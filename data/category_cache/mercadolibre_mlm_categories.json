@@ -1,0 +1,150 @@
+{
+  "platform": "mercadolibre",
+  "site": "MLM",
+  "updated_at": "2026-05-27T00:00:00",
+  "records": [
+    {
+      "category_id": "MLM-100",
+      "subject_id": "",
+      "type_id": "",
+      "name_original": "Electrónica > Audio > Audífonos",
+      "name_cn": "耳机",
+      "path_original": [
+        "Electrónica",
+        "Audio",
+        "Audífonos"
+      ],
+      "path_cn": [
+        "电子产品",
+        "音频",
+        "耳机"
+      ],
+      "parent_id": "MLM-10",
+      "level": 3,
+      "site": "MLM",
+      "country": "MX",
+      "platform": "mercadolibre",
+      "keywords": [
+        "耳机",
+        "audifonos",
+        "headphones",
+        "audífonos"
+      ],
+      "attributes_cache": {
+        "required": [
+          {
+            "id": "BRAND",
+            "name": "Brand",
+            "required": true,
+            "value_type": "string"
+          },
+          {
+            "id": "MODEL",
+            "name": "Model",
+            "required": true,
+            "value_type": "string"
+          },
+          {
+            "id": "PACKAGE_LENGTH",
+            "name": "Package length",
+            "required": true,
+            "value_type": "number",
+            "unit": "cm"
+          },
+          {
+            "id": "PACKAGE_WIDTH",
+            "name": "Package width",
+            "required": true,
+            "value_type": "number",
+            "unit": "cm"
+          },
+          {
+            "id": "PACKAGE_HEIGHT",
+            "name": "Package height",
+            "required": true,
+            "value_type": "number",
+            "unit": "cm"
+          },
+          {
+            "id": "PACKAGE_WEIGHT",
+            "name": "Package weight",
+            "required": true,
+            "value_type": "number",
+            "unit": "kg"
+          }
+        ],
+        "optional": [
+          {
+            "id": "MATERIAL",
+            "name": "Material",
+            "required": false,
+            "value_type": "string"
+          },
+          {
+            "id": "UNSURE_COLOR",
+            "name": "Color",
+            "required": false,
+            "value_type": "select",
+            "options": [
+              "Black",
+              "White",
+              "Blue"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "category_id": "MLM-200",
+      "subject_id": "",
+      "type_id": "",
+      "name_original": "Hogar > Cocina > Botellas",
+      "name_cn": "水瓶",
+      "path_original": [
+        "Hogar",
+        "Cocina",
+        "Botellas"
+      ],
+      "path_cn": [
+        "家居",
+        "厨房",
+        "水瓶"
+      ],
+      "parent_id": "MLM-20",
+      "level": 3,
+      "site": "MLM",
+      "country": "MX",
+      "platform": "mercadolibre",
+      "keywords": [
+        "botella",
+        "water bottle",
+        "水杯",
+        "水瓶"
+      ],
+      "attributes_cache": {
+        "required": [
+          {
+            "id": "BRAND",
+            "name": "Brand",
+            "required": true,
+            "value_type": "string"
+          },
+          {
+            "id": "MODEL",
+            "name": "Model",
+            "required": true,
+            "value_type": "string"
+          }
+        ],
+        "optional": [
+          {
+            "id": "MATERIAL",
+            "name": "Material",
+            "required": false,
+            "value_type": "string"
+          }
+        ]
+      }
+    }
+  ]
+}

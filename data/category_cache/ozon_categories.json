@@ -1,0 +1,86 @@
+{
+  "platform": "ozon",
+  "site": "OZON",
+  "updated_at": "2026-05-27T00:00:00",
+  "records": [
+    {
+      "category_id": "OZON-100",
+      "subject_id": "",
+      "type_id": "OZ-100",
+      "name_original": "Электроника > Аудио > Наушники",
+      "name_cn": "耳机",
+      "path_original": [
+        "Электроника",
+        "Аудио",
+        "Наушники"
+      ],
+      "path_cn": [
+        "电子产品",
+        "音频",
+        "耳机"
+      ],
+      "parent_id": "OZON-10",
+      "level": 3,
+      "site": "OZON",
+      "country": "RU",
+      "platform": "ozon",
+      "keywords": [
+        "наушники",
+        "headphones",
+        "耳机"
+      ],
+      "attributes_cache": {
+        "required": [
+          {
+            "id": "brand",
+            "name": "Brand",
+            "required": true,
+            "value_type": "string"
+          },
+          {
+            "id": "model",
+            "name": "Model",
+            "required": true,
+            "value_type": "string"
+          },
+          {
+            "id": "package_length",
+            "name": "Package length",
+            "required": true,
+            "value_type": "number",
+            "unit": "cm"
+          },
+          {
+            "id": "package_width",
+            "name": "Package width",
+            "required": true,
+            "value_type": "number",
+            "unit": "cm"
+          },
+          {
+            "id": "package_height",
+            "name": "Package height",
+            "required": true,
+            "value_type": "number",
+            "unit": "cm"
+          },
+          {
+            "id": "package_weight",
+            "name": "Package weight",
+            "required": true,
+            "value_type": "number",
+            "unit": "kg"
+          }
+        ],
+        "optional": [
+          {
+            "id": "material",
+            "name": "Material",
+            "required": false,
+            "value_type": "string"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+node_modules/
+.venv/
+__pycache__/
+.pytest_cache/
+test-results/
+browser_profile/
+output/
+
+.env
+.env.*
+*.log
+
+data/images/
+data/cache/
