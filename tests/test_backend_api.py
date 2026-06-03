@@ -68,6 +68,42 @@ def test_image_upload_and_delete_api(backend_server: str, sample_product: dict) 
     assert all(row["id"] != item["id"] for row in deleted.get("imagePool", []))
 
 
+def test_image_translate_api_returns_configuration_warning_without_key(backend_server: str, sample_product: dict) -> None:
+    sample_product["source"]["image_pool"] = [
+        {
+            "id": "source_1",
+            "url": "https://example.com/source-1.jpg",
+            "preview_url": "https://example.com/source-1.jpg",
+            "origin": "1688",
+            "usage": "main",
+            "platforms": ["mercadolibre"],
+            "is_main": True,
+            "selected": True,
+            "order": 0,
+            "status": "ready",
+        }
+    ]
+    data = post_json(
+        backend_server,
+        "/api/image-translate",
+        {
+            "product": sample_product,
+            "platform": "mercadolibre",
+            "language": "Spanish (Mexico)",
+            "image_ids": ["source_1"],
+        },
+    )
+
+    assert data["ok"] is False
+    assert data.get("message")
+    assert "图片翻译服务" in data.get("message", "")
+    assert data["language"] == "Spanish (Mexico)"
+    assert data["imagePoolItems"] == []
+    assert "Target language: Spanish (Mexico)" in data["prompt"]
+    assert data["product"]["product_id"]
+
+
+
 def test_calculate_price_api_returns_frontend_fields(backend_server: str) -> None:
     data = post_json(
         backend_server,

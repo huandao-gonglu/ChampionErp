@@ -6,7 +6,7 @@ from pathlib import Path
 from PIL import Image
 
 from conftest import assert_no_old_path
-from services import image_service
+from services import image_service, image_translate_service
 
 
 def _make_png(path: Path, color: tuple[int, int, int]) -> None:
@@ -71,3 +71,121 @@ def test_upload_data_url_returns_media_asset_shape(app_dir: Path, old_path_marke
     assert (app_dir / item["path"]).exists()
     assert item["status"] == "ready"
     assert_no_old_path(item, old_path_markers)
+
+
+def test_safe_segment_truncates_long_source_url_with_stable_hash() -> None:
+    long_url = (
+        "https://detail.1688.com/offer/906909238760.html?"
+        "topicCode=202603180010000000000015195837&"
+        "optName=%E7%83%AD%E7%82%B9%E5%95%86%E6%9C%BA&"
+        "topicName=%E7%8C%AB%E5%92%AA%E9%A3%9F%E5%85%B7%E6%8A%A4%E9%A2%88%E9%98%B2%E6%89%93%E7%BF%BB&"
+        "item_id=906909238760&offerId=906909238760&object_id=906909238760&"
+        "spm=a260k.29939364.recommend.0"
+    )
+
+    segment = image_service.safe_segment(long_url)
+
+    assert len(segment) <= image_service.MAX_SAFE_SEGMENT_LENGTH
+    assert segment == image_service.safe_segment(long_url)
+    assert segment.startswith("https_detail.1688.com_offer_906909238760.html")
+    assert segment.rsplit("_", 1)[-1].isalnum()
+
+
+def test_upload_data_url_accepts_long_product_id_without_long_filename_error(app_dir: Path) -> None:
+    raw = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32).decode("ascii")
+    long_product_id = (
+        "https://detail.1688.com/offer/906909238760.html?"
+        "topicCode=202603180010000000000015195837&"
+        "optName=%E7%83%AD%E7%82%B9%E5%95%86%E6%9C%BA&"
+        "topicName=%E7%8C%AB%E5%92%AA%E9%A3%9F%E5%85%B7%E6%8A%A4%E9%A2%88%E9%98%B2%E6%89%93%E7%BF%BB&"
+        "item_id=906909238760&offerId=906909238760&object_id=906909238760&"
+        "spm=a260k.29939364.recommend.0"
+    )
+
+    items = image_service.upload_images(
+        app_dir,
+        [{"filename": "tiny.png", "data_url": f"data:image/png;base64,{raw}", "platforms": ["mercadolibre"]}],
+        long_product_id,
+    )
+
+    assert len(items) == 1
+    item = items[0]
+    saved_path = app_dir / item["path"]
+    product_segment = Path(item["path"]).parts[2]
+    assert saved_path.exists()
+    assert len(product_segment) <= image_service.MAX_SAFE_SEGMENT_LENGTH
+    assert saved_path.parent.name == product_segment
+
+
+def test_image_translate_service_materializes_provider_output_into_pool_item(app_dir: Path, tmp_path: Path, old_path_markers: tuple[str, ...]) -> None:
+    source_path = tmp_path / "source.png"
+    generated_path = tmp_path / "translated.png"
+    _make_png(source_path, (255, 0, 0))
+    _make_png(generated_path, (0, 255, 0))
+
+    source_item = image_service.upload_images(
+        app_dir,
+        [{"path": str(source_path), "platforms": ["mercadolibre"], "is_main": True, "selected": True}],
+        "pytest-image-translate",
+    )[0]
+    product = {
+        "product_id": "pytest-image-translate",
+        "name": "Organizer with Chinese text",
+        "source": {"title": "Organizer with Chinese text", "image_pool": [source_item]},
+    }
+    calls: list[dict] = []
+
+    def fake_provider(config: dict, request: dict) -> list[dict]:
+        calls.append({"config": config, "request": request})
+        assert request["target_language"] == "Spanish (Mexico)"
+        assert request["image_ids"] == [source_item["id"]]
+        assert "Only replace or localize text" in request["prompt"]
+        return [{"path": str(generated_path), "provider": "fake-image-ai"}]
+
+    result = image_translate_service.translate_images(
+        app_dir,
+        product,
+        {"image_ai": {"platform": "OpenAI-Compatible", "api_key": "test-key", "base_url": "http://example.test", "model": "fake-image"}},
+        target_language="Spanish (Mexico)",
+        platform="mercadolibre",
+        image_ids=[source_item["id"]],
+        provider=fake_provider,
+    )
+
+    assert result["ok"] is True
+    assert result["generated_count"] == 1
+    assert calls
+    item = result["imagePoolItems"][0]
+    assert item["origin"] == "ai_generated"
+    assert item["target_language"] == "Spanish (Mexico)"
+    assert item["translated_from_id"] == source_item["id"]
+    assert item["path"].replace("\\", "/").startswith("data/images/pytest-image-translate/translated/")
+    assert item["preview_url"].startswith("/file?path=")
+    assert (app_dir / item["path"]).exists()
+    assert item["width"] == 8
+    assert item["height"] == 6
+    assert_no_old_path(result, old_path_markers)
+
+
+def test_image_translate_service_returns_configuration_warning_without_provider_output(app_dir: Path, tmp_path: Path) -> None:
+    source_path = tmp_path / "source.png"
+    _make_png(source_path, (255, 0, 0))
+    source_item = image_service.upload_images(app_dir, [{"path": str(source_path), "selected": True}], "pytest-image-translate-warning")[0]
+    product = {
+        "product_id": "pytest-image-translate-warning",
+        "name": "Warning item",
+        "source": {"title": "Warning item", "image_pool": [source_item]},
+    }
+
+    result = image_translate_service.translate_images(
+        app_dir,
+        product,
+        {"image_ai": {"platform": "OpenAI", "api_key": ""}},
+        target_language="Russian",
+        provider=lambda _config, _request: [],
+    )
+
+    assert result["ok"] is False
+    assert "未配置图片翻译服务" in result["message"]
+    assert result["imagePoolItems"] == []
+    assert "Target language: Russian" in result["prompt"]

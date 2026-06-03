@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import sys
 from copy import deepcopy
 import subprocess
 import socket
@@ -23,10 +24,9 @@ from pathlib import Path
 from typing import Any
 
 import erp_db
-import gui_app as legacy
 import main as generator
 import marketplace_publish as publisher
-from services import collect_service, config_service, copy_service, image_service, pricing_service
+from services import collect_service, config_service, copy_service, html_extract_service as legacy, image_service, image_translate_service, pricing_service
 from product_model import (
     apply_ai_attribute_fill,
     apply_category_selection,
@@ -75,7 +75,10 @@ SOURCE_DIR = IMAGES_DIR / "source"
 UPLOAD_DIR = IMAGES_DIR / "uploads"
 COLLECT_DEBUG_DIR = CACHE_DIR / "collect_debug"
 BROWSER_PROFILE_DIR = APP_DIR / "browser_profile" / "1688"
-WEB_TEMPLATE_PATH = APP_DIR / "erp_web_template.html"
+FRONT_DIR = APP_DIR / "front"
+FRONT_DIST_DIR = APP_DIR / "backend" / "internal" / "web" / "dist"
+FRONT_DIST_INDEX_PATH = FRONT_DIST_DIR / "index.html"
+WEB_TEMPLATE_PATH = FRONT_DIR / "index.html"
 WEB_PORT = int(os.environ.get("ERP_PORT", "5000"))
 BROWSER_DEBUG_PORT = int(os.environ.get("ERP_BROWSER_DEBUG_PORT", "9222"))
 BROWSER_DEBUG_PROFILE_DIR = Path(os.environ.get("ERP_BROWSER_PROFILE_DIR", str(APP_DIR / "browser_profile" / "debug")))
@@ -1029,7 +1032,7 @@ def image_items_from_paths(paths: list[str]) -> list[dict[str, str]]:
                 "name": path.name,
                 "path": str(path),
                 "folder": str(path.parent),
-                "url": f"/file?path={urllib.parse.quote(str(path))}",
+                "url": f"/file?path={urllib.parse.quote(str(path), safe='')}",
                 "size": f"{max(1, path.stat().st_size // 1024)} KB",
                 "time": time.strftime("%m/%d %H:%M", time.localtime(path.stat().st_mtime)),
             }
@@ -1050,7 +1053,7 @@ def image_files(folder: Path, recursive: bool = False) -> list[dict[str, str]]:
                 "name": path.name,
                 "path": str(path),
                 "folder": str(path.parent),
-                "url": f"/file?path={urllib.parse.quote(str(path))}",
+                "url": f"/file?path={urllib.parse.quote(str(path), safe='')}",
                 "size": f"{max(1, path.stat().st_size // 1024)} KB",
                 "time": time.strftime("%m/%d %H:%M", time.localtime(path.stat().st_mtime)),
             }
@@ -1903,7 +1906,7 @@ def pick_web_port(preferred_port: int, attempts: int = 20) -> int:
 
 
 def file_url(path: Path) -> str:
-    return f"/file?path={urllib.parse.quote(str(path))}"
+    return f"/file?path={urllib.parse.quote(str(path), safe='')}"
 
 
 def parse_cookie_header(cookie: str, url: str) -> list[dict[str, str]]:
@@ -2011,17 +2014,60 @@ class CdpWebSocket:
 
 
 def find_chrome_path() -> str:
-    candidates = [
-        Path(os.environ.get("ProgramFiles", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
-        Path(os.environ.get("ProgramFiles(x86)", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
-        Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
-        Path(os.environ.get("ProgramFiles", "")) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
-        Path(os.environ.get("ProgramFiles(x86)", "")) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+    env_candidates = [
+        os.environ.get("ERP_CHROME_PATH", ""),
+        os.environ.get("CHROME_PATH", ""),
+        os.environ.get("BROWSER_PATH", ""),
     ]
+    candidates = [Path(value).expanduser() for value in env_candidates if value.strip()]
+    command_candidates: list[str] = []
+
+    if sys.platform == "darwin":
+        candidates.extend(
+            [
+                Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                Path.home() / "Applications" / "Google Chrome.app" / "Contents" / "MacOS" / "Google Chrome",
+                Path("/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary"),
+                Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+                Path.home() / "Applications" / "Chromium.app" / "Contents" / "MacOS" / "Chromium",
+                Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+                Path.home() / "Applications" / "Microsoft Edge.app" / "Contents" / "MacOS" / "Microsoft Edge",
+            ]
+        )
+        command_candidates = ["google-chrome", "chromium", "chromium-browser", "microsoft-edge", "msedge"]
+    elif os.name == "nt":
+        candidates.extend(
+            [
+                Path(os.environ.get("ProgramFiles", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+                Path(os.environ.get("ProgramFiles(x86)", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+                Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+                Path(os.environ.get("ProgramFiles", "")) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+                Path(os.environ.get("ProgramFiles(x86)", "")) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+                Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+            ]
+        )
+        command_candidates = ["chrome", "chrome.exe", "msedge", "msedge.exe"]
+    else:
+        candidates.extend(
+            [
+                Path("/usr/bin/google-chrome"),
+                Path("/usr/local/bin/google-chrome"),
+                Path("/usr/bin/chromium"),
+                Path("/usr/bin/chromium-browser"),
+                Path("/usr/bin/microsoft-edge"),
+                Path("/usr/bin/msedge"),
+            ]
+        )
+        command_candidates = ["google-chrome", "chromium", "chromium-browser", "microsoft-edge", "msedge"]
+
     for candidate in candidates:
         if candidate.exists():
             return str(candidate)
-    raise RuntimeError("没有找到 Chrome 或 Edge 浏览器")
+    for command in command_candidates:
+        found = shutil.which(command)
+        if found:
+            return found
+    raise RuntimeError("没有找到 Chrome 或 Edge 浏览器；可设置 ERP_CHROME_PATH / CHROME_PATH 指向浏览器可执行文件。")
 
 
 def find_named_browser_path(browser: str) -> str | None:
@@ -2363,7 +2409,7 @@ def fetch_page_html_with_browser_session(url: str, port: int | None = None) -> s
 
 
 def fetch_page_snapshot_with_browser_session(url: str, port: int | None = None, profile_name: str = "1688") -> dict[str, Any] | None:
-    port = port or int(os.environ.get("ERP_1688_CDP_PORT", "9224"))
+    port = port or BROWSER_DEBUG_PORT
     try:
         open_browser_debug_session(url, port, profile_name)
         target = cdp_target_for_url(port, url)
@@ -2663,6 +2709,45 @@ def populate_source_from_legacy_product(product: dict[str, Any], platform: str, 
     return product
 
 
+def collect_product_image_urls(html: str, page_url: str, snapshot_image_urls: list[Any] | None = None, limit: int = 20) -> list[str]:
+    """Prefer product-image candidates from HTML over raw DOM image order.
+
+    1688 pages contain many UI icons before the real product gallery in
+    ``document.images``.  The HTML extractor finds product-specific fields such
+    as og:image/mainUrl/imageUrl first, then we append DOM image URLs as a
+    fallback.
+    """
+
+    candidates: list[Any] = []
+    try:
+        candidates.extend(legacy.extract_product_image_urls(html, page_url, limit=max(limit * 2, 20)))
+    except Exception:
+        pass
+    candidates.extend(snapshot_image_urls or [])
+
+    clean: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        raw = str(item or "").strip()
+        if not raw:
+            continue
+        try:
+            url = legacy.normalize_image_url(raw, page_url)
+        except Exception:
+            url = raw.replace("\\/", "/").strip()
+        lowered = url.lower()
+        parsed_path = urllib.parse.urlparse(url).path.lower()
+        if not url or url in seen:
+            continue
+        if parsed_path.endswith(".svg") or any(skip in lowered for skip in ["sprite", "logo", "avatar", "icon"]):
+            continue
+        seen.add(url)
+        clean.append(url)
+        if len(clean) >= limit:
+            break
+    return clean
+
+
 def parse_1688_product(raw_data: str | dict[str, Any], page_url: str = "") -> dict[str, Any]:
     if isinstance(raw_data, dict):
         html = str(raw_data.get("html", "") or "")
@@ -2744,23 +2829,20 @@ def parse_1688_product(raw_data: str | dict[str, Any], page_url: str = "") -> di
     if parsed_weight and not product.get("weight_kg"):
         product["weight_kg"] = parsed_weight
 
-    if not image_urls:
-        image_urls = legacy.extract_product_image_urls(html, page_url, limit=20)
-    image_urls = list(dict.fromkeys([str(item).strip() for item in image_urls if str(item).strip()]))[:20]
-    source_image_urls = image_urls[:7]
-    detail_image_urls = image_urls[7:20]
-    product["source_image_urls"] = source_image_urls
-    product["detail_image_urls"] = detail_image_urls
     source_dir = SOURCE_DIR
     source_dir.mkdir(parents=True, exist_ok=True)
     image_paths: list[str] = []
-    if image_urls:
+    extracted_image_urls = collect_product_image_urls(html, page_url, image_urls, limit=20)
+    if extracted_image_urls:
         try:
-            image_paths = legacy.download_images(image_urls, source_dir)
+            image_paths = legacy.download_images(extracted_image_urls, source_dir)
         except Exception:
             image_paths = []
-    product["source_images"] = image_paths[: len(source_image_urls)]
-    product["detail_images"] = image_paths[len(source_image_urls) : len(source_image_urls) + len(detail_image_urls)]
+
+    product["source_image_urls"] = extracted_image_urls[:7]
+    product["detail_image_urls"] = extracted_image_urls[7:20]
+    product["source_images"] = image_paths[:7]
+    product["detail_images"] = image_paths[7:20]
     return normalize_product_fields(populate_source_from_legacy_product(product, "1688", page_url))
 
 
@@ -2809,23 +2891,20 @@ def parse_amazon_product(raw_data: str | dict[str, Any], page_url: str = "") -> 
     if parsed_weight:
         product["weight_kg"] = parsed_weight
 
-    if not image_urls:
-        image_urls = legacy.extract_product_image_urls(html, page_url, limit=20)
-    image_urls = list(dict.fromkeys([str(item).strip() for item in image_urls if str(item).strip()]))[:20]
-    source_image_urls = image_urls[:7]
-    detail_image_urls = image_urls[7:20]
-    product["source_image_urls"] = source_image_urls
-    product["detail_image_urls"] = detail_image_urls
     source_dir = SOURCE_DIR
     source_dir.mkdir(parents=True, exist_ok=True)
     image_paths: list[str] = []
-    if image_urls:
+    extracted_image_urls = collect_product_image_urls(html, page_url, image_urls, limit=20)
+    if extracted_image_urls:
         try:
-            image_paths = legacy.download_images(image_urls, source_dir)
+            image_paths = legacy.download_images(extracted_image_urls, source_dir)
         except Exception:
             image_paths = []
-    product["source_images"] = image_paths[: len(source_image_urls)]
-    product["detail_images"] = image_paths[len(source_image_urls) : len(source_image_urls) + len(detail_image_urls)]
+
+    product["source_image_urls"] = extracted_image_urls[:7]
+    product["detail_image_urls"] = extracted_image_urls[7:20]
+    product["source_images"] = image_paths[:7]
+    product["detail_images"] = image_paths[7:20]
     return normalize_product_fields(populate_source_from_legacy_product(product, "amazon", page_url))
 
 def parse_amazon_product(raw_data: str | dict[str, Any], page_url: str = "") -> dict[str, Any]:
@@ -2873,23 +2952,20 @@ def parse_amazon_product(raw_data: str | dict[str, Any], page_url: str = "") -> 
     if parsed_weight:
         product["weight_kg"] = parsed_weight
 
-    if not image_urls:
-        image_urls = legacy.extract_product_image_urls(html, page_url, limit=20)
-    image_urls = list(dict.fromkeys([str(item).strip() for item in image_urls if str(item).strip()]))[:20]
-    source_image_urls = image_urls[:7]
-    detail_image_urls = image_urls[7:20]
-    product["source_image_urls"] = source_image_urls
-    product["detail_image_urls"] = detail_image_urls
     source_dir = SOURCE_DIR
     source_dir.mkdir(parents=True, exist_ok=True)
     image_paths: list[str] = []
-    if image_urls:
+    extracted_image_urls = collect_product_image_urls(html, page_url, image_urls, limit=20)
+    if extracted_image_urls:
         try:
-            image_paths = legacy.download_images(image_urls, source_dir)
+            image_paths = legacy.download_images(extracted_image_urls, source_dir)
         except Exception:
             image_paths = []
-    product["source_images"] = image_paths[: len(source_image_urls)]
-    product["detail_images"] = image_paths[len(source_image_urls) : len(source_image_urls) + len(detail_image_urls)]
+
+    product["source_image_urls"] = extracted_image_urls[:7]
+    product["detail_image_urls"] = extracted_image_urls[7:20]
+    product["source_images"] = image_paths[:7]
+    product["detail_images"] = image_paths[7:20]
     return normalize_product_fields(populate_source_from_legacy_product(product, "amazon", page_url))
 
 
@@ -5384,7 +5460,12 @@ def safe_json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
 
 def html_page(active_page: str = "workbench") -> str:
-    template = WEB_TEMPLATE_PATH.read_text(encoding="utf-8") if WEB_TEMPLATE_PATH.exists() else HTML_TEMPLATE
+    if FRONT_DIST_INDEX_PATH.exists():
+        template = FRONT_DIST_INDEX_PATH.read_text(encoding="utf-8")
+    elif WEB_TEMPLATE_PATH.exists():
+        template = WEB_TEMPLATE_PATH.read_text(encoding="utf-8")
+    else:
+        template = HTML_TEMPLATE
     return template.replace("__ACTIVE_PAGE__", active_page)
 
 
@@ -5476,6 +5557,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/file":
             self.serve_file(parsed)
+            return
+        if parsed.path.startswith("/assets/"):
+            self.serve_frontend_asset(parsed)
             return
         if parsed.path == "/auth/mercadolibre":
             self.serve_ml_auth_page()
@@ -5608,9 +5692,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/open-1688-browser":
                 try:
-                    port = int(os.environ.get("ERP_1688_CDP_PORT", "9224"))
-                    open_browser_debug_session("https://www.1688.com/", port, "1688")
-                    self.send_json({"ok": True, "message": "已打开 1688 浏览器会话，请先登录后再采集。"})
+                    open_browser_debug_session("https://www.1688.com/", BROWSER_DEBUG_PORT, "1688")
+                    self.send_json({"ok": True, "message": f"已用调试端口 {BROWSER_DEBUG_PORT} 打开 1688 浏览器会话，请先登录后再采集。", "port": BROWSER_DEBUG_PORT})
                 except Exception as exc:
                     self.send_json({"ok": False, "error": str(exc)}, 400)
                 return
@@ -6027,19 +6110,61 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/image-translate":
                 body = self.read_body()
-                self.send_json(
-                    {
-                        "ok": False,
-                        "message": "当前未配置图片翻译服务，请在系统设置中配置 API 后使用。",
-                        "language": body.get("language", ""),
-                    }
+                product = normalize_product_fields(body.get("product") or load_product())
+                if not str(product.get("product_id") or "").strip():
+                    product = save_product(product)
+                result = image_translate_service.translate_images(
+                    APP_DIR,
+                    product,
+                    load_app_config(),
+                    target_language=str(body.get("language") or body.get("target_language") or "Spanish (Mexico)"),
+                    platform=str(body.get("platform") or "mercadolibre"),
+                    image_ids=body.get("image_ids") if isinstance(body.get("image_ids"), list) else body.get("selected_image_ids") if isinstance(body.get("selected_image_ids"), list) else [],
+                    mode=str(body.get("mode") or "translate"),
                 )
+                if result.get("ok"):
+                    merged = append_images_to_product_pool(product, result.get("imagePoolItems") if isinstance(result.get("imagePoolItems"), list) else [])
+                    saved = save_product(merged)
+                    self.send_json({"ok": True, **result, "product": saved, "imagePool": current_image_pool(saved), "sourceImages": current_source_images(saved), "productsIndex": load_products_index()})
+                    return
+                self.send_json({"ok": False, "product": product, "imagePool": current_image_pool(product), **result}, 200)
                 return
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, 500)
             return
         self.send_response(404)
         self.end_headers()
+
+    def serve_frontend_asset(self, parsed: urllib.parse.ParseResult) -> None:
+        rel_path = urllib.parse.unquote(parsed.path.lstrip("/"))
+        try:
+            path = (FRONT_DIST_DIR / rel_path).resolve()
+            root = FRONT_DIST_DIR.resolve()
+            if not str(path).startswith(str(root)) or not path.is_file():
+                raise FileNotFoundError
+            content_type = {
+                ".js": "text/javascript; charset=utf-8",
+                ".mjs": "text/javascript; charset=utf-8",
+                ".css": "text/css; charset=utf-8",
+                ".json": "application/json; charset=utf-8",
+                ".svg": "image/svg+xml",
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".webp": "image/webp",
+                ".ico": "image/x-icon",
+                ".woff": "font/woff",
+                ".woff2": "font/woff2",
+            }.get(path.suffix.lower(), "application/octet-stream")
+            raw = path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+        except Exception:
+            self.send_response(404)
+            self.end_headers()
 
     def serve_file(self, parsed: urllib.parse.ParseResult) -> None:
         params = urllib.parse.parse_qs(parsed.query)
@@ -6196,4 +6321,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -28,6 +28,7 @@ except Exception:  # pragma: no cover
 PLATFORMS = ("mercadolibre", "wildberries", "ozon")
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_REMOTE_BYTES = 12 * 1024 * 1024
+MAX_SAFE_SEGMENT_LENGTH = 80
 
 
 def service_status() -> dict[str, str]:
@@ -40,9 +41,28 @@ def images_root(app_dir: Path | str) -> Path:
     return root
 
 
-def safe_segment(value: str, fallback: str = "unassigned") -> str:
-    text = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "")).strip("._")
-    return text or fallback
+def safe_segment(value: str, fallback: str = "unassigned", max_length: int = MAX_SAFE_SEGMENT_LENGTH) -> str:
+    """Return a filesystem-safe single path segment.
+
+    Collection flows may pass a full source URL as ``product_id`` before the
+    product has a stable id.  macOS rejects path components longer than 255
+    bytes, so keep segments short and append a stable hash when truncating.
+    """
+
+    raw = str(value or "")
+    text = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw).strip("._")
+    if not text:
+        raw = str(fallback or "unassigned")
+        text = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw).strip("._") or "unassigned"
+
+    max_length = max(16, int(max_length or MAX_SAFE_SEGMENT_LENGTH))
+    if len(text) <= max_length:
+        return text
+
+    digest = hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()[:10]
+    prefix_length = max(1, max_length - len(digest) - 1)
+    prefix = text[:prefix_length].rstrip("._") or text[:prefix_length]
+    return f"{prefix}_{digest}"[:max_length]
 
 
 def safe_filename(filename: str, suffix: str = ".png") -> str:
@@ -66,7 +86,7 @@ def relative_to_app(path: Path, app_dir: Path | str) -> str:
 
 
 def file_url(path: Path) -> str:
-    return f"/file?path={urllib.parse.quote(str(path))}"
+    return f"/file?path={urllib.parse.quote(str(path), safe='')}"
 
 
 def decode_upload(upload: dict[str, Any]) -> tuple[bytes, str]:

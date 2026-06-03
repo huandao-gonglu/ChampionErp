@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import erp_db
 import erp_web_app
+from services import image_translate_service
 from tests.test_erp_db import sample_product
 
 
@@ -293,6 +294,71 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             self.assertEqual(media_count, 1)
             records = erp_db.list_product_records(app_dir)
             self.assertEqual(records[0]["workflow_status"], "images_ready")
+
+        self.with_temp_app(run)
+
+    def test_image_translate_items_persist_and_move_copy_ready_to_images_ready(self) -> None:
+        def run(app_dir: Path) -> None:
+            source_image = app_dir / "source.png"
+            translated_image = app_dir / "translated.png"
+            from PIL import Image
+
+            Image.new("RGB", (8, 6), (255, 0, 0)).save(source_image, format="PNG")
+            Image.new("RGB", (8, 6), (0, 255, 0)).save(translated_image, format="PNG")
+
+            product = sample_product("Translate image item", "https://example.com/translate-image")
+            product["source"]["image_pool"] = erp_web_app.image_service.upload_images(
+                app_dir,
+                [{"path": str(source_image), "platforms": ["mercadolibre"], "is_main": True, "selected": True}],
+                "translate-image-item",
+            )
+            product["source"]["images"] = []
+            product["drafts"]["mercadolibre"] = {
+                "enabled": True,
+                "title": "AI title",
+                "description": "AI description",
+                "copy_generated_at": "2026-05-29T10:00:00",
+                "images": [],
+                "status": "copy_ready",
+            }
+            saved = erp_web_app.save_product(product)
+            source_item_id = saved["source"]["image_pool"][0]["id"]
+
+            result = image_translate_service.translate_images(
+                app_dir,
+                saved,
+                {"image_ai": {"platform": "OpenAI", "api_key": "test-key"}},
+                target_language="Spanish (Mexico)",
+                platform="mercadolibre",
+                image_ids=[source_item_id],
+                provider=lambda _config, _request: [{"path": str(translated_image), "provider": "fake-image-ai"}],
+            )
+            self.assertTrue(result["ok"])
+
+            merged = erp_web_app.append_images_to_product_pool(saved, result["imagePoolItems"])
+            persisted = erp_web_app.save_product(merged)
+            loaded = erp_db.load_product_model(app_dir, persisted["product_id"])
+            translated_items = [item for item in loaded["source"]["image_pool"] if item.get("target_language") == "Spanish (Mexico)"]
+
+            self.assertEqual(loaded["drafts"]["mercadolibre"]["status"], "images_ready")
+            self.assertEqual(len(translated_items), 1)
+            self.assertEqual(translated_items[0]["origin"], "ai_generated")
+            self.assertEqual(translated_items[0]["translated_from_id"], source_item_id)
+            self.assertIn(translated_items[0]["path"], loaded["drafts"]["mercadolibre"]["images"])
+            self.assertTrue((app_dir / translated_items[0]["path"]).exists())
+
+            conn = sqlite3.connect(app_dir / erp_db.DEFAULT_DB_NAME)
+            try:
+                translated_media_count = conn.execute(
+                    """
+                    SELECT COUNT(*) FROM media_assets
+                    WHERE product_id = ? AND origin = 'ai_generated' AND local_path = ?
+                    """,
+                    (persisted["product_id"], translated_items[0]["path"]),
+                ).fetchone()[0]
+            finally:
+                conn.close()
+            self.assertEqual(translated_media_count, 1)
 
         self.with_temp_app(run)
 

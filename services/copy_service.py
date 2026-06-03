@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from openai import OpenAI
 
 from .config_service import ai_config_from_sources
 
@@ -109,10 +108,14 @@ Product data:
 """
 
 
-def openai_compatible_client(config: dict[str, Any]) -> OpenAI:
+def openai_compatible_client(config: dict[str, Any]) -> Any:
     api_key = str(config.get("api_key") or "").strip()
     if not api_key:
         raise RuntimeError("API Key is not configured.")
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise RuntimeError("OpenAI SDK is not installed. Run: pip install openai") from exc
     base_url = str(config.get("base_url") or "").strip().rstrip("/")
     kwargs: dict[str, Any] = {"api_key": api_key}
     if base_url:

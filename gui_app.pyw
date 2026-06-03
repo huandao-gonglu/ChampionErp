@@ -4562,17 +4562,60 @@ class CdpWebSocket:
 
 
 def find_chrome_path() -> str:
-    candidates = [
-        Path(os.environ.get("ProgramFiles", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
-        Path(os.environ.get("ProgramFiles(x86)", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
-        Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
-        Path(os.environ.get("ProgramFiles", "")) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
-        Path(os.environ.get("ProgramFiles(x86)", "")) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+    env_candidates = [
+        os.environ.get("ERP_CHROME_PATH", ""),
+        os.environ.get("CHROME_PATH", ""),
+        os.environ.get("BROWSER_PATH", ""),
     ]
+    candidates = [Path(value).expanduser() for value in env_candidates if value.strip()]
+    command_candidates: list[str] = []
+
+    if sys.platform == "darwin":
+        candidates.extend(
+            [
+                Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                Path.home() / "Applications" / "Google Chrome.app" / "Contents" / "MacOS" / "Google Chrome",
+                Path("/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary"),
+                Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+                Path.home() / "Applications" / "Chromium.app" / "Contents" / "MacOS" / "Chromium",
+                Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+                Path.home() / "Applications" / "Microsoft Edge.app" / "Contents" / "MacOS" / "Microsoft Edge",
+            ]
+        )
+        command_candidates = ["google-chrome", "chromium", "chromium-browser", "microsoft-edge", "msedge"]
+    elif os.name == "nt":
+        candidates.extend(
+            [
+                Path(os.environ.get("ProgramFiles", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+                Path(os.environ.get("ProgramFiles(x86)", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+                Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+                Path(os.environ.get("ProgramFiles", "")) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+                Path(os.environ.get("ProgramFiles(x86)", "")) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+                Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+            ]
+        )
+        command_candidates = ["chrome", "chrome.exe", "msedge", "msedge.exe"]
+    else:
+        candidates.extend(
+            [
+                Path("/usr/bin/google-chrome"),
+                Path("/usr/local/bin/google-chrome"),
+                Path("/usr/bin/chromium"),
+                Path("/usr/bin/chromium-browser"),
+                Path("/usr/bin/microsoft-edge"),
+                Path("/usr/bin/msedge"),
+            ]
+        )
+        command_candidates = ["google-chrome", "chromium", "chromium-browser", "microsoft-edge", "msedge"]
+
     for candidate in candidates:
         if candidate.exists():
             return str(candidate)
-    raise RuntimeError("没有找到 Chrome 或 Edge 浏览器")
+    for command in command_candidates:
+        found = shutil.which(command)
+        if found:
+            return found
+    raise RuntimeError("没有找到 Chrome 或 Edge 浏览器；可设置 ERP_CHROME_PATH / CHROME_PATH 指向浏览器可执行文件。")
 
 
 def http_json(url: str) -> dict | list:
