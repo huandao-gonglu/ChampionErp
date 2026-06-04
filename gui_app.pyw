@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import mimetypes
@@ -56,6 +56,7 @@ except Exception:
     ImageTk = None
 
 import main as generator
+import erp_db
 import marketplace_publish as publisher
 from product_model import default_product_model
 
@@ -65,7 +66,6 @@ if getattr(sys, "frozen", False):
 else:
     APP_DIR = Path(__file__).resolve().parent
     RESOURCE_DIR = APP_DIR
-PRODUCT_PATH = APP_DIR / "product.json"
 OUTPUT_DIR = APP_DIR / "output"
 STORE_CONFIG_PATH = APP_DIR / "store_config.json"
 APP_CONFIG_PATH = APP_DIR / "app_config.json"
@@ -521,6 +521,23 @@ def default_product() -> dict:
     return default_product_model()
 
 
+def load_current_product_from_sqlite() -> dict:
+    erp_db.initialize_database(APP_DIR)
+    records = erp_db.list_product_records(APP_DIR, limit=1)
+    if records:
+        loaded = erp_db.load_product_model(APP_DIR, records[0]["product_id"])
+        if loaded:
+            return loaded
+    return default_product()
+
+
+def save_product_to_sqlite(product: dict) -> dict:
+    erp_db.initialize_database(APP_DIR)
+    product = dict(product or {})
+    product["product_id"] = erp_db.upsert_product_model(APP_DIR, product)
+    return product
+
+
 class App:
     def __init__(self, root: Tk) -> None:
         self.root = root
@@ -622,9 +639,7 @@ class App:
         self.fill_fields()
 
     def load_product(self) -> dict:
-        if PRODUCT_PATH.exists():
-            return json.loads(PRODUCT_PATH.read_text(encoding="utf-8"))
-        return default_product()
+        return load_current_product_from_sqlite()
 
     def provider_key_name(self) -> str:
         return "deepseek_api_key"
@@ -1014,7 +1029,6 @@ class App:
             self.zh_copy_text.delete("1.0", END)
         self.set_image_urls([])
         self.product = default_product()
-        PRODUCT_PATH.write_text(json.dumps(self.product, ensure_ascii=False, indent=2), encoding="utf-8")
         self.write_log("已清空当前商品、卖点、包装清单和图片信息。")
 
     def refresh_upc_from_pool(self) -> None:
@@ -1885,7 +1899,7 @@ class App:
         if uploaded:
             self.set_image_urls(uploaded)
             self.product = self.collect_product()
-            PRODUCT_PATH.write_text(json.dumps(self.product, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.product = save_product_to_sqlite(self.product)
             self.write_log(f"已把 {len(uploaded)} 张图片上传到美客多图片库，并替换为平台图片ID。")
         return uploaded
 
@@ -1905,7 +1919,7 @@ class App:
             merged = self.get_public_image_urls() + uploaded
             self.set_image_urls(merged)
             self.product = self.collect_product()
-            PRODUCT_PATH.write_text(json.dumps(self.product, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.product = save_product_to_sqlite(self.product)
             self.write_log(f"已上传 {len(uploaded)} 张本地图片到美客多，并写入图片 URL 框。")
         return uploaded
 
@@ -2254,7 +2268,7 @@ class App:
             imported += 1
         self.set_image_urls(urls)
         self.product = self.collect_product()
-        PRODUCT_PATH.write_text(json.dumps(self.product, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.product = save_product_to_sqlite(self.product)
         self.write_log(f"已导入 {imported} 张 ChatGPT 下载图片，并填入图片 URL 框。本地 file URL 可用于记录/预览，正式上架仍需公网 URL。")
         self.show_info("导入完成", f"已导入 {imported} 张图片，并显示到图片预览/上架图片区域。")
 
@@ -2269,7 +2283,7 @@ class App:
                 urls.append(url)
         self.set_image_urls(urls)
         self.product = self.collect_product()
-        PRODUCT_PATH.write_text(json.dumps(self.product, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.product = save_product_to_sqlite(self.product)
         self.write_log(f"ChatGPT 后台生图已自动导入 {len(valid)} 张，已回填到图片框和预览区。")
 
     def watch_chatgpt_auto_result(self, result_path: Path) -> None:
@@ -2898,10 +2912,7 @@ class App:
             if price:
                 product["detected_price"] = price
                 product["detected_currency"] = currency
-            PRODUCT_PATH.write_text(
-                json.dumps(product, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            product = save_product_to_sqlite(product)
             self.product = product
             self.source_images = image_paths
             self.root.after(0, self.fill_fields)
@@ -3395,7 +3406,7 @@ class App:
         product = self.load_product()
         product["source_images"] = []
         product["source_image_urls"] = []
-        PRODUCT_PATH.write_text(json.dumps(product, ensure_ascii=False, indent=2), encoding="utf-8")
+        product = save_product_to_sqlite(product)
         self.product = product
         self.set_image_urls([])
         self.refresh_source_image_preview()
@@ -3412,8 +3423,8 @@ class App:
 
     def save_product(self) -> None:
         product = self.collect_product()
-        PRODUCT_PATH.write_text(json.dumps(product, ensure_ascii=False, indent=2), encoding="utf-8")
-        self.write_log(f"已保存: {PRODUCT_PATH}")
+        self.product = save_product_to_sqlite(product)
+        self.write_log("已保存到 SQLite 商品库。")
 
     def run_analysis(self) -> None:
         if not self.source_images and not self.has_current_product_context(self.collect_product()):
@@ -3436,7 +3447,7 @@ class App:
             self.set_progress(0, 100, "正在自动识别产品信息...")
             self.check_cancelled()
             self.write_log("开始自动识别产品信息...")
-            product = generator.load_json(PRODUCT_PATH)
+            product = self.load_product()
             source_text = self.collect_ai_source_text(product)
             if not source_text.strip():
                 raise RuntimeError("没有可供 AI 识别的文本内容，请先获取网址内容或填写卖点/包装清单。")
@@ -3448,10 +3459,7 @@ class App:
                 deepseek_model=self.deepseek_model.get().strip() or "deepseek-chat",
             )
             self.check_cancelled()
-            PRODUCT_PATH.write_text(
-                json.dumps(updated, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            updated = save_product_to_sqlite(updated)
             self.product = updated
             self.root.after(0, self.fill_fields)
             notes = updated.get("recognition_notes", [])

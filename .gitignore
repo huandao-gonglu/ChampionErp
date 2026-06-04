@@ -13,3 +13,4 @@ output/
 data/images/
 data/cache/
 .playwright-mcp/
+erp.sqlite3

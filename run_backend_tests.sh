@@ -36,7 +36,7 @@ export ERP_TEST_BASE_URL="${ERP_TEST_BASE_URL:-http://127.0.0.1:${ERP_PORT}}"
 # Backend API tests mutate runtime files in the project root. Preserve them so
 # local test runs do not dirty product data or the checked-in SQLite snapshot.
 BACKUP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/champion-erp-test-backup.XXXXXX")"
-RUNTIME_FILES=("product.json" "erp.sqlite3")
+RUNTIME_FILES=("erp.sqlite3")
 restore_runtime_files() {
   local exit_code=$?
   for file in "${RUNTIME_FILES[@]}"; do

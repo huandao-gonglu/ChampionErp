@@ -14,6 +14,7 @@ import {
   diagnosticsToCollectDiagnostics,
   enqueuePublish as enqueuePublishApi,
   exchangeMercadoLibreCode,
+  deleteProducts as deleteProductsApi,
   fetchAiConfig,
   fetchBrowserDebugStatus,
   fetchCategoryAttrs,
@@ -486,6 +487,40 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
+  async function deleteProductsByIds(productIds: string[]) {
+    const ids = Array.from(new Set(productIds.map((id) => String(id || '').trim()).filter(Boolean)))
+    if (!ids.length) {
+      setError('请先选择要删除的商品。')
+      return
+    }
+    loading.value = true
+    setError('')
+    try {
+      const result = await deleteProductsApi(ids)
+      productsIndex.value = result.productsIndex
+      selectedProductIds.value = selectedProductIds.value.filter((id) => !result.deletedIds.includes(id))
+      if (result.product && result.deletedIds.includes(product.value.productId)) {
+        product.value = result.product
+        syncCollectDiagnosticsFromProduct('当前商品已删除。')
+        syncPricingInputFromProduct()
+      }
+      addLog(result.message || `已删除 ${result.deleted} 个商品。`)
+      if (result.missingIds.length) addLog(`未找到商品：${result.missingIds.join('、')}`)
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : '删除商品失败')
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function deleteProduct(item: ProductIndexItem) {
+    await deleteProductsByIds([item.productId])
+  }
+
+  async function deleteSelectedProducts() {
+    await deleteProductsByIds(selectedProductIds.value)
+  }
+
   function toggleProductSelection(productId: string, checked?: boolean) {
     const exists = selectedProductIds.value.includes(productId)
     const shouldAdd = checked ?? !exists
@@ -493,8 +528,13 @@ export const useWorkflowStore = defineStore('workflow', () => {
     if (!shouldAdd) selectedProductIds.value = selectedProductIds.value.filter((id) => id !== productId)
   }
 
-  function selectAllProducts(checked: boolean) {
-    selectedProductIds.value = checked ? productsIndex.value.map((item) => item.productId).filter(Boolean) : []
+  function selectAllProducts(checked: boolean, productIds?: string[]) {
+    const targetIds = (productIds?.length ? productIds : productsIndex.value.map((item) => item.productId)).filter(Boolean)
+    if (!checked) {
+      selectedProductIds.value = selectedProductIds.value.filter((id) => !targetIds.includes(id))
+      return
+    }
+    selectedProductIds.value = Array.from(new Set([...selectedProductIds.value, ...targetIds]))
   }
 
   async function claimSelectedProducts() {
@@ -1194,6 +1234,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
     saveCollectSettings,
     refreshProductsIndex,
     loadProduct,
+    deleteProduct,
+    deleteSelectedProducts,
     toggleProductSelection,
     selectAllProducts,
     claimSelectedProducts,

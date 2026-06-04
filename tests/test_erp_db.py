@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 import tempfile
 import unittest
@@ -105,25 +104,25 @@ class ErpDbTests(unittest.TestCase):
             self.assertEqual(draft_count, 1)
             self.assertEqual(media_count, 1)
 
-    def test_migrate_legacy_json_imports_current_and_product_snapshots(self) -> None:
+    def test_delete_product_model_cascades_drafts_and_media(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             app_dir = Path(tmp)
-            output_products = app_dir / "output" / "products"
-            output_products.mkdir(parents=True)
-            (app_dir / "product.json").write_text(
-                json.dumps(sample_product("Current product", "https://example.com/current"), ensure_ascii=False),
-                encoding="utf-8",
-            )
-            (output_products / "snapshot.json").write_text(
-                json.dumps(sample_product("Snapshot product", "https://example.com/snapshot"), ensure_ascii=False),
-                encoding="utf-8",
-            )
+            erp_db.initialize_database(app_dir)
+            product_id = erp_db.upsert_product_model(app_dir, sample_product())
 
-            result = erp_db.migrate_legacy_json(app_dir)
+            deleted = erp_db.delete_product_model(app_dir, product_id)
 
-            self.assertEqual(result["imported"], 2)
-            records = erp_db.list_product_records(app_dir)
-            self.assertEqual({item["title"] for item in records}, {"Current product", "Snapshot product"})
+            self.assertTrue(deleted)
+            self.assertEqual(erp_db.load_product_model(app_dir, product_id), {})
+            self.assertEqual(erp_db.list_product_records(app_dir), [])
+            conn = sqlite3.connect(app_dir / erp_db.DEFAULT_DB_NAME)
+            try:
+                draft_count = conn.execute("SELECT COUNT(*) FROM platform_drafts").fetchone()[0]
+                media_count = conn.execute("SELECT COUNT(*) FROM media_assets").fetchone()[0]
+            finally:
+                conn.close()
+            self.assertEqual(draft_count, 0)
+            self.assertEqual(media_count, 0)
 
     def test_import_category_cache_searches_chinese_and_loads_required_attributes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

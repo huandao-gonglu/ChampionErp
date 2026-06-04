@@ -12,7 +12,9 @@ const emit = defineEmits<{
   refresh: []
   load: [item: ProductIndexItem]
   toggle: [productId: string, checked: boolean]
-  selectAll: [checked: boolean]
+  selectAll: [checked: boolean, productIds: string[]]
+  deleteItem: [item: ProductIndexItem]
+  deleteSelected: []
   claim: []
   generateCopy: []
   generateImagePrompt: []
@@ -32,6 +34,17 @@ const filteredItems = computed(() => props.items.filter((item) => {
 }))
 
 const allChecked = computed(() => filteredItems.value.length > 0 && filteredItems.value.every((item) => props.selectedIds.includes(item.productId)))
+const selectedCount = computed(() => props.selectedIds.length)
+
+function confirmDelete(item: ProductIndexItem) {
+  const title = item.title || item.productId || '该商品'
+  if (window.confirm(`确认删除商品「${title}」吗？删除后不可恢复。`)) emit('deleteItem', item)
+}
+
+function confirmDeleteSelected() {
+  if (!selectedCount.value) return
+  if (window.confirm(`确认批量删除已勾选的 ${selectedCount.value} 个商品吗？删除后不可恢复。`)) emit('deleteSelected')
+}
 
 function statusClass(value: string) {
   if (['done', 'success', 'ready_to_publish', 'published'].includes(String(value))) return 'badge-success'
@@ -67,6 +80,7 @@ function statusClass(value: string) {
       <button class="btn btn-primary" :disabled="props.loading" @click="emit('generateCopy')">批量 AI 生成标题描述</button>
       <button class="btn btn-secondary" :disabled="props.loading" @click="emit('generateImagePrompt')">生成 GPT 生图任务包</button>
       <button class="btn btn-primary" :disabled="props.loading" @click="emit('publishSelected')">选中商品发布入队</button>
+      <button class="btn btn-outline text-rose-700" :disabled="props.loading || !selectedCount" @click="confirmDeleteSelected">批量删除选中</button>
       <button class="btn btn-outline" :disabled="props.loading" @click="emit('refresh')">刷新商品库</button>
       <button class="btn btn-outline" @click="emit('goEdit')">编辑商品</button>
       <button class="btn btn-outline" @click="emit('goPublish')">发布预检</button>
@@ -78,7 +92,7 @@ function statusClass(value: string) {
       <table class="w-full text-left text-sm">
         <thead class="bg-slate-50 text-xs text-slate-500">
           <tr>
-            <th class="p-3"><input type="checkbox" :checked="allChecked" @change="emit('selectAll', ($event.target as HTMLInputElement).checked)" /></th>
+            <th class="p-3"><input type="checkbox" :checked="allChecked" @change="emit('selectAll', ($event.target as HTMLInputElement).checked, filteredItems.map((item) => item.productId))" /></th>
             <th class="p-3">主图</th>
             <th class="p-3">来源</th>
             <th class="p-3">标题 / 平台草稿箱</th>
@@ -109,7 +123,12 @@ function statusClass(value: string) {
             <td class="p-3"><span :class="statusClass(item.pricingStatus)">{{ item.pricingStatus || '-' }}</span></td>
             <td class="p-3"><span :class="statusClass(String(item.precheckStatus))">{{ item.precheckStatus || '-' }}</span></td>
             <td class="p-3"><span :class="statusClass(item.publishStatus)">{{ item.publishStatus || '-' }}</span></td>
-            <td class="p-3"><button class="btn btn-outline py-1.5" @click="emit('load', item)">查看 / 编辑</button></td>
+            <td class="p-3">
+              <div class="flex flex-wrap gap-2">
+                <button class="btn btn-outline py-1.5" @click="emit('load', item)">查看 / 编辑</button>
+                <button class="btn btn-outline py-1.5 text-rose-700" :disabled="props.loading" @click="confirmDelete(item)">删除</button>
+              </div>
+            </td>
           </tr>
           <tr v-if="!filteredItems.length"><td class="p-6 text-center text-slate-500" colspan="14">当前筛选下暂无商品。可在采集页手动导入或采集后自动加入商品库。</td></tr>
         </tbody>

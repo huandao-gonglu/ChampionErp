@@ -502,6 +502,20 @@ def list_product_records(app_dir: Path | str, limit: int = 500) -> list[dict[str
     return [_record_from_row(row) for row in rows]
 
 
+def delete_product_model(app_dir: Path | str, product_id: str) -> bool:
+    product_id = str(product_id or "").strip()
+    if not product_id:
+        return False
+    initialize_database(app_dir)
+    conn = connect(app_dir)
+    try:
+        cursor = conn.execute("DELETE FROM products WHERE product_id = ?", (product_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
 def _record_from_row(row: sqlite3.Row) -> dict[str, Any]:
     product = json_loads(row["product_json"], {})
     drafts = _dict(product.get("drafts")) if isinstance(product, dict) else {}
@@ -737,36 +751,3 @@ def find_category_record(app_dir: Path | str, platform: str, category_id: str, s
     finally:
         conn.close()
     return _category_record_from_row(row) if row else None
-
-
-def migrate_legacy_json(app_dir: Path | str) -> dict[str, int]:
-    app_dir = Path(app_dir)
-    initialize_database(app_dir)
-    candidates: list[Path] = []
-    product_path = app_dir / "product.json"
-    if product_path.exists():
-        candidates.append(product_path)
-    products_dir = app_dir / "output" / "products"
-    if products_dir.exists():
-        candidates.extend(sorted(products_dir.glob("*.json")))
-    imported = 0
-    skipped = 0
-    seen: set[str] = set()
-    for path in candidates:
-        try:
-            data = json.loads(path.read_text(encoding="utf-8-sig"))
-        except Exception:
-            skipped += 1
-            continue
-        if not isinstance(data, dict):
-            skipped += 1
-            continue
-        product_id = product_identity(data)
-        if product_id in seen:
-            skipped += 1
-            continue
-        data["legacy_json_path"] = str(path)
-        upsert_product_model(app_dir, data)
-        seen.add(product_id)
-        imported += 1
-    return {"imported": imported, "skipped": skipped, "seen": len(seen)}

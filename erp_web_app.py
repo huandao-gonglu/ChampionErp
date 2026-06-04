@@ -59,15 +59,11 @@ LOGS_DIR = DATA_DIR / "logs"
 IMAGES_DIR = DATA_DIR / "images"
 EXPORTS_DIR = DATA_DIR / "exports"
 OUTPUT_DIR = LOGS_DIR
-PRODUCT_PATH = APP_DIR / "product.json"
-DIST_PRODUCT_PATH = DIST_DIR / "product.json"
 STORE_CONFIG_PATH = APP_DIR / "store_config.json"
 DIST_STORE_CONFIG_PATH = DIST_DIR / "store_config.json"
 APP_CONFIG_PATH = APP_DIR / "app_config.json"
 DIST_APP_CONFIG_PATH = DIST_DIR / "app_config.json"
 PUBLISH_LOG_PATH = OUTPUT_DIR / "publish_logs.json"
-PRODUCTS_INDEX_PATH = CACHE_DIR / "products_index.json"
-PRODUCTS_DIR = DATA_DIR / "products"
 PUBLISHING_JOB_DIR = OUTPUT_DIR / "publishing_jobs"
 TASK_DIR = OUTPUT_DIR / "codex_tasks"
 CHATGPT_DIR = IMAGES_DIR / "chatgpt"
@@ -82,7 +78,6 @@ WEB_TEMPLATE_PATH = FRONT_DIR / "index.html"
 WEB_PORT = int(os.environ.get("ERP_PORT", "5000"))
 BROWSER_DEBUG_PORT = int(os.environ.get("ERP_BROWSER_DEBUG_PORT", "9222"))
 BROWSER_DEBUG_PROFILE_DIR = Path(os.environ.get("ERP_BROWSER_PROFILE_DIR", str(APP_DIR / "browser_profile" / "debug")))
-_SQLITE_MIGRATED_DIRS: set[str] = set()
 LEGACY_PATH_ROOTS = (
     "\\".join(["C:", "Users", "miami", "Documents", "Codex", "2026-05-23", "wb-10"]),
     "/".join(["C:", "Users", "miami", "Documents", "Codex", "2026-05-23", "wb-10"]),
@@ -158,10 +153,6 @@ def write_json(path: Path, data: Any) -> None:
 
 def ensure_sqlite_store() -> None:
     erp_db.initialize_database(APP_DIR)
-    key = str(APP_DIR.resolve())
-    if key not in _SQLITE_MIGRATED_DIRS:
-        erp_db.migrate_legacy_json(APP_DIR)
-        _SQLITE_MIGRATED_DIRS.add(key)
 
 
 def _ensure_sqlite_category_cache(platform: str) -> dict[str, Any]:
@@ -340,10 +331,6 @@ def normalize_product_fields(product: dict[str, Any]) -> dict[str, Any]:
     return portable_data(normalized)
 
 
-def product_path() -> Path:
-    return latest_path([PRODUCT_PATH, DIST_PRODUCT_PATH], PRODUCT_PATH)
-
-
 def load_product() -> dict[str, Any]:
     ensure_sqlite_store()
     records = erp_db.list_product_records(APP_DIR, limit=1)
@@ -351,7 +338,7 @@ def load_product() -> dict[str, Any]:
         loaded = erp_db.load_product_model(APP_DIR, records[0]["product_id"])
         if loaded:
             return normalize_product_fields(loaded)
-    return normalize_product_fields(read_json(product_path(), default_product_model()))
+    return normalize_product_fields(default_product_model())
 
 
 def save_product(data: dict[str, Any]) -> dict[str, Any]:
@@ -359,10 +346,6 @@ def save_product(data: dict[str, Any]) -> dict[str, Any]:
     product["product_id"] = product_identity(product)
     ensure_sqlite_store()
     product["product_id"] = erp_db.upsert_product_model(APP_DIR, product)
-    write_json(PRODUCT_PATH, product)
-    if DIST_DIR.exists():
-        write_json(DIST_PRODUCT_PATH, product)
-    upsert_products_index(product)
     return product
 
 
@@ -499,31 +482,6 @@ def product_index_status(product: dict[str, Any], platform: str = "mercadolibre"
     }
 
 
-def product_index_record(product: dict[str, Any], file_path: Path | None = None) -> dict[str, Any]:
-    product_id = product_identity(product)
-    source = product.get("source") if isinstance(product.get("source"), dict) else {}
-    pool = current_image_pool(product)
-    main_image = next((item for item in pool if item.get("is_main")), pool[0] if pool else {})
-    drafts = product.get("drafts") if isinstance(product.get("drafts"), dict) else {}
-    platforms = [platform for platform in PLATFORMS if isinstance(drafts.get(platform), dict) and (drafts[platform].get("enabled") or drafts[platform].get("title") or drafts[platform].get("category_id"))]
-    status = product_index_status(product, "mercadolibre")
-    created_at = str(product.get("created_at") or source.get("created_at") or collect_time_iso())
-    updated_at = collect_time_iso()
-    path = file_path or (PRODUCTS_DIR / f"{product_id}.json")
-    return {
-        "product_id": product_id,
-        "title": source.get("title") or product.get("name") or "",
-        "main_image": _display_image_ref(str(main_image.get("preview_url") or main_image.get("url") or main_image.get("path") or "")),
-        "source_platform": source.get("source_platform") or product.get("source_platform") or "",
-        "source_url": source.get("source_url") or product.get("source_url") or "",
-        "created_at": created_at,
-        "updated_at": updated_at,
-        "platforms": platforms or ["mercadolibre"],
-        "product_file_path": str(path),
-        **status,
-    }
-
-
 def sanitize_products_index(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     sanitized: list[dict[str, Any]] = []
     for item in items:
@@ -537,36 +495,43 @@ def sanitize_products_index(items: list[dict[str, Any]]) -> list[dict[str, Any]]
 
 def load_products_index() -> list[dict[str, Any]]:
     ensure_sqlite_store()
-    records = erp_db.list_product_records(APP_DIR)
-    if records:
-        return sanitize_products_index(records)
-    raw = read_json(PRODUCTS_INDEX_PATH, [])
-    items = raw if isinstance(raw, list) else []
-    if items:
-        return sanitize_products_index(items)
-    current = load_product()
-    if (current.get("source") or {}).get("title") or current.get("name"):
-        record = product_index_record(current, PRODUCT_PATH)
-        return [record]
-    return []
+    return sanitize_products_index(erp_db.list_product_records(APP_DIR))
 
 
-def save_products_index(items: list[dict[str, Any]]) -> None:
-    write_json(PRODUCTS_INDEX_PATH, items)
+def delete_products_from_index(product_ids: list[Any]) -> dict[str, Any]:
+    seen: set[str] = set()
+    ids: list[str] = []
+    for value in product_ids:
+        product_id = str(value or "").strip()
+        if product_id and product_id not in seen:
+            ids.append(product_id)
+            seen.add(product_id)
+    if not ids:
+        return {"ok": False, "error": "请先选择要删除的商品。", "deleted": 0, "deletedIds": [], "productsIndex": load_products_index()}
 
-
-def upsert_products_index(product: dict[str, Any]) -> dict[str, Any]:
-    product_id = product_identity(product)
-    product["product_id"] = product_id
     ensure_sqlite_store()
-    sqlite_id = erp_db.upsert_product_model(APP_DIR, product)
-    product["product_id"] = sqlite_id
-    for record in erp_db.list_product_records(APP_DIR):
-        if str(record.get("product_id") or "") == sqlite_id:
-            return record
-    record = product_index_record(product)
-    record["product_file_path"] = f"sqlite://products/{sqlite_id}"
-    return record
+    deleted_ids: list[str] = []
+    missing_ids: list[str] = []
+    for product_id in ids:
+        deleted = erp_db.delete_product_model(APP_DIR, product_id)
+        if deleted:
+            deleted_ids.append(product_id)
+        else:
+            missing_ids.append(product_id)
+
+    products_index = load_products_index()
+    product = load_product()
+
+    return {
+        "ok": True,
+        "deleted": len(deleted_ids),
+        "deletedIds": deleted_ids,
+        "missingIds": missing_ids,
+        "productsIndex": products_index,
+        "product": product,
+        "imagePool": current_image_pool(product),
+        "message": f"已删除 {len(deleted_ids)} 个商品。",
+    }
 
 
 def load_product_from_index(product_id: str = "", file_path: str = "") -> dict[str, Any]:
@@ -580,27 +545,7 @@ def load_product_from_index(product_id: str = "", file_path: str = "") -> dict[s
         loaded = erp_db.load_product_model(APP_DIR, sqlite_product_id)
         if loaded:
             return normalize_product_fields(loaded)
-    target: Path | None = None
-    if product_id:
-        for item in load_products_index():
-            if str(item.get("product_id") or "") == product_id:
-                file_path = str(item.get("product_file_path") or "")
-                break
-        candidate = PRODUCTS_DIR / f"{re.sub(r'[^A-Za-z0-9_.-]+', '_', product_id)}.json"
-        if candidate.exists():
-            target = candidate
-    if not target and file_path:
-        candidate = Path(file_path)
-        try:
-            resolved = candidate.resolve()
-            app_root = APP_DIR.resolve()
-            if resolved == PRODUCT_PATH.resolve() or str(resolved).startswith(str(app_root)):
-                target = resolved
-        except Exception:
-            target = None
-    if not target or not target.exists():
-        return load_product()
-    return normalize_product_fields(read_json(target, default_product_model()))
+    return load_product()
 
 
 def load_app_config() -> dict[str, Any]:
@@ -5924,6 +5869,11 @@ class Handler(BaseHTTPRequestHandler):
                 product = load_product_from_index(body.get("product_id", ""), body.get("product_file_path", ""))
                 saved = save_product(product)
                 self.send_json({"ok": True, "product": saved, "productsIndex": load_products_index(), "imagePool": current_image_pool(saved), "sourceImages": current_source_images(saved)})
+                return
+            if parsed.path == "/api/delete-products":
+                body = self.read_body()
+                result = delete_products_from_index(body.get("product_ids") if isinstance(body.get("product_ids"), list) else [])
+                self.send_json(result, 200 if result.get("ok") else 400)
                 return
             if parsed.path == "/api/image-pool/upload":
                 body = self.read_body()

@@ -22,10 +22,6 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 "APP_DIR": erp_web_app.APP_DIR,
                 "DIST_DIR": erp_web_app.DIST_DIR,
                 "OUTPUT_DIR": erp_web_app.OUTPUT_DIR,
-                "PRODUCT_PATH": erp_web_app.PRODUCT_PATH,
-                "DIST_PRODUCT_PATH": erp_web_app.DIST_PRODUCT_PATH,
-                "PRODUCTS_INDEX_PATH": erp_web_app.PRODUCTS_INDEX_PATH,
-                "PRODUCTS_DIR": erp_web_app.PRODUCTS_DIR,
                 "PUBLISH_LOG_PATH": erp_web_app.PUBLISH_LOG_PATH,
                 "STORE_CONFIG_PATH": erp_web_app.STORE_CONFIG_PATH,
                 "DIST_STORE_CONFIG_PATH": erp_web_app.DIST_STORE_CONFIG_PATH,
@@ -36,10 +32,6 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 erp_web_app.APP_DIR = app_dir
                 erp_web_app.DIST_DIR = app_dir / "dist"
                 erp_web_app.OUTPUT_DIR = output_dir
-                erp_web_app.PRODUCT_PATH = app_dir / "product.json"
-                erp_web_app.DIST_PRODUCT_PATH = app_dir / "dist" / "product.json"
-                erp_web_app.PRODUCTS_INDEX_PATH = output_dir / "products_index.json"
-                erp_web_app.PRODUCTS_DIR = output_dir / "products"
                 erp_web_app.PUBLISH_LOG_PATH = output_dir / "publish_logs.json"
                 erp_web_app.STORE_CONFIG_PATH = app_dir / "store_config.json"
                 erp_web_app.DIST_STORE_CONFIG_PATH = app_dir / "dist" / "store_config.json"
@@ -57,12 +49,30 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             db_records = erp_db.list_product_records(app_dir)
             self.assertEqual(len(db_records), 1)
             self.assertEqual(db_records[0]["product_id"], saved["product_id"])
+            self.assertFalse((app_dir / "product.json").exists())
             index_records = erp_web_app.load_products_index()
             self.assertEqual(index_records[0]["product_id"], saved["product_id"])
             self.assertTrue(index_records[0]["product_file_path"].startswith("sqlite://"))
             loaded = erp_web_app.load_product_from_index(saved["product_id"], "")
             self.assertEqual(loaded["product_id"], saved["product_id"])
             self.assertEqual(loaded["name"], "Imported title")
+
+        self.with_temp_app(run)
+
+    def test_delete_products_from_index_removes_selected_sqlite_products(self) -> None:
+        def run(app_dir: Path) -> None:
+            first = erp_web_app.save_product(sample_product("Delete me", "https://example.com/delete-me"))
+            second = erp_web_app.save_product(sample_product("Keep me", "https://example.com/keep-me"))
+
+            result = erp_web_app.delete_products_from_index([first["product_id"]])
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["deleted"], 1)
+            self.assertEqual(result["deletedIds"], [first["product_id"]])
+            remaining = erp_db.list_product_records(app_dir)
+            self.assertEqual([item["product_id"] for item in remaining], [second["product_id"]])
+            self.assertEqual(result["productsIndex"][0]["product_id"], second["product_id"])
+            self.assertEqual(erp_db.load_product_model(app_dir, first["product_id"]), {})
 
         self.with_temp_app(run)
 

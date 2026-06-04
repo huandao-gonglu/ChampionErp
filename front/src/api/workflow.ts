@@ -76,6 +76,19 @@ export interface ProductOperationResult {
   raw: UnknownRecord
 }
 
+export interface DeleteProductsResult {
+  ok: boolean
+  deleted: number
+  deletedIds: string[]
+  missingIds: string[]
+  productsIndex: ProductIndexItem[]
+  product?: Product
+  imagePool: ImageAsset[]
+  message: string
+  error: string
+  raw: UnknownRecord
+}
+
 function isRecord(value: unknown): value is UnknownRecord {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
@@ -472,6 +485,24 @@ function normalizeProductOperation(data: unknown): ProductOperationResult {
   }
 }
 
+function normalizeDeleteProductsResult(data: unknown): DeleteProductsResult {
+  const record = asRecord(data)
+  ensureOk(record, '删除商品失败')
+  const normalizedProduct = record.product ? normalizeBackendProduct(record.product, record.imagePool) : undefined
+  return {
+    ok: record.ok !== false,
+    deleted: getNumber(record, ['deleted']),
+    deletedIds: stringList(record.deletedIds || record.deleted_ids),
+    missingIds: stringList(record.missingIds || record.missing_ids),
+    productsIndex: normalizeProductsIndex(record.productsIndex),
+    product: normalizedProduct,
+    imagePool: normalizedProduct?.source.imagePool || (Array.isArray(record.imagePool) ? record.imagePool.map(normalizeImageAsset) : []),
+    message: getString(record, ['message']),
+    error: getString(record, ['error', 'error_message']),
+    raw: record,
+  }
+}
+
 export function diagnosticsToCollectDiagnostics(raw: unknown, product: Product, fallbackMessage = '采集完成。') {
   const record = asRecord(raw)
   const errorCode = getString(record, ['error_code'])
@@ -532,6 +563,11 @@ export async function saveProduct(product: Product): Promise<ProductMutationResp
 export async function loadProduct(productId: string, productFilePath = ''): Promise<ProductMutationResponse> {
   const response = await apiClient.post('/api/load-product', { product_id: productId, product_file_path: productFilePath })
   return normalizeProductMutation(response.data)
+}
+
+export async function deleteProducts(productIds: string[]): Promise<DeleteProductsResult> {
+  const response = await apiClient.post('/api/delete-products', { product_ids: productIds })
+  return normalizeDeleteProductsResult(response.data)
 }
 
 export async function collectProduct(form: CollectForm): Promise<ProductMutationResponse> {
