@@ -6,8 +6,6 @@ import AppSidebar from '@/components/layout/AppSidebar.vue'
 import AuthSettingsPanel from '@/components/auth/AuthSettingsPanel.vue'
 import CategoryPrecheckPanel from '@/components/domain/CategoryPrecheckPanel.vue'
 import CollectView from '@/views/workflow/CollectView.vue'
-import CopyPanel from '@/components/domain/CopyPanel.vue'
-import ImagePoolPanel from '@/components/domain/ImagePoolPanel.vue'
 import LibraryPanel from '@/components/domain/LibraryPanel.vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import PricingChart from '@/components/domain/PricingChart.vue'
@@ -71,7 +69,7 @@ const pathNavMap: Record<string, string> = {
   '/collect': 'collect',
   '/library': 'library',
   '/edit': 'library',
-  '/media': 'copy',
+  '/media': 'library',
   '/pricing': 'pricing',
   '/publish': 'category',
   '/settings': 'settings',
@@ -83,8 +81,6 @@ const navPathMap: Record<string, string> = {
   dashboard: '/',
   collect: '/collect',
   library: '/library',
-  copy: '/media',
-  images: '/media?tab=images',
   pricing: '/pricing',
   category: '/publish',
   publish: '/publish?tab=publish',
@@ -261,16 +257,6 @@ watch(
             @go-publish="navigate('category')"
           />
 
-          <div v-else-if="activeNav === 'copy'" class="space-y-6">
-            <PageHeader title="图片与文案" description="调用后端 AI 文案接口生成目标平台标题、描述、卖点，并生成 GPT 生图任务包。" />
-            <CopyPanel :product="product" :active-marketplace="activeMarketplace" :image-prompt="imagePrompt" @set-marketplace="setMarketplace" @generate="store.generateCopy" @generate-image-prompt="store.generateImagePromptPack" />
-          </div>
-
-          <div v-else-if="activeNav === 'images'" class="space-y-6">
-            <PageHeader title="图片池" description="上传图片、管理图片池、调用图片翻译接口生成目标语言图片。" />
-            <ImagePoolPanel :images="imagePool" :loading="loading" @translate="store.translateImages" @upload="store.uploadReferenceImages" @clear="store.clearSourceImages" @save="store.saveCurrentImagePool" @set-main="store.setMainImage" @delete="store.deleteImages" @sync-generated="store.syncGeneratedImagePool" />
-          </div>
-
           <div v-else-if="activeNav === 'pricing'" class="space-y-6">
             <PageHeader title="核价" description="成本、运费、佣金、汇率和利润计算。" />
             <section class="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
@@ -416,7 +402,7 @@ watch(
           @assign-upc="store.assignUpc"
           @set-marketplace="setMarketplace"
           @go-pricing="navigate('pricing'); closeProductEditor()"
-          @go-images="navigate('images'); closeProductEditor()"
+          @go-images="editorMode = 'images'"
           @go-publish="navigate('category'); closeProductEditor()"
         />
         <ProductImageEditorPanel
