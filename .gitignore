@@ -9,6 +9,8 @@ backend/internal/web/dist/
 
 app_config.json
 backend/internal/web/app_config.json
+store_config.json
+upc_pool.json
 config/*.snapshot.json
 config/local-backup/
 
@@ -16,7 +18,15 @@ config/local-backup/
 .env.*
 *.log
 
+data/category_cache/
 data/images/
 data/cache/
 .playwright-mcp/
 erp.sqlite3
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+*.tsbuildinfo
+logo-cart-verification.png

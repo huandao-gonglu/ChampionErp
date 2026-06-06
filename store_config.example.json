@@ -1,0 +1,39 @@
+{
+  "mercadolibre": {
+    "app_id": "",
+    "client_id": "",
+    "client_secret": "",
+    "app_secret": "",
+    "access_token": "",
+    "refresh_token": "",
+    "redirect_uri": "https://example.com/callback",
+    "category_id": "",
+    "site_id": "MLM",
+    "shop_name": ""
+  },
+  "wildberries": {
+    "content_token": "",
+    "prices_token": "",
+    "subject_id": "",
+    "shop_name": ""
+  },
+  "ozon": {
+    "client_id": "",
+    "api_key": "",
+    "category_id": "",
+    "shop_name": ""
+  },
+  "listing": {
+    "mercadolibre_price": "",
+    "wildberries_price": "",
+    "ozon_price": "",
+    "stock": "10",
+    "sku": "",
+    "usd_cny_rate": "7.20",
+    "mxn_usd_rate": "18.00",
+    "rub_cny_rate": "11.0",
+    "currency_id": "MXN",
+    "condition": "new",
+    "listing_type_id": "gold_special"
+  }
+}
