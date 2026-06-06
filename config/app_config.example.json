@@ -1,4 +1,6 @@
 {
+  "auto_ai_recognition": "0",
+  "alibaba_cookie": "",
   "text_ai": {
     "platform": "DeepSeek",
     "api_key": "",
@@ -12,8 +14,6 @@
     "model": "gpt-image-1",
     "quality": "medium"
   },
-  "auto_ai_recognition": "0",
-  "alibaba_cookie": "",
   "pricing_defaults": {
     "commission_percent": "20",
     "target_margin_percent": "30",

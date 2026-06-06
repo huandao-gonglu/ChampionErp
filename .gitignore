@@ -11,11 +11,15 @@ app_config.json
 backend/internal/web/app_config.json
 store_config.json
 upc_pool.json
+config/app_config.json
+config/store_config.json
+config/*.local.json
 config/*.snapshot.json
 config/local-backup/
 
 .env
 .env.*
+!config/.env.example
 *.log
 
 data/category_cache/

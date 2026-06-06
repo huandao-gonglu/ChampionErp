@@ -54,15 +54,16 @@ from publishing_bus import PublishingBus
 APP_DIR = Path(__file__).resolve().parent
 DIST_DIR = APP_DIR / "dist"
 DATA_DIR = APP_DIR / "data"
+CONFIG_DIR = APP_DIR / "config"
 CACHE_DIR = DATA_DIR / "cache"
 LOGS_DIR = DATA_DIR / "logs"
 IMAGES_DIR = DATA_DIR / "images"
 EXPORTS_DIR = DATA_DIR / "exports"
 OUTPUT_DIR = LOGS_DIR
-STORE_CONFIG_PATH = APP_DIR / "store_config.json"
-DIST_STORE_CONFIG_PATH = DIST_DIR / "store_config.json"
-APP_CONFIG_PATH = APP_DIR / "app_config.json"
-DIST_APP_CONFIG_PATH = DIST_DIR / "app_config.json"
+STORE_CONFIG_PATH = CONFIG_DIR / "store_config.json"
+APP_CONFIG_PATH = CONFIG_DIR / "app_config.json"
+LEGACY_STORE_CONFIG_PATHS = (APP_DIR / "store_config.json", DIST_DIR / "store_config.json")
+LEGACY_APP_CONFIG_PATHS = (APP_DIR / "app_config.json", DIST_DIR / "app_config.json")
 PUBLISH_LOG_PATH = OUTPUT_DIR / "publish_logs.json"
 PUBLISHING_JOB_DIR = OUTPUT_DIR / "publishing_jobs"
 TASK_DIR = OUTPUT_DIR / "codex_tasks"
@@ -214,6 +215,10 @@ def latest_path(paths: list[Path], fallback: Path) -> Path:
     if not existing:
         return fallback
     return max(existing, key=lambda path: path.stat().st_mtime)
+
+
+def runtime_config_path(primary: Path, legacy_paths: tuple[Path, ...]) -> Path:
+    return latest_path([primary, *legacy_paths], primary)
 
 
 def normalize_list(value: Any) -> list[str]:
@@ -549,7 +554,7 @@ def load_product_from_index(product_id: str = "", file_path: str = "") -> dict[s
 
 
 def load_app_config() -> dict[str, Any]:
-    path = latest_path([APP_CONFIG_PATH, DIST_APP_CONFIG_PATH], APP_CONFIG_PATH)
+    path = runtime_config_path(APP_CONFIG_PATH, LEGACY_APP_CONFIG_PATHS)
     raw = read_json(path, default_app_config())
     config = normalize_app_config(raw)
     if not APP_CONFIG_PATH.exists():
@@ -560,19 +565,17 @@ def load_app_config() -> dict[str, Any]:
 def save_app_config(config: dict[str, Any]) -> None:
     config = normalize_app_config(config)
     write_json(APP_CONFIG_PATH, config)
-    # ``dist/app_config.json`` used to mirror local secrets into packaged
-    # assets. Keep local runtime config only at project root so ignored API
-    # keys are not accidentally copied into a web bundle directory.
+    # Runtime secrets live only under config/ so they are never mirrored into
+    # packaged web assets.
 
 
 def load_store_config() -> dict[str, Any]:
-    return publisher.load_store_config(latest_path([STORE_CONFIG_PATH, DIST_STORE_CONFIG_PATH], STORE_CONFIG_PATH))
+    return publisher.load_store_config(runtime_config_path(STORE_CONFIG_PATH, LEGACY_STORE_CONFIG_PATHS))
 
 
 def save_store_config(config: dict[str, Any]) -> None:
+    STORE_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     publisher.save_store_config(STORE_CONFIG_PATH, config)
-    if DIST_DIR.exists():
-        publisher.save_store_config(DIST_STORE_CONFIG_PATH, config)
 
 
 def _auth_status_label(status: Any, store: dict[str, Any]) -> str:

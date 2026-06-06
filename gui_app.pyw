@@ -66,9 +66,12 @@ if getattr(sys, "frozen", False):
 else:
     APP_DIR = Path(__file__).resolve().parent
     RESOURCE_DIR = APP_DIR
+CONFIG_DIR = APP_DIR / "config"
 OUTPUT_DIR = APP_DIR / "output"
-STORE_CONFIG_PATH = APP_DIR / "store_config.json"
-APP_CONFIG_PATH = APP_DIR / "app_config.json"
+STORE_CONFIG_PATH = CONFIG_DIR / "store_config.json"
+APP_CONFIG_PATH = CONFIG_DIR / "app_config.json"
+LEGACY_STORE_CONFIG_PATH = APP_DIR / "store_config.json"
+LEGACY_APP_CONFIG_PATH = APP_DIR / "app_config.json"
 UPC_POOL_PATH = APP_DIR / "upc_pool.json"
 ML_ATTR_CACHE_PATH = APP_DIR / "ml_category_attributes_cache.json"
 
@@ -82,8 +85,12 @@ def join_lines(values: list[str]) -> str:
 
 
 def load_app_config() -> dict:
-    if APP_CONFIG_PATH.exists():
-        return json.loads(APP_CONFIG_PATH.read_text(encoding="utf-8-sig"))
+    path = APP_CONFIG_PATH if APP_CONFIG_PATH.exists() else LEGACY_APP_CONFIG_PATH
+    if path.exists():
+        config = json.loads(path.read_text(encoding="utf-8-sig"))
+        if path != APP_CONFIG_PATH:
+            save_app_config(config)
+        return config
     config = {
         "api_provider": "DeepSeek",
         "openai_api_key": "",
@@ -103,7 +110,21 @@ def load_app_config() -> dict:
 
 
 def save_app_config(config: dict) -> None:
+    APP_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     APP_CONFIG_PATH.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_store_config() -> dict:
+    path = STORE_CONFIG_PATH if STORE_CONFIG_PATH.exists() else LEGACY_STORE_CONFIG_PATH
+    config = publisher.load_store_config(path)
+    if path != STORE_CONFIG_PATH and path.exists():
+        save_store_config(config)
+    return config
+
+
+def save_store_config(config: dict) -> None:
+    STORE_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    publisher.save_store_config(STORE_CONFIG_PATH, config)
 
 
 def upc_check_digit(first_11: str) -> str:
@@ -592,7 +613,7 @@ class App:
         self.cancel_requested = False
         self.source_gallery_selection: set[int] = set()
         self.ai_gallery_selection: set[int] = set()
-        self.store_config = publisher.load_store_config(STORE_CONFIG_PATH)
+        self.store_config = load_store_config()
         listing_settings = self.store_config.get("listing", {})
         self.mx_category = StringVar(value=self.store_config.get("mercadolibre", {}).get("category_id", ""))
         self.mx_category_path = StringVar(value=self.store_config.get("mercadolibre", {}).get("category_path", ""))
@@ -1643,7 +1664,7 @@ class App:
                 attrs = cache[category_id]
             else:
                 self.sync_store_config_from_fields()
-                config = publisher.load_store_config(STORE_CONFIG_PATH)
+                config = load_store_config()
                 config = self.ensure_mercadolibre_token(config)
                 attrs = publisher.mercadolibre_category_attributes(
                     category_id,
@@ -2576,7 +2597,7 @@ class App:
 
     def fetch_ml_shipping_cost(self) -> None:
         try:
-            config = publisher.load_store_config(STORE_CONFIG_PATH)
+            config = load_store_config()
             cost = publisher.estimate_mercadolibre_shipping(
                 config.get("mercadolibre", {}).get("access_token", ""),
                 self.ml_zip_from.get().strip(),
@@ -2634,7 +2655,7 @@ class App:
         )[:220]
         try:
             self.sync_store_config_from_fields()
-            config = publisher.load_store_config(STORE_CONFIG_PATH)
+            config = load_store_config()
             config = self.ensure_mercadolibre_token(config)
             token = config.get("mercadolibre", {}).get("access_token", "")
             options = publisher.search_mercadolibre_categories(keyword, token)
@@ -2656,7 +2677,7 @@ class App:
         try:
             self.set_progress(0, 100, "正在同步美客多本地类目库...")
             self.sync_store_config_from_fields()
-            config = publisher.load_store_config(STORE_CONFIG_PATH)
+            config = load_store_config()
             token = config.get("mercadolibre", {}).get("access_token", "")
             count = publisher.sync_mercadolibre_category_tree(token)
             self.set_progress(100, 100, "美客多类目库已同步")
@@ -2669,7 +2690,7 @@ class App:
     def search_wb_subject(self) -> None:
         keyword = self.vars["category"].get().strip() or self.vars["name"].get().strip()
         self.sync_store_config_from_fields()
-        token = publisher.load_store_config(STORE_CONFIG_PATH).get("wildberries", {}).get("content_token", "")
+        token = load_store_config().get("wildberries", {}).get("content_token", "")
         try:
             options = publisher.search_wildberries_subjects(keyword, token)
             selected = self.choose_search_result("选择 WB 分类", options)
@@ -3162,7 +3183,7 @@ class App:
                     "mercadolibre_logistic_type": self.ml_logistic_type.get().strip() or "remote",
                 },
             }
-            publisher.save_store_config(STORE_CONFIG_PATH, self.store_config)
+            save_store_config(self.store_config)
             self.write_log("店铺授权/上架设置已保存。")
             window.destroy()
 
@@ -3356,7 +3377,7 @@ class App:
         listing["listing_type_id"] = self.ml_listing_type.get().strip() or "gold_special"
         listing["mercadolibre_logistic_type"] = self.ml_logistic_type.get().strip() or "remote"
         listing["ml_prep_fee_cny"] = self.ml_prep_fee_cny.get().strip()
-        publisher.save_store_config(STORE_CONFIG_PATH, self.store_config)
+        save_store_config(self.store_config)
 
     def ensure_mercadolibre_token(self, config: dict, force: bool = False) -> dict:
         ml = config.setdefault("mercadolibre", {})
@@ -3377,7 +3398,7 @@ class App:
         if token_data.get("refresh_token"):
             ml["refresh_token"] = token_data["refresh_token"]
         self.store_config = config
-        publisher.save_store_config(STORE_CONFIG_PATH, config)
+        save_store_config(config)
         self.write_log("美客多 Access Token 已自动刷新，并会用新 Token 继续本次操作。")
         return config
 
@@ -4039,7 +4060,7 @@ class App:
                 plan = self.latest_plan
             plan = self.apply_listing_overrides(plan)
 
-            config = publisher.load_store_config(STORE_CONFIG_PATH)
+            config = load_store_config()
             if config.get("mercadolibre", {}).get("refresh_token"):
                 try:
                     config = self.ensure_mercadolibre_token(config)
@@ -4238,7 +4259,7 @@ class App:
         try:
             self.sync_store_config_from_fields()
             out_dir = self.output_dir_path()
-            config = publisher.load_store_config(STORE_CONFIG_PATH)
+            config = load_store_config()
             if platform in {"all", "mercadolibre"}:
                 config = self.ensure_mercadolibre_token(config)
             if platform in {"all", "mercadolibre"}:

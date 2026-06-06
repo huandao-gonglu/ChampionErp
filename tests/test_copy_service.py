@@ -95,14 +95,16 @@ def test_assign_upc_writes_current_product_and_returns_full_payload(tmp_path: Pa
     original = {
         "APP_DIR": erp_web_app.APP_DIR,
         "DATA_DIR": erp_web_app.DATA_DIR,
+        "CONFIG_DIR": erp_web_app.CONFIG_DIR,
         "APP_CONFIG_PATH": erp_web_app.APP_CONFIG_PATH,
-        "DIST_APP_CONFIG_PATH": erp_web_app.DIST_APP_CONFIG_PATH,
+        "LEGACY_APP_CONFIG_PATHS": erp_web_app.LEGACY_APP_CONFIG_PATHS,
     }
     try:
         erp_web_app.APP_DIR = tmp_path
         erp_web_app.DATA_DIR = tmp_path / "data"
-        erp_web_app.APP_CONFIG_PATH = tmp_path / "app_config.json"
-        erp_web_app.DIST_APP_CONFIG_PATH = tmp_path / "dist" / "app_config.json"
+        erp_web_app.CONFIG_DIR = tmp_path / "config"
+        erp_web_app.APP_CONFIG_PATH = erp_web_app.CONFIG_DIR / "app_config.json"
+        erp_web_app.LEGACY_APP_CONFIG_PATHS = (tmp_path / "app_config.json", tmp_path / "dist" / "app_config.json")
         (tmp_path / "upc_pool.json").write_text('{"values":["725272000007"],"used":[]}', encoding="utf-8")
         erp_web_app.save_product({"name": "UPC test product", "drafts": {"mercadolibre": {"enabled": True}}})
 

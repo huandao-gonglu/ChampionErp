@@ -14,6 +14,8 @@
   "wildberries": {
     "content_token": "",
     "prices_token": "",
+    "marketplace_token": "",
+    "stocks_token": "",
     "subject_id": "",
     "shop_name": ""
   },
@@ -29,11 +31,9 @@
     "ozon_price": "",
     "stock": "10",
     "sku": "",
-    "usd_cny_rate": "7.20",
-    "mxn_usd_rate": "18.00",
-    "rub_cny_rate": "11.0",
     "currency_id": "MXN",
     "condition": "new",
-    "listing_type_id": "gold_special"
+    "listing_type_id": "gold_special",
+    "mercadolibre_logistic_type": "remote"
   }
 }

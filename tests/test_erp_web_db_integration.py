@@ -21,22 +21,24 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             original_globals = {
                 "APP_DIR": erp_web_app.APP_DIR,
                 "DIST_DIR": erp_web_app.DIST_DIR,
+                "CONFIG_DIR": erp_web_app.CONFIG_DIR,
                 "OUTPUT_DIR": erp_web_app.OUTPUT_DIR,
                 "PUBLISH_LOG_PATH": erp_web_app.PUBLISH_LOG_PATH,
                 "STORE_CONFIG_PATH": erp_web_app.STORE_CONFIG_PATH,
-                "DIST_STORE_CONFIG_PATH": erp_web_app.DIST_STORE_CONFIG_PATH,
                 "APP_CONFIG_PATH": erp_web_app.APP_CONFIG_PATH,
-                "DIST_APP_CONFIG_PATH": erp_web_app.DIST_APP_CONFIG_PATH,
+                "LEGACY_STORE_CONFIG_PATHS": erp_web_app.LEGACY_STORE_CONFIG_PATHS,
+                "LEGACY_APP_CONFIG_PATHS": erp_web_app.LEGACY_APP_CONFIG_PATHS,
             }
             try:
                 erp_web_app.APP_DIR = app_dir
                 erp_web_app.DIST_DIR = app_dir / "dist"
+                erp_web_app.CONFIG_DIR = app_dir / "config"
                 erp_web_app.OUTPUT_DIR = output_dir
                 erp_web_app.PUBLISH_LOG_PATH = output_dir / "publish_logs.json"
-                erp_web_app.STORE_CONFIG_PATH = app_dir / "store_config.json"
-                erp_web_app.DIST_STORE_CONFIG_PATH = app_dir / "dist" / "store_config.json"
-                erp_web_app.APP_CONFIG_PATH = app_dir / "app_config.json"
-                erp_web_app.DIST_APP_CONFIG_PATH = app_dir / "dist" / "app_config.json"
+                erp_web_app.STORE_CONFIG_PATH = erp_web_app.CONFIG_DIR / "store_config.json"
+                erp_web_app.APP_CONFIG_PATH = erp_web_app.CONFIG_DIR / "app_config.json"
+                erp_web_app.LEGACY_STORE_CONFIG_PATHS = (app_dir / "store_config.json", app_dir / "dist" / "store_config.json")
+                erp_web_app.LEGACY_APP_CONFIG_PATHS = (app_dir / "app_config.json", app_dir / "dist" / "app_config.json")
                 callback(app_dir)
             finally:
                 for name, value in original_globals.items():
