@@ -13,7 +13,7 @@ if not exist "%PY%" (
   python -m venv .venv
 )
 
-"%PY%" -c "import requests, PIL, dotenv" >nul 2>nul
+"%PY%" -c "import requests, PIL, dotenv, openai" >nul 2>nul
 if errorlevel 1 (
   echo [setup] Installing backend dependencies
   "%PY%" -m pip install --upgrade pip

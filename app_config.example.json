@@ -1,0 +1,26 @@
+{
+  "text_ai": {
+    "platform": "DeepSeek",
+    "api_key": "",
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-chat"
+  },
+  "image_ai": {
+    "platform": "OpenAI",
+    "api_key": "",
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-image-1",
+    "quality": "medium"
+  },
+  "auto_ai_recognition": "0",
+  "alibaba_cookie": "",
+  "pricing_defaults": {
+    "commission_percent": "20",
+    "target_margin_percent": "30",
+    "domestic_freight": "0",
+    "international_freight": "0",
+    "payment_fee_percent": "4",
+    "currency_rate": "7.2",
+    "packaging_cost": "0"
+  }
+}

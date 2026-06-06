@@ -84,7 +84,7 @@ def join_lines(values: list[str]) -> str:
 def load_app_config() -> dict:
     if APP_CONFIG_PATH.exists():
         return json.loads(APP_CONFIG_PATH.read_text(encoding="utf-8-sig"))
-    return {
+    config = {
         "api_provider": "DeepSeek",
         "openai_api_key": "",
         "openai_base_url": "https://api.openai.com/v1",
@@ -98,6 +98,8 @@ def load_app_config() -> dict:
         "auto_ai_recognition": "0",
         "alibaba_cookie": "",
     }
+    save_app_config(config)
+    return config
 
 
 def save_app_config(config: dict) -> None:

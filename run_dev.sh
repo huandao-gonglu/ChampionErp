@@ -112,7 +112,7 @@ wait_for_url() {
   return 1
 }
 
-if ! "$PY" -c "import requests, PIL, dotenv" >/dev/null 2>&1; then
+if ! "$PY" -c "import requests, PIL, dotenv, openai" >/dev/null 2>&1; then
   echo "[setup] Installing backend dependencies"
   "$PY" -m pip install --upgrade pip
   "$PY" -m pip install -r "$ROOT_DIR/requirements.txt"

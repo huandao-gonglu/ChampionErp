@@ -6,6 +6,7 @@ const props = defineProps<{
   items: ProductIndexItem[]
   selectedIds: string[]
   loading: boolean
+  error?: string
 }>()
 
 const emit = defineEmits<{
@@ -87,6 +88,9 @@ function statusClass(value: string) {
     </div>
 
     <div class="mt-4 text-sm text-slate-500">本地商品库：{{ filteredItems.length }} / {{ props.items.length }} 条记录。</div>
+    <div v-if="props.error" class="mt-4 rounded-2xl bg-rose-50 p-4 text-sm font-medium text-rose-700 ring-1 ring-rose-200">
+      {{ props.error }}
+    </div>
 
     <div class="mt-4 overflow-auto rounded-2xl border border-slate-200">
       <table class="w-full text-left text-sm">

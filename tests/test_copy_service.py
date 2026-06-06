@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 from conftest import assert_no_old_path
+import erp_web_app
 from services import config_service, copy_service
 
 
@@ -57,3 +59,33 @@ def test_ai_config_hides_nvidia_and_does_not_hardcode_keys(app_dir: Path, old_pa
     source = (app_dir / "services" / "copy_service.py").read_text(encoding="utf-8", errors="ignore")
     assert "sk-" not in source
     assert_no_old_path(source, old_path_markers)
+
+
+def test_ai_channel_accepts_nested_text_ai_config() -> None:
+    calls: list[dict] = []
+
+    class Models:
+        @staticmethod
+        def list() -> list:
+            return []
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+            self.models = Models()
+
+    with patch.dict("sys.modules", {"openai": type("OpenAIModule", (), {"OpenAI": FakeOpenAI})}):
+        result = erp_web_app.test_ai_channel(
+            "text",
+            {
+                "text_ai": {
+                    "platform": "DeepSeek",
+                    "api_key": "test-key",
+                    "base_url": "https://api.deepseek.com",
+                    "model": "deepseek-chat",
+                }
+            },
+        )
+
+    assert result["ok"] is True
+    assert calls == [{"api_key": "test-key", "base_url": "https://api.deepseek.com"}]

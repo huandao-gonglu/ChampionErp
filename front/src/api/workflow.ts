@@ -735,6 +735,21 @@ export async function generateCopyBatch(productIds: string[], platform: Marketpl
   const response = await apiClient.post('/api/generate-copy-batch', { product_ids: productIds, platform })
   const data = asRecord(response.data)
   ensureOk(data, '批量文案失败')
+  const failedCount = getNumber(data, ['failed_count', 'failedCount'])
+  if (failedCount > 0) {
+    const failures = Array.isArray(data.items)
+      ? data.items
+        .map((item) => {
+          const record = asRecord(item)
+          if (record.ok === true) return ''
+          const productId = getString(record, ['product_id', 'productId'])
+          const error = getString(record, ['error', 'warning', 'message'], '生成失败')
+          return [productId, error].filter(Boolean).join('：')
+        })
+        .filter(Boolean)
+      : []
+    throw new Error(failures.length ? failures.join('；') : `批量文案失败 ${failedCount} 个商品`)
+  }
   return data
 }
 
@@ -951,7 +966,12 @@ export async function fetchMercadoLibreAuthChecklist(): Promise<MercadoLibreAuth
 }
 
 export async function testAiChannel(channel: 'text' | 'image', config: UnknownRecord): Promise<AuthResult> {
-  const response = await apiClient.post('/api/test-ai-channel', { channel, config })
+  const channelConfig = channel === 'image' && isRecord(config.image_ai)
+    ? config.image_ai
+    : channel === 'text' && isRecord(config.text_ai)
+      ? config.text_ai
+      : config
+  const response = await apiClient.post('/api/test-ai-channel', { channel, config: channelConfig })
   return normalizeAuthResult(response.data)
 }
 

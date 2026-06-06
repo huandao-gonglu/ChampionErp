@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, watch } from 'vue'
+import { computed, reactive, watch } from 'vue'
 import type { AuthResult, Marketplace, MercadoLibreAuthChecklist, MercadoLibreTestMode, UnknownRecord } from '@/types/workflow'
 
 const props = defineProps<{
@@ -48,21 +48,41 @@ const form = reactive({
   ozonApiKey: '',
 })
 
+function asRecord(value: unknown): UnknownRecord {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as UnknownRecord : {}
+}
+
+function textValue(value: unknown): string {
+  return String(value ?? '').trim()
+}
+
+function firstText(...values: unknown[]): string {
+  for (const value of values) {
+    const text = textValue(value)
+    if (text) return text
+  }
+  return ''
+}
+
 function fillFromProps() {
-  const text = (props.aiConfig.text_ai || props.appConfig.text_ai || {}) as UnknownRecord
-  const image = (props.aiConfig.image_ai || props.appConfig.image_ai || {}) as UnknownRecord
-  const ml = (props.storeConfig.mercadolibre || {}) as UnknownRecord
-  const wb = (props.storeConfig.wildberries || {}) as UnknownRecord
-  const ozon = (props.storeConfig.ozon || {}) as UnknownRecord
-  form.textAiPlatform = String(text.platform || props.appConfig.text_ai_platform || 'DeepSeek')
-  form.textAiApiKey = String(text.api_key || props.appConfig.text_ai_api_key || '')
-  form.textAiBaseUrl = String(text.base_url || props.appConfig.text_ai_base_url || '')
-  form.textAiModel = String(text.model || props.appConfig.text_ai_model || '')
-  form.imageAiPlatform = String(image.platform || props.appConfig.image_ai_platform || 'OpenAI')
-  form.imageAiApiKey = String(image.api_key || props.appConfig.image_ai_api_key || '')
-  form.imageAiBaseUrl = String(image.base_url || props.appConfig.image_ai_base_url || '')
-  form.imageAiModel = String(image.model || props.appConfig.image_ai_model || '')
-  form.imageAiQuality = String(image.quality || props.appConfig.image_ai_quality || 'medium')
+  const text = asRecord(props.aiConfig.text_ai || props.appConfig.text_ai)
+  const image = asRecord(props.aiConfig.image_ai || props.appConfig.image_ai)
+  const appText = asRecord(props.appConfig.text_ai)
+  const appImage = asRecord(props.appConfig.image_ai)
+  const ml = asRecord(props.storeConfig.mercadolibre)
+  const wb = asRecord(props.storeConfig.wildberries)
+  const ozon = asRecord(props.storeConfig.ozon)
+  form.textAiPlatform = firstText(text.platform, appText.platform, 'DeepSeek')
+  const nextTextKey = firstText(text.api_key, appText.api_key)
+  if (nextTextKey || !form.textAiApiKey) form.textAiApiKey = nextTextKey
+  form.textAiBaseUrl = firstText(text.base_url, appText.base_url, 'https://api.deepseek.com')
+  form.textAiModel = firstText(text.model, appText.model, 'deepseek-chat')
+  form.imageAiPlatform = firstText(image.platform, appImage.platform, 'OpenAI')
+  const nextImageKey = firstText(image.api_key, appImage.api_key)
+  if (nextImageKey || !form.imageAiApiKey) form.imageAiApiKey = nextImageKey
+  form.imageAiBaseUrl = firstText(image.base_url, appImage.base_url, 'https://api.openai.com/v1')
+  form.imageAiModel = firstText(image.model, appImage.model, 'gpt-image-1')
+  form.imageAiQuality = firstText(image.quality, appImage.quality, 'medium')
   form.mlAppId = String(ml.app_id || '')
   form.mlClientSecret = String(ml.client_secret || ml.app_secret || '')
   form.mlRedirectUri = String(ml.redirect_uri || 'https://example.com/callback')
@@ -74,10 +94,29 @@ function fillFromProps() {
 
 watch(() => [props.appConfig, props.aiConfig, props.storeConfig], fillFromProps, { immediate: true, deep: true })
 
+const textAiReady = computed(() => Boolean(
+  form.textAiPlatform.trim()
+  && form.textAiModel.trim()
+  && form.textAiBaseUrl.trim()
+  && form.textAiApiKey.trim(),
+))
+
+const imageAiReady = computed(() => Boolean(
+  form.imageAiPlatform.trim()
+  && form.imageAiModel.trim()
+  && form.imageAiBaseUrl.trim()
+  && form.imageAiApiKey.trim(),
+))
+
+const canSaveAi = computed(() => textAiReady.value || imageAiReady.value)
+const aiButtonHint = computed(() => props.loading ? '正在处理，请稍候' : '请至少完整填写一个 AI 通道的平台、模型、Base URL 和 API Key')
+const textAiHint = computed(() => props.loading ? '正在处理，请稍候' : '请完整填写文本 AI 的平台、模型、Base URL 和 API Key')
+const imageAiHint = computed(() => props.loading ? '正在处理，请稍候' : '请完整填写图片 AI 的平台、模型、Base URL 和 API Key')
+
 function aiPayload(): UnknownRecord {
   return {
-    text_ai: { platform: form.textAiPlatform, api_key: form.textAiApiKey, base_url: form.textAiBaseUrl, model: form.textAiModel },
-    image_ai: { platform: form.imageAiPlatform, api_key: form.imageAiApiKey, base_url: form.imageAiBaseUrl, model: form.imageAiModel, quality: form.imageAiQuality },
+    text_ai: { platform: form.textAiPlatform.trim(), api_key: form.textAiApiKey.trim(), base_url: form.textAiBaseUrl.trim(), model: form.textAiModel.trim() },
+    image_ai: { platform: form.imageAiPlatform.trim(), api_key: form.imageAiApiKey.trim(), base_url: form.imageAiBaseUrl.trim(), model: form.imageAiModel.trim(), quality: form.imageAiQuality.trim() || 'medium' },
   }
 }
 
@@ -100,9 +139,9 @@ function copy(text: string) {
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div><h2 class="card-title">设置</h2><p class="muted mt-1">AI、授权、UPC 池、默认核价参数和日志都放在设置区。</p></div>
         <div class="flex flex-wrap gap-2">
-          <button class="btn btn-primary" :disabled="props.loading" @click="emit('saveAi', aiPayload())">保存 AI</button>
-          <button class="btn btn-outline" :disabled="props.loading" @click="emit('testAi', 'text', aiPayload())">测试文本 AI</button>
-          <button class="btn btn-outline" :disabled="props.loading" @click="emit('testAi', 'image', aiPayload())">测试图片 AI</button>
+          <button class="btn btn-primary" :disabled="props.loading || !canSaveAi" :title="canSaveAi ? '' : aiButtonHint" @click="emit('saveAi', aiPayload())">保存 AI</button>
+          <button class="btn btn-outline" :disabled="props.loading || !textAiReady" :title="textAiReady ? '' : textAiHint" @click="emit('testAi', 'text', aiPayload())">测试文本 AI</button>
+          <button class="btn btn-outline" :disabled="props.loading || !imageAiReady" :title="imageAiReady ? '' : imageAiHint" @click="emit('testAi', 'image', aiPayload())">测试图片 AI</button>
         </div>
       </div>
       <div class="mt-5 grid gap-4 xl:grid-cols-2">
@@ -112,7 +151,7 @@ function copy(text: string) {
             <input v-model="form.textAiPlatform" class="input" placeholder="平台，例如 DeepSeek" />
             <input v-model="form.textAiModel" class="input" placeholder="模型，例如 deepseek-chat" />
             <input v-model="form.textAiBaseUrl" class="input md:col-span-2" placeholder="Base URL" />
-            <input v-model="form.textAiApiKey" type="password" class="input md:col-span-2" placeholder="API Key" />
+            <input v-model="form.textAiApiKey" class="input md:col-span-2" placeholder="API Key" autocomplete="off" spellcheck="false" />
           </div>
         </div>
         <div class="rounded-2xl border p-4">
@@ -122,9 +161,15 @@ function copy(text: string) {
             <input v-model="form.imageAiModel" class="input" placeholder="模型" />
             <input v-model="form.imageAiQuality" class="input" placeholder="质量 medium/high" />
             <input v-model="form.imageAiBaseUrl" class="input" placeholder="Base URL" />
-            <input v-model="form.imageAiApiKey" type="password" class="input md:col-span-2" placeholder="API Key" />
+            <input v-model="form.imageAiApiKey" class="input md:col-span-2" placeholder="API Key" autocomplete="off" spellcheck="false" />
           </div>
         </div>
+      </div>
+      <div v-if="props.lastResult?.raw?.channel" class="mt-4 rounded-2xl p-4 text-sm ring-1" :class="props.lastResult.ok ? 'bg-emerald-50 text-emerald-950 ring-emerald-100' : 'bg-rose-50 text-rose-950 ring-rose-100'">
+        <div class="font-semibold">最近 AI 测试：{{ props.lastResult.ok ? '成功' : '失败' }}</div>
+        <div class="mt-1 break-words">{{ props.lastResult.message || props.lastResult.error }}</div>
+        <div v-if="props.lastResult.nextAction" class="mt-1 text-blue-700">下一步：{{ props.lastResult.nextAction }}</div>
+        <pre class="mt-3 max-h-52 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{{ JSON.stringify(props.lastResult.raw, null, 2) }}</pre>
       </div>
     </section>
 
@@ -185,7 +230,7 @@ function copy(text: string) {
           <div class="mt-3 flex flex-wrap gap-2"><button class="btn btn-outline py-1.5" @click="emit('testAuth', 'ozon')">测试授权</button><button class="btn btn-outline py-1.5" @click="emit('testAuth', 'ozon', 'category')">读取类目测试</button><button class="btn btn-outline py-1.5 text-rose-700" @click="emit('clearAuth', 'ozon')">清除授权</button></div>
         </article>
       </div>
-      <div v-if="props.lastResult" class="mt-4 rounded-2xl bg-slate-50 p-4 text-sm ring-1 ring-slate-200">
+      <div v-if="props.lastResult && !props.lastResult.raw?.channel" class="mt-4 rounded-2xl bg-slate-50 p-4 text-sm ring-1 ring-slate-200">
         <div class="font-semibold">最近结果：{{ props.lastResult.ok ? '成功' : '失败' }}</div>
         <div class="mt-1">{{ props.lastResult.message || props.lastResult.error }}</div>
         <div v-if="props.lastResult.nextAction" class="mt-1 text-blue-700">下一步：{{ props.lastResult.nextAction }}</div>

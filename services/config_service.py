@@ -46,25 +46,25 @@ def ai_config_from_sources(app_dir: Path | str, app_config: dict[str, Any] | Non
     cfg = app_config if isinstance(app_config, dict) else {}
     text_ai = cfg.get("text_ai") if isinstance(cfg.get("text_ai"), dict) else {}
     image_ai = cfg.get("image_ai") if isinstance(cfg.get("image_ai"), dict) else {}
-    text_provider = str(text_ai.get("platform") or cfg.get("text_ai_platform") or cfg.get("api_provider") or "DeepSeek").strip()
+    text_provider = str(text_ai.get("platform") or "DeepSeek").strip()
     if text_provider.lower() == "nvidia":
         text_provider = "DeepSeek"
-    image_provider = str(image_ai.get("platform") or cfg.get("image_ai_platform") or "OpenAI").strip()
+    image_provider = str(image_ai.get("platform") or "OpenAI").strip()
     if image_provider.lower() == "nvidia":
         image_provider = "OpenAI"
     return {
         "text_ai": {
             "platform": text_provider,
-            "api_key": str(text_ai.get("api_key") or cfg.get("text_ai_api_key") or cfg.get("deepseek_api_key") or os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip(),
-            "base_url": str(text_ai.get("base_url") or cfg.get("text_ai_base_url") or cfg.get("deepseek_base_url") or os.getenv("DEEPSEEK_BASE_URL") or "https://api.deepseek.com").strip(),
-            "model": str(text_ai.get("model") or cfg.get("text_ai_model") or cfg.get("deepseek_model") or os.getenv("DEEPSEEK_MODEL") or "deepseek-chat").strip(),
+            "api_key": str(text_ai.get("api_key") or os.getenv("DEEPSEEK_API_KEY") or "").strip(),
+            "base_url": str(text_ai.get("base_url") or os.getenv("DEEPSEEK_BASE_URL") or "https://api.deepseek.com").strip(),
+            "model": str(text_ai.get("model") or os.getenv("DEEPSEEK_MODEL") or "deepseek-chat").strip(),
         },
         "image_ai": {
             "platform": image_provider,
-            "api_key": str(image_ai.get("api_key") or cfg.get("image_ai_api_key") or cfg.get("openai_api_key") or os.getenv("OPENAI_API_KEY") or "").strip(),
-            "base_url": str(image_ai.get("base_url") or cfg.get("image_ai_base_url") or cfg.get("openai_base_url") or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").strip(),
-            "model": str(image_ai.get("model") or cfg.get("image_ai_model") or cfg.get("openai_image_model") or os.getenv("OPENAI_IMAGE_MODEL") or "gpt-image-1").strip(),
-            "quality": str(image_ai.get("quality") or cfg.get("image_ai_quality") or "medium").strip(),
+            "api_key": str(image_ai.get("api_key") or os.getenv("OPENAI_API_KEY") or "").strip(),
+            "base_url": str(image_ai.get("base_url") or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").strip(),
+            "model": str(image_ai.get("model") or os.getenv("OPENAI_IMAGE_MODEL") or "gpt-image-1").strip(),
+            "quality": str(image_ai.get("quality") or "medium").strip(),
         },
         "providers": {
             "text": list(TEXT_PROVIDERS),

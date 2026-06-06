@@ -53,6 +53,7 @@ import {
   uploadImages,
 } from '@/api/workflow'
 import { createDefaultCollectDiagnostics, createDefaultCollectForm, createDefaultPricingInput, createEmptyProduct, marketplaces } from '@/constants/initialState'
+import { useAppStore } from '@/stores/app'
 import type {
   AuthResult,
   BrowserDebugStatus,
@@ -79,6 +80,20 @@ import type {
 function asStoreAuthSummary(raw: UnknownRecord): UnknownRecord | null {
   const value = raw.storeAuthSummary
   return value && typeof value === 'object' && !Array.isArray(value) ? value as UnknownRecord : null
+}
+
+function isRecord(value: unknown): value is UnknownRecord {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function mergeAiConfigWithSubmitted(publicConfig: UnknownRecord, submittedConfig: UnknownRecord): UnknownRecord {
+  const merged: UnknownRecord = { ...publicConfig }
+  for (const section of ['text_ai', 'image_ai']) {
+    const publicSection = isRecord(publicConfig[section]) ? publicConfig[section] as UnknownRecord : {}
+    const submittedSection = isRecord(submittedConfig[section]) ? submittedConfig[section] as UnknownRecord : {}
+    merged[section] = { ...publicSection, ...submittedSection }
+  }
+  return merged
 }
 
 function collectStats(product: Product) {
@@ -183,7 +198,10 @@ export const useWorkflowStore = defineStore('workflow', () => {
 
   function setError(message: string) {
     error.value = message
-    if (message) addLog(`错误：${message}`)
+    if (message) {
+      addLog(`错误：${message}`)
+      useAppStore().pushToast(message, 'error')
+    }
   }
 
   function syncCollectDiagnosticsFromProduct(message = '已读取后端商品状态。', raw?: UnknownRecord) {
@@ -1024,7 +1042,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
     setError('')
     try {
       const result = await saveAiConfig(config)
-      aiConfig.value = result.raw
+      aiConfig.value = mergeAiConfigWithSubmitted(result.raw, config)
+      appConfig.value = mergeAiConfigWithSubmitted(appConfig.value, config)
       addLog('AI 配置已保存。')
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '保存 AI 配置失败')
@@ -1040,7 +1059,16 @@ export const useWorkflowStore = defineStore('workflow', () => {
       lastAuthResult.value = await testAiChannel(channel, config)
       addLog(`${channel} AI 测试：${lastAuthResult.value.message || lastAuthResult.value.error || '完成'}`)
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '测试 AI 失败')
+      const message = exc instanceof Error ? exc.message : '测试 AI 失败'
+      lastAuthResult.value = {
+        ok: false,
+        message: '',
+        error: message,
+        errorCode: '',
+        nextAction: '请检查 API Key、Base URL 和模型名，然后再试一次。',
+        raw: { ok: false, error: message, channel },
+      }
+      setError(message)
     } finally {
       loading.value = false
     }

@@ -6,6 +6,11 @@ test-results/
 browser_profile/
 output/
 
+app_config.json
+backend/internal/web/app_config.json
+config/*.snapshot.json
+config/local-backup/
+
 .env
 .env.*
 *.log

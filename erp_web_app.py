@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import base64
@@ -549,15 +549,20 @@ def load_product_from_index(product_id: str = "", file_path: str = "") -> dict[s
 
 
 def load_app_config() -> dict[str, Any]:
-    raw = read_json(latest_path([APP_CONFIG_PATH, DIST_APP_CONFIG_PATH], APP_CONFIG_PATH), legacy.load_app_config())
-    return normalize_app_config(raw)
+    path = latest_path([APP_CONFIG_PATH, DIST_APP_CONFIG_PATH], APP_CONFIG_PATH)
+    raw = read_json(path, default_app_config())
+    config = normalize_app_config(raw)
+    if not APP_CONFIG_PATH.exists():
+        write_json(APP_CONFIG_PATH, config)
+    return config
 
 
 def save_app_config(config: dict[str, Any]) -> None:
     config = normalize_app_config(config)
     write_json(APP_CONFIG_PATH, config)
-    if DIST_DIR.exists():
-        write_json(DIST_APP_CONFIG_PATH, config)
+    # ``dist/app_config.json`` used to mirror local secrets into packaged
+    # assets. Keep local runtime config only at project root so ignored API
+    # keys are not accidentally copied into a web bundle directory.
 
 
 def load_store_config() -> dict[str, Any]:
@@ -880,90 +885,124 @@ def _clear_store_auth_result() -> dict[str, str]:
     }
 
 
+
+AI_CONFIG_ALIAS_KEYS_TO_DROP = {
+    "api_provider",
+    "deepseek_api_key",
+    "deepseek_base_url",
+    "deepseek_model",
+    "openai_api_key",
+    "openai_base_url",
+    "openai_model",
+    "openai_text_api_key",
+    "openai_text_model",
+    "openai_image_model",
+    "openai_image_quality",
+    "nvidia_api_key",
+    "nvidia_base_url",
+    "nvidia_model",
+    "text_ai_platform",
+    "text_ai_api_key",
+    "text_ai_base_url",
+    "text_ai_model",
+    "image_ai_platform",
+    "image_ai_api_key",
+    "image_ai_base_url",
+    "image_ai_model",
+    "image_ai_quality",
+    "nvidia_deprecated",
+}
+
+def default_app_config() -> dict[str, Any]:
+    return {
+        "auto_ai_recognition": "0",
+        "alibaba_cookie": "",
+        "text_ai": {
+            "platform": "DeepSeek",
+            "api_key": "",
+            "base_url": "https://api.deepseek.com",
+            "model": "deepseek-chat",
+        },
+        "image_ai": {
+            "platform": "OpenAI",
+            "api_key": "",
+            "base_url": "https://api.openai.com/v1",
+            "model": "gpt-image-1",
+            "quality": "medium",
+        },
+        "pricing_defaults": {},
+    }
+
+
+def normalize_ai_section(section: Any, defaults: dict[str, str], include_quality: bool = False) -> dict[str, str]:
+    raw = section if isinstance(section, dict) else {}
+    api_key = str(raw.get("api_key") or "").strip()
+    normalized = {
+        "platform": str(raw.get("platform") or defaults["platform"]).strip(),
+        "api_key": api_key,
+        "base_url": str(raw.get("base_url") or defaults["base_url"]).strip(),
+        "model": str(raw.get("model") or defaults["model"]).strip(),
+        "masked_key": mask_secret(api_key),
+        "status": "已绑定" if api_key else "未绑定",
+    }
+    if normalized["platform"].lower() == "nvidia":
+        normalized["platform"] = defaults["platform"]
+    if include_quality:
+        normalized["quality"] = str(raw.get("quality") or defaults.get("quality") or "medium").strip()
+    return normalized
+
+
 def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
-    base = legacy.load_app_config()
-    if isinstance(config, dict):
-        base.update(config)
+    """Normalize runtime config. AI config is canonical-only.
 
-    text_ai = base.get("text_ai") if isinstance(base.get("text_ai"), dict) else {}
-    image_ai = base.get("image_ai") if isinstance(base.get("image_ai"), dict) else {}
+    Only ``text_ai`` and ``image_ai`` are read for AI credentials/settings.
+    Top-level legacy aliases such as ``deepseek_api_key`` or ``text_ai_api_key``
+    are intentionally ignored.
+    """
+    incoming = config if isinstance(config, dict) else {}
+    defaults = default_app_config()
 
-    text_platform = str(text_ai.get("platform") or base.get("text_ai_platform") or base.get("api_provider") or "DeepSeek")
-    image_platform = str(image_ai.get("platform") or base.get("image_ai_platform") or "OpenAI")
-    if text_platform.strip().lower() == "nvidia":
-        text_platform = "DeepSeek"
-        base["nvidia_deprecated"] = True
-    if image_platform.strip().lower() == "nvidia":
-        image_platform = "OpenAI"
-        base["nvidia_deprecated"] = True
-    text_key = str(text_ai.get("api_key") or base.get("text_ai_api_key") or base.get("deepseek_api_key") or base.get("openai_text_api_key") or base.get("openai_api_key") or "")
-    image_key = str(image_ai.get("api_key") or base.get("image_ai_api_key") or base.get("openai_api_key") or "")
-
-    text_base_default = "https://api.deepseek.com" if text_platform.lower() == "deepseek" else "https://api.openai.com/v1"
-    text_model_default = "deepseek-chat" if text_platform.lower() == "deepseek" else "gpt-4.1-mini"
-    image_base_default = "https://api.openai.com/v1"
-
-    text_ai = {
-        "platform": text_platform,
-        "api_key": text_key,
-        "base_url": str(text_ai.get("base_url") or base.get("text_ai_base_url") or base.get("deepseek_base_url") or base.get("openai_base_url") or text_base_default),
-        "model": str(text_ai.get("model") or base.get("text_ai_model") or base.get("deepseek_model") or base.get("openai_text_model") or base.get("openai_model") or text_model_default),
-        "masked_key": mask_secret(text_key),
-        "status": "已绑定" if text_key else "未绑定",
-    }
-    image_ai = {
-        "platform": image_platform,
-        "api_key": image_key,
-        "base_url": str(image_ai.get("base_url") or base.get("image_ai_base_url") or base.get("openai_base_url") or image_base_default),
-        "model": str(image_ai.get("model") or base.get("image_ai_model") or base.get("openai_image_model") or "gpt-image-2"),
-        "quality": str(image_ai.get("quality") or base.get("image_ai_quality") or base.get("openai_image_quality") or "medium"),
-        "masked_key": mask_secret(image_key),
-        "status": "已绑定" if image_key else "未绑定",
-    }
-    pricing_defaults = base.get("pricing_defaults") if isinstance(base.get("pricing_defaults"), dict) else {}
+    text_ai = normalize_ai_section(
+        incoming.get("text_ai"),
+        defaults["text_ai"],
+    )
+    image_ai = normalize_ai_section(
+        incoming.get("image_ai"),
+        defaults["image_ai"],
+        include_quality=True,
+    )
+    raw_pricing = incoming.get("pricing_defaults") if isinstance(incoming.get("pricing_defaults"), dict) else {}
     pricing_defaults = {
-        "commission_percent": str(pricing_defaults.get("commission_percent") or base.get("commission_percent") or "20"),
-        "target_margin_percent": str(pricing_defaults.get("target_margin_percent") or base.get("margin_percent") or "30"),
-        "domestic_freight": str(pricing_defaults.get("domestic_freight") or base.get("domestic_freight") or "0"),
-        "international_freight": str(pricing_defaults.get("international_freight") or base.get("international_freight") or "0"),
-        "payment_fee_percent": str(pricing_defaults.get("payment_fee_percent") or base.get("payment_fee_percent") or "0"),
-        "currency_rate": str(pricing_defaults.get("currency_rate") or base.get("rate") or "1"),
-        "packaging_cost": str(pricing_defaults.get("packaging_cost") or pricing_defaults.get("packaging") or base.get("packaging") or "0"),
-        "default_target_margin_percent": str(pricing_defaults.get("default_target_margin_percent") or pricing_defaults.get("target_margin_percent") or base.get("margin_percent") or "30"),
-        "default_currency_rate": str(pricing_defaults.get("default_currency_rate") or pricing_defaults.get("currency_rate") or base.get("rate") or "1"),
-        "default_packaging_cost": str(pricing_defaults.get("default_packaging_cost") or pricing_defaults.get("packaging_cost") or base.get("packaging") or "0"),
-        "default_domestic_freight": str(pricing_defaults.get("default_domestic_freight") or pricing_defaults.get("domestic_freight") or base.get("domestic_freight") or "0"),
-        "mercadolibre_commission_percent": str(pricing_defaults.get("mercadolibre_commission_percent") or pricing_defaults.get("commission_percent") or base.get("commission_percent") or "20"),
-        "wildberries_commission_percent": str(pricing_defaults.get("wildberries_commission_percent") or pricing_defaults.get("commission_percent") or base.get("commission_percent") or "20"),
-        "ozon_commission_percent": str(pricing_defaults.get("ozon_commission_percent") or pricing_defaults.get("commission_percent") or base.get("commission_percent") or "20"),
-        "mercadolibre_payment_fee_percent": str(pricing_defaults.get("mercadolibre_payment_fee_percent") or pricing_defaults.get("payment_fee_percent") or base.get("payment_fee_percent") or "0"),
-        "wildberries_payment_fee_percent": str(pricing_defaults.get("wildberries_payment_fee_percent") or "0"),
-        "ozon_payment_fee_percent": str(pricing_defaults.get("ozon_payment_fee_percent") or "0"),
+        "commission_percent": str(raw_pricing.get("commission_percent") or "20"),
+        "target_margin_percent": str(raw_pricing.get("target_margin_percent") or "30"),
+        "domestic_freight": str(raw_pricing.get("domestic_freight") or "0"),
+        "international_freight": str(raw_pricing.get("international_freight") or "0"),
+        "payment_fee_percent": str(raw_pricing.get("payment_fee_percent") or "0"),
+        "currency_rate": str(raw_pricing.get("currency_rate") or "1"),
+        "packaging_cost": str(raw_pricing.get("packaging_cost") or raw_pricing.get("packaging") or "0"),
+        "default_target_margin_percent": str(raw_pricing.get("default_target_margin_percent") or raw_pricing.get("target_margin_percent") or "30"),
+        "default_currency_rate": str(raw_pricing.get("default_currency_rate") or raw_pricing.get("currency_rate") or "1"),
+        "default_packaging_cost": str(raw_pricing.get("default_packaging_cost") or raw_pricing.get("packaging_cost") or "0"),
+        "default_domestic_freight": str(raw_pricing.get("default_domestic_freight") or raw_pricing.get("domestic_freight") or "0"),
+        "mercadolibre_commission_percent": str(raw_pricing.get("mercadolibre_commission_percent") or raw_pricing.get("commission_percent") or "20"),
+        "wildberries_commission_percent": str(raw_pricing.get("wildberries_commission_percent") or raw_pricing.get("commission_percent") or "20"),
+        "ozon_commission_percent": str(raw_pricing.get("ozon_commission_percent") or raw_pricing.get("commission_percent") or "20"),
+        "mercadolibre_payment_fee_percent": str(raw_pricing.get("mercadolibre_payment_fee_percent") or raw_pricing.get("payment_fee_percent") or "0"),
+        "wildberries_payment_fee_percent": str(raw_pricing.get("wildberries_payment_fee_percent") or "0"),
+        "ozon_payment_fee_percent": str(raw_pricing.get("ozon_payment_fee_percent") or "0"),
     }
 
-    base["text_ai"] = text_ai
-    base["image_ai"] = image_ai
-    base["pricing_defaults"] = pricing_defaults
-    base["api_provider"] = text_ai["platform"]
-    base["text_ai_platform"] = text_ai["platform"]
-    base["text_ai_api_key"] = text_ai["api_key"]
-    base["text_ai_base_url"] = text_ai["base_url"]
-    base["text_ai_model"] = text_ai["model"]
-    base["image_ai_platform"] = image_ai["platform"]
-    base["image_ai_api_key"] = image_ai["api_key"]
-    base["image_ai_base_url"] = image_ai["base_url"]
-    base["image_ai_model"] = image_ai["model"]
-    base["image_ai_quality"] = image_ai["quality"]
-    if text_ai["platform"].lower() == "deepseek":
-        base["deepseek_api_key"] = text_ai["api_key"]
-        base["deepseek_base_url"] = text_ai["base_url"]
-        base["deepseek_model"] = text_ai["model"]
-    if image_ai["platform"].lower() in {"openai", "自定义兼容接口", "custom"}:
-        base["openai_api_key"] = image_ai["api_key"]
-        base["openai_base_url"] = image_ai["base_url"]
-        base["openai_image_model"] = image_ai["model"]
-        base["openai_image_quality"] = image_ai["quality"]
-    return base
+    canonical = {
+        key: value
+        for key, value in incoming.items()
+        if key not in AI_CONFIG_ALIAS_KEYS_TO_DROP and key not in {"text_ai", "image_ai", "pricing_defaults"}
+    }
+    canonical["auto_ai_recognition"] = str(canonical.get("auto_ai_recognition") or defaults["auto_ai_recognition"])
+    canonical["alibaba_cookie"] = str(canonical.get("alibaba_cookie") or defaults["alibaba_cookie"])
+    canonical["text_ai"] = text_ai
+    canonical["image_ai"] = image_ai
+    canonical["pricing_defaults"] = pricing_defaults
+    return canonical
 
 
 def image_items_from_paths(paths: list[str]) -> list[dict[str, str]]:
@@ -3586,16 +3625,30 @@ def build_plan_for_platform(product: dict[str, Any], platform: str) -> dict[str,
 
 def build_copy_preview(product: dict[str, Any], platform: str, app_cfg: dict[str, Any]) -> dict[str, Any]:
     plan = apply_product_drafts_to_plan(product, build_plan_for_platform(product, platform))
-    provider_name = str(app_cfg.get("api_provider", "DeepSeek")).lower()
+    ai_cfg = config_service.ai_config_from_sources(APP_DIR, app_cfg).get("text_ai", {})
+    provider_name = str(ai_cfg.get("platform") or "DeepSeek").lower()
     provider = "deepseek" if "deepseek" in provider_name else "openai"
-    model = str(app_cfg.get("deepseek_model") or "deepseek-chat")
+    model = str(ai_cfg.get("model") or ("deepseek-chat" if provider == "deepseek" else "gpt-4.1-mini"))
     warning = ""
+    old_env = {
+        "DEEPSEEK_API_KEY": os.environ.get("DEEPSEEK_API_KEY"),
+        "DEEPSEEK_BASE_URL": os.environ.get("DEEPSEEK_BASE_URL"),
+        "DEEPSEEK_MODEL": os.environ.get("DEEPSEEK_MODEL"),
+        "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY"),
+        "OPENAI_BASE_URL": os.environ.get("OPENAI_BASE_URL"),
+    }
     try:
-        if provider == "deepseek" and not str(app_cfg.get("deepseek_api_key") or "").strip():
-            warning = "当前未配置 DeepSeek API Key，已返回基础草稿。"
-        elif provider == "openai" and not str(app_cfg.get("openai_api_key") or "").strip():
-            warning = "当前未配置 OpenAI API Key，已返回基础草稿。"
+        if not str(ai_cfg.get("api_key") or "").strip():
+            warning = f"当前未配置 {ai_cfg.get('platform') or '文本 AI'} API Key，已返回基础草稿。"
         else:
+            if provider == "deepseek":
+                os.environ["DEEPSEEK_API_KEY"] = str(ai_cfg.get("api_key") or "").strip()
+                os.environ["DEEPSEEK_BASE_URL"] = str(ai_cfg.get("base_url") or "https://api.deepseek.com").strip()
+                os.environ["DEEPSEEK_MODEL"] = model
+            else:
+                os.environ["OPENAI_API_KEY"] = str(ai_cfg.get("api_key") or "").strip()
+                if str(ai_cfg.get("base_url") or "").strip():
+                    os.environ["OPENAI_BASE_URL"] = str(ai_cfg.get("base_url") or "").strip()
             generator.refine_listing_copy(
                 plan,
                 model=model,
@@ -3604,6 +3657,12 @@ def build_copy_preview(product: dict[str, Any], platform: str, app_cfg: dict[str
             )
     except Exception as exc:
         warning = str(exc)
+    finally:
+        for key_name, value in old_env.items():
+            if value is None:
+                os.environ.pop(key_name, None)
+            else:
+                os.environ[key_name] = value
     key = platform_to_preset_key(platform)
     listing = plan.get("platforms", {}).get(key, {}).get("listing", {})
     if platform == "mercadolibre":
@@ -3614,11 +3673,11 @@ def build_copy_preview(product: dict[str, Any], platform: str, app_cfg: dict[str
 
 
 def openai_client_from_config(app_cfg: dict[str, Any]):
-    text_ai = app_cfg.get("text_ai") if isinstance(app_cfg.get("text_ai"), dict) else {}
-    api_key = str(text_ai.get("api_key") or app_cfg.get("text_ai_api_key") or app_cfg.get("openai_api_key") or "").strip()
+    text_ai = config_service.ai_config_from_sources(APP_DIR, app_cfg).get("text_ai", {})
+    api_key = str(text_ai.get("api_key") or "").strip()
     if not api_key:
         raise RuntimeError("请先在系统设置的“生文案通道”填写 API Key。")
-    base_url = str(text_ai.get("base_url") or app_cfg.get("text_ai_base_url") or app_cfg.get("openai_base_url") or "").strip().rstrip("/")
+    base_url = str(text_ai.get("base_url") or "").strip().rstrip("/")
     kwargs: dict[str, Any] = {"api_key": api_key}
     if base_url:
         kwargs["base_url"] = base_url
@@ -3765,6 +3824,8 @@ def batch_generate_copy_for_products(
                 raise RuntimeError("商品不存在")
             source_platform = str((product.get("source") or {}).get("source_platform") or product.get("source_platform") or target_platform)
             result = generate_ai_copy_bundle(product, source_platform, target_platform, language, mode, app_cfg)
+            if result.get("warning"):
+                raise RuntimeError(str(result.get("warning")))
             copy_payload = {**(result.get("copy") or {}), "language": result.get("language", language), "source_platform": result.get("source_platform", source_platform), "mode": result.get("mode", mode)}
             saved = save_copy_result(product, result.get("target_market") or target_platform, copy_payload)
             draft = ((saved.get("drafts") or {}).get(target_platform) or {}) if isinstance(saved.get("drafts"), dict) else {}
@@ -3788,6 +3849,7 @@ def batch_generate_copy_for_products(
         "success_count": sum(1 for item in items if item.get("ok")),
         "failed_count": sum(1 for item in items if not item.get("ok")),
         "items": items,
+        "message": f"成功 {sum(1 for item in items if item.get('ok'))}/{len(items)}，失败 {sum(1 for item in items if not item.get('ok'))}。",
         "productsIndex": load_products_index(),
     }
 
@@ -3865,6 +3927,9 @@ def build_image_prompt_pack(
 
 def test_ai_channel(channel: str, channel_config: dict[str, Any]) -> dict[str, Any]:
     channel = (channel or "text").strip().lower()
+    if isinstance(channel_config.get("text_ai"), dict) or isinstance(channel_config.get("image_ai"), dict):
+        section = "image_ai" if channel == "image" else "text_ai"
+        channel_config = channel_config.get(section) if isinstance(channel_config.get(section), dict) else {}
     api_key = str(channel_config.get("api_key") or "").strip()
     base_url = str(channel_config.get("base_url") or "").strip().rstrip("/")
     model = str(channel_config.get("model") or "").strip()
@@ -3884,7 +3949,8 @@ def test_ai_channel(channel: str, channel_config: dict[str, Any]) -> dict[str, A
         "platform": platform,
         "model": model,
         "masked_key": mask_secret(api_key),
-        "message": "测试成功：接口可以连接。",
+        "message": f"{platform or channel} 测试成功：接口可以连接。",
+        "next_action": "可以保存配置并继续使用 AI 生成功能。",
     }
 
 
