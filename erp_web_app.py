@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import base64
-import html
 import json
 import os
 import re
@@ -26,7 +25,8 @@ from typing import Any
 import erp_db
 import main as generator
 import marketplace_publish as publisher
-from services import collect_service, config_service, copy_service, html_extract_service as legacy, image_service, image_translate_service, pricing_service
+from services import collect_service, config_service, copy_service, html_extract_service as legacy, image_service, pricing_service
+from routes import image_routes, static_routes
 from product_model import (
     apply_ai_attribute_fill,
     apply_category_selection,
@@ -5593,22 +5593,22 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": str(exc)}, 404)
             return
         if parsed.path == "/file":
-            self.serve_file(parsed)
+            static_routes.serve_file(self, parsed, sys.modules[__name__])
             return
         if parsed.path.startswith("/assets/"):
-            self.serve_frontend_asset(parsed)
+            static_routes.serve_frontend_asset(self, parsed, sys.modules[__name__])
             return
         if parsed.path == "/auth/mercadolibre":
-            self.serve_ml_auth_page()
+            static_routes.serve_ml_auth_page(self)
             return
         if parsed.path == "/auth/wildberries":
-            self.serve_store_help_page("wildberries")
+            static_routes.serve_store_help_page(self, "wildberries")
             return
         if parsed.path == "/auth/ozon":
-            self.serve_store_help_page("ozon")
+            static_routes.serve_store_help_page(self, "ozon")
             return
         if parsed.path == "/auth/mercadolibre/callback":
-            self.handle_ml_callback(parsed)
+            static_routes.handle_ml_callback(self, parsed, sys.modules[__name__])
             return
         self.send_response(404)
         self.end_headers()
@@ -5616,6 +5616,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         try:
+            if image_routes.handle_post(self, parsed.path, sys.modules[__name__]):
+                return
             if parsed.path == "/api/collect-source":
                 body = self.read_body()
                 try:
@@ -5968,59 +5970,6 @@ class Handler(BaseHTTPRequestHandler):
                 result = delete_products_from_index(body.get("product_ids") if isinstance(body.get("product_ids"), list) else [])
                 self.send_json(result, 200 if result.get("ok") else 400)
                 return
-            if parsed.path == "/api/image-pool/upload":
-                body = self.read_body()
-                product = normalize_product_fields(body.get("product") or load_product())
-                uploads = body.get("uploads") or []
-                if isinstance(uploads, dict):
-                    uploads = [uploads]
-                if not isinstance(uploads, list) or not uploads:
-                    raise RuntimeError("缂哄皯涓婁紶鍥剧墖")
-                if not str(product.get("product_id") or "").strip():
-                    product = save_product(product)
-                source = product.get("source") if isinstance(product.get("source"), dict) else {}
-                uploaded_items = image_service.upload_images(APP_DIR, uploads, str(product.get("product_id") or ""))
-                if not uploaded_items:
-                    raise RuntimeError("涓婁紶鍥剧墖澶辫触锛屾湭瑙ｇ爜鎴愬姛")
-                pool = image_service.add_images(source.get("image_pool") if isinstance(source.get("image_pool"), list) else [], uploaded_items, APP_DIR)
-                saved = save_product(apply_service_image_pool(product, pool))
-                self.send_json({"ok": True, "product": saved, "imagePool": current_image_pool(saved), "sourceImages": current_source_images(saved), "productsIndex": load_products_index()})
-                return
-            if parsed.path == "/api/image-pool/save":
-                body = self.read_body()
-                product_id = str(body.get("product_id") or "").strip()
-                product = body.get("product") if isinstance(body.get("product"), dict) else {}
-                if not product_id and isinstance(product, dict):
-                    product_id = str(product.get("product_id") or product.get("id") or "").strip()
-                if not product_id and product:
-                    product_id = save_product(product).get("product_id", "")
-                result = save_image_pool_for_product(
-                    product_id,
-                    image_service.normalize_pool(body.get("image_pool") if isinstance(body.get("image_pool"), list) else [], APP_DIR),
-                )
-                self.send_json(result, 200 if result.get("ok") else 400)
-                return
-            if parsed.path == "/api/image-pool/action":
-                body = self.read_body()
-                product = normalize_product_fields(body.get("product") or load_product())
-                if not str(product.get("product_id") or "").strip():
-                    product = save_product(product)
-                source = product.get("source") if isinstance(product.get("source"), dict) else {}
-                pool = source.get("image_pool") if isinstance(source.get("image_pool"), list) else []
-                updated_pool = image_service.apply_image_action(APP_DIR, pool, str(body.get("action") or ""), {**body, "product_id": product.get("product_id")})
-                if str(body.get("action") or "").strip().lower() == "filter":
-                    self.send_json({"ok": True, "imagePool": updated_pool})
-                    return
-                saved = save_product(apply_service_image_pool(product, updated_pool))
-                self.send_json({"ok": True, "product": saved, "imagePool": current_image_pool(saved), "sourceImages": current_source_images(saved), "productsIndex": load_products_index()})
-                return
-            if parsed.path == "/api/image-pool/sync-generated":
-                body = self.read_body()
-                product = normalize_product_fields(body.get("product") or load_product())
-                merged = sync_generated_images_into_pool(product)
-                saved = save_product(merged)
-                self.send_json({"ok": True, "product": saved, "imagePool": current_image_pool(saved), "sourceImages": current_source_images(saved), "productsIndex": load_products_index()})
-                return
             if parsed.path == "/api/collect-extension-payload":
                 body = self.read_body()
                 try:
@@ -6151,202 +6100,11 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as exc:
                     self.send_json({"ok": False, "error": str(exc)}, 400)
                 return
-            if parsed.path == "/api/image-translate":
-                body = self.read_body()
-                product = normalize_product_fields(body.get("product") or load_product())
-                if not str(product.get("product_id") or "").strip():
-                    product = save_product(product)
-                result = image_translate_service.translate_images(
-                    APP_DIR,
-                    product,
-                    load_app_config(),
-                    target_language=str(body.get("language") or body.get("target_language") or "Spanish (Mexico)"),
-                    platform=str(body.get("platform") or "mercadolibre"),
-                    image_ids=body.get("image_ids") if isinstance(body.get("image_ids"), list) else body.get("selected_image_ids") if isinstance(body.get("selected_image_ids"), list) else [],
-                    mode=str(body.get("mode") or "translate"),
-                )
-                if result.get("ok"):
-                    merged = append_images_to_product_pool(product, result.get("imagePoolItems") if isinstance(result.get("imagePoolItems"), list) else [])
-                    saved = save_product(merged)
-                    self.send_json({"ok": True, **result, "product": saved, "imagePool": current_image_pool(saved), "sourceImages": current_source_images(saved), "productsIndex": load_products_index()})
-                    return
-                self.send_json({"ok": False, "product": product, "imagePool": current_image_pool(product), **result}, 200)
-                return
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, 500)
             return
         self.send_response(404)
         self.end_headers()
-
-    def serve_frontend_asset(self, parsed: urllib.parse.ParseResult) -> None:
-        rel_path = urllib.parse.unquote(parsed.path.lstrip("/"))
-        try:
-            path = (FRONT_DIST_DIR / rel_path).resolve()
-            root = FRONT_DIST_DIR.resolve()
-            if not str(path).startswith(str(root)) or not path.is_file():
-                raise FileNotFoundError
-            content_type = {
-                ".js": "text/javascript; charset=utf-8",
-                ".mjs": "text/javascript; charset=utf-8",
-                ".css": "text/css; charset=utf-8",
-                ".json": "application/json; charset=utf-8",
-                ".svg": "image/svg+xml",
-                ".png": "image/png",
-                ".jpg": "image/jpeg",
-                ".jpeg": "image/jpeg",
-                ".webp": "image/webp",
-                ".ico": "image/x-icon",
-                ".woff": "font/woff",
-                ".woff2": "font/woff2",
-            }.get(path.suffix.lower(), "application/octet-stream")
-            raw = path.read_bytes()
-            self.send_response(200)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(raw)))
-            self.end_headers()
-            self.wfile.write(raw)
-        except Exception:
-            self.send_response(404)
-            self.end_headers()
-
-    def serve_file(self, parsed: urllib.parse.ParseResult) -> None:
-        params = urllib.parse.parse_qs(parsed.query)
-        path = Path(urllib.parse.unquote(params.get("path", [""])[0]))
-        try:
-            path = path.resolve()
-            output_roots = [
-                DATA_DIR.resolve(),
-                IMAGES_DIR.resolve(),
-                CACHE_DIR.resolve(),
-                LOGS_DIR.resolve(),
-                EXPORTS_DIR.resolve(),
-                OUTPUT_DIR.resolve(),
-                (DIST_DIR / "output").resolve(),
-            ]
-            if not any(str(path).startswith(str(root)) for root in output_roots) or not path.exists():
-                raise FileNotFoundError
-            content_type = {
-                ".jpg": "image/jpeg",
-                ".jpeg": "image/jpeg",
-                ".png": "image/png",
-                ".webp": "image/webp",
-            }.get(path.suffix.lower(), "application/octet-stream")
-            raw = path.read_bytes()
-            self.send_response(200)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(raw)))
-            self.end_headers()
-            self.wfile.write(raw)
-        except Exception:
-            self.send_response(404)
-            self.end_headers()
-
-    def serve_ml_auth_page(self) -> None:
-        raw = (
-            "<html><body style=\"font-family:Arial;padding:24px\">"
-            "<h2>Mercado Libre 授权说明</h2>"
-            "<p>ERP 默认使用 https://example.com/callback 作为 Redirect URI，与现有本地软件保持一致。</p>"
-            "<p>点击“生成授权链接”后，用当前登录店铺的浏览器打开链接；授权完成后即使 example.com 页面打不开也没关系，请复制地址栏中包含 code= 的完整回调地址。</p>"
-            "<p>Access Token 和 Refresh Token 会由 ERP 用 code 自动换取并保存在本机私有配置中。</p>"
-            "</body></html>"
-        ).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(raw)))
-        self.end_headers()
-        self.wfile.write(raw)
-
-    def serve_store_help_page(self, platform: str) -> None:
-        if platform == "wildberries":
-            title = "Wildberries 授权说明"
-            body = (
-                "<p>Wildberries 当前使用卖家后台生成的 API token，不走 OAuth 回调。</p>"
-                "<p>请在 WB 卖家后台生成 Content API Token，复制到 ERP 的 content_token 字段。</p>"
-                "<p>subject_id 是商品主体/类目 ID；如果暂时不知道，可以先保存 token，后续通过类目读取功能补齐。</p>"
-            )
-        else:
-            title = "Ozon 授权说明"
-            body = (
-                "<p>Ozon 当前使用 Seller API 的 Client ID 和 API Key。</p>"
-                "<p>请在 Ozon Seller 后台的 API 设置中创建或查看 API Key，然后填入 ERP。</p>"
-                "<p>保存后点击“测试授权”，ERP 会尝试读取店铺或仓库信息来验证授权。</p>"
-            )
-        raw = f"<html><body style=\"font-family:Arial;padding:24px\"><h2>{title}</h2>{body}</body></html>".encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(raw)))
-        self.end_headers()
-        self.wfile.write(raw)
-
-    def handle_ml_callback(self, parsed: urllib.parse.ParseResult) -> None:
-        params = urllib.parse.parse_qs(parsed.query)
-        code = params.get("code", [""])[0] or ""
-        masked_code = mask_secret(code)
-        status = "received"
-        message = "授权 code 已接收。"
-        try:
-            if code:
-                exchange_mercadolibre_code_from_body(
-                    {
-                        "code_or_url": code,
-                        "app_id": params.get("app_id", [""])[0],
-                        "app_secret": params.get("app_secret", [""])[0],
-                        "client_secret": params.get("client_secret", [""])[0],
-                        "redirect_uri": params.get("redirect_uri", [""])[0],
-                        "code_verifier": params.get("code_verifier", [""])[0],
-                        "site_id": params.get("site_id", [""])[0],
-                    }
-                )
-                status = "exchanged"
-                message = "授权 code 已接收，并已尝试自动换取 token。"
-            else:
-                status = "missing_code"
-                message = "没有在回跳 URL 中找到 code 参数。"
-        except Exception as exc:
-            status = "manual_required"
-            message = f"ERP 已收到 code，但自动换 token 未完成：{exc}"
-        safe_code = html.escape(code)
-        safe_masked_code = html.escape(masked_code or "未收到")
-        safe_message = html.escape(message)
-        erp_url = "/auth"
-        raw = f"""
-<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <title>Mercado Libre 授权 code 已收到</title>
-  <style>
-    body {{ font-family: Arial, sans-serif; background: #f5f7fa; color: #1f2937; padding: 32px; }}
-    .card {{ max-width: 760px; margin: 0 auto; background: white; border-radius: 14px; padding: 28px; box-shadow: 0 12px 28px rgba(15,23,42,.08); }}
-    .badge {{ display: inline-block; background: #dbeafe; color: #1d4ed8; border-radius: 999px; padding: 6px 10px; font-size: 12px; font-weight: 700; }}
-    .code {{ margin-top: 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px; font-family: Consolas, monospace; }}
-    button, a.button {{ display: inline-block; border: 0; border-radius: 10px; padding: 10px 14px; margin-right: 8px; background: #1d4ed8; color: white; text-decoration: none; cursor: pointer; }}
-    .secondary {{ background: #e2e8f0; color: #0f172a; }}
-    .note {{ color: #64748b; font-size: 14px; line-height: 1.6; }}
-  </style>
-</head>
-<body>
-  <div class="card">
-    <span class="badge">{html.escape(status)}</span>
-    <h1>Mercado Libre 授权 code 已收到</h1>
-    <p>{safe_message}</p>
-    <p class="note">如果 ERP 没有自动换 token，请复制下面的 code 回 ERP 授权页手动粘贴。code 是一次性的，有效时间短，使用后会失效。</p>
-    <div class="code">脱敏显示：{safe_masked_code}</div>
-    <textarea id="mlCode" style="position:absolute;left:-9999px">{safe_code}</textarea>
-    <div style="margin-top:18px">
-      <button onclick="navigator.clipboard && navigator.clipboard.writeText(document.getElementById('mlCode').value)">复制 code</button>
-      <a class="button secondary" href="{erp_url}">返回 ERP 授权页</a>
-    </div>
-  </div>
-</body>
-</html>
-""".encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(raw)))
-        self.end_headers()
-        self.wfile.write(raw)
-
 
 def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

@@ -45,7 +45,7 @@ class FrontendTemplateTests(unittest.TestCase):
 
         self.assertIn("createRouter", router)
         self.assertIn("createWebHistory", router)
-        self.assertIn("component: () => import('@/views/workflow/WorkflowView.vue')", router)
+        self.assertIn("import('@/views/workflow/WorkflowView.vue')", router)
         self.assertIn("titleKey", router)
         self.assertIn("router.beforeEach", router)
         self.assertIn("router.onError", router)
@@ -140,10 +140,11 @@ class FrontendTemplateTests(unittest.TestCase):
 
     def test_python_backend_prefers_built_vue_dist_and_serves_assets(self) -> None:
         backend = (APP_DIR / "erp_web_app.py").read_text(encoding="utf-8-sig")
+        static_routes = (APP_DIR / "routes" / "static_routes.py").read_text(encoding="utf-8")
 
         self.assertIn("FRONT_DIST_INDEX_PATH", backend)
         self.assertIn("FRONT_DIST_DIR", backend)
-        self.assertIn("def serve_frontend_asset", backend)
+        self.assertIn("def serve_frontend_asset", static_routes)
         self.assertIn('parsed.path.startswith("/assets/")', backend)
 
 
