@@ -18,7 +18,7 @@ import StepTimeline from '@/components/domain/StepTimeline.vue'
 import { workflowNavItems } from '@/constants/navigation'
 import { useAppStore } from '@/stores/app'
 import { useWorkflowStore } from '@/stores/workflow'
-import type { Marketplace } from '@/types/workflow'
+import type { Marketplace, ProductIndexItem } from '@/types/workflow'
 
 const store = useWorkflowStore()
 const {
@@ -62,12 +62,13 @@ const appStore = useAppStore()
 const route = useRoute()
 const router = useRouter()
 const activeNav = ref('dashboard')
+const editorOpen = ref(false)
 const navItems = workflowNavItems
 const pathNavMap: Record<string, string> = {
   '/': 'dashboard',
   '/collect': 'collect',
   '/library': 'library',
-  '/edit': 'edit',
+  '/edit': 'library',
   '/media': 'copy',
   '/pricing': 'pricing',
   '/publish': 'category',
@@ -80,7 +81,6 @@ const navPathMap: Record<string, string> = {
   dashboard: '/',
   collect: '/collect',
   library: '/library',
-  edit: '/edit',
   copy: '/media',
   images: '/media?tab=images',
   pricing: '/pricing',
@@ -116,6 +116,15 @@ const pendingItems = computed(() => productsIndex.value.filter((item) => {
 
 function setMarketplace(value: Marketplace) {
   store.setMarketplace(value)
+}
+
+async function openProductEditor(item?: ProductIndexItem) {
+  if (item) await store.loadProduct(item)
+  editorOpen.value = true
+}
+
+function closeProductEditor() {
+  editorOpen.value = false
 }
 
 function navigate(key: string) {
@@ -185,7 +194,7 @@ watch(
                 :loading="loading"
                 :error="error"
                 @refresh="store.refreshProductsIndex"
-                @load="store.loadProduct"
+                @load="openProductEditor"
                 @delete-item="store.deleteProduct"
                 @delete-selected="store.deleteSelectedProducts"
                 @toggle="store.toggleProductSelection"
@@ -194,7 +203,6 @@ watch(
                 @generate-copy="store.generateCopyForSelectedProducts"
                 @generate-image-prompt="store.generateImagePromptPack"
                 @publish-selected="store.enqueueSelectedProducts"
-                @go-edit="navigate('edit')"
                 @go-publish="navigate('category')"
               />
               <RunLog :logs="logs" />
@@ -232,7 +240,7 @@ watch(
             :loading="loading"
             :error="error"
             @refresh="store.refreshProductsIndex"
-            @load="store.loadProduct"
+            @load="openProductEditor"
             @delete-item="store.deleteProduct"
             @delete-selected="store.deleteSelectedProducts"
             @toggle="store.toggleProductSelection"
@@ -241,25 +249,8 @@ watch(
             @generate-copy="store.generateCopyForSelectedProducts"
             @generate-image-prompt="store.generateImagePromptPack"
             @publish-selected="store.enqueueSelectedProducts"
-            @go-edit="navigate('edit')"
             @go-publish="navigate('category')"
           />
-
-          <div v-else-if="activeNav === 'edit'" class="space-y-6">
-            <PageHeader title="商品编辑" description="基本信息、平台草稿、类目属性、价格和图片围绕同一个商品模型保存。" />
-            <ProductEditorPanel
-              :product="product"
-              :active-marketplace="activeMarketplace"
-              :loading="loading"
-              @save="store.saveCurrentProduct"
-              @generate-copy="store.generateCopy"
-              @assign-upc="store.assignUpc"
-              @set-marketplace="setMarketplace"
-              @go-pricing="navigate('pricing')"
-              @go-images="navigate('images')"
-              @go-publish="navigate('category')"
-            />
-          </div>
 
           <div v-else-if="activeNav === 'copy'" class="space-y-6">
             <PageHeader title="图片与文案" description="调用后端 AI 文案接口生成目标平台标题、描述、卖点，并生成 GPT 生图任务包。" />
@@ -347,7 +338,7 @@ watch(
                       <td class="p-3"><span class="badge-muted">{{ item.categoryStatus || '-' }}</span></td>
                       <td class="p-3"><span class="badge-muted">{{ item.precheckStatus || '-' }}</span></td>
                       <td class="p-3"><span class="badge-muted">{{ item.publishStatus || '-' }}</span></td>
-                      <td class="p-3"><button class="btn btn-outline py-1.5" @click="store.loadProduct(item); navigate('edit')">继续处理</button></td>
+                      <td class="p-3"><button class="btn btn-outline py-1.5" @click="openProductEditor(item)">继续处理</button></td>
                     </tr>
                     <tr v-if="!pendingItems.length"><td colspan="9" class="p-6 text-center text-slate-500">暂无待处理商品。</td></tr>
                   </tbody>
@@ -394,5 +385,29 @@ watch(
         </div>
       </main>
     </div>
+    <div v-if="editorOpen" class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/50 p-4 backdrop-blur-sm" @click.self="closeProductEditor">
+      <div class="w-full max-w-6xl rounded-3xl bg-white p-4 shadow-2xl ring-1 ring-slate-200 dark:bg-dark-900 dark:ring-dark-700 sm:p-6">
+        <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 class="text-xl font-black text-slate-950 dark:text-white">商品编辑</h2>
+            <p class="mt-1 text-sm text-slate-500">从商品库弹出编辑，不再占用左侧主流程导航。</p>
+          </div>
+          <button class="btn btn-outline" @click="closeProductEditor">关闭</button>
+        </div>
+        <ProductEditorPanel
+          :product="product"
+          :active-marketplace="activeMarketplace"
+          :loading="loading"
+          @save="store.saveCurrentProduct"
+          @generate-copy="store.generateCopy"
+          @assign-upc="store.assignUpc"
+          @set-marketplace="setMarketplace"
+          @go-pricing="navigate('pricing'); closeProductEditor()"
+          @go-images="navigate('images'); closeProductEditor()"
+          @go-publish="navigate('category'); closeProductEditor()"
+        />
+      </div>
+    </div>
+
   </div>
 </template>

@@ -89,3 +89,30 @@ def test_ai_channel_accepts_nested_text_ai_config() -> None:
 
     assert result["ok"] is True
     assert calls == [{"api_key": "test-key", "base_url": "https://api.deepseek.com"}]
+
+
+def test_assign_upc_writes_current_product_and_returns_full_payload(tmp_path: Path) -> None:
+    original = {
+        "APP_DIR": erp_web_app.APP_DIR,
+        "DATA_DIR": erp_web_app.DATA_DIR,
+        "APP_CONFIG_PATH": erp_web_app.APP_CONFIG_PATH,
+        "DIST_APP_CONFIG_PATH": erp_web_app.DIST_APP_CONFIG_PATH,
+    }
+    try:
+        erp_web_app.APP_DIR = tmp_path
+        erp_web_app.DATA_DIR = tmp_path / "data"
+        erp_web_app.APP_CONFIG_PATH = tmp_path / "app_config.json"
+        erp_web_app.DIST_APP_CONFIG_PATH = tmp_path / "dist" / "app_config.json"
+        (tmp_path / "upc_pool.json").write_text('{"values":["725272000007"],"used":[]}', encoding="utf-8")
+        erp_web_app.save_product({"name": "UPC test product", "drafts": {"mercadolibre": {"enabled": True}}})
+
+        result = erp_web_app.assign_upc()
+
+        assert result["ok"] is True
+        assert result["upc"] == "725272000007"
+        assert result["product"]["upc"] == "725272000007"
+        assert result["product"]["drafts"]["mercadolibre"]["upc"] == "725272000007"
+        assert isinstance(result["productsIndex"], list)
+    finally:
+        for name, value in original.items():
+            setattr(erp_web_app, name, value)

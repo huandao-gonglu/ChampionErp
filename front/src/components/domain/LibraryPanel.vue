@@ -20,7 +20,6 @@ const emit = defineEmits<{
   generateCopy: []
   generateImagePrompt: []
   publishSelected: []
-  goEdit: []
   goPublish: []
 }>()
 
@@ -83,7 +82,6 @@ function statusClass(value: string) {
       <button class="btn btn-primary" :disabled="props.loading" @click="emit('publishSelected')">选中商品发布入队</button>
       <button class="btn btn-outline text-rose-700" :disabled="props.loading || !selectedCount" @click="confirmDeleteSelected">批量删除选中</button>
       <button class="btn btn-outline" :disabled="props.loading" @click="emit('refresh')">刷新商品库</button>
-      <button class="btn btn-outline" @click="emit('goEdit')">编辑商品</button>
       <button class="btn btn-outline" @click="emit('goPublish')">发布预检</button>
     </div>
 
@@ -129,7 +127,7 @@ function statusClass(value: string) {
             <td class="p-3"><span :class="statusClass(item.publishStatus)">{{ item.publishStatus || '-' }}</span></td>
             <td class="p-3">
               <div class="flex flex-wrap gap-2">
-                <button class="btn btn-outline py-1.5" @click="emit('load', item)">查看 / 编辑</button>
+                <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('load', item)">编辑</button>
                 <button class="btn btn-outline py-1.5 text-rose-700" :disabled="props.loading" @click="confirmDelete(item)">删除</button>
               </div>
             </td>

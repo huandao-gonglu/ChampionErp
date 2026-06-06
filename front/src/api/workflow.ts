@@ -42,6 +42,7 @@ export interface ProductMutationResponse {
   diagnostics?: UnknownRecord
   warning?: string
   message?: string
+  raw?: UnknownRecord
 }
 
 export interface AiPublicConfig {
@@ -407,7 +408,8 @@ function normalizePublishLogs(value: unknown): PublishLogItem[] {
 function normalizeProductMutation(data: unknown): ProductMutationResponse {
   const record = asRecord(data)
   ensureOk(record, '请求失败')
-  const product = normalizeBackendProduct(record.product, record.imagePool)
+  const hasProduct = isRecord(record.product)
+  const product = normalizeBackendProduct(hasProduct ? record.product : {}, record.imagePool)
   return {
     ok: record.ok !== false,
     product,
@@ -416,6 +418,7 @@ function normalizeProductMutation(data: unknown): ProductMutationResponse {
     diagnostics: asRecord(record.diagnostics),
     warning: getString(record, ['warning']) || undefined,
     message: getString(record, ['message']) || undefined,
+    raw: record,
   }
 }
 

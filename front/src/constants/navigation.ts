@@ -10,7 +10,6 @@ export const workflowNavItems: WorkflowNavItem[] = [
   { key: 'dashboard', title: '仪表盘', subtitle: '流程总览', icon: '▦' },
   { key: 'collect', title: '采集', subtitle: '链接、Cookie、浏览器标签', icon: '☷' },
   { key: 'library', title: '商品库', subtitle: '本地商品母库', icon: '▱' },
-  { key: 'edit', title: '商品编辑', subtitle: 'SKU、UPC、库存', icon: '▤' },
   { key: 'copy', title: '图片与文案', subtitle: 'AI 标题、描述、生图', icon: '✧' },
   { key: 'images', title: '图片池', subtitle: '上传、翻译图', icon: '▧' },
   { key: 'pricing', title: '核价', subtitle: '成本、运费、利润', icon: '◷' },

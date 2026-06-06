@@ -29,8 +29,8 @@ const legacyEntryRoutes: RouteRecordRaw[] = [
   },
   {
     path: '/edit',
-    component: workflowComponent,
-    meta: { title: '商品编辑', hideInMenu: true },
+    redirect: '/library',
+    meta: { title: '商品库', hideInMenu: true },
   },
   {
     path: '/media',

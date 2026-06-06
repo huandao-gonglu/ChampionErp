@@ -747,9 +747,14 @@ export const useWorkflowStore = defineStore('workflow', () => {
     setError('')
     try {
       const result = await assignUpcApi()
-      product.value = result.product
+      const assignedUpc = String(result.raw?.upc || result.product.upc || '')
+      if (result.product.productId || result.product.name || result.product.source.title) {
+        product.value = result.product
+      } else if (assignedUpc) {
+        product.value.upc = assignedUpc
+      }
       if (result.productsIndex.length) productsIndex.value = result.productsIndex
-      addLog(`UPC 已分配：${product.value.upc || '已写入商品'}`)
+      addLog(`UPC 已分配：${assignedUpc || product.value.upc || '已写入商品'}`)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '分配 UPC 失败')
     } finally {

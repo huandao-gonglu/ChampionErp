@@ -4246,14 +4246,31 @@ def assign_upc() -> dict[str, Any]:
         pool = json.loads(pool_path.read_text(encoding="utf-8"))
     except Exception:
         return {"ok": False, "error": "UPC 池读取失败"}
-    values = list(pool.get("values") or [])
-    used = set(pool.get("used") or [])
+    values = [str(value or "").strip() for value in list(pool.get("values") or []) if str(value or "").strip()]
+    used = {str(value or "").strip() for value in list(pool.get("used") or []) if str(value or "").strip()}
     for value in values:
-        if value not in used:
-            used.add(value)
-            pool["used"] = sorted(used)
-            write_json(pool_path, pool)
-            return {"ok": True, "upc": value}
+        if value in used:
+            continue
+        product = normalize_product_fields(load_product())
+        product["upc"] = value
+        drafts = product.get("drafts") if isinstance(product.get("drafts"), dict) else {}
+        for draft in drafts.values():
+            if isinstance(draft, dict):
+                draft["upc"] = value
+                draft["gtin"] = value
+                draft["barcode"] = value
+        saved = save_product(product)
+        used.add(value)
+        pool["used"] = sorted(used)
+        write_json(pool_path, pool)
+        return {
+            "ok": True,
+            "upc": value,
+            "product": saved,
+            "productsIndex": load_products_index(),
+            "imagePool": current_image_pool(saved),
+            "message": f"UPC 已分配：{value}",
+        }
     return {"ok": False, "error": "UPC 池为空，请先在设置中导入 UPC"}
 
 
