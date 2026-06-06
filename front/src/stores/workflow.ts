@@ -778,12 +778,13 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
-  async function generateImagePromptPack() {
+  async function generateImagePromptPack(targetLanguage?: string) {
     loading.value = true
     setError('')
     try {
-      imagePrompt.value = await generateImagePrompts(product.value, activeMarketplace.value)
-      addLog('GPT 生图任务包已生成。')
+      const language = String(targetLanguage || '').trim()
+      imagePrompt.value = await generateImagePrompts(product.value, activeMarketplace.value, language)
+      addLog(`生图提示词已生成。${language ? `目标语言：${language}` : ''}`)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '生成图片提示词失败')
     } finally {
@@ -791,18 +792,18 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
-  async function translateImages() {
+  async function translateImages(targetLanguage?: string) {
     loading.value = true
     setError('')
     try {
-      const language = activeMarketplace.value === 'mercadolibre' ? 'Spanish (Mexico)' : 'Russian'
+      const language = String(targetLanguage || '').trim() || (activeMarketplace.value === 'mercadolibre' ? 'Spanish (Mexico)' : 'Russian')
       const result = await imageTranslateApi(product.value, activeMarketplace.value, language)
       product.value = result.product
       if (result.productsIndex.length) productsIndex.value = result.productsIndex
       currentStage.value = 3
-      addLog(`图片翻译/生成完成。${result.message ? `提示：${result.message}` : ''}`)
+      addLog(`图片翻译/重绘完成：${language}。${result.message ? `提示：${result.message}` : ''}`)
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '图片翻译/生成失败')
+      setError(exc instanceof Error ? exc.message : '图片翻译/重绘失败')
     } finally {
       loading.value = false
     }

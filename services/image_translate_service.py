@@ -15,6 +15,7 @@ import mimetypes
 import os
 import re
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
@@ -24,6 +25,9 @@ Provider = Callable[[dict[str, Any], dict[str, Any]], list[dict[str, Any]]]
 
 SUPPORTED_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 DEFAULT_TARGET_LANGUAGE = "Spanish (Mexico)"
+DEFAULT_IMAGE_SIZE = "1024x1024"
+MAX_PROVIDER_IMAGE_BYTES = 20 * 1024 * 1024
+IMAGE_AI_TIMEOUT_SECONDS = int(os.environ.get("AI_IMAGE_REQUEST_TIMEOUT_SECONDS", "180"))
 
 
 def service_status() -> dict[str, str]:
@@ -102,7 +106,151 @@ def _bytes_from_result(result: dict[str, Any]) -> tuple[bytes, str]:
         candidate = Path(path)
         if candidate.exists() and candidate.is_file():
             return candidate.read_bytes(), candidate.suffix or ".png"
+
+    url = str(result.get("url") or "").strip()
+    if url.startswith(("http://", "https://")):
+        request = urllib.request.Request(url, headers={"User-Agent": "champion-erp-image-ai/1.0"})
+        try:
+            with urllib.request.urlopen(request, timeout=IMAGE_AI_TIMEOUT_SECONDS) as response:
+                content_type = str(response.headers.get("Content-Type") or "")
+                raw = response.read(MAX_PROVIDER_IMAGE_BYTES + 1)
+            if len(raw) <= MAX_PROVIDER_IMAGE_BYTES:
+                suffix = result.get("suffix") or result.get("ext") or ""
+                return raw, _safe_suffix(str(suffix), content_type)
+        except Exception:
+            return b"", ".png"
     return b"", ".png"
+
+
+def _response_items(response: Any) -> list[Any]:
+    if isinstance(response, dict):
+        data = response.get("data")
+    else:
+        data = getattr(response, "data", None)
+    return data if isinstance(data, list) else []
+
+
+def _item_value(item: Any, key: str) -> Any:
+    if isinstance(item, dict):
+        return item.get(key)
+    return getattr(item, key, None)
+
+
+def _provider_results_from_response(response: Any, provider_name: str, mode: str, source_id: str = "") -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for item in _response_items(response):
+        b64_json = str(_item_value(item, "b64_json") or "").strip()
+        data_url = str(_item_value(item, "data_url") or _item_value(item, "dataUrl") or "").strip()
+        url = str(_item_value(item, "url") or "").strip()
+        if not any((b64_json, data_url, url)):
+            continue
+        result = {
+            "provider": provider_name,
+            "mode": mode,
+            "source_id": source_id,
+            "suffix": ".png",
+        }
+        if b64_json:
+            result["b64_json"] = b64_json
+        if data_url:
+            result["data_url"] = data_url
+        if url:
+            result["url"] = url
+        results.append(result)
+    return results
+
+
+def _local_source_path(app_dir: Path | str, item: dict[str, Any]) -> Path | None:
+    for key in ("path", "local_path"):
+        candidate = image_service.resolve_local_path(str(item.get(key) or ""), app_dir)
+        if candidate and candidate.exists() and candidate.is_file():
+            return candidate
+    return None
+
+
+def _call_image_method(method: Any, payload: dict[str, Any]) -> Any:
+    try:
+        return method(**payload)
+    except TypeError:
+        if "quality" not in payload:
+            raise
+        fallback = dict(payload)
+        fallback.pop("quality", None)
+        return method(**fallback)
+
+
+def openai_image_provider(config: dict[str, Any], request: dict[str, Any]) -> list[dict[str, Any]]:
+    """Call an OpenAI-compatible image model and normalize returned images."""
+    api_key = str(config.get("api_key") or "").strip()
+    if not api_key:
+        return []
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise RuntimeError("OpenAI SDK is not installed. Run: pip install openai") from exc
+
+    base_url = str(config.get("base_url") or "").strip().rstrip("/")
+    provider_name = str(config.get("platform") or "OpenAI-Compatible").strip() or "OpenAI-Compatible"
+    model = str(config.get("model") or "gpt-image-1").strip()
+    quality = str(config.get("quality") or "medium").strip()
+    size = str(config.get("size") or DEFAULT_IMAGE_SIZE).strip() or DEFAULT_IMAGE_SIZE
+    prompt = str(request.get("prompt") or "").strip()
+    app_dir = Path(str(request.get("app_dir") or "."))
+    kwargs: dict[str, Any] = {"api_key": api_key, "timeout": IMAGE_AI_TIMEOUT_SECONDS}
+    if base_url:
+        kwargs["base_url"] = base_url
+    client = OpenAI(**kwargs)
+
+    generated: list[dict[str, Any]] = []
+    selected = [item for item in request.get("images") or [] if isinstance(item, dict)]
+    for item in selected:
+        source_path = _local_source_path(app_dir, item)
+        if not source_path:
+            continue
+        source_id = str(item.get("id") or "").strip()
+        try:
+            with source_path.open("rb") as image_file:
+                payload: dict[str, Any] = {
+                    "model": model,
+                    "image": image_file,
+                    "prompt": prompt,
+                    "n": 1,
+                    "size": size,
+                    "quality": quality,
+                }
+                response = _call_image_method(client.images.edit, payload)
+            generated.extend(_provider_results_from_response(response, provider_name, str(request.get("mode") or "translate"), source_id))
+        except Exception:
+            continue
+
+    if generated:
+        return generated
+
+    source_notes = []
+    for item in selected[:4]:
+        note = " | ".join(
+            value
+            for value in [
+                str(item.get("id") or "").strip(),
+                str(item.get("usage") or "").strip(),
+                str(item.get("url") or item.get("path") or "").strip(),
+            ]
+            if value
+        )
+        if note:
+            source_notes.append(note)
+    fallback_prompt = prompt
+    if source_notes:
+        fallback_prompt = f"{prompt}\n\nReference images selected in ERP:\n" + "\n".join(f"- {note}" for note in source_notes)
+    payload = {
+        "model": model,
+        "prompt": fallback_prompt,
+        "n": 1,
+        "size": size,
+        "quality": quality,
+    }
+    response = _call_image_method(client.images.generate, payload)
+    return _provider_results_from_response(response, provider_name, str(request.get("mode") or "translate"))
 
 
 def _safe_suffix(suffix: str, mime: str = "") -> str:
@@ -228,13 +376,17 @@ def translate_images(
         "platform": platform,
         "mode": mode,
         "prompt": prompt,
+        "app_dir": str(app_dir),
     }
-    provider_fn = provider or _mock_provider
+    use_mock = os.environ.get("ERP_IMAGE_TRANSLATE_MOCK", "").strip().lower() in {"1", "true", "yes"}
+    provider_fn = provider or (_mock_provider if use_mock else openai_image_provider)
     generated = provider_fn(cfg, request)
     if not generated:
         api_key = str(cfg.get("api_key") or "").strip()
         if not api_key:
             message = "当前未配置图片翻译服务，请在系统设置中配置 API 后使用。"
+        elif provider is None and not use_mock:
+            message = "图片模型没有返回图片，请检查模型是否支持图片生成/重绘，并确认 Base URL 使用 OpenAI 兼容的 /v1 地址。"
         else:
             message = "当前图片翻译服务尚未接入真实图片模型。"
         return {

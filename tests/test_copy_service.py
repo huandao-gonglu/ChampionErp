@@ -88,7 +88,7 @@ def test_ai_channel_accepts_nested_text_ai_config() -> None:
         )
 
     assert result["ok"] is True
-    assert calls == [{"api_key": "test-key", "base_url": "https://api.deepseek.com"}]
+    assert calls == [{"api_key": "test-key", "base_url": "https://api.deepseek.com", "timeout": erp_web_app.AI_TEXT_REQUEST_TIMEOUT_SECONDS}]
 
 
 def test_assign_upc_writes_current_product_and_returns_full_payload(tmp_path: Path) -> None:

@@ -2,11 +2,12 @@ import axios, { AxiosError } from 'axios'
 import { normalizeApiError } from '@/utils/apiError'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || ''
+export const API_REQUEST_TIMEOUT_MS = 180_000
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,
   withCredentials: true,
-  timeout: 30_000,
+  timeout: API_REQUEST_TIMEOUT_MS,
   headers: {
     'Content-Type': 'application/json',
   },

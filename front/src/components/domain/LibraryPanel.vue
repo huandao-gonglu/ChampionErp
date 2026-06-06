@@ -12,6 +12,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   refresh: []
   load: [item: ProductIndexItem]
+  editImages: [item: ProductIndexItem]
   toggle: [productId: string, checked: boolean]
   selectAll: [checked: boolean, productIds: string[]]
   deleteItem: [item: ProductIndexItem]
@@ -127,7 +128,8 @@ function statusClass(value: string) {
             <td class="p-3"><span :class="statusClass(item.publishStatus)">{{ item.publishStatus || '-' }}</span></td>
             <td class="p-3">
               <div class="flex flex-wrap gap-2">
-                <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('load', item)">编辑</button>
+                <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('load', item)">编辑文本</button>
+                <button class="btn btn-secondary py-1.5" :disabled="props.loading" @click="emit('editImages', item)">编辑图片</button>
                 <button class="btn btn-outline py-1.5 text-rose-700" :disabled="props.loading" @click="confirmDelete(item)">删除</button>
               </div>
             </td>

@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import type { ImageAsset, Marketplace } from '@/types/workflow'
 
 const props = defineProps<{
   images: ImageAsset[]
   loading: boolean
+  showTranslateAction?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -18,6 +19,7 @@ const emit = defineEmits<{
 }>()
 
 const input = ref<HTMLInputElement | null>(null)
+const previewImage = ref<ImageAsset | null>(null)
 const platforms: Array<{ key: Marketplace; label: string }> = [
   { key: 'mercadolibre', label: 'ML' },
   { key: 'wildberries', label: 'WB' },
@@ -42,20 +44,46 @@ function togglePlatform(image: ImageAsset, platform: Marketplace, checked: boole
 function selectedIds() {
   return props.images.filter((image) => image.selected).map((image) => image.id)
 }
+
+const previewSrc = computed(() => {
+  const image = previewImage.value
+  return image ? image.previewUrl || image.url || image.path : ''
+})
+
+function openPreview(image: ImageAsset) {
+  if (image.previewUrl || image.url || image.path) previewImage.value = image
+}
+
+function closePreview() {
+  previewImage.value = null
+}
+
+function handleKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') closePreview()
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('keydown', handleKeydown)
+}
+
+onBeforeUnmount(() => {
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('keydown', handleKeydown)
+  }
+})
 </script>
 
 <template>
   <section class="card">
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h2 class="card-title">图片池 / 翻译图</h2>
-        <p class="muted mt-1">原图、上传图、AI 生成图统一进入发布图片池。</p>
+        <h2 class="card-title">图片池 / AI 图片</h2>
       </div>
       <div class="flex flex-wrap gap-2">
         <input ref="input" type="file" accept="image/*" multiple class="hidden" @change="selected" />
         <button class="btn btn-outline" :disabled="props.loading" @click="choose">上传图片</button>
-        <button class="btn btn-secondary" :disabled="props.loading" @click="emit('syncGenerated')">同步生成图</button>
-        <button class="btn btn-primary" :disabled="props.loading || !props.images.length" @click="emit('translate')">生成/翻译图片</button>
+        <button class="btn btn-secondary" :disabled="props.loading" @click="emit('syncGenerated')">导入 ChatGPT 生成图</button>
+        <button v-if="props.showTranslateAction !== false" class="btn btn-primary" :disabled="props.loading || !props.images.length" @click="emit('translate')">AI 翻译/重绘图片</button>
         <button class="btn btn-outline" :disabled="props.loading || !props.images.length" @click="emit('save')">保存图片池</button>
         <button class="btn btn-outline" :disabled="props.loading || !selectedIds().length" @click="emit('delete', selectedIds())">删除选中</button>
         <button class="btn btn-outline" :disabled="props.loading || !props.images.length" @click="emit('clear')">清空图片池</button>
@@ -64,7 +92,13 @@ function selectedIds() {
 
     <div class="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
       <article v-for="image in props.images" :key="image.id" class="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-        <img :src="image.previewUrl || image.url || image.path" :alt="image.id" class="h-40 w-full object-cover" />
+        <img
+          :src="image.previewUrl || image.url || image.path"
+          :alt="image.id"
+          class="h-40 w-full cursor-zoom-in object-cover"
+          title="双击预览"
+          @dblclick="openPreview(image)"
+        />
           <div class="space-y-2 p-3">
             <div class="flex items-center justify-between gap-2">
               <label class="flex min-w-0 items-center gap-2">
@@ -105,4 +139,23 @@ function selectedIds() {
       </div>
     </div>
   </section>
+
+  <div
+    v-if="previewImage"
+    class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
+    @click.self="closePreview"
+  >
+    <div class="relative flex max-h-full w-full max-w-6xl flex-col gap-3">
+      <div class="flex items-center justify-between gap-3 rounded-xl bg-white px-4 py-3 shadow-card dark:bg-dark-900">
+        <div class="min-w-0">
+          <div class="truncate text-sm font-semibold text-slate-950 dark:text-white">{{ previewImage.id }}</div>
+          <div class="text-xs text-slate-500 dark:text-accent-300">{{ previewImage.width }}×{{ previewImage.height }} · {{ previewImage.origin }}</div>
+        </div>
+        <button class="btn btn-outline py-1.5" @click="closePreview">关闭</button>
+      </div>
+      <div class="flex min-h-0 items-center justify-center overflow-hidden rounded-xl bg-slate-950">
+        <img :src="previewSrc" :alt="previewImage.id" class="max-h-[78vh] max-w-full object-contain" />
+      </div>
+    </div>
+  </div>
 </template>

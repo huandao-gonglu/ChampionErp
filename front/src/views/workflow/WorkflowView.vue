@@ -12,6 +12,7 @@ import LibraryPanel from '@/components/domain/LibraryPanel.vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import PricingChart from '@/components/domain/PricingChart.vue'
 import PricingPanel from '@/components/domain/PricingPanel.vue'
+import ProductImageEditorPanel from '@/components/domain/ProductImageEditorPanel.vue'
 import ProductEditorPanel from '@/components/domain/ProductEditorPanel.vue'
 import RunLog from '@/components/domain/RunLog.vue'
 import StepTimeline from '@/components/domain/StepTimeline.vue'
@@ -63,6 +64,7 @@ const route = useRoute()
 const router = useRouter()
 const activeNav = ref('dashboard')
 const editorOpen = ref(false)
+const editorMode = ref<'text' | 'images'>('text')
 const navItems = workflowNavItems
 const pathNavMap: Record<string, string> = {
   '/': 'dashboard',
@@ -118,9 +120,14 @@ function setMarketplace(value: Marketplace) {
   store.setMarketplace(value)
 }
 
-async function openProductEditor(item?: ProductIndexItem) {
+async function openProductEditor(item?: ProductIndexItem, mode: 'text' | 'images' = 'text') {
   if (item) await store.loadProduct(item)
+  editorMode.value = mode
   editorOpen.value = true
+}
+
+async function openProductImageEditor(item?: ProductIndexItem) {
+  await openProductEditor(item, 'images')
 }
 
 function closeProductEditor() {
@@ -195,6 +202,7 @@ watch(
                 :error="error"
                 @refresh="store.refreshProductsIndex"
                 @load="openProductEditor"
+                @edit-images="openProductImageEditor"
                 @delete-item="store.deleteProduct"
                 @delete-selected="store.deleteSelectedProducts"
                 @toggle="store.toggleProductSelection"
@@ -241,6 +249,7 @@ watch(
             :error="error"
             @refresh="store.refreshProductsIndex"
             @load="openProductEditor"
+            @edit-images="openProductImageEditor"
             @delete-item="store.deleteProduct"
             @delete-selected="store.deleteSelectedProducts"
             @toggle="store.toggleProductSelection"
@@ -386,15 +395,19 @@ watch(
       </main>
     </div>
     <div v-if="editorOpen" class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/50 p-4 backdrop-blur-sm" @click.self="closeProductEditor">
-      <div class="w-full max-w-6xl rounded-3xl bg-white p-4 shadow-2xl ring-1 ring-slate-200 dark:bg-dark-900 dark:ring-dark-700 sm:p-6">
+      <div class="w-full rounded-3xl bg-white p-4 shadow-2xl ring-1 ring-slate-200 dark:bg-dark-900 dark:ring-dark-700 sm:p-6" :class="editorMode === 'images' ? 'max-w-7xl' : 'max-w-6xl'">
         <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 class="text-xl font-black text-slate-950 dark:text-white">商品编辑</h2>
-            <p class="mt-1 text-sm text-slate-500">从商品库弹出编辑，不再占用左侧主流程导航。</p>
+            <h2 class="text-xl font-black text-slate-950 dark:text-white">{{ editorMode === 'images' ? '商品图片编辑' : '商品文本编辑' }}</h2>
           </div>
-          <button class="btn btn-outline" @click="closeProductEditor">关闭</button>
+          <div class="flex flex-wrap gap-2">
+            <button class="btn btn-outline" :class="editorMode === 'text' ? 'bg-slate-100' : ''" @click="editorMode = 'text'">编辑文本</button>
+            <button class="btn btn-outline" :class="editorMode === 'images' ? 'bg-slate-100' : ''" @click="editorMode = 'images'">编辑图片</button>
+            <button class="btn btn-outline" @click="closeProductEditor">关闭</button>
+          </div>
         </div>
         <ProductEditorPanel
+          v-if="editorMode === 'text'"
           :product="product"
           :active-marketplace="activeMarketplace"
           :loading="loading"
@@ -405,6 +418,24 @@ watch(
           @go-pricing="navigate('pricing'); closeProductEditor()"
           @go-images="navigate('images'); closeProductEditor()"
           @go-publish="navigate('category'); closeProductEditor()"
+        />
+        <ProductImageEditorPanel
+          v-else
+          :product="product"
+          :active-marketplace="activeMarketplace"
+          :image-prompt="imagePrompt"
+          :images="imagePool"
+          :loading="loading"
+          :error="error"
+          @set-marketplace="setMarketplace"
+          @generate-prompt="store.generateImagePromptPack"
+          @translate="store.translateImages"
+          @upload="store.uploadReferenceImages"
+          @sync-generated="store.syncGeneratedImagePool"
+          @save="store.saveCurrentImagePool"
+          @set-main="store.setMainImage"
+          @delete="store.deleteImages"
+          @clear="store.clearSourceImages"
         />
       </div>
     </div>

@@ -78,6 +78,8 @@ FRONT_DIST_INDEX_PATH = FRONT_DIST_DIR / "index.html"
 WEB_TEMPLATE_PATH = FRONT_DIR / "index.html"
 WEB_PORT = int(os.environ.get("ERP_PORT", "5000"))
 BROWSER_DEBUG_PORT = int(os.environ.get("ERP_BROWSER_DEBUG_PORT", "9222"))
+AI_TEXT_REQUEST_TIMEOUT_SECONDS = int(os.environ.get("AI_TEXT_REQUEST_TIMEOUT_SECONDS", "60"))
+AI_IMAGE_REQUEST_TIMEOUT_SECONDS = int(os.environ.get("AI_IMAGE_REQUEST_TIMEOUT_SECONDS", "180"))
 BROWSER_DEBUG_PROFILE_DIR = Path(os.environ.get("ERP_BROWSER_PROFILE_DIR", str(APP_DIR / "browser_profile" / "debug")))
 LEGACY_PATH_ROOTS = (
     "\\".join(["C:", "Users", "miami", "Documents", "Codex", "2026-05-23", "wb-10"]),
@@ -3681,7 +3683,7 @@ def openai_client_from_config(app_cfg: dict[str, Any]):
     if not api_key:
         raise RuntimeError("请先在系统设置的“生文案通道”填写 API Key。")
     base_url = str(text_ai.get("base_url") or "").strip().rstrip("/")
-    kwargs: dict[str, Any] = {"api_key": api_key}
+    kwargs: dict[str, Any] = {"api_key": api_key, "timeout": AI_TEXT_REQUEST_TIMEOUT_SECONDS}
     if base_url:
         kwargs["base_url"] = base_url
     from openai import OpenAI
@@ -3884,6 +3886,7 @@ def build_image_prompt_pack(
     selected_image_ids: list[str] | None = None,
     include_bullets: bool = True,
     include_description: bool = True,
+    target_language: str = "",
 ) -> str:
     copy = build_copy_preview(product, platform, load_app_config())
     listing = copy.get("listing", {})
@@ -3894,11 +3897,13 @@ def build_image_prompt_pack(
         images = _source_only_pool_items(product)
     bullets = normalize_list(product.get("selling_points")) if include_bullets else []
     description = str(listing.get("description") or product.get("description") or "").strip() if include_description else ""
+    language = str(target_language or listing.get("language") or "").strip()
     lines = [
         "ChatGPT 生图提示词包",
         f"产品名: {product.get('name', '')}",
         f"品牌: {product.get('brand', '')}",
         f"品类: {product.get('category', '')}",
+        f"目标语言: {language or '按目标平台'}",
         f"核心卖点: {'，'.join(bullets[:6])}",
         f"平台文案: {listing.get('title', '')}",
         f"平台描述: {description}",
@@ -3941,7 +3946,8 @@ def test_ai_channel(channel: str, channel_config: dict[str, Any]) -> dict[str, A
         raise RuntimeError("请先填写 API Key。")
     from openai import OpenAI
 
-    kwargs: dict[str, Any] = {"api_key": api_key}
+    timeout_seconds = AI_IMAGE_REQUEST_TIMEOUT_SECONDS if channel == "image" else AI_TEXT_REQUEST_TIMEOUT_SECONDS
+    kwargs: dict[str, Any] = {"api_key": api_key, "timeout": timeout_seconds}
     if base_url:
         kwargs["base_url"] = base_url
     client = OpenAI(**kwargs)
@@ -5753,13 +5759,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/generate-image-prompts":
                 body = self.read_body()
-                product = load_product()
+                product = normalize_product_fields(body.get("product") or load_product())
                 prompt = build_image_prompt_pack(
                     product,
                     body.get("platform", "mercadolibre"),
                     body.get("selected_image_ids") if isinstance(body.get("selected_image_ids"), list) else [],
                     bool(body.get("include_bullets", True)),
                     bool(body.get("include_description", True)),
+                    str(body.get("target_language") or body.get("language") or ""),
                 )
                 self.send_json({"ok": True, "prompt": prompt, "selected_image_ids": body.get("selected_image_ids") or []})
                 return

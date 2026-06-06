@@ -1,4 +1,4 @@
-import { apiClient } from '@/api/client'
+import { API_REQUEST_TIMEOUT_MS, apiClient } from '@/api/client'
 import { createEmptyDraft, createEmptyProduct } from '@/constants/initialState'
 import type {
   BrowserDebugStatus,
@@ -756,9 +756,12 @@ export async function generateCopyBatch(productIds: string[], platform: Marketpl
   return data
 }
 
-export async function generateImagePrompts(product: Product, platform: Marketplace): Promise<string> {
+export async function generateImagePrompts(product: Product, platform: Marketplace, targetLanguage = ''): Promise<string> {
   const response = await apiClient.post('/api/generate-image-prompts', {
+    product: toBackendProduct(product),
     platform,
+    language: targetLanguage,
+    target_language: targetLanguage,
     selected_image_ids: product.source.imagePool.filter((image) => image.selected).map((image) => image.id),
     include_bullets: true,
     include_description: true,
@@ -774,7 +777,7 @@ export async function imageTranslate(product: Product, platform: Marketplace, la
     platform,
     language,
     image_ids: product.source.imagePool.filter((image) => image.selected).map((image) => image.id),
-  })
+  }, { timeout: API_REQUEST_TIMEOUT_MS })
   return normalizeProductMutation(response.data)
 }
 

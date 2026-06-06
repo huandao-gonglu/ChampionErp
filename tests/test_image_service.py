@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -189,3 +190,51 @@ def test_image_translate_service_returns_configuration_warning_without_provider_
     assert "未配置图片翻译服务" in result["message"]
     assert result["imagePoolItems"] == []
     assert "Target language: Russian" in result["prompt"]
+
+
+def test_image_translate_service_uses_default_openai_provider(app_dir: Path, tmp_path: Path) -> None:
+    source_path = tmp_path / "source.png"
+    _make_png(source_path, (255, 0, 0))
+    source_item = image_service.upload_images(app_dir, [{"path": str(source_path), "selected": True}], "pytest-openai-image-provider")[0]
+    product = {
+        "product_id": "pytest-openai-image-provider",
+        "name": "Provider item",
+        "source": {"title": "Provider item", "image_pool": [source_item]},
+    }
+    raw = base64.b64encode(source_path.read_bytes()).decode("ascii")
+    calls: list[dict] = []
+
+    class Images:
+        @staticmethod
+        def edit(**kwargs):
+            calls.append(kwargs)
+            return type("Response", (), {"data": [type("Item", (), {"b64_json": raw})()]})()
+
+        @staticmethod
+        def generate(**kwargs):
+            raise AssertionError("edit should be used when a local source image exists")
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            calls.append({"client": kwargs})
+            self.images = Images()
+
+    with patch.dict("sys.modules", {"openai": type("OpenAIModule", (), {"OpenAI": FakeOpenAI})}):
+        result = image_translate_service.translate_images(
+            app_dir,
+            product,
+            {"image_ai": {"platform": "OpenAI-Compatible", "api_key": "test-key", "base_url": "http://example.test/v1", "model": "fake-image"}},
+            target_language="Spanish (Mexico)",
+            platform="mercadolibre",
+            image_ids=[source_item["id"]],
+        )
+
+    assert result["ok"] is True
+    assert result["generated_count"] == 1
+    assert calls[0]["client"]["timeout"] == image_translate_service.IMAGE_AI_TIMEOUT_SECONDS
+    assert calls[1]["model"] == "fake-image"
+    assert calls[1]["image"].closed is True
+    item = result["imagePoolItems"][0]
+    assert item["origin"] == "ai_generated"
+    assert item["provider"] == "OpenAI-Compatible"
+    assert (app_dir / item["path"]).exists()
