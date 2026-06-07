@@ -124,7 +124,7 @@ describe('workflow store live API flow', () => {
     product.drafts.mercadolibre.status = 'ready_to_publish'
     vi.mocked(workflowApi.publishPrecheck).mockResolvedValue({
       product,
-      precheck: { ok: true, errors: [], warnings: [], checkedAt: '2026-06-02T00:00:00Z' },
+      precheck: { ok: true, errors: [], warnings: [], errorItems: [], warningItems: [], checkedAt: '2026-06-02T00:00:00Z' },
       platformResults: {},
     })
 

@@ -296,6 +296,7 @@ watch(
               :category-precheck="categoryPrecheck"
               :precheck="precheck"
               :payload-preview="payloadPreview"
+              :products-index="productsIndex"
               :loading="loading"
               @update-category-query="categoryQuery = $event"
               @set-marketplace="setMarketplace"
@@ -308,6 +309,8 @@ watch(
               @precheck="store.runPrecheck"
               @preview-payload="store.previewPayload"
               @publish="() => store.enqueuePublish()"
+              @load-product="store.loadProduct"
+              @refresh-products="store.refreshProductsIndex"
             />
           </div>
 

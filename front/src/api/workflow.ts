@@ -19,6 +19,7 @@ import type {
   PublishJob,
   PublishLogItem,
   PublishPrecheck,
+  PrecheckIssue,
   UnknownRecord,
 } from '@/types/workflow'
 
@@ -137,6 +138,40 @@ function stringList(value: unknown): string[] {
       .filter(Boolean)
   }
   return []
+}
+
+function precheckIssueFromUnknown(value: unknown, fallbackSeverity: 'error' | 'warning'): PrecheckIssue {
+  const record = asRecord(value)
+  if (Object.keys(record).length) {
+    const message = getString(record, ['message', 'error', 'code'], fallbackSeverity === 'error' ? '预检错误' : '预检提醒')
+    return {
+      code: getString(record, ['code']),
+      field: getString(record, ['field']),
+      message,
+      severity: getString(record, ['severity'], fallbackSeverity),
+      nextAction: getString(record, ['next_action', 'nextAction']),
+    }
+  }
+  return {
+    code: '',
+    field: '',
+    message: String(value || '').trim(),
+    severity: fallbackSeverity,
+    nextAction: '',
+  }
+}
+
+function precheckIssues(value: unknown, fallbackSeverity: 'error' | 'warning'): PrecheckIssue[] {
+  const rawItems = Array.isArray(value) ? value : stringList(value)
+  return rawItems
+    .map((item) => precheckIssueFromUnknown(item, fallbackSeverity))
+    .filter((item) => item.message || item.field || item.code)
+}
+
+function precheckIssueSummary(issue: PrecheckIssue): string {
+  const prefix = issue.field ? `${issue.field}：` : ''
+  const suffix = issue.nextAction ? `（${issue.nextAction}）` : ''
+  return `${prefix}${issue.message}${suffix}`.trim()
 }
 
 function platformList(value: unknown): Marketplace[] {
@@ -833,12 +868,16 @@ export async function publishPrecheck(product: Product, platforms: Marketplace[]
   ensureOk(data, '预检失败')
   const firstPlatform = platforms[0] || 'mercadolibre'
   const result = asRecord(asRecord(data.platforms)[firstPlatform])
+  const errorItems = precheckIssues(result.errors, 'error')
+  const warningItems = precheckIssues(result.warnings, 'warning')
   return {
     product: normalizeBackendProduct(data.product),
     precheck: {
       ok: result.ok !== false,
-      errors: stringList(result.errors),
-      warnings: stringList(result.warnings),
+      errors: errorItems.map(precheckIssueSummary),
+      warnings: warningItems.map(precheckIssueSummary),
+      errorItems,
+      warningItems,
       checkedAt: getString(result, ['checked_at'], new Date().toISOString()),
     },
     platformResults: asRecord(data.platforms),

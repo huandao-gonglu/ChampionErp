@@ -103,6 +103,10 @@ function collectStats(product: Product) {
   }
 }
 
+function hasProductForPublish(product: Product) {
+  return Boolean(product.productId || product.name || product.source.title)
+}
+
 function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -893,6 +897,10 @@ export const useWorkflowStore = defineStore('workflow', () => {
   }
 
   async function runCategoryOnlyPrecheck() {
+    if (!hasProductForPublish(product.value)) {
+      setError('请先从商品库选择要预检的商品。')
+      return
+    }
     const categoryId = product.value.drafts[activeMarketplace.value].categoryId.trim()
     if (!categoryId) {
       setError('请先选择或填写类目 ID。')
@@ -924,6 +932,10 @@ export const useWorkflowStore = defineStore('workflow', () => {
   }
 
   async function runPrecheck() {
+    if (!hasProductForPublish(product.value)) {
+      setError('请先从商品库选择要预检的商品。')
+      return
+    }
     loading.value = true
     setError('')
     try {
@@ -941,6 +953,10 @@ export const useWorkflowStore = defineStore('workflow', () => {
   }
 
   async function previewPayload() {
+    if (!hasProductForPublish(product.value)) {
+      setError('请先从商品库选择要预检的商品。')
+      return
+    }
     loading.value = true
     setError('')
     try {
@@ -955,6 +971,10 @@ export const useWorkflowStore = defineStore('workflow', () => {
   }
 
   async function enqueuePublish(targetProduct: Product = product.value, targetPlatforms: Marketplace[] = [activeMarketplace.value]) {
+    if (!hasProductForPublish(targetProduct)) {
+      setError('请先从商品库选择要发布的商品。')
+      return
+    }
     loading.value = true
     setError('')
     try {

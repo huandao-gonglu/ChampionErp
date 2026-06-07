@@ -146,10 +146,20 @@ export interface CategoryPrecheckResult {
   raw: UnknownRecord
 }
 
+export interface PrecheckIssue {
+  code: string
+  field: string
+  message: string
+  severity: 'error' | 'warning' | string
+  nextAction: string
+}
+
 export interface PublishPrecheck {
   ok: boolean
   errors: string[]
   warnings: string[]
+  errorItems: PrecheckIssue[]
+  warningItems: PrecheckIssue[]
   checkedAt: string
 }
 

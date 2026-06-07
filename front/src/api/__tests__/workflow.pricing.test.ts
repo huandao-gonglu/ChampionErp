@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import { calculatePrice } from '@/api/workflow'
+import { calculatePrice, publishPrecheck } from '@/api/workflow'
 import { apiClient } from '@/api/client'
+import { createEmptyProduct } from '@/constants/initialState'
 
 vi.mock('@/api/client', () => ({
   API_REQUEST_TIMEOUT_MS: 30000,
@@ -85,6 +86,62 @@ describe('calculatePrice API mapping', () => {
       exchangeRateSource: 'manual',
       exchangeRateFetchedAt: '',
       exchangeRateCached: false,
+    })
+  })
+})
+
+describe('publishPrecheck API mapping', () => {
+  it('keeps structured backend issues readable for the UI', async () => {
+    const product = createEmptyProduct()
+    vi.mocked(apiClient.post).mockResolvedValueOnce({
+      data: {
+        ok: true,
+        product: {
+          product_id: 'prod-1',
+          drafts: {
+            mercadolibre: {
+              enabled: true,
+              attributes: {},
+            },
+          },
+          source: {},
+        },
+        platforms: {
+          mercadolibre: {
+            ok: false,
+            errors: [
+              {
+                code: 'PRICE_MISSING',
+                field: 'price',
+                message: '价格缺失或无效',
+                severity: 'error',
+                next_action: '前往核价页计算并应用售价',
+              },
+            ],
+            warnings: [
+              {
+                code: 'CATEGORY_PATH_MISSING',
+                field: 'category_path',
+                message: '类目路径为空',
+                severity: 'warning',
+              },
+            ],
+            checked_at: '2026-06-02T00:00:00Z',
+          },
+        },
+      },
+    })
+
+    const result = await publishPrecheck(product, ['mercadolibre'])
+
+    expect(result.precheck.ok).toBe(false)
+    expect(result.precheck.errors).toEqual(['price：价格缺失或无效（前往核价页计算并应用售价）'])
+    expect(result.precheck.warnings).toEqual(['category_path：类目路径为空'])
+    expect(result.precheck.errorItems[0]).toMatchObject({
+      code: 'PRICE_MISSING',
+      field: 'price',
+      message: '价格缺失或无效',
+      nextAction: '前往核价页计算并应用售价',
     })
   })
 })
