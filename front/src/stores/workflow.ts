@@ -814,6 +814,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
     setError('')
     try {
       pricingResult.value = await calculatePriceApi(pricingInput.value)
+      if (pricingResult.value.usdCnyRate > 0) pricingInput.value.usdCnyRate = pricingResult.value.usdCnyRate
+      if (pricingResult.value.mxnUsdRate > 0) pricingInput.value.mxnUsdRate = pricingResult.value.mxnUsdRate
       product.value.drafts.mercadolibre.price = String(pricingResult.value.suggestedPriceMxn || '')
       const saved = await saveProductApi(product.value)
       product.value = saved.product
@@ -1050,9 +1052,9 @@ export const useWorkflowStore = defineStore('workflow', () => {
       const result = await saveAiConfig(config)
       aiConfig.value = mergeAiConfigWithSubmitted(result.raw, config)
       appConfig.value = mergeAiConfigWithSubmitted(appConfig.value, config)
-      addLog('AI 配置已保存。')
+      addLog('平台授权设置已保存。')
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '保存 AI 配置失败')
+      setError(exc instanceof Error ? exc.message : '保存平台授权设置失败')
     } finally {
       loading.value = false
     }

@@ -72,7 +72,7 @@ const pathNavMap: Record<string, string> = {
   '/media': 'library',
   '/pricing': 'pricing',
   '/publish': 'category',
-  '/settings': 'settings',
+  '/settings': 'auth',
   '/auth': 'auth',
   '/logs': 'logs',
   '/pending': 'pending',
@@ -86,7 +86,6 @@ const navPathMap: Record<string, string> = {
   publish: '/publish?tab=publish',
   pending: '/pending',
   auth: '/auth',
-  settings: '/settings',
   logs: '/logs',
 }
 
@@ -96,6 +95,8 @@ const summaryCards = computed(() => [
   { label: '发布日志', value: publishLogs.value.length, hint: '历史发布记录' },
   { label: '完成度', value: `${progressPercent.value}%`, hint: '核心链路进度' },
 ])
+
+const pricingProductItems = computed(() => productsIndex.value.filter((item) => item.productId))
 
 const pendingItems = computed(() => productsIndex.value.filter((item) => {
   const values = [
@@ -130,13 +131,19 @@ function closeProductEditor() {
   editorOpen.value = false
 }
 
+async function selectPricingProduct(productId: string) {
+  const item = pricingProductItems.value.find((entry) => entry.productId === productId)
+  if (item) await store.loadProduct(item)
+}
+
 function navigate(key: string) {
   activeNav.value = key
   const nextPath = navPathMap[key] || '/'
   if (route.fullPath !== nextPath) void router.push(nextPath)
   if (key === 'library') void store.refreshProductsIndex()
+  if (key === 'pricing' && !productsIndex.value.length) void store.refreshProductsIndex()
   if (key === 'logs') void store.refreshPublishLogs()
-  if (key === 'settings' || key === 'auth') void store.loadAiConfig()
+  if (key === 'auth') void store.loadAiConfig()
 }
 
 function toggleTheme() {
@@ -260,7 +267,20 @@ watch(
           <div v-else-if="activeNav === 'pricing'" class="space-y-6">
             <PageHeader title="核价" description="成本、运费、佣金、汇率和利润计算。" />
             <section class="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
-              <PricingPanel :input="pricingInput" :result="pricingResult" @calculate="store.calculatePrice" />
+              <PricingPanel
+                :input="pricingInput"
+                :result="pricingResult"
+                :product-items="pricingProductItems"
+                :product-id="product.productId"
+                :product-title="product.source.title || product.name || product.productId"
+                :source-platform="product.source.sourcePlatform"
+                :draft-price="product.drafts.mercadolibre.price"
+                :loading="loading"
+                @calculate="store.calculatePrice"
+                @select-product="selectPricingProduct"
+                @refresh-products="store.refreshProductsIndex"
+                @edit-product="openProductEditor()"
+              />
               <PricingChart :result="pricingResult" />
             </section>
           </div>
@@ -343,7 +363,7 @@ watch(
           </div>
 
           <AuthSettingsPanel
-            v-else-if="activeNav === 'auth' || activeNav === 'settings'"
+            v-else-if="activeNav === 'auth'"
             :app-config="appConfig"
             :ai-config="aiConfig"
             :store-config="storeConfig"
@@ -425,6 +445,5 @@ watch(
         />
       </div>
     </div>
-
   </div>
 </template>

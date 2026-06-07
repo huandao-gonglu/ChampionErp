@@ -100,6 +100,10 @@ def merge_ai_config(app_dir: Path | str, current: dict[str, Any], incoming: dict
             next_section["platform"] = "DeepSeek" if section == "text_ai" else "OpenAI"
             next_section["deprecated_note"] = "NVIDIA provider is deprecated and hidden in the Web UI."
         merged[section] = next_section
+    if isinstance(incoming.get("pricing_defaults"), dict):
+        current_pricing = merged.get("pricing_defaults") if isinstance(merged.get("pricing_defaults"), dict) else {}
+        incoming_pricing = incoming.get("pricing_defaults") if isinstance(incoming.get("pricing_defaults"), dict) else {}
+        merged["pricing_defaults"] = {**current_pricing, **incoming_pricing}
     return merged
 
 

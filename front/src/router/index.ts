@@ -49,7 +49,7 @@ const legacyEntryRoutes: RouteRecordRaw[] = [
   },
   {
     path: '/settings',
-    component: workflowComponent,
+    redirect: '/auth',
     meta: { title: '设置', hideInMenu: true },
   },
   {

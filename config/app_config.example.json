@@ -21,6 +21,9 @@
     "international_freight": "0",
     "payment_fee_percent": "4",
     "currency_rate": "7.2",
-    "packaging_cost": "0"
+    "packaging_cost": "0",
+    "exchange_rate_api_url": "https://open.er-api.com/v6/latest/USD",
+    "exchange_rate_timeout_seconds": "10",
+    "exchange_rate_cache_ttl_seconds": "3600"
   }
 }

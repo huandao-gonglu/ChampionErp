@@ -793,18 +793,37 @@ export async function calculatePrice(input: PricingInput): Promise<PricingResult
     height_cm: input.heightCm,
     commission_percent: input.commissionPercent,
     target_margin_percent: input.targetMarginPercent,
-    usd_cny_rate: input.usdCnyRate,
-    mxn_usd_rate: input.mxnUsdRate,
+    usd_cny_rate: input.exchangeRateMode === 'manual' ? input.usdCnyRate : '',
+    mxn_usd_rate: input.exchangeRateMode === 'manual' ? input.mxnUsdRate : '',
+    exchange_rate_mode: input.exchangeRateMode,
+    display_currency_mode: input.displayCurrencyMode,
   })
   const data = asRecord(response.data)
   ensureOk(data, '核价失败')
+  const backendInput = asRecord(data.input)
+  const exchangeRates = asRecord(data.exchange_rates)
+  const rates = asRecord(exchangeRates.rates)
+  const suggestedPriceUsd = getNumber(data, ['suggested_price_usd', 'sale_price_usd', 'price_usd'])
+  const usdCnyRate = getNumber(backendInput, ['usd_cny_rate'], getNumber(rates, ['usd_cny_rate']))
   return {
     suggestedPriceMxn: getNumber(data, ['suggested_price_mxn', 'sale_price_mxn', 'price_mxn']),
-    suggestedPriceUsd: getNumber(data, ['suggested_price_usd', 'sale_price_usd', 'price_usd']),
+    suggestedPriceUsd,
+    suggestedPriceCny: Math.round(suggestedPriceUsd * usdCnyRate * 100) / 100,
+    wbPriceRub: getNumber(data, ['wb_price_rub']),
     shippingCostUsd: getNumber(data, ['shipping_cost_usd', 'international_shipping_usd']),
+    shippingCostCny: getNumber(data, ['shipping_cost_cny']),
+    totalCostCny: getNumber(data, ['total_cost_cny']),
     netRevenueCny: getNumber(data, ['net_revenue_cny']),
     profitCny: getNumber(data, ['profit_cny']),
-    marginPercent: getNumber(data, ['margin_percent', 'profit_margin_percent']),
+    marginPercent: getNumber(data, ['profit_percent', 'margin_percent', 'profit_margin_percent']),
+    usdCnyRate,
+    mxnUsdRate: getNumber(backendInput, ['mxn_usd_rate'], getNumber(rates, ['mxn_usd_rate'])),
+    rubUsdRate: getNumber(backendInput, ['rub_usd_rate'], getNumber(rates, ['rub_usd_rate'])),
+    rubCnyRate: getNumber(rates, ['rub_cny_rate'], getNumber(backendInput, ['rub_cny_rate'])),
+    exchangeRateMode: getString(data, ['exchange_rate_mode'], input.exchangeRateMode),
+    exchangeRateSource: getString(exchangeRates, ['source']),
+    exchangeRateFetchedAt: getString(exchangeRates, ['fetched_at']),
+    exchangeRateCached: getBoolean(exchangeRates, ['cached']),
   }
 }
 

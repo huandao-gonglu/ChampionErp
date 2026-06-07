@@ -1,0 +1,90 @@
+import { describe, expect, it, vi } from 'vitest'
+import { calculatePrice } from '@/api/workflow'
+import { apiClient } from '@/api/client'
+
+vi.mock('@/api/client', () => ({
+  API_REQUEST_TIMEOUT_MS: 30000,
+  apiClient: {
+    post: vi.fn(),
+  },
+}))
+
+describe('calculatePrice API mapping', () => {
+  it('posts pricing inputs and maps backend pricing fields for the UI', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({
+      data: {
+        ok: true,
+        suggested_price_mxn: 739.83,
+        suggested_price_usd: 43.52,
+        wb_price_rub: 3011,
+        shipping_cost_usd: 8,
+        shipping_cost_cny: 58,
+        total_cost_cny: 183,
+        net_revenue_cny: 203.88,
+        profit_cny: 78.88,
+        profit_percent: 25,
+        input: { usd_cny_rate: 7.25, mxn_usd_rate: 17, rub_cny_rate: 12 },
+        exchange_rate_mode: 'manual',
+        exchange_rates: {
+          ok: true,
+          source: 'manual',
+          rates: { usd_cny_rate: 7.25, mxn_usd_rate: 17, rub_usd_rate: 73.5, rub_cny_rate: 12 },
+        },
+      },
+    })
+
+    const result = await calculatePrice({
+      platform: 'mercadolibre',
+      site: 'MLM',
+      purchaseCostCny: 100,
+      domesticFreightCny: 10,
+      weightKg: 1.2,
+      lengthCm: 30,
+      widthCm: 20,
+      heightCm: 15,
+      commissionPercent: 15,
+      targetMarginPercent: 25,
+      usdCnyRate: 7.25,
+      mxnUsdRate: 17,
+      exchangeRateMode: 'manual',
+      displayCurrencyMode: 'platform',
+    })
+
+    expect(apiClient.post).toHaveBeenCalledWith('/api/calculate-price', {
+      platform: 'mercadolibre',
+      site: 'MLM',
+      purchase_cost: 100,
+      domestic_freight: 10,
+      weight_kg: 1.2,
+      length_cm: 30,
+      width_cm: 20,
+      height_cm: 15,
+      commission_percent: 15,
+      target_margin_percent: 25,
+      usd_cny_rate: 7.25,
+      mxn_usd_rate: 17,
+      exchange_rate_mode: 'manual',
+      display_currency_mode: 'platform',
+    })
+    expect(result).toEqual({
+      suggestedPriceMxn: 739.83,
+      suggestedPriceUsd: 43.52,
+      suggestedPriceCny: 315.52,
+      wbPriceRub: 3011,
+      shippingCostUsd: 8,
+      shippingCostCny: 58,
+      totalCostCny: 183,
+      netRevenueCny: 203.88,
+      profitCny: 78.88,
+      marginPercent: 25,
+      usdCnyRate: 7.25,
+      mxnUsdRate: 17,
+      rubUsdRate: 73.5,
+      rubCnyRate: 12,
+      exchangeRateMode: 'manual',
+      exchangeRateSource: 'manual',
+      exchangeRateFetchedAt: '',
+      exchangeRateCached: false,
+    })
+  })
+})

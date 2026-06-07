@@ -111,7 +111,9 @@ export function createDefaultPricingInput(): PricingInput {
     heightCm: 0,
     commissionPercent: 16,
     targetMarginPercent: 30,
-    usdCnyRate: 7.2,
-    mxnUsdRate: 18,
+    usdCnyRate: 0,
+    mxnUsdRate: 0,
+    exchangeRateMode: 'live',
+    displayCurrencyMode: 'platform',
   }
 }

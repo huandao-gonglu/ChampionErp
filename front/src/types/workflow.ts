@@ -99,15 +99,29 @@ export interface PricingInput {
   targetMarginPercent: number
   usdCnyRate: number
   mxnUsdRate: number
+  exchangeRateMode: 'live' | 'manual'
+  displayCurrencyMode: 'platform' | 'cny'
 }
 
 export interface PricingResult {
   suggestedPriceMxn: number
   suggestedPriceUsd: number
+  suggestedPriceCny: number
+  wbPriceRub: number
   shippingCostUsd: number
+  shippingCostCny: number
+  totalCostCny: number
   netRevenueCny: number
   profitCny: number
   marginPercent: number
+  usdCnyRate: number
+  mxnUsdRate: number
+  rubUsdRate: number
+  rubCnyRate: number
+  exchangeRateMode: string
+  exchangeRateSource: string
+  exchangeRateFetchedAt: string
+  exchangeRateCached: boolean
 }
 
 export interface CategorySelection {

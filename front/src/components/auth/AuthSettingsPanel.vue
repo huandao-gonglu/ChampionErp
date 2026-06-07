@@ -37,6 +37,9 @@ const form = reactive({
   imageAiBaseUrl: '',
   imageAiModel: '',
   imageAiQuality: '',
+  exchangeRateApiUrl: '',
+  exchangeRateTimeoutSeconds: '10',
+  exchangeRateCacheTtlSeconds: '3600',
   mlAppId: '',
   mlClientSecret: '',
   mlRedirectUri: 'https://example.com/callback',
@@ -67,6 +70,7 @@ function firstText(...values: unknown[]): string {
 function fillFromProps() {
   const text = asRecord(props.aiConfig.text_ai || props.appConfig.text_ai)
   const image = asRecord(props.aiConfig.image_ai || props.appConfig.image_ai)
+  const pricing = asRecord(props.appConfig.pricing_defaults)
   const appText = asRecord(props.appConfig.text_ai)
   const appImage = asRecord(props.appConfig.image_ai)
   const ml = asRecord(props.storeConfig.mercadolibre)
@@ -83,6 +87,9 @@ function fillFromProps() {
   form.imageAiBaseUrl = firstText(image.base_url, appImage.base_url, 'https://api.openai.com/v1')
   form.imageAiModel = firstText(image.model, appImage.model, 'gpt-image-1')
   form.imageAiQuality = firstText(image.quality, appImage.quality, 'medium')
+  form.exchangeRateApiUrl = firstText(pricing.exchange_rate_api_url, 'https://open.er-api.com/v6/latest/USD')
+  form.exchangeRateTimeoutSeconds = firstText(pricing.exchange_rate_timeout_seconds, '10')
+  form.exchangeRateCacheTtlSeconds = firstText(pricing.exchange_rate_cache_ttl_seconds, '3600')
   form.mlAppId = String(ml.app_id || '')
   form.mlClientSecret = String(ml.client_secret || ml.app_secret || '')
   form.mlRedirectUri = String(ml.redirect_uri || 'https://example.com/callback')
@@ -117,6 +124,11 @@ function aiPayload(): UnknownRecord {
   return {
     text_ai: { platform: form.textAiPlatform.trim(), api_key: form.textAiApiKey.trim(), base_url: form.textAiBaseUrl.trim(), model: form.textAiModel.trim() },
     image_ai: { platform: form.imageAiPlatform.trim(), api_key: form.imageAiApiKey.trim(), base_url: form.imageAiBaseUrl.trim(), model: form.imageAiModel.trim(), quality: form.imageAiQuality.trim() || 'medium' },
+    pricing_defaults: {
+      exchange_rate_api_url: form.exchangeRateApiUrl.trim(),
+      exchange_rate_timeout_seconds: form.exchangeRateTimeoutSeconds.trim(),
+      exchange_rate_cache_ttl_seconds: form.exchangeRateCacheTtlSeconds.trim(),
+    },
   }
 }
 
@@ -137,14 +149,14 @@ function copy(text: string) {
   <div class="space-y-6">
     <section class="card">
       <div class="flex flex-wrap items-start justify-between gap-3">
-        <div><h2 class="card-title">设置</h2><p class="muted mt-1">AI、授权、UPC 池、默认核价参数和日志都放在设置区。</p></div>
+        <div><h2 class="card-title">平台授权</h2><p class="muted mt-1">平台授权、AI 通道和核价汇率 API 都在这里配置。</p></div>
         <div class="flex flex-wrap gap-2">
-          <button class="btn btn-primary" :disabled="props.loading || !canSaveAi" :title="canSaveAi ? '' : aiButtonHint" @click="emit('saveAi', aiPayload())">保存 AI</button>
+          <button class="btn btn-primary" :disabled="props.loading || !canSaveAi" :title="canSaveAi ? '' : aiButtonHint" @click="emit('saveAi', aiPayload())">保存设置</button>
           <button class="btn btn-outline" :disabled="props.loading || !textAiReady" :title="textAiReady ? '' : textAiHint" @click="emit('testAi', 'text', aiPayload())">测试文本 AI</button>
           <button class="btn btn-outline" :disabled="props.loading || !imageAiReady" :title="imageAiReady ? '' : imageAiHint" @click="emit('testAi', 'image', aiPayload())">测试图片 AI</button>
         </div>
       </div>
-      <div class="mt-5 grid gap-4 xl:grid-cols-2">
+      <div class="mt-5 grid gap-4 xl:grid-cols-3">
         <div class="rounded-2xl border p-4">
           <h3 class="font-semibold">文本 AI</h3>
           <div class="mt-3 grid gap-3 md:grid-cols-2">
@@ -162,6 +174,16 @@ function copy(text: string) {
             <input v-model="form.imageAiQuality" class="input" placeholder="质量 medium/high" />
             <input v-model="form.imageAiBaseUrl" class="input" placeholder="Base URL" />
             <input v-model="form.imageAiApiKey" class="input md:col-span-2" placeholder="API Key" autocomplete="off" spellcheck="false" />
+          </div>
+        </div>
+        <div class="rounded-2xl border p-4">
+          <h3 class="font-semibold">核价汇率</h3>
+          <div class="mt-3 grid gap-3">
+            <input v-model="form.exchangeRateApiUrl" class="input" placeholder="汇率 API URL" />
+            <div class="grid gap-3 sm:grid-cols-2">
+              <input v-model="form.exchangeRateTimeoutSeconds" class="input" placeholder="超时秒数，例如 10" />
+              <input v-model="form.exchangeRateCacheTtlSeconds" class="input" placeholder="缓存秒数，例如 3600" />
+            </div>
           </div>
         </div>
       </div>
