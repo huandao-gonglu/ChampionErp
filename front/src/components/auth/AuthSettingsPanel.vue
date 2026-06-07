@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import type { AuthResult, Marketplace, MercadoLibreAuthChecklist, MercadoLibreTestMode, UnknownRecord } from '@/types/workflow'
 
 const props = defineProps<{
@@ -50,6 +50,14 @@ const form = reactive({
   ozonClientId: '',
   ozonApiKey: '',
 })
+
+const selectedStorePlatform = ref<Marketplace>('mercadolibre')
+
+const storePlatforms: Array<{ key: Marketplace; label: string; subtitle: string }> = [
+  { key: 'mercadolibre', label: 'Mercado Libre', subtitle: 'OAuth、授权链接、Token 检测' },
+  { key: 'wildberries', label: 'Wildberries', subtitle: 'Content / Prices API Token' },
+  { key: 'ozon', label: 'Ozon', subtitle: 'Client ID + API Key' },
+]
 
 function asRecord(value: unknown): UnknownRecord {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as UnknownRecord : {}
@@ -140,6 +148,44 @@ function storePayload(): UnknownRecord {
   }
 }
 
+function selectedStorePayload(): UnknownRecord {
+  return { [selectedStorePlatform.value]: asRecord(storePayload()[selectedStorePlatform.value]) }
+}
+
+const selectedStorePlatformMeta = computed(() => storePlatforms.find((item) => item.key === selectedStorePlatform.value) || storePlatforms[0])
+
+const selectedStoreSummary = computed(() => asRecord(props.storeAuthSummary[selectedStorePlatform.value]))
+
+const hasStoreSummary = computed(() => Object.keys(selectedStoreSummary.value).length > 0)
+
+const selectedLastStoreResult = computed(() => {
+  if (!props.lastResult || props.lastResult.raw?.channel) return null
+  const raw = asRecord(props.lastResult.raw)
+  const platform = String(raw.platform || '').trim()
+  return !platform || platform === selectedStorePlatform.value ? props.lastResult : null
+})
+
+const selectedStoreResultDetails = computed(() => {
+  if (selectedLastStoreResult.value) {
+    const raw = asRecord(selectedLastStoreResult.value.raw)
+    const { storeAuthSummary: _storeAuthSummary, ...details } = raw
+    return details
+  }
+  return selectedStoreSummary.value
+})
+
+const hasSelectedStoreResult = computed(() => Object.keys(selectedStoreResultDetails.value).length > 0)
+
+const selectedStoreResultStatus = computed(() => {
+  if (selectedLastStoreResult.value) return selectedLastStoreResult.value.ok ? '成功' : '失败'
+  return String(selectedStoreSummary.value.status || selectedStoreSummary.value.message || '已记录')
+})
+
+const selectedStoreResultMessage = computed(() => {
+  if (selectedLastStoreResult.value) return selectedLastStoreResult.value.message || selectedLastStoreResult.value.error || ''
+  return String(selectedStoreSummary.value.next_action || selectedStoreSummary.value.error_message || selectedStoreSummary.value.masked_account || selectedStoreSummary.value.shop_name || '')
+})
+
 function copy(text: string) {
   if (text) void navigator.clipboard?.writeText(text)
 }
@@ -197,12 +243,31 @@ function copy(text: string) {
 
     <section class="card">
       <div class="flex flex-wrap items-start justify-between gap-3">
-        <div><h2 class="card-title">平台授权</h2><p class="muted mt-1">Mercado Libre、Wildberries、Ozon 店铺授权配置。</p></div>
-        <button class="btn btn-primary" :disabled="props.loading" @click="emit('saveStore', storePayload())">保存授权配置</button>
+        <div>
+          <h2 class="card-title">店铺授权</h2>
+          <p class="muted mt-1">选择一个平台，只显示该平台的授权配置和检测结果。</p>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <select v-model="selectedStorePlatform" class="input w-64">
+            <option v-for="platform in storePlatforms" :key="platform.key" :value="platform.key">{{ platform.label }}</option>
+          </select>
+          <button class="btn btn-primary" :disabled="props.loading" @click="emit('saveStore', selectedStorePayload())">保存当前平台授权</button>
+        </div>
       </div>
-      <div class="mt-5 grid gap-4 xl:grid-cols-3">
-        <article class="rounded-2xl border p-4">
-          <h3 class="font-semibold">Mercado Libre OAuth</h3>
+
+      <div class="mt-5 rounded-2xl border p-4">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 class="font-semibold">{{ selectedStorePlatformMeta.label }}</h3>
+            <p class="mt-1 text-sm text-slate-300">{{ selectedStorePlatformMeta.subtitle }}</p>
+          </div>
+          <div v-if="hasStoreSummary" class="rounded-xl bg-slate-900/80 px-3 py-2 text-sm text-slate-100 ring-1 ring-slate-600">
+            <span class="font-semibold text-white">检测状态：</span>
+            <span class="text-slate-100">{{ selectedStoreSummary.status || selectedStoreSummary.message || '已记录' }}</span>
+          </div>
+        </div>
+
+        <template v-if="selectedStorePlatform === 'mercadolibre'">
           <input v-model="form.mlAppId" class="input mt-3" placeholder="App ID" />
           <input v-model="form.mlClientSecret" type="password" class="input mt-2" placeholder="Client Secret" />
           <input v-model="form.mlRedirectUri" class="input mt-2" placeholder="Redirect URI" />
@@ -225,7 +290,7 @@ function copy(text: string) {
             <div class="mt-1 break-all">{{ props.authLink }}</div>
             <button class="btn btn-outline mt-2 py-1.5 text-xs" @click="copy(props.authLink)">复制链接</button>
           </div>
-          <div v-if="props.mercadolibreChecklist" class="mt-3 rounded-xl bg-slate-50 p-3 text-xs ring-1 ring-slate-200">
+          <div v-if="props.mercadolibreChecklist" class="mt-3 rounded-xl bg-slate-900/80 p-3 text-xs text-slate-100 ring-1 ring-slate-600">
             <div class="flex items-center justify-between gap-2">
               <div class="font-semibold">授权清单：{{ props.mercadolibreChecklist.tokenReady ? 'Token 已保存' : props.mercadolibreChecklist.readyForAuthLink ? '可生成授权链接' : '配置不完整' }}</div>
               <button class="btn btn-outline py-1 text-xs" @click="copy(props.mercadolibreChecklist.copyText)">复制清单</button>
@@ -238,25 +303,33 @@ function copy(text: string) {
             </ul>
             <div class="mt-2 text-blue-700">下一步：{{ props.mercadolibreChecklist.nextAction }}</div>
           </div>
-        </article>
-        <article class="rounded-2xl border p-4">
-          <h3 class="font-semibold">Wildberries Token</h3>
+        </template>
+
+        <template v-else-if="selectedStorePlatform === 'wildberries'">
           <input v-model="form.wbContentToken" type="password" class="input mt-3" placeholder="Content API Token" />
           <input v-model="form.wbPricesToken" type="password" class="input mt-2" placeholder="Prices API Token，可选" />
-          <div class="mt-3 flex flex-wrap gap-2"><button class="btn btn-outline py-1.5" @click="emit('testAuth', 'wildberries', 'content')">测试 Content</button><button class="btn btn-outline py-1.5" @click="emit('testAuth', 'wildberries', 'prices')">测试价格</button><button class="btn btn-outline py-1.5 text-rose-700" @click="emit('clearAuth', 'wildberries')">清除授权</button></div>
-        </article>
-        <article class="rounded-2xl border p-4">
-          <h3 class="font-semibold">Ozon Client ID + API Key</h3>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('testAuth', 'wildberries', 'content')">测试 Content</button>
+            <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('testAuth', 'wildberries', 'prices')">测试价格</button>
+            <button class="btn btn-outline py-1.5 text-rose-700" :disabled="props.loading" @click="emit('clearAuth', 'wildberries')">清除授权</button>
+          </div>
+        </template>
+
+        <template v-else>
           <input v-model="form.ozonClientId" class="input mt-3" placeholder="Client ID" />
           <input v-model="form.ozonApiKey" type="password" class="input mt-2" placeholder="API Key" />
-          <div class="mt-3 flex flex-wrap gap-2"><button class="btn btn-outline py-1.5" @click="emit('testAuth', 'ozon')">测试授权</button><button class="btn btn-outline py-1.5" @click="emit('testAuth', 'ozon', 'category')">读取类目测试</button><button class="btn btn-outline py-1.5 text-rose-700" @click="emit('clearAuth', 'ozon')">清除授权</button></div>
-        </article>
-      </div>
-      <div v-if="props.lastResult && !props.lastResult.raw?.channel" class="mt-4 rounded-2xl bg-slate-50 p-4 text-sm ring-1 ring-slate-200">
-        <div class="font-semibold">最近结果：{{ props.lastResult.ok ? '成功' : '失败' }}</div>
-        <div class="mt-1">{{ props.lastResult.message || props.lastResult.error }}</div>
-        <div v-if="props.lastResult.nextAction" class="mt-1 text-blue-700">下一步：{{ props.lastResult.nextAction }}</div>
-        <pre class="mt-3 max-h-52 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{{ JSON.stringify(props.lastResult.raw, null, 2) }}</pre>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('testAuth', 'ozon')">测试授权</button>
+            <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('testAuth', 'ozon', 'category')">读取类目测试</button>
+            <button class="btn btn-outline py-1.5 text-rose-700" :disabled="props.loading" @click="emit('clearAuth', 'ozon')">清除授权</button>
+          </div>
+        </template>
+
+        <div v-if="hasSelectedStoreResult" class="mt-4 rounded-xl bg-slate-900/80 p-3 text-sm text-slate-100 ring-1 ring-slate-600">
+          <div class="font-semibold text-white">授权检测结果：{{ selectedStoreResultStatus }}</div>
+          <div v-if="selectedStoreResultMessage" class="mt-1 text-slate-200">{{ selectedStoreResultMessage }}</div>
+          <pre class="mt-2 max-h-52 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{{ JSON.stringify(selectedStoreResultDetails, null, 2) }}</pre>
+        </div>
       </div>
     </section>
   </div>

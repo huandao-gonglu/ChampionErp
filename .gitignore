@@ -34,3 +34,4 @@ erp.sqlite3
 *.db-shm
 *.tsbuildinfo
 logo-cart-verification.png
+data/logs/
