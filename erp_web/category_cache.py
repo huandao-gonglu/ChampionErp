@@ -11,6 +11,7 @@ from typing import Any, Callable
 import erp_db
 
 JsonClient = Callable[[str, str | None], dict[str, Any] | list[Any]]
+ProgressCallback = Callable[[dict[str, Any]], None]
 
 
 def http_json(url: str, access_token: str | None = None) -> dict[str, Any] | list[Any]:
@@ -21,7 +22,7 @@ def http_json(url: str, access_token: str | None = None) -> dict[str, Any] | lis
     if access_token:
         headers["Authorization"] = f"Bearer {access_token}"
     request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=10) as response:
+    with urllib.request.urlopen(request, timeout=6) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -89,6 +90,7 @@ def build_mercadolibre_category_cache(
     max_categories: int = 500,
     access_token: str | None = None,
     http_client: JsonClient = http_json,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     site = str(site or "MLM").strip().upper()
     max_categories = max(1, int(max_categories or 500))
@@ -100,11 +102,15 @@ def build_mercadolibre_category_cache(
     records: list[dict[str, Any]] = []
     visited: set[str] = set()
     errors: list[str] = []
+    if progress_callback:
+        progress_callback({"stage": "roots_loaded", "site": site, "total_roots": len(queue), "visited": 0, "records": 0, "queued": len(queue), "max_categories": max_categories})
     while queue and len(visited) < max_categories:
         category_id = queue.pop(0)
         if category_id in visited:
             continue
         visited.add(category_id)
+        if progress_callback:
+            progress_callback({"stage": "category_detail", "site": site, "category_id": category_id, "visited": len(visited), "records": len(records), "queued": len(queue), "max_categories": max_categories})
         try:
             detail = http_client(
                 f"https://api.mercadolibre.com/categories/{urllib.parse.quote(category_id)}",
@@ -119,13 +125,19 @@ def build_mercadolibre_category_cache(
         child_ids = [str(item.get("id") or "").strip() for item in children if isinstance(item, dict) and str(item.get("id") or "").strip()]
         if child_ids:
             queue.extend(child_id for child_id in child_ids if child_id not in visited)
+            if progress_callback:
+                progress_callback({"stage": "children_queued", "site": site, "category_id": category_id, "visited": len(visited), "records": len(records), "queued": len(queue), "max_categories": max_categories})
             continue
         try:
+            if progress_callback:
+                progress_callback({"stage": "category_attributes", "site": site, "category_id": category_id, "visited": len(visited), "records": len(records), "queued": len(queue), "max_categories": max_categories})
             attrs = ml_attributes_for_category(category_id, access_token=access_token, http_client=http_client)
         except Exception as exc:
             errors.append(f"{category_id}/attributes: {exc}")
             attrs = {"required": [], "optional": []}
         records.append(ml_category_record(detail, site, attrs))
+        if progress_callback:
+            progress_callback({"stage": "record_ready", "site": site, "category_id": category_id, "visited": len(visited), "records": len(records), "record": records[-1], "queued": len(queue), "max_categories": max_categories, "errors": len(errors)})
     return {
         "platform": "mercadolibre",
         "site": site,
@@ -144,6 +156,7 @@ def refresh_official_category_cache(
     site: str = "MLM",
     max_categories: int = 500,
     http_client: JsonClient = http_json,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     platform = str(platform or "").strip().lower()
     if platform != "mercadolibre":
@@ -156,6 +169,7 @@ def refresh_official_category_cache(
             max_categories=max_categories,
             access_token=token or None,
             http_client=http_client,
+            progress_callback=progress_callback,
         )
     except urllib.error.HTTPError as exc:
         status = erp_db.category_cache_status(app_dir, platform)
@@ -166,8 +180,8 @@ def refresh_official_category_cache(
                 "platform": platform,
                 "site": site,
                 "error_code": "MERCADOLIBRE_CATEGORY_AUTH_REQUIRED",
-                "error": "Mercado Libre 官方类目接口拒绝匿名访问，请先完成店铺授权或刷新 access_token 后再更新类目缓存。",
-                "next_action": "前往授权页完成 Mercado Libre 授权，然后回到发布预检页刷新类目缓存。",
+                "error": "Mercado Libre 官方类目接口拒绝当前 access_token，请先刷新 token 或重新授权后再更新类目缓存。",
+                "next_action": "前往授权页刷新 Mercado Libre token；如果仍失败，请重新授权后再回到发布预检页刷新类目缓存。",
                 "http_status": code,
                 "cache_status": status,
             }

@@ -98,6 +98,17 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, 404)
             return
+        if parsed.path == "/api/category-cache/refresh-status":
+            params = urllib.parse.parse_qs(parsed.query)
+            job_id = str((params.get("job_id") or [""])[0]).strip()
+            if not job_id:
+                self.send_json({"ok": False, "error": "缺少 job_id"}, 400)
+                return
+            try:
+                self.send_json({"ok": True, "job": get_category_cache_refresh_job(job_id)})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, 404)
+            return
         if parsed.path == "/file":
             static_routes.serve_file(self, parsed, APP_MODULE)
             return
@@ -402,10 +413,18 @@ class Handler(BaseHTTPRequestHandler):
                     }
                 )
                 return
+            if parsed.path == "/api/category-ai-suggest":
+                body = self.read_body()
+                platform = str(body.get("platform") or "mercadolibre").strip().lower()
+                site = str(body.get("site") or body.get("country") or "").strip()
+                product = normalize_product_fields(body.get("product") or load_product())
+                limit = int(body.get("limit") or 5)
+                self.send_json(suggest_category_ids(product, platform=platform, site=site, limit=limit))
+                return
             if parsed.path == "/api/category-cache/refresh":
                 body = self.read_body()
                 platform = str(body.get("platform") or "mercadolibre").strip().lower()
-                site = str(body.get("site") or body.get("country") or "MLM").strip().upper()
+                site = str(body.get("site") or body.get("country") or "").strip().upper()
                 max_categories = int(body.get("max_categories") or 500)
                 if platform == "mercadolibre":
                     self.send_json(refresh_official_category_cache(platform, site=site, max_categories=max_categories))
@@ -420,6 +439,13 @@ class Handler(BaseHTTPRequestHandler):
                             "warning": "当前平台暂未接入官方类目刷新，仅读取本地缓存。",
                         }
                     )
+                return
+            if parsed.path == "/api/category-cache/refresh-job":
+                body = self.read_body()
+                platform = str(body.get("platform") or "mercadolibre").strip().lower()
+                site = str(body.get("site") or body.get("country") or "").strip().upper()
+                max_categories = int(body.get("max_categories") or 500)
+                self.send_json({"ok": True, "job": start_category_cache_refresh_job(platform, site=site, max_categories=max_categories)})
                 return
             if parsed.path == "/api/category-ai-fill":
                 body = self.read_body()
@@ -542,7 +568,7 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     return
                 try:
-                    payload = _sanitize_for_log(build_mercadolibre_payload_preview(product, load_store_config()))
+                    payload = app._sanitize_for_log(build_mercadolibre_payload_preview(product, load_store_config()))
                     path = OUTPUT_DIR / "last_mercadolibre_payload.json"
                     write_json(path, payload)
                     append_ml_publish_log(product, "payload_preview", collect_time_iso(), payload, {"ok": True, "status": "payload_preview", "path": str(path)}, "", "", {}, "仅预览 payload，未调用真实发布")
@@ -611,4 +637,3 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.send_response(404)
         self.end_headers()
-

@@ -174,8 +174,8 @@ test("category refresh without Mercado Libre token shows an auth recovery action
       body: JSON.stringify({
         ok: false,
         error_code: "MERCADOLIBRE_CATEGORY_AUTH_REQUIRED",
-        error: "Mercado Libre 官方类目接口拒绝匿名访问，请先完成授权。",
-        next_action: "前往授权页完成 Mercado Libre 授权，然后回到发布预检页刷新类目缓存。",
+        error: "Mercado Libre 官方类目接口拒绝当前 access_token，请先刷新 token 或重新授权后再更新类目缓存。",
+        next_action: "前往授权页刷新 Mercado Libre token；如果仍失败，请重新授权后再回到发布预检页刷新类目缓存。",
         cache_status: { storage: "sqlite", records: 2 },
       }),
     });

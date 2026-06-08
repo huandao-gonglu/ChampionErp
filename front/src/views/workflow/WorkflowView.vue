@@ -33,6 +33,7 @@ const {
   category,
   categoryQuery,
   categoryResults,
+  categoryCacheStatus,
   categoryPrecheck,
   precheck,
   payloadPreview,
@@ -297,10 +298,12 @@ watch(
               :precheck="precheck"
               :payload-preview="payloadPreview"
               :products-index="productsIndex"
+              :category-cache-status="categoryCacheStatus"
               :loading="loading"
               @update-category-query="categoryQuery = $event"
               @set-marketplace="setMarketplace"
               @search-category="store.searchCategory"
+              @suggest-category="store.suggestCategoryByAi"
               @select-category="store.selectCategory"
               @apply-category="store.loadCategoryAttributes"
               @fill-attributes="store.fillAttributesByAi"

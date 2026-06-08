@@ -227,6 +227,8 @@ export function normalizeImageAsset(value: unknown): ImageAsset {
 function normalizeDraft(value: unknown, language: string): MarketplaceDraft {
   const record = asRecord(value)
   const draft = createEmptyDraft(language)
+  const packageDimensions = asRecord(record.package_dimensions ?? record.packageDimensions)
+  const saleTerms = Array.isArray(record.sale_terms) ? record.sale_terms.map((item) => asRecord(item)) : Array.isArray(record.saleTerms) ? record.saleTerms.map((item) => asRecord(item)) : []
   return {
     ...draft,
     enabled: getBoolean(record, ['enabled'], draft.enabled),
@@ -242,6 +244,15 @@ function normalizeDraft(value: unknown, language: string): MarketplaceDraft {
     language: getString(record, ['language'], language),
     stock: getString(record, ['stock']),
     sku: getString(record, ['sku']),
+    upc: getString(record, ['upc', 'gtin', 'barcode']),
+    packageDimensions: {
+      lengthCm: getString(packageDimensions, ['length_cm', 'lengthCm']),
+      widthCm: getString(packageDimensions, ['width_cm', 'widthCm']),
+      heightCm: getString(packageDimensions, ['height_cm', 'heightCm']),
+      weightKg: getString(packageDimensions, ['weight_kg', 'weightKg']),
+    },
+    saleTerms,
+    allowGtinExemption: getBoolean(record, ['allow_gtin_exemption', 'allowGtinExemption', 'gtin_exempt']),
   }
 }
 
@@ -332,6 +343,15 @@ function toBackendDraft(draft: MarketplaceDraft): UnknownRecord {
     language: draft.language,
     stock: draft.stock,
     sku: draft.sku,
+    upc: draft.upc,
+    package_dimensions: {
+      length_cm: draft.packageDimensions.lengthCm,
+      width_cm: draft.packageDimensions.widthCm,
+      height_cm: draft.packageDimensions.heightCm,
+      weight_kg: draft.packageDimensions.weightKg,
+    },
+    sale_terms: draft.saleTerms,
+    allow_gtin_exemption: draft.allowGtinExemption,
   }
 }
 
@@ -952,7 +972,21 @@ export async function fetchCategoryAttrs(platform: Marketplace, categoryId: stri
       return {
         id: getString(record, ['id', 'attribute_id']),
         name: getString(record, ['name', 'label']),
-        required: getBoolean(record, ['required'], true),
+        required: getBoolean(record, ['required'], false),
+        options: stringList(record.options),
+      }
+    })
+    : []
+  const optionalFromRequired = required.filter((item) => !item.required)
+  const requiredOnly = required.filter((item) => item.required)
+  const optional = Array.isArray(data.optional)
+    ? data.optional.map((item) => {
+      const record = asRecord(item)
+      return {
+        id: getString(record, ['id', 'attribute_id']),
+        name: getString(record, ['name', 'label']),
+        required: false,
+        options: stringList(record.options),
       }
     })
     : []
@@ -960,11 +994,12 @@ export async function fetchCategoryAttrs(platform: Marketplace, categoryId: stri
     platform,
     categoryId,
     categoryPath: getString(data, ['category_path', 'path', 'name']),
-    requiredAttributes: required,
+    requiredAttributes: requiredOnly,
+    optionalAttributes: [...optionalFromRequired, ...optional].filter((item, index, items) => item.id && items.findIndex((candidate) => candidate.id === item.id) === index),
   }
 }
 
-export async function searchCategories(platform: Marketplace, query: string, site = 'MLM'): Promise<{ results: CategorySearchResult[]; cacheStatus: UnknownRecord }> {
+export async function searchCategories(platform: Marketplace, query: string, site = ''): Promise<{ results: CategorySearchResult[]; cacheStatus: UnknownRecord }> {
   const response = await apiClient.post('/api/category-search', { platform, query, site, limit: 20 })
   const data = asRecord(response.data)
   ensureOk(data, '搜索类目失败')
@@ -982,8 +1017,54 @@ export async function searchCategories(platform: Marketplace, query: string, sit
   return { results, cacheStatus: asRecord(data.cache_status) }
 }
 
-export async function fillCategoryAttributes(product: Product, platform: Marketplace, categoryId: string): Promise<ProductMutationResponse & { needReview: unknown[] }> {
-  const response = await apiClient.post('/api/category-ai-fill', { product: toBackendProduct(product), platform, category_id: categoryId })
+export async function suggestCategories(product: Product, platform: Marketplace, site = ''): Promise<{ results: CategorySearchResult[]; cacheStatus: UnknownRecord; terms: string[] }> {
+  const response = await apiClient.post('/api/category-ai-suggest', { product: toBackendProduct(product), platform, site, limit: 5 })
+  const data = asRecord(response.data)
+  ensureOk(data, 'AI 建议类目失败')
+  const results = Array.isArray(data.suggestions)
+    ? data.suggestions.map((item) => {
+      const record = asRecord(item)
+      return {
+        id: getString(record, ['id', 'category_id']),
+        name: getString(record, ['name', 'title']),
+        path: getString(record, ['path', 'category_path'], getString(record, ['name', 'title'])),
+        raw: record,
+      }
+    })
+    : []
+  return { results, cacheStatus: asRecord(data.cache_status), terms: Array.isArray(data.terms) ? data.terms.map(String) : [] }
+}
+
+function categorySelectionToBackendRecord(category: CategorySelection | null): UnknownRecord | null {
+  if (!category) return null
+  return {
+    category_id: category.categoryId,
+    category_path: category.categoryPath,
+    path_original: category.categoryPath ? [category.categoryPath] : [],
+    attributes_cache: {
+      required: category.requiredAttributes.map((attr) => ({
+        id: attr.id,
+        name: attr.name,
+        required: attr.required,
+        options: attr.options || [],
+      })),
+      optional: category.optionalAttributes.map((attr) => ({
+        id: attr.id,
+        name: attr.name,
+        required: false,
+        options: attr.options || [],
+      })),
+    },
+  }
+}
+
+export async function fillCategoryAttributes(product: Product, platform: Marketplace, categoryId: string, category: CategorySelection | null = null): Promise<ProductMutationResponse & { needReview: unknown[] }> {
+  const response = await apiClient.post('/api/category-ai-fill', {
+    product: toBackendProduct(product),
+    platform,
+    category_id: categoryId,
+    category_record: categorySelectionToBackendRecord(category),
+  })
   const data = asRecord(response.data)
   ensureOk(data, 'AI 填充属性失败')
   const normalizedProduct = normalizeBackendProduct(data.product)
@@ -996,11 +1077,25 @@ export async function fillCategoryAttributes(product: Product, platform: Marketp
   }
 }
 
-export async function refreshCategoryCache(platform: Marketplace, site = 'MLM', maxCategories = 500): Promise<UnknownRecord> {
+export async function refreshCategoryCache(platform: Marketplace, site = '', maxCategories = 500): Promise<UnknownRecord> {
   const response = await apiClient.post('/api/category-cache/refresh', { platform, site, max_categories: maxCategories })
   const data = asRecord(response.data)
   ensureOk(data, '刷新类目缓存失败')
   return data
+}
+
+export async function startCategoryCacheRefresh(platform: Marketplace, site = '', maxCategories = 500): Promise<UnknownRecord> {
+  const response = await apiClient.post('/api/category-cache/refresh-job', { platform, site, max_categories: maxCategories })
+  const data = asRecord(response.data)
+  ensureOk(data, '启动类目缓存刷新失败')
+  return asRecord(data.job)
+}
+
+export async function fetchCategoryCacheRefreshJob(jobId: string): Promise<UnknownRecord> {
+  const response = await apiClient.get('/api/category-cache/refresh-status', { params: { job_id: jobId } })
+  const data = asRecord(response.data)
+  ensureOk(data, '读取类目刷新进度失败')
+  return asRecord(data.job)
 }
 
 export async function assignUpc(): Promise<ProductMutationResponse> {

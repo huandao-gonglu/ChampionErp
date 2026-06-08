@@ -17,6 +17,7 @@ import {
   deleteProducts as deleteProductsApi,
   fetchAiConfig,
   fetchBrowserDebugStatus,
+  fetchCategoryCacheRefreshJob,
   fetchCategoryAttrs,
   fetchMercadoLibreAuthChecklist,
   fetchProductsIndex,
@@ -37,7 +38,6 @@ import {
   previewPublishPayload,
   publishProductDirect,
   publishPrecheck,
-  refreshCategoryCache,
   refreshMercadoLibreToken,
   runCategoryPrecheck,
   runMercadoLibreRealAuthTest,
@@ -47,6 +47,8 @@ import {
   saveProduct as saveProductApi,
   saveStoreSettings,
   searchCategories,
+  startCategoryCacheRefresh,
+  suggestCategories,
   syncGeneratedImages,
   testAiChannel,
   testStoreAuth,
@@ -119,6 +121,10 @@ function readFileAsDataUrl(file: File): Promise<string> {
 function parseNumber(value: string | number): number {
   const parsed = typeof value === 'number' ? value : Number.parseFloat(value)
   return Number.isFinite(parsed) ? parsed : 0
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
 }
 
 export const useWorkflowStore = defineStore('workflow', () => {
@@ -852,6 +858,27 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
+  async function suggestCategoryByAi() {
+    if (!hasProductForPublish(product.value)) {
+      setError('请先从商品库选择要建议类目的商品。')
+      return
+    }
+    loading.value = true
+    setError('')
+    try {
+      const result = await suggestCategories(product.value, activeMarketplace.value)
+      categoryResults.value = result.results
+      categoryCacheStatus.value = result.cacheStatus
+      categoryQuery.value = result.terms.slice(0, 6).join(' / ')
+      addLog(`AI 类目建议完成：${result.results.length} 条候选。`)
+      if (!result.results.length) setError('没有找到合适类目，请先刷新官方类目缓存，或换关键词搜索。')
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : 'AI 建议类目失败')
+    } finally {
+      loading.value = false
+    }
+  }
+
   async function selectCategory(item: CategorySearchResult) {
     product.value.drafts[activeMarketplace.value].categoryId = item.id
     product.value.drafts[activeMarketplace.value].categoryPath = item.path || item.name
@@ -886,9 +913,15 @@ export const useWorkflowStore = defineStore('workflow', () => {
     loading.value = true
     setError('')
     try {
-      const result = await fillCategoryAttributes(product.value, activeMarketplace.value, categoryId)
+      if (!category.value || category.value.categoryId !== categoryId || category.value.platform !== activeMarketplace.value) {
+        category.value = await fetchCategoryAttrs(activeMarketplace.value, categoryId)
+      }
+      const before = { ...product.value.drafts[activeMarketplace.value].attributes }
+      const result = await fillCategoryAttributes(product.value, activeMarketplace.value, categoryId, category.value)
       product.value = result.product
-      addLog(`属性已填充，需要复核 ${result.needReview.length} 项。`)
+      const after = product.value.drafts[activeMarketplace.value].attributes
+      const filledCount = Object.keys(after).filter((key) => String(after[key] || '').trim() && String(before[key] || '').trim() !== String(after[key] || '').trim()).length
+      addLog(`属性已填充：新增/更新 ${filledCount} 项，需要复核 ${result.needReview.length} 项。`)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : 'AI 填充属性失败')
     } finally {
@@ -922,8 +955,25 @@ export const useWorkflowStore = defineStore('workflow', () => {
     loading.value = true
     setError('')
     try {
-      categoryCacheStatus.value = await refreshCategoryCache(activeMarketplace.value)
-      addLog('类目缓存刷新完成。')
+      let job = await startCategoryCacheRefresh(activeMarketplace.value)
+      categoryCacheStatus.value = job
+      addLog(`类目缓存刷新已启动：${job.job_id || job.jobId || ''}`)
+      const jobId = String(job.job_id || job.jobId || '')
+      for (let attempt = 0; jobId && attempt < 900; attempt += 1) {
+        if (['completed', 'failed'].includes(String(job.status || ''))) break
+        await wait(1000)
+        job = await fetchCategoryCacheRefreshJob(jobId)
+        categoryCacheStatus.value = job
+      }
+      if (String(job.status || '') === 'failed') {
+        throw new Error(String(job.error || '类目缓存刷新失败'))
+      }
+      const result = job.result && typeof job.result === 'object' ? job.result as Record<string, unknown> : {}
+      const cacheStatus = result.cache_status && typeof result.cache_status === 'object' ? result.cache_status as Record<string, unknown> : {}
+      const imported = job.imported ?? result.imported
+      const records = job.records ?? cacheStatus.records
+      const site = job.site ? ` / ${job.site}` : ''
+      addLog(`类目缓存刷新完成${site}：本次 ${imported ?? 0} 条，本地 ${records ?? '-'} 条。`)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '刷新类目缓存失败')
     } finally {
@@ -1310,6 +1360,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     translateImages,
     calculatePrice,
     searchCategory,
+    suggestCategoryByAi,
     selectCategory,
     loadCategoryAttributes,
     fillAttributesByAi,

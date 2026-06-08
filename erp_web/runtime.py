@@ -16,6 +16,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 import webbrowser
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler
@@ -189,6 +190,182 @@ def find_category_record(platform: str, category_id: str, site: str = "") -> dic
     _ensure_sqlite_category_cache(platform)
     record = erp_db.find_category_record(APP_DIR, platform, category_id, site=site)
     return record or _json_find_category_record(platform, category_id, site=site)
+
+
+_CATEGORY_AI_KEYWORD_MAP = {
+    "风扇": ["ventilador", "fan"],
+    "喷雾": ["niebla", "humidificador", "mist"],
+    "无叶": ["sin aspas", "bladeless"],
+    "耳机": ["audifonos", "auriculares", "headphones"],
+    "瓶": ["botella", "bottle"],
+    "水杯": ["vaso", "termo", "cup"],
+    "项链": ["collar", "necklace"],
+    "灯": ["lampara", "light"],
+    "手机壳": ["funda", "case"],
+}
+_CATEGORY_AI_STOPWORDS = {
+    "api", "stage", "collect", "product", "backend", "test", "manual", "imported",
+    "the", "and", "for", "with", "from", "para", "con", "producto", "de", "del",
+    "una", "uno", "los", "las", "por", "sin",
+}
+
+
+def _category_suggest_terms(product: dict[str, Any]) -> list[str]:
+    product = normalize_product_fields(product)
+    draft = _draft_for_platform(product, "mercadolibre")
+    source = product.get("source") if isinstance(product.get("source"), dict) else {}
+    chunks = [
+        product.get("name"),
+        product.get("category"),
+        product.get("brand"),
+        product.get("model"),
+        source.get("title"),
+        source.get("description"),
+        draft.get("title"),
+        draft.get("description"),
+        draft.get("brand"),
+        draft.get("model"),
+    ]
+    text = " ".join(str(item or "") for item in chunks).lower()
+    raw_terms = [
+        item.strip().lower()
+        for item in re.split(r"[\s,，/|;；:：()（）\\-]+", text)
+        if len(item.strip()) >= 2 and item.strip().lower() not in _CATEGORY_AI_STOPWORDS and not item.strip().isdigit()
+    ]
+    terms: list[str] = []
+    for term in raw_terms[:80]:
+        terms.append(term)
+        for key, mapped in _CATEGORY_AI_KEYWORD_MAP.items():
+            if key in term or key in text:
+                terms.extend(mapped)
+    return list(dict.fromkeys(item for item in terms if item))
+
+
+def _category_suggest_query(product: dict[str, Any]) -> str:
+    product = normalize_product_fields(product)
+    draft = _draft_for_platform(product, "mercadolibre")
+    source = product.get("source") if isinstance(product.get("source"), dict) else {}
+    for value in (
+        draft.get("title"),
+        source.get("title"),
+        product.get("name"),
+        product.get("category"),
+    ):
+        text = str(value or "").strip()
+        if text:
+            return text[:120]
+    return " ".join(_category_suggest_terms(product)[:8])
+
+
+def _mercadolibre_domain_discovery_suggestions(product: dict[str, Any], site: str, limit: int) -> list[dict[str, Any]]:
+    query = _category_suggest_query(product)
+    if not query:
+        return []
+    token = str((load_store_config().get("mercadolibre") or {}).get("access_token") or "").strip()
+    suggestions: list[dict[str, Any]] = []
+    sites = [str(site or "").strip().upper() or "CBT"]
+    if "MLM" not in sites:
+        sites.append("MLM")
+    for site_id in sites:
+        try:
+            data = http_json(
+                f"https://api.mercadolibre.com/sites/{urllib.parse.quote(site_id)}/domain_discovery/search?q={urllib.parse.quote(query)}&limit={max(1, min(8, limit))}",
+                token or None,
+            )
+        except Exception:
+            continue
+        for item in data if isinstance(data, list) else []:
+            if not isinstance(item, dict):
+                continue
+            category_id = str(item.get("category_id") or "").strip()
+            if not category_id:
+                continue
+            name = str(item.get("category_name") or item.get("domain_name") or category_id).strip()
+            name_l = name.lower()
+            score = 100 if site_id == sites[0] else 80
+            if any(token in name_l for token in ("fan", "fans", "ventilador", "ventiladores")):
+                score += 40
+            if any(token in name_l for token in ("warmer", "calentador")) and any(term in query.lower() for term in ("fan", "ventilador", "风扇")):
+                score -= 30
+            suggestions.append(
+                {
+                    "id": category_id,
+                    "category_id": category_id,
+                    "name": name,
+                    "path": name,
+                    "site": site_id,
+                    "score": score,
+                    "matched_terms": [query],
+                    "source": "mercadolibre_domain_discovery",
+                    "raw": item,
+                }
+            )
+    deduped: dict[str, dict[str, Any]] = {}
+    for item in suggestions:
+        deduped.setdefault(str(item.get("category_id") or ""), item)
+    return sorted(deduped.values(), key=lambda item: int(item.get("score") or 0), reverse=True)[:limit]
+
+
+def suggest_category_ids(product: dict[str, Any], platform: str = "mercadolibre", site: str = "", limit: int = 5) -> dict[str, Any]:
+    platform = str(platform or "mercadolibre").strip().lower()
+    site = str(site or load_store_config().get("mercadolibre", {}).get("site_id") or "").strip()
+    terms = _category_suggest_terms(product)
+    _ensure_sqlite_category_cache(platform)
+    records = erp_db.search_category_records(APP_DIR, platform, query="", site=site, limit=10000)
+    if not records and site:
+        records = erp_db.search_category_records(APP_DIR, platform, query="", site="", limit=10000)
+    live_suggestions = _mercadolibre_domain_discovery_suggestions(product, site, max(1, int(limit or 5))) if platform == "mercadolibre" else []
+    scored: list[tuple[int, dict[str, Any], list[str]]] = []
+    for record in records:
+        haystack = " ".join(
+            [
+                str(record.get("category_id") or ""),
+                str(record.get("name_original") or ""),
+                str(record.get("name_cn") or ""),
+                " ".join(map(str, record.get("path_original") or [])),
+                " ".join(map(str, record.get("path_cn") or [])),
+                " ".join(map(str, record.get("keywords") or [])),
+            ]
+        ).lower()
+        matched = [term for term in terms if term and term in haystack]
+        if not matched:
+            continue
+        score = sum(8 if " " in term else 3 for term in matched)
+        category_id = str(record.get("category_id") or "")
+        if category_id and category_id.lower() in haystack:
+            score += 1
+        if score >= 6:
+            scored.append((score, record, matched[:8]))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    suggestions = list(live_suggestions)
+    seen_ids = {str(item.get("category_id") or item.get("id") or "") for item in suggestions}
+    for score, record, matched in scored[: max(1, int(limit or 5))]:
+        category_id = str(record.get("category_id") or record.get("id") or "")
+        if category_id in seen_ids:
+            continue
+        suggestions.append(
+            {
+                "id": category_id,
+                "category_id": category_id,
+                "name": record.get("name_original") or record.get("name_cn") or record.get("category_id") or "",
+                "path": " / ".join(str(item) for item in (record.get("path_original") or record.get("path_cn") or []) if str(item).strip()) or str(record.get("name_original") or ""),
+                "site": record.get("site") or site,
+                "score": score,
+                "matched_terms": matched,
+                "raw": record,
+            }
+        )
+        seen_ids.add(category_id)
+        if len(suggestions) >= max(1, int(limit or 5)):
+            break
+    return {
+        "ok": True,
+        "platform": platform,
+        "site": site,
+        "terms": terms[:30],
+        "suggestions": suggestions,
+        "cache_status": category_cache_status(platform),
+    }
 
 
 def normalize_list(value: Any) -> list[str]:
@@ -2005,15 +2182,206 @@ def build_mercadolibre_category_cache(site: str = "MLM", max_categories: int = 5
     )
 
 
-def refresh_official_category_cache(platform: str, site: str = "MLM", max_categories: int = 500) -> dict[str, Any]:
-    return category_cache_runtime.refresh_official_category_cache(
+def _refresh_mercadolibre_access_token_for_category_cache(config: dict[str, Any]) -> str:
+    ml = config.setdefault("mercadolibre", {})
+    app_id = str(ml.get("app_id") or ml.get("client_id") or "").strip()
+    app_secret = _mercadolibre_app_secret(ml)
+    refresh_token = str(ml.get("refresh_token") or "").strip()
+    if not app_id or not app_secret or not refresh_token:
+        return ""
+    refreshed = publisher.refresh_mercadolibre_token(app_id, app_secret, refresh_token)
+    token = str(refreshed.get("access_token") or "").strip()
+    if not token:
+        return ""
+    ml["access_token"] = token
+    ml["refresh_token"] = str(refreshed.get("refresh_token") or refresh_token).strip()
+    ml.update(_store_auth_result_fields("mercadolibre", "测试成功", ml.get("shop_name") or token))
+    ml["auth_error_code"] = ""
+    ml["auth_error_message"] = ""
+    save_store_config(config)
+    return token
+
+
+def refresh_official_category_cache(
+    platform: str,
+    site: str = "",
+    max_categories: int = 500,
+    progress_callback: category_cache_runtime.ProgressCallback | None = None,
+) -> dict[str, Any]:
+    config = load_store_config()
+    ml = config.get("mercadolibre", {}) if isinstance(config.get("mercadolibre"), dict) else {}
+    resolved_site = str(site or ml.get("site_id") or "MLM").strip().upper() or "MLM"
+    result = category_cache_runtime.refresh_official_category_cache(
         APP_DIR,
         platform,
-        load_store_config(),
-        site=site,
+        config,
+        site=resolved_site,
         max_categories=max_categories,
         http_client=http_json,
+        progress_callback=progress_callback,
     )
+    if (
+        str(platform or "").strip().lower() == "mercadolibre"
+        and not result.get("ok")
+        and result.get("error_code") == "MERCADOLIBRE_CATEGORY_AUTH_REQUIRED"
+        and str(ml.get("refresh_token") or "").strip()
+    ):
+        try:
+            token = _refresh_mercadolibre_access_token_for_category_cache(config)
+        except Exception as exc:
+            token = ""
+            result["refresh_error"] = str(exc)
+        if token:
+            if progress_callback:
+                progress_callback({"stage": "token_refreshed", "site": resolved_site, "max_categories": max_categories})
+            result = category_cache_runtime.refresh_official_category_cache(
+                APP_DIR,
+                platform,
+                config,
+                site=resolved_site,
+                max_categories=max_categories,
+                http_client=http_json,
+                progress_callback=progress_callback,
+            )
+            if result.get("ok"):
+                result["token_refreshed"] = True
+    return result
+
+
+def _category_refresh_job_update(job_id: str, updates: dict[str, Any]) -> None:
+    with CATEGORY_REFRESH_LOCK:
+        job = CATEGORY_REFRESH_JOBS.setdefault(job_id, {})
+        job.update(updates)
+        job["updated_at"] = collect_time_iso()
+
+
+def _category_refresh_progress_percent(job: dict[str, Any]) -> int:
+    status = str(job.get("status") or "")
+    if status == "completed":
+        return 100
+    if status == "failed":
+        return int(job.get("progress") or 100)
+    max_categories = max(1, int(job.get("max_categories") or 500))
+    visited = max(0, int(job.get("visited") or 0))
+    return max(3, min(98, int(visited / max_categories * 100)))
+
+
+def _category_refresh_job_snapshot(job_id: str) -> dict[str, Any]:
+    with CATEGORY_REFRESH_LOCK:
+        job = deepcopy(CATEGORY_REFRESH_JOBS.get(job_id) or {})
+    if not job:
+        raise KeyError(job_id)
+    job["progress"] = _category_refresh_progress_percent(job)
+    return job
+
+
+def start_category_cache_refresh_job(platform: str, site: str = "", max_categories: int = 500) -> dict[str, Any]:
+    job_id = f"cat-{uuid.uuid4().hex[:12]}"
+    platform = str(platform or "mercadolibre").strip().lower()
+    max_categories = max(1, int(max_categories or 500))
+    _category_refresh_job_update(
+        job_id,
+        {
+            "ok": True,
+            "job_id": job_id,
+            "platform": platform,
+            "site": str(site or "").strip().upper(),
+            "max_categories": max_categories,
+            "status": "queued",
+            "stage": "queued",
+            "visited": 0,
+            "records": 0,
+            "queued": 0,
+            "errors_count": 0,
+            "started_at": collect_time_iso(),
+        },
+    )
+
+    def run() -> None:
+        partial_records: list[dict[str, Any]] = []
+        partial_imported = 0
+
+        def import_partial_records(force: bool = False) -> None:
+            nonlocal partial_records, partial_imported
+            if not partial_records or (not force and len(partial_records) < 25):
+                return
+            with CATEGORY_REFRESH_LOCK:
+                job_site = str(CATEGORY_REFRESH_JOBS.get(job_id, {}).get("site") or site or "").strip().upper()
+            cache = {
+                "platform": "mercadolibre",
+                "site": job_site or "MLM",
+                "updated_at": collect_time_iso(),
+                "records": list(partial_records),
+            }
+            imported = erp_db.import_category_cache(APP_DIR, cache)
+            partial_imported += imported
+            partial_records = []
+            _category_refresh_job_update(job_id, {"partial_imported": partial_imported})
+
+        def on_progress(progress: dict[str, Any]) -> None:
+            record = progress.get("record")
+            if isinstance(record, dict):
+                partial_records.append(record)
+                import_partial_records()
+            _category_refresh_job_update(
+                job_id,
+                {
+                    "status": "running",
+                    "stage": progress.get("stage") or "running",
+                    "site": progress.get("site") or "",
+                    "category_id": progress.get("category_id") or "",
+                    "visited": int(progress.get("visited") or 0),
+                    "records": int(progress.get("records") or 0),
+                    "queued": int(progress.get("queued") or 0),
+                    "max_categories": int(progress.get("max_categories") or max_categories),
+                    "errors_count": int(progress.get("errors") or 0),
+                },
+            )
+
+        try:
+            _category_refresh_job_update(job_id, {"status": "running", "stage": "starting"})
+            result = refresh_official_category_cache(platform, site=site, max_categories=max_categories, progress_callback=on_progress)
+            import_partial_records(force=True)
+            terminal_status = "completed" if result.get("ok") else "failed"
+            cache_status = result.get("cache_status") if isinstance(result.get("cache_status"), dict) else {}
+            _category_refresh_job_update(
+                job_id,
+                {
+                    "status": terminal_status,
+                    "stage": terminal_status,
+                    "ok": bool(result.get("ok")),
+                    "site": result.get("site") or "",
+                    "imported": int(result.get("imported") or 0),
+                    "visited": int(result.get("visited") or 0),
+                    "records": int(cache_status.get("records") or result.get("imported") or 0),
+                    "errors_count": len(result.get("errors") or []),
+                    "error": result.get("error") or "",
+                    "error_code": result.get("error_code") or "",
+                    "next_action": result.get("next_action") or "",
+                    "result": {key: value for key, value in result.items() if key != "cache"},
+                    "finished_at": collect_time_iso(),
+                },
+            )
+        except Exception as exc:
+            import_partial_records(force=True)
+            _category_refresh_job_update(
+                job_id,
+                {
+                    "status": "failed",
+                    "stage": "failed",
+                    "ok": False,
+                    "error": str(exc),
+                    "finished_at": collect_time_iso(),
+                },
+            )
+
+    thread = threading.Thread(target=run, name=f"category-refresh-{job_id}", daemon=True)
+    thread.start()
+    return _category_refresh_job_snapshot(job_id)
+
+
+def get_category_cache_refresh_job(job_id: str) -> dict[str, Any]:
+    return _category_refresh_job_snapshot(str(job_id or "").strip())
 
 
 def wait_for_cdp(port: int, timeout: int = 15) -> None:
@@ -4320,12 +4688,37 @@ def validate_mercadolibre_draft(product: dict[str, Any], config: dict[str, Any])
             errors.append(precheck_item("PACKAGE_DIMENSIONS_MISSING", f"package_dimensions.{field}", f"{field} 缺失", "error", "前往核价页或类目属性页补齐尺寸"))
     if not str(pkg.get("weight_kg") or "").strip():
         errors.append(precheck_item("WEIGHT_MISSING", "package_dimensions.weight_kg", "重量缺失", "error", "前往核价页或类目属性页补齐重量"))
-    if not str(pricing.get("suggested_price") or "").strip():
+    if not str(pricing.get("suggested_price") or "").strip() and not str(draft.get("price") or "").strip():
         errors.append(precheck_item("PRICING_NOT_APPLIED", "pricing", "尚未应用核价结果", "error", "前往核价页应用售价"))
-    need_review = [str(item) for item in draft.get("validation_errors") or [] if str(item).strip()]
+    elif not str(pricing.get("suggested_price") or "").strip():
+        warnings.append(precheck_item("PRICING_NOT_APPLIED", "pricing", "当前使用草稿售价，建议回核价页确认已应用最新核价结果", "warning", "前往核价页复核售价"))
+
+    def review_item_resolved(item: str) -> bool:
+        field = str(item or "").strip()
+        attr_id = field.split(".", 1)[-1] if field.startswith("attributes.") else field
+        package_map = {
+            "PACKAGE_LENGTH": "length_cm",
+            "PACKAGE_WIDTH": "width_cm",
+            "PACKAGE_HEIGHT": "height_cm",
+            "PACKAGE_WEIGHT": "weight_kg",
+        }
+        if attr_id in package_map and str(pkg.get(package_map[attr_id]) or "").strip():
+            return True
+        return bool(attr_id and str(attrs.get(attr_id) or "").strip())
+
+    need_review: list[str] = []
+    for item in draft.get("validation_errors") or []:
+        if isinstance(item, dict):
+            if str(item.get("code") or "") != "NEED_REVIEW_ATTRIBUTES":
+                continue
+            raw_field = str(item.get("field") or "").strip()
+        else:
+            raw_field = str(item or "").strip()
+        if raw_field and not review_item_resolved(raw_field):
+            need_review.append(raw_field)
     if need_review:
         errors.append(precheck_item("NEED_REVIEW_ATTRIBUTES", "attributes", f"仍有 {len(need_review)} 个属性待复核", "error", "前往类目属性页确认 need_review 字段"))
-    if not str(draft.get("upc") or draft.get("gtin") or draft.get("barcode") or "").strip():
+    if not str(draft.get("upc") or draft.get("gtin") or draft.get("barcode") or product.get("upc") or product.get("gtin") or product.get("barcode") or "").strip():
         allow_gtin_exemption = bool(draft.get("allow_gtin_exemption") or draft.get("gtin_exempt") or config.get("listing", {}).get("allow_gtin_exemption"))
         if allow_gtin_exemption:
             warnings.append(precheck_item("UPC_MISSING", "upc", "UPC / GTIN 为空，已按配置允许豁免", "warning", "确认 Mercado Libre 类目允许 EMPTY_GTIN_REASON"))
@@ -5163,6 +5556,8 @@ PUBLISHING_BUS = PublishingBus(
         "ozon": ProjectPublishingAdapter(),
     },
 )
+CATEGORY_REFRESH_JOBS: dict[str, dict[str, Any]] = {}
+CATEGORY_REFRESH_LOCK = threading.Lock()
 
 
 def publish_product(product: dict[str, Any], platform: str, config: dict[str, Any]) -> dict[str, Any]:

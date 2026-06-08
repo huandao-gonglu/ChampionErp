@@ -17,6 +17,15 @@ export function createEmptyDraft(language = ''): MarketplaceDraft {
     language,
     stock: '',
     sku: '',
+    upc: '',
+    packageDimensions: {
+      lengthCm: '',
+      widthCm: '',
+      heightCm: '',
+      weightKg: '',
+    },
+    saleTerms: [],
+    allowGtinExemption: false,
   }
 }
 

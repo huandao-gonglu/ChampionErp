@@ -649,6 +649,55 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
 
         self.with_temp_app(run)
 
+    def test_refresh_mercadolibre_category_cache_refreshes_token_once_after_auth_error(self) -> None:
+        def run(app_dir: Path) -> None:
+            erp_web_app.save_store_config(
+                {
+                    "mercadolibre": {
+                        "app_id": "123",
+                        "app_secret": "secret",
+                        "access_token": "expired-token",
+                        "refresh_token": "refresh-123",
+                        "site_id": "MLM",
+                    }
+                }
+            )
+            auth_error = urllib.error.HTTPError("https://api.mercadolibre.com/sites/MLM/categories", 401, "Unauthorized", {}, None)
+            responses = {
+                "https://api.mercadolibre.com/sites/MLM/categories": [{"id": "MLM1", "name": "Home"}],
+                "https://api.mercadolibre.com/categories/MLM1": {
+                    "id": "MLM1",
+                    "name": "Home",
+                    "path_from_root": [{"id": "MLM1", "name": "Home"}],
+                    "children_categories": [],
+                },
+                "https://api.mercadolibre.com/categories/MLM1/attributes": [],
+            }
+            calls: list[tuple[str, str | None]] = []
+
+            def fake_http_json(url: str, access_token: str | None = None):
+                calls.append((url, access_token))
+                if len(calls) == 1:
+                    raise auth_error
+                return responses[url]
+
+            with patch.object(erp_web_app, "http_json", side_effect=fake_http_json), patch.object(
+                erp_web_app.publisher,
+                "refresh_mercadolibre_token",
+                return_value={"access_token": "fresh-token", "refresh_token": "refresh-456"},
+            ):
+                result = erp_web_app.refresh_official_category_cache("mercadolibre", max_categories=20)
+
+            self.assertTrue(result["ok"])
+            self.assertTrue(result["token_refreshed"])
+            self.assertEqual(calls[0][1], "expired-token")
+            self.assertEqual(calls[1][1], "fresh-token")
+            saved = erp_web_app.load_store_config()["mercadolibre"]
+            self.assertEqual(saved["access_token"], "fresh-token")
+            self.assertEqual(saved["refresh_token"], "refresh-456")
+
+        self.with_temp_app(run)
+
     def test_exchange_mercadolibre_code_returns_category_refresh_next_action(self) -> None:
         def run(app_dir: Path) -> None:
             erp_web_app.save_store_config(

@@ -396,6 +396,7 @@ def _attribute_value_from_source(product: dict[str, Any], platform: str, attr: d
     attr_id = str(attr.get("id") or "").strip()
     attr_name = str(attr.get("name") or "").strip().lower()
     source_dims = source.get("dimensions") if isinstance(source.get("dimensions"), dict) else {}
+    draft_pkg = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
     source_material = str(source.get("material") or "").strip()
     source_package = normalize_list(source.get("package_contents"))
 
@@ -406,24 +407,47 @@ def _attribute_value_from_source(product: dict[str, Any], platform: str, attr: d
         return result(str(draft.get("brand") or product.get("brand") or source.get("brand") or "Generic").strip() or "Generic")
     if "model" in attr_id.lower() or "model" in attr_name:
         return result(str(draft.get("model") or product.get("model") or source.get("model") or "General").strip() or "General")
-    if any(token in attr_id.lower() or token in attr_name for token in ["package_length", "length", "longitud", "largo"]):
-        value = str(source_dims.get("length_cm") or "").strip()
+    if attr_id.upper() == "EMPTY_GTIN_REASON" or "empty gtin reason" in attr_name:
+        gtin_value = str(draft.get("upc") or product.get("upc") or source.get("upc") or source.get("gtin") or "").strip()
+        if gtin_value:
+            return result("", True)
+        if not draft.get("allow_gtin_exemption"):
+            return result("", False)
+        options = [str(option).strip() for option in (attr.get("options") if isinstance(attr.get("options"), list) else []) if str(option).strip()]
+        preferred = [
+            "Product exempt from GTIN",
+            "The product does not have a registered code",
+            "No registrado",
+            "Otro",
+        ]
+        for candidate in preferred:
+            for option in options:
+                if candidate.lower() in option.lower() or option.lower() in candidate.lower():
+                    return result(option, True)
+        return result(options[0] if options else "Product exempt from GTIN", True)
+    if attr_id.upper() in {"GTIN", "UPC", "UNIVERSAL_PRODUCT_CODE"} or attr_id.lower() in {"gtin", "upc"} or "universal product code" in attr_name:
+        value = str(draft.get("upc") or product.get("upc") or source.get("upc") or source.get("gtin") or "").strip()
         return result(value, bool(value))
-    if any(token in attr_id.lower() or token in attr_name for token in ["package_width", "width", "ancho"]):
-        value = str(source_dims.get("width_cm") or "").strip()
+    attr_id_upper = attr_id.upper()
+    is_package_attr = "PACKAGE" in attr_id_upper or "package" in attr_name
+    if is_package_attr and any(token in attr_id.lower() or token in attr_name for token in ["package_length", "length", "longitud", "largo"]):
+        value = str(draft_pkg.get("length_cm") or source_dims.get("length_cm") or "").strip()
         return result(value, bool(value))
-    if any(token in attr_id.lower() or token in attr_name for token in ["package_height", "height", "alto"]):
-        value = str(source_dims.get("height_cm") or "").strip()
+    if is_package_attr and any(token in attr_id.lower() or token in attr_name for token in ["package_width", "width", "ancho"]):
+        value = str(draft_pkg.get("width_cm") or source_dims.get("width_cm") or "").strip()
         return result(value, bool(value))
-    if any(token in attr_id.lower() or token in attr_name for token in ["package_weight", "weight", "peso"]):
-        value = str(source_dims.get("weight_kg") or source.get("weight_kg") or "").strip()
+    if is_package_attr and any(token in attr_id.lower() or token in attr_name for token in ["package_height", "height", "alto"]):
+        value = str(draft_pkg.get("height_cm") or source_dims.get("height_cm") or "").strip()
+        return result(value, bool(value))
+    if is_package_attr and any(token in attr_id.lower() or token in attr_name for token in ["package_weight", "weight", "peso"]):
+        value = str(draft_pkg.get("weight_kg") or source_dims.get("weight_kg") or source.get("weight_kg") or "").strip()
         return result(value, bool(value))
     if "material" in attr_id.lower() or "material" in attr_name or "材质" in attr_name:
         return result(source_material, bool(source_material))
-    if "package" in attr_id.lower() or "package" in attr_name or "包装" in attr_name:
+    if attr_id_upper in {"PACKAGE_CONTENTS", "PACKAGE_INCLUDES"} or "package contents" in attr_name or "包装清单" in attr_name:
         value = " / ".join(source_package)
         return result(value, bool(value))
-    if "title" in attr_id.lower() or "name" in attr_name:
+    if attr_id_upper in {"TITLE", "CATALOG_TITLE", "INVOICE_PRODUCT_NAME"} or attr_name in {"title", "catalog title", "invoice product name"}:
         value = str(source.get("title") or product.get("name") or "").strip()
         return result(value, bool(value))
     if "price" in attr_id.lower():
@@ -442,7 +466,8 @@ def _attribute_value_from_source(product: dict[str, Any], platform: str, attr: d
         source_text = " ".join([str(source.get("title") or ""), str(source.get("description") or ""), " ".join(normalize_list(source.get("bullets")))]).lower()
         for option in options:
             option_text = str(option or "").strip()
-            if option_text and option_text.lower() in source_text:
+            normalized_option = option_text.lower()
+            if len(normalized_option) >= 3 and normalized_option in source_text:
                 return result(option_text, True)
         return result("", False)
     return result("", False)
@@ -454,16 +479,41 @@ def build_ai_attribute_fill(product: dict[str, Any], platform: str, category_rec
     schema = _category_attribute_schema(category_record)
     attributes = deepcopy(draft.get("attributes") or {})
     need_review: list[str] = []
+    safe_auto_fill_ids = {
+        "BRAND",
+        "MODEL",
+        "GTIN",
+        "UPC",
+        "UNIVERSAL_PRODUCT_CODE",
+        "EMPTY_GTIN_REASON",
+        "PACKAGE_LENGTH",
+        "PACKAGE_WIDTH",
+        "PACKAGE_HEIGHT",
+        "PACKAGE_WEIGHT",
+        "SELLER_SKU",
+        "SKU",
+    }
     for attr in schema:
         attr_id = str(attr.get("id") or "").strip()
         if not attr_id:
             continue
+        gtin_value = str(draft.get("upc") or normalized.get("upc") or "").strip()
+        if attr_id.upper() == "EMPTY_GTIN_REASON" and gtin_value:
+            attributes.pop(attr_id, None)
+            continue
+        if attr_id.upper() in {"GTIN", "UPC", "UNIVERSAL_PRODUCT_CODE"} and not gtin_value and draft.get("allow_gtin_exemption"):
+            attributes.pop(attr_id, None)
+            continue
+        attr_required = bool(attr.get("required"))
+        can_auto_fill = attr_required or attr_id.upper() in safe_auto_fill_ids or attr_id in attributes
+        if not can_auto_fill:
+            continue
         value, confident = _attribute_value_from_source(normalized, platform, attr)
         if value:
             attributes[attr_id] = value
-        elif attr.get("required"):
+        elif attr_required:
             need_review.append(attr_id)
-        if not confident:
+        if attr_required and not confident:
             need_review.append(attr_id)
     if not attributes.get("BRAND"):
         attributes["BRAND"] = str(draft.get("brand") or normalized.get("brand") or normalized.get("source", {}).get("brand") or "Generic").strip() or "Generic"
@@ -519,11 +569,23 @@ def validate_category_precheck(product: dict[str, Any], platform: str, category_
         if not str(pkg.get(field) or "").strip():
             errors.append(f"package_dimensions.{field}")
     values = draft.get("attributes") if isinstance(draft.get("attributes"), dict) else {}
+    package_attr_values = {
+        "PACKAGE_LENGTH": str(pkg.get("length_cm") or "").strip(),
+        "PACKAGE_WIDTH": str(pkg.get("width_cm") or "").strip(),
+        "PACKAGE_HEIGHT": str(pkg.get("height_cm") or "").strip(),
+        "PACKAGE_WEIGHT": str(pkg.get("weight_kg") or "").strip(),
+    }
     for attr in _category_attribute_schema(category_record):
         if not attr.get("required"):
             continue
         attr_id = str(attr.get("id") or "").strip()
         if not attr_id:
+            continue
+        if attr_id.upper() == "EMPTY_GTIN_REASON" and str(draft.get("upc") or normalized.get("upc") or values.get("GTIN") or "").strip():
+            continue
+        if attr_id.upper() in {"GTIN", "UPC", "UNIVERSAL_PRODUCT_CODE"} and str(values.get("EMPTY_GTIN_REASON") or "").strip():
+            continue
+        if package_attr_values.get(attr_id):
             continue
         if not str(values.get(attr_id) or "").strip():
             errors.append(f"attributes.{attr_id}")

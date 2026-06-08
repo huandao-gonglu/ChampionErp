@@ -66,6 +66,15 @@ export interface MarketplaceDraft {
   language: string
   stock: string
   sku: string
+  upc: string
+  packageDimensions: {
+    lengthCm: string
+    widthCm: string
+    heightCm: string
+    weightKg: string
+  }
+  saleTerms: UnknownRecord[]
+  allowGtinExemption: boolean
 }
 
 export interface Product {
@@ -128,7 +137,8 @@ export interface CategorySelection {
   platform: Marketplace
   categoryId: string
   categoryPath: string
-  requiredAttributes: Array<{ id: string; name: string; required: boolean }>
+  requiredAttributes: Array<{ id: string; name: string; required: boolean; options?: string[] }>
+  optionalAttributes: Array<{ id: string; name: string; required: boolean; options?: string[] }>
 }
 
 export interface CategorySearchResult {
