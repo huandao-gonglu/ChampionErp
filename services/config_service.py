@@ -55,13 +55,13 @@ def ai_config_from_sources(app_dir: Path | str, app_config: dict[str, Any] | Non
     return {
         "text_ai": {
             "platform": text_provider,
-            "api_key": str(text_ai.get("api_key") or os.getenv("DEEPSEEK_API_KEY") or "").strip(),
+            "api_key": str(text_ai.get("api_key") if "api_key" in text_ai else os.getenv("DEEPSEEK_API_KEY") or "").strip(),
             "base_url": str(text_ai.get("base_url") or os.getenv("DEEPSEEK_BASE_URL") or "https://api.deepseek.com").strip(),
             "model": str(text_ai.get("model") or os.getenv("DEEPSEEK_MODEL") or "deepseek-chat").strip(),
         },
         "image_ai": {
             "platform": image_provider,
-            "api_key": str(image_ai.get("api_key") or os.getenv("OPENAI_API_KEY") or "").strip(),
+            "api_key": str(image_ai.get("api_key") if "api_key" in image_ai else os.getenv("OPENAI_API_KEY") or "").strip(),
             "base_url": str(image_ai.get("base_url") or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").strip(),
             "model": str(image_ai.get("model") or os.getenv("OPENAI_IMAGE_MODEL") or "gpt-image-1").strip(),
             "quality": str(image_ai.get("quality") or "medium").strip(),

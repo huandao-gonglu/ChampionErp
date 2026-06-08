@@ -202,11 +202,13 @@ def openai_image_provider(config: dict[str, Any], request: dict[str, Any]) -> li
     client = OpenAI(**kwargs)
 
     generated: list[dict[str, Any]] = []
+    has_local_source = False
     selected = [item for item in request.get("images") or [] if isinstance(item, dict)]
     for item in selected:
         source_path = _local_source_path(app_dir, item)
         if not source_path:
             continue
+        has_local_source = True
         source_id = str(item.get("id") or "").strip()
         try:
             with source_path.open("rb") as image_file:
@@ -225,6 +227,8 @@ def openai_image_provider(config: dict[str, Any], request: dict[str, Any]) -> li
 
     if generated:
         return generated
+    if not has_local_source:
+        return []
 
     source_notes = []
     for item in selected[:4]:
@@ -379,6 +383,19 @@ def translate_images(
         "app_dir": str(app_dir),
     }
     use_mock = os.environ.get("ERP_IMAGE_TRANSLATE_MOCK", "").strip().lower() in {"1", "true", "yes"}
+    if provider is None and not use_mock and not any(_local_source_path(app_dir, item) for item in selected):
+        message = "当前图片翻译服务需要本地源图片，请先采集下载或上传图片后再翻译。"
+        return {
+            "ok": False,
+            "message": message,
+            "error": message,
+            "prompt": prompt,
+            "imagePoolItems": [],
+            "selected_image_ids": request["image_ids"],
+            "language": target,
+            "target_language": target,
+            "provider": provider_name,
+        }
     provider_fn = provider or (_mock_provider if use_mock else openai_image_provider)
     generated = provider_fn(cfg, request)
     if not generated:
