@@ -9,6 +9,8 @@ from unittest.mock import patch
 
 import erp_db
 import erp_web_app
+from erp_web.http_handler import Handler
+from routes import image_routes
 from services import image_translate_service
 from tests.test_erp_db import sample_product
 
@@ -587,6 +589,105 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
 
         self.with_temp_app(run)
 
+    def test_mercadolibre_image_upload_failure_returns_compact_response(self) -> None:
+        def run(app_dir: Path) -> None:
+            first_image = app_dir / "first.jpg"
+            second_image = app_dir / "second.jpg"
+            first_image.write_bytes(b"not-a-real-jpeg")
+            second_image.write_bytes(b"also-not-a-real-jpeg")
+            product = sample_product("Upload failure item", "https://example.com/upload-failure")
+            product["source"]["image_pool"] = [
+                {
+                    "id": "img_1",
+                    "path": str(first_image),
+                    "origin": "local_upload",
+                    "platforms": ["mercadolibre"],
+                    "is_main": True,
+                    "selected": True,
+                    "order": 0,
+                },
+                {
+                    "id": "img_2",
+                    "path": str(second_image),
+                    "origin": "local_upload",
+                    "platforms": ["mercadolibre"],
+                    "is_main": False,
+                    "selected": True,
+                    "order": 1,
+                },
+            ]
+            ml_error = 'POST Mercado Libre picture upload failed: 400 {"message":"Error creating image. File not compatible with pictures engine","error":"bad_request","status":400,"cause":[]}'
+
+            with (
+                patch.object(erp_web_app, "ensure_mercadolibre_auth_ready", return_value={"ok": True, "token": "token"}),
+                patch.object(erp_web_app, "validate_mercadolibre_draft", return_value={"platform": "mercadolibre", "ok": True, "errors": [], "warnings": [], "checked_at": "2026-06-11T00:00:00"}),
+                patch.object(erp_web_app.publisher, "upload_mercadolibre_picture", side_effect=RuntimeError(ml_error)),
+            ):
+                result = erp_web_app.mercadolibre_real_publish(product, confirm=True)
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["error"], "图片上传失败，已禁止真实发布")
+            self.assertNotIn("product", result)
+            self.assertIn("product_id", result)
+            self.assertIn("productsIndex", result)
+            errors = result["precheck"]["errors"]
+            self.assertEqual(len(errors), 1)
+            self.assertEqual(errors[0]["code"], "IMAGE_UPLOAD_FAILED")
+            self.assertIn("不兼容 Mercado Libre 图片引擎", errors[0]["message"])
+            self.assertIn("共 2 次", errors[0]["message"])
+            self.assertNotIn('"cause"', errors[0]["message"])
+
+        self.with_temp_app(run)
+
+    def test_image_pool_delete_uses_current_saved_product_not_stale_request_body(self) -> None:
+        def run(app_dir: Path) -> None:
+            product = sample_product("Delete image current state", "https://example.com/delete-image-current")
+            product["source"]["image_pool"] = [
+                {
+                    "id": "remove_me",
+                    "url": "https://example.com/remove.jpg",
+                    "preview_url": "https://example.com/remove.jpg",
+                    "origin": "source",
+                    "platforms": ["mercadolibre"],
+                    "selected": True,
+                    "is_main": True,
+                    "order": 0,
+                },
+                {
+                    "id": "keep_me",
+                    "url": "https://example.com/keep.jpg",
+                    "preview_url": "https://example.com/keep.jpg",
+                    "origin": "source",
+                    "platforms": ["mercadolibre"],
+                    "selected": True,
+                    "is_main": False,
+                    "order": 1,
+                },
+            ]
+            saved = erp_web_app.save_product(product)
+            stale_product = {
+                "product_id": saved["product_id"],
+                "source": {
+                    "image_pool": [saved["source"]["image_pool"][0]],
+                },
+            }
+            captured: dict[str, object] = {}
+            class FakeHandler:
+                pass
+
+            handler = FakeHandler()
+            handler.read_body = lambda: {"product": stale_product, "action": "delete", "image_ids": ["remove_me"]}
+            handler.send_json = lambda data, status=200: captured.update({"data": data, "status": status})
+
+            image_routes.handle_post(handler, "/api/image-pool/action", erp_web_app)
+
+            self.assertEqual(captured["status"], 200)
+            loaded = erp_db.load_product_model(app_dir, saved["product_id"])
+            image_ids = [item["id"] for item in loaded["source"]["image_pool"]]
+            self.assertEqual(image_ids, ["keep_me"])
+
+        self.with_temp_app(run)
+
     def test_refresh_mercadolibre_category_cache_imports_official_tree_and_attributes(self) -> None:
         def run(app_dir: Path) -> None:
             responses = {
@@ -797,6 +898,38 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
         self.assertIn("App ID", checklist["copy_text"])
         self.assertIn("下一步", checklist["copy_text"])
         self.assertIn("Client Secret", checklist["next_action"])
+
+    def test_mercadolibre_ssl_eof_error_returns_network_guidance(self) -> None:
+        message = "<urlopen error [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1081)>"
+
+        code = erp_web_app._mercadolibre_test_error_code(message)
+        explanation = erp_web_app.explain_mercadolibre_auth_error(code, message)
+
+        self.assertEqual(code, "network_tls_failed")
+        self.assertEqual(explanation["code"], "network_tls_failed")
+        self.assertIn("网络连接失败", explanation["title"])
+        self.assertIn("代理", explanation["plain_message"])
+        self.assertIn("api.mercadolibre.com", explanation["next_action"])
+
+    def test_refresh_token_route_returns_auth_error_without_private_nameerror(self) -> None:
+        def run(app_dir: Path) -> None:
+            erp_web_app.save_store_config({"mercadolibre": {}})
+            captured: dict[str, object] = {}
+            handler = object.__new__(Handler)
+            handler.path = "/api/mercadolibre/refresh-token"
+            handler.read_body = lambda: {"app_id": "", "client_secret": "", "refresh_token": ""}
+            handler.send_json = lambda data, status=200: captured.update({"data": data, "status": status})
+
+            Handler.do_POST(handler)
+
+            data = captured["data"]
+            self.assertEqual(captured["status"], 400)
+            self.assertIsInstance(data, dict)
+            self.assertFalse(data["ok"])
+            self.assertIn("Refresh Token", data["error"])
+            self.assertNotIn("_mercadolibre_test_error_code", data["error"])
+
+        self.with_temp_app(run)
 
 
 if __name__ == "__main__":

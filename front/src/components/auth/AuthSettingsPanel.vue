@@ -2,6 +2,8 @@
 import { computed, reactive, ref, watch } from 'vue'
 import type { AuthResult, Marketplace, MercadoLibreAuthChecklist, MercadoLibreTestMode, UnknownRecord } from '@/types/workflow'
 
+const DEFAULT_ML_REDIRECT_URI = 'https://example.com/callback'
+
 const props = defineProps<{
   appConfig: UnknownRecord
   aiConfig: UnknownRecord
@@ -42,7 +44,7 @@ const form = reactive({
   exchangeRateCacheTtlSeconds: '3600',
   mlAppId: '',
   mlClientSecret: '',
-  mlRedirectUri: 'https://example.com/callback',
+  mlRedirectUri: DEFAULT_ML_REDIRECT_URI,
   mlCode: '',
   mlCategoryId: '',
   wbContentToken: '',
@@ -54,7 +56,7 @@ const form = reactive({
 const selectedStorePlatform = ref<Marketplace>('mercadolibre')
 
 const storePlatforms: Array<{ key: Marketplace; label: string; subtitle: string }> = [
-  { key: 'mercadolibre', label: 'Mercado Libre', subtitle: 'OAuth、授权链接、Token 检测' },
+  { key: 'mercadolibre', label: 'Mercado Libre', subtitle: 'OAuth、授权链接、店铺授权测试' },
   { key: 'wildberries', label: 'Wildberries', subtitle: 'Content / Prices API Token' },
   { key: 'ozon', label: 'Ozon', subtitle: 'Client ID + API Key' },
 ]
@@ -100,7 +102,7 @@ function fillFromProps() {
   form.exchangeRateCacheTtlSeconds = firstText(pricing.exchange_rate_cache_ttl_seconds, '3600')
   form.mlAppId = String(ml.app_id || '')
   form.mlClientSecret = String(ml.client_secret || ml.app_secret || '')
-  form.mlRedirectUri = String(ml.redirect_uri || 'https://example.com/callback')
+  form.mlRedirectUri = String(ml.redirect_uri || DEFAULT_ML_REDIRECT_URI)
   form.wbContentToken = String(wb.content_token || '')
   form.wbPricesToken = String(wb.prices_token || '')
   form.ozonClientId = String(ozon.client_id || '')
@@ -262,7 +264,7 @@ function copy(text: string) {
             <p class="mt-1 text-sm text-slate-300">{{ selectedStorePlatformMeta.subtitle }}</p>
           </div>
           <div v-if="hasStoreSummary" class="rounded-xl bg-slate-900/80 px-3 py-2 text-sm text-slate-100 ring-1 ring-slate-600">
-            <span class="font-semibold text-white">检测状态：</span>
+            <span class="font-semibold text-white">授权测试：</span>
             <span class="text-slate-100">{{ selectedStoreSummary.status || selectedStoreSummary.message || '已记录' }}</span>
           </div>
         </div>
@@ -279,7 +281,7 @@ function copy(text: string) {
             <button class="btn btn-outline py-1.5" :disabled="props.loading || !props.authLink" @click="emit('openMlLink', props.authLink)">打开授权链接</button>
             <button class="btn btn-outline py-1.5" :disabled="props.loading || !form.mlCode" @click="emit('exchangeMlCode', form.mlCode, { app_id: form.mlAppId, client_secret: form.mlClientSecret, redirect_uri: form.mlRedirectUri })">用 code 换 token</button>
             <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('refreshMlToken', { app_id: form.mlAppId, client_secret: form.mlClientSecret })">刷新 token</button>
-            <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('testAuth', 'mercadolibre')">检测店铺</button>
+            <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('testAuth', 'mercadolibre')">测试店铺授权</button>
             <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('realMlTest', 'user_info')">07D 用户信息</button>
             <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('realMlTest', 'category_attrs', form.mlCategoryId)">07D 类目属性</button>
             <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('realMlTest', 'payload_generate')">07D Payload</button>
@@ -326,7 +328,7 @@ function copy(text: string) {
         </template>
 
         <div v-if="hasSelectedStoreResult" class="mt-4 rounded-xl bg-slate-900/80 p-3 text-sm text-slate-100 ring-1 ring-slate-600">
-          <div class="font-semibold text-white">授权检测结果：{{ selectedStoreResultStatus }}</div>
+          <div class="font-semibold text-white">授权测试结果：{{ selectedStoreResultStatus }}</div>
           <div v-if="selectedStoreResultMessage" class="mt-1 text-slate-200">{{ selectedStoreResultMessage }}</div>
           <pre class="mt-2 max-h-52 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{{ JSON.stringify(selectedStoreResultDetails, null, 2) }}</pre>
         </div>

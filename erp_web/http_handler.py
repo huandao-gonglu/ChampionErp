@@ -332,7 +332,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"ok": True, **result})
                 except Exception as exc:
                     message = str(exc)
-                    code = _mercadolibre_test_error_code(message)
+                    code = app._mercadolibre_test_error_code(message)
                     append_ml_auth_test_log(
                         "exchange_code",
                         "failed",
@@ -340,7 +340,7 @@ class Handler(BaseHTTPRequestHandler):
                         {"ok": False, "error_code": code, "error_message": message},
                         code,
                         message,
-                        _auth_next_action("mercadolibre", "测试失败", code, message),
+                        app._auth_next_action("mercadolibre", "测试失败", code, message),
                     )
                     explanation = explain_mercadolibre_auth_error(code, message)
                     self.send_json({"ok": False, "error": message, "error_code": explanation["code"], "next_action": explanation["next_action"], "auth_explanation": explanation}, 400)
@@ -352,7 +352,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"ok": True, **result})
                 except Exception as exc:
                     message = str(exc)
-                    code = _mercadolibre_test_error_code(message)
+                    code = app._mercadolibre_test_error_code(message)
                     explanation = explain_mercadolibre_auth_error(code, message)
                     self.send_json({"ok": False, "error": message, "error_code": explanation["code"], "next_action": explanation["next_action"], "auth_explanation": explanation}, 400)
                 return
@@ -370,7 +370,7 @@ class Handler(BaseHTTPRequestHandler):
                     platform = str(body.get("platform") or "").strip().lower()
                     message = str(exc)
                     if platform == "mercadolibre":
-                        code = _mercadolibre_test_error_code(message)
+                        code = app._mercadolibre_test_error_code(message)
                         explanation = explain_mercadolibre_auth_error(code, message)
                         self.send_json({"ok": False, "error": message, "error_code": explanation["code"], "next_action": explanation["next_action"], "auth_explanation": explanation}, 400)
                     else:

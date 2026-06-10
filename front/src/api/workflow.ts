@@ -1149,27 +1149,27 @@ export async function buildMercadoLibreAuthLink(appId: string, redirectUri: stri
 }
 
 export async function refreshMercadoLibreToken(params: UnknownRecord = {}): Promise<AuthResult> {
-  const response = await apiClient.post('/api/mercadolibre/refresh-token', params)
+  const response = await apiClient.post('/api/mercadolibre/refresh-token', params, { validateStatus: () => true })
   return normalizeAuthResult(response.data)
 }
 
 export async function runMercadoLibreRealAuthTest(product: Product, mode: MercadoLibreTestMode, categoryId = ''): Promise<AuthResult> {
-  const response = await apiClient.post('/api/mercadolibre/real-auth-test', { product: toBackendProduct(product), mode, category_id: categoryId })
+  const response = await apiClient.post('/api/mercadolibre/real-auth-test', { product: toBackendProduct(product), mode, category_id: categoryId }, { validateStatus: () => true })
   return normalizeAuthResult(response.data)
 }
 
 export async function openAuthLink(url: string, browser = 'default'): Promise<AuthResult> {
-  const response = await apiClient.post('/api/open-auth-link', { url, browser })
+  const response = await apiClient.post('/api/open-auth-link', { url, browser }, { validateStatus: () => true })
   return normalizeAuthResult(response.data)
 }
 
 export async function exchangeMercadoLibreCode(codeOrUrl: string, params: UnknownRecord = {}): Promise<AuthResult> {
-  const response = await apiClient.post('/api/mercadolibre/exchange-code', { code_or_url: codeOrUrl, ...params })
+  const response = await apiClient.post('/api/mercadolibre/exchange-code', { code_or_url: codeOrUrl, ...params }, { validateStatus: () => true })
   return normalizeAuthResult(response.data)
 }
 
 export async function testStoreAuth(platform: Marketplace, scope = ''): Promise<AuthResult> {
-  const response = await apiClient.post('/api/test-store-auth', { platform, scope })
+  const response = await apiClient.post('/api/test-store-auth', { platform, scope }, { validateStatus: () => true })
   return normalizeAuthResult(response.data)
 }
 
@@ -1182,12 +1182,15 @@ export async function clearStoreAuth(platform: Marketplace): Promise<UnknownReco
 
 function normalizeAuthResult(value: unknown): AuthResult {
   const record = asRecord(value)
+  const explanation = asRecord(record.auth_explanation)
+  const explanationTitle = getString(explanation, ['title'])
+  const explanationMessage = getString(explanation, ['plain_message'])
   return {
     ok: record.ok !== false,
     message: getString(record, ['message', 'status'], record.ok === false ? '失败' : '成功'),
-    error: getString(record, ['error', 'error_message']),
-    errorCode: getString(record, ['error_code']),
-    nextAction: getString(record, ['next_action']),
+    error: explanationTitle || explanationMessage || getString(record, ['error', 'error_message']),
+    errorCode: getString(record, ['error_code'], getString(explanation, ['code'])),
+    nextAction: getString(record, ['next_action'], getString(explanation, ['next_action'])),
     raw: record,
   }
 }

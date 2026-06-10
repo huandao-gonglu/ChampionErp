@@ -348,7 +348,20 @@ def _upsert_drafts(conn: sqlite3.Connection, product_id: str, product: dict[str,
 
 
 def _upsert_media(conn: sqlite3.Connection, product_id: str, product: dict[str, Any], now: str) -> None:
-    for index, item in enumerate(_image_pool(product)):
+    pool = _image_pool(product)
+    asset_ids = [
+        str(item.get("id") or f"image_{index + 1}").strip() or f"image_{index + 1}"
+        for index, item in enumerate(pool)
+    ]
+    if asset_ids:
+        placeholders = ",".join("?" for _ in asset_ids)
+        conn.execute(
+            f"DELETE FROM media_assets WHERE product_id = ? AND asset_id NOT IN ({placeholders})",
+            (product_id, *asset_ids),
+        )
+    else:
+        conn.execute("DELETE FROM media_assets WHERE product_id = ?", (product_id,))
+    for index, item in enumerate(pool):
         asset_id = str(item.get("id") or f"image_{index + 1}").strip() or f"image_{index + 1}"
         width = _int_or_none(item.get("width"))
         height = _int_or_none(item.get("height"))

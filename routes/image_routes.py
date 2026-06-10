@@ -14,6 +14,16 @@ IMAGE_POST_PATHS = {
 }
 
 
+def request_product(body: dict[str, Any], app: Any) -> dict[str, Any]:
+    submitted = body.get("product") if isinstance(body.get("product"), dict) else {}
+    product_id = str(body.get("product_id") or submitted.get("product_id") or submitted.get("id") or "").strip()
+    if product_id:
+        current = app.load_product_from_index(product_id, "")
+        if current:
+            return app.normalize_product_fields(current)
+    return app.normalize_product_fields(submitted or app.load_product())
+
+
 def handle_post(handler: Any, path: str, app: Any) -> bool:
     if path not in IMAGE_POST_PATHS:
         return False
@@ -21,7 +31,7 @@ def handle_post(handler: Any, path: str, app: Any) -> bool:
     body = handler.read_body()
 
     if path == "/api/image-pool/upload":
-        product = app.normalize_product_fields(body.get("product") or app.load_product())
+        product = request_product(body, app)
         uploads = body.get("uploads") or []
         if isinstance(uploads, dict):
             uploads = [uploads]
@@ -61,7 +71,7 @@ def handle_post(handler: Any, path: str, app: Any) -> bool:
         return True
 
     if path == "/api/image-pool/action":
-        product = app.normalize_product_fields(body.get("product") or app.load_product())
+        product = request_product(body, app)
         if not str(product.get("product_id") or "").strip():
             product = app.save_product(product)
         source = product.get("source") if isinstance(product.get("source"), dict) else {}
@@ -83,7 +93,7 @@ def handle_post(handler: Any, path: str, app: Any) -> bool:
         return True
 
     if path == "/api/image-pool/sync-generated":
-        product = app.normalize_product_fields(body.get("product") or app.load_product())
+        product = request_product(body, app)
         merged = app.sync_generated_images_into_pool(product)
         saved = app.save_product(merged)
         handler.send_json(
@@ -98,7 +108,7 @@ def handle_post(handler: Any, path: str, app: Any) -> bool:
         return True
 
     if path == "/api/image-translate":
-        product = app.normalize_product_fields(body.get("product") or app.load_product())
+        product = request_product(body, app)
         if not str(product.get("product_id") or "").strip():
             product = app.save_product(product)
         image_ids = body.get("image_ids") if isinstance(body.get("image_ids"), list) else body.get("selected_image_ids") if isinstance(body.get("selected_image_ids"), list) else []

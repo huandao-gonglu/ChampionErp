@@ -947,8 +947,11 @@ def build_mercadolibre_payload(
     if not any(attr.get("id") == "VEHICLE_TYPE" for attr in attributes):
         attributes.append({"id": "VEHICLE_TYPE", "value_name": "Car/Truck"})
     if is_global_selling:
-        attributes = [attr for attr in attributes if str(attr.get("id") or "") != "CONDITION"]
-        attributes.append({"id": "ITEM_CONDITION", "value_name": str(settings.get("condition") or "new")})
+        attributes = [
+            attr
+            for attr in attributes
+            if str(attr.get("id") or "") not in {"CONDITION", "ITEM_CONDITION"}
+        ]
     deduped: dict[str, dict[str, Any]] = {}
     for attr in attributes:
         attr_id = str(attr.get("id") or "").strip()
@@ -1003,17 +1006,18 @@ def build_mercadolibre_payload(
         "buying_mode": "buy_it_now",
         "catalog_listing": False,
         "listing_type_id": settings.get("listing_type_id") or "gold_special",
-        "package_length": package_length,
-        "package_width": package_width,
-        "package_height": package_height,
-        "package_weight": package_weight,
+        "condition": settings.get("condition") or "new",
         "sites_to_sell": [site_entry],
         "attributes": attributes,
         "sale_terms": sale_terms,
         "description": {"plain_text": listing.get("description", "")},
     }
     if not is_global_selling:
-        payload["condition"] = settings.get("condition") or "new"
+        payload["package_length"] = package_length
+        payload["package_width"] = package_width
+        payload["package_height"] = package_height
+        payload["package_weight"] = package_weight
+    if pictures:
         payload["pictures"] = pictures
     return payload
 

@@ -787,6 +787,8 @@ def _auth_next_action(platform: str, status_label: str, error_code: str, error_m
         return "重新生成授权链接并重新授权"
     if "callback" in error_code_l or "callback" in error_message_l:
         return "确认回调地址可访问且已正确注册"
+    if "network" in error_code_l or "ssl" in error_message_l or "unexpected_eof" in error_message_l or "eof occurred" in error_message_l:
+        return "检查本机网络、代理或防火墙后重试 Mercado Libre 授权接口"
     if platform == "mercadolibre":
         return "重新发起授权并检查回调地址"
     if platform == "wildberries":
@@ -814,6 +816,8 @@ def explain_mercadolibre_auth_error(error_code: str = "", error_message: str = "
         normalized = "redirect_uri_mismatch"
     if "expired" in text and "token" in text:
         normalized = "token_expired"
+    if "ssl" in text or "unexpected_eof" in text or "eof occurred" in text or "urlopen error" in text:
+        normalized = "network_tls_failed"
     if normalized == "invalid_grant":
         return {
             "platform": "mercadolibre",
@@ -853,6 +857,14 @@ def explain_mercadolibre_auth_error(error_code: str = "", error_message: str = "
             "title": "App ID 或 Client Secret 不正确",
             "plain_message": "Mercado Libre 不认可当前应用信息，通常是 App ID、Client Secret 填错，或复制时多了空格。",
             "next_action": "回 Mercado Libre Developers 应用详情复制 App ID 和 Client Secret，保存后重新生成授权链接。",
+        }
+    if normalized in {"NETWORK_BLOCKED", "NETWORK_TIMEOUT", "network_tls_failed"}:
+        return {
+            "platform": "mercadolibre",
+            "code": normalized,
+            "title": "Mercado Libre 授权接口网络连接失败",
+            "plain_message": "ERP 已请求 Mercado Libre token 接口，但 HTTPS/TLS 连接在读取响应时被提前断开，常见原因是代理、VPN、公司网络 TLS 拦截、防火墙或临时网络抖动。",
+            "next_action": "确认当前电脑能稳定访问 https://api.mercadolibre.com，关闭会拦截 HTTPS 的代理/抓包工具后重试；如果必须走代理，请让 Python/系统网络也使用同一代理。",
         }
     return {
         "platform": "mercadolibre",
@@ -4560,6 +4572,68 @@ def precheck_item(code: str, field: str, message: str, severity: str = "error", 
     }
 
 
+def compact_precheck_items(items: list[Any]) -> list[dict[str, Any]]:
+    compacted: list[dict[str, Any]] = []
+    index_by_key: dict[tuple[str, str, str, str, str], int] = {}
+    counts: list[int] = []
+    for raw in items:
+        if not isinstance(raw, dict):
+            raw = precheck_item("", "", str(raw or ""))
+        item = precheck_item(
+            str(raw.get("code") or ""),
+            str(raw.get("field") or ""),
+            str(raw.get("message") or ""),
+            str(raw.get("severity") or "error"),
+            str(raw.get("next_action") or ""),
+        )
+        key = (item["code"], item["field"], item["message"], item["severity"], item["next_action"])
+        if key in index_by_key:
+            idx = index_by_key[key]
+            counts[idx] += 1
+            compacted[idx]["message"] = f"{key[2]}（共 {counts[idx]} 次）"
+            compacted[idx]["count"] = counts[idx]
+            continue
+        index_by_key[key] = len(compacted)
+        counts.append(1)
+        item["count"] = 1
+        compacted.append(item)
+    return compacted
+
+
+def compact_precheck(precheck: dict[str, Any]) -> dict[str, Any]:
+    errors = list(precheck.get("errors") or [])
+    warnings = list(precheck.get("warnings") or [])
+    compacted = dict(precheck)
+    compacted["errors"] = compact_precheck_items(errors)
+    compacted["warnings"] = compact_precheck_items(warnings)
+    compacted["error_count"] = sum(int(item.get("count") or 1) for item in compacted["errors"])
+    compacted["warning_count"] = sum(int(item.get("count") or 1) for item in compacted["warnings"])
+    return compacted
+
+
+def mercadolibre_picture_upload_error_message(exc: Exception) -> str:
+    raw = str(exc)
+    if "File not compatible with pictures engine" in raw:
+        return "Mercado Libre 图片上传失败：图片文件格式或内容不兼容 Mercado Libre 图片引擎"
+    if len(raw) > 240:
+        raw = raw[:237].rstrip() + "..."
+    return f"Mercado Libre 图片上传失败：{raw}"
+
+
+def compact_publish_failure_response(status: str, error: str, saved: dict[str, Any] | None = None, **extra: Any) -> dict[str, Any]:
+    response: dict[str, Any] = {"ok": False, "status": status, "error": error}
+    precheck = extra.pop("precheck", None)
+    if isinstance(precheck, dict):
+        response["precheck"] = compact_precheck(precheck)
+    if saved:
+        response["product_id"] = str(saved.get("product_id") or "")
+        response["productsIndex"] = load_products_index()
+    for key, value in extra.items():
+        if value not in (None, "", [], {}):
+            response[key] = value
+    return response
+
+
 def _draft_for_platform(product: dict[str, Any], platform: str) -> dict[str, Any]:
     drafts = product.get("drafts") if isinstance(product.get("drafts"), dict) else {}
     draft = drafts.get(platform) if isinstance(drafts, dict) else {}
@@ -4952,6 +5026,8 @@ def append_ml_publish_log(
 
 def _mercadolibre_test_error_code(message: str) -> str:
     text = str(message or "").lower()
+    if "ssl" in text or "unexpected_eof" in text or "eof occurred" in text:
+        return "network_tls_failed"
     if "winerror 10013" in text or "urlopen error" in text and "socket" in text:
         return "NETWORK_BLOCKED"
     if "timed out" in text or "timeout" in text:
@@ -5321,13 +5397,14 @@ def ensure_mercadolibre_pictures_uploaded(product: dict[str, Any], token: str) -
         except Exception as exc:
             item["upload_status"] = "failed"
             item["upload_error"] = str(exc)
-            errors.append(precheck_item("IMAGE_UPLOAD_FAILED", "images", f"Mercado Libre 图片上传失败：{exc}", "error", "检查图片文件后重试"))
+            errors.append(precheck_item("IMAGE_UPLOAD_FAILED", "images", mercadolibre_picture_upload_error_message(exc), "error", "检查图片文件格式/尺寸后重试"))
         updated_pool.append(item)
     source["image_pool"] = updated_pool
     normalized["source"] = source
     normalized.setdefault("drafts", {}).setdefault("mercadolibre", default_draft("mercadolibre"))["images"] = picture_refs
     normalized["source_image_urls"] = picture_refs
     saved = save_product(normalized)
+    errors = compact_precheck_items(errors)
     return {"ok": not errors, "product": saved, "picture_refs": picture_refs, "errors": errors}
 
 
@@ -5437,14 +5514,14 @@ def mercadolibre_real_publish(product: dict[str, Any], confirm: bool) -> dict[st
         updated = apply_precheck_to_product(product, "mercadolibre", precheck, status="not_ready")
         append_ml_publish_log(updated, "not_ready", started_at, {"precheck": precheck}, {"ok": False, "status": "not_ready"}, error["code"], error["message"], _field_error_map([error]), error["next_action"])
         saved = save_product(updated)
-        return {"ok": False, "status": "not_ready", "error": error["message"], "precheck": precheck, "product": saved}
+        return compact_publish_failure_response("not_ready", error["message"], saved, precheck=precheck, next_action=error["next_action"])
     precheck = validate_mercadolibre_draft(product, config)
     if not precheck.get("ok"):
         updated = apply_precheck_to_product(product, "mercadolibre", precheck, status="not_ready")
         first = (precheck.get("errors") or [{}])[0]
         append_ml_publish_log(updated, "not_ready", started_at, {"precheck": precheck}, {"ok": False, "status": "not_ready"}, str(first.get("code") or ""), "；".join(str(item.get("message") or "") for item in precheck.get("errors") or [] if isinstance(item, dict)), _field_error_map(list(precheck.get("errors") or []) + list(precheck.get("warnings") or [])), str(first.get("next_action") or ""))
         saved = save_product(updated)
-        return {"ok": False, "status": "not_ready", "error": "发布前预检未通过", "precheck": precheck, "product": saved}
+        return compact_publish_failure_response("not_ready", "发布前预检未通过", saved, precheck=precheck, next_action=str(first.get("next_action") or ""))
     upload = ensure_mercadolibre_pictures_uploaded(product, str(auth.get("token") or ""))
     product = upload.get("product") or product
     if not upload.get("ok"):
@@ -5453,7 +5530,7 @@ def mercadolibre_real_publish(product: dict[str, Any], confirm: bool) -> dict[st
         first = (precheck.get("errors") or [{}])[0]
         append_ml_publish_log(updated, "not_ready", started_at, {"precheck": precheck}, {"ok": False, "status": "image_upload_failed"}, str(first.get("code") or "IMAGE_UPLOAD_FAILED"), "；".join(str(item.get("message") or "") for item in precheck.get("errors") or [] if isinstance(item, dict)), _field_error_map(precheck.get("errors") or []), str(first.get("next_action") or ""))
         saved = save_product(updated)
-        return {"ok": False, "status": "not_ready", "error": "图片上传失败，已禁止真实发布", "precheck": precheck, "product": saved}
+        return compact_publish_failure_response("not_ready", "图片上传失败，已禁止真实发布", saved, precheck=precheck, next_action=str(first.get("next_action") or "前往图片池替换或重新上传图片"))
     payload = build_mercadolibre_payload_preview(product, config, upload.get("picture_refs") or [])
     payload_path = OUTPUT_DIR / "last_mercadolibre_payload.json"
     write_json(payload_path, _sanitize_for_log(payload))
@@ -5464,7 +5541,7 @@ def mercadolibre_real_publish(product: dict[str, Any], confirm: bool) -> dict[st
         updated = apply_precheck_to_product(product, "mercadolibre", precheck, status="not_ready")
         append_ml_publish_log(updated, "not_ready", started_at, payload, {"ok": False, "errors": payload_errors}, "PAYLOAD_INVALID", "，".join(payload_errors), {"payload": payload_errors}, "前往对应页面补齐字段")
         saved = save_product(updated)
-        return {"ok": False, "status": "not_ready", "error": "，".join(payload_errors), "payload": _sanitize_for_log(payload), "payload_path": str(payload_path), "product": saved}
+        return compact_publish_failure_response("not_ready", "，".join(payload_errors), saved, payload_path=str(payload_path), next_action="前往对应页面补齐字段")
     try:
         result = publisher.publish_mercadolibre(payload, str(auth.get("token") or ""))
         ok = isinstance(result, dict) and bool(result.get("id") or result.get("ok") or result.get("success"))
@@ -5483,7 +5560,7 @@ def mercadolibre_real_publish(product: dict[str, Any], confirm: bool) -> dict[st
         updated = apply_precheck_to_product(product, "mercadolibre", {"platform": "mercadolibre", "ok": False, "errors": errors, "warnings": [], "checked_at": collect_time_iso()}, status="real_publish_failed")
         append_ml_publish_log(updated, "real_publish_failed", started_at, payload, mapped, str(parsed.get("error") or "REAL_PUBLISH_FAILED"), mapped["summary"], mapped["field_errors"], "按字段提示修复后重试")
         saved = save_product(updated)
-        return {"ok": False, "status": "real_publish_failed", "error": mapped["summary"], "error_map": mapped, "payload": _sanitize_for_log(payload), "payload_path": str(payload_path), "product": saved}
+        return compact_publish_failure_response("real_publish_failed", mapped["summary"], saved, error_map=mapped, payload_path=str(payload_path), next_action="按字段提示修复后重试")
 
 
 def map_mercadolibre_publish_error(parsed: dict[str, Any]) -> dict[str, Any]:
