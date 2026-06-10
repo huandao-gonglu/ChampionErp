@@ -68,6 +68,7 @@ import type {
   Marketplace,
   MercadoLibreAuthChecklist,
   MercadoLibreTestMode,
+  PrecheckIssue,
   PricingInput,
   PricingResult,
   Product,
@@ -125,6 +126,22 @@ function parseNumber(value: string | number): number {
 
 function wait(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
+
+function precheckIssueFromRaw(value: unknown, fallbackSeverity: 'error' | 'warning'): PrecheckIssue {
+  const record = isRecord(value) ? value : {}
+  return {
+    code: String(record.code || ''),
+    field: String(record.field || ''),
+    message: String(record.message || value || ''),
+    severity: String(record.severity || fallbackSeverity) as PrecheckIssue['severity'],
+    nextAction: String(record.next_action || record.nextAction || ''),
+  }
+}
+
+function precheckMessages(items: unknown): string[] {
+  if (!Array.isArray(items)) return []
+  return items.map((item) => isRecord(item) ? String(item.message || item.code || '') : String(item || '')).filter(Boolean)
 }
 
 export const useWorkflowStore = defineStore('workflow', () => {
@@ -202,6 +219,25 @@ export const useWorkflowStore = defineStore('workflow', () => {
     return Math.round((done / workflowSteps.value.length) * 100)
   })
 
+  function restorePrecheckFromProduct() {
+    const previews = isRecord(product.value.raw.publish_preview) ? product.value.raw.publish_preview : {}
+    const raw = isRecord(previews[activeMarketplace.value]) ? previews[activeMarketplace.value] as UnknownRecord : null
+    if (!raw) {
+      precheck.value = null
+      return
+    }
+    const errorItems = Array.isArray(raw.errors) ? raw.errors.map((item) => precheckIssueFromRaw(item, 'error')) : []
+    const warningItems = Array.isArray(raw.warnings) ? raw.warnings.map((item) => precheckIssueFromRaw(item, 'warning')) : []
+    precheck.value = {
+      ok: raw.ok === true,
+      errors: precheckMessages(raw.errors),
+      warnings: precheckMessages(raw.warnings),
+      errorItems,
+      warningItems,
+      checkedAt: String(raw.checked_at || raw.checkedAt || ''),
+    }
+  }
+
   function addLog(message: string) {
     logs.value.unshift(`${new Date().toLocaleTimeString()} ${message}`)
   }
@@ -265,6 +301,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     try {
       const state = await fetchState()
       product.value = state.product
+      restorePrecheckFromProduct()
       productsIndex.value = state.productsIndex
       publishLogs.value = state.publishLogs
       appConfig.value = state.appConfig
@@ -503,6 +540,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     try {
       const result = await loadProductApi(item.productId, item.productFilePath)
       product.value = result.product
+      restorePrecheckFromProduct()
       if (result.productsIndex.length) productsIndex.value = result.productsIndex
       fillFormFromState(appConfig.value)
       syncCollectDiagnosticsFromProduct('已加载商品库商品。')
@@ -566,7 +604,11 @@ export const useWorkflowStore = defineStore('workflow', () => {
   }
 
   async function claimSelectedProducts() {
-    const ids = selectedProductIds.value.length ? selectedProductIds.value : product.value.productId ? [product.value.productId] : []
+    const ids = selectedProductIds.value.length
+      ? selectedProductIds.value
+      : product.value.productId
+        ? [product.value.productId]
+        : productsIndex.value.map((item) => item.productId).filter(Boolean)
     if (!ids.length) {
       setError('请先选择商品。')
       return
@@ -574,11 +616,33 @@ export const useWorkflowStore = defineStore('workflow', () => {
     loading.value = true
     setError('')
     try {
-      await claimProductsApi(ids, collectForm.value.selectedClaimPlatforms)
+      const platforms = collectForm.value.selectedClaimPlatforms.length ? collectForm.value.selectedClaimPlatforms : [activeMarketplace.value]
+      await claimProductsApi(ids, platforms)
       productsIndex.value = await fetchProductsIndex()
       addLog(`已认领 ${ids.length} 个商品到平台草稿。`)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '认领商品失败')
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function claimCurrentProduct() {
+    const id = product.value.productId
+    if (!id) {
+      setError('请先从商品库加载一个商品。')
+      return
+    }
+    loading.value = true
+    setError('')
+    try {
+      await claimProductsApi([id], [activeMarketplace.value])
+      const loaded = await loadProductApi(id, '')
+      product.value = loaded.product
+      productsIndex.value = await fetchProductsIndex()
+      addLog(`已推到 ${activeMarketplace.value} 平台草稿箱。`)
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : '推到平台草稿箱失败')
     } finally {
       loading.value = false
     }
@@ -1282,7 +1346,10 @@ export const useWorkflowStore = defineStore('workflow', () => {
   }
 
   function setMarketplace(value: Marketplace) {
-    if (marketplaces.includes(value)) activeMarketplace.value = value
+    if (marketplaces.includes(value)) {
+      activeMarketplace.value = value
+      restorePrecheckFromProduct()
+    }
   }
 
   return {
@@ -1345,6 +1412,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     toggleProductSelection,
     selectAllProducts,
     claimSelectedProducts,
+    claimCurrentProduct,
     generateCopyForSelectedProducts,
     enqueueSelectedProducts,
     uploadReferenceImages,

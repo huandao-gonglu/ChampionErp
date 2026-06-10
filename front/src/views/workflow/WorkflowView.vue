@@ -312,6 +312,7 @@ watch(
               @precheck="store.runPrecheck"
               @preview-payload="store.previewPayload"
               @publish="() => store.enqueuePublish()"
+              @claim-current="store.claimCurrentProduct"
               @load-product="store.loadProduct"
               @refresh-products="store.refreshProductsIndex"
             />

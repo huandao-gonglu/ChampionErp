@@ -509,6 +509,27 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
         self.assertFalse(pending_status["publish_queue_ready"])
         self.assertEqual(pending_status["publish_queue_platforms"], [])
 
+        precheck_only_product = sample_product("Queue precheck item", "https://example.com/queue-precheck")
+        precheck_only_product["drafts"]["mercadolibre"] = {
+            "enabled": True,
+            "title": "Manual title",
+            "description": "Manual description",
+            "images": ["https://example.com/source.jpg"],
+            "category_id": "MLM123",
+            "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
+            "price": "19.99",
+            "stock": "5",
+            "publish_status": "ready",
+        }
+        precheck_only_product["publish_preview"] = {
+            "mercadolibre": {"ok": True, "errors": [], "warnings": [], "checked_at": "2026-05-30T11:10:00"}
+        }
+        precheck_status = erp_web_app.product_index_status(precheck_only_product, "mercadolibre")
+
+        self.assertEqual(precheck_status["workflow_status"], "ready_to_publish")
+        self.assertTrue(precheck_status["publish_queue_ready"])
+        self.assertEqual(precheck_status["publish_queue_platforms"], ["mercadolibre"])
+
     def test_publish_bus_terminal_result_persists_product_and_log_once(self) -> None:
         def run(app_dir: Path) -> None:
             product = sample_product("Persist publish result", "https://example.com/publish-result")

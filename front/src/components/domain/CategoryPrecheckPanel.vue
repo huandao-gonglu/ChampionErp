@@ -29,6 +29,7 @@ const emit = defineEmits<{
   precheck: []
   previewPayload: []
   publish: []
+  claimCurrent: []
   loadProduct: [item: ProductIndexItem]
   refreshProducts: []
 }>()
@@ -65,7 +66,9 @@ const activeDraft = computed(() => {
 })
 const blockingIssues = computed(() => props.precheck?.errorItems || [])
 const warningIssues = computed(() => props.precheck?.warningItems || [])
+const canQueuePublish = computed(() => Boolean(hasCurrentProduct.value && (props.precheck?.ok || activeDraft.value.status === 'ready_to_publish')))
 const publishReadiness = computed(() => {
+  if (!props.precheck && activeDraft.value.status === 'ready_to_publish') return '已保存为校验通过，可以加入发布队列。'
   if (!props.precheck) return '点击上架预检后，这里会变成可处理清单。'
   if (props.precheck.ok) return '预检通过，可以加入发布队列。'
   return `还剩 ${blockingIssues.value.length} 个阻断项，先在本页补齐能直接处理的字段。`
@@ -194,6 +197,7 @@ watch(
           </select>
           <button class="btn btn-outline" :disabled="props.loading" @click="emit('refreshProducts')">刷新商品库</button>
           <button class="btn btn-primary" :disabled="props.loading || !selectedProduct" @click="loadSelectedProduct">加载商品</button>
+          <button class="btn btn-secondary" :disabled="props.loading || !hasCurrentProduct" @click="emit('claimCurrent')">推到平台草稿箱</button>
         </div>
       </div>
     </article>
@@ -369,7 +373,7 @@ watch(
           <div class="flex flex-wrap gap-2">
             <button class="btn btn-outline" :disabled="props.loading || !hasCurrentProduct" @click="emit('precheck')">上架预检</button>
             <button class="btn btn-outline" :disabled="props.loading || !hasCurrentProduct" @click="emit('previewPayload')">Payload 预览</button>
-            <button class="btn btn-primary" :disabled="props.loading || !hasCurrentProduct || !props.precheck?.ok" @click="emit('publish')">确认加入队列</button>
+            <button class="btn btn-primary" :disabled="props.loading || !canQueuePublish" @click="emit('publish')">确认加入队列</button>
           </div>
         </div>
         <ul v-if="props.precheck?.errorItems.length" class="mt-3 space-y-2 text-sm text-rose-700">

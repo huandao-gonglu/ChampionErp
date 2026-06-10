@@ -571,6 +571,8 @@ def draft_workflow_status(product: dict[str, Any], platform: str = "mercadolibre
         return "published"
     if not (draft.get("enabled") or draft.get("title") or draft.get("category_id") or draft.get("status")):
         return "collected"
+    if _draft_publish_fields_ready(draft) and _draft_precheck_ready(product, platform, draft):
+        return "ready_to_publish"
     if _draft_copy_ready(draft) and _draft_images_ready(product, platform, draft) and _draft_publish_fields_ready(draft) and _draft_precheck_ready(product, platform, draft):
         return "ready_to_publish"
     if _draft_copy_ready(draft) and _draft_images_ready(product, platform, draft):
