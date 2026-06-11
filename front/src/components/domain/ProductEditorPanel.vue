@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { Marketplace, Product } from '@/types/workflow'
 
 const props = defineProps<{
@@ -34,6 +34,17 @@ function listModel(getter: () => string[], setter: (value: string[]) => void) {
 const sellingPointsText = listModel(() => props.product.sellingPoints, (value) => { props.product.sellingPoints = value })
 const packageIncludesText = listModel(() => props.product.packageIncludes, (value) => { props.product.packageIncludes = value })
 const materialsText = listModel(() => props.product.materials, (value) => { props.product.materials = value })
+const aiCopyRequested = ref(false)
+const aiCopyGenerating = computed(() => aiCopyRequested.value && props.loading)
+
+function generateAiCopy() {
+  aiCopyRequested.value = true
+  emit('generateCopy')
+}
+
+watch(() => props.loading, (loading) => {
+  if (!loading) aiCopyRequested.value = false
+})
 </script>
 
 <template>
@@ -45,8 +56,24 @@ const materialsText = listModel(() => props.product.materials, (value) => { prop
       </div>
       <div class="flex flex-wrap gap-2">
         <button class="btn btn-primary" :disabled="props.loading" @click="emit('save')">保存商品</button>
-        <button class="btn btn-secondary" :disabled="props.loading" @click="emit('generateCopy')">生成 AI 文案</button>
+        <button class="btn btn-secondary" :disabled="props.loading" @click="generateAiCopy">
+          <span v-if="aiCopyGenerating" class="size-3 animate-spin rounded-full border-2 border-white/50 border-t-white"></span>
+          {{ aiCopyGenerating ? '正在生成' : '生成 AI 文案' }}
+        </button>
         <button class="btn btn-outline" :disabled="props.loading" @click="emit('assignUpc')">分配 UPC</button>
+      </div>
+    </div>
+
+    <div v-if="aiCopyGenerating" class="mt-4 rounded-2xl border border-dashed border-blue-200 bg-blue-50 p-4 text-sm text-blue-950">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p class="font-semibold">正在生成 AI 文案</p>
+          <p class="mt-1 text-blue-800">正在生成当前平台的标题、描述和卖点，请稍候。</p>
+        </div>
+        <span class="badge-info">生成中</span>
+      </div>
+      <div class="mt-3 h-2 overflow-hidden rounded-full bg-white">
+        <div class="h-full w-1/3 animate-pulse rounded-full bg-blue-500"></div>
       </div>
     </div>
 

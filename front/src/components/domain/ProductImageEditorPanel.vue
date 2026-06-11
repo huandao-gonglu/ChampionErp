@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import ImagePoolPanel from '@/components/domain/ImagePoolPanel.vue'
 import type { ImageAsset, Marketplace, Product } from '@/types/workflow'
 
@@ -38,6 +38,44 @@ const languageOptions = [
 ]
 
 const targetLanguage = ref(defaultLanguage(props.activeMarketplace))
+const imageAiAction = ref<'prompt' | 'sync' | 'translate' | ''>('')
+const imageAiStartedAt = ref(0)
+const imageAiNow = ref(0)
+const imageAiTargets = ref<Array<{ id: string; label: string }>>([])
+let imageAiTimer: ReturnType<typeof window.setInterval> | null = null
+const IMAGE_AI_ESTIMATED_MS_PER_IMAGE = 180_000
+const imageAiRunning = computed(() => Boolean(imageAiAction.value && props.loading))
+const imageAiTotal = computed(() => Math.max(1, imageAiTargets.value.length))
+const imageAiElapsedMs = computed(() => Math.max(0, imageAiNow.value - imageAiStartedAt.value))
+const imageAiCurrentIndex = computed(() => {
+  if (!imageAiRunning.value) return 0
+  return Math.min(imageAiTotal.value, Math.floor(imageAiElapsedMs.value / IMAGE_AI_ESTIMATED_MS_PER_IMAGE) + 1)
+})
+const imageAiCurrentTarget = computed(() => imageAiTargets.value[imageAiCurrentIndex.value - 1])
+const imageAiProgressPercent = computed(() => {
+  if (!imageAiRunning.value) return 0
+  const totalMs = imageAiTotal.value * IMAGE_AI_ESTIMATED_MS_PER_IMAGE
+  const percent = Math.round((imageAiElapsedMs.value / totalMs) * 100)
+  return Math.min(98, Math.max(1, percent))
+})
+const imageAiProgressTitle = computed(() => {
+  if (imageAiAction.value === 'prompt') return '正在生成生图任务包'
+  if (imageAiAction.value === 'sync') return '正在导入 ChatGPT 生成图'
+  if (imageAiAction.value === 'translate') return '正在 AI 翻译/重绘图片'
+  return 'AI 生图处理中'
+})
+const imageAiProgressDescription = computed(() => {
+  if (imageAiAction.value === 'sync') return '正在同步已生成图片到当前商品图片池。'
+  const target = imageAiCurrentTarget.value
+  if (target) return `正在处理第 ${imageAiCurrentIndex.value}/${imageAiTotal.value} 张：${target.label}`
+  if (imageAiAction.value === 'prompt') return '正在整理当前商品的生图任务包。'
+  if (imageAiAction.value === 'translate') return '正在处理图片翻译和重绘结果。'
+  return '正在处理 AI 图片任务。'
+})
+const imageAiProgressMeta = computed(() => {
+  if (imageAiAction.value === 'sync') return '正在同步已生成图片到当前商品图片池，请稍候。'
+  return `预计按单张最多 180 秒计算，当前进度 ${imageAiProgressPercent.value}%。`
+})
 
 function defaultLanguage(platform: Marketplace) {
   if (platform === 'mercadolibre') return 'Spanish (Mexico)'
@@ -56,13 +94,59 @@ function copyPrompt() {
   if (props.imagePrompt) void navigator.clipboard?.writeText(props.imagePrompt)
 }
 
+function selectedOrAllImageTargets() {
+  const selected = props.images.filter((image) => image.selected)
+  const images = selected.length ? selected : props.images
+  return images.map((image, index) => ({
+    id: image.id,
+    label: image.id || image.usage || `图片 ${index + 1}`,
+  }))
+}
+
+function startImageAiProgress(action: 'prompt' | 'sync' | 'translate', targets = selectedOrAllImageTargets()) {
+  imageAiAction.value = action
+  imageAiTargets.value = targets.length ? targets : [{ id: action, label: action === 'sync' ? '生成图导入' : '当前商品图片' }]
+  imageAiStartedAt.value = Date.now()
+  imageAiNow.value = imageAiStartedAt.value
+  if (imageAiTimer) window.clearInterval(imageAiTimer)
+  imageAiTimer = window.setInterval(() => {
+    imageAiNow.value = Date.now()
+  }, 1000)
+}
+
+function stopImageAiProgress() {
+  if (imageAiTimer) {
+    window.clearInterval(imageAiTimer)
+    imageAiTimer = null
+  }
+  imageAiAction.value = ''
+  imageAiTargets.value = []
+  imageAiStartedAt.value = 0
+  imageAiNow.value = 0
+}
+
 function translateSelectedImages() {
+  startImageAiProgress('translate')
   emit('translate', targetLanguage.value)
 }
 
 function generatePrompt() {
+  startImageAiProgress('prompt')
   emit('generatePrompt', targetLanguage.value)
 }
+
+function syncGeneratedImages() {
+  startImageAiProgress('sync', [{ id: 'sync-generated', label: 'ChatGPT 生成图' }])
+  emit('syncGenerated')
+}
+
+watch(() => props.loading, (loading) => {
+  if (!loading) stopImageAiProgress()
+})
+
+onBeforeUnmount(() => {
+  stopImageAiProgress()
+})
 </script>
 
 <template>
@@ -97,10 +181,33 @@ function generatePrompt() {
           <h3 class="font-semibold text-slate-950">AI 生图</h3>
         </div>
         <div class="flex flex-wrap gap-2">
-          <button class="btn btn-secondary" :disabled="props.loading" @click="generatePrompt">生成生图提示词</button>
+          <button class="btn btn-secondary" :disabled="props.loading" @click="generatePrompt">
+            <span v-if="imageAiRunning && imageAiAction === 'prompt'" class="size-3 animate-spin rounded-full border-2 border-white/50 border-t-white"></span>
+            {{ imageAiRunning && imageAiAction === 'prompt' ? '正在生成' : '生成生图提示词' }}
+          </button>
           <button class="btn btn-outline" :disabled="!props.imagePrompt" @click="copyPrompt">复制提示词</button>
-          <button class="btn btn-secondary" :disabled="props.loading" @click="emit('syncGenerated')">导入 ChatGPT 生成图</button>
-          <button class="btn btn-primary" :disabled="props.loading || !props.images.length" @click="translateSelectedImages">AI 翻译/重绘选中图</button>
+          <button class="btn btn-secondary" :disabled="props.loading" @click="syncGeneratedImages">
+            <span v-if="imageAiRunning && imageAiAction === 'sync'" class="size-3 animate-spin rounded-full border-2 border-white/50 border-t-white"></span>
+            {{ imageAiRunning && imageAiAction === 'sync' ? '正在导入' : '导入 ChatGPT 生成图' }}
+          </button>
+          <button class="btn btn-primary" :disabled="props.loading || !props.images.length" @click="translateSelectedImages">
+            <span v-if="imageAiRunning && imageAiAction === 'translate'" class="size-3 animate-spin rounded-full border-2 border-white/50 border-t-white"></span>
+            {{ imageAiRunning && imageAiAction === 'translate' ? '正在处理' : 'AI 翻译/重绘选中图' }}
+          </button>
+        </div>
+      </div>
+
+      <div v-if="imageAiRunning" class="mt-4 rounded-2xl border border-dashed border-blue-200 bg-blue-50 p-4 text-sm text-blue-950">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p class="font-semibold">{{ imageAiProgressTitle }}</p>
+            <p class="mt-1 text-blue-800">{{ imageAiProgressDescription }}</p>
+            <p class="mt-1 text-xs text-blue-700">{{ imageAiProgressMeta }}</p>
+          </div>
+          <span class="badge-info">{{ imageAiProgressPercent }}%</span>
+        </div>
+        <div class="mt-3 h-2 overflow-hidden rounded-full bg-white">
+          <div class="h-full rounded-full bg-blue-500 transition-all duration-500" :style="{ width: `${imageAiProgressPercent}%` }"></div>
         </div>
       </div>
 
@@ -123,7 +230,7 @@ function generatePrompt() {
       @save="emit('save')"
       @set-main="emit('setMain', $event)"
       @delete="emit('delete', $event)"
-      @sync-generated="emit('syncGenerated')"
+      @sync-generated="syncGeneratedImages"
     />
   </div>
 </template>

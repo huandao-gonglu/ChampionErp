@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { calculatePrice, publishPrecheck } from '@/api/workflow'
+import { calculatePrice, imageTranslate, publishPrecheck } from '@/api/workflow'
 import { apiClient } from '@/api/client'
 import { createEmptyProduct } from '@/constants/initialState'
 
@@ -143,5 +143,43 @@ describe('publishPrecheck API mapping', () => {
       message: '价格缺失或无效',
       nextAction: '前往核价页计算并应用售价',
     })
+  })
+})
+
+describe('imageTranslate API timeout', () => {
+  it('scales the request timeout by selected image count', async () => {
+    const product = createEmptyProduct()
+    product.source.imagePool = [
+      { id: 'img-1', url: '', path: '', previewUrl: '', origin: 'upload', usage: 'main', platforms: ['mercadolibre'], isMain: true, selected: true, status: 'ready', width: 1000, height: 1000 },
+      { id: 'img-2', url: '', path: '', previewUrl: '', origin: 'upload', usage: 'detail', platforms: ['mercadolibre'], isMain: false, selected: true, status: 'ready', width: 1000, height: 1000 },
+      { id: 'img-3', url: '', path: '', previewUrl: '', origin: 'upload', usage: 'detail', platforms: ['mercadolibre'], isMain: false, selected: false, status: 'ready', width: 1000, height: 1000 },
+    ]
+    vi.mocked(apiClient.post).mockResolvedValueOnce({
+      data: { ok: true, product: { source: { image_pool: [] } }, productsIndex: [] },
+    })
+
+    await imageTranslate(product, 'mercadolibre', 'Spanish (Mexico)')
+
+    expect(apiClient.post).toHaveBeenCalledWith('/api/image-translate', expect.objectContaining({
+      image_ids: ['img-1', 'img-2'],
+    }), { timeout: 60000 })
+  })
+
+  it('uses the whole image pool count when no images are selected', async () => {
+    const product = createEmptyProduct()
+    product.source.imagePool = [
+      { id: 'img-1', url: '', path: '', previewUrl: '', origin: 'upload', usage: 'main', platforms: ['mercadolibre'], isMain: true, selected: false, status: 'ready', width: 1000, height: 1000 },
+      { id: 'img-2', url: '', path: '', previewUrl: '', origin: 'upload', usage: 'detail', platforms: ['mercadolibre'], isMain: false, selected: false, status: 'ready', width: 1000, height: 1000 },
+      { id: 'img-3', url: '', path: '', previewUrl: '', origin: 'upload', usage: 'detail', platforms: ['mercadolibre'], isMain: false, selected: false, status: 'ready', width: 1000, height: 1000 },
+    ]
+    vi.mocked(apiClient.post).mockResolvedValueOnce({
+      data: { ok: true, product: { source: { image_pool: [] } }, productsIndex: [] },
+    })
+
+    await imageTranslate(product, 'mercadolibre', 'Spanish (Mexico)')
+
+    expect(apiClient.post).toHaveBeenCalledWith('/api/image-translate', expect.objectContaining({
+      image_ids: [],
+    }), { timeout: 90000 })
   })
 })

@@ -34,14 +34,18 @@ export ERP_PORT="${ERP_PORT:-5050}"
 export ERP_TEST_BASE_URL="${ERP_TEST_BASE_URL:-http://127.0.0.1:${ERP_PORT}}"
 
 # Backend API tests mutate runtime files in the project root. Preserve them so
-# local test runs do not dirty product data or the checked-in SQLite snapshot.
+# local test runs do not dirty product data, local config, or the checked-in
+# SQLite snapshot.
 BACKUP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/champion-erp-test-backup.XXXXXX")"
-RUNTIME_FILES=("erp.sqlite3")
+RUNTIME_FILES=("erp.sqlite3" "config/store_config.json" "config/app_config.json")
 restore_runtime_files() {
   local exit_code=$?
   for file in "${RUNTIME_FILES[@]}"; do
+    mkdir -p "$ROOT_DIR/$(dirname "$file")"
     if [ -f "$BACKUP_DIR/$file" ]; then
       cp "$BACKUP_DIR/$file" "$ROOT_DIR/$file"
+    elif [ -f "$BACKUP_DIR/$file.__missing__" ]; then
+      rm -f "$ROOT_DIR/$file"
     fi
   done
   rm -rf "$BACKUP_DIR"
@@ -50,8 +54,11 @@ restore_runtime_files() {
 trap restore_runtime_files EXIT
 
 for file in "${RUNTIME_FILES[@]}"; do
+  mkdir -p "$BACKUP_DIR/$(dirname "$file")"
   if [ -f "$ROOT_DIR/$file" ]; then
     cp "$ROOT_DIR/$file" "$BACKUP_DIR/$file"
+  else
+    : > "$BACKUP_DIR/$file.__missing__"
   fi
 done
 

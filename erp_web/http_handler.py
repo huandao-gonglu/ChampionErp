@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import urllib.parse
@@ -13,10 +14,17 @@ from . import runtime as app
 from .runtime import *  # noqa: F403 - route methods intentionally mirror runtime globals.
 
 APP_MODULE = app
+logger = logging.getLogger(__name__)
+access_logger = logging.getLogger("erp.access")
+
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
-        return
+        try:
+            message = format % args
+        except TypeError:
+            message = format
+        access_logger.info("%s - %s", self.address_string(), message)
 
     def send_json(self, data: Any, status: int = 200) -> None:
         raw = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -633,6 +641,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"ok": False, "error": str(exc)}, 400)
                 return
         except Exception as exc:
+            logger.exception("Unhandled POST request failed: %s", self.path)
             self.send_json({"ok": False, "error": str(exc)}, 500)
             return
         self.send_response(404)
