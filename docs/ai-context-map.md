@@ -19,6 +19,7 @@ This map exists to reduce context scanning for humans and coding agents.
 - Category cache, search, suggestion, and precheck APIs: `erp_web/http_route_units/category_routes.py`
 - Product save/load/delete and pricing APIs: `erp_web/http_route_units/product_routes.py`
 - Publish precheck, payload preview, real publish, and queue APIs: `erp_web/http_route_units/publish_routes.py`
+- Each route unit declares `HANDLED_PATHS` and a handler map (`GET_HANDLERS` or `POST_HANDLERS`) so a path can be resolved without reading the whole route file.
 - Static assets and auth helper pages: `routes/static_routes.py`
 - Image upload and image pool API: `routes/image_routes.py`
 - Product collection workflows: `erp_web/runtime_units/source_collect_workflows.py`
