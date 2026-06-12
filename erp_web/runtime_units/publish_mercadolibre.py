@@ -255,7 +255,7 @@ def mercadolibre_remote_items(status: str = "active", page: int = 1, per_page: i
     current_page = max(1, int(page or 1))
     offset = (current_page - 1) * page_size
 
-    query_params: dict[str, Any] = {"limit": page_size, "offset": offset}
+    query_params: dict[str, Any] = {"limit": page_size, "offset": offset, "orders": "start_time_desc"}
     if wanted != "all":
         query_params["status"] = wanted
     query = urllib.parse.urlencode(query_params)
@@ -284,6 +284,8 @@ def mercadolibre_remote_items(status: str = "active", page: int = 1, per_page: i
             body = entry.get("body") if isinstance(entry, dict) else None
             if isinstance(body, dict):
                 items.append(_mercadolibre_item_summary(body))
+    item_order = {item_id: index for index, item_id in enumerate(item_ids)}
+    items.sort(key=lambda item: item_order.get(str(item.get("id") or ""), len(item_order)))
 
     return {
         "ok": True,
@@ -315,30 +317,63 @@ def mercadolibre_close_remote_item(item_id: str) -> dict[str, Any]:
     if not auth.get("ok"):
         return {"ok": False, "error": auth.get("message") or "Mercado Libre 授权不可用", "error_code": auth.get("error_code") or "AUTH_INVALID", "next_action": auth.get("next_action") or "请先完成授权测试"}
     token = str(auth.get("token") or "").strip()
-    if item_id.upper().startswith("CBT"):
-        store = config.get("mercadolibre", {}) if isinstance(config.get("mercadolibre"), dict) else {}
-        target_site_id = str(store.get("site_id") or "MLM").strip().upper() or "MLM"
-        payload = {"site_id": target_site_id, "logistic_type": "remote", "deleted": True}
-        result = publisher.request_json("PUT", f"https://api.mercadolibre.com/global/items/{urllib.parse.quote(item_id)}", token, payload)
+    def close_regular_item() -> dict[str, Any]:
+        result = publisher.request_json("PUT", f"https://api.mercadolibre.com/items/{urllib.parse.quote(item_id)}", token, {"status": "closed"})
+        item = result if isinstance(result, dict) else {}
         return {
             "ok": True,
             "platform": "mercadolibre",
             "item_id": item_id,
-            "status": "closed",
-            "raw": _sanitize_for_log(result if isinstance(result, dict) else {"response": result}),
-            "message": f"{item_id} 已提交 Global Selling {target_site_id} 删除。",
+            "status": str(item.get("status") or "closed"),
+            "item": _mercadolibre_item_summary(item) if item else {},
+            "raw": _sanitize_for_log(item),
+            "message": f"{item_id} 已提交结束发布。",
         }
-    result = publisher.request_json("PUT", f"https://api.mercadolibre.com/items/{urllib.parse.quote(item_id)}", token, {"status": "closed"})
-    item = result if isinstance(result, dict) else {}
-    return {
-        "ok": True,
-        "platform": "mercadolibre",
-        "item_id": item_id,
-        "status": str(item.get("status") or "closed"),
-        "item": _mercadolibre_item_summary(item) if item else {},
-        "raw": _sanitize_for_log(item),
-        "message": f"{item_id} 已提交结束发布。",
-    }
+
+    if item_id.upper().startswith("CBT"):
+        payload = {"status": "paused"}
+        item = publisher.request_json("GET", f"https://api.mercadolibre.com/items/{urllib.parse.quote(item_id)}", token)
+        item = item if isinstance(item, dict) else {}
+        status = str(item.get("status") or "").strip().lower()
+        if status in {"paused", "closed"}:
+            return {
+                "ok": True,
+                "platform": "mercadolibre",
+                "item_id": item_id,
+                "status": status,
+                "item": _mercadolibre_item_summary(item) if item else {},
+                "raw": _sanitize_for_log({"item": item}),
+                "message": f"{item_id} 已处于下架状态。",
+            }
+        try:
+            result = publisher.request_json("PUT", f"https://api.mercadolibre.com/global/items/{urllib.parse.quote(item_id)}", token, payload)
+        except Exception as exc:
+            if "not a cbt item" in str(exc).lower():
+                return close_regular_item()
+            raise
+        item = publisher.request_json("GET", f"https://api.mercadolibre.com/items/{urllib.parse.quote(item_id)}", token)
+        item = item if isinstance(item, dict) else {}
+        status = str(item.get("status") or "").strip().lower()
+        if status not in {"paused", "closed"}:
+            return {
+                "ok": False,
+                "platform": "mercadolibre",
+                "item_id": item_id,
+                "status": status or "unknown",
+                "error": f"{item_id} 已调用 Global Selling 下架接口，但 Mercado Libre 仍返回状态 {status or 'unknown'}。",
+                "error_code": "MERCADOLIBRE_STATUS_UNCHANGED",
+                "raw": _sanitize_for_log({"update": result if isinstance(result, dict) else {"response": result}, "item": item}),
+            }
+        return {
+            "ok": True,
+            "platform": "mercadolibre",
+            "item_id": item_id,
+            "status": status,
+            "item": _mercadolibre_item_summary(item) if item else {},
+            "raw": _sanitize_for_log({"update": result if isinstance(result, dict) else {"response": result}, "item": item}),
+            "message": f"{item_id} 已提交 Global Selling 下架。",
+        }
+    return close_regular_item()
 
 
 def _local_path_from_image_item(item: dict[str, Any]) -> Path | None:

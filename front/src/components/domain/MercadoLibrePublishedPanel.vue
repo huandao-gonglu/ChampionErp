@@ -38,7 +38,7 @@ function badgeClass(status: string) {
 }
 
 function requestClose(item: MercadoLibreRemoteItem) {
-  const confirmed = window.confirm(`确认删除/结束 Mercado Libre 商品 ${item.id}？\n\n该操作会把商品状态改为 closed，通常不可恢复。`)
+  const confirmed = window.confirm(`确认下架 Mercado Libre 商品 ${item.id}？`)
   if (confirmed) emit('closeItem', item)
 }
 
@@ -61,7 +61,7 @@ function goPage(page: number) {
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div>
         <h2 class="card-title">Mercado Libre 已发布商品</h2>
-        <p class="muted mt-1">从 Mercado Libre 账号实时读取商品列表；删除会调用 API 结束发布。</p>
+        <p class="muted mt-1">从 Mercado Libre 账号实时读取商品列表；下架会调用 API 暂停或结束发布。</p>
       </div>
       <div class="flex flex-wrap gap-2">
         <select
@@ -141,10 +141,10 @@ function goPage(page: number) {
                 <a v-if="item.permalink" class="btn btn-outline py-1.5" :href="item.permalink" target="_blank" rel="noreferrer">官网</a>
                 <button
                   class="btn btn-secondary py-1.5"
-                  :disabled="props.loading || item.status === 'closed'"
+                  :disabled="props.loading || item.status === 'closed' || item.status === 'paused'"
                   @click="requestClose(item)"
                 >
-                  删除商品
+                  {{ item.status === 'closed' || item.status === 'paused' ? '已下架' : '下架商品' }}
                 </button>
               </div>
             </td>

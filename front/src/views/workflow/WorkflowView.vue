@@ -391,7 +391,7 @@ watch(
           </div>
 
           <div v-else-if="activeNav === 'mlItems'" class="space-y-6">
-            <PageHeader title="ML 已发布商品" description="实时查看 Mercado Libre 账号商品，并支持通过 API 删除/结束发布。" />
+            <PageHeader title="ML 已发布商品" description="实时查看 Mercado Libre 账号商品，并支持通过 API 下架或结束发布。" />
             <MercadoLibrePublishedPanel
               :items="mercadoLibreRemoteItems"
               :status="mercadoLibreRemoteStatus"

@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import unittest
 import urllib.error
+import urllib.parse
 from pathlib import Path
 from unittest.mock import patch
 
@@ -565,12 +566,12 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             def fake_request(method: str, url: str, token: str = "", payload: dict | list | None = None, extra_headers: dict | None = None):
                 if url == "https://api.mercadolibre.com/users/me":
                     return {"id": "12345", "nickname": "shop", "site_id": "MLM"}
-                if url == "https://api.mercadolibre.com/users/12345/items/search?limit=50&offset=0&status=active":
-                    return {"results": ["MLM1", "MLM2"], "paging": {"total": 2}}
-                if url == "https://api.mercadolibre.com/items?ids=MLM1%2CMLM2":
+                if url == "https://api.mercadolibre.com/users/12345/items/search?limit=50&offset=0&orders=start_time_desc&status=active":
+                    return {"results": ["MLM2", "MLM1"], "paging": {"total": 2}}
+                if url == "https://api.mercadolibre.com/items?ids=MLM2%2CMLM1":
                     return [
-                        {"code": 200, "body": {"id": "MLM1", "title": "First", "status": "active", "price": 9.59, "currency_id": "USD", "available_quantity": 10, "sold_quantity": 1, "attributes": [{"id": "SELLER_SKU", "value_name": "SKU-1"}]}},
-                        {"code": 200, "body": {"id": "MLM2", "title": "Second", "status": "active", "price": 12, "currency_id": "USD", "available_quantity": 3, "sold_quantity": 0}},
+                        {"code": 200, "body": {"id": "MLM1", "title": "First", "status": "active", "price": 9.59, "currency_id": "USD", "available_quantity": 10, "sold_quantity": 1, "date_created": "2026-06-10T10:00:00.000Z", "attributes": [{"id": "SELLER_SKU", "value_name": "SKU-1"}]}},
+                        {"code": 200, "body": {"id": "MLM2", "title": "Second", "status": "active", "price": 12, "currency_id": "USD", "available_quantity": 3, "sold_quantity": 0, "date_created": "2026-06-12T10:00:00.000Z"}},
                     ]
                 raise AssertionError(f"Unexpected request: {method} {url}")
 
@@ -581,8 +582,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 result = erp_web_app.mercadolibre_remote_items("active")
 
             self.assertTrue(result["ok"])
-            self.assertEqual([item["id"] for item in result["items"]], ["MLM1", "MLM2"])
-            self.assertEqual(result["items"][0]["seller_sku"], "SKU-1")
+            self.assertEqual([item["id"] for item in result["items"]], ["MLM2", "MLM1"])
+            self.assertEqual(result["items"][1]["seller_sku"], "SKU-1")
             self.assertEqual(result["paging"]["active"]["total"], 2)
             self.assertEqual(result["pagination"]["page"], 1)
             self.assertEqual(result["pagination"]["total"], 2)
@@ -594,17 +595,19 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             erp_web_app.save_store_config({"mercadolibre": {"access_token": "token", "user_id": "12345"}})
 
             calls: list[str] = []
+            ids = [f"CBT{i:02d}" for i in range(50, 54)]
 
             def fake_request(method: str, url: str, token: str = "", payload: dict | list | None = None, extra_headers: dict | None = None):
                 calls.append(url)
                 if url == "https://api.mercadolibre.com/users/me":
                     return {"id": "12345", "nickname": "shop", "site_id": "CBT"}
-                if url == "https://api.mercadolibre.com/users/12345/items/search?limit=50&offset=50&status=active":
-                    return {"results": ["CBTNEW", "CBTOLD"], "paging": {"total": 54, "limit": 50, "offset": 50}}
+                if url == "https://api.mercadolibre.com/users/12345/items/search?limit=50&offset=50&orders=start_time_desc&status=active":
+                    return {"results": ids, "paging": {"total": 54, "limit": 100, "offset": 0}}
                 if url.startswith("https://api.mercadolibre.com/items?ids="):
+                    requested = urllib.parse.unquote(url.rsplit("ids=", 1)[-1]).split(",")
                     return [
-                        {"code": 200, "body": {"id": "CBTNEW", "title": "New item", "status": "active"}},
-                        {"code": 200, "body": {"id": "CBTOLD", "title": "Old item", "status": "active"}},
+                        {"code": 200, "body": {"id": item_id, "title": item_id, "status": "active", "date_created": f"2026-06-{int(item_id[-2:]) + 1:02d}T10:00:00.000Z"}}
+                        for item_id in requested
                     ]
                 raise AssertionError(f"Unexpected request: {method} {url}")
 
@@ -612,13 +615,14 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 result = erp_web_app.mercadolibre_remote_items("active", page=2, per_page=50)
 
             self.assertTrue(result["ok"])
-            self.assertEqual([item["id"] for item in result["items"]], ["CBTNEW", "CBTOLD"])
+            self.assertEqual([item["id"] for item in result["items"]], ["CBT50", "CBT51", "CBT52", "CBT53"])
             self.assertEqual(result["pagination"]["page"], 2)
             self.assertEqual(result["pagination"]["offset"], 50)
             self.assertEqual(result["pagination"]["total"], 54)
             self.assertTrue(result["pagination"]["has_prev"])
             self.assertFalse(result["pagination"]["has_next"])
-            self.assertNotIn("https://api.mercadolibre.com/users/12345/items/search?limit=50&offset=0&status=active", calls)
+            self.assertIn("https://api.mercadolibre.com/users/12345/items/search?limit=50&offset=50&orders=start_time_desc&status=active", calls)
+            self.assertNotIn("https://api.mercadolibre.com/users/12345/items/search?limit=50&offset=0&orders=start_time_desc&status=active", calls)
 
         self.with_temp_app(run)
 
@@ -652,22 +656,74 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
         def run(app_dir: Path) -> None:
             erp_web_app.save_store_config({"mercadolibre": {"access_token": "token", "user_id": "12345", "site_id": "MLM"}})
             calls: list[tuple[str, str, dict | list | None]] = []
+            item_gets = 0
 
             def fake_request(method: str, url: str, token: str = "", payload: dict | list | None = None, extra_headers: dict | None = None):
+                nonlocal item_gets
                 calls.append((method, url, payload))
                 if url == "https://api.mercadolibre.com/users/me":
                     return {"id": "12345", "nickname": "shop", "site_id": "CBT"}
+                if method == "GET" and url == "https://api.mercadolibre.com/items/CBT3475477379":
+                    item_gets += 1
+                    return {"id": "CBT3475477379", "title": "First", "status": "active" if item_gets == 1 else "paused"}
                 return {}
 
             with patch.object(erp_web_app.publisher, "request_json", side_effect=fake_request):
                 result = erp_web_app.mercadolibre_close_remote_item("CBT3475477379")
 
             self.assertTrue(result["ok"])
-            self.assertEqual(result["status"], "closed")
+            self.assertEqual(result["status"], "paused")
             self.assertEqual(calls, [
                 ("GET", "https://api.mercadolibre.com/users/me", None),
-                ("PUT", "https://api.mercadolibre.com/global/items/CBT3475477379", {"site_id": "MLM", "logistic_type": "remote", "deleted": True}),
+                ("GET", "https://api.mercadolibre.com/items/CBT3475477379", None),
+                ("PUT", "https://api.mercadolibre.com/global/items/CBT3475477379", {"status": "paused"}),
+                ("GET", "https://api.mercadolibre.com/items/CBT3475477379", None),
             ])
+
+        self.with_temp_app(run)
+
+    def test_mercadolibre_close_remote_item_is_idempotent_for_paused_global_listing(self) -> None:
+        def run(app_dir: Path) -> None:
+            erp_web_app.save_store_config({"mercadolibre": {"access_token": "token", "user_id": "12345", "site_id": "MLM"}})
+            calls: list[tuple[str, str, dict | list | None]] = []
+
+            def fake_request(method: str, url: str, token: str = "", payload: dict | list | None = None, extra_headers: dict | None = None):
+                calls.append((method, url, payload))
+                if url == "https://api.mercadolibre.com/users/me":
+                    return {"id": "12345", "nickname": "shop", "site_id": "CBT"}
+                if method == "GET" and url == "https://api.mercadolibre.com/items/CBT3475477379":
+                    return {"id": "CBT3475477379", "title": "First", "status": "paused"}
+                return {}
+
+            with patch.object(erp_web_app.publisher, "request_json", side_effect=fake_request):
+                result = erp_web_app.mercadolibre_close_remote_item("CBT3475477379")
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["status"], "paused")
+            self.assertEqual(calls, [
+                ("GET", "https://api.mercadolibre.com/users/me", None),
+                ("GET", "https://api.mercadolibre.com/items/CBT3475477379", None),
+            ])
+
+        self.with_temp_app(run)
+
+    def test_mercadolibre_close_remote_item_rejects_unchanged_global_status(self) -> None:
+        def run(app_dir: Path) -> None:
+            erp_web_app.save_store_config({"mercadolibre": {"access_token": "token", "user_id": "12345", "site_id": "MLM"}})
+
+            def fake_request(method: str, url: str, token: str = "", payload: dict | list | None = None, extra_headers: dict | None = None):
+                if url == "https://api.mercadolibre.com/users/me":
+                    return {"id": "12345", "nickname": "shop", "site_id": "CBT"}
+                if method == "GET" and url == "https://api.mercadolibre.com/items/CBT3475477379":
+                    return {"id": "CBT3475477379", "title": "First", "status": "active"}
+                return {}
+
+            with patch.object(erp_web_app.publisher, "request_json", side_effect=fake_request):
+                result = erp_web_app.mercadolibre_close_remote_item("CBT3475477379")
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["error_code"], "MERCADOLIBRE_STATUS_UNCHANGED")
+            self.assertEqual(result["status"], "active")
 
         self.with_temp_app(run)
 

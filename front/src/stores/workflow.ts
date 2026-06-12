@@ -1218,10 +1218,10 @@ export const useWorkflowStore = defineStore('workflow', () => {
     setError('')
     try {
       const result = await closeMercadoLibrePublishedItem(itemId)
-      addLog(String(result.message || `${itemId} 已结束发布。`))
+      addLog(String(result.message || `${itemId} 已下架。`))
       await refreshMercadoLibreRemoteItems(mercadoLibreRemoteStatus.value, mercadoLibreRemotePage.value, mercadoLibreRemotePerPage.value)
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '删除 Mercado Libre 商品失败')
+      setError(exc instanceof Error ? exc.message : '下架 Mercado Libre 商品失败')
     } finally {
       loading.value = false
     }
