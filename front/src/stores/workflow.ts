@@ -174,6 +174,10 @@ export const useWorkflowStore = defineStore('workflow', () => {
   const publishLogs = ref<PublishLogItem[]>([])
   const mercadoLibreRemoteItems = ref<MercadoLibreRemoteItem[]>([])
   const mercadoLibreRemoteStatus = ref('active')
+  const mercadoLibreRemotePage = ref(1)
+  const mercadoLibreRemotePerPage = ref(50)
+  const mercadoLibreRemoteTotal = ref(0)
+  const mercadoLibreRemoteTotalPages = ref(1)
   const activeMarketplace = ref<Marketplace>('mercadolibre')
   const logs = ref<string[]>(['等待读取后端状态。'])
   const appConfig = ref<UnknownRecord>({})
@@ -1178,13 +1182,30 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
-  async function refreshMercadoLibreRemoteItems(status: string = mercadoLibreRemoteStatus.value) {
+  async function refreshMercadoLibreRemoteItems(status: string = mercadoLibreRemoteStatus.value, page?: number, perPage?: number) {
     loading.value = true
     setError('')
     try {
-      mercadoLibreRemoteStatus.value = status
-      mercadoLibreRemoteItems.value = await fetchMercadoLibrePublishedItems(status)
-      addLog(`Mercado Libre 远程商品已刷新：${mercadoLibreRemoteItems.value.length} 条。`)
+      const nextStatus = status || mercadoLibreRemoteStatus.value
+      const nextPerPage = perPage || mercadoLibreRemotePerPage.value
+      const nextPage = page || (nextStatus === mercadoLibreRemoteStatus.value ? mercadoLibreRemotePage.value : 1)
+      const result = await fetchMercadoLibrePublishedItems(nextStatus, nextPage, nextPerPage)
+      if (!result.items.length && result.pagination.total > 0 && nextPage > 1) {
+        const previous = await fetchMercadoLibrePublishedItems(nextStatus, nextPage - 1, nextPerPage)
+        mercadoLibreRemoteItems.value = previous.items
+        mercadoLibreRemotePage.value = previous.pagination.page
+        mercadoLibreRemotePerPage.value = previous.pagination.perPage
+        mercadoLibreRemoteTotal.value = previous.pagination.total
+        mercadoLibreRemoteTotalPages.value = previous.pagination.totalPages
+      } else {
+        mercadoLibreRemoteItems.value = result.items
+        mercadoLibreRemotePage.value = result.pagination.page
+        mercadoLibreRemotePerPage.value = result.pagination.perPage
+        mercadoLibreRemoteTotal.value = result.pagination.total
+        mercadoLibreRemoteTotalPages.value = result.pagination.totalPages
+      }
+      mercadoLibreRemoteStatus.value = nextStatus
+      addLog(`Mercado Libre 远程商品已刷新：第 ${mercadoLibreRemotePage.value}/${mercadoLibreRemoteTotalPages.value} 页，当前 ${mercadoLibreRemoteItems.value.length} 条，共 ${mercadoLibreRemoteTotal.value} 条。`)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '读取 Mercado Libre 已发布商品失败')
     } finally {
@@ -1198,7 +1219,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     try {
       const result = await closeMercadoLibrePublishedItem(itemId)
       addLog(String(result.message || `${itemId} 已结束发布。`))
-      await refreshMercadoLibreRemoteItems(mercadoLibreRemoteStatus.value)
+      await refreshMercadoLibreRemoteItems(mercadoLibreRemoteStatus.value, mercadoLibreRemotePage.value, mercadoLibreRemotePerPage.value)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '删除 Mercado Libre 商品失败')
     } finally {
@@ -1422,6 +1443,10 @@ export const useWorkflowStore = defineStore('workflow', () => {
     publishLogs,
     mercadoLibreRemoteItems,
     mercadoLibreRemoteStatus,
+    mercadoLibreRemotePage,
+    mercadoLibreRemotePerPage,
+    mercadoLibreRemoteTotal,
+    mercadoLibreRemoteTotalPages,
     activeMarketplace,
     logs,
     appConfig,

@@ -565,7 +565,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             def fake_request(method: str, url: str, token: str = "", payload: dict | list | None = None, extra_headers: dict | None = None):
                 if url == "https://api.mercadolibre.com/users/me":
                     return {"id": "12345", "nickname": "shop", "site_id": "MLM"}
-                if url == "https://api.mercadolibre.com/users/12345/items/search?status=active&limit=50":
+                if url == "https://api.mercadolibre.com/users/12345/items/search?limit=50&offset=0&status=active":
                     return {"results": ["MLM1", "MLM2"], "paging": {"total": 2}}
                 if url == "https://api.mercadolibre.com/items?ids=MLM1%2CMLM2":
                     return [
@@ -584,6 +584,41 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             self.assertEqual([item["id"] for item in result["items"]], ["MLM1", "MLM2"])
             self.assertEqual(result["items"][0]["seller_sku"], "SKU-1")
             self.assertEqual(result["paging"]["active"]["total"], 2)
+            self.assertEqual(result["pagination"]["page"], 1)
+            self.assertEqual(result["pagination"]["total"], 2)
+
+        self.with_temp_app(run)
+
+    def test_mercadolibre_remote_items_supports_second_page(self) -> None:
+        def run(app_dir: Path) -> None:
+            erp_web_app.save_store_config({"mercadolibre": {"access_token": "token", "user_id": "12345"}})
+
+            calls: list[str] = []
+
+            def fake_request(method: str, url: str, token: str = "", payload: dict | list | None = None, extra_headers: dict | None = None):
+                calls.append(url)
+                if url == "https://api.mercadolibre.com/users/me":
+                    return {"id": "12345", "nickname": "shop", "site_id": "CBT"}
+                if url == "https://api.mercadolibre.com/users/12345/items/search?limit=50&offset=50&status=active":
+                    return {"results": ["CBTNEW", "CBTOLD"], "paging": {"total": 54, "limit": 50, "offset": 50}}
+                if url.startswith("https://api.mercadolibre.com/items?ids="):
+                    return [
+                        {"code": 200, "body": {"id": "CBTNEW", "title": "New item", "status": "active"}},
+                        {"code": 200, "body": {"id": "CBTOLD", "title": "Old item", "status": "active"}},
+                    ]
+                raise AssertionError(f"Unexpected request: {method} {url}")
+
+            with patch.object(erp_web_app.publisher, "request_json", side_effect=fake_request):
+                result = erp_web_app.mercadolibre_remote_items("active", page=2, per_page=50)
+
+            self.assertTrue(result["ok"])
+            self.assertEqual([item["id"] for item in result["items"]], ["CBTNEW", "CBTOLD"])
+            self.assertEqual(result["pagination"]["page"], 2)
+            self.assertEqual(result["pagination"]["offset"], 50)
+            self.assertEqual(result["pagination"]["total"], 54)
+            self.assertTrue(result["pagination"]["has_prev"])
+            self.assertFalse(result["pagination"]["has_next"])
+            self.assertNotIn("https://api.mercadolibre.com/users/12345/items/search?limit=50&offset=0&status=active", calls)
 
         self.with_temp_app(run)
 

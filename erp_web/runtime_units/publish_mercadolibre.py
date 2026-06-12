@@ -228,7 +228,7 @@ def _mercadolibre_item_summary(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def mercadolibre_remote_items(status: str = "active", limit: int = 50) -> dict[str, Any]:
+def mercadolibre_remote_items(status: str = "active", page: int = 1, per_page: int = 50, limit: int | None = None) -> dict[str, Any]:
     config = load_store_config()
     auth = ensure_mercadolibre_auth_ready(config)
     if not auth.get("ok"):
@@ -249,22 +249,28 @@ def mercadolibre_remote_items(status: str = "active", limit: int = 50) -> dict[s
         raise RuntimeError("Mercado Libre seller id 为空，请先测试授权。")
 
     wanted = str(status or "active").strip().lower()
-    statuses = ["active", "paused", "closed"] if wanted == "all" else [wanted]
-    statuses = [item for item in statuses if item in {"active", "paused", "closed"}] or ["active"]
-    limit = max(1, min(int(limit or 50), 100))
+    if wanted not in {"active", "paused", "closed", "all"}:
+        wanted = "active"
+    page_size = max(1, min(int(limit if limit is not None else per_page or 50), 100))
+    current_page = max(1, int(page or 1))
+    offset = (current_page - 1) * page_size
 
-    item_ids: list[str] = []
-    paging: dict[str, Any] = {}
-    for item_status in statuses:
-        query = urllib.parse.urlencode({"status": item_status, "limit": limit})
-        search = publisher.request_json("GET", f"https://api.mercadolibre.com/users/{user_id}/items/search?{query}", token)
-        if not isinstance(search, dict):
-            continue
-        paging[item_status] = search.get("paging") if isinstance(search.get("paging"), dict) else {}
-        for item_id in search.get("results") or []:
-            text = str(item_id or "").strip()
-            if text and text not in item_ids:
-                item_ids.append(text)
+    query_params: dict[str, Any] = {"limit": page_size, "offset": offset}
+    if wanted != "all":
+        query_params["status"] = wanted
+    query = urllib.parse.urlencode(query_params)
+    search = publisher.request_json("GET", f"https://api.mercadolibre.com/users/{user_id}/items/search?{query}", token)
+    if not isinstance(search, dict):
+        raise RuntimeError(f"Mercado Libre items/search 返回异常: {search}")
+
+    item_ids = []
+    for item_id in search.get("results") or []:
+        text = str(item_id or "").strip()
+        if text and text not in item_ids:
+            item_ids.append(text)
+    status_paging = search.get("paging") if isinstance(search.get("paging"), dict) else {}
+    total = int(status_paging.get("total") or 0)
+    total_pages = max(1, (total + page_size - 1) // page_size) if total else 1
 
     items: list[dict[str, Any]] = []
     for index in range(0, len(item_ids), 20):
@@ -286,7 +292,16 @@ def mercadolibre_remote_items(status: str = "active", limit: int = 50) -> dict[s
         "user_id": user_id,
         "items": items,
         "item_ids": item_ids,
-        "paging": paging,
+        "paging": {wanted: status_paging},
+        "pagination": {
+            "page": current_page,
+            "per_page": page_size,
+            "offset": offset,
+            "total": total,
+            "total_pages": total_pages,
+            "has_prev": current_page > 1,
+            "has_next": bool(total and offset + page_size < total),
+        },
         "checked_at": collect_time_iso(),
     }
 

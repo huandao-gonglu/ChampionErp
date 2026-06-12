@@ -96,9 +96,10 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/mercadolibre/published-items":
             params = urllib.parse.parse_qs(parsed.query)
             status = str((params.get("status") or ["active"])[0] or "active")
-            limit = int((params.get("limit") or ["50"])[0] or 50)
+            page = int((params.get("page") or ["1"])[0] or 1)
+            per_page = int((params.get("per_page") or params.get("limit") or ["50"])[0] or 50)
             try:
-                result = mercadolibre_remote_items(status=status, limit=limit)
+                result = mercadolibre_remote_items(status=status, page=page, per_page=per_page)
                 self.send_json(result, 200 if result.get("ok") else 400)
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, 400)

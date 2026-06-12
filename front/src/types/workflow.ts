@@ -305,6 +305,21 @@ export interface MercadoLibreRemoteItem {
   raw: UnknownRecord
 }
 
+export interface MercadoLibreRemotePagination {
+  page: number
+  perPage: number
+  offset: number
+  total: number
+  totalPages: number
+  hasPrev: boolean
+  hasNext: boolean
+}
+
+export interface MercadoLibrePublishedPage {
+  items: MercadoLibreRemoteItem[]
+  pagination: MercadoLibreRemotePagination
+}
+
 export interface AuthResult {
   ok: boolean
   message: string

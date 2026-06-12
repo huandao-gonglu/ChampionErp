@@ -44,6 +44,10 @@ const {
   publishLogs,
   mercadoLibreRemoteItems,
   mercadoLibreRemoteStatus,
+  mercadoLibreRemotePage,
+  mercadoLibreRemotePerPage,
+  mercadoLibreRemoteTotal,
+  mercadoLibreRemoteTotalPages,
   publishResult,
   activeMarketplace,
   logs,
@@ -190,7 +194,9 @@ watch(
   () => route.fullPath,
   () => {
     const tab = String(route.query.tab || '')
+    const previous = activeNav.value
     activeNav.value = navItems.some((item) => item.key === tab) ? tab : pathNavMap[route.path] || 'dashboard'
+    if (activeNav.value === 'mlItems' && previous !== activeNav.value) void store.refreshMercadoLibreRemoteItems()
   },
   { immediate: true },
 )
@@ -389,6 +395,10 @@ watch(
             <MercadoLibrePublishedPanel
               :items="mercadoLibreRemoteItems"
               :status="mercadoLibreRemoteStatus"
+              :page="mercadoLibreRemotePage"
+              :per-page="mercadoLibreRemotePerPage"
+              :total="mercadoLibreRemoteTotal"
+              :total-pages="mercadoLibreRemoteTotalPages"
               :loading="loading"
               :error="error"
               @refresh="store.refreshMercadoLibreRemoteItems"

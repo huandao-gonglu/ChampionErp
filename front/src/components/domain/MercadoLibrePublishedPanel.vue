@@ -1,15 +1,20 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { MercadoLibreRemoteItem } from '@/types/workflow'
 
 const props = defineProps<{
   items: MercadoLibreRemoteItem[]
   status: string
+  page: number
+  perPage: number
+  total: number
+  totalPages: number
   loading: boolean
   error?: string
 }>()
 
 const emit = defineEmits<{
-  refresh: [status: string]
+  refresh: [status: string, page?: number, perPage?: number]
   closeItem: [item: MercadoLibreRemoteItem]
 }>()
 
@@ -19,6 +24,10 @@ const statusLabels: Record<string, string> = {
   closed: '已结束',
   all: '全部',
 }
+
+const pageCount = computed(() => Math.max(1, props.totalPages || Math.ceil(props.total / Math.max(1, props.perPage)) || 1))
+const pageStart = computed(() => props.total ? ((props.page - 1) * props.perPage) + 1 : 0)
+const pageEnd = computed(() => Math.min(props.total, (props.page - 1) * props.perPage + props.items.length))
 
 function badgeClass(status: string) {
   const value = String(status || '').toLowerCase()
@@ -31,6 +40,19 @@ function badgeClass(status: string) {
 function requestClose(item: MercadoLibreRemoteItem) {
   const confirmed = window.confirm(`确认删除/结束 Mercado Libre 商品 ${item.id}？\n\n该操作会把商品状态改为 closed，通常不可恢复。`)
   if (confirmed) emit('closeItem', item)
+}
+
+function refreshStatus(status: string) {
+  emit('refresh', status, 1, props.perPage)
+}
+
+function refreshPerPage(value: string) {
+  const next = Number.parseInt(value, 10)
+  emit('refresh', props.status, 1, Number.isFinite(next) ? next : props.perPage)
+}
+
+function goPage(page: number) {
+  emit('refresh', props.status, Math.min(Math.max(1, page), pageCount.value), props.perPage)
 }
 </script>
 
@@ -46,14 +68,24 @@ function requestClose(item: MercadoLibreRemoteItem) {
           :value="props.status"
           class="input w-40"
           :disabled="props.loading"
-          @change="emit('refresh', ($event.target as HTMLSelectElement).value)"
+          @change="refreshStatus(($event.target as HTMLSelectElement).value)"
         >
           <option value="active">在售</option>
           <option value="paused">已暂停</option>
           <option value="closed">已结束</option>
           <option value="all">全部</option>
         </select>
-        <button class="btn btn-outline" :disabled="props.loading" @click="emit('refresh', props.status)">
+        <select
+          :value="props.perPage"
+          class="input w-32"
+          :disabled="props.loading"
+          @change="refreshPerPage(($event.target as HTMLSelectElement).value)"
+        >
+          <option :value="25">25 条/页</option>
+          <option :value="50">50 条/页</option>
+          <option :value="100">100 条/页</option>
+        </select>
+        <button class="btn btn-outline" :disabled="props.loading" @click="emit('refresh', props.status, props.page, props.perPage)">
           {{ props.loading ? '刷新中...' : '刷新' }}
         </button>
       </div>
@@ -63,7 +95,13 @@ function requestClose(item: MercadoLibreRemoteItem) {
       {{ props.error }}
     </div>
 
-    <div class="mt-4 text-sm text-slate-500">当前筛选：{{ statusLabels[props.status] || props.status }}，共 {{ props.items.length }} 条。</div>
+    <div class="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm text-slate-500">
+      <span>当前筛选：{{ statusLabels[props.status] || props.status }}，第 {{ props.page }} / {{ pageCount }} 页，显示 {{ pageStart }}-{{ pageEnd }}，共 {{ props.total }} 条。</span>
+      <div class="flex items-center gap-2">
+        <button class="btn btn-outline py-1.5" :disabled="props.loading || props.page <= 1" @click="goPage(props.page - 1)">上一页</button>
+        <button class="btn btn-outline py-1.5" :disabled="props.loading || props.page >= pageCount" @click="goPage(props.page + 1)">下一页</button>
+      </div>
+    </div>
     <div class="mt-4 overflow-auto rounded-2xl border border-slate-200">
       <table class="w-full text-left text-sm">
         <thead class="bg-slate-50 text-xs text-slate-500">
@@ -116,6 +154,11 @@ function requestClose(item: MercadoLibreRemoteItem) {
           </tr>
         </tbody>
       </table>
+    </div>
+    <div class="mt-4 flex flex-wrap items-center justify-end gap-2 text-sm text-slate-500">
+      <button class="btn btn-outline py-1.5" :disabled="props.loading || props.page <= 1" @click="goPage(props.page - 1)">上一页</button>
+      <span>第 {{ props.page }} / {{ pageCount }} 页</span>
+      <button class="btn btn-outline py-1.5" :disabled="props.loading || props.page >= pageCount" @click="goPage(props.page + 1)">下一页</button>
     </div>
   </section>
 </template>

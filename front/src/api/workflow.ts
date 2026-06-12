@@ -8,6 +8,7 @@ import type {
   CollectForm,
   ImageAsset,
   Marketplace,
+  MercadoLibrePublishedPage,
   MercadoLibreRemoteItem,
   MercadoLibreAuthChecklist,
   MercadoLibreTestMode,
@@ -130,11 +131,36 @@ function normalizeMercadoLibreRemoteItem(value: unknown): MercadoLibreRemoteItem
   }
 }
 
-export async function fetchMercadoLibrePublishedItems(status = 'active'): Promise<MercadoLibreRemoteItem[]> {
-  const response = await apiClient.get(`/api/mercadolibre/published-items?status=${encodeURIComponent(status)}&limit=50`)
+function normalizeMercadoLibrePagination(value: unknown, fallbackPage: number, fallbackPerPage: number) {
+  const record = asRecord(value)
+  const total = getNumber(record, ['total'])
+  const perPage = getNumber(record, ['per_page', 'perPage']) || fallbackPerPage
+  const page = getNumber(record, ['page']) || fallbackPage
+  const totalPages = getNumber(record, ['total_pages', 'totalPages']) || Math.max(1, Math.ceil(total / Math.max(1, perPage)))
+  return {
+    page,
+    perPage,
+    offset: getNumber(record, ['offset']),
+    total,
+    totalPages,
+    hasPrev: getBoolean(record, ['has_prev', 'hasPrev']) || page > 1,
+    hasNext: getBoolean(record, ['has_next', 'hasNext']) || (total > 0 && page < totalPages),
+  }
+}
+
+export async function fetchMercadoLibrePublishedItems(status = 'active', page = 1, perPage = 50): Promise<MercadoLibrePublishedPage> {
+  const params = new URLSearchParams({
+    status,
+    page: String(page),
+    per_page: String(perPage),
+  })
+  const response = await apiClient.get(`/api/mercadolibre/published-items?${params.toString()}`)
   const data = asRecord(response.data)
   ensureOk(data, '读取 Mercado Libre 已发布商品失败')
-  return Array.isArray(data.items) ? data.items.map(normalizeMercadoLibreRemoteItem) : []
+  return {
+    items: Array.isArray(data.items) ? data.items.map(normalizeMercadoLibreRemoteItem) : [],
+    pagination: normalizeMercadoLibrePagination(data.pagination, page, perPage),
+  }
 }
 
 export async function closeMercadoLibrePublishedItem(itemId: string): Promise<UnknownRecord> {
