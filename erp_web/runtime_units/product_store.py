@@ -223,7 +223,9 @@ def publish_queue_platforms(product: dict[str, Any], requested_platforms: list[s
     normalized_targets = [str(platform or "").strip().lower() for platform in targets if str(platform or "").strip().lower() in PLATFORMS]
     eligible: list[str] = []
     for platform in normalized_targets:
-        if draft_workflow_status(product, platform) == "ready_to_publish":
+        draft = (product.get("drafts") or {}).get(platform) if isinstance(product.get("drafts"), dict) else {}
+        draft = draft if isinstance(draft, dict) else {}
+        if draft_workflow_status(product, platform) == "ready_to_publish" or _draft_precheck_ready(product, platform, draft):
             eligible.append(platform)
     return eligible
 
@@ -353,12 +355,93 @@ def save_app_config(config: dict[str, Any]) -> None:
 
 
 def load_store_config() -> dict[str, Any]:
-    return publisher.load_store_config(STORE_CONFIG_PATH)
+    return normalize_store_config(publisher.load_store_config(STORE_CONFIG_PATH))
 
 
-def save_store_config(config: dict[str, Any]) -> None:
+_STORE_SENSITIVE_FIELDS = {
+    "app_id",
+    "client_id",
+    "app_secret",
+    "client_secret",
+    "code_verifier",
+    "access_token",
+    "refresh_token",
+    "redirect_uri",
+    "content_token",
+    "prices_token",
+    "marketplace_token",
+    "stocks_token",
+    "api_key",
+}
+
+
+def default_store_config() -> dict[str, Any]:
+    return publisher.load_store_config(STORE_CONFIG_PATH.with_name("__default_store_config__.json"))
+
+
+def _sync_mercadolibre_secret_aliases(store: dict[str, Any]) -> None:
+    app_secret = str(store.get("app_secret") or "").strip()
+    client_secret = str(store.get("client_secret") or "").strip()
+    if client_secret and not app_secret:
+        store["app_secret"] = client_secret
+    if app_secret and not client_secret:
+        store["client_secret"] = app_secret
+
+
+def merge_store_config_fields(
+    base: dict[str, Any] | None,
+    updates: dict[str, Any] | None,
+    *,
+    preserve_empty_sensitive: bool = True,
+) -> dict[str, Any]:
+    merged = deepcopy(base if isinstance(base, dict) else default_store_config())
+    updates = updates if isinstance(updates, dict) else {}
+    for section_key, section_updates in updates.items():
+        if not isinstance(section_updates, dict):
+            merged[section_key] = deepcopy(section_updates)
+            continue
+        section = merged.setdefault(section_key, {})
+        if not isinstance(section, dict):
+            section = {}
+            merged[section_key] = section
+        for field, value in section_updates.items():
+            if (
+                preserve_empty_sensitive
+                and field in _STORE_SENSITIVE_FIELDS
+                and value in (None, "")
+                and str(section.get(field) or "").strip()
+            ):
+                continue
+            section[field] = deepcopy(value)
+        if section_key == "mercadolibre":
+            _sync_mercadolibre_secret_aliases(section)
+    return merged
+
+
+def normalize_store_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    normalized = merge_store_config_fields(default_store_config(), config, preserve_empty_sensitive=False)
+    ml = normalized.get("mercadolibre") if isinstance(normalized.get("mercadolibre"), dict) else {}
+    if isinstance(ml, dict) and not str(ml.get("code_verifier") or "").strip():
+        ml.pop("code_verifier", None)
+    return normalized
+
+
+def update_store_config_fields(platform: str, fields: dict[str, Any], *, preserve_empty_sensitive: bool = True) -> dict[str, Any]:
+    platform = str(platform or "").strip().lower()
+    config = load_store_config()
+    updated = merge_store_config_fields(config, {platform: fields}, preserve_empty_sensitive=preserve_empty_sensitive)
+    save_store_config(updated)
+    return updated
+
+
+def save_store_config(config: dict[str, Any], *, preserve_empty_sensitive: bool = True) -> None:
     STORE_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    publisher.save_store_config(STORE_CONFIG_PATH, config)
+    if preserve_empty_sensitive:
+        existing = publisher.load_store_config(STORE_CONFIG_PATH) if STORE_CONFIG_PATH.exists() else default_store_config()
+        merged = merge_store_config_fields(existing, config, preserve_empty_sensitive=True)
+    else:
+        merged = normalize_store_config(config)
+    publisher.save_store_config(STORE_CONFIG_PATH, merged)
 
 
 def _auth_status_label(status: Any, store: dict[str, Any]) -> str:

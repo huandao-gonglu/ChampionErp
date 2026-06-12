@@ -188,6 +188,10 @@ const selectedStoreResultMessage = computed(() => {
   return String(selectedStoreSummary.value.next_action || selectedStoreSummary.value.error_message || selectedStoreSummary.value.masked_account || selectedStoreSummary.value.shop_name || '')
 })
 
+const mlCanGenerateLink = computed(() => Boolean(form.mlAppId.trim() && form.mlRedirectUri.trim().startsWith('https://')))
+const mlCanExchangeCode = computed(() => Boolean(mlCanGenerateLink.value && form.mlClientSecret.trim() && form.mlCode.trim()))
+const mlHasRefreshToken = computed(() => Boolean(props.mercadolibreChecklist?.fields.find((field) => field.key === 'refresh_token')?.ok))
+
 function copy(text: string) {
   if (text) void navigator.clipboard?.writeText(text)
 }
@@ -277,10 +281,10 @@ function copy(text: string) {
           <input v-model="form.mlCategoryId" class="input mt-2" placeholder="真实类目 ID，可用于 07D 类目测试" />
           <div class="mt-3 flex flex-wrap gap-2">
             <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('refreshChecklist')">刷新清单</button>
-            <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('generateMlLink', form.mlAppId, form.mlRedirectUri)">生成授权链接</button>
+            <button class="btn btn-outline py-1.5" :disabled="props.loading || !mlCanGenerateLink" title="需要 App ID 和 https:// Redirect URI" @click="emit('generateMlLink', form.mlAppId, form.mlRedirectUri)">生成授权链接</button>
             <button class="btn btn-outline py-1.5" :disabled="props.loading || !props.authLink" @click="emit('openMlLink', props.authLink)">打开授权链接</button>
-            <button class="btn btn-outline py-1.5" :disabled="props.loading || !form.mlCode" @click="emit('exchangeMlCode', form.mlCode, { app_id: form.mlAppId, client_secret: form.mlClientSecret, redirect_uri: form.mlRedirectUri })">用 code 换 token</button>
-            <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('refreshMlToken', { app_id: form.mlAppId, client_secret: form.mlClientSecret })">刷新 token</button>
+            <button class="btn btn-outline py-1.5" :disabled="props.loading || !mlCanExchangeCode" title="需要 App ID、Client Secret、https:// Redirect URI 和回跳 code" @click="emit('exchangeMlCode', form.mlCode, { app_id: form.mlAppId, client_secret: form.mlClientSecret, redirect_uri: form.mlRedirectUri })">用 code 换 token</button>
+            <button class="btn btn-outline py-1.5" :disabled="props.loading || !mlHasRefreshToken" title="需要先用 code 换到 Refresh Token" @click="emit('refreshMlToken', { app_id: form.mlAppId, client_secret: form.mlClientSecret })">刷新 token</button>
             <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('testAuth', 'mercadolibre')">测试店铺授权</button>
             <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('realMlTest', 'user_info')">07D 用户信息</button>
             <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('realMlTest', 'category_attrs', form.mlCategoryId)">07D 类目属性</button>

@@ -99,7 +99,33 @@ def assign_upc() -> dict[str, Any]:
 def build_publish_payload(product: dict[str, Any], platform: str, config: dict[str, Any]) -> dict[str, Any]:
     plan = apply_product_drafts_to_plan(product, build_plan_for_platform(product, platform))
     if platform == "mercadolibre":
-        return publisher.build_mercadolibre_payload(product, plan, config, normalize_list(product.get("source_image_urls")))
+        draft = _draft_for_platform(product, "mercadolibre")
+        payload_config = deepcopy(config)
+        payload_config.setdefault("mercadolibre", {})["category_id"] = str(draft.get("category_id") or "").strip()
+        listing = payload_config.setdefault("listing", {})
+        package_dimensions = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
+        shipping = draft.get("shipping") if isinstance(draft.get("shipping"), dict) else {}
+        for key, value in {
+            "mercadolibre_price": draft.get("price"),
+            "price": draft.get("price"),
+            "stock": draft.get("stock"),
+            "sku": draft.get("sku"),
+            "upc": draft.get("upc") or draft.get("gtin") or draft.get("barcode"),
+            "model": draft.get("model"),
+            "mercadolibre_title": draft.get("title"),
+            "package_length_cm": package_dimensions.get("length_cm"),
+            "package_width_cm": package_dimensions.get("width_cm"),
+            "package_height_cm": package_dimensions.get("height_cm"),
+            "package_weight_kg": package_dimensions.get("weight_kg"),
+            "mercadolibre_logistic_type": shipping.get("logistic_type") or shipping.get("mode"),
+            "mercadolibre_attributes": draft.get("attributes") if isinstance(draft.get("attributes"), dict) else {},
+        }.items():
+            if value not in (None, "", {}):
+                listing[key] = value
+        if isinstance(draft.get("sale_terms"), list) and draft.get("sale_terms"):
+            listing["mercadolibre_sale_terms"] = draft.get("sale_terms")
+        picture_refs = image_pool_refs_for_platform(product, "mercadolibre") or normalize_list(product.get("source_image_urls"))
+        return publisher.build_mercadolibre_payload(product, plan, payload_config, picture_refs)
     if platform == "wildberries":
         return publisher.build_wildberries_payload(product, plan, config)
     if platform == "ozon":

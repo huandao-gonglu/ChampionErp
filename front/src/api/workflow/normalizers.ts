@@ -1,23 +1,13 @@
 import { createEmptyDraft, createEmptyProduct } from '@/constants/initialState'
 import type {
   BrowserDebugStatus,
-  CategoryPrecheckResult,
-  CategorySearchResult,
-  CategorySelection,
-  CollectBatchRow,
-  CollectForm,
   ImageAsset,
   Marketplace,
   MarketplaceDraft,
   MercadoLibreAuthChecklist,
-  MercadoLibreTestMode,
-  PricingInput,
-  PricingResult,
   Product,
   ProductIndexItem,
-  PublishJob,
   PublishLogItem,
-  PublishPrecheck,
   PrecheckIssue,
   UnknownRecord,
 } from '@/types/workflow'
@@ -355,6 +345,7 @@ export function toBackendDraft(draft: MarketplaceDraft): UnknownRecord {
 }
 
 export function toBackendProduct(product: Product): UnknownRecord {
+  const rawDrafts = asRecord(asRecord(product.raw).drafts)
   return {
     ...product.raw,
     product_id: product.productId,
@@ -394,9 +385,9 @@ export function toBackendProduct(product: Product): UnknownRecord {
     dimensions: `${product.source.dimensions.lengthCm} x ${product.source.dimensions.widthCm} x ${product.source.dimensions.heightCm} cm`,
     weight_kg: product.source.weightKg,
     drafts: {
-      mercadolibre: toBackendDraft(product.drafts.mercadolibre),
-      wildberries: toBackendDraft(product.drafts.wildberries),
-      ozon: toBackendDraft(product.drafts.ozon),
+      mercadolibre: { ...asRecord(rawDrafts.mercadolibre), ...toBackendDraft(product.drafts.mercadolibre) },
+      wildberries: { ...asRecord(rawDrafts.wildberries), ...toBackendDraft(product.drafts.wildberries) },
+      ozon: { ...asRecord(rawDrafts.ozon), ...toBackendDraft(product.drafts.ozon) },
     },
   }
 }
@@ -413,6 +404,10 @@ export function normalizeProductsIndex(value: unknown): ProductIndexItem[] {
 
 export function normalizeProductIndexItem(value: unknown): ProductIndexItem {
   const record = asRecord(value)
+  const rawDraftStatuses = asRecord(record.draftStatuses ?? record.draft_statuses)
+  const draftStatuses = Object.fromEntries(
+    platformList(Object.keys(rawDraftStatuses)).map((platform) => [platform, getString(rawDraftStatuses, [platform])]),
+  ) as ProductIndexItem['draftStatuses']
   return {
     productId: getString(record, ['productId', 'product_id', 'id']),
     title: getString(record, ['title', 'name']),
@@ -422,6 +417,7 @@ export function normalizeProductIndexItem(value: unknown): ProductIndexItem {
     createdAt: getString(record, ['createdAt', 'created_at']),
     updatedAt: getString(record, ['updatedAt', 'updated_at']),
     platforms: platformList(record.platforms),
+    draftStatuses,
     productFilePath: getString(record, ['productFilePath', 'product_file_path']),
     collectStatus: getString(record, ['collectStatus', 'collect_status']),
     workflowStatus: getString(record, ['workflowStatus', 'workflow_status']),

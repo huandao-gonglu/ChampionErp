@@ -39,11 +39,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
-        if parsed.path in {"/", "/collect", "/library", "/edit", "/media", "/pricing", "/publish", "/settings", "/auth", "/logs", "/pending"}:
+        if parsed.path in {"/", "/collect", "/library", "/drafts", "/ml-items", "/edit", "/media", "/pricing", "/publish", "/settings", "/auth", "/logs", "/pending"}:
             page = {
                 "/": "workbench",
                 "/collect": "collect",
                 "/library": "library",
+                "/drafts": "drafts",
+                "/ml-items": "ml-items",
                 "/edit": "edit",
                 "/media": "media",
                 "/pricing": "pricing",
@@ -90,6 +92,16 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/publish-logs":
             self.send_json({"ok": True, "items": load_publish_logs()})
+            return
+        if parsed.path == "/api/mercadolibre/published-items":
+            params = urllib.parse.parse_qs(parsed.query)
+            status = str((params.get("status") or ["active"])[0] or "active")
+            limit = int((params.get("limit") or ["50"])[0] or 50)
+            try:
+                result = mercadolibre_remote_items(status=status, limit=limit)
+                self.send_json(result, 200 if result.get("ok") else 400)
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, 400)
             return
         if parsed.path == "/api/ai-config":
             config_service.write_env_template(APP_DIR)
@@ -533,7 +545,7 @@ class Handler(BaseHTTPRequestHandler):
                                     value["app_secret"] = value.get("client_secret")
                                 if value.get("app_secret") and not value.get("client_secret"):
                                     value["client_secret"] = value.get("app_secret")
-                            store_cfg.setdefault(key, {}).update(value)
+                            store_cfg = merge_store_config_fields(store_cfg, {key: value})
                     save_store_config(store_cfg)
                 store_cfg = load_store_config()
                 self.send_json({"ok": True, "appConfig": load_app_config(), "storeConfig": store_cfg, "storeAuthSummary": summarize_store_auth_states(store_cfg)})
@@ -609,6 +621,14 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(result, 200 if result.get("ok") else 400)
                 except Exception as exc:
                     self.send_json({"ok": False, "status": "real_publish_failed", "error": str(exc)}, 400)
+                return
+            if parsed.path == "/api/mercadolibre/close-item":
+                body = self.read_body()
+                try:
+                    result = mercadolibre_close_remote_item(str(body.get("item_id") or body.get("id") or ""))
+                    self.send_json(result, 200 if result.get("ok") else 400)
+                except Exception as exc:
+                    self.send_json({"ok": False, "error": str(exc)}, 400)
                 return
             if parsed.path == "/api/publish-bus/enqueue":
                 body = self.read_body()

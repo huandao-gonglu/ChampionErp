@@ -88,10 +88,16 @@ def exchange_mercadolibre_code_from_body(body: dict[str, Any]) -> dict[str, Any]
     redirect_uri = str(body.get("redirect_uri") or ml.get("redirect_uri") or "").strip()
     code_verifier = str(body.get("code_verifier") or ml.get("code_verifier") or "").strip()
     code_or_url = str(body.get("code_or_url") or body.get("code") or "").strip()
+    exchanged = False
     if not code_or_url:
         raise RuntimeError("请先粘贴包含 code= 的回调地址，或直接粘贴授权 code。")
     if not code_verifier:
         raise RuntimeError("CODE_VERIFIER_MISSING：请重新生成授权链接后再换 token。")
+    ml["app_id"] = app_id
+    ml["app_secret"] = app_secret
+    ml["client_secret"] = app_secret
+    ml["redirect_uri"] = redirect_uri
+    ml["site_id"] = str(body.get("site_id") or ml.get("site_id") or "MLM").strip() or "MLM"
     try:
         result = publisher.exchange_mercadolibre_code(app_id, app_secret, redirect_uri, code_or_url, code_verifier)
         token = str(result.get("access_token") or "").strip()
@@ -101,19 +107,15 @@ def exchange_mercadolibre_code_from_body(body: dict[str, Any]) -> dict[str, Any]
                 shop_name = publisher.fetch_mercadolibre_shop_name(token)
             except Exception:
                 shop_name = ""
-        ml["app_id"] = app_id
-        ml["app_secret"] = app_secret
-        ml["client_secret"] = ml.get("client_secret") or app_secret
-        ml["redirect_uri"] = redirect_uri
         ml["access_token"] = token
         if result.get("refresh_token"):
             ml["refresh_token"] = str(result.get("refresh_token") or "").strip()
         ml["shop_name"] = shop_name or str(result.get("user_id") or "").strip() or ml.get("shop_name", "")
         ml["user_id"] = str(result.get("user_id") or ml.get("user_id") or "").strip()
-        ml["site_id"] = str(body.get("site_id") or ml.get("site_id") or "MLM").strip() or "MLM"
         ml.update(_store_auth_result_fields("mercadolibre", "测试成功", ml.get("shop_name") or ml.get("user_id") or token))
         ml["auth_error_code"] = ""
         ml["auth_error_message"] = ""
+        exchanged = True
         append_ml_auth_test_log(
             "exchange_code",
             "success",
@@ -138,9 +140,9 @@ def exchange_mercadolibre_code_from_body(body: dict[str, Any]) -> dict[str, Any]
             "next_action": "授权成功。下一步可直接在授权页点击“立即刷新类目缓存”，同步 Mercado Libre 官方类目和必填属性。",
         }
     finally:
-        if "code_verifier" in ml:
+        if exchanged and "code_verifier" in ml:
             ml.pop("code_verifier", None)
-        save_store_config(config)
+        save_store_config(config, preserve_empty_sensitive=False)
 
 
 def refresh_mercadolibre_token_from_body(body: dict[str, Any]) -> dict[str, Any]:
@@ -229,11 +231,6 @@ def test_store_auth(platform: str, scope: str = "") -> dict[str, Any]:
             raise RuntimeError("不支持的平台。")
     except Exception as exc:
         error_message = str(exc)
-        error_code = store_auth_failure_code(platform, error_message)
-        next_action = _auth_next_action(platform, "测试失败", error_code, error_message)
-        store = config.setdefault(platform, {})
-        store.update(_store_auth_result_fields(platform, "测试失败", store.get("auth_masked_account") or store.get("shop_name") or "", error_code, error_message, next_action))
-        save_store_config(config)
         raise RuntimeError(f"测试失败：{error_message}") from exc
     save_store_config(config)
     return {

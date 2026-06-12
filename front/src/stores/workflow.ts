@@ -5,6 +5,7 @@ import {
   buildMercadoLibreAuthLink,
   calculatePrice as calculatePriceApi,
   claimProducts as claimProductsApi,
+  closeMercadoLibrePublishedItem,
   clearStoreAuth,
   clean1688Text,
   collectBatch as collectBatchApi,
@@ -20,6 +21,7 @@ import {
   fetchCategoryCacheRefreshJob,
   fetchCategoryAttrs,
   fetchMercadoLibreAuthChecklist,
+  fetchMercadoLibrePublishedItems,
   fetchProductsIndex,
   fetchPublishJob,
   fetchPublishLogs,
@@ -67,6 +69,7 @@ import type {
   CollectForm,
   Marketplace,
   MercadoLibreAuthChecklist,
+  MercadoLibreRemoteItem,
   MercadoLibreTestMode,
   PrecheckIssue,
   PricingInput,
@@ -83,6 +86,10 @@ import type {
 function asStoreAuthSummary(raw: UnknownRecord): UnknownRecord | null {
   const value = raw.storeAuthSummary
   return value && typeof value === 'object' && !Array.isArray(value) ? value as UnknownRecord : null
+}
+
+function authResultError(result: AuthResult, fallback: string): string {
+  return result.error || result.message || result.nextAction || fallback
 }
 
 function isRecord(value: unknown): value is UnknownRecord {
@@ -165,6 +172,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
   const publishJob = ref<PublishJob | null>(null)
   const publishJobStatus = ref<UnknownRecord | null>(null)
   const publishLogs = ref<PublishLogItem[]>([])
+  const mercadoLibreRemoteItems = ref<MercadoLibreRemoteItem[]>([])
+  const mercadoLibreRemoteStatus = ref('active')
   const activeMarketplace = ref<Marketplace>('mercadolibre')
   const logs = ref<string[]>(['等待读取后端状态。'])
   const appConfig = ref<UnknownRecord>({})
@@ -611,7 +620,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
         : productsIndex.value.map((item) => item.productId).filter(Boolean)
     if (!ids.length) {
       setError('请先选择商品。')
-      return
+      return false
     }
     loading.value = true
     setError('')
@@ -620,8 +629,10 @@ export const useWorkflowStore = defineStore('workflow', () => {
       await claimProductsApi(ids, platforms)
       productsIndex.value = await fetchProductsIndex()
       addLog(`已认领 ${ids.length} 个商品到平台草稿。`)
+      return true
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '认领商品失败')
+      return false
     } finally {
       loading.value = false
     }
@@ -631,7 +642,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     const id = product.value.productId
     if (!id) {
       setError('请先从商品库加载一个商品。')
-      return
+      return false
     }
     loading.value = true
     setError('')
@@ -641,8 +652,10 @@ export const useWorkflowStore = defineStore('workflow', () => {
       product.value = loaded.product
       productsIndex.value = await fetchProductsIndex()
       addLog(`已推到 ${activeMarketplace.value} 平台草稿箱。`)
+      return true
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '推到平台草稿箱失败')
+      return false
     } finally {
       loading.value = false
     }
@@ -1165,6 +1178,34 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
+  async function refreshMercadoLibreRemoteItems(status: string = mercadoLibreRemoteStatus.value) {
+    loading.value = true
+    setError('')
+    try {
+      mercadoLibreRemoteStatus.value = status
+      mercadoLibreRemoteItems.value = await fetchMercadoLibrePublishedItems(status)
+      addLog(`Mercado Libre 远程商品已刷新：${mercadoLibreRemoteItems.value.length} 条。`)
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : '读取 Mercado Libre 已发布商品失败')
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function closeMercadoLibreRemoteItem(itemId: string) {
+    loading.value = true
+    setError('')
+    try {
+      const result = await closeMercadoLibrePublishedItem(itemId)
+      addLog(String(result.message || `${itemId} 已结束发布。`))
+      await refreshMercadoLibreRemoteItems(mercadoLibreRemoteStatus.value)
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : '删除 Mercado Libre 商品失败')
+    } finally {
+      loading.value = false
+    }
+  }
+
   async function loadAiConfig() {
     loading.value = true
     setError('')
@@ -1236,6 +1277,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     setError('')
     try {
       lastAuthResult.value = await testStoreAuth(platform, scope)
+      if (!lastAuthResult.value.ok) throw new Error(authResultError(lastAuthResult.value, '测试授权失败'))
       addLog(`${platform} 授权测试：${lastAuthResult.value.message || lastAuthResult.value.error || '完成'}`)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '测试授权失败')
@@ -1276,6 +1318,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     setError('')
     try {
       lastAuthResult.value = await openAuthLink(url, browser)
+      if (!lastAuthResult.value.ok) throw new Error(authResultError(lastAuthResult.value, '打开授权链接失败'))
       addLog(lastAuthResult.value.message || '已打开授权链接。')
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '打开授权链接失败')
@@ -1292,6 +1335,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
       const summary = asStoreAuthSummary(lastAuthResult.value.raw)
       if (summary) storeAuthSummary.value = summary
       mercadolibreAuthChecklist.value = await fetchMercadoLibreAuthChecklist()
+      if (!lastAuthResult.value.ok) throw new Error(authResultError(lastAuthResult.value, '刷新 Mercado Libre token 失败'))
       addLog(`Mercado Libre token 刷新：${lastAuthResult.value.message || lastAuthResult.value.error || '完成'}`)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '刷新 Mercado Libre token 失败')
@@ -1308,6 +1352,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
       const summary = asStoreAuthSummary(lastAuthResult.value.raw)
       if (summary) storeAuthSummary.value = summary
       mercadolibreAuthChecklist.value = await fetchMercadoLibreAuthChecklist()
+      if (!lastAuthResult.value.ok) throw new Error(authResultError(lastAuthResult.value, 'Mercado Libre 真实接口测试失败'))
       addLog(`Mercado Libre 真实接口测试 ${mode}：${lastAuthResult.value.message || lastAuthResult.value.error || lastAuthResult.value.raw.status || '完成'}`)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : 'Mercado Libre 真实接口测试失败')
@@ -1322,6 +1367,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     try {
       lastAuthResult.value = await exchangeMercadoLibreCode(codeOrUrl, params)
       mercadolibreAuthChecklist.value = await fetchMercadoLibreAuthChecklist()
+      if (!lastAuthResult.value.ok) throw new Error(authResultError(lastAuthResult.value, 'Mercado Libre 换 token 失败'))
       addLog(`Mercado Libre 换 token：${lastAuthResult.value.message || '完成'}`)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : 'Mercado Libre 换 token 失败')
@@ -1374,6 +1420,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
     publishJob,
     publishJobStatus,
     publishLogs,
+    mercadoLibreRemoteItems,
+    mercadoLibreRemoteStatus,
     activeMarketplace,
     logs,
     appConfig,
@@ -1441,6 +1489,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
     confirmRealPublish,
     refreshPublishJob,
     refreshPublishLogs,
+    refreshMercadoLibreRemoteItems,
+    closeMercadoLibreRemoteItem,
     loadAiConfig,
     saveAiSettings,
     testAiSettings,

@@ -300,6 +300,10 @@ def apply_claimed_platform_drafts(product: dict[str, Any], claim_platforms: list
         draft = normalized.setdefault("drafts", {}).setdefault(platform, default_draft(platform))
         if not isinstance(draft, dict):
             continue
+        existing_publish_status = str(draft.get("publish_status") or "").strip().lower()
+        existing_status = str(draft.get("status") or "").strip().lower()
+        if existing_publish_status in {"published", "real_publish_success", "success"} or existing_status == "published":
+            continue
         draft["enabled"] = True
         draft["title"] = draft.get("title") if use_existing(draft.get("title")) else source.get("title") or normalized.get("name") or ""
         draft["description"] = draft.get("description") if use_existing(draft.get("description")) else source.get("description") or ""

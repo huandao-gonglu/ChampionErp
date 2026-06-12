@@ -194,12 +194,136 @@ def run_mercadolibre_07d_test(mode: str, product: dict[str, Any] | None = None, 
             next_action = "请先选择真实 Mercado Libre 类目，或在 07D 向导里手动输入真实 category_id。"
         else:
             next_action = _auth_next_action("mercadolibre", "测试失败", code, message)
-        if mode in {"user_info", "refresh_token"} and code != "NETWORK_BLOCKED":
-            ml.update(_store_auth_result_fields("mercadolibre", "测试失败", ml.get("shop_name") or ml.get("user_id") or "", code, message, next_action))
-            save_store_config(config)
         response = {"ok": False, "platform": "mercadolibre", "mode": mode, "status": status, "error_code": code, "error_message": message, "next_action": next_action, "real_publish_called": False}
         append_ml_auth_test_log(mode, status, {"mode": mode}, response, code, message, next_action)
         return response
+
+
+def _mercadolibre_item_summary(item: dict[str, Any]) -> dict[str, Any]:
+    attrs = item.get("attributes") if isinstance(item.get("attributes"), list) else []
+    seller_sku = ""
+    for attr in attrs:
+        if not isinstance(attr, dict):
+            continue
+        if str(attr.get("id") or "").upper() == "SELLER_SKU":
+            seller_sku = str(attr.get("value_name") or attr.get("value_id") or "").strip()
+            break
+    return {
+        "id": str(item.get("id") or "").strip(),
+        "title": str(item.get("title") or "").strip(),
+        "status": str(item.get("status") or "").strip(),
+        "sub_status": item.get("sub_status") if isinstance(item.get("sub_status"), list) else [],
+        "permalink": str(item.get("permalink") or "").strip(),
+        "thumbnail": str(item.get("thumbnail") or item.get("secure_thumbnail") or "").strip(),
+        "price": item.get("price"),
+        "currency_id": str(item.get("currency_id") or "").strip(),
+        "available_quantity": item.get("available_quantity"),
+        "sold_quantity": item.get("sold_quantity"),
+        "category_id": str(item.get("category_id") or "").strip(),
+        "listing_type_id": str(item.get("listing_type_id") or "").strip(),
+        "seller_sku": seller_sku,
+        "date_created": str(item.get("date_created") or "").strip(),
+        "last_updated": str(item.get("last_updated") or "").strip(),
+        "raw": _sanitize_for_log(item),
+    }
+
+
+def mercadolibre_remote_items(status: str = "active", limit: int = 50) -> dict[str, Any]:
+    config = load_store_config()
+    auth = ensure_mercadolibre_auth_ready(config)
+    if not auth.get("ok"):
+        return {"ok": False, "error": auth.get("message") or "Mercado Libre 授权不可用", "error_code": auth.get("error_code") or "AUTH_INVALID", "next_action": auth.get("next_action") or "请先完成授权测试"}
+    token = str(auth.get("token") or "").strip()
+    store = config.get("mercadolibre", {}) if isinstance(config.get("mercadolibre"), dict) else {}
+    user_id = str(store.get("user_id") or store.get("seller_id") or "").strip()
+    if not user_id:
+        me = publisher.request_json("GET", "https://api.mercadolibre.com/users/me", token)
+        if not isinstance(me, dict):
+            raise RuntimeError("Mercado Libre users/me 返回异常")
+        user_id = str(me.get("id") or "").strip()
+        if user_id:
+            config.setdefault("mercadolibre", {})["user_id"] = user_id
+            config.setdefault("mercadolibre", {})["seller_id"] = user_id
+            save_store_config(config)
+    if not user_id:
+        raise RuntimeError("Mercado Libre seller id 为空，请先测试授权。")
+
+    wanted = str(status or "active").strip().lower()
+    statuses = ["active", "paused", "closed"] if wanted == "all" else [wanted]
+    statuses = [item for item in statuses if item in {"active", "paused", "closed"}] or ["active"]
+    limit = max(1, min(int(limit or 50), 100))
+
+    item_ids: list[str] = []
+    paging: dict[str, Any] = {}
+    for item_status in statuses:
+        query = urllib.parse.urlencode({"status": item_status, "limit": limit})
+        search = publisher.request_json("GET", f"https://api.mercadolibre.com/users/{user_id}/items/search?{query}", token)
+        if not isinstance(search, dict):
+            continue
+        paging[item_status] = search.get("paging") if isinstance(search.get("paging"), dict) else {}
+        for item_id in search.get("results") or []:
+            text = str(item_id or "").strip()
+            if text and text not in item_ids:
+                item_ids.append(text)
+
+    items: list[dict[str, Any]] = []
+    for index in range(0, len(item_ids), 20):
+        chunk = item_ids[index:index + 20]
+        if not chunk:
+            continue
+        batch = publisher.request_json("GET", f"https://api.mercadolibre.com/items?ids={urllib.parse.quote(','.join(chunk))}", token)
+        if not isinstance(batch, list):
+            continue
+        for entry in batch:
+            body = entry.get("body") if isinstance(entry, dict) else None
+            if isinstance(body, dict):
+                items.append(_mercadolibre_item_summary(body))
+
+    return {
+        "ok": True,
+        "platform": "mercadolibre",
+        "status": wanted,
+        "user_id": user_id,
+        "items": items,
+        "item_ids": item_ids,
+        "paging": paging,
+        "checked_at": collect_time_iso(),
+    }
+
+
+def mercadolibre_close_remote_item(item_id: str) -> dict[str, Any]:
+    item_id = str(item_id or "").strip()
+    if not item_id:
+        return {"ok": False, "error": "缺少 Mercado Libre item id", "error_code": "ITEM_ID_MISSING"}
+    config = load_store_config()
+    auth = ensure_mercadolibre_auth_ready(config)
+    if not auth.get("ok"):
+        return {"ok": False, "error": auth.get("message") or "Mercado Libre 授权不可用", "error_code": auth.get("error_code") or "AUTH_INVALID", "next_action": auth.get("next_action") or "请先完成授权测试"}
+    token = str(auth.get("token") or "").strip()
+    if item_id.upper().startswith("CBT"):
+        store = config.get("mercadolibre", {}) if isinstance(config.get("mercadolibre"), dict) else {}
+        target_site_id = str(store.get("site_id") or "MLM").strip().upper() or "MLM"
+        payload = {"site_id": target_site_id, "logistic_type": "remote", "deleted": True}
+        result = publisher.request_json("PUT", f"https://api.mercadolibre.com/global/items/{urllib.parse.quote(item_id)}", token, payload)
+        return {
+            "ok": True,
+            "platform": "mercadolibre",
+            "item_id": item_id,
+            "status": "closed",
+            "raw": _sanitize_for_log(result if isinstance(result, dict) else {"response": result}),
+            "message": f"{item_id} 已提交 Global Selling {target_site_id} 删除。",
+        }
+    result = publisher.request_json("PUT", f"https://api.mercadolibre.com/items/{urllib.parse.quote(item_id)}", token, {"status": "closed"})
+    item = result if isinstance(result, dict) else {}
+    return {
+        "ok": True,
+        "platform": "mercadolibre",
+        "item_id": item_id,
+        "status": str(item.get("status") or "closed"),
+        "item": _mercadolibre_item_summary(item) if item else {},
+        "raw": _sanitize_for_log(item),
+        "message": f"{item_id} 已提交结束发布。",
+    }
 
 
 def _local_path_from_image_item(item: dict[str, Any]) -> Path | None:
@@ -321,8 +445,13 @@ def ensure_mercadolibre_auth_ready(config: dict[str, Any]) -> dict[str, Any]:
     if not token:
         return {"ok": False, "error_code": "AUTH_NOT_CONFIGURED", "message": "Mercado Libre Access Token 为空", "next_action": "请先完成授权测试"}
     try:
-        name = publisher.fetch_mercadolibre_shop_name(token)
+        me = publisher.request_json("GET", "https://api.mercadolibre.com/users/me", token)
+        if not isinstance(me, dict):
+            raise RuntimeError("Mercado Libre users/me 返回异常")
+        name = str(me.get("nickname") or me.get("id") or "").strip()
         store["shop_name"] = name or store.get("shop_name", "")
+        store["account_site_id"] = str(me.get("site_id") or store.get("account_site_id") or "").strip().upper()
+        store["user_id"] = str(me.get("id") or store.get("user_id") or "").strip()
         store.update(_store_auth_result_fields("mercadolibre", "测试成功", name or token))
         store["auth_error_code"] = ""
         store["auth_error_message"] = ""
@@ -336,8 +465,13 @@ def ensure_mercadolibre_auth_ready(config: dict[str, Any]) -> dict[str, Any]:
                 token = str(refreshed.get("access_token") or "").strip()
                 store["access_token"] = token
                 store["refresh_token"] = str(refreshed.get("refresh_token") or store.get("refresh_token") or "").strip()
-                name = publisher.fetch_mercadolibre_shop_name(token)
+                me = publisher.request_json("GET", "https://api.mercadolibre.com/users/me", token)
+                if not isinstance(me, dict):
+                    raise RuntimeError("Mercado Libre users/me 返回异常")
+                name = str(me.get("nickname") or me.get("id") or "").strip()
                 store["shop_name"] = name or store.get("shop_name", "")
+                store["account_site_id"] = str(me.get("site_id") or store.get("account_site_id") or "").strip().upper()
+                store["user_id"] = str(me.get("id") or store.get("user_id") or "").strip()
                 store.update(_store_auth_result_fields("mercadolibre", "测试成功", name or token))
                 store["auth_error_code"] = ""
                 store["auth_error_message"] = ""
@@ -346,10 +480,6 @@ def ensure_mercadolibre_auth_ready(config: dict[str, Any]) -> dict[str, Any]:
             except Exception as refresh_exc:
                 message = str(refresh_exc)
         code = store_auth_failure_code("mercadolibre", message)
-        store.update(_store_auth_result_fields("mercadolibre", "测试失败", token))
-        store["auth_error_code"] = code
-        store["auth_error_message"] = message
-        save_store_config(config)
         return {"ok": False, "error_code": "AUTH_TOKEN_EXPIRED" if "expired" in code.lower() or "expired" in message.lower() else "AUTH_INVALID", "message": message, "next_action": "请先完成授权测试或刷新 token"}
 
 
@@ -404,6 +534,8 @@ def mercadolibre_config_for_payload(config: dict[str, Any], product: dict[str, A
 def build_mercadolibre_payload_preview(product: dict[str, Any], config: dict[str, Any], picture_refs: list[str] | None = None) -> dict[str, Any]:
     refs = picture_refs if picture_refs is not None else image_pool_refs_for_platform(product, "mercadolibre")
     payload_product = mercadolibre_product_for_payload(product, refs)
+    if picture_refs is not None:
+        payload_product.setdefault("source", {})["image_pool"] = []
     payload_config = mercadolibre_config_for_payload(config, payload_product)
     return build_publish_payload(payload_product, "mercadolibre", payload_config)
 
@@ -451,7 +583,7 @@ def mercadolibre_real_publish(product: dict[str, Any], confirm: bool) -> dict[st
         return compact_publish_failure_response("not_ready", "，".join(payload_errors), saved, payload_path=str(payload_path), next_action="前往对应页面补齐字段")
     try:
         result = publisher.publish_mercadolibre(payload, str(auth.get("token") or ""))
-        ok = isinstance(result, dict) and bool(result.get("id") or result.get("ok") or result.get("success"))
+        ok = isinstance(result, dict) and bool(result.get("id") or result.get("item_id") or result.get("ok") or result.get("success") or result.get("site_items"))
         status = "real_publish_success" if ok else "real_publish_failed"
         updated = apply_precheck_to_product(product, "mercadolibre", precheck, status=status)
         append_ml_publish_log(updated, status, started_at, payload, result, "" if ok else "REAL_PUBLISH_FAILED", "" if ok else "Mercado Libre 未返回成功状态", {}, "" if ok else "查看响应后重试")

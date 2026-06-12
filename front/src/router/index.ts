@@ -28,6 +28,16 @@ const legacyEntryRoutes: RouteRecordRaw[] = [
     meta: { title: '商品库', hideInMenu: true },
   },
   {
+    path: '/drafts',
+    component: workflowComponent,
+    meta: { title: '草稿箱', hideInMenu: true },
+  },
+  {
+    path: '/ml-items',
+    component: workflowComponent,
+    meta: { title: 'ML已发布', hideInMenu: true },
+  },
+  {
     path: '/edit',
     redirect: '/library',
     meta: { title: '商品库', hideInMenu: true },

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { calculatePrice, imageTranslate, publishPrecheck } from '@/api/workflow'
 import { apiClient } from '@/api/client'
 import { createEmptyProduct } from '@/constants/initialState'
+import { normalizeProductsIndex, toBackendProduct } from '@/api/workflow/normalizers'
 
 vi.mock('@/api/client', () => ({
   API_REQUEST_TIMEOUT_MS: 30000,
@@ -91,6 +92,56 @@ describe('calculatePrice API mapping', () => {
 })
 
 describe('publishPrecheck API mapping', () => {
+  it('maps draft statuses for the draft box', () => {
+    const items = normalizeProductsIndex([
+      {
+        product_id: 'prod-1',
+        title: 'Product 1',
+        platforms: ['mercadolibre', 'ozon'],
+        draft_statuses: {
+          mercadolibre: 'claimed',
+          wildberries: 'collected',
+          ozon: 'ready_to_publish',
+        },
+      },
+    ])
+
+    expect(items[0].draftStatuses).toEqual({
+      mercadolibre: 'claimed',
+      wildberries: 'collected',
+      ozon: 'ready_to_publish',
+    })
+  })
+
+  it('keeps backend draft precheck metadata when posting a normalized product', () => {
+    const product = createEmptyProduct()
+    product.productId = 'prod-1'
+    product.drafts.mercadolibre.title = 'Draft title'
+    product.drafts.mercadolibre.stock = '10'
+    product.drafts.mercadolibre.status = 'claimed'
+    product.raw = {
+      drafts: {
+        mercadolibre: {
+          publish_status: 'ready',
+          validation_errors: [{ code: 'PRICING_NOT_APPLIED', severity: 'warning' }],
+          pricing: { suggested_price: '172.68' },
+        },
+      },
+      publish_preview: {
+        mercadolibre: { ok: true },
+      },
+    }
+
+    const result = toBackendProduct(product)
+    const drafts = result.drafts as Record<string, Record<string, unknown>>
+
+    expect(drafts.mercadolibre.publish_status).toBe('ready')
+    expect(drafts.mercadolibre.validation_errors).toEqual([{ code: 'PRICING_NOT_APPLIED', severity: 'warning' }])
+    expect(drafts.mercadolibre.pricing).toEqual({ suggested_price: '172.68' })
+    expect(drafts.mercadolibre.status).toBe('claimed')
+    expect(result.publish_preview).toEqual({ mercadolibre: { ok: true } })
+  })
+
   it('keeps structured backend issues readable for the UI', async () => {
     const product = createEmptyProduct()
     vi.mocked(apiClient.post).mockResolvedValueOnce({

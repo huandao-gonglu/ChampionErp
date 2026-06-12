@@ -79,6 +79,10 @@ def validate_mercadolibre_draft(product: dict[str, Any], config: dict[str, Any])
             "PACKAGE_WIDTH": "width_cm",
             "PACKAGE_HEIGHT": "height_cm",
             "PACKAGE_WEIGHT": "weight_kg",
+            "SELLER_PACKAGE_LENGTH": "length_cm",
+            "SELLER_PACKAGE_WIDTH": "width_cm",
+            "SELLER_PACKAGE_HEIGHT": "height_cm",
+            "SELLER_PACKAGE_WEIGHT": "weight_kg",
         }
         if attr_id in package_map and str(pkg.get(package_map[attr_id]) or "").strip():
             return True
@@ -233,13 +237,18 @@ def apply_precheck_to_product(product: dict[str, Any], platform: str, precheck: 
     draft = deepcopy(_draft_for_platform(normalized, platform))
     combined = list(precheck.get("errors") or []) + list(precheck.get("warnings") or [])
     draft["validation_errors"] = combined
-    draft["publish_status"] = status or ("ready" if precheck.get("ok") else "not_ready")
+    requested_status = status or ("ready" if precheck.get("ok") else "not_ready")
+    current_publish_status = str(draft.get("publish_status") or "").strip().lower()
+    if current_publish_status in {"published", "real_publish_success", "success"} and requested_status in {"ready", "not_ready", "local_precheck_passed"}:
+        draft["publish_status"] = current_publish_status
+    else:
+        draft["publish_status"] = requested_status
     publish_logs = draft.get("publish_logs") if isinstance(draft.get("publish_logs"), list) else []
     publish_logs.insert(
         0,
         {
             "time": collect_time_iso(),
-            "status": draft["publish_status"],
+            "status": requested_status,
             "error_count": len(precheck.get("errors") or []),
             "warning_count": len(precheck.get("warnings") or []),
         },

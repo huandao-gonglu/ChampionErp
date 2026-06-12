@@ -32,6 +32,65 @@ def listing_for(plan: dict[str, Any], platform_key: str) -> dict[str, Any]:
     return plan["platforms"].get(platform_key, {}).get("listing", {})
 
 
+def _format_number_unit(number: float, unit: str) -> str:
+    if float(number).is_integer():
+        value = str(int(number))
+    else:
+        value = str(round(number, 2)).rstrip("0").rstrip(".")
+    return f"{value} {unit}"
+
+
+def _normalize_mercadolibre_sale_terms(sale_terms: Any, is_global_selling: bool) -> list[dict[str, Any]]:
+    if not isinstance(sale_terms, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    warranty_type = ""
+    for raw in sale_terms:
+        if not isinstance(raw, dict):
+            continue
+        term = dict(raw)
+        term_id = str(term.get("id") or "").strip()
+        if term_id == "WARRANTY_TYPE":
+            value = str(term.get("value_name") or term.get("name") or "").strip().lower()
+            if "vendedor" in value or "seller" in value:
+                term["value_id"] = "2230280"
+                term["value_name"] = "Seller warranty" if is_global_selling else "Garantía del vendedor"
+            elif "fábrica" in value or "fabrica" in value or "factory" in value:
+                term["value_id"] = "2230279"
+                term["value_name"] = "Factory warranty" if is_global_selling else "Garantía de fábrica"
+            elif "sin" in value or "no warranty" in value or "no garantía" in value:
+                term["value_id"] = "6150835"
+                term["value_name"] = "No warranty" if is_global_selling else "Sin garantía"
+            warranty_type = str(term.get("value_name") or "").strip().lower()
+            normalized.append(term)
+            continue
+        if term_id == "WARRANTY_TIME":
+            struct = term.get("value_struct") if isinstance(term.get("value_struct"), dict) else {}
+            raw_number = struct.get("number")
+            if raw_number in (None, ""):
+                match = re.search(r"\d+(?:[,.]\d+)?", str(term.get("value_name") or ""))
+                raw_number = match.group(0) if match else ""
+            number = number_or_zero(raw_number)
+            if number <= 0 or "sin garantía" in warranty_type or "no warranty" in warranty_type:
+                continue
+            raw_unit = str(struct.get("unit") or term.get("value_name") or "").strip().lower()
+            if "mes" in raw_unit or "month" in raw_unit:
+                unit = "months" if is_global_selling else "meses"
+            elif "año" in raw_unit or "ano" in raw_unit or "year" in raw_unit:
+                unit = "years" if is_global_selling else "años"
+            else:
+                unit = "days" if is_global_selling else "días"
+            if unit in {"días", "days"}:
+                number = max(3, round(number / 30))
+                unit = "months" if is_global_selling else "meses"
+            term["value_name"] = _format_number_unit(number, unit)
+            term["value_struct"] = {"number": int(number) if float(number).is_integer() else number, "unit": unit}
+            normalized.append(term)
+            continue
+        normalized.append(term)
+    return normalized
+
+
 def build_mercadolibre_payload(
     product: dict[str, Any],
     plan: dict[str, Any],
@@ -47,9 +106,15 @@ def build_mercadolibre_payload(
     price_usd = price_input if currency_id == "USD" else round(price_input / mxn_rate, 2)
     logistic_type = str(settings.get("mercadolibre_logistic_type") or "remote").strip() or "remote"
     sku = settings.get("sku") or product.get("name") or "SKU-1"
-    site_id = store.get("site_id") or "MLM"
+    site_id = str(store.get("site_id") or "MLM").strip().upper() or "MLM"
+    account_site_id = str(store.get("account_site_id") or store.get("user_site_id") or "").strip().upper()
     category_id = product.get("category_id") or store.get("category_id")
-    is_global_selling = str(category_id or "").startswith("CBT")
+    category_id = str(category_id or "").strip()
+    is_global_selling = account_site_id == "CBT" or category_id.startswith("CBT")
+    if is_global_selling and not category_id.startswith("CBT"):
+        match = re.search(r"(\d+)$", category_id)
+        if match:
+            category_id = f"CBT{match.group(1)}"
     attributes = [
         {"id": "BRAND", "value_name": product.get("brand") or "Generic"},
         {"id": "SELLER_SKU", "value_name": sku},
@@ -83,35 +148,39 @@ def build_mercadolibre_payload(
         attributes.append({"id": "GTIN", "value_name": upc})
     else:
         attributes.append({"id": "EMPTY_GTIN_REASON", "value_name": "The product does not have a registered code"})
+    package_attr_prefix = "PACKAGE" if is_global_selling else "SELLER_PACKAGE"
     attributes.extend(
         [
-            {"id": "PACKAGE_LENGTH", "value_name": f"{package_length} cm"},
-            {"id": "PACKAGE_WIDTH", "value_name": f"{package_width} cm"},
-            {"id": "PACKAGE_HEIGHT", "value_name": f"{package_height} cm"},
-            {"id": "PACKAGE_WEIGHT", "value_name": f"{package_weight} g"},
+            {"id": f"{package_attr_prefix}_LENGTH", "value_name": f"{package_length} cm"},
+            {"id": f"{package_attr_prefix}_WIDTH", "value_name": f"{package_width} cm"},
+            {"id": f"{package_attr_prefix}_HEIGHT", "value_name": f"{package_height} cm"},
+            {"id": f"{package_attr_prefix}_WEIGHT", "value_name": f"{package_weight} g"},
         ]
     )
     extra_attributes = settings.get("mercadolibre_attributes") or {}
     if isinstance(extra_attributes, dict):
         for attr_id, value in extra_attributes.items():
+            attr_id = str(attr_id or "").strip()
+            if attr_id.startswith(("PACKAGE_", "SELLER_PACKAGE_")):
+                continue
             value = str(value or "").strip()
             if attr_id and value:
-                attributes.append({"id": str(attr_id), "value_name": value})
+                attributes.append({"id": attr_id, "value_name": value})
     product_attributes = product.get("attributes") or {}
     if isinstance(product_attributes, dict):
         for attr_id, value in product_attributes.items():
+            attr_id = str(attr_id or "").strip()
+            if attr_id.startswith(("PACKAGE_", "SELLER_PACKAGE_")):
+                continue
             value = str(value or "").strip()
             if attr_id and value:
-                attributes.append({"id": str(attr_id), "value_name": value})
-    if not any(attr.get("id") == "PART_NUMBER" for attr in attributes):
-        attributes.append({"id": "PART_NUMBER", "value_name": str(model or sku)[:255]})
-    if not any(attr.get("id") == "VEHICLE_TYPE" for attr in attributes):
-        attributes.append({"id": "VEHICLE_TYPE", "value_name": "Car/Truck"})
+                attributes.append({"id": attr_id, "value_name": value})
     if is_global_selling:
+        attributes.append({"id": "ITEM_CONDITION", "value_id": "2230284", "value_name": "New"})
         attributes = [
             attr
             for attr in attributes
-            if str(attr.get("id") or "") not in {"CONDITION", "ITEM_CONDITION"}
+            if str(attr.get("id") or "") not in {"CONDITION"}
         ]
     deduped: dict[str, dict[str, Any]] = {}
     for attr in attributes:
@@ -135,30 +204,22 @@ def build_mercadolibre_payload(
             {
                 "id": "WARRANTY_TYPE",
                 "name": "Warranty type",
-                "value_id": "6150835",
-                "value_name": "No warranty",
-            },
-            {
-                "id": "WARRANTY_TIME",
-                "name": "Warranty time",
-                "value_name": "0 days",
+                "value_id": "6150835" if not is_global_selling else "",
+                "value_name": "Sin garantía" if not is_global_selling else "No warranty",
             },
         ]
+    sale_terms = _normalize_mercadolibre_sale_terms(sale_terms, is_global_selling)
 
     site_entry: dict[str, Any] = {
-        "site_id": site_id,
+        "site_id": site_id if site_id != "CBT" else "MLM",
         "logistic_type": logistic_type,
         "price": price_usd,
-        "net_proceeds": net_proceeds,
         "listing_type_id": settings.get("listing_type_id") or "gold_special",
-        "sale_terms": sale_terms,
         "title": title,
     }
-    if pictures:
-        site_entry["pictures"] = pictures
 
     payload = {
-        "_global_selling": True,
+        "_global_selling": is_global_selling,
         "title": title,
         "category_id": category_id,
         "price": price_usd,
@@ -168,16 +229,13 @@ def build_mercadolibre_payload(
         "catalog_listing": False,
         "listing_type_id": settings.get("listing_type_id") or "gold_special",
         "condition": settings.get("condition") or "new",
-        "sites_to_sell": [site_entry],
         "attributes": attributes,
         "sale_terms": sale_terms,
         "description": {"plain_text": listing.get("description", "")},
     }
-    if not is_global_selling:
-        payload["package_length"] = package_length
-        payload["package_width"] = package_width
-        payload["package_height"] = package_height
-        payload["package_weight"] = package_weight
+    if is_global_selling:
+        payload["sites_to_sell"] = [site_entry]
+        payload.pop("condition", None)
     if pictures:
         payload["pictures"] = pictures
     return payload

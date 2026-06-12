@@ -8,6 +8,7 @@ import type {
   CollectForm,
   ImageAsset,
   Marketplace,
+  MercadoLibreRemoteItem,
   MercadoLibreAuthChecklist,
   MercadoLibreTestMode,
   PricingInput,
@@ -30,7 +31,6 @@ import type {
 } from './workflow/normalizers'
 import {
   asRecord,
-  diagnosticsToCollectDiagnostics,
   ensureOk,
   getBoolean,
   getNumber,
@@ -39,7 +39,6 @@ import {
   normalizeBackendProduct,
   normalizeBrowserStatus,
   normalizeDeleteProductsResult,
-  normalizeImageAsset,
   normalizeMercadoLibreAuthChecklist,
   normalizeProductMutation,
   normalizeProductOperation,
@@ -107,6 +106,42 @@ export async function fetchPublishLogs(): Promise<PublishLogItem[]> {
   const data = asRecord(response.data)
   ensureOk(data, '读取发布日志失败')
   return normalizePublishLogs(data.items)
+}
+
+function normalizeMercadoLibreRemoteItem(value: unknown): MercadoLibreRemoteItem {
+  const record = asRecord(value)
+  return {
+    id: getString(record, ['id']),
+    title: getString(record, ['title']),
+    status: getString(record, ['status']),
+    subStatus: stringList(record.sub_status ?? record.subStatus),
+    permalink: getString(record, ['permalink']),
+    thumbnail: getString(record, ['thumbnail']),
+    price: getNumber(record, ['price']),
+    currencyId: getString(record, ['currency_id', 'currencyId']),
+    availableQuantity: getNumber(record, ['available_quantity', 'availableQuantity']),
+    soldQuantity: getNumber(record, ['sold_quantity', 'soldQuantity']),
+    categoryId: getString(record, ['category_id', 'categoryId']),
+    listingTypeId: getString(record, ['listing_type_id', 'listingTypeId']),
+    sellerSku: getString(record, ['seller_sku', 'sellerSku']),
+    dateCreated: getString(record, ['date_created', 'dateCreated']),
+    lastUpdated: getString(record, ['last_updated', 'lastUpdated']),
+    raw: record,
+  }
+}
+
+export async function fetchMercadoLibrePublishedItems(status = 'active'): Promise<MercadoLibreRemoteItem[]> {
+  const response = await apiClient.get(`/api/mercadolibre/published-items?status=${encodeURIComponent(status)}&limit=50`)
+  const data = asRecord(response.data)
+  ensureOk(data, '读取 Mercado Libre 已发布商品失败')
+  return Array.isArray(data.items) ? data.items.map(normalizeMercadoLibreRemoteItem) : []
+}
+
+export async function closeMercadoLibrePublishedItem(itemId: string): Promise<UnknownRecord> {
+  const response = await apiClient.post('/api/mercadolibre/close-item', { item_id: itemId })
+  const data = asRecord(response.data)
+  ensureOk(data, '删除 Mercado Libre 商品失败')
+  return data
 }
 
 export async function saveProduct(product: Product): Promise<ProductMutationResponse> {
@@ -229,6 +264,10 @@ export async function claimProducts(productIds: string[], platforms: Marketplace
   const response = await apiClient.post('/api/claim-products', { product_ids: productIds, platforms })
   const data = asRecord(response.data)
   ensureOk(data, '认领失败')
+  if (productIds.length && getNumber(data, ['claimed_count']) <= 0) {
+    const firstItem = asRecord(Array.isArray(data.items) ? data.items[0] : {})
+    throw new Error(getString(firstItem, ['error'], '没有商品被推到平台草稿箱'))
+  }
   return data
 }
 

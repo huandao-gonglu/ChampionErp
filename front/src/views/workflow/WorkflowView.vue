@@ -6,7 +6,9 @@ import AppSidebar from '@/components/layout/AppSidebar.vue'
 import AuthSettingsPanel from '@/components/auth/AuthSettingsPanel.vue'
 import CategoryPrecheckPanel from '@/components/domain/CategoryPrecheckPanel.vue'
 import CollectView from '@/views/workflow/CollectView.vue'
+import DraftBoxPanel from '@/components/domain/DraftBoxPanel.vue'
 import LibraryPanel from '@/components/domain/LibraryPanel.vue'
+import MercadoLibrePublishedPanel from '@/components/domain/MercadoLibrePublishedPanel.vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import PricingChart from '@/components/domain/PricingChart.vue'
 import PricingPanel from '@/components/domain/PricingPanel.vue'
@@ -40,6 +42,8 @@ const {
   publishJob,
   publishJobStatus,
   publishLogs,
+  mercadoLibreRemoteItems,
+  mercadoLibreRemoteStatus,
   publishResult,
   activeMarketplace,
   logs,
@@ -69,10 +73,12 @@ const pathNavMap: Record<string, string> = {
   '/': 'dashboard',
   '/collect': 'collect',
   '/library': 'library',
+  '/drafts': 'drafts',
   '/edit': 'library',
   '/media': 'library',
   '/pricing': 'pricing',
   '/publish': 'category',
+  '/ml-items': 'mlItems',
   '/settings': 'auth',
   '/auth': 'auth',
   '/logs': 'logs',
@@ -82,9 +88,11 @@ const navPathMap: Record<string, string> = {
   dashboard: '/',
   collect: '/collect',
   library: '/library',
+  drafts: '/drafts',
   pricing: '/pricing',
   category: '/publish',
   publish: '/publish?tab=publish',
+  mlItems: '/ml-items',
   pending: '/pending',
   auth: '/auth',
   logs: '/logs',
@@ -128,6 +136,17 @@ async function openProductImageEditor(item?: ProductIndexItem) {
   await openProductEditor(item, 'images')
 }
 
+async function openDraftEditor(item: ProductIndexItem, platform: Marketplace, mode: 'text' | 'images' = 'text') {
+  store.setMarketplace(platform)
+  await openProductEditor(item, mode)
+}
+
+async function openDraftPrecheck(item: ProductIndexItem, platform: Marketplace) {
+  store.setMarketplace(platform)
+  await store.loadProduct(item)
+  navigate('category')
+}
+
 function closeProductEditor() {
   editorOpen.value = false
 }
@@ -142,9 +161,21 @@ function navigate(key: string) {
   const nextPath = navPathMap[key] || '/'
   if (route.fullPath !== nextPath) void router.push(nextPath)
   if (key === 'library') void store.refreshProductsIndex()
+  if (key === 'drafts') void store.refreshProductsIndex()
   if (key === 'pricing' && !productsIndex.value.length) void store.refreshProductsIndex()
   if (key === 'logs') void store.refreshPublishLogs()
+  if (key === 'mlItems') void store.refreshMercadoLibreRemoteItems()
   if (key === 'auth') void store.loadAiConfig()
+}
+
+async function claimSelectedAndOpenDrafts() {
+  const ok = await store.claimSelectedProducts()
+  if (ok) navigate('drafts')
+}
+
+async function claimCurrentAndOpenDrafts() {
+  const ok = await store.claimCurrentProduct()
+  if (ok) navigate('drafts')
 }
 
 function toggleTheme() {
@@ -182,7 +213,7 @@ watch(
 
       <main class="min-w-0">
         <div class="sticky top-0 z-20 border-b border-slate-200 bg-white/90 px-4 py-3 backdrop-blur lg:hidden">
-          <select v-model="activeNav" class="input">
+          <select :value="activeNav" class="input" @change="navigate(($event.target as HTMLSelectElement).value)">
             <option v-for="item in navItems" :key="item.key" :value="item.key">{{ item.title }}</option>
           </select>
         </div>
@@ -211,7 +242,7 @@ watch(
                 @delete-selected="store.deleteSelectedProducts"
                 @toggle="store.toggleProductSelection"
                 @select-all="store.selectAllProducts"
-                @claim="store.claimSelectedProducts"
+                @claim="claimSelectedAndOpenDrafts"
                 @generate-copy="store.generateCopyForSelectedProducts"
                 @generate-image-prompt="store.generateImagePromptPack"
                 @publish-selected="store.enqueueSelectedProducts"
@@ -258,12 +289,25 @@ watch(
             @delete-selected="store.deleteSelectedProducts"
             @toggle="store.toggleProductSelection"
             @select-all="store.selectAllProducts"
-            @claim="store.claimSelectedProducts"
+            @claim="claimSelectedAndOpenDrafts"
             @generate-copy="store.generateCopyForSelectedProducts"
             @generate-image-prompt="store.generateImagePromptPack"
             @publish-selected="store.enqueueSelectedProducts"
             @go-publish="navigate('category')"
           />
+
+          <div v-else-if="activeNav === 'drafts'" class="space-y-6">
+            <PageHeader title="草稿箱" description="已进入平台草稿状态机的商品，可继续编辑、处理图片并进入发布预检。" />
+            <DraftBoxPanel
+              :items="productsIndex"
+              :loading="loading"
+              :error="error"
+              @refresh="store.refreshProductsIndex"
+              @edit-text="(item, platform) => openDraftEditor(item, platform, 'text')"
+              @edit-images="(item, platform) => openDraftEditor(item, platform, 'images')"
+              @go-publish="openDraftPrecheck"
+            />
+          </div>
 
           <div v-else-if="activeNav === 'pricing'" class="space-y-6">
             <PageHeader title="核价" description="成本、运费、佣金、汇率和利润计算。" />
@@ -312,7 +356,7 @@ watch(
               @precheck="store.runPrecheck"
               @preview-payload="store.previewPayload"
               @publish="() => store.enqueuePublish()"
-              @claim-current="store.claimCurrentProduct"
+              @claim-current="claimCurrentAndOpenDrafts"
               @load-product="store.loadProduct"
               @refresh-products="store.refreshProductsIndex"
             />
@@ -338,6 +382,18 @@ watch(
               </section>
               <RunLog :logs="logs" />
             </section>
+          </div>
+
+          <div v-else-if="activeNav === 'mlItems'" class="space-y-6">
+            <PageHeader title="ML 已发布商品" description="实时查看 Mercado Libre 账号商品，并支持通过 API 删除/结束发布。" />
+            <MercadoLibrePublishedPanel
+              :items="mercadoLibreRemoteItems"
+              :status="mercadoLibreRemoteStatus"
+              :loading="loading"
+              :error="error"
+              @refresh="store.refreshMercadoLibreRemoteItems"
+              @close-item="(item) => store.closeMercadoLibreRemoteItem(item.id)"
+            />
           </div>
 
           <div v-else-if="activeNav === 'pending'" class="space-y-6">

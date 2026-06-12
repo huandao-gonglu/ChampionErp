@@ -37,7 +37,22 @@ vi.mock('@/api/workflow', () => ({
   fetchProductsIndex: vi.fn(),
   fetchBrowserDebugStatus: vi.fn(),
   fetchAiConfig: vi.fn(),
+  fetchMercadoLibreAuthChecklist: vi.fn(),
+  refreshMercadoLibreToken: vi.fn(),
+  runMercadoLibreRealAuthTest: vi.fn(),
+  buildMercadoLibreAuthLink: vi.fn(),
   exchangeMercadoLibreCode: vi.fn(),
+  clearStoreAuth: vi.fn(),
+  startCategoryCacheRefresh: vi.fn(),
+  fetchCategoryCacheRefreshJob: vi.fn(),
+  suggestCategories: vi.fn(),
+  runCategoryPrecheck: vi.fn(),
+  confirmMercadoLibreRealPublish: vi.fn(),
+  publishProductDirect: vi.fn(),
+  deleteProducts: vi.fn(),
+  syncGeneratedImages: vi.fn(),
+  clean1688Text: vi.fn(),
+  saveImagePool: vi.fn(),
   diagnosticsToCollectDiagnostics: vi.fn(),
   collectFromBrowserTab: vi.fn(),
   collectBatch: vi.fn(),
@@ -81,6 +96,15 @@ function mutation(product: Product): ProductMutationResponse {
 describe('workflow store live API flow', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem: vi.fn(() => null),
+        setItem: vi.fn(),
+        removeItem: vi.fn(),
+        clear: vi.fn(),
+      },
+    })
     vi.clearAllMocks()
   })
 
@@ -134,5 +158,33 @@ describe('workflow store live API flow', () => {
 
     expect(store.precheck?.ok).toBe(true)
     expect(store.product.drafts.mercadolibre.status).toBe('ready_to_publish')
+  })
+
+  it('surfaces Mercado Libre refresh token failures instead of logging them as complete', async () => {
+    vi.mocked(workflowApi.refreshMercadoLibreToken).mockResolvedValue({
+      ok: false,
+      message: '失败',
+      error: '请先填写 App ID、App Secret 和 Refresh Token。',
+      errorCode: '',
+      nextAction: '先用 code 换 token，或检查已保存的 refresh token。',
+      raw: { ok: false, platform: 'mercadolibre' },
+    })
+    vi.mocked(workflowApi.fetchMercadoLibreAuthChecklist).mockResolvedValue({
+      platform: 'mercadolibre',
+      readyForAuthLink: true,
+      tokenReady: false,
+      missingCodes: [],
+      fields: [],
+      nextAction: '生成授权链接，用 code 换 token。',
+      copyText: '',
+      raw: {},
+    })
+
+    const store = useWorkflowStore()
+    await store.refreshMercadoLibreAuthToken()
+
+    expect(store.lastAuthResult?.ok).toBe(false)
+    expect(store.error).toBe('请先填写 App ID、App Secret 和 Refresh Token。')
+    expect(workflowApi.fetchMercadoLibreAuthChecklist).toHaveBeenCalledOnce()
   })
 })

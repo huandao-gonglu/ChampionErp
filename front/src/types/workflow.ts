@@ -256,6 +256,7 @@ export interface ProductIndexItem {
   createdAt: string
   updatedAt: string
   platforms: Marketplace[]
+  draftStatuses: Partial<Record<Marketplace, WorkflowStatus>>
   productFilePath: string
   collectStatus: string
   workflowStatus: string
@@ -282,6 +283,25 @@ export interface PublishLogItem {
   errorMessage: string
   requestPayloadPath: string
   responseBodyPath: string
+  raw: UnknownRecord
+}
+
+export interface MercadoLibreRemoteItem {
+  id: string
+  title: string
+  status: string
+  subStatus: string[]
+  permalink: string
+  thumbnail: string
+  price: number
+  currencyId: string
+  availableQuantity: number
+  soldQuantity: number
+  categoryId: string
+  listingTypeId: string
+  sellerSku: string
+  dateCreated: string
+  lastUpdated: string
   raw: UnknownRecord
 }
 

@@ -157,8 +157,8 @@ function useDefaultStock() {
 
 function useSellerWarranty() {
   activeDraft.value.saleTerms = [
-    { id: 'WARRANTY_TYPE', value_name: 'Garantía del vendedor' },
-    { id: 'WARRANTY_TIME', value_name: '30 días' },
+    { id: 'WARRANTY_TYPE', value_id: '2230280', value_name: 'Garantía del vendedor' },
+    { id: 'WARRANTY_TIME', value_name: '3 meses', value_struct: { number: 3, unit: 'meses' } },
   ]
 }
 
@@ -359,7 +359,7 @@ watch(
               <div class="text-sm font-semibold text-slate-950">售后条款</div>
               <div class="mt-1 text-xs text-slate-500">{{ activeDraft.saleTerms.length ? `已配置 ${activeDraft.saleTerms.length} 条` : '尚未配置 warranty / sale_terms' }}</div>
             </div>
-            <button class="btn btn-outline py-1.5" type="button" @click="useSellerWarranty">使用 30 天卖家保修</button>
+            <button class="btn btn-outline py-1.5" type="button" @click="useSellerWarranty">使用 3 个月卖家保修</button>
           </div>
         </div>
       </article>
