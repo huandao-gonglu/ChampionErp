@@ -231,3 +231,13 @@ def browser_debug_commands(port: int = BROWSER_DEBUG_PORT) -> dict[str, str]:
         "start_command": powershell_command,
         "full_path_command": f'"{chrome}" --remote-debugging-port={port} --user-data-dir="{profile}"',
     }
+
+
+__all__ = [
+    "CdpWebSocket",
+    "browser_debug_commands",
+    "find_chrome_path",
+    "find_named_browser_path",
+    "open_auth_link_in_browser",
+    "pick_web_port",
+]

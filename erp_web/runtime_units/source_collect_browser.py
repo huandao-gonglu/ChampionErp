@@ -211,6 +211,18 @@ def fetch_page_snapshot_with_browser_session(url: str, port: int | None = None, 
         return None
 
 
+__all__ = [
+    "browser_debug_status",
+    "fetch_1688_page_snapshot_with_browser_session",
+    "fetch_page_html",
+    "fetch_page_html_with_browser_session",
+    "fetch_page_html_with_status",
+    "fetch_page_snapshot_with_browser_session",
+    "maybe_fetch_page_html_with_playwright",
+    "open_browser_debug_session",
+]
+
+
 def snapshot_from_cdp_target(target: dict[str, Any], platform_hint: str = "") -> dict[str, Any]:
     if not isinstance(target, dict) or not target.get("webSocketDebuggerUrl"):
         raise RuntimeError("TAB_NOT_ACCESSIBLE")

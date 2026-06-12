@@ -117,3 +117,9 @@ def calculate_price(input_data: dict[str, Any]) -> dict[str, Any]:
     result.setdefault("expected_profit", result.get("profit_cny", 0))
     result.setdefault("net_profit", result.get("profit_cny", 0))
     return result
+
+
+__all__ = [
+    "calculate_price",
+    "fetch_pricing_exchange_rates",
+]

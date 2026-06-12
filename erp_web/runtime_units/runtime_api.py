@@ -202,3 +202,11 @@ def html_page(active_page: str = "workbench") -> str:
     else:
         template = HTML_TEMPLATE
     return template.replace("__ACTIVE_PAGE__", active_page)
+
+
+__all__ = [
+    "html_page",
+    "publish_product",
+    "safe_json_body",
+    "save_task_bundle",
+]

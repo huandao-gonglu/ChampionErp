@@ -244,3 +244,14 @@ def test_store_auth(platform: str, scope: str = "") -> dict[str, Any]:
         "message": "测试成功：授权可用。",
         "storeAuthSummary": summarize_store_auth_states(config),
     }
+
+
+__all__ = [
+    "build_mercadolibre_auth_link",
+    "exchange_mercadolibre_code_from_body",
+    "mercadolibre_auth_checklist",
+    "preview_mercadolibre_auth_link",
+    "refresh_mercadolibre_token_from_body",
+    "test_ai_channel",
+    "test_store_auth",
+]

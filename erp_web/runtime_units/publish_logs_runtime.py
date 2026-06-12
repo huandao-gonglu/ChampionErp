@@ -153,3 +153,14 @@ def _mercadolibre_required_attr_ids(attrs: list[dict[str, Any]]) -> list[str]:
             if attr_id:
                 ids.append(attr_id)
     return ids
+
+
+__all__ = [
+    "_is_mock_mercadolibre_category_id",
+    "_mercadolibre_category_id_from_product",
+    "_mercadolibre_required_attr_ids",
+    "_mercadolibre_test_error_code",
+    "_sanitize_for_log",
+    "append_ml_auth_test_log",
+    "append_ml_publish_log",
+]

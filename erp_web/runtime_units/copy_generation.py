@@ -344,3 +344,16 @@ def build_image_prompt_pack(
     if copy.get("warning"):
         lines.append(f"提示: {copy['warning']}")
     return "\n".join(lines)
+
+
+__all__ = [
+    "apply_product_drafts_to_plan",
+    "batch_generate_copy_for_products",
+    "build_copy_preview",
+    "build_image_prompt_pack",
+    "build_plan_for_platform",
+    "generate_ai_copy_bundle",
+    "list_presets",
+    "platform_to_preset_key",
+    "save_copy_result",
+]

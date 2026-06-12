@@ -682,3 +682,15 @@ def map_mercadolibre_publish_error(parsed: dict[str, Any]) -> dict[str, Any]:
         "missing_fields": list(field_errors.keys()),
         "parsed": parsed,
     }
+
+
+__all__ = [
+    "build_mercadolibre_payload_preview",
+    "ensure_mercadolibre_auth_ready",
+    "ensure_mercadolibre_pictures_uploaded",
+    "map_mercadolibre_publish_error",
+    "mercadolibre_close_remote_item",
+    "mercadolibre_real_publish",
+    "mercadolibre_remote_items",
+    "run_mercadolibre_07d_test",
+]

@@ -356,3 +356,21 @@ def productImages_from_source(product: dict[str, Any]) -> list[str]:
     pool = source.get("image_pool") if isinstance(source.get("image_pool"), list) else []
     refs = [str(item.get("url") or item.get("path") or item.get("preview_url") or "").strip() for item in pool if isinstance(item, dict)]
     return [item for item in refs if item] or normalize_list(source.get("images"))
+
+
+__all__ = [
+    "apply_claimed_platform_drafts",
+    "claim_products_to_platforms",
+    "collect_error_code",
+    "collect_field_summary",
+    "collect_image_origin",
+    "collect_next_action",
+    "collect_time_iso",
+    "detect_source_platform",
+    "finalize_collect_diagnostics",
+    "normalize_collect_mode",
+    "normalize_collect_source_images",
+    "parse_collect_urls",
+    "productImages_from_source",
+    "snapshot_field_flags",
+]

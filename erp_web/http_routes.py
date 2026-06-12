@@ -6,7 +6,6 @@ import urllib.parse
 
 from routes import image_routes
 from . import runtime as app
-from .runtime import safe_json_body
 from .http_route_units import (
     auth_config_routes,
     category_routes,
@@ -17,6 +16,7 @@ from .http_route_units import (
     publish_routes,
 )
 from .http_route_units.common import JsonRequestHandler
+from .runtime_units.runtime_api import safe_json_body
 
 
 APP_MODULE = app

@@ -7,6 +7,7 @@ This map exists to reduce context scanning for humans and coding agents.
 - HTTP protocol wrapper: `erp_web/http_handler.py`
 - HTTP route dispatch table: `erp_web/http_routes.py`
 - HTTP route units: `erp_web/http_route_units/`
+- Route-facing business facades: `erp_web/facades/`
 - Runtime compatibility aggregator: `erp_web/runtime.py`
 - Core shape hints: `erp_web/schemas/`
 
@@ -20,6 +21,7 @@ This map exists to reduce context scanning for humans and coding agents.
 - Product save/load/delete and pricing APIs: `erp_web/http_route_units/product_routes.py`
 - Publish precheck, payload preview, real publish, and queue APIs: `erp_web/http_route_units/publish_routes.py`
 - Each route unit declares `HANDLED_PATHS` and a handler map (`GET_HANDLERS` or `POST_HANDLERS`) so a path can be resolved without reading the whole route file.
+- Product, collection, and publish routes delegate orchestration to `erp_web/facades/product_facade.py`, `erp_web/facades/collect_facade.py`, and `erp_web/facades/publish_facade.py`.
 - Static assets and auth helper pages: `routes/static_routes.py`
 - Image upload and image pool API: `routes/image_routes.py`
 - Product collection workflows: `erp_web/runtime_units/source_collect_workflows.py`
@@ -44,4 +46,4 @@ This map exists to reduce context scanning for humans and coding agents.
 
 - `erp_web/runtime.py`, `product_model.py`, and `marketplace_publish.py` dynamically re-export functions from unit modules. Prefer reading the unit module named in this map instead of starting from the aggregator.
 - `erp_web/http_handler.py` should stay thin. New API behavior should go into a focused route unit or service module, not directly into the handler class.
-- Route units still mirror legacy behavior and import runtime globals. Future refactors should replace those calls with explicit imports one route area at a time.
+- Route units should use explicit imports or focused facades. Do not add new `from erp_web.runtime import *` imports; `erp_web/runtime.py` is only a compatibility aggregator.

@@ -236,3 +236,12 @@ def start_category_cache_refresh_job(platform: str, site: str = "", max_categori
 
 def get_category_cache_refresh_job(job_id: str) -> dict[str, Any]:
     return _category_refresh_job_snapshot(str(job_id or "").strip())
+
+
+__all__ = [
+    "build_mercadolibre_category_cache",
+    "get_category_cache_refresh_job",
+    "http_json",
+    "refresh_official_category_cache",
+    "start_category_cache_refresh_job",
+]

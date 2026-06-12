@@ -298,3 +298,21 @@ def _required_attribute_summary(product: dict[str, Any], platform: str) -> dict[
 def _masked_auth_status(platform: str, config: dict[str, Any]) -> tuple[str, str]:
     summary = summarize_store_auth_states(config).get(platform, {})
     return str(summary.get("status") or "未配置"), str(summary.get("next_action") or "")
+
+
+__all__ = [
+    "_draft_for_platform",
+    "_draft_images",
+    "_field_error_map",
+    "_has_main_image",
+    "_masked_auth_status",
+    "_required_attribute_summary",
+    "assign_upc",
+    "build_publish_payload",
+    "compact_precheck",
+    "compact_precheck_items",
+    "compact_publish_failure_response",
+    "mock_category_attrs",
+    "precheck_item",
+    "validate_publish_payload",
+]

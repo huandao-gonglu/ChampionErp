@@ -779,3 +779,26 @@ def normalize_ai_section(section: Any, defaults: dict[str, str], include_quality
 
 def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
     return app_config_runtime.normalize_app_config(config)
+
+
+__all__ = [
+    "AI_CONFIG_ALIAS_KEYS_TO_DROP",
+    "delete_products_from_index",
+    "explain_mercadolibre_auth_error",
+    "load_app_config",
+    "load_product",
+    "load_product_from_index",
+    "load_products_index",
+    "load_store_config",
+    "mercadolibre_auth_checklist",
+    "merge_store_config_fields",
+    "normalize_app_config",
+    "normalize_product_fields",
+    "product_identity",
+    "publish_queue_platforms",
+    "save_app_config",
+    "save_product",
+    "save_store_config",
+    "summarize_store_auth_states",
+    "sync_product_workflow_statuses",
+]

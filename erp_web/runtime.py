@@ -1,6 +1,14 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+"""Legacy compatibility aggregator for runtime unit modules.
+
+New backend code should import directly from ``erp_web.runtime_units.*`` or a
+focused facade instead of importing from this module. It remains for existing
+tests, scripts, and route helpers that still expect the historical flat runtime
+namespace.
+"""
+
 import inspect as _inspect
 from functools import wraps as _wraps
 

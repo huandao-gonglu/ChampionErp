@@ -4,10 +4,26 @@ from __future__ import annotations
 import urllib.parse
 from typing import Callable
 
+from services import config_service
 from routes import static_routes
 from .common import JsonRequestHandler
 from .. import runtime as app
-from ..runtime import *  # noqa: F403 - route units mirror legacy runtime globals.
+from ..runtime_units.category_refresh import get_category_cache_refresh_job
+from ..runtime_units.image_pool import current_generated_images, current_image_pool, current_source_images
+from ..runtime_units.product_store import (
+    load_app_config,
+    load_product,
+    load_products_index,
+    load_store_config,
+    mercadolibre_auth_checklist,
+    summarize_store_auth_states,
+)
+from ..runtime_units.publish_bus import load_publish_logs, persist_publish_bus_terminal_results
+from ..runtime_units.publish_mercadolibre import mercadolibre_remote_items
+from ..runtime_units.publish_adapter import PUBLISHING_BUS
+from ..runtime_units.runtime_api import html_page
+from ..runtime_units.runtime_common import APP_DIR, BROWSER_DEBUG_PORT, OUTPUT_DIR
+from ..runtime_units.source_collect_browser import browser_debug_status
 
 APP_MODULE = app
 GetHandler = Callable[[JsonRequestHandler, object], None]

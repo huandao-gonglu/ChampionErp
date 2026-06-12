@@ -4,9 +4,20 @@ from __future__ import annotations
 
 from typing import Callable
 
+import marketplace_publish as publisher
+from product_model import apply_ai_attribute_fill, validate_category_precheck
+
 from .common import JsonRequestHandler
-from .. import runtime as app
-from ..runtime import *  # noqa: F403 - route units mirror legacy runtime globals.
+from ..runtime_units.category_refresh import refresh_official_category_cache, start_category_cache_refresh_job
+from ..runtime_units.category_store import (
+    category_cache_status,
+    find_category_record,
+    load_category_cache,
+    search_category_cache,
+    suggest_category_ids,
+)
+from ..runtime_units.product_store import load_product, load_store_config, normalize_product_fields, save_product
+from ..runtime_units.publish_helpers import mock_category_attrs
 
 
 PostHandler = Callable[[JsonRequestHandler], None]

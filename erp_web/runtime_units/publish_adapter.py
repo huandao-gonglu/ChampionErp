@@ -48,3 +48,9 @@ PUBLISHING_BUS = PublishingBus(
         "ozon": ProjectPublishingAdapter(),
     },
 )
+
+
+__all__ = [
+    "PUBLISHING_BUS",
+    "ProjectPublishingAdapter",
+]

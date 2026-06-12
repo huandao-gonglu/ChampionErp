@@ -593,3 +593,12 @@ def collect_extension_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "diagnostics": diagnostics,
         "error": "",
     }
+
+
+__all__ = [
+    "collect_1688_product",
+    "collect_batch_products",
+    "collect_extension_payload",
+    "collect_from_browser_tab",
+    "collect_source_product",
+]

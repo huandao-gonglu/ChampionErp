@@ -5,8 +5,17 @@ from __future__ import annotations
 from typing import Callable
 
 from .common import JsonRequestHandler
-from .. import runtime as app
-from ..runtime import *  # noqa: F403 - route units mirror legacy runtime globals.
+from ..runtime_units.auth_runtime import test_ai_channel
+from ..runtime_units.copy_generation import (
+    apply_product_drafts_to_plan,
+    batch_generate_copy_for_products,
+    build_image_prompt_pack,
+    build_plan_for_platform,
+    generate_ai_copy_bundle,
+    platform_to_preset_key,
+    save_copy_result,
+)
+from ..runtime_units.product_store import load_app_config, load_product, load_products_index, normalize_product_fields
 
 
 PostHandler = Callable[[JsonRequestHandler], None]

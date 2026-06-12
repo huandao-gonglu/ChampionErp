@@ -249,3 +249,16 @@ def suggest_category_ids(product: dict[str, Any], platform: str = "mercadolibre"
         "suggestions": suggestions,
         "cache_status": category_cache_status(platform),
     }
+
+
+__all__ = [
+    "category_cache_status",
+    "find_category_record",
+    "import_partial_records",
+    "load_category_cache",
+    "read_json",
+    "save_category_cache",
+    "search_category_cache",
+    "suggest_category_ids",
+    "write_json",
+]

@@ -135,3 +135,17 @@ def save_config_snapshot(app_dir: Path | str, config: dict[str, Any]) -> Path:
             safe[section]["api_key"] = mask_secret(safe[section]["api_key"])
     path.write_text(json.dumps(safe, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
+
+
+__all__ = [
+    "ai_config_from_sources",
+    "config_dir",
+    "env_path",
+    "load_env",
+    "mask_secret",
+    "merge_ai_config",
+    "public_ai_config",
+    "save_config_snapshot",
+    "service_status",
+    "write_env_template",
+]

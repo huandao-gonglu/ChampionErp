@@ -4,9 +4,32 @@ from __future__ import annotations
 
 from typing import Callable
 
+from services import config_service
+
 from .common import JsonRequestHandler
 from .. import runtime as app
-from ..runtime import *  # noqa: F403 - route units mirror legacy runtime globals.
+from ..runtime_units.auth_runtime import (
+    build_mercadolibre_auth_link,
+    exchange_mercadolibre_code_from_body,
+    mercadolibre_auth_checklist,
+    refresh_mercadolibre_token_from_body,
+    test_store_auth,
+)
+from ..runtime_units.browser_debug import open_auth_link_in_browser
+from ..runtime_units.product_store import (
+    explain_mercadolibre_auth_error,
+    load_app_config,
+    load_product,
+    load_store_config,
+    merge_store_config_fields,
+    normalize_product_fields,
+    save_app_config,
+    save_store_config,
+    summarize_store_auth_states,
+)
+from ..runtime_units.publish_logs_runtime import append_ml_auth_test_log
+from ..runtime_units.publish_mercadolibre import run_mercadolibre_07d_test
+from ..runtime_units.runtime_common import APP_DIR
 
 
 PostHandler = Callable[[JsonRequestHandler], None]

@@ -380,3 +380,21 @@ def current_generated_images() -> list[dict[str, str]]:
 
 def current_collect_debug_files() -> list[dict[str, str]]:
     return image_files(COLLECT_DEBUG_DIR, recursive=True)
+
+
+__all__ = [
+    "append_images_to_product_pool",
+    "apply_service_image_pool",
+    "current_collect_debug_files",
+    "current_generated_images",
+    "current_image_pool",
+    "current_source_images",
+    "enrich_image_pool_item_dimensions",
+    "enrich_product_image_dimensions",
+    "image_files",
+    "image_items_from_paths",
+    "image_pool_refs_for_platform",
+    "save_image_pool_for_product",
+    "sync_draft_images_from_pool",
+    "sync_generated_images_into_pool",
+]

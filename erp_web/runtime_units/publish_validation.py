@@ -260,3 +260,12 @@ def apply_precheck_to_product(product: dict[str, Any], platform: str, precheck: 
         platform: precheck,
     }
     return normalize_product_fields(normalized)
+
+
+__all__ = [
+    "apply_precheck_to_product",
+    "validate_mercadolibre_draft",
+    "validate_ozon_draft",
+    "validate_platform_draft",
+    "validate_wildberries_draft",
+]
