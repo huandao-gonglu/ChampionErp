@@ -12,6 +12,7 @@ from .http_route_units import (
     collect_routes,
     copy_routes,
     get_routes,
+    mercadolibre_routes,
     product_routes,
     publish_routes,
 )
@@ -30,6 +31,7 @@ POST_ROUTE_UNITS = (
     auth_config_routes,
     category_routes,
     product_routes,
+    mercadolibre_routes,
     publish_routes,
 )
 POST_ROUTE_UNITS_BY_PATH = {

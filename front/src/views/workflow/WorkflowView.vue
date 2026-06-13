@@ -6,6 +6,7 @@ import AppSidebar from '@/components/layout/AppSidebar.vue'
 import AuthSettingsPanel from '@/components/auth/AuthSettingsPanel.vue'
 import CategoryPrecheckPanel from '@/components/domain/CategoryPrecheckPanel.vue'
 import CollectView from '@/views/workflow/CollectView.vue'
+import DashboardView from '@/views/workflow/DashboardView.vue'
 import DraftBoxPanel from '@/components/domain/DraftBoxPanel.vue'
 import LibraryPanel from '@/components/domain/LibraryPanel.vue'
 import MercadoLibrePublishedPanel from '@/components/domain/MercadoLibrePublishedPanel.vue'
@@ -15,7 +16,6 @@ import PricingPanel from '@/components/domain/PricingPanel.vue'
 import ProductImageEditorPanel from '@/components/domain/ProductImageEditorPanel.vue'
 import ProductEditorPanel from '@/components/domain/ProductEditorPanel.vue'
 import RunLog from '@/components/domain/RunLog.vue'
-import StepTimeline from '@/components/domain/StepTimeline.vue'
 import { workflowNavItems } from '@/constants/navigation'
 import { useAppStore } from '@/stores/app'
 import { useWorkflowStore } from '@/stores/workflow'
@@ -42,6 +42,10 @@ const {
   publishJob,
   publishJobStatus,
   publishLogs,
+  mercadoLibreOrders,
+  mercadoLibreOrderNotifications,
+  mercadoLibreOrdersTotal,
+  mercadoLibreOrdersCheckedAt,
   mercadoLibreRemoteItems,
   mercadoLibreRemoteStatus,
   mercadoLibreRemotePage,
@@ -102,14 +106,13 @@ const navPathMap: Record<string, string> = {
   logs: '/logs',
 }
 
-const summaryCards = computed(() => [
-  { label: '商品库', value: productsIndex.value.length, hint: 'SQLite 商品记录' },
-  { label: '图片池', value: imagePool.value.length, hint: '当前商品图片' },
-  { label: '发布日志', value: publishLogs.value.length, hint: '历史发布记录' },
-  { label: '完成度', value: `${progressPercent.value}%`, hint: '核心链路进度' },
-])
-
 const pricingProductItems = computed(() => productsIndex.value.filter((item) => item.productId))
+
+const mercadolibreNotificationUrl = computed(() => {
+  const ml = storeConfig.value.mercadolibre
+  if (!ml || typeof ml !== 'object' || Array.isArray(ml)) return ''
+  return String(ml.notification_url || ml.notifications_url || ml.webhook_url || '')
+})
 
 const pendingItems = computed(() => productsIndex.value.filter((item) => {
   const values = [
@@ -225,38 +228,40 @@ watch(
         </div>
 
         <div class="px-4 py-6 sm:px-6 lg:px-8">
-          <div v-if="activeNav === 'dashboard'" class="space-y-6">
-            <PageHeader title="跨境 ERP Web 工作台" description="一站式管理采集、商品库、商品编辑、图片文案、核价、发布预检、平台授权和发布日志。" />
-            <section class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <article v-for="card in summaryCards" :key="card.label" class="card">
-                <p class="text-sm font-semibold text-slate-500">{{ card.label }}</p>
-                <p class="mt-2 text-3xl font-black text-slate-950">{{ card.value }}</p>
-                <p class="mt-1 text-xs text-slate-500">{{ card.hint }}</p>
-              </article>
-            </section>
-            <StepTimeline :steps="workflowSteps" :progress="progressPercent" />
-            <section class="grid gap-6 xl:grid-cols-[1fr_0.9fr]">
-              <LibraryPanel
-                :items="productsIndex"
-                :selected-ids="selectedProductIds"
-                :loading="loading"
-                :error="error"
-                @refresh="store.refreshProductsIndex"
-                @load="openProductEditor"
-                @edit-images="openProductImageEditor"
-                @delete-item="store.deleteProduct"
-                @delete-selected="store.deleteSelectedProducts"
-                @toggle="store.toggleProductSelection"
-                @select-all="store.selectAllProducts"
-                @claim="claimSelectedAndOpenDrafts"
-                @generate-copy="store.generateCopyForSelectedProducts"
-                @generate-image-prompt="store.generateImagePromptPack"
-                @publish-selected="store.enqueueSelectedProducts"
-                @go-publish="navigate('category')"
-              />
-              <RunLog :logs="logs" />
-            </section>
-          </div>
+          <DashboardView
+            v-if="activeNav === 'dashboard'"
+            :product="product"
+            :products-index="productsIndex"
+            :pending-items="pendingItems"
+            :selected-ids="selectedProductIds"
+            :progress-percent="progressPercent"
+            :publish-logs="publishLogs"
+            :orders="mercadoLibreOrders"
+            :order-notifications="mercadoLibreOrderNotifications"
+            :orders-total="mercadoLibreOrdersTotal"
+            :orders-checked-at="mercadoLibreOrdersCheckedAt"
+            :notification-url="mercadolibreNotificationUrl"
+            :remote-items="mercadoLibreRemoteItems"
+            :remote-total="mercadoLibreRemoteTotal"
+            :remote-status="mercadoLibreRemoteStatus"
+            :auth-checklist="mercadolibreAuthChecklist"
+            :precheck="precheck"
+            :publish-job="publishJob"
+            :logs="logs"
+            :loading="loading"
+            :error="error"
+            @navigate="navigate"
+            @refresh-products="store.refreshProductsIndex"
+            @refresh-logs="store.refreshPublishLogs"
+            @refresh-orders="store.refreshMercadoLibreOrders"
+            @refresh-remote="store.refreshMercadoLibreRemoteItems"
+            @open-product="openProductEditor"
+            @edit-images="openProductImageEditor"
+            @open-precheck="openDraftPrecheck"
+            @claim-selected="claimSelectedAndOpenDrafts"
+            @collect="navigate('collect')"
+            @publish-selected="store.enqueueSelectedProducts"
+          />
 
           <CollectView
             v-else-if="activeNav === 'collect'"

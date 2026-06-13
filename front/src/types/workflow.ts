@@ -306,6 +306,54 @@ export interface MercadoLibreRemoteItem {
   raw: UnknownRecord
 }
 
+export interface MercadoLibreOrderLine {
+  itemId: string
+  title: string
+  sellerSku: string
+  quantity: string
+}
+
+export interface MercadoLibreOrderItem {
+  id: string
+  status: string
+  statusDetail: string
+  dateCreated: string
+  dateClosed: string
+  lastUpdated: string
+  totalAmount: number
+  paidAmount: number
+  currencyId: string
+  buyerId: string
+  buyerNickname: string
+  shippingId: string
+  shippingStatus: string
+  paymentStatuses: string[]
+  items: MercadoLibreOrderLine[]
+  itemTitles: string[]
+  itemIds: string[]
+  raw: UnknownRecord
+}
+
+export interface MercadoLibreOrderNotification {
+  topic: string
+  resource: string
+  userId: string
+  applicationId: string
+  attempts: number
+  sent: string
+  receivedAt: string
+  orderId: string
+  error: string
+  raw: UnknownRecord
+}
+
+export interface MercadoLibreOrdersPage {
+  items: MercadoLibreOrderItem[]
+  notifications: MercadoLibreOrderNotification[]
+  total: number
+  checkedAt: string
+}
+
 export interface MercadoLibreRemotePagination {
   page: number
   perPage: number

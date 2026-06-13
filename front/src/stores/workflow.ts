@@ -20,6 +20,7 @@ import {
   fetchBrowserDebugStatus,
   fetchCategoryCacheRefreshJob,
   fetchCategoryAttrs,
+  fetchMercadoLibreOrders,
   fetchMercadoLibreAuthChecklist,
   fetchMercadoLibrePublishedItems,
   fetchProductsIndex,
@@ -69,6 +70,8 @@ import type {
   CollectForm,
   Marketplace,
   MercadoLibreAuthChecklist,
+  MercadoLibreOrderItem,
+  MercadoLibreOrderNotification,
   MercadoLibreRemoteItem,
   MercadoLibreTestMode,
   PrecheckIssue,
@@ -203,6 +206,10 @@ export const useWorkflowStore = defineStore('workflow', () => {
   const publishJob = ref<PublishJob | null>(null)
   const publishJobStatus = ref<UnknownRecord | null>(null)
   const publishLogs = ref<PublishLogItem[]>([])
+  const mercadoLibreOrders = ref<MercadoLibreOrderItem[]>([])
+  const mercadoLibreOrderNotifications = ref<MercadoLibreOrderNotification[]>([])
+  const mercadoLibreOrdersTotal = ref(0)
+  const mercadoLibreOrdersCheckedAt = ref('')
   const mercadoLibreRemoteItems = ref<MercadoLibreRemoteItem[]>([])
   const mercadoLibreRemoteStatus = ref('active')
   const mercadoLibreRemotePage = ref(1)
@@ -357,6 +364,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
       storeConfig.value = state.storeConfig
       storeAuthSummary.value = state.storeAuthSummary
       mercadolibreAuthChecklist.value = state.mercadolibreAuthChecklist || null
+      mercadoLibreOrderNotifications.value = state.mercadolibreOrderNotifications || []
       aiConfig.value = state.appConfig
       fillFormFromState(state.appConfig, state.outputDir)
       syncCollectDiagnosticsFromProduct('后端状态已加载。')
@@ -1250,6 +1258,24 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
+  async function refreshMercadoLibreOrders() {
+    loading.value = true
+    setError('')
+    try {
+      const result = await fetchMercadoLibreOrders(10, 0)
+      mercadoLibreOrders.value = result.items
+      mercadoLibreOrderNotifications.value = result.notifications
+      mercadoLibreOrdersTotal.value = result.total
+      mercadoLibreOrdersCheckedAt.value = result.checkedAt
+      addLog(`Mercado Libre 订单已刷新：${result.items.length} 条，通知 ${result.notifications.length} 条。`)
+    } catch (exc) {
+      const message = exc instanceof Error ? exc.message : '读取 Mercado Libre 订单失败'
+      addLog(`Mercado Libre 订单暂不可用：${message}`)
+    } finally {
+      loading.value = false
+    }
+  }
+
   async function closeMercadoLibreRemoteItem(itemId: string) {
     loading.value = true
     setError('')
@@ -1479,6 +1505,10 @@ export const useWorkflowStore = defineStore('workflow', () => {
     publishJob,
     publishJobStatus,
     publishLogs,
+    mercadoLibreOrders,
+    mercadoLibreOrderNotifications,
+    mercadoLibreOrdersTotal,
+    mercadoLibreOrdersCheckedAt,
     mercadoLibreRemoteItems,
     mercadoLibreRemoteStatus,
     mercadoLibreRemotePage,
@@ -1552,6 +1582,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     confirmRealPublish,
     refreshPublishJob,
     refreshPublishLogs,
+    refreshMercadoLibreOrders,
     refreshMercadoLibreRemoteItems,
     closeMercadoLibreRemoteItem,
     loadAiConfig,

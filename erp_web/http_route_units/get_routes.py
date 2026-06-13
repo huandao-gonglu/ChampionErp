@@ -19,6 +19,7 @@ from ..runtime_units.product_store import (
     summarize_store_auth_states,
 )
 from ..runtime_units.publish_bus import load_publish_logs, persist_publish_bus_terminal_results
+from ..runtime_units.mercadolibre_orders import load_mercadolibre_order_notifications, mercadolibre_recent_orders
 from ..runtime_units.publish_mercadolibre import mercadolibre_remote_items
 from ..runtime_units.publish_adapter import PUBLISHING_BUS
 from ..runtime_units.runtime_api import html_page
@@ -49,6 +50,7 @@ GET_API_ROUTES = {
     "/api/browser-debug/status",
     "/api/category-cache/refresh-status",
     "/api/mercadolibre/published-items",
+    "/api/mercadolibre/orders",
     "/api/products-index",
     "/api/publish-bus/status",
     "/api/publish-logs",
@@ -91,6 +93,7 @@ def handle_state(handler: JsonRequestHandler, parsed: object) -> None:
             "sourceImages": current_source_images(prod),
             "generatedImages": current_generated_images(),
             "publishLogs": load_publish_logs(),
+            "mercadolibreOrderNotifications": load_mercadolibre_order_notifications(),
             "productsIndex": load_products_index(),
             "outputDir": str(OUTPUT_DIR),
         }
@@ -121,6 +124,17 @@ def handle_mercadolibre_published_items(handler: JsonRequestHandler, parsed: obj
         handler.send_json(result, 200 if result.get("ok") else 400)
     except Exception as exc:
         handler.send_json({"ok": False, "error": str(exc)}, 400)
+
+
+def handle_mercadolibre_orders(handler: JsonRequestHandler, parsed: object) -> None:
+    params = urllib.parse.parse_qs(parsed.query)
+    limit = int((params.get("limit") or ["10"])[0] or 10)
+    offset = int((params.get("offset") or ["0"])[0] or 0)
+    try:
+        result = mercadolibre_recent_orders(limit=limit, offset=offset)
+        handler.send_json(result, 200 if result.get("ok") else 400)
+    except Exception as exc:
+        handler.send_json({"ok": False, "error": str(exc), "items": [], "notifications": load_mercadolibre_order_notifications()}, 400)
 
 
 def handle_ai_config(handler: JsonRequestHandler, parsed: object) -> None:
@@ -182,6 +196,7 @@ GET_HANDLERS: dict[str, GetHandler] = {
     "/api/browser-debug/status": handle_browser_debug_status,
     "/api/publish-logs": handle_publish_logs,
     "/api/mercadolibre/published-items": handle_mercadolibre_published_items,
+    "/api/mercadolibre/orders": handle_mercadolibre_orders,
     "/api/ai-config": handle_ai_config,
     "/api/publish-bus/status": handle_publish_bus_status,
     "/api/category-cache/refresh-status": handle_category_cache_refresh_status,

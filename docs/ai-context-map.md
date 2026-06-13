@@ -20,6 +20,7 @@ This map exists to reduce context scanning for humans and coding agents.
 - Category cache, search, suggestion, and precheck APIs: `erp_web/http_route_units/category_routes.py`
 - Product save/load/delete and pricing APIs: `erp_web/http_route_units/product_routes.py`
 - Publish precheck, payload preview, real publish, and queue APIs: `erp_web/http_route_units/publish_routes.py`
+- Mercado Libre order notification webhook: `erp_web/http_route_units/mercadolibre_routes.py` handles `POST /api/mercadolibre/notifications`; recent order pull and notification cache are exposed from `GET /api/mercadolibre/orders` in `get_routes.py`.
 - Each route unit declares `HANDLED_PATHS` and a handler map (`GET_HANDLERS` or `POST_HANDLERS`) so a path can be resolved without reading the whole route file.
 - Product, collection, and publish routes delegate orchestration to `erp_web/facades/product_facade.py`, `erp_web/facades/collect_facade.py`, and `erp_web/facades/publish_facade.py`.
 - Runtime unit modules under `erp_web/runtime_units/` use explicit imports. `runtime_common.py` only holds shared constants and legacy common dependencies; do not use it as a wildcard dependency source.
@@ -34,6 +35,7 @@ This map exists to reduce context scanning for humans and coding agents.
 - Category cache and suggestions: `erp_web/runtime_units/category_store.py`, `erp_web/runtime_units/category_refresh.py`
 - Publish precheck and payloads: `erp_web/runtime_units/publish_validation.py`, `erp_web/runtime_units/publish_helpers.py`
 - Mercado Libre publish flow: `erp_web/runtime_units/publish_mercadolibre.py`
+- Mercado Libre order notifications and recent orders: `erp_web/runtime_units/mercadolibre_orders.py`
 - Publish queue: `publishing_bus.py`, `erp_web/runtime_units/publish_bus.py`
 - Product model units: `product_model_units/` use explicit imports; `product_model.py` remains the compatibility re-export layer.
 - Marketplace publish units: `marketplace_publish_units/` use explicit imports; `marketplace_publish.py` remains the compatibility re-export layer.

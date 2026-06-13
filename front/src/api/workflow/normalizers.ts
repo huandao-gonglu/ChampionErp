@@ -5,6 +5,7 @@ import type {
   Marketplace,
   MarketplaceDraft,
   MercadoLibreAuthChecklist,
+  MercadoLibreOrderNotification,
   Product,
   ProductIndexItem,
   PublishLogItem,
@@ -19,6 +20,7 @@ export interface AppStateResponse {
   storeConfig: UnknownRecord
   storeAuthSummary: UnknownRecord
   mercadolibreAuthChecklist?: MercadoLibreAuthChecklist | null
+  mercadolibreOrderNotifications?: MercadoLibreOrderNotification[]
   outputDir: string
   productsIndex: ProductIndexItem[]
   publishLogs: PublishLogItem[]
@@ -524,6 +526,22 @@ export function normalizeMercadoLibreAuthChecklist(value: unknown): MercadoLibre
     fields,
     nextAction: getString(record, ['next_action', 'nextAction']),
     copyText: getString(record, ['copy_text', 'copyText']),
+    raw: record,
+  }
+}
+
+export function normalizeMercadoLibreOrderNotification(value: unknown): MercadoLibreOrderNotification {
+  const record = asRecord(value)
+  return {
+    topic: getString(record, ['topic']),
+    resource: getString(record, ['resource']),
+    userId: getString(record, ['user_id', 'userId']),
+    applicationId: getString(record, ['application_id', 'applicationId']),
+    attempts: getNumber(record, ['attempts']),
+    sent: getString(record, ['sent']),
+    receivedAt: getString(record, ['received_at', 'receivedAt']),
+    orderId: getString(record, ['order_id', 'orderId']),
+    error: getString(record, ['error']),
     raw: record,
   }
 }
