@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from .common import *
+import json
+from copy import deepcopy
+from pathlib import Path
+from typing import Any
+
+from .common import CATEGORY_CACHE_DIR, CATEGORY_CACHE_FILES, normalize_list
+from .defaults import default_draft
 
 def _seed_category_cache_records(platform: str) -> dict[str, Any]:
     platform = str(platform or "").strip().lower()

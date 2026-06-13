@@ -1,11 +1,50 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from .runtime_common import *
+import json
+import urllib.parse
+from copy import deepcopy
+from typing import Any
 
-from .publish_helpers import *
-from .publish_validation import *
-from .publish_logs_runtime import *
+import marketplace_publish as publisher
+from product_model import default_draft
+
+from .auth_runtime import _mercadolibre_app_secret, preview_mercadolibre_auth_link, refresh_mercadolibre_token_from_body
+from .category_store import write_json
+from .collect_helpers import collect_time_iso
+from .image_pool_core import _local_path_from_image_item, _source_pool_items, image_pool_refs_for_platform
+from .product_store import (
+    _auth_next_action,
+    _store_auth_result_fields,
+    load_product,
+    load_store_config,
+    normalize_product_fields,
+    save_product,
+    save_store_config,
+    store_auth_failure_code,
+    summarize_store_auth_states,
+)
+from .publish_helpers import (
+    _draft_for_platform,
+    _field_error_map,
+    build_publish_payload,
+    compact_precheck_items,
+    compact_publish_failure_response,
+    mercadolibre_picture_upload_error_message,
+    precheck_item,
+    validate_publish_payload,
+)
+from .publish_logs_runtime import (
+    _is_mock_mercadolibre_category_id,
+    _mercadolibre_category_id_from_product,
+    _mercadolibre_required_attr_ids,
+    _mercadolibre_test_error_code,
+    _sanitize_for_log,
+    append_ml_auth_test_log,
+    append_ml_publish_log,
+)
+from .publish_validation import apply_precheck_to_product, validate_mercadolibre_draft
+from .runtime_common import OUTPUT_DIR
 
 def run_mercadolibre_07d_test(mode: str, product: dict[str, Any] | None = None, category_id_override: str = "") -> dict[str, Any]:
     mode = str(mode or "auth_link").strip().lower()
@@ -228,6 +267,82 @@ def _mercadolibre_item_summary(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _mercadolibre_response_item_id(value: dict[str, Any]) -> str:
+    for key in ("id", "item_id", "itemId"):
+        text = str(value.get(key) or "").strip()
+        if text:
+            return text
+    for key in ("item", "body"):
+        nested = value.get(key)
+        if isinstance(nested, dict):
+            text = _mercadolibre_response_item_id(nested)
+            if text:
+                return text
+    return ""
+
+
+def _mercadolibre_site_item_errors(result: dict[str, Any]) -> list[dict[str, Any]]:
+    site_items = result.get("site_items") if isinstance(result.get("site_items"), list) else []
+    errors: list[dict[str, Any]] = []
+    for site_item in site_items:
+        if not isinstance(site_item, dict):
+            continue
+        error = site_item.get("error")
+        if not isinstance(error, dict):
+            continue
+        entry = dict(error)
+        for key in ("site_id", "logistic_type"):
+            if site_item.get(key) and not entry.get(key):
+                entry[key] = site_item.get(key)
+        errors.append(entry)
+    return errors
+
+
+def _mercadolibre_publish_result_ok(result: Any) -> bool:
+    if not isinstance(result, dict):
+        return False
+    if _mercadolibre_site_item_errors(result):
+        return False
+    site_items = result.get("site_items") if isinstance(result.get("site_items"), list) else []
+    if site_items:
+        return any(isinstance(item, dict) and _mercadolibre_response_item_id(item) for item in site_items)
+    return bool(_mercadolibre_response_item_id(result) or result.get("ok") or result.get("success"))
+
+
+def _mercadolibre_publish_result_error_map(result: Any) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return {"summary": "Mercado Libre 未返回成功状态", "field_errors": {}, "parsed": {"raw": str(result)}}
+    site_errors = _mercadolibre_site_item_errors(result)
+    if not site_errors:
+        return {
+            "summary": str(result.get("message") or result.get("error") or "Mercado Libre 未返回成功状态"),
+            "field_errors": {},
+            "parsed": {"raw": result},
+        }
+
+    parsed = publisher.parse_mercadolibre_error(json.dumps(site_errors[0], ensure_ascii=False))
+    mapped = map_mercadolibre_publish_error(parsed)
+    messages: list[str] = []
+    for error in site_errors:
+        prefix = str(error.get("site_id") or "").strip()
+        cause = error.get("cause") if isinstance(error.get("cause"), list) else []
+        cause_messages = [
+            str(item.get("message") or "").strip()
+            for item in cause
+            if isinstance(item, dict) and str(item.get("message") or "").strip()
+        ]
+        if not cause_messages:
+            fallback = str(error.get("message") or error.get("error") or "").strip()
+            if fallback:
+                cause_messages = [fallback]
+        for message in cause_messages:
+            messages.append(f"{prefix}: {message}" if prefix else message)
+    if messages:
+        mapped["summary"] = "；".join(messages)
+    mapped["site_item_errors"] = site_errors
+    return mapped
+
+
 def mercadolibre_remote_items(status: str = "active", page: int = 1, per_page: int = 50, limit: int | None = None) -> dict[str, Any]:
     config = load_store_config()
     auth = ensure_mercadolibre_auth_ready(config)
@@ -374,29 +489,6 @@ def mercadolibre_close_remote_item(item_id: str) -> dict[str, Any]:
             "message": f"{item_id} 已提交 Global Selling 下架。",
         }
     return close_regular_item()
-
-
-def _local_path_from_image_item(item: dict[str, Any]) -> Path | None:
-    for key in ("path", "url", "preview_url"):
-        value = str(item.get(key) or "").strip()
-        if not value:
-            continue
-        if value.startswith("/file?"):
-            parsed = urllib.parse.urlparse(value)
-            path = urllib.parse.parse_qs(parsed.query).get("path", [""])[0]
-            if path:
-                candidate = Path(path)
-                if candidate.exists():
-                    return candidate
-        if value.startswith("file:"):
-            candidate = Path(urllib.parse.urlparse(value).path)
-            if candidate.exists():
-                return candidate
-        if not value.startswith(("http://", "https://", "ml-id:")):
-            candidate = Path(value)
-            if candidate.exists():
-                return candidate
-    return None
 
 
 def _mercadolibre_picture_id(item: dict[str, Any]) -> str:
@@ -633,8 +725,18 @@ def mercadolibre_real_publish(product: dict[str, Any], confirm: bool) -> dict[st
         return compact_publish_failure_response("not_ready", "，".join(payload_errors), saved, payload_path=str(payload_path), next_action="前往对应页面补齐字段")
     try:
         result = publisher.publish_mercadolibre(payload, str(auth.get("token") or ""))
-        ok = isinstance(result, dict) and bool(result.get("id") or result.get("item_id") or result.get("ok") or result.get("success") or result.get("site_items"))
+        ok = _mercadolibre_publish_result_ok(result)
         status = "real_publish_success" if ok else "real_publish_failed"
+        if not ok:
+            mapped = _mercadolibre_publish_result_error_map(result)
+            errors = [
+                precheck_item(str((mapped.get("parsed") or {}).get("error") or "REAL_PUBLISH_FAILED"), field, mapped["summary"], "error", "前往对应字段修复后重试")
+                for field in mapped.get("field_errors", {})
+            ] or [precheck_item("REAL_PUBLISH_FAILED", "publish", mapped["summary"], "error", "查看字段映射并重试")]
+            updated = apply_precheck_to_product(product, "mercadolibre", {"platform": "mercadolibre", "ok": False, "errors": errors, "warnings": [], "checked_at": collect_time_iso()}, status=status)
+            append_ml_publish_log(updated, status, started_at, payload, mapped, str((mapped.get("parsed") or {}).get("error") or "REAL_PUBLISH_FAILED"), mapped["summary"], mapped.get("field_errors", {}), "按字段提示修复后重试")
+            saved = save_product(updated)
+            return compact_publish_failure_response(status, mapped["summary"], saved, error_map=mapped, payload_path=str(payload_path), result=_sanitize_for_log(result), next_action="按字段提示修复后重试")
         updated = apply_precheck_to_product(product, "mercadolibre", precheck, status=status)
         append_ml_publish_log(updated, status, started_at, payload, result, "" if ok else "REAL_PUBLISH_FAILED", "" if ok else "Mercado Libre 未返回成功状态", {}, "" if ok else "查看响应后重试")
         saved = save_product(updated)

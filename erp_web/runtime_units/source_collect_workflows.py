@@ -1,10 +1,52 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from .runtime_common import *
+from copy import deepcopy
+from typing import Any
 
-from .source_collect_browser import *
-from .source_collect_parsers import *
+from product_model import (
+    default_collect_diagnostics,
+    default_product_model,
+    merge_source_partial_result,
+    normalize_platforms,
+    parse_dimensions_text,
+)
+from services import collect_service, html_extract_service as legacy, image_service
+
+from .source_collect_browser import (
+    browser_debug_status,
+    choose_browser_tab,
+    fetch_1688_page_snapshot_with_browser_session,
+    fetch_page_html,
+    fetch_page_html_with_status,
+    fetch_page_snapshot_with_browser_session,
+    maybe_fetch_page_html_with_playwright,
+    snapshot_from_cdp_target,
+)
+from .publish_bus import page_snapshot_from_html
+from .source_collect_parsers import parse_1688_product, parse_amazon_product, parse_generic_product
+from .category_refresh import http_json
+from .collect_helpers import (
+    apply_claimed_platform_drafts,
+    collect_error_code,
+    collect_image_origin,
+    collect_time_iso,
+    current_browser_profile_name,
+    detect_source_platform,
+    finalize_collect_diagnostics,
+    is_1688_login_page,
+    is_1688_security_check_page,
+    is_amazon_region_blocked_page,
+    is_amazon_robot_check_page,
+    normalize_collect_mode,
+    normalize_collect_source_images,
+    parse_collect_urls,
+    snapshot_field_flags,
+    write_collect_debug_html,
+)
+from .image_pool_core import current_image_pool, current_source_images
+from .product_store import load_product, load_products_index, normalize_list, save_product
+from .runtime_common import APP_DIR, BROWSER_DEBUG_PORT, VERIFY_MARKERS
 
 def collect_source_product(
     url: str,

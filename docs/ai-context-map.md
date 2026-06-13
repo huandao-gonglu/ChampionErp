@@ -22,16 +22,21 @@ This map exists to reduce context scanning for humans and coding agents.
 - Publish precheck, payload preview, real publish, and queue APIs: `erp_web/http_route_units/publish_routes.py`
 - Each route unit declares `HANDLED_PATHS` and a handler map (`GET_HANDLERS` or `POST_HANDLERS`) so a path can be resolved without reading the whole route file.
 - Product, collection, and publish routes delegate orchestration to `erp_web/facades/product_facade.py`, `erp_web/facades/collect_facade.py`, and `erp_web/facades/publish_facade.py`.
+- Runtime unit modules under `erp_web/runtime_units/` use explicit imports. `runtime_common.py` only holds shared constants and legacy common dependencies; do not use it as a wildcard dependency source.
+- Publish and collection compatibility aggregators (`publish_runtime.py`, `source_collect.py`) use explicit export lists instead of wildcard imports.
 - Static assets and auth helper pages: `routes/static_routes.py`
 - Image upload and image pool API: `routes/image_routes.py`
 - Product collection workflows: `erp_web/runtime_units/source_collect_workflows.py`
 - Product persistence and index: `erp_web/runtime_units/product_store.py`
-- Image pool runtime state: `erp_web/runtime_units/image_pool.py`
+- Image pool pure helpers and display/read logic: `erp_web/runtime_units/image_pool_core.py`
+- Image pool persistence and product mutation actions: `erp_web/runtime_units/image_pool.py`
 - Copy generation: `erp_web/runtime_units/copy_generation.py`
 - Category cache and suggestions: `erp_web/runtime_units/category_store.py`, `erp_web/runtime_units/category_refresh.py`
 - Publish precheck and payloads: `erp_web/runtime_units/publish_validation.py`, `erp_web/runtime_units/publish_helpers.py`
 - Mercado Libre publish flow: `erp_web/runtime_units/publish_mercadolibre.py`
 - Publish queue: `publishing_bus.py`, `erp_web/runtime_units/publish_bus.py`
+- Product model units: `product_model_units/` use explicit imports; `product_model.py` remains the compatibility re-export layer.
+- Marketplace publish units: `marketplace_publish_units/` use explicit imports; `marketplace_publish.py` remains the compatibility re-export layer.
 - AI/provider config: `services/config_service.py`, `erp_web/app_config.py`
 
 ## Data Shapes
@@ -47,3 +52,5 @@ This map exists to reduce context scanning for humans and coding agents.
 - `erp_web/runtime.py`, `product_model.py`, and `marketplace_publish.py` dynamically re-export functions from unit modules. Prefer reading the unit module named in this map instead of starting from the aggregator.
 - `erp_web/http_handler.py` should stay thin. New API behavior should go into a focused route unit or service module, not directly into the handler class.
 - Route units should use explicit imports or focused facades. Do not add new `from erp_web.runtime import *` imports; `erp_web/runtime.py` is only a compatibility aggregator.
+- `erp_web/runtime_units/image_pool_core.py` is the dependency-light layer for image refs, dimensions, and pool display helpers. Product storage and publish modules should depend on it instead of importing `image_pool.py`.
+- `tests/test_ai_context_architecture.py` locks the no-wildcard rule for route/facade layers, product/marketplace units, and runtime unit modules.

@@ -151,6 +151,37 @@ function precheckMessages(items: unknown): string[] {
   return items.map((item) => isRecord(item) ? String(item.message || item.code || '') : String(item || '')).filter(Boolean)
 }
 
+function categorySelectionFromProduct(product: Product, platform: Marketplace): CategorySelection | null {
+  const categories = isRecord(product.raw.local_platform_categories) ? product.raw.local_platform_categories : {}
+  const record = isRecord(categories[platform]) ? categories[platform] as UnknownRecord : null
+  if (!record) return null
+  const attrs = isRecord(record.attributes_cache) ? record.attributes_cache : {}
+  const normalizeAttr = (item: unknown, requiredFallback: boolean) => {
+    const attr = isRecord(item) ? item : {}
+    return {
+      id: String(attr.id || attr.attribute_id || ''),
+      name: String(attr.name || attr.label || attr.id || attr.attribute_id || ''),
+      required: typeof attr.required === 'boolean' ? attr.required : requiredFallback,
+      options: Array.isArray(attr.options) ? attr.options.map(String) : [],
+    }
+  }
+  const requiredAttributes = Array.isArray(attrs.required)
+    ? attrs.required.map((item) => normalizeAttr(item, true)).filter((item) => item.id && item.required)
+    : []
+  const optionalAttributes = Array.isArray(attrs.optional)
+    ? attrs.optional.map((item) => normalizeAttr(item, false)).filter((item) => item.id)
+    : []
+  const categoryId = String(record.category_id || record.subject_id || record.type_id || product.drafts[platform].categoryId || '')
+  if (!categoryId && !requiredAttributes.length && !optionalAttributes.length) return null
+  return {
+    platform,
+    categoryId,
+    categoryPath: String(record.category_path || record.path || record.name_original || product.drafts[platform].categoryPath || ''),
+    requiredAttributes,
+    optionalAttributes,
+  }
+}
+
 export const useWorkflowStore = defineStore('workflow', () => {
   const product = ref<Product>(createEmptyProduct())
   const collectForm = ref<CollectForm>(createDefaultCollectForm())
@@ -251,6 +282,10 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
+  function restoreCategoryFromProduct() {
+    category.value = categorySelectionFromProduct(product.value, activeMarketplace.value)
+  }
+
   function addLog(message: string) {
     logs.value.unshift(`${new Date().toLocaleTimeString()} ${message}`)
   }
@@ -314,6 +349,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     try {
       const state = await fetchState()
       product.value = state.product
+      restoreCategoryFromProduct()
       restorePrecheckFromProduct()
       productsIndex.value = state.productsIndex
       publishLogs.value = state.publishLogs
@@ -553,6 +589,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     try {
       const result = await loadProductApi(item.productId, item.productFilePath)
       product.value = result.product
+      restoreCategoryFromProduct()
       restorePrecheckFromProduct()
       if (result.productsIndex.length) productsIndex.value = result.productsIndex
       fillFormFromState(appConfig.value)
@@ -1415,6 +1452,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
   function setMarketplace(value: Marketplace) {
     if (marketplaces.includes(value)) {
       activeMarketplace.value = value
+      restoreCategoryFromProduct()
       restorePrecheckFromProduct()
     }
   }

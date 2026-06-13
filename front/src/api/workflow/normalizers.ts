@@ -242,6 +242,11 @@ export function normalizeDraft(value: unknown, language: string): MarketplaceDra
     },
     saleTerms,
     allowGtinExemption: getBoolean(record, ['allow_gtin_exemption', 'allowGtinExemption', 'gtin_exempt']),
+    validationErrors: Array.isArray(record.validation_errors)
+      ? record.validation_errors.map((item) => typeof item === 'string' ? item : asRecord(item))
+      : Array.isArray(record.validationErrors)
+        ? record.validationErrors.map((item) => typeof item === 'string' ? item : asRecord(item))
+        : [],
   }
 }
 

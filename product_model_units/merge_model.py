@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from .common import *
+from copy import deepcopy
+from typing import Any
 
-from .category_model import *
-from .image_pool_model import *
-from .defaults import *
+from .common import PLATFORMS, SOURCE_COMPAT_IMAGE_ORIGINS, normalize_list, parse_dimensions_text, text_or_empty
+from .defaults import default_collect_diagnostics, default_draft, default_pricing, default_product_model, default_source
+from .image_pool_model import image_pool_legacy_views, normalize_image_pool
 
 def _merge_source(product: dict[str, Any]) -> dict[str, Any]:
     source = default_source()

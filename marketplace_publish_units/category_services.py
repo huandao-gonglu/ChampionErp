@@ -1,9 +1,18 @@
 from __future__ import annotations
 
-from .common import *
+import json
+import urllib.parse
+from typing import Any
 
-from .category_cache import *
-from .config_http import *
+from .category_cache import (
+    cached_mercadolibre_categories,
+    expanded_category_keywords,
+    load_ml_category_cache,
+    localize_mercadolibre_category_path,
+    save_ml_category_cache,
+)
+from .common import CN_CATEGORY_TERMS, CN_WB_TERMS, ML_CATEGORY_SHIPPING_CACHE_PATH
+from .config_http import request_json, request_ozon_json
 
 def fetch_wildberries_shop_name(token: str) -> str:
     if not token.strip():

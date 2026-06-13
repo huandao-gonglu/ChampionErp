@@ -1,9 +1,68 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from .runtime_common import *
+from copy import deepcopy
+from typing import Any
 
-from .publish_helpers import *
+from product_model import validate_category_precheck
+
+from .collect_helpers import collect_time_iso
+from .product_store import load_app_config, normalize_product_fields
+from .publish_helpers import (
+    _draft_for_platform,
+    _draft_images,
+    _has_main_image,
+    _masked_auth_status,
+    _required_attribute_summary,
+    precheck_item,
+)
+
+
+def _review_field_from_item(item: Any) -> str:
+    if isinstance(item, dict):
+        if str(item.get("code") or "") != "NEED_REVIEW_ATTRIBUTES":
+            return ""
+        return str(item.get("field") or "").strip()
+    return str(item or "").strip()
+
+
+def _review_attr_id(field: str) -> str:
+    value = str(field or "").strip()
+    if value == "attributes":
+        return ""
+    return value.split(".", 1)[-1] if value.startswith("attributes.") else value
+
+
+def _review_attr_field(attr_id: str) -> str:
+    value = _review_attr_id(attr_id)
+    return f"attributes.{value}" if value else "attributes"
+
+
+def _review_precheck_items(need_review: list[str], severity: str) -> list[dict[str, str]]:
+    attr_ids = sorted({_review_attr_id(item) for item in need_review if _review_attr_id(item)})
+    return [
+        precheck_item(
+            "NEED_REVIEW_ATTRIBUTES",
+            _review_attr_field(attr_id),
+            f"属性待复核：{attr_id}",
+            severity,
+            f"前往类目属性页补齐或确认 {attr_id}",
+        )
+        for attr_id in attr_ids
+    ]
+
+
+def _local_category_record(product: dict[str, Any], platform: str, category_id: str) -> dict[str, Any] | None:
+    categories = product.get("local_platform_categories") if isinstance(product.get("local_platform_categories"), dict) else {}
+    record = categories.get(platform)
+    if not isinstance(record, dict):
+        return None
+    wanted = str(category_id or "").strip()
+    record_id = str(record.get("category_id") or record.get("subject_id") or record.get("type_id") or "").strip()
+    if wanted and record_id and wanted != record_id:
+        return None
+    return record
+
 
 def validate_mercadolibre_draft(product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
     product = normalize_product_fields(product)
@@ -89,17 +148,20 @@ def validate_mercadolibre_draft(product: dict[str, Any], config: dict[str, Any])
         return bool(attr_id and str(attrs.get(attr_id) or "").strip())
 
     need_review: list[str] = []
+    local_record = _local_category_record(product, "mercadolibre", category_id)
+    local_missing_attributes = [
+        field
+        for field in validate_category_precheck(product, "mercadolibre", local_record)
+        if str(field).startswith("attributes.") and not review_item_resolved(str(field))
+    ] if local_record else []
     for item in draft.get("validation_errors") or []:
-        if isinstance(item, dict):
-            if str(item.get("code") or "") != "NEED_REVIEW_ATTRIBUTES":
-                continue
-            raw_field = str(item.get("field") or "").strip()
-        else:
-            raw_field = str(item or "").strip()
-        if raw_field and not review_item_resolved(raw_field):
+        raw_field = _review_field_from_item(item)
+        if raw_field == "attributes":
+            need_review.extend(local_missing_attributes)
+        elif raw_field and not review_item_resolved(raw_field):
             need_review.append(raw_field)
     if need_review:
-        errors.append(precheck_item("NEED_REVIEW_ATTRIBUTES", "attributes", f"仍有 {len(need_review)} 个属性待复核", "error", "前往类目属性页确认 need_review 字段"))
+        errors.extend(_review_precheck_items(need_review, "error"))
     if not str(draft.get("upc") or draft.get("gtin") or draft.get("barcode") or product.get("upc") or product.get("gtin") or product.get("barcode") or "").strip():
         allow_gtin_exemption = bool(draft.get("allow_gtin_exemption") or draft.get("gtin_exempt") or config.get("listing", {}).get("allow_gtin_exemption"))
         if allow_gtin_exemption:
@@ -164,9 +226,9 @@ def validate_wildberries_draft(product: dict[str, Any], config: dict[str, Any]) 
     pricing = draft.get("pricing") if isinstance(draft.get("pricing"), dict) else {}
     if not str(pricing.get("suggested_price") or "").strip():
         errors.append(precheck_item("PRICING_NOT_APPLIED", "pricing", "尚未应用核价结果", "error", "前往核价页应用 Wildberries 价格"))
-    need_review = [str(item) for item in draft.get("validation_errors") or [] if str(item).strip()]
+    need_review = [field for item in draft.get("validation_errors") or [] if (field := _review_field_from_item(item))]
     if need_review:
-        warnings.append(precheck_item("NEED_REVIEW_ATTRIBUTES", "attributes", f"仍有 {len(need_review)} 个属性待复核", "warning", "前往类目属性页确认属性"))
+        warnings.extend(_review_precheck_items(need_review, "warning"))
     if not str(draft.get("language") or "").strip():
         warnings.append(precheck_item("LANGUAGE_MISSING", "language", "俄语标题/描述尚未确认", "warning", "发布前确认 Wildberries 文案语言"))
     return {"platform": "wildberries", "ok": not errors, "errors": errors, "warnings": warnings, "checked_at": collect_time_iso()}
@@ -209,9 +271,9 @@ def validate_ozon_draft(product: dict[str, Any], config: dict[str, Any]) -> dict
     pricing = draft.get("pricing") if isinstance(draft.get("pricing"), dict) else {}
     if not str(pricing.get("suggested_price") or "").strip():
         errors.append(precheck_item("PRICING_NOT_APPLIED", "pricing", "尚未应用核价结果", "error", "前往核价页应用 Ozon 价格"))
-    need_review = [str(item) for item in draft.get("validation_errors") or [] if str(item).strip()]
+    need_review = [field for item in draft.get("validation_errors") or [] if (field := _review_field_from_item(item))]
     if need_review:
-        warnings.append(precheck_item("NEED_REVIEW_ATTRIBUTES", "attributes", f"仍有 {len(need_review)} 个属性待复核", "warning", "前往类目属性页确认属性"))
+        warnings.extend(_review_precheck_items(need_review, "warning"))
     return {"platform": "ozon", "ok": not errors, "errors": errors, "warnings": warnings, "checked_at": collect_time_iso()}
 
 

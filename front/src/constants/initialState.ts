@@ -26,6 +26,7 @@ export function createEmptyDraft(language = ''): MarketplaceDraft {
     },
     saleTerms: [],
     allowGtinExemption: false,
+    validationErrors: [],
   }
 }
 

@@ -1,7 +1,16 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from .runtime_common import *
+import re
+import urllib.parse
+from copy import deepcopy
+from typing import Any
+
+from product_model import default_product_model, parse_dimensions_text
+from services import html_extract_service as legacy
+
+from .product_store import normalize_list, normalize_product_fields, normalize_space
+from .runtime_common import SOURCE_DIR
 
 def extract_text_pattern(text: str, patterns: list[str]) -> str:
     for pattern in patterns:
@@ -420,3 +429,16 @@ def parse_generic_product(raw_data: str | dict[str, Any], page_url: str = "") ->
     product["source_image_urls"] = image_urls[:7]
     product["detail_image_urls"] = image_urls[7:20]
     return normalize_product_fields(populate_source_from_legacy_product(product, "unknown", page_url))
+
+
+__all__ = [
+    "collect_product_image_urls",
+    "extract_1688_attributes",
+    "extract_1688_sku",
+    "extract_text_pattern",
+    "infer_list_from_text",
+    "parse_1688_product",
+    "parse_amazon_product",
+    "parse_generic_product",
+    "populate_source_from_legacy_product",
+]

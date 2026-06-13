@@ -1,12 +1,21 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from .runtime_common import *
+import json
+import time
+import urllib.request
+from typing import Any
+
+from erp_web import app_config as app_config_runtime
+from services import pricing_service
+
+from .product_store import load_app_config
+from .runtime_common import EXCHANGE_RATE_CACHE
 
 def _pricing_exchange_rate_config() -> dict[str, Any]:
     pricing = load_app_config().get("pricing_defaults")
     cfg = pricing if isinstance(pricing, dict) else {}
-    default_cfg = default_app_config()["pricing_defaults"]
+    default_cfg = app_config_runtime.default_app_config()["pricing_defaults"]
     return {
         "api_url": str(cfg.get("exchange_rate_api_url") or default_cfg["exchange_rate_api_url"]).strip(),
         "timeout_seconds": max(1, min(30, int(pricing_service.number_value(cfg.get("exchange_rate_timeout_seconds"), 5) or 5))),

@@ -1,7 +1,17 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from .runtime_common import *
+import time
+from typing import Any
+
+from product_model import default_draft
+from services import html_extract_service as legacy
+
+from .category_store import read_json, write_json
+from .collect_helpers import collect_time_iso
+from .product_store import load_product_from_index, normalize_list, normalize_product_fields, save_product
+from .publish_helpers import _draft_for_platform, precheck_item
+from .runtime_common import PUBLISH_LOG_PATH
 
 def page_snapshot_from_html(url: str, html: str, text: str = "", title: str = "", image_urls: list[str] | None = None) -> dict[str, Any]:
     return {
@@ -81,6 +91,8 @@ def append_publish_bus_terminal_log(product: dict[str, Any], job_state: dict[str
     job_id = str(job_state.get("job_id") or "")
     if publish_bus_log_exists(job_id, platform):
         return
+    from .publish_logs_runtime import _product_id_for_log, _write_publish_artifacts
+
     result = item.get("result") if isinstance(item.get("result"), dict) else {}
     payload = {
         "job_id": job_id,
@@ -147,6 +159,7 @@ __all__ = [
     "apply_publish_bus_result_to_product",
     "append_publish_bus_terminal_log",
     "load_publish_logs",
+    "page_snapshot_from_html",
     "persist_publish_bus_terminal_results",
     "publish_bus_log_exists",
     "publish_bus_terminal_status",

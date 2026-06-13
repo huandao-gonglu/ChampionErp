@@ -1,7 +1,25 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from .runtime_common import *
+import os
+import subprocess
+import time
+import urllib.parse
+import urllib.request
+from typing import Any
+
+from services import html_extract_service as legacy
+
+from .browser_debug import (
+    CdpWebSocket,
+    browser_debug_commands,
+    browser_debug_next_action,
+    find_chrome_path,
+    parse_cookie_header,
+)
+from .category_refresh import http_json
+from .collect_helpers import detect_source_platform, save_collect_snapshot_artifacts
+from .runtime_common import APP_DIR, BROWSER_DEBUG_PORT, BROWSER_PROFILE_DIR
 
 def wait_for_cdp(port: int, timeout: int = 15) -> None:
     deadline = time.time() + timeout
@@ -213,6 +231,7 @@ def fetch_page_snapshot_with_browser_session(url: str, port: int | None = None, 
 
 __all__ = [
     "browser_debug_status",
+    "choose_browser_tab",
     "fetch_1688_page_snapshot_with_browser_session",
     "fetch_page_html",
     "fetch_page_html_with_browser_session",
@@ -220,6 +239,7 @@ __all__ = [
     "fetch_page_snapshot_with_browser_session",
     "maybe_fetch_page_html_with_playwright",
     "open_browser_debug_session",
+    "snapshot_from_cdp_target",
 ]
 
 

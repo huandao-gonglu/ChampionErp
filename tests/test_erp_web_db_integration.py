@@ -921,6 +921,55 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
 
         self.with_temp_app(run)
 
+    def test_mercadolibre_global_site_item_error_is_publish_failure(self) -> None:
+        def run(app_dir: Path) -> None:
+            product = sample_product("CBT site item error", "https://example.com/cbt-site-error")
+            api_result = {
+                "site_id": "CBT",
+                "site_items": [
+                    {
+                        "site_id": "MLM",
+                        "logistic_type": "remote",
+                        "error": {
+                            "message": "Validation error",
+                            "error": "validation_error",
+                            "status": 400,
+                            "cause": [
+                                {
+                                    "code": "invalid.item.attribute.values",
+                                    "message": "Attribute [RECOMMENDED_AGE_GROUP] is not valid, item values [(null:1)]",
+                                    "references": ["item.name"],
+                                    "type": "error",
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+
+            with (
+                patch.object(erp_web_app, "ensure_mercadolibre_auth_ready", return_value={"ok": True, "token": "token"}),
+                patch.object(erp_web_app, "validate_mercadolibre_draft", return_value={"platform": "mercadolibre", "ok": True, "errors": [], "warnings": [], "checked_at": "2026-06-11T00:00:00"}),
+                patch.object(erp_web_app, "ensure_mercadolibre_pictures_uploaded", return_value={"ok": True, "product": product, "picture_refs": []}),
+                patch.object(erp_web_app, "build_mercadolibre_payload_preview", return_value={"_global_selling": True, "category_id": "CBT457856", "sites_to_sell": [{"site_id": "MLM"}]}),
+                patch.object(erp_web_app, "validate_publish_payload", return_value=[]),
+                patch.object(erp_web_app.publisher, "publish_mercadolibre", return_value=api_result),
+            ):
+                result = erp_web_app.mercadolibre_real_publish(product, confirm=True)
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["status"], "real_publish_failed")
+            self.assertIn("RECOMMENDED_AGE_GROUP", result["error"])
+            self.assertIn("site_item_errors", result["error_map"])
+            saved = erp_db.load_product_model(app_dir, result["product_id"])
+            self.assertEqual(saved["drafts"]["mercadolibre"]["publish_status"], "real_publish_failed")
+
+            logs = erp_web_app.load_publish_logs()
+            self.assertEqual(logs[0]["status"], "real_publish_failed")
+            self.assertIn("RECOMMENDED_AGE_GROUP", logs[0]["error_message"])
+
+        self.with_temp_app(run)
+
     def test_image_pool_delete_uses_current_saved_product_not_stale_request_body(self) -> None:
         def run(app_dir: Path) -> None:
             product = sample_product("Delete image current state", "https://example.com/delete-image-current")

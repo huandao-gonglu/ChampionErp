@@ -75,6 +75,7 @@ export interface MarketplaceDraft {
   }
   saleTerms: UnknownRecord[]
   allowGtinExemption: boolean
+  validationErrors: Array<UnknownRecord | string>
 }
 
 export interface Product {

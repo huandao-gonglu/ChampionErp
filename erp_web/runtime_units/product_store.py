@@ -1,7 +1,24 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from .runtime_common import *
+import re
+import time
+from copy import deepcopy
+from typing import Any
+
+import erp_db
+import marketplace_publish as publisher
+from erp_web import app_config as app_config_runtime
+from product_model import PLATFORMS, default_product_model, normalize_product_model
+
+from .category_store import ensure_sqlite_store, read_json, write_json
+from .image_pool_core import (
+    _display_image_ref,
+    _source_pool_items,
+    current_image_pool,
+    enrich_product_image_dimensions,
+)
+from .runtime_common import APP_CONFIG_PATH, APP_DIR, STORE_CONFIG_PATH
 
 def normalize_list(value: Any) -> list[str]:
     if isinstance(value, list):
@@ -517,6 +534,8 @@ def _auth_next_action(platform: str, status_label: str, error_code: str, error_m
 
 
 def explain_mercadolibre_auth_error(error_code: str = "", error_message: str = "") -> dict[str, str]:
+    from .publish_logs_runtime import _mercadolibre_test_error_code
+
     code = str(error_code or "").strip()
     message = str(error_message or "").strip()
     text = f"{code} {message}".lower()
@@ -740,6 +759,8 @@ def _store_auth_result_fields(
     error_message: str = "",
     next_action: str = "",
 ) -> dict[str, str]:
+    from .collect_helpers import collect_time_iso
+
     platform = str(platform or "").strip().lower()
     account_text = str(account or "").strip()
     error_code_text = str(error_code or "").strip()

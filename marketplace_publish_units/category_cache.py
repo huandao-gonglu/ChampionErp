@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from .common import *
+import json
+import re
+
+from .common import ML_CATEGORY_CACHE_PATH, ML_CATEGORY_CN_HINTS, ML_CATEGORY_TREE_PATH, ML_CATEGORY_WORDS
+from .config_http import request_json
 
 def has_cjk(value: str) -> bool:
     return any("\u4e00" <= char <= "\u9fff" for char in value)

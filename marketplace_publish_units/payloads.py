@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from .common import *
+import re
+from typing import Any
 
-from .category_cache import *
-from .config_http import *
-from .category_services import *
+from .config_http import number_or_zero, request_json
 
 def required_wildberries_characteristics(subject_id: str, token: str) -> list[dict[str, Any]]:
     if not subject_id:

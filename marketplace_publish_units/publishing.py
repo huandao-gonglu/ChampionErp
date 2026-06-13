@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from .common import *
+from typing import Any
 
-from .config_http import *
-from .payloads import *
+from .config_http import request_json
 
 def publish_mercadolibre(payload: dict[str, Any], token: str) -> dict[str, Any]:
     item_payload = dict(payload)

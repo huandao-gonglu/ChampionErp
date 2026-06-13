@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from .common import *
+import json
+import re
+from typing import Any
 
 def parse_mercadolibre_error(error: Exception | str) -> dict[str, Any]:
     """解析美客多 API 返回的错误，提取缺失字段、错误码和可读消息。

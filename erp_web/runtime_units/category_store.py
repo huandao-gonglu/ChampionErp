@@ -1,7 +1,21 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from .runtime_common import *
+import json
+import re
+import urllib.parse
+from pathlib import Path
+from typing import Any
+
+import erp_db
+from product_model import (
+    category_cache_status as _json_category_cache_status,
+    find_category_record as _json_find_category_record,
+    load_category_cache as _json_load_category_cache,
+    search_category_cache as _json_search_category_cache,
+)
+
+from .runtime_common import APP_DIR
 
 def read_json(path: Path, default: Any) -> Any:
     try:
@@ -94,6 +108,9 @@ _CATEGORY_AI_STOPWORDS = {
 
 
 def _category_suggest_terms(product: dict[str, Any]) -> list[str]:
+    from .product_store import normalize_product_fields
+    from .publish_helpers import _draft_for_platform
+
     product = normalize_product_fields(product)
     draft = _draft_for_platform(product, "mercadolibre")
     source = product.get("source") if isinstance(product.get("source"), dict) else {}
@@ -125,6 +142,9 @@ def _category_suggest_terms(product: dict[str, Any]) -> list[str]:
 
 
 def _category_suggest_query(product: dict[str, Any]) -> str:
+    from .product_store import normalize_product_fields
+    from .publish_helpers import _draft_for_platform
+
     product = normalize_product_fields(product)
     draft = _draft_for_platform(product, "mercadolibre")
     source = product.get("source") if isinstance(product.get("source"), dict) else {}
@@ -141,6 +161,9 @@ def _category_suggest_query(product: dict[str, Any]) -> str:
 
 
 def _mercadolibre_domain_discovery_suggestions(product: dict[str, Any], site: str, limit: int) -> list[dict[str, Any]]:
+    from .category_refresh import http_json
+    from .product_store import load_store_config
+
     query = _category_suggest_query(product)
     if not query:
         return []
@@ -190,6 +213,8 @@ def _mercadolibre_domain_discovery_suggestions(product: dict[str, Any], site: st
 
 
 def suggest_category_ids(product: dict[str, Any], platform: str = "mercadolibre", site: str = "", limit: int = 5) -> dict[str, Any]:
+    from .product_store import load_store_config
+
     platform = str(platform or "mercadolibre").strip().lower()
     site = str(site or load_store_config().get("mercadolibre", {}).get("site_id") or "").strip()
     terms = _category_suggest_terms(product)

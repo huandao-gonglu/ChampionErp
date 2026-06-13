@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
+import type { ComponentPublicInstance } from 'vue'
 import type { CategoryPrecheckResult, CategorySearchResult, CategorySelection, Marketplace, PrecheckIssue, Product, ProductIndexItem, PublishPrecheck, UnknownRecord } from '@/types/workflow'
 
 const props = defineProps<{
@@ -42,6 +43,7 @@ const platforms: Array<{ key: Marketplace; label: string }> = [
 
 const selectedProductId = ref('')
 const showOptionalAttributes = ref(false)
+const attributeInputRefs = ref<Record<string, HTMLInputElement | null>>({})
 
 const hasCurrentProduct = computed(() => Boolean(props.product.productId || props.product.name || props.product.source.title))
 
@@ -62,10 +64,23 @@ const activeDraft = computed(() => {
   if (typeof draft.allowGtinExemption !== 'boolean') {
     draft.allowGtinExemption = false
   }
+  if (!Array.isArray(draft.validationErrors)) {
+    draft.validationErrors = []
+  }
   return draft
 })
 const blockingIssues = computed(() => props.precheck?.errorItems || [])
 const warningIssues = computed(() => props.precheck?.warningItems || [])
+const pendingReviewAttributeIds = computed(() => {
+  const ids = new Set<string>()
+  for (const item of activeDraft.value.validationErrors) {
+    collectReviewAttributeId(item, ids)
+  }
+  for (const issue of [...blockingIssues.value, ...warningIssues.value]) {
+    collectReviewAttributeId(issue, ids)
+  }
+  return [...ids].sort()
+})
 const canQueuePublish = computed(() => Boolean(hasCurrentProduct.value && (props.precheck?.ok || activeDraft.value.status === 'ready_to_publish')))
 const publishReadiness = computed(() => {
   if (!props.precheck && activeDraft.value.status === 'ready_to_publish') return '已保存为校验通过，可以加入发布队列。'
@@ -127,6 +142,40 @@ function isMissingAttribute(attrId: string) {
     ...(props.precheck?.errorItems?.map((item) => item.field) || []),
   ]
   return missing.some((field) => field === attrId || field === `attributes.${attrId}` || field.endsWith(`.${attrId}`))
+}
+
+function reviewAttributeIdFromField(field: string) {
+  const value = String(field || '').trim()
+  if (!value || value === 'attributes') return ''
+  return value.startsWith('attributes.') ? value.slice('attributes.'.length) : value
+}
+
+function collectReviewAttributeId(item: PrecheckIssue | UnknownRecord | string, ids: Set<string>) {
+  if (typeof item === 'string') {
+    const attrId = reviewAttributeIdFromField(item)
+    if (attrId) ids.add(attrId)
+    return
+  }
+  const record = item as UnknownRecord
+  if (String(record.code || '') !== 'NEED_REVIEW_ATTRIBUTES') return
+  const attrId = reviewAttributeIdFromField(String(record.field || ''))
+  if (attrId) ids.add(attrId)
+}
+
+function setAttributeInputRef(attrId: string, el: Element | ComponentPublicInstance | null) {
+  const node = el && '$el' in el ? el.$el : el
+  attributeInputRefs.value[attrId] = node instanceof HTMLInputElement ? node : null
+}
+
+async function focusAttribute(attrId: string) {
+  if (optionalAttributeFields.value.some((attr) => attr.id === attrId)) {
+    showOptionalAttributes.value = true
+  }
+  await nextTick()
+  const input = attributeInputRefs.value[attrId]
+  input?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  input?.focus({ preventScroll: true })
+  input?.select()
 }
 
 function issueTitle(issue: PrecheckIssue) {
@@ -263,6 +312,20 @@ watch(
           <button class="btn btn-primary" :disabled="props.loading || !hasCurrentProduct" @click="emit('fillAttributes')">AI 填充属性</button>
           <button class="btn btn-outline" :disabled="props.loading || !hasCurrentProduct" @click="emit('categoryPrecheck')">类目预检</button>
         </div>
+        <div v-if="pendingReviewAttributeIds.length" class="mt-4 rounded-xl bg-amber-50 p-3 text-sm text-amber-800 ring-1 ring-amber-200">
+          <div class="font-semibold">待复核属性</div>
+          <div class="mt-2 flex flex-wrap gap-2">
+            <button
+              v-for="attrId in pendingReviewAttributeIds"
+              :key="attrId"
+              class="rounded-full bg-white px-2.5 py-1 font-mono text-xs text-amber-800 ring-1 ring-amber-200 transition hover:bg-amber-100 focus:outline-none focus:ring-2 focus:ring-amber-400"
+              type="button"
+              @click="focusAttribute(attrId)"
+            >
+              {{ attrId }}
+            </button>
+          </div>
+        </div>
         <div class="mt-4 flex flex-wrap gap-2">
           <span v-for="attr in requiredAttributeFields" :key="attr.id" class="badge-muted">{{ attr.name || attr.id }}</span>
           <span v-if="!props.category?.requiredAttributes.length" class="badge-muted">待读取属性</span>
@@ -271,6 +334,7 @@ watch(
           <label v-for="attr in requiredAttributeFields" :key="attr.id" class="block">
             <span class="text-xs font-semibold" :class="isMissingAttribute(attr.id) ? 'text-rose-700' : 'text-slate-500'">{{ attr.required ? '* ' : '' }}{{ attr.name || attr.id }}</span>
             <input
+              :ref="(el) => setAttributeInputRef(attr.id, el)"
               v-model="props.product.drafts[props.activeMarketplace].attributes[attr.id]"
               class="input mt-1"
               :class="isMissingAttribute(attr.id) ? 'border-rose-300 bg-rose-50' : ''"
@@ -286,7 +350,7 @@ watch(
           <div v-if="showOptionalAttributes" class="mt-3 grid gap-2">
             <label v-for="attr in optionalAttributeFields" :key="attr.id" class="block">
               <span class="text-xs font-semibold text-slate-500">{{ attr.name || attr.id }}</span>
-              <input v-model="props.product.drafts[props.activeMarketplace].attributes[attr.id]" class="input mt-1" :placeholder="attr.id" />
+              <input :ref="(el) => setAttributeInputRef(attr.id, el)" v-model="props.product.drafts[props.activeMarketplace].attributes[attr.id]" class="input mt-1" :placeholder="attr.id" />
             </label>
           </div>
         </div>

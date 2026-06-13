@@ -1,7 +1,21 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from .runtime_common import *
+import base64
+import json
+import os
+import shutil
+import socket
+import struct
+import subprocess
+import sys
+import time
+import urllib.parse
+import webbrowser
+from pathlib import Path
+from typing import Any
+
+from .runtime_common import BROWSER_DEBUG_PORT, BROWSER_DEBUG_PROFILE_DIR
 
 def pick_web_port(preferred_port: int, attempts: int = 20) -> int:
     import socket
@@ -233,9 +247,14 @@ def browser_debug_commands(port: int = BROWSER_DEBUG_PORT) -> dict[str, str]:
     }
 
 
+def browser_debug_next_action() -> str:
+    return "请按 start_command 启动专用 Chrome，打开商品详情页后重试。"
+
+
 __all__ = [
     "CdpWebSocket",
     "browser_debug_commands",
+    "browser_debug_next_action",
     "find_chrome_path",
     "find_named_browser_path",
     "open_auth_link_in_browser",
