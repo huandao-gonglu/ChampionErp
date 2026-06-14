@@ -36,6 +36,13 @@ const {
   category,
   categoryQuery,
   categoryResults,
+  categoryAttributeTranslationEnabled,
+  categoryAttributeTranslations,
+  categoryAttributeTranslationsSource,
+  categoryAttributeTranslating,
+  categoryResultTranslations,
+  categoryResultTranslationsSource,
+  categoryResultTranslating,
   categoryCacheStatus,
   categoryPrecheck,
   precheck,
@@ -363,6 +370,13 @@ watch(
               :category="category"
               :category-query="categoryQuery"
               :category-results="categoryResults"
+              :category-attribute-translation-enabled="categoryAttributeTranslationEnabled"
+              :category-attribute-translations="categoryAttributeTranslations"
+              :category-attribute-translations-source="categoryAttributeTranslationsSource"
+              :category-attribute-translating="categoryAttributeTranslating"
+              :category-result-translations="categoryResultTranslations"
+              :category-result-translations-source="categoryResultTranslationsSource"
+              :category-result-translating="categoryResultTranslating"
               :category-precheck="categoryPrecheck"
               :precheck="precheck"
               :payload-preview="payloadPreview"
@@ -375,6 +389,7 @@ watch(
               @suggest-category="store.suggestCategoryByAi"
               @select-category="store.selectCategory"
               @apply-category="store.loadCategoryAttributes"
+              @set-translate-attributes-enabled="store.setCategoryAttributeTranslationEnabled"
               @fill-attributes="store.fillAttributesByAi"
               @category-precheck="store.runCategoryOnlyPrecheck"
               @refresh-categories="store.refreshCategories"

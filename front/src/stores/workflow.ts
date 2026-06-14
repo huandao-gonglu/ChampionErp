@@ -21,6 +21,8 @@ import {
   fetchBrowserDebugStatus,
   fetchCategoryCacheRefreshJob,
   fetchCategoryAttrs,
+  fetchCategoryAttributeTranslations,
+  fetchCategoryResultTranslations,
   fetchDraftsIndex,
   fetchMercadoLibreOrders,
   fetchMercadoLibreAuthChecklist,
@@ -67,8 +69,10 @@ import type {
   AuthResult,
   BrowserDebugStatus,
   CategoryPrecheckResult,
+  CategoryResultTranslations,
   CategorySearchResult,
   CategorySelection,
+  CategoryAttributeTranslations,
   CollectBatchRow,
   CollectDiagnostics,
   CollectForm,
@@ -204,6 +208,13 @@ export const useWorkflowStore = defineStore('workflow', () => {
   const category = ref<CategorySelection | null>(null)
   const categoryQuery = ref('')
   const categoryResults = ref<CategorySearchResult[]>([])
+  const categoryAttributeTranslationEnabled = ref(false)
+  const categoryAttributeTranslations = ref<CategoryAttributeTranslations>({})
+  const categoryAttributeTranslationsSource = ref('')
+  const categoryAttributeTranslating = ref(false)
+  const categoryResultTranslations = ref<CategoryResultTranslations>({})
+  const categoryResultTranslationsSource = ref('')
+  const categoryResultTranslating = ref(false)
   const categoryCacheStatus = ref<UnknownRecord>({})
   const categoryPrecheck = ref<CategoryPrecheckResult | null>(null)
   const precheck = ref<PublishPrecheck | null>(null)
@@ -1048,8 +1059,13 @@ export const useWorkflowStore = defineStore('workflow', () => {
     try {
       const result = await searchCategories(activeMarketplace.value, categoryQuery.value)
       categoryResults.value = result.results
+      categoryResultTranslations.value = {}
+      categoryResultTranslationsSource.value = ''
       categoryCacheStatus.value = result.cacheStatus
       addLog(`类目搜索完成：${result.results.length} 条。`)
+      if (categoryAttributeTranslationEnabled.value) {
+        await translateCategoryResults()
+      }
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '类目搜索失败')
     } finally {
@@ -1059,7 +1075,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
 
   async function suggestCategoryByAi() {
     if (!hasProductForPublish(product.value)) {
-      setError('请先从商品库选择要建议类目的商品。')
+      setError('请先从商品库选择要匹配类目的商品。')
       return
     }
     loading.value = true
@@ -1067,12 +1083,17 @@ export const useWorkflowStore = defineStore('workflow', () => {
     try {
       const result = await suggestCategories(product.value, activeMarketplace.value)
       categoryResults.value = result.results
+      categoryResultTranslations.value = {}
+      categoryResultTranslationsSource.value = ''
       categoryCacheStatus.value = result.cacheStatus
       categoryQuery.value = result.terms.slice(0, 6).join(' / ')
-      addLog(`AI 类目建议完成：${result.results.length} 条候选。`)
+      addLog(`类目匹配完成：${result.results.length} 条候选。`)
+      if (categoryAttributeTranslationEnabled.value) {
+        await translateCategoryResults()
+      }
       if (!result.results.length) setError('没有找到合适类目，请先刷新官方类目缓存，或换关键词搜索。')
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : 'AI 建议类目失败')
+      setError(exc instanceof Error ? exc.message : '匹配类目失败')
     } finally {
       loading.value = false
     }
@@ -1081,6 +1102,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
   async function selectCategory(item: CategorySearchResult) {
     product.value.drafts[activeMarketplace.value].categoryId = item.id
     product.value.drafts[activeMarketplace.value].categoryPath = item.path || item.name
+    categoryAttributeTranslations.value = {}
+    categoryAttributeTranslationsSource.value = ''
     await loadCategoryAttributes()
   }
 
@@ -1094,13 +1117,68 @@ export const useWorkflowStore = defineStore('workflow', () => {
     setError('')
     try {
       category.value = await fetchCategoryAttrs(activeMarketplace.value, categoryId)
+      categoryAttributeTranslations.value = {}
+      categoryAttributeTranslationsSource.value = ''
       currentStage.value = 6
       addLog(`已读取类目属性：${categoryId}`)
+      if (categoryAttributeTranslationEnabled.value) {
+        await translateCategoryAttributes()
+      }
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '读取类目属性失败')
     } finally {
       loading.value = false
     }
+  }
+
+  async function translateCategoryAttributes() {
+    const categoryId = product.value.drafts[activeMarketplace.value].categoryId.trim()
+    if (!categoryId) {
+      setError('请先选择或填写类目 ID。')
+      return
+    }
+    loading.value = true
+    categoryAttributeTranslating.value = true
+    setError('')
+    try {
+      if (!category.value || category.value.categoryId !== categoryId || category.value.platform !== activeMarketplace.value) {
+        category.value = await fetchCategoryAttrs(activeMarketplace.value, categoryId)
+      }
+      const result = await fetchCategoryAttributeTranslations(category.value)
+      categoryAttributeTranslations.value = result.translations
+      categoryAttributeTranslationsSource.value = result.source
+      const count = Object.values(result.translations).filter((item) => item.label).length
+      addLog(`属性翻译已加载：${count} 项${result.source === 'cache' ? '（缓存）' : '（AI）'}。`)
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : '翻译类目属性失败')
+    } finally {
+      categoryAttributeTranslating.value = false
+      loading.value = false
+    }
+  }
+
+  async function translateCategoryResults() {
+    if (!categoryResults.value.length) return
+    categoryResultTranslating.value = true
+    try {
+      const result = await fetchCategoryResultTranslations(activeMarketplace.value, categoryResults.value)
+      categoryResultTranslations.value = result.translations
+      categoryResultTranslationsSource.value = result.source
+      const count = Object.values(result.translations).filter(Boolean).length
+      addLog(`候选类目翻译已加载：${count} 项${result.source === 'cache' ? '（缓存）' : result.source === 'ai' ? '（AI）' : ''}。`)
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : '翻译候选类目失败')
+    } finally {
+      categoryResultTranslating.value = false
+    }
+  }
+
+  function setCategoryAttributeTranslationEnabled(value: boolean) {
+    categoryAttributeTranslationEnabled.value = value
+    if (!value) return
+    void translateCategoryResults()
+    const categoryId = product.value.drafts[activeMarketplace.value].categoryId.trim()
+    if (categoryId || category.value) void translateCategoryAttributes()
   }
 
   async function fillAttributesByAi() {
@@ -1120,7 +1198,9 @@ export const useWorkflowStore = defineStore('workflow', () => {
       product.value = result.product
       const after = product.value.drafts[activeMarketplace.value].attributes
       const filledCount = Object.keys(after).filter((key) => String(after[key] || '').trim() && String(before[key] || '').trim() !== String(after[key] || '').trim()).length
-      addLog(`属性已填充：新增/更新 ${filledCount} 项，需要复核 ${result.needReview.length} 项。`)
+      const source = result.raw?.fill_source === 'text_ai' ? '文本 AI' : '规则'
+      addLog(`属性已填充：${source} 新增/更新 ${filledCount} 项，需要复核 ${result.needReview.length} 项。`)
+      if (result.warning) addLog(result.warning)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : 'AI 填充属性失败')
     } finally {
@@ -1555,6 +1635,11 @@ export const useWorkflowStore = defineStore('workflow', () => {
   function setMarketplace(value: Marketplace) {
     if (marketplaces.includes(value)) {
       activeMarketplace.value = value
+      categoryAttributeTranslationEnabled.value = false
+      categoryAttributeTranslations.value = {}
+      categoryAttributeTranslationsSource.value = ''
+      categoryResultTranslations.value = {}
+      categoryResultTranslationsSource.value = ''
       restoreCategoryFromProduct()
       restorePrecheckFromProduct()
     }
@@ -1575,6 +1660,13 @@ export const useWorkflowStore = defineStore('workflow', () => {
     category,
     categoryQuery,
     categoryResults,
+    categoryAttributeTranslationEnabled,
+    categoryAttributeTranslations,
+    categoryAttributeTranslationsSource,
+    categoryAttributeTranslating,
+    categoryResultTranslations,
+    categoryResultTranslationsSource,
+    categoryResultTranslating,
     categoryCacheStatus,
     categoryPrecheck,
     precheck,
@@ -1653,6 +1745,9 @@ export const useWorkflowStore = defineStore('workflow', () => {
     suggestCategoryByAi,
     selectCategory,
     loadCategoryAttributes,
+    translateCategoryAttributes,
+    translateCategoryResults,
+    setCategoryAttributeTranslationEnabled,
     fillAttributesByAi,
     runCategoryOnlyPrecheck,
     refreshCategories,

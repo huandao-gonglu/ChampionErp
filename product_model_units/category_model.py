@@ -453,6 +453,9 @@ def build_ai_attribute_fill(product: dict[str, Any], platform: str, category_rec
         attr_id = str(attr.get("id") or "").strip()
         if not attr_id:
             continue
+        current_value = str(attributes.get(attr_id) or "").strip()
+        if current_value and current_value.upper() == attr_id.upper():
+            attributes.pop(attr_id, None)
         gtin_value = str(draft.get("upc") or normalized.get("upc") or "").strip()
         if attr_id.upper() == "EMPTY_GTIN_REASON" and gtin_value:
             attributes.pop(attr_id, None)

@@ -1,0 +1,148 @@
+# -*- coding: utf-8 -*-
+from __future__ import annotations
+
+import json
+import re
+from typing import Any
+
+from services import config_service
+
+from .copy_generation import openai_client_from_config
+from .product_store import load_app_config
+from .runtime_common import APP_DIR, CACHE_DIR
+
+
+CATEGORY_RESULT_TRANSLATION_CACHE_PATH = CACHE_DIR / "category_result_translations.json"
+
+
+def _read_cache() -> dict[str, Any]:
+    try:
+        if CATEGORY_RESULT_TRANSLATION_CACHE_PATH.exists():
+            data = json.loads(CATEGORY_RESULT_TRANSLATION_CACHE_PATH.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+def _write_cache(cache: dict[str, Any]) -> None:
+    CATEGORY_RESULT_TRANSLATION_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CATEGORY_RESULT_TRANSLATION_CACHE_PATH.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _text_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [part.strip() for part in re.split(r"\s*/\s*|\s*>\s*", value) if part.strip()]
+    return []
+
+
+def _joined(value: Any) -> str:
+    return " / ".join(_text_list(value))
+
+
+def _normalized_category(item: Any) -> dict[str, str]:
+    raw = item if isinstance(item, dict) else {}
+    nested = raw.get("raw") if isinstance(raw.get("raw"), dict) else raw
+    category_id = str(raw.get("id") or raw.get("category_id") or nested.get("id") or nested.get("category_id") or "").strip()
+    name = str(raw.get("name") or raw.get("title") or nested.get("name") or nested.get("title") or nested.get("name_original") or category_id).strip()
+    path = str(raw.get("path") or raw.get("category_path") or nested.get("path") or nested.get("category_path") or _joined(nested.get("path_original")) or name).strip()
+    cn_path = str(raw.get("path_cn") or raw.get("name_cn") or _joined(nested.get("path_cn")) or nested.get("name_cn") or "").strip()
+    return {"id": category_id, "name": name, "path": path, "cn_path": cn_path}
+
+
+def _json_from_text(text: str) -> dict[str, Any]:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    try:
+        data = json.loads(cleaned)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        match = re.search(r"\{.*\}", cleaned, flags=re.S)
+        if not match:
+            raise
+        data = json.loads(match.group(0))
+        return data if isinstance(data, dict) else {}
+
+
+def _normalize_translation_map(value: Any) -> dict[str, str]:
+    raw = value if isinstance(value, dict) else {}
+    if isinstance(raw.get("translations"), dict):
+        raw = raw["translations"]
+    result: dict[str, str] = {}
+    for category_id, item in raw.items():
+        if isinstance(item, dict):
+            text = str(item.get("path") or item.get("label") or item.get("zh_path") or item.get("name") or "").strip()
+        else:
+            text = str(item or "").strip()
+        if str(category_id).strip() and text:
+            result[str(category_id).strip()] = text
+    return result
+
+
+def _request_ai_category_translations(platform: str, language: str, categories: list[dict[str, str]]) -> dict[str, str]:
+    app_cfg = load_app_config()
+    text_ai = config_service.ai_config_from_sources(APP_DIR, app_cfg).get("text_ai", {})
+    model = str(text_ai.get("model") or "deepseek-chat").strip()
+    client = openai_client_from_config(app_cfg)
+    payload = {"platform": platform, "target_language": language, "categories": categories}
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Translate marketplace category names/paths for Chinese ecommerce operators. "
+                "Return only JSON. Preserve category ids. Keep translations concise and domain-specific."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                'Return JSON as {"translations":{"CATEGORY_ID":"中文类目路径"}}.\n'
+                f"Input:\n{json.dumps(payload, ensure_ascii=False)}"
+            ),
+        },
+    ]
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0.1,
+            response_format={"type": "json_object"},
+        )
+    except Exception:
+        response = client.chat.completions.create(model=model, messages=messages, temperature=0.1)
+    return _normalize_translation_map(_json_from_text(response.choices[0].message.content or ""))
+
+
+def translate_category_results(platform: str, categories: list[Any], language: str = "zh-CN") -> dict[str, Any]:
+    platform = str(platform or "mercadolibre").strip().lower()
+    language = str(language or "zh-CN").strip() or "zh-CN"
+    normalized = [_normalized_category(item) for item in categories]
+    normalized = [item for item in normalized if item.get("id")]
+    if not normalized:
+        return {"ok": True, "platform": platform, "language": language, "source": "empty", "translations": {}}
+    cache = _read_cache()
+    translations: dict[str, str] = {}
+    missing: list[dict[str, str]] = []
+    for item in normalized:
+        cache_key = f"{platform}:{item['id']}:{language}"
+        cached = str(cache.get(cache_key) or "").strip()
+        if item.get("cn_path"):
+            translations[item["id"]] = item["cn_path"]
+            cache[cache_key] = item["cn_path"]
+        elif cached:
+            translations[item["id"]] = cached
+        else:
+            missing.append(item)
+    source = "cache"
+    if missing:
+        ai_translations = _request_ai_category_translations(platform, language, missing)
+        for category_id, text in ai_translations.items():
+            translations[category_id] = text
+            cache[f"{platform}:{category_id}:{language}"] = text
+        source = "ai"
+    _write_cache(cache)
+    return {"ok": True, "platform": platform, "language": language, "source": source, "translations": translations}

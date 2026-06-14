@@ -5,9 +5,12 @@ from __future__ import annotations
 from typing import Callable
 
 import marketplace_publish as publisher
-from product_model import apply_ai_attribute_fill, validate_category_precheck
+from product_model import validate_category_precheck
 
 from .common import JsonRequestHandler
+from ..runtime_units.category_attribute_ai_fill import apply_text_ai_attribute_fill
+from ..runtime_units.category_attribute_translation import translate_category_attributes
+from ..runtime_units.category_result_translation import translate_category_results
 from ..runtime_units.category_refresh import refresh_official_category_cache, start_category_cache_refresh_job
 from ..runtime_units.category_store import (
     category_cache_status,
@@ -105,12 +108,16 @@ def handle_category_ai_fill(handler: JsonRequestHandler) -> None:
     platform = str(body.get("platform") or "mercadolibre").strip().lower()
     category_id = str(body.get("category_id") or "").strip()
     product = normalize_product_fields(body.get("product") or load_product())
-    record = find_category_record(platform, category_id) or body.get("category_record")
-    updated = apply_ai_attribute_fill(product, platform, record if isinstance(record, dict) else None)
+    body_record = body.get("category_record")
+    record = body_record if isinstance(body_record, dict) else find_category_record(platform, category_id)
+    updated, fill_meta = apply_text_ai_attribute_fill(product, platform, record if isinstance(record, dict) else None)
     saved = save_product(updated)
     handler.send_json(
         {
             "ok": True,
+            "fill_source": fill_meta.get("source"),
+            "warning": fill_meta.get("warning", ""),
+            "ai_filled": fill_meta.get("ai_filled", []),
             "product": saved,
             "draft": saved.get("drafts", {}).get(platform, {}),
             "attributes": saved.get("drafts", {}).get(platform, {}).get("attributes", {}),
@@ -118,6 +125,26 @@ def handle_category_ai_fill(handler: JsonRequestHandler) -> None:
             "cache_status": category_cache_status(platform),
         }
     )
+    return
+
+
+def handle_category_attribute_translations(handler: JsonRequestHandler) -> None:
+    body = handler.read_body()
+    platform = str(body.get("platform") or "mercadolibre").strip().lower()
+    category_id = str(body.get("category_id") or "").strip()
+    category_path = str(body.get("category_path") or "").strip()
+    language = str(body.get("language") or "zh-CN").strip() or "zh-CN"
+    attrs = body.get("attributes") if isinstance(body.get("attributes"), list) else []
+    handler.send_json(translate_category_attributes(platform, category_id, category_path, attrs, language=language))
+    return
+
+
+def handle_category_result_translations(handler: JsonRequestHandler) -> None:
+    body = handler.read_body()
+    platform = str(body.get("platform") or "mercadolibre").strip().lower()
+    language = str(body.get("language") or "zh-CN").strip() or "zh-CN"
+    categories = body.get("categories") if isinstance(body.get("categories"), list) else []
+    handler.send_json(translate_category_results(platform, categories, language=language))
     return
 
 
@@ -147,6 +174,8 @@ POST_HANDLERS: dict[str, PostHandler] = {
     "/api/category-cache/refresh": handle_category_cache_refresh,
     "/api/category-cache/refresh-job": handle_category_cache_refresh_job,
     "/api/category-ai-fill": handle_category_ai_fill,
+    "/api/category-attribute-translations": handle_category_attribute_translations,
+    "/api/category-result-translations": handle_category_result_translations,
     "/api/category-precheck": handle_category_precheck,
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)

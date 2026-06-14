@@ -143,6 +143,16 @@ export interface CategorySelection {
   optionalAttributes: Array<{ id: string; name: string; required: boolean; options?: string[] }>
 }
 
+export interface CategoryAttributeTranslation {
+  label: string
+  help: string
+  values: Record<string, string>
+}
+
+export type CategoryAttributeTranslations = Record<string, CategoryAttributeTranslation>
+
+export type CategoryResultTranslations = Record<string, string>
+
 export interface CategorySearchResult {
   id: string
   name: string

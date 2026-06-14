@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
-import type { CategoryPrecheckResult, CategorySearchResult, CategorySelection, Marketplace, PrecheckIssue, Product, ProductIndexItem, PublishPrecheck, UnknownRecord } from '@/types/workflow'
+import type { CategoryAttributeTranslations, CategoryPrecheckResult, CategoryResultTranslations, CategorySearchResult, CategorySelection, Marketplace, PrecheckIssue, Product, ProductIndexItem, PublishPrecheck, UnknownRecord } from '@/types/workflow'
 
 const props = defineProps<{
   product: Product
@@ -9,6 +9,13 @@ const props = defineProps<{
   category: CategorySelection | null
   categoryQuery: string
   categoryResults: CategorySearchResult[]
+  categoryAttributeTranslationEnabled: boolean
+  categoryAttributeTranslations: CategoryAttributeTranslations
+  categoryAttributeTranslationsSource: string
+  categoryAttributeTranslating: boolean
+  categoryResultTranslations: CategoryResultTranslations
+  categoryResultTranslationsSource: string
+  categoryResultTranslating: boolean
   categoryPrecheck: CategoryPrecheckResult | null
   precheck: PublishPrecheck | null
   payloadPreview: UnknownRecord | null
@@ -24,6 +31,7 @@ const emit = defineEmits<{
   suggestCategory: []
   selectCategory: [item: CategorySearchResult]
   applyCategory: []
+  setTranslateAttributesEnabled: [value: boolean]
   fillAttributes: []
   categoryPrecheck: []
   refreshCategories: []
@@ -43,7 +51,7 @@ const platforms: Array<{ key: Marketplace; label: string }> = [
 
 const selectedProductId = ref('')
 const showOptionalAttributes = ref(false)
-const attributeInputRefs = ref<Record<string, HTMLInputElement | null>>({})
+const attributeInputRefs = ref<Record<string, HTMLInputElement | HTMLSelectElement | null>>({})
 type WarrantyType = 'none' | 'seller' | 'factory'
 type WarrantyUnit = 'months' | 'years'
 
@@ -132,15 +140,15 @@ const isCategoryRefreshRunning = computed(() => ['queued', 'running'].includes(S
 
 const attributeFields = computed(() => {
   const draftAttrs = props.product.drafts[props.activeMarketplace].attributes
-  const fields = new Map<string, { id: string; name: string; required: boolean }>()
+  const fields = new Map<string, { id: string; name: string; required: boolean; options: string[] }>()
   for (const attr of props.category?.requiredAttributes || []) {
-    if (attr.id) fields.set(attr.id, { id: attr.id, name: attr.name || attr.id, required: attr.required })
+    if (attr.id) fields.set(attr.id, { id: attr.id, name: attr.name || attr.id, required: attr.required, options: attr.options || [] })
   }
   for (const attr of props.category?.optionalAttributes || []) {
-    if (attr.id && !fields.has(attr.id)) fields.set(attr.id, { id: attr.id, name: attr.name || attr.id, required: false })
+    if (attr.id && !fields.has(attr.id)) fields.set(attr.id, { id: attr.id, name: attr.name || attr.id, required: false, options: attr.options || [] })
   }
   for (const key of Object.keys(draftAttrs)) {
-    if (!fields.has(key)) fields.set(key, { id: key, name: key, required: false })
+    if (!fields.has(key)) fields.set(key, { id: key, name: key, required: false, options: [] })
   }
   return [...fields.values()]
 })
@@ -181,6 +189,50 @@ const warrantyDurationUnit = computed<WarrantyUnit>({
   },
 })
 const warrantySummary = computed(() => activeDraft.value.saleTerms.length ? `已配置 ${activeDraft.value.saleTerms.length} 条` : '尚未配置 warranty / sale_terms')
+const translateAttributesEnabled = computed({
+  get: () => props.categoryAttributeTranslationEnabled,
+  set: (value: boolean) => emit('setTranslateAttributesEnabled', value),
+})
+const translationCount = computed(() => Object.values(props.categoryAttributeTranslations || {}).filter((item) => item.label).length)
+const translationSourceLabel = computed(() => props.categoryAttributeTranslationsSource === 'cache' ? '缓存' : props.categoryAttributeTranslationsSource === 'ai' ? 'AI' : '')
+const showAttributeTranslationProgress = computed(() => translateAttributesEnabled.value && props.categoryAttributeTranslating)
+const categoryResultTranslationCount = computed(() => Object.values(props.categoryResultTranslations || {}).filter(Boolean).length)
+const showCategoryResultTranslationProgress = computed(() => translateAttributesEnabled.value && props.categoryResultTranslating)
+
+function attributeTranslation(attrId: string) {
+  return props.categoryAttributeTranslations?.[attrId] || null
+}
+
+function attributeLabel(attr: { id: string; name: string }) {
+  const translation = translateAttributesEnabled.value ? attributeTranslation(attr.id) : null
+  return translation?.label || attr.name || attr.id
+}
+
+function attributeOriginalLabel(attr: { id: string; name: string }) {
+  return [attr.name || attr.id, attr.id].filter((item, index, items) => item && items.indexOf(item) === index).join(' · ')
+}
+
+function attributeOptionLabel(attrId: string, option: string) {
+  const translation = translateAttributesEnabled.value ? attributeTranslation(attrId) : null
+  const translated = translation?.values?.[option]
+  return translated ? `${translated} / ${option}` : option
+}
+
+function attributePlaceholder(attr: { id: string; options?: string[] }) {
+  return attr.options?.length ? '请选择平台允许的选项' : '请输入属性值'
+}
+
+function categoryResultTranslation(item: CategorySearchResult) {
+  return props.categoryResultTranslations?.[item.id] || ''
+}
+
+function categoryResultTitle(item: CategorySearchResult) {
+  return translateAttributesEnabled.value && categoryResultTranslation(item) ? categoryResultTranslation(item) : item.name || item.id
+}
+
+function categoryResultSubtitle(item: CategorySearchResult) {
+  return item.path || item.id
+}
 
 function isMissingAttribute(attrId: string) {
   const missing = [
@@ -211,7 +263,7 @@ function collectReviewAttributeId(item: PrecheckIssue | UnknownRecord | string, 
 
 function setAttributeInputRef(attrId: string, el: Element | ComponentPublicInstance | null) {
   const node = el && '$el' in el ? el.$el : el
-  attributeInputRefs.value[attrId] = node instanceof HTMLInputElement ? node : null
+  attributeInputRefs.value[attrId] = node instanceof HTMLInputElement || node instanceof HTMLSelectElement ? node : null
 }
 
 async function focusAttribute(attrId: string) {
@@ -222,7 +274,7 @@ async function focusAttribute(attrId: string) {
   const input = attributeInputRefs.value[attrId]
   input?.scrollIntoView({ behavior: 'smooth', block: 'center' })
   input?.focus({ preventScroll: true })
-  input?.select()
+  if (input instanceof HTMLInputElement) input.select()
 }
 
 function issueTitle(issue: PrecheckIssue) {
@@ -281,6 +333,7 @@ watch(
   },
   { immediate: true },
 )
+
 </script>
 
 <template>
@@ -318,10 +371,21 @@ watch(
       <div>
         <h2 class="card-title">类目 / 属性 / 发布预检</h2>
         <p class="muted mt-1">类目搜索、必填属性填充、发布前校验和 payload 预览。</p>
+        <p v-if="showCategoryResultTranslationProgress || showAttributeTranslationProgress" class="mt-1 text-xs text-brand-700 dark:text-brand-300">正在调用文本 AI 翻译类目/属性...</p>
+        <p v-else-if="translateAttributesEnabled && (categoryResultTranslationCount || translationCount)" class="mt-1 text-xs text-accent-500 dark:text-accent-400">已翻译候选类目 {{ categoryResultTranslationCount }} 项 / 属性 {{ translationCount }} 项</p>
       </div>
-      <select :value="props.activeMarketplace" class="input w-56" @change="emit('setMarketplace', ($event.target as HTMLSelectElement).value as Marketplace)">
-        <option v-for="platform in platforms" :key="platform.key" :value="platform.key">{{ platform.label }}</option>
-      </select>
+      <div class="flex flex-wrap items-center gap-2">
+        <label class="inline-flex items-center gap-2 rounded-full border border-accent-200 bg-white px-3 py-1.5 text-sm font-semibold text-accent-700 shadow-sm dark:border-dark-700 dark:bg-dark-900 dark:text-accent-200">
+          <input v-model="translateAttributesEnabled" type="checkbox" class="size-4 rounded border-accent-300" :disabled="props.loading || !hasCurrentProduct" />
+          翻译类目/属性
+        </label>
+        <select :value="props.activeMarketplace" class="input w-56" @change="emit('setMarketplace', ($event.target as HTMLSelectElement).value as Marketplace)">
+          <option v-for="platform in platforms" :key="platform.key" :value="platform.key">{{ platform.label }}</option>
+        </select>
+      </div>
+    </div>
+    <div v-if="showCategoryResultTranslationProgress || showAttributeTranslationProgress" class="mt-3 h-2 overflow-hidden rounded-full bg-accent-200 dark:bg-dark-800">
+      <div class="h-full w-2/3 animate-pulse rounded-full bg-brand-500" />
     </div>
 
     <div class="mt-5 grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
@@ -344,16 +408,16 @@ watch(
         </div>
         <div class="mt-4 flex gap-2">
           <input :value="props.categoryQuery" class="input" placeholder="类目关键词" @input="emit('updateCategoryQuery', ($event.target as HTMLInputElement).value)" @keyup.enter="emit('searchCategory')" />
-          <button class="btn btn-outline shrink-0" :disabled="props.loading || !hasCurrentProduct" @click="emit('suggestCategory')">AI 建议类目</button>
+          <button class="btn btn-outline shrink-0" :disabled="props.loading || !hasCurrentProduct" @click="emit('suggestCategory')">匹配类目</button>
           <button class="btn btn-primary shrink-0" :disabled="props.loading" @click="emit('searchCategory')">搜索</button>
         </div>
         <div class="mt-4 max-h-80 space-y-2 overflow-y-auto">
           <button v-for="item in props.categoryResults" :key="item.id" class="w-full rounded-lg border border-accent-200 bg-white p-3 text-left hover:border-brand-300 hover:bg-brand-50 dark:border-dark-700 dark:bg-dark-900 dark:hover:border-primary-500/60 dark:hover:bg-dark-800" @click="emit('selectCategory', item)">
             <div class="flex flex-wrap items-center justify-between gap-2">
-              <div class="font-semibold text-accent-950 dark:text-white">{{ item.name || item.id }}</div>
+              <div class="font-semibold text-accent-950 dark:text-white">{{ categoryResultTitle(item) }}</div>
               <span v-if="item.raw.score" class="badge-info">AI {{ item.raw.score }}</span>
             </div>
-            <div class="mt-1 text-xs text-accent-500 dark:text-accent-400">{{ item.path || item.id }}</div>
+            <div class="mt-1 text-xs text-accent-500 dark:text-accent-400">{{ categoryResultSubtitle(item) }}</div>
             <div v-if="item.raw.site || item.raw.source" class="mt-1 text-xs text-accent-400 dark:text-accent-500">{{ item.raw.site || '' }}{{ item.raw.source ? ` / ${item.raw.source}` : '' }}</div>
           </button>
           <div v-if="!props.categoryResults.length" class="rounded-lg border border-dashed border-accent-300 bg-white p-5 text-center text-sm text-accent-500 dark:border-dark-600 dark:bg-dark-900 dark:text-accent-300">暂无搜索结果。</div>
@@ -361,7 +425,12 @@ watch(
       </article>
 
       <article class="min-w-0 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
-        <h3 class="font-semibold text-accent-950 dark:text-white">当前类目 / 必填属性</h3>
+        <div class="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 class="font-semibold text-accent-950 dark:text-white">当前类目 / 必填属性</h3>
+            <p v-if="translateAttributesEnabled && translationCount" class="mt-1 text-xs text-accent-500 dark:text-accent-400">属性翻译：{{ translationCount }} 项{{ translationSourceLabel ? ` / ${translationSourceLabel}` : '' }}</p>
+          </div>
+        </div>
         <label class="mt-4 block">
           <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">类目 ID</span>
           <input v-model="props.product.drafts[props.activeMarketplace].categoryId" class="input mt-1" placeholder="例如 MLM12345" />
@@ -390,18 +459,32 @@ watch(
           </div>
         </div>
         <div class="mt-4 flex flex-wrap gap-2">
-          <span v-for="attr in requiredAttributeFields" :key="attr.id" class="badge-muted">{{ attr.name || attr.id }}</span>
+          <span v-for="attr in requiredAttributeFields" :key="attr.id" class="badge-muted">{{ attributeLabel(attr) }}</span>
           <span v-if="!props.category?.requiredAttributes.length" class="badge-muted">待读取属性</span>
         </div>
         <div class="mt-4 grid gap-2">
           <label v-for="attr in requiredAttributeFields" :key="attr.id" class="block">
-            <span class="text-xs font-semibold" :class="isMissingAttribute(attr.id) ? 'text-rose-700' : 'text-slate-500'">{{ attr.required ? '* ' : '' }}{{ attr.name || attr.id }}</span>
-            <input
+            <span class="text-xs font-semibold" :class="isMissingAttribute(attr.id) ? 'text-rose-700' : 'text-slate-500'">{{ attr.required ? '* ' : '' }}{{ attributeLabel(attr) }}</span>
+            <span v-if="translateAttributesEnabled && attributeTranslation(attr.id)" class="mt-0.5 block text-[11px] text-slate-400">{{ attributeOriginalLabel(attr) }}</span>
+            <span v-if="translateAttributesEnabled && attributeTranslation(attr.id)?.help" class="mt-0.5 block text-[11px] text-slate-500">{{ attributeTranslation(attr.id)?.help }}</span>
+            <span v-if="pendingReviewAttributeIds.includes(attr.id)" class="mt-0.5 block text-[11px] text-amber-600">AI 暂无法从商品信息判断，请人工确认。</span>
+            <select
+              v-if="attr.options.length"
               :ref="(el) => setAttributeInputRef(attr.id, el)"
               v-model="props.product.drafts[props.activeMarketplace].attributes[attr.id]"
               class="input mt-1"
               :class="isMissingAttribute(attr.id) ? 'border-rose-300 bg-rose-50' : ''"
-              :placeholder="attr.id"
+            >
+              <option value="">{{ attributePlaceholder(attr) }}</option>
+              <option v-for="option in attr.options" :key="option" :value="option">{{ attributeOptionLabel(attr.id, option) }}</option>
+            </select>
+            <input
+              v-else
+              :ref="(el) => setAttributeInputRef(attr.id, el)"
+              v-model="props.product.drafts[props.activeMarketplace].attributes[attr.id]"
+              class="input mt-1"
+              :class="isMissingAttribute(attr.id) ? 'border-rose-300 bg-rose-50' : ''"
+              :placeholder="attributePlaceholder(attr)"
             />
           </label>
         </div>
@@ -412,8 +495,14 @@ watch(
           </button>
           <div v-if="showOptionalAttributes" class="mt-3 grid gap-2">
             <label v-for="attr in optionalAttributeFields" :key="attr.id" class="block">
-              <span class="text-xs font-semibold text-slate-500">{{ attr.name || attr.id }}</span>
-              <input :ref="(el) => setAttributeInputRef(attr.id, el)" v-model="props.product.drafts[props.activeMarketplace].attributes[attr.id]" class="input mt-1" :placeholder="attr.id" />
+              <span class="text-xs font-semibold text-slate-500">{{ attributeLabel(attr) }}</span>
+              <span v-if="translateAttributesEnabled && attributeTranslation(attr.id)" class="mt-0.5 block text-[11px] text-slate-400">{{ attributeOriginalLabel(attr) }}</span>
+              <span v-if="translateAttributesEnabled && attributeTranslation(attr.id)?.help" class="mt-0.5 block text-[11px] text-slate-500">{{ attributeTranslation(attr.id)?.help }}</span>
+              <select v-if="attr.options.length" :ref="(el) => setAttributeInputRef(attr.id, el)" v-model="props.product.drafts[props.activeMarketplace].attributes[attr.id]" class="input mt-1">
+                <option value="">{{ attributePlaceholder(attr) }}</option>
+                <option v-for="option in attr.options" :key="option" :value="option">{{ attributeOptionLabel(attr.id, option) }}</option>
+              </select>
+              <input v-else :ref="(el) => setAttributeInputRef(attr.id, el)" v-model="props.product.drafts[props.activeMarketplace].attributes[attr.id]" class="input mt-1" :placeholder="attributePlaceholder(attr)" />
             </label>
           </div>
         </div>

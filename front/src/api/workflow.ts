@@ -2,7 +2,9 @@ import { API_REQUEST_TIMEOUT_MS, apiClient } from '@/api/client'
 import { listingLanguageLabel } from '@/constants/locales'
 import type {
   BrowserDebugStatus,
+  CategoryAttributeTranslations,
   CategoryPrecheckResult,
+  CategoryResultTranslations,
   CategorySearchResult,
   CategorySelection,
   CollectBatchRow,
@@ -615,6 +617,18 @@ export async function fetchCategoryAttrs(platform: Marketplace, categoryId: stri
   })
   const data = asRecord(response.data)
   ensureOk(data, '读取类目属性失败')
+  const attributeOptions = (record: UnknownRecord) => {
+    if (Array.isArray(record.options)) return record.options.map(String).filter(Boolean)
+    if (Array.isArray(record.values)) {
+      return record.values
+        .map((item) => {
+          const option = asRecord(item)
+          return getString(option, ['name', 'value_name', 'id'])
+        })
+        .filter(Boolean)
+    }
+    return stringList(record.options)
+  }
   const required = Array.isArray(data.required)
     ? data.required.map((item) => {
       const record = asRecord(item)
@@ -622,7 +636,7 @@ export async function fetchCategoryAttrs(platform: Marketplace, categoryId: stri
         id: getString(record, ['id', 'attribute_id']),
         name: getString(record, ['name', 'label']),
         required: getBoolean(record, ['required'], false),
-        options: stringList(record.options),
+        options: attributeOptions(record),
       }
     })
     : []
@@ -635,7 +649,7 @@ export async function fetchCategoryAttrs(platform: Marketplace, categoryId: stri
         id: getString(record, ['id', 'attribute_id']),
         name: getString(record, ['name', 'label']),
         required: false,
-        options: stringList(record.options),
+        options: attributeOptions(record),
       }
     })
     : []
@@ -669,7 +683,7 @@ export async function searchCategories(platform: Marketplace, query: string, sit
 export async function suggestCategories(product: Product, platform: Marketplace, site = ''): Promise<{ results: CategorySearchResult[]; cacheStatus: UnknownRecord; terms: string[] }> {
   const response = await apiClient.post('/api/category-ai-suggest', { product: toBackendProduct(product), platform, site, limit: 5 })
   const data = asRecord(response.data)
-  ensureOk(data, 'AI 建议类目失败')
+  ensureOk(data, '匹配类目失败')
   const results = Array.isArray(data.suggestions)
     ? data.suggestions.map((item) => {
       const record = asRecord(item)
@@ -724,7 +738,53 @@ export async function fillCategoryAttributes(product: Product, platform: Marketp
     productsIndex: [],
     draftsIndex: [],
     needReview: Array.isArray(data.need_review) ? data.need_review : [],
+    warning: getString(data, ['warning']),
+    raw: data,
   }
+}
+
+export async function fetchCategoryAttributeTranslations(category: CategorySelection, language = 'zh-CN'): Promise<{ translations: CategoryAttributeTranslations; source: string }> {
+  const response = await apiClient.post('/api/category-attribute-translations', {
+    platform: category.platform,
+    category_id: category.categoryId,
+    category_path: category.categoryPath,
+    language,
+    attributes: [...category.requiredAttributes, ...category.optionalAttributes],
+  })
+  const data = asRecord(response.data)
+  ensureOk(data, '翻译类目属性失败')
+  const rawTranslations = asRecord(data.translations)
+  const translations: CategoryAttributeTranslations = {}
+  for (const [attrId, value] of Object.entries(rawTranslations)) {
+    const record = asRecord(value)
+    translations[attrId] = {
+      label: getString(record, ['label', 'zh_label']),
+      help: getString(record, ['help', 'zh_help']),
+      values: Object.fromEntries(Object.entries(asRecord(record.values)).map(([key, text]) => [key, String(text || '')]).filter(([, text]) => text.trim())),
+    }
+  }
+  return { translations, source: getString(data, ['source']) }
+}
+
+export async function fetchCategoryResultTranslations(platform: Marketplace, categories: CategorySearchResult[], language = 'zh-CN'): Promise<{ translations: CategoryResultTranslations; source: string }> {
+  const response = await apiClient.post('/api/category-result-translations', {
+    platform,
+    language,
+    categories: categories.map((item) => ({
+      id: item.id,
+      name: item.name,
+      path: item.path,
+      raw: item.raw,
+    })),
+  })
+  const data = asRecord(response.data)
+  ensureOk(data, '翻译候选类目失败')
+  const translations = Object.fromEntries(
+    Object.entries(asRecord(data.translations))
+      .map(([key, value]) => [key, String(value || '').trim()])
+      .filter(([, value]) => value),
+  )
+  return { translations, source: getString(data, ['source']) }
 }
 
 export async function refreshCategoryCache(platform: Marketplace, site = '', maxCategories = 500): Promise<UnknownRecord> {
