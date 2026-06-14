@@ -528,36 +528,34 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
         self.assertEqual(attributes["SELLER_PACKAGE_WEIGHT"], "350 g")
         self.assertEqual(payload["sale_terms"], [{"id": "WARRANTY_TYPE", "value_name": "Sin garantía", "value_id": "6150835"}])
 
-    def test_claim_and_precheck_do_not_downgrade_published_mercadolibre_draft(self) -> None:
-        product = sample_product("Published item", "https://example.com/published-item")
-        product["drafts"]["mercadolibre"].update(
-            {
-                "enabled": True,
-                "title": "Published title",
-                "description": "Published description",
-                "category_id": "MLM123",
-                "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
-                "price": "19.99",
-                "stock": "5",
-                "publish_status": "real_publish_success",
-                "status": "published",
-            }
-        )
+    def test_claiming_published_product_creates_a_new_active_draft(self) -> None:
+        def run(app_dir: Path) -> None:
+            product = sample_product("Published item", "https://example.com/published-item")
+            product["drafts"]["mercadolibre"].update(
+                {
+                    "enabled": True,
+                    "title": "Published title",
+                    "description": "Published description",
+                    "category_id": "MLM123",
+                    "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
+                    "price": "19.99",
+                    "stock": "5",
+                    "publish_status": "real_publish_success",
+                    "status": "published",
+                }
+            )
+            saved = erp_web_app.save_product(product)
 
-        claimed = erp_web_app.apply_claimed_platform_drafts(product, ["mercadolibre"])
-        self.assertEqual(claimed["drafts"]["mercadolibre"]["publish_status"], "real_publish_success")
-        self.assertEqual(claimed["drafts"]["mercadolibre"]["status"], "published")
-        self.assertEqual(claimed["workflow_statuses"]["mercadolibre"], "published")
+            result = erp_web_app.claim_products_to_platforms([saved["product_id"]], ["mercadolibre"])
 
-        prechecked = erp_web_app.apply_precheck_to_product(
-            claimed,
-            "mercadolibre",
-            {"platform": "mercadolibre", "ok": True, "errors": [], "warnings": [], "checked_at": "2026-06-12T01:00:00"},
-            status="ready",
-        )
-        self.assertEqual(prechecked["drafts"]["mercadolibre"]["publish_status"], "real_publish_success")
-        self.assertEqual(prechecked["drafts"]["mercadolibre"]["status"], "published")
-        self.assertEqual(prechecked["workflow_statuses"]["mercadolibre"], "published")
+            self.assertTrue(result["ok"])
+            all_drafts = erp_db.list_draft_records(app_dir, scope="all")
+            active_drafts = erp_db.list_draft_records(app_dir)
+            statuses = sorted(item["status"] for item in all_drafts if item["platform"] == "mercadolibre")
+            self.assertEqual(statuses, ["claimed", "published"])
+            self.assertEqual([item["status"] for item in active_drafts], ["claimed"])
+
+        self.with_temp_app(run)
 
     def test_mercadolibre_remote_items_lists_seller_items(self) -> None:
         def run(app_dir: Path) -> None:

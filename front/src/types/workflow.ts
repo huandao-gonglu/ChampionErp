@@ -53,6 +53,7 @@ export interface ProductSource {
 }
 
 export interface MarketplaceDraft {
+  draftId: string
   enabled: boolean
   title: string
   description: string
@@ -270,6 +271,27 @@ export interface ProductIndexItem {
   publishStatus: string
   publishQueueReady: boolean
   optimized: boolean
+  raw: UnknownRecord
+}
+
+export interface DraftIndexItem {
+  draftId: string
+  productId: string
+  platform: Marketplace
+  site: string
+  status: WorkflowStatus | string
+  title: string
+  productTitle: string
+  mainImage: string
+  sourcePlatform: string
+  sourceUrl: string
+  categoryId: string
+  categoryPath: string
+  price: string
+  publishStatus: string
+  createdAt: string
+  updatedAt: string
+  productFilePath: string
   raw: UnknownRecord
 }
 

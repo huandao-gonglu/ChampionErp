@@ -42,7 +42,7 @@ const imageAiAction = ref<'prompt' | 'sync' | 'translate' | ''>('')
 const imageAiStartedAt = ref(0)
 const imageAiNow = ref(0)
 const imageAiTargets = ref<Array<{ id: string; label: string }>>([])
-let imageAiTimer: ReturnType<typeof window.setInterval> | null = null
+let imageAiTimer: number | null = null
 const IMAGE_AI_ESTIMATED_MS_PER_IMAGE = 180_000
 const imageAiRunning = computed(() => Boolean(imageAiAction.value && props.loading))
 const imageAiTotal = computed(() => Math.max(1, imageAiTargets.value.length))

@@ -5,6 +5,7 @@ import type {
   CategorySearchResult,
   CategorySelection,
   CollectBatchRow,
+  DraftIndexItem,
   CollectForm,
   ImageAsset,
   Marketplace,
@@ -43,6 +44,7 @@ import {
   normalizeBackendProduct,
   normalizeBrowserStatus,
   normalizeDeleteProductsResult,
+  normalizeDraftsIndex,
   normalizeMercadoLibreAuthChecklist,
   normalizeMercadoLibreOrderNotification,
   normalizeProductMutation,
@@ -98,6 +100,7 @@ export async function fetchState(): Promise<AppStateResponse> {
       : [],
     outputDir: getString(data, ['outputDir']),
     productsIndex: normalizeProductsIndex(data.productsIndex),
+    draftsIndex: normalizeDraftsIndex(data.draftsIndex),
     publishLogs: normalizePublishLogs(data.publishLogs),
   }
 }
@@ -107,6 +110,14 @@ export async function fetchProductsIndex(): Promise<ProductIndexItem[]> {
   const data = asRecord(response.data)
   ensureOk(data, '读取商品库失败')
   return normalizeProductsIndex(data.items)
+}
+
+export async function fetchDraftsIndex(scope = 'active'): Promise<DraftIndexItem[]> {
+  const params = new URLSearchParams({ scope })
+  const response = await apiClient.get(`/api/drafts-index?${params.toString()}`)
+  const data = asRecord(response.data)
+  ensureOk(data, '读取草稿箱失败')
+  return normalizeDraftsIndex(data.items)
 }
 
 export async function fetchPublishLogs(): Promise<PublishLogItem[]> {
@@ -235,6 +246,11 @@ export async function saveProduct(product: Product): Promise<ProductMutationResp
 
 export async function loadProduct(productId: string, productFilePath = ''): Promise<ProductMutationResponse> {
   const response = await apiClient.post('/api/load-product', { product_id: productId, product_file_path: productFilePath })
+  return normalizeProductMutation(response.data)
+}
+
+export async function loadDraft(draftId: string): Promise<ProductMutationResponse> {
+  const response = await apiClient.post('/api/load-draft', { draft_id: draftId })
   return normalizeProductMutation(response.data)
 }
 
@@ -502,7 +518,7 @@ export async function calculatePrice(input: PricingInput): Promise<PricingResult
   }
 }
 
-export async function publishPrecheck(product: Product, platforms: Marketplace[] = ['mercadolibre']): Promise<{ product: Product; precheck: PublishPrecheck; platformResults: UnknownRecord }> {
+export async function publishPrecheck(product: Product, platforms: Marketplace[] = ['mercadolibre']): Promise<{ product: Product; precheck: PublishPrecheck; platformResults: UnknownRecord; productsIndex?: ProductIndexItem[]; draftsIndex?: DraftIndexItem[] }> {
   const response = await apiClient.post('/api/publish-precheck', { product: toBackendProduct(product), platforms })
   const data = asRecord(response.data)
   ensureOk(data, '预检失败')
@@ -521,6 +537,8 @@ export async function publishPrecheck(product: Product, platforms: Marketplace[]
       checkedAt: getString(result, ['checked_at'], new Date().toISOString()),
     },
     platformResults: asRecord(data.platforms),
+    productsIndex: normalizeProductsIndex(data.productsIndex),
+    draftsIndex: normalizeDraftsIndex(data.draftsIndex),
   }
 }
 
@@ -693,6 +711,7 @@ export async function fillCategoryAttributes(product: Product, platform: Marketp
     product: normalizedProduct,
     imagePool: normalizedProduct.source.imagePool,
     productsIndex: [],
+    draftsIndex: [],
     needReview: Array.isArray(data.need_review) ? data.need_review : [],
   }
 }

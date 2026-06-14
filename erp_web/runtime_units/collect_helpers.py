@@ -22,6 +22,7 @@ from services import image_service
 from .browser_debug import file_url
 from .image_pool_core import image_pool_refs_for_platform
 from .product_store import (
+    load_drafts_index,
     load_product_from_index,
     load_products_index,
     normalize_list,
@@ -325,12 +326,9 @@ def apply_claimed_platform_drafts(product: dict[str, Any], claim_platforms: list
         return str(value or "").strip().lower() not in placeholder_titles
 
     for platform in platforms:
-        draft = normalized.setdefault("drafts", {}).setdefault(platform, default_draft(platform))
+        draft = default_draft(platform)
+        normalized.setdefault("drafts", {})[platform] = draft
         if not isinstance(draft, dict):
-            continue
-        existing_publish_status = str(draft.get("publish_status") or "").strip().lower()
-        existing_status = str(draft.get("status") or "").strip().lower()
-        if existing_publish_status in {"published", "real_publish_success", "success"} or existing_status == "published":
             continue
         draft["enabled"] = True
         draft["title"] = draft.get("title") if use_existing(draft.get("title")) else source.get("title") or normalized.get("name") or ""
@@ -376,6 +374,7 @@ def claim_products_to_platforms(product_ids: list[str], platforms: list[str]) ->
         "claimed_count": sum(1 for item in items if item.get("ok")),
         "items": items,
         "productsIndex": load_products_index(),
+        "draftsIndex": load_drafts_index(),
     }
 
 

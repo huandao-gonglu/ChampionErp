@@ -20,6 +20,7 @@ class ProductSource(TypedDict, total=False):
 
 
 class PlatformDraft(TypedDict, total=False):
+    draft_id: str
     platform: str
     site: str
     status: str

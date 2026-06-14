@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -76,7 +77,7 @@ def initialize_database(app_dir: Path | str) -> Path:
             );
 
             CREATE TABLE IF NOT EXISTS platform_drafts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                draft_id TEXT PRIMARY KEY,
                 product_id TEXT NOT NULL,
                 platform TEXT NOT NULL,
                 site TEXT NOT NULL DEFAULT '',
@@ -90,8 +91,7 @@ def initialize_database(app_dir: Path | str) -> Path:
                 draft_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                FOREIGN KEY(product_id) REFERENCES products(product_id) ON DELETE CASCADE,
-                UNIQUE(product_id, platform, site)
+                FOREIGN KEY(product_id) REFERENCES products(product_id) ON DELETE CASCADE
             );
 
             CREATE TABLE IF NOT EXISTS media_assets (
@@ -156,6 +156,7 @@ def initialize_database(app_dir: Path | str) -> Path:
             CREATE INDEX IF NOT EXISTS idx_publish_logs_product ON publish_logs(product_id, platform);
             """
         )
+        _migrate_platform_drafts_schema(conn)
         conn.commit()
     finally:
         conn.close()
@@ -204,6 +205,108 @@ def _slug(value: str) -> str:
         chars.append(ch if ch.isalnum() or ch in "._-" else "_")
     slug = "".join(chars).strip("._-")
     return slug[:80] or "product"
+
+
+def _migrate_platform_drafts_schema(conn: sqlite3.Connection) -> None:
+    columns = conn.execute("PRAGMA table_info(platform_drafts)").fetchall()
+    if not columns:
+        return
+    has_draft_id = any(str(row["name"]) == "draft_id" for row in columns)
+    draft_id_is_pk = any(str(row["name"]) == "draft_id" and int(row["pk"] or 0) == 1 for row in columns)
+    if has_draft_id and draft_id_is_pk:
+        return
+
+    rows = conn.execute("SELECT * FROM platform_drafts").fetchall()
+    conn.execute("ALTER TABLE platform_drafts RENAME TO platform_drafts_legacy")
+    conn.execute(
+        """
+        CREATE TABLE platform_drafts (
+            draft_id TEXT PRIMARY KEY,
+            product_id TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            site TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'claimed',
+            title TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            category_id TEXT NOT NULL DEFAULT '',
+            category_path TEXT NOT NULL DEFAULT '',
+            attributes_json TEXT NOT NULL DEFAULT '{}',
+            price_json TEXT NOT NULL DEFAULT '{}',
+            draft_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(product_id) REFERENCES products(product_id) ON DELETE CASCADE
+        )
+        """
+    )
+    seen: set[str] = set()
+    for row in rows:
+        draft_json = json_loads(row["draft_json"], {})
+        draft = draft_json if isinstance(draft_json, dict) else {}
+        draft_id = str(draft.get("draft_id") or draft.get("draftId") or "").strip()
+        if not draft_id:
+            seed = "|".join([str(row["product_id"]), str(row["platform"]), str(row["site"]), str(row["created_at"])])
+            draft_id = f"draft_{hashlib.sha1(seed.encode('utf-8', errors='ignore')).hexdigest()[:16]}"
+        while draft_id in seen:
+            draft_id = f"draft_{uuid.uuid4().hex[:16]}"
+        seen.add(draft_id)
+        draft["draft_id"] = draft_id
+        conn.execute(
+            """
+            INSERT INTO platform_drafts (
+                draft_id, product_id, platform, site, status, title, description,
+                category_id, category_path, attributes_json, price_json, draft_json,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                draft_id,
+                row["product_id"],
+                row["platform"],
+                row["site"],
+                row["status"],
+                row["title"],
+                row["description"],
+                row["category_id"],
+                row["category_path"],
+                row["attributes_json"],
+                row["price_json"],
+                json_dumps(draft),
+                row["created_at"],
+                row["updated_at"],
+            ),
+        )
+    conn.execute("DROP TABLE platform_drafts_legacy")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_platform_drafts_product ON platform_drafts(product_id)")
+
+
+def draft_identity(product_id: str, platform: str, draft: dict[str, Any] | None = None) -> str:
+    draft = _dict(draft)
+    existing = str(draft.get("draft_id") or draft.get("draftId") or "").strip()
+    if existing:
+        return _slug(existing)
+    prefix = _slug(f"{product_id}_{platform}")[:48]
+    return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+def _draft_status(draft: dict[str, Any]) -> str:
+    return str(draft.get("status") or draft.get("publish_status") or "claimed")
+
+
+def _draft_should_persist(draft: dict[str, Any]) -> bool:
+    if str(draft.get("draft_id") or draft.get("draftId") or "").strip():
+        return True
+    status = str(draft.get("status") or draft.get("publish_status") or "").strip().lower()
+    if status in {"copy_ready", "images_ready", "ready_to_publish", "published", "failed", "not_ready"}:
+        return True
+    for key in ("title", "description", "category_id", "copy_generated_at"):
+        if str(draft.get(key) or "").strip():
+            return True
+    for key in ("attributes", "validation_errors"):
+        value = draft.get(key)
+        if isinstance(value, (dict, list)) and bool(value):
+            return True
+    return False
 
 
 def _source(product: dict[str, Any]) -> dict[str, Any]:
@@ -306,6 +409,10 @@ def _upsert_drafts(conn: sqlite3.Connection, product_id: str, product: dict[str,
         draft = _dict(draft_raw)
         if platform not in PLATFORMS or not draft:
             continue
+        if not _draft_should_persist(draft):
+            continue
+        draft_id = draft_identity(product_id, platform, draft)
+        draft["draft_id"] = draft_id
         site = str(draft.get("site") or draft.get("site_id") or "").strip()
         price_json = {
             key: draft.get(key)
@@ -315,10 +422,13 @@ def _upsert_drafts(conn: sqlite3.Connection, product_id: str, product: dict[str,
         conn.execute(
             """
             INSERT INTO platform_drafts (
-                product_id, platform, site, status, title, description, category_id,
+                draft_id, product_id, platform, site, status, title, description, category_id,
                 category_path, attributes_json, price_json, draft_json, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(product_id, platform, site) DO UPDATE SET
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(draft_id) DO UPDATE SET
+                product_id=excluded.product_id,
+                platform=excluded.platform,
+                site=excluded.site,
                 status=excluded.status,
                 title=excluded.title,
                 description=excluded.description,
@@ -330,10 +440,11 @@ def _upsert_drafts(conn: sqlite3.Connection, product_id: str, product: dict[str,
                 updated_at=excluded.updated_at
             """,
             (
+                draft_id,
                 product_id,
                 platform,
                 site,
-                str(draft.get("status") or draft.get("publish_status") or "claimed"),
+                _draft_status(draft),
                 str(draft.get("title") or ""),
                 str(draft.get("description") or ""),
                 str(draft.get("category_id") or ""),
@@ -441,12 +552,22 @@ def load_product_model(app_dir: Path | str, product_id: str) -> dict[str, Any]:
 
 def _load_drafts(conn: sqlite3.Connection, product_id: str, existing: dict[str, Any]) -> dict[str, Any]:
     drafts = dict(existing)
-    for row in conn.execute("SELECT * FROM platform_drafts WHERE product_id = ?", (product_id,)):
+    seen_platforms: set[str] = set()
+    for row in conn.execute(
+        """
+        SELECT * FROM platform_drafts
+        WHERE product_id = ?
+        ORDER BY CASE WHEN status = 'published' THEN 1 ELSE 0 END ASC, updated_at DESC
+        """,
+        (product_id,),
+    ):
         draft = json_loads(row["draft_json"], {})
         if not isinstance(draft, dict):
             draft = {}
+        draft_id = row["draft_id"] if "draft_id" in row.keys() else str(draft.get("draft_id") or "")
         draft.update(
             {
+                "draft_id": draft_id,
                 "status": row["status"],
                 "title": row["title"],
                 "description": row["description"],
@@ -455,8 +576,126 @@ def _load_drafts(conn: sqlite3.Connection, product_id: str, existing: dict[str, 
                 "attributes": json_loads(row["attributes_json"], {}),
             }
         )
-        drafts[row["platform"]] = draft
+        platform = str(row["platform"])
+        if platform not in seen_platforms:
+            drafts[platform] = draft
+            seen_platforms.add(platform)
     return drafts
+
+
+def _draft_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    draft = json_loads(row["draft_json"], {})
+    if not isinstance(draft, dict):
+        draft = {}
+    draft.update(
+        {
+            "draft_id": row["draft_id"],
+            "product_id": row["product_id"],
+            "platform": row["platform"],
+            "site": row["site"],
+            "status": row["status"],
+            "title": row["title"],
+            "description": row["description"],
+            "category_id": row["category_id"],
+            "category_path": row["category_path"],
+            "attributes": json_loads(row["attributes_json"], {}),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+    )
+    return draft
+
+
+def load_draft_model(app_dir: Path | str, draft_id: str) -> dict[str, Any]:
+    draft_id = str(draft_id or "").strip()
+    if not draft_id:
+        return {}
+    initialize_database(app_dir)
+    conn = connect(app_dir)
+    try:
+        row = conn.execute("SELECT * FROM platform_drafts WHERE draft_id = ?", (draft_id,)).fetchone()
+        return _draft_from_row(row) if row else {}
+    finally:
+        conn.close()
+
+
+def load_product_for_draft(app_dir: Path | str, draft_id: str) -> dict[str, Any]:
+    draft = load_draft_model(app_dir, draft_id)
+    if not draft:
+        return {}
+    product = load_product_model(app_dir, str(draft.get("product_id") or ""))
+    if not product:
+        return {}
+    platform = str(draft.get("platform") or "").strip()
+    if platform in PLATFORMS:
+        product.setdefault("drafts", {})
+        if isinstance(product["drafts"], dict):
+            product["drafts"][platform] = draft
+        product["current_draft_id"] = draft.get("draft_id")
+        product["current_draft_platform"] = platform
+    return product
+
+
+def upsert_draft_model(app_dir: Path | str, product_id: str, platform: str, draft: dict[str, Any]) -> str:
+    initialize_database(app_dir)
+    now = utc_now()
+    product_id = str(product_id or "").strip()
+    platform = str(platform or "").strip().lower()
+    if not product_id or platform not in PLATFORMS:
+        return ""
+    draft = dict(_dict(draft))
+    draft_id = draft_identity(product_id, platform, draft)
+    draft["draft_id"] = draft_id
+    site = str(draft.get("site") or draft.get("site_id") or "").strip()
+    price_json = {
+        key: draft.get(key)
+        for key in ("price", "sale_price", "currency", "net_profit", "pricing")
+        if draft.get(key) not in (None, "")
+    }
+    conn = connect(app_dir)
+    try:
+        conn.execute(
+            """
+            INSERT INTO platform_drafts (
+                draft_id, product_id, platform, site, status, title, description,
+                category_id, category_path, attributes_json, price_json, draft_json,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(draft_id) DO UPDATE SET
+                product_id=excluded.product_id,
+                platform=excluded.platform,
+                site=excluded.site,
+                status=excluded.status,
+                title=excluded.title,
+                description=excluded.description,
+                category_id=excluded.category_id,
+                category_path=excluded.category_path,
+                attributes_json=excluded.attributes_json,
+                price_json=excluded.price_json,
+                draft_json=excluded.draft_json,
+                updated_at=excluded.updated_at
+            """,
+            (
+                draft_id,
+                product_id,
+                platform,
+                site,
+                _draft_status(draft),
+                str(draft.get("title") or ""),
+                str(draft.get("description") or ""),
+                str(draft.get("category_id") or ""),
+                str(draft.get("category_path") or ""),
+                json_dumps(draft.get("attributes") or {}),
+                json_dumps(price_json),
+                json_dumps(draft),
+                str(draft.get("created_at") or now),
+                now,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return draft_id
 
 
 def _load_media(conn: sqlite3.Connection, product_id: str) -> list[dict[str, Any]]:
@@ -510,9 +749,73 @@ def list_product_records(app_dir: Path | str, limit: int = 500) -> list[dict[str
             """,
             (max(1, int(limit or 500)),),
         ).fetchall()
+        records: list[dict[str, Any]] = []
+        for row in rows:
+            product = json_loads(row["product_json"], {})
+            existing_drafts = _dict(product.get("drafts")) if isinstance(product, dict) else {}
+            records.append(_record_from_row(row, _load_drafts(conn, row["product_id"], existing_drafts)))
+        return records
     finally:
         conn.close()
-    return [_record_from_row(row) for row in rows]
+
+
+def list_draft_records(app_dir: Path | str, scope: str = "active", limit: int = 500) -> list[dict[str, Any]]:
+    initialize_database(app_dir)
+    scope = str(scope or "active").strip().lower()
+    conn = connect(app_dir)
+    try:
+        rows = conn.execute(
+            """
+            SELECT d.*, p.title AS product_title, p.source_platform, p.source_url, p.product_json,
+                   (
+                     SELECT preview_url FROM media_assets m
+                     WHERE m.product_id = d.product_id
+                     ORDER BY m.is_main DESC, m.sort_order ASC, m.id ASC
+                     LIMIT 1
+                   ) AS main_image
+            FROM platform_drafts d
+            JOIN products p ON p.product_id = d.product_id
+            ORDER BY d.updated_at DESC
+            LIMIT ?
+            """,
+            (max(1, int(limit or 500)),),
+        ).fetchall()
+    finally:
+        conn.close()
+    records = [_draft_record_from_row(row) for row in rows]
+    if scope == "published":
+        return [item for item in records if str(item.get("status") or "").lower() == "published"]
+    if scope == "all":
+        return records
+    return [item for item in records if str(item.get("status") or "").lower() != "published"]
+
+
+def _draft_record_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    product = json_loads(row["product_json"], {})
+    draft = _draft_from_row(row)
+    price_json = json_loads(row["price_json"], {})
+    pricing = _dict(draft.get("pricing"))
+    status = str(draft.get("status") or draft.get("publish_status") or row["status"] or "claimed")
+    return {
+        "draft_id": row["draft_id"],
+        "product_id": row["product_id"],
+        "platform": row["platform"],
+        "site": row["site"],
+        "status": status,
+        "title": row["title"] or draft.get("title") or "",
+        "product_title": row["product_title"] or _dict(product).get("name") or "",
+        "main_image": row["main_image"] or "",
+        "source_platform": row["source_platform"] or "",
+        "source_url": row["source_url"] or "",
+        "category_id": row["category_id"] or "",
+        "category_path": row["category_path"] or "",
+        "price": str(draft.get("price") or _dict(price_json).get("price") or pricing.get("suggested_price") or ""),
+        "publish_status": str(draft.get("publish_status") or ""),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "product_file_path": f"sqlite://products/{row['product_id']}",
+        "raw": draft,
+    }
 
 
 def delete_product_model(app_dir: Path | str, product_id: str) -> bool:
@@ -529,9 +832,9 @@ def delete_product_model(app_dir: Path | str, product_id: str) -> bool:
         conn.close()
 
 
-def _record_from_row(row: sqlite3.Row) -> dict[str, Any]:
+def _record_from_row(row: sqlite3.Row, loaded_drafts: dict[str, Any] | None = None) -> dict[str, Any]:
     product = json_loads(row["product_json"], {})
-    drafts = _dict(product.get("drafts")) if isinstance(product, dict) else {}
+    drafts = loaded_drafts if isinstance(loaded_drafts, dict) else _dict(product.get("drafts")) if isinstance(product, dict) else {}
     platforms = [
         platform
         for platform in PLATFORMS

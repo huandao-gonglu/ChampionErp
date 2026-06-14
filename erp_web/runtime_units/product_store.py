@@ -306,6 +306,11 @@ def load_products_index() -> list[dict[str, Any]]:
     return sanitize_products_index(erp_db.list_product_records(APP_DIR))
 
 
+def load_drafts_index(scope: str = "active") -> list[dict[str, Any]]:
+    ensure_sqlite_store()
+    return sanitize_products_index(erp_db.list_draft_records(APP_DIR, scope=scope))
+
+
 def delete_products_from_index(product_ids: list[Any]) -> dict[str, Any]:
     seen: set[str] = set()
     ids: list[str] = []
@@ -351,6 +356,16 @@ def load_product_from_index(product_id: str = "", file_path: str = "") -> dict[s
         sqlite_product_id = file_path.rsplit("/", 1)[-1]
     if sqlite_product_id:
         loaded = erp_db.load_product_model(APP_DIR, sqlite_product_id)
+        if loaded:
+            return normalize_product_fields(loaded)
+    return load_product()
+
+
+def load_draft_from_index(draft_id: str) -> dict[str, Any]:
+    draft_id = str(draft_id or "").strip()
+    ensure_sqlite_store()
+    if draft_id:
+        loaded = erp_db.load_product_for_draft(APP_DIR, draft_id)
         if loaded:
             return normalize_product_fields(loaded)
     return load_product()
@@ -807,6 +822,8 @@ __all__ = [
     "delete_products_from_index",
     "explain_mercadolibre_auth_error",
     "load_app_config",
+    "load_draft_from_index",
+    "load_drafts_index",
     "load_product",
     "load_product_from_index",
     "load_products_index",

@@ -6,6 +6,8 @@ from erp_web.runtime_units.image_pool import current_image_pool, current_source_
 from erp_web.runtime_units.pricing_runtime import calculate_price
 from erp_web.runtime_units.product_store import (
     delete_products_from_index,
+    load_draft_from_index,
+    load_drafts_index,
     load_product_from_index,
     load_products_index,
     save_product,
@@ -31,6 +33,7 @@ def save_product_payload(body: dict[str, Any]) -> ApiResponse:
         "ok": True,
         "product": product,
         "productsIndex": load_products_index(),
+        "draftsIndex": load_drafts_index(),
         "imagePool": current_image_pool(product),
     }
 
@@ -42,6 +45,20 @@ def load_product_payload(body: dict[str, Any]) -> ApiResponse:
         "ok": True,
         "product": saved,
         "productsIndex": load_products_index(),
+        "draftsIndex": load_drafts_index(),
+        "imagePool": current_image_pool(saved),
+        "sourceImages": current_source_images(saved),
+    }
+
+
+def load_draft_payload(body: dict[str, Any]) -> ApiResponse:
+    product = load_draft_from_index(body.get("draft_id", "") or body.get("draftId", ""))
+    saved: Product = save_product(product)
+    return {
+        "ok": True,
+        "product": saved,
+        "productsIndex": load_products_index(),
+        "draftsIndex": load_drafts_index(),
         "imagePool": current_image_pool(saved),
         "sourceImages": current_source_images(saved),
     }
@@ -56,6 +73,7 @@ __all__ = [
     "assign_product_upc",
     "calculate_product_price",
     "delete_products_payload",
+    "load_draft_payload",
     "load_product_payload",
     "save_product_payload",
 ]

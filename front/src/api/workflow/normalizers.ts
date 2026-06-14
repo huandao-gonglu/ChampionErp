@@ -1,6 +1,7 @@
 import { createEmptyDraft, createEmptyProduct } from '@/constants/initialState'
 import type {
   BrowserDebugStatus,
+  DraftIndexItem,
   ImageAsset,
   Marketplace,
   MarketplaceDraft,
@@ -23,6 +24,7 @@ export interface AppStateResponse {
   mercadolibreOrderNotifications?: MercadoLibreOrderNotification[]
   outputDir: string
   productsIndex: ProductIndexItem[]
+  draftsIndex?: DraftIndexItem[]
   publishLogs: PublishLogItem[]
 }
 
@@ -31,6 +33,7 @@ export interface ProductMutationResponse {
   product: Product
   imagePool: ImageAsset[]
   productsIndex: ProductIndexItem[]
+  draftsIndex?: DraftIndexItem[]
   diagnostics?: UnknownRecord
   warning?: string
   message?: string
@@ -66,6 +69,7 @@ export interface ProductOperationResult {
   product?: Product
   imagePool: ImageAsset[]
   productsIndex: ProductIndexItem[]
+  draftsIndex?: DraftIndexItem[]
   raw: UnknownRecord
 }
 
@@ -222,6 +226,7 @@ export function normalizeDraft(value: unknown, language: string): MarketplaceDra
   const saleTerms = Array.isArray(record.sale_terms) ? record.sale_terms.map((item) => asRecord(item)) : Array.isArray(record.saleTerms) ? record.saleTerms.map((item) => asRecord(item)) : []
   return {
     ...draft,
+    draftId: getString(record, ['draftId', 'draft_id']),
     enabled: getBoolean(record, ['enabled'], draft.enabled),
     title: getString(record, ['title']),
     description: getString(record, ['description']),
@@ -326,6 +331,7 @@ export function toBackendImageAsset(image: ImageAsset): UnknownRecord {
 export function toBackendDraft(draft: MarketplaceDraft): UnknownRecord {
   return {
     enabled: draft.enabled,
+    draft_id: draft.draftId,
     title: draft.title,
     description: draft.description,
     bullets: draft.bullets,
@@ -409,6 +415,35 @@ export function normalizeProductsIndex(value: unknown): ProductIndexItem[] {
   return Array.isArray(value) ? value.map(normalizeProductIndexItem) : []
 }
 
+export function normalizeDraftsIndex(value: unknown): DraftIndexItem[] {
+  return Array.isArray(value) ? value.map(normalizeDraftIndexItem) : []
+}
+
+export function normalizeDraftIndexItem(value: unknown): DraftIndexItem {
+  const record = asRecord(value)
+  const platform = getString(record, ['platform']) as Marketplace
+  return {
+    draftId: getString(record, ['draftId', 'draft_id']),
+    productId: getString(record, ['productId', 'product_id']),
+    platform,
+    site: getString(record, ['site']),
+    status: getString(record, ['status']) as DraftIndexItem['status'],
+    title: getString(record, ['title']),
+    productTitle: getString(record, ['productTitle', 'product_title']),
+    mainImage: getString(record, ['mainImage', 'main_image', 'image']),
+    sourcePlatform: getString(record, ['sourcePlatform', 'source_platform']),
+    sourceUrl: getString(record, ['sourceUrl', 'source_url']),
+    categoryId: getString(record, ['categoryId', 'category_id']),
+    categoryPath: getString(record, ['categoryPath', 'category_path']),
+    price: getString(record, ['price']),
+    publishStatus: getString(record, ['publishStatus', 'publish_status']),
+    createdAt: getString(record, ['createdAt', 'created_at']),
+    updatedAt: getString(record, ['updatedAt', 'updated_at']),
+    productFilePath: getString(record, ['productFilePath', 'product_file_path']),
+    raw: record,
+  }
+}
+
 export function normalizeProductIndexItem(value: unknown): ProductIndexItem {
   const record = asRecord(value)
   const rawDraftStatuses = asRecord(record.draftStatuses ?? record.draft_statuses)
@@ -472,6 +507,7 @@ export function normalizeProductMutation(data: unknown): ProductMutationResponse
     product,
     imagePool: product.source.imagePool,
     productsIndex: normalizeProductsIndex(record.productsIndex),
+    draftsIndex: normalizeDraftsIndex(record.draftsIndex),
     diagnostics: asRecord(record.diagnostics),
     warning: getString(record, ['warning']) || undefined,
     message: getString(record, ['message']) || undefined,
@@ -557,6 +593,7 @@ export function normalizeProductOperation(data: unknown): ProductOperationResult
     product: normalizedProduct,
     imagePool: normalizedProduct?.source.imagePool || (Array.isArray(record.imagePool) ? record.imagePool.map(normalizeImageAsset) : []),
     productsIndex: normalizeProductsIndex(record.productsIndex),
+    draftsIndex: normalizeDraftsIndex(record.draftsIndex),
     raw: record,
   }
 }

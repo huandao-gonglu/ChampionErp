@@ -11,3 +11,4 @@ class ApiResponse(TypedDict, total=False):
     data: Any
     product: dict[str, Any]
     productsIndex: list[dict[str, Any]]
+    draftsIndex: list[dict[str, Any]]

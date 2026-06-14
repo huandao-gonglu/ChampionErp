@@ -101,7 +101,7 @@ function statusClass(value: string) {
         <button class="btn btn-secondary" :disabled="props.loading" @click="emit('claim')">批量认领到平台草稿箱</button>
         <button class="btn btn-primary" :disabled="props.loading" @click="emit('generateCopy')">批量 AI 生成标题描述</button>
         <button class="btn btn-secondary" :disabled="props.loading" @click="emit('generateImagePrompt')">生成 GPT 生图任务包</button>
-        <button class="btn btn-primary" :disabled="props.loading" @click="emit('publishSelected')">选中商品发布入队</button>
+        <button class="btn btn-primary" :disabled="props.loading || !selectedCount" @click="emit('publishSelected')">已选通过项入队</button>
         <button class="btn btn-outline text-rose-700 dark:text-rose-200" :disabled="props.loading || !selectedCount" @click="confirmDeleteSelected">批量删除选中</button>
       </div>
     </div>

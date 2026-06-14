@@ -11,6 +11,7 @@ from .. import runtime as app
 from ..runtime_units.category_refresh import get_category_cache_refresh_job
 from ..runtime_units.image_pool import current_generated_images, current_image_pool, current_source_images
 from ..runtime_units.product_store import (
+    load_drafts_index,
     load_app_config,
     load_product,
     load_products_index,
@@ -51,6 +52,7 @@ GET_API_ROUTES = {
     "/api/category-cache/refresh-status",
     "/api/mercadolibre/published-items",
     "/api/mercadolibre/orders",
+    "/api/drafts-index",
     "/api/products-index",
     "/api/publish-bus/status",
     "/api/publish-logs",
@@ -95,6 +97,7 @@ def handle_state(handler: JsonRequestHandler, parsed: object) -> None:
             "publishLogs": load_publish_logs(),
             "mercadolibreOrderNotifications": load_mercadolibre_order_notifications(),
             "productsIndex": load_products_index(),
+            "draftsIndex": load_drafts_index(),
             "outputDir": str(OUTPUT_DIR),
         }
     )
@@ -102,6 +105,12 @@ def handle_state(handler: JsonRequestHandler, parsed: object) -> None:
 
 def handle_products_index(handler: JsonRequestHandler, parsed: object) -> None:
     handler.send_json({"ok": True, "items": load_products_index()})
+
+
+def handle_drafts_index(handler: JsonRequestHandler, parsed: object) -> None:
+    params = urllib.parse.parse_qs(parsed.query)
+    scope = str((params.get("scope") or ["active"])[0] or "active")
+    handler.send_json({"ok": True, "items": load_drafts_index(scope)})
 
 
 def handle_browser_debug_status(handler: JsonRequestHandler, parsed: object) -> None:
@@ -193,6 +202,7 @@ def handle_mercadolibre_callback(handler: JsonRequestHandler, parsed: object) ->
 GET_HANDLERS: dict[str, GetHandler] = {
     "/api/state": handle_state,
     "/api/products-index": handle_products_index,
+    "/api/drafts-index": handle_drafts_index,
     "/api/browser-debug/status": handle_browser_debug_status,
     "/api/publish-logs": handle_publish_logs,
     "/api/mercadolibre/published-items": handle_mercadolibre_published_items,

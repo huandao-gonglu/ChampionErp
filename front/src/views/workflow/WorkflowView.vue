@@ -19,7 +19,7 @@ import RunLog from '@/components/domain/RunLog.vue'
 import { workflowNavItems } from '@/constants/navigation'
 import { useAppStore } from '@/stores/app'
 import { useWorkflowStore } from '@/stores/workflow'
-import type { Marketplace, ProductIndexItem } from '@/types/workflow'
+import type { DraftIndexItem, Marketplace, ProductIndexItem, UnknownRecord } from '@/types/workflow'
 
 const store = useWorkflowStore()
 const {
@@ -29,6 +29,7 @@ const {
   collectBatchRows,
   browserDebugStatus,
   productsIndex,
+  draftsIndex,
   selectedProductIds,
   pricingInput,
   pricingResult,
@@ -109,7 +110,7 @@ const navPathMap: Record<string, string> = {
 const pricingProductItems = computed(() => productsIndex.value.filter((item) => item.productId))
 
 const mercadolibreNotificationUrl = computed(() => {
-  const ml = storeConfig.value.mercadolibre
+  const ml = storeConfig.value.mercadolibre as UnknownRecord | undefined
   if (!ml || typeof ml !== 'object' || Array.isArray(ml)) return ''
   return String(ml.notification_url || ml.notifications_url || ml.webhook_url || '')
 })
@@ -143,12 +144,20 @@ async function openProductImageEditor(item?: ProductIndexItem) {
   await openProductEditor(item, 'images')
 }
 
-async function openDraftEditor(item: ProductIndexItem, platform: Marketplace, mode: 'text' | 'images' = 'text') {
-  store.setMarketplace(platform)
-  await openProductEditor(item, mode)
+async function openDraftEditor(item: DraftIndexItem, mode: 'text' | 'images' = 'text') {
+  store.setMarketplace(item.platform)
+  await store.loadDraft(item)
+  editorMode.value = mode
+  editorOpen.value = true
 }
 
-async function openDraftPrecheck(item: ProductIndexItem, platform: Marketplace) {
+async function openDraftPrecheck(item: DraftIndexItem) {
+  store.setMarketplace(item.platform)
+  await store.loadDraft(item)
+  navigate('category')
+}
+
+async function openProductPrecheck(item: ProductIndexItem, platform: Marketplace = activeMarketplace.value) {
   store.setMarketplace(platform)
   await store.loadProduct(item)
   navigate('category')
@@ -168,7 +177,7 @@ function navigate(key: string) {
   const nextPath = navPathMap[key] || '/'
   if (route.fullPath !== nextPath) void router.push(nextPath)
   if (key === 'library') void store.refreshProductsIndex()
-  if (key === 'drafts') void store.refreshProductsIndex()
+  if (key === 'drafts') void store.refreshDraftsIndex()
   if (key === 'pricing' && !productsIndex.value.length) void store.refreshProductsIndex()
   if (key === 'logs') void store.refreshPublishLogs()
   if (key === 'mlItems') void store.refreshMercadoLibreRemoteItems()
@@ -257,7 +266,7 @@ watch(
             @refresh-remote="store.refreshMercadoLibreRemoteItems"
             @open-product="openProductEditor"
             @edit-images="openProductImageEditor"
-            @open-precheck="openDraftPrecheck"
+            @open-precheck="openProductPrecheck"
             @claim-selected="claimSelectedAndOpenDrafts"
             @collect="navigate('collect')"
             @publish-selected="store.enqueueSelectedProducts"
@@ -306,14 +315,14 @@ watch(
           />
 
           <div v-else-if="activeNav === 'drafts'" class="space-y-6">
-            <PageHeader title="草稿箱" description="已进入平台草稿状态机的商品，可继续编辑、处理图片并进入发布预检。" />
+            <PageHeader title="草稿箱" description="来自商品库的平台编辑稿，聚焦未发布完成的文案、图片、类目和发布预检。" />
             <DraftBoxPanel
-              :items="productsIndex"
+              :drafts="draftsIndex"
               :loading="loading"
               :error="error"
-              @refresh="store.refreshProductsIndex"
-              @edit-text="(item, platform) => openDraftEditor(item, platform, 'text')"
-              @edit-images="(item, platform) => openDraftEditor(item, platform, 'images')"
+              @refresh="store.refreshDraftsIndex"
+              @edit-text="(item) => openDraftEditor(item, 'text')"
+              @edit-images="(item) => openDraftEditor(item, 'images')"
               @go-publish="openDraftPrecheck"
             />
           </div>

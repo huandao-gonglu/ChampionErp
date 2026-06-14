@@ -291,7 +291,7 @@ function stringifyJson(value: unknown) {
             <div class="flex flex-wrap gap-2">
               <button type="button" class="btn btn-primary" :disabled="loading" @click="emit('collect')">采集商品</button>
               <button type="button" class="btn btn-outline" :disabled="loading" @click="emit('refreshProducts')">刷新商品</button>
-              <button type="button" class="btn btn-secondary" :disabled="loading || !selectedIds.length" @click="emit('publishSelected')">发布已选</button>
+              <button type="button" class="btn btn-secondary" :disabled="loading || !selectedIds.length" @click="emit('publishSelected')">已选通过项入队</button>
             </div>
           </div>
 

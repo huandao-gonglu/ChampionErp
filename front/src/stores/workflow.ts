@@ -20,6 +20,7 @@ import {
   fetchBrowserDebugStatus,
   fetchCategoryCacheRefreshJob,
   fetchCategoryAttrs,
+  fetchDraftsIndex,
   fetchMercadoLibreOrders,
   fetchMercadoLibreAuthChecklist,
   fetchMercadoLibrePublishedItems,
@@ -34,6 +35,7 @@ import {
   imagePoolAction,
   imageTranslate as imageTranslateApi,
   importManualProduct,
+  loadDraft as loadDraftApi,
   loadProduct as loadProductApi,
   open1688Browser as open1688BrowserApi,
   openAuthLink,
@@ -68,6 +70,7 @@ import type {
   CollectBatchRow,
   CollectDiagnostics,
   CollectForm,
+  DraftIndexItem,
   Marketplace,
   MercadoLibreAuthChecklist,
   MercadoLibreOrderItem,
@@ -192,6 +195,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
   const collectBatchRows = ref<CollectBatchRow[]>([])
   const browserDebugStatus = ref<BrowserDebugStatus | null>(null)
   const productsIndex = ref<ProductIndexItem[]>([])
+  const draftsIndex = ref<DraftIndexItem[]>([])
   const selectedProductIds = ref<string[]>([])
   const pricingInput = ref<PricingInput>(createDefaultPricingInput())
   const pricingResult = ref<PricingResult | null>(null)
@@ -235,6 +239,11 @@ export const useWorkflowStore = defineStore('workflow', () => {
   const imagePool = computed(() => product.value.source.imagePool)
   const selectedImages = computed(() => imagePool.value.filter((image) => image.selected))
   const selectedProducts = computed(() => productsIndex.value.filter((item) => selectedProductIds.value.includes(item.productId)))
+
+  function applyMutationIndexes(result: { productsIndex?: ProductIndexItem[]; draftsIndex?: DraftIndexItem[] }) {
+    if (result.productsIndex?.length) productsIndex.value = result.productsIndex
+    if (result.draftsIndex) draftsIndex.value = result.draftsIndex
+  }
 
   const workflowSteps = computed<WorkflowStep[]>(() => {
     const hasCollected = Boolean(product.value.source.title || product.value.name)
@@ -359,6 +368,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
       restoreCategoryFromProduct()
       restorePrecheckFromProduct()
       productsIndex.value = state.productsIndex
+      draftsIndex.value = state.draftsIndex || []
       publishLogs.value = state.publishLogs
       appConfig.value = state.appConfig
       storeConfig.value = state.storeConfig
@@ -401,7 +411,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     try {
       const result = await collectProductApi(collectForm.value)
       product.value = result.product
-      if (result.productsIndex.length) productsIndex.value = result.productsIndex
+      applyMutationIndexes(result)
       syncCollectDiagnosticsFromProduct('采集完成。', result.diagnostics)
       syncPricingInputFromProduct()
       currentStage.value = 1
@@ -451,7 +461,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     try {
       const result = await collectFromBrowserTabApi(collectForm.value, saveOnly)
       product.value = result.product
-      if (result.productsIndex.length) productsIndex.value = result.productsIndex
+      applyMutationIndexes(result)
       if (result.browserStatus) browserDebugStatus.value = result.browserStatus
       syncCollectDiagnosticsFromProduct(saveOnly ? 'HTML 快照已保存。' : '已从浏览器标签采集。', result.diagnostics)
       syncPricingInputFromProduct()
@@ -591,6 +601,19 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
+  async function refreshDraftsIndex(scope = 'active') {
+    loading.value = true
+    setError('')
+    try {
+      draftsIndex.value = await fetchDraftsIndex(scope)
+      addLog(`草稿箱已刷新：${draftsIndex.value.length} 条。`)
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : '刷新草稿箱失败')
+    } finally {
+      loading.value = false
+    }
+  }
+
   async function loadProduct(item: ProductIndexItem) {
     loading.value = true
     setError('')
@@ -599,13 +622,34 @@ export const useWorkflowStore = defineStore('workflow', () => {
       product.value = result.product
       restoreCategoryFromProduct()
       restorePrecheckFromProduct()
-      if (result.productsIndex.length) productsIndex.value = result.productsIndex
+      applyMutationIndexes(result)
       fillFormFromState(appConfig.value)
       syncCollectDiagnosticsFromProduct('已加载商品库商品。')
       syncPricingInputFromProduct()
       addLog(`已加载商品：${product.value.source.title || product.value.name || item.productId}`)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '加载商品失败')
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function loadDraft(item: DraftIndexItem) {
+    loading.value = true
+    setError('')
+    try {
+      const result = await loadDraftApi(item.draftId)
+      product.value = result.product
+      activeMarketplace.value = item.platform
+      restoreCategoryFromProduct()
+      restorePrecheckFromProduct()
+      applyMutationIndexes(result)
+      fillFormFromState(appConfig.value)
+      syncCollectDiagnosticsFromProduct('已加载平台草稿。')
+      syncPricingInputFromProduct()
+      addLog(`已加载草稿：${item.title || item.productTitle || item.draftId}`)
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : '加载草稿失败')
     } finally {
       loading.value = false
     }
@@ -677,6 +721,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
       const platforms = collectForm.value.selectedClaimPlatforms.length ? collectForm.value.selectedClaimPlatforms : [activeMarketplace.value]
       await claimProductsApi(ids, platforms)
       productsIndex.value = await fetchProductsIndex()
+      draftsIndex.value = await fetchDraftsIndex()
       addLog(`已认领 ${ids.length} 个商品到平台草稿。`)
       return true
     } catch (exc) {
@@ -700,6 +745,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
       const loaded = await loadProductApi(id, '')
       product.value = loaded.product
       productsIndex.value = await fetchProductsIndex()
+      draftsIndex.value = await fetchDraftsIndex()
       addLog(`已推到 ${activeMarketplace.value} 平台草稿箱。`)
       return true
     } catch (exc) {
@@ -868,7 +914,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     try {
       const result = await saveProductApi(product.value)
       product.value = result.product
-      if (result.productsIndex.length) productsIndex.value = result.productsIndex
+      applyMutationIndexes(result)
       syncPricingInputFromProduct()
       addLog('商品草稿已保存。')
     } catch (exc) {
@@ -1119,6 +1165,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
       product.value = result.product
       precheck.value = result.precheck
       precheckResults.value = result.platformResults
+      applyMutationIndexes(result)
       if (result.precheck.ok) currentStage.value = 7
       addLog(result.precheck.ok ? '预检通过，商品可进入发布队列。' : `预检未通过：${result.precheck.errors.join('、')}`)
     } catch (exc) {
@@ -1155,6 +1202,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     setError('')
     try {
       publishJob.value = await enqueuePublishApi(targetProduct, targetPlatforms)
+      draftsIndex.value = await fetchDraftsIndex()
       currentStage.value = 8
       addLog(`发布任务已入队：${publishJob.value.jobId}`)
     } catch (exc) {
@@ -1171,7 +1219,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
       const result = await publishProductDirect(product.value, activeMarketplace.value)
       publishResult.value = result.raw
       if (result.product) product.value = result.product
-      if (result.productsIndex.length) productsIndex.value = result.productsIndex
+      applyMutationIndexes(result)
+      draftsIndex.value = result.draftsIndex?.length ? result.draftsIndex : await fetchDraftsIndex()
       publishLogs.value = await fetchPublishLogs()
       addLog(`直接发布返回：${result.status || (result.ok ? 'success' : 'failed')} ${result.message || result.error || ''}`)
       if (!result.ok && result.error) setError(result.error)
@@ -1189,7 +1238,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
       const result = await confirmMercadoLibreRealPublish(product.value, true)
       publishResult.value = result.raw
       if (result.product) product.value = result.product
-      if (result.productsIndex.length) productsIndex.value = result.productsIndex
+      applyMutationIndexes(result)
+      draftsIndex.value = result.draftsIndex?.length ? result.draftsIndex : await fetchDraftsIndex()
       publishLogs.value = await fetchPublishLogs()
       addLog(`Mercado Libre 真实发布返回：${result.status || (result.ok ? 'success' : 'failed')} ${result.message || result.error || ''}`)
       if (!result.ok && result.error) setError(result.error)
@@ -1490,6 +1540,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     collectBatchRows,
     browserDebugStatus,
     productsIndex,
+    draftsIndex,
     selectedProductIds,
     selectedProducts,
     pricingInput,
@@ -1547,7 +1598,9 @@ export const useWorkflowStore = defineStore('workflow', () => {
     clearCollectedProduct,
     saveCollectSettings,
     refreshProductsIndex,
+    refreshDraftsIndex,
     loadProduct,
+    loadDraft,
     deleteProduct,
     deleteSelectedProducts,
     toggleProductSelection,

@@ -6,6 +6,7 @@ from erp_web.runtime_units import publish_logs_runtime as publish_log_helpers
 from erp_web.runtime_units.category_store import read_json, write_json
 from erp_web.runtime_units.collect_helpers import collect_time_iso
 from erp_web.runtime_units.product_store import (
+    load_drafts_index,
     load_product,
     load_products_index,
     load_store_config,
@@ -52,6 +53,7 @@ def precheck_publish_payload(body: dict[str, Any]) -> ApiResponse:
         "platforms": results,
         "product": saved,
         "productsIndex": load_products_index(),
+        "draftsIndex": load_drafts_index(),
     }
 
 

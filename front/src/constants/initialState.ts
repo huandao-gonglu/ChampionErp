@@ -4,6 +4,7 @@ export const marketplaces: Marketplace[] = ['mercadolibre', 'wildberries', 'ozon
 
 export function createEmptyDraft(language = ''): MarketplaceDraft {
   return {
+    draftId: '',
     enabled: true,
     title: '',
     description: '',
