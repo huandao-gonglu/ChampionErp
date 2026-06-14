@@ -770,7 +770,7 @@ def map_mercadolibre_publish_error(parsed: dict[str, Any]) -> dict[str, Any]:
         "attributes": "请在平台属性区域补齐缺失属性后重试。",
         "pictures": "请重新检查图片上传结果，优先使用已导入并可访问的商品图片。",
         "title": "请把 Mercado Libre 标题控制在 60 个字符以内。",
-        "sale_terms": "请检查 Warranty type / Warranty time 等售后条款。",
+        "sale_terms": "请检查 Warranty type / Warranty time 等保修条款。",
         "category_id": "请填写或更换 Mercado Libre 类目 ID。",
         "price": "请先完成核价并填写发布价格。",
         "stock": "请检查库存 available_quantity 是否为有效正数。",

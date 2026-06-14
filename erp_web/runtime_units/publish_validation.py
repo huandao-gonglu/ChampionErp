@@ -179,7 +179,7 @@ def validate_mercadolibre_draft(product: dict[str, Any], config: dict[str, Any])
     if not sale_terms:
         sale_terms = config.get("listing", {}).get("mercadolibre_sale_terms") if isinstance(config.get("listing"), dict) else []
     if not sale_terms:
-        errors.append(precheck_item("SALE_TERMS_MISSING", "sale_terms", "sale_terms / warranty 尚未配置完整", "error", "前往平台属性页补齐售后条款"))
+        errors.append(precheck_item("SALE_TERMS_MISSING", "sale_terms", "sale_terms / warranty 尚未配置完整", "error", "前往平台属性页补齐保修条款"))
     draft_shipping = draft.get("shipping") if isinstance(draft.get("shipping"), dict) else {}
     logistic_type = str(draft_shipping.get("logistic_type") or draft_shipping.get("mode") or config.get("listing", {}).get("mercadolibre_logistic_type") or "").strip()
     if not logistic_type:
