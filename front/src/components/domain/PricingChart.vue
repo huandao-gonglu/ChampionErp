@@ -17,13 +17,24 @@ const props = defineProps<{
   result: PricingResult | null
 }>()
 
+function cssColor(token: string, fallback: string) {
+  if (typeof window === 'undefined') return fallback
+  const value = window.getComputedStyle(document.documentElement).getPropertyValue(token).trim()
+  return value ? `rgb(${value})` : fallback
+}
+
 const chartData = computed(() => ({
   labels: ['售价 USD', '净收益 CNY', '利润 CNY', '运费 USD'],
   datasets: [
     {
       label: '当前核价结果',
       borderRadius: 10,
-      backgroundColor: ['#2563eb', '#10b981', '#f59e0b', '#64748b'],
+      backgroundColor: [
+        cssColor('--color-info-600', 'rgb(37 99 235)'),
+        cssColor('--color-success-500', 'rgb(34 197 94)'),
+        cssColor('--color-warning-500', 'rgb(245 158 11)'),
+        cssColor('--color-accent-500', 'rgb(113 113 122)'),
+      ],
       data: props.result
         ? [props.result.suggestedPriceUsd, props.result.netRevenueCny, props.result.profitCny, props.result.shippingCostUsd]
         : [0, 0, 0, 0],
@@ -31,7 +42,7 @@ const chartData = computed(() => ({
   ],
 }))
 
-const chartOptions = {
+const chartOptions = computed(() => ({
   responsive: true,
   maintainAspectRatio: false,
   plugins: {
@@ -43,22 +54,22 @@ const chartOptions = {
     y: {
       beginAtZero: true,
       ticks: {
-        color: '#64748b',
+        color: cssColor('--color-accent-500', 'rgb(113 113 122)'),
       },
       grid: {
-        color: '#cbd5e1',
+        color: cssColor('--color-accent-300', 'rgb(212 212 216)'),
       },
     },
     x: {
       ticks: {
-        color: '#64748b',
+        color: cssColor('--color-accent-500', 'rgb(113 113 122)'),
       },
       grid: {
         display: false,
       },
     },
   },
-}
+}))
 </script>
 
 <template>

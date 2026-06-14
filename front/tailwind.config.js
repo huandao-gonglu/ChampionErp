@@ -1,3 +1,8 @@
+const shadeSteps = [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950]
+const colorScale = (name, steps = shadeSteps) => Object.fromEntries(
+  steps.map((step) => [step, `rgb(var(--color-${name}-${step}) / <alpha-value>)`]),
+)
+
 /** @type {import('tailwindcss').Config} */
 export default {
   darkMode: 'class',
@@ -5,55 +10,37 @@ export default {
   theme: {
     extend: {
       colors: {
-        primary: {
-          50: '#ecfdf5',
-          100: '#d1fae5',
-          200: '#a7f3d0',
-          300: '#6ee7b7',
-          400: '#34d399',
-          500: '#10b981',
-          600: '#059669',
-          700: '#047857',
-          800: '#065f46',
-          900: '#064e3b',
-        },
-        brand: {
-          50: '#ecfdf5',
-          100: '#d1fae5',
-          200: '#a7f3d0',
-          300: '#6ee7b7',
-          400: '#34d399',
-          500: '#10b981',
-          600: '#059669',
-          700: '#047857',
-          800: '#065f46',
-          900: '#064e3b',
-        },
-        accent: {
-          50: '#f8fafc',
-          100: '#f1f5f9',
-          200: '#e2e8f0',
-          300: '#cbd5e1',
-          400: '#94a3b8',
-          500: '#64748b',
-          600: '#475569',
-          700: '#334155',
-          800: '#1e293b',
-          900: '#0f172a',
-          950: '#020617',
-        },
-        dark: {
-          600: '#334155',
-          700: '#1e293b',
-          800: '#172033',
-          900: '#0f172a',
-          950: '#020617',
-        },
+        primary: colorScale('primary'),
+        brand: colorScale('primary'),
+        accent: colorScale('accent'),
+        dark: colorScale('dark', [500, 600, 700, 800, 900, 950]),
+        success: colorScale('success'),
+        info: colorScale('info'),
+        warning: colorScale('warning'),
+        danger: colorScale('danger'),
+      },
+      fontFamily: {
+        sans: [
+          'Inter',
+          'system-ui',
+          '-apple-system',
+          'BlinkMacSystemFont',
+          'Segoe UI',
+          'Roboto',
+          'Helvetica Neue',
+          'Arial',
+          'PingFang SC',
+          'Hiragino Sans GB',
+          'Microsoft YaHei',
+          'sans-serif',
+        ],
+        mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace'],
       },
       boxShadow: {
-        soft: '0 18px 45px rgba(15, 23, 42, 0.08)',
-        card: '0 14px 35px rgba(15, 23, 42, 0.08)',
-        glass: '0 20px 60px rgba(15, 23, 42, 0.18)',
+        soft: '0 18px 45px rgb(var(--shadow-color) / 0.08)',
+        card: '0 1px 2px rgb(var(--shadow-color) / 0.05), 0 14px 35px rgb(var(--shadow-color) / 0.08)',
+        glass: '0 20px 60px rgb(var(--shadow-color) / 0.18)',
+        glow: '0 0 24px rgb(var(--color-primary-500) / 0.24)',
       },
       borderRadius: {
         '4xl': '2rem',
