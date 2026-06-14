@@ -12,8 +12,9 @@ from services import pricing_service
 from .product_store import load_app_config
 from .runtime_common import EXCHANGE_RATE_CACHE
 
-def _pricing_exchange_rate_config() -> dict[str, Any]:
-    pricing = load_app_config().get("pricing_defaults")
+def _pricing_exchange_rate_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    source_config = config if isinstance(config, dict) else load_app_config()
+    pricing = source_config.get("pricing_defaults") if isinstance(source_config.get("pricing_defaults"), dict) else source_config
     cfg = pricing if isinstance(pricing, dict) else {}
     default_cfg = app_config_runtime.default_app_config()["pricing_defaults"]
     return {
@@ -49,8 +50,8 @@ def _extract_usd_rates(payload: Any) -> dict[str, float]:
     return rates
 
 
-def fetch_pricing_exchange_rates(force_refresh: bool = False) -> dict[str, Any]:
-    cfg = _pricing_exchange_rate_config()
+def fetch_pricing_exchange_rates(force_refresh: bool = False, config: dict[str, Any] | None = None) -> dict[str, Any]:
+    cfg = _pricing_exchange_rate_config(config)
     api_url = cfg["api_url"]
     if not api_url:
         return {"ok": False, "error": "汇率 API URL 未配置，请在系统设置里填写。", "source": "config"}

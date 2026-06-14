@@ -12,7 +12,7 @@ export type WorkflowStatus =
   | 'published'
   | 'failed'
 
-export type CollectMode = 'browser' | 'http' | 'manual' | 'extension'
+export type CollectMode = 'browser' | 'http' | 'manual' | 'extension' | 'api'
 
 export type UnknownRecord = Record<string, unknown>
 
@@ -198,6 +198,13 @@ export interface CollectForm {
   platform: string
   mode: CollectMode
   alibabaCookie: string
+  alibabaAppKey: string
+  alibabaAppSecret: string
+  alibabaAccessToken: string
+  alibabaApiBaseUrl: string
+  alibabaApiMethod: string
+  alibabaApiVersion: string
+  alibabaApiTimeoutSeconds: string
   autoAiRecognition: boolean
   outputDir: string
   selectedClaimPlatforms: Marketplace[]

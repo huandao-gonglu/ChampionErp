@@ -104,6 +104,10 @@ def merge_ai_config(app_dir: Path | str, current: dict[str, Any], incoming: dict
         current_pricing = merged.get("pricing_defaults") if isinstance(merged.get("pricing_defaults"), dict) else {}
         incoming_pricing = incoming.get("pricing_defaults") if isinstance(incoming.get("pricing_defaults"), dict) else {}
         merged["pricing_defaults"] = {**current_pricing, **incoming_pricing}
+    if isinstance(incoming.get("1688_api"), dict):
+        current_1688_api = merged.get("1688_api") if isinstance(merged.get("1688_api"), dict) else {}
+        incoming_1688_api = incoming.get("1688_api") if isinstance(incoming.get("1688_api"), dict) else {}
+        merged["1688_api"] = {**current_1688_api, **incoming_1688_api}
     return merged
 
 
@@ -133,6 +137,10 @@ def save_config_snapshot(app_dir: Path | str, config: dict[str, Any]) -> Path:
     for section in ("text_ai", "image_ai"):
         if isinstance(safe.get(section), dict) and safe[section].get("api_key"):
             safe[section]["api_key"] = mask_secret(safe[section]["api_key"])
+    if isinstance(safe.get("1688_api"), dict):
+        for key in ("app_key", "app_secret", "access_token"):
+            if safe["1688_api"].get(key):
+                safe["1688_api"][key] = mask_secret(safe["1688_api"][key])
     path.write_text(json.dumps(safe, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
 

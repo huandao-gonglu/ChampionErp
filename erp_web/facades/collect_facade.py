@@ -30,6 +30,7 @@ def collect_source_payload(body: dict[str, Any]) -> ResponseWithStatus:
             body.get("cookie", ""),
             body.get("platform", ""),
             body.get("platforms") if isinstance(body.get("platforms"), list) else None,
+            body.get("1688_api") if isinstance(body.get("1688_api"), dict) else None,
         )
         result["productsIndex"] = load_products_index()
         return result, 200
@@ -44,6 +45,7 @@ def collect_batch_payload(body: dict[str, Any]) -> ApiResponse:
         body.get("cookie", ""),
         body.get("platform", ""),
         body.get("platforms") if isinstance(body.get("platforms"), list) else None,
+        body.get("1688_api") if isinstance(body.get("1688_api"), dict) else None,
     )
 
 
@@ -101,6 +103,7 @@ def collect_1688_payload(body: dict[str, Any]) -> ResponseWithStatus:
             body.get("cookie", ""),
             "1688",
             body.get("platforms") if isinstance(body.get("platforms"), list) else None,
+            body.get("1688_api") if isinstance(body.get("1688_api"), dict) else None,
         )
         status = 200 if result.get("ok") or (result.get("diagnostics") or {}).get("partial_success") else 400
         result["productsIndex"] = load_products_index()

@@ -25,6 +25,7 @@ from .source_collect_browser import (
 )
 from .publish_bus import page_snapshot_from_html
 from .source_collect_parsers import parse_1688_product, parse_amazon_product, parse_generic_product
+from .source_collect_1688_api import collect_1688_product_via_api
 from .category_refresh import http_json
 from .collect_helpers import (
     apply_claimed_platform_drafts,
@@ -54,6 +55,7 @@ def collect_source_product(
     cookie: str | None = None,
     platform: str | None = None,
     claim_platforms: list[str] | None = None,
+    api_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     url = str(url or "").strip()
     if not url:
@@ -84,6 +86,10 @@ def collect_source_product(
     try:
         if collect_mode == "manual":
             raise RuntimeError("MANUAL_MODE")
+        if collect_mode == "api":
+            if platform_detected != "1688":
+                raise RuntimeError("API_MODE_ONLY_SUPPORTS_1688")
+            return collect_1688_product_via_api(url, claim_platforms, api_config)
 
         if collect_mode == "browser":
             snapshot = fetch_page_snapshot_with_browser_session(url, profile_name=current_browser_profile_name(platform_detected))
@@ -285,6 +291,7 @@ def collect_batch_products(
     cookie: str | None = None,
     platform: str | None = None,
     platforms: list[str] | None = None,
+    api_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     parsed_urls = parse_collect_urls(urls)
     items: list[dict[str, Any]] = []
@@ -304,7 +311,10 @@ def collect_batch_products(
             "product": None,
         }
         try:
-            result = collect_source_product(url, mode, cookie, detected, platforms)
+            if api_config is not None:
+                result = collect_source_product(url, mode, cookie, detected, platforms, api_config)
+            else:
+                result = collect_source_product(url, mode, cookie, detected, platforms)
             product = result.get("product") if isinstance(result.get("product"), dict) else {}
             source = product.get("source") if isinstance(product.get("source"), dict) else {}
             image_pool = current_image_pool(product)

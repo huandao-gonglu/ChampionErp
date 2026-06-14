@@ -27,7 +27,7 @@ const emit = defineEmits<{
   clean1688: []
 }>()
 
-type CollectTab = 'manual' | 'browser' | 'url'
+type CollectTab = 'manual' | 'browser' | 'api' | 'url'
 
 const activeCollectTab = ref<CollectTab>('browser')
 const advancedOpen = ref(false)
@@ -104,6 +104,24 @@ const collectTabs: Array<{
     panelValueClass: 'text-slate-950 dark:text-white',
     panelBorderClass: 'border-accent-200 dark:border-dark-700',
   },
+  {
+    key: 'api',
+    optionTitle: '方式四：API 采集',
+    title: 'API 采集',
+    subtitle: '使用平台授权里的 1688 凭证采集',
+    badge: '1688 API',
+    navClass: 'bg-blue-50 ring-blue-100 dark:bg-blue-500/10 dark:ring-blue-500/20',
+    labelClass: 'text-blue-700 dark:text-blue-200',
+    selectClass: 'border-blue-200 bg-white focus:border-primary-500 focus:ring-primary-100 dark:border-blue-500/30 dark:bg-dark-900 dark:focus:ring-primary-500/20',
+    summaryClass: 'bg-white ring-blue-100 dark:bg-dark-900/80 dark:ring-blue-500/20',
+    titleClass: 'text-blue-950 dark:text-blue-100',
+    subtitleClass: 'text-blue-700 dark:text-blue-200',
+    badgeClass: 'bg-blue-50 text-blue-700 ring-blue-200 dark:bg-blue-500/10 dark:text-blue-200 dark:ring-blue-500/30',
+    panelClass: 'bg-white ring-blue-100 dark:bg-dark-900/80 dark:ring-blue-500/20',
+    panelLabelClass: 'text-blue-700 dark:text-blue-200',
+    panelValueClass: 'text-slate-950 dark:text-white',
+    panelBorderClass: 'border-blue-100 dark:border-blue-500/20',
+  },
 ]
 
 const urlCollectModes = [
@@ -125,7 +143,11 @@ function selectCollectTab(tab: CollectTab) {
   activeCollectTab.value = tab
   if (tab === 'manual' && props.form.mode !== 'extension') props.form.mode = 'manual'
   if (tab === 'browser') props.form.mode = 'browser'
-  if (tab === 'url' && ['manual', 'extension'].includes(props.form.mode)) props.form.mode = 'browser'
+  if (tab === 'api') {
+    props.form.platform = '1688'
+    props.form.mode = 'api'
+  }
+  if (tab === 'url' && ['manual', 'extension', 'api'].includes(props.form.mode)) props.form.mode = 'browser'
 }
 
 function openDebugFile(path: string) {
@@ -353,6 +375,49 @@ function copyDiagnostics() {
                 <button class="btn btn-primary" :disabled="props.loading" @click="emit('collectFromBrowser', false)">从当前标签页采集</button>
                 <button class="btn btn-outline" :disabled="props.loading" @click="emit('collectFromBrowser', true)">保存 HTML 快照</button>
               </div>
+            </div>
+          </div>
+        </section>
+
+        <section v-else-if="activeCollectTab === 'api'" class="card space-y-6 border-blue-100 bg-blue-50/70 dark:border-blue-500/20 dark:bg-blue-500/10">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 class="card-title text-blue-950 dark:text-blue-100">方式四：API 采集</h3>
+              <p class="mt-1 text-sm text-blue-700 dark:text-blue-200">使用“平台授权”里的 1688 AppKey / Secret，从官方接口采集商品详情。</p>
+            </div>
+            <span class="rounded-full bg-white px-3 py-1 text-xs text-blue-700 ring-1 ring-blue-100 dark:bg-dark-900 dark:text-blue-200 dark:ring-blue-500/20">/api/collect-1688 · mode=api</span>
+          </div>
+
+          <div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+            <div class="rounded-2xl bg-white p-4 ring-1 ring-blue-100 dark:bg-dark-900/80 dark:ring-blue-500/20">
+              <div class="text-sm font-bold text-slate-950 dark:text-white">1. 填写 1688 商品链接</div>
+              <label class="mt-4 block">
+                <span class="text-xs font-semibold text-slate-500 dark:text-accent-300">商品详情链接</span>
+                <input v-model="props.form.productUrl" class="input mt-1" placeholder="https://detail.1688.com/offer/..." />
+              </label>
+              <label class="mt-4 flex items-center gap-2 rounded-2xl bg-blue-50 px-3 py-2 ring-1 ring-blue-100 dark:bg-blue-500/10 dark:ring-blue-500/20">
+                <input v-model="props.form.autoAiRecognition" type="checkbox" class="size-4 rounded border-blue-200 text-brand-600 focus:ring-brand-500" />
+                <span class="text-sm font-medium text-blue-950 dark:text-blue-100">采集后提示进入 AI 文案</span>
+              </label>
+            </div>
+
+            <div class="rounded-2xl bg-white p-4 ring-1 ring-blue-100 dark:bg-dark-900/80 dark:ring-blue-500/20">
+              <div class="text-sm font-bold text-slate-950 dark:text-white">2. 认领到平台草稿</div>
+              <div class="mt-3 space-y-2 text-sm text-slate-700 dark:text-accent-200">
+                <label class="flex items-center gap-2"><input v-model="props.form.selectedClaimPlatforms" type="checkbox" value="mercadolibre" /> Mercado Libre</label>
+                <label class="flex items-center gap-2"><input v-model="props.form.selectedClaimPlatforms" type="checkbox" value="wildberries" /> Wildberries</label>
+                <label class="flex items-center gap-2"><input v-model="props.form.selectedClaimPlatforms" type="checkbox" value="ozon" /> Ozon</label>
+              </div>
+            </div>
+          </div>
+
+          <div class="rounded-2xl bg-white p-4 ring-1 ring-blue-100 dark:bg-dark-900/80 dark:ring-blue-500/20">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div class="text-sm font-bold text-slate-950 dark:text-white">3. 开始 API 采集</div>
+                <p class="mt-1 text-xs text-slate-500 dark:text-accent-300">如果提示凭证缺失，请到“平台授权”保存 1688 采集 API。</p>
+              </div>
+              <button class="btn btn-primary" :disabled="props.loading" @click="emit('collect')">API 采集单链接</button>
             </div>
           </div>
         </section>

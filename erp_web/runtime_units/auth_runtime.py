@@ -46,6 +46,72 @@ def test_ai_channel(channel: str, channel_config: dict[str, Any]) -> dict[str, A
     }
 
 
+def test_api_config(kind: str, config: dict[str, Any], test_value: str = "") -> dict[str, Any]:
+    kind = (kind or "").strip().lower()
+    if kind in {"exchange_rate", "exchange", "pricing"}:
+        from .pricing_runtime import fetch_pricing_exchange_rates
+
+        result = fetch_pricing_exchange_rates(True, {"pricing_defaults": config if isinstance(config, dict) else {}})
+        if not result.get("ok"):
+            return {
+                "ok": False,
+                "channel": "exchange_rate",
+                "error": str(result.get("error") or "汇率 API 测试失败"),
+                "next_action": "请检查汇率 API URL、超时秒数，以及接口响应是否包含 CNY 和 MXN 汇率。",
+                "raw": result,
+            }
+        rates = result.get("rates") if isinstance(result.get("rates"), dict) else {}
+        return {
+            "ok": True,
+            "channel": "exchange_rate",
+            "message": f"汇率 API 测试成功：USD/CNY {rates.get('usd_cny_rate')}，MXN/USD {rates.get('mxn_usd_rate')}。",
+            "next_action": "可以保存配置并在核价时使用实时汇率。",
+            "source": result.get("source"),
+            "rates": rates,
+        }
+    if kind in {"1688", "alibaba", "1688_api"}:
+        from .source_collect_1688_api import (
+            build_1688_api_params,
+            ensure_1688_api_ready,
+            extract_1688_offer_id,
+            normalize_1688_api_config,
+            parse_1688_api_product,
+            request_1688_product_detail,
+        )
+
+        api_config = normalize_1688_api_config(config if isinstance(config, dict) else {})
+        ensure_1688_api_ready(api_config)
+        offer_id = extract_1688_offer_id(test_value)
+        if not offer_id:
+            params = build_1688_api_params(api_config, "123456789")
+            return {
+                "ok": True,
+                "channel": "1688",
+                "message": "1688 API 配置校验通过：凭证、请求地址和签名参数可生成。",
+                "next_action": "如需真实连通测试，请填写一个 1688 商品 ID 或详情链接后再点测试。",
+                "request": {
+                    "base_url": api_config.get("base_url"),
+                    "method": api_config.get("method"),
+                    "app_key": mask_secret(api_config.get("app_key")),
+                    "sign_length": len(str(params.get("sign") or "")),
+                },
+            }
+        response = request_1688_product_detail(api_config, offer_id)
+        raw = response.get("raw") if isinstance(response.get("raw"), dict) else {}
+        source = parse_1688_api_product(raw, f"https://detail.1688.com/offer/{offer_id}.html", offer_id)
+        return {
+            "ok": True,
+            "channel": "1688",
+            "message": f"1688 API 测试成功：已读取商品 {source.get('title') or offer_id}。",
+            "next_action": "可以保存配置，并在采集页选择 API 采集。",
+            "http_status": response.get("http_status"),
+            "offer_id": offer_id,
+            "title": source.get("title"),
+            "images_count": len(source.get("images") if isinstance(source.get("images"), list) else []),
+        }
+    raise RuntimeError("未知 API 测试类型。")
+
+
 def build_mercadolibre_auth_link(app_id: str, redirect_uri: str) -> dict[str, str]:
     if not app_id or not redirect_uri:
         raise RuntimeError("请先填写 Mercado Libre 的 client_id 和 redirect_uri。")
@@ -266,5 +332,6 @@ __all__ = [
     "preview_mercadolibre_auth_link",
     "refresh_mercadolibre_token_from_body",
     "test_ai_channel",
+    "test_api_config",
     "test_store_auth",
 ]

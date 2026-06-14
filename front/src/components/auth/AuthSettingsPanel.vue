@@ -18,6 +18,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   saveAi: [config: UnknownRecord]
   testAi: [channel: 'text' | 'image', config: UnknownRecord]
+  testApi: [kind: 'exchange_rate' | '1688', config: UnknownRecord, testValue?: string]
   saveStore: [config: UnknownRecord]
   testAuth: [platform: Marketplace, scope?: string]
   refreshChecklist: []
@@ -42,6 +43,14 @@ const form = reactive({
   exchangeRateApiUrl: '',
   exchangeRateTimeoutSeconds: '10',
   exchangeRateCacheTtlSeconds: '3600',
+  alibabaAppKey: '',
+  alibabaAppSecret: '',
+  alibabaAccessToken: '',
+  alibabaApiBaseUrl: 'https://gw.open.1688.com/openapi/param2/1/com.alibaba.product/alibaba.product.get',
+  alibabaApiMethod: 'alibaba.product.get',
+  alibabaApiVersion: '1.0',
+  alibabaApiTimeoutSeconds: '20',
+  alibabaTestOfferId: '',
   mlAppId: '',
   mlClientSecret: '',
   mlRedirectUri: DEFAULT_ML_REDIRECT_URI,
@@ -82,6 +91,7 @@ function fillFromProps() {
   const text = asRecord(props.aiConfig.text_ai || props.appConfig.text_ai)
   const image = asRecord(props.aiConfig.image_ai || props.appConfig.image_ai)
   const pricing = asRecord(props.appConfig.pricing_defaults)
+  const alibabaApi = asRecord(props.appConfig['1688_api'])
   const appText = asRecord(props.appConfig.text_ai)
   const appImage = asRecord(props.appConfig.image_ai)
   const ml = asRecord(props.storeConfig.mercadolibre)
@@ -101,6 +111,13 @@ function fillFromProps() {
   form.exchangeRateApiUrl = firstText(pricing.exchange_rate_api_url, 'https://open.er-api.com/v6/latest/USD')
   form.exchangeRateTimeoutSeconds = firstText(pricing.exchange_rate_timeout_seconds, '10')
   form.exchangeRateCacheTtlSeconds = firstText(pricing.exchange_rate_cache_ttl_seconds, '3600')
+  form.alibabaAppKey = firstText(alibabaApi.app_key, form.alibabaAppKey)
+  form.alibabaAppSecret = firstText(alibabaApi.app_secret, form.alibabaAppSecret)
+  form.alibabaAccessToken = firstText(alibabaApi.access_token, form.alibabaAccessToken)
+  form.alibabaApiBaseUrl = firstText(alibabaApi.base_url, form.alibabaApiBaseUrl)
+  form.alibabaApiMethod = firstText(alibabaApi.method, form.alibabaApiMethod)
+  form.alibabaApiVersion = firstText(alibabaApi.api_version, form.alibabaApiVersion)
+  form.alibabaApiTimeoutSeconds = firstText(alibabaApi.timeout_seconds, form.alibabaApiTimeoutSeconds)
   form.mlAppId = String(ml.app_id || '')
   form.mlClientSecret = String(ml.client_secret || ml.app_secret || '')
   form.mlRedirectUri = String(ml.redirect_uri || DEFAULT_ML_REDIRECT_URI)
@@ -127,10 +144,12 @@ const imageAiReady = computed(() => Boolean(
   && form.imageAiApiKey.trim(),
 ))
 
-const canSaveAi = computed(() => textAiReady.value || imageAiReady.value)
-const aiButtonHint = computed(() => props.loading ? '正在处理，请稍候' : '请至少完整填写一个 AI 通道的平台、模型、Base URL 和 API Key')
 const textAiHint = computed(() => props.loading ? '正在处理，请稍候' : '请完整填写文本 AI 的平台、模型、Base URL 和 API Key')
 const imageAiHint = computed(() => props.loading ? '正在处理，请稍候' : '请完整填写图片 AI 的平台、模型、Base URL 和 API Key')
+const exchangeRateReady = computed(() => Boolean(form.exchangeRateApiUrl.trim()))
+const exchangeRateHint = computed(() => props.loading ? '正在处理，请稍候' : '请填写汇率 API URL')
+const alibabaApiReady = computed(() => Boolean(form.alibabaAppKey.trim() && form.alibabaAppSecret.trim() && form.alibabaApiBaseUrl.trim()))
+const alibabaApiHint = computed(() => props.loading ? '正在处理，请稍候' : '请填写 1688 App Key、App Secret 和 API 请求地址')
 
 function aiPayload(): UnknownRecord {
   return {
@@ -140,6 +159,15 @@ function aiPayload(): UnknownRecord {
       exchange_rate_api_url: form.exchangeRateApiUrl.trim(),
       exchange_rate_timeout_seconds: form.exchangeRateTimeoutSeconds.trim(),
       exchange_rate_cache_ttl_seconds: form.exchangeRateCacheTtlSeconds.trim(),
+    },
+    '1688_api': {
+      app_key: form.alibabaAppKey.trim(),
+      app_secret: form.alibabaAppSecret.trim(),
+      access_token: form.alibabaAccessToken.trim(),
+      base_url: form.alibabaApiBaseUrl.trim(),
+      method: form.alibabaApiMethod.trim(),
+      api_version: form.alibabaApiVersion.trim(),
+      timeout_seconds: form.alibabaApiTimeoutSeconds.trim(),
     },
   }
 }
@@ -206,14 +234,15 @@ function copy(text: string) {
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div><h2 class="card-title">平台授权</h2><p class="muted mt-1">平台授权、AI 通道和核价汇率 API 都在这里配置。</p></div>
         <div class="flex flex-wrap gap-2">
-          <button class="btn btn-primary" :disabled="props.loading || !canSaveAi" :title="canSaveAi ? '' : aiButtonHint" @click="emit('saveAi', aiPayload())">保存设置</button>
-          <button class="btn btn-outline" :disabled="props.loading || !textAiReady" :title="textAiReady ? '' : textAiHint" @click="emit('testAi', 'text', aiPayload())">测试文本 AI</button>
-          <button class="btn btn-outline" :disabled="props.loading || !imageAiReady" :title="imageAiReady ? '' : imageAiHint" @click="emit('testAi', 'image', aiPayload())">测试图片 AI</button>
+          <button class="btn btn-primary" :disabled="props.loading" @click="emit('saveAi', aiPayload())">保存设置</button>
         </div>
       </div>
-      <div class="mt-5 grid gap-4 xl:grid-cols-3">
+      <div class="mt-5 grid gap-4 xl:grid-cols-2 2xl:grid-cols-4">
         <div class="rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
-          <h3 class="font-semibold text-accent-950 dark:text-white">文本 AI</h3>
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <h3 class="font-semibold text-accent-950 dark:text-white">文本 AI</h3>
+            <button class="btn btn-outline py-1.5 text-sm" :disabled="props.loading || !textAiReady" :title="textAiReady ? '' : textAiHint" @click="emit('testAi', 'text', aiPayload())">测试</button>
+          </div>
           <div class="mt-3 grid gap-3 md:grid-cols-2">
             <input v-model="form.textAiPlatform" class="input" placeholder="平台，例如 DeepSeek" />
             <input v-model="form.textAiModel" class="input" placeholder="模型，例如 deepseek-chat" />
@@ -222,7 +251,10 @@ function copy(text: string) {
           </div>
         </div>
         <div class="rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
-          <h3 class="font-semibold text-accent-950 dark:text-white">图片 AI</h3>
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <h3 class="font-semibold text-accent-950 dark:text-white">图片 AI</h3>
+            <button class="btn btn-outline py-1.5 text-sm" :disabled="props.loading || !imageAiReady" :title="imageAiReady ? '' : imageAiHint" @click="emit('testAi', 'image', aiPayload())">测试</button>
+          </div>
           <div class="mt-3 grid gap-3 md:grid-cols-2">
             <input v-model="form.imageAiPlatform" class="input" placeholder="平台，例如 OpenAI" />
             <input v-model="form.imageAiModel" class="input" placeholder="模型" />
@@ -232,7 +264,10 @@ function copy(text: string) {
           </div>
         </div>
         <div class="rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
-          <h3 class="font-semibold text-accent-950 dark:text-white">核价汇率</h3>
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <h3 class="font-semibold text-accent-950 dark:text-white">核价汇率</h3>
+            <button class="btn btn-outline py-1.5 text-sm" :disabled="props.loading || !exchangeRateReady" :title="exchangeRateReady ? '' : exchangeRateHint" @click="emit('testApi', 'exchange_rate', aiPayload().pricing_defaults as UnknownRecord)">测试</button>
+          </div>
           <div class="mt-3 grid gap-3">
             <input v-model="form.exchangeRateApiUrl" class="input" placeholder="汇率 API URL" />
             <div class="grid gap-3 sm:grid-cols-2">
@@ -241,9 +276,25 @@ function copy(text: string) {
             </div>
           </div>
         </div>
+        <div class="rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <h3 class="font-semibold text-accent-950 dark:text-white">1688 采集 API</h3>
+            <button class="btn btn-outline py-1.5 text-sm" :disabled="props.loading || !alibabaApiReady" :title="alibabaApiReady ? '' : alibabaApiHint" @click="emit('testApi', '1688', aiPayload()['1688_api'] as UnknownRecord, form.alibabaTestOfferId)">测试</button>
+          </div>
+          <div class="mt-3 grid gap-3 md:grid-cols-2">
+            <input v-model="form.alibabaAppKey" class="input" placeholder="App Key" autocomplete="off" spellcheck="false" />
+            <input v-model="form.alibabaAppSecret" type="password" class="input" placeholder="App Secret" autocomplete="off" spellcheck="false" />
+            <input v-model="form.alibabaAccessToken" type="password" class="input md:col-span-2" placeholder="Access Token / Session，可选" autocomplete="off" spellcheck="false" />
+            <input v-model="form.alibabaApiMethod" class="input" placeholder="alibaba.product.get" />
+            <input v-model="form.alibabaApiVersion" class="input" placeholder="API 版本" />
+            <input v-model="form.alibabaApiBaseUrl" class="input md:col-span-2 font-mono text-xs" placeholder="API 请求地址" />
+            <input v-model="form.alibabaApiTimeoutSeconds" class="input" placeholder="超时秒数" />
+            <input v-model="form.alibabaTestOfferId" class="input md:col-span-2" placeholder="测试商品 ID / 详情链接，可选" />
+          </div>
+        </div>
       </div>
       <div v-if="props.lastResult?.raw?.channel" class="mt-4 rounded-lg p-4 text-sm ring-1" :class="props.lastResult.ok ? 'bg-emerald-50 text-emerald-950 ring-emerald-100 dark:bg-emerald-500/10 dark:text-emerald-100 dark:ring-emerald-500/30' : 'bg-rose-50 text-rose-950 ring-rose-100 dark:bg-rose-500/10 dark:text-rose-100 dark:ring-rose-500/30'">
-        <div class="font-semibold">最近 AI 测试：{{ props.lastResult.ok ? '成功' : '失败' }}</div>
+        <div class="font-semibold">最近配置测试：{{ props.lastResult.ok ? '成功' : '失败' }}</div>
         <div class="mt-1 break-words">{{ props.lastResult.message || props.lastResult.error }}</div>
         <div v-if="props.lastResult.nextAction" class="mt-1 text-blue-700">下一步：{{ props.lastResult.nextAction }}</div>
         <pre class="mt-3 max-h-52 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{{ JSON.stringify(props.lastResult.raw, null, 2) }}</pre>

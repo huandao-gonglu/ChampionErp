@@ -58,6 +58,7 @@ import {
   startCategoryCacheRefresh,
   suggestCategories,
   syncGeneratedImages,
+  testApiConfig,
   testAiChannel,
   testStoreAuth,
   uploadImages,
@@ -110,7 +111,7 @@ function isRecord(value: unknown): value is UnknownRecord {
 
 function mergeAiConfigWithSubmitted(publicConfig: UnknownRecord, submittedConfig: UnknownRecord): UnknownRecord {
   const merged: UnknownRecord = { ...publicConfig }
-  for (const section of ['text_ai', 'image_ai']) {
+  for (const section of ['text_ai', 'image_ai', '1688_api', 'pricing_defaults']) {
     const publicSection = isRecord(publicConfig[section]) ? publicConfig[section] as UnknownRecord : {}
     const submittedSection = isRecord(submittedConfig[section]) ? submittedConfig[section] as UnknownRecord : {}
     merged[section] = { ...publicSection, ...submittedSection }
@@ -351,7 +352,17 @@ export const useWorkflowStore = defineStore('workflow', () => {
   }
 
   function fillFormFromState(nextAppConfig: UnknownRecord, outputDir = '') {
+    const api1688 = nextAppConfig['1688_api'] && typeof nextAppConfig['1688_api'] === 'object' && !Array.isArray(nextAppConfig['1688_api'])
+      ? nextAppConfig['1688_api'] as UnknownRecord
+      : {}
     collectForm.value.alibabaCookie = String(nextAppConfig.alibaba_cookie || collectForm.value.alibabaCookie || '')
+    collectForm.value.alibabaAppKey = String(api1688.app_key || collectForm.value.alibabaAppKey || '')
+    collectForm.value.alibabaAppSecret = String(api1688.app_secret || collectForm.value.alibabaAppSecret || '')
+    collectForm.value.alibabaAccessToken = String(api1688.access_token || collectForm.value.alibabaAccessToken || '')
+    collectForm.value.alibabaApiBaseUrl = String(api1688.base_url || collectForm.value.alibabaApiBaseUrl || '')
+    collectForm.value.alibabaApiMethod = String(api1688.method || collectForm.value.alibabaApiMethod || '')
+    collectForm.value.alibabaApiVersion = String(api1688.api_version || collectForm.value.alibabaApiVersion || '')
+    collectForm.value.alibabaApiTimeoutSeconds = String(api1688.timeout_seconds || collectForm.value.alibabaApiTimeoutSeconds || '')
     collectForm.value.autoAiRecognition = String(nextAppConfig.auto_ai_recognition ?? '1') !== '0'
     collectForm.value.outputDir = String(nextAppConfig.collect_output_dir || outputDir || collectForm.value.outputDir || '')
     collectForm.value.productUrl = product.value.source.sourceUrl || collectForm.value.productUrl
@@ -1468,6 +1479,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
       const result = await saveAiConfig(config)
       aiConfig.value = mergeAiConfigWithSubmitted(result.raw, config)
       appConfig.value = mergeAiConfigWithSubmitted(appConfig.value, config)
+      fillFormFromState(appConfig.value)
       addLog('平台授权设置已保存。')
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '保存平台授权设置失败')
@@ -1491,6 +1503,28 @@ export const useWorkflowStore = defineStore('workflow', () => {
         errorCode: '',
         nextAction: '请检查 API Key、Base URL 和模型名，然后再试一次。',
         raw: { ok: false, error: message, channel },
+      }
+      setError(message)
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function testPlatformApiConfig(kind: 'exchange_rate' | '1688', config: UnknownRecord, testValue = '') {
+    loading.value = true
+    setError('')
+    try {
+      lastAuthResult.value = await testApiConfig(kind, config, testValue)
+      addLog(`${kind} API 测试：${lastAuthResult.value.message || lastAuthResult.value.error || '完成'}`)
+    } catch (exc) {
+      const message = exc instanceof Error ? exc.message : '测试 API 配置失败'
+      lastAuthResult.value = {
+        ok: false,
+        message: '',
+        error: message,
+        errorCode: '',
+        nextAction: '请检查当前卡片里的配置后再试一次。',
+        raw: { ok: false, error: message, channel: kind },
       }
       setError(message)
     } finally {
@@ -1764,6 +1798,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     loadAiConfig,
     saveAiSettings,
     testAiSettings,
+    testPlatformApiConfig,
     saveStoreConfig,
     testAuth,
     loadMercadoLibreChecklist,

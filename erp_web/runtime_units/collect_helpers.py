@@ -38,7 +38,7 @@ def collect_time_iso() -> str:
 
 def normalize_collect_mode(mode: str, url: str = "") -> str:
     value = str(mode or "").strip().lower()
-    if value in {"browser", "http", "manual"}:
+    if value in {"browser", "http", "manual", "api"}:
         return value
     if value in {"playwright", "browser-session", "browser_session"}:
         return "browser"
@@ -192,6 +192,8 @@ def collect_next_action(platform: str, error_code: str) -> str:
     if not code:
         return "采集已完成，可进入商品库继续 AI 文案、生图和编辑。"
     if platform == "1688":
+        if "API" in code:
+            return "请检查 1688 官方 API 凭证、接口权限和商品详情接口地址；未开通权限时可切回浏览器采集。"
         if any(key in code for key in ["LOGIN", "CAPTCHA", "SECURITY", "SLIDER", "REMOTE_DEBUGGING"]):
             return "1688 触发验证，请手动打开浏览器完成验证，或使用手动导入。"
         return "请尝试浏览器会话采集；如果仍失败，保存商品详情页 HTML 后导入，或手动补充缺失字段。"
@@ -241,6 +243,7 @@ def collect_error_code(platform: str, mode: str, reason: str = "") -> str:
             "PROFILE": "1688_BROWSER_PROFILE_NOT_FOUND",
             "REMOTE": "1688_REMOTE_DEBUGGING_NOT_CONNECTED",
             "NETWORK": "NETWORK_BLOCKED",
+            "API": "1688_API_FAILED",
         }
         return mapping.get(reason, "1688_SELECTOR_FAILED")
     return "COLLECT_FAILED"

@@ -481,6 +481,7 @@ watch(
             :loading="loading"
             @save-ai="store.saveAiSettings"
             @test-ai="store.testAiSettings"
+            @test-api="store.testPlatformApiConfig"
             @save-store="store.saveStoreConfig"
             @test-auth="store.testAuth"
             @refresh-checklist="store.loadMercadoLibreChecklist"

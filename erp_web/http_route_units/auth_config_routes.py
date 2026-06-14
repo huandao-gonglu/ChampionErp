@@ -13,6 +13,7 @@ from ..runtime_units.auth_runtime import (
     exchange_mercadolibre_code_from_body,
     mercadolibre_auth_checklist,
     refresh_mercadolibre_token_from_body,
+    test_api_config,
     test_store_auth,
 )
 from ..runtime_units.browser_debug import open_auth_link_in_browser
@@ -129,6 +130,29 @@ def handle_test_store_auth(handler: JsonRequestHandler) -> None:
     return
 
 
+def handle_test_api_config(handler: JsonRequestHandler) -> None:
+    body = handler.read_body()
+    try:
+        result = test_api_config(
+            str(body.get("kind") or ""),
+            body.get("config") if isinstance(body.get("config"), dict) else {},
+            str(body.get("test_value") or ""),
+        )
+        handler.send_json(result, 200 if result.get("ok") else 400)
+    except Exception as exc:
+        kind = str(body.get("kind") or "").strip().lower()
+        handler.send_json(
+            {
+                "ok": False,
+                "channel": kind,
+                "error": str(exc),
+                "next_action": "请检查当前卡片里的配置后再试一次。",
+            },
+            400,
+        )
+    return
+
+
 def handle_save_settings(handler: JsonRequestHandler) -> None:
     body = handler.read_body()
     if body.get("appConfig"):
@@ -160,6 +184,7 @@ POST_HANDLERS: dict[str, PostHandler] = {
     "/api/mercadolibre/refresh-token": handle_mercadolibre_refresh_token,
     "/api/mercadolibre/real-auth-test": handle_mercadolibre_real_auth_test,
     "/api/test-store-auth": handle_test_store_auth,
+    "/api/test-api-config": handle_test_api_config,
     "/api/save-settings": handle_save_settings,
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)

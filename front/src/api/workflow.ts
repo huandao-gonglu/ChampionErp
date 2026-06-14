@@ -277,6 +277,15 @@ export async function collectProduct(form: CollectForm): Promise<ProductMutation
     url,
     mode: form.mode,
     cookie: form.alibabaCookie,
+    '1688_api': {
+      app_key: form.alibabaAppKey,
+      app_secret: form.alibabaAppSecret,
+      access_token: form.alibabaAccessToken,
+      base_url: form.alibabaApiBaseUrl,
+      method: form.alibabaApiMethod,
+      api_version: form.alibabaApiVersion,
+      timeout_seconds: form.alibabaApiTimeoutSeconds,
+    },
     platform: form.platform,
     platforms: form.selectedClaimPlatforms,
   })
@@ -295,6 +304,15 @@ export async function collectBatch(form: CollectForm): Promise<{ rows: CollectBa
     urls: form.productUrls,
     mode: form.mode === 'extension' ? 'manual' : form.mode,
     cookie: form.alibabaCookie,
+    '1688_api': {
+      app_key: form.alibabaAppKey,
+      app_secret: form.alibabaAppSecret,
+      access_token: form.alibabaAccessToken,
+      base_url: form.alibabaApiBaseUrl,
+      method: form.alibabaApiMethod,
+      api_version: form.alibabaApiVersion,
+      timeout_seconds: form.alibabaApiTimeoutSeconds,
+    },
     platform: form.platform === 'manual' ? '' : form.platform,
     platforms: form.selectedClaimPlatforms,
   })
@@ -383,6 +401,15 @@ export async function saveCollectSettings(form: CollectForm): Promise<void> {
   const response = await apiClient.post('/api/save-settings', {
     appConfig: {
       alibaba_cookie: form.alibabaCookie,
+      '1688_api': {
+        app_key: form.alibabaAppKey,
+        app_secret: form.alibabaAppSecret,
+        access_token: form.alibabaAccessToken,
+        base_url: form.alibabaApiBaseUrl,
+        method: form.alibabaApiMethod,
+        api_version: form.alibabaApiVersion,
+        timeout_seconds: form.alibabaApiTimeoutSeconds,
+      },
       collect_output_dir: form.outputDir,
       auto_ai_recognition: form.autoAiRecognition ? '1' : '0',
     },
@@ -841,6 +868,11 @@ export async function testAiChannel(channel: 'text' | 'image', config: UnknownRe
       ? config.text_ai
       : config
   const response = await apiClient.post('/api/test-ai-channel', { channel, config: channelConfig })
+  return normalizeAuthResult(response.data)
+}
+
+export async function testApiConfig(kind: 'exchange_rate' | '1688', config: UnknownRecord, testValue = ''): Promise<AuthResult> {
+  const response = await apiClient.post('/api/test-api-config', { kind, config, test_value: testValue }, { validateStatus: () => true })
   return normalizeAuthResult(response.data)
 }
 

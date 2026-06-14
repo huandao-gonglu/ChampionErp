@@ -63,6 +63,31 @@ def test_normalize_app_config_ignores_legacy_ai_aliases(app_dir: Path) -> None:
         assert key not in saved
 
 
+def test_normalize_app_config_keeps_1688_api_credentials() -> None:
+    import erp_web_app
+
+    saved = erp_web_app.normalize_app_config(
+        {
+            "1688_api": {
+                "app_key": "app-key-123456",
+                "app_secret": "secret-abcdef",
+                "access_token": "token-xyz",
+                "base_url": "https://example.test/openapi",
+                "method": "alibaba.product.get",
+                "api_version": "1.0",
+                "timeout_seconds": "30",
+            }
+        }
+    )
+
+    assert "enabled" not in saved["1688_api"]
+    assert saved["1688_api"]["app_key"] == "app-key-123456"
+    assert saved["1688_api"]["app_secret"] == "secret-abcdef"
+    assert saved["1688_api"]["access_token"] == "token-xyz"
+    assert saved["1688_api"]["base_url"] == "https://example.test/openapi"
+    assert saved["1688_api"]["masked_app_secret"].startswith("secr")
+
+
 def test_ai_config_from_sources_ignores_legacy_aliases(app_dir: Path) -> None:
     cfg = config_service.ai_config_from_sources(
         app_dir,
