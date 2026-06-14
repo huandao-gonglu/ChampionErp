@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import PageHeader from '@/components/layout/PageHeader.vue'
 import type { BrowserDebugStatus, CollectBatchRow, CollectDiagnostics, CollectForm, Product } from '@/types/workflow'
 
 const props = defineProps<{
@@ -139,21 +140,16 @@ function copyDiagnostics() {
 
 <template>
   <div class="space-y-6">
-    <header class="rounded-3xl bg-slate-950 p-6 text-white shadow-soft">
-      <div class="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
-        <div>
-          <p class="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-200">Collect / Source Only</p>
-          <h2 class="mt-3 text-3xl font-bold">采集商品</h2>
-          <p class="mt-3 max-w-3xl text-sm leading-6 text-slate-300">
-            选择一种采集方式后继续操作。默认从“浏览器采集”开始，适合需要登录、验证码或当前标签页上下文的 1688 / Amazon 商品。
-          </p>
-        </div>
-        <div class="flex flex-wrap items-center gap-3">
-          <span class="rounded-full bg-white/10 px-4 py-2 text-sm text-slate-200 ring-1 ring-white/15">{{ collectStatusLabel }}</span>
-          <button class="btn border border-white/20 bg-white/10 text-white hover:bg-white/20" :disabled="props.loading" @click="emit('clearProduct')">清空当前商品</button>
-        </div>
-      </div>
-    </header>
+    <PageHeader
+      eyebrow="Collect / Source Only"
+      title="采集商品"
+      description="选择一种采集方式后继续操作。默认从“浏览器采集”开始，适合需要登录、验证码或当前标签页上下文的 1688 / Amazon 商品。"
+    >
+      <template #actions>
+        <span class="rounded-full bg-primary-50 px-4 py-2 text-sm font-semibold text-primary-700 ring-1 ring-primary-100 dark:bg-primary-500/10 dark:text-primary-200 dark:ring-primary-500/30">{{ collectStatusLabel }}</span>
+        <button class="btn btn-outline" :disabled="props.loading" @click="emit('clearProduct')">清空当前商品</button>
+      </template>
+    </PageHeader>
 
     <div v-if="props.error" class="rounded-2xl bg-rose-50 p-4 text-sm font-medium text-rose-700 ring-1 ring-rose-200">
       {{ props.error }}

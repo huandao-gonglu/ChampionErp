@@ -101,7 +101,7 @@ function syncSiteForPlatform() {
 
     <div class="mt-5 grid gap-3 border-b border-accent-200 pb-5 dark:border-dark-700 lg:grid-cols-[minmax(0,1fr)_120px_150px_auto]">
       <label class="block">
-        <span class="text-xs font-semibold text-slate-500 dark:text-accent-300">商品</span>
+        <span class="text-xs font-semibold text-accent-500 dark:text-accent-300">商品</span>
         <select
           class="input mt-1"
           :disabled="props.loading || !props.productItems.length"
@@ -115,12 +115,12 @@ function syncSiteForPlatform() {
         </select>
       </label>
       <div>
-        <p class="text-xs font-semibold text-slate-500 dark:text-accent-300">来源平台</p>
-        <p class="mt-3 text-sm font-semibold text-slate-950 dark:text-white">{{ props.sourcePlatform || '-' }}</p>
+        <p class="text-xs font-semibold text-accent-500 dark:text-accent-300">来源平台</p>
+        <p class="mt-3 text-sm font-semibold text-accent-950 dark:text-white">{{ props.sourcePlatform || '-' }}</p>
       </div>
       <div>
-        <p class="text-xs font-semibold text-slate-500 dark:text-accent-300">当前价格</p>
-        <p class="mt-3 text-sm font-semibold text-slate-950 dark:text-white">{{ props.draftPrice || '-' }}</p>
+        <p class="text-xs font-semibold text-accent-500 dark:text-accent-300">当前价格</p>
+        <p class="mt-3 text-sm font-semibold text-accent-950 dark:text-white">{{ props.draftPrice || '-' }}</p>
       </div>
       <div class="flex items-end gap-2">
         <button class="btn btn-outline py-2" :disabled="props.loading" @click="emit('refreshProducts')">刷新</button>
@@ -179,7 +179,7 @@ function syncSiteForPlatform() {
       </label>
     </div>
 
-    <div class="mt-3 rounded-xl bg-slate-50 p-3 text-xs leading-relaxed text-slate-600 ring-1 ring-slate-200 dark:bg-dark-800 dark:text-accent-300 dark:ring-dark-700">
+    <div class="mt-3 rounded-xl bg-accent-50 p-3 text-xs leading-relaxed text-accent-600 ring-1 ring-accent-200 dark:bg-dark-800 dark:text-accent-300 dark:ring-dark-700">
       <span v-if="props.result">
         本次汇率：USD/CNY {{ props.result.usdCnyRate || '-' }}，MXN/USD {{ props.result.mxnUsdRate || '-' }}
         <span v-if="currentPlatformCurrency() === 'RUB'">，RUB/CNY {{ props.result.rubCnyRate || '-' }}</span>

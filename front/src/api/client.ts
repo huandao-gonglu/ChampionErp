@@ -1,4 +1,5 @@
 import axios, { AxiosError } from 'axios'
+import { uiLocaleOption } from '@/constants/locales'
 import { normalizeApiError } from '@/utils/apiError'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || ''
@@ -16,7 +17,7 @@ export const apiClient = axios.create({
 apiClient.interceptors.request.use((config) => {
   const token = localStorage.getItem('accessToken')
   if (token) config.headers.set('Authorization', `Bearer ${token}`)
-  config.headers.set('Accept-Language', localStorage.getItem('locale') || navigator.language || 'zh-CN')
+  config.headers.set('Accept-Language', uiLocaleOption(localStorage.getItem('uiLocale') || localStorage.getItem('locale')).acceptLanguage)
   config.headers.set('X-Timezone', Intl.DateTimeFormat().resolvedOptions().timeZone)
   return config
 })

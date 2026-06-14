@@ -1,4 +1,5 @@
 import type { CollectDiagnostics, CollectForm, Marketplace, MarketplaceDraft, PricingInput, Product } from '@/types/workflow'
+import { listingLanguageLabel } from '@/constants/locales'
 
 export const marketplaces: Marketplace[] = ['mercadolibre', 'wildberries', 'ozon']
 
@@ -64,9 +65,9 @@ export function createEmptyProduct(): Product {
       collectDiagnostics: {},
     },
     drafts: {
-      mercadolibre: createEmptyDraft('Spanish (Mexico)'),
-      wildberries: createEmptyDraft('Russian'),
-      ozon: createEmptyDraft('Russian'),
+      mercadolibre: createEmptyDraft(listingLanguageLabel('mercadolibre')),
+      wildberries: createEmptyDraft(listingLanguageLabel('wildberries')),
+      ozon: createEmptyDraft(listingLanguageLabel('ozon')),
     },
     raw: {},
   }

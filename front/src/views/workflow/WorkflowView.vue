@@ -230,7 +230,7 @@ watch(
       />
 
       <main class="min-w-0">
-        <div class="sticky top-0 z-20 border-b border-slate-200 bg-white/90 px-4 py-3 backdrop-blur lg:hidden">
+        <div class="sticky top-0 z-20 border-b border-accent-200 bg-white/90 px-4 py-3 backdrop-blur dark:border-dark-700 dark:bg-dark-900/90 lg:hidden">
           <select :value="activeNav" class="input" @change="navigate(($event.target as HTMLSelectElement).value)">
             <option v-for="item in navItems" :key="item.key" :value="item.key">{{ item.title }}</option>
           </select>

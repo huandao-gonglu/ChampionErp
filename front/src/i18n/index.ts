@@ -1,31 +1,32 @@
 import { createI18n } from 'vue-i18n'
-import { DEFAULT_LOCALE, SUPPORTED_LOCALES, type SupportedLocale } from '@/constants/branding'
+import { DEFAULT_UI_LOCALE, SUPPORTED_UI_LOCALES, type SupportedUiLocale, uiLocaleOption } from '@/constants/locales'
 import zh from './locales/zh'
 import en from './locales/en'
 
-function detectLocale(): SupportedLocale {
-  const saved = localStorage.getItem('locale')
-  if (SUPPORTED_LOCALES.includes(saved as SupportedLocale)) return saved as SupportedLocale
-  return navigator.language.toLowerCase().startsWith('zh') ? 'zh' : DEFAULT_LOCALE
+export function detectUiLocale(): SupportedUiLocale {
+  const saved = localStorage.getItem('uiLocale') || localStorage.getItem('locale')
+  if (SUPPORTED_UI_LOCALES.includes(saved as SupportedUiLocale)) return saved as SupportedUiLocale
+  return navigator.language.toLowerCase().startsWith('zh') ? 'zh' : DEFAULT_UI_LOCALE
 }
 
 export const i18n = createI18n({
   legacy: false,
-  locale: detectLocale(),
+  locale: detectUiLocale(),
   fallbackLocale: 'en',
   messages: { zh, en },
 })
 
 export async function initI18n() {
-  const locale = detectLocale()
+  const locale = detectUiLocale()
   i18n.global.locale.value = locale
-  document.documentElement.lang = locale === 'zh' ? 'zh-CN' : 'en'
+  document.documentElement.lang = uiLocaleOption(locale).htmlLang
 }
 
-export function setLocale(locale: SupportedLocale) {
+export function setUiLocale(locale: SupportedUiLocale) {
+  localStorage.setItem('uiLocale', locale)
   localStorage.setItem('locale', locale)
   i18n.global.locale.value = locale
-  document.documentElement.lang = locale === 'zh' ? 'zh-CN' : 'en'
+  document.documentElement.lang = uiLocaleOption(locale).htmlLang
 }
 
 export default i18n

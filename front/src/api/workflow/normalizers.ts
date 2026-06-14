@@ -1,4 +1,5 @@
 import { createEmptyDraft, createEmptyProduct } from '@/constants/initialState'
+import { listingLanguageLabel } from '@/constants/locales'
 import type {
   BrowserDebugStatus,
   DraftIndexItem,
@@ -299,9 +300,9 @@ export function normalizeBackendProduct(value: unknown, imagePoolOverride?: unkn
       collectDiagnostics: asRecord(source.collect_diagnostics),
     },
     drafts: {
-      mercadolibre: normalizeDraft(drafts.mercadolibre, 'Spanish (Mexico)'),
-      wildberries: normalizeDraft(drafts.wildberries, 'Russian'),
-      ozon: normalizeDraft(drafts.ozon, 'Russian'),
+      mercadolibre: normalizeDraft(drafts.mercadolibre, listingLanguageLabel('mercadolibre')),
+      wildberries: normalizeDraft(drafts.wildberries, listingLanguageLabel('wildberries')),
+      ozon: normalizeDraft(drafts.ozon, listingLanguageLabel('ozon')),
     },
     raw: record,
   }

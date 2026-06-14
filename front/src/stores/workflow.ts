@@ -60,6 +60,7 @@ import {
   uploadImages,
 } from '@/api/workflow'
 import { createDefaultCollectDiagnostics, createDefaultCollectForm, createDefaultPricingInput, createEmptyProduct, marketplaces } from '@/constants/initialState'
+import { listingLanguageLabel } from '@/constants/locales'
 import { useAppStore } from '@/stores/app'
 import type {
   AuthResult,
@@ -964,7 +965,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     loading.value = true
     setError('')
     try {
-      const language = String(targetLanguage || '').trim()
+      const language = String(targetLanguage || product.value.drafts[activeMarketplace.value]?.language || listingLanguageLabel(activeMarketplace.value)).trim()
       imagePrompt.value = await generateImagePrompts(product.value, activeMarketplace.value, language)
       addLog(`生图提示词已生成。${language ? `目标语言：${language}` : ''}`)
     } catch (exc) {
@@ -978,7 +979,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     loading.value = true
     setError('')
     try {
-      const language = String(targetLanguage || '').trim() || (activeMarketplace.value === 'mercadolibre' ? 'Spanish (Mexico)' : 'Russian')
+      const language = String(targetLanguage || product.value.drafts[activeMarketplace.value]?.language || listingLanguageLabel(activeMarketplace.value)).trim()
       const result = await imageTranslateApi(product.value, activeMarketplace.value, language)
       product.value = result.product
       if (result.productsIndex.length) productsIndex.value = result.productsIndex

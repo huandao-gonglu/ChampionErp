@@ -1,4 +1,5 @@
 import { API_REQUEST_TIMEOUT_MS, apiClient } from '@/api/client'
+import { listingLanguageLabel } from '@/constants/locales'
 import type {
   BrowserDebugStatus,
   CategoryPrecheckResult,
@@ -415,10 +416,12 @@ export async function syncGeneratedImages(product: Product): Promise<ProductMuta
 }
 
 export async function generateCopy(product: Product, platform: Marketplace): Promise<ProductMutationResponse> {
+  const draftLanguage = product.drafts[platform]?.language || listingLanguageLabel(platform)
   const response = await apiClient.post('/api/generate-copy', {
     platform,
     target_market: platform,
-    language: platform === 'mercadolibre' ? 'Spanish (Mexico)' : 'Russian',
+    language: draftLanguage,
+    listing_language: draftLanguage,
     product: toBackendProduct(product),
   })
   return normalizeProductMutation(response.data)
@@ -447,11 +450,12 @@ export async function generateCopyBatch(productIds: string[], platform: Marketpl
 }
 
 export async function generateImagePrompts(product: Product, platform: Marketplace, targetLanguage = ''): Promise<string> {
+  const listingLanguage = targetLanguage || product.drafts[platform]?.language || listingLanguageLabel(platform)
   const response = await apiClient.post('/api/generate-image-prompts', {
     product: toBackendProduct(product),
     platform,
-    language: targetLanguage,
-    target_language: targetLanguage,
+    language: listingLanguage,
+    target_language: listingLanguage,
     selected_image_ids: product.source.imagePool.filter((image) => image.selected).map((image) => image.id),
     include_bullets: true,
     include_description: true,
@@ -462,11 +466,13 @@ export async function generateImagePrompts(product: Product, platform: Marketpla
 }
 
 export async function imageTranslate(product: Product, platform: Marketplace, language: string): Promise<ProductMutationResponse> {
+  const listingLanguage = language || product.drafts[platform]?.language || listingLanguageLabel(platform)
   const selectedImageIds = product.source.imagePool.filter((image) => image.selected).map((image) => image.id)
   const response = await apiClient.post('/api/image-translate', {
     product: toBackendProduct(product),
     platform,
-    language,
+    language: listingLanguage,
+    target_language: listingLanguage,
     image_ids: selectedImageIds,
   }, { timeout: imageTranslateTimeoutMs(product) })
   return normalizeProductMutation(response.data)
