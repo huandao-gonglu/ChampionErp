@@ -221,16 +221,16 @@ watch(
 </script>
 
 <template>
-  <section class="card">
-    <article class="mb-6 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+  <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
+    <article class="mb-6 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
       <div class="flex flex-wrap items-start justify-between gap-4">
         <div class="min-w-0">
-          <p class="text-xs font-semibold text-slate-500">当前预检商品</p>
+          <p class="text-xs font-semibold text-accent-500 dark:text-accent-400">当前预检商品</p>
           <div class="mt-2 flex flex-wrap items-center gap-3">
-            <img v-if="props.product.source.imagePool[0]?.previewUrl || props.product.source.imagePool[0]?.url" :src="props.product.source.imagePool[0]?.previewUrl || props.product.source.imagePool[0]?.url" class="size-14 rounded object-cover" />
+            <img v-if="props.product.source.imagePool[0]?.previewUrl || props.product.source.imagePool[0]?.url" :src="props.product.source.imagePool[0]?.previewUrl || props.product.source.imagePool[0]?.url" class="size-14 rounded-lg object-cover" />
             <div class="min-w-0">
-              <h3 class="truncate font-semibold text-slate-950">{{ currentProductTitle }}</h3>
-              <div class="mt-1 flex flex-wrap gap-2 text-xs text-slate-500">
+              <h3 class="truncate font-semibold text-accent-950 dark:text-white">{{ currentProductTitle }}</h3>
+              <div class="mt-1 flex flex-wrap gap-2 text-xs text-accent-500 dark:text-accent-400">
                 <span>{{ props.product.sku || props.product.drafts[props.activeMarketplace].sku || '无 SKU' }}</span>
                 <span>{{ props.product.source.sourcePlatform || '来源未记录' }}</span>
                 <span>{{ props.product.drafts[props.activeMarketplace].status || 'pending' }}</span>
@@ -262,22 +262,22 @@ watch(
     </div>
 
     <div class="mt-5 grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-      <article class="min-w-0 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+      <article class="min-w-0 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <h3 class="font-semibold text-slate-950">类目搜索</h3>
-            <p class="mt-1 text-sm text-slate-500">输入中文关键词，例如：瓶 / 项链 / 耳机。</p>
+            <h3 class="font-semibold text-accent-950 dark:text-white">类目搜索</h3>
+            <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">输入中文关键词，例如：瓶 / 项链 / 耳机。</p>
           </div>
           <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('refreshCategories')">{{ props.loading ? '正在刷新...' : '刷新官方类目缓存' }}</button>
         </div>
-        <p class="mt-3 text-xs text-slate-500">
+        <p class="mt-3 text-xs text-accent-500 dark:text-accent-400">
           {{ props.loading ? '正在从 Mercado Libre 官方接口同步类目和必填属性，数量较多时可能需要 1-3 分钟。' : (categoryCacheSummary || '用于把 Mercado Libre 官方类目和必填属性保存到本地，供下面搜索和预检使用。') }}
         </p>
         <div v-if="isCategoryRefreshRunning || categoryCacheSummary" class="mt-3">
-          <div class="h-2 overflow-hidden rounded-full bg-slate-200">
+          <div class="h-2 overflow-hidden rounded-full bg-accent-200 dark:bg-dark-800">
             <div class="h-full rounded-full bg-emerald-500 transition-all" :style="{ width: `${categoryRefreshProgress}%` }" />
           </div>
-          <div class="mt-1 text-xs text-slate-500">{{ categoryCacheSummary || '准备同步...' }}</div>
+          <div class="mt-1 text-xs text-accent-500 dark:text-accent-400">{{ categoryCacheSummary || '准备同步...' }}</div>
         </div>
         <div class="mt-4 flex gap-2">
           <input :value="props.categoryQuery" class="input" placeholder="类目关键词" @input="emit('updateCategoryQuery', ($event.target as HTMLInputElement).value)" @keyup.enter="emit('searchCategory')" />
@@ -285,26 +285,26 @@ watch(
           <button class="btn btn-primary shrink-0" :disabled="props.loading" @click="emit('searchCategory')">搜索</button>
         </div>
         <div class="mt-4 max-h-80 space-y-2 overflow-y-auto">
-          <button v-for="item in props.categoryResults" :key="item.id" class="w-full rounded-xl border bg-white p-3 text-left hover:border-brand-300 hover:bg-brand-50" @click="emit('selectCategory', item)">
+          <button v-for="item in props.categoryResults" :key="item.id" class="w-full rounded-lg border border-accent-200 bg-white p-3 text-left hover:border-brand-300 hover:bg-brand-50 dark:border-dark-700 dark:bg-dark-900 dark:hover:border-primary-500/60 dark:hover:bg-dark-800" @click="emit('selectCategory', item)">
             <div class="flex flex-wrap items-center justify-between gap-2">
-              <div class="font-semibold text-slate-950">{{ item.name || item.id }}</div>
+              <div class="font-semibold text-accent-950 dark:text-white">{{ item.name || item.id }}</div>
               <span v-if="item.raw.score" class="badge-info">AI {{ item.raw.score }}</span>
             </div>
-            <div class="mt-1 text-xs text-slate-500">{{ item.path || item.id }}</div>
-            <div v-if="item.raw.site || item.raw.source" class="mt-1 text-xs text-slate-400">{{ item.raw.site || '' }}{{ item.raw.source ? ` / ${item.raw.source}` : '' }}</div>
+            <div class="mt-1 text-xs text-accent-500 dark:text-accent-400">{{ item.path || item.id }}</div>
+            <div v-if="item.raw.site || item.raw.source" class="mt-1 text-xs text-accent-400 dark:text-accent-500">{{ item.raw.site || '' }}{{ item.raw.source ? ` / ${item.raw.source}` : '' }}</div>
           </button>
-          <div v-if="!props.categoryResults.length" class="rounded-xl border border-dashed border-slate-300 bg-white p-5 text-center text-sm text-slate-500">暂无搜索结果。</div>
+          <div v-if="!props.categoryResults.length" class="rounded-lg border border-dashed border-accent-300 bg-white p-5 text-center text-sm text-accent-500 dark:border-dark-600 dark:bg-dark-900 dark:text-accent-300">暂无搜索结果。</div>
         </div>
       </article>
 
-      <article class="min-w-0 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-        <h3 class="font-semibold text-slate-950">当前类目 / 必填属性</h3>
+      <article class="min-w-0 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
+        <h3 class="font-semibold text-accent-950 dark:text-white">当前类目 / 必填属性</h3>
         <label class="mt-4 block">
-          <span class="text-xs font-semibold text-slate-500">类目 ID</span>
+          <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">类目 ID</span>
           <input v-model="props.product.drafts[props.activeMarketplace].categoryId" class="input mt-1" placeholder="例如 MLM12345" />
         </label>
         <label class="mt-3 block">
-          <span class="text-xs font-semibold text-slate-500">类目路径</span>
+          <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">类目路径</span>
           <input v-model="props.product.drafts[props.activeMarketplace].categoryPath" class="input mt-1" />
         </label>
         <div class="mt-4 flex flex-wrap gap-2">
@@ -342,8 +342,8 @@ watch(
             />
           </label>
         </div>
-        <div v-if="optionalAttributeFields.length" class="mt-4 rounded-xl border border-slate-200 bg-white p-3">
-          <button class="flex w-full items-center justify-between text-left text-sm font-semibold text-slate-700" type="button" @click="showOptionalAttributes = !showOptionalAttributes">
+        <div v-if="optionalAttributeFields.length" class="mt-4 rounded-lg border border-accent-200 bg-white p-3 dark:border-dark-700 dark:bg-dark-900">
+          <button class="flex w-full items-center justify-between text-left text-sm font-semibold text-accent-700 dark:text-accent-200" type="button" @click="showOptionalAttributes = !showOptionalAttributes">
             <span>可选字段 {{ optionalAttributeFields.length }} 个</span>
             <span>{{ showOptionalAttributes ? '收起' : '展开' }}</span>
           </button>
@@ -364,11 +364,11 @@ watch(
     </div>
 
     <div class="mt-6 grid min-w-0 gap-6 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
-      <article class="min-w-0 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+      <article class="min-w-0 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
         <div class="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h3 class="font-semibold text-slate-950">发布必填资料</h3>
-            <p class="mt-1 text-sm text-slate-500">{{ publishReadiness }}</p>
+            <h3 class="font-semibold text-accent-950 dark:text-white">发布必填资料</h3>
+            <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">{{ publishReadiness }}</p>
           </div>
           <span v-if="props.precheck" class="badge-muted">{{ blockingIssues.length }} 阻断 / {{ warningIssues.length }} 提醒</span>
         </div>
@@ -392,47 +392,47 @@ watch(
             <span class="text-xs font-semibold" :class="hasIssue('upc', 'UPC_MISSING') ? 'text-rose-700' : 'text-slate-500'">UPC / GTIN</span>
             <input v-model="activeDraft.upc" class="input mt-1" :class="hasIssue('upc', 'UPC_MISSING') ? 'border-rose-300 bg-rose-50' : ''" />
           </label>
-          <label class="mt-6 flex items-center gap-2 text-sm font-semibold text-slate-700">
-            <input v-model="activeDraft.allowGtinExemption" type="checkbox" class="size-4 rounded border-slate-300" />
+          <label class="mt-6 flex items-center gap-2 text-sm font-semibold text-accent-700 dark:text-accent-200">
+            <input v-model="activeDraft.allowGtinExemption" type="checkbox" class="size-4 rounded border-accent-300" />
             允许无 UPC 豁免
           </label>
         </div>
 
         <div class="mt-4 grid gap-3 md:grid-cols-4">
           <label class="block">
-            <span class="text-xs font-semibold text-slate-500">长 cm</span>
+            <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">长 cm</span>
             <input v-model="activeDraft.packageDimensions.lengthCm" class="input mt-1" />
           </label>
           <label class="block">
-            <span class="text-xs font-semibold text-slate-500">宽 cm</span>
+            <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">宽 cm</span>
             <input v-model="activeDraft.packageDimensions.widthCm" class="input mt-1" />
           </label>
           <label class="block">
-            <span class="text-xs font-semibold text-slate-500">高 cm</span>
+            <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">高 cm</span>
             <input v-model="activeDraft.packageDimensions.heightCm" class="input mt-1" />
           </label>
           <label class="block">
-            <span class="text-xs font-semibold text-slate-500">重量 kg</span>
+            <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">重量 kg</span>
             <input v-model="activeDraft.packageDimensions.weightKg" class="input mt-1" />
           </label>
         </div>
 
-        <div class="mt-4 rounded-xl border border-slate-200 bg-white p-3">
+        <div class="mt-4 rounded-lg border border-accent-200 bg-white p-3 dark:border-dark-700 dark:bg-dark-900">
           <div class="flex flex-wrap items-center justify-between gap-2">
             <div>
-              <div class="text-sm font-semibold text-slate-950">售后条款</div>
-              <div class="mt-1 text-xs text-slate-500">{{ activeDraft.saleTerms.length ? `已配置 ${activeDraft.saleTerms.length} 条` : '尚未配置 warranty / sale_terms' }}</div>
+              <div class="text-sm font-semibold text-accent-950 dark:text-white">售后条款</div>
+              <div class="mt-1 text-xs text-accent-500 dark:text-accent-400">{{ activeDraft.saleTerms.length ? `已配置 ${activeDraft.saleTerms.length} 条` : '尚未配置 warranty / sale_terms' }}</div>
             </div>
             <button class="btn btn-outline py-1.5" type="button" @click="useSellerWarranty">使用 3 个月卖家保修</button>
           </div>
         </div>
       </article>
 
-      <article class="min-w-0 rounded-2xl border p-4" :class="props.precheck?.ok ? 'border-emerald-200 bg-emerald-50' : 'border-slate-200 bg-slate-50'">
+      <article class="min-w-0 rounded-lg border p-4" :class="props.precheck?.ok ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-500/30 dark:bg-emerald-500/10' : 'border-accent-200 bg-accent-50 dark:border-dark-700 dark:bg-dark-950/70'">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h3 class="font-semibold text-slate-950">预检结果</h3>
-            <p class="mt-2 text-sm" :class="props.precheck?.ok ? 'text-emerald-700' : 'text-slate-600'">{{ props.precheck ? (props.precheck.ok ? '预检通过，可以发布。' : '预检未通过。') : '尚未执行预检。' }}</p>
+            <h3 class="font-semibold text-accent-950 dark:text-white">预检结果</h3>
+            <p class="mt-2 text-sm" :class="props.precheck?.ok ? 'text-emerald-700 dark:text-emerald-200' : 'text-accent-600 dark:text-accent-300'">{{ props.precheck ? (props.precheck.ok ? '预检通过，可以发布。' : '预检未通过。') : '尚未执行预检。' }}</p>
           </div>
           <div class="flex flex-wrap gap-2">
             <button class="btn btn-outline" :disabled="props.loading || !hasCurrentProduct" @click="emit('precheck')">上架预检</button>
@@ -441,14 +441,14 @@ watch(
           </div>
         </div>
         <ul v-if="props.precheck?.errorItems.length" class="mt-3 space-y-2 text-sm text-rose-700">
-          <li v-for="issue in props.precheck.errorItems" :key="`${issue.code}-${issue.field}-${issue.message}`" class="rounded-xl bg-white/70 p-3 ring-1 ring-rose-100">
+          <li v-for="issue in props.precheck.errorItems" :key="`${issue.code}-${issue.field}-${issue.message}`" class="rounded-lg bg-white/70 p-3 ring-1 ring-rose-100 dark:bg-rose-500/10 dark:ring-rose-500/20">
             <div class="font-semibold">{{ issueTitle(issue) }}</div>
             <div v-if="issue.nextAction" class="mt-1 text-rose-600">{{ issue.nextAction }}</div>
           </li>
         </ul>
         <ul v-else-if="props.precheck?.errors.length" class="mt-3 list-inside list-disc text-sm text-rose-700"><li v-for="err in props.precheck.errors" :key="err">{{ err }}</li></ul>
         <ul v-if="props.precheck?.warningItems.length" class="mt-3 space-y-2 text-sm text-amber-700">
-          <li v-for="issue in props.precheck.warningItems" :key="`${issue.code}-${issue.field}-${issue.message}`" class="rounded-xl bg-white/70 p-3 ring-1 ring-amber-100">
+          <li v-for="issue in props.precheck.warningItems" :key="`${issue.code}-${issue.field}-${issue.message}`" class="rounded-lg bg-white/70 p-3 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:ring-amber-500/20">
             <div class="font-semibold">{{ issueTitle(issue) }}</div>
             <div v-if="issue.nextAction" class="mt-1 text-amber-600">{{ issue.nextAction }}</div>
           </li>
@@ -456,9 +456,9 @@ watch(
         <ul v-else-if="props.precheck?.warnings.length" class="mt-3 list-inside list-disc text-sm text-amber-700"><li v-for="warning in props.precheck.warnings" :key="warning">{{ warning }}</li></ul>
       </article>
 
-      <article class="min-w-0 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-        <h3 class="font-semibold text-slate-950">Payload 预览</h3>
-        <pre class="mt-3 max-h-80 w-full max-w-full overflow-auto rounded-xl bg-slate-950 p-3 text-xs text-slate-100">{{ props.payloadPreview ? JSON.stringify(props.payloadPreview, null, 2) : '尚未生成 payload。' }}</pre>
+      <article class="min-w-0 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
+        <h3 class="font-semibold text-accent-950 dark:text-white">Payload 预览</h3>
+        <pre class="mt-3 max-h-80 w-full max-w-full overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-100">{{ props.payloadPreview ? JSON.stringify(props.payloadPreview, null, 2) : '尚未生成 payload。' }}</pre>
       </article>
     </div>
   </section>

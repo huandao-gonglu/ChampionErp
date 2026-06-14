@@ -57,16 +57,17 @@ function goPage(page: number) {
 </script>
 
 <template>
-  <section class="card">
-    <div class="flex flex-wrap items-start justify-between gap-3">
-      <div>
-        <h2 class="card-title">Mercado Libre 已发布商品</h2>
+  <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
+    <div class="flex flex-wrap items-start justify-between gap-4">
+      <div class="min-w-0">
+        <p class="text-xs font-semibold uppercase text-primary-600 dark:text-primary-300">ML 已发布</p>
+        <h2 class="mt-2 card-title">Mercado Libre 已发布商品</h2>
         <p class="muted mt-1">从 Mercado Libre 账号实时读取商品列表；下架会调用 API 暂停或结束发布。</p>
       </div>
-      <div class="flex flex-wrap gap-2">
+      <div class="grid w-full gap-3 sm:grid-cols-3 lg:w-auto">
         <select
           :value="props.status"
-          class="input w-40"
+          class="input sm:w-40"
           :disabled="props.loading"
           @change="refreshStatus(($event.target as HTMLSelectElement).value)"
         >
@@ -77,7 +78,7 @@ function goPage(page: number) {
         </select>
         <select
           :value="props.perPage"
-          class="input w-32"
+          class="input sm:w-32"
           :disabled="props.loading"
           @change="refreshPerPage(($event.target as HTMLSelectElement).value)"
         >
@@ -91,20 +92,20 @@ function goPage(page: number) {
       </div>
     </div>
 
-    <div v-if="props.error" class="mt-4 rounded-2xl bg-rose-50 p-4 text-sm font-medium text-rose-700 ring-1 ring-rose-200">
+    <div v-if="props.error" class="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm font-medium text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200">
       {{ props.error }}
     </div>
 
-    <div class="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm text-slate-500">
+    <div class="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-accent-200 bg-accent-50 p-3 text-sm text-accent-500 dark:border-dark-700 dark:bg-dark-950/70 dark:text-accent-400">
       <span>当前筛选：{{ statusLabels[props.status] || props.status }}，第 {{ props.page }} / {{ pageCount }} 页，显示 {{ pageStart }}-{{ pageEnd }}，共 {{ props.total }} 条。</span>
       <div class="flex items-center gap-2">
         <button class="btn btn-outline py-1.5" :disabled="props.loading || props.page <= 1" @click="goPage(props.page - 1)">上一页</button>
         <button class="btn btn-outline py-1.5" :disabled="props.loading || props.page >= pageCount" @click="goPage(props.page + 1)">下一页</button>
       </div>
     </div>
-    <div class="mt-4 overflow-auto rounded-2xl border border-slate-200">
-      <table class="w-full text-left text-sm">
-        <thead class="bg-slate-50 text-xs text-slate-500">
+    <div class="mt-5 overflow-auto rounded-lg border border-accent-200 dark:border-dark-700">
+      <table class="w-full min-w-[1100px] text-left text-sm">
+        <thead class="border-b border-accent-200 bg-accent-50 text-xs text-accent-500 dark:border-dark-700 dark:bg-dark-950/70 dark:text-accent-400">
           <tr>
             <th class="p-3">商品</th>
             <th class="p-3">状态</th>
@@ -115,27 +116,27 @@ function goPage(page: number) {
             <th class="p-3">操作</th>
           </tr>
         </thead>
-        <tbody>
-          <tr v-for="item in props.items" :key="item.id" class="border-t align-top">
+        <tbody class="divide-y divide-accent-100 dark:divide-dark-800">
+          <tr v-for="item in props.items" :key="item.id" class="align-top transition hover:bg-accent-50/70 dark:hover:bg-dark-800/60">
             <td class="max-w-md p-3">
               <div class="flex gap-3">
-                <img v-if="item.thumbnail" :src="item.thumbnail" class="size-12 shrink-0 rounded object-cover" />
-                <div v-else class="size-12 shrink-0 rounded bg-slate-100 text-center text-[10px] leading-[48px] text-slate-500">无图</div>
+                <img v-if="item.thumbnail" :src="item.thumbnail" class="size-12 shrink-0 rounded-lg object-cover" />
+                <div v-else class="flex size-12 shrink-0 items-center justify-center rounded-lg bg-accent-100 text-[10px] font-bold text-accent-500 dark:bg-dark-800 dark:text-accent-300">无图</div>
                 <div class="min-w-0">
-                  <div class="font-semibold text-slate-950">{{ item.title || item.id }}</div>
-                  <div class="mt-1 font-mono text-xs text-slate-500">{{ item.id }}</div>
-                  <div class="mt-1 text-xs text-slate-500">{{ item.categoryId }}</div>
+                  <div class="font-semibold text-accent-950 dark:text-white">{{ item.title || item.id }}</div>
+                  <div class="mt-1 font-mono text-xs text-accent-500 dark:text-accent-400">{{ item.id }}</div>
+                  <div class="mt-1 text-xs text-accent-500 dark:text-accent-400">{{ item.categoryId }}</div>
                 </div>
               </div>
             </td>
             <td class="p-3">
               <span :class="badgeClass(item.status)">{{ statusLabels[item.status] || item.status || '-' }}</span>
-              <div v-if="item.subStatus.length" class="mt-1 text-xs text-slate-500">{{ item.subStatus.join(', ') }}</div>
+              <div v-if="item.subStatus.length" class="mt-1 text-xs text-accent-500 dark:text-accent-400">{{ item.subStatus.join(', ') }}</div>
             </td>
-            <td class="p-3 font-semibold">{{ item.price || '-' }} {{ item.currencyId }}</td>
-            <td class="p-3">{{ item.availableQuantity }} / {{ item.soldQuantity }}</td>
-            <td class="p-3 font-mono text-xs">{{ item.sellerSku || '-' }}</td>
-            <td class="p-3 text-xs text-slate-500">{{ item.lastUpdated || item.dateCreated || '-' }}</td>
+            <td class="p-3 font-semibold text-accent-950 dark:text-white">{{ item.price || '-' }} {{ item.currencyId }}</td>
+            <td class="p-3 text-accent-700 dark:text-accent-200">{{ item.availableQuantity }} / {{ item.soldQuantity }}</td>
+            <td class="p-3 font-mono text-xs text-accent-700 dark:text-accent-200">{{ item.sellerSku || '-' }}</td>
+            <td class="p-3 text-xs text-accent-500 dark:text-accent-400">{{ item.lastUpdated || item.dateCreated || '-' }}</td>
             <td class="p-3">
               <div class="flex flex-wrap gap-2">
                 <a v-if="item.permalink" class="btn btn-outline py-1.5" :href="item.permalink" target="_blank" rel="noreferrer">官网</a>
@@ -150,12 +151,12 @@ function goPage(page: number) {
             </td>
           </tr>
           <tr v-if="!props.items.length">
-            <td class="p-6 text-center text-slate-500" colspan="7">暂无远程商品，或当前状态筛选下没有商品。</td>
+            <td class="p-6 text-center text-accent-500 dark:text-accent-300" colspan="7">暂无远程商品，或当前状态筛选下没有商品。</td>
           </tr>
         </tbody>
       </table>
     </div>
-    <div class="mt-4 flex flex-wrap items-center justify-end gap-2 text-sm text-slate-500">
+    <div class="mt-4 flex flex-wrap items-center justify-end gap-2 text-sm text-accent-500 dark:text-accent-400">
       <button class="btn btn-outline py-1.5" :disabled="props.loading || props.page <= 1" @click="goPage(props.page - 1)">上一页</button>
       <span>第 {{ props.page }} / {{ pageCount }} 页</span>
       <button class="btn btn-outline py-1.5" :disabled="props.loading || props.page >= pageCount" @click="goPage(props.page + 1)">下一页</button>

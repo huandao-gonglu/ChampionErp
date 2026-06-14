@@ -280,8 +280,6 @@ watch(
             @open-profile="store.openDebugProfile"
             @clear-product="store.clearCollectedProduct"
             @save-settings="store.saveCollectSettings"
-            @choose-images="store.uploadReferenceImages"
-            @clear-images="store.clearSourceImages"
             @generate-copy="store.generateCopy"
             @import-manual="store.importManual"
             @clean1688="store.previewClean1688Text"
@@ -376,18 +374,18 @@ watch(
           <div v-else-if="activeNav === 'publish'" class="space-y-6">
             <PageHeader title="发布队列" description="发布队列、任务状态和运行日志。" />
             <section class="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
-              <section class="card">
+              <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
                 <div class="flex flex-wrap items-center justify-between gap-3">
                   <div><h2 class="card-title">发布任务</h2><p class="muted mt-1">对应后端 `/api/publish-bus/enqueue` 和状态查询接口。</p></div>
                   <div class="flex flex-wrap gap-2"><button class="btn btn-outline" :disabled="!publishJob" @click="store.refreshPublishJob">刷新任务状态</button><button class="btn btn-primary" :disabled="loading || !precheck?.ok" @click="() => store.enqueuePublish()">发布入队</button><button class="btn btn-outline" :disabled="loading || activeMarketplace === 'mercadolibre' || !precheck?.ok" @click="store.publishDirect">非 ML 直接发布</button><button class="btn btn-primary" :disabled="loading || activeMarketplace !== 'mercadolibre' || !precheck?.ok" @click="store.confirmRealPublish">确认 ML 真实发布</button></div>
                 </div>
-                <div class="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div class="mt-5 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
                   <template v-if="publishJob">
-                    <p class="text-sm text-slate-500">Job ID</p><p class="mt-1 break-all font-semibold text-slate-950">{{ publishJob.jobId }}</p>
+                    <p class="text-sm text-accent-500 dark:text-accent-400">Job ID</p><p class="mt-1 break-all font-semibold text-accent-950 dark:text-white">{{ publishJob.jobId }}</p>
                     <div class="mt-4 flex flex-wrap gap-2"><span class="badge-success">{{ publishJob.status }}</span><span v-for="platform in publishJob.platforms" :key="platform" class="badge-info">{{ platform }}</span></div>
                     <pre v-if="publishJobStatus" class="mt-4 max-h-80 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{{ JSON.stringify(publishJobStatus, null, 2) }}</pre>
                   </template>
-                  <template v-else><p class="text-sm text-slate-600">通过预检后可加入发布队列，生成任务状态。</p></template>
+                  <template v-else><p class="text-sm text-accent-600 dark:text-accent-300">通过预检后可加入发布队列，生成任务状态。</p></template>
                   <pre v-if="publishResult" class="mt-4 max-h-80 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{{ JSON.stringify(publishResult, null, 2) }}</pre>
                 </div>
               </section>
@@ -413,27 +411,27 @@ watch(
 
           <div v-else-if="activeNav === 'pending'" class="space-y-6">
             <PageHeader title="待处理" description="汇总采集、文案、图片、类目、预检或发布仍处于 pending / failed / not_ready / partial 的商品。" />
-            <section class="card">
+            <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
               <div class="flex flex-wrap items-center justify-between gap-3">
                 <div><h2 class="card-title">待处理商品</h2><p class="muted mt-1">来自商品库状态字段，便于继续补齐流程。</p></div>
                 <button class="btn btn-outline" :disabled="loading" @click="store.refreshProductsIndex">刷新</button>
               </div>
-              <div class="mt-4 overflow-auto rounded-2xl border border-slate-200">
-                <table class="w-full text-left text-sm">
-                  <thead class="bg-slate-50 text-xs text-slate-500"><tr><th class="p-3">商品</th><th class="p-3">采集</th><th class="p-3">流程</th><th class="p-3">文案</th><th class="p-3">图片</th><th class="p-3">类目</th><th class="p-3">预检</th><th class="p-3">发布</th><th class="p-3">操作</th></tr></thead>
-                  <tbody>
-                    <tr v-for="item in pendingItems" :key="item.productId" class="border-t">
-                      <td class="max-w-sm p-3"><div class="font-semibold text-slate-950">{{ item.title || item.productId || '-' }}</div><div class="mt-1 truncate text-xs text-slate-500">{{ item.sourceUrl }}</div></td>
-                      <td class="p-3"><span class="badge-muted">{{ item.collectStatus || '-' }}</span></td>
-                      <td class="p-3"><span class="badge-muted">{{ item.workflowStatus || '-' }}</span></td>
-                      <td class="p-3"><span class="badge-muted">{{ item.aiCopyStatus || '-' }}</span></td>
-                      <td class="p-3"><span class="badge-muted">{{ item.imageStatus || '-' }}</span></td>
-                      <td class="p-3"><span class="badge-muted">{{ item.categoryStatus || '-' }}</span></td>
-                      <td class="p-3"><span class="badge-muted">{{ item.precheckStatus || '-' }}</span></td>
-                      <td class="p-3"><span class="badge-muted">{{ item.publishStatus || '-' }}</span></td>
-                      <td class="p-3"><button class="btn btn-outline py-1.5" @click="openProductEditor(item)">继续处理</button></td>
+              <div class="mt-4 overflow-auto rounded-lg border border-accent-200 dark:border-dark-700">
+                <table class="w-full min-w-[1080px] text-left text-sm">
+                  <thead class="border-b border-accent-200 bg-accent-50 text-xs text-accent-500 dark:border-dark-700 dark:bg-dark-950/70 dark:text-accent-400"><tr><th class="min-w-80 p-3">商品</th><th class="whitespace-nowrap p-3">采集</th><th class="whitespace-nowrap p-3">流程</th><th class="whitespace-nowrap p-3">文案</th><th class="whitespace-nowrap p-3">图片</th><th class="whitespace-nowrap p-3">类目</th><th class="whitespace-nowrap p-3">预检</th><th class="whitespace-nowrap p-3">发布</th><th class="whitespace-nowrap p-3">操作</th></tr></thead>
+                  <tbody class="divide-y divide-accent-100 dark:divide-dark-800">
+                    <tr v-for="item in pendingItems" :key="item.productId" class="align-top transition hover:bg-accent-50/70 dark:hover:bg-dark-800/60">
+                      <td class="min-w-80 max-w-md p-3"><div class="font-semibold text-accent-950 dark:text-white">{{ item.title || item.productId || '-' }}</div><div class="mt-1 max-w-sm truncate text-xs text-accent-500 dark:text-accent-400">{{ item.sourceUrl }}</div></td>
+                      <td class="whitespace-nowrap p-3"><span class="badge-muted">{{ item.collectStatus || '-' }}</span></td>
+                      <td class="whitespace-nowrap p-3"><span class="badge-muted">{{ item.workflowStatus || '-' }}</span></td>
+                      <td class="whitespace-nowrap p-3"><span class="badge-muted">{{ item.aiCopyStatus || '-' }}</span></td>
+                      <td class="whitespace-nowrap p-3"><span class="badge-muted">{{ item.imageStatus || '-' }}</span></td>
+                      <td class="whitespace-nowrap p-3"><span class="badge-muted">{{ item.categoryStatus || '-' }}</span></td>
+                      <td class="whitespace-nowrap p-3"><span class="badge-muted">{{ item.precheckStatus || '-' }}</span></td>
+                      <td class="whitespace-nowrap p-3"><span class="badge-muted">{{ item.publishStatus || '-' }}</span></td>
+                      <td class="whitespace-nowrap p-3"><button class="btn btn-outline py-1.5" @click="openProductEditor(item)">继续处理</button></td>
                     </tr>
-                    <tr v-if="!pendingItems.length"><td colspan="9" class="p-6 text-center text-slate-500">暂无待处理商品。</td></tr>
+                    <tr v-if="!pendingItems.length"><td colspan="9" class="p-6 text-center text-accent-500 dark:text-accent-300">暂无待处理商品。</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -465,12 +463,12 @@ watch(
 
           <div v-else class="space-y-6">
             <PageHeader title="发布日志" description="展示发布请求、响应、错误码和下一步处理建议。" />
-            <section class="card">
+            <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
               <div class="flex flex-wrap items-center justify-between gap-3"><div><h2 class="card-title">发布日志</h2><p class="muted mt-1">来自 `/api/publish-logs`。</p></div><button class="btn btn-outline" :disabled="loading" @click="store.refreshPublishLogs">刷新日志</button></div>
-              <div class="mt-4 overflow-auto rounded-2xl border border-slate-200">
-                <table class="w-full text-left text-sm">
-                  <thead class="bg-slate-50 text-xs text-slate-500"><tr><th class="p-3">时间</th><th class="p-3">商品</th><th class="p-3">平台</th><th class="p-3">状态</th><th class="p-3">错误码</th><th class="p-3">错误</th><th class="p-3">Payload</th></tr></thead>
-                  <tbody><tr v-for="item in publishLogs" :key="`${item.jobId}-${item.startedAt}-${item.platform}`" class="border-t"><td class="p-3">{{ item.finishedAt || item.startedAt }}</td><td class="p-3">{{ item.productId || '-' }}</td><td class="p-3">{{ item.platform || '-' }}</td><td class="p-3"><span class="badge-muted">{{ item.status || '-' }}</span></td><td class="p-3 font-mono">{{ item.errorCode || '-' }}</td><td class="max-w-sm p-3">{{ item.errorMessage || '-' }}</td><td class="max-w-xs truncate p-3">{{ item.requestPayloadPath || '-' }}</td></tr><tr v-if="!publishLogs.length"><td colspan="7" class="p-6 text-center text-slate-500">暂无发布日志。</td></tr></tbody>
+              <div class="mt-4 overflow-auto rounded-lg border border-accent-200 dark:border-dark-700">
+                <table class="w-full min-w-[1180px] text-left text-sm">
+                  <thead class="border-b border-accent-200 bg-accent-50 text-xs text-accent-500 dark:border-dark-700 dark:bg-dark-950/70 dark:text-accent-400"><tr><th class="whitespace-nowrap p-3">时间</th><th class="min-w-72 p-3">商品</th><th class="whitespace-nowrap p-3">平台</th><th class="whitespace-nowrap p-3">状态</th><th class="whitespace-nowrap p-3">错误码</th><th class="min-w-72 p-3">错误</th><th class="min-w-64 p-3">Payload</th></tr></thead>
+                  <tbody class="divide-y divide-accent-100 dark:divide-dark-800"><tr v-for="item in publishLogs" :key="`${item.jobId}-${item.startedAt}-${item.platform}`" class="align-top transition hover:bg-accent-50/70 dark:hover:bg-dark-800/60"><td class="whitespace-nowrap p-3 text-accent-700 dark:text-accent-200">{{ item.finishedAt || item.startedAt }}</td><td class="max-w-md truncate p-3 text-accent-700 dark:text-accent-200">{{ item.productId || '-' }}</td><td class="whitespace-nowrap p-3 text-accent-700 dark:text-accent-200">{{ item.platform || '-' }}</td><td class="whitespace-nowrap p-3"><span class="badge-muted">{{ item.status || '-' }}</span></td><td class="whitespace-nowrap p-3 font-mono text-accent-700 dark:text-accent-200">{{ item.errorCode || '-' }}</td><td class="max-w-md p-3 text-accent-700 dark:text-accent-200">{{ item.errorMessage || '-' }}</td><td class="max-w-sm truncate p-3 text-accent-500 dark:text-accent-400">{{ item.requestPayloadPath || '-' }}</td></tr><tr v-if="!publishLogs.length"><td colspan="7" class="p-6 text-center text-accent-500 dark:text-accent-300">暂无发布日志。</td></tr></tbody>
                 </table>
               </div>
             </section>

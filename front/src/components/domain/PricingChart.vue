@@ -42,11 +42,17 @@ const chartOptions = {
   scales: {
     y: {
       beginAtZero: true,
+      ticks: {
+        color: '#64748b',
+      },
       grid: {
-        color: '#e2e8f0',
+        color: '#cbd5e1',
       },
     },
     x: {
+      ticks: {
+        color: '#64748b',
+      },
       grid: {
         display: false,
       },
@@ -56,7 +62,7 @@ const chartOptions = {
 </script>
 
 <template>
-  <section class="card">
+  <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
     <div class="flex items-center justify-between gap-3">
       <div>
         <h2 class="card-title">利润图表</h2>

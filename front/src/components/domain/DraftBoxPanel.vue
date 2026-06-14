@@ -35,14 +35,15 @@ const draftRows = computed(() => props.items.flatMap((item) => {
 </script>
 
 <template>
-  <section class="card">
-    <div class="flex flex-wrap items-start justify-between gap-3">
-      <div>
-        <h2 class="card-title">平台草稿箱</h2>
+  <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
+    <div class="flex flex-wrap items-start justify-between gap-4">
+      <div class="min-w-0">
+        <p class="text-xs font-semibold uppercase text-primary-600 dark:text-primary-300">草稿箱</p>
+        <h2 class="mt-2 card-title">平台草稿箱</h2>
         <p class="muted mt-1">展示已经认领到平台草稿状态机的商品，可继续编辑并进入发布预检。</p>
       </div>
-      <div class="flex flex-wrap gap-2">
-        <select v-model="platformFilter" class="input w-48">
+      <div class="grid w-full gap-3 sm:grid-cols-[minmax(0,1fr)_auto] lg:w-auto">
+        <select v-model="platformFilter" class="input sm:w-48">
           <option value="all">全部平台</option>
           <option value="mercadolibre">Mercado Libre</option>
           <option value="wildberries">Wildberries</option>
@@ -52,42 +53,44 @@ const draftRows = computed(() => props.items.flatMap((item) => {
       </div>
     </div>
 
-    <div class="mt-4 text-sm text-slate-500">草稿：{{ draftRows.length }} 条。</div>
-    <div v-if="props.error" class="mt-4 rounded-2xl bg-rose-50 p-4 text-sm font-medium text-rose-700 ring-1 ring-rose-200">
+    <div class="mt-5 rounded-lg border border-accent-200 bg-accent-50 p-3 text-sm text-accent-500 dark:border-dark-700 dark:bg-dark-950/70 dark:text-accent-400">
+      草稿：<span class="font-semibold text-accent-800 dark:text-accent-100">{{ draftRows.length }}</span> 条
+    </div>
+    <div v-if="props.error" class="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm font-medium text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200">
       {{ props.error }}
     </div>
 
-    <div class="mt-4 overflow-auto rounded-2xl border border-slate-200">
-      <table class="w-full text-left text-sm">
-        <thead class="bg-slate-50 text-xs text-slate-500">
+    <div class="mt-5 overflow-auto rounded-lg border border-accent-200 dark:border-dark-700">
+      <table class="w-full min-w-[1120px] text-left text-sm">
+        <thead class="border-b border-accent-200 bg-accent-50 text-xs text-accent-500 dark:border-dark-700 dark:bg-dark-950/70 dark:text-accent-400">
           <tr>
-            <th class="p-3">商品</th>
-            <th class="p-3">平台</th>
-            <th class="p-3">草稿状态</th>
-            <th class="p-3">来源</th>
-            <th class="p-3">操作</th>
+            <th class="min-w-80 p-3">商品</th>
+            <th class="whitespace-nowrap p-3">平台</th>
+            <th class="whitespace-nowrap p-3">草稿状态</th>
+            <th class="min-w-64 p-3">来源</th>
+            <th class="min-w-72 p-3">操作</th>
           </tr>
         </thead>
-        <tbody>
-          <tr v-for="row in draftRows" :key="`${row.item.productId}-${row.platform}`" class="border-t align-top">
-            <td class="max-w-lg p-3">
+        <tbody class="divide-y divide-accent-100 dark:divide-dark-800">
+          <tr v-for="row in draftRows" :key="`${row.item.productId}-${row.platform}`" class="align-top transition hover:bg-accent-50/70 dark:hover:bg-dark-800/60">
+            <td class="min-w-80 max-w-lg p-3">
               <div class="flex gap-3">
-                <img v-if="row.item.mainImage" :src="row.item.mainImage" class="size-12 rounded object-cover" />
-                <div v-else class="size-12 shrink-0 rounded bg-slate-100 text-center text-[10px] leading-[48px] text-slate-500">无图</div>
+                <img v-if="row.item.mainImage" :src="row.item.mainImage" class="size-12 rounded-lg object-cover" />
+                <div v-else class="flex size-12 shrink-0 items-center justify-center rounded-lg bg-accent-100 text-[10px] font-bold text-accent-500 dark:bg-dark-800 dark:text-accent-300">无图</div>
                 <div class="min-w-0">
-                  <div class="font-semibold text-slate-950">{{ row.item.title || row.item.productId || '-' }}</div>
-                  <div class="mt-1 truncate text-xs text-slate-500">{{ row.item.productId }}</div>
+                  <div class="font-semibold text-accent-950 dark:text-white">{{ row.item.title || row.item.productId || '-' }}</div>
+                  <div class="mt-1 truncate text-xs text-accent-500 dark:text-accent-400">{{ row.item.productId }}</div>
                 </div>
               </div>
             </td>
-            <td class="p-3"><span class="badge-muted">{{ platformLabels[row.platform] }}</span></td>
-            <td class="p-3"><span :class="statusBadgeClass(row.status)">{{ workflowStatusLabel(row.status) }}</span></td>
-            <td class="p-3">
-              <div class="font-semibold">{{ row.item.sourcePlatform || '-' }}</div>
-              <div class="max-w-xs truncate text-xs text-slate-500">{{ row.item.sourceUrl }}</div>
+            <td class="whitespace-nowrap p-3"><span class="badge-muted">{{ platformLabels[row.platform] }}</span></td>
+            <td class="whitespace-nowrap p-3"><span :class="statusBadgeClass(row.status)">{{ workflowStatusLabel(row.status) }}</span></td>
+            <td class="min-w-64 p-3">
+              <div class="font-semibold text-accent-950 dark:text-white">{{ row.item.sourcePlatform || '-' }}</div>
+              <div class="max-w-xs truncate text-xs text-accent-500 dark:text-accent-400">{{ row.item.sourceUrl }}</div>
             </td>
-            <td class="p-3">
-              <div class="flex flex-wrap gap-2">
+            <td class="min-w-72 p-3">
+              <div class="flex flex-nowrap gap-2">
                 <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('editText', row.item, row.platform)">编辑文本</button>
                 <button class="btn btn-secondary py-1.5" :disabled="props.loading" @click="emit('editImages', row.item, row.platform)">编辑图片</button>
                 <button class="btn btn-primary py-1.5" :disabled="props.loading" @click="emit('goPublish', row.item, row.platform)">发布预检</button>
@@ -95,7 +98,7 @@ const draftRows = computed(() => props.items.flatMap((item) => {
             </td>
           </tr>
           <tr v-if="!draftRows.length">
-            <td class="p-6 text-center text-slate-500" colspan="5">暂无平台草稿。可先从商品库或发布预检页推到平台草稿箱。</td>
+            <td class="p-6 text-center text-accent-500 dark:text-accent-300" colspan="5">暂无平台草稿。可先从商品库或发布预检页推到平台草稿箱。</td>
           </tr>
         </tbody>
       </table>

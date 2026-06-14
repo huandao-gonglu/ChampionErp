@@ -202,7 +202,7 @@ function copy(text: string) {
 
 <template>
   <div class="space-y-6">
-    <section class="card">
+    <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div><h2 class="card-title">平台授权</h2><p class="muted mt-1">平台授权、AI 通道和核价汇率 API 都在这里配置。</p></div>
         <div class="flex flex-wrap gap-2">
@@ -212,8 +212,8 @@ function copy(text: string) {
         </div>
       </div>
       <div class="mt-5 grid gap-4 xl:grid-cols-3">
-        <div class="rounded-2xl border p-4">
-          <h3 class="font-semibold">文本 AI</h3>
+        <div class="rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
+          <h3 class="font-semibold text-accent-950 dark:text-white">文本 AI</h3>
           <div class="mt-3 grid gap-3 md:grid-cols-2">
             <input v-model="form.textAiPlatform" class="input" placeholder="平台，例如 DeepSeek" />
             <input v-model="form.textAiModel" class="input" placeholder="模型，例如 deepseek-chat" />
@@ -221,8 +221,8 @@ function copy(text: string) {
             <input v-model="form.textAiApiKey" class="input md:col-span-2" placeholder="API Key" autocomplete="off" spellcheck="false" />
           </div>
         </div>
-        <div class="rounded-2xl border p-4">
-          <h3 class="font-semibold">图片 AI</h3>
+        <div class="rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
+          <h3 class="font-semibold text-accent-950 dark:text-white">图片 AI</h3>
           <div class="mt-3 grid gap-3 md:grid-cols-2">
             <input v-model="form.imageAiPlatform" class="input" placeholder="平台，例如 OpenAI" />
             <input v-model="form.imageAiModel" class="input" placeholder="模型" />
@@ -231,8 +231,8 @@ function copy(text: string) {
             <input v-model="form.imageAiApiKey" class="input md:col-span-2" placeholder="API Key" autocomplete="off" spellcheck="false" />
           </div>
         </div>
-        <div class="rounded-2xl border p-4">
-          <h3 class="font-semibold">核价汇率</h3>
+        <div class="rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
+          <h3 class="font-semibold text-accent-950 dark:text-white">核价汇率</h3>
           <div class="mt-3 grid gap-3">
             <input v-model="form.exchangeRateApiUrl" class="input" placeholder="汇率 API URL" />
             <div class="grid gap-3 sm:grid-cols-2">
@@ -242,7 +242,7 @@ function copy(text: string) {
           </div>
         </div>
       </div>
-      <div v-if="props.lastResult?.raw?.channel" class="mt-4 rounded-2xl p-4 text-sm ring-1" :class="props.lastResult.ok ? 'bg-emerald-50 text-emerald-950 ring-emerald-100' : 'bg-rose-50 text-rose-950 ring-rose-100'">
+      <div v-if="props.lastResult?.raw?.channel" class="mt-4 rounded-lg p-4 text-sm ring-1" :class="props.lastResult.ok ? 'bg-emerald-50 text-emerald-950 ring-emerald-100 dark:bg-emerald-500/10 dark:text-emerald-100 dark:ring-emerald-500/30' : 'bg-rose-50 text-rose-950 ring-rose-100 dark:bg-rose-500/10 dark:text-rose-100 dark:ring-rose-500/30'">
         <div class="font-semibold">最近 AI 测试：{{ props.lastResult.ok ? '成功' : '失败' }}</div>
         <div class="mt-1 break-words">{{ props.lastResult.message || props.lastResult.error }}</div>
         <div v-if="props.lastResult.nextAction" class="mt-1 text-blue-700">下一步：{{ props.lastResult.nextAction }}</div>
@@ -250,7 +250,7 @@ function copy(text: string) {
       </div>
     </section>
 
-    <section class="card">
+    <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 class="card-title">店铺授权</h2>
@@ -264,11 +264,11 @@ function copy(text: string) {
         </div>
       </div>
 
-      <div class="mt-5 rounded-2xl border p-4">
+      <div class="mt-5 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
         <div class="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h3 class="font-semibold">{{ selectedStorePlatformMeta.label }}</h3>
-            <p class="mt-1 text-sm text-slate-300">{{ selectedStorePlatformMeta.subtitle }}</p>
+            <h3 class="font-semibold text-accent-950 dark:text-white">{{ selectedStorePlatformMeta.label }}</h3>
+            <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">{{ selectedStorePlatformMeta.subtitle }}</p>
           </div>
           <div v-if="hasStoreSummary" class="rounded-xl bg-slate-900/80 px-3 py-2 text-sm text-slate-100 ring-1 ring-slate-600">
             <span class="font-semibold text-white">授权测试：</span>
@@ -295,12 +295,12 @@ function copy(text: string) {
             <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('realMlTest', 'payload_generate')">07D Payload</button>
             <button class="btn btn-outline py-1.5 text-rose-700" :disabled="props.loading" @click="emit('clearAuth', 'mercadolibre')">清除 ML 授权</button>
           </div>
-          <div v-if="props.authLink" class="mt-3 rounded-xl bg-blue-50 p-3 text-xs text-blue-900 ring-1 ring-blue-100">
+          <div v-if="props.authLink" class="mt-3 rounded-lg bg-blue-50 p-3 text-xs text-blue-900 ring-1 ring-blue-100 dark:bg-blue-500/10 dark:text-blue-100 dark:ring-blue-500/30">
             <div class="font-semibold">授权链接</div>
             <div class="mt-1 break-all">{{ props.authLink }}</div>
             <button class="btn btn-outline mt-2 py-1.5 text-xs" @click="copy(props.authLink)">复制链接</button>
           </div>
-          <div v-if="props.mercadolibreChecklist" class="mt-3 rounded-xl bg-slate-900/80 p-3 text-xs text-slate-100 ring-1 ring-slate-600">
+          <div v-if="props.mercadolibreChecklist" class="mt-3 rounded-lg bg-slate-900/80 p-3 text-xs text-slate-100 ring-1 ring-slate-600 dark:bg-dark-900 dark:ring-dark-700">
             <div class="flex items-center justify-between gap-2">
               <div class="font-semibold">授权清单：{{ props.mercadolibreChecklist.tokenReady ? 'Token 已保存' : props.mercadolibreChecklist.readyForAuthLink ? '可生成授权链接' : '配置不完整' }}</div>
               <button class="btn btn-outline py-1 text-xs" @click="copy(props.mercadolibreChecklist.copyText)">复制清单</button>
@@ -335,7 +335,7 @@ function copy(text: string) {
           </div>
         </template>
 
-        <div v-if="hasSelectedStoreResult" class="mt-4 rounded-xl bg-slate-900/80 p-3 text-sm text-slate-100 ring-1 ring-slate-600">
+        <div v-if="hasSelectedStoreResult" class="mt-4 rounded-lg bg-slate-900/80 p-3 text-sm text-slate-100 ring-1 ring-slate-600 dark:bg-dark-900 dark:ring-dark-700">
           <div class="font-semibold text-white">授权测试结果：{{ selectedStoreResultStatus }}</div>
           <div v-if="selectedStoreResultMessage" class="mt-1 text-slate-200">{{ selectedStoreResultMessage }}</div>
           <pre class="mt-2 max-h-52 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{{ JSON.stringify(selectedStoreResultDetails, null, 2) }}</pre>

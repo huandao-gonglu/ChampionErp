@@ -90,7 +90,7 @@ function syncSiteForPlatform() {
 </script>
 
 <template>
-  <section class="card">
+  <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
         <h2 class="card-title">核价</h2>
@@ -130,51 +130,51 @@ function syncSiteForPlatform() {
 
     <div class="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
       <label class="block">
-        <span class="text-xs font-semibold text-slate-500">显示货币</span>
+        <span class="text-xs font-semibold text-accent-500 dark:text-accent-300">显示货币</span>
         <select v-model="props.input.displayCurrencyMode" class="input mt-1">
           <option value="platform">默认（按平台货币）</option>
           <option value="cny">人民币</option>
         </select>
       </label>
       <label class="block">
-        <span class="text-xs font-semibold text-slate-500">汇率来源</span>
+        <span class="text-xs font-semibold text-accent-500 dark:text-accent-300">汇率来源</span>
         <select v-model="props.input.exchangeRateMode" class="input mt-1">
           <option value="live">实时 API</option>
           <option value="manual">手动输入</option>
         </select>
       </label>
       <label class="block">
-        <span class="text-xs font-semibold text-slate-500">平台</span>
+        <span class="text-xs font-semibold text-accent-500 dark:text-accent-300">平台</span>
         <select v-model="props.input.platform" class="input mt-1" @change="syncSiteForPlatform">
           <option v-for="platform in platformOptions" :key="platform.key" :value="platform.key">{{ platform.label }}</option>
         </select>
       </label>
       <label class="block">
-        <span class="text-xs font-semibold text-slate-500">站点</span>
+        <span class="text-xs font-semibold text-accent-500 dark:text-accent-300">站点</span>
         <input v-model="props.input.site" class="input mt-1" placeholder="MLM / RU" />
       </label>
       <label class="block">
-        <span class="text-xs font-semibold text-slate-500">采购成本 CNY</span>
+        <span class="text-xs font-semibold text-accent-500 dark:text-accent-300">采购成本 CNY</span>
         <input v-model.number="props.input.purchaseCostCny" class="input mt-1" type="number" />
       </label>
       <label class="block">
-        <span class="text-xs font-semibold text-slate-500">重量 kg</span>
+        <span class="text-xs font-semibold text-accent-500 dark:text-accent-300">重量 kg</span>
         <input v-model.number="props.input.weightKg" class="input mt-1" type="number" />
       </label>
       <label class="block">
-        <span class="text-xs font-semibold text-slate-500">佣金 %</span>
+        <span class="text-xs font-semibold text-accent-500 dark:text-accent-300">佣金 %</span>
         <input v-model.number="props.input.commissionPercent" class="input mt-1" type="number" />
       </label>
       <label class="block">
-        <span class="text-xs font-semibold text-slate-500">目标利润 %</span>
+        <span class="text-xs font-semibold text-accent-500 dark:text-accent-300">目标利润 %</span>
         <input v-model.number="props.input.targetMarginPercent" class="input mt-1" type="number" />
       </label>
       <label class="block">
-        <span class="text-xs font-semibold text-slate-500">USD/CNY</span>
+        <span class="text-xs font-semibold text-accent-500 dark:text-accent-300">USD/CNY</span>
         <input v-model.number="props.input.usdCnyRate" class="input mt-1" type="number" step="0.0001" :disabled="props.input.exchangeRateMode === 'live'" />
       </label>
       <label class="block">
-        <span class="text-xs font-semibold text-slate-500">MXN/USD</span>
+        <span class="text-xs font-semibold text-accent-500 dark:text-accent-300">MXN/USD</span>
         <input v-model.number="props.input.mxnUsdRate" class="input mt-1" type="number" step="0.0001" :disabled="props.input.exchangeRateMode === 'live'" />
       </label>
     </div>
@@ -190,30 +190,30 @@ function syncSiteForPlatform() {
     </div>
 
     <div class="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-      <div class="min-w-0 rounded-2xl bg-brand-50 p-4 ring-1 ring-brand-100">
-        <p class="text-xs font-semibold text-brand-700">{{ priceTitle() }}</p>
-        <p class="mt-2 break-words text-xl font-bold leading-tight text-brand-700 2xl:text-2xl">{{ props.result ? resultPrice(props.result) : '-' }}</p>
-        <p v-if="props.result" class="mt-2 break-words text-xs font-semibold leading-snug text-brand-700/80">{{ resultPriceHint(props.result) }}</p>
+      <div class="min-w-0 rounded-lg bg-brand-50 p-4 ring-1 ring-brand-100 dark:bg-primary-500/10 dark:ring-primary-500/30">
+        <p class="text-xs font-semibold text-brand-700 dark:text-primary-200">{{ priceTitle() }}</p>
+        <p class="mt-2 break-words text-xl font-bold leading-tight text-brand-700 dark:text-primary-100 2xl:text-2xl">{{ props.result ? resultPrice(props.result) : '-' }}</p>
+        <p v-if="props.result" class="mt-2 break-words text-xs font-semibold leading-snug text-brand-700/80 dark:text-primary-200/80">{{ resultPriceHint(props.result) }}</p>
       </div>
-      <div class="min-w-0 rounded-2xl bg-slate-50 p-4 ring-1 ring-slate-200">
-        <p class="text-xs font-semibold text-slate-500">利润 / 总成本</p>
-        <p class="mt-2 break-words text-xl font-bold leading-tight text-slate-950 2xl:text-2xl">{{ props.result ? formatMoney(props.result.profitCny, 'CNY') : '-' }}</p>
-        <p v-if="props.result" class="mt-2 break-words text-xs font-semibold leading-snug text-slate-500">
+      <div class="min-w-0 rounded-lg bg-accent-50 p-4 ring-1 ring-accent-200 dark:bg-dark-950/70 dark:ring-dark-700">
+        <p class="text-xs font-semibold text-accent-500 dark:text-accent-300">利润 / 总成本</p>
+        <p class="mt-2 break-words text-xl font-bold leading-tight text-accent-950 dark:text-white 2xl:text-2xl">{{ props.result ? formatMoney(props.result.profitCny, 'CNY') : '-' }}</p>
+        <p v-if="props.result" class="mt-2 break-words text-xs font-semibold leading-snug text-accent-500 dark:text-accent-400">
           成本 {{ formatMoney(props.result.totalCostCny, 'CNY') }}
         </p>
       </div>
-      <div class="min-w-0 rounded-2xl bg-slate-50 p-4 ring-1 ring-slate-200">
-        <p class="text-xs font-semibold text-slate-500">运费</p>
-        <p class="mt-2 break-words text-xl font-bold leading-tight text-slate-950 2xl:text-2xl">
+      <div class="min-w-0 rounded-lg bg-accent-50 p-4 ring-1 ring-accent-200 dark:bg-dark-950/70 dark:ring-dark-700">
+        <p class="text-xs font-semibold text-accent-500 dark:text-accent-300">运费</p>
+        <p class="mt-2 break-words text-xl font-bold leading-tight text-accent-950 dark:text-white 2xl:text-2xl">
           {{ props.result ? displayMoney(props.result.shippingCostCny, props.result.shippingCostUsd, 'USD') : '-' }}
         </p>
-        <p v-if="props.result" class="mt-2 break-words text-xs font-semibold leading-snug text-slate-500">
+        <p v-if="props.result" class="mt-2 break-words text-xs font-semibold leading-snug text-accent-500 dark:text-accent-400">
           {{ props.input.displayCurrencyMode === 'cny' ? formatMoney(props.result.shippingCostUsd, 'USD') : formatMoney(props.result.shippingCostCny, 'CNY') }}
         </p>
       </div>
-      <div class="min-w-0 rounded-2xl bg-slate-50 p-4 ring-1 ring-slate-200">
-        <p class="text-xs font-semibold text-slate-500">利润率</p>
-        <p class="mt-2 break-words text-xl font-bold leading-tight text-slate-950 2xl:text-2xl">{{ props.result ? formatPercent(props.result.marginPercent) : '-' }}</p>
+      <div class="min-w-0 rounded-lg bg-accent-50 p-4 ring-1 ring-accent-200 dark:bg-dark-950/70 dark:ring-dark-700">
+        <p class="text-xs font-semibold text-accent-500 dark:text-accent-300">利润率</p>
+        <p class="mt-2 break-words text-xl font-bold leading-tight text-accent-950 dark:text-white 2xl:text-2xl">{{ props.result ? formatPercent(props.result.marginPercent) : '-' }}</p>
       </div>
     </div>
   </section>
