@@ -14,6 +14,7 @@ const emit = defineEmits<{
   editText: [item: DraftIndexItem]
   editImages: [item: DraftIndexItem]
   goPublish: [item: DraftIndexItem]
+  deleteDraft: [item: DraftIndexItem]
 }>()
 
 const platformFilter = ref<'all' | Marketplace>('all')
@@ -110,6 +111,7 @@ const publishedDraftCount = computed(() => allDraftRows.value.filter((row) => ro
                 <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('editText', row)">编辑文本</button>
                 <button class="btn btn-secondary py-1.5" :disabled="props.loading" @click="emit('editImages', row)">编辑图片</button>
                 <button class="btn btn-primary py-1.5" :disabled="props.loading" @click="emit('goPublish', row)">发布预检</button>
+                <button class="btn btn-outline py-1.5 text-rose-600 hover:border-rose-300 hover:bg-rose-50 dark:text-rose-200 dark:hover:border-rose-500/50 dark:hover:bg-rose-500/10" :disabled="props.loading" @click="emit('deleteDraft', row)">删除</button>
               </div>
             </td>
           </tr>

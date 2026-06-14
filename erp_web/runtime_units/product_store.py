@@ -347,6 +347,30 @@ def delete_products_from_index(product_ids: list[Any]) -> dict[str, Any]:
     }
 
 
+def delete_draft_from_index(draft_id: Any) -> dict[str, Any]:
+    normalized_id = str(draft_id or "").strip()
+    if not normalized_id:
+        return {"ok": False, "error": "请先选择要删除的草稿。", "draftsIndex": load_drafts_index()}
+
+    ensure_sqlite_store()
+    draft = erp_db.load_draft_model(APP_DIR, normalized_id)
+    product_id = str(draft.get("product_id") or "")
+    deleted = erp_db.delete_draft_model(APP_DIR, normalized_id)
+    product = load_product_from_index(product_id, "") if product_id else load_product()
+
+    return {
+        "ok": deleted,
+        "deleted": 1 if deleted else 0,
+        "deletedDraftId": normalized_id if deleted else "",
+        "product": product,
+        "productsIndex": load_products_index(),
+        "draftsIndex": load_drafts_index(),
+        "imagePool": current_image_pool(product),
+        "message": "草稿已删除。" if deleted else "草稿不存在或已被删除。",
+        "error": "" if deleted else "草稿不存在或已被删除。",
+    }
+
+
 def load_product_from_index(product_id: str = "", file_path: str = "") -> dict[str, Any]:
     product_id = str(product_id or "").strip()
     file_path = str(file_path or "").strip()
@@ -819,6 +843,7 @@ def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "AI_CONFIG_ALIAS_KEYS_TO_DROP",
+    "delete_draft_from_index",
     "delete_products_from_index",
     "explain_mercadolibre_auth_error",
     "load_app_config",

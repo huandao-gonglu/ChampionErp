@@ -255,6 +255,11 @@ export async function loadDraft(draftId: string): Promise<ProductMutationRespons
   return normalizeProductMutation(response.data)
 }
 
+export async function deleteDraft(draftId: string): Promise<ProductMutationResponse> {
+  const response = await apiClient.post('/api/delete-draft', { draft_id: draftId })
+  return normalizeProductMutation(response.data)
+}
+
 export async function deleteProducts(productIds: string[]): Promise<DeleteProductsResult> {
   const response = await apiClient.post('/api/delete-products', { product_ids: productIds })
   return normalizeDeleteProductsResult(response.data)

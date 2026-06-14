@@ -124,6 +124,27 @@ class ErpDbTests(unittest.TestCase):
             self.assertEqual(draft_count, 0)
             self.assertEqual(media_count, 0)
 
+    def test_delete_draft_model_removes_single_draft_without_product_or_media(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app_dir = Path(tmp)
+            erp_db.initialize_database(app_dir)
+            product_id = erp_db.upsert_product_model(app_dir, sample_product())
+            draft_id = erp_db.list_draft_records(app_dir)[0]["draft_id"]
+
+            deleted = erp_db.delete_draft_model(app_dir, draft_id)
+
+            self.assertTrue(deleted)
+            self.assertEqual(erp_db.list_draft_records(app_dir), [])
+            loaded = erp_db.load_product_model(app_dir, product_id)
+            self.assertEqual(loaded["product_id"], product_id)
+            self.assertNotIn("mercadolibre", loaded.get("drafts", {}))
+            conn = sqlite3.connect(app_dir / erp_db.DEFAULT_DB_NAME)
+            try:
+                media_count = conn.execute("SELECT COUNT(*) FROM media_assets").fetchone()[0]
+            finally:
+                conn.close()
+            self.assertEqual(media_count, 1)
+
     def test_import_category_cache_searches_chinese_and_loads_required_attributes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             app_dir = Path(tmp)

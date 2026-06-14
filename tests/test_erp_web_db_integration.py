@@ -81,6 +81,23 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
 
         self.with_temp_app(run)
 
+    def test_delete_draft_from_index_removes_only_selected_draft(self) -> None:
+        def run(app_dir: Path) -> None:
+            saved = erp_web_app.save_product(sample_product("Draft delete", "https://example.com/draft-delete"))
+            draft_id = erp_db.list_draft_records(app_dir)[0]["draft_id"]
+
+            result = erp_web_app.delete_draft_from_index(draft_id)
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["deleted"], 1)
+            self.assertEqual(result["deletedDraftId"], draft_id)
+            self.assertEqual(result["draftsIndex"], [])
+            self.assertEqual(result["product"]["product_id"], saved["product_id"])
+            self.assertEqual(erp_db.list_product_records(app_dir)[0]["product_id"], saved["product_id"])
+            self.assertEqual(erp_db.list_draft_records(app_dir), [])
+
+        self.with_temp_app(run)
+
     def test_1688_collect_images_are_limited_to_first_five(self) -> None:
         source = {
             "images": [f"https://img.example/{index}.jpg" for index in range(8)],

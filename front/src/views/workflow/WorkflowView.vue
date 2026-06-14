@@ -157,6 +157,12 @@ async function openDraftPrecheck(item: DraftIndexItem) {
   navigate('category')
 }
 
+async function deleteDraft(item: DraftIndexItem) {
+  const title = item.title || item.productTitle || item.draftId
+  if (!window.confirm(`确认删除草稿「${title}」？商品本身不会被删除。`)) return
+  await store.deleteDraft(item)
+}
+
 async function openProductPrecheck(item: ProductIndexItem, platform: Marketplace = activeMarketplace.value) {
   store.setMarketplace(platform)
   await store.loadProduct(item)
@@ -324,6 +330,7 @@ watch(
               @edit-text="(item) => openDraftEditor(item, 'text')"
               @edit-images="(item) => openDraftEditor(item, 'images')"
               @go-publish="openDraftPrecheck"
+              @delete-draft="deleteDraft"
             />
           </div>
 

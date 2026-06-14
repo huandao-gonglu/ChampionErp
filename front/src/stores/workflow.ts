@@ -12,6 +12,7 @@ import {
   collectFromBrowserTab as collectFromBrowserTabApi,
   collectProduct as collectProductApi,
   confirmMercadoLibreRealPublish,
+  deleteDraft as deleteDraftApi,
   diagnosticsToCollectDiagnostics,
   enqueuePublish as enqueuePublishApi,
   exchangeMercadoLibreCode,
@@ -651,6 +652,31 @@ export const useWorkflowStore = defineStore('workflow', () => {
       addLog(`已加载草稿：${item.title || item.productTitle || item.draftId}`)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '加载草稿失败')
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function deleteDraft(item: DraftIndexItem) {
+    const draftId = String(item.draftId || '').trim()
+    if (!draftId) {
+      setError('请先选择要删除的草稿。')
+      return
+    }
+    loading.value = true
+    setError('')
+    try {
+      const result = await deleteDraftApi(draftId)
+      applyMutationIndexes(result)
+      if (result.product.productId && result.product.productId === product.value.productId) {
+        product.value = result.product
+        restoreCategoryFromProduct()
+        restorePrecheckFromProduct()
+        syncPricingInputFromProduct()
+      }
+      addLog(result.message || `已删除草稿：${item.title || item.productTitle || draftId}`)
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : '删除草稿失败')
     } finally {
       loading.value = false
     }
@@ -1602,6 +1628,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     refreshDraftsIndex,
     loadProduct,
     loadDraft,
+    deleteDraft,
     deleteProduct,
     deleteSelectedProducts,
     toggleProductSelection,

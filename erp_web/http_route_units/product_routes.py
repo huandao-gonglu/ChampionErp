@@ -34,12 +34,18 @@ def handle_delete_products(handler: JsonRequestHandler) -> None:
     handler.send_json(result, status)
 
 
+def handle_delete_draft(handler: JsonRequestHandler) -> None:
+    result, status = product_facade.delete_draft_payload(handler.read_body())
+    handler.send_json(result, status)
+
+
 POST_HANDLERS: dict[str, PostHandler] = {
     "/api/calculate-price": handle_calculate_price,
     "/api/assign-upc": handle_assign_upc,
     "/api/save-product": handle_save_product,
     "/api/load-product": handle_load_product,
     "/api/load-draft": handle_load_draft,
+    "/api/delete-draft": handle_delete_draft,
     "/api/delete-products": handle_delete_products,
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)

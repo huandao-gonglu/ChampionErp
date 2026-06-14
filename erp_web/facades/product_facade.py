@@ -5,6 +5,7 @@ from typing import Any
 from erp_web.runtime_units.image_pool import current_image_pool, current_source_images
 from erp_web.runtime_units.pricing_runtime import calculate_price
 from erp_web.runtime_units.product_store import (
+    delete_draft_from_index,
     delete_products_from_index,
     load_draft_from_index,
     load_drafts_index,
@@ -69,9 +70,15 @@ def delete_products_payload(body: dict[str, Any]) -> ResponseWithStatus:
     return result, 200 if result.get("ok") else 400
 
 
+def delete_draft_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    result = delete_draft_from_index(body.get("draft_id", "") or body.get("draftId", ""))
+    return result, 200 if result.get("ok") else 404
+
+
 __all__ = [
     "assign_product_upc",
     "calculate_product_price",
+    "delete_draft_payload",
     "delete_products_payload",
     "load_draft_payload",
     "load_product_payload",

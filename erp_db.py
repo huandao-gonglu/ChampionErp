@@ -636,6 +636,30 @@ def load_product_for_draft(app_dir: Path | str, draft_id: str) -> dict[str, Any]
     return product
 
 
+def delete_draft_model(app_dir: Path | str, draft_id: str) -> bool:
+    draft_id = str(draft_id or "").strip()
+    if not draft_id:
+        return False
+    initialize_database(app_dir)
+    conn = connect(app_dir)
+    try:
+        row = conn.execute("SELECT product_id, platform FROM platform_drafts WHERE draft_id = ?", (draft_id,)).fetchone()
+        cursor = conn.execute("DELETE FROM platform_drafts WHERE draft_id = ?", (draft_id,))
+        if cursor.rowcount > 0 and row:
+            product_row = conn.execute("SELECT product_json FROM products WHERE product_id = ?", (row["product_id"],)).fetchone()
+            product = json_loads(product_row["product_json"], {}) if product_row else {}
+            if isinstance(product, dict) and isinstance(product.get("drafts"), dict):
+                product["drafts"].pop(str(row["platform"]), None)
+                conn.execute(
+                    "UPDATE products SET product_json = ?, updated_at = ? WHERE product_id = ?",
+                    (json_dumps(product), utc_now(), row["product_id"]),
+                )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
 def upsert_draft_model(app_dir: Path | str, product_id: str, platform: str, draft: dict[str, Any]) -> str:
     initialize_database(app_dir)
     now = utc_now()
