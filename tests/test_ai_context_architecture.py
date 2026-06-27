@@ -61,3 +61,11 @@ def test_context_map_mentions_runtime_compatibility_boundary() -> None:
     text = (ROOT / "docs/ai-context-map.md").read_text(encoding="utf-8")
     assert "compatibility aggregator" in text
     assert "Do not add new `from erp_web.runtime import *`" in text
+
+
+def test_context_map_mentions_product_research_entry_points() -> None:
+    text = (ROOT / "docs/ai-context-map.md").read_text(encoding="utf-8")
+    assert "erp_web/http_route_units/product_research_routes.py" in text
+    assert "erp_web/product_research_config.py" in text
+    assert "services/product_research_service.py" in text
+    assert "erp_web/schemas/product_research.py" in text

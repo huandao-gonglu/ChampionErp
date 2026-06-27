@@ -32,6 +32,7 @@ GetHandler = Callable[[JsonRequestHandler, object], None]
 
 FRONTEND_PAGE_ROUTES = {
     "/": "workbench",
+    "/research": "research",
     "/collect": "collect",
     "/library": "library",
     "/drafts": "drafts",

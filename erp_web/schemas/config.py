@@ -9,6 +9,7 @@ class AppConfig(TypedDict, total=False):
     image_ai: dict[str, str]
     video_ai: dict[str, str]
     pricing: dict[str, Any]
+    product_research: dict[str, Any]
     browser: dict[str, Any]
 
 

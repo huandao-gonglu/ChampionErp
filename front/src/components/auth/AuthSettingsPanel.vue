@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
+import ProductResearchSettingsPanel from '@/components/auth/ProductResearchSettingsPanel.vue'
 import type { AuthResult, Marketplace, MercadoLibreAuthChecklist, MercadoLibreTestMode, UnknownRecord } from '@/types/workflow'
 
 const DEFAULT_ML_REDIRECT_URI = 'https://example.com/callback'
@@ -393,5 +394,7 @@ function copy(text: string) {
         </div>
       </div>
     </section>
+
+    <ProductResearchSettingsPanel :text-ai-config="aiPayload().text_ai as UnknownRecord" />
   </div>
 </template>

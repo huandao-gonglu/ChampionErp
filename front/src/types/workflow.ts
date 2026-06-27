@@ -408,6 +408,139 @@ export interface MercadoLibrePublishedPage {
   pagination: MercadoLibreRemotePagination
 }
 
+export type ProductResearchSearchMode = 'target_only' | 'target_plus_reference' | 'global_scan'
+
+export interface ProductResearchPrice {
+  amount: number
+  currency: string
+}
+
+export interface ProductResearchMetrics {
+  searchInterest: number
+  reviewCount: number
+  rating: number
+  contentHeat: number
+  engagementCount: number
+}
+
+export interface ProductResearchSignal {
+  source: string
+  sourceId: string
+  sourceType: string
+  market: string
+  language: string
+  keyword: string
+  chinaElementType: string
+  dataType: string
+  title: string
+  productUrl: string
+  imageUrl: string
+  price?: ProductResearchPrice
+  metrics: ProductResearchMetrics
+  capturedAt: string
+  raw: UnknownRecord
+}
+
+export interface ProductResearchCandidate {
+  candidateId: string
+  targetMarket: string
+  overseasKeyword: string
+  chinaElementType: string
+  productType: string
+  relatedSources: string[]
+  chinesePurchaseKeywords: string[]
+  upgradeSuggestions: string[]
+  logisticsRisks: string[]
+  complianceRisks: string[]
+  chinaElementStrength: string
+  waitTolerance: string
+  localScarcity: string
+  opportunityScore: number
+  scoreBreakdown: Record<string, number>
+  recommendedAction: string
+  evidenceSignals: ProductResearchSignal[]
+  raw: UnknownRecord
+}
+
+export interface ProductResearchSourceStatus {
+  source: string
+  sourceId: string
+  market: string
+  status: string
+  itemsFound: number
+  errorMessage: string
+  providerStrategy: string
+  raw: UnknownRecord
+}
+
+export interface ProductResearchTaskSummary {
+  taskId: string
+  status: string
+  searchMode: string
+  createdAt: string
+  completedAt: string
+  request: UnknownRecord
+  raw: UnknownRecord
+}
+
+export interface ProductResearchResponse {
+  task: ProductResearchTaskSummary
+  items: ProductResearchCandidate[]
+  signals: ProductResearchSignal[]
+  sourceStatus: ProductResearchSourceStatus[]
+  raw: UnknownRecord
+}
+
+export interface ProductResearchSourceRegistryItem {
+  id: string
+  name: string
+  sourceType: string
+  platform: string
+  enabled: boolean
+  priority: number
+  supportedMarkets: string[]
+  supportedLanguages: string[]
+  supportedDataTypes: string[]
+  authRequired: boolean
+  rateLimitPerMinute: number
+  complianceNote: string
+  providerStrategy: string
+  configJson: UnknownRecord
+  raw: UnknownRecord
+}
+
+export interface ProductResearchTargetMarket {
+  market: string
+  name: string
+  enabled: boolean
+  language: string
+  currency: string
+  referenceMarkets: string[]
+  providerIds: string[]
+  raw: UnknownRecord
+}
+
+export interface ProductResearchConfig {
+  searchProviders: ProductResearchSourceRegistryItem[]
+  targetMarkets: ProductResearchTargetMarket[]
+  sourceRegistry: ProductResearchSourceRegistryItem[]
+  raw: UnknownRecord
+}
+
+export interface ProductResearchProviderTestResult {
+  ok: boolean
+  status: string
+  sourceId: string
+  providerStrategy: string
+  market: string
+  keyword: string
+  itemsFound: number
+  durationMs: number
+  error: string
+  sample: UnknownRecord
+  raw: UnknownRecord
+}
+
 export interface AuthResult {
   ok: boolean
   message: string

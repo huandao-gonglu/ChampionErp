@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .product_research_config import default_product_research_config, normalize_product_research_config
+
 
 DEFAULT_EXCHANGE_RATE_API_URL = "https://open.er-api.com/v6/latest/USD"
 
@@ -75,6 +77,7 @@ def default_app_config() -> dict[str, Any]:
             "exchange_rate_timeout_seconds": "10",
             "exchange_rate_cache_ttl_seconds": "3600",
         },
+        "product_research": default_product_research_config(),
     }
 
 
@@ -130,7 +133,7 @@ def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
     canonical = {
         key: value
         for key, value in incoming.items()
-        if key not in AI_CONFIG_ALIAS_KEYS_TO_DROP and key not in {"text_ai", "image_ai", "pricing_defaults"}
+        if key not in AI_CONFIG_ALIAS_KEYS_TO_DROP and key not in {"text_ai", "image_ai", "pricing_defaults", "product_research"}
     }
     canonical["auto_ai_recognition"] = str(canonical.get("auto_ai_recognition") or defaults["auto_ai_recognition"])
     canonical["alibaba_cookie"] = str(canonical.get("alibaba_cookie") or defaults["alibaba_cookie"])
@@ -155,4 +158,5 @@ def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
     canonical["text_ai"] = text_ai
     canonical["image_ai"] = image_ai
     canonical["pricing_defaults"] = pricing_defaults
+    canonical["product_research"] = normalize_product_research_config(incoming.get("product_research"))
     return canonical

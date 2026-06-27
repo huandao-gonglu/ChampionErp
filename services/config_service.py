@@ -12,6 +12,18 @@ from dotenv import load_dotenv
 
 TEXT_PROVIDERS = ("DeepSeek", "OpenAI", "OpenAI-Compatible")
 IMAGE_PROVIDERS = ("OpenAI", "OpenAI-Compatible")
+PRODUCT_RESEARCH_SENSITIVE_CONFIG_KEYS = {
+    "access_token",
+    "api_key",
+    "app_secret",
+    "authorization",
+    "bearer_token",
+    "client_secret",
+    "password",
+    "refresh_token",
+    "secret",
+    "token",
+}
 
 
 def service_status() -> dict[str, str]:
@@ -39,6 +51,16 @@ def mask_secret(value: Any) -> str:
     if len(text) <= 8:
         return "*" * len(text)
     return f"{text[:4]}...{text[-4:]}"
+
+
+def mask_nested_config(value: Any, key: str = "") -> Any:
+    if isinstance(value, dict):
+        return {nested_key: mask_nested_config(nested_value, nested_key) for nested_key, nested_value in value.items()}
+    if isinstance(value, list):
+        return [mask_nested_config(item, key) for item in value]
+    if key.lower() in PRODUCT_RESEARCH_SENSITIVE_CONFIG_KEYS:
+        return mask_secret(value)
+    return value
 
 
 def ai_config_from_sources(app_dir: Path | str, app_config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -141,6 +163,17 @@ def save_config_snapshot(app_dir: Path | str, config: dict[str, Any]) -> Path:
         for key in ("app_key", "app_secret", "access_token"):
             if safe["1688_api"].get(key):
                 safe["1688_api"][key] = mask_secret(safe["1688_api"][key])
+    product_research = safe.get("product_research")
+    if isinstance(product_research, dict):
+        sources = []
+        if isinstance(product_research.get("source_registry"), list):
+            sources.extend(product_research["source_registry"])
+        if isinstance(product_research.get("search_providers"), list):
+            sources.extend(product_research["search_providers"])
+        for source in sources:
+            if not isinstance(source, dict) or not isinstance(source.get("config_json"), dict):
+                continue
+            source["config_json"] = mask_nested_config(source["config_json"])
     path.write_text(json.dumps(safe, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
 

@@ -23,6 +23,11 @@ const legacyEntryRoutes: RouteRecordRaw[] = [
     meta: { title: '采集', hideInMenu: true },
   },
   {
+    path: '/research',
+    component: workflowComponent,
+    meta: { title: '选品调研', hideInMenu: true },
+  },
+  {
     path: '/library',
     component: workflowComponent,
     meta: { title: '商品库', hideInMenu: true },

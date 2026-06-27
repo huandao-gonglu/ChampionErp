@@ -161,3 +161,75 @@ def test_save_product_and_publish_precheck_api_exist(backend_server: str, sample
     )
     assert precheck["ok"] is True
     assert "mercadolibre" in precheck["platforms"]
+
+
+def test_product_research_search_task_api_returns_candidates(backend_server: str) -> None:
+    data = post_json(
+        backend_server,
+        "/api/v1/product-research/search-tasks",
+        {
+            "search_mode": "target_plus_reference",
+            "markets": {
+                "target_markets": ["US"],
+                "reference_markets": ["GB", "CA"],
+            },
+            "product_intent": {
+                "china_element_required": True,
+                "upgrade_variant_required": True,
+            },
+            "filters": {
+                "include_china_element_types": ["mahjong", "calligraphy"],
+                "upgrade_types": ["gift_box", "custom_name", "localized_explanation"],
+                "exclude_risks": ["food", "battery", "children_product", "medical_device", "cosmetics", "liquid"],
+            },
+            "sources": {
+                "demand_sources": ["google_trends", "etsy", "ebay"],
+            },
+            "result_options": {
+                "limit": 5,
+                "sort_by": "opportunity_score",
+            },
+        },
+    )
+
+    assert data["ok"] is True
+    assert data["task"]["task_id"].startswith("prt_")
+    assert data["items"]
+    assert data["items"][0]["overseas_keyword"]
+    assert data["items"][0]["chinese_purchase_keywords"]
+    assert data["items"][0]["opportunity_score"] > 0
+    assert any(row["source"] == "google_trends" for row in data["source_status"])
+    assert any(row["source"] == "ebay" and row["status"] == "configuration_required" for row in data["source_status"])
+
+
+def test_product_research_search_provider_test_api(backend_server: str) -> None:
+    data = post_json(
+        backend_server,
+        "/api/v1/product-research/search-providers/test",
+        {
+            "provider": {
+                "id": "api_test_seeded",
+                "name": "API Test Seeded",
+                "source_type": "api",
+                "platform": "api_test",
+                "enabled": True,
+                "priority": 1,
+                "supported_markets": ["US"],
+                "supported_languages": ["en"],
+                "supported_data_types": ["marketplace_products"],
+                "auth_required": False,
+                "config_json": {"provider_strategy": "seeded_mock"},
+            },
+            "options": {
+                "market": "US",
+                "language": "en",
+                "keyword": "mahjong gift",
+                "data_type": "marketplace_products",
+            },
+        },
+    )
+
+    assert data["ok"] is True
+    assert data["status"] == "success"
+    assert data["items_found"] == 1
+    assert data["sample"]["keyword"] == "mahjong gift"

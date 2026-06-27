@@ -23,6 +23,16 @@ import type {
   PricingResult,
   Product,
   ProductIndexItem,
+  ProductResearchCandidate,
+  ProductResearchConfig,
+  ProductResearchMetrics,
+  ProductResearchProviderTestResult,
+  ProductResearchResponse,
+  ProductResearchSignal,
+  ProductResearchSourceRegistryItem,
+  ProductResearchSourceStatus,
+  ProductResearchTargetMarket,
+  ProductResearchTaskSummary,
   PublishJob,
   PublishLogItem,
   PublishPrecheck,
@@ -233,6 +243,272 @@ export async function fetchMercadoLibrePublishedItems(status = 'active', page = 
     items: Array.isArray(data.items) ? data.items.map(normalizeMercadoLibreRemoteItem) : [],
     pagination: normalizeMercadoLibrePagination(data.pagination, page, perPage),
   }
+}
+
+function normalizeProductResearchMetrics(value: unknown): ProductResearchMetrics {
+  const record = asRecord(value)
+  return {
+    searchInterest: getNumber(record, ['search_interest', 'searchInterest']),
+    reviewCount: getNumber(record, ['review_count', 'reviewCount']),
+    rating: getNumber(record, ['rating']),
+    contentHeat: getNumber(record, ['content_heat', 'contentHeat']),
+    engagementCount: getNumber(record, ['engagement_count', 'engagementCount']),
+  }
+}
+
+function normalizeProductResearchSignal(value: unknown): ProductResearchSignal {
+  const record = asRecord(value)
+  const priceRecord = asRecord(record.price)
+  const amount = getNumber(priceRecord, ['amount'])
+  return {
+    source: getString(record, ['source']),
+    sourceId: getString(record, ['source_id', 'sourceId']),
+    sourceType: getString(record, ['source_type', 'sourceType']),
+    market: getString(record, ['market']),
+    language: getString(record, ['language']),
+    keyword: getString(record, ['keyword']),
+    chinaElementType: getString(record, ['china_element_type', 'chinaElementType']),
+    dataType: getString(record, ['data_type', 'dataType']),
+    title: getString(record, ['title']),
+    productUrl: getString(record, ['product_url', 'productUrl']),
+    imageUrl: getString(record, ['image_url', 'imageUrl']),
+    price: amount
+      ? {
+          amount,
+          currency: getString(priceRecord, ['currency']),
+        }
+      : undefined,
+    metrics: normalizeProductResearchMetrics(record.metrics),
+    capturedAt: getString(record, ['captured_at', 'capturedAt']),
+    raw: record,
+  }
+}
+
+function normalizeProductResearchCandidate(value: unknown): ProductResearchCandidate {
+  const record = asRecord(value)
+  return {
+    candidateId: getString(record, ['candidate_id', 'candidateId']),
+    targetMarket: getString(record, ['target_market', 'targetMarket']),
+    overseasKeyword: getString(record, ['overseas_keyword', 'overseasKeyword']),
+    chinaElementType: getString(record, ['china_element_type', 'chinaElementType']),
+    productType: getString(record, ['product_type', 'productType']),
+    relatedSources: stringList(record.related_sources ?? record.relatedSources),
+    chinesePurchaseKeywords: stringList(record.chinese_purchase_keywords ?? record.chinesePurchaseKeywords),
+    upgradeSuggestions: stringList(record.upgrade_suggestions ?? record.upgradeSuggestions),
+    logisticsRisks: stringList(record.logistics_risks ?? record.logisticsRisks),
+    complianceRisks: stringList(record.compliance_risks ?? record.complianceRisks),
+    chinaElementStrength: getString(record, ['china_element_strength', 'chinaElementStrength']),
+    waitTolerance: getString(record, ['wait_tolerance', 'waitTolerance']),
+    localScarcity: getString(record, ['local_scarcity', 'localScarcity']),
+    opportunityScore: getNumber(record, ['opportunity_score', 'opportunityScore']),
+    scoreBreakdown: Object.fromEntries(Object.entries(asRecord(record.score_breakdown ?? record.scoreBreakdown)).map(([key, score]) => [key, Number(score) || 0])),
+    recommendedAction: getString(record, ['recommended_action', 'recommendedAction']),
+    evidenceSignals: Array.isArray(record.evidence_signals)
+      ? record.evidence_signals.map(normalizeProductResearchSignal)
+      : Array.isArray(record.evidenceSignals)
+        ? record.evidenceSignals.map(normalizeProductResearchSignal)
+        : [],
+    raw: record,
+  }
+}
+
+function normalizeProductResearchSourceStatus(value: unknown): ProductResearchSourceStatus {
+  const record = asRecord(value)
+  return {
+    source: getString(record, ['source']),
+    sourceId: getString(record, ['source_id', 'sourceId']),
+    market: getString(record, ['market']),
+    status: getString(record, ['status']),
+    itemsFound: getNumber(record, ['items_found', 'itemsFound']),
+    errorMessage: getString(record, ['error_message', 'errorMessage']),
+    providerStrategy: getString(record, ['provider_strategy', 'providerStrategy']),
+    raw: record,
+  }
+}
+
+function normalizeProductResearchTask(value: unknown): ProductResearchTaskSummary {
+  const record = asRecord(value)
+  return {
+    taskId: getString(record, ['task_id', 'taskId']),
+    status: getString(record, ['status']),
+    searchMode: getString(record, ['search_mode', 'searchMode']),
+    createdAt: getString(record, ['created_at', 'createdAt']),
+    completedAt: getString(record, ['completed_at', 'completedAt']),
+    request: asRecord(record.request),
+    raw: record,
+  }
+}
+
+function normalizeProductResearchResponse(value: unknown): ProductResearchResponse {
+  const record = asRecord(value)
+  ensureOk(record, '选品搜索失败')
+  return {
+    task: normalizeProductResearchTask(record.task),
+    items: Array.isArray(record.items) ? record.items.map(normalizeProductResearchCandidate) : [],
+    signals: Array.isArray(record.signals) ? record.signals.map(normalizeProductResearchSignal) : [],
+    sourceStatus: Array.isArray(record.source_status)
+      ? record.source_status.map(normalizeProductResearchSourceStatus)
+      : Array.isArray(record.sourceStatus)
+        ? record.sourceStatus.map(normalizeProductResearchSourceStatus)
+        : [],
+    raw: record,
+  }
+}
+
+export async function createProductResearchSearchTask(payload: UnknownRecord): Promise<ProductResearchResponse> {
+  const response = await apiClient.post('/api/v1/product-research/search-tasks', payload)
+  return normalizeProductResearchResponse(response.data)
+}
+
+export async function fetchProductResearchSearchTask(taskId: string): Promise<ProductResearchResponse> {
+  const response = await apiClient.get('/api/v1/product-research/search-tasks', { params: { task_id: taskId } })
+  return normalizeProductResearchResponse(response.data)
+}
+
+function normalizeProductResearchProvider(value: unknown): ProductResearchSourceRegistryItem {
+  const record = asRecord(value)
+  const config = asRecord(record.config_json ?? record.configJson)
+  const sourceType = getString(record, ['source_type', 'sourceType'])
+  return {
+    id: getString(record, ['id', 'source_id', 'sourceId']),
+    name: getString(record, ['name']),
+    sourceType: sourceType === 'third_party_api' ? 'api' : sourceType || 'api',
+    platform: getString(record, ['platform']),
+    enabled: getBoolean(record, ['enabled']),
+    priority: getNumber(record, ['priority']),
+    supportedMarkets: stringList(record.supported_markets ?? record.supportedMarkets),
+    supportedLanguages: stringList(record.supported_languages ?? record.supportedLanguages),
+    supportedDataTypes: stringList(record.supported_data_types ?? record.supportedDataTypes),
+    authRequired: getBoolean(record, ['auth_required', 'authRequired']),
+    rateLimitPerMinute: getNumber(record, ['rate_limit_per_minute', 'rateLimitPerMinute']),
+    complianceNote: getString(record, ['compliance_note', 'complianceNote']),
+    providerStrategy: getString(config, ['provider_strategy', 'providerStrategy']),
+    configJson: config,
+    raw: record,
+  }
+}
+
+function normalizeProductResearchTargetMarket(value: unknown): ProductResearchTargetMarket {
+  const record = asRecord(value)
+  return {
+    market: getString(record, ['market', 'code', 'id']).toUpperCase(),
+    name: getString(record, ['name']),
+    enabled: getBoolean(record, ['enabled']),
+    language: getString(record, ['language']),
+    currency: getString(record, ['currency']),
+    referenceMarkets: stringList(record.reference_markets ?? record.referenceMarkets).map((item) => item.toUpperCase()),
+    providerIds: stringList(record.provider_ids ?? record.providerIds ?? record.source_ids ?? record.sourceIds),
+    raw: record,
+  }
+}
+
+function normalizeProductResearchConfig(value: unknown): ProductResearchConfig {
+  const record = asRecord(value)
+  const rawProviders = Array.isArray(record.search_providers)
+    ? record.search_providers
+    : Array.isArray(record.searchProviders)
+      ? record.searchProviders
+      : Array.isArray(record.source_registry)
+        ? record.source_registry
+        : []
+  const rawMarkets = Array.isArray(record.target_markets)
+    ? record.target_markets
+    : Array.isArray(record.targetMarkets)
+      ? record.targetMarkets
+      : []
+  const rawRegistry = Array.isArray(record.source_registry)
+    ? record.source_registry
+    : Array.isArray(record.sourceRegistry)
+      ? record.sourceRegistry
+      : rawProviders
+  return {
+    searchProviders: rawProviders.map(normalizeProductResearchProvider),
+    targetMarkets: rawMarkets.map(normalizeProductResearchTargetMarket),
+    sourceRegistry: rawRegistry.map(normalizeProductResearchProvider),
+    raw: record,
+  }
+}
+
+function toProductResearchProviderPayload(provider: ProductResearchSourceRegistryItem): UnknownRecord {
+  return {
+    id: provider.id.trim(),
+    name: provider.name.trim() || provider.id.trim(),
+    source_type: provider.sourceType || 'api',
+    platform: provider.platform.trim().toLowerCase() || provider.id.trim().toLowerCase(),
+    enabled: provider.enabled,
+    priority: provider.priority || 10,
+    supported_markets: provider.supportedMarkets,
+    supported_languages: provider.supportedLanguages,
+    supported_data_types: provider.supportedDataTypes,
+    auth_required: provider.authRequired,
+    rate_limit_per_minute: provider.rateLimitPerMinute || null,
+    compliance_note: provider.complianceNote,
+    config_json: {
+      ...provider.configJson,
+      provider_strategy: provider.providerStrategy || String(provider.configJson.provider_strategy || ''),
+    },
+  }
+}
+
+function toProductResearchTargetMarketPayload(market: ProductResearchTargetMarket): UnknownRecord {
+  return {
+    market: market.market.trim().toUpperCase(),
+    name: market.name.trim() || market.market.trim().toUpperCase(),
+    enabled: market.enabled,
+    language: market.language.trim().toLowerCase() || 'en',
+    currency: market.currency.trim().toUpperCase() || 'USD',
+    reference_markets: market.referenceMarkets.map((item) => item.trim().toUpperCase()).filter(Boolean),
+    provider_ids: market.providerIds.map((item) => item.trim()).filter(Boolean),
+  }
+}
+
+export async function fetchProductResearchSettings(): Promise<ProductResearchConfig> {
+  const response = await apiClient.get('/api/v1/product-research/source-registry')
+  const data = asRecord(response.data)
+  ensureOk(data, '读取选品数据源失败')
+  return normalizeProductResearchConfig(data.config)
+}
+
+export async function saveProductResearchSettings(config: ProductResearchConfig): Promise<ProductResearchConfig> {
+  const response = await apiClient.post('/api/v1/product-research/source-registry/save', {
+    config: {
+      search_providers: config.searchProviders.map(toProductResearchProviderPayload),
+      target_markets: config.targetMarkets.map(toProductResearchTargetMarketPayload),
+    },
+  })
+  const data = asRecord(response.data)
+  ensureOk(data, '保存选品数据源失败')
+  return normalizeProductResearchConfig(data.config)
+}
+
+function normalizeProductResearchProviderTestResult(value: unknown): ProductResearchProviderTestResult {
+  const record = asRecord(value)
+  return {
+    ok: getBoolean(record, ['ok']),
+    status: getString(record, ['status']),
+    sourceId: getString(record, ['source_id', 'sourceId']),
+    providerStrategy: getString(record, ['provider_strategy', 'providerStrategy']),
+    market: getString(record, ['market']),
+    keyword: getString(record, ['keyword']),
+    itemsFound: getNumber(record, ['items_found', 'itemsFound']),
+    durationMs: getNumber(record, ['duration_ms', 'durationMs']),
+    error: getString(record, ['error', 'error_message', 'errorMessage']),
+    sample: asRecord(record.sample),
+    raw: record,
+  }
+}
+
+export async function testProductResearchSearchProvider(provider: ProductResearchSourceRegistryItem, options: UnknownRecord): Promise<ProductResearchProviderTestResult> {
+  const response = await apiClient.post('/api/v1/product-research/search-providers/test', {
+    provider: toProductResearchProviderPayload(provider),
+    options,
+  })
+  return normalizeProductResearchProviderTestResult(response.data)
+}
+
+export async function fetchProductResearchSourceRegistry(): Promise<ProductResearchSourceRegistryItem[]> {
+  const config = await fetchProductResearchSettings()
+  return config.sourceRegistry
 }
 
 export async function closeMercadoLibrePublishedItem(itemId: string): Promise<UnknownRecord> {

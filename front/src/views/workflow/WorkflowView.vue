@@ -15,6 +15,7 @@ import PricingChart from '@/components/domain/PricingChart.vue'
 import PricingPanel from '@/components/domain/PricingPanel.vue'
 import ProductImageEditorPanel from '@/components/domain/ProductImageEditorPanel.vue'
 import ProductEditorPanel from '@/components/domain/ProductEditorPanel.vue'
+import ProductResearchPanel from '@/components/domain/ProductResearchPanel.vue'
 import RunLog from '@/components/domain/RunLog.vue'
 import { workflowNavItems } from '@/constants/navigation'
 import { useAppStore } from '@/stores/app'
@@ -87,6 +88,7 @@ const editorMode = ref<'text' | 'images'>('text')
 const navItems = workflowNavItems
 const pathNavMap: Record<string, string> = {
   '/': 'dashboard',
+  '/research': 'research',
   '/collect': 'collect',
   '/library': 'library',
   '/drafts': 'drafts',
@@ -102,6 +104,7 @@ const pathNavMap: Record<string, string> = {
 }
 const navPathMap: Record<string, string> = {
   dashboard: '/',
+  research: '/research',
   collect: '/collect',
   library: '/library',
   drafts: '/drafts',
@@ -284,6 +287,11 @@ watch(
             @collect="navigate('collect')"
             @publish-selected="store.enqueueSelectedProducts"
           />
+
+          <div v-else-if="activeNav === 'research'" class="space-y-6">
+            <PageHeader title="选品调研" description="目标市场需求、相近市场参考、数据源质量和机会评分。" />
+            <ProductResearchPanel />
+          </div>
 
           <CollectView
             v-else-if="activeNav === 'collect'"

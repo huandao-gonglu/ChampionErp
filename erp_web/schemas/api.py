@@ -9,6 +9,8 @@ class ApiResponse(TypedDict, total=False):
     error_code: str
     message: str
     data: Any
+    items: list[Any]
     product: dict[str, Any]
     productsIndex: list[dict[str, Any]]
     draftsIndex: list[dict[str, Any]]
+    task: dict[str, Any]
