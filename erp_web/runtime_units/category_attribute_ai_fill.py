@@ -6,11 +6,10 @@ import re
 from copy import deepcopy
 from typing import Any
 
-from services import config_service
+from services import ai_gateway
 
 from product_model import apply_ai_attribute_fill, normalize_product_model
 
-from .copy_generation import openai_client_from_config
 from .product_store import load_app_config
 from .runtime_common import APP_DIR
 
@@ -66,22 +65,6 @@ def _category_path_text(record: dict[str, Any] | None) -> str:
     return ""
 
 
-def _json_from_text(text: str) -> dict[str, Any]:
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
-    try:
-        data = json.loads(cleaned)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        match = re.search(r"\{.*\}", cleaned, flags=re.S)
-        if not match:
-            raise
-        data = json.loads(match.group(0))
-        return data if isinstance(data, dict) else {}
-
-
 def _short_text(value: Any, limit: int = 3000) -> str:
     text = str(value or "").strip()
     return text[:limit]
@@ -128,9 +111,6 @@ def _product_context(product: dict[str, Any], platform: str) -> dict[str, Any]:
 
 def _request_ai_fill(product: dict[str, Any], platform: str, category_record: dict[str, Any] | None, schema: list[dict[str, Any]]) -> dict[str, Any]:
     app_cfg = load_app_config()
-    text_ai = config_service.ai_config_from_sources(APP_DIR, app_cfg).get("text_ai", {})
-    model = str(text_ai.get("model") or "deepseek-chat").strip()
-    client = openai_client_from_config(app_cfg)
     payload = {
         "platform": platform,
         "category_id": str((category_record or {}).get("category_id") or ""),
@@ -157,17 +137,7 @@ def _request_ai_fill(product: dict[str, Any], platform: str, category_record: di
             ),
         },
     ]
-    try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=0,
-            response_format={"type": "json_object"},
-        )
-    except Exception:
-        response = client.chat.completions.create(model=model, messages=messages, temperature=0)
-    content = response.choices[0].message.content or ""
-    return _json_from_text(content)
+    return ai_gateway.chat_json(APP_DIR, app_cfg, "category.attribute_fill", messages, temperature=0)
 
 
 def _option_value(raw_value: Any, options: list[str]) -> str:
@@ -219,7 +189,7 @@ def _validated_ai_attributes(ai_result: dict[str, Any], schema: list[dict[str, A
     return accepted, review
 
 
-def apply_text_ai_attribute_fill(product: dict[str, Any], platform: str, category_record: dict[str, Any] | None) -> tuple[dict[str, Any], dict[str, Any]]:
+def apply_ai_model_attribute_fill(product: dict[str, Any], platform: str, category_record: dict[str, Any] | None) -> tuple[dict[str, Any], dict[str, Any]]:
     base_product = apply_ai_attribute_fill(product, platform, category_record)
     schema = _attribute_schema(category_record)
     if not schema:
@@ -229,7 +199,7 @@ def apply_text_ai_attribute_fill(product: dict[str, Any], platform: str, categor
         ai_result = _request_ai_fill(normalize_product_model(product or {}), platform, category_record, schema)
         ai_attrs, ai_review = _validated_ai_attributes(ai_result, schema)
     except Exception as exc:
-        meta["warning"] = f"文本 AI 填充失败，已使用规则填充：{exc}"
+        meta["warning"] = f"AI 属性填充失败，已使用规则填充：{exc}"
         return base_product, meta
 
     updated = normalize_product_model(deepcopy(base_product))
@@ -256,6 +226,6 @@ def apply_text_ai_attribute_fill(product: dict[str, Any], platform: str, categor
     draft["attributes"] = attrs
     draft["validation_errors"] = sorted(need_review)
     updated.setdefault("drafts", {})[platform] = draft
-    meta["source"] = "text_ai"
+    meta["source"] = "ai_model"
     meta["ai_filled"] = sorted(ai_attrs)
     return normalize_product_model(updated), meta

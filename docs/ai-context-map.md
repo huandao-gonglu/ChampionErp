@@ -21,7 +21,7 @@ This map exists to reduce context scanning for humans and coding agents.
 - Product save/load/delete and pricing APIs: `erp_web/http_route_units/product_routes.py`
 - Product research search tasks, source registry/settings APIs, and search provider test API: `erp_web/http_route_units/product_research_routes.py`, backed by `erp_web/facades/product_research_facade.py` and `services/product_research_service.py`.
 - Product research defaults and config normalization: `erp_web/product_research_config.py`; user-facing search methods live in `product_research.search_providers`, and target markets bind those methods through `product_research.target_markets[].provider_ids`. API search methods use `config_json.request` for URL/auth/query/body and `config_json.response` for result-field mapping.
-- Product research AI web search is a first-class search provider strategy (`source_type: ai_search`, `config_json.provider_strategy: text_ai_web_search`) that reuses the existing `text_ai` app config until the AI selector is refactored.
+- Product research AI web search is a first-class search provider strategy (`source_type: ai_search`, `config_json.provider_strategy: ai_web_search`). It resolves a model through `services/ai_gateway.py` and can optionally pin `config_json.ai_model_id`.
 - Publish precheck, payload preview, real publish, and queue APIs: `erp_web/http_route_units/publish_routes.py`
 - Mercado Libre order notification webhook: `erp_web/http_route_units/mercadolibre_routes.py` handles `POST /api/mercadolibre/notifications`; recent order pull and notification cache are exposed from `GET /api/mercadolibre/orders` in `get_routes.py`.
 - Each route unit declares `HANDLED_PATHS` and a handler map (`GET_HANDLERS` or `POST_HANDLERS`) so a path can be resolved without reading the whole route file.
@@ -42,7 +42,7 @@ This map exists to reduce context scanning for humans and coding agents.
 - Publish queue: `publishing_bus.py`, `erp_web/runtime_units/publish_bus.py`
 - Product model units: `product_model_units/` use explicit imports; `product_model.py` remains the compatibility re-export layer.
 - Marketplace publish units: `marketplace_publish_units/` use explicit imports; `marketplace_publish.py` remains the compatibility re-export layer.
-- AI/provider config: `services/config_service.py`, `erp_web/app_config.py`
+- AI model config and unified gateway: `services/ai_model_config.py`, `services/ai_gateway.py`, `services/config_service.py`, `erp_web/app_config.py`
 
 ## Data Shapes
 

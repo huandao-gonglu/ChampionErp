@@ -20,7 +20,7 @@ vi.mock('@/api/workflow', () => ({
   enqueuePublish: vi.fn(),
   fetchCategoryAttrs: vi.fn(),
   testStoreAuth: vi.fn(),
-  testAiChannel: vi.fn(),
+  testAiModel: vi.fn(),
   searchCategories: vi.fn(),
   saveStoreSettings: vi.fn(),
   saveAiConfig: vi.fn(),

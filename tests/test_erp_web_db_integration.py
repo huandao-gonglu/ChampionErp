@@ -359,7 +359,18 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             result = image_translate_service.translate_images(
                 app_dir,
                 saved,
-                {"image_ai": {"platform": "OpenAI", "api_key": "test-key"}},
+                {
+                    "ai_models": [
+                        {
+                            "id": "image_model",
+                            "provider": "OpenAI",
+                            "api_key": "test-key",
+                            "base_url": "https://api.openai.com/v1",
+                            "model": "gpt-image-1",
+                            "capabilities": ["image_edit", "image_generate"],
+                        }
+                    ]
+                },
                 target_language="Spanish (Mexico)",
                 platform="mercadolibre",
                 image_ids=[source_item_id],

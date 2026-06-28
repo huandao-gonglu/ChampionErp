@@ -4,11 +4,10 @@ from typing import Any, TypedDict
 
 
 class AppConfig(TypedDict, total=False):
-    ai: dict[str, Any]
-    text_ai: dict[str, str]
-    image_ai: dict[str, str]
-    video_ai: dict[str, str]
+    ai_models: list[dict[str, Any]]
+    ai_use_case_bindings: dict[str, dict[str, str]]
     pricing: dict[str, Any]
+    pricing_defaults: dict[str, Any]
     product_research: dict[str, Any]
     browser: dict[str, Any]
 

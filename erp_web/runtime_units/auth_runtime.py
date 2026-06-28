@@ -5,45 +5,40 @@ import urllib.parse
 from typing import Any
 
 import marketplace_publish as publisher
+from services import ai_gateway, ai_model_config
 
 from .product_store import (
     _store_auth_result_fields,
+    load_app_config,
     load_store_config,
     mask_secret,
     save_store_config,
     summarize_store_auth_states,
 )
 from .publish_logs_runtime import append_ml_auth_test_log
-from .runtime_common import AI_IMAGE_REQUEST_TIMEOUT_SECONDS, AI_TEXT_REQUEST_TIMEOUT_SECONDS
+from .runtime_common import APP_DIR
 
-def test_ai_channel(channel: str, channel_config: dict[str, Any]) -> dict[str, Any]:
-    channel = (channel or "text").strip().lower()
-    if isinstance(channel_config.get("text_ai"), dict) or isinstance(channel_config.get("image_ai"), dict):
-        section = "image_ai" if channel == "image" else "text_ai"
-        channel_config = channel_config.get(section) if isinstance(channel_config.get(section), dict) else {}
-    api_key = str(channel_config.get("api_key") or "").strip()
-    base_url = str(channel_config.get("base_url") or "").strip().rstrip("/")
-    model = str(channel_config.get("model") or "").strip()
-    platform = str(channel_config.get("platform") or "OpenAI").strip()
-    if not api_key:
-        raise RuntimeError("请先填写 API Key。")
-    from openai import OpenAI
+def _merge_saved_ai_model_config(model_config: dict[str, Any]) -> dict[str, Any]:
+    incoming = dict(model_config if isinstance(model_config, dict) else {})
+    model_id = str(incoming.get("id") or "").strip()
+    if not model_id:
+        return incoming
+    stored_models = ai_model_config.normalize_ai_models(load_app_config().get("ai_models"))
+    stored = next((model for model in stored_models if str(model.get("id") or "") == model_id), {})
+    if not stored:
+        return incoming
+    merged = dict(stored)
+    for key, value in incoming.items():
+        if key == "api_key" and not str(value or "").strip():
+            continue
+        if key in {"model_options", "available_models", "api_key_configured", "api_key_masked"}:
+            continue
+        merged[key] = value
+    return merged
 
-    timeout_seconds = AI_IMAGE_REQUEST_TIMEOUT_SECONDS if channel == "image" else AI_TEXT_REQUEST_TIMEOUT_SECONDS
-    kwargs: dict[str, Any] = {"api_key": api_key, "timeout": timeout_seconds}
-    if base_url:
-        kwargs["base_url"] = base_url
-    client = OpenAI(**kwargs)
-    client.models.list()
-    return {
-        "ok": True,
-        "channel": channel,
-        "platform": platform,
-        "model": model,
-        "masked_key": mask_secret(api_key),
-        "message": f"{platform or channel} 测试成功：接口可以连接。",
-        "next_action": "可以保存配置并继续使用 AI 生成功能。",
-    }
+
+def test_ai_model_config(model_config: dict[str, Any]) -> dict[str, Any]:
+    return ai_gateway.test_ai_model(APP_DIR, _merge_saved_ai_model_config(model_config))
 
 
 def test_api_config(kind: str, config: dict[str, Any], test_value: str = "") -> dict[str, Any]:
@@ -331,7 +326,7 @@ __all__ = [
     "mercadolibre_auth_checklist",
     "preview_mercadolibre_auth_link",
     "refresh_mercadolibre_token_from_body",
-    "test_ai_channel",
+    "test_ai_model_config",
     "test_api_config",
     "test_store_auth",
 ]

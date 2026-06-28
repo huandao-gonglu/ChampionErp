@@ -146,7 +146,18 @@ def test_image_translate_service_materializes_provider_output_into_pool_item(app
     result = image_translate_service.translate_images(
         app_dir,
         product,
-        {"image_ai": {"platform": "OpenAI-Compatible", "api_key": "test-key", "base_url": "http://example.test", "model": "fake-image"}},
+        {
+            "ai_models": [
+                {
+                    "id": "image_model",
+                    "provider": "OpenAI-Compatible",
+                    "api_key": "test-key",
+                    "base_url": "http://example.test",
+                    "model": "fake-image",
+                    "capabilities": ["image_edit", "image_generate"],
+                }
+            ]
+        },
         target_language="Spanish (Mexico)",
         platform="mercadolibre",
         image_ids=[source_item["id"]],
@@ -181,13 +192,24 @@ def test_image_translate_service_returns_configuration_warning_without_provider_
     result = image_translate_service.translate_images(
         app_dir,
         product,
-        {"image_ai": {"platform": "OpenAI", "api_key": ""}},
+        {
+            "ai_models": [
+                {
+                    "id": "image_model",
+                    "provider": "OpenAI",
+                    "api_key": "",
+                    "base_url": "https://api.openai.com/v1",
+                    "model": "gpt-image-1",
+                    "capabilities": ["image_edit", "image_generate"],
+                }
+            ]
+        },
         target_language="Russian",
         provider=lambda _config, _request: [],
     )
 
     assert result["ok"] is False
-    assert "未配置图片翻译服务" in result["message"]
+    assert "未配置图片翻译模型" in result["message"]
     assert result["imagePoolItems"] == []
     assert "Target language: Russian" in result["prompt"]
 
@@ -223,7 +245,18 @@ def test_image_translate_service_uses_default_openai_provider(app_dir: Path, tmp
         result = image_translate_service.translate_images(
             app_dir,
             product,
-            {"image_ai": {"platform": "OpenAI-Compatible", "api_key": "test-key", "base_url": "http://example.test/v1", "model": "fake-image"}},
+            {
+                "ai_models": [
+                    {
+                        "id": "image_model",
+                        "provider": "OpenAI-Compatible",
+                        "api_key": "test-key",
+                        "base_url": "http://example.test/v1",
+                        "model": "fake-image",
+                        "capabilities": ["image_edit", "image_generate"],
+                    }
+                ]
+            },
             target_language="Spanish (Mexico)",
             platform="mercadolibre",
             image_ids=[source_item["id"]],
@@ -232,6 +265,7 @@ def test_image_translate_service_uses_default_openai_provider(app_dir: Path, tmp
     assert result["ok"] is True
     assert result["generated_count"] == 1
     assert calls[0]["client"]["timeout"] == image_translate_service.IMAGE_AI_TIMEOUT_SECONDS
+    assert calls[0]["client"]["default_headers"]["User-Agent"] == image_translate_service.ai_model_config.AI_HTTP_USER_AGENT
     assert calls[1]["model"] == "fake-image"
     assert calls[1]["image"].closed is True
     item = result["imagePoolItems"][0]

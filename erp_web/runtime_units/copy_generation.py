@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import main as generator
 from product_model import PLATFORMS
-from services import config_service, copy_service
+from services import copy_service
 
 from .collect_helpers import collect_time_iso
 from .image_pool_core import _source_only_pool_items, _source_pool_items
@@ -19,7 +18,7 @@ from .product_store import (
     normalize_product_fields,
     save_product,
 )
-from .runtime_common import AI_TEXT_REQUEST_TIMEOUT_SECONDS, APP_DIR
+from .runtime_common import APP_DIR
 
 def list_presets() -> dict[str, Any]:
     return generator.load_json(APP_DIR / "presets" / "platforms.json")
@@ -61,65 +60,28 @@ def build_plan_for_platform(product: dict[str, Any], platform: str) -> dict[str,
 
 def build_copy_preview(product: dict[str, Any], platform: str, app_cfg: dict[str, Any]) -> dict[str, Any]:
     plan = apply_product_drafts_to_plan(product, build_plan_for_platform(product, platform))
-    ai_cfg = config_service.ai_config_from_sources(APP_DIR, app_cfg).get("text_ai", {})
-    provider_name = str(ai_cfg.get("platform") or "DeepSeek").lower()
-    provider = "deepseek" if "deepseek" in provider_name else "openai"
-    model = str(ai_cfg.get("model") or ("deepseek-chat" if provider == "deepseek" else "gpt-4.1-mini"))
     warning = ""
-    old_env = {
-        "DEEPSEEK_API_KEY": os.environ.get("DEEPSEEK_API_KEY"),
-        "DEEPSEEK_BASE_URL": os.environ.get("DEEPSEEK_BASE_URL"),
-        "DEEPSEEK_MODEL": os.environ.get("DEEPSEEK_MODEL"),
-        "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY"),
-        "OPENAI_BASE_URL": os.environ.get("OPENAI_BASE_URL"),
-    }
-    try:
-        if not str(ai_cfg.get("api_key") or "").strip():
-            warning = f"当前未配置 {ai_cfg.get('platform') or '文本 AI'} API Key，已返回基础草稿。"
-        else:
-            if provider == "deepseek":
-                os.environ["DEEPSEEK_API_KEY"] = str(ai_cfg.get("api_key") or "").strip()
-                os.environ["DEEPSEEK_BASE_URL"] = str(ai_cfg.get("base_url") or "https://api.deepseek.com").strip()
-                os.environ["DEEPSEEK_MODEL"] = model
-            else:
-                os.environ["OPENAI_API_KEY"] = str(ai_cfg.get("api_key") or "").strip()
-                if str(ai_cfg.get("base_url") or "").strip():
-                    os.environ["OPENAI_BASE_URL"] = str(ai_cfg.get("base_url") or "").strip()
-            generator.refine_listing_copy(
-                plan,
-                model=model,
-                provider=provider,
-                deepseek_model=model,
-            )
-    except Exception as exc:
-        warning = str(exc)
-    finally:
-        for key_name, value in old_env.items():
-            if value is None:
-                os.environ.pop(key_name, None)
-            else:
-                os.environ[key_name] = value
     key = platform_to_preset_key(platform)
     listing = plan.get("platforms", {}).get(key, {}).get("listing", {})
+    try:
+        result = copy_service.generate_copy(
+            str(APP_DIR),
+            product,
+            app_cfg,
+            target_market=key,
+            language=str(listing.get("language") or ""),
+            mode="preview",
+        )
+        warning = str(result.get("warning") or "")
+        if not warning and isinstance(result.get("copy"), dict):
+            listing.update(result["copy"])
+    except Exception as exc:
+        warning = str(exc)
     if platform == "mercadolibre":
         listing["title"] = str(listing.get("title") or product.get("name") or "")[:60]
     if platform == "ozon" and not listing.get("description"):
         listing["description"] = "Ozon 俄语文案草稿。"
     return {"plan": plan, "listing": listing, "warning": warning}
-
-
-def openai_client_from_config(app_cfg: dict[str, Any]):
-    text_ai = config_service.ai_config_from_sources(APP_DIR, app_cfg).get("text_ai", {})
-    api_key = str(text_ai.get("api_key") or "").strip()
-    if not api_key:
-        raise RuntimeError("请先在系统设置的“生文案通道”填写 API Key。")
-    base_url = str(text_ai.get("base_url") or "").strip().rstrip("/")
-    kwargs: dict[str, Any] = {"api_key": api_key, "timeout": AI_TEXT_REQUEST_TIMEOUT_SECONDS}
-    if base_url:
-        kwargs["base_url"] = base_url
-    from openai import OpenAI
-
-    return OpenAI(**kwargs)
 
 
 def target_market_label(target_market: str) -> str:

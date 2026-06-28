@@ -8,7 +8,7 @@ import marketplace_publish as publisher
 from product_model import validate_category_precheck
 
 from .common import JsonRequestHandler
-from ..runtime_units.category_attribute_ai_fill import apply_text_ai_attribute_fill
+from ..runtime_units.category_attribute_ai_fill import apply_ai_model_attribute_fill
 from ..runtime_units.category_attribute_translation import translate_category_attributes
 from ..runtime_units.category_result_translation import translate_category_results
 from ..runtime_units.category_refresh import refresh_official_category_cache, start_category_cache_refresh_job
@@ -110,7 +110,7 @@ def handle_category_ai_fill(handler: JsonRequestHandler) -> None:
     product = normalize_product_fields(body.get("product") or load_product())
     body_record = body.get("category_record")
     record = body_record if isinstance(body_record, dict) else find_category_record(platform, category_id)
-    updated, fill_meta = apply_text_ai_attribute_fill(product, platform, record if isinstance(record, dict) else None)
+    updated, fill_meta = apply_ai_model_attribute_fill(product, platform, record if isinstance(record, dict) else None)
     saved = save_product(updated)
     handler.send_json(
         {

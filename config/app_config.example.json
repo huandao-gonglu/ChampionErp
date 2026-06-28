@@ -1,19 +1,38 @@
 {
   "auto_ai_recognition": "0",
   "alibaba_cookie": "",
-  "text_ai": {
-    "platform": "DeepSeek",
-    "api_key": "",
-    "base_url": "https://api.deepseek.com",
-    "model": "deepseek-chat"
-  },
-  "image_ai": {
-    "platform": "OpenAI",
-    "api_key": "",
-    "base_url": "https://api.openai.com/v1",
-    "model": "gpt-image-1",
-    "quality": "medium"
-  },
+  "ai_models": [
+    {
+      "id": "default_text",
+      "name": "默认文本模型",
+      "provider": "DeepSeek",
+      "api_style": "openai_compatible",
+      "base_url": "https://api.deepseek.com",
+      "base_url_env": "DEEPSEEK_BASE_URL",
+      "api_key": "",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "model": "deepseek-chat",
+      "model_env": "DEEPSEEK_MODEL",
+      "capabilities": ["chat", "json"],
+      "enabled": true
+    },
+    {
+      "id": "default_image",
+      "name": "默认图片模型",
+      "provider": "OpenAI",
+      "api_style": "openai_compatible",
+      "base_url": "https://api.openai.com/v1",
+      "base_url_env": "OPENAI_BASE_URL",
+      "api_key": "",
+      "api_key_env": "OPENAI_API_KEY",
+      "model": "gpt-image-1",
+      "model_env": "OPENAI_IMAGE_MODEL",
+      "capabilities": ["image_generate", "image_edit"],
+      "quality": "medium",
+      "enabled": true
+    }
+  ],
+  "ai_use_case_bindings": {},
   "pricing_defaults": {
     "commission_percent": "20",
     "target_margin_percent": "30",

@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import logging
 
 from typing import Callable
 
 from .common import JsonRequestHandler
-from ..runtime_units.auth_runtime import test_ai_channel
+from ..runtime_units.auth_runtime import test_ai_model_config
 from ..runtime_units.copy_generation import (
     apply_product_drafts_to_plan,
     batch_generate_copy_for_products,
@@ -19,6 +20,7 @@ from ..runtime_units.product_store import load_app_config, load_product, load_pr
 
 
 PostHandler = Callable[[JsonRequestHandler], None]
+logger = logging.getLogger(__name__)
 
 def handle_generate_copy(handler: JsonRequestHandler) -> None:
     body = handler.read_body()
@@ -62,12 +64,24 @@ def handle_generate_image_prompts(handler: JsonRequestHandler) -> None:
     return
 
 
-def handle_test_ai_channel(handler: JsonRequestHandler) -> None:
+def handle_test_ai_model(handler: JsonRequestHandler) -> None:
     body = handler.read_body()
     try:
-        result = test_ai_channel(body.get("channel", "text"), body.get("config") or {})
+        model_config = body.get("model") if isinstance(body.get("model"), dict) else body.get("config")
+        result = test_ai_model_config(model_config if isinstance(model_config, dict) else {})
         handler.send_json(result)
     except Exception as exc:
+        model_config = body.get("model") if isinstance(body.get("model"), dict) else body.get("config")
+        model_record = model_config if isinstance(model_config, dict) else {}
+        logger.info(
+            "AI model test failed trigger=%s model_id=%s provider=%s model=%s probe=%s error=%s",
+            model_record.get("test_trigger"),
+            model_record.get("id"),
+            model_record.get("provider"),
+            model_record.get("model"),
+            model_record.get("probe_capabilities", True),
+            exc,
+        )
         handler.send_json({"ok": False, "error": str(exc)}, 400)
     return
 
@@ -76,7 +90,7 @@ POST_HANDLERS: dict[str, PostHandler] = {
     "/api/generate-copy": handle_generate_copy,
     "/api/generate-copy-batch": handle_generate_copy_batch,
     "/api/generate-image-prompts": handle_generate_image_prompts,
-    "/api/test-ai-channel": handle_test_ai_channel,
+    "/api/test-ai-model": handle_test_ai_model,
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)
 

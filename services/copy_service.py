@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 
-from .config_service import ai_config_from_sources
+from . import ai_gateway
 
 
 def service_status() -> dict[str, str]:
@@ -33,18 +32,6 @@ def normalize_list(value: Any, limit: int | None = None) -> list[str]:
         if limit and len(result) >= limit:
             break
     return result
-
-
-def parse_json_text(raw_text: str) -> dict[str, Any]:
-    text = str(raw_text or "").strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        text = text.removeprefix("json").strip()
-    start = text.find("{")
-    end = text.rfind("}")
-    if start >= 0 and end >= start:
-        text = text[start : end + 1]
-    return json.loads(text)
 
 
 def product_summary(product: dict[str, Any]) -> str:
@@ -108,21 +95,6 @@ Product data:
 """
 
 
-def openai_compatible_client(config: dict[str, Any]) -> Any:
-    api_key = str(config.get("api_key") or "").strip()
-    if not api_key:
-        raise RuntimeError("API Key is not configured.")
-    try:
-        from openai import OpenAI
-    except ImportError as exc:
-        raise RuntimeError("OpenAI SDK is not installed. Run: pip install openai") from exc
-    base_url = str(config.get("base_url") or "").strip().rstrip("/")
-    kwargs: dict[str, Any] = {"api_key": api_key}
-    if base_url:
-        kwargs["base_url"] = base_url
-    return OpenAI(**kwargs)
-
-
 def generate_copy(
     app_dir: str,
     product: dict[str, Any],
@@ -133,24 +105,22 @@ def generate_copy(
 ) -> dict[str, Any]:
     target = str(target_market or "mercadolibre").strip().lower()
     language = language or ("Spanish (Mexico)" if target == "mercadolibre" else "English")
-    cfg = ai_config_from_sources(app_dir, app_config).get("text_ai", {})
-    provider = str(cfg.get("platform") or "DeepSeek").strip()
-    if provider.lower() == "nvidia":
-        provider = "DeepSeek"
     result = fallback_copy(product, target)
     warning = ""
     prompt = build_copy_prompt(product, target, language, mode)
+    model = {}
     try:
-        client = openai_compatible_client(cfg)
-        response = client.chat.completions.create(
-            model=str(cfg.get("model") or "deepseek-chat"),
+        model = ai_gateway.resolve_model_for_use_case(app_dir, app_config, "copy.generate")
+        parsed = ai_gateway.chat_json(
+            app_dir,
+            app_config,
+            "copy.generate",
             messages=[
                 {"role": "system", "content": "Return only valid JSON for ecommerce listing copy."},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.35,
         )
-        parsed = parse_json_text(response.choices[0].message.content or "")
         if isinstance(parsed, dict):
             result.update(
                 {
@@ -165,11 +135,11 @@ def generate_copy(
         warning = str(exc)
     return {
         "ok": True,
-        "provider": provider,
+        "provider": str(model.get("provider") or ""),
+        "ai_model_id": str(model.get("id") or ""),
         "target_market": target,
         "language": language,
         "mode": mode,
         "copy": result,
         "warning": warning,
-        "nvidia_deprecated": True,
     }

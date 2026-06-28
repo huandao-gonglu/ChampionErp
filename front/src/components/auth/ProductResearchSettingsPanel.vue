@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { fetchProductResearchSettings, saveProductResearchSettings, testProductResearchSearchProvider } from '@/api/workflow'
+import { completeProductResearchProviderByAi, fetchProductResearchSettings, saveProductResearchSettings, testProductResearchSearchProvider } from '@/api/workflow'
 import type { ProductResearchConfig, ProductResearchProviderTestResult, ProductResearchSourceRegistryItem, ProductResearchTargetMarket, UnknownRecord } from '@/types/workflow'
 
 const props = defineProps<{
-  textAiConfig?: UnknownRecord
+  aiModels?: UnknownRecord[]
+  embedded?: boolean
 }>()
 
 const sourceTypeOptions = [
@@ -17,7 +18,7 @@ const sourceTypeOptions = [
 const strategyOptions = [
   { value: 'seeded_mock', label: '本地种子数据' },
   { value: 'configured_api', label: '已配置 API' },
-  { value: 'text_ai_web_search', label: 'AI 联网搜索' },
+  { value: 'ai_web_search', label: 'AI 联网搜索' },
   { value: 'manual_import', label: '人工导入' },
 ]
 
@@ -45,12 +46,17 @@ const aiCompletionMessage = ref('')
 
 const selectedProvider = computed(() => settings.value.searchProviders[selectedProviderIndex.value] || null)
 const selectedMarket = computed(() => settings.value.targetMarkets[selectedMarketIndex.value] || null)
-const textAiConfig = computed(() => asRecord(props.textAiConfig))
-const textAiReady = computed(() => Boolean(
-  String(textAiConfig.value.base_url || '').trim()
-  && String(textAiConfig.value.api_key || '').trim()
-  && String(textAiConfig.value.model || '').trim(),
-))
+const aiModels = computed(() => (props.aiModels || []).map(asRecord).filter((model) => String(model.id || '').trim()))
+const configCompleteModels = computed(() => aiModels.value.filter((model) => {
+  const capabilities = Array.isArray(model.capabilities) ? model.capabilities.map((item) => String(item || '')) : []
+  return capabilities.includes('chat') && capabilities.includes('json') && model.enabled !== false
+}))
+const webSearchModels = computed(() => aiModels.value.filter((model) => {
+  const capabilities = Array.isArray(model.capabilities) ? model.capabilities.map((item) => String(item || '')) : []
+  return capabilities.includes('chat') && capabilities.includes('json') && capabilities.includes('web_search') && model.enabled !== false
+}))
+const defaultCompletionModelId = computed(() => String(configCompleteModels.value[0]?.id || ''))
+const configCompleteReady = computed(() => configCompleteModels.value.length > 0)
 
 function asRecord(value: unknown): UnknownRecord {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as UnknownRecord : {}
@@ -108,8 +114,8 @@ function defaultApiConfig(): UnknownRecord {
 
 function defaultAiSearchConfig(): UnknownRecord {
   return {
-    provider_strategy: 'text_ai_web_search',
-    ai_config_ref: 'text_ai',
+    provider_strategy: 'ai_web_search',
+    ai_model_id: '',
     max_items: 12,
     require_source_url: true,
   }
@@ -207,15 +213,14 @@ function setProviderSourceType(value: string) {
   selectedProvider.value.sourceType = value
   if (value === 'ai_search') {
     if (!selectedProvider.value.platform || selectedProvider.value.platform.startsWith('source_')) {
-      selectedProvider.value.platform = 'text_ai'
+      selectedProvider.value.platform = 'ai_model'
     }
     selectedProvider.value.authRequired = false
     selectedProvider.value.supportedDataTypes = ['ai_web_search']
     setSelectedConfigJson({
       ...defaultAiSearchConfig(),
       ...asRecord(selectedProvider.value.configJson),
-      provider_strategy: 'text_ai_web_search',
-      ai_config_ref: 'text_ai',
+      provider_strategy: 'ai_web_search',
     })
   } else if (value === 'api' && !selectedProvider.value.providerStrategy) {
     setSelectedConfigJson(defaultApiConfig())
@@ -234,14 +239,14 @@ function setProviderStrategy(value: string) {
   const current = asRecord(selectedProvider.value.configJson)
   const next = {
     ...(value === 'configured_api' ? defaultApiConfig() : {}),
-    ...(value === 'text_ai_web_search' ? defaultAiSearchConfig() : {}),
+    ...(value === 'ai_web_search' ? defaultAiSearchConfig() : {}),
     ...current,
     provider_strategy: value,
   }
-  if (value === 'text_ai_web_search') {
+  if (value === 'ai_web_search') {
     selectedProvider.value.sourceType = 'ai_search'
     if (!selectedProvider.value.platform || selectedProvider.value.platform.startsWith('source_')) {
-      selectedProvider.value.platform = 'text_ai'
+      selectedProvider.value.platform = 'ai_model'
     }
     selectedProvider.value.authRequired = false
     selectedProvider.value.supportedDataTypes = ['ai_web_search']
@@ -270,8 +275,7 @@ function updateAiSearchConfigField(field: string, value: string | number | boole
   setSelectedConfigJson({
     ...defaultAiSearchConfig(),
     ...configJson,
-    provider_strategy: 'text_ai_web_search',
-    ai_config_ref: 'text_ai',
+    provider_strategy: 'ai_web_search',
     [field]: value,
   })
 }
@@ -335,104 +339,23 @@ function updateApiJsonField(section: 'headers' | 'query' | 'body', value: string
   }
 }
 
-function stripJsonFence(value: string) {
-  return value
-    .trim()
-    .replace(/^```(?:json)?/i, '')
-    .replace(/```$/i, '')
-    .trim()
-}
-
 function mergeStringList(current: string[], suggested: unknown, uppercase = false) {
   const next = splitList(Array.isArray(suggested) ? suggested.join(',') : String(suggested || ''), uppercase)
   return next.length ? next : current
-}
-
-function openAiChatUrl(baseUrl: string) {
-  const trimmed = baseUrl.trim().replace(/\/+$/, '')
-  return trimmed.endsWith('/chat/completions') ? trimmed : `${trimmed}/chat/completions`
-}
-
-function aiAutocompletePrompt(provider: ProductResearchSourceRegistryItem) {
-  return [
-    '你是 ERP 选品调研 API 配置助手。只返回 JSON，不要解释。',
-    '目标：根据用户已填写的搜索手段信息，补全不易理解的技术字段。',
-    '不要编造 API Key、Token、真实私密参数。不要覆盖用户已填写的 URL、Key、Token。',
-    'JSON schema:',
-    '{',
-    '  "supported_markets": ["US"],',
-    '  "supported_languages": ["en"],',
-    '  "supported_data_types": ["marketplace_products"],',
-    '  "request": {',
-    '    "method": "GET",',
-    '    "auth_type": "api_key_header",',
-    '    "api_key_header": "x-api-key",',
-    '    "headers": {},',
-    '    "query": {"market": "{market}", "q": "{keyword}"},',
-    '    "body": {}',
-    '  },',
-    '  "response": {',
-    '    "items_path": "data.items",',
-    '    "title_path": "title",',
-    '    "keyword_path": "keyword",',
-    '    "price_path": "price.amount",',
-    '    "currency_path": "price.currency",',
-    '    "url_path": "url",',
-    '    "image_path": "image_url"',
-    '  },',
-    '  "test": {"market": "US", "keyword": "mahjong gift"}',
-    '}',
-    '',
-    `用户已填信息：${JSON.stringify({
-      id: provider.id,
-      name: provider.name,
-      source_type: provider.sourceType,
-      platform: provider.platform,
-      supported_markets: provider.supportedMarkets,
-      supported_languages: provider.supportedLanguages,
-      supported_data_types: provider.supportedDataTypes,
-      config_json: provider.configJson,
-      note: provider.complianceNote,
-    }, null, 2)}`,
-  ].join('\n')
 }
 
 async function completeSelectedProviderByAi() {
   if (!selectedProvider.value) return
   error.value = ''
   aiCompletionMessage.value = ''
-  if (!textAiReady.value) {
-    error.value = '请先在上方文本 AI 填写 Base URL、模型和 API Key。'
+  if (!configCompleteReady.value) {
+    error.value = '请先在上方配置至少一个支持文本和 JSON 的 AI 模型。'
     return
   }
   if (!applySelectedConfigJson()) return
   aiCompletingProvider.value = true
   try {
-    const response = await fetch(openAiChatUrl(String(textAiConfig.value.base_url || '')), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${String(textAiConfig.value.api_key || '').trim()}`,
-      },
-      body: JSON.stringify({
-        model: String(textAiConfig.value.model || '').trim(),
-        messages: [
-          { role: 'system', content: 'You return strict JSON only.' },
-          { role: 'user', content: aiAutocompletePrompt(selectedProvider.value) },
-        ],
-        temperature: 0.1,
-      }),
-    })
-    const payload = await response.json().catch(() => ({}))
-    if (!response.ok) {
-      throw new Error(String(asRecord(payload).error || response.statusText || 'AI 补全失败'))
-    }
-    const rawChoices = asRecord(payload).choices
-    const choices = Array.isArray(rawChoices) ? rawChoices : []
-    const firstChoice = asRecord(choices[0])
-    const message = asRecord(firstChoice.message)
-    const content = String(message.content || '').trim()
-    const suggestion = asRecord(JSON.parse(stripJsonFence(content)))
+    const suggestion = await completeProductResearchProviderByAi(selectedProvider.value, defaultCompletionModelId.value)
     const currentConfig = asRecord(selectedProvider.value.configJson)
     const currentRequest = asRecord(currentConfig.request)
     const suggestedRequest = asRecord(suggestion.request)
@@ -541,7 +464,7 @@ async function testSelectedProvider() {
       keyword: providerTestKeyword.value,
       itemsFound: 0,
       durationMs: 0,
-      error: exc instanceof Error ? exc.message : selectedProvider.value.providerStrategy === 'text_ai_web_search' ? '测试 AI 搜索失败' : '测试 API 失败',
+      error: exc instanceof Error ? exc.message : selectedProvider.value.providerStrategy === 'ai_web_search' ? '测试 AI 搜索失败' : '测试 API 失败',
       sample: {},
       raw: {},
     }
@@ -561,7 +484,7 @@ onMounted(loadSettings)
 </script>
 
 <template>
-  <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
+  <section :class="props.embedded ? 'rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70' : 'rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80'">
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div>
         <h2 class="card-title">选品调研来源</h2>
@@ -668,19 +591,22 @@ onMounted(loadSettings)
               <input v-model="selectedProvider.complianceNote" class="input" placeholder="api从亚马逊获取热榜" />
             </label>
 
-            <div v-if="selectedProvider.sourceType === 'ai_search' || selectedProvider.providerStrategy === 'text_ai_web_search'" class="space-y-3 rounded-lg border border-accent-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-900">
+            <div v-if="selectedProvider.sourceType === 'ai_search' || selectedProvider.providerStrategy === 'ai_web_search'" class="space-y-3 rounded-lg border border-accent-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-900">
               <div class="flex flex-wrap items-center justify-between gap-3">
                 <h4 class="text-sm font-semibold text-accent-950 dark:text-white">AI 搜索配置</h4>
                 <div class="flex flex-wrap items-center gap-2">
-                  <span :class="textAiReady ? 'badge-success' : 'badge-muted'">文本 AI</span>
-                  <span class="badge-info">{{ selectedProvider.providerStrategy || 'text_ai_web_search' }}</span>
+                  <span :class="webSearchModels.length ? 'badge-success' : 'badge-muted'">AI 模型</span>
+                  <span class="badge-info">{{ selectedProvider.providerStrategy || 'ai_web_search' }}</span>
                 </div>
               </div>
 
               <div class="grid gap-3 md:grid-cols-3">
                 <label class="block">
-                  <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">使用 AI 配置</span>
-                  <input class="input" value="text_ai" disabled />
+                  <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">指定模型</span>
+                  <select class="input" :value="aiSearchConfigField('ai_model_id')" @change="updateAiSearchConfigField('ai_model_id', eventText($event))">
+                    <option value="">自动匹配</option>
+                    <option v-for="model in webSearchModels" :key="String(model.id)" :value="String(model.id)">{{ model.name || model.id }}</option>
+                  </select>
                 </label>
                 <label class="block">
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">最大结果</span>

@@ -506,6 +506,16 @@ export async function testProductResearchSearchProvider(provider: ProductResearc
   return normalizeProductResearchProviderTestResult(response.data)
 }
 
+export async function completeProductResearchProviderByAi(provider: ProductResearchSourceRegistryItem, modelId = ''): Promise<UnknownRecord> {
+  const response = await apiClient.post('/api/v1/product-research/search-providers/ai-complete', {
+    provider: toProductResearchProviderPayload(provider),
+    model_id: modelId,
+  })
+  const data = asRecord(response.data)
+  ensureOk(data, 'AI 补全搜索手段失败')
+  return asRecord(data.suggestion)
+}
+
 export async function fetchProductResearchSourceRegistry(): Promise<ProductResearchSourceRegistryItem[]> {
   const config = await fetchProductResearchSettings()
   return config.sourceRegistry
@@ -1137,13 +1147,8 @@ export async function fetchMercadoLibreAuthChecklist(): Promise<MercadoLibreAuth
   return normalizeMercadoLibreAuthChecklist(data.checklist ?? data)
 }
 
-export async function testAiChannel(channel: 'text' | 'image', config: UnknownRecord): Promise<AuthResult> {
-  const channelConfig = channel === 'image' && isRecord(config.image_ai)
-    ? config.image_ai
-    : channel === 'text' && isRecord(config.text_ai)
-      ? config.text_ai
-      : config
-  const response = await apiClient.post('/api/test-ai-channel', { channel, config: channelConfig })
+export async function testAiModel(model: UnknownRecord): Promise<AuthResult> {
+  const response = await apiClient.post('/api/test-ai-model', { model })
   return normalizeAuthResult(response.data)
 }
 

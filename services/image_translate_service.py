@@ -13,13 +13,12 @@ import base64
 import binascii
 import mimetypes
 import os
-import re
 import time
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
-from . import config_service, image_service
+from . import ai_gateway, ai_model_config, image_service
 
 Provider = Callable[[dict[str, Any], dict[str, Any]], list[dict[str, Any]]]
 
@@ -181,7 +180,7 @@ def _call_image_method(method: Any, payload: dict[str, Any]) -> Any:
 
 def openai_image_provider(config: dict[str, Any], request: dict[str, Any]) -> list[dict[str, Any]]:
     """Call an OpenAI-compatible image model and normalize returned images."""
-    api_key = str(config.get("api_key") or "").strip()
+    api_key = ai_model_config.model_api_key(config)
     if not api_key:
         return []
     try:
@@ -189,14 +188,18 @@ def openai_image_provider(config: dict[str, Any], request: dict[str, Any]) -> li
     except ImportError as exc:
         raise RuntimeError("OpenAI SDK is not installed. Run: pip install openai") from exc
 
-    base_url = str(config.get("base_url") or "").strip().rstrip("/")
-    provider_name = str(config.get("platform") or "OpenAI-Compatible").strip() or "OpenAI-Compatible"
-    model = str(config.get("model") or "gpt-image-1").strip()
+    base_url = ai_model_config.model_base_url(config).rstrip("/")
+    provider_name = str(config.get("provider") or config.get("name") or "OpenAI-Compatible").strip() or "OpenAI-Compatible"
+    model = ai_model_config.model_name(config) or "gpt-image-1"
     quality = str(config.get("quality") or "medium").strip()
     size = str(config.get("size") or DEFAULT_IMAGE_SIZE).strip() or DEFAULT_IMAGE_SIZE
     prompt = str(request.get("prompt") or "").strip()
     app_dir = Path(str(request.get("app_dir") or "."))
-    kwargs: dict[str, Any] = {"api_key": api_key, "timeout": IMAGE_AI_TIMEOUT_SECONDS}
+    kwargs: dict[str, Any] = {
+        "api_key": api_key,
+        "timeout": IMAGE_AI_TIMEOUT_SECONDS,
+        "default_headers": {"User-Agent": ai_model_config.AI_HTTP_USER_AGENT},
+    }
     if base_url:
         kwargs["base_url"] = base_url
     client = OpenAI(**kwargs)
@@ -355,8 +358,13 @@ def translate_images(
     ``provider`` is expected to return one or more dicts containing either
     ``bytes``, ``data_url``, ``b64_json``/``base64``, or a local ``path``.
     """
-    cfg = config_service.ai_config_from_sources(app_dir, app_config).get("image_ai", {})
-    provider_name = str(cfg.get("platform") or "OpenAI").strip()
+    config_error = ""
+    try:
+        cfg = ai_gateway.resolve_model_for_use_case(app_dir, app_config, "image.translate")
+    except Exception as exc:
+        cfg = {}
+        config_error = str(exc)
+    provider_name = str(cfg.get("provider") or cfg.get("name") or "OpenAI-Compatible").strip() or "OpenAI-Compatible"
     target = str(target_language or DEFAULT_TARGET_LANGUAGE).strip() or DEFAULT_TARGET_LANGUAGE
     selected = select_source_images(product, image_ids, platform)
     if not selected:
@@ -399,9 +407,11 @@ def translate_images(
     provider_fn = provider or (_mock_provider if use_mock else openai_image_provider)
     generated = provider_fn(cfg, request)
     if not generated:
-        api_key = str(cfg.get("api_key") or "").strip()
-        if not api_key:
-            message = "当前未配置图片翻译服务，请在系统设置中配置 API 后使用。"
+        api_key = ai_model_config.model_api_key(cfg)
+        if config_error:
+            message = f"当前未配置可用图片翻译模型：{config_error}"
+        elif not api_key:
+            message = "当前未配置图片翻译模型 API Key，请在系统设置中配置后使用。"
         elif provider is None and not use_mock:
             message = "图片模型没有返回图片，请检查模型是否支持图片生成/重绘，并确认 Base URL 使用 OpenAI 兼容的 /v1 地址。"
         else:

@@ -5,9 +5,8 @@ import json
 import re
 from typing import Any
 
-from services import config_service
+from services import ai_gateway
 
-from .copy_generation import openai_client_from_config
 from .product_store import load_app_config
 from .runtime_common import APP_DIR, CACHE_DIR
 
@@ -78,22 +77,6 @@ def _normalize_translation_map(value: Any) -> dict[str, Any]:
     return normalized
 
 
-def _json_from_text(text: str) -> dict[str, Any]:
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
-    try:
-        data = json.loads(cleaned)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        match = re.search(r"\{.*\}", cleaned, flags=re.S)
-        if not match:
-            raise
-        data = json.loads(match.group(0))
-        return data if isinstance(data, dict) else {}
-
-
 def _request_ai_attribute_translations(
     platform: str,
     category_id: str,
@@ -102,9 +85,6 @@ def _request_ai_attribute_translations(
     attributes: list[dict[str, Any]],
 ) -> dict[str, Any]:
     app_cfg = load_app_config()
-    text_ai = config_service.ai_config_from_sources(APP_DIR, app_cfg).get("text_ai", {})
-    model = str(text_ai.get("model") or "deepseek-chat").strip()
-    client = openai_client_from_config(app_cfg)
     prompt = {
         "platform": platform,
         "category_id": category_id,
@@ -130,21 +110,7 @@ def _request_ai_attribute_translations(
             ),
         },
     ]
-    try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=0.1,
-            response_format={"type": "json_object"},
-        )
-    except Exception:
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=0.1,
-        )
-    content = response.choices[0].message.content or ""
-    return _normalize_translation_map(_json_from_text(content))
+    return _normalize_translation_map(ai_gateway.chat_json(APP_DIR, app_cfg, "category.attribute_translation", messages, temperature=0.1))
 
 
 def translate_category_attributes(

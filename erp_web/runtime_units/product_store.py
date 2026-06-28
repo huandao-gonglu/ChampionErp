@@ -827,14 +827,8 @@ def _clear_store_auth_result() -> dict[str, str]:
 
 
 
-AI_CONFIG_ALIAS_KEYS_TO_DROP = app_config_runtime.AI_CONFIG_ALIAS_KEYS_TO_DROP
-
 def default_app_config() -> dict[str, Any]:
     return app_config_runtime.default_app_config()
-
-
-def normalize_ai_section(section: Any, defaults: dict[str, str], include_quality: bool = False) -> dict[str, str]:
-    return app_config_runtime.normalize_ai_section(section, defaults, include_quality=include_quality)
 
 
 def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -842,7 +836,6 @@ def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
 
 
 __all__ = [
-    "AI_CONFIG_ALIAS_KEYS_TO_DROP",
     "delete_draft_from_index",
     "delete_products_from_index",
     "explain_mercadolibre_auth_error",

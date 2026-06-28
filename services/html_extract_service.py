@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
+from . import ai_model_config
+
 try:
     from PIL import Image
 except Exception:  # pragma: no cover
@@ -30,16 +32,8 @@ def load_app_config() -> dict[str, Any]:
     Kept here so erp_web_app no longer imports the legacy tkinter desktop app.
     """
     return {
-        "api_provider": "DeepSeek",
-        "openai_api_key": "",
-        "openai_base_url": "https://api.openai.com/v1",
-        "openai_image_model": "gpt-image-1.5",
-        "nvidia_api_key": "",
-        "nvidia_base_url": "https://integrate.api.nvidia.com/v1",
-        "nvidia_model": "minimaxai/minimax-m2.7",
-        "deepseek_api_key": "",
-        "deepseek_base_url": "https://api.deepseek.com",
-        "deepseek_model": "deepseek-chat",
+        "ai_models": ai_model_config.default_ai_models(),
+        "ai_use_case_bindings": {},
         "auto_ai_recognition": "0",
         "alibaba_cookie": "",
     }

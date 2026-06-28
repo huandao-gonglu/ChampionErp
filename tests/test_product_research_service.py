@@ -128,7 +128,7 @@ def test_keyword_only_request_does_not_merge_default_china_elements() -> None:
     assert {item["china_element_type"] for item in expanded} == {"custom_keyword"}
 
 
-def test_text_ai_web_search_adds_source_backed_signals(tmp_path, monkeypatch) -> None:
+def test_ai_web_search_adds_source_backed_signals(tmp_path, monkeypatch) -> None:
     class FakeResponse:
         def __enter__(self):
             return self
@@ -175,14 +175,14 @@ def test_text_ai_web_search_adds_source_backed_signals(tmp_path, monkeypatch) ->
         seen["prompt"] = body["messages"][1]["content"]
         return FakeResponse()
 
-    monkeypatch.setattr(product_research_service.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(product_research_service.ai_gateway.urllib.request, "urlopen", fake_urlopen)
     config = default_product_research_config()
     config["search_providers"] = [
         {
             "id": "ai_market_search",
             "name": "AI 市场搜索",
             "source_type": "ai_search",
-            "platform": "text_ai",
+            "platform": "ai_model",
             "enabled": True,
             "priority": 1,
             "supported_markets": ["US"],
@@ -190,8 +190,8 @@ def test_text_ai_web_search_adds_source_backed_signals(tmp_path, monkeypatch) ->
             "supported_data_types": ["ai_web_search"],
             "auth_required": False,
             "config_json": {
-                "provider_strategy": "text_ai_web_search",
-                "ai_config_ref": "text_ai",
+                "provider_strategy": "ai_web_search",
+                "ai_model_id": "web_search_model",
                 "max_items": 12,
                 "require_source_url": True,
             },
@@ -212,19 +212,23 @@ def test_text_ai_web_search_adds_source_backed_signals(tmp_path, monkeypatch) ->
         body,
         normalize_product_research_config(config),
         {
-            "text_ai": {
-                "platform": "OpenAI-Compatible",
-                "api_key": "text-ai-key",
-                "base_url": "https://ai.example.com/v1",
-                "model": "web-search-model",
-            }
+            "ai_models": [
+                {
+                    "id": "web_search_model",
+                    "provider": "OpenAI-Compatible",
+                    "api_key": "ai-key",
+                    "base_url": "https://ai.example.com/v1",
+                    "model": "web-search-model",
+                    "capabilities": ["chat", "json", "web_search"],
+                }
+            ]
         },
     )
 
     ai_status = next(row for row in task["source_status"] if row["source_id"] == "ai_market_search")
     ai_signal = next(signal for signal in task["signals"] if signal["source_id"] == "ai_market_search")
     assert seen["url"] == "https://ai.example.com/v1/chat/completions"
-    assert seen["auth"] == "Bearer text-ai-key"
+    assert seen["auth"] == "Bearer ai-key"
     assert seen["model"] == "web-search-model"
     assert "pet storage" in seen["prompt"]
     assert ai_status["status"] == "success"
@@ -247,18 +251,22 @@ def test_text_ai_web_search_adds_source_backed_signals(tmp_path, monkeypatch) ->
         normalize_product_research_config(config),
         tmp_path,
         {
-            "text_ai": {
-                "platform": "OpenAI-Compatible",
-                "api_key": "text-ai-key",
-                "base_url": "https://ai.example.com/v1",
-                "model": "web-search-model",
-            }
+            "ai_models": [
+                {
+                    "id": "web_search_model",
+                    "provider": "OpenAI-Compatible",
+                    "api_key": "ai-key",
+                    "base_url": "https://ai.example.com/v1",
+                    "model": "web-search-model",
+                    "capabilities": ["chat", "json", "web_search"],
+                }
+            ]
         },
     )
 
     assert result["ok"] is True
     assert result["source_id"] == "ai_market_search"
-    assert result["provider_strategy"] == "text_ai_web_search"
+    assert result["provider_strategy"] == "ai_web_search"
     assert result["items_found"] == 1
 
 

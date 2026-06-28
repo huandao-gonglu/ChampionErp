@@ -59,7 +59,7 @@ import {
   suggestCategories,
   syncGeneratedImages,
   testApiConfig,
-  testAiChannel,
+  testAiModel,
   testStoreAuth,
   uploadImages,
 } from '@/api/workflow'
@@ -109,9 +109,28 @@ function isRecord(value: unknown): value is UnknownRecord {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
+function publicSafeAiModel(model: UnknownRecord): UnknownRecord {
+  const safe = { ...model }
+  if (safe.api_key) {
+    delete safe.api_key
+    if (safe.api_key_configured === undefined) safe.api_key_configured = true
+  }
+  return safe
+}
+
 function mergeAiConfigWithSubmitted(publicConfig: UnknownRecord, submittedConfig: UnknownRecord): UnknownRecord {
   const merged: UnknownRecord = { ...publicConfig }
-  for (const section of ['text_ai', 'image_ai', '1688_api', 'pricing_defaults']) {
+  if (Array.isArray(submittedConfig.ai_models)) {
+    const publicModels = Array.isArray(publicConfig.ai_models) ? publicConfig.ai_models.filter(isRecord) : []
+    const publicById = new Map(publicModels.map((model) => [String(model.id || ''), publicSafeAiModel(model)]))
+    merged.ai_models = submittedConfig.ai_models
+      .filter(isRecord)
+      .map((model) => publicSafeAiModel({ ...(publicById.get(String(model.id || '')) || {}), ...model }))
+  }
+  if (isRecord(submittedConfig.ai_use_case_bindings)) {
+    merged.ai_use_case_bindings = submittedConfig.ai_use_case_bindings
+  }
+  for (const section of ['1688_api', 'pricing_defaults']) {
     const publicSection = isRecord(publicConfig[section]) ? publicConfig[section] as UnknownRecord : {}
     const submittedSection = isRecord(submittedConfig[section]) ? submittedConfig[section] as UnknownRecord : {}
     merged[section] = { ...publicSection, ...submittedSection }
@@ -1209,7 +1228,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
       product.value = result.product
       const after = product.value.drafts[activeMarketplace.value].attributes
       const filledCount = Object.keys(after).filter((key) => String(after[key] || '').trim() && String(before[key] || '').trim() !== String(after[key] || '').trim()).length
-      const source = result.raw?.fill_source === 'text_ai' ? '文本 AI' : '规则'
+      const source = result.raw?.fill_source === 'ai_model' ? 'AI 模型' : '规则'
       addLog(`属性已填充：${source} 新增/更新 ${filledCount} 项，需要复核 ${result.needReview.length} 项。`)
       if (result.warning) addLog(result.warning)
     } catch (exc) {
@@ -1488,12 +1507,12 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
-  async function testAiSettings(channel: 'text' | 'image', config: UnknownRecord) {
+  async function testAiSettings(model: UnknownRecord) {
     loading.value = true
     setError('')
     try {
-      lastAuthResult.value = await testAiChannel(channel, config)
-      addLog(`${channel} AI 测试：${lastAuthResult.value.message || lastAuthResult.value.error || '完成'}`)
+      lastAuthResult.value = await testAiModel(model)
+      addLog(`AI 模型测试：${lastAuthResult.value.message || lastAuthResult.value.error || '完成'}`)
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : '测试 AI 失败'
       lastAuthResult.value = {
@@ -1502,7 +1521,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
         error: message,
         errorCode: '',
         nextAction: '请检查 API Key、Base URL 和模型名，然后再试一次。',
-        raw: { ok: false, error: message, channel },
+        raw: { ok: false, error: message, channel: 'ai_model' },
       }
       setError(message)
     } finally {

@@ -157,7 +157,28 @@ def test_search_provider_payload(body: dict[str, Any]) -> ResponseWithStatus:
         return {"ok": False, "error": str(exc)}, 500
 
 
+def complete_provider_config_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    try:
+        app_config = load_app_config()
+        current = app_config.get("product_research") if isinstance(app_config.get("product_research"), dict) else {}
+        provider = body.get("provider") if isinstance(body.get("provider"), dict) else {}
+        restored = _restore_masked_provider_secrets({"search_providers": [provider]}, current)
+        model_id = str(body.get("model_id") or body.get("ai_model_id") or "").strip()
+        suggestion = product_research_service.complete_provider_config_with_ai(
+            (restored.get("search_providers") or [{}])[0],
+            APP_DIR,
+            app_config,
+            model_id=model_id,
+        )
+        return {"ok": True, "suggestion": suggestion}, 200
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}, 400
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}, 500
+
+
 __all__ = [
+    "complete_provider_config_payload",
     "create_search_task_payload",
     "get_search_task_payload",
     "get_source_registry_payload",

@@ -3,37 +3,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from services import ai_model_config
+
 from .product_research_config import default_product_research_config, normalize_product_research_config
 
 
 DEFAULT_EXCHANGE_RATE_API_URL = "https://open.er-api.com/v6/latest/USD"
-
-AI_CONFIG_ALIAS_KEYS_TO_DROP = {
-    "api_provider",
-    "deepseek_api_key",
-    "deepseek_base_url",
-    "deepseek_model",
-    "openai_api_key",
-    "openai_base_url",
-    "openai_model",
-    "openai_text_api_key",
-    "openai_text_model",
-    "openai_image_model",
-    "openai_image_quality",
-    "nvidia_api_key",
-    "nvidia_base_url",
-    "nvidia_model",
-    "text_ai_platform",
-    "text_ai_api_key",
-    "text_ai_base_url",
-    "text_ai_model",
-    "image_ai_platform",
-    "image_ai_api_key",
-    "image_ai_base_url",
-    "image_ai_model",
-    "image_ai_quality",
-    "nvidia_deprecated",
-}
+PRESERVED_APP_CONFIG_KEYS = {"auto_ai_recognition", "alibaba_cookie", "mercadolibre_title_limit"}
 
 
 def mask_secret(value: Any) -> str:
@@ -43,6 +19,71 @@ def mask_secret(value: Any) -> str:
     if len(text) <= 8:
         return f"{text[:2]}****"
     return f"{text[:4]}****{text[-4:]}"
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _first_text(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _find_model_index(models: list[dict[str, Any]], preferred_id: str, capabilities: set[str]) -> int:
+    for index, model in enumerate(models):
+        if str(model.get("id") or "") == preferred_id:
+            return index
+    for index, model in enumerate(models):
+        model_caps = set(ai_model_config.normalize_capabilities(model.get("capabilities")))
+        if capabilities and capabilities.issubset(model_caps):
+            return index
+    return -1
+
+
+def _apply_legacy_model_values(model: dict[str, Any], values: dict[str, str], *, override_existing: bool) -> dict[str, Any]:
+    next_model = dict(model)
+    for key, value in values.items():
+        if not value:
+            continue
+        if override_existing or not str(next_model.get(key) or "").strip():
+            next_model[key] = value
+    return next_model
+
+
+def migrate_legacy_ai_config(incoming: dict[str, Any], ai_models: list[dict[str, Any]], *, override_defaults: bool) -> list[dict[str, Any]]:
+    """Read old AI config fields once and map them into canonical ai_models."""
+    legacy_text = _as_dict(incoming.get("text_ai"))
+    legacy_image = _as_dict(incoming.get("image_ai"))
+    text_values = {
+        "provider": _first_text(legacy_text.get("platform"), incoming.get("api_provider")),
+        "api_key": _first_text(legacy_text.get("api_key"), incoming.get("text_ai_api_key"), incoming.get("deepseek_api_key")),
+        "base_url": _first_text(legacy_text.get("base_url"), incoming.get("text_ai_base_url"), incoming.get("deepseek_base_url")),
+        "model": _first_text(legacy_text.get("model"), incoming.get("text_ai_model"), incoming.get("deepseek_model")),
+    }
+    image_values = {
+        "provider": _first_text(legacy_image.get("platform"), incoming.get("image_ai_platform"), "OpenAI" if _first_text(legacy_image.get("api_key"), incoming.get("image_ai_api_key"), incoming.get("openai_api_key")) else ""),
+        "api_key": _first_text(legacy_image.get("api_key"), incoming.get("image_ai_api_key"), incoming.get("openai_api_key")),
+        "base_url": _first_text(legacy_image.get("base_url"), incoming.get("image_ai_base_url"), incoming.get("openai_base_url")),
+        "model": _first_text(legacy_image.get("model"), incoming.get("image_ai_model"), incoming.get("openai_image_model"), incoming.get("openai_model")),
+        "quality": _first_text(legacy_image.get("quality"), incoming.get("image_ai_quality"), incoming.get("openai_image_quality")),
+    }
+    if not any(text_values.values()) and not any(image_values.values()):
+        return ai_models
+
+    models = [dict(model) for model in ai_models]
+    text_index = _find_model_index(models, "default_text", {ai_model_config.CAP_CHAT, ai_model_config.CAP_JSON})
+    if text_index >= 0 and any(text_values.values()):
+        models[text_index] = _apply_legacy_model_values(models[text_index], text_values, override_existing=override_defaults)
+
+    image_index = _find_model_index(models, "default_image", {ai_model_config.CAP_IMAGE_EDIT})
+    if image_index >= 0 and any(image_values.values()):
+        models[image_index] = _apply_legacy_model_values(models[image_index], image_values, override_existing=override_defaults)
+
+    return models
 
 
 def default_app_config() -> dict[str, Any]:
@@ -59,19 +100,8 @@ def default_app_config() -> dict[str, Any]:
             "sign_method": "md5",
             "timeout_seconds": "20",
         },
-        "text_ai": {
-            "platform": "DeepSeek",
-            "api_key": "",
-            "base_url": "https://api.deepseek.com",
-            "model": "deepseek-chat",
-        },
-        "image_ai": {
-            "platform": "OpenAI",
-            "api_key": "",
-            "base_url": "https://api.openai.com/v1",
-            "model": "gpt-image-1",
-            "quality": "medium",
-        },
+        "ai_models": ai_model_config.default_ai_models(),
+        "ai_use_case_bindings": {},
         "pricing_defaults": {
             "exchange_rate_api_url": DEFAULT_EXCHANGE_RATE_API_URL,
             "exchange_rate_timeout_seconds": "10",
@@ -81,31 +111,17 @@ def default_app_config() -> dict[str, Any]:
     }
 
 
-def normalize_ai_section(section: Any, defaults: dict[str, str], include_quality: bool = False) -> dict[str, str]:
-    raw = section if isinstance(section, dict) else {}
-    api_key = str(raw.get("api_key") or "").strip()
-    normalized = {
-        "platform": str(raw.get("platform") or defaults["platform"]).strip(),
-        "api_key": api_key,
-        "base_url": str(raw.get("base_url") or defaults["base_url"]).strip(),
-        "model": str(raw.get("model") or defaults["model"]).strip(),
-        "masked_key": mask_secret(api_key),
-        "status": "已绑定" if api_key else "未绑定",
-    }
-    if normalized["platform"].lower() == "nvidia":
-        normalized["platform"] = defaults["platform"]
-    if include_quality:
-        normalized["quality"] = str(raw.get("quality") or defaults.get("quality") or "medium").strip()
-    return normalized
-
-
 def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
-    """Normalize runtime config. AI config is canonical-only."""
+    """Normalize runtime config. AI config is stored in canonical ai_models."""
     incoming = config if isinstance(config, dict) else {}
     defaults = default_app_config()
 
-    text_ai = normalize_ai_section(incoming.get("text_ai"), defaults["text_ai"])
-    image_ai = normalize_ai_section(incoming.get("image_ai"), defaults["image_ai"], include_quality=True)
+    raw_ai_models = incoming.get("ai_models")
+    has_canonical_ai_models = isinstance(raw_ai_models, list) and bool(raw_ai_models)
+    ai_models = ai_model_config.normalize_ai_models(raw_ai_models if has_canonical_ai_models else defaults["ai_models"])
+    ai_models = migrate_legacy_ai_config(incoming, ai_models, override_defaults=not has_canonical_ai_models)
+    ai_models = ai_model_config.normalize_ai_models(ai_models)
+    ai_use_case_bindings = ai_model_config.normalize_ai_use_case_bindings(incoming.get("ai_use_case_bindings"))
     raw_pricing = incoming.get("pricing_defaults") if isinstance(incoming.get("pricing_defaults"), dict) else {}
     pricing_defaults = {
         "commission_percent": str(raw_pricing.get("commission_percent") or "20"),
@@ -130,11 +146,7 @@ def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
         "exchange_rate_cache_ttl_seconds": str(raw_pricing.get("exchange_rate_cache_ttl_seconds") or defaults["pricing_defaults"]["exchange_rate_cache_ttl_seconds"]).strip(),
     }
 
-    canonical = {
-        key: value
-        for key, value in incoming.items()
-        if key not in AI_CONFIG_ALIAS_KEYS_TO_DROP and key not in {"text_ai", "image_ai", "pricing_defaults", "product_research"}
-    }
+    canonical = {key: incoming[key] for key in PRESERVED_APP_CONFIG_KEYS if key in incoming}
     canonical["auto_ai_recognition"] = str(canonical.get("auto_ai_recognition") or defaults["auto_ai_recognition"])
     canonical["alibaba_cookie"] = str(canonical.get("alibaba_cookie") or defaults["alibaba_cookie"])
     raw_1688_api = incoming.get("1688_api") if isinstance(incoming.get("1688_api"), dict) else {}
@@ -155,8 +167,8 @@ def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
     next_1688_api["masked_access_token"] = mask_secret(next_1688_api["access_token"])
     next_1688_api["status"] = "已配置" if next_1688_api["app_key"] and next_1688_api["app_secret"] else "未配置"
     canonical["1688_api"] = next_1688_api
-    canonical["text_ai"] = text_ai
-    canonical["image_ai"] = image_ai
+    canonical["ai_models"] = ai_models
+    canonical["ai_use_case_bindings"] = ai_use_case_bindings
     canonical["pricing_defaults"] = pricing_defaults
     canonical["product_research"] = normalize_product_research_config(incoming.get("product_research"))
     return canonical

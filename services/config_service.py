@@ -1,17 +1,16 @@
-"""Configuration helpers for AI channels and local runtime settings."""
+"""Configuration helpers for AI models and local runtime settings."""
 
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
 
+from . import ai_model_config
 
-TEXT_PROVIDERS = ("DeepSeek", "OpenAI", "OpenAI-Compatible")
-IMAGE_PROVIDERS = ("OpenAI", "OpenAI-Compatible")
+
 PRODUCT_RESEARCH_SENSITIVE_CONFIG_KEYS = {
     "access_token",
     "api_key",
@@ -63,65 +62,33 @@ def mask_nested_config(value: Any, key: str = "") -> Any:
     return value
 
 
-def ai_config_from_sources(app_dir: Path | str, app_config: dict[str, Any] | None = None) -> dict[str, Any]:
+def public_ai_config(app_dir: Path | str, app_config: dict[str, Any] | None = None) -> dict[str, Any]:
     load_env(app_dir)
     cfg = app_config if isinstance(app_config, dict) else {}
-    text_ai = cfg.get("text_ai") if isinstance(cfg.get("text_ai"), dict) else {}
-    image_ai = cfg.get("image_ai") if isinstance(cfg.get("image_ai"), dict) else {}
-    text_provider = str(text_ai.get("platform") or "DeepSeek").strip()
-    if text_provider.lower() == "nvidia":
-        text_provider = "DeepSeek"
-    image_provider = str(image_ai.get("platform") or "OpenAI").strip()
-    if image_provider.lower() == "nvidia":
-        image_provider = "OpenAI"
-    return {
-        "text_ai": {
-            "platform": text_provider,
-            "api_key": str(text_ai.get("api_key") if "api_key" in text_ai else os.getenv("DEEPSEEK_API_KEY") or "").strip(),
-            "base_url": str(text_ai.get("base_url") or os.getenv("DEEPSEEK_BASE_URL") or "https://api.deepseek.com").strip(),
-            "model": str(text_ai.get("model") or os.getenv("DEEPSEEK_MODEL") or "deepseek-chat").strip(),
-        },
-        "image_ai": {
-            "platform": image_provider,
-            "api_key": str(image_ai.get("api_key") if "api_key" in image_ai else os.getenv("OPENAI_API_KEY") or "").strip(),
-            "base_url": str(image_ai.get("base_url") or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").strip(),
-            "model": str(image_ai.get("model") or os.getenv("OPENAI_IMAGE_MODEL") or "gpt-image-1").strip(),
-            "quality": str(image_ai.get("quality") or "medium").strip(),
-        },
-        "providers": {
-            "text": list(TEXT_PROVIDERS),
-            "image": list(IMAGE_PROVIDERS),
-            "deprecated": ["NVIDIA"],
-        },
-        "storage": {
-            "config_dir": str(config_dir(app_dir)),
-            "env_path": str(env_path(app_dir)),
-        },
+    public = ai_model_config.public_ai_config(cfg)
+    public["storage"] = {
+        "config_dir": str(config_dir(app_dir)),
+        "env_path": str(env_path(app_dir)),
     }
-
-
-def public_ai_config(app_dir: Path | str, app_config: dict[str, Any] | None = None) -> dict[str, Any]:
-    cfg = ai_config_from_sources(app_dir, app_config)
-    for section in ("text_ai", "image_ai"):
-        cfg[section]["api_key_masked"] = mask_secret(cfg[section].get("api_key"))
-        cfg[section]["api_key_configured"] = bool(cfg[section].get("api_key"))
-        cfg[section].pop("api_key", None)
-    return cfg
+    return public
 
 
 def merge_ai_config(app_dir: Path | str, current: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
     merged = dict(current or {})
-    for section in ("text_ai", "image_ai"):
-        current_section = merged.get(section) if isinstance(merged.get(section), dict) else {}
-        incoming_section = incoming.get(section) if isinstance(incoming.get(section), dict) else {}
-        next_section = dict(current_section)
-        for key in ("platform", "api_key", "base_url", "model", "quality"):
-            if key in incoming_section:
-                next_section[key] = incoming_section[key]
-        if str(next_section.get("platform") or "").lower() == "nvidia":
-            next_section["platform"] = "DeepSeek" if section == "text_ai" else "OpenAI"
-            next_section["deprecated_note"] = "NVIDIA provider is deprecated and hidden in the Web UI."
-        merged[section] = next_section
+    if isinstance(incoming.get("ai_models"), list):
+        current_models = ai_model_config.normalize_ai_models(current.get("ai_models") if isinstance(current, dict) else None)
+        current_by_id = {str(model.get("id") or ""): model for model in current_models if str(model.get("id") or "")}
+        next_models = ai_model_config.normalize_ai_models(incoming.get("ai_models"))
+        for model in next_models:
+            model_id = str(model.get("id") or "")
+            current_model = current_by_id.get(model_id, {})
+            current_key = str(current_model.get("api_key") or "").strip()
+            incoming_key = str(model.get("api_key") or "").strip()
+            if current_key and (not incoming_key or incoming_key == mask_secret(current_key)):
+                model["api_key"] = current_key
+        merged["ai_models"] = next_models
+    if isinstance(incoming.get("ai_use_case_bindings"), dict):
+        merged["ai_use_case_bindings"] = ai_model_config.normalize_ai_use_case_bindings(incoming.get("ai_use_case_bindings"))
     if isinstance(incoming.get("pricing_defaults"), dict):
         current_pricing = merged.get("pricing_defaults") if isinstance(merged.get("pricing_defaults"), dict) else {}
         incoming_pricing = incoming.get("pricing_defaults") if isinstance(incoming.get("pricing_defaults"), dict) else {}
@@ -156,9 +123,10 @@ def write_env_template(app_dir: Path | str) -> Path:
 def save_config_snapshot(app_dir: Path | str, config: dict[str, Any]) -> Path:
     path = config_dir(app_dir) / "ai_config.snapshot.json"
     safe = json.loads(json.dumps(config or {}, ensure_ascii=False))
-    for section in ("text_ai", "image_ai"):
-        if isinstance(safe.get(section), dict) and safe[section].get("api_key"):
-            safe[section]["api_key"] = mask_secret(safe[section]["api_key"])
+    if isinstance(safe.get("ai_models"), list):
+        for model in safe["ai_models"]:
+            if isinstance(model, dict) and model.get("api_key"):
+                model["api_key"] = mask_secret(model["api_key"])
     if isinstance(safe.get("1688_api"), dict):
         for key in ("app_key", "app_secret", "access_token"):
             if safe["1688_api"].get(key):
@@ -179,7 +147,6 @@ def save_config_snapshot(app_dir: Path | str, config: dict[str, Any]) -> Path:
 
 
 __all__ = [
-    "ai_config_from_sources",
     "config_dir",
     "env_path",
     "load_env",

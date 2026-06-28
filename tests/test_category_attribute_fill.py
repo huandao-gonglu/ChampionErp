@@ -32,7 +32,7 @@ def test_ai_attribute_fill_treats_attribute_id_value_as_missing() -> None:
     assert "AIR_CONDITIONER_TYPE" in result["need_review"]
 
 
-def test_text_ai_attribute_fill_uses_product_context_and_validates_options(monkeypatch) -> None:
+def test_ai_model_attribute_fill_uses_product_context_and_validates_options(monkeypatch) -> None:
     product = default_product_model()
     product["name"] = "Portable air conditioner"
     product["source"]["title"] = "Portable electric air conditioner with cooling"
@@ -71,12 +71,12 @@ def test_text_ai_attribute_fill_uses_product_context_and_validates_options(monke
 
     monkeypatch.setattr(category_attribute_ai_fill, "_request_ai_fill", fake_request_ai_fill)
 
-    updated, meta = category_attribute_ai_fill.apply_text_ai_attribute_fill(product, "mercadolibre", category)
+    updated, meta = category_attribute_ai_fill.apply_ai_model_attribute_fill(product, "mercadolibre", category)
     attrs = updated["drafts"]["mercadolibre"]["attributes"]
 
     assert captured["title"] == "Portable electric air conditioner with cooling"
     assert "AIR_CONDITIONER_TYPE" in captured["schema_ids"]
-    assert meta["source"] == "text_ai"
+    assert meta["source"] == "ai_model"
     assert attrs["BRAND"] == "Generic"
     assert attrs["MODEL"] == "T-3A"
     assert attrs["AIR_CONDITIONER_TYPE"] == "Portable"

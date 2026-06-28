@@ -371,7 +371,7 @@ watch(
       <div>
         <h2 class="card-title">类目 / 属性 / 发布预检</h2>
         <p class="muted mt-1">类目搜索、必填属性填充、发布前校验和 payload 预览。</p>
-        <p v-if="showCategoryResultTranslationProgress || showAttributeTranslationProgress" class="mt-1 text-xs text-brand-700 dark:text-brand-300">正在调用文本 AI 翻译类目/属性...</p>
+        <p v-if="showCategoryResultTranslationProgress || showAttributeTranslationProgress" class="mt-1 text-xs text-brand-700 dark:text-brand-300">正在调用 AI 模型翻译类目/属性...</p>
         <p v-else-if="translateAttributesEnabled && (categoryResultTranslationCount || translationCount)" class="mt-1 text-xs text-accent-500 dark:text-accent-400">已翻译候选类目 {{ categoryResultTranslationCount }} 项 / 属性 {{ translationCount }} 项</p>
       </div>
       <div class="flex flex-wrap items-center gap-2">

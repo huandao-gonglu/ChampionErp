@@ -26,7 +26,7 @@ from erp_web.schemas.product_research import (
     ProductResearchSourceStatus,
     ProductResearchTask,
 )
-from services import config_service
+from services import ai_gateway
 
 
 SENSITIVE_CONFIG_KEYS = {
@@ -660,56 +660,7 @@ def _configured_api_signals(
     return signals
 
 
-def _chat_completions_url(base_url: str) -> str:
-    trimmed = str(base_url or "").strip().rstrip("/")
-    if not trimmed:
-        return ""
-    if trimmed.endswith("/chat/completions"):
-        return trimmed
-    return f"{trimmed}/chat/completions"
-
-
-def _json_from_text(raw_text: str) -> dict[str, Any]:
-    text = str(raw_text or "").strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        text = text.removeprefix("json").strip()
-    start = text.find("{")
-    end = text.rfind("}")
-    if start >= 0 and end >= start:
-        text = text[start : end + 1]
-    parsed = json.loads(text)
-    if isinstance(parsed, list):
-        return {"items": parsed}
-    if not isinstance(parsed, dict):
-        raise ValueError("AI response JSON must be an object.")
-    return parsed
-
-
-def _chat_response_text(payload: Any) -> str:
-    if not isinstance(payload, dict):
-        return ""
-    choices = payload.get("choices")
-    if isinstance(choices, list) and choices:
-        first = choices[0] if isinstance(choices[0], dict) else {}
-        message = first.get("message") if isinstance(first.get("message"), dict) else {}
-        content = message.get("content")
-        if isinstance(content, list):
-            parts = []
-            for item in content:
-                if isinstance(item, dict):
-                    parts.append(str(item.get("text") or item.get("content") or ""))
-                else:
-                    parts.append(str(item or ""))
-            return "\n".join(part for part in parts if part)
-        return str(content or first.get("text") or "")
-    output_text = payload.get("output_text")
-    if isinstance(output_text, str):
-        return output_text
-    return ""
-
-
-def _text_ai_web_search_prompt(market: str, language: str, keyword_items: list[dict[str, str]], max_items: int) -> str:
+def _ai_web_search_prompt(market: str, language: str, keyword_items: list[dict[str, str]], max_items: int) -> str:
     keywords = [item["keyword"] for item in keyword_items]
     return f"""Use your web search capability to research ecommerce demand signals.
 
@@ -743,48 +694,6 @@ Rules:
 """
 
 
-def _text_ai_web_search_request_json(
-    text_ai: dict[str, Any],
-    market: str,
-    language: str,
-    keyword_items: list[dict[str, str]],
-    max_items: int,
-    timeout_seconds: int,
-) -> Any:
-    url = _chat_completions_url(str(text_ai.get("base_url") or ""))
-    if not url:
-        raise ValueError("Text AI Base URL is not configured.")
-    model = str(text_ai.get("model") or "").strip()
-    if not model:
-        raise ValueError("Text AI model is not configured.")
-    prompt = _text_ai_web_search_prompt(market, language, keyword_items, max_items)
-    body: dict[str, Any] = {
-        "model": model,
-        "messages": [
-            {
-                "role": "system",
-                "content": "You are a source-backed ecommerce market research assistant. Return only JSON.",
-            },
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.2,
-        "max_tokens": 1800,
-        "stream": False,
-    }
-    if "api.openai.com" in url and "search" in model.lower():
-        body.pop("temperature", None)
-        body["web_search_options"] = {"search_context_size": "medium"}
-    headers = {
-        "Authorization": f"Bearer {str(text_ai.get('api_key') or '').strip()}",
-        "Content-Type": "application/json",
-    }
-    req = urllib.request.Request(url, data=json.dumps(body, ensure_ascii=False).encode("utf-8"), headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout_seconds) as response:
-        raw = response.read()
-    text = raw.decode("utf-8")
-    return json.loads(text) if text else {}
-
-
 def _keyword_item_for_ai_result(raw_keyword: Any, keyword_items: list[dict[str, str]]) -> dict[str, str] | None:
     keyword = str(raw_keyword or "").strip().lower()
     if not keyword and len(keyword_items) == 1:
@@ -804,7 +713,7 @@ def _url_value(value: Any) -> str:
     return ""
 
 
-def _text_ai_web_search_signals_from_items(
+def _ai_web_search_signals_from_items(
     items: Any,
     market: str,
     language: str,
@@ -812,12 +721,12 @@ def _text_ai_web_search_signals_from_items(
     source: ProductResearchDataSource | None = None,
 ) -> tuple[list[NormalizedDemandSignal], int]:
     source = source or {
-        "id": "text_ai_web_search",
-        "name": "Text AI Web Search",
+        "id": "ai_web_search",
+        "name": "AI Web Search",
         "source_type": "ai_search",
-        "platform": "text_ai",
+        "platform": "ai_model",
     }
-    source_id = str(source.get("id") or "text_ai_web_search")
+    source_id = str(source.get("id") or "ai_web_search")
     source_name = str(source.get("name") or source.get("platform") or source_id)
     source_type = str(source.get("source_type") or "ai_search")
     if isinstance(items, dict):
@@ -877,7 +786,7 @@ def _text_ai_web_search_signals_from_items(
     return signals, len(raw_items)
 
 
-def _text_ai_web_search_signals(
+def _ai_web_search_signals(
     source: ProductResearchDataSource,
     app_dir: Path | str,
     app_config: dict[str, Any] | None,
@@ -887,22 +796,88 @@ def _text_ai_web_search_signals(
     default_timeout_seconds: int,
 ) -> list[NormalizedDemandSignal]:
     config_json = source.get("config_json") if isinstance(source.get("config_json"), dict) else {}
-    ai_config_ref = str(config_json.get("ai_config_ref") or "text_ai").strip()
-    if ai_config_ref != "text_ai":
-        raise ValueError("Only ai_config_ref='text_ai' is supported before the AI selector refactor.")
-    text_ai = config_service.ai_config_from_sources(app_dir, app_config).get("text_ai", {})
-    if not str(text_ai.get("api_key") or "").strip():
-        raise ValueError("Text AI API Key is not configured.")
     max_items = _int_value(config_json.get("max_items"), 12, 1, 50)
     timeout_seconds = _int_value(config_json.get("timeout_seconds"), default_timeout_seconds, 1, 180)
-    payload = _text_ai_web_search_request_json(text_ai, market, language, keyword_items, max_items, timeout_seconds)
-    content = _chat_response_text(payload)
-    parsed = _json_from_text(content)
-    source_signals, parsed_count = _text_ai_web_search_signals_from_items(parsed.get("items"), market, language, keyword_items, source)
+    model_id = str(config_json.get("ai_model_id") or config_json.get("model_id") or "").strip()
+    prompt = _ai_web_search_prompt(market, language, keyword_items, max_items)
+    parsed = ai_gateway.chat_json(
+        app_dir,
+        app_config,
+        "research.web_search",
+        [
+            {
+                "role": "system",
+                "content": "You are a source-backed ecommerce market research assistant. Return only JSON.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        model_id=model_id,
+        temperature=0.2,
+        max_tokens=1800,
+        timeout_seconds=timeout_seconds,
+    )
+    source_signals, parsed_count = _ai_web_search_signals_from_items(parsed.get("items"), market, language, keyword_items, source)
     require_source_url = _bool_value(config_json.get("require_source_url"), True)
     if require_source_url and parsed_count and not source_signals:
         raise ValueError("AI returned items without valid source URLs.")
     return source_signals
+
+
+def _provider_config_completion_prompt(provider: ProductResearchDataSource) -> str:
+    return [
+        "你是 ERP 选品调研 API 配置助手。只返回 JSON，不要解释。",
+        "目标：根据用户已填写的搜索手段信息，补全不易理解的技术字段。",
+        "不要编造 API Key、Token、真实私密参数。不要覆盖用户已填写的 URL、Key、Token。",
+        "JSON schema:",
+        "{",
+        '  "supported_markets": ["US"],',
+        '  "supported_languages": ["en"],',
+        '  "supported_data_types": ["marketplace_products"],',
+        '  "request": {',
+        '    "method": "GET",',
+        '    "auth_type": "api_key_header",',
+        '    "api_key_header": "x-api-key",',
+        '    "headers": {},',
+        '    "query": {"market": "{market}", "q": "{keyword}"},',
+        '    "body": {}',
+        "  },",
+        '  "response": {',
+        '    "items_path": "data.items",',
+        '    "title_path": "title",',
+        '    "keyword_path": "keyword",',
+        '    "price_path": "price.amount",',
+        '    "currency_path": "price.currency",',
+        '    "url_path": "url",',
+        '    "image_path": "image_url"',
+        "  },",
+        '  "test": {"market": "US", "keyword": "mahjong gift"}',
+        "}",
+        "",
+        f"用户已填信息：{json.dumps(provider, ensure_ascii=False, indent=2)}",
+    ].join("\n")
+
+
+def complete_provider_config_with_ai(
+    provider: ProductResearchDataSource,
+    app_dir: Path | str,
+    app_config: dict[str, Any] | None = None,
+    model_id: str = "",
+) -> dict[str, Any]:
+    if not isinstance(provider, dict) or not str(provider.get("id") or provider.get("platform") or "").strip():
+        raise ValueError("provider is required")
+    prompt = _provider_config_completion_prompt(provider)
+    return ai_gateway.chat_json(
+        app_dir,
+        app_config,
+        "research.provider_config_complete",
+        [
+            {"role": "system", "content": "You return strict JSON only."},
+            {"role": "user", "content": prompt},
+        ],
+        model_id=model_id,
+        temperature=0.1,
+        max_tokens=1800,
+    )
 
 
 def test_search_provider_connection(
@@ -964,8 +939,8 @@ def test_search_provider_connection(
             signals = _manual_import_signals(source, market, [keyword_item], data_type)
         elif strategy == "seeded_mock":
             signals = [_seeded_signal(source, market, language, keyword_item, data_type)]
-        elif strategy in {"text_ai_web_search", "ai_web_search"}:
-            signals = _text_ai_web_search_signals(source, app_dir, app_config, market, language, [keyword_item], timeout_seconds)
+        elif strategy == "ai_web_search":
+            signals = _ai_web_search_signals(source, app_dir, app_config, market, language, [keyword_item], timeout_seconds)
         else:
             raise ValueError(f"Provider strategy '{strategy}' is not supported by test runtime.")
         sample = signals[0] if signals else {}
@@ -1105,8 +1080,8 @@ def collect_signals(
                             data_type,
                             int(runtime.get("source_timeout_seconds") or 12),
                         )
-                elif strategy in {"text_ai_web_search", "ai_web_search"}:
-                    source_signals = _text_ai_web_search_signals(
+                elif strategy == "ai_web_search":
+                    source_signals = _ai_web_search_signals(
                         source,
                         app_dir,
                         app_config,
@@ -1129,7 +1104,7 @@ def collect_signals(
                 signals.extend(source_signals)
             except Exception as exc:
                 error_text = str(exc)
-                next_status = "configuration_required" if strategy in {"text_ai_web_search", "ai_web_search"} and "configured" in error_text.lower() else "failed"
+                next_status = "configuration_required" if strategy == "ai_web_search" and "configured" in error_text.lower() else "failed"
                 status.update({"status": next_status, "error_message": error_text, "items_found": 0})
             statuses.append(status)
     return signals, statuses
@@ -1341,6 +1316,7 @@ __all__ = [
     "build_candidates",
     "build_task_response",
     "collect_signals",
+    "complete_provider_config_with_ai",
     "create_search_task",
     "expand_keywords",
     "list_search_tasks",
