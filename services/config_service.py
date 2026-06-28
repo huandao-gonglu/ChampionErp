@@ -76,13 +76,20 @@ def public_ai_config(app_dir: Path | str, app_config: dict[str, Any] | None = No
 def merge_ai_config(app_dir: Path | str, current: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
     merged = dict(current or {})
     if isinstance(incoming.get("ai_models"), list):
+        raw_models = incoming.get("ai_models")
         current_models = ai_model_config.normalize_ai_models(current.get("ai_models") if isinstance(current, dict) else None)
         current_by_id = {str(model.get("id") or ""): model for model in current_models if str(model.get("id") or "")}
-        next_models = ai_model_config.normalize_ai_models(incoming.get("ai_models"))
+        copy_source_by_id = {
+            str(model.get("id") or "").strip(): str(model.get("copy_source_id") or "").strip()
+            for model in raw_models
+            if isinstance(model, dict) and str(model.get("id") or "").strip() and str(model.get("copy_source_id") or "").strip()
+        }
+        next_models = ai_model_config.normalize_ai_models(raw_models)
         for model in next_models:
             model_id = str(model.get("id") or "")
             current_model = current_by_id.get(model_id, {})
-            current_key = str(current_model.get("api_key") or "").strip()
+            source_model = current_by_id.get(copy_source_by_id.get(model_id, ""), {})
+            current_key = str(current_model.get("api_key") or source_model.get("api_key") or "").strip()
             incoming_key = str(model.get("api_key") or "").strip()
             if current_key and (not incoming_key or incoming_key == mask_secret(current_key)):
                 model["api_key"] = current_key

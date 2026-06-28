@@ -86,6 +86,51 @@ def test_merge_config_preserves_existing_model_key_when_public_payload_is_blank(
     assert merged["ai_models"][0]["api_key"] == "saved-key"
 
 
+def test_merge_config_copies_saved_model_key_from_source_model(app_dir: Path) -> None:
+    current = {
+        "ai_models": [
+            {
+                "id": "copy_model",
+                "provider": "DeepSeek",
+                "api_key": "saved-key",
+                "base_url": "https://api.deepseek.com",
+                "model": "deepseek-chat",
+                "capabilities": ["chat", "json"],
+            }
+        ]
+    }
+    merged = config_service.merge_ai_config(
+        app_dir,
+        current,
+        {
+            "ai_models": [
+                {
+                    "id": "copy_model",
+                    "provider": "DeepSeek",
+                    "api_key": "",
+                    "base_url": "https://api.deepseek.com",
+                    "model": "deepseek-chat",
+                    "capabilities": ["chat", "json"],
+                },
+                {
+                    "id": "copy_model_copy",
+                    "copy_source_id": "copy_model",
+                    "provider": "DeepSeek",
+                    "api_key": "",
+                    "base_url": "https://api.deepseek.com",
+                    "model": "deepseek-reasoner",
+                    "capabilities": ["chat", "json"],
+                },
+            ]
+        },
+    )
+
+    assert merged["ai_models"][0]["api_key"] == "saved-key"
+    assert merged["ai_models"][1]["api_key"] == "saved-key"
+    assert merged["ai_models"][1]["model"] == "deepseek-reasoner"
+    assert "copy_source_id" not in merged["ai_models"][1]
+
+
 def test_normalize_app_config_migrates_legacy_ai_aliases(app_dir: Path) -> None:
     import erp_web_app
 

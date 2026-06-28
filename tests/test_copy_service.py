@@ -185,6 +185,71 @@ def test_ai_model_connection_uses_saved_key_when_public_payload_omits_secret(mon
     }]
 
 
+def test_ai_model_connection_copies_saved_key_from_source_model(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        @staticmethod
+        def read() -> bytes:
+            return b'{"data":[{"id":"deepseek-reasoner"}]}'
+
+    def fake_urlopen(request, timeout):
+        calls.append({
+            "url": request.full_url,
+            "auth": request.get_header("Authorization"),
+            "ua": request.get_header("User-agent") or request.get_header("User-Agent"),
+            "timeout": timeout,
+        })
+        return FakeResponse()
+
+    monkeypatch.setattr(
+        erp_runtime,
+        "load_app_config",
+        lambda: {
+            "ai_models": [
+                {
+                    "id": "copy_model",
+                    "name": "Copy Model",
+                    "provider": "DeepSeek",
+                    "api_key": "saved-key",
+                    "base_url": "https://api.deepseek.com",
+                    "model": "deepseek-chat",
+                    "capabilities": ["chat", "json"],
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
+    result = erp_web_app.test_ai_model_config(
+        {
+            "id": "copy_model_copy",
+            "copy_source_id": "copy_model",
+            "name": "Copy Model 副本",
+            "provider": "DeepSeek",
+            "api_key": "",
+            "api_key_configured": True,
+            "base_url": "https://api.deepseek.com",
+            "model": "deepseek-reasoner",
+            "capabilities": ["chat", "json"],
+            "probe_capabilities": False,
+        },
+    )
+
+    assert result["ok"] is True
+    assert calls == [{
+        "url": "https://api.deepseek.com/models",
+        "auth": "Bearer saved-key",
+        "ua": ai_model_config.AI_HTTP_USER_AGENT,
+        "timeout": 60,
+    }]
+
+
 def test_ai_model_probe_reports_unsupported_capabilities(monkeypatch) -> None:
     calls: list[dict] = []
 

@@ -198,6 +198,30 @@ function defaultAiModelRow(index: number): UnknownRecord {
   }, index)
 }
 
+function uniqueAiModelId(baseId: string): string {
+  const existing = new Set(aiModels.value.map((model) => String(model.id || '').trim()).filter(Boolean))
+  const base = (baseId || 'ai_model').replace(/\s+/g, '_').replace(/[^\w.-]/g, '_') || 'ai_model'
+  let candidate = `${base}_copy`
+  let suffix = 2
+  while (existing.has(candidate)) {
+    candidate = `${base}_copy_${suffix}`
+    suffix += 1
+  }
+  return candidate
+}
+
+function uniqueAiModelName(baseName: string): string {
+  const existing = new Set(aiModels.value.map((model) => String(model.name || '').trim()).filter(Boolean))
+  const base = baseName || 'AI 模型'
+  let candidate = `${base} 副本`
+  let suffix = 2
+  while (existing.has(candidate)) {
+    candidate = `${base} 副本 ${suffix}`
+    suffix += 1
+  }
+  return candidate
+}
+
 function normalizeUseCaseBindings(value: unknown): Record<string, string> {
   const record = asRecord(value)
   const result: Record<string, string> = {}
@@ -273,6 +297,8 @@ function aiPayload(): UnknownRecord {
   return {
     ai_models: aiModels.value.map((model, index) => {
       const row = normalizeAiModelRow(model, index)
+      const copySourceId = firstText(model.copy_source_id)
+      if (copySourceId && !firstText(row.api_key)) row.copy_source_id = copySourceId
       delete row.model_options
       delete row.model_env
       delete row.detected_capabilities
@@ -393,6 +419,27 @@ function addAiModel() {
   if (aiControlsLocked.value) return
   aiModels.value.push(defaultAiModelRow(aiModels.value.length))
   selectedAiModelIndex.value = aiModels.value.length - 1
+}
+
+function duplicateSelectedAiModel() {
+  if (aiControlsLocked.value) return
+  const current = selectedAiModel.value
+  if (!current) return
+  const sourceId = firstText(current.id)
+  const cloned = normalizeAiModelRow({
+    ...current,
+    id: uniqueAiModelId(sourceId || firstText(current.model) || `ai_model_${aiModels.value.length + 1}`),
+    name: uniqueAiModelName(firstText(current.name, current.id, `AI 模型 ${aiModels.value.length + 1}`)),
+    capabilities: asStringArray(current.capabilities),
+    detected_capabilities: [],
+    unsupported_capabilities: [],
+    model_options: normalizeModelOptions(current.model_options),
+  }, aiModels.value.length)
+  if (sourceId && !firstText(cloned.api_key)) cloned.copy_source_id = sourceId
+  aiModels.value.splice(selectedAiModelIndex.value + 1, 0, cloned)
+  selectedAiModelIndex.value += 1
+  lastAutoModelListSignature.value = ''
+  lastAutoCapabilitySignature.value = ''
 }
 
 function removeSelectedAiModel() {
@@ -637,6 +684,7 @@ function copy(text: string) {
             </div>
             <div class="flex flex-wrap gap-2">
               <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="addAiModel">添加模型</button>
+              <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedAiModel" @click="duplicateSelectedAiModel">复制当前模型</button>
               <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedAiModelReady" :title="selectedAiModelReady ? '自动测试后也可以手动重试' : selectedAiHint" @click="testSelectedAiModel">测试当前模型</button>
               <button class="btn btn-primary py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="emit('saveAi', aiPayload())">保存 AI 设置</button>
             </div>

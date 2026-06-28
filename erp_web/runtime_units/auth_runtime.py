@@ -23,15 +23,17 @@ def _merge_saved_ai_model_config(model_config: dict[str, Any]) -> dict[str, Any]
     model_id = str(incoming.get("id") or "").strip()
     if not model_id:
         return incoming
+    source_model_id = str(incoming.get("copy_source_id") or "").strip()
     stored_models = ai_model_config.normalize_ai_models(load_app_config().get("ai_models"))
     stored = next((model for model in stored_models if str(model.get("id") or "") == model_id), {})
-    if not stored:
+    source = next((model for model in stored_models if str(model.get("id") or "") == source_model_id), {}) if source_model_id else {}
+    if not stored and not source:
         return incoming
-    merged = dict(stored)
+    merged = dict(stored or source)
     for key, value in incoming.items():
         if key == "api_key" and not str(value or "").strip():
             continue
-        if key in {"model_options", "available_models", "api_key_configured", "api_key_masked"}:
+        if key in {"model_options", "available_models", "api_key_configured", "api_key_masked", "copy_source_id"}:
             continue
         merged[key] = value
     return merged
