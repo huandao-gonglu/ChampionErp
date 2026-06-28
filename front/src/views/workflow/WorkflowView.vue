@@ -214,8 +214,9 @@ function toggleTheme() {
   appStore.toggleTheme()
 }
 
-onMounted(() => {
-  void store.loadState()
+onMounted(async () => {
+  await store.loadState()
+  if (activeNav.value === 'auth') await store.loadAiConfig()
 })
 
 watch(
@@ -225,6 +226,7 @@ watch(
     const previous = activeNav.value
     activeNav.value = navItems.some((item) => item.key === tab) ? tab : pathNavMap[route.path] || 'dashboard'
     if (activeNav.value === 'mlItems' && previous !== activeNav.value) void store.refreshMercadoLibreRemoteItems()
+    if (activeNav.value === 'auth' && previous !== activeNav.value) void store.loadAiConfig()
   },
   { immediate: true },
 )

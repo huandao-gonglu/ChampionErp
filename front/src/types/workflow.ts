@@ -415,50 +415,22 @@ export interface ProductResearchPrice {
   currency: string
 }
 
-export interface ProductResearchMetrics {
-  searchInterest: number
-  reviewCount: number
-  rating: number
-  contentHeat: number
-  engagementCount: number
-}
-
-export interface ProductResearchSignal {
-  source: string
-  sourceId: string
-  sourceType: string
-  market: string
-  language: string
-  keyword: string
-  chinaElementType: string
-  dataType: string
+export interface HotProductCandidate {
+  id: string
   title: string
-  productUrl: string
   imageUrl: string
+  rank: number
+  sourceUrl: string
+  marketId: string
+  platform: string
+  site: string
+  keyword: string
   price?: ProductResearchPrice
-  metrics: ProductResearchMetrics
-  capturedAt: string
-  raw: UnknownRecord
-}
-
-export interface ProductResearchCandidate {
-  candidateId: string
-  targetMarket: string
-  overseasKeyword: string
-  chinaElementType: string
-  productType: string
-  relatedSources: string[]
-  chinesePurchaseKeywords: string[]
-  upgradeSuggestions: string[]
-  logisticsRisks: string[]
-  complianceRisks: string[]
-  chinaElementStrength: string
-  waitTolerance: string
-  localScarcity: string
-  opportunityScore: number
-  scoreBreakdown: Record<string, number>
-  recommendedAction: string
-  evidenceSignals: ProductResearchSignal[]
+  rating: number
+  reviewCount: number
+  hotScore: number
+  sourceName: string
+  collectedAt: string
   raw: UnknownRecord
 }
 
@@ -473,8 +445,8 @@ export interface ProductResearchSourceStatus {
   raw: UnknownRecord
 }
 
-export interface ProductResearchTaskSummary {
-  taskId: string
+export interface ProductResearchRunSummary {
+  runId: string
   status: string
   searchMode: string
   createdAt: string
@@ -484,9 +456,8 @@ export interface ProductResearchTaskSummary {
 }
 
 export interface ProductResearchResponse {
-  task: ProductResearchTaskSummary
-  items: ProductResearchCandidate[]
-  signals: ProductResearchSignal[]
+  run: ProductResearchRunSummary
+  items: HotProductCandidate[]
   sourceStatus: ProductResearchSourceStatus[]
   raw: UnknownRecord
 }
@@ -510,19 +481,23 @@ export interface ProductResearchSourceRegistryItem {
 }
 
 export interface ProductResearchTargetMarket {
-  market: string
-  name: string
-  enabled: boolean
-  language: string
-  currency: string
-  referenceMarkets: string[]
-  providerIds: string[]
+  id: string
+  platform: string
+  site: string
+  displayName: string
+  raw: UnknownRecord
+}
+
+export interface ProductResearchMarketHotProducts {
+  marketId: string
+  items: HotProductCandidate[]
   raw: UnknownRecord
 }
 
 export interface ProductResearchConfig {
   searchProviders: ProductResearchSourceRegistryItem[]
   targetMarkets: ProductResearchTargetMarket[]
+  marketHotProducts: ProductResearchMarketHotProducts[]
   sourceRegistry: ProductResearchSourceRegistryItem[]
   raw: UnknownRecord
 }

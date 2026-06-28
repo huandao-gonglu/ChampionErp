@@ -12,12 +12,22 @@ class ProductResearchPrice(TypedDict, total=False):
     currency: str
 
 
-class ProductResearchMetrics(TypedDict, total=False):
-    search_interest: float
-    review_count: int
+class HotProductCandidate(TypedDict, total=False):
+    id: str
+    title: str
+    image_url: str
+    rank: int
+    source_url: str
+    market_id: str
+    platform: str
+    site: str
+    keyword: str
+    price: ProductResearchPrice
     rating: float
-    content_heat: float
-    engagement_count: int
+    review_count: int
+    hot_score: float
+    source_name: str
+    collected_at: str
 
 
 class ProductResearchDataSource(TypedDict, total=False):
@@ -37,25 +47,23 @@ class ProductResearchDataSource(TypedDict, total=False):
 
 
 class ProductResearchTargetMarket(TypedDict, total=False):
-    market: str
-    name: str
-    enabled: bool
-    language: str
-    currency: str
-    reference_markets: list[str]
-    provider_ids: list[str]
+    id: str
+    platform: str
+    site: str
+    display_name: str
+
+
+class ProductResearchMarketHotProducts(TypedDict, total=False):
+    market_id: str
+    items: list[HotProductCandidate]
 
 
 class ProductResearchConfig(TypedDict, total=False):
     search_defaults: dict[str, Any]
     provider_runtime: dict[str, Any]
-    reference_market_map: dict[str, list[str]]
-    market_languages: dict[str, str]
-    china_element_catalog: dict[str, dict[str, Any]]
-    upgrade_type_catalog: dict[str, str]
-    scoring_weights: dict[str, int]
     search_providers: list[ProductResearchDataSource]
     target_markets: list[ProductResearchTargetMarket]
+    market_hot_products: list[ProductResearchMarketHotProducts]
     source_registry: list[ProductResearchDataSource]
 
 
@@ -63,27 +71,7 @@ class ProductResearchSearchRequest(TypedDict, total=False):
     search_mode: SearchMode
     markets: dict[str, list[str]]
     keywords: list[str]
-    product_intent: dict[str, bool]
-    filters: dict[str, list[str]]
-    sources: dict[str, list[str]]
     result_options: dict[str, Any]
-
-
-class NormalizedDemandSignal(TypedDict, total=False):
-    source: str
-    source_id: str
-    source_type: SourceType
-    market: str
-    language: str
-    keyword: str
-    china_element_type: str
-    data_type: str
-    title: str
-    product_url: str
-    image_url: str
-    price: ProductResearchPrice
-    metrics: ProductResearchMetrics
-    captured_at: str
 
 
 class ProductResearchSourceStatus(TypedDict, total=False):
@@ -96,49 +84,27 @@ class ProductResearchSourceStatus(TypedDict, total=False):
     provider_strategy: str
 
 
-class ProductResearchCandidate(TypedDict, total=False):
-    candidate_id: str
-    target_market: str
-    overseas_keyword: str
-    china_element_type: str
-    product_type: str
-    related_sources: list[str]
-    chinese_purchase_keywords: list[str]
-    upgrade_suggestions: list[str]
-    logistics_risks: list[str]
-    compliance_risks: list[str]
-    china_element_strength: str
-    wait_tolerance: str
-    local_scarcity: str
-    opportunity_score: float
-    score_breakdown: dict[str, float]
-    recommended_action: str
-    evidence_signals: list[NormalizedDemandSignal]
-
-
-class ProductResearchTask(TypedDict, total=False):
-    task_id: str
+class ProductResearchRun(TypedDict, total=False):
+    run_id: str
     status: str
     search_mode: str
     created_at: str
     completed_at: str
     request: ProductResearchSearchRequest
-    items: list[ProductResearchCandidate]
-    signals: list[NormalizedDemandSignal]
+    items: list[HotProductCandidate]
     source_status: list[ProductResearchSourceStatus]
 
 
 __all__ = [
-    "NormalizedDemandSignal",
-    "ProductResearchCandidate",
+    "HotProductCandidate",
     "ProductResearchConfig",
     "ProductResearchDataSource",
-    "ProductResearchMetrics",
+    "ProductResearchMarketHotProducts",
     "ProductResearchPrice",
+    "ProductResearchRun",
     "ProductResearchSearchRequest",
     "ProductResearchSourceStatus",
     "ProductResearchTargetMarket",
-    "ProductResearchTask",
     "SearchMode",
     "SourceType",
 ]

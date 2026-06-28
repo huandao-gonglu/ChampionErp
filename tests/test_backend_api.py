@@ -163,43 +163,33 @@ def test_save_product_and_publish_precheck_api_exist(backend_server: str, sample
     assert "mercadolibre" in precheck["platforms"]
 
 
-def test_product_research_search_task_api_returns_candidates(backend_server: str) -> None:
+def test_product_research_hot_product_api_returns_candidates(backend_server: str) -> None:
     data = post_json(
         backend_server,
-        "/api/v1/product-research/search-tasks",
+        "/api/v1/product-research/hot-products/search",
         {
-            "search_mode": "target_plus_reference",
+            "search_mode": "target_only",
             "markets": {
-                "target_markets": ["US"],
-                "reference_markets": ["GB", "CA"],
+                "target_markets": ["amazon-us"],
+                "reference_markets": [],
             },
-            "product_intent": {
-                "china_element_required": True,
-                "upgrade_variant_required": True,
-            },
-            "filters": {
-                "include_china_element_types": ["mahjong", "calligraphy"],
-                "upgrade_types": ["gift_box", "custom_name", "localized_explanation"],
-                "exclude_risks": ["food", "battery", "children_product", "medical_device", "cosmetics", "liquid"],
-            },
-            "sources": {
-                "demand_sources": ["google_trends", "etsy", "ebay"],
-            },
+            "keywords": ["pet storage"],
             "result_options": {
                 "limit": 5,
-                "sort_by": "opportunity_score",
+                "sort_by": "rank",
             },
         },
     )
 
     assert data["ok"] is True
-    assert data["task"]["task_id"].startswith("prt_")
+    assert data["run"]["run_id"].startswith("prr_")
     assert data["items"]
-    assert data["items"][0]["overseas_keyword"]
-    assert data["items"][0]["chinese_purchase_keywords"]
-    assert data["items"][0]["opportunity_score"] > 0
-    assert any(row["source"] == "google_trends" for row in data["source_status"])
-    assert any(row["source"] == "ebay" and row["status"] == "configuration_required" for row in data["source_status"])
+    assert data["items"][0]["title"]
+    assert data["items"][0]["image_url"].startswith("https://")
+    assert data["items"][0]["rank"] == 1
+    assert data["items"][0]["source_url"].startswith("https://")
+    assert data["items"][0]["hot_score"] > 0
+    assert any(row["source"] == "market_hot_products" and row["status"] == "success" for row in data["source_status"])
 
 
 def test_product_research_search_provider_test_api(backend_server: str) -> None:

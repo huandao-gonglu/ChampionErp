@@ -2,6 +2,11 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { completeProductResearchProviderByAi, fetchProductResearchSettings, saveProductResearchSettings, testProductResearchSearchProvider } from '@/api/workflow'
 import type { ProductResearchConfig, ProductResearchProviderTestResult, ProductResearchSourceRegistryItem, ProductResearchTargetMarket, UnknownRecord } from '@/types/workflow'
+import {
+  productResearchProviderName,
+  productResearchSourceTypeLabel,
+  productResearchStrategyLabel,
+} from '@/utils/productResearchLabels'
 
 const props = defineProps<{
   aiModels?: UnknownRecord[]
@@ -25,6 +30,7 @@ const strategyOptions = [
 const emptySettings = (): ProductResearchConfig => ({
   searchProviders: [],
   targetMarkets: [],
+  marketHotProducts: [],
   sourceRegistry: [],
   raw: {},
 })
@@ -46,6 +52,8 @@ const aiCompletionMessage = ref('')
 
 const selectedProvider = computed(() => settings.value.searchProviders[selectedProviderIndex.value] || null)
 const selectedMarket = computed(() => settings.value.targetMarkets[selectedMarketIndex.value] || null)
+const selectedProviderIsAiSearch = computed(() => selectedProvider.value?.sourceType === 'ai_search' || selectedProvider.value?.providerStrategy === 'ai_web_search')
+const selectedProviderIsManualImport = computed(() => selectedProvider.value?.sourceType === 'manual_import' || selectedProvider.value?.providerStrategy === 'manual_import')
 const aiModels = computed(() => (props.aiModels || []).map(asRecord).filter((model) => String(model.id || '').trim()))
 const configCompleteModels = computed(() => aiModels.value.filter((model) => {
   const capabilities = Array.isArray(model.capabilities) ? model.capabilities.map((item) => String(item || '')) : []
@@ -57,6 +65,12 @@ const webSearchModels = computed(() => aiModels.value.filter((model) => {
 }))
 const defaultCompletionModelId = computed(() => String(configCompleteModels.value[0]?.id || ''))
 const configCompleteReady = computed(() => configCompleteModels.value.length > 0)
+const strategyOptionsForSelectedProvider = computed(() => {
+  if (selectedProviderIsAiSearch.value) return strategyOptions.filter((option) => option.value === 'ai_web_search')
+  if (selectedProviderIsManualImport.value) return strategyOptions.filter((option) => option.value === 'manual_import')
+  if (selectedProvider.value?.sourceType === 'api') return strategyOptions.filter((option) => ['configured_api', 'seeded_mock'].includes(option.value))
+  return strategyOptions.filter((option) => option.value !== 'ai_web_search' && option.value !== 'manual_import')
+})
 
 function asRecord(value: unknown): UnknownRecord {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as UnknownRecord : {}
@@ -79,12 +93,29 @@ function eventText(event: Event) {
   return (event.target as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement).value
 }
 
-function eventChecked(event: Event) {
-  return (event.target as HTMLInputElement).checked
+function providerLabel(provider: ProductResearchSourceRegistryItem) {
+  return productResearchProviderName(provider)
 }
 
-function providerLabel(provider: ProductResearchSourceRegistryItem) {
-  return provider.name || provider.id || provider.platform || '未命名搜索手段'
+function sourceTypeLabel(value: string) {
+  return sourceTypeOptions.find((option) => option.value === value)?.label || productResearchSourceTypeLabel(value)
+}
+
+function strategyLabel(value: string) {
+  return strategyOptions.find((option) => option.value === value)?.label || productResearchStrategyLabel(value)
+}
+
+function supportedMarketLabel(markets: string[]) {
+  if (markets.includes('*')) return '全部市场'
+  return joinList(markets) || '-'
+}
+
+function providerTestMarketDefault(provider: ProductResearchSourceRegistryItem | null) {
+  return provider?.supportedMarkets.find((market) => market && market !== '*') || selectedMarket.value?.id || 'amazon-us'
+}
+
+function providerTestLanguageDefault(provider: ProductResearchSourceRegistryItem | null) {
+  return provider?.supportedLanguages.find((language) => language && language !== '*') || 'en'
 }
 
 function defaultApiConfig(): UnknownRecord {
@@ -121,11 +152,41 @@ function defaultAiSearchConfig(): UnknownRecord {
   }
 }
 
+function uniqueProviderId(prefix: string) {
+  const existing = new Set(settings.value.searchProviders.map((provider) => provider.id))
+  let index = settings.value.searchProviders.length + 1
+  let candidate = `${prefix}_${index}`
+  while (existing.has(candidate)) {
+    index += 1
+    candidate = `${prefix}_${index}`
+  }
+  return candidate
+}
+
+function uniqueMarketId(base = 'amazon-us') {
+  const existing = new Set(settings.value.targetMarkets.map((market) => market.id))
+  let candidate = base
+  let index = settings.value.targetMarkets.length + 1
+  while (existing.has(candidate)) {
+    candidate = `${base}-${index}`
+    index += 1
+  }
+  return candidate
+}
+
+function defaultManualImportConfig(): UnknownRecord {
+  return {
+    provider_strategy: 'manual_import',
+    items: [],
+  }
+}
+
 function blankProvider(): ProductResearchSourceRegistryItem {
   const next = settings.value.searchProviders.length + 1
+  const id = uniqueProviderId('api_source')
   return {
-    id: `api_source_${next}`,
-    name: `api_搜索手段_${next}`,
+    id,
+    name: `API 搜索手段 ${next}`,
     sourceType: 'api',
     platform: `source_${next}`,
     enabled: true,
@@ -142,15 +203,34 @@ function blankProvider(): ProductResearchSourceRegistryItem {
   }
 }
 
-function blankMarket(): ProductResearchTargetMarket {
+function blankAiSearchProvider(): ProductResearchSourceRegistryItem {
+  const id = uniqueProviderId('ai_search')
   return {
-    market: 'US',
-    name: 'United States',
+    id,
+    name: 'AI 搜索',
+    sourceType: 'ai_search',
+    platform: 'ai_model',
     enabled: true,
-    language: 'en',
-    currency: 'USD',
-    referenceMarkets: ['GB', 'CA', 'AU'],
-    providerIds: settings.value.searchProviders[0]?.id ? [settings.value.searchProviders[0].id] : [],
+    priority: 1,
+    supportedMarkets: ['*'],
+    supportedLanguages: ['*'],
+    supportedDataTypes: ['ai_web_search'],
+    authRequired: false,
+    rateLimitPerMinute: 0,
+    complianceNote: '',
+    providerStrategy: 'ai_web_search',
+    configJson: defaultAiSearchConfig(),
+    raw: {},
+  }
+}
+
+function blankMarket(): ProductResearchTargetMarket {
+  const id = uniqueMarketId('amazon-us')
+  return {
+    id,
+    platform: 'amazon',
+    site: 'amazon.com',
+    displayName: id === 'amazon-us' ? 'Amazon US' : `Amazon US ${settings.value.targetMarkets.length + 1}`,
     raw: {},
   }
 }
@@ -173,18 +253,17 @@ async function loadSettings() {
   }
 }
 
-function addProvider() {
-  settings.value.searchProviders.push(blankProvider())
+function addProvider(sourceType: 'api' | 'ai_search' = 'api') {
+  const provider = sourceType === 'ai_search' ? blankAiSearchProvider() : blankProvider()
+  settings.value.searchProviders.push(provider)
   selectedProviderIndex.value = settings.value.searchProviders.length - 1
+  if (sourceType === 'ai_search' && selectedMarket.value) providerTestMarket.value = selectedMarket.value.id
 }
 
 function removeProvider(index: number) {
   const provider = settings.value.searchProviders[index]
   if (!provider) return
   settings.value.searchProviders.splice(index, 1)
-  for (const market of settings.value.targetMarkets) {
-    market.providerIds = market.providerIds.filter((id) => id !== provider.id)
-  }
   clampSelections()
 }
 
@@ -203,27 +282,36 @@ function updateProviderList(field: 'supportedMarkets' | 'supportedLanguages' | '
   selectedProvider.value[field] = splitList(value, field === 'supportedMarkets')
 }
 
-function updateMarketReferences(value: string) {
-  if (!selectedMarket.value) return
-  selectedMarket.value.referenceMarkets = splitList(value, true)
-}
-
 function setProviderSourceType(value: string) {
   if (!selectedProvider.value) return
   selectedProvider.value.sourceType = value
   if (value === 'ai_search') {
-    if (!selectedProvider.value.platform || selectedProvider.value.platform.startsWith('source_')) {
-      selectedProvider.value.platform = 'ai_model'
-    }
+    selectedProvider.value.platform = 'ai_model'
     selectedProvider.value.authRequired = false
     selectedProvider.value.supportedDataTypes = ['ai_web_search']
     setSelectedConfigJson({
       ...defaultAiSearchConfig(),
-      ...asRecord(selectedProvider.value.configJson),
+      ...(selectedProvider.value.providerStrategy === 'ai_web_search' ? asRecord(selectedProvider.value.configJson) : {}),
       provider_strategy: 'ai_web_search',
     })
-  } else if (value === 'api' && !selectedProvider.value.providerStrategy) {
-    setSelectedConfigJson(defaultApiConfig())
+  } else if (value === 'manual_import') {
+    selectedProvider.value.platform = selectedProvider.value.platform || 'manual_import'
+    selectedProvider.value.authRequired = false
+    selectedProvider.value.supportedDataTypes = ['keyword_trend', 'marketplace_products', 'content_trend']
+    setSelectedConfigJson({
+      ...defaultManualImportConfig(),
+      ...(selectedProvider.value.providerStrategy === 'manual_import' ? asRecord(selectedProvider.value.configJson) : {}),
+      provider_strategy: 'manual_import',
+    })
+  } else if (value === 'api') {
+    if (!selectedProvider.value.platform || selectedProvider.value.platform === 'ai_model' || selectedProvider.value.platform.startsWith('source_')) {
+      selectedProvider.value.platform = selectedProvider.value.id || 'api_source'
+    }
+    if (selectedProvider.value.providerStrategy !== 'configured_api' && selectedProvider.value.providerStrategy !== 'seeded_mock') {
+      setSelectedConfigJson(defaultApiConfig())
+    }
+  } else if (selectedProvider.value.providerStrategy === 'ai_web_search' || selectedProvider.value.providerStrategy === 'manual_import') {
+    setSelectedConfigJson({ provider_strategy: 'seeded_mock' })
   }
 }
 
@@ -240,16 +328,21 @@ function setProviderStrategy(value: string) {
   const next = {
     ...(value === 'configured_api' ? defaultApiConfig() : {}),
     ...(value === 'ai_web_search' ? defaultAiSearchConfig() : {}),
+    ...(value === 'manual_import' ? defaultManualImportConfig() : {}),
     ...current,
     provider_strategy: value,
   }
   if (value === 'ai_web_search') {
     selectedProvider.value.sourceType = 'ai_search'
-    if (!selectedProvider.value.platform || selectedProvider.value.platform.startsWith('source_')) {
-      selectedProvider.value.platform = 'ai_model'
-    }
+    selectedProvider.value.platform = 'ai_model'
     selectedProvider.value.authRequired = false
     selectedProvider.value.supportedDataTypes = ['ai_web_search']
+  } else if (value === 'manual_import') {
+    selectedProvider.value.sourceType = 'manual_import'
+    selectedProvider.value.authRequired = false
+    selectedProvider.value.supportedDataTypes = ['keyword_trend', 'marketplace_products', 'content_trend']
+  } else if (value === 'configured_api' && selectedProvider.value.sourceType === 'ai_search') {
+    selectedProvider.value.sourceType = 'api'
   }
   setSelectedConfigJson(next)
 }
@@ -315,12 +408,21 @@ function updateApiResponseField(field: string, value: string) {
   })
 }
 
+function apiJsonSectionLabel(section: 'headers' | 'query' | 'body') {
+  const labels = {
+    headers: '请求头',
+    query: '查询参数',
+    body: '请求体',
+  }
+  return labels[section]
+}
+
 function updateApiJsonField(section: 'headers' | 'query' | 'body', value: string) {
   if (!selectedProvider.value) return
   try {
     const parsed = JSON.parse(value || '{}')
     if ((section === 'headers' || section === 'query') && (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))) {
-      error.value = `${section} 必须是 JSON 对象`
+      error.value = `${apiJsonSectionLabel(section)}必须是 JSON 对象`
       return
     }
     const configJson = asRecord(selectedProvider.value.configJson)
@@ -335,7 +437,7 @@ function updateApiJsonField(section: 'headers' | 'query' | 'body', value: string
     })
     error.value = ''
   } catch {
-    error.value = `${section} 不是合法 JSON`
+    error.value = `${apiJsonSectionLabel(section)}不是合法 JSON`
   }
 }
 
@@ -382,7 +484,7 @@ async function completeSelectedProviderByAi() {
       },
     })
     const test = asRecord(suggestion.test)
-    providerTestMarket.value = String(test.market || providerTestMarket.value || selectedProvider.value.supportedMarkets[0] || 'US').toUpperCase()
+    providerTestMarket.value = String(test.market || providerTestMarket.value || selectedProvider.value.supportedMarkets[0] || 'amazon-us')
     providerTestKeyword.value = String(test.keyword || providerTestKeyword.value || 'mahjong gift')
     aiCompletionMessage.value = 'AI 已补全技术字段，请检查后保存或测试 API。'
   } catch (exc) {
@@ -397,23 +499,15 @@ function applySelectedConfigJson() {
   try {
     const parsed = JSON.parse(selectedConfigText.value || '{}')
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      error.value = 'config_json 必须是 JSON 对象'
+      error.value = '高级配置 (config_json) 必须是 JSON 对象'
       return false
     }
     setSelectedConfigJson(parsed as UnknownRecord)
     return true
   } catch {
-    error.value = 'config_json 不是合法 JSON'
+    error.value = '高级配置 (config_json) 不是合法 JSON'
     return false
   }
-}
-
-function toggleMarketProvider(providerId: string) {
-  if (!selectedMarket.value) return
-  const ids = new Set(selectedMarket.value.providerIds)
-  if (ids.has(providerId)) ids.delete(providerId)
-  else ids.add(providerId)
-  selectedMarket.value.providerIds = Array.from(ids)
 }
 
 async function saveSettings() {
@@ -424,8 +518,8 @@ async function saveSettings() {
     error.value = '每个搜索手段都需要 ID'
     return
   }
-  if (!settings.value.targetMarkets.every((market) => market.market.trim())) {
-    error.value = '每个目标市场都需要市场代码'
+  if (!settings.value.targetMarkets.every((market) => market.id.trim() && market.platform.trim() && market.site.trim() && market.displayName.trim())) {
+    error.value = '每个目标市场都需要 ID、平台、站点和显示名称'
     return
   }
   saving.value = true
@@ -449,8 +543,8 @@ async function testSelectedProvider() {
   testingProvider.value = true
   try {
     providerTestResult.value = await testProductResearchSearchProvider(selectedProvider.value, {
-      market: providerTestMarket.value.trim().toUpperCase() || selectedProvider.value.supportedMarkets[0] || 'US',
-      language: selectedProvider.value.supportedLanguages[0] || 'en',
+      market: providerTestMarket.value.trim().replace(/^\*$/, '') || providerTestMarketDefault(selectedProvider.value),
+      language: providerTestLanguageDefault(selectedProvider.value),
       keyword: providerTestKeyword.value.trim() || 'mahjong gift',
       data_type: selectedProvider.value.supportedDataTypes[0] || 'marketplace_products',
     })
@@ -475,7 +569,7 @@ async function testSelectedProvider() {
 
 watch(selectedProvider, (provider) => {
   selectedConfigText.value = JSON.stringify(provider?.configJson || {}, null, 2)
-  providerTestMarket.value = provider?.supportedMarkets[0] || 'US'
+  providerTestMarket.value = providerTestMarketDefault(provider)
   providerTestKeyword.value = 'mahjong gift'
   providerTestResult.value = null
 }, { immediate: true })
@@ -488,7 +582,7 @@ onMounted(loadSettings)
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div>
         <h2 class="card-title">选品调研来源</h2>
-        <p class="muted mt-1">先维护搜索手段，再把它绑定到目标市场。</p>
+        <p class="muted mt-1">目标市场只定义平台和站点；搜索手段后续单独接入运行链路。</p>
       </div>
       <div class="flex flex-wrap gap-2">
         <button class="btn btn-outline" :disabled="loading || saving" @click="loadSettings">刷新</button>
@@ -506,8 +600,12 @@ onMounted(loadSettings)
             <h3 class="font-semibold text-accent-950 dark:text-white">搜索手段</h3>
             <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">{{ settings.searchProviders.length }} 个来源</p>
           </div>
-          <button class="btn btn-outline py-1.5 text-sm" @click="addProvider">添加搜索手段</button>
+          <div class="flex flex-wrap gap-2">
+            <button class="btn btn-outline py-1.5 text-sm" @click="addProvider('api')">添加 API</button>
+            <button class="btn btn-primary py-1.5 text-sm" @click="addProvider('ai_search')">添加 AI 搜索</button>
+          </div>
         </div>
+        <p class="mt-2 text-xs text-accent-500 dark:text-accent-400">这里先维护可用的搜索能力，不再把它写进目标市场对象。</p>
 
         <div class="mt-4 grid gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
           <div class="space-y-2">
@@ -520,43 +618,60 @@ onMounted(loadSettings)
               @click="selectedProviderIndex = index"
             >
               <span class="block truncate font-semibold">{{ providerLabel(provider) }}</span>
-              <span class="mt-1 block truncate text-xs text-accent-500 dark:text-accent-400">{{ provider.id }} · {{ provider.sourceType }}</span>
+              <span class="mt-1 block truncate text-xs text-accent-500 dark:text-accent-400">{{ provider.id }} · {{ sourceTypeLabel(provider.sourceType) }}</span>
             </button>
           </div>
 
           <div v-if="selectedProvider" class="space-y-3">
             <div class="grid gap-3 md:grid-cols-2">
-              <label class="block">
+              <label v-if="!selectedProviderIsAiSearch" class="block">
                 <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">ID</span>
                 <input v-model="selectedProvider.id" class="input" placeholder="api_amazon" />
               </label>
               <label class="block">
                 <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">名称</span>
-                <input v-model="selectedProvider.name" class="input" placeholder="api_亚马逊" />
+                <input v-model="selectedProvider.name" class="input" :placeholder="selectedProviderIsAiSearch ? 'AI 搜索' : '亚马逊 API 搜索'" />
               </label>
-              <label class="block">
+              <label v-if="!selectedProviderIsAiSearch" class="block">
                 <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">类型</span>
                 <select :value="selectedProvider.sourceType" class="input" @change="setProviderSourceType(eventText($event))">
                   <option v-for="option in sourceTypeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
                 </select>
               </label>
-              <label class="block">
+              <div v-else class="rounded-lg border border-primary-200 bg-primary-50 px-3 py-2 text-sm text-primary-800 dark:border-primary-500/30 dark:bg-primary-500/10 dark:text-primary-100">
+                <span class="block text-xs font-semibold opacity-75">类型</span>
+                <span class="mt-1 block font-semibold">AI 搜索</span>
+              </div>
+              <label v-if="!selectedProviderIsAiSearch" class="block">
                 <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">平台</span>
                 <input v-model="selectedProvider.platform" class="input" placeholder="amazon" />
               </label>
-              <label class="block">
+              <div v-else class="rounded-lg border border-primary-200 bg-primary-50 px-3 py-2 text-sm text-primary-800 dark:border-primary-500/30 dark:bg-primary-500/10 dark:text-primary-100">
+                <span class="block text-xs font-semibold opacity-75">运行方式</span>
+                <span class="mt-1 block font-semibold">AI 联网搜索</span>
+              </div>
+              <label v-if="!selectedProviderIsAiSearch" class="block">
                 <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">优先级</span>
                 <input v-model.number="selectedProvider.priority" class="input" min="1" type="number" />
               </label>
-              <label class="block">
+              <div v-else class="rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm text-accent-700 dark:border-dark-700 dark:bg-dark-900 dark:text-accent-200">
+                <span class="block text-xs font-semibold text-accent-500 dark:text-accent-400">支持市场</span>
+                <span class="mt-1 block font-semibold">{{ supportedMarketLabel(selectedProvider.supportedMarkets) }}</span>
+                <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">支持范围属于搜索手段自身配置。</span>
+              </div>
+              <label v-if="strategyOptionsForSelectedProvider.length > 1" class="block">
                 <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">策略</span>
                 <select :value="selectedProvider.providerStrategy" class="input" @change="setProviderStrategy(eventText($event))">
-                  <option v-for="option in strategyOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+                  <option v-for="option in strategyOptionsForSelectedProvider" :key="option.value" :value="option.value">{{ option.label }}</option>
                 </select>
               </label>
+              <div v-else-if="!selectedProviderIsAiSearch" class="rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm text-accent-700 dark:border-dark-700 dark:bg-dark-900 dark:text-accent-200">
+                <span class="block text-xs font-semibold text-accent-500 dark:text-accent-400">策略</span>
+                <span class="mt-1 block font-semibold">{{ strategyLabel(selectedProvider.providerStrategy) }}</span>
+              </div>
             </div>
 
-            <div class="grid gap-3 md:grid-cols-3">
+            <div v-if="!selectedProviderIsAiSearch" class="grid gap-3 md:grid-cols-3">
               <label class="block">
                 <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">支持市场</span>
                 <input class="input" :value="joinList(selectedProvider.supportedMarkets)" placeholder="US, UK" @input="updateProviderList('supportedMarkets', eventText($event))" />
@@ -565,30 +680,30 @@ onMounted(loadSettings)
                 <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">语言</span>
                 <input class="input" :value="joinList(selectedProvider.supportedLanguages)" placeholder="en" @input="updateProviderList('supportedLanguages', eventText($event))" />
               </label>
-              <label class="block">
+              <label v-if="!selectedProviderIsAiSearch" class="block">
                 <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">数据类型</span>
                 <input class="input" :value="joinList(selectedProvider.supportedDataTypes)" placeholder="marketplace_products" @input="updateProviderList('supportedDataTypes', eventText($event))" />
               </label>
             </div>
 
-            <div class="grid gap-3 md:grid-cols-3">
+            <div v-if="!selectedProviderIsAiSearch" class="grid gap-3 md:grid-cols-3">
               <label class="flex items-center gap-2 rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm dark:border-dark-700 dark:bg-dark-900">
                 <input v-model="selectedProvider.enabled" type="checkbox" />
                 <span>启用</span>
               </label>
-              <label class="flex items-center gap-2 rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm dark:border-dark-700 dark:bg-dark-900">
+              <label v-if="!selectedProviderIsAiSearch" class="flex items-center gap-2 rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm dark:border-dark-700 dark:bg-dark-900">
                 <input v-model="selectedProvider.authRequired" type="checkbox" />
                 <span>需要授权</span>
               </label>
-              <label class="block">
+              <label v-if="!selectedProviderIsAiSearch" class="block">
                 <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">限速/分钟</span>
                 <input v-model.number="selectedProvider.rateLimitPerMinute" class="input" min="0" type="number" />
               </label>
             </div>
 
-            <label class="block">
+            <label v-if="!selectedProviderIsAiSearch" class="block">
               <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">说明</span>
-              <input v-model="selectedProvider.complianceNote" class="input" placeholder="api从亚马逊获取热榜" />
+              <input v-model="selectedProvider.complianceNote" class="input" :placeholder="selectedProviderIsAiSearch ? 'AI 联网搜索来源' : '通过 Amazon API 获取热榜'" />
             </label>
 
             <div v-if="selectedProvider.sourceType === 'ai_search' || selectedProvider.providerStrategy === 'ai_web_search'" class="space-y-3 rounded-lg border border-accent-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-900">
@@ -596,15 +711,15 @@ onMounted(loadSettings)
                 <h4 class="text-sm font-semibold text-accent-950 dark:text-white">AI 搜索配置</h4>
                 <div class="flex flex-wrap items-center gap-2">
                   <span :class="webSearchModels.length ? 'badge-success' : 'badge-muted'">AI 模型</span>
-                  <span class="badge-info">{{ selectedProvider.providerStrategy || 'ai_web_search' }}</span>
+                  <span class="badge-info">{{ strategyLabel(selectedProvider.providerStrategy || 'ai_web_search') }}</span>
                 </div>
               </div>
 
-              <div class="grid gap-3 md:grid-cols-3">
+              <div class="grid gap-3 md:grid-cols-2">
                 <label class="block">
-                  <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">指定模型</span>
+                  <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">模型覆盖</span>
                   <select class="input" :value="aiSearchConfigField('ai_model_id')" @change="updateAiSearchConfigField('ai_model_id', eventText($event))">
-                    <option value="">自动匹配</option>
+                    <option value="">使用功能绑定</option>
                     <option v-for="model in webSearchModels" :key="String(model.id)" :value="String(model.id)">{{ model.name || model.id }}</option>
                   </select>
                 </label>
@@ -612,17 +727,14 @@ onMounted(loadSettings)
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">最大结果</span>
                   <input class="input" min="1" max="50" type="number" :value="Number(aiSearchConfigField('max_items', '12')) || 12" @input="updateAiSearchConfigField('max_items', Number(eventText($event)) || 12)" />
                 </label>
-                <label class="flex items-center gap-2 rounded-lg border border-accent-200 bg-accent-50 px-3 py-2 text-sm dark:border-dark-700 dark:bg-dark-950/70">
-                  <input :checked="aiSearchConfigField('require_source_url', 'true') !== 'false'" type="checkbox" @change="updateAiSearchConfigField('require_source_url', eventChecked($event))" />
-                  <span>要求来源 URL</span>
-                </label>
               </div>
 
-              <div class="rounded-lg border border-accent-200 bg-accent-50 p-3 dark:border-dark-700 dark:bg-dark-950/70">
-                <div class="grid gap-3 md:grid-cols-[120px_minmax(0,1fr)_auto]">
+              <details class="rounded-lg border border-accent-200 bg-accent-50 p-3 dark:border-dark-700 dark:bg-dark-950/70">
+                <summary class="cursor-pointer text-sm font-semibold text-accent-700 dark:text-accent-200">测试 AI 搜索</summary>
+                <div class="mt-3 grid gap-3 md:grid-cols-[120px_minmax(0,1fr)_auto]">
                   <label class="block">
                     <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">测试市场</span>
-                    <input v-model="providerTestMarket" class="input uppercase" placeholder="US" />
+                    <input v-model="providerTestMarket" class="input" placeholder="amazon-us / US" />
                   </label>
                   <label class="block">
                     <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">测试关键词</span>
@@ -647,14 +759,14 @@ onMounted(loadSettings)
                   <div v-if="providerTestResult.error" class="mt-2 break-words">{{ providerTestResult.error }}</div>
                   <pre v-if="Object.keys(providerTestResult.sample).length" class="mt-3 max-h-44 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{{ JSON.stringify(providerTestResult.sample, null, 2) }}</pre>
                 </div>
-              </div>
+              </details>
             </div>
 
             <div v-if="selectedProvider.sourceType === 'api' || selectedProvider.providerStrategy === 'configured_api'" class="space-y-3 rounded-lg border border-accent-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-900">
               <div class="flex flex-wrap items-center justify-between gap-3">
                 <h4 class="text-sm font-semibold text-accent-950 dark:text-white">API 配置</h4>
                 <div class="flex flex-wrap items-center gap-2">
-                  <span class="badge-info">{{ selectedProvider.providerStrategy || 'configured_api' }}</span>
+                  <span class="badge-info">{{ strategyLabel(selectedProvider.providerStrategy || 'configured_api') }}</span>
                   <button class="btn btn-outline py-1.5 text-xs" :disabled="aiCompletingProvider" @click="completeSelectedProviderByAi">
                     {{ aiCompletingProvider ? '补全中' : 'AI 补全' }}
                   </button>
@@ -746,7 +858,7 @@ onMounted(loadSettings)
                 <div class="grid gap-3 md:grid-cols-[120px_minmax(0,1fr)_auto]">
                   <label class="block">
                     <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">测试市场</span>
-                    <input v-model="providerTestMarket" class="input uppercase" placeholder="US" />
+                    <input v-model="providerTestMarket" class="input" placeholder="amazon-us / US" />
                   </label>
                   <label class="block">
                     <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">测试关键词</span>
@@ -774,10 +886,13 @@ onMounted(loadSettings)
               </div>
             </div>
 
-            <label class="block">
-              <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">config_json</span>
-              <textarea v-model="selectedConfigText" class="input min-h-32 font-mono text-xs" spellcheck="false" />
-            </label>
+            <details class="rounded-lg border border-accent-200 bg-white p-3 dark:border-dark-700 dark:bg-dark-900">
+              <summary class="cursor-pointer text-sm font-semibold text-accent-700 dark:text-accent-200">高级配置 (config_json)</summary>
+              <label class="mt-3 block">
+                <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">JSON 内容</span>
+                <textarea v-model="selectedConfigText" class="input min-h-32 font-mono text-xs" spellcheck="false" />
+              </label>
+            </details>
 
             <button class="btn btn-outline py-1.5 text-sm text-danger-700" @click="removeProvider(selectedProviderIndex)">删除当前搜索手段</button>
           </div>
@@ -797,61 +912,35 @@ onMounted(loadSettings)
           <div class="space-y-2">
             <button
               v-for="(market, index) in settings.targetMarkets"
-              :key="market.market || index"
+              :key="market.id || index"
               type="button"
               class="w-full rounded-lg border px-3 py-2 text-left text-sm transition"
               :class="selectedMarketIndex === index ? 'border-primary-300 bg-white text-primary-700 shadow-sm dark:border-primary-500/40 dark:bg-primary-500/10 dark:text-primary-100' : 'border-accent-200 bg-white text-accent-700 hover:bg-accent-50 dark:border-dark-700 dark:bg-dark-900/70 dark:text-accent-200'"
               @click="selectedMarketIndex = index"
             >
-              <span class="block font-semibold">{{ market.market || '未命名' }}</span>
-              <span class="mt-1 block truncate text-xs text-accent-500 dark:text-accent-400">{{ market.providerIds.length }} 个搜索手段</span>
+              <span class="block font-semibold">{{ market.displayName || market.id || '未命名' }}</span>
+              <span class="mt-1 block truncate text-xs text-accent-500 dark:text-accent-400">{{ market.platform || '-' }} · {{ market.site || '-' }}</span>
             </button>
           </div>
 
           <div v-if="selectedMarket" class="space-y-3">
             <div class="grid gap-3 md:grid-cols-2">
               <label class="block">
-                <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">市场代码</span>
-                <input v-model="selectedMarket.market" class="input uppercase" placeholder="US / UK" />
+                <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">目标市场 ID</span>
+                <input v-model="selectedMarket.id" class="input" placeholder="amazon-us" />
               </label>
               <label class="block">
-                <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">名称</span>
-                <input v-model="selectedMarket.name" class="input" placeholder="United States" />
+                <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">显示名称</span>
+                <input v-model="selectedMarket.displayName" class="input" placeholder="Amazon US" />
               </label>
               <label class="block">
-                <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">语言</span>
-                <input v-model="selectedMarket.language" class="input" placeholder="en" />
+                <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">平台</span>
+                <input v-model="selectedMarket.platform" class="input" placeholder="amazon" />
               </label>
               <label class="block">
-                <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">币种</span>
-                <input v-model="selectedMarket.currency" class="input" placeholder="USD" />
+                <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">站点</span>
+                <input v-model="selectedMarket.site" class="input" placeholder="amazon.com" />
               </label>
-            </div>
-
-            <label class="flex items-center gap-2 rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm dark:border-dark-700 dark:bg-dark-900">
-              <input v-model="selectedMarket.enabled" type="checkbox" />
-              <span>启用这个市场</span>
-            </label>
-
-            <label class="block">
-              <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">相近市场</span>
-              <input class="input" :value="joinList(selectedMarket.referenceMarkets)" placeholder="GB, CA, AU" @input="updateMarketReferences(eventText($event))" />
-            </label>
-
-            <div>
-              <div class="mb-2 text-xs font-semibold text-accent-600 dark:text-accent-300">绑定搜索手段</div>
-              <div class="grid gap-2">
-                <button
-                  v-for="provider in settings.searchProviders"
-                  :key="provider.id"
-                  type="button"
-                  class="btn min-h-10 justify-start px-3 text-xs"
-                  :class="selectedMarket.providerIds.includes(provider.id) ? 'border border-primary-300 bg-primary-50 text-primary-700 dark:border-primary-500/30 dark:bg-primary-500/10 dark:text-primary-100' : 'btn-outline'"
-                  @click="toggleMarketProvider(provider.id)"
-                >
-                  {{ providerLabel(provider) }}
-                </button>
-              </div>
             </div>
 
             <button class="btn btn-outline py-1.5 text-sm text-danger-700" @click="removeMarket(selectedMarketIndex)">删除当前市场</button>

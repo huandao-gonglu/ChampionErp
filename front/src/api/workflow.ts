@@ -19,20 +19,19 @@ import type {
   MercadoLibreRemoteItem,
   MercadoLibreAuthChecklist,
   MercadoLibreTestMode,
+  HotProductCandidate,
   PricingInput,
   PricingResult,
   Product,
   ProductIndexItem,
-  ProductResearchCandidate,
   ProductResearchConfig,
-  ProductResearchMetrics,
+  ProductResearchMarketHotProducts,
   ProductResearchProviderTestResult,
   ProductResearchResponse,
-  ProductResearchSignal,
   ProductResearchSourceRegistryItem,
   ProductResearchSourceStatus,
   ProductResearchTargetMarket,
-  ProductResearchTaskSummary,
+  ProductResearchRunSummary,
   PublishJob,
   PublishLogItem,
   PublishPrecheck,
@@ -245,69 +244,31 @@ export async function fetchMercadoLibrePublishedItems(status = 'active', page = 
   }
 }
 
-function normalizeProductResearchMetrics(value: unknown): ProductResearchMetrics {
-  const record = asRecord(value)
-  return {
-    searchInterest: getNumber(record, ['search_interest', 'searchInterest']),
-    reviewCount: getNumber(record, ['review_count', 'reviewCount']),
-    rating: getNumber(record, ['rating']),
-    contentHeat: getNumber(record, ['content_heat', 'contentHeat']),
-    engagementCount: getNumber(record, ['engagement_count', 'engagementCount']),
-  }
-}
-
-function normalizeProductResearchSignal(value: unknown): ProductResearchSignal {
+function normalizeHotProductCandidate(value: unknown): HotProductCandidate {
   const record = asRecord(value)
   const priceRecord = asRecord(record.price)
   const amount = getNumber(priceRecord, ['amount'])
   return {
-    source: getString(record, ['source']),
-    sourceId: getString(record, ['source_id', 'sourceId']),
-    sourceType: getString(record, ['source_type', 'sourceType']),
-    market: getString(record, ['market']),
-    language: getString(record, ['language']),
-    keyword: getString(record, ['keyword']),
-    chinaElementType: getString(record, ['china_element_type', 'chinaElementType']),
-    dataType: getString(record, ['data_type', 'dataType']),
+    id: getString(record, ['id']),
     title: getString(record, ['title']),
-    productUrl: getString(record, ['product_url', 'productUrl']),
     imageUrl: getString(record, ['image_url', 'imageUrl']),
+    rank: getNumber(record, ['rank']),
+    sourceUrl: getString(record, ['source_url', 'sourceUrl']),
+    marketId: getString(record, ['market_id', 'marketId', 'market']),
+    platform: getString(record, ['platform']),
+    site: getString(record, ['site']),
+    keyword: getString(record, ['keyword']),
     price: amount
       ? {
           amount,
           currency: getString(priceRecord, ['currency']),
         }
       : undefined,
-    metrics: normalizeProductResearchMetrics(record.metrics),
-    capturedAt: getString(record, ['captured_at', 'capturedAt']),
-    raw: record,
-  }
-}
-
-function normalizeProductResearchCandidate(value: unknown): ProductResearchCandidate {
-  const record = asRecord(value)
-  return {
-    candidateId: getString(record, ['candidate_id', 'candidateId']),
-    targetMarket: getString(record, ['target_market', 'targetMarket']),
-    overseasKeyword: getString(record, ['overseas_keyword', 'overseasKeyword']),
-    chinaElementType: getString(record, ['china_element_type', 'chinaElementType']),
-    productType: getString(record, ['product_type', 'productType']),
-    relatedSources: stringList(record.related_sources ?? record.relatedSources),
-    chinesePurchaseKeywords: stringList(record.chinese_purchase_keywords ?? record.chinesePurchaseKeywords),
-    upgradeSuggestions: stringList(record.upgrade_suggestions ?? record.upgradeSuggestions),
-    logisticsRisks: stringList(record.logistics_risks ?? record.logisticsRisks),
-    complianceRisks: stringList(record.compliance_risks ?? record.complianceRisks),
-    chinaElementStrength: getString(record, ['china_element_strength', 'chinaElementStrength']),
-    waitTolerance: getString(record, ['wait_tolerance', 'waitTolerance']),
-    localScarcity: getString(record, ['local_scarcity', 'localScarcity']),
-    opportunityScore: getNumber(record, ['opportunity_score', 'opportunityScore']),
-    scoreBreakdown: Object.fromEntries(Object.entries(asRecord(record.score_breakdown ?? record.scoreBreakdown)).map(([key, score]) => [key, Number(score) || 0])),
-    recommendedAction: getString(record, ['recommended_action', 'recommendedAction']),
-    evidenceSignals: Array.isArray(record.evidence_signals)
-      ? record.evidence_signals.map(normalizeProductResearchSignal)
-      : Array.isArray(record.evidenceSignals)
-        ? record.evidenceSignals.map(normalizeProductResearchSignal)
-        : [],
+    rating: getNumber(record, ['rating']),
+    reviewCount: getNumber(record, ['review_count', 'reviewCount']),
+    hotScore: getNumber(record, ['hot_score', 'hotScore']),
+    sourceName: getString(record, ['source_name', 'sourceName']),
+    collectedAt: getString(record, ['collected_at', 'collectedAt']),
     raw: record,
   }
 }
@@ -326,10 +287,10 @@ function normalizeProductResearchSourceStatus(value: unknown): ProductResearchSo
   }
 }
 
-function normalizeProductResearchTask(value: unknown): ProductResearchTaskSummary {
+function normalizeProductResearchRun(value: unknown): ProductResearchRunSummary {
   const record = asRecord(value)
   return {
-    taskId: getString(record, ['task_id', 'taskId']),
+    runId: getString(record, ['run_id', 'runId']),
     status: getString(record, ['status']),
     searchMode: getString(record, ['search_mode', 'searchMode']),
     createdAt: getString(record, ['created_at', 'createdAt']),
@@ -343,9 +304,8 @@ function normalizeProductResearchResponse(value: unknown): ProductResearchRespon
   const record = asRecord(value)
   ensureOk(record, '选品搜索失败')
   return {
-    task: normalizeProductResearchTask(record.task),
-    items: Array.isArray(record.items) ? record.items.map(normalizeProductResearchCandidate) : [],
-    signals: Array.isArray(record.signals) ? record.signals.map(normalizeProductResearchSignal) : [],
+    run: normalizeProductResearchRun(record.run),
+    items: Array.isArray(record.items) ? record.items.map(normalizeHotProductCandidate) : [],
     sourceStatus: Array.isArray(record.source_status)
       ? record.source_status.map(normalizeProductResearchSourceStatus)
       : Array.isArray(record.sourceStatus)
@@ -355,13 +315,8 @@ function normalizeProductResearchResponse(value: unknown): ProductResearchRespon
   }
 }
 
-export async function createProductResearchSearchTask(payload: UnknownRecord): Promise<ProductResearchResponse> {
-  const response = await apiClient.post('/api/v1/product-research/search-tasks', payload)
-  return normalizeProductResearchResponse(response.data)
-}
-
-export async function fetchProductResearchSearchTask(taskId: string): Promise<ProductResearchResponse> {
-  const response = await apiClient.get('/api/v1/product-research/search-tasks', { params: { task_id: taskId } })
+export async function createProductResearchHotProductRun(payload: UnknownRecord): Promise<ProductResearchResponse> {
+  const response = await apiClient.post('/api/v1/product-research/hot-products/search', payload)
   return normalizeProductResearchResponse(response.data)
 }
 
@@ -391,13 +346,26 @@ function normalizeProductResearchProvider(value: unknown): ProductResearchSource
 function normalizeProductResearchTargetMarket(value: unknown): ProductResearchTargetMarket {
   const record = asRecord(value)
   return {
-    market: getString(record, ['market', 'code', 'id']).toUpperCase(),
-    name: getString(record, ['name']),
-    enabled: getBoolean(record, ['enabled']),
-    language: getString(record, ['language']),
-    currency: getString(record, ['currency']),
-    referenceMarkets: stringList(record.reference_markets ?? record.referenceMarkets).map((item) => item.toUpperCase()),
-    providerIds: stringList(record.provider_ids ?? record.providerIds ?? record.source_ids ?? record.sourceIds),
+    id: getString(record, ['id', 'market_id', 'marketId', 'market', 'code']),
+    platform: getString(record, ['platform']).toLowerCase(),
+    site: getString(record, ['site']).toLowerCase(),
+    displayName: getString(record, ['display_name', 'displayName', 'name']),
+    raw: record,
+  }
+}
+
+function normalizeProductResearchMarketHotProducts(value: unknown): ProductResearchMarketHotProducts {
+  const record = asRecord(value)
+  const rawItems = Array.isArray(record.items)
+    ? record.items
+    : Array.isArray(record.hot_products)
+      ? record.hot_products
+      : Array.isArray(record.hotProducts)
+        ? record.hotProducts
+        : []
+  return {
+    marketId: getString(record, ['market_id', 'marketId', 'id', 'market']),
+    items: rawItems.map(normalizeHotProductCandidate),
     raw: record,
   }
 }
@@ -416,6 +384,11 @@ function normalizeProductResearchConfig(value: unknown): ProductResearchConfig {
     : Array.isArray(record.targetMarkets)
       ? record.targetMarkets
       : []
+  const rawMarketHotProducts = Array.isArray(record.market_hot_products)
+    ? record.market_hot_products
+    : Array.isArray(record.marketHotProducts)
+      ? record.marketHotProducts
+      : []
   const rawRegistry = Array.isArray(record.source_registry)
     ? record.source_registry
     : Array.isArray(record.sourceRegistry)
@@ -424,6 +397,7 @@ function normalizeProductResearchConfig(value: unknown): ProductResearchConfig {
   return {
     searchProviders: rawProviders.map(normalizeProductResearchProvider),
     targetMarkets: rawMarkets.map(normalizeProductResearchTargetMarket),
+    marketHotProducts: rawMarketHotProducts.map(normalizeProductResearchMarketHotProducts),
     sourceRegistry: rawRegistry.map(normalizeProductResearchProvider),
     raw: record,
   }
@@ -452,13 +426,38 @@ function toProductResearchProviderPayload(provider: ProductResearchSourceRegistr
 
 function toProductResearchTargetMarketPayload(market: ProductResearchTargetMarket): UnknownRecord {
   return {
-    market: market.market.trim().toUpperCase(),
-    name: market.name.trim() || market.market.trim().toUpperCase(),
-    enabled: market.enabled,
-    language: market.language.trim().toLowerCase() || 'en',
-    currency: market.currency.trim().toUpperCase() || 'USD',
-    reference_markets: market.referenceMarkets.map((item) => item.trim().toUpperCase()).filter(Boolean),
-    provider_ids: market.providerIds.map((item) => item.trim()).filter(Boolean),
+    id: market.id.trim(),
+    platform: market.platform.trim().toLowerCase(),
+    site: market.site.trim().toLowerCase(),
+    display_name: market.displayName.trim() || market.id.trim(),
+  }
+}
+
+function toProductResearchMarketHotProductsPayload(collection: ProductResearchMarketHotProducts): UnknownRecord {
+  return {
+    market_id: collection.marketId.trim(),
+    items: (collection.items || []).map((item) => ({
+      id: item.id.trim(),
+      title: item.title.trim(),
+      image_url: item.imageUrl.trim(),
+      rank: item.rank,
+      source_url: item.sourceUrl.trim(),
+      market_id: item.marketId.trim(),
+      platform: item.platform.trim().toLowerCase(),
+      site: item.site.trim().toLowerCase(),
+      keyword: item.keyword.trim(),
+      price: item.price
+        ? {
+            amount: item.price.amount,
+            currency: item.price.currency.trim().toUpperCase(),
+          }
+        : undefined,
+      rating: item.rating,
+      review_count: item.reviewCount,
+      hot_score: item.hotScore,
+      source_name: item.sourceName.trim(),
+      collected_at: item.collectedAt,
+    })),
   }
 }
 
@@ -474,6 +473,7 @@ export async function saveProductResearchSettings(config: ProductResearchConfig)
     config: {
       search_providers: config.searchProviders.map(toProductResearchProviderPayload),
       target_markets: config.targetMarkets.map(toProductResearchTargetMarketPayload),
+      market_hot_products: config.marketHotProducts.map(toProductResearchMarketHotProductsPayload),
     },
   })
   const data = asRecord(response.data)

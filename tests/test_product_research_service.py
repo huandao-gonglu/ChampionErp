@@ -2,51 +2,103 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from erp_web.product_research_config import default_product_research_config, normalize_product_research_config
 from services import product_research_service
 
 
-def product_research_payload() -> dict:
+def hot_product_payload() -> dict:
     return {
-        "search_mode": "target_plus_reference",
-        "markets": {
-            "target_markets": ["US"],
-            "reference_markets": ["GB", "CA"],
-        },
-        "product_intent": {
-            "china_element_required": True,
-            "upgrade_variant_required": True,
-        },
-        "filters": {
-            "include_china_element_types": ["mahjong", "calligraphy"],
-            "upgrade_types": ["gift_box", "custom_name", "localized_explanation"],
-            "exclude_risks": ["food", "battery", "children_product", "medical_device", "cosmetics", "liquid"],
-        },
-        "sources": {
-            "demand_sources": ["google_trends", "etsy", "ebay"],
-        },
-        "result_options": {
-            "limit": 5,
-            "sort_by": "opportunity_score",
-        },
+        "search_mode": "target_only",
+        "markets": {"target_markets": ["amazon-us"], "reference_markets": []},
+        "keywords": ["pet storage"],
+        "result_options": {"limit": 6, "sort_by": "rank"},
     }
 
 
-def test_create_search_task_returns_candidates_and_source_status(tmp_path) -> None:
+def test_create_hot_product_run_returns_market_hot_product_candidates(tmp_path) -> None:
     config = normalize_product_research_config(default_product_research_config())
-    task = product_research_service.create_search_task(tmp_path, product_research_payload(), config)
 
-    assert task["status"] == "completed"
-    assert task["items"]
-    assert task["signals"]
-    assert any(row["source"] == "google_trends" and row["status"] == "success" for row in task["source_status"])
-    assert any(row["source"] == "etsy" and row["status"] == "success" for row in task["source_status"])
-    assert any(row["source"] == "ebay" and row["status"] == "configuration_required" for row in task["source_status"])
-    assert task["items"][0]["opportunity_score"] >= task["items"][-1]["opportunity_score"]
+    run = product_research_service.create_hot_product_run(tmp_path, hot_product_payload(), config)
 
-    loaded = product_research_service.load_search_task(tmp_path, task["task_id"])
-    assert loaded
-    assert loaded["task_id"] == task["task_id"]
+    assert run["status"] == "completed"
+    assert run["run_id"].startswith("prr_")
+    assert len(run["items"]) == 2
+    assert not (tmp_path / "data" / "cache" / "product_research" / "tasks").exists()
+
+    first = run["items"][0]
+    assert first["id"] == "hot_amazon-us_1"
+    assert first["title"] == "pet storage organizer set"
+    assert first["image_url"].startswith("https://")
+    assert first["rank"] == 1
+    assert first["source_url"].startswith("https://amazon.com/s?")
+    assert first["platform"] == "amazon"
+    assert first["site"] == "amazon.com"
+    assert first["market_id"] == "amazon-us"
+    assert first["keyword"] == "pet storage"
+    assert first["price"]["currency"] == "USD"
+    assert first["rating"] > 0
+    assert first["review_count"] > 0
+    assert first["hot_score"] > run["items"][-1]["hot_score"]
+    assert first["source_name"] == "市场候选数据"
+    assert first["collected_at"]
+    assert run["source_status"] == [
+        {
+            "source": "market_hot_products",
+            "source_id": "market_hot_products",
+            "market": "amazon-us",
+            "status": "success",
+            "items_found": 2,
+            "error_message": "",
+            "provider_strategy": "market_data",
+        }
+    ]
+
+
+def test_multiple_keywords_are_ranked_in_one_temporary_result(tmp_path) -> None:
+    config = normalize_product_research_config(default_product_research_config())
+    body = hot_product_payload()
+    body["keywords"] = ["pet storage", "desk organizer"]
+    body["result_options"]["limit"] = 5
+
+    run = product_research_service.create_hot_product_run(tmp_path, body, config)
+
+    assert [item["rank"] for item in run["items"]] == [1, 2, 3, 4]
+    assert [item["keyword"] for item in run["items"]] == [
+        "pet storage",
+        "pet storage",
+        "desk organizer",
+        "desk organizer",
+    ]
+
+
+def test_hot_product_run_returns_empty_when_market_has_no_saved_data(tmp_path) -> None:
+    config = default_product_research_config()
+    config["target_markets"] = [
+        {
+            "id": "amazon-us",
+            "platform": "amazon",
+            "site": "amazon.com",
+            "display_name": "Amazon US",
+        }
+    ]
+    config["market_hot_products"] = [{"market_id": "amazon-us", "items": []}]
+
+    run = product_research_service.create_hot_product_run(tmp_path, hot_product_payload(), normalize_product_research_config(config))
+
+    assert run["items"] == []
+    assert run["source_status"][0]["status"] == "empty"
+    assert run["source_status"][0]["error_message"] == "目标市场还没有候选商品数据"
+
+
+def test_normalize_search_request_requires_keywords() -> None:
+    config = normalize_product_research_config(default_product_research_config())
+    body = hot_product_payload()
+    body["keywords"] = []
+
+    with pytest.raises(ValueError, match="keywords is required"):
+        product_research_service.normalize_search_request(body, config)
 
 
 def test_public_product_research_config_masks_source_secrets() -> None:
@@ -79,56 +131,7 @@ def test_public_product_research_config_masks_source_secrets() -> None:
     assert source_config["base_url"] == "https://api.example.com"
 
 
-def test_target_market_derives_bound_search_provider(tmp_path) -> None:
-    config = default_product_research_config()
-    config["search_providers"] = [
-        {
-            "id": "api_amazon",
-            "name": "api_亚马逊",
-            "source_type": "api",
-            "platform": "amazon",
-            "enabled": True,
-            "priority": 1,
-            "supported_markets": ["US", "GB"],
-            "supported_languages": ["en"],
-            "supported_data_types": ["marketplace_products"],
-            "auth_required": False,
-            "config_json": {"provider_strategy": "seeded_mock"},
-        }
-    ]
-    config["target_markets"] = [
-        {"market": "US", "language": "en", "currency": "USD", "provider_ids": ["api_amazon"]},
-        {"market": "UK", "language": "en", "currency": "GBP", "provider_ids": ["api_amazon"]},
-    ]
-    body = product_research_payload()
-    body["markets"] = {"target_markets": ["UK"], "reference_markets": []}
-    body.pop("sources")
-
-    task = product_research_service.create_search_task(tmp_path, body, normalize_product_research_config(config))
-
-    assert task["request"]["sources"]["demand_sources"] == ["api_amazon"]
-    assert task["items"]
-    assert any(row["source"] == "api_amazon" and row["status"] in {"success", "cached"} for row in task["source_status"])
-    assert any(signal["source_id"] == "api_amazon" for signal in task["signals"])
-
-
-def test_keyword_only_request_does_not_merge_default_china_elements() -> None:
-    config = normalize_product_research_config(default_product_research_config())
-    body = product_research_payload()
-    body["keywords"] = ["pet storage", "car organizer"]
-    body["filters"].pop("include_china_element_types")
-    body["filters"]["upgrade_types"] = []
-
-    request = product_research_service.normalize_search_request(body, config)
-    expanded = product_research_service.expand_keywords(request, config)
-
-    assert request["filters"]["include_china_element_types"] == []
-    assert request["filters"]["upgrade_types"] == []
-    assert [item["keyword"] for item in expanded] == ["pet storage", "car organizer"]
-    assert {item["china_element_type"] for item in expanded} == {"custom_keyword"}
-
-
-def test_ai_web_search_adds_source_backed_signals(tmp_path, monkeypatch) -> None:
+def test_ai_web_search_provider_connection_uses_configured_model(tmp_path, monkeypatch) -> None:
     class FakeResponse:
         def __enter__(self):
             return self
@@ -146,14 +149,8 @@ def test_ai_web_search_adds_source_backed_signals(tmp_path, monkeypatch) -> None
                                     {
                                         "items": [
                                             {
-                                                "keyword": "pet storage",
-                                                "market": "US",
-                                                "title": "Pet storage baskets trend on US marketplace",
-                                                "source_name": "Example Search",
+                                                "title": "Pet storage baskets trend",
                                                 "source_url": "https://example.com/pet-storage-trend",
-                                                "product_url": "https://example.com/pet-storage-product",
-                                                "metrics": {"content_heat": 82},
-                                                "confidence": 0.82,
                                             }
                                         ]
                                     }
@@ -169,78 +166,32 @@ def test_ai_web_search_adds_source_backed_signals(tmp_path, monkeypatch) -> None
     def fake_urlopen(request, timeout):
         seen["url"] = request.full_url
         seen["auth"] = request.get_header("Authorization") or request.get_header("authorization") or ""
-        seen["timeout"] = str(timeout)
         body = json.loads(request.data.decode("utf-8"))
         seen["model"] = body["model"]
         seen["prompt"] = body["messages"][1]["content"]
         return FakeResponse()
 
     monkeypatch.setattr(product_research_service.ai_gateway.urllib.request, "urlopen", fake_urlopen)
-    config = default_product_research_config()
-    config["search_providers"] = [
-        {
-            "id": "ai_market_search",
-            "name": "AI 市场搜索",
-            "source_type": "ai_search",
-            "platform": "ai_model",
-            "enabled": True,
-            "priority": 1,
-            "supported_markets": ["US"],
-            "supported_languages": ["en"],
-            "supported_data_types": ["ai_web_search"],
-            "auth_required": False,
-            "config_json": {
-                "provider_strategy": "ai_web_search",
-                "ai_model_id": "web_search_model",
-                "max_items": 12,
-                "require_source_url": True,
-            },
-        }
-    ]
-    config["target_markets"] = [
-        {"market": "US", "language": "en", "currency": "USD", "provider_ids": ["ai_market_search"]},
-    ]
-    body = product_research_payload()
-    body["keywords"] = ["pet storage"]
-    body["filters"].pop("include_china_element_types")
-    body["filters"]["upgrade_types"] = []
-    body["sources"] = {"demand_sources": ["ai_market_search"]}
-    body["product_intent"] = {"keyword_required": True}
-
-    task = product_research_service.create_search_task(
-        tmp_path,
-        body,
-        normalize_product_research_config(config),
-        {
-            "ai_models": [
-                {
-                    "id": "web_search_model",
-                    "provider": "OpenAI-Compatible",
-                    "api_key": "ai-key",
-                    "base_url": "https://ai.example.com/v1",
-                    "model": "web-search-model",
-                    "capabilities": ["chat", "json", "web_search"],
-                }
-            ]
+    provider = {
+        "id": "ai_market_search",
+        "name": "AI 市场搜索",
+        "source_type": "ai_search",
+        "platform": "ai_model",
+        "enabled": True,
+        "priority": 1,
+        "supported_markets": ["US"],
+        "supported_languages": ["en"],
+        "supported_data_types": ["ai_web_search"],
+        "auth_required": False,
+        "config_json": {
+            "provider_strategy": "ai_web_search",
+            "ai_model_id": "web_search_model",
         },
-    )
-
-    ai_status = next(row for row in task["source_status"] if row["source_id"] == "ai_market_search")
-    ai_signal = next(signal for signal in task["signals"] if signal["source_id"] == "ai_market_search")
-    assert seen["url"] == "https://ai.example.com/v1/chat/completions"
-    assert seen["auth"] == "Bearer ai-key"
-    assert seen["model"] == "web-search-model"
-    assert "pet storage" in seen["prompt"]
-    assert ai_status["status"] == "success"
-    assert ai_status["items_found"] == 1
-    assert ai_signal["keyword"] == "pet storage"
-    assert ai_signal["product_url"] == "https://example.com/pet-storage-product"
-    assert ai_signal["data_type"] == "ai_web_search"
-    assert any("AI 市场搜索" in item["related_sources"] for item in task["items"])
+    }
 
     result = product_research_service.test_search_provider_connection(
         {
-            "provider": config["search_providers"][0],
+            "provider": provider,
             "options": {
                 "market": "US",
                 "language": "en",
@@ -248,7 +199,7 @@ def test_ai_web_search_adds_source_backed_signals(tmp_path, monkeypatch) -> None
                 "data_type": "ai_web_search",
             },
         },
-        normalize_product_research_config(config),
+        normalize_product_research_config(default_product_research_config()),
         tmp_path,
         {
             "ai_models": [
@@ -265,12 +216,15 @@ def test_ai_web_search_adds_source_backed_signals(tmp_path, monkeypatch) -> None
     )
 
     assert result["ok"] is True
-    assert result["source_id"] == "ai_market_search"
-    assert result["provider_strategy"] == "ai_web_search"
     assert result["items_found"] == 1
+    assert result["sample"]["source_url"] == "https://example.com/pet-storage-trend"
+    assert seen["url"] == "https://ai.example.com/v1/chat/completions"
+    assert seen["auth"] == "Bearer ai-key"
+    assert seen["model"] == "web-search-model"
+    assert "pet storage" in seen["prompt"]
 
 
-def test_configured_api_provider_uses_saved_request_mapping(tmp_path, monkeypatch) -> None:
+def test_configured_api_provider_connection_uses_saved_request_mapping(monkeypatch) -> None:
     class FakeResponse:
         def __enter__(self):
             return self
@@ -285,12 +239,7 @@ def test_configured_api_provider_uses_saved_request_mapping(tmp_path, monkeypatc
                         "items": [
                             {
                                 "title": "Mahjong gift lamp",
-                                "keyword": "mahjong gift lamp",
-                                "price": {"amount": 29.99, "currency": "USD"},
                                 "url": "https://example.com/mahjong-lamp",
-                                "image_url": "https://example.com/mahjong-lamp.jpg",
-                                "review_count": 120,
-                                "rating": 4.8,
                             }
                         ]
                     }
@@ -302,65 +251,41 @@ def test_configured_api_provider_uses_saved_request_mapping(tmp_path, monkeypatc
     def fake_urlopen(request, timeout):
         seen["url"] = request.full_url
         seen["api_key"] = request.get_header("X-api-key") or request.get_header("x-api-key") or ""
-        seen["timeout"] = str(timeout)
         return FakeResponse()
 
     monkeypatch.setattr(product_research_service.urllib.request, "urlopen", fake_urlopen)
-    config = default_product_research_config()
-    config["search_providers"] = [
-        {
-            "id": "api_amazon",
-            "name": "api_亚马逊",
-            "source_type": "api",
-            "platform": "amazon",
-            "enabled": True,
-            "priority": 1,
-            "supported_markets": ["US"],
-            "supported_languages": ["en"],
-            "supported_data_types": ["marketplace_products"],
-            "auth_required": True,
-            "config_json": {
-                "provider_strategy": "configured_api",
-                "request": {
-                    "method": "GET",
-                    "url": "https://api.example.com/hot",
-                    "auth_type": "api_key_header",
-                    "api_key_header": "x-api-key",
-                    "api_key": "secret-token",
-                    "query": {"market": "{market}", "q": "{keyword}"},
-                },
-                "response": {
-                    "items_path": "data.items",
-                    "title_path": "title",
-                    "keyword_path": "keyword",
-                    "price_path": "price.amount",
-                    "currency_path": "price.currency",
-                    "url_path": "url",
-                    "image_path": "image_url",
-                },
+    provider = {
+        "id": "api_amazon",
+        "name": "api_亚马逊",
+        "source_type": "api",
+        "platform": "amazon",
+        "enabled": True,
+        "priority": 1,
+        "supported_markets": ["US"],
+        "supported_languages": ["en"],
+        "supported_data_types": ["marketplace_products"],
+        "auth_required": True,
+        "config_json": {
+            "provider_strategy": "configured_api",
+            "request": {
+                "method": "GET",
+                "url": "https://api.example.com/hot",
+                "auth_type": "api_key_header",
+                "api_key_header": "x-api-key",
+                "api_key": "secret-token",
+                "query": {"market": "{market}", "q": "{keyword}"},
             },
-        }
-    ]
-    config["target_markets"] = [
-        {"market": "US", "language": "en", "currency": "USD", "provider_ids": ["api_amazon"]},
-    ]
-    body = product_research_payload()
-    body["markets"] = {"target_markets": ["US"], "reference_markets": []}
-    body["filters"]["include_china_element_types"] = ["mahjong"]
-    body.pop("sources")
-
-    task = product_research_service.create_search_task(tmp_path, body, normalize_product_research_config(config))
-
-    assert "market=US" in seen["url"]
-    assert seen["api_key"] == "secret-token"
-    assert task["items"]
-    assert task["signals"][0]["title"] == "Mahjong gift lamp"
-    assert task["signals"][0]["product_url"] == "https://example.com/mahjong-lamp"
-    assert any(row["source"] == "api_amazon" and row["status"] == "success" for row in task["source_status"])
+            "response": {
+                "items_path": "data.items",
+                "title_path": "title",
+                "url_path": "url",
+            },
+        },
+    }
 
     result = product_research_service.test_search_provider_connection(
         {
-            "provider": config["search_providers"][0],
+            "provider": provider,
             "options": {
                 "market": "US",
                 "language": "en",
@@ -368,9 +293,12 @@ def test_configured_api_provider_uses_saved_request_mapping(tmp_path, monkeypatc
                 "data_type": "marketplace_products",
             },
         },
-        normalize_product_research_config(config),
+        normalize_product_research_config(default_product_research_config()),
     )
 
     assert result["ok"] is True
     assert result["items_found"] == 1
     assert result["sample"]["title"] == "Mahjong gift lamp"
+    assert result["sample"]["source_url"] == "https://example.com/mahjong-lamp"
+    assert "market=US" in seen["url"]
+    assert seen["api_key"] == "secret-token"

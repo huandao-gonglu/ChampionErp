@@ -19,8 +19,8 @@ This map exists to reduce context scanning for humans and coding agents.
 - Auth, AI config, and settings APIs: `erp_web/http_route_units/auth_config_routes.py`
 - Category cache, search, suggestion, and precheck APIs: `erp_web/http_route_units/category_routes.py`
 - Product save/load/delete and pricing APIs: `erp_web/http_route_units/product_routes.py`
-- Product research search tasks, source registry/settings APIs, and search provider test API: `erp_web/http_route_units/product_research_routes.py`, backed by `erp_web/facades/product_research_facade.py` and `services/product_research_service.py`.
-- Product research defaults and config normalization: `erp_web/product_research_config.py`; user-facing search methods live in `product_research.search_providers`, and target markets bind those methods through `product_research.target_markets[].provider_ids`. API search methods use `config_json.request` for URL/auth/query/body and `config_json.response` for result-field mapping.
+- Product research temporary hot-product runs (`POST /api/v1/product-research/hot-products/search`), source registry/settings APIs, and search provider test API: `erp_web/http_route_units/product_research_routes.py`, backed by `erp_web/facades/product_research_facade.py` and `services/product_research_service.py`.
+- Product research defaults and config normalization: `erp_web/product_research_config.py`; user-facing search methods live in `product_research.search_providers`. Target markets are only platform/site definitions (`id`, `platform`, `site`, `display_name`), while generated hot-product candidate lists live separately in `product_research.market_hot_products[]` keyed by `market_id`. API search methods use `config_json.request` for URL/auth/query/body and `config_json.response` for result-field mapping.
 - Product research AI web search is a first-class search provider strategy (`source_type: ai_search`, `config_json.provider_strategy: ai_web_search`). It resolves a model through `services/ai_gateway.py` and can optionally pin `config_json.ai_model_id`.
 - Publish precheck, payload preview, real publish, and queue APIs: `erp_web/http_route_units/publish_routes.py`
 - Mercado Libre order notification webhook: `erp_web/http_route_units/mercadolibre_routes.py` handles `POST /api/mercadolibre/notifications`; recent order pull and notification cache are exposed from `GET /api/mercadolibre/orders` in `get_routes.py`.
@@ -50,7 +50,7 @@ This map exists to reduce context scanning for humans and coding agents.
 - Image pool items: `erp_web/schemas/image.py`
 - Publish jobs: `erp_web/schemas/publish.py`
 - App/store config: `erp_web/schemas/config.py`
-- Product research search providers, target markets, normalized demand signals, search tasks, and candidates: `erp_web/schemas/product_research.py`
+- Product research search providers, target markets, temporary hot-product candidates, and run results: `erp_web/schemas/product_research.py`
 - API response envelope: `erp_web/schemas/api.py`
 
 ## Compatibility Notes

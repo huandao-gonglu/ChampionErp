@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import urllib.parse
 from typing import Any
 
 from services import config_service, product_research_service
@@ -74,30 +73,15 @@ def _restore_masked_provider_secrets(incoming: dict[str, Any], current: dict[str
     return incoming
 
 
-def create_search_task_payload(body: dict[str, Any]) -> ResponseWithStatus:
+def create_hot_product_run_payload(body: dict[str, Any]) -> ResponseWithStatus:
     try:
         app_config = load_app_config()
-        task = product_research_service.create_search_task(APP_DIR, body, app_config.get("product_research", {}), app_config)
-        return product_research_service.build_task_response(task), 200
+        run = product_research_service.create_hot_product_run(APP_DIR, body, app_config.get("product_research", {}), app_config)
+        return product_research_service.build_run_response(run), 200
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}, 400
     except Exception as exc:
         return {"ok": False, "error": str(exc)}, 500
-
-
-def get_search_task_payload(parsed: urllib.parse.ParseResult) -> ResponseWithStatus:
-    params = urllib.parse.parse_qs(parsed.query)
-    task_id = str((params.get("task_id") or [""])[0] or "").strip()
-    if task_id:
-        task = product_research_service.load_search_task(APP_DIR, task_id)
-        if not task:
-            return {"ok": False, "error": "task_id not found"}, 404
-        return product_research_service.build_task_response(task), 200
-    try:
-        limit = int((params.get("limit") or ["20"])[0] or 20)
-    except ValueError:
-        return {"ok": False, "error": "limit must be an integer"}, 400
-    return {"ok": True, "items": product_research_service.list_search_tasks(APP_DIR, limit=limit)}, 200
 
 
 def get_source_registry_payload() -> ResponseWithStatus:
@@ -119,13 +103,9 @@ def save_source_registry_payload(body: dict[str, Any]) -> ResponseWithStatus:
     for key in (
         "search_defaults",
         "provider_runtime",
-        "reference_market_map",
-        "market_languages",
-        "china_element_catalog",
-        "upgrade_type_catalog",
-        "scoring_weights",
         "search_providers",
         "target_markets",
+        "market_hot_products",
         "source_registry",
     ):
         if key in incoming:
@@ -179,8 +159,7 @@ def complete_provider_config_payload(body: dict[str, Any]) -> ResponseWithStatus
 
 __all__ = [
     "complete_provider_config_payload",
-    "create_search_task_payload",
-    "get_search_task_payload",
+    "create_hot_product_run_payload",
     "get_source_registry_payload",
     "save_source_registry_payload",
     "test_search_provider_payload",

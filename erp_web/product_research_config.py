@@ -7,7 +7,18 @@ from typing import Any
 
 PRODUCT_RESEARCH_SOURCE_TYPES = {"api", "ai_search", "crawler", "third_party_api", "manual_import"}
 PRODUCT_RESEARCH_SEARCH_MODES = {"target_only", "target_plus_reference", "global_scan"}
+DEFAULT_MARKET_ID_BY_CODE = {
+    "US": "amazon-us",
+    "GB": "amazon-uk",
+    "UK": "amazon-uk",
+    "CA": "amazon-ca",
+    "AU": "amazon-au",
+}
 DEFAULT_MARKET_CURRENCIES = {
+    "amazon-us": "USD",
+    "amazon-uk": "GBP",
+    "amazon-ca": "CAD",
+    "amazon-au": "AUD",
     "US": "USD",
     "GB": "GBP",
     "UK": "GBP",
@@ -17,6 +28,13 @@ DEFAULT_MARKET_CURRENCIES = {
     "FR": "EUR",
     "JP": "JPY",
 }
+DEFAULT_HOT_PRODUCT_IMAGES = [
+    "https://images.unsplash.com/photo-1586023492125-27b2c045efd7?auto=format&fit=crop&w=800&q=80",
+    "https://images.unsplash.com/photo-1558618666-fcd25c85cd64?auto=format&fit=crop&w=800&q=80",
+    "https://images.unsplash.com/photo-1513519245088-0e12902e5a38?auto=format&fit=crop&w=800&q=80",
+    "https://images.unsplash.com/photo-1583847268964-b28dc8f51f92?auto=format&fit=crop&w=800&q=80",
+    "https://images.unsplash.com/photo-1524758631624-e2822e304c36?auto=format&fit=crop&w=800&q=80",
+]
 
 
 def _string_list(value: Any) -> list[str]:
@@ -47,150 +65,102 @@ def _bool_value(value: Any, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on", "enabled"}
 
 
+def _keyword_slug(value: str) -> str:
+    return "-".join(part for part in str(value or "").strip().lower().split() if part) or "product"
+
+
+def _default_hot_products(market_id: str, platform: str, site: str, currency: str) -> list[dict[str, Any]]:
+    keywords = ["pet storage", "desk organizer", "mahjong gift"]
+    rows: list[dict[str, Any]] = []
+    rank = 1
+    for keyword in keywords:
+        for suffix in ("organizer set", "storage basket"):
+            slug = _keyword_slug(keyword)
+            rows.append(
+                {
+                    "id": f"hot_{market_id}_{rank}",
+                    "title": f"{keyword} {suffix}",
+                    "image_url": DEFAULT_HOT_PRODUCT_IMAGES[(rank - 1) % len(DEFAULT_HOT_PRODUCT_IMAGES)],
+                    "rank": rank,
+                    "source_url": f"https://{site}/s?k={slug}&mock_rank={rank}",
+                    "market_id": market_id,
+                    "platform": platform,
+                    "site": site,
+                    "keyword": keyword,
+                    "price": {"amount": round(12.99 + rank * 4.25, 2), "currency": currency},
+                    "rating": min(5.0, round(4.2 + rank * 0.08, 1)),
+                    "review_count": 180 + rank * 137,
+                    "hot_score": round(98 - rank * 3.5, 1),
+                    "source_name": "市场候选数据",
+                    "collected_at": "2026-06-29T00:00:00Z",
+                }
+            )
+            rank += 1
+    return rows
+
+
+def _float_value(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_hot_product_price(value: Any, currency: str) -> dict[str, Any] | None:
+    raw = value if isinstance(value, dict) else {}
+    amount = _float_value(raw.get("amount"), 0.0)
+    if amount <= 0:
+        return None
+    return {
+        "amount": amount,
+        "currency": str(raw.get("currency") or currency or "USD").strip().upper(),
+    }
+
+
+def _normalize_hot_product_candidate(value: Any, target: dict[str, Any], index: int) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    market_id = str(raw.get("market_id") or raw.get("marketId") or raw.get("market") or target.get("id") or target.get("market_id") or "").strip()
+    platform = str(raw.get("platform") or target.get("platform") or "").strip().lower()
+    site = str(raw.get("site") or target.get("site") or "").strip().lower()
+    keyword = str(raw.get("keyword") or "").strip()
+    rank = _int_value(raw.get("rank"), index + 1, 1, 100000)
+    normalized = {
+        "id": str(raw.get("id") or f"hot_{market_id}_{rank}").strip(),
+        "title": str(raw.get("title") or "").strip(),
+        "image_url": str(raw.get("image_url") or raw.get("imageUrl") or "").strip(),
+        "rank": rank,
+        "source_url": str(raw.get("source_url") or raw.get("sourceUrl") or "").strip(),
+        "market_id": market_id,
+        "platform": platform,
+        "site": site,
+        "keyword": keyword,
+        "rating": _float_value(raw.get("rating"), 0.0),
+        "review_count": _int_value(raw.get("review_count", raw.get("reviewCount")), 0, 0),
+        "hot_score": _float_value(raw.get("hot_score", raw.get("hotScore")), 0.0),
+        "source_name": str(raw.get("source_name") or raw.get("sourceName") or "市场候选数据").strip(),
+        "collected_at": str(raw.get("collected_at") or raw.get("collectedAt") or "").strip(),
+    }
+    price = _normalize_hot_product_price(raw.get("price"), DEFAULT_MARKET_CURRENCIES.get(market_id, "USD"))
+    if price:
+        normalized["price"] = price
+    return normalized
+
+
 def default_product_research_config() -> dict[str, Any]:
     defaults = {
         "search_defaults": {
-            "search_mode": "target_plus_reference",
-            "target_markets": ["US"],
+            "search_mode": "target_only",
+            "target_markets": ["amazon-us"],
             "reference_markets": [],
-            "demand_sources": ["google_trends", "etsy", "ebay", "tiktok", "pinterest"],
-            "limit": 50,
+            "limit": 12,
             "max_limit": 100,
-            "sort_by": "opportunity_score",
-            "time_range_days": 90,
-            "include_china_element_types": [
-                "chinese_new_year",
-                "calligraphy",
-                "mahjong",
-                "hanfu",
-                "oriental_home_decor",
-            ],
-            "upgrade_types": ["gift_box", "custom_name", "bundle_set", "localized_explanation"],
-            "exclude_risks": ["food", "battery", "children_product", "medical_device", "cosmetics", "liquid"],
+            "sort_by": "rank",
         },
         "provider_runtime": {
             "source_timeout_seconds": 12,
             "retry_count": 1,
             "cache_ttl_seconds": 21600,
             "max_keywords_per_source": 12,
-        },
-        "reference_market_map": {
-            "US": ["GB", "CA", "AU"],
-            "GB": ["US", "CA", "AU"],
-            "DE": ["AT", "CH", "FR", "NL"],
-            "JP": ["KR", "TW", "HK", "SG"],
-            "FR": ["BE", "CH", "DE", "NL"],
-        },
-        "market_languages": {
-            "US": "en",
-            "GB": "en",
-            "CA": "en",
-            "AU": "en",
-            "DE": "de",
-            "FR": "fr",
-            "JP": "ja",
-        },
-        "china_element_catalog": {
-            "chinese_new_year": {
-                "label": "Chinese New Year",
-                "product_type": "festival_decor",
-                "keywords": [
-                    "Chinese New Year decorations",
-                    "Lunar New Year decor",
-                    "red envelope",
-                    "Chinese lantern",
-                    "zodiac gifts",
-                ],
-                "purchase_keywords": [
-                    "spring festival decoration set",
-                    "red envelope",
-                    "lantern hanging decor",
-                    "zodiac ornament",
-                ],
-            },
-            "calligraphy": {
-                "label": "Chinese calligraphy",
-                "product_type": "cultural_gift",
-                "keywords": [
-                    "Chinese calligraphy gift",
-                    "Chinese name stamp",
-                    "Chinese lucky charm",
-                    "feng shui gift",
-                ],
-                "purchase_keywords": [
-                    "calligraphy gift",
-                    "custom Chinese name seal",
-                    "zodiac gift",
-                    "feng shui ornament",
-                ],
-            },
-            "mahjong": {
-                "label": "Mahjong",
-                "product_type": "game_accessory",
-                "keywords": [
-                    "mahjong gifts",
-                    "mahjong accessories",
-                    "mahjong earrings",
-                    "mahjong party decor",
-                    "mahjong bag",
-                ],
-                "purchase_keywords": [
-                    "mahjong accessories",
-                    "mahjong earrings",
-                    "mahjong keychain",
-                    "mahjong party decoration",
-                ],
-            },
-            "hanfu": {
-                "label": "Hanfu accessories",
-                "product_type": "fashion_accessory",
-                "keywords": [
-                    "hanfu accessories",
-                    "Chinese hairpin",
-                    "Chinese fan",
-                    "jade bracelet",
-                    "Chinese style earrings",
-                ],
-                "purchase_keywords": [
-                    "hanfu hairpin",
-                    "Chinese fan",
-                    "jade bracelet",
-                    "Chinese style earrings",
-                ],
-            },
-            "oriental_home_decor": {
-                "label": "Oriental home decor",
-                "product_type": "home_decor",
-                "keywords": [
-                    "oriental home decor",
-                    "Chinese wall art",
-                    "Asian aesthetic room decor",
-                    "Chinese vase",
-                    "tea room decor",
-                ],
-                "purchase_keywords": [
-                    "new Chinese style wall art",
-                    "tea room decor",
-                    "oriental ornament",
-                    "Chinese vase decor",
-                ],
-            },
-        },
-        "upgrade_type_catalog": {
-            "gift_box": "Gift box packaging",
-            "custom_name": "Custom name or monogram",
-            "bundle_set": "Bundle set",
-            "localized_explanation": "Localized cultural explanation card",
-            "material_upgrade": "Material or finish upgrade",
-        },
-        "scoring_weights": {
-            "search_interest": 20,
-            "china_element_fit": 15,
-            "wait_tolerance": 15,
-            "local_scarcity": 15,
-            "upgrade_space": 15,
-            "logistics_fit": 10,
-            "compliance_fit": 10,
         },
         "source_registry": [
             {
@@ -221,6 +191,21 @@ def default_product_research_config() -> dict[str, Any]:
                 "auth_required": False,
                 "rate_limit_per_minute": 12,
                 "compliance_note": "Public data collection must follow platform terms, robots rules, and rate limits.",
+                "config_json": {"provider_strategy": "seeded_mock"},
+            },
+            {
+                "id": "ai_market_search_seeded",
+                "name": "AI Market Search Seeded Provider",
+                "source_type": "ai_search",
+                "platform": "ai_market_search",
+                "enabled": True,
+                "priority": 2,
+                "supported_markets": ["US", "GB", "CA", "AU", "JP", "DE", "FR"],
+                "supported_languages": ["en", "ja", "de", "fr"],
+                "supported_data_types": ["ai_web_search"],
+                "auth_required": False,
+                "rate_limit_per_minute": 20,
+                "compliance_note": "Seeded local provider for result-first product research demos. Replace with configured AI web search when ready.",
                 "config_json": {"provider_strategy": "seeded_mock"},
             },
             {
@@ -280,7 +265,7 @@ def default_product_research_config() -> dict[str, Any]:
                 "supported_data_types": ["keyword_trend", "marketplace_products", "content_trend"],
                 "auth_required": False,
                 "rate_limit_per_minute": None,
-                "compliance_note": "Use config_json.items for manually imported normalized signals.",
+                "compliance_note": "Use config_json.items for manually imported hot-product candidates.",
                 "config_json": {"provider_strategy": "manual_import", "items": []},
             },
         ],
@@ -288,63 +273,46 @@ def default_product_research_config() -> dict[str, Any]:
     defaults["search_providers"] = [deepcopy(item) for item in defaults["source_registry"]]
     defaults["target_markets"] = [
         {
-            "market": "US",
-            "name": "United States",
-            "enabled": True,
-            "language": "en",
-            "currency": "USD",
-            "reference_markets": ["GB", "CA", "AU"],
-            "provider_ids": [
-                "google_trends_seeded",
-                "etsy_public_search_seeded",
-                "ebay_browse_api",
-                "tiktok_content_seeded",
-                "pinterest_content_seeded",
-            ],
+            "id": "amazon-us",
+            "platform": "amazon",
+            "site": "amazon.com",
+            "display_name": "Amazon US",
         },
         {
-            "market": "GB",
-            "name": "United Kingdom",
-            "enabled": True,
-            "language": "en",
-            "currency": "GBP",
-            "reference_markets": ["US", "CA", "AU"],
-            "provider_ids": [
-                "google_trends_seeded",
-                "etsy_public_search_seeded",
-                "ebay_browse_api",
-                "tiktok_content_seeded",
-                "pinterest_content_seeded",
-            ],
+            "id": "amazon-uk",
+            "platform": "amazon",
+            "site": "amazon.co.uk",
+            "display_name": "Amazon UK",
         },
         {
-            "market": "CA",
-            "name": "Canada",
-            "enabled": True,
-            "language": "en",
-            "currency": "CAD",
-            "reference_markets": ["US", "GB", "AU"],
-            "provider_ids": [
-                "google_trends_seeded",
-                "etsy_public_search_seeded",
-                "tiktok_content_seeded",
-                "pinterest_content_seeded",
-            ],
+            "id": "amazon-ca",
+            "platform": "amazon",
+            "site": "amazon.ca",
+            "display_name": "Amazon Canada",
         },
         {
-            "market": "AU",
-            "name": "Australia",
-            "enabled": True,
-            "language": "en",
-            "currency": "AUD",
-            "reference_markets": ["US", "GB", "CA"],
-            "provider_ids": [
-                "google_trends_seeded",
-                "etsy_public_search_seeded",
-                "ebay_browse_api",
-                "tiktok_content_seeded",
-                "pinterest_content_seeded",
-            ],
+            "id": "amazon-au",
+            "platform": "amazon",
+            "site": "amazon.com.au",
+            "display_name": "Amazon Australia",
+        },
+    ]
+    defaults["market_hot_products"] = [
+        {
+            "market_id": "amazon-us",
+            "items": _default_hot_products("amazon-us", "amazon", "amazon.com", "USD"),
+        },
+        {
+            "market_id": "amazon-uk",
+            "items": _default_hot_products("amazon-uk", "amazon", "amazon.co.uk", "GBP"),
+        },
+        {
+            "market_id": "amazon-ca",
+            "items": _default_hot_products("amazon-ca", "amazon", "amazon.ca", "CAD"),
+        },
+        {
+            "market_id": "amazon-au",
+            "items": _default_hot_products("amazon-au", "amazon", "amazon.com.au", "AUD"),
         },
     ]
     return defaults
@@ -380,35 +348,78 @@ def _normalize_product_research_source(source: Any, fallback: dict[str, Any] | N
     }
 
 
-def _normalize_target_market(
-    market: Any,
-    fallback: dict[str, Any] | None = None,
-    default_provider_ids: list[str] | None = None,
-) -> dict[str, Any]:
-    raw = market if isinstance(market, dict) else {"market": market}
+def _site_slug(value: str) -> str:
+    return "-".join(part for part in value.lower().replace(".", "-").split("-") if part)
+
+
+def _target_market_id(raw: dict[str, Any], defaults: dict[str, Any]) -> str:
+    explicit_id = str(
+        raw.get("id")
+        or raw.get("market_id")
+        or raw.get("marketId")
+        or defaults.get("id")
+        or defaults.get("market_id")
+        or defaults.get("marketId")
+        or ""
+    ).strip()
+    if explicit_id:
+        return explicit_id
+    legacy_code = str(raw.get("market") or raw.get("code") or defaults.get("market") or defaults.get("code") or "").strip().upper()
+    if legacy_code in DEFAULT_MARKET_ID_BY_CODE:
+        return DEFAULT_MARKET_ID_BY_CODE[legacy_code]
+    platform = str(raw.get("platform") or defaults.get("platform") or "").strip().lower()
+    site = str(raw.get("site") or defaults.get("site") or "").strip().lower()
+    if platform and site:
+        return f"{platform}-{_site_slug(site)}"
+    return legacy_code.lower()
+
+
+def _normalize_target_market(market: Any, fallback: dict[str, Any] | None = None) -> dict[str, Any]:
+    raw = market if isinstance(market, dict) else {"id": market}
     defaults = fallback if isinstance(fallback, dict) else {}
-    market_code = str(raw.get("market") or raw.get("code") or raw.get("id") or defaults.get("market") or "").strip().upper()
-    provider_ids = (
-        _string_list(raw.get("provider_ids"))
-        or _string_list(raw.get("source_ids"))
-        or _string_list(raw.get("demand_sources"))
-        or _string_list(defaults.get("provider_ids"))
-        or list(default_provider_ids or [])
-    )
-    language = str(raw.get("language") or defaults.get("language") or "").strip().lower()
+    market_id = _target_market_id(raw, defaults)
+    platform = str(raw.get("platform") or defaults.get("platform") or "").strip().lower()
+    site = str(raw.get("site") or defaults.get("site") or "").strip().lower()
+    display_name = str(
+        raw.get("display_name")
+        or raw.get("displayName")
+        or raw.get("name")
+        or defaults.get("display_name")
+        or defaults.get("displayName")
+        or defaults.get("name")
+        or market_id
+    ).strip()
     return {
-        "market": market_code,
-        "name": str(raw.get("name") or defaults.get("name") or market_code).strip(),
-        "enabled": _bool_value(raw.get("enabled"), _bool_value(defaults.get("enabled"), True)),
-        "language": language or "en",
-        "currency": str(
-            raw.get("currency")
-            or defaults.get("currency")
-            or DEFAULT_MARKET_CURRENCIES.get(market_code)
-            or "USD"
-        ).strip().upper(),
-        "reference_markets": _string_list(raw.get("reference_markets", defaults.get("reference_markets", []))),
-        "provider_ids": [item for item in dict.fromkeys(provider_ids) if item],
+        "id": market_id,
+        "platform": platform,
+        "site": site,
+        "display_name": display_name,
+    }
+
+
+def _normalize_market_hot_products(value: Any, target_by_id: dict[str, dict[str, Any]], index: int) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    raw_market_id = str(raw.get("market_id") or raw.get("marketId") or raw.get("id") or raw.get("market") or "").strip()
+    market_id = DEFAULT_MARKET_ID_BY_CODE.get(raw_market_id.upper(), raw_market_id)
+    target = target_by_id.get(market_id) or _normalize_target_market(raw, None)
+    if not market_id:
+        market_id = target.get("id") or f"market-{index + 1}"
+    raw_items = (
+        raw.get("items")
+        if isinstance(raw.get("items"), list)
+        else raw.get("hot_products")
+        if isinstance(raw.get("hot_products"), list)
+        else raw.get("hotProducts")
+        if isinstance(raw.get("hotProducts"), list)
+        else []
+    )
+    return {
+        "market_id": market_id,
+        "items": [
+            _normalize_hot_product_candidate(item, target, item_index)
+            for item_index, item in enumerate(raw_items)
+            if isinstance(item, dict)
+        ],
     }
 
 
@@ -429,15 +440,9 @@ def normalize_product_research_config(config: Any) -> dict[str, Any]:
         "search_mode": search_mode,
         "target_markets": _string_list(search_defaults.get("target_markets")) or defaults["search_defaults"]["target_markets"],
         "reference_markets": _string_list(search_defaults.get("reference_markets")),
-        "demand_sources": _string_list(search_defaults.get("demand_sources")) or defaults["search_defaults"]["demand_sources"],
         "limit": _int_value(search_defaults.get("limit"), defaults["search_defaults"]["limit"], 1, max_limit),
         "max_limit": max_limit,
         "sort_by": str(search_defaults.get("sort_by") or defaults["search_defaults"]["sort_by"]).strip(),
-        "time_range_days": _int_value(search_defaults.get("time_range_days"), defaults["search_defaults"]["time_range_days"], 1, 3650),
-        "include_china_element_types": _string_list(search_defaults.get("include_china_element_types"))
-        or defaults["search_defaults"]["include_china_element_types"],
-        "upgrade_types": _string_list(search_defaults.get("upgrade_types")) or defaults["search_defaults"]["upgrade_types"],
-        "exclude_risks": _string_list(search_defaults.get("exclude_risks")) or defaults["search_defaults"]["exclude_risks"],
     }
 
     provider_runtime = dict(defaults["provider_runtime"])
@@ -471,53 +476,65 @@ def normalize_product_research_config(config: Any) -> dict[str, Any]:
     source_registry = [deepcopy(item) for item in search_providers]
     source_registry = [item for item in source_registry if item.get("id")]
 
-    reference_market_map = dict(
-        raw.get("reference_market_map")
-        if isinstance(raw.get("reference_market_map"), dict)
-        else defaults["reference_market_map"]
-    )
-    market_languages = dict(
-        raw.get("market_languages")
-        if isinstance(raw.get("market_languages"), dict)
-        else defaults["market_languages"]
-    )
     target_market_defaults = {
-        item["market"]: item for item in defaults.get("target_markets", []) if isinstance(item, dict) and item.get("market")
+        item["id"]: item for item in defaults.get("target_markets", []) if isinstance(item, dict) and item.get("id")
     }
-    default_provider_ids = [item["id"] for item in search_providers if item.get("id") and item.get("platform") != "manual_import"]
     raw_target_markets = raw.get("target_markets")
     target_markets = (
         [
             _normalize_target_market(
                 item,
-                target_market_defaults.get(str((item.get("market") if isinstance(item, dict) else item) or "").strip().upper()),
-                default_provider_ids,
+                target_market_defaults.get(
+                    DEFAULT_MARKET_ID_BY_CODE.get(
+                        str((item.get("market") if isinstance(item, dict) else item) or "").strip().upper(),
+                        str((item.get("id") if isinstance(item, dict) else item) or "").strip(),
+                    )
+                ),
             )
             for item in raw_target_markets
         ]
         if isinstance(raw_target_markets, list)
-        else [_normalize_target_market(item, None, default_provider_ids) for item in defaults.get("target_markets", [])]
+        else [_normalize_target_market(item) for item in defaults.get("target_markets", [])]
     )
-    target_markets = [item for item in target_markets if item.get("market")]
-    for item in target_markets:
-        market = item["market"]
-        if not item.get("reference_markets"):
-            item["reference_markets"] = _string_list(reference_market_map.get(market))
-        if not item.get("language") or item["language"] == "en":
-            item["language"] = str(market_languages.get(market) or item.get("language") or "en").strip().lower()
-        market_languages.setdefault(market, item["language"])
-        reference_market_map.setdefault(market, item.get("reference_markets", []))
+    target_markets = [item for item in target_markets if item.get("id") and item.get("platform") and item.get("site")]
+    target_by_id = {item["id"]: item for item in target_markets}
+
+    raw_market_hot_products = raw.get("market_hot_products")
+    if not isinstance(raw_market_hot_products, list):
+        raw_market_hot_products = raw.get("marketHotProducts")
+    if not isinstance(raw_market_hot_products, list) and isinstance(raw_target_markets, list):
+        legacy_collections: list[dict[str, Any]] = []
+        for raw_market, target in zip(raw_target_markets, target_markets, strict=False):
+            if not isinstance(raw_market, dict):
+                continue
+            raw_items = raw_market.get("hot_products") if isinstance(raw_market.get("hot_products"), list) else raw_market.get("hotProducts")
+            if isinstance(raw_items, list):
+                legacy_collections.append({"market_id": target["id"], "items": raw_items})
+        raw_market_hot_products = legacy_collections
+    market_hot_products = (
+        [
+            _normalize_market_hot_products(item, target_by_id, index)
+            for index, item in enumerate(raw_market_hot_products)
+            if isinstance(item, dict)
+        ]
+        if isinstance(raw_market_hot_products, list) and raw_market_hot_products
+        else [
+            _normalize_market_hot_products(item, target_by_id, index)
+            for index, item in enumerate(defaults.get("market_hot_products", []))
+            if isinstance(item, dict)
+        ]
+    )
+    market_hot_products = [
+        collection for collection in market_hot_products
+        if collection.get("market_id") in target_by_id
+    ]
 
     return {
         "search_defaults": search_defaults,
         "provider_runtime": provider_runtime,
-        "reference_market_map": reference_market_map,
-        "market_languages": market_languages,
-        "china_element_catalog": raw.get("china_element_catalog") if isinstance(raw.get("china_element_catalog"), dict) else defaults["china_element_catalog"],
-        "upgrade_type_catalog": raw.get("upgrade_type_catalog") if isinstance(raw.get("upgrade_type_catalog"), dict) else defaults["upgrade_type_catalog"],
-        "scoring_weights": raw.get("scoring_weights") if isinstance(raw.get("scoring_weights"), dict) else defaults["scoring_weights"],
         "search_providers": search_providers,
         "target_markets": target_markets,
+        "market_hot_products": market_hot_products,
         "source_registry": source_registry,
     }
 
