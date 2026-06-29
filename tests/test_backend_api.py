@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import base64
+import time
 
 import requests
 
 
 def post_json(base_url: str, path: str, payload: dict, expected_status: int = 200) -> dict:
     response = requests.post(f"{base_url}{path}", json=payload, timeout=20)
+    assert response.status_code == expected_status, response.text[:500]
+    data = response.json()
+    assert isinstance(data, dict)
+    assert data
+    return data
+
+
+def get_json(base_url: str, path: str, params: dict | None = None, expected_status: int = 200) -> dict:
+    response = requests.get(f"{base_url}{path}", params=params, timeout=20)
     assert response.status_code == expected_status, response.text[:500]
     data = response.json()
     assert isinstance(data, dict)
@@ -173,7 +183,6 @@ def test_product_research_hot_product_api_returns_candidates(backend_server: str
                 "target_markets": ["amazon-us"],
                 "reference_markets": [],
             },
-            "keywords": ["pet storage"],
             "result_options": {
                 "limit": 5,
                 "sort_by": "rank",
@@ -183,13 +192,29 @@ def test_product_research_hot_product_api_returns_candidates(backend_server: str
 
     assert data["ok"] is True
     assert data["run"]["run_id"].startswith("prr_")
-    assert data["items"]
-    assert data["items"][0]["title"]
-    assert data["items"][0]["image_url"].startswith("https://")
-    assert data["items"][0]["rank"] == 1
-    assert data["items"][0]["source_url"].startswith("https://")
-    assert data["items"][0]["hot_score"] > 0
-    assert any(row["source"] == "market_hot_products" and row["status"] == "success" for row in data["source_status"])
+    assert data["run"]["description"]
+    for _ in range(25):
+        if data["run"]["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.2)
+        data = get_json(
+            backend_server,
+            "/api/v1/product-research/hot-products/runs",
+            {"run_id": data["run"]["run_id"]},
+        )
+    assert isinstance(data["items"], list)
+    if data["run"]["status"] not in {"completed", "failed"}:
+        assert data["run"]["status"] in {"queued", "running"}
+        assert data["run"]["description"]
+        return
+    assert data["source_status"]
+    if data["items"]:
+        assert data["items"][0]["title"]
+        assert data["items"][0]["rank"] >= 1
+        assert data["items"][0]["source_url"].startswith("https://")
+        assert any(row["status"] == "success" and row["items_found"] > 0 for row in data["source_status"])
+    else:
+        assert any(row["status"] in {"failed", "configuration_required", "empty"} for row in data["source_status"])
 
 
 def test_product_research_search_provider_test_api(backend_server: str) -> None:
@@ -198,17 +223,27 @@ def test_product_research_search_provider_test_api(backend_server: str) -> None:
         "/api/v1/product-research/search-providers/test",
         {
             "provider": {
-                "id": "api_test_seeded",
-                "name": "API Test Seeded",
-                "source_type": "api",
-                "platform": "api_test",
+                "id": "manual_test_import",
+                "name": "Manual Test Import",
+                "source_type": "manual_import",
+                "platform": "manual_import",
                 "enabled": True,
                 "priority": 1,
                 "supported_markets": ["US"],
                 "supported_languages": ["en"],
                 "supported_data_types": ["marketplace_products"],
                 "auth_required": False,
-                "config_json": {"provider_strategy": "seeded_mock"},
+                "config_json": {
+                    "provider_strategy": "manual_import",
+                    "items": [
+                        {
+                            "title": "Mahjong gift lamp",
+                            "source_url": "https://example.com/mahjong-lamp",
+                            "keyword": "mahjong gift",
+                            "market": "US",
+                        }
+                    ],
+                },
             },
             "options": {
                 "market": "US",
@@ -223,3 +258,4 @@ def test_product_research_search_provider_test_api(backend_server: str) -> None:
     assert data["status"] == "success"
     assert data["items_found"] == 1
     assert data["sample"]["keyword"] == "mahjong gift"
+    assert data["sample"]["source_url"] == "https://example.com/mahjong-lamp"

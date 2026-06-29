@@ -25,7 +25,7 @@ import type {
   Product,
   ProductIndexItem,
   ProductResearchConfig,
-  ProductResearchMarketHotProducts,
+  ProductResearchMarketSearchMethodBinding,
   ProductResearchProviderTestResult,
   ProductResearchResponse,
   ProductResearchSourceRegistryItem,
@@ -283,6 +283,9 @@ function normalizeProductResearchSourceStatus(value: unknown): ProductResearchSo
     itemsFound: getNumber(record, ['items_found', 'itemsFound']),
     errorMessage: getString(record, ['error_message', 'errorMessage']),
     providerStrategy: getString(record, ['provider_strategy', 'providerStrategy']),
+    rawItemsFound: getNumber(record, ['raw_items_found', 'rawItemsFound']),
+    itemsFiltered: getNumber(record, ['items_filtered', 'itemsFiltered']),
+    diagnosticMessage: getString(record, ['diagnostic_message', 'diagnosticMessage']),
     raw: record,
   }
 }
@@ -295,6 +298,8 @@ function normalizeProductResearchRun(value: unknown): ProductResearchRunSummary 
     searchMode: getString(record, ['search_mode', 'searchMode']),
     createdAt: getString(record, ['created_at', 'createdAt']),
     completedAt: getString(record, ['completed_at', 'completedAt']),
+    description: getString(record, ['description']),
+    progressDescription: getString(record, ['progress_description', 'progressDescription']),
     request: asRecord(record.request),
     raw: record,
   }
@@ -311,6 +316,7 @@ function normalizeProductResearchResponse(value: unknown): ProductResearchRespon
       : Array.isArray(record.sourceStatus)
         ? record.sourceStatus.map(normalizeProductResearchSourceStatus)
         : [],
+    description: getString(record, ['description']) || getString(asRecord(record.run), ['description']),
     raw: record,
   }
 }
@@ -318,6 +324,19 @@ function normalizeProductResearchResponse(value: unknown): ProductResearchRespon
 export async function createProductResearchHotProductRun(payload: UnknownRecord): Promise<ProductResearchResponse> {
   const response = await apiClient.post('/api/v1/product-research/hot-products/search', payload)
   return normalizeProductResearchResponse(response.data)
+}
+
+export async function fetchProductResearchHotProductRun(runId: string): Promise<ProductResearchResponse> {
+  const params = new URLSearchParams({ run_id: runId })
+  const response = await apiClient.get(`/api/v1/product-research/hot-products/runs?${params.toString()}`)
+  return normalizeProductResearchResponse(response.data)
+}
+
+export async function fetchActiveProductResearchHotProductRun(): Promise<ProductResearchResponse | null> {
+  const response = await apiClient.get('/api/v1/product-research/hot-products/runs')
+  const data = asRecord(response.data)
+  ensureOk(data, '读取选品运行状态失败')
+  return data.run ? normalizeProductResearchResponse(data) : null
 }
 
 function normalizeProductResearchProvider(value: unknown): ProductResearchSourceRegistryItem {
@@ -345,27 +364,27 @@ function normalizeProductResearchProvider(value: unknown): ProductResearchSource
 
 function normalizeProductResearchTargetMarket(value: unknown): ProductResearchTargetMarket {
   const record = asRecord(value)
+  const rawSearchMethods = Array.isArray(record.search_methods)
+    ? record.search_methods
+    : Array.isArray(record.searchMethods)
+      ? record.searchMethods
+      : []
   return {
     id: getString(record, ['id', 'market_id', 'marketId', 'market', 'code']),
     platform: getString(record, ['platform']).toLowerCase(),
     site: getString(record, ['site']).toLowerCase(),
     displayName: getString(record, ['display_name', 'displayName', 'name']),
+    searchMethods: rawSearchMethods.map(normalizeProductResearchMarketSearchMethodBinding),
     raw: record,
   }
 }
 
-function normalizeProductResearchMarketHotProducts(value: unknown): ProductResearchMarketHotProducts {
+function normalizeProductResearchMarketSearchMethodBinding(value: unknown): ProductResearchMarketSearchMethodBinding {
   const record = asRecord(value)
-  const rawItems = Array.isArray(record.items)
-    ? record.items
-    : Array.isArray(record.hot_products)
-      ? record.hot_products
-      : Array.isArray(record.hotProducts)
-        ? record.hotProducts
-        : []
   return {
-    marketId: getString(record, ['market_id', 'marketId', 'id', 'market']),
-    items: rawItems.map(normalizeHotProductCandidate),
+    methodId: getString(record, ['method_id', 'methodId', 'provider_id', 'providerId', 'id']),
+    enabled: getBoolean(record, ['enabled'], true),
+    configJson: asRecord(record.config_json ?? record.configJson),
     raw: record,
   }
 }
@@ -384,11 +403,6 @@ function normalizeProductResearchConfig(value: unknown): ProductResearchConfig {
     : Array.isArray(record.targetMarkets)
       ? record.targetMarkets
       : []
-  const rawMarketHotProducts = Array.isArray(record.market_hot_products)
-    ? record.market_hot_products
-    : Array.isArray(record.marketHotProducts)
-      ? record.marketHotProducts
-      : []
   const rawRegistry = Array.isArray(record.source_registry)
     ? record.source_registry
     : Array.isArray(record.sourceRegistry)
@@ -397,7 +411,6 @@ function normalizeProductResearchConfig(value: unknown): ProductResearchConfig {
   return {
     searchProviders: rawProviders.map(normalizeProductResearchProvider),
     targetMarkets: rawMarkets.map(normalizeProductResearchTargetMarket),
-    marketHotProducts: rawMarketHotProducts.map(normalizeProductResearchMarketHotProducts),
     sourceRegistry: rawRegistry.map(normalizeProductResearchProvider),
     raw: record,
   }
@@ -430,33 +443,10 @@ function toProductResearchTargetMarketPayload(market: ProductResearchTargetMarke
     platform: market.platform.trim().toLowerCase(),
     site: market.site.trim().toLowerCase(),
     display_name: market.displayName.trim() || market.id.trim(),
-  }
-}
-
-function toProductResearchMarketHotProductsPayload(collection: ProductResearchMarketHotProducts): UnknownRecord {
-  return {
-    market_id: collection.marketId.trim(),
-    items: (collection.items || []).map((item) => ({
-      id: item.id.trim(),
-      title: item.title.trim(),
-      image_url: item.imageUrl.trim(),
-      rank: item.rank,
-      source_url: item.sourceUrl.trim(),
-      market_id: item.marketId.trim(),
-      platform: item.platform.trim().toLowerCase(),
-      site: item.site.trim().toLowerCase(),
-      keyword: item.keyword.trim(),
-      price: item.price
-        ? {
-            amount: item.price.amount,
-            currency: item.price.currency.trim().toUpperCase(),
-          }
-        : undefined,
-      rating: item.rating,
-      review_count: item.reviewCount,
-      hot_score: item.hotScore,
-      source_name: item.sourceName.trim(),
-      collected_at: item.collectedAt,
+    search_methods: (market.searchMethods || []).map((binding) => ({
+      method_id: binding.methodId.trim(),
+      enabled: binding.enabled,
+      config_json: binding.configJson,
     })),
   }
 }
@@ -473,7 +463,6 @@ export async function saveProductResearchSettings(config: ProductResearchConfig)
     config: {
       search_providers: config.searchProviders.map(toProductResearchProviderPayload),
       target_markets: config.targetMarkets.map(toProductResearchTargetMarketPayload),
-      market_hot_products: config.marketHotProducts.map(toProductResearchMarketHotProductsPayload),
     },
   })
   const data = asRecord(response.data)

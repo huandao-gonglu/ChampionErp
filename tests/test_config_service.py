@@ -25,6 +25,8 @@ def test_default_env_template_and_public_config(app_dir: Path, old_path_markers:
     assert all("api_key" not in model for model in public["ai_models"])
     assert all("api_key_configured" in model for model in public["ai_models"])
     assert "copy.generate" in {item["id"] for item in public["ai_use_cases"]}
+    assert public["model_quality_levels"] == ["fast", "balanced", "high_quality"]
+    assert public["image_quality_options"] == ["auto", "low", "medium", "high"]
     assert public["storage"]["config_dir"].startswith(str(app_dir / "config"))
     assert_no_old_path(public, old_path_markers)
 
@@ -84,6 +86,39 @@ def test_merge_config_preserves_existing_model_key_when_public_payload_is_blank(
     )
 
     assert merged["ai_models"][0]["api_key"] == "saved-key"
+
+
+def test_normalize_ai_model_keeps_quality_only_for_image_models() -> None:
+    text_model = ai_model_config.normalize_ai_model(
+        {
+            "id": "text_model",
+            "model": "gpt-5.5",
+            "capabilities": ["chat", "json", "web_search"],
+            "quality": "high",
+            "size": "1024x1024",
+            "timeout_seconds": "30",
+        },
+        2,
+    )
+    image_model = ai_model_config.normalize_ai_model(
+        {
+            "id": "image_model",
+            "model": "gpt-image-1",
+            "capabilities": ["image_generate"],
+            "quality_level": "fast",
+            "quality": "high",
+            "size": "1024x1024",
+        },
+        2,
+    )
+
+    assert "quality" not in text_model
+    assert "size" not in text_model
+    assert text_model["quality_level"] == "high_quality"
+    assert text_model["timeout_seconds"] == "30"
+    assert image_model["quality_level"] == "fast"
+    assert image_model["quality"] == "high"
+    assert image_model["size"] == "1024x1024"
 
 
 def test_merge_config_copies_saved_model_key_from_source_model(app_dir: Path) -> None:

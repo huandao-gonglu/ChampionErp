@@ -46,16 +46,18 @@ class ProductResearchDataSource(TypedDict, total=False):
     config_json: dict[str, Any]
 
 
+class ProductResearchMarketSearchMethodBinding(TypedDict, total=False):
+    method_id: str
+    enabled: bool
+    config_json: dict[str, Any]
+
+
 class ProductResearchTargetMarket(TypedDict, total=False):
     id: str
     platform: str
     site: str
     display_name: str
-
-
-class ProductResearchMarketHotProducts(TypedDict, total=False):
-    market_id: str
-    items: list[HotProductCandidate]
+    search_methods: list[ProductResearchMarketSearchMethodBinding]
 
 
 class ProductResearchConfig(TypedDict, total=False):
@@ -63,7 +65,6 @@ class ProductResearchConfig(TypedDict, total=False):
     provider_runtime: dict[str, Any]
     search_providers: list[ProductResearchDataSource]
     target_markets: list[ProductResearchTargetMarket]
-    market_hot_products: list[ProductResearchMarketHotProducts]
     source_registry: list[ProductResearchDataSource]
 
 
@@ -82,6 +83,9 @@ class ProductResearchSourceStatus(TypedDict, total=False):
     items_found: int
     error_message: str
     provider_strategy: str
+    raw_items_found: int
+    items_filtered: int
+    diagnostic_message: str
 
 
 class ProductResearchRun(TypedDict, total=False):
@@ -90,6 +94,8 @@ class ProductResearchRun(TypedDict, total=False):
     search_mode: str
     created_at: str
     completed_at: str
+    description: str
+    progress_description: str
     request: ProductResearchSearchRequest
     items: list[HotProductCandidate]
     source_status: list[ProductResearchSourceStatus]
@@ -99,7 +105,7 @@ __all__ = [
     "HotProductCandidate",
     "ProductResearchConfig",
     "ProductResearchDataSource",
-    "ProductResearchMarketHotProducts",
+    "ProductResearchMarketSearchMethodBinding",
     "ProductResearchPrice",
     "ProductResearchRun",
     "ProductResearchSearchRequest",

@@ -1,79 +1,208 @@
 from __future__ import annotations
 
 import json
-
-import pytest
+import time
 
 from erp_web.product_research_config import default_product_research_config, normalize_product_research_config
 from services import product_research_service
+from services import product_research_methods
+from services.product_research_methods import AiSearchMethod, ProductResearchSearchMethod
 
 
 def hot_product_payload() -> dict:
     return {
         "search_mode": "target_only",
         "markets": {"target_markets": ["amazon-us"], "reference_markets": []},
-        "keywords": ["pet storage"],
         "result_options": {"limit": 6, "sort_by": "rank"},
     }
 
 
-def test_create_hot_product_run_returns_market_hot_product_candidates(tmp_path) -> None:
+def web_search_app_config() -> dict:
+    return {
+        "ai_models": [
+            {
+                "id": "web_search_model",
+                "provider": "OpenAI-Compatible",
+                "api_key": "ai-key",
+                "base_url": "https://ai.example.com/v1",
+                "model": "web-search-model",
+                "capabilities": ["chat", "json", "web_search"],
+            }
+        ]
+    }
+
+
+def patch_ai_search(monkeypatch, items: list[dict], seen: dict | None = None) -> None:
+    def fake_chat_json(app_dir, app_config, use_case_id, messages, **kwargs):
+        if seen is not None:
+            seen["app_dir"] = app_dir
+            seen["app_config"] = app_config
+            seen["use_case_id"] = use_case_id
+            seen["messages"] = messages
+            seen["kwargs"] = kwargs
+        return {"items": items}
+
+    monkeypatch.setattr(product_research_methods.ai_gateway, "chat_json", fake_chat_json)
+
+
+def test_create_hot_product_run_returns_ai_search_candidates(tmp_path, monkeypatch) -> None:
+    seen: dict = {}
+    patch_ai_search(
+        monkeypatch,
+        [
+            {
+                "title": "Silicone kitchen utensil rest",
+                "image_url": "https://example.com/kitchen-rest.jpg",
+                "rank": 1,
+                "source_url": "https://www.amazon.com/dp/example-kitchen-rest",
+                "keyword": "kitchen",
+                "price": {"amount": 24.99, "currency": "USD"},
+                "rating": 4.6,
+                "review_count": 1200,
+                "hot_score": 91,
+            },
+            {
+                "title": "Magnetic measuring spoons",
+                "image_url": "https://example.com/measuring-spoons.jpg",
+                "rank": 2,
+                "source_url": "https://www.amazon.com/dp/example-spoons",
+                "keyword": "kitchen",
+                "price": {"amount": 18.5, "currency": "USD"},
+                "rating": 4.4,
+                "review_count": 840,
+                "hot_score": 84,
+            },
+        ],
+        seen,
+    )
     config = normalize_product_research_config(default_product_research_config())
 
-    run = product_research_service.create_hot_product_run(tmp_path, hot_product_payload(), config)
+    run = product_research_service.create_hot_product_run(tmp_path, hot_product_payload(), config, web_search_app_config())
 
     assert run["status"] == "completed"
     assert run["run_id"].startswith("prr_")
     assert len(run["items"]) == 2
     assert not (tmp_path / "data" / "cache" / "product_research" / "tasks").exists()
+    log_path = tmp_path / "data" / "logs" / "product_research_runs.jsonl"
+    assert log_path.exists()
+    log_lines = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert len(log_lines) == 1
+    assert log_lines[0]["run_id"] == run["run_id"]
+    assert log_lines[0]["target_markets"] == ["amazon-us"]
+    assert log_lines[0]["items_count"] == 2
+    assert log_lines[0]["source_status"][0]["status"] == "success"
+    assert log_lines[0]["items_preview"][0]["title"] == "Silicone kitchen utensil rest"
+    assert log_lines[0]["items_preview"][0]["source_url"] == "https://www.amazon.com/dp/example-kitchen-rest"
 
     first = run["items"][0]
-    assert first["id"] == "hot_amazon-us_1"
-    assert first["title"] == "pet storage organizer set"
-    assert first["image_url"].startswith("https://")
+    assert first["id"].startswith("hot_amazon-us_")
+    assert first["title"] == "Silicone kitchen utensil rest"
+    assert first["image_url"] == "https://example.com/kitchen-rest.jpg"
     assert first["rank"] == 1
-    assert first["source_url"].startswith("https://amazon.com/s?")
+    assert first["source_url"] == "https://www.amazon.com/dp/example-kitchen-rest"
     assert first["platform"] == "amazon"
     assert first["site"] == "amazon.com"
     assert first["market_id"] == "amazon-us"
-    assert first["keyword"] == "pet storage"
+    assert first["keyword"] == "kitchen"
     assert first["price"]["currency"] == "USD"
     assert first["rating"] > 0
     assert first["review_count"] > 0
     assert first["hot_score"] > run["items"][-1]["hot_score"]
-    assert first["source_name"] == "市场候选数据"
+    assert first["source_name"] == "AI 搜索"
     assert first["collected_at"]
-    assert run["source_status"] == [
-        {
-            "source": "market_hot_products",
-            "source_id": "market_hot_products",
-            "market": "amazon-us",
-            "status": "success",
-            "items_found": 2,
-            "error_message": "",
-            "provider_strategy": "market_data",
-        }
-    ]
+    assert seen["use_case_id"] == "research.web_search"
+    assert seen["kwargs"]["stream"] is True
+    assert seen["kwargs"]["response_format"] is False
+    assert "当前热卖" in seen["messages"][1]["content"]
+    assert "pet storage" not in seen["messages"][1]["content"]
+    assert "{keywords}" not in seen["messages"][1]["content"]
+    assert run["source_status"][0]["source"] == "AI 搜索"
+    assert run["source_status"][0]["source_id"] == "ai_web_search"
+    assert run["source_status"][0]["market"] == "amazon-us"
+    assert run["source_status"][0]["status"] == "success"
+    assert run["source_status"][0]["items_found"] == 2
+    assert run["source_status"][0]["error_message"] == ""
+    assert run["source_status"][0]["provider_strategy"] == "ai_web_search"
+    assert run["source_status"][0]["raw_items_found"] == 2
+    assert run["source_status"][0]["items_filtered"] == 0
 
 
-def test_multiple_keywords_are_ranked_in_one_temporary_result(tmp_path) -> None:
+def test_create_hot_product_run_async_polls_stream_description(tmp_path, monkeypatch) -> None:
+    item = {
+        "title": "Async silicone sink tray",
+        "image_url": "https://example.com/sink-tray.jpg",
+        "rank": 1,
+        "source_url": "https://www.amazon.com/dp/example-sink-tray",
+        "keyword": "kitchen",
+        "price": {"amount": 14.99, "currency": "USD"},
+        "rating": 4.7,
+        "review_count": 560,
+        "hot_score": 89,
+    }
+
+    def fake_chat_json(app_dir, app_config, use_case_id, messages, **kwargs):
+        callback = kwargs.get("token_callback")
+        if callback:
+            callback(json.dumps(item, ensure_ascii=False) + "\n")
+            time.sleep(0.05)
+            callback('{"title":"Ignored missing source","rank":2}\n')
+            time.sleep(0.05)
+        return {"items": [item]}
+
+    monkeypatch.setattr(product_research_methods.ai_gateway, "chat_json", fake_chat_json)
+    config = normalize_product_research_config(default_product_research_config())
+
+    run = product_research_service.create_hot_product_run_async(tmp_path, hot_product_payload(), config, web_search_app_config())
+
+    assert run["status"] == "queued"
+    streamed = None
+    for _ in range(50):
+        streamed = product_research_service.get_hot_product_run(run["run_id"])
+        if streamed and "AI 正在返回结果" in streamed.get("description", ""):
+            break
+        time.sleep(0.01)
+    assert streamed is not None
+    assert streamed["items"][0]["title"] == "Async silicone sink tray"
+    assert "AI 正在返回结果" in streamed.get("description", "")
+
+    final = streamed
+    for _ in range(50):
+        final = product_research_service.get_hot_product_run(run["run_id"])
+        if final and final.get("status") in {"completed", "failed"}:
+            break
+        time.sleep(0.02)
+    assert final is not None
+    assert final["status"] == "completed"
+    assert final["items"][0]["title"] == "Async silicone sink tray"
+    assert final["description"] == "运行完成，找到 1 个候选商品。"
+
+
+def test_incoming_keywords_are_ignored_for_market_hot_products(tmp_path, monkeypatch) -> None:
+    seen: dict = {}
+    patch_ai_search(
+        monkeypatch,
+        [
+            {"title": "Desk organizer tray", "rank": 3, "source_url": "https://example.com/desk-3", "keyword": "office"},
+            {"title": "Kitchen storage basket", "rank": 1, "source_url": "https://example.com/kitchen-1", "keyword": "kitchen"},
+            {"title": "Travel cable organizer", "rank": 2, "source_url": "https://example.com/travel-2", "keyword": "travel"},
+        ],
+        seen,
+    )
     config = normalize_product_research_config(default_product_research_config())
     body = hot_product_payload()
     body["keywords"] = ["pet storage", "desk organizer"]
     body["result_options"]["limit"] = 5
 
-    run = product_research_service.create_hot_product_run(tmp_path, body, config)
+    run = product_research_service.create_hot_product_run(tmp_path, body, config, web_search_app_config())
 
-    assert [item["rank"] for item in run["items"]] == [1, 2, 3, 4]
-    assert [item["keyword"] for item in run["items"]] == [
-        "pet storage",
-        "pet storage",
-        "desk organizer",
-        "desk organizer",
-    ]
+    assert [item["rank"] for item in run["items"]] == [1, 2, 3]
+    assert [item["keyword"] for item in run["items"]] == ["kitchen", "travel", "office"]
+    assert "pet storage" not in seen["messages"][1]["content"]
+    assert "desk organizer" not in seen["messages"][1]["content"]
 
 
-def test_hot_product_run_returns_empty_when_market_has_no_saved_data(tmp_path) -> None:
+def test_hot_product_run_returns_empty_when_ai_returns_no_traceable_items(tmp_path, monkeypatch) -> None:
+    patch_ai_search(monkeypatch, [])
     config = default_product_research_config()
     config["target_markets"] = [
         {
@@ -81,24 +210,158 @@ def test_hot_product_run_returns_empty_when_market_has_no_saved_data(tmp_path) -
             "platform": "amazon",
             "site": "amazon.com",
             "display_name": "Amazon US",
+            "search_methods": [{"method_id": "ai_web_search", "enabled": True, "config_json": {}}],
         }
     ]
-    config["market_hot_products"] = [{"market_id": "amazon-us", "items": []}]
+
+    run = product_research_service.create_hot_product_run(
+        tmp_path,
+        hot_product_payload(),
+        normalize_product_research_config(config),
+        web_search_app_config(),
+    )
+
+    assert run["items"] == []
+    assert run["source_status"][0]["status"] == "empty"
+    assert run["source_status"][0]["error_message"] == "AI 返回了 0 条原始候选。"
+
+
+def test_hot_product_run_returns_empty_when_market_has_no_search_methods(tmp_path) -> None:
+    config = default_product_research_config()
+    config["target_markets"] = [
+        {
+            "id": "amazon-us",
+            "platform": "amazon",
+            "site": "amazon.com",
+            "display_name": "Amazon US",
+            "search_methods": [],
+        }
+    ]
 
     run = product_research_service.create_hot_product_run(tmp_path, hot_product_payload(), normalize_product_research_config(config))
 
     assert run["items"] == []
     assert run["source_status"][0]["status"] == "empty"
-    assert run["source_status"][0]["error_message"] == "目标市场还没有候选商品数据"
+    assert run["source_status"][0]["error_message"] == "目标市场还没有关联搜索手段"
 
 
-def test_normalize_search_request_requires_keywords() -> None:
+def test_target_market_normalization_adds_search_method_binding() -> None:
+    config = normalize_product_research_config(default_product_research_config())
+    market = config["target_markets"][0]
+
+    assert market["search_methods"][0]["method_id"] == "ai_web_search"
+    prompt = market["search_methods"][0]["config_json"]["prompt"]
+    assert "JSONL" in prompt
+    assert '"items"' in prompt
+    assert '"title"' in prompt
+    assert '"source_url"' in prompt
+    assert "后端会补齐 id、market_id、platform、site、source_name、collected_at" in prompt
+
+
+def test_ai_gateway_parse_jsonl_items_text() -> None:
+    payload = product_research_methods.ai_gateway.parse_json_text(
+        "\n".join(
+            [
+                '{"title":"A","rank":1,"source_url":"https://example.com/a"}',
+                '{"title":"B","rank":2,"source_url":"https://example.com/b"}',
+            ]
+        )
+    )
+
+    assert [item["title"] for item in payload["items"]] == ["A", "B"]
+
+
+def test_normalize_config_removes_legacy_seeded_sources() -> None:
+    config = default_product_research_config()
+    config["search_providers"] = [
+        {
+            "id": "google_trends_seeded",
+            "name": "Google Trends Seeded",
+            "source_type": "api",
+            "platform": "google_trends",
+            "enabled": True,
+            "priority": 1,
+            "config_json": {"provider_strategy": "seeded_mock"},
+        },
+        {
+            "id": "ai_market_search_seeded",
+            "name": "AI 搜索",
+            "source_type": "ai_search",
+            "platform": "ai_model",
+            "enabled": True,
+            "priority": 1,
+            "config_json": {"provider_strategy": "seeded_mock"},
+        },
+    ]
+    config["target_markets"] = [
+        {
+            "id": "amazon-us",
+            "platform": "amazon",
+            "site": "amazon.com",
+            "display_name": "Amazon US",
+            "search_methods": [
+                {"method_id": "google_trends_seeded", "enabled": True, "config_json": {}},
+                {"method_id": "ai_market_search_seeded", "enabled": True, "config_json": {}},
+            ],
+        }
+    ]
+
+    normalized = normalize_product_research_config(config)
+
+    assert [provider["id"] for provider in normalized["search_providers"]] == ["ai_web_search"]
+    assert normalized["target_markets"][0]["search_methods"][0]["method_id"] == "ai_web_search"
+
+
+def test_ai_search_method_implements_search_method_contract() -> None:
+    assert isinstance(AiSearchMethod(), ProductResearchSearchMethod)
+
+
+def test_normalize_search_request_ignores_keywords() -> None:
     config = normalize_product_research_config(default_product_research_config())
     body = hot_product_payload()
-    body["keywords"] = []
+    body["keywords"] = ["pet storage"]
 
-    with pytest.raises(ValueError, match="keywords is required"):
-        product_research_service.normalize_search_request(body, config)
+    normalized = product_research_service.normalize_search_request(body, config)
+
+    assert normalized["keywords"] == []
+
+
+def test_get_active_hot_product_run_returns_latest_non_terminal() -> None:
+    queued_run = {
+        "run_id": "test_active_queued",
+        "status": "queued",
+        "search_mode": "target_only",
+        "created_at": "2026-06-30T00:00:00Z",
+        "completed_at": "",
+        "request": hot_product_payload(),
+        "items": [],
+        "source_status": [],
+        "description": "queued",
+        "progress_description": "",
+    }
+    completed_run = {
+        **queued_run,
+        "run_id": "test_active_completed",
+        "status": "completed",
+        "completed_at": "2026-06-30T00:00:02Z",
+    }
+    running_run = {
+        **queued_run,
+        "run_id": "test_active_running",
+        "status": "running",
+        "description": "running",
+    }
+
+    product_research_service._store_run(queued_run)
+    product_research_service._store_run(completed_run)
+    product_research_service._store_run(running_run)
+
+    active = product_research_service.get_active_hot_product_run()
+
+    assert active is not None
+    assert active["run_id"] == "test_active_running"
+    product_research_service._update_run("test_active_queued", status="completed")
+    product_research_service._update_run("test_active_running", status="completed")
 
 
 def test_public_product_research_config_masks_source_secrets() -> None:

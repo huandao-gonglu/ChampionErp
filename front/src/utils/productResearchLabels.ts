@@ -47,7 +47,6 @@ export function productResearchStrategyLabel(value: string | undefined | null) {
     ai_web_search: 'AI 联网搜索',
     configured_api: '已配置 API',
     manual_import: '人工导入',
-    seeded_mock: '本地种子数据',
     stored_list: '保存列表',
   }
   return labels[String(value || '')] || String(value || '-') || '-'

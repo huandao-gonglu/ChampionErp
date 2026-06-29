@@ -305,6 +305,65 @@ def test_ai_model_probe_reports_unsupported_capabilities(monkeypatch) -> None:
     ]
 
 
+def test_ai_model_probe_requires_real_web_search_evidence(monkeypatch) -> None:
+    class FakeResponse:
+        def __init__(self, body: bytes):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self) -> bytes:
+            return self.body
+
+    def fake_urlopen(request, timeout):
+        if request.full_url.endswith("/models"):
+            return FakeResponse(b'{"data":[{"id":"gpt-web"}]}')
+        body = json.loads((request.data or b"{}").decode("utf-8"))
+        if body.get("web_search_options"):
+            return FakeResponse(
+                json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": json.dumps(
+                                        {
+                                            "can_access_web": False,
+                                            "reason": "No live web/search tool is available.",
+                                        }
+                                    )
+                                }
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+            )
+        return FakeResponse(b'{"choices":[{"message":{"content":"ok"}}]}')
+
+    monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
+    result = erp_web_app.test_ai_model_config(
+        {
+            "id": "web_model",
+            "name": "Web Model",
+            "provider": "OpenAI-Compatible",
+            "api_key": "test-key",
+            "base_url": "https://ai.example.com/v1",
+            "model": "gpt-web",
+            "capabilities": ["chat", "web_search"],
+        },
+    )
+
+    assert result["ok"] is True
+    assert "chat" in result["supported_capabilities"]
+    assert "web_search" in result["unsupported_capabilities"]
+    assert result["capability_results"]["web_search"]["ok"] is False
+    assert "No live web/search tool" in result["capability_results"]["web_search"]["error"]
+
+
 def test_assign_upc_writes_current_product_and_returns_full_payload(tmp_path: Path) -> None:
     original = {
         "APP_DIR": erp_web_app.APP_DIR,

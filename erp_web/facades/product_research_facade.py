@@ -76,12 +76,26 @@ def _restore_masked_provider_secrets(incoming: dict[str, Any], current: dict[str
 def create_hot_product_run_payload(body: dict[str, Any]) -> ResponseWithStatus:
     try:
         app_config = load_app_config()
-        run = product_research_service.create_hot_product_run(APP_DIR, body, app_config.get("product_research", {}), app_config)
+        run = product_research_service.create_hot_product_run_async(APP_DIR, body, app_config.get("product_research", {}), app_config)
         return product_research_service.build_run_response(run), 200
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}, 400
     except Exception as exc:
         return {"ok": False, "error": str(exc)}, 500
+
+
+def get_hot_product_run_payload(run_id: str) -> ResponseWithStatus:
+    run = product_research_service.get_hot_product_run(run_id)
+    if run is None:
+        return product_research_service.build_run_not_found_response(run_id), 404
+    return product_research_service.build_run_response(run), 200
+
+
+def get_active_hot_product_run_payload() -> ResponseWithStatus:
+    run = product_research_service.get_active_hot_product_run()
+    if run is None:
+        return {"ok": True, "run": None, "items": [], "source_status": [], "description": ""}, 200
+    return product_research_service.build_run_response(run), 200
 
 
 def get_source_registry_payload() -> ResponseWithStatus:
@@ -105,7 +119,6 @@ def save_source_registry_payload(body: dict[str, Any]) -> ResponseWithStatus:
         "provider_runtime",
         "search_providers",
         "target_markets",
-        "market_hot_products",
         "source_registry",
     ):
         if key in incoming:
@@ -160,6 +173,8 @@ def complete_provider_config_payload(body: dict[str, Any]) -> ResponseWithStatus
 __all__ = [
     "complete_provider_config_payload",
     "create_hot_product_run_payload",
+    "get_active_hot_product_run_payload",
+    "get_hot_product_run_payload",
     "get_source_registry_payload",
     "save_source_registry_payload",
     "test_search_provider_payload",

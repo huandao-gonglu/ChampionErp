@@ -8,7 +8,7 @@ import re
 import urllib.request
 import urllib.error
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from . import ai_model_config, config_service
 
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 def parse_json_text(raw_text: str) -> dict[str, Any]:
     text = str(raw_text or "").strip()
     if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", text)
         text = re.sub(r"\s*```$", "", text).strip()
     try:
         data = json.loads(text)
@@ -29,10 +29,47 @@ def parse_json_text(raw_text: str) -> dict[str, Any]:
     start = text.find("{")
     end = text.rfind("}")
     if start >= 0 and end >= start:
-        data = json.loads(text[start : end + 1])
-        if isinstance(data, dict):
-            return data
+        try:
+            data = json.loads(text[start : end + 1])
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    jsonl_items = _parse_jsonl_items_text(text)
+    if jsonl_items:
+        return {"items": jsonl_items}
     raise ValueError("AI response JSON must be an object.")
+
+
+def _parse_jsonl_items_text(text: str) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("```"):
+            continue
+        if line.startswith("- "):
+            line = line[2:].strip()
+        if line.endswith(","):
+            line = line[:-1].rstrip()
+        if "{" in line and "}" in line and not line.startswith("{"):
+            line = line[line.find("{") : line.rfind("}") + 1]
+        try:
+            payload = json.loads(line)
+        except Exception:
+            continue
+        rows = payload if isinstance(payload, list) else [payload]
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if isinstance(row.get("items"), list):
+                items.extend(item for item in row["items"] if isinstance(item, dict))
+                continue
+            if isinstance(row.get("item"), dict):
+                items.append(row["item"])
+                continue
+            if row.get("title") or row.get("name") or row.get("source_url") or row.get("sourceUrl"):
+                items.append(row)
+    return items
 
 
 def _chat_completions_url(base_url: str) -> str:
@@ -42,6 +79,19 @@ def _chat_completions_url(base_url: str) -> str:
     if text.endswith("/chat/completions"):
         return text
     return f"{text}/chat/completions"
+
+
+def _responses_url(base_url: str) -> str:
+    text = str(base_url or "").strip().rstrip("/")
+    if not text:
+        return ""
+    if text.endswith("/responses"):
+        return text
+    for suffix in ("/chat/completions", "/images/generations", "/images/edits"):
+        if text.endswith(suffix):
+            text = text[: -len(suffix)]
+            break
+    return f"{text}/responses"
 
 
 def _models_url(base_url: str) -> str:
@@ -93,7 +143,154 @@ def _chat_response_text(payload: Any) -> str:
             return "\n".join(part for part in parts if part)
         return str(content or first.get("text") or "")
     output_text = payload.get("output_text")
+    if isinstance(output_text, str):
+        return output_text
+    output = payload.get("output")
+    if isinstance(output, list):
+        parts: list[str] = []
+        for item in output:
+            record = item if isinstance(item, dict) else {}
+            content = record.get("content")
+            if isinstance(content, list):
+                for part in content:
+                    part_record = part if isinstance(part, dict) else {}
+                    parts.append(str(part_record.get("text") or part_record.get("content") or ""))
+        joined = "".join(part for part in parts if part)
+        if joined:
+            return joined
     return output_text if isinstance(output_text, str) else ""
+
+
+def _content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                parts.append(str(item.get("text") or item.get("content") or ""))
+            else:
+                parts.append(str(item or ""))
+        return "".join(parts)
+    if isinstance(content, dict):
+        return str(content.get("text") or content.get("content") or "")
+    return str(content or "")
+
+
+def _chat_stream_delta_text(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    if isinstance(payload.get("delta"), str):
+        return payload["delta"]
+    if isinstance(payload.get("output_text"), str):
+        return payload["output_text"]
+    choices = payload.get("choices")
+    if isinstance(choices, list):
+        parts: list[str] = []
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+            message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+            text = _content_to_text(delta.get("content")) or _content_to_text(message.get("content")) or str(choice.get("text") or "")
+            if text:
+                parts.append(text)
+        return "".join(parts)
+    return ""
+
+
+def _read_chat_stream_text(response: Any, token_callback: Callable[[str], None] | None = None) -> str:
+    parts: list[str] = []
+    fallback_lines: list[str] = []
+    for raw_line in response:
+        line = raw_line.decode("utf-8", errors="replace").strip()
+        if not line or line.startswith(":"):
+            continue
+        if not line.startswith("data:"):
+            fallback_lines.append(line)
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            break
+        try:
+            payload = json.loads(data)
+        except json.JSONDecodeError:
+            logger.debug("Ignoring non-JSON AI stream event: %s", data[:200])
+            continue
+        delta = _chat_stream_delta_text(payload)
+        if not delta:
+            continue
+        parts.append(delta)
+        if token_callback:
+            token_callback(delta)
+    return "".join(parts) if parts else "\n".join(fallback_lines)
+
+
+def _responses_stream_delta_text(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    event_type = str(payload.get("type") or "")
+    if event_type in {"response.output_text.delta", "response.refusal.delta"}:
+        return str(payload.get("delta") or "")
+    return _chat_stream_delta_text(payload)
+
+
+def _read_responses_stream_text(response: Any, token_callback: Callable[[str], None] | None = None) -> str:
+    parts: list[str] = []
+    fallback_lines: list[str] = []
+    for raw_line in response:
+        line = raw_line.decode("utf-8", errors="replace").strip()
+        if not line or line.startswith(":") or line.startswith("event:"):
+            continue
+        if not line.startswith("data:"):
+            fallback_lines.append(line)
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            break
+        try:
+            payload = json.loads(data)
+        except json.JSONDecodeError:
+            logger.debug("Ignoring non-JSON AI responses stream event: %s", data[:200])
+            continue
+        delta = _responses_stream_delta_text(payload)
+        if not delta:
+            continue
+        parts.append(delta)
+        if token_callback:
+            token_callback(delta)
+    return "".join(parts) if parts else "\n".join(fallback_lines)
+
+
+def _parse_chat_json_text_or_payload(raw_text: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(str(raw_text or ""))
+        if isinstance(payload, dict) and ("choices" in payload or "output_text" in payload):
+            return parse_json_text(_chat_response_text(payload))
+    except Exception:
+        pass
+    return parse_json_text(raw_text)
+
+
+def _responses_input(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+    return [
+        {
+            "role": str(message.get("role") or "user"),
+            "content": str(message.get("content") or ""),
+        }
+        for message in messages
+    ]
+
+
+def _model_api_style(model: dict[str, Any]) -> str:
+    return ai_model_config.normalize_api_style(model.get("api_style"))
+
+
+def _web_search_body_for_model(model: dict[str, Any]) -> dict[str, Any]:
+    extra = model.get("extra") if isinstance(model.get("extra"), dict) else {}
+    if _model_api_style(model) == ai_model_config.API_STYLE_OPENAI_RESPONSES:
+        return {"tools": extra.get("web_search_tools") or [{"type": "web_search"}]}
+    return {"web_search_options": extra.get("web_search_options") or {"search_context_size": "medium"}}
 
 
 def _resolved_model(app_dir: Path | str, app_config: dict[str, Any] | None, use_case_id: str, model_id: str = "") -> dict[str, Any]:
@@ -203,7 +400,7 @@ def _probe_json_capability(base_url: str, api_key: str, model_name: str, timeout
 
 
 def _probe_tool_calling_capability(base_url: str, api_key: str, model_name: str, timeout: int) -> None:
-    _post_json(
+    payload = _post_json(
         _chat_completions_url(base_url),
         api_key,
         {
@@ -226,23 +423,76 @@ def _probe_tool_calling_capability(base_url: str, api_key: str, model_name: str,
         },
         timeout,
     )
+    choices = payload.get("choices") if isinstance(payload, dict) else []
+    first = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+    message = first.get("message") if isinstance(first.get("message"), dict) else {}
+    tool_calls = message.get("tool_calls")
+    if not isinstance(tool_calls, list) or not tool_calls:
+        raise RuntimeError("Provider accepted tool parameters but did not return tool_calls.")
 
 
-def _probe_web_search_capability(base_url: str, api_key: str, model_name: str, timeout: int) -> None:
-    _post_json(
-        _chat_completions_url(base_url),
-        api_key,
+def _web_search_probe_prompt() -> list[dict[str, str]]:
+    return [
         {
-            "model": model_name,
-            "messages": [{"role": "user", "content": "Return JSON: {\"ok\": true}"}],
-            "temperature": 0,
-            "max_tokens": 32,
-            "stream": False,
-            "response_format": {"type": "json_object"},
-            "web_search_options": {"search_context_size": "low"},
+            "role": "system",
+            "content": (
+                "You are verifying whether this API call has live web search/browser access. "
+                "Use live web access only. Do not answer from memory. Return JSON only."
+            ),
         },
-        timeout,
-    )
+        {
+            "role": "user",
+            "content": (
+                "Open or search this exact page now: https://www.amazon.com/Best-Sellers/zgbs . "
+                "Return {\"can_access_web\": true, \"source_url\": \"...\", \"evidence\": \"...\"} only if you can verify it now. "
+                "If no live web/search tool is available, or access fails, return "
+                "{\"can_access_web\": false, \"reason\": \"...\"}."
+            ),
+        },
+    ]
+
+
+def _validate_web_search_probe(payload: dict[str, Any]) -> None:
+    data = parse_json_text(_chat_response_text(payload))
+    if data.get("can_access_web") is not True:
+        raise RuntimeError(str(data.get("reason") or "Provider did not prove live web access."))
+    source_url = str(data.get("source_url") or "").lower()
+    evidence = str(data.get("evidence") or "").strip()
+    if "amazon.com" not in source_url or not evidence:
+        raise RuntimeError("Provider did not return traceable Amazon evidence for live web access.")
+
+
+def _probe_web_search_capability(model: dict[str, Any], api_key: str, model_name: str, timeout: int) -> None:
+    base_url = ai_model_config.model_base_url(model)
+    if _model_api_style(model) == ai_model_config.API_STYLE_OPENAI_RESPONSES:
+        payload = _post_json(
+            _responses_url(base_url),
+            api_key,
+            {
+                "model": model_name,
+                "input": _responses_input(_web_search_probe_prompt()),
+                "temperature": 0,
+                "max_output_tokens": 600,
+                **_web_search_body_for_model(model),
+            },
+            timeout,
+        )
+    else:
+        payload = _post_json(
+            _chat_completions_url(base_url),
+            api_key,
+            {
+                "model": model_name,
+                "messages": _web_search_probe_prompt(),
+                "temperature": 0,
+                "max_tokens": 600,
+                "stream": False,
+                "response_format": {"type": "json_object"},
+                **_web_search_body_for_model(model),
+            },
+            timeout,
+        )
+    _validate_web_search_probe(payload)
 
 
 def _probe_image_generate_capability(base_url: str, api_key: str, model_name: str, timeout: int) -> None:
@@ -320,12 +570,12 @@ def _capability_error_text(exc: Exception) -> str:
     return str(exc)
 
 
-def probe_model_capabilities(base_url: str, api_key: str, model_name: str, capabilities: list[str], timeout: int) -> dict[str, Any]:
+def probe_model_capabilities(model: dict[str, Any], api_key: str, model_name: str, capabilities: list[str], timeout: int) -> dict[str, Any]:
+    base_url = ai_model_config.model_base_url(model)
     probes = {
         ai_model_config.CAP_CHAT: _probe_chat_capability,
         ai_model_config.CAP_JSON: _probe_json_capability,
         ai_model_config.CAP_TOOL_CALLING: _probe_tool_calling_capability,
-        ai_model_config.CAP_WEB_SEARCH: _probe_web_search_capability,
         ai_model_config.CAP_IMAGE_GENERATE: _probe_image_generate_capability,
         ai_model_config.CAP_IMAGE_EDIT: _probe_image_edit_capability,
     }
@@ -335,6 +585,14 @@ def probe_model_capabilities(base_url: str, api_key: str, model_name: str, capab
     for capability in ai_model_config.normalize_capabilities(capabilities):
         probe = probes.get(capability)
         if probe is None:
+            if capability == ai_model_config.CAP_WEB_SEARCH:
+                try:
+                    _probe_web_search_capability(model, api_key, model_name, timeout)
+                    supported.append(capability)
+                    results[capability] = {"ok": True, "error": ""}
+                except Exception as exc:
+                    unsupported.append(capability)
+                    results[capability] = {"ok": False, "error": _capability_error_text(exc)}
             continue
         try:
             probe(base_url, api_key, model_name, timeout)
@@ -358,6 +616,8 @@ def chat_json(
     timeout_seconds: int | None = None,
     response_format: bool = True,
     extra_body: dict[str, Any] | None = None,
+    stream: bool = False,
+    token_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     model = _resolved_model(app_dir, app_config, use_case_id, model_id)
     api_key = ai_model_config.model_api_key(model)
@@ -369,21 +629,36 @@ def chat_json(
     url = _chat_completions_url(ai_model_config.model_base_url(model))
     if not url:
         raise RuntimeError(f"AI 模型 {model.get('id')} 未配置 Base URL。")
-    body: dict[str, Any] = {
-        "model": model_name,
-        "messages": messages,
-        "temperature": temperature,
-        "stream": False,
-    }
-    if max_tokens is not None:
-        body["max_tokens"] = max_tokens
-    if response_format and ai_model_config.CAP_JSON in ai_model_config.normalize_capabilities(model.get("capabilities")):
-        body["response_format"] = {"type": "json_object"}
-    if ai_model_config.CAP_WEB_SEARCH in ai_model_config.normalize_capabilities(model.get("capabilities")):
-        extra = model.get("extra") if isinstance(model.get("extra"), dict) else {}
-        body["web_search_options"] = extra.get("web_search_options") or {"search_context_size": "medium"}
+    capabilities = ai_model_config.model_effective_capabilities(model)
+    api_style = _model_api_style(model)
+    if api_style == ai_model_config.API_STYLE_OPENAI_RESPONSES:
+        url = _responses_url(ai_model_config.model_base_url(model))
+        body: dict[str, Any] = {
+            "model": model_name,
+            "input": _responses_input(messages),
+            "temperature": temperature,
+            "stream": bool(stream),
+        }
+        if max_tokens is not None:
+            body["max_output_tokens"] = max_tokens
+        if ai_model_config.CAP_WEB_SEARCH in capabilities:
+            body.update(_web_search_body_for_model(model))
+    else:
+        body = {
+            "model": model_name,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": bool(stream),
+        }
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
+        if response_format and ai_model_config.CAP_JSON in capabilities:
+            body["response_format"] = {"type": "json_object"}
+        if ai_model_config.CAP_WEB_SEARCH in capabilities:
+            body.update(_web_search_body_for_model(model))
     if extra_body:
         body.update(extra_body)
+    body["stream"] = bool(stream)
     timeout = int(timeout_seconds or model.get("timeout_seconds") or 60)
     request = urllib.request.Request(
         url,
@@ -391,12 +666,16 @@ def chat_json(
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "Accept": "application/json",
+            "Accept": "text/event-stream" if stream else "application/json",
             "User-Agent": ai_model_config.AI_HTTP_USER_AGENT,
         },
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
+        if stream:
+            if api_style == ai_model_config.API_STYLE_OPENAI_RESPONSES:
+                return _parse_chat_json_text_or_payload(_read_responses_stream_text(response, token_callback))
+            return _parse_chat_json_text_or_payload(_read_chat_stream_text(response, token_callback))
         raw = response.read()
     payload = json.loads(raw.decode("utf-8")) if raw else {}
     return parse_json_text(_chat_response_text(payload))
@@ -422,7 +701,7 @@ def test_ai_model(app_dir: Path | str, model: dict[str, Any]) -> dict[str, Any]:
         if not model_name:
             raise RuntimeError("请先选择模型。")
         capability_probe = probe_model_capabilities(
-            base_url,
+            normalized,
             api_key,
             model_name,
             requested_capabilities,

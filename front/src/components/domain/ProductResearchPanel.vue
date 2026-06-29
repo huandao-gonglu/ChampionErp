@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
   createProductResearchHotProductRun,
+  fetchActiveProductResearchHotProductRun,
+  fetchProductResearchHotProductRun,
   fetchProductResearchSettings,
 } from '@/api/workflow'
 import {
@@ -17,7 +19,6 @@ import type {
 
 const form = ref({
   targetMarket: 'amazon-us',
-  keywordText: '',
   limit: 12,
 })
 
@@ -26,11 +27,14 @@ const error = ref('')
 const result = ref<ProductResearchResponse | null>(null)
 const researchConfig = ref<ProductResearchConfig | null>(null)
 const selectedCandidateId = ref('')
+let pollTimer: number | null = null
+let polling = false
+const LAST_RUN_STORAGE_KEY = 'champion.erp.productResearch.lastRunId'
 
 const candidates = computed(() => result.value?.items || [])
 const targetMarketOptions = computed(() => {
   const markets = researchConfig.value?.targetMarkets || []
-  return markets.length ? markets : [{ id: 'amazon-us', displayName: 'Amazon US', platform: 'amazon', site: 'amazon.com', raw: {} }]
+  return markets.length ? markets : [{ id: 'amazon-us', displayName: 'Amazon US', platform: 'amazon', site: 'amazon.com', searchMethods: [], raw: {} }]
 })
 const selectedTargetMarket = computed<ProductResearchTargetMarket>(() => {
   return targetMarketOptions.value.find((item) => item.id === form.value.targetMarket) || targetMarketOptions.value[0]
@@ -38,24 +42,21 @@ const selectedTargetMarket = computed<ProductResearchTargetMarket>(() => {
 const selectedCandidate = computed(() => {
   return candidates.value.find((item) => item.id === selectedCandidateId.value) || candidates.value[0] || null
 })
-const searchKeywords = computed(() => parseKeywords(form.value.keywordText))
-const canRunSearch = computed(() => Boolean(searchKeywords.value.length && selectedTargetMarket.value?.id))
+const canRunSearch = computed(() => Boolean(selectedTargetMarket.value?.id))
+const runDescription = computed(() => {
+  const status = result.value?.run.status || ''
+  const description = result.value?.run.description || result.value?.description || ''
+  const progressDescription = result.value?.run.progressDescription || ''
+  if (isTerminalRunStatus(status) && progressDescription && progressDescription !== description) {
+    return `${description}\n最近 AI 返回：${progressDescription.replace(/^AI 正在返回结果：/, '')}`
+  }
+  return progressDescription || description
+})
 const averageHotScore = computed(() => {
   if (!candidates.value.length) return 0
   return candidates.value.reduce((sum, item) => sum + item.hotScore, 0) / candidates.value.length
 })
 const successfulSources = computed(() => (result.value?.sourceStatus || []).filter((item) => item.status === 'success').length)
-
-function parseKeywords(value: string) {
-  return Array.from(
-    new Set(
-      value
-        .split(/[\n,，;；]+/)
-        .map((item) => item.trim())
-        .filter(Boolean),
-    ),
-  )
-}
 
 function buildPayload() {
   return {
@@ -64,7 +65,6 @@ function buildPayload() {
       target_markets: [selectedTargetMarket.value.id],
       reference_markets: [],
     },
-    keywords: searchKeywords.value,
     result_options: {
       limit: form.value.limit,
       sort_by: 'rank',
@@ -79,20 +79,122 @@ async function loadSettings() {
   }
 }
 
+function isTerminalRunStatus(status: string) {
+  return ['completed', 'failed'].includes(status)
+}
+
+function applyRunResponse(next: ProductResearchResponse) {
+  result.value = next
+  if (next.run.runId) {
+    rememberLastRunId(next.run.runId)
+  }
+  if (!next.items.some((item) => item.id === selectedCandidateId.value)) {
+    selectedCandidateId.value = next.items[0]?.id || ''
+  }
+}
+
+function readLastRunId() {
+  try {
+    return window.sessionStorage.getItem(LAST_RUN_STORAGE_KEY) || ''
+  } catch {
+    return ''
+  }
+}
+
+function rememberLastRunId(runId: string) {
+  try {
+    window.sessionStorage.setItem(LAST_RUN_STORAGE_KEY, runId)
+  } catch {
+    // 浏览器存储不可用时只跳过本地恢复，后端活跃任务查询仍可兜底。
+  }
+}
+
+function forgetLastRunId() {
+  try {
+    window.sessionStorage.removeItem(LAST_RUN_STORAGE_KEY)
+  } catch {
+    // ignore
+  }
+}
+
+function stopPolling() {
+  if (pollTimer !== null) {
+    window.clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+async function pollRun(runId: string) {
+  if (!runId || polling) return
+  polling = true
+  try {
+    const next = await fetchProductResearchHotProductRun(runId)
+    applyRunResponse(next)
+    if (isTerminalRunStatus(next.run.status)) {
+      stopPolling()
+      loading.value = false
+    }
+  } catch (exc) {
+    stopPolling()
+    loading.value = false
+    forgetLastRunId()
+    error.value = exc instanceof Error ? exc.message : '读取选品运行状态失败'
+  } finally {
+    polling = false
+  }
+}
+
+function startPolling(runId: string) {
+  stopPolling()
+  pollTimer = window.setInterval(() => {
+    void pollRun(runId)
+  }, 500)
+  void pollRun(runId)
+}
+
 async function runSearch() {
+  stopPolling()
   loading.value = true
   error.value = ''
   try {
-    if (!searchKeywords.value.length) {
-      throw new Error('请先输入关键词')
-    }
     const next = await createProductResearchHotProductRun(buildPayload())
-    result.value = next
-    selectedCandidateId.value = next.items[0]?.id || ''
+    applyRunResponse(next)
+    if (next.run.runId && !isTerminalRunStatus(next.run.status)) {
+      startPolling(next.run.runId)
+      return
+    }
+    loading.value = false
   } catch (exc) {
     error.value = exc instanceof Error ? exc.message : '选品搜索失败'
-  } finally {
     loading.value = false
+  }
+}
+
+async function restoreRunAfterRefresh() {
+  const storedRunId = readLastRunId()
+  if (storedRunId) {
+    try {
+      const storedRun = await fetchProductResearchHotProductRun(storedRunId)
+      applyRunResponse(storedRun)
+      if (!isTerminalRunStatus(storedRun.run.status)) {
+        loading.value = true
+        startPolling(storedRun.run.runId)
+      }
+      return
+    } catch {
+      forgetLastRunId()
+    }
+  }
+  try {
+    const activeRun = await fetchActiveProductResearchHotProductRun()
+    if (!activeRun?.run.runId) return
+    applyRunResponse(activeRun)
+    if (!isTerminalRunStatus(activeRun.run.status)) {
+      loading.value = true
+      startPolling(activeRun.run.runId)
+    }
+  } catch {
+    // 恢复运行状态失败不阻断页面使用，用户仍可手动重新生成。
   }
 }
 
@@ -125,6 +227,13 @@ function runStatusLabel(value: string) {
   return labels[value] || '待运行'
 }
 
+function runStatusClass(value: string) {
+  if (value === 'completed') return 'badge-success'
+  if (value === 'running' || value === 'queued') return 'badge-info'
+  if (value === 'failed') return 'badge-danger'
+  return 'badge-muted'
+}
+
 function statusClass(value: string) {
   if (value === 'success') return 'badge-success'
   if (value === 'configuration_required') return 'badge-info'
@@ -147,18 +256,20 @@ function candidateMarketLabel(item: HotProductCandidate) {
 }
 
 function sourceLabel(value: string) {
-  const labels: Record<string, string> = {
-    market_hot_products: '市场候选数据',
-  }
-  return labels[value] || value || '-'
+  return value || '-'
 }
 
 onMounted(async () => {
   try {
     await loadSettings()
+    await restoreRunAfterRefresh()
   } catch {
     researchConfig.value = null
   }
+})
+
+onBeforeUnmount(() => {
+  stopPolling()
 })
 </script>
 
@@ -179,7 +290,7 @@ onMounted(async () => {
       </div>
       <div class="rounded-lg border border-accent-200 bg-white p-4 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
         <p class="text-xs font-semibold uppercase text-accent-500 dark:text-accent-400">运行状态</p>
-        <p class="mt-3"><span class="badge-success">{{ runStatusLabel(result?.run.status || 'idle') }}</span></p>
+        <p class="mt-3"><span :class="runStatusClass(result?.run.status || 'idle')">{{ runStatusLabel(result?.run.status || 'idle') }}</span></p>
       </div>
     </div>
 
@@ -188,7 +299,7 @@ onMounted(async () => {
         <div class="flex items-start justify-between gap-3">
           <div>
             <h2 class="card-title">搜索条件</h2>
-            <p class="muted mt-1">选择平台站点，输入本次关注的关键词。</p>
+            <p class="muted mt-1">选择平台站点，生成当前市场的热卖商品候选。</p>
           </div>
           <span class="badge-info">临时结果</span>
         </div>
@@ -204,25 +315,19 @@ onMounted(async () => {
           </label>
 
           <label class="block">
-            <div class="mb-2 flex items-center justify-between gap-3">
-              <span class="text-sm font-semibold text-accent-700 dark:text-accent-200">关键词</span>
-              <span class="text-xs text-accent-500 dark:text-accent-400">{{ searchKeywords.length }} 个</span>
-            </div>
-            <textarea
-              v-model="form.keywordText"
-              class="input min-h-[104px] resize-y leading-6"
-              placeholder="例如：pet storage&#10;mahjong gift&#10;custom name stamp"
-            ></textarea>
-          </label>
-
-          <label class="block">
             <span class="mb-2 block text-sm font-semibold text-accent-700 dark:text-accent-200">结果数量</span>
             <input v-model.number="form.limit" class="input" min="1" max="50" type="number" />
           </label>
 
           <button class="btn btn-primary w-full" :disabled="loading || !canRunSearch" @click="runSearch">
-            {{ loading ? '生成中' : '生成候选' }}
+            {{ loading ? '运行中' : '生成候选' }}
           </button>
+          <p
+            v-if="runDescription"
+            class="max-h-28 overflow-auto whitespace-pre-wrap rounded-lg border border-accent-200 bg-accent-50/70 px-3 py-2 text-xs leading-5 text-accent-500 dark:border-dark-700 dark:bg-dark-950/50 dark:text-accent-400"
+          >
+            {{ runDescription }}
+          </p>
           <p v-if="error" class="rounded-lg border border-danger-200 bg-danger-50 px-3 py-2 text-sm text-danger-700 dark:border-danger-500/30 dark:bg-danger-500/10 dark:text-danger-200">{{ error }}</p>
         </div>
       </section>
@@ -268,7 +373,7 @@ onMounted(async () => {
             </button>
 
             <div v-if="!candidates.length" class="rounded-lg border border-dashed border-accent-300 p-8 text-center text-sm text-accent-500 dark:border-dark-700 dark:text-accent-300">
-              选择目标市场并输入关键词后，生成一组临时热点商品。
+              选择目标市场后，生成一组临时热点商品。
             </div>
           </div>
         </div>
@@ -314,7 +419,7 @@ onMounted(async () => {
             <img :src="selectedCandidate.imageUrl" :alt="selectedCandidate.title" class="mt-5 aspect-square w-full rounded-lg object-cover" />
             <div class="mt-4 flex flex-wrap items-center gap-2">
               <span class="badge-success">#{{ selectedCandidate.rank }}</span>
-              <span class="badge-info">{{ selectedCandidate.keyword }}</span>
+              <span v-if="selectedCandidate.keyword" class="badge-info">{{ selectedCandidate.keyword }}</span>
               <span class="badge-muted">{{ selectedCandidate.site }}</span>
             </div>
             <h3 class="mt-4 text-lg font-bold text-accent-950 dark:text-white">{{ selectedCandidate.title }}</h3>

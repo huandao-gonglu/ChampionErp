@@ -442,6 +442,9 @@ export interface ProductResearchSourceStatus {
   itemsFound: number
   errorMessage: string
   providerStrategy: string
+  rawItemsFound: number
+  itemsFiltered: number
+  diagnosticMessage: string
   raw: UnknownRecord
 }
 
@@ -451,6 +454,8 @@ export interface ProductResearchRunSummary {
   searchMode: string
   createdAt: string
   completedAt: string
+  description: string
+  progressDescription: string
   request: UnknownRecord
   raw: UnknownRecord
 }
@@ -459,6 +464,7 @@ export interface ProductResearchResponse {
   run: ProductResearchRunSummary
   items: HotProductCandidate[]
   sourceStatus: ProductResearchSourceStatus[]
+  description: string
   raw: UnknownRecord
 }
 
@@ -480,24 +486,25 @@ export interface ProductResearchSourceRegistryItem {
   raw: UnknownRecord
 }
 
+export interface ProductResearchMarketSearchMethodBinding {
+  methodId: string
+  enabled: boolean
+  configJson: UnknownRecord
+  raw: UnknownRecord
+}
+
 export interface ProductResearchTargetMarket {
   id: string
   platform: string
   site: string
   displayName: string
-  raw: UnknownRecord
-}
-
-export interface ProductResearchMarketHotProducts {
-  marketId: string
-  items: HotProductCandidate[]
+  searchMethods: ProductResearchMarketSearchMethodBinding[]
   raw: UnknownRecord
 }
 
 export interface ProductResearchConfig {
   searchProviders: ProductResearchSourceRegistryItem[]
   targetMarkets: ProductResearchTargetMarket[]
-  marketHotProducts: ProductResearchMarketHotProducts[]
   sourceRegistry: ProductResearchSourceRegistryItem[]
   raw: UnknownRecord
 }

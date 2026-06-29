@@ -12,6 +12,27 @@ CAP_IMAGE_GENERATE = "image_generate"
 CAP_IMAGE_EDIT = "image_edit"
 CAP_TOOL_CALLING = "tool_calling"
 
+API_STYLE_OPENAI_COMPATIBLE = "openai_compatible"
+API_STYLE_OPENAI_RESPONSES = "openai_responses"
+AI_API_STYLES = (API_STYLE_OPENAI_COMPATIBLE, API_STYLE_OPENAI_RESPONSES)
+AI_IMAGE_QUALITY_OPTIONS = ("auto", "low", "medium", "high")
+MODEL_QUALITY_FAST = "fast"
+MODEL_QUALITY_BALANCED = "balanced"
+MODEL_QUALITY_HIGH = "high_quality"
+AI_MODEL_QUALITY_LEVELS = (MODEL_QUALITY_FAST, MODEL_QUALITY_BALANCED, MODEL_QUALITY_HIGH)
+AI_MODEL_QUALITY_ALIASES = {
+    "low": MODEL_QUALITY_FAST,
+    "speed": MODEL_QUALITY_FAST,
+    "fast": MODEL_QUALITY_FAST,
+    "medium": MODEL_QUALITY_BALANCED,
+    "normal": MODEL_QUALITY_BALANCED,
+    "balanced": MODEL_QUALITY_BALANCED,
+    "auto": MODEL_QUALITY_BALANCED,
+    "high": MODEL_QUALITY_HIGH,
+    "quality": MODEL_QUALITY_HIGH,
+    "high_quality": MODEL_QUALITY_HIGH,
+}
+
 AI_MODEL_CAPABILITIES = (
     CAP_CHAT,
     CAP_JSON,
@@ -98,6 +119,37 @@ def normalize_capabilities(value: Any) -> list[str]:
     return result
 
 
+def normalize_api_style(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in AI_API_STYLES else API_STYLE_OPENAI_COMPATIBLE
+
+
+def normalize_model_quality_level(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return AI_MODEL_QUALITY_ALIASES.get(text, MODEL_QUALITY_BALANCED)
+
+
+def normalize_capability_results(value: Any) -> dict[str, dict[str, Any]]:
+    raw = value if isinstance(value, dict) else {}
+    results: dict[str, dict[str, Any]] = {}
+    for capability, result in raw.items():
+        key = str(capability or "").strip().lower()
+        if key not in AI_MODEL_CAPABILITIES:
+            continue
+        record = result if isinstance(result, dict) else {}
+        results[key] = {
+            "ok": bool(record.get("ok")),
+            "error": str(record.get("error") or "").strip(),
+            "detail": str(record.get("detail") or "").strip(),
+        }
+    return results
+
+
+def model_has_image_capability(model: dict[str, Any]) -> bool:
+    capabilities = set(normalize_capabilities(model.get("capabilities")))
+    return bool({CAP_IMAGE_GENERATE, CAP_IMAGE_EDIT} & capabilities)
+
+
 def default_ai_models() -> list[dict[str, Any]]:
     return [
         {
@@ -112,6 +164,7 @@ def default_ai_models() -> list[dict[str, Any]]:
             "model": "deepseek-chat",
             "model_env": "DEEPSEEK_MODEL",
             "capabilities": [CAP_CHAT, CAP_JSON],
+            "quality_level": MODEL_QUALITY_BALANCED,
             "enabled": True,
         },
         {
@@ -126,6 +179,7 @@ def default_ai_models() -> list[dict[str, Any]]:
             "model": "gpt-image-1",
             "model_env": "OPENAI_IMAGE_MODEL",
             "capabilities": [CAP_IMAGE_GENERATE, CAP_IMAGE_EDIT],
+            "quality_level": MODEL_QUALITY_BALANCED,
             "quality": "medium",
             "enabled": True,
         },
@@ -144,7 +198,7 @@ def normalize_ai_model(value: Any, index: int = 0) -> dict[str, Any]:
         "id": model_id,
         "name": str(raw.get("name") or fallback.get("name") or model_id).strip(),
         "provider": str(raw.get("provider") or fallback.get("provider") or "OpenAI-Compatible").strip(),
-        "api_style": str(raw.get("api_style") or fallback.get("api_style") or "openai_compatible").strip(),
+        "api_style": normalize_api_style(raw.get("api_style") or fallback.get("api_style")),
         "base_url": str(raw.get("base_url") or fallback.get("base_url") or "").strip(),
         "base_url_env": str(raw.get("base_url_env") or fallback_envs.get("base_url_env") or "").strip(),
         "api_key": str(raw.get("api_key") or "").strip(),
@@ -154,10 +208,27 @@ def normalize_ai_model(value: Any, index: int = 0) -> dict[str, Any]:
         "capabilities": capabilities,
         "enabled": bool(raw.get("enabled", fallback.get("enabled", True))),
     }
-    for key in ("quality", "size", "timeout_seconds"):
+    detected = normalize_capabilities(raw.get("detected_capabilities") or raw.get("supported_capabilities"))
+    unsupported = normalize_capabilities(raw.get("unsupported_capabilities"))
+    capability_results = normalize_capability_results(raw.get("capability_results"))
+    if detected:
+        normalized["detected_capabilities"] = detected
+    if unsupported:
+        normalized["unsupported_capabilities"] = unsupported
+    if capability_results:
+        normalized["capability_results"] = capability_results
+    image_capable = model_has_image_capability(normalized)
+    quality_level_source = raw.get("quality_level", fallback.get("quality_level"))
+    if quality_level_source in (None, "") and not image_capable:
+        quality_level_source = raw.get("quality")
+    normalized["quality_level"] = normalize_model_quality_level(quality_level_source)
+    for key in ("quality", "size"):
         value_for_key = raw.get(key, fallback.get(key))
-        if value_for_key not in (None, ""):
+        if image_capable and value_for_key not in (None, ""):
             normalized[key] = value_for_key
+    value_for_key = raw.get("timeout_seconds", fallback.get("timeout_seconds"))
+    if value_for_key not in (None, ""):
+        normalized["timeout_seconds"] = value_for_key
     extra = raw.get("extra") if isinstance(raw.get("extra"), dict) else {}
     if extra:
         normalized["extra"] = extra
@@ -221,8 +292,22 @@ def model_name(model: dict[str, Any]) -> str:
 
 
 def model_has_capabilities(model: dict[str, Any], required: list[str] | tuple[str, ...] | set[str]) -> bool:
-    capabilities = set(normalize_capabilities(model.get("capabilities")))
+    capabilities = set(model_effective_capabilities(model))
     return all(item in capabilities for item in required)
+
+
+def model_effective_capabilities(model: dict[str, Any]) -> list[str]:
+    requested = normalize_capabilities(model.get("capabilities"))
+    results = normalize_capability_results(model.get("capability_results"))
+    if not results:
+        return requested
+    effective: list[str] = []
+    for capability in requested:
+        result = results.get(capability)
+        if result is not None and result.get("ok") is False:
+            continue
+        effective.append(capability)
+    return effective
 
 
 def resolve_ai_model(
@@ -258,6 +343,7 @@ def public_ai_config(app_config: dict[str, Any] | None) -> dict[str, Any]:
         public = dict(model)
         public["api_key_configured"] = bool(model_api_key(model))
         public["api_key_masked"] = mask_secret(model_api_key(model))
+        public["effective_capabilities"] = model_effective_capabilities(model)
         public.pop("api_key", None)
         models.append(public)
     return {
@@ -265,4 +351,7 @@ def public_ai_config(app_config: dict[str, Any] | None) -> dict[str, Any]:
         "ai_use_case_bindings": normalize_ai_use_case_bindings(config.get("ai_use_case_bindings")),
         "ai_use_cases": list(AI_USE_CASES.values()),
         "capabilities": list(AI_MODEL_CAPABILITIES),
+        "api_styles": list(AI_API_STYLES),
+        "image_quality_options": list(AI_IMAGE_QUALITY_OPTIONS),
+        "model_quality_levels": list(AI_MODEL_QUALITY_LEVELS),
     }

@@ -91,6 +91,20 @@ const capabilityOptions = [
   { value: 'tool_calling', label: 'Function Call' },
 ]
 const allCapabilityValues = capabilityOptions.map((item) => item.value)
+const imageCapabilityValues = new Set(['image_generate', 'image_edit'])
+const fallbackModelQualityLevels = ['fast', 'balanced', 'high_quality']
+const fallbackImageQualityValues = ['auto', 'low', 'medium', 'high']
+const modelQualityLabels: Record<string, string> = {
+  fast: '速度优先',
+  balanced: '均衡',
+  high_quality: '质量优先',
+}
+const imageQualityLabels: Record<string, string> = {
+  auto: '自动',
+  low: '低',
+  medium: '中',
+  high: '高',
+}
 
 function asRecord(value: unknown): UnknownRecord {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as UnknownRecord : {}
@@ -172,12 +186,15 @@ function normalizeAiModelRow(value: unknown, index: number): UnknownRecord {
     api_key_masked: firstText(record.api_key_masked),
     model,
     model_env: firstText(record.model_env),
+    quality_level: firstText(record.quality_level, record.model_quality_level, 'balanced'),
     quality: firstText(record.quality),
     size: firstText(record.size),
     timeout_seconds: firstText(record.timeout_seconds),
     capabilities: asStringArray(record.capabilities),
     detected_capabilities: asStringArray(record.detected_capabilities || record.supported_capabilities),
     unsupported_capabilities: asStringArray(record.unsupported_capabilities),
+    capability_results: asRecord(record.capability_results),
+    effective_capabilities: asStringArray(record.effective_capabilities),
     enabled: record.enabled !== false,
     api_key_configured: Boolean(record.api_key_configured),
     model_options: modelOptions,
@@ -193,6 +210,7 @@ function defaultAiModelRow(index: number): UnknownRecord {
     base_url: '',
     api_key: '',
     model: '',
+    quality_level: 'balanced',
     capabilities: [],
     enabled: true,
   }, index)
@@ -270,6 +288,32 @@ const aiUseCases = computed(() => Array.isArray(props.aiConfig.ai_use_cases) ? p
 const activeAuthSettingsTabMeta = computed(() => authSettingsTabs.find((tab) => tab.key === activeAuthSettingsTab.value) || authSettingsTabs[0])
 const capabilityLabelByValue = Object.fromEntries(capabilityOptions.map((item) => [item.value, item.label]))
 const selectedModelOptions = computed(() => normalizeModelOptions(selectedAiModel.value?.model_options))
+const modelQualityOptions = computed(() => {
+  const values = asStringArray(props.aiConfig.model_quality_levels)
+  const source = values.length ? values : fallbackModelQualityLevels
+  const current = modelField('quality_level')
+  const seen = new Set<string>()
+  const result: Array<{ value: string; label: string }> = []
+  for (const value of [...source, current]) {
+    if (!value || seen.has(value)) continue
+    seen.add(value)
+    result.push({ value, label: modelQualityLabels[value] || value })
+  }
+  return result
+})
+const imageQualityOptions = computed(() => {
+  const values = asStringArray(props.aiConfig.image_quality_options)
+  const source = values.length ? values : fallbackImageQualityValues
+  const current = modelField('quality')
+  const seen = new Set<string>()
+  const result: Array<{ value: string; label: string }> = []
+  for (const value of [...source, current]) {
+    if (!value || seen.has(value)) continue
+    seen.add(value)
+    result.push({ value, label: imageQualityLabels[value] || value })
+  }
+  return result
+})
 const selectedModelListReady = computed(() => Boolean(
   selectedAiModel.value
   && String(selectedAiModel.value.base_url || selectedAiModel.value.base_url_env || '').trim()
@@ -285,6 +329,7 @@ const selectedAiModelReady = computed(() => Boolean(
 const aiControlsLocked = computed(() => props.loading || aiRequestPending.value)
 const aiBlockingMessage = computed(() => aiRequestMessage.value || '正在检测 AI 配置，请稍候')
 const selectedAiHint = computed(() => props.loading ? '正在处理，请稍候' : '请先填写 Base URL 和 API Key，再选择模型')
+const selectedAiModelImageCapable = computed(() => modelHasImageCapability(selectedAiModel.value))
 const exchangeRateReady = computed(() => Boolean(form.exchangeRateApiUrl.trim()))
 const exchangeRateHint = computed(() => props.loading ? '正在处理，请稍候' : '请填写汇率 API URL')
 const alibabaApiReady = computed(() => Boolean(form.alibabaAppKey.trim() && form.alibabaAppSecret.trim() && form.alibabaApiBaseUrl.trim()))
@@ -299,10 +344,12 @@ function aiPayload(): UnknownRecord {
       const row = normalizeAiModelRow(model, index)
       const copySourceId = firstText(model.copy_source_id)
       if (copySourceId && !firstText(row.api_key)) row.copy_source_id = copySourceId
+      if (!modelHasImageCapability(row)) {
+        delete row.quality
+        delete row.size
+      }
       delete row.model_options
       delete row.model_env
-      delete row.detected_capabilities
-      delete row.unsupported_capabilities
       return row
     }),
     ai_use_case_bindings: Object.fromEntries(
@@ -360,8 +407,13 @@ function selectedCapabilities(): string[] {
   return asStringArray(selectedAiModel.value?.capabilities)
 }
 
+function modelHasImageCapability(model: UnknownRecord | null): boolean {
+  return asStringArray(model?.capabilities).some((capability) => imageCapabilityValues.has(capability))
+}
+
 function modelCapabilities(model: UnknownRecord): string[] {
-  return asStringArray(model.capabilities)
+  const effective = asStringArray(model.effective_capabilities)
+  return effective.length ? effective : asStringArray(model.capabilities)
 }
 
 function useCaseRequiredCapabilities(useCase: UnknownRecord): string[] {
@@ -412,7 +464,12 @@ function setCapability(capability: string, checked: boolean) {
   if (checked) current.add(capability)
   else current.delete(capability)
   selectedAiModel.value.capabilities = Array.from(current)
+  if (!modelHasImageCapability(selectedAiModel.value)) {
+    selectedAiModel.value.quality = ''
+    selectedAiModel.value.size = ''
+  }
   lastAutoCapabilitySignature.value = ''
+  if (selectedAiModelReady.value) autoTestSelectedAiModel()
 }
 
 function addAiModel() {
@@ -570,6 +627,8 @@ function applyAiTestResult(result: AuthResult | null) {
       : Array.from(supported)
     target.detected_capabilities = Array.from(supported)
     target.unsupported_capabilities = Array.from(unsupported)
+    target.capability_results = capabilityResults
+    target.effective_capabilities = nextCapabilities
     target.capabilities = nextCapabilities
     lastAutoCapabilitySignature.value = capabilitySignature(target)
   }
@@ -711,6 +770,19 @@ function copy(text: string) {
                 <input class="input" :value="modelField('id')" :disabled="aiControlsLocked" placeholder="模型 ID，例如 deepseek_text" @input="setSelectedModelField('id', eventText($event))" />
                 <input class="input" :value="modelField('name')" :disabled="aiControlsLocked" placeholder="显示名称" @input="setSelectedModelField('name', eventText($event))" />
                 <input class="input" :value="modelField('provider')" :disabled="aiControlsLocked" placeholder="Provider，例如 DeepSeek / OpenAI" @input="setSelectedModelField('provider', eventText($event))" />
+                <label class="block">
+                  <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">API 风格</span>
+                  <select class="input" :value="modelField('api_style', 'openai_compatible')" :disabled="aiControlsLocked" @change="setSelectedModelField('api_style', eventText($event))">
+                    <option value="openai_compatible">OpenAI-Compatible Chat</option>
+                    <option value="openai_responses">OpenAI Responses</option>
+                  </select>
+                </label>
+                <label class="block">
+                  <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">模型质量档位</span>
+                  <select class="input" :value="modelField('quality_level', 'balanced')" :disabled="aiControlsLocked" @change="setSelectedModelField('quality_level', eventText($event))">
+                    <option v-for="option in modelQualityOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+                  </select>
+                </label>
                 <input class="input" :value="modelField('base_url')" :disabled="aiControlsLocked" placeholder="Base URL" @input="setSelectedModelField('base_url', eventText($event))" @blur="handleAiConfigFieldBlur('base_url')" />
                 <input class="input md:col-span-2" :value="modelField('api_key')" :disabled="aiControlsLocked" :placeholder="apiKeyPlaceholder()" autocomplete="off" spellcheck="false" @input="setSelectedModelField('api_key', eventText($event))" @blur="handleAiConfigFieldBlur('api_key')" />
                 <label class="block md:col-span-2">
@@ -720,7 +792,18 @@ function copy(text: string) {
                     <option v-for="option in selectedModelOptions" :key="option.id" :value="option.id">{{ option.label }}</option>
                   </select>
                 </label>
-                <input class="input" :value="modelField('quality')" :disabled="aiControlsLocked" placeholder="图片质量，可选" @input="setSelectedModelField('quality', eventText($event))" />
+                <label v-if="selectedAiModelImageCapable" class="block">
+                  <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">图片质量</span>
+                  <select
+                    class="input"
+                    :value="modelField('quality', 'auto')"
+                    :disabled="aiControlsLocked"
+                    title="OpenAI 图片接口常用质量选项；模型列表 API 不返回该枚举"
+                    @change="setSelectedModelField('quality', eventText($event))"
+                  >
+                    <option v-for="option in imageQualityOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+                  </select>
+                </label>
                 <input class="input" :value="modelField('timeout_seconds')" :disabled="aiControlsLocked" placeholder="超时秒数，可选" @input="setSelectedModelField('timeout_seconds', eventText($event))" />
                 <details class="md:col-span-2 rounded-lg border border-dashed border-accent-200 bg-white px-3 py-2 text-sm dark:border-dark-700 dark:bg-dark-900">
                   <summary class="cursor-pointer font-semibold text-accent-700 dark:text-accent-200">高级配置</summary>

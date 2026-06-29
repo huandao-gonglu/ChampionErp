@@ -28,13 +28,8 @@ DEFAULT_MARKET_CURRENCIES = {
     "FR": "EUR",
     "JP": "JPY",
 }
-DEFAULT_HOT_PRODUCT_IMAGES = [
-    "https://images.unsplash.com/photo-1586023492125-27b2c045efd7?auto=format&fit=crop&w=800&q=80",
-    "https://images.unsplash.com/photo-1558618666-fcd25c85cd64?auto=format&fit=crop&w=800&q=80",
-    "https://images.unsplash.com/photo-1513519245088-0e12902e5a38?auto=format&fit=crop&w=800&q=80",
-    "https://images.unsplash.com/photo-1583847268964-b28dc8f51f92?auto=format&fit=crop&w=800&q=80",
-    "https://images.unsplash.com/photo-1524758631624-e2822e304c36?auto=format&fit=crop&w=800&q=80",
-]
+DEFAULT_AI_SEARCH_METHOD_ID = "ai_web_search"
+LEGACY_AI_SEARCH_METHOD_IDS = {"ai_market_search_seeded"}
 
 
 def _string_list(value: Any) -> list[str]:
@@ -65,85 +60,37 @@ def _bool_value(value: Any, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on", "enabled"}
 
 
-def _keyword_slug(value: str) -> str:
-    return "-".join(part for part in str(value or "").strip().lower().split() if part) or "product"
+def _default_ai_search_prompt(market: dict[str, Any]) -> str:
+    display_name = str(market.get("display_name") or market.get("displayName") or market.get("id") or "").strip()
+    platform = str(market.get("platform") or "").strip()
+    site = str(market.get("site") or "").strip()
+    market_id = str(market.get("id") or market.get("market_id") or market.get("marketId") or "").strip()
+    currency = DEFAULT_MARKET_CURRENCIES.get(market_id, "USD")
+    return "\n".join(
+        [
+            f"请在 {display_name}（{platform} / {site}）查找当前热卖、增长明显或值得选品跟进的商品。",
+            "优先返回 JSONL：每一行是一个完整商品候选 JSON 对象，不要返回 Markdown、解释文字或代码块。",
+            "每一行字段必须符合：",
+            '{"title":"商品标题，必填","image_url":"商品图片 URL，找不到可为空字符串","rank":1,"source_url":"真实可追溯的来源 URL，必填","keyword":"商品主题或热卖方向，可为空字符串","price":{"amount":19.99,"currency":"' + currency + '"},"rating":4.6,"review_count":120,"hot_score":88}',
+            '如果系统限制必须返回完整 JSON，也可以返回 {"items":[...]}，items 内对象字段同上。',
+            "字段要求：rank 越小热度越高；hot_score 为 0-100；缺少真实依据的数值填 0；不要编造来源 URL。",
+            "优先选择能追溯到目标站点或可信热卖榜单/搜索结果页的商品。",
+            "后端会补齐 id、market_id、platform、site、source_name、collected_at，不需要你返回这些字段。",
+            '如果找不到真实可追溯结果，返回 {"items": []}。',
+        ]
+    )
 
 
-def _default_hot_products(market_id: str, platform: str, site: str, currency: str) -> list[dict[str, Any]]:
-    keywords = ["pet storage", "desk organizer", "mahjong gift"]
-    rows: list[dict[str, Any]] = []
-    rank = 1
-    for keyword in keywords:
-        for suffix in ("organizer set", "storage basket"):
-            slug = _keyword_slug(keyword)
-            rows.append(
-                {
-                    "id": f"hot_{market_id}_{rank}",
-                    "title": f"{keyword} {suffix}",
-                    "image_url": DEFAULT_HOT_PRODUCT_IMAGES[(rank - 1) % len(DEFAULT_HOT_PRODUCT_IMAGES)],
-                    "rank": rank,
-                    "source_url": f"https://{site}/s?k={slug}&mock_rank={rank}",
-                    "market_id": market_id,
-                    "platform": platform,
-                    "site": site,
-                    "keyword": keyword,
-                    "price": {"amount": round(12.99 + rank * 4.25, 2), "currency": currency},
-                    "rating": min(5.0, round(4.2 + rank * 0.08, 1)),
-                    "review_count": 180 + rank * 137,
-                    "hot_score": round(98 - rank * 3.5, 1),
-                    "source_name": "市场候选数据",
-                    "collected_at": "2026-06-29T00:00:00Z",
-                }
-            )
-            rank += 1
-    return rows
-
-
-def _float_value(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _normalize_hot_product_price(value: Any, currency: str) -> dict[str, Any] | None:
-    raw = value if isinstance(value, dict) else {}
-    amount = _float_value(raw.get("amount"), 0.0)
-    if amount <= 0:
-        return None
-    return {
-        "amount": amount,
-        "currency": str(raw.get("currency") or currency or "USD").strip().upper(),
-    }
-
-
-def _normalize_hot_product_candidate(value: Any, target: dict[str, Any], index: int) -> dict[str, Any]:
-    raw = value if isinstance(value, dict) else {}
-    market_id = str(raw.get("market_id") or raw.get("marketId") or raw.get("market") or target.get("id") or target.get("market_id") or "").strip()
-    platform = str(raw.get("platform") or target.get("platform") or "").strip().lower()
-    site = str(raw.get("site") or target.get("site") or "").strip().lower()
-    keyword = str(raw.get("keyword") or "").strip()
-    rank = _int_value(raw.get("rank"), index + 1, 1, 100000)
-    normalized = {
-        "id": str(raw.get("id") or f"hot_{market_id}_{rank}").strip(),
-        "title": str(raw.get("title") or "").strip(),
-        "image_url": str(raw.get("image_url") or raw.get("imageUrl") or "").strip(),
-        "rank": rank,
-        "source_url": str(raw.get("source_url") or raw.get("sourceUrl") or "").strip(),
-        "market_id": market_id,
-        "platform": platform,
-        "site": site,
-        "keyword": keyword,
-        "rating": _float_value(raw.get("rating"), 0.0),
-        "review_count": _int_value(raw.get("review_count", raw.get("reviewCount")), 0, 0),
-        "hot_score": _float_value(raw.get("hot_score", raw.get("hotScore")), 0.0),
-        "source_name": str(raw.get("source_name") or raw.get("sourceName") or "市场候选数据").strip(),
-        "collected_at": str(raw.get("collected_at") or raw.get("collectedAt") or "").strip(),
-    }
-    price = _normalize_hot_product_price(raw.get("price"), DEFAULT_MARKET_CURRENCIES.get(market_id, "USD"))
-    if price:
-        normalized["price"] = price
-    return normalized
+def _default_market_search_methods(market: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "method_id": DEFAULT_AI_SEARCH_METHOD_ID,
+            "enabled": True,
+            "config_json": {
+                "prompt": _default_ai_search_prompt(market),
+            },
+        }
+    ]
 
 
 def default_product_research_config() -> dict[str, Any]:
@@ -157,116 +104,25 @@ def default_product_research_config() -> dict[str, Any]:
             "sort_by": "rank",
         },
         "provider_runtime": {
-            "source_timeout_seconds": 12,
+            "source_timeout_seconds": 120,
             "retry_count": 1,
             "cache_ttl_seconds": 21600,
-            "max_keywords_per_source": 12,
         },
         "source_registry": [
             {
-                "id": "google_trends_seeded",
-                "name": "Google Trends Seeded Provider",
-                "source_type": "api",
-                "platform": "google_trends",
+                "id": DEFAULT_AI_SEARCH_METHOD_ID,
+                "name": "AI 搜索",
+                "source_type": "ai_search",
+                "platform": "ai_model",
                 "enabled": True,
                 "priority": 1,
-                "supported_markets": ["US", "GB", "CA", "AU", "JP", "DE", "FR"],
-                "supported_languages": ["en", "ja", "de", "fr"],
-                "supported_data_types": ["keyword_trend"],
-                "auth_required": False,
-                "rate_limit_per_minute": 30,
-                "compliance_note": "Seeded local provider for MVP. Replace config_json with official or third-party API settings.",
-                "config_json": {"provider_strategy": "seeded_mock"},
-            },
-            {
-                "id": "etsy_public_search_seeded",
-                "name": "Etsy Public Search Seeded Provider",
-                "source_type": "crawler",
-                "platform": "etsy",
-                "enabled": True,
-                "priority": 3,
-                "supported_markets": ["US", "GB", "CA", "AU"],
-                "supported_languages": ["en"],
-                "supported_data_types": ["marketplace_products"],
-                "auth_required": False,
-                "rate_limit_per_minute": 12,
-                "compliance_note": "Public data collection must follow platform terms, robots rules, and rate limits.",
-                "config_json": {"provider_strategy": "seeded_mock"},
-            },
-            {
-                "id": "ai_market_search_seeded",
-                "name": "AI Market Search Seeded Provider",
-                "source_type": "ai_search",
-                "platform": "ai_market_search",
-                "enabled": True,
-                "priority": 2,
-                "supported_markets": ["US", "GB", "CA", "AU", "JP", "DE", "FR"],
-                "supported_languages": ["en", "ja", "de", "fr"],
+                "supported_markets": [],
+                "supported_languages": [],
                 "supported_data_types": ["ai_web_search"],
                 "auth_required": False,
                 "rate_limit_per_minute": 20,
-                "compliance_note": "Seeded local provider for result-first product research demos. Replace with configured AI web search when ready.",
-                "config_json": {"provider_strategy": "seeded_mock"},
-            },
-            {
-                "id": "ebay_browse_api",
-                "name": "eBay Browse API",
-                "source_type": "api",
-                "platform": "ebay",
-                "enabled": True,
-                "priority": 1,
-                "supported_markets": ["US", "GB", "DE", "AU"],
-                "supported_languages": ["en", "de"],
-                "supported_data_types": ["marketplace_products"],
-                "auth_required": True,
-                "rate_limit_per_minute": 30,
-                "compliance_note": "Requires configured eBay API credentials before live collection.",
-                "config_json": {"provider_strategy": "configured_api", "auth_config_keys": ["client_id", "client_secret"]},
-            },
-            {
-                "id": "tiktok_content_seeded",
-                "name": "TikTok Content Seeded Provider",
-                "source_type": "third_party_api",
-                "platform": "tiktok",
-                "enabled": True,
-                "priority": 4,
-                "supported_markets": ["US", "GB", "CA", "AU", "JP", "DE", "FR"],
-                "supported_languages": ["en", "ja", "de", "fr"],
-                "supported_data_types": ["content_trend"],
-                "auth_required": False,
-                "rate_limit_per_minute": 20,
-                "compliance_note": "Use authorized content APIs or approved third-party data providers for live data.",
-                "config_json": {"provider_strategy": "seeded_mock"},
-            },
-            {
-                "id": "pinterest_content_seeded",
-                "name": "Pinterest Content Seeded Provider",
-                "source_type": "third_party_api",
-                "platform": "pinterest",
-                "enabled": True,
-                "priority": 4,
-                "supported_markets": ["US", "GB", "CA", "AU", "JP", "DE", "FR"],
-                "supported_languages": ["en", "ja", "de", "fr"],
-                "supported_data_types": ["content_trend"],
-                "auth_required": False,
-                "rate_limit_per_minute": 20,
-                "compliance_note": "Use authorized content APIs or approved third-party data providers for live data.",
-                "config_json": {"provider_strategy": "seeded_mock"},
-            },
-            {
-                "id": "manual_import",
-                "name": "Manual Import",
-                "source_type": "manual_import",
-                "platform": "manual_import",
-                "enabled": True,
-                "priority": 9,
-                "supported_markets": ["*"],
-                "supported_languages": ["*"],
-                "supported_data_types": ["keyword_trend", "marketplace_products", "content_trend"],
-                "auth_required": False,
-                "rate_limit_per_minute": None,
-                "compliance_note": "Use config_json.items for manually imported hot-product candidates.",
-                "config_json": {"provider_strategy": "manual_import", "items": []},
+                "compliance_note": "通过已配置的联网 AI 模型获取真实可追溯的热卖商品候选。",
+                "config_json": {"provider_strategy": "ai_web_search", "ai_model_id": "", "max_items": 12, "require_source_url": True, "stream": True},
             },
         ],
     }
@@ -297,24 +153,6 @@ def default_product_research_config() -> dict[str, Any]:
             "display_name": "Amazon Australia",
         },
     ]
-    defaults["market_hot_products"] = [
-        {
-            "market_id": "amazon-us",
-            "items": _default_hot_products("amazon-us", "amazon", "amazon.com", "USD"),
-        },
-        {
-            "market_id": "amazon-uk",
-            "items": _default_hot_products("amazon-uk", "amazon", "amazon.co.uk", "GBP"),
-        },
-        {
-            "market_id": "amazon-ca",
-            "items": _default_hot_products("amazon-ca", "amazon", "amazon.ca", "CAD"),
-        },
-        {
-            "market_id": "amazon-au",
-            "items": _default_hot_products("amazon-au", "amazon", "amazon.com.au", "AUD"),
-        },
-    ]
     return defaults
 
 
@@ -325,10 +163,22 @@ def _normalize_product_research_source(source: Any, fallback: dict[str, Any] | N
     if source_type not in PRODUCT_RESEARCH_SOURCE_TYPES:
         source_type = "manual_import"
     source_id = str(raw.get("id") or raw.get("source_id") or defaults.get("id") or defaults.get("source_id") or "").strip()
+    if source_id in LEGACY_AI_SEARCH_METHOD_IDS:
+        source_id = DEFAULT_AI_SEARCH_METHOD_ID
     platform = str(raw.get("platform") or defaults.get("platform") or source_id or "manual_import").strip().lower()
     if not source_id:
         source_id = platform
     config_json = raw.get("config_json") if isinstance(raw.get("config_json"), dict) else defaults.get("config_json")
+    config_json = dict(config_json) if isinstance(config_json, dict) else {}
+    if source_type == "ai_search":
+        config_json = {
+            "provider_strategy": "ai_web_search",
+            "ai_model_id": "",
+            "max_items": 12,
+            **config_json,
+        }
+        if config_json.get("provider_strategy") == "seeded_mock":
+            config_json["provider_strategy"] = "ai_web_search"
     rate_limit_raw = raw.get("rate_limit_per_minute", defaults.get("rate_limit_per_minute"))
     rate_limit_per_minute = None if rate_limit_raw is None or str(rate_limit_raw).strip() == "" else _int_value(rate_limit_raw, 0, 0)
     return {
@@ -344,8 +194,13 @@ def _normalize_product_research_source(source: Any, fallback: dict[str, Any] | N
         "auth_required": _bool_value(raw.get("auth_required"), _bool_value(defaults.get("auth_required"), False)),
         "rate_limit_per_minute": rate_limit_per_minute,
         "compliance_note": str(raw.get("compliance_note") or defaults.get("compliance_note") or "").strip(),
-        "config_json": dict(config_json) if isinstance(config_json, dict) else {},
+        "config_json": config_json,
     }
+
+
+def _source_strategy(source: dict[str, Any]) -> str:
+    config_json = source.get("config_json") if isinstance(source.get("config_json"), dict) else {}
+    return str(config_json.get("provider_strategy") or source.get("provider_strategy") or "").strip()
 
 
 def _site_slug(value: str) -> str:
@@ -389,38 +244,54 @@ def _normalize_target_market(market: Any, fallback: dict[str, Any] | None = None
         or defaults.get("name")
         or market_id
     ).strip()
-    return {
+    normalized = {
         "id": market_id,
         "platform": platform,
         "site": site,
         "display_name": display_name,
     }
+    search_methods_raw = raw.get("search_methods") if isinstance(raw.get("search_methods"), list) else raw.get("searchMethods")
+    if not isinstance(search_methods_raw, list):
+        legacy_provider_ids = _string_list(raw.get("provider_ids") or raw.get("providerIds") or raw.get("source_ids") or raw.get("sourceIds"))
+        search_methods_raw = [
+            {"method_id": method_id, "enabled": True, "config_json": {}}
+            for method_id in legacy_provider_ids
+        ] if legacy_provider_ids else defaults.get("search_methods")
+    if not isinstance(search_methods_raw, list):
+        search_methods_raw = _default_market_search_methods(normalized)
+    normalized["search_methods"] = [
+        _normalize_market_search_method_binding(item, normalized)
+        for item in search_methods_raw
+        if isinstance(item, dict)
+    ]
+    return normalized
 
 
-def _normalize_market_hot_products(value: Any, target_by_id: dict[str, dict[str, Any]], index: int) -> dict[str, Any]:
+def _normalize_market_search_method_binding(value: Any, market: dict[str, Any]) -> dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
-    raw_market_id = str(raw.get("market_id") or raw.get("marketId") or raw.get("id") or raw.get("market") or "").strip()
-    market_id = DEFAULT_MARKET_ID_BY_CODE.get(raw_market_id.upper(), raw_market_id)
-    target = target_by_id.get(market_id) or _normalize_target_market(raw, None)
-    if not market_id:
-        market_id = target.get("id") or f"market-{index + 1}"
-    raw_items = (
-        raw.get("items")
-        if isinstance(raw.get("items"), list)
-        else raw.get("hot_products")
-        if isinstance(raw.get("hot_products"), list)
-        else raw.get("hotProducts")
-        if isinstance(raw.get("hotProducts"), list)
-        else []
-    )
+    method_id = str(raw.get("method_id") or raw.get("methodId") or raw.get("provider_id") or raw.get("providerId") or raw.get("id") or "").strip()
+    if method_id in LEGACY_AI_SEARCH_METHOD_IDS:
+        method_id = DEFAULT_AI_SEARCH_METHOD_ID
+    config_json = raw.get("config_json") if isinstance(raw.get("config_json"), dict) else raw.get("configJson")
+    if not isinstance(config_json, dict):
+        config_json = {}
+    prompt = str(config_json.get("prompt") or "")
+    if "{keywords}" in prompt or "关键词" in prompt or _is_legacy_default_ai_search_prompt(prompt):
+        config_json["prompt"] = _default_ai_search_prompt(market)
+    elif method_id == DEFAULT_AI_SEARCH_METHOD_ID:
+        config_json = {
+            "prompt": _default_ai_search_prompt(market),
+            **config_json,
+        }
     return {
-        "market_id": market_id,
-        "items": [
-            _normalize_hot_product_candidate(item, target, item_index)
-            for item_index, item in enumerate(raw_items)
-            if isinstance(item, dict)
-        ],
+        "method_id": method_id,
+        "enabled": _bool_value(raw.get("enabled"), True),
+        "config_json": dict(config_json),
     }
+
+
+def _is_legacy_default_ai_search_prompt(prompt: str) -> bool:
+    return "返回结构必须是" in prompt and '"items"' in prompt and "后端会补齐" in prompt
 
 
 def normalize_product_research_config(config: Any) -> dict[str, Any]:
@@ -448,10 +319,9 @@ def normalize_product_research_config(config: Any) -> dict[str, Any]:
     provider_runtime = dict(defaults["provider_runtime"])
     provider_runtime.update({key: value for key, value in provider_runtime_raw.items() if value is not None})
     provider_runtime = {
-        "source_timeout_seconds": _int_value(provider_runtime.get("source_timeout_seconds"), defaults["provider_runtime"]["source_timeout_seconds"], 1, 120),
+        "source_timeout_seconds": _int_value(provider_runtime.get("source_timeout_seconds"), defaults["provider_runtime"]["source_timeout_seconds"], 30, 300),
         "retry_count": _int_value(provider_runtime.get("retry_count"), defaults["provider_runtime"]["retry_count"], 0, 5),
         "cache_ttl_seconds": _int_value(provider_runtime.get("cache_ttl_seconds"), defaults["provider_runtime"]["cache_ttl_seconds"], 0, 604800),
-        "max_keywords_per_source": _int_value(provider_runtime.get("max_keywords_per_source"), defaults["provider_runtime"]["max_keywords_per_source"], 1, 100),
     }
 
     default_sources = defaults["source_registry"]
@@ -472,7 +342,7 @@ def normalize_product_research_config(config: Any) -> dict[str, Any]:
             else [_normalize_product_research_source(item) for item in default_sources]
         )
     )
-    search_providers = [item for item in search_providers if item.get("id")]
+    search_providers = [item for item in search_providers if item.get("id") and _source_strategy(item) != "seeded_mock"]
     source_registry = [deepcopy(item) for item in search_providers]
     source_registry = [item for item in source_registry if item.get("id")]
 
@@ -497,44 +367,18 @@ def normalize_product_research_config(config: Any) -> dict[str, Any]:
         else [_normalize_target_market(item) for item in defaults.get("target_markets", [])]
     )
     target_markets = [item for item in target_markets if item.get("id") and item.get("platform") and item.get("site")]
-    target_by_id = {item["id"]: item for item in target_markets}
-
-    raw_market_hot_products = raw.get("market_hot_products")
-    if not isinstance(raw_market_hot_products, list):
-        raw_market_hot_products = raw.get("marketHotProducts")
-    if not isinstance(raw_market_hot_products, list) and isinstance(raw_target_markets, list):
-        legacy_collections: list[dict[str, Any]] = []
-        for raw_market, target in zip(raw_target_markets, target_markets, strict=False):
-            if not isinstance(raw_market, dict):
-                continue
-            raw_items = raw_market.get("hot_products") if isinstance(raw_market.get("hot_products"), list) else raw_market.get("hotProducts")
-            if isinstance(raw_items, list):
-                legacy_collections.append({"market_id": target["id"], "items": raw_items})
-        raw_market_hot_products = legacy_collections
-    market_hot_products = (
-        [
-            _normalize_market_hot_products(item, target_by_id, index)
-            for index, item in enumerate(raw_market_hot_products)
-            if isinstance(item, dict)
+    method_ids = {str(item.get("id") or "").strip() for item in search_providers}
+    for target in target_markets:
+        search_methods = target.get("search_methods") if isinstance(target.get("search_methods"), list) else []
+        target["search_methods"] = [
+            item for item in search_methods
+            if str(item.get("method_id") or item.get("methodId") or "").strip() in method_ids
         ]
-        if isinstance(raw_market_hot_products, list) and raw_market_hot_products
-        else [
-            _normalize_market_hot_products(item, target_by_id, index)
-            for index, item in enumerate(defaults.get("market_hot_products", []))
-            if isinstance(item, dict)
-        ]
-    )
-    market_hot_products = [
-        collection for collection in market_hot_products
-        if collection.get("market_id") in target_by_id
-    ]
-
     return {
         "search_defaults": search_defaults,
         "provider_runtime": provider_runtime,
         "search_providers": search_providers,
         "target_markets": target_markets,
-        "market_hot_products": market_hot_products,
         "source_registry": source_registry,
     }
 
