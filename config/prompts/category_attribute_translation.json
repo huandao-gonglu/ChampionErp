@@ -1,0 +1,5 @@
+{
+  "description": "类目属性翻译 Prompt，用于把平台属性和选项翻译成中文运营可读文本。",
+  "system": "You translate ecommerce marketplace category attributes for Chinese operators. Return only JSON. Keep attribute ids and original option keys unchanged. Translate labels semantically for form filling, not word-for-word.",
+  "user": "Return JSON in this shape: {\"translations\":{\"ATTRIBUTE_ID\":{\"label\":\"中文字段名\",\"help\":\"一句中文填写提示\",\"values\":{\"Original option\":\"中文选项\"}}}}.\nInput:\n{$input_json}"
+}

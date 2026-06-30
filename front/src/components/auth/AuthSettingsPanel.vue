@@ -61,6 +61,7 @@ const activeAuthSettingsTab = ref<AuthSettingsTab>('ai_models')
 const selectedAiModelIndex = ref(0)
 const aiModels = ref<UnknownRecord[]>([])
 const aiUseCaseBindings = ref<Record<string, string>>({})
+const aiUseCasePrompts = ref<Record<string, UnknownRecord>>({})
 const modelListDependencyFields = new Set(['provider', 'api_style', 'base_url', 'base_url_env', 'api_key', 'api_key_env'])
 const capabilityProbeDependencyFields = new Set([...modelListDependencyFields, 'model'])
 const lastAutoModelListSignature = ref('')
@@ -76,7 +77,7 @@ const storePlatforms: Array<{ key: Marketplace; label: string; subtitle: string 
 
 const authSettingsTabs: Array<{ key: AuthSettingsTab; label: string; summary: string }> = [
   { key: 'ai_models', label: 'AI 模型', summary: '配置模型、能力和连接测试' },
-  { key: 'ai_bindings', label: '功能绑定', summary: '为功能指定模型或自动匹配' },
+  { key: 'ai_bindings', label: '功能绑定', summary: '模型和功能 Prompt' },
   { key: 'stores', label: '店铺授权', summary: 'Mercado Libre、Wildberries、Ozon' },
   { key: 'apis', label: '采集与核价', summary: '汇率 API 和 1688 采集 API' },
   { key: 'research', label: '调研来源', summary: '选品调研搜索手段和市场' },
@@ -251,6 +252,16 @@ function normalizeUseCaseBindings(value: unknown): Record<string, string> {
   return result
 }
 
+function normalizeUseCasePrompts(value: unknown): Record<string, UnknownRecord> {
+  const record = asRecord(value)
+  const result: Record<string, UnknownRecord> = {}
+  for (const [key, raw] of Object.entries(record)) {
+    const item = asRecord(raw)
+    if (key) result[key] = { ...item }
+  }
+  return result
+}
+
 function fillFromProps() {
   const pricing = asRecord(props.appConfig.pricing_defaults)
   const alibabaApi = asRecord(props.appConfig['1688_api'])
@@ -261,6 +272,7 @@ function fillFromProps() {
   aiModels.value = modelRows.length ? modelRows.map((item, index) => normalizeAiModelRow(displayAiModelRecord(item), index)) : [defaultAiModelRow(0)]
   selectedAiModelIndex.value = Math.min(selectedAiModelIndex.value, Math.max(aiModels.value.length - 1, 0))
   aiUseCaseBindings.value = normalizeUseCaseBindings(props.aiConfig.ai_use_case_bindings || props.appConfig.ai_use_case_bindings)
+  aiUseCasePrompts.value = normalizeUseCasePrompts(props.aiConfig.ai_use_case_prompts || props.appConfig.ai_use_case_prompts)
   form.exchangeRateApiUrl = firstText(pricing.exchange_rate_api_url, 'https://open.er-api.com/v6/latest/USD')
   form.exchangeRateTimeoutSeconds = firstText(pricing.exchange_rate_timeout_seconds, '10')
   form.exchangeRateCacheTtlSeconds = firstText(pricing.exchange_rate_cache_ttl_seconds, '3600')
@@ -285,6 +297,10 @@ watch(() => [props.appConfig, props.aiConfig, props.storeConfig], fillFromProps,
 
 const selectedAiModel = computed(() => aiModels.value[selectedAiModelIndex.value] || null)
 const aiUseCases = computed(() => Array.isArray(props.aiConfig.ai_use_cases) ? props.aiConfig.ai_use_cases.map(asRecord) : [])
+const globalPromptUseCases = computed(() => aiUseCases.value.filter((useCase) => {
+  const id = String(useCase.id || '')
+  return id && Boolean(aiUseCasePrompts.value[id])
+}))
 const activeAuthSettingsTabMeta = computed(() => authSettingsTabs.find((tab) => tab.key === activeAuthSettingsTab.value) || authSettingsTabs[0])
 const capabilityLabelByValue = Object.fromEntries(capabilityOptions.map((item) => [item.value, item.label]))
 const selectedModelOptions = computed(() => normalizeModelOptions(selectedAiModel.value?.model_options))
@@ -354,8 +370,24 @@ function aiPayload(): UnknownRecord {
     }),
     ai_use_case_bindings: Object.fromEntries(
       Object.entries(aiUseCaseBindings.value)
+        .filter(([useCaseId]) => globalPromptUseCases.value.some((useCase) => String(useCase.id || '') === useCaseId))
         .filter(([, modelId]) => String(modelId || '').trim())
         .map(([useCaseId, modelId]) => [useCaseId, { model_id: modelId }]),
+    ),
+    ai_use_case_prompts: Object.fromEntries(
+      globalPromptUseCases.value.map((useCase) => {
+        const useCaseId = String(useCase.id || '')
+        const prompt = aiUseCasePrompts.value[useCaseId] || {}
+        return [
+          useCaseId,
+          {
+            path: String(prompt.path || '').trim(),
+            description: String(prompt.description || ''),
+            system_prompt: String(prompt.system_prompt || ''),
+            user_prompt: String(prompt.user_prompt || ''),
+          },
+        ]
+      }),
     ),
     pricing_defaults: {
       exchange_rate_api_url: form.exchangeRateApiUrl.trim(),
@@ -437,6 +469,23 @@ function compatibleModelsForUseCase(useCase: UnknownRecord): UnknownRecord[] {
 function useCaseCapabilityText(useCase: UnknownRecord): string {
   const labels = useCaseRequiredCapabilities(useCase).map((capability) => capabilityLabelByValue[capability] || capability)
   return labels.length ? labels.join(' / ') : '无特殊能力要求'
+}
+
+function useCasePrompt(useCaseId: string): UnknownRecord {
+  if (!aiUseCasePrompts.value[useCaseId]) aiUseCasePrompts.value[useCaseId] = {}
+  return aiUseCasePrompts.value[useCaseId]
+}
+
+function useCasePromptField(useCaseId: string, field: string): string {
+  return String(useCasePrompt(useCaseId)[field] || '')
+}
+
+function setUseCasePromptField(useCaseId: string, field: string, value: string) {
+  if (aiControlsLocked.value) return
+  aiUseCasePrompts.value[useCaseId] = {
+    ...useCasePrompt(useCaseId),
+    [field]: value,
+  }
 }
 
 function hasCapability(capability: string): boolean {
@@ -847,19 +896,43 @@ function copy(text: string) {
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h3 class="font-semibold text-accent-950 dark:text-white">功能绑定</h3>
-              <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">功能选择指定模型；留空时按能力自动匹配。</p>
+              <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">功能选择指定模型，并编辑该功能使用的 Prompt 文件。</p>
             </div>
             <button class="btn btn-primary py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="emit('saveAi', aiPayload())">保存功能绑定</button>
           </div>
-          <div v-if="aiUseCases.length" class="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            <label v-for="useCase in aiUseCases" :key="String(useCase.id)" class="block rounded-lg border border-accent-200 bg-white p-3 dark:border-dark-700 dark:bg-dark-900">
-              <span class="block text-sm font-semibold text-accent-950 dark:text-white">{{ useCase.label || useCase.id }}</span>
-              <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">需要：{{ useCaseCapabilityText(useCase) }}</span>
-              <select class="input mt-2" :value="aiUseCaseBindings[String(useCase.id || '')] || ''" @change="setUseCaseBinding(String(useCase.id || ''), eventText($event))">
-                <option value="">自动匹配</option>
-                <option v-for="model in compatibleModelsForUseCase(useCase)" :key="String(model.id)" :value="String(model.id)">{{ model.name || model.id }}</option>
-              </select>
-            </label>
+          <div v-if="globalPromptUseCases.length" class="mt-4 grid gap-3 xl:grid-cols-2">
+            <div v-for="useCase in globalPromptUseCases" :key="String(useCase.id)" class="rounded-lg border border-accent-200 bg-white p-3 dark:border-dark-700 dark:bg-dark-900">
+              <div class="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <span class="block text-sm font-semibold text-accent-950 dark:text-white">{{ useCase.label || useCase.id }}</span>
+                  <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">需要：{{ useCaseCapabilityText(useCase) }}</span>
+                </div>
+                <span class="badge-muted">{{ useCase.id }}</span>
+              </div>
+              <label class="mt-3 block">
+                <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">模型</span>
+                <select class="input" :value="aiUseCaseBindings[String(useCase.id || '')] || ''" @change="setUseCaseBinding(String(useCase.id || ''), eventText($event))">
+                  <option value="">自动匹配</option>
+                  <option v-for="model in compatibleModelsForUseCase(useCase)" :key="String(model.id)" :value="String(model.id)">{{ model.name || model.id }}</option>
+                </select>
+              </label>
+              <label class="mt-3 block">
+                <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">Prompt JSON 文件</span>
+                <input class="input font-mono text-xs" :value="useCasePromptField(String(useCase.id || ''), 'path')" @input="setUseCasePromptField(String(useCase.id || ''), 'path', eventText($event))" />
+              </label>
+              <label class="mt-3 block">
+                <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">说明</span>
+                <textarea class="input min-h-16 resize-y text-sm leading-5" :value="useCasePromptField(String(useCase.id || ''), 'description')" @input="setUseCasePromptField(String(useCase.id || ''), 'description', eventText($event))" />
+              </label>
+              <label class="mt-3 block">
+                <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">System Prompt</span>
+                <textarea class="input min-h-24 resize-y font-mono text-xs leading-5" :value="useCasePromptField(String(useCase.id || ''), 'system_prompt')" spellcheck="false" @input="setUseCasePromptField(String(useCase.id || ''), 'system_prompt', eventText($event))" />
+              </label>
+              <label class="mt-3 block">
+                <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">User Prompt</span>
+                <textarea class="input min-h-40 resize-y font-mono text-xs leading-5" :value="useCasePromptField(String(useCase.id || ''), 'user_prompt')" spellcheck="false" @input="setUseCasePromptField(String(useCase.id || ''), 'user_prompt', eventText($event))" />
+              </label>
+            </div>
           </div>
           <div v-else class="mt-4 rounded-lg border border-dashed border-accent-300 bg-white p-6 text-center text-sm text-accent-500 dark:border-dark-600 dark:bg-dark-900 dark:text-accent-300">
             当前没有可配置的 AI 功能。
@@ -1010,7 +1083,7 @@ function copy(text: string) {
         </section>
 
         <section v-show="activeAuthSettingsTab === 'research'">
-          <ProductResearchSettingsPanel :ai-models="aiModels" embedded />
+          <ProductResearchSettingsPanel :ai-models="aiModels" :ai-use-case-prompts="aiUseCasePrompts" embedded />
         </section>
       </div>
     </section>

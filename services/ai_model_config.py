@@ -58,6 +58,7 @@ AI_USE_CASES: dict[str, dict[str, Any]] = {
         "id": "copy.preview",
         "label": "文案预览精修",
         "required_capabilities": [CAP_CHAT, CAP_JSON],
+        "global_binding": False,
     },
     "image.translate": {
         "id": "image.translate",
@@ -83,11 +84,6 @@ AI_USE_CASES: dict[str, dict[str, Any]] = {
         "id": "research.web_search",
         "label": "产品调研 AI 联网搜索",
         "required_capabilities": [CAP_CHAT, CAP_JSON, CAP_WEB_SEARCH],
-    },
-    "research.provider_config_complete": {
-        "id": "research.provider_config_complete",
-        "label": "选品调研 API 配置补全",
-        "required_capabilities": [CAP_CHAT, CAP_JSON],
     },
 }
 
@@ -258,7 +254,8 @@ def normalize_ai_use_case_bindings(value: Any) -> dict[str, dict[str, str]]:
     raw = value if isinstance(value, dict) else {}
     result: dict[str, dict[str, str]] = {}
     for use_case_id, item in raw.items():
-        if str(use_case_id) not in AI_USE_CASES:
+        use_case = AI_USE_CASES.get(str(use_case_id))
+        if not use_case or use_case.get("global_binding") is False:
             continue
         item_dict = item if isinstance(item, dict) else {}
         model_id = str(item_dict.get("model_id") or "").strip()

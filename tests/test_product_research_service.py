@@ -59,6 +59,30 @@ def patch_ai_search(monkeypatch, items: list[dict], seen: dict | None = None) ->
     monkeypatch.setattr(product_research_methods.ai_gateway, "chat_json", fake_chat_json)
 
 
+def web_search_app_config_with_prompt_file(tmp_path, user_prompt: str, system_prompt: str = "System prompt from file.") -> dict:
+    prompt_dir = tmp_path / "config"
+    prompt_dir.mkdir(parents=True, exist_ok=True)
+    prompt_path = prompt_dir / "test_ai_prompt.json"
+    prompt_path.write_text(
+        json.dumps(
+            {
+                "description": "测试 AI 搜索提示词",
+                "system": system_prompt,
+                "user": user_prompt,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    app_config = web_search_app_config()
+    app_config["ai_use_case_prompts"] = {
+        "research.web_search": {
+            "path": "config/test_ai_prompt.json",
+        }
+    }
+    return app_config
+
+
 def test_create_hot_product_run_returns_ai_search_candidates(tmp_path, monkeypatch) -> None:
     seen: dict = {}
     patch_ai_search(
@@ -208,6 +232,7 @@ def test_hot_product_run_restores_completed_cache_after_memory_loss(tmp_path, mo
         [
             {
                 "title": "Cached travel charger",
+                "image_url": "https://example.com/cached-travel-charger.jpg",
                 "rank": 1,
                 "source_url": "https://www.amazon.com/dp/cached-travel-charger",
             }
@@ -271,9 +296,27 @@ def test_incoming_keywords_are_ignored_for_market_hot_products(tmp_path, monkeyp
     patch_ai_search(
         monkeypatch,
         [
-            {"title": "Desk organizer tray", "rank": 3, "source_url": "https://example.com/desk-3", "keyword": "office"},
-            {"title": "Kitchen storage basket", "rank": 1, "source_url": "https://example.com/kitchen-1", "keyword": "kitchen"},
-            {"title": "Travel cable organizer", "rank": 2, "source_url": "https://example.com/travel-2", "keyword": "travel"},
+            {
+                "title": "Desk organizer tray",
+                "image_url": "https://example.com/desk-3.jpg",
+                "rank": 3,
+                "source_url": "https://example.com/desk-3",
+                "keyword": "office",
+            },
+            {
+                "title": "Kitchen storage basket",
+                "image_url": "https://example.com/kitchen-1.jpg",
+                "rank": 1,
+                "source_url": "https://example.com/kitchen-1",
+                "keyword": "kitchen",
+            },
+            {
+                "title": "Travel cable organizer",
+                "image_url": "https://example.com/travel-2.jpg",
+                "rank": 2,
+                "source_url": "https://example.com/travel-2",
+                "keyword": "travel",
+            },
         ],
         seen,
     )
@@ -336,15 +379,154 @@ def test_hot_product_run_returns_empty_when_market_has_no_search_methods(tmp_pat
 
 def test_target_market_normalization_adds_search_method_binding() -> None:
     config = normalize_product_research_config(default_product_research_config())
+    method = config["search_providers"][0]
     market = config["target_markets"][0]
 
     assert market["search_methods"][0]["method_id"] == "ai_web_search"
-    prompt = market["search_methods"][0]["config_json"]["prompt"]
-    assert "JSONL" in prompt
-    assert '"items"' in prompt
-    assert '"title"' in prompt
-    assert '"source_url"' in prompt
-    assert "后端会补齐 id、market_id、platform、site、source_name、collected_at" in prompt
+    assert "prompt" not in market["search_methods"][0]["config_json"]
+    assert "prompt_template" not in method["config_json"]
+    assert "prompt_override" not in market["search_methods"][0]["config_json"]
+    assert "prompt_templates" not in config
+
+
+def test_ai_search_renders_prompt_template_from_file(tmp_path, monkeypatch) -> None:
+    seen: dict = {}
+    patch_ai_search(
+        monkeypatch,
+        [
+            {
+                "title": "Template rendered item",
+                "image_url": "https://example.com/template-rendered.jpg",
+                "rank": 1,
+                "source_url": "https://www.amazon.com/dp/template-rendered",
+            }
+        ],
+        seen,
+    )
+    app_config = web_search_app_config_with_prompt_file(
+        tmp_path,
+        "市场={$displayName}; 平台={$platform}; 站点={$site}; 货币={$currency}; 数量={$limit}",
+    )
+    config = default_product_research_config()
+    config["target_markets"] = [
+        {
+            "id": "amazon-us",
+            "platform": "amazon",
+            "site": "amazon.com",
+            "display_name": "Amazon US",
+            "search_methods": [{"method_id": "ai_web_search", "enabled": True, "config_json": {}}],
+        }
+    ]
+
+    product_research_service.create_hot_product_run(
+        tmp_path,
+        hot_product_payload(),
+        normalize_product_research_config(config),
+        app_config,
+    )
+
+    prompt = seen["messages"][1]["content"]
+    assert seen["messages"][0]["content"] == "System prompt from file."
+    assert "市场=Amazon US" in prompt
+    assert "平台=amazon" in prompt
+    assert "站点=amazon.com" in prompt
+    assert "货币=USD" in prompt
+    assert "数量=6" in prompt
+    assert "{$" not in prompt
+
+
+def test_ai_search_uses_target_market_saved_prompt(tmp_path, monkeypatch) -> None:
+    seen: dict = {}
+    patch_ai_search(
+        monkeypatch,
+        [
+            {
+                "title": "Saved prompt item",
+                "image_url": "https://example.com/saved-prompt.jpg",
+                "rank": 1,
+                "source_url": "https://www.amazon.com/dp/saved-prompt",
+            }
+        ],
+        seen,
+    )
+    config = default_product_research_config()
+    config["target_markets"] = [
+        {
+            "id": "amazon-us",
+            "platform": "amazon",
+            "site": "amazon.com",
+            "display_name": "Amazon US",
+            "search_methods": [
+                {
+                    "method_id": "ai_web_search",
+                    "enabled": True,
+                    "config_json": {"prompt": "Saved market prompt for Amazon US"},
+                }
+            ],
+        }
+    ]
+
+    product_research_service.create_hot_product_run(
+        tmp_path,
+        hot_product_payload(),
+        normalize_product_research_config(config),
+        web_search_app_config_with_prompt_file(tmp_path, "Default template {$displayName}"),
+    )
+
+    assert seen["messages"][1]["content"] == "Saved market prompt for Amazon US"
+
+
+def test_normalize_config_removes_prompt_template_fields_and_keeps_market_prompt() -> None:
+    config = default_product_research_config()
+    config["source_registry"][0]["config_json"]["prompt_template"] = "old provider prompt"
+    config["source_registry"][0]["config_json"]["promptTemplatePath"] = "config/old.txt"
+    config["target_markets"][0]["search_methods"] = [
+        {
+            "method_id": "ai_web_search",
+            "enabled": True,
+            "config_json": {
+                "prompt": "old market prompt",
+                "prompt_override": "old override",
+            },
+        }
+    ]
+
+    normalized = normalize_product_research_config(config)
+
+    method_config = normalized["search_providers"][0]["config_json"]
+    binding_config = normalized["target_markets"][0]["search_methods"][0]["config_json"]
+    assert "prompt_template" not in method_config
+    assert "promptTemplatePath" not in method_config
+    assert binding_config["prompt"] == "old market prompt"
+    assert "prompt_override" not in binding_config
+
+
+def test_ai_search_filters_candidates_without_image_url(tmp_path, monkeypatch) -> None:
+    patch_ai_search(
+        monkeypatch,
+        [
+            {
+                "title": "No image candidate",
+                "rank": 1,
+                "source_url": "https://www.amazon.com/dp/no-image",
+            },
+            {
+                "title": "Direct image candidate",
+                "image_url": "https://example.com/direct-image.jpg",
+                "rank": 2,
+                "source_url": "https://www.amazon.com/dp/direct-image",
+            },
+        ],
+    )
+    config = normalize_product_research_config(default_product_research_config())
+
+    run = product_research_service.create_hot_product_run(tmp_path, hot_product_payload(), config, web_search_app_config())
+
+    assert [item["title"] for item in run["items"]] == ["Direct image candidate"]
+    assert run["items"][0]["image_url"] == "https://example.com/direct-image.jpg"
+    assert run["source_status"][0]["items_found"] == 1
+    assert run["source_status"][0]["items_filtered"] == 1
+    assert run["source_status"][0]["diagnostic_message"] == "AI 返回 2 条原始候选，整理后 1 条；过滤原因：1 条缺少图片 URL。"
 
 
 def test_ai_gateway_parse_jsonl_items_text() -> None:
@@ -541,6 +723,12 @@ def test_ai_web_search_provider_connection_uses_configured_model(tmp_path, monke
         },
     }
 
+    app_config = web_search_app_config_with_prompt_file(
+        tmp_path,
+        "Test market {$market}; language {$language}; keyword {$keyword}",
+    )
+    config = default_product_research_config()
+
     result = product_research_service.test_search_provider_connection(
         {
             "provider": provider,
@@ -551,20 +739,9 @@ def test_ai_web_search_provider_connection_uses_configured_model(tmp_path, monke
                 "data_type": "ai_web_search",
             },
         },
-        normalize_product_research_config(default_product_research_config()),
+        normalize_product_research_config(config),
         tmp_path,
-        {
-            "ai_models": [
-                {
-                    "id": "web_search_model",
-                    "provider": "OpenAI-Compatible",
-                    "api_key": "ai-key",
-                    "base_url": "https://ai.example.com/v1",
-                    "model": "web-search-model",
-                    "capabilities": ["chat", "json", "web_search"],
-                }
-            ]
-        },
+        app_config,
     )
 
     assert result["ok"] is True

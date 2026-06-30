@@ -33,6 +33,26 @@
     }
   ],
   "ai_use_case_bindings": {},
+  "ai_use_case_prompts": {
+    "copy.generate": {
+      "path": "config/prompts/copy_generate.json"
+    },
+    "image.translate": {
+      "path": "config/prompts/image_translate.json"
+    },
+    "category.attribute_fill": {
+      "path": "config/prompts/category_attribute_fill.json"
+    },
+    "category.attribute_translation": {
+      "path": "config/prompts/category_attribute_translation.json"
+    },
+    "category.result_translation": {
+      "path": "config/prompts/category_result_translation.json"
+    },
+    "research.web_search": {
+      "path": "config/prompts/ai_example.json"
+    }
+  },
   "pricing_defaults": {
     "commission_percent": "20",
     "target_margin_percent": "30",

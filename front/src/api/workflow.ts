@@ -390,6 +390,31 @@ function normalizeProductResearchMarketSearchMethodBinding(value: unknown): Prod
   }
 }
 
+function withoutPromptTemplateFields(config: UnknownRecord): UnknownRecord {
+  const result = { ...config }
+  for (const key of [
+    'promptTemplate',
+    'prompt_template',
+    'promptTemplatePath',
+    'prompt_template_path',
+    'promptOverride',
+    'prompt_override',
+    'systemPrompt',
+    'system_prompt',
+  ]) {
+    delete result[key]
+  }
+  return result
+}
+
+function withoutProviderPromptConfigFields(config: UnknownRecord): UnknownRecord {
+  const result = withoutPromptTemplateFields(config)
+  delete result.prompt
+  delete result.systemPrompt
+  delete result.system_prompt
+  return result
+}
+
 function normalizeProductResearchConfig(value: unknown): ProductResearchConfig {
   const record = asRecord(value)
   const rawProviders = Array.isArray(record.search_providers)
@@ -432,7 +457,7 @@ function toProductResearchProviderPayload(provider: ProductResearchSourceRegistr
     rate_limit_per_minute: provider.rateLimitPerMinute || null,
     compliance_note: provider.complianceNote,
     config_json: {
-      ...provider.configJson,
+      ...withoutProviderPromptConfigFields(provider.configJson),
       provider_strategy: provider.providerStrategy || String(provider.configJson.provider_strategy || ''),
     },
   }
@@ -447,7 +472,7 @@ function toProductResearchTargetMarketPayload(market: ProductResearchTargetMarke
     search_methods: (market.searchMethods || []).map((binding) => ({
       method_id: binding.methodId.trim(),
       enabled: binding.enabled,
-      config_json: binding.configJson,
+      config_json: withoutPromptTemplateFields(binding.configJson),
     })),
   }
 }
@@ -494,16 +519,6 @@ export async function testProductResearchSearchProvider(provider: ProductResearc
     options,
   })
   return normalizeProductResearchProviderTestResult(response.data)
-}
-
-export async function completeProductResearchProviderByAi(provider: ProductResearchSourceRegistryItem, modelId = ''): Promise<UnknownRecord> {
-  const response = await apiClient.post('/api/v1/product-research/search-providers/ai-complete', {
-    provider: toProductResearchProviderPayload(provider),
-    model_id: modelId,
-  })
-  const data = asRecord(response.data)
-  ensureOk(data, 'AI 补全搜索手段失败')
-  return asRecord(data.suggestion)
 }
 
 export async function fetchProductResearchSourceRegistry(): Promise<ProductResearchSourceRegistryItem[]> {

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from services import ai_model_config
+from services import ai_model_config, ai_prompt_templates
 
 from .product_research_config import default_product_research_config, normalize_product_research_config
 
@@ -102,6 +102,7 @@ def default_app_config() -> dict[str, Any]:
         },
         "ai_models": ai_model_config.default_ai_models(),
         "ai_use_case_bindings": {},
+        "ai_use_case_prompts": ai_prompt_templates.default_ai_use_case_prompts(),
         "pricing_defaults": {
             "exchange_rate_api_url": DEFAULT_EXCHANGE_RATE_API_URL,
             "exchange_rate_timeout_seconds": "10",
@@ -122,6 +123,7 @@ def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
     ai_models = migrate_legacy_ai_config(incoming, ai_models, override_defaults=not has_canonical_ai_models)
     ai_models = ai_model_config.normalize_ai_models(ai_models)
     ai_use_case_bindings = ai_model_config.normalize_ai_use_case_bindings(incoming.get("ai_use_case_bindings"))
+    ai_use_case_prompts = ai_prompt_templates.normalize_ai_use_case_prompts(incoming.get("ai_use_case_prompts"))
     raw_pricing = incoming.get("pricing_defaults") if isinstance(incoming.get("pricing_defaults"), dict) else {}
     pricing_defaults = {
         "commission_percent": str(raw_pricing.get("commission_percent") or "20"),
@@ -169,6 +171,7 @@ def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
     canonical["1688_api"] = next_1688_api
     canonical["ai_models"] = ai_models
     canonical["ai_use_case_bindings"] = ai_use_case_bindings
+    canonical["ai_use_case_prompts"] = ai_use_case_prompts
     canonical["pricing_defaults"] = pricing_defaults
     canonical["product_research"] = normalize_product_research_config(incoming.get("product_research"))
     return canonical

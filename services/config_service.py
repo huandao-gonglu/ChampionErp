@@ -8,7 +8,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from . import ai_model_config
+from . import ai_model_config, ai_prompt_templates
 
 
 PRODUCT_RESEARCH_SENSITIVE_CONFIG_KEYS = {
@@ -66,6 +66,7 @@ def public_ai_config(app_dir: Path | str, app_config: dict[str, Any] | None = No
     load_env(app_dir)
     cfg = app_config if isinstance(app_config, dict) else {}
     public = ai_model_config.public_ai_config(cfg)
+    public["ai_use_case_prompts"] = ai_prompt_templates.public_ai_use_case_prompts(app_dir, cfg)
     public["storage"] = {
         "config_dir": str(config_dir(app_dir)),
         "env_path": str(env_path(app_dir)),
@@ -96,6 +97,12 @@ def merge_ai_config(app_dir: Path | str, current: dict[str, Any], incoming: dict
         merged["ai_models"] = next_models
     if isinstance(incoming.get("ai_use_case_bindings"), dict):
         merged["ai_use_case_bindings"] = ai_model_config.normalize_ai_use_case_bindings(incoming.get("ai_use_case_bindings"))
+    if isinstance(incoming.get("ai_use_case_prompts"), dict):
+        merged["ai_use_case_prompts"] = ai_prompt_templates.merge_ai_use_case_prompts(
+            app_dir,
+            current if isinstance(current, dict) else {},
+            incoming.get("ai_use_case_prompts"),
+        )
     if isinstance(incoming.get("pricing_defaults"), dict):
         current_pricing = merged.get("pricing_defaults") if isinstance(merged.get("pricing_defaults"), dict) else {}
         incoming_pricing = incoming.get("pricing_defaults") if isinstance(incoming.get("pricing_defaults"), dict) else {}

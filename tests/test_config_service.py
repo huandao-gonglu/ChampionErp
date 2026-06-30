@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from conftest import assert_no_old_path
@@ -27,6 +28,10 @@ def test_default_env_template_and_public_config(app_dir: Path, old_path_markers:
     assert "copy.generate" in {item["id"] for item in public["ai_use_cases"]}
     assert public["model_quality_levels"] == ["fast", "balanced", "high_quality"]
     assert public["image_quality_options"] == ["auto", "low", "medium", "high"]
+    assert "copy.generate" in public["ai_use_case_prompts"]
+    assert "research.web_search" in public["ai_use_case_prompts"]
+    assert public["ai_use_case_prompts"]["copy.generate"]["user_prompt"]
+    assert public["ai_use_case_prompts"]["research.web_search"]["user_prompt"]
     assert public["storage"]["config_dir"].startswith(str(app_dir / "config"))
     assert_no_old_path(public, old_path_markers)
 
@@ -53,6 +58,40 @@ def test_merge_config_reads_key_from_config_not_code(app_dir: Path) -> None:
 
     assert cfg["api_key"] == "test-key"
     assert cfg["model"] == "deepseek-chat"
+
+
+def test_merge_config_writes_ai_use_case_prompt_files(app_dir: Path) -> None:
+    merged = config_service.merge_ai_config(
+        app_dir,
+        {},
+        {
+            "ai_use_case_prompts": {
+                "copy.generate": {
+                    "path": "config/prompts/copy_generate.json",
+                    "description": "文案生成提示词",
+                    "system_prompt": "System from settings",
+                    "user_prompt": "User prompt {$language}",
+                },
+                "research.web_search": {
+                    "path": "config/prompts/research_web_search.json",
+                    "description": "AI 选品搜索默认模板",
+                    "system_prompt": "Research system",
+                    "user_prompt": "Research user {$marketId}",
+                },
+            }
+        },
+    )
+
+    assert merged["ai_use_case_prompts"]["copy.generate"]["path"] == "config/prompts/copy_generate.json"
+    assert merged["ai_use_case_prompts"]["research.web_search"]["path"] == "config/prompts/research_web_search.json"
+    written = json.loads((app_dir / "config/prompts/copy_generate.json").read_text(encoding="utf-8"))
+    assert written["description"] == "文案生成提示词"
+    assert written["system"] == "System from settings"
+    assert written["user"] == "User prompt {$language}"
+    research_written = json.loads((app_dir / "config/prompts/research_web_search.json").read_text(encoding="utf-8"))
+    assert research_written["description"] == "AI 选品搜索默认模板"
+    assert research_written["system"] == "Research system"
+    assert research_written["user"] == "Research user {$marketId}"
 
 
 def test_merge_config_preserves_existing_model_key_when_public_payload_is_blank(app_dir: Path) -> None:

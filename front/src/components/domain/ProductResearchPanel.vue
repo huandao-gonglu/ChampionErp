@@ -27,6 +27,7 @@ const error = ref('')
 const result = ref<ProductResearchResponse | null>(null)
 const researchConfig = ref<ProductResearchConfig | null>(null)
 const selectedCandidateId = ref('')
+const imageLoadErrors = ref<Record<string, boolean>>({})
 let pollTimer: number | null = null
 let polling = false
 const LAST_RUN_STORAGE_KEY = 'champion.erp.productResearch.lastRunId'
@@ -88,6 +89,10 @@ function applyRunResponse(next: ProductResearchResponse) {
   if (next.run.runId) {
     rememberLastRunId(next.run.runId)
   }
+  const currentIds = new Set(next.items.map((item) => item.id))
+  imageLoadErrors.value = Object.fromEntries(
+    Object.entries(imageLoadErrors.value).filter(([id]) => currentIds.has(id)),
+  )
   if (!next.items.some((item) => item.id === selectedCandidateId.value)) {
     selectedCandidateId.value = next.items[0]?.id || ''
   }
@@ -259,6 +264,18 @@ function sourceLabel(value: string) {
   return value || '-'
 }
 
+function hasCandidateImage(item: HotProductCandidate | null) {
+  return Boolean(item?.imageUrl && !imageLoadErrors.value[item.id])
+}
+
+function markCandidateImageFailed(id: string) {
+  if (!id) return
+  imageLoadErrors.value = {
+    ...imageLoadErrors.value,
+    [id]: true,
+  }
+}
+
 onMounted(async () => {
   try {
     await loadSettings()
@@ -352,7 +369,16 @@ onBeforeUnmount(() => {
               @click="selectedCandidateId = item.id"
             >
               <div class="flex gap-3">
-                <img :src="item.imageUrl" :alt="item.title" class="h-24 w-24 flex-none rounded-lg object-cover" />
+                <img
+                  v-if="hasCandidateImage(item)"
+                  :src="item.imageUrl"
+                  :alt="item.title"
+                  class="h-24 w-24 flex-none rounded-lg object-cover"
+                  @error="markCandidateImageFailed(item.id)"
+                />
+                <div v-else class="flex h-24 w-24 flex-none items-center justify-center rounded-lg border border-dashed border-accent-300 bg-accent-50 text-xs font-semibold text-accent-400 dark:border-dark-700 dark:bg-dark-950/50 dark:text-accent-500">
+                  暂无图片
+                </div>
                 <div class="min-w-0 flex-1">
                   <div class="flex flex-wrap items-center gap-2">
                     <span class="badge-success">#{{ item.rank }}</span>
@@ -416,7 +442,16 @@ onBeforeUnmount(() => {
           </div>
 
           <template v-if="selectedCandidate">
-            <img :src="selectedCandidate.imageUrl" :alt="selectedCandidate.title" class="mt-5 aspect-square w-full rounded-lg object-cover" />
+            <img
+              v-if="hasCandidateImage(selectedCandidate)"
+              :src="selectedCandidate.imageUrl"
+              :alt="selectedCandidate.title"
+              class="mt-5 aspect-square w-full rounded-lg object-cover"
+              @error="markCandidateImageFailed(selectedCandidate.id)"
+            />
+            <div v-else class="mt-5 flex aspect-square w-full items-center justify-center rounded-lg border border-dashed border-accent-300 bg-accent-50 text-sm font-semibold text-accent-400 dark:border-dark-700 dark:bg-dark-950/50 dark:text-accent-500">
+              暂无图片
+            </div>
             <div class="mt-4 flex flex-wrap items-center gap-2">
               <span class="badge-success">#{{ selectedCandidate.rank }}</span>
               <span v-if="selectedCandidate.keyword" class="badge-info">{{ selectedCandidate.keyword }}</span>

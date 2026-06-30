@@ -28,7 +28,7 @@ from erp_web.schemas.product_research import (
     ProductResearchRun,
     ProductResearchSourceStatus,
 )
-from services import ai_gateway, ai_model_config
+from services import ai_gateway, ai_model_config, ai_prompt_templates
 from services.product_research_methods import search_method_for
 
 
@@ -214,7 +214,7 @@ def _path_value(value: Any, path: str, default: Any = None) -> Any:
     return current
 
 
-def public_product_research_config(config: dict[str, Any]) -> ProductResearchConfig:
+def public_product_research_config(config: dict[str, Any], app_dir: Path | str = ".") -> ProductResearchConfig:
     normalized = normalize_product_research_config(config)
     public_config = json.loads(json.dumps(normalized, ensure_ascii=False))
     for source in (public_config.get("source_registry") or []) + (public_config.get("search_providers") or []):
@@ -998,39 +998,9 @@ def _configured_api_sample(
     }
 
 
-def _ai_web_search_prompt(market: str, language: str, keyword: str) -> str:
-    return "\n".join(
-        [
-            "Use web search to find ecommerce hot-product evidence.",
-            "Return only valid JSON. Do not return Markdown, explanations, or code fences.",
-            "Required JSON shape:",
-            "{",
-            '  "items": [',
-            "    {",
-            '      "title": "product title, required",',
-            '      "image_url": "product image URL, empty string when unknown",',
-            '      "rank": 1,',
-            '      "source_url": "traceable source URL, required",',
-            '      "keyword": "matched keyword",',
-            '      "price": {"amount": 19.99, "currency": "USD"},',
-            '      "rating": 4.6,',
-            '      "review_count": 120,',
-            '      "hot_score": 88',
-            "    }",
-            "  ]",
-            "}",
-            "rank 1 is hottest. hot_score must be 0-100. Use 0 for unknown numeric values. Do not invent source URLs.",
-            "The backend will add id, market_id, platform, site, source_name, and collected_at.",
-            f"Target market: {market}.",
-            f"Preferred language: {language or 'en'}.",
-            f"Keyword: {keyword}.",
-            'Return {"items": []} when traceable results are unavailable.',
-        ]
-    )
-
-
 def _ai_web_search_sample(
     source: ProductResearchDataSource,
+    config: dict[str, Any],
     app_dir: Path | str,
     app_config: dict[str, Any] | None,
     market: str,
@@ -1044,13 +1014,31 @@ def _ai_web_search_sample(
     capabilities = ai_model_config.normalize_capabilities(model.get("capabilities"))
     if ai_model_config.CAP_WEB_SEARCH not in capabilities:
         raise RuntimeError("AI 搜索需要选择一个支持 web_search 的 AI 模型。")
+    prompt_pair = ai_prompt_templates.load_ai_use_case_prompt_pair(app_dir, app_config, "research.web_search")
+    user_prompt = ai_prompt_templates.render_prompt_template(
+        prompt_pair["user"],
+        {
+            "market": market,
+            "market_id": market,
+            "marketId": market,
+            "display_name": market,
+            "displayName": market,
+            "platform": str(source.get("platform") or ""),
+            "site": str(source.get("site") or ""),
+            "currency": "USD",
+            "language": language or "en",
+            "keyword": keyword,
+            "keywords": keyword,
+            "limit": 1,
+        },
+    )
     parsed = ai_gateway.chat_json(
         app_dir,
         app_config,
         "research.web_search",
         [
-            {"role": "system", "content": "You are a source-backed ecommerce market research assistant. Return only JSON."},
-            {"role": "user", "content": _ai_web_search_prompt(market, language, keyword)},
+            {"role": "system", "content": prompt_pair["system"]},
+            {"role": "user", "content": user_prompt},
         ],
         model_id=model_id,
         temperature=0.2,
@@ -1082,64 +1070,6 @@ def _manual_import_sample(source: ProductResearchDataSource, keyword: str, marke
         "market": str(first.get("market") or first.get("market_id") or first.get("marketId") or market).strip(),
         "data_type": data_type,
     }
-
-
-def _provider_config_completion_prompt(provider: ProductResearchDataSource) -> str:
-    return "\n".join(
-        [
-            "你是 ERP 选品调研 API 配置助手。只返回 JSON，不要解释。",
-            "目标：根据用户已填写的搜索手段信息，补全不易理解的技术字段。",
-            "不要编造 API Key、Token、真实私密参数。不要覆盖用户已填写的 URL、Key、Token。",
-            "JSON schema:",
-            "{",
-            '  "supported_markets": ["US"],',
-            '  "supported_languages": ["en"],',
-            '  "supported_data_types": ["marketplace_products"],',
-            '  "request": {',
-            '    "method": "GET",',
-            '    "auth_type": "api_key_header",',
-            '    "api_key_header": "x-api-key",',
-            '    "headers": {},',
-            '    "query": {"market": "{market}", "q": "{keyword}"},',
-            '    "body": {}',
-            "  },",
-            '  "response": {',
-            '    "items_path": "data.items",',
-            '    "title_path": "title",',
-            '    "keyword_path": "keyword",',
-            '    "price_path": "price.amount",',
-            '    "currency_path": "price.currency",',
-            '    "url_path": "url",',
-            '    "image_path": "image_url"',
-            "  },",
-            '  "test": {"market": "US", "keyword": "mahjong gift"}',
-            "}",
-            "",
-            f"用户已填信息：{json.dumps(provider, ensure_ascii=False, indent=2)}",
-        ]
-    )
-
-
-def complete_provider_config_with_ai(
-    provider: ProductResearchDataSource,
-    app_dir: Path | str,
-    app_config: dict[str, Any] | None = None,
-    model_id: str = "",
-) -> dict[str, Any]:
-    if not isinstance(provider, dict) or not str(provider.get("id") or provider.get("platform") or "").strip():
-        raise ValueError("provider is required")
-    return ai_gateway.chat_json(
-        app_dir,
-        app_config,
-        "research.provider_config_complete",
-        [
-            {"role": "system", "content": "You return strict JSON only."},
-            {"role": "user", "content": _provider_config_completion_prompt(provider)},
-        ],
-        model_id=model_id,
-        temperature=0.1,
-        max_tokens=1800,
-    )
 
 
 def test_search_provider_connection(
@@ -1178,7 +1108,7 @@ def test_search_provider_connection(
         if strategy == "configured_api":
             sample = _configured_api_sample(source, market, language, keyword, data_type, timeout_seconds)
         elif strategy == "ai_web_search":
-            sample = _ai_web_search_sample(source, app_dir, app_config, market, language, keyword, timeout_seconds)
+            sample = _ai_web_search_sample(source, current_config, app_dir, app_config, market, language, keyword, timeout_seconds)
         elif strategy == "manual_import":
             sample = _manual_import_sample(source, keyword, market, data_type)
         else:
@@ -1214,7 +1144,6 @@ __all__ = [
     "build_run_log_record",
     "build_run_not_found_response",
     "build_run_response",
-    "complete_provider_config_with_ai",
     "create_hot_product_run",
     "create_hot_product_run_async",
     "get_active_hot_product_run",

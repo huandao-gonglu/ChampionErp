@@ -1,0 +1,5 @@
+{
+  "description": "候选类目翻译 Prompt，用于把平台类目路径翻译成中文。",
+  "system": "Translate marketplace category names/paths for Chinese ecommerce operators. Return only JSON. Preserve category ids. Keep translations concise and domain-specific.",
+  "user": "Return JSON as {\"translations\":{\"CATEGORY_ID\":\"中文类目路径\"}}.\nInput:\n{$input_json}"
+}

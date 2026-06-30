@@ -5,7 +5,7 @@ import json
 import re
 from typing import Any
 
-from services import ai_gateway
+from services import ai_gateway, ai_prompt_templates
 
 from .product_store import load_app_config
 from .runtime_common import APP_DIR, CACHE_DIR
@@ -69,19 +69,17 @@ def _normalize_translation_map(value: Any) -> dict[str, str]:
 def _request_ai_category_translations(platform: str, language: str, categories: list[dict[str, str]]) -> dict[str, str]:
     app_cfg = load_app_config()
     payload = {"platform": platform, "target_language": language, "categories": categories}
+    prompt_pair = ai_prompt_templates.load_ai_use_case_prompt_pair(APP_DIR, app_cfg, "category.result_translation")
     messages = [
         {
             "role": "system",
-            "content": (
-                "Translate marketplace category names/paths for Chinese ecommerce operators. "
-                "Return only JSON. Preserve category ids. Keep translations concise and domain-specific."
-            ),
+            "content": prompt_pair["system"],
         },
         {
             "role": "user",
-            "content": (
-                'Return JSON as {"translations":{"CATEGORY_ID":"中文类目路径"}}.\n'
-                f"Input:\n{json.dumps(payload, ensure_ascii=False)}"
+            "content": ai_prompt_templates.render_prompt_template(
+                prompt_pair["user"],
+                {"input_json": json.dumps(payload, ensure_ascii=False)},
             ),
         },
     ]

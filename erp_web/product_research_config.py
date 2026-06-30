@@ -4,7 +4,6 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-
 PRODUCT_RESEARCH_SOURCE_TYPES = {"api", "ai_search", "crawler", "third_party_api", "manual_import"}
 PRODUCT_RESEARCH_SEARCH_MODES = {"target_only", "target_plus_reference", "global_scan"}
 DEFAULT_MARKET_ID_BY_CODE = {
@@ -13,20 +12,6 @@ DEFAULT_MARKET_ID_BY_CODE = {
     "UK": "amazon-uk",
     "CA": "amazon-ca",
     "AU": "amazon-au",
-}
-DEFAULT_MARKET_CURRENCIES = {
-    "amazon-us": "USD",
-    "amazon-uk": "GBP",
-    "amazon-ca": "CAD",
-    "amazon-au": "AUD",
-    "US": "USD",
-    "GB": "GBP",
-    "UK": "GBP",
-    "CA": "CAD",
-    "AU": "AUD",
-    "DE": "EUR",
-    "FR": "EUR",
-    "JP": "JPY",
 }
 DEFAULT_AI_SEARCH_METHOD_ID = "ai_web_search"
 LEGACY_AI_SEARCH_METHOD_IDS = {"ai_market_search_seeded"}
@@ -60,35 +45,12 @@ def _bool_value(value: Any, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on", "enabled"}
 
 
-def _default_ai_search_prompt(market: dict[str, Any]) -> str:
-    display_name = str(market.get("display_name") or market.get("displayName") or market.get("id") or "").strip()
-    platform = str(market.get("platform") or "").strip()
-    site = str(market.get("site") or "").strip()
-    market_id = str(market.get("id") or market.get("market_id") or market.get("marketId") or "").strip()
-    currency = DEFAULT_MARKET_CURRENCIES.get(market_id, "USD")
-    return "\n".join(
-        [
-            f"请在 {display_name}（{platform} / {site}）查找当前热卖、增长明显或值得选品跟进的商品。",
-            "优先返回 JSONL：每一行是一个完整商品候选 JSON 对象，不要返回 Markdown、解释文字或代码块。",
-            "每一行字段必须符合：",
-            '{"title":"商品标题，必填","image_url":"商品图片 URL，找不到可为空字符串","rank":1,"source_url":"真实可追溯的来源 URL，必填","keyword":"商品主题或热卖方向，可为空字符串","price":{"amount":19.99,"currency":"' + currency + '"},"rating":4.6,"review_count":120,"hot_score":88}',
-            '如果系统限制必须返回完整 JSON，也可以返回 {"items":[...]}，items 内对象字段同上。',
-            "字段要求：rank 越小热度越高；hot_score 为 0-100；缺少真实依据的数值填 0；不要编造来源 URL。",
-            "优先选择能追溯到目标站点或可信热卖榜单/搜索结果页的商品。",
-            "后端会补齐 id、market_id、platform、site、source_name、collected_at，不需要你返回这些字段。",
-            '如果找不到真实可追溯结果，返回 {"items": []}。',
-        ]
-    )
-
-
-def _default_market_search_methods(market: dict[str, Any]) -> list[dict[str, Any]]:
+def _default_market_search_methods() -> list[dict[str, Any]]:
     return [
         {
             "method_id": DEFAULT_AI_SEARCH_METHOD_ID,
             "enabled": True,
-            "config_json": {
-                "prompt": _default_ai_search_prompt(market),
-            },
+            "config_json": {},
         }
     ]
 
@@ -122,7 +84,14 @@ def default_product_research_config() -> dict[str, Any]:
                 "auth_required": False,
                 "rate_limit_per_minute": 20,
                 "compliance_note": "通过已配置的联网 AI 模型获取真实可追溯的热卖商品候选。",
-                "config_json": {"provider_strategy": "ai_web_search", "ai_model_id": "", "max_items": 12, "require_source_url": True, "stream": True},
+                "config_json": {
+                    "provider_strategy": "ai_web_search",
+                    "ai_model_id": "",
+                    "max_items": 12,
+                    "require_source_url": True,
+                    "require_image_url": True,
+                    "stream": True,
+                },
             },
         ],
     }
@@ -171,10 +140,21 @@ def _normalize_product_research_source(source: Any, fallback: dict[str, Any] | N
     config_json = raw.get("config_json") if isinstance(raw.get("config_json"), dict) else defaults.get("config_json")
     config_json = dict(config_json) if isinstance(config_json, dict) else {}
     if source_type == "ai_search":
+        for prompt_key in (
+            "prompt",
+            "promptTemplate",
+            "prompt_template",
+            "prompt_template_path",
+            "promptTemplatePath",
+            "system_prompt",
+            "systemPrompt",
+        ):
+            config_json.pop(prompt_key, None)
         config_json = {
             "provider_strategy": "ai_web_search",
             "ai_model_id": "",
             "max_items": 12,
+            "require_image_url": True,
             **config_json,
         }
         if config_json.get("provider_strategy") == "seeded_mock":
@@ -258,7 +238,7 @@ def _normalize_target_market(market: Any, fallback: dict[str, Any] | None = None
             for method_id in legacy_provider_ids
         ] if legacy_provider_ids else defaults.get("search_methods")
     if not isinstance(search_methods_raw, list):
-        search_methods_raw = _default_market_search_methods(normalized)
+        search_methods_raw = _default_market_search_methods()
     normalized["search_methods"] = [
         _normalize_market_search_method_binding(item, normalized)
         for item in search_methods_raw
@@ -275,23 +255,21 @@ def _normalize_market_search_method_binding(value: Any, market: dict[str, Any]) 
     config_json = raw.get("config_json") if isinstance(raw.get("config_json"), dict) else raw.get("configJson")
     if not isinstance(config_json, dict):
         config_json = {}
-    prompt = str(config_json.get("prompt") or "")
-    if "{keywords}" in prompt or "关键词" in prompt or _is_legacy_default_ai_search_prompt(prompt):
-        config_json["prompt"] = _default_ai_search_prompt(market)
-    elif method_id == DEFAULT_AI_SEARCH_METHOD_ID:
-        config_json = {
-            "prompt": _default_ai_search_prompt(market),
-            **config_json,
-        }
+    config_json = dict(config_json)
+    for prompt_key in (
+        "promptOverride",
+        "prompt_override",
+        "promptTemplate",
+        "prompt_template",
+        "prompt_template_path",
+        "promptTemplatePath",
+    ):
+        config_json.pop(prompt_key, None)
     return {
         "method_id": method_id,
         "enabled": _bool_value(raw.get("enabled"), True),
         "config_json": dict(config_json),
     }
-
-
-def _is_legacy_default_ai_search_prompt(prompt: str) -> bool:
-    return "返回结构必须是" in prompt and '"items"' in prompt and "后端会补齐" in prompt
 
 
 def normalize_product_research_config(config: Any) -> dict[str, Any]:
@@ -323,7 +301,6 @@ def normalize_product_research_config(config: Any) -> dict[str, Any]:
         "retry_count": _int_value(provider_runtime.get("retry_count"), defaults["provider_runtime"]["retry_count"], 0, 5),
         "cache_ttl_seconds": _int_value(provider_runtime.get("cache_ttl_seconds"), defaults["provider_runtime"]["cache_ttl_seconds"], 0, 604800),
     }
-
     default_sources = defaults["source_registry"]
     raw_providers = raw.get("search_providers")
     raw_sources = raw.get("source_registry")

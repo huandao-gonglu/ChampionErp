@@ -18,7 +18,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
-from . import ai_gateway, ai_model_config, image_service
+from . import ai_gateway, ai_model_config, ai_prompt_templates, image_service
 
 Provider = Callable[[dict[str, Any], dict[str, Any]], list[dict[str, Any]]]
 
@@ -37,23 +37,23 @@ def build_translate_prompt(
     product: dict[str, Any],
     target_language: str = DEFAULT_TARGET_LANGUAGE,
     mode: str = "translate",
+    app_dir: Path | str = ".",
+    app_config: dict[str, Any] | None = None,
 ) -> str:
     """Build the prompt used to ask an image model to localize product images."""
     source = product.get("source") if isinstance(product.get("source"), dict) else {}
     title = str(product.get("name") or product.get("title") or source.get("title") or "").strip()
     target = str(target_language or DEFAULT_TARGET_LANGUAGE).strip() or DEFAULT_TARGET_LANGUAGE
     mode_label = "translate existing text" if str(mode or "").strip().lower() == "translate" else "localized ecommerce conversion"
-    return "\n".join(
-        [
-            "Localize ecommerce product images.",
-            f"Mode: {mode_label}.",
-            f"Target language: {target}.",
-            f"Product title: {title}.",
-            "Keep the original product, composition, colors, aspect ratio, and selling-point hierarchy.",
-            "Only replace or localize text that is already part of the product image layout.",
-            "Do not add logos, watermarks, QR codes, fake certifications, prices, or unsupported accessories.",
-            "Return independent square marketplace-ready images.",
-        ]
+    template = ai_prompt_templates.load_ai_use_case_prompt_pair(app_dir, app_config, "image.translate")["user"]
+    return ai_prompt_templates.render_prompt_template(
+        template,
+        {
+            "mode": mode,
+            "mode_label": mode_label,
+            "target_language": target,
+            "product_title": title,
+        },
     )
 
 
@@ -378,7 +378,7 @@ def translate_images(
             "provider": provider_name,
         }
 
-    prompt = build_translate_prompt(product, target, mode)
+    prompt = build_translate_prompt(product, target, mode, app_dir, app_config)
     request = {
         "product": product,
         "images": selected,

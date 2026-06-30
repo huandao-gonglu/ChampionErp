@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from erp_web.schemas.product_research import HotProductCandidate
-from services import ai_gateway, ai_model_config
+from services import ai_gateway, ai_model_config, ai_prompt_templates
 
 
 RunProgressEvent = str | dict[str, Any]
@@ -91,13 +91,6 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def _render_prompt(template: str, context: dict[str, Any]) -> str:
-    rendered = template
-    for key, value in context.items():
-        rendered = rendered.replace("{" + key + "}", str(value))
-    return rendered
-
-
 def _first_matching_keyword(title: str, keywords: list[str]) -> str:
     lowered = title.lower()
     for keyword in keywords:
@@ -116,6 +109,20 @@ def _price_value(value: Any, fallback_currency: str) -> dict[str, Any] | None:
     return {"amount": amount, "currency": currency}
 
 
+def _image_url_value(value: Any) -> str:
+    url = str(value or "").strip()
+    if not url:
+        return ""
+    lowered = url.lower()
+    if not lowered.startswith(("https://", "http://")):
+        return ""
+    if lowered.startswith("http://"):
+        return ""
+    if lowered.startswith(("data:", "blob:")):
+        return ""
+    return url
+
+
 def _normalize_ai_candidate(
     value: Any,
     *,
@@ -124,11 +131,13 @@ def _normalize_ai_candidate(
     keywords: list[str],
     index: int,
     require_source_url: bool,
+    require_image_url: bool,
 ) -> HotProductCandidate | None:
     raw = value if isinstance(value, dict) else {}
     title = str(raw.get("title") or raw.get("name") or "").strip()
     source_url = str(raw.get("source_url") or raw.get("sourceUrl") or raw.get("url") or raw.get("product_url") or "").strip()
-    if not title or (require_source_url and not source_url):
+    image_url = _image_url_value(raw.get("image_url") or raw.get("imageUrl") or raw.get("image"))
+    if not title or (require_source_url and not source_url) or (require_image_url and not image_url):
         return None
 
     market_id = str(market.get("id") or market.get("market_id") or market.get("marketId") or "").strip()
@@ -141,7 +150,7 @@ def _normalize_ai_candidate(
     item: HotProductCandidate = {
         "id": str(raw.get("id") or f"hot_{market_id}_{_stable_digest([title, source_url, keyword, rank])}").strip(),
         "title": title,
-        "image_url": str(raw.get("image_url") or raw.get("imageUrl") or raw.get("image") or "").strip(),
+        "image_url": image_url,
         "rank": rank,
         "source_url": source_url,
         "market_id": market_id,
@@ -201,14 +210,19 @@ class _JsonlCandidateAccumulator:
         keywords: list[str],
         limit: int,
         require_source_url: bool,
+        require_image_url: bool,
     ) -> None:
         self.market = market
         self.method = method
         self.keywords = keywords
         self.limit = limit
         self.require_source_url = require_source_url
+        self.require_image_url = require_image_url
         self.buffer = ""
         self.raw_count = 0
+        self.dropped_missing_title = 0
+        self.dropped_missing_source_url = 0
+        self.dropped_missing_image_url = 0
         self.items: list[HotProductCandidate] = []
         self.seen: set[str] = set()
 
@@ -237,6 +251,15 @@ class _JsonlCandidateAccumulator:
                 if len(self.items) >= self.limit:
                     return emitted
                 self.raw_count += 1
+                title = str(row.get("title") or row.get("name") or "").strip()
+                source_url = str(row.get("source_url") or row.get("sourceUrl") or row.get("url") or row.get("product_url") or "").strip()
+                image_url = _image_url_value(row.get("image_url") or row.get("imageUrl") or row.get("image"))
+                if not title:
+                    self.dropped_missing_title += 1
+                elif self.require_source_url and not source_url:
+                    self.dropped_missing_source_url += 1
+                elif self.require_image_url and not image_url:
+                    self.dropped_missing_image_url += 1
                 item = _normalize_ai_candidate(
                     row,
                     market=self.market,
@@ -244,6 +267,7 @@ class _JsonlCandidateAccumulator:
                     keywords=self.keywords,
                     index=self.raw_count - 1,
                     require_source_url=self.require_source_url,
+                    require_image_url=self.require_image_url,
                 )
                 if item is None:
                     continue
@@ -257,44 +281,28 @@ class _JsonlCandidateAccumulator:
         return emitted
 
 
-def _ai_search_prompt(binding_config: dict[str, Any], market: dict[str, Any], keywords: list[str], limit: int) -> str:
-    prompt = str(binding_config.get("prompt") or "").strip()
-    if "{keywords}" in prompt or "关键词" in prompt:
-        prompt = ""
-    if not prompt:
-        display_name = str(market.get("display_name") or market.get("displayName") or market.get("id") or "").strip()
-        prompt = (
-            "请在 {display_name}（{platform} / {site}）查找当前热卖、增长明显或值得选品跟进的商品。\n"
-            "优先返回 JSONL：每一行是一个完整商品候选 JSON 对象，不要返回 Markdown、解释文字或代码块。\n"
-            "每一行字段必须符合：\n"
-            '{"title":"商品标题，必填","image_url":"商品图片 URL，找不到可为空字符串","rank":1,"source_url":"真实可追溯的来源 URL，必填","keyword":"商品主题或热卖方向，可为空字符串","price":{"amount":19.99,"currency":"USD"},"rating":4.6,"review_count":120,"hot_score":88}\n'
-            "如果系统限制必须返回完整 JSON，也可以返回 {\"items\":[...]}，items 内对象字段同上。\n"
-            "字段要求：rank 越小热度越高；hot_score 为 0-100；缺少真实依据的数值填 0；不要编造来源 URL。\n"
-            "优先选择能追溯到目标站点或可信热卖榜单/搜索结果页的商品。\n"
-            "后端会补齐 id、market_id、platform、site、source_name、collected_at，不需要你返回这些字段。\n"
-            '如果找不到真实可追溯结果，返回 {"items": []}。'
-        )
-        context_display = display_name
-    else:
-        context_display = str(market.get("display_name") or market.get("displayName") or market.get("id") or "").strip()
-        if "JSONL" not in prompt.upper():
-            prompt = (
-                f"{prompt}\n\n"
-                "输出格式补充：优先返回 JSONL，每一行是一个完整商品候选 JSON 对象；"
-                "如果系统限制必须返回完整 JSON，也可以返回 {\"items\":[...]}。不要返回 Markdown 或解释文字。"
-            )
-    return _render_prompt(
-        prompt,
-        {
-            "keywords": ", ".join(keywords),
-            "limit": limit,
-            "market_id": str(market.get("id") or ""),
-            "display_name": context_display,
-            "displayName": context_display,
-            "platform": str(market.get("platform") or ""),
-            "site": str(market.get("site") or ""),
-        },
-    )
+def _market_prompt_context(market: dict[str, Any], keywords: list[str], limit: int) -> dict[str, Any]:
+    market_id = str(market.get("id") or market.get("market_id") or market.get("marketId") or "").strip()
+    display_name = str(market.get("display_name") or market.get("displayName") or market_id).strip()
+    platform = str(market.get("platform") or "").strip()
+    site = str(market.get("site") or "").strip()
+    currency = str(market.get("currency") or DEFAULT_CURRENCY_BY_MARKET.get(market_id, "USD")).strip().upper() or "USD"
+    return {
+        "keywords": ", ".join(keywords),
+        "keyword": ", ".join(keywords),
+        "limit": limit,
+        "market_id": market_id,
+        "marketId": market_id,
+        "display_name": display_name,
+        "displayName": display_name,
+        "platform": platform,
+        "site": site,
+        "currency": currency,
+    }
+
+
+def _ai_search_prompt(template: str, market: dict[str, Any], keywords: list[str], limit: int) -> str:
+    return ai_prompt_templates.render_prompt_template(template, _market_prompt_context(market, keywords, limit))
 
 
 class AiSearchMethod(ProductResearchSearchMethod):
@@ -323,11 +331,16 @@ class AiSearchMethod(ProductResearchSearchMethod):
         timeout_seconds = _int_value(binding_config.get("timeout_seconds") or method_config.get("timeout_seconds") or runtime.get("source_timeout_seconds"), 120, 30, 300)
         stream_enabled = _bool_value(binding_config.get("stream", method_config.get("stream")), True)
         require_source_url = _bool_value(method_config.get("require_source_url"), True)
+        require_image_url = _bool_value(method_config.get("require_image_url"), True)
 
         model = ai_gateway.resolve_model_for_use_case(app_dir, app_config, "research.web_search", model_id=model_id)
         capabilities = ai_model_config.normalize_capabilities(model.get("capabilities"))
         if ai_model_config.CAP_WEB_SEARCH not in capabilities:
             raise RuntimeError("AI 搜索需要选择一个支持 web_search 的 AI 模型。")
+        prompt_pair = ai_prompt_templates.load_ai_use_case_prompt_pair(app_dir, app_config, "research.web_search")
+        user_prompt = str(binding_config.get("prompt") or "").strip()
+        if not user_prompt:
+            user_prompt = _ai_search_prompt(prompt_pair["user"], market, keywords, result_limit)
 
         stream_parts: list[str] = []
         streamed = _JsonlCandidateAccumulator(
@@ -336,6 +349,7 @@ class AiSearchMethod(ProductResearchSearchMethod):
             keywords=keywords,
             limit=result_limit,
             require_source_url=require_source_url,
+            require_image_url=require_image_url,
         )
 
         def handle_token(token: str) -> None:
@@ -357,11 +371,11 @@ class AiSearchMethod(ProductResearchSearchMethod):
             [
                 {
                     "role": "system",
-                    "content": "你是有来源依据的电商选品调研助手。必须返回严格 JSON，不要返回 Markdown 或解释。",
+                    "content": prompt_pair["system"],
                 },
                 {
                     "role": "user",
-                    "content": _ai_search_prompt(binding_config, market, keywords, result_limit),
+                    "content": user_prompt,
                 },
             ],
             model_id=model_id,
@@ -379,14 +393,18 @@ class AiSearchMethod(ProductResearchSearchMethod):
         normalized: list[HotProductCandidate] = []
         dropped_missing_title = 0
         dropped_missing_source_url = 0
+        dropped_missing_image_url = 0
         for index, raw_item in enumerate(raw_items[:result_limit]):
             raw = raw_item if isinstance(raw_item, dict) else {}
             title = str(raw.get("title") or raw.get("name") or "").strip()
             source_url = str(raw.get("source_url") or raw.get("sourceUrl") or raw.get("url") or raw.get("product_url") or "").strip()
+            image_url = _image_url_value(raw.get("image_url") or raw.get("imageUrl") or raw.get("image"))
             if not title:
                 dropped_missing_title += 1
             elif require_source_url and not source_url:
                 dropped_missing_source_url += 1
+            elif require_image_url and not image_url:
+                dropped_missing_image_url += 1
             item = _normalize_ai_candidate(
                 raw_item,
                 market=market,
@@ -394,6 +412,7 @@ class AiSearchMethod(ProductResearchSearchMethod):
                 keywords=keywords,
                 index=index,
                 require_source_url=require_source_url,
+                require_image_url=require_image_url,
             )
             if item is not None:
                 normalized.append(item)
@@ -409,28 +428,41 @@ class AiSearchMethod(ProductResearchSearchMethod):
             if len(combined) >= result_limit:
                 break
         filtered_count = len(raw_items[:result_limit]) - len(normalized)
+        dropped_missing_title += streamed.dropped_missing_title
+        dropped_missing_source_url += streamed.dropped_missing_source_url
+        dropped_missing_image_url += streamed.dropped_missing_image_url
+        streamed_filtered_count = (
+            streamed.dropped_missing_title
+            + streamed.dropped_missing_source_url
+            + streamed.dropped_missing_image_url
+        )
         raw_count = max(len(raw_items), streamed.raw_count)
-        if not raw_items:
-            diagnostic_message = (
-                f"AI 流式返回 {streamed.raw_count} 条原始候选，整理后 {len(combined)} 条。"
-                if streamed.raw_count
-                else "AI 返回了 0 条原始候选。"
-            )
-        elif filtered_count:
+        total_filtered_count = filtered_count + streamed_filtered_count
+        if total_filtered_count:
             reasons: list[str] = []
             if dropped_missing_title:
                 reasons.append(f"{dropped_missing_title} 条缺少商品标题")
             if dropped_missing_source_url:
                 reasons.append(f"{dropped_missing_source_url} 条缺少来源 URL")
+            if dropped_missing_image_url:
+                reasons.append(f"{dropped_missing_image_url} 条缺少图片 URL")
             reason_text = "，".join(reasons) or "字段不完整"
-            diagnostic_message = f"AI 返回 {raw_count} 条原始候选，整理后 {len(combined)} 条；过滤原因：{reason_text}。"
+            source_label = "AI 流式返回" if not raw_items and streamed.raw_count else "AI 返回"
+            diagnostic_message = f"{source_label} {raw_count} 条原始候选，整理后 {len(combined)} 条；过滤原因：{reason_text}。"
+        elif not raw_items:
+            diagnostic_message = (
+                f"AI 流式返回 {streamed.raw_count} 条原始候选，整理后 {len(combined)} 条。"
+                if streamed.raw_count
+                else "AI 返回了 0 条原始候选。"
+            )
         else:
             diagnostic_message = f"AI 返回 {raw_count} 条原始候选，整理后 {len(combined)} 条。"
         self.last_diagnostics = {
             "raw_items_found": raw_count,
-            "items_filtered": filtered_count,
+            "items_filtered": total_filtered_count,
             "dropped_missing_title": dropped_missing_title,
             "dropped_missing_source_url": dropped_missing_source_url,
+            "dropped_missing_image_url": dropped_missing_image_url,
             "stream_enabled": stream_enabled,
             "streamed_items_found": len(streamed.items),
             "diagnostic_message": diagnostic_message,

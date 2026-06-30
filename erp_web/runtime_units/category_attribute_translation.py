@@ -5,7 +5,7 @@ import json
 import re
 from typing import Any
 
-from services import ai_gateway
+from services import ai_gateway, ai_prompt_templates
 
 from .product_store import load_app_config
 from .runtime_common import APP_DIR, CACHE_DIR
@@ -92,21 +92,17 @@ def _request_ai_attribute_translations(
         "target_language": language or "zh-CN",
         "attributes": attributes,
     }
+    prompt_pair = ai_prompt_templates.load_ai_use_case_prompt_pair(APP_DIR, app_cfg, "category.attribute_translation")
     messages = [
         {
             "role": "system",
-            "content": (
-                "You translate ecommerce marketplace category attributes for Chinese operators. "
-                "Return only JSON. Keep attribute ids and original option keys unchanged. "
-                "Translate labels semantically for form filling, not word-for-word."
-            ),
+            "content": prompt_pair["system"],
         },
         {
             "role": "user",
-            "content": (
-                "Return JSON in this shape: "
-                '{"translations":{"ATTRIBUTE_ID":{"label":"中文字段名","help":"一句中文填写提示","values":{"Original option":"中文选项"}}}}.\n'
-                f"Input:\n{json.dumps(prompt, ensure_ascii=False)}"
+            "content": ai_prompt_templates.render_prompt_template(
+                prompt_pair["user"],
+                {"input_json": json.dumps(prompt, ensure_ascii=False)},
             ),
         },
     ]

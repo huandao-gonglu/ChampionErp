@@ -27,11 +27,6 @@ def handle_test_search_provider(handler: JsonRequestHandler) -> None:
     handler.send_json(result, status)
 
 
-def handle_complete_search_provider(handler: JsonRequestHandler) -> None:
-    result, status = product_research_facade.complete_provider_config_payload(handler.read_body())
-    handler.send_json(result, status)
-
-
 def handle_get_source_registry(handler: JsonRequestHandler, parsed: object) -> None:
     result, status = product_research_facade.get_source_registry_payload()
     handler.send_json(result, status)
@@ -51,7 +46,6 @@ POST_HANDLERS: dict[str, PostHandler] = {
     "/api/v1/product-research/hot-products/search": handle_create_hot_product_run,
     "/api/v1/product-research/source-registry/save": handle_save_source_registry,
     "/api/v1/product-research/search-providers/test": handle_test_search_provider,
-    "/api/v1/product-research/search-providers/ai-complete": handle_complete_search_provider,
 }
 GET_HANDLERS: dict[str, GetHandler] = {
     "/api/v1/product-research/hot-products/runs": handle_get_hot_product_run,

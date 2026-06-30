@@ -100,7 +100,7 @@ def get_active_hot_product_run_payload() -> ResponseWithStatus:
 
 def get_source_registry_payload() -> ResponseWithStatus:
     config = load_app_config().get("product_research", {})
-    public_config = product_research_service.public_product_research_config(config)
+    public_config = product_research_service.public_product_research_config(config, APP_DIR)
     return {
         "ok": True,
         "config": public_config,
@@ -126,7 +126,7 @@ def save_source_registry_payload(body: dict[str, Any]) -> ResponseWithStatus:
     app_config["product_research"] = normalize_product_research_config(next_config)
     save_app_config(app_config)
     config_service.save_config_snapshot(APP_DIR, app_config)
-    public_config = product_research_service.public_product_research_config(load_app_config().get("product_research", {}))
+    public_config = product_research_service.public_product_research_config(load_app_config().get("product_research", {}), APP_DIR)
     return {
         "ok": True,
         "config": public_config,
@@ -150,28 +150,7 @@ def test_search_provider_payload(body: dict[str, Any]) -> ResponseWithStatus:
         return {"ok": False, "error": str(exc)}, 500
 
 
-def complete_provider_config_payload(body: dict[str, Any]) -> ResponseWithStatus:
-    try:
-        app_config = load_app_config()
-        current = app_config.get("product_research") if isinstance(app_config.get("product_research"), dict) else {}
-        provider = body.get("provider") if isinstance(body.get("provider"), dict) else {}
-        restored = _restore_masked_provider_secrets({"search_providers": [provider]}, current)
-        model_id = str(body.get("model_id") or body.get("ai_model_id") or "").strip()
-        suggestion = product_research_service.complete_provider_config_with_ai(
-            (restored.get("search_providers") or [{}])[0],
-            APP_DIR,
-            app_config,
-            model_id=model_id,
-        )
-        return {"ok": True, "suggestion": suggestion}, 200
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}, 400
-    except Exception as exc:
-        return {"ok": False, "error": str(exc)}, 500
-
-
 __all__ = [
-    "complete_provider_config_payload",
     "create_hot_product_run_payload",
     "get_active_hot_product_run_payload",
     "get_hot_product_run_payload",

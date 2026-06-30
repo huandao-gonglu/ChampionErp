@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 
-from . import ai_gateway
+from . import ai_gateway, ai_prompt_templates
 
 
 def service_status() -> dict[str, str]:
@@ -73,26 +73,45 @@ def fallback_copy(product: dict[str, Any], target_market: str = "mercadolibre") 
 def build_copy_prompt(product: dict[str, Any], target_market: str, language: str, mode: str) -> str:
     title_limit = 60 if target_market == "mercadolibre" else 120
     market_label = "Mercado Libre Mexico" if target_market == "mercadolibre" else target_market.title()
-    return f"""You are an ecommerce listing copywriter.
+    template = ai_prompt_templates.load_ai_use_case_prompt_pair(".", {}, "copy.generate")["user"]
+    return ai_prompt_templates.render_prompt_template(
+        template,
+        {
+            "language": language,
+            "target_market": target_market,
+            "market_label": market_label,
+            "mode": mode,
+            "title_limit": title_limit,
+            "product_summary": product_summary(product),
+        },
+    )
 
-Return only valid JSON with:
-title: string
-description: string
-bullets: array of 5 short strings
-alt_titles: array of 2-3 strings
-search_keywords: array of 10-20 strings
 
-Rules:
-- Language: {language}.
-- Target marketplace: {market_label}.
-- Mode: {mode}.
-- Keep title under {title_limit} characters when possible.
-- Do not invent certifications, compatibility, accessories, brand claims, or specs.
-- For Mercado Libre Mexico, use natural Mexican Spanish and avoid medical or exaggerated claims.
-
-Product data:
-{product_summary(product)}
-"""
+def build_copy_prompt_from_config(
+    app_dir: str,
+    app_config: dict[str, Any] | None,
+    product: dict[str, Any],
+    target_market: str,
+    language: str,
+    mode: str,
+) -> dict[str, str]:
+    title_limit = 60 if target_market == "mercadolibre" else 120
+    market_label = "Mercado Libre Mexico" if target_market == "mercadolibre" else target_market.title()
+    pair = ai_prompt_templates.load_ai_use_case_prompt_pair(app_dir, app_config, "copy.generate")
+    return {
+        "system": pair["system"],
+        "user": ai_prompt_templates.render_prompt_template(
+            pair["user"],
+            {
+                "language": language,
+                "target_market": target_market,
+                "market_label": market_label,
+                "mode": mode,
+                "title_limit": title_limit,
+                "product_summary": product_summary(product),
+            },
+        ),
+    }
 
 
 def generate_copy(
@@ -107,7 +126,7 @@ def generate_copy(
     language = language or ("Spanish (Mexico)" if target == "mercadolibre" else "English")
     result = fallback_copy(product, target)
     warning = ""
-    prompt = build_copy_prompt(product, target, language, mode)
+    prompt_pair = build_copy_prompt_from_config(app_dir, app_config, product, target, language, mode)
     model = {}
     try:
         model = ai_gateway.resolve_model_for_use_case(app_dir, app_config, "copy.generate")
@@ -116,8 +135,8 @@ def generate_copy(
             app_config,
             "copy.generate",
             messages=[
-                {"role": "system", "content": "Return only valid JSON for ecommerce listing copy."},
-                {"role": "user", "content": prompt},
+                {"role": "system", "content": prompt_pair["system"]},
+                {"role": "user", "content": prompt_pair["user"]},
             ],
             temperature=0.35,
         )
