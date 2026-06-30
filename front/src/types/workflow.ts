@@ -454,6 +454,7 @@ export interface ProductResearchRunSummary {
   searchMode: string
   createdAt: string
   completedAt: string
+  expiresAt: string
   description: string
   progressDescription: string
   request: UnknownRecord

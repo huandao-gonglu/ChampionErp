@@ -298,6 +298,7 @@ function normalizeProductResearchRun(value: unknown): ProductResearchRunSummary 
     searchMode: getString(record, ['search_mode', 'searchMode']),
     createdAt: getString(record, ['created_at', 'createdAt']),
     completedAt: getString(record, ['completed_at', 'completedAt']),
+    expiresAt: getString(record, ['expires_at', 'expiresAt']),
     description: getString(record, ['description']),
     progressDescription: getString(record, ['progress_description', 'progressDescription']),
     request: asRecord(record.request),

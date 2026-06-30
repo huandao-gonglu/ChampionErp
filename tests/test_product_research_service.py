@@ -1,12 +1,26 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 import json
 import time
+
+import pytest
 
 from erp_web.product_research_config import default_product_research_config, normalize_product_research_config
 from services import product_research_service
 from services import product_research_methods
 from services.product_research_methods import AiSearchMethod, ProductResearchSearchMethod
+
+
+@pytest.fixture(autouse=True)
+def reset_product_research_runs() -> Iterator[None]:
+    with product_research_service._RUNS_LOCK:
+        product_research_service._RUNS.clear()
+        product_research_service._RUN_ORDER.clear()
+    yield
+    with product_research_service._RUNS_LOCK:
+        product_research_service._RUNS.clear()
+        product_research_service._RUN_ORDER.clear()
 
 
 def hot_product_payload() -> dict:
@@ -81,8 +95,15 @@ def test_create_hot_product_run_returns_ai_search_candidates(tmp_path, monkeypat
 
     assert run["status"] == "completed"
     assert run["run_id"].startswith("prr_")
+    assert run["expires_at"]
     assert len(run["items"]) == 2
     assert not (tmp_path / "data" / "cache" / "product_research" / "tasks").exists()
+    cache_path = product_research_service.product_research_run_cache_path(tmp_path, run["run_id"])
+    assert cache_path.exists()
+    cached_run = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert cached_run["run_id"] == run["run_id"]
+    assert cached_run["items"][0]["title"] == "Silicone kitchen utensil rest"
+    assert cached_run["expires_at"] == run["expires_at"]
     log_path = tmp_path / "data" / "logs" / "product_research_runs.jsonl"
     assert log_path.exists()
     log_lines = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
@@ -175,6 +196,74 @@ def test_create_hot_product_run_async_polls_stream_description(tmp_path, monkeyp
     assert final["status"] == "completed"
     assert final["items"][0]["title"] == "Async silicone sink tray"
     assert final["description"] == "运行完成，找到 1 个候选商品。"
+    cache_path = product_research_service.product_research_run_cache_path(tmp_path, run["run_id"])
+    cached_run = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert cached_run["status"] == "completed"
+    assert cached_run["items"][0]["title"] == "Async silicone sink tray"
+
+
+def test_hot_product_run_restores_completed_cache_after_memory_loss(tmp_path, monkeypatch) -> None:
+    patch_ai_search(
+        monkeypatch,
+        [
+            {
+                "title": "Cached travel charger",
+                "rank": 1,
+                "source_url": "https://www.amazon.com/dp/cached-travel-charger",
+            }
+        ],
+    )
+    config = normalize_product_research_config(default_product_research_config())
+    run = product_research_service.create_hot_product_run(tmp_path, hot_product_payload(), config, web_search_app_config())
+
+    with product_research_service._RUNS_LOCK:
+        product_research_service._RUNS.clear()
+        product_research_service._RUN_ORDER.clear()
+
+    restored = product_research_service.get_hot_product_run(run["run_id"], tmp_path)
+
+    assert restored is not None
+    assert restored["run_id"] == run["run_id"]
+    assert restored["status"] == "completed"
+    assert restored["items"][0]["title"] == "Cached travel charger"
+    assert restored["expires_at"] == run["expires_at"]
+
+
+def test_running_cached_run_is_marked_failed_after_backend_restart(tmp_path) -> None:
+    created_at = product_research_service._utc_now()
+    run = {
+        "run_id": "cached_running",
+        "status": "running",
+        "search_mode": "target_only",
+        "created_at": created_at,
+        "completed_at": "",
+        "expires_at": product_research_service._run_expiry(created_at),
+        "request": hot_product_payload(),
+        "items": [
+            {
+                "id": "hot_cached_1",
+                "title": "Cached partial item",
+                "rank": 1,
+                "source_url": "https://example.com/cached-partial",
+            }
+        ],
+        "source_status": [],
+        "description": "AI 正在返回结果",
+        "progress_description": "partial token",
+    }
+    cache_path = product_research_service.product_research_run_cache_path(tmp_path, run["run_id"])
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps(run, ensure_ascii=False), encoding="utf-8")
+
+    restored = product_research_service.get_hot_product_run(run["run_id"], tmp_path)
+    active = product_research_service.get_active_hot_product_run(tmp_path)
+
+    assert restored is not None
+    assert restored["status"] == "failed"
+    assert "后台任务已中断" in restored["description"]
+    assert restored["items"][0]["title"] == "Cached partial item"
+    assert restored["source_status"][0]["provider_strategy"] == "run_cache"
+    assert active is None
 
 
 def test_incoming_keywords_are_ignored_for_market_hot_products(tmp_path, monkeypatch) -> None:

@@ -94,6 +94,7 @@ class ProductResearchRun(TypedDict, total=False):
     search_mode: str
     created_at: str
     completed_at: str
+    expires_at: str
     description: str
     progress_description: str
     request: ProductResearchSearchRequest

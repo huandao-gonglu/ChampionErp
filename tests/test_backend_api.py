@@ -193,6 +193,7 @@ def test_product_research_hot_product_api_returns_candidates(backend_server: str
     assert data["ok"] is True
     assert data["run"]["run_id"].startswith("prr_")
     assert data["run"]["description"]
+    assert data["run"]["expires_at"]
     for _ in range(25):
         if data["run"]["status"] in {"completed", "failed"}:
             break

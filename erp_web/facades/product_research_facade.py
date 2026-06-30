@@ -85,14 +85,14 @@ def create_hot_product_run_payload(body: dict[str, Any]) -> ResponseWithStatus:
 
 
 def get_hot_product_run_payload(run_id: str) -> ResponseWithStatus:
-    run = product_research_service.get_hot_product_run(run_id)
+    run = product_research_service.get_hot_product_run(run_id, APP_DIR)
     if run is None:
         return product_research_service.build_run_not_found_response(run_id), 404
     return product_research_service.build_run_response(run), 200
 
 
 def get_active_hot_product_run_payload() -> ResponseWithStatus:
-    run = product_research_service.get_active_hot_product_run()
+    run = product_research_service.get_active_hot_product_run(APP_DIR)
     if run is None:
         return {"ok": True, "run": None, "items": [], "source_status": [], "description": ""}, 200
     return product_research_service.build_run_response(run), 200
