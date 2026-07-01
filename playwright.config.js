@@ -14,7 +14,7 @@ module.exports = defineConfig({
     screenshot: "only-on-failure",
   },
   webServer: {
-    command: `"${PYTHON}" erp_web_app.py`,
+    command: `"${PYTHON}" -m erp_web.server`,
     cwd: __dirname,
     env: {
       ...process.env,

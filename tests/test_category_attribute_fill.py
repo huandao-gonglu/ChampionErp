@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from product_model import build_ai_attribute_fill, default_product_model
+from erp_web.product_model import build_ai_attribute_fill, default_product_model
 from erp_web.runtime_units import category_attribute_ai_fill
 
 

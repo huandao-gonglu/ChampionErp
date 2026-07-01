@@ -10,7 +10,7 @@ PLATFORMS = ("mercadolibre", "wildberries", "ozon")
 IMAGE_ORIGINS = ("source", "amazon", "1688", "browser", "html_import", "manual", "local_upload", "ai_generated", "chatgpt_import", "extension")
 IMAGE_USAGES = ("main", "detail", "size", "scene", "package", "selling_point", "material", "unknown", "other")
 SOURCE_COMPAT_IMAGE_ORIGINS = {"source", "amazon", "1688", "browser", "html_import", "manual", "extension"}
-APP_DIR = Path(__file__).resolve().parents[1]
+APP_DIR = Path(__file__).resolve().parents[2]
 CATEGORY_CACHE_DIR = APP_DIR / "data" / "category_cache"
 CATEGORY_CACHE_FILES = {
     "mercadolibre": CATEGORY_CACHE_DIR / "mercadolibre_mlm_categories.json",

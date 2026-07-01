@@ -3,8 +3,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from product_model import default_source
-from services import collect_service
+from erp_web.product_model import default_source
+from erp_web.services import collect_service
 
 from erp_web.runtime_units.collect_helpers import claim_products_to_platforms
 from erp_web.runtime_units.product_store import load_product, load_products_index, normalize_product_fields, save_product

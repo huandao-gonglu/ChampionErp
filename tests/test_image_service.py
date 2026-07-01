@@ -7,7 +7,7 @@ from unittest.mock import patch
 from PIL import Image
 
 from conftest import assert_no_old_path
-from services import image_service, image_translate_service
+from erp_web.services import image_service, image_translate_service
 
 
 def _make_png(path: Path, color: tuple[int, int, int]) -> None:

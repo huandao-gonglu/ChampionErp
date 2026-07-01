@@ -382,10 +382,14 @@ function normalizeProductResearchTargetMarket(value: unknown): ProductResearchTa
 
 function normalizeProductResearchMarketSearchMethodBinding(value: unknown): ProductResearchMarketSearchMethodBinding {
   const record = asRecord(value)
+  const configJson = withoutPromptTemplateFields(asRecord(record.config_json ?? record.configJson))
+  const prompt = getString(record, ['prompt']) || getString(configJson, ['prompt'])
+  delete configJson.prompt
   return {
     methodId: getString(record, ['method_id', 'methodId', 'provider_id', 'providerId', 'id']),
     enabled: getBoolean(record, ['enabled'], true),
-    configJson: asRecord(record.config_json ?? record.configJson),
+    prompt,
+    configJson,
     raw: record,
   }
 }
@@ -412,6 +416,12 @@ function withoutProviderPromptConfigFields(config: UnknownRecord): UnknownRecord
   delete result.prompt
   delete result.systemPrompt
   delete result.system_prompt
+  return result
+}
+
+function withoutBindingPromptConfigFields(config: UnknownRecord): UnknownRecord {
+  const result = withoutPromptTemplateFields(config)
+  delete result.prompt
   return result
 }
 
@@ -472,7 +482,8 @@ function toProductResearchTargetMarketPayload(market: ProductResearchTargetMarke
     search_methods: (market.searchMethods || []).map((binding) => ({
       method_id: binding.methodId.trim(),
       enabled: binding.enabled,
-      config_json: withoutPromptTemplateFields(binding.configJson),
+      prompt: String(binding.prompt || ''),
+      config_json: withoutBindingPromptConfigFields(binding.configJson),
     })),
   }
 }

@@ -256,7 +256,9 @@ def _normalize_market_search_method_binding(value: Any, market: dict[str, Any]) 
     if not isinstance(config_json, dict):
         config_json = {}
     config_json = dict(config_json)
+    prompt = str(raw.get("prompt") or config_json.get("prompt") or "").strip()
     for prompt_key in (
+        "prompt",
         "promptOverride",
         "prompt_override",
         "promptTemplate",
@@ -268,6 +270,7 @@ def _normalize_market_search_method_binding(value: Any, market: dict[str, Any]) 
     return {
         "method_id": method_id,
         "enabled": _bool_value(raw.get("enabled"), True),
+        "prompt": prompt,
         "config_json": dict(config_json),
     }
 

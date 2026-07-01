@@ -27,3 +27,7 @@ def main() -> None:
         except Exception:
             logger.exception("Failed to open browser for %s", url)
     server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

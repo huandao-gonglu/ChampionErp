@@ -7,8 +7,8 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 
-import main as generator
-import marketplace_publish as publisher
+from erp_web import listing_planner as generator
+from erp_web import marketplaces as publisher
 
 from .category_store import write_json
 from .collect_helpers import collect_time_iso

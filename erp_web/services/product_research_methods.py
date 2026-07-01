@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from erp_web.schemas.product_research import HotProductCandidate
-from services import ai_gateway, ai_model_config, ai_prompt_templates
+from erp_web.services import ai_gateway, ai_model_config, ai_prompt_templates
 
 
 RunProgressEvent = str | dict[str, Any]
@@ -305,6 +305,15 @@ def _ai_search_prompt(template: str, market: dict[str, Any], keywords: list[str]
     return ai_prompt_templates.render_prompt_template(template, _market_prompt_context(market, keywords, limit))
 
 
+def _should_retry_ai_search_without_stream(exc: ai_gateway.AIHTTPError) -> bool:
+    if exc.status_code in {400, 406, 415}:
+        return True
+    if exc.status_code != 403:
+        return False
+    detail = f"{exc.detail} {exc.reason}".lower()
+    return any(marker in detail for marker in ("stream", "streaming", "event-stream", "sse"))
+
+
 class AiSearchMethod(ProductResearchSearchMethod):
     def __init__(self) -> None:
         self.last_diagnostics: dict[str, Any] = {}
@@ -334,11 +343,20 @@ class AiSearchMethod(ProductResearchSearchMethod):
         require_image_url = _bool_value(method_config.get("require_image_url"), True)
 
         model = ai_gateway.resolve_model_for_use_case(app_dir, app_config, "research.web_search", model_id=model_id)
+        resolved_model_id = str(model.get("id") or model_id or "").strip()
+        api_style = ai_model_config.normalize_api_style(model.get("api_style"))
+        stream_fallback_used = False
+        self.last_diagnostics = {
+            "ai_model_id": resolved_model_id,
+            "api_style": api_style,
+            "stream_enabled": stream_enabled,
+            "stream_fallback_used": stream_fallback_used,
+        }
         capabilities = ai_model_config.normalize_capabilities(model.get("capabilities"))
         if ai_model_config.CAP_WEB_SEARCH not in capabilities:
             raise RuntimeError("AI 搜索需要选择一个支持 web_search 的 AI 模型。")
         prompt_pair = ai_prompt_templates.load_ai_use_case_prompt_pair(app_dir, app_config, "research.web_search")
-        user_prompt = str(binding_config.get("prompt") or "").strip()
+        user_prompt = str(binding.get("prompt") or "").strip()
         if not user_prompt:
             user_prompt = _ai_search_prompt(prompt_pair["user"], market, keywords, result_limit)
 
@@ -364,28 +382,50 @@ class AiSearchMethod(ProductResearchSearchMethod):
             if stream_text:
                 progress_callback(f"AI 正在返回结果：{stream_text}")
 
-        parsed = ai_gateway.chat_json(
-            app_dir,
-            app_config,
-            "research.web_search",
-            [
+        messages = [
+            {
+                "role": "system",
+                "content": prompt_pair["system"],
+            },
+            {
+                "role": "user",
+                "content": user_prompt,
+            },
+        ]
+        request_temperature = _float_value(method_config.get("temperature"), 0.2, 0.0, 2.0)
+        request_max_tokens = _int_value(method_config.get("max_tokens"), 1800, 256, 12000)
+
+        def request_ai_json(enabled_stream: bool) -> dict[str, Any]:
+            return ai_gateway.chat_json(
+                app_dir,
+                app_config,
+                "research.web_search",
+                messages,
+                model_id=model_id,
+                temperature=request_temperature,
+                max_tokens=request_max_tokens,
+                timeout_seconds=timeout_seconds,
+                stream=enabled_stream,
+                token_callback=handle_token if enabled_stream else None,
+                response_format=False,
+            )
+
+        try:
+            parsed = request_ai_json(stream_enabled)
+        except ai_gateway.AIHTTPError as exc:
+            if not stream_enabled or not _should_retry_ai_search_without_stream(exc):
+                raise
+            stream_fallback_used = True
+            stream_enabled = False
+            self.last_diagnostics.update(
                 {
-                    "role": "system",
-                    "content": prompt_pair["system"],
-                },
-                {
-                    "role": "user",
-                    "content": user_prompt,
-                },
-            ],
-            model_id=model_id,
-            temperature=_float_value(method_config.get("temperature"), 0.2, 0.0, 2.0),
-            max_tokens=_int_value(method_config.get("max_tokens"), 1800, 256, 12000),
-            timeout_seconds=timeout_seconds,
-            stream=stream_enabled,
-            token_callback=handle_token if stream_enabled else None,
-            response_format=False,
-        )
+                    "stream_enabled": stream_enabled,
+                    "stream_fallback_used": stream_fallback_used,
+                }
+            )
+            if progress_callback:
+                progress_callback("AI 搜索流式请求被拒绝，正在改用非流式请求重试。")
+            parsed = request_ai_json(False)
         if progress_callback:
             for item in streamed.flush():
                 progress_callback({"type": "candidate", "item": item})
@@ -463,7 +503,10 @@ class AiSearchMethod(ProductResearchSearchMethod):
             "dropped_missing_title": dropped_missing_title,
             "dropped_missing_source_url": dropped_missing_source_url,
             "dropped_missing_image_url": dropped_missing_image_url,
+            "ai_model_id": resolved_model_id,
+            "api_style": api_style,
             "stream_enabled": stream_enabled,
+            "stream_fallback_used": stream_fallback_used,
             "streamed_items_found": len(streamed.items),
             "diagnostic_message": diagnostic_message,
         }

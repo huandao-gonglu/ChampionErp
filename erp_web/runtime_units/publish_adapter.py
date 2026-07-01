@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from publishing_bus import PublishingBus
+from erp_web.runtime_units.publishing_bus_core import PublishingBus
 
 from .product_store import normalize_product_fields
 from .runtime_api import publish_product

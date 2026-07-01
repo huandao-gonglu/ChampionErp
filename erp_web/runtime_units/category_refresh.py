@@ -6,8 +6,8 @@ import uuid
 from copy import deepcopy
 from typing import Any
 
-import erp_db
-import marketplace_publish as publisher
+from erp_web import db as erp_db
+from erp_web import marketplaces as publisher
 from erp_web import category_cache as category_cache_runtime
 
 from .auth_runtime import _mercadolibre_app_secret

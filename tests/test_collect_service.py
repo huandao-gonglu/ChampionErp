@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from conftest import assert_no_old_path
-from services import collect_service
+from erp_web.services import collect_service
 
 
 SAMPLE_1688_TEXT = """
@@ -44,5 +44,5 @@ def test_verification_text_requires_manual_handling(old_path_markers: tuple[str,
 
 
 def test_collect_service_does_not_reference_legacy_runtime_paths(app_dir: Path, old_path_markers: tuple[str, ...]) -> None:
-    service_source = (app_dir / "services" / "collect_service.py").read_text(encoding="utf-8", errors="ignore")
+    service_source = (app_dir / "erp_web" / "services" / "collect_service.py").read_text(encoding="utf-8", errors="ignore")
     assert_no_old_path(service_source, old_path_markers)

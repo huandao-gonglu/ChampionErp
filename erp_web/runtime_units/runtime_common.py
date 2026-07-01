@@ -23,13 +23,13 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 
-import erp_db
-import main as generator
-import marketplace_publish as publisher
+from erp_web import db as erp_db
+from erp_web import listing_planner as generator
+from erp_web import marketplaces as publisher
 from erp_web import app_config as app_config_runtime
 from erp_web import category_cache as category_cache_runtime
-from services import collect_service, config_service, copy_service, html_extract_service as legacy, image_service, pricing_service
-from product_model import (
+from erp_web.services import collect_service, config_service, copy_service, html_extract_service as legacy, image_service, pricing_service
+from erp_web.product_model import (
     apply_ai_attribute_fill,
     apply_category_selection,
     default_collect_diagnostics,
@@ -50,7 +50,7 @@ from product_model import (
     search_category_cache,
     validate_category_precheck,
 )
-from publishing_bus import PublishingBus
+from erp_web.runtime_units.publishing_bus_core import PublishingBus
 
 
 APP_DIR = Path(__file__).resolve().parents[2]
@@ -76,7 +76,7 @@ UPLOAD_DIR = IMAGES_DIR / "uploads"
 COLLECT_DEBUG_DIR = CACHE_DIR / "collect_debug"
 BROWSER_PROFILE_DIR = APP_DIR / "browser_profile" / "1688"
 FRONT_DIR = APP_DIR / "front"
-FRONT_DIST_DIR = APP_DIR / "backend" / "internal" / "web" / "dist"
+FRONT_DIST_DIR = APP_DIR / "erp_web" / "static" / "dist"
 FRONT_DIST_INDEX_PATH = FRONT_DIST_DIR / "index.html"
 WEB_TEMPLATE_PATH = FRONT_DIR / "index.html"
 WEB_PORT = int(os.environ.get("ERP_PORT", "5000"))

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import erp_db
+from erp_web import db as erp_db
 
 
 def sample_product(title: str = "Imported title", source_url: str = "https://example.com/item") -> dict:

@@ -11,7 +11,7 @@ import urllib.request
 from copy import deepcopy
 from typing import Any
 
-from product_model import default_collect_diagnostics, merge_source_partial_result, parse_dimensions_text
+from erp_web.product_model import default_collect_diagnostics, merge_source_partial_result, parse_dimensions_text
 
 from .collect_helpers import (
     apply_claimed_platform_drafts,

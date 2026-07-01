@@ -4,7 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from product_model import validate_category_precheck
+from erp_web.product_model import validate_category_precheck
 
 from .collect_helpers import collect_time_iso
 from .product_store import load_app_config, normalize_product_fields

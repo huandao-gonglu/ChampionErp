@@ -28,8 +28,8 @@ from erp_web.schemas.product_research import (
     ProductResearchRun,
     ProductResearchSourceStatus,
 )
-from services import ai_gateway, ai_model_config, ai_prompt_templates
-from services.product_research_methods import search_method_for
+from erp_web.services import ai_gateway, ai_model_config, ai_prompt_templates
+from erp_web.services.product_research_methods import search_method_for
 
 
 logger = logging.getLogger(__name__)
@@ -555,6 +555,13 @@ def _source_status_diagnostics(diagnostics: dict[str, Any]) -> dict[str, Any]:
     for key in ("raw_items_found", "items_filtered"):
         if key in diagnostics:
             status[key] = _int_value(diagnostics.get(key), 0, 0)
+    for key in ("ai_model_id", "api_style"):
+        value = str(diagnostics.get(key) or "").strip()
+        if value:
+            status[key] = value
+    for key in ("stream_enabled", "stream_fallback_used"):
+        if key in diagnostics:
+            status[key] = bool(diagnostics.get(key))
     message = str(diagnostics.get("diagnostic_message") or "").strip()
     if message:
         status["diagnostic_message"] = message
@@ -652,6 +659,7 @@ def build_hot_product_candidates(
                 )
                 continue
             start_count = len(items)
+            runner = None
             try:
                 runner = search_method_for(method)
                 if progress_callback:
@@ -683,6 +691,7 @@ def build_hot_product_candidates(
                     }
                 )
             except Exception as exc:
+                diagnostics = _runner_diagnostics(runner)
                 statuses.append(
                     {
                         "source": str(method.get("name") or method_id),
@@ -692,6 +701,7 @@ def build_hot_product_candidates(
                         "items_found": 0,
                         "error_message": str(exc),
                         "provider_strategy": _method_strategy(method),
+                        **_source_status_diagnostics(diagnostics),
                     }
                 )
     return items, statuses

@@ -319,13 +319,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    root = Path(__file__).parent
+    root = Path(__file__).resolve().parents[1]
     product_path = Path(args.product)
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     product = load_json(product_path)
-    presets = load_json(root / "presets" / "platforms.json")
+    presets = load_json(root / "config" / "presets" / "platforms.json")
     keys = list(presets.keys()) if args.platform == "all" else [args.platform]
     platforms = [PlatformPlan(key=k, preset=presets[k]) for k in keys]
     plan = build_plan(product, platforms)

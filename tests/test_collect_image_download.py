@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from services import html_extract_service
+from erp_web.services import html_extract_service
 
 
 def _png_bytes(width: int, height: int) -> bytes:
@@ -15,7 +15,7 @@ def _png_bytes(width: int, height: int) -> bytes:
 
 
 def test_collect_product_image_urls_prefers_html_product_images_over_dom_icons() -> None:
-    import erp_web_app
+    from erp_web import runtime as erp_web_app
 
     html = """
     <html><head>

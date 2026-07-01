@@ -4,14 +4,14 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from product_model import (
+from erp_web.product_model import (
     default_collect_diagnostics,
     default_product_model,
     merge_source_partial_result,
     normalize_platforms,
     parse_dimensions_text,
 )
-from services import collect_service, html_extract_service as legacy, image_service
+from erp_web.services import collect_service, html_extract_service as legacy, image_service
 
 from .source_collect_browser import (
     browser_debug_status,

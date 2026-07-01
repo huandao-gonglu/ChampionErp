@@ -4,8 +4,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from product_model import default_draft
-from services import html_extract_service as legacy
+from erp_web.product_model import default_draft
+from erp_web.services import html_extract_service as legacy
 
 from .category_store import read_json, write_json
 from .collect_helpers import collect_time_iso

@@ -1,7 +1,8 @@
 @echo off
 setlocal
-cd /d D:\champion-Erp
-set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
+set "ROOT_DIR=%~dp0.."
+cd /d "%ROOT_DIR%"
+set "PYTHON_EXE=%ROOT_DIR%\.venv\Scripts\python.exe"
 if exist "%PYTHON_EXE%" (
   "%PYTHON_EXE%" -m pytest tests -v
 ) else (

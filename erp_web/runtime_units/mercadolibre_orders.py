@@ -4,7 +4,7 @@ from __future__ import annotations
 import urllib.parse
 from typing import Any
 
-import marketplace_publish as publisher
+from erp_web import marketplaces as publisher
 
 from .category_store import read_json, write_json
 from .collect_helpers import collect_time_iso

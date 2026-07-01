@@ -6,7 +6,7 @@ import urllib.parse
 from pathlib import Path
 from typing import Any
 
-from product_model import (
+from erp_web.product_model import (
     PLATFORMS,
     SOURCE_COMPAT_IMAGE_ORIGINS,
     image_pool_legacy_views,

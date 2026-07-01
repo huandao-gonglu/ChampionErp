@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from conftest import assert_no_old_path
-from services import ai_model_config, config_service
+from erp_web.services import ai_model_config, config_service
 
 
 def test_config_paths_are_project_local(app_dir: Path, old_path_markers: tuple[str, ...]) -> None:
@@ -206,7 +206,7 @@ def test_merge_config_copies_saved_model_key_from_source_model(app_dir: Path) ->
 
 
 def test_normalize_app_config_migrates_legacy_ai_aliases(app_dir: Path) -> None:
-    import erp_web_app
+    from erp_web import runtime as erp_web_app
 
     saved = erp_web_app.normalize_app_config(
         {
@@ -233,7 +233,7 @@ def test_normalize_app_config_migrates_legacy_ai_aliases(app_dir: Path) -> None:
 
 
 def test_normalize_app_config_keeps_1688_api_credentials() -> None:
-    import erp_web_app
+    from erp_web import runtime as erp_web_app
 
     saved = erp_web_app.normalize_app_config(
         {
@@ -258,7 +258,7 @@ def test_normalize_app_config_keeps_1688_api_credentials() -> None:
 
 
 def test_normalize_app_config_migrates_legacy_nested_ai_sections(app_dir: Path) -> None:
-    import erp_web_app
+    from erp_web import runtime as erp_web_app
 
     cfg = erp_web_app.normalize_app_config(
         {
@@ -290,7 +290,7 @@ def test_normalize_app_config_migrates_legacy_nested_ai_sections(app_dir: Path) 
 
 
 def test_normalize_app_config_uses_legacy_key_without_overwriting_canonical_model(app_dir: Path) -> None:
-    import erp_web_app
+    from erp_web import runtime as erp_web_app
 
     cfg = erp_web_app.normalize_app_config(
         {

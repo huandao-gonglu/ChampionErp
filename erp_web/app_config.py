@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from services import ai_model_config, ai_prompt_templates
+from erp_web.services import ai_model_config, ai_prompt_templates
 
 from .product_research_config import default_product_research_config, normalize_product_research_config
 

@@ -8,6 +8,27 @@ from typing import Any
 from . import ai_gateway, ai_prompt_templates
 
 
+DEFAULT_COPY_USER_PROMPT = """You are an ecommerce listing copywriter.
+
+Return only valid JSON with:
+title: string
+description: string
+bullets: array of 5 short strings
+alt_titles: array of 2-3 strings
+search_keywords: array of 10-20 strings
+
+Rules:
+- Language: {$language}.
+- Target marketplace: {$market_label}.
+- Mode: {$mode}.
+- Keep title under {$title_limit} characters when possible.
+- Do not invent certifications, compatibility, accessories, brand claims, or specs.
+- For Mercado Libre Mexico, use natural Mexican Spanish and avoid medical or exaggerated claims.
+
+Product data:
+{$product_summary}"""
+
+
 def service_status() -> dict[str, str]:
     return {"service": "copy", "status": "ready"}
 
@@ -73,9 +94,8 @@ def fallback_copy(product: dict[str, Any], target_market: str = "mercadolibre") 
 def build_copy_prompt(product: dict[str, Any], target_market: str, language: str, mode: str) -> str:
     title_limit = 60 if target_market == "mercadolibre" else 120
     market_label = "Mercado Libre Mexico" if target_market == "mercadolibre" else target_market.title()
-    template = ai_prompt_templates.load_ai_use_case_prompt_pair(".", {}, "copy.generate")["user"]
     return ai_prompt_templates.render_prompt_template(
-        template,
+        DEFAULT_COPY_USER_PROMPT,
         {
             "language": language,
             "target_market": target_market,

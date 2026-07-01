@@ -5,7 +5,7 @@ import json
 import re
 from typing import Any
 
-from services import ai_gateway, ai_prompt_templates
+from erp_web.services import ai_gateway, ai_prompt_templates
 
 from .product_store import load_app_config
 from .runtime_common import APP_DIR, CACHE_DIR

@@ -31,7 +31,7 @@ def test_runtime_publish_and_collect_aggregators_use_explicit_exports() -> None:
 
 
 def test_refactored_model_and_marketplace_units_do_not_use_wildcard_imports() -> None:
-    for path in python_files("product_model_units", "marketplace_publish_units"):
+    for path in python_files("erp_web/product_model", "erp_web/marketplaces"):
         if path.name in {"__init__.py", "common.py"}:
             continue
         text = path.read_text(encoding="utf-8")
@@ -67,5 +67,5 @@ def test_context_map_mentions_product_research_entry_points() -> None:
     text = (ROOT / "docs/ai-context-map.md").read_text(encoding="utf-8")
     assert "erp_web/http_route_units/product_research_routes.py" in text
     assert "erp_web/product_research_config.py" in text
-    assert "services/product_research_service.py" in text
+    assert "erp_web/services/product_research_service.py" in text
     assert "erp_web/schemas/product_research.py" in text

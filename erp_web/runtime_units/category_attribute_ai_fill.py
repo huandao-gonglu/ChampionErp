@@ -6,9 +6,9 @@ import re
 from copy import deepcopy
 from typing import Any
 
-from services import ai_gateway, ai_prompt_templates
+from erp_web.services import ai_gateway, ai_prompt_templates
 
-from product_model import apply_ai_attribute_fill, normalize_product_model
+from erp_web.product_model import apply_ai_attribute_fill, normalize_product_model
 
 from .product_store import load_app_config
 from .runtime_common import APP_DIR

@@ -8,7 +8,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
-import erp_db
+from erp_web import db as erp_db
 
 JsonClient = Callable[[str, str | None], dict[str, Any] | list[Any]]
 ProgressCallback = Callable[[dict[str, Any]], None]

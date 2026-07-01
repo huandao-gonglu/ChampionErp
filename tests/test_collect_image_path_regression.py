@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from product_model import merge_source_partial_result
+from erp_web.product_model import merge_source_partial_result
 
 
 def test_pool_display_item_converts_existing_local_preview_to_file_url(app_dir: Path) -> None:
-    from erp_web_app import _pool_display_item
+    from erp_web.runtime import _pool_display_item
 
     image_path = app_dir / "data" / "images" / "pytest-path-fix" / "existing.png"
     image_path.parent.mkdir(parents=True, exist_ok=True)
@@ -22,7 +22,7 @@ def test_pool_display_item_converts_existing_local_preview_to_file_url(app_dir: 
 
 
 def test_pool_display_item_marks_missing_local_preview_without_raw_file_url() -> None:
-    from erp_web_app import _pool_display_item
+    from erp_web.runtime import _pool_display_item
 
     raw_path = r"D:\champion-Erp\output\source_images\missing-pytest.jpg"
     item = _pool_display_item({"id": "missing", "path": raw_path, "preview_url": raw_path, "status": "ready"})
@@ -34,7 +34,7 @@ def test_pool_display_item_marks_missing_local_preview_without_raw_file_url() ->
 
 
 def test_products_index_main_image_never_exposes_raw_local_path() -> None:
-    from erp_web_app import sanitize_products_index
+    from erp_web.runtime import sanitize_products_index
 
     items = sanitize_products_index([{"product_id": "old", "main_image": r"C:\legacy\bad-image.jpg"}])
 

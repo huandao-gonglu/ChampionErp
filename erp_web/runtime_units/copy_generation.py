@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from typing import Any
 
-import main as generator
-from product_model import PLATFORMS
-from services import copy_service
+from erp_web import listing_planner as generator
+from erp_web.product_model import PLATFORMS
+from erp_web.services import copy_service
 
 from .collect_helpers import collect_time_iso
 from .image_pool_core import _source_only_pool_items, _source_pool_items
@@ -21,7 +21,7 @@ from .product_store import (
 from .runtime_common import APP_DIR
 
 def list_presets() -> dict[str, Any]:
-    return generator.load_json(APP_DIR / "presets" / "platforms.json")
+    return generator.load_json(APP_DIR / "config" / "presets" / "platforms.json")
 
 
 def platform_to_preset_key(platform: str) -> str:

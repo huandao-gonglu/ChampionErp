@@ -8,7 +8,7 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from services import html_extract_service as legacy
+from erp_web.services import html_extract_service as legacy
 
 from .browser_debug import (
     CdpWebSocket,

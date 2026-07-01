@@ -490,6 +490,7 @@ export interface ProductResearchSourceRegistryItem {
 export interface ProductResearchMarketSearchMethodBinding {
   methodId: string
   enabled: boolean
+  prompt: string
   configJson: UnknownRecord
   raw: UnknownRecord
 }

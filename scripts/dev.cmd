@@ -1,13 +1,14 @@
 @echo off
 setlocal enabledelayedexpansion
-cd /d "%~dp0"
+set "ROOT_DIR=%~dp0.."
+cd /d "%ROOT_DIR%"
 
 if "%ERP_PORT%"=="" set "ERP_PORT=5050"
 if "%VITE_DEV_PORT%"=="" set "VITE_DEV_PORT=3000"
 if "%ERP_NO_BROWSER%"=="" set "ERP_NO_BROWSER=1"
 if "%VITE_DEV_PROXY_TARGET%"=="" set "VITE_DEV_PROXY_TARGET=http://127.0.0.1:%ERP_PORT%"
 
-set "PY=%~dp0.venv\Scripts\python.exe"
+set "PY=%ROOT_DIR%\.venv\Scripts\python.exe"
 if not exist "%PY%" (
   echo [setup] Creating Python virtual environment: .venv
   python -m venv .venv
@@ -17,7 +18,7 @@ if not exist "%PY%" (
 if errorlevel 1 (
   echo [setup] Installing backend dependencies
   "%PY%" -m pip install --upgrade pip
-  "%PY%" -m pip install -r "%~dp0requirements.txt"
+  "%PY%" -m pip install -r "%ROOT_DIR%\requirements.txt"
   "%PY%" -m pip install requests pillow python-dotenv
 )
 
@@ -28,18 +29,18 @@ if errorlevel 1 (
   exit /b 1
 )
 
-if not exist "%~dp0front\node_modules" (
+if not exist "%ROOT_DIR%\front\node_modules" (
   echo [setup] Installing frontend dependencies
   pushd front
   pnpm install
   popd
 )
 
-if not exist "%~dp0data\logs" mkdir "%~dp0data\logs"
-set "BACKEND_LOG=%~dp0data\logs\dev-backend.log"
-set "FRONTEND_LOG=%~dp0data\logs\dev-frontend.log"
+if not exist "%ROOT_DIR%\data\logs" mkdir "%ROOT_DIR%\data\logs"
+set "BACKEND_LOG=%ROOT_DIR%\data\logs\dev-backend.log"
+set "FRONTEND_LOG=%ROOT_DIR%\data\logs\dev-frontend.log"
 
-if exist "%~dp0front\node_modules\.vite" rmdir /s /q "%~dp0front\node_modules\.vite"
+if exist "%ROOT_DIR%\front\node_modules\.vite" rmdir /s /q "%ROOT_DIR%\front\node_modules\.vite"
 
 call :KillPortOwner "Backend" "%ERP_PORT%"
 if errorlevel 1 exit /b 1
@@ -53,13 +54,13 @@ echo [log] Frontend log: %FRONTEND_LOG%
 echo.
 
 echo [start] Launching backend...
-start "Champion ERP Backend" /D "%~dp0" cmd /k ""%PY%" "%~dp0erp_web_app.py" ^>"%BACKEND_LOG%" 2^>^&1"
+start "Champion ERP Backend" /D "%ROOT_DIR%" cmd /k ""%PY%" -m erp_web.server ^>"%BACKEND_LOG%" 2^>^&1"
 
 call :WaitForUrl "backend" "http://127.0.0.1:%ERP_PORT%/" "%BACKEND_LOG%"
 if errorlevel 1 exit /b 1
 
 echo [start] Launching Vue dev server...
-start "Champion ERP Vue" /D "%~dp0front" cmd /k "pnpm exec vite --host 127.0.0.1 --port %VITE_DEV_PORT% --strictPort --force ^>"%FRONTEND_LOG%" 2^>^&1"
+start "Champion ERP Vue" /D "%ROOT_DIR%\front" cmd /k "pnpm exec vite --host 127.0.0.1 --port %VITE_DEV_PORT% --strictPort --force ^>"%FRONTEND_LOG%" 2^>^&1"
 
 call :WaitForUrl "frontend" "http://127.0.0.1:%VITE_DEV_PORT%/" "%FRONTEND_LOG%"
 if errorlevel 1 exit /b 1

@@ -39,7 +39,7 @@ Use codegraph for **structural** questions: what calls what, what would break, w
 - Keep `docs/ai-context-map.md` current whenever backend areas move, split, or gain new public entry points.
 - New HTTP behavior should start in `erp_web/http_route_units/` with `HANDLED_PATHS` and explicit handler maps.
 - Route code should stay thin. Put orchestration in focused facades under `erp_web/facades/` or focused runtime/service modules.
-- Compatibility aggregators such as `erp_web/runtime.py`, `product_model.py`, and `marketplace_publish.py` are not primary reading entry points.
+- `erp_web/runtime.py` is a runtime namespace aggregator, not a primary reading entry point.
 
 ### Imports And Boundaries
 
@@ -79,5 +79,5 @@ Use codegraph for **structural** questions: what calls what, what would break, w
 
 - Prefer small files with obvious ownership over large modules with mixed concerns.
 - Prefer stable dispatch tables, facades, and typed schemas over dynamic aggregators or implicit globals.
-- Keep old compatibility surfaces working, but do not use them as the model for new code.
+- Do not add root-level compatibility modules for package internals.
 - If a change makes AI read several unrelated files to understand one behavior, split the behavior or document the intended entry point.

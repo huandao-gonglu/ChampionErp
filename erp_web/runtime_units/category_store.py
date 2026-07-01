@@ -7,8 +7,8 @@ import urllib.parse
 from pathlib import Path
 from typing import Any
 
-import erp_db
-from product_model import (
+from erp_web import db as erp_db
+from erp_web.product_model import (
     category_cache_status as _json_category_cache_status,
     find_category_record as _json_find_category_record,
     load_category_cache as _json_load_category_cache,

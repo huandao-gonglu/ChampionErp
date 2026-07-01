@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
@@ -22,10 +22,10 @@ fi
 # Try runtime requirements too, but do not block local backend tests if an AI SDK
 # is unavailable for the current Python version / package index.
 if [ "${INSTALL_FULL_REQUIREMENTS:-0}" = "1" ]; then
-  "$PY" -m pip install -r requirements.txt
+  "$PY" -m pip install -r "$ROOT_DIR/requirements.txt"
 fi
 
-# Do not auto-open browser while tests spawn erp_web_app.py.
+# Do not auto-open browser while tests spawn erp_web.server.
 export ERP_NO_BROWSER="${ERP_NO_BROWSER:-1}"
 export ERP_SKIP_OPEN_BROWSER="${ERP_SKIP_OPEN_BROWSER:-1}"
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from services import config_service, product_research_service
+from erp_web.services import config_service, product_research_service
 
 from erp_web.product_research_config import normalize_product_research_config
 from erp_web.runtime_units.product_store import load_app_config, save_app_config

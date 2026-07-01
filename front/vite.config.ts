@@ -24,7 +24,7 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: '../backend/internal/web/dist',
+    outDir: '../erp_web/static/dist',
     emptyOutDir: true,
     sourcemap: false,
     rollupOptions: {

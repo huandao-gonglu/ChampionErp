@@ -51,7 +51,7 @@ def backend_server() -> Iterator[str]:
         env = os.environ.copy()
         env["ERP_SKIP_OPEN_BROWSER"] = "1"
         process = subprocess.Popen(
-            [sys.executable, str(APP_DIR / "erp_web_app.py")],
+            [sys.executable, "-m", "erp_web.server"],
             cwd=str(APP_DIR),
             env=env,
             stdout=subprocess.PIPE,

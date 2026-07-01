@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Callable
 
-import marketplace_publish as publisher
-from product_model import validate_category_precheck
+from erp_web import marketplaces as publisher
+from erp_web.product_model import validate_category_precheck
 
 from .common import JsonRequestHandler
 from ..runtime_units.category_attribute_ai_fill import apply_ai_model_attribute_fill

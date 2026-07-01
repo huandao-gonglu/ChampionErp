@@ -6,8 +6,8 @@ import urllib.parse
 from copy import deepcopy
 from typing import Any
 
-import marketplace_publish as publisher
-from product_model import default_draft
+from erp_web import marketplaces as publisher
+from erp_web.product_model import default_draft
 
 from .auth_runtime import _mercadolibre_app_secret, preview_mercadolibre_auth_link, refresh_mercadolibre_token_from_body
 from .category_store import write_json

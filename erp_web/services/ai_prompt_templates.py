@@ -56,7 +56,7 @@ def normalize_ai_use_case_prompts(value: Any) -> dict[str, dict[str, str]]:
 
 
 def _project_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    return Path(__file__).resolve().parents[2]
 
 
 def _candidate_prompt_paths(app_dir: Path | str, prompt_path: str) -> list[Path]:

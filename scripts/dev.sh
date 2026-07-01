@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FRONT_DIR="$ROOT_DIR/front"
 BACKEND_PORT="${ERP_PORT:-5050}"
 FRONTEND_PORT="${VITE_DEV_PORT:-3000}"
@@ -170,7 +170,7 @@ echo "[log] Backend log:  $BACKEND_LOG"
 echo "[log] Frontend log: $FRONTEND_LOG"
 
 echo "[start] Launching backend..."
-"$PY" "$ROOT_DIR/erp_web_app.py" >"$BACKEND_LOG" 2>&1 &
+"$PY" -m erp_web.server >"$BACKEND_LOG" 2>&1 &
 BACKEND_PID=$!
 
 wait_for_url "backend" "http://127.0.0.1:${BACKEND_PORT}/" "$BACKEND_PID" "$BACKEND_LOG"

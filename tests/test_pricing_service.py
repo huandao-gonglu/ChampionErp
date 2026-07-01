@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 
-from services import pricing_service
+from erp_web.services import pricing_service
 
 
 def _assert_finite_positive(result: dict, *keys: str) -> None:

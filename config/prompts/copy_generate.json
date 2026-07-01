@@ -1,5 +1,5 @@
 {
-  "description": "商品 AI 文案生成 Prompt，用于根据商品资料生成标题、描述、卖点和关键词。",
-  "system": "Return only valid JSON for ecommerce listing copy.",
-  "user": "You are an ecommerce listing copywriter.\n\nReturn only valid JSON with:\ntitle: string\ndescription: string\nbullets: array of 5 short strings\nalt_titles: array of 2-3 strings\nsearch_keywords: array of 10-20 strings\n\nRules:\n- Language: {$language}.\n- Target marketplace: {$market_label}.\n- Mode: {$mode}.\n- Keep title under {$title_limit} characters when possible.\n- Do not invent certifications, compatibility, accessories, brand claims, or specs.\n- For Mercado Libre Mexico, use natural Mexican Spanish and avoid medical or exaggerated claims.\n\nProduct data:\n{$product_summary}"
+  "description": "文案生成提示词",
+  "system": "System from settings",
+  "user": "User prompt {$language}"
 }

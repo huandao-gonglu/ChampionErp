@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+import io
 import json
 import time
+import urllib.error
 
 import pytest
 
 from erp_web.product_research_config import default_product_research_config, normalize_product_research_config
-from services import product_research_service
-from services import product_research_methods
-from services.product_research_methods import AiSearchMethod, ProductResearchSearchMethod
+from erp_web.services import product_research_service
+from erp_web.services import product_research_methods
+from erp_web.services.product_research_methods import AiSearchMethod, ProductResearchSearchMethod
 
 
 @pytest.fixture(autouse=True)
@@ -226,6 +228,76 @@ def test_create_hot_product_run_async_polls_stream_description(tmp_path, monkeyp
     assert cached_run["items"][0]["title"] == "Async silicone sink tray"
 
 
+def test_ai_search_retries_without_stream_when_stream_is_forbidden(tmp_path, monkeypatch) -> None:
+    item = {
+        "title": "Non-stream silicone sink tray",
+        "image_url": "https://example.com/non-stream-sink-tray.jpg",
+        "rank": 1,
+        "source_url": "https://www.amazon.com/dp/example-non-stream",
+        "keyword": "kitchen",
+        "price": {"amount": 13.99, "currency": "USD"},
+        "rating": 4.5,
+        "review_count": 380,
+        "hot_score": 82,
+    }
+    calls: list[bool] = []
+
+    def fake_chat_json(app_dir, app_config, use_case_id, messages, **kwargs):
+        calls.append(bool(kwargs.get("stream")))
+        if kwargs.get("stream"):
+            raise product_research_methods.ai_gateway.AIHTTPError(
+                status_code=403,
+                reason="Forbidden",
+                detail="stream is not allowed",
+                model_id="web_search_model",
+                model_name="web-search-model",
+                api_style="openai_compatible",
+                endpoint="ai.example.com/v1/chat/completions",
+            )
+        return {"items": [item]}
+
+    monkeypatch.setattr(product_research_methods.ai_gateway, "chat_json", fake_chat_json)
+    config = normalize_product_research_config(default_product_research_config())
+
+    run = product_research_service.create_hot_product_run(tmp_path, hot_product_payload(), config, web_search_app_config())
+
+    assert calls == [True, False]
+    assert run["status"] == "completed"
+    assert run["items"][0]["title"] == "Non-stream silicone sink tray"
+    assert run["source_status"][0]["status"] == "success"
+    assert run["source_status"][0]["stream_enabled"] is False
+    assert run["source_status"][0]["stream_fallback_used"] is True
+
+
+def test_ai_search_does_not_retry_official_client_forbidden_error(tmp_path, monkeypatch) -> None:
+    calls: list[bool] = []
+
+    def fake_chat_json(app_dir, app_config, use_case_id, messages, **kwargs):
+        calls.append(bool(kwargs.get("stream")))
+        raise product_research_methods.ai_gateway.AIHTTPError(
+            status_code=403,
+            reason="Forbidden",
+            detail='{"error":{"message":"This account only allows Codex official clients","type":"forbidden_error"}}',
+            model_id="web_search_model",
+            model_name="web-search-model",
+            api_style="openai_responses",
+            endpoint="ai.example.com/v1/responses",
+        )
+
+    monkeypatch.setattr(product_research_methods.ai_gateway, "chat_json", fake_chat_json)
+    config = normalize_product_research_config(default_product_research_config())
+
+    run = product_research_service.create_hot_product_run(tmp_path, hot_product_payload(), config, web_search_app_config())
+
+    assert calls == [True]
+    assert run["status"] == "completed"
+    assert run["items"] == []
+    assert run["source_status"][0]["status"] == "failed"
+    assert "only allows Codex official clients" in run["source_status"][0]["error_message"]
+    assert run["source_status"][0]["stream_enabled"] is True
+    assert run["source_status"][0]["stream_fallback_used"] is False
+
+
 def test_hot_product_run_restores_completed_cache_after_memory_loss(tmp_path, monkeypatch) -> None:
     patch_ai_search(
         monkeypatch,
@@ -383,6 +455,7 @@ def test_target_market_normalization_adds_search_method_binding() -> None:
     market = config["target_markets"][0]
 
     assert market["search_methods"][0]["method_id"] == "ai_web_search"
+    assert market["search_methods"][0]["prompt"] == ""
     assert "prompt" not in market["search_methods"][0]["config_json"]
     assert "prompt_template" not in method["config_json"]
     assert "prompt_override" not in market["search_methods"][0]["config_json"]
@@ -460,7 +533,8 @@ def test_ai_search_uses_target_market_saved_prompt(tmp_path, monkeypatch) -> Non
                 {
                     "method_id": "ai_web_search",
                     "enabled": True,
-                    "config_json": {"prompt": "Saved market prompt for Amazon US"},
+                    "prompt": "Saved market prompt for Amazon US",
+                    "config_json": {},
                 }
             ],
         }
@@ -494,10 +568,12 @@ def test_normalize_config_removes_prompt_template_fields_and_keeps_market_prompt
     normalized = normalize_product_research_config(config)
 
     method_config = normalized["search_providers"][0]["config_json"]
-    binding_config = normalized["target_markets"][0]["search_methods"][0]["config_json"]
+    binding = normalized["target_markets"][0]["search_methods"][0]
+    binding_config = binding["config_json"]
     assert "prompt_template" not in method_config
     assert "promptTemplatePath" not in method_config
-    assert binding_config["prompt"] == "old market prompt"
+    assert binding["prompt"] == "old market prompt"
+    assert "prompt" not in binding_config
     assert "prompt_override" not in binding_config
 
 
@@ -540,6 +616,33 @@ def test_ai_gateway_parse_jsonl_items_text() -> None:
     )
 
     assert [item["title"] for item in payload["items"]] == ["A", "B"]
+
+
+def test_ai_gateway_chat_json_reports_http_error_detail(tmp_path, monkeypatch) -> None:
+    def fake_urlopen(request, timeout):
+        raise urllib.error.HTTPError(
+            request.full_url,
+            403,
+            "Forbidden",
+            {},
+            io.BytesIO(b'{"error":"web search forbidden for this model"}'),
+        )
+
+    monkeypatch.setattr(product_research_methods.ai_gateway.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(product_research_methods.ai_gateway.AIHTTPError) as exc_info:
+        product_research_methods.ai_gateway.chat_json(
+            tmp_path,
+            web_search_app_config(),
+            "research.web_search",
+            [{"role": "user", "content": "Find products"}],
+            model_id="web_search_model",
+        )
+
+    message = str(exc_info.value)
+    assert "HTTP 403" in message
+    assert "ai.example.com/v1/chat/completions" in message
+    assert "web search forbidden for this model" in message
 
 
 def test_normalize_config_removes_legacy_seeded_sources() -> None:

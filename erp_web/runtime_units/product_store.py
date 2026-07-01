@@ -6,10 +6,10 @@ import time
 from copy import deepcopy
 from typing import Any
 
-import erp_db
-import marketplace_publish as publisher
+from erp_web import db as erp_db
+from erp_web import marketplaces as publisher
 from erp_web import app_config as app_config_runtime
-from product_model import PLATFORMS, default_product_model, normalize_product_model
+from erp_web.product_model import PLATFORMS, default_product_model, normalize_product_model
 
 from .category_store import ensure_sqlite_store, read_json, write_json
 from .image_pool_core import (

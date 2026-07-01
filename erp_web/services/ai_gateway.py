@@ -5,14 +5,43 @@ from __future__ import annotations
 import json
 import logging
 import re
-import urllib.request
 import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
 from . import ai_model_config, config_service
 
 logger = logging.getLogger(__name__)
+
+
+class AIHTTPError(RuntimeError):
+    """HTTP error raised by the configured AI model endpoint."""
+
+    def __init__(
+        self,
+        *,
+        status_code: int,
+        reason: str,
+        detail: str,
+        model_id: str,
+        model_name: str,
+        api_style: str,
+        endpoint: str,
+    ) -> None:
+        self.status_code = status_code
+        self.reason = reason
+        self.detail = detail
+        self.model_id = model_id
+        self.model_name = model_name
+        self.api_style = api_style
+        self.endpoint = endpoint
+        model_label = model_id or model_name or "unknown"
+        detail_text = f": {detail}" if detail else f": {reason}" if reason else ""
+        super().__init__(
+            f"AI 模型请求失败：{model_label} ({api_style}, {endpoint}) HTTP {status_code}{detail_text}"
+        )
 
 
 def parse_json_text(raw_text: str) -> dict[str, Any]:
@@ -293,6 +322,43 @@ def _web_search_body_for_model(model: dict[str, Any]) -> dict[str, Any]:
     return {"web_search_options": extra.get("web_search_options") or {"search_context_size": "medium"}}
 
 
+def _safe_endpoint_label(url: str) -> str:
+    parsed = urllib.parse.urlparse(str(url or ""))
+    if not parsed.netloc:
+        return str(url or "").strip()
+    return f"{parsed.netloc}{parsed.path}"
+
+
+def _http_error_detail(exc: urllib.error.HTTPError) -> str:
+    try:
+        detail = exc.read().decode("utf-8", errors="replace")
+    except Exception:
+        detail = ""
+    text = re.sub(r"\s+", " ", str(detail or "").strip())
+    text = re.sub(r"Bearer\s+[A-Za-z0-9._~+/=-]+", "Bearer ***", text, flags=re.IGNORECASE)
+    text = re.sub(r"sk-[A-Za-z0-9_-]{12,}", "sk-***", text)
+    return text[:1000]
+
+
+def _ai_http_error(
+    exc: urllib.error.HTTPError,
+    *,
+    model: dict[str, Any],
+    model_name: str,
+    api_style: str,
+    url: str,
+) -> AIHTTPError:
+    return AIHTTPError(
+        status_code=int(exc.code or 0),
+        reason=str(exc.reason or ""),
+        detail=_http_error_detail(exc),
+        model_id=str(model.get("id") or ""),
+        model_name=model_name,
+        api_style=api_style,
+        endpoint=_safe_endpoint_label(url),
+    )
+
+
 def _resolved_model(app_dir: Path | str, app_config: dict[str, Any] | None, use_case_id: str, model_id: str = "") -> dict[str, Any]:
     config_service.load_env(app_dir)
     return ai_model_config.resolve_ai_model(app_config, use_case_id, model_id=model_id)
@@ -562,10 +628,7 @@ def _probe_image_edit_capability(base_url: str, api_key: str, model_name: str, t
 
 def _capability_error_text(exc: Exception) -> str:
     if isinstance(exc, urllib.error.HTTPError):
-        try:
-            detail = exc.read().decode("utf-8", errors="replace")
-        except Exception:
-            detail = ""
+        detail = _http_error_detail(exc)
         return f"{exc.code} {detail or exc.reason}".strip()
     return str(exc)
 
@@ -671,12 +734,15 @@ def chat_json(
         },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        if stream:
-            if api_style == ai_model_config.API_STYLE_OPENAI_RESPONSES:
-                return _parse_chat_json_text_or_payload(_read_responses_stream_text(response, token_callback))
-            return _parse_chat_json_text_or_payload(_read_chat_stream_text(response, token_callback))
-        raw = response.read()
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            if stream:
+                if api_style == ai_model_config.API_STYLE_OPENAI_RESPONSES:
+                    return _parse_chat_json_text_or_payload(_read_responses_stream_text(response, token_callback))
+                return _parse_chat_json_text_or_payload(_read_chat_stream_text(response, token_callback))
+            raw = response.read()
+    except urllib.error.HTTPError as exc:
+        raise _ai_http_error(exc, model=model, model_name=model_name, api_style=api_style, url=url) from exc
     payload = json.loads(raw.decode("utf-8")) if raw else {}
     return parse_json_text(_chat_response_text(payload))
 
@@ -738,6 +804,7 @@ def test_ai_model(app_dir: Path | str, model: dict[str, Any]) -> dict[str, Any]:
 
 
 __all__ = [
+    "AIHTTPError",
     "chat_json",
     "list_remote_models",
     "parse_json_text",

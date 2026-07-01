@@ -4,8 +4,8 @@ from __future__ import annotations
 import urllib.parse
 from typing import Any
 
-import marketplace_publish as publisher
-from services import ai_gateway, ai_model_config
+from erp_web import marketplaces as publisher
+from erp_web.services import ai_gateway, ai_model_config
 
 from .product_store import (
     _store_auth_result_fields,

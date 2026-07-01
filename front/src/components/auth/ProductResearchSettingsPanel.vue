@@ -293,34 +293,27 @@ function defaultAiPrompt(market: ProductResearchTargetMarket) {
   })
 }
 
-function defaultBindingConfig(provider?: ProductResearchSourceRegistryItem | null, market?: ProductResearchTargetMarket | null): UnknownRecord {
-  if (isAiSearchMethod(provider) && market) {
-    return { prompt: defaultAiPrompt(market) }
-  }
-  return {}
+function defaultBindingPrompt(provider?: ProductResearchSourceRegistryItem | null, market?: ProductResearchTargetMarket | null): string {
+  return isAiSearchMethod(provider) && market ? defaultAiPrompt(market) : ''
 }
 
 function bindingConfigField(binding: ProductResearchMarketSearchMethodBinding, field: string, fallback = '') {
   return String(binding.configJson[field] ?? fallback)
 }
 
-function updateBindingConfigField(binding: ProductResearchMarketSearchMethodBinding, field: string, value: string | number | boolean) {
-  binding.configJson = {
-    ...binding.configJson,
-    [field]: value,
-  }
+function updateBindingPrompt(binding: ProductResearchMarketSearchMethodBinding, value: string) {
+  binding.prompt = value
 }
 
 function selectedBindingPrompt() {
   if (!selectedMarketBinding.value) return ''
-  const savedPrompt = bindingConfigField(selectedMarketBinding.value, 'prompt')
-  if (savedPrompt) return savedPrompt
+  if (selectedMarketBinding.value.prompt) return selectedMarketBinding.value.prompt
   return selectedMarket.value ? defaultAiPrompt(selectedMarket.value) : ''
 }
 
 function resetSelectedBindingPrompt() {
   if (!selectedMarketBinding.value || !selectedMarket.value) return
-  updateBindingConfigField(selectedMarketBinding.value, 'prompt', defaultAiPrompt(selectedMarket.value))
+  updateBindingPrompt(selectedMarketBinding.value, defaultAiPrompt(selectedMarket.value))
 }
 
 function ensureAiBindingPrompts() {
@@ -328,11 +321,8 @@ function ensureAiBindingPrompts() {
     for (const binding of market.searchMethods) {
       const provider = methodForBinding(binding)
       if (!isAiSearchMethod(provider)) continue
-      if (bindingConfigField(binding, 'prompt')) continue
-      binding.configJson = {
-        ...binding.configJson,
-        prompt: defaultAiPrompt(market),
-      }
+      if (binding.prompt) continue
+      binding.prompt = defaultAiPrompt(market)
     }
   }
 }
@@ -347,7 +337,8 @@ function selectMarketSearchMethod(providerId: string) {
   market.searchMethods.push({
     methodId: provider.id,
     enabled: true,
-    configJson: defaultBindingConfig(provider, market),
+    prompt: defaultBindingPrompt(provider, market),
+    configJson: {},
     raw: {},
   })
 }
@@ -1062,7 +1053,7 @@ onMounted(loadSettings)
                       class="input min-h-36 resize-y font-mono text-xs leading-5"
                       :value="selectedBindingPrompt()"
                       spellcheck="false"
-                      @input="updateBindingConfigField(selectedMarketBinding, 'prompt', eventText($event))"
+                      @input="updateBindingPrompt(selectedMarketBinding, eventText($event))"
                     />
                   </label>
                   <button

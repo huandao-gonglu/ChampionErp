@@ -7,6 +7,7 @@ from typing import Any
 
 from .common import CATEGORY_CACHE_DIR, CATEGORY_CACHE_FILES, normalize_list
 from .defaults import default_draft
+from .merge_model import normalize_product_model
 
 def _seed_category_cache_records(platform: str) -> dict[str, Any]:
     platform = str(platform or "").strip().lower()

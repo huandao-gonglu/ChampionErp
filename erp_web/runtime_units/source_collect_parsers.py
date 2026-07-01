@@ -6,8 +6,8 @@ import urllib.parse
 from copy import deepcopy
 from typing import Any
 
-from product_model import default_product_model, parse_dimensions_text
-from services import html_extract_service as legacy
+from erp_web.product_model import default_product_model, parse_dimensions_text
+from erp_web.services import html_extract_service as legacy
 
 from .product_store import normalize_list, normalize_product_fields, normalize_space
 from .runtime_common import SOURCE_DIR

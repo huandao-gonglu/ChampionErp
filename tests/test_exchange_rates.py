@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import erp_web_app
+from erp_web import runtime as erp_web_app
 
 
 def test_extract_usd_rates_supports_open_er_api_payload() -> None:

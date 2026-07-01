@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 def test_find_chrome_path_prefers_env_override(monkeypatch, tmp_path: Path) -> None:
-    import erp_web_app
+    from erp_web import runtime as erp_web_app
 
     fake_browser = tmp_path / "Google Chrome"
     fake_browser.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -15,7 +15,7 @@ def test_find_chrome_path_prefers_env_override(monkeypatch, tmp_path: Path) -> N
 
 
 def test_find_chrome_path_detects_macos_chrome_candidate(monkeypatch) -> None:
-    import erp_web_app
+    from erp_web import runtime as erp_web_app
 
     expected = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
     monkeypatch.delenv("ERP_CHROME_PATH", raising=False)
@@ -29,7 +29,7 @@ def test_find_chrome_path_detects_macos_chrome_candidate(monkeypatch) -> None:
 
 
 def test_fetch_browser_session_defaults_to_unified_debug_port(monkeypatch) -> None:
-    import erp_web_app
+    from erp_web import runtime as erp_web_app
 
     opened: dict[str, object] = {}
 
@@ -80,7 +80,7 @@ def test_fetch_browser_session_defaults_to_unified_debug_port(monkeypatch) -> No
 
 
 def test_open_1688_browser_uses_unified_debug_port(monkeypatch) -> None:
-    import erp_web_app
+    from erp_web import runtime as erp_web_app
 
     opened: dict[str, object] = {}
 

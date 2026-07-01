@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import marketplace_publish
+from erp_web import marketplaces as marketplace_publish
 
 
 def test_global_mercadolibre_payload_includes_top_level_pictures() -> None:

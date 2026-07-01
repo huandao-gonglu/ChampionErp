@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from services import image_service, image_translate_service
+from erp_web.services import image_service, image_translate_service
 
 
 IMAGE_POST_PATHS = {

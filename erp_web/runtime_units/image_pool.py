@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from product_model import (
+from erp_web.product_model import (
     PLATFORMS,
     SOURCE_COMPAT_IMAGE_ORIGINS,
     default_draft,
@@ -17,7 +17,7 @@ from product_model import (
     normalize_image_pool,
     normalize_image_pool_item,
 )
-from services import image_service
+from erp_web.services import image_service
 
 from .browser_debug import file_url
 from .image_pool_core import (

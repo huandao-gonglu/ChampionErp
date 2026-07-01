@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from services import config_service
+from erp_web.services import config_service
 
 from .common import JsonRequestHandler
 from .. import runtime as app

@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import urllib.parse
 
-from routes import image_routes
+from erp_web.http_route_units import image_routes
 from . import runtime as app
 from .http_route_units import (
     auth_config_routes,

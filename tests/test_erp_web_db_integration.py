@@ -8,11 +8,11 @@ import urllib.parse
 from pathlib import Path
 from unittest.mock import patch
 
-import erp_db
-import erp_web_app
+from erp_web import db as erp_db
+from erp_web import runtime as erp_web_app
 from erp_web.http_handler import Handler
-from routes import image_routes
-from services import image_translate_service
+from erp_web.http_route_units import image_routes
+from erp_web.services import image_translate_service
 from tests.test_erp_db import sample_product
 
 

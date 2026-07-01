@@ -7,7 +7,7 @@ import urllib.request
 from typing import Any
 
 from erp_web import app_config as app_config_runtime
-from services import pricing_service
+from erp_web.services import pricing_service
 
 from .product_store import load_app_config
 from .runtime_common import EXCHANGE_RATE_CACHE

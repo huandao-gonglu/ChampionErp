@@ -49,6 +49,7 @@ class ProductResearchDataSource(TypedDict, total=False):
 class ProductResearchMarketSearchMethodBinding(TypedDict, total=False):
     method_id: str
     enabled: bool
+    prompt: str
     config_json: dict[str, Any]
 
 
@@ -86,6 +87,10 @@ class ProductResearchSourceStatus(TypedDict, total=False):
     raw_items_found: int
     items_filtered: int
     diagnostic_message: str
+    ai_model_id: str
+    api_style: str
+    stream_enabled: bool
+    stream_fallback_used: bool
 
 
 class ProductResearchRun(TypedDict, total=False):

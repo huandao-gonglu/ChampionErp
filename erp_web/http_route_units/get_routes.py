@@ -4,8 +4,8 @@ from __future__ import annotations
 import urllib.parse
 from typing import Callable
 
-from services import config_service
-from routes import static_routes
+from erp_web.services import config_service
+from erp_web.http_route_units import static_routes
 from .common import JsonRequestHandler
 from .. import runtime as app
 from ..runtime_units.category_refresh import get_category_cache_refresh_job

@@ -6,9 +6,9 @@ from pathlib import Path
 import urllib.error
 
 from conftest import assert_no_old_path
-import erp_web_app
+from erp_web import runtime as erp_web_app
 import erp_web.runtime as erp_runtime
-from services import ai_gateway, ai_model_config, copy_service
+from erp_web.services import ai_gateway, ai_model_config, copy_service
 
 
 def test_generate_copy_without_api_key_returns_warning(app_dir: Path) -> None:
@@ -66,7 +66,7 @@ def test_prompt_contains_manual_product_data_and_mexico_spanish() -> None:
 
 
 def test_copy_service_does_not_hardcode_keys(app_dir: Path, old_path_markers: tuple[str, ...]) -> None:
-    source = (app_dir / "services" / "copy_service.py").read_text(encoding="utf-8", errors="ignore")
+    source = (app_dir / "erp_web" / "services" / "copy_service.py").read_text(encoding="utf-8", errors="ignore")
     assert "sk-" not in source
     assert_no_old_path(source, old_path_markers)
 
