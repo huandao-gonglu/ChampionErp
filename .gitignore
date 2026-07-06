@@ -1,6 +1,7 @@
 node_modules/
 .venv/
 .codegraph/
+.DS_Store
 __pycache__/
 .pytest_cache/
 test-results/
