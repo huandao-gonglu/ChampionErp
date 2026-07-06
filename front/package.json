@@ -3,9 +3,14 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "main": "desktop/main.cjs",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vue-tsc -b && vite build",
+    "build:desktop": "vue-tsc -b && vite build --mode desktop",
+    "desktop:dev": "pnpm build:desktop && electron .",
+    "desktop:pack": "pnpm build:desktop && electron-builder --dir",
+    "desktop:dist": "pnpm build:desktop && electron-builder",
     "preview": "vite preview --host 127.0.0.1",
     "lint": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts --fix",
     "lint:check": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts",
@@ -32,6 +37,8 @@
     "@vitest/coverage-v8": "^2.1.9",
     "@vue/test-utils": "^2.4.10",
     "autoprefixer": "^10.5.0",
+    "electron": "^43.0.0",
+    "electron-builder": "^26.15.3",
     "eslint": "^9.39.4",
     "eslint-plugin-vue": "^9.33.0",
     "globals": "^15.15.0",
@@ -45,5 +52,34 @@
     "vitest": "^2.1.9",
     "vue-eslint-parser": "^10.4.1",
     "vue-tsc": "^2.2.12"
+  },
+  "build": {
+    "appId": "com.champion.erp.front",
+    "productName": "Champion ERP",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "desktop/**/*",
+      "dist-desktop/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ]
+    }
   }
 }
