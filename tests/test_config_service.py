@@ -257,6 +257,39 @@ def test_normalize_app_config_keeps_1688_api_credentials() -> None:
     assert saved["1688_api"]["masked_app_secret"].startswith("secr")
 
 
+def test_normalize_app_config_keeps_yunexpress_credentials() -> None:
+    from erp_web import runtime as erp_web_app
+
+    saved = erp_web_app.normalize_app_config(
+        {
+            "yunexpress": {
+                "environment": "production",
+                "base_url": "https://openapi.example.test",
+                "app_id": "app-id-123456",
+                "app_secret": "secret-abcdef",
+                "source_key": "source-key-xyz",
+                "product_code": "S1002",
+                "label_type": "pdf",
+                "weight_unit": "kg",
+                "size_unit": "cm",
+                "timeout_seconds": "30",
+            }
+        }
+    )
+
+    assert saved["yunexpress"]["environment"] == "production"
+    assert saved["yunexpress"]["base_url"] == "https://openapi.example.test"
+    assert saved["yunexpress"]["app_id"] == "app-id-123456"
+    assert saved["yunexpress"]["app_secret"] == "secret-abcdef"
+    assert saved["yunexpress"]["source_key"] == "source-key-xyz"
+    assert saved["yunexpress"]["product_code"] == "S1002"
+    assert saved["yunexpress"]["label_type"] == "PDF"
+    assert saved["yunexpress"]["weight_unit"] == "KG"
+    assert saved["yunexpress"]["size_unit"] == "CM"
+    assert saved["yunexpress"]["masked_app_secret"].startswith("secr")
+    assert saved["yunexpress"]["status"] == "已配置"
+
+
 def test_normalize_app_config_migrates_legacy_nested_ai_sections(app_dir: Path) -> None:
     from erp_web import runtime as erp_web_app
 

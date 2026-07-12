@@ -21,6 +21,7 @@ PRODUCT_RESEARCH_SENSITIVE_CONFIG_KEYS = {
     "password",
     "refresh_token",
     "secret",
+    "source_key",
     "token",
 }
 
@@ -111,6 +112,10 @@ def merge_ai_config(app_dir: Path | str, current: dict[str, Any], incoming: dict
         current_1688_api = merged.get("1688_api") if isinstance(merged.get("1688_api"), dict) else {}
         incoming_1688_api = incoming.get("1688_api") if isinstance(incoming.get("1688_api"), dict) else {}
         merged["1688_api"] = {**current_1688_api, **incoming_1688_api}
+    if isinstance(incoming.get("yunexpress"), dict):
+        current_yunexpress = merged.get("yunexpress") if isinstance(merged.get("yunexpress"), dict) else {}
+        incoming_yunexpress = incoming.get("yunexpress") if isinstance(incoming.get("yunexpress"), dict) else {}
+        merged["yunexpress"] = {**current_yunexpress, **incoming_yunexpress}
     return merged
 
 
@@ -145,6 +150,10 @@ def save_config_snapshot(app_dir: Path | str, config: dict[str, Any]) -> Path:
         for key in ("app_key", "app_secret", "access_token"):
             if safe["1688_api"].get(key):
                 safe["1688_api"][key] = mask_secret(safe["1688_api"][key])
+    if isinstance(safe.get("yunexpress"), dict):
+        for key in ("app_id", "app_secret", "source_key"):
+            if safe["yunexpress"].get(key):
+                safe["yunexpress"][key] = mask_secret(safe["yunexpress"][key])
     product_research = safe.get("product_research")
     if isinstance(product_research, dict):
         sources = []

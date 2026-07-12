@@ -106,6 +106,10 @@ def test_api_config(kind: str, config: dict[str, Any], test_value: str = "") -> 
             "title": source.get("title"),
             "images_count": len(source.get("images") if isinstance(source.get("images"), list) else []),
         }
+    if kind in {"yunexpress", "yunexpress_api", "yuntu"}:
+        from ..facades.logistics_facade import test_yunexpress_config
+
+        return test_yunexpress_config(config if isinstance(config, dict) else {})
     raise RuntimeError("未知 API 测试类型。")
 
 

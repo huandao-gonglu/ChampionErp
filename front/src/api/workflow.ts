@@ -1168,7 +1168,7 @@ export async function testAiModel(model: UnknownRecord): Promise<AuthResult> {
   return normalizeAuthResult(response.data)
 }
 
-export async function testApiConfig(kind: 'exchange_rate' | '1688', config: UnknownRecord, testValue = ''): Promise<AuthResult> {
+export async function testApiConfig(kind: 'exchange_rate' | '1688' | 'yunexpress', config: UnknownRecord, testValue = ''): Promise<AuthResult> {
   const response = await apiClient.post('/api/test-api-config', { kind, config, test_value: testValue }, { validateStatus: () => true })
   return normalizeAuthResult(response.data)
 }

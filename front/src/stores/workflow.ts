@@ -1532,7 +1532,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
-  async function testPlatformApiConfig(kind: 'exchange_rate' | '1688', config: UnknownRecord, testValue = '') {
+  async function testPlatformApiConfig(kind: 'exchange_rate' | '1688' | 'yunexpress', config: UnknownRecord, testValue = '') {
     loading.value = true
     setError('')
     try {

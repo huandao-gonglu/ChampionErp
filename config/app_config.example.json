@@ -64,5 +64,19 @@
     "exchange_rate_api_url": "https://open.er-api.com/v6/latest/USD",
     "exchange_rate_timeout_seconds": "10",
     "exchange_rate_cache_ttl_seconds": "3600"
+  },
+  "yunexpress": {
+    "environment": "sandbox",
+    "base_url": "https://openapi-sbx.yunexpress.cn",
+    "app_id": "",
+    "app_secret": "",
+    "source_key": "",
+    "product_code": "",
+    "source_code": "",
+    "platform_account_code": "",
+    "label_type": "PDF",
+    "weight_unit": "KG",
+    "size_unit": "CM",
+    "timeout_seconds": "20"
   }
 }

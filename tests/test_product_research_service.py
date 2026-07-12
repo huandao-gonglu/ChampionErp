@@ -701,12 +701,14 @@ def test_normalize_search_request_ignores_keywords() -> None:
 
 
 def test_get_active_hot_product_run_returns_latest_non_terminal() -> None:
+    created_at = product_research_service._utc_now()
     queued_run = {
         "run_id": "test_active_queued",
         "status": "queued",
         "search_mode": "target_only",
-        "created_at": "2026-06-30T00:00:00Z",
+        "created_at": created_at,
         "completed_at": "",
+        "expires_at": product_research_service._run_expiry(created_at),
         "request": hot_product_payload(),
         "items": [],
         "source_status": [],
@@ -717,7 +719,7 @@ def test_get_active_hot_product_run_returns_latest_non_terminal() -> None:
         **queued_run,
         "run_id": "test_active_completed",
         "status": "completed",
-        "completed_at": "2026-06-30T00:00:02Z",
+        "completed_at": created_at,
     }
     running_run = {
         **queued_run,
