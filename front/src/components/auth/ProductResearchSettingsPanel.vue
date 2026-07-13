@@ -56,8 +56,7 @@ const selectedProviderIsAiSearch = computed(() => selectedProvider.value?.source
 const selectedProviderIsManualImport = computed(() => selectedProvider.value?.sourceType === 'manual_import' || selectedProvider.value?.providerStrategy === 'manual_import')
 const aiModels = computed(() => (props.aiModels || []).map(asRecord).filter((model) => String(model.id || '').trim()))
 const webSearchModels = computed(() => aiModels.value.filter((model) => {
-  const rawCapabilities = Array.isArray(model.effective_capabilities) && model.effective_capabilities.length ? model.effective_capabilities : model.capabilities
-  const capabilities = Array.isArray(rawCapabilities) ? rawCapabilities.map((item) => String(item || '')) : []
+  const capabilities = Array.isArray(model.capabilities) ? model.capabilities.map((item) => String(item || '')) : []
   return capabilities.includes('chat') && capabilities.includes('json') && capabilities.includes('web_search') && model.enabled !== false
 }))
 const strategyOptionsForSelectedProvider = computed(() => {

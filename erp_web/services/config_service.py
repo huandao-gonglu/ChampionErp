@@ -88,6 +88,9 @@ def merge_ai_config(app_dir: Path | str, current: dict[str, Any], incoming: dict
         }
         next_models = ai_model_config.normalize_ai_models(raw_models)
         for model in next_models:
+            if ai_model_config.model_connection_type(model) in {ai_model_config.CONNECTION_TYPE_CLI, ai_model_config.CONNECTION_TYPE_BROWSER}:
+                model["api_key"] = ""
+                continue
             model_id = str(model.get("id") or "")
             current_model = current_by_id.get(model_id, {})
             source_model = current_by_id.get(copy_source_by_id.get(model_id, ""), {})

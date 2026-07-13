@@ -5,6 +5,7 @@
     {
       "id": "default_text",
       "name": "默认文本模型",
+      "connection_type": "api",
       "provider": "DeepSeek",
       "api_style": "openai_compatible",
       "base_url": "https://api.deepseek.com",
@@ -19,6 +20,7 @@
     {
       "id": "default_image",
       "name": "默认图片模型",
+      "connection_type": "api",
       "provider": "OpenAI",
       "api_style": "openai_compatible",
       "base_url": "https://api.openai.com/v1",
@@ -30,6 +32,32 @@
       "capabilities": ["image_generate", "image_edit"],
       "quality": "medium",
       "enabled": true
+    },
+    {
+      "id": "codex_cli_text",
+      "name": "Codex CLI 文本模型",
+      "connection_type": "cli",
+      "provider": "Codex CLI",
+      "cli_tool": "codex",
+      "command": "codex",
+      "model": "",
+      "capabilities": ["chat", "json", "web_search", "image_generate"],
+      "timeout_seconds": "180",
+      "sandbox": "read-only",
+      "enabled": false
+    },
+    {
+      "id": "browser_ai_text",
+      "name": "浏览器 AI 文本模型",
+      "connection_type": "browser",
+      "provider": "浏览器 AI",
+      "browser_provider": "chatgpt",
+      "browser_mode": "managed_profile",
+      "browser_profile": "",
+      "model": "",
+      "capabilities": ["chat", "json"],
+      "timeout_seconds": "180",
+      "enabled": false
     }
   ],
   "ai_use_case_bindings": {},

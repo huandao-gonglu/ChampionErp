@@ -3,7 +3,38 @@
 from __future__ import annotations
 
 import os
+import shutil
 from typing import Any
+
+CONNECTION_TYPE_API = "api"
+CONNECTION_TYPE_CLI = "cli"
+CONNECTION_TYPE_BROWSER = "browser"
+AI_CONNECTION_TYPES = (CONNECTION_TYPE_API, CONNECTION_TYPE_CLI, CONNECTION_TYPE_BROWSER)
+
+CLI_TOOL_CODEX = "codex"
+CLI_TOOL_CLAUDE = "claude"
+CLI_TOOL_GEMINI = "gemini"
+CLI_TOOL_GLM = "glm"
+CLI_TOOL_CUSTOM = "custom"
+AI_CLI_TOOL_DEFAULT_COMMANDS = {
+    CLI_TOOL_CODEX: "codex",
+    CLI_TOOL_CLAUDE: "claude",
+    CLI_TOOL_GEMINI: "gemini",
+    CLI_TOOL_GLM: "glm",
+    CLI_TOOL_CUSTOM: "",
+}
+AI_CLI_TOOL_LABELS = {
+    CLI_TOOL_CODEX: "Codex CLI",
+    CLI_TOOL_CLAUDE: "Claude CLI",
+    CLI_TOOL_GEMINI: "Gemini CLI",
+    CLI_TOOL_GLM: "GLM CLI",
+    CLI_TOOL_CUSTOM: "自定义 CLI",
+}
+AI_CLI_TOOLS = tuple(AI_CLI_TOOL_DEFAULT_COMMANDS)
+CLI_DEFAULT_SANDBOX = "read-only"
+BROWSER_MODE_MANAGED_PROFILE = "managed_profile"
+BROWSER_MODE_EXISTING_BROWSER = "existing_browser"
+AI_BROWSER_MODES = (BROWSER_MODE_MANAGED_PROFILE, BROWSER_MODE_EXISTING_BROWSER)
 
 CAP_CHAT = "chat"
 CAP_JSON = "json"
@@ -41,7 +72,6 @@ AI_MODEL_CAPABILITIES = (
     CAP_IMAGE_EDIT,
     CAP_TOOL_CALLING,
 )
-
 AI_HTTP_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -115,30 +145,33 @@ def normalize_capabilities(value: Any) -> list[str]:
     return result
 
 
+def normalize_connection_type(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in AI_CONNECTION_TYPES else CONNECTION_TYPE_API
+
+
+def normalize_cli_tool(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in AI_CLI_TOOLS else CLI_TOOL_CODEX
+
+
+def default_cli_command(cli_tool: str) -> str:
+    return AI_CLI_TOOL_DEFAULT_COMMANDS.get(normalize_cli_tool(cli_tool), "")
+
+
 def normalize_api_style(value: Any) -> str:
     text = str(value or "").strip().lower()
     return text if text in AI_API_STYLES else API_STYLE_OPENAI_COMPATIBLE
 
 
+def normalize_browser_mode(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in AI_BROWSER_MODES else BROWSER_MODE_MANAGED_PROFILE
+
+
 def normalize_model_quality_level(value: Any) -> str:
     text = str(value or "").strip().lower()
     return AI_MODEL_QUALITY_ALIASES.get(text, MODEL_QUALITY_BALANCED)
-
-
-def normalize_capability_results(value: Any) -> dict[str, dict[str, Any]]:
-    raw = value if isinstance(value, dict) else {}
-    results: dict[str, dict[str, Any]] = {}
-    for capability, result in raw.items():
-        key = str(capability or "").strip().lower()
-        if key not in AI_MODEL_CAPABILITIES:
-            continue
-        record = result if isinstance(result, dict) else {}
-        results[key] = {
-            "ok": bool(record.get("ok")),
-            "error": str(record.get("error") or "").strip(),
-            "detail": str(record.get("detail") or "").strip(),
-        }
-    return results
 
 
 def model_has_image_capability(model: dict[str, Any]) -> bool:
@@ -151,6 +184,7 @@ def default_ai_models() -> list[dict[str, Any]]:
         {
             "id": "default_text",
             "name": "默认文本模型",
+            "connection_type": CONNECTION_TYPE_API,
             "provider": "DeepSeek",
             "api_style": "openai_compatible",
             "base_url": "https://api.deepseek.com",
@@ -166,6 +200,7 @@ def default_ai_models() -> list[dict[str, Any]]:
         {
             "id": "default_image",
             "name": "默认图片模型",
+            "connection_type": CONNECTION_TYPE_API,
             "provider": "OpenAI",
             "api_style": "openai_compatible",
             "base_url": "https://api.openai.com/v1",
@@ -184,45 +219,78 @@ def default_ai_models() -> list[dict[str, Any]]:
 
 def normalize_ai_model(value: Any, index: int = 0) -> dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
-    fallback = default_ai_models()[index] if index < len(default_ai_models()) else {}
-    fallback_envs = fallback if not raw else {}
-    model_id = str(raw.get("id") or fallback.get("id") or f"ai_model_{index + 1}").strip()
-    capabilities = normalize_capabilities(raw.get("capabilities") or fallback.get("capabilities"))
-    if not capabilities:
-        capabilities = [CAP_CHAT, CAP_JSON]
+    model_id = str(raw.get("id") or f"ai_model_{index + 1}").strip()
+    connection_type = normalize_connection_type(raw.get("connection_type"))
+    cli_tool = normalize_cli_tool(raw.get("cli_tool") or raw.get("cli_provider") or raw.get("tool"))
+    cli_command = str(raw.get("command") or raw.get("cli_command") or raw.get("command_path") or "").strip()
+    if connection_type == CONNECTION_TYPE_CLI and not cli_command:
+        cli_command = default_cli_command(cli_tool)
+    capabilities = normalize_capabilities(raw.get("capabilities"))
+    provider = str(raw.get("provider") or "OpenAI-Compatible").strip()
+    base_url = str(raw.get("base_url") or "").strip()
+    base_url_env = str(raw.get("base_url_env") or "").strip()
+    api_key = str(raw.get("api_key") or "").strip()
+    api_key_env = str(raw.get("api_key_env") or "").strip()
+    model_name_value = str(raw.get("model") or "").strip()
+    model_env = str(raw.get("model_env") or "").strip()
+    if connection_type == CONNECTION_TYPE_CLI:
+        provider = str(raw.get("provider") or AI_CLI_TOOL_LABELS.get(cli_tool) or "本地 CLI").strip()
+        base_url = ""
+        base_url_env = ""
+        api_key = ""
+        api_key_env = ""
+        model_name_value = str(raw.get("model") or "").strip()
+        model_env = ""
+    if connection_type == CONNECTION_TYPE_BROWSER:
+        provider = str(raw.get("provider") or "浏览器 AI").strip()
+        base_url = ""
+        base_url_env = ""
+        api_key = ""
+        api_key_env = ""
+        model_name_value = str(raw.get("model") or "").strip()
+        model_env = ""
     normalized: dict[str, Any] = {
         "id": model_id,
-        "name": str(raw.get("name") or fallback.get("name") or model_id).strip(),
-        "provider": str(raw.get("provider") or fallback.get("provider") or "OpenAI-Compatible").strip(),
-        "api_style": normalize_api_style(raw.get("api_style") or fallback.get("api_style")),
-        "base_url": str(raw.get("base_url") or fallback.get("base_url") or "").strip(),
-        "base_url_env": str(raw.get("base_url_env") or fallback_envs.get("base_url_env") or "").strip(),
-        "api_key": str(raw.get("api_key") or "").strip(),
-        "api_key_env": str(raw.get("api_key_env") or fallback_envs.get("api_key_env") or "").strip(),
-        "model": str(raw.get("model") or fallback.get("model") or "").strip(),
-        "model_env": str(raw.get("model_env") or fallback_envs.get("model_env") or "").strip(),
+        "name": str(raw.get("name") or model_id).strip(),
+        "connection_type": connection_type,
+        "provider": provider,
+        "api_style": normalize_api_style(raw.get("api_style")),
+        "base_url": base_url,
+        "base_url_env": base_url_env,
+        "api_key": api_key,
+        "api_key_env": api_key_env,
+        "model": model_name_value,
+        "model_env": model_env,
         "capabilities": capabilities,
-        "enabled": bool(raw.get("enabled", fallback.get("enabled", True))),
+        "enabled": bool(raw.get("enabled", True)),
     }
-    detected = normalize_capabilities(raw.get("detected_capabilities") or raw.get("supported_capabilities"))
-    unsupported = normalize_capabilities(raw.get("unsupported_capabilities"))
-    capability_results = normalize_capability_results(raw.get("capability_results"))
-    if detected:
-        normalized["detected_capabilities"] = detected
-    if unsupported:
-        normalized["unsupported_capabilities"] = unsupported
-    if capability_results:
-        normalized["capability_results"] = capability_results
+    if connection_type == CONNECTION_TYPE_CLI:
+        normalized["cli_tool"] = cli_tool
+        normalized["command"] = cli_command
+        normalized["profile"] = str(raw.get("profile") or raw.get("cli_profile") or "").strip()
+        normalized["sandbox"] = str(raw.get("sandbox") or CLI_DEFAULT_SANDBOX).strip() or CLI_DEFAULT_SANDBOX
+    if connection_type == CONNECTION_TYPE_BROWSER:
+        normalized["browser_provider"] = str(raw.get("browser_provider") or raw.get("browserProvider") or "").strip()
+        if not normalized["browser_provider"]:
+            normalized["browser_provider"] = "chatgpt"
+        normalized["browser_mode"] = normalize_browser_mode(raw.get("browser_mode") or raw.get("browserMode"))
+        normalized["browser_profile"] = str(raw.get("browser_profile") or raw.get("browserProfile") or "").strip()
+        browser_port = str(raw.get("browser_port") or raw.get("browserPort") or "").strip()
+        if browser_port:
+            normalized["browser_port"] = browser_port
+        browser_url = str(raw.get("browser_url") or raw.get("browserUrl") or "").strip()
+        if browser_url:
+            normalized["browser_url"] = browser_url
     image_capable = model_has_image_capability(normalized)
-    quality_level_source = raw.get("quality_level", fallback.get("quality_level"))
+    quality_level_source = raw.get("quality_level")
     if quality_level_source in (None, "") and not image_capable:
         quality_level_source = raw.get("quality")
     normalized["quality_level"] = normalize_model_quality_level(quality_level_source)
     for key in ("quality", "size"):
-        value_for_key = raw.get(key, fallback.get(key))
+        value_for_key = raw.get(key)
         if image_capable and value_for_key not in (None, ""):
             normalized[key] = value_for_key
-    value_for_key = raw.get("timeout_seconds", fallback.get("timeout_seconds"))
+    value_for_key = raw.get("timeout_seconds")
     if value_for_key not in (None, ""):
         normalized["timeout_seconds"] = value_for_key
     extra = raw.get("extra") if isinstance(raw.get("extra"), dict) else {}
@@ -288,23 +356,22 @@ def model_name(model: dict[str, Any]) -> str:
     return os.getenv(env_name, "").strip() if env_name else ""
 
 
+def model_connection_type(model: dict[str, Any]) -> str:
+    return normalize_connection_type(model.get("connection_type"))
+
+
+def model_cli_tool(model: dict[str, Any]) -> str:
+    return normalize_cli_tool(model.get("cli_tool"))
+
+
+def model_cli_command(model: dict[str, Any]) -> str:
+    command = str(model.get("command") or model.get("cli_command") or "").strip()
+    return command or default_cli_command(model_cli_tool(model))
+
+
 def model_has_capabilities(model: dict[str, Any], required: list[str] | tuple[str, ...] | set[str]) -> bool:
-    capabilities = set(model_effective_capabilities(model))
+    capabilities = set(normalize_capabilities(model.get("capabilities")))
     return all(item in capabilities for item in required)
-
-
-def model_effective_capabilities(model: dict[str, Any]) -> list[str]:
-    requested = normalize_capabilities(model.get("capabilities"))
-    results = normalize_capability_results(model.get("capability_results"))
-    if not results:
-        return requested
-    effective: list[str] = []
-    for capability in requested:
-        result = results.get(capability)
-        if result is not None and result.get("ok") is False:
-            continue
-        effective.append(capability)
-    return effective
 
 
 def resolve_ai_model(
@@ -340,15 +407,34 @@ def public_ai_config(app_config: dict[str, Any] | None) -> dict[str, Any]:
         public = dict(model)
         public["api_key_configured"] = bool(model_api_key(model))
         public["api_key_masked"] = mask_secret(model_api_key(model))
-        public["effective_capabilities"] = model_effective_capabilities(model)
         public.pop("api_key", None)
         models.append(public)
     return {
         "ai_models": models,
         "ai_use_case_bindings": normalize_ai_use_case_bindings(config.get("ai_use_case_bindings")),
         "ai_use_cases": list(AI_USE_CASES.values()),
+        "connection_types": list(AI_CONNECTION_TYPES),
+        "browser_modes": list(AI_BROWSER_MODES),
         "capabilities": list(AI_MODEL_CAPABILITIES),
         "api_styles": list(AI_API_STYLES),
+        "cli_tools": local_cli_tool_status(),
         "image_quality_options": list(AI_IMAGE_QUALITY_OPTIONS),
         "model_quality_levels": list(AI_MODEL_QUALITY_LEVELS),
     }
+
+
+def local_cli_tool_status() -> list[dict[str, Any]]:
+    tools: list[dict[str, Any]] = []
+    for tool in AI_CLI_TOOLS:
+        command = default_cli_command(tool)
+        path = shutil.which(command) if command else ""
+        tools.append(
+            {
+                "value": tool,
+                "label": AI_CLI_TOOL_LABELS.get(tool, tool),
+                "command": command,
+                "installed": bool(path),
+                "path": path or "",
+            }
+        )
+    return tools

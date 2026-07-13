@@ -1524,7 +1524,14 @@ export const useWorkflowStore = defineStore('workflow', () => {
         error: message,
         errorCode: '',
         nextAction: '请检查 API Key、Base URL 和模型名，然后再试一次。',
-        raw: { ok: false, error: message, channel: 'ai_model' },
+        raw: {
+          ok: false,
+          error: message,
+          channel: 'ai_model',
+          model_id: model.id,
+          test_trigger: model.test_trigger,
+          probe_only_capability: model.probe_only_capability,
+        },
       }
       setError(message)
     } finally {

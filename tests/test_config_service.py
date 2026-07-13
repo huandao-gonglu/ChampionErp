@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from conftest import assert_no_old_path
-from erp_web.services import ai_model_config, config_service
+from erp_web.services import ai_model_config, browser_ai_runtime, config_service
 
 
 def test_config_paths_are_project_local(app_dir: Path, old_path_markers: tuple[str, ...]) -> None:
@@ -127,6 +127,83 @@ def test_merge_config_preserves_existing_model_key_when_public_payload_is_blank(
     assert merged["ai_models"][0]["api_key"] == "saved-key"
 
 
+def test_merge_config_clears_saved_api_key_when_model_switches_to_cli(app_dir: Path) -> None:
+    current = {
+        "ai_models": [
+            {
+                "id": "copy_model",
+                "provider": "DeepSeek",
+                "api_key": "saved-key",
+                "base_url": "https://api.deepseek.com",
+                "model": "deepseek-chat",
+                "capabilities": ["chat", "json"],
+            }
+        ]
+    }
+    merged = config_service.merge_ai_config(
+        app_dir,
+        current,
+        {
+            "ai_models": [
+                {
+                    "id": "copy_model",
+                    "connection_type": "cli",
+                    "provider": "Codex CLI",
+                    "cli_tool": "codex",
+                    "command": "codex",
+                    "api_key": "",
+                    "base_url": "",
+                    "model": "",
+                    "capabilities": ["chat", "json"],
+                }
+            ]
+        },
+    )
+
+    assert merged["ai_models"][0]["connection_type"] == "cli"
+    assert merged["ai_models"][0]["api_key"] == ""
+    assert merged["ai_models"][0]["command"] == "codex"
+
+
+def test_merge_config_clears_saved_api_key_when_model_switches_to_browser(app_dir: Path) -> None:
+    current = {
+        "ai_models": [
+            {
+                "id": "copy_model",
+                "provider": "DeepSeek",
+                "api_key": "saved-key",
+                "base_url": "https://api.deepseek.com",
+                "model": "deepseek-chat",
+                "capabilities": ["chat", "json"],
+            }
+        ]
+    }
+    merged = config_service.merge_ai_config(
+        app_dir,
+        current,
+        {
+            "ai_models": [
+                {
+                    "id": "copy_model",
+                    "connection_type": "browser",
+                    "provider": "浏览器 AI",
+                    "browser_provider": "chatgpt",
+                    "browser_profile": "default",
+                    "api_key": "",
+                    "base_url": "",
+                    "model": "",
+                    "capabilities": ["chat", "json"],
+                }
+            ]
+        },
+    )
+
+    assert merged["ai_models"][0]["connection_type"] == "browser"
+    assert merged["ai_models"][0]["api_key"] == ""
+    assert merged["ai_models"][0]["browser_provider"] == "chatgpt"
+    assert merged["ai_models"][0]["browser_profile"] == "default"
+
+
 def test_normalize_ai_model_keeps_quality_only_for_image_models() -> None:
     text_model = ai_model_config.normalize_ai_model(
         {
@@ -158,6 +235,156 @@ def test_normalize_ai_model_keeps_quality_only_for_image_models() -> None:
     assert image_model["quality_level"] == "fast"
     assert image_model["quality"] == "high"
     assert image_model["size"] == "1024x1024"
+
+
+def test_normalize_ai_models_seeds_defaults_only_for_empty_config() -> None:
+    seeded = ai_model_config.normalize_ai_models(None)
+
+    assert seeded[0]["id"] == "default_text"
+    assert seeded[0]["connection_type"] == "api"
+    assert seeded[0]["provider"] == "DeepSeek"
+    assert seeded[0]["model"] == "deepseek-chat"
+    assert seeded[1]["id"] == "default_image"
+    assert seeded[1]["connection_type"] == "api"
+    assert seeded[1]["provider"] == "OpenAI"
+    assert seeded[1]["model"] == "gpt-image-1"
+
+
+def test_normalize_ai_model_does_not_inherit_positional_defaults() -> None:
+    models = ai_model_config.normalize_ai_models(
+        [
+            {
+                "id": "custom_text",
+                "name": "自定义文本模型",
+                "capabilities": ["chat", "json"],
+            },
+            {
+                "id": "custom_image",
+                "name": "自定义图片模型",
+                "capabilities": ["image_generate"],
+            },
+        ]
+    )
+
+    assert models[0]["id"] == "custom_text"
+    assert models[0]["provider"] == "OpenAI-Compatible"
+    assert models[0]["base_url"] == ""
+    assert models[0]["model"] == ""
+    assert models[0]["model_env"] == ""
+    assert models[1]["id"] == "custom_image"
+    assert models[1]["provider"] == "OpenAI-Compatible"
+    assert models[1]["base_url"] == ""
+    assert models[1]["model"] == ""
+    assert models[1]["quality_level"] == "balanced"
+
+
+def test_normalize_ai_model_keeps_empty_capabilities_empty() -> None:
+    model = ai_model_config.normalize_ai_model(
+        {
+            "id": "untested_model",
+            "name": "未测试模型",
+            "capabilities": [],
+        }
+    )
+
+    assert model["capabilities"] == []
+
+
+def test_normalize_ai_model_supports_cli_connection() -> None:
+    model = ai_model_config.normalize_ai_model(
+        {
+            "id": "codex_cli_text",
+            "name": "Codex CLI 文本模型",
+            "connection_type": "cli",
+            "provider": "Codex CLI",
+            "cli_tool": "codex",
+            "command": "",
+            "model": "",
+            "api_key": "should-not-survive",
+            "capabilities": ["chat", "json", "web_search", "image_generate", "image_edit"],
+            "timeout_seconds": "180",
+        },
+        2,
+    )
+
+    assert model["connection_type"] == "cli"
+    assert model["cli_tool"] == "codex"
+    assert model["command"] == "codex"
+    assert model["provider"] == "Codex CLI"
+    assert model["model"] == ""
+    assert model["api_key"] == ""
+    assert model["capabilities"] == ["chat", "json", "web_search", "image_generate", "image_edit"]
+    assert model["timeout_seconds"] == "180"
+    assert model["sandbox"] == "read-only"
+
+
+def test_normalize_cli_model_does_not_inherit_default_api_model_name() -> None:
+    model = ai_model_config.normalize_ai_model(
+        {
+            "id": "default_text",
+            "name": "默认文本模型",
+            "connection_type": "cli",
+            "provider": "Codex CLI",
+            "cli_tool": "codex",
+            "command": "codex",
+            "model": "",
+            "base_url": "",
+            "api_key_env": "",
+            "capabilities": ["chat", "json", "web_search"],
+        },
+        0,
+    )
+
+    assert model["connection_type"] == "cli"
+    assert model["provider"] == "Codex CLI"
+    assert model["model"] == ""
+    assert model["model_env"] == ""
+    assert model["base_url"] == ""
+    assert model["api_key_env"] == ""
+    assert model["capabilities"] == ["chat", "json", "web_search"]
+
+
+def test_normalize_browser_model_does_not_inherit_default_api_fields() -> None:
+    model = ai_model_config.normalize_ai_model(
+        {
+            "id": "default_text",
+            "name": "浏览器文本模型",
+            "connection_type": "browser",
+            "provider": "",
+            "browser_provider": "",
+            "browser_profile": "default",
+            "browser_port": "9444",
+            "model": "",
+            "base_url": "https://api.deepseek.com",
+            "api_key": "should-not-survive",
+            "api_key_env": "DEEPSEEK_API_KEY",
+            "capabilities": ["chat", "json", "web_search", "image_generate"],
+        },
+        0,
+    )
+
+    assert model["connection_type"] == "browser"
+    assert model["provider"] == "浏览器 AI"
+    assert model["browser_provider"] == "chatgpt"
+    assert model["browser_mode"] == "managed_profile"
+    assert model["browser_profile"] == "default"
+    assert model["browser_port"] == "9444"
+    assert model["model"] == ""
+    assert model["model_env"] == ""
+    assert model["base_url"] == ""
+    assert model["api_key"] == ""
+    assert model["api_key_env"] == ""
+    assert model["capabilities"] == ["chat", "json", "web_search", "image_generate"]
+    assert browser_ai_runtime.browser_ai_profile_dir("/tmp/champion", model) == Path("/tmp/champion/browser_profile/ai/chatgpt/default")
+
+
+def test_public_ai_config_exposes_connection_types_and_cli_tools(app_dir: Path) -> None:
+    public = config_service.public_ai_config(app_dir, {})
+
+    assert public["connection_types"] == ["api", "cli", "browser"]
+    assert public["browser_modes"] == ["managed_profile", "existing_browser"]
+    assert any(tool["value"] == "codex" and tool["command"] == "codex" for tool in public["cli_tools"])
+    assert "effective_capabilities" not in public["ai_models"][0]
 
 
 def test_merge_config_copies_saved_model_key_from_source_model(app_dir: Path) -> None:
