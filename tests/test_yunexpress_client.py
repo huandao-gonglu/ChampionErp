@@ -107,7 +107,7 @@ def test_yunexpress_client_requests_token_then_creates_order() -> None:
     assert len(requests) == 2
     token_request = requests[0][0]
     order_request = requests[1][0]
-    assert json.loads(token_request.data.decode("utf-8"))["sourceKey"] == "source-key"
+    assert json.loads(token_request.data.decode("utf-8"))["sourcekey"] == "source-key"
     assert order_request.full_url.endswith(CREATE_PACKAGE_PATH)
     assert order_request.get_header("Token") == "token-123"
     assert order_request.get_header("Sign")

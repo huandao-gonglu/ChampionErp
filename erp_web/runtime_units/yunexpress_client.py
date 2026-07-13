@@ -159,7 +159,8 @@ class YunExpressClient:
             "grantType": "client_credentials",
             "appId": self.config["app_id"],
             "appSecret": self.config["app_secret"],
-            "sourceKey": self.config["source_key"],
+            # 云途沙盒实际校验小写 sourcekey；sourceKey 会被误报为应用密钥错误。
+            "sourcekey": self.config["source_key"],
         }
         result = self._post_json(TOKEN_PATH, payload, signed=False)
         result_payload = result.get("result") if isinstance(result.get("result"), dict) else {}
