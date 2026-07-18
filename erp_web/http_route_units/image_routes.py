@@ -14,14 +14,15 @@ IMAGE_POST_PATHS = {
 }
 
 
-def request_product(body: dict[str, Any], app: Any) -> dict[str, Any]:
-    submitted = body.get("product") if isinstance(body.get("product"), dict) else {}
-    product_id = str(body.get("product_id") or submitted.get("product_id") or submitted.get("id") or "").strip()
-    if product_id:
-        current = app.load_product_from_index(product_id, "")
-        if current:
-            return app.normalize_product_fields(current)
-    return app.normalize_product_fields(submitted or app.load_product())
+def request_product(body: dict[str, Any], app: Any) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
+    product_id = str(body.get("product_id") or "").strip()
+    if not product_id:
+        return {}, {"ok": False, "error": "product_id 不能为空"}, 400
+    product = app.load_product_from_index(product_id, "")
+    loaded_id = str(product.get("product_id") or product.get("id") or "").strip()
+    if loaded_id != product_id:
+        return {}, {"ok": False, "error": "商品不存在", "product_id": product_id}, 404
+    return app.normalize_product_fields(product), None, 200
 
 
 def handle_post(handler: Any, path: str, app: Any) -> bool:
@@ -31,14 +32,15 @@ def handle_post(handler: Any, path: str, app: Any) -> bool:
     body = handler.read_body()
 
     if path == "/api/image-pool/upload":
-        product = request_product(body, app)
+        product, error_response, status = request_product(body, app)
+        if error_response:
+            handler.send_json(error_response, status)
+            return True
         uploads = body.get("uploads") or []
         if isinstance(uploads, dict):
             uploads = [uploads]
         if not isinstance(uploads, list) or not uploads:
             raise RuntimeError("缂哄皯涓婁紶鍥剧墖")
-        if not str(product.get("product_id") or "").strip():
-            product = app.save_product(product)
         source = product.get("source") if isinstance(product.get("source"), dict) else {}
         uploaded_items = image_service.upload_images(app.APP_DIR, uploads, str(product.get("product_id") or ""))
         if not uploaded_items:
@@ -57,23 +59,22 @@ def handle_post(handler: Any, path: str, app: Any) -> bool:
         return True
 
     if path == "/api/image-pool/save":
-        product_id = str(body.get("product_id") or "").strip()
-        product = body.get("product") if isinstance(body.get("product"), dict) else {}
-        if not product_id and isinstance(product, dict):
-            product_id = str(product.get("product_id") or product.get("id") or "").strip()
-        if not product_id and product:
-            product_id = app.save_product(product).get("product_id", "")
+        product, error_response, status = request_product(body, app)
+        if error_response:
+            handler.send_json(error_response, status)
+            return True
         result = app.save_image_pool_for_product(
-            product_id,
+            str(product.get("product_id") or ""),
             image_service.normalize_pool(body.get("image_pool") if isinstance(body.get("image_pool"), list) else [], app.APP_DIR),
         )
         handler.send_json(result, 200 if result.get("ok") else 400)
         return True
 
     if path == "/api/image-pool/action":
-        product = request_product(body, app)
-        if not str(product.get("product_id") or "").strip():
-            product = app.save_product(product)
+        product, error_response, status = request_product(body, app)
+        if error_response:
+            handler.send_json(error_response, status)
+            return True
         source = product.get("source") if isinstance(product.get("source"), dict) else {}
         pool = source.get("image_pool") if isinstance(source.get("image_pool"), list) else []
         updated_pool = image_service.apply_image_action(app.APP_DIR, pool, str(body.get("action") or ""), {**body, "product_id": product.get("product_id")})
@@ -93,7 +94,10 @@ def handle_post(handler: Any, path: str, app: Any) -> bool:
         return True
 
     if path == "/api/image-pool/sync-generated":
-        product = request_product(body, app)
+        product, error_response, status = request_product(body, app)
+        if error_response:
+            handler.send_json(error_response, status)
+            return True
         merged = app.sync_generated_images_into_pool(product)
         saved = app.save_product(merged)
         handler.send_json(
@@ -108,9 +112,10 @@ def handle_post(handler: Any, path: str, app: Any) -> bool:
         return True
 
     if path == "/api/image-translate":
-        product = request_product(body, app)
-        if not str(product.get("product_id") or "").strip():
-            product = app.save_product(product)
+        product, error_response, status = request_product(body, app)
+        if error_response:
+            handler.send_json(error_response, status)
+            return True
         image_ids = body.get("image_ids") if isinstance(body.get("image_ids"), list) else body.get("selected_image_ids") if isinstance(body.get("selected_image_ids"), list) else []
         result = image_translate_service.translate_images(
             app.APP_DIR,

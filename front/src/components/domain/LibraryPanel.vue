@@ -5,6 +5,7 @@ import type { Marketplace, ProductIndexItem } from '@/types/workflow'
 const props = defineProps<{
   items: ProductIndexItem[]
   selectedIds: string[]
+  claimPlatforms: Marketplace[]
   loading: boolean
   error?: string
 }>()
@@ -17,6 +18,7 @@ const emit = defineEmits<{
   selectAll: [checked: boolean, productIds: string[]]
   deleteItem: [item: ProductIndexItem]
   deleteSelected: []
+  setClaimPlatforms: [value: Marketplace[]]
   claim: []
   generateCopy: []
   generateImagePrompt: []
@@ -24,6 +26,11 @@ const emit = defineEmits<{
   goPublish: []
 }>()
 
+const platforms: Array<{ key: Marketplace; label: string }> = [
+  { key: 'mercadolibre', label: 'Mercado Libre' },
+  { key: 'wildberries', label: 'Wildberries' },
+  { key: 'ozon', label: 'Ozon' },
+]
 const platformFilter = ref<'all' | Marketplace>('all')
 const workflowFilter = ref('all')
 const doneStatuses = new Set(['done', 'success', 'ready', 'ready_to_publish', 'published', 'completed', 'true', 'real_publish_success'])
@@ -46,6 +53,13 @@ function confirmDelete(item: ProductIndexItem) {
 function confirmDeleteSelected() {
   if (!selectedCount.value) return
   if (window.confirm(`确认批量删除已勾选的 ${selectedCount.value} 个商品吗？删除后不可恢复。`)) emit('deleteSelected')
+}
+
+function setClaimPlatform(platform: Marketplace, checked: boolean) {
+  const next = checked
+    ? Array.from(new Set([...props.claimPlatforms, platform]))
+    : props.claimPlatforms.filter((item) => item !== platform)
+  emit('setClaimPlatforms', platforms.filter((item) => next.includes(item.key)).map((item) => item.key))
 }
 
 function statusClass(value: string) {
@@ -97,7 +111,14 @@ function statusClass(value: string) {
         </div>
       </div>
 
-      <div class="mt-4 flex flex-wrap gap-2 text-sm">
+      <div class="mt-4 flex flex-wrap items-center gap-2 text-sm">
+        <div class="flex flex-wrap items-center gap-2 rounded-lg border border-accent-200 bg-white px-3 py-2 dark:border-dark-700 dark:bg-dark-900">
+          <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">认领目标</span>
+          <label v-for="platform in platforms" :key="platform.key" class="inline-flex items-center gap-1.5 whitespace-nowrap text-xs font-semibold text-accent-700 dark:text-accent-200">
+            <input class="size-4 rounded border-accent-300 text-primary-600" type="checkbox" :checked="props.claimPlatforms.includes(platform.key)" :disabled="props.loading" @change="setClaimPlatform(platform.key, ($event.target as HTMLInputElement).checked)" />
+            {{ platform.label }}
+          </label>
+        </div>
         <button class="btn btn-secondary" :disabled="props.loading" @click="emit('claim')">批量认领到平台草稿箱</button>
         <button class="btn btn-primary" :disabled="props.loading" @click="emit('generateCopy')">批量 AI 生成标题描述</button>
         <button class="btn btn-secondary" :disabled="props.loading" @click="emit('generateImagePrompt')">生成 GPT 生图任务包</button>

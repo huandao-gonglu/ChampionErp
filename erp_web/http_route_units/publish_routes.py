@@ -10,7 +10,8 @@ PostHandler = Callable[[JsonRequestHandler], None]
 
 
 def handle_publish_precheck(handler: JsonRequestHandler) -> None:
-    handler.send_json(publish_facade.precheck_publish_payload(handler.read_body()))
+    result, status = publish_facade.precheck_publish_payload(handler.read_body())
+    handler.send_json(result, status)
 
 
 def handle_publish_payload_preview(handler: JsonRequestHandler) -> None:

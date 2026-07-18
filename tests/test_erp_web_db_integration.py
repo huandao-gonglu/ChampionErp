@@ -1053,7 +1053,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 pass
 
             handler = FakeHandler()
-            handler.read_body = lambda: {"product": stale_product, "action": "delete", "image_ids": ["remove_me"]}
+            handler.read_body = lambda: {"product_id": stale_product["product_id"], "action": "delete", "image_ids": ["remove_me"]}
             handler.send_json = lambda data, status=200: captured.update({"data": data, "status": status})
 
             image_routes.handle_post(handler, "/api/image-pool/action", erp_web_app)

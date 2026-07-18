@@ -20,10 +20,9 @@ from ..runtime_units.browser_debug import open_auth_link_in_browser
 from ..runtime_units.product_store import (
     explain_mercadolibre_auth_error,
     load_app_config,
-    load_product,
+    load_required_product_from_body,
     load_store_config,
     merge_store_config_fields,
-    normalize_product_fields,
     save_app_config,
     save_store_config,
     summarize_store_auth_states,
@@ -108,7 +107,10 @@ def handle_mercadolibre_refresh_token(handler: JsonRequestHandler) -> None:
 
 def handle_mercadolibre_real_auth_test(handler: JsonRequestHandler) -> None:
     body = handler.read_body()
-    product = normalize_product_fields(body.get("product") or load_product())
+    product, error_response, status = load_required_product_from_body(body)
+    if error_response:
+        handler.send_json(error_response, status)
+        return
     result = run_mercadolibre_07d_test(str(body.get("mode") or "auth_link"), product, str(body.get("category_id") or ""))
     handler.send_json(result)
     return

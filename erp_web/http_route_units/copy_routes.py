@@ -5,6 +5,8 @@ import logging
 
 from typing import Callable
 
+from erp_web.product_model import PLATFORMS
+
 from .common import JsonRequestHandler
 from ..runtime_units.auth_runtime import test_ai_model_config
 from ..runtime_units.copy_generation import (
@@ -16,20 +18,42 @@ from ..runtime_units.copy_generation import (
     platform_to_preset_key,
     save_copy_result,
 )
-from ..runtime_units.product_store import load_app_config, load_product, load_products_index, normalize_product_fields
+from ..runtime_units.product_store import load_app_config, load_products_index, load_required_product_from_body
 
 
 PostHandler = Callable[[JsonRequestHandler], None]
 logger = logging.getLogger(__name__)
 
+DEFAULT_COPY_LANGUAGE_BY_PLATFORM = {
+    "mercadolibre": "Spanish (Mexico)",
+    "wildberries": "Russian",
+    "ozon": "Russian",
+}
+
+
+def _copy_language(body: dict, product: dict, platform: str) -> str:
+    explicit = str(body.get("language") or "").strip()
+    if explicit:
+        return explicit
+    drafts = product.get("drafts") if isinstance(product.get("drafts"), dict) else {}
+    draft = drafts.get(platform) if isinstance(drafts.get(platform), dict) else {}
+    draft_language = str(draft.get("language") or "").strip()
+    return draft_language or DEFAULT_COPY_LANGUAGE_BY_PLATFORM.get(platform, "English")
+
+
 def handle_generate_copy(handler: JsonRequestHandler) -> None:
     body = handler.read_body()
-    product = normalize_product_fields(body.get("product") or load_product())
-    platform = str(body.get("platform", "mercadolibre") or "mercadolibre")
-    target_market = str(body.get("target_market") or platform or "mercadolibre")
-    language = str(body.get("language") or ("Spanish (Mexico)" if target_market.strip().lower() == "mercadolibre" else "English"))
+    product, error_response, status = load_required_product_from_body(body)
+    if error_response:
+        handler.send_json(error_response, status)
+        return
+    platform = str(body.get("platform") or "mercadolibre").strip().lower()
+    if platform not in PLATFORMS:
+        handler.send_json({"ok": False, "error": "不支持的平台"}, 400)
+        return
+    language = _copy_language(body, product, platform)
     mode = str(body.get("mode") or "rewrite")
-    result = generate_ai_copy_bundle(product, platform, target_market, language, mode, load_app_config())
+    result = generate_ai_copy_bundle(product, platform, platform, language, mode, load_app_config())
     product = save_copy_result(product, result["target_market"], {**result["copy"], "language": result["language"], "source_platform": result["source_platform"], "mode": result["mode"]})
     plan = apply_product_drafts_to_plan(product, build_plan_for_platform(product, platform))
     listing = plan.get("platforms", {}).get(platform_to_preset_key(platform), {}).get("listing", {})
@@ -51,7 +75,10 @@ def handle_generate_copy_batch(handler: JsonRequestHandler) -> None:
 
 def handle_generate_image_prompts(handler: JsonRequestHandler) -> None:
     body = handler.read_body()
-    product = normalize_product_fields(body.get("product") or load_product())
+    product, error_response, status = load_required_product_from_body(body)
+    if error_response:
+        handler.send_json(error_response, status)
+        return
     prompt = build_image_prompt_pack(
         product,
         body.get("platform", "mercadolibre"),

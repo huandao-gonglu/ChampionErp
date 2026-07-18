@@ -45,12 +45,14 @@ def test_collect_api_manual_import_returns_product(backend_server: str) -> None:
 
 
 def test_image_upload_and_delete_api(backend_server: str, sample_product: dict) -> None:
+    saved = post_json(backend_server, "/api/save-product", {"product": sample_product})
+    product_id = saved["product"]["product_id"]
     raw = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32).decode("ascii")
     upload = post_json(
         backend_server,
         "/api/image-pool/upload",
         {
-            "product": sample_product,
+            "product_id": product_id,
             "uploads": [
                 {
                     "filename": "api-stage3a.png",
@@ -72,7 +74,7 @@ def test_image_upload_and_delete_api(backend_server: str, sample_product: dict) 
     deleted = post_json(
         backend_server,
         "/api/image-pool/action",
-        {"product": upload["product"], "action": "delete", "image_ids": [item["id"]]},
+        {"product_id": product_id, "action": "delete", "image_ids": [item["id"]]},
     )
     assert deleted["ok"] is True
     assert all(row["id"] != item["id"] for row in deleted.get("imagePool", []))
@@ -93,11 +95,12 @@ def test_image_translate_api_returns_configuration_warning_without_key(backend_s
             "status": "ready",
         }
     ]
+    saved = post_json(backend_server, "/api/save-product", {"product": sample_product})
     data = post_json(
         backend_server,
         "/api/image-translate",
         {
-            "product": sample_product,
+            "product_id": saved["product"]["product_id"],
             "platform": "mercadolibre",
             "language": "Spanish (Mexico)",
             "image_ids": ["source_1"],
@@ -142,14 +145,14 @@ def test_calculate_price_api_returns_frontend_fields(backend_server: str) -> Non
 
 
 def test_generate_copy_api_returns_warning_without_key(backend_server: str, sample_product: dict) -> None:
+    saved = post_json(backend_server, "/api/save-product", {"product": sample_product})
+    product_id = saved["product"]["product_id"]
     data = post_json(
         backend_server,
         "/api/generate-copy",
         {
+            "product_id": product_id,
             "platform": "mercadolibre",
-            "target_market": "mercadolibre",
-            "language": "Spanish (Mexico)",
-            "product": sample_product,
         },
     )
 
@@ -157,6 +160,18 @@ def test_generate_copy_api_returns_warning_without_key(backend_server: str, samp
     assert data["copy"]["title"]
     assert "product" in data
     assert "warning" in data
+
+
+def test_generate_copy_api_requires_product_id(backend_server: str) -> None:
+    data = post_json(
+        backend_server,
+        "/api/generate-copy",
+        {"platform": "mercadolibre"},
+        expected_status=400,
+    )
+
+    assert data["ok"] is False
+    assert "product_id" in data["error"]
 
 
 def test_save_product_and_publish_precheck_api_exist(backend_server: str, sample_product: dict) -> None:
@@ -167,7 +182,7 @@ def test_save_product_and_publish_precheck_api_exist(backend_server: str, sample
     precheck = post_json(
         backend_server,
         "/api/publish-precheck",
-        {"product": saved["product"], "platforms": ["mercadolibre"]},
+        {"product_id": saved["product"]["product_id"], "platforms": ["mercadolibre"]},
     )
     assert precheck["ok"] is True
     assert "mercadolibre" in precheck["platforms"]

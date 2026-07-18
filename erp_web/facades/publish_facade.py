@@ -7,10 +7,9 @@ from erp_web.runtime_units.category_store import read_json, write_json
 from erp_web.runtime_units.collect_helpers import collect_time_iso
 from erp_web.runtime_units.product_store import (
     load_drafts_index,
-    load_product,
     load_products_index,
     load_store_config,
-    normalize_product_fields,
+    load_required_product_from_body,
     publish_queue_platforms,
     save_product,
     sync_product_workflow_statuses,
@@ -31,8 +30,10 @@ from erp_web.schemas.product import Product
 ResponseWithStatus = tuple[ApiResponse, int]
 
 
-def precheck_publish_payload(body: dict[str, Any]) -> ApiResponse:
-    product: Product = normalize_product_fields(body.get("product") or load_product())
+def precheck_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    product, error_response, status = load_required_product_from_body(body)
+    if error_response:
+        return error_response, status
     config = load_store_config()
     platforms = body.get("platforms") or []
     if isinstance(platforms, str):
@@ -54,12 +55,14 @@ def precheck_publish_payload(body: dict[str, Any]) -> ApiResponse:
         "product": saved,
         "productsIndex": load_products_index(),
         "draftsIndex": load_drafts_index(),
-    }
+    }, 200
 
 
 def preview_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
     platform = str(body.get("platform") or "mercadolibre").strip().lower()
-    product: Product = normalize_product_fields(body.get("product") or load_product())
+    product, error_response, status = load_required_product_from_body(body)
+    if error_response:
+        return error_response, status
     if platform not in PLATFORMS:
         return {"ok": False, "error": "不支持的平台"}, 400
     if platform != "mercadolibre":
@@ -102,7 +105,9 @@ def preview_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
 
 def publish_product_payload(body: dict[str, Any]) -> ResponseWithStatus:
     platform = body.get("platform", "mercadolibre")
-    product: Product = normalize_product_fields(body.get("product") or load_product())
+    product, error_response, status = load_required_product_from_body(body)
+    if error_response:
+        return error_response, status
     try:
         result = publish_product(product, platform, load_store_config())
         return result, 200 if result.get("ok") else 400
@@ -111,7 +116,9 @@ def publish_product_payload(body: dict[str, Any]) -> ResponseWithStatus:
 
 
 def confirm_mercadolibre_real_publish(body: dict[str, Any]) -> ResponseWithStatus:
-    product: Product = normalize_product_fields(body.get("product") or load_product())
+    product, error_response, status = load_required_product_from_body(body)
+    if error_response:
+        return error_response, status
     confirm = bool(body.get("confirm_real_publish") or body.get("confirm"))
     try:
         result = mercadolibre_real_publish(product, confirm)
@@ -129,7 +136,9 @@ def close_mercadolibre_item(body: dict[str, Any]) -> ResponseWithStatus:
 
 
 def enqueue_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
-    product: Product = normalize_product_fields(body.get("product") or load_product())
+    product, error_response, status = load_required_product_from_body(body)
+    if error_response:
+        return error_response, status
     platforms = body.get("platforms") or []
     if isinstance(platforms, str):
         platforms = [platforms]

@@ -79,6 +79,12 @@ function imageTranslateTimeoutMs(product: Product): number {
   return IMAGE_TRANSLATE_TIMEOUT_PER_IMAGE_MS * imageCount
 }
 
+function requiredProductId(product: Product, action = '继续操作'): string {
+  const productId = product.productId.trim()
+  if (!productId) throw new Error(`请先保存或加载商品后再${action}`)
+  return productId
+}
+
 export type {
   AiPublicConfig,
   AppStateResponse,
@@ -722,7 +728,7 @@ export async function saveCollectSettings(form: CollectForm): Promise<void> {
 
 export async function uploadImages(product: Product, uploads: Array<{ filename: string; data_url: string }>): Promise<ProductMutationResponse> {
   const response = await apiClient.post('/api/image-pool/upload', {
-    product: toBackendProduct(product),
+    product_id: requiredProductId(product, '上传图片'),
     uploads: uploads.map((upload, index) => ({
       ...upload,
       platforms: ['mercadolibre'],
@@ -735,31 +741,26 @@ export async function uploadImages(product: Product, uploads: Array<{ filename: 
 
 export async function saveImagePool(product: Product, imagePool: ImageAsset[]): Promise<ProductMutationResponse> {
   const response = await apiClient.post('/api/image-pool/save', {
-    product_id: product.productId,
-    product: toBackendProduct(product),
+    product_id: requiredProductId(product, '保存图片池'),
     image_pool: imagePool.map(toBackendImageAsset),
   })
   return normalizeProductMutation(response.data)
 }
 
 export async function imagePoolAction(product: Product, action: string, payload: UnknownRecord = {}): Promise<ProductMutationResponse> {
-  const response = await apiClient.post('/api/image-pool/action', { product: toBackendProduct(product), action, ...payload })
+  const response = await apiClient.post('/api/image-pool/action', { action, ...payload, product_id: requiredProductId(product, '更新图片池') })
   return normalizeProductMutation(response.data)
 }
 
 export async function syncGeneratedImages(product: Product): Promise<ProductMutationResponse> {
-  const response = await apiClient.post('/api/image-pool/sync-generated', { product: toBackendProduct(product) })
+  const response = await apiClient.post('/api/image-pool/sync-generated', { product_id: requiredProductId(product, '同步生成图片') })
   return normalizeProductMutation(response.data)
 }
 
 export async function generateCopy(product: Product, platform: Marketplace): Promise<ProductMutationResponse> {
-  const draftLanguage = product.drafts[platform]?.language || listingLanguageLabel(platform)
   const response = await apiClient.post('/api/generate-copy', {
+    product_id: requiredProductId(product, '生成文案'),
     platform,
-    target_market: platform,
-    language: draftLanguage,
-    listing_language: draftLanguage,
-    product: toBackendProduct(product),
   })
   return normalizeProductMutation(response.data)
 }
@@ -789,7 +790,7 @@ export async function generateCopyBatch(productIds: string[], platform: Marketpl
 export async function generateImagePrompts(product: Product, platform: Marketplace, targetLanguage = ''): Promise<string> {
   const listingLanguage = targetLanguage || product.drafts[platform]?.language || listingLanguageLabel(platform)
   const response = await apiClient.post('/api/generate-image-prompts', {
-    product: toBackendProduct(product),
+    product_id: requiredProductId(product, '生成图片提示词'),
     platform,
     language: listingLanguage,
     target_language: listingLanguage,
@@ -806,7 +807,7 @@ export async function imageTranslate(product: Product, platform: Marketplace, la
   const listingLanguage = language || product.drafts[platform]?.language || listingLanguageLabel(platform)
   const selectedImageIds = product.source.imagePool.filter((image) => image.selected).map((image) => image.id)
   const response = await apiClient.post('/api/image-translate', {
-    product: toBackendProduct(product),
+    product_id: requiredProductId(product, '翻译图片'),
     platform,
     language: listingLanguage,
     target_language: listingLanguage,
@@ -862,7 +863,7 @@ export async function calculatePrice(input: PricingInput): Promise<PricingResult
 }
 
 export async function publishPrecheck(product: Product, platforms: Marketplace[] = ['mercadolibre']): Promise<{ product: Product; precheck: PublishPrecheck; platformResults: UnknownRecord; productsIndex?: ProductIndexItem[]; draftsIndex?: DraftIndexItem[] }> {
-  const response = await apiClient.post('/api/publish-precheck', { product: toBackendProduct(product), platforms })
+  const response = await apiClient.post('/api/publish-precheck', { product_id: requiredProductId(product, '发布预检'), platforms })
   const data = asRecord(response.data)
   ensureOk(data, '预检失败')
   const firstPlatform = platforms[0] || 'mercadolibre'
@@ -886,7 +887,7 @@ export async function publishPrecheck(product: Product, platforms: Marketplace[]
 }
 
 export async function runCategoryPrecheck(product: Product, platform: Marketplace, categoryId: string): Promise<CategoryPrecheckResult> {
-  const response = await apiClient.post('/api/category-precheck', { product: toBackendProduct(product), platform, category_id: categoryId })
+  const response = await apiClient.post('/api/category-precheck', { product_id: requiredProductId(product, '类目预检'), platform, category_id: categoryId })
   const data = asRecord(response.data)
   ensureOk(data, '类目预检失败')
   return {
@@ -899,7 +900,7 @@ export async function runCategoryPrecheck(product: Product, platform: Marketplac
 }
 
 export async function previewPublishPayload(product: Product, platform: Marketplace): Promise<PayloadPreviewResult> {
-  const response = await apiClient.post('/api/publish-payload-preview', { product: toBackendProduct(product), platform })
+  const response = await apiClient.post('/api/publish-payload-preview', { product_id: requiredProductId(product, '预览发布 payload'), platform })
   const data = asRecord(response.data)
   ensureOk(data, '生成 payload 失败')
   return {
@@ -912,7 +913,7 @@ export async function previewPublishPayload(product: Product, platform: Marketpl
 }
 
 export async function enqueuePublish(product: Product, platforms: Marketplace[] = ['mercadolibre']): Promise<PublishJob> {
-  const response = await apiClient.post('/api/publish-bus/enqueue', { product: toBackendProduct(product), platforms })
+  const response = await apiClient.post('/api/publish-bus/enqueue', { product_id: requiredProductId(product, '发布入队'), platforms })
   const data = asRecord(response.data)
   ensureOk(data, '发布入队失败')
   return {
@@ -931,12 +932,12 @@ export async function fetchPublishJob(jobId: string): Promise<UnknownRecord> {
 }
 
 export async function publishProductDirect(product: Product, platform: Marketplace): Promise<ProductOperationResult> {
-  const response = await apiClient.post('/api/publish-product', { product: toBackendProduct(product), platform }, { validateStatus: () => true })
+  const response = await apiClient.post('/api/publish-product', { product_id: requiredProductId(product, '发布商品'), platform }, { validateStatus: () => true })
   return normalizeProductOperation(response.data)
 }
 
 export async function confirmMercadoLibreRealPublish(product: Product, confirm = false): Promise<ProductOperationResult> {
-  const response = await apiClient.post('/api/mercadolibre/confirm-real-publish', { product: toBackendProduct(product), confirm_real_publish: confirm, confirm }, { validateStatus: () => true })
+  const response = await apiClient.post('/api/mercadolibre/confirm-real-publish', { product_id: requiredProductId(product, '确认真实发布'), confirm_real_publish: confirm, confirm }, { validateStatus: () => true })
   return normalizeProductOperation(response.data)
 }
 
@@ -1011,7 +1012,7 @@ export async function searchCategories(platform: Marketplace, query: string, sit
 }
 
 export async function suggestCategories(product: Product, platform: Marketplace, site = ''): Promise<{ results: CategorySearchResult[]; cacheStatus: UnknownRecord; terms: string[] }> {
-  const response = await apiClient.post('/api/category-ai-suggest', { product: toBackendProduct(product), platform, site, limit: 5 })
+  const response = await apiClient.post('/api/category-ai-suggest', { product_id: requiredProductId(product, '匹配类目'), platform, site, limit: 5 })
   const data = asRecord(response.data)
   ensureOk(data, '匹配类目失败')
   const results = Array.isArray(data.suggestions)
@@ -1053,7 +1054,7 @@ function categorySelectionToBackendRecord(category: CategorySelection | null): U
 
 export async function fillCategoryAttributes(product: Product, platform: Marketplace, categoryId: string, category: CategorySelection | null = null): Promise<ProductMutationResponse & { needReview: unknown[] }> {
   const response = await apiClient.post('/api/category-ai-fill', {
-    product: toBackendProduct(product),
+    product_id: requiredProductId(product, '填充类目属性'),
     platform,
     category_id: categoryId,
     category_record: categorySelectionToBackendRecord(category),
@@ -1194,7 +1195,7 @@ export async function refreshMercadoLibreToken(params: UnknownRecord = {}): Prom
 }
 
 export async function runMercadoLibreRealAuthTest(product: Product, mode: MercadoLibreTestMode, categoryId = ''): Promise<AuthResult> {
-  const response = await apiClient.post('/api/mercadolibre/real-auth-test', { product: toBackendProduct(product), mode, category_id: categoryId }, { validateStatus: () => true })
+  const response = await apiClient.post('/api/mercadolibre/real-auth-test', { product_id: requiredProductId(product, '运行真实授权测试'), mode, category_id: categoryId }, { validateStatus: () => true })
   return normalizeAuthResult(response.data)
 }
 

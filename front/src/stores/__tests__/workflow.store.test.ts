@@ -35,6 +35,7 @@ vi.mock('@/api/workflow', () => ({
   fetchPublishLogs: vi.fn(),
   fetchPublishJob: vi.fn(),
   fetchProductsIndex: vi.fn(),
+  fetchDraftsIndex: vi.fn(),
   fetchBrowserDebugStatus: vi.fn(),
   fetchAiConfig: vi.fn(),
   fetchMercadoLibreAuthChecklist: vi.fn(),
@@ -186,5 +187,33 @@ describe('workflow store live API flow', () => {
     expect(store.lastAuthResult?.ok).toBe(false)
     expect(store.error).toBe('请先填写 App ID、App Secret 和 Refresh Token。')
     expect(workflowApi.fetchMercadoLibreAuthChecklist).toHaveBeenCalledOnce()
+  })
+
+  it('claims selected products to configured target platforms', async () => {
+    vi.mocked(workflowApi.claimProducts).mockResolvedValue({ ok: true })
+    vi.mocked(workflowApi.fetchProductsIndex).mockResolvedValue([])
+    vi.mocked(workflowApi.fetchDraftsIndex).mockResolvedValue([])
+
+    const store = useWorkflowStore()
+    store.selectedProductIds = ['product-1', 'product-2']
+    store.setClaimPlatforms(['mercadolibre', 'ozon'])
+    await store.claimSelectedProducts()
+
+    expect(workflowApi.claimProducts).toHaveBeenCalledWith(['product-1', 'product-2'], ['mercadolibre', 'ozon'])
+  })
+
+  it('pushes the current product to configured target platforms', async () => {
+    const product = collectedProduct()
+    vi.mocked(workflowApi.claimProducts).mockResolvedValue({ ok: true })
+    vi.mocked(workflowApi.loadProduct).mockResolvedValue(mutation(product))
+    vi.mocked(workflowApi.fetchProductsIndex).mockResolvedValue([])
+    vi.mocked(workflowApi.fetchDraftsIndex).mockResolvedValue([])
+
+    const store = useWorkflowStore()
+    store.product = product
+    store.setClaimPlatforms(['wildberries', 'ozon'])
+    await store.claimCurrentProduct()
+
+    expect(workflowApi.claimProducts).toHaveBeenCalledWith(['real-product-1'], ['wildberries', 'ozon'])
   })
 })

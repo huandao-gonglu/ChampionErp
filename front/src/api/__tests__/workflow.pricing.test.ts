@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { calculatePrice, imageTranslate, publishPrecheck } from '@/api/workflow'
+import { calculatePrice, generateCopy, imageTranslate, publishPrecheck } from '@/api/workflow'
 import { apiClient } from '@/api/client'
 import { createEmptyProduct } from '@/constants/initialState'
 import { normalizeProductsIndex, toBackendProduct } from '@/api/workflow/normalizers'
@@ -91,6 +91,27 @@ describe('calculatePrice API mapping', () => {
   })
 })
 
+describe('generateCopy API mapping', () => {
+  it('posts only product id and platform for single-product copy generation', async () => {
+    const product = createEmptyProduct()
+    product.productId = 'prod-1'
+    vi.mocked(apiClient.post).mockResolvedValueOnce({
+      data: {
+        ok: true,
+        product: toBackendProduct(product),
+        productsIndex: [],
+      },
+    })
+
+    await generateCopy(product, 'ozon')
+
+    expect(apiClient.post).toHaveBeenCalledWith('/api/generate-copy', {
+      product_id: 'prod-1',
+      platform: 'ozon',
+    })
+  })
+})
+
 describe('publishPrecheck API mapping', () => {
   it('maps draft statuses for the draft box', () => {
     const items = normalizeProductsIndex([
@@ -144,6 +165,7 @@ describe('publishPrecheck API mapping', () => {
 
   it('keeps structured backend issues readable for the UI', async () => {
     const product = createEmptyProduct()
+    product.productId = 'prod-1'
     vi.mocked(apiClient.post).mockResolvedValueOnce({
       data: {
         ok: true,
@@ -185,6 +207,10 @@ describe('publishPrecheck API mapping', () => {
 
     const result = await publishPrecheck(product, ['mercadolibre'])
 
+    expect(apiClient.post).toHaveBeenCalledWith('/api/publish-precheck', {
+      product_id: 'prod-1',
+      platforms: ['mercadolibre'],
+    })
     expect(result.precheck.ok).toBe(false)
     expect(result.precheck.errors).toEqual(['price：价格缺失或无效（前往核价页计算并应用售价）'])
     expect(result.precheck.warnings).toEqual(['category_path：类目路径为空'])
@@ -200,6 +226,7 @@ describe('publishPrecheck API mapping', () => {
 describe('imageTranslate API timeout', () => {
   it('scales the request timeout by selected image count', async () => {
     const product = createEmptyProduct()
+    product.productId = 'prod-1'
     product.source.imagePool = [
       { id: 'img-1', url: '', path: '', previewUrl: '', origin: 'upload', usage: 'main', platforms: ['mercadolibre'], isMain: true, selected: true, status: 'ready', width: 1000, height: 1000 },
       { id: 'img-2', url: '', path: '', previewUrl: '', origin: 'upload', usage: 'detail', platforms: ['mercadolibre'], isMain: false, selected: true, status: 'ready', width: 1000, height: 1000 },
@@ -212,12 +239,14 @@ describe('imageTranslate API timeout', () => {
     await imageTranslate(product, 'mercadolibre', 'Spanish (Mexico)')
 
     expect(apiClient.post).toHaveBeenCalledWith('/api/image-translate', expect.objectContaining({
+      product_id: 'prod-1',
       image_ids: ['img-1', 'img-2'],
     }), { timeout: 60000 })
   })
 
   it('uses the whole image pool count when no images are selected', async () => {
     const product = createEmptyProduct()
+    product.productId = 'prod-1'
     product.source.imagePool = [
       { id: 'img-1', url: '', path: '', previewUrl: '', origin: 'upload', usage: 'main', platforms: ['mercadolibre'], isMain: true, selected: false, status: 'ready', width: 1000, height: 1000 },
       { id: 'img-2', url: '', path: '', previewUrl: '', origin: 'upload', usage: 'detail', platforms: ['mercadolibre'], isMain: false, selected: false, status: 'ready', width: 1000, height: 1000 },
@@ -230,6 +259,7 @@ describe('imageTranslate API timeout', () => {
     await imageTranslate(product, 'mercadolibre', 'Spanish (Mexico)')
 
     expect(apiClient.post).toHaveBeenCalledWith('/api/image-translate', expect.objectContaining({
+      product_id: 'prod-1',
       image_ids: [],
     }), { timeout: 90000 })
   })

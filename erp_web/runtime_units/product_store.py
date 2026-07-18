@@ -425,6 +425,21 @@ def load_product_from_index(product_id: str = "", file_path: str = "") -> dict[s
     return load_product()
 
 
+def product_id_from_body(body: dict[str, Any]) -> str:
+    return str(body.get("product_id") or "").strip()
+
+
+def load_required_product_from_body(body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
+    product_id = product_id_from_body(body)
+    if not product_id:
+        return {}, {"ok": False, "error": "product_id 不能为空"}, 400
+    product = load_product_from_index(product_id, "")
+    loaded_id = str(product.get("product_id") or product.get("id") or "").strip()
+    if loaded_id != product_id:
+        return {}, {"ok": False, "error": "商品不存在", "product_id": product_id}, 404
+    return product, None, 200
+
+
 def load_draft_from_index(draft_id: str) -> dict[str, Any]:
     draft_id = str(draft_id or "").strip()
     ensure_sqlite_store()
@@ -890,7 +905,9 @@ __all__ = [
     "merge_store_config_fields",
     "normalize_app_config",
     "normalize_product_fields",
+    "product_id_from_body",
     "product_identity",
+    "load_required_product_from_body",
     "publish_queue_platforms",
     "save_app_config",
     "save_product",

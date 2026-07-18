@@ -809,6 +809,20 @@ export const useWorkflowStore = defineStore('workflow', () => {
     selectedProductIds.value = Array.from(new Set([...selectedProductIds.value, ...targetIds]))
   }
 
+  function normalizeClaimPlatforms(values: Marketplace[]) {
+    return marketplaces.filter((platform) => values.includes(platform))
+  }
+
+  function claimTargetPlatforms() {
+    const selected = normalizeClaimPlatforms(collectForm.value.selectedClaimPlatforms)
+    return selected.length ? selected : [activeMarketplace.value]
+  }
+
+  function setClaimPlatforms(values: Marketplace[]) {
+    const selected = normalizeClaimPlatforms(values)
+    collectForm.value.selectedClaimPlatforms = selected.length ? selected : [activeMarketplace.value]
+  }
+
   async function claimSelectedProducts() {
     const ids = selectedProductIds.value.length
       ? selectedProductIds.value
@@ -822,11 +836,11 @@ export const useWorkflowStore = defineStore('workflow', () => {
     loading.value = true
     setError('')
     try {
-      const platforms = collectForm.value.selectedClaimPlatforms.length ? collectForm.value.selectedClaimPlatforms : [activeMarketplace.value]
+      const platforms = claimTargetPlatforms()
       await claimProductsApi(ids, platforms)
       productsIndex.value = await fetchProductsIndex()
       draftsIndex.value = await fetchDraftsIndex()
-      addLog(`已认领 ${ids.length} 个商品到平台草稿。`)
+      addLog(`已认领 ${ids.length} 个商品到 ${platforms.join('、')} 平台草稿。`)
       return true
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '认领商品失败')
@@ -845,12 +859,13 @@ export const useWorkflowStore = defineStore('workflow', () => {
     loading.value = true
     setError('')
     try {
-      await claimProductsApi([id], [activeMarketplace.value])
+      const platforms = claimTargetPlatforms()
+      await claimProductsApi([id], platforms)
       const loaded = await loadProductApi(id, '')
       product.value = loaded.product
       productsIndex.value = await fetchProductsIndex()
       draftsIndex.value = await fetchDraftsIndex()
-      addLog(`已推到 ${activeMarketplace.value} 平台草稿箱。`)
+      addLog(`已推到 ${platforms.join('、')} 平台草稿箱。`)
       return true
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '推到平台草稿箱失败')
@@ -1822,6 +1837,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     deleteSelectedProducts,
     toggleProductSelection,
     selectAllProducts,
+    setClaimPlatforms,
     claimSelectedProducts,
     claimCurrentProduct,
     generateCopyForSelectedProducts,

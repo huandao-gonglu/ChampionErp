@@ -28,6 +28,12 @@ Rules:
 Product data:
 {$product_summary}"""
 
+DEFAULT_LANGUAGE_BY_TARGET = {
+    "mercadolibre": "Spanish (Mexico)",
+    "wildberries": "Russian",
+    "ozon": "Russian",
+}
+
 
 def service_status() -> dict[str, str]:
     return {"service": "copy", "status": "ready"}
@@ -143,7 +149,7 @@ def generate_copy(
     mode: str = "rewrite",
 ) -> dict[str, Any]:
     target = str(target_market or "mercadolibre").strip().lower()
-    language = language or ("Spanish (Mexico)" if target == "mercadolibre" else "English")
+    language = language or DEFAULT_LANGUAGE_BY_TARGET.get(target, "English")
     result = fallback_copy(product, target)
     warning = ""
     prompt_pair = build_copy_prompt_from_config(app_dir, app_config, product, target, language, mode)

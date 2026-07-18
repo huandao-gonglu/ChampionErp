@@ -19,7 +19,7 @@ from ..runtime_units.category_store import (
     search_category_cache,
     suggest_category_ids,
 )
-from ..runtime_units.product_store import load_product, load_store_config, normalize_product_fields, save_product
+from ..runtime_units.product_store import load_required_product_from_body, load_store_config, save_product
 from ..runtime_units.publish_helpers import mock_category_attrs
 
 
@@ -67,7 +67,10 @@ def handle_category_ai_suggest(handler: JsonRequestHandler) -> None:
     body = handler.read_body()
     platform = str(body.get("platform") or "mercadolibre").strip().lower()
     site = str(body.get("site") or body.get("country") or "").strip()
-    product = normalize_product_fields(body.get("product") or load_product())
+    product, error_response, status = load_required_product_from_body(body)
+    if error_response:
+        handler.send_json(error_response, status)
+        return
     limit = int(body.get("limit") or 5)
     handler.send_json(suggest_category_ids(product, platform=platform, site=site, limit=limit))
     return
@@ -107,7 +110,10 @@ def handle_category_ai_fill(handler: JsonRequestHandler) -> None:
     body = handler.read_body()
     platform = str(body.get("platform") or "mercadolibre").strip().lower()
     category_id = str(body.get("category_id") or "").strip()
-    product = normalize_product_fields(body.get("product") or load_product())
+    product, error_response, status = load_required_product_from_body(body)
+    if error_response:
+        handler.send_json(error_response, status)
+        return
     body_record = body.get("category_record")
     record = body_record if isinstance(body_record, dict) else find_category_record(platform, category_id)
     updated, fill_meta = apply_ai_model_attribute_fill(product, platform, record if isinstance(record, dict) else None)
@@ -152,7 +158,10 @@ def handle_category_precheck(handler: JsonRequestHandler) -> None:
     body = handler.read_body()
     platform = str(body.get("platform") or "mercadolibre").strip().lower()
     category_id = str(body.get("category_id") or "").strip()
-    product = normalize_product_fields(body.get("product") or load_product())
+    product, error_response, status = load_required_product_from_body(body)
+    if error_response:
+        handler.send_json(error_response, status)
+        return
     record = find_category_record(platform, category_id) or body.get("category_record")
     errors = validate_category_precheck(product, platform, record if isinstance(record, dict) else None)
     handler.send_json(

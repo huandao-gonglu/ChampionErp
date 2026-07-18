@@ -104,6 +104,8 @@ test("publish page shows confirmation card before queue enqueue", async ({ page 
 
   await page.route("**/api/publish-precheck", async route => {
     const body = route.request().postDataJSON();
+    expect(body.product_id).toBeTruthy();
+    expect(body.product).toBeUndefined();
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -112,7 +114,7 @@ test("publish page shows confirmation card before queue enqueue", async ({ page 
         platforms: {
           mercadolibre: { ok: true, errors: [], warnings: [] },
         },
-        product: body.product,
+        product: { product_id: body.product_id, source: {}, drafts: {} },
         productsIndex: [],
       }),
     });
@@ -658,7 +660,7 @@ test("library ready filter and batch queue entry only accept ready_to_publish it
   await page.route("**/api/publish-bus/enqueue", async route => {
     const body = route.request().postDataJSON();
     expect(body.platforms).toEqual(["mercadolibre"]);
-    expect(body.product.product_id).toBe("prod-ready-1");
+    expect(body.product_id).toBe("prod-ready-1");
     await route.fulfill({
       status: 200,
       contentType: "application/json",

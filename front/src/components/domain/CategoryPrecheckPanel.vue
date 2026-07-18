@@ -6,6 +6,7 @@ import type { CategoryAttributeTranslations, CategoryPrecheckResult, CategoryRes
 const props = defineProps<{
   product: Product
   activeMarketplace: Marketplace
+  claimPlatforms: Marketplace[]
   category: CategorySelection | null
   categoryQuery: string
   categoryResults: CategorySearchResult[]
@@ -27,6 +28,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   updateCategoryQuery: [value: string]
   setMarketplace: [value: Marketplace]
+  setClaimPlatforms: [value: Marketplace[]]
   searchCategory: []
   suggestCategory: []
   selectCategory: [item: CategorySearchResult]
@@ -222,6 +224,13 @@ function attributePlaceholder(attr: { id: string; options?: string[] }) {
   return attr.options?.length ? '请选择平台允许的选项' : '请输入属性值'
 }
 
+function setClaimPlatform(platform: Marketplace, checked: boolean) {
+  const next = checked
+    ? Array.from(new Set([...props.claimPlatforms, platform]))
+    : props.claimPlatforms.filter((item) => item !== platform)
+  emit('setClaimPlatforms', platforms.filter((item) => next.includes(item.key)).map((item) => item.key))
+}
+
 function categoryResultTranslation(item: CategorySearchResult) {
   return props.categoryResultTranslations?.[item.id] || ''
 }
@@ -362,7 +371,14 @@ watch(
           </select>
           <button class="btn btn-outline" :disabled="props.loading" @click="emit('refreshProducts')">刷新商品库</button>
           <button class="btn btn-primary" :disabled="props.loading || !selectedProduct" @click="loadSelectedProduct">加载商品</button>
-          <button class="btn btn-secondary" :disabled="props.loading || !hasCurrentProduct" @click="emit('claimCurrent')">推到平台草稿箱</button>
+          <div class="flex flex-wrap items-center gap-2 rounded-lg border border-accent-200 bg-white px-3 py-2 dark:border-dark-700 dark:bg-dark-900">
+            <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">认领目标</span>
+            <label v-for="platform in platforms" :key="platform.key" class="inline-flex items-center gap-1.5 whitespace-nowrap text-xs font-semibold text-accent-700 dark:text-accent-200">
+              <input class="size-4 rounded border-accent-300 text-primary-600" type="checkbox" :checked="props.claimPlatforms.includes(platform.key)" :disabled="props.loading" @change="setClaimPlatform(platform.key, ($event.target as HTMLInputElement).checked)" />
+              {{ platform.label }}
+            </label>
+          </div>
+          <button class="btn btn-secondary" :disabled="props.loading || !hasCurrentProduct" @click="emit('claimCurrent')">推到目标草稿箱</button>
         </div>
       </div>
     </article>

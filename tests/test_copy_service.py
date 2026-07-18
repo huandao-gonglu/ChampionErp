@@ -47,6 +47,17 @@ def test_generate_copy_without_api_key_returns_warning(app_dir: Path) -> None:
     assert result["copy"]["title"]
 
 
+def test_generate_copy_defaults_ozon_to_russian(app_dir: Path) -> None:
+    result = copy_service.generate_copy(
+        str(app_dir),
+        {"name": "Manual organizer"},
+        {"ai_models": []},
+        target_market="ozon",
+    )
+
+    assert result["language"] == "Russian"
+
+
 def test_prompt_contains_manual_product_data_and_mexico_spanish() -> None:
     prompt = copy_service.build_copy_prompt(
         {
