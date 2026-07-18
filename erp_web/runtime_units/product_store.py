@@ -347,27 +347,67 @@ def delete_products_from_index(product_ids: list[Any]) -> dict[str, Any]:
     }
 
 
+def _normalize_delete_ids(value: Any) -> list[str]:
+    raw_ids = value if isinstance(value, list) else [value]
+    ids: list[str] = []
+    seen: set[str] = set()
+    for raw_id in raw_ids:
+        normalized_id = str(raw_id or "").strip()
+        if normalized_id and normalized_id not in seen:
+            ids.append(normalized_id)
+            seen.add(normalized_id)
+    return ids
+
+
 def delete_draft_from_index(draft_id: Any) -> dict[str, Any]:
-    normalized_id = str(draft_id or "").strip()
-    if not normalized_id:
-        return {"ok": False, "error": "请先选择要删除的草稿。", "draftsIndex": load_drafts_index()}
+    normalized_ids = _normalize_delete_ids(draft_id)
+    if not normalized_ids:
+        return {
+            "ok": False,
+            "error": "请先选择要删除的草稿。",
+            "deleted": 0,
+            "deletedDraftId": "",
+            "deletedDraftIds": [],
+            "deletedIds": [],
+            "missingIds": [],
+            "draftsIndex": load_drafts_index(),
+        }
 
     ensure_sqlite_store()
-    draft = erp_db.load_draft_model(APP_DIR, normalized_id)
-    product_id = str(draft.get("product_id") or "")
-    deleted = erp_db.delete_draft_model(APP_DIR, normalized_id)
-    product = load_product_from_index(product_id, "") if product_id else load_product()
+    deleted_ids: list[str] = []
+    missing_ids: list[str] = []
+    affected_product_ids: list[str] = []
+    for normalized_id in normalized_ids:
+        draft = erp_db.load_draft_model(APP_DIR, normalized_id)
+        product_id = str(draft.get("product_id") or "")
+        deleted = erp_db.delete_draft_model(APP_DIR, normalized_id)
+        if deleted:
+            deleted_ids.append(normalized_id)
+            if product_id and product_id not in affected_product_ids:
+                affected_product_ids.append(product_id)
+        else:
+            missing_ids.append(normalized_id)
+
+    product = load_product_from_index(affected_product_ids[0], "") if len(affected_product_ids) == 1 else load_product()
+    deleted_count = len(deleted_ids)
+    message = "草稿已删除。" if deleted_count == 1 else f"已删除 {deleted_count} 个草稿。"
+    if not deleted_count:
+        message = "草稿不存在或已被删除。"
 
     return {
-        "ok": deleted,
-        "deleted": 1 if deleted else 0,
-        "deletedDraftId": normalized_id if deleted else "",
+        "ok": deleted_count > 0,
+        "deleted": deleted_count,
+        "deletedDraftId": deleted_ids[0] if deleted_count == 1 else "",
+        "deletedDraftIds": deleted_ids,
+        "deletedIds": deleted_ids,
+        "missingIds": missing_ids,
+        "affectedProductIds": affected_product_ids,
         "product": product,
         "productsIndex": load_products_index(),
         "draftsIndex": load_drafts_index(),
         "imagePool": current_image_pool(product),
-        "message": "草稿已删除。" if deleted else "草稿不存在或已被删除。",
-        "error": "" if deleted else "草稿不存在或已被删除。",
+        "message": message,
+        "error": "" if deleted_count else "草稿不存在或已被删除。",
     }
 
 

@@ -98,6 +98,26 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
 
         self.with_temp_app(run)
 
+    def test_delete_draft_from_index_accepts_draft_id_list(self) -> None:
+        def run(app_dir: Path) -> None:
+            first = erp_web_app.save_product(sample_product("Draft delete 1", "https://example.com/draft-delete-1"))
+            second = erp_web_app.save_product(sample_product("Draft delete 2", "https://example.com/draft-delete-2"))
+            draft_ids = [item["draft_id"] for item in erp_db.list_draft_records(app_dir)]
+
+            result = erp_web_app.delete_draft_from_index(draft_ids)
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["deleted"], 2)
+            self.assertEqual(result["deletedDraftIds"], draft_ids)
+            self.assertEqual(result["deletedIds"], draft_ids)
+            self.assertEqual(result["missingIds"], [])
+            self.assertEqual(result["draftsIndex"], [])
+            self.assertEqual(sorted(result["affectedProductIds"]), sorted([first["product_id"], second["product_id"]]))
+            self.assertEqual(len(erp_db.list_product_records(app_dir)), 2)
+            self.assertEqual(erp_db.list_draft_records(app_dir), [])
+
+        self.with_temp_app(run)
+
     def test_1688_collect_images_are_limited_to_first_five(self) -> None:
         source = {
             "images": [f"https://img.example/{index}.jpg" for index in range(8)],

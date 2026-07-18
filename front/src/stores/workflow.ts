@@ -701,29 +701,62 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
-  async function deleteDraft(item: DraftIndexItem) {
-    const draftId = String(item.draftId || '').trim()
-    if (!draftId) {
+  async function deleteDraftsByIds(draftIds: string[], items: DraftIndexItem[] = []) {
+    const ids = Array.from(new Set(draftIds.map((id) => String(id || '').trim()).filter(Boolean)))
+    if (!ids.length) {
       setError('请先选择要删除的草稿。')
       return
     }
     loading.value = true
     setError('')
     try {
-      const result = await deleteDraftApi(draftId)
+      const result = await deleteDraftApi(ids.length === 1 ? ids[0] : ids)
       applyMutationIndexes(result)
+      const deletedIds = result.deletedDraftIds?.length
+        ? result.deletedDraftIds
+        : result.deletedIds?.length
+          ? result.deletedIds
+          : result.deletedDraftId
+            ? [result.deletedDraftId]
+            : []
+      const affectedProductIds = result.affectedProductIds?.length
+        ? result.affectedProductIds
+        : Array.from(new Set(items.filter((item) => deletedIds.includes(item.draftId)).map((item) => item.productId).filter(Boolean)))
+      const currentProductId = product.value.productId
       if (result.product.productId && result.product.productId === product.value.productId) {
         product.value = result.product
         restoreCategoryFromProduct()
         restorePrecheckFromProduct()
         syncPricingInputFromProduct()
+      } else if (currentProductId && affectedProductIds.includes(currentProductId)) {
+        try {
+          const refreshed = await loadProductApi(currentProductId)
+          product.value = refreshed.product
+          applyMutationIndexes(refreshed)
+          restoreCategoryFromProduct()
+          restorePrecheckFromProduct()
+          syncPricingInputFromProduct()
+        } catch (refreshExc) {
+          addLog(`当前商品刷新失败：${refreshExc instanceof Error ? refreshExc.message : '未知错误'}`)
+        }
       }
-      addLog(result.message || `已删除草稿：${item.title || item.productTitle || draftId}`)
+      const deletedCount = result.deleted ?? deletedIds.length
+      const fallbackTitle = items[0]?.title || items[0]?.productTitle || ids[0]
+      addLog(result.message || (deletedCount === 1 ? `已删除草稿：${fallbackTitle}` : `已删除 ${deletedCount} 个草稿。`))
+      if (result.missingIds?.length) addLog(`未找到草稿：${result.missingIds.join('、')}`)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '删除草稿失败')
     } finally {
       loading.value = false
     }
+  }
+
+  async function deleteDraft(item: DraftIndexItem) {
+    await deleteDraftsByIds([item.draftId], [item])
+  }
+
+  async function deleteDrafts(items: DraftIndexItem[]) {
+    await deleteDraftsByIds(items.map((item) => item.draftId), items)
   }
 
   async function deleteProductsByIds(productIds: string[]) {
@@ -1784,6 +1817,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     loadProduct,
     loadDraft,
     deleteDraft,
+    deleteDrafts,
     deleteProduct,
     deleteSelectedProducts,
     toggleProductSelection,

@@ -173,6 +173,13 @@ async function deleteDraft(item: DraftIndexItem) {
   await store.deleteDraft(item)
 }
 
+async function deleteDrafts(items: DraftIndexItem[]) {
+  const validItems = items.filter((item) => String(item.draftId || '').trim())
+  if (!validItems.length) return
+  if (!window.confirm(`确认批量删除已勾选的 ${validItems.length} 个草稿？商品本身不会被删除。`)) return
+  await store.deleteDrafts(validItems)
+}
+
 async function openProductPrecheck(item: ProductIndexItem, platform: Marketplace = activeMarketplace.value) {
   store.setMarketplace(platform)
   await store.loadProduct(item)
@@ -348,6 +355,7 @@ watch(
               @edit-images="(item) => openDraftEditor(item, 'images')"
               @go-publish="openDraftPrecheck"
               @delete-draft="deleteDraft"
+              @delete-drafts="deleteDrafts"
             />
           </div>
 

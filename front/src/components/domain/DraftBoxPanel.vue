@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { statusBadgeClass, workflowStatusLabel } from '@/utils/status'
 import type { DraftIndexItem, Marketplace } from '@/types/workflow'
 
@@ -15,10 +15,12 @@ const emit = defineEmits<{
   editImages: [item: DraftIndexItem]
   goPublish: [item: DraftIndexItem]
   deleteDraft: [item: DraftIndexItem]
+  deleteDrafts: [items: DraftIndexItem[]]
 }>()
 
 const platformFilter = ref<'all' | Marketplace>('all')
 const draftScope = ref<'active' | 'published' | 'all'>('active')
+const selectedDraftIds = ref<string[]>([])
 const activeDraftStatusSet = new Set(['claimed', 'copy_ready', 'images_ready', 'ready_to_publish', 'failed', 'not_ready'])
 const draftStatusSet = new Set([...activeDraftStatusSet, 'published'])
 const platformLabels: Record<Marketplace, string> = {
@@ -40,6 +42,40 @@ const draftRows = computed(() => allDraftRows.value.filter((row) => {
 
 const activeDraftCount = computed(() => allDraftRows.value.filter((row) => activeDraftStatusSet.has(String(row.status || ''))).length)
 const publishedDraftCount = computed(() => allDraftRows.value.filter((row) => row.status === 'published').length)
+const selectedDrafts = computed(() => props.drafts.filter((item) => selectedDraftIds.value.includes(draftIdOf(item))))
+const selectedCount = computed(() => selectedDrafts.value.length)
+const visibleDraftIds = computed(() => draftRows.value.map(draftIdOf).filter(Boolean))
+const allChecked = computed(() => visibleDraftIds.value.length > 0 && visibleDraftIds.value.every((id) => selectedDraftIds.value.includes(id)))
+
+function draftIdOf(item: DraftIndexItem) {
+  return String(item.draftId || '').trim()
+}
+
+function toggleDraftSelection(item: DraftIndexItem, checked: boolean) {
+  const draftId = draftIdOf(item)
+  if (!draftId) return
+  const exists = selectedDraftIds.value.includes(draftId)
+  if (checked && !exists) selectedDraftIds.value.push(draftId)
+  if (!checked) selectedDraftIds.value = selectedDraftIds.value.filter((id) => id !== draftId)
+}
+
+function selectVisibleDrafts(checked: boolean) {
+  if (!checked) {
+    selectedDraftIds.value = selectedDraftIds.value.filter((id) => !visibleDraftIds.value.includes(id))
+    return
+  }
+  selectedDraftIds.value = Array.from(new Set([...selectedDraftIds.value, ...visibleDraftIds.value]))
+}
+
+function deleteSelectedDrafts() {
+  if (!selectedDrafts.value.length) return
+  emit('deleteDrafts', selectedDrafts.value)
+}
+
+watch(() => props.drafts.map(draftIdOf), (draftIds) => {
+  const existingIds = new Set(draftIds)
+  selectedDraftIds.value = selectedDraftIds.value.filter((id) => existingIds.has(id))
+})
 </script>
 
 <template>
@@ -66,57 +102,74 @@ const publishedDraftCount = computed(() => allDraftRows.value.filter((row) => ro
       </div>
     </div>
 
-    <div class="mt-5 rounded-lg border border-accent-200 bg-accent-50 p-3 text-sm text-accent-500 dark:border-dark-700 dark:bg-dark-950/70 dark:text-accent-400">
-      当前显示：<span class="font-semibold text-accent-800 dark:text-accent-100">{{ draftRows.length }}</span> 条
-      <span class="mx-2 text-accent-300 dark:text-dark-600">/</span>
-      待处理：<span class="font-semibold text-accent-800 dark:text-accent-100">{{ activeDraftCount }}</span>
-      <span class="mx-2 text-accent-300 dark:text-dark-600">/</span>
-      已发布：<span class="font-semibold text-accent-800 dark:text-accent-100">{{ publishedDraftCount }}</span>
+    <div class="mt-5 rounded-lg border border-accent-200 bg-accent-50 p-3 dark:border-dark-700 dark:bg-dark-950/70">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div class="text-sm text-accent-500 dark:text-accent-400">
+          当前显示：<span class="font-semibold text-accent-800 dark:text-accent-100">{{ draftRows.length }}</span> 条
+          <span class="mx-2 text-accent-300 dark:text-dark-600">/</span>
+          待处理：<span class="font-semibold text-accent-800 dark:text-accent-100">{{ activeDraftCount }}</span>
+          <span class="mx-2 text-accent-300 dark:text-dark-600">/</span>
+          已发布：<span class="font-semibold text-accent-800 dark:text-accent-100">{{ publishedDraftCount }}</span>
+          <span class="mx-2 text-accent-300 dark:text-dark-600">/</span>
+          已勾选：<span class="font-semibold text-accent-800 dark:text-accent-100">{{ selectedCount }}</span> 个
+        </div>
+        <button class="btn btn-outline px-3 py-1.5 text-xs text-rose-600 hover:border-rose-300 hover:bg-rose-50 dark:text-rose-200 dark:hover:border-rose-500/50 dark:hover:bg-rose-500/10" :disabled="props.loading || !selectedCount" @click="deleteSelectedDrafts">批量删除选中</button>
+      </div>
     </div>
     <div v-if="props.error" class="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm font-medium text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200">
       {{ props.error }}
     </div>
 
-    <div class="mt-5 overflow-auto rounded-lg border border-accent-200 dark:border-dark-700">
-      <table class="w-full min-w-[1120px] text-left text-sm">
+    <div class="mt-5 overflow-hidden rounded-lg border border-accent-200 dark:border-dark-700">
+      <table class="w-full table-fixed text-left text-sm">
+        <colgroup>
+          <col class="w-[5%]" />
+          <col class="w-[24%]" />
+          <col class="w-[11%]" />
+          <col class="w-[12%]" />
+          <col class="w-[19%]" />
+          <col class="w-[29%]" />
+        </colgroup>
         <thead class="border-b border-accent-200 bg-accent-50 text-xs text-accent-500 dark:border-dark-700 dark:bg-dark-950/70 dark:text-accent-400">
           <tr>
-            <th class="min-w-80 p-3">商品</th>
+            <th class="p-3"><input class="size-4 rounded border-accent-300 text-primary-600" type="checkbox" aria-label="全选当前草稿" :checked="allChecked" :disabled="props.loading || !visibleDraftIds.length" @change="selectVisibleDrafts(($event.target as HTMLInputElement).checked)" /></th>
+            <th class="p-3">商品</th>
             <th class="whitespace-nowrap p-3">平台</th>
             <th class="whitespace-nowrap p-3">草稿状态</th>
-            <th class="min-w-64 p-3">来源</th>
-            <th class="min-w-72 p-3">操作</th>
+            <th class="p-3">来源</th>
+            <th class="p-3">操作</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-accent-100 dark:divide-dark-800">
           <tr v-for="row in draftRows" :key="row.draftId" class="align-top transition hover:bg-accent-50/70 dark:hover:bg-dark-800/60">
-            <td class="min-w-80 max-w-lg p-3">
+            <td class="p-3"><input class="size-4 rounded border-accent-300 text-primary-600" type="checkbox" aria-label="勾选草稿" :checked="selectedDraftIds.includes(draftIdOf(row))" :disabled="props.loading || !draftIdOf(row)" @change="toggleDraftSelection(row, ($event.target as HTMLInputElement).checked)" /></td>
+            <td class="min-w-0 p-3">
               <div class="flex gap-3">
                 <img v-if="row.mainImage" :src="row.mainImage" class="size-12 rounded-lg object-cover" />
                 <div v-else class="flex size-12 shrink-0 items-center justify-center rounded-lg bg-accent-100 text-[10px] font-bold text-accent-500 dark:bg-dark-800 dark:text-accent-300">无图</div>
                 <div class="min-w-0">
-                  <div class="font-semibold text-accent-950 dark:text-white">{{ row.title || row.productTitle || row.productId || '-' }}</div>
+                  <div class="truncate font-semibold text-accent-950 dark:text-white">{{ row.title || row.productTitle || row.productId || '-' }}</div>
                   <div class="mt-1 truncate text-xs text-accent-500 dark:text-accent-400">{{ row.productTitle || row.productId }}</div>
                 </div>
               </div>
             </td>
-            <td class="whitespace-nowrap p-3"><span class="badge-muted">{{ platformLabels[row.platform] }}</span></td>
-            <td class="whitespace-nowrap p-3"><span :class="statusBadgeClass(row.status)">{{ workflowStatusLabel(row.status) }}</span></td>
-            <td class="min-w-64 p-3">
-              <div class="font-semibold text-accent-950 dark:text-white">{{ row.sourcePlatform || '-' }}</div>
-              <div class="max-w-xs truncate text-xs text-accent-500 dark:text-accent-400">{{ row.sourceUrl }}</div>
+            <td class="p-3"><span class="badge-muted max-w-full truncate" :title="platformLabels[row.platform]">{{ platformLabels[row.platform] }}</span></td>
+            <td class="p-3"><span class="inline-flex max-w-full truncate" :class="statusBadgeClass(row.status)" :title="workflowStatusLabel(row.status)">{{ workflowStatusLabel(row.status) }}</span></td>
+            <td class="min-w-0 p-3">
+              <div class="truncate font-semibold text-accent-950 dark:text-white" :title="row.sourcePlatform || '-'">{{ row.sourcePlatform || '-' }}</div>
+              <div class="truncate text-xs text-accent-500 dark:text-accent-400" :title="row.sourceUrl">{{ row.sourceUrl }}</div>
             </td>
-            <td class="min-w-72 p-3">
-              <div class="flex flex-nowrap gap-2">
-                <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('editText', row)">编辑文本</button>
-                <button class="btn btn-secondary py-1.5" :disabled="props.loading" @click="emit('editImages', row)">编辑图片</button>
-                <button class="btn btn-primary py-1.5" :disabled="props.loading" @click="emit('goPublish', row)">发布预检</button>
-                <button class="btn btn-outline py-1.5 text-rose-600 hover:border-rose-300 hover:bg-rose-50 dark:text-rose-200 dark:hover:border-rose-500/50 dark:hover:bg-rose-500/10" :disabled="props.loading" @click="emit('deleteDraft', row)">删除</button>
+            <td class="p-3">
+              <div class="flex flex-wrap gap-2">
+                <button class="btn btn-outline whitespace-nowrap px-3 py-1.5 text-xs" :disabled="props.loading" @click="emit('editText', row)">编辑文本</button>
+                <button class="btn btn-secondary whitespace-nowrap px-3 py-1.5 text-xs" :disabled="props.loading" @click="emit('editImages', row)">编辑图片</button>
+                <button class="btn btn-primary whitespace-nowrap px-3 py-1.5 text-xs" :disabled="props.loading" @click="emit('goPublish', row)">发布预检</button>
+                <button class="btn btn-outline whitespace-nowrap px-3 py-1.5 text-xs text-rose-600 hover:border-rose-300 hover:bg-rose-50 dark:text-rose-200 dark:hover:border-rose-500/50 dark:hover:bg-rose-500/10" :disabled="props.loading" @click="emit('deleteDraft', row)">删除</button>
               </div>
             </td>
           </tr>
           <tr v-if="!draftRows.length">
-            <td class="p-6 text-center text-accent-500 dark:text-accent-300" colspan="5">暂无平台草稿。可先从商品库或发布预检页推到平台草稿箱。</td>
+            <td class="p-6 text-center text-accent-500 dark:text-accent-300" colspan="6">暂无平台草稿。可先从商品库或发布预检页推到平台草稿箱。</td>
           </tr>
         </tbody>
       </table>

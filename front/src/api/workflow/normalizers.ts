@@ -35,6 +35,12 @@ export interface ProductMutationResponse {
   imagePool: ImageAsset[]
   productsIndex: ProductIndexItem[]
   draftsIndex?: DraftIndexItem[]
+  deleted?: number
+  deletedDraftId?: string
+  deletedDraftIds?: string[]
+  deletedIds?: string[]
+  missingIds?: string[]
+  affectedProductIds?: string[]
   diagnostics?: UnknownRecord
   warning?: string
   message?: string
@@ -509,6 +515,12 @@ export function normalizeProductMutation(data: unknown): ProductMutationResponse
     imagePool: product.source.imagePool,
     productsIndex: normalizeProductsIndex(record.productsIndex),
     draftsIndex: normalizeDraftsIndex(record.draftsIndex),
+    deleted: getNumber(record, ['deleted']),
+    deletedDraftId: getString(record, ['deletedDraftId', 'deleted_draft_id']),
+    deletedDraftIds: stringList(record.deletedDraftIds || record.deleted_draft_ids || record.deletedIds || record.deleted_ids),
+    deletedIds: stringList(record.deletedIds || record.deleted_ids || record.deletedDraftIds || record.deleted_draft_ids),
+    missingIds: stringList(record.missingIds || record.missing_ids),
+    affectedProductIds: stringList(record.affectedProductIds || record.affected_product_ids),
     diagnostics: asRecord(record.diagnostics),
     warning: getString(record, ['warning']) || undefined,
     message: getString(record, ['message']) || undefined,

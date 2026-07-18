@@ -71,7 +71,12 @@ def delete_products_payload(body: dict[str, Any]) -> ResponseWithStatus:
 
 
 def delete_draft_payload(body: dict[str, Any]) -> ResponseWithStatus:
-    result = delete_draft_from_index(body.get("draft_id", "") or body.get("draftId", ""))
+    draft_ids = body.get("draft_ids")
+    if draft_ids is None:
+        draft_ids = body.get("draftIds")
+    if draft_ids is None:
+        draft_ids = body.get("draft_id", "") or body.get("draftId", "")
+    result = delete_draft_from_index(draft_ids)
     return result, 200 if result.get("ok") else 404
 
 
