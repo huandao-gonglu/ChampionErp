@@ -103,8 +103,17 @@ function goPage(page: number) {
         <button class="btn btn-outline py-1.5" :disabled="props.loading || props.page >= pageCount" @click="goPage(props.page + 1)">下一页</button>
       </div>
     </div>
-    <div class="mt-5 overflow-auto rounded-lg border border-accent-200 dark:border-dark-700">
-      <table class="w-full min-w-[1100px] text-left text-sm">
+    <div class="mt-5 overflow-hidden rounded-lg border border-accent-200 dark:border-dark-700">
+      <table class="w-full table-fixed text-left text-sm">
+        <colgroup>
+          <col class="w-[30%]" />
+          <col class="w-[13%]" />
+          <col class="w-[10%]" />
+          <col class="w-[9%]" />
+          <col class="w-[10%]" />
+          <col class="w-[12%]" />
+          <col class="w-[16%]" />
+        </colgroup>
         <thead class="border-b border-accent-200 bg-accent-50 text-xs text-accent-500 dark:border-dark-700 dark:bg-dark-950/70 dark:text-accent-400">
           <tr>
             <th class="p-3">商品</th>
@@ -118,30 +127,30 @@ function goPage(page: number) {
         </thead>
         <tbody class="divide-y divide-accent-100 dark:divide-dark-800">
           <tr v-for="item in props.items" :key="item.id" class="align-top transition hover:bg-accent-50/70 dark:hover:bg-dark-800/60">
-            <td class="max-w-md p-3">
+            <td class="min-w-0 p-3">
               <div class="flex gap-3">
                 <img v-if="item.thumbnail" :src="item.thumbnail" class="size-12 shrink-0 rounded-lg object-cover" />
                 <div v-else class="flex size-12 shrink-0 items-center justify-center rounded-lg bg-accent-100 text-[10px] font-bold text-accent-500 dark:bg-dark-800 dark:text-accent-300">无图</div>
                 <div class="min-w-0">
-                  <div class="font-semibold text-accent-950 dark:text-white">{{ item.title || item.id }}</div>
-                  <div class="mt-1 font-mono text-xs text-accent-500 dark:text-accent-400">{{ item.id }}</div>
-                  <div class="mt-1 text-xs text-accent-500 dark:text-accent-400">{{ item.categoryId }}</div>
+                  <div class="truncate font-semibold text-accent-950 dark:text-white" :title="item.title || item.id">{{ item.title || item.id }}</div>
+                  <div class="mt-1 truncate font-mono text-xs text-accent-500 dark:text-accent-400" :title="item.id">{{ item.id }}</div>
+                  <div class="mt-1 truncate text-xs text-accent-500 dark:text-accent-400" :title="item.categoryId">{{ item.categoryId }}</div>
                 </div>
               </div>
             </td>
-            <td class="p-3">
-              <span :class="badgeClass(item.status)">{{ statusLabels[item.status] || item.status || '-' }}</span>
-              <div v-if="item.subStatus.length" class="mt-1 text-xs text-accent-500 dark:text-accent-400">{{ item.subStatus.join(', ') }}</div>
+            <td class="min-w-0 p-3">
+              <span class="inline-flex max-w-full truncate" :class="badgeClass(item.status)" :title="statusLabels[item.status] || item.status || '-'">{{ statusLabels[item.status] || item.status || '-' }}</span>
+              <div v-if="item.subStatus.length" class="mt-1 truncate text-xs text-accent-500 dark:text-accent-400" :title="item.subStatus.join(', ')">{{ item.subStatus.join(', ') }}</div>
             </td>
-            <td class="p-3 font-semibold text-accent-950 dark:text-white">{{ item.price || '-' }} {{ item.currencyId }}</td>
-            <td class="p-3 text-accent-700 dark:text-accent-200">{{ item.availableQuantity }} / {{ item.soldQuantity }}</td>
-            <td class="p-3 font-mono text-xs text-accent-700 dark:text-accent-200">{{ item.sellerSku || '-' }}</td>
-            <td class="p-3 text-xs text-accent-500 dark:text-accent-400">{{ item.lastUpdated || item.dateCreated || '-' }}</td>
+            <td class="p-3 font-semibold text-accent-950 dark:text-white"><span class="block truncate" :title="`${item.price || '-'} ${item.currencyId}`">{{ item.price || '-' }} {{ item.currencyId }}</span></td>
+            <td class="p-3 text-accent-700 dark:text-accent-200"><span class="block truncate" :title="`${item.availableQuantity} / ${item.soldQuantity}`">{{ item.availableQuantity }} / {{ item.soldQuantity }}</span></td>
+            <td class="p-3 font-mono text-xs text-accent-700 dark:text-accent-200"><span class="block truncate" :title="item.sellerSku || '-'">{{ item.sellerSku || '-' }}</span></td>
+            <td class="p-3 text-xs text-accent-500 dark:text-accent-400"><span class="block truncate" :title="item.lastUpdated || item.dateCreated || '-'">{{ item.lastUpdated || item.dateCreated || '-' }}</span></td>
             <td class="p-3">
               <div class="flex flex-wrap gap-2">
-                <a v-if="item.permalink" class="btn btn-outline py-1.5" :href="item.permalink" target="_blank" rel="noreferrer">官网</a>
+                <a v-if="item.permalink" class="btn btn-outline whitespace-nowrap px-3 py-1.5 text-xs" :href="item.permalink" target="_blank" rel="noreferrer">官网</a>
                 <button
-                  class="btn btn-secondary py-1.5"
+                  class="btn btn-secondary whitespace-nowrap px-3 py-1.5 text-xs"
                   :disabled="props.loading || item.status === 'closed' || item.status === 'paused'"
                   @click="requestClose(item)"
                 >

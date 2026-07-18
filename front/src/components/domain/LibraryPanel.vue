@@ -106,55 +106,71 @@ function statusClass(value: string) {
       </div>
     </div>
 
-    <div class="mt-5 overflow-auto rounded-lg border border-accent-200 dark:border-dark-700">
-      <table class="w-full min-w-[1540px] text-left text-sm">
+    <div class="mt-5 overflow-hidden rounded-lg border border-accent-200 dark:border-dark-700">
+      <table class="w-full table-fixed text-left text-sm">
+        <colgroup>
+          <col class="w-[4%]" />
+          <col class="w-[6%]" />
+          <col class="w-[12%]" />
+          <col class="w-[17%]" />
+          <col class="w-[4.5%]" />
+          <col class="w-[4.5%]" />
+          <col class="w-[5.5%]" />
+          <col class="w-[4.5%]" />
+          <col class="w-[4.5%]" />
+          <col class="w-[4.5%]" />
+          <col class="w-[4.5%]" />
+          <col class="w-[4.5%]" />
+          <col class="w-[4.5%]" />
+          <col class="w-[19.5%]" />
+        </colgroup>
         <thead class="border-b border-accent-200 bg-accent-50 text-xs text-accent-500 dark:border-dark-700 dark:bg-dark-950/70 dark:text-accent-400">
           <tr>
-            <th class="p-3"><input class="size-4 rounded border-accent-300 text-primary-600" type="checkbox" :checked="allChecked" @change="emit('selectAll', ($event.target as HTMLInputElement).checked, filteredItems.map((item) => item.productId))" /></th>
-            <th class="p-3">主图</th>
-            <th class="min-w-56 p-3">来源</th>
-            <th class="min-w-72 p-3">标题 / 平台草稿箱</th>
-            <th class="whitespace-nowrap p-3">采集</th>
-            <th class="whitespace-nowrap p-3">流程</th>
-            <th class="whitespace-nowrap p-3">AI 文案</th>
-            <th class="whitespace-nowrap p-3">生图</th>
-            <th class="whitespace-nowrap p-3">类目</th>
-            <th class="whitespace-nowrap p-3">属性</th>
-            <th class="whitespace-nowrap p-3">价格</th>
-            <th class="whitespace-nowrap p-3">预检</th>
-            <th class="whitespace-nowrap p-3">发布</th>
-            <th class="min-w-56 p-3">操作</th>
+            <th class="p-2"><input class="size-4 rounded border-accent-300 text-primary-600" type="checkbox" aria-label="全选当前商品" :checked="allChecked" :disabled="props.loading || !filteredItems.length" @change="emit('selectAll', ($event.target as HTMLInputElement).checked, filteredItems.map((item) => item.productId))" /></th>
+            <th class="p-2">主图</th>
+            <th class="p-3">来源</th>
+            <th class="p-3">标题 / 平台草稿箱</th>
+            <th class="px-1.5 py-3"><span class="block truncate" title="采集">采集</span></th>
+            <th class="px-1.5 py-3"><span class="block truncate" title="流程">流程</span></th>
+            <th class="px-1.5 py-3"><span class="block truncate" title="AI 文案">AI 文案</span></th>
+            <th class="px-1.5 py-3"><span class="block truncate" title="生图">生图</span></th>
+            <th class="px-1.5 py-3"><span class="block truncate" title="类目">类目</span></th>
+            <th class="px-1.5 py-3"><span class="block truncate" title="属性">属性</span></th>
+            <th class="px-1.5 py-3"><span class="block truncate" title="价格">价格</span></th>
+            <th class="px-1.5 py-3"><span class="block truncate" title="预检">预检</span></th>
+            <th class="px-1.5 py-3"><span class="block truncate" title="发布">发布</span></th>
+            <th class="p-3">操作</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-accent-100 dark:divide-dark-800">
           <tr v-for="item in filteredItems" :key="item.productId" class="align-top transition hover:bg-accent-50/70 dark:hover:bg-dark-800/60">
-            <td class="p-3"><input class="size-4 rounded border-accent-300 text-primary-600" type="checkbox" :checked="props.selectedIds.includes(item.productId)" @change="emit('toggle', item.productId, ($event.target as HTMLInputElement).checked)" /></td>
+            <td class="p-2"><input class="size-4 rounded border-accent-300 text-primary-600" type="checkbox" aria-label="勾选商品" :checked="props.selectedIds.includes(item.productId)" :disabled="props.loading" @change="emit('toggle', item.productId, ($event.target as HTMLInputElement).checked)" /></td>
+            <td class="p-2">
+              <img v-if="item.mainImage" :src="item.mainImage" class="size-10 rounded-lg object-cover" />
+              <div v-else class="flex size-10 items-center justify-center rounded-lg bg-accent-100 text-[10px] font-bold text-accent-500 dark:bg-dark-800 dark:text-accent-300">无图</div>
+            </td>
+            <td class="min-w-0 p-3">
+              <div class="truncate font-semibold text-accent-950 dark:text-white" :title="item.sourcePlatform || '-'">{{ item.sourcePlatform || '-' }}</div>
+              <div class="truncate text-xs text-accent-500 dark:text-accent-400" :title="item.sourceUrl">{{ item.sourceUrl }}</div>
+            </td>
+            <td class="min-w-0 p-3">
+              <div class="truncate font-semibold text-accent-950 dark:text-white" :title="item.title || '-'">{{ item.title || '-' }}</div>
+              <div class="mt-2 flex flex-wrap gap-1.5"><span v-for="platform in item.platforms" :key="platform" class="badge-muted max-w-full truncate" :title="platform">{{ platform }}</span></div>
+            </td>
+            <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.collectStatus)" :title="item.collectStatus || '-'">{{ item.collectStatus || '-' }}</span></td>
+            <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.workflowStatus)" :title="item.workflowStatus || '-'">{{ item.workflowStatus || '-' }}</span></td>
+            <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.aiCopyStatus)" :title="item.aiCopyStatus || '-'">{{ item.aiCopyStatus || '-' }}</span></td>
+            <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.imageStatus)" :title="item.imageStatus || '-'">{{ item.imageStatus || '-' }}</span></td>
+            <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.categoryStatus)" :title="item.categoryStatus || '-'">{{ item.categoryStatus || '-' }}</span></td>
+            <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.attributesStatus)" :title="item.attributesStatus || '-'">{{ item.attributesStatus || '-' }}</span></td>
+            <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.pricingStatus)" :title="item.pricingStatus || '-'">{{ item.pricingStatus || '-' }}</span></td>
+            <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(String(item.precheckStatus))" :title="String(item.precheckStatus || '-')">{{ item.precheckStatus || '-' }}</span></td>
+            <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.publishStatus)" :title="item.publishStatus || '-'">{{ item.publishStatus || '-' }}</span></td>
             <td class="p-3">
-              <img v-if="item.mainImage" :src="item.mainImage" class="size-12 rounded-lg object-cover" />
-              <div v-else class="flex size-12 items-center justify-center rounded-lg bg-accent-100 text-[10px] font-bold text-accent-500 dark:bg-dark-800 dark:text-accent-300">无图</div>
-            </td>
-            <td class="min-w-56 p-3">
-              <div class="font-semibold text-accent-950 dark:text-white">{{ item.sourcePlatform || '-' }}</div>
-              <div class="max-w-40 truncate text-xs text-accent-500 dark:text-accent-400">{{ item.sourceUrl }}</div>
-            </td>
-            <td class="min-w-72 max-w-md p-3">
-              <div class="font-semibold text-accent-950 dark:text-white">{{ item.title || '-' }}</div>
-              <div class="mt-2 flex flex-wrap gap-1.5"><span v-for="platform in item.platforms" :key="platform" class="badge-muted">{{ platform }}</span></div>
-            </td>
-            <td class="whitespace-nowrap p-3"><span :class="statusClass(item.collectStatus)">{{ item.collectStatus || '-' }}</span></td>
-            <td class="whitespace-nowrap p-3"><span :class="statusClass(item.workflowStatus)">{{ item.workflowStatus || '-' }}</span></td>
-            <td class="whitespace-nowrap p-3"><span :class="statusClass(item.aiCopyStatus)">{{ item.aiCopyStatus || '-' }}</span></td>
-            <td class="whitespace-nowrap p-3"><span :class="statusClass(item.imageStatus)">{{ item.imageStatus || '-' }}</span></td>
-            <td class="whitespace-nowrap p-3"><span :class="statusClass(item.categoryStatus)">{{ item.categoryStatus || '-' }}</span></td>
-            <td class="whitespace-nowrap p-3"><span :class="statusClass(item.attributesStatus)">{{ item.attributesStatus || '-' }}</span></td>
-            <td class="whitespace-nowrap p-3"><span :class="statusClass(item.pricingStatus)">{{ item.pricingStatus || '-' }}</span></td>
-            <td class="whitespace-nowrap p-3"><span :class="statusClass(String(item.precheckStatus))">{{ item.precheckStatus || '-' }}</span></td>
-            <td class="whitespace-nowrap p-3"><span :class="statusClass(item.publishStatus)">{{ item.publishStatus || '-' }}</span></td>
-            <td class="min-w-56 p-3">
-              <div class="flex flex-nowrap gap-2">
-                <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('load', item)">编辑文本</button>
-                <button class="btn btn-secondary py-1.5" :disabled="props.loading" @click="emit('editImages', item)">编辑图片</button>
-                <button class="btn btn-outline py-1.5 text-rose-700 dark:text-rose-200" :disabled="props.loading" @click="confirmDelete(item)">删除</button>
+              <div class="flex flex-wrap gap-2">
+                <button class="btn btn-outline whitespace-nowrap px-3 py-1.5 text-xs" :disabled="props.loading" @click="emit('load', item)">编辑文本</button>
+                <button class="btn btn-secondary whitespace-nowrap px-3 py-1.5 text-xs" :disabled="props.loading" @click="emit('editImages', item)">编辑图片</button>
+                <button class="btn btn-outline whitespace-nowrap px-3 py-1.5 text-xs text-rose-700 dark:text-rose-200" :disabled="props.loading" @click="confirmDelete(item)">删除</button>
               </div>
             </td>
           </tr>

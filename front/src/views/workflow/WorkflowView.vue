@@ -465,20 +465,31 @@ watch(
                 <div><h2 class="card-title">待处理商品</h2><p class="muted mt-1">来自商品库状态字段，便于继续补齐流程。</p></div>
                 <button class="btn btn-outline" :disabled="loading" @click="store.refreshProductsIndex">刷新</button>
               </div>
-              <div class="mt-4 overflow-auto rounded-lg border border-accent-200 dark:border-dark-700">
-                <table class="w-full min-w-[1080px] text-left text-sm">
-                  <thead class="border-b border-accent-200 bg-accent-50 text-xs text-accent-500 dark:border-dark-700 dark:bg-dark-950/70 dark:text-accent-400"><tr><th class="min-w-80 p-3">商品</th><th class="whitespace-nowrap p-3">采集</th><th class="whitespace-nowrap p-3">流程</th><th class="whitespace-nowrap p-3">文案</th><th class="whitespace-nowrap p-3">图片</th><th class="whitespace-nowrap p-3">类目</th><th class="whitespace-nowrap p-3">预检</th><th class="whitespace-nowrap p-3">发布</th><th class="whitespace-nowrap p-3">操作</th></tr></thead>
+              <div class="mt-4 overflow-hidden rounded-lg border border-accent-200 dark:border-dark-700">
+                <table class="w-full table-fixed text-left text-sm">
+                  <colgroup>
+                    <col class="w-[30%]" />
+                    <col class="w-[7%]" />
+                    <col class="w-[7%]" />
+                    <col class="w-[7%]" />
+                    <col class="w-[7%]" />
+                    <col class="w-[7%]" />
+                    <col class="w-[7%]" />
+                    <col class="w-[7%]" />
+                    <col class="w-[21%]" />
+                  </colgroup>
+                  <thead class="border-b border-accent-200 bg-accent-50 text-xs text-accent-500 dark:border-dark-700 dark:bg-dark-950/70 dark:text-accent-400"><tr><th class="p-3">商品</th><th class="px-1.5 py-3"><span class="block truncate" title="采集">采集</span></th><th class="px-1.5 py-3"><span class="block truncate" title="流程">流程</span></th><th class="px-1.5 py-3"><span class="block truncate" title="文案">文案</span></th><th class="px-1.5 py-3"><span class="block truncate" title="图片">图片</span></th><th class="px-1.5 py-3"><span class="block truncate" title="类目">类目</span></th><th class="px-1.5 py-3"><span class="block truncate" title="预检">预检</span></th><th class="px-1.5 py-3"><span class="block truncate" title="发布">发布</span></th><th class="p-3">操作</th></tr></thead>
                   <tbody class="divide-y divide-accent-100 dark:divide-dark-800">
                     <tr v-for="item in pendingItems" :key="item.productId" class="align-top transition hover:bg-accent-50/70 dark:hover:bg-dark-800/60">
-                      <td class="min-w-80 max-w-md p-3"><div class="font-semibold text-accent-950 dark:text-white">{{ item.title || item.productId || '-' }}</div><div class="mt-1 max-w-sm truncate text-xs text-accent-500 dark:text-accent-400">{{ item.sourceUrl }}</div></td>
-                      <td class="whitespace-nowrap p-3"><span class="badge-muted">{{ item.collectStatus || '-' }}</span></td>
-                      <td class="whitespace-nowrap p-3"><span class="badge-muted">{{ item.workflowStatus || '-' }}</span></td>
-                      <td class="whitespace-nowrap p-3"><span class="badge-muted">{{ item.aiCopyStatus || '-' }}</span></td>
-                      <td class="whitespace-nowrap p-3"><span class="badge-muted">{{ item.imageStatus || '-' }}</span></td>
-                      <td class="whitespace-nowrap p-3"><span class="badge-muted">{{ item.categoryStatus || '-' }}</span></td>
-                      <td class="whitespace-nowrap p-3"><span class="badge-muted">{{ item.precheckStatus || '-' }}</span></td>
-                      <td class="whitespace-nowrap p-3"><span class="badge-muted">{{ item.publishStatus || '-' }}</span></td>
-                      <td class="whitespace-nowrap p-3"><button class="btn btn-outline py-1.5" @click="openProductEditor(item)">继续处理</button></td>
+                      <td class="min-w-0 p-3"><div class="truncate font-semibold text-accent-950 dark:text-white" :title="item.title || item.productId || '-'">{{ item.title || item.productId || '-' }}</div><div class="mt-1 truncate text-xs text-accent-500 dark:text-accent-400" :title="item.sourceUrl">{{ item.sourceUrl }}</div></td>
+                      <td class="px-1.5 py-3"><span class="badge-muted max-w-full truncate" :title="item.collectStatus || '-'">{{ item.collectStatus || '-' }}</span></td>
+                      <td class="px-1.5 py-3"><span class="badge-muted max-w-full truncate" :title="item.workflowStatus || '-'">{{ item.workflowStatus || '-' }}</span></td>
+                      <td class="px-1.5 py-3"><span class="badge-muted max-w-full truncate" :title="item.aiCopyStatus || '-'">{{ item.aiCopyStatus || '-' }}</span></td>
+                      <td class="px-1.5 py-3"><span class="badge-muted max-w-full truncate" :title="item.imageStatus || '-'">{{ item.imageStatus || '-' }}</span></td>
+                      <td class="px-1.5 py-3"><span class="badge-muted max-w-full truncate" :title="item.categoryStatus || '-'">{{ item.categoryStatus || '-' }}</span></td>
+                      <td class="px-1.5 py-3"><span class="badge-muted max-w-full truncate" :title="item.precheckStatus || '-'">{{ item.precheckStatus || '-' }}</span></td>
+                      <td class="px-1.5 py-3"><span class="badge-muted max-w-full truncate" :title="item.publishStatus || '-'">{{ item.publishStatus || '-' }}</span></td>
+                      <td class="p-3"><button class="btn btn-outline whitespace-nowrap px-3 py-1.5 text-xs" @click="openProductEditor(item)">继续处理</button></td>
                     </tr>
                     <tr v-if="!pendingItems.length"><td colspan="9" class="p-6 text-center text-accent-500 dark:text-accent-300">暂无待处理商品。</td></tr>
                   </tbody>
@@ -515,10 +526,19 @@ watch(
             <PageHeader title="发布日志" description="展示发布请求、响应、错误码和下一步处理建议。" />
             <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
               <div class="flex flex-wrap items-center justify-between gap-3"><div><h2 class="card-title">发布日志</h2><p class="muted mt-1">来自 `/api/publish-logs`。</p></div><button class="btn btn-outline" :disabled="loading" @click="store.refreshPublishLogs">刷新日志</button></div>
-              <div class="mt-4 overflow-auto rounded-lg border border-accent-200 dark:border-dark-700">
-                <table class="w-full min-w-[1180px] text-left text-sm">
-                  <thead class="border-b border-accent-200 bg-accent-50 text-xs text-accent-500 dark:border-dark-700 dark:bg-dark-950/70 dark:text-accent-400"><tr><th class="whitespace-nowrap p-3">时间</th><th class="min-w-72 p-3">商品</th><th class="whitespace-nowrap p-3">平台</th><th class="whitespace-nowrap p-3">状态</th><th class="whitespace-nowrap p-3">错误码</th><th class="min-w-72 p-3">错误</th><th class="min-w-64 p-3">Payload</th></tr></thead>
-                  <tbody class="divide-y divide-accent-100 dark:divide-dark-800"><tr v-for="item in publishLogs" :key="`${item.jobId}-${item.startedAt}-${item.platform}`" class="align-top transition hover:bg-accent-50/70 dark:hover:bg-dark-800/60"><td class="whitespace-nowrap p-3 text-accent-700 dark:text-accent-200">{{ item.finishedAt || item.startedAt }}</td><td class="max-w-md truncate p-3 text-accent-700 dark:text-accent-200">{{ item.productId || '-' }}</td><td class="whitespace-nowrap p-3 text-accent-700 dark:text-accent-200">{{ item.platform || '-' }}</td><td class="whitespace-nowrap p-3"><span class="badge-muted">{{ item.status || '-' }}</span></td><td class="whitespace-nowrap p-3 font-mono text-accent-700 dark:text-accent-200">{{ item.errorCode || '-' }}</td><td class="max-w-md p-3 text-accent-700 dark:text-accent-200">{{ item.errorMessage || '-' }}</td><td class="max-w-sm truncate p-3 text-accent-500 dark:text-accent-400">{{ item.requestPayloadPath || '-' }}</td></tr><tr v-if="!publishLogs.length"><td colspan="7" class="p-6 text-center text-accent-500 dark:text-accent-300">暂无发布日志。</td></tr></tbody>
+              <div class="mt-4 overflow-hidden rounded-lg border border-accent-200 dark:border-dark-700">
+                <table class="w-full table-fixed text-left text-sm">
+                  <colgroup>
+                    <col class="w-[16%]" />
+                    <col class="w-[16%]" />
+                    <col class="w-[10%]" />
+                    <col class="w-[10%]" />
+                    <col class="w-[10%]" />
+                    <col class="w-[24%]" />
+                    <col class="w-[14%]" />
+                  </colgroup>
+                  <thead class="border-b border-accent-200 bg-accent-50 text-xs text-accent-500 dark:border-dark-700 dark:bg-dark-950/70 dark:text-accent-400"><tr><th class="p-3">时间</th><th class="p-3">商品</th><th class="p-3">平台</th><th class="p-3">状态</th><th class="p-3">错误码</th><th class="p-3">错误</th><th class="p-3">Payload</th></tr></thead>
+                  <tbody class="divide-y divide-accent-100 dark:divide-dark-800"><tr v-for="item in publishLogs" :key="`${item.jobId}-${item.startedAt}-${item.platform}`" class="align-top transition hover:bg-accent-50/70 dark:hover:bg-dark-800/60"><td class="p-3 text-accent-700 dark:text-accent-200"><span class="block truncate" :title="item.finishedAt || item.startedAt">{{ item.finishedAt || item.startedAt }}</span></td><td class="p-3 text-accent-700 dark:text-accent-200"><span class="block truncate" :title="item.productId || '-'">{{ item.productId || '-' }}</span></td><td class="p-3 text-accent-700 dark:text-accent-200"><span class="block truncate" :title="item.platform || '-'">{{ item.platform || '-' }}</span></td><td class="p-3"><span class="badge-muted max-w-full truncate" :title="item.status || '-'">{{ item.status || '-' }}</span></td><td class="p-3 font-mono text-accent-700 dark:text-accent-200"><span class="block truncate" :title="item.errorCode || '-'">{{ item.errorCode || '-' }}</span></td><td class="p-3 text-accent-700 dark:text-accent-200"><span class="block truncate" :title="item.errorMessage || '-'">{{ item.errorMessage || '-' }}</span></td><td class="p-3 text-accent-500 dark:text-accent-400"><span class="block truncate" :title="item.requestPayloadPath || '-'">{{ item.requestPayloadPath || '-' }}</span></td></tr><tr v-if="!publishLogs.length"><td colspan="7" class="p-6 text-center text-accent-500 dark:text-accent-300">暂无发布日志。</td></tr></tbody>
                 </table>
               </div>
             </section>

@@ -433,8 +433,17 @@ function stringifyJson(value: unknown) {
             <button type="button" class="btn btn-outline" @click="emit('navigate', 'library')">进入商品库</button>
           </div>
 
-          <div class="mt-4 overflow-auto">
-            <table class="w-full min-w-[760px] text-left text-sm">
+          <div class="mt-4 overflow-hidden">
+            <table class="w-full table-fixed text-left text-sm">
+              <colgroup>
+                <col class="w-[34%]" />
+                <col class="w-[11%]" />
+                <col class="w-[9%]" />
+                <col class="w-[9%]" />
+                <col class="w-[9%]" />
+                <col class="w-[13%]" />
+                <col class="w-[15%]" />
+              </colgroup>
               <thead class="border-b border-accent-200 text-xs text-accent-500 dark:border-dark-700 dark:text-accent-400">
                 <tr>
                   <th class="py-3 pr-3">商品</th>
@@ -448,25 +457,25 @@ function stringifyJson(value: unknown) {
               </thead>
               <tbody class="divide-y divide-accent-100 dark:divide-dark-800">
                 <tr v-for="item in recentProducts" :key="item.productId">
-                  <td class="max-w-md py-3 pr-3">
+                  <td class="min-w-0 py-3 pr-3">
                     <div class="flex items-center gap-3">
                       <img v-if="item.mainImage" :src="item.mainImage" alt="" class="size-11 rounded-lg object-cover" />
                       <div v-else class="flex size-11 items-center justify-center rounded-lg bg-accent-100 text-xs font-bold text-accent-500 dark:bg-dark-800 dark:text-accent-300">ERP</div>
                       <div class="min-w-0">
-                        <p class="truncate font-semibold text-accent-950 dark:text-white">{{ item.title || item.productId || '-' }}</p>
-                        <p class="truncate text-xs text-accent-500 dark:text-accent-400">{{ item.sourceUrl || item.productId }}</p>
+                        <p class="truncate font-semibold text-accent-950 dark:text-white" :title="item.title || item.productId || '-'">{{ item.title || item.productId || '-' }}</p>
+                        <p class="truncate text-xs text-accent-500 dark:text-accent-400" :title="item.sourceUrl || item.productId">{{ item.sourceUrl || item.productId }}</p>
                       </div>
                     </div>
                   </td>
-                  <td class="px-3 py-3">{{ item.sourcePlatform || '-' }}</td>
-                  <td class="px-3 py-3"><span :class="statusClass(item.aiCopyStatus)">{{ item.aiCopyStatus || '-' }}</span></td>
-                  <td class="px-3 py-3"><span :class="statusClass(item.imageStatus)">{{ item.imageStatus || '-' }}</span></td>
-                  <td class="px-3 py-3"><span :class="statusClass(item.precheckStatus)">{{ item.precheckStatus || '-' }}</span></td>
-                  <td class="px-3 py-3 text-accent-500 dark:text-accent-400">{{ formatDate(item.updatedAt || item.createdAt) }}</td>
+                  <td class="px-2 py-3"><span class="block truncate" :title="item.sourcePlatform || '-'">{{ item.sourcePlatform || '-' }}</span></td>
+                  <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.aiCopyStatus)" :title="item.aiCopyStatus || '-'">{{ item.aiCopyStatus || '-' }}</span></td>
+                  <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.imageStatus)" :title="item.imageStatus || '-'">{{ item.imageStatus || '-' }}</span></td>
+                  <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.precheckStatus)" :title="item.precheckStatus || '-'">{{ item.precheckStatus || '-' }}</span></td>
+                  <td class="px-2 py-3 text-accent-500 dark:text-accent-400"><span class="block truncate" :title="formatDate(item.updatedAt || item.createdAt)">{{ formatDate(item.updatedAt || item.createdAt) }}</span></td>
                   <td class="py-3 pl-3">
-                    <div class="flex justify-end gap-2">
-                      <button type="button" class="btn btn-outline py-1.5" @click="emit('openProduct', item)">编辑</button>
-                      <button type="button" class="btn btn-primary py-1.5" @click="emit('openPrecheck', item, firstPlatform(item))">发布</button>
+                    <div class="flex flex-wrap justify-end gap-2">
+                      <button type="button" class="btn btn-outline whitespace-nowrap px-3 py-1.5 text-xs" @click="emit('openProduct', item)">编辑</button>
+                      <button type="button" class="btn btn-primary whitespace-nowrap px-3 py-1.5 text-xs" @click="emit('openPrecheck', item, firstPlatform(item))">发布</button>
                     </div>
                   </td>
                 </tr>
