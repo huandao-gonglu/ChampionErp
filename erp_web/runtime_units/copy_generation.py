@@ -7,16 +7,14 @@ from erp_web import listing_planner as generator
 from erp_web.product_model import PLATFORMS
 from erp_web.services import copy_service
 
-from .collect_helpers import collect_time_iso
 from .image_pool_core import _source_only_pool_items, _source_pool_items
 from .product_store import (
-    draft_workflow_status,
     load_app_config,
     load_product_from_index,
     load_products_index,
     normalize_list,
     normalize_product_fields,
-    save_product,
+    save_draft_copy_result,
 )
 from .runtime_common import APP_DIR
 
@@ -162,36 +160,7 @@ def save_copy_result(
 ) -> dict[str, Any]:
     product = normalize_product_fields(product)
     target_key = (target_market or "").strip().lower() or "mercadolibre"
-    copy_results = product.setdefault("copy_results", {})
-    if isinstance(copy_results, dict):
-        copy_results[target_key] = copy
-    drafts = product.setdefault("drafts", {})
-    if isinstance(drafts, dict):
-        draft = drafts.setdefault(target_key, {})
-        if isinstance(draft, dict):
-            draft.update(
-                {
-                    "title": copy.get("title", ""),
-                    "description": copy.get("description", ""),
-                    "bullets": copy.get("bullets", []),
-                    "search_terms": copy.get("search_keywords", []),
-                    "language": copy.get("language", draft.get("language", "")),
-                    "copy_source": "ai",
-                    "copy_generated_at": collect_time_iso(),
-                }
-            )
-            draft["status"] = draft_workflow_status(product, target_key)
-    if target_key == "mercadolibre":
-        overrides = product.setdefault("listing_overrides", {})
-        if isinstance(overrides, dict):
-            overrides["mercadolibre"] = {
-                "title": copy.get("title", ""),
-                "description": copy.get("description", ""),
-                "alt_titles": copy.get("alt_titles", []),
-                "search_keywords": copy.get("search_keywords", []),
-                "language": copy.get("language", "English"),
-            }
-    return save_product(product)
+    return save_draft_copy_result(product, target_key, copy)
 
 
 def batch_generate_copy_for_products(

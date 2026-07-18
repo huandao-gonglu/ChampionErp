@@ -97,6 +97,38 @@ export interface Product {
   raw: UnknownRecord
 }
 
+export interface DraftDetail extends MarketplaceDraft {
+  productId: string
+  platform: Marketplace
+  site: string
+  createdAt: string
+  updatedAt: string
+  raw: UnknownRecord
+}
+
+export interface DraftProductContext {
+  productId: string
+  title: string
+  sourceTitle: string
+  sourcePlatform: string
+  sourceUrl: string
+  brand: string
+  model: string
+  sku: string
+  stock: string
+  cost: string
+  sourcePrice: string
+  currency: string
+  weightKg: string
+  dimensions: {
+    lengthCm: string
+    widthCm: string
+    heightCm: string
+  }
+  imagePool: ImageAsset[]
+  raw: UnknownRecord
+}
+
 export interface PricingInput {
   platform: Marketplace
   site: string

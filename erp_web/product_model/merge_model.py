@@ -47,6 +47,10 @@ def _merge_source(product: dict[str, Any]) -> dict[str, Any]:
     source["package_contents"] = normalize_list(incoming.get("package_contents") or (product.get("package_includes") if legacy_fallback else []))
     source["variants"] = deepcopy(incoming.get("variants") or (product.get("variations") if legacy_fallback else []) or [])
     source["skus"] = deepcopy(incoming.get("skus") or (product.get("sku_items") if legacy_fallback else []) or [])
+    source["attributes"] = deepcopy(incoming.get("attributes") if isinstance(incoming.get("attributes"), dict) else product.get("attributes") if isinstance(product.get("attributes"), dict) else {})
+    source["brand"] = str(incoming.get("brand") or product.get("brand") or "").strip()
+    source["model"] = str(incoming.get("model") or product.get("model") or "").strip()
+    source["sku"] = str(incoming.get("sku") or product.get("sku") or "").strip()
     source["collect_status"] = str(incoming.get("collect_status") or (product.get("collect_status") if legacy_fallback else "") or "").strip()
     source["collect_logs"] = deepcopy(incoming.get("collect_logs") or (product.get("collect_logs") if legacy_fallback else []) or [])
     diagnostics = incoming.get("collect_diagnostics") if isinstance(incoming.get("collect_diagnostics"), dict) else {}
@@ -199,10 +203,11 @@ def merge_source_partial_result(
             return
         target[key] = deepcopy(value)
 
-    for field in ["source_url", "source_platform", "title", "price", "currency", "description", "weight_kg", "material", "collect_status"]:
+    for field in ["source_url", "source_platform", "title", "price", "currency", "description", "weight_kg", "material", "brand", "model", "sku", "collect_status"]:
         apply_if_present(source, field, updates.get(field))
     for field in ["bullets", "images", "image_pool", "package_contents", "variants", "skus", "collect_logs"]:
         apply_if_present(source, field, updates.get(field))
+    apply_if_present(source, "attributes", updates.get("attributes"))
     apply_if_present(source, "dimensions", updates.get("dimensions"))
     if should_clear_collect_images:
         kept_pool: list[dict[str, Any]] = []
@@ -239,6 +244,13 @@ def merge_source_partial_result(
 
     normalized["source"] = source
     normalized["name"] = str(source.get("title") or normalized.get("name") or "").strip()
+    normalized["brand"] = str(source.get("brand") or normalized.get("brand") or "").strip()
+    normalized["model"] = str(source.get("model") or normalized.get("model") or "").strip()
+    normalized["sku"] = str(source.get("sku") or normalized.get("sku") or "").strip()
+    if isinstance(source.get("attributes"), dict) and source.get("attributes"):
+        normalized["attributes"] = deepcopy(source["attributes"])
+    if isinstance(source.get("skus"), list) and source["skus"]:
+        normalized["sku_items"] = deepcopy(source["skus"])
     normalized["source_url"] = str(source.get("source_url") or normalized.get("source_url") or "").strip()
     normalized["source_platform"] = str(source.get("source_platform") or normalized.get("source_platform") or "").strip()
     normalized["materials"] = normalize_list(normalized.get("materials") or [source.get("material")])

@@ -18,7 +18,7 @@ from ..runtime_units.copy_generation import (
     platform_to_preset_key,
     save_copy_result,
 )
-from ..runtime_units.product_store import load_app_config, load_products_index, load_required_product_from_body
+from ..runtime_units.product_store import load_app_config, load_draft_detail_from_index, load_products_index, load_required_product_from_body
 
 
 PostHandler = Callable[[JsonRequestHandler], None]
@@ -57,7 +57,13 @@ def handle_generate_copy(handler: JsonRequestHandler) -> None:
     product = save_copy_result(product, result["target_market"], {**result["copy"], "language": result["language"], "source_platform": result["source_platform"], "mode": result["mode"]})
     plan = apply_product_drafts_to_plan(product, build_plan_for_platform(product, platform))
     listing = plan.get("platforms", {}).get(platform_to_preset_key(platform), {}).get("listing", {})
-    handler.send_json({"ok": True, **result, "product": product, "plan": plan, "listing": listing, "productsIndex": load_products_index()})
+    draft_payload: dict = {}
+    draft_id = str(product.get("current_draft_id") or "")
+    if draft_id:
+        detail, detail_error, _ = load_draft_detail_from_index(draft_id)
+        if not detail_error:
+            draft_payload = detail
+    handler.send_json({"ok": True, **result, "product": product, "plan": plan, "listing": listing, "productsIndex": load_products_index(), **draft_payload})
     return
 
 

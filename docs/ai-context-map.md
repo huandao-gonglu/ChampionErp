@@ -23,7 +23,7 @@ This map exists to reduce context scanning for humans and coding agents.
 - Auth, AI config, and settings APIs: `erp_web/http_route_units/auth_config_routes.py`
 - Global AI function prompts are JSON-backed through `erp_web/services/ai_prompt_templates.py` and saved in `ai_use_case_prompts`; each row points to one file with `description`, `system`, and `user`. `research.web_search` is the default AI product-research template and is edited from the global function-binding settings.
 - Category cache, search, suggestion, and precheck APIs: `erp_web/http_route_units/category_routes.py`
-- Product save/load/delete and pricing APIs: `erp_web/http_route_units/product_routes.py`
+- Product save/load/delete, independent platform draft detail/save, and pricing APIs: `erp_web/http_route_units/product_routes.py`
 - Product research temporary hot-product runs (`POST /api/v1/product-research/hot-products/search`) create async runs; `GET /api/v1/product-research/hot-products/runs?run_id=...` polls status, source results, and weak progress descriptions. Source registry/settings APIs and search provider test API live in `erp_web/http_route_units/product_research_routes.py`, backed by `erp_web/facades/product_research_facade.py` and `erp_web/services/product_research_service.py`.
 - Product research defaults and config normalization: `erp_web/product_research_config.py`; default prompt loading and template rendering use `erp_web/services/ai_prompt_templates.py`; user-facing search methods live in `product_research.search_providers`. Target markets (`product_research.target_markets[]`) own their search-method bindings in `search_methods[]`, while each concrete search method implements the `ProductResearchSearchMethod.run(...) -> list[HotProductCandidate]` contract in `erp_web/services/product_research_methods.py`. Hot-product candidates are runtime results from the selected search methods and are not stored in product-research settings.
 - Product research AI search prompts are decoupled from search providers. The default template is `ai_use_case_prompts.research.web_search.path` such as `config/prompts/ai_example.json`; target-market generated prompts are stored per binding in `product_research.target_markets[].search_methods[].prompt` and are not shown in global function binding.
@@ -39,10 +39,10 @@ This map exists to reduce context scanning for humans and coding agents.
 - Static assets and auth helper pages: `erp_web/http_route_units/static_routes.py`
 - Image upload and image pool API: `erp_web/http_route_units/image_routes.py`
 - Product collection workflows: `erp_web/runtime_units/source_collect_workflows.py`
-- Product persistence and index: `erp_web/runtime_units/product_store.py`
+- Product persistence and index: `erp_web/runtime_units/product_store.py`. Product profile saves intentionally strip `drafts`; platform draft text/detail editing uses `load_draft_detail_from_index()` and `save_draft_detail()` so one `draft_id` updates one `platform_drafts` row.
 - Image pool pure helpers and display/read logic: `erp_web/runtime_units/image_pool_core.py`
 - Image pool persistence and product mutation actions: `erp_web/runtime_units/image_pool.py`
-- Copy generation: `erp_web/runtime_units/copy_generation.py`
+- Copy generation: `erp_web/runtime_units/copy_generation.py`. Generated copy is saved through `save_draft_copy_result()` into one platform draft row and `/api/generate-copy` returns `draft`/`productContext` for independent draft editing.
 - Category cache and suggestions: `erp_web/runtime_units/category_store.py`, `erp_web/runtime_units/category_refresh.py`
 - Publish precheck and payloads: `erp_web/runtime_units/publish_validation.py`, `erp_web/runtime_units/publish_helpers.py`
 - Mercado Libre publish flow: `erp_web/runtime_units/publish_mercadolibre.py`

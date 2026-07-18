@@ -118,6 +118,64 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
 
         self.with_temp_app(run)
 
+    def test_save_product_profile_does_not_overwrite_platform_draft(self) -> None:
+        def run(app_dir: Path) -> None:
+            saved = erp_web_app.save_product(sample_product("Profile boundary", "https://example.com/profile-boundary"))
+            draft = erp_db.list_draft_records(app_dir)[0]
+
+            profile = dict(saved)
+            profile["name"] = "Profile boundary updated"
+            profile["drafts"] = {
+                "mercadolibre": {
+                    "draft_id": draft["draft_id"],
+                    "title": "Should not overwrite draft",
+                    "description": "Should not overwrite draft description",
+                }
+            }
+            updated = erp_web_app.save_product_profile(profile)
+
+            reloaded_draft = erp_db.load_draft_model(app_dir, draft["draft_id"])
+            self.assertEqual(updated["name"], "Profile boundary updated")
+            self.assertEqual(reloaded_draft["title"], "Titulo MX")
+            self.assertEqual(reloaded_draft["description"], "Descripcion MX")
+
+        self.with_temp_app(run)
+
+    def test_save_draft_detail_updates_only_selected_draft(self) -> None:
+        def run(app_dir: Path) -> None:
+            saved = erp_web_app.save_product(sample_product("Draft boundary", "https://example.com/draft-boundary"))
+            product_id = saved["product_id"]
+            ozon_draft_id = erp_db.upsert_draft_model(
+                app_dir,
+                product_id,
+                "ozon",
+                {
+                    "title": "Ozon original",
+                    "description": "Ozon description",
+                    "price": "22",
+                    "status": "copy_ready",
+                },
+            )
+            ml_draft = next(item for item in erp_db.list_draft_records(app_dir, scope="all") if item["platform"] == "mercadolibre")
+
+            result, error, status = erp_web_app.save_draft_detail(
+                {
+                    "draft_id": ml_draft["draft_id"],
+                    "title": "ML independent title",
+                    "description": "ML independent description",
+                    "price": "33",
+                    "status": "copy_ready",
+                }
+            )
+
+            self.assertIsNone(error)
+            self.assertEqual(status, 200)
+            self.assertEqual(result["draft"]["title"], "ML independent title")
+            self.assertEqual(erp_db.load_draft_model(app_dir, ml_draft["draft_id"])["title"], "ML independent title")
+            self.assertEqual(erp_db.load_draft_model(app_dir, ozon_draft_id)["title"], "Ozon original")
+
+        self.with_temp_app(run)
+
     def test_1688_collect_images_are_limited_to_first_five(self) -> None:
         source = {
             "images": [f"https://img.example/{index}.jpg" for index in range(8)],

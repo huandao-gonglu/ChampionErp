@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { useClipboard } from '@/composables/useClipboard'
 import { statusBadgeClass, workflowStatusLabel } from '@/utils/status'
 import type { DraftIndexItem, Marketplace } from '@/types/workflow'
 
@@ -21,6 +22,9 @@ const emit = defineEmits<{
 const platformFilter = ref<'all' | Marketplace>('all')
 const draftScope = ref<'active' | 'published' | 'all'>('active')
 const selectedDraftIds = ref<string[]>([])
+const copiedDraftId = ref('')
+const { copy: copyToClipboard } = useClipboard()
+let copiedDraftTimer: number | null = null
 const activeDraftStatusSet = new Set(['claimed', 'copy_ready', 'images_ready', 'ready_to_publish', 'failed', 'not_ready'])
 const draftStatusSet = new Set([...activeDraftStatusSet, 'published'])
 const platformLabels: Record<Marketplace, string> = {
@@ -72,9 +76,25 @@ function deleteSelectedDrafts() {
   emit('deleteDrafts', selectedDrafts.value)
 }
 
+async function copyDraftId(item: DraftIndexItem) {
+  const draftId = draftIdOf(item)
+  if (!draftId) return
+  await copyToClipboard(draftId)
+  copiedDraftId.value = draftId
+  if (copiedDraftTimer) window.clearTimeout(copiedDraftTimer)
+  copiedDraftTimer = window.setTimeout(() => {
+    copiedDraftId.value = ''
+    copiedDraftTimer = null
+  }, 1500)
+}
+
 watch(() => props.drafts.map(draftIdOf), (draftIds) => {
   const existingIds = new Set(draftIds)
   selectedDraftIds.value = selectedDraftIds.value.filter((id) => existingIds.has(id))
+})
+
+onBeforeUnmount(() => {
+  if (copiedDraftTimer) window.clearTimeout(copiedDraftTimer)
 })
 </script>
 
@@ -164,6 +184,9 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
                 <button class="btn btn-outline whitespace-nowrap px-3 py-1.5 text-xs" :disabled="props.loading" @click="emit('editText', row)">编辑文本</button>
                 <button class="btn btn-secondary whitespace-nowrap px-3 py-1.5 text-xs" :disabled="props.loading" @click="emit('editImages', row)">编辑图片</button>
                 <button class="btn btn-primary whitespace-nowrap px-3 py-1.5 text-xs" :disabled="props.loading" @click="emit('goPublish', row)">发布预检</button>
+                <button class="btn btn-outline whitespace-nowrap px-3 py-1.5 text-xs" :disabled="props.loading || !draftIdOf(row)" :title="draftIdOf(row) || '当前草稿暂无 ID'" @click="copyDraftId(row)">
+                  {{ copiedDraftId === draftIdOf(row) ? '已复制' : '复制草稿id' }}
+                </button>
                 <button class="btn btn-outline whitespace-nowrap px-3 py-1.5 text-xs text-rose-600 hover:border-rose-300 hover:bg-rose-50 dark:text-rose-200 dark:hover:border-rose-500/50 dark:hover:bg-rose-500/10" :disabled="props.loading" @click="emit('deleteDraft', row)">删除</button>
               </div>
             </td>

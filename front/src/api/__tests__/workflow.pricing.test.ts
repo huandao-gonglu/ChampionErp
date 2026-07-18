@@ -134,7 +134,7 @@ describe('publishPrecheck API mapping', () => {
     })
   })
 
-  it('keeps backend draft precheck metadata when posting a normalized product', () => {
+  it('keeps product metadata but does not post platform drafts with a normalized product', () => {
     const product = createEmptyProduct()
     product.productId = 'prod-1'
     product.drafts.mercadolibre.title = 'Draft title'
@@ -154,12 +154,8 @@ describe('publishPrecheck API mapping', () => {
     }
 
     const result = toBackendProduct(product)
-    const drafts = result.drafts as Record<string, Record<string, unknown>>
 
-    expect(drafts.mercadolibre.publish_status).toBe('ready')
-    expect(drafts.mercadolibre.validation_errors).toEqual([{ code: 'PRICING_NOT_APPLIED', severity: 'warning' }])
-    expect(drafts.mercadolibre.pricing).toEqual({ suggested_price: '172.68' })
-    expect(drafts.mercadolibre.status).toBe('claimed')
+    expect(result.drafts).toBeUndefined()
     expect(result.publish_preview).toEqual({ mercadolibre: { ok: true } })
   })
 

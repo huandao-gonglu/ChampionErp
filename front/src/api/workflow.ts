@@ -9,6 +9,7 @@ import type {
   CategorySelection,
   CollectBatchRow,
   DraftIndexItem,
+  DraftDetail,
   CollectForm,
   ImageAsset,
   Marketplace,
@@ -42,6 +43,7 @@ import type {
   AppStateResponse,
   AuthResult,
   DeleteProductsResult,
+  DraftMutationResponse,
   PayloadPreviewResult,
   ProductMutationResponse,
   ProductOperationResult,
@@ -52,10 +54,10 @@ import {
   getBoolean,
   getNumber,
   getString,
-  isRecord,
   normalizeBackendProduct,
   normalizeBrowserStatus,
   normalizeDeleteProductsResult,
+  normalizeDraftMutation,
   normalizeDraftsIndex,
   normalizeMercadoLibreAuthChecklist,
   normalizeMercadoLibreOrderNotification,
@@ -68,6 +70,7 @@ import {
   precheckIssues,
   stringList,
   toBackendImageAsset,
+  toBackendDraftDetail,
   toBackendProduct,
 } from './workflow/normalizers'
 
@@ -90,6 +93,7 @@ export type {
   AppStateResponse,
   AuthResult,
   DeleteProductsResult,
+  DraftMutationResponse,
   PayloadPreviewResult,
   ProductMutationResponse,
   ProductOperationResult,
@@ -560,9 +564,14 @@ export async function loadProduct(productId: string, productFilePath = ''): Prom
   return normalizeProductMutation(response.data)
 }
 
-export async function loadDraft(draftId: string): Promise<ProductMutationResponse> {
+export async function loadDraft(draftId: string): Promise<DraftMutationResponse> {
   const response = await apiClient.post('/api/load-draft', { draft_id: draftId })
-  return normalizeProductMutation(response.data)
+  return normalizeDraftMutation(response.data)
+}
+
+export async function saveDraft(draft: DraftDetail): Promise<DraftMutationResponse> {
+  const response = await apiClient.post('/api/save-draft', { draft: toBackendDraftDetail(draft) })
+  return normalizeDraftMutation(response.data)
 }
 
 export async function deleteDraft(draftIds: string | string[]): Promise<ProductMutationResponse> {

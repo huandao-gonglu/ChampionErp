@@ -1,4 +1,4 @@
-import type { CollectDiagnostics, CollectForm, Marketplace, MarketplaceDraft, PricingInput, Product } from '@/types/workflow'
+import type { CollectDiagnostics, CollectForm, DraftDetail, DraftProductContext, Marketplace, MarketplaceDraft, PricingInput, Product } from '@/types/workflow'
 import { listingLanguageLabel } from '@/constants/locales'
 
 export const marketplaces: Marketplace[] = ['mercadolibre', 'wildberries', 'ozon']
@@ -69,6 +69,43 @@ export function createEmptyProduct(): Product {
       wildberries: createEmptyDraft(listingLanguageLabel('wildberries')),
       ozon: createEmptyDraft(listingLanguageLabel('ozon')),
     },
+    raw: {},
+  }
+}
+
+export function createEmptyDraftDetail(platform: Marketplace = 'mercadolibre'): DraftDetail {
+  return {
+    ...createEmptyDraft(listingLanguageLabel(platform)),
+    productId: '',
+    platform,
+    site: '',
+    createdAt: '',
+    updatedAt: '',
+    raw: {},
+  }
+}
+
+export function createEmptyDraftProductContext(): DraftProductContext {
+  return {
+    productId: '',
+    title: '',
+    sourceTitle: '',
+    sourcePlatform: '',
+    sourceUrl: '',
+    brand: '',
+    model: '',
+    sku: '',
+    stock: '',
+    cost: '',
+    sourcePrice: '',
+    currency: '',
+    weightKg: '',
+    dimensions: {
+      lengthCm: '',
+      widthCm: '',
+      heightCm: '',
+    },
+    imagePool: [],
     raw: {},
   }
 }

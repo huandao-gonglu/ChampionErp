@@ -8,6 +8,7 @@ import CategoryPrecheckPanel from '@/components/domain/CategoryPrecheckPanel.vue
 import CollectView from '@/views/workflow/CollectView.vue'
 import DashboardView from '@/views/workflow/DashboardView.vue'
 import DraftBoxPanel from '@/components/domain/DraftBoxPanel.vue'
+import DraftEditorPanel from '@/components/domain/DraftEditorPanel.vue'
 import LibraryPanel from '@/components/domain/LibraryPanel.vue'
 import MercadoLibrePublishedPanel from '@/components/domain/MercadoLibrePublishedPanel.vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
@@ -18,6 +19,7 @@ import ProductEditorPanel from '@/components/domain/ProductEditorPanel.vue'
 import ProductResearchPanel from '@/components/domain/ProductResearchPanel.vue'
 import RunLog from '@/components/domain/RunLog.vue'
 import { workflowNavItems } from '@/constants/navigation'
+import { useClipboard } from '@/composables/useClipboard'
 import { useAppStore } from '@/stores/app'
 import { useWorkflowStore } from '@/stores/workflow'
 import type { DraftIndexItem, Marketplace, ProductIndexItem, UnknownRecord } from '@/types/workflow'
@@ -72,6 +74,8 @@ const {
   lastAuthResult,
   authLink,
   imagePrompt,
+  currentDraft,
+  currentDraftProductContext,
   workflowSteps,
   progressPercent,
   imagePool,
@@ -82,8 +86,10 @@ const {
 const appStore = useAppStore()
 const route = useRoute()
 const router = useRouter()
+const { copied: productIdCopied, copy: copyToClipboard } = useClipboard()
 const activeNav = ref('dashboard')
 const editorOpen = ref(false)
+const draftEditorOpen = ref(false)
 const editorMode = ref<'text' | 'images'>('text')
 const navItems = workflowNavItems
 const pathNavMap: Record<string, string> = {
@@ -154,16 +160,51 @@ async function openProductImageEditor(item?: ProductIndexItem) {
   await openProductEditor(item, 'images')
 }
 
-async function openDraftEditor(item: DraftIndexItem, mode: 'text' | 'images' = 'text') {
+function productIndexFromDraft(item: DraftIndexItem): ProductIndexItem {
+  return {
+    productId: item.productId,
+    title: item.productTitle || item.title,
+    mainImage: item.mainImage,
+    sourcePlatform: item.sourcePlatform,
+    sourceUrl: item.sourceUrl,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    platforms: [item.platform],
+    draftStatuses: {
+      [item.platform]: item.status as ProductIndexItem['draftStatuses'][Marketplace],
+    },
+    productFilePath: item.productFilePath,
+    collectStatus: '',
+    workflowStatus: '',
+    aiCopyStatus: '',
+    imageStatus: '',
+    categoryStatus: '',
+    attributesStatus: '',
+    pricingStatus: '',
+    precheckStatus: '',
+    publishStatus: item.publishStatus,
+    publishQueueReady: false,
+    optimized: false,
+    raw: item.raw,
+  }
+}
+
+async function openDraftEditor(item: DraftIndexItem) {
   store.setMarketplace(item.platform)
   await store.loadDraft(item)
-  editorMode.value = mode
+  draftEditorOpen.value = true
+}
+
+async function openDraftImageEditor(item: DraftIndexItem) {
+  store.setMarketplace(item.platform)
+  await store.loadProduct(productIndexFromDraft(item))
+  editorMode.value = 'images'
   editorOpen.value = true
 }
 
 async function openDraftPrecheck(item: DraftIndexItem) {
   store.setMarketplace(item.platform)
-  await store.loadDraft(item)
+  await store.loadProduct(productIndexFromDraft(item))
   navigate('category')
 }
 
@@ -188,6 +229,15 @@ async function openProductPrecheck(item: ProductIndexItem, platform: Marketplace
 
 function closeProductEditor() {
   editorOpen.value = false
+}
+
+function closeDraftEditor() {
+  draftEditorOpen.value = false
+}
+
+async function copyProductId() {
+  if (!product.value.productId) return
+  await copyToClipboard(product.value.productId)
 }
 
 async function selectPricingProduct(productId: string) {
@@ -353,8 +403,8 @@ watch(
               :loading="loading"
               :error="error"
               @refresh="store.refreshDraftsIndex"
-              @edit-text="(item) => openDraftEditor(item, 'text')"
-              @edit-images="(item) => openDraftEditor(item, 'images')"
+              @edit-text="openDraftEditor"
+              @edit-images="openDraftImageEditor"
               @go-publish="openDraftPrecheck"
               @delete-draft="deleteDraft"
               @delete-drafts="deleteDrafts"
@@ -557,6 +607,9 @@ watch(
             <h2 class="text-xl font-black text-slate-950 dark:text-white">{{ editorMode === 'images' ? '商品图片编辑' : '商品文本编辑' }}</h2>
           </div>
           <div class="flex flex-wrap gap-2">
+            <button class="btn btn-outline" :disabled="!product.productId" :title="product.productId || '当前商品暂无 ID'" @click="copyProductId">
+              {{ productIdCopied ? '已复制' : '复制id' }}
+            </button>
             <button class="btn btn-outline" :class="editorMode === 'text' ? 'bg-slate-100' : ''" @click="editorMode = 'text'">编辑文本</button>
             <button class="btn btn-outline" :class="editorMode === 'images' ? 'bg-slate-100' : ''" @click="editorMode = 'images'">编辑图片</button>
             <button class="btn btn-outline" @click="closeProductEditor">关闭</button>
@@ -565,12 +618,9 @@ watch(
         <ProductEditorPanel
           v-if="editorMode === 'text'"
           :product="product"
-          :active-marketplace="activeMarketplace"
           :loading="loading"
           @save="store.saveCurrentProduct"
-          @generate-copy="store.generateCopy"
           @assign-upc="store.assignUpc"
-          @set-marketplace="setMarketplace"
           @go-pricing="navigate('pricing'); closeProductEditor()"
           @go-images="editorMode = 'images'"
           @go-publish="navigate('category'); closeProductEditor()"
@@ -592,6 +642,18 @@ watch(
           @set-main="store.setMainImage"
           @delete="store.deleteImages"
           @clear="store.clearSourceImages"
+        />
+      </div>
+    </div>
+    <div v-if="draftEditorOpen" class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/50 p-4 backdrop-blur-sm" @click.self="closeDraftEditor">
+      <div class="w-full max-w-7xl rounded-3xl bg-white p-4 shadow-2xl ring-1 ring-slate-200 dark:bg-dark-900 dark:ring-dark-700 sm:p-6">
+        <DraftEditorPanel
+          :draft="currentDraft"
+          :product-context="currentDraftProductContext"
+          :loading="loading"
+          @generate-copy="() => store.generateCopy(true)"
+          @save="store.saveCurrentDraft"
+          @close="closeDraftEditor"
         />
       </div>
     </div>

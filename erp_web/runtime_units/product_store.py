@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import time
 from copy import deepcopy
+from datetime import datetime, timezone
 from typing import Any
 
 from erp_web import db as erp_db
@@ -151,6 +152,15 @@ def save_product(data: dict[str, Any]) -> dict[str, Any]:
     ensure_sqlite_store()
     product["product_id"] = erp_db.upsert_product_model(APP_DIR, product)
     return product
+
+
+def save_product_profile(data: dict[str, Any]) -> dict[str, Any]:
+    product_data = dict(data or {})
+    product_data.pop("drafts", None)
+    source = product_data.get("source") if isinstance(product_data.get("source"), dict) else None
+    if source is not None and "name" in product_data:
+        source["title"] = str(product_data.get("name") or source.get("title") or "").strip()
+    return save_product(product_data)
 
 
 def product_identity(product: dict[str, Any]) -> str:
@@ -448,6 +458,114 @@ def load_draft_from_index(draft_id: str) -> dict[str, Any]:
         if loaded:
             return normalize_product_fields(loaded)
     return load_product()
+
+
+def draft_product_context(product: dict[str, Any]) -> dict[str, Any]:
+    normalized = normalize_product_fields(product or {})
+    source = normalized.get("source") if isinstance(normalized.get("source"), dict) else {}
+    dimensions = source.get("dimensions") if isinstance(source.get("dimensions"), dict) else {}
+    return {
+        "product_id": str(normalized.get("product_id") or normalized.get("id") or ""),
+        "title": str(normalized.get("name") or source.get("title") or ""),
+        "source_title": str(source.get("title") or normalized.get("name") or ""),
+        "source_platform": str(source.get("source_platform") or normalized.get("source_platform") or ""),
+        "source_url": str(source.get("source_url") or normalized.get("source_url") or ""),
+        "brand": str(normalized.get("brand") or source.get("brand") or ""),
+        "model": str(normalized.get("model") or source.get("model") or ""),
+        "sku": str(normalized.get("sku") or ""),
+        "stock": str(normalized.get("stock") or ""),
+        "cost": str(normalized.get("cost") or normalized.get("source_price_cny_for_cost") or source.get("price") or ""),
+        "source_price": str(source.get("price") or ""),
+        "currency": str(source.get("currency") or ""),
+        "weight_kg": str(source.get("weight_kg") or normalized.get("weight_kg") or ""),
+        "dimensions": {
+            "length_cm": str(dimensions.get("length_cm") or dimensions.get("lengthCm") or ""),
+            "width_cm": str(dimensions.get("width_cm") or dimensions.get("widthCm") or ""),
+            "height_cm": str(dimensions.get("height_cm") or dimensions.get("heightCm") or ""),
+        },
+        "image_pool": current_image_pool(normalized),
+        "raw": normalized,
+    }
+
+
+def load_draft_detail_from_index(draft_id: str) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
+    draft_id = str(draft_id or "").strip()
+    if not draft_id:
+        return {}, {"ok": False, "error": "draft_id 不能为空"}, 400
+    ensure_sqlite_store()
+    draft = erp_db.load_draft_model(APP_DIR, draft_id)
+    if not draft:
+        return {}, {"ok": False, "error": "草稿不存在", "draft_id": draft_id}, 404
+    product = erp_db.load_product_model(APP_DIR, str(draft.get("product_id") or ""))
+    if not product:
+        return {}, {"ok": False, "error": "草稿关联商品不存在", "draft_id": draft_id}, 404
+    return {
+        "ok": True,
+        "draft": draft,
+        "productContext": draft_product_context(product),
+        "productsIndex": load_products_index(),
+        "draftsIndex": load_drafts_index(),
+    }, None, 200
+
+
+def save_draft_detail(draft_payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
+    draft_id = str(draft_payload.get("draft_id") or draft_payload.get("draftId") or "").strip()
+    if not draft_id:
+        return {}, {"ok": False, "error": "draft_id 不能为空"}, 400
+    ensure_sqlite_store()
+    existing = erp_db.load_draft_model(APP_DIR, draft_id)
+    if not existing:
+        return {}, {"ok": False, "error": "草稿不存在", "draft_id": draft_id}, 404
+    product_id = str(existing.get("product_id") or "").strip()
+    platform = str(existing.get("platform") or "").strip().lower()
+    if platform not in PLATFORMS:
+        return {}, {"ok": False, "error": "草稿平台不支持", "draft_id": draft_id}, 400
+    merged = {**existing, **dict(draft_payload), "draft_id": draft_id, "product_id": product_id, "platform": platform}
+    saved_draft_id = erp_db.upsert_draft_model(APP_DIR, product_id, platform, merged)
+    draft = erp_db.load_draft_model(APP_DIR, saved_draft_id)
+    product = erp_db.load_product_model(APP_DIR, product_id)
+    return {
+        "ok": True,
+        "draft": draft,
+        "productContext": draft_product_context(product),
+        "productsIndex": load_products_index(),
+        "draftsIndex": load_drafts_index(),
+        "message": "草稿已保存。",
+    }, None, 200
+
+
+def save_draft_copy_result(product: dict[str, Any], target_market: str, copy: dict[str, Any]) -> dict[str, Any]:
+    product = normalize_product_fields(product or {})
+    product_id = str(product.get("product_id") or product.get("id") or "").strip()
+    target_key = str(target_market or "").strip().lower() or "mercadolibre"
+    if not product_id:
+        raise RuntimeError("product_id 不能为空")
+    if target_key not in PLATFORMS:
+        raise RuntimeError("不支持的平台")
+    drafts = product.get("drafts") if isinstance(product.get("drafts"), dict) else {}
+    draft = dict(drafts.get(target_key) if isinstance(drafts.get(target_key), dict) else {})
+    draft.update(
+        {
+            "title": copy.get("title", ""),
+            "description": copy.get("description", ""),
+            "bullets": normalize_list(copy.get("bullets")),
+            "search_terms": normalize_list(copy.get("search_keywords")),
+            "language": str(copy.get("language") or draft.get("language") or ""),
+            "copy_source": "ai",
+            "copy_result": copy,
+            "copy_generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    product_for_status = dict(product)
+    merged_drafts = dict(drafts)
+    merged_drafts[target_key] = draft
+    product_for_status["drafts"] = merged_drafts
+    draft["status"] = draft_workflow_status(product_for_status, target_key)
+    saved_draft_id = erp_db.upsert_draft_model(APP_DIR, product_id, target_key, draft)
+    saved = load_product_from_index(product_id, "")
+    saved["current_draft_id"] = saved_draft_id
+    saved["current_draft_platform"] = target_key
+    return saved
 
 
 def load_app_config() -> dict[str, Any]:
@@ -895,6 +1013,7 @@ __all__ = [
     "delete_products_from_index",
     "explain_mercadolibre_auth_error",
     "load_app_config",
+    "load_draft_detail_from_index",
     "load_draft_from_index",
     "load_drafts_index",
     "load_product",
@@ -909,8 +1028,11 @@ __all__ = [
     "product_identity",
     "load_required_product_from_body",
     "publish_queue_platforms",
+    "save_draft_detail",
     "save_app_config",
+    "save_draft_copy_result",
     "save_product",
+    "save_product_profile",
     "save_store_config",
     "summarize_store_auth_states",
     "sync_product_workflow_statuses",

@@ -2,7 +2,9 @@ import { createEmptyDraft, createEmptyProduct } from '@/constants/initialState'
 import { listingLanguageLabel } from '@/constants/locales'
 import type {
   BrowserDebugStatus,
+  DraftDetail,
   DraftIndexItem,
+  DraftProductContext,
   ImageAsset,
   Marketplace,
   MarketplaceDraft,
@@ -32,6 +34,8 @@ export interface AppStateResponse {
 export interface ProductMutationResponse {
   ok: boolean
   product: Product
+  draft?: DraftDetail
+  productContext?: DraftProductContext
   imagePool: ImageAsset[]
   productsIndex: ProductIndexItem[]
   draftsIndex?: DraftIndexItem[]
@@ -45,6 +49,16 @@ export interface ProductMutationResponse {
   warning?: string
   message?: string
   raw?: UnknownRecord
+}
+
+export interface DraftMutationResponse {
+  ok: boolean
+  draft: DraftDetail
+  productContext: DraftProductContext
+  productsIndex: ProductIndexItem[]
+  draftsIndex: DraftIndexItem[]
+  message?: string
+  raw: UnknownRecord
 }
 
 export interface AiPublicConfig {
@@ -364,10 +378,65 @@ export function toBackendDraft(draft: MarketplaceDraft): UnknownRecord {
   }
 }
 
-export function toBackendProduct(product: Product): UnknownRecord {
-  const rawDrafts = asRecord(asRecord(product.raw).drafts)
+export function normalizeDraftDetail(value: unknown): DraftDetail {
+  const record = asRecord(value)
+  const platform = (getString(record, ['platform']) || 'mercadolibre') as Marketplace
+  const draft = normalizeDraft(record, listingLanguageLabel(platform))
   return {
-    ...product.raw,
+    ...draft,
+    productId: getString(record, ['productId', 'product_id']),
+    platform,
+    site: getString(record, ['site', 'site_id']),
+    createdAt: getString(record, ['createdAt', 'created_at']),
+    updatedAt: getString(record, ['updatedAt', 'updated_at']),
+    raw: record,
+  }
+}
+
+export function normalizeDraftProductContext(value: unknown): DraftProductContext {
+  const record = asRecord(value)
+  const dimensions = normalizeDimensions(record.dimensions)
+  const imagePoolRaw = Array.isArray(record.image_pool)
+    ? record.image_pool
+    : Array.isArray(record.imagePool)
+      ? record.imagePool
+      : []
+  return {
+    productId: getString(record, ['productId', 'product_id']),
+    title: getString(record, ['title']),
+    sourceTitle: getString(record, ['sourceTitle', 'source_title']),
+    sourcePlatform: getString(record, ['sourcePlatform', 'source_platform']),
+    sourceUrl: getString(record, ['sourceUrl', 'source_url']),
+    brand: getString(record, ['brand']),
+    model: getString(record, ['model']),
+    sku: getString(record, ['sku']),
+    stock: getString(record, ['stock']),
+    cost: getString(record, ['cost']),
+    sourcePrice: getString(record, ['sourcePrice', 'source_price']),
+    currency: getString(record, ['currency']),
+    weightKg: getString(record, ['weightKg', 'weight_kg']),
+    dimensions,
+    imagePool: imagePoolRaw.map(normalizeImageAsset),
+    raw: record,
+  }
+}
+
+export function toBackendDraftDetail(draft: DraftDetail): UnknownRecord {
+  return {
+    ...asRecord(draft.raw),
+    ...toBackendDraft(draft),
+    draft_id: draft.draftId,
+    product_id: draft.productId,
+    platform: draft.platform,
+    site: draft.site,
+  }
+}
+
+export function toBackendProduct(product: Product): UnknownRecord {
+  const rawProduct = { ...asRecord(product.raw) }
+  delete rawProduct.drafts
+  return {
+    ...rawProduct,
     product_id: product.productId,
     id: product.productId,
     name: product.name,
@@ -404,11 +473,6 @@ export function toBackendProduct(product: Product): UnknownRecord {
     source_platform: product.source.sourcePlatform,
     dimensions: `${product.source.dimensions.lengthCm} x ${product.source.dimensions.widthCm} x ${product.source.dimensions.heightCm} cm`,
     weight_kg: product.source.weightKg,
-    drafts: {
-      mercadolibre: { ...asRecord(rawDrafts.mercadolibre), ...toBackendDraft(product.drafts.mercadolibre) },
-      wildberries: { ...asRecord(rawDrafts.wildberries), ...toBackendDraft(product.drafts.wildberries) },
-      ozon: { ...asRecord(rawDrafts.ozon), ...toBackendDraft(product.drafts.ozon) },
-    },
   }
 }
 
@@ -512,6 +576,8 @@ export function normalizeProductMutation(data: unknown): ProductMutationResponse
   return {
     ok: record.ok !== false,
     product,
+    draft: isRecord(record.draft) ? normalizeDraftDetail(record.draft) : undefined,
+    productContext: isRecord(record.productContext ?? record.product_context) ? normalizeDraftProductContext(record.productContext ?? record.product_context) : undefined,
     imagePool: product.source.imagePool,
     productsIndex: normalizeProductsIndex(record.productsIndex),
     draftsIndex: normalizeDraftsIndex(record.draftsIndex),
@@ -523,6 +589,20 @@ export function normalizeProductMutation(data: unknown): ProductMutationResponse
     affectedProductIds: stringList(record.affectedProductIds || record.affected_product_ids),
     diagnostics: asRecord(record.diagnostics),
     warning: getString(record, ['warning']) || undefined,
+    message: getString(record, ['message']) || undefined,
+    raw: record,
+  }
+}
+
+export function normalizeDraftMutation(data: unknown): DraftMutationResponse {
+  const record = asRecord(data)
+  ensureOk(record, '草稿请求失败')
+  return {
+    ok: record.ok !== false,
+    draft: normalizeDraftDetail(record.draft),
+    productContext: normalizeDraftProductContext(record.productContext ?? record.product_context),
+    productsIndex: normalizeProductsIndex(record.productsIndex),
+    draftsIndex: normalizeDraftsIndex(record.draftsIndex),
     message: getString(record, ['message']) || undefined,
     raw: record,
   }

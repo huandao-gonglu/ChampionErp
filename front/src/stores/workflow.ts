@@ -51,6 +51,7 @@ import {
   runMercadoLibreRealAuthTest,
   saveAiConfig,
   saveCollectSettings as saveCollectSettingsApi,
+  saveDraft as saveDraftApi,
   saveImagePool,
   saveProduct as saveProductApi,
   saveStoreSettings,
@@ -63,7 +64,7 @@ import {
   testStoreAuth,
   uploadImages,
 } from '@/api/workflow'
-import { createDefaultCollectDiagnostics, createDefaultCollectForm, createDefaultPricingInput, createEmptyProduct, marketplaces } from '@/constants/initialState'
+import { createDefaultCollectDiagnostics, createDefaultCollectForm, createDefaultPricingInput, createEmptyDraftDetail, createEmptyDraftProductContext, createEmptyProduct, marketplaces } from '@/constants/initialState'
 import { listingLanguageLabel } from '@/constants/locales'
 import { useAppStore } from '@/stores/app'
 import type {
@@ -77,7 +78,9 @@ import type {
   CollectBatchRow,
   CollectDiagnostics,
   CollectForm,
+  DraftDetail,
   DraftIndexItem,
+  DraftProductContext,
   Marketplace,
   MercadoLibreAuthChecklist,
   MercadoLibreOrderItem,
@@ -270,11 +273,28 @@ export const useWorkflowStore = defineStore('workflow', () => {
   const currentStage = ref(0)
   const loading = ref(false)
   const error = ref('')
+  const currentDraft = ref<DraftDetail>(createEmptyDraftDetail())
+  const currentDraftProductContext = ref<DraftProductContext>(createEmptyDraftProductContext())
 
   const draft = computed(() => product.value.drafts[activeMarketplace.value])
   const imagePool = computed(() => product.value.source.imagePool)
   const selectedImages = computed(() => imagePool.value.filter((image) => image.selected))
   const selectedProducts = computed(() => productsIndex.value.filter((item) => selectedProductIds.value.includes(item.productId)))
+
+  function draftDetailFromProduct(platform: Marketplace, sourceProduct: Product = product.value): DraftDetail {
+    const sourceDraft = sourceProduct.drafts[platform]
+    const rawDrafts = isRecord(sourceProduct.raw.drafts) ? sourceProduct.raw.drafts : {}
+    const rawDraft = isRecord(rawDrafts[platform]) ? rawDrafts[platform] as UnknownRecord : {}
+    return {
+      ...sourceDraft,
+      productId: sourceProduct.productId,
+      platform,
+      site: String(rawDraft.site || rawDraft.site_id || ''),
+      createdAt: String(rawDraft.created_at || ''),
+      updatedAt: String(rawDraft.updated_at || ''),
+      raw: rawDraft,
+    }
+  }
 
   function applyMutationIndexes(result: { productsIndex?: ProductIndexItem[]; draftsIndex?: DraftIndexItem[] }) {
     if (result.productsIndex?.length) productsIndex.value = result.productsIndex
@@ -685,14 +705,10 @@ export const useWorkflowStore = defineStore('workflow', () => {
     setError('')
     try {
       const result = await loadDraftApi(item.draftId)
-      product.value = result.product
+      currentDraft.value = result.draft
+      currentDraftProductContext.value = result.productContext
       activeMarketplace.value = item.platform
-      restoreCategoryFromProduct()
-      restorePrecheckFromProduct()
       applyMutationIndexes(result)
-      fillFormFromState(appConfig.value)
-      syncCollectDiagnosticsFromProduct('已加载平台草稿。')
-      syncPricingInputFromProduct()
       addLog(`已加载草稿：${item.title || item.productTitle || item.draftId}`)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '加载草稿失败')
@@ -1043,6 +1059,23 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
+  async function saveCurrentDraft() {
+    loading.value = true
+    setError('')
+    try {
+      const result = await saveDraftApi(currentDraft.value)
+      currentDraft.value = result.draft
+      currentDraftProductContext.value = result.productContext
+      activeMarketplace.value = result.draft.platform
+      applyMutationIndexes(result)
+      addLog(result.message || `草稿已保存：${result.draft.title || result.draft.draftId}`)
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : '保存草稿失败')
+    } finally {
+      loading.value = false
+    }
+  }
+
   async function assignUpc() {
     loading.value = true
     setError('')
@@ -1063,13 +1096,31 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
-  async function generateCopy() {
+  async function generateCopy(useCurrentDraft = false) {
     loading.value = true
     setError('')
     try {
-      const result = await generateCopyApi(product.value, activeMarketplace.value)
+      const draftProductId = useCurrentDraft ? currentDraft.value.productId || currentDraftProductContext.value.productId : ''
+      const productForCopy = draftProductId && draftProductId !== product.value.productId
+        ? { ...product.value, productId: draftProductId }
+        : product.value
+      const result = await generateCopyApi(productForCopy, activeMarketplace.value)
       product.value = result.product
-      if (result.productsIndex.length) productsIndex.value = result.productsIndex
+      if (result.draft) {
+        currentDraft.value = result.draft
+        currentDraftProductContext.value = result.productContext || currentDraftProductContext.value
+        activeMarketplace.value = result.draft.platform
+        product.value.drafts[result.draft.platform] = result.draft
+      } else if (useCurrentDraft && result.product.productId) {
+        const generatedDraft = draftDetailFromProduct(activeMarketplace.value, result.product)
+        currentDraft.value = {
+          ...currentDraft.value,
+          ...generatedDraft,
+          draftId: generatedDraft.draftId || currentDraft.value.draftId,
+          productId: generatedDraft.productId || draftProductId || currentDraft.value.productId,
+        }
+      }
+      applyMutationIndexes(result)
       currentStage.value = 2
       addLog(`${activeMarketplace.value} 文案已生成。${result.warning ? `提示：${result.warning}` : ''}`)
     } catch (exc) {
@@ -1117,10 +1168,16 @@ export const useWorkflowStore = defineStore('workflow', () => {
       pricingResult.value = await calculatePriceApi(pricingInput.value)
       if (pricingResult.value.usdCnyRate > 0) pricingInput.value.usdCnyRate = pricingResult.value.usdCnyRate
       if (pricingResult.value.mxnUsdRate > 0) pricingInput.value.mxnUsdRate = pricingResult.value.mxnUsdRate
-      product.value.drafts.mercadolibre.price = String(pricingResult.value.suggestedPriceMxn || '')
-      const saved = await saveProductApi(product.value)
-      product.value = saved.product
-      if (saved.productsIndex.length) productsIndex.value = saved.productsIndex
+      const draftToSave = draftDetailFromProduct('mercadolibre')
+      if (!draftToSave.draftId) {
+        throw new Error('当前商品没有 Mercado Libre 草稿，请先从商品库认领到草稿箱。')
+      }
+      draftToSave.price = String(pricingResult.value.suggestedPriceMxn || '')
+      const saved = await saveDraftApi(draftToSave)
+      product.value.drafts.mercadolibre = saved.draft
+      currentDraft.value = saved.draft
+      currentDraftProductContext.value = saved.productContext
+      applyMutationIndexes(saved)
       currentStage.value = 5
       addLog(`核价完成：建议美客多售价 ${pricingResult.value.suggestedPriceMxn} MXN。`)
     } catch (exc) {
@@ -1810,6 +1867,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
     currentStage,
     loading,
     error,
+    currentDraft,
+    currentDraftProductContext,
     draft,
     imagePool,
     selectedImages,
@@ -1849,6 +1908,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     deleteImages,
     syncGeneratedImagePool,
     saveCurrentProduct,
+    saveCurrentDraft,
     assignUpc,
     generateCopy,
     generateImagePromptPack,

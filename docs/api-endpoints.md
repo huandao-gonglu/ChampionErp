@@ -139,14 +139,14 @@
   `platform`：目标平台，可选，默认 `mercadolibre`
   `language`：目标语言，可选，默认取草稿语言或平台默认语言
   `mode`：生成模式，可选，默认 `rewrite`
-  ）；按商品 ID 和平台生成单个商品文案并写回草稿。
+  ）；按商品 ID 和平台生成单个商品文案，只写入对应平台草稿 `platform_drafts`。响应包含 `draft`、`productContext`、`draftsIndex`，并保留兼容字段 `product`。
 
 - `POST /api/generate-copy-batch`（
   `product_ids`：商品 ID 列表，必填
   `platform`：目标平台，可选，默认 `mercadolibre`
   `language`：目标语言，可选
   `mode`：生成模式，可选，默认 `rewrite`
-  ）；按商品 ID 列表批量生成指定平台文案。
+  ）；按商品 ID 列表批量生成指定平台文案，并逐条更新对应平台草稿。
 
 - `POST /api/generate-image-prompts`（
   `product_id`：商品 ID，必填
@@ -316,7 +316,7 @@
 
 - `POST /api/save-product`（
   `product`：商品对象，必填
-  ）；保存当前商品模型到本地库。
+  ）；保存商品资料到本地库。该接口只保存商品来源事实、供应链和内部字段，不保存或覆盖平台草稿 `drafts`。
 
 - `POST /api/load-product`（
   `product_id`：商品 ID，可选
@@ -324,9 +324,13 @@
   ）；按商品 ID 或路径加载商品完整数据。
 
 - `POST /api/load-draft`（
-  `draft_id`：草稿 ID，可选
+  `draft_id`：草稿 ID，必填
   `draftId`：草稿 ID 别名，可选
-  ）；按草稿 ID 加载草稿对应商品数据。
+  ）；按草稿 ID 加载单条平台草稿，返回 `draft` 和只读 `productContext` 参考信息，不返回整包商品编辑对象。
+
+- `POST /api/save-draft`（
+  `draft`：平台草稿对象，必填，需包含 `draft_id`
+  ）；按 `draft_id` 保存单条平台草稿，只更新该条 `platform_drafts` 记录，不覆盖同商品下其他平台草稿，也不更新商品公共资料。
 
 - `POST /api/delete-draft`（
   `draft_ids`：草稿 ID 列表，可选
