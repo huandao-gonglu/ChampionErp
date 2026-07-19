@@ -12,7 +12,7 @@ def default_image_pool_item() -> dict[str, Any]:
         "path": "",
         "origin": "source",
         "usage": "detail",
-        "platforms": list(PLATFORMS),
+        "platforms": [],
         "is_main": False,
         "selected": False,
         "order": 0,
@@ -41,7 +41,7 @@ def normalize_image_pool_item(item: Any, order: int = 0, origin_hint: str = "sou
         normalized["id"] = f"img_{order + 1}"
         normalized["origin"] = origin_hint if origin_hint in IMAGE_ORIGINS else "source"
         normalized["usage"] = "main" if order == 0 else "detail"
-        normalized["platforms"] = list(PLATFORMS)
+        normalized["platforms"] = []
         normalized["is_main"] = order == 0
         normalized["order"] = order
         normalized["status"] = "ready" if normalized["preview_url"] else "empty"
@@ -55,7 +55,7 @@ def normalize_image_pool_item(item: Any, order: int = 0, origin_hint: str = "sou
     usage = text_or_empty(item.get("usage")) or ("main" if order == 0 else "detail")
     normalized["usage"] = usage if usage in IMAGE_USAGES else "other"
     platforms = normalize_platforms(item.get("platforms"))
-    normalized["platforms"] = platforms or list(PLATFORMS)
+    normalized["platforms"] = platforms
     normalized["is_main"] = bool(item.get("is_main", order == 0 and normalized["usage"] == "main"))
     normalized["selected"] = bool(item.get("selected", False))
     try:

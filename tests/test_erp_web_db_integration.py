@@ -156,23 +156,75 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                     "status": "copy_ready",
                 },
             )
-            ml_draft = next(item for item in erp_db.list_draft_records(app_dir, scope="all") if item["platform"] == "mercadolibre")
+            yandex_draft_id = erp_db.upsert_draft_model(
+                app_dir,
+                product_id,
+                "yandex",
+                {
+                    "title": "Yandex original",
+                    "description": "Yandex description",
+                    "price": "21",
+                    "status": "copy_ready",
+                },
+            )
 
             result, error, status = erp_web_app.save_draft_detail(
                 {
-                    "draft_id": ml_draft["draft_id"],
-                    "title": "ML independent title",
-                    "description": "ML independent description",
+                    "draft_id": yandex_draft_id,
+                    "title": "Yandex independent title",
+                    "description": "Yandex independent description",
                     "price": "33",
                     "status": "copy_ready",
+                    "language": "ru-RU",
+                    "target_sites": [
+                        {"platform": "yandex", "site": "global"},
+                        {"platform": "ozon", "site": "global"},
+                    ],
                 }
             )
 
             self.assertIsNone(error)
             self.assertEqual(status, 200)
-            self.assertEqual(result["draft"]["title"], "ML independent title")
-            self.assertEqual(erp_db.load_draft_model(app_dir, ml_draft["draft_id"])["title"], "ML independent title")
+            self.assertEqual(result["draft"]["title"], "Yandex independent title")
+            self.assertEqual(result["draft"]["platforms"], ["yandex", "ozon"])
+            self.assertEqual(erp_db.load_draft_model(app_dir, yandex_draft_id)["title"], "Yandex independent title")
+            self.assertEqual(erp_db.load_draft_model(app_dir, yandex_draft_id)["platforms"], ["yandex", "ozon"])
+            updated_record = next(item for item in erp_db.list_draft_records(app_dir, scope="all") if item["draft_id"] == yandex_draft_id)
+            self.assertEqual(updated_record["platforms"], ["yandex", "ozon"])
             self.assertEqual(erp_db.load_draft_model(app_dir, ozon_draft_id)["title"], "Ozon original")
+
+        self.with_temp_app(run)
+
+    def test_same_product_drafts_keep_separate_platform_selections(self) -> None:
+        def run(app_dir: Path) -> None:
+            saved = erp_web_app.save_product(sample_product("Two draft copies", "https://example.com/two-drafts"))
+            first_result = erp_web_app.claim_products_to_platforms([saved["product_id"]], ["yandex"])
+            second_result = erp_web_app.claim_products_to_platforms([saved["product_id"]], ["yandex"])
+            first_draft_id = first_result["items"][0]["draft_ids"][0]
+            second_draft_id = second_result["items"][0]["draft_ids"][0]
+            draft_ids_before_update = [item["draft_id"] for item in erp_db.list_draft_records(app_dir, scope="all")]
+
+            self.assertNotEqual(first_draft_id, second_draft_id)
+            result, error, status = erp_web_app.save_draft_detail(
+                {
+                    "draft_id": second_draft_id,
+                    "language": "ru-RU",
+                    "target_sites": [
+                        {"platform": "yandex", "site": "global"},
+                        {"platform": "ozon", "site": "global"},
+                    ],
+                }
+            )
+
+            self.assertIsNone(error)
+            self.assertEqual(status, 200)
+            self.assertEqual(result["draft"]["draft_id"], second_draft_id)
+            self.assertEqual(erp_db.load_draft_model(app_dir, first_draft_id)["platforms"], ["yandex"])
+            self.assertEqual(erp_db.load_draft_model(app_dir, second_draft_id)["platforms"], ["yandex", "ozon"])
+            self.assertEqual(
+                [item["draft_id"] for item in erp_db.list_draft_records(app_dir, scope="all")],
+                draft_ids_before_update,
+            )
 
         self.with_temp_app(run)
 
@@ -255,7 +307,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(erp_web_app.draft_workflow_status(product, "mercadolibre"), "copy_ready")
 
-        product["drafts"]["mercadolibre"]["images"] = ["https://example.com/ai.jpg"]
+        product["drafts"]["mercadolibre"]["images"] = [{"asset_id": "img_1", "role": "main", "order": 0}]
         self.assertEqual(erp_web_app.draft_workflow_status(product, "mercadolibre"), "images_ready")
 
         product["drafts"]["mercadolibre"].update(
@@ -284,6 +336,10 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
 
             self.assertTrue(result["ok"])
             self.assertEqual(result["claimed_count"], 1)
+            created_drafts = [erp_db.load_draft_model(app_dir, draft_id) for draft_id in result["items"][0]["draft_ids"]]
+            self.assertTrue(all(draft["source_product_id"] == saved["product_id"] for draft in created_drafts))
+            self.assertTrue(any(draft["title"] == saved["source"]["title"] for draft in created_drafts))
+            self.assertTrue(any(draft["images"] for draft in created_drafts))
             loaded = erp_db.load_product_model(app_dir, saved["product_id"])
             self.assertEqual(loaded["drafts"]["mercadolibre"]["status"], "claimed")
             self.assertEqual(loaded["drafts"]["ozon"]["status"], "claimed")
@@ -354,7 +410,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
 
         self.with_temp_app(run)
 
-    def test_save_image_pool_changes_persists_media_and_moves_copy_ready_to_images_ready(self) -> None:
+    def test_save_image_pool_changes_persists_media_without_touching_draft_images(self) -> None:
         def run(app_dir: Path) -> None:
             product = sample_product("Image ready item", "https://example.com/image-ready")
             product["source"]["image_pool"] = []
@@ -391,8 +447,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
 
             self.assertTrue(result["ok"])
             loaded = erp_db.load_product_model(app_dir, saved["product_id"])
-            self.assertEqual(loaded["drafts"]["mercadolibre"]["status"], "images_ready")
-            self.assertEqual(loaded["drafts"]["mercadolibre"]["images"], ["https://example.com/ai-image.jpg"])
+            self.assertEqual(loaded["drafts"]["mercadolibre"]["status"], "copy_ready")
+            self.assertEqual(loaded["drafts"]["mercadolibre"]["images"], [])
             conn = sqlite3.connect(app_dir / erp_db.DEFAULT_DB_NAME)
             try:
                 media_count = conn.execute(
@@ -403,11 +459,11 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 conn.close()
             self.assertEqual(media_count, 1)
             records = erp_db.list_product_records(app_dir)
-            self.assertEqual(records[0]["workflow_status"], "images_ready")
+            self.assertEqual(records[0]["workflow_status"], "copy_ready")
 
         self.with_temp_app(run)
 
-    def test_image_translate_items_persist_and_move_copy_ready_to_images_ready(self) -> None:
+    def test_image_translate_items_persist_without_touching_draft_images(self) -> None:
         def run(app_dir: Path) -> None:
             source_image = app_dir / "source.png"
             translated_image = app_dir / "translated.png"
@@ -461,11 +517,11 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             loaded = erp_db.load_product_model(app_dir, persisted["product_id"])
             translated_items = [item for item in loaded["source"]["image_pool"] if item.get("target_language") == "Spanish (Mexico)"]
 
-            self.assertEqual(loaded["drafts"]["mercadolibre"]["status"], "images_ready")
+            self.assertEqual(loaded["drafts"]["mercadolibre"]["status"], "copy_ready")
             self.assertEqual(len(translated_items), 1)
-            self.assertEqual(translated_items[0]["origin"], "ai_generated")
-            self.assertEqual(translated_items[0]["translated_from_id"], source_item_id)
-            self.assertIn(translated_items[0]["path"], loaded["drafts"]["mercadolibre"]["images"])
+            self.assertEqual(translated_items[0]["origin"], "ai_translated")
+            self.assertEqual(translated_items[0]["derived_from_id"], source_item_id)
+            self.assertEqual(loaded["drafts"]["mercadolibre"]["images"], [])
             self.assertTrue((app_dir / translated_items[0]["path"]).exists())
 
             conn = sqlite3.connect(app_dir / erp_db.DEFAULT_DB_NAME)
@@ -473,13 +529,83 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 translated_media_count = conn.execute(
                     """
                     SELECT COUNT(*) FROM media_assets
-                    WHERE product_id = ? AND origin = 'ai_generated' AND local_path = ?
+                    WHERE product_id = ? AND origin = 'ai_translated' AND local_path = ?
                     """,
                     (persisted["product_id"], translated_items[0]["path"]),
                 ).fetchone()[0]
             finally:
                 conn.close()
             self.assertEqual(translated_media_count, 1)
+
+        self.with_temp_app(run)
+
+    def test_image_translate_items_can_apply_to_draft_refs(self) -> None:
+        def run(app_dir: Path) -> None:
+            source_image = app_dir / "source.png"
+            translated_image = app_dir / "translated.png"
+            from PIL import Image
+
+            Image.new("RGB", (8, 6), (255, 0, 0)).save(source_image, format="PNG")
+            Image.new("RGB", (8, 6), (0, 255, 0)).save(translated_image, format="PNG")
+
+            product = sample_product("Translate image draft item", "https://example.com/translate-image-draft")
+            product["source"]["image_pool"] = erp_web_app.image_service.upload_images(
+                app_dir,
+                [{"path": str(source_image), "platforms": ["mercadolibre"], "is_main": True, "selected": True}],
+                "translate-image-draft-item",
+            )
+            source_item_id = product["source"]["image_pool"][0]["id"]
+            product["drafts"]["mercadolibre"] = {
+                "enabled": True,
+                "title": "AI title",
+                "description": "AI description",
+                "copy_generated_at": "2026-05-29T10:00:00",
+                "images": [{"asset_id": source_item_id, "role": "main", "order": 0}],
+                "status": "images_ready",
+            }
+            saved = erp_web_app.save_product(product)
+            draft_id = saved["drafts"]["mercadolibre"]["draft_id"]
+
+            result = image_translate_service.translate_images(
+                app_dir,
+                saved,
+                {
+                    "ai_models": [
+                        {
+                            "id": "image_model",
+                            "provider": "OpenAI",
+                            "api_key": "test-key",
+                            "base_url": "https://api.openai.com/v1",
+                            "model": "gpt-image-1",
+                            "capabilities": ["image_edit", "image_generate"],
+                        }
+                    ]
+                },
+                target_language="Spanish (Mexico)",
+                platform="mercadolibre",
+                image_ids=[source_item_id],
+                provider=lambda _config, _request: [{"path": str(translated_image), "provider": "fake-image-ai"}],
+            )
+            self.assertTrue(result["ok"])
+
+            merged = erp_web_app.append_images_to_product_pool(saved, result["imagePoolItems"])
+            persisted = erp_web_app.save_product(merged)
+            draft_result, draft_error, status = erp_web_app.apply_image_assets_to_draft(
+                draft_id,
+                result["imagePoolItems"],
+                "replace_selected",
+            )
+
+            self.assertIsNone(draft_error)
+            self.assertEqual(status, 200)
+            self.assertTrue(draft_result["ok"])
+            loaded = erp_db.load_product_model(app_dir, persisted["product_id"])
+            translated_item = next(item for item in loaded["source"]["image_pool"] if item.get("derived_from_id") == source_item_id)
+            draft_images = erp_db.load_draft_model(app_dir, draft_id)["images"]
+            self.assertEqual(
+                draft_images,
+                [{"asset_id": translated_item["id"], "role": "main", "order": 0, "source_asset_id": source_item_id}],
+            )
 
         self.with_temp_app(run)
 
@@ -534,7 +660,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 "title": "AI title",
                 "description": "AI description",
                 "copy_generated_at": "2026-05-30T10:00:00",
-                "images": ["https://example.com/ai.jpg"],
+                "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
                 "category_id": "MLM123",
                 "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
                 "price": "19.99",
@@ -588,7 +714,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "enabled": True,
             "title": "Draft title for ML",
             "description": "Draft description",
-            "images": ["https://example.com/draft-main.jpg"],
+            "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
             "category_id": "MLM455865",
             "attributes": {"BRAND": "DraftBrand", "MODEL": "DraftModel", "MATERIAL": "ABS"},
             "price": "9.59",
@@ -839,7 +965,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "title": "AI title",
             "description": "AI description",
             "copy_generated_at": "2026-05-30T11:00:00",
-            "images": ["https://example.com/ai.jpg"],
+            "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
             "category_id": "MLM123",
             "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
             "price": "19.99",
@@ -859,7 +985,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "title": "AI title",
             "description": "AI description",
             "copy_generated_at": "2026-05-30T11:00:00",
-            "images": ["https://example.com/ai.jpg"],
+            "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
             "category_id": "MLM123",
             "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
             "price": "19.99",
@@ -882,7 +1008,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "enabled": True,
             "title": "Manual title",
             "description": "Manual description",
-            "images": ["https://example.com/source.jpg"],
+            "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
             "category_id": "MLM123",
             "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
             "price": "19.99",
@@ -903,7 +1029,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "enabled": True,
             "title": "Payload title",
             "description": "Payload description",
-            "images": ["https://example.com/source.jpg"],
+            "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
             "category_id": "MLM123",
             "attributes": {},
             "price": "19.99",
@@ -927,7 +1053,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 "title": "AI title",
                 "description": "AI description",
                 "copy_generated_at": "2026-05-30T11:00:00",
-                "images": ["https://example.com/ai.jpg"],
+                "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
                 "category_id": "MLM123",
                 "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
                 "price": "19.99",

@@ -68,21 +68,21 @@ def _seed_category_cache_records(platform: str) -> dict[str, Any]:
             },
         ]
         return {"platform": "mercadolibre", "site": "MLM", "updated_at": "2026-05-27T00:00:00", "records": records}
-    if platform == "wildberries":
+    if platform == "yandex":
         records = [
             {
-                "category_id": "WB-100",
-                "subject_id": "WB-100",
+                "category_id": "YANDEX-100",
+                "subject_id": "YANDEX-100",
                 "type_id": "",
                 "name_original": "Электроника > Аудио > Наушники",
                 "name_cn": "耳机",
                 "path_original": ["Электроника", "Аудио", "Наушники"],
                 "path_cn": ["电子产品", "音频", "耳机"],
-                "parent_id": "WB-10",
+                "parent_id": "YANDEX-10",
                 "level": 3,
-                "site": "WB",
+                "site": "global",
                 "country": "RU",
-                "platform": "wildberries",
+                "platform": "yandex",
                 "keywords": ["наушники", "headphones", "耳机"],
                 "attributes_cache": {
                     "required": [
@@ -100,7 +100,7 @@ def _seed_category_cache_records(platform: str) -> dict[str, Any]:
                 },
             }
         ]
-        return {"platform": "wildberries", "site": "WB", "updated_at": "2026-05-27T00:00:00", "records": records}
+        return {"platform": "yandex", "site": "global", "updated_at": "2026-05-27T00:00:00", "records": records}
     records = [
         {
             "category_id": "OZON-100",
@@ -112,7 +112,7 @@ def _seed_category_cache_records(platform: str) -> dict[str, Any]:
             "path_cn": ["电子产品", "音频", "耳机"],
             "parent_id": "OZON-10",
             "level": 3,
-            "site": "OZON",
+                "site": "global",
             "country": "RU",
             "platform": "ozon",
             "keywords": ["наушники", "headphones", "耳机"],
@@ -131,7 +131,7 @@ def _seed_category_cache_records(platform: str) -> dict[str, Any]:
             },
         }
     ]
-    return {"platform": "ozon", "site": "OZON", "updated_at": "2026-05-27T00:00:00", "records": records}
+    return {"platform": "ozon", "site": "global", "updated_at": "2026-05-27T00:00:00", "records": records}
 
 
 def _category_cache_path(platform: str) -> Path:
@@ -322,8 +322,8 @@ def apply_category_selection(product: dict[str, Any], platform: str, category_re
     if platform == "mercadolibre":
         normalized["category_id"] = category_id or normalized.get("category_id", "")
         normalized["category_path"] = category_path or normalized.get("category_path", "")
-    elif platform == "wildberries":
-        normalized["wb_subject_id"] = category_id or normalized.get("wb_subject_id", "")
+    elif platform == "yandex":
+        normalized["yandex_category_id"] = category_id or normalized.get("yandex_category_id", "")
         normalized["category_path"] = category_path or normalized.get("category_path", "")
     elif platform == "ozon":
         normalized["ozon_category_id"] = category_id or normalized.get("ozon_category_id", "")
@@ -514,8 +514,8 @@ def validate_category_precheck(product: dict[str, Any], platform: str, category_
     if platform == "mercadolibre":
         if not str(draft.get("category_id") or normalized.get("category_id") or "").strip():
             errors.append("category_id")
-    elif platform == "wildberries":
-        if not str(draft.get("category_id") or normalized.get("wb_subject_id") or "").strip():
+    elif platform == "yandex":
+        if not str(draft.get("category_id") or normalized.get("yandex_category_id") or "").strip():
             errors.append("category_id")
     elif platform == "ozon":
         if not str(draft.get("category_id") or normalized.get("ozon_category_id") or "").strip():

@@ -23,7 +23,7 @@ from . import ai_gateway, ai_model_config, ai_prompt_templates, image_service
 Provider = Callable[[dict[str, Any], dict[str, Any]], list[dict[str, Any]]]
 
 SUPPORTED_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
-DEFAULT_TARGET_LANGUAGE = "Spanish (Mexico)"
+DEFAULT_TARGET_LANGUAGE = "es"
 DEFAULT_IMAGE_SIZE = "1024x1024"
 MAX_PROVIDER_IMAGE_BYTES = 20 * 1024 * 1024
 IMAGE_AI_TIMEOUT_SECONDS = int(os.environ.get("AI_IMAGE_REQUEST_TIMEOUT_SECONDS", "180"))
@@ -54,6 +54,19 @@ def build_translate_prompt(
             "target_language": target,
             "product_title": title,
         },
+    )
+
+
+def build_image_edit_prompt(user_prompt: str) -> str:
+    """Return the exact user prompt for image-to-image editing."""
+
+    return str(user_prompt or "").strip()
+
+
+def _image_mock_enabled() -> bool:
+    return any(
+        os.environ.get(name, "").strip().lower() in {"1", "true", "yes"}
+        for name in ("ERP_IMAGE_EDIT_MOCK", "ERP_IMAGE_TRANSLATE_MOCK")
     )
 
 
@@ -303,7 +316,7 @@ def _store_translated_item(
             "path": rel_path,
             "local_path": rel_path,
             "preview_url": image_service.file_url(dest),
-            "origin": "ai_generated",
+            "origin": "ai_translated",
             "usage": str((source_item or {}).get("usage") or result.get("usage") or ("main" if index == 0 else "detail")),
             "platforms": result.get("platforms") or platform_values,
             "is_main": bool(result.get("is_main", index == 0)),
@@ -312,7 +325,7 @@ def _store_translated_item(
             "height": height,
             "status": "ready",
             "note": f"AI image translation to {target_language}",
-            "translated_from_id": source_id,
+            "derived_from_id": source_id,
             "target_language": target_language,
             "provider": result.get("provider", ""),
             "raw": {"image_translate": {"created_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "mode": result.get("mode", "translate")}},
@@ -320,15 +333,66 @@ def _store_translated_item(
         index,
         app_dir,
     )
-    item["translated_from_id"] = source_id
+    item["derived_from_id"] = source_id
     item["target_language"] = target_language
+    item["provider"] = str(result.get("provider") or "").strip()
+    return item
+
+
+def _store_edited_item(
+    app_dir: Path | str,
+    result: dict[str, Any],
+    product_id: str,
+    index: int,
+    platform_values: list[str],
+    prompt: str,
+    source_item: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    raw, suffix = _bytes_from_result(result)
+    if not raw:
+        raise RuntimeError("图片编辑结果为空，未收到图片数据")
+    suffix = _safe_suffix(suffix, str(result.get("mime") or result.get("content_type") or ""))
+    target_dir = image_service.images_root(app_dir) / image_service.safe_segment(product_id, "edited") / "edited"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    source_id = str(result.get("source_id") or (source_item or {}).get("id") or index + 1).strip()
+    filename = image_service.safe_filename(
+        str(result.get("filename") or f"edited_{index + 1}_{source_id}{suffix}"),
+        suffix,
+    )
+    dest = target_dir / filename
+    dest.write_bytes(raw)
+    width, height = image_service.image_dimensions(dest)
+    rel_path = image_service.relative_to_app(dest, app_dir)
+    item = image_service.normalize_item(
+        {
+            "id": dest.stem,
+            "path": rel_path,
+            "local_path": rel_path,
+            "preview_url": image_service.file_url(dest),
+            "origin": "ai_generated",
+            "usage": str((source_item or {}).get("usage") or result.get("usage") or "detail"),
+            "platforms": result.get("platforms") or platform_values,
+            "is_main": bool(result.get("is_main", False)),
+            "selected": bool(result.get("selected", True)),
+            "width": width,
+            "height": height,
+            "status": "ready",
+            "note": "AI image edit",
+            "derived_from_id": source_id,
+            "provider": result.get("provider", ""),
+            "raw": {"image_edit": {"created_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "mode": result.get("mode", "edit"), "prompt": prompt}},
+        },
+        index,
+        app_dir,
+    )
+    item["derived_from_id"] = source_id
     item["provider"] = str(result.get("provider") or "").strip()
     return item
 
 
 def _mock_provider(_: dict[str, Any], request: dict[str, Any]) -> list[dict[str, Any]]:
     """Deterministic local provider used only when explicitly enabled."""
-    if os.environ.get("ERP_IMAGE_TRANSLATE_MOCK", "").strip().lower() not in {"1", "true", "yes"}:
+    if not _image_mock_enabled():
         return []
     if image_service.Image is None:
         # 1x1 transparent PNG fallback.
@@ -372,7 +436,7 @@ def translate_images(
             "ok": False,
             "error": "没有可翻译的图片，请先采集或上传图片。",
             "imagePoolItems": [],
-            "selected_image_ids": image_ids or [],
+            "source_image_ids": image_ids or [],
             "language": target,
             "target_language": target,
             "provider": provider_name,
@@ -390,7 +454,7 @@ def translate_images(
         "prompt": prompt,
         "app_dir": str(app_dir),
     }
-    use_mock = os.environ.get("ERP_IMAGE_TRANSLATE_MOCK", "").strip().lower() in {"1", "true", "yes"}
+    use_mock = _image_mock_enabled()
     if provider is None and not use_mock and not any(_local_source_path(app_dir, item) for item in selected):
         message = "当前图片翻译服务需要本地源图片，请先采集下载或上传图片后再翻译。"
         return {
@@ -399,7 +463,7 @@ def translate_images(
             "error": message,
             "prompt": prompt,
             "imagePoolItems": [],
-            "selected_image_ids": request["image_ids"],
+            "source_image_ids": request["image_ids"],
             "language": target,
             "target_language": target,
             "provider": provider_name,
@@ -422,7 +486,7 @@ def translate_images(
             "error": message,
             "prompt": prompt,
             "imagePoolItems": [],
-            "selected_image_ids": request["image_ids"],
+            "source_image_ids": request["image_ids"],
             "language": target,
             "target_language": target,
             "provider": provider_name,
@@ -445,7 +509,125 @@ def translate_images(
         "platform": platform,
         "mode": mode,
         "prompt": prompt,
-        "selected_image_ids": request["image_ids"],
+        "source_image_ids": request["image_ids"],
+        "imagePoolItems": items,
+        "generated_count": len(items),
+    }
+
+
+def edit_images(
+    app_dir: Path | str,
+    product: dict[str, Any],
+    app_config: dict[str, Any] | None = None,
+    prompt: str = "",
+    platform: str = "mercadolibre",
+    image_ids: list[str] | None = None,
+    provider: Provider | None = None,
+) -> dict[str, Any]:
+    """Run image-to-image editing with the user's prompt and selected images."""
+
+    user_prompt = build_image_edit_prompt(prompt)
+    requested_ids = [str(item).strip() for item in (image_ids or []) if str(item).strip()]
+    config_error = ""
+    try:
+        cfg = ai_gateway.resolve_model_for_use_case(app_dir, app_config, "image.translate")
+    except Exception as exc:
+        cfg = {}
+        config_error = str(exc)
+    provider_name = str(cfg.get("provider") or cfg.get("name") or "OpenAI-Compatible").strip() or "OpenAI-Compatible"
+    if not user_prompt:
+        return {
+            "ok": False,
+            "message": "图生图提示词不能为空。",
+            "error": "图生图提示词不能为空。",
+            "prompt": "",
+            "imagePoolItems": [],
+            "source_image_ids": requested_ids,
+            "provider": provider_name,
+        }
+    if not requested_ids:
+        return {
+            "ok": False,
+            "message": "请先勾选要用于图生图的图片。",
+            "error": "请先勾选要用于图生图的图片。",
+            "prompt": user_prompt,
+            "imagePoolItems": [],
+            "source_image_ids": [],
+            "provider": provider_name,
+        }
+
+    selected = select_source_images(product, requested_ids, platform)
+    if not selected:
+        return {
+            "ok": False,
+            "message": "没有找到可编辑的源图片，请重新选择图片。",
+            "error": "没有找到可编辑的源图片，请重新选择图片。",
+            "prompt": user_prompt,
+            "imagePoolItems": [],
+            "source_image_ids": requested_ids,
+            "provider": provider_name,
+        }
+
+    request = {
+        "product": product,
+        "images": selected,
+        "image_ids": [str(item.get("id") or "") for item in selected],
+        "platform": platform,
+        "mode": "edit",
+        "prompt": user_prompt,
+        "app_dir": str(app_dir),
+    }
+    use_mock = _image_mock_enabled()
+    if provider is None and not use_mock and not any(_local_source_path(app_dir, item) for item in selected):
+        message = "当前图片编辑服务需要本地源图片，请先采集下载或上传图片后再使用图生图。"
+        return {
+            "ok": False,
+            "message": message,
+            "error": message,
+            "prompt": user_prompt,
+            "imagePoolItems": [],
+            "source_image_ids": request["image_ids"],
+            "provider": provider_name,
+        }
+
+    provider_fn = provider or (_mock_provider if use_mock else openai_image_provider)
+    generated = provider_fn(cfg, request)
+    if not generated:
+        api_key = ai_model_config.model_api_key(cfg)
+        if config_error:
+            message = f"当前未配置可用图片编辑模型：{config_error}"
+        elif not api_key:
+            message = "当前未配置图片编辑模型 API Key，请在系统设置中配置后使用。"
+        elif provider is None and not use_mock:
+            message = "图片模型没有返回图片，请检查模型是否支持图片编辑，并确认 Base URL 使用 OpenAI 兼容的 /v1 地址。"
+        else:
+            message = "当前图片编辑服务尚未接入真实图片模型。"
+        return {
+            "ok": False,
+            "message": message,
+            "error": message,
+            "prompt": user_prompt,
+            "imagePoolItems": [],
+            "source_image_ids": request["image_ids"],
+            "provider": provider_name,
+        }
+
+    platform_values = image_service.normalize_platforms([platform]) or list(image_service.PLATFORMS)
+    product_id = str(product.get("product_id") or product.get("id") or "edited").strip() or "edited"
+    items: list[dict[str, Any]] = []
+    for index, result in enumerate(generated):
+        if not isinstance(result, dict):
+            continue
+        source_item = selected[index] if index < len(selected) else selected[-1]
+        items.append(_store_edited_item(app_dir, result, product_id, index, platform_values, user_prompt, source_item))
+
+    return {
+        "ok": True,
+        "provider": provider_name,
+        "platform": platform,
+        "mode": "edit",
+        "prompt": user_prompt,
+        "source_image_ids": request["image_ids"],
         "imagePoolItems": items,
         "generated_count": len(items),
     }

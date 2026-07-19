@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
-import type { CategoryAttributeTranslations, CategoryPrecheckResult, CategoryResultTranslations, CategorySearchResult, CategorySelection, Marketplace, PrecheckIssue, Product, ProductIndexItem, PublishPrecheck, UnknownRecord } from '@/types/workflow'
+import type { CategoryAttributeTranslations, CategoryPrecheckResult, CategoryResultTranslations, CategorySearchResult, CategorySelection, Marketplace, MarketplaceOption, PrecheckIssue, Product, ProductIndexItem, PublishPrecheck, UnknownRecord } from '@/types/workflow'
 
 const props = defineProps<{
   product: Product
   activeMarketplace: Marketplace
+  platformOptions: MarketplaceOption[]
   claimPlatforms: Marketplace[]
   category: CategorySelection | null
   categoryQuery: string
@@ -28,6 +29,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   updateCategoryQuery: [value: string]
   setMarketplace: [value: Marketplace]
+  setMarketplaceSite: [value: string]
   setClaimPlatforms: [value: Marketplace[]]
   searchCategory: []
   suggestCategory: []
@@ -45,11 +47,8 @@ const emit = defineEmits<{
   refreshProducts: []
 }>()
 
-const platforms: Array<{ key: Marketplace; label: string }> = [
-  { key: 'mercadolibre', label: 'Mercado Libre' },
-  { key: 'wildberries', label: 'Wildberries' },
-  { key: 'ozon', label: 'Ozon' },
-]
+const activePlatformOption = computed(() => props.platformOptions.find((platform) => platform.key === props.activeMarketplace))
+const activeSite = computed(() => props.product.drafts[props.activeMarketplace]?.site || activePlatformOption.value?.sites[0]?.code || '')
 
 const selectedProductId = ref('')
 const showOptionalAttributes = ref(false)
@@ -228,7 +227,7 @@ function setClaimPlatform(platform: Marketplace, checked: boolean) {
   const next = checked
     ? Array.from(new Set([...props.claimPlatforms, platform]))
     : props.claimPlatforms.filter((item) => item !== platform)
-  emit('setClaimPlatforms', platforms.filter((item) => next.includes(item.key)).map((item) => item.key))
+  emit('setClaimPlatforms', props.platformOptions.filter((item) => next.includes(item.key)).map((item) => item.key))
 }
 
 function categoryResultTranslation(item: CategorySearchResult) {
@@ -373,7 +372,7 @@ watch(
           <button class="btn btn-primary" :disabled="props.loading || !selectedProduct" @click="loadSelectedProduct">加载商品</button>
           <div class="flex flex-wrap items-center gap-2 rounded-lg border border-accent-200 bg-white px-3 py-2 dark:border-dark-700 dark:bg-dark-900">
             <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">认领目标</span>
-            <label v-for="platform in platforms" :key="platform.key" class="inline-flex items-center gap-1.5 whitespace-nowrap text-xs font-semibold text-accent-700 dark:text-accent-200">
+            <label v-for="platform in props.platformOptions" :key="platform.key" class="inline-flex items-center gap-1.5 whitespace-nowrap text-xs font-semibold text-accent-700 dark:text-accent-200">
               <input class="size-4 rounded border-accent-300 text-primary-600" type="checkbox" :checked="props.claimPlatforms.includes(platform.key)" :disabled="props.loading" @change="setClaimPlatform(platform.key, ($event.target as HTMLInputElement).checked)" />
               {{ platform.label }}
             </label>
@@ -395,8 +394,11 @@ watch(
           <input v-model="translateAttributesEnabled" type="checkbox" class="size-4 rounded border-accent-300" :disabled="props.loading || !hasCurrentProduct" />
           翻译类目/属性
         </label>
-        <select :value="props.activeMarketplace" class="input w-56" @change="emit('setMarketplace', ($event.target as HTMLSelectElement).value as Marketplace)">
-          <option v-for="platform in platforms" :key="platform.key" :value="platform.key">{{ platform.label }}</option>
+        <select :value="props.activeMarketplace" class="input w-40" @change="emit('setMarketplace', ($event.target as HTMLSelectElement).value as Marketplace)">
+          <option v-for="platform in props.platformOptions" :key="platform.key" :value="platform.key">{{ platform.label }}</option>
+        </select>
+        <select :value="activeSite" class="input w-64" @change="emit('setMarketplaceSite', ($event.target as HTMLSelectElement).value)">
+          <option v-for="site in activePlatformOption?.sites || []" :key="site.code" :value="site.code">{{ activePlatformOption?.label }} - {{ site.label }}（{{ site.code }} / {{ site.language }} / {{ site.currency }}）</option>
         </select>
       </div>
     </div>

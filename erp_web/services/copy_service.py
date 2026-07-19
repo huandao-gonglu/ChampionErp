@@ -29,9 +29,9 @@ Product data:
 {$product_summary}"""
 
 DEFAULT_LANGUAGE_BY_TARGET = {
-    "mercadolibre": "Spanish (Mexico)",
-    "wildberries": "Russian",
-    "ozon": "Russian",
+    "mercadolibre": "es",
+    "yandex": "ru-RU",
+    "ozon": "ru-RU",
 }
 
 

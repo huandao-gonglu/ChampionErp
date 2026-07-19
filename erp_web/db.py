@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from erp_web.marketplace_registry import PLATFORMS
 
 DEFAULT_DB_NAME = "erp.sqlite3"
 REQUIRED_TABLES = (
@@ -18,7 +19,6 @@ REQUIRED_TABLES = (
     "category_cache",
     "publish_logs",
 )
-PLATFORMS = ("mercadolibre", "wildberries", "ozon")
 
 
 def utc_now() -> str:
@@ -182,6 +182,47 @@ def _dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _platform_values(value: Any) -> list[str]:
+    raw_items: list[Any]
+    if isinstance(value, list):
+        raw_items = value
+    elif isinstance(value, str):
+        parsed = json_loads(value, [])
+        if isinstance(parsed, list):
+            raw_items = parsed
+        else:
+            raw_items = [
+                part.strip()
+                for part in value.replace("；", "\n").replace(";", "\n").replace(",", "\n").splitlines()
+                if part.strip()
+            ]
+    else:
+        raw_items = []
+    platforms: list[str] = []
+    for item in raw_items:
+        platform = str(item or "").strip().lower()
+        if platform in PLATFORMS and platform not in platforms:
+            platforms.append(platform)
+    return platforms
+
+
+def _draft_platforms(draft: dict[str, Any], primary_platform: Any) -> list[str]:
+    platforms: list[str] = []
+    target_sites = draft.get("target_sites")
+    if isinstance(target_sites, list):
+        for target in target_sites:
+            target = _dict(target)
+            platform = str(target.get("platform") or "").strip().lower()
+            if platform in PLATFORMS and platform not in platforms:
+                platforms.append(platform)
+    if not platforms:
+        platforms = _platform_values(draft.get("platforms") or draft.get("platforms_json"))
+    primary = str(primary_platform or "").strip().lower()
+    if primary in PLATFORMS and primary not in platforms:
+        platforms.insert(0, primary)
+    return platforms
+
+
 def product_identity(product: dict[str, Any]) -> str:
     product = _dict(product)
     source = _dict(product.get("source"))
@@ -302,7 +343,7 @@ def _draft_should_persist(draft: dict[str, Any]) -> bool:
     for key in ("title", "description", "category_id", "copy_generated_at"):
         if str(draft.get(key) or "").strip():
             return True
-    for key in ("attributes", "validation_errors"):
+    for key in ("attributes", "validation_errors", "images"):
         value = draft.get(key)
         if isinstance(value, (dict, list)) and bool(value):
             return True
@@ -413,6 +454,8 @@ def _upsert_drafts(conn: sqlite3.Connection, product_id: str, product: dict[str,
             continue
         draft_id = draft_identity(product_id, platform, draft)
         draft["draft_id"] = draft_id
+        draft["platform"] = platform
+        draft["platforms"] = _draft_platforms(draft, platform)
         site = str(draft.get("site") or draft.get("site_id") or "").strip()
         price_json = {
             key: draft.get(key)
@@ -565,9 +608,12 @@ def _load_drafts(conn: sqlite3.Connection, product_id: str, existing: dict[str, 
         if not isinstance(draft, dict):
             draft = {}
         draft_id = row["draft_id"] if "draft_id" in row.keys() else str(draft.get("draft_id") or "")
+        platform = str(row["platform"])
         draft.update(
             {
                 "draft_id": draft_id,
+                "platform": platform,
+                "platforms": _draft_platforms(draft, platform),
                 "status": row["status"],
                 "title": row["title"],
                 "description": row["description"],
@@ -576,7 +622,6 @@ def _load_drafts(conn: sqlite3.Connection, product_id: str, existing: dict[str, 
                 "attributes": json_loads(row["attributes_json"], {}),
             }
         )
-        platform = str(row["platform"])
         if platform not in seen_platforms:
             drafts[platform] = draft
             seen_platforms.add(platform)
@@ -591,7 +636,9 @@ def _draft_from_row(row: sqlite3.Row) -> dict[str, Any]:
         {
             "draft_id": row["draft_id"],
             "product_id": row["product_id"],
+            "source_product_id": draft.get("source_product_id") or row["product_id"],
             "platform": row["platform"],
+            "platforms": _draft_platforms(draft, row["platform"]),
             "site": row["site"],
             "status": row["status"],
             "title": row["title"],
@@ -665,11 +712,16 @@ def upsert_draft_model(app_dir: Path | str, product_id: str, platform: str, draf
     now = utc_now()
     product_id = str(product_id or "").strip()
     platform = str(platform or "").strip().lower()
+    draft = dict(_dict(draft))
+    draft_platform = str(draft.get("platform") or "").strip().lower()
+    if draft_platform in PLATFORMS:
+        platform = draft_platform
     if not product_id or platform not in PLATFORMS:
         return ""
-    draft = dict(_dict(draft))
     draft_id = draft_identity(product_id, platform, draft)
     draft["draft_id"] = draft_id
+    draft["platform"] = platform
+    draft["platforms"] = _draft_platforms(draft, platform)
     site = str(draft.get("site") or draft.get("site_id") or "").strip()
     price_json = {
         key: draft.get(key)
@@ -799,7 +851,7 @@ def list_draft_records(app_dir: Path | str, scope: str = "active", limit: int = 
                    ) AS main_image
             FROM platform_drafts d
             JOIN products p ON p.product_id = d.product_id
-            ORDER BY d.updated_at DESC
+            ORDER BY d.created_at DESC, d.rowid DESC
             LIMIT ?
             """,
             (max(1, int(limit or 500)),),
@@ -820,11 +872,16 @@ def _draft_record_from_row(row: sqlite3.Row) -> dict[str, Any]:
     price_json = json_loads(row["price_json"], {})
     pricing = _dict(draft.get("pricing"))
     status = str(draft.get("status") or draft.get("publish_status") or row["status"] or "claimed")
+    target_sites = draft.get("target_sites") if isinstance(draft.get("target_sites"), list) else [{"platform": row["platform"], "site": row["site"], "language": draft.get("language") or "", "currency": draft.get("currency") or ""}]
     return {
         "draft_id": row["draft_id"],
         "product_id": row["product_id"],
+        "source_product_id": draft.get("source_product_id") or row["product_id"],
         "platform": row["platform"],
+        "platforms": _draft_platforms({**draft, "target_sites": target_sites}, row["platform"]),
+        "target_sites": target_sites,
         "site": row["site"],
+        "language": str(draft.get("language") or ""),
         "status": status,
         "title": row["title"] or draft.get("title") or "",
         "product_title": row["product_title"] or _dict(product).get("name") or "",

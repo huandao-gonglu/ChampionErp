@@ -378,13 +378,25 @@
 
 - `POST /api/image-translate`（
   `product_id`：商品 ID，必填
-  `image_ids`：图片 ID 列表，可选
-  `selected_image_ids`：图片 ID 列表别名，可选
+  `source_image_ids`：商品图片池资产 ID 列表，可选
   `language`：目标语言，可选
   `target_language`：目标语言别名，可选
   `platform`：目标平台，可选
   `mode`：图片处理模式，可选
+  `draft_id`：草稿 ID，可选
+  `apply_to_draft`：是否把翻译图写入草稿图片引用，可选
+  `draft_image_strategy`：写入策略，可选，支持 `append`、`replace_selected`、`replace_all`
   ）；按目标语言翻译或改写选中商品图片。
+
+- `POST /api/image-edit`（
+  `product_id`：商品 ID，必填
+  `source_image_ids`：商品图片池资产 ID 列表，必填
+  `prompt`：用户本次图生图提示词，必填
+  `platform`：目标平台，可选
+  `draft_id`：草稿 ID，可选
+  `apply_to_draft`：是否把新图追加写入草稿图片引用，可选
+  `draft_image_strategy`：写入策略，可选，支持 `append`、`replace_selected`、`replace_all`
+  ）；用用户提示词和选中源图调用图片 AI provider 生成新图片，并写入商品图片池。
 
 ### 发布
 

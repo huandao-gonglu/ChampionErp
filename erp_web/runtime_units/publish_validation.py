@@ -187,21 +187,21 @@ def validate_mercadolibre_draft(product: dict[str, Any], config: dict[str, Any])
     return {"platform": "mercadolibre", "ok": not errors, "errors": errors, "warnings": warnings, "checked_at": collect_time_iso()}
 
 
-def validate_wildberries_draft(product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+def validate_yandex_draft(product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
     product = normalize_product_fields(product)
-    draft = _draft_for_platform(product, "wildberries")
-    store = config.get("wildberries", {}) if isinstance(config.get("wildberries"), dict) else {}
+    draft = _draft_for_platform(product, "yandex")
+    store = config.get("yandex", {}) if isinstance(config.get("yandex"), dict) else {}
     errors: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []
-    auth_status, auth_next = _masked_auth_status("wildberries", config)
+    auth_status, auth_next = _masked_auth_status("yandex", config)
     if auth_status in {"未配置", "测试失败", "Token 过期", "权限不足", "被限流"}:
-        errors.append(precheck_item("AUTH_NOT_CONFIGURED", "auth", f"Wildberries 授权状态：{auth_status}", "error", auth_next or "前往授权页测试 Token"))
+        errors.append(precheck_item("AUTH_NOT_CONFIGURED", "auth", f"Yandex 授权状态：{auth_status}", "error", auth_next or "前往授权页保存 Token"))
     if not str(draft.get("title") or "").strip():
         errors.append(precheck_item("TITLE_MISSING", "title", "缺少标题", "error", "前往商品编辑页补齐标题"))
     if not str(draft.get("description") or "").strip():
         errors.append(precheck_item("DESCRIPTION_MISSING", "description", "缺少描述", "error", "前往商品编辑页补齐描述"))
-    if not str(draft.get("category_id") or store.get("subject_id") or "").strip():
-        errors.append(precheck_item("CATEGORY_MISSING", "category_id", "缺少 Wildberries Subject ID", "error", "前往类目属性页选择类目"))
+    if not str(draft.get("category_id") or store.get("category_id") or "").strip():
+        errors.append(precheck_item("CATEGORY_MISSING", "category_id", "缺少 Yandex 类目 ID", "error", "前往类目属性页选择类目"))
     if not str(draft.get("brand") or "").strip():
         errors.append(precheck_item("BRAND_MISSING", "brand", "品牌为空", "error", "前往类目属性页确认 Brand"))
     if not str(draft.get("model") or "").strip():
@@ -209,10 +209,10 @@ def validate_wildberries_draft(product: dict[str, Any], config: dict[str, Any]) 
     if not str(draft.get("sku") or product.get("sku") or "").strip():
         errors.append(precheck_item("SKU_MISSING", "sku", "SKU 为空", "error", "前往商品编辑页填写 SKU"))
     if not str(draft.get("price") or "").strip():
-        errors.append(precheck_item("PRICE_MISSING", "price", "价格缺失", "error", "前往核价页应用 Wildberries 价格"))
+        errors.append(precheck_item("PRICE_MISSING", "price", "价格缺失", "error", "前往核价页应用 Yandex 价格"))
     if not str(draft.get("stock") or "").strip():
         errors.append(precheck_item("STOCK_MISSING", "stock", "库存缺失", "error", "前往商品编辑页填写库存"))
-    images = _draft_images(product, "wildberries", draft)
+    images = _draft_images(product, "yandex", draft)
     if not images:
         errors.append(precheck_item("IMAGE_MISSING", "images", "缺少图片", "error", "前往图片池导入图片"))
     elif len(images) < 1:
@@ -225,13 +225,13 @@ def validate_wildberries_draft(product: dict[str, Any], config: dict[str, Any]) 
         errors.append(precheck_item("WEIGHT_MISSING", "package_dimensions.weight_kg", "重量缺失", "error", "前往核价页补齐重量"))
     pricing = draft.get("pricing") if isinstance(draft.get("pricing"), dict) else {}
     if not str(pricing.get("suggested_price") or "").strip():
-        errors.append(precheck_item("PRICING_NOT_APPLIED", "pricing", "尚未应用核价结果", "error", "前往核价页应用 Wildberries 价格"))
+        errors.append(precheck_item("PRICING_NOT_APPLIED", "pricing", "尚未应用核价结果", "error", "前往核价页应用 Yandex 价格"))
     need_review = [field for item in draft.get("validation_errors") or [] if (field := _review_field_from_item(item))]
     if need_review:
         warnings.extend(_review_precheck_items(need_review, "warning"))
     if not str(draft.get("language") or "").strip():
-        warnings.append(precheck_item("LANGUAGE_MISSING", "language", "俄语标题/描述尚未确认", "warning", "发布前确认 Wildberries 文案语言"))
-    return {"platform": "wildberries", "ok": not errors, "errors": errors, "warnings": warnings, "checked_at": collect_time_iso()}
+        warnings.append(precheck_item("LANGUAGE_MISSING", "language", "俄语标题/描述尚未确认", "warning", "发布前确认 Yandex 文案语言"))
+    return {"platform": "yandex", "ok": not errors, "errors": errors, "warnings": warnings, "checked_at": collect_time_iso()}
 
 
 def validate_ozon_draft(product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
@@ -281,8 +281,8 @@ def validate_platform_draft(product: dict[str, Any], platform: str, config: dict
     platform = str(platform or "").strip().lower()
     if platform == "mercadolibre":
         return validate_mercadolibre_draft(product, config)
-    if platform == "wildberries":
-        return validate_wildberries_draft(product, config)
+    if platform == "yandex":
+        return validate_yandex_draft(product, config)
     if platform == "ozon":
         return validate_ozon_draft(product, config)
     return {
@@ -329,5 +329,5 @@ __all__ = [
     "validate_mercadolibre_draft",
     "validate_ozon_draft",
     "validate_platform_draft",
-    "validate_wildberries_draft",
+    "validate_yandex_draft",
 ]

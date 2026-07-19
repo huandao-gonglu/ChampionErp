@@ -4,6 +4,7 @@ from typing import Any
 
 from .common import PLATFORMS
 from .image_pool_model import default_image_pool_item
+from erp_web.marketplace_registry import default_marketplace_site
 
 def default_source() -> dict[str, Any]:
     return {
@@ -108,15 +109,19 @@ def default_pricing(platform: str = "") -> dict[str, Any]:
 
 
 def default_draft(platform: str) -> dict[str, Any]:
+    site = default_marketplace_site(platform)
     return {
+        "platform": platform,
+        "platforms": [platform],
+        "target_sites": [{"platform": platform, "site": site["code"], "language": site["language"], "currency": site["currency"]}],
         "enabled": True,
         "title": "",
         "description": "",
         "bullets": [],
         "search_terms": [],
-        "language": "",
+        "language": site["language"],
         "country": "",
-        "site": "",
+        "site": site["code"],
         "category_id": "",
         "category_path": "",
         "attributes": {},
@@ -161,12 +166,18 @@ def default_product_model() -> dict[str, Any]:
         "avoid_claims": [],
         "marketplace_terms": {
             "mercadolibre": {
-                "language": "es-MX",
+                "language": "es",
                 "product_type": "",
                 "primary_keywords": [],
                 "attribute_keywords": [],
             },
-            "wildberries": {
+            "yandex": {
+                "language": "ru-RU",
+                "product_type": "",
+                "primary_keywords": [],
+                "attribute_keywords": [],
+            },
+            "ozon": {
                 "language": "ru-RU",
                 "product_type": "",
                 "primary_keywords": [],

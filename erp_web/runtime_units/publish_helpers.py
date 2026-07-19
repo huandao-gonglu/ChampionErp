@@ -6,7 +6,13 @@ from copy import deepcopy
 from typing import Any
 
 from erp_web import marketplaces as publisher
-from erp_web.product_model import category_cache_status, default_draft, find_category_record, validate_category_precheck
+from erp_web.product_model import (
+    category_cache_status,
+    default_draft,
+    find_category_record,
+    normalize_draft_image_refs,
+    validate_category_precheck,
+)
 
 from .category_store import write_json
 from .copy_generation import apply_product_drafts_to_plan, build_plan_for_platform
@@ -144,8 +150,8 @@ def build_publish_payload(product: dict[str, Any], platform: str, config: dict[s
             listing["mercadolibre_sale_terms"] = draft.get("sale_terms")
         picture_refs = image_pool_refs_for_platform(product, "mercadolibre") or normalize_list(product.get("source_image_urls"))
         return publisher.build_mercadolibre_payload(product, plan, payload_config, picture_refs)
-    if platform == "wildberries":
-        return publisher.build_wildberries_payload(product, plan, config)
+    if platform == "yandex":
+        raise RuntimeError("Yandex 发布 API 尚未接入，当前不能生成真实发布 payload。")
     if platform == "ozon":
         return publisher.build_ozon_payload(product, plan, config)
     raise RuntimeError("不支持的平台")
@@ -167,11 +173,8 @@ def validate_publish_payload(platform: str, payload: Any, config: dict[str, Any]
         pictures = payload.get("pictures") or payload.get("sites_to_sell", [{}])[0].get("pictures", [])
         if not pictures:
             missing.append("图片")
-    elif platform == "wildberries":
-        if not config.get("wildberries", {}).get("content_token"):
-            missing.append("WB Token")
-        if not payload:
-            missing.append("发布结构")
+    elif platform == "yandex":
+        missing.append("Yandex 发布 API 尚未接入，当前仅支持站点、文案、类目与核价配置。")
     elif platform == "ozon":
         missing.append("该平台发布接口尚未配置，当前仅完成数据校验。")
     return missing
@@ -256,11 +259,23 @@ def _draft_for_platform(product: dict[str, Any], platform: str) -> dict[str, Any
 
 
 def _draft_images(product: dict[str, Any], platform: str, draft: dict[str, Any]) -> list[str]:
-    images = normalize_list(draft.get("images"))
-    return images or image_pool_refs_for_platform(product, platform)
+    refs = normalize_draft_image_refs(draft.get("images"))
+    if not refs:
+        return image_pool_refs_for_platform(product, platform)
+    pool = current_image_pool(product)
+    asset_ref_map = {
+        str(item.get("id") or item.get("asset_id") or "").strip(): str(item.get("url") or item.get("path") or item.get("preview_url") or "").strip()
+        for item in pool
+        if isinstance(item, dict)
+    }
+    images = [asset_ref_map.get(str(ref.get("asset_id") or "").strip(), "") for ref in refs]
+    return [image for image in images if image]
 
 
 def _has_main_image(product: dict[str, Any], platform: str, draft: dict[str, Any]) -> bool:
+    draft_refs = normalize_draft_image_refs(draft.get("images"))
+    if draft_refs:
+        return any(ref.get("role") == "main" for ref in draft_refs)
     pool = current_image_pool(product)
     platform_items = []
     for item in pool:

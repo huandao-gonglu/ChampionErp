@@ -3,10 +3,15 @@ import { listingLanguageLabel } from '@/constants/locales'
 import type {
   BrowserDebugStatus,
   DraftDetail,
+  DraftImageRef,
   DraftIndexItem,
+  DraftImageRole,
   DraftProductContext,
   ImageAsset,
   Marketplace,
+  MarketplaceOption,
+  MarketplaceSiteOption,
+  MarketplaceTargetSite,
   MarketplaceDraft,
   MercadoLibreAuthChecklist,
   MercadoLibreOrderNotification,
@@ -26,6 +31,7 @@ export interface AppStateResponse {
   mercadolibreAuthChecklist?: MercadoLibreAuthChecklist | null
   mercadolibreOrderNotifications?: MercadoLibreOrderNotification[]
   outputDir: string
+  platformOptions: MarketplaceOption[]
   productsIndex: ProductIndexItem[]
   draftsIndex?: DraftIndexItem[]
   publishLogs: PublishLogItem[]
@@ -191,8 +197,68 @@ export function precheckIssueSummary(issue: PrecheckIssue): string {
 }
 
 export function platformList(value: unknown): Marketplace[] {
-  const allowed = new Set<Marketplace>(['mercadolibre', 'wildberries', 'ozon'])
-  return stringList(value).filter((item): item is Marketplace => allowed.has(item as Marketplace))
+  let rawItems: string[] = []
+  if (typeof value === 'string' && value.trim().startsWith('[')) {
+    try {
+      rawItems = stringList(JSON.parse(value))
+    } catch {
+      rawItems = stringList(value)
+    }
+  } else {
+    rawItems = stringList(value)
+  }
+  const selected = new Set<Marketplace>()
+  rawItems.forEach((item) => {
+    const platform = item.trim().toLowerCase() as Marketplace
+    if (platform) selected.add(platform)
+  })
+  return Array.from(selected)
+}
+
+export function normalizeMarketplaceOptions(value: unknown): MarketplaceOption[] {
+  if (!Array.isArray(value)) return []
+  const seen = new Set<Marketplace>()
+  return value.flatMap((item) => {
+    const record = asRecord(item)
+    const key = getString(record, ['key', 'id', 'platform']).toLowerCase() as Marketplace
+    if (!key || seen.has(key)) return []
+    seen.add(key)
+    const siteSeen = new Set<string>()
+    const sites = Array.isArray(record.sites)
+      ? record.sites.flatMap((site): MarketplaceSiteOption[] => {
+        const siteRecord = asRecord(site)
+        const code = getString(siteRecord, ['code', 'key', 'id']).trim()
+        const siteKey = getString(siteRecord, ['key', 'code', 'id'], code).trim()
+        if (!siteKey || !code || siteSeen.has(siteKey.toLowerCase())) return []
+        siteSeen.add(siteKey.toLowerCase())
+        return [{
+          key: siteKey,
+          code,
+          label: getString(siteRecord, ['label', 'name'], code),
+          language: getString(siteRecord, ['language'], ''),
+          currency: getString(siteRecord, ['currency'], ''),
+        }]
+      })
+      : []
+    return [{ key, label: getString(record, ['label', 'name'], key), sites }]
+  })
+}
+
+function normalizeTargetSites(value: unknown, platform: Marketplace, site: string, language: string, currency: string): MarketplaceTargetSite[] {
+  const rawItems = Array.isArray(value) ? value : []
+  const targets = rawItems.flatMap((value): MarketplaceTargetSite[] => {
+    const record = asRecord(value)
+    const targetPlatform = getString(record, ['platform']).toLowerCase() as Marketplace
+    const targetSite = getString(record, ['site', 'site_id'])
+    if (!targetPlatform || !targetSite) return []
+    return [{
+      platform: targetPlatform,
+      site: targetSite,
+      language: getString(record, ['language'], language),
+      currency: getString(record, ['currency', 'currency_id'], currency),
+    }]
+  })
+  return targets.length ? targets : [{ platform, site, language, currency }]
 }
 
 export function normalizeDimensions(value: unknown) {
@@ -229,14 +295,73 @@ export function normalizeImageAsset(value: unknown): ImageAsset {
     previewUrl,
     origin: getString(record, ['origin', 'source_kind'], 'source'),
     usage: getString(record, ['usage', 'asset_type'], 'detail'),
-    platforms: platforms.length ? platforms : ['mercadolibre', 'wildberries', 'ozon'],
+    platforms,
     isMain: getBoolean(record, ['isMain', 'is_main', 'is_primary']),
     selected: getBoolean(record, ['selected'], true),
     status: getString(record, ['status'], previewUrl ? 'ready' : 'empty'),
     width,
     height,
     targetLanguage: getString(record, ['targetLanguage', 'target_language']) || undefined,
-    translatedFromId: getString(record, ['translatedFromId', 'translated_from_id']) || undefined,
+    derivedFromId: getString(record, ['derivedFromId', 'derived_from_id']) || undefined,
+    provider: getString(record, ['provider']) || undefined,
+  }
+}
+
+const draftImageRoles: DraftImageRole[] = ['main', 'detail', 'size', 'scene', 'package', 'selling_point', 'material', 'other']
+
+function normalizeDraftImageRole(value: unknown, order: number): DraftImageRole {
+  const role = String(value || '').trim().toLowerCase() as DraftImageRole
+  if (draftImageRoles.includes(role)) return role
+  return order === 0 ? 'main' : 'detail'
+}
+
+export function normalizeDraftImageRef(value: unknown, order = 0): DraftImageRef | null {
+  const record = asRecord(value)
+  const assetId = getString(record, ['assetId', 'asset_id', 'id'])
+  if (!assetId) return null
+  return {
+    assetId,
+    role: normalizeDraftImageRole(record.role ?? record.usage, order),
+    order: getNumber(record, ['order'], order),
+    label: getString(record, ['label']) || undefined,
+    note: getString(record, ['note']) || undefined,
+    altText: getString(record, ['altText', 'alt_text']) || undefined,
+    sourceAssetId: getString(record, ['sourceAssetId', 'source_asset_id']) || undefined,
+  }
+}
+
+export function normalizeDraftImageRefs(value: unknown): DraftImageRef[] {
+  if (!Array.isArray(value)) return []
+  const seen = new Set<string>()
+  const refs = value.flatMap((item, index) => {
+    const ref = normalizeDraftImageRef(item, index)
+    if (!ref || seen.has(ref.assetId)) return []
+    seen.add(ref.assetId)
+    return [ref]
+  }).sort((left, right) => left.order - right.order)
+  refs.forEach((ref, index) => { ref.order = index })
+  let mainSeen = false
+  refs.forEach((ref) => {
+    if (ref.role !== 'main') return
+    if (mainSeen) {
+      ref.role = 'detail'
+    } else {
+      mainSeen = true
+    }
+  })
+  if (refs.length && !mainSeen) refs[0].role = 'main'
+  return refs
+}
+
+export function toBackendDraftImageRef(ref: DraftImageRef): UnknownRecord {
+  return {
+    asset_id: ref.assetId,
+    role: ref.role,
+    order: ref.order,
+    label: ref.label,
+    note: ref.note,
+    alt_text: ref.altText,
+    source_asset_id: ref.sourceAssetId,
   }
 }
 
@@ -245,9 +370,16 @@ export function normalizeDraft(value: unknown, language: string): MarketplaceDra
   const draft = createEmptyDraft(language)
   const packageDimensions = asRecord(record.package_dimensions ?? record.packageDimensions)
   const saleTerms = Array.isArray(record.sale_terms) ? record.sale_terms.map((item) => asRecord(item)) : Array.isArray(record.saleTerms) ? record.saleTerms.map((item) => asRecord(item)) : []
+  const site = getString(record, ['site', 'site_id'], draft.site)
+  const currency = getString(record, ['currency', 'currency_id'], draft.currency)
+  const draftLanguage = getString(record, ['language'], language)
   return {
     ...draft,
     draftId: getString(record, ['draftId', 'draft_id']),
+    platforms: platformList(record.platforms ?? record.platforms_json),
+    targetSites: normalizeTargetSites(record.target_sites ?? record.targetSites, platformList(record.platforms ?? record.platforms_json)[0] || 'mercadolibre', site, draftLanguage, currency),
+    site,
+    currency,
     enabled: getBoolean(record, ['enabled'], draft.enabled),
     title: getString(record, ['title']),
     description: getString(record, ['description']),
@@ -256,9 +388,9 @@ export function normalizeDraft(value: unknown, language: string): MarketplaceDra
     categoryPath: getString(record, ['categoryPath', 'category_path']),
     attributes: Object.fromEntries(Object.entries(asRecord(record.attributes)).map(([key, value]) => [key, String(value ?? '')])),
     price: getString(record, ['price', 'sale_price']),
-    images: stringList(record.images),
+    images: normalizeDraftImageRefs(record.images),
     status: getString(record, ['status'], draft.status) as MarketplaceDraft['status'],
-    language: getString(record, ['language'], language),
+    language: draftLanguage,
     stock: getString(record, ['stock']),
     sku: getString(record, ['sku']),
     upc: getString(record, ['upc', 'gtin', 'barcode']),
@@ -321,7 +453,7 @@ export function normalizeBackendProduct(value: unknown, imagePoolOverride?: unkn
     },
     drafts: {
       mercadolibre: normalizeDraft(drafts.mercadolibre, listingLanguageLabel('mercadolibre')),
-      wildberries: normalizeDraft(drafts.wildberries, listingLanguageLabel('wildberries')),
+      yandex: normalizeDraft(drafts.yandex, listingLanguageLabel('yandex')),
       ozon: normalizeDraft(drafts.ozon, listingLanguageLabel('ozon')),
     },
     raw: record,
@@ -345,7 +477,8 @@ export function toBackendImageAsset(image: ImageAsset): UnknownRecord {
     width: image.width,
     height: image.height,
     target_language: image.targetLanguage,
-    translated_from_id: image.translatedFromId,
+    derived_from_id: image.derivedFromId,
+    provider: image.provider,
   }
 }
 
@@ -353,6 +486,10 @@ export function toBackendDraft(draft: MarketplaceDraft): UnknownRecord {
   return {
     enabled: draft.enabled,
     draft_id: draft.draftId,
+    platforms: draft.platforms,
+    target_sites: draft.targetSites.map((target) => ({ platform: target.platform, site: target.site, language: target.language, currency: target.currency })),
+    site: draft.site,
+    currency: draft.currency,
     title: draft.title,
     description: draft.description,
     bullets: draft.bullets,
@@ -361,7 +498,7 @@ export function toBackendDraft(draft: MarketplaceDraft): UnknownRecord {
     attributes: draft.attributes,
     price: draft.price,
     sale_price: draft.price,
-    images: draft.images,
+    images: draft.images.map(toBackendDraftImageRef),
     status: draft.status,
     language: draft.language,
     stock: draft.stock,
@@ -382,10 +519,15 @@ export function normalizeDraftDetail(value: unknown): DraftDetail {
   const record = asRecord(value)
   const platform = (getString(record, ['platform']) || 'mercadolibre') as Marketplace
   const draft = normalizeDraft(record, listingLanguageLabel(platform))
+  const platforms = draft.platforms.length ? draft.platforms : [platform]
+  const primaryPlatform = platforms.includes(platform) ? platform : platforms[0] || platform
   return {
     ...draft,
     productId: getString(record, ['productId', 'product_id']),
-    platform,
+    sourceProductId: getString(record, ['sourceProductId', 'source_product_id'], getString(record, ['productId', 'product_id'])),
+    platform: primaryPlatform,
+    platforms,
+    targetSites: normalizeTargetSites(record.target_sites ?? record.targetSites, primaryPlatform, getString(record, ['site', 'site_id']), draft.language, draft.currency),
     site: getString(record, ['site', 'site_id']),
     createdAt: getString(record, ['createdAt', 'created_at']),
     updatedAt: getString(record, ['updatedAt', 'updated_at']),
@@ -403,6 +545,7 @@ export function normalizeDraftProductContext(value: unknown): DraftProductContex
       : []
   return {
     productId: getString(record, ['productId', 'product_id']),
+    sourceProductId: getString(record, ['sourceProductId', 'source_product_id'], getString(record, ['productId', 'product_id'])),
     title: getString(record, ['title']),
     sourceTitle: getString(record, ['sourceTitle', 'source_title']),
     sourcePlatform: getString(record, ['sourcePlatform', 'source_platform']),
@@ -422,12 +565,17 @@ export function normalizeDraftProductContext(value: unknown): DraftProductContex
 }
 
 export function toBackendDraftDetail(draft: DraftDetail): UnknownRecord {
+  const platforms = draft.platforms.length ? draft.platforms : [draft.platform]
+  const platform = platforms.includes(draft.platform) ? draft.platform : platforms[0] || draft.platform
   return {
     ...asRecord(draft.raw),
     ...toBackendDraft(draft),
     draft_id: draft.draftId,
     product_id: draft.productId,
-    platform: draft.platform,
+    source_product_id: draft.sourceProductId || draft.productId,
+    platform,
+    platforms,
+    target_sites: draft.targetSites.map((target) => ({ platform: target.platform, site: target.site, language: target.language, currency: target.currency })),
     site: draft.site,
   }
 }
@@ -492,12 +640,19 @@ export function normalizeDraftsIndex(value: unknown): DraftIndexItem[] {
 
 export function normalizeDraftIndexItem(value: unknown): DraftIndexItem {
   const record = asRecord(value)
-  const platform = getString(record, ['platform']) as Marketplace
+  const platform = (getString(record, ['platform']) || 'mercadolibre') as Marketplace
+  const platforms = platformList(record.platforms ?? asRecord(record.raw).platforms)
+  const effectivePlatforms = platforms.length ? platforms : [platform]
+  const primaryPlatform = effectivePlatforms.includes(platform) ? platform : effectivePlatforms[0] || platform
   return {
     draftId: getString(record, ['draftId', 'draft_id']),
     productId: getString(record, ['productId', 'product_id']),
-    platform,
+    sourceProductId: getString(record, ['sourceProductId', 'source_product_id'], getString(record, ['productId', 'product_id'])),
+    platform: primaryPlatform,
+    platforms: effectivePlatforms,
+    targetSites: normalizeTargetSites(record.target_sites ?? record.targetSites ?? asRecord(record.raw).target_sites, primaryPlatform, getString(record, ['site']), getString(record, ['language']), getString(record, ['currency'])),
     site: getString(record, ['site']),
+    language: getString(record, ['language'], getString(asRecord(record.raw), ['language'])),
     status: getString(record, ['status']) as DraftIndexItem['status'],
     title: getString(record, ['title']),
     productTitle: getString(record, ['productTitle', 'product_title']),

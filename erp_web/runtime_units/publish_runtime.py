@@ -28,7 +28,7 @@ from .publish_validation import (
     validate_mercadolibre_draft,
     validate_ozon_draft,
     validate_platform_draft,
-    validate_wildberries_draft,
+    validate_yandex_draft,
 )
 
 __all__ = [
@@ -56,5 +56,5 @@ __all__ = [
     "validate_ozon_draft",
     "validate_platform_draft",
     "validate_publish_payload",
-    "validate_wildberries_draft",
+    "validate_yandex_draft",
 ]

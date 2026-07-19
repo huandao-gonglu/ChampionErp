@@ -9,9 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from erp_web.product_model import (
-    PLATFORMS,
     SOURCE_COMPAT_IMAGE_ORIGINS,
-    default_draft,
     default_source,
     image_pool_legacy_views,
     normalize_image_pool,
@@ -66,7 +64,7 @@ def sync_generated_images_into_pool(product: dict[str, Any]) -> dict[str, Any]:
                     "preview_url": str(file_item.get("url") or file_item.get("path") or ""),
                     "origin": "ai_generated",
                     "usage": "scene",
-                    "platforms": list(PLATFORMS),
+                    "platforms": [],
                     "is_main": False,
                     "selected": False,
                     "order": len(pool),
@@ -123,7 +121,7 @@ def _image_pool_item_from_path(path: Path, origin: str, usage: str, platforms: l
             "preview_url": file_url(path),
             "origin": origin,
             "usage": usage,
-            "platforms": platforms or list(PLATFORMS),
+            "platforms": platforms or [],
             "is_main": is_main,
             "selected": selected,
             "order": 0,
@@ -160,12 +158,6 @@ def append_images_to_product_pool(product: dict[str, Any], items: list[dict[str,
 
 def sync_draft_images_from_pool(product: dict[str, Any]) -> dict[str, Any]:
     normalized = normalize_product_fields(product)
-    for platform in PLATFORMS:
-        draft = normalized.setdefault("drafts", {}).setdefault(platform, default_draft(platform))
-        if isinstance(draft, dict):
-            refs = image_pool_refs_for_platform(normalized, platform)
-            if refs:
-                draft["images"] = refs
     return sync_product_workflow_statuses(normalized)
 
 

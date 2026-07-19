@@ -37,3 +37,4 @@ erp.sqlite3
 *.tsbuildinfo
 logo-cart-verification.png
 data/logs/
+.codex-audit/

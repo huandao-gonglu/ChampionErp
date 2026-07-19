@@ -90,7 +90,7 @@ def run_mercadolibre_07d_test(mode: str, product: dict[str, Any] | None = None, 
             ml["user_id"] = str(data.get("id") or ml.get("user_id") or "").strip()
             ml["seller_id"] = str(data.get("id") or ml.get("seller_id") or "").strip()
             ml["nickname"] = str(data.get("nickname") or ml.get("nickname") or "").strip()
-            ml["site_id"] = str(data.get("site_id") or ml.get("site_id") or "MLM").strip() or "MLM"
+            ml["site_id"] = str(data.get("site_id") or ml.get("site_id") or "CBT").strip() or "CBT"
             ml["shop_name"] = ml.get("nickname") or ml.get("shop_name") or ml.get("user_id") or ""
             ml.update(_store_auth_result_fields("mercadolibre", "测试成功", ml.get("shop_name") or token))
             ml["auth_error_code"] = ""

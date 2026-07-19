@@ -9,25 +9,26 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from erp_web import db as erp_db
 from erp_web.product_model import (
     PLATFORMS,
     SOURCE_COMPAT_IMAGE_ORIGINS,
     default_draft,
+    draft_image_refs_from_pool,
     image_pool_legacy_views,
     normalize_image_pool,
+    normalize_draft_image_refs,
     normalize_platforms,
 )
 from erp_web.services import image_service
 
 from .browser_debug import file_url
-from .image_pool_core import image_pool_refs_for_platform
 from .product_store import (
     load_drafts_index,
     load_product_from_index,
     load_products_index,
     normalize_list,
     normalize_product_fields,
-    save_product,
     sync_product_workflow_statuses,
 )
 from .runtime_common import AMAZON_VERIFY_MARKERS, APP_DIR, COLLECT_DEBUG_DIR, VERIFY_MARKERS
@@ -277,7 +278,7 @@ def normalize_collect_source_images(source_updates: dict[str, Any], platform: st
     if str(platform or "").strip().lower() == "1688":
         refs = refs[:5]
     origin = collect_image_origin(platform, mode)
-    platforms = normalize_platforms(claim_platforms) or ["mercadolibre"]
+    platforms = normalize_platforms(claim_platforms)
     normalized_pool = image_service.materialize_image_values(
         APP_DIR,
         refs,
@@ -320,9 +321,10 @@ def parse_collect_urls(value: Any) -> list[str]:
 def apply_claimed_platform_drafts(product: dict[str, Any], claim_platforms: list[str] | None = None) -> dict[str, Any]:
     normalized = normalize_product_fields(product)
     source = normalized.get("source") if isinstance(normalized.get("source"), dict) else {}
-    platforms = normalize_platforms(claim_platforms) or ["mercadolibre"]
+    platforms = normalize_platforms(claim_platforms)
+    if not platforms:
+        return sync_product_workflow_statuses(normalized)
     dims = source.get("dimensions") if isinstance(source.get("dimensions"), dict) else {}
-    image_refs = image_pool_refs_for_platform(normalized, "mercadolibre") or productImages_from_source(normalized)
     placeholder_titles = {"", "-", "unknown", "draft title", "untitled", "未命名"}
 
     def use_existing(value: Any) -> bool:
@@ -333,11 +335,12 @@ def apply_claimed_platform_drafts(product: dict[str, Any], claim_platforms: list
         normalized.setdefault("drafts", {})[platform] = draft
         if not isinstance(draft, dict):
             continue
+        image_refs = draft_image_refs_from_pool(normalized, platform)
         draft["enabled"] = True
         draft["title"] = draft.get("title") if use_existing(draft.get("title")) else source.get("title") or normalized.get("name") or ""
         draft["description"] = draft.get("description") if use_existing(draft.get("description")) else source.get("description") or ""
         draft["bullets"] = draft.get("bullets") or source.get("bullets") or []
-        draft["images"] = draft.get("images") if draft.get("images") else image_refs
+        draft["images"] = normalize_draft_image_refs(draft.get("images")) or image_refs
         draft["brand"] = draft.get("brand") or source.get("brand") or "Generic"
         draft["model"] = draft.get("model") or normalized.get("model") or "General"
         draft["status"] = "claimed"
@@ -351,25 +354,69 @@ def apply_claimed_platform_drafts(product: dict[str, Any], claim_platforms: list
     return sync_product_workflow_statuses(normalized)
 
 
-def claim_products_to_platforms(product_ids: list[str], platforms: list[str]) -> dict[str, Any]:
+def draft_copy_from_product(product: dict[str, Any], platform: str) -> dict[str, Any]:
+    normalized = normalize_product_fields(product)
+    source = normalized.get("source") if isinstance(normalized.get("source"), dict) else {}
+    dims = source.get("dimensions") if isinstance(source.get("dimensions"), dict) else {}
+    product_id = str(normalized.get("product_id") or normalized.get("id") or "").strip()
+    draft = default_draft(platform)
+    snapshot = deepcopy(normalized)
+    snapshot.pop("drafts", None)
+    draft.update(
+        {
+            "enabled": True,
+            "platform": platform,
+            "platforms": [platform],
+            "source_product_id": product_id,
+            "source_product_snapshot": snapshot,
+            "title": str(source.get("title") or normalized.get("name") or ""),
+            "description": str(source.get("description") or normalized.get("description") or ""),
+            "bullets": normalize_list(source.get("bullets") or normalized.get("selling_points")),
+            "images": productImages_from_source(normalized),
+            "brand": str(normalized.get("brand") or source.get("brand") or "Generic"),
+            "model": str(normalized.get("model") or source.get("model") or "General"),
+            "sku": str(normalized.get("sku") or source.get("sku") or ""),
+            "stock": str(normalized.get("stock") or ""),
+            "price": "",
+            "status": "claimed",
+            "copied_from_product_at": collect_time_iso(),
+            "package_dimensions": {
+                "length_cm": str(dims.get("length_cm") or dims.get("lengthCm") or ""),
+                "width_cm": str(dims.get("width_cm") or dims.get("widthCm") or ""),
+                "height_cm": str(dims.get("height_cm") or dims.get("heightCm") or ""),
+                "weight_kg": str(source.get("weight_kg") or normalized.get("weight_kg") or ""),
+            },
+        }
+    )
+    return draft
+
+
+def claim_products_to_platforms(product_ids: list[str], platforms: list[str] | None = None) -> dict[str, Any]:
     targets = normalize_platforms(platforms) or ["mercadolibre"]
     targets = [platform for platform in targets if platform in PLATFORMS]
     if not targets:
-        return {"ok": False, "claimed_count": 0, "items": [], "error": "没有可认领的平台"}
+        return {"ok": False, "claimed_count": 0, "items": [], "error": "没有可用的草稿目标"}
     items: list[dict[str, Any]] = []
     for product_id in [str(item or "").strip() for item in product_ids if str(item or "").strip()]:
         product = load_product_from_index(product_id, "")
-        if not product:
+        loaded_id = str(product.get("product_id") or product.get("id") or "").strip() if isinstance(product, dict) else ""
+        if not product or loaded_id != product_id:
             items.append({"product_id": product_id, "ok": False, "error": "商品不存在"})
             continue
-        product = apply_claimed_platform_drafts(product, targets)
-        product = save_product(product)
+        draft_ids: list[str] = []
+        for platform in targets:
+            draft = draft_copy_from_product(product, platform)
+            draft_id = erp_db.upsert_draft_model(APP_DIR, product_id, platform, draft)
+            if draft_id:
+                draft_ids.append(draft_id)
         items.append(
             {
-                "product_id": product.get("product_id") or product_id,
-                "ok": True,
+                "product_id": product_id,
+                "source_product_id": product_id,
+                "ok": bool(draft_ids),
                 "platforms": targets,
-                "draft_statuses": (product.get("workflow_statuses") or {}),
+                "draft_ids": draft_ids,
+                "draft_statuses": {platform: "claimed" for platform in targets},
             }
         )
     return {

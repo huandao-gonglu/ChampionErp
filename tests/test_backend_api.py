@@ -103,7 +103,7 @@ def test_image_translate_api_returns_configuration_warning_without_key(backend_s
             "product_id": saved["product"]["product_id"],
             "platform": "mercadolibre",
             "language": "Spanish (Mexico)",
-            "image_ids": ["source_1"],
+            "source_image_ids": ["source_1"],
         },
     )
 

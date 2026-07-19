@@ -24,14 +24,14 @@ export interface ListingLocaleOption {
 
 export const MARKETPLACE_LISTING_LOCALES: Record<Marketplace, ListingLocaleOption> = {
   mercadolibre: {
-    value: 'es-MX',
-    label: 'Spanish (Mexico)',
-    marketplaceLabel: 'Mercado Libre Mexico',
+    value: 'es',
+    label: 'Spanish',
+    marketplaceLabel: 'Mercado Libre Global',
   },
-  wildberries: {
+  yandex: {
     value: 'ru-RU',
     label: 'Russian',
-    marketplaceLabel: 'Wildberries',
+    marketplaceLabel: 'Yandex Russia',
   },
   ozon: {
     value: 'ru-RU',
@@ -44,7 +44,7 @@ export const LISTING_LANGUAGE_OPTIONS: ListingLocaleOption[] = [
   MARKETPLACE_LISTING_LOCALES.mercadolibre,
   { value: 'pt-BR', label: 'Portuguese (Brazil)', marketplaceLabel: 'Mercado Livre Brazil' },
   { value: 'en-US', label: 'English', marketplaceLabel: 'Generic English' },
-  MARKETPLACE_LISTING_LOCALES.wildberries,
+  MARKETPLACE_LISTING_LOCALES.yandex,
 ]
 
 export function uiLocaleOption(locale: string | null | undefined): UiLocaleOption {

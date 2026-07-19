@@ -26,8 +26,8 @@ def platform_to_preset_key(platform: str) -> str:
     platform = (platform or "").lower()
     if platform == "mercadolibre":
         return "mercadolibre"
-    if platform in {"wildberries", "ozon"}:
-        return "wildberries"
+    if platform in {"yandex", "ozon"}:
+        return "yandex"
     return "mercadolibre"
 
 
@@ -86,7 +86,7 @@ def target_market_label(target_market: str) -> str:
     mapping = {
         "amazon": "Amazon",
         "mercadolibre": "Mercado Libre",
-        "wildberries": "Wildberries",
+        "yandex": "Yandex",
         "ozon": "Ozon",
     }
     return mapping.get((target_market or "").lower(), (target_market or "marketplace").title())

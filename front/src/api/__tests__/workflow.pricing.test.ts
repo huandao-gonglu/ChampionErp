@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { calculatePrice, generateCopy, imageTranslate, publishPrecheck } from '@/api/workflow'
+import { calculatePrice, generateCopy, imageEdit, imageTranslate, publishPrecheck } from '@/api/workflow'
 import { apiClient } from '@/api/client'
 import { createEmptyProduct } from '@/constants/initialState'
 import { normalizeProductsIndex, toBackendProduct } from '@/api/workflow/normalizers'
@@ -121,7 +121,7 @@ describe('publishPrecheck API mapping', () => {
         platforms: ['mercadolibre', 'ozon'],
         draft_statuses: {
           mercadolibre: 'claimed',
-          wildberries: 'collected',
+          yandex: 'collected',
           ozon: 'ready_to_publish',
         },
       },
@@ -129,7 +129,7 @@ describe('publishPrecheck API mapping', () => {
 
     expect(items[0].draftStatuses).toEqual({
       mercadolibre: 'claimed',
-      wildberries: 'collected',
+      yandex: 'collected',
       ozon: 'ready_to_publish',
     })
   })
@@ -236,7 +236,7 @@ describe('imageTranslate API timeout', () => {
 
     expect(apiClient.post).toHaveBeenCalledWith('/api/image-translate', expect.objectContaining({
       product_id: 'prod-1',
-      image_ids: ['img-1', 'img-2'],
+      source_image_ids: ['img-1', 'img-2'],
     }), { timeout: 60000 })
   })
 
@@ -256,7 +256,37 @@ describe('imageTranslate API timeout', () => {
 
     expect(apiClient.post).toHaveBeenCalledWith('/api/image-translate', expect.objectContaining({
       product_id: 'prod-1',
-      image_ids: [],
+      source_image_ids: [],
     }), { timeout: 90000 })
+  })
+})
+
+describe('imageEdit API payload', () => {
+  it('posts selected source images and the user prompt to image-edit', async () => {
+    const product = createEmptyProduct()
+    product.productId = 'prod-1'
+    product.source.imagePool = [
+      { id: 'img-1', url: '', path: '', previewUrl: '', origin: 'upload', usage: 'main', platforms: ['mercadolibre'], isMain: true, selected: true, status: 'ready', width: 1000, height: 1000 },
+      { id: 'img-2', url: '', path: '', previewUrl: '', origin: 'upload', usage: 'detail', platforms: ['mercadolibre'], isMain: false, selected: false, status: 'ready', width: 1000, height: 1000 },
+    ]
+    vi.mocked(apiClient.post).mockResolvedValueOnce({
+      data: { ok: true, product: { source: { image_pool: [] } }, productsIndex: [] },
+    })
+
+    await imageEdit(product, 'mercadolibre', '  扣除背景，保留产品主体  ', {
+      draftId: 'draft-1',
+      applyToDraft: true,
+      draftImageStrategy: 'append',
+    })
+
+    expect(apiClient.post).toHaveBeenCalledWith('/api/image-edit', expect.objectContaining({
+      product_id: 'prod-1',
+      platform: 'mercadolibre',
+      prompt: '扣除背景，保留产品主体',
+      draft_id: 'draft-1',
+      apply_to_draft: true,
+      draft_image_strategy: 'append',
+      source_image_ids: ['img-1'],
+    }), { timeout: 30000 })
   })
 })

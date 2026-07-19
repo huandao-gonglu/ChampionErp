@@ -22,7 +22,6 @@ const emit = defineEmits<{
   openProfile: []
   clearProduct: []
   saveSettings: []
-  generateCopy: []
   importManual: []
   clean1688: []
 }>()
@@ -215,7 +214,7 @@ function copyDiagnostics() {
 
           <div class="grid gap-4 lg:grid-cols-3">
             <div class="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
-              <div class="text-sm font-bold text-emerald-950">1. 选择来源与目标草稿</div>
+              <div class="text-sm font-bold text-emerald-950">1. 选择来源</div>
               <div class="mt-4 space-y-4">
                 <label class="block">
                   <span class="text-xs font-semibold text-emerald-800">来源平台</span>
@@ -226,14 +225,6 @@ function copyDiagnostics() {
                     <option value="unknown">其他</option>
                   </select>
                 </label>
-                <div>
-                  <span class="text-xs font-semibold text-emerald-800">认领到平台草稿</span>
-                  <div class="mt-2 space-y-2 text-sm text-emerald-950">
-                    <label class="flex items-center gap-2"><input v-model="props.form.selectedClaimPlatforms" type="checkbox" value="mercadolibre" /> Mercado Libre</label>
-                    <label class="flex items-center gap-2"><input v-model="props.form.selectedClaimPlatforms" type="checkbox" value="wildberries" /> Wildberries</label>
-                    <label class="flex items-center gap-2"><input v-model="props.form.selectedClaimPlatforms" type="checkbox" value="ozon" /> Ozon</label>
-                  </div>
-                </div>
               </div>
             </div>
 
@@ -277,11 +268,10 @@ function copyDiagnostics() {
             <div class="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div class="text-sm font-bold text-slate-950">4. 导入商品库</div>
-                <p class="mt-1 text-xs text-slate-500">导入后会生成商品记录、来源图片和目标平台草稿。</p>
+                <p class="mt-1 text-xs text-slate-500">导入后会生成商品记录和来源图片，可在商品库推到草稿箱。</p>
               </div>
               <div class="flex flex-wrap gap-2">
                 <button class="btn btn-primary" :disabled="props.loading" @click="emit('importManual')">导入手动内容</button>
-                <button class="btn btn-outline" :disabled="props.loading || !hasCollectedProduct" @click="emit('generateCopy')">生成 AI 文案</button>
               </div>
             </div>
           </div>
@@ -397,17 +387,13 @@ function copyDiagnostics() {
               </label>
               <label class="mt-4 flex items-center gap-2 rounded-2xl bg-blue-50 px-3 py-2 ring-1 ring-blue-100 dark:bg-blue-500/10 dark:ring-blue-500/20">
                 <input v-model="props.form.autoAiRecognition" type="checkbox" class="size-4 rounded border-blue-200 text-brand-600 focus:ring-brand-500" />
-                <span class="text-sm font-medium text-blue-950 dark:text-blue-100">采集后提示进入 AI 文案</span>
+                <span class="text-sm font-medium text-blue-950 dark:text-blue-100">采集后提示检查商品库</span>
               </label>
             </div>
 
             <div class="rounded-2xl bg-white p-4 ring-1 ring-blue-100 dark:bg-dark-900/80 dark:ring-blue-500/20">
-              <div class="text-sm font-bold text-slate-950 dark:text-white">2. 认领到平台草稿</div>
-              <div class="mt-3 space-y-2 text-sm text-slate-700 dark:text-accent-200">
-                <label class="flex items-center gap-2"><input v-model="props.form.selectedClaimPlatforms" type="checkbox" value="mercadolibre" /> Mercado Libre</label>
-                <label class="flex items-center gap-2"><input v-model="props.form.selectedClaimPlatforms" type="checkbox" value="wildberries" /> Wildberries</label>
-                <label class="flex items-center gap-2"><input v-model="props.form.selectedClaimPlatforms" type="checkbox" value="ozon" /> Ozon</label>
-              </div>
+              <div class="text-sm font-bold text-slate-950 dark:text-white">2. 入库后处理</div>
+              <p class="mt-3 text-sm text-slate-700 dark:text-accent-200">采集完成后先在商品库检查文本和通用图片，再推到草稿箱生成独立草稿。</p>
             </div>
           </div>
 
@@ -467,14 +453,14 @@ function copyDiagnostics() {
               </label>
               <label class="flex items-end gap-2 rounded-2xl bg-slate-50 px-3 py-2 ring-1 ring-slate-200">
                 <input v-model="props.form.autoAiRecognition" type="checkbox" class="size-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500" />
-                <span class="text-sm font-medium text-slate-700">采集后提示进入 AI 文案</span>
+                <span class="text-sm font-medium text-slate-700">采集后提示检查商品库</span>
               </label>
             </div>
 
             <div class="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
               <button type="button" class="flex w-full items-center justify-between text-left" @click="advancedOpen = !advancedOpen">
                 <span>
-                  <span class="block text-sm font-semibold text-slate-950">高级选项：Cookie / 保存位置 / 认领平台</span>
+                  <span class="block text-sm font-semibold text-slate-950">高级选项：Cookie / 保存位置</span>
                   <span class="mt-1 block text-xs text-slate-500">只有遇到登录、验证码、反爬或需要保存默认配置时再展开。</span>
                 </span>
                 <span class="text-xl">{{ advancedOpen ? '−' : '+' }}</span>
@@ -484,20 +470,10 @@ function copyDiagnostics() {
                   <span class="text-xs font-semibold text-slate-500">1688 Cookie</span>
                   <textarea v-model="props.form.alibabaCookie" class="input mt-1 min-h-24 bg-white font-mono" placeholder="复制浏览器请求 Cookie" />
                 </label>
-                <div class="grid gap-4 lg:grid-cols-2">
-                  <label class="block">
-                    <span class="text-xs font-semibold text-slate-500">保存位置</span>
-                    <input v-model="props.form.outputDir" class="input mt-1 bg-white" placeholder="data/images/source" />
-                  </label>
-                  <div>
-                    <span class="text-xs font-semibold text-slate-500">认领到平台草稿</span>
-                    <div class="mt-2 flex flex-wrap gap-3 text-sm">
-                      <label class="flex items-center gap-2"><input v-model="props.form.selectedClaimPlatforms" type="checkbox" value="mercadolibre" /> Mercado Libre</label>
-                      <label class="flex items-center gap-2"><input v-model="props.form.selectedClaimPlatforms" type="checkbox" value="wildberries" /> Wildberries</label>
-                      <label class="flex items-center gap-2"><input v-model="props.form.selectedClaimPlatforms" type="checkbox" value="ozon" /> Ozon</label>
-                    </div>
-                  </div>
-                </div>
+                <label class="block">
+                  <span class="text-xs font-semibold text-slate-500">保存位置</span>
+                  <input v-model="props.form.outputDir" class="input mt-1 bg-white" placeholder="data/images/source" />
+                </label>
                 <button type="button" class="btn btn-outline" :disabled="props.loading" @click="emit('saveSettings')">保存 Cookie / 设置</button>
               </div>
             </div>

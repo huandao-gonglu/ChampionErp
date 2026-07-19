@@ -25,9 +25,9 @@ PostHandler = Callable[[JsonRequestHandler], None]
 logger = logging.getLogger(__name__)
 
 DEFAULT_COPY_LANGUAGE_BY_PLATFORM = {
-    "mercadolibre": "Spanish (Mexico)",
-    "wildberries": "Russian",
-    "ozon": "Russian",
+    "mercadolibre": "es",
+    "yandex": "ru-RU",
+    "ozon": "ru-RU",
 }
 
 

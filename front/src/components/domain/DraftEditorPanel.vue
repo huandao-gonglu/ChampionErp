@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { DraftDetail, DraftProductContext } from '@/types/workflow'
+import type { DraftDetail, DraftProductContext, MarketplaceOption } from '@/types/workflow'
 
 const props = defineProps<{
   draft: DraftDetail
   productContext: DraftProductContext
+  platformOptions: MarketplaceOption[]
   loading: boolean
 }>()
 
@@ -14,12 +15,6 @@ const emit = defineEmits<{
   close: []
 }>()
 
-const platformLabels = {
-  mercadolibre: 'Mercado Libre',
-  wildberries: 'Wildberries',
-  ozon: 'Ozon',
-}
-
 function listModel(getter: () => string[], setter: (value: string[]) => void) {
   return computed({
     get: () => getter().join('\n'),
@@ -28,27 +23,15 @@ function listModel(getter: () => string[], setter: (value: string[]) => void) {
 }
 
 const bulletsText = listModel(() => props.draft.bullets, (value) => { props.draft.bullets = value })
-const imagesText = listModel(() => props.draft.images, (value) => { props.draft.images = value })
-const attributesText = computed({
-  get: () => Object.entries(props.draft.attributes).map(([key, value]) => `${key}=${value}`).join('\n'),
-  set: (value: string) => {
-    props.draft.attributes = Object.fromEntries(
-      value
-        .split(/\n|,/)
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .map((line) => {
-          const index = line.indexOf('=')
-          if (index < 0) return [line, '']
-          return [line.slice(0, index).trim(), line.slice(index + 1).trim()]
-        })
-        .filter(([key]) => key),
-    )
-  },
-})
 
 const contextTitle = computed(() => props.productContext.sourceTitle || props.productContext.title || props.productContext.productId || '-')
 const canGenerateCopy = computed(() => Boolean(props.draft.productId || props.productContext.productId))
+const sourceProductId = computed(() => props.draft.sourceProductId || props.productContext.sourceProductId || props.productContext.productId || props.draft.productId)
+const platformLabel = computed(() => {
+  const platform = props.platformOptions.find((item) => item.key === props.draft.platform)
+  const site = platform?.sites.find((item) => item.code.toLowerCase() === props.draft.site.toLowerCase())
+  return site ? `${platform?.label} · ${site.label}（${site.code}）` : `${platform?.label || props.draft.platform} · ${props.draft.site || '-'}`
+})
 </script>
 
 <template>
@@ -56,8 +39,8 @@ const canGenerateCopy = computed(() => Boolean(props.draft.productId || props.pr
     <div class="rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div class="min-w-0">
-          <p class="text-xs font-semibold uppercase text-primary-600 dark:text-primary-300">{{ platformLabels[props.draft.platform] || props.draft.platform }}</p>
-          <h2 class="mt-2 text-xl font-black text-slate-950 dark:text-white">平台草稿编辑</h2>
+          <p class="text-xs font-semibold uppercase text-primary-600 dark:text-primary-300">{{ platformLabel }}</p>
+          <h2 class="mt-2 text-xl font-black text-slate-950 dark:text-white">草稿编辑</h2>
           <p class="mt-1 truncate text-sm text-accent-500 dark:text-accent-300" :title="props.draft.draftId">{{ props.draft.draftId || '未保存草稿' }}</p>
         </div>
         <div class="flex flex-wrap gap-2">
@@ -114,14 +97,6 @@ const canGenerateCopy = computed(() => Boolean(props.draft.productId || props.pr
             <span class="text-xs font-semibold text-slate-500">平台卖点，每行一个</span>
             <textarea v-model="bulletsText" class="input mt-1 min-h-28" />
           </label>
-          <label class="block">
-            <span class="text-xs font-semibold text-slate-500">草稿图片，每行一个</span>
-            <textarea v-model="imagesText" class="input mt-1 min-h-28 font-mono text-xs" />
-          </label>
-          <label class="block xl:col-span-2">
-            <span class="text-xs font-semibold text-slate-500">平台属性，格式 KEY=VALUE</span>
-            <textarea v-model="attributesText" class="input mt-1 min-h-28 font-mono text-xs" />
-          </label>
         </div>
       </section>
 
@@ -142,8 +117,8 @@ const canGenerateCopy = computed(() => Boolean(props.draft.productId || props.pr
               <dd class="mt-1 text-slate-800 dark:text-accent-100">{{ props.productContext.sourcePrice || props.productContext.cost || '-' }} {{ props.productContext.currency }} / {{ props.productContext.weightKg || '-' }} kg</dd>
             </div>
             <div>
-              <dt class="text-xs font-semibold text-accent-500 dark:text-accent-300">商品 ID</dt>
-              <dd class="mt-1 break-all font-mono text-xs text-slate-700 dark:text-accent-200">{{ props.productContext.productId || props.draft.productId || '-' }}</dd>
+              <dt class="text-xs font-semibold text-accent-500 dark:text-accent-300">来源商品 ID</dt>
+              <dd class="mt-1 break-all font-mono text-xs text-slate-700 dark:text-accent-200">{{ sourceProductId || '-' }}</dd>
             </div>
             <div>
               <dt class="text-xs font-semibold text-accent-500 dark:text-accent-300">来源链接</dt>

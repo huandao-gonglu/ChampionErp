@@ -37,11 +37,12 @@ This map exists to reduce context scanning for humans and coding agents.
 - Runtime unit modules under `erp_web/runtime_units/` use explicit imports. `runtime_common.py` only holds shared constants and legacy common dependencies; do not use it as a wildcard dependency source.
 - Publish and collection compatibility aggregators (`publish_runtime.py`, `source_collect.py`) use explicit export lists instead of wildcard imports.
 - Static assets and auth helper pages: `erp_web/http_route_units/static_routes.py`
-- Image upload and image pool API: `erp_web/http_route_units/image_routes.py`
+- Image upload and image pool API: `erp_web/http_route_units/image_routes.py`; image translation and image-to-image editing both flow through `erp_web/services/image_translate_service.py`, with `/api/image-edit` passing user prompt plus `source_image_ids` to the image provider.
 - Product collection workflows: `erp_web/runtime_units/source_collect_workflows.py`
 - Product persistence and index: `erp_web/runtime_units/product_store.py`. Product profile saves intentionally strip `drafts`; platform draft text/detail editing uses `load_draft_detail_from_index()` and `save_draft_detail()` so one `draft_id` updates one `platform_drafts` row.
 - Image pool pure helpers and display/read logic: `erp_web/runtime_units/image_pool_core.py`
 - Image pool persistence and product mutation actions: `erp_web/runtime_units/image_pool.py`
+- Draft image references are structured asset refs (`asset_id`, `role`, `order`) normalized by `erp_web/product_model/draft_image_model.py`; image files and metadata stay in product `source.image_pool`.
 - Copy generation: `erp_web/runtime_units/copy_generation.py`. Generated copy is saved through `save_draft_copy_result()` into one platform draft row and `/api/generate-copy` returns `draft`/`productContext` for independent draft editing.
 - Category cache and suggestions: `erp_web/runtime_units/category_store.py`, `erp_web/runtime_units/category_refresh.py`
 - Publish precheck and payloads: `erp_web/runtime_units/publish_validation.py`, `erp_web/runtime_units/publish_helpers.py`
@@ -55,7 +56,7 @@ This map exists to reduce context scanning for humans and coding agents.
 ## Data Shapes
 
 - Product and source fields: `erp_web/schemas/product.py`
-- Image pool items: `erp_web/schemas/image.py`
+- Image pool items and draft image refs: `erp_web/schemas/image.py`
 - Publish jobs: `erp_web/schemas/publish.py`
 - App/store config: `erp_web/schemas/config.py`
 - Product research search providers, target markets, temporary hot-product candidates, and run results: `erp_web/schemas/product_research.py`

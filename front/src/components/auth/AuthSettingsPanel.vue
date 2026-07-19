@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import ProductResearchSettingsPanel from '@/components/auth/ProductResearchSettingsPanel.vue'
-import type { AuthResult, Marketplace, MercadoLibreAuthChecklist, MercadoLibreTestMode, UnknownRecord } from '@/types/workflow'
+import type { AuthResult, Marketplace, MarketplaceOption, MercadoLibreAuthChecklist, MercadoLibreTestMode, UnknownRecord } from '@/types/workflow'
 
 const DEFAULT_ML_REDIRECT_URI = 'https://example.com/callback'
 
@@ -10,6 +10,7 @@ const props = defineProps<{
   aiConfig: UnknownRecord
   storeConfig: UnknownRecord
   storeAuthSummary: UnknownRecord
+  platformOptions: MarketplaceOption[]
   mercadolibreChecklist: MercadoLibreAuthChecklist | null
   lastResult: AuthResult | null
   authLink: string
@@ -61,8 +62,7 @@ const form = reactive({
   mlNotificationUrl: '',
   mlCode: '',
   mlCategoryId: '',
-  wbContentToken: '',
-  wbPricesToken: '',
+  yandexApiToken: '',
   ozonClientId: '',
   ozonApiKey: '',
 })
@@ -94,16 +94,16 @@ const capabilityProbeDialog = reactive({
   result: null as UnknownRecord | null,
 })
 
-const storePlatforms: Array<{ key: Marketplace; label: string; subtitle: string }> = [
-  { key: 'mercadolibre', label: 'Mercado Libre', subtitle: 'OAuth、授权链接、店铺授权测试' },
-  { key: 'wildberries', label: 'Wildberries', subtitle: 'Content / Prices API Token' },
-  { key: 'ozon', label: 'Ozon', subtitle: 'Client ID + API Key' },
-]
+const storePlatforms = computed(() => props.platformOptions.map((platform) => ({
+  key: platform.key,
+  label: platform.label,
+  subtitle: `${platform.sites.map((site) => `${site.label}（${site.code}）`).join('、')}共用同一套授权`,
+})))
 
 const authSettingsTabs: Array<{ key: AuthSettingsTab; label: string; summary: string }> = [
   { key: 'ai_models', label: 'AI 模型', summary: '配置模型、能力和连接测试' },
   { key: 'ai_bindings', label: '功能绑定', summary: '模型和功能 Prompt' },
-  { key: 'stores', label: '店铺授权', summary: 'Mercado Libre、Wildberries、Ozon' },
+  { key: 'stores', label: '店铺授权', summary: '按一级平台保存，子站点共用凭证' },
   { key: 'apis', label: '采集、核价与物流', summary: '汇率、1688 采集和云途物流 API' },
   { key: 'research', label: '调研来源', summary: '选品调研搜索手段和市场' },
 ]
@@ -370,7 +370,7 @@ function fillFromProps() {
   const alibabaApi = asRecord(props.appConfig['1688_api'])
   const yunexpress = asRecord(props.appConfig.yunexpress)
   const ml = asRecord(props.storeConfig.mercadolibre)
-  const wb = asRecord(props.storeConfig.wildberries)
+  const yandex = asRecord(props.storeConfig.yandex)
   const ozon = asRecord(props.storeConfig.ozon)
   const modelRows = Array.isArray(props.aiConfig.ai_models) ? props.aiConfig.ai_models : Array.isArray(props.appConfig.ai_models) ? props.appConfig.ai_models : []
   aiModels.value = modelRows.length ? modelRows.map((item, index) => normalizeAiModelRow(displayAiModelRecord(item), index)) : [defaultAiModelRow(0)]
@@ -403,8 +403,7 @@ function fillFromProps() {
   form.mlClientSecret = String(ml.client_secret || ml.app_secret || '')
   form.mlRedirectUri = String(ml.redirect_uri || DEFAULT_ML_REDIRECT_URI)
   form.mlNotificationUrl = String(ml.notification_url || ml.notifications_url || ml.webhook_url || '')
-  form.wbContentToken = String(wb.content_token || '')
-  form.wbPricesToken = String(wb.prices_token || '')
+  form.yandexApiToken = String(yandex.api_token || '')
   form.ozonClientId = String(ozon.client_id || '')
   form.ozonApiKey = String(ozon.api_key || '')
 }
@@ -1037,7 +1036,7 @@ watch(() => props.loading, (loading) => {
 function storePayload(): UnknownRecord {
   return {
     mercadolibre: { app_id: form.mlAppId, client_secret: form.mlClientSecret, app_secret: form.mlClientSecret, redirect_uri: form.mlRedirectUri, notification_url: form.mlNotificationUrl },
-    wildberries: { content_token: form.wbContentToken, prices_token: form.wbPricesToken },
+    yandex: { api_token: form.yandexApiToken },
     ozon: { client_id: form.ozonClientId, api_key: form.ozonApiKey },
   }
 }
@@ -1046,7 +1045,7 @@ function selectedStorePayload(): UnknownRecord {
   return { [selectedStorePlatform.value]: asRecord(storePayload()[selectedStorePlatform.value]) }
 }
 
-const selectedStorePlatformMeta = computed(() => storePlatforms.find((item) => item.key === selectedStorePlatform.value) || storePlatforms[0])
+const selectedStorePlatformMeta = computed(() => storePlatforms.value.find((item) => item.key === selectedStorePlatform.value) || storePlatforms.value[0])
 
 const selectedStoreSummary = computed(() => asRecord(props.storeAuthSummary[selectedStorePlatform.value]))
 
@@ -1436,14 +1435,12 @@ function handleYunexpressEnvironmentChange(value: string) {
               </div>
             </template>
 
-            <template v-else-if="selectedStorePlatform === 'wildberries'">
-              <input v-model="form.wbContentToken" type="password" class="input mt-3" placeholder="Content API Token" />
-              <input v-model="form.wbPricesToken" type="password" class="input mt-2" placeholder="Prices API Token，可选" />
+            <template v-else-if="selectedStorePlatform === 'yandex'">
+              <input v-model="form.yandexApiToken" type="password" class="input mt-3" placeholder="Yandex API Token" />
               <div class="mt-3 flex flex-wrap gap-2">
-                <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('testAuth', 'wildberries', 'content')">测试 Content</button>
-                <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('testAuth', 'wildberries', 'prices')">测试价格</button>
-                <button class="btn btn-outline py-1.5 text-rose-700" :disabled="props.loading" @click="emit('clearAuth', 'wildberries')">清除授权</button>
+                <button class="btn btn-outline py-1.5 text-rose-700" :disabled="props.loading" @click="emit('clearAuth', 'yandex')">清除授权</button>
               </div>
+              <p class="mt-2 text-xs text-accent-500">当前仅保存一级平台凭证；Yandex 在线授权校验将在接入对应 API 后启用。</p>
             </template>
 
             <template v-else>

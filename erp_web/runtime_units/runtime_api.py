@@ -155,8 +155,8 @@ def publish_product(product: dict[str, Any], platform: str, config: dict[str, An
             )
             saved = save_product(updated)
             return {"ok": False, "status": "real_publish_failed", "error": mapped["summary"], "error_map": mapped, "payload": payload, "product": saved}
-    elif platform == "wildberries":
-        result = {"ok": False, "status": "ready_for_real_publish", "message": "Wildberries 真实发布前，建议先确认授权与类目接口。当前保留本地预检与 payload。"}
+    elif platform == "yandex":
+        result = {"ok": False, "status": "ready_for_real_publish", "message": "Yandex 真实发布前，请先完成对应 API 的授权和类目接口接入。当前保留本地预检与 payload。"}
         status = "ready_for_real_publish"
     else:
         result = {"ok": False, "status": "ready_for_real_publish", "message": "Ozon 真实发布接口仍需真实授权验证。当前保留本地预检与 payload。"}

@@ -36,6 +36,7 @@ import {
   generateCopyBatch,
   generateImagePrompts,
   imagePoolAction,
+  imageEdit as imageEditApi,
   imageTranslate as imageTranslateApi,
   importManualProduct,
   loadDraft as loadDraftApi,
@@ -58,12 +59,12 @@ import {
   searchCategories,
   startCategoryCacheRefresh,
   suggestCategories,
-  syncGeneratedImages,
   testApiConfig,
   testAiModel,
   testStoreAuth,
   uploadImages,
 } from '@/api/workflow'
+import type { ImageEditOptions, ImageTranslateOptions } from '@/api/workflow'
 import { createDefaultCollectDiagnostics, createDefaultCollectForm, createDefaultPricingInput, createEmptyDraftDetail, createEmptyDraftProductContext, createEmptyProduct, marketplaces } from '@/constants/initialState'
 import { listingLanguageLabel } from '@/constants/locales'
 import { useAppStore } from '@/stores/app'
@@ -82,6 +83,8 @@ import type {
   DraftIndexItem,
   DraftProductContext,
   Marketplace,
+  MarketplaceOption,
+  MarketplaceTargetSite,
   MercadoLibreAuthChecklist,
   MercadoLibreOrderItem,
   MercadoLibreOrderNotification,
@@ -260,6 +263,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
   const mercadoLibreRemoteTotal = ref(0)
   const mercadoLibreRemoteTotalPages = ref(1)
   const activeMarketplace = ref<Marketplace>('mercadolibre')
+  const platformOptions = ref<MarketplaceOption[]>([])
   const logs = ref<string[]>(['等待读取后端状态。'])
   const appConfig = ref<UnknownRecord>({})
   const aiConfig = ref<UnknownRecord>({})
@@ -277,6 +281,35 @@ export const useWorkflowStore = defineStore('workflow', () => {
   const currentDraftProductContext = ref<DraftProductContext>(createEmptyDraftProductContext())
 
   const draft = computed(() => product.value.drafts[activeMarketplace.value])
+
+  function activeMarketplaceSite(): string {
+    const draftSite = String(product.value.drafts[activeMarketplace.value]?.site || '').trim()
+    if (draftSite) return draftSite
+    return platformOptions.value.find((option) => option.key === activeMarketplace.value)?.sites[0]?.code || ''
+  }
+
+  function targetKey(platform: Marketplace, site: string) {
+    return `${String(platform || '').trim().toLowerCase()}:${String(site || '').trim().toLowerCase()}`
+  }
+
+  function configuredTargetsForLanguage(language: string): MarketplaceTargetSite[] {
+    const selectedLanguage = String(language || '').trim().toLowerCase()
+    if (!selectedLanguage) return []
+    return platformOptions.value.flatMap((platform) => platform.sites
+      .filter((site) => String(site.language || '').trim().toLowerCase() === selectedLanguage)
+      .map((site) => ({ platform: platform.key, site: site.code, language: site.language, currency: site.currency })))
+  }
+
+  function configuredSelectedTargets(language: string, targets: MarketplaceTargetSite[]): MarketplaceTargetSite[] {
+    const configuredTargets = configuredTargetsForLanguage(language)
+    const selectedKeys = new Set(targets.map((target) => targetKey(target.platform, target.site)).filter(Boolean))
+    return configuredTargets.filter((target) => selectedKeys.has(targetKey(target.platform, target.site)))
+  }
+
+  function targetPlatforms(targets: MarketplaceTargetSite[]): Marketplace[] {
+    return Array.from(new Set(targets.map((target) => target.platform).filter(Boolean)))
+  }
+
   const imagePool = computed(() => product.value.source.imagePool)
   const selectedImages = computed(() => imagePool.value.filter((image) => image.selected))
   const selectedProducts = computed(() => productsIndex.value.filter((item) => selectedProductIds.value.includes(item.productId)))
@@ -288,7 +321,9 @@ export const useWorkflowStore = defineStore('workflow', () => {
     return {
       ...sourceDraft,
       productId: sourceProduct.productId,
+      sourceProductId: sourceProduct.productId,
       platform,
+      platforms: sourceDraft.platforms.length ? sourceDraft.platforms : [platform],
       site: String(rawDraft.site || rawDraft.site_id || ''),
       createdAt: String(rawDraft.created_at || ''),
       updatedAt: String(rawDraft.updated_at || ''),
@@ -314,7 +349,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     const flags = [hasCollected, hasLibrary, hasCopy, hasImages, hasEdit, hasPrice, hasCategory, hasPrecheck, hasPublished]
     return [
       ['collect', '采集商品', '链接、Cookie、浏览器标签、手动导入'],
-      ['library', '商品库', 'SQLite 本地商品库和批量认领'],
+      ['library', '商品库', 'SQLite 本地商品库和草稿复制'],
       ['copy', 'AI 文案', '生成目标平台标题、描述、卖点'],
       ['images', '图片处理', '上传、图片池、图片翻译'],
       ['edit', '商品编辑', '基础信息、SKU、UPC、库存'],
@@ -435,6 +470,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
       restorePrecheckFromProduct()
       productsIndex.value = state.productsIndex
       draftsIndex.value = state.draftsIndex || []
+      platformOptions.value = state.platformOptions
       publishLogs.value = state.publishLogs
       appConfig.value = state.appConfig
       storeConfig.value = state.storeConfig
@@ -707,7 +743,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
       const result = await loadDraftApi(item.draftId)
       currentDraft.value = result.draft
       currentDraftProductContext.value = result.productContext
-      activeMarketplace.value = item.platform
+      activeMarketplace.value = result.draft.platform
       applyMutationIndexes(result)
       addLog(`已加载草稿：${item.title || item.productTitle || item.draftId}`)
     } catch (exc) {
@@ -715,6 +751,81 @@ export const useWorkflowStore = defineStore('workflow', () => {
     } finally {
       loading.value = false
     }
+  }
+
+  async function updateDraftTargets(item: DraftIndexItem, targets: MarketplaceTargetSite[]) {
+    const draftId = String(item.draftId || '').trim()
+    if (!draftId) {
+      setError('草稿缺少 ID，无法保存站点。')
+      return
+    }
+    const expectedLanguage = String(targets[0]?.language || item.language || '').trim()
+    if (!expectedLanguage) {
+      setError('请先选择草稿语言。')
+      return
+    }
+    const configuredTargets = configuredTargetsForLanguage(expectedLanguage)
+    if (!configuredTargets.length) {
+      setError('当前语言没有配置可发布站点。')
+      return
+    }
+    const validTargets = configuredSelectedTargets(expectedLanguage, targets)
+    if (!validTargets.length) {
+      setError('请选择来自市场配置且与草稿语言匹配的站点。')
+      return
+    }
+    const primaryTarget = validTargets[0]
+    const platforms = targetPlatforms(validTargets)
+    const previousDraftsIndex = draftsIndex.value
+    draftsIndex.value = draftsIndex.value.map((draft) => (
+      draft.draftId === draftId
+        ? { ...draft, platform: primaryTarget.platform, site: primaryTarget.site, language: primaryTarget.language, platforms, targetSites: validTargets }
+        : draft
+    ))
+    loading.value = true
+    setError('')
+    try {
+      const loaded = currentDraft.value.draftId === draftId
+        ? { draft: currentDraft.value, productContext: currentDraftProductContext.value }
+        : await loadDraftApi(draftId)
+      const draftToSave: DraftDetail = {
+        ...loaded.draft,
+        platform: primaryTarget.platform,
+        platforms,
+        targetSites: validTargets,
+        site: primaryTarget.site,
+        language: primaryTarget.language,
+        currency: primaryTarget.currency,
+      }
+      const result = await saveDraftApi(draftToSave)
+      if (currentDraft.value.draftId === draftId) {
+        currentDraft.value = result.draft
+        currentDraftProductContext.value = result.productContext
+        activeMarketplace.value = result.draft.platform
+      }
+      applyMutationIndexes(result)
+      addLog(`草稿目标市场已更新：${validTargets.map((target) => `${target.platform} · ${target.site}`).join('、')}。`)
+    } catch (exc) {
+      draftsIndex.value = previousDraftsIndex
+      setError(exc instanceof Error ? exc.message : '更新草稿站点失败')
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function updateDraftLanguage(item: DraftIndexItem, language: string) {
+    const selectedLanguage = String(language || '').trim()
+    if (!selectedLanguage) {
+      setError('请选择草稿语言。')
+      return
+    }
+    const matchingTargets = configuredTargetsForLanguage(selectedLanguage)
+    if (!matchingTargets.length) {
+      setError('当前语言没有配置可发布站点。')
+      return
+    }
+    const existingTargets = configuredSelectedTargets(selectedLanguage, item.targetSites || [])
+    await updateDraftTargets(item, existingTargets.length ? existingTargets : matchingTargets.slice(0, 1))
   }
 
   async function deleteDraftsByIds(draftIds: string[], items: DraftIndexItem[] = []) {
@@ -829,11 +940,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
     return marketplaces.filter((platform) => values.includes(platform))
   }
 
-  function claimTargetPlatforms() {
-    const selected = normalizeClaimPlatforms(collectForm.value.selectedClaimPlatforms)
-    return selected.length ? selected : [activeMarketplace.value]
-  }
-
   function setClaimPlatforms(values: Marketplace[]) {
     const selected = normalizeClaimPlatforms(values)
     collectForm.value.selectedClaimPlatforms = selected.length ? selected : [activeMarketplace.value]
@@ -852,14 +958,14 @@ export const useWorkflowStore = defineStore('workflow', () => {
     loading.value = true
     setError('')
     try {
-      const platforms = claimTargetPlatforms()
-      await claimProductsApi(ids, platforms)
+      const platform = activeMarketplace.value
+      await claimProductsApi(ids, platform)
       productsIndex.value = await fetchProductsIndex()
       draftsIndex.value = await fetchDraftsIndex()
-      addLog(`已认领 ${ids.length} 个商品到 ${platforms.join('、')} 平台草稿。`)
+      addLog(`已推送 ${ids.length} 个商品到草稿箱。`)
       return true
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '认领商品失败')
+      setError(exc instanceof Error ? exc.message : '推到草稿箱失败')
       return false
     } finally {
       loading.value = false
@@ -875,16 +981,16 @@ export const useWorkflowStore = defineStore('workflow', () => {
     loading.value = true
     setError('')
     try {
-      const platforms = claimTargetPlatforms()
-      await claimProductsApi([id], platforms)
+      const platform = activeMarketplace.value
+      await claimProductsApi([id], platform)
       const loaded = await loadProductApi(id, '')
       product.value = loaded.product
       productsIndex.value = await fetchProductsIndex()
       draftsIndex.value = await fetchDraftsIndex()
-      addLog(`已推到 ${platforms.join('、')} 平台草稿箱。`)
+      addLog('已推到草稿箱。')
       return true
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '推到平台草稿箱失败')
+      setError(exc instanceof Error ? exc.message : '推到草稿箱失败')
       return false
     } finally {
       loading.value = false
@@ -1028,16 +1134,25 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
-  async function syncGeneratedImagePool() {
+  async function editImagesWithPrompt(prompt: string, options: ImageEditOptions = {}) {
+    const userPrompt = String(prompt || '').trim()
+    if (!userPrompt) {
+      setError('请输入图生图提示词')
+      return
+    }
     loading.value = true
     setError('')
     try {
-      const result = await syncGeneratedImages(product.value)
+      const result = await imageEditApi(product.value, activeMarketplace.value, userPrompt, options)
       product.value = result.product
-      if (result.productsIndex.length) productsIndex.value = result.productsIndex
-      addLog('已同步生成图到当前商品图片池。')
+      if (result.draft) currentDraft.value = result.draft
+      if (result.productContext) currentDraftProductContext.value = result.productContext
+      applyMutationIndexes(result)
+      currentStage.value = 3
+      const generatedCount = Number(result.raw?.generated_count || 0)
+      addLog(`图生图完成${generatedCount ? `：新增 ${generatedCount} 张图片` : ''}。${result.message ? `提示：${result.message}` : ''}`)
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '同步生成图失败')
+      setError(exc instanceof Error ? exc.message : '图生图失败')
     } finally {
       loading.value = false
     }
@@ -1144,14 +1259,17 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
-  async function translateImages(targetLanguage?: string) {
+  async function translateImages(targetLanguage?: string, options: ImageTranslateOptions = {}) {
     loading.value = true
     setError('')
     try {
       const language = String(targetLanguage || product.value.drafts[activeMarketplace.value]?.language || listingLanguageLabel(activeMarketplace.value)).trim()
-      const result = await imageTranslateApi(product.value, activeMarketplace.value, language)
+      const result = await imageTranslateApi(product.value, activeMarketplace.value, language, options)
       product.value = result.product
+      if (result.draft) currentDraft.value = result.draft
+      if (result.productContext) currentDraftProductContext.value = result.productContext
       if (result.productsIndex.length) productsIndex.value = result.productsIndex
+      if (result.draftsIndex) draftsIndex.value = result.draftsIndex
       currentStage.value = 3
       addLog(`图片翻译/重绘完成：${language}。${result.message ? `提示：${result.message}` : ''}`)
     } catch (exc) {
@@ -1195,7 +1313,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     loading.value = true
     setError('')
     try {
-      const result = await searchCategories(activeMarketplace.value, categoryQuery.value)
+      const result = await searchCategories(activeMarketplace.value, categoryQuery.value, activeMarketplaceSite())
       categoryResults.value = result.results
       categoryResultTranslations.value = {}
       categoryResultTranslationsSource.value = ''
@@ -1219,7 +1337,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     loading.value = true
     setError('')
     try {
-      const result = await suggestCategories(product.value, activeMarketplace.value)
+      const result = await suggestCategories(product.value, activeMarketplace.value, activeMarketplaceSite())
       categoryResults.value = result.results
       categoryResultTranslations.value = {}
       categoryResultTranslationsSource.value = ''
@@ -1372,7 +1490,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     loading.value = true
     setError('')
     try {
-      let job = await startCategoryCacheRefresh(activeMarketplace.value)
+      let job = await startCategoryCacheRefresh(activeMarketplace.value, activeMarketplaceSite())
       categoryCacheStatus.value = job
       addLog(`类目缓存刷新已启动：${job.job_id || job.jobId || ''}`)
       const jobId = String(job.job_id || job.jobId || '')
@@ -1803,6 +1921,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
   function setMarketplace(value: Marketplace) {
     if (marketplaces.includes(value)) {
       activeMarketplace.value = value
+      setMarketplaceSite(activeMarketplaceSite())
       categoryAttributeTranslationEnabled.value = false
       categoryAttributeTranslations.value = {}
       categoryAttributeTranslationsSource.value = ''
@@ -1811,6 +1930,17 @@ export const useWorkflowStore = defineStore('workflow', () => {
       restoreCategoryFromProduct()
       restorePrecheckFromProduct()
     }
+  }
+
+  function setMarketplaceSite(site: string) {
+    const draft = product.value.drafts[activeMarketplace.value]
+    const selected = platformOptions.value
+      .find((option) => option.key === activeMarketplace.value)
+      ?.sites.find((item) => item.code.toLowerCase() === String(site || '').trim().toLowerCase())
+    if (!draft || !selected) return
+    draft.site = selected.code
+    draft.language = selected.language
+    draft.currency = selected.currency
   }
 
   return {
@@ -1854,6 +1984,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     mercadoLibreRemoteTotal,
     mercadoLibreRemoteTotalPages,
     activeMarketplace,
+    platformOptions,
     logs,
     appConfig,
     aiConfig,
@@ -1890,6 +2021,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
     refreshDraftsIndex,
     loadProduct,
     loadDraft,
+    updateDraftTargets,
+    updateDraftLanguage,
     deleteDraft,
     deleteDrafts,
     deleteProduct,
@@ -1906,7 +2039,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     saveCurrentImagePool,
     setMainImage,
     deleteImages,
-    syncGeneratedImagePool,
+    editImagesWithPrompt,
     saveCurrentProduct,
     saveCurrentDraft,
     assignUpc,
@@ -1948,5 +2081,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
     exchangeMlCode,
     clearPlatformAuth,
     setMarketplace,
+    setMarketplaceSite,
   }
 })

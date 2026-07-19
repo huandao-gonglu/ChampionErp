@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 from erp_web.product_model import (
-    PLATFORMS,
     SOURCE_COMPAT_IMAGE_ORIGINS,
     image_pool_legacy_views,
     normalize_image_pool,
@@ -222,7 +221,7 @@ def current_image_pool(prod: dict[str, Any]) -> list[dict[str, Any]]:
                 "preview_url": str(file_item.get("url") or file_item.get("path") or ""),
                 "origin": "ai_generated",
                 "usage": "scene",
-                "platforms": list(PLATFORMS),
+                "platforms": [],
                 "is_main": False,
                 "selected": False,
                 "order": len(normalized),
@@ -243,7 +242,7 @@ def image_pool_refs_for_platform(prod: dict[str, Any], platform: str) -> list[st
     pool = _source_pool_items(prod)
     if not pool:
         return []
-    if platform not in {"mercadolibre", "wildberries", "ozon"}:
+    if platform not in {"mercadolibre", "yandex", "ozon"}:
         return [str(item.get("url") or item.get("path") or item.get("preview_url") or "").strip() for item in pool if str(item.get("url") or item.get("path") or item.get("preview_url") or "").strip()]
     platform_items = [
         item

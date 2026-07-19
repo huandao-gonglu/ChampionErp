@@ -26,6 +26,7 @@ from ..runtime_units.publish_adapter import PUBLISHING_BUS
 from ..runtime_units.runtime_api import html_page
 from ..runtime_units.runtime_common import APP_DIR, BROWSER_DEBUG_PORT, OUTPUT_DIR
 from ..runtime_units.source_collect_browser import browser_debug_status
+from ..marketplace_registry import marketplace_options
 
 APP_MODULE = app
 GetHandler = Callable[[JsonRequestHandler, object], None]
@@ -99,6 +100,7 @@ def handle_state(handler: JsonRequestHandler, parsed: object) -> None:
             "mercadolibreOrderNotifications": load_mercadolibre_order_notifications(),
             "productsIndex": load_products_index(),
             "draftsIndex": load_drafts_index(),
+            "platformOptions": marketplace_options(),
             "outputDir": str(OUTPUT_DIR),
         }
     )

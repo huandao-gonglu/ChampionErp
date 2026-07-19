@@ -69,9 +69,9 @@ def test_failed_collect_without_images_clears_stale_collect_pool_but_keeps_local
         "source_image_urls": [r"D:\champion-Erp\output\source_images\old.jpg"],
         "sku_items": [{"id": "0", "image": r"D:\champion-Erp\output\source_images\old.jpg"}],
         "drafts": {
-            "mercadolibre": {"enabled": True, "images": [r"D:\champion-Erp\output\source_images\old.jpg"]},
-            "wildberries": {"enabled": True, "images": [r"D:\champion-Erp\output\source_images\old.jpg"]},
-            "ozon": {"enabled": True, "images": [r"D:\champion-Erp\output\source_images\old.jpg"]},
+            "mercadolibre": {"enabled": True, "images": [{"asset_id": "old-source", "role": "main", "order": 0}]},
+            "yandex": {"enabled": True, "images": [{"asset_id": "old-source", "role": "main", "order": 0}]},
+            "ozon": {"enabled": True, "images": [{"asset_id": "old-source", "role": "main", "order": 0}]},
         },
     }
 
@@ -88,5 +88,5 @@ def test_failed_collect_without_images_clears_stale_collect_pool_but_keeps_local
     assert merged["source_image_urls"] == []
     assert merged["sku_items"][0]["image"] == ""
     assert merged["drafts"]["mercadolibre"]["images"] == []
-    assert merged["drafts"]["wildberries"]["images"] == []
+    assert merged["drafts"]["yandex"]["images"] == []
     assert merged["drafts"]["ozon"]["images"] == []

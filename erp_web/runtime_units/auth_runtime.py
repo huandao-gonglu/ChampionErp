@@ -177,7 +177,7 @@ def exchange_mercadolibre_code_from_body(body: dict[str, Any]) -> dict[str, Any]
     ml["app_secret"] = app_secret
     ml["client_secret"] = app_secret
     ml["redirect_uri"] = redirect_uri
-    ml["site_id"] = str(body.get("site_id") or ml.get("site_id") or "MLM").strip() or "MLM"
+    ml["site_id"] = str(body.get("site_id") or ml.get("site_id") or "CBT").strip() or "CBT"
     try:
         result = publisher.exchange_mercadolibre_code(app_id, app_secret, redirect_uri, code_or_url, code_verifier)
         token = str(result.get("access_token") or "").strip()
@@ -278,22 +278,8 @@ def test_store_auth(platform: str, scope: str = "") -> dict[str, Any]:
             store.update(_store_auth_result_fields("mercadolibre", "测试成功", name or token))
             store["auth_error_code"] = ""
             store["auth_error_message"] = ""
-        elif platform == "wildberries":
-            wb = config.setdefault("wildberries", {})
-            token_key = {
-                "content": "content_token",
-                "prices": "prices_token",
-                "stocks": "stocks_token",
-                "marketplace": "marketplace_token",
-            }.get(scope, "content_token")
-            token = str(wb.get(token_key) or wb.get("content_token") or "").strip()
-            if not token:
-                raise RuntimeError("请先填写 Wildberries Token。")
-            name = publisher.fetch_wildberries_shop_name(token)
-            wb["shop_name"] = name or wb.get("shop_name", "")
-            wb.update(_store_auth_result_fields("wildberries", "测试成功", name or mask_secret(token)))
-            wb["auth_error_code"] = ""
-            wb["auth_error_message"] = ""
+        elif platform == "yandex":
+            raise RuntimeError("Yandex 授权已支持保存；在线校验需在接入对应 API 后启用。")
         elif platform == "ozon":
             ozon = config.get("ozon", {})
             client_id = str(ozon.get("client_id") or "").strip()

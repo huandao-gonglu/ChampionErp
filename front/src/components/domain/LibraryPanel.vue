@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { Marketplace, ProductIndexItem } from '@/types/workflow'
+import type { ProductIndexItem } from '@/types/workflow'
 
 const props = defineProps<{
   items: ProductIndexItem[]
   selectedIds: string[]
-  claimPlatforms: Marketplace[]
   loading: boolean
   error?: string
 }>()
@@ -18,28 +17,16 @@ const emit = defineEmits<{
   selectAll: [checked: boolean, productIds: string[]]
   deleteItem: [item: ProductIndexItem]
   deleteSelected: []
-  setClaimPlatforms: [value: Marketplace[]]
   claim: []
-  generateCopy: []
-  generateImagePrompt: []
-  publishSelected: []
-  goPublish: []
 }>()
 
-const platforms: Array<{ key: Marketplace; label: string }> = [
-  { key: 'mercadolibre', label: 'Mercado Libre' },
-  { key: 'wildberries', label: 'Wildberries' },
-  { key: 'ozon', label: 'Ozon' },
-]
-const platformFilter = ref<'all' | Marketplace>('all')
 const workflowFilter = ref('all')
 const doneStatuses = new Set(['done', 'success', 'ready', 'ready_to_publish', 'published', 'completed', 'true', 'real_publish_success'])
 
 const filteredItems = computed(() => props.items.filter((item) => {
-  const platformOk = platformFilter.value === 'all' || item.platforms.includes(platformFilter.value)
-  const workflowOk = workflowFilter.value === 'all'
-    || (workflowFilter.value === 'ready_to_publish' ? item.workflowStatus === 'ready_to_publish' : item.workflowStatus !== 'ready_to_publish')
-  return platformOk && workflowOk
+  if (workflowFilter.value === 'all') return true
+  if (workflowFilter.value === 'collected') return item.collectStatus === 'success' || item.collectStatus === 'collected'
+  return item.collectStatus !== 'success' && item.collectStatus !== 'collected'
 }))
 
 const allChecked = computed(() => filteredItems.value.length > 0 && filteredItems.value.every((item) => props.selectedIds.includes(item.productId)))
@@ -53,13 +40,6 @@ function confirmDelete(item: ProductIndexItem) {
 function confirmDeleteSelected() {
   if (!selectedCount.value) return
   if (window.confirm(`确认批量删除已勾选的 ${selectedCount.value} 个商品吗？删除后不可恢复。`)) emit('deleteSelected')
-}
-
-function setClaimPlatform(platform: Marketplace, checked: boolean) {
-  const next = checked
-    ? Array.from(new Set([...props.claimPlatforms, platform]))
-    : props.claimPlatforms.filter((item) => item !== platform)
-  emit('setClaimPlatforms', platforms.filter((item) => next.includes(item.key)).map((item) => item.key))
 }
 
 function statusClass(value: string) {
@@ -76,25 +56,17 @@ function statusClass(value: string) {
     <div class="flex flex-wrap items-start justify-between gap-4">
       <div class="min-w-0">
         <p class="text-xs font-semibold uppercase text-primary-600 dark:text-primary-300">商品库</p>
-        <h2 class="mt-2 card-title">商品库 / 平台采集箱</h2>
-        <p class="muted mt-1">来自后端 SQLite 商品母库，可批量认领、生成文案、生图任务包和发布。</p>
+        <h2 class="mt-2 card-title">商品母库</h2>
+        <p class="muted mt-1">保存采集后的商品事实、供应链字段和通用图片；发布相关内容进入草稿箱后再编辑。</p>
       </div>
-      <div class="grid w-full gap-3 sm:grid-cols-2 lg:w-auto">
-        <select v-model="platformFilter" class="input sm:w-48">
-          <option value="all">全部平台</option>
-          <option value="mercadolibre">Mercado Libre</option>
-          <option value="wildberries">Wildberries</option>
-          <option value="ozon">Ozon</option>
-        </select>
-        <select v-model="workflowFilter" class="input sm:w-44">
-          <option value="all">全部流程</option>
-          <option value="ready_to_publish">仅看校验通过</option>
-          <option value="not_ready">未校验通过</option>
-        </select>
-      </div>
+      <select v-model="workflowFilter" class="input w-full sm:w-44">
+        <option value="all">全部商品</option>
+        <option value="collected">已采集</option>
+        <option value="not_collected">待补全</option>
+      </select>
     </div>
 
-    <div v-if="props.error" class="rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm font-medium text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200">
+    <div v-if="props.error" class="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm font-medium text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200">
       {{ props.error }}
     </div>
 
@@ -107,59 +79,31 @@ function statusClass(value: string) {
         </div>
         <div class="flex flex-wrap gap-2">
           <button class="btn btn-outline py-2" :disabled="props.loading" @click="emit('refresh')">刷新商品库</button>
-          <button class="btn btn-outline py-2" @click="emit('goPublish')">发布预检</button>
+          <button class="btn btn-secondary py-2" :disabled="props.loading || !selectedCount" @click="emit('claim')">推到草稿箱</button>
+          <button class="btn btn-outline py-2 text-rose-700 dark:text-rose-200" :disabled="props.loading || !selectedCount" @click="confirmDeleteSelected">批量删除</button>
         </div>
-      </div>
-
-      <div class="mt-4 flex flex-wrap items-center gap-2 text-sm">
-        <div class="flex flex-wrap items-center gap-2 rounded-lg border border-accent-200 bg-white px-3 py-2 dark:border-dark-700 dark:bg-dark-900">
-          <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">认领目标</span>
-          <label v-for="platform in platforms" :key="platform.key" class="inline-flex items-center gap-1.5 whitespace-nowrap text-xs font-semibold text-accent-700 dark:text-accent-200">
-            <input class="size-4 rounded border-accent-300 text-primary-600" type="checkbox" :checked="props.claimPlatforms.includes(platform.key)" :disabled="props.loading" @change="setClaimPlatform(platform.key, ($event.target as HTMLInputElement).checked)" />
-            {{ platform.label }}
-          </label>
-        </div>
-        <button class="btn btn-secondary" :disabled="props.loading" @click="emit('claim')">批量认领到平台草稿箱</button>
-        <button class="btn btn-primary" :disabled="props.loading" @click="emit('generateCopy')">批量 AI 生成标题描述</button>
-        <button class="btn btn-secondary" :disabled="props.loading" @click="emit('generateImagePrompt')">生成 GPT 生图任务包</button>
-        <button class="btn btn-primary" :disabled="props.loading || !selectedCount" @click="emit('publishSelected')">已选通过项入队</button>
-        <button class="btn btn-outline text-rose-700 dark:text-rose-200" :disabled="props.loading || !selectedCount" @click="confirmDeleteSelected">批量删除选中</button>
       </div>
     </div>
 
     <div class="mt-5 overflow-hidden rounded-lg border border-accent-200 dark:border-dark-700">
       <table class="w-full table-fixed text-left text-sm">
         <colgroup>
-          <col class="w-[4%]" />
-          <col class="w-[6%]" />
+          <col class="w-[5%]" />
+          <col class="w-[8%]" />
+          <col class="w-[18%]" />
+          <col class="w-[33%]" />
+          <col class="w-[9%]" />
           <col class="w-[12%]" />
-          <col class="w-[17%]" />
-          <col class="w-[4.5%]" />
-          <col class="w-[4.5%]" />
-          <col class="w-[5.5%]" />
-          <col class="w-[4.5%]" />
-          <col class="w-[4.5%]" />
-          <col class="w-[4.5%]" />
-          <col class="w-[4.5%]" />
-          <col class="w-[4.5%]" />
-          <col class="w-[4.5%]" />
-          <col class="w-[19.5%]" />
+          <col class="w-[15%]" />
         </colgroup>
         <thead class="border-b border-accent-200 bg-accent-50 text-xs text-accent-500 dark:border-dark-700 dark:bg-dark-950/70 dark:text-accent-400">
           <tr>
             <th class="p-2"><input class="size-4 rounded border-accent-300 text-primary-600" type="checkbox" aria-label="全选当前商品" :checked="allChecked" :disabled="props.loading || !filteredItems.length" @change="emit('selectAll', ($event.target as HTMLInputElement).checked, filteredItems.map((item) => item.productId))" /></th>
             <th class="p-2">主图</th>
             <th class="p-3">来源</th>
-            <th class="p-3">标题 / 平台草稿箱</th>
-            <th class="px-1.5 py-3"><span class="block truncate" title="采集">采集</span></th>
-            <th class="px-1.5 py-3"><span class="block truncate" title="流程">流程</span></th>
-            <th class="px-1.5 py-3"><span class="block truncate" title="AI 文案">AI 文案</span></th>
-            <th class="px-1.5 py-3"><span class="block truncate" title="生图">生图</span></th>
-            <th class="px-1.5 py-3"><span class="block truncate" title="类目">类目</span></th>
-            <th class="px-1.5 py-3"><span class="block truncate" title="属性">属性</span></th>
-            <th class="px-1.5 py-3"><span class="block truncate" title="价格">价格</span></th>
-            <th class="px-1.5 py-3"><span class="block truncate" title="预检">预检</span></th>
-            <th class="px-1.5 py-3"><span class="block truncate" title="发布">发布</span></th>
+            <th class="p-3">商品标题</th>
+            <th class="p-3">采集</th>
+            <th class="p-3">更新时间</th>
             <th class="p-3">操作</th>
           </tr>
         </thead>
@@ -176,17 +120,10 @@ function statusClass(value: string) {
             </td>
             <td class="min-w-0 p-3">
               <div class="truncate font-semibold text-accent-950 dark:text-white" :title="item.title || '-'">{{ item.title || '-' }}</div>
-              <div class="mt-2 flex flex-wrap gap-1.5"><span v-for="platform in item.platforms" :key="platform" class="badge-muted max-w-full truncate" :title="platform">{{ platform }}</span></div>
+              <div class="mt-1 truncate font-mono text-xs text-accent-500 dark:text-accent-400" :title="item.productId">{{ item.productId }}</div>
             </td>
-            <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.collectStatus)" :title="item.collectStatus || '-'">{{ item.collectStatus || '-' }}</span></td>
-            <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.workflowStatus)" :title="item.workflowStatus || '-'">{{ item.workflowStatus || '-' }}</span></td>
-            <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.aiCopyStatus)" :title="item.aiCopyStatus || '-'">{{ item.aiCopyStatus || '-' }}</span></td>
-            <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.imageStatus)" :title="item.imageStatus || '-'">{{ item.imageStatus || '-' }}</span></td>
-            <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.categoryStatus)" :title="item.categoryStatus || '-'">{{ item.categoryStatus || '-' }}</span></td>
-            <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.attributesStatus)" :title="item.attributesStatus || '-'">{{ item.attributesStatus || '-' }}</span></td>
-            <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.pricingStatus)" :title="item.pricingStatus || '-'">{{ item.pricingStatus || '-' }}</span></td>
-            <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(String(item.precheckStatus))" :title="String(item.precheckStatus || '-')">{{ item.precheckStatus || '-' }}</span></td>
-            <td class="px-1.5 py-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.publishStatus)" :title="item.publishStatus || '-'">{{ item.publishStatus || '-' }}</span></td>
+            <td class="p-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.collectStatus)" :title="item.collectStatus || '-'">{{ item.collectStatus || '-' }}</span></td>
+            <td class="p-3 text-xs text-accent-500 dark:text-accent-300"><span class="block truncate" :title="item.updatedAt || item.createdAt">{{ item.updatedAt || item.createdAt || '-' }}</span></td>
             <td class="p-3">
               <div class="flex flex-wrap gap-2">
                 <button class="btn btn-outline whitespace-nowrap px-3 py-1.5 text-xs" :disabled="props.loading" @click="emit('load', item)">编辑文本</button>
@@ -195,7 +132,7 @@ function statusClass(value: string) {
               </div>
             </td>
           </tr>
-          <tr v-if="!filteredItems.length"><td class="p-6 text-center text-accent-500 dark:text-accent-300" colspan="14">当前筛选下暂无商品。可在采集页手动导入或采集后自动加入商品库。</td></tr>
+          <tr v-if="!filteredItems.length"><td class="p-6 text-center text-accent-500 dark:text-accent-300" colspan="7">当前筛选下暂无商品。可在采集页导入或采集商品后加入商品库。</td></tr>
         </tbody>
       </table>
     </div>

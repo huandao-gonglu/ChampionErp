@@ -23,4 +23,18 @@ class ImageItem(TypedDict, total=False):
     sort_order: int
     sku: str
     note: str
+    derived_from_id: str
+    target_language: str
+    provider: str
+    translate_job_id: str
     raw: dict[str, Any]
+
+
+class DraftImageRef(TypedDict, total=False):
+    asset_id: str
+    role: str
+    order: int
+    label: str
+    note: str
+    alt_text: str
+    source_asset_id: str

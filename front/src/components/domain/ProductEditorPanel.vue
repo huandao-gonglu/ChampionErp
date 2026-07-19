@@ -10,9 +10,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   save: []
   assignUpc: []
-  goPricing: []
-  goImages: []
-  goPublish: []
 }>()
 
 function listModel(getter: () => string[], setter: (value: string[]) => void) {
@@ -55,13 +52,6 @@ const materialsText = listModel(() => props.product.materials, (value) => { prop
       <label class="block"><span class="text-xs font-semibold text-slate-500">库存</span><input v-model="props.product.stock" class="input mt-1" /></label>
       <label class="block"><span class="text-xs font-semibold text-slate-500">UPC</span><input v-model="props.product.upc" class="input mt-1" /></label>
       <label class="block"><span class="text-xs font-semibold text-slate-500">采购成本</span><input v-model="props.product.cost" class="input mt-1" /></label>
-    </div>
-
-    <div class="mt-5 grid gap-3 md:grid-cols-4">
-      <button class="rounded-2xl border bg-slate-50 p-4 text-left hover:bg-slate-100" @click="emit('goPublish')"><div class="font-semibold">类目 / 必填属性</div><div class="mt-1 text-xs text-slate-500">搜索、选择、AI 填充属性</div></button>
-      <button class="rounded-2xl border bg-slate-50 p-4 text-left hover:bg-slate-100" @click="emit('goPricing')"><div class="font-semibold">价格 / 净收益</div><div class="mt-1 text-xs text-slate-500">计算建议售价</div></button>
-      <button class="rounded-2xl border bg-slate-50 p-4 text-left hover:bg-slate-100" @click="emit('goImages')"><div class="font-semibold">图片区</div><div class="mt-1 text-xs text-slate-500">全选、上传、翻译图</div></button>
-      <button class="rounded-2xl border bg-slate-50 p-4 text-left hover:bg-slate-100" @click="emit('goPublish')"><div class="font-semibold">保存 / 发布预检</div><div class="mt-1 text-xs text-slate-500">生成 payload 并校验</div></button>
     </div>
 
     <div class="mt-5 grid gap-4 xl:grid-cols-2">

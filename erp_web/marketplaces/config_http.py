@@ -30,15 +30,11 @@ def load_store_config(path: Path) -> dict[str, Any]:
             "refresh_token": "",
             "redirect_uri": "",
             "category_id": "",
-            "site_id": "MLM",
+            "site_id": "CBT",
             "shop_name": "",
         },
-        "wildberries": {
-            "content_token": "",
-            "prices_token": "",
-            "marketplace_token": "",
-            "stocks_token": "",
-            "subject_id": "",
+        "yandex": {
+            "api_token": "",
             "shop_name": "",
             "auth_status": "",
             "auth_checked_at": "",
@@ -61,7 +57,7 @@ def load_store_config(path: Path) -> dict[str, Any]:
         },
         "listing": {
             "mercadolibre_price": "",
-            "wildberries_price": "",
+            "yandex_price": "",
             "ozon_price": "",
             "stock": "10",
             "sku": "",

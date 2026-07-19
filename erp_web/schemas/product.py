@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, TypedDict
 
-from .image import ImageItem
+from .image import DraftImageRef, ImageItem
 
 
 class ProductSource(TypedDict, total=False):
@@ -14,7 +14,7 @@ class ProductSource(TypedDict, total=False):
     description: str
     bullets: list[str]
     attributes: dict[str, Any]
-    images: list[str]
+    images: list[DraftImageRef]
     image_pool: list[ImageItem]
     created_at: str
 

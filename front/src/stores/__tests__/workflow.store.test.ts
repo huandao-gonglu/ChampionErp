@@ -1,10 +1,10 @@
 import { setActivePinia, createPinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createEmptyProduct } from '@/constants/initialState'
+import { createEmptyDraftDetail, createEmptyDraftProductContext, createEmptyProduct } from '@/constants/initialState'
 import { useWorkflowStore } from '@/stores/workflow'
 import * as workflowApi from '@/api/workflow'
-import type { AppStateResponse, ProductMutationResponse } from '@/api/workflow'
-import type { Product } from '@/types/workflow'
+import type { AppStateResponse, DraftMutationResponse, ProductMutationResponse } from '@/api/workflow'
+import type { DraftDetail, DraftIndexItem, Product } from '@/types/workflow'
 
 vi.mock('@/api/workflow', () => ({
   fetchState: vi.fn(),
@@ -14,6 +14,7 @@ vi.mock('@/api/workflow', () => ({
   saveCollectSettings: vi.fn(),
   uploadImages: vi.fn(),
   generateCopy: vi.fn(),
+  imageEdit: vi.fn(),
   imageTranslate: vi.fn(),
   calculatePrice: vi.fn(),
   publishPrecheck: vi.fn(),
@@ -51,7 +52,6 @@ vi.mock('@/api/workflow', () => ({
   confirmMercadoLibreRealPublish: vi.fn(),
   publishProductDirect: vi.fn(),
   deleteProducts: vi.fn(),
-  syncGeneratedImages: vi.fn(),
   clean1688Text: vi.fn(),
   saveImagePool: vi.fn(),
   diagnosticsToCollectDiagnostics: vi.fn(),
@@ -59,6 +59,9 @@ vi.mock('@/api/workflow', () => ({
   collectBatch: vi.fn(),
   claimProducts: vi.fn(),
   assignUpc: vi.fn(),
+  loadDraft: vi.fn(),
+  saveDraft: vi.fn(),
+  deleteDraft: vi.fn(),
 }))
 
 function collectedProduct(): Product {
@@ -94,6 +97,17 @@ function mutation(product: Product): ProductMutationResponse {
   return { ok: true, product, imagePool: product.source.imagePool, productsIndex: [] }
 }
 
+function draftMutation(draft: DraftDetail, draftsIndex: DraftIndexItem[] = []): DraftMutationResponse {
+  return {
+    ok: true,
+    draft,
+    productContext: createEmptyDraftProductContext(),
+    productsIndex: [],
+    draftsIndex,
+    raw: {},
+  }
+}
+
 describe('workflow store live API flow', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -118,6 +132,7 @@ describe('workflow store live API flow', () => {
       storeConfig: {},
       storeAuthSummary: {},
       outputDir: '',
+      platformOptions: [],
       productsIndex: [],
       publishLogs: [],
     } satisfies AppStateResponse)
@@ -189,20 +204,19 @@ describe('workflow store live API flow', () => {
     expect(workflowApi.fetchMercadoLibreAuthChecklist).toHaveBeenCalledOnce()
   })
 
-  it('claims selected products to configured target platforms', async () => {
+  it('copies selected products to the draft box for the active platform', async () => {
     vi.mocked(workflowApi.claimProducts).mockResolvedValue({ ok: true })
     vi.mocked(workflowApi.fetchProductsIndex).mockResolvedValue([])
     vi.mocked(workflowApi.fetchDraftsIndex).mockResolvedValue([])
 
     const store = useWorkflowStore()
     store.selectedProductIds = ['product-1', 'product-2']
-    store.setClaimPlatforms(['mercadolibre', 'ozon'])
     await store.claimSelectedProducts()
 
-    expect(workflowApi.claimProducts).toHaveBeenCalledWith(['product-1', 'product-2'], ['mercadolibre', 'ozon'])
+    expect(workflowApi.claimProducts).toHaveBeenCalledWith(['product-1', 'product-2'], 'mercadolibre')
   })
 
-  it('pushes the current product to configured target platforms', async () => {
+  it('pushes the current product to the draft box for the active platform', async () => {
     const product = collectedProduct()
     vi.mocked(workflowApi.claimProducts).mockResolvedValue({ ok: true })
     vi.mocked(workflowApi.loadProduct).mockResolvedValue(mutation(product))
@@ -211,9 +225,135 @@ describe('workflow store live API flow', () => {
 
     const store = useWorkflowStore()
     store.product = product
-    store.setClaimPlatforms(['wildberries', 'ozon'])
+    store.setMarketplace('yandex')
     await store.claimCurrentProduct()
 
-    expect(workflowApi.claimProducts).toHaveBeenCalledWith(['real-product-1'], ['wildberries', 'ozon'])
+    expect(workflowApi.claimProducts).toHaveBeenCalledWith(['real-product-1'], 'yandex')
+  })
+
+  it('updates one draft to a selected secondary site', async () => {
+    const draft = createEmptyDraftDetail('mercadolibre')
+    draft.draftId = 'draft-1'
+    draft.productId = 'product-1'
+    draft.sourceProductId = 'product-1'
+    draft.title = 'Draft title'
+    draft.platform = 'yandex'
+    draft.platforms = ['yandex']
+    draft.site = 'global'
+    draft.language = 'ru-RU'
+    draft.currency = 'RUB'
+    draft.targetSites = [{ platform: 'yandex', site: 'global', language: 'ru-RU', currency: 'RUB' }]
+    const item: DraftIndexItem = {
+      draftId: 'draft-1',
+      productId: 'product-1',
+      sourceProductId: 'product-1',
+      platform: 'yandex',
+      platforms: ['yandex'],
+      targetSites: [{ platform: 'yandex', site: 'global', language: 'ru-RU', currency: 'RUB' }],
+      site: 'global',
+      language: 'ru-RU',
+      status: 'claimed',
+      title: 'Draft title',
+      productTitle: 'Source title',
+      mainImage: '',
+      sourcePlatform: '1688',
+      sourceUrl: 'https://example.com/source',
+      categoryId: '',
+      categoryPath: '',
+      price: '',
+      publishStatus: '',
+      createdAt: '',
+      updatedAt: '',
+      productFilePath: '',
+      raw: {},
+    }
+    const savedTargets = [{ platform: 'yandex', site: 'global', language: 'ru-RU', currency: 'RUB' }, { platform: 'ozon', site: 'global', language: 'ru-RU', currency: 'RUB' }]
+    const savedDraft = { ...draft, platforms: ['yandex', 'ozon'], targetSites: savedTargets }
+    const sibling = { ...item, draftId: 'draft-2', title: 'Sibling draft', platforms: ['yandex'] as DraftIndexItem['platforms'] }
+    const savedIndex = [{ ...item, targetSites: savedDraft.targetSites, site: savedDraft.site, platforms: savedDraft.platforms }, sibling]
+    vi.mocked(workflowApi.loadDraft).mockResolvedValue(draftMutation(draft, [item, sibling]))
+    vi.mocked(workflowApi.saveDraft).mockResolvedValue(draftMutation(savedDraft, savedIndex))
+
+    const store = useWorkflowStore()
+    store.platformOptions = [
+      { key: 'yandex', label: 'Yandex', sites: [{ key: 'global', code: 'global', label: '俄罗斯', language: 'ru-RU', currency: 'RUB' }] },
+      { key: 'ozon', label: 'Ozon', sites: [{ key: 'global', code: 'global', label: '俄罗斯', language: 'ru-RU', currency: 'RUB' }] },
+    ]
+    await store.updateDraftTargets(item, savedTargets)
+
+    expect(workflowApi.saveDraft).toHaveBeenCalledWith(expect.objectContaining({
+      draftId: 'draft-1',
+      platform: 'yandex',
+      platforms: ['yandex', 'ozon'],
+      site: 'global',
+      language: 'ru-RU',
+      currency: 'RUB',
+      targetSites: savedTargets,
+    }))
+    expect(store.currentDraft.draftId).toBe('')
+    expect(store.draftsIndex[0].targetSites).toEqual(savedTargets)
+    expect(store.draftsIndex[0].platforms).toEqual(['yandex', 'ozon'])
+    expect(store.draftsIndex[1].platforms).toEqual(['yandex'])
+  })
+
+  it('updates draft language from configured target market languages only', async () => {
+    const draft = createEmptyDraftDetail('mercadolibre')
+    draft.draftId = 'draft-1'
+    draft.productId = 'product-1'
+    draft.sourceProductId = 'product-1'
+    draft.platform = 'yandex'
+    draft.platforms = ['yandex']
+    draft.site = 'global'
+    draft.language = 'ru-RU'
+    draft.currency = 'RUB'
+    draft.targetSites = [{ platform: 'yandex', site: 'global', language: 'ru-RU', currency: 'RUB' }]
+    const item: DraftIndexItem = {
+      draftId: 'draft-1',
+      productId: 'product-1',
+      sourceProductId: 'product-1',
+      platform: 'yandex',
+      platforms: ['yandex'],
+      targetSites: [{ platform: 'yandex', site: 'global', language: 'ru-RU', currency: 'RUB' }],
+      site: 'global',
+      language: 'ru-RU',
+      status: 'claimed',
+      title: 'Draft title',
+      productTitle: 'Source title',
+      mainImage: '',
+      sourcePlatform: '1688',
+      sourceUrl: 'https://example.com/source',
+      categoryId: '',
+      categoryPath: '',
+      price: '',
+      publishStatus: '',
+      createdAt: '',
+      updatedAt: '',
+      productFilePath: '',
+      raw: {},
+    }
+    const selectedTarget = { platform: 'mercadolibre', site: 'CBT', language: 'es', currency: 'USD' }
+    const savedDraft = { ...draft, platform: 'mercadolibre', platforms: ['mercadolibre'], site: 'CBT', language: 'es', currency: 'USD', targetSites: [selectedTarget] }
+    vi.mocked(workflowApi.loadDraft).mockResolvedValue(draftMutation(draft, [item]))
+    vi.mocked(workflowApi.saveDraft).mockResolvedValue(draftMutation(savedDraft, [{ ...item, ...savedDraft }]))
+
+    const store = useWorkflowStore()
+    store.platformOptions = [
+      { key: 'mercadolibre', label: '美客多', sites: [
+        { key: 'CBT', code: 'CBT', label: '全局', language: 'es', currency: 'USD' },
+        { key: 'MLB', code: 'MLB', label: '巴西', language: 'pt-BR', currency: 'BRL' },
+      ] },
+      { key: 'yandex', label: 'Yandex', sites: [{ key: 'global', code: 'global', label: '俄罗斯', language: 'ru-RU', currency: 'RUB' }] },
+    ]
+    await store.updateDraftLanguage(item, 'es')
+
+    expect(workflowApi.saveDraft).toHaveBeenCalledWith(expect.objectContaining({
+      draftId: 'draft-1',
+      platform: 'mercadolibre',
+      platforms: ['mercadolibre'],
+      site: 'CBT',
+      language: 'es',
+      currency: 'USD',
+      targetSites: [selectedTarget],
+    }))
   })
 })

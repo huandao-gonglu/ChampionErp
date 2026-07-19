@@ -21,15 +21,15 @@ class ProjectPublishingAdapter:
         if not category_id:
             if platform == "mercadolibre":
                 category_id = str(product.get("category_id") or config.get("mercadolibre", {}).get("category_id") or "").strip()
-            elif platform == "wildberries":
-                category_id = str(product.get("wb_subject_id") or config.get("wildberries", {}).get("subject_id") or "").strip()
+            elif platform == "yandex":
+                category_id = str(product.get("yandex_category_id") or config.get("yandex", {}).get("category_id") or "").strip()
             elif platform == "ozon":
                 category_id = str(product.get("ozon_category_id") or config.get("ozon", {}).get("category_id") or "").strip()
         if category_id:
             if platform == "mercadolibre":
                 product["category_id"] = category_id
-            elif platform == "wildberries":
-                product["wb_subject_id"] = category_id
+            elif platform == "yandex":
+                product["yandex_category_id"] = category_id
             elif platform == "ozon":
                 product["ozon_category_id"] = category_id
         return product
@@ -45,7 +45,7 @@ PUBLISHING_BUS = PublishingBus(
     PUBLISHING_JOB_DIR,
     adapters={
         "mercadolibre": ProjectPublishingAdapter(),
-        "wildberries": ProjectPublishingAdapter(),
+        "yandex": ProjectPublishingAdapter(),
         "ozon": ProjectPublishingAdapter(),
     },
 )

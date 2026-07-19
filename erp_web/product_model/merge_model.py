@@ -3,8 +3,11 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from erp_web.marketplace_registry import marketplace_site
+
 from .common import PLATFORMS, SOURCE_COMPAT_IMAGE_ORIGINS, normalize_list, parse_dimensions_text, text_or_empty
 from .defaults import default_collect_diagnostics, default_draft, default_pricing, default_product_model, default_source
+from .draft_image_model import normalize_draft_image_refs
 from .image_pool_model import image_pool_legacy_views, normalize_image_pool
 
 def _merge_source(product: dict[str, Any]) -> dict[str, Any]:
@@ -75,31 +78,25 @@ def _draft_sources(product: dict[str, Any], platform: str) -> dict[str, Any]:
 def _apply_source_mappings_to_draft(product: dict[str, Any], platform: str, current: dict[str, Any]) -> dict[str, Any]:
     source = product.get("source") if isinstance(product.get("source"), dict) else {}
     current = deepcopy(current if isinstance(current, dict) else default_draft(platform))
+    local_categories = product.get("local_platform_categories") if isinstance(product.get("local_platform_categories"), dict) else {}
+    selected = local_categories.get(platform) if isinstance(local_categories.get(platform), dict) else {}
+    site_config = marketplace_site(platform, str(current.get("site") or selected.get("site") or ""))
 
     if platform == "mercadolibre":
-        local_categories = product.get("local_platform_categories") if isinstance(product.get("local_platform_categories"), dict) else {}
-        selected = local_categories.get(platform) if isinstance(local_categories.get(platform), dict) else {}
         current["category_id"] = str(current.get("category_id") or selected.get("category_id") or product.get("category_id") or "").strip()
         current["category_path"] = str(current.get("category_path") or selected.get("category_path") or product.get("category_path") or "").strip()
-        current["language"] = str(current.get("language") or product.get("marketplace_terms", {}).get("mercadolibre", {}).get("language") or "es-MX").strip()
-        current["site"] = str(current.get("site") or selected.get("site") or "MLM").strip()
-        current["country"] = str(current.get("country") or selected.get("country") or "MX").strip()
-    elif platform == "wildberries":
-        local_categories = product.get("local_platform_categories") if isinstance(product.get("local_platform_categories"), dict) else {}
-        selected = local_categories.get(platform) if isinstance(local_categories.get(platform), dict) else {}
-        current["category_id"] = str(current.get("category_id") or selected.get("category_id") or product.get("wb_subject_id") or "").strip()
+    elif platform == "yandex":
         current["category_path"] = str(current.get("category_path") or selected.get("category_path") or product.get("category_path") or "").strip()
-        current["language"] = str(current.get("language") or product.get("marketplace_terms", {}).get("wildberries", {}).get("language") or "ru-RU").strip()
-        current["site"] = str(current.get("site") or selected.get("site") or "WB").strip()
-        current["country"] = str(current.get("country") or selected.get("country") or "RU").strip()
+        current["category_id"] = str(current.get("category_id") or selected.get("category_id") or "").strip()
     elif platform == "ozon":
-        local_categories = product.get("local_platform_categories") if isinstance(product.get("local_platform_categories"), dict) else {}
-        selected = local_categories.get(platform) if isinstance(local_categories.get(platform), dict) else {}
         current["category_id"] = str(current.get("category_id") or selected.get("category_id") or product.get("ozon_category_id") or "").strip()
         current["category_path"] = str(current.get("category_path") or selected.get("category_path") or product.get("category_path") or "").strip()
-        current["language"] = str(current.get("language") or "ru-RU").strip()
-        current["site"] = str(current.get("site") or selected.get("site") or "OZON").strip()
-        current["country"] = str(current.get("country") or selected.get("country") or "RU").strip()
+
+    if site_config["code"]:
+        current["site"] = site_config["code"]
+        current["language"] = str(current.get("language") or product.get("marketplace_terms", {}).get(platform, {}).get("language") or site_config["language"]).strip()
+        current["currency"] = str(current.get("currency") or site_config["currency"]).strip()
+        current["country"] = str(current.get("country") or site_config["label"]).strip()
 
     current["brand"] = str(current.get("brand") or product.get("brand") or source.get("brand") or "Generic").strip() or "Generic"
     current["model"] = str(current.get("model") or product.get("model") or source.get("model") or "General").strip() or "General"
@@ -123,8 +120,15 @@ def _apply_source_mappings_to_draft(product: dict[str, Any], platform: str, curr
 
 def _merge_platform_draft(product: dict[str, Any], platform: str) -> dict[str, Any]:
     current = _apply_source_mappings_to_draft(product, platform, _draft_sources(product, platform))
+    platform_values = []
+    for item in normalize_list(current.get("platforms")):
+        value = str(item or "").strip().lower()
+        if value in PLATFORMS and value not in platform_values:
+            platform_values.append(value)
+    current["platform"] = platform
+    current["platforms"] = platform_values or [platform]
     current["enabled"] = bool(current.get("enabled", True))
-    current["images"] = normalize_list(current.get("images") or product.get("source_image_urls") or product.get("detail_image_urls"))
+    current["images"] = normalize_draft_image_refs(current.get("images"))
     current["bullets"] = normalize_list(current.get("bullets"))
     current["search_terms"] = normalize_list(current.get("search_terms"))
     current["publish_logs"] = deepcopy(current.get("publish_logs") or [])
@@ -219,7 +223,13 @@ def merge_source_partial_result(
                 kept_pool.append(deepcopy(item))
         source["image_pool"] = kept_pool
         source["images"] = []
-        kept_refs = {
+        kept_asset_ids = {
+            asset_id
+            for item in kept_pool
+            for asset_id in [text_or_empty(item.get("id") or item.get("asset_id"))]
+            if asset_id
+        }
+        kept_image_refs = {
             ref
             for item in kept_pool
             for ref in [text_or_empty(item.get("url") or item.get("path") or item.get("preview_url"))]
@@ -229,9 +239,13 @@ def merge_source_partial_result(
         for draft in drafts.values():
             if not isinstance(draft, dict):
                 continue
-            draft["images"] = [ref for ref in normalize_list(draft.get("images")) if ref in kept_refs] if kept_refs else []
+            draft["images"] = [
+                ref
+                for ref in normalize_draft_image_refs(draft.get("images"))
+                if text_or_empty(ref.get("asset_id")) in kept_asset_ids
+            ] if kept_asset_ids else []
         for sku_item in normalized.get("sku_items") if isinstance(normalized.get("sku_items"), list) else []:
-            if isinstance(sku_item, dict) and text_or_empty(sku_item.get("image")) not in kept_refs:
+            if isinstance(sku_item, dict) and text_or_empty(sku_item.get("image")) not in kept_image_refs:
                 sku_item["image"] = ""
         for field in ["source_images", "source_image_urls", "detail_images", "detail_image_urls"]:
             normalized[field] = []
@@ -316,7 +330,7 @@ def normalize_product_model(product: dict[str, Any] | None) -> dict[str, Any]:
         normalized["source"]["collect_diagnostics"] = _merge_collect_diagnostics(default_collect_diagnostics(), normalized["source"].get("collect_diagnostics"))
 
     normalized["category_id"] = str(normalized.get("category_id") or normalized["drafts"]["mercadolibre"].get("category_id") or "").strip()
-    normalized["wb_subject_id"] = str(normalized.get("wb_subject_id") or normalized["drafts"]["wildberries"].get("category_id") or "").strip()
+    normalized["yandex_category_id"] = str(normalized.get("yandex_category_id") or normalized["drafts"]["yandex"].get("category_id") or "").strip()
     normalized["ozon_category_id"] = str(normalized.get("ozon_category_id") or normalized["drafts"]["ozon"].get("category_id") or "").strip()
 
     return normalized

@@ -1,11 +1,15 @@
 import type { CollectDiagnostics, CollectForm, DraftDetail, DraftProductContext, Marketplace, MarketplaceDraft, PricingInput, Product } from '@/types/workflow'
 import { listingLanguageLabel } from '@/constants/locales'
 
-export const marketplaces: Marketplace[] = ['mercadolibre', 'wildberries', 'ozon']
+export const marketplaces: Marketplace[] = ['mercadolibre', 'yandex', 'ozon']
 
-export function createEmptyDraft(language = ''): MarketplaceDraft {
+export function createEmptyDraft(language = '', site = '', currency = ''): MarketplaceDraft {
   return {
     draftId: '',
+    platforms: [],
+    targetSites: [],
+    site,
+    currency,
     enabled: true,
     title: '',
     description: '',
@@ -65,9 +69,9 @@ export function createEmptyProduct(): Product {
       collectDiagnostics: {},
     },
     drafts: {
-      mercadolibre: createEmptyDraft(listingLanguageLabel('mercadolibre')),
-      wildberries: createEmptyDraft(listingLanguageLabel('wildberries')),
-      ozon: createEmptyDraft(listingLanguageLabel('ozon')),
+      mercadolibre: createEmptyDraft(listingLanguageLabel('mercadolibre'), 'CBT', 'USD'),
+      yandex: createEmptyDraft(listingLanguageLabel('yandex'), 'global', 'RUB'),
+      ozon: createEmptyDraft(listingLanguageLabel('ozon'), 'global', 'RUB'),
     },
     raw: {},
   }
@@ -77,7 +81,9 @@ export function createEmptyDraftDetail(platform: Marketplace = 'mercadolibre'): 
   return {
     ...createEmptyDraft(listingLanguageLabel(platform)),
     productId: '',
+    sourceProductId: '',
     platform,
+    platforms: [platform],
     site: '',
     createdAt: '',
     updatedAt: '',
@@ -88,6 +94,7 @@ export function createEmptyDraftDetail(platform: Marketplace = 'mercadolibre'): 
 export function createEmptyDraftProductContext(): DraftProductContext {
   return {
     productId: '',
+    sourceProductId: '',
     title: '',
     sourceTitle: '',
     sourcePlatform: '',
@@ -158,7 +165,7 @@ export function createDefaultCollectDiagnostics(): CollectDiagnostics {
 export function createDefaultPricingInput(): PricingInput {
   return {
     platform: 'mercadolibre',
-    site: 'MLM',
+    site: 'CBT',
     purchaseCostCny: 0,
     domesticFreightCny: 0,
     weightKg: 0,

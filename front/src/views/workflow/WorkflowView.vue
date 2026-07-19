@@ -65,6 +65,7 @@ const {
   mercadoLibreRemoteTotalPages,
   publishResult,
   activeMarketplace,
+  platformOptions,
   logs,
   appConfig,
   aiConfig,
@@ -73,7 +74,6 @@ const {
   mercadolibreAuthChecklist,
   lastAuthResult,
   authLink,
-  imagePrompt,
   currentDraft,
   currentDraftProductContext,
   workflowSteps,
@@ -91,6 +91,10 @@ const activeNav = ref('dashboard')
 const editorOpen = ref(false)
 const draftEditorOpen = ref(false)
 const editorMode = ref<'text' | 'images'>('text')
+const editorContext = ref<'product' | 'draftImage'>('product')
+const imageEditorTitle = ref('商品库图片编辑')
+const imageEditorDraftId = ref('')
+const imageEditorTargetLanguage = ref('')
 const navItems = workflowNavItems
 const pathNavMap: Record<string, string> = {
   '/': 'dashboard',
@@ -153,6 +157,10 @@ function setMarketplace(value: Marketplace) {
 async function openProductEditor(item?: ProductIndexItem, mode: 'text' | 'images' = 'text') {
   if (item) await store.loadProduct(item)
   editorMode.value = mode
+  editorContext.value = 'product'
+  imageEditorTitle.value = '商品库图片编辑'
+  imageEditorDraftId.value = ''
+  imageEditorTargetLanguage.value = ''
   editorOpen.value = true
 }
 
@@ -161,18 +169,17 @@ async function openProductImageEditor(item?: ProductIndexItem) {
 }
 
 function productIndexFromDraft(item: DraftIndexItem): ProductIndexItem {
+  const platforms = [item.platform]
   return {
-    productId: item.productId,
+    productId: item.sourceProductId || item.productId,
     title: item.productTitle || item.title,
     mainImage: item.mainImage,
     sourcePlatform: item.sourcePlatform,
     sourceUrl: item.sourceUrl,
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
-    platforms: [item.platform],
-    draftStatuses: {
-      [item.platform]: item.status as ProductIndexItem['draftStatuses'][Marketplace],
-    },
+    platforms,
+    draftStatuses: Object.fromEntries(platforms.map((platform) => [platform, item.status])) as ProductIndexItem['draftStatuses'],
     productFilePath: item.productFilePath,
     collectStatus: '',
     workflowStatus: '',
@@ -196,10 +203,40 @@ async function openDraftEditor(item: DraftIndexItem) {
 }
 
 async function openDraftImageEditor(item: DraftIndexItem) {
+  draftEditorOpen.value = false
   store.setMarketplace(item.platform)
+  await store.loadDraft(item)
   await store.loadProduct(productIndexFromDraft(item))
   editorMode.value = 'images'
+  editorContext.value = 'draftImage'
+  imageEditorTitle.value = '草稿图片编辑'
+  imageEditorDraftId.value = item.draftId
+  imageEditorTargetLanguage.value = item.language
   editorOpen.value = true
+}
+
+async function translateEditorImages() {
+  if (editorContext.value === 'draftImage') {
+    await store.translateImages(imageEditorTargetLanguage.value, {
+      draftId: imageEditorDraftId.value,
+      applyToDraft: true,
+      draftImageStrategy: 'replace_selected',
+    })
+    return
+  }
+  await store.translateImages()
+}
+
+async function editEditorImages(prompt: string) {
+  if (editorContext.value === 'draftImage') {
+    await store.editImagesWithPrompt(prompt, {
+      draftId: imageEditorDraftId.value,
+      applyToDraft: true,
+      draftImageStrategy: 'append',
+    })
+    return
+  }
+  await store.editImagesWithPrompt(prompt)
 }
 
 async function openDraftPrecheck(item: DraftIndexItem) {
@@ -229,6 +266,8 @@ async function openProductPrecheck(item: ProductIndexItem, platform: Marketplace
 
 function closeProductEditor() {
   editorOpen.value = false
+  imageEditorDraftId.value = ''
+  imageEditorTargetLanguage.value = ''
 }
 
 function closeDraftEditor() {
@@ -369,7 +408,6 @@ watch(
             @open-profile="store.openDebugProfile"
             @clear-product="store.clearCollectedProduct"
             @save-settings="store.saveCollectSettings"
-            @generate-copy="store.generateCopy"
             @import-manual="store.importManual"
             @clean1688="store.previewClean1688Text"
           />
@@ -378,7 +416,6 @@ watch(
             v-else-if="activeNav === 'library'"
             :items="productsIndex"
             :selected-ids="selectedProductIds"
-            :claim-platforms="collectForm.selectedClaimPlatforms"
             :loading="loading"
             :error="error"
             @refresh="store.refreshProductsIndex"
@@ -388,26 +425,24 @@ watch(
             @delete-selected="store.deleteSelectedProducts"
             @toggle="store.toggleProductSelection"
             @select-all="store.selectAllProducts"
-            @set-claim-platforms="store.setClaimPlatforms"
             @claim="claimSelectedAndOpenDrafts"
-            @generate-copy="store.generateCopyForSelectedProducts"
-            @generate-image-prompt="store.generateImagePromptPack"
-            @publish-selected="store.enqueueSelectedProducts"
-            @go-publish="navigate('category')"
           />
 
           <div v-else-if="activeNav === 'drafts'" class="space-y-6">
-            <PageHeader title="草稿箱" description="来自商品库的平台编辑稿，聚焦未发布完成的文案、图片、类目和发布预检。" />
+            <PageHeader title="草稿箱" description="从商品库复制出的独立编辑稿，来源商品只作为关联和参考。" />
             <DraftBoxPanel
               :drafts="draftsIndex"
+              :platform-options="platformOptions"
               :loading="loading"
               :error="error"
               @refresh="store.refreshDraftsIndex"
+              @update-language="store.updateDraftLanguage"
               @edit-text="openDraftEditor"
               @edit-images="openDraftImageEditor"
               @go-publish="openDraftPrecheck"
               @delete-draft="deleteDraft"
               @delete-drafts="deleteDrafts"
+              @update-targets="store.updateDraftTargets"
             />
           </div>
 
@@ -421,7 +456,8 @@ watch(
                 :product-id="product.productId"
                 :product-title="product.source.title || product.name || product.productId"
                 :source-platform="product.source.sourcePlatform"
-                :draft-price="product.drafts.mercadolibre.price"
+                :draft-price="product.drafts[activeMarketplace].price"
+                :platform-options="platformOptions"
                 :loading="loading"
                 @calculate="store.calculatePrice"
                 @select-product="selectPricingProduct"
@@ -437,6 +473,7 @@ watch(
             <CategoryPrecheckPanel
               :product="product"
               :active-marketplace="activeMarketplace"
+              :platform-options="platformOptions"
               :claim-platforms="collectForm.selectedClaimPlatforms"
               :category="category"
               :category-query="categoryQuery"
@@ -456,6 +493,7 @@ watch(
               :loading="loading"
               @update-category-query="categoryQuery = $event"
               @set-marketplace="setMarketplace"
+              @set-marketplace-site="store.setMarketplaceSite"
               @set-claim-platforms="store.setClaimPlatforms"
               @search-category="store.searchCategory"
               @suggest-category="store.suggestCategoryByAi"
@@ -558,6 +596,7 @@ watch(
             :ai-config="aiConfig"
             :store-config="storeConfig"
             :store-auth-summary="storeAuthSummary"
+            :platform-options="platformOptions"
             :mercadolibre-checklist="mercadolibreAuthChecklist"
             :last-result="lastAuthResult"
             :auth-link="authLink"
@@ -604,13 +643,13 @@ watch(
       <div class="w-full rounded-3xl bg-white p-4 shadow-2xl ring-1 ring-slate-200 dark:bg-dark-900 dark:ring-dark-700 sm:p-6" :class="editorMode === 'images' ? 'max-w-7xl' : 'max-w-6xl'">
         <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 class="text-xl font-black text-slate-950 dark:text-white">{{ editorMode === 'images' ? '商品图片编辑' : '商品文本编辑' }}</h2>
+            <h2 class="text-xl font-black text-slate-950 dark:text-white">{{ editorMode === 'images' ? imageEditorTitle : '商品文本编辑' }}</h2>
           </div>
           <div class="flex flex-wrap gap-2">
             <button class="btn btn-outline" :disabled="!product.productId" :title="product.productId || '当前商品暂无 ID'" @click="copyProductId">
               {{ productIdCopied ? '已复制' : '复制id' }}
             </button>
-            <button class="btn btn-outline" :class="editorMode === 'text' ? 'bg-slate-100' : ''" @click="editorMode = 'text'">编辑文本</button>
+            <button v-if="editorContext === 'product'" class="btn btn-outline" :class="editorMode === 'text' ? 'bg-slate-100' : ''" @click="editorMode = 'text'">编辑文本</button>
             <button class="btn btn-outline" :class="editorMode === 'images' ? 'bg-slate-100' : ''" @click="editorMode = 'images'">编辑图片</button>
             <button class="btn btn-outline" @click="closeProductEditor">关闭</button>
           </div>
@@ -621,24 +660,21 @@ watch(
           :loading="loading"
           @save="store.saveCurrentProduct"
           @assign-upc="store.assignUpc"
-          @go-pricing="navigate('pricing'); closeProductEditor()"
-          @go-images="editorMode = 'images'"
-          @go-publish="navigate('category'); closeProductEditor()"
         />
         <ProductImageEditorPanel
           v-else
+          :title="imageEditorTitle"
           :product="product"
-          :active-marketplace="activeMarketplace"
-          :image-prompt="imagePrompt"
           :images="imagePool"
           :loading="loading"
           :error="error"
-          @set-marketplace="setMarketplace"
-          @generate-prompt="store.generateImagePromptPack"
-          @translate="store.translateImages"
+          :show-translate-action="editorContext === 'draftImage'"
+          :draft="editorContext === 'draftImage' ? currentDraft : undefined"
+          @translate="translateEditorImages"
+          @image-edit="editEditorImages"
           @upload="store.uploadReferenceImages"
-          @sync-generated="store.syncGeneratedImagePool"
           @save="store.saveCurrentImagePool"
+          @save-draft-images="store.saveCurrentDraft"
           @set-main="store.setMainImage"
           @delete="store.deleteImages"
           @clear="store.clearSourceImages"
@@ -650,6 +686,7 @@ watch(
         <DraftEditorPanel
           :draft="currentDraft"
           :product-context="currentDraftProductContext"
+          :platform-options="platformOptions"
           :loading="loading"
           @generate-copy="() => store.generateCopy(true)"
           @save="store.saveCurrentDraft"

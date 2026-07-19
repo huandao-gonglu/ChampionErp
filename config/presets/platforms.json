@@ -22,7 +22,7 @@
       "tone": "清爽、可信、偏拉美电商转化风格"
     },
     "listing_copy": {
-      "language": "es-MX",
+      "language": "es",
       "title_max_chars": 60,
       "title_formula": "产品类型 + 品牌 + 关键属性 + 规格/用途",
       "title_rules": [
@@ -40,8 +40,8 @@
       ]
     }
   },
-  "wildberries": {
-    "display_name": "Wildberries / WB",
+  "yandex": {
+    "display_name": "Yandex Russia",
     "image_count": 10,
     "canvas": "1500x2000",
     "api_size": "1024x1536",

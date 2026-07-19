@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import type { Marketplace, PricingInput, PricingResult, ProductIndexItem } from '@/types/workflow'
+import { computed } from 'vue'
+import type { Marketplace, MarketplaceOption, PricingInput, PricingResult, ProductIndexItem } from '@/types/workflow'
 import { useCurrency } from '@/composables/useCurrency'
 
 const props = defineProps<{
@@ -10,6 +11,7 @@ const props = defineProps<{
   productTitle: string
   sourcePlatform: string
   draftPrice: string
+  platformOptions: MarketplaceOption[]
   loading: boolean
 }>()
 
@@ -21,30 +23,16 @@ const emit = defineEmits<{
 }>()
 
 const { formatMoney, formatPercent } = useCurrency()
-const platformOptions: Array<{ key: Marketplace; label: string; site: string }> = [
-  { key: 'mercadolibre', label: 'Mercado Libre', site: 'MLM' },
-  { key: 'wildberries', label: 'Wildberries', site: 'RU' },
-  { key: 'ozon', label: 'Ozon', site: 'RU' },
-]
-
-const platformCurrencyByMarketplace: Record<Marketplace, 'MXN' | 'RUB'> = {
-  mercadolibre: 'MXN',
-  wildberries: 'RUB',
-  ozon: 'RUB',
-}
-
-const platformLabelByMarketplace: Record<Marketplace, string> = {
-  mercadolibre: '美客多',
-  wildberries: 'Wildberries',
-  ozon: 'Ozon',
-}
+const selectedPlatform = computed(() => props.platformOptions.find((platform) => platform.key === props.input.platform))
+const siteOptions = computed(() => selectedPlatform.value?.sites || [])
+const selectedSite = computed(() => siteOptions.value.find((site) => site.code.toLowerCase() === props.input.site.toLowerCase()) || siteOptions.value[0])
 
 function currentPlatformCurrency() {
-  return platformCurrencyByMarketplace[props.input.platform] || 'MXN'
+  return selectedSite.value?.currency || 'USD'
 }
 
 function platformSuggestedPrice(result: PricingResult) {
-  if ((props.input.platform === 'wildberries' || props.input.platform === 'ozon') && result.wbPriceRub > 0) {
+  if ((props.input.platform === 'yandex' || props.input.platform === 'ozon') && result.wbPriceRub > 0) {
     return result.wbPriceRub
   }
   return result.suggestedPriceMxn
@@ -79,13 +67,13 @@ function displayMoney(cnyValue: number, platformValue: number, platformCurrency:
 
 function priceTitle() {
   return props.input.displayCurrencyMode === 'cny'
-    ? `${platformLabelByMarketplace[props.input.platform] || '平台'}建议售价（人民币）`
-    : `${platformLabelByMarketplace[props.input.platform] || '平台'}建议售价`
+    ? `${selectedPlatform.value?.label || '平台'} - ${selectedSite.value?.label || '站点'}建议售价（人民币）`
+    : `${selectedPlatform.value?.label || '平台'} - ${selectedSite.value?.label || '站点'}建议售价`
 }
 
 function syncSiteForPlatform() {
-  const selected = platformOptions.find((platform) => platform.key === props.input.platform)
-  if (selected) props.input.site = selected.site
+  const selected = siteOptions.value.find((site) => site.code.toLowerCase() === props.input.site.toLowerCase()) || siteOptions.value[0]
+  if (selected) props.input.site = selected.code
 }
 </script>
 
@@ -146,12 +134,14 @@ function syncSiteForPlatform() {
       <label class="block">
         <span class="text-xs font-semibold text-accent-500 dark:text-accent-300">平台</span>
         <select v-model="props.input.platform" class="input mt-1" @change="syncSiteForPlatform">
-          <option v-for="platform in platformOptions" :key="platform.key" :value="platform.key">{{ platform.label }}</option>
+          <option v-for="platform in props.platformOptions" :key="platform.key" :value="platform.key">{{ platform.label }}</option>
         </select>
       </label>
       <label class="block">
         <span class="text-xs font-semibold text-accent-500 dark:text-accent-300">站点</span>
-        <input v-model="props.input.site" class="input mt-1" placeholder="MLM / RU" />
+        <select v-model="props.input.site" class="input mt-1">
+          <option v-for="site in siteOptions" :key="site.code" :value="site.code">{{ selectedPlatform?.label }} - {{ site.label }}（{{ site.code }} / {{ site.language }} / {{ site.currency }}）</option>
+        </select>
       </label>
       <label class="block">
         <span class="text-xs font-semibold text-accent-500 dark:text-accent-300">采购成本 CNY</span>

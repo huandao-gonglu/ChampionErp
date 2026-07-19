@@ -61,6 +61,7 @@ import {
   normalizeDraftsIndex,
   normalizeMercadoLibreAuthChecklist,
   normalizeMercadoLibreOrderNotification,
+  normalizeMarketplaceOptions,
   normalizeProductMutation,
   normalizeProductOperation,
   normalizeProductsIndex,
@@ -121,6 +122,7 @@ export async function fetchState(): Promise<AppStateResponse> {
       ? data.mercadolibreOrderNotifications.map(normalizeMercadoLibreOrderNotification)
       : [],
     outputDir: getString(data, ['outputDir']),
+    platformOptions: normalizeMarketplaceOptions(data.platformOptions),
     productsIndex: normalizeProductsIndex(data.productsIndex),
     draftsIndex: normalizeDraftsIndex(data.draftsIndex),
     publishLogs: normalizePublishLogs(data.publishLogs),
@@ -605,7 +607,6 @@ export async function collectProduct(form: CollectForm): Promise<ProductMutation
       timeout_seconds: form.alibabaApiTimeoutSeconds,
     },
     platform: form.platform,
-    platforms: form.selectedClaimPlatforms,
   })
   return normalizeProductMutation(response.data)
 }
@@ -632,7 +633,6 @@ export async function collectBatch(form: CollectForm): Promise<{ rows: CollectBa
       timeout_seconds: form.alibabaApiTimeoutSeconds,
     },
     platform: form.platform === 'manual' ? '' : form.platform,
-    platforms: form.selectedClaimPlatforms,
   })
   const data = asRecord(response.data)
   ensureOk(data, '批量采集失败')
@@ -661,7 +661,6 @@ export async function collectFromBrowserTab(form: CollectForm, saveOnly = false)
   const response = await apiClient.post('/api/collect-from-browser-tab', {
     product_url: form.productUrl,
     platform_hint: form.platform === 'manual' ? '' : form.platform,
-    platforms: form.selectedClaimPlatforms,
     save_only: saveOnly,
   })
   const data = asRecord(response.data)
@@ -699,18 +698,17 @@ export async function importManualProduct(form: CollectForm): Promise<ProductMut
     weight: form.manualWeight,
     images: stringList(form.manualImages),
     raw_html_optional: form.rawText,
-    platforms: form.selectedClaimPlatforms,
   })
   return normalizeProductMutation(response.data)
 }
 
-export async function claimProducts(productIds: string[], platforms: Marketplace[]): Promise<UnknownRecord> {
-  const response = await apiClient.post('/api/claim-products', { product_ids: productIds, platforms })
+export async function claimProducts(productIds: string[], platform?: Marketplace): Promise<UnknownRecord> {
+  const response = await apiClient.post('/api/claim-products', { product_ids: productIds, platform })
   const data = asRecord(response.data)
-  ensureOk(data, '认领失败')
+  ensureOk(data, '推到草稿箱失败')
   if (productIds.length && getNumber(data, ['claimed_count']) <= 0) {
     const firstItem = asRecord(Array.isArray(data.items) ? data.items[0] : {})
-    throw new Error(getString(firstItem, ['error'], '没有商品被推到平台草稿箱'))
+    throw new Error(getString(firstItem, ['error'], '没有商品被推到草稿箱'))
   }
   return data
 }
@@ -740,7 +738,7 @@ export async function uploadImages(product: Product, uploads: Array<{ filename: 
     product_id: requiredProductId(product, '上传图片'),
     uploads: uploads.map((upload, index) => ({
       ...upload,
-      platforms: ['mercadolibre'],
+      platforms: [],
       selected: true,
       is_main: index === 0 && product.source.imagePool.length === 0,
     })),
@@ -758,11 +756,6 @@ export async function saveImagePool(product: Product, imagePool: ImageAsset[]): 
 
 export async function imagePoolAction(product: Product, action: string, payload: UnknownRecord = {}): Promise<ProductMutationResponse> {
   const response = await apiClient.post('/api/image-pool/action', { action, ...payload, product_id: requiredProductId(product, '更新图片池') })
-  return normalizeProductMutation(response.data)
-}
-
-export async function syncGeneratedImages(product: Product): Promise<ProductMutationResponse> {
-  const response = await apiClient.post('/api/image-pool/sync-generated', { product_id: requiredProductId(product, '同步生成图片') })
   return normalizeProductMutation(response.data)
 }
 
@@ -812,7 +805,15 @@ export async function generateImagePrompts(product: Product, platform: Marketpla
   return getString(data, ['prompt'])
 }
 
-export async function imageTranslate(product: Product, platform: Marketplace, language: string): Promise<ProductMutationResponse> {
+export interface ImageTranslateOptions {
+  draftId?: string
+  applyToDraft?: boolean
+  draftImageStrategy?: 'pool_only' | 'append' | 'replace_selected' | 'replace_all'
+}
+
+export interface ImageEditOptions extends ImageTranslateOptions {}
+
+export async function imageTranslate(product: Product, platform: Marketplace, language: string, options: ImageTranslateOptions = {}): Promise<ProductMutationResponse> {
   const listingLanguage = language || product.drafts[platform]?.language || listingLanguageLabel(platform)
   const selectedImageIds = product.source.imagePool.filter((image) => image.selected).map((image) => image.id)
   const response = await apiClient.post('/api/image-translate', {
@@ -820,7 +821,26 @@ export async function imageTranslate(product: Product, platform: Marketplace, la
     platform,
     language: listingLanguage,
     target_language: listingLanguage,
-    image_ids: selectedImageIds,
+    draft_id: options.draftId,
+    apply_to_draft: options.applyToDraft,
+    draft_image_strategy: options.draftImageStrategy,
+    source_image_ids: selectedImageIds,
+  }, { timeout: imageTranslateTimeoutMs(product) })
+  return normalizeProductMutation(response.data)
+}
+
+export async function imageEdit(product: Product, platform: Marketplace, prompt: string, options: ImageEditOptions = {}): Promise<ProductMutationResponse> {
+  const userPrompt = String(prompt || '').trim()
+  if (!userPrompt) throw new Error('请输入图生图提示词')
+  const selectedImageIds = product.source.imagePool.filter((image) => image.selected).map((image) => image.id)
+  const response = await apiClient.post('/api/image-edit', {
+    product_id: requiredProductId(product, '图生图'),
+    platform,
+    prompt: userPrompt,
+    draft_id: options.draftId,
+    apply_to_draft: options.applyToDraft,
+    draft_image_strategy: options.draftImageStrategy,
+    source_image_ids: selectedImageIds,
   }, { timeout: imageTranslateTimeoutMs(product) })
   return normalizeProductMutation(response.data)
 }

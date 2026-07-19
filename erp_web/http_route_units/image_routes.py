@@ -11,6 +11,7 @@ IMAGE_POST_PATHS = {
     "/api/image-pool/action",
     "/api/image-pool/sync-generated",
     "/api/image-translate",
+    "/api/image-edit",
 }
 
 
@@ -23,6 +24,10 @@ def request_product(body: dict[str, Any], app: Any) -> tuple[dict[str, Any], dic
     if loaded_id != product_id:
         return {}, {"ok": False, "error": "商品不存在", "product_id": product_id}, 404
     return app.normalize_product_fields(product), None, 200
+
+
+def _truthy(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def handle_post(handler: Any, path: str, app: Any) -> bool:
@@ -116,12 +121,12 @@ def handle_post(handler: Any, path: str, app: Any) -> bool:
         if error_response:
             handler.send_json(error_response, status)
             return True
-        image_ids = body.get("image_ids") if isinstance(body.get("image_ids"), list) else body.get("selected_image_ids") if isinstance(body.get("selected_image_ids"), list) else []
+        image_ids = body.get("source_image_ids") if isinstance(body.get("source_image_ids"), list) else []
         result = image_translate_service.translate_images(
             app.APP_DIR,
             product,
             app.load_app_config(),
-            target_language=str(body.get("language") or body.get("target_language") or "Spanish (Mexico)"),
+            target_language=str(body.get("language") or body.get("target_language") or "es"),
             platform=str(body.get("platform") or "mercadolibre"),
             image_ids=image_ids,
             mode=str(body.get("mode") or "translate"),
@@ -129,6 +134,18 @@ def handle_post(handler: Any, path: str, app: Any) -> bool:
         if result.get("ok"):
             merged = app.append_images_to_product_pool(product, result.get("imagePoolItems") if isinstance(result.get("imagePoolItems"), list) else [])
             saved = app.save_product(merged)
+            draft_result = {}
+            draft_error = None
+            draft_status = 200
+            if _truthy(body.get("apply_to_draft")):
+                draft_result, draft_error, draft_status = app.apply_image_assets_to_draft(
+                    str(body.get("draft_id") or body.get("draftId") or ""),
+                    result.get("imagePoolItems") if isinstance(result.get("imagePoolItems"), list) else [],
+                    str(body.get("draft_image_strategy") or body.get("draftImageStrategy") or "append"),
+                )
+                if draft_error:
+                    handler.send_json({**result, **draft_error, "product": saved, "productsIndex": app.load_products_index()}, draft_status)
+                    return True
             handler.send_json(
                 {
                     "ok": True,
@@ -137,6 +154,56 @@ def handle_post(handler: Any, path: str, app: Any) -> bool:
                     "imagePool": app.current_image_pool(saved),
                     "sourceImages": app.current_source_images(saved),
                     "productsIndex": app.load_products_index(),
+                    "draft": draft_result.get("draft") if isinstance(draft_result, dict) else None,
+                    "productContext": draft_result.get("productContext") if isinstance(draft_result, dict) else None,
+                    "draftsIndex": draft_result.get("draftsIndex") if isinstance(draft_result, dict) else app.load_drafts_index(),
+                }
+            )
+            return True
+        handler.send_json({"ok": False, "product": product, "imagePool": app.current_image_pool(product), **result}, 200)
+        return True
+
+    if path == "/api/image-edit":
+        product, error_response, status = request_product(body, app)
+        if error_response:
+            handler.send_json(error_response, status)
+            return True
+        image_ids = body.get("source_image_ids") if isinstance(body.get("source_image_ids"), list) else []
+        result = image_translate_service.edit_images(
+            app.APP_DIR,
+            product,
+            app.load_app_config(),
+            prompt=str(body.get("prompt") or ""),
+            platform=str(body.get("platform") or "mercadolibre"),
+            image_ids=image_ids,
+        )
+        if result.get("ok"):
+            image_items = result.get("imagePoolItems") if isinstance(result.get("imagePoolItems"), list) else []
+            merged = app.append_images_to_product_pool(product, image_items)
+            saved = app.save_product(merged)
+            draft_result = {}
+            draft_error = None
+            draft_status = 200
+            if _truthy(body.get("apply_to_draft")):
+                draft_result, draft_error, draft_status = app.apply_image_assets_to_draft(
+                    str(body.get("draft_id") or body.get("draftId") or ""),
+                    image_items,
+                    str(body.get("draft_image_strategy") or body.get("draftImageStrategy") or "append"),
+                )
+                if draft_error:
+                    handler.send_json({**result, **draft_error, "product": saved, "productsIndex": app.load_products_index()}, draft_status)
+                    return True
+            handler.send_json(
+                {
+                    "ok": True,
+                    **result,
+                    "product": saved,
+                    "imagePool": app.current_image_pool(saved),
+                    "sourceImages": app.current_source_images(saved),
+                    "productsIndex": app.load_products_index(),
+                    "draft": draft_result.get("draft") if isinstance(draft_result, dict) else None,
+                    "productContext": draft_result.get("productContext") if isinstance(draft_result, dict) else None,
+                    "draftsIndex": draft_result.get("draftsIndex") if isinstance(draft_result, dict) else app.load_drafts_index(),
                 }
             )
             return True

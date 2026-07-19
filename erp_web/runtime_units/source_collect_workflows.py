@@ -532,7 +532,7 @@ def collect_extension_payload(payload: dict[str, Any]) -> dict[str, Any]:
     source_url = str(payload.get("source_url") or "").strip()
     platform = str(payload.get("platform") or detect_source_platform(source_url) or "unknown").strip().lower()
     raw_html = str(payload.get("raw_html_optional") or payload.get("raw_text") or payload.get("text") or "").strip()
-    claim_platforms = normalize_platforms(payload.get("platforms")) or ["mercadolibre"]
+    claim_platforms = normalize_platforms(payload.get("platforms"))
     explicit_collect_mode = "collect_mode" in payload
     collect_mode = str(payload.get("collect_mode") or "manual").strip().lower()
     image_origin_mode = collect_mode if explicit_collect_mode else "extension"

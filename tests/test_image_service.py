@@ -168,15 +168,93 @@ def test_image_translate_service_materializes_provider_output_into_pool_item(app
     assert result["generated_count"] == 1
     assert calls
     item = result["imagePoolItems"][0]
-    assert item["origin"] == "ai_generated"
+    assert item["origin"] == "ai_translated"
     assert item["target_language"] == "Spanish (Mexico)"
-    assert item["translated_from_id"] == source_item["id"]
+    assert item["derived_from_id"] == source_item["id"]
     assert item["path"].replace("\\", "/").startswith("data/images/pytest-image-translate/translated/")
     assert item["preview_url"].startswith("/file?path=")
     assert (app_dir / item["path"]).exists()
     assert item["width"] == 8
     assert item["height"] == 6
     assert_no_old_path(result, old_path_markers)
+
+
+def test_image_edit_service_materializes_user_prompt_into_pool_item(app_dir: Path, tmp_path: Path, old_path_markers: tuple[str, ...]) -> None:
+    source_path = tmp_path / "source.png"
+    generated_path = tmp_path / "edited.png"
+    _make_png(source_path, (255, 0, 0))
+    _make_png(generated_path, (0, 0, 255))
+
+    source_item = image_service.upload_images(
+        app_dir,
+        [{"path": str(source_path), "platforms": ["mercadolibre"], "is_main": True, "selected": True}],
+        "pytest-image-edit",
+    )[0]
+    product = {
+        "product_id": "pytest-image-edit",
+        "name": "Desk fan",
+        "source": {"title": "Desk fan", "image_pool": [source_item]},
+    }
+    calls: list[dict] = []
+
+    def fake_provider(config: dict, request: dict) -> list[dict]:
+        calls.append({"config": config, "request": request})
+        assert request["prompt"] == "扣除背景，保留产品主体"
+        assert request["mode"] == "edit"
+        assert request["image_ids"] == [source_item["id"]]
+        assert "target_language" not in request
+        return [{"path": str(generated_path), "provider": "fake-image-ai"}]
+
+    result = image_translate_service.edit_images(
+        app_dir,
+        product,
+        {
+            "ai_models": [
+                {
+                    "id": "image_model",
+                    "provider": "OpenAI-Compatible",
+                    "api_key": "test-key",
+                    "base_url": "http://example.test",
+                    "model": "fake-image",
+                    "capabilities": ["image_edit", "image_generate"],
+                }
+            ]
+        },
+        prompt="  扣除背景，保留产品主体  ",
+        platform="mercadolibre",
+        image_ids=[source_item["id"]],
+        provider=fake_provider,
+    )
+
+    assert result["ok"] is True
+    assert result["prompt"] == "扣除背景，保留产品主体"
+    assert result["source_image_ids"] == [source_item["id"]]
+    assert calls
+    item = result["imagePoolItems"][0]
+    assert item["origin"] == "ai_generated"
+    assert item["derived_from_id"] == source_item["id"]
+    assert item["provider"] == "fake-image-ai"
+    assert item["raw"]["image_edit"]["prompt"] == "扣除背景，保留产品主体"
+    assert item["path"].replace("\\", "/").startswith("data/images/pytest-image-edit/edited/")
+    assert (app_dir / item["path"]).exists()
+    assert_no_old_path(result, old_path_markers)
+
+
+def test_image_edit_service_requires_selected_image_ids(app_dir: Path, tmp_path: Path) -> None:
+    source_path = tmp_path / "source.png"
+    _make_png(source_path, (255, 0, 0))
+    source_item = image_service.upload_images(app_dir, [{"path": str(source_path), "selected": True}], "pytest-image-edit-require-selection")[0]
+    product = {
+        "product_id": "pytest-image-edit-require-selection",
+        "name": "Selection item",
+        "source": {"title": "Selection item", "image_pool": [source_item]},
+    }
+
+    result = image_translate_service.edit_images(app_dir, product, {}, prompt="扣除背景", image_ids=[])
+
+    assert result["ok"] is False
+    assert "勾选" in result["message"]
+    assert result["imagePoolItems"] == []
 
 
 def test_image_translate_service_returns_configuration_warning_without_provider_output(app_dir: Path, tmp_path: Path) -> None:
@@ -269,6 +347,6 @@ def test_image_translate_service_uses_default_openai_provider(app_dir: Path, tmp
     assert calls[1]["model"] == "fake-image"
     assert calls[1]["image"].closed is True
     item = result["imagePoolItems"][0]
-    assert item["origin"] == "ai_generated"
+    assert item["origin"] == "ai_translated"
     assert item["provider"] == "OpenAI-Compatible"
     assert (app_dir / item["path"]).exists()

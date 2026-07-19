@@ -10,7 +10,14 @@ from typing import Any
 from erp_web import db as erp_db
 from erp_web import marketplaces as publisher
 from erp_web import app_config as app_config_runtime
-from erp_web.product_model import PLATFORMS, default_product_model, normalize_product_model
+from erp_web.marketplace_registry import marketplace_site
+from erp_web.product_model import (
+    PLATFORMS,
+    apply_created_image_refs_to_draft,
+    default_product_model,
+    normalize_draft_image_refs,
+    normalize_product_model,
+)
 
 from .category_store import ensure_sqlite_store, read_json, write_json
 from .image_pool_core import (
@@ -191,16 +198,8 @@ def _draft_copy_ready(draft: dict[str, Any]) -> bool:
 
 
 def _draft_images_ready(product: dict[str, Any], platform: str, draft: dict[str, Any]) -> bool:
-    images = normalize_list(draft.get("images"))
-    if images:
-        return True
-    pool = current_image_pool(product)
-    return any(
-        isinstance(item, dict)
-        and str(item.get("status") or "").strip().lower() != "empty"
-        and str(item.get("origin") or "").strip().lower() in {"ai_generated", "chatgpt_import", "local_upload"}
-        for item in pool
-    )
+    images = normalize_draft_image_refs(draft.get("images"))
+    return bool(images)
 
 
 def _draft_publish_fields_ready(draft: dict[str, Any]) -> bool:
@@ -466,6 +465,7 @@ def draft_product_context(product: dict[str, Any]) -> dict[str, Any]:
     dimensions = source.get("dimensions") if isinstance(source.get("dimensions"), dict) else {}
     return {
         "product_id": str(normalized.get("product_id") or normalized.get("id") or ""),
+        "source_product_id": str(normalized.get("source_product_id") or normalized.get("product_id") or normalized.get("id") or ""),
         "title": str(normalized.get("name") or source.get("title") or ""),
         "source_title": str(source.get("title") or normalized.get("name") or ""),
         "source_platform": str(source.get("source_platform") or normalized.get("source_platform") or ""),
@@ -496,7 +496,7 @@ def load_draft_detail_from_index(draft_id: str) -> tuple[dict[str, Any], dict[st
     draft = erp_db.load_draft_model(APP_DIR, draft_id)
     if not draft:
         return {}, {"ok": False, "error": "草稿不存在", "draft_id": draft_id}, 404
-    product = erp_db.load_product_model(APP_DIR, str(draft.get("product_id") or ""))
+    product = erp_db.load_product_model(APP_DIR, str(draft.get("source_product_id") or draft.get("product_id") or ""))
     if not product:
         return {}, {"ok": False, "error": "草稿关联商品不存在", "draft_id": draft_id}, 404
     return {
@@ -517,13 +517,52 @@ def save_draft_detail(draft_payload: dict[str, Any]) -> tuple[dict[str, Any], di
     if not existing:
         return {}, {"ok": False, "error": "草稿不存在", "draft_id": draft_id}, 404
     product_id = str(existing.get("product_id") or "").strip()
-    platform = str(existing.get("platform") or "").strip().lower()
-    if platform not in PLATFORMS:
-        return {}, {"ok": False, "error": "草稿平台不支持", "draft_id": draft_id}, 400
-    merged = {**existing, **dict(draft_payload), "draft_id": draft_id, "product_id": product_id, "platform": platform}
+    source_product_id = str(existing.get("source_product_id") or product_id).strip()
+    existing_platform = str(existing.get("platform") or "").strip().lower()
+    requested_language = str(draft_payload.get("language") or existing.get("language") or "").strip()
+    raw_targets = draft_payload.get("target_sites") if isinstance(draft_payload.get("target_sites"), list) else draft_payload.get("targetSites")
+    targets: list[dict[str, str]] = []
+    for raw_target in raw_targets if isinstance(raw_targets, list) else []:
+        target = raw_target if isinstance(raw_target, dict) else {}
+        target_platform = str(target.get("platform") or "").strip().lower()
+        selected_site = marketplace_site(target_platform, str(target.get("site") or target.get("site_id") or ""))
+        if target_platform not in PLATFORMS or not selected_site.get("code"):
+            continue
+        if requested_language and selected_site["language"].lower() != requested_language.lower():
+            continue
+        if not any(item["platform"] == target_platform and item["site"] == selected_site["code"] for item in targets):
+            targets.append({"platform": target_platform, "site": selected_site["code"], "language": selected_site["language"], "currency": selected_site["currency"]})
+    if not targets:
+        requested_platform = str(draft_payload.get("platform") or existing_platform).strip().lower()
+        platform = requested_platform if requested_platform in PLATFORMS else existing_platform
+        selected_site = marketplace_site(platform, str(draft_payload.get("site") or existing.get("site") or ""))
+        if platform not in PLATFORMS or not selected_site.get("code"):
+            return {}, {"ok": False, "error": "草稿站点不支持", "draft_id": draft_id}, 400
+        targets = [{"platform": platform, "site": selected_site["code"], "language": selected_site["language"], "currency": selected_site["currency"]}]
+    primary_target = targets[0]
+    platform = primary_target["platform"]
+    platforms = []
+    for target in targets:
+        target_platform = str(target.get("platform") or "").strip().lower()
+        if target_platform in PLATFORMS and target_platform not in platforms:
+            platforms.append(target_platform)
+    merged = {
+        **existing,
+        **dict(draft_payload),
+        "draft_id": draft_id,
+        "product_id": product_id,
+        "source_product_id": source_product_id,
+        "platform": platform,
+        "platforms": platforms or [platform],
+        "site": primary_target["site"],
+        "target_sites": targets,
+        "language": primary_target["language"],
+        "currency": primary_target["currency"],
+    }
+    merged["images"] = normalize_draft_image_refs(merged.get("images"))
     saved_draft_id = erp_db.upsert_draft_model(APP_DIR, product_id, platform, merged)
     draft = erp_db.load_draft_model(APP_DIR, saved_draft_id)
-    product = erp_db.load_product_model(APP_DIR, product_id)
+    product = erp_db.load_product_model(APP_DIR, source_product_id or product_id)
     return {
         "ok": True,
         "draft": draft,
@@ -531,6 +570,42 @@ def save_draft_detail(draft_payload: dict[str, Any]) -> tuple[dict[str, Any], di
         "productsIndex": load_products_index(),
         "draftsIndex": load_drafts_index(),
         "message": "草稿已保存。",
+    }, None, 200
+
+
+def apply_image_assets_to_draft(
+    draft_id: str,
+    created_items: list[dict[str, Any]],
+    strategy: str = "append",
+) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
+    draft_id = str(draft_id or "").strip()
+    if not draft_id:
+        return {}, {"ok": False, "error": "draft_id 不能为空"}, 400
+    ensure_sqlite_store()
+    existing = erp_db.load_draft_model(APP_DIR, draft_id)
+    if not existing:
+        return {}, {"ok": False, "error": "草稿不存在", "draft_id": draft_id}, 404
+    product_id = str(existing.get("product_id") or "").strip()
+    platform = str(existing.get("platform") or "").strip().lower()
+    if not product_id or platform not in PLATFORMS:
+        return {}, {"ok": False, "error": "草稿关联商品或平台无效", "draft_id": draft_id}, 400
+    product = erp_db.load_product_model(APP_DIR, str(existing.get("source_product_id") or product_id))
+    next_images = apply_created_image_refs_to_draft(existing.get("images"), created_items, strategy)
+    merged = {**existing, "images": next_images}
+    product_for_status = dict(product or {})
+    drafts = product_for_status.get("drafts") if isinstance(product_for_status.get("drafts"), dict) else {}
+    product_for_status["drafts"] = {**drafts, platform: merged}
+    merged["status"] = draft_workflow_status(product_for_status, platform)
+    saved_draft_id = erp_db.upsert_draft_model(APP_DIR, product_id, platform, merged)
+    draft = erp_db.load_draft_model(APP_DIR, saved_draft_id)
+    product = erp_db.load_product_model(APP_DIR, str(draft.get("source_product_id") or product_id))
+    return {
+        "ok": True,
+        "draft": draft,
+        "productContext": draft_product_context(product),
+        "productsIndex": load_products_index(),
+        "draftsIndex": load_drafts_index(),
+        "message": "草稿图片已更新。",
     }, None, 200
 
 
@@ -556,6 +631,8 @@ def save_draft_copy_result(product: dict[str, Any], target_market: str, copy: di
             "copy_generated_at": datetime.now(timezone.utc).isoformat(),
         }
     )
+    draft.setdefault("platform", target_key)
+    draft.setdefault("platforms", [target_key])
     product_for_status = dict(product)
     merged_drafts = dict(drafts)
     merged_drafts[target_key] = draft
@@ -738,8 +815,8 @@ def _auth_next_action(platform: str, status_label: str, error_code: str, error_m
         return "检查本机网络、代理或防火墙后重试 Mercado Libre 授权接口"
     if platform == "mercadolibre":
         return "重新发起授权并检查回调地址"
-    if platform == "wildberries":
-        return "确认 Token 已复制完整且接口权限正确"
+    if platform == "yandex":
+        return "确认 Yandex API Token 已保存且具备目标接口权限"
     if platform == "ozon":
         return "确认 Client ID 和 API Key 已保存且未过期"
     return "检查配置后重新测试"
@@ -829,7 +906,7 @@ def mercadolibre_auth_checklist(config: dict[str, Any] | None = None) -> dict[st
     app_id = str(ml.get("app_id") or ml.get("client_id") or "").strip()
     app_secret = str(ml.get("app_secret") or ml.get("client_secret") or "").strip()
     redirect_uri = str(ml.get("redirect_uri") or "").strip()
-    site_id = str(ml.get("site_id") or "MLM").strip() or "MLM"
+    site_id = str(ml.get("site_id") or "CBT").strip() or "CBT"
     code_verifier = str(ml.get("code_verifier") or "").strip()
     access_token = str(ml.get("access_token") or "").strip()
     refresh_token = str(ml.get("refresh_token") or "").strip()
@@ -890,18 +967,15 @@ def summarize_store_auth(platform: str, store: dict[str, Any]) -> dict[str, Any]
     if not masked_account:
         if platform == "mercadolibre":
             masked_account = str(store.get("shop_name") or store.get("user_id") or "").strip()
-        elif platform == "wildberries":
-            masked_account = str(store.get("shop_name") or store.get("subject_id") or "").strip()
+        elif platform == "yandex":
+            masked_account = str(store.get("shop_name") or store.get("api_token") or "").strip()
         elif platform == "ozon":
             masked_account = str(store.get("shop_name") or store.get("client_id") or "").strip()
     if not masked_account:
         candidates = [
             store.get("access_token"),
             store.get("refresh_token"),
-            store.get("content_token"),
-            store.get("prices_token"),
-            store.get("marketplace_token"),
-            store.get("stocks_token"),
+            store.get("api_token"),
             store.get("api_key"),
             store.get("app_secret"),
         ]
@@ -927,7 +1001,7 @@ def summarize_store_auth_states(store_config: dict[str, Any]) -> dict[str, Any]:
     store_config = store_config if isinstance(store_config, dict) else {}
     return {
         platform: summarize_store_auth(platform, store_config.get(platform, {}))
-        for platform in ("mercadolibre", "wildberries", "ozon")
+        for platform in ("mercadolibre", "yandex", "ozon")
     }
 
 
@@ -948,12 +1022,12 @@ def store_auth_failure_code(platform: str, message: str) -> str:
         if "callback" in text:
             return "callback_not_received"
         return "mercadolibre_auth_failed"
-    if platform == "wildberries":
+    if platform == "yandex":
         if "429" in text or "too many requests" in text:
             return "rate_limited"
         if "401" in text or "403" in text or "unauthorized" in text:
             return "permission_denied"
-        return "wildberries_auth_failed"
+        return "yandex_auth_failed"
     if platform == "ozon":
         if "429" in text or "too many requests" in text:
             return "rate_limited"
@@ -1009,6 +1083,7 @@ def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
 
 
 __all__ = [
+    "apply_image_assets_to_draft",
     "delete_draft_from_index",
     "delete_products_from_index",
     "explain_mercadolibre_auth_error",

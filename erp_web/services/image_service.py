@@ -19,13 +19,14 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from erp_web.marketplace_registry import PLATFORMS
+
 try:
     from PIL import Image
 except Exception:  # pragma: no cover
     Image = None  # type: ignore[assignment]
 
 
-PLATFORMS = ("mercadolibre", "wildberries", "ozon")
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_REMOTE_BYTES = 12 * 1024 * 1024
 MAX_SAFE_SEGMENT_LENGTH = 80
@@ -174,8 +175,8 @@ def normalize_item(item: dict[str, Any], index: int = 0, app_dir: Path | str | N
         seed = str(url or preview_url or path or index)
         asset_id = hashlib.sha1(seed.encode("utf-8", errors="ignore")).hexdigest()[:16]
 
-    platforms = normalize_platforms(data.get("platforms") or data.get("platforms_json")) or list(PLATFORMS)
-    return {
+    platforms = normalize_platforms(data.get("platforms") or data.get("platforms_json"))
+    normalized = {
         "id": asset_id,
         "asset_id": asset_id,
         "url": url,
@@ -199,6 +200,11 @@ def normalize_item(item: dict[str, Any], index: int = 0, app_dir: Path | str | N
         "size_label": data.get("size_label") or (f"{width}x{height}" if width and height else "unknown"),
         "raw": data.get("raw") if isinstance(data.get("raw"), dict) else {},
     }
+    for key in ("derived_from_id", "source_asset_id", "target_language", "provider", "translate_job_id"):
+        value = data.get(key)
+        if value not in (None, ""):
+            normalized[key] = str(value).strip()
+    return normalized
 
 
 def normalize_pool(pool: list[dict[str, Any]], app_dir: Path | str | None = None) -> list[dict[str, Any]]:
@@ -244,7 +250,7 @@ def upload_images(app_dir: Path | str, uploads: list[dict[str, Any]], product_id
                     "preview_url": file_url(dest),
                     "origin": upload.get("origin") or "local_upload",
                     "usage": upload.get("usage") or ("main" if index == 0 else "detail"),
-                    "platforms": upload.get("platforms") or list(PLATFORMS),
+                    "platforms": upload.get("platforms") or [],
                     "is_main": bool(upload.get("is_main", index == 0)),
                     "is_sku": bool(upload.get("is_sku")),
                     "sku": upload.get("sku") or upload.get("sku_id") or "",

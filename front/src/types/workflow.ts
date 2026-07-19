@@ -1,4 +1,25 @@
-export type Marketplace = 'mercadolibre' | 'wildberries' | 'ozon'
+export type Marketplace = string
+
+export interface MarketplaceSiteOption {
+  key: string
+  code: string
+  label: string
+  language: string
+  currency: string
+}
+
+export interface MarketplaceOption {
+  key: Marketplace
+  label: string
+  sites: MarketplaceSiteOption[]
+}
+
+export interface MarketplaceTargetSite {
+  platform: Marketplace
+  site: string
+  language: string
+  currency: string
+}
 
 export type WorkflowStatus =
   | 'pending'
@@ -30,7 +51,20 @@ export interface ImageAsset {
   width: number
   height: number
   targetLanguage?: string
-  translatedFromId?: string
+  derivedFromId?: string
+  provider?: string
+}
+
+export type DraftImageRole = 'main' | 'detail' | 'size' | 'scene' | 'package' | 'selling_point' | 'material' | 'other'
+
+export interface DraftImageRef {
+  assetId: string
+  role: DraftImageRole
+  order: number
+  label?: string
+  note?: string
+  altText?: string
+  sourceAssetId?: string
 }
 
 export interface ProductSource {
@@ -54,6 +88,10 @@ export interface ProductSource {
 
 export interface MarketplaceDraft {
   draftId: string
+  platforms: Marketplace[]
+  targetSites: MarketplaceTargetSite[]
+  site: string
+  currency: string
   enabled: boolean
   title: string
   description: string
@@ -62,7 +100,7 @@ export interface MarketplaceDraft {
   categoryPath: string
   attributes: Record<string, string>
   price: string
-  images: string[]
+  images: DraftImageRef[]
   status: WorkflowStatus
   language: string
   stock: string
@@ -99,6 +137,7 @@ export interface Product {
 
 export interface DraftDetail extends MarketplaceDraft {
   productId: string
+  sourceProductId: string
   platform: Marketplace
   site: string
   createdAt: string
@@ -108,6 +147,7 @@ export interface DraftDetail extends MarketplaceDraft {
 
 export interface DraftProductContext {
   productId: string
+  sourceProductId: string
   title: string
   sourceTitle: string
   sourcePlatform: string
@@ -326,8 +366,12 @@ export interface ProductIndexItem {
 export interface DraftIndexItem {
   draftId: string
   productId: string
+  sourceProductId: string
   platform: Marketplace
+  platforms: Marketplace[]
+  targetSites: MarketplaceTargetSite[]
   site: string
+  language: string
   status: WorkflowStatus | string
   title: string
   productTitle: string
