@@ -23,6 +23,7 @@ import type {
   HotProductCandidate,
   PricingInput,
   PricingResult,
+  PricingTargetResult,
   Product,
   ProductIndexItem,
   ProductResearchConfig,
@@ -54,6 +55,7 @@ import {
   getBoolean,
   getNumber,
   getString,
+  isRecord,
   normalizeBackendProduct,
   normalizeBrowserStatus,
   normalizeDeleteProductsResult,
@@ -811,7 +813,7 @@ export interface ImageTranslateOptions {
   draftImageStrategy?: 'pool_only' | 'append' | 'replace_selected' | 'replace_all'
 }
 
-export interface ImageEditOptions extends ImageTranslateOptions {}
+export type ImageEditOptions = ImageTranslateOptions
 
 export async function imageTranslate(product: Product, platform: Marketplace, language: string, options: ImageTranslateOptions = {}): Promise<ProductMutationResponse> {
   const listingLanguage = language || product.drafts[platform]?.language || listingLanguageLabel(platform)
@@ -845,10 +847,44 @@ export async function imageEdit(product: Product, platform: Marketplace, prompt:
   return normalizeProductMutation(response.data)
 }
 
+function normalizePricingTargetResult(value: unknown, fallback: Partial<PricingTargetResult> = {}): PricingTargetResult {
+  const record = asRecord(value)
+  const input = asRecord(record.input)
+  const currency = getString(record, ['currency'], fallback.currency || 'USD')
+  const currencySuggested = currency === 'MXN'
+    ? getNumber(record, ['suggested_price_mxn', 'sale_price_mxn', 'price_mxn'])
+    : currency === 'RUB'
+      ? getNumber(record, ['wb_price_rub', 'suggested_price_rub', 'price_rub'])
+      : getNumber(record, ['suggested_price_usd', 'sale_price_usd', 'price_usd'])
+  return {
+    targetKey: getString(record, ['target_key', 'targetKey'], fallback.targetKey || ''),
+    platform: (getString(record, ['platform'], fallback.platform || 'mercadolibre')) as Marketplace,
+    site: getString(record, ['site'], fallback.site || ''),
+    currency,
+    suggestedPrice: getNumber(record, ['suggested_price', 'suggestedPrice'], fallback.suggestedPrice || currencySuggested),
+    suggestedPriceUsd: getNumber(record, ['suggested_price_usd', 'suggestedPriceUsd'], fallback.suggestedPriceUsd || 0),
+    suggestedPriceCny: getNumber(record, ['suggested_price_cny', 'suggestedPriceCny'], fallback.suggestedPriceCny || 0),
+    appliedPrice: getNumber(record, ['applied_price', 'appliedPrice'], fallback.appliedPrice || currencySuggested),
+    shippingCostUsd: getNumber(record, ['shipping_cost_usd', 'shippingCostUsd'], fallback.shippingCostUsd || 0),
+    shippingCostCny: getNumber(record, ['shipping_cost_cny', 'shippingCostCny'], fallback.shippingCostCny || 0),
+    totalCostCny: getNumber(record, ['total_cost_cny', 'totalCostCny'], fallback.totalCostCny || 0),
+    netRevenueCny: getNumber(record, ['net_revenue_cny', 'netRevenueCny'], fallback.netRevenueCny || 0),
+    profitCny: getNumber(record, ['profit_cny', 'profitCny'], fallback.profitCny || 0),
+    marginPercent: getNumber(record, ['margin_percent', 'profit_percent', 'marginPercent'], fallback.marginPercent || 0),
+    commissionPercent: getNumber(record, ['commission_percent', 'commissionPercent'], fallback.commissionPercent || 0),
+    paymentFeePercent: getNumber(record, ['payment_fee_percent', 'paymentFeePercent'], fallback.paymentFeePercent || 0),
+    targetMarginPercent: getNumber(record, ['target_margin_percent', 'targetMarginPercent'], fallback.targetMarginPercent || 0),
+    usdCnyRate: getNumber(record, ['usd_cny_rate', 'usdCnyRate'], getNumber(input, ['usd_cny_rate', 'usdCnyRate'], fallback.usdCnyRate || 0)),
+    mxnUsdRate: getNumber(record, ['mxn_usd_rate', 'mxnUsdRate'], getNumber(input, ['mxn_usd_rate', 'mxnUsdRate'], fallback.mxnUsdRate || 0)),
+    rubCnyRate: getNumber(record, ['rub_cny_rate', 'rubCnyRate'], getNumber(input, ['rub_cny_rate', 'rubCnyRate'], fallback.rubCnyRate || 0)),
+    isLoss: getBoolean(record, ['is_loss', 'isLoss'], fallback.isLoss || false),
+    errors: Array.isArray(record.errors) ? record.errors.map((item) => isRecord(item) ? item : String(item || '')).filter(Boolean) : [],
+    raw: record,
+  }
+}
+
 export async function calculatePrice(input: PricingInput): Promise<PricingResult> {
-  const response = await apiClient.post('/api/calculate-price', {
-    platform: input.platform,
-    site: input.site,
+  const common = {
     purchase_cost: input.purchaseCostCny,
     domestic_freight: input.domesticFreightCny,
     weight_kg: input.weightKg,
@@ -859,31 +895,64 @@ export async function calculatePrice(input: PricingInput): Promise<PricingResult
     target_margin_percent: input.targetMarginPercent,
     usd_cny_rate: input.exchangeRateMode === 'manual' ? input.usdCnyRate : '',
     mxn_usd_rate: input.exchangeRateMode === 'manual' ? input.mxnUsdRate : '',
+    rub_cny_rate: input.exchangeRateMode === 'manual' ? input.rubCnyRate : '',
     exchange_rate_mode: input.exchangeRateMode,
     display_currency_mode: input.displayCurrencyMode,
+  }
+  const targets = input.targets.length
+    ? input.targets.map((target) => ({
+      target_key: target.targetKey,
+      platform: target.platform,
+      site: target.site,
+      currency: target.currency,
+      commission_percent: target.commissionPercent,
+      payment_fee_percent: target.paymentFeePercent,
+      target_margin_percent: target.targetMarginPercent,
+      shipping_cost_usd: target.shippingCostUsd,
+      shipping_cost_cny: target.shippingCostCny,
+      russia_freight_rate: target.russiaFreightRate,
+      applied_price: target.appliedPrice,
+    }))
+    : [{ platform: input.platform, site: input.site, commission_percent: input.commissionPercent, target_margin_percent: input.targetMarginPercent }]
+  const response = await apiClient.post('/api/calculate-price', {
+    ...common,
+    platform: input.platform,
+    site: input.site,
+    common,
+    targets,
   })
   const data = asRecord(response.data)
-  ensureOk(data, '核价失败')
+  if (data.ok === false && !Array.isArray(data.results)) ensureOk(data, '核价失败')
   const backendInput = asRecord(data.input)
+  const commonInput = asRecord(backendInput.common)
   const exchangeRates = asRecord(data.exchange_rates)
   const rates = asRecord(exchangeRates.rates)
-  const suggestedPriceUsd = getNumber(data, ['suggested_price_usd', 'sale_price_usd', 'price_usd'])
-  const usdCnyRate = getNumber(backendInput, ['usd_cny_rate'], getNumber(rates, ['usd_cny_rate']))
+  const rawResults = Array.isArray(data.results) ? data.results : [data]
+  const fallbackTargets = input.targets.length ? input.targets : []
+  const results = rawResults.map((item, index) => normalizePricingTargetResult(item, fallbackTargets[index]))
+  const primary = results[0] || normalizePricingTargetResult(data, {
+    targetKey: `${input.platform}:${input.site}`,
+    platform: input.platform,
+    site: input.site,
+  })
+  const suggestedPriceUsd = getNumber(data, ['suggested_price_usd', 'sale_price_usd', 'price_usd'], primary.suggestedPriceUsd)
+  const usdCnyRate = getNumber(commonInput, ['usd_cny_rate'], getNumber(backendInput, ['usd_cny_rate'], getNumber(rates, ['usd_cny_rate'], primary.usdCnyRate)))
   return {
-    suggestedPriceMxn: getNumber(data, ['suggested_price_mxn', 'sale_price_mxn', 'price_mxn']),
+    results,
+    suggestedPriceMxn: getNumber(data, ['suggested_price_mxn', 'sale_price_mxn', 'price_mxn'], primary.currency === 'MXN' ? primary.suggestedPrice : 0),
     suggestedPriceUsd,
-    suggestedPriceCny: Math.round(suggestedPriceUsd * usdCnyRate * 100) / 100,
+    suggestedPriceCny: getNumber(data, ['suggested_price_cny'], primary.suggestedPriceCny || Math.round(suggestedPriceUsd * usdCnyRate * 100) / 100),
     wbPriceRub: getNumber(data, ['wb_price_rub']),
-    shippingCostUsd: getNumber(data, ['shipping_cost_usd', 'international_shipping_usd']),
-    shippingCostCny: getNumber(data, ['shipping_cost_cny']),
-    totalCostCny: getNumber(data, ['total_cost_cny']),
-    netRevenueCny: getNumber(data, ['net_revenue_cny']),
-    profitCny: getNumber(data, ['profit_cny']),
-    marginPercent: getNumber(data, ['profit_percent', 'margin_percent', 'profit_margin_percent']),
+    shippingCostUsd: getNumber(data, ['shipping_cost_usd', 'international_shipping_usd'], primary.shippingCostUsd),
+    shippingCostCny: getNumber(data, ['shipping_cost_cny'], primary.shippingCostCny),
+    totalCostCny: getNumber(data, ['total_cost_cny'], primary.totalCostCny),
+    netRevenueCny: getNumber(data, ['net_revenue_cny'], primary.netRevenueCny),
+    profitCny: getNumber(data, ['profit_cny'], primary.profitCny),
+    marginPercent: getNumber(data, ['profit_percent', 'margin_percent', 'profit_margin_percent'], primary.marginPercent),
     usdCnyRate,
-    mxnUsdRate: getNumber(backendInput, ['mxn_usd_rate'], getNumber(rates, ['mxn_usd_rate'])),
-    rubUsdRate: getNumber(backendInput, ['rub_usd_rate'], getNumber(rates, ['rub_usd_rate'])),
-    rubCnyRate: getNumber(rates, ['rub_cny_rate'], getNumber(backendInput, ['rub_cny_rate'])),
+    mxnUsdRate: getNumber(commonInput, ['mxn_usd_rate'], getNumber(backendInput, ['mxn_usd_rate'], getNumber(rates, ['mxn_usd_rate'], primary.mxnUsdRate))),
+    rubUsdRate: getNumber(commonInput, ['rub_usd_rate'], getNumber(backendInput, ['rub_usd_rate'], getNumber(rates, ['rub_usd_rate']))),
+    rubCnyRate: getNumber(rates, ['rub_cny_rate'], getNumber(commonInput, ['rub_cny_rate'], getNumber(backendInput, ['rub_cny_rate'], primary.rubCnyRate))),
     exchangeRateMode: getString(data, ['exchange_rate_mode'], input.exchangeRateMode),
     exchangeRateSource: getString(exchangeRates, ['source']),
     exchangeRateFetchedAt: getString(exchangeRates, ['fetched_at']),

@@ -84,6 +84,7 @@ def fetch_pricing_exchange_rates(force_refresh: bool = False, config: dict[str, 
             "mxn_usd_rate": round(float(mxn_usd), 6),
             "rub_usd_rate": round(float(rub_usd or 0), 6),
             "rub_cny_rate": round(float(rub_cny), 6),
+            "currency_usd_rates": {currency: round(float(rate), 6) for currency, rate in rates.items() if rate > 0},
         },
         "raw": payload,
     }
@@ -103,7 +104,16 @@ def calculate_price(input_data: dict[str, Any]) -> dict[str, Any]:
         rates = exchange_rates.get("rates") if isinstance(exchange_rates.get("rates"), dict) else {}
         source["usd_cny_rate"] = rates.get("usd_cny_rate")
         source["mxn_usd_rate"] = rates.get("mxn_usd_rate")
+        source["rub_usd_rate"] = rates.get("rub_usd_rate")
         source["rub_cny_rate"] = rates.get("rub_cny_rate")
+        source["currency_usd_rates"] = rates.get("currency_usd_rates")
+        common = source.get("common") if isinstance(source.get("common"), dict) else None
+        if common is not None:
+            common["usd_cny_rate"] = source["usd_cny_rate"]
+            common["mxn_usd_rate"] = source["mxn_usd_rate"]
+            common["rub_usd_rate"] = source["rub_usd_rate"]
+            common["rub_cny_rate"] = source["rub_cny_rate"]
+            common["currency_usd_rates"] = source["currency_usd_rates"]
     result = pricing_service.pricing_result(source)
     if exchange_rates:
         result["exchange_rates"] = exchange_rates
@@ -115,7 +125,9 @@ def calculate_price(input_data: dict[str, Any]) -> dict[str, Any]:
             "rates": {
                 "usd_cny_rate": source.get("usd_cny_rate"),
                 "mxn_usd_rate": source.get("mxn_usd_rate"),
+                "rub_usd_rate": source.get("rub_usd_rate"),
                 "rub_cny_rate": source.get("rub_cny_rate"),
+                "currency_usd_rates": source.get("currency_usd_rates") or {},
             },
         }
         result["exchange_rate_mode"] = "manual"

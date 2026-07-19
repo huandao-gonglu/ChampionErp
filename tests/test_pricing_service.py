@@ -276,3 +276,67 @@ def test_pricing_reports_validation_errors_for_missing_required_inputs() -> None
         {"field": "margin_percent", "message": "目标利润率 + Mercado Libre 佣金 + 支付手续费不能大于等于 100%"},
     ]
     assert result["precheck_errors"] == result["errors"]
+
+
+def test_batch_pricing_keeps_live_rates_when_common_rates_are_empty() -> None:
+    result = pricing_service.pricing_result(
+        {
+            "usd_cny_rate": 6.7892,
+            "mxn_usd_rate": 17.521375,
+            "rub_cny_rate": 11.489603,
+            "currency_usd_rates": {"USD": 1, "MXN": 17.521375, "CLP": 942.61},
+            "common": {
+                "purchase_cost": 94,
+                "weight_kg": 0.3,
+                "usd_cny_rate": "",
+                "mxn_usd_rate": "",
+                "rub_cny_rate": "",
+            },
+            "targets": [
+                {"target_key": "mercadolibre:cbt", "platform": "mercadolibre", "site": "CBT", "currency": "USD", "commission_percent": 16, "target_margin_percent": 30},
+                {"target_key": "mercadolibre:mlm", "platform": "mercadolibre", "site": "MLM", "currency": "MXN", "commission_percent": 16, "target_margin_percent": 30},
+                {"target_key": "mercadolibre:mlc", "platform": "mercadolibre", "site": "MLC", "currency": "CLP", "commission_percent": 16, "target_margin_percent": 30},
+            ],
+        }
+    )
+
+    assert result["ok"] is True
+    assert [item["errors"] for item in result["results"]] == [[], [], []]
+    assert result["results"][0]["suggested_price"] > 0
+    assert result["results"][1]["suggested_price"] > 0
+    assert result["results"][2]["suggested_price"] > 0
+    assert result["results"][0]["shipping_cost_usd"] > 0
+    assert result["results"][0]["applied_price"] == result["results"][0]["suggested_price"]
+    assert result["results"][1]["applied_price"] == result["results"][1]["suggested_price"]
+
+
+def test_batch_pricing_treats_zero_applied_price_as_use_suggested_price() -> None:
+    result = pricing_service.pricing_result(
+        {
+            "common": {
+                "purchase_cost": 94,
+                "weight_kg": 0.3,
+                "usd_cny_rate": 6.7892,
+                "mxn_usd_rate": 17.521375,
+            },
+            "targets": [
+                {
+                    "target_key": "mercadolibre:mlm",
+                    "platform": "mercadolibre",
+                    "site": "MLM",
+                    "currency": "MXN",
+                    "commission_percent": 16,
+                    "target_margin_percent": 30,
+                    "shipping_cost_usd": 0,
+                    "applied_price": 0,
+                }
+            ],
+        }
+    )
+
+    target = result["results"][0]
+    assert target["ok"] is True
+    assert target["shipping_cost_usd"] > 0
+    assert target["suggested_price"] > 0
+    assert target["applied_price"] == target["suggested_price"]
+    assert target["margin_percent"] == 30.0

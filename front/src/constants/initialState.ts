@@ -18,6 +18,7 @@ export function createEmptyDraft(language = '', site = '', currency = ''): Marke
     categoryPath: '',
     attributes: {},
     price: '',
+    pricing: {},
     images: [],
     status: 'pending',
     language,
@@ -176,7 +177,9 @@ export function createDefaultPricingInput(): PricingInput {
     targetMarginPercent: 30,
     usdCnyRate: 0,
     mxnUsdRate: 0,
+    rubCnyRate: 0,
     exchangeRateMode: 'live',
     displayCurrencyMode: 'platform',
+    targets: [],
   }
 }

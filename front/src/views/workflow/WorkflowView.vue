@@ -95,6 +95,7 @@ const editorContext = ref<'product' | 'draftImage'>('product')
 const imageEditorTitle = ref('商品库图片编辑')
 const imageEditorDraftId = ref('')
 const imageEditorTargetLanguage = ref('')
+const stateReady = ref(false)
 const navItems = workflowNavItems
 const pathNavMap: Record<string, string> = {
   '/': 'dashboard',
@@ -127,7 +128,8 @@ const navPathMap: Record<string, string> = {
   logs: '/logs',
 }
 
-const pricingProductItems = computed(() => productsIndex.value.filter((item) => item.productId))
+const pricingDraftItems = computed(() => draftsIndex.value.filter((item) => item.draftId))
+const pricingDraftTitle = computed(() => currentDraft.value.title || currentDraftProductContext.value.title || currentDraftProductContext.value.sourceTitle || currentDraft.value.draftId)
 
 const mercadolibreNotificationUrl = computed(() => {
   const ml = storeConfig.value.mercadolibre as UnknownRecord | undefined
@@ -245,6 +247,13 @@ async function openDraftPrecheck(item: DraftIndexItem) {
   navigate('category')
 }
 
+async function openDraftPricing(item: DraftIndexItem) {
+  const ok = await store.loadDraftForPricing(item)
+  if (!ok) return
+  activeNav.value = 'pricing'
+  await router.push({ path: '/pricing', query: { draftId: item.draftId } })
+}
+
 async function deleteDraft(item: DraftIndexItem) {
   const title = item.title || item.productTitle || item.draftId
   if (!window.confirm(`确认删除草稿「${title}」？商品本身不会被删除。`)) return
@@ -279,9 +288,15 @@ async function copyProductId() {
   await copyToClipboard(product.value.productId)
 }
 
-async function selectPricingProduct(productId: string) {
-  const item = pricingProductItems.value.find((entry) => entry.productId === productId)
-  if (item) await store.loadProduct(item)
+async function selectPricingDraft(draftId: string) {
+  if (!draftId) return
+  const ok = await store.loadDraftForPricing(draftId)
+  if (ok) await router.replace({ path: '/pricing', query: { draftId } })
+}
+
+function openPricingDraftEditor() {
+  if (!currentDraft.value.draftId) return
+  draftEditorOpen.value = true
 }
 
 function navigate(key: string) {
@@ -290,10 +305,16 @@ function navigate(key: string) {
   if (route.fullPath !== nextPath) void router.push(nextPath)
   if (key === 'library') void store.refreshProductsIndex()
   if (key === 'drafts') void store.refreshDraftsIndex()
-  if (key === 'pricing' && !productsIndex.value.length) void store.refreshProductsIndex()
+  if (key === 'pricing' && !draftsIndex.value.length) void store.refreshDraftsIndex()
   if (key === 'logs') void store.refreshPublishLogs()
   if (key === 'mlItems') void store.refreshMercadoLibreRemoteItems()
   if (key === 'auth') void store.loadAiConfig()
+}
+
+async function applyPricingDraftFromRoute() {
+  const draftId = String(route.query.draftId || '').trim()
+  if (activeNav.value !== 'pricing' || !draftId || currentDraft.value.draftId === draftId) return
+  await store.loadDraftForPricing(draftId)
 }
 
 async function claimSelectedAndOpenDrafts() {
@@ -312,7 +333,9 @@ function toggleTheme() {
 
 onMounted(async () => {
   await store.loadState()
+  stateReady.value = true
   if (activeNav.value === 'auth') await store.loadAiConfig()
+  await applyPricingDraftFromRoute()
 })
 
 watch(
@@ -323,6 +346,7 @@ watch(
     activeNav.value = navItems.some((item) => item.key === tab) ? tab : pathNavMap[route.path] || 'dashboard'
     if (activeNav.value === 'mlItems' && previous !== activeNav.value) void store.refreshMercadoLibreRemoteItems()
     if (activeNav.value === 'auth' && previous !== activeNav.value) void store.loadAiConfig()
+    if (activeNav.value === 'pricing' && stateReady.value) void applyPricingDraftFromRoute()
   },
   { immediate: true },
 )
@@ -439,6 +463,7 @@ watch(
               @update-language="store.updateDraftLanguage"
               @edit-text="openDraftEditor"
               @edit-images="openDraftImageEditor"
+              @go-pricing="openDraftPricing"
               @go-publish="openDraftPrecheck"
               @delete-draft="deleteDraft"
               @delete-drafts="deleteDrafts"
@@ -452,17 +477,17 @@ watch(
               <PricingPanel
                 :input="pricingInput"
                 :result="pricingResult"
-                :product-items="pricingProductItems"
-                :product-id="product.productId"
-                :product-title="product.source.title || product.name || product.productId"
-                :source-platform="product.source.sourcePlatform"
-                :draft-price="product.drafts[activeMarketplace].price"
+                :draft-items="pricingDraftItems"
+                :draft-id="currentDraft.draftId"
+                :draft-title="pricingDraftTitle"
+                :product-context="currentDraftProductContext"
+                :draft-price="currentDraft.price"
                 :platform-options="platformOptions"
                 :loading="loading"
                 @calculate="store.calculatePrice"
-                @select-product="selectPricingProduct"
-                @refresh-products="store.refreshProductsIndex"
-                @edit-product="openProductEditor()"
+                @select-draft="selectPricingDraft"
+                @refresh-drafts="store.refreshDraftsIndex"
+                @edit-draft="openPricingDraftEditor"
               />
               <PricingChart :result="pricingResult" />
             </section>

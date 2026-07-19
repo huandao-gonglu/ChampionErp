@@ -23,21 +23,24 @@ function cssColor(token: string, fallback: string) {
   return value ? `rgb(${value})` : fallback
 }
 
+const labels = computed(() => (props.result?.results.length
+  ? props.result.results.map((item) => `${item.platform} · ${item.site}`)
+  : ['待核价']))
+
 const chartData = computed(() => ({
-  labels: ['售价 USD', '净收益 CNY', '利润 CNY', '运费 USD'],
+  labels: labels.value,
   datasets: [
     {
-      label: '当前核价结果',
-      borderRadius: 10,
-      backgroundColor: [
-        cssColor('--color-info-600', 'rgb(37 99 235)'),
-        cssColor('--color-success-500', 'rgb(34 197 94)'),
-        cssColor('--color-warning-500', 'rgb(245 158 11)'),
-        cssColor('--color-accent-500', 'rgb(113 113 122)'),
-      ],
-      data: props.result
-        ? [props.result.suggestedPriceUsd, props.result.netRevenueCny, props.result.profitCny, props.result.shippingCostUsd]
-        : [0, 0, 0, 0],
+      label: '利润 CNY',
+      borderRadius: 8,
+      backgroundColor: cssColor('--color-success-500', 'rgb(34 197 94)'),
+      data: props.result?.results.length ? props.result.results.map((item) => item.profitCny) : [0],
+    },
+    {
+      label: '总成本 CNY',
+      borderRadius: 8,
+      backgroundColor: cssColor('--color-warning-500', 'rgb(245 158 11)'),
+      data: props.result?.results.length ? props.result.results.map((item) => item.totalCostCny) : [0],
     },
   ],
 }))
@@ -47,7 +50,9 @@ const chartOptions = computed(() => ({
   maintainAspectRatio: false,
   plugins: {
     legend: {
-      display: false,
+      labels: {
+        color: cssColor('--color-accent-600', 'rgb(82 82 91)'),
+      },
     },
   },
   scales: {
@@ -76,10 +81,10 @@ const chartOptions = computed(() => ({
   <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
     <div class="flex items-center justify-between gap-3">
       <div>
-        <h2 class="card-title">利润图表</h2>
-        <p class="muted mt-1">Chart.js 展示核价关键指标。</p>
+        <h2 class="card-title">利润对比</h2>
+        <p class="muted mt-1">按目标市场展示利润和总成本。</p>
       </div>
-      <span class="badge-muted">live</span>
+      <span class="badge-muted">{{ props.result?.results.length || 0 }} 个市场</span>
     </div>
     <div class="mt-4 h-64">
       <Bar :data="chartData" :options="chartOptions" />

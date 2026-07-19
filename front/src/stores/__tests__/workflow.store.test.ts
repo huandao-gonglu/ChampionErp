@@ -4,7 +4,7 @@ import { createEmptyDraftDetail, createEmptyDraftProductContext, createEmptyProd
 import { useWorkflowStore } from '@/stores/workflow'
 import * as workflowApi from '@/api/workflow'
 import type { AppStateResponse, DraftMutationResponse, ProductMutationResponse } from '@/api/workflow'
-import type { DraftDetail, DraftIndexItem, Product } from '@/types/workflow'
+import type { DraftDetail, DraftIndexItem, PricingResult, Product } from '@/types/workflow'
 
 vi.mock('@/api/workflow', () => ({
   fetchState: vi.fn(),
@@ -354,6 +354,153 @@ describe('workflow store live API flow', () => {
       language: 'es',
       currency: 'USD',
       targetSites: [selectedTarget],
+    }))
+  })
+
+  it('does not reuse stale draft price as pricing applied price', async () => {
+    const draft = createEmptyDraftDetail('mercadolibre')
+    draft.draftId = 'draft-1'
+    draft.productId = 'product-1'
+    draft.sourceProductId = 'product-1'
+    draft.platform = 'mercadolibre'
+    draft.platforms = ['mercadolibre']
+    draft.site = 'CBT'
+    draft.language = 'es'
+    draft.currency = 'USD'
+    draft.price = '94'
+    draft.targetSites = [{ platform: 'mercadolibre', site: 'CBT', language: 'es', currency: 'USD' }]
+    draft.pricing = {}
+    vi.mocked(workflowApi.loadDraft).mockResolvedValue(draftMutation(draft))
+
+    const store = useWorkflowStore()
+    store.platformOptions = [
+      { key: 'mercadolibre', label: '美客多', sites: [{ key: 'CBT', code: 'CBT', label: '全局', language: 'es', currency: 'USD' }] },
+    ]
+    await store.loadDraftForPricing('draft-1')
+
+    expect(store.pricingInput.targets).toHaveLength(1)
+    expect(store.pricingInput.targets[0].targetKey).toBe('mercadolibre:cbt')
+    expect(store.pricingInput.targets[0].appliedPrice).toBe(0)
+    expect(store.currentDraft.price).toBe('94')
+  })
+
+  it('syncs calculated applied prices back into pricing inputs', async () => {
+    const draft = createEmptyDraftDetail('mercadolibre')
+    draft.draftId = 'draft-1'
+    draft.productId = 'product-1'
+    draft.sourceProductId = 'product-1'
+    draft.platform = 'mercadolibre'
+    draft.platforms = ['mercadolibre']
+    draft.site = 'CBT'
+    draft.language = 'es'
+    draft.currency = 'USD'
+    draft.targetSites = [
+      { platform: 'mercadolibre', site: 'CBT', language: 'es', currency: 'USD' },
+      { platform: 'mercadolibre', site: 'MLM', language: 'es', currency: 'MXN' },
+    ]
+    draft.pricing = {}
+    const pricingResult: PricingResult = {
+      results: [
+        {
+          targetKey: 'mercadolibre:cbt',
+          platform: 'mercadolibre',
+          site: 'CBT',
+          currency: 'USD',
+          suggestedPrice: 23.45,
+          suggestedPriceUsd: 23.45,
+          suggestedPriceCny: 159.2,
+          appliedPrice: 23.45,
+          shippingCostUsd: 2.7,
+          shippingCostCny: 18.33,
+          totalCostCny: 112.33,
+          netRevenueCny: 159.2,
+          profitCny: 47.76,
+          marginPercent: 30,
+          commissionPercent: 16,
+          paymentFeePercent: 0,
+          targetMarginPercent: 30,
+          usdCnyRate: 6.7892,
+          mxnUsdRate: 17.521375,
+          rubCnyRate: 11.489603,
+          isLoss: false,
+          errors: [],
+          raw: {},
+        },
+        {
+          targetKey: 'mercadolibre:mlm',
+          platform: 'mercadolibre',
+          site: 'MLM',
+          currency: 'MXN',
+          suggestedPrice: 410.88,
+          suggestedPriceUsd: 23.45,
+          suggestedPriceCny: 159.2,
+          appliedPrice: 410.88,
+          shippingCostUsd: 2.7,
+          shippingCostCny: 18.33,
+          totalCostCny: 112.33,
+          netRevenueCny: 159.2,
+          profitCny: 47.76,
+          marginPercent: 30,
+          commissionPercent: 16,
+          paymentFeePercent: 0,
+          targetMarginPercent: 30,
+          usdCnyRate: 6.7892,
+          mxnUsdRate: 17.521375,
+          rubCnyRate: 11.489603,
+          isLoss: false,
+          errors: [],
+          raw: {},
+        },
+      ],
+      suggestedPriceMxn: 0,
+      suggestedPriceUsd: 23.45,
+      suggestedPriceCny: 159.2,
+      wbPriceRub: 0,
+      shippingCostUsd: 2.7,
+      shippingCostCny: 18.33,
+      totalCostCny: 112.33,
+      netRevenueCny: 159.2,
+      profitCny: 47.76,
+      marginPercent: 30,
+      usdCnyRate: 6.7892,
+      mxnUsdRate: 17.521375,
+      rubUsdRate: 77.999985,
+      rubCnyRate: 11.489603,
+      exchangeRateMode: 'live',
+      exchangeRateSource: 'test://rates',
+      exchangeRateFetchedAt: '2026-07-19T00:00:00Z',
+      exchangeRateCached: false,
+    }
+    vi.mocked(workflowApi.loadDraft).mockResolvedValue(draftMutation(draft))
+    vi.mocked(workflowApi.calculatePrice).mockResolvedValue(pricingResult)
+    vi.mocked(workflowApi.saveDraft).mockImplementation(async (savedDraft) => draftMutation(savedDraft))
+
+    const store = useWorkflowStore()
+    store.platformOptions = [
+      {
+        key: 'mercadolibre',
+        label: '美客多',
+        sites: [
+          { key: 'CBT', code: 'CBT', label: '全局', language: 'es', currency: 'USD' },
+          { key: 'MLM', code: 'MLM', label: '墨西哥', language: 'es', currency: 'MXN' },
+        ],
+      },
+    ]
+    await store.loadDraftForPricing('draft-1')
+    expect(store.pricingInput.targets.map((target) => target.appliedPrice)).toEqual([0, 0])
+
+    await store.calculatePrice()
+
+    expect(store.pricingInput.targets.map((target) => target.appliedPrice)).toEqual([23.45, 410.88])
+    expect(store.pricingInput.targets.map((target) => target.shippingCostUsd)).toEqual([2.7, 2.7])
+    expect(store.currentDraft.price).toBe('23.45')
+    expect(workflowApi.saveDraft).toHaveBeenCalledWith(expect.objectContaining({
+      pricing: expect.objectContaining({
+        targets: expect.objectContaining({
+          'mercadolibre:cbt': expect.objectContaining({ appliedPrice: 23.45 }),
+          'mercadolibre:mlm': expect.objectContaining({ appliedPrice: 410.88 }),
+        }),
+      }),
     }))
   })
 })

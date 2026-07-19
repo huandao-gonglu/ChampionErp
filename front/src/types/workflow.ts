@@ -100,6 +100,7 @@ export interface MarketplaceDraft {
   categoryPath: string
   attributes: Record<string, string>
   price: string
+  pricing: UnknownRecord
   images: DraftImageRef[]
   status: WorkflowStatus
   language: string
@@ -182,11 +183,54 @@ export interface PricingInput {
   targetMarginPercent: number
   usdCnyRate: number
   mxnUsdRate: number
+  rubCnyRate: number
   exchangeRateMode: 'live' | 'manual'
   displayCurrencyMode: 'platform' | 'cny'
+  targets: PricingTargetInput[]
+}
+
+export interface PricingTargetInput {
+  targetKey: string
+  platform: Marketplace
+  site: string
+  currency: string
+  commissionPercent: number
+  paymentFeePercent: number
+  targetMarginPercent: number
+  shippingCostUsd: number
+  shippingCostCny: number
+  russiaFreightRate: number
+  appliedPrice: number
+}
+
+export interface PricingTargetResult {
+  targetKey: string
+  platform: Marketplace
+  site: string
+  currency: string
+  suggestedPrice: number
+  suggestedPriceUsd: number
+  suggestedPriceCny: number
+  appliedPrice: number
+  shippingCostUsd: number
+  shippingCostCny: number
+  totalCostCny: number
+  netRevenueCny: number
+  profitCny: number
+  marginPercent: number
+  commissionPercent: number
+  paymentFeePercent: number
+  targetMarginPercent: number
+  usdCnyRate: number
+  mxnUsdRate: number
+  rubCnyRate: number
+  isLoss: boolean
+  errors: Array<UnknownRecord | string>
+  raw: UnknownRecord
 }
 
 export interface PricingResult {
+  results: PricingTargetResult[]
   suggestedPriceMxn: number
   suggestedPriceUsd: number
   suggestedPriceCny: number

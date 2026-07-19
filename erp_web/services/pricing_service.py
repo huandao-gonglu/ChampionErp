@@ -9,6 +9,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from erp_web.marketplace_registry import marketplace_site
+
 
 ML_SHIPPING_FALLBACK_TABLE = [
     {"max_g": 100, "usd": 1.70},
@@ -150,6 +152,264 @@ def _base_values(values: dict[str, Any]) -> dict[str, float]:
     }
 
 
+def pricing_target_key(platform: str, site: str) -> str:
+    platform_key = str(platform or "").strip().lower()
+    site_key = str(site or "").strip().upper()
+    return f"{platform_key}:{site_key}" if site_key else platform_key
+
+
+def _record(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _target_value(target: dict[str, Any], source: dict[str, Any], *keys: str, default: Any = "") -> Any:
+    for container in (target, source):
+        for key in keys:
+            value = container.get(key)
+            if value not in (None, ""):
+                return value
+    return default
+
+
+def _target_number(target: dict[str, Any], source: dict[str, Any], *keys: str, default: float = 0.0) -> float:
+    return number_value(_target_value(target, source, *keys, default=default), default)
+
+
+def _currency_usd_rates(source: dict[str, Any]) -> dict[str, float]:
+    raw = source.get("currency_usd_rates") or source.get("currencyUsdRates")
+    rates_record = _record(source.get("rates"))
+    if not raw and isinstance(rates_record.get("currency_usd_rates"), dict):
+        raw = rates_record.get("currency_usd_rates")
+    rates: dict[str, float] = {"USD": 1.0}
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            currency = str(key or "").strip().upper()
+            rate = number_value(value)
+            if currency and rate > 0:
+                rates[currency] = rate
+    for key, currency in (
+        ("mxn_usd_rate", "MXN"),
+        ("rub_usd_rate", "RUB"),
+        ("brl_usd_rate", "BRL"),
+        ("clp_usd_rate", "CLP"),
+        ("cop_usd_rate", "COP"),
+        ("ars_usd_rate", "ARS"),
+    ):
+        rate = number_value(source.get(key))
+        if rate > 0:
+            rates[currency] = rate
+    return rates
+
+
+def _currency_per_usd(currency: str, source: dict[str, Any], values: dict[str, Any]) -> float:
+    currency_key = str(currency or "").strip().upper() or "USD"
+    if currency_key == "USD":
+        return 1.0
+    if currency_key == "CNY":
+        return values["usd_cny_rate"]
+    rates = _currency_usd_rates(source)
+    if rates.get(currency_key, 0) > 0:
+        return rates[currency_key]
+    if currency_key == "MXN":
+        return values["mxn_usd_rate"]
+    if currency_key == "RUB" and values["rub_cny_rate"] > 0 and values["usd_cny_rate"] > 0:
+        return values["rub_cny_rate"] * values["usd_cny_rate"]
+    return 0.0
+
+
+def _currency_per_cny(currency: str, source: dict[str, Any], values: dict[str, Any]) -> float:
+    currency_key = str(currency or "").strip().upper() or "USD"
+    if currency_key == "CNY":
+        return 1.0
+    if currency_key == "RUB" and values["rub_cny_rate"] > 0:
+        return values["rub_cny_rate"]
+    rate_per_usd = _currency_per_usd(currency_key, source, values)
+    return rate_per_usd / values["usd_cny_rate"] if rate_per_usd > 0 and values["usd_cny_rate"] > 0 else 0.0
+
+
+def _target_defaults(platform: str) -> dict[str, float]:
+    platform_key = str(platform or "").strip().lower()
+    if platform_key in {"yandex", "ozon"}:
+        return {"commission_percent": 20.0, "payment_fee_percent": 0.0, "target_margin_percent": 30.0}
+    return {"commission_percent": 16.0, "payment_fee_percent": 0.0, "target_margin_percent": 30.0}
+
+
+def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], index: int = 0) -> dict[str, Any]:
+    source = {**common, **target}
+    platform = str(_target_value(target, source, "platform", default="mercadolibre") or "mercadolibre").strip().lower()
+    site_config = marketplace_site(platform, str(_target_value(target, source, "site", "site_id", default="")))
+    site = str(_target_value(target, source, "site", "site_id", default=site_config.get("code") or "") or "").strip() or site_config.get("code", "")
+    currency = str(_target_value(target, source, "currency", "currency_id", default=site_config.get("currency") or "USD") or "USD").strip().upper()
+    defaults = _target_defaults(platform)
+    commission_percent = _target_number(
+        target,
+        source,
+        "commission_percent",
+        "commissionPercent",
+        "ml_commission_percent",
+        "wb_commission_percent",
+        default=defaults["commission_percent"],
+    )
+    payment_fee_percent = _target_number(target, source, "payment_fee_percent", "paymentFeePercent", default=defaults["payment_fee_percent"])
+    target_margin_percent = _target_number(target, source, "target_margin_percent", "targetMarginPercent", "margin_percent", default=defaults["target_margin_percent"])
+    source.update(
+        {
+            "platform": platform,
+            "site": site,
+            "commission_percent": commission_percent,
+            "ml_commission_percent": commission_percent,
+            "payment_fee_percent": payment_fee_percent,
+            "target_margin_percent": target_margin_percent,
+            "margin_percent": target_margin_percent,
+        }
+    )
+    values = normalize_pricing_input(source)
+    base = _base_values(values)
+    errors: list[dict[str, str]] = []
+    if values["cost_cny"] <= 0:
+        errors.append({"field": "cost_cny", "message": "采购成本缺失"})
+    if base["billable_kg"] <= 0:
+        errors.append({"field": "weight_or_dimensions", "message": "重量或尺寸缺失"})
+    if values["usd_cny_rate"] <= 0:
+        errors.append({"field": "usd_cny_rate", "message": "USD/CNY 汇率缺失"})
+
+    shipping_usd = 0.0
+    shipping_cny = 0.0
+    prep_fee_cny = values["prep_fee_cny"] if platform == "mercadolibre" else 0.0
+    if platform == "mercadolibre":
+        shipping_usd_input = _target_number(target, source, "shipping_cost_usd", "shippingCostUsd", "ml_shipping_usd", "shipping_usd", default=0)
+        shipping_usd = shipping_usd_input if shipping_usd_input > 0 else values["ml_shipping_usd"]
+        shipping_cny = shipping_usd * values["usd_cny_rate"]
+        total_cost_cny = base["common_base_cny"] + prep_fee_cny + shipping_cny
+    else:
+        shipping_cny = _target_number(target, source, "shipping_cost_cny", "shippingCostCny", default=0)
+        freight_rate = _target_number(target, source, "russia_freight_rate", "russiaFreightRate", default=values["russia_freight_rate"])
+        if shipping_cny <= 0 and freight_rate > 0:
+            shipping_cny = base["billable_kg"] * freight_rate
+        shipping_usd = shipping_cny / values["usd_cny_rate"] if values["usd_cny_rate"] > 0 else 0.0
+        total_cost_cny = base["common_base_cny"] + shipping_cny
+
+    commission = commission_percent / 100
+    payment_fee = payment_fee_percent / 100
+    margin = target_margin_percent / 100
+    denominator = 1 - commission - payment_fee - margin
+    if denominator <= 0:
+        errors.append({"field": "target_margin_percent", "message": "目标利润率 + 佣金 + 支付手续费不能大于等于 100%"})
+    currency_rate_cny = _currency_per_cny(currency, source, values)
+    if currency_rate_cny <= 0:
+        errors.append({"field": "currency_rate", "message": f"{currency}/CNY 汇率缺失"})
+
+    safe_denominator = max(denominator, 0.01)
+    revenue_cny = total_cost_cny / safe_denominator if total_cost_cny > 0 else 0.0
+    suggested_price = revenue_cny * currency_rate_cny if currency_rate_cny > 0 else 0.0
+    suggested_price_usd = revenue_cny / values["usd_cny_rate"] if values["usd_cny_rate"] > 0 else 0.0
+    applied_price_input = _target_number(target, source, "applied_price", "appliedPrice", "sale_price", "price", default=0)
+    applied_price = applied_price_input if applied_price_input > 0 else suggested_price
+    actual_revenue_cny = applied_price / currency_rate_cny if applied_price > 0 and currency_rate_cny > 0 else revenue_cny
+    commission_cny = actual_revenue_cny * commission
+    payment_fee_cny = actual_revenue_cny * payment_fee
+    profit_cny = actual_revenue_cny - commission_cny - payment_fee_cny - total_cost_cny
+    net_revenue_cny = actual_revenue_cny - commission_cny - payment_fee_cny - shipping_cny
+    profit_percent = (profit_cny / actual_revenue_cny * 100) if actual_revenue_cny else 0.0
+    key = str(_target_value(target, source, "target_key", "targetKey", default=pricing_target_key(platform, site)) or "").strip() or pricing_target_key(platform, site)
+    return {
+        "ok": not errors,
+        "target_key": key,
+        "platform": platform,
+        "site": site,
+        "currency": currency,
+        "index": index,
+        "suggested_price": round(suggested_price, 2),
+        "suggested_price_usd": round(suggested_price_usd, 2),
+        "suggested_price_cny": round(revenue_cny, 2),
+        "applied_price": round(applied_price, 2),
+        "shipping_cost_usd": round(shipping_usd, 2),
+        "shipping_cost_cny": round(shipping_cny, 2),
+        "total_cost_cny": round(total_cost_cny, 2),
+        "net_revenue_cny": round(net_revenue_cny, 2),
+        "profit_cny": round(profit_cny, 2),
+        "profit_usd": round(profit_cny / values["usd_cny_rate"], 2) if values["usd_cny_rate"] > 0 else 0.0,
+        "margin_percent": round(profit_percent, 2),
+        "commission_percent": round(commission_percent, 2),
+        "payment_fee_percent": round(payment_fee_percent, 2),
+        "target_margin_percent": round(target_margin_percent, 2),
+        "usd_cny_rate": round(values["usd_cny_rate"], 4),
+        "mxn_usd_rate": round(values["mxn_usd_rate"], 4),
+        "rub_cny_rate": round(values["rub_cny_rate"], 6),
+        "currency_per_cny": round(currency_rate_cny, 6),
+        "is_loss": profit_cny < 0,
+        "errors": errors,
+        "precheck_errors": errors,
+        "input": {**values, "currency": currency, "target_key": key},
+        "breakdown": {
+            "billable_weight_kg": base["billable_kg"],
+            "billable_weight_g": int(round(base["billable_kg"] * 1000)) if base["billable_kg"] else 0,
+            "actual_weight_kg": values["weight_kg"],
+            "volume_weight_kg": base["volume_weight_kg"],
+            "common_base_cny": round(base["common_base_cny"], 2),
+            "prep_fee_cny": round(prep_fee_cny, 2),
+            "shipping_cny": round(shipping_cny, 2),
+            "cost_cny": round(values["cost_cny"], 2),
+            "freight_cny": round(values["freight_cny"], 2),
+            "commission_cny": round(commission_cny, 2),
+            "payment_fee_cny": round(payment_fee_cny, 2),
+            "target_margin_percent": round(target_margin_percent, 2),
+        },
+        "formula": "建议售价 = 总成本 / (1 - 平台佣金 - 支付手续费 - 目标利润率)",
+    }
+
+
+def calculate_pricing_batch(data: dict[str, Any]) -> dict[str, Any]:
+    source = data if isinstance(data, dict) else {}
+    common = _record(source.get("common"))
+    targets = source.get("targets")
+    if not isinstance(targets, list) or not targets:
+        return calculate_pricing(source)
+    common_source = {**source, **common}
+    for key, value in source.items():
+        if key in {"common", "targets"}:
+            continue
+        if value not in (None, "", [], {}):
+            common_source[key] = value
+    common_source.pop("targets", None)
+    results = [calculate_target_pricing(common_source, _record(target), index) for index, target in enumerate(targets)]
+    primary = results[0] if results else {}
+    errors = [error for result in results for error in result.get("errors", []) if isinstance(error, dict)]
+    response: dict[str, Any] = {
+        "ok": bool(results) and all(bool(result.get("ok")) for result in results),
+        "mode": "batch",
+        "results": results,
+        "targets": results,
+        "errors": errors,
+        "precheck_errors": errors,
+        "input": {"common": common_source, "targets": targets},
+    }
+    if primary:
+        response.update(
+            {
+                "platform": primary.get("platform"),
+                "site": primary.get("site"),
+                "currency": primary.get("currency"),
+                "suggested_price": primary.get("suggested_price"),
+                "suggested_price_usd": primary.get("suggested_price_usd"),
+                "suggested_price_cny": primary.get("suggested_price_cny"),
+                "suggested_price_mxn": primary.get("suggested_price") if primary.get("currency") == "MXN" else 0,
+                "sale_price_mxn": primary.get("applied_price") if primary.get("currency") == "MXN" else 0,
+                "shipping_cost_usd": primary.get("shipping_cost_usd"),
+                "shipping_cost_cny": primary.get("shipping_cost_cny"),
+                "total_cost_cny": primary.get("total_cost_cny"),
+                "net_revenue_cny": primary.get("net_revenue_cny"),
+                "profit_cny": primary.get("profit_cny"),
+                "profit_percent": primary.get("margin_percent"),
+                "margin_percent": primary.get("margin_percent"),
+                "is_loss": primary.get("is_loss"),
+                "breakdown": primary.get("breakdown"),
+                "formula": primary.get("formula"),
+            }
+        )
+    return response
+
+
 def calculate_pricing(data: dict[str, Any]) -> dict[str, Any]:
     values = normalize_pricing_input(data)
     base = _base_values(values)
@@ -274,6 +534,8 @@ def reverse_price_from_net_proceeds(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def pricing_result(data: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(data, dict) and isinstance(data.get("targets"), list):
+        return calculate_pricing_batch(data)
     mode = str((data or {}).get("mode") or "").strip().lower()
     if mode in {"reverse_profit", "profit"} or number_value((data or {}).get("target_profit_cny")) > 0:
         return reverse_price_from_profit(data)

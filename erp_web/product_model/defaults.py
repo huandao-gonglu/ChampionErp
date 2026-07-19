@@ -105,6 +105,15 @@ def default_pricing(platform: str = "") -> dict[str, Any]:
         "is_loss": False,
         "pricing_errors": [],
         "checked_at": "",
+        "common": {},
+        "targets": {},
+        "exchange_rates": {},
+        "exchangeRates": {},
+        "target_key": "",
+        "targetKey": "",
+        "applied_price": "",
+        "appliedPrice": "",
+        "updatedAt": "",
     }
 
 
