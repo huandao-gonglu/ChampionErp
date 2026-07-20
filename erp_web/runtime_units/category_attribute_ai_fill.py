@@ -44,7 +44,7 @@ def _normalize_attr(attr: Any, required_fallback: bool = False) -> dict[str, Any
 
 def _attribute_schema(category_record: dict[str, Any] | None) -> list[dict[str, Any]]:
     record = category_record if isinstance(category_record, dict) else {}
-    attrs = record.get("attributes_cache") if isinstance(record.get("attributes_cache"), dict) else {}
+    attrs = record.get("attributes") if isinstance(record.get("attributes"), dict) else {}
     required = [_normalize_attr(attr, True) for attr in (attrs.get("required") if isinstance(attrs.get("required"), list) else [])]
     optional = [_normalize_attr(attr, False) for attr in (attrs.get("optional") if isinstance(attrs.get("optional"), list) else [])]
     return [attr for attr in required + optional if attr.get("id")]

@@ -19,6 +19,16 @@ export interface MarketplaceTargetSite {
   site: string
   language: string
   currency: string
+  categoryId?: string
+  categoryPath?: string
+  attributes?: Record<string, string>
+  validationErrors?: Array<UnknownRecord | string>
+  categoryPrecheck?: UnknownRecord
+  publishStatus?: string
+  status?: WorkflowStatus | string
+  lastPrecheck?: UnknownRecord
+  lastPrecheckTarget?: UnknownRecord
+  publishLogs?: UnknownRecord[]
 }
 
 export type WorkflowStatus =
@@ -116,6 +126,9 @@ export interface MarketplaceDraft {
   saleTerms: UnknownRecord[]
   allowGtinExemption: boolean
   validationErrors: Array<UnknownRecord | string>
+  publishStatus: string
+  lastPrecheck: UnknownRecord
+  lastPrecheckTarget: UnknownRecord
 }
 
 export interface Product {

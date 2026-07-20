@@ -93,7 +93,7 @@ def validate_mercadolibre_draft(product: dict[str, Any], config: dict[str, Any])
     if not category_id:
         errors.append(precheck_item("CATEGORY_MISSING", "category_id", "缺少 Mercado Libre 类目 ID", "error", "前往类目属性页选择类目"))
     elif not category_path:
-        warnings.append(precheck_item("CATEGORY_PATH_MISSING", "category_path", "类目路径为空，建议重新选择本地类目缓存", "warning", "前往类目属性页重新选择类目"))
+        warnings.append(precheck_item("CATEGORY_PATH_MISSING", "category_path", "类目路径为空，建议重新实时匹配类目", "warning", "前往类目属性页重新选择类目"))
     if summary["missing"]:
         for field in summary["missing"]:
             attr_id = str(field).split(".", 1)[-1]

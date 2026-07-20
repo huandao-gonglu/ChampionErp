@@ -1,18 +1,54 @@
 from __future__ import annotations
 
 import json
+import re
 import urllib.parse
 from typing import Any
 
-from .category_cache import (
-    cached_mercadolibre_categories,
-    expanded_category_keywords,
-    load_ml_category_cache,
-    localize_mercadolibre_category_path,
-    save_ml_category_cache,
-)
-from .common import CN_CATEGORY_TERMS, CN_WB_TERMS, ML_CATEGORY_SHIPPING_CACHE_PATH
+from .common import CN_CATEGORY_TERMS, CN_WB_TERMS, ML_CATEGORY_CN_HINTS, ML_CATEGORY_SHIPPING_CACHE_PATH, ML_CATEGORY_WORDS
 from .config_http import request_json, request_ozon_json
+
+
+def has_cjk(value: str) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in value)
+
+
+def expanded_category_keywords(keyword: str, mapping: dict[str, list[str]]) -> list[str]:
+    raw = " ".join(keyword.split())
+    terms: list[str] = []
+    ascii_term = re.sub(r"[^\w\s-]", " ", raw, flags=re.ASCII)
+    ascii_term = " ".join(ascii_term.split())
+    if ascii_term:
+        terms.append(ascii_term)
+    for cn, mapped in mapping.items():
+        if cn in raw:
+            terms.extend(mapped)
+    if not terms and has_cjk(raw):
+        for char in raw:
+            terms.extend(mapping.get(char, []))
+    unique: list[str] = []
+    for term in terms:
+        term = term.strip()
+        if term and term.lower() not in [item.lower() for item in unique]:
+            unique.append(term)
+    return unique
+
+
+def localize_mercadolibre_category_path(path: str) -> str:
+    cn_parts: list[str] = []
+    for part in [item.strip() for item in path.split("/") if item.strip()]:
+        hit = ""
+        for en, cn in sorted(ML_CATEGORY_WORDS.items(), key=lambda item: len(item[0]), reverse=True):
+            if re.search(rf"\b{re.escape(en)}\b", part, flags=re.I):
+                hit = re.sub(rf"\b{re.escape(en)}\b", cn, part, flags=re.I)
+                break
+        for en, cn in ML_CATEGORY_CN_HINTS.items():
+            if not hit and en.casefold() in part.casefold():
+                hit = cn
+                break
+        cn_parts.append(hit or part)
+    cn_path = " / ".join(cn_parts)
+    return f"{cn_path}  |  {path}" if cn_path and cn_path != path else path
 
 def fetch_wildberries_shop_name(token: str) -> str:
     if not token.strip():
@@ -37,9 +73,6 @@ def fetch_wildberries_shop_name(token: str) -> str:
 def search_mercadolibre_categories(keyword: str, token: str = "") -> list[tuple[str, str]]:
     if not keyword.strip():
         raise RuntimeError("请先填写产品名或品类。")
-    cached = cached_mercadolibre_categories(keyword)
-    if cached:
-        return filter_mercadolibre_remote_categories(cached, token)
     results = []
     seen = set()
     terms = expanded_category_keywords(keyword, CN_CATEGORY_TERMS)
@@ -65,9 +98,6 @@ def search_mercadolibre_categories(keyword: str, token: str = "") -> list[tuple[
                 results.append((category_id, f"{label}  |  关键词: {term}"))
     if results:
         results = filter_mercadolibre_remote_categories(results, token)
-        cache = load_ml_category_cache()
-        cache[keyword.strip()] = [[category_id, label] for category_id, label in results[:50]]
-        save_ml_category_cache(cache)
     return results[:50]
 
 

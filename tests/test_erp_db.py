@@ -145,44 +145,5 @@ class ErpDbTests(unittest.TestCase):
                 conn.close()
             self.assertEqual(media_count, 1)
 
-    def test_import_category_cache_searches_chinese_and_loads_required_attributes(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            app_dir = Path(tmp)
-            cache = {
-                "platform": "mercadolibre",
-                "site": "MLM",
-                "updated_at": "2026-05-29T10:00:00Z",
-                "records": [
-                    {
-                        "platform": "mercadolibre",
-                        "site": "MLM",
-                        "category_id": "MLM999",
-                        "name_original": "Necklaces",
-                        "name_cn": "项链",
-                        "path_original": ["Jewelry", "Necklaces"],
-                        "path_cn": ["珠宝", "项链"],
-                        "keywords": ["项链", "吊坠"],
-                        "attributes_cache": {
-                            "required": [
-                                {"id": "BRAND", "name": "品牌", "required": True},
-                                {"id": "MODEL", "name": "型号", "required": True},
-                            ],
-                            "optional": [{"id": "COLOR", "name": "颜色", "required": False}],
-                        },
-                    }
-                ],
-            }
-
-            imported = erp_db.import_category_cache(app_dir, cache)
-            results = erp_db.search_category_records(app_dir, "mercadolibre", query="项链", site="MLM")
-            record = erp_db.find_category_record(app_dir, "mercadolibre", "MLM999", site="MLM")
-            status = erp_db.category_cache_status(app_dir, "mercadolibre")
-
-            self.assertEqual(imported, 1)
-            self.assertEqual(results[0]["category_id"], "MLM999")
-            self.assertEqual(record["attributes_cache"]["required"][0]["id"], "BRAND")
-            self.assertEqual(status["records"], 1)
-
-
 if __name__ == "__main__":
     unittest.main()

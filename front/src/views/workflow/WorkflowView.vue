@@ -46,7 +46,6 @@ const {
   categoryResultTranslations,
   categoryResultTranslationsSource,
   categoryResultTranslating,
-  categoryCacheStatus,
   categoryPrecheck,
   precheck,
   payloadPreview,
@@ -76,6 +75,8 @@ const {
   authLink,
   currentDraft,
   currentDraftProductContext,
+  currentPublishTargets,
+  selectedPublishTarget,
   workflowSteps,
   progressPercent,
   imagePool,
@@ -90,6 +91,7 @@ const { copied: productIdCopied, copy: copyToClipboard } = useClipboard()
 const activeNav = ref('dashboard')
 const editorOpen = ref(false)
 const draftEditorOpen = ref(false)
+const categoryEditorOpen = ref(false)
 const editorMode = ref<'text' | 'images'>('text')
 const editorContext = ref<'product' | 'draftImage'>('product')
 const imageEditorTitle = ref('商品库图片编辑')
@@ -217,6 +219,11 @@ async function openDraftImageEditor(item: DraftIndexItem) {
   editorOpen.value = true
 }
 
+async function openDraftCategoryEditor(item: DraftIndexItem) {
+  await store.loadDraft(item)
+  categoryEditorOpen.value = true
+}
+
 async function translateEditorImages() {
   if (editorContext.value === 'draftImage') {
     await store.translateImages(imageEditorTargetLanguage.value, {
@@ -242,8 +249,7 @@ async function editEditorImages(prompt: string) {
 }
 
 async function openDraftPrecheck(item: DraftIndexItem) {
-  store.setMarketplace(item.platform)
-  await store.loadProduct(productIndexFromDraft(item))
+  await store.loadDraft(item)
   navigate('category')
 }
 
@@ -281,6 +287,10 @@ function closeProductEditor() {
 
 function closeDraftEditor() {
   draftEditorOpen.value = false
+}
+
+function closeCategoryEditor() {
+  categoryEditorOpen.value = false
 }
 
 async function copyProductId() {
@@ -463,6 +473,7 @@ watch(
               @update-language="store.updateDraftLanguage"
               @edit-text="openDraftEditor"
               @edit-images="openDraftImageEditor"
+              @edit-category="openDraftCategoryEditor"
               @go-pricing="openDraftPricing"
               @go-publish="openDraftPrecheck"
               @delete-draft="deleteDraft"
@@ -496,10 +507,11 @@ watch(
           <div v-else-if="activeNav === 'category'" class="space-y-6">
             <PageHeader title="发布预检" description="类目搜索、必填属性填充、payload 预览、发布前校验。" />
             <CategoryPrecheckPanel
-              :product="product"
-              :active-marketplace="activeMarketplace"
+              :draft="currentDraft"
+              :product-context="currentDraftProductContext"
+              :publish-targets="currentPublishTargets"
+              :selected-publish-target="selectedPublishTarget"
               :platform-options="platformOptions"
-              :claim-platforms="collectForm.selectedClaimPlatforms"
               :category="category"
               :category-query="categoryQuery"
               :category-results="categoryResults"
@@ -513,13 +525,9 @@ watch(
               :category-precheck="categoryPrecheck"
               :precheck="precheck"
               :payload-preview="payloadPreview"
-              :products-index="productsIndex"
-              :category-cache-status="categoryCacheStatus"
               :loading="loading"
               @update-category-query="categoryQuery = $event"
-              @set-marketplace="setMarketplace"
-              @set-marketplace-site="store.setMarketplaceSite"
-              @set-claim-platforms="store.setClaimPlatforms"
+              @select-publish-target="store.selectPublishTarget"
               @search-category="store.searchCategory"
               @suggest-category="store.suggestCategoryByAi"
               @select-category="store.selectCategory"
@@ -527,13 +535,9 @@ watch(
               @set-translate-attributes-enabled="store.setCategoryAttributeTranslationEnabled"
               @fill-attributes="store.fillAttributesByAi"
               @category-precheck="store.runCategoryOnlyPrecheck"
-              @refresh-categories="store.refreshCategories"
               @precheck="store.runPrecheck"
               @preview-payload="store.previewPayload"
               @publish="() => store.enqueuePublish()"
-              @claim-current="claimCurrentAndOpenDrafts"
-              @load-product="store.loadProduct"
-              @refresh-products="store.refreshProductsIndex"
             />
           </div>
 
@@ -716,6 +720,54 @@ watch(
           @generate-copy="() => store.generateCopy(true)"
           @save="store.saveCurrentDraft"
           @close="closeDraftEditor"
+        />
+      </div>
+    </div>
+    <div v-if="categoryEditorOpen" class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/50 p-4 backdrop-blur-sm" @click.self="closeCategoryEditor">
+      <div class="w-full max-w-7xl rounded-3xl bg-white p-4 shadow-2xl ring-1 ring-slate-200 dark:bg-dark-900 dark:ring-dark-700 sm:p-6">
+        <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 class="text-xl font-black text-slate-950 dark:text-white">类目/属性</h2>
+            <p class="mt-1 text-sm text-slate-500 dark:text-slate-300">编辑当前草稿各目标站点的类目和平台属性。</p>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <button class="btn btn-primary" :disabled="loading || !currentDraft.draftId" @click="store.saveCurrentDraft">保存草稿</button>
+            <button class="btn btn-outline" @click="closeCategoryEditor">关闭</button>
+          </div>
+        </div>
+        <CategoryPrecheckPanel
+          mode="category"
+          :draft="currentDraft"
+          :product-context="currentDraftProductContext"
+          :publish-targets="currentPublishTargets"
+          :selected-publish-target="selectedPublishTarget"
+          :platform-options="platformOptions"
+          :category="category"
+          :category-query="categoryQuery"
+          :category-results="categoryResults"
+          :category-attribute-translation-enabled="categoryAttributeTranslationEnabled"
+          :category-attribute-translations="categoryAttributeTranslations"
+          :category-attribute-translations-source="categoryAttributeTranslationsSource"
+          :category-attribute-translating="categoryAttributeTranslating"
+          :category-result-translations="categoryResultTranslations"
+          :category-result-translations-source="categoryResultTranslationsSource"
+          :category-result-translating="categoryResultTranslating"
+          :category-precheck="categoryPrecheck"
+          :precheck="precheck"
+          :payload-preview="payloadPreview"
+          :loading="loading"
+          @update-category-query="categoryQuery = $event"
+          @select-publish-target="store.selectPublishTarget"
+          @search-category="store.searchCategory"
+          @suggest-category="store.suggestCategoryByAi"
+          @select-category="store.selectCategory"
+          @apply-category="store.loadCategoryAttributes"
+          @set-translate-attributes-enabled="store.setCategoryAttributeTranslationEnabled"
+          @fill-attributes="store.fillAttributesByAi"
+          @category-precheck="store.runCategoryOnlyPrecheck"
+          @precheck="store.runPrecheck"
+          @preview-payload="store.previewPayload"
+          @publish="() => store.enqueuePublish()"
         />
       </div>
     </div>

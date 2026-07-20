@@ -82,6 +82,8 @@ export interface AuthResult {
 
 export interface PayloadPreviewResult {
   platform: Marketplace
+  site: string
+  target: UnknownRecord | MarketplaceTargetSite
   status: string
   path: string
   payload: UnknownRecord
@@ -244,9 +246,38 @@ export function normalizeMarketplaceOptions(value: unknown): MarketplaceOption[]
   })
 }
 
-function normalizeTargetSites(value: unknown, platform: Marketplace, site: string, language: string, currency: string): MarketplaceTargetSite[] {
+function normalizeAttributes(value: unknown): Record<string, string> {
+  return Object.fromEntries(Object.entries(asRecord(value)).map(([key, rawValue]) => [key, String(rawValue ?? '')]))
+}
+
+function normalizeValidationErrors(value: unknown): Array<UnknownRecord | string> {
+  return Array.isArray(value)
+    ? value.map((item) => typeof item === 'string' ? item : asRecord(item))
+    : []
+}
+
+function targetListingFields(record: UnknownRecord, fallback?: Partial<MarketplaceTargetSite>): Partial<MarketplaceTargetSite> {
+  const fallbackAttributes = fallback?.attributes || {}
+  const fallbackValidationErrors = fallback?.validationErrors || []
+  return {
+    categoryId: getString(record, ['categoryId', 'category_id', 'subject_id'], fallback?.categoryId || ''),
+    categoryPath: getString(record, ['categoryPath', 'category_path'], fallback?.categoryPath || ''),
+    attributes: Object.keys(asRecord(record.attributes)).length ? normalizeAttributes(record.attributes) : { ...fallbackAttributes },
+    validationErrors: normalizeValidationErrors(record.validation_errors ?? record.validationErrors).length
+      ? normalizeValidationErrors(record.validation_errors ?? record.validationErrors)
+      : [...fallbackValidationErrors],
+    categoryPrecheck: asRecord(record.category_precheck ?? record.categoryPrecheck),
+    publishStatus: getString(record, ['publishStatus', 'publish_status'], fallback?.publishStatus || ''),
+    status: getString(record, ['status'], fallback?.status ? String(fallback.status) : ''),
+    lastPrecheck: asRecord(record.last_precheck ?? record.lastPrecheck),
+    lastPrecheckTarget: asRecord(record.last_precheck_target ?? record.lastPrecheckTarget),
+    publishLogs: Array.isArray(record.publish_logs) ? record.publish_logs.map((item) => asRecord(item)) : Array.isArray(record.publishLogs) ? record.publishLogs.map((item) => asRecord(item)) : [],
+  }
+}
+
+function normalizeTargetSites(value: unknown, platform: Marketplace, site: string, language: string, currency: string, fallback?: Partial<MarketplaceTargetSite>): MarketplaceTargetSite[] {
   const rawItems = Array.isArray(value) ? value : []
-  const targets = rawItems.flatMap((value): MarketplaceTargetSite[] => {
+  const targets = rawItems.flatMap((value, index): MarketplaceTargetSite[] => {
     const record = asRecord(value)
     const targetPlatform = getString(record, ['platform']).toLowerCase() as Marketplace
     const targetSite = getString(record, ['site', 'site_id'])
@@ -256,9 +287,10 @@ function normalizeTargetSites(value: unknown, platform: Marketplace, site: strin
       site: targetSite,
       language: getString(record, ['language'], language),
       currency: getString(record, ['currency', 'currency_id'], currency),
+      ...targetListingFields(record, index === 0 ? fallback : undefined),
     }]
   })
-  return targets.length ? targets : [{ platform, site, language, currency }]
+  return targets.length ? targets : [{ platform, site, language, currency, ...targetListingFields({}, fallback) }]
 }
 
 export function normalizeDimensions(value: unknown) {
@@ -365,6 +397,25 @@ export function toBackendDraftImageRef(ref: DraftImageRef): UnknownRecord {
   }
 }
 
+function toBackendTargetSite(target: MarketplaceTargetSite): UnknownRecord {
+  return {
+    platform: target.platform,
+    site: target.site,
+    language: target.language,
+    currency: target.currency,
+    category_id: target.categoryId || '',
+    category_path: target.categoryPath || '',
+    attributes: target.attributes || {},
+    validation_errors: target.validationErrors || [],
+    category_precheck: target.categoryPrecheck || {},
+    publish_status: target.publishStatus || '',
+    status: target.status || '',
+    last_precheck: target.lastPrecheck || {},
+    last_precheck_target: target.lastPrecheckTarget || {},
+    publish_logs: target.publishLogs || [],
+  }
+}
+
 export function normalizeDraft(value: unknown, language: string): MarketplaceDraft {
   const record = asRecord(value)
   const draft = createEmptyDraft(language)
@@ -373,20 +424,34 @@ export function normalizeDraft(value: unknown, language: string): MarketplaceDra
   const site = getString(record, ['site', 'site_id'], draft.site)
   const currency = getString(record, ['currency', 'currency_id'], draft.currency)
   const draftLanguage = getString(record, ['language'], language)
+  const categoryId = getString(record, ['categoryId', 'category_id', 'subject_id'])
+  const categoryPath = getString(record, ['categoryPath', 'category_path'])
+  const attributes = normalizeAttributes(record.attributes)
+  const validationErrors = normalizeValidationErrors(record.validation_errors ?? record.validationErrors)
+  const targetFallback: Partial<MarketplaceTargetSite> = {
+    categoryId,
+    categoryPath,
+    attributes,
+    validationErrors,
+    publishStatus: getString(record, ['publishStatus', 'publish_status']),
+    status: getString(record, ['status'], draft.status),
+    lastPrecheck: asRecord(record.last_precheck ?? record.lastPrecheck),
+    lastPrecheckTarget: asRecord(record.last_precheck_target ?? record.lastPrecheckTarget),
+  }
   return {
     ...draft,
     draftId: getString(record, ['draftId', 'draft_id']),
     platforms: platformList(record.platforms ?? record.platforms_json),
-    targetSites: normalizeTargetSites(record.target_sites ?? record.targetSites, platformList(record.platforms ?? record.platforms_json)[0] || 'mercadolibre', site, draftLanguage, currency),
+    targetSites: normalizeTargetSites(record.target_sites ?? record.targetSites, platformList(record.platforms ?? record.platforms_json)[0] || 'mercadolibre', site, draftLanguage, currency, targetFallback),
     site,
     currency,
     enabled: getBoolean(record, ['enabled'], draft.enabled),
     title: getString(record, ['title']),
     description: getString(record, ['description']),
     bullets: stringList(record.bullets),
-    categoryId: getString(record, ['categoryId', 'category_id', 'subject_id']),
-    categoryPath: getString(record, ['categoryPath', 'category_path']),
-    attributes: Object.fromEntries(Object.entries(asRecord(record.attributes)).map(([key, value]) => [key, String(value ?? '')])),
+    categoryId,
+    categoryPath,
+    attributes,
     price: getString(record, ['price', 'sale_price']),
     pricing: asRecord(record.pricing),
     images: normalizeDraftImageRefs(record.images),
@@ -403,11 +468,10 @@ export function normalizeDraft(value: unknown, language: string): MarketplaceDra
     },
     saleTerms,
     allowGtinExemption: getBoolean(record, ['allow_gtin_exemption', 'allowGtinExemption', 'gtin_exempt']),
-    validationErrors: Array.isArray(record.validation_errors)
-      ? record.validation_errors.map((item) => typeof item === 'string' ? item : asRecord(item))
-      : Array.isArray(record.validationErrors)
-        ? record.validationErrors.map((item) => typeof item === 'string' ? item : asRecord(item))
-        : [],
+    validationErrors,
+    publishStatus: getString(record, ['publishStatus', 'publish_status']),
+    lastPrecheck: asRecord(record.last_precheck ?? record.lastPrecheck),
+    lastPrecheckTarget: asRecord(record.last_precheck_target ?? record.lastPrecheckTarget),
   }
 }
 
@@ -488,7 +552,7 @@ export function toBackendDraft(draft: MarketplaceDraft): UnknownRecord {
     enabled: draft.enabled,
     draft_id: draft.draftId,
     platforms: draft.platforms,
-    target_sites: draft.targetSites.map((target) => ({ platform: target.platform, site: target.site, language: target.language, currency: target.currency })),
+    target_sites: draft.targetSites.map(toBackendTargetSite),
     site: draft.site,
     currency: draft.currency,
     title: draft.title,
@@ -514,6 +578,9 @@ export function toBackendDraft(draft: MarketplaceDraft): UnknownRecord {
     },
     sale_terms: draft.saleTerms,
     allow_gtin_exemption: draft.allowGtinExemption,
+    publish_status: draft.publishStatus,
+    last_precheck: draft.lastPrecheck,
+    last_precheck_target: draft.lastPrecheckTarget,
   }
 }
 
@@ -529,7 +596,16 @@ export function normalizeDraftDetail(value: unknown): DraftDetail {
     sourceProductId: getString(record, ['sourceProductId', 'source_product_id'], getString(record, ['productId', 'product_id'])),
     platform: primaryPlatform,
     platforms,
-    targetSites: normalizeTargetSites(record.target_sites ?? record.targetSites, primaryPlatform, getString(record, ['site', 'site_id']), draft.language, draft.currency),
+    targetSites: normalizeTargetSites(record.target_sites ?? record.targetSites, primaryPlatform, getString(record, ['site', 'site_id']), draft.language, draft.currency, {
+      categoryId: draft.categoryId,
+      categoryPath: draft.categoryPath,
+      attributes: draft.attributes,
+      validationErrors: draft.validationErrors,
+      publishStatus: draft.publishStatus,
+      status: draft.status,
+      lastPrecheck: draft.lastPrecheck,
+      lastPrecheckTarget: draft.lastPrecheckTarget,
+    }),
     site: getString(record, ['site', 'site_id']),
     createdAt: getString(record, ['createdAt', 'created_at']),
     updatedAt: getString(record, ['updatedAt', 'updated_at']),
@@ -577,7 +653,7 @@ export function toBackendDraftDetail(draft: DraftDetail): UnknownRecord {
     source_product_id: draft.sourceProductId || draft.productId,
     platform,
     platforms,
-    target_sites: draft.targetSites.map((target) => ({ platform: target.platform, site: target.site, language: target.language, currency: target.currency })),
+    target_sites: draft.targetSites.map(toBackendTargetSite),
     site: draft.site,
   }
 }
@@ -646,13 +722,25 @@ export function normalizeDraftIndexItem(value: unknown): DraftIndexItem {
   const platforms = platformList(record.platforms ?? asRecord(record.raw).platforms)
   const effectivePlatforms = platforms.length ? platforms : [platform]
   const primaryPlatform = effectivePlatforms.includes(platform) ? platform : effectivePlatforms[0] || platform
+  const rawRecord = asRecord(record.raw)
+  const categoryId = getString(record, ['categoryId', 'category_id'], getString(rawRecord, ['category_id']))
+  const categoryPath = getString(record, ['categoryPath', 'category_path'], getString(rawRecord, ['category_path']))
   return {
     draftId: getString(record, ['draftId', 'draft_id']),
     productId: getString(record, ['productId', 'product_id']),
     sourceProductId: getString(record, ['sourceProductId', 'source_product_id'], getString(record, ['productId', 'product_id'])),
     platform: primaryPlatform,
     platforms: effectivePlatforms,
-    targetSites: normalizeTargetSites(record.target_sites ?? record.targetSites ?? asRecord(record.raw).target_sites, primaryPlatform, getString(record, ['site']), getString(record, ['language']), getString(record, ['currency'])),
+    targetSites: normalizeTargetSites(record.target_sites ?? record.targetSites ?? rawRecord.target_sites, primaryPlatform, getString(record, ['site']), getString(record, ['language']), getString(record, ['currency']), {
+      categoryId,
+      categoryPath,
+      attributes: normalizeAttributes(rawRecord.attributes),
+      validationErrors: normalizeValidationErrors(rawRecord.validation_errors ?? rawRecord.validationErrors),
+      publishStatus: getString(record, ['publishStatus', 'publish_status'], getString(rawRecord, ['publish_status'])),
+      status: getString(record, ['status'], getString(rawRecord, ['status'])),
+      lastPrecheck: asRecord(rawRecord.last_precheck ?? rawRecord.lastPrecheck),
+      lastPrecheckTarget: asRecord(rawRecord.last_precheck_target ?? rawRecord.lastPrecheckTarget),
+    }),
     site: getString(record, ['site']),
     language: getString(record, ['language'], getString(asRecord(record.raw), ['language'])),
     status: getString(record, ['status']) as DraftIndexItem['status'],
@@ -661,8 +749,8 @@ export function normalizeDraftIndexItem(value: unknown): DraftIndexItem {
     mainImage: getString(record, ['mainImage', 'main_image', 'image']),
     sourcePlatform: getString(record, ['sourcePlatform', 'source_platform']),
     sourceUrl: getString(record, ['sourceUrl', 'source_url']),
-    categoryId: getString(record, ['categoryId', 'category_id']),
-    categoryPath: getString(record, ['categoryPath', 'category_path']),
+    categoryId,
+    categoryPath,
     price: getString(record, ['price']),
     publishStatus: getString(record, ['publishStatus', 'publish_status']),
     createdAt: getString(record, ['createdAt', 'created_at']),

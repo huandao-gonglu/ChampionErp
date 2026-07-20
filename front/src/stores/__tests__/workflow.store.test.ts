@@ -25,7 +25,6 @@ vi.mock('@/api/workflow', () => ({
   searchCategories: vi.fn(),
   saveStoreSettings: vi.fn(),
   saveAiConfig: vi.fn(),
-  refreshCategoryCache: vi.fn(),
   previewPublishPayload: vi.fn(),
   openBrowserProfile: vi.fn(),
   openAuthLink: vi.fn(),
@@ -45,8 +44,6 @@ vi.mock('@/api/workflow', () => ({
   buildMercadoLibreAuthLink: vi.fn(),
   exchangeMercadoLibreCode: vi.fn(),
   clearStoreAuth: vi.fn(),
-  startCategoryCacheRefresh: vi.fn(),
-  fetchCategoryCacheRefreshJob: vi.fn(),
   suggestCategories: vi.fn(),
   runCategoryPrecheck: vi.fn(),
   confirmMercadoLibreRealPublish: vi.fn(),
@@ -160,20 +157,31 @@ describe('workflow store live API flow', () => {
   })
 
   it('stores precheck result returned by backend', async () => {
-    const product = collectedProduct()
-    product.drafts.mercadolibre.status = 'ready_to_publish'
+    const draft = createEmptyDraftDetail('mercadolibre')
+    draft.draftId = 'draft-1'
+    draft.productId = 'real-product-1'
+    draft.sourceProductId = 'real-product-1'
+    draft.site = 'CBT'
+    draft.targetSites = [{ platform: 'mercadolibre', site: 'CBT', language: 'es', currency: 'USD' }]
+    draft.status = 'ready_to_publish'
+    vi.mocked(workflowApi.saveDraft).mockResolvedValue(draftMutation(draft))
     vi.mocked(workflowApi.publishPrecheck).mockResolvedValue({
-      product,
+      draft,
       precheck: { ok: true, errors: [], warnings: [], errorItems: [], warningItems: [], checkedAt: '2026-06-02T00:00:00Z' },
       platformResults: {},
+      productContext: createEmptyDraftProductContext(),
     })
 
     const store = useWorkflowStore()
-    store.product = product
+    store.currentDraft = draft
     await store.runPrecheck()
 
     expect(store.precheck?.ok).toBe(true)
-    expect(store.product.drafts.mercadolibre.status).toBe('ready_to_publish')
+    expect(store.currentDraft.status).toBe('ready_to_publish')
+    expect(workflowApi.publishPrecheck).toHaveBeenCalledWith(
+      expect.objectContaining({ draftId: 'draft-1', productId: 'real-product-1' }),
+      expect.objectContaining({ platform: 'mercadolibre', site: 'CBT', categoryId: '', attributes: {} }),
+    )
   })
 
   it('surfaces Mercado Libre refresh token failures instead of logging them as complete', async () => {
@@ -288,7 +296,7 @@ describe('workflow store live API flow', () => {
       site: 'global',
       language: 'ru-RU',
       currency: 'RUB',
-      targetSites: savedTargets,
+      targetSites: savedTargets.map((target) => expect.objectContaining(target)),
     }))
     expect(store.currentDraft.draftId).toBe('')
     expect(store.draftsIndex[0].targetSites).toEqual(savedTargets)
@@ -353,7 +361,7 @@ describe('workflow store live API flow', () => {
       site: 'CBT',
       language: 'es',
       currency: 'USD',
-      targetSites: [selectedTarget],
+      targetSites: [expect.objectContaining(selectedTarget)],
     }))
   })
 

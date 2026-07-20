@@ -7,10 +7,6 @@ from .category_model import (
     apply_ai_attribute_fill,
     apply_category_selection,
     build_ai_attribute_fill,
-    category_cache_status,
-    find_category_record,
-    load_category_cache,
-    search_category_cache,
     validate_category_precheck,
 )
 from .common import (
@@ -56,7 +52,6 @@ __all__ = [
     "apply_ai_attribute_fill",
     "apply_category_selection",
     "build_ai_attribute_fill",
-    "category_cache_status",
     "default_collect_diagnostics",
     "default_draft",
     "default_draft_image_ref",
@@ -68,9 +63,7 @@ __all__ = [
     "draft_image_asset_ids",
     "draft_image_refs_from_assets",
     "draft_image_refs_from_pool",
-    "find_category_record",
     "image_pool_legacy_views",
-    "load_category_cache",
     "merge_source_partial_result",
     "normalize_draft_image_ref",
     "normalize_draft_image_refs",
@@ -81,7 +74,6 @@ __all__ = [
     "normalize_platforms",
     "normalize_product_model",
     "parse_dimensions_text",
-    "search_category_cache",
     "text_or_empty",
     "validate_category_precheck",
 ]

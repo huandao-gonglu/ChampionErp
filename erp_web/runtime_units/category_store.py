@@ -7,15 +7,13 @@ import urllib.parse
 from pathlib import Path
 from typing import Any
 
-from erp_web import db as erp_db
-from erp_web.product_model import (
-    category_cache_status as _json_category_cache_status,
-    find_category_record as _json_find_category_record,
-    load_category_cache as _json_load_category_cache,
-    search_category_cache as _json_search_category_cache,
+from .category_refresh import (
+    http_json,
+    mercadolibre_category_attributes,
+    mercadolibre_category_detail,
+    mercadolibre_category_record,
 )
 
-from .runtime_common import APP_DIR
 
 def read_json(path: Path, default: Any) -> Any:
     try:
@@ -32,61 +30,10 @@ def write_json(path: Path, data: Any) -> None:
 
 
 def ensure_sqlite_store() -> None:
+    from erp_web import db as erp_db
+    from .runtime_common import APP_DIR
+
     erp_db.initialize_database(APP_DIR)
-
-
-def _ensure_sqlite_category_cache(platform: str) -> dict[str, Any]:
-    erp_db.initialize_database(APP_DIR)
-    platform = str(platform or "mercadolibre").strip().lower()
-    status = erp_db.category_cache_status(APP_DIR, platform)
-    if status.get("records"):
-        return status
-    cache = _json_load_category_cache(platform)
-    erp_db.import_category_cache(APP_DIR, cache if isinstance(cache, dict) else {})
-    return erp_db.category_cache_status(APP_DIR, platform)
-
-
-def load_category_cache(platform: str) -> dict[str, Any]:
-    platform = str(platform or "mercadolibre").strip().lower()
-    status = _ensure_sqlite_category_cache(platform)
-    return {
-        "platform": platform,
-        "storage": "sqlite",
-        "updated_at": status.get("updated_at") or "",
-        "records": erp_db.search_category_records(APP_DIR, platform, limit=10000),
-    }
-
-
-def category_cache_status(platform: str) -> dict[str, Any]:
-    platform = str(platform or "mercadolibre").strip().lower()
-    status = _ensure_sqlite_category_cache(platform)
-    json_status = _json_category_cache_status(platform)
-    if isinstance(json_status, dict):
-        status = {
-            **json_status,
-            **status,
-            "records": status.get("records", 0),
-            "sqlite_records": status.get("records", 0),
-            "json_records": json_status.get("records", 0),
-            "storage": "sqlite",
-        }
-    return status
-
-
-def search_category_cache(platform: str, query: str = "", site: str = "", limit: int = 20) -> list[dict[str, Any]]:
-    platform = str(platform or "mercadolibre").strip().lower()
-    _ensure_sqlite_category_cache(platform)
-    results = erp_db.search_category_records(APP_DIR, platform, query=query, site=site, limit=limit)
-    if results:
-        return results
-    return _json_search_category_cache(platform, query=query, site=site, limit=limit)
-
-
-def find_category_record(platform: str, category_id: str, site: str = "") -> dict[str, Any] | None:
-    platform = str(platform or "mercadolibre").strip().lower()
-    _ensure_sqlite_category_cache(platform)
-    record = erp_db.find_category_record(APP_DIR, platform, category_id, site=site)
-    return record or _json_find_category_record(platform, category_id, site=site)
 
 
 _CATEGORY_AI_KEYWORD_MAP = {
@@ -105,6 +52,26 @@ _CATEGORY_AI_STOPWORDS = {
     "the", "and", "for", "with", "from", "para", "con", "producto", "de", "del",
     "una", "uno", "los", "las", "por", "sin",
 }
+
+
+def _require_mercadolibre(platform: str) -> str:
+    platform = str(platform or "mercadolibre").strip().lower()
+    if platform != "mercadolibre":
+        raise RuntimeError("当前只支持 Mercado Libre 实时类目搜索；其他平台未接入官方实时类目接口。")
+    return platform
+
+
+def _mercadolibre_token() -> str:
+    from .product_store import load_store_config
+
+    return str((load_store_config().get("mercadolibre") or {}).get("access_token") or "").strip()
+
+
+def _mercadolibre_site(site: str = "") -> str:
+    from .product_store import load_store_config
+
+    configured = str((load_store_config().get("mercadolibre") or {}).get("site_id") or "").strip()
+    return str(site or configured or "MLM").strip().upper()
 
 
 def _category_suggest_terms(product: dict[str, Any]) -> list[str]:
@@ -160,130 +127,124 @@ def _category_suggest_query(product: dict[str, Any]) -> str:
     return " ".join(_category_suggest_terms(product)[:8])
 
 
-def _mercadolibre_domain_discovery_suggestions(product: dict[str, Any], site: str, limit: int) -> list[dict[str, Any]]:
-    from .category_refresh import http_json
-    from .product_store import load_store_config
+def _domain_discovery_url(site: str, query: str, limit: int) -> str:
+    site = _mercadolibre_site(site)
+    quoted_query = urllib.parse.quote(query)
+    safe_limit = max(1, min(8, int(limit or 5)))
+    if site == "CBT":
+        return f"https://api.mercadolibre.com/marketplace/domain_discovery/search?q={quoted_query}&limit={safe_limit}"
+    return f"https://api.mercadolibre.com/sites/{urllib.parse.quote(site)}/domain_discovery/search?q={quoted_query}&limit={safe_limit}"
 
-    query = _category_suggest_query(product)
+
+def _path_text(record: dict[str, Any]) -> str:
+    path = record.get("path_original") if isinstance(record.get("path_original"), list) else []
+    if path:
+        return " / ".join(str(item).strip() for item in path if str(item).strip())
+    return str(record.get("category_path") or record.get("name_original") or record.get("category_id") or "").strip()
+
+
+def fetch_category_record(platform: str, category_id: str, site: str = "", include_attributes: bool = False) -> dict[str, Any]:
+    _require_mercadolibre(platform)
+    category_id = str(category_id or "").strip()
+    if not category_id:
+        raise RuntimeError("缺少 Mercado Libre 类目 ID。")
+    token = _mercadolibre_token()
+    resolved_site = _mercadolibre_site(site)
+    detail = mercadolibre_category_detail(category_id, token or None, http_client=http_json)
+    attrs = (
+        mercadolibre_category_attributes(category_id, token or None, http_client=http_json)
+        if include_attributes
+        else {"required": [], "optional": []}
+    )
+    return mercadolibre_category_record(detail, resolved_site, attrs)
+
+
+def fetch_category_attributes(platform: str, category_id: str, site: str = "") -> dict[str, Any]:
+    record = fetch_category_record(platform, category_id, site=site, include_attributes=True)
+    attrs = record.get("attributes") if isinstance(record.get("attributes"), dict) else {}
+    required = list(attrs.get("required") or [])
+    optional = list(attrs.get("optional") or [])
+    return {
+        "ok": True,
+        "platform": "mercadolibre",
+        "site": record.get("site") or _mercadolibre_site(site),
+        "source": "mercadolibre_live",
+        "category": record,
+        "required": required,
+        "optional": optional,
+        "attributes": required + optional,
+        "category_id": record.get("category_id") or category_id,
+        "category_path": _path_text(record),
+        "path": _path_text(record),
+    }
+
+
+def search_categories_live(platform: str, query: str, site: str = "", limit: int = 5) -> list[dict[str, Any]]:
+    _require_mercadolibre(platform)
+    query = str(query or "").strip()
     if not query:
         return []
-    token = str((load_store_config().get("mercadolibre") or {}).get("access_token") or "").strip()
+    token = _mercadolibre_token()
+    resolved_site = _mercadolibre_site(site)
+    data = http_json(_domain_discovery_url(resolved_site, query, limit), token or None)
     suggestions: list[dict[str, Any]] = []
-    sites = [str(site or "").strip().upper() or "CBT"]
-    if "MLM" not in sites:
-        sites.append("MLM")
-    for site_id in sites:
-        try:
-            data = http_json(
-                f"https://api.mercadolibre.com/sites/{urllib.parse.quote(site_id)}/domain_discovery/search?q={urllib.parse.quote(query)}&limit={max(1, min(8, limit))}",
-                token or None,
-            )
-        except Exception:
+    seen_ids: set[str] = set()
+    for index, item in enumerate(data if isinstance(data, list) else []):
+        if not isinstance(item, dict):
             continue
-        for item in data if isinstance(data, list) else []:
-            if not isinstance(item, dict):
-                continue
-            category_id = str(item.get("category_id") or "").strip()
-            if not category_id:
-                continue
-            name = str(item.get("category_name") or item.get("domain_name") or category_id).strip()
-            name_l = name.lower()
-            score = 100 if site_id == sites[0] else 80
-            if any(token in name_l for token in ("fan", "fans", "ventilador", "ventiladores")):
-                score += 40
-            if any(token in name_l for token in ("warmer", "calentador")) and any(term in query.lower() for term in ("fan", "ventilador", "风扇")):
-                score -= 30
-            suggestions.append(
-                {
-                    "id": category_id,
-                    "category_id": category_id,
-                    "name": name,
-                    "path": name,
-                    "site": site_id,
-                    "score": score,
-                    "matched_terms": [query],
-                    "source": "mercadolibre_domain_discovery",
-                    "raw": item,
-                }
-            )
-    deduped: dict[str, dict[str, Any]] = {}
-    for item in suggestions:
-        deduped.setdefault(str(item.get("category_id") or ""), item)
-    return sorted(deduped.values(), key=lambda item: int(item.get("score") or 0), reverse=True)[:limit]
-
-
-def suggest_category_ids(product: dict[str, Any], platform: str = "mercadolibre", site: str = "", limit: int = 5) -> dict[str, Any]:
-    from .product_store import load_store_config
-
-    platform = str(platform or "mercadolibre").strip().lower()
-    site = str(site or load_store_config().get("mercadolibre", {}).get("site_id") or "").strip()
-    terms = _category_suggest_terms(product)
-    _ensure_sqlite_category_cache(platform)
-    records = erp_db.search_category_records(APP_DIR, platform, query="", site=site, limit=10000)
-    if not records and site:
-        records = erp_db.search_category_records(APP_DIR, platform, query="", site="", limit=10000)
-    live_suggestions = _mercadolibre_domain_discovery_suggestions(product, site, max(1, int(limit or 5))) if platform == "mercadolibre" else []
-    scored: list[tuple[int, dict[str, Any], list[str]]] = []
-    for record in records:
-        haystack = " ".join(
-            [
-                str(record.get("category_id") or ""),
-                str(record.get("name_original") or ""),
-                str(record.get("name_cn") or ""),
-                " ".join(map(str, record.get("path_original") or [])),
-                " ".join(map(str, record.get("path_cn") or [])),
-                " ".join(map(str, record.get("keywords") or [])),
-            ]
-        ).lower()
-        matched = [term for term in terms if term and term in haystack]
-        if not matched:
+        category_id = str(item.get("category_id") or "").strip()
+        if not category_id or category_id in seen_ids:
             continue
-        score = sum(8 if " " in term else 3 for term in matched)
-        category_id = str(record.get("category_id") or "")
-        if category_id and category_id.lower() in haystack:
-            score += 1
-        if score >= 6:
-            scored.append((score, record, matched[:8]))
-    scored.sort(key=lambda item: item[0], reverse=True)
-    suggestions = list(live_suggestions)
-    seen_ids = {str(item.get("category_id") or item.get("id") or "") for item in suggestions}
-    for score, record, matched in scored[: max(1, int(limit or 5))]:
-        category_id = str(record.get("category_id") or record.get("id") or "")
-        if category_id in seen_ids:
-            continue
+        record = fetch_category_record("mercadolibre", category_id, site=resolved_site, include_attributes=False)
+        name = str(item.get("category_name") or item.get("domain_name") or record.get("name_original") or category_id).strip()
+        path = _path_text(record) or name
         suggestions.append(
             {
                 "id": category_id,
                 "category_id": category_id,
-                "name": record.get("name_original") or record.get("name_cn") or record.get("category_id") or "",
-                "path": " / ".join(str(item) for item in (record.get("path_original") or record.get("path_cn") or []) if str(item).strip()) or str(record.get("name_original") or ""),
-                "site": record.get("site") or site,
-                "score": score,
-                "matched_terms": matched,
-                "raw": record,
+                "name": name,
+                "path": path,
+                "category_path": path,
+                "path_ids": record.get("path_ids") if isinstance(record.get("path_ids"), list) else [],
+                "site": resolved_site,
+                "score": max(1, 100 - index * 5),
+                "matched_terms": [query],
+                "source": "mercadolibre_domain_discovery",
+                "raw": {
+                    "domain_discovery": item,
+                    "category": record.get("raw") if isinstance(record.get("raw"), dict) else {},
+                    "path_ids": record.get("path_ids") if isinstance(record.get("path_ids"), list) else [],
+                },
             }
         )
         seen_ids.add(category_id)
         if len(suggestions) >= max(1, int(limit or 5)):
             break
+    return suggestions
+
+
+def suggest_category_ids(product: dict[str, Any], platform: str = "mercadolibre", site: str = "", limit: int = 5) -> dict[str, Any]:
+    platform = _require_mercadolibre(platform)
+    resolved_site = _mercadolibre_site(site)
+    query = _category_suggest_query(product)
+    suggestions = search_categories_live(platform, query, site=resolved_site, limit=max(1, int(limit or 5))) if query else []
     return {
         "ok": True,
         "platform": platform,
-        "site": site,
-        "terms": terms[:30],
+        "site": resolved_site,
+        "query": query,
+        "terms": _category_suggest_terms(product)[:30],
         "suggestions": suggestions,
-        "cache_status": category_cache_status(platform),
+        "source": "mercadolibre_live",
     }
 
 
 __all__ = [
-    "category_cache_status",
-    "find_category_record",
-    "import_partial_records",
-    "load_category_cache",
+    "ensure_sqlite_store",
+    "fetch_category_attributes",
+    "fetch_category_record",
     "read_json",
-    "save_category_cache",
-    "search_category_cache",
+    "search_categories_live",
     "suggest_category_ids",
     "write_json",
 ]

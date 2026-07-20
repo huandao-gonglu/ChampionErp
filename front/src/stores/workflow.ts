@@ -19,7 +19,6 @@ import {
   deleteProducts as deleteProductsApi,
   fetchAiConfig,
   fetchBrowserDebugStatus,
-  fetchCategoryCacheRefreshJob,
   fetchCategoryAttrs,
   fetchCategoryAttributeTranslations,
   fetchCategoryResultTranslations,
@@ -57,7 +56,6 @@ import {
   saveProduct as saveProductApi,
   saveStoreSettings,
   searchCategories,
-  startCategoryCacheRefresh,
   suggestCategories,
   testApiConfig,
   testAiModel,
@@ -174,10 +172,6 @@ function parseNumber(value: string | number): number {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
-function wait(ms: number) {
-  return new Promise((resolve) => window.setTimeout(resolve, ms))
-}
-
 function precheckIssueFromRaw(value: unknown, fallbackSeverity: 'error' | 'warning'): PrecheckIssue {
   const record = isRecord(value) ? value : {}
   return {
@@ -198,7 +192,7 @@ function categorySelectionFromProduct(product: Product, platform: Marketplace): 
   const categories = isRecord(product.raw.local_platform_categories) ? product.raw.local_platform_categories : {}
   const record = isRecord(categories[platform]) ? categories[platform] as UnknownRecord : null
   if (!record) return null
-  const attrs = isRecord(record.attributes_cache) ? record.attributes_cache : {}
+  const attrs = isRecord(record.attributes) ? record.attributes : {}
   const normalizeAttr = (item: unknown, requiredFallback: boolean) => {
     const attr = isRecord(item) ? item : {}
     return {
@@ -246,7 +240,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
   const categoryResultTranslations = ref<CategoryResultTranslations>({})
   const categoryResultTranslationsSource = ref('')
   const categoryResultTranslating = ref(false)
-  const categoryCacheStatus = ref<UnknownRecord>({})
   const categoryPrecheck = ref<CategoryPrecheckResult | null>(null)
   const precheck = ref<PublishPrecheck | null>(null)
   const precheckResults = ref<UnknownRecord>({})
@@ -281,6 +274,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
   const error = ref('')
   const currentDraft = ref<DraftDetail>(createEmptyDraftDetail())
   const currentDraftProductContext = ref<DraftProductContext>(createEmptyDraftProductContext())
+  const activePublishTargetKey = ref('')
 
   const draft = computed(() => product.value.drafts[activeMarketplace.value])
 
@@ -292,6 +286,105 @@ export const useWorkflowStore = defineStore('workflow', () => {
 
   function targetKey(platform: Marketplace, site: string) {
     return `${String(platform || '').trim().toLowerCase()}:${String(site || '').trim().toLowerCase()}`
+  }
+
+  function targetSiteKey(target: MarketplaceTargetSite) {
+    return targetKey(target.platform, target.site)
+  }
+
+  function cloneAttributes(value: unknown): Record<string, string> {
+    const record = isRecord(value) ? value : {}
+    return Object.fromEntries(Object.entries(record).map(([key, rawValue]) => [key, String(rawValue ?? '')]))
+  }
+
+  function cloneValidationErrors(value: unknown): Array<UnknownRecord | string> {
+    return Array.isArray(value)
+      ? value.map((item) => isRecord(item) ? { ...item } : String(item || ''))
+      : []
+  }
+
+  function categoryPrecheckFromTarget(value: unknown): CategoryPrecheckResult | null {
+    if (!isRecord(value) || !Object.keys(value).length) return null
+    return {
+      ok: value.ok !== false,
+      errors: Array.isArray(value.errors) ? value.errors.map(String) : [],
+      missingFields: Array.isArray(value.missingFields)
+        ? value.missingFields.map(String)
+        : Array.isArray(value.missing_fields)
+          ? value.missing_fields.map(String)
+          : [],
+      checkedAt: String(value.checkedAt || value.checked_at || ''),
+      raw: value,
+    }
+  }
+
+  function normalizeDraftTarget(target: MarketplaceTargetSite, draftDetail: DraftDetail, useRootFallback = false): MarketplaceTargetSite {
+    const site = platformSite(target.platform, target.site)
+    return {
+      ...target,
+      platform: target.platform,
+      site: target.site || site?.code || '',
+      language: target.language || site?.language || draftDetail.language || '',
+      currency: target.currency || site?.currency || draftDetail.currency || '',
+      categoryId: String(target.categoryId || (useRootFallback ? draftDetail.categoryId : '') || ''),
+      categoryPath: String(target.categoryPath || (useRootFallback ? draftDetail.categoryPath : '') || ''),
+      attributes: Object.keys(target.attributes || {}).length ? cloneAttributes(target.attributes) : useRootFallback ? cloneAttributes(draftDetail.attributes) : {},
+      validationErrors: (target.validationErrors || []).length ? cloneValidationErrors(target.validationErrors) : useRootFallback ? cloneValidationErrors(draftDetail.validationErrors) : [],
+      categoryPrecheck: target.categoryPrecheck || {},
+      publishStatus: String(target.publishStatus || (useRootFallback ? draftDetail.publishStatus : '') || ''),
+      status: String(target.status || (useRootFallback ? draftDetail.status : '') || ''),
+      lastPrecheck: target.lastPrecheck || (useRootFallback ? draftDetail.lastPrecheck : {}) || {},
+      lastPrecheckTarget: target.lastPrecheckTarget || (useRootFallback ? draftDetail.lastPrecheckTarget : {}) || {},
+      publishLogs: Array.isArray(target.publishLogs) ? target.publishLogs : [],
+    }
+  }
+
+  function mergeTargetDetails(targets: MarketplaceTargetSite[], previousTargets: MarketplaceTargetSite[], draftDetail: DraftDetail): MarketplaceTargetSite[] {
+    const previousByKey = new Map(previousTargets.map((target) => [targetSiteKey(target), target]))
+    return targets.map((target, index) => {
+      const previous = previousByKey.get(targetSiteKey(target))
+      return normalizeDraftTarget({ ...(previous || {}), ...target }, draftDetail, !previous && index === 0)
+    })
+  }
+
+  function persistActiveTargetListingFields(extra: Partial<MarketplaceTargetSite> = {}) {
+    if (!currentDraft.value.draftId) return
+    if (!currentDraft.value.targetSites.length && currentPublishTargets.value.length) {
+      currentDraft.value.targetSites = currentPublishTargets.value.map((target, index) => normalizeDraftTarget(target, currentDraft.value, index === 0))
+    }
+    const key = activePublishTargetKey.value || targetSiteKey(selectedPublishTarget.value)
+    const index = currentDraft.value.targetSites.findIndex((target) => targetSiteKey(target) === key)
+    if (index < 0) return
+    const existing = currentDraft.value.targetSites[index]
+    currentDraft.value.targetSites.splice(index, 1, {
+      ...existing,
+      categoryId: currentDraft.value.categoryId,
+      categoryPath: currentDraft.value.categoryPath,
+      attributes: cloneAttributes(currentDraft.value.attributes),
+      validationErrors: cloneValidationErrors(currentDraft.value.validationErrors),
+      publishStatus: currentDraft.value.publishStatus,
+      status: currentDraft.value.status,
+      lastPrecheck: currentDraft.value.lastPrecheck,
+      lastPrecheckTarget: currentDraft.value.lastPrecheckTarget,
+      ...extra,
+    })
+  }
+
+  function applyTargetListingToDraft(target: MarketplaceTargetSite) {
+    currentDraft.value.categoryId = String(target.categoryId || '')
+    currentDraft.value.categoryPath = String(target.categoryPath || '')
+    currentDraft.value.attributes = cloneAttributes(target.attributes)
+    currentDraft.value.validationErrors = cloneValidationErrors(target.validationErrors)
+    currentDraft.value.publishStatus = String(target.publishStatus || '')
+    currentDraft.value.lastPrecheck = isRecord(target.lastPrecheck) ? target.lastPrecheck : {}
+    currentDraft.value.lastPrecheckTarget = isRecord(target.lastPrecheckTarget) ? target.lastPrecheckTarget : {}
+    categoryPrecheck.value = categoryPrecheckFromTarget(target.categoryPrecheck)
+    category.value = null
+    categoryResults.value = []
+    categoryAttributeTranslations.value = {}
+    categoryAttributeTranslationsSource.value = ''
+    categoryResultTranslations.value = {}
+    categoryResultTranslationsSource.value = ''
   }
 
   function configuredTargetsForLanguage(language: string): MarketplaceTargetSite[] {
@@ -337,6 +430,58 @@ export const useWorkflowStore = defineStore('workflow', () => {
       language: draftDetail.language || site?.language || '',
       currency: draftDetail.currency || site?.currency || '',
     }].filter((target) => target.platform && target.site)
+  }
+
+  function normalizedDraftTargets(draftDetail: DraftDetail): MarketplaceTargetSite[] {
+    const selected = (draftDetail.targetSites || []).filter((target) => target.platform && target.site)
+    if (selected.length) {
+      return selected.map((target, index) => normalizeDraftTarget(target, draftDetail, index === 0)).filter((target) => target.platform && target.site)
+    }
+    const site = platformSite(draftDetail.platform, draftDetail.site)
+    return [{
+      platform: draftDetail.platform,
+      site: draftDetail.site || site?.code || '',
+      language: draftDetail.language || site?.language || '',
+      currency: draftDetail.currency || site?.currency || '',
+    }].map((target) => normalizeDraftTarget(target, draftDetail, true)).filter((target) => target.platform && target.site)
+  }
+
+  const currentPublishTargets = computed(() => currentDraft.value.draftId ? normalizedDraftTargets(currentDraft.value) : [])
+
+  const selectedPublishTarget = computed<MarketplaceTargetSite>(() => {
+    const targets = currentPublishTargets.value
+    if (!targets.length) return { platform: '', site: '', language: '', currency: '' }
+    const selected = targets.find((target) => pricingTargetKey(target.platform, target.site) === activePublishTargetKey.value)
+    return selected || targets[0]
+  })
+
+  function syncActivePublishTarget(preferred?: MarketplaceTargetSite) {
+    const targets = currentPublishTargets.value
+    if (!targets.length) {
+      activePublishTargetKey.value = ''
+      return
+    }
+    const preferredKey = preferred ? pricingTargetKey(preferred.platform, preferred.site) : ''
+    const existing = targets.find((target) => pricingTargetKey(target.platform, target.site) === (preferredKey || activePublishTargetKey.value))
+    const selected = existing || targets[0]
+    activePublishTargetKey.value = pricingTargetKey(selected.platform, selected.site)
+    activeMarketplace.value = selected.platform
+    applyTargetListingToDraft(selected)
+  }
+
+  function selectPublishTarget(target: MarketplaceTargetSite) {
+    const targets = currentPublishTargets.value
+    const selected = targets.find((item) => pricingTargetKey(item.platform, item.site) === pricingTargetKey(target.platform, target.site))
+    if (!selected) {
+      setError('这个站点不属于当前草稿的目标市场。')
+      return
+    }
+    persistActiveTargetListingFields(categoryPrecheck.value ? { categoryPrecheck: categoryPrecheck.value.raw || categoryPrecheck.value } : {})
+    activePublishTargetKey.value = pricingTargetKey(selected.platform, selected.site)
+    activeMarketplace.value = selected.platform
+    precheck.value = null
+    payloadPreview.value = null
+    applyTargetListingToDraft(selected)
   }
 
   function pricingTargetRecord(pricing: UnknownRecord, key: string): UnknownRecord {
@@ -826,6 +971,12 @@ export const useWorkflowStore = defineStore('workflow', () => {
       currentDraft.value = result.draft
       currentDraftProductContext.value = result.productContext
       activeMarketplace.value = result.draft.platform
+      syncActivePublishTarget()
+      category.value = null
+      categoryResults.value = []
+      categoryPrecheck.value = null
+      precheck.value = null
+      payloadPreview.value = null
       applyMutationIndexes(result)
       syncPricingInputFromProduct()
       addLog(`已加载草稿：${item.title || item.productTitle || item.draftId}`)
@@ -849,6 +1000,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
       currentDraft.value = result.draft
       currentDraftProductContext.value = result.productContext
       activeMarketplace.value = result.draft.platform
+      syncActivePublishTarget()
       pricingResult.value = null
       applyMutationIndexes(result)
       syncPricingInputFromProduct()
@@ -902,7 +1054,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
         ...loaded.draft,
         platform: primaryTarget.platform,
         platforms,
-        targetSites: validTargets,
+        targetSites: mergeTargetDetails(validTargets, loaded.draft.targetSites || [], loaded.draft),
         site: primaryTarget.site,
         language: primaryTarget.language,
         currency: primaryTarget.currency,
@@ -912,6 +1064,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
         currentDraft.value = result.draft
         currentDraftProductContext.value = result.productContext
         activeMarketplace.value = result.draft.platform
+        syncActivePublishTarget(primaryTarget)
       }
       applyMutationIndexes(result)
       addLog(`草稿目标市场已更新：${validTargets.map((target) => `${target.platform} · ${target.site}`).join('、')}。`)
@@ -1127,35 +1280,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
   }
 
   async function enqueueSelectedProducts() {
-    const ids = selectedProductIds.value.length ? selectedProductIds.value : product.value.productId ? [product.value.productId] : []
-    if (!ids.length) {
-      setError('请先选择要发布入队的商品。')
-      return
-    }
-    loading.value = true
-    setError('')
-    try {
-      let success = 0
-      const failures: string[] = []
-      for (const id of ids) {
-        const item = productsIndex.value.find((entry) => entry.productId === id)
-        if (!item) continue
-        try {
-          const loaded = await loadProductApi(item.productId, item.productFilePath)
-          await enqueuePublishApi(loaded.product, [activeMarketplace.value])
-          success += 1
-        } catch (exc) {
-          failures.push(`${item.title || id}: ${exc instanceof Error ? exc.message : '入队失败'}`)
-        }
-      }
-      productsIndex.value = await fetchProductsIndex()
-      addLog(`选中商品发布入队完成：成功 ${success}/${ids.length}。${failures.length ? `失败：${failures.join('；')}` : ''}`)
-      if (failures.length) setError(failures[0])
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '选中商品发布入队失败')
-    } finally {
-      loading.value = false
-    }
+    setError('发布入队已改为草稿目标级操作，请从草稿箱进入对应草稿并完成预检后入队。')
   }
 
   async function uploadReferenceImages(files: File[]) {
@@ -1288,10 +1413,12 @@ export const useWorkflowStore = defineStore('workflow', () => {
     loading.value = true
     setError('')
     try {
+      persistActiveTargetListingFields(categoryPrecheck.value ? { categoryPrecheck: categoryPrecheck.value.raw || categoryPrecheck.value } : {})
       const result = await saveDraftApi(currentDraft.value)
       currentDraft.value = result.draft
       currentDraftProductContext.value = result.productContext
       activeMarketplace.value = result.draft.platform
+      syncActivePublishTarget()
       applyMutationIndexes(result)
       addLog(result.message || `草稿已保存：${result.draft.title || result.draft.draftId}`)
     } catch (exc) {
@@ -1299,6 +1426,24 @@ export const useWorkflowStore = defineStore('workflow', () => {
     } finally {
       loading.value = false
     }
+  }
+
+  async function persistCurrentDraftForPublish() {
+    if (!currentDraft.value.draftId) {
+      throw new Error('请先从草稿箱选择一个草稿再进行发布预检。')
+    }
+    if (!currentPublishTargets.value.length) {
+      throw new Error('当前草稿没有目标站点，请先在草稿箱选择目标市场。')
+    }
+    persistActiveTargetListingFields(categoryPrecheck.value ? { categoryPrecheck: categoryPrecheck.value.raw || categoryPrecheck.value } : {})
+    syncActivePublishTarget()
+    const target = selectedPublishTarget.value
+    const result = await saveDraftApi(currentDraft.value)
+    currentDraft.value = result.draft
+    currentDraftProductContext.value = result.productContext
+    syncActivePublishTarget(target)
+    applyMutationIndexes(result)
+    return result.draft
   }
 
   async function assignUpc() {
@@ -1503,14 +1648,18 @@ export const useWorkflowStore = defineStore('workflow', () => {
       setError('请输入类目搜索关键词。')
       return
     }
+    const target = selectedPublishTarget.value
+    if (!currentDraft.value.draftId || !target.platform || !target.site) {
+      setError('请先从草稿箱选择要预检的草稿目标。')
+      return
+    }
     loading.value = true
     setError('')
     try {
-      const result = await searchCategories(activeMarketplace.value, categoryQuery.value, activeMarketplaceSite())
+      const result = await searchCategories(target.platform, categoryQuery.value, target.site)
       categoryResults.value = result.results
       categoryResultTranslations.value = {}
       categoryResultTranslationsSource.value = ''
-      categoryCacheStatus.value = result.cacheStatus
       addLog(`类目搜索完成：${result.results.length} 条。`)
       if (categoryAttributeTranslationEnabled.value) {
         await translateCategoryResults()
@@ -1523,24 +1672,25 @@ export const useWorkflowStore = defineStore('workflow', () => {
   }
 
   async function suggestCategoryByAi() {
-    if (!hasProductForPublish(product.value)) {
-      setError('请先从商品库选择要匹配类目的商品。')
+    const target = selectedPublishTarget.value
+    if (!currentDraft.value.draftId || !target.platform || !target.site) {
+      setError('请先从草稿箱选择要匹配类目的草稿目标。')
       return
     }
     loading.value = true
     setError('')
     try {
-      const result = await suggestCategories(product.value, activeMarketplace.value, activeMarketplaceSite())
+      await persistCurrentDraftForPublish()
+      const result = await suggestCategories(currentDraft.value, selectedPublishTarget.value)
       categoryResults.value = result.results
       categoryResultTranslations.value = {}
       categoryResultTranslationsSource.value = ''
-      categoryCacheStatus.value = result.cacheStatus
       categoryQuery.value = result.terms.slice(0, 6).join(' / ')
       addLog(`类目匹配完成：${result.results.length} 条候选。`)
       if (categoryAttributeTranslationEnabled.value) {
         await translateCategoryResults()
       }
-      if (!result.results.length) setError('没有找到合适类目，请先刷新官方类目缓存，或换关键词搜索。')
+      if (!result.results.length) setError('没有找到合适类目，请换一个更接近商品标题的关键词。')
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '匹配类目失败')
     } finally {
@@ -1549,23 +1699,28 @@ export const useWorkflowStore = defineStore('workflow', () => {
   }
 
   async function selectCategory(item: CategorySearchResult) {
-    product.value.drafts[activeMarketplace.value].categoryId = item.id
-    product.value.drafts[activeMarketplace.value].categoryPath = item.path || item.name
+    currentDraft.value.categoryId = item.id
+    currentDraft.value.categoryPath = item.path || item.name
     categoryAttributeTranslations.value = {}
     categoryAttributeTranslationsSource.value = ''
     await loadCategoryAttributes()
   }
 
   async function loadCategoryAttributes() {
-    const categoryId = product.value.drafts[activeMarketplace.value].categoryId.trim()
+    const target = selectedPublishTarget.value
+    const categoryId = currentDraft.value.categoryId.trim()
     if (!categoryId) {
       setError('请先填写或选择类目 ID。')
+      return
+    }
+    if (!target.platform) {
+      setError('当前草稿没有可读取类目属性的目标站点。')
       return
     }
     loading.value = true
     setError('')
     try {
-      category.value = await fetchCategoryAttrs(activeMarketplace.value, categoryId)
+      category.value = await fetchCategoryAttrs(target.platform, categoryId, target.site)
       categoryAttributeTranslations.value = {}
       categoryAttributeTranslationsSource.value = ''
       currentStage.value = 6
@@ -1581,17 +1736,19 @@ export const useWorkflowStore = defineStore('workflow', () => {
   }
 
   async function translateCategoryAttributes() {
-    const categoryId = product.value.drafts[activeMarketplace.value].categoryId.trim()
+    const target = selectedPublishTarget.value
+    const categoryId = currentDraft.value.categoryId.trim()
     if (!categoryId) {
       setError('请先选择或填写类目 ID。')
       return
     }
+    if (!target.platform) return
     loading.value = true
     categoryAttributeTranslating.value = true
     setError('')
     try {
-      if (!category.value || category.value.categoryId !== categoryId || category.value.platform !== activeMarketplace.value) {
-        category.value = await fetchCategoryAttrs(activeMarketplace.value, categoryId)
+      if (!category.value || category.value.categoryId !== categoryId || category.value.platform !== target.platform) {
+        category.value = await fetchCategoryAttrs(target.platform, categoryId, target.site)
       }
       const result = await fetchCategoryAttributeTranslations(category.value)
       categoryAttributeTranslations.value = result.translations
@@ -1608,9 +1765,11 @@ export const useWorkflowStore = defineStore('workflow', () => {
 
   async function translateCategoryResults() {
     if (!categoryResults.value.length) return
+    const target = selectedPublishTarget.value
+    if (!target.platform) return
     categoryResultTranslating.value = true
     try {
-      const result = await fetchCategoryResultTranslations(activeMarketplace.value, categoryResults.value)
+      const result = await fetchCategoryResultTranslations(target.platform, categoryResults.value)
       categoryResultTranslations.value = result.translations
       categoryResultTranslationsSource.value = result.source
       const count = Object.values(result.translations).filter(Boolean).length
@@ -1626,26 +1785,35 @@ export const useWorkflowStore = defineStore('workflow', () => {
     categoryAttributeTranslationEnabled.value = value
     if (!value) return
     void translateCategoryResults()
-    const categoryId = product.value.drafts[activeMarketplace.value].categoryId.trim()
+    const categoryId = currentDraft.value.categoryId.trim()
     if (categoryId || category.value) void translateCategoryAttributes()
   }
 
   async function fillAttributesByAi() {
-    const categoryId = product.value.drafts[activeMarketplace.value].categoryId.trim()
+    const categoryId = currentDraft.value.categoryId.trim()
     if (!categoryId) {
       setError('请先选择类目。')
+      return
+    }
+    if (!currentDraft.value.draftId) {
+      setError('请先从草稿箱选择一个草稿再填充属性。')
       return
     }
     loading.value = true
     setError('')
     try {
-      if (!category.value || category.value.categoryId !== categoryId || category.value.platform !== activeMarketplace.value) {
-        category.value = await fetchCategoryAttrs(activeMarketplace.value, categoryId)
+      await persistCurrentDraftForPublish()
+      const target = selectedPublishTarget.value
+      if (!category.value || category.value.categoryId !== categoryId || category.value.platform !== target.platform) {
+        category.value = await fetchCategoryAttrs(target.platform, categoryId, target.site)
       }
-      const before = { ...product.value.drafts[activeMarketplace.value].attributes }
-      const result = await fillCategoryAttributes(product.value, activeMarketplace.value, categoryId, category.value)
-      product.value = result.product
-      const after = product.value.drafts[activeMarketplace.value].attributes
+      const before = { ...currentDraft.value.attributes }
+      const result = await fillCategoryAttributes(currentDraft.value, target, categoryId, category.value)
+      currentDraft.value = result.draft
+      currentDraftProductContext.value = result.productContext
+      syncActivePublishTarget(target)
+      applyMutationIndexes(result)
+      const after = currentDraft.value.attributes
       const filledCount = Object.keys(after).filter((key) => String(after[key] || '').trim() && String(before[key] || '').trim() !== String(after[key] || '').trim()).length
       const source = result.raw?.fill_source === 'ai_model' ? 'AI 模型' : '规则'
       addLog(`属性已填充：${source} 新增/更新 ${filledCount} 项，需要复核 ${result.needReview.length} 项。`)
@@ -1658,11 +1826,11 @@ export const useWorkflowStore = defineStore('workflow', () => {
   }
 
   async function runCategoryOnlyPrecheck() {
-    if (!hasProductForPublish(product.value)) {
-      setError('请先从商品库选择要预检的商品。')
+    if (!currentDraft.value.draftId) {
+      setError('请先从草稿箱选择要预检的草稿。')
       return
     }
-    const categoryId = product.value.drafts[activeMarketplace.value].categoryId.trim()
+    const categoryId = currentDraft.value.categoryId.trim()
     if (!categoryId) {
       setError('请先选择或填写类目 ID。')
       return
@@ -1670,7 +1838,9 @@ export const useWorkflowStore = defineStore('workflow', () => {
     loading.value = true
     setError('')
     try {
-      categoryPrecheck.value = await runCategoryPrecheck(product.value, activeMarketplace.value, categoryId)
+      await persistCurrentDraftForPublish()
+      categoryPrecheck.value = await runCategoryPrecheck(currentDraft.value, selectedPublishTarget.value, categoryId)
+      persistActiveTargetListingFields({ categoryPrecheck: categoryPrecheck.value.raw || categoryPrecheck.value })
       addLog(categoryPrecheck.value.ok ? '类目预检通过。' : `类目预检发现缺项：${categoryPrecheck.value.missingFields.join('、') || categoryPrecheck.value.errors.join('、')}`)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '类目预检失败')
@@ -1679,46 +1849,20 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
-  async function refreshCategories() {
-    loading.value = true
-    setError('')
-    try {
-      let job = await startCategoryCacheRefresh(activeMarketplace.value, activeMarketplaceSite())
-      categoryCacheStatus.value = job
-      addLog(`类目缓存刷新已启动：${job.job_id || job.jobId || ''}`)
-      const jobId = String(job.job_id || job.jobId || '')
-      for (let attempt = 0; jobId && attempt < 900; attempt += 1) {
-        if (['completed', 'failed'].includes(String(job.status || ''))) break
-        await wait(1000)
-        job = await fetchCategoryCacheRefreshJob(jobId)
-        categoryCacheStatus.value = job
-      }
-      if (String(job.status || '') === 'failed') {
-        throw new Error(String(job.error || '类目缓存刷新失败'))
-      }
-      const result = job.result && typeof job.result === 'object' ? job.result as Record<string, unknown> : {}
-      const cacheStatus = result.cache_status && typeof result.cache_status === 'object' ? result.cache_status as Record<string, unknown> : {}
-      const imported = job.imported ?? result.imported
-      const records = job.records ?? cacheStatus.records
-      const site = job.site ? ` / ${job.site}` : ''
-      addLog(`类目缓存刷新完成${site}：本次 ${imported ?? 0} 条，本地 ${records ?? '-'} 条。`)
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '刷新类目缓存失败')
-    } finally {
-      loading.value = false
-    }
-  }
-
   async function runPrecheck() {
-    if (!hasProductForPublish(product.value)) {
-      setError('请先从商品库选择要预检的商品。')
+    if (!currentDraft.value.draftId) {
+      setError('请先从草稿箱选择要预检的草稿。')
       return
     }
     loading.value = true
     setError('')
     try {
-      const result = await publishPrecheck(product.value, [activeMarketplace.value])
-      product.value = result.product
+      await persistCurrentDraftForPublish()
+      const target = selectedPublishTarget.value
+      const result = await publishPrecheck(currentDraft.value, target)
+      currentDraft.value = result.draft
+      if (result.productContext) currentDraftProductContext.value = result.productContext
+      syncActivePublishTarget(target)
       precheck.value = result.precheck
       precheckResults.value = result.platformResults
       applyMutationIndexes(result)
@@ -1732,14 +1876,20 @@ export const useWorkflowStore = defineStore('workflow', () => {
   }
 
   async function previewPayload() {
-    if (!hasProductForPublish(product.value)) {
-      setError('请先从商品库选择要预检的商品。')
+    if (!currentDraft.value.draftId) {
+      setError('请先从草稿箱选择要预检的草稿。')
       return
     }
     loading.value = true
     setError('')
     try {
-      const result = await previewPublishPayload(product.value, activeMarketplace.value)
+      await persistCurrentDraftForPublish()
+      const target = selectedPublishTarget.value
+      const result = await previewPublishPayload(currentDraft.value, target)
+      if (result.draft) currentDraft.value = result.draft
+      if (result.productContext) currentDraftProductContext.value = result.productContext
+      syncActivePublishTarget(target)
+      applyMutationIndexes(result)
       payloadPreview.value = result.payload
       addLog(`Payload 已生成：${result.path || result.status}`)
     } catch (exc) {
@@ -1749,15 +1899,16 @@ export const useWorkflowStore = defineStore('workflow', () => {
     }
   }
 
-  async function enqueuePublish(targetProduct: Product = product.value, targetPlatforms: Marketplace[] = [activeMarketplace.value]) {
-    if (!hasProductForPublish(targetProduct)) {
-      setError('请先从商品库选择要发布的商品。')
+  async function enqueuePublish() {
+    if (!currentDraft.value.draftId) {
+      setError('请先从草稿箱选择要发布的草稿。')
       return
     }
     loading.value = true
     setError('')
     try {
-      publishJob.value = await enqueuePublishApi(targetProduct, targetPlatforms)
+      await persistCurrentDraftForPublish()
+      publishJob.value = await enqueuePublishApi(currentDraft.value, selectedPublishTarget.value)
       draftsIndex.value = await fetchDraftsIndex()
       currentStage.value = 8
       addLog(`发布任务已入队：${publishJob.value.jobId}`)
@@ -2158,7 +2309,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
     categoryResultTranslations,
     categoryResultTranslationsSource,
     categoryResultTranslating,
-    categoryCacheStatus,
     categoryPrecheck,
     precheck,
     precheckResults,
@@ -2193,6 +2343,9 @@ export const useWorkflowStore = defineStore('workflow', () => {
     error,
     currentDraft,
     currentDraftProductContext,
+    activePublishTargetKey,
+    currentPublishTargets,
+    selectedPublishTarget,
     draft,
     imagePool,
     selectedImages,
@@ -2250,7 +2403,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
     setCategoryAttributeTranslationEnabled,
     fillAttributesByAi,
     runCategoryOnlyPrecheck,
-    refreshCategories,
     runPrecheck,
     previewPayload,
     enqueuePublish,
@@ -2276,5 +2428,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
     clearPlatformAuth,
     setMarketplace,
     setMarketplaceSite,
+    selectPublishTarget,
   }
 })

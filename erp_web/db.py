@@ -16,7 +16,6 @@ REQUIRED_TABLES = (
     "products",
     "platform_drafts",
     "media_assets",
-    "category_cache",
     "publish_logs",
 )
 
@@ -115,22 +114,6 @@ def initialize_database(app_dir: Path | str) -> Path:
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(product_id) REFERENCES products(product_id) ON DELETE CASCADE,
                 UNIQUE(product_id, asset_id)
-            );
-
-            CREATE TABLE IF NOT EXISTS category_cache (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                platform TEXT NOT NULL,
-                site TEXT NOT NULL DEFAULT '',
-                category_id TEXT NOT NULL,
-                name_original TEXT NOT NULL DEFAULT '',
-                name_cn TEXT NOT NULL DEFAULT '',
-                path_original_json TEXT NOT NULL DEFAULT '[]',
-                path_cn_json TEXT NOT NULL DEFAULT '[]',
-                keywords_json TEXT NOT NULL DEFAULT '[]',
-                attributes_json TEXT NOT NULL DEFAULT '{}',
-                raw_json TEXT NOT NULL DEFAULT '{}',
-                updated_at TEXT NOT NULL,
-                UNIQUE(platform, site, category_id)
             );
 
             CREATE TABLE IF NOT EXISTS publish_logs (
@@ -362,7 +345,6 @@ def _source(product: dict[str, Any]) -> dict[str, Any]:
         "description": product.get("description") or "",
         "images": product.get("source_image_urls") or product.get("source_images") or [],
     }
-
 
 def _image_pool(product: dict[str, Any]) -> list[dict[str, Any]]:
     source = _source(product)
@@ -950,201 +932,3 @@ def _record_from_row(row: sqlite3.Row, loaded_drafts: dict[str, Any] | None = No
         "platforms": platforms,
         "product_file_path": f"sqlite://products/{row['product_id']}",
     }
-
-
-def _category_identity(record: dict[str, Any]) -> str:
-    for key in ("category_id", "subject_id", "type_id", "id"):
-        value = str(record.get(key) or "").strip()
-        if value:
-            return value
-    return ""
-
-
-def _category_site(record: dict[str, Any], fallback: str = "") -> str:
-    return str(record.get("site") or record.get("country") or fallback or "").strip()
-
-
-def _category_attrs(record: dict[str, Any]) -> dict[str, Any]:
-    attrs = _dict(record.get("attributes_cache") or record.get("attributes"))
-    required = _list(attrs.get("required"))
-    optional = _list(attrs.get("optional"))
-    return {"required": required, "optional": optional}
-
-
-def import_category_cache(app_dir: Path | str, cache: dict[str, Any]) -> int:
-    initialize_database(app_dir)
-    platform = str(cache.get("platform") or "").strip()
-    if not platform:
-        return 0
-    site = str(cache.get("site") or "").strip()
-    updated_at = str(cache.get("updated_at") or utc_now())
-    records = [item for item in _list(cache.get("records")) if isinstance(item, dict)]
-    conn = connect(app_dir)
-    imported = 0
-    try:
-        for record in records:
-            category_id = _category_identity(record)
-            if not category_id:
-                continue
-            row_site = _category_site(record, site)
-            attrs = _category_attrs(record)
-            conn.execute(
-                """
-                INSERT INTO category_cache (
-                    platform, site, category_id, name_original, name_cn,
-                    path_original_json, path_cn_json, keywords_json,
-                    attributes_json, raw_json, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(platform, site, category_id) DO UPDATE SET
-                    name_original = excluded.name_original,
-                    name_cn = excluded.name_cn,
-                    path_original_json = excluded.path_original_json,
-                    path_cn_json = excluded.path_cn_json,
-                    keywords_json = excluded.keywords_json,
-                    attributes_json = excluded.attributes_json,
-                    raw_json = excluded.raw_json,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    platform,
-                    row_site,
-                    category_id,
-                    str(record.get("name_original") or record.get("name") or ""),
-                    str(record.get("name_cn") or ""),
-                    json_dumps(_list(record.get("path_original"))),
-                    json_dumps(_list(record.get("path_cn"))),
-                    json_dumps(_list(record.get("keywords"))),
-                    json_dumps(attrs),
-                    json_dumps(record),
-                    updated_at,
-                ),
-            )
-            imported += 1
-        conn.commit()
-    finally:
-        conn.close()
-    return imported
-
-
-def category_cache_status(app_dir: Path | str, platform: str) -> dict[str, Any]:
-    initialize_database(app_dir)
-    conn = connect(app_dir)
-    try:
-        row = conn.execute(
-            """
-            SELECT COUNT(*) AS records, MAX(updated_at) AS updated_at
-            FROM category_cache
-            WHERE platform = ?
-            """,
-            (platform,),
-        ).fetchone()
-    finally:
-        conn.close()
-    return {
-        "storage": "sqlite",
-        "platform": platform,
-        "records": int(row["records"] or 0) if row else 0,
-        "updated_at": (row["updated_at"] if row else "") or "",
-    }
-
-
-def _category_record_from_row(row: sqlite3.Row) -> dict[str, Any]:
-    raw = json_loads(row["raw_json"], {})
-    record = raw if isinstance(raw, dict) else {}
-    record.update(
-        {
-            "platform": row["platform"],
-            "site": row["site"],
-            "category_id": row["category_id"],
-            "name_original": row["name_original"],
-            "name_cn": row["name_cn"],
-            "path_original": json_loads(row["path_original_json"], []),
-            "path_cn": json_loads(row["path_cn_json"], []),
-            "keywords": json_loads(row["keywords_json"], []),
-            "attributes_cache": json_loads(row["attributes_json"], {"required": [], "optional": []}),
-            "updated_at": row["updated_at"],
-        }
-    )
-    return record
-
-
-def search_category_records(
-    app_dir: Path | str,
-    platform: str,
-    query: str = "",
-    site: str = "",
-    limit: int = 20,
-) -> list[dict[str, Any]]:
-    initialize_database(app_dir)
-    conn = connect(app_dir)
-    try:
-        rows = conn.execute(
-            """
-            SELECT *
-            FROM category_cache
-            WHERE platform = ?
-            ORDER BY name_cn ASC, name_original ASC
-            """,
-            (platform,),
-        ).fetchall()
-    finally:
-        conn.close()
-    query_text = str(query or "").strip().lower()
-    site_text = str(site or "").strip().lower()
-    results: list[dict[str, Any]] = []
-    for row in rows:
-        if site_text and str(row["site"] or "").lower() not in {"", site_text}:
-            continue
-        record = _category_record_from_row(row)
-        haystack = " ".join(
-            [
-                str(record.get("category_id") or ""),
-                str(record.get("subject_id") or ""),
-                str(record.get("type_id") or ""),
-                str(record.get("name_original") or ""),
-                str(record.get("name_cn") or ""),
-                " ".join(map(str, _list(record.get("path_original")))),
-                " ".join(map(str, _list(record.get("path_cn")))),
-                " ".join(map(str, _list(record.get("keywords")))),
-            ]
-        ).lower()
-        if query_text and query_text not in haystack:
-            continue
-        results.append(record)
-        if len(results) >= max(1, int(limit or 20)):
-            break
-    return results
-
-
-def find_category_record(app_dir: Path | str, platform: str, category_id: str, site: str = "") -> dict[str, Any] | None:
-    initialize_database(app_dir)
-    category_id = str(category_id or "").strip()
-    site_text = str(site or "").strip()
-    conn = connect(app_dir)
-    try:
-        if site_text:
-            row = conn.execute(
-                """
-                SELECT *
-                FROM category_cache
-                WHERE platform = ? AND category_id = ? AND site = ?
-                LIMIT 1
-                """,
-                (platform, category_id, site_text),
-            ).fetchone()
-            if row:
-                return _category_record_from_row(row)
-        row = conn.execute(
-            """
-            SELECT *
-            FROM category_cache
-            WHERE platform = ? AND category_id = ?
-            ORDER BY CASE WHEN site = '' THEN 1 ELSE 0 END, site ASC
-            LIMIT 1
-            """,
-            (platform, category_id),
-        ).fetchone()
-    finally:
-        conn.close()
-    return _category_record_from_row(row) if row else None

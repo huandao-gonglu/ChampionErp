@@ -178,11 +178,17 @@ def test_save_product_and_publish_precheck_api_exist(backend_server: str, sample
     saved = post_json(backend_server, "/api/save-product", {"product": sample_product})
     assert saved["ok"] is True
     assert saved["product"]["product_id"]
+    claimed = post_json(
+        backend_server,
+        "/api/claim-products",
+        {"product_ids": [saved["product"]["product_id"]], "platform": "mercadolibre"},
+    )
+    draft_id = claimed["items"][0]["draft_ids"][0]
 
     precheck = post_json(
         backend_server,
         "/api/publish-precheck",
-        {"product_id": saved["product"]["product_id"], "platforms": ["mercadolibre"]},
+        {"draft_id": draft_id, "platform": "mercadolibre", "site": "CBT"},
     )
     assert precheck["ok"] is True
     assert "mercadolibre" in precheck["platforms"]

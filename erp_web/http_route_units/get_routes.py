@@ -8,7 +8,6 @@ from erp_web.services import config_service
 from erp_web.http_route_units import static_routes
 from .common import JsonRequestHandler
 from .. import runtime as app
-from ..runtime_units.category_refresh import get_category_cache_refresh_job
 from ..runtime_units.image_pool import current_generated_images, current_image_pool, current_source_images
 from ..runtime_units.product_store import (
     load_drafts_index,
@@ -51,7 +50,6 @@ FRONTEND_PAGE_ROUTES = {
 GET_API_ROUTES = {
     "/api/ai-config",
     "/api/browser-debug/status",
-    "/api/category-cache/refresh-status",
     "/api/mercadolibre/published-items",
     "/api/mercadolibre/orders",
     "/api/drafts-index",
@@ -166,18 +164,6 @@ def handle_publish_bus_status(handler: JsonRequestHandler, parsed: object) -> No
         handler.send_json({"ok": False, "error": str(exc)}, 404)
 
 
-def handle_category_cache_refresh_status(handler: JsonRequestHandler, parsed: object) -> None:
-    params = urllib.parse.parse_qs(parsed.query)
-    job_id = str((params.get("job_id") or [""])[0]).strip()
-    if not job_id:
-        handler.send_json({"ok": False, "error": "缺少 job_id"}, 400)
-        return
-    try:
-        handler.send_json({"ok": True, "job": get_category_cache_refresh_job(job_id)})
-    except Exception as exc:
-        handler.send_json({"ok": False, "error": str(exc)}, 404)
-
-
 def handle_file(handler: JsonRequestHandler, parsed: object) -> None:
     static_routes.serve_file(handler, parsed, APP_MODULE)
 
@@ -212,7 +198,6 @@ GET_HANDLERS: dict[str, GetHandler] = {
     "/api/mercadolibre/orders": handle_mercadolibre_orders,
     "/api/ai-config": handle_ai_config,
     "/api/publish-bus/status": handle_publish_bus_status,
-    "/api/category-cache/refresh-status": handle_category_cache_refresh_status,
     "/file": handle_file,
     "/auth/mercadolibre": handle_mercadolibre_auth_page,
     "/auth/wildberries": handle_wildberries_auth_page,

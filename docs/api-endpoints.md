@@ -45,10 +45,6 @@
   `job_id`：发布任务 ID，必填
   ）；查询发布队列任务状态。
 
-- `GET /api/category-cache/refresh-status`（
-  `job_id`：类目刷新任务 ID，必填
-  ）；查询类目缓存刷新任务状态。
-
 - `GET /api/v1/product-research/hot-products/runs`（
   `run_id`：调研运行 ID，可选
   `runId`：调研运行 ID 别名，可选
@@ -227,7 +223,7 @@
 - `POST /api/category-attrs`（
   `platform`：平台标识，可选，默认 `mercadolibre`
   `category_id`：类目 ID，可选
-  ）；读取指定平台类目的必填属性，Mercado Libre 有 token 时可实时拉取。
+  ）；实时读取指定 Mercado Libre 类目的必填/选填属性。
 
 - `POST /api/category-search`（
   `platform`：平台标识，可选，默认 `mercadolibre`
@@ -236,7 +232,7 @@
   `query`：搜索关键词，可选
   `keyword`：搜索关键词别名，可选
   `limit`：结果数量，可选
-  ）；从本地类目缓存搜索类目候选。
+  ）；实时调用 Mercado Libre `domain_discovery/search` 搜索类目候选，并补齐每个候选的完整类目路径。
 
 - `POST /api/category-ai-suggest`（
   `product_id`：商品 ID，必填
@@ -244,21 +240,7 @@
   `site`：站点或国家，可选
   `country`：站点或国家别名，可选
   `limit`：建议数量，可选
-  ）；用 AI 和商品上下文为商品建议类目 ID。
-
-- `POST /api/category-cache/refresh`（
-  `platform`：平台标识，可选
-  `site`：站点或国家，可选
-  `country`：站点或国家别名，可选
-  `max_categories`：最大刷新类目数量，可选
-  ）；同步刷新平台类目缓存或读取当前本地缓存。
-
-- `POST /api/category-cache/refresh-job`（
-  `platform`：平台标识，可选
-  `site`：站点或国家，可选
-  `country`：站点或国家别名，可选
-  `max_categories`：最大刷新类目数量，可选
-  ）；启动异步类目缓存刷新任务。
+  ）；用商品上下文实时匹配 Mercado Libre 类目候选。
 
 - `POST /api/category-ai-fill`（
   `product_id`：商品 ID，必填

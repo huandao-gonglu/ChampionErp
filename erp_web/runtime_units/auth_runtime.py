@@ -217,7 +217,7 @@ def exchange_mercadolibre_code_from_body(body: dict[str, Any]) -> dict[str, Any]
             "checked_at": ml.get("auth_checked_at") or "",
             "storeAuthSummary": summarize_store_auth_states(config),
             "message": "Mercado Libre 授权成功，已自动读取用户信息。",
-            "next_action": "授权成功。下一步可直接在授权页点击“立即刷新类目缓存”，同步 Mercado Libre 官方类目和必填属性。",
+            "next_action": "授权成功。下一步到草稿的类目/属性页实时匹配 Mercado Libre 类目，并按选中类目读取必填属性。",
         }
     finally:
         if exchanged and "code_verifier" in ml:
@@ -259,7 +259,7 @@ def refresh_mercadolibre_token_from_body(body: dict[str, Any]) -> dict[str, Any]
         "checked_at": ml.get("auth_checked_at") or "",
         "storeAuthSummary": summarize_store_auth_states(config),
         "message": "Mercado Libre token 已刷新。",
-        "next_action": "Token 已刷新。下一步可直接在授权页点击“立即刷新类目缓存”，同步 Mercado Libre 官方类目和必填属性。",
+        "next_action": "Token 已刷新。下一步到草稿的类目/属性页实时匹配 Mercado Libre 类目，并按选中类目读取必填属性。",
     }
 
 

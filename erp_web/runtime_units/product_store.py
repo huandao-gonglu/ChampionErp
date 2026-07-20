@@ -488,6 +488,33 @@ def draft_product_context(product: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _normalized_target_payload(target: dict[str, Any], platform: str, selected_site: dict[str, Any]) -> dict[str, Any]:
+    payload = deepcopy(target if isinstance(target, dict) else {})
+    payload["platform"] = platform
+    payload["site"] = selected_site["code"]
+    payload["language"] = selected_site["language"]
+    payload["currency"] = selected_site["currency"]
+    for camel_key, snake_key in (
+        ("categoryId", "category_id"),
+        ("categoryPath", "category_path"),
+        ("validationErrors", "validation_errors"),
+        ("categoryPrecheck", "category_precheck"),
+        ("publishStatus", "publish_status"),
+        ("lastPrecheck", "last_precheck"),
+        ("lastPrecheckTarget", "last_precheck_target"),
+        ("publishLogs", "publish_logs"),
+    ):
+        if camel_key in payload and snake_key not in payload:
+            payload[snake_key] = payload[camel_key]
+    if not isinstance(payload.get("attributes"), dict):
+        payload["attributes"] = {}
+    if not isinstance(payload.get("validation_errors"), list):
+        payload["validation_errors"] = []
+    if not isinstance(payload.get("publish_logs"), list):
+        payload["publish_logs"] = []
+    return payload
+
+
 def load_draft_detail_from_index(draft_id: str) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
     draft_id = str(draft_id or "").strip()
     if not draft_id:
@@ -531,14 +558,18 @@ def save_draft_detail(draft_payload: dict[str, Any]) -> tuple[dict[str, Any], di
         if requested_language and selected_site["language"].lower() != requested_language.lower():
             continue
         if not any(item["platform"] == target_platform and item["site"] == selected_site["code"] for item in targets):
-            targets.append({"platform": target_platform, "site": selected_site["code"], "language": selected_site["language"], "currency": selected_site["currency"]})
+            targets.append(_normalized_target_payload(target, target_platform, selected_site))
     if not targets:
         requested_platform = str(draft_payload.get("platform") or existing_platform).strip().lower()
         platform = requested_platform if requested_platform in PLATFORMS else existing_platform
         selected_site = marketplace_site(platform, str(draft_payload.get("site") or existing.get("site") or ""))
         if platform not in PLATFORMS or not selected_site.get("code"):
             return {}, {"ok": False, "error": "草稿站点不支持", "draft_id": draft_id}, 400
-        targets = [{"platform": platform, "site": selected_site["code"], "language": selected_site["language"], "currency": selected_site["currency"]}]
+        fallback_target = {}
+        existing_targets = existing.get("target_sites") if isinstance(existing.get("target_sites"), list) else []
+        if existing_targets:
+            fallback_target = existing_targets[0] if isinstance(existing_targets[0], dict) else {}
+        targets = [_normalized_target_payload(fallback_target, platform, selected_site)]
     primary_target = targets[0]
     platform = primary_target["platform"]
     platforms = []
@@ -933,7 +964,7 @@ def mercadolibre_auth_checklist(config: dict[str, Any] | None = None) -> dict[st
     elif not token_ready:
         next_action = "生成授权链接，用店铺主账号浏览器打开，复制 code 回 ERP 换 token。"
     else:
-        next_action = "授权配置已具备。可直接点击授权页里的“立即刷新类目缓存”，同步 Mercado Libre 官方类目和必填属性。"
+        next_action = "授权配置已具备。到草稿的类目/属性页实时匹配 Mercado Libre 类目，并按选中类目读取必填属性。"
     fields = [
         {"key": "app_id", "label": "App ID / Client ID", "ok": bool(app_id), "value": mask_secret(app_id) if app_id else "缺失"},
         {"key": "app_secret", "label": "Client Secret", "ok": bool(app_secret), "value": mask_secret(app_secret) if app_secret else "缺失"},

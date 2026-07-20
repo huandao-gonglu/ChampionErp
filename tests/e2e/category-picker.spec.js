@@ -1,6 +1,6 @@
 const { test, expect } = require("@playwright/test");
 
-test("category picker searches SQLite cache and fills attributes", async ({ page }) => {
+test("category picker searches live categories and fills attributes", async ({ page }) => {
   await page.goto("/publish");
 
   await page.route("**/api/category-attrs", async route => {
@@ -166,40 +166,6 @@ test("publish page shows confirmation card before queue enqueue", async ({ page 
   expect(enqueued).toBeTruthy();
 });
 
-test("category refresh without Mercado Libre token shows an auth recovery action", async ({ page }) => {
-  await page.goto("/publish");
-
-  await page.route("**/api/category-cache/refresh", async route => {
-    await route.fulfill({
-      status: 400,
-      contentType: "application/json",
-      body: JSON.stringify({
-        ok: false,
-        error_code: "MERCADOLIBRE_CATEGORY_AUTH_REQUIRED",
-        error: "Mercado Libre 官方类目接口拒绝当前 access_token，请先刷新 token 或重新授权后再更新类目缓存。",
-        next_action: "前往授权页刷新 Mercado Libre token；如果仍失败，请重新授权后再回到发布预检页刷新类目缓存。",
-        cache_status: { storage: "sqlite", records: 2 },
-      }),
-    });
-  });
-
-  await page.locator("#page-publish").getByRole("button", { name: "更新类目缓存" }).click();
-
-  await expect(page.locator("#categoryRefreshRecovery")).toBeVisible();
-  await expect(page.locator("#categoryRefreshRecovery")).toContainText("Mercado Libre 授权");
-  await expect(page.locator("#categoryRefreshRecovery").getByRole("button", { name: "前往授权页" })).toBeVisible();
-});
-
-test("auth page still links to publish page category refresh section", async ({ page }) => {
-  await page.goto("/auth");
-
-  await expect(page.locator("#mlCategoryRefreshNextStep")).toBeVisible();
-  await page.locator("#mlCategoryRefreshNextStep").getByRole("button", { name: "去发布预检页查看" }).click();
-
-  await expect(page.locator("#page-publish")).toBeVisible();
-  await expect(page.locator("#categoryCacheStatus")).toBeVisible();
-});
-
 test("auth page explains invalid grant in plain language", async ({ page }) => {
   await page.goto("/auth");
   await page.route("**/api/mercadolibre/exchange-code", async route => {
@@ -243,123 +209,6 @@ test("auth page shows Mercado Libre config checklist", async ({ page }) => {
   await expect(page.getByRole("button", { name: "复制检查清单" })).toBeVisible();
 });
 
-test("auth page can directly refresh Mercado Libre category cache once token is ready", async ({ page }) => {
-  await page.route("**/api/state", async route => {
-    const response = await route.fetch();
-    const data = await response.json();
-    data.storeConfig = data.storeConfig || {};
-    data.storeConfig.mercadolibre = {
-      ...(data.storeConfig.mercadolibre || {}),
-      access_token: "test-access-token",
-      refresh_token: "test-refresh-token",
-      site_id: "MLM",
-    };
-    data.mercadolibreAuthChecklist = {
-      ...(data.mercadolibreAuthChecklist || {}),
-      ready_for_auth_link: true,
-      token_ready: true,
-      next_action: "可直接点击授权页里的立即刷新类目缓存按钮。",
-    };
-    await route.fulfill({ response, json: data });
-  });
-
-  await page.route("**/api/category-cache/refresh", async route => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        ok: true,
-        imported: 18,
-        cache_status: { storage: "sqlite", sqlite_records: 20, records: 20 },
-      }),
-    });
-  });
-
-  await page.goto("/auth");
-
-  const refreshBtn = page.locator("#mlDirectCategoryRefreshBtn");
-  await expect(refreshBtn).toBeEnabled();
-  await refreshBtn.click();
-
-  await expect(page.locator("#mlCategoryRefreshDirectStatus")).toContainText("18");
-  await expect(page.locator("#mlCategoryRefreshDirectStatus")).toContainText("20");
-});
-
-test("category refresh success suggests a recommended keyword on publish page", async ({ page }) => {
-  await page.route("**/api/state", async route => {
-    const response = await route.fetch();
-    const data = await response.json();
-    data.product = {
-      ...(data.product || {}),
-      category: "水瓶",
-      source: {
-        ...((data.product || {}).source || {}),
-        title: "不锈钢水瓶",
-      },
-    };
-    data.storeConfig = data.storeConfig || {};
-    data.storeConfig.mercadolibre = {
-      ...(data.storeConfig.mercadolibre || {}),
-      access_token: "test-access-token",
-      refresh_token: "test-refresh-token",
-      site_id: "MLM",
-    };
-    data.mercadolibreAuthChecklist = {
-      ...(data.mercadolibreAuthChecklist || {}),
-      ready_for_auth_link: true,
-      token_ready: true,
-      next_action: "可直接刷新 Mercado Libre 类目缓存。",
-    };
-    await route.fulfill({ response, json: data });
-  });
-
-  await page.route("**/api/category-cache/refresh", async route => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        ok: true,
-        imported: 18,
-        cache_status: { storage: "sqlite", sqlite_records: 20, records: 20 },
-      }),
-    });
-  });
-
-  await page.route("**/api/category-search", async route => {
-    const body = route.request().postDataJSON();
-    expect(body.query).toBe("水瓶");
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        ok: true,
-        results: [
-          {
-            category_id: "MLM-200",
-            path_cn: "家居/厨房/水瓶",
-            attributes_cache: {
-              required: [{ id: "BRAND", name: "Brand", required: true }],
-              optional: [],
-            },
-          },
-        ],
-        cache_status: { storage: "sqlite", sqlite_records: 20, records: 20 },
-      }),
-    });
-  });
-
-  await page.goto("/auth");
-  await page.locator("#mlDirectCategoryRefreshBtn").click();
-  await page.locator("#mlCategoryRefreshNextStep").getByRole("button", { name: "去发布预检页查看" }).click();
-
-  await expect(page.locator("#categorySearchSuggestion")).toContainText("水瓶");
-  await page.locator("#categorySearchSuggestion").getByRole("button", { name: "用推荐词搜索类目" }).click();
-
-  await expect(page.locator("#categoryPickerModal")).toBeVisible();
-  await expect(page.locator("#categoryPickerKeyword")).toHaveValue("水瓶");
-  await expect(page.locator("#categorySearchResults")).toContainText("MLM-200");
-});
-
 test("selecting a category auto-loads attributes and runs local precheck", async ({ page }) => {
   await page.goto("/publish");
 
@@ -373,13 +222,12 @@ test("selecting a category auto-loads attributes and runs local precheck", async
           {
             category_id: "MLM-200",
             path_cn: "家居/厨房/水瓶",
-            attributes_cache: {
+            attributes: {
               required: [{ id: "BRAND", name: "Brand", required: true }],
               optional: [],
             },
           },
         ],
-        cache_status: { storage: "sqlite", sqlite_records: 20, records: 20 },
       }),
     });
   });
@@ -435,13 +283,12 @@ test("missing required category attributes highlight fields and disable publish 
           {
             category_id: "MLM-200",
             path_cn: "家居/厨房/水瓶",
-            attributes_cache: {
+            attributes: {
               required: [{ id: "BRAND", name: "Brand", required: true }],
               optional: [],
             },
           },
         ],
-        cache_status: { storage: "sqlite", sqlite_records: 20, records: 20 },
       }),
     });
   });

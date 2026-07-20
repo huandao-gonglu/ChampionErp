@@ -14,8 +14,6 @@ from typing import Any
 
 APP_DIR = Path(__file__).resolve().parents[2]
 MARKETPLACE_CACHE_DIR = APP_DIR / "data" / "cache" / "marketplaces"
-ML_CATEGORY_CACHE_PATH = MARKETPLACE_CACHE_DIR / "ml_category_cache.json"
-ML_CATEGORY_TREE_PATH = MARKETPLACE_CACHE_DIR / "ml_category_tree.json"
 ML_CATEGORY_SHIPPING_CACHE_PATH = MARKETPLACE_CACHE_DIR / "ml_category_shipping_cache.json"
 
 ML_CATEGORY_WORDS = {

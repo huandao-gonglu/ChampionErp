@@ -13,6 +13,7 @@ import type {
   CollectForm,
   ImageAsset,
   Marketplace,
+  MarketplaceTargetSite,
   MercadoLibreOrderItem,
   MercadoLibreOrderLine,
   MercadoLibreOrdersPage,
@@ -89,6 +90,15 @@ function requiredProductId(product: Product, action = '继续操作'): string {
   const productId = product.productId.trim()
   if (!productId) throw new Error(`请先保存或加载商品后再${action}`)
   return productId
+}
+
+function requiredDraftTarget(draft: DraftDetail, target: MarketplaceTargetSite, action = '继续操作') {
+  const draftId = String(draft.draftId || '').trim()
+  if (!draftId) throw new Error(`请先从草稿箱选择草稿后再${action}`)
+  const platform = String(target.platform || '').trim()
+  const site = String(target.site || '').trim()
+  if (!platform || !site) throw new Error(`当前草稿没有可${action}的目标站点`)
+  return { draft_id: draftId, platform, site }
 }
 
 export type {
@@ -960,16 +970,17 @@ export async function calculatePrice(input: PricingInput): Promise<PricingResult
   }
 }
 
-export async function publishPrecheck(product: Product, platforms: Marketplace[] = ['mercadolibre']): Promise<{ product: Product; precheck: PublishPrecheck; platformResults: UnknownRecord; productsIndex?: ProductIndexItem[]; draftsIndex?: DraftIndexItem[] }> {
-  const response = await apiClient.post('/api/publish-precheck', { product_id: requiredProductId(product, '发布预检'), platforms })
+export async function publishPrecheck(draft: DraftDetail, target: MarketplaceTargetSite): Promise<{ draft: DraftDetail; precheck: PublishPrecheck; platformResults: UnknownRecord; productsIndex?: ProductIndexItem[]; draftsIndex?: DraftIndexItem[]; productContext?: DraftMutationResponse['productContext'] }> {
+  const response = await apiClient.post('/api/publish-precheck', requiredDraftTarget(draft, target, '发布预检'))
   const data = asRecord(response.data)
   ensureOk(data, '预检失败')
-  const firstPlatform = platforms[0] || 'mercadolibre'
-  const result = asRecord(asRecord(data.platforms)[firstPlatform])
+  const platform = getString(data, ['platform'], target.platform)
+  const result = asRecord(asRecord(data.platforms)[platform])
   const errorItems = precheckIssues(result.errors, 'error')
   const warningItems = precheckIssues(result.warnings, 'warning')
+  const mutation = normalizeDraftMutation(data)
   return {
-    product: normalizeBackendProduct(data.product),
+    draft: mutation.draft,
     precheck: {
       ok: result.ok !== false,
       errors: errorItems.map(precheckIssueSummary),
@@ -981,11 +992,12 @@ export async function publishPrecheck(product: Product, platforms: Marketplace[]
     platformResults: asRecord(data.platforms),
     productsIndex: normalizeProductsIndex(data.productsIndex),
     draftsIndex: normalizeDraftsIndex(data.draftsIndex),
+    productContext: mutation.productContext,
   }
 }
 
-export async function runCategoryPrecheck(product: Product, platform: Marketplace, categoryId: string): Promise<CategoryPrecheckResult> {
-  const response = await apiClient.post('/api/category-precheck', { product_id: requiredProductId(product, '类目预检'), platform, category_id: categoryId })
+export async function runCategoryPrecheck(draft: DraftDetail, target: MarketplaceTargetSite, categoryId: string): Promise<CategoryPrecheckResult> {
+  const response = await apiClient.post('/api/category-precheck', { ...requiredDraftTarget(draft, target, '类目预检'), category_id: categoryId })
   const data = asRecord(response.data)
   ensureOk(data, '类目预检失败')
   return {
@@ -997,21 +1009,28 @@ export async function runCategoryPrecheck(product: Product, platform: Marketplac
   }
 }
 
-export async function previewPublishPayload(product: Product, platform: Marketplace): Promise<PayloadPreviewResult> {
-  const response = await apiClient.post('/api/publish-payload-preview', { product_id: requiredProductId(product, '预览发布 payload'), platform })
+export async function previewPublishPayload(draft: DraftDetail, target: MarketplaceTargetSite): Promise<PayloadPreviewResult & { draft?: DraftDetail; productContext?: DraftMutationResponse['productContext']; productsIndex?: ProductIndexItem[]; draftsIndex?: DraftIndexItem[] }> {
+  const response = await apiClient.post('/api/publish-payload-preview', requiredDraftTarget(draft, target, '预览发布 payload'))
   const data = asRecord(response.data)
   ensureOk(data, '生成 payload 失败')
+  const mutation = isRecord(data.draft) ? normalizeDraftMutation(data) : null
   return {
-    platform,
+    platform: getString(data, ['platform'], target.platform),
+    site: getString(data, ['site'], target.site),
+    target: asRecord(data.target),
     status: getString(data, ['status']),
     path: getString(data, ['path']),
     payload: asRecord(data.payload),
     warning: getString(data, ['warning']),
+    draft: mutation?.draft,
+    productContext: mutation?.productContext,
+    productsIndex: mutation?.productsIndex,
+    draftsIndex: mutation?.draftsIndex,
   }
 }
 
-export async function enqueuePublish(product: Product, platforms: Marketplace[] = ['mercadolibre']): Promise<PublishJob> {
-  const response = await apiClient.post('/api/publish-bus/enqueue', { product_id: requiredProductId(product, '发布入队'), platforms })
+export async function enqueuePublish(draft: DraftDetail, target: MarketplaceTargetSite): Promise<PublishJob> {
+  const response = await apiClient.post('/api/publish-bus/enqueue', requiredDraftTarget(draft, target, '发布入队'))
   const data = asRecord(response.data)
   ensureOk(data, '发布入队失败')
   return {
@@ -1039,10 +1058,11 @@ export async function confirmMercadoLibreRealPublish(product: Product, confirm =
   return normalizeProductOperation(response.data)
 }
 
-export async function fetchCategoryAttrs(platform: Marketplace, categoryId: string): Promise<CategorySelection> {
+export async function fetchCategoryAttrs(platform: Marketplace, categoryId: string, site = ''): Promise<CategorySelection> {
   const response = await apiClient.post('/api/category-attrs', {
     platform,
     category_id: categoryId,
+    site,
   })
   const data = asRecord(response.data)
   ensureOk(data, '读取类目属性失败')
@@ -1091,7 +1111,7 @@ export async function fetchCategoryAttrs(platform: Marketplace, categoryId: stri
   }
 }
 
-export async function searchCategories(platform: Marketplace, query: string, site = ''): Promise<{ results: CategorySearchResult[]; cacheStatus: UnknownRecord }> {
+export async function searchCategories(platform: Marketplace, query: string, site = ''): Promise<{ results: CategorySearchResult[] }> {
   const response = await apiClient.post('/api/category-search', { platform, query, site, limit: 20 })
   const data = asRecord(response.data)
   ensureOk(data, '搜索类目失败')
@@ -1106,11 +1126,11 @@ export async function searchCategories(platform: Marketplace, query: string, sit
       }
     })
     : []
-  return { results, cacheStatus: asRecord(data.cache_status) }
+  return { results }
 }
 
-export async function suggestCategories(product: Product, platform: Marketplace, site = ''): Promise<{ results: CategorySearchResult[]; cacheStatus: UnknownRecord; terms: string[] }> {
-  const response = await apiClient.post('/api/category-ai-suggest', { product_id: requiredProductId(product, '匹配类目'), platform, site, limit: 5 })
+export async function suggestCategories(draft: DraftDetail, target: MarketplaceTargetSite): Promise<{ results: CategorySearchResult[]; terms: string[] }> {
+  const response = await apiClient.post('/api/category-ai-suggest', { ...requiredDraftTarget(draft, target, '匹配类目'), limit: 5 })
   const data = asRecord(response.data)
   ensureOk(data, '匹配类目失败')
   const results = Array.isArray(data.suggestions)
@@ -1124,7 +1144,7 @@ export async function suggestCategories(product: Product, platform: Marketplace,
       }
     })
     : []
-  return { results, cacheStatus: asRecord(data.cache_status), terms: Array.isArray(data.terms) ? data.terms.map(String) : [] }
+  return { results, terms: Array.isArray(data.terms) ? data.terms.map(String) : [] }
 }
 
 function categorySelectionToBackendRecord(category: CategorySelection | null): UnknownRecord | null {
@@ -1133,7 +1153,7 @@ function categorySelectionToBackendRecord(category: CategorySelection | null): U
     category_id: category.categoryId,
     category_path: category.categoryPath,
     path_original: category.categoryPath ? [category.categoryPath] : [],
-    attributes_cache: {
+    attributes: {
       required: category.requiredAttributes.map((attr) => ({
         id: attr.id,
         name: attr.name,
@@ -1150,25 +1170,19 @@ function categorySelectionToBackendRecord(category: CategorySelection | null): U
   }
 }
 
-export async function fillCategoryAttributes(product: Product, platform: Marketplace, categoryId: string, category: CategorySelection | null = null): Promise<ProductMutationResponse & { needReview: unknown[] }> {
+export async function fillCategoryAttributes(draft: DraftDetail, target: MarketplaceTargetSite, categoryId: string, category: CategorySelection | null = null): Promise<DraftMutationResponse & { needReview: unknown[]; warning?: string }> {
   const response = await apiClient.post('/api/category-ai-fill', {
-    product_id: requiredProductId(product, '填充类目属性'),
-    platform,
+    ...requiredDraftTarget(draft, target, '填充类目属性'),
     category_id: categoryId,
     category_record: categorySelectionToBackendRecord(category),
   })
   const data = asRecord(response.data)
   ensureOk(data, 'AI 填充属性失败')
-  const normalizedProduct = normalizeBackendProduct(data.product)
+  const result = normalizeDraftMutation(data)
   return {
-    ok: true,
-    product: normalizedProduct,
-    imagePool: normalizedProduct.source.imagePool,
-    productsIndex: [],
-    draftsIndex: [],
+    ...result,
     needReview: Array.isArray(data.need_review) ? data.need_review : [],
     warning: getString(data, ['warning']),
-    raw: data,
   }
 }
 
@@ -1214,27 +1228,6 @@ export async function fetchCategoryResultTranslations(platform: Marketplace, cat
       .filter(([, value]) => value),
   )
   return { translations, source: getString(data, ['source']) }
-}
-
-export async function refreshCategoryCache(platform: Marketplace, site = '', maxCategories = 500): Promise<UnknownRecord> {
-  const response = await apiClient.post('/api/category-cache/refresh', { platform, site, max_categories: maxCategories })
-  const data = asRecord(response.data)
-  ensureOk(data, '刷新类目缓存失败')
-  return data
-}
-
-export async function startCategoryCacheRefresh(platform: Marketplace, site = '', maxCategories = 500): Promise<UnknownRecord> {
-  const response = await apiClient.post('/api/category-cache/refresh-job', { platform, site, max_categories: maxCategories })
-  const data = asRecord(response.data)
-  ensureOk(data, '启动类目缓存刷新失败')
-  return asRecord(data.job)
-}
-
-export async function fetchCategoryCacheRefreshJob(jobId: string): Promise<UnknownRecord> {
-  const response = await apiClient.get('/api/category-cache/refresh-status', { params: { job_id: jobId } })
-  const data = asRecord(response.data)
-  ensureOk(data, '读取类目刷新进度失败')
-  return asRecord(data.job)
 }
 
 export async function assignUpc(): Promise<ProductMutationResponse> {

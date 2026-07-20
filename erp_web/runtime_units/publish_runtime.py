@@ -8,7 +8,6 @@ from .publish_helpers import (
     compact_precheck,
     compact_precheck_items,
     compact_publish_failure_response,
-    mock_category_attrs,
     precheck_item,
     validate_publish_payload,
 )
@@ -49,7 +48,6 @@ __all__ = [
     "mercadolibre_close_remote_item",
     "mercadolibre_real_publish",
     "mercadolibre_remote_items",
-    "mock_category_attrs",
     "precheck_item",
     "run_mercadolibre_07d_test",
     "validate_mercadolibre_draft",

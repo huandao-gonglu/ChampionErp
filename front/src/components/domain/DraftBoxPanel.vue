@@ -15,6 +15,7 @@ const emit = defineEmits<{
   refresh: []
   editText: [item: DraftIndexItem]
   editImages: [item: DraftIndexItem]
+  editCategory: [item: DraftIndexItem]
   goPricing: [item: DraftIndexItem]
   goPublish: [item: DraftIndexItem]
   deleteDraft: [item: DraftIndexItem]
@@ -367,6 +368,7 @@ onBeforeUnmount(() => {
               <div class="flex flex-wrap gap-2">
                 <button class="btn btn-outline whitespace-nowrap px-3 py-1.5 text-xs" :disabled="props.loading" @click="emit('editText', row)">编辑文本</button>
                 <button class="btn btn-secondary whitespace-nowrap px-3 py-1.5 text-xs" :disabled="props.loading" @click="emit('editImages', row)">编辑图片</button>
+                <button class="btn btn-outline whitespace-nowrap px-3 py-1.5 text-xs" :disabled="props.loading || !draftIdOf(row)" @click="emit('editCategory', row)">类目/属性</button>
                 <button class="btn btn-outline whitespace-nowrap px-3 py-1.5 text-xs" :disabled="props.loading || !draftIdOf(row)" @click="emit('goPricing', row)">核价</button>
                 <button class="btn btn-primary whitespace-nowrap px-3 py-1.5 text-xs" :disabled="props.loading" @click="emit('goPublish', row)">发布预检</button>
                 <button class="btn btn-outline whitespace-nowrap px-3 py-1.5 text-xs" :disabled="props.loading || !draftIdOf(row)" :title="draftIdOf(row) || '当前草稿暂无 ID'" @click="copyDraftId(row)">

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { calculatePrice, generateCopy, imageEdit, imageTranslate, publishPrecheck } from '@/api/workflow'
 import { apiClient } from '@/api/client'
-import { createEmptyProduct } from '@/constants/initialState'
+import { createEmptyDraftDetail, createEmptyProduct } from '@/constants/initialState'
 import { normalizeProductsIndex, toBackendProduct } from '@/api/workflow/normalizers'
 
 vi.mock('@/api/client', () => ({
@@ -234,21 +234,21 @@ describe('publishPrecheck API mapping', () => {
   })
 
   it('keeps structured backend issues readable for the UI', async () => {
-    const product = createEmptyProduct()
-    product.productId = 'prod-1'
+    const draft = createEmptyDraftDetail('mercadolibre')
+    draft.draftId = 'draft-1'
+    draft.targetSites = [{ platform: 'mercadolibre', site: 'CBT', language: 'es', currency: 'USD' }]
     vi.mocked(apiClient.post).mockResolvedValueOnce({
       data: {
         ok: true,
-        product: {
-          product_id: 'prod-1',
-          drafts: {
-            mercadolibre: {
-              enabled: true,
-              attributes: {},
-            },
-          },
-          source: {},
+        draft: {
+          draft_id: 'draft-1',
+          platform: 'mercadolibre',
+          site: 'CBT',
+          target_sites: [{ platform: 'mercadolibre', site: 'CBT', language: 'es', currency: 'USD' }],
+          enabled: true,
+          attributes: {},
         },
+        productContext: { product_id: 'prod-1' },
         platforms: {
           mercadolibre: {
             ok: false,
@@ -275,11 +275,12 @@ describe('publishPrecheck API mapping', () => {
       },
     })
 
-    const result = await publishPrecheck(product, ['mercadolibre'])
+    const result = await publishPrecheck(draft, draft.targetSites[0])
 
     expect(apiClient.post).toHaveBeenCalledWith('/api/publish-precheck', {
-      product_id: 'prod-1',
-      platforms: ['mercadolibre'],
+      draft_id: 'draft-1',
+      platform: 'mercadolibre',
+      site: 'CBT',
     })
     expect(result.precheck.ok).toBe(false)
     expect(result.precheck.errors).toEqual(['price：价格缺失或无效（前往核价页计算并应用售价）'])

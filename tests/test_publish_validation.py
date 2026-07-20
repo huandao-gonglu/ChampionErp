@@ -10,7 +10,7 @@ def test_mercadolibre_review_summary_restores_local_attribute_ids() -> None:
             "mercadolibre": {
                 "category_id": "MLM1",
                 "category_path": "Protectores y Folios",
-                "attributes_cache": {
+                "attributes": {
                     "required": [
                         {"id": "GTIN", "name": "Código universal de producto", "required": True},
                         {"id": "RECOMMENDED_AGE_GROUP", "name": "Edad recomendada", "required": True},
@@ -58,4 +58,3 @@ def test_mercadolibre_review_summary_restores_local_attribute_ids() -> None:
         "attributes.RECOMMENDED_AGE_GROUP",
         "attributes.TRADING_CARD_GAME_ACCESSORY_TYPE",
     ]
-

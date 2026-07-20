@@ -3,7 +3,6 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
-import urllib.error
 import urllib.parse
 from pathlib import Path
 from unittest.mock import patch
@@ -609,43 +608,39 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
 
         self.with_temp_app(run)
 
-    def test_category_search_and_attrs_use_sqlite_cache(self) -> None:
+    def test_category_search_and_attrs_use_live_mercadolibre_api(self) -> None:
         def run(app_dir: Path) -> None:
-            erp_db.import_category_cache(
-                app_dir,
-                {
-                    "platform": "mercadolibre",
-                    "site": "MLM",
-                    "updated_at": "2026-05-29T10:00:00Z",
-                    "records": [
-                        {
-                            "platform": "mercadolibre",
-                            "site": "MLM",
-                            "category_id": "MLM999",
-                            "name_original": "Necklaces",
-                            "name_cn": "项链",
-                            "path_original": ["Jewelry", "Necklaces"],
-                            "path_cn": ["珠宝", "项链"],
-                            "keywords": ["吊坠"],
-                            "attributes_cache": {
-                                "required": [{"id": "BRAND", "name": "品牌", "required": True}],
-                                "optional": [],
-                            },
-                        }
+            responses = {
+                "https://api.mercadolibre.com/sites/MLM/domain_discovery/search?q=necklace&limit=5": [
+                    {"domain_id": "MLM-NECKLACES", "domain_name": "Necklaces", "category_id": "MLM999", "category_name": "Necklaces"}
+                ],
+                "https://api.mercadolibre.com/categories/MLM999": {
+                    "id": "MLM999",
+                    "name": "Necklaces",
+                    "path_from_root": [
+                        {"id": "MLM1430", "name": "Clothes, Bags and Shoes"},
+                        {"id": "MLM999", "name": "Necklaces"},
                     ],
+                    "children_categories": [],
                 },
-            )
+                "https://api.mercadolibre.com/categories/MLM999/attributes": [
+                    {"id": "BRAND", "name": "Brand", "tags": {"required": True}, "value_type": "string"},
+                ],
+            }
 
-            results = erp_web_app.search_category_cache("mercadolibre", query="项链", site="MLM")
-            attrs = erp_web_app.mock_category_attrs("mercadolibre", "MLM999")
+            with patch.object(erp_web_app, "http_json", side_effect=lambda url, access_token=None: responses[url]):
+                results = erp_web_app.search_categories_live("mercadolibre", query="necklace", site="MLM", limit=5)
+                attrs = erp_web_app.fetch_category_attributes("mercadolibre", "MLM999", site="MLM")
             product = sample_product()
             product["drafts"]["mercadolibre"]["category_id"] = "MLM999"
             product["drafts"]["mercadolibre"]["attributes"] = {}
+            product["local_platform_categories"] = {"mercadolibre": attrs["category"]}
             summary = erp_web_app._required_attribute_summary(product, "mercadolibre")
 
             self.assertEqual(results[0]["category_id"], "MLM999")
+            self.assertEqual(results[0]["path"], "Clothes, Bags and Shoes / Necklaces")
             self.assertEqual(attrs["required"][0]["id"], "BRAND")
-            self.assertEqual(attrs["cache_status"]["storage"], "sqlite")
+            self.assertEqual(attrs["source"], "mercadolibre_live")
             self.assertEqual(summary["required_count"], 1)
             self.assertEqual(summary["filled_count"], 0)
 
@@ -1249,139 +1244,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
 
         self.with_temp_app(run)
 
-    def test_refresh_mercadolibre_category_cache_imports_official_tree_and_attributes(self) -> None:
-        def run(app_dir: Path) -> None:
-            responses = {
-                "https://api.mercadolibre.com/sites/MLM/categories": [
-                    {"id": "MLM1", "name": "Home, Furniture and Garden"},
-                    {"id": "MLM2", "name": "Sports and Fitness"},
-                ],
-                "https://api.mercadolibre.com/categories/MLM1": {
-                    "id": "MLM1",
-                    "name": "Home, Furniture and Garden",
-                    "path_from_root": [{"id": "MLM1", "name": "Home, Furniture and Garden"}],
-                    "children_categories": [
-                        {"id": "MLM10", "name": "Kitchen & Housewares", "total_items_in_this_category": 10},
-                    ],
-                },
-                "https://api.mercadolibre.com/categories/MLM2": {
-                    "id": "MLM2",
-                    "name": "Sports and Fitness",
-                    "path_from_root": [{"id": "MLM2", "name": "Sports and Fitness"}],
-                    "children_categories": [],
-                },
-                "https://api.mercadolibre.com/categories/MLM10": {
-                    "id": "MLM10",
-                    "name": "Water Bottles",
-                    "path_from_root": [
-                        {"id": "MLM1", "name": "Home, Furniture and Garden"},
-                        {"id": "MLM10", "name": "Kitchen & Housewares"},
-                    ],
-                    "children_categories": [],
-                },
-                "https://api.mercadolibre.com/categories/MLM2/attributes": [],
-                "https://api.mercadolibre.com/categories/MLM10/attributes": [
-                    {"id": "BRAND", "name": "Brand", "tags": {"required": True}, "value_type": "string"},
-                    {"id": "MODEL", "name": "Model", "tags": {"required": True}, "value_type": "string"},
-                ],
-            }
-
-            with patch.object(erp_web_app, "http_json", side_effect=lambda url, access_token=None: responses[url]):
-                result = erp_web_app.refresh_official_category_cache("mercadolibre", site="MLM", max_categories=20)
-
-            self.assertTrue(result["ok"])
-            self.assertGreaterEqual(result["imported"], 2)
-            results = erp_web_app.search_category_cache("mercadolibre", query="Bottle", site="MLM", limit=10)
-            self.assertEqual(results[0]["category_id"], "MLM10")
-            attrs = results[0]["attributes_cache"]
-            self.assertEqual([item["id"] for item in attrs["required"]], ["BRAND", "MODEL"])
-            self.assertEqual(erp_db.category_cache_status(app_dir, "mercadolibre")["records"], result["imported"])
-
-        self.with_temp_app(run)
-
-    def test_refresh_mercadolibre_category_cache_auth_error_keeps_cache_and_returns_next_action(self) -> None:
-        def run(app_dir: Path) -> None:
-            erp_db.import_category_cache(
-                app_dir,
-                {
-                    "platform": "mercadolibre",
-                    "site": "MLM",
-                    "records": [
-                        {
-                            "platform": "mercadolibre",
-                            "site": "MLM",
-                            "category_id": "MLM-200",
-                            "name_original": "Bottles",
-                            "name_cn": "水瓶",
-                            "path_original": ["Home", "Bottles"],
-                            "path_cn": ["家居", "水瓶"],
-                            "attributes_cache": {"required": [], "optional": []},
-                        }
-                    ],
-                },
-            )
-            error = urllib.error.HTTPError("https://api.mercadolibre.com/sites/MLM/categories", 401, "Unauthorized", {}, None)
-
-            with patch.object(erp_web_app, "http_json", side_effect=error):
-                result = erp_web_app.refresh_official_category_cache("mercadolibre", site="MLM", max_categories=20)
-
-            self.assertFalse(result["ok"])
-            self.assertEqual(result["error_code"], "MERCADOLIBRE_CATEGORY_AUTH_REQUIRED")
-            self.assertIn("授权", result["next_action"])
-            self.assertEqual(erp_db.category_cache_status(app_dir, "mercadolibre")["records"], 1)
-
-        self.with_temp_app(run)
-
-    def test_refresh_mercadolibre_category_cache_refreshes_token_once_after_auth_error(self) -> None:
-        def run(app_dir: Path) -> None:
-            erp_web_app.save_store_config(
-                {
-                    "mercadolibre": {
-                        "app_id": "123",
-                        "app_secret": "secret",
-                        "access_token": "expired-token",
-                        "refresh_token": "refresh-123",
-                        "site_id": "MLM",
-                    }
-                }
-            )
-            auth_error = urllib.error.HTTPError("https://api.mercadolibre.com/sites/MLM/categories", 401, "Unauthorized", {}, None)
-            responses = {
-                "https://api.mercadolibre.com/sites/MLM/categories": [{"id": "MLM1", "name": "Home"}],
-                "https://api.mercadolibre.com/categories/MLM1": {
-                    "id": "MLM1",
-                    "name": "Home",
-                    "path_from_root": [{"id": "MLM1", "name": "Home"}],
-                    "children_categories": [],
-                },
-                "https://api.mercadolibre.com/categories/MLM1/attributes": [],
-            }
-            calls: list[tuple[str, str | None]] = []
-
-            def fake_http_json(url: str, access_token: str | None = None):
-                calls.append((url, access_token))
-                if len(calls) == 1:
-                    raise auth_error
-                return responses[url]
-
-            with patch.object(erp_web_app, "http_json", side_effect=fake_http_json), patch.object(
-                erp_web_app.publisher,
-                "refresh_mercadolibre_token",
-                return_value={"access_token": "fresh-token", "refresh_token": "refresh-456"},
-            ):
-                result = erp_web_app.refresh_official_category_cache("mercadolibre", max_categories=20)
-
-            self.assertTrue(result["ok"])
-            self.assertTrue(result["token_refreshed"])
-            self.assertEqual(calls[0][1], "expired-token")
-            self.assertEqual(calls[1][1], "fresh-token")
-            saved = erp_web_app.load_store_config()["mercadolibre"]
-            self.assertEqual(saved["access_token"], "fresh-token")
-            self.assertEqual(saved["refresh_token"], "refresh-456")
-
-        self.with_temp_app(run)
-
-    def test_exchange_mercadolibre_code_returns_category_refresh_next_action(self) -> None:
+    def test_exchange_mercadolibre_code_returns_live_category_next_action(self) -> None:
         def run(app_dir: Path) -> None:
             erp_web_app.save_store_config(
                 {
@@ -1402,7 +1265,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 result = erp_web_app.exchange_mercadolibre_code_from_body({"code_or_url": "https://example.com/callback?code=TG-1"})
 
             self.assertEqual(result["status"], "测试成功")
-            self.assertIn("类目", result["next_action"])
+            self.assertIn("实时匹配", result["next_action"])
             saved = erp_web_app.load_store_config()["mercadolibre"]
             self.assertEqual(saved["access_token"], "token-123")
             self.assertNotIn("code_verifier", saved)

@@ -7,9 +7,7 @@ from typing import Any
 
 from erp_web import marketplaces as publisher
 from erp_web.product_model import (
-    category_cache_status,
     default_draft,
-    find_category_record,
     normalize_draft_image_refs,
     validate_category_precheck,
 )
@@ -26,63 +24,6 @@ from .product_store import (
     summarize_store_auth_states,
 )
 from .runtime_common import APP_DIR
-
-def mock_category_attrs(platform: str, category_id: str) -> dict[str, Any]:
-    platform = str(platform or "").strip().lower()
-    record = find_category_record(platform, category_id)
-    if record:
-        attrs = record.get("attributes_cache") if isinstance(record.get("attributes_cache"), dict) else {}
-        required = list(attrs.get("required") or [])
-        optional = list(attrs.get("optional") or [])
-        return {
-            "ok": True,
-            "source": "cache",
-            "cache_status": category_cache_status(platform),
-            "category": record,
-            "required": required,
-            "optional": optional,
-            "attributes": required + optional,
-            "category_path": record.get("path_cn") or record.get("path_original") or [],
-        }
-    if platform == "mercadolibre":
-        return {
-            "ok": True,
-            "source": "mock",
-            "cache_status": category_cache_status(platform),
-            "required": [
-                {"id": "BRAND", "name": "Brand", "required": True, "value_type": "string"},
-                {"id": "MODEL", "name": "Model", "required": True, "value_type": "string"},
-                {"id": "GTIN", "name": "GTIN", "required": False, "value_type": "string"},
-                {"id": "PACKAGE_LENGTH", "name": "Package length", "required": True, "value_type": "number", "unit": "cm"},
-                {"id": "PACKAGE_WIDTH", "name": "Package width", "required": True, "value_type": "number", "unit": "cm"},
-                {"id": "PACKAGE_HEIGHT", "name": "Package height", "required": True, "value_type": "number", "unit": "cm"},
-                {"id": "PACKAGE_WEIGHT", "name": "Package weight", "required": True, "value_type": "number", "unit": "kg"},
-            ],
-            "optional": [
-                {"id": "MATERIAL", "name": "Material", "required": False, "value_type": "string"},
-                {"id": "UNSURE_COLOR", "name": "Color", "required": False, "value_type": "select", "options": ["Black", "White", "Blue"]},
-            ],
-        }
-    return {
-        "ok": True,
-        "source": "mock",
-        "cache_status": category_cache_status(platform),
-        "required": [
-            {"id": "brand", "name": "Brand", "required": True, "value_type": "string"},
-            {"id": "subject", "name": "Subject", "required": True, "value_type": "string"},
-            {"id": "price", "name": "Price", "required": True, "value_type": "number"},
-        ],
-        "optional": [
-            {"id": "material", "name": "Material", "required": False, "value_type": "string"},
-        ],
-        "attributes": [
-            {"id": "brand", "name": "Brand", "required": True, "value_type": "string"},
-            {"id": "subject", "name": "Subject", "required": True, "value_type": "string"},
-            {"id": "price", "name": "Price", "required": True, "value_type": "number"},
-            {"id": "material", "name": "Material", "required": False, "value_type": "string"},
-        ],
-    }
-
 
 def assign_upc() -> dict[str, Any]:
     pool_path = APP_DIR / "upc_pool.json"
@@ -310,12 +251,16 @@ def _field_error_map(items: list[dict[str, Any]]) -> dict[str, list[str]]:
 def _required_attribute_summary(product: dict[str, Any], platform: str) -> dict[str, Any]:
     draft = _draft_for_platform(product, platform)
     category_id = str(draft.get("category_id") or "").strip()
-    record = find_category_record(platform, category_id) if category_id else None
+    categories = product.get("local_platform_categories") if isinstance(product.get("local_platform_categories"), dict) else {}
+    record = categories.get(platform) if isinstance(categories.get(platform), dict) else None
+    record_id = str((record or {}).get("category_id") or (record or {}).get("subject_id") or (record or {}).get("type_id") or "").strip()
+    if category_id and record_id and record_id != category_id:
+        record = None
     if not isinstance(record, dict):
         return {"required_count": 0, "filled_count": 0, "missing": []}
     missing = validate_category_precheck(product, platform, record)
     required_fields = [item for item in missing if str(item).startswith("attributes.")]
-    attrs = record.get("attributes_cache") if isinstance(record.get("attributes_cache"), dict) else {}
+    attrs = record.get("attributes") if isinstance(record.get("attributes"), dict) else {}
     required_schema = [
         attr for attr in (attrs.get("required") or [])
         if isinstance(attr, dict) and bool(attr.get("required"))
@@ -345,7 +290,6 @@ __all__ = [
     "compact_precheck",
     "compact_precheck_items",
     "compact_publish_failure_response",
-    "mock_category_attrs",
     "precheck_item",
     "validate_publish_payload",
 ]

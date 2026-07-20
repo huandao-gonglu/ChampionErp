@@ -27,7 +27,6 @@ from erp_web import db as erp_db
 from erp_web import listing_planner as generator
 from erp_web import marketplaces as publisher
 from erp_web import app_config as app_config_runtime
-from erp_web import category_cache as category_cache_runtime
 from erp_web.services import collect_service, config_service, copy_service, html_extract_service as legacy, image_service, pricing_service
 from erp_web.product_model import (
     apply_ai_attribute_fill,
@@ -35,9 +34,6 @@ from erp_web.product_model import (
     default_collect_diagnostics,
     default_draft,
     default_product_model,
-    category_cache_status,
-    find_category_record,
-    load_category_cache,
     PLATFORMS,
     image_pool_legacy_views,
     normalize_image_pool_item,
@@ -47,7 +43,6 @@ from erp_web.product_model import (
     normalize_product_model,
     parse_dimensions_text,
     SOURCE_COMPAT_IMAGE_ORIGINS,
-    search_category_cache,
     validate_category_precheck,
 )
 from erp_web.runtime_units.publishing_bus_core import PublishingBus
@@ -104,11 +99,6 @@ VERIFY_MARKERS = (
     "verify",
     "security verification",
 )
-
-_json_category_cache_status = category_cache_status
-_json_find_category_record = find_category_record
-_json_load_category_cache = load_category_cache
-_json_search_category_cache = search_category_cache
 
 AMAZON_VERIFY_MARKERS = (
     "robot check",

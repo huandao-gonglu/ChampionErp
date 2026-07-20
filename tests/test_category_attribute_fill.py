@@ -14,7 +14,7 @@ def test_ai_attribute_fill_treats_attribute_id_value_as_missing() -> None:
     }
     category = {
         "category_id": "MLM459570",
-        "attributes_cache": {
+        "attributes": {
             "required": [
                 {"id": "BRAND", "name": "Marca", "required": True},
                 {"id": "MODEL", "name": "Modelo", "required": True},
@@ -46,7 +46,7 @@ def test_ai_model_attribute_fill_uses_product_context_and_validates_options(monk
     }
     category = {
         "category_id": "MLM459570",
-        "attributes_cache": {
+        "attributes": {
             "required": [
                 {"id": "BRAND", "name": "Marca", "required": True},
                 {"id": "MODEL", "name": "Modelo", "required": True},

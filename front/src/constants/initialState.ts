@@ -34,6 +34,9 @@ export function createEmptyDraft(language = '', site = '', currency = ''): Marke
     saleTerms: [],
     allowGtinExemption: false,
     validationErrors: [],
+    publishStatus: '',
+    lastPrecheck: {},
+    lastPrecheckTarget: {},
   }
 }
 
