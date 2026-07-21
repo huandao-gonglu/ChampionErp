@@ -66,7 +66,11 @@ def build_publish_payload(product: dict[str, Any], platform: str, config: dict[s
     if platform == "mercadolibre":
         draft = _draft_for_platform(product, "mercadolibre")
         payload_config = deepcopy(config)
-        payload_config.setdefault("mercadolibre", {})["category_id"] = str(draft.get("category_id") or "").strip()
+        store = payload_config.setdefault("mercadolibre", {})
+        store["category_id"] = str(draft.get("category_id") or "").strip()
+        site_id = str(draft.get("site") or draft.get("site_id") or "").strip().upper()
+        if site_id:
+            store["site_id"] = site_id
         listing = payload_config.setdefault("listing", {})
         package_dimensions = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
         shipping = draft.get("shipping") if isinstance(draft.get("shipping"), dict) else {}

@@ -646,7 +646,11 @@ def mercadolibre_config_for_payload(config: dict[str, Any], product: dict[str, A
     cfg = deepcopy(config)
     draft = _draft_for_platform(product, "mercadolibre")
     pkg = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
-    cfg.setdefault("mercadolibre", {})["category_id"] = str(draft.get("category_id") or "").strip()
+    store = cfg.setdefault("mercadolibre", {})
+    store["category_id"] = str(draft.get("category_id") or "").strip()
+    site_id = str(draft.get("site") or draft.get("site_id") or "").strip().upper()
+    if site_id:
+        store["site_id"] = site_id
     listing = cfg.setdefault("listing", {})
     for key, value in {
         "mercadolibre_price": draft.get("price"),

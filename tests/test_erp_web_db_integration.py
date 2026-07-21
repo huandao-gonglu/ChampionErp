@@ -755,6 +755,60 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
         self.assertEqual(attributes["SELLER_PACKAGE_WEIGHT"], "350 g")
         self.assertEqual(payload["sale_terms"], [{"id": "WARRANTY_TYPE", "value_name": "Sin garantía", "value_id": "6150835"}])
 
+    def test_mercadolibre_publish_payload_uses_draft_target_site_over_store_config(self) -> None:
+        product = sample_product("Draft CBT payload", "https://example.com/draft-cbt-payload")
+        product["source"]["image_pool"][0].update(
+            {
+                "url": "https://example.com/draft-cbt-main.jpg",
+                "preview_url": "https://example.com/draft-cbt-main.jpg",
+                "platforms": ["mercadolibre"],
+                "is_main": True,
+                "selected": True,
+                "status": "ready",
+            }
+        )
+        product["drafts"]["mercadolibre"] = {
+            "enabled": True,
+            "site": "CBT",
+            "title": "Draft CBT title",
+            "description": "Draft CBT description",
+            "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
+            "category_id": "CBT457856",
+            "attributes": {"BRAND": "DraftBrand", "MODEL": "DraftModel"},
+            "price": "18.00",
+            "stock": "10",
+            "sku": "DRAFT-CBT-SKU",
+            "upc": "123456789012",
+            "package_dimensions": {
+                "length_cm": "11",
+                "width_cm": "7",
+                "height_cm": "5",
+                "weight_kg": "0.35",
+            },
+            "sale_terms": [{"id": "WARRANTY_TYPE", "value_name": "No warranty"}],
+            "shipping": {"logistic_type": "remote"},
+            "status": "ready_to_publish",
+        }
+        config = {
+            "mercadolibre": {"site_id": "MLM", "category_id": "WRONG-CATEGORY", "access_token": "token"},
+            "listing": {
+                "currency_id": "USD",
+                "price": "0",
+                "mercadolibre_price": "0",
+                "stock": "0",
+                "sku": "CONFIG-SKU",
+            },
+        }
+
+        payload = erp_web_app.build_publish_payload(product, "mercadolibre", config)
+        attributes = {item["id"]: item["value_name"] for item in payload["attributes"]}
+
+        self.assertTrue(payload["_global_selling"])
+        self.assertEqual(payload["category_id"], "CBT457856")
+        self.assertEqual(payload["sites_to_sell"][0]["site_id"], "CBT")
+        self.assertEqual(attributes["PACKAGE_LENGTH"], "11.0 cm")
+        self.assertNotIn("SELLER_PACKAGE_LENGTH", attributes)
+
     def test_claiming_published_product_creates_a_new_active_draft(self) -> None:
         def run(app_dir: Path) -> None:
             product = sample_product("Published item", "https://example.com/published-item")

@@ -76,6 +76,8 @@ def validate_mercadolibre_draft(product: dict[str, Any], config: dict[str, Any])
     title = str(draft.get("title") or "").strip()
     description = str(draft.get("description") or "").strip()
     category_id = str(draft.get("category_id") or "").strip()
+    category_id_upper = category_id.upper()
+    site_id = str(draft.get("site") or draft.get("site_id") or store.get("site_id") or "").strip().upper()
     category_path = str(draft.get("category_path") or "").strip()
     attrs = draft.get("attributes") if isinstance(draft.get("attributes"), dict) else {}
     pkg = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
@@ -94,6 +96,10 @@ def validate_mercadolibre_draft(product: dict[str, Any], config: dict[str, Any])
         errors.append(precheck_item("CATEGORY_MISSING", "category_id", "缺少 Mercado Libre 类目 ID", "error", "前往类目属性页选择类目"))
     elif not category_path:
         warnings.append(precheck_item("CATEGORY_PATH_MISSING", "category_path", "类目路径为空，建议重新实时匹配类目", "warning", "前往类目属性页重新选择类目"))
+    if site_id == "CBT" and category_id and not category_id_upper.startswith("CBT"):
+        errors.append(precheck_item("CATEGORY_SITE_MISMATCH", "category_id", "CBT 发布必须使用 CBT 类目 ID", "error", "前往类目属性页重新实时选择 CBT 类目"))
+    elif site_id and site_id != "CBT" and category_id and (category_id_upper.startswith("CBT") or not category_id_upper.startswith(site_id)):
+        errors.append(precheck_item("CATEGORY_SITE_MISMATCH", "category_id", f"{site_id} 发布必须使用 {site_id} 类目 ID", "error", "前往类目属性页重新实时选择该站点类目"))
     if summary["missing"]:
         for field in summary["missing"]:
             attr_id = str(field).split(".", 1)[-1]

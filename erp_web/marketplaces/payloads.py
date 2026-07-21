@@ -105,15 +105,17 @@ def build_mercadolibre_payload(
     price_usd = price_input if currency_id == "USD" else round(price_input / mxn_rate, 2)
     logistic_type = str(settings.get("mercadolibre_logistic_type") or "remote").strip() or "remote"
     sku = settings.get("sku") or product.get("name") or "SKU-1"
-    site_id = str(store.get("site_id") or "MLM").strip().upper() or "MLM"
-    account_site_id = str(store.get("account_site_id") or store.get("user_site_id") or "").strip().upper()
+    site_id = str(store.get("site_id") or "").strip().upper()
+    if not site_id:
+        raise RuntimeError("Mercado Libre 发布目标站点不能为空。")
     category_id = product.get("category_id") or store.get("category_id")
     category_id = str(category_id or "").strip()
-    is_global_selling = account_site_id == "CBT" or category_id.startswith("CBT")
-    if is_global_selling and not category_id.startswith("CBT"):
-        match = re.search(r"(\d+)$", category_id)
-        if match:
-            category_id = f"CBT{match.group(1)}"
+    category_id_upper = category_id.upper()
+    is_global_selling = site_id == "CBT"
+    if is_global_selling and not category_id_upper.startswith("CBT"):
+        raise RuntimeError("CBT 发布必须使用真实 CBT 类目 ID，请在草稿的类目/属性里重新实时选择 CBT 类目。")
+    if not is_global_selling and (category_id_upper.startswith("CBT") or (category_id_upper and not category_id_upper.startswith(site_id))):
+        raise RuntimeError(f"{site_id} 发布必须使用 {site_id} 类目 ID，请在草稿的类目/属性里重新实时选择该站点类目。")
     attributes = [
         {"id": "BRAND", "value_name": product.get("brand") or "Generic"},
         {"id": "SELLER_SKU", "value_name": sku},
@@ -210,7 +212,7 @@ def build_mercadolibre_payload(
     sale_terms = _normalize_mercadolibre_sale_terms(sale_terms, is_global_selling)
 
     site_entry: dict[str, Any] = {
-        "site_id": site_id if site_id != "CBT" else "MLM",
+        "site_id": site_id,
         "logistic_type": logistic_type,
         "price": price_usd,
         "listing_type_id": settings.get("listing_type_id") or "gold_special",

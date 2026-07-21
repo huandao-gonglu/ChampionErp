@@ -58,3 +58,34 @@ def test_mercadolibre_review_summary_restores_local_attribute_ids() -> None:
         "attributes.RECOMMENDED_AGE_GROUP",
         "attributes.TRADING_CARD_GAME_ACCESSORY_TYPE",
     ]
+
+
+def test_mercadolibre_precheck_rejects_cbt_target_with_local_category() -> None:
+    product = {
+        "sku": "SKU-CBT",
+        "drafts": {
+            "mercadolibre": {
+                "site": "CBT",
+                "title": "Sample title",
+                "description": "Sample description",
+                "category_id": "MLM1",
+                "category_path": "Local category",
+                "brand": "Brand",
+                "model": "Model",
+                "sku": "SKU-CBT",
+                "price": "10",
+                "stock": "1",
+                "upc": "123456789012",
+                "attributes": {"BRAND": "Brand", "MODEL": "Model"},
+                "package_dimensions": {"length_cm": "1", "width_cm": "1", "height_cm": "1", "weight_kg": "0.1"},
+                "pricing": {"suggested_price": "10"},
+                "sale_terms": [{"id": "WARRANTY_TYPE", "value_name": "Seller warranty"}],
+                "shipping": {"logistic_type": "drop_off"},
+            }
+        },
+        "images": [{"url": "https://example.com/a.jpg", "selected": True, "platforms": ["mercadolibre"], "is_main": True}],
+    }
+
+    result = validate_mercadolibre_draft(product, {"mercadolibre": {"access_token": "x"}, "listing": {}})
+
+    assert any(item["code"] == "CATEGORY_SITE_MISMATCH" for item in result["errors"])

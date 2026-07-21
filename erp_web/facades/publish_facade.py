@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from erp_web.runtime_units import publish_logs_runtime as publish_log_helpers
-from erp_web.runtime_units.category_store import read_json, write_json
+from erp_web.runtime_units.category_store import write_json
 from erp_web.runtime_units.collect_helpers import collect_time_iso
 from erp_web.runtime_units.product_store import (
     load_store_config,
@@ -116,23 +116,7 @@ def preview_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
             "draftsIndex": saved["draftsIndex"],
         }, 200
     except Exception as exc:
-        path = OUTPUT_DIR / "last_mercadolibre_payload.json"
-        if path.exists():
-            return {
-                "ok": True,
-                "platform": platform,
-                "site": context["site"],
-                "target": context["target"],
-                "status": "file_fallback",
-                "payload": read_json(path, {}),
-                "path": str(path),
-                "warning": str(exc),
-                "draft": saved["draft"],
-                "productContext": saved["productContext"],
-                "productsIndex": saved["productsIndex"],
-                "draftsIndex": saved["draftsIndex"],
-            }, 200
-        return {"ok": False, "platform": platform, "error": str(exc)}, 400
+        return {"ok": False, "platform": platform, "site": context["site"], "target": context["target"], "error": str(exc)}, 400
 
 
 def publish_product_payload(body: dict[str, Any]) -> ResponseWithStatus:
