@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
@@ -39,6 +39,12 @@ const {
   category,
   categoryQuery,
   categoryResults,
+  categoryAutoMatching,
+  categoryAutoMatchMessage,
+  categoryAutoMatchCurrent,
+  categoryAutoMatchTotal,
+  categoryAutoMatchProductName,
+  categoryAutoMatchTargetError,
   categoryAttributeTranslationEnabled,
   categoryAttributeTranslations,
   categoryAttributeTranslationsSource,
@@ -222,6 +228,8 @@ async function openDraftImageEditor(item: DraftIndexItem) {
 async function openDraftCategoryEditor(item: DraftIndexItem) {
   await store.loadDraft(item)
   categoryEditorOpen.value = true
+  await nextTick()
+  void store.autoSuggestCategoriesForDraft()
 }
 
 async function translateEditorImages() {
@@ -515,6 +523,8 @@ watch(
               :category="category"
               :category-query="categoryQuery"
               :category-results="categoryResults"
+              :category-auto-match-product-name="categoryAutoMatchProductName"
+              :category-auto-match-target-error="categoryAutoMatchTargetError"
               :category-attribute-translation-enabled="categoryAttributeTranslationEnabled"
               :category-attribute-translations="categoryAttributeTranslations"
               :category-attribute-translations-source="categoryAttributeTranslationsSource"
@@ -724,7 +734,7 @@ watch(
       </div>
     </div>
     <div v-if="categoryEditorOpen" class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/50 p-4 backdrop-blur-sm" @click.self="closeCategoryEditor">
-      <div class="w-full max-w-7xl rounded-3xl bg-white p-4 shadow-2xl ring-1 ring-slate-200 dark:bg-dark-900 dark:ring-dark-700 sm:p-6">
+      <div class="relative w-full max-w-7xl rounded-3xl bg-white p-4 shadow-2xl ring-1 ring-slate-200 dark:bg-dark-900 dark:ring-dark-700 sm:p-6">
         <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 class="text-xl font-black text-slate-950 dark:text-white">类目/属性</h2>
@@ -745,6 +755,8 @@ watch(
           :category="category"
           :category-query="categoryQuery"
           :category-results="categoryResults"
+          :category-auto-match-product-name="categoryAutoMatchProductName"
+          :category-auto-match-target-error="categoryAutoMatchTargetError"
           :category-attribute-translation-enabled="categoryAttributeTranslationEnabled"
           :category-attribute-translations="categoryAttributeTranslations"
           :category-attribute-translations-source="categoryAttributeTranslationsSource"
@@ -769,6 +781,15 @@ watch(
           @preview-payload="store.previewPayload"
           @publish="() => store.enqueuePublish()"
         />
+        <div v-if="categoryAutoMatching" class="absolute inset-0 z-20 flex items-center justify-center rounded-3xl bg-white/90 p-6 text-center backdrop-blur-sm dark:bg-dark-950/90">
+          <div class="max-w-md">
+            <div class="mx-auto size-10 animate-spin rounded-full border-4 border-brand-100 border-t-brand-600 dark:border-brand-950 dark:border-t-brand-400" />
+            <h3 class="mt-5 text-lg font-black text-slate-950 dark:text-white">正在自动识别并匹配类目</h3>
+            <p class="mt-2 text-sm text-slate-600 dark:text-slate-300">{{ categoryAutoMatchMessage || '正在准备商品信息…' }}</p>
+            <p v-if="categoryAutoMatchTotal" class="mt-3 text-xs font-semibold text-brand-700 dark:text-brand-300">已处理 {{ categoryAutoMatchCurrent }} / {{ categoryAutoMatchTotal }} 个目标站点</p>
+            <p class="mt-5 text-xs text-slate-500 dark:text-slate-400">完成后会自动关闭，请逐站点检查候选类目并手动确认。</p>
+          </div>
+        </div>
       </div>
     </div>
   </div>

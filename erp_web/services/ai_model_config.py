@@ -100,6 +100,11 @@ AI_USE_CASES: dict[str, dict[str, Any]] = {
         "label": "类目属性 AI 填充",
         "required_capabilities": [CAP_CHAT, CAP_JSON],
     },
+    "category.product_identify": {
+        "id": "category.product_identify",
+        "label": "商品主体识别与类目检索词",
+        "required_capabilities": [CAP_CHAT, CAP_JSON],
+    },
     "category.attribute_translation": {
         "id": "category.attribute_translation",
         "label": "类目属性翻译",

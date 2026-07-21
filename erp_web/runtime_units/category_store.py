@@ -13,6 +13,7 @@ from .category_refresh import (
     mercadolibre_category_detail,
     mercadolibre_category_record,
 )
+from .ozon_category_api import fetch_ozon_category_record, search_ozon_categories
 
 
 def read_json(path: Path, default: Any) -> Any:
@@ -61,6 +62,13 @@ def _require_mercadolibre(platform: str) -> str:
     return platform
 
 
+def _require_supported_category_platform(platform: str) -> str:
+    platform = str(platform or "mercadolibre").strip().lower()
+    if platform not in {"mercadolibre", "ozon"}:
+        raise RuntimeError("当前只支持 Mercado Libre 和 Ozon 的实时类目搜索；该平台尚未接入官方实时类目接口。")
+    return platform
+
+
 def _mercadolibre_token() -> str:
     from .product_store import load_store_config
 
@@ -74,12 +82,12 @@ def _mercadolibre_site(site: str = "") -> str:
     return str(site or configured or "MLM").strip().upper()
 
 
-def _category_suggest_terms(product: dict[str, Any]) -> list[str]:
+def _category_suggest_terms(product: dict[str, Any], platform: str = "mercadolibre") -> list[str]:
     from .product_store import normalize_product_fields
     from .publish_helpers import _draft_for_platform
 
     product = normalize_product_fields(product)
-    draft = _draft_for_platform(product, "mercadolibre")
+    draft = _draft_for_platform(product, platform)
     source = product.get("source") if isinstance(product.get("source"), dict) else {}
     chunks = [
         product.get("name"),
@@ -108,12 +116,12 @@ def _category_suggest_terms(product: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(item for item in terms if item))
 
 
-def _category_suggest_query(product: dict[str, Any]) -> str:
+def _category_suggest_query(product: dict[str, Any], platform: str = "mercadolibre") -> str:
     from .product_store import normalize_product_fields
     from .publish_helpers import _draft_for_platform
 
     product = normalize_product_fields(product)
-    draft = _draft_for_platform(product, "mercadolibre")
+    draft = _draft_for_platform(product, platform)
     source = product.get("source") if isinstance(product.get("source"), dict) else {}
     for value in (
         draft.get("title"),
@@ -124,7 +132,7 @@ def _category_suggest_query(product: dict[str, Any]) -> str:
         text = str(value or "").strip()
         if text:
             return text[:120]
-    return " ".join(_category_suggest_terms(product)[:8])
+    return " ".join(_category_suggest_terms(product, platform)[:8])
 
 
 def _domain_discovery_url(site: str, query: str, limit: int) -> str:
@@ -144,7 +152,9 @@ def _path_text(record: dict[str, Any]) -> str:
 
 
 def fetch_category_record(platform: str, category_id: str, site: str = "", include_attributes: bool = False) -> dict[str, Any]:
-    _require_mercadolibre(platform)
+    platform = _require_supported_category_platform(platform)
+    if platform == "ozon":
+        return fetch_ozon_category_record(category_id, include_attributes=include_attributes)
     category_id = str(category_id or "").strip()
     if not category_id:
         raise RuntimeError("缺少 Mercado Libre 类目 ID。")
@@ -160,15 +170,16 @@ def fetch_category_record(platform: str, category_id: str, site: str = "", inclu
 
 
 def fetch_category_attributes(platform: str, category_id: str, site: str = "") -> dict[str, Any]:
+    platform = _require_supported_category_platform(platform)
     record = fetch_category_record(platform, category_id, site=site, include_attributes=True)
     attrs = record.get("attributes") if isinstance(record.get("attributes"), dict) else {}
     required = list(attrs.get("required") or [])
     optional = list(attrs.get("optional") or [])
     return {
         "ok": True,
-        "platform": "mercadolibre",
-        "site": record.get("site") or _mercadolibre_site(site),
-        "source": "mercadolibre_live",
+        "platform": platform,
+        "site": record.get("site") or (_mercadolibre_site(site) if platform == "mercadolibre" else "global"),
+        "source": f"{platform}_live",
         "category": record,
         "required": required,
         "optional": optional,
@@ -180,10 +191,12 @@ def fetch_category_attributes(platform: str, category_id: str, site: str = "") -
 
 
 def search_categories_live(platform: str, query: str, site: str = "", limit: int = 5) -> list[dict[str, Any]]:
-    _require_mercadolibre(platform)
+    platform = _require_supported_category_platform(platform)
     query = str(query or "").strip()
     if not query:
         return []
+    if platform == "ozon":
+        return search_ozon_categories(query, limit=limit)
     token = _mercadolibre_token()
     resolved_site = _mercadolibre_site(site)
     data = http_json(_domain_discovery_url(resolved_site, query, limit), token or None)
@@ -224,18 +237,18 @@ def search_categories_live(platform: str, query: str, site: str = "", limit: int
 
 
 def suggest_category_ids(product: dict[str, Any], platform: str = "mercadolibre", site: str = "", limit: int = 5) -> dict[str, Any]:
-    platform = _require_mercadolibre(platform)
-    resolved_site = _mercadolibre_site(site)
-    query = _category_suggest_query(product)
+    platform = _require_supported_category_platform(platform)
+    resolved_site = _mercadolibre_site(site) if platform == "mercadolibre" else "global"
+    query = _category_suggest_query(product, platform)
     suggestions = search_categories_live(platform, query, site=resolved_site, limit=max(1, int(limit or 5))) if query else []
     return {
         "ok": True,
         "platform": platform,
         "site": resolved_site,
         "query": query,
-        "terms": _category_suggest_terms(product)[:30],
+        "terms": _category_suggest_terms(product, platform)[:30],
         "suggestions": suggestions,
-        "source": "mercadolibre_live",
+        "source": f"{platform}_live",
     }
 
 

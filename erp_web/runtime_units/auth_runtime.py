@@ -286,9 +286,14 @@ def test_store_auth(platform: str, scope: str = "") -> dict[str, Any]:
             api_key = str(ozon.get("api_key") or "").strip()
             if not client_id or not api_key:
                 raise RuntimeError("请先填写 Ozon Client ID 和 API Key。")
-            if scope == "category" and not str(ozon.get("category_id") or "").strip():
-                raise RuntimeError("请先填写 Ozon category_id，再测试类目读取。")
-            name = publisher.fetch_ozon_shop_name(client_id, api_key)
+            category_summary: dict[str, Any] | None = None
+            if scope == "category":
+                from .ozon_category_api import fetch_ozon_category_tree_summary
+
+                category_summary = fetch_ozon_category_tree_summary()
+                name = str(ozon.get("shop_name") or client_id)
+            else:
+                name = publisher.fetch_ozon_shop_name(client_id, api_key)
             config.setdefault("ozon", {})["shop_name"] = name or config.get("ozon", {}).get("shop_name", "")
             config["ozon"].update(_store_auth_result_fields("ozon", "测试成功", name or client_id))
             config["ozon"]["auth_error_code"] = ""
@@ -299,7 +304,7 @@ def test_store_auth(platform: str, scope: str = "") -> dict[str, Any]:
         error_message = str(exc)
         raise RuntimeError(f"测试失败：{error_message}") from exc
     save_store_config(config)
-    return {
+    response = {
         "ok": True,
         "platform": platform,
         "scope": scope,
@@ -310,6 +315,10 @@ def test_store_auth(platform: str, scope: str = "") -> dict[str, Any]:
         "message": "测试成功：授权可用。",
         "storeAuthSummary": summarize_store_auth_states(config),
     }
+    if platform == "ozon" and scope == "category":
+        response["message"] = f"类目读取测试成功：已读取 {category_summary.get('product_type_count', 0) if category_summary else 0} 个可发布商品类型。"
+        response["category_tree"] = category_summary or {}
+    return response
 
 
 __all__ = [

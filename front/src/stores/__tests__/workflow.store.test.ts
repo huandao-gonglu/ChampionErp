@@ -16,6 +16,7 @@ vi.mock('@/api/workflow', () => ({
   generateCopy: vi.fn(),
   imageEdit: vi.fn(),
   imageTranslate: vi.fn(),
+  identifyProductForCategory: vi.fn(),
   calculatePrice: vi.fn(),
   publishPrecheck: vi.fn(),
   enqueuePublish: vi.fn(),
@@ -182,6 +183,44 @@ describe('workflow store live API flow', () => {
       expect.objectContaining({ draftId: 'draft-1', productId: 'real-product-1' }),
       expect.objectContaining({ platform: 'mercadolibre', site: 'CBT', categoryId: '', attributes: {} }),
     )
+  })
+
+  it('identifies the product once and keeps automatic category candidates for every target site', async () => {
+    const draft = createEmptyDraftDetail('mercadolibre')
+    draft.draftId = 'draft-1'
+    draft.productId = 'real-product-1'
+    draft.sourceProductId = 'real-product-1'
+    draft.site = 'MLM'
+    draft.targetSites = [
+      { platform: 'mercadolibre', site: 'MLM', language: 'es-MX', currency: 'MXN' },
+      { platform: 'mercadolibre', site: 'CBT', language: 'en-US', currency: 'USD' },
+    ]
+    vi.mocked(workflowApi.saveDraft).mockResolvedValue(draftMutation(draft))
+    vi.mocked(workflowApi.identifyProductForCategory).mockResolvedValue({
+      identity: { name: '手持风扇', productType: 'handheld_fan', confidence: 0.94, reason: ['标题和属性一致'] },
+      targets: [
+        { platform: 'mercadolibre', site: 'MLM', language: 'es-MX', currency: 'MXN', query: 'ventilador portátil' },
+        { platform: 'mercadolibre', site: 'CBT', language: 'en-US', currency: 'USD', query: 'portable handheld fan' },
+      ],
+    })
+    vi.mocked(workflowApi.searchCategories)
+      .mockResolvedValueOnce({ results: [{ id: 'MLM1', name: 'Ventiladores', path: 'Hogar / Ventiladores', raw: {} }] })
+      .mockResolvedValueOnce({ results: [{ id: 'CBT1', name: 'Fans', path: 'Home / Fans', raw: {} }] })
+
+    const store = useWorkflowStore()
+    store.currentDraft = draft
+    await store.autoSuggestCategoriesForDraft()
+
+    expect(workflowApi.identifyProductForCategory).toHaveBeenCalledTimes(1)
+    expect(workflowApi.searchCategories).toHaveBeenNthCalledWith(1, 'mercadolibre', 'ventilador portátil', 'MLM', 5)
+    expect(workflowApi.searchCategories).toHaveBeenNthCalledWith(2, 'mercadolibre', 'portable handheld fan', 'CBT', 5)
+    expect(store.categoryAutoMatchProductName).toBe('手持风扇')
+    expect(store.categoryQuery).toBe('ventilador portátil')
+    expect(store.categoryResults[0]?.id).toBe('MLM1')
+
+    store.selectPublishTarget(draft.targetSites[1])
+    expect(store.categoryQuery).toBe('portable handheld fan')
+    expect(store.categoryResults[0]?.id).toBe('CBT1')
   })
 
   it('surfaces Mercado Libre refresh token failures instead of logging them as complete', async () => {

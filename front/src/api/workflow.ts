@@ -4,6 +4,7 @@ import type {
   BrowserDebugStatus,
   CategoryAttributeTranslations,
   CategoryPrecheckResult,
+  CategoryProductIdentification,
   CategoryResultTranslations,
   CategorySearchResult,
   CategorySelection,
@@ -1058,11 +1059,12 @@ export async function confirmMercadoLibreRealPublish(product: Product, confirm =
   return normalizeProductOperation(response.data)
 }
 
-export async function fetchCategoryAttrs(platform: Marketplace, categoryId: string, site = ''): Promise<CategorySelection> {
+export async function fetchCategoryAttrs(platform: Marketplace, categoryId: string, site = '', categoryRecord?: UnknownRecord): Promise<CategorySelection> {
   const response = await apiClient.post('/api/category-attrs', {
     platform,
     category_id: categoryId,
     site,
+    category_record: categoryRecord,
   })
   const data = asRecord(response.data)
   ensureOk(data, '读取类目属性失败')
@@ -1108,11 +1110,12 @@ export async function fetchCategoryAttrs(platform: Marketplace, categoryId: stri
     categoryPath: getString(data, ['category_path', 'path', 'name']),
     requiredAttributes: requiredOnly,
     optionalAttributes: [...optionalFromRequired, ...optional].filter((item, index, items) => item.id && items.findIndex((candidate) => candidate.id === item.id) === index),
+    raw: asRecord(data.category),
   }
 }
 
-export async function searchCategories(platform: Marketplace, query: string, site = ''): Promise<{ results: CategorySearchResult[] }> {
-  const response = await apiClient.post('/api/category-search', { platform, query, site, limit: 20 })
+export async function searchCategories(platform: Marketplace, query: string, site = '', limit = 20): Promise<{ results: CategorySearchResult[] }> {
+  const response = await apiClient.post('/api/category-search', { platform, query, site, limit })
   const data = asRecord(response.data)
   ensureOk(data, '搜索类目失败')
   const results = Array.isArray(data.results)
@@ -1147,9 +1150,41 @@ export async function suggestCategories(draft: DraftDetail, target: MarketplaceT
   return { results, terms: Array.isArray(data.terms) ? data.terms.map(String) : [] }
 }
 
+export async function identifyProductForCategory(draft: DraftDetail): Promise<CategoryProductIdentification> {
+  const draftId = draft.draftId.trim()
+  if (!draftId) throw new Error('请先从草稿箱选择一个草稿再识别商品主体')
+  const response = await apiClient.post('/api/category-ai-identify-product', { draft_id: draftId })
+  const data = asRecord(response.data)
+  ensureOk(data, '识别商品主体失败')
+  const identity = asRecord(data.identity)
+  const targets = Array.isArray(data.targets)
+    ? data.targets.map((item) => {
+      const record = asRecord(item)
+      return {
+        platform: getString(record, ['platform']).toLowerCase() as Marketplace,
+        site: getString(record, ['site', 'site_id']),
+        language: getString(record, ['language']),
+        currency: getString(record, ['currency']),
+        query: getString(record, ['query']),
+      }
+    }).filter((target) => target.platform && target.site)
+    : []
+  return {
+    identity: {
+      name: getString(identity, ['name', 'product_name']),
+      productType: getString(identity, ['productType', 'product_type']),
+      confidence: getNumber(identity, ['confidence'], 0),
+      reason: stringList(identity.reason),
+    },
+    targets,
+  }
+}
+
 function categorySelectionToBackendRecord(category: CategorySelection | null): UnknownRecord | null {
   if (!category) return null
   return {
+    ...asRecord(category.raw),
+    platform: category.platform,
     category_id: category.categoryId,
     category_path: category.categoryPath,
     path_original: category.categoryPath ? [category.categoryPath] : [],

@@ -232,7 +232,7 @@
   `query`：搜索关键词，可选
   `keyword`：搜索关键词别名，可选
   `limit`：结果数量，可选
-  ）；实时调用 Mercado Libre `domain_discovery/search` 搜索类目候选，并补齐每个候选的完整类目路径。
+  ）；Mercado Libre 实时调用 `domain_discovery/search` 搜索类目候选并补齐路径；Ozon 实时读取官方 `description-category/tree`，检索可发布的商品类型并返回配套的描述类目 ID。
 
 - `POST /api/category-ai-suggest`（
   `product_id`：商品 ID，必填
@@ -241,6 +241,10 @@
   `country`：站点或国家别名，可选
   `limit`：建议数量，可选
   ）；用商品上下文实时匹配 Mercado Libre 类目候选。
+
+- `POST /api/category-ai-identify-product`（
+  `draft_id`：草稿 ID，必填
+  ）；调用文本 AI 识别商品主体，并为草稿全部目标站点生成本地化类目检索词。前端随后逐站点调用实时类目搜索，并保留候选供人工确认。
 
 - `POST /api/category-ai-fill`（
   `product_id`：商品 ID，必填

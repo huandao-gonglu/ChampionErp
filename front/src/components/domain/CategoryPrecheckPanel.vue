@@ -13,6 +13,8 @@ const props = withDefaults(defineProps<{
   category: CategorySelection | null
   categoryQuery: string
   categoryResults: CategorySearchResult[]
+  categoryAutoMatchProductName?: string
+  categoryAutoMatchTargetError?: string
   categoryAttributeTranslationEnabled: boolean
   categoryAttributeTranslations: CategoryAttributeTranslations
   categoryAttributeTranslationsSource: string
@@ -26,6 +28,8 @@ const props = withDefaults(defineProps<{
   loading: boolean
 }>(), {
   mode: 'publish',
+  categoryAutoMatchProductName: '',
+  categoryAutoMatchTargetError: '',
 })
 
 const emit = defineEmits<{
@@ -349,6 +353,7 @@ function applyWarrantyTerms(type: WarrantyType, durationValue = '3', unit: Warra
       <div>
         <h2 class="card-title">{{ isCategoryMode ? '类目/属性' : '类目 / 属性 / 发布预检' }}</h2>
         <p class="muted mt-1">{{ isCategoryMode ? '在当前草稿的目标站点之间切换，并分别维护平台类目和必填属性。' : '类目搜索、必填属性填充、发布前校验和 payload 预览。' }}</p>
+        <p v-if="props.categoryAutoMatchProductName" class="mt-1 text-xs font-semibold text-brand-700 dark:text-brand-300">AI 识别商品主体：{{ props.categoryAutoMatchProductName }}。请逐站点检查候选类目后再确认。</p>
         <p v-if="showCategoryResultTranslationProgress || showAttributeTranslationProgress" class="mt-1 text-xs text-brand-700 dark:text-brand-300">正在调用 AI 模型翻译类目/属性...</p>
         <p v-else-if="translateAttributesEnabled && (categoryResultTranslationCount || translationCount)" class="mt-1 text-xs text-accent-500 dark:text-accent-400">已翻译候选类目 {{ categoryResultTranslationCount }} 项 / 属性 {{ translationCount }} 项</p>
       </div>
@@ -370,14 +375,15 @@ function applyWarrantyTerms(type: WarrantyType, durationValue = '3', unit: Warra
       <article class="min-w-0 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <h3 class="font-semibold text-accent-950 dark:text-white">实时类目搜索</h3>
-            <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">输入商品标题或关键词，实时匹配当前目标站点的 Mercado Libre 类目路径。</p>
+            <h3 class="font-semibold text-accent-950 dark:text-white">类目候选与手动搜索</h3>
+            <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">打开页面后会自动识别商品主体并生成候选；如需调整，可手动输入关键词搜索当前目标站点。</p>
           </div>
         </div>
         <p class="mt-3 text-xs text-accent-500 dark:text-accent-400">{{ props.loading ? '正在请求 Mercado Libre 实时类目接口...' : '候选类目来自 Mercado Libre 实时搜索；选中类目后再实时读取必填属性。' }}</p>
+        <p v-if="props.categoryAutoMatchTargetError" class="mt-2 text-xs text-amber-700 dark:text-amber-300">本目标站点自动匹配未完成：{{ props.categoryAutoMatchTargetError }}</p>
         <div class="mt-4 flex gap-2">
           <input :value="props.categoryQuery" class="input" placeholder="类目关键词" @input="emit('updateCategoryQuery', ($event.target as HTMLInputElement).value)" @keyup.enter="emit('searchCategory')" />
-          <button class="btn btn-outline shrink-0" :disabled="props.loading || !hasCurrentDraft" @click="emit('suggestCategory')">匹配类目</button>
+          <button class="btn btn-outline shrink-0" :disabled="props.loading || !hasCurrentDraft" @click="emit('suggestCategory')">重新自动匹配</button>
           <button class="btn btn-primary shrink-0" :disabled="props.loading || !hasCurrentDraft" @click="emit('searchCategory')">搜索</button>
         </div>
         <div class="mt-4 max-h-80 space-y-2 overflow-y-auto">

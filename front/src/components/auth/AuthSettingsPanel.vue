@@ -929,6 +929,14 @@ function testSelectedAiModel() {
   requestAiModelCheck(false, '正在测试模型连接', 'manual_connection')
 }
 
+function refreshSelectedModelList(force = false) {
+  if (!selectedAiModel.value || aiControlsLocked.value || !selectedModelListReady.value) return
+  const signature = modelListSignature(selectedAiModel.value)
+  if (!signature || (!force && signature === lastAutoModelListSignature.value)) return
+  lastAutoModelListSignature.value = signature
+  requestAiModelCheck(false, '正在加载模型列表', force ? 'manual_model_list' : 'auto_model_list')
+}
+
 function requestAiModelCheck(probeCapabilities: boolean, message: string, trigger: string) {
   if (!selectedAiModel.value || aiControlsLocked.value) return
   aiRequestPending.value = true
@@ -964,8 +972,9 @@ function confirmCapabilityProbe() {
   })
 }
 
-function handleAiConfigFieldBlur(_field: 'base_url' | 'api_key' | 'model') {
+function handleAiConfigFieldBlur(field: 'base_url' | 'api_key' | 'model') {
   lastAutoModelListSignature.value = ''
+  if (field === 'base_url' || field === 'api_key') refreshSelectedModelList()
 }
 
 function handleAiModelSelect(value: string) {
@@ -1174,6 +1183,7 @@ function handleYunexpressEnvironmentChange(value: string) {
             <div class="flex flex-wrap gap-2">
               <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="addAiModel">添加模型</button>
               <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedAiModel" @click="duplicateSelectedAiModel">复制当前模型</button>
+              <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedModelListReady" :title="selectedModelListReady ? '从 Provider 加载可用模型列表' : '请先填写 Base URL 和 API Key'" @click="refreshSelectedModelList(true)">加载模型列表</button>
               <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedAiModelReady" :title="selectedAiModelReady ? '测试模型连接' : selectedAiHint" @click="testSelectedAiModel">测试当前模型</button>
               <button class="btn btn-primary py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="emit('saveAi', aiPayload())">保存 AI 设置</button>
             </div>
@@ -1234,10 +1244,12 @@ function handleYunexpressEnvironmentChange(value: string) {
                   <input class="input md:col-span-2" :value="modelField('api_key')" :disabled="aiControlsLocked" :placeholder="apiKeyPlaceholder()" autocomplete="off" spellcheck="false" @input="setSelectedModelField('api_key', eventText($event))" @blur="handleAiConfigFieldBlur('api_key')" />
                   <label class="block md:col-span-2">
                     <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">模型</span>
-                    <select class="input" :value="modelField('model')" :disabled="aiControlsLocked || !selectedModelOptions.length" @change="handleAiModelSelect(eventText($event))">
+                    <select v-if="selectedModelOptions.length" class="input" :value="modelField('model')" :disabled="aiControlsLocked" @change="handleAiModelSelect(eventText($event))">
                       <option value="">{{ selectedModelOptions.length ? '请选择模型' : '填写 URL 和 API Key 后自动加载' }}</option>
                       <option v-for="option in selectedModelOptions" :key="option.id" :value="option.id">{{ option.label }}</option>
                     </select>
+                    <input v-else class="input" :value="modelField('model')" :disabled="aiControlsLocked" placeholder="先加载模型列表，或直接填写模型 ID" @input="setSelectedModelField('model', eventText($event))" @blur="handleAiConfigFieldBlur('model')" />
+                    <span v-if="!selectedModelOptions.length" class="mt-1 block text-xs text-accent-500 dark:text-accent-400">Provider 不支持模型列表时，可直接填写模型 ID。</span>
                   </label>
                 </template>
                 <template v-else-if="selectedAiModelIsCli">

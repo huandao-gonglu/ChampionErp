@@ -8,6 +8,7 @@ from erp_web.product_model import validate_category_precheck
 from .common import JsonRequestHandler
 from ..runtime_units.category_attribute_ai_fill import apply_ai_model_attribute_fill
 from ..runtime_units.category_attribute_translation import translate_category_attributes
+from ..runtime_units.category_product_identify import identify_product_for_category
 from ..runtime_units.category_result_translation import translate_category_results
 from ..runtime_units.category_store import (
     fetch_category_attributes,
@@ -15,7 +16,7 @@ from ..runtime_units.category_store import (
     search_categories_live,
     suggest_category_ids,
 )
-from ..runtime_units.draft_publish_context import load_required_draft_publish_context, save_draft_target_listing_result
+from ..runtime_units.draft_publish_context import draft_publish_targets, load_required_draft_publish_context, save_draft_target_listing_result
 from ..runtime_units.product_store import load_required_product_from_body, save_product
 
 
@@ -28,7 +29,7 @@ def _send_category_error(handler: JsonRequestHandler, exc: Exception, status: in
             "ok": False,
             "error": str(exc),
             "error_code": "CATEGORY_LIVE_API_FAILED",
-            "next_action": "请确认目标站点、类目 ID 和 Mercado Libre 授权可用后重试。",
+            "next_action": "请确认目标站点、类目 ID，以及 Mercado Libre 或 Ozon 的授权信息可用后重试。",
         },
         status,
     )
@@ -64,7 +65,7 @@ def handle_category_search(handler: JsonRequestHandler) -> None:
     limit = int(body.get("limit") or 20)
     try:
         results = search_categories_live(platform, query=query, site=site, limit=limit)
-        handler.send_json({"ok": True, "platform": platform, "site": site, "query": query, "source": "mercadolibre_live", "results": results})
+        handler.send_json({"ok": True, "platform": platform, "site": site, "query": query, "source": f"{platform}_live", "results": results})
     except Exception as exc:
         _send_category_error(handler, exc)
 
@@ -89,6 +90,26 @@ def handle_category_ai_suggest(handler: JsonRequestHandler) -> None:
     limit = int(body.get("limit") or 5)
     try:
         handler.send_json(suggest_category_ids(product, platform=platform, site=site, limit=limit))
+    except Exception as exc:
+        _send_category_error(handler, exc)
+
+
+def handle_category_ai_identify_product(handler: JsonRequestHandler) -> None:
+    """为草稿的全部目标站点生成经过语义识别的类目检索词。"""
+
+    body = handler.read_body()
+    context, error_response, status = load_required_draft_publish_context(body)
+    if error_response:
+        handler.send_json(error_response, status)
+        return
+    try:
+        handler.send_json(
+            identify_product_for_category(
+                context["product"],
+                context["draft"],
+                draft_publish_targets(context["draft"]),
+            )
+        )
     except Exception as exc:
         _send_category_error(handler, exc)
 
@@ -215,6 +236,7 @@ POST_HANDLERS: dict[str, PostHandler] = {
     "/api/category-attrs": handle_category_attrs,
     "/api/category-search": handle_category_search,
     "/api/category-ai-suggest": handle_category_ai_suggest,
+    "/api/category-ai-identify-product": handle_category_ai_identify_product,
     "/api/category-ai-fill": handle_category_ai_fill,
     "/api/category-attribute-translations": handle_category_attribute_translations,
     "/api/category-result-translations": handle_category_result_translations,

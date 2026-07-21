@@ -37,6 +37,7 @@ import {
   imagePoolAction,
   imageEdit as imageEditApi,
   imageTranslate as imageTranslateApi,
+  identifyProductForCategory,
   importManualProduct,
   loadDraft as loadDraftApi,
   loadProduct as loadProductApi,
@@ -56,7 +57,6 @@ import {
   saveProduct as saveProductApi,
   saveStoreSettings,
   searchCategories,
-  suggestCategories,
   testApiConfig,
   testAiModel,
   testStoreAuth,
@@ -70,6 +70,7 @@ import type {
   AuthResult,
   BrowserDebugStatus,
   CategoryPrecheckResult,
+  CategoryProductIdentification,
   CategoryResultTranslations,
   CategorySearchResult,
   CategorySelection,
@@ -216,6 +217,7 @@ function categorySelectionFromProduct(product: Product, platform: Marketplace): 
     categoryPath: String(record.category_path || record.path || record.name_original || product.drafts[platform].categoryPath || ''),
     requiredAttributes,
     optionalAttributes,
+    raw: record,
   }
 }
 
@@ -233,6 +235,12 @@ export const useWorkflowStore = defineStore('workflow', () => {
   const category = ref<CategorySelection | null>(null)
   const categoryQuery = ref('')
   const categoryResults = ref<CategorySearchResult[]>([])
+  const categoryRecommendations = ref<Record<string, { query: string; results: CategorySearchResult[]; error: string }>>({})
+  const categoryAutoMatching = ref(false)
+  const categoryAutoMatchMessage = ref('')
+  const categoryAutoMatchCurrent = ref(0)
+  const categoryAutoMatchTotal = ref(0)
+  const categoryAutoMatchProductName = ref('')
   const categoryAttributeTranslationEnabled = ref(false)
   const categoryAttributeTranslations = ref<CategoryAttributeTranslations>({})
   const categoryAttributeTranslationsSource = ref('')
@@ -301,6 +309,30 @@ export const useWorkflowStore = defineStore('workflow', () => {
     return Array.isArray(value)
       ? value.map((item) => isRecord(item) ? { ...item } : String(item || ''))
       : []
+  }
+
+  function categoryRecommendationForTarget(target: MarketplaceTargetSite) {
+    return categoryRecommendations.value[targetSiteKey(target)]
+  }
+
+  function applyCategoryRecommendationForTarget(target: MarketplaceTargetSite) {
+    const recommendation = categoryRecommendationForTarget(target)
+    categoryQuery.value = recommendation?.query || ''
+    categoryResults.value = recommendation?.results || []
+  }
+
+  function setCategoryRecommendation(target: MarketplaceTargetSite, query: string, results: CategorySearchResult[], error = '') {
+    categoryRecommendations.value = {
+      ...categoryRecommendations.value,
+      [targetSiteKey(target)]: {
+        query,
+        results,
+        error,
+      },
+    }
+    if (targetSiteKey(target) === targetSiteKey(selectedPublishTarget.value)) {
+      applyCategoryRecommendationForTarget(target)
+    }
   }
 
   function categoryPrecheckFromTarget(value: unknown): CategoryPrecheckResult | null {
@@ -380,7 +412,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     currentDraft.value.lastPrecheckTarget = isRecord(target.lastPrecheckTarget) ? target.lastPrecheckTarget : {}
     categoryPrecheck.value = categoryPrecheckFromTarget(target.categoryPrecheck)
     category.value = null
-    categoryResults.value = []
+    applyCategoryRecommendationForTarget(target)
     categoryAttributeTranslations.value = {}
     categoryAttributeTranslationsSource.value = ''
     categoryResultTranslations.value = {}
@@ -454,6 +486,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     const selected = targets.find((target) => pricingTargetKey(target.platform, target.site) === activePublishTargetKey.value)
     return selected || targets[0]
   })
+  const categoryAutoMatchTargetError = computed(() => categoryRecommendationForTarget(selectedPublishTarget.value)?.error || '')
 
   function syncActivePublishTarget(preferred?: MarketplaceTargetSite) {
     const targets = currentPublishTargets.value
@@ -971,6 +1004,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
       currentDraft.value = result.draft
       currentDraftProductContext.value = result.productContext
       activeMarketplace.value = result.draft.platform
+      categoryRecommendations.value = {}
+      categoryAutoMatchProductName.value = ''
       syncActivePublishTarget()
       category.value = null
       categoryResults.value = []
@@ -1657,7 +1692,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     setError('')
     try {
       const result = await searchCategories(target.platform, categoryQuery.value, target.site)
-      categoryResults.value = result.results
+      setCategoryRecommendation(target, categoryQuery.value, result.results)
       categoryResultTranslations.value = {}
       categoryResultTranslationsSource.value = ''
       addLog(`类目搜索完成：${result.results.length} 条。`)
@@ -1672,28 +1707,74 @@ export const useWorkflowStore = defineStore('workflow', () => {
   }
 
   async function suggestCategoryByAi() {
-    const target = selectedPublishTarget.value
-    if (!currentDraft.value.draftId || !target.platform || !target.site) {
-      setError('请先从草稿箱选择要匹配类目的草稿目标。')
-      return
+    await autoSuggestCategoriesForDraft()
+  }
+
+  async function autoSuggestCategoriesForDraft() {
+    if (!currentDraft.value.draftId) {
+      setError('请先从草稿箱选择要匹配类目的草稿。')
+      return false
     }
+    const initialTargets = currentPublishTargets.value
+    if (!initialTargets.length) {
+      setError('当前草稿没有可匹配类目的目标站点。')
+      return false
+    }
+    categoryAutoMatching.value = true
+    categoryAutoMatchMessage.value = '正在使用文本 AI 识别商品主体…'
+    categoryAutoMatchCurrent.value = 0
+    categoryAutoMatchTotal.value = initialTargets.length
+    categoryAutoMatchProductName.value = ''
+    categoryRecommendations.value = {}
     loading.value = true
     setError('')
     try {
       await persistCurrentDraftForPublish()
-      const result = await suggestCategories(currentDraft.value, selectedPublishTarget.value)
-      categoryResults.value = result.results
+      const identification: CategoryProductIdentification = await identifyProductForCategory(currentDraft.value)
+      categoryAutoMatchProductName.value = identification.identity.name
+      const targetQueries = new Map(identification.targets.map((target) => [targetSiteKey(target), target.query.trim()]))
+      const recommendations: Record<string, { query: string; results: CategorySearchResult[]; error: string }> = {}
+      let matchedCount = 0
+      const targets = currentPublishTargets.value
+      categoryAutoMatchTotal.value = targets.length
+      for (const [index, target] of targets.entries()) {
+        const query = targetQueries.get(targetSiteKey(target)) || ''
+        categoryAutoMatchMessage.value = `正在为 ${target.platform.toUpperCase()} ${target.site} 匹配类目（${index + 1}/${targets.length}）…`
+        if (!query) {
+          recommendations[targetSiteKey(target)] = { query: '', results: [], error: 'AI 未返回该站点的类目检索词。' }
+          categoryAutoMatchCurrent.value = index + 1
+          continue
+        }
+        try {
+          const result = await searchCategories(target.platform, query, target.site, 5)
+          recommendations[targetSiteKey(target)] = { query, results: result.results, error: '' }
+          if (result.results.length) matchedCount += 1
+        } catch (exc) {
+          recommendations[targetSiteKey(target)] = {
+            query,
+            results: [],
+            error: exc instanceof Error ? exc.message : '类目匹配失败',
+          }
+        }
+        categoryAutoMatchCurrent.value = index + 1
+      }
+      categoryRecommendations.value = recommendations
+      applyCategoryRecommendationForTarget(selectedPublishTarget.value)
       categoryResultTranslations.value = {}
       categoryResultTranslationsSource.value = ''
-      categoryQuery.value = result.terms.slice(0, 6).join(' / ')
-      addLog(`类目匹配完成：${result.results.length} 条候选。`)
+      const confidence = Math.round(identification.identity.confidence * 100)
+      addLog(`商品主体已识别：${identification.identity.name}${confidence ? `（置信度 ${confidence}%）` : ''}；${matchedCount}/${targets.length} 个目标站点已生成类目候选。`)
       if (categoryAttributeTranslationEnabled.value) {
         await translateCategoryResults()
       }
-      if (!result.results.length) setError('没有找到合适类目，请换一个更接近商品标题的关键词。')
+      if (!matchedCount) setError('没有找到可用类目候选，请检查各目标站点的检索词后手动搜索。')
+      return matchedCount > 0
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '匹配类目失败')
+      return false
     } finally {
+      categoryAutoMatchMessage.value = ''
+      categoryAutoMatching.value = false
       loading.value = false
     }
   }
@@ -1703,10 +1784,10 @@ export const useWorkflowStore = defineStore('workflow', () => {
     currentDraft.value.categoryPath = item.path || item.name
     categoryAttributeTranslations.value = {}
     categoryAttributeTranslationsSource.value = ''
-    await loadCategoryAttributes()
+    await loadCategoryAttributes(item.raw)
   }
 
-  async function loadCategoryAttributes() {
+  async function loadCategoryAttributes(categoryRecord?: UnknownRecord) {
     const target = selectedPublishTarget.value
     const categoryId = currentDraft.value.categoryId.trim()
     if (!categoryId) {
@@ -1720,7 +1801,10 @@ export const useWorkflowStore = defineStore('workflow', () => {
     loading.value = true
     setError('')
     try {
-      category.value = await fetchCategoryAttrs(target.platform, categoryId, target.site)
+      const matchingLoadedRecord = category.value?.categoryId === categoryId && category.value.platform === target.platform
+        ? category.value.raw
+        : undefined
+      category.value = await fetchCategoryAttrs(target.platform, categoryId, target.site, categoryRecord || matchingLoadedRecord)
       categoryAttributeTranslations.value = {}
       categoryAttributeTranslationsSource.value = ''
       currentStage.value = 6
@@ -2302,6 +2386,12 @@ export const useWorkflowStore = defineStore('workflow', () => {
     category,
     categoryQuery,
     categoryResults,
+    categoryAutoMatching,
+    categoryAutoMatchMessage,
+    categoryAutoMatchCurrent,
+    categoryAutoMatchTotal,
+    categoryAutoMatchProductName,
+    categoryAutoMatchTargetError,
     categoryAttributeTranslationEnabled,
     categoryAttributeTranslations,
     categoryAttributeTranslationsSource,
@@ -2396,6 +2486,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     calculatePrice,
     searchCategory,
     suggestCategoryByAi,
+    autoSuggestCategoriesForDraft,
     selectCategory,
     loadCategoryAttributes,
     translateCategoryAttributes,

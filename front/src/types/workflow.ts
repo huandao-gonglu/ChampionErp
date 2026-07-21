@@ -270,6 +270,7 @@ export interface CategorySelection {
   categoryPath: string
   requiredAttributes: Array<{ id: string; name: string; required: boolean; options?: string[] }>
   optionalAttributes: Array<{ id: string; name: string; required: boolean; options?: string[] }>
+  raw?: UnknownRecord
 }
 
 export interface CategoryAttributeTranslation {
@@ -287,6 +288,22 @@ export interface CategorySearchResult {
   name: string
   path: string
   raw: UnknownRecord
+}
+
+export interface CategoryProductIdentity {
+  name: string
+  productType: string
+  confidence: number
+  reason: string[]
+}
+
+export interface CategoryProductTargetQuery extends MarketplaceTargetSite {
+  query: string
+}
+
+export interface CategoryProductIdentification {
+  identity: CategoryProductIdentity
+  targets: CategoryProductTargetQuery[]
 }
 
 export interface CategoryPrecheckResult {
