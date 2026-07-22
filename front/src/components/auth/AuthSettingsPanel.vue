@@ -821,10 +821,12 @@ function addCapabilityToSelected(capability: string) {
   selectedAiModel.value.capabilities = Array.from(current)
 }
 
-function setCapability(capability: string, checked: boolean) {
+function setCapability(capability: string, checked: boolean, event?: Event) {
   if (!selectedAiModel.value) return
   if (aiControlsLocked.value) return
   if (checked && !hasCapability(capability)) {
+    const input = event?.target
+    if (input instanceof HTMLInputElement) input.checked = false
     openCapabilityProbe(capability)
     return
   }
@@ -1376,7 +1378,7 @@ function handleYunexpressEnvironmentChange(value: string) {
                   class="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition"
                   :class="[capabilityStateClass(capability.value), 'cursor-pointer hover:border-primary-200 hover:bg-primary-50/50 dark:hover:border-primary-500/40 dark:hover:bg-primary-500/10']"
                 >
-                  <input type="checkbox" :checked="hasCapability(capability.value)" :disabled="aiControlsLocked" @change="setCapability(capability.value, eventChecked($event))" />
+                  <input type="checkbox" :checked="hasCapability(capability.value)" :disabled="aiControlsLocked" @change="setCapability(capability.value, eventChecked($event), $event)" />
                   <span>{{ capability.label }}</span>
                 </label>
                 <label class="flex items-center gap-2 rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm dark:border-dark-700 dark:bg-dark-900">
