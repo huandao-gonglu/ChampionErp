@@ -83,6 +83,12 @@ def test_copy_service_does_not_hardcode_keys(app_dir: Path, old_path_markers: tu
     assert_no_old_path(source, old_path_markers)
 
 
+def test_model_list_url_strips_known_api_endpoints() -> None:
+    assert ai_gateway._models_url("https://api.example.com/v1") == "https://api.example.com/v1/models"
+    assert ai_gateway._models_url("https://api.example.com/v1/chat/completions") == "https://api.example.com/v1/models"
+    assert ai_gateway._models_url("https://api.example.com/v1/responses") == "https://api.example.com/v1/models"
+
+
 def test_ai_model_connection_uses_model_config(monkeypatch) -> None:
     calls: list[dict] = []
 
@@ -453,7 +459,8 @@ def test_codex_cli_probe_reports_web_search_and_image_generate_failures(tmp_path
         },
     )
 
-    assert result["ok"] is True
+    assert result["ok"] is False
+    assert result["connection_ok"] is True
     assert result["supported_capabilities"] == ["chat", "json"]
     assert result["capability_results"]["web_search"]["ok"] is False
     assert result["capability_results"]["image_generate"]["ok"] is False
@@ -510,7 +517,7 @@ def test_codex_cli_probe_only_capability_runs_single_probe(tmp_path: Path, monke
     assert result["test_trigger"] == "capability_checkbox"
     assert len(calls) == 1
     assert "成都" in calls[0]
-    assert probe_date in calls[0]
+    assert "不要把当前日期理解成未来天气预报" in calls[0]
     assert "[System]" not in calls[0]
     assert "[User]" not in calls[0]
 
@@ -651,7 +658,7 @@ def test_browser_ai_probe_only_capability_runs_single_browser_message(tmp_path: 
     assert result["test_trigger"] == "capability_checkbox"
     assert len(prompts) == 1
     assert "成都" in prompts[0]
-    assert probe_date in prompts[0]
+    assert "不要把当前日期理解成未来天气预报" in prompts[0]
     assert "实时验证" in prompts[0] or "live web" in prompts[0].lower()
     assert "[System]" not in prompts[0]
     assert "[User]" not in prompts[0]
@@ -741,7 +748,8 @@ def test_ai_model_probe_reports_capability_failures(monkeypatch) -> None:
         },
     )
 
-    assert result["ok"] is True
+    assert result["ok"] is False
+    assert result["connection_ok"] is True
     assert result["supported_capabilities"] == ["chat"]
     assert result["capability_results"]["json"]["ok"] is False
     assert calls == [
@@ -752,6 +760,8 @@ def test_ai_model_probe_reports_capability_failures(monkeypatch) -> None:
 
 
 def test_ai_model_probe_requires_real_web_search_evidence(monkeypatch) -> None:
+    request_bodies: list[dict] = []
+
     class FakeResponse:
         def __init__(self, body: bytes):
             self.body = body
@@ -769,7 +779,8 @@ def test_ai_model_probe_requires_real_web_search_evidence(monkeypatch) -> None:
         if request.full_url.endswith("/models"):
             return FakeResponse(b'{"data":[{"id":"gpt-web"}]}')
         body = json.loads((request.data or b"{}").decode("utf-8"))
-        if body.get("web_search_options"):
+        request_bodies.append(body)
+        if body.get("enable_search"):
             return FakeResponse(
                 json.dumps(
                     {
@@ -803,10 +814,232 @@ def test_ai_model_probe_requires_real_web_search_evidence(monkeypatch) -> None:
         },
     )
 
-    assert result["ok"] is True
+    assert result["ok"] is False
+    assert result["connection_ok"] is True
+    assert "联网搜索" in result["message"]
     assert "chat" in result["supported_capabilities"]
     assert result["capability_results"]["web_search"]["ok"] is False
     assert "No live web/search tool" in result["capability_results"]["web_search"]["error"]
+    web_search_bodies = [body for body in request_bodies if body.get("enable_search") or body.get("web_search_options")]
+    assert len(web_search_bodies) == 2
+    assert web_search_bodies[0]["enable_search"] is True
+    assert web_search_bodies[0]["search_options"] == {"forced_search": True}
+    assert "tools" not in web_search_bodies[0]
+    assert web_search_bodies[1]["web_search_options"] == {"search_context_size": "medium"}
+
+
+def test_ai_model_web_search_probe_supports_enable_search_override(monkeypatch) -> None:
+    request_bodies: list[dict] = []
+    probe_date = ai_gateway._web_search_probe_date_iso()
+
+    class FakeResponse:
+        def __init__(self, body: bytes):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self) -> bytes:
+            return self.body
+
+    def fake_urlopen(request, timeout):
+        if request.full_url.endswith("/models"):
+            return FakeResponse(b'{"data":[{"id":"qwen3.7-plus"}]}')
+        body = json.loads((request.data or b"{}").decode("utf-8"))
+        request_bodies.append(body)
+        assert body["enable_search"] is True
+        assert body["search_options"] == {"forced_search": True}
+        return FakeResponse(
+            json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    {
+                                        "can_access_web": True,
+                                        "source_url": "https://www.weather.com/weather/today/l/Chengdu",
+                                        "location": "成都",
+                                        "date": probe_date,
+                                        "weather": "晴",
+                                        "temperature": "28°C",
+                                        "evidence": "实时天气搜索结果。",
+                                    }
+                                )
+                            }
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+        )
+
+    monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
+    result = erp_web_app.test_ai_model_config(
+        {
+            "id": "qwen_web_model",
+            "name": "Qwen Web Model",
+            "provider": "OpenAI-Compatible",
+            "api_key": "test-key",
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "model": "qwen3.7-plus",
+            "capabilities": ["web_search"],
+            "extra": {"web_search_request_mode": "enable_search"},
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["connection_ok"] is True
+    assert result["supported_capabilities"] == ["web_search"]
+    assert result["capability_results"]["web_search"]["request_mode"] == "enable_search"
+    assert request_bodies[-1]["enable_search"] is True
+    assert request_bodies[-1]["search_options"] == {"forced_search": True}
+    assert "tools" not in request_bodies[-1]
+    assert "web_search_options" not in request_bodies[-1]
+
+
+def test_ai_model_web_search_probe_falls_back_to_web_search_options(monkeypatch) -> None:
+    request_bodies: list[dict] = []
+    probe_date = ai_gateway._web_search_probe_date_iso()
+
+    class FakeResponse:
+        def __init__(self, body: bytes):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self) -> bytes:
+            return self.body
+
+    def fake_urlopen(request, timeout):
+        if request.full_url.endswith("/models"):
+            return FakeResponse(b'{"data":[{"id":"qwen3.7-plus"}]}')
+        body = json.loads((request.data or b"{}").decode("utf-8"))
+        request_bodies.append(body)
+        if body.get("enable_search"):
+            assert body["search_options"] == {"forced_search": True}
+            return FakeResponse(
+                b'{"choices":[{"message":{"content":"{\\"can_access_web\\":false,\\"reason\\":\\"enable_search is not supported\\"}"}}]}'
+            )
+        assert body["web_search_options"] == {"search_context_size": "medium"}
+        return FakeResponse(
+            json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    {
+                                        "can_access_web": True,
+                                        "source_url": "https://www.weather.com/weather/today/l/Chengdu",
+                                        "location": "成都",
+                                        "date": probe_date,
+                                        "weather": "晴",
+                                        "temperature": "28°C",
+                                        "evidence": "实时天气搜索结果。",
+                                    }
+                                )
+                            }
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+        )
+
+    monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
+    result = erp_web_app.test_ai_model_config(
+        {
+            "id": "qwen_web_model",
+            "name": "Qwen Web Model",
+            "provider": "OpenAI-Compatible",
+            "api_key": "test-key",
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "model": "qwen3.7-plus",
+            "capabilities": ["web_search"],
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["supported_capabilities"] == ["web_search"]
+    assert result["capability_results"]["web_search"]["request_mode"] == "web_search_options"
+    assert len(request_bodies) == 2
+    assert request_bodies[0]["enable_search"] is True
+    assert request_bodies[0]["search_options"] == {"forced_search": True}
+    assert request_bodies[1]["web_search_options"] == {"search_context_size": "medium"}
+
+
+def test_ai_model_web_search_probe_uses_configured_responses_api(monkeypatch) -> None:
+    requests: list[tuple[str, dict]] = []
+    probe_date = ai_gateway._web_search_probe_date_iso()
+
+    class FakeResponse:
+        def __init__(self, body: bytes):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self) -> bytes:
+            return self.body
+
+    def fake_urlopen(request, timeout):
+        if request.full_url.endswith("/models"):
+            return FakeResponse(b'{"data":[{"id":"qwen3.7-plus"}]}')
+        body = json.loads((request.data or b"{}").decode("utf-8"))
+        requests.append((request.full_url, body))
+        if request.full_url.endswith("/responses"):
+            assert body["tools"] == [{"type": "web_search"}]
+            return FakeResponse(
+                json.dumps(
+                    {
+                        "output_text": json.dumps(
+                            {
+                                "can_access_web": True,
+                                "source_url": "https://www.weather.com/weather/today/l/Chengdu",
+                                "location": "成都",
+                                "date": probe_date,
+                                "weather": "晴",
+                                "temperature": "28°C",
+                                "evidence": "Responses API 的实时天气搜索结果。",
+                            }
+                        )
+                    }
+                ).encode("utf-8")
+            )
+        return FakeResponse(
+            b'{"choices":[{"message":{"content":"{\\"can_access_web\\":false,\\"reason\\":\\"Chat Completions has no web search\\"}"}}]}'
+        )
+
+    monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
+    result = erp_web_app.test_ai_model_config(
+        {
+            "id": "qwen_web_model",
+            "name": "Qwen Web Model",
+            "provider": "OpenAI-Compatible",
+            "api_key": "test-key",
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "model": "qwen3.7-plus",
+            "api_style": "openai_responses",
+            "capabilities": ["web_search"],
+        },
+    )
+
+    assert result["ok"] is True
+    web_search = result["capability_results"]["web_search"]
+    assert web_search["request_mode"] == "openai_tools"
+    assert web_search["api_style"] == "openai_responses"
+    assert [url for url, _body in requests] == [
+        "https://dashscope.aliyuncs.com/compatible-mode/v1/responses",
+    ]
 
 
 def test_assign_upc_writes_current_product_and_returns_full_payload(tmp_path: Path) -> None:

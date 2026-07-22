@@ -169,7 +169,7 @@ def _models_url(base_url: str) -> str:
     text = str(base_url or "").strip().rstrip("/")
     if not text:
         return ""
-    for suffix in ("/chat/completions", "/images/generations", "/images/edits"):
+    for suffix in ("/chat/completions", "/responses", "/images/generations", "/images/edits"):
         if text.endswith(suffix):
             text = text[: -len(suffix)]
             break
@@ -359,9 +359,52 @@ def _model_api_style(model: dict[str, Any]) -> str:
 
 def _web_search_body_for_model(model: dict[str, Any]) -> dict[str, Any]:
     extra = model.get("extra") if isinstance(model.get("extra"), dict) else {}
+    custom_body = extra.get("web_search_request_body")
+    if isinstance(custom_body, dict):
+        return dict(custom_body)
     if _model_api_style(model) == ai_model_config.API_STYLE_OPENAI_RESPONSES:
         return {"tools": extra.get("web_search_tools") or [{"type": "web_search"}]}
-    return {"web_search_options": extra.get("web_search_options") or {"search_context_size": "medium"}}
+    return _web_search_body_for_mode(extra, _chat_web_search_request_mode(extra))
+
+
+def _chat_web_search_request_mode(extra: dict[str, Any]) -> str:
+    request_mode = str(extra.get("web_search_request_mode") or "enable_search").strip().lower()
+    return request_mode if request_mode in {"enable_search", "web_search_options"} else "enable_search"
+
+
+def _web_search_body_for_mode(extra: dict[str, Any], request_mode: str) -> dict[str, Any]:
+    if request_mode == "enable_search":
+        # Model Studio's OpenAI-compatible endpoint uses ``enable_search``.
+        # ``forced_search`` is important for a capability probe: without it the
+        # model may elect not to search and turn a working integration into a
+        # false negative.
+        configured_options = extra.get("search_options")
+        search_options = dict(configured_options) if isinstance(configured_options, dict) else {}
+        search_options.setdefault("forced_search", True)
+        return {"enable_search": True, "search_options": search_options}
+    if request_mode == "web_search_options":
+        return {"web_search_options": extra.get("web_search_options") or {"search_context_size": "medium"}}
+    return {"enable_search": True, "search_options": {"forced_search": True}}
+
+
+def _web_search_probe_candidates(model: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """在既定 API 协议内依次生成联网搜索参数候选项。"""
+    extra = model.get("extra") if isinstance(model.get("extra"), dict) else {}
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    custom_body = extra.get("web_search_request_body")
+    if isinstance(custom_body, dict) and custom_body:
+        candidates.append(("custom_request_body", dict(custom_body)))
+    if _model_api_style(model) == ai_model_config.API_STYLE_OPENAI_RESPONSES:
+        candidates.append(("openai_tools", {"tools": extra.get("web_search_tools") or [{"type": "web_search"}]}))
+        return candidates
+
+    seen: set[str] = set()
+    for request_mode in (_chat_web_search_request_mode(extra), "enable_search", "web_search_options"):
+        if request_mode in seen:
+            continue
+        seen.add(request_mode)
+        candidates.append((request_mode, _web_search_body_for_mode(extra, request_mode)))
+    return candidates
 
 
 def _safe_endpoint_label(url: str) -> str:
@@ -770,26 +813,67 @@ def _web_search_probe_date_iso() -> str:
 
 
 def _web_search_probe_prompt() -> list[dict[str, str]]:
-    probe_date = _web_search_probe_date_iso()
     return [
         {
             "role": "system",
             "content": (
-                "必须使用实时联网或搜索能力查询当前天气，不要凭记忆回答；只返回 JSON。"
+                "必须调用实时联网或搜索能力查询天气，不要凭记忆回答；只返回 JSON。"
             ),
         },
         {
             "role": "user",
             "content": (
-                f"请使用当前会话可用的实时联网或搜索能力，查询中国四川省成都市在 {probe_date} 的当前天气。"
+                "请使用当前会话可用的实时联网或搜索能力，查询中国四川省成都市此刻的实时天气。"
+                "不要把当前日期理解成未来天气预报；请从实时搜索结果中取得信息对应的中国日期。"
                 "只有在已经实时查询成功时，返回 "
                 "{\"can_access_web\": true, \"source_url\": \"...\", \"location\": \"成都\", "
-                f"\"date\": \"{probe_date}\", \"weather\": \"...\", \"temperature\": \"...\", \"evidence\": \"...\"}}。"
+                "\"date\": \"YYYY-MM-DD\", \"weather\": \"...\", \"temperature\": \"...\", \"evidence\": \"...\"}。"
                 "如果当前模型没有实时联网/搜索能力，或访问失败，返回 "
                 "{\"can_access_web\": false, \"reason\": \"...\"}."
             ),
         },
     ]
+
+
+_CAPABILITY_LABELS = {
+    ai_model_config.CAP_CHAT: "对话",
+    ai_model_config.CAP_JSON: "JSON 输出",
+    ai_model_config.CAP_WEB_SEARCH: "联网搜索",
+    ai_model_config.CAP_IMAGE_GENERATE: "图片生成",
+    ai_model_config.CAP_IMAGE_EDIT: "图片编辑",
+    ai_model_config.CAP_TOOL_CALLING: "Function Call",
+}
+
+
+def _capability_test_outcome(
+    capability_probe: dict[str, Any],
+    probe_requested: bool,
+    connection_ok: bool,
+    connection_message: str,
+    connection_next_action: str,
+) -> dict[str, str | bool]:
+    """区分连接性与请求能力的测试结论。"""
+    unsupported = capability_probe.get("unsupported") if isinstance(capability_probe, dict) else []
+    failed_capabilities = [str(item) for item in unsupported if str(item).strip()]
+    if probe_requested and failed_capabilities:
+        labels = "、".join(_CAPABILITY_LABELS.get(item, item) for item in failed_capabilities)
+        next_action = (
+            f"接口连接正常，但请不要启用 {labels}；请检查供应商是否支持对应工具参数、模型权限和联网配置后重试。"
+            if connection_ok
+            else connection_next_action
+        )
+        return {
+            "ok": False,
+            "connection_ok": connection_ok,
+            "message": f"{connection_message.rstrip('。')}，但能力测试未通过：{labels}。",
+            "next_action": next_action,
+        }
+    return {
+        "ok": connection_ok,
+        "connection_ok": connection_ok,
+        "message": connection_message,
+        "next_action": connection_next_action,
+    }
 
 
 def _validate_web_search_probe_data(data: dict[str, Any]) -> None:
@@ -821,38 +905,46 @@ def _probe_web_search_capability(
     model_name: str,
     timeout: int,
     messages: list[dict[str, str]] | None = None,
-) -> None:
+) -> tuple[str, str]:
     base_url = ai_model_config.model_base_url(model)
     probe_messages = messages or _web_search_probe_prompt()
-    if _model_api_style(model) == ai_model_config.API_STYLE_OPENAI_RESPONSES:
-        payload = _post_json(
-            _responses_url(base_url),
-            api_key,
-            {
-                "model": model_name,
-                "input": _responses_input(probe_messages),
-                "temperature": 0,
-                "max_output_tokens": 600,
-                **_web_search_body_for_model(model),
-            },
-            timeout,
-        )
-    else:
-        payload = _post_json(
-            _chat_completions_url(base_url),
-            api_key,
-            {
-                "model": model_name,
-                "messages": probe_messages,
-                "temperature": 0,
-                "max_tokens": 600,
-                "stream": False,
-                "response_format": {"type": "json_object"},
-                **_web_search_body_for_model(model),
-            },
-            timeout,
-        )
-    _validate_web_search_probe(payload)
+    api_style = _model_api_style(model)
+    errors: list[str] = []
+    for request_mode, web_search_body in _web_search_probe_candidates(model):
+        try:
+            if api_style == ai_model_config.API_STYLE_OPENAI_RESPONSES:
+                payload = _post_json(
+                    _responses_url(base_url),
+                    api_key,
+                    {
+                        "model": model_name,
+                        "input": _responses_input(probe_messages),
+                        "temperature": 0,
+                        "max_output_tokens": 600,
+                        **web_search_body,
+                    },
+                    timeout,
+                )
+            else:
+                payload = _post_json(
+                    _chat_completions_url(base_url),
+                    api_key,
+                    {
+                        "model": model_name,
+                        "messages": probe_messages,
+                        "temperature": 0,
+                        "max_tokens": 600,
+                        "stream": False,
+                        "response_format": {"type": "json_object"},
+                        **web_search_body,
+                    },
+                    timeout,
+                )
+            _validate_web_search_probe(payload)
+            return request_mode, api_style
+        except Exception as exc:
+            errors.append(f"{request_mode}: {_capability_error_text(exc)}")
+    raise RuntimeError("未能验证实时联网搜索。已尝试 " + "；".join(errors))
 
 
 def _probe_image_generate_capability(
@@ -976,7 +1068,7 @@ def probe_model_capabilities(
                     ),
                 )
             elif capability == ai_model_config.CAP_WEB_SEARCH:
-                _probe_web_search_capability(
+                request_mode, api_style = _probe_web_search_capability(
                     model,
                     api_key,
                     model_name,
@@ -992,7 +1084,11 @@ def probe_model_capabilities(
             else:
                 continue
             supported.append(capability)
-            results[capability] = {"ok": True, "error": ""}
+            result: dict[str, str | bool] = {"ok": True, "error": ""}
+            if capability == ai_model_config.CAP_WEB_SEARCH:
+                result["request_mode"] = request_mode
+                result["api_style"] = api_style
+            results[capability] = result
         except Exception as exc:
             if "Codex CLI 模型" in str(exc):
                 raise
@@ -1425,8 +1521,15 @@ def _test_http_model(app_dir: Path | str, model: dict[str, Any], raw_model: dict
             timeout,
             probe_options,
         )
+    outcome = _capability_test_outcome(
+        capability_probe,
+        probe_requested,
+        True,
+        f"{model.get('name') or model.get('id')} 测试成功：接口可以连接。",
+        "可以保存配置并继续使用 AI 功能。",
+    )
     result = {
-        "ok": True,
+        **outcome,
         "channel": "ai_model",
         "model_id": model.get("id"),
         "provider": model.get("provider"),
@@ -1439,8 +1542,6 @@ def _test_http_model(app_dir: Path | str, model: dict[str, Any], raw_model: dict
         "tested_capabilities": requested_capabilities,
         "test_trigger": trigger,
         "masked_key": ai_model_config.mask_secret(api_key),
-        "message": f"{model.get('name') or model.get('id')} 测试成功：接口可以连接。",
-        "next_action": "可以保存配置并继续使用 AI 功能。",
     }
     logger.info(
         "AI model test result trigger=%s model_id=%s provider=%s model=%s probe=%s requested=%s supported=%s unsupported=%s capability_errors=%s available_models=%s",
@@ -1619,8 +1720,15 @@ class CodexCliProvider(AiProvider):
         installed_path = shutil.which(executable) if executable else ""
         if not installed_path:
             raise RuntimeError(f"未找到本地 CLI 命令：{executable or command}。请先安装，或填写完整命令路径。")
+        outcome = _capability_test_outcome(
+            capability_probe,
+            probe_requested,
+            True,
+            f"{model.get('name') or model.get('id')} 测试成功：本地 CLI 可以调用。",
+            "可以保存配置并继续使用 AI 功能；登录和账号状态由本机 CLI 自己管理。",
+        )
         return {
-            "ok": True,
+            **outcome,
             "channel": "ai_model",
             "model_id": model.get("id"),
             "provider": model.get("provider"),
@@ -1634,8 +1742,6 @@ class CodexCliProvider(AiProvider):
             "capability_results": capability_probe["results"],
             "tested_capabilities": requested_capabilities,
             "test_trigger": str(raw.get("test_trigger") or "").strip(),
-            "message": f"{model.get('name') or model.get('id')} 测试成功：本地 CLI 可以调用。",
-            "next_action": "可以保存配置并继续使用 AI 功能；登录和账号状态由本机 CLI 自己管理。",
         }
 
 
@@ -1670,8 +1776,26 @@ class BrowserAiProvider(AiProvider):
         capability_probe = {"supported": [], "unsupported": [], "results": {}}
         if probe_requested:
             capability_probe = probe_browser_model_capabilities(app_dir, model, requested_capabilities, timeout, probe_options)
+        connection_ok = bool(page.ready)
+        connection_message = (
+            f"{model.get('name') or model.get('id')} 测试成功：浏览器网页已连接。"
+            if connection_ok
+            else f"{model.get('name') or model.get('id')} 已打开浏览器网页，请先手动登录。"
+        )
+        connection_next_action = (
+            "能力勾选会发送测试消息；测试成功后才会启用对应能力。"
+            if connection_ok
+            else "在打开的浏览器窗口完成登录后，再勾选需要的能力并测试。"
+        )
+        outcome = _capability_test_outcome(
+            capability_probe,
+            probe_requested,
+            connection_ok,
+            connection_message,
+            connection_next_action,
+        )
         return {
-            "ok": True,
+            **outcome,
             "channel": "ai_model",
             "model_id": model.get("id"),
             "provider": model.get("provider"),
@@ -1689,8 +1813,6 @@ class BrowserAiProvider(AiProvider):
             "tested_capabilities": requested_capabilities,
             "test_trigger": str(raw.get("test_trigger") or "").strip(),
             "ready": page.ready,
-            "message": f"{model.get('name') or model.get('id')} 测试成功：浏览器网页已连接。" if page.ready else f"{model.get('name') or model.get('id')} 已打开浏览器网页，请先手动登录。",
-            "next_action": "能力勾选会发送测试消息；测试成功后才会启用对应能力。" if page.ready else "在打开的浏览器窗口完成登录后，再勾选需要的能力并测试。",
         }
 
 

@@ -92,6 +92,7 @@ const capabilityProbeDialog = reactive({
   pending: false,
   error: '',
   result: null as UnknownRecord | null,
+  originalCapabilities: [] as string[],
 })
 
 const storePlatforms = computed(() => props.platformOptions.map((platform) => ({
@@ -155,17 +156,6 @@ function asRecord(value: unknown): UnknownRecord {
 
 function textValue(value: unknown): string {
   return String(value ?? '').trim()
-}
-
-function chinaTodayIso(): string {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(new Date())
-  const partValue = (type: string) => parts.find((part) => part.type === type)?.value || ''
-  return `${partValue('year')}-${partValue('month')}-${partValue('day')}`
 }
 
 function firstText(...values: unknown[]): string {
@@ -298,6 +288,7 @@ function normalizeAiModelRow(value: unknown, index: number): UnknownRecord {
     browser_profile: firstText(record.browser_profile, record.browserProfile),
     browser_port: firstText(record.browser_port, record.browserPort),
     browser_url: firstText(record.browser_url, record.browserUrl),
+    extra: asRecord(record.extra),
     enabled: record.enabled !== false,
     api_key_configured: Boolean(record.api_key_configured),
     model_options: modelOptions,
@@ -465,20 +456,8 @@ const selectedModelListReady = computed(() => Boolean(
   && String(selectedAiModel.value.base_url || selectedAiModel.value.base_url_env || '').trim()
   && (String(selectedAiModel.value.api_key || '').trim() || selectedAiModel.value.api_key_configured),
 ))
-const selectedAiModelReady = computed(() => {
-  if (!selectedAiModel.value) return false
-  if (selectedAiModelIsCli.value) return Boolean(String(selectedAiModel.value.command || cliToolDefaultCommand(String(selectedAiModel.value.cli_tool || 'codex'))).trim())
-  if (selectedAiModelIsBrowser.value) return true
-  return Boolean(
-    String(selectedAiModel.value.provider || '').trim()
-    && String(selectedAiModel.value.model || '').trim()
-    && String(selectedAiModel.value.base_url || selectedAiModel.value.base_url_env || '').trim()
-    && (String(selectedAiModel.value.api_key || '').trim() || selectedAiModel.value.api_key_configured)
-  )
-})
 const aiControlsLocked = computed(() => props.loading || aiRequestPending.value)
 const aiBlockingMessage = computed(() => aiRequestMessage.value || '正在检测 AI 配置，请稍候')
-const selectedAiHint = computed(() => props.loading ? '正在处理，请稍候' : selectedAiModelIsCli.value ? '请先确认本机 CLI 命令可用' : selectedAiModelIsBrowser.value ? '会打开或连接浏览器网页；首次使用请在浏览器窗口手动登录' : '请先填写 Base URL 和 API Key，再选择模型')
 const selectedAiModelImageCapable = computed(() => modelHasImageCapability(selectedAiModel.value))
 const exchangeRateReady = computed(() => Boolean(form.exchangeRateApiUrl.trim()))
 const exchangeRateHint = computed(() => props.loading ? '正在处理，请稍候' : '请填写汇率 API URL')
@@ -515,6 +494,7 @@ function aiPayload(): UnknownRecord {
         delete row.browser_profile
         delete row.browser_port
         delete row.browser_url
+        delete row.extra
       } else if (row.connection_type === BROWSER_CONNECTION_TYPE) {
         row.provider = firstText(row.provider, '浏览器 AI')
         row.browser_provider = firstText(row.browser_provider, 'chatgpt')
@@ -529,6 +509,7 @@ function aiPayload(): UnknownRecord {
         row.model_env = ''
         delete row.cli_tool
         delete row.command
+        delete row.extra
         delete row.profile
         delete row.sandbox
       } else {
@@ -677,6 +658,26 @@ function selectedCapabilities(): string[] {
   return asStringArray(selectedAiModel.value?.capabilities)
 }
 
+function webSearchRequestMode(): string {
+  const extra = asRecord(selectedAiModel.value?.extra)
+  const mode = firstText(extra.web_search_request_mode, 'enable_search')
+  return ['enable_search', 'web_search_options'].includes(mode) ? mode : 'enable_search'
+}
+
+function applyWebSearchRequestMode(mode: string) {
+  if (!selectedAiModel.value) return
+  const extra = { ...asRecord(selectedAiModel.value.extra) }
+  if (mode === 'enable_search') delete extra.web_search_request_mode
+  else extra.web_search_request_mode = mode
+  selectedAiModel.value.extra = extra
+  lastAutoCapabilitySignature.value = ''
+}
+
+function setWebSearchRequestMode(mode: string) {
+  if (aiControlsLocked.value) return
+  applyWebSearchRequestMode(mode)
+}
+
 function modelHasImageCapability(model: UnknownRecord | null): boolean {
   return asStringArray(model?.capabilities).some((capability) => imageCapabilityValues.has(capability))
 }
@@ -755,15 +756,14 @@ function capabilityProbePayload(capability: string): UnknownRecord {
       { role: 'user', content: 'Return {"ok":true}.' },
     ]
   } else if (capability === 'web_search') {
-    const probeDate = chinaTodayIso()
     base.probe_messages = [
       {
         role: 'system',
-        content: '必须使用实时联网或搜索能力查询当前天气，不要凭记忆回答；只返回 JSON。',
+        content: '必须调用实时联网或搜索能力查询天气，不要凭记忆回答；只返回 JSON。',
       },
       {
         role: 'user',
-        content: `请使用当前会话可用的实时联网或搜索能力，查询中国四川省成都市在 ${probeDate} 的当前天气。只有在已经实时查询成功时，返回 {"can_access_web": true, "source_url": "...", "location": "成都", "date": "${probeDate}", "weather": "...", "temperature": "...", "evidence": "..."}。如果当前模型没有实时联网/搜索能力，或访问失败，返回 {"can_access_web": false, "reason": "..."}。`,
+        content: '请使用当前会话可用的实时联网或搜索能力，查询中国四川省成都市此刻的实时天气。不要把当前日期理解成未来天气预报；请从实时搜索结果中取得信息对应的中国日期。只有在已经实时查询成功时，返回 {"can_access_web": true, "source_url": "...", "location": "成都", "date": "YYYY-MM-DD", "weather": "...", "temperature": "...", "evidence": "..."}。如果当前模型没有实时联网/搜索能力，或访问失败，返回 {"can_access_web": false, "reason": "..."}。',
       },
     ]
   } else if (capability === 'image_generate') {
@@ -787,21 +787,31 @@ function capabilityProbePayload(capability: string): UnknownRecord {
 }
 
 function openCapabilityProbe(capability: string) {
+  const originalCapabilities = selectedCapabilities()
+  if (selectedAiModel.value) selectedAiModel.value.capabilities = [...originalCapabilities]
   capabilityProbeDialog.open = true
   capabilityProbeDialog.capability = capability
   capabilityProbeDialog.payloadText = JSON.stringify(capabilityProbePayload(capability), null, 2)
   capabilityProbeDialog.pending = false
   capabilityProbeDialog.error = ''
   capabilityProbeDialog.result = null
+  capabilityProbeDialog.originalCapabilities = originalCapabilities
 }
 
-function closeCapabilityProbe() {
+function restoreCapabilityProbeSelection() {
+  if (!selectedAiModel.value) return
+  selectedAiModel.value.capabilities = [...capabilityProbeDialog.originalCapabilities]
+}
+
+function closeCapabilityProbe(restoreSelection = true) {
   if (capabilityProbeDialog.pending) return
+  if (restoreSelection) restoreCapabilityProbeSelection()
   capabilityProbeDialog.open = false
   capabilityProbeDialog.capability = ''
   capabilityProbeDialog.payloadText = ''
   capabilityProbeDialog.error = ''
   capabilityProbeDialog.result = null
+  capabilityProbeDialog.originalCapabilities = []
 }
 
 function addCapabilityToSelected(capability: string) {
@@ -924,11 +934,6 @@ function aiModelPayloadForCheck(probeCapabilities: boolean): UnknownRecord {
   return model
 }
 
-function testSelectedAiModel() {
-  if (!selectedAiModel.value) return
-  requestAiModelCheck(false, '正在测试模型连接', 'manual_connection')
-}
-
 function refreshSelectedModelList(force = false) {
   if (!selectedAiModel.value || aiControlsLocked.value || !selectedModelListReady.value) return
   const signature = modelListSignature(selectedAiModel.value)
@@ -998,6 +1003,7 @@ function applyAiTestResult(result: AuthResult | null) {
     lastAutoModelListSignature.value = ''
     lastAutoCapabilitySignature.value = ''
     if (isPendingCapabilityProbe) {
+      restoreCapabilityProbeSelection()
       capabilityProbeDialog.pending = false
       capabilityProbeDialog.error = result.error || result.message || '能力测试失败'
       capabilityProbeDialog.result = raw
@@ -1020,11 +1026,16 @@ function applyAiTestResult(result: AuthResult | null) {
     capabilityProbeDialog.result = raw
     const capabilityResult = asRecord(capabilityResults[pendingCapability])
     if (supported.has(pendingCapability) && capabilityResult.ok !== false) {
+      const requestMode = firstText(capabilityResult.request_mode)
+      if (pendingCapability === 'web_search' && ['openai_tools', 'enable_search', 'web_search_options'].includes(requestMode)) {
+        applyWebSearchRequestMode(requestMode)
+      }
       addCapabilityToSelected(pendingCapability)
       lastAutoCapabilitySignature.value = capabilitySignature(target)
-      closeCapabilityProbe()
+      closeCapabilityProbe(false)
       return
     }
+    restoreCapabilityProbeSelection()
     capabilityProbeDialog.error = String(capabilityResult.error || raw.error || result?.error || '能力测试未通过')
     capabilityProbeDialog.result = raw
   }
@@ -1036,6 +1047,7 @@ watch(() => props.loading, (loading) => {
     aiRequestPending.value = false
     aiRequestMessage.value = ''
     if (capabilityProbeDialog.open && capabilityProbeDialog.pending) {
+      restoreCapabilityProbeSelection()
       capabilityProbeDialog.pending = false
       capabilityProbeDialog.error = capabilityProbeDialog.error || '测试已结束，但没有收到完整的能力测试结果。请查看最近 AI 测试结果后重试。'
     }
@@ -1114,7 +1126,7 @@ function handleYunexpressEnvironmentChange(value: string) {
             <h3 class="font-semibold text-accent-950 dark:text-white">测试 {{ capabilityProbeLabel }}</h3>
             <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">确认成功后会启用该能力。</p>
           </div>
-          <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="capabilityProbeDialog.pending" @click="closeCapabilityProbe">关闭</button>
+          <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="capabilityProbeDialog.pending" @click="closeCapabilityProbe()">关闭</button>
         </div>
         <label class="mt-4 block">
           <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">测试内容</span>
@@ -1131,7 +1143,7 @@ function handleYunexpressEnvironmentChange(value: string) {
         </div>
         <pre v-if="capabilityProbeDialog.result" class="mt-3 max-h-56 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{{ JSON.stringify(capabilityProbeDialog.result, null, 2) }}</pre>
         <div class="mt-4 flex flex-wrap justify-end gap-2">
-          <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="capabilityProbeDialog.pending" @click="closeCapabilityProbe">取消</button>
+          <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="capabilityProbeDialog.pending" @click="closeCapabilityProbe()">取消</button>
           <button class="btn btn-primary py-1.5 text-sm" type="button" :disabled="capabilityProbeDialog.pending" @click="confirmCapabilityProbe">
             {{ capabilityProbeDialog.pending ? '测试中' : '确定测试' }}
           </button>
@@ -1183,8 +1195,8 @@ function handleYunexpressEnvironmentChange(value: string) {
             <div class="flex flex-wrap gap-2">
               <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="addAiModel">添加模型</button>
               <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedAiModel" @click="duplicateSelectedAiModel">复制当前模型</button>
+              <button class="btn btn-outline py-1.5 text-sm text-rose-700" type="button" :disabled="aiControlsLocked || aiModels.length <= 1" @click="removeSelectedAiModel">删除当前模型</button>
               <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedModelListReady" :title="selectedModelListReady ? '从 Provider 加载可用模型列表' : '请先填写 Base URL 和 API Key'" @click="refreshSelectedModelList(true)">加载模型列表</button>
-              <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedAiModelReady" :title="selectedAiModelReady ? '测试模型连接' : selectedAiHint" @click="testSelectedAiModel">测试当前模型</button>
               <button class="btn btn-primary py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="emit('saveAi', aiPayload())">保存 AI 设置</button>
             </div>
           </div>
@@ -1205,17 +1217,22 @@ function handleYunexpressEnvironmentChange(value: string) {
               </button>
             </div>
 
-            <div v-if="selectedAiModel" class="space-y-3">
+            <div v-if="selectedAiModel" class="ai-model-form space-y-3">
               <div class="grid gap-3 md:grid-cols-2">
-                <input class="input" :value="modelField('id')" :disabled="aiControlsLocked" placeholder="模型 ID，例如 deepseek_text" @input="setSelectedModelField('id', eventText($event))" />
-                <input class="input" :value="modelField('name')" :disabled="aiControlsLocked" placeholder="显示名称" @input="setSelectedModelField('name', eventText($event))" />
+                <label class="block">
+                  <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">模型 ID</span>
+                  <input class="input" :value="modelField('id')" :disabled="aiControlsLocked" placeholder="例如 deepseek_text" @input="setSelectedModelField('id', eventText($event))" />
+                </label>
+                <label class="block">
+                  <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">显示名称</span>
+                  <input class="input" :value="modelField('name')" :disabled="aiControlsLocked" placeholder="例如 DeepSeek 文本模型" @input="setSelectedModelField('name', eventText($event))" />
+                </label>
                 <label class="block">
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">接入方式</span>
                   <select class="input" :value="modelField('connection_type', 'api')" :disabled="aiControlsLocked" @change="setSelectedModelField('connection_type', eventText($event))">
                     <option v-for="option in connectionTypeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
                   </select>
                 </label>
-                <input v-if="selectedAiModelIsApi" class="input" :value="modelField('provider')" :disabled="aiControlsLocked" placeholder="Provider，例如 DeepSeek / OpenAI" @input="setSelectedModelField('provider', eventText($event))" />
                 <label v-if="selectedAiModelIsApi" class="block">
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">API 风格</span>
                   <select class="input" :value="modelField('api_style', 'openai_compatible')" :disabled="aiControlsLocked" @change="setSelectedModelField('api_style', eventText($event))">
@@ -1240,8 +1257,14 @@ function handleYunexpressEnvironmentChange(value: string) {
                   </select>
                 </label>
                 <template v-if="selectedAiModelIsApi">
-                  <input class="input" :value="modelField('base_url')" :disabled="aiControlsLocked" placeholder="Base URL" @input="setSelectedModelField('base_url', eventText($event))" @blur="handleAiConfigFieldBlur('base_url')" />
-                  <input class="input md:col-span-2" :value="modelField('api_key')" :disabled="aiControlsLocked" :placeholder="apiKeyPlaceholder()" autocomplete="off" spellcheck="false" @input="setSelectedModelField('api_key', eventText($event))" @blur="handleAiConfigFieldBlur('api_key')" />
+                  <label class="block">
+                    <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">Base URL</span>
+                    <input class="input" :value="modelField('base_url')" :disabled="aiControlsLocked" placeholder="https://api.example.com/v1" @input="setSelectedModelField('base_url', eventText($event))" @blur="handleAiConfigFieldBlur('base_url')" />
+                  </label>
+                  <label class="block md:col-span-2">
+                    <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">API Key</span>
+                    <input type="password" class="input" :value="modelField('api_key')" :disabled="aiControlsLocked" :placeholder="apiKeyPlaceholder()" autocomplete="off" spellcheck="false" @input="setSelectedModelField('api_key', eventText($event))" @blur="handleAiConfigFieldBlur('api_key')" />
+                  </label>
                   <label class="block md:col-span-2">
                     <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">模型</span>
                     <select v-if="selectedModelOptions.length" class="input" :value="modelField('model')" :disabled="aiControlsLocked" @change="handleAiModelSelect(eventText($event))">
@@ -1253,14 +1276,23 @@ function handleYunexpressEnvironmentChange(value: string) {
                   </label>
                 </template>
                 <template v-else-if="selectedAiModelIsCli">
-                  <input class="input" :value="modelField('command')" :disabled="aiControlsLocked" placeholder="CLI 命令，例如 codex" @input="setSelectedModelField('command', eventText($event))" />
-                  <input class="input" :value="modelField('model')" :disabled="aiControlsLocked" placeholder="模型，可留空使用 CLI 默认" @input="setSelectedModelField('model', eventText($event))" @blur="handleAiConfigFieldBlur('model')" />
+                  <label class="block">
+                    <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">CLI 命令</span>
+                    <input class="input" :value="modelField('command')" :disabled="aiControlsLocked" placeholder="例如 codex" @input="setSelectedModelField('command', eventText($event))" />
+                  </label>
+                  <label class="block">
+                    <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">模型</span>
+                    <input class="input" :value="modelField('model')" :disabled="aiControlsLocked" placeholder="可留空使用 CLI 默认" @input="setSelectedModelField('model', eventText($event))" @blur="handleAiConfigFieldBlur('model')" />
+                  </label>
                   <div class="md:col-span-2 rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm text-accent-600 dark:border-dark-700 dark:bg-dark-900 dark:text-accent-300">
                     {{ selectedCliStatusText }}
                   </div>
                 </template>
                 <template v-else>
-                  <input class="input" :value="modelField('model')" :disabled="aiControlsLocked" placeholder="网页模型，可选" @input="setSelectedModelField('model', eventText($event))" />
+                  <label class="block">
+                    <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">网页模型</span>
+                    <input class="input" :value="modelField('model')" :disabled="aiControlsLocked" placeholder="可选" @input="setSelectedModelField('model', eventText($event))" />
+                  </label>
                   <div class="md:col-span-2 rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm text-accent-600 dark:border-dark-700 dark:bg-dark-900 dark:text-accent-300">
                     将打开独立的浏览器 Profile；首次使用请在浏览器窗口手动登录，之后复用本机登录态。
                   </div>
@@ -1277,15 +1309,36 @@ function handleYunexpressEnvironmentChange(value: string) {
                     <option v-for="option in imageQualityOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
                   </select>
                 </label>
-                <input class="input" :value="modelField('timeout_seconds')" :disabled="aiControlsLocked" placeholder="超时秒数，可选" @input="setSelectedModelField('timeout_seconds', eventText($event))" />
+                <label class="block">
+                  <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">超时秒数</span>
+                  <input class="input" :value="modelField('timeout_seconds')" :disabled="aiControlsLocked" placeholder="可选" @input="setSelectedModelField('timeout_seconds', eventText($event))" />
+                </label>
                 <details class="md:col-span-2 rounded-lg border border-dashed border-accent-200 bg-white px-3 py-2 text-sm dark:border-dark-700 dark:bg-dark-900">
                   <summary class="cursor-pointer font-semibold text-accent-700 dark:text-accent-200">高级配置</summary>
                   <div v-if="selectedAiModelIsApi" class="mt-3 grid gap-3 md:grid-cols-2">
-                    <input class="input" :value="modelField('base_url_env')" :disabled="aiControlsLocked" placeholder="Base URL 环境变量名，可选" @input="setSelectedModelField('base_url_env', eventText($event))" />
-                    <input class="input" :value="modelField('api_key_env')" :disabled="aiControlsLocked" placeholder="API Key 环境变量名，可选" @input="setSelectedModelField('api_key_env', eventText($event))" />
+                    <label class="block">
+                      <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">Base URL 环境变量</span>
+                      <input class="input" :value="modelField('base_url_env')" :disabled="aiControlsLocked" placeholder="可选" @input="setSelectedModelField('base_url_env', eventText($event))" />
+                    </label>
+                    <label class="block">
+                      <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">API Key 环境变量</span>
+                      <input class="input" :value="modelField('api_key_env')" :disabled="aiControlsLocked" placeholder="可选" @input="setSelectedModelField('api_key_env', eventText($event))" />
+                    </label>
+                    <label v-if="modelField('api_style', 'openai_compatible') === 'openai_compatible'" class="block md:col-span-2">
+                      <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">联网搜索请求格式</span>
+                      <select class="input" :value="webSearchRequestMode()" :disabled="aiControlsLocked" @change="setWebSearchRequestMode(eventText($event))">
+                        <option value="enable_search">enable_search + 强制搜索（通义或兼容网关）</option>
+                        <option value="web_search_options">web_search_options（兼容网关）</option>
+                      </select>
+                      <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">仅在勾选“联网搜索”时发送。Chat Completions 没有通用的联网字段；测试会在当前 Chat 协议内依次尝试这些供应商扩展参数，并采用成功的方式。通义兼容接口会发送 enable_search 与 search_options.forced_search。</span>
+                    </label>
+                    <span v-else class="block md:col-span-2 text-xs text-accent-500 dark:text-accent-400">OpenAI Responses 使用标准的 tools: [{ type: 'web_search' }] 请求格式。测试只验证当前选择的 API 风格，不会自动切换协议；成功后会记录该工具格式。</span>
                   </div>
                   <div v-else-if="selectedAiModelIsCli" class="mt-3 grid gap-3 md:grid-cols-2">
-                    <input class="input" :value="modelField('profile')" :disabled="aiControlsLocked" placeholder="CLI Profile，可选" @input="setSelectedModelField('profile', eventText($event))" />
+                    <label class="block">
+                      <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">CLI Profile</span>
+                      <input class="input" :value="modelField('profile')" :disabled="aiControlsLocked" placeholder="可选" @input="setSelectedModelField('profile', eventText($event))" />
+                    </label>
                     <label class="block">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">Sandbox</span>
                       <select class="input" :value="modelField('sandbox', 'read-only')" :disabled="aiControlsLocked" @change="setSelectedModelField('sandbox', eventText($event))">
@@ -1300,9 +1353,18 @@ function handleYunexpressEnvironmentChange(value: string) {
                         <option v-for="option in browserModeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
                       </select>
                     </label>
-                    <input class="input" :value="modelField('browser_profile')" :disabled="aiControlsLocked" placeholder="Profile 名称，可留空 default" @input="setSelectedModelField('browser_profile', eventText($event))" />
-                    <input class="input" :value="modelField('browser_port')" :disabled="aiControlsLocked" placeholder="调试端口，可选" @input="setSelectedModelField('browser_port', eventText($event))" />
-                    <input class="input" :value="modelField('browser_url')" :disabled="aiControlsLocked" placeholder="自定义网页 URL，可选" @input="setSelectedModelField('browser_url', eventText($event))" />
+                    <label class="block">
+                      <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">浏览器 Profile</span>
+                      <input class="input" :value="modelField('browser_profile')" :disabled="aiControlsLocked" placeholder="留空使用 default" @input="setSelectedModelField('browser_profile', eventText($event))" />
+                    </label>
+                    <label class="block">
+                      <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">远程调试端口</span>
+                      <input class="input" :value="modelField('browser_port')" :disabled="aiControlsLocked" placeholder="可选" @input="setSelectedModelField('browser_port', eventText($event))" />
+                    </label>
+                    <label class="block">
+                      <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">网页 URL</span>
+                      <input class="input" :value="modelField('browser_url')" :disabled="aiControlsLocked" placeholder="可选" @input="setSelectedModelField('browser_url', eventText($event))" />
+                    </label>
                   </div>
                 </details>
               </div>
@@ -1323,7 +1385,6 @@ function handleYunexpressEnvironmentChange(value: string) {
                 </label>
               </div>
 
-              <button class="btn btn-outline py-1.5 text-sm text-rose-700" type="button" :disabled="aiControlsLocked || aiModels.length <= 1" @click="removeSelectedAiModel">删除当前模型</button>
             </div>
           </div>
 
@@ -1576,3 +1637,10 @@ function handleYunexpressEnvironmentChange(value: string) {
     </section>
   </div>
 </template>
+
+<style scoped>
+.ai-model-form input.input,
+.ai-model-form select.input {
+  height: 2.5rem;
+}
+</style>
