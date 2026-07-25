@@ -13,6 +13,7 @@ const props = defineProps<{
   draftPrice: string
   platformOptions: MarketplaceOption[]
   loading: boolean
+  selectionLocked?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -107,8 +108,8 @@ function exchangeRateText() {
       <button class="btn btn-primary" :disabled="props.loading || !props.draftId || !props.input.targets.length" @click="emit('calculate')">计算并应用</button>
     </div>
 
-    <div class="mt-5 grid gap-3 border-b border-accent-200 pb-5 dark:border-dark-700 lg:grid-cols-[minmax(0,1fr)_160px_160px_auto]">
-      <label class="block">
+    <div class="mt-5 grid gap-3 border-b border-accent-200 pb-5 dark:border-dark-700" :class="props.selectionLocked ? 'lg:grid-cols-2' : 'lg:grid-cols-[minmax(0,1fr)_160px_160px_auto]'">
+      <label v-if="!props.selectionLocked" class="block">
         <span class="text-xs font-semibold text-accent-500 dark:text-accent-300">草稿</span>
         <select
           class="input mt-1"
@@ -132,7 +133,7 @@ function exchangeRateText() {
         <p class="text-xs font-semibold text-accent-500 dark:text-accent-300">当前主售价</p>
         <p class="mt-3 text-sm font-semibold text-accent-950 dark:text-white">{{ props.draftPrice || '-' }}</p>
       </div>
-      <div class="flex items-end gap-2">
+      <div v-if="!props.selectionLocked" class="flex items-end gap-2">
         <button class="btn btn-outline py-2" :disabled="props.loading" @click="emit('refreshDrafts')">刷新</button>
         <button class="btn btn-secondary py-2" :disabled="props.loading || !props.draftId" @click="emit('editDraft')">编辑</button>
       </div>

@@ -86,49 +86,47 @@ function statusClass(value: string) {
     </div>
 
     <div class="mt-5 overflow-hidden rounded-lg border border-accent-200 dark:border-dark-700">
-      <table class="w-full table-fixed text-left text-sm">
+      <table class="w-full table-fixed text-left text-xs">
         <colgroup>
-          <col class="w-[5%]" />
-          <col class="w-[8%]" />
-          <col class="w-[18%]" />
-          <col class="w-[33%]" />
-          <col class="w-[9%]" />
-          <col class="w-[12%]" />
-          <col class="w-[15%]" />
+          <col class="w-10" />
+          <col class="w-10" />
+          <col class="w-[14%]" />
+          <col />
+          <col class="w-[72px]" />
+          <col class="w-[108px]" />
+          <col class="w-[150px]" />
         </colgroup>
         <thead class="border-b border-accent-200 bg-accent-50 text-xs text-accent-500 dark:border-dark-700 dark:bg-dark-950/70 dark:text-accent-400">
-          <tr>
+          <tr class="whitespace-nowrap">
             <th class="p-2"><input class="size-4 rounded border-accent-300 text-primary-600" type="checkbox" aria-label="全选当前商品" :checked="allChecked" :disabled="props.loading || !filteredItems.length" @change="emit('selectAll', ($event.target as HTMLInputElement).checked, filteredItems.map((item) => item.productId))" /></th>
             <th class="p-2">主图</th>
-            <th class="p-3">来源</th>
-            <th class="p-3">商品标题</th>
-            <th class="p-3">采集</th>
-            <th class="p-3">更新时间</th>
-            <th class="p-3">操作</th>
+            <th class="p-2">来源</th>
+            <th class="p-2">商品标题</th>
+            <th class="p-2">采集</th>
+            <th class="p-2">更新</th>
+            <th class="p-2">操作</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-accent-100 dark:divide-dark-800">
-          <tr v-for="item in filteredItems" :key="item.productId" class="align-top transition hover:bg-accent-50/70 dark:hover:bg-dark-800/60">
+          <tr v-for="item in filteredItems" :key="item.productId" class="whitespace-nowrap align-middle transition hover:bg-accent-50/70 dark:hover:bg-dark-800/60">
             <td class="p-2"><input class="size-4 rounded border-accent-300 text-primary-600" type="checkbox" aria-label="勾选商品" :checked="props.selectedIds.includes(item.productId)" :disabled="props.loading" @change="emit('toggle', item.productId, ($event.target as HTMLInputElement).checked)" /></td>
             <td class="p-2">
-              <img v-if="item.mainImage" :src="item.mainImage" class="size-10 rounded-lg object-cover" />
-              <div v-else class="flex size-10 items-center justify-center rounded-lg bg-accent-100 text-[10px] font-bold text-accent-500 dark:bg-dark-800 dark:text-accent-300">无图</div>
+              <img v-if="item.mainImage" :src="item.mainImage" class="size-8 rounded-md object-cover" />
+              <div v-else class="flex size-8 items-center justify-center rounded-md bg-accent-100 text-[9px] font-bold text-accent-500 dark:bg-dark-800 dark:text-accent-300">无图</div>
             </td>
-            <td class="min-w-0 p-3">
-              <div class="truncate font-semibold text-accent-950 dark:text-white" :title="item.sourcePlatform || '-'">{{ item.sourcePlatform || '-' }}</div>
-              <div class="truncate text-xs text-accent-500 dark:text-accent-400" :title="item.sourceUrl">{{ item.sourceUrl }}</div>
+            <td class="min-w-0 p-2">
+              <div class="truncate text-accent-600 dark:text-accent-300" :title="`${item.sourcePlatform || '-'} · ${item.sourceUrl || '-'}`">{{ item.sourcePlatform || '-' }} · {{ item.sourceUrl || '-' }}</div>
             </td>
-            <td class="min-w-0 p-3">
-              <div class="truncate font-semibold text-accent-950 dark:text-white" :title="item.title || '-'">{{ item.title || '-' }}</div>
-              <div class="mt-1 truncate font-mono text-xs text-accent-500 dark:text-accent-400" :title="item.productId">{{ item.productId }}</div>
+            <td class="min-w-0 p-2">
+              <div class="truncate font-semibold text-accent-950 dark:text-white" :title="`${item.title || '-'} · ${item.productId || '-'}`">{{ item.title || '-' }}</div>
             </td>
-            <td class="p-3"><span class="inline-flex max-w-full truncate" :class="statusClass(item.collectStatus)" :title="item.collectStatus || '-'">{{ item.collectStatus || '-' }}</span></td>
-            <td class="p-3 text-xs text-accent-500 dark:text-accent-300"><span class="block truncate" :title="item.updatedAt || item.createdAt">{{ item.updatedAt || item.createdAt || '-' }}</span></td>
-            <td class="p-3">
-              <div class="flex flex-wrap gap-2">
-                <button class="btn btn-outline whitespace-nowrap px-3 py-1.5 text-xs" :disabled="props.loading" @click="emit('load', item)">编辑文本</button>
-                <button class="btn btn-secondary whitespace-nowrap px-3 py-1.5 text-xs" :disabled="props.loading" @click="emit('editImages', item)">编辑图片</button>
-                <button class="btn btn-outline whitespace-nowrap px-3 py-1.5 text-xs text-rose-700 dark:text-rose-200" :disabled="props.loading" @click="confirmDelete(item)">删除</button>
+            <td class="min-w-0 p-2"><span class="inline-flex max-w-full truncate" :class="statusClass(item.collectStatus)" :title="item.collectStatus || '-'">{{ item.collectStatus || '-' }}</span></td>
+            <td class="min-w-0 p-2 text-accent-500 dark:text-accent-300"><span class="block truncate" :title="item.updatedAt || item.createdAt">{{ item.updatedAt || item.createdAt || '-' }}</span></td>
+            <td class="p-2">
+              <div class="flex flex-nowrap gap-1">
+                <button class="btn btn-outline shrink-0 whitespace-nowrap px-1.5 py-1 text-xs" :disabled="props.loading" title="编辑文本" @click="emit('load', item)">编辑</button>
+                <button class="btn btn-secondary shrink-0 whitespace-nowrap px-1.5 py-1 text-xs" :disabled="props.loading" title="编辑图片" @click="emit('editImages', item)">图片</button>
+                <button class="btn btn-outline shrink-0 whitespace-nowrap px-1.5 py-1 text-xs text-rose-700 dark:text-rose-200" :disabled="props.loading" @click="confirmDelete(item)">删除</button>
               </div>
             </td>
           </tr>

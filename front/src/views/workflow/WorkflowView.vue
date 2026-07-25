@@ -9,6 +9,7 @@ import CollectView from '@/views/workflow/CollectView.vue'
 import DashboardView from '@/views/workflow/DashboardView.vue'
 import DraftBoxPanel from '@/components/domain/DraftBoxPanel.vue'
 import DraftEditorPanel from '@/components/domain/DraftEditorPanel.vue'
+import DraftWorkspacePanel, { type DraftWorkspaceTab } from '@/components/domain/DraftWorkspacePanel.vue'
 import LibraryPanel from '@/components/domain/LibraryPanel.vue'
 import MercadoLibrePublishedPanel from '@/components/domain/MercadoLibrePublishedPanel.vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
@@ -97,13 +98,12 @@ const { copied: productIdCopied, copy: copyToClipboard } = useClipboard()
 const activeNav = ref('dashboard')
 const editorOpen = ref(false)
 const productEditorBackdropPointerId = ref<number | null>(null)
-const draftEditorOpen = ref(false)
-const categoryEditorOpen = ref(false)
+const draftWorkspaceOpen = ref(false)
+const draftWorkspaceTab = ref<DraftWorkspaceTab>('text')
+const draftWorkspaceItem = ref<DraftIndexItem | null>(null)
+const draftWorkspaceImagesLoadedFor = ref('')
 const editorMode = ref<'text' | 'images'>('text')
-const editorContext = ref<'product' | 'draftImage'>('product')
 const imageEditorTitle = ref('商品库图片编辑')
-const imageEditorDraftId = ref('')
-const imageEditorTargetLanguage = ref('')
 const stateReady = ref(false)
 const navItems = workflowNavItems
 const pathNavMap: Record<string, string> = {
@@ -139,6 +139,7 @@ const navPathMap: Record<string, string> = {
 
 const pricingDraftItems = computed(() => draftsIndex.value.filter((item) => item.draftId))
 const pricingDraftTitle = computed(() => currentDraft.value.title || currentDraftProductContext.value.title || currentDraftProductContext.value.sourceTitle || currentDraft.value.draftId)
+const draftWorkspaceTitle = computed(() => currentDraft.value.title || currentDraftProductContext.value.title || currentDraftProductContext.value.sourceTitle || '草稿编辑')
 
 const mercadolibreNotificationUrl = computed(() => {
   const ml = storeConfig.value.mercadolibre as UnknownRecord | undefined
@@ -161,17 +162,10 @@ const pendingItems = computed(() => productsIndex.value.filter((item) => {
   return values.some((value) => ['failed', 'not_ready', 'pending', 'partial'].includes(value))
 }))
 
-function setMarketplace(value: Marketplace) {
-  store.setMarketplace(value)
-}
-
 async function openProductEditor(item?: ProductIndexItem, mode: 'text' | 'images' = 'text') {
   if (item) await store.loadProduct(item)
   editorMode.value = mode
-  editorContext.value = 'product'
   imageEditorTitle.value = '商品库图片编辑'
-  imageEditorDraftId.value = ''
-  imageEditorTargetLanguage.value = ''
   editorOpen.value = true
 }
 
@@ -207,66 +201,54 @@ function productIndexFromDraft(item: DraftIndexItem): ProductIndexItem {
   }
 }
 
-async function openDraftEditor(item: DraftIndexItem) {
+async function openDraftWorkspace(item: DraftIndexItem, tab: DraftWorkspaceTab = 'text') {
   store.setMarketplace(item.platform)
   await store.loadDraft(item)
-  draftEditorOpen.value = true
+  if (currentDraft.value.draftId !== item.draftId) return
+  draftWorkspaceItem.value = item
+  draftWorkspaceImagesLoadedFor.value = ''
+  draftWorkspaceOpen.value = true
+  await switchDraftWorkspaceTab(tab)
 }
 
-async function openDraftImageEditor(item: DraftIndexItem) {
-  draftEditorOpen.value = false
-  store.setMarketplace(item.platform)
-  await store.loadDraft(item)
+async function ensureDraftWorkspaceImages() {
+  const item = draftWorkspaceItem.value
+  if (!item || draftWorkspaceImagesLoadedFor.value === item.draftId) return
   await store.loadProduct(productIndexFromDraft(item))
-  editorMode.value = 'images'
-  editorContext.value = 'draftImage'
-  imageEditorTitle.value = '草稿图片编辑'
-  imageEditorDraftId.value = item.draftId
-  imageEditorTargetLanguage.value = item.language
-  editorOpen.value = true
+  if (currentDraft.value.draftId === item.draftId) draftWorkspaceImagesLoadedFor.value = item.draftId
 }
 
-async function openDraftCategoryEditor(item: DraftIndexItem) {
-  await store.loadDraft(item)
-  categoryEditorOpen.value = true
-  await nextTick()
-  void store.autoSuggestCategoriesForDraft()
+async function switchDraftWorkspaceTab(tab: DraftWorkspaceTab) {
+  if (tab === 'images') await ensureDraftWorkspaceImages()
+  draftWorkspaceTab.value = tab
+  if (tab === 'category') {
+    await nextTick()
+    void store.autoSuggestCategoriesForDraft()
+  }
 }
 
 async function translateEditorImages() {
-  if (editorContext.value === 'draftImage') {
-    await store.translateImages(imageEditorTargetLanguage.value, {
-      draftId: imageEditorDraftId.value,
-      applyToDraft: true,
-      draftImageStrategy: 'replace_selected',
-    })
-    return
-  }
   await store.translateImages()
 }
 
 async function editEditorImages(prompt: string) {
-  if (editorContext.value === 'draftImage') {
-    await store.editImagesWithPrompt(prompt, {
-      draftId: imageEditorDraftId.value,
-      applyToDraft: true,
-      draftImageStrategy: 'append',
-    })
-    return
-  }
   await store.editImagesWithPrompt(prompt)
 }
 
-async function openDraftPrecheck(item: DraftIndexItem) {
-  await store.loadDraft(item)
-  navigate('category')
+async function translateDraftWorkspaceImages() {
+  await store.translateImages(currentDraft.value.language, {
+    draftId: currentDraft.value.draftId,
+    applyToDraft: true,
+    draftImageStrategy: 'replace_selected',
+  })
 }
 
-async function openDraftPricing(item: DraftIndexItem) {
-  const ok = await store.loadDraftForPricing(item)
-  if (!ok) return
-  activeNav.value = 'pricing'
-  await router.push({ path: '/pricing', query: { draftId: item.draftId } })
+async function editDraftWorkspaceImages(prompt: string) {
+  await store.editImagesWithPrompt(prompt, {
+    draftId: currentDraft.value.draftId,
+    applyToDraft: true,
+    draftImageStrategy: 'append',
+  })
 }
 
 async function deleteDraft(item: DraftIndexItem) {
@@ -291,8 +273,6 @@ async function openProductPrecheck(item: ProductIndexItem, platform: Marketplace
 function closeProductEditor() {
   editorOpen.value = false
   productEditorBackdropPointerId.value = null
-  imageEditorDraftId.value = ''
-  imageEditorTargetLanguage.value = ''
 }
 
 function recordProductEditorBackdropPointer(event: PointerEvent) {
@@ -308,12 +288,10 @@ function closeProductEditorFromBackdrop(event: PointerEvent) {
   closeProductEditor()
 }
 
-function closeDraftEditor() {
-  draftEditorOpen.value = false
-}
-
-function closeCategoryEditor() {
-  categoryEditorOpen.value = false
+function closeDraftWorkspace() {
+  draftWorkspaceOpen.value = false
+  draftWorkspaceItem.value = null
+  draftWorkspaceImagesLoadedFor.value = ''
 }
 
 async function copyProductId() {
@@ -329,7 +307,13 @@ async function selectPricingDraft(draftId: string) {
 
 function openPricingDraftEditor() {
   if (!currentDraft.value.draftId) return
-  draftEditorOpen.value = true
+  const item = draftsIndex.value.find((draft) => draft.draftId === currentDraft.value.draftId)
+  if (item) {
+    void openDraftWorkspace(item)
+    return
+  }
+  draftWorkspaceTab.value = 'text'
+  draftWorkspaceOpen.value = true
 }
 
 function navigate(key: string) {
@@ -352,11 +336,6 @@ async function applyPricingDraftFromRoute() {
 
 async function claimSelectedAndOpenDrafts() {
   const ok = await store.claimSelectedProducts()
-  if (ok) navigate('drafts')
-}
-
-async function claimCurrentAndOpenDrafts() {
-  const ok = await store.claimCurrentProduct()
   if (ok) navigate('drafts')
 }
 
@@ -494,11 +473,7 @@ watch(
               :error="error"
               @refresh="store.refreshDraftsIndex"
               @update-language="store.updateDraftLanguage"
-              @edit-text="openDraftEditor"
-              @edit-images="openDraftImageEditor"
-              @edit-category="openDraftCategoryEditor"
-              @go-pricing="openDraftPricing"
-              @go-publish="openDraftPrecheck"
+              @edit="openDraftWorkspace"
               @delete-draft="deleteDraft"
               @delete-drafts="deleteDrafts"
               @update-targets="store.updateDraftTargets"
@@ -708,7 +683,7 @@ watch(
             <button class="btn btn-outline" :disabled="!product.productId" :title="product.productId || '当前商品暂无 ID'" @click="copyProductId">
               {{ productIdCopied ? '已复制' : '复制id' }}
             </button>
-            <button v-if="editorContext === 'product'" class="btn btn-outline" :class="editorMode === 'text' ? 'bg-slate-100' : ''" @click="editorMode = 'text'">编辑文本</button>
+            <button class="btn btn-outline" :class="editorMode === 'text' ? 'bg-slate-100' : ''" @click="editorMode = 'text'">编辑文本</button>
             <button class="btn btn-outline" :class="editorMode === 'images' ? 'bg-slate-100' : ''" @click="editorMode = 'images'">编辑图片</button>
             <button class="btn btn-outline" @click="closeProductEditor">关闭</button>
           </div>
@@ -727,89 +702,168 @@ watch(
           :images="imagePool"
           :loading="loading"
           :error="error"
-          :show-translate-action="editorContext === 'draftImage'"
-          :draft="editorContext === 'draftImage' ? currentDraft : undefined"
           @translate="translateEditorImages"
           @image-edit="editEditorImages"
           @upload="store.uploadReferenceImages"
           @save="store.saveCurrentImagePool"
-          @save-draft-images="store.saveCurrentDraft"
           @set-main="store.setMainImage"
           @delete="store.deleteImages"
           @clear="store.clearSourceImages"
         />
       </div>
     </div>
-    <div v-if="draftEditorOpen" class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/50 p-4 backdrop-blur-sm" @click.self="closeDraftEditor">
-      <div class="w-full max-w-7xl rounded-3xl bg-white p-4 shadow-2xl ring-1 ring-slate-200 dark:bg-dark-900 dark:ring-dark-700 sm:p-6">
-        <DraftEditorPanel
-          :draft="currentDraft"
-          :product-context="currentDraftProductContext"
-          :platform-options="platformOptions"
-          :loading="loading"
-          @generate-copy="() => store.generateCopy(true)"
-          @save="store.saveCurrentDraft"
-          @close="closeDraftEditor"
-        />
-      </div>
-    </div>
-    <div v-if="categoryEditorOpen" class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/50 p-4 backdrop-blur-sm" @click.self="closeCategoryEditor">
-      <div class="relative w-full max-w-7xl rounded-3xl bg-white p-4 shadow-2xl ring-1 ring-slate-200 dark:bg-dark-900 dark:ring-dark-700 sm:p-6">
-        <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 class="text-xl font-black text-slate-950 dark:text-white">类目/属性</h2>
-            <p class="mt-1 text-sm text-slate-500 dark:text-slate-300">编辑当前草稿各目标站点的类目和平台属性。</p>
-          </div>
-          <div class="flex flex-wrap gap-2">
+    <div v-if="draftWorkspaceOpen" class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/50 p-4 backdrop-blur-sm" @click.self="closeDraftWorkspace">
+      <div class="w-full max-w-[96rem] rounded-3xl bg-white p-4 shadow-2xl ring-1 ring-slate-200 dark:bg-dark-900 dark:ring-dark-700 sm:p-6">
+        <DraftWorkspacePanel
+          :active-tab="draftWorkspaceTab"
+          :draft-title="draftWorkspaceTitle"
+          :draft-id="currentDraft.draftId"
+          @update-active-tab="switchDraftWorkspaceTab"
+          @close="closeDraftWorkspace"
+        >
+          <template #actions>
+            <button v-if="draftWorkspaceTab === 'text'" class="btn btn-outline" :disabled="loading || !(currentDraft.productId || currentDraftProductContext.productId)" @click="() => store.generateCopy(true)">AI 编辑文案</button>
             <button class="btn btn-primary" :disabled="loading || !currentDraft.draftId" @click="store.saveCurrentDraft">保存草稿</button>
-            <button class="btn btn-outline" @click="closeCategoryEditor">关闭</button>
-          </div>
-        </div>
-        <CategoryPrecheckPanel
-          mode="category"
-          :draft="currentDraft"
-          :product-context="currentDraftProductContext"
-          :publish-targets="currentPublishTargets"
-          :selected-publish-target="selectedPublishTarget"
-          :platform-options="platformOptions"
-          :category="category"
-          :category-query="categoryQuery"
-          :category-results="categoryResults"
-          :category-auto-match-product-name="categoryAutoMatchProductName"
-          :category-auto-match-target-error="categoryAutoMatchTargetError"
-          :category-attribute-translation-enabled="categoryAttributeTranslationEnabled"
-          :category-attribute-translations="categoryAttributeTranslations"
-          :category-attribute-translations-source="categoryAttributeTranslationsSource"
-          :category-attribute-translating="categoryAttributeTranslating"
-          :category-result-translations="categoryResultTranslations"
-          :category-result-translations-source="categoryResultTranslationsSource"
-          :category-result-translating="categoryResultTranslating"
-          :category-precheck="categoryPrecheck"
-          :precheck="precheck"
-          :payload-preview="payloadPreview"
-          :loading="loading"
-          @update-category-query="categoryQuery = $event"
-          @select-publish-target="store.selectPublishTarget"
-          @search-category="store.searchCategory"
-          @suggest-category="store.suggestCategoryByAi"
-          @select-category="store.selectCategory"
-          @apply-category="store.loadCategoryAttributes"
-          @set-translate-attributes-enabled="store.setCategoryAttributeTranslationEnabled"
-          @fill-attributes="store.fillAttributesByAi"
-          @category-precheck="store.runCategoryOnlyPrecheck"
-          @precheck="store.runPrecheck"
-          @preview-payload="store.previewPayload"
-          @publish="() => store.enqueuePublish()"
-        />
-        <div v-if="categoryAutoMatching" class="absolute inset-0 z-20 flex items-center justify-center rounded-3xl bg-white/90 p-6 text-center backdrop-blur-sm dark:bg-dark-950/90">
-          <div class="max-w-md">
-            <div class="mx-auto size-10 animate-spin rounded-full border-4 border-brand-100 border-t-brand-600 dark:border-brand-950 dark:border-t-brand-400" />
-            <h3 class="mt-5 text-lg font-black text-slate-950 dark:text-white">正在自动识别并匹配类目</h3>
-            <p class="mt-2 text-sm text-slate-600 dark:text-slate-300">{{ categoryAutoMatchMessage || '正在准备商品信息…' }}</p>
-            <p v-if="categoryAutoMatchTotal" class="mt-3 text-xs font-semibold text-brand-700 dark:text-brand-300">已处理 {{ categoryAutoMatchCurrent }} / {{ categoryAutoMatchTotal }} 个目标站点</p>
-            <p class="mt-5 text-xs text-slate-500 dark:text-slate-400">完成后会自动关闭，请逐站点检查候选类目并手动确认。</p>
-          </div>
-        </div>
+          </template>
+
+          <template #text>
+            <DraftEditorPanel
+              embedded
+              :draft="currentDraft"
+              :product-context="currentDraftProductContext"
+              :platform-options="platformOptions"
+              :loading="loading"
+              @generate-copy="() => store.generateCopy(true)"
+              @save="store.saveCurrentDraft"
+              @close="closeDraftWorkspace"
+            />
+          </template>
+
+          <template #images>
+            <ProductImageEditorPanel
+              title="草稿图片编辑"
+              :product="product"
+              :images="imagePool"
+              :loading="loading"
+              :error="error"
+              show-translate-action
+              :draft="currentDraft"
+              @translate="translateDraftWorkspaceImages"
+              @image-edit="editDraftWorkspaceImages"
+              @upload="store.uploadReferenceImages"
+              @save="store.saveCurrentImagePool"
+              @save-draft-images="store.saveCurrentDraft"
+              @set-main="store.setMainImage"
+              @delete="store.deleteImages"
+              @clear="store.clearSourceImages"
+            />
+          </template>
+
+          <template #category>
+            <div class="relative">
+              <CategoryPrecheckPanel
+                mode="category"
+                :draft="currentDraft"
+                :product-context="currentDraftProductContext"
+                :publish-targets="currentPublishTargets"
+                :selected-publish-target="selectedPublishTarget"
+                :platform-options="platformOptions"
+                :category="category"
+                :category-query="categoryQuery"
+                :category-results="categoryResults"
+                :category-auto-match-product-name="categoryAutoMatchProductName"
+                :category-auto-match-target-error="categoryAutoMatchTargetError"
+                :category-attribute-translation-enabled="categoryAttributeTranslationEnabled"
+                :category-attribute-translations="categoryAttributeTranslations"
+                :category-attribute-translations-source="categoryAttributeTranslationsSource"
+                :category-attribute-translating="categoryAttributeTranslating"
+                :category-result-translations="categoryResultTranslations"
+                :category-result-translations-source="categoryResultTranslationsSource"
+                :category-result-translating="categoryResultTranslating"
+                :category-precheck="categoryPrecheck"
+                :precheck="precheck"
+                :payload-preview="payloadPreview"
+                :loading="loading"
+                @update-category-query="categoryQuery = $event"
+                @select-publish-target="store.selectPublishTarget"
+                @search-category="store.searchCategory"
+                @suggest-category="store.suggestCategoryByAi"
+                @select-category="store.selectCategory"
+                @apply-category="store.loadCategoryAttributes"
+                @set-translate-attributes-enabled="store.setCategoryAttributeTranslationEnabled"
+                @fill-attributes="store.fillAttributesByAi"
+                @category-precheck="store.runCategoryOnlyPrecheck"
+                @precheck="store.runPrecheck"
+                @preview-payload="store.previewPayload"
+                @publish="() => store.enqueuePublish()"
+              />
+              <div v-if="categoryAutoMatching" class="absolute inset-0 z-20 flex items-center justify-center rounded-3xl bg-white/90 p-6 text-center backdrop-blur-sm dark:bg-dark-950/90">
+                <div class="max-w-md">
+                  <div class="mx-auto size-10 animate-spin rounded-full border-4 border-brand-100 border-t-brand-600 dark:border-brand-950 dark:border-t-brand-400" />
+                  <h3 class="mt-5 text-lg font-black text-slate-950 dark:text-white">正在自动识别并匹配类目</h3>
+                  <p class="mt-2 text-sm text-slate-600 dark:text-slate-300">{{ categoryAutoMatchMessage || '正在准备商品信息…' }}</p>
+                  <p v-if="categoryAutoMatchTotal" class="mt-3 text-xs font-semibold text-brand-700 dark:text-brand-300">已处理 {{ categoryAutoMatchCurrent }} / {{ categoryAutoMatchTotal }} 个目标站点</p>
+                  <p class="mt-5 text-xs text-slate-500 dark:text-slate-400">完成后会自动关闭，请逐站点检查候选类目并手动确认。</p>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <template #pricing>
+            <PricingPanel
+              selection-locked
+              :input="pricingInput"
+              :result="pricingResult"
+              :draft-items="pricingDraftItems"
+              :draft-id="currentDraft.draftId"
+              :draft-title="pricingDraftTitle"
+              :product-context="currentDraftProductContext"
+              :draft-price="currentDraft.price"
+              :platform-options="platformOptions"
+              :loading="loading"
+              @calculate="store.calculatePrice"
+            />
+          </template>
+
+          <template #precheck>
+            <CategoryPrecheckPanel
+              mode="publish"
+              :draft="currentDraft"
+              :product-context="currentDraftProductContext"
+              :publish-targets="currentPublishTargets"
+              :selected-publish-target="selectedPublishTarget"
+              :platform-options="platformOptions"
+              :category="category"
+              :category-query="categoryQuery"
+              :category-results="categoryResults"
+              :category-auto-match-product-name="categoryAutoMatchProductName"
+              :category-auto-match-target-error="categoryAutoMatchTargetError"
+              :category-attribute-translation-enabled="categoryAttributeTranslationEnabled"
+              :category-attribute-translations="categoryAttributeTranslations"
+              :category-attribute-translations-source="categoryAttributeTranslationsSource"
+              :category-attribute-translating="categoryAttributeTranslating"
+              :category-result-translations="categoryResultTranslations"
+              :category-result-translations-source="categoryResultTranslationsSource"
+              :category-result-translating="categoryResultTranslating"
+              :category-precheck="categoryPrecheck"
+              :precheck="precheck"
+              :payload-preview="payloadPreview"
+              :loading="loading"
+              @update-category-query="categoryQuery = $event"
+              @select-publish-target="store.selectPublishTarget"
+              @search-category="store.searchCategory"
+              @suggest-category="store.suggestCategoryByAi"
+              @select-category="store.selectCategory"
+              @apply-category="store.loadCategoryAttributes"
+              @set-translate-attributes-enabled="store.setCategoryAttributeTranslationEnabled"
+              @fill-attributes="store.fillAttributesByAi"
+              @category-precheck="store.runCategoryOnlyPrecheck"
+              @precheck="store.runPrecheck"
+              @preview-payload="store.previewPayload"
+              @publish="() => store.enqueuePublish()"
+            />
+          </template>
+        </DraftWorkspacePanel>
       </div>
     </div>
   </div>

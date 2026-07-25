@@ -2,12 +2,15 @@
 import { computed } from 'vue'
 import type { DraftDetail, DraftProductContext, MarketplaceOption } from '@/types/workflow'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   draft: DraftDetail
   productContext: DraftProductContext
   platformOptions: MarketplaceOption[]
   loading: boolean
-}>()
+  embedded?: boolean
+}>(), {
+  embedded: false,
+})
 
 const emit = defineEmits<{
   save: []
@@ -36,7 +39,7 @@ const platformLabel = computed(() => {
 
 <template>
   <section class="space-y-5">
-    <div class="rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
+    <div v-if="!props.embedded" class="rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div class="min-w-0">
           <p class="text-xs font-semibold uppercase text-primary-600 dark:text-primary-300">{{ platformLabel }}</p>

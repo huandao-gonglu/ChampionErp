@@ -13,11 +13,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   refresh: []
-  editText: [item: DraftIndexItem]
-  editImages: [item: DraftIndexItem]
-  editCategory: [item: DraftIndexItem]
-  goPricing: [item: DraftIndexItem]
-  goPublish: [item: DraftIndexItem]
+  edit: [item: DraftIndexItem]
   deleteDraft: [item: DraftIndexItem]
   deleteDrafts: [items: DraftIndexItem[]]
   updateLanguage: [item: DraftIndexItem, language: string]
@@ -271,53 +267,51 @@ onBeforeUnmount(() => {
       {{ props.error }}
     </div>
 
-    <div class="mt-5 overflow-x-auto rounded-lg border border-accent-200 dark:border-dark-700">
-      <table class="w-full min-w-[1320px] table-fixed text-left text-sm">
+    <div class="mt-5 overflow-hidden rounded-lg border border-accent-200 dark:border-dark-700">
+      <table class="w-full table-fixed text-left text-xs">
         <colgroup>
-          <col class="w-[52px]" />
+          <col class="w-10" />
           <col />
-          <col class="w-[148px]" />
-          <col class="w-[240px]" />
-          <col class="w-[120px]" />
-          <col />
-          <col class="w-[340px]" />
+          <col class="w-[88px]" />
+          <col class="w-[150px]" />
+          <col class="w-[88px]" />
+          <col class="w-[14%]" />
+          <col class="w-[150px]" />
         </colgroup>
         <thead class="border-b border-accent-200 bg-accent-50 text-xs text-accent-500 dark:border-dark-700 dark:bg-dark-950/70 dark:text-accent-400">
-          <tr>
-            <th class="p-3"><input class="size-4 rounded border-accent-300 text-primary-600" type="checkbox" aria-label="全选当前草稿" :checked="allChecked" :disabled="props.loading || !visibleDraftIds.length" @change="selectVisibleDrafts(($event.target as HTMLInputElement).checked)" /></th>
-            <th class="p-3">商品</th>
-            <th class="whitespace-nowrap p-3">语言</th>
-            <th class="whitespace-nowrap p-3">市场</th>
-            <th class="whitespace-nowrap p-3">草稿状态</th>
-            <th class="p-3">来源商品</th>
-            <th class="p-3">操作</th>
+          <tr class="whitespace-nowrap">
+            <th class="p-2"><input class="size-4 rounded border-accent-300 text-primary-600" type="checkbox" aria-label="全选当前草稿" :checked="allChecked" :disabled="props.loading || !visibleDraftIds.length" @change="selectVisibleDrafts(($event.target as HTMLInputElement).checked)" /></th>
+            <th class="p-2">商品</th>
+            <th class="p-2">语言</th>
+            <th class="p-2">市场</th>
+            <th class="p-2">状态</th>
+            <th class="p-2">来源</th>
+            <th class="p-2">操作</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-accent-100 dark:divide-dark-800">
-          <tr v-for="row in draftRows" :key="draftRowKey(row)" class="align-top transition hover:bg-accent-50/70 dark:hover:bg-dark-800/60">
-            <td class="p-3"><input class="size-4 rounded border-accent-300 text-primary-600" type="checkbox" aria-label="勾选草稿" :checked="selectedDraftIds.includes(draftIdOf(row))" :disabled="props.loading || !draftIdOf(row)" @change="toggleDraftSelection(row, ($event.target as HTMLInputElement).checked)" /></td>
-            <td class="min-w-0 p-3">
-              <div class="flex gap-3">
-                <img v-if="row.mainImage" :src="row.mainImage" class="size-12 rounded-lg object-cover" />
-                <div v-else class="flex size-12 shrink-0 items-center justify-center rounded-lg bg-accent-100 text-[10px] font-bold text-accent-500 dark:bg-dark-800 dark:text-accent-300">无图</div>
+          <tr v-for="row in draftRows" :key="draftRowKey(row)" class="whitespace-nowrap align-middle transition hover:bg-accent-50/70 dark:hover:bg-dark-800/60">
+            <td class="p-2"><input class="size-4 rounded border-accent-300 text-primary-600" type="checkbox" aria-label="勾选草稿" :checked="selectedDraftIds.includes(draftIdOf(row))" :disabled="props.loading || !draftIdOf(row)" @change="toggleDraftSelection(row, ($event.target as HTMLInputElement).checked)" /></td>
+            <td class="min-w-0 p-2">
+              <div class="flex items-center gap-2">
+                <img v-if="row.mainImage" :src="row.mainImage" class="size-8 shrink-0 rounded-md object-cover" />
+                <div v-else class="flex size-8 shrink-0 items-center justify-center rounded-md bg-accent-100 text-[9px] font-bold text-accent-500 dark:bg-dark-800 dark:text-accent-300">无图</div>
                 <div class="min-w-0">
                   <div class="truncate font-semibold text-accent-950 dark:text-white">{{ row.title || row.productTitle || row.productId || '-' }}</div>
-                  <div class="mt-1 truncate text-xs text-accent-500 dark:text-accent-400">{{ row.productTitle || row.sourceProductId || row.productId }}</div>
                 </div>
               </div>
             </td>
-            <td class="p-3 align-top">
-              <select class="input h-9 w-28 min-w-0 py-1.5 text-xs sm:w-32" :value="row.language" :disabled="props.loading || !languageOptions.length" @change="changeLanguage(row, ($event.target as HTMLSelectElement).value)">
+            <td class="p-2">
+              <select class="input h-8 w-full min-w-0 px-2 py-1 text-xs" :value="row.language" :title="`可选市场 ${targetOptionCount(row)} 个`" :disabled="props.loading || !languageOptions.length" @change="changeLanguage(row, ($event.target as HTMLSelectElement).value)">
                 <option value="" disabled>选择语言</option>
                 <option v-for="language in languageOptions" :key="language.value" :value="language.value">{{ language.value }}</option>
               </select>
-              <p class="mt-1 whitespace-nowrap text-[11px] text-accent-500 dark:text-accent-400">可选市场 {{ targetOptionCount(row) }} 个</p>
             </td>
-            <td class="p-3 align-top">
-              <div class="space-y-2">
+            <td class="p-2">
+              <div class="relative">
                 <button
                   type="button"
-                  class="input flex h-9 w-56 max-w-full items-center justify-between gap-2 py-1.5 text-left text-xs"
+                  class="input flex h-8 w-full items-center justify-between gap-1 px-2 py-1 text-left text-xs"
                   :title="targetSites(row).map((target) => targetLabel(target.platform, target.site)).join('、') || compactTargetLabels(row)"
                   :disabled="props.loading || !targetOptionCount(row)"
                   :aria-expanded="editingTargetDraftId === draftIdOf(row)"
@@ -326,7 +320,7 @@ onBeforeUnmount(() => {
                   <span class="min-w-0 truncate">{{ compactTargetLabels(row) }}</span>
                   <span class="shrink-0 text-[11px] text-accent-400 dark:text-accent-500">{{ selectedTargetCount(row) }}/{{ targetOptionCount(row) }}</span>
                 </button>
-                <div v-if="editingTargetDraftId === draftIdOf(row)" class="rounded-lg border border-accent-200 bg-white p-2 text-xs shadow-sm dark:border-dark-700 dark:bg-dark-900">
+                <div v-if="editingTargetDraftId === draftIdOf(row)" class="absolute left-0 z-20 mt-1 w-64 rounded-lg border border-accent-200 bg-white p-2 text-xs shadow-sm dark:border-dark-700 dark:bg-dark-900">
                   <div class="mb-2 flex items-center justify-between gap-2 text-[11px] font-semibold text-accent-500 dark:text-accent-400">
                     <span>市场列表</span>
                     <span>{{ row.language || '-' }} · 已选 {{ selectedEditingCount(row) }}</span>
@@ -359,22 +353,17 @@ onBeforeUnmount(() => {
                 </div>
               </div>
             </td>
-            <td class="p-3"><span class="inline-flex max-w-full truncate" :class="statusBadgeClass(row.status)" :title="workflowStatusLabel(row.status)">{{ workflowStatusLabel(row.status) }}</span></td>
-            <td class="min-w-0 p-3">
-              <div class="truncate font-mono text-xs font-semibold text-accent-950 dark:text-white" :title="row.sourceProductId || row.productId">{{ row.sourceProductId || row.productId || '-' }}</div>
-              <div class="mt-1 truncate text-xs text-accent-500 dark:text-accent-400" :title="row.sourceUrl">{{ row.sourcePlatform || '-' }} · {{ row.sourceUrl || '-' }}</div>
+            <td class="min-w-0 p-2"><span class="inline-flex max-w-full truncate" :class="statusBadgeClass(row.status)" :title="workflowStatusLabel(row.status)">{{ workflowStatusLabel(row.status) }}</span></td>
+            <td class="min-w-0 p-2">
+              <div class="truncate font-mono text-xs text-accent-600 dark:text-accent-300" :title="`${row.sourceProductId || row.productId || '-'} · ${row.sourcePlatform || '-'} · ${row.sourceUrl || '-'}`">{{ row.sourceProductId || row.productId || '-' }} · {{ row.sourcePlatform || '-' }} · {{ row.sourceUrl || '-' }}</div>
             </td>
-            <td class="p-3">
-              <div class="flex flex-wrap gap-2">
-                <button class="btn btn-outline whitespace-nowrap px-3 py-1.5 text-xs" :disabled="props.loading" @click="emit('editText', row)">编辑文本</button>
-                <button class="btn btn-secondary whitespace-nowrap px-3 py-1.5 text-xs" :disabled="props.loading" @click="emit('editImages', row)">编辑图片</button>
-                <button class="btn btn-outline whitespace-nowrap px-3 py-1.5 text-xs" :disabled="props.loading || !draftIdOf(row)" @click="emit('editCategory', row)">类目/属性</button>
-                <button class="btn btn-outline whitespace-nowrap px-3 py-1.5 text-xs" :disabled="props.loading || !draftIdOf(row)" @click="emit('goPricing', row)">核价</button>
-                <button class="btn btn-primary whitespace-nowrap px-3 py-1.5 text-xs" :disabled="props.loading" @click="emit('goPublish', row)">发布预检</button>
-                <button class="btn btn-outline whitespace-nowrap px-3 py-1.5 text-xs" :disabled="props.loading || !draftIdOf(row)" :title="draftIdOf(row) || '当前草稿暂无 ID'" @click="copyDraftId(row)">
-                  {{ copiedDraftId === draftIdOf(row) ? '已复制' : '复制草稿id' }}
+            <td class="p-2">
+              <div class="flex flex-nowrap gap-1">
+                <button class="btn btn-primary shrink-0 whitespace-nowrap px-1.5 py-1 text-xs" :disabled="props.loading || !draftIdOf(row)" @click="emit('edit', row)">编辑</button>
+                <button class="btn btn-outline shrink-0 whitespace-nowrap px-1.5 py-1 text-xs" :disabled="props.loading || !draftIdOf(row)" :title="draftIdOf(row) || '当前草稿暂无 ID'" @click="copyDraftId(row)">
+                  {{ copiedDraftId === draftIdOf(row) ? '已复制' : '复制' }}
                 </button>
-                <button class="btn btn-outline whitespace-nowrap px-3 py-1.5 text-xs text-rose-600 hover:border-rose-300 hover:bg-rose-50 dark:text-rose-200 dark:hover:border-rose-500/50 dark:hover:bg-rose-500/10" :disabled="props.loading" @click="emit('deleteDraft', row)">删除</button>
+                <button class="btn btn-outline shrink-0 whitespace-nowrap px-1.5 py-1 text-xs text-rose-600 hover:border-rose-300 hover:bg-rose-50 dark:text-rose-200 dark:hover:border-rose-500/50 dark:hover:bg-rose-500/10" :disabled="props.loading" @click="emit('deleteDraft', row)">删除</button>
               </div>
             </td>
           </tr>
