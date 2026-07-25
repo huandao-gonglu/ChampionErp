@@ -96,6 +96,7 @@ const router = useRouter()
 const { copied: productIdCopied, copy: copyToClipboard } = useClipboard()
 const activeNav = ref('dashboard')
 const editorOpen = ref(false)
+const productEditorBackdropPointerId = ref<number | null>(null)
 const draftEditorOpen = ref(false)
 const categoryEditorOpen = ref(false)
 const editorMode = ref<'text' | 'images'>('text')
@@ -289,8 +290,22 @@ async function openProductPrecheck(item: ProductIndexItem, platform: Marketplace
 
 function closeProductEditor() {
   editorOpen.value = false
+  productEditorBackdropPointerId.value = null
   imageEditorDraftId.value = ''
   imageEditorTargetLanguage.value = ''
+}
+
+function recordProductEditorBackdropPointer(event: PointerEvent) {
+  if (!event.isPrimary) return
+  productEditorBackdropPointerId.value = event.target === event.currentTarget && event.button === 0 ? event.pointerId : null
+}
+
+function closeProductEditorFromBackdrop(event: PointerEvent) {
+  if (!event.isPrimary || productEditorBackdropPointerId.value !== event.pointerId) return
+  const shouldClose = event.target === event.currentTarget
+  productEditorBackdropPointerId.value = null
+  if (!shouldClose) return
+  closeProductEditor()
 }
 
 function closeDraftEditor() {
@@ -678,7 +693,12 @@ watch(
         </div>
       </main>
     </div>
-    <div v-if="editorOpen" class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/50 p-4 backdrop-blur-sm" @click.self="closeProductEditor">
+    <div
+      v-if="editorOpen"
+      class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/50 p-4 backdrop-blur-sm"
+      @pointerdown="recordProductEditorBackdropPointer"
+      @pointerup="closeProductEditorFromBackdrop"
+    >
       <div class="w-full rounded-3xl bg-white p-4 shadow-2xl ring-1 ring-slate-200 dark:bg-dark-900 dark:ring-dark-700 sm:p-6" :class="editorMode === 'images' ? 'max-w-7xl' : 'max-w-6xl'">
         <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>

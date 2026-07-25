@@ -8,25 +8,7 @@ from typing import Any
 from erp_web.services import ai_gateway, ai_prompt_templates
 
 from .product_store import load_app_config
-from .runtime_common import APP_DIR, CACHE_DIR
-
-
-CATEGORY_RESULT_TRANSLATION_CACHE_PATH = CACHE_DIR / "category_result_translations.json"
-
-
-def _read_cache() -> dict[str, Any]:
-    try:
-        if CATEGORY_RESULT_TRANSLATION_CACHE_PATH.exists():
-            data = json.loads(CATEGORY_RESULT_TRANSLATION_CACHE_PATH.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
-    except Exception:
-        pass
-    return {}
-
-
-def _write_cache(cache: dict[str, Any]) -> None:
-    CATEGORY_RESULT_TRANSLATION_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CATEGORY_RESULT_TRANSLATION_CACHE_PATH.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+from .runtime_common import APP_DIR
 
 
 def _text_list(value: Any) -> list[str]:
@@ -93,25 +75,17 @@ def translate_category_results(platform: str, categories: list[Any], language: s
     normalized = [item for item in normalized if item.get("id")]
     if not normalized:
         return {"ok": True, "platform": platform, "language": language, "source": "empty", "translations": {}}
-    cache = _read_cache()
     translations: dict[str, str] = {}
     missing: list[dict[str, str]] = []
     for item in normalized:
-        cache_key = f"{platform}:{item['id']}:{language}"
-        cached = str(cache.get(cache_key) or "").strip()
         if item.get("cn_path"):
             translations[item["id"]] = item["cn_path"]
-            cache[cache_key] = item["cn_path"]
-        elif cached:
-            translations[item["id"]] = cached
         else:
             missing.append(item)
-    source = "cache"
+    source = "provided"
     if missing:
         ai_translations = _request_ai_category_translations(platform, language, missing)
         for category_id, text in ai_translations.items():
             translations[category_id] = text
-            cache[f"{platform}:{category_id}:{language}"] = text
         source = "ai"
-    _write_cache(cache)
     return {"ok": True, "platform": platform, "language": language, "source": source, "translations": translations}

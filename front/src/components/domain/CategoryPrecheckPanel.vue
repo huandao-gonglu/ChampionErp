@@ -371,7 +371,7 @@ function applyWarrantyTerms(type: WarrantyType, durationValue = '3', unit: Warra
       <div class="h-full w-2/3 animate-pulse rounded-full bg-brand-500" />
     </div>
 
-    <div class="mt-5 grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+    <div class="mt-5 grid min-w-0 items-start gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
       <article class="min-w-0 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <div>
@@ -386,7 +386,7 @@ function applyWarrantyTerms(type: WarrantyType, durationValue = '3', unit: Warra
           <button class="btn btn-outline shrink-0" :disabled="props.loading || !hasCurrentDraft" @click="emit('suggestCategory')">重新自动匹配</button>
           <button class="btn btn-primary shrink-0" :disabled="props.loading || !hasCurrentDraft" @click="emit('searchCategory')">搜索</button>
         </div>
-        <div class="mt-4 max-h-80 space-y-2 overflow-y-auto">
+        <div class="mt-4 space-y-2">
           <button v-for="item in props.categoryResults" :key="item.id" class="w-full rounded-lg border border-accent-200 bg-white p-3 text-left hover:border-brand-300 hover:bg-brand-50 dark:border-dark-700 dark:bg-dark-900 dark:hover:border-primary-500/60 dark:hover:bg-dark-800" @click="emit('selectCategory', item)">
             <div class="flex flex-wrap items-center justify-between gap-2">
               <div class="font-semibold text-accent-950 dark:text-white">{{ categoryResultTitle(item) }}</div>

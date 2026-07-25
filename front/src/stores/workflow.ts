@@ -248,6 +248,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
   const categoryResultTranslations = ref<CategoryResultTranslations>({})
   const categoryResultTranslationsSource = ref('')
   const categoryResultTranslating = ref(false)
+  let categoryAttributeTranslationRequest = 0
+  let categoryResultTranslationRequest = 0
   const categoryPrecheck = ref<CategoryPrecheckResult | null>(null)
   const precheck = ref<PublishPrecheck | null>(null)
   const precheckResults = ref<UnknownRecord>({})
@@ -413,6 +415,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
     categoryPrecheck.value = categoryPrecheckFromTarget(target.categoryPrecheck)
     category.value = null
     applyCategoryRecommendationForTarget(target)
+    categoryAttributeTranslationRequest += 1
+    categoryResultTranslationRequest += 1
     categoryAttributeTranslations.value = {}
     categoryAttributeTranslationsSource.value = ''
     categoryResultTranslations.value = {}
@@ -515,6 +519,10 @@ export const useWorkflowStore = defineStore('workflow', () => {
     precheck.value = null
     payloadPreview.value = null
     applyTargetListingToDraft(selected)
+    if (categoryAttributeTranslationEnabled.value) {
+      void translateCategoryResults()
+      if (currentDraft.value.categoryId.trim()) void translateCategoryAttributes()
+    }
   }
 
   function pricingTargetRecord(pricing: UnknownRecord, key: string): UnknownRecord {
@@ -1827,23 +1835,29 @@ export const useWorkflowStore = defineStore('workflow', () => {
       return
     }
     if (!target.platform) return
+    const requestId = ++categoryAttributeTranslationRequest
     loading.value = true
     categoryAttributeTranslating.value = true
     setError('')
     try {
-      if (!category.value || category.value.categoryId !== categoryId || category.value.platform !== target.platform) {
-        category.value = await fetchCategoryAttrs(target.platform, categoryId, target.site)
-      }
-      const result = await fetchCategoryAttributeTranslations(category.value)
+      const categoryForTranslation = category.value && category.value.categoryId === categoryId && category.value.platform === target.platform
+        ? category.value
+        : await fetchCategoryAttrs(target.platform, categoryId, target.site)
+      if (requestId !== categoryAttributeTranslationRequest) return
+      category.value = categoryForTranslation
+      const result = await fetchCategoryAttributeTranslations(categoryForTranslation)
+      if (requestId !== categoryAttributeTranslationRequest) return
       categoryAttributeTranslations.value = result.translations
       categoryAttributeTranslationsSource.value = result.source
       const count = Object.values(result.translations).filter((item) => item.label).length
       addLog(`属性翻译已加载：${count} 项${result.source === 'cache' ? '（缓存）' : '（AI）'}。`)
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '翻译类目属性失败')
+      if (requestId === categoryAttributeTranslationRequest) setError(exc instanceof Error ? exc.message : '翻译类目属性失败')
     } finally {
-      categoryAttributeTranslating.value = false
-      loading.value = false
+      if (requestId === categoryAttributeTranslationRequest) {
+        categoryAttributeTranslating.value = false
+        loading.value = false
+      }
     }
   }
 
@@ -1851,17 +1865,20 @@ export const useWorkflowStore = defineStore('workflow', () => {
     if (!categoryResults.value.length) return
     const target = selectedPublishTarget.value
     if (!target.platform) return
+    const requestId = ++categoryResultTranslationRequest
+    const results = categoryResults.value
     categoryResultTranslating.value = true
     try {
-      const result = await fetchCategoryResultTranslations(target.platform, categoryResults.value)
+      const result = await fetchCategoryResultTranslations(target.platform, results)
+      if (requestId !== categoryResultTranslationRequest) return
       categoryResultTranslations.value = result.translations
       categoryResultTranslationsSource.value = result.source
       const count = Object.values(result.translations).filter(Boolean).length
-      addLog(`候选类目翻译已加载：${count} 项${result.source === 'cache' ? '（缓存）' : result.source === 'ai' ? '（AI）' : ''}。`)
+      addLog(`候选类目翻译已加载：${count} 项${result.source === 'provided' ? '（已有中文）' : '（AI）'}。`)
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '翻译候选类目失败')
+      if (requestId === categoryResultTranslationRequest) setError(exc instanceof Error ? exc.message : '翻译候选类目失败')
     } finally {
-      categoryResultTranslating.value = false
+      if (requestId === categoryResultTranslationRequest) categoryResultTranslating.value = false
     }
   }
 

@@ -8,29 +8,7 @@ from typing import Any
 from erp_web.services import ai_gateway, ai_prompt_templates
 
 from .product_store import load_app_config
-from .runtime_common import APP_DIR, CACHE_DIR
-
-
-ATTRIBUTE_TRANSLATION_CACHE_PATH = CACHE_DIR / "category_attribute_translations.json"
-
-
-def _read_translation_cache() -> dict[str, Any]:
-    try:
-        if ATTRIBUTE_TRANSLATION_CACHE_PATH.exists():
-            data = json.loads(ATTRIBUTE_TRANSLATION_CACHE_PATH.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
-    except Exception:
-        pass
-    return {}
-
-
-def _write_translation_cache(cache: dict[str, Any]) -> None:
-    ATTRIBUTE_TRANSLATION_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    ATTRIBUTE_TRANSLATION_CACHE_PATH.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def _cache_key(platform: str, category_id: str, language: str) -> str:
-    return f"{platform.strip().lower() or 'mercadolibre'}:{category_id.strip()}:{language.strip().lower() or 'zh-CN'}"
+from .runtime_common import APP_DIR
 
 
 def _normalized_attribute(attr: Any) -> dict[str, Any]:
@@ -130,35 +108,13 @@ def translate_category_attributes(
             "source": "empty",
             "translations": {},
         }
-    key = _cache_key(platform, category_id, language)
-    cache = _read_translation_cache()
-    cached = cache.get(key) if isinstance(cache.get(key), dict) else {}
-    cached_translations = _normalize_translation_map(cached.get("translations") if isinstance(cached, dict) else {})
     attr_ids = {str(attr.get("id") or "") for attr in normalized_attrs}
-    if attr_ids and attr_ids.issubset(set(cached_translations)):
-        return {
-            "ok": True,
-            "platform": platform,
-            "category_id": category_id,
-            "language": language,
-            "source": "cache",
-            "translations": {attr_id: cached_translations[attr_id] for attr_id in attr_ids},
-        }
     translations = _request_ai_attribute_translations(platform, category_id, category_path, language, normalized_attrs)
-    merged = {**cached_translations, **translations}
-    cache[key] = {
-        "platform": platform,
-        "category_id": category_id,
-        "category_path": category_path,
-        "language": language,
-        "translations": merged,
-    }
-    _write_translation_cache(cache)
     return {
         "ok": True,
         "platform": platform,
         "category_id": category_id,
         "language": language,
         "source": "ai",
-        "translations": {attr_id: merged.get(attr_id, {}) for attr_id in attr_ids},
+        "translations": {attr_id: translations.get(attr_id, {}) for attr_id in attr_ids},
     }
