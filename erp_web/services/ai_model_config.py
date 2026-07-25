@@ -47,22 +47,6 @@ API_STYLE_OPENAI_COMPATIBLE = "openai_compatible"
 API_STYLE_OPENAI_RESPONSES = "openai_responses"
 AI_API_STYLES = (API_STYLE_OPENAI_COMPATIBLE, API_STYLE_OPENAI_RESPONSES)
 AI_IMAGE_QUALITY_OPTIONS = ("auto", "low", "medium", "high")
-MODEL_QUALITY_FAST = "fast"
-MODEL_QUALITY_BALANCED = "balanced"
-MODEL_QUALITY_HIGH = "high_quality"
-AI_MODEL_QUALITY_LEVELS = (MODEL_QUALITY_FAST, MODEL_QUALITY_BALANCED, MODEL_QUALITY_HIGH)
-AI_MODEL_QUALITY_ALIASES = {
-    "low": MODEL_QUALITY_FAST,
-    "speed": MODEL_QUALITY_FAST,
-    "fast": MODEL_QUALITY_FAST,
-    "medium": MODEL_QUALITY_BALANCED,
-    "normal": MODEL_QUALITY_BALANCED,
-    "balanced": MODEL_QUALITY_BALANCED,
-    "auto": MODEL_QUALITY_BALANCED,
-    "high": MODEL_QUALITY_HIGH,
-    "quality": MODEL_QUALITY_HIGH,
-    "high_quality": MODEL_QUALITY_HIGH,
-}
 
 AI_MODEL_CAPABILITIES = (
     CAP_CHAT,
@@ -174,11 +158,6 @@ def normalize_browser_mode(value: Any) -> str:
     return text if text in AI_BROWSER_MODES else BROWSER_MODE_MANAGED_PROFILE
 
 
-def normalize_model_quality_level(value: Any) -> str:
-    text = str(value or "").strip().lower()
-    return AI_MODEL_QUALITY_ALIASES.get(text, MODEL_QUALITY_BALANCED)
-
-
 def model_has_image_capability(model: dict[str, Any]) -> bool:
     capabilities = set(normalize_capabilities(model.get("capabilities")))
     return bool({CAP_IMAGE_GENERATE, CAP_IMAGE_EDIT} & capabilities)
@@ -199,7 +178,6 @@ def default_ai_models() -> list[dict[str, Any]]:
             "model": "deepseek-chat",
             "model_env": "DEEPSEEK_MODEL",
             "capabilities": [CAP_CHAT, CAP_JSON],
-            "quality_level": MODEL_QUALITY_BALANCED,
             "enabled": True,
         },
         {
@@ -215,7 +193,6 @@ def default_ai_models() -> list[dict[str, Any]]:
             "model": "gpt-image-1",
             "model_env": "OPENAI_IMAGE_MODEL",
             "capabilities": [CAP_IMAGE_GENERATE, CAP_IMAGE_EDIT],
-            "quality_level": MODEL_QUALITY_BALANCED,
             "quality": "medium",
             "enabled": True,
         },
@@ -287,10 +264,6 @@ def normalize_ai_model(value: Any, index: int = 0) -> dict[str, Any]:
         if browser_url:
             normalized["browser_url"] = browser_url
     image_capable = model_has_image_capability(normalized)
-    quality_level_source = raw.get("quality_level")
-    if quality_level_source in (None, "") and not image_capable:
-        quality_level_source = raw.get("quality")
-    normalized["quality_level"] = normalize_model_quality_level(quality_level_source)
     for key in ("quality", "size"):
         value_for_key = raw.get(key)
         if image_capable and value_for_key not in (None, ""):
@@ -424,7 +397,6 @@ def public_ai_config(app_config: dict[str, Any] | None) -> dict[str, Any]:
         "api_styles": list(AI_API_STYLES),
         "cli_tools": local_cli_tool_status(),
         "image_quality_options": list(AI_IMAGE_QUALITY_OPTIONS),
-        "model_quality_levels": list(AI_MODEL_QUALITY_LEVELS),
     }
 
 

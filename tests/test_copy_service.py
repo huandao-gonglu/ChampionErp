@@ -89,6 +89,127 @@ def test_model_list_url_strips_known_api_endpoints() -> None:
     assert ai_gateway._models_url("https://api.example.com/v1/responses") == "https://api.example.com/v1/models"
 
 
+def test_openai_chat_request_body_merges_custom_json_after_standard_fields(tmp_path: Path, monkeypatch) -> None:
+    request_bodies: list[dict] = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        @staticmethod
+        def read() -> bytes:
+            return b'{"choices":[{"message":{"content":"{\\"ok\\":true}"}}]}'
+
+    def fake_urlopen(request, timeout):
+        request_bodies.append(json.loads((request.data or b"{}").decode("utf-8")))
+        return FakeResponse()
+
+    monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
+    result = ai_gateway.chat_json(
+        tmp_path,
+        {
+            "ai_models": [
+                {
+                    "id": "custom_chat_model",
+                    "provider": "OpenAI-Compatible",
+                    "api_key": "test-key",
+                    "base_url": "https://ai.example.com/v1",
+                    "model": "configured-model",
+                    "capabilities": ["chat", "json"],
+                    "extra": {
+                        "request_body": {
+                            "model": "provider-specific-model",
+                            "temperature": 0.85,
+                            "top_p": 0.7,
+                        }
+                    },
+                }
+            ]
+        },
+        "copy.generate",
+        [{"role": "user", "content": "Return JSON."}],
+        temperature=0.2,
+        max_tokens=12,
+    )
+
+    assert result == {"ok": True}
+    assert request_bodies == [
+        {
+            "model": "provider-specific-model",
+            "messages": [{"role": "user", "content": "Return JSON."}],
+            "temperature": 0.85,
+            "stream": False,
+            "max_tokens": 12,
+            "response_format": {"type": "json_object"},
+            "top_p": 0.7,
+        }
+    ]
+
+
+def test_openai_responses_request_body_merges_custom_json_after_standard_fields(tmp_path: Path, monkeypatch) -> None:
+    request_bodies: list[dict] = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        @staticmethod
+        def read() -> bytes:
+            return b'{"output_text":"{\\"ok\\":true}"}'
+
+    def fake_urlopen(request, timeout):
+        request_bodies.append(json.loads((request.data or b"{}").decode("utf-8")))
+        return FakeResponse()
+
+    monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
+    result = ai_gateway.chat_json(
+        tmp_path,
+        {
+            "ai_models": [
+                {
+                    "id": "custom_responses_model",
+                    "provider": "OpenAI-Compatible",
+                    "api_style": "openai_responses",
+                    "api_key": "test-key",
+                    "base_url": "https://ai.example.com/v1",
+                    "model": "configured-model",
+                    "capabilities": ["chat", "json"],
+                    "extra": {
+                        "request_body": {
+                            "model": "provider-specific-model",
+                            "temperature": 0.85,
+                            "max_output_tokens": 55,
+                            "top_p": 0.7,
+                        }
+                    },
+                }
+            ]
+        },
+        "copy.generate",
+        [{"role": "user", "content": "Return JSON."}],
+        temperature=0.2,
+        max_tokens=12,
+    )
+
+    assert result == {"ok": True}
+    assert request_bodies == [
+        {
+            "model": "provider-specific-model",
+            "input": [{"role": "user", "content": "Return JSON."}],
+            "temperature": 0.85,
+            "stream": False,
+            "max_output_tokens": 55,
+            "top_p": 0.7,
+        }
+    ]
+
+
 def test_ai_model_connection_uses_model_config(monkeypatch) -> None:
     calls: list[dict] = []
 
@@ -759,6 +880,56 @@ def test_ai_model_probe_reports_capability_failures(monkeypatch) -> None:
     ]
 
 
+def test_responses_capability_probe_preserves_style_and_merges_custom_json(monkeypatch) -> None:
+    request_bodies: list[dict] = []
+
+    class FakeResponse:
+        def __init__(self, body: bytes):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self) -> bytes:
+            return self.body
+
+    def fake_urlopen(request, timeout):
+        if request.full_url.endswith("/models"):
+            return FakeResponse(b'{"data":[{"id":"responses-model"}]}')
+        assert request.full_url.endswith("/responses")
+        body = json.loads((request.data or b"{}").decode("utf-8"))
+        request_bodies.append(body)
+        if body.get("tools"):
+            return FakeResponse(b'{"output":[{"type":"function_call","name":"noop","arguments":"{}"}]}')
+        if body.get("max_output_tokens") == 32:
+            return FakeResponse(b'{"output_text":"{\\"ok\\":true}"}')
+        return FakeResponse(b'{"output_text":"ok"}')
+
+    monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
+    result = erp_web_app.test_ai_model_config(
+        {
+            "id": "responses_model",
+            "name": "Responses Model",
+            "provider": "OpenAI-Compatible",
+            "api_style": "openai_responses",
+            "api_key": "test-key",
+            "base_url": "https://ai.example.com/v1",
+            "model": "responses-model",
+            "capabilities": ["chat", "json", "tool_calling"],
+            "extra": {"request_body": {"top_p": 0.7}},
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["supported_capabilities"] == ["chat", "json", "tool_calling"]
+    assert len(request_bodies) == 3
+    assert all("input" in body and "messages" not in body for body in request_bodies)
+    assert all(body["top_p"] == 0.7 for body in request_bodies)
+
+
 def test_ai_model_probe_requires_real_web_search_evidence(monkeypatch) -> None:
     request_bodies: list[dict] = []
 
@@ -886,7 +1057,10 @@ def test_ai_model_web_search_probe_supports_enable_search_override(monkeypatch) 
             "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
             "model": "qwen3.7-plus",
             "capabilities": ["web_search"],
-            "extra": {"web_search_request_mode": "enable_search"},
+            "extra": {
+                "web_search_request_mode": "enable_search",
+                "request_body": {"top_p": 0.7},
+            },
         },
     )
 
@@ -896,6 +1070,7 @@ def test_ai_model_web_search_probe_supports_enable_search_override(monkeypatch) 
     assert result["capability_results"]["web_search"]["request_mode"] == "enable_search"
     assert request_bodies[-1]["enable_search"] is True
     assert request_bodies[-1]["search_options"] == {"forced_search": True}
+    assert request_bodies[-1]["top_p"] == 0.7
     assert "tools" not in request_bodies[-1]
     assert "web_search_options" not in request_bodies[-1]
 

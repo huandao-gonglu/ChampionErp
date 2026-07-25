@@ -26,7 +26,7 @@ def test_default_env_template_and_public_config(app_dir: Path, old_path_markers:
     assert all("api_key" not in model for model in public["ai_models"])
     assert all("api_key_configured" in model for model in public["ai_models"])
     assert "copy.generate" in {item["id"] for item in public["ai_use_cases"]}
-    assert public["model_quality_levels"] == ["fast", "balanced", "high_quality"]
+    assert "model_quality_levels" not in public
     assert public["image_quality_options"] == ["auto", "low", "medium", "high"]
     assert "copy.generate" in public["ai_use_case_prompts"]
     assert "research.web_search" in public["ai_use_case_prompts"]
@@ -221,7 +221,6 @@ def test_normalize_ai_model_keeps_quality_only_for_image_models() -> None:
             "id": "image_model",
             "model": "gpt-image-1",
             "capabilities": ["image_generate"],
-            "quality_level": "fast",
             "quality": "high",
             "size": "1024x1024",
         },
@@ -230,9 +229,9 @@ def test_normalize_ai_model_keeps_quality_only_for_image_models() -> None:
 
     assert "quality" not in text_model
     assert "size" not in text_model
-    assert text_model["quality_level"] == "high_quality"
+    assert "quality_level" not in text_model
     assert text_model["timeout_seconds"] == "30"
-    assert image_model["quality_level"] == "fast"
+    assert "quality_level" not in image_model
     assert image_model["quality"] == "high"
     assert image_model["size"] == "1024x1024"
 
@@ -275,7 +274,7 @@ def test_normalize_ai_model_does_not_inherit_positional_defaults() -> None:
     assert models[1]["provider"] == "OpenAI-Compatible"
     assert models[1]["base_url"] == ""
     assert models[1]["model"] == ""
-    assert models[1]["quality_level"] == "balanced"
+    assert "quality_level" not in models[1]
 
 
 def test_normalize_ai_model_keeps_empty_capabilities_empty() -> None:

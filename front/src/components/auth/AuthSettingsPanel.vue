@@ -94,6 +94,11 @@ const capabilityProbeDialog = reactive({
   result: null as UnknownRecord | null,
   originalCapabilities: [] as string[],
 })
+const customRequestBodyEditor = reactive({
+  modelId: '',
+  text: '',
+  error: '',
+})
 
 const storePlatforms = computed(() => props.platformOptions.map((platform) => ({
   key: platform.key,
@@ -136,13 +141,7 @@ const fallbackCliTools = [
   { value: 'custom', label: '自定义 CLI', command: '', installed: false, path: '' },
 ]
 const cliSandboxOptions = ['read-only', 'workspace-write', 'danger-full-access']
-const fallbackModelQualityLevels = ['fast', 'balanced', 'high_quality']
 const fallbackImageQualityValues = ['auto', 'low', 'medium', 'high']
-const modelQualityLabels: Record<string, string> = {
-  fast: '速度优先',
-  balanced: '均衡',
-  high_quality: '质量优先',
-}
 const imageQualityLabels: Record<string, string> = {
   auto: '自动',
   low: '低',
@@ -274,7 +273,6 @@ function normalizeAiModelRow(value: unknown, index: number): UnknownRecord {
     api_key_masked: firstText(record.api_key_masked),
     model,
     model_env: firstText(record.model_env),
-    quality_level: firstText(record.quality_level, record.model_quality_level, 'balanced'),
     quality: firstText(record.quality),
     size: firstText(record.size),
     timeout_seconds: firstText(record.timeout_seconds),
@@ -305,7 +303,6 @@ function defaultAiModelRow(index: number): UnknownRecord {
     base_url: '',
     api_key: '',
     model: '',
-    quality_level: 'balanced',
     capabilities: [],
     enabled: true,
   }, index)
@@ -423,19 +420,6 @@ const selectedCliStatusText = computed(() => {
   if (tool.value === 'custom') return '自定义 CLI 已预留，请填写完整命令；当前版本先支持 Codex CLI'
   const status = tool.installed ? `已检测到：${tool.path || tool.command}` : `未检测到 ${tool.command || tool.label}，请先安装或填写完整路径`
   return tool.value === 'codex' ? status : `${status}；当前版本先支持 Codex CLI，其他工具为预留`
-})
-const modelQualityOptions = computed(() => {
-  const values = asStringArray(props.aiConfig.model_quality_levels)
-  const source = values.length ? values : fallbackModelQualityLevels
-  const current = modelField('quality_level')
-  const seen = new Set<string>()
-  const result: Array<{ value: string; label: string }> = []
-  for (const value of [...source, current]) {
-    if (!value || seen.has(value)) continue
-    seen.add(value)
-    result.push({ value, label: modelQualityLabels[value] || value })
-  }
-  return result
 })
 const imageQualityOptions = computed(() => {
   const values = asStringArray(props.aiConfig.image_quality_options)
@@ -579,6 +563,54 @@ function aiPayload(): UnknownRecord {
   }
 }
 
+function syncCustomRequestBodyEditor() {
+  const modelId = firstText(selectedAiModel.value?.id)
+  if (customRequestBodyEditor.modelId === modelId) return
+  const extra = asRecord(selectedAiModel.value?.extra)
+  const requestBody = asRecord(extra.request_body)
+  customRequestBodyEditor.modelId = modelId
+  customRequestBodyEditor.text = Object.keys(requestBody).length ? JSON.stringify(requestBody, null, 2) : ''
+  customRequestBodyEditor.error = ''
+}
+
+function updateCustomRequestBodyText(value: string) {
+  customRequestBodyEditor.text = value
+  customRequestBodyEditor.error = ''
+}
+
+function commitCustomRequestBody(): boolean {
+  if (!selectedAiModelIsApi.value || !selectedAiModel.value) return true
+  const text = customRequestBodyEditor.text.trim()
+  const extra = { ...asRecord(selectedAiModel.value.extra) }
+  if (!text) {
+    delete extra.request_body
+    selectedAiModel.value.extra = extra
+    customRequestBodyEditor.error = ''
+    lastAutoCapabilitySignature.value = ''
+    return true
+  }
+  try {
+    const parsed: unknown = JSON.parse(text)
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+      throw new Error('根节点必须是 JSON 对象')
+    }
+    if (Object.keys(parsed).length) extra.request_body = parsed
+    else delete extra.request_body
+    selectedAiModel.value.extra = extra
+    customRequestBodyEditor.error = ''
+    lastAutoCapabilitySignature.value = ''
+    return true
+  } catch (error) {
+    customRequestBodyEditor.error = error instanceof Error ? `自定义请求 JSON 无效：${error.message}` : '自定义请求 JSON 无效'
+    return false
+  }
+}
+
+function saveAiSettings() {
+  if (aiControlsLocked.value || !commitCustomRequestBody()) return
+  emit('saveAi', aiPayload())
+}
+
 function modelField(field: string, fallback = ''): string {
   return String(selectedAiModel.value?.[field] ?? fallback)
 }
@@ -677,6 +709,8 @@ function setWebSearchRequestMode(mode: string) {
   if (aiControlsLocked.value) return
   applyWebSearchRequestMode(mode)
 }
+
+watch(() => firstText(selectedAiModel.value?.id), syncCustomRequestBodyEditor, { immediate: true })
 
 function modelHasImageCapability(model: UnknownRecord | null): boolean {
   return asStringArray(model?.capabilities).some((capability) => imageCapabilityValues.has(capability))
@@ -1199,7 +1233,7 @@ function handleYunexpressEnvironmentChange(value: string) {
               <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedAiModel" @click="duplicateSelectedAiModel">复制当前模型</button>
               <button class="btn btn-outline py-1.5 text-sm text-rose-700" type="button" :disabled="aiControlsLocked || aiModels.length <= 1" @click="removeSelectedAiModel">删除当前模型</button>
               <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedModelListReady" :title="selectedModelListReady ? '从 Provider 加载可用模型列表' : '请先填写 Base URL 和 API Key'" @click="refreshSelectedModelList(true)">加载模型列表</button>
-              <button class="btn btn-primary py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="emit('saveAi', aiPayload())">保存 AI 设置</button>
+              <button class="btn btn-primary py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="saveAiSettings">保存 AI 设置</button>
             </div>
           </div>
 
@@ -1252,14 +1286,8 @@ function handleYunexpressEnvironmentChange(value: string) {
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">网页 Provider</span>
                   <input class="input" :value="modelField('browser_provider')" :disabled="aiControlsLocked" placeholder="例如 chatgpt / claude / gemini" @input="setSelectedModelField('browser_provider', eventText($event))" />
                 </label>
-                <label class="block">
-                  <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">模型质量档位</span>
-                  <select class="input" :value="modelField('quality_level', 'balanced')" :disabled="aiControlsLocked" @change="setSelectedModelField('quality_level', eventText($event))">
-                    <option v-for="option in modelQualityOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-                  </select>
-                </label>
                 <template v-if="selectedAiModelIsApi">
-                  <label class="block">
+                  <label class="block md:col-span-2">
                     <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">Base URL</span>
                     <input class="input" :value="modelField('base_url')" :disabled="aiControlsLocked" placeholder="https://api.example.com/v1" @input="setSelectedModelField('base_url', eventText($event))" @blur="handleAiConfigFieldBlur('base_url')" />
                   </label>
@@ -1325,6 +1353,20 @@ function handleYunexpressEnvironmentChange(value: string) {
                     <label class="block">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">API Key 环境变量</span>
                       <input class="input" :value="modelField('api_key_env')" :disabled="aiControlsLocked" placeholder="可选" @input="setSelectedModelField('api_key_env', eventText($event))" />
+                    </label>
+                    <label class="block md:col-span-2">
+                      <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">自定义请求 JSON</span>
+                      <textarea
+                        v-model="customRequestBodyEditor.text"
+                        class="input min-h-28 resize-y font-mono text-xs leading-5"
+                        :disabled="aiControlsLocked"
+                        placeholder='例如 {"top_p": 0.8, "enable_thinking": true}'
+                        spellcheck="false"
+                        @input="updateCustomRequestBodyText(eventText($event))"
+                        @blur="commitCustomRequestBody"
+                      ></textarea>
+                      <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">仅支持 JSON 对象。它会与界面生成的 Chat / Responses 请求浅合并；同名字段以此处值为准，不会替换其余标准字段。</span>
+                      <span v-if="customRequestBodyEditor.error" class="mt-1 block text-xs text-rose-600 dark:text-rose-300">{{ customRequestBodyEditor.error }}</span>
                     </label>
                     <label v-if="modelField('api_style', 'openai_compatible') === 'openai_compatible'" class="block md:col-span-2">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">联网搜索请求格式</span>

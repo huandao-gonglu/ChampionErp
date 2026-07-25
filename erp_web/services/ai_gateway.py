@@ -357,6 +357,26 @@ def _model_api_style(model: dict[str, Any]) -> str:
     return ai_model_config.normalize_api_style(model.get("api_style"))
 
 
+def _model_request_body_overrides(model: dict[str, Any]) -> dict[str, Any]:
+    """Return the user-managed JSON fields that are merged into API requests last."""
+    extra = model.get("extra") if isinstance(model.get("extra"), dict) else {}
+    request_body = extra.get("request_body")
+    return dict(request_body) if isinstance(request_body, dict) else {}
+
+
+def _merge_request_body(
+    model: dict[str, Any],
+    body: dict[str, Any],
+    request_extra_body: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Keep the standard request shape, then let explicit request JSON override duplicate keys."""
+    merged = dict(body)
+    if request_extra_body:
+        merged.update(request_extra_body)
+    merged.update(_model_request_body_overrides(model))
+    return merged
+
+
 def _web_search_body_for_model(model: dict[str, Any]) -> dict[str, Any]:
     extra = model.get("extra") if isinstance(model.get("extra"), dict) else {}
     custom_body = extra.get("web_search_request_body")
@@ -724,77 +744,160 @@ def _probe_image_prompt(probe_options: dict[str, Any] | None, default: str) -> s
 
 
 def _probe_chat_capability(
-    base_url: str,
+    model: dict[str, Any],
     api_key: str,
     model_name: str,
     timeout: int,
     messages: list[dict[str, str]] | None = None,
 ) -> None:
+    base_url = ai_model_config.model_base_url(model)
+    probe_messages = messages or [
+        {"role": "system", "content": "Reply with ok."},
+        {"role": "user", "content": "ok"},
+    ]
+    if _model_api_style(model) == ai_model_config.API_STYLE_OPENAI_RESPONSES:
+        _post_json(
+            _responses_url(base_url),
+            api_key,
+            _merge_request_body(
+                model,
+                {
+                    "model": model_name,
+                    "input": _responses_input(probe_messages),
+                    "temperature": 0,
+                    "max_output_tokens": 8,
+                    "stream": False,
+                },
+            ),
+            timeout,
+        )
+        return
     _post_json(
         _chat_completions_url(base_url),
         api_key,
-        {
-            "model": model_name,
-            "messages": messages or [
-                {"role": "system", "content": "Reply with ok."},
-                {"role": "user", "content": "ok"},
-            ],
-            "temperature": 0,
-            "max_tokens": 8,
-            "stream": False,
-        },
+        _merge_request_body(
+            model,
+            {
+                "model": model_name,
+                "messages": probe_messages,
+                "temperature": 0,
+                "max_tokens": 8,
+                "stream": False,
+            },
+        ),
         timeout,
     )
 
 
 def _probe_json_capability(
-    base_url: str,
+    model: dict[str, Any],
     api_key: str,
     model_name: str,
     timeout: int,
     messages: list[dict[str, str]] | None = None,
 ) -> None:
+    base_url = ai_model_config.model_base_url(model)
+    probe_messages = messages or [
+        {"role": "system", "content": "Return JSON only."},
+        {"role": "user", "content": 'Return {"ok":true}.'},
+    ]
+    if _model_api_style(model) == ai_model_config.API_STYLE_OPENAI_RESPONSES:
+        payload = _post_json(
+            _responses_url(base_url),
+            api_key,
+            _merge_request_body(
+                model,
+                {
+                    "model": model_name,
+                    "input": _responses_input(probe_messages),
+                    "temperature": 0,
+                    "max_output_tokens": 32,
+                    "stream": False,
+                },
+            ),
+            timeout,
+        )
+        parse_json_text(_chat_response_text(payload))
+        return
     payload = _post_json(
         _chat_completions_url(base_url),
         api_key,
-        {
-            "model": model_name,
-            "messages": messages or [
-                {"role": "system", "content": "Return JSON only."},
-                {"role": "user", "content": 'Return {"ok":true}.'},
-            ],
-            "temperature": 0,
-            "max_tokens": 32,
-            "stream": False,
-            "response_format": {"type": "json_object"},
-        },
+        _merge_request_body(
+            model,
+            {
+                "model": model_name,
+                "messages": probe_messages,
+                "temperature": 0,
+                "max_tokens": 32,
+                "stream": False,
+                "response_format": {"type": "json_object"},
+            },
+        ),
         timeout,
     )
     parse_json_text(_chat_response_text(payload))
 
 
-def _probe_tool_calling_capability(base_url: str, api_key: str, model_name: str, timeout: int) -> None:
+def _probe_tool_calling_capability(model: dict[str, Any], api_key: str, model_name: str, timeout: int) -> None:
+    base_url = ai_model_config.model_base_url(model)
+    if _model_api_style(model) == ai_model_config.API_STYLE_OPENAI_RESPONSES:
+        payload = _post_json(
+            _responses_url(base_url),
+            api_key,
+            _merge_request_body(
+                model,
+                {
+                    "model": model_name,
+                    "input": _responses_input([{"role": "user", "content": "Call the noop tool."}]),
+                    "temperature": 0,
+                    "max_output_tokens": 32,
+                    "stream": False,
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "noop",
+                            "description": "No-op test tool.",
+                            "parameters": {"type": "object", "properties": {}},
+                        }
+                    ],
+                    "tool_choice": {"type": "function", "name": "noop"},
+                },
+            ),
+            timeout,
+        )
+        output = payload.get("output") if isinstance(payload, dict) else []
+        tool_calls = (
+            [item for item in output if isinstance(item, dict) and str(item.get("type") or "") == "function_call"]
+            if isinstance(output, list)
+            else []
+        )
+        if not tool_calls:
+            raise RuntimeError("Provider accepted tool parameters but did not return a function_call output item.")
+        return
     payload = _post_json(
         _chat_completions_url(base_url),
         api_key,
-        {
-            "model": model_name,
-            "messages": [{"role": "user", "content": "Call the noop tool."}],
-            "temperature": 0,
-            "max_tokens": 32,
-            "stream": False,
-            "tools": [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "noop",
-                        "description": "No-op test tool.",
-                        "parameters": {"type": "object", "properties": {}},
-                    },
-                }
-            ],
-            "tool_choice": {"type": "function", "function": {"name": "noop"}},
-        },
+        _merge_request_body(
+            model,
+            {
+                "model": model_name,
+                "messages": [{"role": "user", "content": "Call the noop tool."}],
+                "temperature": 0,
+                "max_tokens": 32,
+                "stream": False,
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "noop",
+                            "description": "No-op test tool.",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                "tool_choice": {"type": "function", "function": {"name": "noop"}},
+            },
+        ),
         timeout,
     )
     choices = payload.get("choices") if isinstance(payload, dict) else []
@@ -913,22 +1016,26 @@ def _probe_web_search_capability(
     for request_mode, web_search_body in _web_search_probe_candidates(model):
         try:
             if api_style == ai_model_config.API_STYLE_OPENAI_RESPONSES:
-                payload = _post_json(
-                    _responses_url(base_url),
-                    api_key,
+                body = _merge_request_body(
+                    model,
                     {
                         "model": model_name,
                         "input": _responses_input(probe_messages),
                         "temperature": 0,
                         "max_output_tokens": 600,
+                        "stream": False,
                         **web_search_body,
                     },
+                )
+                payload = _post_json(
+                    _responses_url(base_url),
+                    api_key,
+                    body,
                     timeout,
                 )
             else:
-                payload = _post_json(
-                    _chat_completions_url(base_url),
-                    api_key,
+                body = _merge_request_body(
+                    model,
                     {
                         "model": model_name,
                         "messages": probe_messages,
@@ -938,6 +1045,11 @@ def _probe_web_search_capability(
                         "response_format": {"type": "json_object"},
                         **web_search_body,
                     },
+                )
+                payload = _post_json(
+                    _chat_completions_url(base_url),
+                    api_key,
+                    body,
                     timeout,
                 )
             _validate_web_search_probe(payload)
@@ -1041,7 +1153,7 @@ def probe_model_capabilities(
         try:
             if capability == ai_model_config.CAP_CHAT:
                 _probe_chat_capability(
-                    base_url,
+                    model,
                     api_key,
                     model_name,
                     timeout,
@@ -1055,7 +1167,7 @@ def probe_model_capabilities(
                 )
             elif capability == ai_model_config.CAP_JSON:
                 _probe_json_capability(
-                    base_url,
+                    model,
                     api_key,
                     model_name,
                     timeout,
@@ -1080,7 +1192,7 @@ def probe_model_capabilities(
             elif capability == ai_model_config.CAP_IMAGE_EDIT:
                 _probe_image_edit_capability(base_url, api_key, model_name, timeout, _probe_image_prompt(probe_options, "turn the pixel blue"))
             elif capability == ai_model_config.CAP_TOOL_CALLING:
-                _probe_tool_calling_capability(base_url, api_key, model_name, timeout)
+                _probe_tool_calling_capability(model, api_key, model_name, timeout)
             else:
                 continue
             supported.append(capability)
@@ -1585,9 +1697,7 @@ class OpenAICompatibleProvider(AiProvider):
             body["response_format"] = {"type": "json_object"}
         if ai_model_config.CAP_WEB_SEARCH in capabilities:
             body.update(_web_search_body_for_model(model))
-        if request.extra_body:
-            body.update(request.extra_body)
-        body["stream"] = bool(request.stream)
+        body = _merge_request_body(model, body, request.extra_body)
         timeout = int(request.timeout_seconds or model.get("timeout_seconds") or 60)
         payload = self._post_chat(model, api_key, model_name, url, body, timeout, request)
         return parse_json_text(_chat_response_text(payload))
@@ -1602,13 +1712,14 @@ class OpenAICompatibleProvider(AiProvider):
         timeout: int,
         request: AiChatRequest,
     ) -> dict[str, Any]:
+        stream = bool(body.get("stream"))
         http_request = urllib.request.Request(
             url,
             data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
-                "Accept": "text/event-stream" if request.stream else "application/json",
+                "Accept": "text/event-stream" if stream else "application/json",
                 "User-Agent": ai_model_config.AI_HTTP_USER_AGENT,
             },
             method="POST",
@@ -1616,7 +1727,7 @@ class OpenAICompatibleProvider(AiProvider):
         api_style = _model_api_style(model)
         try:
             with urllib.request.urlopen(http_request, timeout=timeout) as response:
-                if request.stream:
+                if stream:
                     return _parse_chat_json_text_or_payload(_read_chat_stream_text(response, request.token_callback))
                 raw = response.read()
         except urllib.error.HTTPError as exc:
@@ -1651,24 +1762,23 @@ class OpenAIResponsesProvider(AiProvider):
             body["max_output_tokens"] = request.max_tokens
         if ai_model_config.CAP_WEB_SEARCH in capabilities:
             body.update(_web_search_body_for_model(model))
-        if request.extra_body:
-            body.update(request.extra_body)
-        body["stream"] = bool(request.stream)
+        body = _merge_request_body(model, body, request.extra_body)
         timeout = int(request.timeout_seconds or model.get("timeout_seconds") or 60)
+        stream = bool(body.get("stream"))
         http_request = urllib.request.Request(
             url,
             data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
-                "Accept": "text/event-stream" if request.stream else "application/json",
+                "Accept": "text/event-stream" if stream else "application/json",
                 "User-Agent": ai_model_config.AI_HTTP_USER_AGENT,
             },
             method="POST",
         )
         try:
             with urllib.request.urlopen(http_request, timeout=timeout) as response:
-                if request.stream:
+                if stream:
                     return _parse_chat_json_text_or_payload(_read_responses_stream_text(response, request.token_callback))
                 raw = response.read()
         except urllib.error.HTTPError as exc:
