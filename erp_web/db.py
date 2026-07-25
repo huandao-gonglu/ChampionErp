@@ -15,6 +15,7 @@ REQUIRED_TABLES = (
     "store_auth",
     "products",
     "platform_drafts",
+    "draft_id_aliases",
     "media_assets",
     "publish_logs",
 )
@@ -93,6 +94,12 @@ def initialize_database(app_dir: Path | str) -> Path:
                 FOREIGN KEY(product_id) REFERENCES products(product_id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS draft_id_aliases (
+                legacy_draft_id TEXT PRIMARY KEY,
+                draft_id TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS media_assets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 product_id TEXT NOT NULL,
@@ -140,6 +147,7 @@ def initialize_database(app_dir: Path | str) -> Path:
             """
         )
         _migrate_platform_drafts_schema(conn)
+        _migrate_mismatched_draft_identities(conn)
         conn.commit()
     finally:
         conn.close()
@@ -309,8 +317,93 @@ def draft_identity(product_id: str, platform: str, draft: dict[str, Any] | None 
     existing = str(draft.get("draft_id") or draft.get("draftId") or "").strip()
     if existing:
         return _slug(existing)
-    prefix = _slug(f"{product_id}_{platform}")[:48]
-    return f"{prefix}_{uuid.uuid4().hex[:12]}"
+    # 草稿可以在编辑时切换或新增目标平台，ID 不应再编码首个目标平台。
+    prefix = _slug(product_id)[:48]
+    return f"{prefix}_draft_{uuid.uuid4().hex[:12]}"
+
+
+def _legacy_draft_id_platform(product_id: str, draft_id: str) -> str:
+    prefix = f"{_slug(product_id)}_"
+    suffix = _slug(draft_id)
+    if not suffix.startswith(prefix):
+        return ""
+    for platform in PLATFORMS:
+        if suffix[len(prefix) :].startswith(f"{platform}_"):
+            return platform
+    return ""
+
+
+def _resolve_draft_id(conn: sqlite3.Connection, draft_id: str) -> str:
+    resolved = _slug(draft_id)
+    seen: set[str] = set()
+    while resolved and resolved not in seen:
+        seen.add(resolved)
+        row = conn.execute(
+            "SELECT draft_id FROM draft_id_aliases WHERE legacy_draft_id = ?",
+            (resolved,),
+        ).fetchone()
+        if not row:
+            break
+        next_id = str(row["draft_id"] or "").strip()
+        if not next_id:
+            break
+        resolved = next_id
+    return resolved
+
+
+def _replace_draft_id_in_product_json(conn: sqlite3.Connection, product_id: str, old_id: str, new_id: str) -> None:
+    row = conn.execute("SELECT product_json FROM products WHERE product_id = ?", (product_id,)).fetchone()
+    product = json_loads(row["product_json"], {}) if row else {}
+    drafts = product.get("drafts") if isinstance(product, dict) else None
+    if not isinstance(drafts, dict):
+        return
+    changed = False
+    for draft in drafts.values():
+        if not isinstance(draft, dict):
+            continue
+        for key in ("draft_id", "draftId"):
+            if str(draft.get(key) or "").strip() == old_id:
+                draft[key] = new_id
+                changed = True
+    if changed:
+        conn.execute(
+            "UPDATE products SET product_json = ?, updated_at = ? WHERE product_id = ?",
+            (json_dumps(product), utc_now(), product_id),
+        )
+
+
+def _migrate_mismatched_draft_identities(conn: sqlite3.Connection) -> None:
+    """将历史上带有错误平台前缀的草稿 ID 迁移为中性 ID。
+
+    草稿 ID 曾包含创建时的首个平台；后来编辑目标市场会改变主平台，导致
+    Ozon 草稿仍显示 ``*_mercadolibre_*``。迁移保留旧 ID 的别名以兼容旧链接。
+    """
+    rows = conn.execute("SELECT draft_id, product_id, platform, draft_json FROM platform_drafts").fetchall()
+    for row in rows:
+        old_id = str(row["draft_id"] or "").strip()
+        product_id = str(row["product_id"] or "").strip()
+        platform = str(row["platform"] or "").strip().lower()
+        if not old_id or platform not in PLATFORMS:
+            continue
+        legacy_platform = _legacy_draft_id_platform(product_id, old_id)
+        if not legacy_platform or legacy_platform == platform:
+            continue
+        new_id = draft_identity(product_id, platform)
+        while conn.execute("SELECT 1 FROM platform_drafts WHERE draft_id = ?", (new_id,)).fetchone():
+            new_id = draft_identity(product_id, platform)
+        draft = json_loads(row["draft_json"], {})
+        if not isinstance(draft, dict):
+            draft = {}
+        draft["draft_id"] = new_id
+        conn.execute(
+            "UPDATE platform_drafts SET draft_id = ?, draft_json = ?, updated_at = ? WHERE draft_id = ?",
+            (new_id, json_dumps(draft), utc_now(), old_id),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO draft_id_aliases (legacy_draft_id, draft_id, created_at) VALUES (?, ?, ?)",
+            (old_id, new_id, utc_now()),
+        )
+        _replace_draft_id_in_product_json(conn, product_id, old_id, new_id)
 
 
 def _draft_status(draft: dict[str, Any]) -> str:
@@ -434,7 +527,7 @@ def _upsert_drafts(conn: sqlite3.Connection, product_id: str, product: dict[str,
             continue
         if not _draft_should_persist(draft):
             continue
-        draft_id = draft_identity(product_id, platform, draft)
+        draft_id = _resolve_draft_id(conn, draft_identity(product_id, platform, draft))
         draft["draft_id"] = draft_id
         draft["platform"] = platform
         draft["platforms"] = _draft_platforms(draft, platform)
@@ -642,6 +735,7 @@ def load_draft_model(app_dir: Path | str, draft_id: str) -> dict[str, Any]:
     initialize_database(app_dir)
     conn = connect(app_dir)
     try:
+        draft_id = _resolve_draft_id(conn, draft_id)
         row = conn.execute("SELECT * FROM platform_drafts WHERE draft_id = ?", (draft_id,)).fetchone()
         return _draft_from_row(row) if row else {}
     finally:
@@ -672,6 +766,7 @@ def delete_draft_model(app_dir: Path | str, draft_id: str) -> bool:
     initialize_database(app_dir)
     conn = connect(app_dir)
     try:
+        draft_id = _resolve_draft_id(conn, draft_id)
         row = conn.execute("SELECT product_id, platform FROM platform_drafts WHERE draft_id = ?", (draft_id,)).fetchone()
         cursor = conn.execute("DELETE FROM platform_drafts WHERE draft_id = ?", (draft_id,))
         if cursor.rowcount > 0 and row:
@@ -683,6 +778,7 @@ def delete_draft_model(app_dir: Path | str, draft_id: str) -> bool:
                     "UPDATE products SET product_json = ?, updated_at = ? WHERE product_id = ?",
                     (json_dumps(product), utc_now(), row["product_id"]),
                 )
+        conn.execute("DELETE FROM draft_id_aliases WHERE legacy_draft_id = ? OR draft_id = ?", (draft_id, draft_id))
         conn.commit()
         return cursor.rowcount > 0
     finally:
@@ -700,18 +796,30 @@ def upsert_draft_model(app_dir: Path | str, product_id: str, platform: str, draf
         platform = draft_platform
     if not product_id or platform not in PLATFORMS:
         return ""
-    draft_id = draft_identity(product_id, platform, draft)
-    draft["draft_id"] = draft_id
-    draft["platform"] = platform
-    draft["platforms"] = _draft_platforms(draft, platform)
-    site = str(draft.get("site") or draft.get("site_id") or "").strip()
-    price_json = {
-        key: draft.get(key)
-        for key in ("price", "sale_price", "currency", "net_profit", "pricing")
-        if draft.get(key) not in (None, "")
-    }
     conn = connect(app_dir)
     try:
+        requested_id = draft_identity(product_id, platform, draft)
+        draft_id = _resolve_draft_id(conn, requested_id)
+        legacy_id_to_retire = ""
+        if draft_id == requested_id and _legacy_draft_id_platform(product_id, requested_id) not in {"", platform}:
+            existing = conn.execute(
+                "SELECT 1 FROM platform_drafts WHERE draft_id = ? AND product_id = ?",
+                (requested_id, product_id),
+            ).fetchone()
+            if existing:
+                legacy_id_to_retire = requested_id
+                draft_id = draft_identity(product_id, platform)
+                while conn.execute("SELECT 1 FROM platform_drafts WHERE draft_id = ?", (draft_id,)).fetchone():
+                    draft_id = draft_identity(product_id, platform)
+        draft["draft_id"] = draft_id
+        draft["platform"] = platform
+        draft["platforms"] = _draft_platforms(draft, platform)
+        site = str(draft.get("site") or draft.get("site_id") or "").strip()
+        price_json = {
+            key: draft.get(key)
+            for key in ("price", "sale_price", "currency", "net_profit", "pricing")
+            if draft.get(key) not in (None, "")
+        }
         conn.execute(
             """
             INSERT INTO platform_drafts (
@@ -750,6 +858,13 @@ def upsert_draft_model(app_dir: Path | str, product_id: str, platform: str, draf
                 now,
             ),
         )
+        if legacy_id_to_retire:
+            conn.execute(
+                "INSERT OR REPLACE INTO draft_id_aliases (legacy_draft_id, draft_id, created_at) VALUES (?, ?, ?)",
+                (legacy_id_to_retire, draft_id, now),
+            )
+            conn.execute("DELETE FROM platform_drafts WHERE draft_id = ?", (legacy_id_to_retire,))
+            _replace_draft_id_in_product_json(conn, product_id, legacy_id_to_retire, draft_id)
         conn.commit()
     finally:
         conn.close()

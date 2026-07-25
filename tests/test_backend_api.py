@@ -144,7 +144,7 @@ def test_calculate_price_api_returns_frontend_fields(backend_server: str) -> Non
     assert isinstance(data["breakdown"], dict)
 
 
-def test_generate_copy_api_returns_warning_without_key(backend_server: str, sample_product: dict) -> None:
+def test_generate_copy_api_returns_error_without_key(backend_server: str, sample_product: dict) -> None:
     saved = post_json(backend_server, "/api/save-product", {"product": sample_product})
     product_id = saved["product"]["product_id"]
     data = post_json(
@@ -154,12 +154,12 @@ def test_generate_copy_api_returns_warning_without_key(backend_server: str, samp
             "product_id": product_id,
             "platform": "mercadolibre",
         },
+        expected_status=400,
     )
 
-    assert data["ok"] is True
-    assert data["copy"]["title"]
-    assert "product" in data
-    assert "warning" in data
+    assert data["ok"] is False
+    assert data["copy"] == {}
+    assert "本地化文案生成失败" in data["error"]
 
 
 def test_generate_copy_api_requires_product_id(backend_server: str) -> None:

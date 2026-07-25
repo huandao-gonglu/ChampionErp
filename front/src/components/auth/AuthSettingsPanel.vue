@@ -1675,7 +1675,7 @@ function handleYunexpressEnvironmentChange(value: string) {
         </section>
 
         <section v-show="activeAuthSettingsTab === 'research'">
-          <ProductResearchSettingsPanel :ai-models="aiModels" :ai-use-case-prompts="aiUseCasePrompts" embedded />
+          <ProductResearchSettingsPanel :ai-use-case-prompts="aiUseCasePrompts" embedded />
         </section>
       </div>
     </section>

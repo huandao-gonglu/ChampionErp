@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from erp_web import listing_planner as generator
+from erp_web.marketplace_registry import default_marketplace_site
 from erp_web.product_model import PLATFORMS
 from erp_web.services import copy_service
 
@@ -70,66 +71,14 @@ def build_copy_preview(product: dict[str, Any], platform: str, app_cfg: dict[str
             language=str(listing.get("language") or ""),
             mode="preview",
         )
-        warning = str(result.get("warning") or "")
-        if not warning and isinstance(result.get("copy"), dict):
+        warning = str(result.get("error") or "")
+        if result.get("ok") and isinstance(result.get("copy"), dict):
             listing.update(result["copy"])
     except Exception as exc:
         warning = str(exc)
     if platform == "mercadolibre":
         listing["title"] = str(listing.get("title") or product.get("name") or "")[:60]
-    if platform == "ozon" and not listing.get("description"):
-        listing["description"] = "Ozon 俄语文案草稿。"
     return {"plan": plan, "listing": listing, "warning": warning}
-
-
-def target_market_label(target_market: str) -> str:
-    mapping = {
-        "amazon": "Amazon",
-        "mercadolibre": "Mercado Libre",
-        "yandex": "Yandex",
-        "ozon": "Ozon",
-    }
-    return mapping.get((target_market or "").lower(), (target_market or "marketplace").title())
-
-
-def build_web_copy_prompt(
-    product: dict[str, Any],
-    source_listing: dict[str, Any],
-    source_platform: str,
-    target_market: str,
-    language: str,
-    mode: str,
-) -> str:
-    target_label = target_market_label(target_market)
-    source_label = target_market_label(source_platform)
-    language = (language or "English").strip() or "English"
-    title_limit = 180 if target_market.lower() == "amazon" else 60 if target_market.lower() == "mercadolibre" else 120
-    return f"""You are an ecommerce copywriter.
-
-Return only valid JSON with these keys:
-title: string
-description: string
-bullets: array of 5 short strings
-alt_titles: array of 2-3 strings
-search_keywords: array of 10-20 strings
-
-Requirements:
-- Write in {language}.
-- Target market: {target_label}.
-- Mode: {mode}.
-- Keep the title under {title_limit} characters if possible.
-- Do not invent certifications, accessories, or specs not supported by the product data.
-- Make the copy conversion-oriented but truthful.
-- If the target is Amazon, use Amazon-style bullets and a concise product description.
-- If the target is Mercado Libre, keep the title and description natural for that marketplace.
-
-Source draft from {source_label}:
-Title: {source_listing.get("title", "")}
-Description: {source_listing.get("description", "")}
-
-Product summary:
-{generator.product_summary(product)}
-"""
 
 
 def generate_ai_copy_bundle(
@@ -172,7 +121,7 @@ def batch_generate_copy_for_products(
     target_platform = str(platform or "mercadolibre").strip().lower() or "mercadolibre"
     if target_platform not in PLATFORMS:
         return {"ok": False, "success_count": 0, "failed_count": 0, "items": [], "error": "不支持的平台"}
-    language = str(language or ("Spanish" if target_platform == "mercadolibre" else "Russian")).strip()
+    language = str(language or default_marketplace_site(target_platform).get("language") or "English").strip()
     app_cfg = load_app_config()
     items: list[dict[str, Any]] = []
     for product_id in [str(item or "").strip() for item in product_ids if str(item or "").strip()]:
@@ -191,8 +140,8 @@ def batch_generate_copy_for_products(
                 raise RuntimeError("商品不存在")
             source_platform = str((product.get("source") or {}).get("source_platform") or product.get("source_platform") or target_platform)
             result = generate_ai_copy_bundle(product, source_platform, target_platform, language, mode, app_cfg)
-            if result.get("warning"):
-                raise RuntimeError(str(result.get("warning")))
+            if not result.get("ok"):
+                raise RuntimeError(str(result.get("error") or "本地化文案生成失败"))
             copy_payload = {**(result.get("copy") or {}), "language": result.get("language", language), "source_platform": result.get("source_platform", source_platform), "mode": result.get("mode", mode)}
             saved = save_copy_result(product, result.get("target_market") or target_platform, copy_payload)
             draft = ((saved.get("drafts") or {}).get(target_platform) or {}) if isinstance(saved.get("drafts"), dict) else {}
@@ -201,7 +150,7 @@ def batch_generate_copy_for_products(
                     "ok": True,
                     "status": draft.get("status") or "copy_ready",
                     "title": draft.get("title") or "",
-                    "warning": result.get("warning") or "",
+                    "warning": "",
                     "product": saved,
                 }
             )

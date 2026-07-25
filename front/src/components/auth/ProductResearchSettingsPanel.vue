@@ -9,7 +9,6 @@ import {
 } from '@/utils/productResearchLabels'
 
 const props = defineProps<{
-  aiModels?: UnknownRecord[]
   aiUseCasePrompts?: UnknownRecord
   embedded?: boolean
 }>()
@@ -54,11 +53,6 @@ const selectedMarketBinding = computed(() => selectedMarket.value?.searchMethods
 const selectedMarketMethod = computed(() => selectedMarketBinding.value ? methodForBinding(selectedMarketBinding.value) : null)
 const selectedProviderIsAiSearch = computed(() => selectedProvider.value?.sourceType === 'ai_search' || selectedProvider.value?.providerStrategy === 'ai_web_search')
 const selectedProviderIsManualImport = computed(() => selectedProvider.value?.sourceType === 'manual_import' || selectedProvider.value?.providerStrategy === 'manual_import')
-const aiModels = computed(() => (props.aiModels || []).map(asRecord).filter((model) => String(model.id || '').trim()))
-const webSearchModels = computed(() => aiModels.value.filter((model) => {
-  const capabilities = Array.isArray(model.capabilities) ? model.capabilities.map((item) => String(item || '')) : []
-  return capabilities.includes('chat') && capabilities.includes('json') && capabilities.includes('web_search') && model.enabled !== false
-}))
 const strategyOptionsForSelectedProvider = computed(() => {
   if (selectedProviderIsAiSearch.value) return strategyOptions.filter((option) => option.value === 'ai_web_search')
   if (selectedProviderIsManualImport.value) return strategyOptions.filter((option) => option.value === 'manual_import')
@@ -135,7 +129,6 @@ function defaultApiConfig(): UnknownRecord {
 function defaultAiSearchConfig(): UnknownRecord {
   return {
     provider_strategy: 'ai_web_search',
-    ai_model_id: '',
     max_items: 12,
     require_source_url: true,
     require_image_url: true,
@@ -783,19 +776,12 @@ onMounted(loadSettings)
               <div class="flex flex-wrap items-center justify-between gap-3">
                 <h4 class="text-sm font-semibold text-accent-950 dark:text-white">AI 搜索配置</h4>
                 <div class="flex flex-wrap items-center gap-2">
-                  <span :class="webSearchModels.length ? 'badge-success' : 'badge-muted'">AI 模型</span>
+                  <span class="badge-info">模型由“功能绑定”的产品调研 AI 联网搜索统一配置</span>
                   <span class="badge-info">{{ strategyLabel(selectedProvider.providerStrategy || 'ai_web_search') }}</span>
                 </div>
               </div>
 
-              <div class="grid gap-3 md:grid-cols-2">
-                <label class="block">
-                  <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">模型覆盖</span>
-                  <select class="input" :value="aiSearchConfigField('ai_model_id')" @change="updateAiSearchConfigField('ai_model_id', eventText($event))">
-                    <option value="">自动匹配模型</option>
-                    <option v-for="model in webSearchModels" :key="String(model.id)" :value="String(model.id)">{{ model.name || model.id }}</option>
-                  </select>
-                </label>
+              <div class="grid gap-3">
                 <label class="block">
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">最大结果</span>
                   <input class="input" min="1" max="50" type="number" :value="Number(aiSearchConfigField('max_items', '12')) || 12" @input="updateAiSearchConfigField('max_items', Number(eventText($event)) || 12)" />

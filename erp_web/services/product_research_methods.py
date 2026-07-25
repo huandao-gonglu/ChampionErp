@@ -336,14 +336,13 @@ class AiSearchMethod(ProductResearchSearchMethod):
         runtime = config.get("provider_runtime") if isinstance(config.get("provider_runtime"), dict) else {}
         max_items = _int_value(method_config.get("max_items"), limit, 1, 100)
         result_limit = min(limit, max_items)
-        model_id = str(binding_config.get("ai_model_id") or method_config.get("ai_model_id") or method_config.get("model_id") or "").strip()
         timeout_seconds = _int_value(binding_config.get("timeout_seconds") or method_config.get("timeout_seconds") or runtime.get("source_timeout_seconds"), 120, 30, 300)
         stream_enabled = _bool_value(binding_config.get("stream", method_config.get("stream")), True)
         require_source_url = _bool_value(method_config.get("require_source_url"), True)
         require_image_url = _bool_value(method_config.get("require_image_url"), True)
 
-        model = ai_gateway.resolve_model_for_use_case(app_dir, app_config, "research.web_search", model_id=model_id)
-        resolved_model_id = str(model.get("id") or model_id or "").strip()
+        model = ai_gateway.resolve_model_for_use_case(app_dir, app_config, "research.web_search")
+        resolved_model_id = str(model.get("id") or "").strip()
         api_style = ai_model_config.normalize_api_style(model.get("api_style"))
         stream_fallback_used = False
         self.last_diagnostics = {
@@ -401,7 +400,6 @@ class AiSearchMethod(ProductResearchSearchMethod):
                 app_config,
                 "research.web_search",
                 messages,
-                model_id=model_id,
                 temperature=request_temperature,
                 max_tokens=request_max_tokens,
                 timeout_seconds=timeout_seconds,

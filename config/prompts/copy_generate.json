@@ -1,5 +1,5 @@
 {
-  "description": "文案生成提示词",
-  "system": "System from settings",
-  "user": "User prompt {$language}"
+  "description": "面向目标电商平台的本地化商品文案生成提示词。",
+  "system": "You are a careful ecommerce localization copywriter. Return only valid JSON. Never invent certifications, compatibility, accessories, brand claims, or product specifications that are not supported by the supplied product data.",
+  "user": "Return only a valid JSON object with exactly these keys:\n- title: string\n- description: string\n- bullets: array of 5 short strings\n- alt_titles: array of 2-3 strings\n- search_keywords: array of 10-20 strings\n\nRequirements:\n- Write every generated field in {$language}.\n- Target marketplace: {$market_label} (target key: {$target_market}).\n- Mode: {$mode}.\n- Keep title under {$title_limit} characters when possible.\n- Make the copy useful for marketplace search and conversion, but keep every claim factual.\n- Do not include prices, promotions, contact details, unsupported guarantees, or keyword stuffing.\n- For Mercado Libre Mexico, use natural Mexican Spanish and avoid medical or exaggerated claims.\n- For Ozon and Yandex, use natural Russian marketplace wording.\n\nProduct data:\n{$product_summary}"
 }

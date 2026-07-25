@@ -1018,9 +1018,7 @@ def _ai_web_search_sample(
     keyword: str,
     timeout_seconds: int,
 ) -> dict[str, Any]:
-    config_json = source.get("config_json") if isinstance(source.get("config_json"), dict) else {}
-    model_id = str(config_json.get("ai_model_id") or config_json.get("model_id") or "").strip()
-    model = ai_gateway.resolve_model_for_use_case(app_dir, app_config, "research.web_search", model_id=model_id)
+    model = ai_gateway.resolve_model_for_use_case(app_dir, app_config, "research.web_search")
     capabilities = ai_model_config.normalize_capabilities(model.get("capabilities"))
     if ai_model_config.CAP_WEB_SEARCH not in capabilities:
         raise RuntimeError("AI 搜索需要选择一个支持 web_search 的 AI 模型。")
@@ -1050,7 +1048,6 @@ def _ai_web_search_sample(
             {"role": "system", "content": prompt_pair["system"]},
             {"role": "user", "content": user_prompt},
         ],
-        model_id=model_id,
         temperature=0.2,
         max_tokens=1200,
         timeout_seconds=timeout_seconds,

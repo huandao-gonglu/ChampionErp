@@ -5,6 +5,7 @@ import logging
 
 from typing import Callable
 
+from erp_web.marketplace_registry import default_marketplace_site
 from erp_web.product_model import PLATFORMS
 
 from .common import JsonRequestHandler
@@ -24,13 +25,6 @@ from ..runtime_units.product_store import load_app_config, load_draft_detail_fro
 PostHandler = Callable[[JsonRequestHandler], None]
 logger = logging.getLogger(__name__)
 
-DEFAULT_COPY_LANGUAGE_BY_PLATFORM = {
-    "mercadolibre": "es",
-    "yandex": "ru-RU",
-    "ozon": "ru-RU",
-}
-
-
 def _copy_language(body: dict, product: dict, platform: str) -> str:
     explicit = str(body.get("language") or "").strip()
     if explicit:
@@ -38,7 +32,7 @@ def _copy_language(body: dict, product: dict, platform: str) -> str:
     drafts = product.get("drafts") if isinstance(product.get("drafts"), dict) else {}
     draft = drafts.get(platform) if isinstance(drafts.get(platform), dict) else {}
     draft_language = str(draft.get("language") or "").strip()
-    return draft_language or DEFAULT_COPY_LANGUAGE_BY_PLATFORM.get(platform, "English")
+    return draft_language or str(default_marketplace_site(platform).get("language") or "English")
 
 
 def handle_generate_copy(handler: JsonRequestHandler) -> None:
@@ -54,6 +48,9 @@ def handle_generate_copy(handler: JsonRequestHandler) -> None:
     language = _copy_language(body, product, platform)
     mode = str(body.get("mode") or "rewrite")
     result = generate_ai_copy_bundle(product, platform, platform, language, mode, load_app_config())
+    if not result.get("ok"):
+        handler.send_json(result, 400)
+        return
     product = save_copy_result(product, result["target_market"], {**result["copy"], "language": result["language"], "source_platform": result["source_platform"], "mode": result["mode"]})
     plan = apply_product_drafts_to_plan(product, build_plan_for_platform(product, platform))
     listing = plan.get("platforms", {}).get(platform_to_preset_key(platform), {}).get("listing", {})

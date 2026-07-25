@@ -227,6 +227,35 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
 
         self.with_temp_app(run)
 
+    def test_switching_legacy_platform_draft_to_ozon_migrates_its_id(self) -> None:
+        def run(app_dir: Path) -> None:
+            saved = erp_web_app.save_product(sample_product("Legacy draft", "https://example.com/legacy-draft"))
+            product_id = saved["product_id"]
+            legacy_id = f"{product_id}_mercadolibre_legacy"
+            created_id = erp_db.upsert_draft_model(
+                app_dir,
+                product_id,
+                "mercadolibre",
+                {"draft_id": legacy_id, "title": "Legacy", "status": "claimed"},
+            )
+            self.assertEqual(created_id, legacy_id)
+
+            migrated_id = erp_db.upsert_draft_model(
+                app_dir,
+                product_id,
+                "ozon",
+                {"draft_id": legacy_id, "platform": "ozon", "title": "Ozon draft", "status": "claimed"},
+            )
+
+            self.assertNotEqual(migrated_id, legacy_id)
+            self.assertIn("_draft_", migrated_id)
+            self.assertEqual(erp_db.load_draft_model(app_dir, migrated_id)["platform"], "ozon")
+            self.assertEqual(erp_db.load_draft_model(app_dir, legacy_id)["draft_id"], migrated_id)
+            records = [record for record in erp_db.list_draft_records(app_dir, scope="all") if record["draft_id"] == migrated_id]
+            self.assertEqual(len(records), 1)
+
+        self.with_temp_app(run)
+
     def test_1688_collect_images_are_limited_to_first_five(self) -> None:
         source = {
             "images": [f"https://img.example/{index}.jpg" for index in range(8)],

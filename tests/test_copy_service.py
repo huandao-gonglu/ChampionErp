@@ -6,13 +6,15 @@ from pathlib import Path
 import subprocess
 import urllib.error
 
+import pytest
+
 from conftest import assert_no_old_path
 from erp_web import runtime as erp_web_app
 import erp_web.runtime as erp_runtime
 from erp_web.services import ai_gateway, ai_model_config, browser_ai_runtime, copy_service
 
 
-def test_generate_copy_without_api_key_returns_warning(app_dir: Path) -> None:
+def test_generate_copy_without_api_key_does_not_create_fallback_copy(app_dir: Path) -> None:
     product = {
         "name": "Manual test organizer",
         "materials": ["PP"],
@@ -38,16 +40,35 @@ def test_generate_copy_without_api_key_returns_warning(app_dir: Path) -> None:
         language="Spanish (Mexico)",
     )
 
-    assert result["ok"] is True
-    assert result["warning"]
-    assert "API Key" in result["warning"]
+    assert result["ok"] is False
+    assert "API Key" in result["error"]
     assert result["target_market"] == "mercadolibre"
     assert result["language"] == "Spanish (Mexico)"
     assert result["provider"] == "DeepSeek"
-    assert result["copy"]["title"]
+    assert result["copy"] == {}
 
 
-def test_generate_copy_defaults_ozon_to_russian(app_dir: Path) -> None:
+def test_generate_copy_uses_bound_provider_and_registry_language_for_ozon(app_dir: Path, monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_resolve(app_dir, app_config, use_case_id, **kwargs):
+        seen["resolved_use_case"] = use_case_id
+        seen["resolve_kwargs"] = kwargs
+        return {"id": "bound_copy_model", "provider": "Test Provider"}
+
+    def fake_chat_json(app_dir, app_config, use_case_id, messages, **kwargs):
+        seen["chat_use_case"] = use_case_id
+        seen["messages"] = messages
+        return {
+            "title": "Органайзер для дома",
+            "description": "Компактный органайзер для хранения вещей дома.",
+            "bullets": ["Складная конструкция", "Для домашнего хранения"],
+            "alt_titles": ["Домашний органайзер"],
+            "search_keywords": ["органайзер", "хранение"],
+        }
+
+    monkeypatch.setattr(copy_service.ai_gateway, "resolve_model_for_use_case", fake_resolve)
+    monkeypatch.setattr(copy_service.ai_gateway, "chat_json", fake_chat_json)
     result = copy_service.generate_copy(
         str(app_dir),
         {"name": "Manual organizer"},
@@ -55,26 +76,47 @@ def test_generate_copy_defaults_ozon_to_russian(app_dir: Path) -> None:
         target_market="ozon",
     )
 
-    assert result["language"] == "Russian"
+    assert result["ok"] is True
+    assert result["language"] == "ru-RU"
+    assert result["provider"] == "Test Provider"
+    assert result["copy"]["description"] == "Компактный органайзер для хранения вещей дома."
+    assert seen["resolved_use_case"] == "copy.generate"
+    assert seen["resolve_kwargs"] == {}
+    assert seen["chat_use_case"] == "copy.generate"
 
 
-def test_prompt_contains_manual_product_data_and_mexico_spanish() -> None:
-    prompt = copy_service.build_copy_prompt(
-        {
-            "name": "Manual organizer",
-            "materials": ["PP"],
-            "selling_points": ["For kitchen", "Reusable"],
-            "source_text": "Manual text only, no crawler required.",
-        },
-        "mercadolibre",
-        "Spanish (Mexico)",
+def test_configured_copy_prompt_contains_target_and_product_context(app_dir: Path) -> None:
+    prompt = copy_service.build_copy_prompt_from_config(
+        str(app_dir),
+        {},
+        {"name": "Manual organizer", "selling_points": ["Foldable"]},
+        "ozon",
+        "ru-RU",
         "rewrite",
     )
 
-    assert "Spanish (Mexico)" in prompt
-    assert "Mercado Libre Mexico" in prompt
-    assert "Manual organizer" in prompt
-    assert "Manual text only" in prompt
+    assert "ru-RU" in prompt["user"]
+    assert "Ozon" in prompt["user"]
+    assert "Manual organizer" in prompt["user"]
+    assert "{$" not in prompt["user"]
+
+
+def test_copy_prompt_configuration_is_not_silently_replaced(app_dir: Path, tmp_path: Path) -> None:
+    prompt_path = tmp_path / "incomplete_copy_prompt.json"
+    prompt_path.write_text(
+        json.dumps({"system": "configured", "user": "Language: {$language}"}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="必须包含"):
+        copy_service.build_copy_prompt_from_config(
+            str(app_dir),
+            {"ai_use_case_prompts": {"copy.generate": {"path": str(prompt_path)}}},
+            {"name": "Manual organizer"},
+            "mercadolibre",
+            "Spanish (Mexico)",
+            "rewrite",
+        )
 
 
 def test_copy_service_does_not_hardcode_keys(app_dir: Path, old_path_markers: tuple[str, ...]) -> None:

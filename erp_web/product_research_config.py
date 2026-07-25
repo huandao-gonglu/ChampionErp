@@ -86,7 +86,6 @@ def default_product_research_config() -> dict[str, Any]:
                 "compliance_note": "通过已配置的联网 AI 模型获取真实可追溯的热卖商品候选。",
                 "config_json": {
                     "provider_strategy": "ai_web_search",
-                    "ai_model_id": "",
                     "max_items": 12,
                     "require_source_url": True,
                     "require_image_url": True,
@@ -150,9 +149,11 @@ def _normalize_product_research_source(source: Any, fallback: dict[str, Any] | N
             "systemPrompt",
         ):
             config_json.pop(prompt_key, None)
+        # 模型由 research.web_search 功能绑定统一决定，不能由数据源覆盖。
+        config_json.pop("ai_model_id", None)
+        config_json.pop("model_id", None)
         config_json = {
             "provider_strategy": "ai_web_search",
-            "ai_model_id": "",
             "max_items": 12,
             "require_image_url": True,
             **config_json,
@@ -267,6 +268,9 @@ def _normalize_market_search_method_binding(value: Any, market: dict[str, Any]) 
         "promptTemplatePath",
     ):
         config_json.pop(prompt_key, None)
+    # 搜索方法绑定仅保留市场级参数，模型仍由 research.web_search 功能绑定选择。
+    config_json.pop("ai_model_id", None)
+    config_json.pop("model_id", None)
     return {
         "method_id": method_id,
         "enabled": _bool_value(raw.get("enabled"), True),

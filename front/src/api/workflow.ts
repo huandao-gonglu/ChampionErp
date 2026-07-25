@@ -441,12 +441,16 @@ function withoutProviderPromptConfigFields(config: UnknownRecord): UnknownRecord
   delete result.prompt
   delete result.systemPrompt
   delete result.system_prompt
+  delete result.ai_model_id
+  delete result.model_id
   return result
 }
 
 function withoutBindingPromptConfigFields(config: UnknownRecord): UnknownRecord {
   const result = withoutPromptTemplateFields(config)
   delete result.prompt
+  delete result.ai_model_id
+  delete result.model_id
   return result
 }
 

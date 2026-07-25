@@ -85,6 +85,30 @@ def web_search_app_config_with_prompt_file(tmp_path, user_prompt: str, system_pr
     return app_config
 
 
+def test_ai_search_source_discards_legacy_model_override() -> None:
+    config = default_product_research_config()
+    config["source_registry"][0]["config_json"]["ai_model_id"] = "legacy_model"
+    config["source_registry"][0]["config_json"]["model_id"] = "another_legacy_model"
+    config["target_markets"][0]["search_methods"] = [
+        {
+            "method_id": "ai_web_search",
+            "config_json": {
+                "ai_model_id": "legacy_model",
+                "model_id": "another_legacy_model",
+            },
+        }
+    ]
+
+    normalized = normalize_product_research_config(config)
+    source_config = normalized["source_registry"][0]["config_json"]
+    binding_config = normalized["target_markets"][0]["search_methods"][0]["config_json"]
+
+    assert "ai_model_id" not in source_config
+    assert "model_id" not in source_config
+    assert "ai_model_id" not in binding_config
+    assert "model_id" not in binding_config
+
+
 def test_create_hot_product_run_returns_ai_search_candidates(tmp_path, monkeypatch) -> None:
     seen: dict = {}
     patch_ai_search(
@@ -770,7 +794,7 @@ def test_public_product_research_config_masks_source_secrets() -> None:
     assert source_config["base_url"] == "https://api.example.com"
 
 
-def test_ai_web_search_provider_connection_uses_configured_model(tmp_path, monkeypatch) -> None:
+def test_ai_web_search_provider_connection_uses_function_binding_model(tmp_path, monkeypatch) -> None:
     class FakeResponse:
         def __enter__(self):
             return self
@@ -824,7 +848,6 @@ def test_ai_web_search_provider_connection_uses_configured_model(tmp_path, monke
         "auth_required": False,
         "config_json": {
             "provider_strategy": "ai_web_search",
-            "ai_model_id": "web_search_model",
         },
     }
 
