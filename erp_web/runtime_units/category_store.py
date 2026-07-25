@@ -69,12 +69,6 @@ def _require_supported_category_platform(platform: str) -> str:
     return platform
 
 
-def _mercadolibre_token() -> str:
-    from .product_store import load_store_config
-
-    return str((load_store_config().get("mercadolibre") or {}).get("access_token") or "").strip()
-
-
 def _mercadolibre_site(site: str = "") -> str:
     from .product_store import load_store_config
 
@@ -158,11 +152,10 @@ def fetch_category_record(platform: str, category_id: str, site: str = "", inclu
     category_id = str(category_id or "").strip()
     if not category_id:
         raise RuntimeError("缺少 Mercado Libre 类目 ID。")
-    token = _mercadolibre_token()
     resolved_site = _mercadolibre_site(site)
-    detail = mercadolibre_category_detail(category_id, token or None, http_client=http_json)
+    detail = mercadolibre_category_detail(category_id, http_client=http_json)
     attrs = (
-        mercadolibre_category_attributes(category_id, token or None, http_client=http_json)
+        mercadolibre_category_attributes(category_id, http_client=http_json)
         if include_attributes
         else {"required": [], "optional": []}
     )
@@ -197,9 +190,8 @@ def search_categories_live(platform: str, query: str, site: str = "", limit: int
         return []
     if platform == "ozon":
         return search_ozon_categories(query, limit=limit)
-    token = _mercadolibre_token()
     resolved_site = _mercadolibre_site(site)
-    data = http_json(_domain_discovery_url(resolved_site, query, limit), token or None)
+    data = http_json(_domain_discovery_url(resolved_site, query, limit))
     suggestions: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     for index, item in enumerate(data if isinstance(data, list) else []):

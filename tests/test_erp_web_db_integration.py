@@ -628,7 +628,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 ],
             }
 
-            with patch.object(erp_web_app, "http_json", side_effect=lambda url, access_token=None: responses[url]):
+            with patch.object(erp_web_app, "http_json", side_effect=lambda url, access_token=None: responses[url]) as http_json_mock:
                 results = erp_web_app.search_categories_live("mercadolibre", query="necklace", site="MLM", limit=5)
                 attrs = erp_web_app.fetch_category_attributes("mercadolibre", "MLM999", site="MLM")
             product = sample_product()
@@ -643,6 +643,13 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             self.assertEqual(attrs["source"], "mercadolibre_live")
             self.assertEqual(summary["required_count"], 1)
             self.assertEqual(summary["filled_count"], 0)
+            self.assertTrue(
+                all(
+                    (not call.args[1:] or call.args[1] is None)
+                    and call.kwargs == {}
+                    for call in http_json_mock.call_args_list
+                )
+            )
 
         self.with_temp_app(run)
 
