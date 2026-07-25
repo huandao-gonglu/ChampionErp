@@ -267,7 +267,7 @@ onBeforeUnmount(() => {
       {{ props.error }}
     </div>
 
-    <div class="mt-5 overflow-hidden rounded-lg border border-accent-200 dark:border-dark-700">
+    <div class="mt-5 overflow-visible rounded-lg border border-accent-200 dark:border-dark-700">
       <table class="w-full table-fixed text-left text-xs">
         <colgroup>
           <col class="w-10" />
