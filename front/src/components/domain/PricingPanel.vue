@@ -99,7 +99,7 @@ function exchangeRateText() {
 </script>
 
 <template>
-  <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
+  <section class="min-w-0 rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div class="min-w-0">
         <h2 class="card-title">草稿核价</h2>
@@ -108,7 +108,7 @@ function exchangeRateText() {
       <button class="btn btn-primary" :disabled="props.loading || !props.draftId || !props.input.targets.length" @click="emit('calculate')">计算并应用</button>
     </div>
 
-    <div class="mt-5 grid gap-3 border-b border-accent-200 pb-5 dark:border-dark-700" :class="props.selectionLocked ? 'lg:grid-cols-2' : 'lg:grid-cols-[minmax(0,1fr)_160px_160px_auto]'">
+    <div class="mt-5 grid gap-3 border-b border-accent-200 pb-5 dark:border-dark-700" :class="props.selectionLocked ? 'lg:max-w-3xl lg:grid-cols-2' : 'lg:grid-cols-[minmax(18rem,32rem)_minmax(12rem,20rem)_9rem_auto] lg:justify-start'">
       <label v-if="!props.selectionLocked" class="block">
         <span class="text-xs font-semibold text-accent-500 dark:text-accent-300">草稿</span>
         <select
@@ -139,7 +139,7 @@ function exchangeRateText() {
       </div>
     </div>
 
-    <div class="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+    <div class="mt-5 grid max-w-6xl gap-3 sm:grid-cols-2 lg:grid-cols-4">
       <label class="block">
         <span class="text-xs font-semibold text-accent-500 dark:text-accent-300">显示货币</span>
         <select v-model="props.input.displayCurrencyMode" class="input mt-1">
@@ -201,8 +201,59 @@ function exchangeRateText() {
       <span v-else>手动汇率模式会使用上方输入的汇率。</span>
     </div>
 
-    <div class="mt-5 overflow-x-auto rounded-lg border border-accent-200 dark:border-dark-700">
-      <table class="w-full min-w-[1040px] table-fixed text-left text-sm">
+    <div class="mt-5 space-y-3 2xl:hidden">
+      <article v-for="target in props.input.targets" :key="target.targetKey" class="min-w-0 rounded-lg border border-accent-200 p-4 dark:border-dark-700">
+        <div class="flex min-w-0 items-start justify-between gap-3">
+          <div class="min-w-0">
+            <p class="truncate font-semibold text-accent-950 dark:text-white" :title="siteLabel(target)">{{ siteLabel(target) }}</p>
+            <p class="mt-1 text-xs text-accent-500 dark:text-accent-400">{{ siteMeta(target) }}</p>
+          </div>
+          <span :class="targetStatusClass(target)">{{ targetStatus(target) }}</span>
+        </div>
+        <p v-if="resultErrors(target)" class="mt-3 text-xs font-semibold text-rose-600 dark:text-rose-200">{{ resultErrors(target) }}</p>
+        <div class="mt-4 grid gap-3 sm:grid-cols-2">
+          <label class="block">
+            <span class="text-xs font-semibold text-accent-500 dark:text-accent-300">佣金 %</span>
+            <input v-model.number="target.commissionPercent" class="input mt-1 w-full" type="number" />
+          </label>
+          <label class="block">
+            <span class="text-xs font-semibold text-accent-500 dark:text-accent-300">支付 %</span>
+            <input v-model.number="target.paymentFeePercent" class="input mt-1 w-full" type="number" />
+          </label>
+          <label class="block">
+            <span class="text-xs font-semibold text-accent-500 dark:text-accent-300">目标利润 %</span>
+            <input v-model.number="target.targetMarginPercent" class="input mt-1 w-full" type="number" />
+          </label>
+          <label class="block">
+            <span class="text-xs font-semibold text-accent-500 dark:text-accent-300">运费 USD</span>
+            <input v-model.number="target.shippingCostUsd" class="input mt-1 w-full" type="number" />
+          </label>
+          <label class="block">
+            <span class="text-xs font-semibold text-accent-500 dark:text-accent-300">运费 CNY</span>
+            <input v-model.number="target.shippingCostCny" class="input mt-1 w-full" type="number" />
+          </label>
+          <label class="block">
+            <span class="text-xs font-semibold text-accent-500 dark:text-accent-300">应用售价</span>
+            <input v-model.number="target.appliedPrice" class="input mt-1 w-full" type="number" :placeholder="targetPrice(target)" />
+            <p class="mt-1 text-xs text-accent-500 dark:text-accent-400">利润率：{{ marginText(target) }}</p>
+          </label>
+        </div>
+        <div class="mt-4 grid gap-3 rounded-lg bg-accent-50 p-3 text-sm dark:bg-dark-800 sm:grid-cols-2">
+          <div>
+            <p class="text-xs font-semibold text-accent-500 dark:text-accent-300">建议售价</p>
+            <p class="mt-1 break-words font-semibold text-accent-950 dark:text-white">{{ suggestedPrice(target) }}</p>
+          </div>
+          <div>
+            <p class="text-xs font-semibold text-accent-500 dark:text-accent-300">利润</p>
+            <p class="mt-1 break-words font-semibold text-accent-950 dark:text-white">{{ profitText(target) }}</p>
+          </div>
+        </div>
+      </article>
+      <p v-if="!props.input.targets.length" class="rounded-lg border border-dashed border-accent-300 p-6 text-center text-sm text-accent-500 dark:border-dark-600 dark:text-accent-300">当前草稿没有目标市场。</p>
+    </div>
+
+    <div class="mt-5 hidden rounded-lg border border-accent-200 dark:border-dark-700 2xl:block">
+      <table class="w-full table-fixed text-left text-sm">
         <colgroup>
           <col class="w-[210px]" />
           <col class="w-[92px]" />

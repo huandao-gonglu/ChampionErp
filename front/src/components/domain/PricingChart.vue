@@ -78,7 +78,7 @@ const chartOptions = computed(() => ({
 </script>
 
 <template>
-  <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
+  <section class="min-w-0 rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
     <div class="flex items-center justify-between gap-3">
       <div>
         <h2 class="card-title">利润对比</h2>

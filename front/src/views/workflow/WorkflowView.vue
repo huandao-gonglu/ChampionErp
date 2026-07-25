@@ -482,7 +482,7 @@ watch(
 
           <div v-else-if="activeNav === 'pricing'" class="space-y-6">
             <PageHeader title="核价" description="成本、运费、佣金、汇率和利润计算。" />
-            <section class="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+            <section class="grid min-w-0 gap-6">
               <PricingPanel
                 :input="pricingInput"
                 :result="pricingResult"
