@@ -685,6 +685,7 @@ export function toBackendProduct(product: Product): UnknownRecord {
       price: product.source.price,
       currency: product.source.currency,
       description: product.source.description,
+      bullets: product.sellingPoints,
       dimensions: {
         length_cm: product.source.dimensions.lengthCm,
         width_cm: product.source.dimensions.widthCm,

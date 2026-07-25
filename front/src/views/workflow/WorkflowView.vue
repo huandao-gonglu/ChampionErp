@@ -745,7 +745,7 @@ watch(
           @close="closeDraftWorkspace"
         >
           <template #actions>
-            <button v-if="draftWorkspaceTab === 'text'" class="btn btn-outline" :disabled="loading || !(currentDraft.productId || currentDraftProductContext.productId)" @click="() => store.generateCopy(true)">AI 编辑文案</button>
+            <button v-if="draftWorkspaceTab === 'text'" class="btn btn-outline" :disabled="loading || !(currentDraft.productId || currentDraftProductContext.productId)" @click="() => store.generateCopy(true)">生成/改写本地化文案</button>
             <button class="btn btn-primary" :disabled="loading || !currentDraft.draftId" @click="store.saveCurrentDraft">保存草稿</button>
           </template>
 
@@ -754,11 +754,7 @@ watch(
               embedded
               :draft="currentDraft"
               :product-context="currentDraftProductContext"
-              :platform-options="platformOptions"
               :loading="loading"
-              @generate-copy="() => store.generateCopy(true)"
-              @save="store.saveCurrentDraft"
-              @close="closeDraftWorkspace"
             />
           </template>
 

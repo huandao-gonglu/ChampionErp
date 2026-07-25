@@ -233,6 +233,19 @@ describe('publishPrecheck API mapping', () => {
     expect(result.publish_preview).toEqual({ mercadolibre: { ok: true } })
   })
 
+  it('writes product descriptions and selling points into source data', () => {
+    const product = createEmptyProduct()
+    product.source.description = '可折叠收纳盒，适用于厨房和衣柜。'
+    product.sellingPoints = ['可折叠收纳', '节省空间']
+
+    const result = toBackendProduct(product)
+
+    expect(result.source).toEqual(expect.objectContaining({
+      description: '可折叠收纳盒，适用于厨房和衣柜。',
+      bullets: ['可折叠收纳', '节省空间'],
+    }))
+  })
+
   it('keeps structured backend issues readable for the UI', async () => {
     const draft = createEmptyDraftDetail('mercadolibre')
     draft.draftId = 'draft-1'

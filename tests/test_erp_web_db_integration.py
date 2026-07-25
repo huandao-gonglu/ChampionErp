@@ -338,6 +338,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             created_drafts = [erp_db.load_draft_model(app_dir, draft_id) for draft_id in result["items"][0]["draft_ids"]]
             self.assertTrue(all(draft["source_product_id"] == saved["product_id"] for draft in created_drafts))
             self.assertTrue(any(draft["title"] == saved["source"]["title"] for draft in created_drafts))
+            self.assertTrue(all(draft["description"] == saved["source"]["description"] for draft in created_drafts))
+            self.assertTrue(all(draft["bullets"] == saved["source"]["bullets"] for draft in created_drafts))
             self.assertTrue(any(draft["images"] for draft in created_drafts))
             loaded = erp_db.load_product_model(app_dir, saved["product_id"])
             self.assertEqual(loaded["drafts"]["mercadolibre"]["status"], "claimed")

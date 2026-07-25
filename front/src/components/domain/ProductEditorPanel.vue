@@ -29,7 +29,7 @@ const materialsText = listModel(() => props.product.materials, (value) => { prop
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div>
         <h2 class="card-title">商品编辑</h2>
-        <p class="muted mt-1">维护商品来源事实、供应链字段和内部资料；平台标题、描述和价格在草稿箱单独编辑。</p>
+        <p class="muted mt-1">维护商品原始资料、供应链字段和内部资料；平台标题、本地化商品描述和价格在草稿箱单独编辑。</p>
       </div>
       <div class="flex flex-wrap gap-2">
         <button class="btn btn-primary" :disabled="props.loading" @click="emit('save')">保存商品</button>
@@ -55,7 +55,8 @@ const materialsText = listModel(() => props.product.materials, (value) => { prop
     </div>
 
     <div class="mt-5 grid gap-4 xl:grid-cols-2">
-      <label class="block"><span class="text-xs font-semibold text-slate-500">卖点，每行一个</span><textarea v-model="sellingPointsText" class="input mt-1 min-h-24" /></label>
+      <label class="block xl:col-span-2"><span class="text-xs font-semibold text-slate-500">商品描述</span><textarea v-model="props.product.source.description" class="input mt-1 min-h-36" /></label>
+      <label class="block"><span class="text-xs font-semibold text-slate-500">商品卖点，每行一个</span><textarea v-model="sellingPointsText" class="input mt-1 min-h-24" /></label>
       <label class="block"><span class="text-xs font-semibold text-slate-500">包装清单，每行一个</span><textarea v-model="packageIncludesText" class="input mt-1 min-h-24" /></label>
       <label class="block"><span class="text-xs font-semibold text-slate-500">材质，每行一个</span><textarea v-model="materialsText" class="input mt-1 min-h-24" /></label>
     </div>
