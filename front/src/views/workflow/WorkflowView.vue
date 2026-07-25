@@ -21,6 +21,7 @@ import ProductResearchPanel from '@/components/domain/ProductResearchPanel.vue'
 import RunLog from '@/components/domain/RunLog.vue'
 import { workflowNavItems } from '@/constants/navigation'
 import { useClipboard } from '@/composables/useClipboard'
+import { useBackdropDismiss } from '@/composables/useBackdropDismiss'
 import { useAppStore } from '@/stores/app'
 import { useWorkflowStore } from '@/stores/workflow'
 import type { DraftIndexItem, Marketplace, ProductIndexItem, UnknownRecord } from '@/types/workflow'
@@ -97,7 +98,6 @@ const router = useRouter()
 const { copied: productIdCopied, copy: copyToClipboard } = useClipboard()
 const activeNav = ref('dashboard')
 const editorOpen = ref(false)
-const productEditorBackdropPointerId = ref<number | null>(null)
 const draftWorkspaceOpen = ref(false)
 const draftWorkspaceTab = ref<DraftWorkspaceTab>('text')
 const draftWorkspaceItem = ref<DraftIndexItem | null>(null)
@@ -273,27 +273,27 @@ async function openProductPrecheck(item: ProductIndexItem, platform: Marketplace
 
 function closeProductEditor() {
   editorOpen.value = false
-  productEditorBackdropPointerId.value = null
+  resetProductEditorBackdropPointer()
 }
 
-function recordProductEditorBackdropPointer(event: PointerEvent) {
-  if (!event.isPrimary) return
-  productEditorBackdropPointerId.value = event.target === event.currentTarget && event.button === 0 ? event.pointerId : null
-}
-
-function closeProductEditorFromBackdrop(event: PointerEvent) {
-  if (!event.isPrimary || productEditorBackdropPointerId.value !== event.pointerId) return
-  const shouldClose = event.target === event.currentTarget
-  productEditorBackdropPointerId.value = null
-  if (!shouldClose) return
-  closeProductEditor()
-}
+const {
+  recordBackdropPointer: recordProductEditorBackdropPointer,
+  dismissFromBackdrop: closeProductEditorFromBackdrop,
+  resetBackdropPointer: resetProductEditorBackdropPointer,
+} = useBackdropDismiss(closeProductEditor)
 
 function closeDraftWorkspace() {
   draftWorkspaceOpen.value = false
+  resetDraftWorkspaceBackdropPointer()
   draftWorkspaceItem.value = null
   draftWorkspaceImagesLoadedFor.value = ''
 }
+
+const {
+  recordBackdropPointer: recordDraftWorkspaceBackdropPointer,
+  dismissFromBackdrop: closeDraftWorkspaceFromBackdrop,
+  resetBackdropPointer: resetDraftWorkspaceBackdropPointer,
+} = useBackdropDismiss(closeDraftWorkspace)
 
 async function copyProductId() {
   if (!product.value.productId) return
@@ -673,6 +673,7 @@ watch(
       class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/50 p-4 backdrop-blur-sm"
       @pointerdown="recordProductEditorBackdropPointer"
       @pointerup="closeProductEditorFromBackdrop"
+      @pointercancel="resetProductEditorBackdropPointer"
     >
       <div class="w-full max-w-7xl rounded-3xl bg-white p-4 shadow-2xl ring-1 ring-slate-200 dark:bg-dark-900 dark:ring-dark-700 sm:p-6">
         <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
@@ -735,7 +736,13 @@ watch(
         />
       </div>
     </div>
-    <div v-if="draftWorkspaceOpen" class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/50 p-4 backdrop-blur-sm" @click.self="closeDraftWorkspace">
+    <div
+      v-if="draftWorkspaceOpen"
+      class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/50 p-4 backdrop-blur-sm"
+      @pointerdown="recordDraftWorkspaceBackdropPointer"
+      @pointerup="closeDraftWorkspaceFromBackdrop"
+      @pointercancel="resetDraftWorkspaceBackdropPointer"
+    >
       <div class="w-full max-w-[96rem] rounded-3xl bg-white p-4 shadow-2xl ring-1 ring-slate-200 dark:bg-dark-900 dark:ring-dark-700 sm:p-6">
         <DraftWorkspacePanel
           :active-tab="draftWorkspaceTab"

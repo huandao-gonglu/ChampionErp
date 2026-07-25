@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from 'vue'
+import { useBackdropDismiss } from '@/composables/useBackdropDismiss'
 import type { ImageAsset } from '@/types/workflow'
 
 const props = defineProps<{
@@ -66,8 +67,15 @@ function openImageEditPrompt() {
 
 function closeImageEditPrompt() {
   imageEditPromptOpen.value = false
+  resetImageEditPromptBackdropPointer()
   imageEditPrompt.value = ''
 }
+
+const {
+  recordBackdropPointer: recordImageEditPromptBackdropPointer,
+  dismissFromBackdrop: closeImageEditPromptFromBackdrop,
+  resetBackdropPointer: resetImageEditPromptBackdropPointer,
+} = useBackdropDismiss(closeImageEditPrompt)
 
 function submitImageEdit() {
   const prompt = imageEditPrompt.value.trim()
@@ -186,7 +194,9 @@ onBeforeUnmount(() => {
   <div
     v-if="imageEditPromptOpen"
     class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm"
-    @click.self="closeImageEditPrompt"
+    @pointerdown="recordImageEditPromptBackdropPointer"
+    @pointerup="closeImageEditPromptFromBackdrop"
+    @pointercancel="resetImageEditPromptBackdropPointer"
   >
     <form class="w-full max-w-2xl rounded-2xl bg-white p-5 shadow-2xl ring-1 ring-slate-200 dark:bg-dark-900 dark:ring-dark-700" @submit.prevent="submitImageEdit">
       <div class="mb-4 flex items-start justify-between gap-3">
