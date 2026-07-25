@@ -14,6 +14,8 @@ class ProductSource(TypedDict, total=False):
     description: str
     bullets: list[str]
     attributes: dict[str, Any]
+    attribute_matches: dict[str, Any]
+    dimensions: dict[str, str]
     images: list[DraftImageRef]
     image_pool: list[ImageItem]
     created_at: str

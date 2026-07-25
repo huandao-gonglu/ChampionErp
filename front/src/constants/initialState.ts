@@ -69,6 +69,7 @@ export function createEmptyProduct(): Product {
       weightKg: '',
       imagePool: [],
       attributes: {},
+      attributeMatches: {},
       collectStatus: '',
       collectDiagnostics: {},
     },

@@ -5,6 +5,7 @@ from typing import Any
 
 from erp_web.marketplace_registry import marketplace_site
 
+from .attribute_matching import infer_source_attribute_matches
 from .common import PLATFORMS, SOURCE_COMPAT_IMAGE_ORIGINS, normalize_list, parse_dimensions_text, text_or_empty
 from .defaults import default_collect_diagnostics, default_draft, default_pricing, default_product_model, default_source
 from .draft_image_model import normalize_draft_image_refs
@@ -33,6 +34,10 @@ def _merge_source(product: dict[str, Any]) -> dict[str, Any]:
     source["image_pool"] = normalize_image_pool(image_pool, legacy_images, "source")
     pool_views = image_pool_legacy_views(source["image_pool"], SOURCE_COMPAT_IMAGE_ORIGINS)
     source["images"] = normalize_list(pool_views["images"] or legacy_images)
+    source["attributes"] = deepcopy(incoming.get("attributes") if isinstance(incoming.get("attributes"), dict) else product.get("attributes") if isinstance(product.get("attributes"), dict) else {})
+    source["attribute_matches"] = infer_source_attribute_matches(source["attributes"])
+    dimension_match = source["attribute_matches"].get("dimensions") if isinstance(source["attribute_matches"].get("dimensions"), dict) else {}
+    matched_dimensions = dimension_match.get("normalized") if isinstance(dimension_match.get("normalized"), dict) else {}
     raw_dimensions = incoming.get("dimensions") if isinstance(incoming.get("dimensions"), dict) else {}
     fallback_dimensions = parse_dimensions_text(product.get("dimensions") if legacy_fallback else "")
     fallback_package_dimensions = {
@@ -41,16 +46,15 @@ def _merge_source(product: dict[str, Any]) -> dict[str, Any]:
         "height_cm": text_or_empty(product.get("package_height_cm") if legacy_fallback else ""),
     }
     source["dimensions"] = {
-        "length_cm": str(raw_dimensions.get("length_cm") or fallback_package_dimensions["length_cm"] or fallback_dimensions["length_cm"] or parse_dimensions_text(product.get("dimensions")).get("length_cm") or "").strip(),
-        "width_cm": str(raw_dimensions.get("width_cm") or fallback_package_dimensions["width_cm"] or fallback_dimensions["width_cm"] or parse_dimensions_text(product.get("dimensions")).get("width_cm") or "").strip(),
-        "height_cm": str(raw_dimensions.get("height_cm") or fallback_package_dimensions["height_cm"] or fallback_dimensions["height_cm"] or parse_dimensions_text(product.get("dimensions")).get("height_cm") or "").strip(),
+        "length_cm": str(raw_dimensions.get("length_cm") or fallback_package_dimensions["length_cm"] or fallback_dimensions["length_cm"] or parse_dimensions_text(product.get("dimensions")).get("length_cm") or matched_dimensions.get("length_cm") or "").strip(),
+        "width_cm": str(raw_dimensions.get("width_cm") or fallback_package_dimensions["width_cm"] or fallback_dimensions["width_cm"] or parse_dimensions_text(product.get("dimensions")).get("width_cm") or matched_dimensions.get("width_cm") or "").strip(),
+        "height_cm": str(raw_dimensions.get("height_cm") or fallback_package_dimensions["height_cm"] or fallback_dimensions["height_cm"] or parse_dimensions_text(product.get("dimensions")).get("height_cm") or matched_dimensions.get("height_cm") or "").strip(),
     }
     source["weight_kg"] = str(incoming.get("weight_kg") or (product.get("weight_kg") if legacy_fallback else "") or "").strip()
     source["material"] = str(incoming.get("material") or ((product.get("materials") or [""])[0] if legacy_fallback else "") or "").strip()
     source["package_contents"] = normalize_list(incoming.get("package_contents") or (product.get("package_includes") if legacy_fallback else []))
     source["variants"] = deepcopy(incoming.get("variants") or (product.get("variations") if legacy_fallback else []) or [])
     source["skus"] = deepcopy(incoming.get("skus") or (product.get("sku_items") if legacy_fallback else []) or [])
-    source["attributes"] = deepcopy(incoming.get("attributes") if isinstance(incoming.get("attributes"), dict) else product.get("attributes") if isinstance(product.get("attributes"), dict) else {})
     source["brand"] = str(incoming.get("brand") or product.get("brand") or "").strip()
     source["model"] = str(incoming.get("model") or product.get("model") or "").strip()
     source["sku"] = str(incoming.get("sku") or product.get("sku") or "").strip()
@@ -108,10 +112,12 @@ def _apply_source_mappings_to_draft(product: dict[str, Any], platform: str, curr
     current["stock"] = str(current.get("stock") or product.get("stock") or "").strip()
     current_pkg = current.get("package_dimensions") if isinstance(current.get("package_dimensions"), dict) else {}
     source_dims = source.get("dimensions") if isinstance(source.get("dimensions"), dict) else {}
+    dimension_match = source.get("attribute_matches", {}).get("dimensions") if isinstance(source.get("attribute_matches"), dict) else {}
+    source_dimensions_are_package_safe = not (isinstance(dimension_match, dict) and dimension_match.get("scope") == "product")
     current["package_dimensions"] = {
-        "length_cm": str(current_pkg.get("length_cm") or source_dims.get("length_cm") or product.get("package_length_cm") or "").strip(),
-        "width_cm": str(current_pkg.get("width_cm") or source_dims.get("width_cm") or product.get("package_width_cm") or "").strip(),
-        "height_cm": str(current_pkg.get("height_cm") or source_dims.get("height_cm") or product.get("package_height_cm") or "").strip(),
+        "length_cm": str(current_pkg.get("length_cm") or (source_dims.get("length_cm") if source_dimensions_are_package_safe else "") or product.get("package_length_cm") or "").strip(),
+        "width_cm": str(current_pkg.get("width_cm") or (source_dims.get("width_cm") if source_dimensions_are_package_safe else "") or product.get("package_width_cm") or "").strip(),
+        "height_cm": str(current_pkg.get("height_cm") or (source_dims.get("height_cm") if source_dimensions_are_package_safe else "") or product.get("package_height_cm") or "").strip(),
         "weight_kg": str(current_pkg.get("weight_kg") or source.get("weight_kg") or product.get("weight_kg") or "").strip(),
     }
     current["attributes"] = deepcopy(current.get("attributes") or product.get("attributes") or {})
@@ -296,6 +302,8 @@ def normalize_product_model(product: dict[str, Any] | None) -> dict[str, Any]:
     normalized["drafts"] = {platform: _merge_platform_draft(incoming, platform) for platform in PLATFORMS}
 
     normalized["name"] = str(normalized["source"].get("title") or normalized.get("name") or "").strip()
+    category_match = normalized["source"].get("attribute_matches", {}).get("category") if isinstance(normalized["source"].get("attribute_matches"), dict) else {}
+    normalized["category"] = str(normalized.get("category") or (category_match.get("value") if isinstance(category_match, dict) else "") or "").strip()
     normalized["source_url"] = str(normalized["source"].get("source_url") or normalized.get("source_url") or "").strip()
     normalized["source_platform"] = str(normalized["source"].get("source_platform") or normalized.get("source_platform") or "").strip()
     normalized["materials"] = normalize_list(normalized.get("materials") or [normalized["source"].get("material")])

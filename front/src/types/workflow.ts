@@ -92,6 +92,7 @@ export interface ProductSource {
   weightKg: string
   imagePool: ImageAsset[]
   attributes: Record<string, string>
+  attributeMatches: UnknownRecord
   collectStatus: string
   collectDiagnostics: UnknownRecord
 }

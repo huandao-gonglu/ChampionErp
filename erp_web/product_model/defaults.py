@@ -28,6 +28,7 @@ def default_source() -> dict[str, Any]:
         "variants": [],
         "skus": [],
         "attributes": {},
+        "attribute_matches": {},
         "brand": "",
         "model": "",
         "sku": "",

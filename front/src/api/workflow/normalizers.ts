@@ -513,6 +513,7 @@ export function normalizeBackendProduct(value: unknown, imagePoolOverride?: unkn
       weightKg: getString(source, ['weightKg', 'weight_kg'], getString(record, ['weight_kg', 'source_weight_kg'])),
       imagePool: imagePoolRaw.map(normalizeImageAsset),
       attributes: Object.fromEntries(Object.entries(asRecord(source.attributes ?? record.attributes)).map(([key, value]) => [key, String(value ?? '')])),
+      attributeMatches: asRecord(source.attribute_matches ?? source.attributeMatches),
       collectStatus: getString(source, ['collect_status'], getString(record, ['collect_status'])),
       collectDiagnostics: asRecord(source.collect_diagnostics),
     },

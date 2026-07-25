@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from erp_web.product_model import default_collect_diagnostics, merge_source_partial_result
+from erp_web.product_model import default_collect_diagnostics, merge_source_partial_result, normalize_product_model
 from erp_web.runtime_units.source_collect_parsers import extract_1688_attributes, parse_1688_product
 
 
@@ -115,6 +115,59 @@ def test_parse_1688_product_uses_context_skus_and_preserves_attributes() -> None
     assert product["sku_items"][0]["price"] == "9.50"
     assert product["sku_items"][0]["stock"] == "25"
     assert product["sku_items"][0]["image"] == "https://cbu01.alicdn.com/red.jpg"
+
+
+def test_parse_1688_product_semantically_matches_non_strict_category_and_dimension_keys() -> None:
+    html = """
+    <div id="productAttributes">
+      <table><tbody>
+        <tr><th>风扇 分类</th><td>八爪鱼风扇</td></tr>
+        <tr><th>商品 外观-尺寸（mm）</th><td>220*92*85</td></tr>
+      </tbody></table>
+    </div>
+    """
+
+    product = parse_1688_product({"html": html, "text": "", "url": "https://detail.1688.com/offer/123.html"})
+    source = product["source"]
+
+    assert product["category"] == "八爪鱼风扇"
+    assert source["dimensions"] == {"length_cm": "22", "width_cm": "9.2", "height_cm": "8.5"}
+    assert source["attribute_matches"]["category"]["source_key"] == "风扇 分类"
+    assert source["attribute_matches"]["dimensions"]["source_key"] == "商品 外观-尺寸（mm）"
+
+
+def test_parse_1688_product_defaults_unitless_dimensions_to_millimetres() -> None:
+    html = """
+    <div id="productAttributes">
+      <table><tbody><tr><th>外观尺寸</th><td>220*92*85</td></tr></tbody></table>
+    </div>
+    """
+
+    product = parse_1688_product({"html": html, "text": "", "url": "https://detail.1688.com/offer/123.html"})
+    match = product["source"]["attribute_matches"]["dimensions"]
+
+    assert product["source"]["dimensions"] == {"length_cm": "22", "width_cm": "9.2", "height_cm": "8.5"}
+    assert match["raw_value"] == "220*92*85"
+    assert match["unit"] == "mm"
+    assert match["unit_inferred"] is True
+
+
+def test_product_dimension_match_does_not_fill_package_dimensions() -> None:
+    product = normalize_product_model(
+        {
+            "source": {
+                "attributes": {"外观尺寸": "220*92*85"},
+            }
+        }
+    )
+
+    assert product["source"]["dimensions"] == {"length_cm": "22", "width_cm": "9.2", "height_cm": "8.5"}
+    assert product["drafts"]["mercadolibre"]["package_dimensions"] == {
+        "length_cm": "",
+        "width_cm": "",
+        "height_cm": "",
+        "weight_kg": "",
+    }
 
 
 def test_merge_source_partial_result_keeps_browser_1688_attributes_and_skus() -> None:
