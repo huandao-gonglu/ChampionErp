@@ -1788,10 +1788,40 @@ export const useWorkflowStore = defineStore('workflow', () => {
   }
 
   async function selectCategory(item: CategorySearchResult) {
-    currentDraft.value.categoryId = item.id
+    const previousCategoryId = currentDraft.value.categoryId.trim()
+    const categoryId = item.id.trim()
+    if (!categoryId) {
+      setError('所选类目缺少类目 ID。')
+      return
+    }
+    const categoryChanged = previousCategoryId !== categoryId
+    currentDraft.value.categoryId = categoryId
     currentDraft.value.categoryPath = item.path || item.name
+    if (categoryChanged) {
+      currentDraft.value.attributes = {}
+      currentDraft.value.validationErrors = []
+      currentDraft.value.lastPrecheck = {}
+      currentDraft.value.lastPrecheckTarget = {}
+      currentDraft.value.publishStatus = ''
+      currentDraft.value.status = 'category_ready'
+      category.value = null
+      categoryPrecheck.value = null
+      precheck.value = null
+      payloadPreview.value = null
+    }
     categoryAttributeTranslations.value = {}
     categoryAttributeTranslationsSource.value = ''
+    loading.value = true
+    setError('')
+    try {
+      await persistCurrentDraftForPublish()
+      addLog(`类目已保存：${categoryId}`)
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : '保存类目失败')
+      return
+    } finally {
+      loading.value = false
+    }
     await loadCategoryAttributes(item.raw)
   }
 

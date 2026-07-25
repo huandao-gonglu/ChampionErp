@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
@@ -222,10 +222,6 @@ async function ensureDraftWorkspaceImages() {
 async function switchDraftWorkspaceTab(tab: DraftWorkspaceTab) {
   if (tab === 'images') await ensureDraftWorkspaceImages()
   draftWorkspaceTab.value = tab
-  if (tab === 'category') {
-    await nextTick()
-    void store.autoSuggestCategoriesForDraft()
-  }
 }
 
 async function translateEditorImages() {

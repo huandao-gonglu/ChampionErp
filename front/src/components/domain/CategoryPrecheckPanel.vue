@@ -376,14 +376,14 @@ function applyWarrantyTerms(type: WarrantyType, durationValue = '3', unit: Warra
         <div class="flex flex-wrap items-center justify-between gap-2">
           <div>
             <h3 class="font-semibold text-accent-950 dark:text-white">类目候选与手动搜索</h3>
-            <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">打开页面后会自动识别商品主体并生成候选；如需调整，可手动输入关键词搜索当前目标站点。</p>
+            <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">可手动输入关键词搜索当前目标站点，或按需使用 AI 识别商品主体并生成候选。</p>
           </div>
         </div>
         <p class="mt-3 text-xs text-accent-500 dark:text-accent-400">{{ props.loading ? '正在请求 Mercado Libre 实时类目接口...' : '候选类目来自 Mercado Libre 实时搜索；选中类目后再实时读取必填属性。' }}</p>
         <p v-if="props.categoryAutoMatchTargetError" class="mt-2 text-xs text-amber-700 dark:text-amber-300">本目标站点自动匹配未完成：{{ props.categoryAutoMatchTargetError }}</p>
         <div class="mt-4 flex gap-2">
           <input :value="props.categoryQuery" class="input" placeholder="类目关键词" @input="emit('updateCategoryQuery', ($event.target as HTMLInputElement).value)" @keyup.enter="emit('searchCategory')" />
-          <button class="btn btn-outline shrink-0" :disabled="props.loading || !hasCurrentDraft" @click="emit('suggestCategory')">重新自动匹配</button>
+          <button class="btn btn-outline shrink-0" :disabled="props.loading || !hasCurrentDraft" @click="emit('suggestCategory')">AI 匹配类目</button>
           <button class="btn btn-primary shrink-0" :disabled="props.loading || !hasCurrentDraft" @click="emit('searchCategory')">搜索</button>
         </div>
         <div class="mt-4 space-y-2">
