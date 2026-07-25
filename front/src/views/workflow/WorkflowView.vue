@@ -162,15 +162,16 @@ const pendingItems = computed(() => productsIndex.value.filter((item) => {
   return values.some((value) => ['failed', 'not_ready', 'pending', 'partial'].includes(value))
 }))
 
-async function openProductEditor(item?: ProductIndexItem, mode: 'text' | 'images' = 'text') {
+async function openProductEditor(item?: ProductIndexItem) {
   if (item) await store.loadProduct(item)
-  editorMode.value = mode
+  editorMode.value = 'text'
   imageEditorTitle.value = '商品库图片编辑'
   editorOpen.value = true
 }
 
 async function openProductImageEditor(item?: ProductIndexItem) {
-  await openProductEditor(item, 'images')
+  await openProductEditor(item)
+  editorMode.value = 'images'
 }
 
 function productIndexFromDraft(item: DraftIndexItem): ProductIndexItem {
@@ -455,8 +456,7 @@ watch(
             :loading="loading"
             :error="error"
             @refresh="store.refreshProductsIndex"
-            @load="openProductEditor"
-            @edit-images="openProductImageEditor"
+            @edit="openProductEditor"
             @delete-item="store.deleteProduct"
             @delete-selected="store.deleteSelectedProducts"
             @toggle="store.toggleProductSelection"
@@ -674,20 +674,43 @@ watch(
       @pointerdown="recordProductEditorBackdropPointer"
       @pointerup="closeProductEditorFromBackdrop"
     >
-      <div class="w-full rounded-3xl bg-white p-4 shadow-2xl ring-1 ring-slate-200 dark:bg-dark-900 dark:ring-dark-700 sm:p-6" :class="editorMode === 'images' ? 'max-w-7xl' : 'max-w-6xl'">
+      <div class="w-full max-w-7xl rounded-3xl bg-white p-4 shadow-2xl ring-1 ring-slate-200 dark:bg-dark-900 dark:ring-dark-700 sm:p-6">
         <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 class="text-xl font-black text-slate-950 dark:text-white">{{ editorMode === 'images' ? imageEditorTitle : '商品文本编辑' }}</h2>
+            <h2 class="text-xl font-black text-slate-950 dark:text-white">{{ product.name || '商品编辑' }}</h2>
+            <p class="mt-1 text-sm text-slate-500 dark:text-accent-300">{{ product.productId || '在同一工作台完成文本与图片编辑' }}</p>
           </div>
           <div class="flex flex-wrap gap-2">
             <button class="btn btn-outline" :disabled="!product.productId" :title="product.productId || '当前商品暂无 ID'" @click="copyProductId">
               {{ productIdCopied ? '已复制' : '复制id' }}
             </button>
-            <button class="btn btn-outline" :class="editorMode === 'text' ? 'bg-slate-100' : ''" @click="editorMode = 'text'">编辑文本</button>
-            <button class="btn btn-outline" :class="editorMode === 'images' ? 'bg-slate-100' : ''" @click="editorMode = 'images'">编辑图片</button>
             <button class="btn btn-outline" @click="closeProductEditor">关闭</button>
           </div>
         </div>
+        <nav class="mb-5 grid gap-2 rounded-2xl border border-accent-200 bg-accent-50/70 p-2 dark:border-dark-700 dark:bg-dark-950/70 sm:grid-cols-2" aria-label="商品编辑选项">
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="editorMode === 'text'"
+            class="rounded-xl border px-4 py-3 text-left transition"
+            :class="editorMode === 'text' ? 'border-primary-300 bg-white text-primary-700 shadow-sm dark:border-primary-500/60 dark:bg-dark-800 dark:text-primary-200' : 'border-transparent text-accent-600 hover:bg-white/70 dark:text-accent-300 dark:hover:bg-dark-800/70'"
+            @click="editorMode = 'text'"
+          >
+            <span class="block font-semibold">编辑文本</span>
+            <span class="mt-1 block text-xs opacity-75">标题、描述和商品属性</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="editorMode === 'images'"
+            class="rounded-xl border px-4 py-3 text-left transition"
+            :class="editorMode === 'images' ? 'border-primary-300 bg-white text-primary-700 shadow-sm dark:border-primary-500/60 dark:bg-dark-800 dark:text-primary-200' : 'border-transparent text-accent-600 hover:bg-white/70 dark:text-accent-300 dark:hover:bg-dark-800/70'"
+            @click="editorMode = 'images'"
+          >
+            <span class="block font-semibold">编辑图片</span>
+            <span class="mt-1 block text-xs opacity-75">翻译、处理和管理商品图片</span>
+          </button>
+        </nav>
         <ProductEditorPanel
           v-if="editorMode === 'text'"
           :product="product"

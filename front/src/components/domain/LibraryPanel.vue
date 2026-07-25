@@ -11,8 +11,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   refresh: []
-  load: [item: ProductIndexItem]
-  editImages: [item: ProductIndexItem]
+  edit: [item: ProductIndexItem]
   toggle: [productId: string, checked: boolean]
   selectAll: [checked: boolean, productIds: string[]]
   deleteItem: [item: ProductIndexItem]
@@ -124,8 +123,7 @@ function statusClass(value: string) {
             <td class="min-w-0 p-2 text-accent-500 dark:text-accent-300"><span class="block truncate" :title="item.updatedAt || item.createdAt">{{ item.updatedAt || item.createdAt || '-' }}</span></td>
             <td class="p-2">
               <div class="flex flex-nowrap gap-1">
-                <button class="btn btn-outline shrink-0 whitespace-nowrap px-1.5 py-1 text-xs" :disabled="props.loading" title="编辑文本" @click="emit('load', item)">编辑</button>
-                <button class="btn btn-secondary shrink-0 whitespace-nowrap px-1.5 py-1 text-xs" :disabled="props.loading" title="编辑图片" @click="emit('editImages', item)">图片</button>
+                <button class="btn btn-primary shrink-0 whitespace-nowrap px-1.5 py-1 text-xs" :disabled="props.loading" title="编辑商品" @click="emit('edit', item)">编辑</button>
                 <button class="btn btn-outline shrink-0 whitespace-nowrap px-1.5 py-1 text-xs text-rose-700 dark:text-rose-200" :disabled="props.loading" @click="confirmDelete(item)">删除</button>
               </div>
             </td>
