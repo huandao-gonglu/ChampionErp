@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from erp_web import http_client
 from erp_web.product_research_config import normalize_product_research_config
 from erp_web.schemas.product_research import (
     HotProductCandidate,
@@ -974,11 +975,13 @@ def _configured_api_request_json(
     if query:
         separator = "&" if urllib.parse.urlparse(rendered_url).query else "?"
         rendered_url = f"{rendered_url}{separator}{urllib.parse.urlencode(query, doseq=True)}"
-    req = urllib.request.Request(rendered_url, data=data, headers={str(key): str(value) for key, value in headers.items()}, method=method)
-    with urllib.request.urlopen(req, timeout=timeout_seconds) as response:
-        raw = response.read()
-    text = raw.decode("utf-8")
-    return json.loads(text) if text else {}
+    return http_client.request_json(
+        rendered_url,
+        method=method,
+        data=data,
+        headers={str(key): str(value) for key, value in headers.items()},
+        timeout=timeout_seconds,
+    )
 
 
 def _configured_api_sample(

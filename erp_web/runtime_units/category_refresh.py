@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import json
 import urllib.parse
-import urllib.request
 from typing import Any, Callable
+
+from erp_web import http_client
 
 JsonClient = Callable[[str, str | None], dict[str, Any] | list[Any]]
 
@@ -16,9 +16,7 @@ def http_json(url: str, access_token: str | None = None) -> dict[str, Any] | lis
     }
     if access_token:
         headers["Authorization"] = f"Bearer {access_token}"
-    request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=8) as response:
-        return json.loads(response.read().decode("utf-8"))
+    return http_client.request_json(url, headers=headers, timeout=8)
 
 
 def ml_attr_required(attr: dict[str, Any]) -> bool:

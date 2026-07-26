@@ -12,6 +12,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from erp_web import http_client
+
 def load_store_config(path: Path) -> dict[str, Any]:
     if path.exists():
         return json.loads(path.read_text(encoding="utf-8"))
@@ -94,11 +96,8 @@ def request_json(
     if extra_headers:
         headers.update(extra_headers)
     data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    request = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            raw = response.read().decode("utf-8")
-            return json.loads(raw) if raw else {}
+        return http_client.request_json(url, method=method, headers=headers, data=data, timeout=30)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"{method} {url} failed: {exc.code} {detail}") from exc
@@ -107,11 +106,8 @@ def request_json(
 def request_form_json(method: str, url: str, payload: dict[str, str]) -> dict[str, Any]:
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
     data = urllib.parse.urlencode(payload).encode("utf-8")
-    request = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            raw = response.read().decode("utf-8")
-            return json.loads(raw) if raw else {}
+        return http_client.request_json(url, method=method, headers=headers, data=data, timeout=30)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"{method} {url} failed: {exc.code} {detail}") from exc

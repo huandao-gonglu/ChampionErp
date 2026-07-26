@@ -20,6 +20,8 @@ from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any, Callable
 
+from erp_web import http_client
+
 from . import ai_model_config, ai_work_service, browser_ai_runtime, config_service
 from .ai_image_provider import OpenAIImageProvider
 from .ai_provider_contracts import (
@@ -885,8 +887,9 @@ def list_remote_models(base_url: str, api_key: str, timeout: int = 60) -> list[d
 
 
 def _post_json(url: str, api_key: str, body: dict[str, Any], timeout: int) -> dict[str, Any]:
-    request = urllib.request.Request(
+    return http_client.request_json(
         url,
+        method="POST",
         data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {api_key}",
@@ -894,11 +897,8 @@ def _post_json(url: str, api_key: str, body: dict[str, Any], timeout: int) -> di
             "Accept": "application/json",
             "User-Agent": ai_model_config.AI_HTTP_USER_AGENT,
         },
-        method="POST",
+        timeout=timeout,
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        raw = response.read()
-    return json.loads(raw.decode("utf-8")) if raw else {}
 
 
 def _normalize_probe_messages(value: Any) -> list[dict[str, str]]:
