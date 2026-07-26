@@ -3,6 +3,10 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 
+class UserInputError(Exception):
+    """Invalid request input; mapped to an HTTP 400 by the top-level POST handler."""
+
+
 class JsonRequestHandler(Protocol):
     path: str
     wfile: Any

@@ -4,6 +4,8 @@ from typing import Any
 
 from erp_web.services import image_service, image_translate_service
 
+from .common import UserInputError
+
 
 IMAGE_POST_PATHS = {
     "/api/image-pool/upload",
@@ -45,11 +47,11 @@ def handle_post(handler: Any, path: str, app: Any) -> bool:
         if isinstance(uploads, dict):
             uploads = [uploads]
         if not isinstance(uploads, list) or not uploads:
-            raise RuntimeError("缂哄皯涓婁紶鍥剧墖")
+            raise UserInputError("缺少上传图片")
         source = product.get("source") if isinstance(product.get("source"), dict) else {}
         uploaded_items = image_service.upload_images(app.APP_DIR, uploads, str(product.get("product_id") or ""))
         if not uploaded_items:
-            raise RuntimeError("涓婁紶鍥剧墖澶辫触锛屾湭瑙ｇ爜鎴愬姛")
+            raise UserInputError("上传图片失败，未解码成功")
         pool = image_service.add_images(source.get("image_pool") if isinstance(source.get("image_pool"), list) else [], uploaded_items, app.APP_DIR)
         saved = app.save_product(app.apply_service_image_pool(product, pool))
         handler.send_json(

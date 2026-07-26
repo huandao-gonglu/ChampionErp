@@ -70,7 +70,7 @@ class CdpWebSocket:
         self.sock.sendall(request.encode("ascii"))
         response = self.sock.recv(4096)
         if b" 101 " not in response.split(b"\r\n", 1)[0]:
-            raise RuntimeError("杩炴帴 Chrome DevTools WebSocket 澶辫触")
+            raise RuntimeError("连接 Chrome DevTools WebSocket 失败")
         self.next_id = 1
 
     def close(self) -> None:

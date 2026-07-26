@@ -19,7 +19,7 @@ from .http_route_units import (
     product_research_routes,
     publish_routes,
 )
-from .http_route_units.common import JsonRequestHandler
+from .http_route_units.common import JsonRequestHandler, UserInputError
 from .runtime_units.runtime_api import safe_json_body
 
 
@@ -81,6 +81,10 @@ def handle_post(handler: JsonRequestHandler) -> None:
         route_unit = POST_ROUTE_UNITS_BY_PATH.get(parsed.path)
         if route_unit and route_unit.handle_post(handler, parsed):
             return
+    except UserInputError as exc:
+        logger.warning("Rejected POST request %s: %s", handler.path, exc)
+        handler.send_json({"ok": False, "error": str(exc)}, 400)
+        return
     except Exception as exc:
         logger.exception("Unhandled POST request failed: %s", handler.path)
         handler.send_json({"ok": False, "error": str(exc)}, 500)
