@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .api import ApiResponse
+from .ai_work import AiWorkConversationSummary, AiWorkEvent, AiWorkEventType
 from .config import AppConfig, StoreConfig
 from .image import ImageItem
 from .product import CategoryAttributeDefinition, CategoryAttributeSchema, DraftTargetSite, PlatformDraft, Product, ProductSource
@@ -19,6 +20,9 @@ from .publish import PublishJob, PublishPlatformState
 
 __all__ = [
     "ApiResponse",
+    "AiWorkConversationSummary",
+    "AiWorkEvent",
+    "AiWorkEventType",
     "AppConfig",
     "CategoryAttributeDefinition",
     "CategoryAttributeSchema",

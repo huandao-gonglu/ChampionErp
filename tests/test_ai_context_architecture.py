@@ -69,3 +69,24 @@ def test_context_map_mentions_product_research_entry_points() -> None:
     assert "erp_web/product_research_config.py" in text
     assert "erp_web/services/product_research_service.py" in text
     assert "erp_web/schemas/product_research.py" in text
+
+
+def test_ai_business_services_do_not_import_model_sdks_directly() -> None:
+    allowed = {"ai_image_provider.py"}
+    for path in python_files("erp_web/services"):
+        if path.name in allowed:
+            continue
+        text = path.read_text(encoding="utf-8")
+        assert "from openai import" not in text, f"{path.relative_to(ROOT)} should call an AI Provider"
+
+
+def test_context_map_mentions_ai_provider_and_ai_work_entry_points() -> None:
+    text = (ROOT / "docs/ai-context-map.md").read_text(encoding="utf-8")
+    for entry_point in [
+        "erp_web/services/ai_provider_contracts.py",
+        "erp_web/services/ai_image_provider.py",
+        "erp_web/services/ai_work_service.py",
+        "erp_web/http_route_units/ai_work_routes.py",
+        "front/src/views/AiWorkView.vue",
+    ]:
+        assert entry_point in text

@@ -134,143 +134,12 @@ def _bytes_from_result(result: dict[str, Any]) -> tuple[bytes, str]:
     return b"", ".png"
 
 
-def _response_items(response: Any) -> list[Any]:
-    if isinstance(response, dict):
-        data = response.get("data")
-    else:
-        data = getattr(response, "data", None)
-    return data if isinstance(data, list) else []
-
-
-def _item_value(item: Any, key: str) -> Any:
-    if isinstance(item, dict):
-        return item.get(key)
-    return getattr(item, key, None)
-
-
-def _provider_results_from_response(response: Any, provider_name: str, mode: str, source_id: str = "") -> list[dict[str, Any]]:
-    results: list[dict[str, Any]] = []
-    for item in _response_items(response):
-        b64_json = str(_item_value(item, "b64_json") or "").strip()
-        data_url = str(_item_value(item, "data_url") or _item_value(item, "dataUrl") or "").strip()
-        url = str(_item_value(item, "url") or "").strip()
-        if not any((b64_json, data_url, url)):
-            continue
-        result = {
-            "provider": provider_name,
-            "mode": mode,
-            "source_id": source_id,
-            "suffix": ".png",
-        }
-        if b64_json:
-            result["b64_json"] = b64_json
-        if data_url:
-            result["data_url"] = data_url
-        if url:
-            result["url"] = url
-        results.append(result)
-    return results
-
-
 def _local_source_path(app_dir: Path | str, item: dict[str, Any]) -> Path | None:
     for key in ("path", "local_path"):
         candidate = image_service.resolve_local_path(str(item.get(key) or ""), app_dir)
         if candidate and candidate.exists() and candidate.is_file():
             return candidate
     return None
-
-
-def _call_image_method(method: Any, payload: dict[str, Any]) -> Any:
-    try:
-        return method(**payload)
-    except TypeError:
-        if "quality" not in payload:
-            raise
-        fallback = dict(payload)
-        fallback.pop("quality", None)
-        return method(**fallback)
-
-
-def openai_image_provider(config: dict[str, Any], request: dict[str, Any]) -> list[dict[str, Any]]:
-    """Call an OpenAI-compatible image model and normalize returned images."""
-    api_key = ai_model_config.model_api_key(config)
-    if not api_key:
-        return []
-    try:
-        from openai import OpenAI
-    except ImportError as exc:
-        raise RuntimeError("OpenAI SDK is not installed. Run: pip install openai") from exc
-
-    base_url = ai_model_config.model_base_url(config).rstrip("/")
-    provider_name = str(config.get("provider") or config.get("name") or "OpenAI-Compatible").strip() or "OpenAI-Compatible"
-    model = ai_model_config.model_name(config) or "gpt-image-1"
-    quality = str(config.get("quality") or "medium").strip()
-    size = str(config.get("size") or DEFAULT_IMAGE_SIZE).strip() or DEFAULT_IMAGE_SIZE
-    prompt = str(request.get("prompt") or "").strip()
-    app_dir = Path(str(request.get("app_dir") or "."))
-    kwargs: dict[str, Any] = {
-        "api_key": api_key,
-        "timeout": IMAGE_AI_TIMEOUT_SECONDS,
-        "default_headers": {"User-Agent": ai_model_config.AI_HTTP_USER_AGENT},
-    }
-    if base_url:
-        kwargs["base_url"] = base_url
-    client = OpenAI(**kwargs)
-
-    generated: list[dict[str, Any]] = []
-    has_local_source = False
-    selected = [item for item in request.get("images") or [] if isinstance(item, dict)]
-    for item in selected:
-        source_path = _local_source_path(app_dir, item)
-        if not source_path:
-            continue
-        has_local_source = True
-        source_id = str(item.get("id") or "").strip()
-        try:
-            with source_path.open("rb") as image_file:
-                payload: dict[str, Any] = {
-                    "model": model,
-                    "image": image_file,
-                    "prompt": prompt,
-                    "n": 1,
-                    "size": size,
-                    "quality": quality,
-                }
-                response = _call_image_method(client.images.edit, payload)
-            generated.extend(_provider_results_from_response(response, provider_name, str(request.get("mode") or "translate"), source_id))
-        except Exception:
-            continue
-
-    if generated:
-        return generated
-    if not has_local_source:
-        return []
-
-    source_notes = []
-    for item in selected[:4]:
-        note = " | ".join(
-            value
-            for value in [
-                str(item.get("id") or "").strip(),
-                str(item.get("usage") or "").strip(),
-                str(item.get("url") or item.get("path") or "").strip(),
-            ]
-            if value
-        )
-        if note:
-            source_notes.append(note)
-    fallback_prompt = prompt
-    if source_notes:
-        fallback_prompt = f"{prompt}\n\nReference images selected in ERP:\n" + "\n".join(f"- {note}" for note in source_notes)
-    payload = {
-        "model": model,
-        "prompt": fallback_prompt,
-        "n": 1,
-        "size": size,
-        "quality": quality,
-    }
-    response = _call_image_method(client.images.generate, payload)
-    return _provider_results_from_response(response, provider_name, str(request.get("mode") or "translate"))
 
 
 def _safe_suffix(suffix: str, mime: str = "") -> str:
@@ -468,8 +337,21 @@ def translate_images(
             "target_language": target,
             "provider": provider_name,
         }
-    provider_fn = provider or (_mock_provider if use_mock else openai_image_provider)
-    generated = provider_fn(cfg, request)
+    if provider is not None:
+        generated = provider(cfg, request)
+    elif use_mock:
+        generated = _mock_provider(cfg, request)
+    else:
+        generated = ai_gateway.edit_images(
+            app_dir,
+            app_config,
+            "image.translate",
+            prompt=prompt,
+            images=selected,
+            mode=mode,
+            size=str(cfg.get("size") or DEFAULT_IMAGE_SIZE),
+            quality=str(cfg.get("quality") or "medium"),
+        )
     if not generated:
         api_key = ai_model_config.model_api_key(cfg)
         if config_error:
@@ -590,8 +472,21 @@ def edit_images(
             "provider": provider_name,
         }
 
-    provider_fn = provider or (_mock_provider if use_mock else openai_image_provider)
-    generated = provider_fn(cfg, request)
+    if provider is not None:
+        generated = provider(cfg, request)
+    elif use_mock:
+        generated = _mock_provider(cfg, request)
+    else:
+        generated = ai_gateway.edit_images(
+            app_dir,
+            app_config,
+            "image.translate",
+            prompt=user_prompt,
+            images=selected,
+            mode="edit",
+            size=str(cfg.get("size") or DEFAULT_IMAGE_SIZE),
+            quality=str(cfg.get("quality") or "medium"),
+        )
     if not generated:
         api_key = ai_model_config.model_api_key(cfg)
         if config_error:

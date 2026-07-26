@@ -7,6 +7,7 @@ import urllib.parse
 from erp_web.http_route_units import image_routes
 from . import runtime as app
 from .http_route_units import (
+    ai_work_routes,
     auth_config_routes,
     category_routes,
     collect_routes,
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
 FRONTEND_PAGE_ROUTES = get_routes.FRONTEND_PAGE_ROUTES
 GET_ROUTE_UNITS = (
     get_routes,
+    ai_work_routes,
     product_research_routes,
 )
 GET_API_ROUTES = frozenset(

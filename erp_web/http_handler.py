@@ -27,6 +27,18 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def send_ndjson(self, items: list[dict[str, Any]], status: int = 200) -> None:
+        raw = "".join(
+            json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n"
+            for item in items
+        ).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
     def read_body(self) -> dict[str, Any]:
         return http_routes.safe_json_body(self)
 

@@ -718,10 +718,11 @@ def test_ai_provider_registry_exposes_typed_provider_classes() -> None:
     assert issubclass(ai_gateway.OpenAIResponsesProvider, ai_gateway.AiProvider)
     assert issubclass(ai_gateway.CodexCliProvider, ai_gateway.AiProvider)
     assert issubclass(ai_gateway.BrowserAiProvider, ai_gateway.AiProvider)
+    assert issubclass(ai_gateway.OpenAIImageProvider, ai_gateway.AiProvider)
     assert all(isinstance(provider, ai_gateway.AiProvider) for provider in ai_gateway.AI_PROVIDER_REGISTRY)
 
     provider_ids = [provider.provider_id for provider in ai_gateway.AI_PROVIDER_REGISTRY]
-    assert provider_ids == ["codex_cli", "browser", "openai_responses", "openai_compatible"]
+    assert provider_ids == ["codex_cli", "browser", "openai_responses", "openai_compatible", "openai_image"]
 
 
 def test_browser_ai_provider_uses_browser_runtime(tmp_path: Path, monkeypatch) -> None:

@@ -10,6 +10,9 @@ class JsonRequestHandler(Protocol):
     def send_json(self, data: Any, status: int = 200) -> None:
         ...
 
+    def send_ndjson(self, items: list[dict[str, Any]], status: int = 200) -> None:
+        ...
+
     def read_body(self) -> dict[str, Any]:
         ...
 

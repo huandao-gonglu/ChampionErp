@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 import base64
 import binascii
 from dataclasses import dataclass
@@ -21,7 +20,17 @@ from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any, Callable
 
-from . import ai_model_config, browser_ai_runtime, config_service
+from . import ai_model_config, ai_work_service, browser_ai_runtime, config_service
+from .ai_image_provider import OpenAIImageProvider
+from .ai_provider_contracts import (
+    CAPABILITY_CHAT_JSON,
+    CAPABILITY_IMAGE_EDIT,
+    CAPABILITY_IMAGE_GENERATE,
+    AiChatProvider,
+    AiImageProvider,
+    AiImageRequest,
+    AiProvider,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,24 +47,13 @@ class AiChatRequest:
     extra_body: dict[str, Any] | None = None
     stream: bool = False
     token_callback: Callable[[str], None] | None = None
+    conversation: ai_work_service.AiWorkConversation | None = None
 
-
-class AiProvider(ABC):
-    """统一 AI Provider 接口，隔离 API、CLI 等不同接入方式。"""
-
-    provider_id: str
-
-    @abstractmethod
-    def supports(self, model: dict[str, Any]) -> bool:
-        """Return whether this provider can handle the normalized model row."""
-
-    @abstractmethod
-    def chat_json(self, request: AiChatRequest) -> dict[str, Any]:
-        """Run a chat request and return a parsed JSON object."""
-
-    @abstractmethod
-    def test_model(self, app_dir: Path | str, model: dict[str, Any], raw_model: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Validate provider-specific connectivity and capability support."""
+    def emit_delta(self, text: str) -> None:
+        if self.conversation:
+            self.conversation.emit_text_delta(text)
+        if self.token_callback:
+            self.token_callback(text)
 
 
 class AIHTTPError(RuntimeError):
@@ -661,15 +659,28 @@ def _chat_json_via_cli(
     response_format: bool = True,
     stream: bool = False,
     token_callback: Callable[[str], None] | None = None,
+    conversation: ai_work_service.AiWorkConversation | None = None,
 ) -> dict[str, Any]:
     cli_tool = ai_model_config.model_cli_tool(model)
     if cli_tool != ai_model_config.CLI_TOOL_CODEX:
         raise RuntimeError(f"CLI 工具 {cli_tool} 已预留，但当前版本只支持 Codex CLI。")
     timeout = int(timeout_seconds or model.get("timeout_seconds") or 180)
     allow_external_read = ai_model_config.CAP_WEB_SEARCH in ai_model_config.normalize_capabilities(model.get("capabilities"))
-    text = _run_codex_cli_text(app_dir, model, _cli_prompt(messages, response_format=response_format, allow_external_read=allow_external_read), timeout)
+    prompt = _cli_prompt(messages, response_format=response_format, allow_external_read=allow_external_read)
+    if conversation:
+        conversation.emit_custom(
+            "provider.request",
+            {
+                "command": ai_model_config.model_cli_command(model),
+                "messages": messages,
+                "provider_payload": {"prompt": prompt, "stream": bool(stream)},
+            },
+        )
+    text = _run_codex_cli_text(app_dir, model, prompt, timeout)
     if stream and token_callback and text:
         token_callback(text)
+    if conversation:
+        conversation.finish_assistant_message(text)
     return parse_json_text(text)
 
 
@@ -1671,12 +1682,13 @@ def _test_http_model(app_dir: Path | str, model: dict[str, Any], raw_model: dict
     return result
 
 
-class OpenAICompatibleProvider(AiProvider):
+class OpenAICompatibleProvider(AiChatProvider):
     provider_id = "openai_compatible"
 
-    def supports(self, model: dict[str, Any]) -> bool:
+    def supports(self, model: dict[str, Any], capability: str = CAPABILITY_CHAT_JSON) -> bool:
         return (
-            ai_model_config.model_connection_type(model) == ai_model_config.CONNECTION_TYPE_API
+            capability == CAPABILITY_CHAT_JSON
+            and ai_model_config.model_connection_type(model) == ai_model_config.CONNECTION_TYPE_API
             and _model_api_style(model) == ai_model_config.API_STYLE_OPENAI_COMPATIBLE
         )
 
@@ -1699,8 +1711,20 @@ class OpenAICompatibleProvider(AiProvider):
             body.update(_web_search_body_for_model(model))
         body = _merge_request_body(model, body, request.extra_body)
         timeout = int(request.timeout_seconds or model.get("timeout_seconds") or 60)
-        payload = self._post_chat(model, api_key, model_name, url, body, timeout, request)
-        return parse_json_text(_chat_response_text(payload))
+        if request.conversation:
+            request.conversation.emit_custom(
+                "provider.request",
+                {
+                    "endpoint": url,
+                    "method": "POST",
+                    "messages": request.messages,
+                    "provider_payload": body,
+                },
+            )
+        raw_text = self._post_chat(model, api_key, model_name, url, body, timeout, request)
+        if request.conversation:
+            request.conversation.finish_assistant_message(raw_text)
+        return parse_json_text(raw_text)
 
     def _post_chat(
         self,
@@ -1711,7 +1735,7 @@ class OpenAICompatibleProvider(AiProvider):
         body: dict[str, Any],
         timeout: int,
         request: AiChatRequest,
-    ) -> dict[str, Any]:
+    ) -> str:
         stream = bool(body.get("stream"))
         http_request = urllib.request.Request(
             url,
@@ -1728,22 +1752,26 @@ class OpenAICompatibleProvider(AiProvider):
         try:
             with urllib.request.urlopen(http_request, timeout=timeout) as response:
                 if stream:
-                    return _parse_chat_json_text_or_payload(_read_chat_stream_text(response, request.token_callback))
+                    return _read_chat_stream_text(response, request.emit_delta)
                 raw = response.read()
         except urllib.error.HTTPError as exc:
             raise _ai_http_error(exc, model=model, model_name=model_name, api_style=api_style, url=url) from exc
-        return json.loads(raw.decode("utf-8")) if raw else {}
+        payload = json.loads(raw.decode("utf-8")) if raw else {}
+        if request.conversation:
+            request.conversation.emit("RAW", event=payload, source=self.provider_id)
+        return _chat_response_text(payload)
 
     def test_model(self, app_dir: Path | str, model: dict[str, Any], raw_model: dict[str, Any] | None = None) -> dict[str, Any]:
         return _test_http_model(app_dir, model, raw_model)
 
 
-class OpenAIResponsesProvider(AiProvider):
+class OpenAIResponsesProvider(AiChatProvider):
     provider_id = "openai_responses"
 
-    def supports(self, model: dict[str, Any]) -> bool:
+    def supports(self, model: dict[str, Any], capability: str = CAPABILITY_CHAT_JSON) -> bool:
         return (
-            ai_model_config.model_connection_type(model) == ai_model_config.CONNECTION_TYPE_API
+            capability == CAPABILITY_CHAT_JSON
+            and ai_model_config.model_connection_type(model) == ai_model_config.CONNECTION_TYPE_API
             and _model_api_style(model) == ai_model_config.API_STYLE_OPENAI_RESPONSES
         )
 
@@ -1765,6 +1793,16 @@ class OpenAIResponsesProvider(AiProvider):
         body = _merge_request_body(model, body, request.extra_body)
         timeout = int(request.timeout_seconds or model.get("timeout_seconds") or 60)
         stream = bool(body.get("stream"))
+        if request.conversation:
+            request.conversation.emit_custom(
+                "provider.request",
+                {
+                    "endpoint": url,
+                    "method": "POST",
+                    "messages": request.messages,
+                    "provider_payload": body,
+                },
+            )
         http_request = urllib.request.Request(
             url,
             data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
@@ -1779,7 +1817,10 @@ class OpenAIResponsesProvider(AiProvider):
         try:
             with urllib.request.urlopen(http_request, timeout=timeout) as response:
                 if stream:
-                    return _parse_chat_json_text_or_payload(_read_responses_stream_text(response, request.token_callback))
+                    raw_text = _read_responses_stream_text(response, request.emit_delta)
+                    if request.conversation:
+                        request.conversation.finish_assistant_message(raw_text)
+                    return parse_json_text(raw_text)
                 raw = response.read()
         except urllib.error.HTTPError as exc:
             raise _ai_http_error(
@@ -1790,18 +1831,23 @@ class OpenAIResponsesProvider(AiProvider):
                 url=url,
             ) from exc
         payload = json.loads(raw.decode("utf-8")) if raw else {}
-        return parse_json_text(_chat_response_text(payload))
+        raw_text = _chat_response_text(payload)
+        if request.conversation:
+            request.conversation.emit("RAW", event=payload, source=self.provider_id)
+            request.conversation.finish_assistant_message(raw_text)
+        return parse_json_text(raw_text)
 
     def test_model(self, app_dir: Path | str, model: dict[str, Any], raw_model: dict[str, Any] | None = None) -> dict[str, Any]:
         return _test_http_model(app_dir, model, raw_model)
 
 
-class CodexCliProvider(AiProvider):
+class CodexCliProvider(AiChatProvider):
     provider_id = "codex_cli"
 
-    def supports(self, model: dict[str, Any]) -> bool:
+    def supports(self, model: dict[str, Any], capability: str = CAPABILITY_CHAT_JSON) -> bool:
         return (
-            ai_model_config.model_connection_type(model) == ai_model_config.CONNECTION_TYPE_CLI
+            capability == CAPABILITY_CHAT_JSON
+            and ai_model_config.model_connection_type(model) == ai_model_config.CONNECTION_TYPE_CLI
             and ai_model_config.model_cli_tool(model) == ai_model_config.CLI_TOOL_CODEX
         )
 
@@ -1813,7 +1859,8 @@ class CodexCliProvider(AiProvider):
             timeout_seconds=request.timeout_seconds,
             response_format=request.response_format,
             stream=request.stream,
-            token_callback=request.token_callback,
+            token_callback=request.emit_delta,
+            conversation=request.conversation,
         )
 
     def test_model(self, app_dir: Path | str, model: dict[str, Any], raw_model: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1855,25 +1902,44 @@ class CodexCliProvider(AiProvider):
         }
 
 
-class BrowserAiProvider(AiProvider):
+class BrowserAiProvider(AiChatProvider):
     provider_id = "browser"
 
-    def supports(self, model: dict[str, Any]) -> bool:
-        return ai_model_config.model_connection_type(model) == ai_model_config.CONNECTION_TYPE_BROWSER
+    def supports(self, model: dict[str, Any], capability: str = CAPABILITY_CHAT_JSON) -> bool:
+        return (
+            capability == CAPABILITY_CHAT_JSON
+            and ai_model_config.model_connection_type(model) == ai_model_config.CONNECTION_TYPE_BROWSER
+        )
 
     def chat_json(self, request: AiChatRequest) -> dict[str, Any]:
         timeout = int(request.timeout_seconds or request.model.get("timeout_seconds") or 180)
         capabilities = ai_model_config.normalize_capabilities(request.model.get("capabilities"))
-        result = _browser_chat_result(
-            request.app_dir,
-            request.model,
+        prompt = _browser_prompt(
             request.messages,
-            timeout,
             response_format=request.response_format,
             allow_external_read=ai_model_config.CAP_WEB_SEARCH in capabilities,
         )
-        if request.stream and request.token_callback and result.text:
-            request.token_callback(result.text)
+        if request.conversation:
+            request.conversation.emit_custom(
+                "provider.request",
+                {
+                    "browser_provider": browser_ai_runtime.normalize_browser_provider(
+                        request.model.get("browser_provider")
+                    ),
+                    "messages": request.messages,
+                    "provider_payload": {"prompt": prompt, "stream": bool(request.stream)},
+                },
+            )
+        result = browser_ai_runtime.run_browser_ai_chat(
+            request.app_dir,
+            request.model,
+            prompt,
+            timeout=timeout,
+        )
+        if request.stream and result.text:
+            request.emit_delta(result.text)
+        if request.conversation:
+            request.conversation.finish_assistant_message(result.text)
         return parse_json_text(result.text)
 
     def test_model(self, app_dir: Path | str, model: dict[str, Any], raw_model: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1931,16 +1997,28 @@ AI_PROVIDER_REGISTRY: tuple[AiProvider, ...] = (
     BrowserAiProvider(),
     OpenAIResponsesProvider(),
     OpenAICompatibleProvider(),
+    OpenAIImageProvider(),
 )
 
 
-def _provider_for_model(model: dict[str, Any]) -> AiProvider:
+def _provider_for_model(
+    model: dict[str, Any],
+    capability: str = CAPABILITY_CHAT_JSON,
+) -> AiProvider:
     for provider in AI_PROVIDER_REGISTRY:
-        if provider.supports(model):
+        if provider.supports(model, capability):
             return provider
-    if ai_model_config.model_connection_type(model) == ai_model_config.CONNECTION_TYPE_CLI:
+    if (
+        capability == CAPABILITY_CHAT_JSON
+        and ai_model_config.model_connection_type(model) == ai_model_config.CONNECTION_TYPE_CLI
+    ):
         raise RuntimeError(f"CLI 工具 {ai_model_config.model_cli_tool(model)} 已预留，但当前版本只支持 Codex CLI。")
-    raise RuntimeError(f"不支持的 AI Provider 配置：connection_type={ai_model_config.model_connection_type(model)} api_style={_model_api_style(model)}")
+    raise RuntimeError(
+        "不支持的 AI Provider 配置："
+        f"capability={capability} "
+        f"connection_type={ai_model_config.model_connection_type(model)} "
+        f"api_style={_model_api_style(model)}"
+    )
 
 
 def chat_json(
@@ -1959,28 +2037,145 @@ def chat_json(
     token_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     model = _resolved_model(app_dir, app_config, use_case_id, model_id)
-    provider = _provider_for_model(model)
-    return provider.chat_json(
-        AiChatRequest(
-            app_dir=app_dir,
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            timeout_seconds=timeout_seconds,
-            response_format=response_format,
-            extra_body=extra_body,
-            stream=stream,
-            token_callback=token_callback,
-        )
+    provider = _provider_for_model(model, CAPABILITY_CHAT_JSON)
+    if not isinstance(provider, AiChatProvider):
+        raise RuntimeError(f"Provider {provider.provider_id} 未实现文本对话能力。")
+    conversation = ai_work_service.start_conversation(
+        app_dir,
+        use_case_id=use_case_id,
+        capability=CAPABILITY_CHAT_JSON,
+        provider_id=provider.provider_id,
+        model=model,
+        stream=stream,
+        input_payload={"messages": messages},
     )
+    try:
+        parsed = provider.chat_json(
+            AiChatRequest(
+                app_dir=app_dir,
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout_seconds=timeout_seconds,
+                response_format=response_format,
+                extra_body=extra_body,
+                stream=stream,
+                token_callback=token_callback,
+                conversation=conversation,
+            )
+        )
+        conversation.emit_custom("business.result", {"parsed": parsed})
+        conversation.finish({"parsed": parsed})
+        return parsed
+    except Exception as exc:
+        conversation.fail(exc)
+        raise
+
+
+def generate_images(
+    app_dir: Path | str,
+    app_config: dict[str, Any] | None,
+    use_case_id: str,
+    *,
+    prompt: str,
+    images: list[dict[str, Any]] | None = None,
+    mode: str = "generate",
+    model_id: str = "",
+    size: str = "1024x1024",
+    quality: str = "medium",
+    count: int = 1,
+) -> list[dict[str, Any]]:
+    model = _resolved_model(app_dir, app_config, use_case_id, model_id)
+    provider = _provider_for_model(model, CAPABILITY_IMAGE_GENERATE)
+    if not isinstance(provider, AiImageProvider):
+        raise RuntimeError(f"Provider {provider.provider_id} 未实现图片生成能力。")
+    conversation = ai_work_service.start_conversation(
+        app_dir,
+        use_case_id=use_case_id,
+        capability=CAPABILITY_IMAGE_GENERATE,
+        provider_id=provider.provider_id,
+        model=model,
+        input_payload={"prompt": prompt, "images": images or []},
+    )
+    try:
+        results = provider.generate_images(
+            AiImageRequest(
+                app_dir=app_dir,
+                model=model,
+                prompt=prompt,
+                images=images or [],
+                mode=mode,
+                size=size,
+                quality=quality,
+                count=count,
+                conversation=conversation,
+            )
+        )
+        summary = {"generated_count": len(results)}
+        conversation.emit_custom("business.result", summary)
+        conversation.finish(summary)
+        return results
+    except Exception as exc:
+        conversation.fail(exc)
+        raise
+
+
+def edit_images(
+    app_dir: Path | str,
+    app_config: dict[str, Any] | None,
+    use_case_id: str,
+    *,
+    prompt: str,
+    images: list[dict[str, Any]],
+    mode: str = "edit",
+    model_id: str = "",
+    size: str = "1024x1024",
+    quality: str = "medium",
+    count: int = 1,
+) -> list[dict[str, Any]]:
+    model = _resolved_model(app_dir, app_config, use_case_id, model_id)
+    provider = _provider_for_model(model, CAPABILITY_IMAGE_EDIT)
+    if not isinstance(provider, AiImageProvider):
+        raise RuntimeError(f"Provider {provider.provider_id} 未实现图片编辑能力。")
+    conversation = ai_work_service.start_conversation(
+        app_dir,
+        use_case_id=use_case_id,
+        capability=CAPABILITY_IMAGE_EDIT,
+        provider_id=provider.provider_id,
+        model=model,
+        input_payload={"prompt": prompt, "images": images},
+    )
+    try:
+        results = provider.edit_images(
+            AiImageRequest(
+                app_dir=app_dir,
+                model=model,
+                prompt=prompt,
+                images=images,
+                mode=mode,
+                size=size,
+                quality=quality,
+                count=count,
+                conversation=conversation,
+            )
+        )
+        summary = {"generated_count": len(results)}
+        conversation.emit_custom("business.result", summary)
+        conversation.finish(summary)
+        return results
+    except Exception as exc:
+        conversation.fail(exc)
+        raise
 
 
 def test_ai_model(app_dir: Path | str, model: dict[str, Any]) -> dict[str, Any]:
     config_service.load_env(app_dir)
     raw_model = model if isinstance(model, dict) else {}
     normalized = ai_model_config.normalize_ai_model(raw_model)
-    provider = _provider_for_model(normalized)
+    provider = _provider_for_model(normalized, CAPABILITY_CHAT_JSON)
+    if not isinstance(provider, AiChatProvider):
+        raise RuntimeError(f"Provider {provider.provider_id} 未实现模型测试能力。")
     return provider.test_model(app_dir, normalized, raw_model)
 
 
@@ -1988,12 +2183,18 @@ __all__ = [
     "AI_PROVIDER_REGISTRY",
     "AIHTTPError",
     "AiChatRequest",
+    "AiChatProvider",
+    "AiImageProvider",
+    "AiImageRequest",
     "AiProvider",
     "BrowserAiProvider",
     "CodexCliProvider",
     "OpenAICompatibleProvider",
+    "OpenAIImageProvider",
     "OpenAIResponsesProvider",
     "chat_json",
+    "edit_images",
+    "generate_images",
     "list_remote_models",
     "parse_json_text",
     "probe_model_capabilities",

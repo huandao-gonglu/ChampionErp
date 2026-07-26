@@ -45,6 +45,7 @@ FRONTEND_PAGE_ROUTES = {
     "/settings": "settings",
     "/auth": "auth",
     "/logs": "logs",
+    "/aiWork": "ai-work",
 }
 
 GET_API_ROUTES = {

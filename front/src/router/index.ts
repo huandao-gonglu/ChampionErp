@@ -91,6 +91,15 @@ const routes: RouteRecordRaw[] = [
   // Auth Routes
   // User Routes
   ...legacyEntryRoutes,
+  {
+    path: '/aiWork',
+    name: 'AiWork',
+    component: () => import('@/views/AiWorkView.vue'),
+    meta: {
+      title: 'AI Work',
+      hideInMenu: true,
+    },
+  },
   // Admin Routes
   // 404 Routes
   {
