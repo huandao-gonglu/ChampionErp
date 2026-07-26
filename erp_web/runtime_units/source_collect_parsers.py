@@ -633,67 +633,6 @@ def parse_amazon_product(raw_data: str | dict[str, Any], page_url: str = "") -> 
     product["detail_images"] = image_paths[7:20]
     return normalize_product_fields(populate_source_from_legacy_product(product, "amazon", page_url))
 
-def parse_amazon_product(raw_data: str | dict[str, Any], page_url: str = "") -> dict[str, Any]:
-    if isinstance(raw_data, dict):
-        html = str(raw_data.get("html", "") or "")
-        text = str(raw_data.get("text") or "")
-        page_title = str(raw_data.get("title") or "")
-        page_url = str(raw_data.get("url") or page_url or "")
-        image_urls = list(raw_data.get("image_urls") or [])
-    else:
-        html = str(raw_data or "")
-        text = ""
-        page_title = ""
-        image_urls = []
-    if not text:
-        text = legacy.html_to_text(html)
-
-    product = default_product_model()
-    product["source_url"] = page_url
-    product["source_platform"] = "Amazon"
-    product["source_text"] = text
-
-    title = page_title or legacy.extract_page_title(html)
-    if title:
-        product["name"] = title.strip()
-        product.update({key: value for key, value in legacy.infer_product_from_title(title).items() if value})
-
-    bullets = []
-    try:
-        bullets = legacy.extract_amazon_bullets(html)
-    except Exception:
-        bullets = []
-    if bullets:
-        product["selling_points"] = bullets[:10]
-
-    price, currency = legacy.extract_price_currency(html)
-    if price:
-        product["detected_price"] = price
-        product["detected_currency"] = currency
-        product["detected_price_display"] = f"{price} {currency}".strip()
-
-    dims, parsed_weight = legacy.extract_measurements(html)
-    if dims:
-        product["dimensions"] = dims
-    if parsed_weight:
-        product["weight_kg"] = parsed_weight
-
-    source_dir = SOURCE_DIR
-    source_dir.mkdir(parents=True, exist_ok=True)
-    image_paths: list[str] = []
-    extracted_image_urls = collect_product_image_urls(html, page_url, image_urls, limit=20)
-    if extracted_image_urls:
-        try:
-            image_paths = legacy.download_images(extracted_image_urls, source_dir)
-        except Exception:
-            image_paths = []
-
-    product["source_image_urls"] = extracted_image_urls[:7]
-    product["detail_image_urls"] = extracted_image_urls[7:20]
-    product["source_images"] = image_paths[:7]
-    product["detail_images"] = image_paths[7:20]
-    return normalize_product_fields(populate_source_from_legacy_product(product, "amazon", page_url))
-
 
 def parse_generic_product(raw_data: str | dict[str, Any], page_url: str = "") -> dict[str, Any]:
     if isinstance(raw_data, dict):
