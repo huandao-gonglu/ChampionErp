@@ -2,7 +2,10 @@ import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
-const devProxyTarget = process.env.VITE_DEV_PROXY_TARGET || 'http://127.0.0.1:5050'
+// Follows the backend ERP_PORT convention (dev.sh exports it); 5050 is the dev.sh default.
+const devProxyTarget =
+  process.env.VITE_DEV_PROXY_TARGET ||
+  (process.env.ERP_PORT ? `http://127.0.0.1:${process.env.ERP_PORT}` : 'http://127.0.0.1:5050')
 const devPort = Number(process.env.VITE_DEV_PORT || 3000)
 
 export default defineConfig(({ mode }) => {

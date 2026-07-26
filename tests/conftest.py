@@ -12,7 +12,9 @@ import requests
 
 
 APP_DIR = Path(__file__).resolve().parents[1]
-BASE_URL = os.environ.get("ERP_TEST_BASE_URL", "http://127.0.0.1:5000")
+# Follows the backend's ERP_PORT convention (see erp_web/runtime_units/runtime_common.py)
+# so tests target the same server a dev session started; ERP_TEST_BASE_URL still wins.
+BASE_URL = os.environ.get("ERP_TEST_BASE_URL", f"http://127.0.0.1:{os.environ.get('ERP_PORT', '5000')}")
 OLD_PATH_MARKERS = (
     r"C:\Users\miami\Documents\Codex\2026-05-23\wb-10",
     r"C:/Users/miami/Documents/Codex/2026-05-23/wb-10",

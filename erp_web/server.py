@@ -9,6 +9,7 @@ from http.server import ThreadingHTTPServer
 from .http_handler import Handler
 from .logging_config import configure_logging
 from .runtime import OUTPUT_DIR, WEB_PORT, pick_web_port
+from .runtime_units.category_store import ensure_sqlite_store
 from .runtime_units.publish_adapter import resume_pending_publish_jobs
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 def main() -> None:
     log_file = configure_logging()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_sqlite_store()
     resume_pending_publish_jobs()
     port = pick_web_port(WEB_PORT)
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)

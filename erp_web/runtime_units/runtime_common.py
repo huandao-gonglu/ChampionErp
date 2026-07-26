@@ -74,6 +74,10 @@ FRONT_DIR = APP_DIR / "front"
 FRONT_DIST_DIR = APP_DIR / "erp_web" / "static" / "dist"
 FRONT_DIST_INDEX_PATH = FRONT_DIST_DIR / "index.html"
 WEB_TEMPLATE_PATH = FRONT_DIR / "index.html"
+# Port convention — ERP_PORT is the single knob:
+#   default 5000 (production / Electron desktop, front/desktop/main.cjs follows it)
+#   scripts/dev.sh exports ERP_PORT=5050 and points the Vite proxy at it
+#   tests/conftest.py builds its base URL from the same variable
 WEB_PORT = int(os.environ.get("ERP_PORT", "5000"))
 BROWSER_DEBUG_PORT = int(os.environ.get("ERP_BROWSER_DEBUG_PORT", "9222"))
 DEFAULT_EXCHANGE_RATE_API_URL = "https://open.er-api.com/v6/latest/USD"

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import urllib.parse
 from pathlib import Path
 from typing import Any
@@ -37,11 +38,31 @@ def write_json(path: Path, data: Any) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+# Mutable container (not a rebound global) so the flag survives erp_web.runtime's
+# namespace re-injection; keyed by resolved app dir so tests that repoint APP_DIR
+# still initialize their own database.
+_SQLITE_INIT_STATE: dict[str, bool] = {}
+_SQLITE_INIT_LOCK = threading.Lock()
+
+
 def ensure_sqlite_store() -> None:
+    """Initialize the SQLite store once per process (and per app dir).
+
+    Previously every product load/save re-ran the full CREATE TABLE script and
+    both schema migrations. Now the expensive initialization runs once; the
+    fast path only re-checks that the database file still exists.
+    """
     from erp_web import db as erp_db
     from .runtime_common import APP_DIR
 
-    erp_db.initialize_database(APP_DIR)
+    key = str(Path(APP_DIR).resolve())
+    if _SQLITE_INIT_STATE.get(key) and erp_db.db_path(APP_DIR).exists():
+        return
+    with _SQLITE_INIT_LOCK:
+        if _SQLITE_INIT_STATE.get(key) and erp_db.db_path(APP_DIR).exists():
+            return
+        erp_db.initialize_database(APP_DIR)
+        _SQLITE_INIT_STATE[key] = True
 
 
 _CATEGORY_AI_KEYWORD_MAP = {

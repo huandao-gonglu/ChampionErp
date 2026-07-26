@@ -49,6 +49,15 @@ from .image_pool_core import current_image_pool, current_source_images
 from .product_store import load_product, load_products_index, normalize_list, save_product
 from .runtime_common import APP_DIR, BROWSER_DEBUG_PORT, VERIFY_MARKERS
 
+
+class ManualCollectRequested(RuntimeError):
+    """collect_mode='manual' — the plugin/manual import flow must be used instead.
+
+    Typed replacement for the old ``raise RuntimeError("MANUAL_MODE")`` +
+    string-matching control flow.
+    """
+
+
 def collect_source_product(
     url: str,
     mode: str = "browser",
@@ -85,7 +94,7 @@ def collect_source_product(
 
     try:
         if collect_mode == "manual":
-            raise RuntimeError("MANUAL_MODE")
+            raise ManualCollectRequested("MANUAL_MODE")
         if collect_mode == "api":
             if platform_detected != "1688":
                 raise RuntimeError("API_MODE_ONLY_SUPPORTS_1688")
@@ -213,7 +222,7 @@ def collect_source_product(
         }
     except Exception as exc:
         error_message = str(exc)
-        if error_message == "MANUAL_MODE":
+        if isinstance(exc, ManualCollectRequested):
             error_message = "手动模式请走插件/手动导入接口"
         if not diagnostics.get("error_code"):
             if error_message == "NO_SNAPSHOT":
