@@ -110,7 +110,35 @@ def parse_json_text(raw_text: str) -> dict[str, Any]:
     jsonl_items = _parse_jsonl_items_text(text)
     if jsonl_items:
         return {"items": jsonl_items}
+    trailing = _last_embedded_json_object(text)
+    if trailing is not None:
+        return trailing
     raise ValueError("AI response JSON must be an object.")
+
+
+def _last_embedded_json_object(text: str) -> dict[str, Any] | None:
+    """Return the last complete JSON object embedded in mixed prose.
+
+    Thinking-model output may interleave chain-of-thought prose, fenced draft
+    objects, and the final answer; the trailing complete object wins. Used as
+    the last parse_json_text strategy, so earlier strategies keep their
+    behavior for clean payloads.
+    """
+    decoder = json.JSONDecoder()
+    found: dict[str, Any] | None = None
+    index = 0
+    while True:
+        start = text.find("{", index)
+        if start < 0:
+            return found
+        try:
+            payload, end = decoder.raw_decode(text, start)
+        except ValueError:
+            index = start + 1
+            continue
+        if isinstance(payload, dict) and payload:
+            found = payload
+        index = max(end, start + 1)
 
 
 def _parse_jsonl_items_text(text: str) -> list[dict[str, Any]]:
@@ -304,6 +332,13 @@ def _responses_stream_delta_text(payload: Any) -> str:
     event_type = str(payload.get("type") or "")
     if event_type in {"response.output_text.delta", "response.refusal.delta"}:
         return str(payload.get("delta") or "")
+    if event_type.startswith("response."):
+        # Typed Responses API events outside the allowlist are not assistant
+        # text. Thinking models stream chain-of-thought as
+        # response.reasoning_text.delta with the same string `delta` shape;
+        # falling through to _chat_stream_delta_text would leak it into the
+        # message body (and break JSON parsing downstream).
+        return ""
     return _chat_stream_delta_text(payload)
 
 
