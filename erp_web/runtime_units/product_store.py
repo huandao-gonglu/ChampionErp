@@ -19,6 +19,8 @@ from erp_web.product_model import (
     normalize_product_model,
 )
 
+from erp_web.product_model.common import normalize_list
+
 from .category_store import ensure_sqlite_store, read_json, write_json
 from .image_pool_core import (
     _display_image_ref,
@@ -27,14 +29,6 @@ from .image_pool_core import (
     enrich_product_image_dimensions,
 )
 from .runtime_common import APP_CONFIG_PATH, APP_DIR, STORE_CONFIG_PATH
-
-def normalize_list(value: Any) -> list[str]:
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    if value is None:
-        return []
-    return [line.strip() for line in str(value).splitlines() if line.strip()]
-
 
 def normalize_space(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
@@ -170,23 +164,10 @@ def save_product_profile(data: dict[str, Any]) -> dict[str, Any]:
     return save_product(product_data)
 
 
-def product_identity(product: dict[str, Any]) -> str:
-    source = product.get("source") if isinstance(product.get("source"), dict) else {}
-    existing = str(product.get("product_id") or product.get("id") or source.get("product_id") or "").strip()
-    if existing:
-        return re.sub(r"[^A-Za-z0-9_.-]+", "_", existing)[:80] or "product"
-    raw = "|".join(
-        [
-            str(source.get("source_url") or product.get("source_url") or "").strip(),
-            str(source.get("title") or product.get("name") or "").strip(),
-            str(source.get("created_at") or product.get("created_at") or "").strip(),
-        ]
-    )
-    if not raw.strip("|"):
-        raw = str(time.time())
-    import hashlib
-
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+# Single source of truth for product IDs. This module used to carry its own
+# near-copy with diverging sanitization and a time-based fallback, which could
+# hand the same product two different IDs depending on the code path.
+product_identity = erp_db.product_identity
 
 
 def _draft_copy_ready(draft: dict[str, Any]) -> bool:

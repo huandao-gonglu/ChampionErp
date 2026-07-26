@@ -12,7 +12,7 @@ def service_status() -> dict[str, str]:
     return {"service": "copy", "status": "ready"}
 
 
-def normalize_list(value: Any, limit: int | None = None) -> list[str]:
+def normalize_copy_list(value: Any, limit: int | None = None) -> list[str]:
     if isinstance(value, str):
         items = [line.strip() for line in value.replace("；", "\n").replace(";", "\n").splitlines()]
     elif isinstance(value, list):
@@ -41,12 +41,12 @@ def product_summary(product: dict[str, Any]) -> str:
         "Brand": product.get("brand") or source.get("brand"),
         "Model": product.get("model") or source.get("model"),
         "Category": product.get("category") or source.get("category"),
-        "Material": ", ".join(normalize_list(product.get("materials") or product.get("source_material"))),
+        "Material": ", ".join(normalize_copy_list(product.get("materials") or product.get("source_material"))),
         "Dimensions": product.get("dimensions") or source.get("dimensions"),
         "Weight": product.get("weight_kg") or product.get("source_weight_kg") or source.get("weight_kg"),
-        "Colors": ", ".join(normalize_list(product.get("colors"))),
-        "Selling points": "; ".join(normalize_list(product.get("selling_points"), 8)),
-        "Package includes": "; ".join(normalize_list(product.get("package_includes"), 8)),
+        "Colors": ", ".join(normalize_copy_list(product.get("colors"))),
+        "Selling points": "; ".join(normalize_copy_list(product.get("selling_points"), 8)),
+        "Package includes": "; ".join(normalize_copy_list(product.get("package_includes"), 8)),
         "Source text": product.get("source_text") or product.get("supplemental_info") or source.get("description"),
     }
     return "\n".join(f"{key}: {value}" for key, value in fields.items() if value)
@@ -108,9 +108,9 @@ def _normalized_generated_copy(parsed: Any, target_market: str) -> dict[str, Any
     result = {
         "title": str(parsed.get("title") or "").strip()[:title_limit],
         "description": str(parsed.get("description") or "").strip(),
-        "bullets": normalize_list(parsed.get("bullets") or parsed.get("selling_points"), 5),
-        "alt_titles": normalize_list(parsed.get("alt_titles") or parsed.get("alternative_titles"), 3),
-        "search_keywords": normalize_list(parsed.get("search_keywords") or parsed.get("keywords"), 20),
+        "bullets": normalize_copy_list(parsed.get("bullets") or parsed.get("selling_points"), 5),
+        "alt_titles": normalize_copy_list(parsed.get("alt_titles") or parsed.get("alternative_titles"), 3),
+        "search_keywords": normalize_copy_list(parsed.get("search_keywords") or parsed.get("keywords"), 20),
     }
     missing = [key for key in ("title", "description") if not result[key]]
     if missing:

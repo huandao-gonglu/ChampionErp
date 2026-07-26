@@ -305,7 +305,7 @@ def fetch_ozon_shop_name(client_id: str, api_key: str) -> str:
 
 
 def required_mercadolibre_attributes(category_id: str, token: str) -> list[dict[str, Any]]:
-    attrs = mercadolibre_category_attributes(category_id, token)
+    attrs = mercadolibre_category_attributes_for_publish(category_id, token)
     required = []
     for attr in attrs if isinstance(attrs, list) else []:
         if attr.get("required"):
@@ -320,7 +320,7 @@ def required_mercadolibre_attributes(category_id: str, token: str) -> list[dict[
     return required
 
 
-def mercadolibre_category_attributes(category_id: str, token: str) -> list[dict[str, Any]]:
+def mercadolibre_category_attributes_for_publish(category_id: str, token: str) -> list[dict[str, Any]]:
     if not category_id:
         return []
     attrs = request_json(

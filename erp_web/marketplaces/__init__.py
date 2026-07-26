@@ -6,7 +6,7 @@ from __future__ import annotations
 from .category_services import (
     fetch_ozon_shop_name,
     fetch_wildberries_shop_name,
-    mercadolibre_category_attributes,
+    mercadolibre_category_attributes_for_publish,
     mercadolibre_category_path,
 )
 from .config_http import (
@@ -39,7 +39,7 @@ __all__ = [
     "generate_pkce_pair",
     "is_mercadolibre_auth_error",
     "load_store_config",
-    "mercadolibre_category_attributes",
+    "mercadolibre_category_attributes_for_publish",
     "mercadolibre_category_path",
     "normalize_mercadolibre_error_field",
     "parse_mercadolibre_error",
