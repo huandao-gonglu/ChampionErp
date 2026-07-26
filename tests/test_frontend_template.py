@@ -133,7 +133,7 @@ class FrontendTemplateTests(unittest.TestCase):
     def test_vue_source_has_no_duplicate_static_ids(self) -> None:
         ids: list[str] = []
         for path in FRONT_SRC_DIR.rglob("*.vue"):
-            ids.extend(re.findall(r'\bid="([^"]+)"', path.read_text(encoding="utf-8")))
+            ids.extend(re.findall(r'(?<![-:\w])id="([^"]+)"', path.read_text(encoding="utf-8")))
         duplicates = sorted({item for item in ids if ids.count(item) > 1})
 
         self.assertEqual(duplicates, [])

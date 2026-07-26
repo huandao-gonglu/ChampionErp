@@ -78,9 +78,9 @@ def test_ai_use_case_binding_keeps_timeout_override_and_legacy_model_id() -> Non
     assert bindings["category.attribute_fill"] == {"model_id": "category_model"}
 
 
-def test_merge_config_writes_ai_use_case_prompt_files(app_dir: Path) -> None:
+def test_merge_config_writes_ai_use_case_prompt_files(tmp_path: Path) -> None:
     merged = config_service.merge_ai_config(
-        app_dir,
+        tmp_path,
         {},
         {
             "ai_use_case_prompts": {
@@ -102,11 +102,11 @@ def test_merge_config_writes_ai_use_case_prompt_files(app_dir: Path) -> None:
 
     assert merged["ai_use_case_prompts"]["copy.generate"]["path"] == "config/prompts/copy_generate.json"
     assert merged["ai_use_case_prompts"]["research.web_search"]["path"] == "config/prompts/research_web_search.json"
-    written = json.loads((app_dir / "config/prompts/copy_generate.json").read_text(encoding="utf-8"))
+    written = json.loads((tmp_path / "config/prompts/copy_generate.json").read_text(encoding="utf-8"))
     assert written["description"] == "文案生成提示词"
     assert written["system"] == "System from settings"
     assert written["user"] == "User prompt {$language}"
-    research_written = json.loads((app_dir / "config/prompts/research_web_search.json").read_text(encoding="utf-8"))
+    research_written = json.loads((tmp_path / "config/prompts/research_web_search.json").read_text(encoding="utf-8"))
     assert research_written["description"] == "AI 选品搜索默认模板"
     assert research_written["system"] == "Research system"
     assert research_written["user"] == "Research user {$marketId}"
