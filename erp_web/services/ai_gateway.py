@@ -107,6 +107,12 @@ def parse_json_text(raw_text: str) -> dict[str, Any]:
                 return data
         except Exception:
             pass
+    if "```" in text:
+        # 思考模型的草稿常包在代码围栏里：此时以最后一个完整对象为准，
+        # 避免草稿对象被 JSONL 兜底误收成候选列表。
+        trailing = _last_embedded_json_object(text)
+        if trailing is not None:
+            return trailing
     jsonl_items = _parse_jsonl_items_text(text)
     if jsonl_items:
         return {"items": jsonl_items}
