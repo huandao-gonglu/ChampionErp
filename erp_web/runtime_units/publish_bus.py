@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any
 
@@ -23,12 +24,18 @@ def page_snapshot_from_html(url: str, html: str, text: str = "", title: str = ""
     }
 
 
+# Guards the read-modify-write cycle on publish_logs.json: it is hit concurrently
+# by HTTP request threads and the publishing bus worker pool.
+_PUBLISH_LOG_LOCK = threading.Lock()
+
+
 def append_publish_log(entry: dict[str, Any]) -> None:
-    logs = read_json(PUBLISH_LOG_PATH, [])
-    if not isinstance(logs, list):
-        logs = []
-    logs.insert(0, entry)
-    write_json(PUBLISH_LOG_PATH, logs[:200])
+    with _PUBLISH_LOG_LOCK:
+        logs = read_json(PUBLISH_LOG_PATH, [])
+        if not isinstance(logs, list):
+            logs = []
+        logs.insert(0, entry)
+        write_json(PUBLISH_LOG_PATH, logs[:200])
 
 
 def load_publish_logs() -> list[dict[str, Any]]:

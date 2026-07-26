@@ -30,9 +30,14 @@ def db_path(app_dir: Path | str) -> Path:
 
 
 def connect(app_dir: Path | str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path(app_dir))
+    # timeout + busy_timeout + WAL: the ThreadingHTTPServer request threads and the
+    # publishing bus worker pool write concurrently; without these settings SQLite
+    # raises "database is locked" under load.
+    conn = sqlite3.connect(db_path(app_dir), timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA journal_mode = WAL")
     return conn
 
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import urllib.parse
 from pathlib import Path
@@ -16,11 +17,17 @@ from .category_refresh import (
 from .ozon_category_api import fetch_ozon_category_record, search_ozon_categories
 
 
+logger = logging.getLogger(__name__)
+
+
 def read_json(path: Path, default: Any) -> Any:
     try:
         if path.exists():
             return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
+        # Do not fail the caller, but a corrupt/unreadable JSON store should never
+        # be silently indistinguishable from an empty one.
+        logger.warning("read_json fell back to default for %s", path, exc_info=True)
         return default
     return default
 
