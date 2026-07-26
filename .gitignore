@@ -10,7 +10,6 @@ output/
 erp_web/static/dist/
 
 app_config.json
-backend/internal/web/app_config.json
 store_config.json
 upc_pool.json
 config/app_config.json
@@ -34,7 +33,17 @@ erp.sqlite3
 *.db
 *.db-wal
 *.db-shm
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
 *.tsbuildinfo
 logo-cart-verification.png
 data/logs/
 .codex-audit/
+# git worktrees kept inside the repo
+.worktrees/
+# electron-builder output (126MB+ installers)
+front/release/
+# soft-delete staging area used by remote sessions
+_to_delete/
