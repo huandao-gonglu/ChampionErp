@@ -337,9 +337,25 @@ def _responses_stream_delta_text(payload: Any) -> str:
         # text. Thinking models stream chain-of-thought as
         # response.reasoning_text.delta with the same string `delta` shape;
         # falling through to _chat_stream_delta_text would leak it into the
-        # message body (and break JSON parsing downstream).
+        # parsed message body (and break JSON parsing downstream). Reasoning
+        # deltas are still streamed to the conversation for display via
+        # _responses_stream_reasoning_delta_text.
         return ""
     return _chat_stream_delta_text(payload)
+
+
+_RESPONSES_REASONING_DELTA_EVENTS = frozenset(
+    {"response.reasoning_text.delta", "response.reasoning_summary_text.delta"}
+)
+
+
+def _responses_stream_reasoning_delta_text(payload: Any) -> str:
+    """Display-only reasoning delta: streamed to the conversation, never parsed."""
+    if not isinstance(payload, dict):
+        return ""
+    if str(payload.get("type") or "") in _RESPONSES_REASONING_DELTA_EVENTS:
+        return str(payload.get("delta") or "")
+    return ""
 
 
 def _read_responses_stream_text(response: Any, token_callback: Callable[[str], None] | None = None) -> str:
@@ -362,6 +378,9 @@ def _read_responses_stream_text(response: Any, token_callback: Callable[[str], N
             continue
         delta = _responses_stream_delta_text(payload)
         if not delta:
+            reasoning = _responses_stream_reasoning_delta_text(payload)
+            if reasoning and token_callback:
+                token_callback(reasoning)
             continue
         parts.append(delta)
         if token_callback:
