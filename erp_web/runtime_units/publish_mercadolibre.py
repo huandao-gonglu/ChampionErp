@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import urllib.parse
 from copy import deepcopy
-from typing import Any
+from typing import Any, Callable
 
 from erp_web import marketplaces as publisher
 from erp_web.product_model import default_draft
@@ -46,183 +46,227 @@ from .publish_logs_runtime import (
 from .publish_validation import apply_precheck_to_product, validate_mercadolibre_draft
 from .runtime_common import OUTPUT_DIR
 
+def _07d_auth_link(ctx: dict[str, Any]) -> dict[str, Any]:
+    result = ctx["result"]
+    redirect_uri = ctx["redirect_uri"]
+    url = preview_mercadolibre_auth_link(ctx["app_id"], redirect_uri)
+    parsed = urllib.parse.urlparse(url)
+    query = urllib.parse.parse_qs(parsed.query)
+    result.update(
+        {
+            "auth_url": url,
+            "redirect_uri": query.get("redirect_uri", [""])[0],
+            "redirect_uri_matches_config": query.get("redirect_uri", [""])[0] == redirect_uri,
+            "client_id_present": bool(query.get("client_id", [""])[0]),
+        }
+    )
+    append_ml_auth_test_log("auth_link", "success", {"redirect_uri": redirect_uri}, result, next_action="打开授权链接并完成回调，或手动粘贴 code。")
+    return result
+
+
+def _07d_user_info(ctx: dict[str, Any]) -> dict[str, Any]:
+    result = ctx["result"]
+    ml = ctx["ml"]
+    token = ctx["token"]
+    if not token:
+        raise RuntimeError("Mercado Libre access_token 为空。")
+    data = publisher.request_json("GET", "https://api.mercadolibre.com/users/me", token)
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Mercado Libre users/me 返回异常: {data}")
+    ml["user_id"] = str(data.get("id") or ml.get("user_id") or "").strip()
+    ml["seller_id"] = str(data.get("id") or ml.get("seller_id") or "").strip()
+    ml["nickname"] = str(data.get("nickname") or ml.get("nickname") or "").strip()
+    ml["site_id"] = str(data.get("site_id") or ml.get("site_id") or "CBT").strip() or "CBT"
+    ml["shop_name"] = ml.get("nickname") or ml.get("shop_name") or ml.get("user_id") or ""
+    ml.update(_store_auth_result_fields("mercadolibre", "测试成功", ml.get("shop_name") or token))
+    ml["auth_error_code"] = ""
+    ml["auth_error_message"] = ""
+    save_store_config(ctx["config"])
+    result.update(
+        {
+            "status": "success",
+            "user_id_present": bool(ml.get("user_id")),
+            "seller_id_present": bool(ml.get("seller_id")),
+            "nickname_present": bool(ml.get("nickname")),
+            "site_id": ml.get("site_id") or "",
+            "storeAuthSummary": summarize_store_auth_states(ctx["config"]),
+        }
+    )
+    append_ml_auth_test_log("user_info", "success", {"endpoint": "users/me"}, result, next_action="授权可用于后续类目、图片和 payload 测试。")
+    return result
+
+
+def _07d_refresh_token(ctx: dict[str, Any]) -> dict[str, Any]:
+    result = ctx["result"]
+    if not ctx["app_id"] or not ctx["app_secret"] or not ctx["refresh_token"]:
+        raise RuntimeError("App ID、Client Secret 或 Refresh Token 缺失。")
+    refreshed = refresh_mercadolibre_token_from_body({})
+    result.update({"status": "success", **_sanitize_for_log(refreshed)})
+    append_ml_auth_test_log("refresh_token", "success", {"grant_type": "refresh_token"}, result, next_action="刷新成功后重新测试用户信息。")
+    return result
+
+
+def _07d_category_attrs(ctx: dict[str, Any]) -> dict[str, Any]:
+    result = ctx["result"]
+    product = ctx["product"]
+    token = ctx["token"]
+    category_id = ctx["category_id_override"] or _mercadolibre_category_id_from_product(product)
+    if not category_id:
+        raise RuntimeError("drafts.mercadolibre.category_id 为空。")
+    if _is_mock_mercadolibre_category_id(category_id):
+        raise RuntimeError("REAL_CATEGORY_REQUIRED: 当前 category_id 是 mock/seed 测试类目，请先选择真实 Mercado Libre 类目，或手动输入真实 category_id。")
+    path = publisher.mercadolibre_category_path(category_id, token)
+    attrs = publisher.mercadolibre_category_attributes_for_publish(category_id, token)
+    required_ids = _mercadolibre_required_attr_ids(attrs)
+    draft_attrs = _draft_for_platform(product, "mercadolibre").get("attributes")
+    draft_attrs = draft_attrs if isinstance(draft_attrs, dict) else {}
+    missing = [attr_id for attr_id in required_ids if not str(draft_attrs.get(attr_id) or "").strip()]
+    result.update(
+        {
+            "status": "success",
+            "category_id": category_id,
+            "category_path": path,
+            "required_count": len(required_ids),
+            "missing_required": missing,
+            "field_errors": [
+                precheck_item("REQUIRED_ATTRIBUTE_MISSING", f"attributes.{attr_id}", f"真实类目缺少必填属性：{attr_id}", "error", "前往类目属性页补齐")
+                for attr_id in missing
+            ],
+            "required_attributes": attrs[:80],
+        }
+    )
+    append_ml_auth_test_log("category_attrs", "success" if not missing else "failed", {"category_id": category_id}, result, error_code="REQUIRED_ATTRIBUTE_MISSING" if missing else "", error_message=f"缺少 {len(missing)} 个真实必填属性" if missing else "", next_action="前往类目属性页补齐缺失属性" if missing else "真实类目属性读取成功。")
+    return result
+
+
+def _07d_image_upload(ctx: dict[str, Any]) -> dict[str, Any]:
+    result = ctx["result"]
+    product = ctx["product"]
+    candidates = _mercadolibre_image_candidates(product)
+    if not candidates:
+        error = precheck_item("IMAGE_NOT_FOUND", "images", "Mercado Libre 没有可用图片", "error", "在 07D 向导上传一张测试主图")
+        result.update({"ok": False, "status": "failed", "error_code": error["code"], "error_message": error["message"], "next_action": error["next_action"], "errors": [error], "product": product})
+        append_ml_auth_test_log("image_upload", "failed", {"image_count": 0}, result, error["code"], error["message"], error["next_action"])
+        return result
+    has_uploadable = any(_mercadolibre_picture_id(item) or _local_path_from_image_item(item) for item in candidates)
+    if not has_uploadable:
+        error = precheck_item("IMAGE_UNAVAILABLE", "images", "Mercado Libre 图片不是本地文件，无法执行真实图片上传测试", "error", "请使用 07D 上传测试主图入口上传一张本地图片")
+        result.update({"ok": False, "status": "failed", "error_code": error["code"], "error_message": error["message"], "next_action": error["next_action"], "errors": [error], "product": product})
+        append_ml_auth_test_log("image_upload", "failed", {"image_count": len(candidates)}, result, error["code"], error["message"], error["next_action"])
+        return result
+    auth = ensure_mercadolibre_auth_ready(ctx["config"])
+    if not auth.get("ok"):
+        raise RuntimeError(auth.get("message") or "Mercado Libre 授权不可用。")
+    upload = ensure_mercadolibre_pictures_uploaded(product, str(auth.get("token") or ""))
+    if not upload.get("ok"):
+        first = (upload.get("errors") or [{}])[0]
+        result.update({"ok": False, "status": "failed", "errors": upload.get("errors") or [], "product": upload.get("product") or product})
+        append_ml_auth_test_log("image_upload", "failed", {"image_count": len(_mercadolibre_image_candidates(product))}, result, str(first.get("code") or "IMAGE_UPLOAD_FAILED"), str(first.get("message") or "图片上传失败"), str(first.get("next_action") or "前往图片池修复图片"))
+        return result
+    result.update({"status": "success", "picture_refs": upload.get("picture_refs") or [], "product": upload.get("product") or product})
+    append_ml_auth_test_log("image_upload", "success", {"image_count": len(_mercadolibre_image_candidates(product))}, result, next_action="图片上传测试成功，仍未真实发布。")
+    return result
+
+
+def _07d_payload_generate(ctx: dict[str, Any]) -> dict[str, Any]:
+    result = ctx["result"]
+    product = ctx["product"]
+    payload = build_mercadolibre_payload_preview(product, ctx["config"])
+    path = OUTPUT_DIR / "last_mercadolibre_payload.json"
+    write_json(path, _sanitize_for_log(payload))
+    draft = _draft_for_platform(product, "mercadolibre")
+    draft_category_id = str(draft.get("category_id") or "").strip()
+    sites_to_sell = payload.get("sites_to_sell") if isinstance(payload.get("sites_to_sell"), list) else []
+    attributes = payload.get("attributes") if isinstance(payload.get("attributes"), list) else []
+    picture_items = payload.get("pictures") if isinstance(payload.get("pictures"), list) else []
+    if not picture_items:
+        for site in sites_to_sell:
+            if isinstance(site, dict) and isinstance(site.get("pictures"), list):
+                picture_items = site.get("pictures") or []
+                break
+    condition_present = bool(payload.get("condition")) or any(str(attr.get("id") or "") in {"ITEM_CONDITION", "CONDITION"} for attr in attributes if isinstance(attr, dict))
+    pictures_present = bool(picture_items)
+    pictures_use_ml_id = bool(picture_items) and all(isinstance(pic, dict) and bool(pic.get("id")) and not pic.get("source") for pic in picture_items)
+    shipping_present = bool(payload.get("shipping")) or any(str(site.get("logistic_type") or "").strip() for site in sites_to_sell if isinstance(site, dict))
+    required_checks = {
+        "title": bool(payload.get("title")),
+        "category_id": bool(payload.get("category_id")),
+        "category_id_from_draft": bool(draft_category_id) and str(payload.get("category_id") or "").strip() == draft_category_id,
+        "price": "price" in payload,
+        "currency_id": bool(payload.get("currency_id")),
+        "available_quantity": "available_quantity" in payload,
+        "buying_mode": bool(payload.get("buying_mode")),
+        "listing_type_id": bool(payload.get("listing_type_id")),
+        "condition": condition_present,
+        "pictures": pictures_present,
+        "pictures_with_mercadolibre_id": pictures_use_ml_id,
+        "attributes": bool(attributes),
+        "sale_terms": bool(payload.get("sale_terms")),
+        "shipping_or_logistics": shipping_present,
+    }
+    missing_keys = [key for key, present in required_checks.items() if not present]
+    result.update({"ok": not missing_keys, "status": "success" if not missing_keys else "failed", "payload": _sanitize_for_log(payload), "path": str(path), "missing_keys": missing_keys})
+    append_ml_auth_test_log("payload_generate", "success" if not missing_keys else "failed", {"platform": "mercadolibre"}, {"path": str(path), "missing_keys": missing_keys, "payload": _sanitize_for_log(payload)}, error_code="PAYLOAD_FIELD_MISSING" if missing_keys else "", error_message=", ".join(missing_keys), next_action="补齐 payload 缺失字段" if missing_keys else "payload 已生成，仍未真实发布。")
+    return result
+
+
+def _07d_all(ctx: dict[str, Any]) -> dict[str, Any]:
+    result = ctx["result"]
+    product = ctx["product"]
+    outputs = []
+    for sub_mode in ("auth_link", "user_info", "category_attrs", "payload_generate"):
+        try:
+            outputs.append(run_mercadolibre_07d_test(sub_mode, product))
+        except Exception as exc:
+            outputs.append({"ok": False, "mode": sub_mode, "error": str(exc), "error_code": _mercadolibre_test_error_code(str(exc))})
+    result["tests"] = outputs
+    result["ok"] = all(item.get("ok", True) and item.get("status") != "failed" for item in outputs)
+    return result
+
+
+# "07D" is the historical wizard-step number this test suite belongs to.
+_07D_MODE_HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+    "auth_link": _07d_auth_link,
+    "user_info": _07d_user_info,
+    "refresh_token": _07d_refresh_token,
+    "category_attrs": _07d_category_attrs,
+    "image_upload": _07d_image_upload,
+    "payload_generate": _07d_payload_generate,
+    "all": _07d_all,
+}
+
+
 def run_mercadolibre_07d_test(mode: str, product: dict[str, Any] | None = None, category_id_override: str = "") -> dict[str, Any]:
     mode = str(mode or "auth_link").strip().lower()
     product = normalize_product_fields(product or load_product())
     config = load_store_config()
     ml = config.setdefault("mercadolibre", {})
-    token = str(ml.get("access_token") or "").strip()
-    refresh_token = str(ml.get("refresh_token") or "").strip()
-    app_id = str(ml.get("app_id") or ml.get("client_id") or "").strip()
-    app_secret = _mercadolibre_app_secret(ml)
-    redirect_uri = str(ml.get("redirect_uri") or "").strip()
-    result: dict[str, Any] = {
-        "ok": True,
-        "platform": "mercadolibre",
+    ctx: dict[str, Any] = {
         "mode": mode,
-        "checked_at": collect_time_iso(),
-        "real_publish_called": False,
-        "message": "当前仍未真实发布。",
+        "product": product,
+        "config": config,
+        "ml": ml,
+        "token": str(ml.get("access_token") or "").strip(),
+        "refresh_token": str(ml.get("refresh_token") or "").strip(),
+        "app_id": str(ml.get("app_id") or ml.get("client_id") or "").strip(),
+        "app_secret": _mercadolibre_app_secret(ml),
+        "redirect_uri": str(ml.get("redirect_uri") or "").strip(),
+        "category_id_override": str(category_id_override or "").strip(),
+        "result": {
+            "ok": True,
+            "platform": "mercadolibre",
+            "mode": mode,
+            "checked_at": collect_time_iso(),
+            "real_publish_called": False,
+            "message": "当前仍未真实发布。",
+        },
     }
 
     try:
-        if mode == "auth_link":
-            url = preview_mercadolibre_auth_link(app_id, redirect_uri)
-            parsed = urllib.parse.urlparse(url)
-            query = urllib.parse.parse_qs(parsed.query)
-            result.update(
-                {
-                    "auth_url": url,
-                    "redirect_uri": query.get("redirect_uri", [""])[0],
-                    "redirect_uri_matches_config": query.get("redirect_uri", [""])[0] == redirect_uri,
-                    "client_id_present": bool(query.get("client_id", [""])[0]),
-                }
-            )
-            append_ml_auth_test_log("auth_link", "success", {"redirect_uri": redirect_uri}, result, next_action="打开授权链接并完成回调，或手动粘贴 code。")
-            return result
-
-        if mode == "user_info":
-            if not token:
-                raise RuntimeError("Mercado Libre access_token 为空。")
-            data = publisher.request_json("GET", "https://api.mercadolibre.com/users/me", token)
-            if not isinstance(data, dict):
-                raise RuntimeError(f"Mercado Libre users/me 返回异常: {data}")
-            ml["user_id"] = str(data.get("id") or ml.get("user_id") or "").strip()
-            ml["seller_id"] = str(data.get("id") or ml.get("seller_id") or "").strip()
-            ml["nickname"] = str(data.get("nickname") or ml.get("nickname") or "").strip()
-            ml["site_id"] = str(data.get("site_id") or ml.get("site_id") or "CBT").strip() or "CBT"
-            ml["shop_name"] = ml.get("nickname") or ml.get("shop_name") or ml.get("user_id") or ""
-            ml.update(_store_auth_result_fields("mercadolibre", "测试成功", ml.get("shop_name") or token))
-            ml["auth_error_code"] = ""
-            ml["auth_error_message"] = ""
-            save_store_config(config)
-            result.update(
-                {
-                    "status": "success",
-                    "user_id_present": bool(ml.get("user_id")),
-                    "seller_id_present": bool(ml.get("seller_id")),
-                    "nickname_present": bool(ml.get("nickname")),
-                    "site_id": ml.get("site_id") or "",
-                    "storeAuthSummary": summarize_store_auth_states(config),
-                }
-            )
-            append_ml_auth_test_log("user_info", "success", {"endpoint": "users/me"}, result, next_action="授权可用于后续类目、图片和 payload 测试。")
-            return result
-
-        if mode == "refresh_token":
-            if not app_id or not app_secret or not refresh_token:
-                raise RuntimeError("App ID、Client Secret 或 Refresh Token 缺失。")
-            refreshed = refresh_mercadolibre_token_from_body({})
-            result.update({"status": "success", **_sanitize_for_log(refreshed)})
-            append_ml_auth_test_log("refresh_token", "success", {"grant_type": "refresh_token"}, result, next_action="刷新成功后重新测试用户信息。")
-            return result
-
-        if mode == "category_attrs":
-            category_id = str(category_id_override or "").strip() or _mercadolibre_category_id_from_product(product)
-            if not category_id:
-                raise RuntimeError("drafts.mercadolibre.category_id 为空。")
-            if _is_mock_mercadolibre_category_id(category_id):
-                raise RuntimeError("REAL_CATEGORY_REQUIRED: 当前 category_id 是 mock/seed 测试类目，请先选择真实 Mercado Libre 类目，或手动输入真实 category_id。")
-            path = publisher.mercadolibre_category_path(category_id, token)
-            attrs = publisher.mercadolibre_category_attributes(category_id, token)
-            required_ids = _mercadolibre_required_attr_ids(attrs)
-            draft_attrs = _draft_for_platform(product, "mercadolibre").get("attributes")
-            draft_attrs = draft_attrs if isinstance(draft_attrs, dict) else {}
-            missing = [attr_id for attr_id in required_ids if not str(draft_attrs.get(attr_id) or "").strip()]
-            result.update(
-                {
-                    "status": "success",
-                    "category_id": category_id,
-                    "category_path": path,
-                    "required_count": len(required_ids),
-                    "missing_required": missing,
-                    "field_errors": [
-                        precheck_item("REQUIRED_ATTRIBUTE_MISSING", f"attributes.{attr_id}", f"真实类目缺少必填属性：{attr_id}", "error", "前往类目属性页补齐")
-                        for attr_id in missing
-                    ],
-                    "required_attributes": attrs[:80],
-                }
-            )
-            append_ml_auth_test_log("category_attrs", "success" if not missing else "failed", {"category_id": category_id}, result, error_code="REQUIRED_ATTRIBUTE_MISSING" if missing else "", error_message=f"缺少 {len(missing)} 个真实必填属性" if missing else "", next_action="前往类目属性页补齐缺失属性" if missing else "真实类目属性读取成功。")
-            return result
-
-        if mode == "image_upload":
-            candidates = _mercadolibre_image_candidates(product)
-            if not candidates:
-                error = precheck_item("IMAGE_NOT_FOUND", "images", "Mercado Libre 没有可用图片", "error", "在 07D 向导上传一张测试主图")
-                result.update({"ok": False, "status": "failed", "error_code": error["code"], "error_message": error["message"], "next_action": error["next_action"], "errors": [error], "product": product})
-                append_ml_auth_test_log("image_upload", "failed", {"image_count": 0}, result, error["code"], error["message"], error["next_action"])
-                return result
-            has_uploadable = any(_mercadolibre_picture_id(item) or _local_path_from_image_item(item) for item in candidates)
-            if not has_uploadable:
-                error = precheck_item("IMAGE_UNAVAILABLE", "images", "Mercado Libre 图片不是本地文件，无法执行真实图片上传测试", "error", "请使用 07D 上传测试主图入口上传一张本地图片")
-                result.update({"ok": False, "status": "failed", "error_code": error["code"], "error_message": error["message"], "next_action": error["next_action"], "errors": [error], "product": product})
-                append_ml_auth_test_log("image_upload", "failed", {"image_count": len(candidates)}, result, error["code"], error["message"], error["next_action"])
-                return result
-            auth = ensure_mercadolibre_auth_ready(config)
-            if not auth.get("ok"):
-                raise RuntimeError(auth.get("message") or "Mercado Libre 授权不可用。")
-            upload = ensure_mercadolibre_pictures_uploaded(product, str(auth.get("token") or ""))
-            if not upload.get("ok"):
-                first = (upload.get("errors") or [{}])[0]
-                result.update({"ok": False, "status": "failed", "errors": upload.get("errors") or [], "product": upload.get("product") or product})
-                append_ml_auth_test_log("image_upload", "failed", {"image_count": len(_mercadolibre_image_candidates(product))}, result, str(first.get("code") or "IMAGE_UPLOAD_FAILED"), str(first.get("message") or "图片上传失败"), str(first.get("next_action") or "前往图片池修复图片"))
-                return result
-            result.update({"status": "success", "picture_refs": upload.get("picture_refs") or [], "product": upload.get("product") or product})
-            append_ml_auth_test_log("image_upload", "success", {"image_count": len(_mercadolibre_image_candidates(product))}, result, next_action="图片上传测试成功，仍未真实发布。")
-            return result
-
-        if mode == "payload_generate":
-            payload = build_mercadolibre_payload_preview(product, config)
-            path = OUTPUT_DIR / "last_mercadolibre_payload.json"
-            write_json(path, _sanitize_for_log(payload))
-            draft = _draft_for_platform(product, "mercadolibre")
-            draft_category_id = str(draft.get("category_id") or "").strip()
-            sites_to_sell = payload.get("sites_to_sell") if isinstance(payload.get("sites_to_sell"), list) else []
-            attributes = payload.get("attributes") if isinstance(payload.get("attributes"), list) else []
-            picture_items = payload.get("pictures") if isinstance(payload.get("pictures"), list) else []
-            if not picture_items:
-                for site in sites_to_sell:
-                    if isinstance(site, dict) and isinstance(site.get("pictures"), list):
-                        picture_items = site.get("pictures") or []
-                        break
-            condition_present = bool(payload.get("condition")) or any(str(attr.get("id") or "") in {"ITEM_CONDITION", "CONDITION"} for attr in attributes if isinstance(attr, dict))
-            pictures_present = bool(picture_items)
-            pictures_use_ml_id = bool(picture_items) and all(isinstance(pic, dict) and bool(pic.get("id")) and not pic.get("source") for pic in picture_items)
-            shipping_present = bool(payload.get("shipping")) or any(str(site.get("logistic_type") or "").strip() for site in sites_to_sell if isinstance(site, dict))
-            required_checks = {
-                "title": bool(payload.get("title")),
-                "category_id": bool(payload.get("category_id")),
-                "category_id_from_draft": bool(draft_category_id) and str(payload.get("category_id") or "").strip() == draft_category_id,
-                "price": "price" in payload,
-                "currency_id": bool(payload.get("currency_id")),
-                "available_quantity": "available_quantity" in payload,
-                "buying_mode": bool(payload.get("buying_mode")),
-                "listing_type_id": bool(payload.get("listing_type_id")),
-                "condition": condition_present,
-                "pictures": pictures_present,
-                "pictures_with_mercadolibre_id": pictures_use_ml_id,
-                "attributes": bool(attributes),
-                "sale_terms": bool(payload.get("sale_terms")),
-                "shipping_or_logistics": shipping_present,
-            }
-            missing_keys = [key for key, present in required_checks.items() if not present]
-            result.update({"ok": not missing_keys, "status": "success" if not missing_keys else "failed", "payload": _sanitize_for_log(payload), "path": str(path), "missing_keys": missing_keys})
-            append_ml_auth_test_log("payload_generate", "success" if not missing_keys else "failed", {"platform": "mercadolibre"}, {"path": str(path), "missing_keys": missing_keys, "payload": _sanitize_for_log(payload)}, error_code="PAYLOAD_FIELD_MISSING" if missing_keys else "", error_message=", ".join(missing_keys), next_action="补齐 payload 缺失字段" if missing_keys else "payload 已生成，仍未真实发布。")
-            return result
-
-        if mode == "all":
-            outputs = []
-            for sub_mode in ("auth_link", "user_info", "category_attrs", "payload_generate"):
-                try:
-                    outputs.append(run_mercadolibre_07d_test(sub_mode, product))
-                except Exception as exc:
-                    outputs.append({"ok": False, "mode": sub_mode, "error": str(exc), "error_code": _mercadolibre_test_error_code(str(exc))})
-            result["tests"] = outputs
-            result["ok"] = all(item.get("ok", True) and item.get("status") != "failed" for item in outputs)
-            return result
-
-        raise RuntimeError(f"不支持的 07D 测试模式：{mode}")
+        handler = _07D_MODE_HANDLERS.get(mode)
+        if handler is None:
+            raise RuntimeError(f"不支持的 07D 测试模式：{mode}")
+        return handler(ctx)
     except Exception as exc:
         message = str(exc)
         code = _mercadolibre_test_error_code(message)
