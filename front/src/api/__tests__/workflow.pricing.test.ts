@@ -354,7 +354,8 @@ describe('imageTranslate API timeout', () => {
     }), { timeout: 60000 })
   })
 
-  it('uses the whole image pool count when no images are selected', async () => {
+  it('rejects the request when no images are selected', async () => {
+    vi.mocked(apiClient.post).mockClear()
     const product = createEmptyProduct()
     product.productId = 'prod-1'
     product.source.imagePool = [
@@ -362,16 +363,9 @@ describe('imageTranslate API timeout', () => {
       { id: 'img-2', url: '', path: '', previewUrl: '', origin: 'upload', usage: 'detail', platforms: ['mercadolibre'], isMain: false, selected: false, status: 'ready', width: 1000, height: 1000 },
       { id: 'img-3', url: '', path: '', previewUrl: '', origin: 'upload', usage: 'detail', platforms: ['mercadolibre'], isMain: false, selected: false, status: 'ready', width: 1000, height: 1000 },
     ]
-    vi.mocked(apiClient.post).mockResolvedValueOnce({
-      data: { ok: true, product: { source: { image_pool: [] } }, productsIndex: [] },
-    })
-
-    await imageTranslate(product, 'mercadolibre', 'Spanish (Mexico)')
-
-    expect(apiClient.post).toHaveBeenCalledWith('/api/image-translate', expect.objectContaining({
-      product_id: 'prod-1',
-      source_image_ids: [],
-    }), { timeout: 90000 })
+    await expect(imageTranslate(product, 'mercadolibre', 'Spanish (Mexico)'))
+      .rejects.toThrow('请先勾选要翻译/重绘的图片')
+    expect(apiClient.post).not.toHaveBeenCalled()
   })
 })
 
@@ -391,6 +385,7 @@ describe('imageEdit API payload', () => {
       draftId: 'draft-1',
       applyToDraft: true,
       draftImageStrategy: 'append',
+      sourceImageIds: ['img-2'],
     })
 
     expect(apiClient.post).toHaveBeenCalledWith('/api/image-edit', expect.objectContaining({
@@ -400,7 +395,7 @@ describe('imageEdit API payload', () => {
       draft_id: 'draft-1',
       apply_to_draft: true,
       draft_image_strategy: 'append',
-      source_image_ids: ['img-1'],
+      source_image_ids: ['img-2'],
     }), { timeout: 30000 })
   })
 })

@@ -1,7 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useBackdropDismiss } from '@/composables/useBackdropDismiss'
 import type { ImageAsset } from '@/types/workflow'
+
+interface ImageEditRequest {
+  prompt: string
+  imageIds: string[]
+}
 
 const props = defineProps<{
   images: ImageAsset[]
@@ -12,8 +17,8 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  translate: []
-  imageEdit: [prompt: string]
+  translate: [imageIds: string[]]
+  imageEdit: [request: ImageEditRequest]
   upload: [files: File[]]
   clear: []
   save: []
@@ -26,6 +31,7 @@ const input = ref<HTMLInputElement | null>(null)
 const previewImage = ref<ImageAsset | null>(null)
 const imageEditPromptOpen = ref(false)
 const imageEditPrompt = ref('')
+const selectedImageIdSet = ref<Set<string>>(new Set())
 
 function choose() { input.value?.click() }
 function selected(event: Event) {
@@ -35,16 +41,11 @@ function selected(event: Event) {
   node.value = ''
 }
 
-function selectedIds() {
-  if (props.showDraftControls) {
-    const draftIds = draftAssetIdSet.value
-    return props.images.filter((image) => draftIds.has(image.id)).map((image) => image.id)
-  }
-  return props.images.filter((image) => image.selected).map((image) => image.id)
-}
-
 const draftAssetIdSet = computed(() => new Set(props.draftAssetIds || []))
-const selectedImageCount = computed(() => selectedIds().length)
+const selectedIds = computed(() => props.images
+  .filter((image) => selectedImageIdSet.value.has(image.id))
+  .map((image) => image.id))
+const selectedImageCount = computed(() => selectedIds.value.length)
 
 const previewSrc = computed(() => {
   const image = previewImage.value
@@ -80,7 +81,7 @@ const {
 function submitImageEdit() {
   const prompt = imageEditPrompt.value.trim()
   if (!prompt || props.loading) return
-  emit('imageEdit', prompt)
+  emit('imageEdit', { prompt, imageIds: [...selectedIds.value] })
   closeImageEditPrompt()
 }
 
@@ -92,11 +93,23 @@ function eventChecked(event: Event) {
   return Boolean((event.target as HTMLInputElement | null)?.checked)
 }
 
+function isSelectedForProcessing(image: ImageAsset) {
+  return selectedImageIdSet.value.has(image.id)
+}
+
 function toggleSelection(image: ImageAsset, checked: boolean) {
-  image.selected = checked
-  if (props.showDraftControls) {
-    emit('toggleDraftImage', image, checked)
-  }
+  const next = new Set(selectedImageIdSet.value)
+  if (checked) next.add(image.id)
+  else next.delete(image.id)
+  selectedImageIdSet.value = next
+}
+
+function toggleDraftMembership(image: ImageAsset) {
+  emit('toggleDraftImage', image, !isInDraft(image))
+}
+
+function clearProcessingSelection() {
+  selectedImageIdSet.value = new Set()
 }
 
 function imageLabel(image: ImageAsset, index: number) {
@@ -123,6 +136,17 @@ onBeforeUnmount(() => {
     window.removeEventListener('keydown', handleKeydown)
   }
 })
+
+watch(
+  () => props.images.map((image) => image.id).join('\n'),
+  () => {
+    const availableIds = new Set(props.images.map((image) => image.id))
+    selectedImageIdSet.value = new Set(
+      [...selectedImageIdSet.value].filter((imageId) => availableIds.has(imageId)),
+    )
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -130,21 +154,40 @@ onBeforeUnmount(() => {
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
         <h2 class="card-title">素材图片池</h2>
-        <p class="muted mt-1">{{ selectedImageCount }} 张已选素材</p>
+        <p class="muted mt-1" aria-live="polite">
+          已选择 {{ selectedImageCount }} 张，本次仅处理这些图片
+        </p>
       </div>
       <div class="flex flex-wrap gap-2">
         <input ref="input" type="file" accept="image/*" multiple class="hidden" @change="selected" />
         <button class="btn btn-outline" :disabled="props.loading" @click="choose">上传图片</button>
-        <button class="btn btn-secondary" :disabled="props.loading || !selectedImageCount" @click="openImageEditPrompt">AI 图生图</button>
-        <button v-if="props.showTranslateAction !== false" class="btn btn-primary" :disabled="props.loading || !props.images.length" @click="emit('translate')">AI 翻译/重绘</button>
+        <button class="btn btn-secondary" :disabled="props.loading || !selectedImageCount" @click="openImageEditPrompt">
+          AI 图生图（{{ selectedImageCount }}）
+        </button>
+        <button
+          v-if="props.showTranslateAction !== false"
+          class="btn btn-primary"
+          :disabled="props.loading || !selectedImageCount"
+          @click="emit('translate', [...selectedIds])"
+        >
+          AI 翻译/重绘（{{ selectedImageCount }}）
+        </button>
+        <button v-if="selectedImageCount" class="btn btn-outline" :disabled="props.loading" @click="clearProcessingSelection">取消选择</button>
         <button class="btn btn-outline" :disabled="props.loading || !props.images.length" @click="emit('save')">保存素材库</button>
-        <button class="btn btn-outline" :disabled="props.loading || !selectedIds().length" @click="emit('delete', selectedIds())">删除选中</button>
+        <button class="btn btn-outline" :disabled="props.loading || !selectedImageCount" @click="emit('delete', [...selectedIds])">删除选中</button>
         <button class="btn btn-outline" :disabled="props.loading || !props.images.length" @click="emit('clear')">清空图片池</button>
       </div>
     </div>
 
     <div class="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-      <article v-for="(image, index) in props.images" :key="image.id" class="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-dark-700 dark:bg-dark-900">
+      <article
+        v-for="(image, index) in props.images"
+        :key="image.id"
+        class="overflow-hidden rounded-xl border bg-white transition dark:bg-dark-900"
+        :class="isSelectedForProcessing(image)
+          ? 'border-primary-400 ring-2 ring-primary-300 dark:border-primary-400 dark:ring-primary-500/40'
+          : 'border-slate-200 dark:border-dark-700'"
+      >
         <img
           :src="image.previewUrl || image.url || image.path"
           :alt="image.id"
@@ -152,38 +195,47 @@ onBeforeUnmount(() => {
           title="双击预览"
           @dblclick="openPreview(image)"
         />
-          <div class="space-y-2 p-3">
-            <div class="flex items-start justify-between gap-2">
-              <div class="min-w-0">
-                <p class="truncate text-sm font-semibold text-slate-950 dark:text-white" :title="image.id">{{ imageLabel(image, index) }}</p>
-                <p class="mt-1 text-xs text-slate-500 dark:text-accent-300">{{ image.width }}×{{ image.height }} · {{ image.usage }}</p>
-              </div>
-              <span class="badge" :class="image.origin === 'ai_generated' ? 'bg-purple-50 text-purple-700 ring-1 ring-purple-200' : 'bg-slate-100 text-slate-600 ring-1 ring-slate-200'">
-                {{ image.origin }}
-              </span>
+        <div class="space-y-2 p-3">
+          <div class="flex items-start justify-between gap-2">
+            <div class="min-w-0">
+              <p class="truncate text-sm font-semibold text-slate-950 dark:text-white" :title="image.id">{{ imageLabel(image, index) }}</p>
+              <p class="mt-1 text-xs text-slate-500 dark:text-accent-300">{{ image.width }}×{{ image.height }} · {{ image.usage }}</p>
             </div>
-            <p v-if="image.targetLanguage" class="text-xs font-medium text-brand-700 dark:text-primary-200">{{ image.targetLanguage }} · from {{ image.derivedFromId }}</p>
-            <div class="flex flex-wrap items-center gap-2">
-              <label
-                class="inline-flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs font-semibold"
-                :class="props.showDraftControls && isInDraft(image)
-                  ? 'border-primary-200 bg-primary-50 text-primary-700 dark:border-primary-500/30 dark:bg-primary-500/10 dark:text-primary-200'
-                  : 'border-slate-200 text-slate-600 dark:border-dark-700 dark:text-accent-200'"
-              >
-                <input
-                  type="checkbox"
-                  class="size-4 rounded border-slate-300"
-                  :checked="props.showDraftControls ? isInDraft(image) : image.selected"
-                  @change="toggleSelection(image, eventChecked($event))"
-                />
-                <span>选择素材</span>
-              </label>
-              <button v-if="!props.showDraftControls" class="btn btn-outline py-1.5 text-xs" :disabled="props.loading || image.isMain" @click="emit('setMain', image.id)">
-                {{ image.isMain ? '当前主图' : '设为主图' }}
-              </button>
-              <button class="btn btn-outline py-1.5 text-xs" :disabled="props.loading" @click="emit('delete', [image.id])">删除</button>
-            </div>
+            <span class="badge" :class="image.origin === 'ai_generated' ? 'bg-purple-50 text-purple-700 ring-1 ring-purple-200' : 'bg-slate-100 text-slate-600 ring-1 ring-slate-200'">
+              {{ image.origin }}
+            </span>
           </div>
+          <p v-if="image.targetLanguage" class="text-xs font-medium text-brand-700 dark:text-primary-200">{{ image.targetLanguage }} · from {{ image.derivedFromId }}</p>
+          <div class="flex flex-wrap items-center gap-2">
+            <label
+              class="inline-flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs font-semibold"
+              :class="isSelectedForProcessing(image)
+                ? 'border-primary-200 bg-primary-50 text-primary-700 dark:border-primary-500/30 dark:bg-primary-500/10 dark:text-primary-200'
+                : 'border-slate-200 text-slate-600 dark:border-dark-700 dark:text-accent-200'"
+            >
+              <input
+                type="checkbox"
+                class="size-4 rounded border-slate-300"
+                :checked="isSelectedForProcessing(image)"
+                :aria-label="`选择处理图片 ${imageLabel(image, index)}`"
+                @change="toggleSelection(image, eventChecked($event))"
+              />
+              <span>{{ isSelectedForProcessing(image) ? '已选处理' : '选择处理' }}</span>
+            </label>
+            <button
+              v-if="props.showDraftControls"
+              class="btn btn-outline py-1.5 text-xs"
+              :disabled="props.loading"
+              @click="toggleDraftMembership(image)"
+            >
+              {{ isInDraft(image) ? '移出发布图片' : '加入发布图片' }}
+            </button>
+            <button v-if="!props.showDraftControls" class="btn btn-outline py-1.5 text-xs" :disabled="props.loading || image.isMain" @click="emit('setMain', image.id)">
+              {{ image.isMain ? '当前主图' : '设为主图' }}
+            </button>
+            <button class="btn btn-outline py-1.5 text-xs" :disabled="props.loading" @click="emit('delete', [image.id])">删除</button>
+          </div>
+        </div>
       </article>
       <div v-if="!props.images.length" class="col-span-full rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-10 text-center text-sm text-slate-500">
         暂无图片。请先采集商品、上传图片，或导入手动图片链接。

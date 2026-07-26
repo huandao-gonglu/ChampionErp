@@ -227,27 +227,29 @@ async function switchDraftWorkspaceTab(tab: DraftWorkspaceTab) {
   draftWorkspaceTab.value = tab
 }
 
-async function translateEditorImages() {
-  await store.translateImages()
+async function translateEditorImages(imageIds: string[]) {
+  await store.translateImages(undefined, { sourceImageIds: imageIds })
 }
 
-async function editEditorImages(prompt: string) {
-  await store.editImagesWithPrompt(prompt)
+async function editEditorImages(request: { prompt: string; imageIds: string[] }) {
+  await store.editImagesWithPrompt(request.prompt, { sourceImageIds: request.imageIds })
 }
 
-async function translateDraftWorkspaceImages() {
+async function translateDraftWorkspaceImages(imageIds: string[]) {
   await store.translateImages(currentDraft.value.language, {
     draftId: currentDraft.value.draftId,
     applyToDraft: true,
     draftImageStrategy: 'replace_selected',
+    sourceImageIds: imageIds,
   })
 }
 
-async function editDraftWorkspaceImages(prompt: string) {
-  await store.editImagesWithPrompt(prompt, {
+async function editDraftWorkspaceImages(request: { prompt: string; imageIds: string[] }) {
+  await store.editImagesWithPrompt(request.prompt, {
     draftId: currentDraft.value.draftId,
     applyToDraft: true,
     draftImageStrategy: 'append',
+    sourceImageIds: request.imageIds,
   })
 }
 

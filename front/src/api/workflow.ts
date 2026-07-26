@@ -81,10 +81,8 @@ import {
 
 const IMAGE_TRANSLATE_TIMEOUT_PER_IMAGE_MS = API_REQUEST_TIMEOUT_MS
 
-function imageTranslateTimeoutMs(product: Product): number {
-  const selectedCount = product.source.imagePool.filter((image) => image.selected).length
-  const imageCount = selectedCount || product.source.imagePool.length || 1
-  return IMAGE_TRANSLATE_TIMEOUT_PER_IMAGE_MS * imageCount
+function imageTranslateTimeoutMs(imageIds: string[]): number {
+  return IMAGE_TRANSLATE_TIMEOUT_PER_IMAGE_MS * Math.max(imageIds.length, 1)
 }
 
 function requiredProductId(product: Product, action = '继续操作'): string {
@@ -833,13 +831,15 @@ export interface ImageTranslateOptions {
   draftId?: string
   applyToDraft?: boolean
   draftImageStrategy?: 'pool_only' | 'append' | 'replace_selected' | 'replace_all'
+  sourceImageIds?: string[]
 }
 
 export type ImageEditOptions = ImageTranslateOptions
 
 export async function imageTranslate(product: Product, platform: Marketplace, language: string, options: ImageTranslateOptions = {}): Promise<ProductMutationResponse> {
   const listingLanguage = language || product.drafts[platform]?.language || listingLanguageLabel(platform)
-  const selectedImageIds = product.source.imagePool.filter((image) => image.selected).map((image) => image.id)
+  const selectedImageIds = options.sourceImageIds ?? product.source.imagePool.filter((image) => image.selected).map((image) => image.id)
+  if (!selectedImageIds.length) throw new Error('请先勾选要翻译/重绘的图片')
   const response = await apiClient.post('/api/image-translate', {
     product_id: requiredProductId(product, '翻译图片'),
     platform,
@@ -849,14 +849,15 @@ export async function imageTranslate(product: Product, platform: Marketplace, la
     apply_to_draft: options.applyToDraft,
     draft_image_strategy: options.draftImageStrategy,
     source_image_ids: selectedImageIds,
-  }, { timeout: imageTranslateTimeoutMs(product) })
+  }, { timeout: imageTranslateTimeoutMs(selectedImageIds) })
   return normalizeProductMutation(response.data)
 }
 
 export async function imageEdit(product: Product, platform: Marketplace, prompt: string, options: ImageEditOptions = {}): Promise<ProductMutationResponse> {
   const userPrompt = String(prompt || '').trim()
   if (!userPrompt) throw new Error('请输入图生图提示词')
-  const selectedImageIds = product.source.imagePool.filter((image) => image.selected).map((image) => image.id)
+  const selectedImageIds = options.sourceImageIds ?? product.source.imagePool.filter((image) => image.selected).map((image) => image.id)
+  if (!selectedImageIds.length) throw new Error('请先勾选要用于图生图的图片')
   const response = await apiClient.post('/api/image-edit', {
     product_id: requiredProductId(product, '图生图'),
     platform,
@@ -865,7 +866,7 @@ export async function imageEdit(product: Product, platform: Marketplace, prompt:
     apply_to_draft: options.applyToDraft,
     draft_image_strategy: options.draftImageStrategy,
     source_image_ids: selectedImageIds,
-  }, { timeout: imageTranslateTimeoutMs(product) })
+  }, { timeout: imageTranslateTimeoutMs(selectedImageIds) })
   return normalizeProductMutation(response.data)
 }
 

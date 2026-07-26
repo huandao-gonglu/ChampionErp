@@ -299,13 +299,25 @@ def translate_images(
         config_error = str(exc)
     provider_name = str(cfg.get("provider") or cfg.get("name") or "OpenAI-Compatible").strip() or "OpenAI-Compatible"
     target = str(target_language or DEFAULT_TARGET_LANGUAGE).strip() or DEFAULT_TARGET_LANGUAGE
-    selected = select_source_images(product, image_ids, platform)
+    requested_ids = [str(item).strip() for item in (image_ids or []) if str(item).strip()]
+    if not requested_ids:
+        return {
+            "ok": False,
+            "message": "请先勾选要翻译/重绘的图片。",
+            "error": "请先勾选要翻译/重绘的图片。",
+            "imagePoolItems": [],
+            "source_image_ids": [],
+            "language": target,
+            "target_language": target,
+            "provider": provider_name,
+        }
+    selected = select_source_images(product, requested_ids, platform)
     if not selected:
         return {
             "ok": False,
             "error": "没有可翻译的图片，请先采集或上传图片。",
             "imagePoolItems": [],
-            "source_image_ids": image_ids or [],
+            "source_image_ids": requested_ids,
             "language": target,
             "target_language": target,
             "provider": provider_name,

@@ -257,6 +257,28 @@ def test_image_edit_service_requires_selected_image_ids(app_dir: Path, tmp_path:
     assert result["imagePoolItems"] == []
 
 
+def test_image_translate_service_requires_selected_image_ids(app_dir: Path, tmp_path: Path) -> None:
+    source_path = tmp_path / "source.png"
+    _make_png(source_path, (255, 0, 0))
+    source_item = image_service.upload_images(
+        app_dir,
+        [{"path": str(source_path), "selected": True}],
+        "pytest-image-translate-require-selection",
+    )[0]
+    product = {
+        "product_id": "pytest-image-translate-require-selection",
+        "name": "Selection item",
+        "source": {"title": "Selection item", "image_pool": [source_item]},
+    }
+
+    result = image_translate_service.translate_images(app_dir, product, {}, image_ids=[])
+
+    assert result["ok"] is False
+    assert "勾选" in result["message"]
+    assert result["source_image_ids"] == []
+    assert result["imagePoolItems"] == []
+
+
 def test_image_translate_service_returns_configuration_warning_without_provider_output(app_dir: Path, tmp_path: Path) -> None:
     source_path = tmp_path / "source.png"
     _make_png(source_path, (255, 0, 0))
@@ -283,6 +305,7 @@ def test_image_translate_service_returns_configuration_warning_without_provider_
             ]
         },
         target_language="Russian",
+        image_ids=[source_item["id"]],
         provider=lambda _config, _request: [],
     )
 

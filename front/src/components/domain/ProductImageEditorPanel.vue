@@ -1,8 +1,13 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed } from 'vue'
 import DraftImageRefPanel from '@/components/domain/DraftImageRefPanel.vue'
 import ImagePoolPanel from '@/components/domain/ImagePoolPanel.vue'
 import type { DraftDetail, ImageAsset, Product } from '@/types/workflow'
+
+interface ImageEditRequest {
+  prompt: string
+  imageIds: string[]
+}
 
 const props = defineProps<{
   title?: string
@@ -15,8 +20,8 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  translate: []
-  imageEdit: [prompt: string]
+  translate: [imageIds: string[]]
+  imageEdit: [request: ImageEditRequest]
   upload: [files: File[]]
   save: []
   setMain: [imageId: string]
@@ -26,7 +31,6 @@ const emit = defineEmits<{
 }>()
 
 const draftAssetIds = computed(() => props.draft?.images.map((image) => image.assetId) ?? [])
-const imageIdsSignature = computed(() => props.images.map((image) => image.id).join('\n'))
 
 function orderedDraftImages(draft: DraftDetail) {
   return [...draft.images].sort((left, right) => left.order - right.order)
@@ -51,7 +55,6 @@ function normalizeDraftImageOrders(draft: DraftDetail) {
 function toggleDraftImage(image: ImageAsset, checked: boolean) {
   const draft = props.draft
   if (!draft) return
-  image.selected = checked
   const exists = draft.images.some((item) => item.assetId === image.id)
   if (checked && !exists) {
     draft.images.push({
@@ -65,16 +68,6 @@ function toggleDraftImage(image: ImageAsset, checked: boolean) {
   }
   normalizeDraftImageOrders(draft)
 }
-
-function syncDraftImageSelection() {
-  if (!props.draft) return
-  const selectedIds = new Set(draftAssetIds.value)
-  props.images.forEach((image) => {
-    image.selected = selectedIds.has(image.id)
-  })
-}
-
-watch([draftAssetIds, imageIdsSignature], syncDraftImageSelection, { immediate: true })
 </script>
 
 <template>
@@ -109,7 +102,7 @@ watch([draftAssetIds, imageIdsSignature], syncDraftImageSelection, { immediate: 
         :show-translate-action="props.showTranslateAction === true"
         :show-draft-controls="true"
         :draft-asset-ids="draftAssetIds"
-        @translate="emit('translate')"
+        @translate="emit('translate', $event)"
         @image-edit="emit('imageEdit', $event)"
         @upload="emit('upload', $event)"
         @clear="emit('clear')"
@@ -133,7 +126,7 @@ watch([draftAssetIds, imageIdsSignature], syncDraftImageSelection, { immediate: 
       :images="props.images"
       :loading="props.loading"
       :show-translate-action="props.showTranslateAction === true"
-      @translate="emit('translate')"
+      @translate="emit('translate', $event)"
       @image-edit="emit('imageEdit', $event)"
       @upload="emit('upload', $event)"
       @clear="emit('clear')"
