@@ -29,8 +29,7 @@ const editingTargetKeys = ref<string[]>([])
 const targetEditError = ref('')
 const { copy: copyToClipboard } = useClipboard()
 let copiedDraftTimer: number | null = null
-const activeDraftStatusSet = new Set(['claimed', 'copy_ready', 'images_ready', 'ready_to_publish', 'failed', 'not_ready'])
-const draftStatusSet = new Set([...activeDraftStatusSet, 'published'])
+const isPublishedDraft = (item: DraftIndexItem) => String(item.status || '').trim().toLowerCase() === 'published'
 const languageOptions = computed(() => {
   const languages = new Map<string, { value: string; siteCount: number }>()
   props.platformOptions.forEach((platform) => {
@@ -49,17 +48,17 @@ const languageOptions = computed(() => {
 })
 const allDraftRows = computed(() => props.drafts.filter((item) => {
   if (platformFilter.value !== 'all' && !draftMatchesPlatform(item, platformFilter.value)) return false
-  return draftStatusSet.has(String(item.status || ''))
+  return true
 }))
 
 const draftRows = computed(() => allDraftRows.value.filter((row) => {
-  if (draftScope.value === 'published') return row.status === 'published'
+  if (draftScope.value === 'published') return isPublishedDraft(row)
   if (draftScope.value === 'all') return true
-  return activeDraftStatusSet.has(String(row.status || ''))
+  return !isPublishedDraft(row)
 }))
 
-const activeDraftCount = computed(() => allDraftRows.value.filter((row) => activeDraftStatusSet.has(String(row.status || ''))).length)
-const publishedDraftCount = computed(() => allDraftRows.value.filter((row) => row.status === 'published').length)
+const activeDraftCount = computed(() => allDraftRows.value.filter((row) => !isPublishedDraft(row)).length)
+const publishedDraftCount = computed(() => allDraftRows.value.filter(isPublishedDraft).length)
 const selectedDrafts = computed(() => props.drafts.filter((item) => selectedDraftIds.value.includes(draftIdOf(item))))
 const selectedCount = computed(() => selectedDrafts.value.length)
 const visibleDraftIds = computed(() => draftRows.value.map(draftIdOf).filter(Boolean))

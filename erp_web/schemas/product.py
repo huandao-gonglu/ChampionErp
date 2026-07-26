@@ -21,6 +21,40 @@ class ProductSource(TypedDict, total=False):
     created_at: str
 
 
+class CategoryAttributeDefinition(TypedDict, total=False):
+    id: str
+    name: str
+    required: bool
+    options: list[str]
+    value_type: str
+    unit: str
+    description: str
+
+
+class CategoryAttributeSchema(TypedDict, total=False):
+    version: int
+    platform: str
+    site: str
+    category_id: str
+    category_path: str
+    source: str
+    fetched_at: str
+    required: list[CategoryAttributeDefinition]
+    optional: list[CategoryAttributeDefinition]
+
+
+class DraftTargetSite(TypedDict, total=False):
+    platform: str
+    site: str
+    language: str
+    currency: str
+    category_id: str
+    category_path: str
+    category_attribute_schema: CategoryAttributeSchema
+    attributes: dict[str, Any]
+    validation_errors: list[Any]
+
+
 class PlatformDraft(TypedDict, total=False):
     draft_id: str
     platform: str
@@ -30,6 +64,7 @@ class PlatformDraft(TypedDict, total=False):
     description: str
     category_id: str
     category_path: str
+    target_sites: list[DraftTargetSite]
     attributes: dict[str, Any]
     price: dict[str, Any]
     validation_errors: list[Any]

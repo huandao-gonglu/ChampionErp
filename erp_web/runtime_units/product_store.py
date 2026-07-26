@@ -497,6 +497,7 @@ def _normalized_target_payload(target: dict[str, Any], platform: str, selected_s
     for camel_key, snake_key in (
         ("categoryId", "category_id"),
         ("categoryPath", "category_path"),
+        ("categoryAttributeSchema", "category_attribute_schema"),
         ("validationErrors", "validation_errors"),
         ("categoryPrecheck", "category_precheck"),
         ("publishStatus", "publish_status"),
@@ -508,6 +509,8 @@ def _normalized_target_payload(target: dict[str, Any], platform: str, selected_s
             payload[snake_key] = payload[camel_key]
     if not isinstance(payload.get("attributes"), dict):
         payload["attributes"] = {}
+    if not isinstance(payload.get("category_attribute_schema"), dict):
+        payload["category_attribute_schema"] = {}
     if not isinstance(payload.get("validation_errors"), list):
         payload["validation_errors"] = []
     if not isinstance(payload.get("publish_logs"), list):

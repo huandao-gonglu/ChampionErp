@@ -176,7 +176,31 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                     "status": "copy_ready",
                     "language": "ru-RU",
                     "target_sites": [
-                        {"platform": "yandex", "site": "global"},
+                        {
+                            "platform": "yandex",
+                            "site": "global",
+                            "category_id": "yandex-category-1",
+                            "category_attribute_schema": {
+                                "version": 1,
+                                "platform": "yandex",
+                                "site": "global",
+                                "category_id": "yandex-category-1",
+                                "category_path": "测试类目",
+                                "source": "platform_live",
+                                "fetched_at": "2026-07-25T12:00:00Z",
+                                "required": [
+                                    {
+                                        "id": "BRAND",
+                                        "name": "Brand",
+                                        "required": True,
+                                        "options": [],
+                                        "value_type": "string",
+                                    }
+                                ],
+                                "optional": [],
+                            },
+                            "attributes": {"BRAND": "Test Brand"},
+                        },
                         {"platform": "ozon", "site": "global"},
                     ],
                 }
@@ -186,6 +210,10 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertEqual(result["draft"]["title"], "Yandex independent title")
             self.assertEqual(result["draft"]["platforms"], ["yandex", "ozon"])
+            self.assertEqual(
+                result["draft"]["target_sites"][0]["category_attribute_schema"]["required"][0]["id"],
+                "BRAND",
+            )
             self.assertEqual(erp_db.load_draft_model(app_dir, yandex_draft_id)["title"], "Yandex independent title")
             self.assertEqual(erp_db.load_draft_model(app_dir, yandex_draft_id)["platforms"], ["yandex", "ozon"])
             updated_record = next(item for item in erp_db.list_draft_records(app_dir, scope="all") if item["draft_id"] == yandex_draft_id)

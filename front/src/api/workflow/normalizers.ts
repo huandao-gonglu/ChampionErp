@@ -2,6 +2,8 @@ import { createEmptyDraft, createEmptyProduct } from '@/constants/initialState'
 import { listingLanguageLabel } from '@/constants/locales'
 import type {
   BrowserDebugStatus,
+  CategoryAttributeDefinition,
+  CategoryAttributeSchema,
   DraftDetail,
   DraftImageRef,
   DraftIndexItem,
@@ -256,22 +258,94 @@ function normalizeValidationErrors(value: unknown): Array<UnknownRecord | string
     : []
 }
 
+function normalizeCategoryAttributeDefinition(value: unknown, requiredFallback: boolean): CategoryAttributeDefinition | null {
+  const record = asRecord(value)
+  const id = getString(record, ['id', 'attribute_id'])
+  if (!id) return null
+  const rawOptions = Array.isArray(record.options)
+    ? record.options
+    : Array.isArray(record.values)
+      ? record.values
+      : []
+  const options = rawOptions
+    .map((item) => typeof item === 'string' ? item : getString(asRecord(item), ['name', 'value_name', 'id']))
+    .filter(Boolean)
+  return {
+    id,
+    name: getString(record, ['name', 'label'], id),
+    required: getBoolean(record, ['required'], requiredFallback),
+    options,
+    valueType: getString(record, ['valueType', 'value_type'], 'string'),
+    unit: getString(record, ['unit']),
+    description: getString(record, ['description', 'help', 'tooltip']),
+  }
+}
+
+export function normalizeCategoryAttributeSchema(value: unknown): CategoryAttributeSchema | null {
+  const record = asRecord(value)
+  const categoryId = getString(record, ['categoryId', 'category_id'])
+  if (!categoryId) return null
+  const normalizeList = (items: unknown, requiredFallback: boolean) => Array.isArray(items)
+    ? items
+      .map((item) => normalizeCategoryAttributeDefinition(item, requiredFallback))
+      .filter((item): item is CategoryAttributeDefinition => Boolean(item))
+    : []
+  return {
+    version: Math.max(1, getNumber(record, ['version'], 1)),
+    platform: getString(record, ['platform']).toLowerCase(),
+    site: getString(record, ['site', 'site_id']),
+    categoryId,
+    categoryPath: getString(record, ['categoryPath', 'category_path']),
+    source: getString(record, ['source']),
+    fetchedAt: getString(record, ['fetchedAt', 'fetched_at']),
+    required: normalizeList(record.required, true),
+    optional: normalizeList(record.optional, false),
+  }
+}
+
 function targetListingFields(record: UnknownRecord, fallback?: Partial<MarketplaceTargetSite>): Partial<MarketplaceTargetSite> {
   const fallbackAttributes = fallback?.attributes || {}
   const fallbackValidationErrors = fallback?.validationErrors || []
+  const hasAnyField = (keys: string[]) => keys.some((key) => Object.prototype.hasOwnProperty.call(record, key))
+  const hasCategoryId = hasAnyField(['categoryId', 'category_id', 'subject_id'])
+  const hasCategoryPath = hasAnyField(['categoryPath', 'category_path'])
+  const hasCategoryAttributeSchema = hasAnyField(['category_attribute_schema', 'categoryAttributeSchema'])
+  const hasAttributes = hasAnyField(['attributes'])
+  const hasValidationErrors = hasAnyField(['validation_errors', 'validationErrors'])
+  const hasCategoryPrecheck = hasAnyField(['category_precheck', 'categoryPrecheck'])
+  const hasPublishStatus = hasAnyField(['publishStatus', 'publish_status'])
+  const hasStatus = hasAnyField(['status'])
+  const hasLastPrecheck = hasAnyField(['last_precheck', 'lastPrecheck'])
+  const hasLastPrecheckTarget = hasAnyField(['last_precheck_target', 'lastPrecheckTarget'])
+  const hasPublishLogs = hasAnyField(['publish_logs', 'publishLogs'])
   return {
-    categoryId: getString(record, ['categoryId', 'category_id', 'subject_id'], fallback?.categoryId || ''),
-    categoryPath: getString(record, ['categoryPath', 'category_path'], fallback?.categoryPath || ''),
-    attributes: Object.keys(asRecord(record.attributes)).length ? normalizeAttributes(record.attributes) : { ...fallbackAttributes },
-    validationErrors: normalizeValidationErrors(record.validation_errors ?? record.validationErrors).length
+    categoryId: hasCategoryId ? getString(record, ['categoryId', 'category_id', 'subject_id']) : fallback?.categoryId || '',
+    categoryPath: hasCategoryPath ? getString(record, ['categoryPath', 'category_path']) : fallback?.categoryPath || '',
+    categoryAttributeSchema: hasCategoryAttributeSchema
+      ? normalizeCategoryAttributeSchema(record.category_attribute_schema ?? record.categoryAttributeSchema)
+      : fallback?.categoryAttributeSchema || null,
+    attributes: hasAttributes ? normalizeAttributes(record.attributes) : { ...fallbackAttributes },
+    validationErrors: hasValidationErrors
       ? normalizeValidationErrors(record.validation_errors ?? record.validationErrors)
       : [...fallbackValidationErrors],
-    categoryPrecheck: asRecord(record.category_precheck ?? record.categoryPrecheck),
-    publishStatus: getString(record, ['publishStatus', 'publish_status'], fallback?.publishStatus || ''),
-    status: getString(record, ['status'], fallback?.status ? String(fallback.status) : ''),
-    lastPrecheck: asRecord(record.last_precheck ?? record.lastPrecheck),
-    lastPrecheckTarget: asRecord(record.last_precheck_target ?? record.lastPrecheckTarget),
-    publishLogs: Array.isArray(record.publish_logs) ? record.publish_logs.map((item) => asRecord(item)) : Array.isArray(record.publishLogs) ? record.publishLogs.map((item) => asRecord(item)) : [],
+    categoryPrecheck: hasCategoryPrecheck
+      ? asRecord(record.category_precheck ?? record.categoryPrecheck)
+      : fallback?.categoryPrecheck || {},
+    publishStatus: hasPublishStatus ? getString(record, ['publishStatus', 'publish_status']) : fallback?.publishStatus || '',
+    status: hasStatus ? getString(record, ['status']) : fallback?.status ? String(fallback.status) : '',
+    lastPrecheck: hasLastPrecheck
+      ? asRecord(record.last_precheck ?? record.lastPrecheck)
+      : fallback?.lastPrecheck || {},
+    lastPrecheckTarget: hasLastPrecheckTarget
+      ? asRecord(record.last_precheck_target ?? record.lastPrecheckTarget)
+      : fallback?.lastPrecheckTarget || {},
+    publishLogs: hasPublishLogs
+      ? Array.isArray(record.publish_logs)
+        ? record.publish_logs.map((item) => asRecord(item))
+        : Array.isArray(record.publishLogs)
+          ? record.publishLogs.map((item) => asRecord(item))
+          : []
+      : fallback?.publishLogs || [],
   }
 }
 
@@ -397,6 +471,33 @@ export function toBackendDraftImageRef(ref: DraftImageRef): UnknownRecord {
   }
 }
 
+function toBackendCategoryAttributeDefinition(attribute: CategoryAttributeDefinition): UnknownRecord {
+  return {
+    id: attribute.id,
+    name: attribute.name,
+    required: attribute.required,
+    options: attribute.options || [],
+    value_type: attribute.valueType || 'string',
+    unit: attribute.unit || '',
+    description: attribute.description || '',
+  }
+}
+
+function toBackendCategoryAttributeSchema(schema: CategoryAttributeSchema | null | undefined): UnknownRecord {
+  if (!schema) return {}
+  return {
+    version: schema.version,
+    platform: schema.platform,
+    site: schema.site,
+    category_id: schema.categoryId,
+    category_path: schema.categoryPath,
+    source: schema.source,
+    fetched_at: schema.fetchedAt,
+    required: schema.required.map(toBackendCategoryAttributeDefinition),
+    optional: schema.optional.map(toBackendCategoryAttributeDefinition),
+  }
+}
+
 function toBackendTargetSite(target: MarketplaceTargetSite): UnknownRecord {
   return {
     platform: target.platform,
@@ -405,6 +506,7 @@ function toBackendTargetSite(target: MarketplaceTargetSite): UnknownRecord {
     currency: target.currency,
     category_id: target.categoryId || '',
     category_path: target.categoryPath || '',
+    category_attribute_schema: toBackendCategoryAttributeSchema(target.categoryAttributeSchema),
     attributes: target.attributes || {},
     validation_errors: target.validationErrors || [],
     category_precheck: target.categoryPrecheck || {},
@@ -431,6 +533,7 @@ export function normalizeDraft(value: unknown, language: string): MarketplaceDra
   const targetFallback: Partial<MarketplaceTargetSite> = {
     categoryId,
     categoryPath,
+    categoryAttributeSchema: normalizeCategoryAttributeSchema(record.category_attribute_schema ?? record.categoryAttributeSchema),
     attributes,
     validationErrors,
     publishStatus: getString(record, ['publishStatus', 'publish_status']),
@@ -579,6 +682,7 @@ export function toBackendDraft(draft: MarketplaceDraft): UnknownRecord {
     },
     sale_terms: draft.saleTerms,
     allow_gtin_exemption: draft.allowGtinExemption,
+    validation_errors: draft.validationErrors,
     publish_status: draft.publishStatus,
     last_precheck: draft.lastPrecheck,
     last_precheck_target: draft.lastPrecheckTarget,

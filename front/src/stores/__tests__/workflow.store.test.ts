@@ -229,8 +229,8 @@ describe('workflow store live API flow', () => {
     draft.productId = 'real-product-1'
     draft.sourceProductId = 'real-product-1'
     draft.site = 'MLM'
-    draft.categoryId = 'MLM-OLD'
-    draft.categoryPath = '旧类目'
+    draft.categoryId = 'MLM-NEW'
+    draft.categoryPath = '家居 / 新类目'
     draft.attributes = { OLD_ATTRIBUTE: '旧值' }
     draft.validationErrors = ['旧类目校验错误']
     draft.status = 'ready_to_publish'
@@ -257,24 +257,18 @@ describe('workflow store live API flow', () => {
     ]
     const savedDrafts: DraftDetail[] = []
     vi.mocked(workflowApi.saveDraft).mockImplementation(async (draftToSave) => {
-      const saved = {
-        ...draftToSave,
-        attributes: { ...draftToSave.attributes },
-        validationErrors: [...draftToSave.validationErrors],
-        targetSites: draftToSave.targetSites.map((target) => ({
-          ...target,
-          attributes: { ...(target.attributes || {}) },
-        })),
-      }
+      const saved = JSON.parse(JSON.stringify(draftToSave)) as DraftDetail
       savedDrafts.push(saved)
-      return draftMutation(saved)
+      return draftMutation(JSON.parse(JSON.stringify(saved)) as DraftDetail)
     })
     vi.mocked(workflowApi.fetchCategoryAttrs).mockResolvedValue({
       platform: 'mercadolibre',
       categoryId: 'MLM-NEW',
       categoryPath: '家居 / 新类目',
-      requiredAttributes: [],
+      requiredAttributes: [{ id: 'BRAND', name: 'Brand', required: true, options: [] }],
       optionalAttributes: [],
+      source: 'mercadolibre_live',
+      fetchedAt: '2026-07-25T12:00:00Z',
       raw: {},
     })
 
@@ -287,7 +281,7 @@ describe('workflow store live API flow', () => {
       raw: {},
     })
 
-    expect(savedDrafts).toHaveLength(1)
+    expect(savedDrafts).toHaveLength(2)
     expect(savedDrafts[0]).toEqual(expect.objectContaining({
       categoryId: 'MLM-NEW',
       categoryPath: '家居 / 新类目',
@@ -300,6 +294,7 @@ describe('workflow store live API flow', () => {
       site: 'MLM',
       categoryId: 'MLM-NEW',
       categoryPath: '家居 / 新类目',
+      categoryAttributeSchema: null,
       attributes: {},
     }))
     expect(savedDrafts[0].targetSites[1]).toEqual(expect.objectContaining({
@@ -310,7 +305,29 @@ describe('workflow store live API flow', () => {
     }))
     expect(vi.mocked(workflowApi.saveDraft).mock.invocationCallOrder[0])
       .toBeLessThan(vi.mocked(workflowApi.fetchCategoryAttrs).mock.invocationCallOrder[0])
+    expect(vi.mocked(workflowApi.fetchCategoryAttrs).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(workflowApi.saveDraft).mock.invocationCallOrder[1])
     expect(workflowApi.fetchCategoryAttrs).toHaveBeenCalledWith('mercadolibre', 'MLM-NEW', 'MLM', {})
+    expect(savedDrafts[1].targetSites[0]?.categoryAttributeSchema).toEqual(expect.objectContaining({
+      version: 1,
+      platform: 'mercadolibre',
+      site: 'MLM',
+      categoryId: 'MLM-NEW',
+      categoryPath: '家居 / 新类目',
+      source: 'mercadolibre_live',
+      fetchedAt: '2026-07-25T12:00:00Z',
+      required: [expect.objectContaining({ id: 'BRAND', name: 'Brand', required: true })],
+      optional: [],
+    }))
+    expect(store.category?.requiredAttributes[0]?.id).toBe('BRAND')
+    expect(store.loading).toBe(false)
+    expect(store.categoryAttributeLoading).toBe(false)
+    expect(store.categoryAttributeError).toBe('')
+
+    store.selectPublishTarget(store.currentDraft.targetSites[1])
+    expect(store.category).toBeNull()
+    store.selectPublishTarget(store.currentDraft.targetSites[0])
+    expect(store.category?.requiredAttributes[0]?.id).toBe('BRAND')
   })
 
   it('keeps a selected category saved when loading its attributes fails', async () => {
@@ -336,6 +353,73 @@ describe('workflow store live API flow', () => {
     expect(store.currentDraft.categoryId).toBe('MLM-NEW')
     expect(store.currentDraft.targetSites[0]?.categoryId).toBe('MLM-NEW')
     expect(store.error).toBe('平台类目属性接口超时')
+    expect(store.categoryAttributeLoading).toBe(false)
+    expect(store.categoryAttributeError).toBe('平台类目属性接口超时')
+  })
+
+  it('restores category attributes from the saved target schema when reopening a draft', async () => {
+    const draft = createEmptyDraftDetail('mercadolibre')
+    draft.draftId = 'draft-1'
+    draft.productId = 'real-product-1'
+    draft.sourceProductId = 'real-product-1'
+    draft.site = 'MLM'
+    draft.categoryId = 'MLM-NEW'
+    draft.categoryPath = '家居 / 新类目'
+    draft.targetSites = [{
+      platform: 'mercadolibre',
+      site: 'MLM',
+      language: 'es-MX',
+      currency: 'MXN',
+      categoryId: 'MLM-NEW',
+      categoryPath: '家居 / 新类目',
+      categoryAttributeSchema: {
+        version: 1,
+        platform: 'mercadolibre',
+        site: 'MLM',
+        categoryId: 'MLM-NEW',
+        categoryPath: '家居 / 新类目',
+        source: 'mercadolibre_live',
+        fetchedAt: '2026-07-25T12:00:00Z',
+        required: [{ id: 'BRAND', name: 'Brand', required: true, options: [] }],
+        optional: [],
+      },
+      attributes: {},
+    }]
+    vi.mocked(workflowApi.loadDraft).mockResolvedValue(draftMutation(draft))
+    const item: DraftIndexItem = {
+      draftId: 'draft-1',
+      productId: 'real-product-1',
+      sourceProductId: 'real-product-1',
+      platform: 'mercadolibre',
+      platforms: ['mercadolibre'],
+      targetSites: draft.targetSites,
+      site: 'MLM',
+      language: 'es-MX',
+      status: 'category_ready',
+      title: '测试草稿',
+      productTitle: '测试商品',
+      mainImage: '',
+      sourcePlatform: '1688',
+      sourceUrl: '',
+      categoryId: 'MLM-NEW',
+      categoryPath: '家居 / 新类目',
+      price: '',
+      publishStatus: '',
+      createdAt: '',
+      updatedAt: '',
+      productFilePath: '',
+      raw: {},
+    }
+
+    const store = useWorkflowStore()
+    await store.loadDraft(item)
+
+    expect(store.category?.categoryId).toBe('MLM-NEW')
+    expect(store.category?.requiredAttributes).toEqual([
+      expect.objectContaining({ id: 'BRAND', name: 'Brand', required: true }),
+    ])
+    expect(workflowApi.fetchCategoryAttrs).not.toHaveBeenCalled()
+    expect(workflowApi.identifyProductForCategory).not.toHaveBeenCalled()
   })
 
   it('surfaces Mercado Libre refresh token failures instead of logging them as complete', async () => {

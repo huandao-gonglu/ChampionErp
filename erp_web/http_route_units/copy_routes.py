@@ -19,7 +19,7 @@ from ..runtime_units.copy_generation import (
     platform_to_preset_key,
     save_copy_result,
 )
-from ..runtime_units.product_store import load_app_config, load_draft_detail_from_index, load_products_index, load_required_product_from_body
+from ..runtime_units.product_store import load_app_config, load_draft_detail_from_index, load_draft_from_index, load_products_index, load_required_product_from_body
 
 
 PostHandler = Callable[[JsonRequestHandler], None]
@@ -37,10 +37,23 @@ def _copy_language(body: dict, product: dict, platform: str) -> str:
 
 def handle_generate_copy(handler: JsonRequestHandler) -> None:
     body = handler.read_body()
-    product, error_response, status = load_required_product_from_body(body)
-    if error_response:
-        handler.send_json(error_response, status)
-        return
+    requested_draft_id = str(body.get("draft_id") or "").strip()
+    if requested_draft_id:
+        product = load_draft_from_index(requested_draft_id)
+        loaded_draft_id = str(product.get("current_draft_id") or "").strip()
+        requested_product_id = str(body.get("product_id") or "").strip()
+        loaded_product_id = str(product.get("product_id") or product.get("id") or "").strip()
+        if not loaded_draft_id:
+            handler.send_json({"ok": False, "error": "草稿不存在", "draft_id": requested_draft_id}, 404)
+            return
+        if requested_product_id and loaded_product_id != requested_product_id:
+            handler.send_json({"ok": False, "error": "草稿与商品不匹配", "draft_id": requested_draft_id}, 400)
+            return
+    else:
+        product, error_response, status = load_required_product_from_body(body)
+        if error_response:
+            handler.send_json(error_response, status)
+            return
     platform = str(body.get("platform") or "mercadolibre").strip().lower()
     if platform not in PLATFORMS:
         handler.send_json({"ok": False, "error": "不支持的平台"}, 400)
@@ -49,13 +62,20 @@ def handle_generate_copy(handler: JsonRequestHandler) -> None:
     mode = str(body.get("mode") or "rewrite")
     result = generate_ai_copy_bundle(product, platform, platform, language, mode, load_app_config())
     if not result.get("ok"):
+        logger.warning(
+            "本地化文案生成失败 product_id=%s draft_id=%s platform=%s error=%s",
+            str(product.get("product_id") or product.get("id") or ""),
+            requested_draft_id,
+            platform,
+            str(result.get("error") or ""),
+        )
         handler.send_json(result, 400)
         return
     product = save_copy_result(product, result["target_market"], {**result["copy"], "language": result["language"], "source_platform": result["source_platform"], "mode": result["mode"]})
     plan = apply_product_drafts_to_plan(product, build_plan_for_platform(product, platform))
     listing = plan.get("platforms", {}).get(platform_to_preset_key(platform), {}).get("listing", {})
     draft_payload: dict = {}
-    draft_id = str(product.get("current_draft_id") or "")
+    draft_id = str(product.get("current_draft_id") or requested_draft_id or "")
     if draft_id:
         detail, detail_error, _ = load_draft_detail_from_index(draft_id)
         if not detail_error:

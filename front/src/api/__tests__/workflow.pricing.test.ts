@@ -166,7 +166,7 @@ describe('calculatePrice API mapping', () => {
 })
 
 describe('generateCopy API mapping', () => {
-  it('posts only product id and platform for single-product copy generation', async () => {
+  it('posts product id and platform for single-product copy generation', async () => {
     const product = createEmptyProduct()
     product.productId = 'prod-1'
     vi.mocked(apiClient.post).mockResolvedValueOnce({
@@ -182,6 +182,32 @@ describe('generateCopy API mapping', () => {
     expect(apiClient.post).toHaveBeenCalledWith('/api/generate-copy', {
       product_id: 'prod-1',
       platform: 'ozon',
+    })
+  })
+
+  it('binds copy generation to the current draft and language', async () => {
+    const product = createEmptyProduct()
+    product.productId = 'prod-1'
+    vi.mocked(apiClient.post).mockResolvedValueOnce({
+      data: {
+        ok: true,
+        product: toBackendProduct(product),
+        productsIndex: [],
+      },
+    })
+
+    await generateCopy(product, 'ozon', {
+      draftId: 'draft-1',
+      language: 'ru-RU',
+      mode: 'rewrite',
+    })
+
+    expect(apiClient.post).toHaveBeenCalledWith('/api/generate-copy', {
+      product_id: 'prod-1',
+      platform: 'ozon',
+      draft_id: 'draft-1',
+      language: 'ru-RU',
+      mode: 'rewrite',
     })
   })
 })

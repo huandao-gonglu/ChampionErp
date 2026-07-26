@@ -14,6 +14,28 @@ export interface MarketplaceOption {
   sites: MarketplaceSiteOption[]
 }
 
+export interface CategoryAttributeDefinition {
+  id: string
+  name: string
+  required: boolean
+  options?: string[]
+  valueType?: string
+  unit?: string
+  description?: string
+}
+
+export interface CategoryAttributeSchema {
+  version: number
+  platform: Marketplace
+  site: string
+  categoryId: string
+  categoryPath: string
+  source: string
+  fetchedAt: string
+  required: CategoryAttributeDefinition[]
+  optional: CategoryAttributeDefinition[]
+}
+
 export interface MarketplaceTargetSite {
   platform: Marketplace
   site: string
@@ -21,6 +43,7 @@ export interface MarketplaceTargetSite {
   currency: string
   categoryId?: string
   categoryPath?: string
+  categoryAttributeSchema?: CategoryAttributeSchema | null
   attributes?: Record<string, string>
   validationErrors?: Array<UnknownRecord | string>
   categoryPrecheck?: UnknownRecord
@@ -269,8 +292,10 @@ export interface CategorySelection {
   platform: Marketplace
   categoryId: string
   categoryPath: string
-  requiredAttributes: Array<{ id: string; name: string; required: boolean; options?: string[] }>
-  optionalAttributes: Array<{ id: string; name: string; required: boolean; options?: string[] }>
+  requiredAttributes: CategoryAttributeDefinition[]
+  optionalAttributes: CategoryAttributeDefinition[]
+  source?: string
+  fetchedAt?: string
   raw?: UnknownRecord
 }
 

@@ -108,11 +108,11 @@ def _normalized_generated_copy(parsed: Any, target_market: str) -> dict[str, Any
     result = {
         "title": str(parsed.get("title") or "").strip()[:title_limit],
         "description": str(parsed.get("description") or "").strip(),
-        "bullets": normalize_list(parsed.get("bullets"), 5),
-        "alt_titles": normalize_list(parsed.get("alt_titles"), 3),
-        "search_keywords": normalize_list(parsed.get("search_keywords"), 20),
+        "bullets": normalize_list(parsed.get("bullets") or parsed.get("selling_points"), 5),
+        "alt_titles": normalize_list(parsed.get("alt_titles") or parsed.get("alternative_titles"), 3),
+        "search_keywords": normalize_list(parsed.get("search_keywords") or parsed.get("keywords"), 20),
     }
-    missing = [key for key, value in result.items() if not value]
+    missing = [key for key in ("title", "description") if not result[key]]
     if missing:
         raise RuntimeError(f"AI 返回的文案缺少必要字段：{', '.join(missing)}。")
     return result

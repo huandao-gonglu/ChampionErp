@@ -69,6 +69,7 @@ import { useAppStore } from '@/stores/app'
 import type {
   AuthResult,
   BrowserDebugStatus,
+  CategoryAttributeSchema,
   CategoryPrecheckResult,
   CategoryProductIdentification,
   CategoryResultTranslations,
@@ -155,10 +156,6 @@ function collectStats(product: Product) {
   }
 }
 
-function hasProductForPublish(product: Product) {
-  return Boolean(product.productId || product.name || product.source.title)
-}
-
 function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -221,6 +218,55 @@ function categorySelectionFromProduct(product: Product, platform: Marketplace): 
   }
 }
 
+function categoryAttributeSchemaFromSelection(selection: CategorySelection, target: MarketplaceTargetSite): CategoryAttributeSchema {
+  const normalizeAttributes = (items: CategorySelection['requiredAttributes']) => items.map((item) => ({
+    id: item.id,
+    name: item.name || item.id,
+    required: Boolean(item.required),
+    options: [...(item.options || [])],
+    valueType: item.valueType || 'string',
+    unit: item.unit || '',
+    description: item.description || '',
+  }))
+  return {
+    version: 1,
+    platform: target.platform,
+    site: target.site,
+    categoryId: selection.categoryId,
+    categoryPath: selection.categoryPath || String(target.categoryPath || ''),
+    source: selection.source || `${target.platform}_live`,
+    fetchedAt: selection.fetchedAt || new Date().toISOString(),
+    required: normalizeAttributes(selection.requiredAttributes),
+    optional: normalizeAttributes(selection.optionalAttributes).map((item) => ({ ...item, required: false })),
+  }
+}
+
+function categorySelectionFromAttributeSchema(schema: CategoryAttributeSchema | null | undefined, target: MarketplaceTargetSite): CategorySelection | null {
+  if (!schema || !schema.categoryId) return null
+  if (schema.platform && schema.platform !== target.platform) return null
+  if (schema.site && schema.site !== target.site) return null
+  if (target.categoryId && schema.categoryId !== target.categoryId) return null
+  return {
+    platform: target.platform,
+    categoryId: schema.categoryId,
+    categoryPath: schema.categoryPath || String(target.categoryPath || ''),
+    requiredAttributes: schema.required.map((item) => ({ ...item, options: [...(item.options || [])] })),
+    optionalAttributes: schema.optional.map((item) => ({ ...item, required: false, options: [...(item.options || [])] })),
+    source: schema.source,
+    fetchedAt: schema.fetchedAt,
+    raw: {
+      platform: target.platform,
+      site: target.site,
+      category_id: schema.categoryId,
+      category_path: schema.categoryPath,
+      attributes: {
+        required: schema.required,
+        optional: schema.optional,
+      },
+    },
+  }
+}
+
 export const useWorkflowStore = defineStore('workflow', () => {
   const product = ref<Product>(createEmptyProduct())
   const collectForm = ref<CollectForm>(createDefaultCollectForm())
@@ -245,15 +291,19 @@ export const useWorkflowStore = defineStore('workflow', () => {
   const categoryAttributeTranslations = ref<CategoryAttributeTranslations>({})
   const categoryAttributeTranslationsSource = ref('')
   const categoryAttributeTranslating = ref(false)
+  const categoryAttributeLoading = ref(false)
+  const categoryAttributeError = ref('')
   const categoryResultTranslations = ref<CategoryResultTranslations>({})
   const categoryResultTranslationsSource = ref('')
   const categoryResultTranslating = ref(false)
   let categoryAttributeTranslationRequest = 0
   let categoryResultTranslationRequest = 0
+  let categoryAttributeLoadRequest = 0
   const categoryPrecheck = ref<CategoryPrecheckResult | null>(null)
   const precheck = ref<PublishPrecheck | null>(null)
   const precheckResults = ref<UnknownRecord>({})
   const payloadPreview = ref<UnknownRecord | null>(null)
+  const copyGenerating = ref(false)
   const publishJob = ref<PublishJob | null>(null)
   const publishJobStatus = ref<UnknownRecord | null>(null)
   const publishLogs = ref<PublishLogItem[]>([])
@@ -362,6 +412,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
       currency: target.currency || site?.currency || draftDetail.currency || '',
       categoryId: String(target.categoryId || (useRootFallback ? draftDetail.categoryId : '') || ''),
       categoryPath: String(target.categoryPath || (useRootFallback ? draftDetail.categoryPath : '') || ''),
+      categoryAttributeSchema: target.categoryAttributeSchema || null,
       attributes: Object.keys(target.attributes || {}).length ? cloneAttributes(target.attributes) : useRootFallback ? cloneAttributes(draftDetail.attributes) : {},
       validationErrors: (target.validationErrors || []).length ? cloneValidationErrors(target.validationErrors) : useRootFallback ? cloneValidationErrors(draftDetail.validationErrors) : [],
       categoryPrecheck: target.categoryPrecheck || {},
@@ -390,10 +441,16 @@ export const useWorkflowStore = defineStore('workflow', () => {
     const index = currentDraft.value.targetSites.findIndex((target) => targetSiteKey(target) === key)
     if (index < 0) return
     const existing = currentDraft.value.targetSites[index]
+    const activeSchema = category.value
+      && category.value.categoryId === currentDraft.value.categoryId
+      && category.value.platform === existing.platform
+      ? categoryAttributeSchemaFromSelection(category.value, existing)
+      : existing.categoryAttributeSchema || null
     currentDraft.value.targetSites.splice(index, 1, {
       ...existing,
       categoryId: currentDraft.value.categoryId,
       categoryPath: currentDraft.value.categoryPath,
+      categoryAttributeSchema: activeSchema,
       attributes: cloneAttributes(currentDraft.value.attributes),
       validationErrors: cloneValidationErrors(currentDraft.value.validationErrors),
       publishStatus: currentDraft.value.publishStatus,
@@ -402,6 +459,12 @@ export const useWorkflowStore = defineStore('workflow', () => {
       lastPrecheckTarget: currentDraft.value.lastPrecheckTarget,
       ...extra,
     })
+  }
+
+  function invalidateCategoryAttributeLoad() {
+    categoryAttributeLoadRequest += 1
+    categoryAttributeLoading.value = false
+    categoryAttributeError.value = ''
   }
 
   function applyTargetListingToDraft(target: MarketplaceTargetSite) {
@@ -413,7 +476,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     currentDraft.value.lastPrecheck = isRecord(target.lastPrecheck) ? target.lastPrecheck : {}
     currentDraft.value.lastPrecheckTarget = isRecord(target.lastPrecheckTarget) ? target.lastPrecheckTarget : {}
     categoryPrecheck.value = categoryPrecheckFromTarget(target.categoryPrecheck)
-    category.value = null
+    category.value = categorySelectionFromAttributeSchema(target.categoryAttributeSchema, target)
     applyCategoryRecommendationForTarget(target)
     categoryAttributeTranslationRequest += 1
     categoryResultTranslationRequest += 1
@@ -492,7 +555,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
   })
   const categoryAutoMatchTargetError = computed(() => categoryRecommendationForTarget(selectedPublishTarget.value)?.error || '')
 
-  function syncActivePublishTarget(preferred?: MarketplaceTargetSite) {
+  function syncActivePublishTarget(preferred?: MarketplaceTargetSite, invalidateCategoryLoad = false) {
     const targets = currentPublishTargets.value
     if (!targets.length) {
       activePublishTargetKey.value = ''
@@ -501,6 +564,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     const preferredKey = preferred ? pricingTargetKey(preferred.platform, preferred.site) : ''
     const existing = targets.find((target) => pricingTargetKey(target.platform, target.site) === (preferredKey || activePublishTargetKey.value))
     const selected = existing || targets[0]
+    if (invalidateCategoryLoad) invalidateCategoryAttributeLoad()
     activePublishTargetKey.value = pricingTargetKey(selected.platform, selected.site)
     activeMarketplace.value = selected.platform
     applyTargetListingToDraft(selected)
@@ -514,6 +578,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
       return
     }
     persistActiveTargetListingFields(categoryPrecheck.value ? { categoryPrecheck: categoryPrecheck.value.raw || categoryPrecheck.value } : {})
+    invalidateCategoryAttributeLoad()
     activePublishTargetKey.value = pricingTargetKey(selected.platform, selected.site)
     activeMarketplace.value = selected.platform
     precheck.value = null
@@ -1005,6 +1070,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
   }
 
   async function loadDraft(item: DraftIndexItem) {
+    invalidateCategoryAttributeLoad()
     loading.value = true
     setError('')
     try {
@@ -1014,10 +1080,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
       activeMarketplace.value = result.draft.platform
       categoryRecommendations.value = {}
       categoryAutoMatchProductName.value = ''
-      syncActivePublishTarget()
-      category.value = null
+      syncActivePublishTarget(undefined, true)
       categoryResults.value = []
-      categoryPrecheck.value = null
       precheck.value = null
       payloadPreview.value = null
       applyMutationIndexes(result)
@@ -1036,6 +1100,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
       setError('草稿缺少 ID，无法进入核价。')
       return false
     }
+    invalidateCategoryAttributeLoad()
     loading.value = true
     setError('')
     try {
@@ -1043,7 +1108,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
       currentDraft.value = result.draft
       currentDraftProductContext.value = result.productContext
       activeMarketplace.value = result.draft.platform
-      syncActivePublishTarget()
+      syncActivePublishTarget(undefined, true)
       pricingResult.value = null
       applyMutationIndexes(result)
       syncPricingInputFromProduct()
@@ -1107,7 +1172,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
         currentDraft.value = result.draft
         currentDraftProductContext.value = result.productContext
         activeMarketplace.value = result.draft.platform
-        syncActivePublishTarget(primaryTarget)
+        syncActivePublishTarget(primaryTarget, true)
       }
       applyMutationIndexes(result)
       addLog(`草稿目标市场已更新：${validTargets.map((target) => `${target.platform} · ${target.site}`).join('、')}。`)
@@ -1511,19 +1576,31 @@ export const useWorkflowStore = defineStore('workflow', () => {
 
   async function generateCopy(useCurrentDraft = false) {
     loading.value = true
+    copyGenerating.value = true
     setError('')
     try {
       const draftProductId = useCurrentDraft ? currentDraft.value.productId || currentDraftProductContext.value.productId : ''
       const productForCopy = draftProductId && draftProductId !== product.value.productId
         ? { ...product.value, productId: draftProductId }
         : product.value
-      const result = await generateCopyApi(productForCopy, activeMarketplace.value)
+      const result = await generateCopyApi(
+        productForCopy,
+        activeMarketplace.value,
+        useCurrentDraft
+          ? {
+              draftId: currentDraft.value.draftId,
+              language: currentDraft.value.language,
+              mode: 'rewrite',
+            }
+          : {},
+      )
       product.value = result.product
       if (result.draft) {
         currentDraft.value = result.draft
         currentDraftProductContext.value = result.productContext || currentDraftProductContext.value
         activeMarketplace.value = result.draft.platform
         product.value.drafts[result.draft.platform] = result.draft
+        syncActivePublishTarget(undefined, true)
       } else if (useCurrentDraft && result.product.productId) {
         const generatedDraft = draftDetailFromProduct(activeMarketplace.value, result.product)
         currentDraft.value = {
@@ -1539,6 +1616,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '生成文案失败')
     } finally {
+      copyGenerating.value = false
       loading.value = false
     }
   }
@@ -1718,6 +1796,20 @@ export const useWorkflowStore = defineStore('workflow', () => {
     await autoSuggestCategoriesForDraft()
   }
 
+  function clearCurrentCategoryDependentFields() {
+    currentDraft.value.attributes = {}
+    currentDraft.value.validationErrors = []
+    currentDraft.value.lastPrecheck = {}
+    currentDraft.value.lastPrecheckTarget = {}
+    currentDraft.value.publishStatus = ''
+    currentDraft.value.status = 'category_ready'
+    category.value = null
+    categoryAttributeError.value = ''
+    categoryPrecheck.value = null
+    precheck.value = null
+    payloadPreview.value = null
+  }
+
   async function autoSuggestCategoriesForDraft() {
     if (!currentDraft.value.draftId) {
       setError('请先从草稿箱选择要匹配类目的草稿。')
@@ -1788,36 +1880,35 @@ export const useWorkflowStore = defineStore('workflow', () => {
   }
 
   async function selectCategory(item: CategorySearchResult) {
-    const previousCategoryId = currentDraft.value.categoryId.trim()
+    const previousCategoryId = String(selectedPublishTarget.value.categoryId || '').trim()
     const categoryId = item.id.trim()
     if (!categoryId) {
       setError('所选类目缺少类目 ID。')
       return
     }
     const categoryChanged = previousCategoryId !== categoryId
+    invalidateCategoryAttributeLoad()
+    categoryAttributeLoading.value = true
     currentDraft.value.categoryId = categoryId
     currentDraft.value.categoryPath = item.path || item.name
     if (categoryChanged) {
-      currentDraft.value.attributes = {}
-      currentDraft.value.validationErrors = []
-      currentDraft.value.lastPrecheck = {}
-      currentDraft.value.lastPrecheckTarget = {}
-      currentDraft.value.publishStatus = ''
-      currentDraft.value.status = 'category_ready'
-      category.value = null
-      categoryPrecheck.value = null
-      precheck.value = null
-      payloadPreview.value = null
+      clearCurrentCategoryDependentFields()
     }
     categoryAttributeTranslations.value = {}
     categoryAttributeTranslationsSource.value = ''
+    if (categoryChanged) {
+      persistActiveTargetListingFields({ categoryAttributeSchema: null })
+    }
     loading.value = true
     setError('')
     try {
       await persistCurrentDraftForPublish()
       addLog(`类目已保存：${categoryId}`)
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '保存类目失败')
+      const message = exc instanceof Error ? exc.message : '保存类目失败'
+      categoryAttributeError.value = message
+      categoryAttributeLoading.value = false
+      setError(message)
       return
     } finally {
       loading.value = false
@@ -1826,34 +1917,68 @@ export const useWorkflowStore = defineStore('workflow', () => {
   }
 
   async function loadCategoryAttributes(categoryRecord?: UnknownRecord) {
-    const target = selectedPublishTarget.value
+    const target = { ...selectedPublishTarget.value }
     const categoryId = currentDraft.value.categoryId.trim()
     if (!categoryId) {
-      setError('请先填写或选择类目 ID。')
+      const message = '请先填写或选择类目 ID。'
+      categoryAttributeLoading.value = false
+      categoryAttributeError.value = message
+      setError(message)
       return
     }
     if (!target.platform) {
-      setError('当前草稿没有可读取类目属性的目标站点。')
+      const message = '当前草稿没有可读取类目属性的目标站点。'
+      categoryAttributeLoading.value = false
+      categoryAttributeError.value = message
+      setError(message)
       return
     }
+    const requestId = ++categoryAttributeLoadRequest
+    const requestTargetKey = targetSiteKey(target)
+    const requestIsCurrent = () => (
+      requestId === categoryAttributeLoadRequest
+      && requestTargetKey === targetSiteKey(selectedPublishTarget.value)
+      && categoryId === currentDraft.value.categoryId.trim()
+    )
+    categoryAttributeLoading.value = true
+    categoryAttributeError.value = ''
     loading.value = true
     setError('')
     try {
       const matchingLoadedRecord = category.value?.categoryId === categoryId && category.value.platform === target.platform
         ? category.value.raw
         : undefined
-      category.value = await fetchCategoryAttrs(target.platform, categoryId, target.site, categoryRecord || matchingLoadedRecord)
+      const loadedCategory = await fetchCategoryAttrs(target.platform, categoryId, target.site, categoryRecord || matchingLoadedRecord)
+      if (!requestIsCurrent()) return
+      if (String(target.categoryId || '').trim() !== categoryId) {
+        clearCurrentCategoryDependentFields()
+      }
+      if (loadedCategory.categoryPath) {
+        currentDraft.value.categoryPath = loadedCategory.categoryPath
+      }
+      category.value = loadedCategory
+      categoryAttributeError.value = ''
+      persistActiveTargetListingFields({
+        categoryAttributeSchema: categoryAttributeSchemaFromSelection(loadedCategory, target),
+      })
+      await persistCurrentDraftForPublish()
       categoryAttributeTranslations.value = {}
       categoryAttributeTranslationsSource.value = ''
       currentStage.value = 6
-      addLog(`已读取类目属性：${categoryId}`)
+      addLog(`已读取并保存类目属性：${categoryId}`)
       if (categoryAttributeTranslationEnabled.value) {
         await translateCategoryAttributes()
       }
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '读取类目属性失败')
+      if (!requestIsCurrent()) return
+      const message = exc instanceof Error ? exc.message : '读取或保存类目属性失败'
+      categoryAttributeError.value = message
+      setError(message)
     } finally {
-      loading.value = false
+      if (requestId === categoryAttributeLoadRequest) {
+        categoryAttributeLoading.value = false
+        loading.value = false
+      }
     }
   }
 
@@ -2395,6 +2520,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
 
   function setMarketplace(value: Marketplace) {
     if (marketplaces.includes(value)) {
+      invalidateCategoryAttributeLoad()
       activeMarketplace.value = value
       setMarketplaceSite(activeMarketplaceSite())
       categoryAttributeTranslationEnabled.value = false
@@ -2443,6 +2569,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
     categoryAttributeTranslations,
     categoryAttributeTranslationsSource,
     categoryAttributeTranslating,
+    categoryAttributeLoading,
+    categoryAttributeError,
     categoryResultTranslations,
     categoryResultTranslationsSource,
     categoryResultTranslating,
@@ -2450,6 +2578,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     precheck,
     precheckResults,
     payloadPreview,
+    copyGenerating,
     publishJob,
     publishJobStatus,
     publishLogs,

@@ -51,12 +51,15 @@ const {
   categoryAttributeTranslations,
   categoryAttributeTranslationsSource,
   categoryAttributeTranslating,
+  categoryAttributeLoading,
+  categoryAttributeError,
   categoryResultTranslations,
   categoryResultTranslationsSource,
   categoryResultTranslating,
   categoryPrecheck,
   precheck,
   payloadPreview,
+  copyGenerating,
   publishJob,
   publishJobStatus,
   publishLogs,
@@ -515,6 +518,8 @@ watch(
               :category-attribute-translations="categoryAttributeTranslations"
               :category-attribute-translations-source="categoryAttributeTranslationsSource"
               :category-attribute-translating="categoryAttributeTranslating"
+              :category-attribute-loading="categoryAttributeLoading"
+              :category-attribute-error="categoryAttributeError"
               :category-result-translations="categoryResultTranslations"
               :category-result-translations-source="categoryResultTranslationsSource"
               :category-result-translating="categoryResultTranslating"
@@ -748,7 +753,9 @@ watch(
           @close="closeDraftWorkspace"
         >
           <template #actions>
-            <button v-if="draftWorkspaceTab === 'text'" class="btn btn-outline" :disabled="loading || !(currentDraft.productId || currentDraftProductContext.productId)" @click="() => store.generateCopy(true)">生成/改写本地化文案</button>
+            <button v-if="draftWorkspaceTab === 'text'" class="btn btn-outline" :disabled="loading || !(currentDraft.productId || currentDraftProductContext.productId)" @click="() => store.generateCopy(true)">
+              {{ copyGenerating ? '正在生成本地化文案…' : '生成/改写本地化文案' }}
+            </button>
             <button class="btn btn-primary" :disabled="loading || !currentDraft.draftId" @click="store.saveCurrentDraft">保存草稿</button>
           </template>
 
@@ -799,6 +806,8 @@ watch(
                 :category-attribute-translations="categoryAttributeTranslations"
                 :category-attribute-translations-source="categoryAttributeTranslationsSource"
                 :category-attribute-translating="categoryAttributeTranslating"
+                :category-attribute-loading="categoryAttributeLoading"
+                :category-attribute-error="categoryAttributeError"
                 :category-result-translations="categoryResultTranslations"
                 :category-result-translations-source="categoryResultTranslationsSource"
                 :category-result-translating="categoryResultTranslating"
@@ -864,6 +873,8 @@ watch(
               :category-attribute-translations="categoryAttributeTranslations"
               :category-attribute-translations-source="categoryAttributeTranslationsSource"
               :category-attribute-translating="categoryAttributeTranslating"
+              :category-attribute-loading="categoryAttributeLoading"
+              :category-attribute-error="categoryAttributeError"
               :category-result-translations="categoryResultTranslations"
               :category-result-translations-source="categoryResultTranslationsSource"
               :category-result-translating="categoryResultTranslating"

@@ -85,6 +85,34 @@ def test_generate_copy_uses_bound_provider_and_registry_language_for_ozon(app_di
     assert seen["chat_use_case"] == "copy.generate"
 
 
+def test_generate_copy_accepts_missing_optional_copy_fields(app_dir: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        copy_service.ai_gateway,
+        "resolve_model_for_use_case",
+        lambda *args, **kwargs: {"id": "bound_copy_model", "provider": "Test Provider"},
+    )
+    monkeypatch.setattr(
+        copy_service.ai_gateway,
+        "chat_json",
+        lambda *args, **kwargs: {
+            "title": "Органайзер для дома",
+            "description": "Компактный органайзер для хранения вещей дома.",
+        },
+    )
+
+    result = copy_service.generate_copy(
+        str(app_dir),
+        {"name": "Manual organizer"},
+        {"ai_models": []},
+        target_market="ozon",
+    )
+
+    assert result["ok"] is True
+    assert result["copy"]["bullets"] == []
+    assert result["copy"]["alt_titles"] == []
+    assert result["copy"]["search_keywords"] == []
+
+
 def test_configured_copy_prompt_contains_target_and_product_context(app_dir: Path) -> None:
     prompt = copy_service.build_copy_prompt_from_config(
         str(app_dir),

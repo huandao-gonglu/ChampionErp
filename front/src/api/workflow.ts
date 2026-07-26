@@ -776,10 +776,17 @@ export async function imagePoolAction(product: Product, action: string, payload:
   return normalizeProductMutation(response.data)
 }
 
-export async function generateCopy(product: Product, platform: Marketplace): Promise<ProductMutationResponse> {
+export async function generateCopy(
+  product: Product,
+  platform: Marketplace,
+  options: { draftId?: string; language?: string; mode?: 'rewrite' | 'generate' } = {},
+): Promise<ProductMutationResponse> {
   const response = await apiClient.post('/api/generate-copy', {
     product_id: requiredProductId(product, '生成文案'),
     platform,
+    ...(options.draftId ? { draft_id: options.draftId } : {}),
+    ...(options.language ? { language: options.language } : {}),
+    ...(options.mode ? { mode: options.mode } : {}),
   })
   return normalizeProductMutation(response.data)
 }
@@ -1092,6 +1099,9 @@ export async function fetchCategoryAttrs(platform: Marketplace, categoryId: stri
         name: getString(record, ['name', 'label']),
         required: getBoolean(record, ['required'], false),
         options: attributeOptions(record),
+        valueType: getString(record, ['value_type', 'valueType'], 'string'),
+        unit: getString(record, ['unit']),
+        description: getString(record, ['description', 'help', 'tooltip']),
       }
     })
     : []
@@ -1105,6 +1115,9 @@ export async function fetchCategoryAttrs(platform: Marketplace, categoryId: stri
         name: getString(record, ['name', 'label']),
         required: false,
         options: attributeOptions(record),
+        valueType: getString(record, ['value_type', 'valueType'], 'string'),
+        unit: getString(record, ['unit']),
+        description: getString(record, ['description', 'help', 'tooltip']),
       }
     })
     : []
@@ -1114,6 +1127,8 @@ export async function fetchCategoryAttrs(platform: Marketplace, categoryId: stri
     categoryPath: getString(data, ['category_path', 'path', 'name']),
     requiredAttributes: requiredOnly,
     optionalAttributes: [...optionalFromRequired, ...optional].filter((item, index, items) => item.id && items.findIndex((candidate) => candidate.id === item.id) === index),
+    source: getString(data, ['source'], `${platform}_live`),
+    fetchedAt: new Date().toISOString(),
     raw: asRecord(data.category),
   }
 }
