@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from .publish_adapter import PUBLISHING_BUS, ProjectPublishingAdapter
+from .publish_adapter import ProjectPublishingAdapter, get_publishing_bus, resume_pending_publish_jobs
 from .publish_helpers import (
     assign_upc,
     build_publish_payload,
@@ -31,8 +31,9 @@ from .publish_validation import (
 )
 
 __all__ = [
-    "PUBLISHING_BUS",
     "ProjectPublishingAdapter",
+    "get_publishing_bus",
+    "resume_pending_publish_jobs",
     "append_ml_auth_test_log",
     "append_ml_publish_log",
     "apply_precheck_to_product",

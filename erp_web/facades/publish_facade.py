@@ -12,7 +12,7 @@ from erp_web.runtime_units.product_store import (
     sync_product_workflow_statuses,
 )
 from erp_web.runtime_units.draft_publish_context import load_required_draft_publish_context, save_draft_precheck_result
-from erp_web.runtime_units.publish_adapter import PUBLISHING_BUS
+from erp_web.runtime_units.publish_adapter import get_publishing_bus
 from erp_web.runtime_units.publish_logs_runtime import append_ml_publish_log
 from erp_web.runtime_units.publish_mercadolibre import (
     build_mercadolibre_payload_preview,
@@ -171,7 +171,7 @@ def enqueue_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
                 "draft": context["draft"],
                 "target": context["target"],
             }, 400
-        result = PUBLISHING_BUS.enqueue(product, eligible_platforms, load_store_config())
+        result = get_publishing_bus().enqueue(product, eligible_platforms, load_store_config())
         result["eligible_platforms"] = eligible_platforms
         result["rejected_platforms"] = rejected_platforms
         result["draft_id"] = str(context["draft"].get("draft_id") or "")

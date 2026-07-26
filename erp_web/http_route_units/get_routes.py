@@ -21,7 +21,7 @@ from ..runtime_units.product_store import (
 from ..runtime_units.publish_bus import load_publish_logs, persist_publish_bus_terminal_results
 from ..runtime_units.mercadolibre_orders import load_mercadolibre_order_notifications, mercadolibre_recent_orders
 from ..runtime_units.publish_mercadolibre import mercadolibre_remote_items
-from ..runtime_units.publish_adapter import PUBLISHING_BUS
+from ..runtime_units.publish_adapter import get_publishing_bus
 from ..runtime_units.runtime_api import html_page
 from ..runtime_units.runtime_common import APP_DIR, BROWSER_DEBUG_PORT, OUTPUT_DIR
 from ..runtime_units.source_collect_browser import browser_debug_status
@@ -160,7 +160,7 @@ def handle_publish_bus_status(handler: JsonRequestHandler, parsed: object) -> No
         handler.send_json({"ok": False, "error": "缺少 job_id"}, 400)
         return
     try:
-        handler.send_json({"ok": True, "job": persist_publish_bus_terminal_results(PUBLISHING_BUS.get_status(job_id))})
+        handler.send_json({"ok": True, "job": persist_publish_bus_terminal_results(get_publishing_bus().get_status(job_id))})
     except Exception as exc:
         handler.send_json({"ok": False, "error": str(exc)}, 404)
 
