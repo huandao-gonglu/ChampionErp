@@ -53,6 +53,7 @@ class AiImageRequest:
     prompt: str
     images: list[dict[str, Any]]
     mode: str
+    timeout_seconds: int | None = None
     size: str = "1024x1024"
     quality: str = "medium"
     count: int = 1

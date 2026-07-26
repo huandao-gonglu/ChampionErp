@@ -188,7 +188,7 @@ def test_openai_chat_request_body_merges_custom_json_after_standard_fields(tmp_p
                     "api_key": "test-key",
                     "base_url": "https://ai.example.com/v1",
                     "model": "configured-model",
-                    "capabilities": ["chat", "json"],
+                    "capabilities": ["chat", "json", "web_search"],
                     "extra": {
                         "request_body": {
                             "model": "provider-specific-model",
@@ -203,6 +203,7 @@ def test_openai_chat_request_body_merges_custom_json_after_standard_fields(tmp_p
         [{"role": "user", "content": "Return JSON."}],
         temperature=0.2,
         max_tokens=12,
+        stream=False,
     )
 
     assert result == {"ok": True}
@@ -265,6 +266,7 @@ def test_openai_responses_request_body_merges_custom_json_after_standard_fields(
         [{"role": "user", "content": "Return JSON."}],
         temperature=0.2,
         max_tokens=12,
+        stream=False,
     )
 
     assert result == {"ok": True}
@@ -275,9 +277,147 @@ def test_openai_responses_request_body_merges_custom_json_after_standard_fields(
             "temperature": 0.85,
             "stream": False,
             "max_output_tokens": 55,
+            "text": {"format": {"type": "json_object"}},
             "top_p": 0.7,
         }
     ]
+
+
+def test_openai_responses_activates_only_use_case_capabilities(tmp_path: Path, monkeypatch) -> None:
+    requests: list[dict] = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        @staticmethod
+        def read() -> bytes:
+            return b'{"output_text":"{\\"ok\\":true}"}'
+
+    def fake_urlopen(request, timeout):
+        requests.append(
+            {
+                "body": json.loads((request.data or b"{}").decode("utf-8")),
+                "timeout": timeout,
+            }
+        )
+        return FakeResponse()
+
+    monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
+    app_config = {
+        "ai_models": [
+            {
+                "id": "responses_with_search",
+                "provider": "OpenAI-Compatible",
+                "api_style": "openai_responses",
+                "api_key": "test-key",
+                "base_url": "https://ai.example.com/v1",
+                "model": "configured-model",
+                "capabilities": ["chat", "json", "web_search"],
+                "capability_profiles": {
+                    "json": {
+                        "tested": True,
+                        "connection_type": "api",
+                        "api_style": "openai_responses",
+                        "request_body": {
+                            "text": {"format": {"type": "json_object"}},
+                            "provider_json_mode": "tested-json-recipe",
+                        },
+                    },
+                    "web_search": {
+                        "tested": True,
+                        "connection_type": "api",
+                        "api_style": "openai_responses",
+                        "request_mode": "openai_tools",
+                        "request_body": {
+                            "tools": [{"type": "web_search_preview"}],
+                            "provider_search_mode": "tested-search-recipe",
+                        },
+                    },
+                },
+                "timeout_seconds": 30,
+            }
+        ],
+        "ai_use_case_bindings": {
+            "copy.generate": {
+                "model_id": "responses_with_search",
+                "timeout_override_seconds": 125,
+            },
+            "research.web_search": {"model_id": "responses_with_search"},
+        },
+    }
+
+    copy_result = ai_gateway.chat_json(
+        tmp_path,
+        app_config,
+        "copy.generate",
+        [{"role": "user", "content": "Return JSON."}],
+        stream=False,
+    )
+    research_result = ai_gateway.chat_json(
+        tmp_path,
+        app_config,
+        "research.web_search",
+        [{"role": "user", "content": "Search and return JSON."}],
+        stream=False,
+    )
+
+    assert copy_result == {"ok": True}
+    assert research_result == {"ok": True}
+    assert "tools" not in requests[0]["body"]
+    assert requests[0]["body"]["text"] == {"format": {"type": "json_object"}}
+    assert requests[0]["body"]["provider_json_mode"] == "tested-json-recipe"
+    assert "provider_search_mode" not in requests[0]["body"]
+    assert requests[0]["timeout"] == 125
+    assert requests[1]["body"]["tools"] == [{"type": "web_search_preview"}]
+    assert requests[1]["body"]["text"] == {"format": {"type": "json_object"}}
+    assert requests[1]["body"]["provider_json_mode"] == "tested-json-recipe"
+    assert requests[1]["body"]["provider_search_mode"] == "tested-search-recipe"
+    assert requests[1]["timeout"] == 30
+
+
+def test_runtime_rejects_stale_tested_capability_profile(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        ai_gateway.urllib.request,
+        "urlopen",
+        lambda request, timeout: pytest.fail("失效能力配方不应发出 Provider 请求"),
+    )
+    app_config = {
+        "ai_models": [
+            {
+                "id": "stale_model",
+                "provider": "OpenAI-Compatible",
+                "api_style": "openai_responses",
+                "api_key": "test-key",
+                "base_url": "https://ai.example.com/v1",
+                "model": "current-model",
+                "capabilities": ["chat", "json"],
+                "capability_profiles": {
+                    "chat": {
+                        "tested": True,
+                        "connection_type": "api",
+                        "provider": "OpenAI-Compatible",
+                        "api_style": "openai_responses",
+                        "model": "tested-old-model",
+                        "base_url": "https://ai.example.com/v1",
+                        "request_body": {},
+                    }
+                },
+            }
+        ]
+    }
+
+    with pytest.raises(RuntimeError, match="model 已变化，请重新测试"):
+        ai_gateway.chat_json(
+            tmp_path,
+            app_config,
+            "copy.generate",
+            [{"role": "user", "content": "Return JSON."}],
+            stream=False,
+        )
 
 
 def test_ai_model_connection_uses_model_config(monkeypatch) -> None:
@@ -999,6 +1139,11 @@ def test_responses_capability_probe_preserves_style_and_merges_custom_json(monke
     assert len(request_bodies) == 3
     assert all("input" in body and "messages" not in body for body in request_bodies)
     assert all(body["top_p"] == 0.7 for body in request_bodies)
+    json_probe = next(body for body in request_bodies if body.get("max_output_tokens") == 32)
+    assert json_probe["text"] == {"format": {"type": "json_object"}}
+    json_profile = result["capability_results"]["json"]["capability_profile"]
+    assert json_profile["api_style"] == "openai_responses"
+    assert json_profile["request_body"] == {"text": {"format": {"type": "json_object"}}}
 
 
 def test_ai_model_probe_requires_real_web_search_evidence(monkeypatch) -> None:
@@ -1139,6 +1284,10 @@ def test_ai_model_web_search_probe_supports_enable_search_override(monkeypatch) 
     assert result["connection_ok"] is True
     assert result["supported_capabilities"] == ["web_search"]
     assert result["capability_results"]["web_search"]["request_mode"] == "enable_search"
+    assert result["capability_results"]["web_search"]["capability_profile"]["request_body"] == {
+        "enable_search": True,
+        "search_options": {"forced_search": True},
+    }
     assert request_bodies[-1]["enable_search"] is True
     assert request_bodies[-1]["search_options"] == {"forced_search": True}
     assert request_bodies[-1]["top_p"] == 0.7
@@ -1244,6 +1393,7 @@ def test_ai_model_web_search_probe_uses_configured_responses_api(monkeypatch) ->
         requests.append((request.full_url, body))
         if request.full_url.endswith("/responses"):
             assert body["tools"] == [{"type": "web_search"}]
+            assert body["text"] == {"format": {"type": "json_object"}}
             return FakeResponse(
                 json.dumps(
                     {
@@ -1283,6 +1433,9 @@ def test_ai_model_web_search_probe_uses_configured_responses_api(monkeypatch) ->
     web_search = result["capability_results"]["web_search"]
     assert web_search["request_mode"] == "openai_tools"
     assert web_search["api_style"] == "openai_responses"
+    assert web_search["capability_profile"]["request_body"] == {
+        "tools": [{"type": "web_search"}]
+    }
     assert [url for url, _body in requests] == [
         "https://dashscope.aliyuncs.com/compatible-mode/v1/responses",
     ]

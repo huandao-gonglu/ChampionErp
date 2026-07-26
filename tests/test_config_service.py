@@ -60,6 +60,24 @@ def test_merge_config_reads_key_from_config_not_code(app_dir: Path) -> None:
     assert cfg["model"] == "deepseek-chat"
 
 
+def test_ai_use_case_binding_keeps_timeout_override_and_legacy_model_id() -> None:
+    bindings = ai_model_config.normalize_ai_use_case_bindings(
+        {
+            "copy.generate": {
+                "model_id": "copy_model",
+                "timeout_override_seconds": "125",
+            },
+            "category.attribute_fill": "category_model",
+        }
+    )
+
+    assert bindings["copy.generate"] == {
+        "model_id": "copy_model",
+        "timeout_override_seconds": 125,
+    }
+    assert bindings["category.attribute_fill"] == {"model_id": "category_model"}
+
+
 def test_merge_config_writes_ai_use_case_prompt_files(app_dir: Path) -> None:
     merged = config_service.merge_ai_config(
         app_dir,
@@ -287,6 +305,39 @@ def test_normalize_ai_model_keeps_empty_capabilities_empty() -> None:
     )
 
     assert model["capabilities"] == []
+
+
+def test_normalize_ai_model_keeps_tested_capability_profiles() -> None:
+    model = ai_model_config.normalize_ai_model(
+        {
+            "id": "responses_model",
+            "api_style": "openai_responses",
+            "capabilities": ["chat", "json", "web_search"],
+            "capability_profiles": {
+                "json": {
+                    "version": 1,
+                    "tested": True,
+                    "connection_type": "api",
+                    "api_style": "openai_responses",
+                    "request_body": {"text": {"format": {"type": "json_object"}}},
+                },
+                "web_search": {
+                    "tested": True,
+                    "connection_type": "api",
+                    "api_style": "openai_responses",
+                    "request_mode": "openai_tools",
+                    "request_body": {"tools": [{"type": "web_search"}]},
+                },
+                "unknown": {"tested": True, "request_body": {"ignored": True}},
+            },
+        }
+    )
+
+    assert set(model["capability_profiles"]) == {"json", "web_search"}
+    assert model["capability_profiles"]["json"]["request_body"] == {
+        "text": {"format": {"type": "json_object"}}
+    }
+    assert model["capability_profiles"]["web_search"]["request_mode"] == "openai_tools"
 
 
 def test_normalize_ai_model_supports_cli_connection() -> None:

@@ -40,6 +40,7 @@ class AiChatRequest:
     app_dir: Path | str
     model: dict[str, Any]
     messages: list[dict[str, str]]
+    required_capabilities: tuple[str, ...] = ()
     temperature: float = 0.2
     max_tokens: int | None = None
     timeout_seconds: int | None = None
@@ -425,6 +426,161 @@ def _web_search_probe_candidates(model: dict[str, Any]) -> list[tuple[str, dict[
     return candidates
 
 
+def _capability_profile(
+    model: dict[str, Any],
+    capability: str,
+    *,
+    request_body: dict[str, Any] | None = None,
+    request_mode: str = "",
+    operation: str = "",
+    strategy: str = "",
+    tested: bool = True,
+) -> dict[str, Any]:
+    profile: dict[str, Any] = {
+        "version": 1,
+        "tested": tested,
+        "connection_type": ai_model_config.model_connection_type(model),
+        "provider": str(model.get("provider") or "").strip(),
+        "model": ai_model_config.model_name(model),
+    }
+    if profile["connection_type"] == ai_model_config.CONNECTION_TYPE_API:
+        profile["api_style"] = _model_api_style(model)
+        profile["base_url"] = ai_model_config.model_base_url(model)
+    if request_mode:
+        profile["request_mode"] = request_mode
+    if operation:
+        profile["operation"] = operation
+    if strategy:
+        profile["strategy"] = strategy
+    if request_body is not None:
+        profile["request_body"] = dict(request_body)
+    return profile
+
+
+def _default_capability_profile(
+    model: dict[str, Any],
+    capability: str,
+    *,
+    tested: bool = False,
+) -> dict[str, Any]:
+    connection_type = ai_model_config.model_connection_type(model)
+    if connection_type == ai_model_config.CONNECTION_TYPE_CLI:
+        strategy = "external_read" if capability == ai_model_config.CAP_WEB_SEARCH else "cli_prompt"
+        return _capability_profile(model, capability, strategy=strategy, tested=tested)
+    if connection_type == ai_model_config.CONNECTION_TYPE_BROWSER:
+        strategy = "external_read" if capability == ai_model_config.CAP_WEB_SEARCH else "browser_prompt"
+        return _capability_profile(model, capability, strategy=strategy, tested=tested)
+    if capability == ai_model_config.CAP_JSON:
+        request_body = (
+            {"text": {"format": {"type": "json_object"}}}
+            if _model_api_style(model) == ai_model_config.API_STYLE_OPENAI_RESPONSES
+            else {"response_format": {"type": "json_object"}}
+        )
+        return _capability_profile(model, capability, request_body=request_body, tested=tested)
+    if capability == ai_model_config.CAP_WEB_SEARCH:
+        extra = model.get("extra") if isinstance(model.get("extra"), dict) else {}
+        if isinstance(extra.get("web_search_request_body"), dict):
+            request_mode = "custom_request_body"
+        elif _model_api_style(model) == ai_model_config.API_STYLE_OPENAI_RESPONSES:
+            request_mode = "openai_tools"
+        else:
+            request_mode = _chat_web_search_request_mode(extra)
+        return _capability_profile(
+            model,
+            capability,
+            request_body=_web_search_body_for_model(model),
+            request_mode=request_mode,
+            tested=tested,
+        )
+    operation_by_capability = {
+        ai_model_config.CAP_CHAT: "chat",
+        ai_model_config.CAP_IMAGE_GENERATE: "images.generate",
+        ai_model_config.CAP_IMAGE_EDIT: "images.edit",
+        ai_model_config.CAP_TOOL_CALLING: "tools",
+    }
+    return _capability_profile(
+        model,
+        capability,
+        request_body={},
+        operation=operation_by_capability.get(capability, ""),
+        tested=tested,
+    )
+
+
+def _saved_capability_profile(model: dict[str, Any], capability: str) -> dict[str, Any] | None:
+    profiles = ai_model_config.normalize_capability_profiles(model.get("capability_profiles"))
+    profile = profiles.get(capability)
+    if not profile:
+        return None
+    if profile.get("tested") is not True:
+        raise RuntimeError(f"AI 能力 {capability} 的配方尚未通过测试，请重新测试该能力。")
+    connection_type = ai_model_config.model_connection_type(model)
+    saved_connection_type = str(profile.get("connection_type") or "").strip()
+    if saved_connection_type and saved_connection_type != connection_type:
+        raise RuntimeError(f"AI 能力 {capability} 的连接类型已变化，请重新测试该能力。")
+    identity_fields = {
+        "provider": str(model.get("provider") or "").strip(),
+        "model": ai_model_config.model_name(model),
+    }
+    if connection_type == ai_model_config.CONNECTION_TYPE_API:
+        identity_fields["base_url"] = ai_model_config.model_base_url(model)
+    for key, current_value in identity_fields.items():
+        saved_value = str(profile.get(key) or "").strip()
+        if saved_value and saved_value != current_value:
+            raise RuntimeError(f"AI 能力 {capability} 的 {key} 已变化，请重新测试该能力。")
+    if connection_type == ai_model_config.CONNECTION_TYPE_API:
+        saved_api_style = str(profile.get("api_style") or "").strip()
+        if saved_api_style and saved_api_style != _model_api_style(model):
+            raise RuntimeError(f"AI 能力 {capability} 的 API 风格已变化，请重新测试该能力。")
+        model_overrides = _model_request_body_overrides(model)
+        request_body = profile.get("request_body")
+        if isinstance(request_body, dict):
+            for key, value in request_body.items():
+                if key in model_overrides and model_overrides[key] != value:
+                    raise RuntimeError(f"AI 能力 {capability} 的请求字段 {key} 已变化，请重新测试该能力。")
+    return profile
+
+
+def _resolved_capability_profile(model: dict[str, Any], capability: str) -> dict[str, Any]:
+    """Return the tested activation recipe, with a legacy fallback for old configs."""
+    return _saved_capability_profile(model, capability) or _default_capability_profile(model, capability)
+
+
+def _capability_request_body(
+    model: dict[str, Any],
+    capabilities: set[str] | tuple[str, ...] | list[str],
+) -> dict[str, Any]:
+    """Compose provider request fields from model-level capability recipes."""
+    merged: dict[str, Any] = {}
+    for capability in ai_model_config.normalize_capabilities(list(capabilities)):
+        profile = _resolved_capability_profile(model, capability)
+        request_body = profile.get("request_body")
+        if not isinstance(request_body, dict):
+            continue
+        for key, value in request_body.items():
+            if key in merged and merged[key] != value:
+                raise RuntimeError(f"AI 能力配方冲突：{capability} 与其他能力都定义了请求字段 {key}。")
+            merged[key] = value
+    return merged
+
+
+def _validate_capability_profiles(
+    model: dict[str, Any],
+    capabilities: tuple[str, ...] | list[str],
+) -> None:
+    for capability in ai_model_config.normalize_capabilities(list(capabilities)):
+        _resolved_capability_profile(model, capability)
+
+
+def _profile_with_effective_request_body(profile: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+    """Capture the exact tested values for fields owned by this capability."""
+    request_body = profile.get("request_body")
+    if not isinstance(request_body, dict):
+        return profile
+    effective = {key: body[key] for key in request_body if key in body}
+    return {**profile, "request_body": effective}
+
+
 def _safe_endpoint_label(url: str) -> str:
     parsed = urllib.parse.urlparse(str(url or ""))
     if not parsed.netloc:
@@ -465,6 +621,32 @@ def _ai_http_error(
 def _resolved_model(app_dir: Path | str, app_config: dict[str, Any] | None, use_case_id: str, model_id: str = "") -> dict[str, Any]:
     config_service.load_env(app_dir)
     return ai_model_config.resolve_ai_model(app_config, use_case_id, model_id=model_id)
+
+
+def _resolved_use_case_request(
+    app_dir: Path | str,
+    app_config: dict[str, Any] | None,
+    use_case_id: str,
+    *,
+    model_id: str = "",
+    timeout_seconds: int | None = None,
+    default_timeout_seconds: int,
+) -> tuple[dict[str, Any], tuple[str, ...], int]:
+    model = _resolved_model(app_dir, app_config, use_case_id, model_id)
+    binding = ai_model_config.ai_use_case_binding(app_config, use_case_id)
+    required_capabilities = tuple(ai_model_config.ai_use_case_required_capabilities(use_case_id))
+    provider_default_timeout = (
+        180
+        if ai_model_config.model_connection_type(model) != ai_model_config.CONNECTION_TYPE_API
+        else default_timeout_seconds
+    )
+    effective_timeout = int(
+        binding.get("timeout_override_seconds")
+        or timeout_seconds
+        or model.get("timeout_seconds")
+        or provider_default_timeout
+    )
+    return model, required_capabilities, effective_timeout
 
 
 def resolve_model_for_use_case(app_dir: Path | str, app_config: dict[str, Any] | None, use_case_id: str, model_id: str = "") -> dict[str, Any]:
@@ -656,6 +838,7 @@ def _chat_json_via_cli(
     messages: list[dict[str, str]],
     *,
     timeout_seconds: int | None = None,
+    required_capabilities: tuple[str, ...] = (),
     response_format: bool = True,
     stream: bool = False,
     token_callback: Callable[[str], None] | None = None,
@@ -665,7 +848,7 @@ def _chat_json_via_cli(
     if cli_tool != ai_model_config.CLI_TOOL_CODEX:
         raise RuntimeError(f"CLI 工具 {cli_tool} 已预留，但当前版本只支持 Codex CLI。")
     timeout = int(timeout_seconds or model.get("timeout_seconds") or 180)
-    allow_external_read = ai_model_config.CAP_WEB_SEARCH in ai_model_config.normalize_capabilities(model.get("capabilities"))
+    allow_external_read = ai_model_config.CAP_WEB_SEARCH in required_capabilities
     prompt = _cli_prompt(messages, response_format=response_format, allow_external_read=allow_external_read)
     if conversation:
         conversation.emit_custom(
@@ -806,47 +989,53 @@ def _probe_json_capability(
     model_name: str,
     timeout: int,
     messages: list[dict[str, str]] | None = None,
-) -> None:
+) -> dict[str, Any]:
     base_url = ai_model_config.model_base_url(model)
     probe_messages = messages or [
         {"role": "system", "content": "Return JSON only."},
         {"role": "user", "content": 'Return {"ok":true}.'},
     ]
+    profile = _default_capability_profile(model, ai_model_config.CAP_JSON, tested=True)
+    capability_body = profile.get("request_body") if isinstance(profile.get("request_body"), dict) else {}
     if _model_api_style(model) == ai_model_config.API_STYLE_OPENAI_RESPONSES:
-        payload = _post_json(
-            _responses_url(base_url),
-            api_key,
-            _merge_request_body(
-                model,
-                {
-                    "model": model_name,
-                    "input": _responses_input(probe_messages),
-                    "temperature": 0,
-                    "max_output_tokens": 32,
-                    "stream": False,
-                },
-            ),
-            timeout,
-        )
-        parse_json_text(_chat_response_text(payload))
-        return
-    payload = _post_json(
-        _chat_completions_url(base_url),
-        api_key,
-        _merge_request_body(
+        body = _merge_request_body(
             model,
             {
                 "model": model_name,
-                "messages": probe_messages,
+                "input": _responses_input(probe_messages),
                 "temperature": 0,
-                "max_tokens": 32,
+                "max_output_tokens": 32,
                 "stream": False,
-                "response_format": {"type": "json_object"},
+                **capability_body,
             },
-        ),
+        )
+        payload = _post_json(
+            _responses_url(base_url),
+            api_key,
+            body,
+            timeout,
+        )
+        parse_json_text(_chat_response_text(payload))
+        return _profile_with_effective_request_body(profile, body)
+    body = _merge_request_body(
+        model,
+        {
+            "model": model_name,
+            "messages": probe_messages,
+            "temperature": 0,
+            "max_tokens": 32,
+            "stream": False,
+            **capability_body,
+        },
+    )
+    payload = _post_json(
+        _chat_completions_url(base_url),
+        api_key,
+        body,
         timeout,
     )
     parse_json_text(_chat_response_text(payload))
+    return _profile_with_effective_request_body(profile, body)
 
 
 def _probe_tool_calling_capability(model: dict[str, Any], api_key: str, model_name: str, timeout: int) -> None:
@@ -1019,13 +1208,26 @@ def _probe_web_search_capability(
     model_name: str,
     timeout: int,
     messages: list[dict[str, str]] | None = None,
-) -> tuple[str, str]:
+) -> dict[str, Any]:
     base_url = ai_model_config.model_base_url(model)
     probe_messages = messages or _web_search_probe_prompt()
     api_style = _model_api_style(model)
     errors: list[str] = []
     for request_mode, web_search_body in _web_search_probe_candidates(model):
         try:
+            profile = _capability_profile(
+                model,
+                ai_model_config.CAP_WEB_SEARCH,
+                request_body=web_search_body,
+                request_mode=request_mode,
+                tested=True,
+            )
+            json_body = _default_capability_profile(
+                model,
+                ai_model_config.CAP_JSON,
+                tested=True,
+            ).get("request_body")
+            json_body = json_body if isinstance(json_body, dict) else {}
             if api_style == ai_model_config.API_STYLE_OPENAI_RESPONSES:
                 body = _merge_request_body(
                     model,
@@ -1035,6 +1237,7 @@ def _probe_web_search_capability(
                         "temperature": 0,
                         "max_output_tokens": 600,
                         "stream": False,
+                        **json_body,
                         **web_search_body,
                     },
                 )
@@ -1053,7 +1256,7 @@ def _probe_web_search_capability(
                         "temperature": 0,
                         "max_tokens": 600,
                         "stream": False,
-                        "response_format": {"type": "json_object"},
+                        **json_body,
                         **web_search_body,
                     },
                 )
@@ -1064,7 +1267,7 @@ def _probe_web_search_capability(
                     timeout,
                 )
             _validate_web_search_probe(payload)
-            return request_mode, api_style
+            return _profile_with_effective_request_body(profile, body)
         except Exception as exc:
             errors.append(f"{request_mode}: {_capability_error_text(exc)}")
     raise RuntimeError("未能验证实时联网搜索。已尝试 " + "；".join(errors))
@@ -1157,11 +1360,12 @@ def probe_model_capabilities(
     probe_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     base_url = ai_model_config.model_base_url(model)
-    results: dict[str, dict[str, str | bool]] = {}
+    results: dict[str, dict[str, Any]] = {}
     supported: list[str] = []
     unsupported: list[str] = []
     for capability in ai_model_config.normalize_capabilities(capabilities):
         try:
+            capability_profile = _default_capability_profile(model, capability, tested=True)
             if capability == ai_model_config.CAP_CHAT:
                 _probe_chat_capability(
                     model,
@@ -1177,7 +1381,7 @@ def probe_model_capabilities(
                     ),
                 )
             elif capability == ai_model_config.CAP_JSON:
-                _probe_json_capability(
+                capability_profile = _probe_json_capability(
                     model,
                     api_key,
                     model_name,
@@ -1191,7 +1395,7 @@ def probe_model_capabilities(
                     ),
                 )
             elif capability == ai_model_config.CAP_WEB_SEARCH:
-                request_mode, api_style = _probe_web_search_capability(
+                capability_profile = _probe_web_search_capability(
                     model,
                     api_key,
                     model_name,
@@ -1207,10 +1411,14 @@ def probe_model_capabilities(
             else:
                 continue
             supported.append(capability)
-            result: dict[str, str | bool] = {"ok": True, "error": ""}
+            result: dict[str, Any] = {
+                "ok": True,
+                "error": "",
+                "capability_profile": capability_profile,
+            }
             if capability == ai_model_config.CAP_WEB_SEARCH:
-                result["request_mode"] = request_mode
-                result["api_style"] = api_style
+                result["request_mode"] = capability_profile.get("request_mode", "")
+                result["api_style"] = capability_profile.get("api_style", "")
             results[capability] = result
         except Exception as exc:
             if "Codex CLI 模型" in str(exc):
@@ -1403,7 +1611,7 @@ def probe_cli_model_capabilities(
     cli_tool = ai_model_config.model_cli_tool(model)
     supported: list[str] = []
     unsupported: list[str] = []
-    results: dict[str, dict[str, str | bool]] = {}
+    results: dict[str, dict[str, Any]] = {}
     if cli_tool != ai_model_config.CLI_TOOL_CODEX:
         for capability in requested:
             unsupported.append(capability)
@@ -1444,7 +1652,11 @@ def probe_cli_model_capabilities(
             else:
                 raise RuntimeError("CLI Provider 当前仅支持 chat/json/web_search/image_generate 能力测试。")
             supported.append(capability)
-            results[capability] = {"ok": True, "error": ""}
+            results[capability] = {
+                "ok": True,
+                "error": "",
+                "capability_profile": _default_capability_profile(model, capability, tested=True),
+            }
         except Exception as exc:
             if "Codex CLI 模型" in str(exc):
                 raise
@@ -1561,7 +1773,7 @@ def probe_browser_model_capabilities(
 ) -> dict[str, Any]:
     supported: list[str] = []
     unsupported: list[str] = []
-    results: dict[str, dict[str, str | bool]] = {}
+    results: dict[str, dict[str, Any]] = {}
     for capability in ai_model_config.normalize_capabilities(capabilities):
         try:
             if capability == ai_model_config.CAP_CHAT:
@@ -1597,7 +1809,11 @@ def probe_browser_model_capabilities(
             else:
                 raise RuntimeError("浏览器 Provider 当前支持 chat/json/web_search/image_generate 能力测试；图片编辑和 Function Call 需要后续单独适配。")
             supported.append(capability)
-            results[capability] = {"ok": True, "error": ""}
+            results[capability] = {
+                "ok": True,
+                "error": "",
+                "capability_profile": _default_capability_profile(model, capability, tested=True),
+            }
         except Exception as exc:
             unsupported.append(capability)
             results[capability] = {"ok": False, "error": _capability_error_text(exc)}
@@ -1696,7 +1912,11 @@ class OpenAICompatibleProvider(AiChatProvider):
         model = request.model
         api_key, model_name, base_url = _ensure_http_model_ready(model)
         url = _chat_completions_url(base_url)
-        capabilities = ai_model_config.normalize_capabilities(model.get("capabilities"))
+        capabilities = [
+            capability
+            for capability in request.required_capabilities
+            if capability != ai_model_config.CAP_JSON or request.response_format
+        ]
         body: dict[str, Any] = {
             "model": model_name,
             "messages": request.messages,
@@ -1705,11 +1925,9 @@ class OpenAICompatibleProvider(AiChatProvider):
         }
         if request.max_tokens is not None:
             body["max_tokens"] = request.max_tokens
-        if request.response_format and ai_model_config.CAP_JSON in capabilities:
-            body["response_format"] = {"type": "json_object"}
-        if ai_model_config.CAP_WEB_SEARCH in capabilities:
-            body.update(_web_search_body_for_model(model))
+        body.update(_capability_request_body(model, capabilities))
         body = _merge_request_body(model, body, request.extra_body)
+        body["stream"] = bool(request.stream)
         timeout = int(request.timeout_seconds or model.get("timeout_seconds") or 60)
         if request.conversation:
             request.conversation.emit_custom(
@@ -1779,7 +1997,11 @@ class OpenAIResponsesProvider(AiChatProvider):
         model = request.model
         api_key, model_name, base_url = _ensure_http_model_ready(model)
         url = _responses_url(base_url)
-        capabilities = ai_model_config.normalize_capabilities(model.get("capabilities"))
+        capabilities = [
+            capability
+            for capability in request.required_capabilities
+            if capability != ai_model_config.CAP_JSON or request.response_format
+        ]
         body: dict[str, Any] = {
             "model": model_name,
             "input": _responses_input(request.messages),
@@ -1788,9 +2010,9 @@ class OpenAIResponsesProvider(AiChatProvider):
         }
         if request.max_tokens is not None:
             body["max_output_tokens"] = request.max_tokens
-        if ai_model_config.CAP_WEB_SEARCH in capabilities:
-            body.update(_web_search_body_for_model(model))
+        body.update(_capability_request_body(model, capabilities))
         body = _merge_request_body(model, body, request.extra_body)
+        body["stream"] = bool(request.stream)
         timeout = int(request.timeout_seconds or model.get("timeout_seconds") or 60)
         stream = bool(body.get("stream"))
         if request.conversation:
@@ -1857,6 +2079,7 @@ class CodexCliProvider(AiChatProvider):
             request.model,
             request.messages,
             timeout_seconds=request.timeout_seconds,
+            required_capabilities=request.required_capabilities,
             response_format=request.response_format,
             stream=request.stream,
             token_callback=request.emit_delta,
@@ -1913,11 +2136,10 @@ class BrowserAiProvider(AiChatProvider):
 
     def chat_json(self, request: AiChatRequest) -> dict[str, Any]:
         timeout = int(request.timeout_seconds or request.model.get("timeout_seconds") or 180)
-        capabilities = ai_model_config.normalize_capabilities(request.model.get("capabilities"))
         prompt = _browser_prompt(
             request.messages,
             response_format=request.response_format,
-            allow_external_read=ai_model_config.CAP_WEB_SEARCH in capabilities,
+            allow_external_read=ai_model_config.CAP_WEB_SEARCH in request.required_capabilities,
         )
         if request.conversation:
             request.conversation.emit_custom(
@@ -2033,10 +2255,19 @@ def chat_json(
     timeout_seconds: int | None = None,
     response_format: bool = True,
     extra_body: dict[str, Any] | None = None,
-    stream: bool = False,
+    stream: bool | None = None,
     token_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
-    model = _resolved_model(app_dir, app_config, use_case_id, model_id)
+    model, required_capabilities, effective_timeout = _resolved_use_case_request(
+        app_dir,
+        app_config,
+        use_case_id,
+        model_id=model_id,
+        timeout_seconds=timeout_seconds,
+        default_timeout_seconds=60,
+    )
+    effective_stream = True if stream is None else bool(stream)
+    _validate_capability_profiles(model, required_capabilities)
     provider = _provider_for_model(model, CAPABILITY_CHAT_JSON)
     if not isinstance(provider, AiChatProvider):
         raise RuntimeError(f"Provider {provider.provider_id} 未实现文本对话能力。")
@@ -2046,7 +2277,9 @@ def chat_json(
         capability=CAPABILITY_CHAT_JSON,
         provider_id=provider.provider_id,
         model=model,
-        stream=stream,
+        stream=effective_stream,
+        required_capabilities=required_capabilities,
+        timeout_seconds=effective_timeout,
         input_payload={"messages": messages},
     )
     try:
@@ -2055,12 +2288,13 @@ def chat_json(
                 app_dir=app_dir,
                 model=model,
                 messages=messages,
+                required_capabilities=required_capabilities,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=effective_timeout,
                 response_format=response_format,
                 extra_body=extra_body,
-                stream=stream,
+                stream=effective_stream,
                 token_callback=token_callback,
                 conversation=conversation,
             )
@@ -2085,8 +2319,17 @@ def generate_images(
     size: str = "1024x1024",
     quality: str = "medium",
     count: int = 1,
+    timeout_seconds: int | None = None,
 ) -> list[dict[str, Any]]:
-    model = _resolved_model(app_dir, app_config, use_case_id, model_id)
+    model, required_capabilities, effective_timeout = _resolved_use_case_request(
+        app_dir,
+        app_config,
+        use_case_id,
+        model_id=model_id,
+        timeout_seconds=timeout_seconds,
+        default_timeout_seconds=180,
+    )
+    _validate_capability_profiles(model, required_capabilities)
     provider = _provider_for_model(model, CAPABILITY_IMAGE_GENERATE)
     if not isinstance(provider, AiImageProvider):
         raise RuntimeError(f"Provider {provider.provider_id} 未实现图片生成能力。")
@@ -2096,6 +2339,8 @@ def generate_images(
         capability=CAPABILITY_IMAGE_GENERATE,
         provider_id=provider.provider_id,
         model=model,
+        required_capabilities=required_capabilities,
+        timeout_seconds=effective_timeout,
         input_payload={"prompt": prompt, "images": images or []},
     )
     try:
@@ -2106,6 +2351,7 @@ def generate_images(
                 prompt=prompt,
                 images=images or [],
                 mode=mode,
+                timeout_seconds=effective_timeout,
                 size=size,
                 quality=quality,
                 count=count,
@@ -2133,8 +2379,17 @@ def edit_images(
     size: str = "1024x1024",
     quality: str = "medium",
     count: int = 1,
+    timeout_seconds: int | None = None,
 ) -> list[dict[str, Any]]:
-    model = _resolved_model(app_dir, app_config, use_case_id, model_id)
+    model, required_capabilities, effective_timeout = _resolved_use_case_request(
+        app_dir,
+        app_config,
+        use_case_id,
+        model_id=model_id,
+        timeout_seconds=timeout_seconds,
+        default_timeout_seconds=180,
+    )
+    _validate_capability_profiles(model, required_capabilities)
     provider = _provider_for_model(model, CAPABILITY_IMAGE_EDIT)
     if not isinstance(provider, AiImageProvider):
         raise RuntimeError(f"Provider {provider.provider_id} 未实现图片编辑能力。")
@@ -2144,6 +2399,8 @@ def edit_images(
         capability=CAPABILITY_IMAGE_EDIT,
         provider_id=provider.provider_id,
         model=model,
+        required_capabilities=required_capabilities,
+        timeout_seconds=effective_timeout,
         input_payload={"prompt": prompt, "images": images},
     )
     try:
@@ -2154,6 +2411,7 @@ def edit_images(
                 prompt=prompt,
                 images=images,
                 mode=mode,
+                timeout_seconds=effective_timeout,
                 size=size,
                 quality=quality,
                 count=count,

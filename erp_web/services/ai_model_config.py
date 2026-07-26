@@ -134,6 +134,43 @@ def normalize_capabilities(value: Any) -> list[str]:
     return result
 
 
+def normalize_capability_profiles(value: Any) -> dict[str, dict[str, Any]]:
+    """Normalize tested model capability activation recipes.
+
+    Profiles belong to a concrete model connection. Business use cases only
+    name capabilities and never carry provider-specific request fields.
+    """
+    raw_profiles = value if isinstance(value, dict) else {}
+    allowed = set(AI_MODEL_CAPABILITIES)
+    result: dict[str, dict[str, Any]] = {}
+    for raw_capability, raw_profile in raw_profiles.items():
+        capability = str(raw_capability or "").strip().lower()
+        if capability not in allowed or not isinstance(raw_profile, dict):
+            continue
+        profile: dict[str, Any] = {
+            "version": 1,
+            "tested": bool(raw_profile.get("tested", True)),
+        }
+        for key in (
+            "connection_type",
+            "provider",
+            "api_style",
+            "model",
+            "base_url",
+            "request_mode",
+            "operation",
+            "strategy",
+        ):
+            text = str(raw_profile.get(key) or "").strip()
+            if text:
+                profile[key] = text
+        request_body = raw_profile.get("request_body")
+        if isinstance(request_body, dict):
+            profile["request_body"] = dict(request_body)
+        result[capability] = profile
+    return result
+
+
 def normalize_connection_type(value: Any) -> str:
     text = str(value or "").strip().lower()
     return text if text in AI_CONNECTION_TYPES else CONNECTION_TYPE_API
@@ -246,6 +283,9 @@ def normalize_ai_model(value: Any, index: int = 0) -> dict[str, Any]:
         "capabilities": capabilities,
         "enabled": bool(raw.get("enabled", True)),
     }
+    capability_profiles = normalize_capability_profiles(raw.get("capability_profiles"))
+    if capability_profiles:
+        normalized["capability_profiles"] = capability_profiles
     if connection_type == CONNECTION_TYPE_CLI:
         normalized["cli_tool"] = cli_tool
         normalized["command"] = cli_command
@@ -296,18 +336,47 @@ def normalize_ai_models(value: Any) -> list[dict[str, Any]]:
     return unique
 
 
-def normalize_ai_use_case_bindings(value: Any) -> dict[str, dict[str, str]]:
+def _normalize_timeout_override_seconds(value: Any) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        seconds = int(text)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("AI 功能绑定超时必须是正整数秒。") from exc
+    if seconds <= 0:
+        raise ValueError("AI 功能绑定超时必须大于 0 秒。")
+    return seconds
+
+
+def normalize_ai_use_case_bindings(value: Any) -> dict[str, dict[str, Any]]:
     raw = value if isinstance(value, dict) else {}
-    result: dict[str, dict[str, str]] = {}
+    result: dict[str, dict[str, Any]] = {}
     for use_case_id, item in raw.items():
         use_case = AI_USE_CASES.get(str(use_case_id))
         if not use_case or use_case.get("global_binding") is False:
             continue
-        item_dict = item if isinstance(item, dict) else {}
+        item_dict = item if isinstance(item, dict) else {"model_id": item}
         model_id = str(item_dict.get("model_id") or "").strip()
+        timeout_seconds = _normalize_timeout_override_seconds(item_dict.get("timeout_override_seconds"))
+        binding: dict[str, Any] = {}
         if model_id:
-            result[str(use_case_id)] = {"model_id": model_id}
+            binding["model_id"] = model_id
+        if timeout_seconds is not None:
+            binding["timeout_override_seconds"] = timeout_seconds
+        if binding:
+            result[str(use_case_id)] = binding
     return result
+
+
+def ai_use_case_required_capabilities(use_case_id: str) -> list[str]:
+    use_case = AI_USE_CASES.get(str(use_case_id), {})
+    return normalize_capabilities(use_case.get("required_capabilities"))
+
+
+def ai_use_case_binding(app_config: dict[str, Any] | None, use_case_id: str) -> dict[str, Any]:
+    config = app_config if isinstance(app_config, dict) else {}
+    return dict(normalize_ai_use_case_bindings(config.get("ai_use_case_bindings")).get(use_case_id) or {})
 
 
 def model_api_key(model: dict[str, Any]) -> str:
@@ -361,8 +430,7 @@ def resolve_ai_model(
     config = app_config if isinstance(app_config, dict) else {}
     models = normalize_ai_models(config.get("ai_models"))
     bindings = normalize_ai_use_case_bindings(config.get("ai_use_case_bindings"))
-    use_case = AI_USE_CASES.get(use_case_id, {})
-    required = list(required_capabilities or use_case.get("required_capabilities") or [])
+    required = list(required_capabilities or ai_use_case_required_capabilities(use_case_id))
     preferred_id = str(model_id or (bindings.get(use_case_id) or {}).get("model_id") or "").strip()
     candidates = [model for model in models if model.get("enabled", True)]
     if preferred_id:

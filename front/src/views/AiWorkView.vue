@@ -66,6 +66,20 @@ const parsedResult = computed(() => {
   return event?.value
 })
 
+const conversationOutput = computed(() => {
+  if (assistantOutput.value) return assistantOutput.value
+  const result = parsedResult.value
+  if (result && typeof result === 'object') {
+    const generatedCount = Number((result as Record<string, unknown>).generated_count)
+    if (Number.isFinite(generatedCount)) {
+      return `图片任务已完成，共生成 ${generatedCount} 张图片。`
+    }
+  }
+  if (result !== undefined) return pretty(result)
+  if (selectedConversation.value?.status === 'completed') return 'Provider 已返回，任务已完成。'
+  return '等待 Provider 返回……'
+})
+
 const runError = computed(() =>
   [...selectedEvents.value].reverse().find((event) => event.type === 'RUN_ERROR'),
 )
@@ -286,7 +300,7 @@ onBeforeUnmount(() => {
                 <p class="text-xs font-black uppercase tracking-wide text-primary-700 dark:text-primary-200">assistant</p>
                 <span v-if="selectedConversation.status === 'running'" class="text-xs font-bold text-primary-600">正在输出</span>
               </div>
-              <pre ref="outputElement" class="max-h-[55vh] overflow-auto whitespace-pre-wrap break-words font-sans text-sm leading-6">{{ assistantOutput || '等待 Provider 返回……' }}</pre>
+              <pre ref="outputElement" class="max-h-[55vh] overflow-auto whitespace-pre-wrap break-words font-sans text-sm leading-6">{{ conversationOutput }}</pre>
             </article>
 
             <article v-if="runError" class="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-rose-700">

@@ -150,7 +150,7 @@ def test_chat_json_records_actual_provider_request_and_response(tmp_path: Path, 
         {"role": "user", "content": "Localize this product."},
     ]
 
-    result = ai_gateway.chat_json(tmp_path, _chat_config(), "copy.generate", messages)
+    result = ai_gateway.chat_json(tmp_path, _chat_config(), "copy.generate", messages, stream=False)
 
     assert result == {"title": "Hola"}
     conversations = ai_work_service.list_conversations(tmp_path)
@@ -172,7 +172,7 @@ def test_chat_json_records_actual_provider_request_and_response(tmp_path: Path, 
             assert isinstance(json.loads(raw_line), dict)
 
 
-def test_streaming_chat_appends_provider_deltas_in_order(tmp_path: Path, monkeypatch) -> None:
+def test_chat_streams_provider_deltas_by_default(tmp_path: Path, monkeypatch) -> None:
     class FakeStreamResponse:
         def __enter__(self):
             return self
@@ -196,7 +196,6 @@ def test_streaming_chat_appends_provider_deltas_in_order(tmp_path: Path, monkeyp
         _chat_config(stream=True),
         "copy.generate",
         [{"role": "user", "content": "Return title."}],
-        stream=True,
     )
 
     assert result == {"title": "Hola"}

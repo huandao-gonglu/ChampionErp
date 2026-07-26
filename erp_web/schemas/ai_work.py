@@ -48,6 +48,8 @@ class AiWorkConversationSummary(TypedDict, total=False):
     model_id: str
     model: str
     stream: bool
+    required_capabilities: list[str]
+    timeout_seconds: int | None
     status: str
     created_at: str
     updated_at: str

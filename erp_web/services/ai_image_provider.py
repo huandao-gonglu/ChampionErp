@@ -100,7 +100,7 @@ class OpenAIImageProvider(AiImageProvider):
         )
 
     @staticmethod
-    def _client(model: dict[str, Any]) -> Any:
+    def _client(model: dict[str, Any], timeout_seconds: int | None = None) -> Any:
         api_key = ai_model_config.model_api_key(model)
         if not api_key:
             raise RuntimeError("当前图片模型未配置 API Key。")
@@ -110,7 +110,7 @@ class OpenAIImageProvider(AiImageProvider):
             raise RuntimeError("OpenAI SDK is not installed. Run: pip install openai") from exc
         kwargs: dict[str, Any] = {
             "api_key": api_key,
-            "timeout": IMAGE_AI_TIMEOUT_SECONDS,
+            "timeout": int(timeout_seconds or model.get("timeout_seconds") or IMAGE_AI_TIMEOUT_SECONDS),
             "default_headers": {"User-Agent": ai_model_config.AI_HTTP_USER_AGENT},
         }
         base_url = ai_model_config.model_base_url(model).rstrip("/")
@@ -123,7 +123,7 @@ class OpenAIImageProvider(AiImageProvider):
         return str(model.get("provider") or model.get("name") or "OpenAI-Compatible").strip() or "OpenAI-Compatible"
 
     def generate_images(self, request: AiImageRequest) -> list[dict[str, Any]]:
-        client = self._client(request.model)
+        client = self._client(request.model, request.timeout_seconds)
         model_name = ai_model_config.model_name(request.model) or "gpt-image-1"
         payload = {
             "model": model_name,
@@ -151,7 +151,7 @@ class OpenAIImageProvider(AiImageProvider):
         return results
 
     def edit_images(self, request: AiImageRequest) -> list[dict[str, Any]]:
-        client = self._client(request.model)
+        client = self._client(request.model, request.timeout_seconds)
         model_name = ai_model_config.model_name(request.model) or "gpt-image-1"
         provider_name = self._provider_name(request.model)
         generated: list[dict[str, Any]] = []
@@ -220,6 +220,7 @@ class OpenAIImageProvider(AiImageProvider):
             prompt=fallback_prompt,
             images=[],
             mode=request.mode,
+            timeout_seconds=request.timeout_seconds,
             size=request.size,
             quality=request.quality,
             count=request.count,

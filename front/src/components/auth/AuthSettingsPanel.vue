@@ -72,7 +72,7 @@ type AuthSettingsTab = 'ai_models' | 'ai_bindings' | 'stores' | 'apis' | 'resear
 const activeAuthSettingsTab = ref<AuthSettingsTab>('ai_models')
 const selectedAiModelIndex = ref(0)
 const aiModels = ref<UnknownRecord[]>([])
-const aiUseCaseBindings = ref<Record<string, string>>({})
+const aiUseCaseBindings = ref<Record<string, UnknownRecord>>({})
 const aiUseCasePrompts = ref<Record<string, UnknownRecord>>({})
 const API_CONNECTION_TYPE = 'api'
 const CLI_CONNECTION_TYPE = 'cli'
@@ -202,6 +202,17 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map((item) => String(item || '').trim()).filter(Boolean) : []
 }
 
+function normalizeCapabilityProfiles(value: unknown): UnknownRecord {
+  const source = asRecord(value)
+  const profiles: UnknownRecord = {}
+  for (const capability of allCapabilityValues) {
+    const profile = asRecord(source[capability])
+    if (!Object.keys(profile).length) continue
+    profiles[capability] = JSON.parse(JSON.stringify(profile)) as UnknownRecord
+  }
+  return profiles
+}
+
 function normalizeModelOptions(value: unknown): Array<{ id: string; label: string }> {
   const rawItems = Array.isArray(value) ? value : []
   const options: Array<{ id: string; label: string }> = []
@@ -277,6 +288,7 @@ function normalizeAiModelRow(value: unknown, index: number): UnknownRecord {
     size: firstText(record.size),
     timeout_seconds: firstText(record.timeout_seconds),
     capabilities: asStringArray(record.capabilities),
+    capability_profiles: normalizeCapabilityProfiles(record.capability_profiles),
     cli_tool: cliTool,
     command: firstText(record.command, record.cli_command, connectionType === CLI_CONNECTION_TYPE ? cliToolDefaultCommand(cliTool) : ''),
     profile: firstText(record.profile, record.cli_profile),
@@ -332,13 +344,19 @@ function uniqueAiModelName(baseName: string): string {
   return candidate
 }
 
-function normalizeUseCaseBindings(value: unknown): Record<string, string> {
+function normalizeUseCaseBindings(value: unknown): Record<string, UnknownRecord> {
   const record = asRecord(value)
-  const result: Record<string, string> = {}
+  const result: Record<string, UnknownRecord> = {}
   for (const [key, raw] of Object.entries(record)) {
     const item = asRecord(raw)
-    const modelId = firstText(item.model_id, raw)
-    if (key && modelId) result[key] = modelId
+    const modelId = firstText(item.model_id, typeof raw === 'string' ? raw : '')
+    const timeoutOverrideSeconds = firstText(item.timeout_override_seconds)
+    if (key && (modelId || timeoutOverrideSeconds)) {
+      result[key] = {
+        model_id: modelId,
+        timeout_override_seconds: timeoutOverrideSeconds,
+      }
+    }
   }
   return result
 }
@@ -410,7 +428,6 @@ const capabilityLabelByValue = Object.fromEntries(capabilityOptions.map((item) =
 const selectedAiModelConnectionType = computed(() => normalizeConnectionType(modelField('connection_type', API_CONNECTION_TYPE)))
 const selectedAiModelIsApi = computed(() => selectedAiModelConnectionType.value === API_CONNECTION_TYPE)
 const selectedAiModelIsCli = computed(() => selectedAiModelConnectionType.value === CLI_CONNECTION_TYPE)
-const selectedAiModelIsBrowser = computed(() => selectedAiModelConnectionType.value === BROWSER_CONNECTION_TYPE)
 const selectedModelOptions = computed(() => selectedAiModelIsApi.value ? normalizeModelOptions(selectedAiModel.value?.model_options) : [])
 const capabilityProbeLabel = computed(() => capabilityLabelByValue[capabilityProbeDialog.capability] || capabilityProbeDialog.capability || '能力')
 const selectedCliToolStatus = computed(() => cliToolOptions.value.find((tool) => tool.value === modelField('cli_tool', 'codex')) || cliToolOptions.value[0])
@@ -459,6 +476,7 @@ function aiPayload(): UnknownRecord {
       const row = normalizeAiModelRow(model, index)
       const copySourceId = firstText(model.copy_source_id)
       if (row.connection_type === API_CONNECTION_TYPE && copySourceId && !firstText(row.api_key)) row.copy_source_id = copySourceId
+      if (!Object.keys(asRecord(row.capability_profiles)).length) delete row.capability_profiles
       if (!modelHasImageCapability(row)) {
         delete row.quality
         delete row.size
@@ -514,8 +532,17 @@ function aiPayload(): UnknownRecord {
     ai_use_case_bindings: Object.fromEntries(
       Object.entries(aiUseCaseBindings.value)
         .filter(([useCaseId]) => globalPromptUseCases.value.some((useCase) => String(useCase.id || '') === useCaseId))
-        .filter(([, modelId]) => String(modelId || '').trim())
-        .map(([useCaseId, modelId]) => [useCaseId, { model_id: modelId }]),
+        .map(([useCaseId, binding]) => [
+          useCaseId,
+          {
+            model_id: firstText(binding.model_id),
+            timeout_override_seconds: firstText(binding.timeout_override_seconds),
+          },
+        ])
+        .filter(([, binding]) => {
+          const record = asRecord(binding)
+          return Boolean(firstText(record.model_id, record.timeout_override_seconds))
+        }),
     ),
     ai_use_case_prompts: Object.fromEntries(
       globalPromptUseCases.value.map((useCase) => {
@@ -578,15 +605,22 @@ function updateCustomRequestBodyText(value: string) {
   customRequestBodyEditor.error = ''
 }
 
+function clearCapabilityProofs(model: UnknownRecord) {
+  model.capabilities = []
+  model.capability_profiles = {}
+  lastAutoCapabilitySignature.value = ''
+}
+
 function commitCustomRequestBody(): boolean {
   if (!selectedAiModelIsApi.value || !selectedAiModel.value) return true
   const text = customRequestBodyEditor.text.trim()
   const extra = { ...asRecord(selectedAiModel.value.extra) }
+  const previousRequestBody = JSON.stringify(asRecord(extra.request_body))
   if (!text) {
     delete extra.request_body
     selectedAiModel.value.extra = extra
     customRequestBodyEditor.error = ''
-    lastAutoCapabilitySignature.value = ''
+    if (previousRequestBody !== '{}') clearCapabilityProofs(selectedAiModel.value)
     return true
   }
   try {
@@ -598,7 +632,7 @@ function commitCustomRequestBody(): boolean {
     else delete extra.request_body
     selectedAiModel.value.extra = extra
     customRequestBodyEditor.error = ''
-    lastAutoCapabilitySignature.value = ''
+    if (previousRequestBody !== JSON.stringify(asRecord(parsed))) clearCapabilityProofs(selectedAiModel.value)
     return true
   } catch (error) {
     customRequestBodyEditor.error = error instanceof Error ? `自定义请求 JSON 无效：${error.message}` : '自定义请求 JSON 无效'
@@ -680,9 +714,10 @@ function setSelectedModelField(field: string, value: string | boolean) {
     selectedAiModel.value.model_options = []
   }
   if (typeof value === 'string' && capabilityProbeDependencyFields.has(field)) {
-    if (desiredCapabilities.length) selectedAiModel.value.capabilities = []
+    if (desiredCapabilities.length || Object.keys(asRecord(selectedAiModel.value.capability_profiles)).length) {
+      clearCapabilityProofs(selectedAiModel.value)
+    }
     lastAutoModelListSignature.value = ''
-    lastAutoCapabilitySignature.value = ''
   }
 }
 
@@ -707,7 +742,14 @@ function applyWebSearchRequestMode(mode: string) {
 
 function setWebSearchRequestMode(mode: string) {
   if (aiControlsLocked.value) return
+  const previousMode = webSearchRequestMode()
   applyWebSearchRequestMode(mode)
+  if (previousMode !== webSearchRequestMode() && selectedAiModel.value) {
+    const capabilities = new Set(selectedCapabilities())
+    capabilities.delete('web_search')
+    selectedAiModel.value.capabilities = Array.from(capabilities)
+    removeCapabilityProfile(selectedAiModel.value, 'web_search')
+  }
 }
 
 watch(() => firstText(selectedAiModel.value?.id), syncCustomRequestBodyEditor, { immediate: true })
@@ -731,11 +773,7 @@ function modelSupportsUseCase(model: UnknownRecord, useCase: UnknownRecord): boo
 }
 
 function compatibleModelsForUseCase(useCase: UnknownRecord): UnknownRecord[] {
-  const compatible = aiModels.value.filter((model) => modelSupportsUseCase(model, useCase))
-  const boundId = String(aiUseCaseBindings.value[String(useCase.id || '')] || '')
-  if (!boundId || compatible.some((model) => String(model.id || '') === boundId)) return compatible
-  const bound = aiModels.value.find((model) => String(model.id || '') === boundId)
-  return bound ? [bound, ...compatible] : compatible
+  return aiModels.value.filter((model) => modelSupportsUseCase(model, useCase))
 }
 
 function useCaseCapabilityText(useCase: UnknownRecord): string {
@@ -848,11 +886,25 @@ function closeCapabilityProbe(restoreSelection = true) {
   capabilityProbeDialog.originalCapabilities = []
 }
 
-function addCapabilityToSelected(capability: string) {
-  if (!selectedAiModel.value) return
-  const current = new Set(selectedCapabilities())
+function addCapability(model: UnknownRecord, capability: string) {
+  const current = new Set(asStringArray(model.capabilities))
   current.add(capability)
-  selectedAiModel.value.capabilities = Array.from(current)
+  model.capabilities = Array.from(current)
+}
+
+function saveCapabilityProfile(model: UnknownRecord, capability: string, value: unknown) {
+  const profile = asRecord(value)
+  if (!Object.keys(profile).length) return
+  model.capability_profiles = {
+    ...normalizeCapabilityProfiles(model.capability_profiles),
+    [capability]: JSON.parse(JSON.stringify(profile)) as UnknownRecord,
+  }
+}
+
+function removeCapabilityProfile(model: UnknownRecord, capability: string) {
+  const profiles = normalizeCapabilityProfiles(model.capability_profiles)
+  delete profiles[capability]
+  model.capability_profiles = profiles
 }
 
 function setCapability(capability: string, checked: boolean, event?: Event) {
@@ -866,7 +918,10 @@ function setCapability(capability: string, checked: boolean, event?: Event) {
   }
   const current = new Set(selectedCapabilities())
   if (checked) current.add(capability)
-  else current.delete(capability)
+  else {
+    current.delete(capability)
+    removeCapabilityProfile(selectedAiModel.value, capability)
+  }
   selectedAiModel.value.capabilities = Array.from(current)
   if (!modelHasImageCapability(selectedAiModel.value)) {
     selectedAiModel.value.quality = ''
@@ -891,6 +946,7 @@ function duplicateSelectedAiModel() {
     id: uniqueAiModelId(sourceId || firstText(current.model) || `ai_model_${aiModels.value.length + 1}`),
     name: uniqueAiModelName(firstText(current.name, current.id, `AI 模型 ${aiModels.value.length + 1}`)),
     capabilities: asStringArray(current.capabilities),
+    capability_profiles: normalizeCapabilityProfiles(current.capability_profiles),
     model_options: normalizeModelOptions(current.model_options),
   }, aiModels.value.length)
   if (sourceId && !firstText(cloned.api_key)) cloned.copy_source_id = sourceId
@@ -906,16 +962,33 @@ function removeSelectedAiModel() {
   if (!current || aiModels.value.length <= 1) return
   const removedId = String(current.id || '')
   aiModels.value.splice(selectedAiModelIndex.value, 1)
-  for (const [useCaseId, modelId] of Object.entries(aiUseCaseBindings.value)) {
-    if (modelId === removedId) delete aiUseCaseBindings.value[useCaseId]
+  for (const [useCaseId, binding] of Object.entries(aiUseCaseBindings.value)) {
+    if (firstText(binding.model_id) === removedId) {
+      aiUseCaseBindings.value[useCaseId] = {
+        ...binding,
+        model_id: '',
+      }
+    }
   }
   selectedAiModelIndex.value = Math.min(selectedAiModelIndex.value, aiModels.value.length - 1)
 }
 
-function setUseCaseBinding(useCaseId: string, modelId: string) {
+function useCaseBindingField(useCaseId: string, field: string): string {
+  return firstText(aiUseCaseBindings.value[useCaseId]?.[field])
+}
+
+function setUseCaseBindingField(useCaseId: string, field: string, value: string) {
   if (aiControlsLocked.value) return
-  if (!modelId) delete aiUseCaseBindings.value[useCaseId]
-  else aiUseCaseBindings.value[useCaseId] = modelId
+  const next = {
+    ...asRecord(aiUseCaseBindings.value[useCaseId]),
+    [field]: value,
+  }
+  if (!firstText(next.model_id, next.timeout_override_seconds)) delete aiUseCaseBindings.value[useCaseId]
+  else aiUseCaseBindings.value[useCaseId] = next
+}
+
+function setUseCaseBinding(useCaseId: string, modelId: string) {
+  setUseCaseBindingField(useCaseId, 'model_id', modelId)
 }
 
 function modelListSignature(model: UnknownRecord | null): string {
@@ -1066,7 +1139,8 @@ function applyAiTestResult(result: AuthResult | null) {
       if (pendingCapability === 'web_search' && ['openai_tools', 'enable_search', 'web_search_options'].includes(requestMode)) {
         applyWebSearchRequestMode(requestMode)
       }
-      addCapabilityToSelected(pendingCapability)
+      saveCapabilityProfile(target, pendingCapability, capabilityResult.capability_profile)
+      addCapability(target, pendingCapability)
       lastAutoCapabilitySignature.value = capabilitySignature(target)
       closeCapabilityProbe(false)
       return
@@ -1360,7 +1434,7 @@ function handleYunexpressEnvironmentChange(value: string) {
                         v-model="customRequestBodyEditor.text"
                         class="input min-h-28 resize-y font-mono text-xs leading-5"
                         :disabled="aiControlsLocked"
-                        placeholder='例如 {"top_p": 0.8, "enable_thinking": true}'
+                        placeholder="例如 {&quot;top_p&quot;: 0.8, &quot;enable_thinking&quot;: true}"
                         spellcheck="false"
                         @input="updateCustomRequestBodyText(eventText($event))"
                         @blur="commitCustomRequestBody"
@@ -1374,9 +1448,9 @@ function handleYunexpressEnvironmentChange(value: string) {
                         <option value="enable_search">enable_search + 强制搜索（通义或兼容网关）</option>
                         <option value="web_search_options">web_search_options（兼容网关）</option>
                       </select>
-                      <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">仅在勾选“联网搜索”时发送。Chat Completions 没有通用的联网字段；测试会在当前 Chat 协议内依次尝试这些供应商扩展参数，并采用成功的方式。通义兼容接口会发送 enable_search 与 search_options.forced_search。</span>
+                      <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">仅在功能需要“联网搜索”时发送。Chat Completions 没有通用的联网字段；测试会在当前 Chat 协议内依次尝试这些供应商扩展参数，并把成功的完整能力配方保存到当前模型。通义兼容接口会发送 enable_search 与 search_options.forced_search。</span>
                     </label>
-                    <span v-else class="block md:col-span-2 text-xs text-accent-500 dark:text-accent-400">OpenAI Responses 使用标准的 tools: [{ type: 'web_search' }] 请求格式。测试只验证当前选择的 API 风格，不会自动切换协议；成功后会记录该工具格式。</span>
+                    <span v-else class="block md:col-span-2 text-xs text-accent-500 dark:text-accent-400">OpenAI Responses 使用标准的 tools: [{ type: 'web_search' }] 请求格式。测试只验证当前选择的 API 风格，不会自动切换协议；成功后会保存并在正式请求中复用该能力配方。</span>
                   </div>
                   <div v-else-if="selectedAiModelIsCli" class="mt-3 grid gap-3 md:grid-cols-2">
                     <label class="block">
@@ -1428,7 +1502,6 @@ function handleYunexpressEnvironmentChange(value: string) {
                   <span>启用</span>
                 </label>
               </div>
-
             </div>
           </div>
 
@@ -1444,7 +1517,7 @@ function handleYunexpressEnvironmentChange(value: string) {
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h3 class="font-semibold text-accent-950 dark:text-white">功能绑定</h3>
-              <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">功能选择指定模型，并编辑该功能使用的 Prompt 文件。</p>
+              <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">功能声明所需能力；这里只显示满足能力要求的模型，并可单独覆盖超时。</p>
             </div>
             <button class="btn btn-primary py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="emit('saveAi', aiPayload())">保存功能绑定</button>
           </div>
@@ -1459,10 +1532,22 @@ function handleYunexpressEnvironmentChange(value: string) {
               </div>
               <label class="mt-3 block">
                 <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">模型</span>
-                <select class="input" :value="aiUseCaseBindings[String(useCase.id || '')] || ''" @change="setUseCaseBinding(String(useCase.id || ''), eventText($event))">
+                <select class="input" :value="useCaseBindingField(String(useCase.id || ''), 'model_id')" @change="setUseCaseBinding(String(useCase.id || ''), eventText($event))">
                   <option value="">自动匹配</option>
-                  <option v-for="model in compatibleModelsForUseCase(useCase)" :key="String(model.id)" :value="String(model.id)">{{ model.name || model.id }}</option>
+                  <option v-for="model in compatibleModelsForUseCase(useCase)" :key="String(model.id)" :value="String(model.id)">{{ model.name || model.id }} · {{ model.provider }}</option>
                 </select>
+              </label>
+              <label class="mt-3 block">
+                <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">超时覆盖（秒）</span>
+                <input
+                  class="input"
+                  type="number"
+                  min="1"
+                  step="1"
+                  placeholder="留空继承模型设置"
+                  :value="useCaseBindingField(String(useCase.id || ''), 'timeout_override_seconds')"
+                  @input="setUseCaseBindingField(String(useCase.id || ''), 'timeout_override_seconds', eventText($event))"
+                />
               </label>
               <label class="mt-3 block">
                 <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">Prompt JSON 文件</span>

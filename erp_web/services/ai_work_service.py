@@ -170,6 +170,8 @@ def start_conversation(
     provider_id: str,
     model: dict[str, Any],
     stream: bool = False,
+    required_capabilities: list[str] | tuple[str, ...] | None = None,
+    timeout_seconds: int | None = None,
     input_payload: Any = None,
 ) -> AiWorkConversation:
     now = _now()
@@ -183,6 +185,8 @@ def start_conversation(
         "model_id": str(model.get("id") or ""),
         "model": str(model.get("model") or model.get("name") or ""),
         "stream": bool(stream),
+        "required_capabilities": list(required_capabilities or []),
+        "timeout_seconds": timeout_seconds,
     }
     conversation = AiWorkConversation(app_dir, conversation_id, path, metadata)
     conversation.emit(
@@ -251,6 +255,8 @@ def _summary_from_events(events: list[AiWorkEvent], path: Path) -> AiWorkConvers
         "model_id": str(metadata.get("model_id") or ""),
         "model": str(metadata.get("model") or ""),
         "stream": bool(metadata.get("stream")),
+        "required_capabilities": list(metadata.get("required_capabilities") or []),
+        "timeout_seconds": metadata.get("timeout_seconds"),
         "status": status,
         "created_at": str(first.get("occurred_at") or ""),
         "updated_at": str(last.get("occurred_at") or first.get("occurred_at") or ""),

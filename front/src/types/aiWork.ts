@@ -41,6 +41,8 @@ export interface AiWorkConversationSummary {
   model_id: string
   model: string
   stream: boolean
+  required_capabilities: string[]
+  timeout_seconds: number | null
   status: 'running' | 'completed' | 'failed' | 'interrupted'
   created_at: string
   updated_at: string
@@ -59,4 +61,3 @@ export interface AiWorkConversationResponse {
   conversation_id: string
   events: AiWorkEvent[]
 }
-

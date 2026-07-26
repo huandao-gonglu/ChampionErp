@@ -1051,6 +1051,7 @@ def _ai_web_search_sample(
         temperature=0.2,
         max_tokens=1200,
         timeout_seconds=timeout_seconds,
+        stream=False,
     )
     items = parsed.get("items")
     first = items[0] if isinstance(items, list) and items and isinstance(items[0], dict) else {}
