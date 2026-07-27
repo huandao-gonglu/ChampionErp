@@ -86,7 +86,7 @@ def append_ml_publish_log(
     return payload_path, response_path
 
 
-def _mercadolibre_test_error_code(message: str) -> str:
+def mercadolibre_test_error_code(message: str) -> str:
     text = str(message or "").lower()
     if "ssl" in text or "unexpected_eof" in text or "eof occurred" in text:
         return "network_tls_failed"
@@ -166,8 +166,8 @@ __all__ = [
     "_is_mock_mercadolibre_category_id",
     "_mercadolibre_category_id_from_product",
     "_mercadolibre_required_attr_ids",
-    "_mercadolibre_test_error_code",
     "_sanitize_for_log",
     "append_ml_auth_test_log",
     "append_ml_publish_log",
+    "mercadolibre_test_error_code",
 ]

@@ -3,19 +3,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
-import threading
-import urllib.parse
+import uuid
 from pathlib import Path
 from typing import Any
 
-from .category_refresh import (
-    http_json,
-    mercadolibre_category_attributes,
-    mercadolibre_category_detail,
-    mercadolibre_category_record,
-)
-from .ozon_category_api import fetch_ozon_category_record, search_ozon_categories
+from .category_providers import require_category_provider
 
 
 logger = logging.getLogger(__name__)
@@ -34,36 +28,25 @@ def read_json(path: Path, default: Any) -> Any:
 
 
 def write_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    """Atomically persist JSON: write a same-directory temp file, then os.replace.
 
-
-# Mutable container (not a rebound global) so the flag survives erp_web.runtime's
-# namespace re-injection; keyed by resolved app dir so tests that repoint APP_DIR
-# still initialize their own database.
-_SQLITE_INIT_STATE: dict[str, bool] = {}
-_SQLITE_INIT_LOCK = threading.Lock()
-
-
-def ensure_sqlite_store() -> None:
-    """Initialize the SQLite store once per process (and per app dir).
-
-    Previously every product load/save re-ran the full CREATE TABLE script and
-    both schema migrations. Now the expensive initialization runs once; the
-    fast path only re-checks that the database file still exists.
+    A crash mid-write must never leave a truncated/corrupt store behind.
     """
-    from erp_web import db as erp_db
-    from .runtime_common import APP_DIR
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}")
+    try:
+        tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
 
-    key = str(Path(APP_DIR).resolve())
-    if _SQLITE_INIT_STATE.get(key) and erp_db.db_path(APP_DIR).exists():
-        return
-    with _SQLITE_INIT_LOCK:
-        if _SQLITE_INIT_STATE.get(key) and erp_db.db_path(APP_DIR).exists():
-            return
-        erp_db.initialize_database(APP_DIR)
-        _SQLITE_INIT_STATE[key] = True
 
+# SQLite 初始化已并入 ErpDatabase（构造期建 schema）；本模块只保留 JSON 文件
+# 读写工具和类目实时检索。
 
 _CATEGORY_AI_KEYWORD_MAP = {
     "风扇": ["ventilador", "fan"],
@@ -81,27 +64,6 @@ _CATEGORY_AI_STOPWORDS = {
     "the", "and", "for", "with", "from", "para", "con", "producto", "de", "del",
     "una", "uno", "los", "las", "por", "sin",
 }
-
-
-def _require_mercadolibre(platform: str) -> str:
-    platform = str(platform or "mercadolibre").strip().lower()
-    if platform != "mercadolibre":
-        raise RuntimeError("当前只支持 Mercado Libre 实时类目搜索；其他平台未接入官方实时类目接口。")
-    return platform
-
-
-def _require_supported_category_platform(platform: str) -> str:
-    platform = str(platform or "mercadolibre").strip().lower()
-    if platform not in {"mercadolibre", "ozon"}:
-        raise RuntimeError("当前只支持 Mercado Libre 和 Ozon 的实时类目搜索；该平台尚未接入官方实时类目接口。")
-    return platform
-
-
-def _mercadolibre_site(site: str = "") -> str:
-    from .product_store import load_store_config
-
-    configured = str((load_store_config().get("mercadolibre") or {}).get("site_id") or "").strip()
-    return str(site or configured or "MLM").strip().upper()
 
 
 def _category_suggest_terms(product: dict[str, Any], platform: str = "mercadolibre") -> list[str]:
@@ -157,15 +119,6 @@ def _category_suggest_query(product: dict[str, Any], platform: str = "mercadolib
     return " ".join(_category_suggest_terms(product, platform)[:8])
 
 
-def _domain_discovery_url(site: str, query: str, limit: int) -> str:
-    site = _mercadolibre_site(site)
-    quoted_query = urllib.parse.quote(query)
-    safe_limit = max(1, min(8, int(limit or 5)))
-    if site == "CBT":
-        return f"https://api.mercadolibre.com/marketplace/domain_discovery/search?q={quoted_query}&limit={safe_limit}"
-    return f"https://api.mercadolibre.com/sites/{urllib.parse.quote(site)}/domain_discovery/search?q={quoted_query}&limit={safe_limit}"
-
-
 def _path_text(record: dict[str, Any]) -> str:
     path = record.get("path_original") if isinstance(record.get("path_original"), list) else []
     if path:
@@ -174,24 +127,13 @@ def _path_text(record: dict[str, Any]) -> str:
 
 
 def fetch_category_record(platform: str, category_id: str, site: str = "", include_attributes: bool = False) -> dict[str, Any]:
-    platform = _require_supported_category_platform(platform)
-    if platform == "ozon":
-        return fetch_ozon_category_record(category_id, include_attributes=include_attributes)
-    category_id = str(category_id or "").strip()
-    if not category_id:
-        raise RuntimeError("缺少 Mercado Libre 类目 ID。")
-    resolved_site = _mercadolibre_site(site)
-    detail = mercadolibre_category_detail(category_id, http_client=http_json)
-    attrs = (
-        mercadolibre_category_attributes(category_id, http_client=http_json)
-        if include_attributes
-        else {"required": [], "optional": []}
-    )
-    return mercadolibre_category_record(detail, resolved_site, attrs)
+    provider = require_category_provider(platform)
+    return provider.detail(category_id, site=site, include_attributes=include_attributes)
 
 
 def fetch_category_attributes(platform: str, category_id: str, site: str = "") -> dict[str, Any]:
-    platform = _require_supported_category_platform(platform)
+    platform = str(platform or "").strip().lower()
+    provider = require_category_provider(platform)
     record = fetch_category_record(platform, category_id, site=site, include_attributes=True)
     attrs = record.get("attributes") if isinstance(record.get("attributes"), dict) else {}
     required = list(attrs.get("required") or [])
@@ -199,7 +141,7 @@ def fetch_category_attributes(platform: str, category_id: str, site: str = "") -
     return {
         "ok": True,
         "platform": platform,
-        "site": record.get("site") or (_mercadolibre_site(site) if platform == "mercadolibre" else "global"),
+        "site": record.get("site") or provider.resolve_site(site),
         "source": f"{platform}_live",
         "category": record,
         "required": required,
@@ -212,53 +154,17 @@ def fetch_category_attributes(platform: str, category_id: str, site: str = "") -
 
 
 def search_categories_live(platform: str, query: str, site: str = "", limit: int = 5) -> list[dict[str, Any]]:
-    platform = _require_supported_category_platform(platform)
+    provider = require_category_provider(platform)
     query = str(query or "").strip()
     if not query:
         return []
-    if platform == "ozon":
-        return search_ozon_categories(query, limit=limit)
-    resolved_site = _mercadolibre_site(site)
-    data = http_json(_domain_discovery_url(resolved_site, query, limit))
-    suggestions: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
-    for index, item in enumerate(data if isinstance(data, list) else []):
-        if not isinstance(item, dict):
-            continue
-        category_id = str(item.get("category_id") or "").strip()
-        if not category_id or category_id in seen_ids:
-            continue
-        record = fetch_category_record("mercadolibre", category_id, site=resolved_site, include_attributes=False)
-        name = str(item.get("category_name") or item.get("domain_name") or record.get("name_original") or category_id).strip()
-        path = _path_text(record) or name
-        suggestions.append(
-            {
-                "id": category_id,
-                "category_id": category_id,
-                "name": name,
-                "path": path,
-                "category_path": path,
-                "path_ids": record.get("path_ids") if isinstance(record.get("path_ids"), list) else [],
-                "site": resolved_site,
-                "score": max(1, 100 - index * 5),
-                "matched_terms": [query],
-                "source": "mercadolibre_domain_discovery",
-                "raw": {
-                    "domain_discovery": item,
-                    "category": record.get("raw") if isinstance(record.get("raw"), dict) else {},
-                    "path_ids": record.get("path_ids") if isinstance(record.get("path_ids"), list) else [],
-                },
-            }
-        )
-        seen_ids.add(category_id)
-        if len(suggestions) >= max(1, int(limit or 5)):
-            break
-    return suggestions
+    return provider.search(query, site=site, limit=limit)
 
 
 def suggest_category_ids(product: dict[str, Any], platform: str = "mercadolibre", site: str = "", limit: int = 5) -> dict[str, Any]:
-    platform = _require_supported_category_platform(platform)
-    resolved_site = _mercadolibre_site(site) if platform == "mercadolibre" else "global"
+    platform = str(platform or "").strip().lower()
+    provider = require_category_provider(platform)
+    resolved_site = provider.resolve_site(site)
     query = _category_suggest_query(product, platform)
     suggestions = search_categories_live(platform, query, site=resolved_site, limit=max(1, int(limit or 5))) if query else []
     return {
@@ -273,7 +179,6 @@ def suggest_category_ids(product: dict[str, Any], platform: str = "mercadolibre"
 
 
 __all__ = [
-    "ensure_sqlite_store",
     "fetch_category_attributes",
     "fetch_category_record",
     "read_json",

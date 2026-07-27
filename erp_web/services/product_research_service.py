@@ -16,11 +16,13 @@ import time
 import urllib.parse
 import urllib.request
 from copy import deepcopy
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from erp_web import http_client
+from erp_web.context import get_context
+from erp_web.db import ErpDatabase
 from erp_web.product_research_config import normalize_product_research_config
 from erp_web.schemas.product_research import (
     HotProductCandidate,
@@ -35,16 +37,12 @@ from erp_web.services.product_research_methods import search_method_for
 
 logger = logging.getLogger(__name__)
 PRODUCT_RESEARCH_RUN_LOG_RELATIVE_PATH = Path("data") / "logs" / "product_research_runs.jsonl"
-PRODUCT_RESEARCH_RUN_CACHE_RELATIVE_DIR = Path("data") / "cache" / "product_research" / "runs"
-RUN_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 RUN_LOG_ITEM_PREVIEW_LIMIT = 10
 RUN_STATUS_RETENTION_LIMIT = 100
 TERMINAL_RUN_STATUSES = {"completed", "failed"}
+RESTART_INTERRUPTED_DESCRIPTION = "服务已重启，后台任务已中断；已保留已接收的候选商品。"
 RunProgressEvent = str | dict[str, Any]
 RunProgressCallback = Callable[[RunProgressEvent], None]
-_RUNS_LOCK = threading.RLock()
-_RUNS: dict[str, ProductResearchRun] = {}
-_RUN_ORDER: list[str] = []
 SENSITIVE_CONFIG_KEYS = {
     "access_token",
     "api_key",
@@ -66,50 +64,8 @@ MARKET_ALIASES = {
 }
 
 
-def _utc_datetime_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 def _utc_now() -> str:
-    return _utc_datetime_now().isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
-def _utc_iso(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
-def _parse_utc_datetime(value: Any) -> datetime | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    if text.endswith("Z"):
-        text = f"{text[:-1]}+00:00"
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
-def _run_expiry(created_at: Any = None) -> str:
-    base = _parse_utc_datetime(created_at) or _utc_datetime_now()
-    return _utc_iso(base + timedelta(seconds=RUN_CACHE_TTL_SECONDS))
-
-
-def _ensure_run_expiry(run: ProductResearchRun) -> ProductResearchRun:
-    next_run: ProductResearchRun = deepcopy(run)
-    if not str(next_run.get("expires_at") or "").strip():
-        next_run["expires_at"] = _run_expiry(next_run.get("created_at"))
-    return next_run
-
-
-def _is_run_expired(run: ProductResearchRun) -> bool:
-    expires_at = _parse_utc_datetime(run.get("expires_at")) or _parse_utc_datetime(_run_expiry(run.get("created_at")))
-    if expires_at is None:
-        return False
-    return expires_at <= _utc_datetime_now()
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _stable_digest(value: Any, length: int = 16) -> str:
@@ -286,242 +242,190 @@ def _trim_run_description(value: Any, max_length: int = 1200) -> str:
     return "..." + text[-max_length:]
 
 
-def product_research_run_cache_dir(app_dir: Path | str = ".") -> Path:
-    return Path(app_dir) / PRODUCT_RESEARCH_RUN_CACHE_RELATIVE_DIR
-
-
-def _safe_run_id(value: Any) -> str:
-    run_id = str(value or "").strip()
-    return "".join(char for char in run_id if char.isalnum() or char in {"_", "-"})
-
-
-def product_research_run_cache_path(app_dir: Path | str, run_id: str) -> Path:
-    safe_run_id = _safe_run_id(run_id)
-    if not safe_run_id:
-        raise ValueError("run_id is required")
-    return product_research_run_cache_dir(app_dir) / f"{safe_run_id}.json"
-
-
-def _write_run_cache(app_dir: Path | str, run: ProductResearchRun) -> Path:
-    cached_run = _ensure_run_expiry(run)
-    path = product_research_run_cache_path(app_dir, str(cached_run.get("run_id") or ""))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(".json.tmp")
-    tmp_path.write_text(json.dumps(cached_run, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-    tmp_path.replace(path)
-    return path
-
-
-def _delete_run_cache(path: Path) -> None:
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        return
-    except Exception:
-        logger.exception("Failed to delete expired product research run cache: %s", path)
-
-
-def _read_run_cache_file(path: Path) -> ProductResearchRun | None:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return None
-    except Exception:
-        logger.exception("Failed to read product research run cache: %s", path)
-        return None
-    if not isinstance(payload, dict) or not str(payload.get("run_id") or "").strip():
-        return None
-    run = _ensure_run_expiry(payload)
-    if _is_run_expired(run):
-        _delete_run_cache(path)
-        return None
-    return run
-
-
-def _restore_cached_run_for_process(app_dir: Path | str, run: ProductResearchRun) -> ProductResearchRun:
-    restored = _ensure_run_expiry(run)
-    if str(restored.get("status") or "") in TERMINAL_RUN_STATUSES:
-        return restored
-    restored["status"] = "failed"
-    restored["completed_at"] = restored.get("completed_at") or _utc_now()
-    restored["description"] = "服务已重启，后台任务已中断；已保留已接收的候选商品。"
-    restored["progress_description"] = restored.get("progress_description") or restored["description"]
-    if not isinstance(restored.get("source_status"), list) or not restored.get("source_status"):
-        restored["source_status"] = [
-            {
-                "source": "product_research",
-                "source_id": "product_research",
-                "market": "",
-                "status": "failed",
-                "items_found": len(restored.get("items") or []),
-                "error_message": restored["description"],
-                "provider_strategy": "run_cache",
-            }
-        ]
-    try:
-        _write_run_cache(app_dir, restored)
-    except Exception:
-        logger.exception("Failed to update interrupted product research run cache: %s", restored.get("run_id"))
-    return restored
-
-
-def _remember_run(run: ProductResearchRun) -> ProductResearchRun:
-    run_id = str(run.get("run_id") or "").strip()
-    if not run_id:
-        raise ValueError("run_id is required")
-    cached_run = _ensure_run_expiry(run)
-    _RUNS[run_id] = deepcopy(cached_run)
-    if run_id not in _RUN_ORDER:
-        _RUN_ORDER.append(run_id)
-    while len(_RUN_ORDER) > RUN_STATUS_RETENTION_LIMIT:
-        old_run_id = _RUN_ORDER.pop(0)
-        _RUNS.pop(old_run_id, None)
-    return deepcopy(_RUNS[run_id])
-
-
-def _store_run(run: ProductResearchRun, app_dir: Path | str | None = None) -> ProductResearchRun:
-    run_id = str(run.get("run_id") or "").strip()
-    if not run_id:
-        raise ValueError("run_id is required")
-    with _RUNS_LOCK:
-        stored = _remember_run(run)
-    if app_dir is not None:
-        try:
-            _write_run_cache(app_dir, stored)
-        except Exception:
-            logger.exception("Failed to write product research run cache: %s", run_id)
-    return stored
-
-
-def _update_run(run_id: str, app_dir: Path | str | None = None, **updates: Any) -> ProductResearchRun | None:
-    run_key = str(run_id or "").strip()
-    if not run_key:
-        return None
-    if "description" in updates:
-        updates["description"] = _trim_run_description(updates.get("description"))
-    if "progress_description" in updates:
-        updates["progress_description"] = _trim_run_description(updates.get("progress_description"))
-    with _RUNS_LOCK:
-        run = _RUNS.get(run_key)
-        if run is None:
-            return None
-        run.update(updates)
-        updated = _ensure_run_expiry(run)
-        _RUNS[run_key] = deepcopy(updated)
-    if app_dir is not None:
-        try:
-            _write_run_cache(app_dir, updated)
-        except Exception:
-            logger.exception("Failed to write product research run cache: %s", run_key)
-    return deepcopy(updated)
-
-
 def _candidate_key(item: dict[str, Any]) -> str:
     return str(item.get("source_url") or item.get("id") or item.get("title") or "").strip()
 
 
-def _append_run_items(
-    run_id: str,
-    items: list[HotProductCandidate],
-    description: str = "",
-    app_dir: Path | str | None = None,
-) -> ProductResearchRun | None:
-    run_key = str(run_id or "").strip()
-    if not run_key or not items:
-        return None
-    with _RUNS_LOCK:
-        run = _RUNS.get(run_key)
-        if run is None:
-            return None
-        current_items = [item for item in (run.get("items") or []) if isinstance(item, dict)]
-        seen = {_candidate_key(item) for item in current_items if _candidate_key(item)}
-        added = False
-        for item in items:
-            key = _candidate_key(item)
-            if key and key in seen:
-                continue
-            if key:
-                seen.add(key)
-            current_items.append(item)
-            added = True
-        if added:
-            run["items"] = sorted(current_items, key=lambda item: int(item.get("rank") or 999999))
-            run["status"] = "running"
-            run["description"] = _trim_run_description(description or f"已接收 {len(current_items)} 个候选商品，AI 仍在继续搜索。")
-            run["progress_description"] = run["description"]
-        updated = _ensure_run_expiry(run)
-        _RUNS[run_key] = deepcopy(updated)
-    if added and app_dir is not None:
+class ProductResearchRunRegistry:
+    """Registry for research runs: SQLite is the source of truth, memory a hot cache.
+
+    Every write goes through to ``research_runs``/``research_candidates``;
+    the in-memory dict only serves running handles and hot reads. Candidate
+    results are kept permanently (no TTL). On construction — i.e. once per
+    process — every non-terminal run left over in the database is marked
+    ``failed`` while its already-received candidates stay queryable.
+    """
+
+    def __init__(self, db: ErpDatabase) -> None:
+        self._db = db
+        self._lock = threading.RLock()
+        self._runs: dict[str, ProductResearchRun] = {}
+        self._order: list[str] = []
         try:
-            _write_run_cache(app_dir, updated)
+            self._db.mark_interrupted_research_runs_failed(RESTART_INTERRUPTED_DESCRIPTION)
         except Exception:
-            logger.exception("Failed to write product research run cache: %s", run_key)
-    return deepcopy(updated)
+            logger.exception("Failed to mark interrupted product research runs as failed")
 
+    # -- persistence -----------------------------------------------------------
 
-def get_hot_product_run(run_id: str, app_dir: Path | str | None = None) -> ProductResearchRun | None:
-    run_key = str(run_id or "").strip()
-    if not run_key:
-        return None
-    with _RUNS_LOCK:
-        run = _RUNS.get(run_key)
-        if run is not None:
-            if _is_run_expired(run):
-                _RUNS.pop(run_key, None)
-                if run_key in _RUN_ORDER:
-                    _RUN_ORDER.remove(run_key)
-            else:
-                return deepcopy(run)
-    if app_dir is None:
-        return None
-    path = product_research_run_cache_path(app_dir, run_key)
-    cached_run = _read_run_cache_file(path)
-    if cached_run is None:
-        return None
-    restored = _restore_cached_run_for_process(app_dir, cached_run)
-    return _store_run(restored)
+    def _persist(self, run: ProductResearchRun) -> None:
+        params = {key: value for key, value in run.items() if key != "items"}
+        items = [item for item in (run.get("items") or []) if isinstance(item, dict)]
+        status = str(run.get("status") or "")
+        try:
+            self._db.save_research_run(
+                str(run.get("run_id") or ""),
+                status=status,
+                method=str(run.get("search_mode") or ""),
+                params=params,
+                error=str(run.get("description") or "") if status == "failed" else "",
+                created_at=str(run.get("created_at") or ""),
+                updated_at=_utc_now(),
+                items=items,
+            )
+        except Exception:
+            logger.exception("Failed to persist product research run: %s", run.get("run_id"))
 
+    def _load_from_db(self, run_id: str) -> ProductResearchRun | None:
+        record = self._db.load_research_run(run_id)
+        if not record:
+            return None
+        run: ProductResearchRun = dict(record.get("params") or {})
+        run["run_id"] = record["run_id"]
+        run["status"] = record["status"]
+        run["items"] = record["items"]
+        if record["status"] == "failed" and record["error"]:
+            run["description"] = record["error"]
+            run["progress_description"] = str(run.get("progress_description") or "") or record["error"]
+            if not run.get("completed_at"):
+                run["completed_at"] = record["updated_at"]
+            if not isinstance(run.get("source_status"), list) or not run.get("source_status"):
+                run["source_status"] = [
+                    {
+                        "source": "product_research",
+                        "source_id": "product_research",
+                        "market": "",
+                        "status": "failed",
+                        "items_found": len(record["items"]),
+                        "error_message": record["error"],
+                        "provider_strategy": "run_registry",
+                    }
+                ]
+        return run
 
-def _load_cached_runs(app_dir: Path | str) -> list[ProductResearchRun]:
-    cache_dir = product_research_run_cache_dir(app_dir)
-    if not cache_dir.exists():
-        return []
-    try:
-        paths = sorted(cache_dir.glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
-    except Exception:
-        logger.exception("Failed to list product research run cache: %s", cache_dir)
-        return []
-    runs: list[ProductResearchRun] = []
-    for path in paths[:RUN_STATUS_RETENTION_LIMIT]:
-        run = _read_run_cache_file(path)
-        if run is None:
-            continue
-        runs.append(_restore_cached_run_for_process(app_dir, run))
-    return runs
+    # -- memory hot cache ---------------------------------------------------------
 
+    def _remember(self, run: ProductResearchRun) -> ProductResearchRun:
+        run_id = str(run.get("run_id") or "").strip()
+        self._runs[run_id] = deepcopy(run)
+        if run_id not in self._order:
+            self._order.append(run_id)
+        while len(self._order) > RUN_STATUS_RETENTION_LIMIT:
+            old_run_id = self._order.pop(0)
+            self._runs.pop(old_run_id, None)
+        return deepcopy(self._runs[run_id])
 
-def get_active_hot_product_run(app_dir: Path | str | None = None) -> ProductResearchRun | None:
-    with _RUNS_LOCK:
-        for run_id in reversed(_RUN_ORDER):
-            run = _RUNS.get(run_id)
+    # -- public API -----------------------------------------------------------------
+
+    def store(self, run: ProductResearchRun) -> ProductResearchRun:
+        run_id = str(run.get("run_id") or "").strip()
+        if not run_id:
+            raise ValueError("run_id is required")
+        # Write-through: the table commits first, memory only publishes after —
+        # a reader that sees the new state in memory can rely on the DB row.
+        stored = deepcopy(run)
+        self._persist(stored)
+        with self._lock:
+            return self._remember(stored)
+
+    def update(self, run_id: str, **updates: Any) -> ProductResearchRun | None:
+        run_key = str(run_id or "").strip()
+        if not run_key:
+            return None
+        if "description" in updates:
+            updates["description"] = _trim_run_description(updates.get("description"))
+        if "progress_description" in updates:
+            updates["progress_description"] = _trim_run_description(updates.get("progress_description"))
+        with self._lock:
+            run = self._runs.get(run_key)
             if run is None:
-                continue
-            if _is_run_expired(run):
-                _RUNS.pop(run_id, None)
-                continue
-            if str(run.get("status") or "") not in TERMINAL_RUN_STATUSES:
+                run = self._load_from_db(run_key)
+                if run is None:
+                    return None
+            updated = dict(deepcopy(run))
+            updated.update(updates)
+        self._persist(updated)
+        with self._lock:
+            return self._remember(updated)
+
+    def append_items(
+        self,
+        run_id: str,
+        items: list[HotProductCandidate],
+        description: str = "",
+    ) -> ProductResearchRun | None:
+        run_key = str(run_id or "").strip()
+        if not run_key or not items:
+            return None
+        with self._lock:
+            run = self._runs.get(run_key)
+            if run is None:
+                return None
+            updated = dict(deepcopy(run))
+            current_items = [item for item in (updated.get("items") or []) if isinstance(item, dict)]
+            seen = {_candidate_key(item) for item in current_items if _candidate_key(item)}
+            added = False
+            for item in items:
+                key = _candidate_key(item)
+                if key and key in seen:
+                    continue
+                if key:
+                    seen.add(key)
+                current_items.append(item)
+                added = True
+            if added:
+                updated["items"] = sorted(current_items, key=lambda item: int(item.get("rank") or 999999))
+                updated["status"] = "running"
+                updated["description"] = _trim_run_description(description or f"已接收 {len(current_items)} 个候选商品，AI 仍在继续搜索。")
+                updated["progress_description"] = updated["description"]
+        if added:
+            self._persist(updated)
+        with self._lock:
+            return self._remember(updated)
+
+    def get(self, run_id: str) -> ProductResearchRun | None:
+        run_key = str(run_id or "").strip()
+        if not run_key:
+            return None
+        with self._lock:
+            run = self._runs.get(run_key)
+            if run is not None:
                 return deepcopy(run)
-    if app_dir is not None:
-        for run in reversed(_load_cached_runs(app_dir)):
-            _store_run(run)
-        with _RUNS_LOCK:
-            for run_id in reversed(_RUN_ORDER):
-                run = _RUNS.get(run_id)
-                if run is None or _is_run_expired(run):
+        loaded = self._load_from_db(run_key)
+        if loaded is None:
+            return None
+        with self._lock:
+            return self._remember(loaded)
+
+    def get_active(self) -> ProductResearchRun | None:
+        # Non-terminal runs only ever live in this process (older ones were
+        # marked failed at construction), so the memory cache is authoritative.
+        with self._lock:
+            for run_id in reversed(self._order):
+                run = self._runs.get(run_id)
+                if run is None:
                     continue
                 if str(run.get("status") or "") not in TERMINAL_RUN_STATUSES:
                     return deepcopy(run)
-    return None
+        return None
+
+
+def get_hot_product_run(run_id: str) -> ProductResearchRun | None:
+    return get_context().research.get(run_id)
+
+
+def get_active_hot_product_run() -> ProductResearchRun | None:
+    return get_context().research.get_active()
 
 
 def _search_method_by_id(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -780,14 +684,13 @@ def create_hot_product_run(
         "search_mode": request["search_mode"],
         "created_at": created_at,
         "completed_at": _utc_now(),
-        "expires_at": _run_expiry(created_at),
         "request": request,
         "items": items,
         "source_status": source_status,
         "description": _run_completion_description(items, source_status),
         "progress_description": "",
     }
-    run = _store_run(run, app_dir)
+    run = get_context().research.store(run)
     try:
         append_product_research_run_log(app_dir, run)
     except Exception:
@@ -796,13 +699,14 @@ def create_hot_product_run(
 
 
 def _run_hot_product_worker(
+    registry: ProductResearchRunRegistry,
     app_dir: Path | str,
     run_id: str,
     request: dict[str, Any],
     config: dict[str, Any],
     app_config: dict[str, Any] | None = None,
 ) -> None:
-    _update_run(run_id, app_dir, status="running", description="正在准备目标市场和搜索手段。")
+    registry.update(run_id, status="running", description="正在准备目标市场和搜索手段。")
 
     def progress(event: RunProgressEvent) -> None:
         if isinstance(event, dict):
@@ -810,14 +714,14 @@ def _run_hot_product_worker(
             if event_type == "candidate":
                 item = event.get("item")
                 if isinstance(item, dict):
-                    _append_run_items(run_id, [item], app_dir=app_dir)
+                    registry.append_items(run_id, [item])
                 return
             description = str(event.get("description") or "").strip()
             if description:
-                _update_run(run_id, app_dir, status="running", description=description, progress_description=description)
+                registry.update(run_id, status="running", description=description, progress_description=description)
             return
         description = str(event or "")
-        _update_run(run_id, app_dir, status="running", description=description, progress_description=description)
+        registry.update(run_id, status="running", description=description, progress_description=description)
 
     try:
         items, source_status = build_hot_product_candidates(
@@ -828,9 +732,8 @@ def _run_hot_product_worker(
             progress_callback=progress,
         )
         description = _run_completion_description(items, source_status)
-        run = _update_run(
+        run = registry.update(
             run_id,
-            app_dir,
             status="completed",
             completed_at=_utc_now(),
             items=items,
@@ -839,9 +742,8 @@ def _run_hot_product_worker(
         )
     except Exception as exc:
         logger.exception("Product research run failed: %s", run_id)
-        run = _update_run(
+        run = registry.update(
             run_id,
-            app_dir,
             status="failed",
             completed_at=_utc_now(),
             items=[],
@@ -880,17 +782,17 @@ def create_hot_product_run_async(
         "search_mode": request["search_mode"],
         "created_at": created_at,
         "completed_at": "",
-        "expires_at": _run_expiry(created_at),
         "request": request,
         "items": [],
         "source_status": [],
         "description": "已创建运行任务，等待后台执行。",
         "progress_description": "",
     }
-    stored = _store_run(run, app_dir)
+    registry = get_context().research
+    stored = registry.store(run)
     worker = threading.Thread(
         target=_run_hot_product_worker,
-        args=(app_dir, stored["run_id"], deepcopy(request), deepcopy(normalized_config), deepcopy(app_config) if app_config is not None else None),
+        args=(registry, app_dir, stored["run_id"], deepcopy(request), deepcopy(normalized_config), deepcopy(app_config) if app_config is not None else None),
         daemon=True,
     )
     worker.start()
@@ -907,7 +809,6 @@ def build_run_response(run: ProductResearchRun) -> dict[str, Any]:
             "search_mode": run.get("search_mode"),
             "created_at": run.get("created_at"),
             "completed_at": run.get("completed_at"),
-            "expires_at": run.get("expires_at"),
             "request": run.get("request"),
             "description": run.get("description") or "",
             "progress_description": run.get("progress_description") or "",
@@ -1150,6 +1051,7 @@ def test_search_provider_connection(
 
 
 __all__ = [
+    "ProductResearchRunRegistry",
     "append_product_research_run_log",
     "build_hot_product_candidates",
     "build_run_log_record",

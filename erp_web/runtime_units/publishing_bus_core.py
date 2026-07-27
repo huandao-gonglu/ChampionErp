@@ -2,39 +2,57 @@
 from __future__ import annotations
 
 import copy
-import json
 import threading
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
-from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 
 class PublishingAdapter(Protocol):
-    def resolve_category(self, product: dict[str, Any], platform: str, config: dict[str, Any]) -> dict[str, Any]:
+    def resolve_category(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         ...
 
-    def validate_required_attributes(self, product: dict[str, Any], platform: str, config: dict[str, Any]) -> list[str]:
+    def required_attributes_missing(self, product: dict[str, Any], config: dict[str, Any]) -> list[str]:
         ...
 
     def publish(self, product: dict[str, Any], platform: str, config: dict[str, Any]) -> dict[str, Any]:
         ...
 
 
+class PublishingJobStore(Protocol):
+    """Persistence contract implemented by ``erp_web.db.ErpDatabase``."""
+
+    def save_publish_job(self, state: dict[str, Any]) -> None:
+        ...
+
+    def load_publish_job(self, job_id: str) -> dict[str, Any]:
+        ...
+
+    def list_pending_publish_jobs(self) -> list[dict[str, Any]]:
+        ...
+
+
 class PublishingBus:
+    """Publish queue with SQLite-backed job state.
+
+    Job state never contains store credentials/config: the platform config is
+    fetched from ``config_provider`` (store_auth-backed) at execution time.
+    """
+
     def __init__(
         self,
-        state_dir: Path,
+        store: PublishingJobStore,
         adapters: dict[str, PublishingAdapter],
+        config_provider: Callable[[], dict[str, Any]] | None = None,
         max_workers: int = 6,
         max_retries: int = 1,
         retry_delay_seconds: float = 0.25,
         auto_resume_pending: bool = True,
     ) -> None:
-        self.state_dir = Path(state_dir)
-        self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.store = store
         self.adapters = adapters
+        self.config_provider = config_provider or (lambda: {})
         self.max_retries = max(0, int(max_retries))
         self.retry_delay_seconds = max(0.0, float(retry_delay_seconds))
         self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="PublishingBus")
@@ -43,7 +61,7 @@ class PublishingBus:
         if auto_resume_pending:
             self.recover_pending_jobs()
 
-    def enqueue(self, product: dict[str, Any], platforms: list[str], config: dict[str, Any]) -> dict[str, Any]:
+    def enqueue(self, product: dict[str, Any], platforms: list[str]) -> dict[str, Any]:
         selected = [platform for platform in platforms if platform in self.adapters]
         if not selected:
             raise ValueError("请选择至少一个可发布平台。")
@@ -57,26 +75,23 @@ class PublishingBus:
             "updated_at": now,
             "product_name": str(product.get("name") or ""),
             "product": copy.deepcopy(product),
-            "config": copy.deepcopy(config),
             "platforms": {
                 platform: self._new_platform_state(platform, now)
                 for platform in selected
             },
         }
         self._write_state(job_id, state)
-        self._submit_job(job_id, product, selected, config)
+        self._submit_job(job_id, product, selected)
         self._update_job_status(job_id)
         return {"ok": True, "job_id": job_id, "platforms": selected, "status": "queued"}
 
     def recover_pending_jobs(self) -> list[str]:
         recovered: list[str] = []
-        for path in sorted(self.state_dir.glob("*.json")):
-            try:
-                state = json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
+        for state in self.store.list_pending_publish_jobs():
+            if not isinstance(state, dict):
                 continue
-            job_id = str(state.get("job_id") or path.stem)
-            if self._resume_state(job_id, state):
+            job_id = str(state.get("job_id") or "")
+            if job_id and self._resume_state(job_id, state):
                 recovered.append(job_id)
         return recovered
 
@@ -90,23 +105,22 @@ class PublishingBus:
     def get_status(self, job_id: str) -> dict[str, Any]:
         return self._read_state(job_id)
 
-    def _submit_job(self, job_id: str, product: dict[str, Any], platforms: list[str], config: dict[str, Any]) -> None:
+    def _submit_job(self, job_id: str, product: dict[str, Any], platforms: list[str]) -> None:
         futures = [
-            self.executor.submit(self._run_platform, job_id, copy.deepcopy(product), platform, copy.deepcopy(config))
+            self.executor.submit(self._run_platform, job_id, copy.deepcopy(product), platform)
             for platform in platforms
         ]
         self._futures[job_id] = futures
 
     def _resume_state(self, job_id: str, state: dict[str, Any]) -> bool:
         product = state.get("product") if isinstance(state.get("product"), dict) else {}
-        config = state.get("config") if isinstance(state.get("config"), dict) else {}
         pending = []
         platforms = state.get("platforms") if isinstance(state.get("platforms"), dict) else {}
         for platform, item in platforms.items():
             if not isinstance(item, dict):
                 continue
             status = str(item.get("status") or "").lower()
-            if status in {"queued", "running", "retrying"} and platform in self.adapters:
+            if status in {"pending", "queued", "running", "retrying"} and platform in self.adapters:
                 item["status"] = "queued"
                 item["stage"] = "resuming"
                 item["error"] = str(item.get("error") or "")
@@ -116,8 +130,10 @@ class PublishingBus:
             return False
         state["status"] = "queued"
         state["updated_at"] = current_time()
+        # 旧 job 状态里若残留 config/凭据，一律丢弃（发布执行时从 store_auth 现取）。
+        state.pop("config", None)
         self._write_state(job_id, state)
-        self._submit_job(job_id, product, pending, config)
+        self._submit_job(job_id, product, pending)
         self._update_job_status(job_id)
         return True
 
@@ -133,7 +149,7 @@ class PublishingBus:
             "attempts": 0,
         }
 
-    def _run_platform(self, job_id: str, product: dict[str, Any], platform: str, config: dict[str, Any]) -> None:
+    def _run_platform(self, job_id: str, product: dict[str, Any], platform: str) -> None:
         adapter = self.adapters[platform]
         attempts = 0
         max_attempts = self.max_retries + 1
@@ -141,8 +157,11 @@ class PublishingBus:
         while attempts < max_attempts:
             attempts += 1
             try:
+                # 每次执行时现取店铺配置（凭据来自 store_auth 表），不落任何 job 持久化。
+                config = self.config_provider()
+                config = config if isinstance(config, dict) else {}
                 self._set_platform(job_id, platform, status="running", stage="resolving_category", attempts=attempts)
-                resolved = adapter.resolve_category(product, platform, config)
+                resolved = adapter.resolve_category(product, config)
                 product = resolved if isinstance(resolved, dict) else product
                 self._set_platform(
                     job_id,
@@ -151,7 +170,7 @@ class PublishingBus:
                     category_id=str(product.get("category_id") or product.get("wb_subject_id") or product.get("ozon_category_id") or ""),
                     attempts=attempts,
                 )
-                missing = adapter.validate_required_attributes(product, platform, config)
+                missing = adapter.required_attributes_missing(product, config)
                 if missing:
                     self._set_platform(
                         job_id,
@@ -217,22 +236,15 @@ class PublishingBus:
             state["updated_at"] = current_time()
             self._write_state(job_id, state)
 
-    def _state_path(self, job_id: str) -> Path:
-        safe = "".join(char for char in str(job_id) if char.isalnum() or char in "-_")
-        return self.state_dir / f"{safe}.json"
-
     def _read_state(self, job_id: str) -> dict[str, Any]:
-        path = self._state_path(job_id)
-        if not path.exists():
+        state = self.store.load_publish_job(job_id)
+        if not state:
             raise FileNotFoundError(f"发布任务不存在：{job_id}")
-        return json.loads(path.read_text(encoding="utf-8"))
+        return state
 
     def _write_state(self, job_id: str, state: dict[str, Any]) -> None:
-        path = self._state_path(job_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(path)
+        state["job_id"] = str(state.get("job_id") or job_id)
+        self.store.save_publish_job(state)
 
 
 def current_time() -> str:

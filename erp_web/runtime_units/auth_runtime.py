@@ -4,6 +4,7 @@ from __future__ import annotations
 import urllib.parse
 from typing import Any
 
+from erp_web.marketplace_registry import marketplace_spec, platform_label
 from erp_web import marketplaces as publisher
 from erp_web.services import ai_gateway, ai_model_config
 
@@ -49,7 +50,8 @@ def test_api_config(kind: str, config: dict[str, Any], test_value: str = "") -> 
         from .pricing_runtime import fetch_pricing_exchange_rates
 
         result = fetch_pricing_exchange_rates(True, {"pricing_defaults": config if isinstance(config, dict) else {}})
-        if not result.get("ok"):
+        # stale 表回落对核价是兜底，但对“测试 API 连通性”就是失败。
+        if not result.get("ok") or result.get("stale"):
             return {
                 "ok": False,
                 "channel": "exchange_rate",
@@ -113,7 +115,7 @@ def test_api_config(kind: str, config: dict[str, Any], test_value: str = "") -> 
     raise RuntimeError("未知 API 测试类型。")
 
 
-def build_mercadolibre_auth_link(app_id: str, redirect_uri: str) -> dict[str, str]:
+def build_mercadolibre_auth_link(app_id: str, redirect_uri: str) -> dict[str, Any]:
     if not app_id or not redirect_uri:
         raise RuntimeError("请先填写 Mercado Libre 的 client_id 和 redirect_uri。")
     parsed = urllib.parse.urlparse(str(redirect_uri or "").strip())
@@ -132,7 +134,7 @@ def build_mercadolibre_auth_link(app_id: str, redirect_uri: str) -> dict[str, st
     config["mercadolibre"]["redirect_uri"] = redirect_uri
     config["mercadolibre"]["app_id"] = app_id
     save_store_config(config)
-    return {"url": url, "code_verifier": verifier}
+    return {"url": url, "verifier_saved": True}
 
 
 def preview_mercadolibre_auth_link(app_id: str, redirect_uri: str) -> str:
@@ -263,46 +265,62 @@ def refresh_mercadolibre_token_from_body(body: dict[str, Any]) -> dict[str, Any]
     }
 
 
+def _test_mercadolibre_auth(config: dict[str, Any], scope: str) -> dict[str, Any]:
+    del scope
+    token = str(config.get("mercadolibre", {}).get("access_token") or "").strip()
+    if not token:
+        raise RuntimeError("请先填写 Mercado Libre access token，或通过授权链接换取 token。")
+    name = publisher.fetch_mercadolibre_shop_name(token)
+    store = config.setdefault("mercadolibre", {})
+    store["shop_name"] = name or store.get("shop_name", "")
+    store.update(_store_auth_result_fields("mercadolibre", "测试成功", name or token))
+    store["auth_error_code"] = ""
+    store["auth_error_message"] = ""
+    return {}
+
+
+def _test_ozon_auth(config: dict[str, Any], scope: str) -> dict[str, Any]:
+    ozon = config.get("ozon", {})
+    client_id = str(ozon.get("client_id") or "").strip()
+    api_key = str(ozon.get("api_key") or "").strip()
+    if not client_id or not api_key:
+        raise RuntimeError("请先填写 Ozon Client ID 和 API Key。")
+    category_summary: dict[str, Any] | None = None
+    if scope == "category":
+        from .ozon_category_api import fetch_ozon_category_tree_summary
+
+        category_summary = fetch_ozon_category_tree_summary()
+        name = str(ozon.get("shop_name") or client_id)
+    else:
+        name = publisher.fetch_ozon_shop_name(client_id, api_key)
+    store = config.setdefault("ozon", {})
+    store["shop_name"] = name or store.get("shop_name", "")
+    store.update(_store_auth_result_fields("ozon", "测试成功", name or client_id))
+    store["auth_error_code"] = ""
+    store["auth_error_message"] = ""
+    return {"category_tree": category_summary} if category_summary else {}
+
+
+_STORE_AUTH_TESTERS = {
+    "mercadolibre_token": _test_mercadolibre_auth,
+    "ozon_api": _test_ozon_auth,
+}
+
+
 def test_store_auth(platform: str, scope: str = "") -> dict[str, Any]:
     platform = (platform or "").strip().lower()
     scope = (scope or "").strip().lower()
+    spec = marketplace_spec(platform)
+    if spec is None:
+        raise RuntimeError("不支持的平台。")
+    tester = _STORE_AUTH_TESTERS.get(spec.test_auth)
+    if tester is None:
+        raise RuntimeError(f"{platform_label(platform)}授权已支持保存；在线校验尚未接入。")
     config = load_store_config()
     try:
-        if platform == "mercadolibre":
-            token = str(config.get("mercadolibre", {}).get("access_token") or "").strip()
-            if not token:
-                raise RuntimeError("请先填写 Mercado Libre access token，或通过授权链接换取 token。")
-            name = publisher.fetch_mercadolibre_shop_name(token)
-            store = config.setdefault("mercadolibre", {})
-            store["shop_name"] = name or store.get("shop_name", "")
-            store.update(_store_auth_result_fields("mercadolibre", "测试成功", name or token))
-            store["auth_error_code"] = ""
-            store["auth_error_message"] = ""
-        elif platform == "yandex":
-            raise RuntimeError("Yandex 授权已支持保存；在线校验需在接入对应 API 后启用。")
-        elif platform == "ozon":
-            ozon = config.get("ozon", {})
-            client_id = str(ozon.get("client_id") or "").strip()
-            api_key = str(ozon.get("api_key") or "").strip()
-            if not client_id or not api_key:
-                raise RuntimeError("请先填写 Ozon Client ID 和 API Key。")
-            category_summary: dict[str, Any] | None = None
-            if scope == "category":
-                from .ozon_category_api import fetch_ozon_category_tree_summary
-
-                category_summary = fetch_ozon_category_tree_summary()
-                name = str(ozon.get("shop_name") or client_id)
-            else:
-                name = publisher.fetch_ozon_shop_name(client_id, api_key)
-            config.setdefault("ozon", {})["shop_name"] = name or config.get("ozon", {}).get("shop_name", "")
-            config["ozon"].update(_store_auth_result_fields("ozon", "测试成功", name or client_id))
-            config["ozon"]["auth_error_code"] = ""
-            config["ozon"]["auth_error_message"] = ""
-        else:
-            raise RuntimeError("不支持的平台。")
+        extra = tester(config, scope)
     except Exception as exc:
-        error_message = str(exc)
-        raise RuntimeError(f"测试失败：{error_message}") from exc
+        raise RuntimeError(f"测试失败：{exc}") from exc
     save_store_config(config)
     response = {
         "ok": True,
@@ -314,17 +332,17 @@ def test_store_auth(platform: str, scope: str = "") -> dict[str, Any]:
         "status": str(config.get(platform, {}).get("auth_status") or "ok"),
         "message": "测试成功：授权可用。",
         "storeAuthSummary": summarize_store_auth_states(config),
+        **extra,
     }
-    if platform == "ozon" and scope == "category":
-        response["message"] = f"类目读取测试成功：已读取 {category_summary.get('product_type_count', 0) if category_summary else 0} 个可发布商品类型。"
-        response["category_tree"] = category_summary or {}
+    category_tree = extra.get("category_tree")
+    if isinstance(category_tree, dict):
+        response["message"] = f"类目读取测试成功：已读取 {category_tree.get('product_type_count', 0)} 个可发布商品类型。"
     return response
 
 
 __all__ = [
     "build_mercadolibre_auth_link",
     "exchange_mercadolibre_code_from_body",
-    "mercadolibre_auth_checklist",
     "preview_mercadolibre_auth_link",
     "refresh_mercadolibre_token_from_body",
     "test_ai_model_config",

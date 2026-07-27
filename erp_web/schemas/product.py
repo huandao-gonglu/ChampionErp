@@ -5,6 +5,9 @@ from typing import Any, TypedDict
 from .image import DraftImageRef, ImageItem
 
 
+PRODUCT_SCHEMA_VERSION = 1
+
+
 class ProductSource(TypedDict, total=False):
     source_platform: str
     source_url: str
@@ -72,6 +75,7 @@ class PlatformDraft(TypedDict, total=False):
 
 
 class Product(TypedDict, total=False):
+    schema_version: int
     product_id: str
     id: str
     name: str
@@ -90,3 +94,14 @@ class Product(TypedDict, total=False):
     pricing: dict[str, Any]
     created_at: str
     updated_at: str
+
+
+__all__ = [
+    "PRODUCT_SCHEMA_VERSION",
+    "CategoryAttributeDefinition",
+    "CategoryAttributeSchema",
+    "DraftTargetSite",
+    "PlatformDraft",
+    "Product",
+    "ProductSource",
+]

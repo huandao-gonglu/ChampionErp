@@ -16,73 +16,33 @@ const workflowRoutes: RouteRecordRaw[] = [
   },
 ]
 
-const legacyEntryRoutes: RouteRecordRaw[] = [
-  {
-    path: '/collect',
-    component: workflowComponent,
-    meta: { title: '采集', hideInMenu: true },
-  },
-  {
-    path: '/research',
-    component: workflowComponent,
-    meta: { title: '选品调研', hideInMenu: true },
-  },
-  {
-    path: '/library',
-    component: workflowComponent,
-    meta: { title: '商品库', hideInMenu: true },
-  },
-  {
-    path: '/drafts',
-    component: workflowComponent,
-    meta: { title: '草稿箱', hideInMenu: true },
-  },
-  {
-    path: '/ml-items',
-    component: workflowComponent,
-    meta: { title: 'ML已发布', hideInMenu: true },
-  },
-  {
-    path: '/edit',
-    redirect: '/library',
-    meta: { title: '商品库', hideInMenu: true },
-  },
-  {
-    path: '/media',
-    redirect: '/library',
-    meta: { title: '商品库', hideInMenu: true },
-  },
-  {
-    path: '/pricing',
-    component: workflowComponent,
-    meta: { title: '核价', hideInMenu: true },
-  },
-  {
-    path: '/publish',
-    component: workflowComponent,
-    meta: { title: '发布预检', hideInMenu: true },
-  },
-  {
-    path: '/settings',
-    redirect: '/auth',
-    meta: { title: '设置', hideInMenu: true },
-  },
-  {
-    path: '/auth',
-    component: workflowComponent,
-    meta: { title: '授权', hideInMenu: true },
-  },
-  {
-    path: '/logs',
-    component: workflowComponent,
-    meta: { title: '日志', hideInMenu: true },
-  },
-  {
-    path: '/pending',
-    component: workflowComponent,
-    meta: { title: '待处理', hideInMenu: true },
-  },
-]
+const legacyWorkflowEntries = [
+  { path: '/collect', tab: 'collect', title: '采集' },
+  { path: '/research', tab: 'research', title: '选品调研' },
+  { path: '/library', tab: 'library', title: '商品库' },
+  { path: '/drafts', tab: 'drafts', title: '草稿箱' },
+  { path: '/ml-items', tab: 'mlItems', title: 'ML已发布' },
+  { path: '/edit', tab: 'library', title: '商品库' },
+  { path: '/media', tab: 'library', title: '商品库' },
+  { path: '/pricing', tab: 'pricing', title: '核价' },
+  { path: '/publish', tab: 'category', title: '发布预检' },
+  { path: '/settings', tab: 'auth', title: '设置' },
+  { path: '/auth', tab: 'auth', title: '授权' },
+  { path: '/logs', tab: 'logs', title: '日志' },
+  { path: '/pending', tab: 'pending', title: '待处理' },
+] as const
+
+const legacyEntryRoutes: RouteRecordRaw[] = legacyWorkflowEntries.map((entry) => ({
+  path: entry.path,
+  redirect: (to) => ({
+    name: 'WorkflowHome',
+    query: {
+      ...to.query,
+      tab: String(to.query.tab || entry.tab),
+    },
+  }),
+  meta: { title: entry.title, hideInMenu: true },
+}))
 
 const routes: RouteRecordRaw[] = [
   // Setup Routes

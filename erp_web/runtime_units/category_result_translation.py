@@ -1,14 +1,10 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
 
-from erp_web.services import ai_gateway, ai_prompt_templates
-
-from .product_store import load_app_config
-from .runtime_common import APP_DIR
+from .ai_use_case import run_ai_use_case
 
 
 def _text_list(value: Any) -> list[str]:
@@ -49,23 +45,13 @@ def _normalize_translation_map(value: Any) -> dict[str, str]:
 
 
 def _request_ai_category_translations(platform: str, language: str, categories: list[dict[str, str]]) -> dict[str, str]:
-    app_cfg = load_app_config()
     payload = {"platform": platform, "target_language": language, "categories": categories}
-    prompt_pair = ai_prompt_templates.load_ai_use_case_prompt_pair(APP_DIR, app_cfg, "category.result_translation")
-    messages = [
-        {
-            "role": "system",
-            "content": prompt_pair["system"],
-        },
-        {
-            "role": "user",
-            "content": ai_prompt_templates.render_prompt_template(
-                prompt_pair["user"],
-                {"input_json": json.dumps(payload, ensure_ascii=False)},
-            ),
-        },
-    ]
-    return _normalize_translation_map(ai_gateway.chat_json(APP_DIR, app_cfg, "category.result_translation", messages, temperature=0.1))
+    return run_ai_use_case(
+        "category.result_translation",
+        payload,
+        _normalize_translation_map,
+        temperature=0.1,
+    )
 
 
 def translate_category_results(platform: str, categories: list[Any], language: str = "zh-CN") -> dict[str, Any]:

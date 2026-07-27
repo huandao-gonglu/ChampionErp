@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { calculatePrice, generateCopy, imageEdit, imageTranslate, publishPrecheck } from '@/api/workflow'
 import { apiClient } from '@/api/client'
 import { createEmptyDraftDetail, createEmptyProduct } from '@/constants/initialState'
-import { normalizeProductsIndex, toBackendProduct } from '@/api/workflow/normalizers'
+import { normalizeBackendProduct, normalizeProductsIndex, toBackendProduct } from '@/api/workflow/normalizers'
 
 vi.mock('@/api/client', () => ({
   API_REQUEST_TIMEOUT_MS: 30000,
@@ -270,6 +270,31 @@ describe('publishPrecheck API mapping', () => {
       description: '可折叠收纳盒，适用于厨房和衣柜。',
       bullets: ['可折叠收纳', '节省空间'],
     }))
+    expect(result.schema_version).toBe(1)
+    expect(result.id).toBeUndefined()
+    expect(result.source_url).toBeUndefined()
+  })
+
+  it('only reads canonical fields from a versioned product', () => {
+    const product = normalizeBackendProduct({
+      schema_version: 1,
+      product_id: 'canonical-id',
+      id: 'legacy-id',
+      name: '规范名称',
+      title: '旧名称',
+      source_url: 'https://legacy.example/item',
+      source: {
+        source_url: 'https://canonical.example/item',
+        source_platform: '1688',
+        title: '规范标题',
+        image_pool: [],
+      },
+      drafts: {},
+    })
+
+    expect(product.productId).toBe('canonical-id')
+    expect(product.name).toBe('规范名称')
+    expect(product.source.sourceUrl).toBe('https://canonical.example/item')
   })
 
   it('keeps structured backend issues readable for the UI', async () => {

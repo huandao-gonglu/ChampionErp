@@ -1,14 +1,10 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
 
-from erp_web.services import ai_gateway, ai_prompt_templates
-
-from .product_store import load_app_config
-from .runtime_common import APP_DIR
+from .ai_use_case import run_ai_use_case
 
 
 def _normalized_attribute(attr: Any) -> dict[str, Any]:
@@ -62,7 +58,6 @@ def _request_ai_attribute_translations(
     language: str,
     attributes: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    app_cfg = load_app_config()
     prompt = {
         "platform": platform,
         "category_id": category_id,
@@ -70,21 +65,12 @@ def _request_ai_attribute_translations(
         "target_language": language or "zh-CN",
         "attributes": attributes,
     }
-    prompt_pair = ai_prompt_templates.load_ai_use_case_prompt_pair(APP_DIR, app_cfg, "category.attribute_translation")
-    messages = [
-        {
-            "role": "system",
-            "content": prompt_pair["system"],
-        },
-        {
-            "role": "user",
-            "content": ai_prompt_templates.render_prompt_template(
-                prompt_pair["user"],
-                {"input_json": json.dumps(prompt, ensure_ascii=False)},
-            ),
-        },
-    ]
-    return _normalize_translation_map(ai_gateway.chat_json(APP_DIR, app_cfg, "category.attribute_translation", messages, temperature=0.1))
+    return run_ai_use_case(
+        "category.attribute_translation",
+        prompt,
+        _normalize_translation_map,
+        temperature=0.1,
+    )
 
 
 def translate_category_attributes(

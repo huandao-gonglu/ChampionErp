@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import urllib.parse
+import uuid
 from typing import Any
 
-from .common import CN_CATEGORY_TERMS, CN_WB_TERMS, ML_CATEGORY_CN_HINTS, ML_CATEGORY_SHIPPING_CACHE_PATH, ML_CATEGORY_WORDS
+from .common import CN_CATEGORY_TERMS, ML_CATEGORY_CN_HINTS, ML_CATEGORY_SHIPPING_CACHE_PATH, ML_CATEGORY_WORDS
 from .config_http import request_json, request_ozon_json
 
 
@@ -49,25 +51,6 @@ def localize_mercadolibre_category_path(path: str) -> str:
         cn_parts.append(hit or part)
     cn_path = " / ".join(cn_parts)
     return f"{cn_path}  |  {path}" if cn_path and cn_path != path else path
-
-def fetch_wildberries_shop_name(token: str) -> str:
-    if not token.strip():
-        raise RuntimeError("WB Token 为空。")
-    try:
-        data = request_json("GET", "https://common-api.wildberries.ru/api/v1/seller-info", token)
-    except RuntimeError as exc:
-        message = str(exc)
-        if "429" in message or "Too Many Requests" in message:
-            return "WB Token 已保存（接口限流，稍后再查店铺名）"
-        if "401" in message or "403" in message:
-            raise RuntimeError(
-                "WB Token 无法通过正式环境验证。请确认创建令牌时没有勾选 Test Environment/测试环境，"
-                "并且复制的是完整 Token。原始错误: " + message
-            ) from exc
-        raise
-    if not isinstance(data, dict):
-        return ""
-    return data.get("tradeMark") or data.get("name") or data.get("sid") or ""
 
 
 def search_mercadolibre_categories(keyword: str, token: str = "") -> list[tuple[str, str]]:
@@ -126,7 +109,20 @@ def load_ml_category_shipping_cache() -> dict[str, dict[str, Any]]:
 def save_ml_category_shipping_cache(cache: dict[str, dict[str, Any]]) -> None:
     try:
         ML_CATEGORY_SHIPPING_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        ML_CATEGORY_SHIPPING_CACHE_PATH.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+        # Atomic write (same-directory temp file + os.replace) so a crash cannot
+        # leave a truncated cache file behind.
+        tmp_path = ML_CATEGORY_SHIPPING_CACHE_PATH.with_name(
+            f".{ML_CATEGORY_SHIPPING_CACHE_PATH.name}.tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        )
+        try:
+            tmp_path.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp_path, ML_CATEGORY_SHIPPING_CACHE_PATH)
+        except BaseException:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+            raise
     except Exception:
         pass
 
@@ -192,31 +188,6 @@ def filter_mercadolibre_remote_categories(options: list[tuple[str, str]], token:
     if filtered:
         return filtered
     return [(category_id, f"[未通过发货校验] {label}") for category_id, label in options]
-
-
-def search_wildberries_subjects(keyword: str, token: str) -> list[tuple[str, str]]:
-    if not keyword.strip():
-        raise RuntimeError("请先填写产品名或品类。")
-    if not token.strip():
-        raise RuntimeError("WB Token 为空，请先在授权店铺里保存 WB Token。")
-    results = []
-    seen = set()
-    terms = expanded_category_keywords(keyword, CN_WB_TERMS) or [keyword.strip()]
-    for term in terms[:8]:
-        data = request_json(
-            "GET",
-            "https://content-api.wildberries.ru/content/v2/object/all?"
-            f"name={urllib.parse.quote(term)}&locale=ru",
-            token,
-        )
-        raw = data.get("data", []) if isinstance(data, dict) else []
-        for item in raw:
-            subject_id = str(item.get("subjectID") or item.get("objectID") or item.get("id") or "")
-            name = item.get("subjectName") or item.get("objectName") or item.get("name") or ""
-            if subject_id and subject_id not in seen:
-                seen.add(subject_id)
-                results.append((subject_id, f"{name}  |  关键词: {term}"))
-    return results[:50]
 
 
 def estimate_mercadolibre_shipping(

@@ -3,7 +3,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from erp_web import runtime as erp_web_app
-from erp_web.runtime_units import category_store, ozon_category_api
+from erp_web.runtime_units import auth_runtime, category_store, ozon_category_api
 
 
 OZON_TREE = {
@@ -105,13 +105,13 @@ def test_ozon_category_tree_summary_reuses_the_live_tree() -> None:
 def test_ozon_category_auth_test_reads_the_category_tree_without_a_category_id() -> None:
     config: dict[str, object] = {"ozon": {"client_id": "client-id", "api_key": "api-key", "shop_name": ""}}
     with (
-        patch.object(erp_web_app, "load_store_config", return_value=config),
-        patch.object(erp_web_app, "save_store_config") as save_config,
-        patch.object(erp_web_app, "summarize_store_auth_states", return_value={"ozon": {"status": "测试成功"}}),
+        patch.object(auth_runtime, "load_store_config", return_value=config),
+        patch.object(auth_runtime, "save_store_config") as save_config,
+        patch.object(auth_runtime, "summarize_store_auth_states", return_value={"ozon": {"status": "测试成功"}}),
         patch("erp_web.runtime_units.ozon_category_api.fetch_ozon_category_tree_summary", return_value={"product_type_count": 2, "sample": {"type_id": "94765"}}) as fetch_tree,
         patch.object(erp_web_app.publisher, "fetch_ozon_shop_name") as fetch_shop,
     ):
-        result = erp_web_app.test_store_auth("ozon", "category")
+        result = auth_runtime.test_store_auth("ozon", "category")
 
     fetch_tree.assert_called_once_with()
     fetch_shop.assert_not_called()

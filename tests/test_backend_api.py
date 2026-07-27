@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import time
 
 import requests
@@ -22,6 +23,44 @@ def get_json(base_url: str, path: str, params: dict | None = None, expected_stat
     assert isinstance(data, dict)
     assert data
     return data
+
+
+def test_state_contract_is_versioned_and_never_returns_plaintext_secrets(
+    backend_server: str,
+) -> None:
+    saved = post_json(
+        backend_server,
+        "/api/save-settings",
+        {
+            "appConfig": {
+                "alibaba_cookie": "state-cookie-private",
+                "1688_api": {
+                    "app_key": "state-app-key",
+                    "app_secret": "state-app-secret",
+                    "access_token": "state-1688-token",
+                },
+            },
+            "storeConfig": {
+                "ozon": {
+                    "client_id": "state-ozon-client",
+                    "api_key": "state-ozon-private",
+                },
+            },
+        },
+    )
+    state = get_json(backend_server, "/api/state")
+
+    assert state["schemaVersion"] == 1
+    assert state["product"]["schema_version"] == 1
+    assert state["storeConfig"]["ozon"]["client_id"] == "state-ozon-client"
+    serialized = json.dumps({"saved": saved, "state": state}, ensure_ascii=False)
+    for secret in (
+        "state-cookie-private",
+        "state-app-secret",
+        "state-1688-token",
+        "state-ozon-private",
+    ):
+        assert secret not in serialized
 
 
 def test_collect_api_manual_import_returns_product(backend_server: str) -> None:
@@ -174,6 +213,25 @@ def test_generate_copy_api_requires_product_id(backend_server: str) -> None:
     assert "product_id" in data["error"]
 
 
+def test_upc_pool_import_api_returns_added_count_and_stats(backend_server: str) -> None:
+    first = post_json(
+        backend_server,
+        "/api/upc-pool/import",
+        {"values": ["012345678905", "012345678912", "012345678905", ""]},
+    )
+    assert first["ok"] is True
+    assert first["imported"] == 2
+    assert first["upcPool"] == {"total": 2, "free": 2, "used": 0}
+
+    second = post_json(
+        backend_server,
+        "/api/upc-pool/import",
+        {"values": ["012345678905"]},
+    )
+    assert second["imported"] == 0
+    assert second["upcPool"] == first["upcPool"]
+
+
 def test_save_product_and_publish_precheck_api_exist(backend_server: str, sample_product: dict) -> None:
     saved = post_json(backend_server, "/api/save-product", {"product": sample_product})
     assert saved["ok"] is True
@@ -214,7 +272,6 @@ def test_product_research_hot_product_api_returns_candidates(backend_server: str
     assert data["ok"] is True
     assert data["run"]["run_id"].startswith("prr_")
     assert data["run"]["description"]
-    assert data["run"]["expires_at"]
     for _ in range(25):
         if data["run"]["status"] in {"completed", "failed"}:
             break

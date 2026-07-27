@@ -5,16 +5,23 @@ from typing import Callable
 
 from .common import JsonRequestHandler
 from ..facades import product_facade
+from ..runtime_units.pricing_runtime import calculate_price
+from ..runtime_units.publish_helpers import assign_upc
 
 PostHandler = Callable[[JsonRequestHandler], None]
 
 
 def handle_calculate_price(handler: JsonRequestHandler) -> None:
-    handler.send_json(product_facade.calculate_product_price(handler.read_body()))
+    handler.send_json(calculate_price(handler.read_body()))
 
 
 def handle_assign_upc(handler: JsonRequestHandler) -> None:
-    handler.send_json(product_facade.assign_product_upc())
+    handler.send_json(assign_upc())
+
+
+def handle_import_upcs(handler: JsonRequestHandler) -> None:
+    result, status = product_facade.import_upcs_payload(handler.read_body())
+    handler.send_json(result, status)
 
 
 def handle_save_product(handler: JsonRequestHandler) -> None:
@@ -48,6 +55,7 @@ def handle_delete_draft(handler: JsonRequestHandler) -> None:
 POST_HANDLERS: dict[str, PostHandler] = {
     "/api/calculate-price": handle_calculate_price,
     "/api/assign-upc": handle_assign_upc,
+    "/api/upc-pool/import": handle_import_upcs,
     "/api/save-product": handle_save_product,
     "/api/save-draft": handle_save_draft,
     "/api/load-product": handle_load_product,

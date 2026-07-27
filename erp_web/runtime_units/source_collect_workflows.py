@@ -7,6 +7,7 @@ from typing import Any
 from erp_web.product_model import (
     default_collect_diagnostics,
     default_product_model,
+    default_source,
     merge_source_partial_result,
     normalize_platforms,
     parse_dimensions_text,
@@ -24,21 +25,16 @@ from .source_collect_browser import (
     snapshot_from_cdp_target,
 )
 from .publish_bus import page_snapshot_from_html
-from .source_collect_parsers import parse_1688_product, parse_amazon_product, parse_generic_product
 from .source_collect_1688_api import collect_1688_product_via_api
+from .source_sites import parse_source_snapshot, source_site
 from .category_refresh import http_json
 from .collect_helpers import (
     apply_claimed_platform_drafts,
     collect_error_code,
     collect_image_origin,
     collect_time_iso,
-    current_browser_profile_name,
     detect_source_platform,
     finalize_collect_diagnostics,
-    is_1688_login_page,
-    is_1688_security_check_page,
-    is_amazon_region_blocked_page,
-    is_amazon_robot_check_page,
     normalize_collect_mode,
     normalize_collect_source_images,
     parse_collect_urls,
@@ -46,7 +42,13 @@ from .collect_helpers import (
     write_collect_debug_html,
 )
 from .image_pool_core import current_image_pool, current_source_images
-from .product_store import load_product, load_products_index, normalize_list, save_product
+from .product_store import (
+    load_product,
+    load_products_index,
+    normalize_list,
+    normalize_product_fields,
+    save_product,
+)
 from .runtime_common import APP_DIR, BROWSER_DEBUG_PORT, VERIFY_MARKERS
 
 
@@ -71,6 +73,7 @@ def collect_source_product(
         raise RuntimeError("璇峰厛杈撳叆鍟嗗搧閾炬帴銆?")
 
     platform_detected = (platform or detect_source_platform(url)).lower() or "unknown"
+    site = source_site(platform_detected)
     collect_mode = normalize_collect_mode(mode, url)
     cookie = (cookie or "").strip()
     diagnostics = default_collect_diagnostics()
@@ -96,13 +99,13 @@ def collect_source_product(
         if collect_mode == "manual":
             raise ManualCollectRequested("MANUAL_MODE")
         if collect_mode == "api":
-            if platform_detected != "1688":
+            if not site.supports_api_collect:
                 raise RuntimeError("API_MODE_ONLY_SUPPORTS_1688")
             return collect_1688_product_via_api(url, claim_platforms, api_config)
 
         if collect_mode == "browser":
-            snapshot = fetch_page_snapshot_with_browser_session(url, profile_name=current_browser_profile_name(platform_detected))
-            if not snapshot and platform_detected == "1688":
+            snapshot = fetch_page_snapshot_with_browser_session(url, profile_name=site.browser_profile)
+            if not snapshot and site.playwright_fallback:
                 html = maybe_fetch_page_html_with_playwright(url, cookie) or ""
                 if html:
                     snapshot = page_snapshot_from_html(url, html, legacy.html_to_text(html), legacy.extract_page_title(html), legacy.extract_product_image_urls(html, url, limit=20))
@@ -125,47 +128,14 @@ def collect_source_product(
         diagnostics["page_title"] = title or legacy.extract_page_title(html)
         diagnostics["http_status"] = http_status
 
-        if platform_detected == "1688":
-            diagnostics["is_login_page"] = is_1688_login_page(final_url, html, text, title)
-            diagnostics["is_captcha_page"] = is_1688_security_check_page(html, text)
-            diagnostics["is_security_check_page"] = diagnostics["is_captcha_page"]
-            if diagnostics["is_login_page"]:
-                error_reason = "LOGIN"
-            elif diagnostics["is_captcha_page"]:
-                error_reason = "CAPTCHA"
-        elif platform_detected == "amazon":
-            diagnostics["is_login_page"] = "signin" in final_url.lower() or "sign in" in f"{title} {text}".lower()
-            diagnostics["is_captcha_page"] = is_amazon_robot_check_page(final_url, html, text, title)
-            diagnostics["is_security_check_page"] = diagnostics["is_captcha_page"]
-            if diagnostics["is_captcha_page"]:
-                error_reason = "ROBOT"
-            elif is_amazon_region_blocked_page(html, text):
-                error_reason = "REGION"
-
-        if platform_detected == "amazon":
-            parsed_product = parse_amazon_product(snapshot, final_url)
-        elif platform_detected == "unknown":
-            parsed_product = parse_generic_product(snapshot, final_url)
-        else:
-            parsed_product = parse_1688_product(snapshot, final_url)
+        page_diagnostics, error_reason = site.diagnose(final_url, html, text, title)
+        diagnostics.update(page_diagnostics)
+        parsed_product = site.parse(snapshot, final_url)
 
         source_updates = parsed_product.get("source") if isinstance(parsed_product.get("source"), dict) else {}
         source_updates = normalize_collect_source_images(source_updates, platform_detected, collect_mode, claim_platforms)
         diagnostics.update(snapshot_field_flags(source_updates))
-        if not diagnostics["title_found"]:
-            error_reason = error_reason or "NO_TITLE"
-        if diagnostics["images_found_count"] <= 0:
-            error_reason = error_reason or "NO_IMAGES"
-        if platform_detected == "amazon" and diagnostics["bullets_found_count"] <= 0:
-            error_reason = error_reason or "NO_BULLETS"
-        if platform_detected == "amazon" and not diagnostics["dimensions_found"]:
-            error_reason = error_reason or "NO_DIMENSIONS"
-        if platform_detected == "amazon" and not diagnostics["weight_found"]:
-            error_reason = error_reason or "NO_WEIGHT"
-        if platform_detected == "1688" and diagnostics["images_found_count"] <= 0:
-            error_reason = error_reason or "NO_IMAGES"
-        if platform_detected == "1688" and not diagnostics["dimensions_found"]:
-            error_reason = error_reason or "NO_DIMENSIONS"
+        error_reason = site.quality_reason(diagnostics, error_reason)
 
         diagnostics["error_code"] = collect_error_code(platform_detected, collect_mode, error_reason) if error_reason else ""
         diagnostics["error_message"] = "采集成功" if not diagnostics["error_code"] else diagnostics["error_code"]
@@ -230,10 +200,10 @@ def collect_source_product(
             elif "403" in error_message or "forbidden" in error_message.lower():
                 reason = "FORBIDDEN"
             elif "winerror 10013" in error_message.lower() or "访问套接字" in error_message or "socket" in error_message.lower():
-                reason = "REMOTE" if platform_detected == "1688" else "NETWORK"
+                reason = "REMOTE" if site.supports_api_collect else "NETWORK"
             else:
                 reason = "REMOTE" if "remote" in error_message.lower() or "connect" in error_message.lower() else "SELECTOR"
-            if platform_detected == "1688" and "profile" in error_message.lower():
+            if site.supports_api_collect and "profile" in error_message.lower():
                 reason = "PROFILE"
             diagnostics["error_code"] = collect_error_code(platform_detected, collect_mode, reason)
         diagnostics["error_message"] = error_message
@@ -242,12 +212,7 @@ def collect_source_product(
         diagnostics["partial_success"] = bool(snapshot or html or text)
         if snapshot or html or text:
             fallback_snapshot = snapshot or page_snapshot_from_html(url, html, text, title)
-            if platform_detected == "amazon":
-                parsed_product = parse_amazon_product(fallback_snapshot, final_url)
-            elif platform_detected == "unknown":
-                parsed_product = parse_generic_product(fallback_snapshot, final_url)
-            else:
-                parsed_product = parse_1688_product(fallback_snapshot, final_url)
+            parsed_product = site.parse(fallback_snapshot, final_url)
             source_updates = parsed_product.get("source") if isinstance(parsed_product.get("source"), dict) else {}
             source_updates = normalize_collect_source_images(source_updates, platform_detected, collect_mode, claim_platforms)
             diagnostics.update(snapshot_field_flags(source_updates))
@@ -414,6 +379,7 @@ def collect_from_browser_tab(
         text = str(snapshot.get("text") or "")
         title = str(snapshot.get("title") or snapshot.get("page_title") or "")
         platform_detected = (platform_hint or detect_source_platform(final_url) or detect_source_platform(title) or "unknown").lower()
+        site = source_site(platform_detected)
         diagnostics = default_collect_diagnostics()
         diagnostics.update(
             {
@@ -435,35 +401,19 @@ def collect_from_browser_tab(
         )
         if not diagnostics["html_snapshot_path"] and html_text:
             diagnostics["html_snapshot_path"] = write_collect_debug_html(final_url, html_text, platform_detected)
-        error_reason = ""
-        if platform_detected == "1688":
-            diagnostics["is_login_page"] = is_1688_login_page(final_url, html_text, text, title)
-            diagnostics["is_captcha_page"] = is_1688_security_check_page(html_text, text)
-            diagnostics["is_security_check_page"] = diagnostics["is_captcha_page"]
-            if diagnostics["is_login_page"]:
-                error_reason = "LOGIN"
-            elif "滑块" in text or "slider" in text.lower():
-                error_reason = "SLIDER"
-            elif diagnostics["is_captcha_page"]:
-                error_reason = "CAPTCHA"
-        elif platform_detected == "amazon":
-            diagnostics["is_login_page"] = "signin" in final_url.lower() or "sign in" in f"{title} {text}".lower()
-            diagnostics["is_captcha_page"] = is_amazon_robot_check_page(final_url, html_text, text, title)
-            diagnostics["is_security_check_page"] = diagnostics["is_captcha_page"]
-            if diagnostics["is_captcha_page"]:
-                error_reason = "ROBOT"
-            elif diagnostics["is_login_page"]:
-                error_reason = "LOGIN"
-            elif is_amazon_region_blocked_page(html_text, text):
-                error_reason = "REGION"
-        parsed = parse_amazon_product(snapshot, final_url) if platform_detected == "amazon" else parse_1688_product(snapshot, final_url) if platform_detected == "1688" else parse_generic_product(snapshot, final_url)
+        page_diagnostics, error_reason = site.diagnose(
+            final_url,
+            html_text,
+            text,
+            title,
+            detect_slider=True,
+        )
+        diagnostics.update(page_diagnostics)
+        parsed = site.parse(snapshot, final_url)
         source_updates = parsed.get("source") if isinstance(parsed.get("source"), dict) else {}
         source_updates = normalize_collect_source_images(source_updates, platform_detected, "browser", claim_platforms)
         flags = snapshot_field_flags(source_updates)
-        if not flags["title_found"]:
-            error_reason = error_reason or "NO_TITLE"
-        if flags["images_found_count"] <= 0:
-            error_reason = error_reason or "NO_IMAGES"
+        error_reason = site.quality_reason(flags, error_reason)
         diagnostics["error_code"] = collect_error_code(platform_detected, "browser", error_reason) if error_reason else ""
         diagnostics["error_message"] = "浏览器采集成功" if not diagnostics["error_code"] else diagnostics["error_code"]
         diagnostics["partial_success"] = any([flags["title_found"], flags["images_found_count"], flags["bullets_found_count"], flags["dimensions_found"], flags["weight_found"]])
@@ -528,11 +478,70 @@ def collect_1688_product(url: str, cookie: str | None = None) -> dict[str, Any]:
     text = str(snapshot.get("text") or "")
     if not html.strip() or any(marker in html for marker in VERIFY_MARKERS) or any(marker in text for marker in VERIFY_MARKERS):
         raise RuntimeError("采集失败：1688 返回了登录、验证码或安全验证页面。请在打开的 1688 浏览器中完成验证后重试。")
-    product = parse_1688_product(snapshot, url)
+    product = parse_source_snapshot("1688", snapshot, url)
     if not product.get("name"):
         raise RuntimeError("采集失败：没有识别到商品标题。请确认链接是商品详情页，或登录 1688 后重试。")
     save_product(product)
     return product
+
+
+def collect_1688_payload_service(body: dict[str, Any]) -> dict[str, Any]:
+    """处理 1688 文本清洗保存或在线采集；facade 只负责 HTTP 状态映射。"""
+
+    pasted = str(body.get("text") or body.get("html") or body.get("source_text") or "").strip()
+    if not pasted:
+        result = collect_source_product(
+            body.get("url", ""),
+            body.get("mode", "browser"),
+            body.get("cookie", ""),
+            "1688",
+            body.get("platforms") if isinstance(body.get("platforms"), list) else None,
+            body.get("1688_api") if isinstance(body.get("1688_api"), dict) else None,
+        )
+        result["productsIndex"] = load_products_index()
+        return result
+
+    cleaned = collect_service.clean_1688_text(
+        pasted,
+        str(body.get("url") or body.get("source_url") or ""),
+    )
+    if not body.get("save"):
+        return cleaned
+
+    product = normalize_product_fields(body.get("product") or load_product())
+    product.update(
+        {
+            "source_platform": "1688",
+            "source_url": cleaned.get("source_url") or product.get("source_url") or "",
+            "source_price_cny": cleaned.get("source_price_cny", ""),
+            "source_price_cny_for_cost": cleaned.get("source_price_cny_for_cost", ""),
+            "source_material": cleaned.get("source_material", ""),
+            "source_weight_kg": cleaned.get("source_weight_kg", ""),
+            "materials": cleaned.get("materials") or product.get("materials", []),
+            "dimensions": cleaned.get("dimensions") or product.get("dimensions", ""),
+            "colors": cleaned.get("colors") or product.get("colors", []),
+            "package_includes": cleaned.get("package_includes") or product.get("package_includes", []),
+            "target_customer": cleaned.get("target_customer") or product.get("target_customer", ""),
+            "source_text": cleaned.get("source_text", ""),
+            "supplemental_info": cleaned.get("supplemental_info", ""),
+        }
+    )
+    source = product.get("source") if isinstance(product.get("source"), dict) else default_source()
+    source.update(
+        {
+            "source_platform": "1688",
+            "source_url": cleaned.get("source_url") or source.get("source_url") or "",
+            "price": cleaned.get("source_price_cny") or source.get("price") or "",
+            "currency": "CNY" if cleaned.get("source_price_cny") else source.get("currency", ""),
+            "description": cleaned.get("clean_source_text") or source.get("description") or "",
+            "attributes": cleaned.get("source_attributes") or {},
+        }
+    )
+    product["source"] = source
+    saved = save_product(product)
+    cleaned["product"] = saved
+    cleaned["productsIndex"] = load_products_index()
+    return cleaned
 
 
 def collect_extension_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -551,7 +560,7 @@ def collect_extension_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if raw_html:
         html_platform = detect_source_platform(source_url) or platform or "unknown"
         snapshot = page_snapshot_from_html(source_url or "manual://html-import", raw_html)
-        parsed_product = parse_amazon_product(snapshot, source_url) if html_platform == "amazon" else parse_1688_product(snapshot, source_url) if html_platform == "1688" else parse_generic_product(snapshot, source_url)
+        parsed_product = parse_source_snapshot(html_platform, snapshot, source_url)
         parsed_source = parsed_product.get("source") if isinstance(parsed_product.get("source"), dict) else {}
         platform = html_platform
     image_values = normalize_list(payload.get("images"))
@@ -658,6 +667,7 @@ def collect_extension_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "collect_1688_product",
+    "collect_1688_payload_service",
     "collect_batch_products",
     "collect_extension_payload",
     "collect_from_browser_tab",

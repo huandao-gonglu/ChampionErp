@@ -1,12 +1,9 @@
 import { computed, ref } from 'vue'
-import { defineStore } from 'pinia'
+import { defineStore, storeToRefs } from 'pinia'
 import {
   assignUpc as assignUpcApi,
-  buildMercadoLibreAuthLink,
   calculatePrice as calculatePriceApi,
   claimProducts as claimProductsApi,
-  closeMercadoLibrePublishedItem,
-  clearStoreAuth,
   clean1688Text,
   collectBatch as collectBatchApi,
   collectFromBrowserTab as collectFromBrowserTabApi,
@@ -15,19 +12,13 @@ import {
   deleteDraft as deleteDraftApi,
   diagnosticsToCollectDiagnostics,
   enqueuePublish as enqueuePublishApi,
-  exchangeMercadoLibreCode,
   deleteProducts as deleteProductsApi,
-  fetchAiConfig,
   fetchBrowserDebugStatus,
   fetchCategoryAttrs,
   fetchCategoryAttributeTranslations,
   fetchCategoryResultTranslations,
   fetchDraftsIndex,
-  fetchMercadoLibreOrders,
-  fetchMercadoLibreAuthChecklist,
-  fetchMercadoLibrePublishedItems,
   fetchProductsIndex,
-  fetchPublishJob,
   fetchPublishLogs,
   fetchState,
   fillCategoryAttributes,
@@ -42,111 +33,48 @@ import {
   loadDraft as loadDraftApi,
   loadProduct as loadProductApi,
   open1688Browser as open1688BrowserApi,
-  openAuthLink,
   openBrowserProfile,
   previewPublishPayload,
   publishProductDirect,
   publishPrecheck,
-  refreshMercadoLibreToken,
   runCategoryPrecheck,
-  runMercadoLibreRealAuthTest,
-  saveAiConfig,
   saveCollectSettings as saveCollectSettingsApi,
   saveDraft as saveDraftApi,
   saveImagePool,
   saveProduct as saveProductApi,
-  saveStoreSettings,
   searchCategories,
-  testApiConfig,
-  testAiModel,
-  testStoreAuth,
   uploadImages,
 } from '@/api/workflow'
 import type { ImageEditOptions, ImageTranslateOptions } from '@/api/workflow'
-import { createDefaultCollectDiagnostics, createDefaultCollectForm, createDefaultPricingInput, createEmptyDraftDetail, createEmptyDraftProductContext, createEmptyProduct, marketplaces } from '@/constants/initialState'
+import { createDefaultCollectDiagnostics, createDefaultCollectForm, createEmptyProduct, marketplaces } from '@/constants/initialState'
 import { listingLanguageLabel } from '@/constants/locales'
-import { useAppStore } from '@/stores/app'
+import { useWorkflowActivityStore } from '@/stores/workflow/activity'
+import { useWorkflowCatalogStore } from '@/stores/workflow/catalog'
+import { useWorkflowCollectionStore } from '@/stores/workflow/collection'
+import { useWorkflowPublishingStore } from '@/stores/workflow/publishing'
+import { useWorkflowSettingsStore } from '@/stores/workflow/settings'
 import type {
-  AuthResult,
-  BrowserDebugStatus,
   CategoryAttributeSchema,
   CategoryPrecheckResult,
   CategoryProductIdentification,
-  CategoryResultTranslations,
   CategorySearchResult,
   CategorySelection,
-  CategoryAttributeTranslations,
-  CollectBatchRow,
-  CollectDiagnostics,
-  CollectForm,
   DraftDetail,
   DraftIndexItem,
-  DraftProductContext,
   Marketplace,
-  MarketplaceOption,
   MarketplaceTargetSite,
-  MercadoLibreAuthChecklist,
-  MercadoLibreOrderItem,
-  MercadoLibreOrderNotification,
-  MercadoLibreRemoteItem,
-  MercadoLibreTestMode,
   PrecheckIssue,
-  PricingInput,
   PricingResult,
   PricingTargetInput,
   PricingTargetResult,
   Product,
   ProductIndexItem,
-  PublishJob,
-  PublishLogItem,
-  PublishPrecheck,
   UnknownRecord,
   WorkflowStep,
 } from '@/types/workflow'
 
-function asStoreAuthSummary(raw: UnknownRecord): UnknownRecord | null {
-  const value = raw.storeAuthSummary
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as UnknownRecord : null
-}
-
-function authResultError(result: AuthResult, fallback: string): string {
-  return result.error || result.message || result.nextAction || fallback
-}
-
 function isRecord(value: unknown): value is UnknownRecord {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-}
-
-function publicSafeAiModel(model: UnknownRecord): UnknownRecord {
-  const safe = { ...model }
-  if (safe.api_key) {
-    delete safe.api_key
-    if (safe.api_key_configured === undefined) safe.api_key_configured = true
-  }
-  return safe
-}
-
-function mergeAiConfigWithSubmitted(publicConfig: UnknownRecord, submittedConfig: UnknownRecord): UnknownRecord {
-  const merged: UnknownRecord = { ...publicConfig }
-  if (Array.isArray(submittedConfig.ai_models)) {
-    const publicModels = Array.isArray(publicConfig.ai_models) ? publicConfig.ai_models.filter(isRecord) : []
-    const publicById = new Map(publicModels.map((model) => [String(model.id || ''), publicSafeAiModel(model)]))
-    merged.ai_models = submittedConfig.ai_models
-      .filter(isRecord)
-      .map((model) => publicSafeAiModel({ ...(publicById.get(String(model.id || '')) || {}), ...model }))
-  }
-  if (isRecord(submittedConfig.ai_use_case_bindings)) {
-    merged.ai_use_case_bindings = submittedConfig.ai_use_case_bindings
-  }
-  if (isRecord(submittedConfig.ai_use_case_prompts)) {
-    merged.ai_use_case_prompts = submittedConfig.ai_use_case_prompts
-  }
-  for (const section of ['1688_api', 'pricing_defaults']) {
-    const publicSection = isRecord(publicConfig[section]) ? publicConfig[section] as UnknownRecord : {}
-    const submittedSection = isRecord(submittedConfig[section]) ? submittedConfig[section] as UnknownRecord : {}
-    merged[section] = { ...publicSection, ...submittedSection }
-  }
-  return merged
 }
 
 function collectStats(product: Product) {
@@ -268,73 +196,108 @@ function categorySelectionFromAttributeSchema(schema: CategoryAttributeSchema | 
 }
 
 export const useWorkflowStore = defineStore('workflow', () => {
-  const product = ref<Product>(createEmptyProduct())
-  const collectForm = ref<CollectForm>(createDefaultCollectForm())
-  const collectDiagnostics = ref<CollectDiagnostics>(createDefaultCollectDiagnostics())
-  const collectBatchRows = ref<CollectBatchRow[]>([])
-  const browserDebugStatus = ref<BrowserDebugStatus | null>(null)
-  const productsIndex = ref<ProductIndexItem[]>([])
-  const draftsIndex = ref<DraftIndexItem[]>([])
-  const selectedProductIds = ref<string[]>([])
-  const pricingInput = ref<PricingInput>(createDefaultPricingInput())
-  const pricingResult = ref<PricingResult | null>(null)
-  const category = ref<CategorySelection | null>(null)
-  const categoryQuery = ref('')
-  const categoryResults = ref<CategorySearchResult[]>([])
-  const categoryRecommendations = ref<Record<string, { query: string; results: CategorySearchResult[]; error: string }>>({})
-  const categoryAutoMatching = ref(false)
-  const categoryAutoMatchMessage = ref('')
-  const categoryAutoMatchCurrent = ref(0)
-  const categoryAutoMatchTotal = ref(0)
-  const categoryAutoMatchProductName = ref('')
-  const categoryAttributeTranslationEnabled = ref(false)
-  const categoryAttributeTranslations = ref<CategoryAttributeTranslations>({})
-  const categoryAttributeTranslationsSource = ref('')
-  const categoryAttributeTranslating = ref(false)
-  const categoryAttributeLoading = ref(false)
-  const categoryAttributeError = ref('')
-  const categoryResultTranslations = ref<CategoryResultTranslations>({})
-  const categoryResultTranslationsSource = ref('')
-  const categoryResultTranslating = ref(false)
+  const catalogStore = useWorkflowCatalogStore()
+  const collectionStore = useWorkflowCollectionStore()
+  const publishingStore = useWorkflowPublishingStore()
+  const settingsStore = useWorkflowSettingsStore()
+  const activityStore = useWorkflowActivityStore()
+  const {
+    product,
+    productsIndex,
+    draftsIndex,
+    selectedProductIds,
+    currentDraft,
+    currentDraftProductContext,
+    imagePrompt,
+  } = storeToRefs(catalogStore)
+  const {
+    collectForm,
+    collectDiagnostics,
+    collectBatchRows,
+    browserDebugStatus,
+  } = storeToRefs(collectionStore)
+  const { fillFormFromState } = collectionStore
+  const {
+    pricingInput,
+    pricingResult,
+    category,
+    categoryQuery,
+    categoryResults,
+    categoryRecommendations,
+    categoryAutoMatching,
+    categoryAutoMatchMessage,
+    categoryAutoMatchCurrent,
+    categoryAutoMatchTotal,
+    categoryAutoMatchProductName,
+    categoryAttributeTranslationEnabled,
+    categoryAttributeTranslations,
+    categoryAttributeTranslationsSource,
+    categoryAttributeTranslating,
+    categoryAttributeLoading,
+    categoryAttributeError,
+    categoryResultTranslations,
+    categoryResultTranslationsSource,
+    categoryResultTranslating,
+    categoryPrecheck,
+    precheck,
+    precheckResults,
+    payloadPreview,
+    copyGenerating,
+    publishJob,
+    publishJobStatus,
+    publishLogs,
+    mercadoLibreOrders,
+    mercadoLibreOrderNotifications,
+    mercadoLibreOrdersTotal,
+    mercadoLibreOrdersCheckedAt,
+    mercadoLibreRemoteItems,
+    mercadoLibreRemoteStatus,
+    mercadoLibreRemotePage,
+    mercadoLibreRemotePerPage,
+    mercadoLibreRemoteTotal,
+    mercadoLibreRemoteTotalPages,
+    activeMarketplace,
+    platformOptions,
+    publishResult,
+    activePublishTargetKey,
+  } = storeToRefs(publishingStore)
+  const {
+    refreshPublishJob,
+    refreshPublishLogs,
+    refreshMercadoLibreRemoteItems,
+    refreshMercadoLibreOrders,
+    closeMercadoLibreRemoteItem,
+  } = publishingStore
+  const {
+    appConfig,
+    aiConfig,
+    storeConfig,
+    storeAuthSummary,
+    mercadolibreAuthChecklist,
+    lastAuthResult,
+    authLink,
+  } = storeToRefs(settingsStore)
+  const {
+    loadAiConfig,
+    saveAiSettings,
+    testAiSettings,
+    testPlatformApiConfig,
+    saveStoreConfig,
+    testAuth,
+    loadMercadoLibreChecklist,
+    generateMercadoLibreAuthLink,
+    openMercadoLibreAuth,
+    refreshMercadoLibreAuthToken,
+    runMercadoLibreAuthTest,
+    exchangeMlCode,
+    clearPlatformAuth,
+  } = settingsStore
+  const { logs, loading, error } = storeToRefs(activityStore)
+  const { addLog, setError } = activityStore
   let categoryAttributeTranslationRequest = 0
   let categoryResultTranslationRequest = 0
   let categoryAttributeLoadRequest = 0
-  const categoryPrecheck = ref<CategoryPrecheckResult | null>(null)
-  const precheck = ref<PublishPrecheck | null>(null)
-  const precheckResults = ref<UnknownRecord>({})
-  const payloadPreview = ref<UnknownRecord | null>(null)
-  const copyGenerating = ref(false)
-  const publishJob = ref<PublishJob | null>(null)
-  const publishJobStatus = ref<UnknownRecord | null>(null)
-  const publishLogs = ref<PublishLogItem[]>([])
-  const mercadoLibreOrders = ref<MercadoLibreOrderItem[]>([])
-  const mercadoLibreOrderNotifications = ref<MercadoLibreOrderNotification[]>([])
-  const mercadoLibreOrdersTotal = ref(0)
-  const mercadoLibreOrdersCheckedAt = ref('')
-  const mercadoLibreRemoteItems = ref<MercadoLibreRemoteItem[]>([])
-  const mercadoLibreRemoteStatus = ref('active')
-  const mercadoLibreRemotePage = ref(1)
-  const mercadoLibreRemotePerPage = ref(50)
-  const mercadoLibreRemoteTotal = ref(0)
-  const mercadoLibreRemoteTotalPages = ref(1)
-  const activeMarketplace = ref<Marketplace>('mercadolibre')
-  const platformOptions = ref<MarketplaceOption[]>([])
-  const logs = ref<string[]>(['等待读取后端状态。'])
-  const appConfig = ref<UnknownRecord>({})
-  const aiConfig = ref<UnknownRecord>({})
-  const storeConfig = ref<UnknownRecord>({})
-  const storeAuthSummary = ref<UnknownRecord>({})
-  const mercadolibreAuthChecklist = ref<MercadoLibreAuthChecklist | null>(null)
-  const lastAuthResult = ref<AuthResult | null>(null)
-  const authLink = ref('')
-  const publishResult = ref<UnknownRecord | null>(null)
-  const imagePrompt = ref('')
   const currentStage = ref(0)
-  const loading = ref(false)
-  const error = ref('')
-  const currentDraft = ref<DraftDetail>(createEmptyDraftDetail())
-  const currentDraftProductContext = ref<DraftProductContext>(createEmptyDraftProductContext())
-  const activePublishTargetKey = ref('')
 
   const draft = computed(() => product.value.drafts[activeMarketplace.value])
 
@@ -711,18 +674,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
     category.value = categorySelectionFromProduct(product.value, activeMarketplace.value)
   }
 
-  function addLog(message: string) {
-    logs.value.unshift(`${new Date().toLocaleTimeString()} ${message}`)
-  }
-
-  function setError(message: string) {
-    error.value = message
-    if (message) {
-      addLog(`错误：${message}`)
-      useAppStore().pushToast(message, 'error')
-    }
-  }
-
   function syncCollectDiagnosticsFromProduct(message = '已读取后端商品状态。', raw?: UnknownRecord) {
     if (raw && Object.keys(raw).length) {
       collectDiagnostics.value = diagnosticsToCollectDiagnostics(raw, product.value, message)
@@ -744,30 +695,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
       htmlSnapshotPath: String(product.value.source.collectDiagnostics.html_snapshot_path || ''),
       screenshotPath: String(product.value.source.collectDiagnostics.screenshot_path || ''),
     }
-  }
-
-  function fillFormFromState(nextAppConfig: UnknownRecord, outputDir = '') {
-    const api1688 = nextAppConfig['1688_api'] && typeof nextAppConfig['1688_api'] === 'object' && !Array.isArray(nextAppConfig['1688_api'])
-      ? nextAppConfig['1688_api'] as UnknownRecord
-      : {}
-    collectForm.value.alibabaCookie = String(nextAppConfig.alibaba_cookie || collectForm.value.alibabaCookie || '')
-    collectForm.value.alibabaAppKey = String(api1688.app_key || collectForm.value.alibabaAppKey || '')
-    collectForm.value.alibabaAppSecret = String(api1688.app_secret || collectForm.value.alibabaAppSecret || '')
-    collectForm.value.alibabaAccessToken = String(api1688.access_token || collectForm.value.alibabaAccessToken || '')
-    collectForm.value.alibabaApiBaseUrl = String(api1688.base_url || collectForm.value.alibabaApiBaseUrl || '')
-    collectForm.value.alibabaApiMethod = String(api1688.method || collectForm.value.alibabaApiMethod || '')
-    collectForm.value.alibabaApiVersion = String(api1688.api_version || collectForm.value.alibabaApiVersion || '')
-    collectForm.value.alibabaApiTimeoutSeconds = String(api1688.timeout_seconds || collectForm.value.alibabaApiTimeoutSeconds || '')
-    collectForm.value.autoAiRecognition = String(nextAppConfig.auto_ai_recognition ?? '1') !== '0'
-    collectForm.value.outputDir = String(nextAppConfig.collect_output_dir || outputDir || collectForm.value.outputDir || '')
-    collectForm.value.productUrl = product.value.source.sourceUrl || collectForm.value.productUrl
-    collectForm.value.platform = product.value.source.sourcePlatform || collectForm.value.platform || '1688'
-    collectForm.value.manualTitle = product.value.source.title || product.value.name || ''
-    collectForm.value.manualPrice = product.value.source.price || ''
-    collectForm.value.manualDescription = product.value.source.description || ''
-    collectForm.value.manualWeight = product.value.source.weightKg || ''
-    const dims = product.value.source.dimensions
-    collectForm.value.manualDimensions = [dims.lengthCm, dims.widthCm, dims.heightCm].filter(Boolean).join(' x ')
   }
 
   function syncPricingInputFromProduct() {
@@ -2208,311 +2135,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
       if (!result.ok && result.error) setError(result.error)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : 'Mercado Libre 真实发布失败')
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function refreshPublishJob() {
-    if (!publishJob.value?.jobId) return
-    loading.value = true
-    setError('')
-    try {
-      publishJobStatus.value = await fetchPublishJob(publishJob.value.jobId)
-      addLog(`发布任务状态已刷新：${publishJob.value.jobId}`)
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '刷新发布任务失败')
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function refreshPublishLogs() {
-    loading.value = true
-    setError('')
-    try {
-      publishLogs.value = await fetchPublishLogs()
-      addLog(`发布日志已刷新：${publishLogs.value.length} 条。`)
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '刷新发布日志失败')
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function refreshMercadoLibreRemoteItems(status: string = mercadoLibreRemoteStatus.value, page?: number, perPage?: number) {
-    loading.value = true
-    setError('')
-    try {
-      const nextStatus = status || mercadoLibreRemoteStatus.value
-      const nextPerPage = perPage || mercadoLibreRemotePerPage.value
-      const nextPage = page || (nextStatus === mercadoLibreRemoteStatus.value ? mercadoLibreRemotePage.value : 1)
-      const result = await fetchMercadoLibrePublishedItems(nextStatus, nextPage, nextPerPage)
-      if (!result.items.length && result.pagination.total > 0 && nextPage > 1) {
-        const previous = await fetchMercadoLibrePublishedItems(nextStatus, nextPage - 1, nextPerPage)
-        mercadoLibreRemoteItems.value = previous.items
-        mercadoLibreRemotePage.value = previous.pagination.page
-        mercadoLibreRemotePerPage.value = previous.pagination.perPage
-        mercadoLibreRemoteTotal.value = previous.pagination.total
-        mercadoLibreRemoteTotalPages.value = previous.pagination.totalPages
-      } else {
-        mercadoLibreRemoteItems.value = result.items
-        mercadoLibreRemotePage.value = result.pagination.page
-        mercadoLibreRemotePerPage.value = result.pagination.perPage
-        mercadoLibreRemoteTotal.value = result.pagination.total
-        mercadoLibreRemoteTotalPages.value = result.pagination.totalPages
-      }
-      mercadoLibreRemoteStatus.value = nextStatus
-      addLog(`Mercado Libre 远程商品已刷新：第 ${mercadoLibreRemotePage.value}/${mercadoLibreRemoteTotalPages.value} 页，当前 ${mercadoLibreRemoteItems.value.length} 条，共 ${mercadoLibreRemoteTotal.value} 条。`)
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '读取 Mercado Libre 已发布商品失败')
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function refreshMercadoLibreOrders() {
-    loading.value = true
-    setError('')
-    try {
-      const result = await fetchMercadoLibreOrders(10, 0)
-      mercadoLibreOrders.value = result.items
-      mercadoLibreOrderNotifications.value = result.notifications
-      mercadoLibreOrdersTotal.value = result.total
-      mercadoLibreOrdersCheckedAt.value = result.checkedAt
-      addLog(`Mercado Libre 订单已刷新：${result.items.length} 条，通知 ${result.notifications.length} 条。`)
-    } catch (exc) {
-      const message = exc instanceof Error ? exc.message : '读取 Mercado Libre 订单失败'
-      addLog(`Mercado Libre 订单暂不可用：${message}`)
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function closeMercadoLibreRemoteItem(itemId: string) {
-    loading.value = true
-    setError('')
-    try {
-      const result = await closeMercadoLibrePublishedItem(itemId)
-      addLog(String(result.message || `${itemId} 已下架。`))
-      await refreshMercadoLibreRemoteItems(mercadoLibreRemoteStatus.value, mercadoLibreRemotePage.value, mercadoLibreRemotePerPage.value)
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '下架 Mercado Libre 商品失败')
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function loadAiConfig() {
-    loading.value = true
-    setError('')
-    try {
-      const result = await fetchAiConfig()
-      aiConfig.value = result.raw
-      addLog('AI 配置已读取。')
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '读取 AI 配置失败')
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function saveAiSettings(config: UnknownRecord) {
-    loading.value = true
-    setError('')
-    try {
-      const result = await saveAiConfig(config)
-      aiConfig.value = mergeAiConfigWithSubmitted(result.raw, config)
-      appConfig.value = mergeAiConfigWithSubmitted(appConfig.value, config)
-      fillFormFromState(appConfig.value)
-      addLog('平台授权设置已保存。')
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '保存平台授权设置失败')
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function testAiSettings(model: UnknownRecord) {
-    loading.value = true
-    setError('')
-    try {
-      lastAuthResult.value = await testAiModel(model)
-      addLog(`AI 模型测试：${lastAuthResult.value.message || lastAuthResult.value.error || '完成'}`)
-    } catch (exc) {
-      const message = exc instanceof Error ? exc.message : '测试 AI 失败'
-      lastAuthResult.value = {
-        ok: false,
-        message: '',
-        error: message,
-        errorCode: '',
-        nextAction: '请检查 API Key、Base URL 和模型名，然后再试一次。',
-        raw: {
-          ok: false,
-          error: message,
-          channel: 'ai_model',
-          model_id: model.id,
-          test_trigger: model.test_trigger,
-          probe_only_capability: model.probe_only_capability,
-        },
-      }
-      setError(message)
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function testPlatformApiConfig(kind: 'exchange_rate' | '1688' | 'yunexpress', config: UnknownRecord, testValue = '') {
-    loading.value = true
-    setError('')
-    try {
-      lastAuthResult.value = await testApiConfig(kind, config, testValue)
-      addLog(`${kind} API 测试：${lastAuthResult.value.message || lastAuthResult.value.error || '完成'}`)
-    } catch (exc) {
-      const message = exc instanceof Error ? exc.message : '测试 API 配置失败'
-      lastAuthResult.value = {
-        ok: false,
-        message: '',
-        error: message,
-        errorCode: '',
-        nextAction: '请检查当前卡片里的配置后再试一次。',
-        raw: { ok: false, error: message, channel: kind },
-      }
-      setError(message)
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function saveStoreConfig(config: UnknownRecord) {
-    loading.value = true
-    setError('')
-    try {
-      storeAuthSummary.value = await saveStoreSettings(config)
-      storeConfig.value = { ...storeConfig.value, ...config }
-      mercadolibreAuthChecklist.value = await fetchMercadoLibreAuthChecklist()
-      addLog('平台授权配置已保存。')
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '保存平台授权失败')
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function testAuth(platform: Marketplace, scope = '') {
-    loading.value = true
-    setError('')
-    try {
-      lastAuthResult.value = await testStoreAuth(platform, scope)
-      if (!lastAuthResult.value.ok) throw new Error(authResultError(lastAuthResult.value, '测试授权失败'))
-      addLog(`${platform} 授权测试：${lastAuthResult.value.message || lastAuthResult.value.error || '完成'}`)
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '测试授权失败')
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function loadMercadoLibreChecklist() {
-    loading.value = true
-    setError('')
-    try {
-      mercadolibreAuthChecklist.value = await fetchMercadoLibreAuthChecklist()
-      addLog('Mercado Libre 授权检查清单已刷新。')
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '读取 Mercado Libre 授权清单失败')
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function generateMercadoLibreAuthLink(appId: string, redirectUri: string) {
-    loading.value = true
-    setError('')
-    try {
-      authLink.value = await buildMercadoLibreAuthLink(appId, redirectUri)
-      mercadolibreAuthChecklist.value = await fetchMercadoLibreAuthChecklist()
-      addLog('Mercado Libre 授权链接已生成。')
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '生成 Mercado Libre 授权链接失败')
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function openMercadoLibreAuth(url: string, browser = 'default') {
-    loading.value = true
-    setError('')
-    try {
-      lastAuthResult.value = await openAuthLink(url, browser)
-      if (!lastAuthResult.value.ok) throw new Error(authResultError(lastAuthResult.value, '打开授权链接失败'))
-      addLog(lastAuthResult.value.message || '已打开授权链接。')
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '打开授权链接失败')
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function refreshMercadoLibreAuthToken(params: UnknownRecord = {}) {
-    loading.value = true
-    setError('')
-    try {
-      lastAuthResult.value = await refreshMercadoLibreToken(params)
-      const summary = asStoreAuthSummary(lastAuthResult.value.raw)
-      if (summary) storeAuthSummary.value = summary
-      mercadolibreAuthChecklist.value = await fetchMercadoLibreAuthChecklist()
-      if (!lastAuthResult.value.ok) throw new Error(authResultError(lastAuthResult.value, '刷新 Mercado Libre token 失败'))
-      addLog(`Mercado Libre token 刷新：${lastAuthResult.value.message || lastAuthResult.value.error || '完成'}`)
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '刷新 Mercado Libre token 失败')
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function runMercadoLibreAuthTest(mode: MercadoLibreTestMode, categoryId = '') {
-    loading.value = true
-    setError('')
-    try {
-      lastAuthResult.value = await runMercadoLibreRealAuthTest(product.value, mode, categoryId)
-      const summary = asStoreAuthSummary(lastAuthResult.value.raw)
-      if (summary) storeAuthSummary.value = summary
-      mercadolibreAuthChecklist.value = await fetchMercadoLibreAuthChecklist()
-      if (!lastAuthResult.value.ok) throw new Error(authResultError(lastAuthResult.value, 'Mercado Libre 真实接口测试失败'))
-      addLog(`Mercado Libre 真实接口测试 ${mode}：${lastAuthResult.value.message || lastAuthResult.value.error || lastAuthResult.value.raw.status || '完成'}`)
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : 'Mercado Libre 真实接口测试失败')
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function exchangeMlCode(codeOrUrl: string, params: UnknownRecord = {}) {
-    loading.value = true
-    setError('')
-    try {
-      lastAuthResult.value = await exchangeMercadoLibreCode(codeOrUrl, params)
-      mercadolibreAuthChecklist.value = await fetchMercadoLibreAuthChecklist()
-      if (!lastAuthResult.value.ok) throw new Error(authResultError(lastAuthResult.value, 'Mercado Libre 换 token 失败'))
-      addLog(`Mercado Libre 换 token：${lastAuthResult.value.message || '完成'}`)
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : 'Mercado Libre 换 token 失败')
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function clearPlatformAuth(platform: Marketplace) {
-    loading.value = true
-    setError('')
-    try {
-      storeAuthSummary.value = await clearStoreAuth(platform)
-      storeConfig.value = { ...storeConfig.value, [platform]: {} }
-      if (platform === 'mercadolibre') mercadolibreAuthChecklist.value = await fetchMercadoLibreAuthChecklist()
-      addLog(`${platform} 授权已清除。`)
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '清除授权失败')
     } finally {
       loading.value = false
     }

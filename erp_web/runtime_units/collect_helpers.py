@@ -9,7 +9,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from erp_web import db as erp_db
+from erp_web.context import get_context
 from erp_web.product_model import (
     PLATFORMS,
     SOURCE_COMPAT_IMAGE_ORIGINS,
@@ -31,7 +31,8 @@ from .product_store import (
     normalize_product_fields,
     sync_product_workflow_statuses,
 )
-from .runtime_common import AMAZON_VERIFY_MARKERS, APP_DIR, COLLECT_DEBUG_DIR, VERIFY_MARKERS
+from .runtime_common import APP_DIR, COLLECT_DEBUG_DIR
+from .source_sites import detect_source_site, source_site
 
 def collect_time_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
@@ -51,18 +52,7 @@ def normalize_collect_mode(mode: str, url: str = "") -> str:
 
 
 def detect_source_platform(url: str) -> str:
-    lowered = str(url or "").lower()
-    if "amazon." in lowered:
-        return "amazon"
-    if "1688.com" in lowered:
-        return "1688"
-    if "wildberries" in lowered:
-        return "wildberries"
-    if "ozon" in lowered:
-        return "ozon"
-    if "alibaba." in lowered:
-        return "alibaba"
-    return "unknown"
+    return detect_source_site(url)
 
 
 def collect_debug_path(kind: str, suffix: str) -> Path:
@@ -128,30 +118,19 @@ def collect_debug_file_url(path: str) -> str:
 
 
 def is_1688_login_page(url: str, html: str, text: str, title: str) -> bool:
-    lowered = "\n".join([str(url or ""), html or "", text or "", title or ""]).lower()
-    return "login.1688.com" in lowered or "请登录" in lowered or "登录" in lowered or "帐号密码登录" in lowered
+    return source_site("1688").login_check(url, html, text, title)
 
 
 def is_1688_security_check_page(html: str, text: str) -> bool:
-    lowered = "\n".join([html or "", text or ""]).lower()
-    return any(marker.lower() in lowered for marker in VERIFY_MARKERS) or "滑块" in lowered or "安全验证" in lowered
+    return source_site("1688").captcha_check("", html, text, "")
 
 
 def is_amazon_robot_check_page(url: str, html: str, text: str, title: str) -> bool:
-    lowered = "\n".join([str(url or ""), html or "", text or "", title or ""]).lower()
-    return any(marker in lowered for marker in AMAZON_VERIFY_MARKERS) or "/errors/validatecaptcha" in lowered
+    return source_site("amazon").captcha_check(url, html, text, title)
 
 
 def is_amazon_region_blocked_page(html: str, text: str) -> bool:
-    lowered = "\n".join([html or "", text or ""]).lower()
-    region_markers = (
-        "cannot be shipped to your selected location",
-        "not deliverable",
-        "currently unavailable",
-        "this item cannot be shipped",
-        "not available in your region",
-    )
-    return any(marker in lowered for marker in region_markers)
+    return source_site("amazon").region_check("", html, text, "")
 
 
 def snapshot_field_flags(source: dict[str, Any]) -> dict[str, Any]:
@@ -188,21 +167,7 @@ def collect_field_summary(source: dict[str, Any]) -> dict[str, list[str]]:
 
 
 def collect_next_action(platform: str, error_code: str) -> str:
-    platform = (platform or "").lower()
-    code = (error_code or "").upper()
-    if not code:
-        return "采集已完成，可进入商品库继续 AI 文案、生图和编辑。"
-    if platform == "1688":
-        if "API" in code:
-            return "请检查 1688 官方 API 凭证、接口权限和商品详情接口地址；未开通权限时可切回浏览器采集。"
-        if any(key in code for key in ["LOGIN", "CAPTCHA", "SECURITY", "SLIDER", "REMOTE_DEBUGGING"]):
-            return "1688 触发验证，请手动打开浏览器完成验证，或使用手动导入。"
-        return "请尝试浏览器会话采集；如果仍失败，保存商品详情页 HTML 后导入，或手动补充缺失字段。"
-    if platform == "amazon":
-        if any(key in code for key in ["ROBOT", "REGION", "LOGIN", "FORBIDDEN"]):
-            return "请使用已登录且地区正确的浏览器会话重试；如果仍被拦截，请使用 HTML 导入 / 手动补充。"
-        return "请尝试浏览器登录后采集；如果选择器失败，使用 HTML 导入或手动补充。"
-    return "无法稳定自动解析该来源，请使用 HTML 导入或手动补充后继续后续流程。"
+    return source_site(platform).next_action(error_code)
 
 
 def finalize_collect_diagnostics(diagnostics: dict[str, Any], source: dict[str, Any], platform: str) -> dict[str, Any]:
@@ -214,49 +179,12 @@ def finalize_collect_diagnostics(diagnostics: dict[str, Any], source: dict[str, 
 
 
 def collect_error_code(platform: str, mode: str, reason: str = "") -> str:
-    platform = (platform or "").lower()
-    reason = (reason or "").upper()
-    if platform == "amazon":
-        mapping = {
-            "ROBOT": "AMAZON_ROBOT_CHECK",
-            "REGION": "AMAZON_REGION_BLOCKED",
-            "NO_IMAGES": "AMAZON_IMAGE_NOT_FOUND",
-            "NO_TITLE": "AMAZON_TITLE_NOT_FOUND",
-            "NO_BULLETS": "AMAZON_NO_BULLETS_FOUND",
-            "NO_DIMENSIONS": "AMAZON_DIMENSIONS_NOT_FOUND",
-            "NO_WEIGHT": "AMAZON_WEIGHT_NOT_FOUND",
-            "SELECTOR": "AMAZON_SELECTOR_FAILED",
-            "LOGIN": "AMAZON_LOGIN_REQUIRED",
-            "NETWORK": "NETWORK_BLOCKED",
-            "FORBIDDEN": "HTTP_FORBIDDEN",
-        }
-        return mapping.get(reason, "AMAZON_SELECTOR_FAILED")
-    if platform == "1688":
-        mapping = {
-            "LOGIN": "1688_LOGIN_REQUIRED",
-            "SECURITY": "1688_SECURITY_CHECK",
-            "CAPTCHA": "1688_CAPTCHA_REQUIRED",
-            "SLIDER": "1688_SLIDER_REQUIRED",
-            "NO_IMAGES": "1688_IMAGE_NOT_FOUND",
-            "NO_TITLE": "1688_TITLE_NOT_FOUND",
-            "NO_DIMENSIONS": "1688_DIMENSIONS_NOT_FOUND",
-            "SELECTOR": "1688_SELECTOR_FAILED",
-            "PROFILE": "1688_BROWSER_PROFILE_NOT_FOUND",
-            "REMOTE": "1688_REMOTE_DEBUGGING_NOT_CONNECTED",
-            "NETWORK": "NETWORK_BLOCKED",
-            "API": "1688_API_FAILED",
-        }
-        return mapping.get(reason, "1688_SELECTOR_FAILED")
-    return "COLLECT_FAILED"
+    del mode  # 错误命名由采集源拥有；模式不再改变同一原因的语义。
+    return source_site(platform).error_code(reason)
 
 
 def current_browser_profile_name(platform: str) -> str:
-    platform = (platform or "").lower()
-    if platform == "amazon":
-        return "amazon"
-    if platform == "1688":
-        return "1688"
-    return platform or "collect"
+    return source_site(platform).browser_profile
 
 
 def collect_image_origin(platform: str, mode: str = "") -> str:
@@ -264,8 +192,9 @@ def collect_image_origin(platform: str, mode: str = "") -> str:
     mode = (mode or "").strip().lower()
     if mode in {"extension", "manual", "html_import", "browser"}:
         return mode
-    if platform in {"amazon", "1688"}:
-        return platform
+    site = source_site(platform)
+    if site.key != "generic":
+        return site.key
     return "source"
 
 
@@ -275,8 +204,9 @@ def normalize_collect_source_images(source_updates: dict[str, Any], platform: st
     refs: list[Any] = list(pool)
     if not refs:
         refs.extend(normalize_list(source.get("images")))
-    if str(platform or "").strip().lower() == "1688":
-        refs = refs[:5]
+    image_limit = source_site(platform).image_limit
+    if image_limit is not None:
+        refs = refs[:image_limit]
     origin = collect_image_origin(platform, mode)
     platforms = normalize_platforms(claim_platforms)
     normalized_pool = image_service.materialize_image_values(
@@ -406,7 +336,7 @@ def claim_products_to_platforms(product_ids: list[str], platforms: list[str] | N
         draft_ids: list[str] = []
         for platform in targets:
             draft = draft_copy_from_product(product, platform)
-            draft_id = erp_db.upsert_draft_model(APP_DIR, product_id, platform, draft)
+            draft_id = get_context().db.upsert_draft_model(product_id, platform, draft)
             if draft_id:
                 draft_ids.append(draft_id)
         items.append(

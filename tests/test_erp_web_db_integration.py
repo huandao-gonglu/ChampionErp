@@ -5,13 +5,16 @@ import tempfile
 import unittest
 import urllib.parse
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from erp_web import db as erp_db
 from erp_web import runtime as erp_web_app
+from erp_web.context import get_context
 from erp_web.http_handler import Handler
 from erp_web.http_route_units import image_routes
+from erp_web.runtime_units.publish_logs_runtime import mercadolibre_test_error_code
 from erp_web.services import image_translate_service
+from tests.runtime_test_utils import patch_unit_globals
 from tests.test_erp_db import sample_product
 
 
@@ -20,37 +23,24 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             app_dir = Path(tmp)
             output_dir = app_dir / "output"
-            original_globals = {
-                "APP_DIR": erp_web_app.APP_DIR,
-                "DIST_DIR": erp_web_app.DIST_DIR,
-                "CONFIG_DIR": erp_web_app.CONFIG_DIR,
-                "OUTPUT_DIR": erp_web_app.OUTPUT_DIR,
-                "PUBLISH_LOG_PATH": erp_web_app.PUBLISH_LOG_PATH,
-                "STORE_CONFIG_PATH": erp_web_app.STORE_CONFIG_PATH,
-                "APP_CONFIG_PATH": erp_web_app.APP_CONFIG_PATH,
-                "LEGACY_STORE_CONFIG_PATHS": erp_web_app.LEGACY_STORE_CONFIG_PATHS,
-                "LEGACY_APP_CONFIG_PATHS": erp_web_app.LEGACY_APP_CONFIG_PATHS,
-            }
-            try:
-                erp_web_app.APP_DIR = app_dir
-                erp_web_app.DIST_DIR = app_dir / "dist"
-                erp_web_app.CONFIG_DIR = app_dir / "config"
-                erp_web_app.OUTPUT_DIR = output_dir
-                erp_web_app.PUBLISH_LOG_PATH = output_dir / "publish_logs.json"
-                erp_web_app.STORE_CONFIG_PATH = erp_web_app.CONFIG_DIR / "store_config.json"
-                erp_web_app.APP_CONFIG_PATH = erp_web_app.CONFIG_DIR / "app_config.json"
-                erp_web_app.LEGACY_STORE_CONFIG_PATHS = (app_dir / "store_config.json", app_dir / "dist" / "store_config.json")
-                erp_web_app.LEGACY_APP_CONFIG_PATHS = (app_dir / "app_config.json", app_dir / "dist" / "app_config.json")
+            config_dir = app_dir / "config"
+            with patch_unit_globals(
+                APP_DIR=app_dir,
+                DIST_DIR=app_dir / "dist",
+                CONFIG_DIR=config_dir,
+                OUTPUT_DIR=output_dir,
+                STORE_CONFIG_PATH=config_dir / "store_config.json",
+                APP_CONFIG_PATH=config_dir / "app_config.json",
+                LEGACY_STORE_CONFIG_PATHS=(app_dir / "store_config.json", app_dir / "dist" / "store_config.json"),
+                LEGACY_APP_CONFIG_PATHS=(app_dir / "app_config.json", app_dir / "dist" / "app_config.json"),
+            ):
                 callback(app_dir)
-            finally:
-                for name, value in original_globals.items():
-                    setattr(erp_web_app, name, value)
 
     def test_save_product_uses_sqlite_as_primary_product_index(self) -> None:
         def run(app_dir: Path) -> None:
             saved = erp_web_app.save_product(sample_product())
 
-            db_records = erp_db.list_product_records(app_dir)
+            db_records = get_context().db.list_product_records()
             self.assertEqual(len(db_records), 1)
             self.assertEqual(db_records[0]["product_id"], saved["product_id"])
             self.assertFalse((app_dir / "product.json").exists())
@@ -73,17 +63,17 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(result["deleted"], 1)
             self.assertEqual(result["deletedIds"], [first["product_id"]])
-            remaining = erp_db.list_product_records(app_dir)
+            remaining = get_context().db.list_product_records()
             self.assertEqual([item["product_id"] for item in remaining], [second["product_id"]])
             self.assertEqual(result["productsIndex"][0]["product_id"], second["product_id"])
-            self.assertEqual(erp_db.load_product_model(app_dir, first["product_id"]), {})
+            self.assertEqual(get_context().db.load_product_model(first["product_id"]), {})
 
         self.with_temp_app(run)
 
     def test_delete_draft_from_index_removes_only_selected_draft(self) -> None:
         def run(app_dir: Path) -> None:
             saved = erp_web_app.save_product(sample_product("Draft delete", "https://example.com/draft-delete"))
-            draft_id = erp_db.list_draft_records(app_dir)[0]["draft_id"]
+            draft_id = get_context().db.list_draft_records()[0]["draft_id"]
 
             result = erp_web_app.delete_draft_from_index(draft_id)
 
@@ -92,8 +82,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             self.assertEqual(result["deletedDraftId"], draft_id)
             self.assertEqual(result["draftsIndex"], [])
             self.assertEqual(result["product"]["product_id"], saved["product_id"])
-            self.assertEqual(erp_db.list_product_records(app_dir)[0]["product_id"], saved["product_id"])
-            self.assertEqual(erp_db.list_draft_records(app_dir), [])
+            self.assertEqual(get_context().db.list_product_records()[0]["product_id"], saved["product_id"])
+            self.assertEqual(get_context().db.list_draft_records(), [])
 
         self.with_temp_app(run)
 
@@ -101,7 +91,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
         def run(app_dir: Path) -> None:
             first = erp_web_app.save_product(sample_product("Draft delete 1", "https://example.com/draft-delete-1"))
             second = erp_web_app.save_product(sample_product("Draft delete 2", "https://example.com/draft-delete-2"))
-            draft_ids = [item["draft_id"] for item in erp_db.list_draft_records(app_dir)]
+            draft_ids = [item["draft_id"] for item in get_context().db.list_draft_records()]
 
             result = erp_web_app.delete_draft_from_index(draft_ids)
 
@@ -112,15 +102,15 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             self.assertEqual(result["missingIds"], [])
             self.assertEqual(result["draftsIndex"], [])
             self.assertEqual(sorted(result["affectedProductIds"]), sorted([first["product_id"], second["product_id"]]))
-            self.assertEqual(len(erp_db.list_product_records(app_dir)), 2)
-            self.assertEqual(erp_db.list_draft_records(app_dir), [])
+            self.assertEqual(len(get_context().db.list_product_records()), 2)
+            self.assertEqual(get_context().db.list_draft_records(), [])
 
         self.with_temp_app(run)
 
     def test_save_product_profile_does_not_overwrite_platform_draft(self) -> None:
         def run(app_dir: Path) -> None:
             saved = erp_web_app.save_product(sample_product("Profile boundary", "https://example.com/profile-boundary"))
-            draft = erp_db.list_draft_records(app_dir)[0]
+            draft = get_context().db.list_draft_records()[0]
 
             profile = dict(saved)
             profile["name"] = "Profile boundary updated"
@@ -133,7 +123,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             }
             updated = erp_web_app.save_product_profile(profile)
 
-            reloaded_draft = erp_db.load_draft_model(app_dir, draft["draft_id"])
+            reloaded_draft = get_context().db.load_draft_model(draft["draft_id"])
             self.assertEqual(updated["name"], "Profile boundary updated")
             self.assertEqual(reloaded_draft["title"], "Titulo MX")
             self.assertEqual(reloaded_draft["description"], "Descripcion MX")
@@ -144,9 +134,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
         def run(app_dir: Path) -> None:
             saved = erp_web_app.save_product(sample_product("Draft boundary", "https://example.com/draft-boundary"))
             product_id = saved["product_id"]
-            ozon_draft_id = erp_db.upsert_draft_model(
-                app_dir,
-                product_id,
+            ozon_draft_id = get_context().db.upsert_draft_model(product_id,
                 "ozon",
                 {
                     "title": "Ozon original",
@@ -155,9 +143,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                     "status": "copy_ready",
                 },
             )
-            yandex_draft_id = erp_db.upsert_draft_model(
-                app_dir,
-                product_id,
+            yandex_draft_id = get_context().db.upsert_draft_model(product_id,
                 "yandex",
                 {
                     "title": "Yandex original",
@@ -214,11 +200,11 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 result["draft"]["target_sites"][0]["category_attribute_schema"]["required"][0]["id"],
                 "BRAND",
             )
-            self.assertEqual(erp_db.load_draft_model(app_dir, yandex_draft_id)["title"], "Yandex independent title")
-            self.assertEqual(erp_db.load_draft_model(app_dir, yandex_draft_id)["platforms"], ["yandex", "ozon"])
-            updated_record = next(item for item in erp_db.list_draft_records(app_dir, scope="all") if item["draft_id"] == yandex_draft_id)
+            self.assertEqual(get_context().db.load_draft_model(yandex_draft_id)["title"], "Yandex independent title")
+            self.assertEqual(get_context().db.load_draft_model(yandex_draft_id)["platforms"], ["yandex", "ozon"])
+            updated_record = next(item for item in get_context().db.list_draft_records(scope="all") if item["draft_id"] == yandex_draft_id)
             self.assertEqual(updated_record["platforms"], ["yandex", "ozon"])
-            self.assertEqual(erp_db.load_draft_model(app_dir, ozon_draft_id)["title"], "Ozon original")
+            self.assertEqual(get_context().db.load_draft_model(ozon_draft_id)["title"], "Ozon original")
 
         self.with_temp_app(run)
 
@@ -229,7 +215,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             second_result = erp_web_app.claim_products_to_platforms([saved["product_id"]], ["yandex"])
             first_draft_id = first_result["items"][0]["draft_ids"][0]
             second_draft_id = second_result["items"][0]["draft_ids"][0]
-            draft_ids_before_update = [item["draft_id"] for item in erp_db.list_draft_records(app_dir, scope="all")]
+            draft_ids_before_update = [item["draft_id"] for item in get_context().db.list_draft_records(scope="all")]
 
             self.assertNotEqual(first_draft_id, second_draft_id)
             result, error, status = erp_web_app.save_draft_detail(
@@ -246,41 +232,39 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             self.assertIsNone(error)
             self.assertEqual(status, 200)
             self.assertEqual(result["draft"]["draft_id"], second_draft_id)
-            self.assertEqual(erp_db.load_draft_model(app_dir, first_draft_id)["platforms"], ["yandex"])
-            self.assertEqual(erp_db.load_draft_model(app_dir, second_draft_id)["platforms"], ["yandex", "ozon"])
+            self.assertEqual(get_context().db.load_draft_model(first_draft_id)["platforms"], ["yandex"])
+            self.assertEqual(get_context().db.load_draft_model(second_draft_id)["platforms"], ["yandex", "ozon"])
             self.assertEqual(
-                [item["draft_id"] for item in erp_db.list_draft_records(app_dir, scope="all")],
+                [item["draft_id"] for item in get_context().db.list_draft_records(scope="all")],
                 draft_ids_before_update,
             )
 
         self.with_temp_app(run)
 
-    def test_switching_legacy_platform_draft_to_ozon_migrates_its_id(self) -> None:
+    def test_draft_ids_are_opaque_and_platform_lives_in_column(self) -> None:
         def run(app_dir: Path) -> None:
-            saved = erp_web_app.save_product(sample_product("Legacy draft", "https://example.com/legacy-draft"))
+            saved = erp_web_app.save_product(sample_product("Opaque draft", "https://example.com/opaque-draft"))
             product_id = saved["product_id"]
-            legacy_id = f"{product_id}_mercadolibre_legacy"
-            created_id = erp_db.upsert_draft_model(
-                app_dir,
+            created_id = get_context().db.upsert_draft_model(
                 product_id,
                 "mercadolibre",
-                {"draft_id": legacy_id, "title": "Legacy", "status": "claimed"},
+                {"title": "ML draft", "status": "claimed"},
             )
-            self.assertEqual(created_id, legacy_id)
+            self.assertTrue(created_id.startswith("d"))
+            self.assertEqual(len(created_id), 13)
+            self.assertNotIn("mercadolibre", created_id)
 
-            migrated_id = erp_db.upsert_draft_model(
-                app_dir,
+            moved_id = get_context().db.upsert_draft_model(
                 product_id,
                 "ozon",
-                {"draft_id": legacy_id, "platform": "ozon", "title": "Ozon draft", "status": "claimed"},
+                {"draft_id": created_id, "platform": "ozon", "title": "Ozon draft", "status": "claimed"},
             )
 
-            self.assertNotEqual(migrated_id, legacy_id)
-            self.assertIn("_draft_", migrated_id)
-            self.assertEqual(erp_db.load_draft_model(app_dir, migrated_id)["platform"], "ozon")
-            self.assertEqual(erp_db.load_draft_model(app_dir, legacy_id)["draft_id"], migrated_id)
-            records = [record for record in erp_db.list_draft_records(app_dir, scope="all") if record["draft_id"] == migrated_id]
+            self.assertEqual(moved_id, created_id)
+            self.assertEqual(get_context().db.load_draft_model(created_id)["platform"], "ozon")
+            records = [record for record in get_context().db.list_draft_records(scope="all") if record["draft_id"] == created_id]
             self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["platform"], "ozon")
 
         self.with_temp_app(run)
 
@@ -297,15 +281,15 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
     def test_failed_new_collect_creates_failed_sqlite_record(self) -> None:
         def run(app_dir: Path) -> None:
             url = "https://detail.1688.com/offer/123456.html"
-            with patch.object(erp_web_app, "fetch_page_html_with_status", return_value=("", "")):
+            with patch_unit_globals(fetch_page_html_with_status=MagicMock(return_value=("", ""))):
                 result = erp_web_app.collect_source_product(url, mode="http", platform="1688", claim_platforms=["mercadolibre"])
 
             self.assertFalse(result["ok"])
-            records = erp_db.list_product_records(app_dir)
+            records = get_context().db.list_product_records()
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["source_url"], url)
             self.assertEqual(records[0]["collect_status"], "failed")
-            loaded = erp_db.load_product_model(app_dir, records[0]["product_id"])
+            loaded = get_context().db.load_product_model(records[0]["product_id"])
             self.assertEqual(loaded["source"]["collect_diagnostics"]["error_code"], "1688_SELECTOR_FAILED")
 
         self.with_temp_app(run)
@@ -324,7 +308,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 saved = erp_web_app.save_product(product)
                 return {"ok": True, "product": saved, "diagnostics": {"success": True, "error_code": ""}}
 
-            with patch.object(erp_web_app, "collect_source_product", side_effect=fake_collect):
+            with patch_unit_globals(collect_source_product=fake_collect):
                 result = erp_web_app.collect_batch_products(
                     "https://detail.1688.com/offer/1.html\nhttps://detail.1688.com/offer/bad.html",
                     mode="http",
@@ -336,7 +320,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             self.assertEqual(result["success_count"], 1)
             self.assertEqual(result["failed_count"], 1)
             self.assertEqual([row["status"] for row in result["items"]], ["success", "failed"])
-            self.assertEqual(len(erp_db.list_product_records(app_dir)), 1)
+            self.assertEqual(len(get_context().db.list_product_records()), 1)
 
         self.with_temp_app(run)
 
@@ -392,13 +376,13 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
 
             self.assertTrue(result["ok"])
             self.assertEqual(result["claimed_count"], 1)
-            created_drafts = [erp_db.load_draft_model(app_dir, draft_id) for draft_id in result["items"][0]["draft_ids"]]
+            created_drafts = [get_context().db.load_draft_model(draft_id) for draft_id in result["items"][0]["draft_ids"]]
             self.assertTrue(all(draft["source_product_id"] == saved["product_id"] for draft in created_drafts))
             self.assertTrue(any(draft["title"] == saved["source"]["title"] for draft in created_drafts))
             self.assertTrue(all(draft["description"] == saved["source"]["description"] for draft in created_drafts))
             self.assertTrue(all(draft["bullets"] == saved["source"]["bullets"] for draft in created_drafts))
             self.assertTrue(any(draft["images"] for draft in created_drafts))
-            loaded = erp_db.load_product_model(app_dir, saved["product_id"])
+            loaded = get_context().db.load_product_model(saved["product_id"])
             self.assertEqual(loaded["drafts"]["mercadolibre"]["status"], "claimed")
             self.assertEqual(loaded["drafts"]["ozon"]["status"], "claimed")
             conn = sqlite3.connect(app_dir / erp_db.DEFAULT_DB_NAME)
@@ -449,7 +433,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                     "warning": "",
                 }
 
-            with patch.object(erp_web_app, "generate_ai_copy_bundle", side_effect=fake_bundle):
+            with patch_unit_globals(generate_ai_copy_bundle=fake_bundle):
                 result = erp_web_app.batch_generate_copy_for_products(
                     [first_saved["product_id"], second_saved["product_id"]],
                     platform="mercadolibre",
@@ -458,12 +442,12 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
 
             self.assertTrue(result["ok"])
             self.assertEqual(result["success_count"], 2)
-            loaded_first = erp_db.load_product_model(app_dir, first_saved["product_id"])
-            loaded_second = erp_db.load_product_model(app_dir, second_saved["product_id"])
+            loaded_first = get_context().db.load_product_model(first_saved["product_id"])
+            loaded_second = get_context().db.load_product_model(second_saved["product_id"])
             self.assertEqual(loaded_first["drafts"]["mercadolibre"]["status"], "copy_ready")
             self.assertEqual(loaded_second["drafts"]["mercadolibre"]["status"], "copy_ready")
             self.assertEqual(loaded_first["drafts"]["mercadolibre"]["title"], "AI First collected")
-            records = erp_db.list_product_records(app_dir)
+            records = get_context().db.list_product_records()
             self.assertEqual({record["workflow_status"] for record in records}, {"copy_ready"})
 
         self.with_temp_app(run)
@@ -504,7 +488,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             )
 
             self.assertTrue(result["ok"])
-            loaded = erp_db.load_product_model(app_dir, saved["product_id"])
+            loaded = get_context().db.load_product_model(saved["product_id"])
             self.assertEqual(loaded["drafts"]["mercadolibre"]["status"], "copy_ready")
             self.assertEqual(loaded["drafts"]["mercadolibre"]["images"], [])
             conn = sqlite3.connect(app_dir / erp_db.DEFAULT_DB_NAME)
@@ -516,7 +500,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             finally:
                 conn.close()
             self.assertEqual(media_count, 1)
-            records = erp_db.list_product_records(app_dir)
+            records = get_context().db.list_product_records()
             self.assertEqual(records[0]["workflow_status"], "copy_ready")
 
         self.with_temp_app(run)
@@ -572,7 +556,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
 
             merged = erp_web_app.append_images_to_product_pool(saved, result["imagePoolItems"])
             persisted = erp_web_app.save_product(merged)
-            loaded = erp_db.load_product_model(app_dir, persisted["product_id"])
+            loaded = get_context().db.load_product_model(persisted["product_id"])
             translated_items = [item for item in loaded["source"]["image_pool"] if item.get("target_language") == "Spanish (Mexico)"]
 
             self.assertEqual(loaded["drafts"]["mercadolibre"]["status"], "copy_ready")
@@ -657,9 +641,9 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             self.assertIsNone(draft_error)
             self.assertEqual(status, 200)
             self.assertTrue(draft_result["ok"])
-            loaded = erp_db.load_product_model(app_dir, persisted["product_id"])
+            loaded = get_context().db.load_product_model(persisted["product_id"])
             translated_item = next(item for item in loaded["source"]["image_pool"] if item.get("derived_from_id") == source_item_id)
-            draft_images = erp_db.load_draft_model(app_dir, draft_id)["images"]
+            draft_images = get_context().db.load_draft_model(draft_id)["images"]
             self.assertEqual(
                 draft_images,
                 [{"asset_id": translated_item["id"], "role": "main", "order": 0, "source_asset_id": source_item_id}],
@@ -687,7 +671,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 ],
             }
 
-            with patch.object(erp_web_app, "http_json", side_effect=lambda url, access_token=None: responses[url]) as http_json_mock:
+            http_json_mock = MagicMock(side_effect=lambda url, access_token=None: responses[url])
+            with patch_unit_globals(http_json=http_json_mock):
                 results = erp_web_app.search_categories_live("mercadolibre", query="necklace", site="MLM", limit=5)
                 attrs = erp_web_app.fetch_category_attributes("mercadolibre", "MLM999", site="MLM")
             product = sample_product()
@@ -753,7 +738,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             self.assertTrue(persisted["publish_preview"]["mercadolibre"]["ok"])
             self.assertEqual(persisted["workflow_statuses"]["mercadolibre"], "ready_to_publish")
 
-            records = erp_db.list_product_records(app_dir)
+            records = get_context().db.list_product_records()
             self.assertEqual(records[0]["workflow_status"], "ready_to_publish")
             self.assertEqual(records[0]["precheck_status"], True)
 
@@ -896,8 +881,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             result = erp_web_app.claim_products_to_platforms([saved["product_id"]], ["mercadolibre"])
 
             self.assertTrue(result["ok"])
-            all_drafts = erp_db.list_draft_records(app_dir, scope="all")
-            active_drafts = erp_db.list_draft_records(app_dir)
+            all_drafts = get_context().db.list_draft_records(scope="all")
+            active_drafts = get_context().db.list_draft_records()
             statuses = sorted(item["status"] for item in all_drafts if item["platform"] == "mercadolibre")
             self.assertEqual(statuses, ["claimed", "published"])
             self.assertEqual([item["status"] for item in active_drafts], ["claimed"])
@@ -1203,7 +1188,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             erp_web_app.persist_publish_bus_terminal_results(job_state)
             erp_web_app.persist_publish_bus_terminal_results(job_state)
 
-            loaded = erp_db.load_product_model(app_dir, saved["product_id"])
+            loaded = get_context().db.load_product_model(saved["product_id"])
             draft = loaded["drafts"]["mercadolibre"]
             self.assertEqual(draft["publish_status"], "published")
             self.assertEqual(draft["status"], "published")
@@ -1246,8 +1231,10 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             ml_error = 'POST Mercado Libre picture upload failed: 400 {"message":"Error creating image. File not compatible with pictures engine","error":"bad_request","status":400,"cause":[]}'
 
             with (
-                patch.object(erp_web_app, "ensure_mercadolibre_auth_ready", return_value={"ok": True, "token": "token"}),
-                patch.object(erp_web_app, "validate_mercadolibre_draft", return_value={"platform": "mercadolibre", "ok": True, "errors": [], "warnings": [], "checked_at": "2026-06-11T00:00:00"}),
+                patch_unit_globals(
+                    ensure_mercadolibre_auth_ready=MagicMock(return_value={"ok": True, "token": "token"}),
+                    validate_mercadolibre_draft=MagicMock(return_value={"platform": "mercadolibre", "ok": True, "errors": [], "warnings": [], "checked_at": "2026-06-11T00:00:00"}),
+                ),
                 patch.object(erp_web_app.publisher, "upload_mercadolibre_picture", side_effect=RuntimeError(ml_error)),
             ):
                 result = erp_web_app.mercadolibre_real_publish(product, confirm=True)
@@ -1293,11 +1280,13 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             }
 
             with (
-                patch.object(erp_web_app, "ensure_mercadolibre_auth_ready", return_value={"ok": True, "token": "token"}),
-                patch.object(erp_web_app, "validate_mercadolibre_draft", return_value={"platform": "mercadolibre", "ok": True, "errors": [], "warnings": [], "checked_at": "2026-06-11T00:00:00"}),
-                patch.object(erp_web_app, "ensure_mercadolibre_pictures_uploaded", return_value={"ok": True, "product": product, "picture_refs": []}),
-                patch.object(erp_web_app, "build_mercadolibre_payload_preview", return_value={"_global_selling": True, "category_id": "CBT457856", "sites_to_sell": [{"site_id": "MLM"}]}),
-                patch.object(erp_web_app, "validate_publish_payload", return_value=[]),
+                patch_unit_globals(
+                    ensure_mercadolibre_auth_ready=MagicMock(return_value={"ok": True, "token": "token"}),
+                    validate_mercadolibre_draft=MagicMock(return_value={"platform": "mercadolibre", "ok": True, "errors": [], "warnings": [], "checked_at": "2026-06-11T00:00:00"}),
+                    ensure_mercadolibre_pictures_uploaded=MagicMock(return_value={"ok": True, "product": product, "picture_refs": []}),
+                    build_mercadolibre_payload_preview=MagicMock(return_value={"_global_selling": True, "category_id": "CBT457856", "sites_to_sell": [{"site_id": "MLM"}]}),
+                    validate_publish_payload=MagicMock(return_value=[]),
+                ),
                 patch.object(erp_web_app.publisher, "publish_mercadolibre", return_value=api_result),
             ):
                 result = erp_web_app.mercadolibre_real_publish(product, confirm=True)
@@ -1306,7 +1295,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             self.assertEqual(result["status"], "real_publish_failed")
             self.assertIn("RECOMMENDED_AGE_GROUP", result["error"])
             self.assertIn("site_item_errors", result["error_map"])
-            saved = erp_db.load_product_model(app_dir, result["product_id"])
+            saved = get_context().db.load_product_model(result["product_id"])
             self.assertEqual(saved["drafts"]["mercadolibre"]["publish_status"], "real_publish_failed")
 
             logs = erp_web_app.load_publish_logs()
@@ -1358,7 +1347,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             image_routes.handle_post(handler, "/api/image-pool/action", erp_web_app)
 
             self.assertEqual(captured["status"], 200)
-            loaded = erp_db.load_product_model(app_dir, saved["product_id"])
+            loaded = get_context().db.load_product_model(saved["product_id"])
             image_ids = [item["id"] for item in loaded["source"]["image_pool"]]
             self.assertEqual(image_ids, ["keep_me"])
 
@@ -1540,7 +1529,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
     def test_mercadolibre_ssl_eof_error_returns_network_guidance(self) -> None:
         message = "<urlopen error [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1081)>"
 
-        code = erp_web_app._mercadolibre_test_error_code(message)
+        code = mercadolibre_test_error_code(message)
         explanation = erp_web_app.explain_mercadolibre_auth_error(code, message)
 
         self.assertEqual(code, "network_tls_failed")

@@ -109,36 +109,6 @@ const editorMode = ref<'text' | 'images'>('text')
 const imageEditorTitle = ref('商品库图片编辑')
 const stateReady = ref(false)
 const navItems = workflowNavItems
-const pathNavMap: Record<string, string> = {
-  '/': 'dashboard',
-  '/research': 'research',
-  '/collect': 'collect',
-  '/library': 'library',
-  '/drafts': 'drafts',
-  '/edit': 'library',
-  '/media': 'library',
-  '/pricing': 'pricing',
-  '/publish': 'category',
-  '/ml-items': 'mlItems',
-  '/settings': 'auth',
-  '/auth': 'auth',
-  '/logs': 'logs',
-  '/pending': 'pending',
-}
-const navPathMap: Record<string, string> = {
-  dashboard: '/',
-  research: '/research',
-  collect: '/collect',
-  library: '/library',
-  drafts: '/drafts',
-  pricing: '/pricing',
-  category: '/publish',
-  publish: '/publish?tab=publish',
-  mlItems: '/ml-items',
-  pending: '/pending',
-  auth: '/auth',
-  logs: '/logs',
-}
 
 const pricingDraftItems = computed(() => draftsIndex.value.filter((item) => item.draftId))
 const pricingDraftTitle = computed(() => currentDraft.value.title || currentDraftProductContext.value.title || currentDraftProductContext.value.sourceTitle || currentDraft.value.draftId)
@@ -304,7 +274,7 @@ async function copyProductId() {
 async function selectPricingDraft(draftId: string) {
   if (!draftId) return
   const ok = await store.loadDraftForPricing(draftId)
-  if (ok) await router.replace({ path: '/pricing', query: { draftId } })
+  if (ok) await router.replace({ name: 'WorkflowHome', query: { tab: 'pricing', draftId } })
 }
 
 function openPricingDraftEditor() {
@@ -320,8 +290,10 @@ function openPricingDraftEditor() {
 
 function navigate(key: string) {
   activeNav.value = key
-  const nextPath = navPathMap[key] || '/'
-  if (route.fullPath !== nextPath) void router.push(nextPath)
+  const nextQuery = key === 'dashboard' ? {} : { tab: key }
+  if (route.path !== '/' || String(route.query.tab || '') !== String(nextQuery.tab || '')) {
+    void router.push({ name: 'WorkflowHome', query: nextQuery })
+  }
   if (key === 'library') void store.refreshProductsIndex()
   if (key === 'drafts') void store.refreshDraftsIndex()
   if (key === 'pricing' && !draftsIndex.value.length) void store.refreshDraftsIndex()
@@ -353,11 +325,11 @@ onMounted(async () => {
 })
 
 watch(
-  () => route.fullPath,
+  () => route.query,
   () => {
     const tab = String(route.query.tab || '')
     const previous = activeNav.value
-    activeNav.value = navItems.some((item) => item.key === tab) ? tab : pathNavMap[route.path] || 'dashboard'
+    activeNav.value = navItems.some((item) => item.key === tab) ? tab : 'dashboard'
     if (activeNav.value === 'mlItems' && previous !== activeNav.value) void store.refreshMercadoLibreRemoteItems()
     if (activeNav.value === 'auth' && previous !== activeNav.value) void store.loadAiConfig()
     if (activeNav.value === 'pricing' && stateReady.value) void applyPricingDraftFromRoute()

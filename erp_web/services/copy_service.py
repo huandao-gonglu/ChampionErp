@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from erp_web.marketplace_registry import default_marketplace_site, marketplace_options
+from erp_web.marketplace_registry import (
+    default_marketplace_site,
+    marketplace_options,
+    platform_title_limit,
+)
 from . import ai_gateway, ai_prompt_templates
 
 
@@ -70,7 +74,7 @@ def build_copy_prompt_from_config(
     language: str,
     mode: str,
 ) -> dict[str, str]:
-    title_limit = 60 if target_market == "mercadolibre" else 120
+    title_limit = platform_title_limit(target_market)
     market_label = _market_label(target_market)
     pair = ai_prompt_templates.load_ai_use_case_prompt_pair(app_dir, app_config, "copy.generate")
     configured_user = pair["user"]
@@ -104,7 +108,7 @@ def build_copy_prompt_from_config(
 def _normalized_generated_copy(parsed: Any, target_market: str) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise RuntimeError("AI 未返回 JSON 对象。")
-    title_limit = 60 if target_market == "mercadolibre" else 120
+    title_limit = platform_title_limit(target_market)
     result = {
         "title": str(parsed.get("title") or "").strip()[:title_limit],
         "description": str(parsed.get("description") or "").strip(),

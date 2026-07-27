@@ -85,20 +85,12 @@ def serve_ml_auth_page(handler: Any) -> None:
 
 
 def serve_store_help_page(handler: Any, platform: str) -> None:
-    if platform == "wildberries":
-        title = "Wildberries 授权说明"
-        body = (
-            "<p>Wildberries 当前使用卖家后台生成的 API token，不走 OAuth 回调。</p>"
-            "<p>请在 WB 卖家后台生成 Content API Token，复制到 ERP 的 content_token 字段。</p>"
-            "<p>subject_id 是商品主体/类目 ID；如果暂时不知道，可以先保存 token，后续通过类目读取功能补齐。</p>"
-        )
-    else:
-        title = "Ozon 授权说明"
-        body = (
-            "<p>Ozon 当前使用 Seller API 的 Client ID 和 API Key。</p>"
-            "<p>请在 Ozon Seller 后台的 API 设置中创建或查看 API Key，然后填入 ERP。</p>"
-            "<p>保存后点击“测试授权”，ERP 会尝试读取店铺或仓库信息来验证授权。</p>"
-        )
+    title = "Ozon 授权说明"
+    body = (
+        "<p>Ozon 当前使用 Seller API 的 Client ID 和 API Key。</p>"
+        "<p>请在 Ozon Seller 后台的 API 设置中创建或查看 API Key，然后填入 ERP。</p>"
+        "<p>保存后点击“测试授权”，ERP 会尝试读取店铺或仓库信息来验证授权。</p>"
+    )
     raw = f"<html><body style=\"font-family:Arial;padding:24px\"><h2>{title}</h2>{body}</body></html>".encode("utf-8")
     send_raw(handler, raw, "text/html; charset=utf-8")
 

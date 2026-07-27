@@ -29,7 +29,7 @@ def test_find_chrome_path_detects_macos_chrome_candidate(monkeypatch) -> None:
 
 
 def test_fetch_browser_session_defaults_to_unified_debug_port(monkeypatch) -> None:
-    from erp_web import runtime as erp_web_app
+    from erp_web.runtime_units import source_collect_browser
 
     opened: dict[str, object] = {}
 
@@ -38,10 +38,10 @@ def test_fetch_browser_session_defaults_to_unified_debug_port(monkeypatch) -> No
         opened["port"] = port
         opened["profile_name"] = profile_name
 
-    monkeypatch.setattr(erp_web_app, "BROWSER_DEBUG_PORT", 9222)
+    monkeypatch.setattr(source_collect_browser, "BROWSER_DEBUG_PORT", 9222)
     monkeypatch.setenv("ERP_1688_CDP_PORT", "9224")
-    monkeypatch.setattr(erp_web_app, "open_browser_debug_session", fake_open_browser_debug_session)
-    monkeypatch.setattr(erp_web_app, "cdp_target_for_url", lambda port, url: {"webSocketDebuggerUrl": "ws://fake"})
+    monkeypatch.setattr(source_collect_browser, "open_browser_debug_session", fake_open_browser_debug_session)
+    monkeypatch.setattr(source_collect_browser, "cdp_target_for_url", lambda port, url: {"webSocketDebuggerUrl": "ws://fake"})
 
     class FakeCdp:
         def __init__(self, _url: str) -> None:
@@ -70,17 +70,17 @@ def test_fetch_browser_session_defaults_to_unified_debug_port(monkeypatch) -> No
         def close(self) -> None:
             pass
 
-    monkeypatch.setattr(erp_web_app, "CdpWebSocket", FakeCdp)
-    monkeypatch.setattr(erp_web_app, "save_collect_snapshot_artifacts", lambda *args, **kwargs: {"html_snapshot_path": "", "screenshot_path": ""})
+    monkeypatch.setattr(source_collect_browser, "CdpWebSocket", FakeCdp)
+    monkeypatch.setattr(source_collect_browser, "save_collect_snapshot_artifacts", lambda *args, **kwargs: {"html_snapshot_path": "", "screenshot_path": ""})
 
-    snapshot = erp_web_app.fetch_page_snapshot_with_browser_session("https://detail.1688.com/offer/1.html")
+    snapshot = source_collect_browser.fetch_page_snapshot_with_browser_session("https://detail.1688.com/offer/1.html")
 
     assert opened["port"] == 9222
     assert snapshot
 
 
 def test_open_1688_browser_uses_unified_debug_port(monkeypatch) -> None:
-    from erp_web import runtime as erp_web_app
+    from erp_web.runtime_units import source_collect_browser
 
     opened: dict[str, object] = {}
 
@@ -89,10 +89,10 @@ def test_open_1688_browser_uses_unified_debug_port(monkeypatch) -> None:
         opened["port"] = port
         opened["profile_name"] = profile_name
 
-    monkeypatch.setattr(erp_web_app, "BROWSER_DEBUG_PORT", 9222)
+    monkeypatch.setattr(source_collect_browser, "BROWSER_DEBUG_PORT", 9222)
     monkeypatch.setenv("ERP_1688_CDP_PORT", "9224")
-    monkeypatch.setattr(erp_web_app, "open_browser_debug_session", fake_open_browser_debug_session)
+    monkeypatch.setattr(source_collect_browser, "open_browser_debug_session", fake_open_browser_debug_session)
 
-    erp_web_app.open_browser_debug_session("https://www.1688.com/", erp_web_app.BROWSER_DEBUG_PORT, "1688")
+    source_collect_browser.open_browser_debug_session("https://www.1688.com/", source_collect_browser.BROWSER_DEBUG_PORT, "1688")
 
     assert opened["port"] == 9222

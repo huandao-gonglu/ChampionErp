@@ -124,6 +124,7 @@ describe('workflow store live API flow', () => {
   it('loads backend state without seeded sample data', async () => {
     const product = createEmptyProduct()
     vi.mocked(workflowApi.fetchState).mockResolvedValue({
+      schemaVersion: 1,
       product,
       imagePool: [],
       appConfig: {},

@@ -3,6 +3,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from erp_web.marketplace_registry import category_id_field
+
 from .common import normalize_list
 from .defaults import default_draft
 from .merge_model import normalize_product_model
@@ -63,15 +65,10 @@ def apply_category_selection(product: dict[str, Any], platform: str, category_re
             "category_path": category_path,
         }
     normalized["local_platform_categories"] = local_categories
-    if platform == "mercadolibre":
-        normalized["category_id"] = category_id or normalized.get("category_id", "")
-        normalized["category_path"] = category_path or normalized.get("category_path", "")
-    elif platform == "yandex":
-        normalized["yandex_category_id"] = category_id or normalized.get("yandex_category_id", "")
-        normalized["category_path"] = category_path or normalized.get("category_path", "")
-    elif platform == "ozon":
-        normalized["ozon_category_id"] = category_id or normalized.get("ozon_category_id", "")
-        normalized["category_path"] = category_path or normalized.get("category_path", "")
+    top_level_category_field = category_id_field(platform)
+    if top_level_category_field:
+        normalized[top_level_category_field] = category_id or normalized.get(top_level_category_field, "")
+    normalized["category_path"] = category_path or normalized.get("category_path", "")
 
     draft = deepcopy(normalized.get("drafts", {}).get(platform) if isinstance(normalized.get("drafts"), dict) else default_draft(platform))
     draft["category_id"] = category_id or str(draft.get("category_id") or "").strip()
@@ -255,15 +252,13 @@ def validate_category_precheck(product: dict[str, Any], platform: str, category_
     platform = str(platform or "").strip().lower()
     draft = normalized.get("drafts", {}).get(platform) if isinstance(normalized.get("drafts"), dict) else {}
     errors: list[str] = []
-    if platform == "mercadolibre":
-        if not str(draft.get("category_id") or normalized.get("category_id") or "").strip():
-            errors.append("category_id")
-    elif platform == "yandex":
-        if not str(draft.get("category_id") or normalized.get("yandex_category_id") or "").strip():
-            errors.append("category_id")
-    elif platform == "ozon":
-        if not str(draft.get("category_id") or normalized.get("ozon_category_id") or "").strip():
-            errors.append("category_id")
+    top_level_category_field = category_id_field(platform)
+    if not str(
+        draft.get("category_id")
+        or (normalized.get(top_level_category_field) if top_level_category_field else "")
+        or ""
+    ).strip():
+        errors.append("category_id")
     if not str(draft.get("brand") or "").strip():
         errors.append("brand")
     if not str(draft.get("model") or "").strip():

@@ -2,10 +2,16 @@
 
 授权按一级平台保存；商品、类目、定价等市场化数据使用 ``platform + site``。
 站点默认语言和币种集中维护，避免各业务页面重复硬编码。
+
+每个平台一条 :class:`MarketplaceSpec`：能力集合（capabilities）、字段映射
+（category_field / preset_key / title_limit / description_limit / language）和
+凭据描述符（字段清单 + secret 标记 + test_auth 回调名）。通用逻辑一律查这里，
+不允许再散落 ``if platform == ...`` 分支；平台细节只出现在对应适配器里。
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 
 
@@ -15,11 +21,62 @@ class Marketplace(StrEnum):
     OZON = "ozon"
 
 
-MARKETPLACE_OPTIONS = (
-    {
-        "key": Marketplace.MERCADO_LIBRE.value,
-        "label": "美客多",
-        "sites": (
+# 能力常量：发布、payload 预览、类目实时检索、类目属性、订单同步。
+CAP_PUBLISH = "publish"
+CAP_PREVIEW_PAYLOAD = "preview_payload"
+CAP_CATEGORY_SEARCH = "category_search"
+CAP_CATEGORY_ATTRIBUTES = "category_attributes"
+CAP_ORDERS = "orders"
+
+
+@dataclass(frozen=True)
+class CredentialField:
+    """平台凭据字段描述符（secret 字段绝不回显明文）。"""
+
+    key: str
+    label: str
+    secret: bool = False
+
+
+@dataclass(frozen=True)
+class MarketplaceSpec:
+    """一级平台注册项：能力 + 字段映射 + 凭据描述符。"""
+
+    key: str
+    label: str
+    sites: tuple[dict[str, str], ...]
+    capabilities: frozenset[str]
+    category_field: str
+    preset_key: str
+    title_limit: int
+    description_limit: int
+    credential_fields: tuple[CredentialField, ...]
+    # auth_runtime 在线校验回调名；空字符串 = 平台未接入在线授权校验。
+    test_auth: str = ""
+    # summarize_store_auth 兜底 masked_account 的取值字段顺序。
+    masked_account_fields: tuple[str, ...] = ()
+    # store_auth_failure_code 的平台兜底错误码。
+    auth_failure_code: str = "auth_failed"
+
+    @property
+    def language(self) -> str:
+        return str(self.sites[0]["language"]) if self.sites else ""
+
+    def credential_keys(self) -> tuple[str, ...]:
+        return tuple(field.key for field in self.credential_fields)
+
+    def secret_credential_keys(self) -> tuple[str, ...]:
+        return tuple(field.key for field in self.credential_fields if field.secret)
+
+    def has_capability(self, capability: str) -> bool:
+        return capability in self.capabilities
+
+
+MARKETPLACE_SPECS: tuple[MarketplaceSpec, ...] = (
+    MarketplaceSpec(
+        key=Marketplace.MERCADO_LIBRE.value,
+        label="美客多",
+        sites=(
             {"key": "CBT", "code": "CBT", "label": "全局", "language": "es", "currency": "USD"},
             {"key": "MLM", "code": "MLM", "label": "墨西哥", "language": "es", "currency": "MXN"},
             {"key": "MLB", "code": "MLB", "label": "巴西", "language": "pt-BR", "currency": "BRL"},
@@ -27,23 +84,118 @@ MARKETPLACE_OPTIONS = (
             {"key": "MCO", "code": "MCO", "label": "哥伦比亚", "language": "es", "currency": "COP"},
             {"key": "MLA", "code": "MLA", "label": "阿根廷", "language": "es", "currency": "ARS"},
         ),
-    },
-    {
-        "key": Marketplace.YANDEX.value,
-        "label": "Yandex",
-        "sites": (
+        capabilities=frozenset({CAP_PUBLISH, CAP_PREVIEW_PAYLOAD, CAP_CATEGORY_SEARCH, CAP_CATEGORY_ATTRIBUTES, CAP_ORDERS}),
+        category_field="category_id",
+        preset_key="mercadolibre",
+        title_limit=60,
+        description_limit=50000,
+        credential_fields=(
+            CredentialField("app_id", "App ID / Client ID"),
+            CredentialField("app_secret", "Client Secret", secret=True),
+            CredentialField("redirect_uri", "Redirect URI"),
+            CredentialField("access_token", "Access Token", secret=True),
+            CredentialField("refresh_token", "Refresh Token", secret=True),
+            CredentialField("site_id", "Site"),
+        ),
+        test_auth="mercadolibre_token",
+        masked_account_fields=("shop_name", "user_id"),
+        auth_failure_code="mercadolibre_auth_failed",
+    ),
+    MarketplaceSpec(
+        key=Marketplace.YANDEX.value,
+        label="Yandex",
+        sites=(
             {"key": "global", "code": "global", "label": "俄罗斯", "language": "ru-RU", "currency": "RUB"},
         ),
-    },
-    {
-        "key": Marketplace.OZON.value,
-        "label": "Ozon",
-        "sites": (
+        capabilities=frozenset(),
+        category_field="yandex_category_id",
+        preset_key="yandex",
+        title_limit=120,
+        description_limit=6000,
+        credential_fields=(
+            CredentialField("api_token", "API Token", secret=True),
+            CredentialField("campaign_id", "Campaign ID"),
+        ),
+        test_auth="",
+        masked_account_fields=("shop_name", "api_token"),
+        auth_failure_code="yandex_auth_failed",
+    ),
+    MarketplaceSpec(
+        key=Marketplace.OZON.value,
+        label="Ozon",
+        sites=(
             {"key": "global", "code": "global", "label": "俄罗斯", "language": "ru-RU", "currency": "RUB"},
         ),
-    },
+        capabilities=frozenset({CAP_CATEGORY_SEARCH, CAP_CATEGORY_ATTRIBUTES}),
+        category_field="ozon_category_id",
+        preset_key="yandex",
+        title_limit=120,
+        description_limit=6000,
+        credential_fields=(
+            CredentialField("client_id", "Client ID"),
+            CredentialField("api_key", "API Key", secret=True),
+        ),
+        test_auth="ozon_api",
+        masked_account_fields=("shop_name", "client_id"),
+        auth_failure_code="ozon_auth_failed",
+    ),
 )
-PLATFORMS = tuple(option["key"] for option in MARKETPLACE_OPTIONS)
+
+_SPECS_BY_KEY: dict[str, MarketplaceSpec] = {spec.key: spec for spec in MARKETPLACE_SPECS}
+
+MARKETPLACE_OPTIONS = tuple(
+    {"key": spec.key, "label": spec.label, "sites": spec.sites}
+    for spec in MARKETPLACE_SPECS
+)
+PLATFORMS = tuple(spec.key for spec in MARKETPLACE_SPECS)
+
+
+def marketplace_spec(platform: str) -> MarketplaceSpec | None:
+    """按平台 key 返回注册项；未知平台返回 None。"""
+
+    return _SPECS_BY_KEY.get(str(platform or "").strip().lower())
+
+
+def require_marketplace_spec(platform: str) -> MarketplaceSpec:
+    spec = marketplace_spec(platform)
+    if spec is None:
+        raise RuntimeError(f"未注册的平台：{platform or '(空)'}")
+    return spec
+
+
+def platform_label(platform: str) -> str:
+    spec = marketplace_spec(platform)
+    return spec.label if spec else str(platform or "")
+
+
+def platform_capabilities(platform: str) -> frozenset[str]:
+    spec = marketplace_spec(platform)
+    return spec.capabilities if spec else frozenset()
+
+
+def platform_has_capability(platform: str, capability: str) -> bool:
+    return capability in platform_capabilities(platform)
+
+
+def platforms_with_capability(capability: str) -> tuple[str, ...]:
+    return tuple(spec.key for spec in MARKETPLACE_SPECS if capability in spec.capabilities)
+
+
+def category_id_field(platform: str) -> str:
+    """平台在商品顶层的类目 ID 字段名（category_id / yandex_category_id / ozon_category_id）。"""
+
+    spec = marketplace_spec(platform)
+    return spec.category_field if spec else ""
+
+
+def platform_title_limit(platform: str, default: int = 120) -> int:
+    spec = marketplace_spec(platform)
+    return spec.title_limit if spec else int(default)
+
+
+def platform_preset_key(platform: str, default: str = "mercadolibre") -> str:
+    spec = marketplace_spec(platform)
+    return spec.preset_key if spec else default
 
 
 def marketplace_options() -> list[dict[str, object]]:
@@ -55,13 +207,14 @@ def marketplace_options() -> list[dict[str, object]]:
 def marketplace_site(platform: str, site: str = "") -> dict[str, str]:
     """返回平台站点配置；未指定或未知站点时回退到该平台默认站点。"""
 
-    platform_key = str(platform or "").strip().lower()
-    site_key = str(site or "").strip().lower()
-    option = next((item for item in MARKETPLACE_OPTIONS if item["key"] == platform_key), None)
-    if not option:
+    spec = marketplace_spec(platform)
+    if not spec:
         return {"key": "", "code": "", "label": "", "language": "", "currency": ""}
-    sites = option["sites"]
-    selected = next((item for item in sites if item["key"].lower() == site_key or item["code"].lower() == site_key), sites[0])
+    site_key = str(site or "").strip().lower()
+    selected = next(
+        (item for item in spec.sites if item["key"].lower() == site_key or item["code"].lower() == site_key),
+        spec.sites[0],
+    )
     return dict(selected)
 
 
@@ -72,10 +225,27 @@ def default_marketplace_site(platform: str) -> dict[str, str]:
 
 
 __all__ = [
+    "CAP_CATEGORY_ATTRIBUTES",
+    "CAP_CATEGORY_SEARCH",
+    "CAP_ORDERS",
+    "CAP_PREVIEW_PAYLOAD",
+    "CAP_PUBLISH",
+    "CredentialField",
     "MARKETPLACE_OPTIONS",
+    "MARKETPLACE_SPECS",
     "Marketplace",
+    "MarketplaceSpec",
     "PLATFORMS",
+    "category_id_field",
     "default_marketplace_site",
     "marketplace_options",
     "marketplace_site",
+    "marketplace_spec",
+    "platform_capabilities",
+    "platform_has_capability",
+    "platform_label",
+    "platform_preset_key",
+    "platform_title_limit",
+    "platforms_with_capability",
+    "require_marketplace_spec",
 ]

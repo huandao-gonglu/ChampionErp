@@ -3,7 +3,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from erp_web.marketplace_registry import marketplace_site
+from erp_web.marketplace_registry import category_id_field, marketplace_site
+from erp_web.schemas.product import PRODUCT_SCHEMA_VERSION
 
 from .attribute_matching import infer_source_attribute_matches
 from .common import PLATFORMS, SOURCE_COMPAT_IMAGE_ORIGINS, normalize_list, parse_dimensions_text, text_or_empty
@@ -86,15 +87,19 @@ def _apply_source_mappings_to_draft(product: dict[str, Any], platform: str, curr
     selected = local_categories.get(platform) if isinstance(local_categories.get(platform), dict) else {}
     site_config = marketplace_site(platform, str(current.get("site") or selected.get("site") or ""))
 
-    if platform == "mercadolibre":
-        current["category_id"] = str(current.get("category_id") or selected.get("category_id") or product.get("category_id") or "").strip()
-        current["category_path"] = str(current.get("category_path") or selected.get("category_path") or product.get("category_path") or "").strip()
-    elif platform == "yandex":
-        current["category_path"] = str(current.get("category_path") or selected.get("category_path") or product.get("category_path") or "").strip()
-        current["category_id"] = str(current.get("category_id") or selected.get("category_id") or "").strip()
-    elif platform == "ozon":
-        current["category_id"] = str(current.get("category_id") or selected.get("category_id") or product.get("ozon_category_id") or "").strip()
-        current["category_path"] = str(current.get("category_path") or selected.get("category_path") or product.get("category_path") or "").strip()
+    top_level_category_field = category_id_field(platform)
+    current["category_id"] = str(
+        current.get("category_id")
+        or selected.get("category_id")
+        or (product.get(top_level_category_field) if top_level_category_field else "")
+        or ""
+    ).strip()
+    current["category_path"] = str(
+        current.get("category_path")
+        or selected.get("category_path")
+        or product.get("category_path")
+        or ""
+    ).strip()
 
     if site_config["code"]:
         current["site"] = site_config["code"]
@@ -298,6 +303,7 @@ def normalize_product_model(product: dict[str, Any] | None) -> dict[str, Any]:
     incoming = deepcopy(product or {})
     normalized = default_product_model()
     normalized.update({key: value for key, value in incoming.items() if key not in {"source", "drafts"}})
+    normalized["schema_version"] = PRODUCT_SCHEMA_VERSION
     normalized["source"] = _merge_source(incoming)
     normalized["drafts"] = {platform: _merge_platform_draft(incoming, platform) for platform in PLATFORMS}
 

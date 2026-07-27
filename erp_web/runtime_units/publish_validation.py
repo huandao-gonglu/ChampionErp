@@ -311,17 +311,8 @@ def apply_precheck_to_product(product: dict[str, Any], platform: str, precheck: 
         draft["publish_status"] = current_publish_status
     else:
         draft["publish_status"] = requested_status
-    publish_logs = draft.get("publish_logs") if isinstance(draft.get("publish_logs"), list) else []
-    publish_logs.insert(
-        0,
-        {
-            "time": collect_time_iso(),
-            "status": requested_status,
-            "error_count": len(precheck.get("errors") or []),
-            "warning_count": len(precheck.get("warnings") or []),
-        },
-    )
-    draft["publish_logs"] = publish_logs[:20]
+    # 预检历史不再内嵌 draft_json（publish_logs 统一走 SQLite 表）。
+    draft.pop("publish_logs", None)
     normalized.setdefault("drafts", {})[platform] = draft
     normalized["publish_preview"] = {
         **(normalized.get("publish_preview") if isinstance(normalized.get("publish_preview"), dict) else {}),

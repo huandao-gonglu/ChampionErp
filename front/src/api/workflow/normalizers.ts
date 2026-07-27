@@ -25,6 +25,7 @@ import type {
 } from '@/types/workflow'
 
 export interface AppStateResponse {
+  schemaVersion: number
   product: Product
   imagePool: ImageAsset[]
   appConfig: UnknownRecord
@@ -38,6 +39,8 @@ export interface AppStateResponse {
   draftsIndex?: DraftIndexItem[]
   publishLogs: PublishLogItem[]
 }
+
+export const PRODUCT_SCHEMA_VERSION = 1
 
 export interface ProductMutationResponse {
   ok: boolean
@@ -582,42 +585,43 @@ export function normalizeBackendProduct(value: unknown, imagePoolOverride?: unkn
   const record = asRecord(value)
   const source = asRecord(record.source)
   const drafts = asRecord(record.drafts)
+  const currentSchema = getNumber(record, ['schema_version']) >= PRODUCT_SCHEMA_VERSION
   const imagePoolRaw = Array.isArray(imagePoolOverride)
     ? imagePoolOverride
     : Array.isArray(source.image_pool)
       ? source.image_pool
-      : Array.isArray(source.imagePool)
+      : !currentSchema && Array.isArray(source.imagePool)
         ? source.imagePool
         : []
-  const dimensions = normalizeDimensions(source.dimensions ?? record.dimensions)
+  const dimensions = normalizeDimensions(source.dimensions ?? (currentSchema ? undefined : record.dimensions))
   const product = createEmptyProduct()
   return {
     ...product,
-    productId: getString(record, ['productId', 'product_id', 'id']),
-    name: getString(record, ['name', 'title'], getString(source, ['title'])),
+    productId: currentSchema ? getString(record, ['product_id']) : getString(record, ['productId', 'product_id', 'id']),
+    name: currentSchema ? getString(record, ['name'], getString(source, ['title'])) : getString(record, ['name', 'title'], getString(source, ['title'])),
     brand: getString(record, ['brand'], getString(source, ['brand'])),
     model: getString(record, ['model'], getString(source, ['model'])),
-    category: getString(record, ['category', 'category_name']),
+    category: currentSchema ? getString(record, ['category']) : getString(record, ['category', 'category_name']),
     sku: getString(record, ['sku']),
     stock: getString(record, ['stock']),
     upc: getString(record, ['upc']),
-    cost: getString(record, ['cost', 'source_price_cny_for_cost'], getString(source, ['price'])),
-    materials: stringList(record.materials ?? record.source_material ?? source.materials ?? source.material),
-    sellingPoints: stringList(record.sellingPoints ?? record.selling_points ?? source.bullets),
-    packageIncludes: stringList(record.packageIncludes ?? record.package_includes ?? source.package_contents),
+    cost: currentSchema ? getString(record, ['cost'], getString(source, ['price'])) : getString(record, ['cost', 'source_price_cny_for_cost'], getString(source, ['price'])),
+    materials: stringList(currentSchema ? record.materials ?? source.materials : record.materials ?? record.source_material ?? source.materials ?? source.material),
+    sellingPoints: stringList(currentSchema ? source.bullets ?? record.selling_points : record.sellingPoints ?? record.selling_points ?? source.bullets),
+    packageIncludes: stringList(currentSchema ? record.package_includes ?? source.package_contents : record.packageIncludes ?? record.package_includes ?? source.package_contents),
     source: {
-      sourceUrl: getString(source, ['sourceUrl', 'source_url'], getString(record, ['source_url'])),
-      sourcePlatform: getString(source, ['sourcePlatform', 'source_platform'], getString(record, ['source_platform'])),
-      title: getString(source, ['title'], getString(record, ['name', 'title'])),
-      price: getString(source, ['price'], getString(record, ['detected_price', 'source_price_cny'])),
-      currency: getString(source, ['currency'], getString(record, ['detected_currency'], '')),
-      description: getString(source, ['description'], getString(record, ['description', 'source_text'])),
+      sourceUrl: currentSchema ? getString(source, ['source_url']) : getString(source, ['sourceUrl', 'source_url'], getString(record, ['source_url'])),
+      sourcePlatform: currentSchema ? getString(source, ['source_platform']) : getString(source, ['sourcePlatform', 'source_platform'], getString(record, ['source_platform'])),
+      title: currentSchema ? getString(source, ['title']) : getString(source, ['title'], getString(record, ['name', 'title'])),
+      price: currentSchema ? getString(source, ['price']) : getString(source, ['price'], getString(record, ['detected_price', 'source_price_cny'])),
+      currency: currentSchema ? getString(source, ['currency']) : getString(source, ['currency'], getString(record, ['detected_currency'], '')),
+      description: currentSchema ? getString(source, ['description']) : getString(source, ['description'], getString(record, ['description', 'source_text'])),
       dimensions,
-      weightKg: getString(source, ['weightKg', 'weight_kg'], getString(record, ['weight_kg', 'source_weight_kg'])),
+      weightKg: currentSchema ? getString(source, ['weight_kg']) : getString(source, ['weightKg', 'weight_kg'], getString(record, ['weight_kg', 'source_weight_kg'])),
       imagePool: imagePoolRaw.map(normalizeImageAsset),
-      attributes: Object.fromEntries(Object.entries(asRecord(source.attributes ?? record.attributes)).map(([key, value]) => [key, String(value ?? '')])),
-      attributeMatches: asRecord(source.attribute_matches ?? source.attributeMatches),
-      collectStatus: getString(source, ['collect_status'], getString(record, ['collect_status'])),
+      attributes: Object.fromEntries(Object.entries(asRecord(source.attributes ?? (currentSchema ? undefined : record.attributes))).map(([key, value]) => [key, String(value ?? '')])),
+      attributeMatches: asRecord(source.attribute_matches ?? (currentSchema ? undefined : source.attributeMatches)),
+      collectStatus: currentSchema ? getString(source, ['collect_status']) : getString(source, ['collect_status'], getString(record, ['collect_status'])),
       collectDiagnostics: asRecord(source.collect_diagnostics),
     },
     drafts: {
@@ -765,11 +769,38 @@ export function toBackendDraftDetail(draft: DraftDetail): UnknownRecord {
 
 export function toBackendProduct(product: Product): UnknownRecord {
   const rawProduct = { ...asRecord(product.raw) }
-  delete rawProduct.drafts
+  for (const key of [
+    'drafts',
+    'id',
+    'title',
+    'productId',
+    'source_url',
+    'source_platform',
+    'source_images',
+    'source_image_urls',
+    'generated_images',
+    'image_pool',
+    'images',
+    'dimensions',
+    'weight_kg',
+    'detected_price',
+    'detected_currency',
+    'source_price_cny',
+    'source_price_cny_for_cost',
+    'source_text',
+    'source_material',
+    'sellingPoints',
+    'packageIncludes',
+    'category_name',
+    'gtin',
+    'barcode',
+  ]) delete rawProduct[key]
+  const rawSource = { ...asRecord(product.raw.source) }
+  for (const key of ['sourceUrl', 'sourcePlatform', 'imagePool', 'weightKg', 'attributeMatches', 'images']) delete rawSource[key]
   return {
     ...rawProduct,
+    schema_version: PRODUCT_SCHEMA_VERSION,
     product_id: product.productId,
-    id: product.productId,
     name: product.name,
     brand: product.brand,
     model: product.model,
@@ -782,7 +813,7 @@ export function toBackendProduct(product: Product): UnknownRecord {
     selling_points: product.sellingPoints,
     package_includes: product.packageIncludes,
     source: {
-      ...asRecord(product.raw.source),
+      ...rawSource,
       source_url: product.source.sourceUrl,
       source_platform: product.source.sourcePlatform,
       title: product.source.title,
@@ -801,10 +832,6 @@ export function toBackendProduct(product: Product): UnknownRecord {
       collect_status: product.source.collectStatus,
       collect_diagnostics: product.source.collectDiagnostics,
     },
-    source_url: product.source.sourceUrl,
-    source_platform: product.source.sourcePlatform,
-    dimensions: `${product.source.dimensions.lengthCm} x ${product.source.dimensions.widthCm} x ${product.source.dimensions.heightCm} cm`,
-    weight_kg: product.source.weightKg,
   }
 }
 

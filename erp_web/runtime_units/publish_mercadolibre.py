@@ -14,8 +14,8 @@ from .category_store import write_json
 from .collect_helpers import collect_time_iso
 from .image_pool_core import _local_path_from_image_item, _source_pool_items, image_pool_refs_for_platform
 from .product_store import (
-    _auth_next_action,
     _store_auth_result_fields,
+    auth_next_action,
     load_product,
     load_store_config,
     normalize_product_fields,
@@ -38,10 +38,10 @@ from .publish_logs_runtime import (
     _is_mock_mercadolibre_category_id,
     _mercadolibre_category_id_from_product,
     _mercadolibre_required_attr_ids,
-    _mercadolibre_test_error_code,
     _sanitize_for_log,
     append_ml_auth_test_log,
     append_ml_publish_log,
+    mercadolibre_test_error_code,
 )
 from .publish_validation import apply_precheck_to_product, validate_mercadolibre_draft
 from .runtime_common import OUTPUT_DIR
@@ -218,7 +218,7 @@ def _07d_all(ctx: dict[str, Any]) -> dict[str, Any]:
         try:
             outputs.append(run_mercadolibre_07d_test(sub_mode, product))
         except Exception as exc:
-            outputs.append({"ok": False, "mode": sub_mode, "error": str(exc), "error_code": _mercadolibre_test_error_code(str(exc))})
+            outputs.append({"ok": False, "mode": sub_mode, "error": str(exc), "error_code": mercadolibre_test_error_code(str(exc))})
     result["tests"] = outputs
     result["ok"] = all(item.get("ok", True) and item.get("status") != "failed" for item in outputs)
     return result
@@ -269,14 +269,14 @@ def run_mercadolibre_07d_test(mode: str, product: dict[str, Any] | None = None, 
         return handler(ctx)
     except Exception as exc:
         message = str(exc)
-        code = _mercadolibre_test_error_code(message)
+        code = mercadolibre_test_error_code(message)
         status = "failed"
         if code == "NETWORK_BLOCKED":
             next_action = "当前环境无法访问 Mercado Libre，请换到允许外网 socket 的本机环境重试。"
         elif code == "REAL_CATEGORY_REQUIRED":
             next_action = "请先选择真实 Mercado Libre 类目，或在 07D 向导里手动输入真实 category_id。"
         else:
-            next_action = _auth_next_action("mercadolibre", "测试失败", code, message)
+            next_action = auth_next_action("mercadolibre", "测试失败", code, message)
         response = {"ok": False, "platform": "mercadolibre", "mode": mode, "status": status, "error_code": code, "error_message": message, "next_action": next_action, "real_publish_called": False}
         append_ml_auth_test_log(mode, status, {"mode": mode}, response, code, message, next_action)
         return response

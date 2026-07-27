@@ -25,7 +25,6 @@ const BACKEND_PROXY_PREFIXES = [
   '/api',
   '/file',
   '/auth/mercadolibre',
-  '/auth/wildberries',
   '/auth/ozon',
 ]
 

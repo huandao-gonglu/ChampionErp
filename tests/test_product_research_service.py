@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
 import io
 import json
 import time
@@ -8,21 +7,15 @@ import urllib.error
 
 import pytest
 
+from erp_web.context import get_context
 from erp_web.product_research_config import default_product_research_config, normalize_product_research_config
 from erp_web.services import product_research_service
 from erp_web.services import product_research_methods
 from erp_web.services.product_research_methods import AiSearchMethod, ProductResearchSearchMethod
+from erp_web.services.product_research_service import ProductResearchRunRegistry
 
-
-@pytest.fixture(autouse=True)
-def reset_product_research_runs() -> Iterator[None]:
-    with product_research_service._RUNS_LOCK:
-        product_research_service._RUNS.clear()
-        product_research_service._RUN_ORDER.clear()
-    yield
-    with product_research_service._RUNS_LOCK:
-        product_research_service._RUNS.clear()
-        product_research_service._RUN_ORDER.clear()
+# conftest 的 autouse fixture 已为每个测试提供独立 AppContext：
+# get_context().research 每次都是全新 Registry + 空的 research_runs 表。
 
 
 def hot_product_payload() -> dict:
@@ -145,15 +138,15 @@ def test_create_hot_product_run_returns_ai_search_candidates(tmp_path, monkeypat
 
     assert run["status"] == "completed"
     assert run["run_id"].startswith("prr_")
-    assert run["expires_at"]
     assert len(run["items"]) == 2
-    assert not (tmp_path / "data" / "cache" / "product_research" / "tasks").exists()
-    cache_path = product_research_service.product_research_run_cache_path(tmp_path, run["run_id"])
-    assert cache_path.exists()
-    cached_run = json.loads(cache_path.read_text(encoding="utf-8"))
-    assert cached_run["run_id"] == run["run_id"]
-    assert cached_run["items"][0]["title"] == "Silicone kitchen utensil rest"
-    assert cached_run["expires_at"] == run["expires_at"]
+    assert not (tmp_path / "data" / "cache" / "product_research").exists()
+    record = get_context().db.load_research_run(run["run_id"])
+    assert record["status"] == "completed"
+    assert record["method"] == "target_only"
+    assert record["items"][0]["title"] == "Silicone kitchen utensil rest"
+    assert record["items"][1]["title"] == "Magnetic measuring spoons"
+    assert record["params"]["request"]["markets"]["target_markets"] == ["amazon-us"]
+    assert "items" not in record["params"]
     log_path = tmp_path / "data" / "logs" / "product_research_runs.jsonl"
     assert log_path.exists()
     log_lines = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
@@ -215,9 +208,10 @@ def test_create_hot_product_run_async_polls_stream_description(tmp_path, monkeyp
         callback = kwargs.get("token_callback")
         if callback:
             callback(json.dumps(item, ensure_ascii=False) + "\n")
-            time.sleep(0.05)
+            # 窗口开大一点：全量跑测试时轮询线程也必须能观察到“流式进行中”状态。
+            time.sleep(0.3)
             callback('{"title":"Ignored missing source","rank":2}\n')
-            time.sleep(0.05)
+            time.sleep(0.1)
         return {"items": [item]}
 
     monkeypatch.setattr(product_research_methods.ai_gateway, "chat_json", fake_chat_json)
@@ -227,7 +221,7 @@ def test_create_hot_product_run_async_polls_stream_description(tmp_path, monkeyp
 
     assert run["status"] == "queued"
     streamed = None
-    for _ in range(50):
+    for _ in range(300):
         streamed = product_research_service.get_hot_product_run(run["run_id"])
         if streamed and "AI 正在返回结果" in streamed.get("description", ""):
             break
@@ -237,7 +231,7 @@ def test_create_hot_product_run_async_polls_stream_description(tmp_path, monkeyp
     assert "AI 正在返回结果" in streamed.get("description", "")
 
     final = streamed
-    for _ in range(50):
+    for _ in range(300):
         final = product_research_service.get_hot_product_run(run["run_id"])
         if final and final.get("status") in {"completed", "failed"}:
             break
@@ -246,10 +240,9 @@ def test_create_hot_product_run_async_polls_stream_description(tmp_path, monkeyp
     assert final["status"] == "completed"
     assert final["items"][0]["title"] == "Async silicone sink tray"
     assert final["description"] == "运行完成，找到 1 个候选商品。"
-    cache_path = product_research_service.product_research_run_cache_path(tmp_path, run["run_id"])
-    cached_run = json.loads(cache_path.read_text(encoding="utf-8"))
-    assert cached_run["status"] == "completed"
-    assert cached_run["items"][0]["title"] == "Async silicone sink tray"
+    record = get_context().db.load_research_run(run["run_id"])
+    assert record["status"] == "completed"
+    assert record["items"][0]["title"] == "Async silicone sink tray"
 
 
 def test_ai_search_retries_without_stream_when_stream_is_forbidden(tmp_path, monkeypatch) -> None:
@@ -322,7 +315,7 @@ def test_ai_search_does_not_retry_official_client_forbidden_error(tmp_path, monk
     assert run["source_status"][0]["stream_fallback_used"] is False
 
 
-def test_hot_product_run_restores_completed_cache_after_memory_loss(tmp_path, monkeypatch) -> None:
+def test_hot_product_run_restores_completed_run_from_db_after_restart(tmp_path, monkeypatch) -> None:
     patch_ai_search(
         monkeypatch,
         [
@@ -337,20 +330,18 @@ def test_hot_product_run_restores_completed_cache_after_memory_loss(tmp_path, mo
     config = normalize_product_research_config(default_product_research_config())
     run = product_research_service.create_hot_product_run(tmp_path, hot_product_payload(), config, web_search_app_config())
 
-    with product_research_service._RUNS_LOCK:
-        product_research_service._RUNS.clear()
-        product_research_service._RUN_ORDER.clear()
-
-    restored = product_research_service.get_hot_product_run(run["run_id"], tmp_path)
+    # 新 Registry = 模拟进程重启后的空内存；历史 run 必须能从表里查回。
+    registry = ProductResearchRunRegistry(get_context().db)
+    restored = registry.get(run["run_id"])
 
     assert restored is not None
     assert restored["run_id"] == run["run_id"]
     assert restored["status"] == "completed"
     assert restored["items"][0]["title"] == "Cached travel charger"
-    assert restored["expires_at"] == run["expires_at"]
+    assert restored["description"] == run["description"]
 
 
-def test_running_cached_run_is_marked_failed_after_backend_restart(tmp_path) -> None:
+def test_running_run_is_marked_failed_after_backend_restart() -> None:
     created_at = product_research_service._utc_now()
     run = {
         "run_id": "cached_running",
@@ -358,7 +349,6 @@ def test_running_cached_run_is_marked_failed_after_backend_restart(tmp_path) -> 
         "search_mode": "target_only",
         "created_at": created_at,
         "completed_at": "",
-        "expires_at": product_research_service._run_expiry(created_at),
         "request": hot_product_payload(),
         "items": [
             {
@@ -372,19 +362,19 @@ def test_running_cached_run_is_marked_failed_after_backend_restart(tmp_path) -> 
         "description": "AI 正在返回结果",
         "progress_description": "partial token",
     }
-    cache_path = product_research_service.product_research_run_cache_path(tmp_path, run["run_id"])
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(json.dumps(run, ensure_ascii=False), encoding="utf-8")
+    get_context().research.store(run)
 
-    restored = product_research_service.get_hot_product_run(run["run_id"], tmp_path)
-    active = product_research_service.get_active_hot_product_run(tmp_path)
+    # 重启 = 新 Registry 构造：DB 里 running 的 run 标 failed，候选保留。
+    registry = ProductResearchRunRegistry(get_context().db)
+    restored = registry.get(run["run_id"])
 
     assert restored is not None
     assert restored["status"] == "failed"
     assert "后台任务已中断" in restored["description"]
     assert restored["items"][0]["title"] == "Cached partial item"
-    assert restored["source_status"][0]["provider_strategy"] == "run_cache"
-    assert active is None
+    assert restored["source_status"][0]["provider_strategy"] == "run_registry"
+    assert restored["completed_at"]
+    assert registry.get_active() is None
 
 
 def test_incoming_keywords_are_ignored_for_market_hot_products(tmp_path, monkeypatch) -> None:
@@ -725,6 +715,7 @@ def test_normalize_search_request_ignores_keywords() -> None:
 
 
 def test_get_active_hot_product_run_returns_latest_non_terminal() -> None:
+    registry = get_context().research
     created_at = product_research_service._utc_now()
     queued_run = {
         "run_id": "test_active_queued",
@@ -732,7 +723,6 @@ def test_get_active_hot_product_run_returns_latest_non_terminal() -> None:
         "search_mode": "target_only",
         "created_at": created_at,
         "completed_at": "",
-        "expires_at": product_research_service._run_expiry(created_at),
         "request": hot_product_payload(),
         "items": [],
         "source_status": [],
@@ -752,16 +742,17 @@ def test_get_active_hot_product_run_returns_latest_non_terminal() -> None:
         "description": "running",
     }
 
-    product_research_service._store_run(queued_run)
-    product_research_service._store_run(completed_run)
-    product_research_service._store_run(running_run)
+    registry.store(queued_run)
+    registry.store(completed_run)
+    registry.store(running_run)
 
     active = product_research_service.get_active_hot_product_run()
 
     assert active is not None
     assert active["run_id"] == "test_active_running"
-    product_research_service._update_run("test_active_queued", status="completed")
-    product_research_service._update_run("test_active_running", status="completed")
+    registry.update("test_active_queued", status="completed")
+    registry.update("test_active_running", status="completed")
+    assert product_research_service.get_active_hot_product_run() is None
 
 
 def test_public_product_research_config_masks_source_secrets() -> None:

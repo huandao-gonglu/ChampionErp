@@ -2,8 +2,6 @@ import 'vue-router'
 
 declare module 'vue-router' {
   interface RouteMeta {
-    requiresAuth?: boolean
-    requiresAdmin?: boolean
     title?: string
     titleKey?: string
     descriptionKey?: string
@@ -13,6 +11,5 @@ declare module 'vue-router' {
     }>
     icon?: string
     hideInMenu?: boolean
-    requiresPayment?: boolean
   }
 }

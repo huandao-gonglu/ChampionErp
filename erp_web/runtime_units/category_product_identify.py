@@ -3,13 +3,10 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
-from erp_web.services import ai_gateway, ai_prompt_templates
-
-from .product_store import load_app_config, normalize_product_fields
-from .runtime_common import APP_DIR
+from .ai_use_case import run_ai_use_case
+from .product_store import normalize_product_fields
 
 
 def _text(value: Any, limit: int = 1600) -> str:
@@ -110,24 +107,11 @@ def identify_product_for_category(
     normalized_targets = _normalized_targets(targets)
     if not normalized_targets:
         raise RuntimeError("当前草稿没有可识别类目的目标站点。")
-    app_cfg = load_app_config()
     payload = _identity_input(product, draft, normalized_targets)
-    prompt_pair = ai_prompt_templates.load_ai_use_case_prompt_pair(APP_DIR, app_cfg, "category.product_identify")
-    messages = [
-        {"role": "system", "content": prompt_pair["system"]},
-        {
-            "role": "user",
-            "content": ai_prompt_templates.render_prompt_template(
-                prompt_pair["user"],
-                {"input_json": json.dumps(payload, ensure_ascii=False)},
-            ),
-        },
-    ]
-    parsed = ai_gateway.chat_json(
-        APP_DIR,
-        app_cfg,
+    parsed = run_ai_use_case(
         "category.product_identify",
-        messages,
+        payload,
+        lambda value: value,
         temperature=0,
         max_tokens=700,
     )

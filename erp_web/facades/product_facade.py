@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from erp_web.context import get_context
 from erp_web.runtime_units.image_pool import current_image_pool, current_source_images
-from erp_web.runtime_units.pricing_runtime import calculate_price
 from erp_web.runtime_units.product_store import (
     delete_draft_from_index,
     delete_products_from_index,
@@ -14,19 +14,10 @@ from erp_web.runtime_units.product_store import (
     save_draft_detail,
     save_product_profile,
 )
-from erp_web.runtime_units.publish_helpers import assign_upc
 from erp_web.schemas.api import ApiResponse
 from erp_web.schemas.product import Product
 
 ResponseWithStatus = tuple[ApiResponse, int]
-
-
-def calculate_product_price(body: dict[str, Any]) -> ApiResponse:
-    return calculate_price(body)
-
-
-def assign_product_upc() -> ApiResponse:
-    return assign_upc()
 
 
 def save_product_payload(body: dict[str, Any]) -> ApiResponse:
@@ -78,11 +69,22 @@ def delete_draft_payload(body: dict[str, Any]) -> ResponseWithStatus:
     return result, 200 if result.get("ok") else 404
 
 
+def import_upcs_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    values = body.get("values")
+    if not isinstance(values, list):
+        return {"ok": False, "error": "values 必须是 UPC 数组"}, 400
+    added = get_context().db.import_upcs(values)
+    return {
+        "ok": True,
+        "imported": added,
+        "upcPool": get_context().db.upc_pool_stats(),
+    }, 200
+
+
 __all__ = [
-    "assign_product_upc",
-    "calculate_product_price",
     "delete_draft_payload",
     "delete_products_payload",
+    "import_upcs_payload",
     "load_draft_payload",
     "load_product_payload",
     "save_draft_payload",

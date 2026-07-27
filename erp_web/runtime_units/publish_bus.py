@@ -1,18 +1,16 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import threading
 import time
 from typing import Any
 
+from erp_web.context import get_context
 from erp_web.product_model import default_draft
 from erp_web.services import html_extract_service as legacy
 
-from .category_store import read_json, write_json
 from .collect_helpers import collect_time_iso
 from .product_store import load_product_from_index, normalize_list, normalize_product_fields, save_product
 from .publish_helpers import _draft_for_platform, precheck_item
-from .runtime_common import PUBLISH_LOG_PATH
 
 def page_snapshot_from_html(url: str, html: str, text: str = "", title: str = "", image_urls: list[str] | None = None) -> dict[str, Any]:
     return {
@@ -24,23 +22,13 @@ def page_snapshot_from_html(url: str, html: str, text: str = "", title: str = ""
     }
 
 
-# Guards the read-modify-write cycle on publish_logs.json: it is hit concurrently
-# by HTTP request threads and the publishing bus worker pool.
-_PUBLISH_LOG_LOCK = threading.Lock()
-
-
 def append_publish_log(entry: dict[str, Any]) -> None:
-    with _PUBLISH_LOG_LOCK:
-        logs = read_json(PUBLISH_LOG_PATH, [])
-        if not isinstance(logs, list):
-            logs = []
-        logs.insert(0, entry)
-        write_json(PUBLISH_LOG_PATH, logs[:200])
+    """插入 publish_logs 表（大报文仍写 artifacts 文件，表存路径）。"""
+    get_context().db.insert_publish_log(entry)
 
 
-def load_publish_logs() -> list[dict[str, Any]]:
-    logs = read_json(PUBLISH_LOG_PATH, [])
-    return logs if isinstance(logs, list) else []
+def load_publish_logs(limit: int = 200) -> list[dict[str, Any]]:
+    return get_context().db.list_publish_logs(limit=limit)
 
 
 def publish_bus_terminal_status(status: str) -> str:
@@ -53,10 +41,7 @@ def publish_bus_terminal_status(status: str) -> str:
 
 
 def publish_bus_log_exists(job_id: str, platform: str) -> bool:
-    for item in load_publish_logs():
-        if str(item.get("job_id") or "") == str(job_id or "") and str(item.get("platform") or "") == str(platform or ""):
-            return True
-    return False
+    return get_context().db.publish_log_exists(str(job_id or ""), str(platform or ""))
 
 
 def apply_publish_bus_result_to_product(product: dict[str, Any], job_state: dict[str, Any], platform: str, item: dict[str, Any]) -> dict[str, Any]:

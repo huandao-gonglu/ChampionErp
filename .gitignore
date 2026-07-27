@@ -47,3 +47,5 @@ data/logs/
 front/release/
 # soft-delete staging area used by remote sessions
 _to_delete/
+# 本地审查、分析和过程记录，不作为项目正式文档提交
+/doc/

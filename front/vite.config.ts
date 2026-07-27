@@ -26,7 +26,6 @@ export default defineConfig(({ mode }) => {
         '/api': devProxyTarget,
         '/file': devProxyTarget,
         '/auth/mercadolibre': devProxyTarget,
-        '/auth/wildberries': devProxyTarget,
         '/auth/ozon': devProxyTarget,
       },
     },

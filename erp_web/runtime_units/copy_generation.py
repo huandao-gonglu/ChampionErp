@@ -4,7 +4,11 @@ from __future__ import annotations
 from typing import Any
 
 from erp_web import listing_planner as generator
-from erp_web.marketplace_registry import default_marketplace_site
+from erp_web.marketplace_registry import (
+    default_marketplace_site,
+    platform_preset_key,
+    platform_title_limit,
+)
 from erp_web.product_model import PLATFORMS
 from erp_web.services import copy_service
 
@@ -24,12 +28,7 @@ def list_presets() -> dict[str, Any]:
 
 
 def platform_to_preset_key(platform: str) -> str:
-    platform = (platform or "").lower()
-    if platform == "mercadolibre":
-        return "mercadolibre"
-    if platform in {"yandex", "ozon"}:
-        return "yandex"
-    return "mercadolibre"
+    return platform_preset_key(platform)
 
 
 def build_plan_for_platform(product: dict[str, Any], platform: str) -> dict[str, Any]:
@@ -76,8 +75,9 @@ def build_copy_preview(product: dict[str, Any], platform: str, app_cfg: dict[str
             listing.update(result["copy"])
     except Exception as exc:
         warning = str(exc)
-    if platform == "mercadolibre":
-        listing["title"] = str(listing.get("title") or product.get("name") or "")[:60]
+    listing["title"] = str(listing.get("title") or product.get("name") or "")[
+        : platform_title_limit(platform)
+    ]
     return {"plan": plan, "listing": listing, "warning": warning}
 
 

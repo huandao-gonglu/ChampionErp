@@ -54,10 +54,10 @@ class FrontendTemplateTests(unittest.TestCase):
         meta = (FRONT_SRC_DIR / "router" / "meta.d.ts").read_text(encoding="utf-8")
 
         self.assertIn("interface RouteMeta", meta)
-        self.assertIn("requiresAuth", meta)
-        self.assertIn("requiresAdmin", meta)
         self.assertIn("descriptionKey", meta)
         self.assertIn("hideInMenu", meta)
+        self.assertNotIn("requiresAuth", meta)
+        self.assertNotIn("requiresAdmin", meta)
 
     def test_frontend_has_standard_framework_config_files(self) -> None:
         expected = [
@@ -80,19 +80,27 @@ class FrontendTemplateTests(unittest.TestCase):
 
         self.assertIn("axios.create", client)
         self.assertIn("interceptors.request", client)
-        self.assertIn("Authorization", client)
         self.assertIn("Accept-Language", client)
         self.assertIn("X-Timezone", client)
+        self.assertNotIn("Authorization", client)
+        self.assertNotIn("accessToken", client)
         self.assertIn("apiClient", workflow_api)
         self.assertIn("/api/state", workflow_api)
 
-    def test_stores_are_split_into_app_auth_and_workflow(self) -> None:
+    def test_stores_are_split_into_app_and_workflow_domains(self) -> None:
         stores = sorted(path.name for path in (FRONT_SRC_DIR / "stores").glob("*.ts"))
+        workflow_stores = sorted(
+            path.name for path in (FRONT_SRC_DIR / "stores" / "workflow").glob("*.ts")
+        )
 
         self.assertIn("app.ts", stores)
-        self.assertIn("auth.ts", stores)
         self.assertIn("workflow.ts", stores)
         self.assertIn("index.ts", stores)
+        self.assertNotIn("auth.ts", stores)
+        self.assertEqual(
+            workflow_stores,
+            ["activity.ts", "catalog.ts", "collection.ts", "publishing.ts", "settings.ts"],
+        )
 
     def test_components_are_layered_by_responsibility(self) -> None:
         expected = [
@@ -140,12 +148,14 @@ class FrontendTemplateTests(unittest.TestCase):
 
     def test_python_backend_prefers_built_vue_dist_and_serves_assets(self) -> None:
         runtime_common = (APP_DIR / "erp_web" / "runtime_units" / "runtime_common.py").read_text(encoding="utf-8")
+        context_py = (APP_DIR / "erp_web" / "context.py").read_text(encoding="utf-8")
         get_routes = (APP_DIR / "erp_web" / "http_route_units" / "get_routes.py").read_text(encoding="utf-8")
         static_routes = (APP_DIR / "erp_web" / "http_route_units" / "static_routes.py").read_text(encoding="utf-8")
 
         self.assertIn("FRONT_DIST_INDEX_PATH", runtime_common)
         self.assertIn("FRONT_DIST_DIR", runtime_common)
-        self.assertIn('"erp_web" / "static" / "dist"', runtime_common)
+        # The dist-path derivation now lives in AppPaths (erp_web/context.py).
+        self.assertIn('"erp_web" / "static" / "dist"', context_py)
         self.assertIn("def serve_frontend_asset", static_routes)
         self.assertIn('parsed.path.startswith("/assets/")', get_routes)
 

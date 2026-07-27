@@ -11,6 +11,7 @@ from erp_web.product_model import (
     image_pool_legacy_views,
     normalize_image_pool,
 )
+from erp_web.marketplace_registry import marketplace_spec
 
 from .browser_debug import file_url
 from .runtime_common import APP_DIR, CHATGPT_DIR, COLLECT_DEBUG_DIR, SOURCE_DIR
@@ -242,7 +243,7 @@ def image_pool_refs_for_platform(prod: dict[str, Any], platform: str) -> list[st
     pool = _source_pool_items(prod)
     if not pool:
         return []
-    if platform not in {"mercadolibre", "yandex", "ozon"}:
+    if marketplace_spec(platform) is None:
         return [str(item.get("url") or item.get("path") or item.get("preview_url") or "").strip() for item in pool if str(item.get("url") or item.get("path") or item.get("preview_url") or "").strip()]
     platform_items = [
         item

@@ -15,8 +15,6 @@ export const apiClient = axios.create({
 })
 
 apiClient.interceptors.request.use((config) => {
-  const token = localStorage.getItem('accessToken')
-  if (token) config.headers.set('Authorization', `Bearer ${token}`)
   config.headers.set('Accept-Language', uiLocaleOption(localStorage.getItem('uiLocale') || localStorage.getItem('locale')).acceptLanguage)
   config.headers.set('X-Timezone', Intl.DateTimeFormat().resolvedOptions().timeZone)
   return config
@@ -25,10 +23,6 @@ apiClient.interceptors.request.use((config) => {
 apiClient.interceptors.response.use(
   (response) => response,
   (error: AxiosError) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('accessToken')
-      localStorage.removeItem('refreshToken')
-    }
     const data = error.response?.data as Record<string, unknown> | undefined
     const normalized = normalizeApiError(
       {

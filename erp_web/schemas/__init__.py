@@ -1,10 +1,18 @@
 from __future__ import annotations
 
-from .api import ApiResponse
+from .api import API_SCHEMA_VERSION, ApiResponse, AppStateResponse, validate_app_state_response
 from .ai_work import AiWorkConversationSummary, AiWorkEvent, AiWorkEventType
 from .config import AppConfig, StoreConfig
 from .image import ImageItem
-from .product import CategoryAttributeDefinition, CategoryAttributeSchema, DraftTargetSite, PlatformDraft, Product, ProductSource
+from .product import (
+    PRODUCT_SCHEMA_VERSION,
+    CategoryAttributeDefinition,
+    CategoryAttributeSchema,
+    DraftTargetSite,
+    PlatformDraft,
+    Product,
+    ProductSource,
+)
 from .product_research import (
     HotProductCandidate,
     ProductResearchConfig,
@@ -20,6 +28,8 @@ from .publish import PublishJob, PublishPlatformState
 
 __all__ = [
     "ApiResponse",
+    "API_SCHEMA_VERSION",
+    "AppStateResponse",
     "AiWorkConversationSummary",
     "AiWorkEvent",
     "AiWorkEventType",
@@ -30,6 +40,7 @@ __all__ = [
     "ImageItem",
     "HotProductCandidate",
     "PlatformDraft",
+    "PRODUCT_SCHEMA_VERSION",
     "Product",
     "ProductSource",
     "ProductResearchConfig",
@@ -43,4 +54,5 @@ __all__ = [
     "PublishJob",
     "PublishPlatformState",
     "StoreConfig",
+    "validate_app_state_response",
 ]

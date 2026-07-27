@@ -8,8 +8,6 @@ from pathlib import Path
 from typing import Any
 
 from erp_web import listing_planner as generator
-from erp_web import marketplaces as publisher
-
 from .category_store import write_json
 from .collect_helpers import collect_time_iso
 from .copy_generation import list_presets, platform_to_preset_key
@@ -18,19 +16,21 @@ from .publish_bus import append_publish_log
 from .publish_helpers import (
     _draft_for_platform,
     _field_error_map,
-    build_publish_payload,
     precheck_item,
-    validate_publish_payload,
 )
+from .publish_adapter import publishing_adapter_for, unsupported_publish_response
 from .publish_logs_runtime import _write_publish_artifacts
-from .publish_mercadolibre import map_mercadolibre_publish_error
-from .publish_validation import apply_precheck_to_product, validate_platform_draft
+from .publish_validation import apply_precheck_to_product
 from .runtime_common import FRONT_DIST_INDEX_PATH, TASK_DIR, WEB_TEMPLATE_PATH
 
 def publish_product(product: dict[str, Any], platform: str, config: dict[str, Any]) -> dict[str, Any]:
     product = normalize_product_fields(product)
     platform = str(platform or "").strip().lower()
-    precheck = validate_platform_draft(product, platform, config)
+    adapter = publishing_adapter_for(platform)
+    if adapter is None:
+        return unsupported_publish_response(platform)
+    product = adapter.resolve_category(product, config)
+    precheck = adapter.validate_draft(product, config)
     if not precheck.get("ok"):
         updated = apply_precheck_to_product(product, platform, precheck, status="not_ready")
         payload_path, response_path = _write_publish_artifacts(platform, {"precheck": precheck}, {"ok": False, "status": "not_ready"})
@@ -65,8 +65,8 @@ def publish_product(product: dict[str, Any], platform: str, config: dict[str, An
         }
 
     product = apply_precheck_to_product(product, platform, precheck, status="local_precheck_passed")
-    payload = build_publish_payload(product, platform, config)
-    errors = validate_publish_payload(platform, payload, config)
+    payload = adapter.build_payload(product, config)
+    errors = adapter.validate_payload(payload, config)
     if errors:
         updated = apply_precheck_to_product(
             product,
@@ -107,63 +107,57 @@ def publish_product(product: dict[str, Any], platform: str, config: dict[str, An
 
     draft = _draft_for_platform(product, platform)
     started_at = collect_time_iso()
-    result: Any
-    status = "publishing"
-    if platform == "mercadolibre":
-        try:
-            result = publisher.publish_mercadolibre(payload, config["mercadolibre"].get("access_token", ""))
-            status = "real_publish_success" if isinstance(result, dict) and (result.get("id") or result.get("ok") or result.get("success")) else "real_publish_failed"
-        except Exception as exc:
-            parsed = publisher.parse_mercadolibre_error(exc)
-            mapped = map_mercadolibre_publish_error(parsed)
-            payload_path, response_path = _write_publish_artifacts(platform, payload, mapped)
-            updated = apply_precheck_to_product(
-                product,
-                platform,
-                {
-                    "platform": platform,
-                    "ok": False,
-                    "errors": [
-                        precheck_item("REAL_PUBLISH_FAILED", field, str(values[0] if isinstance(values, list) and values else mapped["summary"]), "error", "前往对应字段修复后重试")
-                        for field, values in mapped["field_errors"].items()
-                    ] or [precheck_item("REAL_PUBLISH_FAILED", "publish", mapped["summary"], "error", "查看字段映射并重试")],
-                    "warnings": [],
-                    "checked_at": collect_time_iso(),
-                },
-                status="real_publish_failed",
-            )
-            append_publish_log(
-                {
-                    "product_id": str(updated.get("source_url") or updated.get("sku") or updated.get("name") or ""),
-                    "platform": platform,
-                    "draft_id": str(draft.get("sku") or ""),
-                    "status": "real_publish_failed",
-                    "started_at": started_at,
-                    "finished_at": collect_time_iso(),
-                    "request_payload_path": payload_path,
-                    "response_body_path": response_path,
-                    "error_code": str(parsed.get("error") or "REAL_PUBLISH_FAILED"),
-                    "error_message": mapped["summary"],
-                    "field_errors": mapped["field_errors"],
-                    "next_action": "按字段提示修复后重试",
-                    "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "shop": platform,
-                    "sku": config.get("listing", {}).get("sku", ""),
-                    "error": mapped["summary"],
-                    "image": normalize_list(updated.get("source_image_urls"))[:1],
-                }
-            )
-            saved = save_product(updated)
-            return {"ok": False, "status": "real_publish_failed", "error": mapped["summary"], "error_map": mapped, "payload": payload, "product": saved}
-    elif platform == "yandex":
-        result = {"ok": False, "status": "ready_for_real_publish", "message": "Yandex 真实发布前，请先完成对应 API 的授权和类目接口接入。当前保留本地预检与 payload。"}
-        status = "ready_for_real_publish"
-    else:
-        result = {"ok": False, "status": "ready_for_real_publish", "message": "Ozon 真实发布接口仍需真实授权验证。当前保留本地预检与 payload。"}
-        status = "ready_for_real_publish"
+    try:
+        result: Any = adapter.publish_payload(payload, config)
+        status = (
+            "real_publish_success"
+            if isinstance(result, dict) and (result.get("id") or result.get("ok") or result.get("success"))
+            else "real_publish_failed"
+        )
+    except Exception as exc:
+        mapped = adapter.map_publish_error(exc)
+        payload_path, response_path = _write_publish_artifacts(platform, payload, mapped)
+        updated = apply_precheck_to_product(
+            product,
+            platform,
+            {
+                "platform": platform,
+                "ok": False,
+                "errors": [
+                    precheck_item("REAL_PUBLISH_FAILED", field, str(values[0] if isinstance(values, list) and values else mapped["summary"]), "error", "前往对应字段修复后重试")
+                    for field, values in mapped["field_errors"].items()
+                ] or [precheck_item("REAL_PUBLISH_FAILED", "publish", mapped["summary"], "error", "查看字段映射并重试")],
+                "warnings": [],
+                "checked_at": collect_time_iso(),
+            },
+            status="real_publish_failed",
+        )
+        append_publish_log(
+            {
+                "product_id": str(updated.get("source_url") or updated.get("sku") or updated.get("name") or ""),
+                "platform": platform,
+                "draft_id": str(draft.get("sku") or ""),
+                "status": "real_publish_failed",
+                "started_at": started_at,
+                "finished_at": collect_time_iso(),
+                "request_payload_path": payload_path,
+                "response_body_path": response_path,
+                "error_code": str(mapped.get("error_code") or "REAL_PUBLISH_FAILED"),
+                "error_message": mapped["summary"],
+                "field_errors": mapped["field_errors"],
+                "next_action": "按字段提示修复后重试",
+                "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "shop": platform,
+                "sku": config.get("listing", {}).get("sku", ""),
+                "error": mapped["summary"],
+                "image": normalize_list(updated.get("source_image_urls"))[:1],
+            }
+        )
+        saved = save_product(updated)
+        return {"ok": False, "status": "real_publish_failed", "error": mapped["summary"], "error_map": mapped, "payload": payload, "product": saved}
 
     ok = bool(result.get("id") or result.get("ok") or result.get("success")) if isinstance(result, dict) else True
-    final_status = "real_publish_success" if ok and platform == "mercadolibre" else status if not ok else "mock_success"
+    final_status = "real_publish_success" if ok else status
     payload_path, response_path = _write_publish_artifacts(platform, payload, result)
     updated = apply_precheck_to_product(product, platform, precheck, status=final_status if ok else status)
     append_publish_log(
@@ -224,7 +218,13 @@ def html_page(active_page: str = "workbench") -> str:
     elif WEB_TEMPLATE_PATH.exists():
         template = WEB_TEMPLATE_PATH.read_text(encoding="utf-8")
     else:
-        template = HTML_TEMPLATE
+        # Historical fallback referenced an HTML_TEMPLATE constant that never
+        # existed anywhere, i.e. this branch was a guaranteed NameError. Fail
+        # loudly with an actionable message instead.
+        raise FileNotFoundError(
+            "No frontend template found: build the frontend (expected "
+            f"{FRONT_DIST_INDEX_PATH}) or provide {WEB_TEMPLATE_PATH}."
+        )
     return template.replace("__ACTIVE_PAGE__", active_page)
 
 

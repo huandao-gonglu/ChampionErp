@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from erp_web.marketplace_registry import marketplace_spec
 from erp_web.runtime_units import publish_logs_runtime as publish_log_helpers
 from erp_web.runtime_units.category_store import write_json
 from erp_web.runtime_units.collect_helpers import collect_time_iso
@@ -12,16 +13,16 @@ from erp_web.runtime_units.product_store import (
     sync_product_workflow_statuses,
 )
 from erp_web.runtime_units.draft_publish_context import load_required_draft_publish_context, save_draft_precheck_result
-from erp_web.runtime_units.publish_adapter import get_publishing_bus
-from erp_web.runtime_units.publish_logs_runtime import append_ml_publish_log
-from erp_web.runtime_units.publish_mercadolibre import (
-    build_mercadolibre_payload_preview,
-    mercadolibre_close_remote_item,
-    mercadolibre_real_publish,
+from erp_web.runtime_units.publish_adapter import (
+    get_publishing_bus,
+    publishing_adapter_for,
+    unsupported_publish_response,
 )
+from erp_web.runtime_units.publish_logs_runtime import append_ml_publish_log
+from erp_web.runtime_units.publish_mercadolibre import mercadolibre_close_remote_item, mercadolibre_real_publish
 from erp_web.runtime_units.publish_validation import validate_platform_draft
 from erp_web.runtime_units.runtime_api import publish_product
-from erp_web.runtime_units.runtime_common import OUTPUT_DIR, PLATFORMS
+from erp_web.runtime_units.runtime_common import OUTPUT_DIR
 from erp_web.schemas.api import ApiResponse
 
 ResponseWithStatus = tuple[ApiResponse, int]
@@ -54,10 +55,19 @@ def preview_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
     if error_response:
         return error_response, status
     platform = str(context["platform"])
-    if platform not in PLATFORMS:
+    if marketplace_spec(platform) is None:
         return {"ok": False, "error": "不支持的平台"}, 400
+    adapter = publishing_adapter_for(platform)
+    if adapter is None:
+        return {
+            **unsupported_publish_response(platform),
+            "site": context["site"],
+            "target": context["target"],
+            "draft": context["draft"],
+            "productContext": context["productContext"],
+        }, 200
     config = load_store_config()
-    precheck = validate_platform_draft(context["product"], platform, config)
+    precheck = adapter.validate_draft(context["product"], config)
     saved = save_draft_precheck_result(context, precheck)
     if not precheck.get("ok"):
         return {
@@ -73,22 +83,8 @@ def preview_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
             "productsIndex": saved["productsIndex"],
             "draftsIndex": saved["draftsIndex"],
         }, 400
-    if platform != "mercadolibre":
-        return {
-            "ok": True,
-            "platform": platform,
-            "site": context["site"],
-            "target": context["target"],
-            "status": "pending_real_interface",
-            "message": "payload 待真实接口完善",
-            "payload": {"platform": platform, "message": "payload 待真实接口完善"},
-            "draft": saved["draft"],
-            "productContext": saved["productContext"],
-            "productsIndex": saved["productsIndex"],
-            "draftsIndex": saved["draftsIndex"],
-        }, 200
     try:
-        payload = publish_log_helpers._sanitize_for_log(build_mercadolibre_payload_preview(context["product"], config))
+        payload = publish_log_helpers._sanitize_for_log(adapter.build_payload(context["product"], config))
         path = OUTPUT_DIR / "last_mercadolibre_payload.json"
         write_json(path, payload)
         append_ml_publish_log(
@@ -126,6 +122,8 @@ def publish_product_payload(body: dict[str, Any]) -> ResponseWithStatus:
         return error_response, status
     try:
         result = publish_product(product, platform, load_store_config())
+        if result.get("supported") is False:
+            return result, 200
         return result, 200 if result.get("ok") else 400
     except Exception as exc:
         return {"ok": False, "error": str(exc)}, 400
@@ -157,6 +155,13 @@ def enqueue_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
         return draft_error_response, draft_status
     product = context["product"]
     platforms = [str(context["platform"])]
+    unsupported = [platform for platform in platforms if publishing_adapter_for(platform) is None]
+    if unsupported:
+        return {
+            **unsupported_publish_response(unsupported[0]),
+            "draft": context["draft"],
+            "target": context["target"],
+        }, 200
     try:
         eligible_platforms = publish_queue_platforms(product, platforms)
         rejected_platforms = [platform for platform in platforms if platform not in eligible_platforms]
@@ -171,7 +176,7 @@ def enqueue_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
                 "draft": context["draft"],
                 "target": context["target"],
             }, 400
-        result = get_publishing_bus().enqueue(product, eligible_platforms, load_store_config())
+        result = get_publishing_bus().enqueue(product, eligible_platforms)
         result["eligible_platforms"] = eligible_platforms
         result["rejected_platforms"] = rejected_platforms
         result["draft_id"] = str(context["draft"].get("draft_id") or "")

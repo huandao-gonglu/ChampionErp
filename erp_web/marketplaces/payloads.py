@@ -3,29 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .config_http import number_or_zero, request_json
-
-def required_wildberries_characteristics(subject_id: str, token: str) -> list[dict[str, Any]]:
-    if not subject_id:
-        return []
-    data = request_json(
-        "GET",
-        f"https://content-api.wildberries.ru/content/v2/object/charcs/{subject_id}?locale=ru",
-        token,
-    )
-    chars = data.get("data", []) if isinstance(data, dict) else []
-    return [
-        {
-            "charcID": item.get("charcID"),
-            "name": item.get("name"),
-            "type": item.get("charcType") or item.get("type"),
-            "required": item.get("required", False),
-            "unitName": item.get("unitName"),
-        }
-        for item in chars
-        if item.get("required")
-    ]
-
+from .config_http import number_or_zero
 
 def listing_for(plan: dict[str, Any], platform_key: str) -> dict[str, Any]:
     return plan["platforms"].get(platform_key, {}).get("listing", {})
@@ -242,49 +220,8 @@ def build_mercadolibre_payload(
     return payload
 
 
-def build_wildberries_payload(
-    product: dict[str, Any],
-    plan: dict[str, Any],
-    config: dict[str, Any],
-) -> list[dict[str, Any]]:
-    listing = listing_for(plan, "wildberries")
-    store = config["wildberries"]
-    settings = config["listing"]
-    sku = settings.get("sku") or product.get("name") or "SKU-1"
-    chars = []
-    if product.get("brand"):
-        chars.append({"id": 0, "name": "Бренд", "value": product.get("brand")})
-    if product.get("colors"):
-        chars.append({"id": 0, "name": "Цвет", "value": product["colors"][0]})
-    dims = [float(x.replace(",", ".")) for x in __import__("re").findall(r"\d+(?:[,.]\d+)?", str(product.get("dimensions", "")))]
-    length, width, height = (dims + [1, 1, 1])[:3]
-    weight = float(str(product.get("weight_kg") or "0.1").replace(",", ".") or 0.1)
-
-    return [
-        {
-            "subjectID": int(store.get("subject_id") or 0),
-            "variants": [
-                {
-                    "vendorCode": sku,
-                    "title": listing.get("title") or product.get("name"),
-                    "description": listing.get("description", ""),
-                    "brand": product.get("brand") or "Нет бренда",
-                    "dimensions": {
-                        "length": int(round(length)),
-                        "width": int(round(width)),
-                        "height": int(round(height)),
-                        "weightBrutto": max(0.01, round(weight, 3)),
-                    },
-                    "characteristics": chars,
-                    "sizes": [{"techSize": "0", "wbSize": "", "price": int(float(settings.get("wildberries_price") or settings.get("price") or 0)), "skus": [sku]}],
-                }
-            ],
-        }
-    ]
-
-
 def build_ozon_payload(product: dict[str, Any], plan: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
-    listing = listing_for(plan, "wildberries") or listing_for(plan, "mercadolibre")
+    listing = listing_for(plan, "mercadolibre")
     settings = config["listing"]
     return {
         "items": [

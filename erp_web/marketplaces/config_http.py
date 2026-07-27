@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import mimetypes
+import os
 import re
 import secrets
 import urllib.error
@@ -72,7 +73,19 @@ def load_store_config(path: Path) -> dict[str, Any]:
 
 
 def save_store_config(path: Path, config: dict[str, Any]) -> None:
-    path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    # Atomic write (same-directory temp file + os.replace): store credentials must
+    # never be left half-written by a crash.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}-{secrets.token_hex(4)}")
+    try:
+        tmp_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def bearer_auth_value(token: str) -> str:

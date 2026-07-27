@@ -1,17 +1,13 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import json
 import re
 from copy import deepcopy
 from typing import Any
 
-from erp_web.services import ai_gateway, ai_prompt_templates
-
 from erp_web.product_model import apply_ai_attribute_fill, normalize_product_model
 
-from .product_store import load_app_config
-from .runtime_common import APP_DIR
+from .ai_use_case import run_ai_use_case
 
 
 def _normalize_list(value: Any) -> list[str]:
@@ -110,7 +106,6 @@ def _product_context(product: dict[str, Any], platform: str) -> dict[str, Any]:
 
 
 def _request_ai_fill(product: dict[str, Any], platform: str, category_record: dict[str, Any] | None, schema: list[dict[str, Any]]) -> dict[str, Any]:
-    app_cfg = load_app_config()
     payload = {
         "platform": platform,
         "category_id": str((category_record or {}).get("category_id") or ""),
@@ -118,21 +113,12 @@ def _request_ai_fill(product: dict[str, Any], platform: str, category_record: di
         "product_context": _product_context(product, platform),
         "attributes": schema,
     }
-    prompt_pair = ai_prompt_templates.load_ai_use_case_prompt_pair(APP_DIR, app_cfg, "category.attribute_fill")
-    messages = [
-        {
-            "role": "system",
-            "content": prompt_pair["system"],
-        },
-        {
-            "role": "user",
-            "content": ai_prompt_templates.render_prompt_template(
-                prompt_pair["user"],
-                {"input_json": json.dumps(payload, ensure_ascii=False)},
-            ),
-        },
-    ]
-    return ai_gateway.chat_json(APP_DIR, app_cfg, "category.attribute_fill", messages, temperature=0)
+    return run_ai_use_case(
+        "category.attribute_fill",
+        payload,
+        lambda value: value if isinstance(value, dict) else {},
+        temperature=0,
+    )
 
 
 def _option_value(raw_value: Any, options: list[str]) -> str:

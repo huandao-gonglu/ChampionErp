@@ -4,12 +4,11 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from erp_web import db as erp_db
+from erp_web.context import get_context
 from erp_web.marketplace_registry import marketplace_site
 
-from .collect_helpers import collect_time_iso
 from .product_store import draft_product_context, load_drafts_index, load_products_index, normalize_product_fields
-from .runtime_common import APP_DIR, PLATFORMS
+from .runtime_common import PLATFORMS
 
 ResponseWithStatus = tuple[dict[str, Any], int]
 TARGET_LISTING_KEYS = (
@@ -22,7 +21,6 @@ TARGET_LISTING_KEYS = (
     "status",
     "last_precheck",
     "last_precheck_target",
-    "publish_logs",
 )
 
 
@@ -52,9 +50,6 @@ def _target_listing_fields(raw: dict[str, Any], fallback: dict[str, Any] | None 
     fallback_validation_errors = fallback.get("validation_errors") if isinstance(fallback.get("validation_errors"), list) else []
     if not isinstance(validation_errors, list) or not validation_errors:
         validation_errors = fallback_validation_errors
-    publish_logs = raw.get("publish_logs") if isinstance(raw.get("publish_logs"), list) else raw.get("publishLogs")
-    if not isinstance(publish_logs, list):
-        publish_logs = fallback.get("publish_logs") if isinstance(fallback.get("publish_logs"), list) else []
     return {
         "category_id": str(raw.get("category_id") or raw.get("categoryId") or fallback.get("category_id") or "").strip(),
         "category_path": str(raw.get("category_path") or raw.get("categoryPath") or fallback.get("category_path") or "").strip(),
@@ -65,7 +60,6 @@ def _target_listing_fields(raw: dict[str, Any], fallback: dict[str, Any] | None 
         "status": str(raw.get("status") or fallback.get("status") or "").strip(),
         "last_precheck": deepcopy(raw.get("last_precheck") if isinstance(raw.get("last_precheck"), dict) else raw.get("lastPrecheck") if isinstance(raw.get("lastPrecheck"), dict) else fallback.get("last_precheck") if isinstance(fallback.get("last_precheck"), dict) else {}),
         "last_precheck_target": deepcopy(raw.get("last_precheck_target") if isinstance(raw.get("last_precheck_target"), dict) else raw.get("lastPrecheckTarget") if isinstance(raw.get("lastPrecheckTarget"), dict) else fallback.get("last_precheck_target") if isinstance(fallback.get("last_precheck_target"), dict) else {}),
-        "publish_logs": deepcopy(publish_logs),
     }
 
 
@@ -150,11 +144,12 @@ def merge_target_listing_into_draft(draft: dict[str, Any], target: dict[str, Any
 
 
 def _save_updated_draft(draft: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    db = get_context().db
     product_id = str(draft.get("product_id") or context.get("product", {}).get("product_id") or "").strip()
     platform = str(draft.get("platform") or context.get("platform") or "").strip().lower()
-    saved_draft_id = erp_db.upsert_draft_model(APP_DIR, product_id, platform, draft)
-    saved_draft = erp_db.load_draft_model(APP_DIR, saved_draft_id)
-    source_product = erp_db.load_product_model(APP_DIR, str(saved_draft.get("source_product_id") or saved_draft.get("product_id") or product_id))
+    saved_draft_id = db.upsert_draft_model(product_id, platform, draft)
+    saved_draft = db.load_draft_model(saved_draft_id)
+    source_product = db.load_product_model(str(saved_draft.get("source_product_id") or saved_draft.get("product_id") or product_id))
     return {
         "ok": True,
         "draft": saved_draft,
@@ -168,11 +163,12 @@ def load_required_draft_publish_context(body: dict[str, Any]) -> tuple[dict[str,
     draft_id = str(body.get("draft_id") or body.get("draftId") or "").strip()
     if not draft_id:
         return {}, {"ok": False, "error": "draft_id 不能为空", "error_code": "DRAFT_ID_REQUIRED"}, 400
-    draft = erp_db.load_draft_model(APP_DIR, draft_id)
+    db = get_context().db
+    draft = db.load_draft_model(draft_id)
     if not draft:
         return {}, {"ok": False, "error": "草稿不存在", "error_code": "DRAFT_NOT_FOUND", "draft_id": draft_id}, 404
     product_id = str(draft.get("source_product_id") or draft.get("product_id") or "").strip()
-    product = erp_db.load_product_model(APP_DIR, product_id)
+    product = db.load_product_model(product_id)
     if not product:
         return {}, {"ok": False, "error": "草稿关联商品不存在", "error_code": "DRAFT_PRODUCT_NOT_FOUND", "draft_id": draft_id}, 404
     target, error_response, status = _select_target(draft, str(body.get("platform") or ""), str(body.get("site") or body.get("site_id") or ""))
@@ -204,22 +200,10 @@ def save_draft_precheck_result(context: dict[str, Any], precheck: dict[str, Any]
         publish_status = current_publish_status
     else:
         publish_status = requested_status
-    publish_logs = target.get("publish_logs") if isinstance(target.get("publish_logs"), list) else draft.get("publish_logs") if isinstance(draft.get("publish_logs"), list) else []
-    publish_logs.insert(
-        0,
-        {
-            "time": collect_time_iso(),
-            "status": requested_status,
-            "platform": target.get("platform", ""),
-            "site": target.get("site", ""),
-            "error_count": len(errors),
-            "warning_count": len(warnings),
-        },
-    )
+    # 预检历史不再内嵌 draft_json；publish_logs 统一存 SQLite 表。
     target_updates = {
         "validation_errors": errors + warnings,
         "publish_status": publish_status,
-        "publish_logs": publish_logs[:20],
         "last_precheck_target": target,
         "last_precheck": precheck,
     }

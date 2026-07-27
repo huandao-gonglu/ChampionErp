@@ -13,12 +13,18 @@ from . import ai_model_config, ai_prompt_templates
 
 PRODUCT_RESEARCH_SENSITIVE_CONFIG_KEYS = {
     "access_token",
+    "alibaba_cookie",
     "api_key",
+    "api_token",
+    "app_key",
     "app_secret",
     "authorization",
     "bearer_token",
     "client_secret",
+    "code_verifier",
+    "cookie",
     "password",
+    "private_key",
     "refresh_token",
     "secret",
     "source_key",
@@ -58,9 +64,49 @@ def mask_nested_config(value: Any, key: str = "") -> Any:
         return {nested_key: mask_nested_config(nested_value, nested_key) for nested_key, nested_value in value.items()}
     if isinstance(value, list):
         return [mask_nested_config(item, key) for item in value]
-    if key.lower() in PRODUCT_RESEARCH_SENSITIVE_CONFIG_KEYS:
+    normalized_key = str(key or "").strip().lower()
+    if normalized_key.startswith("masked_"):
+        return value
+    if (
+        normalized_key in PRODUCT_RESEARCH_SENSITIVE_CONFIG_KEYS
+        or normalized_key.endswith(("_api_key", "_password", "_secret", "_token"))
+    ):
         return mask_secret(value)
     return value
+
+
+def public_app_config(
+    app_dir: Path | str,
+    app_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """返回可下发给本地前端的完整设置视图，所有凭据只保留掩码。"""
+
+    load_env(app_dir)
+    safe = json.loads(json.dumps(app_config or {}, ensure_ascii=False))
+    return mask_nested_config(safe)
+
+
+def public_store_config(store_config: dict[str, Any] | None = None) -> dict[str, Any]:
+    """返回店铺静态配置和凭据占位，绝不返回可直接使用的秘密。"""
+
+    safe = json.loads(json.dumps(store_config or {}, ensure_ascii=False))
+    return mask_nested_config(safe)
+
+
+def _merge_masked_secret_section(
+    current: dict[str, Any],
+    incoming: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(current)
+    for key, value in incoming.items():
+        existing = current.get(key)
+        if (
+            str(existing or "").strip()
+            and mask_nested_config(existing, key) == value
+        ):
+            continue
+        merged[key] = value
+    return merged
 
 
 def public_ai_config(app_dir: Path | str, app_config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -114,11 +160,17 @@ def merge_ai_config(app_dir: Path | str, current: dict[str, Any], incoming: dict
     if isinstance(incoming.get("1688_api"), dict):
         current_1688_api = merged.get("1688_api") if isinstance(merged.get("1688_api"), dict) else {}
         incoming_1688_api = incoming.get("1688_api") if isinstance(incoming.get("1688_api"), dict) else {}
-        merged["1688_api"] = {**current_1688_api, **incoming_1688_api}
+        merged["1688_api"] = _merge_masked_secret_section(
+            current_1688_api,
+            incoming_1688_api,
+        )
     if isinstance(incoming.get("yunexpress"), dict):
         current_yunexpress = merged.get("yunexpress") if isinstance(merged.get("yunexpress"), dict) else {}
         incoming_yunexpress = incoming.get("yunexpress") if isinstance(incoming.get("yunexpress"), dict) else {}
-        merged["yunexpress"] = {**current_yunexpress, **incoming_yunexpress}
+        merged["yunexpress"] = _merge_masked_secret_section(
+            current_yunexpress,
+            incoming_yunexpress,
+        )
     return merged
 
 
@@ -178,7 +230,9 @@ __all__ = [
     "load_env",
     "mask_secret",
     "merge_ai_config",
+    "public_app_config",
     "public_ai_config",
+    "public_store_config",
     "save_config_snapshot",
     "service_status",
     "write_env_template",

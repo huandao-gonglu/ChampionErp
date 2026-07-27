@@ -1,18 +1,17 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import json
 from copy import deepcopy
 from typing import Any
 
 from erp_web import marketplaces as publisher
+from erp_web.context import get_context
 from erp_web.product_model import (
     default_draft,
     normalize_draft_image_refs,
     validate_category_precheck,
 )
 
-from .category_store import write_json
 from .copy_generation import apply_product_drafts_to_plan, build_plan_for_platform
 from .image_pool_core import current_image_pool, image_pool_refs_for_platform
 from .product_store import (
@@ -23,106 +22,97 @@ from .product_store import (
     save_product,
     summarize_store_auth_states,
 )
-from .runtime_common import APP_DIR
 
 def assign_upc() -> dict[str, Any]:
-    pool_path = APP_DIR / "upc_pool.json"
-    if not pool_path.exists():
+    """分配一枚 UPC：先在 upc_pool 表内单事务占号（占号即持久），再写商品草稿。"""
+    product = normalize_product_fields(load_product())
+    product_id = str(product.get("product_id") or "").strip()
+    value = get_context().db.assign_upc(product_id)
+    if not value:
         return {"ok": False, "error": "UPC 池为空，请先在设置中导入 UPC"}
-    try:
-        pool = json.loads(pool_path.read_text(encoding="utf-8"))
-    except Exception:
-        return {"ok": False, "error": "UPC 池读取失败"}
-    values = [str(value or "").strip() for value in list(pool.get("values") or []) if str(value or "").strip()]
-    used = {str(value or "").strip() for value in list(pool.get("used") or []) if str(value or "").strip()}
-    for value in values:
-        if value in used:
-            continue
-        product = normalize_product_fields(load_product())
-        product["upc"] = value
-        drafts = product.get("drafts") if isinstance(product.get("drafts"), dict) else {}
-        for draft in drafts.values():
-            if isinstance(draft, dict):
-                draft["upc"] = value
-                draft["gtin"] = value
-                draft["barcode"] = value
-        saved = save_product(product)
-        used.add(value)
-        pool["used"] = sorted(used)
-        write_json(pool_path, pool)
-        return {
-            "ok": True,
-            "upc": value,
-            "product": saved,
-            "productsIndex": load_products_index(),
-            "imagePool": current_image_pool(saved),
-            "message": f"UPC 已分配：{value}",
-        }
-    return {"ok": False, "error": "UPC 池为空，请先在设置中导入 UPC"}
+    product["upc"] = value
+    drafts = product.get("drafts") if isinstance(product.get("drafts"), dict) else {}
+    for draft in drafts.values():
+        if isinstance(draft, dict):
+            draft["upc"] = value
+            draft["gtin"] = value
+            draft["barcode"] = value
+    saved = save_product(product)
+    return {
+        "ok": True,
+        "upc": value,
+        "product": saved,
+        "productsIndex": load_products_index(),
+        "imagePool": current_image_pool(saved),
+        "upcPool": get_context().db.upc_pool_stats(),
+        "message": f"UPC 已分配：{value}",
+    }
+
+
+def build_mercadolibre_publish_payload(product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    plan = apply_product_drafts_to_plan(product, build_plan_for_platform(product, "mercadolibre"))
+    draft = _draft_for_platform(product, "mercadolibre")
+    payload_config = deepcopy(config)
+    store = payload_config.setdefault("mercadolibre", {})
+    store["category_id"] = str(draft.get("category_id") or "").strip()
+    site_id = str(draft.get("site") or draft.get("site_id") or "").strip().upper()
+    if site_id:
+        store["site_id"] = site_id
+    listing = payload_config.setdefault("listing", {})
+    package_dimensions = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
+    shipping = draft.get("shipping") if isinstance(draft.get("shipping"), dict) else {}
+    for key, value in {
+        "mercadolibre_price": draft.get("price"),
+        "price": draft.get("price"),
+        "stock": draft.get("stock"),
+        "sku": draft.get("sku"),
+        "upc": draft.get("upc") or draft.get("gtin") or draft.get("barcode"),
+        "model": draft.get("model"),
+        "mercadolibre_title": draft.get("title"),
+        "package_length_cm": package_dimensions.get("length_cm"),
+        "package_width_cm": package_dimensions.get("width_cm"),
+        "package_height_cm": package_dimensions.get("height_cm"),
+        "package_weight_kg": package_dimensions.get("weight_kg"),
+        "mercadolibre_logistic_type": shipping.get("logistic_type") or shipping.get("mode"),
+        "mercadolibre_attributes": draft.get("attributes") if isinstance(draft.get("attributes"), dict) else {},
+    }.items():
+        if value not in (None, "", {}):
+            listing[key] = value
+    if isinstance(draft.get("sale_terms"), list) and draft.get("sale_terms"):
+        listing["mercadolibre_sale_terms"] = draft.get("sale_terms")
+    picture_refs = image_pool_refs_for_platform(product, "mercadolibre") or normalize_list(product.get("source_image_urls"))
+    return publisher.build_mercadolibre_payload(product, plan, payload_config, picture_refs)
 
 
 def build_publish_payload(product: dict[str, Any], platform: str, config: dict[str, Any]) -> dict[str, Any]:
-    plan = apply_product_drafts_to_plan(product, build_plan_for_platform(product, platform))
-    if platform == "mercadolibre":
-        draft = _draft_for_platform(product, "mercadolibre")
-        payload_config = deepcopy(config)
-        store = payload_config.setdefault("mercadolibre", {})
-        store["category_id"] = str(draft.get("category_id") or "").strip()
-        site_id = str(draft.get("site") or draft.get("site_id") or "").strip().upper()
-        if site_id:
-            store["site_id"] = site_id
-        listing = payload_config.setdefault("listing", {})
-        package_dimensions = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
-        shipping = draft.get("shipping") if isinstance(draft.get("shipping"), dict) else {}
-        for key, value in {
-            "mercadolibre_price": draft.get("price"),
-            "price": draft.get("price"),
-            "stock": draft.get("stock"),
-            "sku": draft.get("sku"),
-            "upc": draft.get("upc") or draft.get("gtin") or draft.get("barcode"),
-            "model": draft.get("model"),
-            "mercadolibre_title": draft.get("title"),
-            "package_length_cm": package_dimensions.get("length_cm"),
-            "package_width_cm": package_dimensions.get("width_cm"),
-            "package_height_cm": package_dimensions.get("height_cm"),
-            "package_weight_kg": package_dimensions.get("weight_kg"),
-            "mercadolibre_logistic_type": shipping.get("logistic_type") or shipping.get("mode"),
-            "mercadolibre_attributes": draft.get("attributes") if isinstance(draft.get("attributes"), dict) else {},
-        }.items():
-            if value not in (None, "", {}):
-                listing[key] = value
-        if isinstance(draft.get("sale_terms"), list) and draft.get("sale_terms"):
-            listing["mercadolibre_sale_terms"] = draft.get("sale_terms")
-        picture_refs = image_pool_refs_for_platform(product, "mercadolibre") or normalize_list(product.get("source_image_urls"))
-        return publisher.build_mercadolibre_payload(product, plan, payload_config, picture_refs)
-    if platform == "yandex":
-        raise RuntimeError("Yandex 发布 API 尚未接入，当前不能生成真实发布 payload。")
-    if platform == "ozon":
-        return publisher.build_ozon_payload(product, plan, config)
-    raise RuntimeError("不支持的平台")
+    from .publish_adapter import require_publishing_adapter
+
+    return require_publishing_adapter(platform).build_payload(product, config)
+
+
+def validate_mercadolibre_publish_payload(payload: Any, config: dict[str, Any]) -> list[str]:
+    missing: list[str] = []
+    payload = payload if isinstance(payload, dict) else {}
+    if not config.get("mercadolibre", {}).get("access_token"):
+        missing.append("Mercado Libre Access Token")
+    if not payload.get("title"):
+        missing.append("标题")
+    if not payload.get("category_id"):
+        missing.append("类目 ID")
+    if not payload.get("price"):
+        missing.append("价格")
+    if not payload.get("attributes"):
+        missing.append("类目属性")
+    pictures = payload.get("pictures") or payload.get("sites_to_sell", [{}])[0].get("pictures", [])
+    if not pictures:
+        missing.append("图片")
+    return missing
 
 
 def validate_publish_payload(platform: str, payload: Any, config: dict[str, Any]) -> list[str]:
-    missing: list[str] = []
-    if platform == "mercadolibre":
-        if not config.get("mercadolibre", {}).get("access_token"):
-            missing.append("Mercado Libre Access Token")
-        if not payload.get("title"):
-            missing.append("标题")
-        if not payload.get("category_id"):
-            missing.append("类目 ID")
-        if not payload.get("price"):
-            missing.append("价格")
-        if not payload.get("attributes"):
-            missing.append("类目属性")
-        pictures = payload.get("pictures") or payload.get("sites_to_sell", [{}])[0].get("pictures", [])
-        if not pictures:
-            missing.append("图片")
-    elif platform == "yandex":
-        missing.append("Yandex 发布 API 尚未接入，当前仅支持站点、文案、类目与核价配置。")
-    elif platform == "ozon":
-        missing.append("该平台发布接口尚未配置，当前仅完成数据校验。")
-    return missing
+    from .publish_adapter import require_publishing_adapter
+
+    return require_publishing_adapter(platform).validate_payload(payload, config)
 
 
 def precheck_item(code: str, field: str, message: str, severity: str = "error", next_action: str = "") -> dict[str, str]:
@@ -290,10 +280,12 @@ __all__ = [
     "_masked_auth_status",
     "_required_attribute_summary",
     "assign_upc",
+    "build_mercadolibre_publish_payload",
     "build_publish_payload",
     "compact_precheck",
     "compact_precheck_items",
     "compact_publish_failure_response",
     "precheck_item",
+    "validate_mercadolibre_publish_payload",
     "validate_publish_payload",
 ]

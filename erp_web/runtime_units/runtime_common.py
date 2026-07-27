@@ -45,45 +45,44 @@ from erp_web.product_model import (
     SOURCE_COMPAT_IMAGE_ORIGINS,
     validate_category_precheck,
 )
+from erp_web.context import get_context
 from erp_web.runtime_units.publishing_bus_core import PublishingBus
 
 
-APP_DIR = Path(__file__).resolve().parents[2]
-DIST_DIR = APP_DIR / "dist"
-DATA_DIR = APP_DIR / "data"
-CONFIG_DIR = APP_DIR / "config"
-CACHE_DIR = DATA_DIR / "cache"
-LOGS_DIR = DATA_DIR / "logs"
-IMAGES_DIR = DATA_DIR / "images"
-EXPORTS_DIR = DATA_DIR / "exports"
-OUTPUT_DIR = LOGS_DIR
-STORE_CONFIG_PATH = CONFIG_DIR / "store_config.json"
-APP_CONFIG_PATH = CONFIG_DIR / "app_config.json"
-REMOVED_LEGACY_CONFIG_PATHS: tuple[Path, ...] = ()
-LEGACY_STORE_CONFIG_PATHS = REMOVED_LEGACY_CONFIG_PATHS
-LEGACY_APP_CONFIG_PATHS = REMOVED_LEGACY_CONFIG_PATHS
-PUBLISH_LOG_PATH = OUTPUT_DIR / "publish_logs.json"
-PUBLISHING_JOB_DIR = OUTPUT_DIR / "publishing_jobs"
-TASK_DIR = OUTPUT_DIR / "codex_tasks"
-CHATGPT_DIR = IMAGES_DIR / "chatgpt"
-SOURCE_DIR = IMAGES_DIR / "source"
-UPLOAD_DIR = IMAGES_DIR / "uploads"
-COLLECT_DEBUG_DIR = CACHE_DIR / "collect_debug"
-BROWSER_PROFILE_DIR = APP_DIR / "browser_profile" / "1688"
-FRONT_DIR = APP_DIR / "front"
-FRONT_DIST_DIR = APP_DIR / "erp_web" / "static" / "dist"
-FRONT_DIST_INDEX_PATH = FRONT_DIST_DIR / "index.html"
-WEB_TEMPLATE_PATH = FRONT_DIR / "index.html"
-# Port convention — ERP_PORT is the single knob:
-#   default 5000 (production / Electron desktop, front/desktop/main.cjs follows it)
-#   scripts/dev.sh exports ERP_PORT=5050 and points the Vite proxy at it
-#   tests/conftest.py builds its base URL from the same variable
-WEB_PORT = int(os.environ.get("ERP_PORT", "5000"))
-BROWSER_DEBUG_PORT = int(os.environ.get("ERP_BROWSER_DEBUG_PORT", "9222"))
+# 过渡：路径/端口常量现在由 AppPaths 派生（erp_web/context.py），此处仅保留
+# 模块级名字向后兼容（含测试 monkeypatch）。新代码请用 get_context().paths。
+_paths = get_context().paths
+APP_DIR = _paths.app_dir
+DIST_DIR = _paths.dist_dir
+DATA_DIR = _paths.data_dir
+CONFIG_DIR = _paths.config_dir
+CACHE_DIR = _paths.cache_dir
+LOGS_DIR = _paths.logs_dir
+IMAGES_DIR = _paths.images_dir
+EXPORTS_DIR = _paths.exports_dir
+OUTPUT_DIR = _paths.output_dir
+STORE_CONFIG_PATH = _paths.store_config_path
+APP_CONFIG_PATH = _paths.app_config_path
+REMOVED_LEGACY_CONFIG_PATHS: tuple[Path, ...] = _paths.removed_legacy_config_paths
+LEGACY_STORE_CONFIG_PATHS = _paths.legacy_store_config_paths
+LEGACY_APP_CONFIG_PATHS = _paths.legacy_app_config_paths
+TASK_DIR = _paths.task_dir
+CHATGPT_DIR = _paths.chatgpt_dir
+SOURCE_DIR = _paths.source_dir
+UPLOAD_DIR = _paths.upload_dir
+COLLECT_DEBUG_DIR = _paths.collect_debug_dir
+BROWSER_PROFILE_DIR = _paths.browser_profile_dir
+FRONT_DIR = _paths.front_dir
+FRONT_DIST_DIR = _paths.front_dist_dir
+FRONT_DIST_INDEX_PATH = _paths.front_dist_index_path
+WEB_TEMPLATE_PATH = _paths.web_template_path
+# Port convention: see AppPaths.from_app_dir (ERP_PORT is the single knob).
+WEB_PORT = _paths.web_port
+BROWSER_DEBUG_PORT = _paths.browser_debug_port
 DEFAULT_EXCHANGE_RATE_API_URL = "https://open.er-api.com/v6/latest/USD"
 AI_TEXT_REQUEST_TIMEOUT_SECONDS = int(os.environ.get("AI_TEXT_REQUEST_TIMEOUT_SECONDS", "60"))
 AI_IMAGE_REQUEST_TIMEOUT_SECONDS = int(os.environ.get("AI_IMAGE_REQUEST_TIMEOUT_SECONDS", "180"))
-BROWSER_DEBUG_PROFILE_DIR = Path(os.environ.get("ERP_BROWSER_PROFILE_DIR", str(APP_DIR / "browser_profile" / "debug")))
+BROWSER_DEBUG_PROFILE_DIR = _paths.browser_debug_profile_dir
 DRAFT_WORKFLOW_STATUSES = (
     "collected",
     "claimed",
@@ -92,7 +91,6 @@ DRAFT_WORKFLOW_STATUSES = (
     "ready_to_publish",
     "published",
 )
-EXCHANGE_RATE_CACHE: dict[str, Any] = {}
 
 VERIFY_MARKERS = (
     "安全验证",

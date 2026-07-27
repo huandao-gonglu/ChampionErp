@@ -3,21 +3,20 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from erp_web.product_model import default_source
 from erp_web.services import collect_service
 
 from erp_web.runtime_units.collect_helpers import claim_products_to_platforms
-from erp_web.runtime_units.product_store import load_product, load_products_index, normalize_product_fields, save_product
+from erp_web.runtime_units.product_store import load_products_index
 from erp_web.runtime_units.runtime_common import BROWSER_DEBUG_PORT, BROWSER_DEBUG_PROFILE_DIR
 from erp_web.runtime_units.source_collect_browser import open_browser_debug_session
 from erp_web.runtime_units.source_collect_workflows import (
+    collect_1688_payload_service,
     collect_batch_products,
     collect_extension_payload,
     collect_from_browser_tab,
     collect_source_product,
 )
 from erp_web.schemas.api import ApiResponse
-from erp_web.schemas.product import Product
 
 ResponseWithStatus = tuple[ApiResponse, int]
 
@@ -62,54 +61,8 @@ def claim_products_payload(body: dict[str, Any]) -> ResponseWithStatus:
 
 def collect_1688_payload(body: dict[str, Any]) -> ResponseWithStatus:
     try:
-        pasted = str(body.get("text") or body.get("html") or body.get("source_text") or "").strip()
-        if pasted:
-            cleaned = collect_service.clean_1688_text(pasted, str(body.get("url") or body.get("source_url") or ""))
-            if body.get("save"):
-                product: Product = normalize_product_fields(body.get("product") or load_product())
-                product.update(
-                    {
-                        "source_platform": "1688",
-                        "source_url": cleaned.get("source_url") or product.get("source_url") or "",
-                        "source_price_cny": cleaned.get("source_price_cny", ""),
-                        "source_price_cny_for_cost": cleaned.get("source_price_cny_for_cost", ""),
-                        "source_material": cleaned.get("source_material", ""),
-                        "source_weight_kg": cleaned.get("source_weight_kg", ""),
-                        "materials": cleaned.get("materials") or product.get("materials", []),
-                        "dimensions": cleaned.get("dimensions") or product.get("dimensions", ""),
-                        "colors": cleaned.get("colors") or product.get("colors", []),
-                        "package_includes": cleaned.get("package_includes") or product.get("package_includes", []),
-                        "target_customer": cleaned.get("target_customer") or product.get("target_customer", ""),
-                        "source_text": cleaned.get("source_text", ""),
-                        "supplemental_info": cleaned.get("supplemental_info", ""),
-                    }
-                )
-                source = product.get("source") if isinstance(product.get("source"), dict) else default_source()
-                source.update(
-                    {
-                        "source_platform": "1688",
-                        "source_url": cleaned.get("source_url") or source.get("source_url") or "",
-                        "price": cleaned.get("source_price_cny") or source.get("price") or "",
-                        "currency": "CNY" if cleaned.get("source_price_cny") else source.get("currency", ""),
-                        "description": cleaned.get("clean_source_text") or source.get("description") or "",
-                        "attributes": cleaned.get("source_attributes") or {},
-                    }
-                )
-                product["source"] = source
-                saved: Product = save_product(product)
-                cleaned["product"] = saved
-                cleaned["productsIndex"] = load_products_index()
-            return cleaned, 200 if cleaned.get("ok") else 400
-        result = collect_source_product(
-            body.get("url", ""),
-            body.get("mode", "browser"),
-            body.get("cookie", ""),
-            "1688",
-            body.get("platforms") if isinstance(body.get("platforms"), list) else None,
-            body.get("1688_api") if isinstance(body.get("1688_api"), dict) else None,
-        )
+        result = collect_1688_payload_service(body)
         status = 200 if result.get("ok") or (result.get("diagnostics") or {}).get("partial_success") else 400
-        result["productsIndex"] = load_products_index()
         return result, status
     except Exception as exc:
         return {"ok": False, "error": str(exc)}, 400

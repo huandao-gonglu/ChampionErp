@@ -10,8 +10,9 @@ import pytest
 
 from conftest import assert_no_old_path
 from erp_web import runtime as erp_web_app
-import erp_web.runtime as erp_runtime
+from erp_web.runtime_units import auth_runtime
 from erp_web.services import ai_gateway, ai_model_config, browser_ai_runtime, copy_service
+from tests.runtime_test_utils import patch_unit_globals
 
 
 def test_generate_copy_without_api_key_does_not_create_fallback_copy(app_dir: Path) -> None:
@@ -494,7 +495,7 @@ def test_ai_model_connection_uses_saved_key_when_public_payload_omits_secret(mon
         return FakeResponse()
 
     monkeypatch.setattr(
-        erp_runtime,
+        auth_runtime,
         "load_app_config",
         lambda: {
             "ai_models": [
@@ -558,7 +559,7 @@ def test_ai_model_connection_copies_saved_key_from_source_model(monkeypatch) -> 
         return FakeResponse()
 
     monkeypatch.setattr(
-        erp_runtime,
+        auth_runtime,
         "load_app_config",
         lambda: {
             "ai_models": [
@@ -1442,19 +1443,13 @@ def test_ai_model_web_search_probe_uses_configured_responses_api(monkeypatch) ->
 
 
 def test_assign_upc_writes_current_product_and_returns_full_payload(tmp_path: Path) -> None:
-    original = {
-        "APP_DIR": erp_web_app.APP_DIR,
-        "DATA_DIR": erp_web_app.DATA_DIR,
-        "CONFIG_DIR": erp_web_app.CONFIG_DIR,
-        "APP_CONFIG_PATH": erp_web_app.APP_CONFIG_PATH,
-        "LEGACY_APP_CONFIG_PATHS": erp_web_app.LEGACY_APP_CONFIG_PATHS,
-    }
-    try:
-        erp_web_app.APP_DIR = tmp_path
-        erp_web_app.DATA_DIR = tmp_path / "data"
-        erp_web_app.CONFIG_DIR = tmp_path / "config"
-        erp_web_app.APP_CONFIG_PATH = erp_web_app.CONFIG_DIR / "app_config.json"
-        erp_web_app.LEGACY_APP_CONFIG_PATHS = (tmp_path / "app_config.json", tmp_path / "dist" / "app_config.json")
+    with patch_unit_globals(
+        APP_DIR=tmp_path,
+        DATA_DIR=tmp_path / "data",
+        CONFIG_DIR=tmp_path / "config",
+        APP_CONFIG_PATH=tmp_path / "config" / "app_config.json",
+        LEGACY_APP_CONFIG_PATHS=(tmp_path / "app_config.json", tmp_path / "dist" / "app_config.json"),
+    ):
         (tmp_path / "upc_pool.json").write_text('{"values":["725272000007"],"used":[]}', encoding="utf-8")
         erp_web_app.save_product({"name": "UPC test product", "drafts": {"mercadolibre": {"enabled": True}}})
 
@@ -1465,6 +1460,3 @@ def test_assign_upc_writes_current_product_and_returns_full_payload(tmp_path: Pa
         assert result["product"]["upc"] == "725272000007"
         assert result["product"]["drafts"]["mercadolibre"]["upc"] == "725272000007"
         assert isinstance(result["productsIndex"], list)
-    finally:
-        for name, value in original.items():
-            setattr(erp_web_app, name, value)

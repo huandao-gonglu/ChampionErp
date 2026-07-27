@@ -7,27 +7,28 @@ from typing import Callable
 from erp_web.services import config_service
 
 from .common import JsonRequestHandler
-from .. import runtime as app
 from ..runtime_units.auth_runtime import (
     build_mercadolibre_auth_link,
     exchange_mercadolibre_code_from_body,
-    mercadolibre_auth_checklist,
     refresh_mercadolibre_token_from_body,
     test_api_config,
     test_store_auth,
 )
 from ..runtime_units.browser_debug import open_auth_link_in_browser
 from ..runtime_units.product_store import (
+    auth_next_action,
     explain_mercadolibre_auth_error,
     load_app_config,
     load_required_product_from_body,
     load_store_config,
+    mercadolibre_auth_checklist,
+    merge_app_config_fields,
     merge_store_config_fields,
     save_app_config,
     save_store_config,
     summarize_store_auth_states,
 )
-from ..runtime_units.publish_logs_runtime import append_ml_auth_test_log
+from ..runtime_units.publish_logs_runtime import append_ml_auth_test_log, mercadolibre_test_error_code
 from ..runtime_units.publish_mercadolibre import run_mercadolibre_07d_test
 from ..runtime_units.runtime_common import APP_DIR
 
@@ -77,7 +78,7 @@ def handle_mercadolibre_exchange_code(handler: JsonRequestHandler) -> None:
         handler.send_json({"ok": True, **result})
     except Exception as exc:
         message = str(exc)
-        code = app._mercadolibre_test_error_code(message)
+        code = mercadolibre_test_error_code(message)
         append_ml_auth_test_log(
             "exchange_code",
             "failed",
@@ -85,7 +86,7 @@ def handle_mercadolibre_exchange_code(handler: JsonRequestHandler) -> None:
             {"ok": False, "error_code": code, "error_message": message},
             code,
             message,
-            app._auth_next_action("mercadolibre", "测试失败", code, message),
+            auth_next_action("mercadolibre", "测试失败", code, message),
         )
         explanation = explain_mercadolibre_auth_error(code, message)
         handler.send_json({"ok": False, "error": message, "error_code": explanation["code"], "next_action": explanation["next_action"], "auth_explanation": explanation}, 400)
@@ -99,7 +100,7 @@ def handle_mercadolibre_refresh_token(handler: JsonRequestHandler) -> None:
         handler.send_json({"ok": True, **result})
     except Exception as exc:
         message = str(exc)
-        code = app._mercadolibre_test_error_code(message)
+        code = mercadolibre_test_error_code(message)
         explanation = explain_mercadolibre_auth_error(code, message)
         handler.send_json({"ok": False, "error": message, "error_code": explanation["code"], "next_action": explanation["next_action"], "auth_explanation": explanation}, 400)
     return
@@ -124,7 +125,7 @@ def handle_test_store_auth(handler: JsonRequestHandler) -> None:
         platform = str(body.get("platform") or "").strip().lower()
         message = str(exc)
         if platform == "mercadolibre":
-            code = app._mercadolibre_test_error_code(message)
+            code = mercadolibre_test_error_code(message)
             explanation = explain_mercadolibre_auth_error(code, message)
             handler.send_json({"ok": False, "error": message, "error_code": explanation["code"], "next_action": explanation["next_action"], "auth_explanation": explanation}, 400)
         else:
@@ -158,8 +159,8 @@ def handle_test_api_config(handler: JsonRequestHandler) -> None:
 def handle_save_settings(handler: JsonRequestHandler) -> None:
     body = handler.read_body()
     if body.get("appConfig"):
-        app_cfg = load_app_config()
-        app_cfg.update(body["appConfig"])
+        # Whitelist merge: never mass-assign arbitrary client keys into app config.
+        app_cfg = merge_app_config_fields(load_app_config(), body["appConfig"])
         save_app_config(app_cfg)
     if body.get("storeConfig"):
         store_cfg = load_store_config()
@@ -173,7 +174,14 @@ def handle_save_settings(handler: JsonRequestHandler) -> None:
                 store_cfg = merge_store_config_fields(store_cfg, {key: value})
         save_store_config(store_cfg)
     store_cfg = load_store_config()
-    handler.send_json({"ok": True, "appConfig": load_app_config(), "storeConfig": store_cfg, "storeAuthSummary": summarize_store_auth_states(store_cfg)})
+    handler.send_json(
+        {
+            "ok": True,
+            "appConfig": config_service.public_app_config(APP_DIR, load_app_config()),
+            "storeConfig": config_service.public_store_config(store_cfg),
+            "storeAuthSummary": summarize_store_auth_states(store_cfg),
+        }
+    )
     return
 
 

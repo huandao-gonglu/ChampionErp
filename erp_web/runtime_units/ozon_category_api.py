@@ -8,7 +8,9 @@ Ozon 创建商品时需要同时使用 ``description_category_id`` 和 ``type_id
 from __future__ import annotations
 
 import time
+import threading
 from copy import deepcopy
+from dataclasses import dataclass, field
 from typing import Any
 
 from erp_web.marketplaces.config_http import request_ozon_json
@@ -17,7 +19,35 @@ from erp_web.marketplaces.config_http import request_ozon_json
 OZON_CATEGORY_TREE_URL = "https://api-seller.ozon.ru/v1/description-category/tree"
 OZON_CATEGORY_ATTRIBUTES_URL = "https://api-seller.ozon.ru/v1/description-category/attribute"
 _TREE_CACHE_TTL_SECONDS = 15 * 60
-_tree_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+
+
+@dataclass
+class TtlCache:
+    ttl_seconds: float
+    _items: dict[str, tuple[float, Any]] = field(default_factory=dict)
+    _lock: threading.RLock = field(default_factory=threading.RLock)
+
+    def get(self, key: str) -> Any | None:
+        now = time.monotonic()
+        with self._lock:
+            cached = self._items.get(key)
+            if not cached:
+                return None
+            if now - cached[0] >= self.ttl_seconds:
+                self._items.pop(key, None)
+                return None
+            return deepcopy(cached[1])
+
+    def set(self, key: str, value: Any) -> None:
+        with self._lock:
+            self._items[key] = (time.monotonic(), deepcopy(value))
+
+    def clear(self) -> None:
+        with self._lock:
+            self._items.clear()
+
+
+_tree_cache = TtlCache(_TREE_CACHE_TTL_SECONDS)
 
 
 def _load_store_config() -> dict[str, Any]:
@@ -51,9 +81,8 @@ def _children(node: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _load_tree(client_id: str, api_key: str) -> list[dict[str, Any]]:
     cached = _tree_cache.get(client_id)
-    now = time.monotonic()
-    if cached and now - cached[0] < _TREE_CACHE_TTL_SECONDS:
-        return deepcopy(cached[1])
+    if isinstance(cached, list):
+        return cached
     response = request_ozon_json(
         "POST",
         OZON_CATEGORY_TREE_URL,
@@ -65,7 +94,7 @@ def _load_tree(client_id: str, api_key: str) -> list[dict[str, Any]]:
     if not isinstance(result, list):
         raise RuntimeError("Ozon 类目树响应缺少 result 列表。")
     tree = [item for item in result if isinstance(item, dict)]
-    _tree_cache[client_id] = (now, deepcopy(tree))
+    _tree_cache.set(client_id, tree)
     return tree
 
 

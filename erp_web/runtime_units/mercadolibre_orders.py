@@ -5,28 +5,16 @@ import urllib.parse
 from typing import Any
 
 from erp_web import marketplaces as publisher
+from erp_web.context import get_context
 
-from .category_store import read_json, write_json
 from .collect_helpers import collect_time_iso
 from .product_store import load_store_config, save_store_config
 from .publish_mercadolibre import ensure_mercadolibre_auth_ready
-from .runtime_common import OUTPUT_DIR
-
-ORDER_NOTIFICATIONS_PATH = OUTPUT_DIR / "mercadolibre_order_notifications.json"
-
-
-def _load_order_notifications() -> list[dict[str, Any]]:
-    value = read_json(ORDER_NOTIFICATIONS_PATH, [])
-    return value if isinstance(value, list) else []
 
 
 def load_mercadolibre_order_notifications(limit: int = 20) -> list[dict[str, Any]]:
-    notifications = _load_order_notifications()
-    return notifications[: max(1, min(int(limit or 20), 100))]
-
-
-def _save_order_notifications(items: list[dict[str, Any]]) -> None:
-    write_json(ORDER_NOTIFICATIONS_PATH, items[:200])
+    """查 order_notifications 表（id desc）；插表天然并发安全，不再截断丢数据。"""
+    return get_context().db.list_order_notifications(limit=max(1, min(int(limit or 20), 200)))
 
 
 def _mercadolibre_user_id(config: dict[str, Any], token: str) -> str:
@@ -184,9 +172,7 @@ def record_mercadolibre_order_notification(body: dict[str, Any]) -> dict[str, An
         notification["order_id"] = str(order.get("id") or "")
     if error:
         notification["error"] = error
-    notifications = _load_order_notifications()
-    notifications.insert(0, notification)
-    _save_order_notifications(notifications)
+    get_context().db.insert_order_notification(notification)
     return {"ok": not bool(error), "notification": notification, "order": order, "error": error}
 
 

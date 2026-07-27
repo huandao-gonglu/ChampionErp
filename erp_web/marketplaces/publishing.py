@@ -26,13 +26,3 @@ def publish_mercadolibre(payload: dict[str, Any], token: str) -> dict[str, Any]:
             description,
         )
     return item if isinstance(item, dict) else {"response": item}
-
-
-def publish_wildberries(payload: list[dict[str, Any]], token: str) -> dict[str, Any]:
-    result = request_json(
-        "POST",
-        "https://content-api.wildberries.ru/content/v2/cards/upload",
-        token,
-        payload,
-    )
-    return result if isinstance(result, dict) else {"response": result}

@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import urllib.parse
 
-from erp_web.services import ai_work_service
+from erp_web.context import get_context
 
 from .common import JsonRequestHandler
-from ..runtime_units.runtime_common import APP_DIR
 
 
 CONVERSATIONS_PATH = "/api/v1/ai-work/conversations"
@@ -27,7 +26,7 @@ def handle_conversation_list(handler: JsonRequestHandler, parsed: object) -> Non
     handler.send_json(
         {
             "ok": True,
-            "conversations": ai_work_service.list_conversations(APP_DIR, limit=limit),
+            "conversations": get_context().ai_journal.list_conversations(limit=limit),
         }
     )
 
@@ -42,7 +41,8 @@ def _conversation_parts(path: str) -> tuple[str, str]:
 
 def handle_conversation(handler: JsonRequestHandler, parsed: object) -> None:
     conversation_id, action = _conversation_parts(parsed.path)
-    path = ai_work_service.find_conversation_path(APP_DIR, conversation_id)
+    journal = get_context().ai_journal
+    path = journal.find_conversation_path(conversation_id)
     if path is None:
         handler.send_json({"ok": False, "error": "AI 对话不存在。"}, 404)
         return
@@ -50,8 +50,7 @@ def handle_conversation(handler: JsonRequestHandler, parsed: object) -> None:
     after_seq = max(_int_param(params, "after_seq", 0), 0)
     if action in {"events", "raw"}:
         wait_ms = 0 if action == "raw" else _int_param(params, "wait_ms", 0)
-        events = ai_work_service.wait_for_conversation_events(
-            APP_DIR,
+        events = journal.wait_for_events(
             conversation_id,
             after_seq=after_seq,
             wait_ms=wait_ms,
@@ -65,8 +64,7 @@ def handle_conversation(handler: JsonRequestHandler, parsed: object) -> None:
         {
             "ok": True,
             "conversation_id": conversation_id,
-            "events": ai_work_service.load_conversation_events(
-                APP_DIR,
+            "events": journal.read_events(
                 conversation_id,
                 after_seq=after_seq,
             ),

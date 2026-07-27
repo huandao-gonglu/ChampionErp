@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from erp_web.runtime_units import category_product_identify
+from erp_web.runtime_units import ai_use_case, category_product_identify
 
 
 def test_identify_product_for_category_returns_localized_query_for_every_target(monkeypatch) -> None:
@@ -21,7 +21,7 @@ def test_identify_product_for_category_returns_localized_query_for_every_target(
             ],
         }
 
-    monkeypatch.setattr(category_product_identify.ai_gateway, "chat_json", fake_chat_json)
+    monkeypatch.setattr(ai_use_case.ai_gateway, "chat_json", fake_chat_json)
     result = category_product_identify.identify_product_for_category(
         {
             "name": "2026新品 Ultra2E 手持小风扇便携式迷你无叶 USB 高速节能电风扇",
@@ -68,7 +68,7 @@ def test_identify_product_for_category_returns_localized_query_for_every_target(
 
 def test_identify_product_for_category_deduplicates_targets_and_keeps_missing_query_empty(monkeypatch) -> None:
     monkeypatch.setattr(
-        category_product_identify.ai_gateway,
+        ai_use_case.ai_gateway,
         "chat_json",
         lambda *args, **kwargs: {"product_name": "折叠伞", "target_queries": []},
     )

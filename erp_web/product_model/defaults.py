@@ -5,6 +5,7 @@ from typing import Any
 from .common import PLATFORMS
 from .image_pool_model import default_image_pool_item
 from erp_web.marketplace_registry import default_marketplace_site
+from erp_web.schemas.product import PRODUCT_SCHEMA_VERSION
 
 def default_source() -> dict[str, Any]:
     return {
@@ -160,6 +161,7 @@ def default_draft(platform: str) -> dict[str, Any]:
 
 def default_product_model() -> dict[str, Any]:
     return {
+        "schema_version": PRODUCT_SCHEMA_VERSION,
         "name": "",
         "brand": "",
         "category": "",

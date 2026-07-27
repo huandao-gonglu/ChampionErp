@@ -5,6 +5,7 @@ import urllib.parse
 from typing import Callable
 
 from erp_web.services import config_service
+from erp_web.schemas.api import API_SCHEMA_VERSION, validate_app_state_response
 from erp_web.http_route_units import static_routes
 from .common import JsonRequestHandler
 from .. import runtime as app
@@ -63,7 +64,6 @@ GET_API_ROUTES = {
 STATIC_ROUTES = {
     "/file",
     "/auth/mercadolibre",
-    "/auth/wildberries",
     "/auth/ozon",
     "/auth/mercadolibre/callback",
 }
@@ -84,25 +84,26 @@ def handle_frontend_page(handler: JsonRequestHandler, parsed: object) -> None:
 def handle_state(handler: JsonRequestHandler, parsed: object) -> None:
     prod = load_product()
     store_cfg = load_store_config()
-    handler.send_json(
-        {
-            "ok": True,
-            "product": prod,
-            "appConfig": load_app_config(),
-            "storeConfig": store_cfg,
-            "storeAuthSummary": summarize_store_auth_states(store_cfg),
-            "mercadolibreAuthChecklist": mercadolibre_auth_checklist(store_cfg.get("mercadolibre", {})),
-            "imagePool": current_image_pool(prod),
-            "sourceImages": current_source_images(prod),
-            "generatedImages": current_generated_images(),
-            "publishLogs": load_publish_logs(),
-            "mercadolibreOrderNotifications": load_mercadolibre_order_notifications(),
-            "productsIndex": load_products_index(),
-            "draftsIndex": load_drafts_index(),
-            "platformOptions": marketplace_options(),
-            "outputDir": str(OUTPUT_DIR),
-        }
-    )
+    app_cfg = load_app_config()
+    state = {
+        "schemaVersion": API_SCHEMA_VERSION,
+        "ok": True,
+        "product": prod,
+        "appConfig": config_service.public_app_config(APP_DIR, app_cfg),
+        "storeConfig": config_service.public_store_config(store_cfg),
+        "storeAuthSummary": summarize_store_auth_states(store_cfg),
+        "mercadolibreAuthChecklist": mercadolibre_auth_checklist(store_cfg.get("mercadolibre", {})),
+        "imagePool": current_image_pool(prod),
+        "sourceImages": current_source_images(prod),
+        "generatedImages": current_generated_images(),
+        "publishLogs": load_publish_logs(),
+        "mercadolibreOrderNotifications": load_mercadolibre_order_notifications(),
+        "productsIndex": load_products_index(),
+        "draftsIndex": load_drafts_index(),
+        "platformOptions": marketplace_options(),
+        "outputDir": str(OUTPUT_DIR),
+    }
+    handler.send_json(validate_app_state_response(state))
 
 
 def handle_products_index(handler: JsonRequestHandler, parsed: object) -> None:
@@ -122,7 +123,12 @@ def handle_browser_debug_status(handler: JsonRequestHandler, parsed: object) -> 
 
 
 def handle_publish_logs(handler: JsonRequestHandler, parsed: object) -> None:
-    handler.send_json({"ok": True, "items": load_publish_logs()})
+    params = urllib.parse.parse_qs(parsed.query)
+    try:
+        limit = int((params.get("limit") or ["200"])[0] or 200)
+    except ValueError:
+        limit = 200
+    handler.send_json({"ok": True, "items": load_publish_logs(limit=limit)})
 
 
 def handle_mercadolibre_published_items(handler: JsonRequestHandler, parsed: object) -> None:
@@ -177,10 +183,6 @@ def handle_mercadolibre_auth_page(handler: JsonRequestHandler, parsed: object) -
     static_routes.serve_ml_auth_page(handler)
 
 
-def handle_wildberries_auth_page(handler: JsonRequestHandler, parsed: object) -> None:
-    static_routes.serve_store_help_page(handler, "wildberries")
-
-
 def handle_ozon_auth_page(handler: JsonRequestHandler, parsed: object) -> None:
     static_routes.serve_store_help_page(handler, "ozon")
 
@@ -201,7 +203,6 @@ GET_HANDLERS: dict[str, GetHandler] = {
     "/api/publish-bus/status": handle_publish_bus_status,
     "/file": handle_file,
     "/auth/mercadolibre": handle_mercadolibre_auth_page,
-    "/auth/wildberries": handle_wildberries_auth_page,
     "/auth/ozon": handle_ozon_auth_page,
     "/auth/mercadolibre/callback": handle_mercadolibre_callback,
 }
