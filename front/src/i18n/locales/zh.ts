@@ -19,7 +19,7 @@ export default {
     library: { title: '商品库', subtitle: '本地商品母库' },
     drafts: { title: '草稿箱', subtitle: '平台草稿、继续编辑' },
     pricing: { title: '核价', subtitle: '成本、运费、利润' },
-    category: { title: '发布预检', subtitle: '类目、属性、payload' },
+    category: { title: '发布预检', subtitle: '发布资料、阻断项、payload' },
     publish: { title: '发布队列', subtitle: '任务状态、日志' },
     mlItems: { title: 'ML已发布', subtitle: '远程商品、删除' },
     pending: { title: '待处理', subtitle: '未完成 / 失败商品' },
@@ -37,7 +37,7 @@ export default {
     },
     precheck: {
       title: '发布预检',
-      description: '类目搜索、必填属性填充、payload 预览、发布前校验。',
+      description: '发布资料、阻断项、payload 预览和发布前校验。',
     },
     publish: {
       title: '发布队列',

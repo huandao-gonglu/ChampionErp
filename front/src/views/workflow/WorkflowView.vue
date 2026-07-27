@@ -4,7 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
 import AuthSettingsPanel from '@/components/auth/AuthSettingsPanel.vue'
-import CategoryPrecheckPanel from '@/components/domain/CategoryPrecheckPanel.vue'
+import CategoryAttributesPanel from '@/components/domain/CategoryAttributesPanel.vue'
+import PublishPrecheckPanel from '@/components/domain/PublishPrecheckPanel.vue'
 import CollectView from '@/views/workflow/CollectView.vue'
 import DashboardView from '@/views/workflow/DashboardView.vue'
 import DraftBoxPanel from '@/components/domain/DraftBoxPanel.vue'
@@ -476,40 +477,17 @@ watch(
           </div>
 
           <div v-else-if="activeNav === 'category'" class="space-y-6">
-            <PageHeader title="发布预检" description="类目搜索、必填属性填充、payload 预览、发布前校验。" />
-            <CategoryPrecheckPanel
+            <PageHeader title="发布预检" description="发布资料、阻断项、payload 预览和发布前校验。" />
+            <PublishPrecheckPanel
               :draft="currentDraft"
               :product-context="currentDraftProductContext"
               :publish-targets="currentPublishTargets"
               :selected-publish-target="selectedPublishTarget"
               :platform-options="platformOptions"
-              :category="category"
-              :category-query="categoryQuery"
-              :category-results="categoryResults"
-              :category-auto-match-product-name="categoryAutoMatchProductName"
-              :category-auto-match-target-error="categoryAutoMatchTargetError"
-              :category-attribute-translation-enabled="categoryAttributeTranslationEnabled"
-              :category-attribute-translations="categoryAttributeTranslations"
-              :category-attribute-translations-source="categoryAttributeTranslationsSource"
-              :category-attribute-translating="categoryAttributeTranslating"
-              :category-attribute-loading="categoryAttributeLoading"
-              :category-attribute-error="categoryAttributeError"
-              :category-result-translations="categoryResultTranslations"
-              :category-result-translations-source="categoryResultTranslationsSource"
-              :category-result-translating="categoryResultTranslating"
-              :category-precheck="categoryPrecheck"
               :precheck="precheck"
               :payload-preview="payloadPreview"
               :loading="loading"
-              @update-category-query="categoryQuery = $event"
               @select-publish-target="store.selectPublishTarget"
-              @search-category="store.searchCategory"
-              @suggest-category="store.suggestCategoryByAi"
-              @select-category="store.selectCategory"
-              @apply-category="store.loadCategoryAttributes"
-              @set-translate-attributes-enabled="store.setCategoryAttributeTranslationEnabled"
-              @fill-attributes="store.fillAttributesByAi"
-              @category-precheck="store.runCategoryOnlyPrecheck"
               @precheck="store.runPrecheck"
               @preview-payload="store.previewPayload"
               @publish="() => store.enqueuePublish()"
@@ -764,8 +742,7 @@ watch(
 
           <template #category>
             <div class="relative">
-              <CategoryPrecheckPanel
-                mode="category"
+              <CategoryAttributesPanel
                 :draft="currentDraft"
                 :product-context="currentDraftProductContext"
                 :publish-targets="currentPublishTargets"
@@ -787,7 +764,6 @@ watch(
                 :category-result-translating="categoryResultTranslating"
                 :category-precheck="categoryPrecheck"
                 :precheck="precheck"
-                :payload-preview="payloadPreview"
                 :loading="loading"
                 @update-category-query="categoryQuery = $event"
                 @select-publish-target="store.selectPublishTarget"
@@ -798,9 +774,6 @@ watch(
                 @set-translate-attributes-enabled="store.setCategoryAttributeTranslationEnabled"
                 @fill-attributes="store.fillAttributesByAi"
                 @category-precheck="store.runCategoryOnlyPrecheck"
-                @precheck="store.runPrecheck"
-                @preview-payload="store.previewPayload"
-                @publish="() => store.enqueuePublish()"
               />
               <div v-if="categoryAutoMatching" class="absolute inset-0 z-20 flex items-center justify-center rounded-3xl bg-white/90 p-6 text-center backdrop-blur-sm dark:bg-dark-950/90">
                 <div class="max-w-md">
@@ -831,40 +804,16 @@ watch(
           </template>
 
           <template #precheck>
-            <CategoryPrecheckPanel
-              mode="publish"
+            <PublishPrecheckPanel
               :draft="currentDraft"
               :product-context="currentDraftProductContext"
               :publish-targets="currentPublishTargets"
               :selected-publish-target="selectedPublishTarget"
               :platform-options="platformOptions"
-              :category="category"
-              :category-query="categoryQuery"
-              :category-results="categoryResults"
-              :category-auto-match-product-name="categoryAutoMatchProductName"
-              :category-auto-match-target-error="categoryAutoMatchTargetError"
-              :category-attribute-translation-enabled="categoryAttributeTranslationEnabled"
-              :category-attribute-translations="categoryAttributeTranslations"
-              :category-attribute-translations-source="categoryAttributeTranslationsSource"
-              :category-attribute-translating="categoryAttributeTranslating"
-              :category-attribute-loading="categoryAttributeLoading"
-              :category-attribute-error="categoryAttributeError"
-              :category-result-translations="categoryResultTranslations"
-              :category-result-translations-source="categoryResultTranslationsSource"
-              :category-result-translating="categoryResultTranslating"
-              :category-precheck="categoryPrecheck"
               :precheck="precheck"
               :payload-preview="payloadPreview"
               :loading="loading"
-              @update-category-query="categoryQuery = $event"
               @select-publish-target="store.selectPublishTarget"
-              @search-category="store.searchCategory"
-              @suggest-category="store.suggestCategoryByAi"
-              @select-category="store.selectCategory"
-              @apply-category="store.loadCategoryAttributes"
-              @set-translate-attributes-enabled="store.setCategoryAttributeTranslationEnabled"
-              @fill-attributes="store.fillAttributesByAi"
-              @category-precheck="store.runCategoryOnlyPrecheck"
               @precheck="store.runPrecheck"
               @preview-payload="store.previewPayload"
               @publish="() => store.enqueuePublish()"

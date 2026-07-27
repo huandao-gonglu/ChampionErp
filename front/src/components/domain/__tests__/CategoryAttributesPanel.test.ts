@@ -2,7 +2,7 @@
 
 import { mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import CategoryPrecheckPanel from '@/components/domain/CategoryPrecheckPanel.vue'
+import CategoryAttributesPanel from '@/components/domain/CategoryAttributesPanel.vue'
 import { createEmptyDraftDetail, createEmptyDraftProductContext } from '@/constants/initialState'
 import type { CategorySelection, DraftDetail, MarketplaceTargetSite } from '@/types/workflow'
 
@@ -15,7 +15,6 @@ const target: MarketplaceTargetSite = {
 
 function panelProps(draft: DraftDetail, category: CategorySelection | null) {
   return {
-    mode: 'category' as const,
     draft,
     productContext: createEmptyDraftProductContext(),
     publishTargets: [target],
@@ -33,7 +32,6 @@ function panelProps(draft: DraftDetail, category: CategorySelection | null) {
     categoryResultTranslating: false,
     categoryPrecheck: null,
     precheck: null,
-    payloadPreview: null,
     loading: false,
   }
 }
@@ -42,7 +40,7 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 
-describe('CategoryPrecheckPanel', () => {
+describe('CategoryAttributesPanel', () => {
   it('平台属性定义未加载时不再用草稿属性生成临时输入框', async () => {
     const draft = createEmptyDraftDetail('ozon')
     draft.draftId = 'draft-schema-error'
@@ -51,7 +49,7 @@ describe('CategoryPrecheckPanel', () => {
     draft.attributes = { BRAND: '卡西道夫', 7236: '旧值' }
     draft.validationErrors = ['7236']
 
-    const wrapper = mount(CategoryPrecheckPanel, {
+    const wrapper = mount(CategoryAttributesPanel, {
       props: {
         ...panelProps(draft, null),
         categoryAttributeError: '平台类目属性接口超时',
@@ -88,7 +86,7 @@ describe('CategoryPrecheckPanel', () => {
       optionalAttributes: [{ id: '8229', name: 'Бренд', required: false, options: [] }],
       raw: {},
     }
-    const wrapper = mount(CategoryPrecheckPanel, {
+    const wrapper = mount(CategoryAttributesPanel, {
       attachTo: document.body,
       props: panelProps(draft, category),
     })

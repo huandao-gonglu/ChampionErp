@@ -15,7 +15,7 @@ export const workflowNavItems: WorkflowNavItem[] = [
   { key: 'library', title: '商品库', titleKey: 'nav.library.title', subtitle: '本地商品母库', subtitleKey: 'nav.library.subtitle', icon: '▱' },
   { key: 'drafts', title: '草稿箱', titleKey: 'nav.drafts.title', subtitle: '平台草稿、继续编辑', subtitleKey: 'nav.drafts.subtitle', icon: '▤' },
   { key: 'pricing', title: '核价', titleKey: 'nav.pricing.title', subtitle: '成本、运费、利润', subtitleKey: 'nav.pricing.subtitle', icon: '◷' },
-  { key: 'category', title: '发布预检', titleKey: 'nav.category.title', subtitle: '类目、属性、payload', subtitleKey: 'nav.category.subtitle', icon: '◇' },
+  { key: 'category', title: '发布预检', titleKey: 'nav.category.title', subtitle: '发布资料、阻断项、payload', subtitleKey: 'nav.category.subtitle', icon: '◇' },
   { key: 'publish', title: '发布队列', titleKey: 'nav.publish.title', subtitle: '任务状态、日志', subtitleKey: 'nav.publish.subtitle', icon: '▣' },
   { key: 'mlItems', title: 'ML已发布', titleKey: 'nav.mlItems.title', subtitle: '远程商品、删除', subtitleKey: 'nav.mlItems.subtitle', icon: '▨' },
   { key: 'pending', title: '待处理', titleKey: 'nav.pending.title', subtitle: '未完成 / 失败商品', subtitleKey: 'nav.pending.subtitle', icon: '!' },

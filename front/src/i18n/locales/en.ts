@@ -19,7 +19,7 @@ export default {
     library: { title: 'Library', subtitle: 'Local product master' },
     drafts: { title: 'Drafts', subtitle: 'Platform drafts, continue editing' },
     pricing: { title: 'Pricing', subtitle: 'Cost, freight, margin' },
-    category: { title: 'Publish Precheck', subtitle: 'Category, attributes, payload' },
+    category: { title: 'Publish Precheck', subtitle: 'Requirements, blockers, payload' },
     publish: { title: 'Publish Queue', subtitle: 'Jobs and logs' },
     mlItems: { title: 'ML Published', subtitle: 'Remote items, close listing' },
     pending: { title: 'Pending', subtitle: 'Incomplete or failed items' },
@@ -37,7 +37,7 @@ export default {
     },
     precheck: {
       title: 'Publish Precheck',
-      description: 'Search categories, fill required attributes, preview payloads, and validate before publishing.',
+      description: 'Review publish requirements and blockers, preview payloads, and validate before publishing.',
     },
     publish: {
       title: 'Publish Queue',
