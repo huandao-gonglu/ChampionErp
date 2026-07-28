@@ -18,8 +18,6 @@ export default {
     collect: { title: 'Collect', subtitle: 'Links, cookies, browser tabs' },
     library: { title: 'Library', subtitle: 'Local product master' },
     drafts: { title: 'Drafts', subtitle: 'Platform drafts, continue editing' },
-    pricing: { title: 'Pricing', subtitle: 'Cost, freight, margin' },
-    category: { title: 'Publish Precheck', subtitle: 'Requirements, blockers, payload' },
     publish: { title: 'Publish Queue', subtitle: 'Jobs and logs' },
     mlItems: { title: 'ML Published', subtitle: 'Remote items, close listing' },
     pending: { title: 'Pending', subtitle: 'Incomplete or failed items' },
@@ -30,14 +28,6 @@ export default {
     drafts: {
       title: 'Drafts',
       description: 'Platform editing drafts created from the product library, focused on copy, images, category, and publish precheck.',
-    },
-    pricing: {
-      title: 'Pricing',
-      description: 'Calculate cost, freight, commission, exchange rates, and margin.',
-    },
-    precheck: {
-      title: 'Publish Precheck',
-      description: 'Review publish requirements and blockers, preview payloads, and validate before publishing.',
     },
     publish: {
       title: 'Publish Queue',

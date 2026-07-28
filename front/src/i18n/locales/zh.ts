@@ -18,8 +18,6 @@ export default {
     collect: { title: '采集', subtitle: '链接、Cookie、浏览器标签' },
     library: { title: '商品库', subtitle: '本地商品母库' },
     drafts: { title: '草稿箱', subtitle: '平台草稿、继续编辑' },
-    pricing: { title: '核价', subtitle: '成本、运费、利润' },
-    category: { title: '发布预检', subtitle: '发布资料、阻断项、payload' },
     publish: { title: '发布队列', subtitle: '任务状态、日志' },
     mlItems: { title: 'ML已发布', subtitle: '远程商品、删除' },
     pending: { title: '待处理', subtitle: '未完成 / 失败商品' },
@@ -30,14 +28,6 @@ export default {
     drafts: {
       title: '草稿箱',
       description: '来自商品库的平台编辑稿，聚焦未发布完成的文案、图片、类目和发布预检。',
-    },
-    pricing: {
-      title: '核价',
-      description: '成本、运费、佣金、汇率和利润计算。',
-    },
-    precheck: {
-      title: '发布预检',
-      description: '发布资料、阻断项、payload 预览和发布前校验。',
     },
     publish: {
       title: '发布队列',

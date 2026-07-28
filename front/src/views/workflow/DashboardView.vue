@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type {
-  Marketplace,
   MercadoLibreAuthChecklist,
   MercadoLibreOrderItem,
   MercadoLibreOrderNotification,
@@ -10,7 +9,6 @@ import type {
   ProductIndexItem,
   PublishJob,
   PublishLogItem,
-  PublishPrecheck,
 } from '@/types/workflow'
 
 const props = defineProps<{
@@ -29,7 +27,6 @@ const props = defineProps<{
   remoteTotal: number
   remoteStatus: string
   authChecklist: MercadoLibreAuthChecklist | null
-  precheck: PublishPrecheck | null
   publishJob: PublishJob | null
   logs: string[]
   loading: boolean
@@ -44,7 +41,6 @@ const emit = defineEmits<{
   refreshRemote: []
   openProduct: [item: ProductIndexItem]
   editImages: [item: ProductIndexItem]
-  openPrecheck: [item: ProductIndexItem, platform: Marketplace]
   claimSelected: []
   collect: []
   publishSelected: []
@@ -143,10 +139,10 @@ const healthItems = computed(() => [
     action: 'auth',
   },
   {
-    label: '当前预检',
-    value: props.precheck?.ok ? '通过' : props.precheck ? '有缺项' : '未运行',
-    ok: Boolean(props.precheck?.ok),
-    action: 'category',
+    label: '预检进度',
+    value: `${precheckedCount.value}/${props.productsIndex.length}`,
+    ok: Boolean(props.productsIndex.length && precheckedCount.value === props.productsIndex.length),
+    action: 'drafts',
   },
   {
     label: '发布任务',
@@ -235,10 +231,6 @@ const orderEvents = computed(() => {
   }))
   return [...fromOrders, ...fromNotifications].slice(0, 4)
 })
-
-function firstPlatform(item: ProductIndexItem): Marketplace {
-  return item.platforms[0] || 'mercadolibre'
-}
 
 function statusClass(status: string) {
   const value = String(status || '').toLowerCase()
@@ -475,7 +467,7 @@ function stringifyJson(value: unknown) {
                   <td class="py-3 pl-3">
                     <div class="flex flex-wrap justify-end gap-2">
                       <button type="button" class="btn btn-outline whitespace-nowrap px-3 py-1.5 text-xs" @click="emit('openProduct', item)">编辑</button>
-                      <button type="button" class="btn btn-primary whitespace-nowrap px-3 py-1.5 text-xs" @click="emit('openPrecheck', item, firstPlatform(item))">发布</button>
+                      <button type="button" class="btn btn-primary whitespace-nowrap px-3 py-1.5 text-xs" @click="emit('navigate', 'drafts')">查看草稿</button>
                     </div>
                   </td>
                 </tr>
@@ -540,7 +532,7 @@ function stringifyJson(value: unknown) {
               <div class="mt-3 flex flex-wrap gap-2">
                 <button type="button" class="btn btn-outline py-1.5" @click="emit('openProduct', item)">继续</button>
                 <button type="button" class="btn btn-outline py-1.5" @click="emit('editImages', item)">图片</button>
-                <button type="button" class="btn btn-primary py-1.5" @click="emit('openPrecheck', item, firstPlatform(item))">预检</button>
+                <button type="button" class="btn btn-primary py-1.5" @click="emit('navigate', 'drafts')">处理草稿</button>
               </div>
             </article>
             <p v-if="!attentionItems.length" class="py-6 text-center text-sm text-accent-500 dark:text-accent-300">暂无待办商品。</p>

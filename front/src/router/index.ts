@@ -24,8 +24,6 @@ const legacyWorkflowEntries = [
   { path: '/ml-items', tab: 'mlItems', title: 'ML已发布' },
   { path: '/edit', tab: 'library', title: '商品库' },
   { path: '/media', tab: 'library', title: '商品库' },
-  { path: '/pricing', tab: 'pricing', title: '核价' },
-  { path: '/publish', tab: 'category', title: '发布预检' },
   { path: '/settings', tab: 'auth', title: '设置' },
   { path: '/auth', tab: 'auth', title: '授权' },
   { path: '/logs', tab: 'logs', title: '日志' },

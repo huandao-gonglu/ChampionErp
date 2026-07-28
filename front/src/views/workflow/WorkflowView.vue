@@ -25,7 +25,7 @@ import { useClipboard } from '@/composables/useClipboard'
 import { useBackdropDismiss } from '@/composables/useBackdropDismiss'
 import { useAppStore } from '@/stores/app'
 import { useWorkflowStore } from '@/stores/workflow'
-import type { DraftIndexItem, Marketplace, ProductIndexItem, UnknownRecord } from '@/types/workflow'
+import type { DraftIndexItem, ProductIndexItem, UnknownRecord } from '@/types/workflow'
 
 const store = useWorkflowStore()
 const {
@@ -108,7 +108,6 @@ const draftWorkspaceItem = ref<DraftIndexItem | null>(null)
 const draftWorkspaceImagesLoadedFor = ref('')
 const editorMode = ref<'text' | 'images'>('text')
 const imageEditorTitle = ref('商品库图片编辑')
-const stateReady = ref(false)
 const navItems = workflowNavItems
 
 const pricingDraftItems = computed(() => draftsIndex.value.filter((item) => item.draftId))
@@ -237,12 +236,6 @@ async function deleteDrafts(items: DraftIndexItem[]) {
   await store.deleteDrafts(validItems)
 }
 
-async function openProductPrecheck(item: ProductIndexItem, platform: Marketplace = activeMarketplace.value) {
-  store.setMarketplace(platform)
-  await store.loadProduct(item)
-  navigate('category')
-}
-
 function closeProductEditor() {
   editorOpen.value = false
   resetProductEditorBackdropPointer()
@@ -272,23 +265,6 @@ async function copyProductId() {
   await copyToClipboard(product.value.productId)
 }
 
-async function selectPricingDraft(draftId: string) {
-  if (!draftId) return
-  const ok = await store.loadDraftForPricing(draftId)
-  if (ok) await router.replace({ name: 'WorkflowHome', query: { tab: 'pricing', draftId } })
-}
-
-function openPricingDraftEditor() {
-  if (!currentDraft.value.draftId) return
-  const item = draftsIndex.value.find((draft) => draft.draftId === currentDraft.value.draftId)
-  if (item) {
-    void openDraftWorkspace(item)
-    return
-  }
-  draftWorkspaceTab.value = 'text'
-  draftWorkspaceOpen.value = true
-}
-
 function navigate(key: string) {
   activeNav.value = key
   const nextQuery = key === 'dashboard' ? {} : { tab: key }
@@ -297,16 +273,9 @@ function navigate(key: string) {
   }
   if (key === 'library') void store.refreshProductsIndex()
   if (key === 'drafts') void store.refreshDraftsIndex()
-  if (key === 'pricing' && !draftsIndex.value.length) void store.refreshDraftsIndex()
   if (key === 'logs') void store.refreshPublishLogs()
   if (key === 'mlItems') void store.refreshMercadoLibreRemoteItems()
   if (key === 'auth') void store.loadAiConfig()
-}
-
-async function applyPricingDraftFromRoute() {
-  const draftId = String(route.query.draftId || '').trim()
-  if (activeNav.value !== 'pricing' || !draftId || currentDraft.value.draftId === draftId) return
-  await store.loadDraftForPricing(draftId)
 }
 
 async function claimSelectedAndOpenDrafts() {
@@ -320,9 +289,7 @@ function toggleTheme() {
 
 onMounted(async () => {
   await store.loadState()
-  stateReady.value = true
   if (activeNav.value === 'auth') await store.loadAiConfig()
-  await applyPricingDraftFromRoute()
 })
 
 watch(
@@ -333,7 +300,6 @@ watch(
     activeNav.value = navItems.some((item) => item.key === tab) ? tab : 'dashboard'
     if (activeNav.value === 'mlItems' && previous !== activeNav.value) void store.refreshMercadoLibreRemoteItems()
     if (activeNav.value === 'auth' && previous !== activeNav.value) void store.loadAiConfig()
-    if (activeNav.value === 'pricing' && stateReady.value) void applyPricingDraftFromRoute()
   },
   { immediate: true },
 )
@@ -379,7 +345,6 @@ watch(
             :remote-total="mercadoLibreRemoteTotal"
             :remote-status="mercadoLibreRemoteStatus"
             :auth-checklist="mercadolibreAuthChecklist"
-            :precheck="precheck"
             :publish-job="publishJob"
             :logs="logs"
             :loading="loading"
@@ -391,7 +356,6 @@ watch(
             @refresh-remote="store.refreshMercadoLibreRemoteItems"
             @open-product="openProductEditor"
             @edit-images="openProductImageEditor"
-            @open-precheck="openProductPrecheck"
             @claim-selected="claimSelectedAndOpenDrafts"
             @collect="navigate('collect')"
             @publish-selected="store.enqueueSelectedProducts"
@@ -451,46 +415,6 @@ watch(
               @delete-draft="deleteDraft"
               @delete-drafts="deleteDrafts"
               @update-targets="store.updateDraftTargets"
-            />
-          </div>
-
-          <div v-else-if="activeNav === 'pricing'" class="space-y-6">
-            <PageHeader title="核价" description="成本、运费、佣金、汇率和利润计算。" />
-            <section class="grid min-w-0 gap-6">
-              <PricingPanel
-                :input="pricingInput"
-                :result="pricingResult"
-                :draft-items="pricingDraftItems"
-                :draft-id="currentDraft.draftId"
-                :draft-title="pricingDraftTitle"
-                :product-context="currentDraftProductContext"
-                :draft-price="currentDraft.price"
-                :platform-options="platformOptions"
-                :loading="loading"
-                @calculate="store.calculatePrice"
-                @select-draft="selectPricingDraft"
-                @refresh-drafts="store.refreshDraftsIndex"
-                @edit-draft="openPricingDraftEditor"
-              />
-              <PricingChart :result="pricingResult" />
-            </section>
-          </div>
-
-          <div v-else-if="activeNav === 'category'" class="space-y-6">
-            <PageHeader title="发布预检" description="发布资料、阻断项、payload 预览和发布前校验。" />
-            <PublishPrecheckPanel
-              :draft="currentDraft"
-              :product-context="currentDraftProductContext"
-              :publish-targets="currentPublishTargets"
-              :selected-publish-target="selectedPublishTarget"
-              :platform-options="platformOptions"
-              :precheck="precheck"
-              :payload-preview="payloadPreview"
-              :loading="loading"
-              @select-publish-target="store.selectPublishTarget"
-              @precheck="store.runPrecheck"
-              @preview-payload="store.previewPayload"
-              @publish="() => store.enqueuePublish()"
             />
           </div>
 
@@ -788,19 +712,22 @@ watch(
           </template>
 
           <template #pricing>
-            <PricingPanel
-              selection-locked
-              :input="pricingInput"
-              :result="pricingResult"
-              :draft-items="pricingDraftItems"
-              :draft-id="currentDraft.draftId"
-              :draft-title="pricingDraftTitle"
-              :product-context="currentDraftProductContext"
-              :draft-price="currentDraft.price"
-              :platform-options="platformOptions"
-              :loading="loading"
-              @calculate="store.calculatePrice"
-            />
+            <div class="grid min-w-0 gap-6">
+              <PricingPanel
+                selection-locked
+                :input="pricingInput"
+                :result="pricingResult"
+                :draft-items="pricingDraftItems"
+                :draft-id="currentDraft.draftId"
+                :draft-title="pricingDraftTitle"
+                :product-context="currentDraftProductContext"
+                :draft-price="currentDraft.price"
+                :platform-options="platformOptions"
+                :loading="loading"
+                @calculate="store.calculatePrice"
+              />
+              <PricingChart :result="pricingResult" />
+            </div>
           </template>
 
           <template #precheck>

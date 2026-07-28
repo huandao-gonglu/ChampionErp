@@ -37,7 +37,6 @@ const collectTabs: Array<{
   title: string
   subtitle: string
   badge: string
-  navClass: string
   labelClass: string
   selectClass: string
   summaryClass: string
@@ -47,7 +46,6 @@ const collectTabs: Array<{
   panelClass: string
   panelLabelClass: string
   panelValueClass: string
-  panelBorderClass: string
 }> = [
   {
     key: 'browser',
@@ -55,7 +53,6 @@ const collectTabs: Array<{
     title: '浏览器采集',
     subtitle: '登录后从当前标签页采集',
     badge: '1688 / Amazon',
-    navClass: 'bg-primary-50/80 ring-primary-100 dark:bg-primary-500/10 dark:ring-primary-500/20',
     labelClass: 'text-primary-700 dark:text-primary-200',
     selectClass: 'border-primary-200 bg-white focus:border-primary-500 focus:ring-primary-100 dark:border-primary-500/30 dark:bg-dark-900 dark:focus:ring-primary-500/20',
     summaryClass: 'bg-white ring-primary-100 dark:bg-dark-900/80 dark:ring-primary-500/20',
@@ -65,7 +62,6 @@ const collectTabs: Array<{
     panelClass: 'bg-white ring-primary-100 dark:bg-dark-900/80 dark:ring-primary-500/20',
     panelLabelClass: 'text-primary-700 dark:text-primary-200',
     panelValueClass: 'text-slate-950 dark:text-white',
-    panelBorderClass: 'border-primary-100 dark:border-primary-500/20',
   },
   {
     key: 'manual',
@@ -73,7 +69,6 @@ const collectTabs: Array<{
     title: '手动 / HTML 导入',
     subtitle: '粘贴资料或 HTML 导入',
     badge: '稳妥',
-    navClass: 'bg-primary-50/80 ring-primary-100 dark:bg-primary-500/10 dark:ring-primary-500/20',
     labelClass: 'text-primary-700 dark:text-primary-200',
     selectClass: 'border-primary-200 bg-white focus:border-primary-500 focus:ring-primary-100 dark:border-primary-500/30 dark:bg-dark-900 dark:focus:ring-primary-500/20',
     summaryClass: 'bg-white ring-primary-100 dark:bg-dark-900/80 dark:ring-primary-500/20',
@@ -83,7 +78,6 @@ const collectTabs: Array<{
     panelClass: 'bg-white ring-primary-100 dark:bg-dark-900/80 dark:ring-primary-500/20',
     panelLabelClass: 'text-primary-700 dark:text-primary-200',
     panelValueClass: 'text-slate-950 dark:text-white',
-    panelBorderClass: 'border-primary-100 dark:border-primary-500/20',
   },
   {
     key: 'url',
@@ -91,7 +85,6 @@ const collectTabs: Array<{
     title: 'URL / 批量采集',
     subtitle: '自动抓取链接或列表',
     badge: '高级',
-    navClass: 'bg-accent-50 ring-accent-200 dark:bg-dark-900/70 dark:ring-dark-700',
     labelClass: 'text-accent-600 dark:text-accent-300',
     selectClass: 'border-accent-300 bg-white focus:border-primary-500 focus:ring-primary-100 dark:border-dark-700 dark:bg-dark-900 dark:focus:ring-primary-500/20',
     summaryClass: 'bg-white ring-accent-200 dark:bg-dark-900/80 dark:ring-dark-700',
@@ -101,7 +94,6 @@ const collectTabs: Array<{
     panelClass: 'bg-white ring-accent-200 dark:bg-dark-900/80 dark:ring-dark-700',
     panelLabelClass: 'text-accent-600 dark:text-accent-300',
     panelValueClass: 'text-slate-950 dark:text-white',
-    panelBorderClass: 'border-accent-200 dark:border-dark-700',
   },
   {
     key: 'api',
@@ -109,7 +101,6 @@ const collectTabs: Array<{
     title: 'API 采集',
     subtitle: '使用平台授权里的 1688 凭证采集',
     badge: '1688 API',
-    navClass: 'bg-blue-50 ring-blue-100 dark:bg-blue-500/10 dark:ring-blue-500/20',
     labelClass: 'text-blue-700 dark:text-blue-200',
     selectClass: 'border-blue-200 bg-white focus:border-primary-500 focus:ring-primary-100 dark:border-blue-500/30 dark:bg-dark-900 dark:focus:ring-primary-500/20',
     summaryClass: 'bg-white ring-blue-100 dark:bg-dark-900/80 dark:ring-blue-500/20',
@@ -119,7 +110,6 @@ const collectTabs: Array<{
     panelClass: 'bg-white ring-blue-100 dark:bg-dark-900/80 dark:ring-blue-500/20',
     panelLabelClass: 'text-blue-700 dark:text-blue-200',
     panelValueClass: 'text-slate-950 dark:text-white',
-    panelBorderClass: 'border-blue-100 dark:border-blue-500/20',
   },
 ]
 
@@ -135,7 +125,6 @@ const collectStatusLabel = computed(() => {
   return '等待采集'
 })
 
-const hasCollectedProduct = computed(() => Boolean(props.product.source.title || props.product.name))
 const activeCollectTabMeta = computed(() => collectTabs.find((tab) => tab.key === activeCollectTab.value) || collectTabs[0])
 
 function selectCollectTab(tab: CollectTab) {
@@ -176,7 +165,7 @@ function copyDiagnostics() {
       {{ props.error }}
     </div>
 
-    <nav class="rounded-3xl p-4 shadow-soft ring-1" :class="activeCollectTabMeta.navClass">
+    <nav data-testid="collect-method-card" class="card p-4">
       <div class="grid gap-4 lg:grid-cols-[minmax(240px,360px)_minmax(0,1fr)] lg:items-center">
         <label class="block">
           <span class="text-xs font-semibold uppercase tracking-[0.16em]" :class="activeCollectTabMeta.labelClass">采集方式</span>
@@ -277,7 +266,7 @@ function copyDiagnostics() {
           </div>
         </section>
 
-        <section v-else-if="activeCollectTab === 'browser'" class="card space-y-6 border-primary-100 bg-primary-50/70 dark:border-primary-500/20 dark:bg-primary-500/10">
+        <section v-else-if="activeCollectTab === 'browser'" data-testid="collect-active-card" class="card space-y-6">
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h3 class="card-title text-primary-900 dark:text-primary-100">方式一：浏览器采集</h3>
@@ -369,7 +358,7 @@ function copyDiagnostics() {
           </div>
         </section>
 
-        <section v-else-if="activeCollectTab === 'api'" class="card space-y-6 border-blue-100 bg-blue-50/70 dark:border-blue-500/20 dark:bg-blue-500/10">
+        <section v-else-if="activeCollectTab === 'api'" data-testid="collect-active-card" class="card space-y-6">
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h3 class="card-title text-blue-950 dark:text-blue-100">方式四：API 采集</h3>
@@ -523,7 +512,7 @@ function copyDiagnostics() {
       </main>
 
       <aside class="space-y-6 xl:sticky xl:top-6 xl:self-start">
-        <section class="rounded-2xl border p-5 shadow-card" :class="[activeCollectTabMeta.navClass, activeCollectTabMeta.panelBorderClass]">
+        <section data-testid="collect-diagnostics-card" class="card">
           <div class="flex items-center justify-between gap-3">
             <div>
               <h3 class="text-base font-semibold" :class="activeCollectTabMeta.titleClass">采集进度 / 诊断</h3>
@@ -584,7 +573,7 @@ function copyDiagnostics() {
           </div>
         </section>
 
-        <section class="rounded-2xl border p-5 shadow-card" :class="[activeCollectTabMeta.navClass, activeCollectTabMeta.panelBorderClass]">
+        <section data-testid="collect-result-card" class="card">
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h3 class="text-base font-semibold" :class="activeCollectTabMeta.titleClass">当前采集结果</h3>
