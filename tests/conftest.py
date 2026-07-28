@@ -124,12 +124,14 @@ def backend_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
         else:
             raise RuntimeError(f"ERP backend did not become ready on port {port}.")
     yield base_url
-    if process and process.poll() is None:
-        process.terminate()
+    if process:
+        if process.poll() is None:
+            process.terminate()
         try:
-            process.wait(timeout=5)
+            process.communicate(timeout=5)
         except subprocess.TimeoutExpired:
             process.kill()
+            process.communicate(timeout=5)
 
 
 @pytest.fixture()
