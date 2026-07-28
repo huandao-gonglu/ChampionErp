@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   fetchAiWorkConversation,
@@ -14,6 +14,7 @@ const loading = ref(false)
 const error = ref('')
 const latestConversation = ref<AiWorkConversationSummary | null>(null)
 const latestEvents = ref<AiWorkEvent[]>([])
+const outputElement = ref<HTMLElement | null>(null)
 let pollGeneration = 0
 
 const shouldRender = computed(() => route.name !== 'AiWork')
@@ -144,6 +145,13 @@ watch(shouldRender, (visible) => {
   if (!visible) closePanel()
 })
 
+watch([panelVisible, progressText], async ([visible]) => {
+  if (!visible) return
+  await nextTick()
+  const element = outputElement.value
+  if (element) element.scrollTop = element.scrollHeight
+}, { flush: 'post' })
+
 onBeforeUnmount(closePanel)
 </script>
 
@@ -201,7 +209,11 @@ onBeforeUnmount(closePanel)
               />
               <span>{{ liveStatus === 'running' ? '实时输出' : '最终结果' }}</span>
             </div>
-            <pre class="max-h-56 overflow-auto whitespace-pre-wrap break-words font-sans text-xs leading-5">{{ progressText }}</pre>
+            <pre
+              ref="outputElement"
+              data-testid="ai-work-output"
+              class="max-h-56 overflow-auto whitespace-pre-wrap break-words font-sans text-xs leading-5"
+            >{{ progressText }}</pre>
           </div>
         </template>
       </div>

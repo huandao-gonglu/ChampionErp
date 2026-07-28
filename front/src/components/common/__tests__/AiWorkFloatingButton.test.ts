@@ -93,4 +93,37 @@ describe('AiWorkFloatingButton', () => {
 
     expect(wrapper.find('[data-testid="ai-work-latest"]').exists()).toBe(false)
   })
+
+  it('流式输出增长时自动滚动到末尾', async () => {
+    let resolveEvents: (events: Array<Record<string, unknown>>) => void = () => {}
+    const pendingEvents = new Promise<Array<Record<string, unknown>>>((resolve) => {
+      resolveEvents = resolve
+    })
+    mocks.fetchConversations.mockResolvedValue({ ok: true, conversations: [conversation] })
+    mocks.fetchConversation.mockResolvedValue({
+      ok: true,
+      conversation_id: conversation.conversation_id,
+      events: [
+        { seq: 1, type: 'RUN_STARTED' },
+        { seq: 2, type: 'TEXT_MESSAGE_CONTENT', delta: '第一段输出' },
+      ],
+    })
+    mocks.waitForEvents.mockReturnValue(pendingEvents)
+    const wrapper = mount(AiWorkFloatingButton)
+
+    await wrapper.get('[data-testid="ai-work-floating"]').trigger('mouseenter')
+    await flushPromises()
+
+    const output = wrapper.get<HTMLElement>('[data-testid="ai-work-output"]').element
+    Object.defineProperty(output, 'scrollHeight', { configurable: true, value: 420 })
+    output.scrollTop = 0
+    resolveEvents([
+      { seq: 3, type: 'TEXT_MESSAGE_CONTENT', delta: '，第二段输出' },
+      { seq: 4, type: 'RUN_FINISHED' },
+    ])
+    await flushPromises()
+
+    expect(output.textContent).toBe('第一段输出，第二段输出')
+    expect(output.scrollTop).toBe(420)
+  })
 })
