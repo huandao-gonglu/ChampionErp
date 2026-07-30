@@ -152,6 +152,16 @@ class AiWorkConversation:
         with self._condition:
             self._seq += 1
             now = _now()
+            trace_payload = {
+                key: self.metadata[key]
+                for key in (
+                    "task_run_id",
+                    "attempt_id",
+                    "workflow_run_id",
+                    "parent_task_run_id",
+                )
+                if key in self.metadata
+            }
             event: AiWorkEvent = {
                 "schema_version": AI_WORK_SCHEMA_VERSION,
                 "seq": self._seq,
@@ -161,6 +171,7 @@ class AiWorkConversation:
                 "threadId": self.conversation_id,
                 "runId": self.conversation_id,
                 "conversation_id": self.conversation_id,
+                **trace_payload,
                 **_json_safe(payload),
             }
             self.journal._record_event(self, event)
@@ -240,11 +251,26 @@ class AiWorkJournal:
         required_capabilities: list[str] | tuple[str, ...] | None = None,
         timeout_seconds: int | None = None,
         input_payload: Any = None,
+        trace_context: dict[str, Any] | None = None,
     ) -> AiWorkConversation:
         now = _now()
         conversation_id = f"aic_{now.strftime('%Y%m%d_%H%M%S_%f')}_{uuid4().hex[:8]}"
         day = now.strftime("%Y-%m-%d")
         path = self._root / day / f"{conversation_id}.jsonl"
+        safe_trace_context = {
+            key: value
+            for key, value in dict(trace_context or {}).items()
+            if key
+            in {
+                "task_run_id",
+                "attempt_id",
+                "workflow_run_id",
+                "parent_task_run_id",
+                "actor_id",
+                "deadline_at",
+                "budget_profile",
+            }
+        }
         metadata = {
             "use_case_id": str(use_case_id or ""),
             "capability": str(capability or ""),
@@ -255,12 +281,14 @@ class AiWorkJournal:
             "stream": bool(stream),
             "required_capabilities": list(required_capabilities or []),
             "timeout_seconds": timeout_seconds,
+            **safe_trace_context,
         }
         conversation = AiWorkConversation(self, conversation_id, day, path, metadata)
         conversation.emit(
             "RUN_STARTED",
             input=_json_safe(input_payload),
             rawEvent=metadata,
+            **safe_trace_context,
         )
         return conversation
 

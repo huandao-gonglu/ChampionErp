@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from erp_web.context import get_context
+from erp_web.schemas.ai_trace import AiExecutionContext
 
 from . import ai_model_config, ai_work_service, config_service
 from .ai_gateway_browser_provider import BrowserAiProvider, probe_browser_model_capabilities
@@ -29,6 +30,7 @@ from .ai_gateway_http_providers import (
 from .ai_gateway_parsing import parse_json_text
 from .ai_gateway_provider_types import AiChatRequest
 from .ai_image_provider import OpenAIImageProvider
+from .ai_invocation import AiInvocation, ConversationAiWorkRecorder
 from .ai_provider_contracts import (
     CAPABILITY_CHAT_JSON,
     CAPABILITY_IMAGE_EDIT,
@@ -118,6 +120,7 @@ class AiProviderClient:
         input_payload: dict[str, Any],
         *,
         stream: bool = False,
+        trace_context: dict[str, Any] | None = None,
     ) -> ai_work_service.AiWorkConversation:
         return get_context().ai_journal.start_conversation(
             use_case_id=self.use_case_id,
@@ -128,6 +131,56 @@ class AiProviderClient:
             required_capabilities=self.required_capabilities,
             timeout_seconds=self.timeout_seconds,
             input_payload=input_payload,
+            trace_context=trace_context,
+        )
+
+    def start_invocation(
+        self,
+        capability: str,
+        provider: AiProvider,
+        input_payload: dict[str, Any],
+        *,
+        stream: bool = False,
+        budget_profile: str = "",
+        task_run_id: str = "",
+        attempt_id: str = "",
+        workflow_run_id: str | None = None,
+        parent_task_run_id: str | None = None,
+        actor_id: str = "local-user",
+        permissions: frozenset[str] | set[str] | tuple[str, ...] = frozenset(),
+        approved_tool_call_ids: frozenset[str] | set[str] | tuple[str, ...] = frozenset(),
+        allow_write: bool = False,
+    ) -> AiInvocation:
+        """创建一次 execution context 和一次 recorder/conversation。"""
+
+        execution_context = AiExecutionContext.create(
+            timeout_seconds=self.timeout_seconds,
+            budget_profile=budget_profile or f"{self.use_case_id}.default",
+            task_run_id=task_run_id,
+            attempt_id=attempt_id,
+            workflow_run_id=workflow_run_id,
+            parent_task_run_id=parent_task_run_id,
+            actor_id=actor_id,
+            permissions=permissions,
+            approved_tool_call_ids=approved_tool_call_ids,
+            allow_write=allow_write,
+        )
+        conversation = self.start_conversation(
+            capability,
+            provider,
+            input_payload,
+            stream=stream,
+            trace_context=execution_context.trace_payload(),
+        )
+        return AiInvocation(
+            use_case_id=self.use_case_id,
+            capability=capability,
+            provider=provider,
+            model=self.model,
+            required_capabilities=self.required_capabilities,
+            timeout_seconds=self.timeout_seconds,
+            execution_context=execution_context,
+            recorder=ConversationAiWorkRecorder(conversation, execution_context),
         )
 
 def chat_json(
@@ -157,12 +210,13 @@ def chat_json(
     provider = client.provider_for(CAPABILITY_CHAT_JSON)
     if not isinstance(provider, AiChatProvider):
         raise RuntimeError(f"Provider {provider.provider_id} 未实现文本对话能力。")
-    conversation = client.start_conversation(
+    invocation = client.start_invocation(
         CAPABILITY_CHAT_JSON,
         provider,
         {"messages": messages},
         stream=effective_stream,
     )
+    recorder = invocation.recorder
     try:
         parsed = provider.chat_json(
             AiChatRequest(
@@ -177,14 +231,14 @@ def chat_json(
                 extra_body=extra_body,
                 stream=effective_stream,
                 token_callback=token_callback,
-                conversation=conversation,
+                conversation=recorder,
             )
         )
-        conversation.emit_custom("business.result", {"parsed": parsed})
-        conversation.finish({"parsed": parsed})
+        recorder.emit_custom("business.result", {"parsed": parsed})
+        recorder.finish({"parsed": parsed})
         return parsed
     except Exception as exc:
-        conversation.fail(exc)
+        recorder.fail(exc)
         raise
 
 def generate_images(

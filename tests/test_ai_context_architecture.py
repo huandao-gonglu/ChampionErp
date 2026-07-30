@@ -310,6 +310,72 @@ def test_ai_provider_and_ai_work_entry_points_are_explicit() -> None:
     assert "get_context().ai_journal" in ai_route
 
 
+def test_context_map_mentions_shared_ai_tool_execution_entry_points() -> None:
+    text = (ROOT / "docs/ai-context-map.md").read_text(encoding="utf-8")
+    for entry_point in [
+        "erp_web/schemas/ai_tools.py",
+        "erp_web/schemas/ai_trace.py",
+        "erp_web/services/ai_invocation.py",
+        "erp_web/services/ai_tool_registry.py",
+        "erp_web/services/ai_tool_runtime.py",
+        "erp_web/services/ai_task_runner.py",
+        "erp_web/services/ai_tool_provider_adapters.py",
+    ]:
+        assert entry_point in text
+
+
+def test_ai_tool_runtime_is_domain_agnostic_and_toolsets_are_explicit() -> None:
+    runtime_text = (
+        ROOT / "erp_web/services/ai_tool_runtime.py"
+    ).read_text(encoding="utf-8")
+    registry_text = (
+        ROOT / "erp_web/services/ai_tool_registry.py"
+    ).read_text(encoding="utf-8")
+    for domain_marker in ("category_", "mercadolibre", "ozon_", "publish_"):
+        assert domain_marker not in runtime_text.lower()
+    assert "MappingProxyType" in registry_text
+    assert "EMPTY_AI_TOOL_REGISTRY = AiToolRegistry({})" in registry_text
+    assert "importlib" not in registry_text
+    assert "import_module" not in registry_text
+
+
+def test_ai_task_runner_owns_one_shared_tool_loop_and_provider_has_no_journal_factory() -> None:
+    runner_text = (
+        ROOT / "erp_web/services/ai_task_runner.py"
+    ).read_text(encoding="utf-8")
+    provider_contract_text = (
+        ROOT / "erp_web/services/ai_provider_contracts.py"
+    ).read_text(encoding="utf-8")
+    adapter_text = (
+        ROOT / "erp_web/services/ai_tool_provider_adapters.py"
+    ).read_text(encoding="utf-8")
+    assert runner_text.count("while True:") == 1
+    assert "provider.run_tool_turn(" in runner_text
+    assert "runtime.execute(call)" in runner_text
+    assert "start_conversation" not in provider_contract_text
+    assert "start_conversation" not in adapter_text
+
+
+def test_pr1_does_not_publish_future_ai_work_event_types() -> None:
+    event_schema = (ROOT / "erp_web/schemas/ai_work.py").read_text(
+        encoding="utf-8"
+    )
+    recorder = (ROOT / "erp_web/services/ai_invocation.py").read_text(
+        encoding="utf-8"
+    )
+    for future_event_type in (
+        '"TASK_STARTED"',
+        '"MODEL_CALL_STARTED"',
+        '"MODEL_CALL_FINISHED"',
+        '"TOOL_CALL_STARTED"',
+        '"TOOL_CALL_FINISHED"',
+        '"TASK_FINISHED"',
+        '"TASK_FAILED"',
+    ):
+        assert future_event_type not in event_schema
+    assert "self.emit_custom(event_type, payload)" in recorder
+
+
 def test_ai_gateway_stays_a_small_stable_facade() -> None:
     gateway = ROOT / "erp_web/services/ai_gateway.py"
     text = gateway.read_text(encoding="utf-8")

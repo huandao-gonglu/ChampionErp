@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from . import ai_work_service
+from .ai_invocation import AiWorkRecorder
 
 @dataclass(frozen=True)
 class AiChatRequest:
@@ -21,7 +21,7 @@ class AiChatRequest:
     extra_body: dict[str, Any] | None = None
     stream: bool = False
     token_callback: Callable[[str], None] | None = None
-    conversation: ai_work_service.AiWorkConversation | None = None
+    conversation: AiWorkRecorder | None = None
 
     def emit_delta(self, text: str) -> None:
         if self.conversation:

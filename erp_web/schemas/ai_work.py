@@ -37,6 +37,12 @@ class AiWorkEvent(TypedDict, total=False):
     code: str
     result: Any
     rawEvent: Any
+    task_run_id: str
+    attempt_id: str
+    workflow_run_id: str | None
+    parent_task_run_id: str | None
+    model_call_id: str
+    tool_call_id: str
 
 
 class AiWorkConversationSummary(TypedDict, total=False):

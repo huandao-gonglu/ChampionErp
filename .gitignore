@@ -49,4 +49,6 @@ front/release/
 _to_delete/
 # 本地审查、分析和过程记录，不作为项目正式文档提交
 /doc/
-/docs/
+/docs/*
+# 仅反向排除需要纳入版本控制的正式文档
+!/docs/ai-context-map.md
