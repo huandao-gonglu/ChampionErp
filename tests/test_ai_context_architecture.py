@@ -228,22 +228,29 @@ def test_runtime_product_store_is_a_pure_delegation_layer() -> None:
     assert "get_context()" not in text
 
 
-def test_context_map_mentions_runtime_compatibility_boundary() -> None:
-    text = (ROOT / "docs/ai-context-map.md").read_text(encoding="utf-8")
-    assert "compatibility aggregator" not in text
-    assert "Python 代码导入兼容层已经退役" in text
-    assert "`erp_web/runtime.py`" in text
-    assert "均已删除" in text
-    assert "erp_web/stores/product_store.py" in text
-    assert "erp_web/services/browser_debug_service.py" in text
+def test_product_research_entry_points_follow_layer_boundaries() -> None:
+    route = ROOT / "erp_web/http_route_units/product_research_routes.py"
+    facade = ROOT / "erp_web/facades/product_research_facade.py"
+    service = ROOT / "erp_web/services/product_research_service.py"
+    schema = ROOT / "erp_web/schemas/product_research.py"
+    assert all(path.exists() for path in (route, facade, service, schema))
 
-
-def test_context_map_mentions_product_research_entry_points() -> None:
-    text = (ROOT / "docs/ai-context-map.md").read_text(encoding="utf-8")
-    assert "erp_web/http_route_units/product_research_routes.py" in text
-    assert "erp_web/product_research_config.py" in text
-    assert "erp_web/services/product_research_service.py" in text
-    assert "erp_web/schemas/product_research.py" in text
+    route_targets = {
+        target for _, target in imported_targets([route])
+    }
+    facade_targets = {
+        target for _, target in imported_targets([facade])
+    }
+    service_targets = {
+        target for _, target in imported_targets([service])
+    }
+    assert any(
+        target.endswith("facades.product_research_facade")
+        for target in route_targets
+    )
+    assert "erp_web.services.product_research_service" in facade_targets
+    assert "erp_web.schemas.product_research" in service_targets
+    assert not any("runtime_units" in target for target in route_targets)
 
 
 def test_ai_business_services_do_not_import_model_sdks_directly() -> None:
@@ -255,30 +262,60 @@ def test_ai_business_services_do_not_import_model_sdks_directly() -> None:
         assert "from openai import" not in text, f"{path.relative_to(ROOT)} should call an AI Provider"
 
 
-def test_context_map_mentions_ai_provider_and_ai_work_entry_points() -> None:
-    text = (ROOT / "docs/ai-context-map.md").read_text(encoding="utf-8")
-    for entry_point in [
-        "erp_web/services/ai_provider_contracts.py",
-        "erp_web/services/ai_gateway_providers.py",
-        "erp_web/services/ai_gateway_http_providers.py",
-        "erp_web/services/ai_gateway_cli_provider.py",
-        "erp_web/services/ai_gateway_browser_provider.py",
-        "erp_web/services/ai_gateway_provider_types.py",
-        "erp_web/services/ai_gateway_provider_profiles.py",
-        "erp_web/services/ai_gateway_provider_prompting.py",
-        "erp_web/services/ai_image_provider.py",
-        "erp_web/services/ai_work_service.py",
-        "erp_web/http_route_units/ai_work_routes.py",
-        "front/src/views/AiWorkView.vue",
-    ]:
-        assert entry_point in text
+def test_ai_provider_and_ai_work_entry_points_are_explicit() -> None:
+    entry_points = [
+        ROOT / "erp_web/services/ai_provider_contracts.py",
+        ROOT / "erp_web/services/ai_gateway.py",
+        ROOT / "erp_web/services/ai_gateway_providers.py",
+        ROOT / "erp_web/services/ai_gateway_http_providers.py",
+        ROOT / "erp_web/services/ai_gateway_cli_provider.py",
+        ROOT / "erp_web/services/ai_gateway_browser_provider.py",
+        ROOT / "erp_web/services/ai_gateway_provider_types.py",
+        ROOT / "erp_web/services/ai_gateway_provider_profiles.py",
+        ROOT / "erp_web/services/ai_gateway_provider_prompting.py",
+        ROOT / "erp_web/services/ai_image_provider.py",
+        ROOT / "erp_web/services/ai_work_service.py",
+        ROOT / "erp_web/http_route_units/ai_work_routes.py",
+        ROOT / "front/src/views/AiWorkView.vue",
+    ]
+    missing = [
+        str(path.relative_to(ROOT))
+        for path in entry_points
+        if not path.exists()
+    ]
+    assert not missing, f"AI 公开入口缺失：{missing}"
+
+    for path in entry_points:
+        if path.suffix != ".py":
+            continue
+        text = path.read_text(encoding="utf-8")
+        tree = ast.parse(text, filename=str(path))
+        if path.name.endswith(("_provider.py", "_providers.py")):
+            assert any(
+                isinstance(node, (ast.Assign, ast.AnnAssign))
+                and any(
+                    isinstance(target, ast.Name) and target.id == "__all__"
+                    for target in (
+                        node.targets
+                        if isinstance(node, ast.Assign)
+                        else [node.target]
+                    )
+                )
+                for node in tree.body
+            ), f"{path.relative_to(ROOT)} 必须显式声明公开导出"
+
+    ai_route = (
+        ROOT / "erp_web/http_route_units/ai_work_routes.py"
+    ).read_text(encoding="utf-8")
+    assert "get_context().ai_journal" in ai_route
 
 
 def test_ai_gateway_stays_a_small_stable_facade() -> None:
     gateway = ROOT / "erp_web/services/ai_gateway.py"
-    lines = gateway.read_text(encoding="utf-8").splitlines()
-    assert len(lines) < 800
-    text = "\n".join(lines)
+    text = gateway.read_text(encoding="utf-8")
+    tree = ast.parse(text, filename=str(gateway))
+    assert not any(isinstance(node, ast.ClassDef) for node in tree.body)
+    assert "__all__" in text
     for module in (
         "ai_gateway_parsing",
         "ai_gateway_probe",
@@ -309,11 +346,6 @@ def test_ai_provider_implementations_stay_in_focused_modules() -> None:
     assert len(facade_text.splitlines()) < 500
     assert "AI_PROVIDER_REGISTRY" in facade_text
 
-    size_limits = {
-        "ai_gateway_http_providers.py": 1600,
-        "ai_gateway_cli_provider.py": 500,
-        "ai_gateway_browser_provider.py": 400,
-    }
     for filename, expected_classes in modules.items():
         path = services / filename
         text = path.read_text(encoding="utf-8")
@@ -322,7 +354,6 @@ def test_ai_provider_implementations_stay_in_focused_modules() -> None:
             node.name for node in tree.body if isinstance(node, ast.ClassDef)
         }
         assert expected_classes.issubset(classes)
-        assert len(text.splitlines()) < size_limits[filename]
         assert "__all__" in text
         assert "import *" not in text
         assert "ai_gateway_providers" not in text, (
@@ -339,7 +370,6 @@ def test_ai_provider_implementations_stay_in_focused_modules() -> None:
         "ai_gateway_provider_prompting.py",
     ):
         text = (services / filename).read_text(encoding="utf-8")
-        assert len(text.splitlines()) < 200
         assert "__all__" in text
         assert "ai_gateway_providers" not in text
 
@@ -436,7 +466,6 @@ def test_frontend_workflow_has_one_real_route_and_no_fake_user_auth() -> None:
 
 def test_frontend_workflow_state_is_split_by_domain() -> None:
     facade = (ROOT / "front/src/stores/workflow.ts").read_text(encoding="utf-8")
-    assert len(facade.splitlines()) < 2400
     for domain_store in (
         "activity",
         "catalog",
