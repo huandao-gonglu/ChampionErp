@@ -62,6 +62,28 @@ facade / future execution profile
 `AiToolRuntime` 不得 import 类目、平台、发布或其他具体领域模块。Main Agent、
 Planner、Memory、Policy Engine 和真实类目 ToolSet 不属于 PR 1。
 
+## 类目候选召回层
+
+- `erp_web/schemas/category.py`：类目召回请求、规范化候选、语料身份、覆盖率和
+  Provider preflight shape。
+- `erp_web/runtime_units/category_retrieval.py`：`CategoryCandidateRetriever` 公共
+  入口；负责受控 query variants、Ozon 完整树本地评分、Mercado Libre 多查询
+  合并、稳定排序、去重和结构化 Provider 故障。该模块不做 AI rerank、业务阈值、
+  人工确认或发布决策。
+- `erp_web/runtime_units/category_providers.py`：Provider 注册、preflight 与平台
+  适配。Mercado Libre 的 `discover()` 只返回轻量候选，召回层合并 ID 后才通过
+  `detail()` 补全路径。
+- `erp_web/runtime_units/ozon_category_api.py`：Ozon 官方完整类目树的 15 分钟缓存、
+  可发布商品类型展平和可复盘 corpus identity。
+- `tests/fixtures/category_retrieval_golden.json`：200 条、双平台、L0-L5 分层的首版
+  离线 golden set。
+- `tests/test_category_retrieval.py`：纯召回、故障分类和字段规范测试。
+- `tests/test_category_retrieval_golden.py`：Recall@5/20、零召回率和分层基线。
+
+旧 `erp_web/runtime_units/category_store.py::search_categories_live` 及其 HTTP
+契约保持不变。新召回层只返回 `category_id/path_segments`，不传播旧边界中的
+`id/path/category_path/raw` 重复或原始字段。
+
 ## Product Research
 
 - `erp_web/http_route_units/product_research_routes.py`：调研 HTTP 入口。

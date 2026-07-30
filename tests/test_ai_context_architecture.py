@@ -356,6 +356,47 @@ def test_ai_task_runner_owns_one_shared_tool_loop_and_provider_has_no_journal_fa
     assert "start_conversation" not in adapter_text
 
 
+def test_context_map_mentions_category_retrieval_entry_points() -> None:
+    text = (ROOT / "docs/ai-context-map.md").read_text(encoding="utf-8")
+    for entry_point in [
+        "erp_web/schemas/category.py",
+        "erp_web/runtime_units/category_retrieval.py",
+        "erp_web/runtime_units/category_providers.py",
+        "erp_web/runtime_units/ozon_category_api.py",
+        "tests/fixtures/category_retrieval_golden.json",
+        "tests/test_category_retrieval.py",
+        "tests/test_category_retrieval_golden.py",
+    ]:
+        assert entry_point in text
+
+
+def test_category_retrieval_stays_deterministic_and_normalized() -> None:
+    retrieval_text = (
+        ROOT / "erp_web/runtime_units/category_retrieval.py"
+    ).read_text(encoding="utf-8")
+    schema_text = (
+        ROOT / "erp_web/schemas/category.py"
+    ).read_text(encoding="utf-8")
+    provider_contract_text = (
+        ROOT / "erp_web/marketplaces/category_provider.py"
+    ).read_text(encoding="utf-8")
+    for forbidden_import in (
+        "ai_gateway",
+        "ai_task_runner",
+        "ai_tool_runtime",
+        "category_product_identify",
+    ):
+        assert forbidden_import not in retrieval_text
+    assert "class CategoryCandidateRetriever" in retrieval_text
+    assert "class CategoryRetrievalError" in retrieval_text
+    assert "FullTreeCategoryProvider" in provider_contract_text
+    assert "RemoteDiscoveryCategoryProvider" in provider_contract_text
+    assert "path_segments: list[str]" in schema_text
+    assert "\n    id:" not in schema_text
+    assert "\n    path:" not in schema_text
+    assert "category_path:" not in schema_text
+
+
 def test_pr1_does_not_publish_future_ai_work_event_types() -> None:
     event_schema = (ROOT / "erp_web/schemas/ai_work.py").read_text(
         encoding="utf-8"

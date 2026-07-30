@@ -2,9 +2,16 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from erp_web import marketplaces as publisher
 from erp_web.context import get_context
 from erp_web.runtime_units import category_store, ozon_category_api, store_credentials
+from erp_web.runtime_units.category_providers import OzonCategoryProvider
+from erp_web.runtime_units.category_retrieval import (
+    CategoryCandidateRetriever,
+    CategoryRetrievalError,
+)
 
 
 OZON_TREE = {
@@ -101,6 +108,109 @@ def test_ozon_category_tree_summary_reuses_the_live_tree() -> None:
         "api-key",
         {"language": "DEFAULT"},
     )
+
+
+def test_ozon_retriever_uses_center_term_against_the_cached_full_tree() -> None:
+    ozon_category_api.clear_ozon_category_tree_cache()
+    tree = {
+        "result": [
+            {
+                "description_category_id": 200,
+                "category_name": "Климатическая техника",
+                "children": [
+                    {
+                        "type_id": 201,
+                        "type_name": "Вентиляторы бытовые",
+                        "disabled": False,
+                        "children": [],
+                    }
+                ],
+            },
+            {
+                "description_category_id": 300,
+                "category_name": "Электроника",
+                "children": [
+                    {
+                        "type_id": 301,
+                        "type_name": "USB аксессуары",
+                        "disabled": False,
+                        "children": [],
+                    }
+                ],
+            },
+        ]
+    }
+    with (
+        patch.object(ozon_category_api, "_load_store_config", _store_config),
+        patch.object(
+            ozon_category_api,
+            "request_ozon_json",
+            return_value=tree,
+        ) as request,
+    ):
+        result = CategoryCandidateRetriever(
+            lambda platform: OzonCategoryProvider()
+        ).retrieve(
+            {
+                "platform": "ozon",
+                "query": "настольный usb вентилятор",
+                "product_type": "вентилятор",
+                "limit": 20,
+            }
+        )
+
+    assert result["candidates"][0]["category_id"] == "201"
+    assert result["retrieval_mode"] == "full_tree_local"
+    assert result["corpus_info"]["corpus_hash"].startswith("sha256:")
+    assert "client-id" not in str(result["corpus_info"])
+    request.assert_called_once()
+
+
+def test_ozon_preflight_reports_missing_credentials_before_retrieval() -> None:
+    ozon_category_api.clear_ozon_category_tree_cache()
+    with patch.object(
+        ozon_category_api,
+        "_load_store_config",
+        return_value={"ozon": {"client_id": "", "api_key": ""}},
+    ):
+        with pytest.raises(CategoryRetrievalError) as raised:
+            CategoryCandidateRetriever(
+                lambda platform: OzonCategoryProvider()
+            ).retrieve(
+                {
+                    "platform": "ozon",
+                    "query": "вентилятор",
+                    "product_type": "вентилятор",
+                }
+            )
+
+    assert raised.value.code == "CATEGORY_CREDENTIALS_MISSING"
+    assert raised.value.stage == "preflight"
+
+
+def test_ozon_preflight_does_not_treat_empty_corpus_as_zero_retrieval() -> None:
+    ozon_category_api.clear_ozon_category_tree_cache()
+    with (
+        patch.object(ozon_category_api, "_load_store_config", _store_config),
+        patch.object(
+            ozon_category_api,
+            "request_ozon_json",
+            return_value={"result": []},
+        ),
+    ):
+        with pytest.raises(CategoryRetrievalError) as raised:
+            CategoryCandidateRetriever(
+                lambda platform: OzonCategoryProvider()
+            ).retrieve(
+                {
+                    "platform": "ozon",
+                    "query": "вентилятор",
+                    "product_type": "вентилятор",
+                }
+            )
+
+    assert raised.value.code == "CATEGORY_CORPUS_UNAVAILABLE"
+    assert raised.value.code != "RETRIEVAL_ZERO"
 
 
 def test_ozon_category_auth_test_reads_the_category_tree_without_a_category_id() -> None:

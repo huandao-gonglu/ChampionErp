@@ -11,9 +11,13 @@ import time
 import threading
 from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+import hashlib
+import json
 from typing import Any
 
 from erp_web.marketplaces.config_http import request_ozon_json
+from erp_web.schemas.category import CategoryCorpusInfo
 
 
 OZON_CATEGORY_TREE_URL = "https://api-seller.ozon.ru/v1/description-category/tree"
@@ -24,7 +28,7 @@ _TREE_CACHE_TTL_SECONDS = 15 * 60
 @dataclass
 class TtlCache:
     ttl_seconds: float
-    _items: dict[str, tuple[float, Any]] = field(default_factory=dict)
+    _items: dict[str, tuple[float, datetime, Any]] = field(default_factory=dict)
     _lock: threading.RLock = field(default_factory=threading.RLock)
 
     def get(self, key: str) -> Any | None:
@@ -36,11 +40,30 @@ class TtlCache:
             if now - cached[0] >= self.ttl_seconds:
                 self._items.pop(key, None)
                 return None
-            return deepcopy(cached[1])
+            return deepcopy(cached[2])
 
     def set(self, key: str, value: Any) -> None:
         with self._lock:
-            self._items[key] = (time.monotonic(), deepcopy(value))
+            self._items[key] = (
+                time.monotonic(),
+                datetime.now(timezone.utc),
+                deepcopy(value),
+            )
+
+    def timestamps(self, key: str) -> tuple[datetime, datetime] | None:
+        now = time.monotonic()
+        with self._lock:
+            cached = self._items.get(key)
+            if not cached:
+                return None
+            if now - cached[0] >= self.ttl_seconds:
+                self._items.pop(key, None)
+                return None
+            retrieved_at = cached[1]
+            return (
+                retrieved_at,
+                retrieved_at + timedelta(seconds=self.ttl_seconds),
+            )
 
     def clear(self) -> None:
         with self._lock:
@@ -142,6 +165,64 @@ def _flatten_product_types(tree: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(unique.values())
 
 
+def _stable_corpus_hash(records: list[dict[str, Any]]) -> str:
+    stable_records = sorted(
+        (
+            {
+                "category_id": _text(record.get("category_id")),
+                "description_category_id": _text(
+                    record.get("description_category_id")
+                ),
+                "name": _text(record.get("name_original")),
+                "path": [
+                    _text(item)
+                    for item in (
+                        record.get("path_original")
+                        if isinstance(record.get("path_original"), list)
+                        else []
+                    )
+                    if _text(item)
+                ],
+            }
+            for record in records
+        ),
+        key=lambda item: (
+            item["category_id"],
+            item["description_category_id"],
+            item["name"],
+        ),
+    )
+    encoded = json.dumps(
+        stable_records,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def load_ozon_category_corpus() -> tuple[list[dict[str, Any]], CategoryCorpusInfo]:
+    """返回缓存树展平后的可发布商品类型及可复盘的语料身份。"""
+
+    client_id, api_key = _ozon_credentials()
+    records = _flatten_product_types(_load_tree(client_id, api_key))
+    if not records:
+        raise RuntimeError("Ozon 类目树未返回可发布的商品类型。")
+    timestamps = _tree_cache.timestamps(client_id)
+    if timestamps is None:
+        raise RuntimeError("Ozon 类目树缓存状态不可用。")
+    retrieved_at, expires_at = timestamps
+    credential_scope = hashlib.sha256(client_id.encode("utf-8")).hexdigest()
+    return records, {
+        "corpus_hash": _stable_corpus_hash(records),
+        "taxonomy_version": None,
+        "locale": "ru-RU",
+        "retrieved_at": retrieved_at.isoformat(),
+        "expires_at": expires_at.isoformat(),
+        "credential_scope_hash": f"sha256:{credential_scope}",
+    }
+
+
 def _normalize_query(value: str) -> list[str]:
     return [part for part in " ".join(value.casefold().split()).split(" ") if part]
 
@@ -162,8 +243,7 @@ def search_ozon_categories(query: str, limit: int = 20) -> list[dict[str, Any]]:
     query = _text(query)
     if not query:
         return []
-    client_id, api_key = _ozon_credentials()
-    records = _flatten_product_types(_load_tree(client_id, api_key))
+    records, _ = load_ozon_category_corpus()
     normalized_query = " ".join(_normalize_query(query))
     terms = _normalize_query(query)
     matches: list[dict[str, Any]] = []
@@ -190,8 +270,7 @@ def search_ozon_categories(query: str, limit: int = 20) -> list[dict[str, Any]]:
 def fetch_ozon_category_tree_summary() -> dict[str, Any]:
     """读取类目树并返回适合授权设置页展示的摘要。"""
 
-    client_id, api_key = _ozon_credentials()
-    product_types = _flatten_product_types(_load_tree(client_id, api_key))
+    product_types, _ = load_ozon_category_corpus()
     if not product_types:
         raise RuntimeError("Ozon 类目树未返回可发布的商品类型。")
     sample = product_types[0]
@@ -281,5 +360,6 @@ __all__ = [
     "clear_ozon_category_tree_cache",
     "fetch_ozon_category_tree_summary",
     "fetch_ozon_category_record",
+    "load_ozon_category_corpus",
     "search_ozon_categories",
 ]

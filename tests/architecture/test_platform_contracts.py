@@ -62,6 +62,7 @@ def test_category_capabilities_match_real_providers() -> None:
         assert (provider is not None) is has_category_capability
         if provider is not None:
             assert provider.platform == spec.key
+            assert callable(provider.preflight)
             assert callable(provider.search)
             assert callable(provider.detail)
             assert callable(provider.resolve_site)
