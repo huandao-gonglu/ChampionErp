@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 
-from erp_web import runtime as erp_web_app
 from erp_web.context import get_context
 from erp_web.runtime_units import pricing_runtime
 
@@ -96,7 +95,7 @@ def test_fetch_failure_without_table_snapshot_reports_error(monkeypatch) -> None
 
 
 def test_extract_usd_rates_supports_open_er_api_payload() -> None:
-    rates = erp_web_app._extract_usd_rates(
+    rates = pricing_runtime._extract_usd_rates(
         {
             "result": "success",
             "base_code": "USD",
@@ -112,7 +111,7 @@ def test_extract_usd_rates_supports_open_er_api_payload() -> None:
 
 
 def test_extract_usd_rates_supports_conversion_rates_payload() -> None:
-    rates = erp_web_app._extract_usd_rates(
+    rates = pricing_runtime._extract_usd_rates(
         {
             "result": "success",
             "base_code": "USD",
@@ -151,7 +150,7 @@ def test_live_batch_pricing_uses_fetched_rates_when_common_rates_are_empty(monke
 
     monkeypatch.setattr(pricing_runtime, "fetch_pricing_exchange_rates", fake_fetch_pricing_exchange_rates)
 
-    result = erp_web_app.calculate_price(
+    result = pricing_runtime.calculate_price(
         {
             "exchange_rate_mode": "live",
             "common": {

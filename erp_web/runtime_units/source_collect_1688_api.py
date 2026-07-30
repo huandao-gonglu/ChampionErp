@@ -11,7 +11,10 @@ import urllib.request
 from copy import deepcopy
 from typing import Any
 
+from erp_web.context import get_context
 from erp_web.product_model import default_collect_diagnostics, merge_source_partial_result, parse_dimensions_text
+from erp_web.product_model.common import normalize_list
+from erp_web.services.config_service import merge_runtime_secret_section
 
 from .collect_helpers import (
     apply_claimed_platform_drafts,
@@ -22,7 +25,6 @@ from .collect_helpers import (
     snapshot_field_flags,
 )
 from .image_pool_core import current_image_pool, current_source_images
-from .product_store import load_app_config, load_product, load_products_index, normalize_list, save_product
 
 
 DEFAULT_1688_DETAIL_API_URL = "https://gw.open.1688.com/openapi/param2/1/com.alibaba.product/alibaba.product.get"
@@ -47,7 +49,11 @@ def extract_1688_offer_id(url_or_id: str) -> str:
 
 
 def normalize_1688_api_config(config: dict[str, Any] | None = None) -> dict[str, str]:
-    app_cfg = config if isinstance(config, dict) else load_app_config()
+    app_cfg = (
+        config
+        if isinstance(config, dict)
+        else get_context().config.load_app_config()
+    )
     if any(key in app_cfg for key in ("app_key", "app_secret", "base_url", "method")):
         raw = app_cfg
     else:
@@ -62,6 +68,37 @@ def normalize_1688_api_config(config: dict[str, Any] | None = None) -> dict[str,
         "sign_method": str(raw.get("sign_method") or "md5").strip().lower(),
         "timeout_seconds": str(raw.get("timeout_seconds") or "20").strip(),
     }
+
+
+def resolve_1688_api_config(config: dict[str, Any] | None = None) -> dict[str, str]:
+    """将请求瞬态配置叠加到已保存真值，过滤空值和公共掩码。"""
+
+    saved_app_config = get_context().config.load_app_config()
+    saved = (
+        saved_app_config.get("1688_api")
+        if isinstance(saved_app_config.get("1688_api"), dict)
+        else {}
+    )
+    incoming_app_config = config if isinstance(config, dict) else {}
+    if any(
+        key in incoming_app_config
+        for key in ("app_key", "app_secret", "access_token", "base_url", "method")
+    ):
+        incoming = incoming_app_config
+    else:
+        incoming = (
+            incoming_app_config.get("1688_api")
+            if isinstance(incoming_app_config.get("1688_api"), dict)
+            else {}
+        )
+    explicit_values = {
+        key: value
+        for key, value in incoming.items()
+        if not isinstance(value, str) or value.strip()
+    }
+    return normalize_1688_api_config(
+        merge_runtime_secret_section(saved, explicit_values)
+    )
 
 
 def ensure_1688_api_ready(config: dict[str, str]) -> None:
@@ -284,10 +321,10 @@ def collect_1688_product_via_api(
     offer_id = extract_1688_offer_id(source_url)
     if not offer_id:
         raise RuntimeError("1688_API_OFFER_ID_MISSING：请使用 detail.1688.com/offer/{id}.html 商品详情链接。")
-    api_config = normalize_1688_api_config(config)
+    api_config = resolve_1688_api_config(config)
     ensure_1688_api_ready(api_config)
     started_at = collect_time_iso()
-    original_product = load_product()
+    original_product = get_context().products.load_product()
     diagnostics = default_collect_diagnostics()
     diagnostics.update(
         {
@@ -340,8 +377,8 @@ def collect_1688_product_via_api(
         merged["source"]["collect_logs"].append({"started_at": started_at, "finished_at": diagnostics["finished_at"], "mode": "api", "platform": "1688", "success": diagnostics["success"], "partial_success": diagnostics["partial_success"], "error_code": diagnostics["error_code"], "error_message": diagnostics["error_message"]})
         merged["source"]["collect_diagnostics"] = diagnostics
         merged = apply_claimed_platform_drafts(merged, claim_platforms)
-        saved = save_product(merged)
-        return {"ok": diagnostics["success"], "product": saved, "imagePool": current_image_pool(saved), "sourceImages": current_source_images(saved), "productsIndex": load_products_index(), "diagnostics": diagnostics, "error": "" if diagnostics["success"] else diagnostics["error_message"], "next_action": diagnostics.get("next_action", "")}
+        saved = get_context().products.save_product(merged)
+        return {"ok": diagnostics["success"], "product": saved, "imagePool": current_image_pool(saved), "sourceImages": current_source_images(saved), "productsIndex": get_context().products.load_products_index(), "diagnostics": diagnostics, "error": "" if diagnostics["success"] else diagnostics["error_message"], "next_action": diagnostics.get("next_action", "")}
     except Exception as exc:
         diagnostics["finished_at"] = collect_time_iso()
         diagnostics["success"] = False
@@ -356,8 +393,8 @@ def collect_1688_product_via_api(
             merged["source"]["source_platform"] = "1688"
         merged["source"]["collect_status"] = "failed"
         merged["source"]["collect_diagnostics"] = diagnostics
-        saved = save_product(merged)
-        return {"ok": False, "product": saved, "imagePool": current_image_pool(saved), "sourceImages": current_source_images(saved), "productsIndex": load_products_index(), "diagnostics": diagnostics, "error": str(exc), "next_action": diagnostics["next_action"]}
+        saved = get_context().products.save_product(merged)
+        return {"ok": False, "product": saved, "imagePool": current_image_pool(saved), "sourceImages": current_source_images(saved), "productsIndex": get_context().products.load_products_index(), "diagnostics": diagnostics, "error": str(exc), "next_action": diagnostics["next_action"]}
 
 
 __all__ = [
@@ -365,6 +402,7 @@ __all__ = [
     "collect_1688_product_via_api",
     "extract_1688_offer_id",
     "normalize_1688_api_config",
+    "resolve_1688_api_config",
     "parse_1688_api_product",
     "request_1688_product_detail",
     "sign_1688_params",

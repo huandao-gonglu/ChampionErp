@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import threading
 import urllib.parse
@@ -65,6 +66,14 @@ def test_each_ai_work_conversation_uses_an_independent_jsonl(tmp_path: Path, jou
         f"{first.conversation_id}.jsonl",
         f"{second.conversation_id}.jsonl",
     }
+    if os.name != "nt":
+        journal_root = (
+            tmp_path / ai_work_service.AI_WORK_RELATIVE_DIR
+        )
+        assert journal_root.stat().st_mode & 0o777 == 0o700
+        assert first.path.parent.stat().st_mode & 0o777 == 0o700
+        assert first.path.stat().st_mode & 0o777 == 0o600
+        assert second.path.stat().st_mode & 0o777 == 0o600
     first_events = journal.read_events(first.conversation_id)
     second_events = journal.read_events(second.conversation_id)
     assert [event["seq"] for event in first_events] == list(range(1, len(first_events) + 1))

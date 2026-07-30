@@ -1,3 +1,27 @@
+// <schema-generated-types>
+export {
+  API_SCHEMA_VERSION,
+  PRODUCT_SCHEMA_VERSION,
+  type BackendApiResponse,
+  type BackendAppStateResponse,
+  type BackendAiCapabilityProfile,
+  type BackendAiModelConfig,
+  type BackendAiUseCaseBinding,
+  type BackendAppConfig,
+  type BackendStoreConfig,
+  type BackendImageItem,
+  type BackendDraftImageRef,
+  type BackendProductSource,
+  type BackendCategoryAttributeDefinition,
+  type BackendCategoryAttributeSchema,
+  type BackendDraftTargetSite,
+  type BackendPlatformDraft,
+  type BackendProduct,
+  type BackendPublishPlatformState,
+  type BackendPublishJob,
+} from './workflow.generated'
+// </schema-generated-types>
+
 export type Marketplace = string
 
 export interface MarketplaceSiteOption {
@@ -362,6 +386,8 @@ export interface PublishJob {
   status: 'queued' | 'running' | 'completed' | 'failed'
   platforms: Marketplace[]
   createdAt: string
+  draftId?: string
+  targetKey?: string
 }
 
 export interface CollectForm {
@@ -369,10 +395,6 @@ export interface CollectForm {
   productUrls: string
   platform: string
   mode: CollectMode
-  alibabaCookie: string
-  alibabaAppKey: string
-  alibabaAppSecret: string
-  alibabaAccessToken: string
   alibabaApiBaseUrl: string
   alibabaApiMethod: string
   alibabaApiVersion: string
@@ -388,6 +410,10 @@ export interface CollectForm {
   manualWeight: string
   manualImages: string
   rawText: string
+}
+
+export interface TransientCollectCredentials {
+  alibabaCookie?: string
 }
 
 export interface CollectDiagnostics {

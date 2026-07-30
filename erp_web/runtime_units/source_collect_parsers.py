@@ -9,11 +9,16 @@ from copy import deepcopy
 from html.parser import HTMLParser
 from typing import Any
 
-from erp_web.product_model import default_product_model, parse_dimensions_text
-from erp_web.services import html_extract_service as legacy
+from erp_web.context import get_context
+from erp_web.product_model import (
+    default_product_model,
+    normalize_image_pool,
+    parse_dimensions_text,
+)
+from erp_web.product_model.common import normalize_list
+from erp_web.services import html_extract_service
+from erp_web.stores.product_store import normalize_product_fields, normalize_space
 
-from .product_store import normalize_list, normalize_product_fields, normalize_space
-from .runtime_common import SOURCE_DIR
 
 def extract_text_pattern(text: str, patterns: list[str]) -> str:
     for pattern in patterns:
@@ -390,25 +395,32 @@ def _weight_text_to_kg(value: Any) -> str:
     return ""
 
 
-def populate_source_from_legacy_product(product: dict[str, Any], platform: str, page_url: str = "") -> dict[str, Any]:
+def finalize_collected_product(
+    product: dict[str, Any],
+    platform: str,
+    page_url: str = "",
+    *,
+    image_refs: list[Any] | None = None,
+    price: str = "",
+    currency: str = "",
+) -> dict[str, Any]:
+    """Map parser output to the canonical product/source model."""
+
     product = deepcopy(product if isinstance(product, dict) else {})
     source = product.get("source") if isinstance(product.get("source"), dict) else {}
-    image_refs = []
-    image_refs.extend(normalize_list(product.get("source_images")))
-    image_refs.extend(normalize_list(product.get("source_image_urls")))
-    image_refs.extend(normalize_list(product.get("detail_images")))
-    image_refs.extend(normalize_list(product.get("detail_image_urls")))
     dims = product.get("dimensions")
+    normalized_refs = list(image_refs or source.get("images") or [])
     source.update(
         {
-            "source_url": str(source.get("source_url") or product.get("source_url") or page_url or "").strip(),
-            "source_platform": str(source.get("source_platform") or platform or product.get("source_platform") or "").strip().lower(),
+            "source_url": str(source.get("source_url") or page_url or "").strip(),
+            "source_platform": str(source.get("source_platform") or platform or "").strip().lower(),
             "title": str(source.get("title") or product.get("name") or "").strip(),
-            "price": str(source.get("price") or product.get("detected_price") or product.get("cost") or "").strip(),
-            "currency": str(source.get("currency") or product.get("detected_currency") or "").strip(),
+            "price": str(source.get("price") or price or product.get("cost") or "").strip(),
+            "currency": str(source.get("currency") or currency or "").strip(),
             "bullets": normalize_list(source.get("bullets") or product.get("selling_points")),
             "description": str(source.get("description") or product.get("description") or "").strip(),
-            "images": normalize_list(source.get("images") or image_refs),
+            "images": normalize_list(normalized_refs),
+            "image_pool": normalize_image_pool(normalized_refs, platform),
             "dimensions": source.get("dimensions") if isinstance(source.get("dimensions"), dict) and any(source.get("dimensions").values()) else parse_dimensions_text(dims),
             "weight_kg": str(source.get("weight_kg") or product.get("weight_kg") or "").strip(),
             "material": str(source.get("material") or (normalize_list(product.get("materials")) or [""])[0] or "").strip(),
@@ -422,7 +434,7 @@ def populate_source_from_legacy_product(product: dict[str, Any], platform: str, 
     if isinstance(product.get("attributes"), dict) and product.get("attributes"):
         source["attributes"] = deepcopy(product["attributes"])
     product["source"] = source
-    return product
+    return normalize_product_fields(product)
 
 
 def collect_product_image_urls(html: str, page_url: str, snapshot_image_urls: list[Any] | None = None, limit: int = 20) -> list[str]:
@@ -436,7 +448,7 @@ def collect_product_image_urls(html: str, page_url: str, snapshot_image_urls: li
 
     candidates: list[Any] = []
     try:
-        candidates.extend(legacy.extract_product_image_urls(html, page_url, limit=max(limit * 2, 20)))
+        candidates.extend(html_extract_service.extract_product_image_urls(html, page_url, limit=max(limit * 2, 20)))
     except Exception:
         pass
     candidates.extend(snapshot_image_urls or [])
@@ -448,7 +460,7 @@ def collect_product_image_urls(html: str, page_url: str, snapshot_image_urls: li
         if not raw:
             continue
         try:
-            url = legacy.normalize_image_url(raw, page_url)
+            url = html_extract_service.normalize_image_url(raw, page_url)
         except Exception:
             url = raw.replace("\\/", "/").strip()
         lowered = url.lower()
@@ -477,9 +489,10 @@ def parse_1688_product(raw_data: str | dict[str, Any], page_url: str = "") -> di
         page_title = ""
         image_urls = []
     if not text:
-        text = legacy.html_to_text(html)
+        text = html_extract_service.html_to_text(html)
     product = default_product_model()
-    product["source_url"] = page_url
+    product["source"]["source_url"] = page_url
+    product["source"]["source_platform"] = "1688"
     product["source_text"] = text
 
     context = extract_1688_context_data(html)
@@ -488,10 +501,10 @@ def parse_1688_product(raw_data: str | dict[str, Any], page_url: str = "") -> di
     for key, values in sku_props.items():
         if isinstance(values, list) and values:
             _add_attribute(attrs, key, values)
-    title = str(context.get("title") or "").strip() or page_title or legacy.extract_page_title(html) or extract_text_pattern(text, [r"产品名称[:：]\s*([^\n]+)", r"商品名称[:：]\s*([^\n]+)", r"标题[:：]\s*([^\n]+)"])
+    title = str(context.get("title") or "").strip() or page_title or html_extract_service.extract_page_title(html) or extract_text_pattern(text, [r"产品名称[:：]\s*([^\n]+)", r"商品名称[:：]\s*([^\n]+)", r"标题[:：]\s*([^\n]+)"])
     if title:
         product["name"] = re.sub(r"\s*-\s*阿里巴巴\s*$", "", title.strip())
-        product.update({key: value for key, value in legacy.infer_product_from_title(title).items() if value})
+        product.update({key: value for key, value in html_extract_service.infer_product_from_title(title).items() if value})
 
     brand = attrs.get("品牌") or attrs.get("厂牌") or extract_text_pattern(text, [r"品牌[:：]\s*([^\n]+)", r"厂牌[:：]\s*([^\n]+)"])
     if brand:
@@ -540,19 +553,14 @@ def parse_1688_product(raw_data: str | dict[str, Any], page_url: str = "") -> di
                 bullets.append(value)
     product["selling_points"] = bullets[:6]
 
-    price, currency = (str(context.get("price") or "").strip(), str(context.get("currency") or "").strip()) if context.get("price") else legacy.extract_price_currency(html)
-    if price:
-        product["detected_price"] = price
-        product["detected_currency"] = currency
-        product["detected_price_display"] = f"{price} {currency}".strip()
-
-    dims, parsed_weight = legacy.extract_measurements(html)
+    price, currency = (str(context.get("price") or "").strip(), str(context.get("currency") or "").strip()) if context.get("price") else html_extract_service.extract_price_currency(html)
+    dims, parsed_weight = html_extract_service.extract_measurements(html)
     if dims and not product.get("dimensions"):
         product["dimensions"] = dims
     if parsed_weight and not product.get("weight_kg"):
         product["weight_kg"] = parsed_weight
 
-    source_dir = SOURCE_DIR
+    source_dir = get_context().paths.source_dir
     source_dir.mkdir(parents=True, exist_ok=True)
     image_paths: list[str] = []
     context_images = normalize_list(context.get("image_urls"))
@@ -561,15 +569,18 @@ def parse_1688_product(raw_data: str | dict[str, Any], page_url: str = "") -> di
     extracted_image_urls = collect_product_image_urls(html, page_url, image_urls, limit=20)
     if extracted_image_urls:
         try:
-            image_paths = legacy.download_images(extracted_image_urls, source_dir)
+            image_paths = html_extract_service.download_images(extracted_image_urls, source_dir)
         except Exception:
             image_paths = []
 
-    product["source_image_urls"] = extracted_image_urls[:7]
-    product["detail_image_urls"] = extracted_image_urls[7:20]
-    product["source_images"] = image_paths[:7]
-    product["detail_images"] = image_paths[7:20]
-    return normalize_product_fields(populate_source_from_legacy_product(product, "1688", page_url))
+    return finalize_collected_product(
+        product,
+        "1688",
+        page_url,
+        image_refs=image_paths + extracted_image_urls,
+        price=price,
+        currency=currency,
+    )
 
 
 def parse_amazon_product(raw_data: str | dict[str, Any], page_url: str = "") -> dict[str, Any]:
@@ -585,53 +596,51 @@ def parse_amazon_product(raw_data: str | dict[str, Any], page_url: str = "") -> 
         page_title = ""
         image_urls = []
     if not text:
-        text = legacy.html_to_text(html)
+        text = html_extract_service.html_to_text(html)
 
     product = default_product_model()
-    product["source_url"] = page_url
-    product["source_platform"] = "Amazon"
+    product["source"]["source_url"] = page_url
+    product["source"]["source_platform"] = "amazon"
     product["source_text"] = text
 
-    title = page_title or legacy.extract_page_title(html)
+    title = page_title or html_extract_service.extract_page_title(html)
     if title:
         product["name"] = title.strip()
-        product.update({key: value for key, value in legacy.infer_product_from_title(title).items() if value})
+        product.update({key: value for key, value in html_extract_service.infer_product_from_title(title).items() if value})
 
     bullets = []
     try:
-        bullets = legacy.extract_amazon_bullets(html)
+        bullets = html_extract_service.extract_amazon_bullets(html)
     except Exception:
         bullets = []
     if bullets:
         product["selling_points"] = bullets[:10]
 
-    price, currency = legacy.extract_price_currency(html)
-    if price:
-        product["detected_price"] = price
-        product["detected_currency"] = currency
-        product["detected_price_display"] = f"{price} {currency}".strip()
-
-    dims, parsed_weight = legacy.extract_measurements(html)
+    price, currency = html_extract_service.extract_price_currency(html)
+    dims, parsed_weight = html_extract_service.extract_measurements(html)
     if dims:
         product["dimensions"] = dims
     if parsed_weight:
         product["weight_kg"] = parsed_weight
 
-    source_dir = SOURCE_DIR
+    source_dir = get_context().paths.source_dir
     source_dir.mkdir(parents=True, exist_ok=True)
     image_paths: list[str] = []
     extracted_image_urls = collect_product_image_urls(html, page_url, image_urls, limit=20)
     if extracted_image_urls:
         try:
-            image_paths = legacy.download_images(extracted_image_urls, source_dir)
+            image_paths = html_extract_service.download_images(extracted_image_urls, source_dir)
         except Exception:
             image_paths = []
 
-    product["source_image_urls"] = extracted_image_urls[:7]
-    product["detail_image_urls"] = extracted_image_urls[7:20]
-    product["source_images"] = image_paths[:7]
-    product["detail_images"] = image_paths[7:20]
-    return normalize_product_fields(populate_source_from_legacy_product(product, "amazon", page_url))
+    return finalize_collected_product(
+        product,
+        "amazon",
+        page_url,
+        image_refs=image_paths + extracted_image_urls,
+        price=price,
+        currency=currency,
+    )
 
 
 def parse_generic_product(raw_data: str | dict[str, Any], page_url: str = "") -> dict[str, Any]:
@@ -647,12 +656,12 @@ def parse_generic_product(raw_data: str | dict[str, Any], page_url: str = "") ->
         page_title = ""
         image_urls = []
     if not text:
-        text = legacy.html_to_text(html)
+        text = html_extract_service.html_to_text(html)
     product = default_product_model()
-    product["source_url"] = page_url
-    product["source_platform"] = "unknown"
+    product["source"]["source_url"] = page_url
+    product["source"]["source_platform"] = "unknown"
     product["source_text"] = text
-    title = page_title or legacy.extract_page_title(html) or extract_text_pattern(text, [r"(?:title|标题|商品名称)[:：]\s*([^\n]+)"])
+    title = page_title or html_extract_service.extract_page_title(html) or extract_text_pattern(text, [r"(?:title|标题|商品名称)[:：]\s*([^\n]+)"])
     if title:
         product["name"] = title.strip()
     brand = extract_text_pattern(text, [r"(?:brand|品牌)[:：]\s*([^\n]+)"])
@@ -661,21 +670,23 @@ def parse_generic_product(raw_data: str | dict[str, Any], page_url: str = "") ->
     bullets = [line.strip(" -•\t") for line in text.splitlines() if 8 <= len(line.strip()) <= 120][:8]
     if bullets:
         product["selling_points"] = bullets
-    price, currency = legacy.extract_price_currency(html)
-    if price:
-        product["detected_price"] = price
-        product["detected_currency"] = currency
-    dims, parsed_weight = legacy.extract_measurements(html)
+    price, currency = html_extract_service.extract_price_currency(html)
+    dims, parsed_weight = html_extract_service.extract_measurements(html)
     if dims:
         product["dimensions"] = dims
     if parsed_weight:
         product["weight_kg"] = parsed_weight
     if not image_urls:
-        image_urls = legacy.extract_product_image_urls(html, page_url, limit=20)
+        image_urls = html_extract_service.extract_product_image_urls(html, page_url, limit=20)
     image_urls = list(dict.fromkeys([str(item).strip() for item in image_urls if str(item).strip()]))[:20]
-    product["source_image_urls"] = image_urls[:7]
-    product["detail_image_urls"] = image_urls[7:20]
-    return normalize_product_fields(populate_source_from_legacy_product(product, "unknown", page_url))
+    return finalize_collected_product(
+        product,
+        "unknown",
+        page_url,
+        image_refs=image_urls,
+        price=price,
+        currency=currency,
+    )
 
 
 __all__ = [
@@ -689,5 +700,5 @@ __all__ = [
     "parse_1688_product",
     "parse_amazon_product",
     "parse_generic_product",
-    "populate_source_from_legacy_product",
+    "finalize_collected_product",
 ]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import urllib.parse
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -37,12 +38,16 @@ def send_raw(handler: Any, raw: bytes, content_type: str, status: int = 200) -> 
     handler.wfile.write(raw)
 
 
-def serve_frontend_asset(handler: Any, parsed: urllib.parse.ParseResult, app: Any) -> None:
+def serve_frontend_asset(
+    handler: Any,
+    parsed: urllib.parse.ParseResult,
+    front_dist_dir: Path,
+) -> None:
     rel_path = urllib.parse.unquote(parsed.path.lstrip("/"))
     try:
-        path = (app.FRONT_DIST_DIR / rel_path).resolve()
-        root = app.FRONT_DIST_DIR.resolve()
-        if not str(path).startswith(str(root)) or not path.is_file():
+        path = (front_dist_dir / rel_path).resolve()
+        root = front_dist_dir.resolve()
+        if not path.is_relative_to(root) or not path.is_file():
             raise FileNotFoundError
         send_raw(handler, path.read_bytes(), FRONTEND_CONTENT_TYPES.get(path.suffix.lower(), "application/octet-stream"))
     except Exception:
@@ -50,23 +55,23 @@ def serve_frontend_asset(handler: Any, parsed: urllib.parse.ParseResult, app: An
         handler.end_headers()
 
 
-def serve_file(handler: Any, parsed: urllib.parse.ParseResult, app: Any) -> None:
+def serve_file(
+    handler: Any,
+    parsed: urllib.parse.ParseResult,
+    media_roots: Iterable[Path],
+) -> None:
     params = urllib.parse.parse_qs(parsed.query)
     path = Path(urllib.parse.unquote(params.get("path", [""])[0]))
     try:
         path = path.resolve()
-        output_roots = [
-            app.DATA_DIR.resolve(),
-            app.IMAGES_DIR.resolve(),
-            app.CACHE_DIR.resolve(),
-            app.LOGS_DIR.resolve(),
-            app.EXPORTS_DIR.resolve(),
-            app.OUTPUT_DIR.resolve(),
-            (app.DIST_DIR / "output").resolve(),
-        ]
-        if not any(str(path).startswith(str(root)) for root in output_roots) or not path.exists():
+        roots = [root.resolve() for root in media_roots]
+        if (
+            path.suffix.lower() not in FILE_CONTENT_TYPES
+            or not any(path.is_relative_to(root) for root in roots)
+            or not path.is_file()
+        ):
             raise FileNotFoundError
-        send_raw(handler, path.read_bytes(), FILE_CONTENT_TYPES.get(path.suffix.lower(), "application/octet-stream"))
+        send_raw(handler, path.read_bytes(), FILE_CONTENT_TYPES[path.suffix.lower()])
     except Exception:
         handler.send_response(404)
         handler.end_headers()
@@ -95,25 +100,23 @@ def serve_store_help_page(handler: Any, platform: str) -> None:
     send_raw(handler, raw, "text/html; charset=utf-8")
 
 
-def handle_ml_callback(handler: Any, parsed: urllib.parse.ParseResult, app: Any) -> None:
+def handle_ml_callback(
+    handler: Any,
+    parsed: urllib.parse.ParseResult,
+    *,
+    exchange_code: Callable[[dict[str, Any]], dict[str, Any]],
+    mask_secret: Callable[[Any], str],
+) -> None:
     params = urllib.parse.parse_qs(parsed.query)
     code = params.get("code", [""])[0] or ""
-    masked_code = app.mask_secret(code)
+    masked_code = mask_secret(code)
     status = "received"
     message = "授权 code 已接收。"
     try:
         if code:
-            app.exchange_mercadolibre_code_from_body(
-                {
-                    "code_or_url": code,
-                    "app_id": params.get("app_id", [""])[0],
-                    "app_secret": params.get("app_secret", [""])[0],
-                    "client_secret": params.get("client_secret", [""])[0],
-                    "redirect_uri": params.get("redirect_uri", [""])[0],
-                    "code_verifier": params.get("code_verifier", [""])[0],
-                    "site_id": params.get("site_id", [""])[0],
-                }
-            )
+            # OAuth 客户端凭据与 PKCE verifier 只从后端 store_auth 读取，
+            # 绝不接受 URL 参数，避免进入浏览器历史、代理日志和 Referer。
+            exchange_code({"code_or_url": code})
             status = "exchanged"
             message = "授权 code 已接收，并已尝试自动换取 token。"
         else:

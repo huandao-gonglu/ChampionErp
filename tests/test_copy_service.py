@@ -9,10 +9,10 @@ import urllib.error
 import pytest
 
 from conftest import assert_no_old_path
-from erp_web import runtime as erp_web_app
-from erp_web.runtime_units import auth_runtime
+from erp_web.context import get_context
+from erp_web.runtime_units import publish_helpers, store_credentials
 from erp_web.services import ai_gateway, ai_model_config, browser_ai_runtime, copy_service
-from tests.runtime_test_utils import patch_unit_globals
+from tests.runtime_test_utils import temp_app_context
 
 
 def test_generate_copy_without_api_key_does_not_create_fallback_copy(app_dir: Path) -> None:
@@ -445,7 +445,7 @@ def test_ai_model_connection_uses_model_config(monkeypatch) -> None:
         return FakeResponse()
 
     monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
-    result = erp_web_app.test_ai_model_config(
+    result = store_credentials.test_ai_model_config(
         {
             "id": "copy_model",
             "name": "Copy Model",
@@ -495,7 +495,7 @@ def test_ai_model_connection_uses_saved_key_when_public_payload_omits_secret(mon
         return FakeResponse()
 
     monkeypatch.setattr(
-        auth_runtime,
+        get_context().config,
         "load_app_config",
         lambda: {
             "ai_models": [
@@ -512,7 +512,7 @@ def test_ai_model_connection_uses_saved_key_when_public_payload_omits_secret(mon
         },
     )
     monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
-    result = erp_web_app.test_ai_model_config(
+    result = store_credentials.test_ai_model_config(
         {
             "id": "copy_model",
             "name": "Copy Model",
@@ -559,7 +559,7 @@ def test_ai_model_connection_copies_saved_key_from_source_model(monkeypatch) -> 
         return FakeResponse()
 
     monkeypatch.setattr(
-        auth_runtime,
+        get_context().config,
         "load_app_config",
         lambda: {
             "ai_models": [
@@ -576,7 +576,7 @@ def test_ai_model_connection_copies_saved_key_from_source_model(monkeypatch) -> 
         },
     )
     monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
-    result = erp_web_app.test_ai_model_config(
+    result = store_credentials.test_ai_model_config(
         {
             "id": "copy_model_copy",
             "copy_source_id": "copy_model",
@@ -1069,7 +1069,7 @@ def test_ai_model_probe_reports_capability_failures(monkeypatch) -> None:
         return FakeResponse(b'{"choices":[{"message":{"content":"ok"}}]}')
 
     monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
-    result = erp_web_app.test_ai_model_config(
+    result = store_credentials.test_ai_model_config(
         {
             "id": "copy_model",
             "name": "Copy Model",
@@ -1121,7 +1121,7 @@ def test_responses_capability_probe_preserves_style_and_merges_custom_json(monke
         return FakeResponse(b'{"output_text":"ok"}')
 
     monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
-    result = erp_web_app.test_ai_model_config(
+    result = store_credentials.test_ai_model_config(
         {
             "id": "responses_model",
             "name": "Responses Model",
@@ -1190,7 +1190,7 @@ def test_ai_model_probe_requires_real_web_search_evidence(monkeypatch) -> None:
         return FakeResponse(b'{"choices":[{"message":{"content":"ok"}}]}')
 
     monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
-    result = erp_web_app.test_ai_model_config(
+    result = store_credentials.test_ai_model_config(
         {
             "id": "web_model",
             "name": "Web Model",
@@ -1265,7 +1265,7 @@ def test_ai_model_web_search_probe_supports_enable_search_override(monkeypatch) 
         )
 
     monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
-    result = erp_web_app.test_ai_model_config(
+    result = store_credentials.test_ai_model_config(
         {
             "id": "qwen_web_model",
             "name": "Qwen Web Model",
@@ -1349,7 +1349,7 @@ def test_ai_model_web_search_probe_falls_back_to_web_search_options(monkeypatch)
         )
 
     monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
-    result = erp_web_app.test_ai_model_config(
+    result = store_credentials.test_ai_model_config(
         {
             "id": "qwen_web_model",
             "name": "Qwen Web Model",
@@ -1417,7 +1417,7 @@ def test_ai_model_web_search_probe_uses_configured_responses_api(monkeypatch) ->
         )
 
     monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
-    result = erp_web_app.test_ai_model_config(
+    result = store_credentials.test_ai_model_config(
         {
             "id": "qwen_web_model",
             "name": "Qwen Web Model",
@@ -1443,17 +1443,11 @@ def test_ai_model_web_search_probe_uses_configured_responses_api(monkeypatch) ->
 
 
 def test_assign_upc_writes_current_product_and_returns_full_payload(tmp_path: Path) -> None:
-    with patch_unit_globals(
-        APP_DIR=tmp_path,
-        DATA_DIR=tmp_path / "data",
-        CONFIG_DIR=tmp_path / "config",
-        APP_CONFIG_PATH=tmp_path / "config" / "app_config.json",
-        LEGACY_APP_CONFIG_PATHS=(tmp_path / "app_config.json", tmp_path / "dist" / "app_config.json"),
-    ):
+    with temp_app_context(tmp_path):
         (tmp_path / "upc_pool.json").write_text('{"values":["725272000007"],"used":[]}', encoding="utf-8")
-        erp_web_app.save_product({"name": "UPC test product", "drafts": {"mercadolibre": {"enabled": True}}})
+        get_context().products.save_product({"name": "UPC test product", "drafts": {"mercadolibre": {"enabled": True}}})
 
-        result = erp_web_app.assign_upc()
+        result = publish_helpers.assign_upc()
 
         assert result["ok"] is True
         assert result["upc"] == "725272000007"

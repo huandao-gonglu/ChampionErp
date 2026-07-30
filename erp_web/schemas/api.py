@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, TypedDict
 
+from .product import Product
+
 
 API_SCHEMA_VERSION = 1
 
@@ -20,8 +22,10 @@ class ApiResponse(TypedDict, total=False):
     task: dict[str, Any]
 
 
-class AppStateResponse(ApiResponse, total=False):
+class AppStateResponse(TypedDict):
     schemaVersion: int
+    ok: bool
+    product: Product
     appConfig: dict[str, Any]
     storeConfig: dict[str, Any]
     storeAuthSummary: dict[str, Any]
@@ -29,8 +33,6 @@ class AppStateResponse(ApiResponse, total=False):
     imagePool: list[dict[str, Any]]
     sourceImages: list[str]
     generatedImages: list[dict[str, Any]]
-    publishLogs: list[dict[str, Any]]
-    mercadolibreOrderNotifications: list[dict[str, Any]]
     platformOptions: list[dict[str, Any]]
     outputDir: str
 
@@ -61,10 +63,6 @@ def validate_app_state_response(payload: dict[str, Any]) -> AppStateResponse:
         "imagePool",
         "sourceImages",
         "generatedImages",
-        "publishLogs",
-        "mercadolibreOrderNotifications",
-        "productsIndex",
-        "draftsIndex",
         "platformOptions",
     )
     for field in object_fields:

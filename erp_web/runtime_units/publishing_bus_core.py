@@ -9,6 +9,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, Protocol
 
 
+
 class PublishingAdapter(Protocol):
     def resolve_category(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         ...
@@ -45,6 +46,9 @@ class PublishingBus:
         store: PublishingJobStore,
         adapters: dict[str, PublishingAdapter],
         config_provider: Callable[[], dict[str, Any]] | None = None,
+        terminal_callback: (
+            Callable[[dict[str, Any]], dict[str, Any] | None] | None
+        ) = None,
         max_workers: int = 6,
         max_retries: int = 1,
         retry_delay_seconds: float = 0.25,
@@ -53,6 +57,7 @@ class PublishingBus:
         self.store = store
         self.adapters = adapters
         self.config_provider = config_provider or (lambda: {})
+        self.terminal_callback = terminal_callback
         self.max_retries = max(0, int(max_retries))
         self.retry_delay_seconds = max(0.0, float(retry_delay_seconds))
         self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="PublishingBus")
@@ -91,7 +96,25 @@ class PublishingBus:
             if not isinstance(state, dict):
                 continue
             job_id = str(state.get("job_id") or "")
-            if job_id and self._resume_state(job_id, state):
+            if not job_id:
+                continue
+            if (
+                str(state.get("status") or "").strip().lower()
+                == "completed"
+                and not state.get("terminal_results_persisted")
+            ):
+                # Job status is committed before the terminal callback runs.
+                # A process crash in that narrow window must be recoverable on
+                # the next startup, just like an interrupted worker.
+                if self.terminal_callback is None:
+                    continue
+                self._update_job_status(job_id)
+                if self._read_state(job_id).get(
+                    "terminal_results_persisted"
+                ):
+                    recovered.append(job_id)
+                continue
+            if self._resume_state(job_id, state):
                 recovered.append(job_id)
         return recovered
 
@@ -163,11 +186,24 @@ class PublishingBus:
                 self._set_platform(job_id, platform, status="running", stage="resolving_category", attempts=attempts)
                 resolved = adapter.resolve_category(product, config)
                 product = resolved if isinstance(resolved, dict) else product
+                drafts = (
+                    product.get("drafts")
+                    if isinstance(product.get("drafts"), dict)
+                    else {}
+                )
+                draft = (
+                    drafts.get(platform)
+                    if isinstance(drafts.get(platform), dict)
+                    else {}
+                )
                 self._set_platform(
                     job_id,
                     platform,
                     stage="validating_required_attributes",
-                    category_id=str(product.get("category_id") or product.get("wb_subject_id") or product.get("ozon_category_id") or ""),
+                    category_id=str(
+                        draft.get("category_id")
+                        or ""
+                    ),
                     attempts=attempts,
                 )
                 missing = adapter.required_attributes_missing(product, config)
@@ -183,15 +219,53 @@ class PublishingBus:
                     return
                 self._set_platform(job_id, platform, stage="publishing", attempts=attempts)
                 result = adapter.publish(product, platform, config)
-                if isinstance(result, dict) and result.get("ok") is False:
-                    result_status = str(result.get("status") or "failed").strip().lower()
+                result_status = (
+                    str(result.get("status") or "").strip().lower()
+                    if isinstance(result, dict)
+                    else ""
+                )
+                success_evidence = (
+                    isinstance(result, dict)
+                    and result.get("ok") is True
+                    and (
+                        result_status
+                        in {
+                            "published",
+                            "success",
+                            "real_publish_success",
+                        }
+                        or bool(
+                            result.get("id")
+                            or result.get("item_id")
+                            or result.get("external_id")
+                        )
+                    )
+                )
+                if not success_evidence:
+                    failure_status = (
+                        result_status
+                        if result_status
+                        in {
+                            "failed",
+                            "not_ready",
+                            "ready_for_real_publish",
+                            "skipped",
+                        }
+                        else "failed"
+                    )
+                    error = (
+                        str(result.get("error") or "")
+                        if isinstance(result, dict)
+                        else ""
+                    )
                     self._set_platform(
                         job_id,
                         platform,
-                        status=result_status if result_status in {"failed", "not_ready", "ready_for_real_publish", "skipped"} else "failed",
-                        stage=result_status or "failed",
-                        error=str(result.get("error") or "publish failed"),
-                        result=result,
+                        status=failure_status,
+                        stage=failure_status,
+                        error=error
+                        or "发布适配器未返回可验证的成功结果",
+                        result=result if isinstance(result, dict) else None,
                         attempts=attempts,
                     )
                     return
@@ -235,6 +309,23 @@ class PublishingBus:
                 state["status"] = "queued"
             state["updated_at"] = current_time()
             self._write_state(job_id, state)
+            if (
+                state["status"] == "completed"
+                and self.terminal_callback is not None
+                and not state.get("terminal_results_persisted")
+            ):
+                try:
+                    persisted = self.terminal_callback(
+                        copy.deepcopy(state)
+                    )
+                    if isinstance(persisted, dict):
+                        state = persisted
+                    state["terminal_results_persisted"] = True
+                    state.pop("terminal_persistence_error", None)
+                except Exception as exc:
+                    state["terminal_persistence_error"] = str(exc)
+                state["updated_at"] = current_time()
+                self._write_state(job_id, state)
 
     def _read_state(self, job_id: str) -> dict[str, Any]:
         state = self.store.load_publish_job(job_id)

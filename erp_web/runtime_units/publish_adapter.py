@@ -6,11 +6,12 @@ from typing import Any
 
 from erp_web import marketplaces as marketplace_api
 from erp_web.context import AppContext, get_context
-from erp_web.marketplace_registry import CAP_PUBLISH, category_id_field, platform_has_capability, platform_label
+from erp_web.marketplace_registry import CAP_PUBLISH, platform_has_capability, platform_label
 from erp_web.marketplaces.publisher import PlatformPublisher
+from erp_web.product_model import default_draft
 from erp_web.runtime_units.publishing_bus_core import PublishingBus
+from erp_web.stores.product_store import normalize_product_fields
 
-from .product_store import normalize_product_fields
 from .publish_helpers import (
     _required_attribute_summary,
     build_mercadolibre_publish_payload,
@@ -36,14 +37,20 @@ class MercadoLibrePublishingAdapter:
         else:
             category_id = str(platform_category or "").strip()
         if not category_id:
-            field = category_id_field(self.platform)
+            drafts = product.get("drafts") if isinstance(product.get("drafts"), dict) else {}
+            draft = drafts.get(self.platform) if isinstance(drafts.get(self.platform), dict) else {}
             category_id = str(
-                product.get(field)
+                draft.get("category_id")
                 or config.get(self.platform, {}).get("category_id")
                 or ""
             ).strip()
         if category_id:
-            product[category_id_field(self.platform)] = category_id
+            drafts = product.setdefault("drafts", {})
+            draft = drafts.setdefault(
+                self.platform,
+                default_draft(self.platform),
+            )
+            draft["category_id"] = category_id
         return product
 
     def required_attributes_missing(self, product: dict[str, Any], config: dict[str, Any]) -> list[str]:
@@ -104,10 +111,18 @@ def unsupported_publish_response(platform: str) -> dict[str, Any]:
 def build_publishing_bus(context: AppContext) -> PublishingBus:
     """为一个 AppContext 构造发布总线；测试上下文与生产上下文互不串状态。"""
 
+    from .publish_bus import persist_publish_bus_terminal_results
+
     return PublishingBus(
         context.db,
         adapters=dict(_PUBLISHERS),
         config_provider=context.config.load_store_config,
+        terminal_callback=lambda state: (
+            persist_publish_bus_terminal_results(
+                state,
+                context=context,
+            )
+        ),
         auto_resume_pending=False,
     )
 

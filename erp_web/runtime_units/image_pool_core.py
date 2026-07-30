@@ -4,17 +4,30 @@ from __future__ import annotations
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from erp_web.product_model import (
-    SOURCE_COMPAT_IMAGE_ORIGINS,
-    image_pool_legacy_views,
+    SOURCE_IMAGE_ORIGINS,
+    image_pool_refs,
     normalize_image_pool,
 )
+from erp_web.product_model.common import normalize_list
 from erp_web.marketplace_registry import marketplace_spec
+from erp_web.services.browser_debug_service import file_url
 
-from .browser_debug import file_url
-from .runtime_common import APP_DIR, CHATGPT_DIR, COLLECT_DEBUG_DIR, SOURCE_DIR
+
+if TYPE_CHECKING:
+    from erp_web.context import AppPaths
+
+
+def _runtime_paths(paths: AppPaths | None = None) -> AppPaths:
+    """Resolve paths lazily so importing this dependency-light module stays inert."""
+
+    if paths is not None:
+        return paths
+    from erp_web.context import get_context
+
+    return get_context().paths
 
 
 def image_items_from_paths(paths: list[str]) -> list[dict[str, str]]:
@@ -72,17 +85,17 @@ def _is_local_image_ref(value: str) -> bool:
     return bool(Path(value).suffix or "\\" in value or "/" in value or Path(value).is_absolute())
 
 
-def _resolve_local_image_ref(value: str) -> Path | None:
+def _resolve_local_image_ref(value: str, app_dir: Path | None = None) -> Path | None:
     value = value.strip()
     if not _is_local_image_ref(value):
         return None
     candidate = Path(value)
     if not candidate.is_absolute():
-        candidate = APP_DIR / candidate
+        candidate = (app_dir or _runtime_paths().app_dir) / candidate
     return candidate
 
 
-def _display_image_ref(value: str) -> str:
+def _display_image_ref(value: str, app_dir: Path | None = None) -> str:
     value = value.strip()
     if not value:
         return ""
@@ -90,17 +103,21 @@ def _display_image_ref(value: str) -> str:
         return value
     if value.lower().startswith(("http://", "https://", "data:", "blob:", "ml-id:")):
         return value
-    candidate = _resolve_local_image_ref(value)
+    candidate = _resolve_local_image_ref(value, app_dir)
     if candidate and candidate.exists() and candidate.is_file():
         return file_url(candidate)
     return ""
 
 
-def _pool_display_item(item: dict[str, Any]) -> dict[str, Any]:
+def _pool_display_item(item: dict[str, Any], app_dir: Path | None = None) -> dict[str, Any]:
     raw_preview = str(item.get("preview_url") or "").strip()
     path = str(item.get("path") or "").strip()
     url = str(item.get("url") or "").strip()
-    display_ref = _display_image_ref(path) or _display_image_ref(raw_preview) or _display_image_ref(url)
+    display_ref = (
+        _display_image_ref(path, app_dir)
+        or _display_image_ref(raw_preview, app_dir)
+        or _display_image_ref(url, app_dir)
+    )
     has_local_ref = any(_is_local_image_ref(value) for value in (path, raw_preview, url))
     status = str(item.get("status") or "ready")
     note = str(item.get("note") or "")
@@ -186,8 +203,14 @@ def enrich_product_image_dimensions(product: dict[str, Any]) -> dict[str, Any]:
     source = normalized.get("source") if isinstance(normalized.get("source"), dict) else {}
     pool = source.get("image_pool") if isinstance(source.get("image_pool"), list) else []
     if pool:
-        source["image_pool"] = normalize_image_pool([enrich_image_pool_item_dimensions(item) for item in pool], [], "source")
-        source["images"] = image_pool_legacy_views(source["image_pool"], SOURCE_COMPAT_IMAGE_ORIGINS)["images"]
+        source["image_pool"] = normalize_image_pool(
+            [enrich_image_pool_item_dimensions(item) for item in pool],
+            "source",
+        )
+        source["images"] = image_pool_refs(
+            source["image_pool"],
+            SOURCE_IMAGE_ORIGINS,
+        )
         normalized["source"] = source
     return normalized
 
@@ -195,7 +218,7 @@ def enrich_product_image_dimensions(product: dict[str, Any]) -> dict[str, Any]:
 def _source_pool_items(prod: dict[str, Any]) -> list[dict[str, Any]]:
     source = prod.get("source") if isinstance(prod.get("source"), dict) else {}
     pool = source.get("image_pool") if isinstance(source.get("image_pool"), list) else []
-    return normalize_image_pool(pool, [], "source")
+    return normalize_image_pool(pool, "source")
 
 
 def _source_only_pool_items(prod: dict[str, Any]) -> list[dict[str, Any]]:
@@ -203,9 +226,22 @@ def _source_only_pool_items(prod: dict[str, Any]) -> list[dict[str, Any]]:
     return [item for item in _source_pool_items(prod) if str(item.get("origin") or "").strip() in allowed]
 
 
-def current_image_pool(prod: dict[str, Any]) -> list[dict[str, Any]]:
+def source_image_refs(prod: dict[str, Any]) -> list[str]:
+    source = prod.get("source") if isinstance(prod.get("source"), dict) else {}
+    refs = image_pool_refs(
+        _source_pool_items(prod),
+        SOURCE_IMAGE_ORIGINS,
+    )
+    return refs or normalize_list(source.get("images"))
+
+
+def current_image_pool(
+    prod: dict[str, Any],
+    paths: AppPaths | None = None,
+) -> list[dict[str, Any]]:
+    active_paths = _runtime_paths(paths)
     normalized = _source_pool_items(prod)
-    generated_files = image_files(CHATGPT_DIR, recursive=True)
+    generated_files = image_files(active_paths.chatgpt_dir, recursive=True)
     existing_keys = {
         (str(item.get("path") or "") or str(item.get("url") or "") or str(item.get("preview_url") or ""))
         for item in normalized
@@ -230,12 +266,22 @@ def current_image_pool(prod: dict[str, Any]) -> list[dict[str, Any]]:
                 "note": "generated file sync",
             }
         )
-    return [_pool_display_item(enrich_image_pool_item_dimensions(item)) for item in normalize_image_pool(normalized, [], "source")]
+    return [
+        _pool_display_item(enrich_image_pool_item_dimensions(item), active_paths.app_dir)
+        for item in normalize_image_pool(normalized, "source")
+    ]
 
 
-def current_source_images(prod: dict[str, Any]) -> list[dict[str, str]]:
-    pool = [_pool_display_item(item) for item in _source_only_pool_items(prod)]
-    return pool or image_files(SOURCE_DIR)
+def current_source_images(
+    prod: dict[str, Any],
+    paths: AppPaths | None = None,
+) -> list[dict[str, str]]:
+    active_paths = _runtime_paths(paths)
+    pool = [
+        _pool_display_item(item, active_paths.app_dir)
+        for item in _source_only_pool_items(prod)
+    ]
+    return pool or image_files(active_paths.source_dir)
 
 
 def image_pool_refs_for_platform(prod: dict[str, Any], platform: str) -> list[str]:
@@ -248,7 +294,14 @@ def image_pool_refs_for_platform(prod: dict[str, Any], platform: str) -> list[st
     platform_items = [
         item
         for item in pool
-        if platform in [str(value).strip().lower() for value in (item.get("platforms") or [])]
+        if (
+            not item.get("platforms")
+            or platform
+            in [
+                str(value).strip().lower()
+                for value in (item.get("platforms") or [])
+            ]
+        )
         and str(item.get("status") or "").strip().lower() != "empty"
     ]
     selected_items = [item for item in platform_items if bool(item.get("selected"))]
@@ -258,12 +311,12 @@ def image_pool_refs_for_platform(prod: dict[str, Any], platform: str) -> list[st
     return [ref for ref in refs if ref]
 
 
-def current_generated_images() -> list[dict[str, str]]:
-    return image_files(CHATGPT_DIR, recursive=True)
+def current_generated_images(paths: AppPaths | None = None) -> list[dict[str, str]]:
+    return image_files(_runtime_paths(paths).chatgpt_dir, recursive=True)
 
 
-def current_collect_debug_files() -> list[dict[str, str]]:
-    return image_files(COLLECT_DEBUG_DIR, recursive=True)
+def current_collect_debug_files(paths: AppPaths | None = None) -> list[dict[str, str]]:
+    return image_files(_runtime_paths(paths).collect_debug_dir, recursive=True)
 
 
 __all__ = [
@@ -285,4 +338,5 @@ __all__ = [
     "image_files",
     "image_items_from_paths",
     "image_pool_refs_for_platform",
+    "source_image_refs",
 ]

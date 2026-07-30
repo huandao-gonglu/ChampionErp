@@ -4,14 +4,9 @@ from __future__ import annotations
 """Application context: single home for path/port wiring.
 
 ``AppPaths`` collects every filesystem location and port the backend derives
-from the application directory (previously 40+ loose constants in
-``erp_web.runtime_units.runtime_common``). ``AppContext`` carries the
-process-wide wiring; later stages will add the database handle, the publishing
-bus, etc.
-
-New code should call ``get_context().paths`` instead of importing path
-constants from ``runtime_common`` (which now merely re-exports these values
-for backward compatibility).
+from the application directory. ``AppContext`` carries the process-wide
+wiring for the database and stateful services. Runtime compatibility path
+constants have been removed; callers resolve paths through the active context.
 """
 
 import os
@@ -50,9 +45,6 @@ class AppPaths:
     output_dir: Path
     store_config_path: Path
     app_config_path: Path
-    removed_legacy_config_paths: tuple[Path, ...]
-    legacy_store_config_paths: tuple[Path, ...]
-    legacy_app_config_paths: tuple[Path, ...]
     db_path: Path
     task_dir: Path
     chatgpt_dir: Path
@@ -85,7 +77,6 @@ class AppPaths:
         logs_dir = data_dir / "logs"
         images_dir = data_dir / "images"
         output_dir = logs_dir
-        removed_legacy: tuple[Path, ...] = ()
         front_dir = app_dir / "front"
         front_dist_dir = app_dir / "erp_web" / "static" / "dist"
         return cls(
@@ -100,9 +91,6 @@ class AppPaths:
             output_dir=output_dir,
             store_config_path=config_dir / "store_config.json",
             app_config_path=config_dir / "app_config.json",
-            removed_legacy_config_paths=removed_legacy,
-            legacy_store_config_paths=removed_legacy,
-            legacy_app_config_paths=removed_legacy,
             db_path=app_dir / DEFAULT_DB_NAME,
             task_dir=output_dir / "codex_tasks",
             chatgpt_dir=images_dir / "chatgpt",
@@ -127,10 +115,13 @@ class AppContext:
 
     The store/service attributes are created lazily on first access.  Their
     modules import runtime units which in turn import this module at import
-    time (``runtime_common`` still derives its legacy path constants from
-    ``get_context()``), so eager construction inside ``__init__`` would
-    dead-lock the import graph.  Lazy construction happens strictly after the
-    import phase, with a lock so each context owns exactly one instance.
+    time, so eager construction inside ``__init__`` would risk an import
+    cycle. Lazy construction happens strictly after the import phase, with a
+    lock so each context owns exactly one instance.
+
+    ``close()`` 是上下文所持资源的显式生命周期边界。它可幂等调用，且只会
+    关闭已经实际创建的 lazy resource；关闭一个从未使用过的上下文不会为了
+    销毁资源而反向构造 ``PublishingBus``。
     """
 
     def __init__(self, paths: AppPaths, db: ErpDatabase) -> None:
@@ -141,6 +132,7 @@ class AppContext:
         # Re-entrant locking keeps that dependency chain safe without
         # deadlocking the process during server startup.
         self._lazy_lock = threading.RLock()
+        self._closed = False
         self._products: "ProductStore | None" = None
         self._config: "ConfigStore | None" = None
         self._research: "ProductResearchRunRegistry | None" = None
@@ -200,13 +192,30 @@ class AppContext:
 
     @property
     def publishing_bus(self) -> "PublishingBus":
-        if self._publishing_bus is None:
-            with self._lazy_lock:
-                if self._publishing_bus is None:
-                    from erp_web.runtime_units.publish_adapter import build_publishing_bus
+        with self._lazy_lock:
+            if self._closed:
+                raise RuntimeError("AppContext 已关闭，不能再访问 publishing_bus")
+            if self._publishing_bus is None:
+                from erp_web.runtime_units.publish_adapter import build_publishing_bus
 
-                    self._publishing_bus = build_publishing_bus(self)
-        return self._publishing_bus
+                self._publishing_bus = build_publishing_bus(self)
+            return self._publishing_bus
+
+    @property
+    def closed(self) -> bool:
+        with self._lazy_lock:
+            return self._closed
+
+    def close(self) -> None:
+        """幂等关闭当前上下文已经创建的资源。"""
+
+        with self._lazy_lock:
+            if self._closed:
+                return
+            self._closed = True
+            publishing_bus = self._publishing_bus
+        if publishing_bus is not None:
+            publishing_bus.executor.shutdown(wait=True)
 
 
 _context_lock = threading.Lock()
@@ -233,7 +242,11 @@ def get_context() -> AppContext:
 
 
 def set_context(context: AppContext) -> None:
-    """Install the process-wide context (server startup, tests)."""
+    """安装当前上下文，但不自动关闭此前的上下文。
+
+    生命周期仍由调用方持有，嵌套临时上下文才能只关闭内层实例，再恢复外层
+    上下文。
+    """
     global _context
     with _context_lock:
         _context = context

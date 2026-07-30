@@ -15,10 +15,6 @@ export const useWorkflowCollectionStore = defineStore('workflow-collection', () 
     const api1688 = nextAppConfig['1688_api'] && typeof nextAppConfig['1688_api'] === 'object' && !Array.isArray(nextAppConfig['1688_api'])
       ? nextAppConfig['1688_api'] as UnknownRecord
       : {}
-    collectForm.value.alibabaCookie = String(nextAppConfig.alibaba_cookie || collectForm.value.alibabaCookie || '')
-    collectForm.value.alibabaAppKey = String(api1688.app_key || collectForm.value.alibabaAppKey || '')
-    collectForm.value.alibabaAppSecret = String(api1688.app_secret || collectForm.value.alibabaAppSecret || '')
-    collectForm.value.alibabaAccessToken = String(api1688.access_token || collectForm.value.alibabaAccessToken || '')
     collectForm.value.alibabaApiBaseUrl = String(api1688.base_url || collectForm.value.alibabaApiBaseUrl || '')
     collectForm.value.alibabaApiMethod = String(api1688.method || collectForm.value.alibabaApiMethod || '')
     collectForm.value.alibabaApiVersion = String(api1688.api_version || collectForm.value.alibabaApiVersion || '')

@@ -4,27 +4,21 @@ from __future__ import annotations
 from typing import Any
 
 from erp_web import listing_planner as generator
+from erp_web.context import get_context
 from erp_web.marketplace_registry import (
     default_marketplace_site,
     platform_preset_key,
     platform_title_limit,
 )
 from erp_web.product_model import PLATFORMS
+from erp_web.product_model.common import normalize_list
 from erp_web.services import copy_service
+from erp_web.stores.product_store import normalize_product_fields
 
 from .image_pool_core import _source_only_pool_items, _source_pool_items
-from .product_store import (
-    load_app_config,
-    load_product_from_index,
-    load_products_index,
-    normalize_list,
-    normalize_product_fields,
-    save_draft_copy_result,
-)
-from .runtime_common import APP_DIR
 
 def list_presets() -> dict[str, Any]:
-    return generator.load_json(APP_DIR / "config" / "presets" / "platforms.json")
+    return generator.load_json(get_context().paths.config_dir / "presets" / "platforms.json")
 
 
 def platform_to_preset_key(platform: str) -> str:
@@ -63,7 +57,7 @@ def build_copy_preview(product: dict[str, Any], platform: str, app_cfg: dict[str
     listing = plan.get("platforms", {}).get(key, {}).get("listing", {})
     try:
         result = copy_service.generate_copy(
-            str(APP_DIR),
+            str(get_context().paths.app_dir),
             product,
             app_cfg,
             target_market=key,
@@ -91,7 +85,7 @@ def generate_ai_copy_bundle(
 ) -> dict[str, Any]:
     source_key = platform_to_preset_key(source_platform)
     result = copy_service.generate_copy(
-        str(APP_DIR),
+        str(get_context().paths.app_dir),
         product,
         app_cfg,
         target_market=(target_market or source_key),
@@ -109,7 +103,11 @@ def save_copy_result(
 ) -> dict[str, Any]:
     product = normalize_product_fields(product)
     target_key = (target_market or "").strip().lower() or "mercadolibre"
-    return save_draft_copy_result(product, target_key, copy)
+    return get_context().products.save_draft_copy_result(
+        product,
+        target_key,
+        copy,
+    )
 
 
 def batch_generate_copy_for_products(
@@ -122,7 +120,7 @@ def batch_generate_copy_for_products(
     if target_platform not in PLATFORMS:
         return {"ok": False, "success_count": 0, "failed_count": 0, "items": [], "error": "不支持的平台"}
     language = str(language or default_marketplace_site(target_platform).get("language") or "English").strip()
-    app_cfg = load_app_config()
+    app_cfg = get_context().config.load_app_config()
     items: list[dict[str, Any]] = []
     for product_id in [str(item or "").strip() for item in product_ids if str(item or "").strip()]:
         row = {
@@ -135,10 +133,13 @@ def batch_generate_copy_for_products(
             "error": "",
         }
         try:
-            product = load_product_from_index(product_id, "")
+            product = get_context().products.load_product_from_index(
+                product_id,
+                "",
+            )
             if not product:
                 raise RuntimeError("商品不存在")
-            source_platform = str((product.get("source") or {}).get("source_platform") or product.get("source_platform") or target_platform)
+            source_platform = str((product.get("source") or {}).get("source_platform") or target_platform)
             result = generate_ai_copy_bundle(product, source_platform, target_platform, language, mode, app_cfg)
             if not result.get("ok"):
                 raise RuntimeError(str(result.get("error") or "本地化文案生成失败"))
@@ -166,7 +167,7 @@ def batch_generate_copy_for_products(
         "failed_count": sum(1 for item in items if not item.get("ok")),
         "items": items,
         "message": f"成功 {sum(1 for item in items if item.get('ok'))}/{len(items)}，失败 {sum(1 for item in items if not item.get('ok'))}。",
-        "productsIndex": load_products_index(),
+        "productsIndex": get_context().products.load_products_index(),
     }
 
 
@@ -199,7 +200,11 @@ def build_image_prompt_pack(
     include_description: bool = True,
     target_language: str = "",
 ) -> str:
-    copy = build_copy_preview(product, platform, load_app_config())
+    copy = build_copy_preview(
+        product,
+        platform,
+        get_context().config.load_app_config(),
+    )
     listing = copy.get("listing", {})
     pool = _source_pool_items(product)
     selected_ids = {str(item).strip() for item in (selected_image_ids or []) if str(item).strip()}

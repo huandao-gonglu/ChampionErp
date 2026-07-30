@@ -8,9 +8,9 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from erp_web.services import html_extract_service as legacy
-
-from .browser_debug import (
+from erp_web.context import get_context
+from erp_web.services import html_extract_service
+from erp_web.services.browser_debug_service import (
     CdpWebSocket,
     browser_debug_commands,
     browser_debug_next_action,
@@ -19,7 +19,6 @@ from .browser_debug import (
 )
 from .category_refresh import http_json
 from .collect_helpers import detect_source_platform, save_collect_snapshot_artifacts
-from .runtime_common import APP_DIR, BROWSER_DEBUG_PORT, BROWSER_PROFILE_DIR
 
 def wait_for_cdp(port: int, timeout: int = 15) -> None:
     deadline = time.time() + timeout
@@ -44,7 +43,12 @@ def normalize_browser_tab(page: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def browser_debug_status(port: int = BROWSER_DEBUG_PORT, tabs_override: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def browser_debug_status(
+    port: int | None = None,
+    tabs_override: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    if port is None:
+        port = get_context().paths.browser_debug_port
     commands = browser_debug_commands(port)
     try:
         raw_tabs = tabs_override if tabs_override is not None else http_json(f"http://127.0.0.1:{port}/json")
@@ -99,7 +103,12 @@ def choose_browser_tab(raw_tabs: list[dict[str, Any]], tab_url: str = "", produc
 
 def open_browser_debug_session(url: str, port: int, profile_name: str) -> None:
     chrome = find_chrome_path()
-    profile = BROWSER_PROFILE_DIR if profile_name.startswith("1688") else APP_DIR / "browser_profile" / profile_name
+    paths = get_context().paths
+    profile = (
+        paths.browser_profile_dir
+        if profile_name.startswith("1688")
+        else paths.app_dir / "browser_profile" / profile_name
+    )
     profile.mkdir(parents=True, exist_ok=True)
     try:
         http_json(f"http://127.0.0.1:{port}/json/version")
@@ -159,7 +168,8 @@ def fetch_page_html_with_browser_session(url: str, port: int | None = None) -> s
 
 
 def fetch_page_snapshot_with_browser_session(url: str, port: int | None = None, profile_name: str = "1688") -> dict[str, Any] | None:
-    port = port or BROWSER_DEBUG_PORT
+    if port is None:
+        port = get_context().paths.browser_debug_port
     try:
         open_browser_debug_session(url, port, profile_name)
         target = cdp_target_for_url(port, url)
@@ -227,7 +237,6 @@ def fetch_page_snapshot_with_browser_session(url: str, port: int | None = None, 
             cdp.close()
     except Exception:
         return None
-
 
 __all__ = [
     "browser_debug_status",
@@ -306,9 +315,9 @@ def fetch_1688_page_snapshot_with_browser_session(url: str, port: int | None = N
 
 def fetch_page_html(url: str, cookie: str = "") -> str:
     try:
-        return legacy.fetch_url_html(url, cookie)
+        return html_extract_service.fetch_url_html(url, cookie)
     except TypeError:
-        return legacy.fetch_url_html(url)
+        return html_extract_service.fetch_url_html(url)
 
 
 def fetch_page_html_with_status(url: str, cookie: str = "") -> tuple[str, int]:

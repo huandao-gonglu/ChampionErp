@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createEmptyDraftDetail } from '@/constants/initialState'
-import { normalizeDraftDetail, toBackendDraft } from '@/api/workflow/normalizers'
+import { normalizeDraftDetail, toBackendDraft, toBackendDraftDetail } from '@/api/workflow/normalizers'
 
 describe('类目属性 Schema 映射', () => {
   it('在目标站点中读写规范化的类目属性定义', () => {
@@ -54,6 +54,10 @@ describe('类目属性 Schema 映射', () => {
     const draft = {
       ...createEmptyDraftDetail('mercadolibre'),
       ...normalized,
+      raw: {
+        sale_price: '旧价格',
+        future_draft_field: '不得回写',
+      },
     }
     const backend = toBackendDraft(draft)
     const target = (backend.target_sites as Array<Record<string, unknown>>)[0]
@@ -65,23 +69,36 @@ describe('类目属性 Schema 映射', () => {
         value_type: 'list',
       })],
     }))
+    expect(backend).not.toHaveProperty('sale_price')
+    expect(target).not.toHaveProperty('publish_logs')
+
+    const backendDetail = toBackendDraftDetail(draft)
+    expect(backendDetail).not.toHaveProperty('sale_price')
+    expect(backendDetail).not.toHaveProperty('future_draft_field')
   })
 
-  it('兼容没有类目属性 Schema 的旧草稿', () => {
+  it('不会从旧 camelCase 草稿字段静默回捞数据', () => {
     const normalized = normalizeDraftDetail({
-      draft_id: 'legacy-draft',
-      product_id: 'product-1',
+      draftId: 'legacy-draft',
+      productId: 'legacy-product',
       platform: 'mercadolibre',
-      site: 'MLM',
-      category_id: 'MLM-OLD',
-      attributes: { BRAND: 'Legacy Brand' },
+      site_id: 'MLM',
+      categoryId: 'MLM-OLD',
+      sale_price: '999',
+      packageDimensions: {
+        lengthCm: '10',
+      },
     })
 
+    expect(normalized.draftId).toBe('')
+    expect(normalized.productId).toBe('')
+    expect(normalized.categoryId).toBe('')
+    expect(normalized.price).toBe('')
+    expect(normalized.packageDimensions.lengthCm).toBe('')
     expect(normalized.targetSites[0]?.categoryAttributeSchema).toBeNull()
-    expect(normalized.targetSites[0]?.attributes).toEqual({ BRAND: 'Legacy Brand' })
   })
 
-  it('目标站点明确清空后不会恢复草稿根级的旧属性和待复核提示', () => {
+  it('目标站点明确清空后不会恢复草稿根级属性和待复核提示', () => {
     const normalized = normalizeDraftDetail({
       draft_id: 'draft-1',
       product_id: 'product-1',

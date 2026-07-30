@@ -1,0 +1,619 @@
+import {
+
+  confirmMercadoLibreRealPublish,
+  enqueuePublish as enqueuePublishApi,
+  fetchCategoryAttrs,
+  fetchCategoryAttributeTranslations,
+  fetchCategoryResultTranslations,
+  fetchPublishLogs,
+  fillCategoryAttributes,
+  identifyProductForCategory,
+  previewPublishPayload,
+  publishProductDirect,
+  publishPrecheck,
+  runCategoryPrecheck,
+  searchCategories,
+} from '@/api/workflow/publishing'
+import { fetchDraftsIndex } from '@/api/workflow/catalog'
+import {  marketplaces } from '@/constants/initialState'
+import type {
+
+  CategoryProductIdentification,
+  CategorySearchResult,
+  Marketplace,
+  MarketplaceTargetSite,
+  UnknownRecord,
+} from '@/types/workflow'
+import {
+
+  categoryAttributeSchemaFromSelection,
+  publishJobMatchesProgressContext,
+  workflowProgressDraft,
+  type WorkflowRuntime,
+} from '../orchestration/runtime'
+
+type WorkflowPublishingActionsPort = Pick<
+  WorkflowRuntime,
+  | 'product'
+  | 'draftsIndex'
+  | 'currentDraft'
+  | 'currentDraftProductContext'
+  | 'category'
+  | 'categoryQuery'
+  | 'categoryResults'
+  | 'categoryRecommendations'
+  | 'categoryAutoMatching'
+  | 'categoryAutoMatchMessage'
+  | 'categoryAutoMatchCurrent'
+  | 'categoryAutoMatchTotal'
+  | 'categoryAutoMatchProductName'
+  | 'categoryAttributeTranslationEnabled'
+  | 'categoryAttributeTranslations'
+  | 'categoryAttributeTranslationsSource'
+  | 'categoryAttributeTranslating'
+  | 'categoryAttributeLoading'
+  | 'categoryAttributeError'
+  | 'categoryResultTranslations'
+  | 'categoryResultTranslationsSource'
+  | 'categoryResultTranslating'
+  | 'categoryPrecheck'
+  | 'precheck'
+  | 'precheckResults'
+  | 'payloadPreview'
+  | 'publishJob'
+  | 'publishJobStatus'
+  | 'publishLogs'
+  | 'activeMarketplace'
+  | 'platformOptions'
+  | 'publishResult'
+  | 'activePublishTargetKey'
+  | 'loading'
+  | 'addLog'
+  | 'setError'
+  | 'requestSequence'
+  | 'currentStage'
+  | 'currentPublishTargets'
+  | 'selectedPublishTarget'
+  | 'activeMarketplaceSite'
+  | 'targetSiteKey'
+  | 'applyCategoryRecommendationForTarget'
+  | 'setCategoryRecommendation'
+  | 'persistActiveTargetListingFields'
+  | 'invalidateCategoryAttributeLoad'
+  | 'applyTargetListingToDraft'
+  | 'pricingTargetKey'
+  | 'syncActivePublishTarget'
+  | 'applyMutationIndexes'
+  | 'restorePrecheckFromProduct'
+  | 'restoreCategoryFromProduct'
+  | 'persistCurrentDraftForPublish'
+>
+
+export function createWorkflowPublishingActions(runtime: WorkflowPublishingActionsPort) {
+  const {
+    product, draftsIndex, currentDraft, currentDraftProductContext, category,
+    categoryQuery, categoryResults, categoryRecommendations, categoryAutoMatching, categoryAutoMatchMessage,
+    categoryAutoMatchCurrent, categoryAutoMatchTotal, categoryAutoMatchProductName, categoryAttributeTranslationEnabled, categoryAttributeTranslations,
+    categoryAttributeTranslationsSource, categoryAttributeTranslating, categoryAttributeLoading, categoryAttributeError, categoryResultTranslations,
+    categoryResultTranslationsSource, categoryResultTranslating, categoryPrecheck, precheck, precheckResults,
+    payloadPreview, publishJob, publishJobStatus, publishLogs, activeMarketplace, platformOptions,
+    publishResult, activePublishTargetKey, loading, addLog, setError,
+    requestSequence, currentStage, currentPublishTargets, selectedPublishTarget, activeMarketplaceSite,
+    targetSiteKey, applyCategoryRecommendationForTarget, setCategoryRecommendation, persistActiveTargetListingFields, invalidateCategoryAttributeLoad,
+    applyTargetListingToDraft, pricingTargetKey, syncActivePublishTarget, applyMutationIndexes, restorePrecheckFromProduct,
+    restoreCategoryFromProduct, persistCurrentDraftForPublish,
+  } = runtime
+
+  function selectPublishTarget(target: MarketplaceTargetSite) {
+    const targets = currentPublishTargets.value
+    const selected = targets.find((item) => pricingTargetKey(item.platform, item.site) === pricingTargetKey(target.platform, target.site))
+    if (!selected) {
+      setError('这个站点不属于当前草稿的目标市场。')
+      return
+    }
+    persistActiveTargetListingFields(categoryPrecheck.value ? { categoryPrecheck: categoryPrecheck.value.raw || categoryPrecheck.value } : {})
+    invalidateCategoryAttributeLoad()
+    activePublishTargetKey.value = pricingTargetKey(selected.platform, selected.site)
+    activeMarketplace.value = selected.platform
+    precheck.value = null
+    payloadPreview.value = null
+    applyTargetListingToDraft(selected)
+    if (categoryAttributeTranslationEnabled.value) {
+      void translateCategoryResults()
+      if (currentDraft.value.categoryId.trim()) void translateCategoryAttributes()
+    }
+  }
+  async function searchCategory() {
+    if (!categoryQuery.value.trim()) {
+      setError('请输入类目搜索关键词。')
+      return
+    }
+    const target = selectedPublishTarget.value
+    if (!currentDraft.value.draftId || !target.platform || !target.site) {
+      setError('请先从草稿箱选择要预检的草稿目标。')
+      return
+    }
+    loading.value = true
+    setError('')
+    try {
+      const result = await searchCategories(target.platform, categoryQuery.value, target.site)
+      setCategoryRecommendation(target, categoryQuery.value, result.results)
+      categoryResultTranslations.value = {}
+      categoryResultTranslationsSource.value = ''
+      addLog(`类目搜索完成：${result.results.length} 条。`)
+      if (categoryAttributeTranslationEnabled.value) {
+        await translateCategoryResults()
+      }
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : '类目搜索失败')
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function suggestCategoryByAi() {
+    await autoSuggestCategoriesForDraft()
+  }
+
+  function clearCurrentCategoryDependentFields() {
+    currentDraft.value.attributes = {}
+    currentDraft.value.validationErrors = []
+    currentDraft.value.lastPrecheck = {}
+    currentDraft.value.lastPrecheckTarget = {}
+    currentDraft.value.publishStatus = ''
+    currentDraft.value.status = 'category_ready'
+    category.value = null
+    categoryAttributeError.value = ''
+    categoryPrecheck.value = null
+    precheck.value = null
+    payloadPreview.value = null
+  }
+
+  async function autoSuggestCategoriesForDraft() {
+    if (!currentDraft.value.draftId) {
+      setError('请先从草稿箱选择要匹配类目的草稿。')
+      return false
+    }
+    const initialTargets = currentPublishTargets.value
+    if (!initialTargets.length) {
+      setError('当前草稿没有可匹配类目的目标站点。')
+      return false
+    }
+    categoryAutoMatching.value = true
+    categoryAutoMatchMessage.value = '正在使用文本 AI 识别商品主体…'
+    categoryAutoMatchCurrent.value = 0
+    categoryAutoMatchTotal.value = initialTargets.length
+    categoryAutoMatchProductName.value = ''
+    categoryRecommendations.value = {}
+    loading.value = true
+    setError('')
+    try {
+      await persistCurrentDraftForPublish()
+      const identification: CategoryProductIdentification = await identifyProductForCategory(currentDraft.value)
+      categoryAutoMatchProductName.value = identification.identity.name
+      const targetQueries = new Map(identification.targets.map((target) => [targetSiteKey(target), target.query.trim()]))
+      const recommendations: Record<string, { query: string; results: CategorySearchResult[]; error: string }> = {}
+      let matchedCount = 0
+      const targets = currentPublishTargets.value
+      categoryAutoMatchTotal.value = targets.length
+      for (const [index, target] of targets.entries()) {
+        const query = targetQueries.get(targetSiteKey(target)) || ''
+        categoryAutoMatchMessage.value = `正在为 ${target.platform.toUpperCase()} ${target.site} 匹配类目（${index + 1}/${targets.length}）…`
+        if (!query) {
+          recommendations[targetSiteKey(target)] = { query: '', results: [], error: 'AI 未返回该站点的类目检索词。' }
+          categoryAutoMatchCurrent.value = index + 1
+          continue
+        }
+        try {
+          const result = await searchCategories(target.platform, query, target.site, 5)
+          recommendations[targetSiteKey(target)] = { query, results: result.results, error: '' }
+          if (result.results.length) matchedCount += 1
+        } catch (exc) {
+          recommendations[targetSiteKey(target)] = {
+            query,
+            results: [],
+            error: exc instanceof Error ? exc.message : '类目匹配失败',
+          }
+        }
+        categoryAutoMatchCurrent.value = index + 1
+      }
+      categoryRecommendations.value = recommendations
+      applyCategoryRecommendationForTarget(selectedPublishTarget.value)
+      categoryResultTranslations.value = {}
+      categoryResultTranslationsSource.value = ''
+      const confidence = Math.round(identification.identity.confidence * 100)
+      addLog(`商品主体已识别：${identification.identity.name}${confidence ? `（置信度 ${confidence}%）` : ''}；${matchedCount}/${targets.length} 个目标站点已生成类目候选。`)
+      if (categoryAttributeTranslationEnabled.value) {
+        await translateCategoryResults()
+      }
+      if (!matchedCount) setError('没有找到可用类目候选，请检查各目标站点的检索词后手动搜索。')
+      return matchedCount > 0
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : '匹配类目失败')
+      return false
+    } finally {
+      categoryAutoMatchMessage.value = ''
+      categoryAutoMatching.value = false
+      loading.value = false
+    }
+  }
+
+  async function selectCategory(item: CategorySearchResult) {
+    const previousCategoryId = String(selectedPublishTarget.value.categoryId || '').trim()
+    const categoryId = item.id.trim()
+    if (!categoryId) {
+      setError('所选类目缺少类目 ID。')
+      return
+    }
+    const categoryChanged = previousCategoryId !== categoryId
+    invalidateCategoryAttributeLoad()
+    categoryAttributeLoading.value = true
+    currentDraft.value.categoryId = categoryId
+    currentDraft.value.categoryPath = item.path || item.name
+    if (categoryChanged) {
+      clearCurrentCategoryDependentFields()
+    }
+    categoryAttributeTranslations.value = {}
+    categoryAttributeTranslationsSource.value = ''
+    if (categoryChanged) {
+      persistActiveTargetListingFields({ categoryAttributeSchema: null })
+    }
+    loading.value = true
+    setError('')
+    try {
+      await persistCurrentDraftForPublish()
+      addLog(`类目已保存：${categoryId}`)
+    } catch (exc) {
+      const message = exc instanceof Error ? exc.message : '保存类目失败'
+      categoryAttributeError.value = message
+      categoryAttributeLoading.value = false
+      setError(message)
+      return
+    } finally {
+      loading.value = false
+    }
+    await loadCategoryAttributes(item.raw)
+  }
+
+  async function loadCategoryAttributes(categoryRecord?: UnknownRecord) {
+    const target = { ...selectedPublishTarget.value }
+    const categoryId = currentDraft.value.categoryId.trim()
+    if (!categoryId) {
+      const message = '请先填写或选择类目 ID。'
+      categoryAttributeLoading.value = false
+      categoryAttributeError.value = message
+      setError(message)
+      return
+    }
+    if (!target.platform) {
+      const message = '当前草稿没有可读取类目属性的目标站点。'
+      categoryAttributeLoading.value = false
+      categoryAttributeError.value = message
+      setError(message)
+      return
+    }
+    const requestId = ++requestSequence.categoryAttributeLoad
+    const requestTargetKey = targetSiteKey(target)
+    const requestIsCurrent = () => (
+      requestId === requestSequence.categoryAttributeLoad
+      && requestTargetKey === targetSiteKey(selectedPublishTarget.value)
+      && categoryId === currentDraft.value.categoryId.trim()
+    )
+    categoryAttributeLoading.value = true
+    categoryAttributeError.value = ''
+    loading.value = true
+    setError('')
+    try {
+      const matchingLoadedRecord = category.value?.categoryId === categoryId && category.value.platform === target.platform
+        ? category.value.raw
+        : undefined
+      const loadedCategory = await fetchCategoryAttrs(target.platform, categoryId, target.site, categoryRecord || matchingLoadedRecord)
+      if (!requestIsCurrent()) return
+      if (String(target.categoryId || '').trim() !== categoryId) {
+        clearCurrentCategoryDependentFields()
+      }
+      if (loadedCategory.categoryPath) {
+        currentDraft.value.categoryPath = loadedCategory.categoryPath
+      }
+      category.value = loadedCategory
+      categoryAttributeError.value = ''
+      persistActiveTargetListingFields({
+        categoryAttributeSchema: categoryAttributeSchemaFromSelection(loadedCategory, target),
+      })
+      await persistCurrentDraftForPublish()
+      categoryAttributeTranslations.value = {}
+      categoryAttributeTranslationsSource.value = ''
+      currentStage.value = 6
+      addLog(`已读取并保存类目属性：${categoryId}`)
+      if (categoryAttributeTranslationEnabled.value) {
+        await translateCategoryAttributes()
+      }
+    } catch (exc) {
+      if (!requestIsCurrent()) return
+      const message = exc instanceof Error ? exc.message : '读取或保存类目属性失败'
+      categoryAttributeError.value = message
+      setError(message)
+    } finally {
+      if (requestId === requestSequence.categoryAttributeLoad) {
+        categoryAttributeLoading.value = false
+        loading.value = false
+      }
+    }
+  }
+
+  async function translateCategoryAttributes() {
+    const target = selectedPublishTarget.value
+    const categoryId = currentDraft.value.categoryId.trim()
+    if (!categoryId) {
+      setError('请先选择或填写类目 ID。')
+      return
+    }
+    if (!target.platform) return
+    const requestId = ++requestSequence.categoryAttributeTranslation
+    loading.value = true
+    categoryAttributeTranslating.value = true
+    setError('')
+    try {
+      const categoryForTranslation = category.value && category.value.categoryId === categoryId && category.value.platform === target.platform
+        ? category.value
+        : await fetchCategoryAttrs(target.platform, categoryId, target.site)
+      if (requestId !== requestSequence.categoryAttributeTranslation) return
+      category.value = categoryForTranslation
+      const result = await fetchCategoryAttributeTranslations(categoryForTranslation)
+      if (requestId !== requestSequence.categoryAttributeTranslation) return
+      categoryAttributeTranslations.value = result.translations
+      categoryAttributeTranslationsSource.value = result.source
+      const count = Object.values(result.translations).filter((item) => item.label).length
+      addLog(`属性翻译已加载：${count} 项${result.source === 'cache' ? '（缓存）' : '（AI）'}。`)
+    } catch (exc) {
+      if (requestId === requestSequence.categoryAttributeTranslation) setError(exc instanceof Error ? exc.message : '翻译类目属性失败')
+    } finally {
+      if (requestId === requestSequence.categoryAttributeTranslation) {
+        categoryAttributeTranslating.value = false
+        loading.value = false
+      }
+    }
+  }
+
+  async function translateCategoryResults() {
+    if (!categoryResults.value.length) return
+    const target = selectedPublishTarget.value
+    if (!target.platform) return
+    const requestId = ++requestSequence.categoryResultTranslation
+    const results = categoryResults.value
+    categoryResultTranslating.value = true
+    try {
+      const result = await fetchCategoryResultTranslations(target.platform, results)
+      if (requestId !== requestSequence.categoryResultTranslation) return
+      categoryResultTranslations.value = result.translations
+      categoryResultTranslationsSource.value = result.source
+      const count = Object.values(result.translations).filter(Boolean).length
+      addLog(`候选类目翻译已加载：${count} 项${result.source === 'provided' ? '（已有中文）' : '（AI）'}。`)
+    } catch (exc) {
+      if (requestId === requestSequence.categoryResultTranslation) setError(exc instanceof Error ? exc.message : '翻译候选类目失败')
+    } finally {
+      if (requestId === requestSequence.categoryResultTranslation) categoryResultTranslating.value = false
+    }
+  }
+
+  function setCategoryAttributeTranslationEnabled(value: boolean) {
+    categoryAttributeTranslationEnabled.value = value
+    if (!value) return
+    void translateCategoryResults()
+    const categoryId = currentDraft.value.categoryId.trim()
+    if (categoryId || category.value) void translateCategoryAttributes()
+  }
+
+  async function fillAttributesByAi() {
+    const categoryId = currentDraft.value.categoryId.trim()
+    if (!categoryId) {
+      setError('请先选择类目。')
+      return
+    }
+    if (!currentDraft.value.draftId) {
+      setError('请先从草稿箱选择一个草稿再填充属性。')
+      return
+    }
+    loading.value = true
+    setError('')
+    try {
+      await persistCurrentDraftForPublish()
+      const target = selectedPublishTarget.value
+      if (!category.value || category.value.categoryId !== categoryId || category.value.platform !== target.platform) {
+        category.value = await fetchCategoryAttrs(target.platform, categoryId, target.site)
+      }
+      const before = { ...currentDraft.value.attributes }
+      const result = await fillCategoryAttributes(currentDraft.value, target, categoryId, category.value)
+      currentDraft.value = result.draft
+      currentDraftProductContext.value = result.productContext
+      syncActivePublishTarget(target)
+      applyMutationIndexes(result)
+      const after = currentDraft.value.attributes
+      const filledCount = Object.keys(after).filter((key) => String(after[key] || '').trim() && String(before[key] || '').trim() !== String(after[key] || '').trim()).length
+      const source = result.raw?.fill_source === 'ai_model' ? 'AI 模型' : '规则'
+      addLog(`属性已填充：${source} 新增/更新 ${filledCount} 项，需要复核 ${result.needReview.length} 项。`)
+      if (result.warning) addLog(result.warning)
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : 'AI 填充属性失败')
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function runCategoryOnlyPrecheck() {
+    if (!currentDraft.value.draftId) {
+      setError('请先从草稿箱选择要预检的草稿。')
+      return
+    }
+    const categoryId = currentDraft.value.categoryId.trim()
+    if (!categoryId) {
+      setError('请先选择或填写类目 ID。')
+      return
+    }
+    loading.value = true
+    setError('')
+    try {
+      await persistCurrentDraftForPublish()
+      categoryPrecheck.value = await runCategoryPrecheck(currentDraft.value, selectedPublishTarget.value, categoryId)
+      persistActiveTargetListingFields({ categoryPrecheck: categoryPrecheck.value.raw || categoryPrecheck.value })
+      addLog(categoryPrecheck.value.ok ? '类目预检通过。' : `类目预检发现缺项：${categoryPrecheck.value.missingFields.join('、') || categoryPrecheck.value.errors.join('、')}`)
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : '类目预检失败')
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function runPrecheck() {
+    if (!currentDraft.value.draftId) {
+      setError('请先从草稿箱选择要预检的草稿。')
+      return
+    }
+    loading.value = true
+    setError('')
+    try {
+      await persistCurrentDraftForPublish()
+      const target = selectedPublishTarget.value
+      const result = await publishPrecheck(currentDraft.value, target)
+      currentDraft.value = result.draft
+      if (result.productContext) currentDraftProductContext.value = result.productContext
+      syncActivePublishTarget(target)
+      precheck.value = result.precheck
+      precheckResults.value = result.platformResults
+      applyMutationIndexes(result)
+      if (result.precheck.ok) currentStage.value = 7
+      addLog(result.precheck.ok ? '预检通过，商品可进入发布队列。' : `预检未通过：${result.precheck.errors.join('、')}`)
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : '上架预检失败')
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function previewPayload() {
+    if (!currentDraft.value.draftId) {
+      setError('请先从草稿箱选择要预检的草稿。')
+      return
+    }
+    loading.value = true
+    setError('')
+    try {
+      await persistCurrentDraftForPublish()
+      const target = selectedPublishTarget.value
+      const result = await previewPublishPayload(currentDraft.value, target)
+      if (result.draft) currentDraft.value = result.draft
+      if (result.productContext) currentDraftProductContext.value = result.productContext
+      syncActivePublishTarget(target)
+      applyMutationIndexes(result)
+      payloadPreview.value = result.payload
+      addLog(`Payload 已生成：${result.path || result.status}`)
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : '生成 Payload 失败')
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function enqueuePublish() {
+    if (!currentDraft.value.draftId) {
+      setError('请先从草稿箱选择要发布的草稿。')
+      return
+    }
+    loading.value = true
+    setError('')
+    try {
+      await persistCurrentDraftForPublish()
+      publishJob.value = await enqueuePublishApi(currentDraft.value, selectedPublishTarget.value)
+      draftsIndex.value = await fetchDraftsIndex()
+      currentStage.value = 8
+      addLog(`发布任务已入队：${publishJob.value.jobId}`)
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : '发布入队失败')
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function publishDirect() {
+    loading.value = true
+    setError('')
+    try {
+      const result = await publishProductDirect(product.value, activeMarketplace.value)
+      publishResult.value = result.raw
+      if (result.product) product.value = result.product
+      applyMutationIndexes(result)
+      draftsIndex.value = result.draftsIndex?.length ? result.draftsIndex : await fetchDraftsIndex()
+      publishLogs.value = await fetchPublishLogs()
+      addLog(`直接发布返回：${result.status || (result.ok ? 'success' : 'failed')} ${result.message || result.error || ''}`)
+      if (!result.ok && result.error) setError(result.error)
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : '直接发布失败')
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function confirmRealPublish() {
+    loading.value = true
+    setError('')
+    try {
+      const result = await confirmMercadoLibreRealPublish(product.value, true)
+      publishResult.value = result.raw
+      if (result.product) product.value = result.product
+      applyMutationIndexes(result)
+      draftsIndex.value = result.draftsIndex?.length ? result.draftsIndex : await fetchDraftsIndex()
+      publishLogs.value = await fetchPublishLogs()
+      addLog(`Mercado Libre 真实发布返回：${result.status || (result.ok ? 'success' : 'failed')} ${result.message || result.error || ''}`)
+      if (!result.ok && result.error) setError(result.error)
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : 'Mercado Libre 真实发布失败')
+    } finally {
+      loading.value = false
+    }
+  }
+
+  function setMarketplace(value: Marketplace) {
+    if (marketplaces.includes(value)) {
+      invalidateCategoryAttributeLoad()
+      activeMarketplace.value = value
+      setMarketplaceSite(activeMarketplaceSite())
+      categoryAttributeTranslationEnabled.value = false
+      categoryAttributeTranslations.value = {}
+      categoryAttributeTranslationsSource.value = ''
+      categoryResultTranslations.value = {}
+      categoryResultTranslationsSource.value = ''
+      restoreCategoryFromProduct()
+      restorePrecheckFromProduct()
+      const progressDraft = workflowProgressDraft(product.value, currentDraft.value, value)
+      if (
+        publishJob.value
+        && !publishJobMatchesProgressContext(
+          publishJob.value,
+          value,
+          progressDraft,
+          activePublishTargetKey.value,
+        )
+      ) {
+        publishJob.value = null
+        publishJobStatus.value = null
+      }
+    }
+  }
+
+  function setMarketplaceSite(site: string) {
+    const draft = product.value.drafts[activeMarketplace.value]
+    const selected = platformOptions.value
+      .find((option) => option.key === activeMarketplace.value)
+      ?.sites.find((item) => item.code.toLowerCase() === String(site || '').trim().toLowerCase())
+    if (!draft || !selected) return
+    draft.site = selected.code
+    draft.language = selected.language
+    draft.currency = selected.currency
+  }
+
+  return {
+    searchCategory, suggestCategoryByAi, autoSuggestCategoriesForDraft, selectCategory, loadCategoryAttributes, translateCategoryAttributes,
+    translateCategoryResults, setCategoryAttributeTranslationEnabled, fillAttributesByAi, runCategoryOnlyPrecheck, runPrecheck, previewPayload,
+    enqueuePublish, publishDirect, confirmRealPublish, setMarketplace, setMarketplaceSite, selectPublishTarget,
+  }
+}

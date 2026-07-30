@@ -6,7 +6,7 @@ import {
   fetchMercadoLibrePublishedItems,
   fetchPublishJob,
   fetchPublishLogs,
-} from '@/api/workflow'
+} from '@/api/workflow/publishing'
 import { createDefaultPricingInput } from '@/constants/initialState'
 import { useWorkflowActivityStore } from '@/stores/workflow/activity'
 import type {

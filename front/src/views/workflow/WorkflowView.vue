@@ -25,18 +25,35 @@ import { useClipboard } from '@/composables/useClipboard'
 import { useBackdropDismiss } from '@/composables/useBackdropDismiss'
 import { useAppStore } from '@/stores/app'
 import { useWorkflowStore } from '@/stores/workflow'
+import { useWorkflowActivityStore } from '@/stores/workflow/activity'
+import { useWorkflowCatalogStore } from '@/stores/workflow/catalog'
+import { useWorkflowCollectionStore } from '@/stores/workflow/collection'
+import { useWorkflowPublishingStore } from '@/stores/workflow/publishing'
+import { useWorkflowSettingsStore } from '@/stores/workflow/settings'
 import type { DraftIndexItem, ProductIndexItem, UnknownRecord } from '@/types/workflow'
 
 const store = useWorkflowStore()
+const activityStore = useWorkflowActivityStore()
+const catalogStore = useWorkflowCatalogStore()
+const collectionStore = useWorkflowCollectionStore()
+const publishingStore = useWorkflowPublishingStore()
+const settingsStore = useWorkflowSettingsStore()
+
 const {
   product,
+  productsIndex,
+  draftsIndex,
+  selectedProductIds,
+  currentDraft,
+  currentDraftProductContext,
+} = storeToRefs(catalogStore)
+const {
   collectForm,
   collectDiagnostics,
   collectBatchRows,
   browserDebugStatus,
-  productsIndex,
-  draftsIndex,
-  selectedProductIds,
+} = storeToRefs(collectionStore)
+const {
   pricingInput,
   pricingResult,
   category,
@@ -47,7 +64,6 @@ const {
   categoryAutoMatchCurrent,
   categoryAutoMatchTotal,
   categoryAutoMatchProductName,
-  categoryAutoMatchTargetError,
   categoryAttributeTranslationEnabled,
   categoryAttributeTranslations,
   categoryAttributeTranslationsSource,
@@ -77,7 +93,8 @@ const {
   publishResult,
   activeMarketplace,
   platformOptions,
-  logs,
+} = storeToRefs(publishingStore)
+const {
   appConfig,
   aiConfig,
   storeConfig,
@@ -85,15 +102,19 @@ const {
   mercadolibreAuthChecklist,
   lastAuthResult,
   authLink,
-  currentDraft,
-  currentDraftProductContext,
+} = storeToRefs(settingsStore)
+const {
+  logs,
+  loading,
+  error,
+} = storeToRefs(activityStore)
+const {
+  categoryAutoMatchTargetError,
   currentPublishTargets,
   selectedPublishTarget,
   workflowSteps,
   progressPercent,
   imagePool,
-  loading,
-  error,
 } = storeToRefs(store)
 
 const appStore = useAppStore()
@@ -101,6 +122,7 @@ const route = useRoute()
 const router = useRouter()
 const { copied: productIdCopied, copy: copyToClipboard } = useClipboard()
 const activeNav = ref('dashboard')
+let initialStateLoaded = false
 const editorOpen = ref(false)
 const draftWorkspaceOpen = ref(false)
 const draftWorkspaceTab = ref<DraftWorkspaceTab>('text')
@@ -265,17 +287,17 @@ async function copyProductId() {
   await copyToClipboard(product.value.productId)
 }
 
+async function refreshDomainForNav(key: string) {
+  await store.hydrateTab(key)
+}
+
 function navigate(key: string) {
   activeNav.value = key
   const nextQuery = key === 'dashboard' ? {} : { tab: key }
   if (route.path !== '/' || String(route.query.tab || '') !== String(nextQuery.tab || '')) {
     void router.push({ name: 'WorkflowHome', query: nextQuery })
   }
-  if (key === 'library') void store.refreshProductsIndex()
-  if (key === 'drafts') void store.refreshDraftsIndex()
-  if (key === 'logs') void store.refreshPublishLogs()
-  if (key === 'mlItems') void store.refreshMercadoLibreRemoteItems()
-  if (key === 'auth') void store.loadAiConfig()
+  void refreshDomainForNav(key)
 }
 
 async function claimSelectedAndOpenDrafts() {
@@ -289,7 +311,8 @@ function toggleTheme() {
 
 onMounted(async () => {
   await store.loadState()
-  if (activeNav.value === 'auth') await store.loadAiConfig()
+  initialStateLoaded = true
+  await refreshDomainForNav(activeNav.value)
 })
 
 watch(
@@ -298,8 +321,9 @@ watch(
     const tab = String(route.query.tab || '')
     const previous = activeNav.value
     activeNav.value = navItems.some((item) => item.key === tab) ? tab : 'dashboard'
-    if (activeNav.value === 'mlItems' && previous !== activeNav.value) void store.refreshMercadoLibreRemoteItems()
-    if (activeNav.value === 'auth' && previous !== activeNav.value) void store.loadAiConfig()
+    if (initialStateLoaded && previous !== activeNav.value) {
+      void refreshDomainForNav(activeNav.value)
+    }
   },
   { immediate: true },
 )

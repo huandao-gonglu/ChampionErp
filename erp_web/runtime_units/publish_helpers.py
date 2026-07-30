@@ -11,45 +11,34 @@ from erp_web.product_model import (
     normalize_draft_image_refs,
     validate_category_precheck,
 )
+from erp_web.stores.config_store import summarize_store_auth_states
+from erp_web.stores.product_store import normalize_product_fields
 
 from .copy_generation import apply_product_drafts_to_plan, build_plan_for_platform
 from .image_pool_core import current_image_pool, image_pool_refs_for_platform
-from .product_store import (
-    load_product,
-    load_products_index,
-    normalize_list,
-    normalize_product_fields,
-    save_product,
-    summarize_store_auth_states,
-)
 
 def assign_upc() -> dict[str, Any]:
-    """分配一枚 UPC：先在 upc_pool 表内单事务占号（占号即持久），再写商品草稿。"""
-    product = normalize_product_fields(load_product())
-    product_id = str(product.get("product_id") or "").strip()
-    value = get_context().db.assign_upc(product_id)
+    """在同一事务内为当前商品占用 UPC 并保存商品/草稿。"""
+    product = normalize_product_fields(get_context().products.load_product())
+    value, saved = get_context().products.assign_upc_to_product(product)
     if not value:
         return {"ok": False, "error": "UPC 池为空，请先在设置中导入 UPC"}
-    product["upc"] = value
-    drafts = product.get("drafts") if isinstance(product.get("drafts"), dict) else {}
-    for draft in drafts.values():
-        if isinstance(draft, dict):
-            draft["upc"] = value
-            draft["gtin"] = value
-            draft["barcode"] = value
-    saved = save_product(product)
     return {
         "ok": True,
         "upc": value,
         "product": saved,
-        "productsIndex": load_products_index(),
+        "productsIndex": get_context().products.load_products_index(),
         "imagePool": current_image_pool(saved),
         "upcPool": get_context().db.upc_pool_stats(),
         "message": f"UPC 已分配：{value}",
     }
 
 
-def build_mercadolibre_publish_payload(product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+def build_mercadolibre_publish_payload(
+    product: dict[str, Any],
+    config: dict[str, Any],
+    picture_refs: list[str] | None = None,
+) -> dict[str, Any]:
     plan = apply_product_drafts_to_plan(product, build_plan_for_platform(product, "mercadolibre"))
     draft = _draft_for_platform(product, "mercadolibre")
     payload_config = deepcopy(config)
@@ -66,7 +55,7 @@ def build_mercadolibre_publish_payload(product: dict[str, Any], config: dict[str
         "price": draft.get("price"),
         "stock": draft.get("stock"),
         "sku": draft.get("sku"),
-        "upc": draft.get("upc") or draft.get("gtin") or draft.get("barcode"),
+        "upc": draft.get("upc"),
         "model": draft.get("model"),
         "mercadolibre_title": draft.get("title"),
         "package_length_cm": package_dimensions.get("length_cm"),
@@ -80,8 +69,17 @@ def build_mercadolibre_publish_payload(product: dict[str, Any], config: dict[str
             listing[key] = value
     if isinstance(draft.get("sale_terms"), list) and draft.get("sale_terms"):
         listing["mercadolibre_sale_terms"] = draft.get("sale_terms")
-    picture_refs = image_pool_refs_for_platform(product, "mercadolibre") or normalize_list(product.get("source_image_urls"))
-    return publisher.build_mercadolibre_payload(product, plan, payload_config, picture_refs)
+    refs = (
+        image_pool_refs_for_platform(product, "mercadolibre")
+        if picture_refs is None
+        else list(picture_refs)
+    )
+    return publisher.build_mercadolibre_payload(
+        product,
+        plan,
+        payload_config,
+        refs,
+    )
 
 
 def build_publish_payload(product: dict[str, Any], platform: str, config: dict[str, Any]) -> dict[str, Any]:
@@ -180,7 +178,9 @@ def compact_publish_failure_response(status: str, error: str, saved: dict[str, A
         response["precheck"] = compact_precheck(precheck)
     if saved:
         response["product_id"] = str(saved.get("product_id") or "")
-        response["productsIndex"] = load_products_index()
+        response["productsIndex"] = (
+            get_context().products.load_products_index()
+        )
     for key, value in extra.items():
         if value not in (None, "", [], {}):
             response[key] = value

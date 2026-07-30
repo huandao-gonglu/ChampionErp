@@ -42,7 +42,7 @@ def build_translate_prompt(
 ) -> str:
     """Build the prompt used to ask an image model to localize product images."""
     source = product.get("source") if isinstance(product.get("source"), dict) else {}
-    title = str(product.get("name") or product.get("title") or source.get("title") or "").strip()
+    title = str(product.get("name") or source.get("title") or "").strip()
     target = str(target_language or DEFAULT_TARGET_LANGUAGE).strip() or DEFAULT_TARGET_LANGUAGE
     mode_label = "translate existing text" if str(mode or "").strip().lower() == "translate" else "localized ecommerce conversion"
     template = ai_prompt_templates.load_ai_use_case_prompt_pair(app_dir, app_config, "image.translate")["user"]
@@ -387,7 +387,7 @@ def translate_images(
         }
 
     platform_values = image_service.normalize_platforms([platform]) or list(image_service.PLATFORMS)
-    product_id = str(product.get("product_id") or product.get("id") or "translated").strip() or "translated"
+    product_id = str(product.get("product_id") or "translated").strip() or "translated"
     items: list[dict[str, Any]] = []
     for index, result in enumerate(generated):
         if not isinstance(result, dict):
@@ -520,7 +520,7 @@ def edit_images(
         }
 
     platform_values = image_service.normalize_platforms([platform]) or list(image_service.PLATFORMS)
-    product_id = str(product.get("product_id") or product.get("id") or "edited").strip() or "edited"
+    product_id = str(product.get("product_id") or "edited").strip() or "edited"
     items: list[dict[str, Any]] = []
     for index, result in enumerate(generated):
         if not isinstance(result, dict):

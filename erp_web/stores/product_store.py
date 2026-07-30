@@ -21,8 +21,11 @@ from erp_web.product_model import (
     PLATFORMS,
     apply_created_image_refs_to_draft,
     default_product_model,
+    normalize_draft_target_site,
     normalize_draft_image_refs,
+    normalize_platform_draft,
     normalize_product_model,
+    validate_product_root_fields,
 )
 from erp_web.product_model.common import normalize_list
 from erp_web.runtime_units.image_pool_core import (
@@ -31,6 +34,7 @@ from erp_web.runtime_units.image_pool_core import (
     current_image_pool,
     enrich_product_image_dimensions,
 )
+from erp_web.schemas.product import PRODUCT_SCHEMA_VERSION
 
 
 def normalize_space(value: Any) -> str:
@@ -52,6 +56,7 @@ def product_id_from_body(body: dict[str, Any]) -> str:
 
 def normalize_sku_items(product: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    source = product.get("source") if isinstance(product.get("source"), dict) else {}
     raw_items = product.get("sku_items")
     if isinstance(raw_items, list):
         for index, item in enumerate(raw_items):
@@ -100,9 +105,20 @@ def normalize_sku_items(product: dict[str, Any]) -> list[dict[str, Any]]:
                 "name": str(product.get("sku") or product.get("model") or product.get("name") or "SKU 1"),
                 "spec1": "",
                 "spec2": "",
-                "price": str(product.get("detected_price") or product.get("cost") or ""),
+                "price": str(source.get("price") or product.get("cost") or ""),
                 "stock": str(product.get("stock") or ""),
-                "image": str((normalize_list(product.get("source_image_urls")) or [""])[0]),
+                "image": str(
+                    (
+                        normalize_list(source.get("images"))
+                        or [
+                            str(item.get("url") or item.get("path") or "")
+                            for item in source.get("image_pool", [])
+                            if isinstance(item, dict)
+                            and str(item.get("url") or item.get("path") or "").strip()
+                        ]
+                        or [""]
+                    )[0]
+                ),
                 "sale_price": "",
                 "custom_stock": "",
             }
@@ -117,8 +133,6 @@ def normalize_product_fields(product: dict[str, Any]) -> dict[str, Any]:
     normalized.setdefault("sku", "")
     normalized.setdefault("model", "")
     normalized.setdefault("attributes", {})
-    normalized.setdefault("detail_images", [])
-    normalized.setdefault("detail_image_urls", [])
     normalized.setdefault("marketplace_terms", {})
     normalized.setdefault("listing_overrides", {})
     normalized.setdefault("copy_results", {})
@@ -126,10 +140,6 @@ def normalize_product_fields(product: dict[str, Any]) -> dict[str, Any]:
     normalized.setdefault("selected_sku_indices", [])
     normalized.setdefault("pricing_defaults", {})
     normalized.setdefault("publish_preview", {})
-    if normalized.get("detected_price") and normalized.get("detected_currency"):
-        normalized["detected_price_display"] = f"{normalized['detected_price']} {normalized['detected_currency']}"
-    else:
-        normalized.setdefault("detected_price_display", "")
     if not isinstance(normalized.get("listing_overrides"), dict):
         normalized["listing_overrides"] = {}
     if not isinstance(normalized.get("copy_results"), dict):
@@ -142,6 +152,29 @@ def normalize_product_fields(product: dict[str, Any]) -> dict[str, Any]:
     if not normalized.get("selected_sku_indices"):
         normalized["selected_sku_indices"] = [0] if normalized["sku_items"] else []
     return normalized
+
+
+def normalize_persisted_product_fields(
+    product: dict[str, Any],
+) -> dict[str, Any]:
+    validate_product_root_fields(
+        product,
+        require_schema_version=True,
+    )
+    raw_version = product.get("schema_version")
+    try:
+        schema_version = int(raw_version)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "持久化产品缺少有效 schema_version；请清空开发数据并按当前 schema 重建"
+        ) from exc
+    if schema_version != PRODUCT_SCHEMA_VERSION:
+        raise ValueError(
+            "持久化产品 schema_version "
+            f"{schema_version} 不是当前版本 {PRODUCT_SCHEMA_VERSION}；"
+            "请清空开发数据并按当前 schema 重建"
+        )
+    return normalize_product_fields(product)
 
 
 # -- workflow-status helpers (pure) -----------------------------------------
@@ -191,30 +224,16 @@ def _normalize_delete_ids(value: Any) -> list[str]:
 
 
 def _normalized_target_payload(target: dict[str, Any], platform: str, selected_site: dict[str, Any]) -> dict[str, Any]:
-    payload = deepcopy(target if isinstance(target, dict) else {})
-    payload["platform"] = platform
-    payload["site"] = selected_site["code"]
-    payload["language"] = selected_site["language"]
-    payload["currency"] = selected_site["currency"]
-    for camel_key, snake_key in (
-        ("categoryId", "category_id"),
-        ("categoryPath", "category_path"),
-        ("categoryAttributeSchema", "category_attribute_schema"),
-        ("validationErrors", "validation_errors"),
-        ("categoryPrecheck", "category_precheck"),
-        ("publishStatus", "publish_status"),
-        ("lastPrecheck", "last_precheck"),
-        ("lastPrecheckTarget", "last_precheck_target"),
-    ):
-        if camel_key in payload and snake_key not in payload:
-            payload[snake_key] = payload[camel_key]
-    if not isinstance(payload.get("attributes"), dict):
-        payload["attributes"] = {}
-    if not isinstance(payload.get("category_attribute_schema"), dict):
-        payload["category_attribute_schema"] = {}
-    if not isinstance(payload.get("validation_errors"), list):
-        payload["validation_errors"] = []
-    return payload
+    return normalize_draft_target_site(
+        target,
+        platform,
+        {
+            "platform": platform,
+            "site": selected_site["code"],
+            "language": selected_site["language"],
+            "currency": selected_site["currency"],
+        },
+    )
 
 
 class ProductStore:
@@ -303,14 +322,32 @@ class ProductStore:
         if records:
             loaded = self._db.load_product_model(records[0]["product_id"])
             if loaded:
-                return normalize_product_fields(loaded)
+                return normalize_persisted_product_fields(loaded)
         return normalize_product_fields(default_product_model())
 
     def save_product(self, data: dict[str, Any]) -> dict[str, Any]:
+        validate_product_root_fields(data)
         product = self.sync_product_workflow_statuses(enrich_product_image_dimensions(normalize_product_fields(data)))
         product["product_id"] = product_identity(product)
-        product["product_id"] = self._db.upsert_product_model(product)
-        return product
+        product_id = self._db.upsert_product_model(product)
+        return normalize_persisted_product_fields(
+            self._db.load_product_model(product_id)
+        )
+
+    def assign_upc_to_product(
+        self,
+        data: dict[str, Any],
+    ) -> tuple[str, dict[str, Any]]:
+        """Atomically claim a UPC and persist the canonical product."""
+        product = self.sync_product_workflow_statuses(
+            enrich_product_image_dimensions(
+                normalize_product_fields(data)
+            )
+        )
+        upc, product_id = self._db.assign_upc_to_product_model(product)
+        if not upc:
+            return "", product
+        return upc, self.load_product_from_index(product_id, "")
 
     def save_product_profile(self, data: dict[str, Any]) -> dict[str, Any]:
         product_data = dict(data or {})
@@ -425,7 +462,7 @@ class ProductStore:
         if sqlite_product_id:
             loaded = self._db.load_product_model(sqlite_product_id)
             if loaded:
-                return normalize_product_fields(loaded)
+                return normalize_persisted_product_fields(loaded)
         return self.load_product()
 
     def load_required_product_from_body(self, body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
@@ -433,7 +470,7 @@ class ProductStore:
         if not product_id:
             return {}, {"ok": False, "error": "product_id 不能为空"}, 400
         product = self.load_product_from_index(product_id, "")
-        loaded_id = str(product.get("product_id") or product.get("id") or "").strip()
+        loaded_id = str(product.get("product_id") or "").strip()
         if loaded_id != product_id:
             return {}, {"ok": False, "error": "商品不存在", "product_id": product_id}, 404
         return product, None, 200
@@ -443,7 +480,19 @@ class ProductStore:
         if draft_id:
             loaded = self._db.load_product_for_draft(draft_id)
             if loaded:
-                return normalize_product_fields(loaded)
+                current_draft_id = str(
+                    loaded.pop("current_draft_id", "")
+                    or draft_id
+                )
+                current_draft_platform = str(
+                    loaded.pop("current_draft_platform", "")
+                )
+                product = normalize_persisted_product_fields(loaded)
+                product["current_draft_id"] = current_draft_id
+                product["current_draft_platform"] = (
+                    current_draft_platform
+                )
+                return product
         return self.load_product()
 
     # -- draft detail --------------------------------------------------------------
@@ -453,12 +502,12 @@ class ProductStore:
         source = normalized.get("source") if isinstance(normalized.get("source"), dict) else {}
         dimensions = source.get("dimensions") if isinstance(source.get("dimensions"), dict) else {}
         return {
-            "product_id": str(normalized.get("product_id") or normalized.get("id") or ""),
-            "source_product_id": str(normalized.get("source_product_id") or normalized.get("product_id") or normalized.get("id") or ""),
+            "product_id": str(normalized.get("product_id") or ""),
+            "source_product_id": str(normalized.get("source_product_id") or normalized.get("product_id") or ""),
             "title": str(normalized.get("name") or source.get("title") or ""),
             "source_title": str(source.get("title") or normalized.get("name") or ""),
-            "source_platform": str(source.get("source_platform") or normalized.get("source_platform") or ""),
-            "source_url": str(source.get("source_url") or normalized.get("source_url") or ""),
+            "source_platform": str(source.get("source_platform") or ""),
+            "source_url": str(source.get("source_url") or ""),
             "brand": str(normalized.get("brand") or source.get("brand") or ""),
             "model": str(normalized.get("model") or source.get("model") or ""),
             "sku": str(normalized.get("sku") or ""),
@@ -486,6 +535,7 @@ class ProductStore:
         product = self._db.load_product_model(str(draft.get("source_product_id") or draft.get("product_id") or ""))
         if not product:
             return {}, {"ok": False, "error": "草稿关联商品不存在", "draft_id": draft_id}, 404
+        product = normalize_persisted_product_fields(product)
         return {
             "ok": True,
             "draft": draft,
@@ -549,9 +599,15 @@ class ProductStore:
             "currency": primary_target["currency"],
         }
         merged["images"] = normalize_draft_image_refs(merged.get("images"))
+        merged = normalize_platform_draft(
+            merged,
+            platform,
+            {"product_id": product_id},
+        )
         saved_draft_id = self._db.upsert_draft_model(product_id, platform, merged)
         draft = self._db.load_draft_model(saved_draft_id)
         product = self._db.load_product_model(source_product_id or product_id)
+        product = normalize_persisted_product_fields(product)
         return {
             "ok": True,
             "draft": draft,
@@ -578,6 +634,7 @@ class ProductStore:
         if not product_id or platform not in PLATFORMS:
             return {}, {"ok": False, "error": "草稿关联商品或平台无效", "draft_id": draft_id}, 400
         product = self._db.load_product_model(str(existing.get("source_product_id") or product_id))
+        product = normalize_persisted_product_fields(product)
         next_images = apply_created_image_refs_to_draft(existing.get("images"), created_items, strategy)
         merged = {**existing, "images": next_images}
         product_for_status = dict(product or {})
@@ -587,6 +644,7 @@ class ProductStore:
         saved_draft_id = self._db.upsert_draft_model(product_id, platform, merged)
         draft = self._db.load_draft_model(saved_draft_id)
         product = self._db.load_product_model(str(draft.get("source_product_id") or product_id))
+        product = normalize_persisted_product_fields(product)
         return {
             "ok": True,
             "draft": draft,
@@ -598,7 +656,7 @@ class ProductStore:
 
     def save_draft_copy_result(self, product: dict[str, Any], target_market: str, copy: dict[str, Any]) -> dict[str, Any]:
         product = normalize_product_fields(product or {})
-        product_id = str(product.get("product_id") or product.get("id") or "").strip()
+        product_id = str(product.get("product_id") or "").strip()
         target_key = str(target_market or "").strip().lower() or "mercadolibre"
         if not product_id:
             raise RuntimeError("product_id 不能为空")
@@ -614,7 +672,6 @@ class ProductStore:
                 "search_terms": normalize_list(copy.get("search_keywords")),
                 "language": str(copy.get("language") or draft.get("language") or ""),
                 "copy_source": "ai",
-                "copy_result": copy,
                 "copy_generated_at": datetime.now(timezone.utc).isoformat(),
             }
         )
@@ -636,6 +693,7 @@ __all__ = [
     "ProductStore",
     "mask_secret",
     "normalize_product_fields",
+    "normalize_persisted_product_fields",
     "normalize_sku_items",
     "normalize_space",
     "product_id_from_body",

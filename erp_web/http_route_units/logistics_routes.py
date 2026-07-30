@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Callable
 
+from erp_web.schemas.requests import validate_request_payload
+
 from .common import JsonRequestHandler
 from ..facades import logistics_facade
 
@@ -10,12 +12,16 @@ PostHandler = Callable[[JsonRequestHandler], None]
 
 
 def handle_yunexpress_preview(handler: JsonRequestHandler) -> None:
-    result, status = logistics_facade.preview_yunexpress_shipment(handler.read_body())
+    result, status = logistics_facade.preview_yunexpress_shipment(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
+    )
     handler.send_json(result, status)
 
 
 def handle_yunexpress_create_shipment(handler: JsonRequestHandler) -> None:
-    result, status = logistics_facade.create_yunexpress_shipment(handler.read_body())
+    result, status = logistics_facade.create_yunexpress_shipment(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
+    )
     handler.send_json(result, status)
 
 

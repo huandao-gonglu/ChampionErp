@@ -14,11 +14,13 @@ from erp_web.context import get_context
 from erp_web.db import ErpDatabase
 from erp_web.services import pricing_service
 
-from .product_store import load_app_config
-
 
 def _pricing_exchange_rate_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
-    source_config = config if isinstance(config, dict) else load_app_config()
+    source_config = (
+        config
+        if isinstance(config, dict)
+        else get_context().config.load_app_config()
+    )
     pricing = source_config.get("pricing_defaults") if isinstance(source_config.get("pricing_defaults"), dict) else source_config
     cfg = pricing if isinstance(pricing, dict) else {}
     default_cfg = app_config_runtime.default_app_config()["pricing_defaults"]

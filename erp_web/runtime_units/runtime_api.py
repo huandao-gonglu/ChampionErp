@@ -3,15 +3,17 @@ from __future__ import annotations
 
 import json
 import time
-from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
+
+from erp_web.context import get_context
+from erp_web.http_request import safe_json_body
+from erp_web.stores.product_store import normalize_product_fields
 
 from erp_web import listing_planner as generator
 from .category_store import write_json
 from .collect_helpers import collect_time_iso
 from .copy_generation import list_presets, platform_to_preset_key
-from .product_store import normalize_list, normalize_product_fields, save_product
 from .publish_bus import append_publish_log
 from .publish_helpers import (
     _draft_for_platform,
@@ -19,9 +21,31 @@ from .publish_helpers import (
     precheck_item,
 )
 from .publish_adapter import publishing_adapter_for, unsupported_publish_response
-from .publish_logs_runtime import _write_publish_artifacts
+from .publish_logs_runtime import (
+    _draft_id_for_log,
+    _product_id_for_log,
+    _write_publish_artifacts,
+)
 from .publish_validation import apply_precheck_to_product
-from .runtime_common import FRONT_DIST_INDEX_PATH, TASK_DIR, WEB_TEMPLATE_PATH
+from .image_pool_core import source_image_refs
+
+
+def _remote_publish_succeeded(result: Any) -> bool:
+    return bool(
+        isinstance(result, dict)
+        and (
+            result.get("id")
+            or result.get("item_id")
+            or result.get("external_id")
+            or (
+                result.get("ok") is True
+                and str(result.get("status") or "").strip().lower()
+                in {"published", "success", "real_publish_success"}
+            )
+            or result.get("success") is True
+        )
+    )
+
 
 def publish_product(product: dict[str, Any], platform: str, config: dict[str, Any]) -> dict[str, Any]:
     product = normalize_product_fields(product)
@@ -35,9 +59,9 @@ def publish_product(product: dict[str, Any], platform: str, config: dict[str, An
         updated = apply_precheck_to_product(product, platform, precheck, status="not_ready")
         payload_path, response_path = _write_publish_artifacts(platform, {"precheck": precheck}, {"ok": False, "status": "not_ready"})
         log_entry = {
-            "product_id": str(updated.get("source_url") or updated.get("sku") or updated.get("name") or ""),
+            "product_id": _product_id_for_log(updated, platform),
             "platform": platform,
-            "draft_id": str(_draft_for_platform(updated, platform).get("sku") or ""),
+            "draft_id": _draft_id_for_log(updated, platform),
             "status": "not_ready",
             "started_at": precheck.get("checked_at") or collect_time_iso(),
             "finished_at": collect_time_iso(),
@@ -51,10 +75,10 @@ def publish_product(product: dict[str, Any], platform: str, config: dict[str, An
             "shop": platform,
             "sku": config.get("listing", {}).get("sku", ""),
             "error": "；".join(str(item.get("message") or "") for item in precheck.get("errors") or [] if isinstance(item, dict)),
-            "image": normalize_list(updated.get("source_image_urls"))[:1],
+            "image": source_image_refs(updated)[:1],
         }
         append_publish_log(log_entry)
-        saved = save_product(updated)
+        saved = get_context().products.save_product(updated)
         return {
             "ok": False,
             "status": "not_ready",
@@ -83,9 +107,9 @@ def publish_product(product: dict[str, Any], platform: str, config: dict[str, An
         payload_path, response_path = _write_publish_artifacts(platform, payload, {"ok": False, "errors": errors})
         append_publish_log(
             {
-                "product_id": str(updated.get("source_url") or updated.get("sku") or updated.get("name") or ""),
+                "product_id": _product_id_for_log(updated, platform),
                 "platform": platform,
-                "draft_id": str(_draft_for_platform(updated, platform).get("sku") or ""),
+                "draft_id": _draft_id_for_log(updated, platform),
                 "status": "not_ready",
                 "started_at": collect_time_iso(),
                 "finished_at": collect_time_iso(),
@@ -99,10 +123,10 @@ def publish_product(product: dict[str, Any], platform: str, config: dict[str, An
                 "shop": platform,
                 "sku": config.get("listing", {}).get("sku", ""),
                 "error": "，".join(errors),
-                "image": normalize_list(updated.get("source_image_urls"))[:1],
+                "image": source_image_refs(updated)[:1],
             }
         )
-        saved = save_product(updated)
+        saved = get_context().products.save_product(updated)
         return {"ok": False, "status": "not_ready", "error": "，".join(errors), "payload": payload, "product": saved}
 
     draft = _draft_for_platform(product, platform)
@@ -111,7 +135,7 @@ def publish_product(product: dict[str, Any], platform: str, config: dict[str, An
         result: Any = adapter.publish_payload(payload, config)
         status = (
             "real_publish_success"
-            if isinstance(result, dict) and (result.get("id") or result.get("ok") or result.get("success"))
+            if _remote_publish_succeeded(result)
             else "real_publish_failed"
         )
     except Exception as exc:
@@ -134,9 +158,9 @@ def publish_product(product: dict[str, Any], platform: str, config: dict[str, An
         )
         append_publish_log(
             {
-                "product_id": str(updated.get("source_url") or updated.get("sku") or updated.get("name") or ""),
+                "product_id": _product_id_for_log(updated, platform),
                 "platform": platform,
-                "draft_id": str(draft.get("sku") or ""),
+                "draft_id": _draft_id_for_log(updated, platform),
                 "status": "real_publish_failed",
                 "started_at": started_at,
                 "finished_at": collect_time_iso(),
@@ -150,21 +174,21 @@ def publish_product(product: dict[str, Any], platform: str, config: dict[str, An
                 "shop": platform,
                 "sku": config.get("listing", {}).get("sku", ""),
                 "error": mapped["summary"],
-                "image": normalize_list(updated.get("source_image_urls"))[:1],
+                "image": source_image_refs(updated)[:1],
             }
         )
-        saved = save_product(updated)
+        saved = get_context().products.save_product(updated)
         return {"ok": False, "status": "real_publish_failed", "error": mapped["summary"], "error_map": mapped, "payload": payload, "product": saved}
 
-    ok = bool(result.get("id") or result.get("ok") or result.get("success")) if isinstance(result, dict) else True
+    ok = _remote_publish_succeeded(result)
     final_status = "real_publish_success" if ok else status
     payload_path, response_path = _write_publish_artifacts(platform, payload, result)
     updated = apply_precheck_to_product(product, platform, precheck, status=final_status if ok else status)
     append_publish_log(
         {
-            "product_id": str(updated.get("source_url") or updated.get("sku") or updated.get("name") or ""),
+            "product_id": _product_id_for_log(updated, platform),
             "platform": platform,
-            "draft_id": str(draft.get("sku") or ""),
+            "draft_id": _draft_id_for_log(updated, platform),
             "status": final_status if ok else status,
             "started_at": started_at,
             "finished_at": collect_time_iso(),
@@ -178,19 +202,24 @@ def publish_product(product: dict[str, Any], platform: str, config: dict[str, An
             "shop": platform,
             "sku": config.get("listing", {}).get("sku", ""),
             "error": "" if ok else str(result.get("error") or result.get("message") or json.dumps(result, ensure_ascii=False)),
-            "image": normalize_list(updated.get("source_image_urls"))[:1],
+            "image": source_image_refs(updated)[:1],
         }
     )
-    saved = save_product(updated)
+    saved = get_context().products.save_product(updated)
     return {"ok": ok, "status": final_status if ok else status, "result": result, "payload": payload, "product": saved, "precheck": precheck}
 
 
 def save_task_bundle(product: dict[str, Any], platform: str, count: int) -> dict[str, Any]:
-    TASK_DIR.mkdir(parents=True, exist_ok=True)
+    task_dir = get_context().paths.task_dir
+    task_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    folder = TASK_DIR / stamp
+    folder = task_dir / stamp
     folder.mkdir(parents=True, exist_ok=True)
-    image_paths = [Path(path) for path in normalize_list(product.get("source_images")) if Path(path).exists()][:5]
+    image_paths = [
+        Path(path)
+        for path in source_image_refs(product)
+        if Path(path).exists()
+    ][:5]
     prompt = generator.build_plan(product, [generator.PlatformPlan(key=platform_to_preset_key(platform), preset=list_presets()[platform_to_preset_key(platform)])])
     prompt_text = json.dumps(prompt, ensure_ascii=False, indent=2)
     prompt_file = folder / "task_prompt.json"
@@ -206,24 +235,19 @@ def save_task_bundle(product: dict[str, Any], platform: str, count: int) -> dict
     return {"folder": str(folder), "prompt": str(prompt_file), "metadata": metadata}
 
 
-def safe_json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    length = int(handler.headers.get("Content-Length", "0") or 0)
-    raw = handler.rfile.read(length).decode("utf-8") if length else "{}"
-    return json.loads(raw or "{}")
-
-
 def html_page(active_page: str = "workbench") -> str:
-    if FRONT_DIST_INDEX_PATH.exists():
-        template = FRONT_DIST_INDEX_PATH.read_text(encoding="utf-8")
-    elif WEB_TEMPLATE_PATH.exists():
-        template = WEB_TEMPLATE_PATH.read_text(encoding="utf-8")
+    paths = get_context().paths
+    if paths.front_dist_index_path.exists():
+        template = paths.front_dist_index_path.read_text(encoding="utf-8")
+    elif paths.web_template_path.exists():
+        template = paths.web_template_path.read_text(encoding="utf-8")
     else:
         # Historical fallback referenced an HTML_TEMPLATE constant that never
         # existed anywhere, i.e. this branch was a guaranteed NameError. Fail
         # loudly with an actionable message instead.
         raise FileNotFoundError(
             "No frontend template found: build the frontend (expected "
-            f"{FRONT_DIST_INDEX_PATH}) or provide {WEB_TEMPLATE_PATH}."
+            f"{paths.front_dist_index_path}) or provide {paths.web_template_path}."
         )
     return template.replace("__ACTIVE_PAGE__", active_page)
 

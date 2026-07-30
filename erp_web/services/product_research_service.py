@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import threading
 import time
 import urllib.parse
@@ -31,7 +32,12 @@ from erp_web.schemas.product_research import (
     ProductResearchRun,
     ProductResearchSourceStatus,
 )
-from erp_web.services import ai_gateway, ai_model_config, ai_prompt_templates
+from erp_web.services import (
+    ai_gateway,
+    ai_model_config,
+    ai_prompt_templates,
+    config_service,
+)
 from erp_web.services.product_research_methods import search_method_for
 
 
@@ -43,18 +49,6 @@ TERMINAL_RUN_STATUSES = {"completed", "failed"}
 RESTART_INTERRUPTED_DESCRIPTION = "服务已重启，后台任务已中断；已保留已接收的候选商品。"
 RunProgressEvent = str | dict[str, Any]
 RunProgressCallback = Callable[[RunProgressEvent], None]
-SENSITIVE_CONFIG_KEYS = {
-    "access_token",
-    "api_key",
-    "app_secret",
-    "authorization",
-    "bearer_token",
-    "client_secret",
-    "password",
-    "refresh_token",
-    "secret",
-    "token",
-}
 MARKET_ALIASES = {
     "US": "amazon-us",
     "GB": "amazon-uk",
@@ -112,23 +106,9 @@ def _int_value(value: Any, default: int, min_value: int = 1, max_value: int | No
     return number
 
 
-def _mask_secret(value: Any) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    if len(text) <= 8:
-        return "*" * len(text)
-    return f"{text[:4]}...{text[-4:]}"
-
-
 def _mask_config_value(key: str, value: Any) -> Any:
-    if isinstance(value, dict):
-        return {nested_key: _mask_config_value(nested_key, nested_value) for nested_key, nested_value in value.items()}
-    if isinstance(value, list):
-        return [_mask_config_value(key, item) for item in value]
-    if key.lower() in SENSITIVE_CONFIG_KEYS:
-        return _mask_secret(value)
-    return value
+    """Use the single recursive credential policy shared by all config APIs."""
+    return config_service.mask_nested_config(value, key)
 
 
 class _TemplateContext(dict[str, Any]):
@@ -665,6 +645,9 @@ def append_product_research_run_log(app_dir: Path | str, run: ProductResearchRun
     record = build_run_log_record(run)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+    if os.name != "nt":
+        path.parent.chmod(0o700)
+        path.chmod(0o600)
     return path
 
 

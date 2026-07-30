@@ -4,7 +4,7 @@
 站点默认语言和币种集中维护，避免各业务页面重复硬编码。
 
 每个平台一条 :class:`MarketplaceSpec`：能力集合（capabilities）、字段映射
-（category_field / preset_key / title_limit / description_limit / language）和
+（preset_key / title_limit / description_limit / language）和
 凭据描述符（字段清单 + secret 标记 + test_auth 回调名）。通用逻辑一律查这里，
 不允许再散落 ``if platform == ...`` 分支；平台细节只出现在对应适配器里。
 """
@@ -46,12 +46,11 @@ class MarketplaceSpec:
     label: str
     sites: tuple[dict[str, str], ...]
     capabilities: frozenset[str]
-    category_field: str
     preset_key: str
     title_limit: int
     description_limit: int
     credential_fields: tuple[CredentialField, ...]
-    # auth_runtime 在线校验回调名；空字符串 = 平台未接入在线授权校验。
+    # ``module:attribute`` 在线校验器入口；空字符串 = 平台未接入在线授权校验。
     test_auth: str = ""
     # summarize_store_auth 兜底 masked_account 的取值字段顺序。
     masked_account_fields: tuple[str, ...] = ()
@@ -85,7 +84,6 @@ MARKETPLACE_SPECS: tuple[MarketplaceSpec, ...] = (
             {"key": "MLA", "code": "MLA", "label": "阿根廷", "language": "es", "currency": "ARS"},
         ),
         capabilities=frozenset({CAP_PUBLISH, CAP_PREVIEW_PAYLOAD, CAP_CATEGORY_SEARCH, CAP_CATEGORY_ATTRIBUTES, CAP_ORDERS}),
-        category_field="category_id",
         preset_key="mercadolibre",
         title_limit=60,
         description_limit=50000,
@@ -97,7 +95,7 @@ MARKETPLACE_SPECS: tuple[MarketplaceSpec, ...] = (
             CredentialField("refresh_token", "Refresh Token", secret=True),
             CredentialField("site_id", "Site"),
         ),
-        test_auth="mercadolibre_token",
+        test_auth="erp_web.runtime_units.store_credentials:_test_mercadolibre_auth",
         masked_account_fields=("shop_name", "user_id"),
         auth_failure_code="mercadolibre_auth_failed",
     ),
@@ -108,7 +106,6 @@ MARKETPLACE_SPECS: tuple[MarketplaceSpec, ...] = (
             {"key": "global", "code": "global", "label": "俄罗斯", "language": "ru-RU", "currency": "RUB"},
         ),
         capabilities=frozenset(),
-        category_field="yandex_category_id",
         preset_key="yandex",
         title_limit=120,
         description_limit=6000,
@@ -127,7 +124,6 @@ MARKETPLACE_SPECS: tuple[MarketplaceSpec, ...] = (
             {"key": "global", "code": "global", "label": "俄罗斯", "language": "ru-RU", "currency": "RUB"},
         ),
         capabilities=frozenset({CAP_CATEGORY_SEARCH, CAP_CATEGORY_ATTRIBUTES}),
-        category_field="ozon_category_id",
         preset_key="yandex",
         title_limit=120,
         description_limit=6000,
@@ -135,7 +131,7 @@ MARKETPLACE_SPECS: tuple[MarketplaceSpec, ...] = (
             CredentialField("client_id", "Client ID"),
             CredentialField("api_key", "API Key", secret=True),
         ),
-        test_auth="ozon_api",
+        test_auth="erp_web.runtime_units.store_credentials:_test_ozon_auth",
         masked_account_fields=("shop_name", "client_id"),
         auth_failure_code="ozon_auth_failed",
     ),
@@ -179,13 +175,6 @@ def platform_has_capability(platform: str, capability: str) -> bool:
 
 def platforms_with_capability(capability: str) -> tuple[str, ...]:
     return tuple(spec.key for spec in MARKETPLACE_SPECS if capability in spec.capabilities)
-
-
-def category_id_field(platform: str) -> str:
-    """平台在商品顶层的类目 ID 字段名（category_id / yandex_category_id / ozon_category_id）。"""
-
-    spec = marketplace_spec(platform)
-    return spec.category_field if spec else ""
 
 
 def platform_title_limit(platform: str, default: int = 120) -> int:
@@ -236,7 +225,6 @@ __all__ = [
     "Marketplace",
     "MarketplaceSpec",
     "PLATFORMS",
-    "category_id_field",
     "default_marketplace_site",
     "marketplace_options",
     "marketplace_site",

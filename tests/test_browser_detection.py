@@ -2,30 +2,28 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from erp_web.services import browser_debug_service
+
 
 def test_find_chrome_path_prefers_env_override(monkeypatch, tmp_path: Path) -> None:
-    from erp_web import runtime as erp_web_app
-
     fake_browser = tmp_path / "Google Chrome"
     fake_browser.write_text("#!/bin/sh\n", encoding="utf-8")
     monkeypatch.setenv("ERP_CHROME_PATH", str(fake_browser))
-    monkeypatch.setattr(erp_web_app.shutil, "which", lambda _command: None)
+    monkeypatch.setattr(browser_debug_service.shutil, "which", lambda _command: None)
 
-    assert erp_web_app.find_chrome_path() == str(fake_browser)
+    assert browser_debug_service.find_chrome_path() == str(fake_browser)
 
 
 def test_find_chrome_path_detects_macos_chrome_candidate(monkeypatch) -> None:
-    from erp_web import runtime as erp_web_app
-
     expected = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
     monkeypatch.delenv("ERP_CHROME_PATH", raising=False)
     monkeypatch.delenv("CHROME_PATH", raising=False)
     monkeypatch.delenv("BROWSER_PATH", raising=False)
-    monkeypatch.setattr(erp_web_app.sys, "platform", "darwin")
-    monkeypatch.setattr(erp_web_app.shutil, "which", lambda _command: None)
-    monkeypatch.setattr(erp_web_app.Path, "exists", lambda self: str(self) == expected)
+    monkeypatch.setattr(browser_debug_service.sys, "platform", "darwin")
+    monkeypatch.setattr(browser_debug_service.shutil, "which", lambda _command: None)
+    monkeypatch.setattr(browser_debug_service.Path, "exists", lambda self: str(self) == expected)
 
-    assert erp_web_app.find_chrome_path() == expected
+    assert browser_debug_service.find_chrome_path() == expected
 
 
 def test_fetch_browser_session_defaults_to_unified_debug_port(monkeypatch) -> None:
@@ -38,7 +36,6 @@ def test_fetch_browser_session_defaults_to_unified_debug_port(monkeypatch) -> No
         opened["port"] = port
         opened["profile_name"] = profile_name
 
-    monkeypatch.setattr(source_collect_browser, "BROWSER_DEBUG_PORT", 9222)
     monkeypatch.setenv("ERP_1688_CDP_PORT", "9224")
     monkeypatch.setattr(source_collect_browser, "open_browser_debug_session", fake_open_browser_debug_session)
     monkeypatch.setattr(source_collect_browser, "cdp_target_for_url", lambda port, url: {"webSocketDebuggerUrl": "ws://fake"})
@@ -73,7 +70,10 @@ def test_fetch_browser_session_defaults_to_unified_debug_port(monkeypatch) -> No
     monkeypatch.setattr(source_collect_browser, "CdpWebSocket", FakeCdp)
     monkeypatch.setattr(source_collect_browser, "save_collect_snapshot_artifacts", lambda *args, **kwargs: {"html_snapshot_path": "", "screenshot_path": ""})
 
-    snapshot = source_collect_browser.fetch_page_snapshot_with_browser_session("https://detail.1688.com/offer/1.html")
+    snapshot = source_collect_browser.fetch_page_snapshot_with_browser_session(
+        "https://detail.1688.com/offer/1.html",
+        port=9222,
+    )
 
     assert opened["port"] == 9222
     assert snapshot
@@ -89,10 +89,13 @@ def test_open_1688_browser_uses_unified_debug_port(monkeypatch) -> None:
         opened["port"] = port
         opened["profile_name"] = profile_name
 
-    monkeypatch.setattr(source_collect_browser, "BROWSER_DEBUG_PORT", 9222)
     monkeypatch.setenv("ERP_1688_CDP_PORT", "9224")
     monkeypatch.setattr(source_collect_browser, "open_browser_debug_session", fake_open_browser_debug_session)
 
-    source_collect_browser.open_browser_debug_session("https://www.1688.com/", source_collect_browser.BROWSER_DEBUG_PORT, "1688")
+    source_collect_browser.open_browser_debug_session(
+        "https://www.1688.com/",
+        9222,
+        "1688",
+    )
 
     assert opened["port"] == 9222

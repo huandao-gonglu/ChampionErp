@@ -41,10 +41,7 @@ def test_erp_web_modules_have_no_unresolved_names() -> None:
 
 
 def test_runtime_namespace_injection_stays_removed() -> None:
-    runtime_source = (APP_DIR / "erp_web" / "runtime.py").read_text(encoding="utf-8")
-    assert "_sync_runtime_units" not in runtime_source
-    assert "_install_runtime_units" not in runtime_source
-    assert "__getattr__" in runtime_source, "runtime.py must stay a lazy forwarding facade"
+    assert not (APP_DIR / "erp_web" / "runtime.py").exists()
     for path in sorted((APP_DIR / "erp_web").rglob("*.py")):
         if "__pycache__" in path.parts:
             continue

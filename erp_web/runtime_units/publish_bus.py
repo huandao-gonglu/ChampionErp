@@ -2,23 +2,27 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from erp_web.context import get_context
 from erp_web.product_model import default_draft
-from erp_web.services import html_extract_service as legacy
+from erp_web.services import html_extract_service
+from erp_web.stores.product_store import normalize_product_fields
 
 from .collect_helpers import collect_time_iso
-from .product_store import load_product_from_index, normalize_list, normalize_product_fields, save_product
+from .image_pool_core import source_image_refs
 from .publish_helpers import _draft_for_platform, precheck_item
+
+if TYPE_CHECKING:
+    from erp_web.context import AppContext
 
 def page_snapshot_from_html(url: str, html: str, text: str = "", title: str = "", image_urls: list[str] | None = None) -> dict[str, Any]:
     return {
         "url": url,
         "html": html,
-        "text": text or legacy.html_to_text(html),
-        "title": title or legacy.extract_page_title(html),
-        "image_urls": image_urls or legacy.extract_product_image_urls(html, url, limit=20),
+        "text": text or html_extract_service.html_to_text(html),
+        "title": title or html_extract_service.extract_page_title(html),
+        "image_urls": image_urls or html_extract_service.extract_product_image_urls(html, url, limit=20),
     }
 
 
@@ -40,8 +44,17 @@ def publish_bus_terminal_status(status: str) -> str:
     return ""
 
 
-def publish_bus_log_exists(job_id: str, platform: str) -> bool:
-    return get_context().db.publish_log_exists(str(job_id or ""), str(platform or ""))
+def publish_bus_log_exists(
+    job_id: str,
+    platform: str,
+    *,
+    context: "AppContext | None" = None,
+) -> bool:
+    runtime_context = context or get_context()
+    return runtime_context.db.publish_log_exists(
+        str(job_id or ""),
+        str(platform or ""),
+    )
 
 
 def apply_publish_bus_result_to_product(product: dict[str, Any], job_state: dict[str, Any], platform: str, item: dict[str, Any]) -> dict[str, Any]:
@@ -79,11 +92,26 @@ def apply_publish_bus_result_to_product(product: dict[str, Any], job_state: dict
     return product
 
 
-def append_publish_bus_terminal_log(product: dict[str, Any], job_state: dict[str, Any], platform: str, item: dict[str, Any]) -> None:
+def append_publish_bus_terminal_log(
+    product: dict[str, Any],
+    job_state: dict[str, Any],
+    platform: str,
+    item: dict[str, Any],
+    *,
+    context: "AppContext | None" = None,
+) -> None:
+    runtime_context = context or get_context()
     job_id = str(job_state.get("job_id") or "")
-    if publish_bus_log_exists(job_id, platform):
+    if (
+        job_id
+        and runtime_context.db.publish_log_exists(job_id, platform)
+    ):
         return
-    from .publish_logs_runtime import _product_id_for_log, _write_publish_artifacts
+    from .publish_logs_runtime import (
+        _draft_id_for_log,
+        _product_id_for_log,
+        _write_publish_artifacts,
+    )
 
     result = item.get("result") if isinstance(item.get("result"), dict) else {}
     payload = {
@@ -93,16 +121,22 @@ def append_publish_bus_terminal_log(product: dict[str, Any], job_state: dict[str
         "stage": item.get("stage") or "",
         "attempts": item.get("attempts", 0),
     }
-    payload_path, response_path = _write_publish_artifacts(f"publish-bus-{platform}", payload, result or item)
+    payload_path, response_path = _write_publish_artifacts(
+        f"publish-bus-{platform}",
+        payload,
+        result or item,
+        output_dir=runtime_context.paths.output_dir,
+        artifact_key=f"{job_id}:{platform}" if job_id else "",
+    )
     error_map = result.get("error_map") if isinstance(result.get("error_map"), dict) else {}
     field_errors = error_map.get("field_errors") if isinstance(error_map.get("field_errors"), dict) else {}
     terminal_status = publish_bus_terminal_status(str(item.get("status") or ""))
-    append_publish_log(
+    runtime_context.db.insert_publish_log_once(
         {
             "job_id": job_id,
             "product_id": str(product.get("product_id") or _product_id_for_log(product, platform)),
             "platform": platform,
-            "draft_id": str(_draft_for_platform(product, platform).get("sku") or ""),
+            "draft_id": _draft_id_for_log(product, platform),
             "status": terminal_status or str(item.get("status") or ""),
             "started_at": str(item.get("created_at") or job_state.get("created_at") or ""),
             "finished_at": str(item.get("updated_at") or job_state.get("updated_at") or collect_time_iso()),
@@ -116,18 +150,26 @@ def append_publish_bus_terminal_log(product: dict[str, Any], job_state: dict[str
             "shop": platform,
             "sku": str(_draft_for_platform(product, platform).get("sku") or ""),
             "error": str(item.get("error") or result.get("error") or ""),
-            "image": normalize_list(product.get("source_image_urls"))[:1],
+            "image": source_image_refs(product)[:1],
         }
     )
 
 
-def persist_publish_bus_terminal_results(job_state: dict[str, Any]) -> dict[str, Any]:
+def persist_publish_bus_terminal_results(
+    job_state: dict[str, Any],
+    *,
+    context: "AppContext | None" = None,
+) -> dict[str, Any]:
     if not isinstance(job_state, dict):
         return {}
+    runtime_context = context or get_context()
     product = job_state.get("product") if isinstance(job_state.get("product"), dict) else {}
     product_id = str(product.get("product_id") or "").strip()
     if product_id:
-        loaded = load_product_from_index(product_id, "")
+        loaded = runtime_context.products.load_product_from_index(
+            product_id,
+            "",
+        )
         if loaded:
             product = loaded
     changed = False
@@ -139,10 +181,16 @@ def persist_publish_bus_terminal_results(job_state: dict[str, Any]) -> dict[str,
         if not terminal_status:
             continue
         product = apply_publish_bus_result_to_product(product, job_state, str(platform), item)
-        append_publish_bus_terminal_log(product, job_state, str(platform), item)
+        append_publish_bus_terminal_log(
+            product,
+            job_state,
+            str(platform),
+            item,
+            context=runtime_context,
+        )
         changed = True
     if changed:
-        saved = save_product(product)
+        saved = runtime_context.products.save_product(product)
         job_state["product"] = saved
     return job_state
 

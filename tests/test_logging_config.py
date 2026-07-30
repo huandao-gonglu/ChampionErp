@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import date
 from pathlib import Path
 
@@ -42,6 +43,9 @@ def test_configure_logging_writes_to_file(tmp_path: Path, monkeypatch) -> None:
 
         assert configured_path == expected_log_file
         assert "logging configured" in expected_log_file.read_text(encoding="utf-8")
+        if os.name != "nt":
+            assert log_file.parent.stat().st_mode & 0o777 == 0o700
+            assert expected_log_file.stat().st_mode & 0o777 == 0o600
     finally:
         cleanup_managed_handlers()
 
@@ -59,6 +63,45 @@ def test_configure_logging_can_use_fixed_file_name(tmp_path: Path, monkeypatch) 
 
         assert configured_path == log_file
         assert "fixed file name" in log_file.read_text(encoding="utf-8")
+        if os.name != "nt":
+            assert log_file.parent.stat().st_mode & 0o777 == 0o700
+            assert log_file.stat().st_mode & 0o777 == 0o600
+    finally:
+        cleanup_managed_handlers()
+
+
+def test_rotated_backend_logs_remain_private(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    cleanup_managed_handlers()
+    log_file = tmp_path / "logs" / "backend.log"
+    monkeypatch.setenv("ERP_LOG_FILE", str(log_file))
+    monkeypatch.setenv("ERP_LOG_DATE_NAMED", "0")
+    monkeypatch.setenv("ERP_LOG_MAX_BYTES", "128")
+    monkeypatch.setenv("ERP_LOG_BACKUP_COUNT", "2")
+
+    try:
+        logging_config.configure_logging(app_dir=tmp_path)
+        for index in range(20):
+            logging.getLogger("erp_web.test").info(
+                "rotation-%s-%s",
+                index,
+                "x" * 80,
+            )
+        flush_managed_handlers()
+
+        rotated = [
+            path
+            for path in log_file.parent.glob("backend.log*")
+            if path.is_file()
+        ]
+        assert len(rotated) >= 2
+        if os.name != "nt":
+            assert all(
+                path.stat().st_mode & 0o777 == 0o600
+                for path in rotated
+            )
     finally:
         cleanup_managed_handlers()
 
@@ -84,3 +127,23 @@ def test_http_handler_log_message_uses_access_logger(caplog) -> None:
         request_handler.log_message('"%s" %s', "GET /api/state HTTP/1.1", "200")
 
     assert "127.0.0.1 - \"GET /api/state HTTP/1.1\" 200" in caplog.text
+
+
+def test_http_access_log_never_records_query_string(caplog) -> None:
+    request_handler = object.__new__(Handler)
+    request_handler.address_string = lambda: "127.0.0.1"  # type: ignore[method-assign]
+    request_handler.command = "GET"
+    request_handler.path = (
+        "/auth/mercadolibre/callback?code=oauth-secret-code&state=secret-state"
+    )
+    request_handler.request_version = "HTTP/1.1"
+
+    with caplog.at_level(logging.INFO, logger="erp.access"):
+        request_handler.log_request(200, 42)
+
+    assert (
+        '127.0.0.1 - "GET /auth/mercadolibre/callback HTTP/1.1" 200 42'
+        in caplog.text
+    )
+    assert "oauth-secret-code" not in caplog.text
+    assert "secret-state" not in caplog.text

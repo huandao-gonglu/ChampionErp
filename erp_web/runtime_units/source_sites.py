@@ -10,8 +10,26 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from .runtime_common import AMAZON_VERIFY_MARKERS, VERIFY_MARKERS
 from .source_collect_parsers import parse_1688_product, parse_amazon_product, parse_generic_product
+
+VERIFY_MARKERS = (
+    "安全验证",
+    "slide.1688.com",
+    "请验证身份",
+    "验证码",
+    "captcha",
+    "verify",
+    "security verification",
+)
+
+AMAZON_VERIFY_MARKERS = (
+    "robot check",
+    "captcha",
+    "enter the characters you see below",
+    "validatecaptcha",
+    "sorry, this page is not available",
+    "this item is no longer available",
+)
 
 Parser = Callable[[str | dict[str, Any], str], dict[str, Any]]
 PageCheck = Callable[[str, str, str, str], bool]

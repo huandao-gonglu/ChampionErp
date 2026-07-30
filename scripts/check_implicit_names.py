@@ -4,11 +4,10 @@ from __future__ import annotations
 
 """Report names that a module loads but never defines or imports.
 
-The old ``erp_web.runtime`` aggregator injected its whole namespace into every
-runtime unit module before each call, so code could silently rely on names it
-never imported. The aggregator is now a stateless forwarding facade, which
-turns every such implicit dependency into a latent NameError. This script
-finds them statically.
+The removed ``erp_web.runtime`` aggregator injected its whole namespace into
+every runtime unit module before each call, so code could silently rely on
+names it never imported. Runtime code now imports its real owners directly;
+this script prevents implicit dependencies from returning.
 
 How it works
 ------------

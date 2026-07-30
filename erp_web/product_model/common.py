@@ -6,7 +6,7 @@ from typing import Any
 from erp_web.marketplace_registry import PLATFORMS
 IMAGE_ORIGINS = ("source", "amazon", "1688", "browser", "html_import", "manual", "local_upload", "ai_generated", "ai_translated", "chatgpt_import", "extension")
 IMAGE_USAGES = ("main", "detail", "size", "scene", "package", "selling_point", "material", "unknown", "other")
-SOURCE_COMPAT_IMAGE_ORIGINS = {"source", "amazon", "1688", "browser", "html_import", "manual", "extension"}
+SOURCE_IMAGE_ORIGINS = {"source", "amazon", "1688", "browser", "html_import", "manual", "extension"}
 
 
 def normalize_list(value: Any) -> list[str]:

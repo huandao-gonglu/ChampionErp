@@ -1,139 +1,43 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import logging
-
 from typing import Callable
 
-from erp_web.marketplace_registry import default_marketplace_site
-from erp_web.product_model import PLATFORMS
+from erp_web.schemas.requests import validate_request_payload
 
 from .common import JsonRequestHandler
-from ..runtime_units.auth_runtime import test_ai_model_config
-from ..runtime_units.copy_generation import (
-    apply_product_drafts_to_plan,
-    batch_generate_copy_for_products,
-    build_image_prompt_pack,
-    build_plan_for_platform,
-    generate_ai_copy_bundle,
-    platform_to_preset_key,
-    save_copy_result,
-)
-from ..runtime_units.product_store import load_app_config, load_draft_detail_from_index, load_draft_from_index, load_products_index, load_required_product_from_body
+from ..facades import copy_facade
 
 
 PostHandler = Callable[[JsonRequestHandler], None]
-logger = logging.getLogger(__name__)
-
-def _copy_language(body: dict, product: dict, platform: str) -> str:
-    explicit = str(body.get("language") or "").strip()
-    if explicit:
-        return explicit
-    drafts = product.get("drafts") if isinstance(product.get("drafts"), dict) else {}
-    draft = drafts.get(platform) if isinstance(drafts.get(platform), dict) else {}
-    draft_language = str(draft.get("language") or "").strip()
-    return draft_language or str(default_marketplace_site(platform).get("language") or "English")
 
 
 def handle_generate_copy(handler: JsonRequestHandler) -> None:
-    body = handler.read_body()
-    requested_draft_id = str(body.get("draft_id") or "").strip()
-    if requested_draft_id:
-        product = load_draft_from_index(requested_draft_id)
-        loaded_draft_id = str(product.get("current_draft_id") or "").strip()
-        requested_product_id = str(body.get("product_id") or "").strip()
-        loaded_product_id = str(product.get("product_id") or product.get("id") or "").strip()
-        if not loaded_draft_id:
-            handler.send_json({"ok": False, "error": "草稿不存在", "draft_id": requested_draft_id}, 404)
-            return
-        if requested_product_id and loaded_product_id != requested_product_id:
-            handler.send_json({"ok": False, "error": "草稿与商品不匹配", "draft_id": requested_draft_id}, 400)
-            return
-    else:
-        product, error_response, status = load_required_product_from_body(body)
-        if error_response:
-            handler.send_json(error_response, status)
-            return
-    platform = str(body.get("platform") or "mercadolibre").strip().lower()
-    if platform not in PLATFORMS:
-        handler.send_json({"ok": False, "error": "不支持的平台"}, 400)
-        return
-    language = _copy_language(body, product, platform)
-    mode = str(body.get("mode") or "rewrite")
-    result = generate_ai_copy_bundle(product, platform, platform, language, mode, load_app_config())
-    if not result.get("ok"):
-        logger.warning(
-            "本地化文案生成失败 product_id=%s draft_id=%s platform=%s error=%s",
-            str(product.get("product_id") or product.get("id") or ""),
-            requested_draft_id,
-            platform,
-            str(result.get("error") or ""),
-        )
-        handler.send_json(result, 400)
-        return
-    product = save_copy_result(product, result["target_market"], {**result["copy"], "language": result["language"], "source_platform": result["source_platform"], "mode": result["mode"]})
-    plan = apply_product_drafts_to_plan(product, build_plan_for_platform(product, platform))
-    listing = plan.get("platforms", {}).get(platform_to_preset_key(platform), {}).get("listing", {})
-    draft_payload: dict = {}
-    draft_id = str(product.get("current_draft_id") or requested_draft_id or "")
-    if draft_id:
-        detail, detail_error, _ = load_draft_detail_from_index(draft_id)
-        if not detail_error:
-            draft_payload = detail
-    handler.send_json({"ok": True, **result, "product": product, "plan": plan, "listing": listing, "productsIndex": load_products_index(), **draft_payload})
-    return
+    result, status = copy_facade.generate_copy_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
+    )
+    handler.send_json(result, status)
 
 
 def handle_generate_copy_batch(handler: JsonRequestHandler) -> None:
-    body = handler.read_body()
-    result = batch_generate_copy_for_products(
-        body.get("product_ids") if isinstance(body.get("product_ids"), list) else [],
-        str(body.get("platform") or "mercadolibre"),
-        str(body.get("language") or ""),
-        str(body.get("mode") or "rewrite"),
+    result, status = copy_facade.generate_copy_batch_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
     )
-    handler.send_json(result, 200 if result.get("ok") else 400)
-    return
+    handler.send_json(result, status)
 
 
 def handle_generate_image_prompts(handler: JsonRequestHandler) -> None:
-    body = handler.read_body()
-    product, error_response, status = load_required_product_from_body(body)
-    if error_response:
-        handler.send_json(error_response, status)
-        return
-    prompt = build_image_prompt_pack(
-        product,
-        body.get("platform", "mercadolibre"),
-        body.get("selected_image_ids") if isinstance(body.get("selected_image_ids"), list) else [],
-        bool(body.get("include_bullets", True)),
-        bool(body.get("include_description", True)),
-        str(body.get("target_language") or body.get("language") or ""),
+    result, status = copy_facade.generate_image_prompts_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
     )
-    handler.send_json({"ok": True, "prompt": prompt, "selected_image_ids": body.get("selected_image_ids") or []})
-    return
+    handler.send_json(result, status)
 
 
 def handle_test_ai_model(handler: JsonRequestHandler) -> None:
-    body = handler.read_body()
-    try:
-        model_config = body.get("model") if isinstance(body.get("model"), dict) else body.get("config")
-        result = test_ai_model_config(model_config if isinstance(model_config, dict) else {})
-        handler.send_json(result)
-    except Exception as exc:
-        model_config = body.get("model") if isinstance(body.get("model"), dict) else body.get("config")
-        model_record = model_config if isinstance(model_config, dict) else {}
-        logger.info(
-            "AI model test failed trigger=%s model_id=%s provider=%s model=%s probe=%s error=%s",
-            model_record.get("test_trigger"),
-            model_record.get("id"),
-            model_record.get("provider"),
-            model_record.get("model"),
-            model_record.get("probe_capabilities", True),
-            exc,
-        )
-        handler.send_json({"ok": False, "error": str(exc)}, 400)
-    return
+    result, status = copy_facade.test_ai_model_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
+    )
+    handler.send_json(result, status)
 
 
 POST_HANDLERS: dict[str, PostHandler] = {

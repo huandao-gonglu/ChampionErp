@@ -3,52 +3,74 @@ from __future__ import annotations
 
 from typing import Callable
 
+from erp_web.schemas.requests import validate_request_payload
+
 from .common import JsonRequestHandler
 from ..facades import product_facade
-from ..runtime_units.pricing_runtime import calculate_price
-from ..runtime_units.publish_helpers import assign_upc
 
 PostHandler = Callable[[JsonRequestHandler], None]
 
 
 def handle_calculate_price(handler: JsonRequestHandler) -> None:
-    handler.send_json(calculate_price(handler.read_body()))
+    handler.send_json(
+        product_facade.calculate_price(
+            validate_request_payload(handler.read_body(), endpoint=handler.path)
+        )
+    )
 
 
 def handle_assign_upc(handler: JsonRequestHandler) -> None:
-    handler.send_json(assign_upc())
+    handler.send_json(product_facade.assign_upc())
 
 
 def handle_import_upcs(handler: JsonRequestHandler) -> None:
-    result, status = product_facade.import_upcs_payload(handler.read_body())
+    result, status = product_facade.import_upcs_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
+    )
     handler.send_json(result, status)
 
 
 def handle_save_product(handler: JsonRequestHandler) -> None:
-    handler.send_json(product_facade.save_product_payload(handler.read_body()))
+    handler.send_json(
+        product_facade.save_product_payload(
+            validate_request_payload(handler.read_body(), endpoint=handler.path)
+        )
+    )
 
 
 def handle_load_product(handler: JsonRequestHandler) -> None:
-    handler.send_json(product_facade.load_product_payload(handler.read_body()))
+    handler.send_json(
+        product_facade.load_product_payload(
+            validate_request_payload(handler.read_body(), endpoint=handler.path)
+        )
+    )
 
 
 def handle_load_draft(handler: JsonRequestHandler) -> None:
-    result, status = product_facade.load_draft_payload(handler.read_body())
+    result, status = product_facade.load_draft_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
+    )
     handler.send_json(result, status)
 
 
 def handle_save_draft(handler: JsonRequestHandler) -> None:
-    result, status = product_facade.save_draft_payload(handler.read_body())
+    result, status = product_facade.save_draft_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
+    )
     handler.send_json(result, status)
 
 
 def handle_delete_products(handler: JsonRequestHandler) -> None:
-    result, status = product_facade.delete_products_payload(handler.read_body())
+    result, status = product_facade.delete_products_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
+    )
     handler.send_json(result, status)
 
 
 def handle_delete_draft(handler: JsonRequestHandler) -> None:
-    result, status = product_facade.delete_draft_payload(handler.read_body())
+    result, status = product_facade.delete_draft_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
+    )
     handler.send_json(result, status)
 
 

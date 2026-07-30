@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Callable
 
+from erp_web.schemas.requests import validate_request_payload
+
 from .common import JsonRequestHandler
 from ..facades import collect_facade
 
@@ -10,31 +12,49 @@ PostHandler = Callable[[JsonRequestHandler], None]
 
 
 def handle_collect_source(handler: JsonRequestHandler) -> None:
-    result, status = collect_facade.collect_source_payload(handler.read_body())
+    result, status = collect_facade.collect_source_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
+    )
     handler.send_json(result, status)
 
 
 def handle_collect_batch(handler: JsonRequestHandler) -> None:
-    handler.send_json(collect_facade.collect_batch_payload(handler.read_body()), 200)
+    handler.send_json(
+        collect_facade.collect_batch_payload(
+            validate_request_payload(handler.read_body(), endpoint=handler.path)
+        ),
+        200,
+    )
 
 
 def handle_claim_products(handler: JsonRequestHandler) -> None:
-    result, status = collect_facade.claim_products_payload(handler.read_body())
+    result, status = collect_facade.claim_products_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
+    )
     handler.send_json(result, status)
 
 
 def handle_collect_1688(handler: JsonRequestHandler) -> None:
-    result, status = collect_facade.collect_1688_payload(handler.read_body())
+    result, status = collect_facade.collect_1688_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
+    )
     handler.send_json(result, status)
 
 
 def handle_collect_1688_clean(handler: JsonRequestHandler) -> None:
-    result, status = collect_facade.clean_1688_payload(handler.read_body())
+    result, status = collect_facade.clean_1688_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
+    )
     handler.send_json(result, status)
 
 
 def handle_collect_from_browser_tab(handler: JsonRequestHandler) -> None:
-    handler.send_json(collect_facade.collect_from_browser_tab_payload(handler.read_body()), 200)
+    handler.send_json(
+        collect_facade.collect_from_browser_tab_payload(
+            validate_request_payload(handler.read_body(), endpoint=handler.path)
+        ),
+        200,
+    )
 
 
 def handle_browser_debug_open_profile(handler: JsonRequestHandler) -> None:
@@ -48,7 +68,9 @@ def handle_open_1688_browser(handler: JsonRequestHandler) -> None:
 
 
 def handle_collect_extension_payload(handler: JsonRequestHandler) -> None:
-    result, status = collect_facade.collect_extension_payload_response(handler.read_body())
+    result, status = collect_facade.collect_extension_payload_response(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
+    )
     handler.send_json(result, status)
 
 

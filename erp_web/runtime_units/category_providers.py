@@ -33,9 +33,15 @@ class MercadoLibreCategoryProvider:
     platform = "mercadolibre"
 
     def resolve_site(self, site: str = "") -> str:
-        from .product_store import load_store_config
+        from erp_web.context import get_context
 
-        configured = str((load_store_config().get(self.platform) or {}).get("site_id") or "").strip()
+        configured = str(
+            (
+                get_context().config.load_store_config().get(self.platform)
+                or {}
+            ).get("site_id")
+            or ""
+        ).strip()
         return str(site or configured or "MLM").strip().upper()
 
     def _discovery_url(self, site: str, query: str, limit: int) -> str:

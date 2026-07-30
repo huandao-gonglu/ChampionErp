@@ -6,9 +6,9 @@ from typing import Any
 
 from erp_web.context import get_context
 from erp_web.marketplace_registry import marketplace_site
+from erp_web.product_model import PLATFORMS, normalize_platform_draft
+from erp_web.stores.product_store import normalize_product_fields
 
-from .product_store import draft_product_context, load_drafts_index, load_products_index, normalize_product_fields
-from .runtime_common import PLATFORMS
 
 ResponseWithStatus = tuple[dict[str, Any], int]
 TARGET_LISTING_KEYS = (
@@ -147,15 +147,26 @@ def _save_updated_draft(draft: dict[str, Any], context: dict[str, Any]) -> dict[
     db = get_context().db
     product_id = str(draft.get("product_id") or context.get("product", {}).get("product_id") or "").strip()
     platform = str(draft.get("platform") or context.get("platform") or "").strip().lower()
-    saved_draft_id = db.upsert_draft_model(product_id, platform, draft)
+    canonical_draft = normalize_platform_draft(
+        draft,
+        platform,
+        {"product_id": product_id},
+    )
+    saved_draft_id = db.upsert_draft_model(
+        product_id,
+        platform,
+        canonical_draft,
+    )
     saved_draft = db.load_draft_model(saved_draft_id)
     source_product = db.load_product_model(str(saved_draft.get("source_product_id") or saved_draft.get("product_id") or product_id))
     return {
         "ok": True,
         "draft": saved_draft,
-        "productContext": draft_product_context(source_product),
-        "productsIndex": load_products_index(),
-        "draftsIndex": load_drafts_index(),
+        "productContext": get_context().products.draft_product_context(
+            source_product
+        ),
+        "productsIndex": get_context().products.load_products_index(),
+        "draftsIndex": get_context().products.load_drafts_index(),
     }
 
 
@@ -181,7 +192,7 @@ def load_required_draft_publish_context(body: dict[str, Any]) -> tuple[dict[str,
     return {
         "draft": draft,
         "product": product_for_publish,
-        "productContext": draft_product_context(product),
+        "productContext": get_context().products.draft_product_context(product),
         "target": target,
         "targets": draft_publish_targets(draft),
         "platform": target["platform"],

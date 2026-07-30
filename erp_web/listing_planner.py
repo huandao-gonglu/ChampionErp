@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from erp_web.marketplace_registry import MARKETPLACE_SPECS, marketplace_spec
+
 
 IMAGE_SCENES = [
     ("01_main", "平台合规主图，纯净背景，商品完整居中，强调真实外观"),
@@ -156,9 +158,10 @@ def build_copy_prompt(
     title_rules = "\n".join(f"- {rule}" for rule in copy_rules["title_rules"])
     description_rules = "\n".join(f"- {rule}" for rule in copy_rules["description_rules"])
     keywords = ", ".join(search_keywords)
-    language_name = "墨西哥西语" if platform.key == "mercadolibre" else "俄语"
-    description_language = "English" if platform.key == "mercadolibre" else language_name
-    market_name = "墨西哥 Mercado Libre" if platform.key == "mercadolibre" else "俄罗斯 Wildberries"
+    spec = marketplace_spec(platform.key)
+    language_name = spec.language if spec else str(copy_rules["language"])
+    description_language = str(copy_rules["language"])
+    market_name = str(platform.preset.get("display_name") or (spec.label if spec else platform.key))
     return f"""请为 {market_name} 生成高曝光、可上架的标题和产品描述。
 
 标题目标语言: {copy_rules["language"]}（{language_name}）
@@ -312,7 +315,11 @@ def write_storyboard(plan: dict[str, Any], out_dir: Path) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate marketplace media plans and storyboards.")
     parser.add_argument("--product", required=True, help="产品 JSON 文件路径")
-    parser.add_argument("--platform", default="all", choices=["all", "mercadolibre", "wildberries"])
+    parser.add_argument(
+        "--platform",
+        default="all",
+        choices=["all", *(spec.key for spec in MARKETPLACE_SPECS)],
+    )
     parser.add_argument("--out", default="output", help="输出目录")
     return parser.parse_args()
 
@@ -326,7 +333,15 @@ def main() -> None:
 
     product = load_json(product_path)
     presets = load_json(root / "config" / "presets" / "platforms.json")
-    keys = list(presets.keys()) if args.platform == "all" else [args.platform]
+    registered = {spec.key for spec in MARKETPLACE_SPECS}
+    keys = (
+        [key for key in presets if key in registered]
+        if args.platform == "all"
+        else [args.platform]
+    )
+    missing_presets = [key for key in keys if key not in presets]
+    if missing_presets:
+        raise RuntimeError("平台缺少媒体规划预设：" + "、".join(missing_presets))
     platforms = [PlatformPlan(key=k, preset=presets[k]) for k in keys]
     plan = build_plan(product, platforms)
 

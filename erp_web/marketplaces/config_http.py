@@ -79,7 +79,11 @@ def save_store_config(path: Path, config: dict[str, Any]) -> None:
     tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}-{secrets.token_hex(4)}")
     try:
         tmp_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+        if os.name != "nt":
+            tmp_path.chmod(0o600)
         os.replace(tmp_path, path)
+        if os.name != "nt":
+            path.chmod(0o600)
     except BaseException:
         try:
             tmp_path.unlink()

@@ -3,11 +3,10 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from erp_web.services import collect_service
+from erp_web.context import get_context
+from erp_web.services import collect_service, config_service
 
 from erp_web.runtime_units.collect_helpers import claim_products_to_platforms
-from erp_web.runtime_units.product_store import load_products_index
-from erp_web.runtime_units.runtime_common import BROWSER_DEBUG_PORT, BROWSER_DEBUG_PROFILE_DIR
 from erp_web.runtime_units.source_collect_browser import open_browser_debug_session
 from erp_web.runtime_units.source_collect_workflows import (
     collect_1688_payload_service,
@@ -21,27 +20,49 @@ from erp_web.schemas.api import ApiResponse
 ResponseWithStatus = tuple[ApiResponse, int]
 
 
+def _resolved_collect_cookie(
+    body: dict[str, Any],
+    app_config: dict[str, Any],
+) -> str:
+    saved_cookie = str(app_config.get("alibaba_cookie") or "")
+    return str(
+        config_service.resolve_runtime_secret_value(
+            saved_cookie,
+            body.get("cookie"),
+            "alibaba_cookie",
+        )
+        or ""
+    )
+
+
 def collect_source_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    context = get_context()
     try:
         result = collect_source_product(
             body.get("url", ""),
             body.get("mode", "browser"),
-            body.get("cookie", ""),
+            _resolved_collect_cookie(
+                body,
+                context.config.load_app_config(),
+            ),
             body.get("platform", ""),
             body.get("platforms") if isinstance(body.get("platforms"), list) else None,
             body.get("1688_api") if isinstance(body.get("1688_api"), dict) else None,
         )
-        result["productsIndex"] = load_products_index()
+        result["productsIndex"] = (
+            context.products.load_products_index()
+        )
         return result, 200
     except Exception as exc:
         return {"ok": False, "error": str(exc)}, 400
 
 
 def collect_batch_payload(body: dict[str, Any]) -> ApiResponse:
+    config = get_context().config.load_app_config()
     return collect_batch_products(
         body.get("urls") if body.get("urls") is not None else body.get("url", ""),
         body.get("mode", "browser"),
-        body.get("cookie", ""),
+        _resolved_collect_cookie(body, config),
         body.get("platform", ""),
         body.get("platforms") if isinstance(body.get("platforms"), list) else None,
         body.get("1688_api") if isinstance(body.get("1688_api"), dict) else None,
@@ -60,8 +81,14 @@ def claim_products_payload(body: dict[str, Any]) -> ResponseWithStatus:
 
 
 def collect_1688_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    config = get_context().config.load_app_config()
     try:
-        result = collect_1688_payload_service(body)
+        resolved_body = dict(body)
+        resolved_body["cookie"] = _resolved_collect_cookie(
+            body,
+            config,
+        )
+        result = collect_1688_payload_service(resolved_body)
         status = 200 if result.get("ok") or (result.get("diagnostics") or {}).get("partial_success") else 400
         return result, status
     except Exception as exc:
@@ -74,11 +101,12 @@ def clean_1688_payload(body: dict[str, Any]) -> ResponseWithStatus:
 
 
 def collect_from_browser_tab_payload(body: dict[str, Any]) -> ApiResponse:
+    debug_port = get_context().paths.browser_debug_port
     return collect_from_browser_tab(
         tab_url=str(body.get("tab_url") or ""),
         platform_hint=str(body.get("platform_hint") or ""),
         product_url=str(body.get("product_url") or body.get("url") or ""),
-        port=int(body.get("port") or BROWSER_DEBUG_PORT),
+        port=int(body.get("port") or debug_port),
         claim_platforms=body.get("platforms") if isinstance(body.get("platforms"), list) else None,
         save_only=bool(body.get("save_only")),
         mock_tabs=body.get("mock_tabs") if isinstance(body.get("mock_tabs"), list) else None,
@@ -87,21 +115,23 @@ def collect_from_browser_tab_payload(body: dict[str, Any]) -> ApiResponse:
 
 
 def open_browser_profile_payload() -> ResponseWithStatus:
-    BROWSER_DEBUG_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    profile_dir = get_context().paths.browser_debug_profile_dir
+    profile_dir.mkdir(parents=True, exist_ok=True)
     try:
-        os.startfile(str(BROWSER_DEBUG_PROFILE_DIR))  # type: ignore[attr-defined]
-        return {"ok": True, "profile_dir": str(BROWSER_DEBUG_PROFILE_DIR)}, 200
+        os.startfile(str(profile_dir))  # type: ignore[attr-defined]
+        return {"ok": True, "profile_dir": str(profile_dir)}, 200
     except Exception as exc:
-        return {"ok": False, "error": str(exc), "profile_dir": str(BROWSER_DEBUG_PROFILE_DIR)}, 400
+        return {"ok": False, "error": str(exc), "profile_dir": str(profile_dir)}, 400
 
 
 def open_1688_browser_payload() -> ResponseWithStatus:
+    debug_port = get_context().paths.browser_debug_port
     try:
-        open_browser_debug_session("https://www.1688.com/", BROWSER_DEBUG_PORT, "1688")
+        open_browser_debug_session("https://www.1688.com/", debug_port, "1688")
         return {
             "ok": True,
-            "message": f"已用调试端口 {BROWSER_DEBUG_PORT} 打开 1688 浏览器会话，请先登录后再采集。",
-            "port": BROWSER_DEBUG_PORT,
+            "message": f"已用调试端口 {debug_port} 打开 1688 浏览器会话，请先登录后再采集。",
+            "port": debug_port,
         }, 200
     except Exception as exc:
         return {"ok": False, "error": str(exc)}, 400

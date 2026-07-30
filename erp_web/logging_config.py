@@ -63,6 +63,53 @@ def _remove_managed_handlers(root_logger: logging.Logger) -> None:
             handler.close()
 
 
+def _prepare_log_directory(
+    path: Path,
+    app_dir: Path,
+) -> bool:
+    """Create a private log directory without chmod-ing arbitrary shared roots."""
+
+    existed = path.exists()
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        inside_app = path.resolve().is_relative_to(
+            app_dir.resolve()
+        )
+    except OSError:
+        inside_app = False
+    private_parent = not existed or inside_app
+    if os.name != "nt" and private_parent:
+        path.chmod(0o700)
+    return private_parent
+
+
+class PrivateRotatingFileHandler(RotatingFileHandler):
+    """Rotating handler whose active file is private after every reopen."""
+
+    def _open(self):
+        if os.name == "nt":
+            return super()._open()
+        flags = os.O_WRONLY | os.O_CREAT
+        if "a" in self.mode:
+            flags |= os.O_APPEND
+        elif "w" in self.mode:
+            flags |= os.O_TRUNC
+        elif "x" in self.mode:
+            flags |= os.O_EXCL
+        descriptor = os.open(self.baseFilename, flags, 0o600)
+        try:
+            os.fchmod(descriptor, 0o600)
+            return os.fdopen(
+                descriptor,
+                self.mode,
+                encoding=self.encoding,
+                errors=self.errors,
+            )
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+
 class DateNamedRotatingFileHandler(logging.Handler):
     """Write to base-YYYY-MM-DD.log and switch files after midnight."""
 
@@ -72,14 +119,16 @@ class DateNamedRotatingFileHandler(logging.Handler):
         max_bytes: int,
         backup_count: int,
         encoding: str = "utf-8",
+        private_parent: bool = True,
     ) -> None:
         super().__init__()
         self.base_file = base_file
         self.max_bytes = max_bytes
         self.backup_count = backup_count
         self.encoding = encoding
+        self.private_parent = private_parent
         self._current_day = ""
-        self._handler: RotatingFileHandler | None = None
+        self._handler: PrivateRotatingFileHandler | None = None
 
     def active_log_file(self) -> Path:
         return _date_named_log_file(self.base_file)
@@ -104,8 +153,14 @@ class DateNamedRotatingFileHandler(logging.Handler):
             self._handler.close()
 
         log_file = _date_named_log_file(self.base_file, today)
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        self._handler = RotatingFileHandler(
+        log_file.parent.mkdir(
+            mode=0o700,
+            parents=True,
+            exist_ok=True,
+        )
+        if os.name != "nt" and self.private_parent:
+            log_file.parent.chmod(0o700)
+        self._handler = PrivateRotatingFileHandler(
             log_file,
             maxBytes=self.max_bytes,
             backupCount=self.backup_count,
@@ -139,7 +194,10 @@ def configure_logging(app_dir: Path | None = None) -> Path:
     """Configure backend logging once and return the active log file path."""
     resolved_app_dir = app_dir or Path(__file__).resolve().parents[1]
     log_file = _resolve_log_file(resolved_app_dir)
-    log_file.parent.mkdir(parents=True, exist_ok=True)
+    private_parent = _prepare_log_directory(
+        log_file.parent,
+        resolved_app_dir,
+    )
 
     level = _parse_log_level(os.environ.get("ERP_LOG_LEVEL"))
     max_bytes = _parse_positive_int(os.environ.get("ERP_LOG_MAX_BYTES"), DEFAULT_LOG_MAX_BYTES)
@@ -160,10 +218,15 @@ def configure_logging(app_dir: Path | None = None) -> Path:
     setattr(console_handler, MANAGED_HANDLER_ATTR, True)
 
     if date_named:
-        file_handler = DateNamedRotatingFileHandler(log_file, max_bytes, backup_count)
+        file_handler = DateNamedRotatingFileHandler(
+            log_file,
+            max_bytes,
+            backup_count,
+            private_parent=private_parent,
+        )
         active_log_file = file_handler.active_log_file()
     else:
-        file_handler = RotatingFileHandler(
+        file_handler = PrivateRotatingFileHandler(
             log_file,
             maxBytes=max_bytes,
             backupCount=backup_count,

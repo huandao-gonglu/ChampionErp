@@ -41,7 +41,7 @@ def normalize_copy_list(value: Any, limit: int | None = None) -> list[str]:
 def product_summary(product: dict[str, Any]) -> str:
     source = product.get("source") if isinstance(product.get("source"), dict) else {}
     fields = {
-        "Title": product.get("name") or product.get("title") or source.get("title"),
+        "Title": product.get("name") or source.get("title"),
         "Brand": product.get("brand") or source.get("brand"),
         "Model": product.get("model") or source.get("model"),
         "Category": product.get("category") or source.get("category"),

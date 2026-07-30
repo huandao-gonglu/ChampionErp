@@ -4,6 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from erp_web.context import get_context
 from erp_web.product_model import (
     default_collect_diagnostics,
     default_product_model,
@@ -12,7 +13,9 @@ from erp_web.product_model import (
     normalize_platforms,
     parse_dimensions_text,
 )
-from erp_web.services import collect_service, html_extract_service as legacy, image_service
+from erp_web.product_model.common import normalize_list
+from erp_web.services import collect_service, html_extract_service, image_service
+from erp_web.stores.product_store import normalize_product_fields
 
 from .source_collect_browser import (
     browser_debug_status,
@@ -26,7 +29,7 @@ from .source_collect_browser import (
 )
 from .publish_bus import page_snapshot_from_html
 from .source_collect_1688_api import collect_1688_product_via_api
-from .source_sites import parse_source_snapshot, source_site
+from .source_sites import VERIFY_MARKERS, parse_source_snapshot, source_site
 from .category_refresh import http_json
 from .collect_helpers import (
     apply_claimed_platform_drafts,
@@ -42,14 +45,6 @@ from .collect_helpers import (
     write_collect_debug_html,
 )
 from .image_pool_core import current_image_pool, current_source_images
-from .product_store import (
-    load_product,
-    load_products_index,
-    normalize_list,
-    normalize_product_fields,
-    save_product,
-)
-from .runtime_common import APP_DIR, BROWSER_DEBUG_PORT, VERIFY_MARKERS
 
 
 class ManualCollectRequested(RuntimeError):
@@ -86,7 +81,7 @@ def collect_source_product(
             "started_at": collect_time_iso(),
         }
     )
-    partial_product = load_product()
+    partial_product = get_context().products.load_product()
     snapshot: dict[str, Any] | None = None
     html = ""
     text = ""
@@ -108,11 +103,11 @@ def collect_source_product(
             if not snapshot and site.playwright_fallback:
                 html = maybe_fetch_page_html_with_playwright(url, cookie) or ""
                 if html:
-                    snapshot = page_snapshot_from_html(url, html, legacy.html_to_text(html), legacy.extract_page_title(html), legacy.extract_product_image_urls(html, url, limit=20))
+                    snapshot = page_snapshot_from_html(url, html, html_extract_service.html_to_text(html), html_extract_service.extract_page_title(html), html_extract_service.extract_product_image_urls(html, url, limit=20))
         if not snapshot:
             html, http_status = fetch_page_html_with_status(url, cookie)
             if html:
-                snapshot = page_snapshot_from_html(url, html, legacy.html_to_text(html), legacy.extract_page_title(html), legacy.extract_product_image_urls(html, url, limit=20))
+                snapshot = page_snapshot_from_html(url, html, html_extract_service.html_to_text(html), html_extract_service.extract_page_title(html), html_extract_service.extract_product_image_urls(html, url, limit=20))
         if not snapshot:
             raise RuntimeError("NO_SNAPSHOT")
 
@@ -125,7 +120,7 @@ def collect_source_product(
         if not diagnostics["html_snapshot_path"] and html:
             diagnostics["html_snapshot_path"] = write_collect_debug_html(final_url, html, platform_detected)
         diagnostics["final_url"] = final_url
-        diagnostics["page_title"] = title or legacy.extract_page_title(html)
+        diagnostics["page_title"] = title or html_extract_service.extract_page_title(html)
         diagnostics["http_status"] = http_status
 
         page_diagnostics, error_reason = site.diagnose(final_url, html, text, title)
@@ -172,21 +167,18 @@ def collect_source_product(
         merged["source"]["collect_diagnostics"] = diagnostics
         merged["collect_status"] = merged["source"]["collect_status"]
         merged["collect_logs"] = merged["source"]["collect_logs"]
-        merged["source_url"] = url
-        merged["source_platform"] = merged["source"]["source_platform"]
         original_url = str((partial_product.get("source") or {}).get("source_url") or "").strip()
         if url and url != original_url:
             merged.pop("product_id", None)
-            merged.pop("id", None)
         merged = apply_claimed_platform_drafts(merged, claim_platforms)
-        saved = save_product(merged)
+        saved = get_context().products.save_product(merged)
         return {
             "ok": diagnostics["success"],
             "product": saved,
             "imagePool": current_image_pool(saved),
             "sourceImages": current_source_images(saved),
             "diagnostics": diagnostics,
-            "productsIndex": load_products_index(),
+            "productsIndex": get_context().products.load_products_index(),
             "error": diagnostics["error_message"] if not diagnostics["success"] else "",
             "next_action": diagnostics.get("next_action", ""),
         }
@@ -224,7 +216,6 @@ def collect_source_product(
         if url and url != original_url:
             merged = default_product_model() if not diagnostics["partial_success"] else merged
             merged.pop("product_id", None)
-            merged.pop("id", None)
             merged["source"]["source_url"] = url
             merged["source"]["source_platform"] = platform_detected
         if diagnostics["partial_success"]:
@@ -246,13 +237,13 @@ def collect_source_product(
         )
         merged["source"]["collect_diagnostics"] = diagnostics
         merged = apply_claimed_platform_drafts(merged, claim_platforms)
-        saved = save_product(merged)
+        saved = get_context().products.save_product(merged)
         return {
             "ok": False,
             "product": saved,
             "imagePool": current_image_pool(saved),
             "sourceImages": current_source_images(saved),
-            "productsIndex": load_products_index(),
+            "productsIndex": get_context().products.load_products_index(),
             "diagnostics": diagnostics,
             "error": error_message or diagnostics["error_code"],
             "next_action": diagnostics.get("next_action", ""),
@@ -302,7 +293,7 @@ def collect_batch_products(
                     "error": str(result.get("error") or ""),
                     "error_code": str(diagnostics.get("error_code") or ""),
                     "next_action": str(result.get("next_action") or diagnostics.get("next_action") or ""),
-                    "product_id": str(product.get("product_id") or product.get("id") or ""),
+                    "product_id": str(product.get("product_id") or ""),
                     "product": product,
                 }
             )
@@ -323,7 +314,7 @@ def collect_batch_products(
         "partial_count": sum(1 for item in items if item["status"] == "partial"),
         "failed_count": sum(1 for item in items if item["status"] == "failed"),
         "items": items,
-        "productsIndex": load_products_index(),
+        "productsIndex": get_context().products.load_products_index(),
     }
 
 
@@ -331,13 +322,15 @@ def collect_from_browser_tab(
     tab_url: str = "",
     platform_hint: str = "",
     product_url: str = "",
-    port: int = BROWSER_DEBUG_PORT,
+    port: int | None = None,
     claim_platforms: list[str] | None = None,
     save_only: bool = False,
     mock_tabs: list[dict[str, Any]] | None = None,
     mock_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    original_product = load_product()
+    if port is None:
+        port = get_context().paths.browser_debug_port
+    original_product = get_context().products.load_product()
     started_at = collect_time_iso()
     status = browser_debug_status(port, mock_tabs)
     if not status.get("connected") and mock_snapshot is None:
@@ -359,14 +352,14 @@ def collect_from_browser_tab(
         )
         merged = merge_source_partial_result(original_product, {}, diagnostics)
         merged["source"]["collect_diagnostics"] = diagnostics
-        saved = save_product(merged)
-        return {"ok": False, "product": saved, "imagePool": current_image_pool(saved), "productsIndex": load_products_index(), "diagnostics": diagnostics, "browserStatus": status, "error": diagnostics["error_message"], "next_action": diagnostics["next_action"], "real_publish_called": False}
+        saved = get_context().products.save_product(merged)
+        return {"ok": False, "product": saved, "imagePool": current_image_pool(saved), "productsIndex": get_context().products.load_products_index(), "diagnostics": diagnostics, "browserStatus": status, "error": diagnostics["error_message"], "next_action": diagnostics["next_action"], "real_publish_called": False}
     try:
         if mock_snapshot is not None:
             snapshot = deepcopy(mock_snapshot)
-            snapshot.setdefault("text", legacy.html_to_text(str(snapshot.get("html") or "")))
-            snapshot.setdefault("title", legacy.extract_page_title(str(snapshot.get("html") or "")))
-            snapshot.setdefault("image_urls", legacy.extract_product_image_urls(str(snapshot.get("html") or ""), str(snapshot.get("url") or product_url or tab_url), limit=80))
+            snapshot.setdefault("text", html_extract_service.html_to_text(str(snapshot.get("html") or "")))
+            snapshot.setdefault("title", html_extract_service.extract_page_title(str(snapshot.get("html") or "")))
+            snapshot.setdefault("image_urls", html_extract_service.extract_product_image_urls(str(snapshot.get("html") or ""), str(snapshot.get("url") or product_url or tab_url), limit=80))
         else:
             raw_tabs = http_json(f"http://127.0.0.1:{port}/json")
             raw_tabs = raw_tabs if isinstance(raw_tabs, list) else []
@@ -434,8 +427,8 @@ def collect_from_browser_tab(
         merged["source"]["collect_logs"].append({"started_at": started_at, "finished_at": diagnostics["finished_at"], "mode": "browser_debugging", "platform": platform_detected, "success": diagnostics["success"], "partial_success": diagnostics["partial_success"], "error_code": diagnostics["error_code"], "error_message": diagnostics["error_message"]})
         merged["source"]["collect_diagnostics"] = diagnostics
         merged = apply_claimed_platform_drafts(merged, claim_platforms)
-        saved = save_product(merged)
-        return {"ok": diagnostics["success"], "product": saved, "imagePool": current_image_pool(saved), "sourceImages": current_source_images(saved), "productsIndex": load_products_index(), "diagnostics": diagnostics, "browserStatus": status, "error": "" if diagnostics["success"] else diagnostics["error_message"], "next_action": diagnostics.get("next_action", ""), "real_publish_called": False}
+        saved = get_context().products.save_product(merged)
+        return {"ok": diagnostics["success"], "product": saved, "imagePool": current_image_pool(saved), "sourceImages": current_source_images(saved), "productsIndex": get_context().products.load_products_index(), "diagnostics": diagnostics, "browserStatus": status, "error": "" if diagnostics["success"] else diagnostics["error_message"], "next_action": diagnostics.get("next_action", ""), "real_publish_called": False}
     except Exception as exc:
         message = str(exc)
         code = "NO_PRODUCT_TAB_FOUND" if "NO_PRODUCT_TAB_FOUND" in message else "TAB_NOT_ACCESSIBLE" if "TAB_NOT_ACCESSIBLE" in message else "REMOTE_DEBUGGING_NOT_CONNECTED"
@@ -443,8 +436,8 @@ def collect_from_browser_tab(
         diagnostics.update({"collect_mode": "browser_debugging", "started_at": started_at, "finished_at": collect_time_iso(), "success": False, "partial_success": False, "error_code": code, "error_message": message, "browser_connected": bool(status.get("connected")), "debug_port": port, "next_action": "请确认专用 Chrome 已打开商品页；如果仍失败，点击保存 HTML 快照或使用 HTML 导入 / 手动补充。", "checked_at": collect_time_iso()})
         merged = merge_source_partial_result(original_product, {}, diagnostics)
         merged["source"]["collect_diagnostics"] = diagnostics
-        saved = save_product(merged)
-        return {"ok": False, "product": saved, "imagePool": current_image_pool(saved), "productsIndex": load_products_index(), "diagnostics": diagnostics, "browserStatus": status, "error": message, "next_action": diagnostics["next_action"], "real_publish_called": False}
+        saved = get_context().products.save_product(merged)
+        return {"ok": False, "product": saved, "imagePool": current_image_pool(saved), "productsIndex": get_context().products.load_products_index(), "diagnostics": diagnostics, "browserStatus": status, "error": message, "next_action": diagnostics["next_action"], "real_publish_called": False}
 
 
 def collect_1688_product(url: str, cookie: str | None = None) -> dict[str, Any]:
@@ -458,9 +451,9 @@ def collect_1688_product(url: str, cookie: str | None = None) -> dict[str, Any]:
             snapshot = {
                 "url": url,
                 "html": html,
-                "text": legacy.html_to_text(html),
-                "title": legacy.extract_page_title(html),
-                "image_urls": legacy.extract_product_image_urls(html, url, limit=20),
+                "text": html_extract_service.html_to_text(html),
+                "title": html_extract_service.extract_page_title(html),
+                "image_urls": html_extract_service.extract_product_image_urls(html, url, limit=20),
             }
     if not snapshot:
         html = fetch_page_html(url, cookie)
@@ -468,9 +461,9 @@ def collect_1688_product(url: str, cookie: str | None = None) -> dict[str, Any]:
             snapshot = {
                 "url": url,
                 "html": html,
-                "text": legacy.html_to_text(html),
-                "title": legacy.extract_page_title(html),
-                "image_urls": legacy.extract_product_image_urls(html, url, limit=20),
+                "text": html_extract_service.html_to_text(html),
+                "title": html_extract_service.extract_page_title(html),
+                "image_urls": html_extract_service.extract_product_image_urls(html, url, limit=20),
             }
     if not snapshot:
         raise RuntimeError("采集失败：可能需要登录 1688 或完成验证码。请点击“打开 1688 浏览器会话”，登录后重试。")
@@ -481,7 +474,7 @@ def collect_1688_product(url: str, cookie: str | None = None) -> dict[str, Any]:
     product = parse_source_snapshot("1688", snapshot, url)
     if not product.get("name"):
         raise RuntimeError("采集失败：没有识别到商品标题。请确认链接是商品详情页，或登录 1688 后重试。")
-    save_product(product)
+    get_context().products.save_product(product)
     return product
 
 
@@ -498,7 +491,9 @@ def collect_1688_payload_service(body: dict[str, Any]) -> dict[str, Any]:
             body.get("platforms") if isinstance(body.get("platforms"), list) else None,
             body.get("1688_api") if isinstance(body.get("1688_api"), dict) else None,
         )
-        result["productsIndex"] = load_products_index()
+        result["productsIndex"] = (
+            get_context().products.load_products_index()
+        )
         return result
 
     cleaned = collect_service.clean_1688_text(
@@ -508,11 +503,11 @@ def collect_1688_payload_service(body: dict[str, Any]) -> dict[str, Any]:
     if not body.get("save"):
         return cleaned
 
-    product = normalize_product_fields(body.get("product") or load_product())
+    product = normalize_product_fields(
+        body.get("product") or get_context().products.load_product()
+    )
     product.update(
         {
-            "source_platform": "1688",
-            "source_url": cleaned.get("source_url") or product.get("source_url") or "",
             "source_price_cny": cleaned.get("source_price_cny", ""),
             "source_price_cny_for_cost": cleaned.get("source_price_cny_for_cost", ""),
             "source_material": cleaned.get("source_material", ""),
@@ -538,15 +533,15 @@ def collect_1688_payload_service(body: dict[str, Any]) -> dict[str, Any]:
         }
     )
     product["source"] = source
-    saved = save_product(product)
+    saved = get_context().products.save_product(product)
     cleaned["product"] = saved
-    cleaned["productsIndex"] = load_products_index()
+    cleaned["productsIndex"] = get_context().products.load_products_index()
     return cleaned
 
 
 def collect_extension_payload(payload: dict[str, Any]) -> dict[str, Any]:
     payload = payload if isinstance(payload, dict) else {}
-    original_product = load_product()
+    original_product = get_context().products.load_product()
     source_url = str(payload.get("source_url") or "").strip()
     platform = str(payload.get("platform") or detect_source_platform(source_url) or "unknown").strip().lower()
     raw_html = str(payload.get("raw_html_optional") or payload.get("raw_text") or payload.get("text") or "").strip()
@@ -565,7 +560,7 @@ def collect_extension_payload(payload: dict[str, Any]) -> dict[str, Any]:
         platform = html_platform
     image_values = normalize_list(payload.get("images"))
     manual_image_pool = image_service.materialize_image_values(
-        APP_DIR,
+        get_context().paths.app_dir,
         image_values,
         source_url or str(payload.get("title") or "manual-import"),
         claim_platforms,
@@ -653,13 +648,13 @@ def collect_extension_payload(payload: dict[str, Any]) -> dict[str, Any]:
         merged.pop("product_id", None)
         merged.pop("id", None)
     merged = apply_claimed_platform_drafts(merged, claim_platforms)
-    saved = save_product(merged)
+    saved = get_context().products.save_product(merged)
     return {
         "ok": True,
         "product": saved,
         "imagePool": current_image_pool(saved),
         "sourceImages": current_source_images(saved),
-        "productsIndex": load_products_index(),
+        "productsIndex": get_context().products.load_products_index(),
         "diagnostics": diagnostics,
         "error": "",
     }

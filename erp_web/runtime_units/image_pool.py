@@ -8,16 +8,18 @@ import time
 from pathlib import Path
 from typing import Any
 
+from erp_web.context import get_context
 from erp_web.product_model import (
-    SOURCE_COMPAT_IMAGE_ORIGINS,
+    SOURCE_IMAGE_ORIGINS,
     default_source,
-    image_pool_legacy_views,
+    image_pool_refs,
     normalize_image_pool,
     normalize_image_pool_item,
 )
 from erp_web.services import image_service
+from erp_web.services.browser_debug_service import file_url
+from erp_web.stores.product_store import normalize_product_fields
 
-from .browser_debug import file_url
 from .image_pool_core import (
     _display_image_ref,
     _pool_display_item,
@@ -33,16 +35,9 @@ from .image_pool_core import (
     image_items_from_paths,
     image_pool_refs_for_platform,
 )
-from .product_store import (
-    load_product_from_index,
-    load_products_index,
-    normalize_product_fields,
-    save_product,
-    sync_product_workflow_statuses,
-)
-from .runtime_common import APP_DIR, CHATGPT_DIR, COLLECT_DEBUG_DIR, SOURCE_DIR, UPLOAD_DIR
 
 def sync_generated_images_into_pool(product: dict[str, Any]) -> dict[str, Any]:
+    paths = get_context().paths
     normalized = normalize_product_fields(product)
     source = normalized.get("source") if isinstance(normalized.get("source"), dict) else default_source()
     pool = _source_pool_items(normalized)
@@ -51,7 +46,7 @@ def sync_generated_images_into_pool(product: dict[str, Any]) -> dict[str, Any]:
         for item in pool
         if str(item.get("path") or item.get("url") or item.get("preview_url") or item.get("id") or "").strip()
     }
-    for file_item in image_files(CHATGPT_DIR, recursive=True):
+    for file_item in image_files(paths.chatgpt_dir, recursive=True):
         key = str(file_item.get("path") or file_item.get("url") or "").strip()
         if not key or key in existing_keys:
             continue
@@ -76,19 +71,23 @@ def sync_generated_images_into_pool(product: dict[str, Any]) -> dict[str, Any]:
             ))
         )
         existing_keys.add(key)
-    source["image_pool"] = normalize_image_pool(pool, [], "source")
-    source["images"] = image_pool_legacy_views(source["image_pool"], SOURCE_COMPAT_IMAGE_ORIGINS)["images"]
+    source["image_pool"] = normalize_image_pool(pool, "source")
+    source["images"] = image_pool_refs(
+        source["image_pool"],
+        SOURCE_IMAGE_ORIGINS,
+    )
     normalized["source"] = source
     return sync_draft_images_from_pool(normalized)
 
 
 def _uploaded_image_path(filename: str, suffix: str) -> Path:
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    upload_dir = get_context().paths.upload_dir
+    upload_dir.mkdir(parents=True, exist_ok=True)
     safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(filename or "image").stem).strip("._") or "image"
     safe_suffix = suffix if suffix.startswith(".") else f".{suffix.lstrip('.')}" if suffix else ".png"
     stamp = time.strftime("%Y%m%d_%H%M%S")
     rand = os.urandom(3).hex()
-    return UPLOAD_DIR / f"{stamp}_{safe_name}_{rand}{safe_suffix}"
+    return upload_dir / f"{stamp}_{safe_name}_{rand}{safe_suffix}"
 
 
 def _decode_data_url(data_url: str) -> tuple[bytes, str]:
@@ -150,41 +149,58 @@ def append_images_to_product_pool(product: dict[str, Any], items: list[dict[str,
             continue
         existing.append(enrich_image_pool_item_dimensions(normalize_image_pool_item(item, order=len(existing), origin_hint=str(item.get("origin") or "source"))))
         existing_keys.add(key)
-    source["image_pool"] = normalize_image_pool(existing, [], "source")
-    source["images"] = image_pool_legacy_views(source["image_pool"], SOURCE_COMPAT_IMAGE_ORIGINS)["images"]
+    source["image_pool"] = normalize_image_pool(existing, "source")
+    source["images"] = image_pool_refs(
+        source["image_pool"],
+        SOURCE_IMAGE_ORIGINS,
+    )
     normalized["source"] = source
     return sync_draft_images_from_pool(normalized)
 
 
 def sync_draft_images_from_pool(product: dict[str, Any]) -> dict[str, Any]:
     normalized = normalize_product_fields(product)
-    return sync_product_workflow_statuses(normalized)
+    return get_context().products.sync_product_workflow_statuses(normalized)
 
 
 def save_image_pool_for_product(product_id: str, image_pool: list[dict[str, Any]]) -> dict[str, Any]:
-    product = load_product_from_index(product_id, "")
+    product = get_context().products.load_product_from_index(product_id, "")
     if not product:
         return {"ok": False, "error": "商品不存在", "product_id": product_id}
     normalized = normalize_product_fields(product)
     source = normalized.get("source") if isinstance(normalized.get("source"), dict) else default_source()
-    pool = normalize_image_pool(image_pool if isinstance(image_pool, list) else [], [], "source")
+    pool = normalize_image_pool(
+        image_pool if isinstance(image_pool, list) else [],
+        "source",
+    )
     source["image_pool"] = [enrich_image_pool_item_dimensions(item) for item in pool]
-    source["images"] = image_pool_legacy_views(source["image_pool"], SOURCE_COMPAT_IMAGE_ORIGINS)["images"]
+    source["images"] = image_pool_refs(
+        source["image_pool"],
+        SOURCE_IMAGE_ORIGINS,
+    )
     normalized["source"] = source
-    saved = save_product(sync_draft_images_from_pool(normalized))
+    saved = get_context().products.save_product(
+        sync_draft_images_from_pool(normalized)
+    )
     return {
         "ok": True,
         "product": saved,
         "imagePool": current_image_pool(saved),
-        "productsIndex": load_products_index(),
+        "productsIndex": get_context().products.load_products_index(),
     }
 
 
 def apply_service_image_pool(product: dict[str, Any], image_pool: list[dict[str, Any]]) -> dict[str, Any]:
     normalized = normalize_product_fields(product)
     source = normalized.get("source") if isinstance(normalized.get("source"), dict) else default_source()
-    source["image_pool"] = image_service.normalize_pool(image_pool if isinstance(image_pool, list) else [], APP_DIR)
-    source["images"] = image_pool_legacy_views(source["image_pool"], SOURCE_COMPAT_IMAGE_ORIGINS)["images"]
+    source["image_pool"] = image_service.normalize_pool(
+        image_pool if isinstance(image_pool, list) else [],
+        get_context().paths.app_dir,
+    )
+    source["images"] = image_pool_refs(
+        source["image_pool"],
+        SOURCE_IMAGE_ORIGINS,
+    )
     normalized["source"] = source
     return sync_draft_images_from_pool(normalized)
 

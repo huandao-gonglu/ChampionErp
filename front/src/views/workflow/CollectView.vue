@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
-import type { BrowserDebugStatus, CollectBatchRow, CollectDiagnostics, CollectForm, Product } from '@/types/workflow'
+import type { BrowserDebugStatus, CollectBatchRow, CollectDiagnostics, CollectForm, Product, TransientCollectCredentials } from '@/types/workflow'
 
 const props = defineProps<{
   form: CollectForm
@@ -14,14 +14,14 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  collect: []
-  batchCollect: []
+  collect: [credentials?: TransientCollectCredentials]
+  batchCollect: [credentials?: TransientCollectCredentials]
   collectFromBrowser: [saveOnly: boolean]
   open1688Browser: []
   checkBrowser: []
   openProfile: []
   clearProduct: []
-  saveSettings: []
+  saveSettings: [credentials?: TransientCollectCredentials]
   importManual: []
   clean1688: []
 }>()
@@ -30,6 +30,7 @@ type CollectTab = 'manual' | 'browser' | 'api' | 'url'
 
 const activeCollectTab = ref<CollectTab>('browser')
 const advancedOpen = ref(false)
+const transientAlibabaCookie = ref('')
 
 const collectTabs: Array<{
   key: CollectTab
@@ -145,6 +146,24 @@ function openDebugFile(path: string) {
 
 function copyDiagnostics() {
   void navigator.clipboard?.writeText(JSON.stringify(props.diagnostics.raw || {}, null, 2))
+}
+
+function takeTransientCollectCredentials(): TransientCollectCredentials {
+  const credentials = { alibabaCookie: transientAlibabaCookie.value.trim() }
+  transientAlibabaCookie.value = ''
+  return credentials
+}
+
+function collectProduct() {
+  emit('collect', takeTransientCollectCredentials())
+}
+
+function collectBatch() {
+  emit('batchCollect', takeTransientCollectCredentials())
+}
+
+function saveSettings() {
+  emit('saveSettings', takeTransientCollectCredentials())
 }
 </script>
 
@@ -392,7 +411,7 @@ function copyDiagnostics() {
                 <div class="text-sm font-bold text-slate-950 dark:text-white">3. 开始 API 采集</div>
                 <p class="mt-1 text-xs text-slate-500 dark:text-accent-300">如果提示凭证缺失，请到“平台授权”保存 1688 采集 API。</p>
               </div>
-              <button class="btn btn-primary" :disabled="props.loading" @click="emit('collect')">API 采集单链接</button>
+              <button class="btn btn-primary" :disabled="props.loading" @click="collectProduct">API 采集单链接</button>
             </div>
           </div>
         </section>
@@ -413,7 +432,7 @@ function copyDiagnostics() {
                 <span class="text-xs font-semibold text-slate-500">单个商品链接</span>
                 <div class="mt-1 flex flex-col gap-2 sm:flex-row">
                   <input v-model="props.form.productUrl" class="input min-w-0 bg-white" placeholder="https://detail.1688.com/offer/..." />
-                  <button class="btn btn-primary shrink-0" :disabled="props.loading" @click="emit('collect')">采集单链接</button>
+                  <button class="btn btn-primary shrink-0" :disabled="props.loading" @click="collectProduct">采集单链接</button>
                 </div>
               </label>
               <label class="block">
@@ -457,13 +476,13 @@ function copyDiagnostics() {
               <div v-if="advancedOpen" class="mt-4 space-y-4">
                 <label class="block">
                   <span class="text-xs font-semibold text-slate-500">1688 Cookie</span>
-                  <textarea v-model="props.form.alibabaCookie" class="input mt-1 min-h-24 bg-white font-mono" placeholder="复制浏览器请求 Cookie" />
+                  <textarea v-model="transientAlibabaCookie" data-testid="transient-alibaba-cookie" class="input mt-1 min-h-24 bg-white font-mono" placeholder="复制浏览器请求 Cookie；提交后立即清空" />
                 </label>
                 <label class="block">
                   <span class="text-xs font-semibold text-slate-500">保存位置</span>
                   <input v-model="props.form.outputDir" class="input mt-1 bg-white" placeholder="data/images/source" />
                 </label>
-                <button type="button" class="btn btn-outline" :disabled="props.loading" @click="emit('saveSettings')">保存 Cookie / 设置</button>
+                <button type="button" class="btn btn-outline" :disabled="props.loading" @click="saveSettings">保存 Cookie / 设置</button>
               </div>
             </div>
           </div>
@@ -475,8 +494,8 @@ function copyDiagnostics() {
                 <p class="mt-1 text-xs text-slate-500">单链接写入当前商品；批量会逐条保存到商品库。</p>
               </div>
               <div class="flex flex-wrap gap-2">
-                <button class="btn btn-primary" :disabled="props.loading" @click="emit('collect')">采集单链接</button>
-                <button class="btn btn-secondary" :disabled="props.loading" @click="emit('batchCollect')">批量采集并保存</button>
+                <button class="btn btn-primary" :disabled="props.loading" @click="collectProduct">采集单链接</button>
+                <button class="btn btn-secondary" :disabled="props.loading" @click="collectBatch">批量采集并保存</button>
               </div>
             </div>
           </div>

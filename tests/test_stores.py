@@ -3,11 +3,21 @@ from __future__ import annotations
 """ProductStore / ConfigStore：经 AppContext 的基本 CRUD 与配置读写。"""
 
 import json
+import os
+import threading
 
+import pytest
+
+import erp_web.stores.config_store as config_store_module
 from erp_web.context import get_context
-from erp_web.runtime_units import product_store as product_store_unit
+from erp_web.db import ErpDatabase
+from erp_web.product_model import normalize_product_model
+from erp_web.runtime_units.store_credentials import (
+    preview_mercadolibre_auth_link,
+)
 from erp_web.schemas.product import PRODUCT_SCHEMA_VERSION
 from erp_web.services import config_service
+from erp_web.stores.config_store import ConfigStore
 
 
 def _sample_product(title: str = "Store test product", url: str = "https://example.com/store-test") -> dict:
@@ -58,14 +68,19 @@ def test_product_store_crud_via_context() -> None:
 
 
 def test_runtime_product_store_functions_delegate_to_context_store() -> None:
-    saved = product_store_unit.save_product(_sample_product("Delegate check", "https://example.com/delegate"))
+    products = get_context().products
+    saved = products.save_product(
+        _sample_product("Delegate check", "https://example.com/delegate")
+    )
 
     assert get_context().db.load_product_model(saved["product_id"])["name"] == "Delegate check"
-    assert [item["product_id"] for item in product_store_unit.load_products_index()] == [saved["product_id"]]
+    assert [item["product_id"] for item in products.load_products_index()] == [
+        saved["product_id"]
+    ]
 
-    result = product_store_unit.delete_products_from_index([saved["product_id"]])
+    result = products.delete_products_from_index([saved["product_id"]])
     assert result["deleted"] == 1
-    assert product_store_unit.load_products_index() == []
+    assert products.load_products_index() == []
 
 
 def test_config_store_app_config_roundtrip_and_whitelist_merge() -> None:
@@ -80,6 +95,163 @@ def test_config_store_app_config_roundtrip_and_whitelist_merge() -> None:
     config["alibaba_cookie"] = "cookie-abc"
     config_store.save_app_config(config)
     assert config_store.load_app_config()["alibaba_cookie"] == "cookie-abc"
+
+
+def test_load_app_config_rejects_plaintext_secrets_without_mutation() -> None:
+    context = get_context()
+    store = context.config
+    config = store.default_app_config()
+    config["alibaba_cookie"] = "legacy-plaintext-cookie"
+    original = json.dumps(config, ensure_ascii=False, indent=2)
+    context.paths.app_config_path.write_text(
+        original,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="非空明文秘密字段"):
+        store.load_app_config()
+
+    assert (
+        context.paths.app_config_path.read_text(encoding="utf-8")
+        == original
+    )
+    assert context.db.load_runtime_secrets("app_config") == {}
+
+
+def test_load_store_config_rejects_file_credentials_without_mutation() -> None:
+    context = get_context()
+    store = context.config
+    original = json.dumps(
+        {
+            "mercadolibre": {
+                "site_id": "MLM",
+                "access_token": "legacy-plaintext-token",
+            }
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    context.paths.store_config_path.write_text(
+        original,
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="已退役的文件凭据"):
+        store.load_store_config()
+
+    assert (
+        context.paths.store_config_path.read_text(encoding="utf-8")
+        == original
+    )
+    assert context.db.list_store_auth() == {}
+
+
+def test_load_store_config_allows_empty_secret_placeholders() -> None:
+    context = get_context()
+    store = context.config
+    original = json.dumps(
+        {
+            "mercadolibre": {
+                "site_id": "MLM",
+                "access_token": "",
+                "app_secret": "",
+            }
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    context.paths.store_config_path.write_text(
+        original,
+        encoding="utf-8",
+    )
+
+    loaded = store.load_store_config()
+
+    assert loaded["mercadolibre"]["site_id"] == "MLM"
+    assert loaded["mercadolibre"]["access_token"] == ""
+    assert (
+        context.paths.store_config_path.read_text(encoding="utf-8")
+        == original
+    )
+    assert context.db.list_store_auth() == {}
+
+
+def test_app_runtime_secret_paths_survive_ai_model_reordering() -> None:
+    context = get_context()
+    config_store = context.config
+    config = config_store.default_app_config()
+    config["ai_models"][0]["api_key"] = "text-model-secret"
+    config["ai_models"][1]["api_key"] = "image-model-secret"
+    expected = {
+        str(model["id"]): str(model["api_key"])
+        for model in config["ai_models"]
+    }
+    config_store.save_app_config(config)
+
+    stored_paths = [
+        json.loads(path)
+        for path in context.db.load_runtime_secrets("app_config")
+        if json.loads(path)[0] == "ai_models"
+    ]
+    assert stored_paths
+    assert all(
+        not any(isinstance(part, int) for part in path)
+        for path in stored_paths
+    )
+    assert {
+        part["$value"]
+        for path in stored_paths
+        for part in path
+        if isinstance(part, dict) and part.get("$field") == "id"
+    } == set(expected)
+
+    static_config = json.loads(
+        context.paths.app_config_path.read_text(encoding="utf-8")
+    )
+    static_config["ai_models"] = list(
+        reversed(static_config["ai_models"])
+    )
+    context.paths.app_config_path.write_text(
+        json.dumps(static_config, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    reopened = ConfigStore(
+        context.paths,
+        ErpDatabase(context.paths.db_path),
+    )
+    restored = reopened.load_app_config()
+    restored_by_id = {
+        str(model["id"]): str(model["api_key"])
+        for model in restored["ai_models"]
+    }
+    assert restored_by_id == expected
+
+
+def test_legacy_index_runtime_secret_paths_are_rejected() -> None:
+    context = get_context()
+    config_store = context.config
+    config = config_store.default_app_config()
+    config_store.save_app_config(config)
+    legacy_path = json.dumps(
+        ["ai_models", 0, "api_key"],
+        separators=(",", ":"),
+    )
+    context.db.replace_runtime_secrets(
+        "app_config",
+        {legacy_path: "legacy-index-secret"},
+    )
+
+    reopened = ConfigStore(
+        context.paths,
+        ErpDatabase(context.paths.db_path),
+    )
+    with pytest.raises(RuntimeError, match="列表 index 路径"):
+        reopened.load_app_config()
+
+    assert context.db.load_runtime_secrets("app_config") == {
+        legacy_path: "legacy-index-secret"
+    }
 
 
 def test_config_store_routes_secrets_to_store_auth_table() -> None:
@@ -98,6 +270,31 @@ def test_config_store_routes_secrets_to_store_auth_table() -> None:
     loaded = config_store.load_store_config()
     assert loaded["mercadolibre"]["access_token"] == "tok-secret-123"
     assert loaded["mercadolibre"]["site_id"] == "MLM"
+
+
+def test_clear_store_auth_deletes_secrets_but_preserves_static_settings() -> None:
+    config_store = get_context().config
+    config_store.save_store_config(
+        {
+            "mercadolibre": {
+                "access_token": "token-to-delete",
+                "app_secret": "secret-to-delete",
+                "site_id": "MLM",
+                "notification_url": "https://notify.example.test/ml",
+            }
+        }
+    )
+
+    cleared = config_store.clear_store_auth("mercadolibre")
+
+    assert get_context().db.get_store_auth("mercadolibre")["credentials"] == {}
+    assert cleared["mercadolibre"]["access_token"] == ""
+    assert cleared["mercadolibre"]["app_secret"] == ""
+    assert cleared["mercadolibre"]["site_id"] == "MLM"
+    assert (
+        cleared["mercadolibre"]["notification_url"]
+        == "https://notify.example.test/ml"
+    )
 
 
 def test_public_config_views_redact_nested_secrets_and_preserve_masked_updates() -> None:
@@ -123,6 +320,9 @@ def test_public_config_views_redact_nested_secrets_and_preserve_masked_updates()
     store_config = {
         "mercadolibre": {
             "site_id": "MLM",
+            "app_id": "ml-public-app-id",
+            "client_id": "ml-public-client-id",
+            "app_secret": "ml-private-app-secret",
             "access_token": "ml-private-token",
             "refresh_token": "ml-private-refresh",
             "code_verifier": "pkce-private-verifier",
@@ -149,6 +349,7 @@ def test_public_config_views_redact_nested_secrets_and_preserve_masked_updates()
         "yun-app-secret",
         "yun-source-key",
         "sk-private-model-key",
+        "ml-private-app-secret",
         "ml-private-token",
         "ml-private-refresh",
         "pkce-private-verifier",
@@ -156,7 +357,19 @@ def test_public_config_views_redact_nested_secrets_and_preserve_masked_updates()
     ):
         assert secret not in serialized
     assert public_app["1688_api"]["app_secret"]
+    assert public_store["mercadolibre"]["app_id"] == "ml-public-app-id"
+    assert (
+        public_store["mercadolibre"]["client_id"]
+        == "ml-public-client-id"
+    )
     assert public_store["ozon"]["client_id"] == "ozon-client"
+    auth_url = preview_mercadolibre_auth_link(
+        str(public_store["mercadolibre"]["app_id"]),
+        "https://example.test/oauth/callback",
+    )
+    assert "client_id=ml-public-app-id" in auth_url
+    assert "ml-private-app-secret" not in auth_url
+    assert "ml-private-token" not in auth_url
 
     config_store = get_context().config
     current = config_store.load_app_config()
@@ -170,3 +383,422 @@ def test_public_config_views_redact_nested_secrets_and_preserve_masked_updates()
         {"1688_api": {"app_secret": masked["1688_api"]["app_secret"]}},
     )
     assert merged["1688_api"]["app_secret"] == "keep-this-secret"
+
+
+def test_config_snapshot_recursively_masks_every_secret_key() -> None:
+    secrets = {
+        "alibaba_cookie": "cookie-private-value",
+        "nested": {
+            "vendor_api_key": "vendor-private-key",
+            "private_key": "private-key-value",
+            "source_key": "source-key-value",
+        },
+    }
+
+    path = config_service.save_config_snapshot(
+        get_context().paths.app_dir,
+        secrets,
+    )
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
+    serialized = json.dumps(snapshot, ensure_ascii=False)
+
+    for secret in (
+        "cookie-private-value",
+        "vendor-private-key",
+        "private-key-value",
+        "source-key-value",
+    ):
+        assert secret not in serialized
+    assert snapshot["alibaba_cookie"]
+    assert snapshot["nested"]["vendor_api_key"]
+    if os.name != "nt":
+        assert path.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "vendorApiKey",
+        "clientSecret",
+        "access-token",
+        "privateKey",
+        "sourceKey",
+        "sessionCookie",
+    ],
+)
+def test_sensitive_config_key_normalizes_common_naming_styles(
+    key: str,
+) -> None:
+    assert config_service.is_sensitive_config_key(key) is True
+
+
+def test_app_runtime_secrets_route_nested_naming_styles_to_sqlite() -> None:
+    context = get_context()
+    store = context.config
+    config = store.default_app_config()
+    source = config["product_research"]["source_registry"][0]
+    source["config_json"].update(
+        {
+            "vendorApiKey": "vendor-key-private",
+            "clientSecret": "client-secret-private",
+            "access-token": "access-token-private",
+            "privateKey": "private-key-private",
+        }
+    )
+
+    store.save_app_config(config)
+
+    static_text = context.paths.app_config_path.read_text(encoding="utf-8")
+    persisted_secrets = context.db.load_runtime_secrets("app_config")
+    for secret in (
+        "vendor-key-private",
+        "client-secret-private",
+        "access-token-private",
+        "private-key-private",
+    ):
+        assert secret not in static_text
+        assert secret in persisted_secrets.values()
+
+    restored = store.load_app_config()
+    restored_source = next(
+        item
+        for item in restored["product_research"]["source_registry"]
+        if item["id"] == source["id"]
+    )
+    assert restored_source["config_json"]["vendorApiKey"] == "vendor-key-private"
+    assert restored_source["config_json"]["clientSecret"] == "client-secret-private"
+    assert restored_source["config_json"]["access-token"] == "access-token-private"
+    assert restored_source["config_json"]["privateKey"] == "private-key-private"
+
+
+def test_product_schema_rejects_future_and_filters_unknown_write_fields() -> None:
+    with pytest.raises(ValueError, match="拒绝降级写入"):
+        normalize_product_model(
+            {
+                "schema_version": PRODUCT_SCHEMA_VERSION + 1,
+                "future_only": "must-not-be-downgraded",
+            }
+        )
+
+    normalized = normalize_product_model(
+        {
+            "schema_version": PRODUCT_SCHEMA_VERSION,
+            "name": "Canonical",
+            "dimensions": "10 x 8 x 3 cm",
+            "future_only": "drop-me",
+            "wb_subject_id": "legacy-platform-field",
+            "source": {
+                "image_pool": [
+                    {
+                        "asset_id": "legacy-image-id",
+                        "local_path": "data/images/legacy.jpg",
+                        "width_px": 640,
+                        "height_px": 480,
+                        "future_image_field": "drop-me",
+                    }
+                ]
+            },
+            "drafts": {
+                "mercadolibre": {
+                    "sale_price": "44.90",
+                    "searchTerms": ["legacy keyword"],
+                    "packageDimensions": {
+                        "lengthCm": "10",
+                        "widthCm": "8",
+                        "heightCm": "3",
+                        "weightKg": "0.5",
+                    },
+                    "categoryPrecheck": {"ok": True},
+                    "future_draft_field": "drop-me",
+                    "targetSites": [
+                        {
+                            "platform": "mercadolibre",
+                            "site": "MLM",
+                            "categoryId": "MLM-CANONICAL",
+                            "categoryPath": "Home / Test",
+                            "publishStatus": "ready",
+                            "futureTargetField": "drop-me",
+                        }
+                    ],
+                    "pricing": {
+                        "suggested_price": 19.9,
+                        "suggestedPrice": 99.9,
+                        "exchangeRates": {"mode": "legacy"},
+                        "targets": {
+                            "mercadolibre:MLM": {
+                                "applied_price": 21.5,
+                                "appliedPrice": 88.8,
+                            }
+                        },
+                    }
+                }
+            },
+        }
+    )
+
+    assert normalized["dimensions"] == "10 x 8 x 3 cm"
+    assert "future_only" not in normalized
+    assert "wb_subject_id" not in normalized
+    image = normalized["source"]["image_pool"][0]
+    assert image["id"] == "legacy-image-id"
+    assert image["path"] == "data/images/legacy.jpg"
+    assert image["width"] == 640
+    assert image["height"] == 480
+    assert {
+        "asset_id",
+        "local_path",
+        "width_px",
+        "height_px",
+        "future_image_field",
+    }.isdisjoint(image)
+    draft = normalized["drafts"]["mercadolibre"]
+    assert draft["price"] == "44.90"
+    assert draft["search_terms"] == ["legacy keyword"]
+    assert draft["package_dimensions"] == {
+        "length_cm": "10",
+        "width_cm": "8",
+        "height_cm": "3",
+        "weight_kg": "0.5",
+    }
+    assert draft["category_precheck"] == {"ok": True}
+    assert "future_draft_field" not in draft
+    target = draft["target_sites"][0]
+    assert target["category_id"] == "MLM-CANONICAL"
+    assert target["category_path"] == "Home / Test"
+    assert target["publish_status"] == "ready"
+    assert {
+        "categoryId",
+        "categoryPath",
+        "publishStatus",
+        "futureTargetField",
+    }.isdisjoint(target)
+    pricing = draft["pricing"]
+    assert pricing["suggested_price"] == 19.9
+    assert "suggestedPrice" not in pricing
+    assert "exchangeRates" not in pricing
+    pricing_target = pricing["targets"]["mercadolibre:MLM"]
+    assert pricing_target["applied_price"] == 21.5
+    assert "appliedPrice" not in pricing_target
+
+
+def test_app_config_secret_update_rolls_back_when_file_write_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = get_context().config
+    initial = store.default_app_config()
+    initial["alibaba_cookie"] = "old-cookie-secret"
+    store.save_app_config(initial)
+    previous_secrets = get_context().db.load_runtime_secrets(
+        "app_config"
+    )
+    previous_file = (
+        get_context().paths.app_config_path.read_bytes()
+    )
+    updated = store.load_app_config()
+    updated["alibaba_cookie"] = "new-cookie-secret"
+
+    def fail_write(*_args, **_kwargs):
+        raise OSError("injected config write failure")
+
+    monkeypatch.setattr(config_store_module, "write_json", fail_write)
+    with pytest.raises(OSError, match="injected config write failure"):
+        store.save_app_config(updated)
+
+    assert (
+        get_context().db.load_runtime_secrets("app_config")
+        == previous_secrets
+    )
+    assert (
+        get_context().paths.app_config_path.read_bytes()
+        == previous_file
+    )
+
+
+def test_store_auth_update_rolls_back_when_static_file_write_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = get_context().config
+    store.save_store_config(
+        {
+            "mercadolibre": {
+                "access_token": "old-token-secret",
+                "site_id": "MLM",
+            }
+        }
+    )
+    previous_auth = get_context().db.list_store_auth()
+    previous_file = (
+        get_context().paths.store_config_path.read_bytes()
+    )
+
+    def fail_write(*_args, **_kwargs):
+        raise OSError("injected store write failure")
+
+    monkeypatch.setattr(
+        config_store_module.publisher,
+        "save_store_config",
+        fail_write,
+    )
+    with pytest.raises(OSError, match="injected store write failure"):
+        store.save_store_config(
+            {
+                "mercadolibre": {
+                    "access_token": "new-token-secret",
+                    "site_id": "MLA",
+                }
+            }
+        )
+
+    assert get_context().db.list_store_auth() == previous_auth
+    assert (
+        get_context().paths.store_config_path.read_bytes()
+        == previous_file
+    )
+
+
+def test_app_config_failed_rollback_cannot_overwrite_concurrent_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = get_context()
+    store = context.config
+    initial = store.default_app_config()
+    initial["alibaba_cookie"] = "initial-cookie-secret"
+    store.save_app_config(initial)
+
+    failing = store.load_app_config()
+    failing["auto_ai_recognition"] = "failure-write"
+    failing["alibaba_cookie"] = "failing-cookie-secret"
+    succeeding = store.load_app_config()
+    succeeding["auto_ai_recognition"] = "successful-write"
+    succeeding["alibaba_cookie"] = "successful-cookie-secret"
+
+    failure_at_file = threading.Event()
+    release_failure = threading.Event()
+    success_reached_db = threading.Event()
+    errors: list[BaseException] = []
+    original_write = config_store_module.write_json
+    original_replace = context.db.replace_runtime_secrets
+
+    def controlled_write(path, payload):
+        if payload.get("auto_ai_recognition") == "failure-write":
+            failure_at_file.set()
+            assert release_failure.wait(timeout=2)
+            raise OSError("injected interleaved app config failure")
+        return original_write(path, payload)
+
+    def tracked_replace(namespace, secrets):
+        if "successful-cookie-secret" in secrets.values():
+            success_reached_db.set()
+        return original_replace(namespace, secrets)
+
+    monkeypatch.setattr(config_store_module, "write_json", controlled_write)
+    monkeypatch.setattr(context.db, "replace_runtime_secrets", tracked_replace)
+
+    def run_failure() -> None:
+        try:
+            store.save_app_config(failing)
+        except BaseException as exc:
+            errors.append(exc)
+
+    failure_thread = threading.Thread(target=run_failure)
+    success_thread = threading.Thread(
+        target=store.save_app_config,
+        args=(succeeding,),
+    )
+    failure_thread.start()
+    assert failure_at_file.wait(timeout=2)
+    success_thread.start()
+    assert success_reached_db.wait(timeout=0.15) is False
+    release_failure.set()
+    failure_thread.join(timeout=2)
+    success_thread.join(timeout=2)
+
+    assert failure_thread.is_alive() is False
+    assert success_thread.is_alive() is False
+    assert len(errors) == 1
+    assert isinstance(errors[0], OSError)
+    assert success_reached_db.is_set()
+    assert store.load_app_config()["alibaba_cookie"] == "successful-cookie-secret"
+
+
+def test_store_config_failed_rollback_cannot_overwrite_concurrent_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = get_context()
+    store = context.config
+    store.save_store_config(
+        {
+            "mercadolibre": {
+                "access_token": "initial-store-token",
+                "site_id": "MLM",
+            }
+        }
+    )
+    failing = {
+        "mercadolibre": {
+            "access_token": "failing-store-token",
+            "site_id": "FAIL",
+        }
+    }
+    succeeding = {
+        "mercadolibre": {
+            "access_token": "successful-store-token",
+            "site_id": "SUCCESS",
+        }
+    }
+
+    failure_at_file = threading.Event()
+    release_failure = threading.Event()
+    success_reached_db = threading.Event()
+    errors: list[BaseException] = []
+    original_save = config_store_module.publisher.save_store_config
+    original_update = context.db.update_store_auth
+
+    def controlled_save(path, payload):
+        section = payload.get("mercadolibre", {})
+        if section.get("site_id") == "FAIL":
+            failure_at_file.set()
+            assert release_failure.wait(timeout=2)
+            raise OSError("injected interleaved store config failure")
+        return original_save(path, payload)
+
+    def tracked_update(platform, **kwargs):
+        credentials = kwargs.get("credentials") or {}
+        if credentials.get("access_token") == "successful-store-token":
+            success_reached_db.set()
+        return original_update(platform, **kwargs)
+
+    monkeypatch.setattr(
+        config_store_module.publisher,
+        "save_store_config",
+        controlled_save,
+    )
+    monkeypatch.setattr(context.db, "update_store_auth", tracked_update)
+
+    def run_failure() -> None:
+        try:
+            store.save_store_config(failing)
+        except BaseException as exc:
+            errors.append(exc)
+
+    failure_thread = threading.Thread(target=run_failure)
+    success_thread = threading.Thread(
+        target=store.save_store_config,
+        args=(succeeding,),
+    )
+    failure_thread.start()
+    assert failure_at_file.wait(timeout=2)
+    success_thread.start()
+    assert success_reached_db.wait(timeout=0.15) is False
+    release_failure.set()
+    failure_thread.join(timeout=2)
+    success_thread.join(timeout=2)
+
+    assert failure_thread.is_alive() is False
+    assert success_thread.is_alive() is False
+    assert len(errors) == 1
+    assert isinstance(errors[0], OSError)
+    assert success_reached_db.is_set()
+    restored = store.load_store_config()["mercadolibre"]
+    assert restored["access_token"] == "successful-store-token"
+    assert restored["site_id"] == "SUCCESS"

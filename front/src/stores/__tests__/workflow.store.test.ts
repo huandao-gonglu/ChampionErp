@@ -2,12 +2,18 @@ import { setActivePinia, createPinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createEmptyDraftDetail, createEmptyDraftProductContext, createEmptyProduct } from '@/constants/initialState'
 import { useWorkflowStore } from '@/stores/workflow'
-import * as workflowApi from '@/api/workflow'
-import type { AppStateResponse, DraftMutationResponse, ProductMutationResponse } from '@/api/workflow'
+import * as catalogApi from '@/api/workflow/catalog'
+import type { AppStateResponse, DraftMutationResponse, ProductMutationResponse } from '@/api/workflow/normalizers'
+import * as publishingApi from '@/api/workflow/publishing'
+import * as settingsApi from '@/api/workflow/settings'
+import * as stateApi from '@/api/workflow/state'
 import type { DraftDetail, DraftIndexItem, PricingResult, Product } from '@/types/workflow'
 
-vi.mock('@/api/workflow', () => ({
+vi.mock('@/api/workflow/state', () => ({
   fetchState: vi.fn(),
+}))
+
+vi.mock('@/api/workflow/catalog', () => ({
   saveProduct: vi.fn(),
   collectProduct: vi.fn(),
   importManualProduct: vi.fn(),
@@ -16,28 +22,55 @@ vi.mock('@/api/workflow', () => ({
   generateCopy: vi.fn(),
   imageEdit: vi.fn(),
   imageTranslate: vi.fn(),
+  openBrowserProfile: vi.fn(),
+  open1688Browser: vi.fn(),
+  loadProduct: vi.fn(),
+  generateImagePrompts: vi.fn(),
+  fetchProductsIndex: vi.fn(),
+  fetchDraftsIndex: vi.fn(),
+  fetchBrowserDebugStatus: vi.fn(),
+  deleteProducts: vi.fn(),
+  clean1688Text: vi.fn(),
+  saveImagePool: vi.fn(),
+  imagePoolAction: vi.fn(),
+  generateCopyBatch: vi.fn(),
+  collectFromBrowserTab: vi.fn(),
+  collectBatch: vi.fn(),
+  claimProducts: vi.fn(),
+  loadDraft: vi.fn(),
+  saveDraft: vi.fn(),
+  deleteDraft: vi.fn(),
+}))
+
+vi.mock('@/api/workflow/publishing', () => ({
   identifyProductForCategory: vi.fn(),
   calculatePrice: vi.fn(),
   publishPrecheck: vi.fn(),
   enqueuePublish: vi.fn(),
   fetchCategoryAttrs: vi.fn(),
-  testStoreAuth: vi.fn(),
-  testAiModel: vi.fn(),
   searchCategories: vi.fn(),
-  saveStoreSettings: vi.fn(),
-  saveAiConfig: vi.fn(),
   previewPublishPayload: vi.fn(),
-  openBrowserProfile: vi.fn(),
-  openAuthLink: vi.fn(),
-  open1688Browser: vi.fn(),
-  loadProduct: vi.fn(),
-  generateImagePrompts: vi.fn(),
   fillCategoryAttributes: vi.fn(),
   fetchPublishLogs: vi.fn(),
   fetchPublishJob: vi.fn(),
-  fetchProductsIndex: vi.fn(),
-  fetchDraftsIndex: vi.fn(),
-  fetchBrowserDebugStatus: vi.fn(),
+  fetchMercadoLibreOrders: vi.fn(),
+  fetchMercadoLibrePublishedItems: vi.fn(),
+  closeMercadoLibrePublishedItem: vi.fn(),
+  suggestCategories: vi.fn(),
+  runCategoryPrecheck: vi.fn(),
+  confirmMercadoLibreRealPublish: vi.fn(),
+  publishProductDirect: vi.fn(),
+  fetchCategoryAttributeTranslations: vi.fn(),
+  fetchCategoryResultTranslations: vi.fn(),
+}))
+
+vi.mock('@/api/workflow/settings', () => ({
+  assignUpc: vi.fn(),
+  testStoreAuth: vi.fn(),
+  testAiModel: vi.fn(),
+  saveStoreSettings: vi.fn(),
+  saveAiConfig: vi.fn(),
+  openAuthLink: vi.fn(),
   fetchAiConfig: vi.fn(),
   fetchMercadoLibreAuthChecklist: vi.fn(),
   refreshMercadoLibreToken: vi.fn(),
@@ -45,22 +78,15 @@ vi.mock('@/api/workflow', () => ({
   buildMercadoLibreAuthLink: vi.fn(),
   exchangeMercadoLibreCode: vi.fn(),
   clearStoreAuth: vi.fn(),
-  suggestCategories: vi.fn(),
-  runCategoryPrecheck: vi.fn(),
-  confirmMercadoLibreRealPublish: vi.fn(),
-  publishProductDirect: vi.fn(),
-  deleteProducts: vi.fn(),
-  clean1688Text: vi.fn(),
-  saveImagePool: vi.fn(),
-  diagnosticsToCollectDiagnostics: vi.fn(),
-  collectFromBrowserTab: vi.fn(),
-  collectBatch: vi.fn(),
-  claimProducts: vi.fn(),
-  assignUpc: vi.fn(),
-  loadDraft: vi.fn(),
-  saveDraft: vi.fn(),
-  deleteDraft: vi.fn(),
+  testApiConfig: vi.fn(),
 }))
+
+const workflowApi = {
+  ...catalogApi,
+  ...publishingApi,
+  ...settingsApi,
+  ...stateApi,
+}
 
 function collectedProduct(): Product {
   const product = createEmptyProduct()
@@ -132,8 +158,6 @@ describe('workflow store live API flow', () => {
       storeAuthSummary: {},
       outputDir: '',
       platformOptions: [],
-      productsIndex: [],
-      publishLogs: [],
     } satisfies AppStateResponse)
 
     const store = useWorkflowStore()
@@ -142,6 +166,193 @@ describe('workflow store live API flow', () => {
     expect(store.product.productId).toBe('')
     expect(store.collectDiagnostics.status).toBe('idle')
     expect(workflowApi.fetchState).toHaveBeenCalledOnce()
+  })
+
+  it('does not hydrate public credential fields into Pinia state', async () => {
+    const product = createEmptyProduct()
+    vi.mocked(workflowApi.fetchState).mockResolvedValue({
+      schemaVersion: 1,
+      product,
+      imagePool: [],
+      appConfig: {
+        alibaba_cookie: 'cook...cret',
+        '1688_api': {
+          app_key: 'key...cret',
+          app_secret: 'app...cret',
+          access_token: 'toke...cret',
+          masked_app_key: 'key...cret',
+          masked_app_secret: 'app...cret',
+          masked_access_token: 'toke...cret',
+          status: '已配置',
+        },
+        yunexpress: {
+          app_id: 'yun-...p-id',
+          app_secret: 'yun-...cret',
+          source_key: 'yun-...-key',
+          masked_app_id: 'yun-...p-id',
+          masked_app_secret: 'yun-...cret',
+          masked_source_key: 'yun-...-key',
+          status: '已配置',
+        },
+      },
+      storeConfig: {},
+      storeAuthSummary: {},
+      outputDir: '',
+      platformOptions: [],
+    } satisfies AppStateResponse)
+
+    const store = useWorkflowStore()
+    await store.loadState()
+
+    const api1688 = store.appConfig['1688_api'] as Record<string, unknown>
+    const yunexpress = store.appConfig.yunexpress as Record<string, unknown>
+    expect(store.appConfig.alibaba_cookie).toBe('')
+    expect(api1688.app_key).toBe('')
+    expect(api1688.app_secret).toBe('')
+    expect(api1688.access_token).toBe('')
+    expect(api1688.masked_app_secret).toBe('app...cret')
+    expect(yunexpress.app_id).toBe('')
+    expect(yunexpress.app_secret).toBe('')
+    expect(yunexpress.source_key).toBe('')
+    expect(yunexpress.masked_app_secret).toBe('yun-...cret')
+    expect(store.collectForm).not.toHaveProperty('alibabaCookie')
+    expect(store.collectForm).not.toHaveProperty('alibabaAppSecret')
+  })
+
+  it('does not retain submitted 1688 or YunExpress plaintext credentials', async () => {
+    vi.mocked(workflowApi.saveAiConfig).mockResolvedValue({
+      raw: {
+        '1688_api': {
+          app_key: 'subm...-key',
+          app_secret: 'subm...cret',
+          access_token: 'subm...oken',
+          masked_app_key: 'subm...-key',
+          masked_app_secret: 'subm...cret',
+          masked_access_token: 'subm...oken',
+          status: '已配置',
+        },
+        yunexpress: {
+          app_id: 'subm...p-id',
+          app_secret: 'subm...cret',
+          source_key: 'subm...-key',
+          masked_app_id: 'subm...p-id',
+          masked_app_secret: 'subm...cret',
+          masked_source_key: 'subm...-key',
+          status: '已配置',
+        },
+      },
+    })
+    const submitted = {
+      '1688_api': {
+        app_key: 'submitted-1688-app-key',
+        app_secret: 'submitted-1688-app-secret',
+        access_token: 'submitted-1688-access-token',
+      },
+      yunexpress: {
+        app_id: 'submitted-yun-app-id',
+        app_secret: 'submitted-yun-app-secret',
+        source_key: 'submitted-yun-source-key',
+      },
+    }
+
+    const store = useWorkflowStore()
+    await store.saveAiSettings(submitted)
+
+    const serialized = JSON.stringify({
+      appConfig: store.appConfig,
+      aiConfig: store.aiConfig,
+      collectForm: store.collectForm,
+    })
+    for (const secret of [
+      'submitted-1688-app-key',
+      'submitted-1688-app-secret',
+      'submitted-1688-access-token',
+      'submitted-yun-app-id',
+      'submitted-yun-app-secret',
+      'submitted-yun-source-key',
+    ]) {
+      expect(serialized).not.toContain(secret)
+    }
+    expect((store.appConfig['1688_api'] as Record<string, unknown>).app_secret).toBe('')
+    expect((store.appConfig.yunexpress as Record<string, unknown>).source_key).toBe('')
+  })
+
+  it('keeps submitted store credentials out of global state', async () => {
+    vi.mocked(workflowApi.saveStoreSettings).mockResolvedValue({
+      storeConfig: {
+        mercadolibre: {
+          app_id: 'public-app-id',
+          app_secret: 'secr...alue',
+        },
+      },
+      storeAuthSummary: {
+        mercadolibre: { configured: true },
+      },
+    })
+    vi.mocked(workflowApi.fetchMercadoLibreAuthChecklist).mockResolvedValue({
+      platform: 'mercadolibre',
+      readyForAuthLink: true,
+      tokenReady: false,
+      missingCodes: [],
+      fields: [],
+      nextAction: '',
+      copyText: '',
+      raw: {},
+    })
+
+    const store = useWorkflowStore()
+    await store.saveStoreConfig({
+      mercadolibre: {
+        app_id: 'public-app-id',
+        app_secret: 'plain-secret-value',
+      },
+    })
+
+    expect(JSON.stringify(store.storeConfig)).not.toContain('plain-secret-value')
+    expect(store.storeAuthSummary).toEqual({
+      mercadolibre: { configured: true },
+    })
+  })
+
+  it('hydrates dashboard domain data after the bootstrap state is split', async () => {
+    vi.mocked(workflowApi.fetchProductsIndex).mockResolvedValue([])
+    vi.mocked(workflowApi.fetchPublishLogs).mockResolvedValue([])
+    vi.mocked(workflowApi.fetchMercadoLibreOrders).mockResolvedValue({
+      items: [],
+      notifications: [],
+      total: 0,
+      checkedAt: '',
+    })
+    vi.mocked(workflowApi.fetchMercadoLibrePublishedItems).mockResolvedValue({
+      items: [],
+      pagination: {
+        page: 1,
+        perPage: 50,
+        offset: 0,
+        total: 0,
+        totalPages: 0,
+        hasPrev: false,
+        hasNext: false,
+      },
+    })
+
+    const store = useWorkflowStore()
+    store.mercadolibreAuthChecklist = {
+      platform: 'mercadolibre',
+      readyForAuthLink: true,
+      tokenReady: true,
+      missingCodes: [],
+      fields: [],
+      nextAction: '',
+      copyText: '',
+      raw: {},
+    }
+    await store.hydrateTab('dashboard')
+
+    expect(workflowApi.fetchProductsIndex).toHaveBeenCalledOnce()
+    expect(workflowApi.fetchPublishLogs).toHaveBeenCalledOnce()
+    expect(workflowApi.fetchMercadoLibreOrders).toHaveBeenCalledOnce()
+    expect(workflowApi.fetchMercadoLibrePublishedItems).toHaveBeenCalledOnce()
   })
 
   it('collects product through backend API and updates diagnostics', async () => {
@@ -156,6 +367,98 @@ describe('workflow store live API flow', () => {
     expect(store.collectDiagnostics.status).toBe('success')
     expect(store.collectDiagnostics.downloadedImages).toBe(1)
     expect(store.progressPercent).toBeGreaterThan(0)
+  })
+
+  it('uses the active non-Mercado Libre draft when calculating workflow progress', () => {
+    const draft = createEmptyDraftDetail('yandex')
+    draft.draftId = 'draft-yandex'
+    draft.platform = 'yandex'
+    draft.platforms = ['yandex']
+    draft.price = '7990'
+    draft.categoryId = 'yandex-category-1'
+    draft.status = 'published'
+
+    const store = useWorkflowStore()
+    store.activeMarketplace = 'yandex'
+    store.currentDraft = draft
+
+    const statuses = Object.fromEntries(store.workflowSteps.map((step) => [step.key, step.status]))
+    expect(statuses.pricing).toBe('done')
+    expect(statuses.category).toBe('done')
+    expect(statuses.precheck).toBe('done')
+    expect(statuses.publish).toBe('done')
+  })
+
+  it('does not reuse completed Mercado Libre progress after switching to a pending Yandex draft', () => {
+    const product = createEmptyProduct()
+    product.productId = 'product-1'
+    product.name = 'Cross-platform product'
+    product.drafts.mercadolibre.draftId = 'draft-ml'
+    product.drafts.mercadolibre.title = 'Mercado Libre copy'
+    product.drafts.mercadolibre.description = 'Completed Mercado Libre description'
+    product.drafts.mercadolibre.images = [{ assetId: 'ml-image', role: 'main', order: 0 }]
+    product.drafts.mercadolibre.status = 'published'
+
+    const yandexDraft = createEmptyDraftDetail('yandex')
+    yandexDraft.draftId = 'draft-yandex'
+    yandexDraft.site = 'global'
+    yandexDraft.status = 'pending'
+    product.drafts.yandex.draftId = yandexDraft.draftId
+
+    const store = useWorkflowStore()
+    store.product = product
+    store.currentDraft = yandexDraft
+    store.publishJob = {
+      jobId: 'job-ml',
+      status: 'completed',
+      platforms: ['mercadolibre'],
+      createdAt: '2026-07-29T00:00:00Z',
+      draftId: 'draft-ml',
+      targetKey: 'mercadolibre:cbt',
+    }
+
+    const mercadoLibreStatuses = Object.fromEntries(store.workflowSteps.map((step) => [step.key, step.status]))
+    expect(mercadoLibreStatuses.copy).toBe('done')
+    expect(mercadoLibreStatuses.images).toBe('done')
+    expect(mercadoLibreStatuses.publish).toBe('done')
+
+    store.setMarketplace('yandex')
+
+    expect(store.publishJob).toBeNull()
+    const yandexStatuses = Object.fromEntries(store.workflowSteps.map((step) => [step.key, step.status]))
+    expect(yandexStatuses.copy).not.toBe('done')
+    expect(yandexStatuses.images).not.toBe('done')
+    expect(yandexStatuses.publish).not.toBe('done')
+
+    store.publishJob = {
+      jobId: 'stale-ml-job',
+      status: 'completed',
+      platforms: ['mercadolibre'],
+      createdAt: '2026-07-29T00:00:00Z',
+      draftId: 'draft-ml',
+      targetKey: 'mercadolibre:cbt',
+    }
+    expect(store.workflowSteps.find((step) => step.key === 'publish')?.status).not.toBe('done')
+
+    store.publishJob = {
+      jobId: 'wrong-yandex-draft',
+      status: 'completed',
+      platforms: ['yandex'],
+      createdAt: '2026-07-29T00:00:00Z',
+      draftId: 'another-yandex-draft',
+      targetKey: 'yandex:global',
+    }
+    expect(store.workflowSteps.find((step) => step.key === 'publish')?.status).not.toBe('done')
+
+    store.publishJob = {
+      jobId: 'wrong-yandex-target',
+      status: 'completed',
+      platforms: ['yandex'],
+      createdAt: '2026-07-29T00:00:00Z',
+      draftId: 'draft-yandex',
+      targetKey: 'yandex:another-site',
+    }
+    expect(store.workflowSteps.find((step) => step.key === 'publish')?.status).not.toBe('done')
   })
 
   it('stores precheck result returned by backend', async () => {
@@ -744,10 +1047,18 @@ describe('workflow store live API flow', () => {
     expect(workflowApi.saveDraft).toHaveBeenCalledWith(expect.objectContaining({
       pricing: expect.objectContaining({
         targets: expect.objectContaining({
-          'mercadolibre:cbt': expect.objectContaining({ appliedPrice: 23.45 }),
-          'mercadolibre:mlm': expect.objectContaining({ appliedPrice: 410.88 }),
+          'mercadolibre:cbt': expect.objectContaining({ applied_price: 23.45 }),
+          'mercadolibre:mlm': expect.objectContaining({ applied_price: 410.88 }),
         }),
+        exchange_rates: expect.objectContaining({ source: 'test://rates' }),
+        updated_at: expect.any(String),
       }),
     }))
+    const savedPricing = vi.mocked(workflowApi.saveDraft).mock.calls[0][0].pricing
+    expect(savedPricing).not.toHaveProperty('suggestedPrice')
+    expect(savedPricing).not.toHaveProperty('appliedPrice')
+    expect(savedPricing).not.toHaveProperty('targetKey')
+    expect(savedPricing).not.toHaveProperty('exchangeRates')
+    expect(savedPricing).not.toHaveProperty('updatedAt')
   })
 })

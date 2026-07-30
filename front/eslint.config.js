@@ -6,7 +6,7 @@ import vueParser from 'vue-eslint-parser'
 
 export default [
   {
-    ignores: ['dist/**', 'coverage/**', 'node_modules/**', '../erp_web/static/dist/**', '.eslintrc.cjs'],
+    ignores: ['dist/**', 'dist-desktop/**', 'coverage/**', 'node_modules/**', '../erp_web/static/dist/**', '.eslintrc.cjs'],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
@@ -48,6 +48,12 @@ export default [
       'vue/singleline-html-element-content-newline': 'off',
       'vue/html-self-closing': 'off',
       '@typescript-eslint/no-explicit-any': 'warn',
+    },
+  },
+  {
+    files: ['desktop/**/*.cjs'],
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
     },
   },
 ]

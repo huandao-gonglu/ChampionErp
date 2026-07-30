@@ -3,8 +3,6 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from erp_web.marketplace_registry import category_id_field
-
 from .common import normalize_list
 from .defaults import default_draft
 from .merge_model import normalize_product_model
@@ -65,11 +63,6 @@ def apply_category_selection(product: dict[str, Any], platform: str, category_re
             "category_path": category_path,
         }
     normalized["local_platform_categories"] = local_categories
-    top_level_category_field = category_id_field(platform)
-    if top_level_category_field:
-        normalized[top_level_category_field] = category_id or normalized.get(top_level_category_field, "")
-    normalized["category_path"] = category_path or normalized.get("category_path", "")
-
     draft = deepcopy(normalized.get("drafts", {}).get(platform) if isinstance(normalized.get("drafts"), dict) else default_draft(platform))
     draft["category_id"] = category_id or str(draft.get("category_id") or "").strip()
     draft["category_path"] = category_path or str(draft.get("category_path") or "").strip()
@@ -106,7 +99,7 @@ def _attribute_value_from_source(product: dict[str, Any], platform: str, attr: d
     if "model" in attr_id.lower() or "model" in attr_name:
         return result(str(draft.get("model") or product.get("model") or source.get("model") or "General").strip() or "General")
     if attr_id.upper() == "EMPTY_GTIN_REASON" or "empty gtin reason" in attr_name:
-        gtin_value = str(draft.get("upc") or product.get("upc") or source.get("upc") or source.get("gtin") or "").strip()
+        gtin_value = str(draft.get("upc") or product.get("upc") or source.get("upc") or "").strip()
         if gtin_value:
             return result("", True)
         if not draft.get("allow_gtin_exemption"):
@@ -124,7 +117,7 @@ def _attribute_value_from_source(product: dict[str, Any], platform: str, attr: d
                     return result(option, True)
         return result(options[0] if options else "Product exempt from GTIN", True)
     if attr_id.upper() in {"GTIN", "UPC", "UNIVERSAL_PRODUCT_CODE"} or attr_id.lower() in {"gtin", "upc"} or "universal product code" in attr_name:
-        value = str(draft.get("upc") or product.get("upc") or source.get("upc") or source.get("gtin") or "").strip()
+        value = str(draft.get("upc") or product.get("upc") or source.get("upc") or "").strip()
         return result(value, bool(value))
     attr_id_upper = attr_id.upper()
     is_package_attr = "PACKAGE" in attr_id_upper or "package" in attr_name
@@ -149,7 +142,7 @@ def _attribute_value_from_source(product: dict[str, Any], platform: str, attr: d
         value = str(source.get("title") or product.get("name") or "").strip()
         return result(value, bool(value))
     if "price" in attr_id.lower():
-        value = str(source.get("price") or product.get("detected_price") or "").strip()
+        value = str(source.get("price") or product.get("cost") or "").strip()
         return result(value, bool(value))
     if "sku" in attr_id.lower():
         value = str(product.get("sku") or "").strip()
@@ -252,12 +245,7 @@ def validate_category_precheck(product: dict[str, Any], platform: str, category_
     platform = str(platform or "").strip().lower()
     draft = normalized.get("drafts", {}).get(platform) if isinstance(normalized.get("drafts"), dict) else {}
     errors: list[str] = []
-    top_level_category_field = category_id_field(platform)
-    if not str(
-        draft.get("category_id")
-        or (normalized.get(top_level_category_field) if top_level_category_field else "")
-        or ""
-    ).strip():
+    if not str(draft.get("category_id") or "").strip():
         errors.append("category_id")
     if not str(draft.get("brand") or "").strip():
         errors.append("brand")

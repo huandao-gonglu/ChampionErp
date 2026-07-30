@@ -80,7 +80,12 @@ def draft_image_asset_ids(value: Any) -> list[str]:
 
 def draft_image_refs_from_pool(product: dict[str, Any], platform: str = "") -> list[dict[str, Any]]:
     source = product.get("source") if isinstance(product.get("source"), dict) else {}
-    pool = normalize_image_pool(source.get("image_pool") if isinstance(source.get("image_pool"), list) else [], [], "source")
+    pool = normalize_image_pool(
+        source.get("image_pool")
+        if isinstance(source.get("image_pool"), list)
+        else [],
+        "source",
+    )
     platform_key = text_or_empty(platform).lower()
     if platform_key:
         platform_items = [

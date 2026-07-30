@@ -2,22 +2,21 @@
 from __future__ import annotations
 
 import urllib.parse
-from typing import Any
+from importlib import import_module
+from typing import Any, Callable
 
-from erp_web.marketplace_registry import marketplace_spec, platform_label
+from erp_web.context import get_context
+from erp_web.marketplace_registry import MarketplaceSpec, marketplace_spec, platform_label
 from erp_web import marketplaces as publisher
 from erp_web.services import ai_gateway, ai_model_config
-
-from .product_store import (
+from erp_web.stores.config_store import (
     _store_auth_result_fields,
-    load_app_config,
-    load_store_config,
-    mask_secret,
-    save_store_config,
+    store_auth_failure_code,
     summarize_store_auth_states,
 )
+from erp_web.stores.product_store import mask_secret
+
 from .publish_logs_runtime import append_ml_auth_test_log
-from .runtime_common import APP_DIR
 
 def _merge_saved_ai_model_config(model_config: dict[str, Any]) -> dict[str, Any]:
     incoming = dict(model_config if isinstance(model_config, dict) else {})
@@ -25,7 +24,9 @@ def _merge_saved_ai_model_config(model_config: dict[str, Any]) -> dict[str, Any]
     if not model_id:
         return incoming
     source_model_id = str(incoming.get("copy_source_id") or "").strip()
-    stored_models = ai_model_config.normalize_ai_models(load_app_config().get("ai_models"))
+    stored_models = ai_model_config.normalize_ai_models(
+        get_context().config.load_app_config().get("ai_models")
+    )
     stored = next((model for model in stored_models if str(model.get("id") or "") == model_id), {})
     source = next((model for model in stored_models if str(model.get("id") or "") == source_model_id), {}) if source_model_id else {}
     if not stored and not source:
@@ -41,7 +42,10 @@ def _merge_saved_ai_model_config(model_config: dict[str, Any]) -> dict[str, Any]
 
 
 def test_ai_model_config(model_config: dict[str, Any]) -> dict[str, Any]:
-    return ai_gateway.test_ai_model(APP_DIR, _merge_saved_ai_model_config(model_config))
+    return ai_gateway.test_ai_model(
+        get_context().paths.app_dir,
+        _merge_saved_ai_model_config(model_config),
+    )
 
 
 def test_api_config(kind: str, config: dict[str, Any], test_value: str = "") -> dict[str, Any]:
@@ -73,12 +77,14 @@ def test_api_config(kind: str, config: dict[str, Any], test_value: str = "") -> 
             build_1688_api_params,
             ensure_1688_api_ready,
             extract_1688_offer_id,
-            normalize_1688_api_config,
             parse_1688_api_product,
             request_1688_product_detail,
+            resolve_1688_api_config,
         )
 
-        api_config = normalize_1688_api_config(config if isinstance(config, dict) else {})
+        api_config = resolve_1688_api_config(
+            config if isinstance(config, dict) else {}
+        )
         ensure_1688_api_ready(api_config)
         offer_id = extract_1688_offer_id(test_value)
         if not offer_id:
@@ -119,7 +125,6 @@ def build_mercadolibre_auth_link(app_id: str, redirect_uri: str) -> dict[str, An
     if not app_id or not redirect_uri:
         raise RuntimeError("请先填写 Mercado Libre 的 client_id 和 redirect_uri。")
     parsed = urllib.parse.urlparse(str(redirect_uri or "").strip())
-    host = (parsed.hostname or "").lower()
     if parsed.scheme != "https":
         raise RuntimeError("REDIRECT_URI_MUST_BE_HTTPS：Mercado Libre Developers 要求 Redirect URI 使用 https://")
     verifier, challenge = publisher.generate_pkce_pair()
@@ -129,11 +134,11 @@ def build_mercadolibre_auth_link(app_id: str, redirect_uri: str) -> dict[str, An
         f"&redirect_uri={urllib.parse.quote(redirect_uri, safe='')}"
         f"&code_challenge={urllib.parse.quote(challenge)}&code_challenge_method=S256"
     )
-    config = load_store_config()
+    config = get_context().config.load_store_config()
     config.setdefault("mercadolibre", {})["code_verifier"] = verifier
     config["mercadolibre"]["redirect_uri"] = redirect_uri
     config["mercadolibre"]["app_id"] = app_id
-    save_store_config(config)
+    get_context().config.save_store_config(config)
     return {"url": url, "verifier_saved": True}
 
 
@@ -163,7 +168,7 @@ def _update_store_auth_state(config: dict[str, Any], platform: str, updates: dic
 
 
 def exchange_mercadolibre_code_from_body(body: dict[str, Any]) -> dict[str, Any]:
-    config = load_store_config()
+    config = get_context().config.load_store_config()
     ml = config.setdefault("mercadolibre", {})
     app_id = str(body.get("app_id") or ml.get("app_id") or "").strip()
     app_secret = str(body.get("app_secret") or body.get("client_secret") or _mercadolibre_app_secret(ml)).strip()
@@ -224,11 +229,14 @@ def exchange_mercadolibre_code_from_body(body: dict[str, Any]) -> dict[str, Any]
     finally:
         if exchanged and "code_verifier" in ml:
             ml.pop("code_verifier", None)
-        save_store_config(config, preserve_empty_sensitive=False)
+        get_context().config.save_store_config(
+            config,
+            preserve_empty_sensitive=False,
+        )
 
 
 def refresh_mercadolibre_token_from_body(body: dict[str, Any]) -> dict[str, Any]:
-    config = load_store_config()
+    config = get_context().config.load_store_config()
     ml = config.setdefault("mercadolibre", {})
     app_id = str(body.get("app_id") or ml.get("app_id") or "").strip()
     app_secret = str(body.get("app_secret") or body.get("client_secret") or _mercadolibre_app_secret(ml)).strip()
@@ -252,7 +260,7 @@ def refresh_mercadolibre_token_from_body(body: dict[str, Any]) -> dict[str, Any]
     ml.update(_store_auth_result_fields("mercadolibre", "测试成功", ml.get("shop_name") or token))
     ml["auth_error_code"] = ""
     ml["auth_error_message"] = ""
-    save_store_config(config)
+    get_context().config.save_store_config(config)
     return {
         "platform": "mercadolibre",
         "status": "测试成功",
@@ -301,10 +309,76 @@ def _test_ozon_auth(config: dict[str, Any], scope: str) -> dict[str, Any]:
     return {"category_tree": category_summary} if category_summary else {}
 
 
-_STORE_AUTH_TESTERS = {
-    "mercadolibre_token": _test_mercadolibre_auth,
-    "ozon_api": _test_ozon_auth,
-}
+StoreAuthTester = Callable[[dict[str, Any], str], dict[str, Any]]
+
+
+def resolve_store_auth_tester(spec: MarketplaceSpec) -> StoreAuthTester | None:
+    """从平台注册项解析在线凭据校验器。
+
+    ``MarketplaceSpec.test_auth`` 保存 ``module:attribute``，因此新增平台只需在
+    registry 声明适配器入口；通用授权流程不再维护第二张平台分发表。
+    """
+
+    target = str(spec.test_auth or "").strip()
+    if not target:
+        return None
+    module_name, separator, attribute_name = target.partition(":")
+    if not separator or not module_name or not attribute_name:
+        raise RuntimeError(f"{spec.label} 的 test_auth 注册项无效：{target}")
+    tester = getattr(import_module(module_name), attribute_name, None)
+    if not callable(tester):
+        raise RuntimeError(f"{spec.label} 的授权校验器不可调用：{target}")
+    return tester
+
+
+def _auth_test_result_failed(result: dict[str, Any]) -> bool:
+    status = str(result.get("status") or "").strip().lower()
+    return result.get("ok") is False or status in {
+        "error",
+        "failed",
+        "failure",
+        "测试失败",
+    }
+
+
+def _persist_store_auth_test_failure(
+    config: dict[str, Any],
+    platform: str,
+    *,
+    error_message: str,
+    error_code: str = "",
+    next_action: str = "",
+) -> str:
+    """覆盖陈旧成功态并持久化在线授权校验失败。"""
+
+    message = str(error_message or "").strip() or f"{platform_label(platform)}在线授权校验失败。"
+    code = str(error_code or "").strip() or store_auth_failure_code(platform, message)
+    store = config.setdefault(platform, {})
+    if not isinstance(store, dict):
+        store = {}
+        config[platform] = store
+    account = str(
+        store.get("auth_masked_account")
+        or store.get("shop_name")
+        or ""
+    ).strip()
+    store.update(
+        _store_auth_result_fields(
+            platform,
+            "测试失败",
+            account,
+            error_code=code,
+            error_message=message,
+            next_action=str(next_action or "").strip(),
+        )
+    )
+    get_context().config.save_store_config(config)
+    return message
+
+
+def _auth_test_failure_exception(message: str) -> RuntimeError:
+    text = str(message or "").strip()
+    return RuntimeError(text if text.startswith("测试失败") else f"测试失败：{text}")
 
 
 def test_store_auth(platform: str, scope: str = "") -> dict[str, Any]:
@@ -313,15 +387,42 @@ def test_store_auth(platform: str, scope: str = "") -> dict[str, Any]:
     spec = marketplace_spec(platform)
     if spec is None:
         raise RuntimeError("不支持的平台。")
-    tester = _STORE_AUTH_TESTERS.get(spec.test_auth)
+    tester = resolve_store_auth_tester(spec)
     if tester is None:
         raise RuntimeError(f"{platform_label(platform)}授权已支持保存；在线校验尚未接入。")
-    config = load_store_config()
+    config = get_context().config.load_store_config()
     try:
         extra = tester(config, scope)
     except Exception as exc:
-        raise RuntimeError(f"测试失败：{exc}") from exc
-    save_store_config(config)
+        message = _persist_store_auth_test_failure(
+            config,
+            platform,
+            error_message=str(exc),
+        )
+        raise _auth_test_failure_exception(message) from exc
+    if not isinstance(extra, dict):
+        message = _persist_store_auth_test_failure(
+            config,
+            platform,
+            error_message="授权校验器返回格式无效。",
+            error_code="invalid_auth_test_result",
+        )
+        raise _auth_test_failure_exception(message)
+    if _auth_test_result_failed(extra):
+        message = _persist_store_auth_test_failure(
+            config,
+            platform,
+            error_message=str(
+                extra.get("error_message")
+                or extra.get("error")
+                or extra.get("message")
+                or ""
+            ),
+            error_code=str(extra.get("error_code") or ""),
+            next_action=str(extra.get("next_action") or ""),
+        )
+        raise _auth_test_failure_exception(message)
+    get_context().config.save_store_config(config)
     response = {
         "ok": True,
         "platform": platform,
@@ -345,6 +446,8 @@ __all__ = [
     "exchange_mercadolibre_code_from_body",
     "preview_mercadolibre_auth_link",
     "refresh_mercadolibre_token_from_body",
+    "resolve_store_auth_tester",
+    "StoreAuthTester",
     "test_ai_model_config",
     "test_api_config",
     "test_store_auth",

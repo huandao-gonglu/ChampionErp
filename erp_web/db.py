@@ -3,14 +3,16 @@ from __future__ import annotations
 """SQLite persistence layer.
 
 ``ErpDatabase`` owns the schema, the connection settings and every read/write
-path.  The schema is versioned via ``PRAGMA user_version``; any mismatch drops
-all known tables and rebuilds them (the project is unreleased — zero legacy
-compatibility by decree).  The only seed path is the UPC pool: purchased UPC
-codes in ``upc_pool.json`` are imported once when the table is empty.
+path.  The schema is versioned via ``PRAGMA user_version``. Only an empty
+database or the current complete schema is accepted; old, partial, unknown and
+future schemas are rejected before any connection setting mutates the file.
+The only seed path is the UPC pool: purchased UPC codes in ``upc_pool.json``
+are imported once when the table is empty.
 """
 
 import hashlib
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -20,12 +22,19 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from erp_web.marketplace_registry import PLATFORMS
+from erp_web.product_model.merge_model import (
+    normalize_platform_draft,
+    normalize_product_model,
+    validate_platform_draft_root_fields,
+    validate_product_root_fields,
+)
 
 DEFAULT_DB_NAME = "erp.sqlite3"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 REQUIRED_TABLES = (
     "store_auth",
+    "runtime_secrets",
     "products",
     "platform_drafts",
     "media_assets",
@@ -42,13 +51,6 @@ REQUIRED_TABLES = (
 # Research run statuses that never change again (mirrors product_research_service).
 _TERMINAL_RESEARCH_STATUSES = ("completed", "failed")
 
-# Tables from earlier schema generations that must be dropped on rebuild.
-_LEGACY_TABLES = (
-    "category_cache",
-    "draft_id_aliases",
-    "platform_drafts_legacy",
-)
-
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS store_auth (
     platform TEXT PRIMARY KEY,
@@ -57,6 +59,14 @@ CREATE TABLE IF NOT EXISTS store_auth (
     auth_detail_json TEXT NOT NULL DEFAULT '{}',
     checked_at TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS runtime_secrets (
+    namespace TEXT NOT NULL,
+    secret_path TEXT NOT NULL,
+    secret_json TEXT NOT NULL DEFAULT '""',
+    updated_at TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(namespace, secret_path)
 );
 
 CREATE TABLE IF NOT EXISTS products (
@@ -83,12 +93,6 @@ CREATE TABLE IF NOT EXISTS platform_drafts (
     platform TEXT NOT NULL,
     site TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'claimed',
-    title TEXT NOT NULL DEFAULT '',
-    description TEXT NOT NULL DEFAULT '',
-    category_id TEXT NOT NULL DEFAULT '',
-    category_path TEXT NOT NULL DEFAULT '',
-    attributes_json TEXT NOT NULL DEFAULT '{}',
-    price_json TEXT NOT NULL DEFAULT '{}',
     draft_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -205,10 +209,33 @@ CREATE INDEX IF NOT EXISTS idx_research_candidates_run ON research_candidates(ru
 CREATE INDEX IF NOT EXISTS idx_ai_sessions_updated ON ai_sessions(updated_at DESC);
 """
 
+_CURRENT_PLATFORM_DRAFT_COLUMNS = frozenset(
+    {
+        "draft_id",
+        "product_id",
+        "platform",
+        "site",
+        "status",
+        "draft_json",
+        "created_at",
+        "updated_at",
+    }
+)
+
 
 # ---------------------------------------------------------------------------
 # Pure helpers (no database access)
 # ---------------------------------------------------------------------------
+
+def _execute_schema_statements(conn: sqlite3.Connection) -> None:
+    """Execute schema DDL one statement at a time in the caller's transaction."""
+    if not conn.in_transaction:
+        raise RuntimeError("schema DDL 必须在显式事务内执行")
+    for statement in _SCHEMA_SQL.split(";"):
+        sql = statement.strip()
+        if sql:
+            conn.execute(sql)
+
 
 def utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -243,14 +270,14 @@ def _slug(value: str) -> str:
 
 def product_identity(product: dict[str, Any]) -> str:
     product = _dict(product)
-    source = _dict(product.get("source"))
-    existing = str(product.get("product_id") or product.get("id") or source.get("product_id") or "").strip()
+    source = _source(product)
+    existing = str(product.get("product_id") or "").strip()
     if existing:
         return _slug(existing)
     seed = "|".join(
         [
-            str(source.get("source_url") or product.get("source_url") or "").strip(),
-            str(source.get("title") or product.get("name") or "").strip(),
+            str(source.get("source_url") or "").strip(),
+            str(source.get("title") or "").strip(),
             str(source.get("created_at") or product.get("created_at") or "").strip(),
         ]
     )
@@ -316,6 +343,70 @@ def _draft_status(draft: dict[str, Any]) -> str:
     return str(draft.get("status") or draft.get("publish_status") or "claimed")
 
 
+def _without_publish_logs(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _without_publish_logs(item)
+            for key, item in value.items()
+            if key != "publish_logs"
+        }
+    if isinstance(value, list):
+        return [_without_publish_logs(item) for item in value]
+    return value
+
+
+def _product_storage_payload(product: dict[str, Any]) -> dict[str, Any]:
+    """Product JSON owns product fields; drafts are owned by platform_drafts."""
+    payload = dict(_dict(_without_publish_logs(product)))
+    payload.pop("drafts", None)
+    return payload
+
+
+_DRAFT_COLUMN_FIELDS = {
+    "draft_id",
+    "product_id",
+    "platform",
+    "site",
+    "status",
+    "created_at",
+    "updated_at",
+}
+
+
+def _draft_storage_payload(draft: dict[str, Any]) -> dict[str, Any]:
+    """Persist only fields not canonically represented by draft table columns."""
+    return {
+        key: value
+        for key, value in _dict(_without_publish_logs(draft)).items()
+        if key not in _DRAFT_COLUMN_FIELDS
+    }
+
+
+def _load_current_draft_json(value: Any) -> dict[str, Any]:
+    try:
+        draft = json.loads(str(value or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            "platform_drafts.draft_json 不是有效的当前 JSON"
+        ) from exc
+    if not isinstance(draft, dict):
+        raise RuntimeError(
+            "platform_drafts.draft_json 必须是 JSON object"
+        )
+    validate_platform_draft_root_fields(draft)
+    return draft
+
+
+def _validate_product_write_shape(product: dict[str, Any]) -> None:
+    validate_product_root_fields(product)
+    raw_drafts = product.get("drafts")
+    if not isinstance(raw_drafts, dict):
+        return
+    for draft in raw_drafts.values():
+        if isinstance(draft, dict):
+            validate_platform_draft_root_fields(draft)
+
+
 def _draft_should_persist(draft: dict[str, Any]) -> bool:
     if str(draft.get("draft_id") or draft.get("draftId") or "").strip():
         return True
@@ -333,17 +424,10 @@ def _draft_should_persist(draft: dict[str, Any]) -> bool:
 
 
 def _source(product: dict[str, Any]) -> dict[str, Any]:
-    source = _dict(product.get("source"))
-    return source or {
-        "source_url": product.get("source_url") or "",
-        "source_platform": product.get("source_platform") or "",
-        "title": product.get("name") or "",
-        "price": product.get("detected_price") or "",
-        "currency": product.get("detected_currency") or "",
-        "bullets": product.get("selling_points") or [],
-        "description": product.get("description") or "",
-        "images": product.get("source_image_urls") or product.get("source_images") or [],
-    }
+    source = product.get("source")
+    if not isinstance(source, dict):
+        raise ValueError("产品缺少 canonical source object")
+    return source
 
 
 def _image_pool(product: dict[str, Any]) -> list[dict[str, Any]]:
@@ -351,13 +435,13 @@ def _image_pool(product: dict[str, Any]) -> list[dict[str, Any]]:
     pool = [item for item in _list(source.get("image_pool")) if isinstance(item, dict)]
     if pool:
         return pool
-    images = _list(source.get("images")) or _list(product.get("source_image_urls")) or _list(product.get("source_images"))
+    images = _list(source.get("images"))
     return [
         {
             "id": f"source_{index + 1}",
             "url": str(url),
             "preview_url": str(url),
-            "origin": str(source.get("source_platform") or product.get("source_platform") or "source"),
+            "origin": str(source.get("source_platform") or "source"),
             "usage": "main" if index == 0 else "detail",
             "platforms": [],
             "is_main": index == 0,
@@ -392,34 +476,121 @@ class ErpDatabase:
 
     # -- connection & schema ------------------------------------------------
 
+    def _restrict_database_file_permissions(self) -> None:
+        """Keep the credential-bearing SQLite database and sidecars private."""
+        if os.name == "nt":
+            return
+        for path in (
+            self.db_path,
+            Path(f"{self.db_path}-wal"),
+            Path(f"{self.db_path}-shm"),
+        ):
+            try:
+                path.chmod(0o600)
+            except FileNotFoundError:
+                continue
+
+    def _create_private_database_file(self) -> None:
+        if os.name == "nt":
+            return
+        descriptor = os.open(
+            self.db_path,
+            os.O_CREAT | os.O_RDWR,
+            0o600,
+        )
+        os.close(descriptor)
+        self._restrict_database_file_permissions()
+
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         # timeout + busy_timeout + WAL: the ThreadingHTTPServer request threads
         # and the publishing bus worker pool write concurrently; without these
         # settings SQLite raises "database is locked" under load.
+        self._create_private_database_file()
         conn = sqlite3.connect(self.db_path, timeout=10)
         try:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys = ON")
             conn.execute("PRAGMA busy_timeout = 5000")
             conn.execute("PRAGMA journal_mode = WAL")
+            self._restrict_database_file_permissions()
             yield conn
+        finally:
+            conn.close()
+            self._restrict_database_file_permissions()
+
+    def _inspect_schema_without_mutation(
+        self,
+    ) -> tuple[int, frozenset[str], frozenset[str]]:
+        """Read an existing database through SQLite's read-only URI mode."""
+        if not self.db_path.exists():
+            return 0, frozenset(), frozenset()
+        uri = f"{self.db_path.resolve().as_uri()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=10)
+        try:
+            version = int(
+                conn.execute("PRAGMA user_version").fetchone()[0] or 0
+            )
+            tables = frozenset(
+                str(row[0])
+                for row in conn.execute(
+                    """
+                    SELECT name FROM sqlite_master
+                    WHERE type = 'table'
+                      AND name NOT LIKE 'sqlite_%'
+                    """
+                )
+            )
+            draft_columns = (
+                frozenset(
+                    str(row[1])
+                    for row in conn.execute(
+                        'PRAGMA table_info("platform_drafts")'
+                    )
+                )
+                if "platform_drafts" in tables
+                else frozenset()
+            )
+            return version, tables, draft_columns
         finally:
             conn.close()
 
     def _initialize_schema(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        (
+            inspected_version,
+            inspected_tables,
+            inspected_draft_columns,
+        ) = (
+            self._inspect_schema_without_mutation()
+        )
+        is_empty_database = (
+            inspected_version == 0 and not inspected_tables
+        )
+        is_current_database = (
+            inspected_version == SCHEMA_VERSION
+            and inspected_tables == frozenset(REQUIRED_TABLES)
+            and inspected_draft_columns
+            == _CURRENT_PLATFORM_DRAFT_COLUMNS
+        )
+        if not is_empty_database and not is_current_database:
+            raise RuntimeError(
+                "数据库 schema 版本 "
+                f"{inspected_version} 不受支持（当前版本 {SCHEMA_VERSION}）；"
+                "仅接受空库或当前完整 schema，未自动迁移或重建。"
+            )
         with self._connect() as conn:
-            version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
-            if version != SCHEMA_VERSION:
-                # 零兼容：版本不匹配直接 drop 全部已知表重建。
-                for table in REQUIRED_TABLES + _LEGACY_TABLES:
-                    conn.execute(f"DROP TABLE IF EXISTS {table}")
-                conn.executescript(_SCHEMA_SQL)
-                conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-            else:
-                conn.executescript(_SCHEMA_SQL)
-            conn.commit()
+            if is_empty_database:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    _execute_schema_statements(conn)
+                    conn.execute(
+                        f"PRAGMA user_version = {SCHEMA_VERSION}"
+                    )
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
         self._maybe_seed_upc_pool()
 
     def _maybe_seed_upc_pool(self) -> None:
@@ -427,8 +598,8 @@ class ErpDatabase:
 
         The file holds paid-for UPC codes (a real asset).  When the table is
         empty and the file exists next to the database, import values and
-        their used/free state once.  This is an import feature, not legacy
-        data compatibility.
+        their used/free state once. This is an explicit import feature, not
+        persisted-schema compatibility.
         """
         seed_path = self.db_path.parent / "upc_pool.json"
         if not seed_path.exists():
@@ -459,56 +630,86 @@ class ErpDatabase:
 
     # -- products / drafts / media ------------------------------------------
 
-    def upsert_product_model(self, product: dict[str, Any]) -> str:
+    def _upsert_product_model_in_connection(
+        self,
+        conn: sqlite3.Connection,
+        product: dict[str, Any],
+    ) -> str:
         now = utc_now()
-        product = dict(_dict(product))
+        product_input = dict(_dict(product))
+        _validate_product_write_shape(product_input)
+        product = normalize_product_model(product_input)
         source = _source(product)
+        stored_product = _product_storage_payload(product)
         product_id = product_identity(product)
         product["product_id"] = product_id
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO products (
-                    product_id, source_platform, source_url, title, brand, model,
-                    collect_status, purchase_price, purchase_currency, dimensions_json,
-                    weight_kg, source_json, product_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(product_id) DO UPDATE SET
-                    source_platform=excluded.source_platform,
-                    source_url=excluded.source_url,
-                    title=excluded.title,
-                    brand=excluded.brand,
-                    model=excluded.model,
-                    collect_status=excluded.collect_status,
-                    purchase_price=excluded.purchase_price,
-                    purchase_currency=excluded.purchase_currency,
-                    dimensions_json=excluded.dimensions_json,
-                    weight_kg=excluded.weight_kg,
-                    source_json=excluded.source_json,
-                    product_json=excluded.product_json,
-                    updated_at=excluded.updated_at
-                """,
-                (
-                    product_id,
-                    str(source.get("source_platform") or product.get("source_platform") or ""),
-                    str(source.get("source_url") or product.get("source_url") or ""),
-                    str(source.get("title") or product.get("name") or ""),
-                    str(source.get("brand") or product.get("brand") or ""),
-                    str(source.get("model") or product.get("model") or ""),
-                    str(source.get("collect_status") or product.get("collect_status") or ""),
-                    str(source.get("price") or product.get("detected_price") or ""),
-                    str(source.get("currency") or product.get("detected_currency") or ""),
-                    json_dumps(source.get("dimensions") or {}),
-                    str(source.get("weight_kg") or product.get("weight_kg") or ""),
-                    json_dumps(source),
-                    json_dumps(product),
-                    str(product.get("created_at") or source.get("created_at") or now),
-                    now,
+        stored_product["product_id"] = product_id
+        conn.execute(
+            """
+            INSERT INTO products (
+                product_id, source_platform, source_url, title, brand, model,
+                collect_status, purchase_price, purchase_currency,
+                dimensions_json, weight_kg, source_json, product_json,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(product_id) DO UPDATE SET
+                source_platform=excluded.source_platform,
+                source_url=excluded.source_url,
+                title=excluded.title,
+                brand=excluded.brand,
+                model=excluded.model,
+                collect_status=excluded.collect_status,
+                purchase_price=excluded.purchase_price,
+                purchase_currency=excluded.purchase_currency,
+                dimensions_json=excluded.dimensions_json,
+                weight_kg=excluded.weight_kg,
+                source_json=excluded.source_json,
+                product_json=excluded.product_json,
+                updated_at=excluded.updated_at
+            """,
+            (
+                product_id,
+                str(source.get("source_platform") or ""),
+                str(source.get("source_url") or ""),
+                str(source.get("title") or product.get("name") or ""),
+                str(source.get("brand") or product.get("brand") or ""),
+                str(source.get("model") or product.get("model") or ""),
+                str(
+                    source.get("collect_status")
+                    or product.get("collect_status")
+                    or ""
                 ),
-            )
-            self._upsert_drafts(conn, product_id, product, now)
-            self._upsert_media(conn, product_id, product, now)
-            conn.commit()
+                str(source.get("price") or ""),
+                str(source.get("currency") or ""),
+                json_dumps(source.get("dimensions") or {}),
+                str(
+                    source.get("weight_kg")
+                    or product.get("weight_kg")
+                    or ""
+                ),
+                json_dumps(_without_publish_logs(source)),
+                json_dumps(stored_product),
+                str(
+                    product.get("created_at")
+                    or source.get("created_at")
+                    or now
+                ),
+                now,
+            ),
+        )
+        self._upsert_drafts(conn, product_id, product, now)
+        self._upsert_media(conn, product_id, product, now)
+        return product_id
+
+    def upsert_product_model(self, product: dict[str, Any]) -> str:
+        with self._write_lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                product_id = self._upsert_product_model_in_connection(
+                    conn,
+                    product,
+                )
+                conn.commit()
         return product_id
 
     def _upsert_drafts(self, conn: sqlite3.Connection, product_id: str, product: dict[str, Any], now: str) -> None:
@@ -524,28 +725,17 @@ class ErpDatabase:
             draft["platform"] = platform
             draft["platforms"] = _draft_platforms(draft, platform)
             site = str(draft.get("site") or draft.get("site_id") or "").strip()
-            price_json = {
-                key: draft.get(key)
-                for key in ("price", "sale_price", "currency", "net_profit", "pricing")
-                if draft.get(key) not in (None, "")
-            }
             conn.execute(
                 """
                 INSERT INTO platform_drafts (
-                    draft_id, product_id, platform, site, status, title, description, category_id,
-                    category_path, attributes_json, price_json, draft_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    draft_id, product_id, platform, site, status, draft_json,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(draft_id) DO UPDATE SET
                     product_id=excluded.product_id,
                     platform=excluded.platform,
                     site=excluded.site,
                     status=excluded.status,
-                    title=excluded.title,
-                    description=excluded.description,
-                    category_id=excluded.category_id,
-                    category_path=excluded.category_path,
-                    attributes_json=excluded.attributes_json,
-                    price_json=excluded.price_json,
                     draft_json=excluded.draft_json,
                     updated_at=excluded.updated_at
                 """,
@@ -555,13 +745,7 @@ class ErpDatabase:
                     platform,
                     site,
                     _draft_status(draft),
-                    str(draft.get("title") or ""),
-                    str(draft.get("description") or ""),
-                    str(draft.get("category_id") or ""),
-                    str(draft.get("category_path") or ""),
-                    json_dumps(draft.get("attributes") or {}),
-                    json_dumps(price_json),
-                    json_dumps(draft),
+                    json_dumps(_draft_storage_payload(draft)),
                     now,
                     now,
                 ),
@@ -638,14 +822,18 @@ class ErpDatabase:
             if not isinstance(product, dict):
                 product = {}
             product["product_id"] = row["product_id"]
-            product["drafts"] = self._load_drafts(conn, row["product_id"], _dict(product.get("drafts")))
+            product["drafts"] = self._load_drafts(conn, row["product_id"])
             product.setdefault("source", {})
             if isinstance(product["source"], dict):
                 product["source"]["image_pool"] = self._load_media(conn, row["product_id"])
             return product
 
-    def _load_drafts(self, conn: sqlite3.Connection, product_id: str, existing: dict[str, Any]) -> dict[str, Any]:
-        drafts = dict(existing)
+    def _load_drafts(
+        self,
+        conn: sqlite3.Connection,
+        product_id: str,
+    ) -> dict[str, Any]:
+        drafts: dict[str, Any] = {}
         seen_platforms: set[str] = set()
         for row in conn.execute(
             """
@@ -655,22 +843,19 @@ class ErpDatabase:
             """,
             (product_id,),
         ):
-            draft = json_loads(row["draft_json"], {})
-            if not isinstance(draft, dict):
-                draft = {}
+            draft = _load_current_draft_json(row["draft_json"])
             draft_id = row["draft_id"] if "draft_id" in row.keys() else str(draft.get("draft_id") or "")
             platform = str(row["platform"])
             draft.update(
                 {
                     "draft_id": draft_id,
+                    "product_id": row["product_id"],
                     "platform": platform,
                     "platforms": _draft_platforms(draft, platform),
                     "status": row["status"],
-                    "title": row["title"],
-                    "description": row["description"],
-                    "category_id": row["category_id"],
-                    "category_path": row["category_path"],
-                    "attributes": json_loads(row["attributes_json"], {}),
+                    "site": row["site"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
                 }
             )
             if platform not in seen_platforms:
@@ -680,9 +865,7 @@ class ErpDatabase:
 
     @staticmethod
     def _draft_from_row(row: sqlite3.Row) -> dict[str, Any]:
-        draft = json_loads(row["draft_json"], {})
-        if not isinstance(draft, dict):
-            draft = {}
+        draft = _load_current_draft_json(row["draft_json"])
         draft.update(
             {
                 "draft_id": row["draft_id"],
@@ -692,11 +875,6 @@ class ErpDatabase:
                 "platforms": _draft_platforms(draft, row["platform"]),
                 "site": row["site"],
                 "status": row["status"],
-                "title": row["title"],
-                "description": row["description"],
-                "category_id": row["category_id"],
-                "category_path": row["category_path"],
-                "attributes": json_loads(row["attributes_json"], {}),
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
             }
@@ -733,21 +911,7 @@ class ErpDatabase:
             return False
         with self._connect() as conn:
             draft_id = _slug(draft_id)
-            row = conn.execute(
-                "SELECT product_id, platform FROM platform_drafts WHERE draft_id = ?", (draft_id,)
-            ).fetchone()
             cursor = conn.execute("DELETE FROM platform_drafts WHERE draft_id = ?", (draft_id,))
-            if cursor.rowcount > 0 and row:
-                product_row = conn.execute(
-                    "SELECT product_json FROM products WHERE product_id = ?", (row["product_id"],)
-                ).fetchone()
-                product = json_loads(product_row["product_json"], {}) if product_row else {}
-                if isinstance(product, dict) and isinstance(product.get("drafts"), dict):
-                    product["drafts"].pop(str(row["platform"]), None)
-                    conn.execute(
-                        "UPDATE products SET product_json = ?, updated_at = ? WHERE product_id = ?",
-                        (json_dumps(product), utc_now(), row["product_id"]),
-                    )
             conn.commit()
             return cursor.rowcount > 0
 
@@ -756,40 +920,34 @@ class ErpDatabase:
         product_id = str(product_id or "").strip()
         platform = str(platform or "").strip().lower()
         draft = dict(_dict(draft))
+        validate_platform_draft_root_fields(draft)
         draft_platform = str(draft.get("platform") or "").strip().lower()
         if draft_platform in PLATFORMS:
             platform = draft_platform
         if not product_id or platform not in PLATFORMS:
             return ""
+        draft = normalize_platform_draft(
+            draft,
+            platform,
+            {"product_id": product_id},
+        )
         with self._connect() as conn:
             draft_id = draft_identity(draft)
             draft["draft_id"] = draft_id
             draft["platform"] = platform
             draft["platforms"] = _draft_platforms(draft, platform)
             site = str(draft.get("site") or draft.get("site_id") or "").strip()
-            price_json = {
-                key: draft.get(key)
-                for key in ("price", "sale_price", "currency", "net_profit", "pricing")
-                if draft.get(key) not in (None, "")
-            }
             conn.execute(
                 """
                 INSERT INTO platform_drafts (
-                    draft_id, product_id, platform, site, status, title, description,
-                    category_id, category_path, attributes_json, price_json, draft_json,
+                    draft_id, product_id, platform, site, status, draft_json,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(draft_id) DO UPDATE SET
                     product_id=excluded.product_id,
                     platform=excluded.platform,
                     site=excluded.site,
                     status=excluded.status,
-                    title=excluded.title,
-                    description=excluded.description,
-                    category_id=excluded.category_id,
-                    category_path=excluded.category_path,
-                    attributes_json=excluded.attributes_json,
-                    price_json=excluded.price_json,
                     draft_json=excluded.draft_json,
                     updated_at=excluded.updated_at
                 """,
@@ -799,13 +957,7 @@ class ErpDatabase:
                     platform,
                     site,
                     _draft_status(draft),
-                    str(draft.get("title") or ""),
-                    str(draft.get("description") or ""),
-                    str(draft.get("category_id") or ""),
-                    str(draft.get("category_path") or ""),
-                    json_dumps(draft.get("attributes") or {}),
-                    json_dumps(price_json),
-                    json_dumps(draft),
+                    json_dumps(_draft_storage_payload(draft)),
                     str(draft.get("created_at") or now),
                     now,
                 ),
@@ -863,9 +1015,12 @@ class ErpDatabase:
             ).fetchall()
             records: list[dict[str, Any]] = []
             for row in rows:
-                product = json_loads(row["product_json"], {})
-                existing_drafts = _dict(product.get("drafts")) if isinstance(product, dict) else {}
-                records.append(_record_from_row(row, self._load_drafts(conn, row["product_id"], existing_drafts)))
+                records.append(
+                    _record_from_row(
+                        row,
+                        self._load_drafts(conn, row["product_id"]),
+                    )
+                )
             return records
 
     def list_draft_records(self, scope: str = "active", limit: int = 500) -> list[dict[str, Any]]:
@@ -898,7 +1053,6 @@ class ErpDatabase:
     def _draft_record_from_row(cls, row: sqlite3.Row) -> dict[str, Any]:
         product = json_loads(row["product_json"], {})
         draft = cls._draft_from_row(row)
-        price_json = json_loads(row["price_json"], {})
         pricing = _dict(draft.get("pricing"))
         status = str(draft.get("status") or draft.get("publish_status") or row["status"] or "claimed")
         target_sites = draft.get("target_sites") if isinstance(draft.get("target_sites"), list) else [{"platform": row["platform"], "site": row["site"], "language": draft.get("language") or "", "currency": draft.get("currency") or ""}]
@@ -912,14 +1066,18 @@ class ErpDatabase:
             "site": row["site"],
             "language": str(draft.get("language") or ""),
             "status": status,
-            "title": row["title"] or draft.get("title") or "",
+            "title": draft.get("title") or "",
             "product_title": row["product_title"] or _dict(product).get("name") or "",
             "main_image": row["main_image"] or "",
             "source_platform": row["source_platform"] or "",
             "source_url": row["source_url"] or "",
-            "category_id": row["category_id"] or "",
-            "category_path": row["category_path"] or "",
-            "price": str(draft.get("price") or _dict(price_json).get("price") or pricing.get("suggested_price") or ""),
+            "category_id": draft.get("category_id") or "",
+            "category_path": draft.get("category_path") or "",
+            "price": str(
+                draft.get("price")
+                or pricing.get("suggested_price")
+                or ""
+            ),
             "publish_status": str(draft.get("publish_status") or ""),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
@@ -966,6 +1124,49 @@ class ErpDatabase:
                 "checked_at": str(row["checked_at"] or ""),
             }
         return result
+
+    def replace_store_auth_snapshot(
+        self,
+        snapshot: dict[str, dict[str, Any]],
+    ) -> None:
+        """Restore the complete auth table after a paired file write fails."""
+        rows = snapshot if isinstance(snapshot, dict) else {}
+        now = utc_now()
+        with self._write_lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("DELETE FROM store_auth")
+                conn.executemany(
+                    """
+                    INSERT INTO store_auth (
+                        platform, credentials_json, auth_status,
+                        auth_detail_json, checked_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            str(platform),
+                            json_dumps(
+                                _dict(value).get("credentials")
+                            ),
+                            str(
+                                _dict(value).get("auth_status")
+                                or ""
+                            ),
+                            json_dumps(
+                                _dict(value).get("auth_detail")
+                            ),
+                            str(
+                                _dict(value).get("checked_at")
+                                or ""
+                            ),
+                            now,
+                        )
+                        for platform, value in sorted(rows.items())
+                        if str(platform).strip()
+                    ],
+                )
+                conn.commit()
 
     def update_store_auth(
         self,
@@ -1022,33 +1223,158 @@ class ErpDatabase:
                 )
                 conn.commit()
 
+    def delete_store_auth(self, platform: str) -> bool:
+        """Delete one platform's credentials and dynamic authorization state."""
+
+        platform = str(platform or "").strip().lower()
+        if not platform:
+            return False
+        with self._write_lock:
+            with self._connect() as conn:
+                cursor = conn.execute(
+                    "DELETE FROM store_auth WHERE platform = ?",
+                    (platform,),
+                )
+                conn.commit()
+        return cursor.rowcount > 0
+
+    # -- runtime_secrets ----------------------------------------------------
+
+    def load_runtime_secrets(self, namespace: str) -> dict[str, Any]:
+        namespace = str(namespace or "").strip()
+        if not namespace:
+            return {}
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT secret_path, secret_json
+                FROM runtime_secrets
+                WHERE namespace = ?
+                ORDER BY secret_path
+                """,
+                (namespace,),
+            ).fetchall()
+        return {
+            str(row["secret_path"]): json_loads(row["secret_json"], "")
+            for row in rows
+        }
+
+    def replace_runtime_secrets(
+        self,
+        namespace: str,
+        secrets: dict[str, Any],
+    ) -> None:
+        """Atomically replace one namespace's path-addressed runtime secrets."""
+        namespace = str(namespace or "").strip()
+        if not namespace:
+            return
+        values = {
+            str(path): value
+            for path, value in _dict(secrets).items()
+            if str(path).strip() and value not in (None, "")
+        }
+        now = utc_now()
+        with self._write_lock:
+            with self._connect() as conn:
+                conn.execute(
+                    "DELETE FROM runtime_secrets WHERE namespace = ?",
+                    (namespace,),
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO runtime_secrets (
+                        namespace, secret_path, secret_json, updated_at
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    [
+                        (namespace, path, json_dumps(value), now)
+                        for path, value in sorted(values.items())
+                    ],
+                )
+                conn.commit()
+
     # -- publish_logs ----------------------------------------------------------
 
-    def insert_publish_log(self, entry: dict[str, Any]) -> int:
+    @staticmethod
+    def _insert_publish_log_row(
+        conn: sqlite3.Connection,
+        entry: dict[str, Any],
+    ) -> int:
         entry = _dict(entry)
         ts = str(entry.get("time") or entry.get("finished_at") or entry.get("checked_at") or "") or utc_now()
         artifacts_path = str(entry.get("response_body_path") or entry.get("request_payload_path") or "")
         message = str(entry.get("error_message") or entry.get("error") or entry.get("message") or "")
-        with self._connect() as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO publish_logs (ts, platform, product_id, draft_id, status, stage, message, artifacts_path, detail_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    ts,
-                    str(entry.get("platform") or ""),
-                    str(entry.get("product_id") or ""),
-                    str(entry.get("draft_id") or ""),
-                    str(entry.get("status") or ""),
-                    str(entry.get("stage") or entry.get("test_type") or ""),
-                    message,
-                    artifacts_path,
-                    json_dumps(entry),
-                ),
+        cursor = conn.execute(
+            """
+            INSERT INTO publish_logs (
+                ts, platform, product_id, draft_id, status,
+                stage, message, artifacts_path, detail_json
             )
-            conn.commit()
-            return int(cursor.lastrowid or 0)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ts,
+                str(entry.get("platform") or ""),
+                str(entry.get("product_id") or ""),
+                str(entry.get("draft_id") or ""),
+                str(entry.get("status") or ""),
+                str(entry.get("stage") or entry.get("test_type") or ""),
+                message,
+                artifacts_path,
+                json_dumps(entry),
+            ),
+        )
+        return int(cursor.lastrowid or 0)
+
+    def insert_publish_log(self, entry: dict[str, Any]) -> int:
+        with self._write_lock:
+            with self._connect() as conn:
+                log_id = self._insert_publish_log_row(conn, entry)
+                conn.commit()
+        return log_id
+
+    def insert_publish_log_once(
+        self,
+        entry: dict[str, Any],
+    ) -> int:
+        """Atomically insert one terminal event per job and platform.
+
+        Older v5 databases keep ``job_id`` inside ``detail_json``. A
+        ``BEGIN IMMEDIATE`` read-and-insert transaction provides the same
+        cross-thread/process exclusion without destructively rebuilding the
+        table merely to add an index.
+        """
+        entry = _dict(entry)
+        job_id = str(entry.get("job_id") or "").strip()
+        platform = str(entry.get("platform") or "").strip()
+        if not job_id:
+            return self.insert_publish_log(entry)
+        with self._write_lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                rows = conn.execute(
+                    """
+                    SELECT detail_json FROM publish_logs
+                    WHERE platform = ?
+                    ORDER BY id DESC
+                    """,
+                    (platform,),
+                ).fetchall()
+                if any(
+                    str(
+                        _dict(
+                            json_loads(row["detail_json"], {})
+                        ).get("job_id")
+                        or ""
+                    )
+                    == job_id
+                    for row in rows
+                ):
+                    conn.rollback()
+                    return 0
+                log_id = self._insert_publish_log_row(conn, entry)
+                conn.commit()
+                return log_id
 
     def list_publish_logs(self, limit: int = 200) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -1126,6 +1452,53 @@ class ErpDatabase:
                 return ""
             conn.commit()
             return upc
+
+    def assign_upc_to_product_model(
+        self,
+        product: dict[str, Any],
+    ) -> tuple[str, str]:
+        """Claim a purchased UPC and persist its product in one transaction."""
+        self._maybe_seed_upc_pool()
+        product_input = dict(_dict(product))
+        _validate_product_write_shape(product_input)
+        product = normalize_product_model(product_input)
+        product_id = product_identity(product)
+        product["product_id"] = product_id
+        drafts = _dict(product.get("drafts"))
+        with self._write_lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    """
+                    SELECT upc FROM upc_pool
+                    WHERE status = 'free'
+                    ORDER BY upc
+                    LIMIT 1
+                    """
+                ).fetchone()
+                if not row:
+                    conn.rollback()
+                    return "", product_id
+                upc = str(row["upc"])
+                product["upc"] = upc
+                for draft in drafts.values():
+                    if isinstance(draft, dict):
+                        draft["upc"] = upc
+                product["drafts"] = drafts
+                self._upsert_product_model_in_connection(conn, product)
+                cursor = conn.execute(
+                    """
+                    UPDATE upc_pool
+                    SET status = 'used', product_id = ?, assigned_at = ?
+                    WHERE upc = ? AND status = 'free'
+                    """,
+                    (product_id, utc_now(), upc),
+                )
+                if cursor.rowcount != 1:
+                    conn.rollback()
+                    return "", product_id
+                conn.commit()
+                return upc, product_id
 
     def upc_pool_stats(self) -> dict[str, int]:
         with self._connect() as conn:
@@ -1235,14 +1608,34 @@ class ErpDatabase:
         return state if isinstance(state, dict) else {}
 
     def list_pending_publish_jobs(self) -> list[dict[str, Any]]:
+        """Return worker-resume and terminal-compensation candidates.
+
+        ``completed`` rows remain candidates until their terminal callback has
+        durably persisted product/log side effects. This closes the crash
+        window between committing the completed job state and running that
+        callback.
+        """
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT payload_json FROM publish_jobs WHERE status IN ('pending', 'queued', 'running', 'retrying') ORDER BY created_at ASC",
+                """
+                SELECT status, payload_json
+                FROM publish_jobs
+                WHERE status IN (
+                    'pending', 'queued', 'running', 'retrying', 'completed'
+                )
+                ORDER BY created_at ASC
+                """,
             ).fetchall()
         states: list[dict[str, Any]] = []
         for row in rows:
             state = json_loads(row["payload_json"], {})
             if isinstance(state, dict):
+                state.setdefault("status", str(row["status"] or ""))
+                if (
+                    str(row["status"] or "").lower() == "completed"
+                    and state.get("terminal_results_persisted")
+                ):
+                    continue
                 states.append(state)
         return states
 

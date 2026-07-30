@@ -5,16 +5,24 @@ import { workflowNavItems } from '@/constants/navigation'
 import { router } from '../index'
 
 describe('工作流顶级导航', () => {
-  it('核价和发布预检只保留在草稿工作台中', () => {
+  it('核价保留在草稿工作台中，旧入口会跳转到对应工作流标签', async () => {
+    Object.defineProperty(window, 'scrollTo', { configurable: true, value: () => undefined })
     const navKeys = workflowNavItems.map((item) => item.key)
     const routePaths = router.getRoutes().map((route) => route.path)
 
     expect(navKeys).not.toContain('pricing')
     expect(navKeys).not.toContain('category')
-    expect(routePaths).not.toContain('/pricing')
-    expect(routePaths).not.toContain('/publish')
+    expect(routePaths).toContain('/pricing')
+    expect(routePaths).toContain('/publish')
     expect(navKeys).toContain('drafts')
     expect(navKeys).toContain('publish')
+
+    await router.push('/pricing')
+    expect(router.currentRoute.value.path).toBe('/')
+    expect(router.currentRoute.value.query.tab).toBe('drafts')
+    await router.push('/publish')
+    expect(router.currentRoute.value.path).toBe('/')
+    expect(router.currentRoute.value.query.tab).toBe('publish')
 
     const workspace = mount(DraftWorkspacePanel, {
       props: {

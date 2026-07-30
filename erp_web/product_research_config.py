@@ -6,15 +6,71 @@ from typing import Any
 
 PRODUCT_RESEARCH_SOURCE_TYPES = {"api", "ai_search", "crawler", "third_party_api", "manual_import"}
 PRODUCT_RESEARCH_SEARCH_MODES = {"target_only", "target_plus_reference", "global_scan"}
-DEFAULT_MARKET_ID_BY_CODE = {
-    "US": "amazon-us",
-    "GB": "amazon-uk",
-    "UK": "amazon-uk",
-    "CA": "amazon-ca",
-    "AU": "amazon-au",
-}
 DEFAULT_AI_SEARCH_METHOD_ID = "ai_web_search"
-LEGACY_AI_SEARCH_METHOD_IDS = {"ai_market_search_seeded"}
+_RETIRED_AI_SEARCH_METHOD_IDS = {"ai_market_search_seeded"}
+_RETIRED_SOURCE_FIELDS = {
+    "source_id",
+    "sourceId",
+    "sourceType",
+    "supportedMarkets",
+    "supportedLanguages",
+    "supportedDataTypes",
+    "authRequired",
+    "rateLimitPerMinute",
+    "complianceNote",
+    "configJson",
+}
+_RETIRED_TARGET_MARKET_FIELDS = {
+    "market_id",
+    "marketId",
+    "market",
+    "code",
+    "displayName",
+    "searchMethods",
+    "provider_ids",
+    "providerIds",
+    "source_ids",
+    "sourceIds",
+}
+_RETIRED_SEARCH_METHOD_FIELDS = {
+    "methodId",
+    "provider_id",
+    "providerId",
+    "configJson",
+}
+_RETIRED_PROVIDER_CONFIG_FIELDS = {
+    "promptTemplate",
+    "prompt_template",
+    "prompt_template_path",
+    "promptTemplatePath",
+    "system_prompt",
+    "systemPrompt",
+    "ai_model_id",
+    "model_id",
+}
+_RETIRED_BINDING_CONFIG_FIELDS = {
+    "promptOverride",
+    "prompt_override",
+    "promptTemplate",
+    "prompt_template",
+    "prompt_template_path",
+    "promptTemplatePath",
+    "ai_model_id",
+    "model_id",
+}
+
+
+def _reject_retired_fields(
+    value: dict[str, Any],
+    fields: set[str],
+    scope: str,
+) -> None:
+    found = sorted(fields.intersection(value))
+    if found:
+        raise ValueError(
+            f"{scope} 包含已退役字段：{', '.join(found)}；"
+            "请使用当前 snake_case 配置结构。"
+        )
 
 
 def _string_list(value: Any) -> list[str]:
@@ -127,39 +183,34 @@ def default_product_research_config() -> dict[str, Any]:
 def _normalize_product_research_source(source: Any, fallback: dict[str, Any] | None = None) -> dict[str, Any]:
     raw = source if isinstance(source, dict) else {}
     defaults = fallback if isinstance(fallback, dict) else {}
+    _reject_retired_fields(raw, _RETIRED_SOURCE_FIELDS, "product_research.search_providers[]")
     source_type = str(raw.get("source_type") or defaults.get("source_type") or "manual_import").strip().lower()
     if source_type not in PRODUCT_RESEARCH_SOURCE_TYPES:
         source_type = "manual_import"
-    source_id = str(raw.get("id") or raw.get("source_id") or defaults.get("id") or defaults.get("source_id") or "").strip()
-    if source_id in LEGACY_AI_SEARCH_METHOD_IDS:
-        source_id = DEFAULT_AI_SEARCH_METHOD_ID
+    source_id = str(raw.get("id") or defaults.get("id") or "").strip()
+    if source_id in _RETIRED_AI_SEARCH_METHOD_IDS:
+        raise ValueError(f"选品搜索方法 {source_id} 已退役，请改用 {DEFAULT_AI_SEARCH_METHOD_ID}")
     platform = str(raw.get("platform") or defaults.get("platform") or source_id or "manual_import").strip().lower()
     if not source_id:
         source_id = platform
     config_json = raw.get("config_json") if isinstance(raw.get("config_json"), dict) else defaults.get("config_json")
     config_json = dict(config_json) if isinstance(config_json, dict) else {}
+    _reject_retired_fields(
+        config_json,
+        _RETIRED_PROVIDER_CONFIG_FIELDS,
+        "product_research.search_providers[].config_json",
+    )
+    if str(config_json.get("provider_strategy") or "").strip() == "seeded_mock":
+        raise ValueError("provider_strategy=seeded_mock 已退役")
     if source_type == "ai_search":
-        for prompt_key in (
-            "prompt",
-            "promptTemplate",
-            "prompt_template",
-            "prompt_template_path",
-            "promptTemplatePath",
-            "system_prompt",
-            "systemPrompt",
-        ):
-            config_json.pop(prompt_key, None)
+        config_json.pop("prompt", None)
         # 模型由 research.web_search 功能绑定统一决定，不能由数据源覆盖。
-        config_json.pop("ai_model_id", None)
-        config_json.pop("model_id", None)
         config_json = {
             "provider_strategy": "ai_web_search",
             "max_items": 12,
             "require_image_url": True,
             **config_json,
         }
-        if config_json.get("provider_strategy") == "seeded_mock":
-            config_json["provider_strategy"] = "ai_web_search"
     rate_limit_raw = raw.get("rate_limit_per_minute", defaults.get("rate_limit_per_minute"))
     rate_limit_per_minute = None if rate_limit_raw is None or str(rate_limit_raw).strip() == "" else _int_value(rate_limit_raw, 0, 0)
     return {
@@ -189,25 +240,19 @@ def _site_slug(value: str) -> str:
 
 
 def _target_market_id(raw: dict[str, Any], defaults: dict[str, Any]) -> str:
-    explicit_id = str(
-        raw.get("id")
-        or raw.get("market_id")
-        or raw.get("marketId")
-        or defaults.get("id")
-        or defaults.get("market_id")
-        or defaults.get("marketId")
-        or ""
-    ).strip()
+    _reject_retired_fields(
+        raw,
+        _RETIRED_TARGET_MARKET_FIELDS,
+        "product_research.target_markets[]",
+    )
+    explicit_id = str(raw.get("id") or defaults.get("id") or "").strip()
     if explicit_id:
         return explicit_id
-    legacy_code = str(raw.get("market") or raw.get("code") or defaults.get("market") or defaults.get("code") or "").strip().upper()
-    if legacy_code in DEFAULT_MARKET_ID_BY_CODE:
-        return DEFAULT_MARKET_ID_BY_CODE[legacy_code]
     platform = str(raw.get("platform") or defaults.get("platform") or "").strip().lower()
     site = str(raw.get("site") or defaults.get("site") or "").strip().lower()
     if platform and site:
         return f"{platform}-{_site_slug(site)}"
-    return legacy_code.lower()
+    return ""
 
 
 def _normalize_target_market(market: Any, fallback: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -218,10 +263,8 @@ def _normalize_target_market(market: Any, fallback: dict[str, Any] | None = None
     site = str(raw.get("site") or defaults.get("site") or "").strip().lower()
     display_name = str(
         raw.get("display_name")
-        or raw.get("displayName")
         or raw.get("name")
         or defaults.get("display_name")
-        or defaults.get("displayName")
         or defaults.get("name")
         or market_id
     ).strip()
@@ -231,13 +274,9 @@ def _normalize_target_market(market: Any, fallback: dict[str, Any] | None = None
         "site": site,
         "display_name": display_name,
     }
-    search_methods_raw = raw.get("search_methods") if isinstance(raw.get("search_methods"), list) else raw.get("searchMethods")
+    search_methods_raw = raw.get("search_methods")
     if not isinstance(search_methods_raw, list):
-        legacy_provider_ids = _string_list(raw.get("provider_ids") or raw.get("providerIds") or raw.get("source_ids") or raw.get("sourceIds"))
-        search_methods_raw = [
-            {"method_id": method_id, "enabled": True, "config_json": {}}
-            for method_id in legacy_provider_ids
-        ] if legacy_provider_ids else defaults.get("search_methods")
+        search_methods_raw = defaults.get("search_methods")
     if not isinstance(search_methods_raw, list):
         search_methods_raw = _default_market_search_methods()
     normalized["search_methods"] = [
@@ -250,27 +289,26 @@ def _normalize_target_market(market: Any, fallback: dict[str, Any] | None = None
 
 def _normalize_market_search_method_binding(value: Any, market: dict[str, Any]) -> dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
-    method_id = str(raw.get("method_id") or raw.get("methodId") or raw.get("provider_id") or raw.get("providerId") or raw.get("id") or "").strip()
-    if method_id in LEGACY_AI_SEARCH_METHOD_IDS:
-        method_id = DEFAULT_AI_SEARCH_METHOD_ID
-    config_json = raw.get("config_json") if isinstance(raw.get("config_json"), dict) else raw.get("configJson")
+    _reject_retired_fields(
+        raw,
+        _RETIRED_SEARCH_METHOD_FIELDS,
+        "product_research.target_markets[].search_methods[]",
+    )
+    method_id = str(raw.get("method_id") or raw.get("id") or "").strip()
+    if method_id in _RETIRED_AI_SEARCH_METHOD_IDS:
+        raise ValueError(f"选品搜索方法 {method_id} 已退役，请改用 {DEFAULT_AI_SEARCH_METHOD_ID}")
+    config_json = raw.get("config_json")
     if not isinstance(config_json, dict):
         config_json = {}
     config_json = dict(config_json)
+    _reject_retired_fields(
+        config_json,
+        _RETIRED_BINDING_CONFIG_FIELDS,
+        "product_research.target_markets[].search_methods[].config_json",
+    )
     prompt = str(raw.get("prompt") or config_json.get("prompt") or "").strip()
-    for prompt_key in (
-        "prompt",
-        "promptOverride",
-        "prompt_override",
-        "promptTemplate",
-        "prompt_template",
-        "prompt_template_path",
-        "promptTemplatePath",
-    ):
-        config_json.pop(prompt_key, None)
+    config_json.pop("prompt", None)
     # 搜索方法绑定仅保留市场级参数，模型仍由 research.web_search 功能绑定选择。
-    config_json.pop("ai_model_id", None)
-    config_json.pop("model_id", None)
     return {
         "method_id": method_id,
         "enabled": _bool_value(raw.get("enabled"), True),
@@ -339,10 +377,7 @@ def normalize_product_research_config(config: Any) -> dict[str, Any]:
             _normalize_target_market(
                 item,
                 target_market_defaults.get(
-                    DEFAULT_MARKET_ID_BY_CODE.get(
-                        str((item.get("market") if isinstance(item, dict) else item) or "").strip().upper(),
-                        str((item.get("id") if isinstance(item, dict) else item) or "").strip(),
-                    )
+                    str((item.get("id") if isinstance(item, dict) else item) or "").strip()
                 ),
             )
             for item in raw_target_markets
@@ -356,7 +391,7 @@ def normalize_product_research_config(config: Any) -> dict[str, Any]:
         search_methods = target.get("search_methods") if isinstance(target.get("search_methods"), list) else []
         target["search_methods"] = [
             item for item in search_methods
-            if str(item.get("method_id") or item.get("methodId") or "").strip() in method_ids
+            if str(item.get("method_id") or "").strip() in method_ids
         ]
     return {
         "search_defaults": search_defaults,

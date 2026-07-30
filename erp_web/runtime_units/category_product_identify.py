@@ -5,8 +5,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from erp_web.stores.product_store import normalize_product_fields
+
 from .ai_use_case import run_ai_use_case
-from .product_store import normalize_product_fields
 
 
 def _text(value: Any, limit: int = 1600) -> str:

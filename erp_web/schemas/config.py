@@ -49,7 +49,7 @@ class AppConfig(TypedDict, total=False):
 
 class StoreConfig(TypedDict, total=False):
     mercadolibre: dict[str, Any]
-    wildberries: dict[str, Any]
+    yandex: dict[str, Any]
     ozon: dict[str, Any]
 
 

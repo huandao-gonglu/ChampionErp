@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
+import CategoryPrecheckPanel from '@/components/domain/CategoryPrecheckPanel.vue'
 import type { CategoryAttributeTranslations, CategoryPrecheckResult, CategoryResultTranslations, CategorySearchResult, CategorySelection, DraftDetail, DraftProductContext, MarketplaceOption, MarketplaceTargetSite, PrecheckIssue, PublishPrecheck, UnknownRecord } from '@/types/workflow'
 
 const props = withDefaults(defineProps<{
@@ -432,12 +433,7 @@ function selectTargetByKey(value: string) {
             </label>
           </div>
         </div>
-        <div v-if="props.categoryPrecheck" class="mt-4 rounded-2xl p-3 text-sm ring-1" :class="props.categoryPrecheck.ok ? 'bg-emerald-50 text-emerald-800 ring-emerald-200' : 'bg-amber-50 text-amber-800 ring-amber-200'">
-          <div class="font-semibold">{{ props.categoryPrecheck.ok ? '类目预检通过' : '类目预检需处理' }}</div>
-          <ul v-if="props.categoryPrecheck.missingFields.length || props.categoryPrecheck.errors.length" class="mt-2 list-inside list-disc">
-            <li v-for="item in [...props.categoryPrecheck.missingFields, ...props.categoryPrecheck.errors]" :key="item">{{ item }}</li>
-          </ul>
-        </div>
+        <CategoryPrecheckPanel :result="props.categoryPrecheck" />
       </article>
     </div>
   </section>

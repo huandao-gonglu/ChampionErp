@@ -1,66 +1,377 @@
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from typing import Any
 
-from erp_web.marketplace_registry import category_id_field, marketplace_site
-from erp_web.schemas.product import PRODUCT_SCHEMA_VERSION
+from erp_web.marketplace_registry import marketplace_site
+from erp_web.schemas.product import (
+    PRODUCT_SCHEMA_VERSION,
+    DraftTargetSite,
+    PlatformDraft,
+    Product,
+)
 
 from .attribute_matching import infer_source_attribute_matches
-from .common import PLATFORMS, SOURCE_COMPAT_IMAGE_ORIGINS, normalize_list, parse_dimensions_text, text_or_empty
+from .common import PLATFORMS, SOURCE_IMAGE_ORIGINS, normalize_list, parse_dimensions_text, text_or_empty
 from .defaults import default_collect_diagnostics, default_draft, default_pricing, default_product_model, default_source
 from .draft_image_model import normalize_draft_image_refs
-from .image_pool_model import image_pool_legacy_views, normalize_image_pool
+from .image_pool_model import image_pool_refs, normalize_image_pool
+
+
+_REMOVED_PRODUCT_FIELDS = {
+    "id",
+    "title",
+    "source_images",
+    "source_image_urls",
+    "detail_images",
+    "detail_image_urls",
+    "gtin",
+    "barcode",
+    "detected_price",
+    "detected_currency",
+    "detected_price_display",
+    "source_url",
+    "source_platform",
+    "category_id",
+    "yandex_category_id",
+    "ozon_category_id",
+    "sale_price",
+}
+_REMOVED_DRAFT_FIELDS = {
+    "barcode",
+    "gtin",
+}
+_CANONICAL_PRODUCT_FIELDS = frozenset(Product.__annotations__)
+_CANONICAL_DRAFT_FIELDS = frozenset(PlatformDraft.__annotations__)
+_CANONICAL_TARGET_FIELDS = frozenset(DraftTargetSite.__annotations__)
+
+
+def _strip_publish_logs(value: Any) -> Any:
+    """Keep publish history in its table instead of product JSON."""
+    if isinstance(value, dict):
+        return {
+            key: _strip_publish_logs(item)
+            for key, item in value.items()
+            if key != "publish_logs"
+        }
+    if isinstance(value, list):
+        return [_strip_publish_logs(item) for item in value]
+    return value
+
+
+def _canonical_product_output(product: dict[str, Any]) -> dict[str, Any]:
+    """Return only fields owned by the current product schema."""
+    canonical = {
+        key: value
+        for key, value in product.items()
+        if key in _CANONICAL_PRODUCT_FIELDS
+    }
+    return _strip_publish_logs(canonical)
+
+
+def _reject_removed_product_fields(product: dict[str, Any]) -> None:
+    removed = sorted(_REMOVED_PRODUCT_FIELDS.intersection(product))
+    if removed:
+        raise ValueError(
+            "产品包含已删除的历史字段："
+            + "、".join(removed)
+            + "；请使用当前 canonical schema"
+        )
+
+
+def validate_product_root_fields(
+    product: dict[str, Any],
+    *,
+    require_schema_version: bool = False,
+) -> None:
+    """Reject retired or unknown root keys at persistence boundaries."""
+
+    _reject_removed_product_fields(product)
+    unknown = sorted(set(product).difference(_CANONICAL_PRODUCT_FIELDS))
+    if unknown:
+        raise ValueError(
+            "产品包含非 canonical 根字段："
+            + "、".join(unknown)
+        )
+    if require_schema_version and product.get("schema_version") in (None, ""):
+        raise ValueError(
+            "持久化产品缺少有效 schema_version；"
+            "请清空开发数据并按当前 schema 重建"
+        )
+
+
+def validate_platform_draft_root_fields(
+    draft: dict[str, Any],
+) -> None:
+    """Reject retired or unknown draft root keys at persistence boundaries."""
+
+    removed = sorted(_REMOVED_DRAFT_FIELDS.intersection(draft))
+    if removed:
+        raise ValueError(
+            "草稿包含已删除的历史字段："
+            + "、".join(removed)
+            + "；请使用当前 canonical schema"
+        )
+    unknown = sorted(set(draft).difference(_CANONICAL_DRAFT_FIELDS))
+    if unknown:
+        raise ValueError(
+            "草稿包含非 canonical 根字段："
+            + "、".join(unknown)
+        )
+
+
+def normalize_draft_target_site(
+    value: Any,
+    platform: str,
+    fallback: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Normalize a target-site boundary payload to current schema fields."""
+    raw = value if isinstance(value, dict) else {}
+    fallback = fallback if isinstance(fallback, dict) else {}
+    target_platform = str(
+        raw.get("platform")
+        or fallback.get("platform")
+        or platform
+    ).strip().lower()
+    raw_site = str(
+        raw.get("site")
+        or raw.get("site_id")
+        or fallback.get("site")
+        or fallback.get("site_id")
+        or ""
+    ).strip()
+    selected = marketplace_site(target_platform, raw_site)
+    canonical = {
+        "platform": target_platform,
+        "site": str(selected.get("code") or raw_site),
+        "language": str(
+            raw.get("language")
+            or fallback.get("language")
+            or selected.get("language")
+            or ""
+        ),
+        "currency": str(
+            raw.get("currency")
+            or fallback.get("currency")
+            or selected.get("currency")
+            or ""
+        ),
+        "category_id": str(
+            raw.get("category_id")
+            or raw.get("categoryId")
+            or fallback.get("category_id")
+            or fallback.get("categoryId")
+            or ""
+        ).strip(),
+        "category_path": str(
+            raw.get("category_path")
+            or raw.get("categoryPath")
+            or fallback.get("category_path")
+            or fallback.get("categoryPath")
+            or ""
+        ).strip(),
+        "category_attribute_schema": deepcopy(
+            raw.get("category_attribute_schema")
+            if isinstance(
+                raw.get("category_attribute_schema"),
+                dict,
+            )
+            else raw.get("categoryAttributeSchema")
+            if isinstance(raw.get("categoryAttributeSchema"), dict)
+            else fallback.get("category_attribute_schema")
+            if isinstance(
+                fallback.get("category_attribute_schema"),
+                dict,
+            )
+            else {}
+        ),
+        "attributes": deepcopy(
+            raw.get("attributes")
+            if isinstance(raw.get("attributes"), dict)
+            else fallback.get("attributes")
+            if isinstance(fallback.get("attributes"), dict)
+            else {}
+        ),
+        "validation_errors": deepcopy(
+            raw.get("validation_errors")
+            if isinstance(raw.get("validation_errors"), list)
+            else raw.get("validationErrors")
+            if isinstance(raw.get("validationErrors"), list)
+            else fallback.get("validation_errors")
+            if isinstance(fallback.get("validation_errors"), list)
+            else []
+        ),
+        "category_precheck": deepcopy(
+            raw.get("category_precheck")
+            if isinstance(raw.get("category_precheck"), dict)
+            else raw.get("categoryPrecheck")
+            if isinstance(raw.get("categoryPrecheck"), dict)
+            else fallback.get("category_precheck")
+            if isinstance(fallback.get("category_precheck"), dict)
+            else {}
+        ),
+        "publish_status": str(
+            raw.get("publish_status")
+            or raw.get("publishStatus")
+            or fallback.get("publish_status")
+            or ""
+        ).strip(),
+        "status": str(
+            raw.get("status")
+            or fallback.get("status")
+            or ""
+        ).strip(),
+        "last_precheck": deepcopy(
+            raw.get("last_precheck")
+            if isinstance(raw.get("last_precheck"), dict)
+            else raw.get("lastPrecheck")
+            if isinstance(raw.get("lastPrecheck"), dict)
+            else fallback.get("last_precheck")
+            if isinstance(fallback.get("last_precheck"), dict)
+            else {}
+        ),
+        "last_precheck_target": deepcopy(
+            raw.get("last_precheck_target")
+            if isinstance(raw.get("last_precheck_target"), dict)
+            else raw.get("lastPrecheckTarget")
+            if isinstance(raw.get("lastPrecheckTarget"), dict)
+            else fallback.get("last_precheck_target")
+            if isinstance(
+                fallback.get("last_precheck_target"),
+                dict,
+            )
+            else {}
+        ),
+    }
+    return {
+        key: item
+        for key, item in canonical.items()
+        if key in _CANONICAL_TARGET_FIELDS
+    }
+
+
+def _snake_pricing_key(value: str) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", str(value)).lower()
+
+
+def _canonical_pricing_mapping(
+    value: Any,
+    *,
+    preserve_mapping_keys: bool = False,
+) -> Any:
+    if isinstance(value, list):
+        return [_canonical_pricing_mapping(item) for item in value]
+    if not isinstance(value, dict):
+        return deepcopy(value)
+    result: dict[str, Any] = {}
+    for key, item in value.items():
+        normalized_key = (
+            str(key)
+            if preserve_mapping_keys
+            else _snake_pricing_key(str(key))
+        )
+        if normalized_key == key:
+            result[normalized_key] = _canonical_pricing_mapping(
+                item,
+                preserve_mapping_keys=normalized_key
+                in {"targets", "exchange_rates"},
+            )
+    for key, item in value.items():
+        normalized_key = (
+            str(key)
+            if preserve_mapping_keys
+            else _snake_pricing_key(str(key))
+        )
+        result.setdefault(
+            normalized_key,
+            _canonical_pricing_mapping(
+                item,
+                preserve_mapping_keys=normalized_key
+                in {"targets", "exchange_rates"},
+            ),
+        )
+    return result
+
+
+def _canonical_platform_draft_output(
+    draft: dict[str, Any],
+) -> dict[str, Any]:
+    return _strip_publish_logs(
+        {
+            key: value
+            for key, value in draft.items()
+            if key in _CANONICAL_DRAFT_FIELDS
+        }
+    )
+
 
 def _merge_source(product: dict[str, Any]) -> dict[str, Any]:
     source = default_source()
     incoming = product.get("source") if isinstance(product.get("source"), dict) else {}
-    legacy_fallback = not isinstance(product.get("source"), dict)
-    source["source_url"] = str(incoming.get("source_url") or (product.get("source_url") if legacy_fallback else "") or "").strip()
-    source["source_platform"] = str(incoming.get("source_platform") or (product.get("source_platform") if legacy_fallback else "") or "").strip()
-    source["title"] = str(incoming.get("title") or (product.get("name") if legacy_fallback else "") or "").strip()
-    source["price"] = str(incoming.get("price") or ((product.get("detected_price") or product.get("cost")) if legacy_fallback else "") or "").strip()
-    source["currency"] = str(incoming.get("currency") or ((product.get("detected_currency") or product.get("currency_id")) if legacy_fallback else "") or "").strip()
-    source["bullets"] = normalize_list(incoming.get("bullets") or (product.get("selling_points") if legacy_fallback else []))
-    source["description"] = str(incoming.get("description") or (product.get("description") if legacy_fallback else "") or "").strip()
+    source["source_url"] = str(
+        incoming.get("source_url")
+        or ""
+    ).strip()
+    source["source_platform"] = str(
+        incoming.get("source_platform")
+        or ""
+    ).strip()
+    source["title"] = str(
+        incoming.get("title")
+        or product.get("name")
+        or ""
+    ).strip()
+    source["price"] = str(
+        incoming.get("price")
+        or product.get("cost")
+        or ""
+    ).strip()
+    source["currency"] = str(incoming.get("currency") or "").strip()
+    source["bullets"] = normalize_list(
+        incoming.get("bullets")
+        or product.get("selling_points")
+    )
+    source["description"] = str(
+        incoming.get("description")
+        or product.get("description")
+        or ""
+    ).strip()
     image_pool = incoming.get("image_pool") if isinstance(incoming.get("image_pool"), list) else []
-    legacy_images: list[Any] = []
-    if isinstance(incoming.get("images"), list) and incoming.get("images"):
-        legacy_images.extend(incoming.get("images"))
-    elif legacy_fallback:
-        legacy_images.extend(list(product.get("source_images") or []))
-        legacy_images.extend(list(product.get("detail_images") or []))
-        legacy_images.extend(list(product.get("source_image_urls") or []))
-        legacy_images.extend(list(product.get("detail_image_urls") or []))
-    source["image_pool"] = normalize_image_pool(image_pool, legacy_images, "source")
-    pool_views = image_pool_legacy_views(source["image_pool"], SOURCE_COMPAT_IMAGE_ORIGINS)
-    source["images"] = normalize_list(pool_views["images"] or legacy_images)
+    source_images = (
+        incoming.get("images")
+        if isinstance(incoming.get("images"), list)
+        else []
+    )
+    source["image_pool"] = normalize_image_pool(
+        image_pool or source_images,
+        "source",
+    )
+    source["images"] = image_pool_refs(
+        source["image_pool"],
+        SOURCE_IMAGE_ORIGINS,
+    )
     source["attributes"] = deepcopy(incoming.get("attributes") if isinstance(incoming.get("attributes"), dict) else product.get("attributes") if isinstance(product.get("attributes"), dict) else {})
     source["attribute_matches"] = infer_source_attribute_matches(source["attributes"])
     dimension_match = source["attribute_matches"].get("dimensions") if isinstance(source["attribute_matches"].get("dimensions"), dict) else {}
     matched_dimensions = dimension_match.get("normalized") if isinstance(dimension_match.get("normalized"), dict) else {}
     raw_dimensions = incoming.get("dimensions") if isinstance(incoming.get("dimensions"), dict) else {}
-    fallback_dimensions = parse_dimensions_text(product.get("dimensions") if legacy_fallback else "")
-    fallback_package_dimensions = {
-        "length_cm": text_or_empty(product.get("package_length_cm") if legacy_fallback else ""),
-        "width_cm": text_or_empty(product.get("package_width_cm") if legacy_fallback else ""),
-        "height_cm": text_or_empty(product.get("package_height_cm") if legacy_fallback else ""),
-    }
+    fallback_dimensions = parse_dimensions_text(product.get("dimensions"))
     source["dimensions"] = {
-        "length_cm": str(raw_dimensions.get("length_cm") or fallback_package_dimensions["length_cm"] or fallback_dimensions["length_cm"] or parse_dimensions_text(product.get("dimensions")).get("length_cm") or matched_dimensions.get("length_cm") or "").strip(),
-        "width_cm": str(raw_dimensions.get("width_cm") or fallback_package_dimensions["width_cm"] or fallback_dimensions["width_cm"] or parse_dimensions_text(product.get("dimensions")).get("width_cm") or matched_dimensions.get("width_cm") or "").strip(),
-        "height_cm": str(raw_dimensions.get("height_cm") or fallback_package_dimensions["height_cm"] or fallback_dimensions["height_cm"] or parse_dimensions_text(product.get("dimensions")).get("height_cm") or matched_dimensions.get("height_cm") or "").strip(),
+        "length_cm": str(raw_dimensions.get("length_cm") or fallback_dimensions["length_cm"] or matched_dimensions.get("length_cm") or "").strip(),
+        "width_cm": str(raw_dimensions.get("width_cm") or fallback_dimensions["width_cm"] or matched_dimensions.get("width_cm") or "").strip(),
+        "height_cm": str(raw_dimensions.get("height_cm") or fallback_dimensions["height_cm"] or matched_dimensions.get("height_cm") or "").strip(),
     }
-    source["weight_kg"] = str(incoming.get("weight_kg") or (product.get("weight_kg") if legacy_fallback else "") or "").strip()
-    source["material"] = str(incoming.get("material") or ((product.get("materials") or [""])[0] if legacy_fallback else "") or "").strip()
-    source["package_contents"] = normalize_list(incoming.get("package_contents") or (product.get("package_includes") if legacy_fallback else []))
-    source["variants"] = deepcopy(incoming.get("variants") or (product.get("variations") if legacy_fallback else []) or [])
-    source["skus"] = deepcopy(incoming.get("skus") or (product.get("sku_items") if legacy_fallback else []) or [])
+    source["weight_kg"] = str(incoming.get("weight_kg") or product.get("weight_kg") or "").strip()
+    source["material"] = str(incoming.get("material") or ((product.get("materials") or [""])[0]) or "").strip()
+    source["package_contents"] = normalize_list(incoming.get("package_contents") or product.get("package_includes"))
+    source["variants"] = deepcopy(incoming.get("variants") or [])
+    source["skus"] = deepcopy(incoming.get("skus") or product.get("sku_items") or [])
     source["brand"] = str(incoming.get("brand") or product.get("brand") or "").strip()
     source["model"] = str(incoming.get("model") or product.get("model") or "").strip()
     source["sku"] = str(incoming.get("sku") or product.get("sku") or "").strip()
-    source["collect_status"] = str(incoming.get("collect_status") or (product.get("collect_status") if legacy_fallback else "") or "").strip()
-    source["collect_logs"] = deepcopy(incoming.get("collect_logs") or (product.get("collect_logs") if legacy_fallback else []) or [])
+    source["collect_status"] = str(incoming.get("collect_status") or product.get("collect_status") or "").strip()
+    source["collect_logs"] = deepcopy(incoming.get("collect_logs") or product.get("collect_logs") or [])
     diagnostics = incoming.get("collect_diagnostics") if isinstance(incoming.get("collect_diagnostics"), dict) else {}
     source["collect_diagnostics"] = _merge_collect_diagnostics({}, diagnostics)
     return source
@@ -85,19 +396,24 @@ def _apply_source_mappings_to_draft(product: dict[str, Any], platform: str, curr
     current = deepcopy(current if isinstance(current, dict) else default_draft(platform))
     local_categories = product.get("local_platform_categories") if isinstance(product.get("local_platform_categories"), dict) else {}
     selected = local_categories.get(platform) if isinstance(local_categories.get(platform), dict) else {}
-    site_config = marketplace_site(platform, str(current.get("site") or selected.get("site") or ""))
+    site_config = marketplace_site(
+        platform,
+        str(
+            current.get("site")
+            or current.get("site_id")
+            or selected.get("site")
+            or ""
+        ),
+    )
 
-    top_level_category_field = category_id_field(platform)
     current["category_id"] = str(
         current.get("category_id")
         or selected.get("category_id")
-        or (product.get(top_level_category_field) if top_level_category_field else "")
         or ""
     ).strip()
     current["category_path"] = str(
         current.get("category_path")
         or selected.get("category_path")
-        or product.get("category_path")
         or ""
     ).strip()
 
@@ -110,20 +426,35 @@ def _apply_source_mappings_to_draft(product: dict[str, Any], platform: str, curr
     current["brand"] = str(current.get("brand") or product.get("brand") or source.get("brand") or "Generic").strip() or "Generic"
     current["model"] = str(current.get("model") or product.get("model") or source.get("model") or "General").strip() or "General"
     current["sku"] = str(current.get("sku") or product.get("sku") or "").strip()
-    current["upc"] = str(current.get("upc") or product.get("upc") or "").strip()
-    current["gtin"] = str(current.get("gtin") or current["upc"] or "").strip()
-    current["barcode"] = str(current.get("barcode") or current["upc"] or "").strip()
-    current["price"] = str(current.get("price") or source.get("price") or product.get("detected_price") or "").strip()
+    current["upc"] = str(
+        current.get("upc")
+        or current.get("gtin")
+        or current.get("barcode")
+        or product.get("upc")
+        or ""
+    ).strip()
+    current["price"] = str(
+        current.get("price")
+        or current.get("sale_price")
+        or source.get("price")
+        or ""
+    ).strip()
     current["stock"] = str(current.get("stock") or product.get("stock") or "").strip()
-    current_pkg = current.get("package_dimensions") if isinstance(current.get("package_dimensions"), dict) else {}
+    current_pkg = (
+        current.get("package_dimensions")
+        if isinstance(current.get("package_dimensions"), dict)
+        else current.get("packageDimensions")
+        if isinstance(current.get("packageDimensions"), dict)
+        else {}
+    )
     source_dims = source.get("dimensions") if isinstance(source.get("dimensions"), dict) else {}
     dimension_match = source.get("attribute_matches", {}).get("dimensions") if isinstance(source.get("attribute_matches"), dict) else {}
     source_dimensions_are_package_safe = not (isinstance(dimension_match, dict) and dimension_match.get("scope") == "product")
     current["package_dimensions"] = {
-        "length_cm": str(current_pkg.get("length_cm") or (source_dims.get("length_cm") if source_dimensions_are_package_safe else "") or product.get("package_length_cm") or "").strip(),
-        "width_cm": str(current_pkg.get("width_cm") or (source_dims.get("width_cm") if source_dimensions_are_package_safe else "") or product.get("package_width_cm") or "").strip(),
-        "height_cm": str(current_pkg.get("height_cm") or (source_dims.get("height_cm") if source_dimensions_are_package_safe else "") or product.get("package_height_cm") or "").strip(),
-        "weight_kg": str(current_pkg.get("weight_kg") or source.get("weight_kg") or product.get("weight_kg") or "").strip(),
+        "length_cm": str(current_pkg.get("length_cm") or current_pkg.get("lengthCm") or (source_dims.get("length_cm") if source_dimensions_are_package_safe else "") or product.get("package_length_cm") or "").strip(),
+        "width_cm": str(current_pkg.get("width_cm") or current_pkg.get("widthCm") or (source_dims.get("width_cm") if source_dimensions_are_package_safe else "") or product.get("package_width_cm") or "").strip(),
+        "height_cm": str(current_pkg.get("height_cm") or current_pkg.get("heightCm") or (source_dims.get("height_cm") if source_dimensions_are_package_safe else "") or product.get("package_height_cm") or "").strip(),
+        "weight_kg": str(current_pkg.get("weight_kg") or current_pkg.get("weightKg") or source.get("weight_kg") or product.get("weight_kg") or "").strip(),
     }
     current["attributes"] = deepcopy(current.get("attributes") or product.get("attributes") or {})
     return current
@@ -132,20 +463,70 @@ def _apply_source_mappings_to_draft(product: dict[str, Any], platform: str, curr
 def _merge_platform_draft(product: dict[str, Any], platform: str) -> dict[str, Any]:
     current = _apply_source_mappings_to_draft(product, platform, _draft_sources(product, platform))
     platform_values = []
-    for item in normalize_list(current.get("platforms")):
+    for item in normalize_list(
+        current.get("platforms")
+        or current.get("platforms_json")
+    ):
         value = str(item or "").strip().lower()
         if value in PLATFORMS and value not in platform_values:
             platform_values.append(value)
     current["platform"] = platform
     current["platforms"] = platform_values or [platform]
+    current["draft_id"] = str(
+        current.get("draft_id")
+        or current.get("draftId")
+        or ""
+    ).strip()
+    current["product_id"] = str(
+        current.get("product_id")
+        or product.get("product_id")
+        or ""
+    ).strip()
+    current["source_product_id"] = str(
+        current.get("source_product_id")
+        or current.get("sourceProductId")
+        or current["product_id"]
+    ).strip()
     current["enabled"] = bool(current.get("enabled", True))
+    current["site"] = str(
+        current.get("site")
+        or current.get("site_id")
+        or ""
+    ).strip()
+    current["currency"] = str(
+        current.get("currency")
+        or current.get("currency_id")
+        or ""
+    ).strip()
+    current["category_id"] = str(
+        current.get("category_id")
+        or current.get("categoryId")
+        or ""
+    ).strip()
+    current["category_path"] = str(
+        current.get("category_path")
+        or current.get("categoryPath")
+        or ""
+    ).strip()
     current["images"] = normalize_draft_image_refs(current.get("images"))
     current["bullets"] = normalize_list(current.get("bullets"))
-    current["search_terms"] = normalize_list(current.get("search_terms"))
-    current["publish_logs"] = deepcopy(current.get("publish_logs") or [])
-    current["validation_errors"] = deepcopy(current.get("validation_errors") or [])
+    current["search_terms"] = normalize_list(
+        current.get("search_terms")
+        or current.get("searchTerms")
+    )
+    current["validation_errors"] = deepcopy(
+        current.get("validation_errors")
+        if isinstance(current.get("validation_errors"), list)
+        else current.get("validationErrors")
+        if isinstance(current.get("validationErrors"), list)
+        else []
+    )
     current["attributes"] = deepcopy(current.get("attributes") or {})
-    pricing = current.get("pricing") if isinstance(current.get("pricing"), dict) else {}
+    pricing = (
+        _canonical_pricing_mapping(current.get("pricing"))
+        if isinstance(current.get("pricing"), dict)
+        else {}
+    )
     merged_pricing = default_pricing(platform)
     merged_pricing.update({key: deepcopy(value) for key, value in pricing.items() if key in merged_pricing and value not in (None, "")})
     merged_pricing["platform"] = platform
@@ -154,7 +535,137 @@ def _merge_platform_draft(product: dict[str, Any], platform: str) -> dict[str, A
     merged_pricing["width_cm"] = str(merged_pricing.get("width_cm") or current["package_dimensions"].get("width_cm") or "").strip()
     merged_pricing["height_cm"] = str(merged_pricing.get("height_cm") or current["package_dimensions"].get("height_cm") or "").strip()
     current["pricing"] = merged_pricing
-    return current
+    current["allow_gtin_exemption"] = bool(
+        current.get("allow_gtin_exemption")
+        or current.get("allowGtinExemption")
+        or current.get("gtin_exempt")
+    )
+    current["sale_terms"] = deepcopy(
+        current.get("sale_terms")
+        if isinstance(current.get("sale_terms"), list)
+        else current.get("saleTerms")
+        if isinstance(current.get("saleTerms"), list)
+        else current.get("warranty")
+        if isinstance(current.get("warranty"), list)
+        else []
+    )
+    current["shipping"] = deepcopy(
+        current.get("shipping")
+        if isinstance(current.get("shipping"), dict)
+        else {}
+    )
+    package_dimensions = (
+        current.get("package_dimensions")
+        if isinstance(current.get("package_dimensions"), dict)
+        else current.get("packageDimensions")
+        if isinstance(current.get("packageDimensions"), dict)
+        else {}
+    )
+    current["package_dimensions"] = {
+        "length_cm": str(
+            package_dimensions.get("length_cm")
+            or package_dimensions.get("lengthCm")
+            or ""
+        ).strip(),
+        "width_cm": str(
+            package_dimensions.get("width_cm")
+            or package_dimensions.get("widthCm")
+            or ""
+        ).strip(),
+        "height_cm": str(
+            package_dimensions.get("height_cm")
+            or package_dimensions.get("heightCm")
+            or ""
+        ).strip(),
+        "weight_kg": str(
+            package_dimensions.get("weight_kg")
+            or package_dimensions.get("weightKg")
+            or ""
+        ).strip(),
+    }
+    current["price"] = str(
+        current.get("price")
+        or current.get("sale_price")
+        or ""
+    ).strip()
+    current["publish_status"] = str(
+        current.get("publish_status")
+        or current.get("publishStatus")
+        or ""
+    ).strip()
+    raw_targets = (
+        current.get("target_sites")
+        if isinstance(current.get("target_sites"), list)
+        else current.get("targetSites")
+        if isinstance(current.get("targetSites"), list)
+        else []
+    )
+    current["target_sites"] = [
+        normalize_draft_target_site(item, platform, current)
+        for item in raw_targets
+        if isinstance(item, dict)
+    ] or [normalize_draft_target_site({}, platform, current)]
+    for field, alias in (
+        ("category_precheck", "categoryPrecheck"),
+        ("last_precheck", "lastPrecheck"),
+        ("last_precheck_target", "lastPrecheckTarget"),
+        ("last_publish_task", "lastPublishTask"),
+    ):
+        current[field] = deepcopy(
+            current.get(field)
+            if isinstance(current.get(field), dict)
+            else current.get(alias)
+            if isinstance(current.get(alias), dict)
+            else {}
+        )
+    current["ai_copy_ready"] = bool(
+        current.get("ai_copy_ready")
+        or current.get("aiCopyReady")
+    )
+    for field, alias in (
+        ("copy_generated_at", "copyGeneratedAt"),
+        ("copy_source", "copySource"),
+        ("created_at", "createdAt"),
+        ("updated_at", "updatedAt"),
+    ):
+        current[field] = str(
+            current.get(field)
+            or current.get(alias)
+            or ""
+        ).strip()
+    return _canonical_platform_draft_output(current)
+
+
+def normalize_platform_draft(
+    draft: dict[str, Any] | None,
+    platform: str,
+    product_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Canonicalize a standalone draft at every persistence boundary.
+
+    Current HTTP boundary aliases are normalized here; the returned mapping
+    contains only ``PlatformDraft`` fields.
+    """
+    platform_key = str(platform or "").strip().lower()
+    if platform_key not in PLATFORMS:
+        raise ValueError(f"不支持的平台：{platform_key or '<empty>'}")
+    product = deepcopy(
+        product_context
+        if isinstance(product_context, dict)
+        else {}
+    )
+    drafts = (
+        deepcopy(product.get("drafts"))
+        if isinstance(product.get("drafts"), dict)
+        else {}
+    )
+    drafts[platform_key] = deepcopy(
+        draft
+        if isinstance(draft, dict)
+        else {}
+    )
+    product["drafts"] = drafts
+    return _merge_platform_draft(product, platform_key)
 
 
 def _merge_collect_diagnostics(existing: dict[str, Any] | None, incoming: dict[str, Any] | None) -> dict[str, Any]:
@@ -230,7 +741,7 @@ def merge_source_partial_result(
             if not isinstance(item, dict):
                 continue
             origin = text_or_empty(item.get("origin")) or "source"
-            if origin not in SOURCE_COMPAT_IMAGE_ORIGINS:
+            if origin not in SOURCE_IMAGE_ORIGINS:
                 kept_pool.append(deepcopy(item))
         source["image_pool"] = kept_pool
         source["images"] = []
@@ -255,14 +766,22 @@ def merge_source_partial_result(
                 for ref in normalize_draft_image_refs(draft.get("images"))
                 if text_or_empty(ref.get("asset_id")) in kept_asset_ids
             ] if kept_asset_ids else []
-        for sku_item in normalized.get("sku_items") if isinstance(normalized.get("sku_items"), list) else []:
-            if isinstance(sku_item, dict) and text_or_empty(sku_item.get("image")) not in kept_image_refs:
-                sku_item["image"] = ""
-        for field in ["source_images", "source_image_urls", "detail_images", "detail_image_urls"]:
-            normalized[field] = []
+        for sku_items in (
+            normalized.get("sku_items"),
+            source.get("skus"),
+        ):
+            for sku_item in sku_items if isinstance(sku_items, list) else []:
+                if (
+                    isinstance(sku_item, dict)
+                    and text_or_empty(sku_item.get("image"))
+                    not in kept_image_refs
+                ):
+                    sku_item["image"] = ""
     if isinstance(source.get("image_pool"), list):
-        pool_views = image_pool_legacy_views(normalize_image_pool(source["image_pool"], [], "source"), SOURCE_COMPAT_IMAGE_ORIGINS)
-        source["images"] = pool_views["images"] or source.get("images", [])
+        source["images"] = image_pool_refs(
+            normalize_image_pool(source["image_pool"], "source"),
+            SOURCE_IMAGE_ORIGINS,
+        ) or source.get("images", [])
 
     current_diag = source.get("collect_diagnostics") if isinstance(source.get("collect_diagnostics"), dict) else default_collect_diagnostics()
     source["collect_diagnostics"] = _merge_collect_diagnostics(current_diag, diagnostics_updates or updates.get("collect_diagnostics"))
@@ -276,65 +795,55 @@ def merge_source_partial_result(
         normalized["attributes"] = deepcopy(source["attributes"])
     if isinstance(source.get("skus"), list) and source["skus"]:
         normalized["sku_items"] = deepcopy(source["skus"])
-    normalized["source_url"] = str(source.get("source_url") or normalized.get("source_url") or "").strip()
-    normalized["source_platform"] = str(source.get("source_platform") or normalized.get("source_platform") or "").strip()
     normalized["materials"] = normalize_list(normalized.get("materials") or [source.get("material")])
     normalized["selling_points"] = normalize_list(normalized.get("selling_points") or source.get("bullets"))
     normalized["package_includes"] = normalize_list(normalized.get("package_includes") or source.get("package_contents"))
-    normalized["source_images"] = normalize_list(normalized.get("source_images") or source.get("images"))
-    normalized["source_image_urls"] = normalize_list(normalized.get("source_image_urls") or source.get("images"))
     normalized["description"] = str(normalized.get("description") or source.get("description") or "").strip()
     normalized["weight_kg"] = str(normalized.get("weight_kg") or source.get("weight_kg") or "").strip()
     normalized["collect_status"] = str(normalized.get("collect_status") or source.get("collect_status") or "").strip()
     normalized["collect_logs"] = deepcopy(normalized.get("collect_logs") or source.get("collect_logs") or [])
-    normalized["detected_price"] = str(normalized.get("detected_price") or source.get("price") or "").strip()
-    normalized["detected_currency"] = str(normalized.get("detected_currency") or source.get("currency") or "").strip()
-    if normalized.get("detected_price") and normalized.get("detected_currency"):
-        normalized["detected_price_display"] = f"{normalized['detected_price']} {normalized['detected_currency']}"
     dimensions = source.get("dimensions") if isinstance(source.get("dimensions"), dict) else {}
     if any(str(dimensions.get(part) or "").strip() for part in ["length_cm", "width_cm", "height_cm"]):
         normalized["dimensions"] = " x ".join(
             str(dimensions.get(part) or "").strip() for part in ["length_cm", "width_cm", "height_cm"] if str(dimensions.get(part) or "").strip()
         ) + (" cm" if all(str(dimensions.get(part) or "").strip() for part in ["length_cm", "width_cm", "height_cm"]) else "")
-    return normalized
+    return _canonical_product_output(normalized)
 
 
 def normalize_product_model(product: dict[str, Any] | None) -> dict[str, Any]:
     incoming = deepcopy(product or {})
+    _reject_removed_product_fields(incoming)
+    raw_schema_version = incoming.get("schema_version")
+    if raw_schema_version not in (None, ""):
+        try:
+            incoming_schema_version = int(raw_schema_version)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("产品 schema_version 必须是整数") from exc
+        if incoming_schema_version != PRODUCT_SCHEMA_VERSION:
+            raise ValueError(
+                "产品 schema_version "
+                f"{incoming_schema_version} 不是当前版本 "
+                f"{PRODUCT_SCHEMA_VERSION}，拒绝降级写入或读取"
+            )
     normalized = default_product_model()
     normalized.update({key: value for key, value in incoming.items() if key not in {"source", "drafts"}})
     normalized["schema_version"] = PRODUCT_SCHEMA_VERSION
+    normalized["product_id"] = str(
+        incoming.get("product_id") or ""
+    ).strip()
+    normalized["upc"] = str(
+        incoming.get("upc") or ""
+    ).strip()
     normalized["source"] = _merge_source(incoming)
     normalized["drafts"] = {platform: _merge_platform_draft(incoming, platform) for platform in PLATFORMS}
 
     normalized["name"] = str(normalized["source"].get("title") or normalized.get("name") or "").strip()
     category_match = normalized["source"].get("attribute_matches", {}).get("category") if isinstance(normalized["source"].get("attribute_matches"), dict) else {}
     normalized["category"] = str(normalized.get("category") or (category_match.get("value") if isinstance(category_match, dict) else "") or "").strip()
-    normalized["source_url"] = str(normalized["source"].get("source_url") or normalized.get("source_url") or "").strip()
-    normalized["source_platform"] = str(normalized["source"].get("source_platform") or normalized.get("source_platform") or "").strip()
     normalized["materials"] = normalize_list(normalized.get("materials") or [normalized["source"].get("material")])
     normalized["selling_points"] = normalize_list(normalized.get("selling_points") or normalized["source"].get("bullets"))
     normalized["package_includes"] = normalize_list(normalized.get("package_includes") or normalized["source"].get("package_contents"))
-    pool_views = image_pool_legacy_views(
-        normalized["source"].get("image_pool") if isinstance(normalized["source"].get("image_pool"), list) else [],
-        SOURCE_COMPAT_IMAGE_ORIGINS,
-    )
-    source_images = normalize_list(normalized.get("source_images"))
-    source_image_urls = normalize_list(normalized.get("source_image_urls"))
-    detail_images = normalize_list(normalized.get("detail_images"))
-    detail_image_urls = normalize_list(normalized.get("detail_image_urls"))
-    normalized["source_images"] = source_images or pool_views["source_images"] or normalize_list(normalized["source"].get("images"))
-    normalized["source_image_urls"] = source_image_urls or normalized["source_images"] or pool_views["source_image_urls"] or normalize_list(normalized["source"].get("images"))
-    normalized["detail_images"] = detail_images or pool_views["detail_images"]
-    normalized["detail_image_urls"] = detail_image_urls or normalized["detail_images"] or pool_views["detail_image_urls"]
     normalized["description"] = str(normalized.get("description") or normalized["drafts"]["mercadolibre"].get("description") or normalized["source"].get("description") or "").strip()
-
-    if not normalized.get("detected_price") and normalized["source"].get("price"):
-        normalized["detected_price"] = str(normalized["source"].get("price"))
-    if not normalized.get("detected_currency") and normalized["source"].get("currency"):
-        normalized["detected_currency"] = str(normalized["source"].get("currency"))
-    if normalized.get("detected_price") and normalized.get("detected_currency"):
-        normalized["detected_price_display"] = f"{normalized['detected_price']} {normalized['detected_currency']}"
 
     normalized["collect_status"] = str(normalized.get("collect_status") or normalized["source"].get("collect_status") or "").strip()
     normalized["collect_logs"] = deepcopy(normalized.get("collect_logs") or normalized["source"].get("collect_logs") or [])
@@ -343,8 +852,4 @@ def normalize_product_model(product: dict[str, Any] | None) -> dict[str, Any]:
     else:
         normalized["source"]["collect_diagnostics"] = _merge_collect_diagnostics(default_collect_diagnostics(), normalized["source"].get("collect_diagnostics"))
 
-    normalized["category_id"] = str(normalized.get("category_id") or normalized["drafts"]["mercadolibre"].get("category_id") or "").strip()
-    normalized["yandex_category_id"] = str(normalized.get("yandex_category_id") or normalized["drafts"]["yandex"].get("category_id") or "").strip()
-    normalized["ozon_category_id"] = str(normalized.get("ozon_category_id") or normalized["drafts"]["ozon"].get("category_id") or "").strip()
-
-    return normalized
+    return _canonical_product_output(normalized)

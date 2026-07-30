@@ -5,7 +5,7 @@ import {
   fetchActiveProductResearchHotProductRun,
   fetchProductResearchHotProductRun,
   fetchProductResearchSettings,
-} from '@/api/workflow'
+} from '@/api/workflow/research'
 import {
   productResearchMarketLabel,
   productResearchStrategyLabel,

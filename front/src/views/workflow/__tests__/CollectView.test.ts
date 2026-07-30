@@ -8,10 +8,6 @@ const form: CollectForm = {
   productUrls: '',
   platform: '1688',
   mode: 'browser',
-  alibabaCookie: '',
-  alibabaAppKey: '',
-  alibabaAppSecret: '',
-  alibabaAccessToken: '',
   alibabaApiBaseUrl: '',
   alibabaApiMethod: '',
   alibabaApiVersion: '',
@@ -88,5 +84,43 @@ describe('CollectView', () => {
       expect(classes).not.toContain('bg-blue-50/70')
       expect(classes).not.toContain('bg-blue-500/10')
     }
+  })
+
+  it('Cookie 只保留在组件局部态并在提交后立即清空', async () => {
+    const collectForm = { ...form }
+    const wrapper = mount(CollectView, {
+      props: {
+        form: collectForm,
+        diagnostics,
+        product,
+        loading: false,
+        error: '',
+        batchRows: [],
+        browserStatus: null,
+      },
+    })
+
+    await wrapper.get('select').setValue('url')
+    const advancedButton = wrapper.findAll('button').find((button) => (
+      button.text().includes('高级选项：Cookie')
+    ))
+    expect(advancedButton).toBeTruthy()
+    await advancedButton!.trigger('click')
+
+    const cookieInput = wrapper.get('[data-testid="transient-alibaba-cookie"]')
+    await cookieInput.setValue('component-only-cookie-secret')
+    expect(JSON.stringify(collectForm)).not.toContain('component-only-cookie-secret')
+
+    const collectButton = wrapper.findAll('button').find((button) => (
+      button.text() === '采集单链接'
+    ))
+    expect(collectButton).toBeTruthy()
+    await collectButton!.trigger('click')
+
+    expect(wrapper.emitted('collect')?.at(-1)?.[0]).toEqual({
+      alibabaCookie: 'component-only-cookie-secret',
+    })
+    expect((cookieInput.element as HTMLTextAreaElement).value).toBe('')
+    expect(JSON.stringify(collectForm)).not.toContain('component-only-cookie-secret')
   })
 })

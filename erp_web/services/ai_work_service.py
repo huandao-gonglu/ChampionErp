@@ -9,6 +9,7 @@ JSONL 文件（按天分目录），会话列表 / 定位一律查 ``ai_sessions
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -53,6 +54,29 @@ def _safe_conversation_id(value: Any) -> str:
     if not safe or safe != text:
         raise ValueError("无效的 AI 对话 ID。")
     return safe
+
+
+def _ensure_private_journal_directory(path: Path) -> None:
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if os.name != "nt":
+        path.chmod(0o700)
+
+
+def _append_private_journal_line(path: Path, line: str) -> None:
+    descriptor = os.open(
+        path,
+        os.O_WRONLY | os.O_APPEND | os.O_CREAT,
+        0o600,
+    )
+    if os.name != "nt":
+        try:
+            os.fchmod(descriptor, 0o600)
+        except BaseException:
+            os.close(descriptor)
+            raise
+    with os.fdopen(descriptor, "a", encoding="utf-8") as output:
+        output.write(line)
+        output.write("\n")
 
 
 def _read_events_from_path(path: Path, after_seq: int = 0) -> list[AiWorkEvent]:
@@ -242,10 +266,18 @@ class AiWorkJournal:
 
     def _record_event(self, conversation: AiWorkConversation, event: AiWorkEvent) -> None:
         """Append one event to the JSONL file and maintain the ai_sessions row."""
-        conversation.path.parent.mkdir(parents=True, exist_ok=True)
-        with conversation.path.open("a", encoding="utf-8") as output:
-            output.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
-            output.write("\n")
+        _ensure_private_journal_directory(self._root)
+        _ensure_private_journal_directory(
+            conversation.path.parent
+        )
+        _append_private_journal_line(
+            conversation.path,
+            json.dumps(
+                event,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
         self._db.upsert_ai_session(
             conversation.conversation_id,
             day=conversation.day,

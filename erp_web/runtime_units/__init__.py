@@ -1,2 +1,4 @@
 # -*- coding: utf-8 -*-
-"""Functional runtime units for the ERP web backend."""
+"""ERP Web 后端的聚焦运行单元。"""
+
+__all__: list[str] = []

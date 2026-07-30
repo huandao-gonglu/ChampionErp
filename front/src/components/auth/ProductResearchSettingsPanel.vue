@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { fetchProductResearchSettings, saveProductResearchSettings, testProductResearchSearchProvider } from '@/api/workflow'
+import {
+  fetchProductResearchSettings,
+  saveProductResearchSettings,
+  testProductResearchSearchProvider,
+} from '@/api/workflow/research'
 import type { ProductResearchConfig, ProductResearchMarketSearchMethodBinding, ProductResearchProviderTestResult, ProductResearchSourceRegistryItem, ProductResearchTargetMarket, UnknownRecord } from '@/types/workflow'
 import {
   productResearchProviderName,
@@ -93,7 +97,7 @@ function strategyLabel(value: string) {
   return strategyOptions.find((option) => option.value === value)?.label || productResearchStrategyLabel(value)
 }
 
-function providerTestMarketDefault(provider: ProductResearchSourceRegistryItem | null) {
+function providerTestMarketDefault() {
   return selectedMarket.value?.id || 'amazon-us'
 }
 
@@ -287,10 +291,6 @@ function defaultAiPrompt(market: ProductResearchTargetMarket) {
 
 function defaultBindingPrompt(provider?: ProductResearchSourceRegistryItem | null, market?: ProductResearchTargetMarket | null): string {
   return isAiSearchMethod(provider) && market ? defaultAiPrompt(market) : ''
-}
-
-function bindingConfigField(binding: ProductResearchMarketSearchMethodBinding, field: string, fallback = '') {
-  return String(binding.configJson[field] ?? fallback)
 }
 
 function updateBindingPrompt(binding: ProductResearchMarketSearchMethodBinding, value: string) {
@@ -610,7 +610,7 @@ async function testSelectedProvider() {
   testingProvider.value = true
   try {
     providerTestResult.value = await testProductResearchSearchProvider(selectedProvider.value, {
-      market: providerTestMarket.value.trim().replace(/^\*$/, '') || providerTestMarketDefault(selectedProvider.value),
+      market: providerTestMarket.value.trim().replace(/^\*$/, '') || providerTestMarketDefault(),
       language: providerTestLanguageDefault(selectedProvider.value),
       keyword: providerTestKeyword.value.trim() || 'mahjong gift',
       data_type: selectedProvider.value.supportedDataTypes[0] || 'marketplace_products',
@@ -636,7 +636,7 @@ async function testSelectedProvider() {
 
 watch(selectedProvider, (provider) => {
   selectedConfigText.value = JSON.stringify(provider?.configJson || {}, null, 2)
-  providerTestMarket.value = providerTestMarketDefault(provider)
+  providerTestMarket.value = providerTestMarketDefault()
   providerTestKeyword.value = 'mahjong gift'
   providerTestResult.value = null
 }, { immediate: true })

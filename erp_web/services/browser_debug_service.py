@@ -15,7 +15,7 @@ import webbrowser
 from pathlib import Path
 from typing import Any
 
-from .runtime_common import BROWSER_DEBUG_PORT, BROWSER_DEBUG_PROFILE_DIR
+from erp_web.context import get_context
 
 def pick_web_port(preferred_port: int, attempts: int = 20) -> int:
     import socket
@@ -233,8 +233,10 @@ def open_auth_link_in_browser(url: str, browser: str = "default") -> dict[str, A
     return {"ok": True, "opened": True, "browser": "default"}
 
 
-def browser_debug_commands(port: int = BROWSER_DEBUG_PORT) -> dict[str, str]:
-    profile = str(BROWSER_DEBUG_PROFILE_DIR)
+def browser_debug_commands(port: int | None = None) -> dict[str, str]:
+    paths = get_context().paths
+    port = paths.browser_debug_port if port is None else port
+    profile = str(paths.browser_debug_profile_dir)
     chrome = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
     powershell_command = f'Start-Process "{chrome}" -ArgumentList \'--remote-debugging-port={port} --user-data-dir="{profile}"\''
     cmd_command = f'start chrome --remote-debugging-port={port} --user-data-dir="{profile}"'

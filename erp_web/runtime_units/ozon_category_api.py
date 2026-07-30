@@ -51,10 +51,10 @@ _tree_cache = TtlCache(_TREE_CACHE_TTL_SECONDS)
 
 
 def _load_store_config() -> dict[str, Any]:
-    # 延迟导入，避免 product_store -> category_store 的依赖环。
-    from .product_store import load_store_config
+    # 延迟导入，避免分类 provider 初始化阶段形成循环依赖。
+    from erp_web.context import get_context
 
-    return load_store_config()
+    return get_context().config.load_store_config()
 
 
 def _ozon_credentials() -> tuple[str, str]:

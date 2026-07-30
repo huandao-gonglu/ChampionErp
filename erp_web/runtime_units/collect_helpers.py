@@ -12,26 +12,19 @@ from typing import Any
 from erp_web.context import get_context
 from erp_web.product_model import (
     PLATFORMS,
-    SOURCE_COMPAT_IMAGE_ORIGINS,
+    SOURCE_IMAGE_ORIGINS,
     default_draft,
     draft_image_refs_from_pool,
-    image_pool_legacy_views,
+    image_pool_refs,
     normalize_image_pool,
     normalize_draft_image_refs,
     normalize_platforms,
 )
+from erp_web.product_model.common import normalize_list
 from erp_web.services import image_service
+from erp_web.services.browser_debug_service import file_url
+from erp_web.stores.product_store import normalize_product_fields
 
-from .browser_debug import file_url
-from .product_store import (
-    load_drafts_index,
-    load_product_from_index,
-    load_products_index,
-    normalize_list,
-    normalize_product_fields,
-    sync_product_workflow_statuses,
-)
-from .runtime_common import APP_DIR, COLLECT_DEBUG_DIR
 from .source_sites import detect_source_site, source_site
 
 def collect_time_iso() -> str:
@@ -55,18 +48,63 @@ def detect_source_platform(url: str) -> str:
     return detect_source_site(url)
 
 
+def _private_collect_descriptor(path: Path, flags: int) -> int:
+    descriptor = os.open(path, flags, 0o600)
+    if os.name != "nt":
+        try:
+            os.fchmod(descriptor, 0o600)
+        except BaseException:
+            os.close(descriptor)
+            raise
+    return descriptor
+
+
+def _write_private_collect_text(path: Path, text: str) -> None:
+    descriptor = _private_collect_descriptor(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+    )
+    with os.fdopen(
+        descriptor,
+        "w",
+        encoding="utf-8",
+        errors="ignore",
+    ) as output:
+        output.write(text)
+
+
+def _write_private_collect_bytes(path: Path, value: bytes) -> None:
+    descriptor = _private_collect_descriptor(
+        path,
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_TRUNC
+        | getattr(os, "O_BINARY", 0),
+    )
+    with os.fdopen(descriptor, "wb") as output:
+        output.write(value)
+
+
 def collect_debug_path(kind: str, suffix: str) -> Path:
-    COLLECT_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+    collect_debug_dir = get_context().paths.collect_debug_dir
+    collect_debug_dir.mkdir(
+        mode=0o700,
+        parents=True,
+        exist_ok=True,
+    )
+    if os.name != "nt":
+        collect_debug_dir.chmod(0o700)
     stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
     rand = os.urandom(4).hex()
     safe_kind = re.sub(r"[^A-Za-z0-9._-]+", "_", kind or "collect").strip("_") or "collect"
     safe_suffix = suffix if suffix.startswith(".") else f".{suffix.lstrip('.')}"
-    return COLLECT_DEBUG_DIR / f"{stamp}_{safe_kind}_{rand}{safe_suffix}"
+    return collect_debug_dir / f"{stamp}_{safe_kind}_{rand}{safe_suffix}"
 
 
 def write_collect_debug_html(url: str, html: str, platform: str = "collect") -> str:
     path = collect_debug_path(platform, ".html")
-    path.write_text(
+    _write_private_collect_text(
+        path,
         "\n".join(
             [
                 "<!doctype html>",
@@ -77,15 +115,13 @@ def write_collect_debug_html(url: str, html: str, platform: str = "collect") -> 
                 "</body></html>",
             ]
         ),
-        encoding="utf-8",
-        errors="ignore",
     )
     return str(path)
 
 
 def write_collect_debug_text(platform: str, text: str, suffix: str = ".txt") -> str:
     path = collect_debug_path(platform, suffix)
-    path.write_text(text, encoding="utf-8", errors="ignore")
+    _write_private_collect_text(path, text)
     return str(path)
 
 
@@ -104,7 +140,10 @@ def save_collect_snapshot_artifacts(
     if screenshot_base64:
         path = collect_debug_path(platform, ".png")
         try:
-            path.write_bytes(base64.b64decode(screenshot_base64))
+            _write_private_collect_bytes(
+                path,
+                base64.b64decode(screenshot_base64),
+            )
             artifacts["screenshot_path"] = str(path)
         except Exception:
             artifacts["screenshot_path"] = ""
@@ -210,15 +249,18 @@ def normalize_collect_source_images(source_updates: dict[str, Any], platform: st
     origin = collect_image_origin(platform, mode)
     platforms = normalize_platforms(claim_platforms)
     normalized_pool = image_service.materialize_image_values(
-        APP_DIR,
+        get_context().paths.app_dir,
         refs,
         str(source.get("source_url") or source.get("title") or "collected"),
         platforms,
         origin,
     )
     if normalized_pool:
-        source["image_pool"] = normalize_image_pool(normalized_pool, [], origin)
-        source["images"] = image_pool_legacy_views(source["image_pool"], SOURCE_COMPAT_IMAGE_ORIGINS)["images"]
+        source["image_pool"] = normalize_image_pool(normalized_pool, origin)
+        source["images"] = image_pool_refs(
+            source["image_pool"],
+            SOURCE_IMAGE_ORIGINS,
+        )
         if not source.get("images"):
             fallback_refs: list[str] = []
             for raw in refs:
@@ -253,7 +295,9 @@ def apply_claimed_platform_drafts(product: dict[str, Any], claim_platforms: list
     source = normalized.get("source") if isinstance(normalized.get("source"), dict) else {}
     platforms = normalize_platforms(claim_platforms)
     if not platforms:
-        return sync_product_workflow_statuses(normalized)
+        return get_context().products.sync_product_workflow_statuses(
+            normalized
+        )
     dims = source.get("dimensions") if isinstance(source.get("dimensions"), dict) else {}
     placeholder_titles = {"", "-", "unknown", "draft title", "untitled", "未命名"}
 
@@ -281,35 +325,31 @@ def apply_claimed_platform_drafts(product: dict[str, Any], claim_platforms: list
             "height_cm": (draft.get("package_dimensions") or {}).get("height_cm") or dims.get("height_cm") or "",
             "weight_kg": (draft.get("package_dimensions") or {}).get("weight_kg") or source.get("weight_kg") or "",
         }
-    return sync_product_workflow_statuses(normalized)
+    return get_context().products.sync_product_workflow_statuses(normalized)
 
 
 def draft_copy_from_product(product: dict[str, Any], platform: str) -> dict[str, Any]:
     normalized = normalize_product_fields(product)
     source = normalized.get("source") if isinstance(normalized.get("source"), dict) else {}
     dims = source.get("dimensions") if isinstance(source.get("dimensions"), dict) else {}
-    product_id = str(normalized.get("product_id") or normalized.get("id") or "").strip()
+    product_id = str(normalized.get("product_id") or "").strip()
     draft = default_draft(platform)
-    snapshot = deepcopy(normalized)
-    snapshot.pop("drafts", None)
     draft.update(
         {
             "enabled": True,
             "platform": platform,
             "platforms": [platform],
             "source_product_id": product_id,
-            "source_product_snapshot": snapshot,
             "title": str(source.get("title") or normalized.get("name") or ""),
             "description": str(source.get("description") or normalized.get("description") or ""),
             "bullets": normalize_list(source.get("bullets") or normalized.get("selling_points")),
-            "images": productImages_from_source(normalized),
+            "images": draft_image_refs_from_pool(normalized, platform),
             "brand": str(normalized.get("brand") or source.get("brand") or "Generic"),
             "model": str(normalized.get("model") or source.get("model") or "General"),
             "sku": str(normalized.get("sku") or source.get("sku") or ""),
             "stock": str(normalized.get("stock") or ""),
             "price": "",
             "status": "claimed",
-            "copied_from_product_at": collect_time_iso(),
             "package_dimensions": {
                 "length_cm": str(dims.get("length_cm") or dims.get("lengthCm") or ""),
                 "width_cm": str(dims.get("width_cm") or dims.get("widthCm") or ""),
@@ -328,8 +368,11 @@ def claim_products_to_platforms(product_ids: list[str], platforms: list[str] | N
         return {"ok": False, "claimed_count": 0, "items": [], "error": "没有可用的草稿目标"}
     items: list[dict[str, Any]] = []
     for product_id in [str(item or "").strip() for item in product_ids if str(item or "").strip()]:
-        product = load_product_from_index(product_id, "")
-        loaded_id = str(product.get("product_id") or product.get("id") or "").strip() if isinstance(product, dict) else ""
+        product = get_context().products.load_product_from_index(
+            product_id,
+            "",
+        )
+        loaded_id = str(product.get("product_id") or "").strip() if isinstance(product, dict) else ""
         if not product or loaded_id != product_id:
             items.append({"product_id": product_id, "ok": False, "error": "商品不存在"})
             continue
@@ -353,8 +396,8 @@ def claim_products_to_platforms(product_ids: list[str], platforms: list[str] | N
         "ok": True,
         "claimed_count": sum(1 for item in items if item.get("ok")),
         "items": items,
-        "productsIndex": load_products_index(),
-        "draftsIndex": load_drafts_index(),
+        "productsIndex": get_context().products.load_products_index(),
+        "draftsIndex": get_context().products.load_drafts_index(),
     }
 
 

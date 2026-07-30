@@ -16,11 +16,22 @@ class ProductSource(TypedDict, total=False):
     currency: str
     description: str
     bullets: list[str]
+    material: str
+    package_contents: list[str]
+    variants: list[dict[str, Any]]
+    skus: list[dict[str, Any]]
     attributes: dict[str, Any]
     attribute_matches: dict[str, Any]
     dimensions: dict[str, str]
-    images: list[DraftImageRef]
+    weight_kg: str
+    images: list[str]
     image_pool: list[ImageItem]
+    collect_status: str
+    collect_logs: list[Any]
+    collect_diagnostics: dict[str, Any]
+    brand: str
+    model: str
+    sku: str
     created_at: str
 
 
@@ -56,42 +67,92 @@ class DraftTargetSite(TypedDict, total=False):
     category_attribute_schema: CategoryAttributeSchema
     attributes: dict[str, Any]
     validation_errors: list[Any]
+    category_precheck: dict[str, Any]
+    publish_status: str
+    status: str
+    last_precheck: dict[str, Any]
+    last_precheck_target: dict[str, Any]
 
 
 class PlatformDraft(TypedDict, total=False):
     draft_id: str
+    product_id: str
+    source_product_id: str
     platform: str
+    platforms: list[str]
+    enabled: bool
     site: str
+    country: str
     status: str
+    publish_status: str
     title: str
     description: str
+    brand: str
+    model: str
     category_id: str
     category_path: str
     target_sites: list[DraftTargetSite]
     attributes: dict[str, Any]
-    price: dict[str, Any]
+    price: str
+    pricing: dict[str, Any]
+    stock: str
+    sku: str
+    upc: str
+    bullets: list[str]
+    search_terms: list[str]
+    language: str
+    currency: str
+    package_dimensions: dict[str, str]
     validation_errors: list[Any]
-    images: list[str]
+    images: list[DraftImageRef]
+    sale_terms: list[dict[str, Any]]
+    allow_gtin_exemption: bool
+    shipping: dict[str, Any]
+    category_precheck: dict[str, Any]
+    last_precheck: dict[str, Any]
+    last_precheck_target: dict[str, Any]
+    last_publish_task: dict[str, Any]
+    ai_copy_ready: bool
+    copy_generated_at: str
+    copy_source: str
+    created_at: str
+    updated_at: str
 
 
 class Product(TypedDict, total=False):
     schema_version: int
     product_id: str
-    id: str
     name: str
-    title: str
     brand: str
     model: str
-    source_platform: str
-    source_url: str
+    category: str
+    target_customer: str
+    sku: str
+    stock: str
+    upc: str
+    cost: str
+    materials: list[str]
+    selling_points: list[str]
+    package_includes: list[str]
+    colors: list[str]
+    avoid_claims: list[str]
+    description: str
+    dimensions: str
+    weight_kg: str
     source: ProductSource
     drafts: dict[str, PlatformDraft]
+    marketplace_terms: dict[str, Any]
+    attributes: dict[str, Any]
+    listing_overrides: dict[str, Any]
+    copy_results: dict[str, Any]
+    sku_items: list[dict[str, Any]]
+    selected_sku_indices: list[int]
+    pricing_defaults: dict[str, Any]
+    publish_preview: dict[str, Any]
+    collect_status: str
+    collect_logs: list[Any]
     local_platform_categories: dict[str, Any]
     workflow_statuses: dict[str, str]
-    image_pool: list[ImageItem]
-    source_images: list[str]
-    generated_images: list[str]
-    pricing: dict[str, Any]
     created_at: str
     updated_at: str
 

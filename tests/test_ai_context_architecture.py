@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 
@@ -13,6 +14,105 @@ def python_files(*folders: str) -> list[Path]:
     return sorted(files)
 
 
+def imported_targets(paths: list[Path]) -> list[tuple[Path, str]]:
+    targets: list[tuple[Path, str]] = []
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                targets.extend((path, alias.name) for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                if module:
+                    targets.append((path, module))
+                targets.extend(
+                    (path, f"{module}.{alias.name}" if module else alias.name)
+                    for alias in node.names
+                )
+    return targets
+
+
+def test_compatibility_runtime_entry_points_are_not_imported() -> None:
+    production_paths = sorted((ROOT / "erp_web").rglob("*.py"))
+    test_paths = sorted((ROOT / "tests").rglob("*.py"))
+    runtime_offenders = [
+        f"{path.relative_to(ROOT)} -> {target}"
+        for path, target in imported_targets(production_paths + test_paths)
+        if target == "erp_web.runtime" or target.startswith("erp_web.runtime.")
+    ]
+    auth_alias_offenders = [
+        f"{path.relative_to(ROOT)} -> {target}"
+        for path, target in imported_targets(production_paths + test_paths)
+        if target == "erp_web.runtime_units.auth_runtime"
+        or target.startswith("erp_web.runtime_units.auth_runtime.")
+    ]
+    assert not runtime_offenders, (
+        "生产代码和测试必须导入真实 owner，不得依赖 erp_web.runtime：\n"
+        + "\n".join(runtime_offenders)
+    )
+    assert not auth_alias_offenders, (
+        "生产代码和测试不得依赖 auth_runtime 旧别名：\n"
+        + "\n".join(auth_alias_offenders)
+    )
+
+
+def test_removed_runtime_compatibility_files_stay_removed() -> None:
+    compatibility_paths = [
+        ROOT / "erp_web/runtime.py",
+        ROOT / "erp_web/runtime_units/auth_runtime.py",
+        ROOT / "erp_web/runtime_units/browser_debug.py",
+        ROOT / "erp_web/runtime_units/product_store.py",
+        ROOT / "erp_web/runtime_units/publish_runtime.py",
+        ROOT / "erp_web/runtime_units/runtime_common.py",
+        ROOT / "erp_web/runtime_units/source_collect.py",
+    ]
+    existing = [str(path.relative_to(ROOT)) for path in compatibility_paths if path.exists()]
+    assert not existing, f"旧 runtime 兼容入口仍存在：{existing}"
+
+    runtime_units_init = (ROOT / "erp_web/runtime_units/__init__.py").read_text(
+        encoding="utf-8"
+    )
+    assert "__getattr__" not in runtime_units_init
+    assert "auth_runtime" not in runtime_units_init
+
+
+def test_historical_persistence_compatibility_stays_removed() -> None:
+    db_text = (ROOT / "erp_web/db.py").read_text(encoding="utf-8")
+    product_text = (
+        ROOT / "erp_web/product_model/merge_model.py"
+    ).read_text(encoding="utf-8")
+    image_text = (
+        ROOT / "erp_web/product_model/image_pool_model.py"
+    ).read_text(encoding="utf-8")
+    app_config_text = (
+        ROOT / "erp_web/app_config.py"
+    ).read_text(encoding="utf-8")
+    context_text = (ROOT / "erp_web/context.py").read_text(encoding="utf-8")
+    research_text = (
+        ROOT / "erp_web/product_research_config.py"
+    ).read_text(encoding="utf-8")
+
+    for retired_db_symbol in (
+        "_LEGACY_TABLES",
+        "_migrate_v4_to_v5",
+        "_recover_platform_drafts_v5",
+        "platform_drafts_v4",
+    ):
+        assert retired_db_symbol not in db_text
+    for retired_product_symbol in (
+        "_LEGACY_PRODUCT_WRITE_FIELDS",
+        "legacy_fallback",
+        "image_pool_legacy_views",
+    ):
+        assert retired_product_symbol not in product_text
+        assert retired_product_symbol not in image_text
+    assert "migrate_legacy_ai_config" not in app_config_text
+    assert "_apply_legacy_model_values" not in app_config_text
+    assert "legacy_store_config_paths" not in context_text
+    assert "legacy_app_config_paths" not in context_text
+    assert "LEGACY_AI_SEARCH_METHOD_IDS" not in research_text
+
+
 def test_route_and_facade_layers_do_not_import_runtime_star() -> None:
     banned = "import *"
     for path in python_files("erp_web/http_route_units", "erp_web/facades"):
@@ -20,10 +120,72 @@ def test_route_and_facade_layers_do_not_import_runtime_star() -> None:
         assert banned not in text, f"{path.relative_to(ROOT)} should use explicit imports"
 
 
+def test_http_routes_use_explicit_facades_and_validated_request_objects() -> None:
+    for path in sorted((ROOT / "erp_web/http_route_units").glob("*_routes.py")):
+        text = path.read_text(encoding="utf-8")
+        assert "runtime_units" not in text, (
+            f"{path.relative_to(ROOT)} should depend on a facade/service, "
+            "not a business runtime unit"
+        )
+        tree = ast.parse(text)
+        body_reads = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "read_body"
+        ]
+        validated_reads = [
+            nested
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "validate_request_payload"
+            and any(keyword.arg == "endpoint" for keyword in node.keywords)
+            for nested in ast.walk(node)
+            if isinstance(nested, ast.Call)
+            and isinstance(nested.func, ast.Attribute)
+            and nested.func.attr == "read_body"
+        ]
+        assert len(body_reads) == len(validated_reads), (
+            f"{path.relative_to(ROOT)} 必须按 endpoint 校验每个请求体"
+        )
+
+    router = (ROOT / "erp_web/http_routes.py").read_text(encoding="utf-8")
+    assert "from . import runtime" not in router
+    assert "RequestValidationError" in router
+
+
+def test_browser_debug_core_does_not_reverse_service_dependencies() -> None:
+    browser_ai = (
+        ROOT / "erp_web/services/browser_ai_runtime.py"
+    ).read_text(encoding="utf-8")
+    browser_core = (
+        ROOT / "erp_web/services/browser_debug_service.py"
+    ).read_text(encoding="utf-8")
+    source_collect_browser = (
+        ROOT / "erp_web/runtime_units/source_collect_browser.py"
+    ).read_text(encoding="utf-8")
+    assert "runtime_units" not in browser_ai
+    assert "runtime_units" not in browser_core
+    assert "from erp_web.services.browser_debug_service import" in source_collect_browser
+
+
 def test_runtime_publish_and_collect_aggregators_use_explicit_exports() -> None:
-    for path in [
+    removed_aggregators = [
         ROOT / "erp_web/runtime_units/publish_runtime.py",
         ROOT / "erp_web/runtime_units/source_collect.py",
+    ]
+    assert all(not path.exists() for path in removed_aggregators)
+    for path in [
+        ROOT / "erp_web/runtime_units/source_collect_workflows.py",
+        ROOT / "erp_web/runtime_units/source_sites.py",
+        ROOT / "erp_web/runtime_units/publish_bus.py",
+        ROOT / "erp_web/runtime_units/publish_helpers.py",
+        ROOT / "erp_web/runtime_units/publish_logs_runtime.py",
+        ROOT / "erp_web/runtime_units/publish_mercadolibre.py",
+        ROOT / "erp_web/runtime_units/publish_validation.py",
+        ROOT / "erp_web/runtime_units/publish_workflows.py",
     ]:
         text = path.read_text(encoding="utf-8")
         assert "import *" not in text, f"{path.relative_to(ROOT)} should list exported symbols explicitly"
@@ -40,19 +202,18 @@ def test_refactored_model_and_marketplace_units_do_not_use_wildcard_imports() ->
 
 def test_refactored_runtime_units_do_not_use_wildcard_imports() -> None:
     for path in python_files("erp_web/runtime_units"):
-        if path.name in {"__init__.py", "runtime_common.py"}:
+        if path.name == "__init__.py":
             continue
         text = path.read_text(encoding="utf-8")
         assert "import *" not in text, f"{path.relative_to(ROOT)} should use explicit imports"
 
 
 def test_image_pool_core_breaks_runtime_import_cycles() -> None:
-    product_store_unit = (ROOT / "erp_web/runtime_units/product_store.py").read_text(encoding="utf-8")
     product_store_impl = (ROOT / "erp_web/stores/product_store.py").read_text(encoding="utf-8")
     image_pool = (ROOT / "erp_web/runtime_units/image_pool.py").read_text(encoding="utf-8")
     publish_mercadolibre = (ROOT / "erp_web/runtime_units/publish_mercadolibre.py").read_text(encoding="utf-8")
 
-    assert "image_pool import" not in product_store_unit
+    assert not (ROOT / "erp_web/runtime_units/product_store.py").exists()
     assert "from erp_web.runtime_units.image_pool import" not in product_store_impl
     assert "from .publish_mercadolibre import" not in image_pool
     assert "from erp_web.runtime_units.image_pool_core import" in product_store_impl
@@ -60,17 +221,21 @@ def test_image_pool_core_breaks_runtime_import_cycles() -> None:
 
 
 def test_runtime_product_store_is_a_pure_delegation_layer() -> None:
-    """runtime_units/product_store.py 只许留一行式委托：不得再有业务逻辑或直接 IO。"""
-    text = (ROOT / "erp_web/runtime_units/product_store.py").read_text(encoding="utf-8")
-    for marker in ("read_json", "write_json", "sqlite3", "open(", "Path(", "deepcopy", "json.load", "json.dump"):
-        assert marker not in text, f"runtime_units/product_store.py should not contain {marker!r}"
-    assert "get_context()" in text
+    """产品持久化只归 stores.ProductStore，不再保留 runtime 委托层。"""
+    assert not (ROOT / "erp_web/runtime_units/product_store.py").exists()
+    text = (ROOT / "erp_web/stores/product_store.py").read_text(encoding="utf-8")
+    assert "class ProductStore" in text
+    assert "get_context()" not in text
 
 
 def test_context_map_mentions_runtime_compatibility_boundary() -> None:
     text = (ROOT / "docs/ai-context-map.md").read_text(encoding="utf-8")
-    assert "compatibility aggregator" in text
-    assert "Do not add new `from erp_web.runtime import *`" in text
+    assert "compatibility aggregator" not in text
+    assert "Python 代码导入兼容层已经退役" in text
+    assert "`erp_web/runtime.py`" in text
+    assert "均已删除" in text
+    assert "erp_web/stores/product_store.py" in text
+    assert "erp_web/services/browser_debug_service.py" in text
 
 
 def test_context_map_mentions_product_research_entry_points() -> None:
@@ -94,6 +259,13 @@ def test_context_map_mentions_ai_provider_and_ai_work_entry_points() -> None:
     text = (ROOT / "docs/ai-context-map.md").read_text(encoding="utf-8")
     for entry_point in [
         "erp_web/services/ai_provider_contracts.py",
+        "erp_web/services/ai_gateway_providers.py",
+        "erp_web/services/ai_gateway_http_providers.py",
+        "erp_web/services/ai_gateway_cli_provider.py",
+        "erp_web/services/ai_gateway_browser_provider.py",
+        "erp_web/services/ai_gateway_provider_types.py",
+        "erp_web/services/ai_gateway_provider_profiles.py",
+        "erp_web/services/ai_gateway_provider_prompting.py",
         "erp_web/services/ai_image_provider.py",
         "erp_web/services/ai_work_service.py",
         "erp_web/http_route_units/ai_work_routes.py",
@@ -116,13 +288,106 @@ def test_ai_gateway_stays_a_small_stable_facade() -> None:
     assert "AiProviderClient" in text
 
 
+def test_ai_provider_implementations_stay_in_focused_modules() -> None:
+    services = ROOT / "erp_web/services"
+    facade = services / "ai_gateway_providers.py"
+    modules = {
+        "ai_gateway_http_providers.py": {
+            "OpenAICompatibleProvider",
+            "OpenAIResponsesProvider",
+        },
+        "ai_gateway_cli_provider.py": {"CodexCliProvider"},
+        "ai_gateway_browser_provider.py": {"BrowserAiProvider"},
+    }
+
+    facade_text = facade.read_text(encoding="utf-8")
+    facade_tree = ast.parse(facade_text)
+    facade_classes = {
+        node.name for node in facade_tree.body if isinstance(node, ast.ClassDef)
+    }
+    assert facade_classes == {"AiProviderClient"}
+    assert len(facade_text.splitlines()) < 500
+    assert "AI_PROVIDER_REGISTRY" in facade_text
+
+    size_limits = {
+        "ai_gateway_http_providers.py": 1600,
+        "ai_gateway_cli_provider.py": 500,
+        "ai_gateway_browser_provider.py": 400,
+    }
+    for filename, expected_classes in modules.items():
+        path = services / filename
+        text = path.read_text(encoding="utf-8")
+        tree = ast.parse(text)
+        classes = {
+            node.name for node in tree.body if isinstance(node, ast.ClassDef)
+        }
+        assert expected_classes.issubset(classes)
+        assert len(text.splitlines()) < size_limits[filename]
+        assert "__all__" in text
+        assert "import *" not in text
+        assert "ai_gateway_providers" not in text, (
+            f"{filename} 不得反向依赖注册表门面，以免形成循环"
+        )
+        if filename != "ai_gateway_http_providers.py":
+            assert "ai_gateway_http_providers" not in text, (
+                f"{filename} 不得为共享请求/配方反向依赖 HTTP 实现"
+            )
+
+    for filename in (
+        "ai_gateway_provider_types.py",
+        "ai_gateway_provider_profiles.py",
+        "ai_gateway_provider_prompting.py",
+    ):
+        text = (services / filename).read_text(encoding="utf-8")
+        assert len(text.splitlines()) < 200
+        assert "__all__" in text
+        assert "ai_gateway_providers" not in text
+
+
+def test_ai_provider_modules_have_no_definition_shadowed_by_alias() -> None:
+    """防止已拆出的实现再次被文件后部的同名赋值静默覆盖。"""
+
+    provider_paths = [
+        ROOT / "erp_web/services/ai_gateway_http_providers.py",
+        ROOT / "erp_web/services/ai_gateway_cli_provider.py",
+        ROOT / "erp_web/services/ai_gateway_browser_provider.py",
+        ROOT / "erp_web/services/ai_gateway_providers.py",
+    ]
+    shadowed: list[str] = []
+    for path in provider_paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        definitions = {
+            node.name: node
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        }
+        for node in tree.body:
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                definition = definitions.get(target.id)
+                if definition and definition.end_lineno < node.lineno:
+                    shadowed.append(
+                        f"{path.name}:{definition.lineno} {target.id} -> {node.lineno}"
+                    )
+    assert not shadowed, "存在被后续同名别名覆盖的死实现：\n" + "\n".join(shadowed)
+
+
 def test_ai_capability_probes_share_one_provider_loop() -> None:
     probe_text = (ROOT / "erp_web/services/ai_gateway_probe.py").read_text(
         encoding="utf-8"
     )
-    provider_text = (
-        ROOT / "erp_web/services/ai_gateway_providers.py"
-    ).read_text(encoding="utf-8")
+    provider_paths = [
+        ROOT / "erp_web/services/ai_gateway_http_providers.py",
+        ROOT / "erp_web/services/ai_gateway_cli_provider.py",
+        ROOT / "erp_web/services/ai_gateway_browser_provider.py",
+    ]
+    provider_text = "\n".join(
+        path.read_text(encoding="utf-8") for path in provider_paths
+    )
     assert "def run_capability_probes(" in probe_text
     assert provider_text.count("probe_runtime.run_capability_probes(") == 3
     for provider in (
@@ -145,6 +410,16 @@ def test_state_contract_is_versioned_validated_and_redacted() -> None:
     assert "config_service.public_app_config" in route_text
     assert "config_service.public_store_config" in route_text
     assert "def validate_app_state_response(" in schema_text
+    state_body = route_text.split("def handle_state(", 1)[1].split(
+        "\ndef handle_products_index(", 1
+    )[0]
+    for legacy_bulk_field in (
+        '"productsIndex"',
+        '"draftsIndex"',
+        '"publishLogs"',
+        '"mercadolibreOrderNotifications"',
+    ):
+        assert legacy_bulk_field not in state_body
 
 
 def test_frontend_workflow_has_one_real_route_and_no_fake_user_auth() -> None:
@@ -176,12 +451,47 @@ def test_frontend_workflow_state_is_split_by_domain() -> None:
     assert "async function refreshMercadoLibreRemoteItems(" not in facade
 
 
-def test_frontend_product_contract_reads_old_but_writes_version_one() -> None:
-    normalizers = (
-        ROOT / "front/src/api/workflow/normalizers.ts"
+def test_frontend_workflow_action_factories_use_explicit_narrow_ports() -> None:
+    for domain in ("collection", "catalog", "pricing", "publishing"):
+        action_path = ROOT / f"front/src/stores/workflow/actions/{domain}.ts"
+        action_text = action_path.read_text(encoding="utf-8")
+        port_name = f"Workflow{domain.title()}ActionsPort"
+        factory_name = f"createWorkflow{domain.title()}Actions"
+        assert f"type {port_name} = Pick<" in action_text, (
+            f"{action_path.relative_to(ROOT)} 必须显式声明依赖端口"
+        )
+        assert f"{factory_name}(runtime: {port_name})" in action_text, (
+            f"{action_path.relative_to(ROOT)} 不得接收完整 WorkflowRuntime"
+        )
+        assert f"{factory_name}(runtime: WorkflowRuntime)" not in action_text
+
+
+def test_frontend_product_contract_rejects_old_and_writes_version_one() -> None:
+    generated = (
+        ROOT / "front/src/types/workflow.generated.ts"
     ).read_text(encoding="utf-8")
-    assert "export const PRODUCT_SCHEMA_VERSION = 1" in normalizers
-    assert "const currentSchema =" in normalizers
-    assert "schema_version: PRODUCT_SCHEMA_VERSION" in normalizers
-    assert "\n    id: product.productId" not in normalizers
-    assert "source_url: product.source.sourceUrl" in normalizers
+    product_normalizer = (
+        ROOT / "front/src/api/workflow/normalizers/product.ts"
+    ).read_text(encoding="utf-8")
+    assert "export const PRODUCT_SCHEMA_VERSION = 1 as const" in generated
+    assert "assertCurrentProductWireSchema(record)" in product_normalizer
+    assert "REMOVED_PRODUCT_FIELDS" in product_normalizer
+    assert "const currentSchema =" not in product_normalizer
+    assert "schema_version: PRODUCT_SCHEMA_VERSION" in product_normalizer
+    assert "\n    id: product.productId" not in product_normalizer
+    assert "source_url: product.source.sourceUrl" in product_normalizer
+    backend_product = generated.split(
+        "export interface BackendProduct {",
+        1,
+    )[1].split("\n}", 1)[0]
+    for retired_field in (
+        "id",
+        "title",
+        "source_url",
+        "source_platform",
+        "source_images",
+        "source_image_urls",
+        "category_id",
+        "sale_price",
+    ):
+        assert f"  {retired_field}?:" not in backend_product

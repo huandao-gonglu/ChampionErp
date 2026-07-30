@@ -251,12 +251,20 @@ describe('publishPrecheck API mapping', () => {
       publish_preview: {
         mercadolibre: { ok: true },
       },
+      future_only_field: '不得透传',
+      source: {
+        variants: [{ sku: 'variant-1' }],
+        future_source_field: '不得透传',
+      },
     }
 
     const result = toBackendProduct(product)
 
     expect(result.drafts).toBeUndefined()
     expect(result.publish_preview).toEqual({ mercadolibre: { ok: true } })
+    expect(result).not.toHaveProperty('future_only_field')
+    expect(result.source?.variants).toEqual([{ sku: 'variant-1' }])
+    expect(result.source).not.toHaveProperty('future_source_field')
   })
 
   it('writes product descriptions and selling points into source data', () => {
@@ -271,18 +279,15 @@ describe('publishPrecheck API mapping', () => {
       bullets: ['可折叠收纳', '节省空间'],
     }))
     expect(result.schema_version).toBe(1)
-    expect(result.id).toBeUndefined()
-    expect(result.source_url).toBeUndefined()
+    expect(result).not.toHaveProperty('id')
+    expect(result).not.toHaveProperty('source_url')
   })
 
   it('only reads canonical fields from a versioned product', () => {
     const product = normalizeBackendProduct({
       schema_version: 1,
       product_id: 'canonical-id',
-      id: 'legacy-id',
       name: '规范名称',
-      title: '旧名称',
-      source_url: 'https://legacy.example/item',
       source: {
         source_url: 'https://canonical.example/item',
         source_platform: '1688',
@@ -295,6 +300,26 @@ describe('publishPrecheck API mapping', () => {
     expect(product.productId).toBe('canonical-id')
     expect(product.name).toBe('规范名称')
     expect(product.source.sourceUrl).toBe('https://canonical.example/item')
+  })
+
+  it('rejects products without the current schema version', () => {
+    expect(() => normalizeBackendProduct({
+      id: 'legacy-id',
+      title: '旧商品',
+      sourceImages: ['legacy.jpg'],
+    })).toThrow('不支持的商品数据 schema_version：未声明')
+
+    expect(() => normalizeBackendProduct({
+      schema_version: 0,
+      product_id: 'old-version',
+    })).toThrow('当前仅接受 1')
+
+    expect(() => normalizeBackendProduct({
+      schema_version: 1,
+      product_id: 'legacy-fields',
+      title: '旧商品',
+      source: {},
+    })).toThrow('商品数据包含已移除的旧字段：title')
   })
 
   it('keeps structured backend issues readable for the UI', async () => {
@@ -368,7 +393,7 @@ describe('imageTranslate API timeout', () => {
       { id: 'img-3', url: '', path: '', previewUrl: '', origin: 'upload', usage: 'detail', platforms: ['mercadolibre'], isMain: false, selected: false, status: 'ready', width: 1000, height: 1000 },
     ]
     vi.mocked(apiClient.post).mockResolvedValueOnce({
-      data: { ok: true, product: { source: { image_pool: [] } }, productsIndex: [] },
+      data: { ok: true, product: toBackendProduct(createEmptyProduct()), productsIndex: [] },
     })
 
     await imageTranslate(product, 'mercadolibre', 'Spanish (Mexico)')
@@ -403,7 +428,7 @@ describe('imageEdit API payload', () => {
       { id: 'img-2', url: '', path: '', previewUrl: '', origin: 'upload', usage: 'detail', platforms: ['mercadolibre'], isMain: false, selected: false, status: 'ready', width: 1000, height: 1000 },
     ]
     vi.mocked(apiClient.post).mockResolvedValueOnce({
-      data: { ok: true, product: { source: { image_pool: [] } }, productsIndex: [] },
+      data: { ok: true, product: toBackendProduct(createEmptyProduct()), productsIndex: [] },
     })
 
     await imageEdit(product, 'mercadolibre', '  扣除背景，保留产品主体  ', {

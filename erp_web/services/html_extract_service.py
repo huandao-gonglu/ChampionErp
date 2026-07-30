@@ -29,7 +29,7 @@ MIN_COLLECT_IMAGE_SIDE = 240
 def load_app_config() -> dict[str, Any]:
     """Default app config for the web backend.
 
-    Kept here so erp_web_app no longer imports the legacy tkinter desktop app.
+    Kept here so erp_web_app no longer imports the retired tkinter desktop app.
     """
     return {
         "ai_models": ai_model_config.default_ai_models(),

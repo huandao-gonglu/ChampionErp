@@ -4,31 +4,33 @@ from __future__ import annotations
 import urllib.parse
 from typing import Callable
 
+from erp_web.context import get_context
 from erp_web.services import config_service
 from erp_web.schemas.api import API_SCHEMA_VERSION, validate_app_state_response
 from erp_web.http_route_units import static_routes
 from .common import JsonRequestHandler
-from .. import runtime as app
-from ..runtime_units.image_pool import current_generated_images, current_image_pool, current_source_images
-from ..runtime_units.product_store import (
-    load_drafts_index,
+from ..facades.get_facade import (
+    browser_debug_status,
+    current_generated_images,
+    current_image_pool,
+    current_source_images,
+    exchange_mercadolibre_code_from_body,
+    get_publishing_bus,
+    html_page,
     load_app_config,
+    load_drafts_index,
+    load_mercadolibre_order_notifications,
     load_product,
     load_products_index,
+    load_publish_logs,
     load_store_config,
+    marketplace_options,
+    mask_secret,
     mercadolibre_auth_checklist,
+    mercadolibre_recent_orders,
+    mercadolibre_remote_items,
     summarize_store_auth_states,
 )
-from ..runtime_units.publish_bus import load_publish_logs, persist_publish_bus_terminal_results
-from ..runtime_units.mercadolibre_orders import load_mercadolibre_order_notifications, mercadolibre_recent_orders
-from ..runtime_units.publish_mercadolibre import mercadolibre_remote_items
-from ..runtime_units.publish_adapter import get_publishing_bus
-from ..runtime_units.runtime_api import html_page
-from ..runtime_units.runtime_common import APP_DIR, BROWSER_DEBUG_PORT, OUTPUT_DIR
-from ..runtime_units.source_collect_browser import browser_debug_status
-from ..marketplace_registry import marketplace_options
-
-APP_MODULE = app
 GetHandler = Callable[[JsonRequestHandler, object], None]
 
 FRONTEND_PAGE_ROUTES = {
@@ -82,6 +84,7 @@ def handle_frontend_page(handler: JsonRequestHandler, parsed: object) -> None:
 
 
 def handle_state(handler: JsonRequestHandler, parsed: object) -> None:
+    paths = get_context().paths
     prod = load_product()
     store_cfg = load_store_config()
     app_cfg = load_app_config()
@@ -89,19 +92,15 @@ def handle_state(handler: JsonRequestHandler, parsed: object) -> None:
         "schemaVersion": API_SCHEMA_VERSION,
         "ok": True,
         "product": prod,
-        "appConfig": config_service.public_app_config(APP_DIR, app_cfg),
+        "appConfig": config_service.public_app_config(paths.app_dir, app_cfg),
         "storeConfig": config_service.public_store_config(store_cfg),
         "storeAuthSummary": summarize_store_auth_states(store_cfg),
         "mercadolibreAuthChecklist": mercadolibre_auth_checklist(store_cfg.get("mercadolibre", {})),
         "imagePool": current_image_pool(prod),
         "sourceImages": current_source_images(prod),
         "generatedImages": current_generated_images(),
-        "publishLogs": load_publish_logs(),
-        "mercadolibreOrderNotifications": load_mercadolibre_order_notifications(),
-        "productsIndex": load_products_index(),
-        "draftsIndex": load_drafts_index(),
         "platformOptions": marketplace_options(),
-        "outputDir": str(OUTPUT_DIR),
+        "outputDir": str(paths.output_dir),
     }
     handler.send_json(validate_app_state_response(state))
 
@@ -117,8 +116,9 @@ def handle_drafts_index(handler: JsonRequestHandler, parsed: object) -> None:
 
 
 def handle_browser_debug_status(handler: JsonRequestHandler, parsed: object) -> None:
+    default_port = get_context().paths.browser_debug_port
     params = urllib.parse.parse_qs(parsed.query)
-    port = int((params.get("port") or [str(BROWSER_DEBUG_PORT)])[0] or BROWSER_DEBUG_PORT)
+    port = int((params.get("port") or [str(default_port)])[0] or default_port)
     handler.send_json(browser_debug_status(port))
 
 
@@ -155,8 +155,13 @@ def handle_mercadolibre_orders(handler: JsonRequestHandler, parsed: object) -> N
 
 
 def handle_ai_config(handler: JsonRequestHandler, parsed: object) -> None:
-    config_service.write_env_template(APP_DIR)
-    handler.send_json({"ok": True, "config": config_service.public_ai_config(APP_DIR, load_app_config())})
+    app_dir = get_context().paths.app_dir
+    handler.send_json(
+        {
+            "ok": True,
+            "config": config_service.public_ai_config(app_dir, load_app_config()),
+        }
+    )
 
 
 def handle_publish_bus_status(handler: JsonRequestHandler, parsed: object) -> None:
@@ -166,17 +171,27 @@ def handle_publish_bus_status(handler: JsonRequestHandler, parsed: object) -> No
         handler.send_json({"ok": False, "error": "缺少 job_id"}, 400)
         return
     try:
-        handler.send_json({"ok": True, "job": persist_publish_bus_terminal_results(get_publishing_bus().get_status(job_id))})
+        handler.send_json({"ok": True, "job": get_publishing_bus().get_status(job_id)})
     except Exception as exc:
         handler.send_json({"ok": False, "error": str(exc)}, 404)
 
 
 def handle_file(handler: JsonRequestHandler, parsed: object) -> None:
-    static_routes.serve_file(handler, parsed, APP_MODULE)
+    paths = get_context().paths
+    static_routes.serve_file(
+        handler,
+        parsed,
+        (
+            paths.images_dir,
+            # 采集 HTML/TXT 也位于此目录，但 serve_file 会再按图片扩展名
+            # 限制，因此这里只开放截图，不会暴露采集页面原文。
+            paths.collect_debug_dir,
+        ),
+    )
 
 
 def handle_assets(handler: JsonRequestHandler, parsed: object) -> None:
-    static_routes.serve_frontend_asset(handler, parsed, APP_MODULE)
+    static_routes.serve_frontend_asset(handler, parsed, get_context().paths.front_dist_dir)
 
 
 def handle_mercadolibre_auth_page(handler: JsonRequestHandler, parsed: object) -> None:
@@ -188,7 +203,12 @@ def handle_ozon_auth_page(handler: JsonRequestHandler, parsed: object) -> None:
 
 
 def handle_mercadolibre_callback(handler: JsonRequestHandler, parsed: object) -> None:
-    static_routes.handle_ml_callback(handler, parsed, APP_MODULE)
+    static_routes.handle_ml_callback(
+        handler,
+        parsed,
+        exchange_code=exchange_mercadolibre_code_from_body,
+        mask_secret=mask_secret,
+    )
 
 
 GET_HANDLERS: dict[str, GetHandler] = {

@@ -4,10 +4,11 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from erp_web.context import get_context
 from erp_web.product_model import validate_category_precheck
+from erp_web.stores.product_store import normalize_product_fields
 
 from .collect_helpers import collect_time_iso
-from .product_store import load_app_config, normalize_product_fields
 from .publish_helpers import (
     _draft_for_platform,
     _draft_images,
@@ -72,7 +73,10 @@ def validate_mercadolibre_draft(product: dict[str, Any], config: dict[str, Any])
     errors: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []
     auth_status, auth_next = _masked_auth_status("mercadolibre", config)
-    title_limit = int(load_app_config().get("mercadolibre_title_limit") or 60)
+    title_limit = int(
+        get_context().config.load_app_config().get("mercadolibre_title_limit")
+        or 60
+    )
     title = str(draft.get("title") or "").strip()
     description = str(draft.get("description") or "").strip()
     category_id = str(draft.get("category_id") or "").strip()
@@ -168,7 +172,7 @@ def validate_mercadolibre_draft(product: dict[str, Any], config: dict[str, Any])
             need_review.append(raw_field)
     if need_review:
         errors.extend(_review_precheck_items(need_review, "error"))
-    if not str(draft.get("upc") or draft.get("gtin") or draft.get("barcode") or product.get("upc") or product.get("gtin") or product.get("barcode") or "").strip():
+    if not str(draft.get("upc") or product.get("upc") or "").strip():
         allow_gtin_exemption = bool(draft.get("allow_gtin_exemption") or draft.get("gtin_exempt") or config.get("listing", {}).get("allow_gtin_exemption"))
         if allow_gtin_exemption:
             warnings.append(precheck_item("UPC_MISSING", "upc", "UPC / GTIN 为空，已按配置允许豁免", "warning", "确认 Mercado Libre 类目允许 EMPTY_GTIN_REASON"))

@@ -8,7 +8,6 @@ from erp_web import marketplaces as publisher
 from erp_web.context import get_context
 
 from .collect_helpers import collect_time_iso
-from .product_store import load_store_config, save_store_config
 from .publish_mercadolibre import ensure_mercadolibre_auth_ready
 
 
@@ -29,7 +28,7 @@ def _mercadolibre_user_id(config: dict[str, Any], token: str) -> str:
     if user_id:
         store["user_id"] = user_id
         store["seller_id"] = user_id
-        save_store_config(config)
+        get_context().config.save_store_config(config)
     return user_id
 
 
@@ -100,7 +99,7 @@ def _orders_from_search_response(value: Any) -> list[dict[str, Any]]:
 
 
 def mercadolibre_recent_orders(limit: int = 10, offset: int = 0) -> dict[str, Any]:
-    config = load_store_config()
+    config = get_context().config.load_store_config()
     auth = ensure_mercadolibre_auth_ready(config)
     if not auth.get("ok"):
         return {
@@ -136,7 +135,7 @@ def mercadolibre_recent_orders(limit: int = 10, offset: int = 0) -> dict[str, An
 
 
 def fetch_mercadolibre_order_resource(resource: str) -> dict[str, Any]:
-    config = load_store_config()
+    config = get_context().config.load_store_config()
     auth = ensure_mercadolibre_auth_ready(config)
     if not auth.get("ok"):
         raise RuntimeError(str(auth.get("message") or "Mercado Libre 授权不可用"))

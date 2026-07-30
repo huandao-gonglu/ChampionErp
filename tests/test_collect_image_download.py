@@ -5,6 +5,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from erp_web.runtime_units.source_collect_parsers import collect_product_image_urls
 from erp_web.services import html_extract_service
 
 
@@ -15,8 +16,6 @@ def _png_bytes(width: int, height: int) -> bytes:
 
 
 def test_collect_product_image_urls_prefers_html_product_images_over_dom_icons() -> None:
-    from erp_web import runtime as erp_web_app
-
     html = """
     <html><head>
       <meta property="og:image" content="https://cbu01.alicdn.com/img/ibank/O1CN-product-main.jpg">
@@ -25,7 +24,7 @@ def test_collect_product_image_urls_prefers_html_product_images_over_dom_icons()
     </body></html>
     """
 
-    urls = erp_web_app.collect_product_image_urls(
+    urls = collect_product_image_urls(
         html,
         "https://detail.1688.com/offer/799002636435.html",
         ["https://img.alicdn.com/imgextra/i1/ui-icon.svg"],

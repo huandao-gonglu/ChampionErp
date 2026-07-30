@@ -3,14 +3,18 @@ from __future__ import annotations
 
 from typing import Callable
 
+from erp_web.schemas.requests import validate_request_payload
+
 from .common import JsonRequestHandler
-from ..runtime_units.mercadolibre_orders import record_mercadolibre_order_notification
+from ..facades.mercadolibre_facade import record_mercadolibre_order_notification
 
 PostHandler = Callable[[JsonRequestHandler], None]
 
 
 def handle_mercadolibre_notification(handler: JsonRequestHandler) -> None:
-    result = record_mercadolibre_order_notification(handler.read_body())
+    result = record_mercadolibre_order_notification(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
+    )
     handler.send_json(result, 200 if result.get("ok") else 202)
 
 

@@ -2,36 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from erp_web.context import get_context
 from erp_web.services import config_service, product_research_service
 
 from erp_web.product_research_config import normalize_product_research_config
-from erp_web.runtime_units.product_store import load_app_config, save_app_config
-from erp_web.runtime_units.runtime_common import APP_DIR
 from erp_web.schemas.api import ApiResponse
 
 
 ResponseWithStatus = tuple[ApiResponse, int]
-SENSITIVE_CONFIG_KEYS = {
-    "access_token",
-    "api_key",
-    "app_secret",
-    "authorization",
-    "bearer_token",
-    "client_secret",
-    "password",
-    "refresh_token",
-    "secret",
-    "token",
-}
-
-
-def _mask_secret(value: Any) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    if len(text) <= 8:
-        return "*" * len(text)
-    return f"{text[:4]}...{text[-4:]}"
 
 
 def _restore_masked_config_value(key: str, value: Any, current_value: Any) -> Any:
@@ -42,10 +20,19 @@ def _restore_masked_config_value(key: str, value: Any, current_value: Any) -> An
             for nested_key, nested_value in value.items()
         }
     if isinstance(value, list):
-        return value
-    if key.lower() not in SENSITIVE_CONFIG_KEYS:
-        return value
-    if current_value and str(value or "") == _mask_secret(current_value):
+        current_items = current_value if isinstance(current_value, list) else []
+        return [
+            _restore_masked_config_value(
+                key,
+                item,
+                current_items[index] if index < len(current_items) else None,
+            )
+            for index, item in enumerate(value)
+        ]
+    if (
+        current_value
+        and value == config_service.mask_nested_config(current_value, key)
+    ):
         return current_value
     return value
 
@@ -60,13 +47,13 @@ def _restore_masked_provider_secrets(incoming: dict[str, Any], current: dict[str
         for row in current_rows:
             if not isinstance(row, dict):
                 continue
-            row_id = str(row.get("id") or row.get("source_id") or "").strip()
+            row_id = str(row.get("id") or "").strip()
             if row_id:
                 current_by_id[row_id] = row
     for provider in providers:
         if not isinstance(provider, dict) or not isinstance(provider.get("config_json"), dict):
             continue
-        current_provider = current_by_id.get(str(provider.get("id") or provider.get("source_id") or "").strip())
+        current_provider = current_by_id.get(str(provider.get("id") or "").strip())
         current_config = current_provider.get("config_json") if isinstance(current_provider, dict) and isinstance(current_provider.get("config_json"), dict) else {}
         for key, value in list(provider["config_json"].items()):
             provider["config_json"][key] = _restore_masked_config_value(key, value, current_config.get(key))
@@ -75,8 +62,14 @@ def _restore_masked_provider_secrets(incoming: dict[str, Any], current: dict[str
 
 def create_hot_product_run_payload(body: dict[str, Any]) -> ResponseWithStatus:
     try:
-        app_config = load_app_config()
-        run = product_research_service.create_hot_product_run_async(APP_DIR, body, app_config.get("product_research", {}), app_config)
+        context = get_context()
+        app_config = context.config.load_app_config()
+        run = product_research_service.create_hot_product_run_async(
+            context.paths.app_dir,
+            body,
+            app_config.get("product_research", {}),
+            app_config,
+        )
         return product_research_service.build_run_response(run), 200
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}, 400
@@ -99,8 +92,17 @@ def get_active_hot_product_run_payload() -> ResponseWithStatus:
 
 
 def get_source_registry_payload() -> ResponseWithStatus:
-    config = load_app_config().get("product_research", {})
-    public_config = product_research_service.public_product_research_config(config, APP_DIR)
+    context = get_context()
+    config = context.config.load_app_config().get(
+        "product_research",
+        {},
+    )
+    public_config = (
+        product_research_service.public_product_research_config(
+            config,
+            context.paths.app_dir,
+        )
+    )
     return {
         "ok": True,
         "config": public_config,
@@ -109,8 +111,10 @@ def get_source_registry_payload() -> ResponseWithStatus:
 
 
 def save_source_registry_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    context = get_context()
+    config_store = context.config
     incoming = body.get("config") if isinstance(body.get("config"), dict) else body
-    app_config = load_app_config()
+    app_config = config_store.load_app_config()
     current = app_config.get("product_research") if isinstance(app_config.get("product_research"), dict) else {}
     incoming = _restore_masked_provider_secrets(dict(incoming), current)
     next_config = dict(current)
@@ -124,9 +128,20 @@ def save_source_registry_payload(body: dict[str, Any]) -> ResponseWithStatus:
         if key in incoming:
             next_config[key] = incoming[key]
     app_config["product_research"] = normalize_product_research_config(next_config)
-    save_app_config(app_config)
-    config_service.save_config_snapshot(APP_DIR, app_config)
-    public_config = product_research_service.public_product_research_config(load_app_config().get("product_research", {}), APP_DIR)
+    config_store.save_app_config(app_config)
+    config_service.save_config_snapshot(
+        context.paths.app_dir,
+        app_config,
+    )
+    public_config = (
+        product_research_service.public_product_research_config(
+            config_store.load_app_config().get(
+                "product_research",
+                {},
+            ),
+            context.paths.app_dir,
+        )
+    )
     return {
         "ok": True,
         "config": public_config,
@@ -136,13 +151,21 @@ def save_source_registry_payload(body: dict[str, Any]) -> ResponseWithStatus:
 
 def test_search_provider_payload(body: dict[str, Any]) -> ResponseWithStatus:
     try:
-        app_config = load_app_config()
+        context = get_context()
+        app_config = context.config.load_app_config()
         current = app_config.get("product_research") if isinstance(app_config.get("product_research"), dict) else {}
         provider = body.get("provider") if isinstance(body.get("provider"), dict) else {}
         restored = _restore_masked_provider_secrets({"search_providers": [provider]}, current)
         test_body = dict(body)
         test_body["provider"] = (restored.get("search_providers") or [{}])[0]
-        result = product_research_service.test_search_provider_connection(test_body, current, APP_DIR, app_config)
+        result = (
+            product_research_service.test_search_provider_connection(
+                test_body,
+                current,
+                context.paths.app_dir,
+                app_config,
+            )
+        )
         return result, 200
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}, 400

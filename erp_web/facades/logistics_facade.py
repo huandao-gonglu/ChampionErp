@@ -4,7 +4,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from erp_web.runtime_units.product_store import load_app_config, mask_secret
+from erp_web.context import get_context
+from erp_web.services.config_service import merge_runtime_secret_section
 from erp_web.runtime_units.yunexpress_client import (
     YunExpressClient,
     build_create_package_payload,
@@ -13,17 +14,29 @@ from erp_web.runtime_units.yunexpress_client import (
     normalize_yunexpress_config,
     validate_create_package_payload,
 )
+from erp_web.stores.product_store import mask_secret
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _config_from_body(body: dict[str, Any]) -> dict[str, Any]:
-    app_config = load_app_config()
+def _resolved_config(override: dict[str, Any] | None = None) -> dict[str, Any]:
+    config_store = get_context().config
+    app_config = config_store.load_app_config()
     stored = _as_dict(app_config.get("yunexpress"))
-    override = _as_dict(body.get("config") or body.get("yunexpress"))
-    return normalize_yunexpress_config({**stored, **override})
+    explicit_values = {
+        key: value
+        for key, value in _as_dict(override).items()
+        if not isinstance(value, str) or value.strip()
+    }
+    return normalize_yunexpress_config(
+        merge_runtime_secret_section(stored, explicit_values)
+    )
+
+
+def _config_from_body(body: dict[str, Any]) -> dict[str, Any]:
+    return _resolved_config(_as_dict(body.get("config") or body.get("yunexpress")))
 
 
 def _public_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -32,11 +45,14 @@ def _public_config(config: dict[str, Any]) -> dict[str, Any]:
     public["masked_app_secret"] = mask_secret(public.get("app_secret"))
     public["masked_source_key"] = mask_secret(public.get("source_key"))
     public["status"] = "已配置" if public.get("app_id") and public.get("app_secret") and public.get("source_key") else "未配置"
+    public["app_id"] = ""
+    public["app_secret"] = ""
+    public["source_key"] = ""
     return public
 
 
 def test_yunexpress_config(config: dict[str, Any]) -> dict[str, Any]:
-    cfg = normalize_yunexpress_config(config)
+    cfg = _resolved_config(config)
     ensure_yunexpress_config_ready(cfg)
     token = YunExpressClient(cfg).request_access_token()
     return {

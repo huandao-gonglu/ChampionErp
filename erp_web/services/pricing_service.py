@@ -99,7 +99,7 @@ def normalize_pricing_input(data: dict[str, Any]) -> dict[str, Any]:
     return {
         "platform": str(first_value(source, "platform", default="mercadolibre") or "mercadolibre").lower(),
         "site": str(first_value(source, "site", "site_id", default="MLM") or "MLM").upper(),
-        "cost_cny": number_value(first_value(source, "cost_cny", "cost", "purchase_cost", "source_price_cny_for_cost", "source_price_cny", "detected_price")),
+        "cost_cny": number_value(first_value(source, "cost_cny", "cost", "purchase_cost", "source_price_cny_for_cost", "source_price_cny")),
         "freight_cny": number_value(first_value(source, "freight_cny", "domestic_freight", "freight", "shipping_price_cny")),
         "prep_fee_cny": number_value(first_value(source, "ml_prep_fee_cny", "prep_fee_cny", "packaging_cost", "packaging")),
         "international_freight_cny": number_value(first_value(source, "international_freight_cny", "international_freight", "international_shipping")),

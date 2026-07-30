@@ -14,11 +14,12 @@ import {
   testAiModel,
   testApiConfig,
   testStoreAuth,
-} from '@/api/workflow'
+} from '@/api/workflow/settings'
 import { useWorkflowActivityStore } from '@/stores/workflow/activity'
 import { useWorkflowCatalogStore } from '@/stores/workflow/catalog'
 import { useWorkflowCollectionStore } from '@/stores/workflow/collection'
 import type { AuthResult, Marketplace, MercadoLibreAuthChecklist, MercadoLibreTestMode, UnknownRecord } from '@/types/workflow'
+import { sanitizePublicAppConfig } from '@/utils/configSecurity'
 
 function isRecord(value: unknown): value is UnknownRecord {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -43,22 +44,25 @@ function publicSafeAiModel(model: UnknownRecord): UnknownRecord {
 }
 
 function mergeAiConfigWithSubmitted(publicConfig: UnknownRecord, submittedConfig: UnknownRecord): UnknownRecord {
-  const merged: UnknownRecord = { ...publicConfig }
+  const safePublicConfig = sanitizePublicAppConfig(publicConfig)
+  const safeSubmittedConfig = sanitizePublicAppConfig(submittedConfig)
+  const merged: UnknownRecord = { ...safePublicConfig }
   if (Array.isArray(submittedConfig.ai_models)) {
-    const publicModels = Array.isArray(publicConfig.ai_models) ? publicConfig.ai_models.filter(isRecord) : []
+    const publicModels = Array.isArray(safePublicConfig.ai_models) ? safePublicConfig.ai_models.filter(isRecord) : []
     const publicById = new Map(publicModels.map((model) => [String(model.id || ''), publicSafeAiModel(model)]))
-    merged.ai_models = submittedConfig.ai_models
+    const submittedModels = Array.isArray(safeSubmittedConfig.ai_models) ? safeSubmittedConfig.ai_models : []
+    merged.ai_models = submittedModels
       .filter(isRecord)
       .map((model) => publicSafeAiModel({ ...(publicById.get(String(model.id || '')) || {}), ...model }))
   }
-  if (isRecord(submittedConfig.ai_use_case_bindings)) merged.ai_use_case_bindings = submittedConfig.ai_use_case_bindings
-  if (isRecord(submittedConfig.ai_use_case_prompts)) merged.ai_use_case_prompts = submittedConfig.ai_use_case_prompts
-  for (const section of ['1688_api', 'pricing_defaults']) {
-    const publicSection = isRecord(publicConfig[section]) ? publicConfig[section] as UnknownRecord : {}
-    const submittedSection = isRecord(submittedConfig[section]) ? submittedConfig[section] as UnknownRecord : {}
+  if (isRecord(safeSubmittedConfig.ai_use_case_bindings)) merged.ai_use_case_bindings = safeSubmittedConfig.ai_use_case_bindings
+  if (isRecord(safeSubmittedConfig.ai_use_case_prompts)) merged.ai_use_case_prompts = safeSubmittedConfig.ai_use_case_prompts
+  for (const section of ['1688_api', 'yunexpress', 'pricing_defaults']) {
+    const publicSection = isRecord(safePublicConfig[section]) ? safePublicConfig[section] as UnknownRecord : {}
+    const submittedSection = isRecord(safeSubmittedConfig[section]) ? safeSubmittedConfig[section] as UnknownRecord : {}
     merged[section] = { ...publicSection, ...submittedSection }
   }
-  return merged
+  return sanitizePublicAppConfig(merged)
 }
 
 export const useWorkflowSettingsStore = defineStore('workflow-settings', () => {
@@ -77,7 +81,7 @@ export const useWorkflowSettingsStore = defineStore('workflow-settings', () => {
     activity.setError('')
     try {
       const result = await fetchAiConfig()
-      aiConfig.value = result.raw
+      aiConfig.value = sanitizePublicAppConfig(result.raw)
       activity.addLog('AI 配置已读取。')
     } catch (exc) {
       activity.setError(exc instanceof Error ? exc.message : '读取 AI 配置失败')
@@ -157,8 +161,9 @@ export const useWorkflowSettingsStore = defineStore('workflow-settings', () => {
     activity.loading = true
     activity.setError('')
     try {
-      storeAuthSummary.value = await saveStoreSettings(config)
-      storeConfig.value = { ...storeConfig.value, ...config }
+      const saved = await saveStoreSettings(config)
+      storeConfig.value = saved.storeConfig
+      storeAuthSummary.value = saved.storeAuthSummary
       mercadolibreAuthChecklist.value = await fetchMercadoLibreAuthChecklist()
       activity.addLog('平台授权配置已保存。')
     } catch (exc) {
@@ -276,8 +281,9 @@ export const useWorkflowSettingsStore = defineStore('workflow-settings', () => {
     activity.loading = true
     activity.setError('')
     try {
-      storeAuthSummary.value = await clearStoreAuth(platform)
-      storeConfig.value = { ...storeConfig.value, [platform]: {} }
+      const cleared = await clearStoreAuth(platform)
+      storeConfig.value = cleared.storeConfig
+      storeAuthSummary.value = cleared.storeAuthSummary
       if (platform === 'mercadolibre') mercadolibreAuthChecklist.value = await fetchMercadoLibreAuthChecklist()
       activity.addLog(`${platform} 授权已清除。`)
     } catch (exc) {

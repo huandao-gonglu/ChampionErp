@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from conftest import assert_no_old_path
+from erp_web import app_config
 from erp_web.services import ai_model_config, browser_ai_runtime, config_service
 
 
@@ -482,37 +485,27 @@ def test_merge_config_copies_saved_model_key_from_source_model(app_dir: Path) ->
     assert "copy_source_id" not in merged["ai_models"][1]
 
 
-def test_normalize_app_config_migrates_legacy_ai_aliases(app_dir: Path) -> None:
-    from erp_web import runtime as erp_web_app
-
-    saved = erp_web_app.normalize_app_config(
-        {
-            "api_provider": "DeepSeek",
-            "deepseek_api_key": "legacy-text-key",
-            "deepseek_base_url": "https://legacy.deepseek.example",
-            "deepseek_model": "legacy-text-model",
-            "text_ai_api_key": "legacy-text-key-2",
-            "openai_api_key": "legacy-image-key",
-            "openai_base_url": "https://legacy.openai.example/v1",
-            "openai_model": "legacy-image-model",
-            "image_ai_api_key": "legacy-image-key-2",
-        }
-    )
-
-    assert saved["ai_models"][0]["api_key"] == "legacy-text-key-2"
-    assert saved["ai_models"][0]["base_url"] == "https://legacy.deepseek.example"
-    assert saved["ai_models"][0]["model"] == "legacy-text-model"
-    assert saved["ai_models"][1]["api_key"] == "legacy-image-key-2"
-    assert saved["ai_models"][1]["base_url"] == "https://legacy.openai.example/v1"
-    assert saved["ai_models"][1]["model"] == "legacy-image-model"
-    for key in ("api_provider", "deepseek_api_key", "text_ai_api_key", "openai_api_key", "image_ai_api_key"):
-        assert key not in saved
+def test_normalize_app_config_rejects_legacy_ai_aliases(
+    app_dir: Path,
+) -> None:
+    with pytest.raises(ValueError, match="已退役的 AI 配置字段"):
+        app_config.normalize_app_config(
+            {
+                "api_provider": "DeepSeek",
+                "deepseek_api_key": "legacy-text-key",
+                "deepseek_base_url": "https://legacy.deepseek.example",
+                "deepseek_model": "legacy-text-model",
+                "text_ai_api_key": "legacy-text-key-2",
+                "openai_api_key": "legacy-image-key",
+                "openai_base_url": "https://legacy.openai.example/v1",
+                "openai_model": "legacy-image-model",
+                "image_ai_api_key": "legacy-image-key-2",
+            }
+        )
 
 
 def test_normalize_app_config_keeps_1688_api_credentials() -> None:
-    from erp_web import runtime as erp_web_app
-
-    saved = erp_web_app.normalize_app_config(
+    saved = app_config.normalize_app_config(
         {
             "1688_api": {
                 "app_key": "app-key-123456",
@@ -535,9 +528,7 @@ def test_normalize_app_config_keeps_1688_api_credentials() -> None:
 
 
 def test_normalize_app_config_keeps_yunexpress_credentials() -> None:
-    from erp_web import runtime as erp_web_app
-
-    saved = erp_web_app.normalize_app_config(
+    saved = app_config.normalize_app_config(
         {
             "yunexpress": {
                 "environment": "production",
@@ -567,60 +558,97 @@ def test_normalize_app_config_keeps_yunexpress_credentials() -> None:
     assert saved["yunexpress"]["status"] == "已配置"
 
 
-def test_normalize_app_config_migrates_legacy_nested_ai_sections(app_dir: Path) -> None:
-    from erp_web import runtime as erp_web_app
-
-    cfg = erp_web_app.normalize_app_config(
-        {
-            "text_ai": {
-                "platform": "DeepSeek",
-                "api_key": "legacy-text-key",
-                "base_url": "https://legacy.deepseek.example",
-                "model": "legacy-text-model",
-            },
-            "image_ai": {
-                "platform": "OpenAI",
-                "api_key": "legacy-image-key",
-                "base_url": "https://legacy.openai.example/v1",
-                "model": "legacy-image-model",
-                "quality": "high",
-            },
-        }
-    )
-
-    assert cfg["ai_models"][0]["api_key"] == "legacy-text-key"
-    assert cfg["ai_models"][0]["base_url"] == "https://legacy.deepseek.example"
-    assert cfg["ai_models"][0]["model"] == "legacy-text-model"
-    assert cfg["ai_models"][1]["api_key"] == "legacy-image-key"
-    assert cfg["ai_models"][1]["base_url"] == "https://legacy.openai.example/v1"
-    assert cfg["ai_models"][1]["model"] == "legacy-image-model"
-    assert cfg["ai_models"][1]["quality"] == "high"
-    assert "text_ai" not in cfg
-    assert "image_ai" not in cfg
-
-
-def test_normalize_app_config_uses_legacy_key_without_overwriting_canonical_model(app_dir: Path) -> None:
-    from erp_web import runtime as erp_web_app
-
-    cfg = erp_web_app.normalize_app_config(
-        {
-            "ai_models": [
-                {
-                    "id": "default_text",
-                    "provider": "New Provider",
-                    "api_key": "",
-                    "base_url": "https://new.example/v1",
-                    "model": "new-model",
-                    "capabilities": ["chat", "json"],
+def test_normalize_app_config_rejects_yunexpress_camel_case_fields() -> None:
+    with pytest.raises(ValueError, match="已退役的 camelCase 字段"):
+        app_config.normalize_app_config(
+            {
+                "yunexpress": {
+                    "appId": "legacy-app-id",
+                    "appSecret": "legacy-secret",
                 }
-            ],
-            "text_ai_api_key": "legacy-text-key",
-            "deepseek_base_url": "https://legacy.deepseek.example",
-            "deepseek_model": "legacy-text-model",
+            }
+        )
+
+
+def test_normalize_app_config_rejects_legacy_nested_ai_sections(
+    app_dir: Path,
+) -> None:
+    with pytest.raises(ValueError, match="已退役的 AI 配置字段"):
+        app_config.normalize_app_config(
+            {
+                "text_ai": {
+                    "platform": "DeepSeek",
+                    "api_key": "legacy-text-key",
+                    "base_url": "https://legacy.deepseek.example",
+                    "model": "legacy-text-model",
+                },
+                "image_ai": {
+                    "platform": "OpenAI",
+                    "api_key": "legacy-image-key",
+                    "base_url": "https://legacy.openai.example/v1",
+                    "model": "legacy-image-model",
+                    "quality": "high",
+                },
+            }
+        )
+
+
+def test_normalize_app_config_rejects_legacy_ai_keys_alongside_canonical_model(
+    app_dir: Path,
+) -> None:
+    with pytest.raises(ValueError, match="已退役的 AI 配置字段"):
+        app_config.normalize_app_config(
+            {
+                "ai_models": [
+                    {
+                        "id": "default_text",
+                        "provider": "New Provider",
+                        "api_key": "",
+                        "base_url": "https://new.example/v1",
+                        "model": "new-model",
+                        "capabilities": ["chat", "json"],
+                    }
+                ],
+                "text_ai_api_key": "legacy-text-key",
+                "deepseek_base_url": "https://legacy.deepseek.example",
+                "deepseek_model": "legacy-text-model",
+            }
+        )
+
+
+def test_normalize_app_config_rejects_retired_pricing_key() -> None:
+    with pytest.raises(ValueError, match="packaging"):
+        app_config.normalize_app_config(
+            {"pricing_defaults": {"packaging": "9"}}
+        )
+
+
+def test_pricing_fields_do_not_backfill_other_canonical_fields() -> None:
+    normalized = app_config.normalize_app_config(
+        {
+            "pricing_defaults": {
+                "commission_percent": "13",
+                "target_margin_percent": "41",
+                "currency_rate": "7",
+                "packaging_cost": "8",
+                "domestic_freight": "9",
+                "payment_fee_percent": "3",
+            }
         }
     )
+    pricing = normalized["pricing_defaults"]
 
-    assert cfg["ai_models"][0]["api_key"] == "legacy-text-key"
-    assert cfg["ai_models"][0]["base_url"] == "https://new.example/v1"
-    assert cfg["ai_models"][0]["model"] == "new-model"
-    assert "text_ai_api_key" not in cfg
+    assert pricing["commission_percent"] == "13"
+    assert pricing["target_margin_percent"] == "41"
+    assert pricing["currency_rate"] == "7"
+    assert pricing["packaging_cost"] == "8"
+    assert pricing["domestic_freight"] == "9"
+    assert pricing["payment_fee_percent"] == "3"
+    assert pricing["default_target_margin_percent"] == "30"
+    assert pricing["default_currency_rate"] == "1"
+    assert pricing["default_packaging_cost"] == "0"
+    assert pricing["default_domestic_freight"] == "0"
+    assert pricing["mercadolibre_commission_percent"] == "20"
+    assert pricing["wildberries_commission_percent"] == "20"
+    assert pricing["ozon_commission_percent"] == "20"
+    assert pricing["mercadolibre_payment_fee_percent"] == "0"

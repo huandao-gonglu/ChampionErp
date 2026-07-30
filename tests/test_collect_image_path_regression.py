@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from erp_web.context import get_context
 from erp_web.product_model import merge_source_partial_result
+from erp_web.runtime_units.image_pool_core import _pool_display_item
 
 
 def test_pool_display_item_converts_existing_local_preview_to_file_url(app_dir: Path) -> None:
-    from erp_web.runtime import _pool_display_item
-
     image_path = app_dir / "data" / "images" / "pytest-path-fix" / "existing.png"
     image_path.parent.mkdir(parents=True, exist_ok=True)
     image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
@@ -22,8 +22,6 @@ def test_pool_display_item_converts_existing_local_preview_to_file_url(app_dir: 
 
 
 def test_pool_display_item_marks_missing_local_preview_without_raw_file_url() -> None:
-    from erp_web.runtime import _pool_display_item
-
     raw_path = r"D:\champion-Erp\output\source_images\missing-pytest.jpg"
     item = _pool_display_item({"id": "missing", "path": raw_path, "preview_url": raw_path, "status": "ready"})
 
@@ -34,9 +32,9 @@ def test_pool_display_item_marks_missing_local_preview_without_raw_file_url() ->
 
 
 def test_products_index_main_image_never_exposes_raw_local_path() -> None:
-    from erp_web.runtime import sanitize_products_index
-
-    items = sanitize_products_index([{"product_id": "old", "main_image": r"C:\legacy\bad-image.jpg"}])
+    items = get_context().products.sanitize_products_index(
+        [{"product_id": "old", "main_image": r"C:\legacy\bad-image.jpg"}]
+    )
 
     assert items == [{"product_id": "old", "main_image": ""}]
 
@@ -65,8 +63,6 @@ def test_failed_collect_without_images_clears_stale_collect_pool_but_keeps_local
                 },
             ],
         },
-        "source_images": [r"D:\champion-Erp\output\source_images\old.jpg"],
-        "source_image_urls": [r"D:\champion-Erp\output\source_images\old.jpg"],
         "sku_items": [{"id": "0", "image": r"D:\champion-Erp\output\source_images\old.jpg"}],
         "drafts": {
             "mercadolibre": {"enabled": True, "images": [{"asset_id": "old-source", "role": "main", "order": 0}]},
@@ -84,8 +80,7 @@ def test_failed_collect_without_images_clears_stale_collect_pool_but_keeps_local
     pool = merged["source"]["image_pool"]
     assert [item["id"] for item in pool] == ["manual-keep"]
     assert merged["source"]["images"] == []
-    assert merged["source_images"] == []
-    assert merged["source_image_urls"] == []
+    assert {"source_images", "source_image_urls"}.isdisjoint(merged)
     assert merged["sku_items"][0]["image"] == ""
     assert merged["drafts"]["mercadolibre"]["images"] == []
     assert merged["drafts"]["yandex"]["images"] == []

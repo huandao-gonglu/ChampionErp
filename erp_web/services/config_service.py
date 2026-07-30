@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import re
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -11,11 +14,12 @@ from dotenv import load_dotenv
 from . import ai_model_config, ai_prompt_templates
 
 
-PRODUCT_RESEARCH_SENSITIVE_CONFIG_KEYS = {
+SENSITIVE_CONFIG_KEYS = {
     "access_token",
     "alibaba_cookie",
     "api_key",
     "api_token",
+    "app_id",
     "app_key",
     "app_secret",
     "authorization",
@@ -30,6 +34,17 @@ PRODUCT_RESEARCH_SENSITIVE_CONFIG_KEYS = {
     "source_key",
     "token",
 }
+SENSITIVE_CONFIG_KEY_SUFFIXES = (
+    "_api_key",
+    "_app_id",
+    "_app_key",
+    "_cookie",
+    "_password",
+    "_private_key",
+    "_secret",
+    "_source_key",
+    "_token",
+)
 
 
 def service_status() -> dict[str, str]:
@@ -59,20 +74,83 @@ def mask_secret(value: Any) -> str:
     return f"{text[:4]}...{text[-4:]}"
 
 
+def normalize_config_key(key: Any) -> str:
+    """把 camelCase、kebab-case 等字段名归一为 snake_case。"""
+
+    text = str(key or "").strip()
+    text = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", text)
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", text)
+    return re.sub(r"[^A-Za-z0-9]+", "_", text).strip("_").lower()
+
+
+def is_sensitive_config_key(key: Any) -> bool:
+    normalized = normalize_config_key(key)
+    if not normalized or normalized.startswith("masked_"):
+        return False
+    return (
+        normalized in SENSITIVE_CONFIG_KEYS
+        or normalized.endswith(SENSITIVE_CONFIG_KEY_SUFFIXES)
+    )
+
+
 def mask_nested_config(value: Any, key: str = "") -> Any:
     if isinstance(value, dict):
         return {nested_key: mask_nested_config(nested_value, nested_key) for nested_key, nested_value in value.items()}
     if isinstance(value, list):
         return [mask_nested_config(item, key) for item in value]
-    normalized_key = str(key or "").strip().lower()
-    if normalized_key.startswith("masked_"):
-        return value
-    if (
-        normalized_key in PRODUCT_RESEARCH_SENSITIVE_CONFIG_KEYS
-        or normalized_key.endswith(("_api_key", "_password", "_secret", "_token"))
-    ):
+    if is_sensitive_config_key(key):
         return mask_secret(value)
     return value
+
+
+def is_masked_secret_placeholder(value: Any) -> bool:
+    """识别公共配置响应里的掩码占位，避免把占位符当成真实凭据。"""
+
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if set(text) == {"*"}:
+        return True
+    return re.fullmatch(r".{1,4}(?:\.\.\.|\*{4}).{0,4}", text) is not None
+
+
+def resolve_runtime_secret_value(
+    saved_value: Any,
+    incoming_value: Any,
+    key: str,
+) -> Any:
+    """请求未显式给出真凭据时回落到已保存值，绝不重放公共掩码。"""
+
+    incoming_text = str(incoming_value or "").strip()
+    if not incoming_text or is_masked_secret_placeholder(incoming_text):
+        return saved_value
+    if (
+        str(saved_value or "").strip()
+        and mask_nested_config(saved_value, key) == incoming_value
+    ):
+        return saved_value
+    return incoming_value
+
+
+def merge_runtime_secret_section(
+    saved: dict[str, Any] | None,
+    incoming: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """合并请求级覆盖；敏感字段的空值或掩码表示“沿用已保存值”."""
+
+    current = saved if isinstance(saved, dict) else {}
+    override = incoming if isinstance(incoming, dict) else {}
+    merged = dict(current)
+    for key, value in override.items():
+        if is_sensitive_config_key(key):
+            resolved = resolve_runtime_secret_value(current.get(key), value, key)
+            if not str(resolved or "").strip() and is_masked_secret_placeholder(value):
+                merged.pop(key, None)
+                continue
+            merged[key] = resolved
+            continue
+        merged[key] = value
+    return merged
 
 
 def public_app_config(
@@ -83,30 +161,42 @@ def public_app_config(
 
     load_env(app_dir)
     safe = json.loads(json.dumps(app_config or {}, ensure_ascii=False))
-    return mask_nested_config(safe)
+    public = mask_nested_config(safe)
+    raw_yunexpress = safe.get("yunexpress") if isinstance(safe.get("yunexpress"), dict) else {}
+    public_yunexpress = public.get("yunexpress") if isinstance(public.get("yunexpress"), dict) else {}
+    if raw_yunexpress and public_yunexpress:
+        public_yunexpress["app_id"] = mask_secret(raw_yunexpress.get("app_id"))
+    return public
 
 
 def public_store_config(store_config: dict[str, Any] | None = None) -> dict[str, Any]:
     """返回店铺静态配置和凭据占位，绝不返回可直接使用的秘密。"""
 
     safe = json.loads(json.dumps(store_config or {}, ensure_ascii=False))
-    return mask_nested_config(safe)
+    public = mask_nested_config(safe)
+    # Mercado Libre OAuth 的 App/Client ID 是公开标识符，前端生成授权 URL
+    # 必须拿到真值；Secret、Token、PKCE 等字段仍按统一策略脱敏。
+    raw_ml = (
+        safe.get("mercadolibre")
+        if isinstance(safe.get("mercadolibre"), dict)
+        else {}
+    )
+    public_ml = (
+        public.get("mercadolibre")
+        if isinstance(public.get("mercadolibre"), dict)
+        else {}
+    )
+    for field in ("app_id", "client_id"):
+        if field in raw_ml:
+            public_ml[field] = raw_ml[field]
+    return public
 
 
 def _merge_masked_secret_section(
     current: dict[str, Any],
     incoming: dict[str, Any],
 ) -> dict[str, Any]:
-    merged = dict(current)
-    for key, value in incoming.items():
-        existing = current.get(key)
-        if (
-            str(existing or "").strip()
-            and mask_nested_config(existing, key) == value
-        ):
-            continue
-        merged[key] = value
-    return merged
+    return merge_runtime_secret_section(current, incoming)
 
 
 def public_ai_config(app_dir: Path | str, app_config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -196,44 +286,41 @@ def write_env_template(app_dir: Path | str) -> Path:
 
 def save_config_snapshot(app_dir: Path | str, config: dict[str, Any]) -> Path:
     path = config_dir(app_dir) / "ai_config.snapshot.json"
-    safe = json.loads(json.dumps(config or {}, ensure_ascii=False))
-    if isinstance(safe.get("ai_models"), list):
-        for model in safe["ai_models"]:
-            if isinstance(model, dict) and model.get("api_key"):
-                model["api_key"] = mask_secret(model["api_key"])
-    if isinstance(safe.get("1688_api"), dict):
-        for key in ("app_key", "app_secret", "access_token"):
-            if safe["1688_api"].get(key):
-                safe["1688_api"][key] = mask_secret(safe["1688_api"][key])
-    if isinstance(safe.get("yunexpress"), dict):
-        for key in ("app_id", "app_secret", "source_key"):
-            if safe["yunexpress"].get(key):
-                safe["yunexpress"][key] = mask_secret(safe["yunexpress"][key])
-    product_research = safe.get("product_research")
-    if isinstance(product_research, dict):
-        sources = []
-        if isinstance(product_research.get("source_registry"), list):
-            sources.extend(product_research["source_registry"])
-        if isinstance(product_research.get("search_providers"), list):
-            sources.extend(product_research["search_providers"])
-        for source in sources:
-            if not isinstance(source, dict) or not isinstance(source.get("config_json"), dict):
-                continue
-            source["config_json"] = mask_nested_config(source["config_json"])
-    path.write_text(json.dumps(safe, ensure_ascii=False, indent=2), encoding="utf-8")
+    copied = json.loads(json.dumps(config or {}, ensure_ascii=False))
+    safe = mask_nested_config(copied)
+    temporary = path.with_name(
+        f".{path.name}.{uuid.uuid4().hex}.tmp"
+    )
+    try:
+        temporary.write_text(
+            json.dumps(safe, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        if os.name != "nt":
+            temporary.chmod(0o600)
+        temporary.replace(path)
+        if os.name != "nt":
+            path.chmod(0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
     return path
 
 
 __all__ = [
     "config_dir",
     "env_path",
+    "is_masked_secret_placeholder",
+    "is_sensitive_config_key",
     "load_env",
     "mask_secret",
+    "merge_runtime_secret_section",
     "merge_ai_config",
+    "normalize_config_key",
     "public_app_config",
     "public_ai_config",
     "public_store_config",
     "save_config_snapshot",
     "service_status",
+    "resolve_runtime_secret_value",
     "write_env_template",
 ]

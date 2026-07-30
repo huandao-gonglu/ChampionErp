@@ -4,6 +4,8 @@ from __future__ import annotations
 import urllib.parse
 from typing import Callable
 
+from erp_web.schemas.requests import validate_request_payload
+
 from .common import JsonRequestHandler
 from ..facades import product_research_facade
 
@@ -13,17 +15,23 @@ GetHandler = Callable[[JsonRequestHandler, object], None]
 
 
 def handle_create_hot_product_run(handler: JsonRequestHandler) -> None:
-    result, status = product_research_facade.create_hot_product_run_payload(handler.read_body())
+    result, status = product_research_facade.create_hot_product_run_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
+    )
     handler.send_json(result, status)
 
 
 def handle_save_source_registry(handler: JsonRequestHandler) -> None:
-    result, status = product_research_facade.save_source_registry_payload(handler.read_body())
+    result, status = product_research_facade.save_source_registry_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
+    )
     handler.send_json(result, status)
 
 
 def handle_test_search_provider(handler: JsonRequestHandler) -> None:
-    result, status = product_research_facade.test_search_provider_payload(handler.read_body())
+    result, status = product_research_facade.test_search_provider_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
+    )
     handler.send_json(result, status)
 
 

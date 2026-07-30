@@ -13,7 +13,7 @@ from .common import (
     IMAGE_ORIGINS,
     IMAGE_USAGES,
     PLATFORMS,
-    SOURCE_COMPAT_IMAGE_ORIGINS,
+    SOURCE_IMAGE_ORIGINS,
     normalize_list,
     parse_dimensions_text,
     text_or_empty,
@@ -37,18 +37,25 @@ from .draft_image_model import (
 )
 from .image_pool_model import (
     default_image_pool_item,
-    image_pool_legacy_views,
+    image_pool_refs,
     normalize_image_pool,
     normalize_image_pool_item,
     normalize_platforms,
 )
-from .merge_model import merge_source_partial_result, normalize_product_model
+from .merge_model import (
+    merge_source_partial_result,
+    normalize_draft_target_site,
+    normalize_platform_draft,
+    normalize_product_model,
+    validate_platform_draft_root_fields,
+    validate_product_root_fields,
+)
 
 __all__ = [
     "IMAGE_ORIGINS",
     "IMAGE_USAGES",
     "PLATFORMS",
-    "SOURCE_COMPAT_IMAGE_ORIGINS",
+    "SOURCE_IMAGE_ORIGINS",
     "apply_ai_attribute_fill",
     "apply_category_selection",
     "build_ai_attribute_fill",
@@ -63,17 +70,21 @@ __all__ = [
     "draft_image_asset_ids",
     "draft_image_refs_from_assets",
     "draft_image_refs_from_pool",
-    "image_pool_legacy_views",
+    "image_pool_refs",
     "merge_source_partial_result",
     "normalize_draft_image_ref",
     "normalize_draft_image_refs",
     "normalize_draft_image_role",
+    "normalize_draft_target_site",
     "normalize_image_pool",
     "normalize_image_pool_item",
     "normalize_list",
+    "normalize_platform_draft",
     "normalize_platforms",
     "normalize_product_model",
     "parse_dimensions_text",
     "text_or_empty",
     "validate_category_precheck",
+    "validate_platform_draft_root_fields",
+    "validate_product_root_fields",
 ]

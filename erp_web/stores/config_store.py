@@ -11,7 +11,10 @@ presentation helpers stay module-level. This module never imports
 ``erp_web.context`` — the store is constructed by ``AppContext``.
 """
 
+import hashlib
+import json
 import logging
+import threading
 from copy import deepcopy
 from typing import Any
 
@@ -20,8 +23,11 @@ from erp_web import marketplaces as publisher
 from erp_web.context import AppPaths
 from erp_web.db import ErpDatabase
 from erp_web.marketplace_registry import MARKETPLACE_SPECS, marketplace_spec
-from erp_web.runtime_units.category_store import read_json, write_json
-from erp_web.services.config_service import mask_nested_config
+from erp_web.runtime_units.category_store import write_json
+from erp_web.services.config_service import (
+    is_sensitive_config_key,
+    mask_nested_config,
+)
 from erp_web.stores.product_store import mask_secret
 
 logger = logging.getLogger(__name__)
@@ -62,12 +68,195 @@ _STORE_AUTH_DETAIL_FIELDS = {
 }
 _STORE_DB_OWNED_FIELDS = _STORE_CREDENTIAL_FIELDS | _STORE_AUTH_DETAIL_FIELDS | {"auth_status", "auth_checked_at"}
 
+_APP_RUNTIME_SECRET_NAMESPACE = "app_config"
+_SECRET_SELECTOR_FIELDS = (
+    "id",
+    "source_id",
+    "sourceId",
+    "provider_id",
+    "providerId",
+    "model_id",
+    "modelId",
+    "key",
+    "slug",
+    "name",
+)
+_SELECTOR_FIELD_KEY = "$field"
+_SELECTOR_VALUE_KEY = "$value"
+_SELECTOR_FINGERPRINT_KEY = "$fingerprint"
+
+
+def _is_app_runtime_secret_field(key: Any) -> bool:
+    return is_sensitive_config_key(key)
+
+
+def _secret_identity_projection(value: Any) -> Any:
+    """Build a stable, secret-free value used only for list-item matching."""
+    if isinstance(value, dict):
+        return {
+            str(key): (
+                ""
+                if _is_app_runtime_secret_field(key)
+                or str(key).startswith("masked_")
+                else _secret_identity_projection(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_secret_identity_projection(item) for item in value]
+    return value
+
+
+def _secret_item_fingerprint(value: Any) -> str:
+    serialized = json.dumps(
+        _secret_identity_projection(value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _secret_list_selector(value: Any) -> dict[str, str]:
+    if isinstance(value, dict):
+        for field in _SECRET_SELECTOR_FIELDS:
+            candidate = str(value.get(field) or "").strip()
+            if candidate:
+                return {
+                    _SELECTOR_FIELD_KEY: field,
+                    _SELECTOR_VALUE_KEY: candidate,
+                }
+    return {
+        _SELECTOR_FINGERPRINT_KEY: _secret_item_fingerprint(value),
+    }
+
+
+def _secret_path(parts: list[Any]) -> str:
+    return json.dumps(parts, ensure_ascii=False, separators=(",", ":"))
+
+
+def _split_app_runtime_secrets(
+    config: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return file-safe config and path-addressed secrets for SQLite."""
+    static = deepcopy(config if isinstance(config, dict) else {})
+    secrets: dict[str, Any] = {}
+
+    def visit(value: Any, path: list[Any]) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                next_path = [*path, str(key)]
+                if _is_app_runtime_secret_field(key):
+                    if item not in (None, ""):
+                        secrets[_secret_path(next_path)] = deepcopy(item)
+                    value[key] = ""
+                else:
+                    visit(item, next_path)
+            return
+        if isinstance(value, list):
+            for item in value:
+                visit(item, [*path, _secret_list_selector(item)])
+
+    visit(static, [])
+    return static, secrets
+
+
+def _apply_app_runtime_secrets(
+    config: dict[str, Any],
+    secrets: dict[str, Any],
+) -> dict[str, Any]:
+    def select_list_item(items: list[Any], selector: dict[str, Any]) -> Any:
+        field = str(selector.get(_SELECTOR_FIELD_KEY) or "")
+        expected = str(selector.get(_SELECTOR_VALUE_KEY) or "")
+        if field and expected:
+            for item in items:
+                if (
+                    isinstance(item, dict)
+                    and str(item.get(field) or "").strip() == expected
+                ):
+                    return item
+            return None
+        fingerprint = str(
+            selector.get(_SELECTOR_FINGERPRINT_KEY) or ""
+        )
+        if fingerprint:
+            for item in items:
+                if _secret_item_fingerprint(item) == fingerprint:
+                    return item
+        return None
+
+    runtime = deepcopy(config if isinstance(config, dict) else {})
+    for encoded_path, secret in secrets.items():
+        try:
+            parts = json.loads(encoded_path)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                "runtime_secrets 包含无法识别的 secret_path；"
+                "仅接受当前 selector 路径格式"
+            ) from exc
+        if not isinstance(parts, list) or not parts:
+            raise RuntimeError(
+                "runtime_secrets 包含无法识别的 secret_path；"
+                "仅接受当前 selector 路径格式"
+            )
+        if any(isinstance(part, int) for part in parts):
+            raise RuntimeError(
+                "runtime_secrets 包含已退役的列表 index 路径；"
+                "请清空开发数据库后使用当前 selector 路径格式"
+            )
+        if not isinstance(parts[-1], str):
+            raise RuntimeError(
+                "runtime_secrets 的 secret_path 末段必须是字段名"
+            )
+        target: Any = runtime
+        valid = True
+        for part in parts[:-1]:
+            if isinstance(part, dict):
+                selector_keys = set(part)
+                valid_selector = (
+                    selector_keys
+                    == {_SELECTOR_FIELD_KEY, _SELECTOR_VALUE_KEY}
+                    and bool(str(part.get(_SELECTOR_FIELD_KEY) or "").strip())
+                    and bool(str(part.get(_SELECTOR_VALUE_KEY) or "").strip())
+                ) or (
+                    selector_keys == {_SELECTOR_FINGERPRINT_KEY}
+                    and bool(
+                        str(
+                            part.get(_SELECTOR_FINGERPRINT_KEY) or ""
+                        ).strip()
+                    )
+                )
+                if not valid_selector:
+                    raise RuntimeError(
+                        "runtime_secrets 包含无法识别的 selector"
+                    )
+                if not isinstance(target, list):
+                    valid = False
+                    break
+                selected = select_list_item(target, part)
+                if selected is None:
+                    valid = False
+                    break
+                target = selected
+            elif isinstance(part, str):
+                if not isinstance(target, dict) or part not in target:
+                    valid = False
+                    break
+                target = target[part]
+            else:
+                raise RuntimeError(
+                    "runtime_secrets 包含无法识别的 secret_path 段"
+                )
+        if not valid:
+            continue
+        last = parts[-1]
+        if isinstance(target, dict):
+            target[last] = deepcopy(secret)
+    return runtime
+
 
 def _strip_db_owned_store_fields(config: dict[str, Any] | None) -> dict[str, Any]:
-    """Drop credential/auth-state keys from platform sections (file side only).
-
-    零兼容：旧 store_config.json 里遗留的 token 一律忽略，凭据只认 store_auth 表。
-    """
+    """Drop credential/auth-state keys from platform sections (file side only)."""
     stripped = deepcopy(config if isinstance(config, dict) else {})
     for platform in _STORE_AUTH_PLATFORMS:
         section = stripped.get(platform)
@@ -77,6 +266,25 @@ def _strip_db_owned_store_fields(config: dict[str, Any] | None) -> dict[str, Any
             key: value for key, value in section.items() if key not in _STORE_DB_OWNED_FIELDS
         }
     return stripped
+
+
+def _non_empty_db_owned_store_fields(
+    config: dict[str, Any] | None,
+) -> list[str]:
+    """Return file paths that illegally contain DB-owned runtime values."""
+    violations: list[str] = []
+    source = config if isinstance(config, dict) else {}
+    for platform in _STORE_AUTH_PLATFORMS:
+        section = source.get(platform)
+        if not isinstance(section, dict):
+            continue
+        for key in _STORE_DB_OWNED_FIELDS:
+            if key not in section:
+                continue
+            value = section[key]
+            if value not in (None, ""):
+                violations.append(f"{platform}.{key}")
+    return sorted(violations)
 
 
 def _sync_mercadolibre_secret_aliases(store: dict[str, Any]) -> None:
@@ -95,6 +303,7 @@ class ConfigStore:
         self._app_config_path = paths.app_config_path
         self._store_config_path = paths.store_config_path
         self._db = db
+        self._save_lock = threading.RLock()
 
     # -- app config -----------------------------------------------------------
 
@@ -105,17 +314,60 @@ class ConfigStore:
         return app_config_runtime.normalize_app_config(config)
 
     def load_app_config(self) -> dict[str, Any]:
-        raw = read_json(self._app_config_path, self.default_app_config())
-        config = self.normalize_app_config(raw)
+        if self._app_config_path.exists():
+            try:
+                raw = json.loads(
+                    self._app_config_path.read_text(encoding="utf-8")
+                )
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    f"{self._app_config_path.name} 不是有效的当前 JSON 配置"
+                ) from exc
+        else:
+            raw = self.default_app_config()
+        normalized = self.normalize_app_config(raw)
+        static_config, file_secrets = _split_app_runtime_secrets(normalized)
+        if file_secrets:
+            raise RuntimeError(
+                f"{self._app_config_path.name} 含有非空明文秘密字段；"
+                "当前格式要求秘密仅存 SQLite runtime_secrets"
+            )
+        stored_secrets = self._db.load_runtime_secrets(
+            _APP_RUNTIME_SECRET_NAMESPACE
+        )
         if not self._app_config_path.exists():
-            write_json(self._app_config_path, config)
-        return config
+            write_json(self._app_config_path, static_config)
+        runtime = _apply_app_runtime_secrets(static_config, stored_secrets)
+        normalized_runtime = self.normalize_app_config(runtime)
+        _, canonical_secrets = _split_app_runtime_secrets(
+            normalized_runtime
+        )
+        if canonical_secrets != stored_secrets:
+            self._db.replace_runtime_secrets(
+                _APP_RUNTIME_SECRET_NAMESPACE,
+                canonical_secrets,
+            )
+        return normalized_runtime
 
     def save_app_config(self, config: dict[str, Any]) -> None:
-        config = self.normalize_app_config(config)
-        write_json(self._app_config_path, config)
-        # Runtime secrets live only under config/ so they are never mirrored into
-        # packaged web assets.
+        with self._save_lock:
+            config = self.normalize_app_config(config)
+            static_config, secrets = _split_app_runtime_secrets(config)
+            previous_secrets = self._db.load_runtime_secrets(
+                _APP_RUNTIME_SECRET_NAMESPACE
+            )
+            try:
+                self._db.replace_runtime_secrets(
+                    _APP_RUNTIME_SECRET_NAMESPACE,
+                    secrets,
+                )
+                write_json(self._app_config_path, static_config)
+            except BaseException:
+                self._db.replace_runtime_secrets(
+                    _APP_RUNTIME_SECRET_NAMESPACE,
+                    previous_secrets,
+                )
+                raise
 
     def merge_app_config_fields(
         self,
@@ -161,7 +413,17 @@ class ConfigStore:
         读侧唯一入口：所有取 access_token / api_key / app_secret 的调用方拿到的
         值均来自 store_auth 表；文件只贡献 site_id、listing 等静态项。
         """
-        raw = _strip_db_owned_store_fields(publisher.load_store_config(self._store_config_path))
+        file_config = publisher.load_store_config(self._store_config_path)
+        violations = _non_empty_db_owned_store_fields(file_config)
+        if violations:
+            raise RuntimeError(
+                f"{self._store_config_path.name} 含有已退役的文件凭据或"
+                "授权状态字段："
+                + ", ".join(violations)
+                + "；当前格式要求这些值仅存 SQLite store_auth"
+            )
+        static_config = _strip_db_owned_store_fields(file_config)
+        raw = static_config
         db_records = self._db.list_store_auth()
         for platform in _STORE_AUTH_PLATFORMS:
             record = db_records.get(platform)
@@ -253,16 +515,50 @@ class ConfigStore:
             )
 
     def save_store_config(self, config: dict[str, Any], *, preserve_empty_sensitive: bool = True) -> None:
-        config = config if isinstance(config, dict) else {}
-        self._save_store_auth_sections(config, preserve_empty_sensitive=preserve_empty_sensitive)
-        self._store_config_path.parent.mkdir(parents=True, exist_ok=True)
-        static_config = _strip_db_owned_store_fields(config)
-        if preserve_empty_sensitive:
-            existing = publisher.load_store_config(self._store_config_path) if self._store_config_path.exists() else self.default_store_config()
-            merged = self.merge_store_config_fields(_strip_db_owned_store_fields(existing), static_config, preserve_empty_sensitive=True)
-        else:
-            merged = self.normalize_store_config(static_config)
-        publisher.save_store_config(self._store_config_path, _strip_db_owned_store_fields(merged))
+        with self._save_lock:
+            config = config if isinstance(config, dict) else {}
+            previous_auth = self._db.list_store_auth()
+            try:
+                self._save_store_auth_sections(
+                    config,
+                    preserve_empty_sensitive=preserve_empty_sensitive,
+                )
+                self._store_config_path.parent.mkdir(
+                    parents=True,
+                    exist_ok=True,
+                )
+                static_config = _strip_db_owned_store_fields(config)
+                if preserve_empty_sensitive:
+                    existing = (
+                        publisher.load_store_config(
+                            self._store_config_path
+                        )
+                        if self._store_config_path.exists()
+                        else self.default_store_config()
+                    )
+                    merged = self.merge_store_config_fields(
+                        _strip_db_owned_store_fields(existing),
+                        static_config,
+                        preserve_empty_sensitive=True,
+                    )
+                else:
+                    merged = self.normalize_store_config(static_config)
+                publisher.save_store_config(
+                    self._store_config_path,
+                    _strip_db_owned_store_fields(merged),
+                )
+            except BaseException:
+                self._db.replace_store_auth_snapshot(previous_auth)
+                raise
+
+    def clear_store_auth(self, platform: str) -> dict[str, Any]:
+        """Clear credentials/auth state without deleting non-sensitive settings."""
+
+        platform = str(platform or "").strip().lower()
+        if marketplace_spec(platform) is None:
+            raise ValueError(f"未注册的平台：{platform or '(空)'}")
+        self._db.delete_store_auth(platform)
+        return self.load_store_config()
 
     def mercadolibre_auth_checklist(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
         ml = config if isinstance(config, dict) else self.load_store_config().get("mercadolibre", {})

@@ -8,6 +8,7 @@ import urllib.error
 import pytest
 
 from erp_web.context import get_context
+from erp_web.facades import product_research_facade
 from erp_web.product_research_config import default_product_research_config, normalize_product_research_config
 from erp_web.services import product_research_service
 from erp_web.services import product_research_methods
@@ -78,7 +79,7 @@ def web_search_app_config_with_prompt_file(tmp_path, user_prompt: str, system_pr
     return app_config
 
 
-def test_ai_search_source_discards_legacy_model_override() -> None:
+def test_ai_search_source_rejects_retired_model_override() -> None:
     config = default_product_research_config()
     config["source_registry"][0]["config_json"]["ai_model_id"] = "legacy_model"
     config["source_registry"][0]["config_json"]["model_id"] = "another_legacy_model"
@@ -92,14 +93,8 @@ def test_ai_search_source_discards_legacy_model_override() -> None:
         }
     ]
 
-    normalized = normalize_product_research_config(config)
-    source_config = normalized["source_registry"][0]["config_json"]
-    binding_config = normalized["target_markets"][0]["search_methods"][0]["config_json"]
-
-    assert "ai_model_id" not in source_config
-    assert "model_id" not in source_config
-    assert "ai_model_id" not in binding_config
-    assert "model_id" not in binding_config
+    with pytest.raises(ValueError, match="已退役字段"):
+        normalize_product_research_config(config)
 
 
 def test_create_hot_product_run_returns_ai_search_candidates(tmp_path, monkeypatch) -> None:
@@ -564,7 +559,7 @@ def test_ai_search_uses_target_market_saved_prompt(tmp_path, monkeypatch) -> Non
     assert seen["messages"][1]["content"] == "Saved market prompt for Amazon US"
 
 
-def test_normalize_config_removes_prompt_template_fields_and_keeps_market_prompt() -> None:
+def test_normalize_config_rejects_retired_prompt_template_fields() -> None:
     config = default_product_research_config()
     config["source_registry"][0]["config_json"]["prompt_template"] = "old provider prompt"
     config["source_registry"][0]["config_json"]["promptTemplatePath"] = "config/old.txt"
@@ -579,16 +574,8 @@ def test_normalize_config_removes_prompt_template_fields_and_keeps_market_prompt
         }
     ]
 
-    normalized = normalize_product_research_config(config)
-
-    method_config = normalized["search_providers"][0]["config_json"]
-    binding = normalized["target_markets"][0]["search_methods"][0]
-    binding_config = binding["config_json"]
-    assert "prompt_template" not in method_config
-    assert "promptTemplatePath" not in method_config
-    assert binding["prompt"] == "old market prompt"
-    assert "prompt" not in binding_config
-    assert "prompt_override" not in binding_config
+    with pytest.raises(ValueError, match="已退役字段"):
+        normalize_product_research_config(config)
 
 
 def test_ai_search_filters_candidates_without_image_url(tmp_path, monkeypatch) -> None:
@@ -659,7 +646,7 @@ def test_ai_gateway_chat_json_reports_http_error_detail(tmp_path, monkeypatch) -
     assert "web search forbidden for this model" in message
 
 
-def test_normalize_config_removes_legacy_seeded_sources() -> None:
+def test_normalize_config_rejects_retired_seeded_sources() -> None:
     config = default_product_research_config()
     config["search_providers"] = [
         {
@@ -694,10 +681,24 @@ def test_normalize_config_removes_legacy_seeded_sources() -> None:
         }
     ]
 
-    normalized = normalize_product_research_config(config)
+    with pytest.raises(ValueError, match="seeded_mock 已退役"):
+        normalize_product_research_config(config)
 
-    assert [provider["id"] for provider in normalized["search_providers"]] == ["ai_web_search"]
-    assert normalized["target_markets"][0]["search_methods"][0]["method_id"] == "ai_web_search"
+
+def test_normalize_config_rejects_retired_target_market_aliases() -> None:
+    config = default_product_research_config()
+    config["target_markets"] = [
+        {
+            "marketId": "amazon-us",
+            "platform": "amazon",
+            "site": "amazon.com",
+            "displayName": "Amazon US",
+            "searchMethods": [],
+        }
+    ]
+
+    with pytest.raises(ValueError, match="已退役字段"):
+        normalize_product_research_config(config)
 
 
 def test_ai_search_method_implements_search_method_contract() -> None:
@@ -772,6 +773,10 @@ def test_public_product_research_config_masks_source_secrets() -> None:
             "config_json": {
                 "provider_strategy": "configured_api",
                 "api_key": "secret-token-123456",
+                "vendor_api_key": "vendor-secret-123456",
+                "cookie": "cookie-secret-123456",
+                "private_key": "private-secret-123456",
+                "source_key": "source-secret-123456",
                 "base_url": "https://api.example.com",
             },
         }
@@ -782,7 +787,50 @@ def test_public_product_research_config_masks_source_secrets() -> None:
 
     assert source_config["api_key"] != "secret-token-123456"
     assert source_config["api_key"].startswith("secr")
+    for key, secret in {
+        "vendor_api_key": "vendor-secret-123456",
+        "cookie": "cookie-secret-123456",
+        "private_key": "private-secret-123456",
+        "source_key": "source-secret-123456",
+    }.items():
+        assert source_config[key] != secret
+        assert source_config[key]
     assert source_config["base_url"] == "https://api.example.com"
+
+
+def test_masked_custom_provider_secrets_restore_from_current_config() -> None:
+    current = {
+        "search_providers": [
+            {
+                "id": "custom",
+                "config_json": {
+                    "vendor_api_key": "vendor-secret-123456",
+                    "nested": [
+                        {"private_key": "private-secret-123456"}
+                    ],
+                },
+            }
+        ]
+    }
+    public = product_research_service.public_product_research_config(
+        current
+    )
+    incoming = {
+        "search_providers": public["search_providers"],
+    }
+
+    restored = (
+        product_research_facade._restore_masked_provider_secrets(
+            incoming,
+            current,
+        )
+    )
+    config = restored["search_providers"][0]["config_json"]
+    assert config["vendor_api_key"] == "vendor-secret-123456"
+    assert (
+        config["nested"][0]["private_key"]
+        == "private-secret-123456"
+    )
 
 
 def test_ai_web_search_provider_connection_uses_function_binding_model(tmp_path, monkeypatch) -> None:

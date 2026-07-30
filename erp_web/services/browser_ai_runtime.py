@@ -173,13 +173,13 @@ def _safe_path_segment(value: str, fallback: str) -> str:
 
 
 def _cdp_websocket(websocket_url: str):
-    from erp_web.runtime_units.browser_debug import CdpWebSocket
+    from erp_web.services.browser_debug_service import CdpWebSocket
 
     return CdpWebSocket(websocket_url)
 
 
 def _find_chrome_path() -> str:
-    from erp_web.runtime_units.browser_debug import find_chrome_path
+    from erp_web.services.browser_debug_service import find_chrome_path
 
     return find_chrome_path()
 

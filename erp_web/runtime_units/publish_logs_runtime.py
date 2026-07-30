@@ -1,24 +1,29 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import hashlib
 import os
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
+from erp_web.context import get_context
+from erp_web.product_model.common import normalize_list
+from erp_web.services.config_service import is_sensitive_config_key
+from erp_web.stores.config_store import store_auth_failure_code
+from erp_web.stores.product_store import mask_secret
+
 from .category_store import write_json
 from .collect_helpers import collect_time_iso
-from .product_store import mask_secret, normalize_list, store_auth_failure_code
 from .publish_bus import append_publish_log
 from .publish_helpers import _draft_for_platform
-from .runtime_common import OUTPUT_DIR
 
 def _sanitize_for_log(value: Any) -> Any:
     if isinstance(value, dict):
         sanitized: dict[str, Any] = {}
         for key, item in value.items():
-            key_l = str(key).lower()
-            if any(token in key_l for token in ("token", "secret", "api_key", "apikey", "authorization")):
+            if is_sensitive_config_key(key):
                 sanitized[key] = mask_secret(item)
             else:
                 sanitized[key] = _sanitize_for_log(item)
@@ -28,25 +33,94 @@ def _sanitize_for_log(value: Any) -> Any:
     return value
 
 
-def _publish_artifact_paths(platform: str) -> tuple[Path, Path]:
+def _publish_artifact_paths(
+    platform: str,
+    *,
+    artifact_key: str = "",
+) -> tuple[Path, Path]:
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    token = f"{stamp}-{platform}-{os.getpid()}"
-    payload_path = OUTPUT_DIR / "publish_artifacts" / f"{token}-payload.json"
-    response_path = OUTPUT_DIR / "publish_artifacts" / f"{token}-response.json"
+    safe_platform = "".join(
+        char
+        for char in str(platform or "").strip().lower()
+        if char.isalnum() or char in "._-"
+    ) or "unknown"
+    raw_key = str(artifact_key or "").strip()
+    if raw_key:
+        safe_key = "".join(
+            char
+            for char in raw_key
+            if char.isalnum() or char in "._-"
+        ).strip("._-")[:64] or "artifact"
+        digest = hashlib.sha256(
+            raw_key.encode("utf-8")
+        ).hexdigest()[:12]
+        token = f"{safe_platform}-{safe_key}-{digest}"
+    else:
+        token = (
+            f"{stamp}-{safe_platform}-{os.getpid()}-"
+            f"{time.time_ns()}-{uuid.uuid4().hex[:12]}"
+        )
+    artifact_dir = get_context().paths.output_dir / "publish_artifacts"
+    payload_path = artifact_dir / f"{token}-payload.json"
+    response_path = artifact_dir / f"{token}-response.json"
     return payload_path, response_path
 
 
-def _write_publish_artifacts(platform: str, payload: Any, response: Any) -> tuple[str, str]:
-    payload_path, response_path = _publish_artifact_paths(platform)
+def _write_publish_artifacts(
+    platform: str,
+    payload: Any,
+    response: Any,
+    *,
+    output_dir: Path | None = None,
+    artifact_key: str = "",
+) -> tuple[str, str]:
+    payload_path, response_path = _publish_artifact_paths(
+        platform,
+        artifact_key=artifact_key,
+    )
+    if output_dir is not None:
+        artifact_dir = Path(output_dir) / "publish_artifacts"
+        payload_path = artifact_dir / payload_path.name
+        response_path = artifact_dir / response_path.name
+    payload_path.parent.mkdir(
+        mode=0o700,
+        parents=True,
+        exist_ok=True,
+    )
+    if os.name != "nt":
+        payload_path.parent.chmod(0o700)
     write_json(payload_path, _sanitize_for_log(payload))
     write_json(response_path, _sanitize_for_log(response))
+    if os.name != "nt":
+        payload_path.parent.chmod(0o700)
+        payload_path.chmod(0o600)
+        response_path.chmod(0o600)
     return str(payload_path), str(response_path)
 
 
 def _product_id_for_log(product: dict[str, Any], platform: str) -> str:
-    draft = _draft_for_platform(product, platform)
+    return str(product.get("product_id") or "").strip()
+
+
+def _draft_id_for_log(
+    product: dict[str, Any],
+    platform: str,
+) -> str:
+    return str(
+        _draft_for_platform(product, platform).get("draft_id") or ""
+    ).strip()
+
+
+def _first_product_image(product: dict[str, Any]) -> list[str]:
     source = product.get("source") if isinstance(product.get("source"), dict) else {}
-    return str(source.get("source_url") or product.get("source_url") or draft.get("sku") or product.get("sku") or product.get("name") or "").strip()
+    pool = source.get("image_pool") if isinstance(source.get("image_pool"), list) else []
+    refs = [
+        str(item.get("url") or item.get("path") or "").strip()
+        for item in pool
+        if isinstance(item, dict)
+        and str(item.get("url") or item.get("path") or "").strip()
+    ]
+    return (refs or normalize_list(source.get("images")))[:1]
 
 
 def append_ml_publish_log(
@@ -60,13 +134,42 @@ def append_ml_publish_log(
     field_errors: dict[str, Any] | None = None,
     next_action: str = "",
 ) -> tuple[str, str]:
-    payload_path, response_path = _write_publish_artifacts("mercadolibre", payload, response)
-    draft = _draft_for_platform(product, "mercadolibre")
+    return append_platform_publish_log(
+        product,
+        "mercadolibre",
+        status,
+        started_at,
+        payload,
+        response,
+        error_code,
+        error_message,
+        field_errors,
+        next_action,
+    )
+
+
+def append_platform_publish_log(
+    product: dict[str, Any],
+    platform: str,
+    status: str,
+    started_at: str,
+    payload: Any,
+    response: Any,
+    error_code: str = "",
+    error_message: str = "",
+    field_errors: dict[str, Any] | None = None,
+    next_action: str = "",
+) -> tuple[str, str]:
+    """记录平台发布阶段；平台名由发布适配器注册项传入。"""
+
+    platform = str(platform or "").strip().lower()
+    payload_path, response_path = _write_publish_artifacts(platform, payload, response)
+    draft = _draft_for_platform(product, platform)
     append_publish_log(
         {
-            "product_id": _product_id_for_log(product, "mercadolibre"),
-            "platform": "mercadolibre",
-            "draft_id": str(draft.get("sku") or ""),
+            "product_id": _product_id_for_log(product, platform),
+            "platform": platform,
+            "draft_id": _draft_id_for_log(product, platform),
             "status": status,
             "started_at": started_at,
             "finished_at": collect_time_iso(),
@@ -77,10 +180,10 @@ def append_ml_publish_log(
             "field_errors": field_errors or {},
             "next_action": next_action,
             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "shop": "mercadolibre",
+            "shop": platform,
             "sku": str(draft.get("sku") or ""),
             "error": error_message,
-            "image": normalize_list(product.get("source_image_urls"))[:1],
+            "image": _first_product_image(product),
         }
     )
     return payload_path, response_path
@@ -144,7 +247,7 @@ def append_ml_auth_test_log(
 
 def _mercadolibre_category_id_from_product(product: dict[str, Any]) -> str:
     draft = _draft_for_platform(product, "mercadolibre")
-    return str(draft.get("category_id") or product.get("category_id") or "").strip()
+    return str(draft.get("category_id") or "").strip()
 
 
 def _is_mock_mercadolibre_category_id(category_id: str) -> bool:
@@ -166,8 +269,11 @@ __all__ = [
     "_is_mock_mercadolibre_category_id",
     "_mercadolibre_category_id_from_product",
     "_mercadolibre_required_attr_ids",
+    "_draft_id_for_log",
+    "_product_id_for_log",
     "_sanitize_for_log",
     "append_ml_auth_test_log",
     "append_ml_publish_log",
+    "append_platform_publish_log",
     "mercadolibre_test_error_code",
 ]

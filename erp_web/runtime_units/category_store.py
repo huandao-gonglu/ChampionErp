@@ -36,7 +36,11 @@ def write_json(path: Path, data: Any) -> None:
     tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}")
     try:
         tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        if os.name != "nt":
+            tmp_path.chmod(0o600)
         os.replace(tmp_path, path)
+        if os.name != "nt":
+            path.chmod(0o600)
     except BaseException:
         try:
             tmp_path.unlink()
@@ -67,7 +71,7 @@ _CATEGORY_AI_STOPWORDS = {
 
 
 def _category_suggest_terms(product: dict[str, Any], platform: str = "mercadolibre") -> list[str]:
-    from .product_store import normalize_product_fields
+    from erp_web.stores.product_store import normalize_product_fields
     from .publish_helpers import _draft_for_platform
 
     product = normalize_product_fields(product)
@@ -101,7 +105,7 @@ def _category_suggest_terms(product: dict[str, Any], platform: str = "mercadolib
 
 
 def _category_suggest_query(product: dict[str, Any], platform: str = "mercadolibre") -> str:
-    from .product_store import normalize_product_fields
+    from erp_web.stores.product_store import normalize_product_fields
     from .publish_helpers import _draft_for_platform
 
     product = normalize_product_fields(product)
