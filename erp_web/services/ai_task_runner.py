@@ -97,7 +97,11 @@ class AiTaskRunner:
                     )
                 except AiToolSchemaError as exc:
                     raise AiTaskExecutionError(
-                        "MODEL_RESPONSE_SCHEMA_INVALID",
+                        (
+                            exc.code
+                            if exc.code == "TOOL_PROTOCOL_UNSUPPORTED"
+                            else "MODEL_RESPONSE_SCHEMA_INVALID"
+                        ),
                         str(exc),
                     ) from exc
                 if not isinstance(turn, AiToolTurn):
@@ -126,6 +130,11 @@ class AiTaskRunner:
                     invocation.recorder.finish({"result": result})
                     return result
 
+                if not toolset.definitions:
+                    raise AiTaskExecutionError(
+                        "TOOL_NOT_ALLOWED",
+                        f"ToolSet {toolset.toolset_id} 不允许调用工具",
+                    )
                 if tool_rounds >= self.max_tool_rounds:
                     raise AiTaskExecutionError(
                         "TOOL_CALL_BUDGET_EXCEEDED",
@@ -142,11 +151,18 @@ class AiTaskRunner:
                     accumulated_results.append(runtime.execute(call))
                 model_round += 1
         except Exception as exc:
-            error = (
-                exc
-                if isinstance(exc, AiTaskExecutionError)
-                else AiTaskExecutionError(exc.__class__.__name__, str(exc))
-            )
+            if isinstance(exc, AiTaskExecutionError):
+                error = exc
+            elif isinstance(exc, TimeoutError):
+                error = AiTaskExecutionError(
+                    "TASK_DEADLINE_EXCEEDED",
+                    str(exc) or "AI Task 总 deadline 已耗尽",
+                )
+            else:
+                error = AiTaskExecutionError(
+                    str(getattr(exc, "code", "") or exc.__class__.__name__),
+                    str(exc),
+                )
             invocation.recorder.record(
                 "TASK_FAILED",
                 code=error.code,

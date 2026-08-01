@@ -71,6 +71,7 @@ class TtlCache:
 
 
 _tree_cache = TtlCache(_TREE_CACHE_TTL_SECONDS)
+_corpus_cache = TtlCache(_TREE_CACHE_TTL_SECONDS)
 
 
 def _load_store_config() -> dict[str, Any]:
@@ -102,17 +103,34 @@ def _children(node: dict[str, Any]) -> list[dict[str, Any]]:
     return [item for item in node.get("children", []) if isinstance(item, dict)] if isinstance(node.get("children"), list) else []
 
 
-def _load_tree(client_id: str, api_key: str) -> list[dict[str, Any]]:
+def _load_tree(
+    client_id: str,
+    api_key: str,
+    *,
+    timeout_seconds: float | None = None,
+) -> list[dict[str, Any]]:
     cached = _tree_cache.get(client_id)
     if isinstance(cached, list):
         return cached
-    response = request_ozon_json(
-        "POST",
-        OZON_CATEGORY_TREE_URL,
-        client_id,
-        api_key,
-        {"language": "DEFAULT"},
-    )
+    if timeout_seconds is None:
+        response = request_ozon_json(
+            "POST",
+            OZON_CATEGORY_TREE_URL,
+            client_id,
+            api_key,
+            {"language": "DEFAULT"},
+        )
+    else:
+        if timeout_seconds <= 0:
+            raise TimeoutError("Ozon 类目树 deadline 已耗尽")
+        response = request_ozon_json(
+            "POST",
+            OZON_CATEGORY_TREE_URL,
+            client_id,
+            api_key,
+            {"language": "DEFAULT"},
+            timeout_seconds=timeout_seconds,
+        )
     result = response.get("result") if isinstance(response, dict) else None
     if not isinstance(result, list):
         raise RuntimeError("Ozon 类目树响应缺少 result 列表。")
@@ -201,20 +219,45 @@ def _stable_corpus_hash(records: list[dict[str, Any]]) -> str:
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
-def load_ozon_category_corpus() -> tuple[list[dict[str, Any]], CategoryCorpusInfo]:
+def load_ozon_category_corpus(
+    *,
+    timeout_seconds: float | None = None,
+) -> tuple[list[dict[str, Any]], CategoryCorpusInfo]:
     """返回缓存树展平后的可发布商品类型及可复盘的语料身份。"""
 
     client_id, api_key = _ozon_credentials()
-    records = _flatten_product_types(_load_tree(client_id, api_key))
+    started_at = time.monotonic()
+    cached = _corpus_cache.get(client_id)
+    if isinstance(cached, dict) and isinstance(cached.get("records"), list):
+        records = cached["records"]
+        corpus_hash = _text(cached.get("corpus_hash"))
+    else:
+        records = _flatten_product_types(
+            _load_tree(
+                client_id,
+                api_key,
+                timeout_seconds=timeout_seconds,
+            )
+        )
+        corpus_hash = _stable_corpus_hash(records)
+        _corpus_cache.set(
+            client_id,
+            {"records": records, "corpus_hash": corpus_hash},
+        )
+    if (
+        timeout_seconds is not None
+        and time.monotonic() - started_at >= timeout_seconds
+    ):
+        raise TimeoutError("Ozon 类目语料加载超过 deadline")
     if not records:
         raise RuntimeError("Ozon 类目树未返回可发布的商品类型。")
-    timestamps = _tree_cache.timestamps(client_id)
+    timestamps = _corpus_cache.timestamps(client_id)
     if timestamps is None:
         raise RuntimeError("Ozon 类目树缓存状态不可用。")
     retrieved_at, expires_at = timestamps
     credential_scope = hashlib.sha256(client_id.encode("utf-8")).hexdigest()
     return records, {
-        "corpus_hash": _stable_corpus_hash(records),
+        "corpus_hash": corpus_hash,
         "taxonomy_version": None,
         "locale": "ru-RU",
         "retrieved_at": retrieved_at.isoformat(),
@@ -239,11 +282,16 @@ def _search_score(record: dict[str, Any], query: str, terms: list[str]) -> int:
     return 0
 
 
-def search_ozon_categories(query: str, limit: int = 20) -> list[dict[str, Any]]:
+def search_ozon_categories(
+    query: str,
+    limit: int = 20,
+    *,
+    timeout_seconds: float | None = None,
+) -> list[dict[str, Any]]:
     query = _text(query)
     if not query:
         return []
-    records, _ = load_ozon_category_corpus()
+    records, _ = load_ozon_category_corpus(timeout_seconds=timeout_seconds)
     normalized_query = " ".join(_normalize_query(query))
     terms = _normalize_query(query)
     matches: list[dict[str, Any]] = []
@@ -308,12 +356,43 @@ def _normalize_attribute(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def fetch_ozon_category_record(category_id: str, include_attributes: bool = False) -> dict[str, Any]:
+def fetch_ozon_category_record(
+    category_id: str,
+    include_attributes: bool = False,
+    *,
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
     type_id = _text(category_id)
     if not type_id:
         raise RuntimeError("缺少 Ozon 商品类型 ID。")
     client_id, api_key = _ozon_credentials()
-    record = _record_for_type_id(type_id, _flatten_product_types(_load_tree(client_id, api_key)))
+    deadline_at = (
+        time.monotonic() + float(timeout_seconds)
+        if timeout_seconds is not None
+        else None
+    )
+
+    def remaining_timeout() -> float:
+        if deadline_at is None:
+            return 30
+        remaining = deadline_at - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Ozon 类目详情 deadline 已耗尽")
+        return remaining
+
+    tree = (
+        _load_tree(client_id, api_key)
+        if deadline_at is None
+        else _load_tree(
+            client_id,
+            api_key,
+            timeout_seconds=remaining_timeout(),
+        )
+    )
+    record = _record_for_type_id(
+        type_id,
+        _flatten_product_types(tree),
+    )
     if not include_attributes:
         return record
     description_category_id = _text(record.get("description_category_id"))
@@ -322,17 +401,28 @@ def fetch_ozon_category_record(category_id: str, include_attributes: bool = Fals
         request_type_id: int | str = int(_text(record.get("type_id")))
     except ValueError as exc:
         raise RuntimeError("Ozon 类目 ID 格式无效。") from exc
-    response = request_ozon_json(
-        "POST",
-        OZON_CATEGORY_ATTRIBUTES_URL,
-        client_id,
-        api_key,
-        {
-            "description_category_id": request_category_id,
-            "type_id": request_type_id,
-            "language": "DEFAULT",
-        },
-    )
+    request_payload = {
+        "description_category_id": request_category_id,
+        "type_id": request_type_id,
+        "language": "DEFAULT",
+    }
+    if deadline_at is None:
+        response = request_ozon_json(
+            "POST",
+            OZON_CATEGORY_ATTRIBUTES_URL,
+            client_id,
+            api_key,
+            request_payload,
+        )
+    else:
+        response = request_ozon_json(
+            "POST",
+            OZON_CATEGORY_ATTRIBUTES_URL,
+            client_id,
+            api_key,
+            request_payload,
+            timeout_seconds=remaining_timeout(),
+        )
     raw_attributes = response.get("result") if isinstance(response, dict) else None
     if not isinstance(raw_attributes, list):
         raise RuntimeError("Ozon 类目属性响应缺少 result 列表。")
@@ -352,6 +442,7 @@ def clear_ozon_category_tree_cache() -> None:
     """供测试和凭据切换后的显式刷新使用。"""
 
     _tree_cache.clear()
+    _corpus_cache.clear()
 
 
 __all__ = [

@@ -244,12 +244,17 @@ class AiToolRuntime:
             )
         except Exception as exc:
             duration_ms = round((time.monotonic() - started_at) * 1000)
+            error_code = (
+                "TASK_DEADLINE_EXCEEDED"
+                if isinstance(exc, TimeoutError)
+                else str(getattr(exc, "code", "") or "TOOL_EXECUTION_FAILED")
+            )
             return self._remember(
                 call,
                 signature,
                 self._error_result(
                     call,
-                    code="TOOL_EXECUTION_FAILED",
+                    code=error_code,
                     message=str(exc) or exc.__class__.__name__,
                     duration_ms=duration_ms,
                 ),

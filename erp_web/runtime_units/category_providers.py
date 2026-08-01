@@ -3,8 +3,7 @@ from __future__ import annotations
 
 """Mercado Libre 与 Ozon 的统一类目 Provider 注册表。"""
 
-from datetime import datetime, timezone
-import hashlib
+import time
 import urllib.parse
 from typing import Any
 
@@ -14,10 +13,6 @@ from erp_web.marketplace_registry import (
     platform_label,
 )
 from erp_web.marketplaces.category_provider import CategoryProvider
-from erp_web.schemas.category import (
-    CategoryCorpusInfo,
-    CategoryProviderPreflight,
-)
 
 from .category_refresh import (
     http_json,
@@ -27,41 +22,30 @@ from .category_refresh import (
 )
 from .ozon_category_api import (
     fetch_ozon_category_record,
-    load_ozon_category_corpus,
     search_ozon_categories,
 )
 
 
-def _path_text(record: dict[str, Any]) -> str:
-    path = record.get("path_original") if isinstance(record.get("path_original"), list) else []
-    if path:
-        return " / ".join(str(item).strip() for item in path if str(item).strip())
-    return str(record.get("category_path") or record.get("name_original") or record.get("category_id") or "").strip()
+def _deadline_at(timeout_seconds: float | None) -> float | None:
+    if timeout_seconds is None:
+        return None
+    timeout = float(timeout_seconds)
+    if timeout <= 0:
+        raise TimeoutError("类目 Provider deadline 已耗尽")
+    return time.monotonic() + timeout
+
+
+def _remaining_timeout(deadline_at: float | None, default: float) -> float:
+    if deadline_at is None:
+        return default
+    remaining = deadline_at - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("类目 Provider deadline 已耗尽")
+    return remaining
 
 
 class MercadoLibreCategoryProvider:
     platform = "mercadolibre"
-
-    def preflight(self, site: str = "") -> CategoryProviderPreflight:
-        resolved_site = self.resolve_site(site)
-        now = datetime.now(timezone.utc).isoformat()
-        scope_hash = hashlib.sha256(
-            f"mercadolibre:public:{resolved_site}".encode("utf-8")
-        ).hexdigest()
-        return {
-            "ok": True,
-            "platform": self.platform,
-            "site": resolved_site,
-            "retrieval_mode": "remote_discovery",
-            "corpus_info": {
-                "corpus_hash": "",
-                "taxonomy_version": None,
-                "locale": _mercadolibre_locale(resolved_site),
-                "retrieved_at": now,
-                "expires_at": now,
-                "credential_scope_hash": f"sha256:{scope_hash}",
-            },
-        }
 
     def resolve_site(self, site: str = "") -> str:
         from erp_web.context import get_context
@@ -89,14 +73,35 @@ class MercadoLibreCategoryProvider:
         site: str = "",
         *,
         include_attributes: bool = False,
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         category_id = str(category_id or "").strip()
         if not category_id:
             raise RuntimeError("缺少 Mercado Libre 类目 ID。")
         resolved_site = self.resolve_site(site)
-        detail = mercadolibre_category_detail(category_id, http_client=http_json)
+        deadline_at = _deadline_at(timeout_seconds)
+
+        def scoped_http_client(
+            url: str,
+            access_token: str | None = None,
+        ) -> dict[str, Any] | list[Any]:
+            if deadline_at is None:
+                return http_json(url, access_token)
+            return http_json(
+                url,
+                access_token,
+                timeout_seconds=_remaining_timeout(deadline_at, 8),
+            )
+
+        detail = mercadolibre_category_detail(
+            category_id,
+            http_client=scoped_http_client,
+        )
         attrs = (
-            mercadolibre_category_attributes(category_id, http_client=http_json)
+            mercadolibre_category_attributes(
+                category_id,
+                http_client=scoped_http_client,
+            )
             if include_attributes
             else {"required": [], "optional": []}
         )
@@ -107,12 +112,24 @@ class MercadoLibreCategoryProvider:
         query: str,
         site: str = "",
         limit: int = 8,
+        *,
+        timeout_seconds: float | None = None,
     ) -> list[dict[str, Any]]:
         query = str(query or "").strip()
         if not query:
             return []
         resolved_site = self.resolve_site(site)
-        data = http_json(self._discovery_url(resolved_site, query, limit))
+        discovery_url = self._discovery_url(resolved_site, query, limit)
+        if timeout_seconds is None:
+            data = http_json(discovery_url)
+        else:
+            data = http_json(
+                discovery_url,
+                timeout_seconds=_remaining_timeout(
+                    _deadline_at(timeout_seconds),
+                    8,
+                ),
+            )
         if not isinstance(data, list):
             raise RuntimeError(
                 "Mercado Libre domain discovery 响应不是列表。"
@@ -130,10 +147,19 @@ class MercadoLibreCategoryProvider:
                 or item.get("domain_name")
                 or category_id
             ).strip()
+            domain_name = str(item.get("domain_name") or "").strip()
+            path = list(
+                dict.fromkeys(
+                    value
+                    for value in (domain_name, name)
+                    if value
+                )
+            )
             discoveries.append(
                 {
                     "category_id": category_id,
                     "name": name,
+                    "path_original": path or [name],
                     "site": resolved_site,
                     "provider_rank": index,
                     "raw": item,
@@ -148,70 +174,8 @@ class MercadoLibreCategoryProvider:
             )
         return discoveries
 
-    def search(self, query: str, site: str = "", limit: int = 5) -> list[dict[str, Any]]:
-        resolved_site = self.resolve_site(site)
-        suggestions: list[dict[str, Any]] = []
-        for discovery in self.discover(query, site=resolved_site, limit=limit):
-            category_id = str(discovery.get("category_id") or "").strip()
-            record = self.detail(category_id, site=resolved_site)
-            name = str(
-                discovery.get("name")
-                or record.get("name_original")
-                or category_id
-            ).strip()
-            path = _path_text(record) or name
-            index = int(discovery.get("provider_rank") or 0)
-            suggestions.append(
-                {
-                    "id": category_id,
-                    "category_id": category_id,
-                    "name": name,
-                    "path": path,
-                    "category_path": path,
-                    "path_ids": (
-                        record.get("path_ids")
-                        if isinstance(record.get("path_ids"), list)
-                        else []
-                    ),
-                    "site": resolved_site,
-                    "score": max(1, 100 - index * 5),
-                    "matched_terms": [str(query or "").strip()],
-                    "source": "mercadolibre_domain_discovery",
-                    "raw": {
-                        "domain_discovery": (
-                            discovery.get("raw")
-                            if isinstance(discovery.get("raw"), dict)
-                            else {}
-                        ),
-                        "category": (
-                            record.get("raw")
-                            if isinstance(record.get("raw"), dict)
-                            else {}
-                        ),
-                        "path_ids": (
-                            record.get("path_ids")
-                            if isinstance(record.get("path_ids"), list)
-                            else []
-                        ),
-                    },
-                }
-            )
-        return suggestions
-
-
 class OzonCategoryProvider:
     platform = "ozon"
-
-    def preflight(self, site: str = "") -> CategoryProviderPreflight:
-        resolved_site = self.resolve_site(site)
-        _, corpus_info = self.category_corpus(resolved_site)
-        return {
-            "ok": True,
-            "platform": self.platform,
-            "site": resolved_site,
-            "retrieval_mode": "full_tree_local",
-            "corpus_info": corpus_info,
-        }
 
     def resolve_site(self, site: str = "") -> str:
         del site
@@ -223,33 +187,29 @@ class OzonCategoryProvider:
         site: str = "",
         *,
         include_attributes: bool = False,
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         del site
-        return fetch_ozon_category_record(category_id, include_attributes=include_attributes)
+        return fetch_ozon_category_record(
+            category_id,
+            include_attributes=include_attributes,
+            timeout_seconds=timeout_seconds,
+        )
 
-    def search(self, query: str, site: str = "", limit: int = 5) -> list[dict[str, Any]]:
-        del site
-        return search_ozon_categories(query, limit=limit)
-
-    def category_corpus(
+    def search(
         self,
+        query: str,
         site: str = "",
-    ) -> tuple[list[dict[str, Any]], CategoryCorpusInfo]:
+        limit: int = 5,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> list[dict[str, Any]]:
         del site
-        return load_ozon_category_corpus()
-
-
-def _mercadolibre_locale(site: str) -> str:
-    return {
-        "MLA": "es-AR",
-        "MLB": "pt-BR",
-        "MLC": "es-CL",
-        "MCO": "es-CO",
-        "MLM": "es-MX",
-        "MPE": "es-PE",
-        "MLU": "es-UY",
-        "CBT": "es-MX",
-    }.get(str(site or "").strip().upper(), "es-419")
+        return search_ozon_categories(
+            query,
+            limit=limit,
+            timeout_seconds=timeout_seconds,
+        )
 
 
 _CATEGORY_PROVIDERS: dict[str, CategoryProvider] = {

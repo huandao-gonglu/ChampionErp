@@ -1,24 +1,13 @@
 from __future__ import annotations
 
-"""类目召回层的规范化数据形状。
+"""类目搜索与匹配的规范化数据形状。"""
 
-旧类目搜索接口仍可在 HTTP 边界返回 ``id/path`` 等兼容字段；新的召回层内部只使用
-``category_id/path_segments``，避免同一语义出现两套字段。
-"""
-
-from typing import Any, Literal, TypedDict
-
-
-CategoryRetrievalMode = Literal["full_tree_local", "remote_discovery", "hybrid"]
-
-
-class CategoryQueryVariant(TypedDict):
-    query: str
-    source: str
-    weight: float
+from typing import Literal, TypedDict
 
 
 class CategoryCorpusInfo(TypedDict, total=False):
+    """平台搜索实现内部使用的缓存语料身份，不进入 AI 上下文。"""
+
     corpus_hash: str
     taxonomy_version: str | None
     locale: str
@@ -27,27 +16,11 @@ class CategoryCorpusInfo(TypedDict, total=False):
     credential_scope_hash: str
 
 
-class CategoryRetrievalRequest(TypedDict, total=False):
-    platform: str
-    site: str
-    locale: str
-    query: str
-    product_type: str
-    brand: str
-    model: str
-    modifiers: list[str]
-    synonyms: list[str]
-    key_attributes: dict[str, Any]
-    limit: int
-
-
 class CategoryCandidate(TypedDict, total=False):
     category_id: str
     name: str
     path_segments: list[str]
-    retrieval_score: float
-    retrieval_sources: list[str]
-    matched_terms: list[str]
+    search_rank: int
     publishable: bool
     platform: str
     site: str
@@ -55,38 +28,60 @@ class CategoryCandidate(TypedDict, total=False):
     type_id: str
 
 
-class CategoryRetrievalCoverage(TypedDict, total=False):
-    query_variant_count: int
-    matched_query_variant_count: int
-    candidate_count: int
-    corpus_record_count: int
-    top_score: float
-
-
-class CategoryCandidateResult(TypedDict):
+class CategorySearchResult(TypedDict):
+    keyword: str
     candidates: list[CategoryCandidate]
-    retrieval_mode: CategoryRetrievalMode
-    corpus_info: CategoryCorpusInfo
-    coverage: CategoryRetrievalCoverage
-    warnings: list[dict[str, Any]]
-    query_variants: list[CategoryQueryVariant]
+    source: str
 
 
-class CategoryProviderPreflight(TypedDict):
+CategoryMatchStatus = Literal["completed", "unresolved", "failed"]
+CategoryMatchMethod = Literal["tool_loop"]
+CategoryConfidenceBand = Literal["high", "medium", "low"]
+
+
+class CategoryMatchFailure(TypedDict, total=False):
+    code: str
+    message: str
+    stage: str
+    retryable: bool
+
+
+class CategoryMatchDecision(TypedDict):
+    method: CategoryMatchMethod
+    confidence_band: CategoryConfidenceBand
+    model_confidence: float
+    decision_score: float
+    abstained: bool
+    evidence: list[str]
+    search_count: int
+
+
+class CategoryMatchTrace(TypedDict):
+    conversation_id: str
+    task_run_id: str
+
+
+class CategoryMatchResult(TypedDict):
     ok: bool
-    platform: str
-    site: str
-    retrieval_mode: CategoryRetrievalMode
-    corpus_info: CategoryCorpusInfo
+    status: CategoryMatchStatus
+    target: dict[str, str]
+    selected_category_id: str | None
+    query: str
+    candidates: list[CategoryCandidate]
+    decision: CategoryMatchDecision
+    failure: CategoryMatchFailure | None
+    trace: CategoryMatchTrace
 
 
 __all__ = [
     "CategoryCandidate",
-    "CategoryCandidateResult",
     "CategoryCorpusInfo",
-    "CategoryProviderPreflight",
-    "CategoryQueryVariant",
-    "CategoryRetrievalCoverage",
-    "CategoryRetrievalMode",
-    "CategoryRetrievalRequest",
+    "CategorySearchResult",
+    "CategoryConfidenceBand",
+    "CategoryMatchDecision",
+    "CategoryMatchFailure",
+    "CategoryMatchMethod",
+    "CategoryMatchResult",
+    "CategoryMatchStatus",
+    "CategoryMatchTrace",
 ]

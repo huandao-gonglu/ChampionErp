@@ -26,15 +26,8 @@ def handle_category_search(handler: JsonRequestHandler) -> None:
     handler.send_json(result, status)
 
 
-def handle_category_ai_suggest(handler: JsonRequestHandler) -> None:
-    result, status = category_facade.category_ai_suggest_payload(
-        validate_request_payload(handler.read_body(), endpoint=handler.path)
-    )
-    handler.send_json(result, status)
-
-
-def handle_category_ai_identify_product(handler: JsonRequestHandler) -> None:
-    result, status = category_facade.category_ai_identify_product_payload(
+def handle_category_match(handler: JsonRequestHandler) -> None:
+    result, status = category_facade.category_match_payload(
         validate_request_payload(handler.read_body(), endpoint=handler.path)
     )
     handler.send_json(result, status)
@@ -71,8 +64,7 @@ def handle_category_precheck(handler: JsonRequestHandler) -> None:
 POST_HANDLERS: dict[str, PostHandler] = {
     "/api/category-attrs": handle_category_attrs,
     "/api/category-search": handle_category_search,
-    "/api/category-ai-suggest": handle_category_ai_suggest,
-    "/api/category-ai-identify-product": handle_category_ai_identify_product,
+    "/api/category-match": handle_category_match,
     "/api/category-ai-fill": handle_category_ai_fill,
     "/api/category-attribute-translations": handle_category_attribute_translations,
     "/api/category-result-translations": handle_category_result_translations,

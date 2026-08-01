@@ -697,7 +697,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             summary = publish_helpers._required_attribute_summary(product, "mercadolibre")
 
             self.assertEqual(results[0]["category_id"], "MLM999")
-            self.assertEqual(results[0]["path"], "Clothes, Bags and Shoes / Necklaces")
+            self.assertEqual(results[0]["path"], "Necklaces")
             self.assertEqual(attrs["required"][0]["id"], "BRAND")
             self.assertEqual(attrs["source"], "mercadolibre_live")
             self.assertEqual(summary["required_count"], 1)

@@ -13,6 +13,7 @@ from erp_web.runtime_units import publish_adapter, publish_workflows
 from erp_web.runtime_units.category_providers import (
     category_provider_for,
 )
+from erp_web.runtime_units.category_searchers import create_category_searcher
 from erp_web.runtime_units.runtime_api import publish_product
 from erp_web.runtime_units.store_credentials import (
     resolve_store_auth_tester,
@@ -62,10 +63,14 @@ def test_category_capabilities_match_real_providers() -> None:
         assert (provider is not None) is has_category_capability
         if provider is not None:
             assert provider.platform == spec.key
-            assert callable(provider.preflight)
-            assert callable(provider.search)
             assert callable(provider.detail)
             assert callable(provider.resolve_site)
+        if CAP_CATEGORY_SEARCH in spec.capabilities:
+            searcher = create_category_searcher(
+                spec.key,
+                site="global" if spec.key == "ozon" else "MLM",
+            )
+            assert callable(searcher.search_categories)
 
 
 def test_store_auth_testers_are_registry_driven() -> None:
@@ -87,7 +92,6 @@ def test_business_ai_use_cases_share_one_executor() -> None:
         "erp_web/runtime_units/category_attribute_translation.py",
         "erp_web/runtime_units/category_result_translation.py",
         "erp_web/runtime_units/category_attribute_ai_fill.py",
-        "erp_web/runtime_units/category_product_identify.py",
     ):
         calls = called_leaf_names(relative_path)
         assert calls.count("run_ai_use_case") == 1

@@ -84,10 +84,14 @@ AI_USE_CASES: dict[str, dict[str, Any]] = {
         "label": "类目属性 AI 填充",
         "required_capabilities": [CAP_CHAT, CAP_JSON],
     },
-    "category.product_identify": {
-        "id": "category.product_identify",
-        "label": "商品主体识别与类目检索词",
+    "category.product_match": {
+        "id": "category.product_match",
+        "label": "商品类目候选匹配",
         "required_capabilities": [CAP_CHAT, CAP_JSON],
+        "execution_mode": "tool_loop",
+        "toolset_id": "category.search",
+        "budget_profile": "category.match.default",
+        "result_schema": "category_match.v1",
     },
     "category.attribute_translation": {
         "id": "category.attribute_translation",

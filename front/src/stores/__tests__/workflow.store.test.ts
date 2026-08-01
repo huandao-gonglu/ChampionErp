@@ -43,11 +43,11 @@ vi.mock('@/api/workflow/catalog', () => ({
 }))
 
 vi.mock('@/api/workflow/publishing', () => ({
-  identifyProductForCategory: vi.fn(),
   calculatePrice: vi.fn(),
   publishPrecheck: vi.fn(),
   enqueuePublish: vi.fn(),
   fetchCategoryAttrs: vi.fn(),
+  matchCategory: vi.fn(),
   searchCategories: vi.fn(),
   previewPublishPayload: vi.fn(),
   fillCategoryAttributes: vi.fn(),
@@ -56,7 +56,6 @@ vi.mock('@/api/workflow/publishing', () => ({
   fetchMercadoLibreOrders: vi.fn(),
   fetchMercadoLibrePublishedItems: vi.fn(),
   closeMercadoLibrePublishedItem: vi.fn(),
-  suggestCategories: vi.fn(),
   runCategoryPrecheck: vi.fn(),
   confirmMercadoLibreRealPublish: vi.fn(),
   publishProductDirect: vi.fn(),
@@ -489,42 +488,49 @@ describe('workflow store live API flow', () => {
     )
   })
 
-  it('identifies the product once and keeps automatic category candidates for every target site', async () => {
+  it('uses category.match as the only automatic matching path and still requires manual selection', async () => {
     const draft = createEmptyDraftDetail('mercadolibre')
-    draft.draftId = 'draft-1'
+    draft.draftId = 'draft-pr3'
     draft.productId = 'real-product-1'
     draft.sourceProductId = 'real-product-1'
     draft.site = 'MLM'
+    draft.title = 'Ventilador portátil'
     draft.targetSites = [
       { platform: 'mercadolibre', site: 'MLM', language: 'es-MX', currency: 'MXN' },
-      { platform: 'mercadolibre', site: 'CBT', language: 'en-US', currency: 'USD' },
     ]
     vi.mocked(workflowApi.saveDraft).mockResolvedValue(draftMutation(draft))
-    vi.mocked(workflowApi.identifyProductForCategory).mockResolvedValue({
-      identity: { name: '手持风扇', productType: 'handheld_fan', confidence: 0.94, reason: ['标题和属性一致'] },
-      targets: [
-        { platform: 'mercadolibre', site: 'MLM', language: 'es-MX', currency: 'MXN', query: 'ventilador portátil' },
-        { platform: 'mercadolibre', site: 'CBT', language: 'en-US', currency: 'USD', query: 'portable handheld fan' },
-      ],
+    vi.mocked(workflowApi.matchCategory).mockResolvedValue({
+      ok: true,
+      status: 'completed',
+      selectedCategoryId: 'MLM-FAN',
+      candidates: [{
+        id: 'MLM-FAN',
+        name: 'Ventiladores',
+        path: 'Hogar / Ventiladores',
+        raw: { category_id: 'MLM-FAN' },
+      }],
+      query: 'ventilador',
+      decision: {
+        method: 'tool_loop',
+        confidenceBand: 'high',
+        modelConfidence: 0.95,
+        decisionScore: 0.88,
+        abstained: false,
+        evidence: ['主体一致'],
+        searchCount: 1,
+      },
+      failure: null,
+      trace: { conversationId: 'aic-1', taskRunId: 'task-1' },
     })
-    vi.mocked(workflowApi.searchCategories)
-      .mockResolvedValueOnce({ results: [{ id: 'MLM1', name: 'Ventiladores', path: 'Hogar / Ventiladores', raw: {} }] })
-      .mockResolvedValueOnce({ results: [{ id: 'CBT1', name: 'Fans', path: 'Home / Fans', raw: {} }] })
 
     const store = useWorkflowStore()
     store.currentDraft = draft
     await store.autoSuggestCategoriesForDraft()
 
-    expect(workflowApi.identifyProductForCategory).toHaveBeenCalledTimes(1)
-    expect(workflowApi.searchCategories).toHaveBeenNthCalledWith(1, 'mercadolibre', 'ventilador portátil', 'MLM', 5)
-    expect(workflowApi.searchCategories).toHaveBeenNthCalledWith(2, 'mercadolibre', 'portable handheld fan', 'CBT', 5)
-    expect(store.categoryAutoMatchProductName).toBe('手持风扇')
-    expect(store.categoryQuery).toBe('ventilador portátil')
-    expect(store.categoryResults[0]?.id).toBe('MLM1')
-
-    store.selectPublishTarget(draft.targetSites[1])
-    expect(store.categoryQuery).toBe('portable handheld fan')
-    expect(store.categoryResults[0]?.id).toBe('CBT1')
+    expect(workflowApi.matchCategory).toHaveBeenCalledOnce()
+    expect(workflowApi.searchCategories).not.toHaveBeenCalled()
+    expect(store.categoryResults[0]?.id).toBe('MLM-FAN')
+    expect(store.currentDraft.categoryId).toBe('')
   })
 
   it('saves the selected category to the active target before loading attributes', async () => {
@@ -723,7 +729,6 @@ describe('workflow store live API flow', () => {
       expect.objectContaining({ id: 'BRAND', name: 'Brand', required: true }),
     ])
     expect(workflowApi.fetchCategoryAttrs).not.toHaveBeenCalled()
-    expect(workflowApi.identifyProductForCategory).not.toHaveBeenCalled()
   })
 
   it('surfaces Mercado Libre refresh token failures instead of logging them as complete', async () => {

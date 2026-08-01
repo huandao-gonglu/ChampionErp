@@ -274,12 +274,16 @@ def request_ozon_json(
     client_id: str,
     api_key: str,
     payload: dict[str, Any] | None = None,
+    *,
+    timeout_seconds: float = 30,
 ) -> dict[str, Any]:
+    if timeout_seconds <= 0:
+        raise TimeoutError("Ozon API deadline 已耗尽")
     headers = {"Content-Type": "application/json", "Client-Id": client_id, "Api-Key": api_key}
     data = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             raw = response.read().decode("utf-8")
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as exc:

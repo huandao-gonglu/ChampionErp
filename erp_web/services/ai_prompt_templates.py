@@ -28,8 +28,8 @@ DEFAULT_AI_USE_CASE_PROMPTS: dict[str, dict[str, str]] = {
     "category.attribute_fill": {
         "path": "config/prompts/category_attribute_fill.json",
     },
-    "category.product_identify": {
-        "path": "config/prompts/category_product_identify.json",
+    "category.product_match": {
+        "path": "config/prompts/category_product_match.json",
     },
     "category.attribute_translation": {
         "path": "config/prompts/category_attribute_translation.json",

@@ -220,6 +220,21 @@
 ### 类目与属性
 
 
+- `POST /api/category-match`（
+  `draft_id`：草稿 ID，推荐
+  `product_id`：无草稿调用时的商品 ID，可选
+  `platform`：目标平台，必填
+  `site`：目标站点，必填
+  `language`：目标语言，可选
+  ）；运行 `category.match`：首轮只发送原语言/目标语言商品事实，AI 必须通过唯一
+  的 `search_categories(keyword)` 工具搜索当前平台类目；不匹配时可换词重试，最多
+  3 轮、3 次调用。响应
+  `status` 为 `completed | unresolved | failed`，`selected_category_id` 只会引用
+  已验证候选；`query` 是最后一次有效搜索词，`candidates` 是去重后的轻量候选，
+  完整搜索历史仅保存在 AI Work trace；可预期的 abstain 返回 HTTP 200，配置/授权依赖错误返回 424，协议
+  错误返回 502，deadline 返回 504。该接口是自动类目匹配的唯一入口，且不自动
+  写入草稿。
+
 - `POST /api/category-attrs`（
   `platform`：平台标识，可选，默认 `mercadolibre`
   `category_id`：类目 ID，可选
@@ -232,19 +247,9 @@
   `query`：搜索关键词，可选
   `keyword`：搜索关键词别名，可选
   `limit`：结果数量，可选
-  ）；Mercado Libre 实时调用 `domain_discovery/search` 搜索类目候选并补齐路径；Ozon 实时读取官方 `description-category/tree`，检索可发布的商品类型并返回配套的描述类目 ID。
-
-- `POST /api/category-ai-suggest`（
-  `product_id`：商品 ID，必填
-  `platform`：平台标识，可选
-  `site`：站点或国家，可选
-  `country`：站点或国家别名，可选
-  `limit`：建议数量，可选
-  ）；用商品上下文实时匹配 Mercado Libre 类目候选。
-
-- `POST /api/category-ai-identify-product`（
-  `draft_id`：草稿 ID，必填
-  ）；调用文本 AI 识别商品主体，并为草稿全部目标站点生成本地化类目检索词。前端随后逐站点调用实时类目搜索，并保留候选供人工确认。
+  ）；供用户主动输入关键词进行手动搜索。Mercado Libre 实时调用
+  `domain_discovery/search` 搜索类目候选并补齐路径；Ozon 实时读取官方
+  `description-category/tree`，检索可发布的商品类型并返回配套的描述类目 ID。
 
 - `POST /api/category-ai-fill`（
   `product_id`：商品 ID，必填

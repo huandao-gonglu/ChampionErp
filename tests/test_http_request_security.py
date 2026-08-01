@@ -192,6 +192,25 @@ def test_endpoint_contract_normalizes_integer_and_boolean_fields() -> None:
     assert publish["confirm"] is False
 
 
+def test_category_match_contract_requires_subject_platform_and_site() -> None:
+    valid = validate_request_payload(
+        {
+            "draft_id": "draft-1",
+            "platform": "mercadolibre",
+            "site": "MLM",
+        },
+        endpoint="/api/category-match",
+    )
+
+    assert valid["draft_id"] == "draft-1"
+    with pytest.raises(RequestValidationError) as raised:
+        validate_request_payload(
+            {"draft_id": "draft-1", "platform": "mercadolibre"},
+            endpoint="/api/category-match",
+        )
+    assert raised.value.error_code == "MISSING_REQUIRED_FIELD"
+
+
 @pytest.mark.parametrize(
     ("endpoint", "payload", "error_code"),
     [

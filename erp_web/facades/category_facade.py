@@ -9,15 +9,13 @@ CategoryProvider 注册表处理；facade 不直接访问文件、网络或 SQLi
 from typing import Any
 
 from erp_web.context import get_context
+from erp_web.facades.category_match_facade import match_category
 from erp_web.product_model import validate_category_precheck
 from erp_web.runtime_units.category_attribute_ai_fill import (
     apply_ai_model_attribute_fill,
 )
 from erp_web.runtime_units.category_attribute_translation import (
     translate_category_attributes,
-)
-from erp_web.runtime_units.category_product_identify import (
-    identify_product_for_category,
 )
 from erp_web.runtime_units.category_result_translation import (
     translate_category_results,
@@ -26,10 +24,8 @@ from erp_web.runtime_units.category_store import (
     fetch_category_attributes,
     fetch_category_record,
     search_categories_live,
-    suggest_category_ids,
 )
 from erp_web.runtime_units.draft_publish_context import (
-    draft_publish_targets,
     load_required_draft_publish_context,
     save_draft_target_listing_result,
 )
@@ -161,39 +157,59 @@ def category_search_payload(body: Payload) -> ResponseWithStatus:
     }, 200
 
 
-def category_ai_suggest_payload(body: Payload) -> ResponseWithStatus:
-    requested_site = str(body.get("site") or body.get("country") or "").strip()
-    product, _, platform, site, error, status = _load_category_subject(
-        body,
-        site=requested_site,
-    )
-    if error:
-        return error, status
-    limit = int(body.get("limit") or 5)
-    try:
-        return suggest_category_ids(
-            product,
-            platform=platform,
-            site=site,
-            limit=limit,
-        ), 200
-    except Exception as exc:
-        return _category_error(exc)
+def _category_match_http_status(result: Payload) -> int:
+    if result.get("status") != "failed":
+        return 200
+    failure = result.get("failure") if isinstance(result.get("failure"), dict) else {}
+    code = str(failure.get("code") or "")
+    if code in {"INPUT_INVALID", "TARGET_REQUIRED"}:
+        return 400
+    if code in {"TOOL_PERMISSION_DENIED", "TOOL_NOT_ALLOWED"}:
+        return 403
+    if code == "CATEGORY_RATE_LIMITED":
+        return 429
+    if code in {
+        "MODEL_TIMEOUT",
+        "TASK_DEADLINE_EXCEEDED",
+        "CATEGORY_PROVIDER_TIMEOUT",
+    }:
+        return 504
+    if code in {
+        "TOOL_PROTOCOL_UNSUPPORTED",
+        "MODEL_RESPONSE_SCHEMA_INVALID",
+        "MODEL_SELECTED_UNKNOWN_CATEGORY",
+        "MODEL_PROVIDER_ERROR",
+        "CATEGORY_SEARCH_REQUIRED",
+        "CATEGORY_SEARCH_INCOMPLETE",
+    }:
+        return 502
+    if code.startswith("CATEGORY_"):
+        return 424
+    return 500
 
 
-def category_ai_identify_product_payload(body: Payload) -> ResponseWithStatus:
-    context, error, status = load_required_draft_publish_context(body)
+def category_match_payload(body: Payload) -> ResponseWithStatus:
+    """``category.match`` 自动类目匹配的唯一 HTTP 边界。"""
+
+    product, context, platform, site, error, status = _load_category_subject(body)
     if error:
         return error, status
-    try:
-        result = identify_product_for_category(
-            context["product"],
-            context["draft"],
-            draft_publish_targets(context["draft"]),
+    draft = (
+        context.get("draft")
+        if isinstance(context, dict) and isinstance(context.get("draft"), dict)
+        else (
+            (product.get("drafts") or {}).get(platform)
+            if isinstance(product.get("drafts"), dict)
+            else {}
         )
-        return result, 200
-    except Exception as exc:
-        return _category_error(exc)
+    )
+    target = {
+        "platform": platform,
+        "site": site,
+        "language": str(body.get("language") or body.get("locale") or "").strip(),
+    }
+    result = match_category(product, draft or {}, target)
+    return result, _category_match_http_status(result)
 
 
 def _draft_fill_payload(
@@ -305,8 +321,7 @@ def category_precheck_payload(body: Payload) -> ResponseWithStatus:
 
 __all__ = [
     "category_ai_fill_payload",
-    "category_ai_identify_product_payload",
-    "category_ai_suggest_payload",
+    "category_match_payload",
     "category_attribute_translations_payload",
     "category_attrs_payload",
     "category_precheck_payload",

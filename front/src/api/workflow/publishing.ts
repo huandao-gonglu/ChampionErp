@@ -2,8 +2,8 @@ import {  apiClient } from '@/api/client'
 import type {
 
   CategoryAttributeTranslations,
+  CategoryMatchResult,
   CategoryPrecheckResult,
-  CategoryProductIdentification,
   CategoryResultTranslations,
   CategorySearchResult,
   CategorySelection,
@@ -460,51 +460,64 @@ export async function searchCategories(platform: Marketplace, query: string, sit
   return { results }
 }
 
-export async function suggestCategories(draft: DraftDetail, target: MarketplaceTargetSite): Promise<{ results: CategorySearchResult[]; terms: string[] }> {
-  const response = await apiClient.post('/api/category-ai-suggest', { ...requiredDraftTarget(draft, target, '匹配类目'), limit: 5 })
+export async function matchCategory(
+  draft: DraftDetail,
+  target: MarketplaceTargetSite,
+): Promise<CategoryMatchResult> {
+  const response = await apiClient.post('/api/category-match', {
+    ...requiredDraftTarget(draft, target, '匹配类目'),
+    language: target.language,
+  })
   const data = asRecord(response.data)
   ensureOk(data, '匹配类目失败')
-  const results = Array.isArray(data.suggestions)
-    ? data.suggestions.map((item) => {
+  const selectedCategoryId = getString(data, ['selected_category_id', 'selectedCategoryId'])
+  const candidates = Array.isArray(data.candidates)
+    ? data.candidates.map((item) => {
       const record = asRecord(item)
+      const pathSegments = stringList(record.path_segments ?? record.pathSegments)
       return {
-        id: getString(record, ['id', 'category_id']),
-        name: getString(record, ['name', 'title']),
-        path: getString(record, ['path', 'category_path'], getString(record, ['name', 'title'])),
+        id: getString(record, ['category_id']),
+        name: getString(record, ['name']),
+        path: pathSegments.join(' / ') || getString(record, ['name']),
         raw: record,
       }
-    })
+    }).filter((item) => item.id)
     : []
-  return { results, terms: Array.isArray(data.terms) ? data.terms.map(String) : [] }
-}
-
-export async function identifyProductForCategory(draft: DraftDetail): Promise<CategoryProductIdentification> {
-  const draftId = draft.draftId.trim()
-  if (!draftId) throw new Error('请先从草稿箱选择一个草稿再识别商品主体')
-  const response = await apiClient.post('/api/category-ai-identify-product', { draft_id: draftId })
-  const data = asRecord(response.data)
-  ensureOk(data, '识别商品主体失败')
-  const identity = asRecord(data.identity)
-  const targets = Array.isArray(data.targets)
-    ? data.targets.map((item) => {
-      const record = asRecord(item)
-      return {
-        platform: getString(record, ['platform']).toLowerCase() as Marketplace,
-        site: getString(record, ['site', 'site_id']),
-        language: getString(record, ['language']),
-        currency: getString(record, ['currency']),
-        query: getString(record, ['query']),
-      }
-    }).filter((target) => target.platform && target.site)
-    : []
+  candidates.sort((left, right) => {
+    if (left.id === selectedCategoryId) return -1
+    if (right.id === selectedCategoryId) return 1
+    return 0
+  })
+  const decision = asRecord(data.decision)
+  const failureRecord = asRecord(data.failure)
+  const trace = asRecord(data.trace)
   return {
-    identity: {
-      name: getString(identity, ['name', 'product_name']),
-      productType: getString(identity, ['productType', 'product_type']),
-      confidence: getNumber(identity, ['confidence'], 0),
-      reason: stringList(identity.reason),
+    ok: getBoolean(data, ['ok']),
+    status: getString(data, ['status'], 'failed') as CategoryMatchResult['status'],
+    selectedCategoryId,
+    candidates,
+    query: getString(data, ['query']),
+    decision: {
+      method: getString(decision, ['method'], 'tool_loop') as CategoryMatchResult['decision']['method'],
+      confidenceBand: getString(decision, ['confidence_band'], 'low') as CategoryMatchResult['decision']['confidenceBand'],
+      modelConfidence: getNumber(decision, ['model_confidence']),
+      decisionScore: getNumber(decision, ['decision_score']),
+      abstained: getBoolean(decision, ['abstained']),
+      evidence: stringList(decision.evidence),
+      searchCount: getNumber(decision, ['search_count']),
     },
-    targets,
+    failure: Object.keys(failureRecord).length
+      ? {
+        code: getString(failureRecord, ['code']),
+        message: getString(failureRecord, ['message']),
+        stage: getString(failureRecord, ['stage']),
+        retryable: getBoolean(failureRecord, ['retryable']),
+      }
+      : null,
+    trace: {
+      conversationId: getString(trace, ['conversation_id']),
+      taskRunId: getString(trace, ['task_run_id']),
+    },
   }
 }
 

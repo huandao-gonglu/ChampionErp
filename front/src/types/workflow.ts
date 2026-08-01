@@ -340,20 +340,35 @@ export interface CategorySearchResult {
   raw: UnknownRecord
 }
 
-export interface CategoryProductIdentity {
-  name: string
-  productType: string
-  confidence: number
-  reason: string[]
+export interface CategoryMatchFailure {
+  code: string
+  message: string
+  stage: string
+  retryable: boolean
 }
 
-export interface CategoryProductTargetQuery extends MarketplaceTargetSite {
+export interface CategoryMatchDecision {
+  method: 'tool_loop'
+  confidenceBand: 'high' | 'medium' | 'low'
+  modelConfidence: number
+  decisionScore: number
+  abstained: boolean
+  evidence: string[]
+  searchCount: number
+}
+
+export interface CategoryMatchResult {
+  ok: boolean
+  status: 'completed' | 'unresolved' | 'failed'
+  selectedCategoryId: string
+  candidates: CategorySearchResult[]
   query: string
-}
-
-export interface CategoryProductIdentification {
-  identity: CategoryProductIdentity
-  targets: CategoryProductTargetQuery[]
+  decision: CategoryMatchDecision
+  failure: CategoryMatchFailure | null
+  trace: {
+    conversationId: string
+    taskRunId: string
+  }
 }
 
 export interface CategoryPrecheckResult {

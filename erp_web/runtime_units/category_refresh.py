@@ -9,14 +9,19 @@ from erp_web import http_client
 JsonClient = Callable[[str, str | None], dict[str, Any] | list[Any]]
 
 
-def http_json(url: str, access_token: str | None = None) -> dict[str, Any] | list[Any]:
+def http_json(
+    url: str,
+    access_token: str | None = None,
+    *,
+    timeout_seconds: float = 8,
+) -> dict[str, Any] | list[Any]:
     headers = {
         "Accept": "application/json",
         "User-Agent": "Mozilla/5.0 ERPCategoryLive/1.0",
     }
     if access_token:
         headers["Authorization"] = f"Bearer {access_token}"
-    return http_client.request_json(url, headers=headers, timeout=8)
+    return http_client.request_json(url, headers=headers, timeout=timeout_seconds)
 
 
 def ml_attr_required(attr: dict[str, Any]) -> bool:

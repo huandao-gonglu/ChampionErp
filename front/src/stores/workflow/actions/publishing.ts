@@ -7,7 +7,7 @@ import {
   fetchCategoryResultTranslations,
   fetchPublishLogs,
   fillCategoryAttributes,
-  identifyProductForCategory,
+  matchCategory,
   previewPublishPayload,
   publishProductDirect,
   publishPrecheck,
@@ -18,7 +18,6 @@ import { fetchDraftsIndex } from '@/api/workflow/catalog'
 import {  marketplaces } from '@/constants/initialState'
 import type {
 
-  CategoryProductIdentification,
   CategorySearchResult,
   Marketplace,
   MarketplaceTargetSite,
@@ -155,6 +154,43 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
     await autoSuggestCategoriesForDraft()
   }
 
+  async function autoMatchCategories(targets: MarketplaceTargetSite[]) {
+    categoryAutoMatchProductName.value = currentDraftProductContext.value.title || currentDraft.value.title
+    const recommendations: Record<string, { query: string; results: CategorySearchResult[]; error: string }> = {}
+    let candidateTargetCount = 0
+    let completedCount = 0
+    for (const [index, target] of targets.entries()) {
+      categoryAutoMatchMessage.value = `正在为 ${target.platform.toUpperCase()} ${target.site} 运行类目能力（${index + 1}/${targets.length}）…`
+      try {
+        const result = await matchCategory(currentDraft.value, target)
+        recommendations[targetSiteKey(target)] = {
+          query: result.query,
+          results: result.candidates,
+          error: result.status === 'failed' ? result.failure?.message || '类目匹配失败' : '',
+        }
+        if (result.candidates.length) candidateTargetCount += 1
+        if (result.status === 'completed') completedCount += 1
+      } catch (exc) {
+        recommendations[targetSiteKey(target)] = {
+          query: '',
+          results: [],
+          error: exc instanceof Error ? exc.message : '类目匹配失败',
+        }
+      }
+      categoryAutoMatchCurrent.value = index + 1
+    }
+    categoryRecommendations.value = recommendations
+    applyCategoryRecommendationForTarget(selectedPublishTarget.value)
+    categoryResultTranslations.value = {}
+    categoryResultTranslationsSource.value = ''
+    addLog(`类目匹配已完成：${candidateTargetCount}/${targets.length} 个目标站点返回候选，${completedCount} 个给出已验证首选；仍需人工点击候选确认。`)
+    if (categoryAttributeTranslationEnabled.value) {
+      await translateCategoryResults()
+    }
+    if (!candidateTargetCount) setError('没有找到可用类目候选，请调整商品信息或手动搜索。')
+    return candidateTargetCount > 0
+  }
+
   function clearCurrentCategoryDependentFields() {
     currentDraft.value.attributes = {}
     currentDraft.value.validationErrors = []
@@ -180,7 +216,7 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
       return false
     }
     categoryAutoMatching.value = true
-    categoryAutoMatchMessage.value = '正在使用文本 AI 识别商品主体…'
+    categoryAutoMatchMessage.value = '正在运行受控类目匹配能力…'
     categoryAutoMatchCurrent.value = 0
     categoryAutoMatchTotal.value = initialTargets.length
     categoryAutoMatchProductName.value = ''
@@ -189,45 +225,7 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
     setError('')
     try {
       await persistCurrentDraftForPublish()
-      const identification: CategoryProductIdentification = await identifyProductForCategory(currentDraft.value)
-      categoryAutoMatchProductName.value = identification.identity.name
-      const targetQueries = new Map(identification.targets.map((target) => [targetSiteKey(target), target.query.trim()]))
-      const recommendations: Record<string, { query: string; results: CategorySearchResult[]; error: string }> = {}
-      let matchedCount = 0
-      const targets = currentPublishTargets.value
-      categoryAutoMatchTotal.value = targets.length
-      for (const [index, target] of targets.entries()) {
-        const query = targetQueries.get(targetSiteKey(target)) || ''
-        categoryAutoMatchMessage.value = `正在为 ${target.platform.toUpperCase()} ${target.site} 匹配类目（${index + 1}/${targets.length}）…`
-        if (!query) {
-          recommendations[targetSiteKey(target)] = { query: '', results: [], error: 'AI 未返回该站点的类目检索词。' }
-          categoryAutoMatchCurrent.value = index + 1
-          continue
-        }
-        try {
-          const result = await searchCategories(target.platform, query, target.site, 5)
-          recommendations[targetSiteKey(target)] = { query, results: result.results, error: '' }
-          if (result.results.length) matchedCount += 1
-        } catch (exc) {
-          recommendations[targetSiteKey(target)] = {
-            query,
-            results: [],
-            error: exc instanceof Error ? exc.message : '类目匹配失败',
-          }
-        }
-        categoryAutoMatchCurrent.value = index + 1
-      }
-      categoryRecommendations.value = recommendations
-      applyCategoryRecommendationForTarget(selectedPublishTarget.value)
-      categoryResultTranslations.value = {}
-      categoryResultTranslationsSource.value = ''
-      const confidence = Math.round(identification.identity.confidence * 100)
-      addLog(`商品主体已识别：${identification.identity.name}${confidence ? `（置信度 ${confidence}%）` : ''}；${matchedCount}/${targets.length} 个目标站点已生成类目候选。`)
-      if (categoryAttributeTranslationEnabled.value) {
-        await translateCategoryResults()
-      }
-      if (!matchedCount) setError('没有找到可用类目候选，请检查各目标站点的检索词后手动搜索。')
-      return matchedCount > 0
+      return await autoMatchCategories(currentPublishTargets.value)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '匹配类目失败')
       return false

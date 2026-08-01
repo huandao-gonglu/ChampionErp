@@ -19,13 +19,8 @@ from .ai_trace import AiExecutionContext, AiTraceIdentifiers
 from .ai_work import AiWorkConversationSummary, AiWorkEvent, AiWorkEventType
 from .category import (
     CategoryCandidate,
-    CategoryCandidateResult,
     CategoryCorpusInfo,
-    CategoryProviderPreflight,
-    CategoryQueryVariant,
-    CategoryRetrievalCoverage,
-    CategoryRetrievalMode,
-    CategoryRetrievalRequest,
+    CategorySearchResult,
 )
 from .config import AppConfig, StoreConfig
 from .image import ImageItem
@@ -68,15 +63,10 @@ __all__ = [
     "AiWorkEventType",
     "AppConfig",
     "CategoryCandidate",
-    "CategoryCandidateResult",
+    "CategoryCorpusInfo",
+    "CategorySearchResult",
     "CategoryAttributeDefinition",
     "CategoryAttributeSchema",
-    "CategoryCorpusInfo",
-    "CategoryProviderPreflight",
-    "CategoryQueryVariant",
-    "CategoryRetrievalCoverage",
-    "CategoryRetrievalMode",
-    "CategoryRetrievalRequest",
     "DraftTargetSite",
     "ImageItem",
     "HotProductCandidate",

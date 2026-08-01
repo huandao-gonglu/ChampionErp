@@ -215,3 +215,106 @@ def test_category_route_only_validates_delegates_and_sends_status(
             "status": 409,
         }
     ]
+
+
+def test_category_match_payload_is_the_only_automatic_matching_route(
+    monkeypatch,
+) -> None:
+    context = {
+        "product": {"product_id": "p-1"},
+        "draft": {"draft_id": "d-1", "title": "Ventilador"},
+        "platform": "mercadolibre",
+        "site": "MLM",
+    }
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        category_facade,
+        "_load_category_subject",
+        lambda body: (
+            context["product"],
+            context,
+            context["platform"],
+            context["site"],
+            None,
+            200,
+        ),
+    )
+
+    def fake_match(product, draft, target):
+        captured.update(product=product, draft=draft, target=target)
+        return {
+            "ok": True,
+            "status": "unresolved",
+            "target": {"platform": "mercadolibre", "site": "MLM"},
+            "selected_category_id": None,
+            "candidates": [],
+            "query": "",
+            "decision": {},
+            "failure": {
+                "code": "ABSTAIN_LOW_CONFIDENCE",
+                "message": "人工确认",
+            },
+            "trace": {},
+        }
+
+    monkeypatch.setattr(category_facade, "match_category", fake_match)
+
+    result, status = category_facade.category_match_payload(
+        {"draft_id": "d-1", "language": "es-MX"}
+    )
+
+    assert status == 200
+    assert result["status"] == "unresolved"
+    assert captured == {
+        "product": context["product"],
+        "draft": context["draft"],
+        "target": {
+            "platform": "mercadolibre",
+            "site": "MLM",
+            "language": "es-MX",
+        },
+    }
+    assert "/api/category-match" in category_routes.HANDLED_PATHS
+    assert "/api/category-search" in category_routes.HANDLED_PATHS
+    assert "/api/category-ai-identify-product" not in category_routes.HANDLED_PATHS
+    assert "/api/category-ai-suggest" not in category_routes.HANDLED_PATHS
+
+
+def test_category_match_failed_taxonomy_maps_to_new_http_contract(monkeypatch) -> None:
+    monkeypatch.setattr(
+        category_facade,
+        "_load_category_subject",
+        lambda body: (
+            {"product_id": "p-1"},
+            {"draft": {"draft_id": "d-1"}},
+            "ozon",
+            "global",
+            None,
+            200,
+        ),
+    )
+    monkeypatch.setattr(
+        category_facade,
+        "match_category",
+        lambda *args, **kwargs: {
+            "ok": False,
+            "status": "failed",
+            "target": {"platform": "ozon", "site": "global"},
+            "selected_category_id": None,
+            "candidates": [],
+            "query": "",
+            "decision": {},
+            "failure": {
+                "code": "CATEGORY_CREDENTIALS_MISSING",
+                "message": "缺少 Ozon 凭据",
+            },
+            "trace": {},
+        },
+    )
+
+    result, status = category_facade.category_match_payload(
+        {"draft_id": "d-1"}
+    )
+
+    assert status == 424
+    assert result["failure"]["code"] == "CATEGORY_CREDENTIALS_MISSING"

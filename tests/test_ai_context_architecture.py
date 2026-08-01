@@ -76,6 +76,25 @@ def test_removed_runtime_compatibility_files_stay_removed() -> None:
     assert "auth_runtime" not in runtime_units_init
 
 
+def test_agents_guidance_points_to_current_architecture_owners() -> None:
+    guidance = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+
+    assert "erp_web/runtime.py` is a runtime namespace aggregator" not in guidance
+    assert "erp_web/runtime_units/product_store.py`:" not in guidance
+    for current_owner in (
+        "erp_web/stores/product_store.py",
+        "erp_web/app_config.py",
+        "erp_web/runtime_units/store_credentials.py",
+        "erp_web/runtime_units/publish_workflows.py",
+        "erp_web/services/ai_tool_runtime.py",
+    ):
+        assert current_owner in guidance
+    assert "validate_request_payload(..., endpoint=handler.path)" in guidance
+    assert ".venv/bin/python -m pytest tests -q" in guidance
+    assert "`POST /api/" not in guidance
+    assert "`GET /api/" not in guidance
+
+
 def test_historical_persistence_compatibility_stays_removed() -> None:
     db_text = (ROOT / "erp_web/db.py").read_text(encoding="utf-8")
     product_text = (
@@ -356,23 +375,93 @@ def test_ai_task_runner_owns_one_shared_tool_loop_and_provider_has_no_journal_fa
     assert "start_conversation" not in adapter_text
 
 
-def test_context_map_mentions_category_retrieval_entry_points() -> None:
+def test_context_map_mentions_category_search_entry_points() -> None:
     text = (ROOT / "docs/ai-context-map.md").read_text(encoding="utf-8")
     for entry_point in [
         "erp_web/schemas/category.py",
-        "erp_web/runtime_units/category_retrieval.py",
+        "erp_web/marketplaces/category_provider.py",
+        "erp_web/runtime_units/category_searchers.py",
         "erp_web/runtime_units/category_providers.py",
         "erp_web/runtime_units/ozon_category_api.py",
-        "tests/fixtures/category_retrieval_golden.json",
-        "tests/test_category_retrieval.py",
-        "tests/test_category_retrieval_golden.py",
+        "tests/test_category_searchers.py",
+        "tests/test_ozon_category_api.py",
     ]:
         assert entry_point in text
+    assert "erp_web/runtime_units/category_retrieval.py" not in text
 
 
-def test_category_retrieval_stays_deterministic_and_normalized() -> None:
-    retrieval_text = (
-        ROOT / "erp_web/runtime_units/category_retrieval.py"
+def test_category_match_vertical_slice_has_explicit_stable_boundaries() -> None:
+    context_map = (ROOT / "docs/ai-context-map.md").read_text(encoding="utf-8")
+    route = ROOT / "erp_web/http_route_units/category_routes.py"
+    http_facade = ROOT / "erp_web/facades/category_facade.py"
+    match_facade = ROOT / "erp_web/facades/category_match_facade.py"
+    category_tools = ROOT / "erp_web/runtime_units/category_tools.py"
+    prompt = ROOT / "config/prompts/category_product_match.json"
+    frontend_actions = ROOT / "front/src/stores/workflow/actions/publishing.ts"
+    for path in (
+        route,
+        http_facade,
+        match_facade,
+        category_tools,
+        prompt,
+        frontend_actions,
+    ):
+        assert path.exists(), f"PR3 入口缺失：{path.relative_to(ROOT)}"
+        assert str(path.relative_to(ROOT)) in context_map
+
+    route_text = route.read_text(encoding="utf-8")
+    http_facade_text = http_facade.read_text(encoding="utf-8")
+    match_text = match_facade.read_text(encoding="utf-8")
+    tool_text = category_tools.read_text(encoding="utf-8")
+    model_config = (
+        ROOT / "erp_web/services/ai_model_config.py"
+    ).read_text(encoding="utf-8")
+    frontend_text = frontend_actions.read_text(encoding="utf-8")
+
+    assert '"/api/category-match": handle_category_match' in route_text
+    assert "/api/category-ai-identify-product" not in route_text
+    assert "/api/category-ai-suggest" not in route_text
+    assert "category_match_payload" in http_facade_text
+    assert "def match_category(" in match_text
+    assert "AiTaskRunner(" in match_text
+    assert "build_category_search_toolset(" in match_text
+    assert "CATEGORY_SEARCH_TOOL_DEFINITIONS" in tool_text
+    assert "side_effect=\"write\"" not in tool_text
+    assert '"category.product_match"' in model_config
+    for field in (
+        '"execution_mode": "tool_loop"',
+        '"toolset_id": "category.search"',
+        '"budget_profile": "category.match.default"',
+        '"result_schema": "category_match.v1"',
+    ):
+        assert field in model_config
+    assert "matchCategory(" in frontend_text
+    assert "identifyProductForCategory" not in frontend_text
+    assert "isCategoryProductMatchEnabled" not in frontend_text
+
+
+def test_category_match_facade_is_the_only_owner_of_match_orchestration() -> None:
+    match_facade = ROOT / "erp_web/facades/category_match_facade.py"
+    tool_runtime = ROOT / "erp_web/services/ai_tool_runtime.py"
+    category_tools = ROOT / "erp_web/runtime_units/category_tools.py"
+    match_text = match_facade.read_text(encoding="utf-8")
+    runtime_text = tool_runtime.read_text(encoding="utf-8")
+    tool_text = category_tools.read_text(encoding="utf-8")
+
+    assert "while True:" not in match_text
+    assert "while True:" not in tool_text
+    assert "category_" not in runtime_text.lower()
+    assert "mercadolibre" not in runtime_text.lower()
+    assert "ozon" not in runtime_text.lower()
+    assert "fetch_category_record" not in tool_runtime.read_text(encoding="utf-8")
+
+
+def test_category_search_uses_bound_polymorphism_and_normalized_shapes() -> None:
+    searcher_text = (
+        ROOT / "erp_web/runtime_units/category_searchers.py"
+    ).read_text(encoding="utf-8")
+    tool_text = (
+        ROOT / "erp_web/runtime_units/category_tools.py"
     ).read_text(encoding="utf-8")
     schema_text = (
         ROOT / "erp_web/schemas/category.py"
@@ -380,17 +469,19 @@ def test_category_retrieval_stays_deterministic_and_normalized() -> None:
     provider_contract_text = (
         ROOT / "erp_web/marketplaces/category_provider.py"
     ).read_text(encoding="utf-8")
-    for forbidden_import in (
-        "ai_gateway",
-        "ai_task_runner",
-        "ai_tool_runtime",
-        "category_product_identify",
-    ):
-        assert forbidden_import not in retrieval_text
-    assert "class CategoryCandidateRetriever" in retrieval_text
-    assert "class CategoryRetrievalError" in retrieval_text
-    assert "FullTreeCategoryProvider" in provider_contract_text
-    assert "RemoteDiscoveryCategoryProvider" in provider_contract_text
+    assert not (ROOT / "erp_web/runtime_units/category_retrieval.py").exists()
+    assert "class CategorySearcher(Protocol)" in provider_contract_text
+    assert "def search_categories(self, keyword: str)" in provider_contract_text
+    assert "FullTreeCategoryProvider" not in provider_contract_text
+    assert "RemoteDiscoveryCategoryProvider" not in provider_contract_text
+    assert "_CATEGORY_SEARCHER_FACTORIES" in searcher_text
+    assert "isinstance(provider" not in searcher_text
+    assert 'name="search_categories"' in tool_text
+    assert '"platform":' not in tool_text
+    assert '"site":' not in tool_text
+    assert "retrieve_category_candidates" not in tool_text
+    assert "get_category_detail" not in tool_text
+    assert "get_category_attributes" not in tool_text
     assert "path_segments: list[str]" in schema_text
     assert "\n    id:" not in schema_text
     assert "\n    path:" not in schema_text

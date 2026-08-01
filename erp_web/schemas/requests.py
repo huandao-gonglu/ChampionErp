@@ -187,8 +187,13 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
             ("category_id", "category_record"),
         )
     ),
-    "/api/category-ai-identify-product": _DRAFT,
-    "/api/category-ai-suggest": _PRODUCT_OR_DRAFT,
+    "/api/category-match": _contract(
+        required=("platform",),
+        required_any=(
+            ("product_id", "draft_id", "draftId"),
+            ("site", "site_id", "country"),
+        ),
+    ),
     "/api/category-attribute-translations": _contract(
         required=("category_id",)
     ),

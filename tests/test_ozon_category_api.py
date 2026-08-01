@@ -8,9 +8,9 @@ from erp_web import marketplaces as publisher
 from erp_web.context import get_context
 from erp_web.runtime_units import category_store, ozon_category_api, store_credentials
 from erp_web.runtime_units.category_providers import OzonCategoryProvider
-from erp_web.runtime_units.category_retrieval import (
-    CategoryCandidateRetriever,
-    CategoryRetrievalError,
+from erp_web.runtime_units.category_searchers import (
+    CategorySearchError,
+    OzonCategorySearcher,
 )
 
 
@@ -54,7 +54,14 @@ def test_ozon_category_search_and_attributes_use_official_api() -> None:
     ozon_category_api.clear_ozon_category_tree_cache()
     calls: list[tuple[str, str, dict[str, object]]] = []
 
-    def request(method: str, url: str, client_id: str, api_key: str, payload: dict[str, object] | None = None) -> dict[str, object]:
+    def request(
+        method: str,
+        url: str,
+        client_id: str,
+        api_key: str,
+        payload: dict[str, object] | None = None,
+        **kwargs: object,
+    ) -> dict[str, object]:
         assert client_id == "client-id"
         assert api_key == "api-key"
         calls.append((method, url, payload or {}))
@@ -110,7 +117,7 @@ def test_ozon_category_tree_summary_reuses_the_live_tree() -> None:
     )
 
 
-def test_ozon_retriever_uses_center_term_against_the_cached_full_tree() -> None:
+def test_ozon_bound_searcher_searches_the_server_cache_by_keyword() -> None:
     ozon_category_api.clear_ozon_category_tree_cache()
     tree = {
         "result": [
@@ -147,48 +154,50 @@ def test_ozon_retriever_uses_center_term_against_the_cached_full_tree() -> None:
             "request_ozon_json",
             return_value=tree,
         ) as request,
+        patch.object(
+            ozon_category_api,
+            "_flatten_product_types",
+            wraps=ozon_category_api._flatten_product_types,
+        ) as flatten,
+        patch.object(
+            ozon_category_api,
+            "_stable_corpus_hash",
+            wraps=ozon_category_api._stable_corpus_hash,
+        ) as corpus_hash,
     ):
-        result = CategoryCandidateRetriever(
-            lambda platform: OzonCategoryProvider()
-        ).retrieve(
-            {
-                "platform": "ozon",
-                "query": "настольный usb вентилятор",
-                "product_type": "вентилятор",
-                "limit": 20,
-            }
+        searcher = OzonCategorySearcher(
+            OzonCategoryProvider(),
+            "global",
         )
+        result = searcher.search_categories("вентилятор")
+        searcher.search_categories("usb аксессуары")
 
     assert result["candidates"][0]["category_id"] == "201"
-    assert result["retrieval_mode"] == "full_tree_local"
-    assert result["corpus_info"]["corpus_hash"].startswith("sha256:")
-    assert "client-id" not in str(result["corpus_info"])
+    assert result["keyword"] == "вентилятор"
+    assert result["source"] == "ozon_cache"
+    assert "corpus" not in str(result)
     request.assert_called_once()
+    flatten.assert_called_once()
+    corpus_hash.assert_called_once()
 
 
-def test_ozon_preflight_reports_missing_credentials_before_retrieval() -> None:
+def test_ozon_search_reports_missing_credentials_on_tool_call() -> None:
     ozon_category_api.clear_ozon_category_tree_cache()
     with patch.object(
         ozon_category_api,
         "_load_store_config",
         return_value={"ozon": {"client_id": "", "api_key": ""}},
     ):
-        with pytest.raises(CategoryRetrievalError) as raised:
-            CategoryCandidateRetriever(
-                lambda platform: OzonCategoryProvider()
-            ).retrieve(
-                {
-                    "platform": "ozon",
-                    "query": "вентилятор",
-                    "product_type": "вентилятор",
-                }
-            )
+        with pytest.raises(CategorySearchError) as raised:
+            OzonCategorySearcher(
+                OzonCategoryProvider(),
+                "global",
+            ).search_categories("вентилятор")
 
     assert raised.value.code == "CATEGORY_CREDENTIALS_MISSING"
-    assert raised.value.stage == "preflight"
 
 
-def test_ozon_preflight_does_not_treat_empty_corpus_as_zero_retrieval() -> None:
+def test_ozon_empty_cache_source_is_not_reported_as_zero_match() -> None:
     ozon_category_api.clear_ozon_category_tree_cache()
     with (
         patch.object(ozon_category_api, "_load_store_config", _store_config),
@@ -198,19 +207,13 @@ def test_ozon_preflight_does_not_treat_empty_corpus_as_zero_retrieval() -> None:
             return_value={"result": []},
         ),
     ):
-        with pytest.raises(CategoryRetrievalError) as raised:
-            CategoryCandidateRetriever(
-                lambda platform: OzonCategoryProvider()
-            ).retrieve(
-                {
-                    "platform": "ozon",
-                    "query": "вентилятор",
-                    "product_type": "вентилятор",
-                }
-            )
+        with pytest.raises(CategorySearchError) as raised:
+            OzonCategorySearcher(
+                OzonCategoryProvider(),
+                "global",
+            ).search_categories("вентилятор")
 
     assert raised.value.code == "CATEGORY_CORPUS_UNAVAILABLE"
-    assert raised.value.code != "RETRIEVAL_ZERO"
 
 
 def test_ozon_category_auth_test_reads_the_category_tree_without_a_category_id() -> None:
