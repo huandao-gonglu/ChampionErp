@@ -7,54 +7,6 @@ import pytest
 from erp_web.services import ai_gateway
 
 
-def _sse(events: list[dict]) -> list[bytes]:
-    lines = [f"data: {json.dumps(event, ensure_ascii=False)}\n".encode("utf-8") for event in events]
-    lines.append(b"data: [DONE]\n")
-    return lines
-
-
-def test_responses_stream_shows_reasoning_but_keeps_it_out_of_parsed_text() -> None:
-    stream = _sse(
-        [
-            {"type": "response.created", "response": {}},
-            {"type": "response.reasoning_text.delta", "delta": 'Thinking Process: draft {"title": "x"}\n\n'},
-            {"type": "response.reasoning_text.done", "text": "Thinking Process: ..."},
-            {"type": "response.function_call_arguments.delta", "delta": '{"query":'},
-            {"type": "response.output_text.delta", "delta": '{"title": '},
-            {"type": "response.output_text.delta", "delta": '"ok"}'},
-            {"type": "response.completed", "response": {}},
-        ]
-    )
-    seen: list[str] = []
-    text = ai_gateway._read_responses_stream_text(iter(stream), seen.append)
-    # Parsed text contains only assistant output, so JSON parsing cannot break.
-    assert text == '{"title": "ok"}'
-    assert ai_gateway.parse_json_text(text) == {"title": "ok"}
-    # The conversation display still streams the chain-of-thought (as before
-    # the fix), followed by the answer; tool-call argument deltas never show.
-    assert "".join(seen) == 'Thinking Process: draft {"title": "x"}\n\n{"title": "ok"}'
-
-
-def test_responses_stream_without_callback_ignores_reasoning() -> None:
-    stream = _sse(
-        [
-            {"type": "response.reasoning_text.delta", "delta": "Thinking..."},
-            {"type": "response.output_text.delta", "delta": '{"a": 1}'},
-        ]
-    )
-    assert ai_gateway._read_responses_stream_text(iter(stream)) == '{"a": 1}'
-
-
-def test_responses_stream_keeps_untyped_chat_chunk_fallback() -> None:
-    stream = _sse(
-        [
-            {"choices": [{"delta": {"content": "hello "}}]},
-            {"choices": [{"delta": {"content": "world"}}]},
-        ]
-    )
-    assert ai_gateway._read_responses_stream_text(iter(stream)) == "hello world"
-
-
 def test_parse_json_text_recovers_trailing_object_after_leaked_thinking() -> None:
     final = {"title": "ok", "bullets": ["a", "b"]}
     text = (

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
-from unittest.mock import patch
 
 from PIL import Image
 
@@ -150,7 +149,7 @@ def test_image_translate_service_materializes_provider_output_into_pool_item(app
             "ai_models": [
                 {
                     "id": "image_model",
-                    "provider": "OpenAI-Compatible",
+                    "provider": "OpenAI",
                     "api_key": "test-key",
                     "base_url": "http://example.test",
                     "model": "fake-image",
@@ -212,7 +211,7 @@ def test_image_edit_service_materializes_user_prompt_into_pool_item(app_dir: Pat
             "ai_models": [
                 {
                     "id": "image_model",
-                    "provider": "OpenAI-Compatible",
+                    "provider": "OpenAI",
                     "api_key": "test-key",
                     "base_url": "http://example.test",
                     "model": "fake-image",
@@ -315,7 +314,11 @@ def test_image_translate_service_returns_configuration_warning_without_provider_
     assert "Target language: Russian" in result["prompt"]
 
 
-def test_image_translate_service_uses_default_openai_provider(app_dir: Path, tmp_path: Path) -> None:
+def test_image_translate_service_uses_pydantic_image_gateway(
+    app_dir: Path,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     source_path = tmp_path / "source.png"
     _make_png(source_path, (255, 0, 0))
     source_item = image_service.upload_images(app_dir, [{"path": str(source_path), "selected": True}], "pytest-openai-image-provider")[0]
@@ -327,49 +330,56 @@ def test_image_translate_service_uses_default_openai_provider(app_dir: Path, tmp
     raw = base64.b64encode(source_path.read_bytes()).decode("ascii")
     calls: list[dict] = []
 
-    class Images:
-        @staticmethod
-        def edit(**kwargs):
-            calls.append(kwargs)
-            return type("Response", (), {"data": [type("Item", (), {"b64_json": raw})()]})()
-
-        @staticmethod
-        def generate(**kwargs):
-            raise AssertionError("edit should be used when a local source image exists")
-
-    class FakeOpenAI:
-        def __init__(self, **kwargs):
-            calls.append({"client": kwargs})
-            self.images = Images()
-
-    with patch.dict("sys.modules", {"openai": type("OpenAIModule", (), {"OpenAI": FakeOpenAI})}):
-        result = image_translate_service.translate_images(
-            app_dir,
-            product,
+    def fake_edit_images(app_dir, app_config, use_case_id, **kwargs):
+        calls.append(
             {
-                "ai_models": [
-                    {
-                        "id": "image_model",
-                        "provider": "OpenAI-Compatible",
-                        "api_key": "test-key",
-                        "base_url": "http://example.test/v1",
-                        "model": "fake-image",
-                        "capabilities": ["image_edit", "image_generate"],
-                    }
-                ]
-            },
-            target_language="Spanish (Mexico)",
-            platform="mercadolibre",
-            image_ids=[source_item["id"]],
+                "app_dir": app_dir,
+                "app_config": app_config,
+                "use_case_id": use_case_id,
+                **kwargs,
+            }
         )
+        return [
+            {
+                "provider": "OpenAI",
+                "mode": kwargs["mode"],
+                "source_id": source_item["id"],
+                "suffix": ".png",
+                "b64_json": raw,
+            }
+        ]
+
+    monkeypatch.setattr(
+        image_translate_service.ai_gateway,
+        "edit_images",
+        fake_edit_images,
+    )
+    result = image_translate_service.translate_images(
+        app_dir,
+        product,
+        {
+            "ai_models": [
+                {
+                    "id": "image_model",
+                    "provider": "OpenAI",
+                    "api_key": "test-key",
+                    "base_url": "http://example.test/v1",
+                    "model": "fake-image",
+                    "capabilities": ["image_edit", "image_generate"],
+                }
+            ]
+        },
+        target_language="Spanish (Mexico)",
+        platform="mercadolibre",
+        image_ids=[source_item["id"]],
+    )
 
     assert result["ok"] is True
     assert result["generated_count"] == 1
-    assert calls[0]["client"]["timeout"] == image_translate_service.IMAGE_AI_TIMEOUT_SECONDS
-    assert calls[0]["client"]["default_headers"]["User-Agent"] == image_translate_service.ai_model_config.AI_HTTP_USER_AGENT
-    assert calls[1]["model"] == "fake-image"
-    assert calls[1]["image"].closed is True
+    assert calls[0]["use_case_id"] == "image.translate"
+    assert calls[0]["images"][0]["id"] == source_item["id"]
+    assert calls[0]["mode"] == "translate"
     item = result["imagePoolItems"][0]
     assert item["origin"] == "ai_translated"
-    assert item["provider"] == "OpenAI-Compatible"
+    assert item["provider"] == "OpenAI"
     assert (app_dir / item["path"]).exists()

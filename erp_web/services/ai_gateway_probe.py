@@ -9,21 +9,65 @@ from __future__ import annotations
 
 import base64
 import binascii
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
+import hashlib
+import json
+import logging
 import re
-import urllib.error
+import secrets
 import urllib.parse
 from pathlib import Path
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
-from . import ai_model_config, browser_ai_runtime
-from .ai_gateway_parsing import _chat_response_text, _http_error_detail, parse_json_text
+from pydantic_ai.exceptions import ModelHTTPError
+
+from erp_web.context import get_context
+
+from . import ai_model_config, ai_work_service, browser_ai_runtime
+from .ai_gateway_parsing import parse_json_text
+from .ai_model_errors import AIHTTPError, model_http_error_detail
 
 
-class SkipCapabilityProbe(Exception):
-    """Provider 声明当前能力不参与探测（既不算成功也不算失败）。"""
+logger = logging.getLogger(__name__)
+
+
+PROBE_STATUS_SUPPORTED = "supported"
+PROBE_STATUS_UNSUPPORTED = "unsupported"
+PROBE_STATUS_UNAVAILABLE = "unavailable"
+PROBE_STATUS_INCONCLUSIVE = "inconclusive"
+PROBE_STATUSES = (
+    PROBE_STATUS_SUPPORTED,
+    PROBE_STATUS_UNSUPPORTED,
+    PROBE_STATUS_UNAVAILABLE,
+    PROBE_STATUS_INCONCLUSIVE,
+)
+
+
+class CapabilityProbeError(RuntimeError):
+    """能力探测的可分类终态。"""
+
+    status = PROBE_STATUS_UNSUPPORTED
+    code = "CAPABILITY_PROBE_UNSUPPORTED"
+
+
+class CapabilityProbeUnsupported(CapabilityProbeError):
+    """请求已完成，但模型或 Provider 不满足能力契约。"""
+
+
+class CapabilityProbeUnavailable(CapabilityProbeError):
+    """当前 ERP transport 尚未接入该能力。"""
+
+    status = PROBE_STATUS_UNAVAILABLE
+    code = "CAPABILITY_PROBE_UNAVAILABLE"
+
+
+class CapabilityProbeInconclusive(CapabilityProbeError):
+    """鉴权、限流、网络或临时 Provider 故障导致无法下结论。"""
+
+    status = PROBE_STATUS_INCONCLUSIVE
+    code = "CAPABILITY_PROBE_INCONCLUSIVE"
 
 
 @dataclass(frozen=True)
@@ -36,13 +80,13 @@ class CapabilityProbeContext:
     app_dir: Path | str | None = None
     api_key: str = ""
     model_name: str = ""
+    probe_token: str = ""
+    capability: str = ""
+    conversation: ai_work_service.AiWorkConversation | None = None
 
 
 class CapabilityProbeProvider(Protocol):
     """Provider 侧统一能力探测契约。"""
-
-    probe_reraise_marker: str
-    probe_web_search_meta: bool
 
     def probe_capability(
         self,
@@ -52,43 +96,296 @@ class CapabilityProbeProvider(Protocol):
         """执行单项探测并返回可持久化的能力配方。"""
 
 
+def empty_capability_probe_report() -> dict[str, Any]:
+    return {
+        "supported": [],
+        "unsupported": [],
+        "unavailable": [],
+        "inconclusive": [],
+        "results": {},
+    }
+
+
+def _probe_provider_id(model: dict[str, Any]) -> str:
+    connection_type = ai_model_config.model_connection_type(model)
+    if connection_type == ai_model_config.CONNECTION_TYPE_API:
+        return str(model.get("provider_id") or "api").strip() or "api"
+    if connection_type == ai_model_config.CONNECTION_TYPE_CLI:
+        return ai_model_config.model_cli_tool(model) or "cli"
+    return str(model.get("browser_provider") or "browser").strip() or "browser"
+
+
+def _start_capability_probe_conversation(
+    context: CapabilityProbeContext,
+    capability: str,
+) -> ai_work_service.AiWorkConversation:
+    return get_context().ai_journal.start_conversation(
+        use_case_id="config.ai_model_probe",
+        capability=capability,
+        provider_id=_probe_provider_id(context.model),
+        model=context.model,
+        stream=False,
+        required_capabilities=[capability],
+        timeout_seconds=context.timeout,
+        input_payload={
+            "use_case_id": "config.ai_model_probe",
+            "status": "probe_started",
+        },
+    )
+
+
+def _record_probe_request(
+    context: CapabilityProbeContext,
+    messages: list[dict[str, str]],
+    *,
+    phase: str = "request",
+    details: dict[str, Any] | None = None,
+) -> None:
+    if context.conversation is None:
+        return
+    context.conversation.emit_custom(
+        "capability_probe.request",
+        {
+            "capability": context.capability,
+            "phase": phase,
+            "messages": _normalize_probe_messages(messages),
+            **dict(details or {}),
+        },
+    )
+
+
+def _record_probe_output(
+    context: CapabilityProbeContext,
+    text: str,
+    *,
+    phase: str = "response",
+) -> None:
+    if context.conversation is None:
+        return
+    output = str(text or "")
+    context.conversation.emit_custom(
+        "capability_probe.response",
+        {
+            "capability": context.capability,
+            "phase": phase,
+            "character_count": len(output),
+        },
+    )
+    if output:
+        context.conversation.emit_text_delta(output)
+
+
+def _record_probe_tool_result(
+    context: CapabilityProbeContext,
+    *,
+    tool_name: str,
+    tool_call_id: str,
+    result: Any,
+) -> None:
+    if context.conversation is None:
+        return
+    context.conversation.emit_custom(
+        "capability_probe.tool_result",
+        {
+            "tool_name": tool_name,
+            "tool_call_id": tool_call_id,
+            "result": result,
+        },
+    )
+
+
+def _record_probe_image_results(
+    context: CapabilityProbeContext,
+    results: list[dict[str, Any]],
+) -> None:
+    if context.conversation is None:
+        return
+    safe_results: list[dict[str, Any]] = []
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        safe = {
+            key: result[key]
+            for key in (
+                "provider",
+                "mode",
+                "source_id",
+                "suffix",
+                "image_path",
+                "path",
+                "local_path",
+                "mime_type",
+            )
+            if result.get(key) not in (None, "")
+        }
+        for key in ("url", "image_url"):
+            reference = str(result.get(key) or "").strip()
+            if not reference:
+                continue
+            if reference.startswith("data:image/"):
+                safe["data_url_length"] = len(reference)
+            else:
+                safe[key] = reference
+        encoded = str(
+            result.get("b64_json")
+            or result.get("image_base64")
+            or result.get("base64")
+            or result.get("data_url")
+            or result.get("dataUrl")
+            or ""
+        )
+        if encoded:
+            safe["image_base64_length"] = len(encoded)
+        safe_results.append(safe)
+    context.conversation.emit_custom(
+        "capability_probe.image_result",
+        {
+            "capability": context.capability,
+            "count": len(results),
+            "images": safe_results,
+        },
+    )
+
+
 def run_capability_probes(
     provider: CapabilityProbeProvider,
     context: CapabilityProbeContext,
     capabilities: list[str],
 ) -> dict[str, Any]:
-    """统一的能力探测循环（原 http/cli/browser 三个同构循环的合并）。
-
-    - Provider 抛 SkipCapabilityProbe：该能力跳过，不记录结果。
-    - Provider 抛其它异常：记为 unsupported，错误文本经 _capability_error_text 归一。
-    - provider.probe_reraise_marker 命中异常文本时原样上抛（配置类致命错误）。
-    """
+    """统一执行能力探测，并保留 supported/unavailable/inconclusive 语义。"""
     supported: list[str] = []
     unsupported: list[str] = []
+    unavailable: list[str] = []
+    inconclusive: list[str] = []
     results: dict[str, dict[str, Any]] = {}
     for capability in ai_model_config.normalize_capabilities(capabilities):
+        conversation = _start_capability_probe_conversation(context, capability)
+        probe_context = replace(
+            context,
+            probe_token=secrets.token_hex(12),
+            capability=capability,
+            conversation=conversation,
+        )
         try:
-            capability_profile = provider.probe_capability(capability, context)
-        except SkipCapabilityProbe:
-            continue
+            capability_profile = provider.probe_capability(
+                capability,
+                probe_context,
+            )
         except Exception as exc:
-            marker = str(getattr(provider, "probe_reraise_marker", "") or "")
-            if marker and marker in str(exc):
-                raise
-            unsupported.append(capability)
-            results[capability] = {"ok": False, "error": _capability_error_text(exc)}
+            status, code = _capability_error_status(exc)
+            error_text = _capability_error_text(exc)
+            bucket = {
+                PROBE_STATUS_UNSUPPORTED: unsupported,
+                PROBE_STATUS_UNAVAILABLE: unavailable,
+                PROBE_STATUS_INCONCLUSIVE: inconclusive,
+            }[status]
+            bucket.append(capability)
+            results[capability] = {
+                "ok": False,
+                "status": status,
+                "error_code": code,
+                "error": error_text,
+                "retryable": status == PROBE_STATUS_INCONCLUSIVE,
+                "conversation_id": conversation.conversation_id,
+            }
+            conversation.finish_assistant_message()
+            conversation.emit_custom(
+                "business.result",
+                {
+                    "capability": capability,
+                    "status": status,
+                    "ok": False,
+                    "error_code": code,
+                    "error": error_text,
+                },
+            )
+            conversation.emit(
+                "RUN_ERROR",
+                message=error_text,
+                code=code,
+            )
+            if isinstance(exc, (AIHTTPError, ModelHTTPError)):
+                logger.warning(
+                    "AI 模型能力探测被 Provider 拒绝：model_id=%s "
+                    "capability=%s status=%s error_code=%s detail=%s",
+                    str(context.model.get("id") or "unknown"),
+                    capability,
+                    status,
+                    code,
+                    error_text,
+                )
             continue
         supported.append(capability)
         result: dict[str, Any] = {
             "ok": True,
+            "status": PROBE_STATUS_SUPPORTED,
             "error": "",
+            "retryable": False,
             "capability_profile": capability_profile,
+            "conversation_id": conversation.conversation_id,
         }
-        if capability == ai_model_config.CAP_WEB_SEARCH and getattr(provider, "probe_web_search_meta", False):
+        if capability == ai_model_config.CAP_WEB_SEARCH:
             result["request_mode"] = capability_profile.get("request_mode", "")
             result["api_style"] = capability_profile.get("api_style", "")
         results[capability] = result
-    return {"supported": supported, "unsupported": unsupported, "results": results}
+        conversation.finish_assistant_message()
+        conversation.emit_custom(
+            "business.result",
+            {
+                "capability": capability,
+                "status": PROBE_STATUS_SUPPORTED,
+                "ok": True,
+                "capability_profile": capability_profile,
+            },
+        )
+        conversation.finish(
+            {
+                "capability": capability,
+                "status": PROBE_STATUS_SUPPORTED,
+                "ok": True,
+            }
+        )
+    return {
+        "supported": supported,
+        "unsupported": unsupported,
+        "unavailable": unavailable,
+        "inconclusive": inconclusive,
+        "results": results,
+    }
+
+
+def _capability_error_status(exc: Exception) -> tuple[str, str]:
+    if isinstance(exc, CapabilityProbeError):
+        return exc.status, exc.code
+    if isinstance(exc, AssertionError):
+        return PROBE_STATUS_INCONCLUSIVE, "CAPABILITY_PROBE_INTERNAL_ERROR"
+    status_code = None
+    if isinstance(exc, (AIHTTPError, ModelHTTPError)):
+        status_code = int(exc.status_code)
+    if status_code is not None:
+        if status_code in {401, 403, 404, 408, 409, 425, 429} or status_code >= 500:
+            return PROBE_STATUS_INCONCLUSIVE, "CAPABILITY_PROBE_PROVIDER_ERROR"
+        return PROBE_STATUS_UNSUPPORTED, "CAPABILITY_PROBE_PROTOCOL_REJECTED"
+    if isinstance(exc, (TimeoutError, ConnectionError, OSError)) or isinstance(
+        getattr(exc, "reason", None), TimeoutError
+    ):
+        return PROBE_STATUS_INCONCLUSIVE, "CAPABILITY_PROBE_TRANSPORT_ERROR"
+    error_text = str(exc).lower()
+    if "未找到本地 cli" in error_text:
+        return PROBE_STATUS_UNAVAILABLE, "CAPABILITY_PROBE_TRANSPORT_UNAVAILABLE"
+    if any(
+        marker in error_text
+        for marker in (
+            "超时",
+            "timed out",
+            "调用失败",
+            "未连接浏览器",
+            "没有找到可输入",
+            "请先在打开的页面中完成登录",
+        )
+    ):
+        return PROBE_STATUS_INCONCLUSIVE, "CAPABILITY_PROBE_TRANSPORT_ERROR"
+    return PROBE_STATUS_UNSUPPORTED, "CAPABILITY_PROBE_CONTRACT_FAILED"
 
 
 def _normalize_probe_messages(value: Any) -> list[dict[str, str]]:
@@ -127,18 +424,149 @@ def _probe_image_prompt(probe_options: dict[str, Any] | None, default: str) -> s
     return str(options.get("image_prompt") or "").strip() or default
 
 
-def _chat_probe_default_messages() -> list[dict[str, str]]:
+_PROBE_OPERATIONS = {
+    ai_model_config.CAP_CHAT: "model.request",
+    ai_model_config.CAP_JSON: "model.request.structured",
+    ai_model_config.CAP_WEB_SEARCH: "model.request.native_tool",
+    ai_model_config.CAP_TOOL_CALLING: "model.request.function_tool",
+    ai_model_config.CAP_IMAGE_GENERATE: "model.request.image_generate",
+    ai_model_config.CAP_IMAGE_EDIT: "model.request.image_edit",
+}
+
+_PROBE_VERSIONS = {
+    ai_model_config.CAP_JSON: 3,
+}
+
+
+def capability_configuration_fingerprint(model: dict[str, Any]) -> str:
+    return ai_model_config.model_configuration_fingerprint(model)
+
+
+def build_capability_profile(
+    model: dict[str, Any],
+    capability: str,
+    *,
+    strategy: str,
+    request_mode: str = "",
+) -> dict[str, Any]:
+    connection_type = ai_model_config.model_connection_type(model)
+    if connection_type == ai_model_config.CONNECTION_TYPE_API:
+        provider_id = str(model.get("provider_id") or "").strip()
+    elif connection_type == ai_model_config.CONNECTION_TYPE_CLI:
+        provider_id = ai_model_config.model_cli_tool(model)
+    else:
+        provider_id = str(model.get("browser_provider") or "browser").strip()
+    profile: dict[str, Any] = {
+        "version": 2,
+        "tested": True,
+        "tested_at": datetime.now(timezone.utc).isoformat(),
+        "probe_version": f"{capability}.v{_PROBE_VERSIONS.get(capability, 2)}",
+        "configuration_fingerprint": capability_configuration_fingerprint(model),
+        "connection_type": connection_type,
+        "provider_id": provider_id,
+        "model": ai_model_config.model_name(model),
+        "strategy": strategy,
+        "operation": _PROBE_OPERATIONS.get(capability, "model.request"),
+    }
+    if connection_type == ai_model_config.CONNECTION_TYPE_API:
+        profile["api_style"] = ai_model_config.normalize_api_style(
+            model.get("api_style")
+        )
+    if request_mode:
+        profile["request_mode"] = request_mode
+    return profile
+
+
+def _chat_probe_default_messages(probe_token: str = "") -> list[dict[str, str]]:
+    expected = probe_token or "ok"
     return [
-        {"role": "system", "content": "Reply with ok."},
-        {"role": "user", "content": "ok"},
+        {"role": "system", "content": "只返回用户给出的探测标记，不要添加其它内容。"},
+        {"role": "user", "content": expected},
     ]
 
 
-def _json_probe_default_messages() -> list[dict[str, str]]:
+def _json_probe_default_messages(probe_token: str = "") -> list[dict[str, str]]:
+    challenge = _json_probe_challenge_payload(probe_token)
     return [
-        {"role": "system", "content": "Return JSON only."},
-        {"role": "user", "content": 'Return {"ok":true}.'},
+        {
+            "role": "system",
+            "content": (
+                "你正在执行 JSON 结构能力探测。只返回一个合法 JSON 对象，"
+                "不要使用 Markdown 代码块，也不要添加解释。读取用户提供的 JSON，"
+                "严格按以下顺序处理 numbers：先移除原数组中的偶数，再把剩余数字"
+                "乘以 rules.multiply，最后按 rules.sort 指定的 ascending 顺序排序。"
+                "输出对象必须且只能包含 probe_token 和 result 两个字段："
+                "probe_token 必须原样返回；result 必须是处理后的 JSON 数字数组。"
+                "不要回显 numbers 或 rules，也不要返回 ok 字段。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(challenge, ensure_ascii=False),
+        },
     ]
+
+
+def _validate_chat_probe_text(text: str, probe_token: str) -> None:
+    if str(text or "").strip() != probe_token:
+        raise CapabilityProbeUnsupported("模型没有准确返回本次对话探测标记。")
+
+
+def _json_probe_challenge_payload(probe_token: str = "") -> dict[str, Any]:
+    """生成包含奇偶混合数组的确定性挑战，便于本地独立复算。"""
+
+    token = probe_token or "ok"
+    digest = hashlib.sha256(token.encode("utf-8")).digest()
+    odd_numbers = [2 * (digest[index] % 5) + 1 for index in range(3)]
+    even_numbers = [2 * (digest[index] % 4 + 1) for index in range(3, 5)]
+    numbers = [
+        odd_numbers[0],
+        even_numbers[0],
+        odd_numbers[1],
+        even_numbers[1],
+        odd_numbers[2],
+    ]
+    rotation = digest[5] % len(numbers)
+    numbers = numbers[rotation:] + numbers[:rotation]
+    return {
+        "numbers": numbers,
+        "rules": {
+            "sort": "ascending",
+            "remove_even": True,
+            "multiply": 2 + digest[6] % 4,
+        },
+        "probe_token": token,
+    }
+
+
+def _json_probe_expected_data(probe_token: str = "") -> dict[str, Any]:
+    challenge = _json_probe_challenge_payload(probe_token)
+    multiplier = challenge["rules"]["multiply"]
+    result = sorted(
+        number * multiplier
+        for number in challenge["numbers"]
+        if number % 2 != 0
+    )
+    return {
+        "probe_token": challenge["probe_token"],
+        "result": result,
+    }
+
+
+def _validate_json_probe_data(data: dict[str, Any], probe_token: str) -> None:
+    expected = _json_probe_expected_data(probe_token)
+    if (
+        type(data) is not dict
+        or set(data) != {"probe_token", "result"}
+        or type(data.get("probe_token")) is not str
+        or data.get("probe_token") != expected["probe_token"]
+        or type(data.get("result")) is not list
+        or any(type(item) is not int for item in data.get("result", []))
+        or data.get("result") != expected["result"]
+    ):
+        raise CapabilityProbeUnsupported(
+            "模型未正确执行 JSON 数组变换探测。"
+        )
 
 
 def _web_search_probe_date_iso() -> str:
@@ -189,15 +617,38 @@ def _capability_test_outcome(
     connection_next_action: str,
 ) -> dict[str, str | bool]:
     """区分连接性与请求能力的测试结论。"""
-    unsupported = capability_probe.get("unsupported") if isinstance(capability_probe, dict) else []
-    failed_capabilities = [str(item) for item in unsupported if str(item).strip()]
+    results = (
+        capability_probe.get("results")
+        if isinstance(capability_probe, dict)
+        else {}
+    )
+    result_map = results if isinstance(results, dict) else {}
+    failed_capabilities = [
+        str(capability)
+        for capability, result in result_map.items()
+        if isinstance(result, dict)
+        and result.get("status") != PROBE_STATUS_SUPPORTED
+    ]
     if probe_requested and failed_capabilities:
         labels = "、".join(_CAPABILITY_LABELS.get(item, item) for item in failed_capabilities)
-        next_action = (
-            f"接口连接正常，但请不要启用 {labels}；请检查供应商是否支持对应工具参数、模型权限和联网配置后重试。"
-            if connection_ok
-            else connection_next_action
+        has_inconclusive = any(
+            isinstance(result_map.get(item), dict)
+            and result_map[item].get("status") == PROBE_STATUS_INCONCLUSIVE
+            for item in failed_capabilities
         )
+        has_unavailable = any(
+            isinstance(result_map.get(item), dict)
+            and result_map[item].get("status") == PROBE_STATUS_UNAVAILABLE
+            for item in failed_capabilities
+        )
+        if not connection_ok:
+            next_action = connection_next_action
+        elif has_inconclusive:
+            next_action = f"{labels} 的探测没有形成确定结论，请检查鉴权、限流或网络状态后重试。"
+        elif has_unavailable:
+            next_action = f"当前连接方式尚未接入 {labels}，请更换连接方式或等待对应 transport 支持。"
+        else:
+            next_action = f"接口连接正常，但请不要启用 {labels}；当前模型未满足对应能力契约。"
         return {
             "ok": False,
             "connection_ok": connection_ok,
@@ -229,10 +680,6 @@ def _validate_web_search_probe_data(data: dict[str, Any]) -> None:
     temperature = str(data.get("temperature") or "").strip()
     if not weather or not temperature:
         raise RuntimeError("Provider did not return a weather condition and temperature.")
-
-
-def _validate_web_search_probe(payload: dict[str, Any]) -> None:
-    _validate_web_search_probe_data(parse_json_text(_chat_response_text(payload)))
 
 
 def _valid_base64_image(value: str) -> bool:
@@ -341,36 +788,14 @@ def _validate_browser_image_generate_probe(
     _validate_cli_image_generate_probe(data, app_dir)
 
 
-def _multipart_body(fields: dict[str, str], files: dict[str, tuple[str, bytes, str]]) -> tuple[bytes, str]:
-    boundary = "----champion-erp-ai-probe"
-    chunks: list[bytes] = []
-    for name, value in fields.items():
-        chunks.extend(
-            [
-                f"--{boundary}\r\n".encode("utf-8"),
-                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"),
-                str(value).encode("utf-8"),
-                b"\r\n",
-            ]
-        )
-    for name, (filename, content, content_type) in files.items():
-        chunks.extend(
-            [
-                f"--{boundary}\r\n".encode("utf-8"),
-                f'Content-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'.encode("utf-8"),
-                f"Content-Type: {content_type}\r\n\r\n".encode("utf-8"),
-                content,
-                b"\r\n",
-            ]
-        )
-    chunks.append(f"--{boundary}--\r\n".encode("utf-8"))
-    return b"".join(chunks), boundary
-
-
 def _capability_error_text(exc: Exception) -> str:
-    if isinstance(exc, urllib.error.HTTPError):
-        detail = _http_error_detail(exc)
-        return f"{exc.code} {detail or exc.reason}".strip()
+    if isinstance(exc, CapabilityProbeError):
+        return str(exc)
+    if isinstance(exc, AIHTTPError):
+        return f"HTTP {exc.status_code}: {exc.detail or exc.reason}".strip()
+    if isinstance(exc, ModelHTTPError):
+        detail = model_http_error_detail(exc)
+        return f"HTTP {exc.status_code}: {detail}".strip()
     if isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError):
         # 无终态事件的可观测性：超时探测明确标注错误码，而不是只留一句 timed out。
         detail = str(exc).strip()
@@ -380,9 +805,19 @@ def _capability_error_text(exc: Exception) -> str:
 
 
 __all__ = [
+    "CapabilityProbeError",
     "CapabilityProbeContext",
+    "CapabilityProbeInconclusive",
     "CapabilityProbeProvider",
-    "SkipCapabilityProbe",
+    "CapabilityProbeUnavailable",
+    "CapabilityProbeUnsupported",
+    "PROBE_STATUS_INCONCLUSIVE",
+    "PROBE_STATUS_SUPPORTED",
+    "PROBE_STATUS_UNAVAILABLE",
+    "PROBE_STATUS_UNSUPPORTED",
+    "build_capability_profile",
+    "capability_configuration_fingerprint",
+    "empty_capability_probe_report",
     "run_capability_probes",
     "_capability_error_text",
     "_capability_test_outcome",
@@ -390,16 +825,18 @@ __all__ = [
     "_cli_image_generate_probe_prompt",
     "_cli_image_probe_data_from_text",
     "_existing_image_path",
+    "_json_probe_challenge_payload",
     "_json_probe_default_messages",
-    "_multipart_body",
+    "_json_probe_expected_data",
     "_normalize_probe_messages",
     "_probe_image_prompt",
     "_probe_messages",
     "_probe_options",
     "_valid_base64_image",
     "_validate_browser_image_generate_probe",
+    "_validate_chat_probe_text",
     "_validate_cli_image_generate_probe",
-    "_validate_web_search_probe",
+    "_validate_json_probe_data",
     "_validate_web_search_probe_data",
     "_web_search_probe_date_iso",
     "_web_search_probe_prompt",

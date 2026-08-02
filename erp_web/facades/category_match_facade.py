@@ -8,12 +8,10 @@
 from __future__ import annotations
 
 from html import unescape
-import json
 import re
 import time
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Protocol
 
-from erp_web.context import get_context
 from erp_web.marketplaces.category_provider import CategorySearcher
 from erp_web.runtime_units.category_searchers import (
     CategorySearchError,
@@ -23,7 +21,6 @@ from erp_web.runtime_units.category_store import (
     fetch_category_record,
 )
 from erp_web.runtime_units.category_tools import (
-    CATEGORY_SEARCH_PERMISSION,
     CategoryCandidateLedger,
     build_category_search_toolset,
 )
@@ -35,45 +32,17 @@ from erp_web.schemas.category import (
     CategoryMatchStatus,
     CategoryMatchTrace,
 )
-from erp_web.services.ai_gateway_providers import AiProviderClient
-from erp_web.services.ai_prompt_templates import (
-    load_ai_use_case_prompt_pair,
-    render_prompt_template,
+from erp_web.services.ai_agent_factory import AiAgentExecutionError
+from erp_web.services.category_match_agent_service import (
+    CATEGORY_MATCH_BUDGET_PROFILE,
+    CATEGORY_MATCH_DEADLINE_SECONDS,
+    CATEGORY_MATCH_USE_CASE_ID,
+    CategoryMatchAgentRun,
+    run_category_match_agent,
 )
-from erp_web.services.ai_provider_contracts import (
-    CAPABILITY_CHAT_JSON,
-    CAPABILITY_TOOL_TURN,
-    AiChatProvider,
-)
-from erp_web.services.ai_task_runner import AiTaskExecutionError, AiTaskRunner
-from erp_web.services.ai_tool_provider_adapters import JsonToolTurnProviderAdapter
 from erp_web.services.ai_tool_registry import AiToolSet
 from erp_web.stores.product_store import normalize_product_fields
 
-
-CATEGORY_MATCH_USE_CASE_ID = "category.product_match"
-CATEGORY_MATCH_BUDGET_PROFILE = "category.match.default"
-CATEGORY_MATCH_DEADLINE_SECONDS = 60
-CATEGORY_MATCH_RESULT_SCHEMA = {
-    "type": "object",
-    "required": [
-        "selected_category_id",
-        "abstained",
-        "model_confidence",
-        "evidence",
-    ],
-    "properties": {
-        "selected_category_id": {"type": "string", "maxLength": 160},
-        "abstained": {"type": "boolean"},
-        "model_confidence": {"type": "number", "minimum": 0, "maximum": 1},
-        "evidence": {
-            "type": "array",
-            "items": {"type": "string", "maxLength": 300},
-            "maxItems": 8,
-        },
-    },
-    "additionalProperties": False,
-}
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _SPACE_RE = re.compile(r"\s+")
@@ -107,11 +76,19 @@ _NOISY_ATTRIBUTE_MARKERS = (
     "pago",
 )
 
-ModelRunner = Callable[
-    [dict[str, Any], AiToolSet],
-    tuple[dict[str, Any], CategoryMatchTrace],
-]
 CategorySearcherFactory = Callable[..., CategorySearcher]
+
+
+class CategoryMatchAgentService(Protocol):
+    def __call__(
+        self,
+        payload: Mapping[str, Any],
+        toolset: AiToolSet,
+        ledger: CategoryCandidateLedger,
+        *,
+        timeout_seconds: float,
+    ) -> CategoryMatchAgentRun:
+        ...
 
 
 class CategoryMatchError(RuntimeError):
@@ -137,14 +114,6 @@ class CategoryMatchError(RuntimeError):
             "stage": self.stage,
             "retryable": self.retryable,
         }
-
-
-class _ModelRunError(RuntimeError):
-    def __init__(self, cause: Exception, trace: CategoryMatchTrace) -> None:
-        self.cause = cause
-        self.code = str(getattr(cause, "code", "") or "MODEL_PROVIDER_ERROR")
-        self.trace = trace
-        super().__init__(str(cause) or cause.__class__.__name__)
 
 
 def _text(value: Any, limit: int) -> str:
@@ -298,7 +267,6 @@ def category_product_facts(
 
 def _empty_decision() -> CategoryMatchDecision:
     return {
-        "method": "tool_loop",
         "confidence_band": "low",
         "model_confidence": 0.0,
         "decision_score": 0.0,
@@ -311,7 +279,7 @@ def _empty_decision() -> CategoryMatchDecision:
 def _failure_from_exception(exc: Exception, *, stage: str) -> CategoryMatchFailure:
     if isinstance(exc, CategoryMatchError):
         return exc.to_dict()
-    cause = exc.cause if isinstance(exc, _ModelRunError) else exc
+    cause = exc
     if isinstance(cause, CategorySearchError):
         return {
             "code": cause.code,
@@ -319,17 +287,12 @@ def _failure_from_exception(exc: Exception, *, stage: str) -> CategoryMatchFailu
             "stage": stage,
             "retryable": cause.retryable,
         }
-    if isinstance(cause, AiTaskExecutionError):
+    if isinstance(cause, AiAgentExecutionError):
         return {
             "code": cause.code,
             "message": str(cause),
             "stage": stage,
-            "retryable": cause.code
-            in {
-                "MODEL_TIMEOUT",
-                "TASK_DEADLINE_EXCEEDED",
-                "TOOL_CALL_BUDGET_EXCEEDED",
-            },
+            "retryable": cause.retryable,
         }
     message = str(cause) or cause.__class__.__name__
     lowered = message.casefold()
@@ -363,6 +326,7 @@ def _result(
     selected_category_id: str | None = None,
     failure: CategoryMatchFailure | None = None,
     trace: CategoryMatchTrace | None = None,
+    agent_run: CategoryMatchAgentRun | None = None,
 ) -> CategoryMatchResult:
     public_candidates: list[CategoryCandidate] = [
         {
@@ -372,7 +336,7 @@ def _result(
         }
         for candidate in ledger.candidates()
     ]
-    return {
+    result: CategoryMatchResult = {
         "ok": ok,
         "status": status,
         "target": {
@@ -386,86 +350,9 @@ def _result(
         "failure": failure,
         "trace": trace or {"conversation_id": "", "task_run_id": ""},
     }
-
-
-def _messages_for_match(payload: dict[str, Any]) -> list[dict[str, str]]:
-    context = get_context()
-    app_config = context.config.load_app_config()
-    prompt = load_ai_use_case_prompt_pair(
-        context.paths.app_dir,
-        app_config,
-        CATEGORY_MATCH_USE_CASE_ID,
-    )
-    input_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    user_prompt = render_prompt_template(
-        prompt.get("user") or "请根据商品事实搜索并匹配类目：{$input_json}",
-        {"input_json": input_json},
-    )
-    system_prompt = prompt.get("system") or (
-        "必须先调用 search_categories；只能选择工具返回的 category_id，"
-        "没有合适结果时继续换词搜索或 abstain。最终仅返回 JSON。"
-    )
-    return [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt},
-    ]
-
-
-def _run_match_ai(
-    payload: dict[str, Any],
-    toolset: AiToolSet,
-    *,
-    timeout_seconds: int,
-) -> tuple[dict[str, Any], CategoryMatchTrace]:
-    context = get_context()
-    app_config = context.config.load_app_config()
-    resolved_client = AiProviderClient.for_use_case(
-        context.paths.app_dir,
-        app_config,
-        CATEGORY_MATCH_USE_CASE_ID,
-        timeout_seconds=timeout_seconds,
-        default_timeout_seconds=CATEGORY_MATCH_DEADLINE_SECONDS,
-    )
-    client = AiProviderClient(
-        app_dir=resolved_client.app_dir,
-        use_case_id=resolved_client.use_case_id,
-        model=resolved_client.model,
-        required_capabilities=resolved_client.required_capabilities,
-        timeout_seconds=min(timeout_seconds, resolved_client.timeout_seconds),
-    )
-    chat_provider = client.provider_for(CAPABILITY_CHAT_JSON)
-    if not isinstance(chat_provider, AiChatProvider):
-        raise AiTaskExecutionError(
-            "TOOL_PROTOCOL_UNSUPPORTED",
-            "当前 Provider 未实现 JSON tool protocol 所需的 chat_json。",
-        )
-    adapter = JsonToolTurnProviderAdapter(chat_provider, app_dir=context.paths.app_dir)
-    messages = _messages_for_match(payload)
-    invocation = client.start_invocation(
-        CAPABILITY_TOOL_TURN,
-        adapter,
-        {"mode": "tool_loop", "target": payload["target"], "messages": messages},
-        budget_profile=CATEGORY_MATCH_BUDGET_PROFILE,
-        permissions={CATEGORY_SEARCH_PERMISSION},
-    )
-    trace: CategoryMatchTrace = {
-        "conversation_id": invocation.recorder.conversation_id,
-        "task_run_id": invocation.execution_context.task_run_id,
-    }
-    try:
-        result = AiTaskRunner(
-            max_tool_rounds=3,
-            max_tool_calls=3,
-            max_tool_output_bytes=32 * 1024,
-        ).run(
-            invocation,
-            messages=messages,
-            toolset=toolset,
-            result_schema=CATEGORY_MATCH_RESULT_SCHEMA,
-        )
-    except Exception as exc:
-        raise _ModelRunError(exc, trace) from exc
-    return result, trace
+    if agent_run is not None:
+        agent_run.finish_business_result(result)
+    return result
 
 
 def _confidence_band(score: float) -> str:
@@ -479,9 +366,11 @@ def _confidence_band(score: float) -> str:
 def _remaining_deadline_seconds(deadline_at: float) -> float:
     remaining = deadline_at - time.monotonic()
     if remaining <= 0:
-        raise AiTaskExecutionError(
+        raise CategoryMatchError(
             "TASK_DEADLINE_EXCEEDED",
-            "类目匹配总 deadline 已耗尽",
+            "类目匹配总 deadline 已耗尽。",
+            stage="model",
+            retryable=True,
         )
     return remaining
 
@@ -589,7 +478,7 @@ def match_category(
     *,
     searcher: CategorySearcher | None = None,
     searcher_factory: CategorySearcherFactory = create_category_searcher,
-    model_runner: ModelRunner | None = None,
+    agent_service: CategoryMatchAgentService = run_category_match_agent,
     detail_loader: Callable[..., dict[str, Any]] = fetch_category_record,
 ) -> CategoryMatchResult:
     """运行一次同步、最多三次搜索且允许 abstain 的 ``category.match``。"""
@@ -605,6 +494,7 @@ def match_category(
     ledger = CategoryCandidateLedger()
     decision = _empty_decision()
     trace: CategoryMatchTrace = {"conversation_id": "", "task_run_id": ""}
+    agent_run: CategoryMatchAgentRun | None = None
     if not platform or not site:
         return _result(
             ok=False,
@@ -659,29 +549,35 @@ def match_category(
         )
 
     payload = {
-        "mode": "tool_loop",
         "target": normalized_target,
         "product": facts,
     }
     try:
         remaining_seconds = _remaining_deadline_seconds(deadline_at)
-        if model_runner is None:
-            if remaining_seconds < 1:
-                raise AiTaskExecutionError(
-                    "TASK_DEADLINE_EXCEEDED",
-                    "类目匹配剩余 deadline 不足以启动模型调用",
-                )
-            model_result, trace = _run_match_ai(
-                payload,
-                toolset,
-                timeout_seconds=int(remaining_seconds),
+        if remaining_seconds < 1:
+            raise CategoryMatchError(
+                "TASK_DEADLINE_EXCEEDED",
+                "类目匹配剩余 deadline 不足以启动模型调用。",
+                stage="model",
+                retryable=True,
             )
-        else:
-            model_result, trace = model_runner(payload, toolset)
+        agent_run = agent_service(
+            payload,
+            toolset,
+            ledger,
+            timeout_seconds=remaining_seconds,
+        )
+        model_result = agent_run.output
+        trace = agent_run.trace
         _remaining_deadline_seconds(deadline_at)
     except Exception as exc:
-        if isinstance(exc, _ModelRunError):
-            trace = exc.trace
+        if isinstance(exc, AiAgentExecutionError):
+            trace = {
+                "conversation_id": exc.conversation_id,
+                "task_run_id": exc.task_run_id,
+                "run_id": exc.run_id,
+                "trace_id": exc.trace_id,
+            }
         decision["search_count"] = ledger.search_count
         return _result(
             ok=False,
@@ -691,6 +587,7 @@ def match_category(
             decision=decision,
             failure=_failure_from_exception(exc, stage="model"),
             trace=trace,
+            agent_run=agent_run,
         )
 
     decision["search_count"] = ledger.search_count
@@ -708,6 +605,7 @@ def match_category(
                 "retryable": False,
             },
             trace=trace,
+            agent_run=agent_run,
         )
     if ledger.successful_search_count == 0 and ledger.last_error is not None:
         return _result(
@@ -718,6 +616,7 @@ def match_category(
             decision=decision,
             failure=_failure_from_exception(ledger.last_error, stage="search"),
             trace=trace,
+            agent_run=agent_run,
         )
     if not isinstance(model_result, Mapping):
         return _result(
@@ -733,6 +632,7 @@ def match_category(
                 "retryable": False,
             },
             trace=trace,
+            agent_run=agent_run,
         )
 
     selected_category_id = _text(model_result.get("selected_category_id"), 160)
@@ -775,6 +675,7 @@ def match_category(
                     "retryable": False,
                 },
                 trace=trace,
+                agent_run=agent_run,
             )
         return _result(
             ok=True,
@@ -789,6 +690,7 @@ def match_category(
                 "retryable": False,
             },
             trace=trace,
+            agent_run=agent_run,
         )
 
     try:
@@ -814,6 +716,7 @@ def match_category(
                 decision=decision,
                 failure=failure,
                 trace=trace,
+                agent_run=agent_run,
             )
         return _result(
             ok=True,
@@ -823,6 +726,7 @@ def match_category(
             decision={**decision, "abstained": True},
             failure=failure,
             trace=trace,
+            agent_run=agent_run,
         )
 
     return _result(
@@ -833,13 +737,13 @@ def match_category(
         decision=decision,
         selected_category_id=selected_category_id,
         trace=trace,
+        agent_run=agent_run,
     )
 
 
 __all__ = [
     "CATEGORY_MATCH_BUDGET_PROFILE",
     "CATEGORY_MATCH_DEADLINE_SECONDS",
-    "CATEGORY_MATCH_RESULT_SCHEMA",
     "CATEGORY_MATCH_USE_CASE_ID",
     "CategoryMatchError",
     "category_product_facts",

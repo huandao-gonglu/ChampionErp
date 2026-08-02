@@ -261,6 +261,8 @@ def merge_ai_config(app_dir: Path | str, current: dict[str, Any], incoming: dict
             current_yunexpress,
             incoming_yunexpress,
         )
+    ai_model_config.validate_ai_use_case_generation_bindings(merged)
+    ai_model_config.validate_ai_model_request_overrides(merged)
     return merged
 
 

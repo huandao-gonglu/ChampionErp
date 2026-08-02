@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import shutil
 from typing import Any
+
+from . import ai_generation_settings, ai_provider_catalog
 
 CONNECTION_TYPE_API = "api"
 CONNECTION_TYPE_CLI = "cli"
@@ -87,8 +91,7 @@ AI_USE_CASES: dict[str, dict[str, Any]] = {
     "category.product_match": {
         "id": "category.product_match",
         "label": "商品类目候选匹配",
-        "required_capabilities": [CAP_CHAT, CAP_JSON],
-        "execution_mode": "tool_loop",
+        "required_capabilities": [CAP_CHAT, CAP_JSON, CAP_TOOL_CALLING],
         "toolset_id": "category.search",
         "budget_profile": "category.match.default",
         "result_schema": "category_match.v1",
@@ -151,26 +154,37 @@ def normalize_capability_profiles(value: Any) -> dict[str, dict[str, Any]]:
         capability = str(raw_capability or "").strip().lower()
         if capability not in allowed or not isinstance(raw_profile, dict):
             continue
+        try:
+            version = max(1, int(raw_profile.get("version") or 1))
+        except (TypeError, ValueError):
+            version = 1
         profile: dict[str, Any] = {
-            "version": 1,
+            "version": version,
             "tested": bool(raw_profile.get("tested", True)),
         }
         for key in (
             "connection_type",
-            "provider",
             "api_style",
             "model",
             "base_url",
             "request_mode",
             "operation",
             "strategy",
+            "tested_at",
+            "probe_version",
+            "configuration_fingerprint",
         ):
             text = str(raw_profile.get(key) or "").strip()
             if text:
                 profile[key] = text
-        request_body = raw_profile.get("request_body")
-        if isinstance(request_body, dict):
-            profile["request_body"] = dict(request_body)
+        raw_provider_id = str(raw_profile.get("provider_id") or "").strip()
+        if raw_provider_id:
+            if str(profile.get("connection_type") or "").strip().lower() == CONNECTION_TYPE_API:
+                profile["provider_id"] = ai_provider_catalog.normalize_provider_id(
+                    raw_provider_id
+                )
+            else:
+                profile["provider_id"] = raw_provider_id
         result[capability] = profile
     return result
 
@@ -210,7 +224,7 @@ def default_ai_models() -> list[dict[str, Any]]:
             "id": "default_text",
             "name": "默认文本模型",
             "connection_type": CONNECTION_TYPE_API,
-            "provider": "DeepSeek",
+            "provider_id": ai_provider_catalog.PROVIDER_ID_DEEPSEEK,
             "api_style": "openai_compatible",
             "base_url": "https://api.deepseek.com",
             "base_url_env": "DEEPSEEK_BASE_URL",
@@ -225,7 +239,7 @@ def default_ai_models() -> list[dict[str, Any]]:
             "id": "default_image",
             "name": "默认图片模型",
             "connection_type": CONNECTION_TYPE_API,
-            "provider": "OpenAI",
+            "provider_id": ai_provider_catalog.PROVIDER_ID_OPENAI,
             "api_style": "openai_compatible",
             "base_url": "https://api.openai.com/v1",
             "base_url_env": "OPENAI_BASE_URL",
@@ -249,13 +263,29 @@ def normalize_ai_model(value: Any, index: int = 0) -> dict[str, Any]:
     if connection_type == CONNECTION_TYPE_CLI and not cli_command:
         cli_command = default_cli_command(cli_tool)
     capabilities = normalize_capabilities(raw.get("capabilities"))
-    provider = str(raw.get("provider") or "OpenAI-Compatible").strip()
+    provider_id = ai_provider_catalog.normalize_provider_id(raw.get("provider_id"))
+    try:
+        provider_spec = ai_provider_catalog.provider_spec(provider_id)
+    except ValueError:
+        provider_spec = None
+    provider = (
+        provider_spec.label
+        if provider_spec is not None
+        else provider_id
+    )
     base_url = str(raw.get("base_url") or "").strip()
     base_url_env = str(raw.get("base_url_env") or "").strip()
     api_key = str(raw.get("api_key") or "").strip()
     api_key_env = str(raw.get("api_key_env") or "").strip()
     model_name_value = str(raw.get("model") or "").strip()
     model_env = str(raw.get("model_env") or "").strip()
+    if (
+        connection_type == CONNECTION_TYPE_API
+        and not base_url
+        and not base_url_env
+        and provider_spec is not None
+    ):
+        base_url = provider_spec.default_base_url
     if connection_type == CONNECTION_TYPE_CLI:
         provider = str(raw.get("provider") or AI_CLI_TOOL_LABELS.get(cli_tool) or "本地 CLI").strip()
         base_url = ""
@@ -277,7 +307,10 @@ def normalize_ai_model(value: Any, index: int = 0) -> dict[str, Any]:
         "name": str(raw.get("name") or model_id).strip(),
         "connection_type": connection_type,
         "provider": provider,
-        "api_style": normalize_api_style(raw.get("api_style")),
+        "api_style": normalize_api_style(
+            raw.get("api_style")
+            or (provider_spec.default_api_style if provider_spec is not None else "")
+        ),
         "base_url": base_url,
         "base_url_env": base_url_env,
         "api_key": api_key,
@@ -287,6 +320,8 @@ def normalize_ai_model(value: Any, index: int = 0) -> dict[str, Any]:
         "capabilities": capabilities,
         "enabled": bool(raw.get("enabled", True)),
     }
+    if connection_type == CONNECTION_TYPE_API:
+        normalized["provider_id"] = provider_id
     capability_profiles = normalize_capability_profiles(raw.get("capability_profiles"))
     if capability_profiles:
         normalized["capability_profiles"] = capability_profiles
@@ -318,6 +353,29 @@ def normalize_ai_model(value: Any, index: int = 0) -> dict[str, Any]:
     extra = raw.get("extra") if isinstance(raw.get("extra"), dict) else {}
     if extra:
         normalized["extra"] = extra
+    profiles = normalized.get("capability_profiles")
+    if isinstance(profiles, dict) and profiles:
+        fingerprint = model_configuration_fingerprint(normalized)
+        stale_capabilities = {
+            capability
+            for capability, profile in profiles.items()
+            if isinstance(profile, dict)
+            and str(profile.get("configuration_fingerprint") or "").strip()
+            and profile.get("configuration_fingerprint") != fingerprint
+        }
+        if stale_capabilities:
+            normalized["capability_profiles"] = {
+                capability: profile
+                for capability, profile in profiles.items()
+                if capability not in stale_capabilities
+            }
+            normalized["capabilities"] = [
+                capability
+                for capability in normalized["capabilities"]
+                if capability not in stale_capabilities
+            ]
+            if not normalized["capability_profiles"]:
+                normalized.pop("capability_profiles")
     return normalized
 
 
@@ -363,11 +421,20 @@ def normalize_ai_use_case_bindings(value: Any) -> dict[str, dict[str, Any]]:
         item_dict = item if isinstance(item, dict) else {"model_id": item}
         model_id = str(item_dict.get("model_id") or "").strip()
         timeout_seconds = _normalize_timeout_override_seconds(item_dict.get("timeout_override_seconds"))
+        generation = ai_generation_settings.normalize_generation_settings(
+            item_dict.get("generation")
+        )
+        if generation and CAP_CHAT not in normalize_capabilities(
+            use_case.get("required_capabilities")
+        ):
+            raise ValueError(f"AI 功能 {use_case_id} 不是文本生成调用，不能配置 generation。")
         binding: dict[str, Any] = {}
         if model_id:
             binding["model_id"] = model_id
         if timeout_seconds is not None:
             binding["timeout_override_seconds"] = timeout_seconds
+        if generation:
+            binding["generation"] = generation
         if binding:
             result[str(use_case_id)] = binding
     return result
@@ -420,6 +487,58 @@ def model_cli_command(model: dict[str, Any]) -> str:
     return command or default_cli_command(model_cli_tool(model))
 
 
+def model_configuration_fingerprint(model: dict[str, Any]) -> str:
+    """生成不包含认证信息与 capability 声明的稳定连接指纹。"""
+
+    connection_type = model_connection_type(model)
+    payload: dict[str, Any] = {
+        "connection_type": connection_type,
+        "model": model_name(model),
+    }
+    if connection_type == CONNECTION_TYPE_API:
+        payload.update(
+            {
+                "provider_id": str(model.get("provider_id") or "").strip(),
+                "api_style": normalize_api_style(model.get("api_style")),
+                "base_url": model_base_url(model),
+                "extra": model.get("extra")
+                if isinstance(model.get("extra"), dict)
+                else {},
+            }
+        )
+    elif connection_type == CONNECTION_TYPE_CLI:
+        payload.update(
+            {
+                "cli_tool": model_cli_tool(model),
+                "command": model_cli_command(model),
+                "profile": str(model.get("profile") or "").strip(),
+                "sandbox": str(model.get("sandbox") or "").strip(),
+            }
+        )
+    else:
+        payload.update(
+            {
+                "browser_provider": str(
+                    model.get("browser_provider") or ""
+                ).strip(),
+                "browser_mode": str(model.get("browser_mode") or "").strip(),
+                "browser_profile": str(
+                    model.get("browser_profile") or ""
+                ).strip(),
+                "browser_port": str(model.get("browser_port") or "").strip(),
+                "browser_url": str(model.get("browser_url") or "").strip(),
+            }
+        )
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
 def model_has_capabilities(model: dict[str, Any], required: list[str] | tuple[str, ...] | set[str]) -> bool:
     capabilities = set(normalize_capabilities(model.get("capabilities")))
     return all(item in capabilities for item in required)
@@ -450,11 +569,83 @@ def resolve_ai_model(
     raise RuntimeError(f"没有可用 AI 模型满足能力要求: {', '.join(required)}")
 
 
+def validate_ai_use_case_generation_bindings(
+    app_config: dict[str, Any] | None,
+) -> None:
+    """确保每个显式功能覆盖都能被实际绑定模型转换。"""
+
+    config = app_config if isinstance(app_config, dict) else {}
+    for use_case_id, binding in normalize_ai_use_case_bindings(
+        config.get("ai_use_case_bindings")
+    ).items():
+        generation = binding.get("generation")
+        if not isinstance(generation, dict) or not generation:
+            continue
+        model = resolve_ai_model(config, use_case_id)
+        try:
+            ai_generation_settings.validate_generation_settings_for_model(
+                model,
+                generation,
+            )
+        except ValueError as exc:
+            raise ValueError(f"AI 功能 {use_case_id} 的生成配置无效：{exc}") from exc
+
+
+def validate_ai_model_request_overrides(
+    app_config: dict[str, Any] | None,
+) -> None:
+    """保存配置时拒绝可绕过 Pydantic message/tool/stream owner 的字段。"""
+
+    config = app_config if isinstance(app_config, dict) else {}
+    for model in normalize_ai_models(config.get("ai_models")):
+        if model_connection_type(model) != CONNECTION_TYPE_API:
+            continue
+        try:
+            provider_spec = ai_provider_catalog.provider_spec_for_model(model)
+        except ValueError as exc:
+            raise ValueError(
+                f"AI 模型 {model.get('id') or 'unknown'} 的 Provider 无效：{exc}"
+            ) from None
+        api_style = normalize_api_style(model.get("api_style"))
+        if api_style not in provider_spec.supported_api_styles:
+            raise ValueError(
+                f"AI 模型 {model.get('id') or 'unknown'} 的 Provider "
+                f"{provider_spec.label} 不支持 API 协议 {api_style}。"
+            )
+        if (
+            model_has_image_capability(model)
+            and "images" not in provider_spec.supported_model_kinds
+        ):
+            raise ValueError(
+                f"AI 模型 {model.get('id') or 'unknown'} 的 Provider "
+                f"{provider_spec.label} 未接入 Images Model。"
+            )
+        explicit_base_url = str(model.get("base_url") or "").strip()
+        if (
+            explicit_base_url
+            and not provider_spec.base_url_editable
+            and explicit_base_url.rstrip("/")
+            != provider_spec.default_base_url.rstrip("/")
+        ):
+            raise ValueError(
+                f"AI 模型 {model.get('id') or 'unknown'} 的 Provider "
+                f"{provider_spec.label} 使用固定 Base URL；"
+                "请使用该服务商的官方地址。"
+            )
+        try:
+            ai_generation_settings.pydantic_model_settings_payload(model, None)
+        except ValueError as exc:
+            raise ValueError(
+                f"AI 模型 {model.get('id') or 'unknown'} 的高级请求配置无效：{exc}"
+            ) from exc
+
+
 def public_ai_config(app_config: dict[str, Any] | None) -> dict[str, Any]:
     config = app_config if isinstance(app_config, dict) else {}
     models: list[dict[str, Any]] = []
     for model in normalize_ai_models(config.get("ai_models")):
         public = dict(model)
+        public["generation_capabilities"] = ai_generation_settings.generation_capabilities(model)
         public["api_key_configured"] = bool(model_api_key(model))
         public["api_key_masked"] = mask_secret(model_api_key(model))
         public.pop("api_key", None)
@@ -467,6 +658,7 @@ def public_ai_config(app_config: dict[str, Any] | None) -> dict[str, Any]:
         "browser_modes": list(AI_BROWSER_MODES),
         "capabilities": list(AI_MODEL_CAPABILITIES),
         "api_styles": list(AI_API_STYLES),
+        "providers": ai_provider_catalog.public_provider_catalog(),
         "cli_tools": local_cli_tool_status(),
         "image_quality_options": list(AI_IMAGE_QUALITY_OPTIONS),
     }

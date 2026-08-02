@@ -511,7 +511,6 @@ describe('workflow store live API flow', () => {
       }],
       query: 'ventilador',
       decision: {
-        method: 'tool_loop',
         confidenceBand: 'high',
         modelConfidence: 0.95,
         decisionScore: 0.88,

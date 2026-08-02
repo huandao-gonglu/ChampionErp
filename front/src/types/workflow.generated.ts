@@ -39,20 +39,23 @@ export interface BackendAiCapabilityProfile {
   version?: number
   tested?: boolean
   connection_type?: string
-  provider?: string
+  provider_id?: string
   api_style?: string
   model?: string
   base_url?: string
   request_mode?: string
   operation?: string
   strategy?: string
-  request_body?: Record<string, unknown>
+  tested_at?: string
+  probe_version?: string
+  configuration_fingerprint?: string
 }
 
 export interface BackendAiModelConfig {
   id?: string
   name?: string
   connection_type?: string
+  provider_id?: string
   provider?: string
   api_style?: string
   base_url?: string
@@ -64,9 +67,22 @@ export interface BackendAiModelConfig {
   enabled?: boolean
 }
 
+export interface BackendAiReasoningSettings {
+  mode?: string
+  effort?: string
+  budget_tokens?: number
+}
+
+export interface BackendAiGenerationSettings {
+  temperature?: number
+  max_output_tokens?: number
+  reasoning?: BackendAiReasoningSettings
+}
+
 export interface BackendAiUseCaseBinding {
   model_id?: string
   timeout_override_seconds?: number
+  generation?: BackendAiGenerationSettings
 }
 
 export interface BackendAppConfig {

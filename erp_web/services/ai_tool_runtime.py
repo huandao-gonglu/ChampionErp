@@ -5,16 +5,17 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from typing import Any
+from typing import Any, Callable
 
 from erp_web.schemas.ai_tools import (
-    AiToolCall,
+    AiToolCommand,
     AiToolResult,
     AiToolSchemaError,
     validate_json_schema,
 )
 from erp_web.schemas.ai_trace import AiExecutionContext
 
+from .ai_agent_observability import sanitize_ai_work_value
 from .ai_invocation import AiWorkRecorder
 from .ai_tool_registry import AiToolSet
 
@@ -34,6 +35,7 @@ class AiToolRuntime:
         recorder: AiWorkRecorder,
         max_tool_calls: int = 4,
         max_output_bytes: int = 64 * 1024,
+        before_executor: Callable[[AiToolCommand], None] | None = None,
     ) -> None:
         if max_tool_calls < 1:
             raise ValueError("max_tool_calls 必须大于 0")
@@ -44,6 +46,7 @@ class AiToolRuntime:
         self.recorder = recorder
         self.max_tool_calls = max_tool_calls
         self.max_output_bytes = max_output_bytes
+        self.before_executor = before_executor
         self._calls_by_id: dict[str, tuple[str, AiToolResult]] = {}
         self._results_by_signature: dict[str, AiToolResult] = {}
 
@@ -52,11 +55,11 @@ class AiToolRuntime:
         return len(self._calls_by_id)
 
     @staticmethod
-    def _signature(call: AiToolCall) -> str:
+    def _signature(command: AiToolCommand) -> str:
         payload = {
-            "tool_name": call.tool_name,
-            "tool_version": call.tool_version,
-            "arguments": call.to_dict()["arguments"],
+            "tool_name": command.tool_name,
+            "tool_version": command.tool_version,
+            "arguments": command.arguments_dict(),
         }
         encoded = json.dumps(
             payload,
@@ -66,27 +69,42 @@ class AiToolRuntime:
         ).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
 
-    def _record_started(self, call: AiToolCall) -> None:
+    def _record_started(self, command: AiToolCommand) -> None:
         self.recorder.record(
             "TOOL_CALL_STARTED",
-            tool_call_id=call.call_id,
-            tool_name=call.tool_name,
-            tool_version=call.tool_version,
-            round=call.round,
-            arguments=call.to_dict()["arguments"],
+            tool_call_id=command.call_id,
+            tool_name=command.tool_name,
+            tool_version=command.tool_version,
+            round=command.round,
+            arguments=sanitize_ai_work_value(command.arguments_dict()),
         )
 
     def _record_finished(self, result: AiToolResult) -> None:
+        payload = {
+            "tool_call_id": result.call_id,
+            "tool_name": result.tool_name,
+            "ok": result.ok,
+            "error_code": (
+                (result.error or {}).get("code") if not result.ok else ""
+            ),
+            "duration_ms": result.duration_ms,
+            "truncated": result.truncated,
+            "deduplicated": result.deduplicated,
+        }
+        if result.ok:
+            payload["output"] = sanitize_ai_work_value(result.output)
+        else:
+            payload["error"] = {
+                "code": str((result.error or {}).get("code") or "TOOL_EXECUTION_FAILED")
+            }
         self.recorder.record(
             "TOOL_CALL_FINISHED",
-            tool_call_id=result.call_id,
-            tool_name=result.tool_name,
-            result=result.to_dict(),
+            **payload,
         )
 
     @staticmethod
     def _error_result(
-        call: AiToolCall,
+        command: AiToolCommand,
         *,
         code: str,
         message: str,
@@ -94,8 +112,8 @@ class AiToolRuntime:
         truncated: bool = False,
     ) -> AiToolResult:
         return AiToolResult(
-            call_id=call.call_id,
-            tool_name=call.tool_name,
+            call_id=command.call_id,
+            tool_name=command.tool_name,
             ok=False,
             error={"code": code, "message": message},
             duration_ms=max(0, duration_ms),
@@ -104,44 +122,44 @@ class AiToolRuntime:
 
     def _remember(
         self,
-        call: AiToolCall,
+        command: AiToolCommand,
         signature: str,
         result: AiToolResult,
         *,
         cache_signature: bool = True,
     ) -> AiToolResult:
-        self._calls_by_id[call.call_id] = (signature, result)
+        self._calls_by_id[command.call_id] = (signature, result)
         if cache_signature:
             self._results_by_signature[signature] = result
         self._record_finished(result)
         return result
 
-    def execute(self, call: AiToolCall) -> AiToolResult:
-        signature = self._signature(call)
-        previous_call = self._calls_by_id.get(call.call_id)
+    def execute(self, command: AiToolCommand) -> AiToolResult:
+        signature = self._signature(command)
+        previous_call = self._calls_by_id.get(command.call_id)
         if previous_call is not None:
             previous_signature, previous_result = previous_call
             if previous_signature != signature:
                 conflict = self._error_result(
-                    call,
+                    command,
                     code="TOOL_CALL_INVALID",
                     message="同一 call_id 不能使用不同工具、版本或参数",
                 )
-                self._record_started(call)
+                self._record_started(command)
                 self._record_finished(conflict)
                 return conflict
             result = previous_result.as_deduplicated()
-            self._record_started(call)
+            self._record_started(command)
             self._record_finished(result)
             return result
 
-        self._record_started(call)
+        self._record_started(command)
         if self.execution_context.expired():
             return self._remember(
-                call,
+                command,
                 signature,
                 self._error_result(
-                    call,
+                    command,
                     code="TASK_DEADLINE_EXCEEDED",
                     message="AI Task 总 deadline 已耗尽",
                 ),
@@ -149,10 +167,10 @@ class AiToolRuntime:
             )
         if self.unique_call_count >= self.max_tool_calls:
             return self._remember(
-                call,
+                command,
                 signature,
                 self._error_result(
-                    call,
+                    command,
                     code="TOOL_CALL_BUDGET_EXCEEDED",
                     message=f"工具调用数超过上限 {self.max_tool_calls}",
                 ),
@@ -161,80 +179,98 @@ class AiToolRuntime:
 
         deduplicated = self._results_by_signature.get(signature)
         if deduplicated is not None:
-            result = deduplicated.as_deduplicated(call_id=call.call_id)
-            return self._remember(call, signature, result)
+            result = deduplicated.as_deduplicated(call_id=command.call_id)
+            return self._remember(command, signature, result)
 
-        binding = self.toolset.get(call.tool_name)
+        binding = self.toolset.get(command.tool_name)
         if binding is None:
             return self._remember(
-                call,
+                command,
                 signature,
                 self._error_result(
-                    call,
+                    command,
                     code="TOOL_NOT_ALLOWED",
-                    message=f"ToolSet {self.toolset.toolset_id} 未允许工具 {call.tool_name}",
+                    message=(
+                        f"ToolSet {self.toolset.toolset_id} "
+                        f"未允许工具 {command.tool_name}"
+                    ),
                 ),
             )
         definition = binding.definition
-        if call.tool_version != definition.version:
+        if command.tool_version != definition.version:
             return self._remember(
-                call,
+                command,
                 signature,
                 self._error_result(
-                    call,
+                    command,
                     code="TOOL_VERSION_MISMATCH",
                     message=(
-                        f"工具 {call.tool_name} 版本不匹配："
-                        f"请求 {call.tool_version}，允许 {definition.version}"
+                        f"工具 {command.tool_name} 版本不匹配："
+                        f"请求 {command.tool_version}，允许 {definition.version}"
                     ),
                 ),
             )
         if definition.required_permission not in self.execution_context.permissions:
             return self._remember(
-                call,
+                command,
                 signature,
                 self._error_result(
-                    call,
+                    command,
                     code="TOOL_PERMISSION_DENIED",
                     message=f"缺少权限 {definition.required_permission}",
                 ),
             )
         if definition.side_effect == "write" and not self.execution_context.allow_write:
             return self._remember(
-                call,
+                command,
                 signature,
                 self._error_result(
-                    call,
+                    command,
                     code="TOOL_WRITE_NOT_ALLOWED",
-                    message=f"当前 invocation 不允许执行写工具 {call.tool_name}",
+                    message=f"当前 invocation 不允许执行写工具 {command.tool_name}",
                 ),
             )
-        if (
-            definition.approval_required
-            and call.call_id not in self.execution_context.approved_tool_call_ids
-        ):
-            return self._remember(
-                call,
-                signature,
-                self._error_result(
-                    call,
-                    code="TOOL_APPROVAL_REQUIRED",
-                    message=f"工具 {call.tool_name} 需要显式审批",
-                ),
-            )
-        arguments = call.to_dict()["arguments"]
+        arguments = command.arguments_dict()
         try:
             validate_json_schema(arguments, definition.input_schema)
         except AiToolSchemaError as exc:
             return self._remember(
-                call,
+                command,
                 signature,
                 self._error_result(
-                    call,
+                    command,
                     code="TOOL_INPUT_SCHEMA_INVALID",
                     message=str(exc),
                 ),
             )
+        if (
+            definition.approval_required
+            and command.call_id not in self.execution_context.approved_tool_call_ids
+        ):
+            return self._remember(
+                command,
+                signature,
+                self._error_result(
+                    command,
+                    code="TOOL_APPROVAL_REQUIRED",
+                    message=f"工具 {command.tool_name} 需要显式审批",
+                ),
+            )
+
+        if self.before_executor is not None and definition.side_effect == "write":
+            try:
+                self.before_executor(command)
+            except Exception:
+                return self._remember(
+                    command,
+                    signature,
+                    self._error_result(
+                        command,
+                        code="TOOL_EXECUTION_CHECKPOINT_FAILED",
+                        message="工具执行前检查点无法持久化",
+                    ),
+                    cache_signature=False,
+                )
 
         started_at = time.monotonic()
         try:
@@ -250,10 +286,10 @@ class AiToolRuntime:
                 else str(getattr(exc, "code", "") or "TOOL_EXECUTION_FAILED")
             )
             return self._remember(
-                call,
+                command,
                 signature,
                 self._error_result(
-                    call,
+                    command,
                     code=error_code,
                     message=str(exc) or exc.__class__.__name__,
                     duration_ms=duration_ms,
@@ -262,10 +298,10 @@ class AiToolRuntime:
         duration_ms = round((time.monotonic() - started_at) * 1000)
         if self.execution_context.expired():
             return self._remember(
-                call,
+                command,
                 signature,
                 self._error_result(
-                    call,
+                    command,
                     code="TASK_DEADLINE_EXCEEDED",
                     message="工具执行完成时 AI Task 总 deadline 已耗尽",
                     duration_ms=duration_ms,
@@ -276,10 +312,10 @@ class AiToolRuntime:
             validate_json_schema(output, definition.output_schema)
         except AiToolSchemaError as exc:
             return self._remember(
-                call,
+                command,
                 signature,
                 self._error_result(
-                    call,
+                    command,
                     code="TOOL_OUTPUT_SCHEMA_INVALID",
                     message=str(exc),
                     duration_ms=duration_ms,
@@ -296,10 +332,10 @@ class AiToolRuntime:
             )
         except (TypeError, ValueError) as exc:
             return self._remember(
-                call,
+                command,
                 signature,
                 self._error_result(
-                    call,
+                    command,
                     code="TOOL_OUTPUT_SCHEMA_INVALID",
                     message=f"工具输出不是 JSON：{exc}",
                     duration_ms=duration_ms,
@@ -307,10 +343,10 @@ class AiToolRuntime:
             )
         if output_size > self.max_output_bytes:
             return self._remember(
-                call,
+                command,
                 signature,
                 self._error_result(
-                    call,
+                    command,
                     code="TOOL_OUTPUT_TOO_LARGE",
                     message=(
                         f"工具输出 {output_size} 字节，超过上限 "
@@ -321,11 +357,11 @@ class AiToolRuntime:
                 ),
             )
         return self._remember(
-            call,
+            command,
             signature,
             AiToolResult(
-                call_id=call.call_id,
-                tool_name=call.tool_name,
+                call_id=command.call_id,
+                tool_name=command.tool_name,
                 ok=True,
                 output=output,
                 duration_ms=duration_ms,

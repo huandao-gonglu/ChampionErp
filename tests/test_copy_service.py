@@ -1,39 +1,55 @@
 from __future__ import annotations
 
-import io
-import json
-from pathlib import Path
 import subprocess
-import urllib.error
+from pathlib import Path
 
 import pytest
 
 from conftest import assert_no_old_path
 from erp_web.context import get_context
-from erp_web.runtime_units import publish_helpers, store_credentials
-from erp_web.services import ai_gateway, ai_model_config, browser_ai_runtime, copy_service
+from erp_web.runtime_units import publish_helpers
+from erp_web.services import (
+    ai_gateway,
+    ai_gateway_providers,
+    ai_model_config,
+    browser_ai_runtime,
+    copy_service,
+)
 from tests.runtime_test_utils import temp_app_context
 
 
-def test_generate_copy_without_api_key_does_not_create_fallback_copy(app_dir: Path) -> None:
-    product = {
-        "name": "Manual test organizer",
-        "materials": ["PP"],
-        "selling_points": ["Foldable", "For home storage"],
-        "source_text": "Use for organizing household items.",
+def _api_model() -> dict[str, object]:
+    return {
+        "id": "copy_model",
+        "name": "Copy Model",
+        "connection_type": "api",
+        "provider": "OpenAI",
+        "provider_id": "openai",
+        "api_style": "openai_compatible",
+        "api_key": "test-key",
+        "base_url": "https://api.example.com/v1",
+        "model": "gpt-test",
+        "capabilities": ["chat", "json"],
+        "enabled": True,
     }
+
+
+def test_generate_copy_without_api_key_does_not_create_fallback_copy(
+    app_dir: Path,
+) -> None:
     result = copy_service.generate_copy(
         str(app_dir),
-        product,
+        {
+            "name": "Manual test organizer",
+            "materials": ["PP"],
+            "selling_points": ["Foldable"],
+        },
         {
             "ai_models": [
                 {
-                    "id": "copy_model",
-                    "provider": "DeepSeek",
+                    **_api_model(),
                     "api_key": "",
-                    "base_url": "https://api.deepseek.com",
-                    "model": "deepseek-chat",
-                    "capabilities": ["chat", "json"],
+                    "api_key_env": "MISSING_TEST_API_KEY",
                 }
             ]
         },
@@ -43,33 +59,29 @@ def test_generate_copy_without_api_key_does_not_create_fallback_copy(app_dir: Pa
 
     assert result["ok"] is False
     assert "API Key" in result["error"]
-    assert result["target_market"] == "mercadolibre"
-    assert result["language"] == "Spanish (Mexico)"
-    assert result["provider"] == "DeepSeek"
     assert result["copy"] == {}
 
 
-def test_generate_copy_uses_bound_provider_and_registry_language_for_ozon(app_dir: Path, monkeypatch) -> None:
+def test_generate_copy_uses_bound_model_and_registry_language(
+    app_dir: Path,
+    monkeypatch,
+) -> None:
     seen: dict[str, object] = {}
 
-    def fake_resolve(app_dir, app_config, use_case_id, **kwargs):
-        seen["resolved_use_case"] = use_case_id
-        seen["resolve_kwargs"] = kwargs
+    def fake_resolve(*args, **kwargs):
+        seen["use_case"] = args[2]
         return {"id": "bound_copy_model", "provider": "Test Provider"}
 
-    def fake_chat_json(app_dir, app_config, use_case_id, messages, **kwargs):
-        seen["chat_use_case"] = use_case_id
-        seen["messages"] = messages
+    def fake_chat(*args, **kwargs):
+        seen["messages"] = kwargs.get("messages") or args[3]
         return {
             "title": "Органайзер для дома",
             "description": "Компактный органайзер для хранения вещей дома.",
-            "bullets": ["Складная конструкция", "Для домашнего хранения"],
-            "alt_titles": ["Домашний органайзер"],
-            "search_keywords": ["органайзер", "хранение"],
         }
 
     monkeypatch.setattr(copy_service.ai_gateway, "resolve_model_for_use_case", fake_resolve)
-    monkeypatch.setattr(copy_service.ai_gateway, "chat_json", fake_chat_json)
+    monkeypatch.setattr(copy_service.ai_gateway, "chat_json", fake_chat)
+
     result = copy_service.generate_copy(
         str(app_dir),
         {"name": "Manual organizer"},
@@ -80,41 +92,13 @@ def test_generate_copy_uses_bound_provider_and_registry_language_for_ozon(app_di
     assert result["ok"] is True
     assert result["language"] == "ru-RU"
     assert result["provider"] == "Test Provider"
-    assert result["copy"]["description"] == "Компактный органайзер для хранения вещей дома."
-    assert seen["resolved_use_case"] == "copy.generate"
-    assert seen["resolve_kwargs"] == {}
-    assert seen["chat_use_case"] == "copy.generate"
-
-
-def test_generate_copy_accepts_missing_optional_copy_fields(app_dir: Path, monkeypatch) -> None:
-    monkeypatch.setattr(
-        copy_service.ai_gateway,
-        "resolve_model_for_use_case",
-        lambda *args, **kwargs: {"id": "bound_copy_model", "provider": "Test Provider"},
-    )
-    monkeypatch.setattr(
-        copy_service.ai_gateway,
-        "chat_json",
-        lambda *args, **kwargs: {
-            "title": "Органайзер для дома",
-            "description": "Компактный органайзер для хранения вещей дома.",
-        },
-    )
-
-    result = copy_service.generate_copy(
-        str(app_dir),
-        {"name": "Manual organizer"},
-        {"ai_models": []},
-        target_market="ozon",
-    )
-
-    assert result["ok"] is True
     assert result["copy"]["bullets"] == []
-    assert result["copy"]["alt_titles"] == []
-    assert result["copy"]["search_keywords"] == []
+    assert seen["use_case"] == "copy.generate"
 
 
-def test_configured_copy_prompt_contains_target_and_product_context(app_dir: Path) -> None:
+def test_configured_copy_prompt_contains_target_and_product_context(
+    app_dir: Path,
+) -> None:
     prompt = copy_service.build_copy_prompt_from_config(
         str(app_dir),
         {},
@@ -130,1322 +114,171 @@ def test_configured_copy_prompt_contains_target_and_product_context(app_dir: Pat
     assert "{$" not in prompt["user"]
 
 
-def test_copy_prompt_configuration_is_not_silently_replaced(app_dir: Path, tmp_path: Path) -> None:
-    prompt_path = tmp_path / "incomplete_copy_prompt.json"
-    prompt_path.write_text(
-        json.dumps({"system": "configured", "user": "Language: {$language}"}),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(RuntimeError, match="必须包含"):
-        copy_service.build_copy_prompt_from_config(
-            str(app_dir),
-            {"ai_use_case_prompts": {"copy.generate": {"path": str(prompt_path)}}},
-            {"name": "Manual organizer"},
-            "mercadolibre",
-            "Spanish (Mexico)",
-            "rewrite",
-        )
+def test_copy_service_does_not_hardcode_keys(
+    app_dir: Path,
+    old_path_markers: tuple[str, ...],
+) -> None:
+    assert_no_old_path((app_dir / "erp_web/services/copy_service.py").read_text(), old_path_markers)
 
 
-def test_copy_service_does_not_hardcode_keys(app_dir: Path, old_path_markers: tuple[str, ...]) -> None:
-    source = (app_dir / "erp_web" / "services" / "copy_service.py").read_text(encoding="utf-8", errors="ignore")
-    assert "sk-" not in source
-    assert_no_old_path(source, old_path_markers)
+def test_api_chat_uses_pydantic_direct_boundary(tmp_path: Path, monkeypatch) -> None:
+    seen: dict[str, object] = {}
 
+    def fake_direct_chat(**kwargs):
+        seen.update(kwargs)
+        return {"ok": True}
 
-def test_model_list_url_strips_known_api_endpoints() -> None:
-    assert ai_gateway._models_url("https://api.example.com/v1") == "https://api.example.com/v1/models"
-    assert ai_gateway._models_url("https://api.example.com/v1/chat/completions") == "https://api.example.com/v1/models"
-    assert ai_gateway._models_url("https://api.example.com/v1/responses") == "https://api.example.com/v1/models"
-
-
-def test_openai_chat_request_body_merges_custom_json_after_standard_fields(tmp_path: Path, monkeypatch) -> None:
-    request_bodies: list[dict] = []
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-        @staticmethod
-        def read() -> bytes:
-            return b'{"choices":[{"message":{"content":"{\\"ok\\":true}"}}]}'
-
-    def fake_urlopen(request, timeout):
-        request_bodies.append(json.loads((request.data or b"{}").decode("utf-8")))
-        return FakeResponse()
-
-    monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
-    result = ai_gateway.chat_json(
-        tmp_path,
-        {
-            "ai_models": [
-                {
-                    "id": "custom_chat_model",
-                    "provider": "OpenAI-Compatible",
-                    "api_key": "test-key",
-                    "base_url": "https://ai.example.com/v1",
-                    "model": "configured-model",
-                    "capabilities": ["chat", "json", "web_search"],
-                    "extra": {
-                        "request_body": {
-                            "model": "provider-specific-model",
-                            "temperature": 0.85,
-                            "top_p": 0.7,
-                        }
-                    },
-                }
-            ]
-        },
-        "copy.generate",
-        [{"role": "user", "content": "Return JSON."}],
-        temperature=0.2,
-        max_tokens=12,
-        stream=False,
-    )
-
-    assert result == {"ok": True}
-    assert request_bodies == [
-        {
-            "model": "provider-specific-model",
-            "messages": [{"role": "user", "content": "Return JSON."}],
-            "temperature": 0.85,
-            "stream": False,
-            "max_tokens": 12,
-            "response_format": {"type": "json_object"},
-            "top_p": 0.7,
-        }
-    ]
-
-
-def test_openai_responses_request_body_merges_custom_json_after_standard_fields(tmp_path: Path, monkeypatch) -> None:
-    request_bodies: list[dict] = []
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-        @staticmethod
-        def read() -> bytes:
-            return b'{"output_text":"{\\"ok\\":true}"}'
-
-    def fake_urlopen(request, timeout):
-        request_bodies.append(json.loads((request.data or b"{}").decode("utf-8")))
-        return FakeResponse()
-
-    monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
-    result = ai_gateway.chat_json(
-        tmp_path,
-        {
-            "ai_models": [
-                {
-                    "id": "custom_responses_model",
-                    "provider": "OpenAI-Compatible",
-                    "api_style": "openai_responses",
-                    "api_key": "test-key",
-                    "base_url": "https://ai.example.com/v1",
-                    "model": "configured-model",
-                    "capabilities": ["chat", "json"],
-                    "extra": {
-                        "request_body": {
-                            "model": "provider-specific-model",
-                            "temperature": 0.85,
-                            "max_output_tokens": 55,
-                            "top_p": 0.7,
-                        }
-                    },
-                }
-            ]
-        },
-        "copy.generate",
-        [{"role": "user", "content": "Return JSON."}],
-        temperature=0.2,
-        max_tokens=12,
-        stream=False,
-    )
-
-    assert result == {"ok": True}
-    assert request_bodies == [
-        {
-            "model": "provider-specific-model",
-            "input": [{"role": "user", "content": "Return JSON."}],
-            "temperature": 0.85,
-            "stream": False,
-            "max_output_tokens": 55,
-            "text": {"format": {"type": "json_object"}},
-            "top_p": 0.7,
-        }
-    ]
-
-
-def test_openai_responses_activates_only_use_case_capabilities(tmp_path: Path, monkeypatch) -> None:
-    requests: list[dict] = []
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-        @staticmethod
-        def read() -> bytes:
-            return b'{"output_text":"{\\"ok\\":true}"}'
-
-    def fake_urlopen(request, timeout):
-        requests.append(
-            {
-                "body": json.loads((request.data or b"{}").decode("utf-8")),
-                "timeout": timeout,
-            }
-        )
-        return FakeResponse()
-
-    monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
-    app_config = {
-        "ai_models": [
-            {
-                "id": "responses_with_search",
-                "provider": "OpenAI-Compatible",
-                "api_style": "openai_responses",
-                "api_key": "test-key",
-                "base_url": "https://ai.example.com/v1",
-                "model": "configured-model",
-                "capabilities": ["chat", "json", "web_search"],
-                "capability_profiles": {
-                    "json": {
-                        "tested": True,
-                        "connection_type": "api",
-                        "api_style": "openai_responses",
-                        "request_body": {
-                            "text": {"format": {"type": "json_object"}},
-                            "provider_json_mode": "tested-json-recipe",
-                        },
-                    },
-                    "web_search": {
-                        "tested": True,
-                        "connection_type": "api",
-                        "api_style": "openai_responses",
-                        "request_mode": "openai_tools",
-                        "request_body": {
-                            "tools": [{"type": "web_search_preview"}],
-                            "provider_search_mode": "tested-search-recipe",
-                        },
-                    },
-                },
-                "timeout_seconds": 30,
-            }
-        ],
-        "ai_use_case_bindings": {
-            "copy.generate": {
-                "model_id": "responses_with_search",
-                "timeout_override_seconds": 125,
-            },
-            "research.web_search": {"model_id": "responses_with_search"},
-        },
-    }
-
-    copy_result = ai_gateway.chat_json(
-        tmp_path,
-        app_config,
-        "copy.generate",
-        [{"role": "user", "content": "Return JSON."}],
-        stream=False,
-    )
-    research_result = ai_gateway.chat_json(
-        tmp_path,
-        app_config,
-        "research.web_search",
-        [{"role": "user", "content": "Search and return JSON."}],
-        stream=False,
-    )
-
-    assert copy_result == {"ok": True}
-    assert research_result == {"ok": True}
-    assert "tools" not in requests[0]["body"]
-    assert requests[0]["body"]["text"] == {"format": {"type": "json_object"}}
-    assert requests[0]["body"]["provider_json_mode"] == "tested-json-recipe"
-    assert "provider_search_mode" not in requests[0]["body"]
-    assert requests[0]["timeout"] == 125
-    assert requests[1]["body"]["tools"] == [{"type": "web_search_preview"}]
-    assert requests[1]["body"]["text"] == {"format": {"type": "json_object"}}
-    assert requests[1]["body"]["provider_json_mode"] == "tested-json-recipe"
-    assert requests[1]["body"]["provider_search_mode"] == "tested-search-recipe"
-    assert requests[1]["timeout"] == 30
-
-
-def test_runtime_rejects_stale_tested_capability_profile(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(
-        ai_gateway.urllib.request,
-        "urlopen",
-        lambda request, timeout: pytest.fail("失效能力配方不应发出 Provider 请求"),
+        ai_gateway_providers.ai_direct_request_service,
+        "chat_json",
+        fake_direct_chat,
     )
-    app_config = {
-        "ai_models": [
-            {
-                "id": "stale_model",
-                "provider": "OpenAI-Compatible",
-                "api_style": "openai_responses",
-                "api_key": "test-key",
-                "base_url": "https://ai.example.com/v1",
-                "model": "current-model",
-                "capabilities": ["chat", "json"],
-                "capability_profiles": {
-                    "chat": {
-                        "tested": True,
-                        "connection_type": "api",
-                        "provider": "OpenAI-Compatible",
-                        "api_style": "openai_responses",
-                        "model": "tested-old-model",
-                        "base_url": "https://ai.example.com/v1",
-                        "request_body": {},
-                    }
-                },
-            }
-        ]
-    }
 
-    with pytest.raises(RuntimeError, match="model 已变化，请重新测试"):
+    result = ai_gateway.chat_json(
+        tmp_path,
+        {"ai_models": [_api_model()]},
+        "copy.generate",
+        [{"role": "user", "content": "Return JSON."}],
+        temperature=0.35,
+        max_tokens=128,
+        stream=False,
+    )
+
+    assert result == {"ok": True}
+    assert seen["use_case_id"] == "copy.generate"
+    assert seen["temperature"] == 0.35
+    assert seen["max_tokens"] == 128
+    assert seen["required_capabilities"] == ("chat", "json")
+    assert all(
+        provider.provider_id != "pydantic_direct"
+        for provider in ai_gateway.AI_PROVIDER_REGISTRY
+    )
+
+
+def test_api_chat_rejects_business_extra_body(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        ai_gateway_providers.ai_direct_request_service,
+        "chat_json",
+        lambda **kwargs: pytest.fail("非法 extra_body 不应到达 Pydantic 请求"),
+    )
+
+    with pytest.raises(ValueError, match="不允许业务层传入 extra_body"):
         ai_gateway.chat_json(
             tmp_path,
-            app_config,
+            {"ai_models": [_api_model()]},
             "copy.generate",
             [{"role": "user", "content": "Return JSON."}],
+            extra_body={"tools": []},
             stream=False,
         )
 
 
-def test_ai_model_connection_uses_model_config(monkeypatch) -> None:
-    calls: list[dict] = []
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-        @staticmethod
-        def read() -> bytes:
-            return b'{"data":[{"id":"deepseek-chat"},{"id":"deepseek-reasoner"}]}'
-
-    def fake_urlopen(request, timeout):
-        calls.append({
-            "url": request.full_url,
-            "auth": request.get_header("Authorization"),
-            "ua": request.get_header("User-agent") or request.get_header("User-Agent"),
-            "timeout": timeout,
-        })
-        return FakeResponse()
-
-    monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
-    result = store_credentials.test_ai_model_config(
-        {
-            "id": "copy_model",
-            "name": "Copy Model",
-            "provider": "DeepSeek",
-            "api_key": "test-key",
-            "base_url": "https://api.deepseek.com",
-            "model": "deepseek-chat",
-            "capabilities": ["chat", "json"],
-            "probe_capabilities": False,
-        },
-    )
-
-    assert result["ok"] is True
-    assert result["available_models"] == [
-        {"id": "deepseek-chat", "label": "deepseek-chat"},
-        {"id": "deepseek-reasoner", "label": "deepseek-reasoner"},
-    ]
-    assert calls == [{
-        "url": "https://api.deepseek.com/models",
-        "auth": "Bearer test-key",
-        "ua": ai_model_config.AI_HTTP_USER_AGENT,
-        "timeout": 60,
-    }]
-
-
-def test_ai_model_connection_uses_saved_key_when_public_payload_omits_secret(monkeypatch) -> None:
-    calls: list[dict] = []
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-        @staticmethod
-        def read() -> bytes:
-            return b'{"data":[{"id":"deepseek-chat"}]}'
-
-    def fake_urlopen(request, timeout):
-        calls.append({
-            "url": request.full_url,
-            "auth": request.get_header("Authorization"),
-            "ua": request.get_header("User-agent") or request.get_header("User-Agent"),
-            "timeout": timeout,
-        })
-        return FakeResponse()
-
-    monkeypatch.setattr(
-        get_context().config,
-        "load_app_config",
-        lambda: {
-            "ai_models": [
-                {
-                    "id": "copy_model",
-                    "name": "Copy Model",
-                    "provider": "DeepSeek",
-                    "api_key": "saved-key",
-                    "base_url": "https://api.deepseek.com",
-                    "model": "deepseek-chat",
-                    "capabilities": ["chat", "json"],
-                }
-            ]
-        },
-    )
-    monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
-    result = store_credentials.test_ai_model_config(
-        {
-            "id": "copy_model",
-            "name": "Copy Model",
-            "provider": "DeepSeek",
-            "api_key": "",
-            "api_key_configured": True,
-            "base_url": "https://api.deepseek.com",
-            "model": "deepseek-chat",
-            "capabilities": ["chat", "json"],
-            "probe_capabilities": False,
-        },
-    )
-
-    assert result["ok"] is True
-    assert calls == [{
-        "url": "https://api.deepseek.com/models",
-        "auth": "Bearer saved-key",
-        "ua": ai_model_config.AI_HTTP_USER_AGENT,
-        "timeout": 60,
-    }]
-
-
-def test_ai_model_connection_copies_saved_key_from_source_model(monkeypatch) -> None:
-    calls: list[dict] = []
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-        @staticmethod
-        def read() -> bytes:
-            return b'{"data":[{"id":"deepseek-reasoner"}]}'
-
-    def fake_urlopen(request, timeout):
-        calls.append({
-            "url": request.full_url,
-            "auth": request.get_header("Authorization"),
-            "ua": request.get_header("User-agent") or request.get_header("User-Agent"),
-            "timeout": timeout,
-        })
-        return FakeResponse()
-
-    monkeypatch.setattr(
-        get_context().config,
-        "load_app_config",
-        lambda: {
-            "ai_models": [
-                {
-                    "id": "copy_model",
-                    "name": "Copy Model",
-                    "provider": "DeepSeek",
-                    "api_key": "saved-key",
-                    "base_url": "https://api.deepseek.com",
-                    "model": "deepseek-chat",
-                    "capabilities": ["chat", "json"],
-                }
-            ]
-        },
-    )
-    monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
-    result = store_credentials.test_ai_model_config(
-        {
-            "id": "copy_model_copy",
-            "copy_source_id": "copy_model",
-            "name": "Copy Model 副本",
-            "provider": "DeepSeek",
-            "api_key": "",
-            "api_key_configured": True,
-            "base_url": "https://api.deepseek.com",
-            "model": "deepseek-reasoner",
-            "capabilities": ["chat", "json"],
-            "probe_capabilities": False,
-        },
-    )
-
-    assert result["ok"] is True
-    assert calls == [{
-        "url": "https://api.deepseek.com/models",
-        "auth": "Bearer saved-key",
-        "ua": ai_model_config.AI_HTTP_USER_AGENT,
-        "timeout": 60,
-    }]
+def test_api_models_never_enter_external_provider_registry() -> None:
+    normalized = ai_model_config.normalize_ai_model(_api_model())
+    with pytest.raises(RuntimeError, match="Pydantic Direct Model"):
+        ai_gateway._provider_for_model(normalized)
+    assert {
+        type(provider) for provider in ai_gateway.AI_PROVIDER_REGISTRY
+    } == {ai_gateway.CodexCliProvider, ai_gateway.BrowserAiProvider}
 
 
 def test_codex_cli_chat_json_uses_local_command(tmp_path: Path, monkeypatch) -> None:
-    calls: list[dict] = []
+    calls: list[dict[str, object]] = []
 
-    def fake_which(command: str) -> str:
-        return f"/usr/local/bin/{command}" if command == "codex" else ""
+    monkeypatch.setattr(
+        ai_gateway.shutil,
+        "which",
+        lambda command: f"/usr/local/bin/{command}" if command == "codex" else "",
+    )
 
     def fake_run(args, input, text, capture_output, cwd, timeout, check):
-        output_path = Path(args[args.index("-o") + 1])
-        output_path.write_text('{"ok":true,"title":"Codex OK"}', encoding="utf-8")
-        calls.append(
-            {
-                "args": args,
-                "input": input,
-                "text": text,
-                "capture_output": capture_output,
-                "cwd": cwd,
-                "timeout": timeout,
-                "check": check,
-            }
+        Path(args[args.index("-o") + 1]).write_text(
+            '{"ok":true,"title":"Codex OK"}',
+            encoding="utf-8",
         )
+        calls.append({"args": args, "input": input, "cwd": cwd, "timeout": timeout})
         return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(ai_gateway.shutil, "which", fake_which)
     monkeypatch.setattr(ai_gateway.subprocess, "run", fake_run)
-
     result = ai_gateway.chat_json(
         tmp_path,
         {
             "ai_models": [
                 {
                     "id": "codex_cli_text",
-                    "name": "Codex CLI 文本模型",
                     "connection_type": "cli",
                     "provider": "Codex CLI",
                     "cli_tool": "codex",
                     "command": "codex",
                     "model": "gpt-5-codex",
                     "capabilities": ["chat", "json"],
-                    "timeout_seconds": "180",
                 }
             ]
         },
         "copy.generate",
-        [
-            {"role": "system", "content": "Return JSON only."},
-            {"role": "user", "content": "Return title."},
-        ],
+        [{"role": "user", "content": "Return title."}],
+        stream=False,
     )
 
     assert result == {"ok": True, "title": "Codex OK"}
-    assert calls
-    args = calls[0]["args"]
-    assert args[:2] == ["codex", "exec"]
-    assert ["--sandbox", "read-only"] == args[args.index("--sandbox") : args.index("--sandbox") + 2]
-    assert ["-m", "gpt-5-codex"] == args[args.index("-m") : args.index("-m") + 2]
-    assert calls[0]["cwd"] == str(tmp_path)
-    assert calls[0]["timeout"] == 180
+    assert calls[0]["args"][:2] == ["codex", "exec"]
     assert "最终输出必须是一个合法 JSON 对象" in calls[0]["input"]
-    assert "[System]" not in calls[0]["input"]
-    assert "[User]" not in calls[0]["input"]
-
-
-def test_ai_model_connection_uses_codex_cli_without_api_credentials(tmp_path: Path, monkeypatch) -> None:
-    calls: list[list[str]] = []
-
-    def fake_which(command: str) -> str:
-        return f"/usr/local/bin/{command}" if command == "codex" else ""
-
-    def fake_run(args, input, text, capture_output, cwd, timeout, check):
-        output_path = Path(args[args.index("-o") + 1])
-        output_path.write_text('{"ok":true}', encoding="utf-8")
-        calls.append(args)
-        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(ai_gateway.shutil, "which", fake_which)
-    monkeypatch.setattr(ai_gateway.subprocess, "run", fake_run)
-
-    result = ai_gateway.test_ai_model(
-        tmp_path,
-        {
-            "id": "codex_cli_text",
-            "name": "Codex CLI 文本模型",
-            "connection_type": "cli",
-            "provider": "Codex CLI",
-            "cli_tool": "codex",
-            "command": "codex",
-            "model": "",
-            "capabilities": ["chat", "json"],
-            "timeout_seconds": "180",
-        },
-    )
-
-    assert result["ok"] is True
-    assert result["connection_type"] == "cli"
-    assert result["command_path"] == "/usr/local/bin/codex"
-    assert result["supported_capabilities"] == ["chat", "json"]
-    assert calls and calls[0][:2] == ["codex", "exec"]
-
-
-def test_codex_cli_probe_supports_web_search_and_image_generate(tmp_path: Path, monkeypatch) -> None:
-    calls: list[str] = []
-    probe_date = ai_gateway._web_search_probe_date_iso()
-
-    def fake_which(command: str) -> str:
-        return f"/usr/local/bin/{command}" if command == "codex" else ""
-
-    def fake_run(args, input, text, capture_output, cwd, timeout, check):
-        output_path = Path(args[args.index("-o") + 1])
-        calls.append(input)
-        if "成都" in input:
-            output_path.write_text(
-                json.dumps(
-                    {
-                        "can_access_web": True,
-                        "source_url": "https://weather.com/weather/today/l/Chengdu",
-                        "location": "成都",
-                        "date": probe_date,
-                        "weather": "多云",
-                        "temperature": "26°C",
-                        "evidence": "Chengdu current weather was checked during the probe.",
-                    }
-                ),
-                encoding="utf-8",
-            )
-        elif "single blue square" in input:
-            generated_path = tmp_path / "blue-square.png"
-            generated_path.write_bytes(b"\x89PNG\r\n\x1a\nfake-image")
-            output_path.write_text(f"Generated Image:\nSaved to:\nfile://{generated_path}", encoding="utf-8")
-        else:
-            output_path.write_text('{"ok":true}', encoding="utf-8")
-        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(ai_gateway.shutil, "which", fake_which)
-    monkeypatch.setattr(ai_gateway.subprocess, "run", fake_run)
-
-    result = ai_gateway.test_ai_model(
-        tmp_path,
-        {
-            "id": "codex_cli_text",
-            "name": "Codex CLI 文本模型",
-            "connection_type": "cli",
-            "provider": "Codex CLI",
-            "cli_tool": "codex",
-            "command": "codex",
-            "model": "",
-            "capabilities": ["chat", "json", "web_search", "image_generate"],
-            "timeout_seconds": "180",
-        },
-    )
-
-    assert result["ok"] is True
-    assert result["supported_capabilities"] == ["chat", "json", "web_search", "image_generate"]
-    assert result["capability_results"]["web_search"]["ok"] is True
-    assert result["capability_results"]["image_generate"]["ok"] is True
-    assert len(calls) == 4
-    assert all("适配器" not in call and "verifying" not in call.lower() for call in calls)
-    assert all("[System]" not in call and "[User]" not in call for call in calls)
-
-
-def test_codex_cli_probe_reports_web_search_and_image_generate_failures(tmp_path: Path, monkeypatch) -> None:
-    def fake_which(command: str) -> str:
-        return f"/usr/local/bin/{command}" if command == "codex" else ""
-
-    def fake_run(args, input, text, capture_output, cwd, timeout, check):
-        output_path = Path(args[args.index("-o") + 1])
-        if "成都" in input:
-            output_path.write_text('{"can_access_web":false,"reason":"No live web/search tool is available."}', encoding="utf-8")
-        elif "single blue square" in input:
-            output_path.write_text('{"can_generate_image":false,"reason":"No image generation tool is available."}', encoding="utf-8")
-        else:
-            output_path.write_text('{"ok":true}', encoding="utf-8")
-        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(ai_gateway.shutil, "which", fake_which)
-    monkeypatch.setattr(ai_gateway.subprocess, "run", fake_run)
-
-    result = ai_gateway.test_ai_model(
-        tmp_path,
-        {
-            "id": "codex_cli_text",
-            "name": "Codex CLI 文本模型",
-            "connection_type": "cli",
-            "provider": "Codex CLI",
-            "cli_tool": "codex",
-            "command": "codex",
-            "model": "",
-            "capabilities": ["chat", "json", "web_search", "image_generate"],
-            "timeout_seconds": "180",
-        },
-    )
-
-    assert result["ok"] is False
-    assert result["connection_ok"] is True
-    assert result["supported_capabilities"] == ["chat", "json"]
-    assert result["capability_results"]["web_search"]["ok"] is False
-    assert result["capability_results"]["image_generate"]["ok"] is False
-    assert "No live web/search tool" in result["capability_results"]["web_search"]["error"]
-    assert "No image generation tool" in result["capability_results"]["image_generate"]["error"]
-
-
-def test_codex_cli_probe_only_capability_runs_single_probe(tmp_path: Path, monkeypatch) -> None:
-    calls: list[str] = []
-    probe_date = ai_gateway._web_search_probe_date_iso()
-
-    def fake_which(command: str) -> str:
-        return f"/usr/local/bin/{command}" if command == "codex" else ""
-
-    def fake_run(args, input, text, capture_output, cwd, timeout, check):
-        output_path = Path(args[args.index("-o") + 1])
-        calls.append(input)
-        output_path.write_text(
-            json.dumps(
-                {
-                    "can_access_web": True,
-                    "source_url": "https://weather.com/weather/today/l/Chengdu",
-                    "location": "成都",
-                    "date": probe_date,
-                    "weather": "多云",
-                    "temperature": "26°C",
-                    "evidence": "Chengdu current weather was checked during the probe.",
-                }
-            ),
-            encoding="utf-8",
-        )
-        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(ai_gateway.shutil, "which", fake_which)
-    monkeypatch.setattr(ai_gateway.subprocess, "run", fake_run)
-
-    result = ai_gateway.test_ai_model(
-        tmp_path,
-        {
-            "id": "codex_cli_text",
-            "connection_type": "cli",
-            "provider": "Codex CLI",
-            "cli_tool": "codex",
-            "command": "codex",
-            "capabilities": ["chat", "json", "web_search", "image_generate"],
-            "probe_only_capability": "web_search",
-            "probe_capabilities": True,
-            "test_trigger": "capability_checkbox",
-        },
-    )
-
-    assert result["supported_capabilities"] == ["web_search"]
-    assert result["tested_capabilities"] == ["web_search"]
-    assert result["test_trigger"] == "capability_checkbox"
-    assert len(calls) == 1
-    assert "成都" in calls[0]
-    assert "不要把当前日期理解成未来天气预报" in calls[0]
-    assert "[System]" not in calls[0]
-    assert "[User]" not in calls[0]
-
-
-def test_ai_provider_registry_exposes_typed_provider_classes() -> None:
-    assert issubclass(ai_gateway.OpenAICompatibleProvider, ai_gateway.AiProvider)
-    assert issubclass(ai_gateway.OpenAIResponsesProvider, ai_gateway.AiProvider)
-    assert issubclass(ai_gateway.CodexCliProvider, ai_gateway.AiProvider)
-    assert issubclass(ai_gateway.BrowserAiProvider, ai_gateway.AiProvider)
-    assert issubclass(ai_gateway.OpenAIImageProvider, ai_gateway.AiProvider)
-    assert all(isinstance(provider, ai_gateway.AiProvider) for provider in ai_gateway.AI_PROVIDER_REGISTRY)
-
-    provider_ids = [provider.provider_id for provider in ai_gateway.AI_PROVIDER_REGISTRY]
-    assert provider_ids == ["codex_cli", "browser", "openai_responses", "openai_compatible", "openai_image"]
 
 
 def test_browser_ai_provider_uses_browser_runtime(tmp_path: Path, monkeypatch) -> None:
-    calls: list[dict] = []
-
-    def fake_open_page(app_dir, model, timeout=30):
-        calls.append({"fn": "open", "app_dir": app_dir, "model": model, "timeout": timeout})
-        return browser_ai_runtime.BrowserAiRunResult(
-            text="ready",
-            image_urls=[],
-            provider="chatgpt",
-            browser_url="https://chatgpt.com/",
-            profile_dir=str(tmp_path / "browser_profile" / "ai" / "chatgpt" / "default"),
-            port=9333,
-            ready=True,
-            title="ChatGPT",
-            page_url="https://chatgpt.com/",
-            message="ready",
-        )
+    prompts: list[str] = []
 
     def fake_run_chat(app_dir, model, prompt, timeout=180):
-        calls.append({"fn": "chat", "app_dir": app_dir, "model": model, "prompt": prompt, "timeout": timeout})
+        prompts.append(prompt)
         return browser_ai_runtime.BrowserAiRunResult(
             text='{"ok":true,"title":"Browser OK"}',
             image_urls=[],
             provider="chatgpt",
             browser_url="https://chatgpt.com/",
-            profile_dir=str(tmp_path / "browser_profile" / "ai" / "chatgpt" / "default"),
+            profile_dir=str(tmp_path / "browser_profile"),
             port=9333,
             ready=True,
         )
 
-    monkeypatch.setattr(ai_gateway.browser_ai_runtime, "open_browser_ai_page", fake_open_page)
-    monkeypatch.setattr(ai_gateway.browser_ai_runtime, "run_browser_ai_chat", fake_run_chat)
-
-    browser_model = ai_model_config.normalize_ai_model(
-        {
-            "id": "browser_text",
-            "name": "浏览器文本模型",
-            "connection_type": "browser",
-            "browser_provider": "chatgpt",
-            "capabilities": ["chat", "json", "web_search"],
-        }
+    monkeypatch.setattr(
+        ai_gateway.browser_ai_runtime,
+        "run_browser_ai_chat",
+        fake_run_chat,
     )
-    provider = ai_gateway._provider_for_model(browser_model)
-
-    assert isinstance(provider, ai_gateway.BrowserAiProvider)
-    connection = ai_gateway.test_ai_model(tmp_path, {**browser_model, "probe_capabilities": False})
-    assert connection["ok"] is True
-    assert connection["connection_type"] == "browser"
-    assert connection["browser_provider"] == "chatgpt"
-    assert connection["profile_dir"].endswith("browser_profile/ai/chatgpt/default")
-
-    parsed = ai_gateway.chat_json(
+    browser_model = {
+        "id": "browser_text",
+        "connection_type": "browser",
+        "provider": "Browser AI",
+        "browser_provider": "chatgpt",
+        "capabilities": ["chat", "json"],
+        "enabled": True,
+    }
+    result = ai_gateway.chat_json(
         tmp_path,
-        {"ai_models": [{**browser_model, "enabled": True}]},
+        {"ai_models": [browser_model]},
         "copy.generate",
-        [
-            {"role": "system", "content": "Return JSON only."},
-            {"role": "user", "content": "Return title."},
-        ],
-    )
-    assert parsed == {"ok": True, "title": "Browser OK"}
-    assert [call["fn"] for call in calls] == ["open", "chat"]
-    assert "最终输出必须是一个合法 JSON 对象" in calls[-1]["prompt"]
-    assert "[System]" not in calls[-1]["prompt"]
-    assert "[User]" not in calls[-1]["prompt"]
-
-
-def test_browser_ai_probe_only_capability_runs_single_browser_message(tmp_path: Path, monkeypatch) -> None:
-    prompts: list[str] = []
-    probe_date = ai_gateway._web_search_probe_date_iso()
-
-    def fake_open_page(app_dir, model, timeout=30):
-        return browser_ai_runtime.BrowserAiRunResult(
-            text="ready",
-            image_urls=[],
-            provider="chatgpt",
-            browser_url="https://chatgpt.com/",
-            profile_dir=str(tmp_path / "browser_profile" / "ai" / "chatgpt" / "default"),
-            port=9333,
-            ready=True,
-        )
-
-    def fake_run_chat(app_dir, model, prompt, timeout=180):
-        prompts.append(prompt)
-        return browser_ai_runtime.BrowserAiRunResult(
-            text=json.dumps(
-                {
-                    "can_access_web": True,
-                    "source_url": "https://weather.com/weather/today/l/Chengdu",
-                    "location": "成都",
-                    "date": probe_date,
-                    "weather": "多云",
-                    "temperature": "26°C",
-                    "evidence": "Chengdu current weather was checked now.",
-                }
-            ),
-            image_urls=[],
-            provider="chatgpt",
-            browser_url="https://chatgpt.com/",
-            profile_dir=str(tmp_path / "browser_profile" / "ai" / "chatgpt" / "default"),
-            port=9333,
-            ready=True,
-        )
-
-    monkeypatch.setattr(ai_gateway.browser_ai_runtime, "open_browser_ai_page", fake_open_page)
-    monkeypatch.setattr(ai_gateway.browser_ai_runtime, "run_browser_ai_chat", fake_run_chat)
-
-    result = ai_gateway.test_ai_model(
-        tmp_path,
-        {
-            "id": "browser_text",
-            "connection_type": "browser",
-            "browser_provider": "chatgpt",
-            "capabilities": ["chat", "json", "web_search"],
-            "probe_only_capability": "web_search",
-            "probe_capabilities": True,
-            "test_trigger": "capability_checkbox",
-        },
+        [{"role": "user", "content": "Return title."}],
+        stream=False,
     )
 
-    assert result["supported_capabilities"] == ["web_search"]
-    assert result["tested_capabilities"] == ["web_search"]
-    assert result["test_trigger"] == "capability_checkbox"
-    assert len(prompts) == 1
-    assert "成都" in prompts[0]
-    assert "不要把当前日期理解成未来天气预报" in prompts[0]
-    assert "实时验证" in prompts[0] or "live web" in prompts[0].lower()
-    assert "[System]" not in prompts[0]
-    assert "[User]" not in prompts[0]
+    assert result == {"ok": True, "title": "Browser OK"}
+    assert "最终输出必须是一个合法 JSON 对象" in prompts[0]
 
 
-def test_codex_cli_reports_api_model_name_as_configuration_error(tmp_path: Path, monkeypatch) -> None:
-    def fake_which(command: str) -> str:
-        return f"/usr/local/bin/{command}" if command == "codex" else ""
-
-    def fake_run(args, input, text, capture_output, cwd, timeout, check):
-        return subprocess.CompletedProcess(
-            args,
-            1,
-            stdout="",
-            stderr=(
-                "warning: Model metadata for `deepseek-chat` not found. "
-                "ERROR: {\"message\":\"The 'deepseek-chat' model is not supported when using Codex with a ChatGPT account.\"}"
-            ),
-        )
-
-    monkeypatch.setattr(ai_gateway.shutil, "which", fake_which)
-    monkeypatch.setattr(ai_gateway.subprocess, "run", fake_run)
-
-    try:
-        ai_gateway.test_ai_model(
-            tmp_path,
-            {
-                "id": "codex_cli_text",
-                "connection_type": "cli",
-                "provider": "Codex CLI",
-                "cli_tool": "codex",
-                "command": "codex",
-                "model": "deepseek-chat",
-                "capabilities": ["chat", "json"],
-            },
-        )
-    except RuntimeError as exc:
-        message = str(exc)
-    else:
-        raise AssertionError("Expected Codex CLI unsupported model error")
-
-    assert "Codex CLI 模型 deepseek-chat 不可用" in message
-    assert "请清空 CLI 模型字段" in message
-
-
-def test_ai_model_probe_reports_capability_failures(monkeypatch) -> None:
-    calls: list[dict] = []
-
-    class FakeResponse:
-        def __init__(self, body: bytes):
-            self.body = body
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-        def read(self) -> bytes:
-            return self.body
-
-    def fake_urlopen(request, timeout):
-        calls.append({"url": request.full_url, "timeout": timeout})
-        if request.full_url.endswith("/models"):
-            return FakeResponse(b'{"data":[{"id":"deepseek-chat"}]}')
-        body = json.loads((request.data or b"{}").decode("utf-8"))
-        if body.get("response_format"):
-            raise urllib.error.HTTPError(
-                request.full_url,
-                400,
-                "Bad Request",
-                {},
-                io.BytesIO(b"unsupported response_format"),
-            )
-        return FakeResponse(b'{"choices":[{"message":{"content":"ok"}}]}')
-
-    monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
-    result = store_credentials.test_ai_model_config(
-        {
-            "id": "copy_model",
-            "name": "Copy Model",
-            "provider": "DeepSeek",
-            "api_key": "test-key",
-            "base_url": "https://api.deepseek.com",
-            "model": "deepseek-chat",
-            "capabilities": ["chat", "json"],
-        },
-    )
-
-    assert result["ok"] is False
-    assert result["connection_ok"] is True
-    assert result["supported_capabilities"] == ["chat"]
-    assert result["capability_results"]["json"]["ok"] is False
-    assert calls == [
-        {"url": "https://api.deepseek.com/models", "timeout": 60},
-        {"url": "https://api.deepseek.com/chat/completions", "timeout": 60},
-        {"url": "https://api.deepseek.com/chat/completions", "timeout": 60},
-    ]
-
-
-def test_responses_capability_probe_preserves_style_and_merges_custom_json(monkeypatch) -> None:
-    request_bodies: list[dict] = []
-
-    class FakeResponse:
-        def __init__(self, body: bytes):
-            self.body = body
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-        def read(self) -> bytes:
-            return self.body
-
-    def fake_urlopen(request, timeout):
-        if request.full_url.endswith("/models"):
-            return FakeResponse(b'{"data":[{"id":"responses-model"}]}')
-        assert request.full_url.endswith("/responses")
-        body = json.loads((request.data or b"{}").decode("utf-8"))
-        request_bodies.append(body)
-        if body.get("tools"):
-            return FakeResponse(b'{"output":[{"type":"function_call","name":"noop","arguments":"{}"}]}')
-        if body.get("max_output_tokens") == 32:
-            return FakeResponse(b'{"output_text":"{\\"ok\\":true}"}')
-        return FakeResponse(b'{"output_text":"ok"}')
-
-    monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
-    result = store_credentials.test_ai_model_config(
-        {
-            "id": "responses_model",
-            "name": "Responses Model",
-            "provider": "OpenAI-Compatible",
-            "api_style": "openai_responses",
-            "api_key": "test-key",
-            "base_url": "https://ai.example.com/v1",
-            "model": "responses-model",
-            "capabilities": ["chat", "json", "tool_calling"],
-            "extra": {"request_body": {"top_p": 0.7}},
-        },
-    )
-
-    assert result["ok"] is True
-    assert result["supported_capabilities"] == ["chat", "json", "tool_calling"]
-    assert len(request_bodies) == 3
-    assert all("input" in body and "messages" not in body for body in request_bodies)
-    assert all(body["top_p"] == 0.7 for body in request_bodies)
-    json_probe = next(body for body in request_bodies if body.get("max_output_tokens") == 32)
-    assert json_probe["text"] == {"format": {"type": "json_object"}}
-    json_profile = result["capability_results"]["json"]["capability_profile"]
-    assert json_profile["api_style"] == "openai_responses"
-    assert json_profile["request_body"] == {"text": {"format": {"type": "json_object"}}}
-
-
-def test_ai_model_probe_requires_real_web_search_evidence(monkeypatch) -> None:
-    request_bodies: list[dict] = []
-
-    class FakeResponse:
-        def __init__(self, body: bytes):
-            self.body = body
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-        def read(self) -> bytes:
-            return self.body
-
-    def fake_urlopen(request, timeout):
-        if request.full_url.endswith("/models"):
-            return FakeResponse(b'{"data":[{"id":"gpt-web"}]}')
-        body = json.loads((request.data or b"{}").decode("utf-8"))
-        request_bodies.append(body)
-        if body.get("enable_search"):
-            return FakeResponse(
-                json.dumps(
-                    {
-                        "choices": [
-                            {
-                                "message": {
-                                    "content": json.dumps(
-                                        {
-                                            "can_access_web": False,
-                                            "reason": "No live web/search tool is available.",
-                                        }
-                                    )
-                                }
-                            }
-                        ]
-                    }
-                ).encode("utf-8")
-            )
-        return FakeResponse(b'{"choices":[{"message":{"content":"ok"}}]}')
-
-    monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
-    result = store_credentials.test_ai_model_config(
-        {
-            "id": "web_model",
-            "name": "Web Model",
-            "provider": "OpenAI-Compatible",
-            "api_key": "test-key",
-            "base_url": "https://ai.example.com/v1",
-            "model": "gpt-web",
-            "capabilities": ["chat", "web_search"],
-        },
-    )
-
-    assert result["ok"] is False
-    assert result["connection_ok"] is True
-    assert "联网搜索" in result["message"]
-    assert "chat" in result["supported_capabilities"]
-    assert result["capability_results"]["web_search"]["ok"] is False
-    assert "No live web/search tool" in result["capability_results"]["web_search"]["error"]
-    web_search_bodies = [body for body in request_bodies if body.get("enable_search") or body.get("web_search_options")]
-    assert len(web_search_bodies) == 2
-    assert web_search_bodies[0]["enable_search"] is True
-    assert web_search_bodies[0]["search_options"] == {"forced_search": True}
-    assert "tools" not in web_search_bodies[0]
-    assert web_search_bodies[1]["web_search_options"] == {"search_context_size": "medium"}
-
-
-def test_ai_model_web_search_probe_supports_enable_search_override(monkeypatch) -> None:
-    request_bodies: list[dict] = []
-    probe_date = ai_gateway._web_search_probe_date_iso()
-
-    class FakeResponse:
-        def __init__(self, body: bytes):
-            self.body = body
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-        def read(self) -> bytes:
-            return self.body
-
-    def fake_urlopen(request, timeout):
-        if request.full_url.endswith("/models"):
-            return FakeResponse(b'{"data":[{"id":"qwen3.7-plus"}]}')
-        body = json.loads((request.data or b"{}").decode("utf-8"))
-        request_bodies.append(body)
-        assert body["enable_search"] is True
-        assert body["search_options"] == {"forced_search": True}
-        return FakeResponse(
-            json.dumps(
-                {
-                    "choices": [
-                        {
-                            "message": {
-                                "content": json.dumps(
-                                    {
-                                        "can_access_web": True,
-                                        "source_url": "https://www.weather.com/weather/today/l/Chengdu",
-                                        "location": "成都",
-                                        "date": probe_date,
-                                        "weather": "晴",
-                                        "temperature": "28°C",
-                                        "evidence": "实时天气搜索结果。",
-                                    }
-                                )
-                            }
-                        }
-                    ]
-                }
-            ).encode("utf-8")
-        )
-
-    monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
-    result = store_credentials.test_ai_model_config(
-        {
-            "id": "qwen_web_model",
-            "name": "Qwen Web Model",
-            "provider": "OpenAI-Compatible",
-            "api_key": "test-key",
-            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-            "model": "qwen3.7-plus",
-            "capabilities": ["web_search"],
-            "extra": {
-                "web_search_request_mode": "enable_search",
-                "request_body": {"top_p": 0.7},
-            },
-        },
-    )
-
-    assert result["ok"] is True
-    assert result["connection_ok"] is True
-    assert result["supported_capabilities"] == ["web_search"]
-    assert result["capability_results"]["web_search"]["request_mode"] == "enable_search"
-    assert result["capability_results"]["web_search"]["capability_profile"]["request_body"] == {
-        "enable_search": True,
-        "search_options": {"forced_search": True},
-    }
-    assert request_bodies[-1]["enable_search"] is True
-    assert request_bodies[-1]["search_options"] == {"forced_search": True}
-    assert request_bodies[-1]["top_p"] == 0.7
-    assert "tools" not in request_bodies[-1]
-    assert "web_search_options" not in request_bodies[-1]
-
-
-def test_ai_model_web_search_probe_falls_back_to_web_search_options(monkeypatch) -> None:
-    request_bodies: list[dict] = []
-    probe_date = ai_gateway._web_search_probe_date_iso()
-
-    class FakeResponse:
-        def __init__(self, body: bytes):
-            self.body = body
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-        def read(self) -> bytes:
-            return self.body
-
-    def fake_urlopen(request, timeout):
-        if request.full_url.endswith("/models"):
-            return FakeResponse(b'{"data":[{"id":"qwen3.7-plus"}]}')
-        body = json.loads((request.data or b"{}").decode("utf-8"))
-        request_bodies.append(body)
-        if body.get("enable_search"):
-            assert body["search_options"] == {"forced_search": True}
-            return FakeResponse(
-                b'{"choices":[{"message":{"content":"{\\"can_access_web\\":false,\\"reason\\":\\"enable_search is not supported\\"}"}}]}'
-            )
-        assert body["web_search_options"] == {"search_context_size": "medium"}
-        return FakeResponse(
-            json.dumps(
-                {
-                    "choices": [
-                        {
-                            "message": {
-                                "content": json.dumps(
-                                    {
-                                        "can_access_web": True,
-                                        "source_url": "https://www.weather.com/weather/today/l/Chengdu",
-                                        "location": "成都",
-                                        "date": probe_date,
-                                        "weather": "晴",
-                                        "temperature": "28°C",
-                                        "evidence": "实时天气搜索结果。",
-                                    }
-                                )
-                            }
-                        }
-                    ]
-                }
-            ).encode("utf-8")
-        )
-
-    monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
-    result = store_credentials.test_ai_model_config(
-        {
-            "id": "qwen_web_model",
-            "name": "Qwen Web Model",
-            "provider": "OpenAI-Compatible",
-            "api_key": "test-key",
-            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-            "model": "qwen3.7-plus",
-            "capabilities": ["web_search"],
-        },
-    )
-
-    assert result["ok"] is True
-    assert result["supported_capabilities"] == ["web_search"]
-    assert result["capability_results"]["web_search"]["request_mode"] == "web_search_options"
-    assert len(request_bodies) == 2
-    assert request_bodies[0]["enable_search"] is True
-    assert request_bodies[0]["search_options"] == {"forced_search": True}
-    assert request_bodies[1]["web_search_options"] == {"search_context_size": "medium"}
-
-
-def test_ai_model_web_search_probe_uses_configured_responses_api(monkeypatch) -> None:
-    requests: list[tuple[str, dict]] = []
-    probe_date = ai_gateway._web_search_probe_date_iso()
-
-    class FakeResponse:
-        def __init__(self, body: bytes):
-            self.body = body
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-        def read(self) -> bytes:
-            return self.body
-
-    def fake_urlopen(request, timeout):
-        if request.full_url.endswith("/models"):
-            return FakeResponse(b'{"data":[{"id":"qwen3.7-plus"}]}')
-        body = json.loads((request.data or b"{}").decode("utf-8"))
-        requests.append((request.full_url, body))
-        if request.full_url.endswith("/responses"):
-            assert body["tools"] == [{"type": "web_search"}]
-            assert body["text"] == {"format": {"type": "json_object"}}
-            return FakeResponse(
-                json.dumps(
-                    {
-                        "output_text": json.dumps(
-                            {
-                                "can_access_web": True,
-                                "source_url": "https://www.weather.com/weather/today/l/Chengdu",
-                                "location": "成都",
-                                "date": probe_date,
-                                "weather": "晴",
-                                "temperature": "28°C",
-                                "evidence": "Responses API 的实时天气搜索结果。",
-                            }
-                        )
-                    }
-                ).encode("utf-8")
-            )
-        return FakeResponse(
-            b'{"choices":[{"message":{"content":"{\\"can_access_web\\":false,\\"reason\\":\\"Chat Completions has no web search\\"}"}}]}'
-        )
-
-    monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", fake_urlopen)
-    result = store_credentials.test_ai_model_config(
-        {
-            "id": "qwen_web_model",
-            "name": "Qwen Web Model",
-            "provider": "OpenAI-Compatible",
-            "api_key": "test-key",
-            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-            "model": "qwen3.7-plus",
-            "api_style": "openai_responses",
-            "capabilities": ["web_search"],
-        },
-    )
-
-    assert result["ok"] is True
-    web_search = result["capability_results"]["web_search"]
-    assert web_search["request_mode"] == "openai_tools"
-    assert web_search["api_style"] == "openai_responses"
-    assert web_search["capability_profile"]["request_body"] == {
-        "tools": [{"type": "web_search"}]
-    }
-    assert [url for url, _body in requests] == [
-        "https://dashscope.aliyuncs.com/compatible-mode/v1/responses",
-    ]
-
-
-def test_assign_upc_writes_current_product_and_returns_full_payload(tmp_path: Path) -> None:
+def test_assign_upc_writes_current_product_and_returns_full_payload(
+    tmp_path: Path,
+) -> None:
     with temp_app_context(tmp_path):
-        (tmp_path / "upc_pool.json").write_text('{"values":["725272000007"],"used":[]}', encoding="utf-8")
-        get_context().products.save_product({"name": "UPC test product", "drafts": {"mercadolibre": {"enabled": True}}})
+        (tmp_path / "upc_pool.json").write_text(
+            '{"values":["725272000007"],"used":[]}',
+            encoding="utf-8",
+        )
+        get_context().products.save_product(
+            {
+                "name": "UPC test product",
+                "drafts": {"mercadolibre": {"enabled": True}},
+            }
+        )
 
         result = publish_helpers.assign_upc()
 

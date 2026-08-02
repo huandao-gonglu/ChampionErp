@@ -44,14 +44,23 @@ const businessResult = computed(() => {
 const liveStatus = computed<AiWorkConversationSummary['status']>(() => {
   if (latestEvents.value.some((event) => event.type === 'RUN_ERROR')) return 'failed'
   if (latestEvents.value.some((event) => event.type === 'RUN_FINISHED')) return 'completed'
+  if (latestEvents.value.some((event) => event.type === 'RUN_DEFERRED')) return 'waiting_approval'
   return latestConversation.value?.status || 'running'
 })
-const isTerminal = computed(() => ['completed', 'failed', 'interrupted'].includes(liveStatus.value))
+const isTerminal = computed(() => ['waiting_approval', 'completed', 'failed', 'interrupted'].includes(liveStatus.value))
 const progressText = computed(() => {
   if (runError.value) return runError.value.message || 'AI 执行失败'
+  if (liveStatus.value === 'waiting_approval') return '工具调用正在等待人工审批。'
   if (assistantOutput.value) return assistantOutput.value
   if (businessResult.value !== undefined) return pretty(businessResult.value)
-  if (latestEvents.value.some((event) => event.type === 'CUSTOM' && event.name === 'provider.request')) {
+  if (latestEvents.value.some((event) => (
+    event.type === 'CUSTOM'
+    && (
+      event.name === 'provider.request'
+      || event.name === 'capability_probe.request'
+      || event.name === 'agent.request'
+    )
+  ))) {
     return '请求已发送，正在等待 Provider 返回……'
   }
   return loading.value ? '正在读取最新对话……' : '正在准备 Provider 请求……'
@@ -68,6 +77,7 @@ function pretty(value: unknown): string {
 function statusText(status: AiWorkConversationSummary['status']): string {
   return {
     running: '进行中',
+    waiting_approval: '等待审批',
     completed: '已完成',
     failed: '失败',
     interrupted: '已中断',
@@ -76,6 +86,7 @@ function statusText(status: AiWorkConversationSummary['status']): string {
 
 function statusClass(status: AiWorkConversationSummary['status']): string {
   if (status === 'running') return 'bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-200'
+  if (status === 'waiting_approval') return 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-200'
   if (status === 'completed') return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200'
   return 'bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-200'
 }
@@ -84,6 +95,13 @@ function formatTime(value: string): string {
   if (!value) return ''
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+}
+
+function conversationTitle(conversation: AiWorkConversationSummary): string {
+  if (conversation.use_case_id === 'config.ai_model_probe') {
+    return `能力探测 · ${conversation.capability || '未知能力'}`
+  }
+  return conversation.use_case_id || conversation.capability
 }
 
 async function pollConversation(conversationId: string, generation: number) {
@@ -174,7 +192,7 @@ onBeforeUnmount(closePanel)
             最新 AI 对话
           </p>
           <p v-if="latestConversation" class="mt-1 max-w-[230px] truncate text-sm font-bold">
-            {{ latestConversation.use_case_id || latestConversation.capability }}
+            {{ conversationTitle(latestConversation) }}
           </p>
         </div>
         <span

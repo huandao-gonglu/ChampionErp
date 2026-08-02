@@ -31,6 +31,14 @@ def test_default_env_template_and_public_config(app_dir: Path, old_path_markers:
     assert "copy.generate" in {item["id"] for item in public["ai_use_cases"]}
     assert "model_quality_levels" not in public
     assert public["image_quality_options"] == ["auto", "low", "medium", "high"]
+    assert {item["id"] for item in public["providers"]} == {
+        "openai",
+        "deepseek",
+        "alibaba",
+    }
+    assert all(item["supported_api_styles"] for item in public["providers"])
+    assert all(item["model_discovery"] in {"openai_models", "manual"} for item in public["providers"])
+    assert all("generation_capabilities" in model for model in public["ai_models"])
     assert "copy.generate" in public["ai_use_case_prompts"]
     assert "research.web_search" in public["ai_use_case_prompts"]
     assert public["ai_use_case_prompts"]["copy.generate"]["user_prompt"]
@@ -48,6 +56,7 @@ def test_merge_config_reads_key_from_config_not_code(app_dir: Path) -> None:
                 {
                     "id": "copy_model",
                     "provider": "DeepSeek",
+                    "provider_id": "deepseek",
                     "api_key": "test-key",
                     "base_url": "https://api.deepseek.com",
                     "model": "deepseek-chat",
@@ -61,6 +70,91 @@ def test_merge_config_reads_key_from_config_not_code(app_dir: Path) -> None:
 
     assert cfg["api_key"] == "test-key"
     assert cfg["model"] == "deepseek-chat"
+
+
+def test_ai_model_config_requires_explicit_provider_id() -> None:
+    legacy = ai_model_config.normalize_ai_model(
+        {
+            "id": "legacy-deepseek",
+            "provider": "DeepSeek",
+            "provider_family": "generic_openai",
+            "model": "deepseek-chat",
+        }
+    )
+    qwen = ai_model_config.normalize_ai_model(
+        {
+            "id": "qwen",
+            "provider_id": "alibaba",
+            "model": "qwen-plus",
+        }
+    )
+
+    assert legacy["provider_id"] == ""
+    assert legacy["provider"] == ""
+    assert legacy["base_url"] == ""
+    assert qwen["provider_id"] == "alibaba"
+    assert qwen["provider"] == "阿里云百炼 / Qwen"
+    assert qwen["base_url"] == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    assert "provider_family" not in legacy
+    assert "provider_family" not in qwen
+
+
+def test_merge_ai_config_rejects_provider_outside_catalog(app_dir: Path) -> None:
+    with pytest.raises(ValueError, match="未接入的 AI Provider"):
+        config_service.merge_ai_config(
+            app_dir,
+            {},
+            {
+                "ai_models": [
+                    {
+                        "id": "unknown-provider",
+                        "provider_id": "made_up_provider",
+                        "base_url": "https://models.example.invalid/v1",
+                        "model": "model",
+                        "capabilities": ["chat"],
+                    }
+                ]
+            },
+        )
+
+
+def test_merge_ai_config_rejects_api_model_without_provider_id(app_dir: Path) -> None:
+    with pytest.raises(ValueError, match="未接入的 AI Provider：empty"):
+        config_service.merge_ai_config(
+            app_dir,
+            {},
+            {
+                "ai_models": [
+                    {
+                        "id": "legacy-provider-fields",
+                        "provider": "OpenAI-Compatible",
+                        "provider_family": "generic_openai",
+                        "base_url": "https://models.example.invalid/v1",
+                        "model": "example-model",
+                        "capabilities": ["chat"],
+                    }
+                ]
+            },
+        )
+
+
+def test_merge_ai_config_rejects_unsupported_provider_protocol(app_dir: Path) -> None:
+    with pytest.raises(ValueError, match="不支持 API 协议 openai_responses"):
+        config_service.merge_ai_config(
+            app_dir,
+            {},
+            {
+                "ai_models": [
+                    {
+                        "id": "deepseek-responses",
+                        "provider_id": "deepseek",
+                        "api_style": "openai_responses",
+                        "model": "deepseek-chat",
+                        "capabilities": ["chat"],
+                    }
+                ]
+            },
+        )
 
 
 def test_ai_use_case_binding_keeps_timeout_override_and_legacy_model_id() -> None:
@@ -79,6 +173,56 @@ def test_ai_use_case_binding_keeps_timeout_override_and_legacy_model_id() -> Non
         "timeout_override_seconds": 125,
     }
     assert bindings["category.attribute_fill"] == {"model_id": "category_model"}
+
+
+def test_ai_use_case_binding_normalizes_generation_overrides() -> None:
+    bindings = ai_model_config.normalize_ai_use_case_bindings(
+        {
+            "category.attribute_translation": {
+                "model_id": "qwen_model",
+                "generation": {
+                    "temperature": "0",
+                    "max_output_tokens": "3000",
+                    "reasoning": {"mode": "disabled"},
+                },
+            }
+        }
+    )
+
+    assert bindings["category.attribute_translation"] == {
+        "model_id": "qwen_model",
+        "generation": {
+            "temperature": 0.0,
+            "max_output_tokens": 3000,
+            "reasoning": {"mode": "disabled"},
+        },
+    }
+
+
+def test_merge_ai_config_rejects_reasoning_for_unmapped_deepseek_profile(app_dir: Path) -> None:
+    with pytest.raises(ValueError, match="无法安全转换推理参数"):
+        config_service.merge_ai_config(
+            app_dir,
+            {},
+            {
+                "ai_models": [
+                    {
+                        "id": "deepseek_model",
+                        "connection_type": "api",
+                        "provider": "DeepSeek",
+                        "provider_id": "deepseek",
+                        "model": "deepseek-reasoner",
+                        "capabilities": ["chat", "json"],
+                    }
+                ],
+                "ai_use_case_bindings": {
+                    "category.attribute_translation": {
+                        "model_id": "deepseek_model",
+                        "generation": {"reasoning": {"mode": "disabled"}},
+                    }
+                },
+            },
+        )
 
 
 def test_merge_config_writes_ai_use_case_prompt_files(tmp_path: Path) -> None:
@@ -121,6 +265,7 @@ def test_merge_config_preserves_existing_model_key_when_public_payload_is_blank(
             {
                 "id": "copy_model",
                 "provider": "DeepSeek",
+                "provider_id": "deepseek",
                 "api_key": "saved-key",
                 "base_url": "https://api.deepseek.com",
                 "model": "deepseek-chat",
@@ -136,6 +281,7 @@ def test_merge_config_preserves_existing_model_key_when_public_payload_is_blank(
                 {
                     "id": "copy_model",
                     "provider": "DeepSeek",
+                    "provider_id": "deepseek",
                     "api_key": "",
                     "base_url": "https://api.deepseek.com",
                     "model": "deepseek-chat",
@@ -287,12 +433,14 @@ def test_normalize_ai_model_does_not_inherit_positional_defaults() -> None:
     )
 
     assert models[0]["id"] == "custom_text"
-    assert models[0]["provider"] == "OpenAI-Compatible"
+    assert models[0]["provider"] == ""
+    assert models[0]["provider_id"] == ""
     assert models[0]["base_url"] == ""
     assert models[0]["model"] == ""
     assert models[0]["model_env"] == ""
     assert models[1]["id"] == "custom_image"
-    assert models[1]["provider"] == "OpenAI-Compatible"
+    assert models[1]["provider"] == ""
+    assert models[1]["provider_id"] == ""
     assert models[1]["base_url"] == ""
     assert models[1]["model"] == ""
     assert "quality_level" not in models[1]
@@ -310,7 +458,7 @@ def test_normalize_ai_model_keeps_empty_capabilities_empty() -> None:
     assert model["capabilities"] == []
 
 
-def test_normalize_ai_model_keeps_tested_capability_profiles() -> None:
+def test_normalize_ai_model_keeps_strategy_profiles_without_wire_payload() -> None:
     model = ai_model_config.normalize_ai_model(
         {
             "id": "responses_model",
@@ -325,10 +473,13 @@ def test_normalize_ai_model_keeps_tested_capability_profiles() -> None:
                     "request_body": {"text": {"format": {"type": "json_object"}}},
                 },
                 "web_search": {
+                    "version": 2,
                     "tested": True,
                     "connection_type": "api",
                     "api_style": "openai_responses",
                     "request_mode": "openai_tools",
+                    "tested_at": "2026-08-02T00:00:00+00:00",
+                    "probe_version": "web_search.v2",
                     "request_body": {"tools": [{"type": "web_search"}]},
                 },
                 "unknown": {"tested": True, "request_body": {"ignored": True}},
@@ -337,10 +488,71 @@ def test_normalize_ai_model_keeps_tested_capability_profiles() -> None:
     )
 
     assert set(model["capability_profiles"]) == {"json", "web_search"}
-    assert model["capability_profiles"]["json"]["request_body"] == {
-        "text": {"format": {"type": "json_object"}}
-    }
+    assert "request_body" not in model["capability_profiles"]["json"]
+    assert "request_body" not in model["capability_profiles"]["web_search"]
     assert model["capability_profiles"]["web_search"]["request_mode"] == "openai_tools"
+    assert model["capability_profiles"]["web_search"]["version"] == 2
+    assert model["capability_profiles"]["web_search"]["probe_version"] == "web_search.v2"
+
+
+def test_normalize_ai_model_invalidates_versioned_proof_after_connection_change() -> None:
+    raw_model = {
+        "id": "fingerprinted",
+        "connection_type": "api",
+        "provider_id": "openai",
+        "base_url": "https://models.example.invalid/v1",
+        "api_key": "secret",
+        "model": "model-a",
+        "capabilities": ["chat"],
+    }
+    fingerprint = ai_model_config.model_configuration_fingerprint(
+        ai_model_config.normalize_ai_model(raw_model)
+    )
+    raw_model["capability_profiles"] = {
+        "chat": {
+            "version": 2,
+            "tested": True,
+            "configuration_fingerprint": fingerprint,
+            "probe_version": "chat.v2",
+        }
+    }
+
+    current = ai_model_config.normalize_ai_model(raw_model)
+    changed = ai_model_config.normalize_ai_model(
+        {**raw_model, "model": "model-b"}
+    )
+
+    assert current["capabilities"] == ["chat"]
+    assert "chat" in current["capability_profiles"]
+    assert current["capability_profiles"]["chat"]["configuration_fingerprint"] == fingerprint
+    assert changed["capabilities"] == []
+    assert "capability_profiles" not in changed
+
+
+def test_app_config_rejects_ai_protocol_fields_in_extra_request_body() -> None:
+    with pytest.raises(ValueError, match="不得覆盖 Pydantic 请求协议字段"):
+        app_config.normalize_app_config(
+            {
+                "ai_models": [
+                    {
+                        "id": "unsafe_model",
+                        "connection_type": "api",
+                        "provider": "OpenAI",
+                        "provider_id": "openai",
+                        "base_url": "https://api.example.com/v1",
+                        "api_key": "test-key",
+                        "model": "test-model",
+                        "capabilities": ["chat", "json"],
+                        "extra": {
+                            "request_body": {
+                                "tools": [{"type": "function"}],
+                                "stream": False,
+                            }
+                        },
+                    }
+                ]
+            }
+        )
 
 
 def test_normalize_ai_model_supports_cli_connection() -> None:
@@ -446,6 +658,7 @@ def test_merge_config_copies_saved_model_key_from_source_model(app_dir: Path) ->
             {
                 "id": "copy_model",
                 "provider": "DeepSeek",
+                "provider_id": "deepseek",
                 "api_key": "saved-key",
                 "base_url": "https://api.deepseek.com",
                 "model": "deepseek-chat",
@@ -461,6 +674,7 @@ def test_merge_config_copies_saved_model_key_from_source_model(app_dir: Path) ->
                 {
                     "id": "copy_model",
                     "provider": "DeepSeek",
+                    "provider_id": "deepseek",
                     "api_key": "",
                     "base_url": "https://api.deepseek.com",
                     "model": "deepseek-chat",
@@ -470,6 +684,7 @@ def test_merge_config_copies_saved_model_key_from_source_model(app_dir: Path) ->
                     "id": "copy_model_copy",
                     "copy_source_id": "copy_model",
                     "provider": "DeepSeek",
+                    "provider_id": "deepseek",
                     "api_key": "",
                     "base_url": "https://api.deepseek.com",
                     "model": "deepseek-reasoner",

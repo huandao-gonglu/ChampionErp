@@ -1,4 +1,4 @@
-"""AI 工具协议的稳定内部契约与轻量 JSON Schema 校验。"""
+"""ERP 工具定义、执行命令、结果与轻量 JSON Schema 校验。"""
 
 from __future__ import annotations
 
@@ -8,16 +8,14 @@ from types import MappingProxyType
 from typing import Any, Literal, Mapping, Sequence
 
 
-AI_TOOL_PROTOCOL_VERSION = "1"
 AiToolSideEffect = Literal["none", "write"]
-AiToolTurnType = Literal["tool_calls", "final"]
 _JSON_SCHEMA_TYPES = frozenset(
     {"null", "boolean", "integer", "number", "string", "array", "object"}
 )
 
 
 class AiToolSchemaError(ValueError):
-    """工具协议或工具输入输出不符合冻结契约。"""
+    """工具定义、命令或输入输出不符合冻结契约。"""
 
     def __init__(self, message: str, *, code: str = "TOOL_CALL_INVALID") -> None:
         self.code = code
@@ -94,7 +92,7 @@ def _matches_json_type(value: Any, expected: str) -> bool:
     if expected == "string":
         return isinstance(value, str)
     if expected == "array":
-        # 协议对象会把 JSON array 冻结成 tuple；它与边界上的 list 语义等价。
+        # 冻结对象会把 JSON array 收敛成 tuple；它与边界上的 list 语义等价。
         return isinstance(value, (list, tuple))
     if expected == "object":
         return isinstance(value, Mapping)
@@ -458,20 +456,16 @@ class AiToolDefinition:
 
 
 @dataclass(frozen=True)
-class AiToolCall:
+class AiToolCommand:
+    """Runtime 内部执行命令；不承担模型或 Provider 的 wire protocol。"""
+
     call_id: str
     tool_name: str
     tool_version: str
     arguments: Mapping[str, Any]
     round: int
-    protocol_version: str = AI_TOOL_PROTOCOL_VERSION
 
     def __post_init__(self) -> None:
-        if self.protocol_version != AI_TOOL_PROTOCOL_VERSION:
-            raise AiToolSchemaError(
-                f"不支持的 tool protocol_version：{self.protocol_version}",
-                code="TOOL_PROTOCOL_UNSUPPORTED",
-            )
         object.__setattr__(self, "call_id", _require_string(self.call_id, label="call.call_id"))
         object.__setattr__(
             self,
@@ -492,40 +486,10 @@ class AiToolCall:
             _freeze_json(_copy_json(arguments, label="call.arguments")),
         )
 
-    @classmethod
-    def from_dict(cls, payload: Mapping[str, Any]) -> "AiToolCall":
-        data = _require_object(payload, label="AiToolCall")
-        _require_exact_fields(
-            data,
-            required={
-                "protocol_version",
-                "call_id",
-                "tool_name",
-                "tool_version",
-                "arguments",
-                "round",
-            },
-            optional=set(),
-            label="AiToolCall",
-        )
-        return cls(
-            protocol_version=data["protocol_version"],
-            call_id=data["call_id"],
-            tool_name=data["tool_name"],
-            tool_version=data["tool_version"],
-            arguments=data["arguments"],
-            round=data["round"],
-        )
+    def arguments_dict(self) -> dict[str, Any]:
+        """向 Runtime/executor 提供可变的 JSON 参数副本。"""
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "protocol_version": self.protocol_version,
-            "call_id": self.call_id,
-            "tool_name": self.tool_name,
-            "tool_version": self.tool_version,
-            "arguments": _copy_json(self.arguments, label="call.arguments"),
-            "round": self.round,
-        }
+        return _copy_json(self.arguments, label="call.arguments")
 
 
 @dataclass(frozen=True)
@@ -621,108 +585,22 @@ class AiToolResult:
         }
 
 
-@dataclass(frozen=True)
-class AiToolTurn:
-    type: AiToolTurnType
-    calls: tuple[AiToolCall, ...] = ()
-    result: Mapping[str, Any] | None = None
-
-    def __post_init__(self) -> None:
-        calls = tuple(self.calls)
-        object.__setattr__(self, "calls", calls)
-        if self.type == "tool_calls":
-            if self.result is not None:
-                raise AiToolSchemaError("tool_calls turn 不得同时包含 final result")
-            if not calls:
-                raise AiToolSchemaError("tool_calls turn 至少需要一个 call")
-            if not all(isinstance(call, AiToolCall) for call in calls):
-                raise AiToolSchemaError("turn.calls 必须全部是 AiToolCall")
-            return
-        if self.type == "final":
-            if calls:
-                raise AiToolSchemaError("final turn 不得同时包含 tool calls")
-            result = _require_object(self.result, label="turn.result")
-            object.__setattr__(
-                self,
-                "result",
-                _freeze_json(_copy_json(result, label="turn.result")),
-            )
-            return
-        raise AiToolSchemaError(
-            f"未知 AiToolTurn type：{self.type}",
-            code="MODEL_RESPONSE_SCHEMA_INVALID",
-        )
-
-    @classmethod
-    def from_dict(cls, payload: Mapping[str, Any]) -> "AiToolTurn":
-        data = _require_object(payload, label="AiToolTurn")
-        turn_type = data.get("type")
-        if turn_type == "tool_calls":
-            _require_exact_fields(
-                data,
-                required={"type", "calls"},
-                optional=set(),
-                label="AiToolTurn",
-            )
-            raw_calls = data["calls"]
-            if not isinstance(raw_calls, list):
-                raise AiToolSchemaError("AiToolTurn.calls 必须是数组")
-            return cls(
-                type="tool_calls",
-                calls=tuple(AiToolCall.from_dict(item) for item in raw_calls),
-            )
-        if turn_type == "final":
-            _require_exact_fields(
-                data,
-                required={"type", "result"},
-                optional=set(),
-                label="AiToolTurn",
-            )
-            return cls(type="final", result=data["result"])
-        raise AiToolSchemaError(
-            f"未知 AiToolTurn type：{turn_type}",
-            code="MODEL_RESPONSE_SCHEMA_INVALID",
-        )
-
-    @classmethod
-    def final(cls, result: Mapping[str, Any]) -> "AiToolTurn":
-        return cls(type="final", result=dict(result))
-
-    def to_dict(self) -> dict[str, Any]:
-        if self.type == "tool_calls":
-            return {"type": "tool_calls", "calls": [call.to_dict() for call in self.calls]}
-        return {"type": "final", "result": _copy_json(self.result, label="turn.result")}
-
-
 def validate_ai_tool_definition(payload: Mapping[str, Any]) -> AiToolDefinition:
     return AiToolDefinition.from_dict(payload)
-
-
-def validate_ai_tool_call(payload: Mapping[str, Any]) -> AiToolCall:
-    return AiToolCall.from_dict(payload)
 
 
 def validate_ai_tool_result(payload: Mapping[str, Any]) -> AiToolResult:
     return AiToolResult.from_dict(payload)
 
 
-def validate_ai_tool_turn(payload: Mapping[str, Any]) -> AiToolTurn:
-    return AiToolTurn.from_dict(payload)
-
-
 __all__ = [
-    "AI_TOOL_PROTOCOL_VERSION",
-    "AiToolCall",
+    "AiToolCommand",
     "AiToolDefinition",
     "AiToolResult",
     "AiToolSchemaError",
     "AiToolSideEffect",
-    "AiToolTurn",
-    "AiToolTurnType",
-    "validate_ai_tool_call",
     "validate_ai_tool_definition",
     "validate_ai_tool_result",
-    "validate_ai_tool_turn",
     "validate_json_schema",
     "validate_json_schema_definition",
 ]

@@ -7,12 +7,11 @@ from typing import Any, Protocol
 
 from erp_web.schemas.ai_trace import AiExecutionContext
 
-from .ai_provider_contracts import AiProvider
 from .ai_work_service import AiWorkConversation
 
 
 class AiWorkRecorder(Protocol):
-    """Task Runner 与 Provider Adapter 共用的记录器接口。"""
+    """Pydantic Agent 与普通 Provider invocation 共用的业务记录器接口。"""
 
     @property
     def conversation_id(self) -> str:
@@ -52,14 +51,13 @@ class ConversationAiWorkRecorder:
         return self.conversation.conversation_id
 
     def record(self, event_type: str, **payload: Any) -> None:
-        # PR 1 只建立 recorder seam；新事件 union 留到 AI Work 扩展阶段。
         self.emit_custom(event_type, payload)
 
     def emit(self, event_type: str, **payload: Any) -> Any:
         return self.conversation.emit(event_type, **payload)
 
     def emit_custom(self, name: str, value: Any) -> Any:
-        return self.emit("CUSTOM", name=name, value=value)
+        return self.conversation.emit_custom(name, value)
 
     def emit_text_delta(self, delta: str) -> None:
         self.conversation.emit_text_delta(delta)
@@ -68,13 +66,20 @@ class ConversationAiWorkRecorder:
         self.conversation.finish_assistant_message(raw_text)
 
     def finish(self, result: Any) -> None:
+        self.emit_custom("business.result", result)
         self.emit("RUN_FINISHED", result=result)
 
     def fail(self, error: Exception) -> None:
+        payload = {
+            key: value
+            for key in ("trace_id", "run_id", "task_run_id")
+            if (value := str(getattr(error, key, "") or ""))
+        }
         self.emit(
             "RUN_ERROR",
             message=str(error),
             code=getattr(error, "code", error.__class__.__name__),
+            **payload,
         )
 
 
@@ -84,18 +89,21 @@ class AiInvocation:
 
     use_case_id: str
     capability: str
-    provider: AiProvider
+    provider_id: str
     model: dict[str, Any]
     required_capabilities: tuple[str, ...]
     timeout_seconds: int
     execution_context: AiExecutionContext
     recorder: AiWorkRecorder
+    generation_settings: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not self.use_case_id:
             raise ValueError("AiInvocation.use_case_id 不能为空")
         if not self.capability:
             raise ValueError("AiInvocation.capability 不能为空")
+        if not self.provider_id:
+            raise ValueError("AiInvocation.provider_id 不能为空")
         if self.timeout_seconds <= 0:
             raise ValueError("AiInvocation.timeout_seconds 必须大于 0")
         object.__setattr__(self, "model", dict(self.model))
@@ -103,6 +111,11 @@ class AiInvocation:
             self,
             "required_capabilities",
             tuple(self.required_capabilities),
+        )
+        object.__setattr__(
+            self,
+            "generation_settings",
+            dict(self.generation_settings or {}),
         )
 
 

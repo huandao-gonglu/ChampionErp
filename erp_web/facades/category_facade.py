@@ -164,8 +164,10 @@ def _category_match_http_status(result: Payload) -> int:
     code = str(failure.get("code") or "")
     if code in {"INPUT_INVALID", "TARGET_REQUIRED"}:
         return 400
-    if code in {"TOOL_PERMISSION_DENIED", "TOOL_NOT_ALLOWED"}:
+    if code in {"AI_TOOL_PERMISSION_DENIED", "TOOL_NOT_ALLOWED"}:
         return 403
+    if code == "AI_TOOL_APPROVAL_REQUIRED":
+        return 409
     if code == "CATEGORY_RATE_LIMITED":
         return 429
     if code in {
@@ -175,14 +177,21 @@ def _category_match_http_status(result: Payload) -> int:
     }:
         return 504
     if code in {
-        "TOOL_PROTOCOL_UNSUPPORTED",
         "MODEL_RESPONSE_SCHEMA_INVALID",
         "MODEL_SELECTED_UNKNOWN_CATEGORY",
         "MODEL_PROVIDER_ERROR",
+        "AI_AGENT_RUN_FAILED",
+        "AI_AGENT_USAGE_LIMIT_EXCEEDED",
         "CATEGORY_SEARCH_REQUIRED",
         "CATEGORY_SEARCH_INCOMPLETE",
     }:
         return 502
+    if code in {
+        "AI_MODEL_CONFIGURATION_INVALID",
+        "AI_MODEL_TOOL_CALLING_UNSUPPORTED",
+        "AI_MODEL_CAPABILITY_UNSUPPORTED",
+    }:
+        return 424
     if code.startswith("CATEGORY_"):
         return 424
     return 500

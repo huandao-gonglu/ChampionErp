@@ -142,9 +142,17 @@ def probe_cli_model_capabilities(
         error = f"CLI 工具 {cli_tool} 已预留，但当前版本只支持 Codex CLI。"
         return {
             "supported": [],
-            "unsupported": requested,
+            "unsupported": [],
+            "unavailable": requested,
+            "inconclusive": [],
             "results": {
-                capability: {"ok": False, "error": error}
+                capability: {
+                    "ok": False,
+                    "status": probe_runtime.PROBE_STATUS_UNAVAILABLE,
+                    "error_code": "CAPABILITY_PROBE_UNAVAILABLE",
+                    "error": error,
+                    "retryable": False,
+                }
                 for capability in requested
             },
         }
@@ -161,8 +169,6 @@ def probe_cli_model_capabilities(
 
 class CodexCliProvider(AiChatProvider):
     provider_id = "codex_cli"
-    probe_reraise_marker = "Codex CLI 模型"
-    probe_web_search_meta = False
 
     def supports(self, model: dict[str, Any], capability: str = CAPABILITY_CHAT_JSON) -> bool:
         return (
@@ -189,39 +195,77 @@ class CodexCliProvider(AiChatProvider):
         context: probe_runtime.CapabilityProbeContext,
         messages: list[dict[str, str]],
     ) -> None:
+        prompt = _cli_prompt(messages, response_format=False)
+        probe_runtime._record_probe_request(
+            context,
+            messages,
+            details={
+                "command": ai_model_config.model_cli_command(context.model),
+                "provider_payload": {"prompt": prompt},
+            },
+        )
         text = _run_codex_cli_text(
             context.app_dir or ".",
             context.model,
-            _cli_prompt(messages, response_format=False),
+            prompt,
             context.timeout,
         )
-        if not text:
-            raise RuntimeError("CLI did not return any text.")
+        probe_runtime._record_probe_output(context, text)
+        probe_runtime._validate_chat_probe_text(text, context.probe_token)
 
     def _probe_json(
         self,
         context: probe_runtime.CapabilityProbeContext,
         messages: list[dict[str, str]],
     ) -> None:
-        _cli_json_probe(
+        prompt = _cli_prompt(messages, response_format=True)
+        probe_runtime._record_probe_request(
+            context,
+            messages,
+            details={
+                "command": ai_model_config.model_cli_command(context.model),
+                "provider_payload": {"prompt": prompt},
+            },
+        )
+        text = _run_codex_cli_text(
             context.app_dir or ".",
             context.model,
-            messages,
+            prompt,
             context.timeout,
         )
+        probe_runtime._record_probe_output(context, text)
+        data = parse_json_text(text)
+        probe_runtime._validate_json_probe_data(data, context.probe_token)
 
     def _probe_web_search(
         self,
         context: probe_runtime.CapabilityProbeContext,
         messages: list[dict[str, str]],
     ) -> None:
-        data = _cli_json_probe(
-            context.app_dir or ".",
-            context.model,
+        prompt = _cli_prompt(
             messages,
-            context.timeout,
+            response_format=True,
             allow_external_read=True,
         )
+        probe_runtime._record_probe_request(
+            context,
+            messages,
+            details={
+                "command": ai_model_config.model_cli_command(context.model),
+                "provider_payload": {
+                    "prompt": prompt,
+                    "allow_external_read": True,
+                },
+            },
+        )
+        text = _run_codex_cli_text(
+            context.app_dir or ".",
+            context.model,
+            prompt,
+            context.timeout,
+        )
+        probe_runtime._record_probe_output(context, text)
+        data = parse_json_text(text)
         probe_runtime._validate_web_search_probe_data(data)
 
     def _probe_image_generate(
@@ -230,17 +274,30 @@ class CodexCliProvider(AiChatProvider):
         messages: list[dict[str, str]],
     ) -> None:
         app_dir = context.app_dir or "."
+        prompt = _cli_prompt(
+            messages,
+            response_format=True,
+            allow_generated_artifacts=True,
+        )
+        probe_runtime._record_probe_request(
+            context,
+            messages,
+            details={
+                "command": ai_model_config.model_cli_command(context.model),
+                "provider_payload": {
+                    "prompt": prompt,
+                    "allow_generated_artifacts": True,
+                },
+            },
+        )
         text = _run_codex_cli_text(
             app_dir,
             context.model,
-            _cli_prompt(
-                messages,
-                response_format=True,
-                allow_generated_artifacts=True,
-            ),
+            prompt,
             context.timeout,
         )
         data = probe_runtime._cli_image_probe_data_from_text(text)
+        probe_runtime._record_probe_image_results(context, [data])
         probe_runtime._validate_cli_image_generate_probe(data, app_dir)
 
     def probe_capability(
@@ -249,30 +306,35 @@ class CodexCliProvider(AiChatProvider):
         context: probe_runtime.CapabilityProbeContext,
     ) -> dict[str, Any]:
         options = context.probe_options
-        messages = probe_runtime._probe_messages
         if capability == ai_model_config.CAP_CHAT:
             self._probe_chat(
                 context,
-                messages(options, probe_runtime._chat_probe_default_messages()),
+                probe_runtime._chat_probe_default_messages(context.probe_token),
             )
         elif capability == ai_model_config.CAP_JSON:
             self._probe_json(
                 context,
-                messages(options, probe_runtime._json_probe_default_messages()),
+                probe_runtime._json_probe_default_messages(context.probe_token),
             )
         elif capability == ai_model_config.CAP_WEB_SEARCH:
             self._probe_web_search(
                 context,
-                messages(options, probe_runtime._web_search_probe_prompt()),
+                probe_runtime._probe_messages(
+                    options,
+                    probe_runtime._web_search_probe_prompt(),
+                ),
             )
         elif capability == ai_model_config.CAP_IMAGE_GENERATE:
             self._probe_image_generate(
                 context,
-                messages(options, probe_runtime._cli_image_generate_probe_prompt()),
+                probe_runtime._probe_messages(
+                    options,
+                    probe_runtime._cli_image_generate_probe_prompt(),
+                ),
             )
         else:
-            raise RuntimeError(
-                "CLI Provider 当前仅支持 chat/json/web_search/image_generate 能力测试。"
+            raise probe_runtime.CapabilityProbeUnavailable(
+                f"CLI Provider 尚未接入 {capability} 能力。"
             )
         return non_http_capability_profile(
             context.model,
@@ -287,7 +349,7 @@ class CodexCliProvider(AiChatProvider):
         probe_options = _probe_options(raw)
         requested_capabilities = probe_options["capabilities"] or ai_model_config.normalize_capabilities(model.get("capabilities"))
         probe_requested = raw.get("probe_capabilities", True) is not False
-        capability_probe = {"supported": [], "unsupported": [], "results": {}}
+        capability_probe = probe_runtime.empty_capability_probe_report()
         if probe_requested:
             capability_probe = probe_cli_model_capabilities(app_dir, model, requested_capabilities, timeout, probe_options)
         command = ai_model_config.model_cli_command(model)
@@ -314,6 +376,9 @@ class CodexCliProvider(AiChatProvider):
             "model": ai_model_config.model_name(model),
             "available_models": ([{"id": ai_model_config.model_name(model), "label": ai_model_config.model_name(model)}] if ai_model_config.model_name(model) else []),
             "supported_capabilities": capability_probe["supported"],
+            "unsupported_capabilities": capability_probe["unsupported"],
+            "unavailable_capabilities": capability_probe["unavailable"],
+            "inconclusive_capabilities": capability_probe["inconclusive"],
             "capability_results": capability_probe["results"],
             "tested_capabilities": requested_capabilities,
             "test_trigger": str(raw.get("test_trigger") or "").strip(),

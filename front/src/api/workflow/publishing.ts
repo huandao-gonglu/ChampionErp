@@ -498,7 +498,6 @@ export async function matchCategory(
     candidates,
     query: getString(data, ['query']),
     decision: {
-      method: getString(decision, ['method'], 'tool_loop') as CategoryMatchResult['decision']['method'],
       confidenceBand: getString(decision, ['confidence_band'], 'low') as CategoryMatchResult['decision']['confidenceBand'],
       modelConfidence: getNumber(decision, ['model_confidence']),
       decisionScore: getNumber(decision, ['decision_score']),

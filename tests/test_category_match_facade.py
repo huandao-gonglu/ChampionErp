@@ -7,7 +7,8 @@ from typing import Any
 from erp_web.facades.category_match_facade import match_category
 from erp_web.runtime_units.category_searchers import CategorySearchError
 from erp_web.schemas.ai_trace import AiExecutionContext
-from erp_web.services.ai_task_runner import AiTaskExecutionError
+from erp_web.services.ai_agent_factory import AiAgentExecutionError
+from erp_web.services.category_match_agent_service import CategoryMatchAgentRun
 
 
 def candidate(
@@ -127,6 +128,16 @@ def selected(category_id: str, confidence: float = 0.95) -> dict[str, Any]:
     }
 
 
+def fake_agent_service(run):
+    def service(payload, toolset, ledger, *, timeout_seconds):
+        del ledger
+        assert timeout_seconds > 0
+        output, trace = run(payload, toolset)
+        return CategoryMatchAgentRun.for_test(output, trace)
+
+    return service
+
+
 def test_first_model_request_contains_only_clean_product_facts() -> None:
     seen: dict[str, Any] = {}
 
@@ -140,13 +151,13 @@ def test_first_model_request_contains_only_clean_product_facts() -> None:
         DRAFT,
         TARGET,
         searcher=FakeSearcher([[candidate("MLM-FAN")]]),
-        model_runner=run,
+        agent_service=fake_agent_service(run),
         detail_loader=detail_loader,
     )
 
     assert result["status"] == "completed"
     assert seen["toolset"].toolset_id == "category.search"
-    assert set(seen["payload"]) == {"mode", "target", "product"}
+    assert set(seen["payload"]) == {"target", "product"}
     serialized = str(seen["payload"])
     assert "candidates" not in serialized
     assert "retrieval" not in serialized
@@ -172,12 +183,11 @@ def test_model_can_change_keyword_until_a_candidate_matches() -> None:
         DRAFT,
         TARGET,
         searcher=searcher,
-        model_runner=run,
+        agent_service=fake_agent_service(run),
         detail_loader=detail_loader,
     )
 
     assert result["status"] == "completed"
-    assert result["decision"]["method"] == "tool_loop"
     assert result["decision"]["search_count"] == 2
     assert searcher.keywords == ["ventilador usb", "ventilador de mesa"]
     assert result["query"] == "ventilador de mesa"
@@ -194,7 +204,9 @@ def test_model_cannot_finish_before_searching() -> None:
         DRAFT,
         TARGET,
         searcher=FakeSearcher([[candidate("MLM-FAN")]]),
-        model_runner=lambda payload, toolset: (selected("MLM-FAN"), TRACE),
+        agent_service=fake_agent_service(
+            lambda payload, toolset: (selected("MLM-FAN"), TRACE)
+        ),
     )
 
     assert result["ok"] is False
@@ -212,7 +224,7 @@ def test_model_selected_unknown_category_is_a_protocol_failure() -> None:
         DRAFT,
         TARGET,
         searcher=FakeSearcher([[candidate("MLM-FAN")]]),
-        model_runner=run,
+        agent_service=fake_agent_service(run),
     )
 
     assert result["ok"] is False
@@ -236,7 +248,7 @@ def test_model_can_abstain_after_real_searches() -> None:
         DRAFT,
         TARGET,
         searcher=FakeSearcher([[], [], []]),
-        model_runner=run,
+        agent_service=fake_agent_service(run),
     )
 
     assert result["ok"] is True
@@ -259,7 +271,7 @@ def test_model_cannot_abstain_early_when_more_keywords_can_be_tried() -> None:
         DRAFT,
         TARGET,
         searcher=FakeSearcher([[]]),
-        model_runner=run,
+        agent_service=fake_agent_service(run),
     )
 
     assert result["ok"] is False
@@ -276,7 +288,7 @@ def test_cross_site_candidate_is_rejected_by_server_validation() -> None:
         DRAFT,
         TARGET,
         searcher=FakeSearcher([[candidate("MLB-FAN", site="MLB")]]),
-        model_runner=run,
+        agent_service=fake_agent_service(run),
     )
 
     assert result["ok"] is True
@@ -305,7 +317,7 @@ def test_final_validation_reads_detail_and_attributes_once() -> None:
         DRAFT,
         TARGET,
         searcher=FakeSearcher([[candidate("MLM-FAN")]]),
-        model_runner=run,
+        agent_service=fake_agent_service(run),
         detail_loader=load_detail,
     )
 
@@ -327,14 +339,14 @@ def test_provider_error_keeps_search_error_taxonomy() -> None:
         DRAFT,
         TARGET,
         searcher=FakeSearcher(error=error),
-        model_runner=run,
+        agent_service=fake_agent_service(run),
     )
 
     assert result["ok"] is False
     assert result["failure"]["code"] == "CATEGORY_CREDENTIALS_MISSING"
 
 
-def test_total_deadline_covers_custom_model_runner(monkeypatch) -> None:
+def test_total_deadline_covers_agent_service(monkeypatch) -> None:
     monkeypatch.setattr(
         "erp_web.facades.category_match_facade.CATEGORY_MATCH_DEADLINE_SECONDS",
         0.001,
@@ -350,7 +362,7 @@ def test_total_deadline_covers_custom_model_runner(monkeypatch) -> None:
         DRAFT,
         TARGET,
         searcher=FakeSearcher([[candidate("MLM-FAN")]]),
-        model_runner=slow_model,
+        agent_service=fake_agent_service(slow_model),
     )
 
     assert result["ok"] is False
@@ -370,7 +382,7 @@ def test_ozon_selection_requires_type_and_description_category_pair() -> None:
             [[candidate("9001", platform="ozon", site="global")]],
             source="ozon_cache",
         ),
-        model_runner=run,
+        agent_service=fake_agent_service(run),
         detail_loader=lambda *args, **kwargs: {
             "category_id": "9001",
             "name_original": "Вентиляторы",
@@ -388,10 +400,13 @@ def test_model_deadline_error_keeps_code() -> None:
         DRAFT,
         TARGET,
         searcher=FakeSearcher([[candidate("MLM-FAN")]]),
-        model_runner=lambda payload, toolset: (_ for _ in ()).throw(
-            AiTaskExecutionError(
-                "TASK_DEADLINE_EXCEEDED",
-                "AI Task 总 deadline 已耗尽",
+        agent_service=fake_agent_service(
+            lambda payload, toolset: (_ for _ in ()).throw(
+                AiAgentExecutionError(
+                    "TASK_DEADLINE_EXCEEDED",
+                    "AI Agent 总 deadline 已耗尽",
+                    retryable=True,
+                )
             )
         ),
     )

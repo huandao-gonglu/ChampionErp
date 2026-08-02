@@ -44,7 +44,6 @@ describe('category.product_match API contract', () => {
         ],
         query: 'ventilador',
         decision: {
-          method: 'tool_loop',
           confidence_band: 'high',
           model_confidence: 0.95,
           decision_score: 0.86,

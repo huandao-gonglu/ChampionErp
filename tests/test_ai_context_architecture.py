@@ -273,12 +273,29 @@ def test_product_research_entry_points_follow_layer_boundaries() -> None:
 
 
 def test_ai_business_services_do_not_import_model_sdks_directly() -> None:
-    allowed = {"ai_image_provider.py"}
+    allowed = {"ai_pydantic_image_model.py"}
     for path in python_files("erp_web/services"):
         if path.name in allowed:
             continue
         text = path.read_text(encoding="utf-8")
-        assert "from openai import" not in text, f"{path.relative_to(ROOT)} should call an AI Provider"
+        assert "from openai import" not in text, (
+            f"{path.relative_to(ROOT)} 应通过集中 Pydantic Model 边界调用"
+        )
+        assert "import openai" not in text, (
+            f"{path.relative_to(ROOT)} 应通过集中 Pydantic Model 边界调用"
+        )
+
+
+def test_ai_provider_selection_uses_catalog_contract() -> None:
+    example = (ROOT / "config/app_config.example.json").read_text(encoding="utf-8")
+    panel = (ROOT / "front/src/components/auth/AuthSettingsPanel.vue").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"provider_id"' in example
+    assert '"provider_family"' not in example
+    assert 'data-testid="ai-provider-id"' in panel
+    assert 'data-testid="ai-provider-family"' not in panel
 
 
 def test_ai_provider_and_ai_work_entry_points_are_explicit() -> None:
@@ -286,13 +303,27 @@ def test_ai_provider_and_ai_work_entry_points_are_explicit() -> None:
         ROOT / "erp_web/services/ai_provider_contracts.py",
         ROOT / "erp_web/services/ai_gateway.py",
         ROOT / "erp_web/services/ai_gateway_providers.py",
-        ROOT / "erp_web/services/ai_gateway_http_providers.py",
         ROOT / "erp_web/services/ai_gateway_cli_provider.py",
         ROOT / "erp_web/services/ai_gateway_browser_provider.py",
         ROOT / "erp_web/services/ai_gateway_provider_types.py",
+        ROOT / "erp_web/services/ai_generation_settings.py",
+        ROOT / "erp_web/services/ai_provider_catalog.py",
+        ROOT / "erp_web/services/ai_model_factory.py",
+        ROOT / "erp_web/services/ai_direct_request_service.py",
+        ROOT / "erp_web/services/ai_model_discovery.py",
+        ROOT / "erp_web/services/ai_model_errors.py",
+        ROOT / "erp_web/services/ai_model_probe_service.py",
+        ROOT / "erp_web/services/ai_pydantic_image_model.py",
+        ROOT / "erp_web/services/ai_gateway_probe.py",
+        ROOT / "erp_web/services/ai_agent_dependencies.py",
+        ROOT / "erp_web/services/ai_agent_factory.py",
+        ROOT / "erp_web/services/ai_agent_instrumentation.py",
+        ROOT / "erp_web/services/ai_agent_observability.py",
+        ROOT / "erp_web/services/ai_agent_state_store.py",
+        ROOT / "erp_web/services/ai_tool_bridge.py",
+        ROOT / "erp_web/services/category_match_agent_service.py",
         ROOT / "erp_web/services/ai_gateway_provider_profiles.py",
         ROOT / "erp_web/services/ai_gateway_provider_prompting.py",
-        ROOT / "erp_web/services/ai_image_provider.py",
         ROOT / "erp_web/services/ai_work_service.py",
         ROOT / "erp_web/http_route_units/ai_work_routes.py",
         ROOT / "front/src/views/AiWorkView.vue",
@@ -337,10 +368,177 @@ def test_context_map_mentions_shared_ai_tool_execution_entry_points() -> None:
         "erp_web/services/ai_invocation.py",
         "erp_web/services/ai_tool_registry.py",
         "erp_web/services/ai_tool_runtime.py",
-        "erp_web/services/ai_task_runner.py",
-        "erp_web/services/ai_tool_provider_adapters.py",
+        "erp_web/services/ai_provider_catalog.py",
+        "erp_web/services/ai_model_factory.py",
+        "erp_web/services/ai_direct_request_service.py",
+        "erp_web/services/ai_model_discovery.py",
+        "erp_web/services/ai_model_probe_service.py",
+        "erp_web/services/ai_pydantic_image_model.py",
+        "erp_web/services/ai_agent_dependencies.py",
+        "erp_web/services/ai_agent_factory.py",
+        "erp_web/services/ai_agent_instrumentation.py",
+        "erp_web/services/ai_agent_observability.py",
+        "erp_web/services/ai_agent_state_store.py",
+        "erp_web/services/ai_tool_bridge.py",
+        "erp_web/services/category_match_agent_service.py",
     ]:
         assert entry_point in text
+
+
+def test_pydantic_ai_types_stay_in_focused_runtime_boundaries() -> None:
+    allowed = {
+        ROOT / "erp_web/services/ai_provider_catalog.py",
+        ROOT / "erp_web/services/ai_model_factory.py",
+        ROOT / "erp_web/services/ai_direct_request_service.py",
+        ROOT / "erp_web/services/ai_model_discovery.py",
+        ROOT / "erp_web/services/ai_model_errors.py",
+        ROOT / "erp_web/services/ai_model_probe_service.py",
+        ROOT / "erp_web/services/ai_pydantic_image_model.py",
+        ROOT / "erp_web/services/ai_gateway_probe.py",
+        ROOT / "erp_web/services/ai_tool_bridge.py",
+        ROOT / "erp_web/services/ai_agent_factory.py",
+        ROOT / "erp_web/services/ai_agent_instrumentation.py",
+        ROOT / "erp_web/services/ai_agent_observability.py",
+        ROOT / "erp_web/services/ai_agent_state_store.py",
+        ROOT / "erp_web/services/category_match_agent_service.py",
+    }
+    offenders = [
+        f"{path.relative_to(ROOT)} -> {target}"
+        for path, target in imported_targets(sorted((ROOT / "erp_web").rglob("*.py")))
+        if target.startswith("pydantic_ai") and path not in allowed
+    ]
+    assert not offenders, (
+        "Pydantic AI 类型只能存在于集中 Agent/Model/Bridge/持久化边界：\n"
+        + "\n".join(offenders)
+    )
+
+
+def test_pydantic_tool_bridge_can_only_execute_through_erp_runtime() -> None:
+    bridge = ROOT / "erp_web/services/ai_tool_bridge.py"
+    text = bridge.read_text(encoding="utf-8")
+
+    assert "dependencies.tool_runtime.execute(" in text
+    assert "binding.executor(" not in text
+    for retired_path_symbol in (
+        "AiTaskRunner",
+        "JsonToolTurnProviderAdapter",
+        "AiToolTurn",
+        "AiToolTurnRequest",
+        "_JSON_TOOL_PROTOCOL_SYSTEM",
+        "protocol_version",
+    ):
+        assert retired_path_symbol not in text
+
+
+def test_deferred_resume_has_durable_claim_checkpoint_and_result_replay() -> None:
+    factory = (ROOT / "erp_web/services/ai_agent_factory.py").read_text(
+        encoding="utf-8"
+    )
+    state_store = (ROOT / "erp_web/services/ai_agent_state_store.py").read_text(
+        encoding="utf-8"
+    )
+    runtime = (ROOT / "erp_web/services/ai_tool_runtime.py").read_text(
+        encoding="utf-8"
+    )
+
+    for marker in (
+        "claim_for_resume(",
+        "mark_tool_execution_started(",
+        "mark_resume_ready(",
+        "load_ready_for_replay(",
+        "release_claim_for_retry(",
+        '"in_doubt"',
+    ):
+        assert marker in state_store
+    assert "before_executor=" in factory
+    assert "mark_tool_execution_started(" in factory
+    assert "mark_resume_ready(" in factory
+    assert "load_ready_for_replay(" in factory
+    assert 'definition.side_effect == "write"' in runtime
+
+
+def test_retired_agent_runtime_and_json_tool_protocol_stay_removed() -> None:
+    retired_files = (
+        ROOT / "erp_web/services/ai_task_runner.py",
+        ROOT / "erp_web/services/ai_tool_provider_adapters.py",
+        ROOT / "tests/test_ai_task_runner.py",
+    )
+    assert all(not path.exists() for path in retired_files)
+
+    retired_symbols = (
+        "AiTaskRunner",
+        "AiTaskExecutionError",
+        "JsonToolTurnProviderAdapter",
+        "_JSON_TOOL_PROTOCOL_SYSTEM",
+        "AiToolTurnProvider",
+        "AiToolTurnRequest",
+        "CAPABILITY_TOOL_TURN",
+        "AiToolTurn",
+        "AiToolCall",
+        "protocol_version",
+        "tool_loop",
+    )
+    scanned = sorted((ROOT / "erp_web").rglob("*.py")) + [
+        ROOT / "config/app_config.example.json",
+        ROOT / "config/prompts/category_product_match.json",
+        ROOT / "docs/ai-context-map.md",
+        ROOT / "front/src/api/workflow/publishing.ts",
+        ROOT / "front/src/types/workflow.ts",
+    ]
+    offenders = [
+        f"{path.relative_to(ROOT)} -> {symbol}"
+        for path in scanned
+        for symbol in retired_symbols
+        if symbol in path.read_text(encoding="utf-8")
+    ]
+    assert not offenders, "旧 Agent Runtime/JSON protocol 残留：\n" + "\n".join(offenders)
+
+
+def test_agent_construction_has_one_production_owner() -> None:
+    owner = ROOT / "erp_web/services/ai_agent_factory.py"
+    offenders = [
+        str(path.relative_to(ROOT))
+        for path in sorted((ROOT / "erp_web").rglob("*.py"))
+        if path != owner and "Agent(" in path.read_text(encoding="utf-8")
+    ]
+    assert not offenders, f"Pydantic Agent 只能由 ai_agent_factory 装配：{offenders}"
+    assert owner.read_text(encoding="utf-8").count("= Agent(") == 1
+
+
+def test_category_facade_uses_only_the_focused_pydantic_agent_service() -> None:
+    facade = ROOT / "erp_web/facades/category_match_facade.py"
+    text = facade.read_text(encoding="utf-8")
+
+    assert "run_category_match_agent" in text
+    assert "agent_service(" in text
+    assert "PydanticToolBridge" not in text
+    assert "create_pydantic_model_binding" not in text
+    assert "pydantic_ai" not in text
+    assert "AiProviderClient" not in text
+
+
+def test_provider_specific_generation_fields_have_one_owner() -> None:
+    owner = ROOT / "erp_web/services/ai_generation_settings.py"
+    markers = (
+        "reasoning_effort",
+        "enable_thinking",
+        "thinking_budget",
+        "max_completion_tokens",
+    )
+    owner_text = owner.read_text(encoding="utf-8")
+    assert all(marker in owner_text for marker in markers)
+    offenders: list[str] = []
+    for path in sorted((ROOT / "erp_web").rglob("*.py")):
+        if path == owner:
+            continue
+        text = path.read_text(encoding="utf-8")
+        for marker in markers:
+            if marker in text:
+                offenders.append(f"{path.relative_to(ROOT)} -> {marker}")
+    assert not offenders, (
+        "厂商生成字段只能由 ai_generation_settings 转换：\n"
+        + "\n".join(offenders)
+    )
 
 
 def test_ai_tool_runtime_is_domain_agnostic_and_toolsets_are_explicit() -> None:
@@ -358,21 +556,17 @@ def test_ai_tool_runtime_is_domain_agnostic_and_toolsets_are_explicit() -> None:
     assert "import_module" not in registry_text
 
 
-def test_ai_task_runner_owns_one_shared_tool_loop_and_provider_has_no_journal_factory() -> None:
-    runner_text = (
-        ROOT / "erp_web/services/ai_task_runner.py"
-    ).read_text(encoding="utf-8")
+def test_pydantic_agent_is_the_only_tool_loop_owner() -> None:
+    services = ROOT / "erp_web/services"
     provider_contract_text = (
         ROOT / "erp_web/services/ai_provider_contracts.py"
     ).read_text(encoding="utf-8")
-    adapter_text = (
-        ROOT / "erp_web/services/ai_tool_provider_adapters.py"
-    ).read_text(encoding="utf-8")
-    assert runner_text.count("while True:") == 1
-    assert "provider.run_tool_turn(" in runner_text
-    assert "runtime.execute(call)" in runner_text
+    assert not (services / "ai_task_runner.py").exists()
+    assert not (services / "ai_tool_provider_adapters.py").exists()
+    assert "AiToolTurnProvider" not in provider_contract_text
+    assert "AiToolTurnRequest" not in provider_contract_text
+    assert "CAPABILITY_TOOL_TURN" not in provider_contract_text
     assert "start_conversation" not in provider_contract_text
-    assert "start_conversation" not in adapter_text
 
 
 def test_context_map_mentions_category_search_entry_points() -> None:
@@ -395,6 +589,7 @@ def test_category_match_vertical_slice_has_explicit_stable_boundaries() -> None:
     route = ROOT / "erp_web/http_route_units/category_routes.py"
     http_facade = ROOT / "erp_web/facades/category_facade.py"
     match_facade = ROOT / "erp_web/facades/category_match_facade.py"
+    agent_service = ROOT / "erp_web/services/category_match_agent_service.py"
     category_tools = ROOT / "erp_web/runtime_units/category_tools.py"
     prompt = ROOT / "config/prompts/category_product_match.json"
     frontend_actions = ROOT / "front/src/stores/workflow/actions/publishing.ts"
@@ -402,6 +597,7 @@ def test_category_match_vertical_slice_has_explicit_stable_boundaries() -> None:
         route,
         http_facade,
         match_facade,
+        agent_service,
         category_tools,
         prompt,
         frontend_actions,
@@ -412,6 +608,7 @@ def test_category_match_vertical_slice_has_explicit_stable_boundaries() -> None:
     route_text = route.read_text(encoding="utf-8")
     http_facade_text = http_facade.read_text(encoding="utf-8")
     match_text = match_facade.read_text(encoding="utf-8")
+    agent_text = agent_service.read_text(encoding="utf-8")
     tool_text = category_tools.read_text(encoding="utf-8")
     model_config = (
         ROOT / "erp_web/services/ai_model_config.py"
@@ -423,18 +620,20 @@ def test_category_match_vertical_slice_has_explicit_stable_boundaries() -> None:
     assert "/api/category-ai-suggest" not in route_text
     assert "category_match_payload" in http_facade_text
     assert "def match_category(" in match_text
-    assert "AiTaskRunner(" in match_text
+    assert "run_category_match_agent" in match_text
+    assert "AiAgentFactory" in agent_text
+    assert "CategoryMatchOutputValidator" in agent_text
     assert "build_category_search_toolset(" in match_text
     assert "CATEGORY_SEARCH_TOOL_DEFINITIONS" in tool_text
     assert "side_effect=\"write\"" not in tool_text
     assert '"category.product_match"' in model_config
     for field in (
-        '"execution_mode": "tool_loop"',
         '"toolset_id": "category.search"',
         '"budget_profile": "category.match.default"',
         '"result_schema": "category_match.v1"',
     ):
         assert field in model_config
+    assert '"execution_mode"' not in model_config
     assert "matchCategory(" in frontend_text
     assert "identifyProductForCategory" not in frontend_text
     assert "isCategoryProductMatchEnabled" not in frontend_text
@@ -488,24 +687,32 @@ def test_category_search_uses_bound_polymorphism_and_normalized_shapes() -> None
     assert "category_path:" not in schema_text
 
 
-def test_pr1_does_not_publish_future_ai_work_event_types() -> None:
+def test_ai_work_keeps_tool_projection_readable_and_technical_spans_separate() -> None:
     event_schema = (ROOT / "erp_web/schemas/ai_work.py").read_text(
         encoding="utf-8"
     )
     recorder = (ROOT / "erp_web/services/ai_invocation.py").read_text(
         encoding="utf-8"
     )
-    for future_event_type in (
+    runtime = (ROOT / "erp_web/services/ai_tool_runtime.py").read_text(
+        encoding="utf-8"
+    )
+    for technical_event_type in (
         '"TASK_STARTED"',
         '"MODEL_CALL_STARTED"',
         '"MODEL_CALL_FINISHED"',
-        '"TOOL_CALL_STARTED"',
-        '"TOOL_CALL_FINISHED"',
         '"TASK_FINISHED"',
         '"TASK_FAILED"',
     ):
-        assert future_event_type not in event_schema
+        assert technical_event_type not in event_schema
     assert "self.emit_custom(event_type, payload)" in recorder
+    assert '"TOOL_CALL_STARTED"' in runtime
+    assert '"TOOL_CALL_FINISHED"' in runtime
+    started = runtime[runtime.index("def _record_started"):runtime.index("def _record_finished")]
+    finished = runtime[runtime.index("def _record_finished"):runtime.index("def _error_result")]
+    assert "arguments=sanitize_ai_work_value" in started
+    assert 'payload["output"] = sanitize_ai_work_value' in finished
+    assert 'payload["error"]' in finished
 
 
 def test_ai_gateway_stays_a_small_stable_facade() -> None:
@@ -527,10 +734,6 @@ def test_ai_provider_implementations_stay_in_focused_modules() -> None:
     services = ROOT / "erp_web/services"
     facade = services / "ai_gateway_providers.py"
     modules = {
-        "ai_gateway_http_providers.py": {
-            "OpenAICompatibleProvider",
-            "OpenAIResponsesProvider",
-        },
         "ai_gateway_cli_provider.py": {"CodexCliProvider"},
         "ai_gateway_browser_provider.py": {"BrowserAiProvider"},
     }
@@ -557,10 +760,9 @@ def test_ai_provider_implementations_stay_in_focused_modules() -> None:
         assert "ai_gateway_providers" not in text, (
             f"{filename} 不得反向依赖注册表门面，以免形成循环"
         )
-        if filename != "ai_gateway_http_providers.py":
-            assert "ai_gateway_http_providers" not in text, (
-                f"{filename} 不得为共享请求/配方反向依赖 HTTP 实现"
-            )
+        assert "ai_gateway_http_providers" not in text, (
+            f"{filename} 不得依赖已退役 HTTP 实现"
+        )
 
     for filename in (
         "ai_gateway_provider_types.py",
@@ -576,7 +778,6 @@ def test_ai_provider_modules_have_no_definition_shadowed_by_alias() -> None:
     """防止已拆出的实现再次被文件后部的同名赋值静默覆盖。"""
 
     provider_paths = [
-        ROOT / "erp_web/services/ai_gateway_http_providers.py",
         ROOT / "erp_web/services/ai_gateway_cli_provider.py",
         ROOT / "erp_web/services/ai_gateway_browser_provider.py",
         ROOT / "erp_web/services/ai_gateway_providers.py",
@@ -604,12 +805,11 @@ def test_ai_provider_modules_have_no_definition_shadowed_by_alias() -> None:
     assert not shadowed, "存在被后续同名别名覆盖的死实现：\n" + "\n".join(shadowed)
 
 
-def test_ai_capability_probes_share_one_provider_loop() -> None:
+def test_all_capability_probes_share_one_provider_loop() -> None:
     probe_text = (ROOT / "erp_web/services/ai_gateway_probe.py").read_text(
         encoding="utf-8"
     )
     provider_paths = [
-        ROOT / "erp_web/services/ai_gateway_http_providers.py",
         ROOT / "erp_web/services/ai_gateway_cli_provider.py",
         ROOT / "erp_web/services/ai_gateway_browser_provider.py",
     ]
@@ -617,15 +817,87 @@ def test_ai_capability_probes_share_one_provider_loop() -> None:
         path.read_text(encoding="utf-8") for path in provider_paths
     )
     assert "def run_capability_probes(" in probe_text
-    assert provider_text.count("probe_runtime.run_capability_probes(") == 3
+    assert provider_text.count("probe_runtime.run_capability_probes(") == 2
+    api_probe_text = (
+        ROOT / "erp_web/services/ai_model_probe_service.py"
+    ).read_text(encoding="utf-8")
+    assert api_probe_text.count("ai_gateway_probe.run_capability_probes(") == 1
+    assert "create_pydantic_probe_binding(" in api_probe_text
+    assert "required_capabilities=[capability]" not in api_probe_text
+    auth_panel_text = (
+        ROOT / "front/src/components/auth/AuthSettingsPanel.vue"
+    ).read_text(encoding="utf-8")
+    assert "capabilities.add(capability)" not in auth_panel_text
     for provider in (
-        "OpenAICompatibleProvider",
-        "OpenAIResponsesProvider",
         "CodexCliProvider",
         "BrowserAiProvider",
     ):
         assert f"class {provider}" in provider_text
-    assert provider_text.count("def probe_capability(") >= 3
+    assert provider_text.count("def probe_capability(") >= 2
+
+
+def test_api_inference_has_one_pydantic_direct_boundary() -> None:
+    services = ROOT / "erp_web/services"
+    retired = (
+        services / "ai_gateway_http_providers.py",
+        services / "ai_image_provider.py",
+    )
+    assert all(not path.exists() for path in retired)
+
+    direct_owner = services / "ai_direct_request_service.py"
+    owner_text = direct_owner.read_text(encoding="utf-8")
+    assert "direct.model_request(" in owner_text
+    assert "direct.model_request_stream(" in owner_text
+    assert "create_pydantic_model_binding(" in owner_text
+
+    direct_call_offenders = [
+        str(path.relative_to(ROOT))
+        for path in sorted((ROOT / "erp_web").rglob("*.py"))
+        if path != direct_owner
+        and (
+            "direct.model_request(" in path.read_text(encoding="utf-8")
+            or "direct.model_request_stream(" in path.read_text(encoding="utf-8")
+        )
+    ]
+    assert not direct_call_offenders, (
+        "普通 API 推理只能由 ai_direct_request_service 执行："
+        f"{direct_call_offenders}"
+    )
+
+    gateway = (services / "ai_gateway_providers.py").read_text(encoding="utf-8")
+    assert "ai_direct_request_service.chat_json(" in gateway
+    assert "ai_direct_request_service.generate_images(" in gateway
+    assert "ai_direct_request_service.edit_images(" in gateway
+    assert "OpenAICompatibleProvider" not in gateway
+    assert "OpenAIResponsesProvider" not in gateway
+    assert "OpenAIImageProvider" not in gateway
+
+    model_config = (services / "ai_model_config.py").read_text(encoding="utf-8")
+    capability_profile_block = model_config.split(
+        "def normalize_capability_profiles(", 1
+    )[1].split("\ndef normalize_connection_type(", 1)[0]
+    assert 'profile["request_body"]' not in capability_profile_block
+    generation = (services / "ai_generation_settings.py").read_text(
+        encoding="utf-8"
+    )
+    assert "def apply_generation_settings(" not in generation
+
+
+def test_ai_api_modules_do_not_build_raw_http_requests() -> None:
+    for filename in (
+        "ai_gateway.py",
+        "ai_gateway_providers.py",
+        "ai_direct_request_service.py",
+        "ai_model_probe_service.py",
+        "ai_pydantic_image_model.py",
+    ):
+        text = (ROOT / "erp_web/services" / filename).read_text(encoding="utf-8")
+        assert "urllib.request" not in text
+        assert "urlopen(" not in text
+    probe_script = (ROOT / "scripts/test_ai_api.py").read_text(encoding="utf-8")
+    assert "urllib.request" not in probe_script
+    assert "def request_body(" not in probe_script
+    assert "ai_direct_request_service.chat_json(" in probe_script
 
 
 def test_state_contract_is_versioned_validated_and_redacted() -> None:

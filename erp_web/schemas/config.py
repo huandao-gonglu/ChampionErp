@@ -7,20 +7,23 @@ class AiCapabilityProfile(TypedDict, total=False):
     version: int
     tested: bool
     connection_type: str
-    provider: str
+    provider_id: str
     api_style: str
     model: str
     base_url: str
     request_mode: str
     operation: str
     strategy: str
-    request_body: dict[str, Any]
+    tested_at: str
+    probe_version: str
+    configuration_fingerprint: str
 
 
 class AiModelConfig(TypedDict, total=False):
     id: str
     name: str
     connection_type: str
+    provider_id: str
     provider: str
     api_style: str
     base_url: str
@@ -32,9 +35,22 @@ class AiModelConfig(TypedDict, total=False):
     enabled: bool
 
 
+class AiReasoningSettings(TypedDict, total=False):
+    mode: str
+    effort: str
+    budget_tokens: int
+
+
+class AiGenerationSettings(TypedDict, total=False):
+    temperature: float
+    max_output_tokens: int
+    reasoning: AiReasoningSettings
+
+
 class AiUseCaseBinding(TypedDict, total=False):
     model_id: str
     timeout_override_seconds: int
+    generation: AiGenerationSettings
 
 
 class AppConfig(TypedDict, total=False):
@@ -53,4 +69,12 @@ class StoreConfig(TypedDict, total=False):
     ozon: dict[str, Any]
 
 
-__all__ = ["AiCapabilityProfile", "AiModelConfig", "AiUseCaseBinding", "AppConfig", "StoreConfig"]
+__all__ = [
+    "AiCapabilityProfile",
+    "AiGenerationSettings",
+    "AiModelConfig",
+    "AiReasoningSettings",
+    "AiUseCaseBinding",
+    "AppConfig",
+    "StoreConfig",
+]

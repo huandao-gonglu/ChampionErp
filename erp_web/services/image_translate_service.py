@@ -297,7 +297,7 @@ def translate_images(
     except Exception as exc:
         cfg = {}
         config_error = str(exc)
-    provider_name = str(cfg.get("provider") or cfg.get("name") or "OpenAI-Compatible").strip() or "OpenAI-Compatible"
+    provider_name = str(cfg.get("provider") or cfg.get("name") or "OpenAI").strip() or "OpenAI"
     target = str(target_language or DEFAULT_TARGET_LANGUAGE).strip() or DEFAULT_TARGET_LANGUAGE
     requested_ids = [str(item).strip() for item in (image_ids or []) if str(item).strip()]
     if not requested_ids:
@@ -428,7 +428,7 @@ def edit_images(
     except Exception as exc:
         cfg = {}
         config_error = str(exc)
-    provider_name = str(cfg.get("provider") or cfg.get("name") or "OpenAI-Compatible").strip() or "OpenAI-Compatible"
+    provider_name = str(cfg.get("provider") or cfg.get("name") or "OpenAI").strip() or "OpenAI"
     if not user_prompt:
         return {
             "ok": False,

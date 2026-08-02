@@ -24,7 +24,7 @@ const conversation = {
   use_case_id: 'copy.generate',
   capability: 'chat_json',
   provider_id: 'openai_compatible',
-  provider: 'OpenAI-Compatible',
+  provider: 'OpenAI',
   model_id: 'model-1',
   model: 'deepseek-chat',
   stream: true,
@@ -125,5 +125,76 @@ describe('AiWorkFloatingButton', () => {
 
     expect(output.textContent).toBe('第一段输出，第二段输出')
     expect(output.scrollTop).toBe(420)
+  })
+
+  it('deferred run 显示等待审批并停止长轮询', async () => {
+    mocks.fetchConversations.mockResolvedValue({
+      ok: true,
+      conversations: [{ ...conversation, status: 'waiting_approval' }],
+    })
+    mocks.fetchConversation.mockResolvedValue({
+      ok: true,
+      conversation_id: conversation.conversation_id,
+      events: [
+        { seq: 1, type: 'RUN_STARTED' },
+        { seq: 2, type: 'RUN_DEFERRED', state_id: 'agent-state-1' },
+      ],
+    })
+
+    const wrapper = mount(AiWorkFloatingButton)
+    await wrapper.get('[data-testid="ai-work-floating"]').trigger('mouseenter')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="ai-work-latest"]').text()).toContain('等待审批')
+    expect(wrapper.get('[data-testid="ai-work-latest"]').text()).toContain('等待人工审批')
+    expect(mocks.waitForEvents).not.toHaveBeenCalled()
+  })
+
+  it('能力探测请求已发出时显示等待 Provider', async () => {
+    mocks.fetchConversations.mockResolvedValue({
+      ok: true,
+      conversations: [{ ...conversation, status: 'completed' }],
+    })
+    mocks.fetchConversation.mockResolvedValue({
+      ok: true,
+      conversation_id: conversation.conversation_id,
+      events: [
+        { seq: 1, type: 'RUN_STARTED' },
+        { seq: 2, type: 'CUSTOM', name: 'capability_probe.request', value: {} },
+      ],
+    })
+
+    const wrapper = mount(AiWorkFloatingButton)
+    await wrapper.get('[data-testid="ai-work-floating"]').trigger('mouseenter')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="ai-work-output"]').text()).toContain(
+      '请求已发送，正在等待 Provider 返回',
+    )
+  })
+
+  it('Agent 初始请求已记录时显示请求已发送', async () => {
+    mocks.fetchConversations.mockResolvedValue({
+      ok: true,
+      conversations: [{ ...conversation, capability: 'agent' }],
+    })
+    mocks.fetchConversation.mockResolvedValue({
+      ok: true,
+      conversation_id: conversation.conversation_id,
+      events: [
+        { seq: 1, type: 'RUN_STARTED' },
+        { seq: 2, type: 'CUSTOM', name: 'agent.request', value: { mode: 'initial' } },
+      ],
+    })
+    mocks.waitForEvents.mockReturnValue(new Promise(() => {}))
+
+    const wrapper = mount(AiWorkFloatingButton)
+    await wrapper.get('[data-testid="ai-work-floating"]').trigger('mouseenter')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="ai-work-output"]').text()).toContain(
+      '请求已发送，正在等待 Provider 返回',
+    )
+    wrapper.unmount()
   })
 })

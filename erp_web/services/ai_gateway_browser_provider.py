@@ -54,8 +54,6 @@ def probe_browser_model_capabilities(
 
 class BrowserAiProvider(AiChatProvider):
     provider_id = "browser"
-    probe_reraise_marker = ""
-    probe_web_search_meta = False
 
     def supports(self, model: dict[str, Any], capability: str = CAPABILITY_CHAT_JSON) -> bool:
         return (
@@ -101,8 +99,29 @@ class BrowserAiProvider(AiChatProvider):
         response_format: bool,
         allow_external_read: bool = False,
         allow_generated_artifacts: bool = False,
+        record_text_output: bool = True,
     ) -> browser_ai_runtime.BrowserAiRunResult:
-        return _browser_chat_result(
+        prompt = _browser_prompt(
+            messages,
+            response_format=response_format,
+            allow_external_read=allow_external_read,
+            allow_generated_artifacts=allow_generated_artifacts,
+        )
+        probe_runtime._record_probe_request(
+            context,
+            messages,
+            details={
+                "browser_provider": browser_ai_runtime.normalize_browser_provider(
+                    context.model.get("browser_provider")
+                ),
+                "provider_payload": {
+                    "prompt": prompt,
+                    "allow_external_read": allow_external_read,
+                    "allow_generated_artifacts": allow_generated_artifacts,
+                },
+            },
+        )
+        result = _browser_chat_result(
             context.app_dir or ".",
             context.model,
             messages,
@@ -111,6 +130,18 @@ class BrowserAiProvider(AiChatProvider):
             allow_external_read=allow_external_read,
             allow_generated_artifacts=allow_generated_artifacts,
         )
+        if record_text_output:
+            probe_runtime._record_probe_output(context, result.text)
+        if context.conversation:
+            context.conversation.emit_custom(
+                "capability_probe.browser_result",
+                {
+                    "provider": result.provider,
+                    "page_url": result.page_url,
+                    "image_count": len(result.image_urls),
+                },
+            )
+        return result
 
     def _probe_chat(
         self,
@@ -118,8 +149,10 @@ class BrowserAiProvider(AiChatProvider):
         messages: list[dict[str, str]],
     ) -> None:
         result = self._run_probe(context, messages, response_format=False)
-        if not result.text.strip():
-            raise RuntimeError("浏览器 AI 没有返回文本。")
+        probe_runtime._validate_chat_probe_text(
+            result.text,
+            context.probe_token,
+        )
 
     def _probe_json(
         self,
@@ -127,7 +160,10 @@ class BrowserAiProvider(AiChatProvider):
         messages: list[dict[str, str]],
     ) -> None:
         result = self._run_probe(context, messages, response_format=True)
-        parse_json_text(result.text)
+        probe_runtime._validate_json_probe_data(
+            parse_json_text(result.text),
+            context.probe_token,
+        )
 
     def _probe_web_search(
         self,
@@ -153,8 +189,13 @@ class BrowserAiProvider(AiChatProvider):
             messages,
             response_format=True,
             allow_generated_artifacts=True,
+            record_text_output=False,
         )
         data = probe_runtime._browser_image_probe_data_from_result(result)
+        probe_runtime._record_probe_image_results(
+            context,
+            [data, *[{"image_url": url} for url in result.image_urls]],
+        )
         probe_runtime._validate_browser_image_generate_probe(
             data,
             result,
@@ -167,31 +208,35 @@ class BrowserAiProvider(AiChatProvider):
         context: probe_runtime.CapabilityProbeContext,
     ) -> dict[str, Any]:
         options = context.probe_options
-        messages = probe_runtime._probe_messages
         if capability == ai_model_config.CAP_CHAT:
             self._probe_chat(
                 context,
-                messages(options, probe_runtime._chat_probe_default_messages()),
+                probe_runtime._chat_probe_default_messages(context.probe_token),
             )
         elif capability == ai_model_config.CAP_JSON:
             self._probe_json(
                 context,
-                messages(options, probe_runtime._json_probe_default_messages()),
+                probe_runtime._json_probe_default_messages(context.probe_token),
             )
         elif capability == ai_model_config.CAP_WEB_SEARCH:
             self._probe_web_search(
                 context,
-                messages(options, probe_runtime._web_search_probe_prompt()),
+                probe_runtime._probe_messages(
+                    options,
+                    probe_runtime._web_search_probe_prompt(),
+                ),
             )
         elif capability == ai_model_config.CAP_IMAGE_GENERATE:
             self._probe_image_generate(
                 context,
-                messages(options, probe_runtime._cli_image_generate_probe_prompt()),
+                probe_runtime._probe_messages(
+                    options,
+                    probe_runtime._cli_image_generate_probe_prompt(),
+                ),
             )
         else:
-            raise RuntimeError(
-                "浏览器 Provider 当前支持 chat/json/web_search/image_generate 能力测试；"
-                "图片编辑和 Function Call 需要后续单独适配。"
+            raise probe_runtime.CapabilityProbeUnavailable(
+                f"浏览器 Provider 尚未接入 {capability} 能力。"
             )
         return non_http_capability_profile(
             context.model,
@@ -207,7 +252,7 @@ class BrowserAiProvider(AiChatProvider):
         requested_capabilities = probe_options["capabilities"] or ai_model_config.normalize_capabilities(model.get("capabilities"))
         probe_requested = raw.get("probe_capabilities", True) is not False
         page = browser_ai_runtime.open_browser_ai_page(app_dir, model, timeout=min(timeout, 45))
-        capability_probe = {"supported": [], "unsupported": [], "results": {}}
+        capability_probe = probe_runtime.empty_capability_probe_report()
         if probe_requested:
             capability_probe = probe_browser_model_capabilities(app_dir, model, requested_capabilities, timeout, probe_options)
         connection_ok = bool(page.ready)
@@ -243,6 +288,9 @@ class BrowserAiProvider(AiChatProvider):
             "model": ai_model_config.model_name(model),
             "available_models": ([{"id": ai_model_config.model_name(model), "label": ai_model_config.model_name(model)}] if ai_model_config.model_name(model) else []),
             "supported_capabilities": capability_probe["supported"],
+            "unsupported_capabilities": capability_probe["unsupported"],
+            "unavailable_capabilities": capability_probe["unavailable"],
+            "inconclusive_capabilities": capability_probe["inconclusive"],
             "capability_results": capability_probe["results"],
             "tested_capabilities": requested_capabilities,
             "test_trigger": str(raw.get("test_trigger") or "").strip(),

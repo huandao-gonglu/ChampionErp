@@ -2,6 +2,8 @@ export type AiWorkEventType =
   | 'RUN_STARTED'
   | 'RUN_FINISHED'
   | 'RUN_ERROR'
+  | 'RUN_DEFERRED'
+  | 'RUN_RESUMED'
   | 'STEP_STARTED'
   | 'STEP_FINISHED'
   | 'TEXT_MESSAGE_START'
@@ -26,10 +28,13 @@ export interface AiWorkEvent {
   value?: unknown
   message?: string
   code?: string
+  input?: unknown
   result?: unknown
   event?: unknown
   source?: string
   rawEvent?: unknown
+  trace_id?: string
+  run_id?: string
 }
 
 export interface AiWorkConversationSummary {
@@ -43,7 +48,7 @@ export interface AiWorkConversationSummary {
   stream: boolean
   required_capabilities: string[]
   timeout_seconds: number | null
-  status: 'running' | 'completed' | 'failed' | 'interrupted'
+  status: 'running' | 'waiting_approval' | 'completed' | 'failed' | 'interrupted'
   created_at: string
   updated_at: string
   last_seq: number

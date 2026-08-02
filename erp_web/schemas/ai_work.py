@@ -9,6 +9,8 @@ AiWorkEventType = Literal[
     "RUN_STARTED",
     "RUN_FINISHED",
     "RUN_ERROR",
+    "RUN_DEFERRED",
+    "RUN_RESUMED",
     "STEP_STARTED",
     "STEP_FINISHED",
     "TEXT_MESSAGE_START",

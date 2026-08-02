@@ -22,6 +22,7 @@ class AiChatRequest:
     stream: bool = False
     token_callback: Callable[[str], None] | None = None
     conversation: AiWorkRecorder | None = None
+    generation_settings: dict[str, Any] | None = None
 
     def emit_delta(self, text: str) -> None:
         if self.conversation:

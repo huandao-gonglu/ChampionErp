@@ -6,6 +6,8 @@ export {
   type BackendAppStateResponse,
   type BackendAiCapabilityProfile,
   type BackendAiModelConfig,
+  type BackendAiReasoningSettings,
+  type BackendAiGenerationSettings,
   type BackendAiUseCaseBinding,
   type BackendAppConfig,
   type BackendStoreConfig,
@@ -348,7 +350,6 @@ export interface CategoryMatchFailure {
 }
 
 export interface CategoryMatchDecision {
-  method: 'tool_loop'
   confidenceBand: 'high' | 'medium' | 'low'
   modelConfidence: number
   decisionScore: number

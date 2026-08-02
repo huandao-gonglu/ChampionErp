@@ -215,4 +215,6 @@ def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
     canonical["ai_use_case_prompts"] = ai_use_case_prompts
     canonical["pricing_defaults"] = pricing_defaults
     canonical["product_research"] = normalize_product_research_config(incoming.get("product_research"))
+    ai_model_config.validate_ai_use_case_generation_bindings(canonical)
+    ai_model_config.validate_ai_model_request_overrides(canonical)
     return canonical

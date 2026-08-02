@@ -1,8 +1,4 @@
-"""AI Provider 注册表、业务客户端与兼容公开门面。
-
-HTTP、CLI、浏览器和图片协议实现在聚焦模块中；这里仅负责 Provider 选择、
-一次业务用例的上下文收敛，以及稳定公开函数。
-"""
+"""AI 网关编排：API 统一走 Pydantic，CLI/浏览器保留独立连接。"""
 
 from __future__ import annotations
 
@@ -13,74 +9,121 @@ from typing import Any, Callable
 from erp_web.context import get_context
 from erp_web.schemas.ai_trace import AiExecutionContext
 
-from . import ai_model_config, ai_work_service, config_service
-from .ai_gateway_browser_provider import BrowserAiProvider, probe_browser_model_capabilities
-from .ai_gateway_cli_provider import CodexCliProvider, probe_cli_model_capabilities
-from .ai_gateway_http_providers import (
-    AIHTTPError,
-    OpenAICompatibleProvider,
-    OpenAIResponsesProvider,
-    _model_api_style,
-    _resolved_use_case_request,
-    _validate_capability_profiles,
-    list_remote_models,
-    probe_model_capabilities,
-    resolve_model_for_use_case,
+from . import (
+    ai_direct_request_service,
+    ai_model_config,
+    ai_work_service,
+    config_service,
 )
-from .ai_gateway_parsing import parse_json_text
+from .ai_gateway_browser_provider import (
+    BrowserAiProvider,
+    probe_browser_model_capabilities,
+)
+from .ai_gateway_cli_provider import CodexCliProvider, probe_cli_model_capabilities
 from .ai_gateway_provider_types import AiChatRequest
-from .ai_image_provider import OpenAIImageProvider
 from .ai_invocation import AiInvocation, ConversationAiWorkRecorder
+from .ai_model_discovery import list_remote_models
+from .ai_model_errors import AIHTTPError
+from .ai_model_probe_service import probe_model_capabilities, test_api_model
 from .ai_provider_contracts import (
     CAPABILITY_CHAT_JSON,
     CAPABILITY_IMAGE_EDIT,
     CAPABILITY_IMAGE_GENERATE,
     AiChatProvider,
-    AiImageProvider,
-    AiImageRequest,
     AiProvider,
 )
 
+
+# 注册表只保存真正独立的非 API 连接。API 不再通过协议 Provider 注册表分流。
 AI_PROVIDER_REGISTRY: tuple[AiProvider, ...] = (
     CodexCliProvider(),
     BrowserAiProvider(),
-    OpenAIResponsesProvider(),
-    OpenAICompatibleProvider(),
-    OpenAIImageProvider(),
 )
+
 
 def _provider_for_model(
     model: dict[str, Any],
     capability: str = CAPABILITY_CHAT_JSON,
 ) -> AiProvider:
+    if ai_model_config.model_connection_type(model) == ai_model_config.CONNECTION_TYPE_API:
+        raise RuntimeError("API 模型必须通过 Pydantic Direct Model 执行。")
     for provider in AI_PROVIDER_REGISTRY:
         if provider.supports(model, capability):
             return provider
     if (
         capability == CAPABILITY_CHAT_JSON
-        and ai_model_config.model_connection_type(model) == ai_model_config.CONNECTION_TYPE_CLI
+        and ai_model_config.model_connection_type(model)
+        == ai_model_config.CONNECTION_TYPE_CLI
     ):
-        raise RuntimeError(f"CLI 工具 {ai_model_config.model_cli_tool(model)} 已预留，但当前版本只支持 Codex CLI。")
+        raise RuntimeError(
+            f"CLI 工具 {ai_model_config.model_cli_tool(model)} 已预留，"
+            "但当前版本只支持 Codex CLI。"
+        )
     raise RuntimeError(
-        "不支持的 AI Provider 配置："
+        "不支持的非 API AI Provider 配置："
         f"capability={capability} "
-        f"connection_type={ai_model_config.model_connection_type(model)} "
-        f"api_style={_model_api_style(model)}"
+        f"connection_type={ai_model_config.model_connection_type(model)}"
     )
+
+
+def resolve_model_for_use_case(
+    app_dir: Path | str,
+    app_config: dict[str, Any] | None,
+    use_case_id: str,
+    model_id: str = "",
+) -> dict[str, Any]:
+    config_service.load_env(app_dir)
+    return ai_model_config.resolve_ai_model(
+        app_config,
+        use_case_id,
+        model_id=model_id,
+    )
+
+
+def _resolved_use_case_request(
+    app_dir: Path | str,
+    app_config: dict[str, Any] | None,
+    use_case_id: str,
+    *,
+    model_id: str = "",
+    timeout_seconds: int | None = None,
+    default_timeout_seconds: int,
+) -> tuple[dict[str, Any], tuple[str, ...], int]:
+    model = resolve_model_for_use_case(
+        app_dir,
+        app_config,
+        use_case_id,
+        model_id,
+    )
+    binding = ai_model_config.ai_use_case_binding(app_config, use_case_id)
+    required = tuple(
+        ai_model_config.ai_use_case_required_capabilities(use_case_id)
+    )
+    provider_default_timeout = (
+        default_timeout_seconds
+        if ai_model_config.model_connection_type(model)
+        == ai_model_config.CONNECTION_TYPE_API
+        else 180
+    )
+    effective_timeout = int(
+        binding.get("timeout_override_seconds")
+        or timeout_seconds
+        or model.get("timeout_seconds")
+        or provider_default_timeout
+    )
+    return model, required, effective_timeout
+
 
 @dataclass(frozen=True)
 class AiProviderClient:
-    """一次业务用例解析后的 Provider 客户端。
-
-    业务入口只在构造时传递 app/config/use-case 参数；后续的 Provider 选择、
-    能力配方校验、超时和对话日志都从该对象读取，避免三条调用链重复隧穿。
-    """
+    """一次业务用例解析后的模型调用上下文。"""
 
     app_dir: Path | str
     use_case_id: str
     model: dict[str, Any]
     required_capabilities: tuple[str, ...]
     timeout_seconds: int
+    generation_settings: dict[str, Any] | None = None
 
     @classmethod
     def for_use_case(
@@ -93,7 +136,7 @@ class AiProviderClient:
         timeout_seconds: int | None = None,
         default_timeout_seconds: int,
     ) -> "AiProviderClient":
-        model, required_capabilities, effective_timeout = _resolved_use_case_request(
+        model, required, effective_timeout = _resolved_use_case_request(
             app_dir,
             app_config,
             use_case_id,
@@ -101,14 +144,19 @@ class AiProviderClient:
             timeout_seconds=timeout_seconds,
             default_timeout_seconds=default_timeout_seconds,
         )
-        _validate_capability_profiles(model, required_capabilities)
+        binding = ai_model_config.ai_use_case_binding(app_config, use_case_id)
         return cls(
             app_dir=app_dir,
             use_case_id=use_case_id,
             model=model,
-            required_capabilities=required_capabilities,
+            required_capabilities=required,
             timeout_seconds=effective_timeout,
+            generation_settings=dict(binding.get("generation") or {}),
         )
+
+    @property
+    def connection_type(self) -> str:
+        return ai_model_config.model_connection_type(self.model)
 
     def provider_for(self, capability: str) -> AiProvider:
         return _provider_for_model(self.model, capability)
@@ -116,7 +164,7 @@ class AiProviderClient:
     def start_conversation(
         self,
         capability: str,
-        provider: AiProvider,
+        provider_id: str,
         input_payload: dict[str, Any],
         *,
         stream: bool = False,
@@ -125,7 +173,7 @@ class AiProviderClient:
         return get_context().ai_journal.start_conversation(
             use_case_id=self.use_case_id,
             capability=capability,
-            provider_id=provider.provider_id,
+            provider_id=provider_id,
             model=self.model,
             stream=stream,
             required_capabilities=self.required_capabilities,
@@ -137,7 +185,7 @@ class AiProviderClient:
     def start_invocation(
         self,
         capability: str,
-        provider: AiProvider,
+        provider_id: str,
         input_payload: dict[str, Any],
         *,
         stream: bool = False,
@@ -147,12 +195,13 @@ class AiProviderClient:
         workflow_run_id: str | None = None,
         parent_task_run_id: str | None = None,
         actor_id: str = "local-user",
+        tenant_id: str = "local",
         permissions: frozenset[str] | set[str] | tuple[str, ...] = frozenset(),
+        business_scope: dict[str, str] | None = None,
+        idempotency_context: dict[str, str] | None = None,
         approved_tool_call_ids: frozenset[str] | set[str] | tuple[str, ...] = frozenset(),
         allow_write: bool = False,
     ) -> AiInvocation:
-        """创建一次 execution context 和一次 recorder/conversation。"""
-
         execution_context = AiExecutionContext.create(
             timeout_seconds=self.timeout_seconds,
             budget_profile=budget_profile or f"{self.use_case_id}.default",
@@ -161,13 +210,16 @@ class AiProviderClient:
             workflow_run_id=workflow_run_id,
             parent_task_run_id=parent_task_run_id,
             actor_id=actor_id,
+            tenant_id=tenant_id,
             permissions=permissions,
+            business_scope=business_scope,
+            idempotency_context=idempotency_context,
             approved_tool_call_ids=approved_tool_call_ids,
             allow_write=allow_write,
         )
         conversation = self.start_conversation(
             capability,
-            provider,
+            provider_id,
             input_payload,
             stream=stream,
             trace_context=execution_context.trace_payload(),
@@ -175,13 +227,15 @@ class AiProviderClient:
         return AiInvocation(
             use_case_id=self.use_case_id,
             capability=capability,
-            provider=provider,
+            provider_id=provider_id,
             model=self.model,
             required_capabilities=self.required_capabilities,
             timeout_seconds=self.timeout_seconds,
             execution_context=execution_context,
             recorder=ConversationAiWorkRecorder(conversation, execution_context),
+            generation_settings=self.generation_settings,
         )
+
 
 def chat_json(
     app_dir: Path | str,
@@ -207,13 +261,48 @@ def chat_json(
         default_timeout_seconds=60,
     )
     effective_stream = True if stream is None else bool(stream)
+    if client.connection_type == ai_model_config.CONNECTION_TYPE_API:
+        if extra_body:
+            raise ValueError(
+                "API 请求不允许业务层传入 extra_body；请使用模型配置的受控字段。"
+            )
+        provider_id = ai_direct_request_service.PYDANTIC_DIRECT_PROVIDER_ID
+        invocation = client.start_invocation(
+            CAPABILITY_CHAT_JSON,
+            provider_id,
+            {"message_count": len(messages)},
+            stream=effective_stream,
+        )
+        recorder = invocation.recorder
+        try:
+            parsed = ai_direct_request_service.chat_json(
+                app_dir=client.app_dir,
+                use_case_id=client.use_case_id,
+                model=client.model,
+                required_capabilities=client.required_capabilities,
+                messages=messages,
+                generation_settings=client.generation_settings,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout_seconds=client.timeout_seconds,
+                response_format=response_format,
+                stream=effective_stream,
+                recorder=recorder,
+                token_callback=token_callback,
+            )
+            recorder.finish({"parsed": parsed})
+            return parsed
+        except Exception as exc:
+            recorder.fail(exc)
+            raise
+
     provider = client.provider_for(CAPABILITY_CHAT_JSON)
     if not isinstance(provider, AiChatProvider):
         raise RuntimeError(f"Provider {provider.provider_id} 未实现文本对话能力。")
     invocation = client.start_invocation(
         CAPABILITY_CHAT_JSON,
-        provider,
-        {"messages": messages},
+        provider.provider_id,
+        {"message_count": len(messages)},
         stream=effective_stream,
     )
     recorder = invocation.recorder
@@ -232,14 +321,36 @@ def chat_json(
                 stream=effective_stream,
                 token_callback=token_callback,
                 conversation=recorder,
+                generation_settings=client.generation_settings,
             )
         )
-        recorder.emit_custom("business.result", {"parsed": parsed})
         recorder.finish({"parsed": parsed})
         return parsed
     except Exception as exc:
         recorder.fail(exc)
         raise
+
+
+def _image_client(
+    app_dir: Path | str,
+    app_config: dict[str, Any] | None,
+    use_case_id: str,
+    *,
+    model_id: str,
+    timeout_seconds: int | None,
+) -> AiProviderClient:
+    client = AiProviderClient.for_use_case(
+        app_dir,
+        app_config,
+        use_case_id,
+        model_id=model_id,
+        timeout_seconds=timeout_seconds,
+        default_timeout_seconds=180,
+    )
+    if client.connection_type != ai_model_config.CONNECTION_TYPE_API:
+        raise RuntimeError("图片 API 能力只允许通过 Pydantic Model 执行。")
+    return client
+
 
 def generate_images(
     app_dir: Path | str,
@@ -255,36 +366,36 @@ def generate_images(
     count: int = 1,
     timeout_seconds: int | None = None,
 ) -> list[dict[str, Any]]:
-    client = AiProviderClient.for_use_case(
+    del images
+    client = _image_client(
         app_dir,
         app_config,
         use_case_id,
         model_id=model_id,
         timeout_seconds=timeout_seconds,
-        default_timeout_seconds=180,
     )
-    provider = client.provider_for(CAPABILITY_IMAGE_GENERATE)
-    if not isinstance(provider, AiImageProvider):
-        raise RuntimeError(f"Provider {provider.provider_id} 未实现图片生成能力。")
+    required = tuple(
+        dict.fromkeys(
+            (*client.required_capabilities, ai_model_config.CAP_IMAGE_GENERATE)
+        )
+    )
     conversation = client.start_conversation(
         CAPABILITY_IMAGE_GENERATE,
-        provider,
-        {"prompt": prompt, "images": images or []},
+        ai_direct_request_service.PYDANTIC_DIRECT_PROVIDER_ID,
+        {"prompt_length": len(prompt), "requested_count": count},
     )
     try:
-        results = provider.generate_images(
-            AiImageRequest(
-                app_dir=client.app_dir,
-                model=client.model,
-                prompt=prompt,
-                images=images or [],
-                mode=mode,
-                timeout_seconds=client.timeout_seconds,
-                size=size,
-                quality=quality,
-                count=count,
-                conversation=conversation,
-            )
+        results = ai_direct_request_service.generate_images(
+            app_dir=client.app_dir,
+            use_case_id=client.use_case_id,
+            model=client.model,
+            required_capabilities=required,
+            prompt=prompt,
+            mode=mode,
+            size=size,
+            quality=quality,
+            count=count,
+            timeout_seconds=client.timeout_seconds,
         )
         summary = {"generated_count": len(results)}
         conversation.emit_custom("business.result", summary)
@@ -293,6 +404,7 @@ def generate_images(
     except Exception as exc:
         conversation.fail(exc)
         raise
+
 
 def edit_images(
     app_dir: Path | str,
@@ -308,36 +420,34 @@ def edit_images(
     count: int = 1,
     timeout_seconds: int | None = None,
 ) -> list[dict[str, Any]]:
-    client = AiProviderClient.for_use_case(
+    client = _image_client(
         app_dir,
         app_config,
         use_case_id,
         model_id=model_id,
         timeout_seconds=timeout_seconds,
-        default_timeout_seconds=180,
     )
-    provider = client.provider_for(CAPABILITY_IMAGE_EDIT)
-    if not isinstance(provider, AiImageProvider):
-        raise RuntimeError(f"Provider {provider.provider_id} 未实现图片编辑能力。")
     conversation = client.start_conversation(
         CAPABILITY_IMAGE_EDIT,
-        provider,
-        {"prompt": prompt, "images": images},
+        ai_direct_request_service.PYDANTIC_DIRECT_PROVIDER_ID,
+        {
+            "prompt_length": len(prompt),
+            "source_image_ids": [str(item.get("id") or "") for item in images],
+        },
     )
     try:
-        results = provider.edit_images(
-            AiImageRequest(
-                app_dir=client.app_dir,
-                model=client.model,
-                prompt=prompt,
-                images=images,
-                mode=mode,
-                timeout_seconds=client.timeout_seconds,
-                size=size,
-                quality=quality,
-                count=count,
-                conversation=conversation,
-            )
+        results = ai_direct_request_service.edit_images(
+            app_dir=client.app_dir,
+            use_case_id=client.use_case_id,
+            model=client.model,
+            required_capabilities=client.required_capabilities,
+            prompt=prompt,
+            images=images,
+            mode=mode,
+            size=size,
+            quality=quality,
+            count=count,
+            timeout_seconds=client.timeout_seconds,
         )
         summary = {"generated_count": len(results)}
         conversation.emit_custom("business.result", summary)
@@ -347,14 +457,19 @@ def edit_images(
         conversation.fail(exc)
         raise
 
+
 def test_ai_model(app_dir: Path | str, model: dict[str, Any]) -> dict[str, Any]:
     config_service.load_env(app_dir)
     raw_model = model if isinstance(model, dict) else {}
     normalized = ai_model_config.normalize_ai_model(raw_model)
+    connection_type = ai_model_config.model_connection_type(normalized)
+    if connection_type == ai_model_config.CONNECTION_TYPE_API:
+        return test_api_model(app_dir, normalized, raw_model)
     provider = _provider_for_model(normalized, CAPABILITY_CHAT_JSON)
     if not isinstance(provider, AiChatProvider):
         raise RuntimeError(f"Provider {provider.provider_id} 未实现模型测试能力。")
     return provider.test_model(app_dir, normalized, raw_model)
+
 
 __all__ = [
     "AI_PROVIDER_REGISTRY",
@@ -362,19 +477,13 @@ __all__ = [
     "AiChatRequest",
     "AiProviderClient",
     "AiChatProvider",
-    "AiImageProvider",
-    "AiImageRequest",
     "AiProvider",
     "BrowserAiProvider",
     "CodexCliProvider",
-    "OpenAICompatibleProvider",
-    "OpenAIImageProvider",
-    "OpenAIResponsesProvider",
     "chat_json",
     "edit_images",
     "generate_images",
     "list_remote_models",
-    "parse_json_text",
     "probe_browser_model_capabilities",
     "probe_cli_model_capabilities",
     "probe_model_capabilities",

@@ -318,3 +318,27 @@ def test_category_match_failed_taxonomy_maps_to_new_http_contract(monkeypatch) -
 
     assert status == 424
     assert result["failure"]["code"] == "CATEGORY_CREDENTIALS_MISSING"
+
+
+def test_category_match_agent_error_http_status_contract() -> None:
+    def failed(code: str) -> dict:
+        return {"status": "failed", "failure": {"code": code}}
+
+    assert category_facade._category_match_http_status(
+        failed("AI_TOOL_PERMISSION_DENIED")
+    ) == 403
+    assert category_facade._category_match_http_status(
+        failed("AI_TOOL_APPROVAL_REQUIRED")
+    ) == 409
+    assert category_facade._category_match_http_status(
+        failed("AI_MODEL_CONFIGURATION_INVALID")
+    ) == 424
+    assert category_facade._category_match_http_status(
+        failed("AI_MODEL_TOOL_CALLING_UNSUPPORTED")
+    ) == 424
+    assert category_facade._category_match_http_status(
+        failed("AI_AGENT_USAGE_LIMIT_EXCEEDED")
+    ) == 502
+    assert category_facade._category_match_http_status(
+        failed("TASK_DEADLINE_EXCEEDED")
+    ) == 504

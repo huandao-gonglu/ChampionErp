@@ -6,11 +6,10 @@ from typing import Any
 import pytest
 
 from erp_web.schemas.ai_tools import (
-    AiToolCall,
+    AiToolCommand,
     AiToolDefinition,
     AiToolResult,
     AiToolSchemaError,
-    AiToolTurn,
 )
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.services.ai_tool_registry import (
@@ -48,7 +47,11 @@ class RecordingRecorder:
         self.record("RUN_ERROR", error=str(error))
 
 
-def tool_definition(*, permission: str = "catalog.read") -> AiToolDefinition:
+def tool_definition(
+    *,
+    permission: str = "catalog.read",
+    side_effect: str = "none",
+) -> AiToolDefinition:
     return AiToolDefinition(
         name="lookup_item",
         version="1",
@@ -66,19 +69,18 @@ def tool_definition(*, permission: str = "catalog.read") -> AiToolDefinition:
             "additionalProperties": False,
         },
         required_permission=permission,
-        side_effect="none",
+        side_effect=side_effect,
         approval_required=False,
     )
 
 
-def tool_call(
+def tool_command(
     call_id: str = "call_1",
     *,
     item_id: str = "sku-1",
     tool_name: str = "lookup_item",
-) -> AiToolCall:
-    return AiToolCall(
-        protocol_version="1",
+) -> AiToolCommand:
+    return AiToolCommand(
         call_id=call_id,
         tool_name=tool_name,
         tool_version="1",
@@ -91,6 +93,7 @@ def execution_context(
     *,
     permissions: frozenset[str] = frozenset({"catalog.read"}),
     expired: bool = False,
+    allow_write: bool = False,
 ) -> AiExecutionContext:
     now = datetime.now(timezone.utc)
     return AiExecutionContext(
@@ -99,6 +102,7 @@ def execution_context(
         deadline_at=now - timedelta(seconds=1) if expired else now + timedelta(seconds=30),
         budget_profile="test.default",
         permissions=permissions,
+        allow_write=allow_write,
     )
 
 
@@ -108,8 +112,10 @@ def runtime(
     permissions: frozenset[str] = frozenset({"catalog.read"}),
     max_tool_calls: int = 4,
     expired: bool = False,
+    before_executor=None,
+    side_effect: str = "none",
 ) -> AiToolRuntime:
-    definition = tool_definition()
+    definition = tool_definition(side_effect=side_effect)
     toolset = AiToolSet.bind(
         "test.read",
         [definition],
@@ -120,13 +126,15 @@ def runtime(
         execution_context=execution_context(
             permissions=permissions,
             expired=expired,
+            allow_write=side_effect == "write",
         ),
         recorder=RecordingRecorder(),
         max_tool_calls=max_tool_calls,
+        before_executor=before_executor,
     )
 
 
-def test_ai_tool_schema_rejects_invalid_turns_and_arguments() -> None:
+def test_ai_tool_schema_rejects_invalid_definitions_commands_and_arguments() -> None:
     with pytest.raises(AiToolSchemaError, match="side_effect"):
         AiToolDefinition(
             name="bad",
@@ -137,19 +145,18 @@ def test_ai_tool_schema_rejects_invalid_turns_and_arguments() -> None:
             required_permission="test.read",
             side_effect="network",  # type: ignore[arg-type]
         )
-    with pytest.raises(AiToolSchemaError, match="未知字段"):
-        AiToolCall.from_dict(
-            {
-                **tool_call().to_dict(),
-                "executor": "model_must_not_choose_this",
-            }
+    with pytest.raises(AiToolSchemaError, match="round"):
+        AiToolCommand(
+            call_id="bad-round",
+            tool_name="lookup_item",
+            tool_version="1",
+            arguments={"item_id": "sku-1"},
+            round=0,
         )
-    with pytest.raises(AiToolSchemaError, match="不得同时"):
-        AiToolTurn(type="final", calls=(tool_call(),), result={"ok": True})
     invalid_arguments = runtime(
         lambda arguments, context: arguments
     ).execute(
-        AiToolCall(
+        AiToolCommand(
             call_id="call_missing",
             tool_name="lookup_item",
             tool_version="1",
@@ -172,22 +179,19 @@ def test_ai_tool_schema_rejects_invalid_turns_and_arguments() -> None:
         )
 
 
-def test_ai_tool_schemas_round_trip_through_protocol_dicts() -> None:
+def test_ai_tool_definition_and_result_round_trip_through_dicts() -> None:
     definition = tool_definition()
-    call = tool_call()
+    command = tool_command()
     result = AiToolResult(
-        call_id=call.call_id,
-        tool_name=call.tool_name,
+        call_id=command.call_id,
+        tool_name=command.tool_name,
         ok=True,
         output={"item_id": "sku-1"},
         duration_ms=12,
     )
-    turn = AiToolTurn(type="tool_calls", calls=(call,))
 
     assert AiToolDefinition.from_dict(definition.to_dict()) == definition
-    assert AiToolCall.from_dict(call.to_dict()) == call
     assert AiToolResult.from_dict(result.to_dict()) == result
-    assert AiToolTurn.from_dict(turn.to_dict()) == turn
 
 
 def test_toolset_requires_exact_explicit_definition_executor_binding() -> None:
@@ -217,7 +221,7 @@ def test_toolset_requires_exact_explicit_definition_executor_binding() -> None:
     with pytest.raises(TypeError):
         definition.input_schema["type"] = "array"  # type: ignore[index]
     with pytest.raises(TypeError):
-        tool_call().arguments["item_id"] = "mutated"  # type: ignore[index]
+        tool_command().arguments["item_id"] = "mutated"  # type: ignore[index]
     with pytest.raises(ValueError, match="cooperative deadline"):
         AiToolSet.bind(
             "test.unbounded",
@@ -228,7 +232,7 @@ def test_toolset_requires_exact_explicit_definition_executor_binding() -> None:
 
 def test_runtime_rejects_unregistered_tool_and_missing_permission() -> None:
     unregistered = runtime(lambda arguments, context: arguments).execute(
-        tool_call(tool_name="unknown")
+        tool_command(tool_name="unknown")
     )
     assert unregistered.ok is False
     assert unregistered.error["code"] == "TOOL_NOT_ALLOWED"
@@ -236,7 +240,7 @@ def test_runtime_rejects_unregistered_tool_and_missing_permission() -> None:
     denied = runtime(
         lambda arguments, context: arguments,
         permissions=frozenset(),
-    ).execute(tool_call())
+    ).execute(tool_command())
     assert denied.ok is False
     assert denied.error["code"] == "TOOL_PERMISSION_DENIED"
 
@@ -250,15 +254,73 @@ def test_runtime_deduplicates_call_ids_and_same_tool_arguments() -> None:
         return {"item_id": arguments["item_id"]}
 
     tool_runtime = runtime(executor)
-    first = tool_runtime.execute(tool_call())
-    repeated_id = tool_runtime.execute(tool_call())
-    repeated_arguments = tool_runtime.execute(tool_call("call_2"))
+    first = tool_runtime.execute(tool_command())
+    repeated_id = tool_runtime.execute(tool_command())
+    repeated_arguments = tool_runtime.execute(tool_command("call_2"))
 
     assert first.ok is True
     assert repeated_id.deduplicated is True
     assert repeated_arguments.deduplicated is True
     assert repeated_arguments.call_id == "call_2"
     assert executions == ["sku-1"]
+
+
+def test_runtime_persists_execution_checkpoint_only_immediately_before_executor() -> None:
+    checkpoints: list[str] = []
+    executions: list[str] = []
+
+    tool_runtime = runtime(
+        lambda arguments, context: (
+            executions.append(arguments["item_id"])
+            or {"item_id": arguments["item_id"]}
+        ),
+        before_executor=lambda command: checkpoints.append(command.call_id),
+        side_effect="write",
+    )
+
+    invalid = tool_runtime.execute(
+        AiToolCommand(
+            call_id="invalid",
+            tool_name="lookup_item",
+            tool_version="1",
+            arguments={},
+            round=1,
+        )
+    )
+    assert invalid.error["code"] == "TOOL_INPUT_SCHEMA_INVALID"
+    assert checkpoints == []
+
+    assert tool_runtime.execute(tool_command()).ok is True
+    assert tool_runtime.execute(tool_command()).deduplicated is True
+    assert checkpoints == ["call_1"]
+    assert executions == ["sku-1"]
+
+
+def test_runtime_aborts_before_side_effect_when_checkpoint_persistence_fails() -> None:
+    executions = 0
+
+    def executor(arguments, context):
+        nonlocal executions
+        del arguments, context
+        executions += 1
+        return {"item_id": "sku-1"}
+
+    def fail_checkpoint(command: AiToolCommand) -> None:
+        del command
+        raise OSError("不得泄露的存储错误")
+
+    result = runtime(
+        executor,
+        before_executor=fail_checkpoint,
+        side_effect="write",
+    ).execute(tool_command())
+
+    assert result.ok is False
+    assert result.error == {
+        "code": "TOOL_EXECUTION_CHECKPOINT_FAILED",
+        "message": "工具执行前检查点无法持久化",
+    }
+    assert executions == 0
 
 
 def test_runtime_rejects_same_call_id_with_different_arguments() -> None:
@@ -271,8 +333,8 @@ def test_runtime_rejects_same_call_id_with_different_arguments() -> None:
         return arguments
 
     tool_runtime = runtime(executor)
-    assert tool_runtime.execute(tool_call()).ok is True
-    conflict = tool_runtime.execute(tool_call(item_id="sku-2"))
+    assert tool_runtime.execute(tool_command()).ok is True
+    conflict = tool_runtime.execute(tool_command(item_id="sku-2"))
 
     assert conflict.ok is False
     assert conflict.error["code"] == "TOOL_CALL_INVALID"
@@ -283,15 +345,15 @@ def test_runtime_enforces_deadline_and_call_budget() -> None:
     expired_result = runtime(
         lambda arguments, context: arguments,
         expired=True,
-    ).execute(tool_call())
+    ).execute(tool_command())
     assert expired_result.error["code"] == "TASK_DEADLINE_EXCEEDED"
 
     tool_runtime = runtime(
         lambda arguments, context: {"item_id": arguments["item_id"]},
         max_tool_calls=1,
     )
-    assert tool_runtime.execute(tool_call()).ok is True
-    over_budget = tool_runtime.execute(tool_call("call_2", item_id="sku-2"))
+    assert tool_runtime.execute(tool_command()).ok is True
+    over_budget = tool_runtime.execute(tool_command("call_2", item_id="sku-2"))
     assert over_budget.ok is False
     assert over_budget.error["code"] == "TOOL_CALL_BUDGET_EXCEEDED"
 
@@ -299,7 +361,7 @@ def test_runtime_enforces_deadline_and_call_budget() -> None:
 def test_runtime_validates_output_schema() -> None:
     result = runtime(
         lambda arguments, context: {"unexpected": arguments["item_id"]}
-    ).execute(tool_call())
+    ).execute(tool_command())
 
     assert result.ok is False
     assert result.error["code"] == "TOOL_OUTPUT_SCHEMA_INVALID"
@@ -352,7 +414,7 @@ def test_runtime_preserves_json_arrays_for_validation_and_executor() -> None:
         recorder=RecordingRecorder(),
     )
     result = tool_runtime.execute(
-        AiToolCall(
+        AiToolCommand(
             call_id="call_arrays",
             tool_name=definition.name,
             tool_version="1",

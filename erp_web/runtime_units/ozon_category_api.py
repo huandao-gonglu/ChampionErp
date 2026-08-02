@@ -7,28 +7,42 @@ Ozon 创建商品时需要同时使用 ``description_category_id`` 和 ``type_id
 """
 from __future__ import annotations
 
-import time
-import threading
 from copy import deepcopy
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import hashlib
 import json
+import logging
+from pathlib import Path
+import ssl
+import threading
+import time
 from typing import Any
+import urllib.error
 
 from erp_web.marketplaces.config_http import request_ozon_json
 from erp_web.schemas.category import CategoryCorpusInfo
 
+from .ozon_category_cache import (
+    OZON_CATEGORY_CACHE_FRESH_TTL,
+    OzonCategoryCacheEntry,
+    clear_ozon_category_cache,
+    read_ozon_category_cache,
+    write_ozon_category_cache,
+)
+
+
+logger = logging.getLogger(__name__)
+
 
 OZON_CATEGORY_TREE_URL = "https://api-seller.ozon.ru/v1/description-category/tree"
 OZON_CATEGORY_ATTRIBUTES_URL = "https://api-seller.ozon.ru/v1/description-category/attribute"
-_TREE_CACHE_TTL_SECONDS = 15 * 60
+_STALE_RETRY_COOLDOWN_SECONDS = 60
 
 
 @dataclass
-class TtlCache:
-    ttl_seconds: float
-    _items: dict[str, tuple[float, datetime, Any]] = field(default_factory=dict)
+class _MemoryCorpusCache:
+    _items: dict[str, tuple[float, Any]] = field(default_factory=dict)
     _lock: threading.RLock = field(default_factory=threading.RLock)
 
     def get(self, key: str) -> Any | None:
@@ -37,32 +51,18 @@ class TtlCache:
             cached = self._items.get(key)
             if not cached:
                 return None
-            if now - cached[0] >= self.ttl_seconds:
+            if now >= cached[0]:
                 self._items.pop(key, None)
                 return None
-            return deepcopy(cached[2])
+            return deepcopy(cached[1])
 
-    def set(self, key: str, value: Any) -> None:
+    def set(self, key: str, value: Any, *, ttl_seconds: float) -> None:
+        if ttl_seconds <= 0:
+            return
         with self._lock:
             self._items[key] = (
-                time.monotonic(),
-                datetime.now(timezone.utc),
+                time.monotonic() + ttl_seconds,
                 deepcopy(value),
-            )
-
-    def timestamps(self, key: str) -> tuple[datetime, datetime] | None:
-        now = time.monotonic()
-        with self._lock:
-            cached = self._items.get(key)
-            if not cached:
-                return None
-            if now - cached[0] >= self.ttl_seconds:
-                self._items.pop(key, None)
-                return None
-            retrieved_at = cached[1]
-            return (
-                retrieved_at,
-                retrieved_at + timedelta(seconds=self.ttl_seconds),
             )
 
     def clear(self) -> None:
@@ -70,8 +70,8 @@ class TtlCache:
             self._items.clear()
 
 
-_tree_cache = TtlCache(_TREE_CACHE_TTL_SECONDS)
-_corpus_cache = TtlCache(_TREE_CACHE_TTL_SECONDS)
+_corpus_cache = _MemoryCorpusCache()
+_corpus_load_lock = threading.RLock()
 
 
 def _load_store_config() -> dict[str, Any]:
@@ -79,6 +79,12 @@ def _load_store_config() -> dict[str, Any]:
     from erp_web.context import get_context
 
     return get_context().config.load_store_config()
+
+
+def _category_cache_root() -> Path:
+    from erp_web.context import get_context
+
+    return get_context().paths.cache_dir
 
 
 def _ozon_credentials() -> tuple[str, str]:
@@ -103,40 +109,111 @@ def _children(node: dict[str, Any]) -> list[dict[str, Any]]:
     return [item for item in node.get("children", []) if isinstance(item, dict)] if isinstance(node.get("children"), list) else []
 
 
-def _load_tree(
+def _credential_scope_hash(client_id: str) -> str:
+    digest = hashlib.sha256(client_id.encode("utf-8")).hexdigest()
+    return f"sha256:{digest}"
+
+
+def _is_auth_error(exc: Exception) -> bool:
+    message = str(exc).casefold()
+    return any(
+        marker in message
+        for marker in (
+            " 401",
+            " 403",
+            "unauthorized",
+            "forbidden",
+            "请先填写",
+            "credentials missing",
+            "missing credential",
+        )
+    )
+
+
+def _is_transient_provider_error(exc: Exception) -> bool:
+    if _is_auth_error(exc):
+        return False
+    if isinstance(
+        exc,
+        (
+            TimeoutError,
+            ConnectionError,
+            urllib.error.URLError,
+            ssl.SSLError,
+        ),
+    ):
+        return True
+    message = str(exc).casefold()
+    return any(
+        marker in message
+        for marker in (
+            " 408",
+            " 425",
+            " 429",
+            " 500",
+            " 502",
+            " 503",
+            " 504",
+            "timeout",
+            "timed out",
+            "rate limit",
+            "temporarily unavailable",
+            "connection",
+            "network",
+            "ssl",
+            "unexpected_eof",
+            "unexpected eof",
+            "connection reset",
+        )
+    )
+
+
+def _load_tree_from_remote(
     client_id: str,
     api_key: str,
     *,
     timeout_seconds: float | None = None,
 ) -> list[dict[str, Any]]:
-    cached = _tree_cache.get(client_id)
-    if isinstance(cached, list):
-        return cached
-    if timeout_seconds is None:
-        response = request_ozon_json(
-            "POST",
-            OZON_CATEGORY_TREE_URL,
-            client_id,
-            api_key,
-            {"language": "DEFAULT"},
-        )
-    else:
-        if timeout_seconds <= 0:
-            raise TimeoutError("Ozon 类目树 deadline 已耗尽")
-        response = request_ozon_json(
-            "POST",
-            OZON_CATEGORY_TREE_URL,
-            client_id,
-            api_key,
-            {"language": "DEFAULT"},
-            timeout_seconds=timeout_seconds,
-        )
+    """从 Ozon 读取类目树；瞬时网络错误在同一 deadline 内只重试一次。"""
+
+    deadline_at = (
+        time.monotonic() + float(timeout_seconds)
+        if timeout_seconds is not None
+        else None
+    )
+    response: dict[str, Any] | None = None
+    for attempt in range(2):
+        try:
+            if deadline_at is None:
+                response = request_ozon_json(
+                    "POST",
+                    OZON_CATEGORY_TREE_URL,
+                    client_id,
+                    api_key,
+                    {"language": "DEFAULT"},
+                )
+            else:
+                remaining = deadline_at - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Ozon 类目树 deadline 已耗尽")
+                response = request_ozon_json(
+                    "POST",
+                    OZON_CATEGORY_TREE_URL,
+                    client_id,
+                    api_key,
+                    {"language": "DEFAULT"},
+                    timeout_seconds=remaining,
+                )
+            break
+        except Exception as exc:
+            if attempt or not _is_transient_provider_error(exc):
+                raise
+    if response is None:
+        raise RuntimeError("Ozon 类目树请求未返回结果。")
     result = response.get("result") if isinstance(response, dict) else None
     if not isinstance(result, list):
         raise RuntimeError("Ozon 类目树响应缺少 result 列表。")
-    tree = [item for item in result if isinstance(item, dict)]
-    _tree_cache.set(client_id, tree)
-    return tree
+    return [item for item in result if isinstance(item, dict)]
 
 
 def _flatten_product_types(tree: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -219,51 +296,181 @@ def _stable_corpus_hash(records: list[dict[str, Any]]) -> str:
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _entry_payload(
+    entry: OzonCategoryCacheEntry,
+    *,
+    cache_source: str,
+    stale: bool,
+) -> dict[str, Any]:
+    return {
+        "entry": entry,
+        "cache_source": cache_source,
+        "stale": stale,
+    }
+
+
+def _corpus_result(
+    payload: dict[str, Any],
+) -> tuple[list[dict[str, Any]], CategoryCorpusInfo]:
+    entry = payload.get("entry")
+    if not isinstance(entry, OzonCategoryCacheEntry):
+        raise RuntimeError("Ozon 类目语料缓存状态不可用。")
+    source = str(payload.get("cache_source") or "persistent_cache")
+    stale = bool(payload.get("stale"))
+    return deepcopy(entry.records), {
+        "corpus_hash": entry.corpus_hash,
+        "taxonomy_version": entry.taxonomy_version,
+        "locale": entry.locale,
+        "retrieved_at": entry.retrieved_at.isoformat(),
+        "expires_at": entry.expires_at.isoformat(),
+        "stale_until": entry.stale_until.isoformat(),
+        "credential_scope_hash": entry.credential_scope_hash,
+        "cache_source": source,
+        "stale": stale,
+    }
+
+
+def _read_valid_persistent_entry(
+    credential_scope_hash: str,
+    *,
+    now: datetime,
+) -> OzonCategoryCacheEntry | None:
+    entry = read_ozon_category_cache(
+        _category_cache_root(),
+        credential_scope_hash,
+        now=now,
+    )
+    if entry is None:
+        return None
+    if _stable_corpus_hash(entry.records) != entry.corpus_hash:
+        return None
+    return entry
+
+
 def load_ozon_category_corpus(
     *,
     timeout_seconds: float | None = None,
+    force_refresh: bool = False,
 ) -> tuple[list[dict[str, Any]], CategoryCorpusInfo]:
-    """返回缓存树展平后的可发布商品类型及可复盘的语料身份。"""
+    """返回可发布商品类型，并按 24 小时新鲜期管理持久化缓存。
+
+    新鲜缓存直接复用；缓存过期后刷新远端。远端仅在瞬时网络错误时允许使用
+    7 天内的旧缓存，认证错误、无效响应和空语料都不会被旧数据掩盖。
+    """
 
     client_id, api_key = _ozon_credentials()
-    started_at = time.monotonic()
-    cached = _corpus_cache.get(client_id)
-    if isinstance(cached, dict) and isinstance(cached.get("records"), list):
-        records = cached["records"]
-        corpus_hash = _text(cached.get("corpus_hash"))
-    else:
-        records = _flatten_product_types(
-            _load_tree(
-                client_id,
-                api_key,
-                timeout_seconds=timeout_seconds,
+    credential_scope_hash = _credential_scope_hash(client_id)
+    deadline_at = (
+        time.monotonic() + float(timeout_seconds)
+        if timeout_seconds is not None
+        else None
+    )
+
+    def remaining_timeout() -> float | None:
+        if deadline_at is None:
+            return None
+        remaining = deadline_at - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Ozon 类目语料加载超过 deadline")
+        return remaining
+
+    with _corpus_load_lock:
+        now = _utc_now()
+        if not force_refresh:
+            cached = _corpus_cache.get(credential_scope_hash)
+            if isinstance(cached, dict):
+                return _corpus_result(cached)
+
+        persistent = _read_valid_persistent_entry(
+            credential_scope_hash,
+            now=now,
+        )
+        if not force_refresh and persistent is not None and persistent.is_fresh(now):
+            payload = _entry_payload(
+                persistent,
+                cache_source="persistent_cache",
+                stale=False,
             )
+            _corpus_cache.set(
+                credential_scope_hash,
+                payload,
+                ttl_seconds=(persistent.expires_at - now).total_seconds(),
+            )
+            return _corpus_result(payload)
+
+        try:
+            records = _flatten_product_types(
+                _load_tree_from_remote(
+                    client_id,
+                    api_key,
+                    timeout_seconds=remaining_timeout(),
+                )
+            )
+            if not records:
+                raise RuntimeError("Ozon 类目树未返回可发布的商品类型。")
+            refreshed_at = _utc_now()
+            entry = OzonCategoryCacheEntry(
+                credential_scope_hash=credential_scope_hash,
+                corpus_hash=_stable_corpus_hash(records),
+                taxonomy_version=None,
+                locale="ru-RU",
+                retrieved_at=refreshed_at,
+                records=records,
+            )
+        except Exception as exc:
+            fallback_now = _utc_now()
+            if (
+                persistent is None
+                or not persistent.can_serve_stale(fallback_now)
+                or not _is_transient_provider_error(exc)
+            ):
+                raise
+            fallback_is_stale = not persistent.is_fresh(fallback_now)
+            payload = _entry_payload(
+                persistent,
+                cache_source=(
+                    "stale_cache" if fallback_is_stale else "persistent_cache"
+                ),
+                stale=fallback_is_stale,
+            )
+            _corpus_cache.set(
+                credential_scope_hash,
+                payload,
+                ttl_seconds=(
+                    min(
+                        _STALE_RETRY_COOLDOWN_SECONDS,
+                        (
+                            persistent.stale_until - fallback_now
+                        ).total_seconds(),
+                    )
+                    if fallback_is_stale
+                    else (
+                        persistent.expires_at - fallback_now
+                    ).total_seconds()
+                ),
+            )
+            return _corpus_result(payload)
+
+        try:
+            write_ozon_category_cache(_category_cache_root(), entry)
+        except OSError:
+            logger.warning("写入 Ozon 类目持久化缓存失败", exc_info=True)
+
+        payload = _entry_payload(
+            entry,
+            cache_source="remote_cache",
+            stale=False,
         )
-        corpus_hash = _stable_corpus_hash(records)
         _corpus_cache.set(
-            client_id,
-            {"records": records, "corpus_hash": corpus_hash},
+            credential_scope_hash,
+            payload,
+            ttl_seconds=OZON_CATEGORY_CACHE_FRESH_TTL.total_seconds(),
         )
-    if (
-        timeout_seconds is not None
-        and time.monotonic() - started_at >= timeout_seconds
-    ):
-        raise TimeoutError("Ozon 类目语料加载超过 deadline")
-    if not records:
-        raise RuntimeError("Ozon 类目树未返回可发布的商品类型。")
-    timestamps = _corpus_cache.timestamps(client_id)
-    if timestamps is None:
-        raise RuntimeError("Ozon 类目树缓存状态不可用。")
-    retrieved_at, expires_at = timestamps
-    credential_scope = hashlib.sha256(client_id.encode("utf-8")).hexdigest()
-    return records, {
-        "corpus_hash": corpus_hash,
-        "taxonomy_version": None,
-        "locale": "ru-RU",
-        "retrieved_at": retrieved_at.isoformat(),
-        "expires_at": expires_at.isoformat(),
-        "credential_scope_hash": f"sha256:{credential_scope}",
-    }
+        return _corpus_result(payload)
 
 
 def _normalize_query(value: str) -> list[str]:
@@ -291,7 +498,9 @@ def search_ozon_categories(
     query = _text(query)
     if not query:
         return []
-    records, _ = load_ozon_category_corpus(timeout_seconds=timeout_seconds)
+    records, corpus_info = load_ozon_category_corpus(
+        timeout_seconds=timeout_seconds
+    )
     normalized_query = " ".join(_normalize_query(query))
     terms = _normalize_query(query)
     matches: list[dict[str, Any]] = []
@@ -308,6 +517,7 @@ def search_ozon_categories(
                 "score": score,
                 "matched_terms": terms,
                 "source": "ozon_category_tree",
+                "cache_source": corpus_info.get("cache_source"),
             }
         )
         matches.append(result)
@@ -315,10 +525,15 @@ def search_ozon_categories(
     return matches[: max(1, min(50, int(limit or 20)))]
 
 
-def fetch_ozon_category_tree_summary() -> dict[str, Any]:
+def fetch_ozon_category_tree_summary(
+    *,
+    force_refresh: bool = False,
+) -> dict[str, Any]:
     """读取类目树并返回适合授权设置页展示的摘要。"""
 
-    product_types, _ = load_ozon_category_corpus()
+    product_types, corpus_info = load_ozon_category_corpus(
+        force_refresh=force_refresh
+    )
     if not product_types:
         raise RuntimeError("Ozon 类目树未返回可发布的商品类型。")
     sample = product_types[0]
@@ -329,7 +544,26 @@ def fetch_ozon_category_tree_summary() -> dict[str, Any]:
             "description_category_id": sample.get("description_category_id"),
             "path": sample.get("category_path"),
         },
+        "cache": {
+            "source": corpus_info.get("cache_source"),
+            "stale": bool(corpus_info.get("stale")),
+            "retrieved_at": corpus_info.get("retrieved_at"),
+            "expires_at": corpus_info.get("expires_at"),
+            "stale_until": corpus_info.get("stale_until"),
+        },
     }
+
+
+def refresh_ozon_category_corpus(
+    *,
+    timeout_seconds: float | None = None,
+) -> tuple[list[dict[str, Any]], CategoryCorpusInfo]:
+    """显式跳过新鲜缓存并刷新 Ozon 类目语料。"""
+
+    return load_ozon_category_corpus(
+        timeout_seconds=timeout_seconds,
+        force_refresh=True,
+    )
 
 
 def _record_for_type_id(type_id: str, records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -365,7 +599,6 @@ def fetch_ozon_category_record(
     type_id = _text(category_id)
     if not type_id:
         raise RuntimeError("缺少 Ozon 商品类型 ID。")
-    client_id, api_key = _ozon_credentials()
     deadline_at = (
         time.monotonic() + float(timeout_seconds)
         if timeout_seconds is not None
@@ -380,21 +613,18 @@ def fetch_ozon_category_record(
             raise TimeoutError("Ozon 类目详情 deadline 已耗尽")
         return remaining
 
-    tree = (
-        _load_tree(client_id, api_key)
-        if deadline_at is None
-        else _load_tree(
-            client_id,
-            api_key,
-            timeout_seconds=remaining_timeout(),
+    records, _ = load_ozon_category_corpus(
+        timeout_seconds=(
+            None if deadline_at is None else remaining_timeout()
         )
     )
     record = _record_for_type_id(
         type_id,
-        _flatten_product_types(tree),
+        records,
     )
     if not include_attributes:
         return record
+    client_id, api_key = _ozon_credentials()
     description_category_id = _text(record.get("description_category_id"))
     try:
         request_category_id: int | str = int(description_category_id)
@@ -438,11 +668,21 @@ def fetch_ozon_category_record(
     return record
 
 
-def clear_ozon_category_tree_cache() -> None:
-    """供测试和凭据切换后的显式刷新使用。"""
+def clear_ozon_category_tree_cache(
+    *,
+    include_persistent: bool = True,
+    credential_scope_hash: str | None = None,
+) -> int:
+    """清空内存缓存，并可删除一个作用域或全部持久化类目缓存。"""
 
-    _tree_cache.clear()
-    _corpus_cache.clear()
+    with _corpus_load_lock:
+        _corpus_cache.clear()
+        if not include_persistent:
+            return 0
+        return clear_ozon_category_cache(
+            _category_cache_root(),
+            credential_scope_hash=credential_scope_hash,
+        )
 
 
 __all__ = [
@@ -452,5 +692,6 @@ __all__ = [
     "fetch_ozon_category_tree_summary",
     "fetch_ozon_category_record",
     "load_ozon_category_corpus",
+    "refresh_ozon_category_corpus",
     "search_ozon_categories",
 ]

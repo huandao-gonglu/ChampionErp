@@ -14,7 +14,7 @@ if not exist "%PY%" (
   python -m venv .venv
 )
 
-"%PY%" -c "import requests, PIL, dotenv, openai" >nul 2>nul
+"%PY%" -c "import requests, PIL, dotenv, openai, pydantic_ai, opentelemetry.sdk; from importlib.metadata import version; assert version('pydantic-ai-slim') == '2.22.0'; assert version('opentelemetry-sdk') == '1.44.0'" >nul 2>nul
 if errorlevel 1 (
   echo [setup] Installing backend dependencies
   "%PY%" -m pip install --upgrade pip

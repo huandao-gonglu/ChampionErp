@@ -10,7 +10,7 @@ import pytest
 
 from erp_web.context import get_context
 from erp_web.http_route_units import ai_work_routes
-from erp_web.services import ai_gateway, ai_work_service
+from erp_web.services import ai_gateway, ai_gateway_providers, ai_work_service
 from tests.runtime_test_utils import temp_app_context
 
 
@@ -21,17 +21,16 @@ def journal(tmp_path: Path):
         yield get_context().ai_journal
 
 
-def _chat_config(stream: bool = False) -> dict:
+def _chat_config() -> dict:
     return {
         "ai_models": [
             {
                 "id": "chat_model",
-                "provider": "OpenAI-Compatible",
+                "provider": "OpenAI",
                 "api_key": "test-key",
                 "base_url": "https://ai.example.com/v1",
                 "model": "test-model",
                 "capabilities": ["chat", "json"],
-                "extra": {"request_body": {"stream": stream}},
             }
         ]
     }
@@ -185,19 +184,18 @@ def test_ai_work_wait_rechecks_events_before_blocking(journal, monkeypatch) -> N
     assert events == [event]
 
 
-def test_chat_json_records_actual_provider_request_and_response(tmp_path: Path, journal, monkeypatch) -> None:
-    class FakeResponse:
-        def __enter__(self):
-            return self
+def test_ai_work_projects_provider_exchange_without_copying_messages(
+    tmp_path: Path, journal, monkeypatch
+) -> None:
+    def fake_direct_chat(**kwargs):
+        kwargs["recorder"].finish_assistant_message('{"title":"Hola"}')
+        return {"title": "Hola"}
 
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-        @staticmethod
-        def read() -> bytes:
-            return b'{"choices":[{"message":{"content":"{\\"title\\":\\"Hola\\"}"}}]}'
-
-    monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", lambda request, timeout: FakeResponse())
+    monkeypatch.setattr(
+        ai_gateway_providers.ai_direct_request_service,
+        "chat_json",
+        fake_direct_chat,
+    )
     messages = [
         {"role": "system", "content": "Return JSON."},
         {"role": "user", "content": "Localize this product."},
@@ -209,44 +207,44 @@ def test_chat_json_records_actual_provider_request_and_response(tmp_path: Path, 
     conversations = journal.list_conversations()
     assert len(conversations) == 1
     events = journal.read_events(conversations[0]["conversation_id"])
-    request_event = next(event for event in events if event.get("name") == "provider.request")
-    request_value = request_event["value"]
-    assert request_value["messages"] == messages
-    assert request_value["provider_payload"]["model"] == "test-model"
-    assert request_value["provider_payload"]["messages"] == messages
+    assert not any(event.get("name") == "provider.request" for event in events)
+    response_event = next(
+        event for event in events if event.get("name") == "provider.response"
+    )
+    assert response_event["value"]["character_count"] == len('{"title":"Hola"}')
+    started = events[0]
+    assert started["type"] == "RUN_STARTED"
+    assert started["input"] == {}
     assert [event.get("delta") for event in events if event["type"] == "TEXT_MESSAGE_CONTENT"] == [
         '{"title":"Hola"}'
     ]
     result_event = next(event for event in events if event.get("name") == "business.result")
     assert result_event["value"]["parsed"] == {"title": "Hola"}
     assert events[-1]["type"] == "RUN_FINISHED"
+    serialized = "\n".join(json.dumps(event, ensure_ascii=False) for event in events)
+    assert "Return JSON." not in serialized
+    assert "Localize this product." not in serialized
     for line in (tmp_path / ai_work_service.AI_WORK_RELATIVE_DIR).glob("*/*.jsonl"):
         for raw_line in line.read_text(encoding="utf-8").splitlines():
             assert isinstance(json.loads(raw_line), dict)
 
 
 def test_chat_streams_provider_deltas_by_default(tmp_path: Path, journal, monkeypatch) -> None:
-    class FakeStreamResponse:
-        def __enter__(self):
-            return self
+    def fake_direct_chat(**kwargs):
+        kwargs["recorder"].emit_text_delta('{"title":')
+        kwargs["recorder"].emit_text_delta('"Hola"}')
+        kwargs["recorder"].finish_assistant_message()
+        return {"title": "Hola"}
 
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-        def __iter__(self):
-            return iter(
-                [
-                    b'data: {"choices":[{"delta":{"content":"{\\"title\\":"}}]}\n',
-                    b'data: {"choices":[{"delta":{"content":"\\"Hola\\"}"}}]}\n',
-                    b"data: [DONE]\n",
-                ]
-            )
-
-    monkeypatch.setattr(ai_gateway.urllib.request, "urlopen", lambda request, timeout: FakeStreamResponse())
+    monkeypatch.setattr(
+        ai_gateway_providers.ai_direct_request_service,
+        "chat_json",
+        fake_direct_chat,
+    )
 
     result = ai_gateway.chat_json(
         tmp_path,
-        _chat_config(stream=True),
+        _chat_config(),
         "copy.generate",
         [{"role": "user", "content": "Return title."}],
     )

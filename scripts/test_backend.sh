@@ -13,16 +13,10 @@ fi
 PY="$ROOT_DIR/.venv/bin/python"
 
 # Install dependencies needed by the backend test suite.
-if ! "$PY" -c "import pytest, requests, PIL, dotenv" >/dev/null 2>&1; then
+if ! "$PY" -c "import pytest, requests, PIL, dotenv, pydantic_ai, opentelemetry.sdk; from importlib.metadata import version; assert version('pydantic-ai-slim') == '2.22.0'; assert version('opentelemetry-sdk') == '1.44.0'" >/dev/null 2>&1; then
   echo "[setup] Installing backend test dependencies"
   "$PY" -m pip install --upgrade pip
-  "$PY" -m pip install pytest requests pillow python-dotenv
-fi
-
-# Try runtime requirements too, but do not block local backend tests if an AI SDK
-# is unavailable for the current Python version / package index.
-if [ "${INSTALL_FULL_REQUIREMENTS:-0}" = "1" ]; then
-  "$PY" -m pip install -r "$ROOT_DIR/requirements.txt"
+  "$PY" -m pip install -r "$ROOT_DIR/requirements-dev.txt"
 fi
 
 # Do not auto-open browser while tests spawn erp_web.server.

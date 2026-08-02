@@ -79,7 +79,15 @@ const CLI_CONNECTION_TYPE = 'cli'
 const BROWSER_CONNECTION_TYPE = 'browser'
 const BROWSER_MODE_MANAGED_PROFILE = 'managed_profile'
 const BROWSER_MODE_EXISTING_BROWSER = 'existing_browser'
-const modelListDependencyFields = new Set(['provider', 'api_style', 'base_url', 'base_url_env', 'api_key', 'api_key_env'])
+const PROVIDER_ID_OPENAI = 'openai'
+const PROVIDER_ID_DEEPSEEK = 'deepseek'
+const PROVIDER_ID_ALIBABA = 'alibaba'
+const fallbackProviders = [
+  { id: PROVIDER_ID_OPENAI, label: 'OpenAI', description: 'OpenAI 服务预设；代理可修改 Base URL，API 协议可选 Chat Completions 或 Responses', provider_family: 'openai', default_base_url: 'https://api.openai.com/v1', default_api_style: 'openai_responses', supported_api_styles: ['openai_compatible', 'openai_responses'], base_url_editable: true },
+  { id: PROVIDER_ID_DEEPSEEK, label: 'DeepSeek', description: '使用 Pydantic AI 的 DeepSeekProvider', provider_family: 'generic_openai', default_base_url: 'https://api.deepseek.com', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible'], base_url_editable: false },
+  { id: PROVIDER_ID_ALIBABA, label: '阿里云百炼 / Qwen', description: '使用 Pydantic AI 的 AlibabaProvider', provider_family: 'alibaba', default_base_url: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible', 'openai_responses'], base_url_editable: true },
+]
+const modelListDependencyFields = new Set(['provider_id', 'api_style', 'base_url', 'base_url_env', 'api_key', 'api_key_env'])
 const capabilityProbeDependencyFields = new Set([...modelListDependencyFields, 'model', 'connection_type', 'cli_tool', 'command', 'profile', 'sandbox', 'browser_provider', 'browser_mode', 'browser_profile', 'browser_port', 'browser_url'])
 const lastAutoModelListSignature = ref('')
 const lastAutoCapabilitySignature = ref('')
@@ -91,7 +99,6 @@ const capabilityProbeDialog = reactive({
   payloadText: '',
   pending: false,
   error: '',
-  result: null as UnknownRecord | null,
   originalCapabilities: [] as string[],
 })
 const customRequestBodyEditor = reactive({
@@ -148,6 +155,14 @@ const imageQualityLabels: Record<string, string> = {
   medium: '中',
   high: '高',
 }
+const reasoningEffortLabels: Record<string, string> = {
+  minimal: '最小（minimal）',
+  low: '低（low）',
+  medium: '中（medium）',
+  high: '高（high）',
+  xhigh: '极高（xhigh）',
+  max: '最大（max）',
+}
 
 function asRecord(value: unknown): UnknownRecord {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as UnknownRecord : {}
@@ -170,6 +185,21 @@ function normalizeConnectionType(value: unknown): string {
   if (text === CLI_CONNECTION_TYPE) return CLI_CONNECTION_TYPE
   if (text === BROWSER_CONNECTION_TYPE) return BROWSER_CONNECTION_TYPE
   return API_CONNECTION_TYPE
+}
+
+function normalizeProviderId(value: unknown): string {
+  return firstText(value).toLowerCase()
+}
+
+function providerLabel(providerId: string): string {
+  if (providerId === PROVIDER_ID_OPENAI) return 'OpenAI'
+  if (providerId === PROVIDER_ID_DEEPSEEK) return 'DeepSeek'
+  if (providerId === PROVIDER_ID_ALIBABA) return '阿里云百炼 / Qwen'
+  return providerId || '未选择服务商'
+}
+
+function providerDefaultApiStyle(providerId: string): string {
+  return providerId === PROVIDER_ID_OPENAI ? 'openai_responses' : 'openai_compatible'
 }
 
 function maskSecret(value: unknown): string {
@@ -271,12 +301,18 @@ function normalizeAiModelRow(value: unknown, index: number): UnknownRecord {
   }
   const connectionType = normalizeConnectionType(record.connection_type)
   const cliTool = firstText(record.cli_tool, record.cli_provider, 'codex')
+  const providerId = normalizeProviderId(record.provider_id)
   return {
     id: firstText(record.id, fallbackId),
     name: firstText(record.name, record.id, `AI 模型 ${index + 1}`),
     connection_type: connectionType,
-    provider: firstText(record.provider, connectionType === CLI_CONNECTION_TYPE ? cliToolLabel(cliTool) : connectionType === BROWSER_CONNECTION_TYPE ? '浏览器 AI' : 'OpenAI-Compatible'),
-    api_style: firstText(record.api_style, 'openai_compatible'),
+    provider: connectionType === CLI_CONNECTION_TYPE
+      ? firstText(record.provider, cliToolLabel(cliTool))
+      : connectionType === BROWSER_CONNECTION_TYPE
+        ? firstText(record.provider, '浏览器 AI')
+        : providerLabel(providerId),
+    provider_id: connectionType === API_CONNECTION_TYPE ? providerId : '',
+    api_style: firstText(record.api_style, providerDefaultApiStyle(providerId)),
     base_url: firstText(record.base_url),
     base_url_env: firstText(record.base_url_env),
     api_key: firstText(record.api_key),
@@ -302,6 +338,7 @@ function normalizeAiModelRow(value: unknown, index: number): UnknownRecord {
     enabled: record.enabled !== false,
     api_key_configured: Boolean(record.api_key_configured),
     model_options: modelOptions,
+    generation_capabilities: JSON.parse(JSON.stringify(asRecord(record.generation_capabilities))) as UnknownRecord,
   }
 }
 
@@ -310,9 +347,10 @@ function defaultAiModelRow(index: number): UnknownRecord {
     id: `ai_model_${Date.now()}_${index + 1}`,
     name: `AI 模型 ${index + 1}`,
     connection_type: API_CONNECTION_TYPE,
-    provider: 'OpenAI-Compatible',
-    api_style: 'openai_compatible',
-    base_url: '',
+    provider: 'OpenAI',
+    provider_id: PROVIDER_ID_OPENAI,
+    api_style: 'openai_responses',
+    base_url: 'https://api.openai.com/v1',
     api_key: '',
     model: '',
     capabilities: [],
@@ -351,10 +389,26 @@ function normalizeUseCaseBindings(value: unknown): Record<string, UnknownRecord>
     const item = asRecord(raw)
     const modelId = firstText(item.model_id, typeof raw === 'string' ? raw : '')
     const timeoutOverrideSeconds = firstText(item.timeout_override_seconds)
-    if (key && (modelId || timeoutOverrideSeconds)) {
+    const generation = asRecord(item.generation)
+    const reasoning = asRecord(generation.reasoning)
+    const normalizedGeneration: UnknownRecord = {
+      temperature: firstText(generation.temperature),
+      max_output_tokens: firstText(generation.max_output_tokens),
+      reasoning: {
+        mode: firstText(reasoning.mode),
+        effort: firstText(reasoning.effort),
+        budget_tokens: firstText(reasoning.budget_tokens),
+      },
+    }
+    const hasGeneration = Boolean(
+      firstText(normalizedGeneration.temperature, normalizedGeneration.max_output_tokens)
+      || firstText(asRecord(normalizedGeneration.reasoning).mode, asRecord(normalizedGeneration.reasoning).effort, asRecord(normalizedGeneration.reasoning).budget_tokens),
+    )
+    if (key && (modelId || timeoutOverrideSeconds || hasGeneration)) {
       result[key] = {
         model_id: modelId,
         timeout_override_seconds: timeoutOverrideSeconds,
+        generation: normalizedGeneration,
       }
     }
   }
@@ -419,6 +473,35 @@ watch(() => [props.appConfig, props.aiConfig, props.storeConfig], fillFromProps,
 const selectedAiModel = computed(() => aiModels.value[selectedAiModelIndex.value] || null)
 const aiUseCases = computed(() => Array.isArray(props.aiConfig.ai_use_cases) ? props.aiConfig.ai_use_cases.map(asRecord) : [])
 const cliToolOptions = computed(() => normalizeCliToolOptions(props.aiConfig.cli_tools))
+const providerOptions = computed(() => {
+  const configuredItems = Array.isArray(props.aiConfig.providers) ? props.aiConfig.providers : []
+  const rawItems = configuredItems.length ? configuredItems : fallbackProviders
+  return rawItems.map((item) => {
+    const record = asRecord(item)
+    return {
+      id: firstText(record.id, record.value),
+      label: firstText(record.label, record.id, record.value),
+      description: firstText(record.description),
+      providerFamily: firstText(record.provider_family, 'generic_openai'),
+      defaultBaseUrl: firstText(record.default_base_url),
+      defaultApiStyle: firstText(record.default_api_style, 'openai_compatible'),
+      supportedApiStyles: asStringArray(record.supported_api_styles).length ? asStringArray(record.supported_api_styles) : ['openai_compatible'],
+      baseUrlEditable: record.base_url_editable !== false,
+      modelDiscovery: firstText(record.model_discovery, 'manual'),
+    }
+  }).filter((item) => item.id)
+})
+
+function aiModelProviderLabel(model: UnknownRecord): string {
+  const connectionType = normalizeConnectionType(model.connection_type)
+  if (connectionType === CLI_CONNECTION_TYPE) {
+    return cliToolLabel(firstText(model.cli_tool, 'codex'))
+  }
+  if (connectionType === BROWSER_CONNECTION_TYPE) return '浏览器 AI'
+  const providerId = normalizeProviderId(model.provider_id)
+  return providerOptions.value.find((item) => item.id === providerId)?.label
+    || providerLabel(providerId)
+}
 const globalPromptUseCases = computed(() => aiUseCases.value.filter((useCase) => {
   const id = String(useCase.id || '')
   return id && Boolean(aiUseCasePrompts.value[id])
@@ -428,6 +511,10 @@ const capabilityLabelByValue = Object.fromEntries(capabilityOptions.map((item) =
 const selectedAiModelConnectionType = computed(() => normalizeConnectionType(modelField('connection_type', API_CONNECTION_TYPE)))
 const selectedAiModelIsApi = computed(() => selectedAiModelConnectionType.value === API_CONNECTION_TYPE)
 const selectedAiModelIsCli = computed(() => selectedAiModelConnectionType.value === CLI_CONNECTION_TYPE)
+const selectedProviderSpec = computed(() => providerOptions.value.find((item) => item.id === modelField('provider_id')))
+const selectedProviderApiStyleOptions = computed(() => selectedProviderSpec.value?.supportedApiStyles || ['openai_compatible'])
+const selectedProviderBaseUrlEditable = computed(() => selectedProviderSpec.value?.baseUrlEditable !== false)
+const selectedProviderSupportsModelDiscovery = computed(() => selectedProviderSpec.value?.modelDiscovery === 'openai_models')
 const selectedModelOptions = computed(() => selectedAiModelIsApi.value ? normalizeModelOptions(selectedAiModel.value?.model_options) : [])
 const capabilityProbeLabel = computed(() => capabilityLabelByValue[capabilityProbeDialog.capability] || capabilityProbeDialog.capability || '能力')
 const selectedCliToolStatus = computed(() => cliToolOptions.value.find((tool) => tool.value === modelField('cli_tool', 'codex')) || cliToolOptions.value[0])
@@ -454,6 +541,7 @@ const imageQualityOptions = computed(() => {
 const selectedModelListReady = computed(() => Boolean(
   selectedAiModel.value
   && selectedAiModelIsApi.value
+  && selectedProviderSupportsModelDiscovery.value
   && String(selectedAiModel.value.base_url || selectedAiModel.value.base_url_env || '').trim()
   && (String(selectedAiModel.value.api_key || '').trim() || selectedAiModel.value.api_key_configured),
 ))
@@ -531,13 +619,34 @@ const yunexpressSourceKeyPlaceholder = computed(() => {
   return masked ? `已配置 ${masked}；留空沿用` : 'SourceKey'
 })
 const lastConfigResultChannel = computed(() => String(props.lastResult?.raw?.channel || ''))
-const showAiConfigResult = computed(() => lastConfigResultChannel.value === 'ai_model')
 const showApiConfigResult = computed(() => ['exchange_rate', '1688', 'yunexpress'].includes(lastConfigResultChannel.value))
+
+function useCaseBindingGenerationPayload(binding: UnknownRecord): UnknownRecord | null {
+  const generation = asRecord(binding.generation)
+  const reasoning = asRecord(generation.reasoning)
+  const payload: UnknownRecord = {}
+  const temperature = firstText(generation.temperature)
+  const maxOutputTokens = firstText(generation.max_output_tokens)
+  const reasoningMode = firstText(reasoning.mode)
+  const reasoningEffort = firstText(reasoning.effort)
+  const reasoningBudgetTokens = firstText(reasoning.budget_tokens)
+  if (temperature) payload.temperature = temperature
+  if (maxOutputTokens) payload.max_output_tokens = maxOutputTokens
+  if (reasoningMode || reasoningEffort || reasoningBudgetTokens) {
+    payload.reasoning = {
+      ...(reasoningMode ? { mode: reasoningMode } : {}),
+      ...(reasoningEffort ? { effort: reasoningEffort } : {}),
+      ...(reasoningBudgetTokens ? { budget_tokens: reasoningBudgetTokens } : {}),
+    }
+  }
+  return Object.keys(payload).length ? payload : null
+}
 
 function aiPayload(): UnknownRecord {
   return {
     ai_models: aiModels.value.map((model, index) => {
       const row = normalizeAiModelRow(model, index)
+      delete row.provider_family
       const copySourceId = firstText(model.copy_source_id)
       if (row.connection_type === API_CONNECTION_TYPE && copySourceId && !firstText(row.api_key)) row.copy_source_id = copySourceId
       if (!Object.keys(asRecord(row.capability_profiles)).length) delete row.capability_profiles
@@ -555,6 +664,7 @@ function aiPayload(): UnknownRecord {
         row.api_style = 'openai_compatible'
         row.api_key_configured = false
         row.api_key_masked = ''
+        delete row.provider_id
         delete row.browser_provider
         delete row.browser_mode
         delete row.browser_profile
@@ -572,6 +682,7 @@ function aiPayload(): UnknownRecord {
         row.api_style = 'openai_compatible'
         row.api_key_configured = false
         row.api_key_masked = ''
+        delete row.provider_id
         row.model_env = ''
         delete row.cli_tool
         delete row.command
@@ -579,6 +690,8 @@ function aiPayload(): UnknownRecord {
         delete row.profile
         delete row.sandbox
       } else {
+        const provider = providerOptions.value.find((item) => item.id === firstText(row.provider_id))
+        row.provider = provider?.label || firstText(row.provider, row.provider_id)
         delete row.cli_tool
         delete row.command
         delete row.profile
@@ -591,6 +704,7 @@ function aiPayload(): UnknownRecord {
       }
       delete row.model_options
       delete row.model_env
+      delete row.generation_capabilities
       return row
     }),
     ai_use_case_bindings: Object.fromEntries(
@@ -601,11 +715,12 @@ function aiPayload(): UnknownRecord {
           {
             model_id: firstText(binding.model_id),
             timeout_override_seconds: firstText(binding.timeout_override_seconds),
+            ...(useCaseBindingGenerationPayload(binding) ? { generation: useCaseBindingGenerationPayload(binding) } : {}),
           },
         ])
         .filter(([, binding]) => {
           const record = asRecord(binding)
-          return Boolean(firstText(record.model_id, record.timeout_override_seconds))
+          return Boolean(firstText(record.model_id, record.timeout_override_seconds) || Object.keys(asRecord(record.generation)).length)
         }),
     ),
     ai_use_case_prompts: Object.fromEntries(
@@ -692,6 +807,22 @@ function commitCustomRequestBody(): boolean {
     if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
       throw new Error('根节点必须是 JSON 对象')
     }
+    const forbiddenProtocolFields = new Set([
+      'input',
+      'instructions',
+      'messages',
+      'model',
+      'parallel_tool_calls',
+      'response_format',
+      'stream',
+      'text',
+      'tool_choice',
+      'tools',
+    ])
+    const forbidden = Object.keys(parsed).filter((key) => forbiddenProtocolFields.has(key)).sort()
+    if (forbidden.length) {
+      throw new Error(`不得覆盖 Pydantic 请求协议字段：${forbidden.join(', ')}`)
+    }
     if (Object.keys(parsed).length) extra.request_body = parsed
     else delete extra.request_body
     selectedAiModel.value.extra = extra
@@ -758,11 +889,19 @@ function apiKeyPlaceholder(): string {
 function setSelectedModelField(field: string, value: string | boolean) {
   if (!selectedAiModel.value) return
   if (aiControlsLocked.value) return
-  const nextValue = field === 'connection_type' && typeof value === 'string' ? normalizeConnectionType(value) : value
+  const nextValue = field === 'connection_type' && typeof value === 'string'
+    ? normalizeConnectionType(value)
+    : field === 'provider_id' && typeof value === 'string'
+      ? firstText(value).toLowerCase()
+      : value
   const previous = selectedAiModel.value[field]
   if (previous === nextValue) return
   const desiredCapabilities = capabilitySelection(selectedAiModel.value)
   const previousConnectionType = normalizeConnectionType(selectedAiModel.value.connection_type)
+  const previousProviderId = normalizeProviderId(selectedAiModel.value.provider_id)
+  const previousProviderSpec = providerOptions.value.find((item) => item.id === previousProviderId)
+  const previousBaseUrl = firstText(selectedAiModel.value.base_url)
+  const previousApiStyle = firstText(selectedAiModel.value.api_style, 'openai_compatible')
   const previousCliTool = String(selectedAiModel.value.cli_tool || 'codex')
   const previousCliDefaultCommand = cliToolDefaultCommand(previousCliTool)
   selectedAiModel.value[field] = nextValue
@@ -779,6 +918,7 @@ function setSelectedModelField(field: string, value: string | boolean) {
       selectedAiModel.value.api_key = ''
       selectedAiModel.value.api_key_env = ''
       selectedAiModel.value.api_style = 'openai_compatible'
+      selectedAiModel.value.provider_id = ''
       selectedAiModel.value.browser_provider = ''
       selectedAiModel.value.browser_mode = ''
       selectedAiModel.value.browser_profile = ''
@@ -796,12 +936,36 @@ function setSelectedModelField(field: string, value: string | boolean) {
       selectedAiModel.value.api_key = ''
       selectedAiModel.value.api_key_env = ''
       selectedAiModel.value.api_style = 'openai_compatible'
+      selectedAiModel.value.provider_id = ''
       selectedAiModel.value.cli_tool = ''
       selectedAiModel.value.command = ''
       selectedAiModel.value.profile = ''
       selectedAiModel.value.sandbox = ''
     } else {
-      selectedAiModel.value.provider = previousConnectionType === API_CONNECTION_TYPE ? firstText(selectedAiModel.value.provider, 'OpenAI-Compatible') : 'OpenAI-Compatible'
+      selectedAiModel.value.provider_id = previousConnectionType === API_CONNECTION_TYPE
+        ? normalizeProviderId(selectedAiModel.value.provider_id)
+        : PROVIDER_ID_OPENAI
+      const apiProvider = providerOptions.value.find((item) => item.id === selectedAiModel.value?.provider_id)
+      selectedAiModel.value.provider = apiProvider?.label || 'OpenAI'
+      if (previousConnectionType !== API_CONNECTION_TYPE && apiProvider) {
+        selectedAiModel.value.api_style = apiProvider.defaultApiStyle
+        selectedAiModel.value.base_url = apiProvider.defaultBaseUrl
+      }
+    }
+  }
+  if (field === 'provider_id' && typeof nextValue === 'string') {
+    const nextProvider = providerOptions.value.find((item) => item.id === nextValue)
+    if (nextProvider) {
+      selectedAiModel.value.provider = nextProvider.label
+      if (
+        previousApiStyle === previousProviderSpec?.defaultApiStyle
+        || !nextProvider.supportedApiStyles.includes(firstText(selectedAiModel.value.api_style))
+      ) {
+        selectedAiModel.value.api_style = nextProvider.defaultApiStyle
+      }
+      if (!previousBaseUrl || previousBaseUrl === previousProviderSpec?.defaultBaseUrl) {
+        selectedAiModel.value.base_url = nextProvider.defaultBaseUrl
+      }
     }
   }
   if (field === 'cli_tool' && typeof value === 'string') {
@@ -828,8 +992,9 @@ function selectedCapabilities(): string[] {
 
 function webSearchRequestMode(): string {
   const extra = asRecord(selectedAiModel.value?.extra)
-  const mode = firstText(extra.web_search_request_mode, 'enable_search')
-  return ['enable_search', 'web_search_options'].includes(mode) ? mode : 'enable_search'
+  const fallback = modelField('provider_id') === PROVIDER_ID_ALIBABA ? 'enable_search' : 'web_search_options'
+  const mode = firstText(extra.web_search_request_mode, fallback)
+  return ['enable_search', 'web_search_options'].includes(mode) ? mode : fallback
 }
 
 function applyWebSearchRequestMode(mode: string) {
@@ -877,6 +1042,91 @@ function compatibleModelsForUseCase(useCase: UnknownRecord): UnknownRecord[] {
   return aiModels.value.filter((model) => modelSupportsUseCase(model, useCase))
 }
 
+function effectiveModelForUseCase(useCase: UnknownRecord): UnknownRecord | null {
+  const useCaseId = firstText(useCase.id)
+  const boundModelId = useCaseBindingField(useCaseId, 'model_id')
+  const compatible = compatibleModelsForUseCase(useCase)
+  if (boundModelId) return compatible.find((model) => firstText(model.id) === boundModelId) || null
+  return compatible[0] || null
+}
+
+function derivedGenerationCapabilities(model: UnknownRecord | null): UnknownRecord {
+  if (!model || normalizeConnectionType(model.connection_type) !== API_CONNECTION_TYPE) {
+    return {
+      status: 'unsupported',
+      temperature: { status: 'unsupported' },
+      max_output_tokens: { status: 'unsupported' },
+      reasoning: { status: 'unsupported', modes: [], efforts: [], supports_budget_tokens: false, note: '当前连接没有统一生成参数通道。' },
+    }
+  }
+  const providerId = normalizeProviderId(model.provider_id)
+  const providerSpec = providerOptions.value.find((item) => item.id === providerId)
+  const providerFamily = providerSpec?.providerFamily || 'generic_openai'
+  const apiStyle = firstText(model.api_style, 'openai_compatible')
+  const saved = asRecord(model.generation_capabilities)
+  if (
+    firstText(saved.provider_id) === providerId
+    && firstText(saved.api_style) === apiStyle
+  ) return saved
+  const base: UnknownRecord = {
+    status: 'supported',
+    provider_id: providerId,
+    api_style: apiStyle,
+    temperature: { status: 'supported', minimum: 0, maximum: 2 },
+    max_output_tokens: { status: 'supported', minimum: 1 },
+  }
+  if (providerFamily === 'generic_openai') {
+    base.reasoning = { status: 'unknown', modes: [], efforts: [], supports_budget_tokens: false, note: '通用兼容接口没有统一的推理字段；请先选择准确厂商。' }
+  } else if (providerFamily === 'openai') {
+    base.reasoning = { status: 'supported', modes: ['disabled', 'enabled'], efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'], supports_budget_tokens: false, note: '参数会按所选 API 协议转换，模型是否接受该强度由厂商校验。' }
+  } else if (apiStyle === 'openai_responses') {
+    base.reasoning = { status: 'supported', modes: ['disabled', 'enabled'], efforts: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'], supports_budget_tokens: false, note: 'Responses 使用 reasoning.effort；关闭推理转换为 effort=none。' }
+  } else {
+    base.reasoning = { status: 'supported', modes: ['disabled', 'enabled'], efforts: [], supports_budget_tokens: true, note: 'Chat Completions 使用 enable_thinking 和 thinking_budget。' }
+  }
+  return base
+}
+
+function useCaseGenerationCapabilities(useCase: UnknownRecord): UnknownRecord {
+  return derivedGenerationCapabilities(effectiveModelForUseCase(useCase))
+}
+
+function useCaseReasoningCapabilities(useCase: UnknownRecord): UnknownRecord {
+  return asRecord(useCaseGenerationCapabilities(useCase).reasoning)
+}
+
+function useCaseSupportsTextGeneration(useCase: UnknownRecord): boolean {
+  return useCaseRequiredCapabilities(useCase).includes('chat')
+}
+
+function useCaseGenerationFieldSupported(useCase: UnknownRecord, field: 'temperature' | 'max_output_tokens'): boolean {
+  return firstText(asRecord(useCaseGenerationCapabilities(useCase)[field]).status) === 'supported'
+}
+
+function useCaseReasoningSupported(useCase: UnknownRecord): boolean {
+  return firstText(useCaseReasoningCapabilities(useCase).status) === 'supported'
+}
+
+function useCaseReasoningEfforts(useCase: UnknownRecord): string[] {
+  return asStringArray(useCaseReasoningCapabilities(useCase).efforts)
+}
+
+function reasoningEffortLabel(effort: string): string {
+  return reasoningEffortLabels[effort] || effort
+}
+
+function useCaseReasoningBudgetSupported(useCase: UnknownRecord): boolean {
+  return Boolean(useCaseReasoningCapabilities(useCase).supports_budget_tokens)
+}
+
+function useCaseGenerationModelText(useCase: UnknownRecord): string {
+  const model = effectiveModelForUseCase(useCase)
+  if (!model) return '没有可用模型，生成参数不会生效'
+  const providerId = normalizeProviderId(model.provider_id)
+  const provider = providerOptions.value.find((item) => item.id === providerId)
+  return `${firstText(model.name, model.id)} · ${provider?.label || providerId}`
+}
+
 function useCaseCapabilityText(useCase: UnknownRecord): string {
   const labels = useCaseRequiredCapabilities(useCase).map((capability) => capabilityLabelByValue[capability] || capability)
   return labels.length ? labels.join(' / ') : '无特殊能力要求'
@@ -918,17 +1168,7 @@ function capabilityProbePayload(capability: string): UnknownRecord {
     probe_only_capability: capability,
     probe_capabilities: true,
   }
-  if (capability === 'chat') {
-    base.probe_messages = [
-      { role: 'system', content: 'Reply with ok.' },
-      { role: 'user', content: 'ok' },
-    ]
-  } else if (capability === 'json') {
-    base.probe_messages = [
-      { role: 'system', content: 'Return JSON only.' },
-      { role: 'user', content: 'Return {"ok":true}.' },
-    ]
-  } else if (capability === 'web_search') {
+  if (capability === 'web_search') {
     base.probe_messages = [
       {
         role: 'system',
@@ -952,9 +1192,7 @@ function capabilityProbePayload(capability: string): UnknownRecord {
       },
     ]
   } else if (capability === 'image_edit') {
-    base.probe_image_prompt = 'turn the pixel blue'
-  } else if (capability === 'tool_calling') {
-    base.probe_messages = [{ role: 'user', content: 'Call the noop tool.' }]
+    base.probe_image_prompt = 'Change the red image to blue while preserving its dimensions.'
   }
   return base
 }
@@ -967,7 +1205,6 @@ function openCapabilityProbe(capability: string) {
   capabilityProbeDialog.payloadText = JSON.stringify(capabilityProbePayload(capability), null, 2)
   capabilityProbeDialog.pending = false
   capabilityProbeDialog.error = ''
-  capabilityProbeDialog.result = null
   capabilityProbeDialog.originalCapabilities = originalCapabilities
 }
 
@@ -983,7 +1220,6 @@ function closeCapabilityProbe(restoreSelection = true) {
   capabilityProbeDialog.capability = ''
   capabilityProbeDialog.payloadText = ''
   capabilityProbeDialog.error = ''
-  capabilityProbeDialog.result = null
   capabilityProbeDialog.originalCapabilities = []
 }
 
@@ -1084,8 +1320,34 @@ function setUseCaseBindingField(useCaseId: string, field: string, value: string)
     ...asRecord(aiUseCaseBindings.value[useCaseId]),
     [field]: value,
   }
-  if (!firstText(next.model_id, next.timeout_override_seconds)) delete aiUseCaseBindings.value[useCaseId]
+  if (!firstText(next.model_id, next.timeout_override_seconds) && !useCaseBindingGenerationPayload(next)) delete aiUseCaseBindings.value[useCaseId]
   else aiUseCaseBindings.value[useCaseId] = next
+}
+
+function useCaseGenerationField(useCaseId: string, field: string, reasoning = false): string {
+  const generation = asRecord(aiUseCaseBindings.value[useCaseId]?.generation)
+  return firstText(reasoning ? asRecord(generation.reasoning)[field] : generation[field])
+}
+
+function setUseCaseGenerationField(useCaseId: string, field: string, value: string, reasoning = false) {
+  if (aiControlsLocked.value) return
+  const binding = { ...asRecord(aiUseCaseBindings.value[useCaseId]) }
+  const generation = { ...asRecord(binding.generation) }
+  if (reasoning) {
+    const nextReasoning = { ...asRecord(generation.reasoning), [field]: value }
+    if (field === 'mode' && value !== 'enabled') {
+      nextReasoning.effort = ''
+      nextReasoning.budget_tokens = ''
+    } else if (field !== 'mode' && value && !firstText(nextReasoning.mode)) {
+      nextReasoning.mode = 'enabled'
+    }
+    generation.reasoning = nextReasoning
+  } else {
+    generation[field] = value
+  }
+  binding.generation = generation
+  if (!firstText(binding.model_id, binding.timeout_override_seconds) && !useCaseBindingGenerationPayload(binding)) delete aiUseCaseBindings.value[useCaseId]
+  else aiUseCaseBindings.value[useCaseId] = binding
 }
 
 function setUseCaseBinding(useCaseId: string, modelId: string) {
@@ -1097,6 +1359,7 @@ function modelListSignature(model: UnknownRecord | null): string {
   if (normalizeConnectionType(model.connection_type) !== API_CONNECTION_TYPE) return ''
   return [
     String(model.id || ''),
+    String(model.provider_id || ''),
     String(model.base_url || model.base_url_env || '').trim(),
     String(model.api_key || '').trim() || (model.api_key_configured ? 'saved' : ''),
   ].join('|')
@@ -1135,11 +1398,8 @@ function capabilitySignature(model: UnknownRecord | null): string {
   ].join('|')
 }
 
-function aiModelPayloadForCheck(probeCapabilities: boolean): UnknownRecord {
+function aiModelPayloadForCheck(): UnknownRecord {
   const model = selectedAiModel.value ? { ...selectedAiModel.value } : {}
-  if (probeCapabilities) {
-    model.capabilities = allCapabilityValues
-  }
   delete model.model_options
   return model
 }
@@ -1156,7 +1416,7 @@ function requestAiModelCheck(probeCapabilities: boolean, message: string, trigge
   if (!selectedAiModel.value || aiControlsLocked.value) return
   aiRequestPending.value = true
   aiRequestMessage.value = message
-  emit('testAi', { ...aiModelPayloadForCheck(probeCapabilities), probe_capabilities: probeCapabilities, test_trigger: trigger })
+  emit('testAi', { ...aiModelPayloadForCheck(), probe_capabilities: probeCapabilities, test_trigger: trigger })
 }
 
 function confirmCapabilityProbe() {
@@ -1170,16 +1430,12 @@ function confirmCapabilityProbe() {
     capabilityProbeDialog.error = '测试内容不是合法 JSON'
     return
   }
-  const capabilities = new Set(selectedCapabilities())
-  capabilities.add(capability)
   capabilityProbeDialog.pending = true
   capabilityProbeDialog.error = ''
-  capabilityProbeDialog.result = null
   aiRequestPending.value = true
   aiRequestMessage.value = `正在测试 ${capabilityLabelByValue[capability] || capability}`
   emit('testAi', {
-    ...aiModelPayloadForCheck(false),
-    capabilities: Array.from(capabilities),
+    ...aiModelPayloadForCheck(),
     ...payload,
     probe_only_capability: capability,
     probe_capabilities: true,
@@ -1215,8 +1471,13 @@ function applyAiTestResult(result: AuthResult | null) {
     if (isPendingCapabilityProbe) {
       restoreCapabilityProbeSelection()
       capabilityProbeDialog.pending = false
-      capabilityProbeDialog.error = result.error || result.message || '能力测试失败'
-      capabilityProbeDialog.result = raw
+      const capabilityResult = asRecord(capabilityResults[pendingCapability])
+      capabilityProbeDialog.error = firstText(
+        capabilityResult.error,
+        result.error,
+        result.message,
+        '能力测试失败',
+      )
     }
     return
   }
@@ -1233,13 +1494,8 @@ function applyAiTestResult(result: AuthResult | null) {
   }
   if (isPendingCapabilityProbe) {
     capabilityProbeDialog.pending = false
-    capabilityProbeDialog.result = raw
     const capabilityResult = asRecord(capabilityResults[pendingCapability])
     if (supported.has(pendingCapability) && capabilityResult.ok !== false) {
-      const requestMode = firstText(capabilityResult.request_mode)
-      if (pendingCapability === 'web_search' && ['openai_tools', 'enable_search', 'web_search_options'].includes(requestMode)) {
-        applyWebSearchRequestMode(requestMode)
-      }
       saveCapabilityProfile(target, pendingCapability, capabilityResult.capability_profile)
       addCapability(target, pendingCapability)
       lastAutoCapabilitySignature.value = capabilitySignature(target)
@@ -1248,7 +1504,6 @@ function applyAiTestResult(result: AuthResult | null) {
     }
     restoreCapabilityProbeSelection()
     capabilityProbeDialog.error = String(capabilityResult.error || raw.error || result?.error || '能力测试未通过')
-    capabilityProbeDialog.result = raw
   }
 }
 
@@ -1260,7 +1515,7 @@ watch(() => props.loading, (loading) => {
     if (capabilityProbeDialog.open && capabilityProbeDialog.pending) {
       restoreCapabilityProbeSelection()
       capabilityProbeDialog.pending = false
-      capabilityProbeDialog.error = capabilityProbeDialog.error || '测试已结束，但没有收到完整的能力测试结果。请查看最近 AI 测试结果后重试。'
+      capabilityProbeDialog.error = capabilityProbeDialog.error || '测试已结束，但没有收到完整的能力测试结果。请重新测试或打开 AI Work 查看最新会话。'
     }
   }
 })
@@ -1277,7 +1532,15 @@ function selectedStorePayload(): UnknownRecord {
   return { [selectedStorePlatform.value]: asRecord(storePayload()[selectedStorePlatform.value]) }
 }
 
-const selectedStorePlatformMeta = computed(() => storePlatforms.value.find((item) => item.key === selectedStorePlatform.value) || storePlatforms.value[0])
+const selectedStorePlatformMeta = computed(() => (
+  storePlatforms.value.find((item) => item.key === selectedStorePlatform.value)
+  || storePlatforms.value[0]
+  || {
+    key: selectedStorePlatform.value,
+    label: '店铺平台',
+    subtitle: '平台配置加载中',
+  }
+))
 
 const selectedStoreSummary = computed(() => asRecord(props.storeAuthSummary[selectedStorePlatform.value]))
 
@@ -1352,7 +1615,6 @@ function handleYunexpressEnvironmentChange(value: string) {
         <div v-if="capabilityProbeDialog.error" class="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-900 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-100">
           {{ capabilityProbeDialog.error }}
         </div>
-        <pre v-if="capabilityProbeDialog.result" class="mt-3 max-h-56 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{{ JSON.stringify(capabilityProbeDialog.result, null, 2) }}</pre>
         <div class="mt-4 flex flex-wrap justify-end gap-2">
           <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="capabilityProbeDialog.pending" @click="closeCapabilityProbe()">取消</button>
           <button class="btn btn-primary py-1.5 text-sm" type="button" :disabled="capabilityProbeDialog.pending" @click="confirmCapabilityProbe">
@@ -1380,6 +1642,7 @@ function handleYunexpressEnvironmentChange(value: string) {
             :class="activeAuthSettingsTab === tab.key ? 'border border-primary-200 bg-white text-primary-700 shadow-sm dark:border-primary-500/40 dark:bg-primary-500/10 dark:text-primary-100' : 'border border-transparent text-accent-600 hover:bg-white/80 hover:text-accent-950 dark:text-accent-300 dark:hover:bg-dark-900 dark:hover:text-white'"
             role="tab"
             :aria-selected="activeAuthSettingsTab === tab.key"
+            :data-testid="`auth-settings-tab-${tab.key}`"
             @click="activeAuthSettingsTab = tab.key"
           >
             <span class="block whitespace-nowrap font-semibold">{{ tab.label }}</span>
@@ -1407,7 +1670,7 @@ function handleYunexpressEnvironmentChange(value: string) {
               <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="addAiModel">添加模型</button>
               <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedAiModel" @click="duplicateSelectedAiModel">复制当前模型</button>
               <button class="btn btn-outline py-1.5 text-sm text-rose-700" type="button" :disabled="aiControlsLocked || aiModels.length <= 1" @click="removeSelectedAiModel">删除当前模型</button>
-              <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedModelListReady" :title="selectedModelListReady ? '从 Provider 加载可用模型列表' : '请先填写 Base URL 和 API Key'" @click="refreshSelectedModelList(true)">加载模型列表</button>
+              <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedModelListReady" :title="selectedModelListReady ? '从 Provider 加载可用模型列表' : selectedProviderSupportsModelDiscovery ? '请先填写 Base URL 和 API Key' : '当前 Provider 不提供模型目录，请手动填写模型 ID'" @click="refreshSelectedModelList(true)">加载模型列表</button>
               <button class="btn btn-primary py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="saveAiSettings">保存 AI 设置</button>
             </div>
           </div>
@@ -1424,7 +1687,7 @@ function handleYunexpressEnvironmentChange(value: string) {
                 @click="selectedAiModelIndex = index"
               >
                 <span class="block truncate font-semibold">{{ model.name || model.id || '未命名模型' }}</span>
-                <span class="mt-1 block truncate text-xs text-accent-500 dark:text-accent-400">{{ model.provider || 'Provider' }} · {{ model.model || '未选模型' }}</span>
+                <span class="mt-1 block truncate text-xs text-accent-500 dark:text-accent-400">{{ aiModelProviderLabel(model) }} · {{ model.model || '未选模型' }}</span>
               </button>
             </div>
 
@@ -1445,12 +1708,19 @@ function handleYunexpressEnvironmentChange(value: string) {
                   </select>
                 </label>
                 <label v-if="selectedAiModelIsApi" class="block">
-                  <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">API 风格</span>
-                  <select class="input" :value="modelField('api_style', 'openai_compatible')" :disabled="aiControlsLocked" @change="setSelectedModelField('api_style', eventText($event))">
-                    <option value="openai_compatible">OpenAI-Compatible Chat</option>
-                    <option value="openai_responses">OpenAI Responses</option>
+                  <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">服务商</span>
+                  <select data-testid="ai-provider-id" class="input" :value="modelField('provider_id')" :disabled="aiControlsLocked" @change="setSelectedModelField('provider_id', eventText($event))">
+                    <option value="" disabled>请选择服务商</option>
+                    <option v-for="option in providerOptions" :key="option.id" :value="option.id">{{ option.label }}</option>
                   </select>
                 </label>
+                <label v-if="selectedAiModelIsApi" class="block">
+                  <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">API 协议</span>
+                  <select data-testid="ai-api-style" class="input" :value="modelField('api_style', 'openai_compatible')" :disabled="aiControlsLocked" @change="setSelectedModelField('api_style', eventText($event))">
+                    <option v-for="apiStyle in selectedProviderApiStyleOptions" :key="apiStyle" :value="apiStyle">{{ apiStyle === 'openai_responses' ? 'Responses' : 'Chat Completions' }}</option>
+                  </select>
+                </label>
+                <span v-if="selectedAiModelIsApi" class="block md:col-span-2 text-xs text-accent-500 dark:text-accent-400"><template v-if="selectedProviderSpec?.description">{{ selectedProviderSpec.description }}。</template>服务商决定端点预设和厂商参数映射；API 协议独立选择，底层统一通过 Pydantic AI 调用。</span>
                 <label v-else-if="selectedAiModelIsCli" class="block">
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">CLI 工具</span>
                   <select class="input" :value="modelField('cli_tool', 'codex')" :disabled="aiControlsLocked" @change="setSelectedModelField('cli_tool', eventText($event))">
@@ -1464,7 +1734,8 @@ function handleYunexpressEnvironmentChange(value: string) {
                 <template v-if="selectedAiModelIsApi">
                   <label class="block md:col-span-2">
                     <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">Base URL</span>
-                    <input class="input" :value="modelField('base_url')" :disabled="aiControlsLocked" placeholder="https://api.example.com/v1" @input="setSelectedModelField('base_url', eventText($event))" @blur="handleAiConfigFieldBlur('base_url')" />
+                    <input class="input" :value="modelField('base_url')" :disabled="aiControlsLocked || !selectedProviderBaseUrlEditable" placeholder="https://api.example.com/v1" @input="setSelectedModelField('base_url', eventText($event))" @blur="handleAiConfigFieldBlur('base_url')" />
+                    <span v-if="!selectedProviderBaseUrlEditable" class="mt-1 block text-xs text-accent-500 dark:text-accent-400">该服务商使用固定官方地址。</span>
                   </label>
                   <label class="block md:col-span-2">
                     <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">API Key</span>
@@ -1540,7 +1811,7 @@ function handleYunexpressEnvironmentChange(value: string) {
                         @input="updateCustomRequestBodyText(eventText($event))"
                         @blur="commitCustomRequestBody"
                       ></textarea>
-                      <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">仅支持 JSON 对象。它会与界面生成的 Chat / Responses 请求浅合并；同名字段以此处值为准，不会替换其余标准字段。</span>
+                      <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">仅支持 JSON 对象。后端会把厂商扩展字段转换为 Pydantic ModelSettings.extra_body；messages、model、tools、stream 等 Pydantic 协议字段不能在这里覆盖。功能绑定中的 temperature、最大输出和推理配置拥有更高优先级。</span>
                       <span v-if="customRequestBodyEditor.error" class="mt-1 block text-xs text-rose-600 dark:text-rose-300">{{ customRequestBodyEditor.error }}</span>
                     </label>
                     <label v-if="modelField('api_style', 'openai_compatible') === 'openai_compatible'" class="block md:col-span-2">
@@ -1549,9 +1820,9 @@ function handleYunexpressEnvironmentChange(value: string) {
                         <option value="enable_search">enable_search + 强制搜索（通义或兼容网关）</option>
                         <option value="web_search_options">web_search_options（兼容网关）</option>
                       </select>
-                      <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">仅在功能需要“联网搜索”时发送。Chat Completions 没有通用的联网字段；测试会在当前 Chat 协议内依次尝试这些供应商扩展参数，并把成功的完整能力配方保存到当前模型。通义兼容接口会发送 enable_search 与 search_options.forced_search。</span>
+                      <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">仅在功能需要“联网搜索”时生效。后端按这里选择的稳定策略生成受控 ModelSettings；测试与正式请求使用同一个 Pydantic Model。通义兼容接口使用 enable_search 与 search_options.forced_search。</span>
                     </label>
-                    <span v-else class="block md:col-span-2 text-xs text-accent-500 dark:text-accent-400">OpenAI Responses 使用标准的 tools: [{ type: 'web_search' }] 请求格式。测试只验证当前选择的 API 风格，不会自动切换协议；成功后会保存并在正式请求中复用该能力配方。</span>
+                    <span v-else class="block md:col-span-2 text-xs text-accent-500 dark:text-accent-400">Responses 协议由 Pydantic WebSearchTool 转译。测试只记录能力和 Pydantic 策略，不保存或复用厂商请求体。</span>
                   </div>
                   <div v-else-if="selectedAiModelIsCli" class="mt-3 grid gap-3 md:grid-cols-2">
                     <label class="block">
@@ -1605,13 +1876,6 @@ function handleYunexpressEnvironmentChange(value: string) {
               </div>
             </div>
           </div>
-
-          <div v-if="showAiConfigResult && props.lastResult" class="mt-4 rounded-lg p-4 text-sm ring-1" :class="props.lastResult.ok ? 'bg-emerald-50 text-emerald-950 ring-emerald-100 dark:bg-emerald-500/10 dark:text-emerald-100 dark:ring-emerald-500/30' : 'bg-rose-50 text-rose-950 ring-rose-100 dark:bg-rose-500/10 dark:text-rose-100 dark:ring-rose-500/30'">
-            <div class="font-semibold">最近 AI 测试：{{ props.lastResult.ok ? '成功' : '失败' }}</div>
-            <div class="mt-1 break-words">{{ props.lastResult.message || props.lastResult.error }}</div>
-            <div v-if="props.lastResult.nextAction" class="mt-1 text-blue-700 dark:text-blue-200">下一步：{{ props.lastResult.nextAction }}</div>
-            <pre class="mt-3 max-h-52 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{{ JSON.stringify(props.lastResult.raw, null, 2) }}</pre>
-          </div>
         </section>
 
         <section v-show="activeAuthSettingsTab === 'ai_bindings'" class="rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
@@ -1620,7 +1884,7 @@ function handleYunexpressEnvironmentChange(value: string) {
               <h3 class="font-semibold text-accent-950 dark:text-white">功能绑定</h3>
               <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">功能声明所需能力；这里只显示满足能力要求的模型，并可单独覆盖超时。</p>
             </div>
-            <button class="btn btn-primary py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="saveAiSettings">保存功能绑定</button>
+            <button data-testid="save-ai-bindings" class="btn btn-primary py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="saveAiSettings">保存功能绑定</button>
           </div>
           <div v-if="globalPromptUseCases.length" class="mt-4 grid gap-3 xl:grid-cols-2">
             <div v-for="useCase in globalPromptUseCases" :key="String(useCase.id)" class="rounded-lg border border-accent-200 bg-white p-3 dark:border-dark-700 dark:bg-dark-900">
@@ -1650,6 +1914,83 @@ function handleYunexpressEnvironmentChange(value: string) {
                   @input="setUseCaseBindingField(String(useCase.id || ''), 'timeout_override_seconds', eventText($event))"
                 />
               </label>
+              <details v-if="useCaseSupportsTextGeneration(useCase)" :data-testid="`generation-settings-${String(useCase.id || '')}`" class="mt-3 rounded-lg border border-dashed border-accent-200 bg-accent-50/60 px-3 py-2 text-sm dark:border-dark-700 dark:bg-dark-950/50">
+                <summary class="cursor-pointer font-semibold text-accent-700 dark:text-accent-200">高级生成设置</summary>
+                <div class="mt-2 text-xs text-accent-500 dark:text-accent-400">当前：{{ useCaseGenerationModelText(useCase) }}。留空表示继承业务默认值。</div>
+                <div class="mt-3 grid gap-3 sm:grid-cols-2">
+                  <label class="block">
+                    <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">Temperature</span>
+                    <input
+                      class="input"
+                      type="number"
+                      min="0"
+                      max="2"
+                      step="0.1"
+                      placeholder="继承"
+                      :data-testid="`generation-temperature-${String(useCase.id || '')}`"
+                      :disabled="aiControlsLocked || !useCaseGenerationFieldSupported(useCase, 'temperature')"
+                      :value="useCaseGenerationField(String(useCase.id || ''), 'temperature')"
+                      @input="setUseCaseGenerationField(String(useCase.id || ''), 'temperature', eventText($event))"
+                    />
+                  </label>
+                  <label class="block">
+                    <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">最大输出 Token</span>
+                    <input
+                      class="input"
+                      type="number"
+                      min="1"
+                      step="1"
+                      placeholder="继承"
+                      :data-testid="`generation-max-output-${String(useCase.id || '')}`"
+                      :disabled="aiControlsLocked || !useCaseGenerationFieldSupported(useCase, 'max_output_tokens')"
+                      :value="useCaseGenerationField(String(useCase.id || ''), 'max_output_tokens')"
+                      @input="setUseCaseGenerationField(String(useCase.id || ''), 'max_output_tokens', eventText($event))"
+                    />
+                  </label>
+                  <label class="block">
+                    <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">推理开关</span>
+                    <select
+                      class="input"
+                      :data-testid="`generation-reasoning-mode-${String(useCase.id || '')}`"
+                      :disabled="aiControlsLocked || !useCaseReasoningSupported(useCase)"
+                      :value="useCaseGenerationField(String(useCase.id || ''), 'mode', true)"
+                      @change="setUseCaseGenerationField(String(useCase.id || ''), 'mode', eventText($event), true)"
+                    >
+                      <option value="">继承模型默认</option>
+                      <option value="disabled">关闭</option>
+                      <option value="enabled">开启</option>
+                    </select>
+                  </label>
+                  <label v-if="useCaseReasoningEfforts(useCase).length" class="block">
+                    <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">推理强度</span>
+                    <select
+                      class="input"
+                      :data-testid="`generation-reasoning-effort-${String(useCase.id || '')}`"
+                      :disabled="aiControlsLocked || useCaseGenerationField(String(useCase.id || ''), 'mode', true) === 'disabled'"
+                      :value="useCaseGenerationField(String(useCase.id || ''), 'effort', true)"
+                      @change="setUseCaseGenerationField(String(useCase.id || ''), 'effort', eventText($event), true)"
+                    >
+                      <option value="">厂商默认（转换为 medium）</option>
+                      <option v-for="effort in useCaseReasoningEfforts(useCase)" :key="effort" :value="effort">{{ reasoningEffortLabel(effort) }}</option>
+                    </select>
+                  </label>
+                  <label v-if="useCaseReasoningBudgetSupported(useCase)" class="block">
+                    <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">推理预算 Token</span>
+                    <input
+                      class="input"
+                      type="number"
+                      min="1"
+                      step="1"
+                      placeholder="厂商默认"
+                      :disabled="aiControlsLocked || useCaseGenerationField(String(useCase.id || ''), 'mode', true) === 'disabled'"
+                      :value="useCaseGenerationField(String(useCase.id || ''), 'budget_tokens', true)"
+                      @input="setUseCaseGenerationField(String(useCase.id || ''), 'budget_tokens', eventText($event), true)"
+                    />
+                  </label>
+                </div>
+                <p class="mt-3 text-xs text-accent-500 dark:text-accent-400">{{ useCaseReasoningCapabilities(useCase).note || '当前模型未声明推理参数映射。' }}</p>
+                <p class="mt-1 text-xs text-amber-700 dark:text-amber-300">关闭推理通常能降低首字延迟，但不能保证翻译准确率；温度设为 0 也只提高稳定性，不等于结果必然正确。</p>
+              </details>
               <label class="mt-3 block">
                 <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">Prompt JSON 文件</span>
                 <input class="input font-mono text-xs" :value="useCasePromptField(String(useCase.id || ''), 'path')" @input="setUseCasePromptField(String(useCase.id || ''), 'path', eventText($event))" />

@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-import io
 import json
 import time
-import urllib.error
 
 import pytest
 
 from erp_web.context import get_context
 from erp_web.facades import product_research_facade
 from erp_web.product_research_config import default_product_research_config, normalize_product_research_config
-from erp_web.services import product_research_service
-from erp_web.services import product_research_methods
+from erp_web.services import ai_gateway_providers, product_research_methods, product_research_service
 from erp_web.services.product_research_methods import AiSearchMethod, ProductResearchSearchMethod
 from erp_web.services.product_research_service import ProductResearchRunRegistry
 
@@ -32,7 +29,7 @@ def web_search_app_config() -> dict:
         "ai_models": [
             {
                 "id": "web_search_model",
-                "provider": "OpenAI-Compatible",
+                "provider": "OpenAI",
                 "api_key": "ai-key",
                 "base_url": "https://ai.example.com/v1",
                 "model": "web-search-model",
@@ -620,16 +617,22 @@ def test_ai_gateway_parse_jsonl_items_text() -> None:
 
 
 def test_ai_gateway_chat_json_reports_http_error_detail(tmp_path, monkeypatch) -> None:
-    def fake_urlopen(request, timeout):
-        raise urllib.error.HTTPError(
-            request.full_url,
-            403,
-            "Forbidden",
-            {},
-            io.BytesIO(b'{"error":"web search forbidden for this model"}'),
+    def fake_direct_chat(**kwargs):
+        raise product_research_methods.ai_gateway.AIHTTPError(
+            status_code=403,
+            reason="Forbidden",
+            detail="web search forbidden for this model",
+            model_id="web_search_model",
+            model_name="web-search-model",
+            api_style="openai_compatible",
+            endpoint="ai.example.com/openai_compatible",
         )
 
-    monkeypatch.setattr(product_research_methods.ai_gateway.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        ai_gateway_providers.ai_direct_request_service,
+        "chat_json",
+        fake_direct_chat,
+    )
 
     with pytest.raises(product_research_methods.ai_gateway.AIHTTPError) as exc_info:
         product_research_methods.ai_gateway.chat_json(
@@ -642,7 +645,7 @@ def test_ai_gateway_chat_json_reports_http_error_detail(tmp_path, monkeypatch) -
 
     message = str(exc_info.value)
     assert "HTTP 403" in message
-    assert "ai.example.com/v1/chat/completions" in message
+    assert "ai.example.com/openai_compatible" in message
     assert "web search forbidden for this model" in message
 
 
@@ -834,46 +837,30 @@ def test_masked_custom_provider_secrets_restore_from_current_config() -> None:
 
 
 def test_ai_web_search_provider_connection_uses_function_binding_model(tmp_path, monkeypatch) -> None:
-    class FakeResponse:
-        def __enter__(self):
-            return self
+    seen: dict[str, object] = {}
 
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-        def read(self) -> bytes:
-            return json.dumps(
+    def fake_chat_json(app_dir, app_config, use_case_id, messages, **kwargs):
+        seen["use_case_id"] = use_case_id
+        seen["model_id"] = product_research_service.ai_gateway.resolve_model_for_use_case(
+            app_dir,
+            app_config,
+            use_case_id,
+        )["id"]
+        seen["prompt"] = messages[1]["content"]
+        return {
+            "items": [
                 {
-                    "choices": [
-                        {
-                            "message": {
-                                "content": json.dumps(
-                                    {
-                                        "items": [
-                                            {
-                                                "title": "Pet storage baskets trend",
-                                                "source_url": "https://example.com/pet-storage-trend",
-                                            }
-                                        ]
-                                    }
-                                )
-                            }
-                        }
-                    ]
+                    "title": "Pet storage baskets trend",
+                    "source_url": "https://example.com/pet-storage-trend",
                 }
-            ).encode("utf-8")
+            ]
+        }
 
-    seen: dict[str, str] = {}
-
-    def fake_urlopen(request, timeout):
-        seen["url"] = request.full_url
-        seen["auth"] = request.get_header("Authorization") or request.get_header("authorization") or ""
-        body = json.loads(request.data.decode("utf-8"))
-        seen["model"] = body["model"]
-        seen["prompt"] = body["messages"][1]["content"]
-        return FakeResponse()
-
-    monkeypatch.setattr(product_research_service.ai_gateway.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        product_research_service.ai_gateway,
+        "chat_json",
+        fake_chat_json,
+    )
     provider = {
         "id": "ai_market_search",
         "name": "AI 市场搜索",
@@ -914,9 +901,8 @@ def test_ai_web_search_provider_connection_uses_function_binding_model(tmp_path,
     assert result["ok"] is True
     assert result["items_found"] == 1
     assert result["sample"]["source_url"] == "https://example.com/pet-storage-trend"
-    assert seen["url"] == "https://ai.example.com/v1/chat/completions"
-    assert seen["auth"] == "Bearer ai-key"
-    assert seen["model"] == "web-search-model"
+    assert seen["use_case_id"] == "research.web_search"
+    assert seen["model_id"] == "web_search_model"
     assert "pet storage" in seen["prompt"]
 
 

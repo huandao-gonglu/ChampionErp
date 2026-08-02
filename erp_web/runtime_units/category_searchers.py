@@ -215,10 +215,19 @@ class OzonCategorySearcher:
             site=self.site,
             limit=self.limit,
         )
+        source_rows = rows if isinstance(rows, list) else []
+        cache_source = next(
+            (
+                str(row.get("cache_source") or "").strip()
+                for row in source_rows
+                if isinstance(row, Mapping) and row.get("cache_source")
+            ),
+            "ozon_cache",
+        )
         return {
             "keyword": normalized,
             "candidates": candidates,
-            "source": "ozon_cache",
+            "source": cache_source,
         }
 
 

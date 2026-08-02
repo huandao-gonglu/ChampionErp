@@ -7,7 +7,7 @@ from erp_web.runtime_units.category_tools import (
     CategoryCandidateLedger,
     build_category_search_toolset,
 )
-from erp_web.schemas.ai_tools import AiToolCall
+from erp_web.schemas.ai_tools import AiToolCommand
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.services.ai_tool_runtime import AiToolRuntime
 
@@ -79,7 +79,7 @@ def test_category_toolset_only_exposes_keyword_search() -> None:
         max_tool_calls=3,
         max_output_bytes=32 * 1024,
     )
-    call = AiToolCall(
+    command = AiToolCommand(
         call_id="call-search",
         tool_name="search_categories",
         tool_version="1",
@@ -87,8 +87,8 @@ def test_category_toolset_only_exposes_keyword_search() -> None:
         round=1,
     )
 
-    first = runtime.execute(call)
-    duplicate = runtime.execute(call)
+    first = runtime.execute(command)
+    duplicate = runtime.execute(command)
 
     assert first.ok is True
     assert duplicate.ok is True
@@ -116,7 +116,7 @@ def test_tool_output_hides_bound_scope_and_provider_metadata() -> None:
         execution_context=context(),
         recorder=Recorder(),
     ).execute(
-        AiToolCall(
+        AiToolCommand(
             call_id="call-search",
             tool_name="search_categories",
             tool_version="1",
@@ -148,7 +148,7 @@ def test_tool_rejects_platform_or_site_arguments() -> None:
         execution_context=context(),
         recorder=Recorder(),
     ).execute(
-        AiToolCall(
+        AiToolCommand(
             call_id="call-search",
             tool_name="search_categories",
             tool_version="1",

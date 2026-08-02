@@ -27,7 +27,25 @@ AI_WORK_RELATIVE_DIR = Path("data") / "logs" / "ai_work"
 AI_WORK_SCHEMA_VERSION = 1
 MAX_CONVERSATION_LIST_LIMIT = 200
 MAX_WAIT_MILLISECONDS = 25_000
-_TERMINAL_EVENT_STATUS = {"RUN_FINISHED": "completed", "RUN_ERROR": "failed"}
+_EVENT_STATUS = {
+    "RUN_FINISHED": "completed",
+    "RUN_ERROR": "failed",
+    "RUN_DEFERRED": "waiting_approval",
+    "RUN_RESUMED": "running",
+}
+_RELEASE_CONDITION_EVENTS = frozenset({"RUN_FINISHED", "RUN_ERROR", "RUN_DEFERRED"})
+_BUSINESS_SUMMARY_KEYS = frozenset(
+    {
+        "use_case_id",
+        "result_version",
+        "platform",
+        "site",
+        "language",
+        "locale",
+        "status",
+        "count",
+    }
+)
 
 
 def _now() -> datetime:
@@ -46,6 +64,43 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, (list, tuple, set)):
         return [_json_safe(item) for item in value]
     return str(value)
+
+
+def _business_input_summary(value: Any) -> Any:
+    """只保留稳定业务引用与计数，不复制 prompt、消息或商品正文。"""
+
+    if not isinstance(value, dict):
+        if isinstance(value, (list, tuple, set)):
+            return {"item_count": len(value)}
+        return None
+    summary: dict[str, Any] = {}
+    for key, item in value.items():
+        normalized_key = str(key or "").strip()
+        if normalized_key in _BUSINESS_SUMMARY_KEYS or normalized_key.endswith("_id"):
+            if item is None or isinstance(item, (str, int, float, bool)):
+                summary[normalized_key] = _json_safe(item)
+        elif isinstance(item, (list, tuple, set)):
+            summary[f"{normalized_key}_count"] = len(item)
+    return summary
+
+
+def _provider_event_summary(value: Any) -> dict[str, Any]:
+    payload = value if isinstance(value, dict) else {}
+    provider_payload = (
+        payload.get("provider_payload")
+        if isinstance(payload.get("provider_payload"), dict)
+        else {}
+    )
+    messages = payload.get("messages")
+    images = payload.get("images")
+    return {
+        "method": str(payload.get("method") or ""),
+        "model": str(provider_payload.get("model") or payload.get("model") or ""),
+        "stream": bool(provider_payload.get("stream") or payload.get("stream")),
+        "message_count": len(messages) if isinstance(messages, list) else 0,
+        "image_count": len(images) if isinstance(images, list) else 0,
+        "character_count": int(payload.get("character_count") or 0),
+    }
 
 
 def _safe_conversation_id(value: Any) -> str:
@@ -110,6 +165,8 @@ def _summary_from_events(events: list[AiWorkEvent], path: Path) -> AiWorkConvers
     elif last.get("type") == "RUN_ERROR":
         status = "failed"
         error = str(last.get("message") or "")
+    elif last.get("type") == "RUN_DEFERRED":
+        status = "waiting_approval"
     elif events and time.time() - path.stat().st_mtime > 60 * 60:
         status = "interrupted"
     return {
@@ -176,12 +233,14 @@ class AiWorkConversation:
             }
             self.journal._record_event(self, event)
             self._condition.notify_all()
-        if event_type in _TERMINAL_EVENT_STATUS:
+        if event_type in _RELEASE_CONDITION_EVENTS:
             # 终态后长轮询都会立即命中文件事件，Condition 条目不再需要。
             self.journal._release_condition(self.conversation_id)
         return event
 
     def emit_custom(self, name: str, value: Any) -> AiWorkEvent:
+        if name in {"provider.request", "provider.response"}:
+            value = _provider_event_summary(value)
         return self.emit("CUSTOM", name=name, value=value)
 
     def start_assistant_message(self) -> str:
@@ -206,13 +265,23 @@ class AiWorkConversation:
             self.emit("TEXT_MESSAGE_END", messageId=self._assistant_message_id)
             self._assistant_ended = True
         if raw_text:
-            self.emit_custom("provider.response", {"text": raw_text})
+            self.emit_custom("provider.response", {"character_count": len(raw_text)})
 
     def finish(self, result: Any) -> None:
         self.emit("RUN_FINISHED", result=result)
 
     def fail(self, error: Exception) -> None:
-        self.emit("RUN_ERROR", message=str(error), code=error.__class__.__name__)
+        payload = {
+            key: value
+            for key in ("trace_id", "run_id", "task_run_id")
+            if (value := str(getattr(error, key, "") or ""))
+        }
+        self.emit(
+            "RUN_ERROR",
+            message=str(error),
+            code=getattr(error, "code", error.__class__.__name__),
+            **payload,
+        )
 
 
 class AiWorkJournal:
@@ -267,8 +336,10 @@ class AiWorkJournal:
                 "workflow_run_id",
                 "parent_task_run_id",
                 "actor_id",
+                "tenant_id",
                 "deadline_at",
                 "budget_profile",
+                "trace_id",
             }
         }
         metadata = {
@@ -286,10 +357,60 @@ class AiWorkJournal:
         conversation = AiWorkConversation(self, conversation_id, day, path, metadata)
         conversation.emit(
             "RUN_STARTED",
-            input=_json_safe(input_payload),
+            input=_business_input_summary(input_payload),
             rawEvent=metadata,
             **safe_trace_context,
         )
+        return conversation
+
+    def resume_conversation(
+        self,
+        conversation_id: str,
+        *,
+        trace_context: dict[str, Any] | None = None,
+    ) -> AiWorkConversation:
+        """从已持久化事件恢复 recorder；不复制或重建 Provider 状态。"""
+
+        safe_id = _safe_conversation_id(conversation_id)
+        path = self.find_conversation_path(safe_id)
+        if path is None:
+            raise ValueError("AI 对话不存在，无法恢复。")
+        events = _read_events_from_path(path)
+        if not events:
+            raise ValueError("AI 对话没有可恢复的事件。")
+        first = events[0]
+        metadata = (
+            dict(first.get("rawEvent"))
+            if isinstance(first.get("rawEvent"), dict)
+            else {}
+        )
+        safe_trace_context = {
+            key: value
+            for key, value in dict(trace_context or {}).items()
+            if key
+            in {
+                "task_run_id",
+                "attempt_id",
+                "workflow_run_id",
+                "parent_task_run_id",
+                "actor_id",
+                "tenant_id",
+                "deadline_at",
+                "budget_profile",
+                "trace_id",
+                "run_id",
+            }
+        }
+        metadata.update(safe_trace_context)
+        conversation = AiWorkConversation(
+            self,
+            safe_id,
+            path.parent.name,
+            path,
+            metadata,
+            _seq=max(int(event.get("seq") or 0) for event in events),
+        )
+        conversation.emit("RUN_RESUMED", **safe_trace_context)
         return conversation
 
     def _record_event(self, conversation: AiWorkConversation, event: AiWorkEvent) -> None:
@@ -309,7 +430,7 @@ class AiWorkJournal:
         self._db.upsert_ai_session(
             conversation.conversation_id,
             day=conversation.day,
-            status=_TERMINAL_EVENT_STATUS.get(str(event.get("type") or ""), "running"),
+            status=_EVENT_STATUS.get(str(event.get("type") or ""), "running"),
             last_seq=int(event.get("seq") or 0),
             updated_at=str(event.get("occurred_at") or ""),
         )

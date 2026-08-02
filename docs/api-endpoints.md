@@ -248,8 +248,9 @@
   `keyword`：搜索关键词别名，可选
   `limit`：结果数量，可选
   ）；供用户主动输入关键词进行手动搜索。Mercado Libre 实时调用
-  `domain_discovery/search` 搜索类目候选并补齐路径；Ozon 实时读取官方
-  `description-category/tree`，检索可发布的商品类型并返回配套的描述类目 ID。
+  `domain_discovery/search` 搜索类目候选并补齐路径；Ozon 搜索服务端持久化的
+  可发布商品类型语料，语料新鲜期为 24 小时，并返回配套的描述类目 ID。刷新遇到
+  瞬时网络错误时可使用最多 7 天旧缓存，认证错误不会被缓存掩盖。
 
 - `POST /api/category-ai-fill`（
   `product_id`：商品 ID，必填

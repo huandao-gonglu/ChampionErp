@@ -9,8 +9,9 @@ from http.server import ThreadingHTTPServer
 from .context import build_default_context, get_context, set_context
 from .http_handler import Handler
 from .logging_config import configure_logging
-from .services.browser_debug_service import pick_web_port
 from .runtime_units.publish_adapter import resume_pending_publish_jobs
+from .services.browser_debug_service import pick_web_port
+from .services.config_service import load_env
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,8 @@ def main() -> None:
     # build_default_context() 构造 ErpDatabase：schema 初始化在构造期完成。
     set_context(build_default_context())
     paths = get_context().paths
+    # 日志配置也允许写在 config/.env；环境变量仍具有更高优先级。
+    load_env(paths.app_dir)
     log_file = configure_logging(paths.app_dir)
     paths.output_dir.mkdir(parents=True, exist_ok=True)
     resume_pending_publish_jobs()

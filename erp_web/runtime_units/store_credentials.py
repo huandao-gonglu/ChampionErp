@@ -297,7 +297,8 @@ def _test_ozon_auth(config: dict[str, Any], scope: str) -> dict[str, Any]:
     if scope == "category":
         from .ozon_category_api import fetch_ozon_category_tree_summary
 
-        category_summary = fetch_ozon_category_tree_summary()
+        # 授权测试必须命中远端，不能让有效缓存掩盖已失效的凭据。
+        category_summary = fetch_ozon_category_tree_summary(force_refresh=True)
         name = str(ozon.get("shop_name") or client_id)
     else:
         name = publisher.fetch_ozon_shop_name(client_id, api_key)

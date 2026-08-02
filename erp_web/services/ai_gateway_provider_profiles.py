@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import ai_model_config
+from . import ai_gateway_probe, ai_model_config
 
 
 def non_http_capability_profile(
@@ -23,14 +23,13 @@ def non_http_capability_profile(
         if capability == ai_model_config.CAP_WEB_SEARCH
         else f"{channel}_prompt"
     )
-    return {
-        "version": 1,
-        "tested": tested,
-        "connection_type": ai_model_config.model_connection_type(model),
-        "provider": str(model.get("provider") or "").strip(),
-        "model": ai_model_config.model_name(model),
-        "strategy": strategy,
-    }
+    profile = ai_gateway_probe.build_capability_profile(
+        model,
+        capability,
+        strategy=strategy,
+    )
+    profile["tested"] = tested
+    return profile
 
 
 __all__ = ["non_http_capability_profile"]

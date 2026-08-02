@@ -1,0 +1,178 @@
+"""Pydantic Model 请求错误到项目稳定错误的转换边界。"""
+
+from __future__ import annotations
+
+import json
+import re
+from typing import Any
+from urllib.parse import urlparse
+
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
+
+
+class AIHTTPError(RuntimeError):
+    """配置的 AI Model/Provider 返回 HTTP 错误。"""
+
+    def __init__(
+        self,
+        *,
+        status_code: int,
+        reason: str,
+        detail: str,
+        model_id: str,
+        model_name: str,
+        api_style: str,
+        endpoint: str,
+    ) -> None:
+        self.status_code = status_code
+        self.reason = reason
+        self.detail = detail
+        self.model_id = model_id
+        self.model_name = model_name
+        self.api_style = api_style
+        self.endpoint = endpoint
+        model_label = model_id or model_name or "unknown"
+        detail_text = f": {detail}" if detail else f": {reason}" if reason else ""
+        super().__init__(
+            f"AI 模型请求失败：{model_label} ({api_style}, {endpoint}) "
+            f"HTTP {status_code}{detail_text}"
+        )
+
+
+class AIModelRequestError(RuntimeError):
+    """Pydantic Model 请求失败，但 Provider 没有返回可识别的 HTTP 状态。"""
+
+
+def _detail_text(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    if isinstance(value, dict):
+        error = value.get("error")
+        if isinstance(error, dict):
+            value = error.get("message") or error.get("detail") or error.get("code")
+        else:
+            value = value.get("message") or value.get("detail") or value.get("code")
+    if not isinstance(value, str):
+        try:
+            value = json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            value = str(value)
+    text = re.sub(r"\s+", " ", value).strip()
+    text = re.sub(
+        r"Bearer\s+[A-Za-z0-9._~+/=-]+",
+        "Bearer ***",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"sk-[A-Za-z0-9_-]{8,}", "sk-***", text)
+    text = re.sub(
+        r"(?i)(api[_-]?key|authorization|access[_-]?token)"
+        r"(\s*[:=]\s*)([^\s,;]+)",
+        r"\1\2***",
+        text,
+    )
+    text = re.sub(r"(https?://[^\s?]+)\?[^\s]+", r"\1?***", text)
+    return text[:1000]
+
+
+def model_http_error_detail(exc: ModelHTTPError) -> str:
+    """提取可安全展示和记录的 Provider 错误码、消息与请求 ID。"""
+
+    body = exc.body
+    if not isinstance(body, dict):
+        return _detail_text(body)
+
+    raw_error = body.get("error")
+    error = raw_error if isinstance(raw_error, dict) else {}
+    code = error.get("code") or body.get("code")
+    message = (
+        error.get("message")
+        or error.get("detail")
+        or body.get("message")
+        or body.get("detail")
+        or (raw_error if isinstance(raw_error, str) else "")
+    )
+    request_id = next(
+        (
+            value
+            for value in (
+                body.get("request_id"),
+                body.get("requestId"),
+                error.get("request_id"),
+                error.get("requestId"),
+            )
+            if value not in (None, "")
+        ),
+        "",
+    )
+    if not request_id and exc.headers:
+        headers = {str(key).lower(): value for key, value in exc.headers.items()}
+        request_id = next(
+            (
+                headers[key]
+                for key in (
+                    "x-request-id",
+                    "request-id",
+                    "x-dashscope-request-id",
+                )
+                if headers.get(key) not in (None, "")
+            ),
+            "",
+        )
+
+    parts: list[str] = []
+    if code not in (None, ""):
+        parts.append(f"code={_detail_text(code)}")
+    if message not in (None, ""):
+        parts.append(f"message={_detail_text(message)}")
+    if request_id not in (None, ""):
+        parts.append(f"request_id={_detail_text(request_id)}")
+    if parts:
+        return "; ".join(parts)[:1000]
+    return "Provider 返回了未识别的错误响应。"
+
+
+def safe_provider_endpoint(base_url: str, api_style: str) -> str:
+    """返回不含凭据和查询参数的 Provider 端点标签。"""
+
+    parsed = urlparse(str(base_url or "").strip())
+    host = parsed.netloc or parsed.path.split("/", 1)[0] or "configured-provider"
+    return f"{host}/{api_style or 'model'}"
+
+
+def map_pydantic_model_error(
+    exc: Exception,
+    *,
+    model_id: str,
+    model_name: str,
+    api_style: str,
+    base_url: str,
+) -> Exception:
+    """把 Pydantic 的公开异常转换为不泄密的项目错误。"""
+
+    if isinstance(exc, AIHTTPError | AIModelRequestError):
+        return exc
+    if isinstance(exc, ModelHTTPError):
+        return AIHTTPError(
+            status_code=int(exc.status_code),
+            reason="",
+            detail=model_http_error_detail(exc),
+            model_id=model_id,
+            model_name=model_name or str(exc.model_name or ""),
+            api_style=api_style,
+            endpoint=safe_provider_endpoint(base_url, api_style),
+        )
+    if isinstance(exc, ModelAPIError):
+        return AIModelRequestError(
+            f"AI 模型请求失败：{model_id or model_name or 'unknown'} ({api_style})。"
+        )
+    return exc
+
+
+__all__ = [
+    "AIHTTPError",
+    "AIModelRequestError",
+    "map_pydantic_model_error",
+    "model_http_error_detail",
+    "safe_provider_endpoint",
+]

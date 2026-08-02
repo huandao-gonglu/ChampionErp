@@ -15,12 +15,22 @@ DEFAULT_LOG_BACKUP_COUNT = 5
 MANAGED_HANDLER_ATTR = "_champion_erp_logging_handler"
 
 
-def _parse_log_level(value: str | None) -> int:
-    level_name = (value or DEFAULT_LOG_LEVEL).strip().upper()
+def _parse_log_level(
+    value: str | None,
+    default: int | str = DEFAULT_LOG_LEVEL,
+) -> int:
+    fallback = (
+        default
+        if isinstance(default, int)
+        else getattr(logging, str(default).strip().upper(), logging.INFO)
+    )
+    level_name = str(value or "").strip().upper()
+    if not level_name:
+        return fallback
     level = getattr(logging, level_name, None)
     if isinstance(level, int):
         return level
-    return logging.INFO
+    return fallback
 
 
 def _parse_positive_int(value: str | None, default: int) -> int:
@@ -199,7 +209,15 @@ def configure_logging(app_dir: Path | None = None) -> Path:
         resolved_app_dir,
     )
 
-    level = _parse_log_level(os.environ.get("ERP_LOG_LEVEL"))
+    default_level = _parse_log_level(os.environ.get("ERP_LOG_LEVEL"))
+    console_level = _parse_log_level(
+        os.environ.get("ERP_LOG_CONSOLE_LEVEL"),
+        default_level,
+    )
+    file_level = _parse_log_level(
+        os.environ.get("ERP_LOG_FILE_LEVEL"),
+        default_level,
+    )
     max_bytes = _parse_positive_int(os.environ.get("ERP_LOG_MAX_BYTES"), DEFAULT_LOG_MAX_BYTES)
     backup_count = _parse_positive_int(os.environ.get("ERP_LOG_BACKUP_COUNT"), DEFAULT_LOG_BACKUP_COUNT)
     date_named = _parse_bool(os.environ.get("ERP_LOG_DATE_NAMED"), True)
@@ -209,11 +227,12 @@ def configure_logging(app_dir: Path | None = None) -> Path:
     )
 
     root_logger = logging.getLogger()
-    root_logger.setLevel(level)
+    # Root 必须允许两个 handler 中更详细的级别通过，最终过滤由各 handler 完成。
+    root_logger.setLevel(min(console_level, file_level))
     _remove_managed_handlers(root_logger)
 
     console_handler = logging.StreamHandler(sys.stderr)
-    console_handler.setLevel(level)
+    console_handler.setLevel(console_level)
     console_handler.setFormatter(formatter)
     setattr(console_handler, MANAGED_HANDLER_ATTR, True)
 
@@ -233,11 +252,18 @@ def configure_logging(app_dir: Path | None = None) -> Path:
             encoding="utf-8",
         )
         active_log_file = log_file
-    file_handler.setLevel(level)
+    file_handler.setLevel(file_level)
     file_handler.setFormatter(formatter)
     setattr(file_handler, MANAGED_HANDLER_ATTR, True)
 
     root_logger.addHandler(console_handler)
     root_logger.addHandler(file_handler)
     logging.captureWarnings(True)
+    logging.getLogger(__name__).debug(
+        "Logging configured file=%s root_level=%s console_level=%s file_level=%s",
+        active_log_file,
+        logging.getLevelName(root_logger.level),
+        logging.getLevelName(console_level),
+        logging.getLevelName(file_level),
+    )
     return active_log_file

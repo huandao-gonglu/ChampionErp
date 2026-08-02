@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, TypedDict
+from types import MappingProxyType
+from typing import Any, Mapping, TypedDict
 from uuid import uuid4
 
 
@@ -27,7 +28,10 @@ class AiExecutionContext:
     deadline_at: datetime
     budget_profile: str
     actor_id: str = "local-user"
+    tenant_id: str = "local"
     permissions: frozenset[str] = frozenset()
+    business_scope: Mapping[str, str] = field(default_factory=dict)
+    idempotency_context: Mapping[str, str] = field(default_factory=dict)
     workflow_run_id: str | None = None
     parent_task_run_id: str | None = None
     approved_tool_call_ids: frozenset[str] = frozenset()
@@ -42,7 +46,31 @@ class AiExecutionContext:
             raise ValueError("deadline_at 必须包含时区")
         if not self.budget_profile:
             raise ValueError("budget_profile 不能为空")
+        if not str(self.tenant_id or "").strip():
+            raise ValueError("tenant_id 不能为空")
         object.__setattr__(self, "permissions", frozenset(self.permissions))
+        object.__setattr__(
+            self,
+            "business_scope",
+            MappingProxyType(
+                {
+                    str(key): str(value)
+                    for key, value in dict(self.business_scope).items()
+                    if str(key)
+                }
+            ),
+        )
+        object.__setattr__(
+            self,
+            "idempotency_context",
+            MappingProxyType(
+                {
+                    str(key): str(value)
+                    for key, value in dict(self.idempotency_context).items()
+                    if str(key)
+                }
+            ),
+        )
         object.__setattr__(
             self,
             "approved_tool_call_ids",
@@ -60,7 +88,10 @@ class AiExecutionContext:
         workflow_run_id: str | None = None,
         parent_task_run_id: str | None = None,
         actor_id: str = "local-user",
+        tenant_id: str = "local",
         permissions: frozenset[str] | set[str] | tuple[str, ...] = frozenset(),
+        business_scope: Mapping[str, str] | None = None,
+        idempotency_context: Mapping[str, str] | None = None,
         approved_tool_call_ids: frozenset[str] | set[str] | tuple[str, ...] = frozenset(),
         allow_write: bool = False,
         now: datetime | None = None,
@@ -77,7 +108,10 @@ class AiExecutionContext:
             workflow_run_id=workflow_run_id or None,
             parent_task_run_id=parent_task_run_id or None,
             actor_id=str(actor_id or "local-user"),
+            tenant_id=str(tenant_id or "").strip(),
             permissions=frozenset(permissions),
+            business_scope=dict(business_scope or {}),
+            idempotency_context=dict(idempotency_context or {}),
             deadline_at=started_at + timedelta(seconds=safe_timeout),
             budget_profile=budget_profile,
             approved_tool_call_ids=frozenset(approved_tool_call_ids),
@@ -122,6 +156,7 @@ class AiExecutionContext:
             "workflow_run_id": self.workflow_run_id,
             "parent_task_run_id": self.parent_task_run_id,
             "actor_id": self.actor_id,
+            "tenant_id": self.tenant_id,
             "deadline_at": self.deadline_at.isoformat(),
             "budget_profile": self.budget_profile,
         }
