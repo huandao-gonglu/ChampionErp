@@ -17,6 +17,7 @@ from .http_route_units import (
     product_routes,
     product_research_routes,
     publish_routes,
+    translation_routes,
 )
 from .http_route_units.common import JsonRequestHandler, UserInputError
 from .http_request import safe_json_body, validate_request_metadata
@@ -46,6 +47,7 @@ POST_ROUTE_UNITS = (
     logistics_routes,
     mercadolibre_routes,
     publish_routes,
+    translation_routes,
 )
 POST_ROUTE_UNITS_BY_PATH = {
     path: route_unit

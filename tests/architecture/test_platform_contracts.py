@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from erp_web import http_routes
 from erp_web.context import get_context
 from erp_web.facades import publish_facade
 from erp_web.marketplace_registry import (
@@ -18,6 +19,7 @@ from erp_web.runtime_units.runtime_api import publish_product
 from erp_web.runtime_units.store_credentials import (
     resolve_store_auth_tester,
 )
+from erp_web.services import ai_model_config, ai_prompt_templates
 
 from .support import called_leaf_names
 
@@ -89,8 +91,7 @@ def test_store_auth_testers_are_registry_driven() -> None:
 
 def test_business_ai_use_cases_share_one_executor() -> None:
     for relative_path in (
-        "erp_web/runtime_units/category_attribute_translation.py",
-        "erp_web/runtime_units/category_result_translation.py",
+        "erp_web/runtime_units/text_translation.py",
         "erp_web/runtime_units/category_attribute_ai_fill.py",
     ):
         calls = called_leaf_names(relative_path)
@@ -108,6 +109,24 @@ def test_business_ai_use_cases_share_one_executor() -> None:
             f"{relative_path} 重复实现 AI 请求编排："
             f"{sorted(duplicated)}"
         )
+
+
+def test_text_translation_is_the_only_translation_contract() -> None:
+    retired_use_cases = {
+        "category.attribute_translation",
+        "category.result_translation",
+    }
+    retired_endpoints = {
+        "/api/category-attribute-translations",
+        "/api/category-result-translations",
+    }
+
+    assert "text.translate" in ai_model_config.AI_USE_CASES
+    assert "text.translate" in ai_prompt_templates.DEFAULT_AI_USE_CASE_PROMPTS
+    assert "/api/text-translate" in http_routes.POST_API_ROUTES
+    assert retired_use_cases.isdisjoint(ai_model_config.AI_USE_CASES)
+    assert retired_use_cases.isdisjoint(ai_prompt_templates.DEFAULT_AI_USE_CASE_PROMPTS)
+    assert retired_endpoints.isdisjoint(http_routes.POST_API_ROUTES)
 
 
 def test_unsupported_publish_paths_fail_closed(monkeypatch) -> None:

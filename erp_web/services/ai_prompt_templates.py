@@ -31,11 +31,8 @@ DEFAULT_AI_USE_CASE_PROMPTS: dict[str, dict[str, str]] = {
     "category.product_match": {
         "path": "config/prompts/category_product_match.json",
     },
-    "category.attribute_translation": {
-        "path": "config/prompts/category_attribute_translation.json",
-    },
-    "category.result_translation": {
-        "path": "config/prompts/category_result_translation.json",
+    "text.translate": {
+        "path": "config/prompts/text_translate.json",
     },
     "research.web_search": {
         "path": "config/prompts/ai_example.json",

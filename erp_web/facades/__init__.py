@@ -12,4 +12,5 @@ __all__ = [
     "product_facade",
     "product_research_facade",
     "publish_facade",
+    "translation_facade",
 ]

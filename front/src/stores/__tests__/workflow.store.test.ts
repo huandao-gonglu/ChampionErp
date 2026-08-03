@@ -7,6 +7,7 @@ import type { AppStateResponse, DraftMutationResponse, ProductMutationResponse }
 import * as publishingApi from '@/api/workflow/publishing'
 import * as settingsApi from '@/api/workflow/settings'
 import * as stateApi from '@/api/workflow/state'
+import * as translationApi from '@/api/workflow/translation'
 import type { DraftDetail, DraftIndexItem, PricingResult, Product } from '@/types/workflow'
 
 vi.mock('@/api/workflow/state', () => ({
@@ -59,8 +60,10 @@ vi.mock('@/api/workflow/publishing', () => ({
   runCategoryPrecheck: vi.fn(),
   confirmMercadoLibreRealPublish: vi.fn(),
   publishProductDirect: vi.fn(),
-  fetchCategoryAttributeTranslations: vi.fn(),
-  fetchCategoryResultTranslations: vi.fn(),
+}))
+
+vi.mock('@/api/workflow/translation', () => ({
+  translateText: vi.fn(),
 }))
 
 vi.mock('@/api/workflow/settings', () => ({
@@ -85,6 +88,7 @@ const workflowApi = {
   ...publishingApi,
   ...settingsApi,
   ...stateApi,
+  ...translationApi,
 }
 
 function collectedProduct(): Product {
@@ -530,6 +534,68 @@ describe('workflow store live API flow', () => {
     expect(workflowApi.searchCategories).not.toHaveBeenCalled()
     expect(store.categoryResults[0]?.id).toBe('MLM-FAN')
     expect(store.currentDraft.categoryId).toBe('')
+  })
+
+  it('translates category candidates through the generic flat text contract', async () => {
+    vi.mocked(workflowApi.translateText).mockResolvedValue({
+      'category.0.path': '家居 / 风扇',
+    })
+    const store = useWorkflowStore()
+    store.categoryResults = [{
+      id: 'MLM-FAN',
+      name: 'Ventiladores',
+      path: 'Hogar / Ventiladores',
+      raw: {},
+    }]
+
+    await store.translateCategoryResults()
+
+    expect(workflowApi.translateText).toHaveBeenCalledWith('zh-CN', {
+      'category.0.path': 'Hogar / Ventiladores',
+    })
+    expect(store.categoryResultTranslations).toEqual({
+      'MLM-FAN': '家居 / 风扇',
+    })
+  })
+
+  it('translates loaded platform attributes without reloading the category', async () => {
+    vi.mocked(workflowApi.translateText).mockResolvedValue({
+      'attribute.0.label': '品牌',
+      'attribute.0.description': '填写商品品牌',
+      'attribute.0.option.0': '通用品牌',
+    })
+    const store = useWorkflowStore()
+    store.currentDraft.categoryId = 'MLM-FAN'
+    store.category = {
+      platform: 'mercadolibre',
+      categoryId: 'MLM-FAN',
+      categoryPath: 'Hogar / Ventiladores',
+      requiredAttributes: [{
+        id: 'BRAND',
+        name: 'Marca',
+        description: 'Indica la marca del producto',
+        required: true,
+        options: ['Generic'],
+      }],
+      optionalAttributes: [],
+      raw: {},
+    }
+
+    await store.translateCategoryAttributes()
+
+    expect(workflowApi.translateText).toHaveBeenCalledWith('zh-CN', {
+      'attribute.0.label': 'Marca',
+      'attribute.0.description': 'Indica la marca del producto',
+      'attribute.0.option.0': 'Generic',
+    })
+    expect(workflowApi.fetchCategoryAttrs).not.toHaveBeenCalled()
+    expect(store.categoryAttributeTranslations).toEqual({
+      BRAND: {
+        label: '品牌',
+        help: '填写商品品牌',
+        values: { Generic: '通用品牌' },
+      },
+    })
   })
 
   it('saves the selected category to the active target before loading attributes', async () => {

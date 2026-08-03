@@ -1,10 +1,7 @@
 import {
-
   confirmMercadoLibreRealPublish,
   enqueuePublish as enqueuePublishApi,
   fetchCategoryAttrs,
-  fetchCategoryAttributeTranslations,
-  fetchCategoryResultTranslations,
   fetchPublishLogs,
   fillCategoryAttributes,
   matchCategory,
@@ -14,22 +11,96 @@ import {
   runCategoryPrecheck,
   searchCategories,
 } from '@/api/workflow/publishing'
+import { translateText, type TextTranslationMap } from '@/api/workflow/translation'
 import { fetchDraftsIndex } from '@/api/workflow/catalog'
-import {  marketplaces } from '@/constants/initialState'
+import { marketplaces } from '@/constants/initialState'
 import type {
-
+  CategoryAttributeTranslations,
+  CategoryResultTranslations,
   CategorySearchResult,
+  CategorySelection,
   Marketplace,
   MarketplaceTargetSite,
   UnknownRecord,
 } from '@/types/workflow'
 import {
-
   categoryAttributeSchemaFromSelection,
   publishJobMatchesProgressContext,
   workflowProgressDraft,
   type WorkflowRuntime,
 } from '../orchestration/runtime'
+
+type AttributeTranslationSlot = {
+  attributeId: string
+  field: 'label' | 'help' | 'option'
+  option?: string
+}
+
+function categoryResultTranslationContent(results: CategorySearchResult[]) {
+  const content: TextTranslationMap = {}
+  const categoryIdsByKey = new Map<string, string>()
+  results.forEach((item, index) => {
+    const text = String(item.path || item.name || '').trim()
+    if (!item.id || !text) return
+    const key = `category.${index}.path`
+    content[key] = text
+    categoryIdsByKey.set(key, item.id)
+  })
+  return { content, categoryIdsByKey }
+}
+
+function categoryAttributeTranslationContent(selection: CategorySelection) {
+  const content: TextTranslationMap = {}
+  const slots = new Map<string, AttributeTranslationSlot>()
+  const attributes = [...selection.requiredAttributes, ...selection.optionalAttributes]
+  attributes.forEach((attribute, attributeIndex) => {
+    const label = String(attribute.name || '').trim()
+    if (label) {
+      const key = `attribute.${attributeIndex}.label`
+      content[key] = label
+      slots.set(key, { attributeId: attribute.id, field: 'label' })
+    }
+    const description = String(attribute.description || '').trim()
+    if (description) {
+      const key = `attribute.${attributeIndex}.description`
+      content[key] = description
+      slots.set(key, { attributeId: attribute.id, field: 'help' })
+    }
+    for (const [optionIndex, option] of (attribute.options || []).entries()) {
+      const text = String(option || '').trim()
+      if (!text) continue
+      const key = `attribute.${attributeIndex}.option.${optionIndex}`
+      content[key] = text
+      slots.set(key, { attributeId: attribute.id, field: 'option', option: text })
+    }
+  })
+  return { content, slots }
+}
+
+function attributeTranslationsFromText(
+  selection: CategorySelection,
+  translated: TextTranslationMap,
+  slots: Map<string, AttributeTranslationSlot>,
+): CategoryAttributeTranslations {
+  const translations: CategoryAttributeTranslations = Object.fromEntries(
+    [...selection.requiredAttributes, ...selection.optionalAttributes].map((attribute) => [
+      attribute.id,
+      { label: '', help: '', values: {} },
+    ]),
+  )
+  for (const [key, text] of Object.entries(translated)) {
+    const slot = slots.get(key)
+    if (!slot || !translations[slot.attributeId]) continue
+    if (slot.field === 'option' && slot.option) {
+      translations[slot.attributeId].values[slot.option] = text
+    } else if (slot.field === 'label') {
+      translations[slot.attributeId].label = text
+    } else {
+      translations[slot.attributeId].help = text
+    }
+  }
+  return translations
+}
 
 type WorkflowPublishingActionsPort = Pick<
   WorkflowRuntime,
@@ -46,7 +117,6 @@ type WorkflowPublishingActionsPort = Pick<
   | 'categoryAutoMatchCurrent'
   | 'categoryAutoMatchTotal'
   | 'categoryAutoMatchProductName'
-  | 'categoryAttributeTranslationEnabled'
   | 'categoryAttributeTranslations'
   | 'categoryAttributeTranslationsSource'
   | 'categoryAttributeTranslating'
@@ -92,7 +162,7 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
   const {
     product, draftsIndex, currentDraft, currentDraftProductContext, category,
     categoryQuery, categoryResults, categoryRecommendations, categoryAutoMatching, categoryAutoMatchMessage,
-    categoryAutoMatchCurrent, categoryAutoMatchTotal, categoryAutoMatchProductName, categoryAttributeTranslationEnabled, categoryAttributeTranslations,
+    categoryAutoMatchCurrent, categoryAutoMatchTotal, categoryAutoMatchProductName, categoryAttributeTranslations,
     categoryAttributeTranslationsSource, categoryAttributeTranslating, categoryAttributeLoading, categoryAttributeError, categoryResultTranslations,
     categoryResultTranslationsSource, categoryResultTranslating, categoryPrecheck, precheck, precheckResults,
     payloadPreview, publishJob, publishJobStatus, publishLogs, activeMarketplace, platformOptions,
@@ -117,10 +187,6 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
     precheck.value = null
     payloadPreview.value = null
     applyTargetListingToDraft(selected)
-    if (categoryAttributeTranslationEnabled.value) {
-      void translateCategoryResults()
-      if (currentDraft.value.categoryId.trim()) void translateCategoryAttributes()
-    }
   }
   async function searchCategory() {
     if (!categoryQuery.value.trim()) {
@@ -140,9 +206,6 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
       categoryResultTranslations.value = {}
       categoryResultTranslationsSource.value = ''
       addLog(`类目搜索完成：${result.results.length} 条。`)
-      if (categoryAttributeTranslationEnabled.value) {
-        await translateCategoryResults()
-      }
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '类目搜索失败')
     } finally {
@@ -184,9 +247,6 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
     categoryResultTranslations.value = {}
     categoryResultTranslationsSource.value = ''
     addLog(`类目匹配已完成：${candidateTargetCount}/${targets.length} 个目标站点返回候选，${completedCount} 个给出已验证首选；仍需人工点击候选确认。`)
-    if (categoryAttributeTranslationEnabled.value) {
-      await translateCategoryResults()
-    }
     if (!candidateTargetCount) setError('没有找到可用类目候选，请调整商品信息或手动搜索。')
     return candidateTargetCount > 0
   }
@@ -323,9 +383,6 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
       categoryAttributeTranslationsSource.value = ''
       currentStage.value = 6
       addLog(`已读取并保存类目属性：${categoryId}`)
-      if (categoryAttributeTranslationEnabled.value) {
-        await translateCategoryAttributes()
-      }
     } catch (exc) {
       if (!requestIsCurrent()) return
       const message = exc instanceof Error ? exc.message : '读取或保存类目属性失败'
@@ -340,29 +397,27 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
   }
 
   async function translateCategoryAttributes() {
-    const target = selectedPublishTarget.value
     const categoryId = currentDraft.value.categoryId.trim()
     if (!categoryId) {
       setError('请先选择或填写类目 ID。')
       return
     }
-    if (!target.platform) return
+    const categoryForTranslation = category.value
+    if (!categoryForTranslation || categoryForTranslation.categoryId !== categoryId) {
+      setError('请先加载平台属性定义，再翻译属性文本。')
+      return
+    }
     const requestId = ++requestSequence.categoryAttributeTranslation
     loading.value = true
     categoryAttributeTranslating.value = true
     setError('')
     try {
-      const categoryForTranslation = category.value && category.value.categoryId === categoryId && category.value.platform === target.platform
-        ? category.value
-        : await fetchCategoryAttrs(target.platform, categoryId, target.site)
+      const { content, slots } = categoryAttributeTranslationContent(categoryForTranslation)
+      const translated = await translateText('zh-CN', content)
       if (requestId !== requestSequence.categoryAttributeTranslation) return
-      category.value = categoryForTranslation
-      const result = await fetchCategoryAttributeTranslations(categoryForTranslation)
-      if (requestId !== requestSequence.categoryAttributeTranslation) return
-      categoryAttributeTranslations.value = result.translations
-      categoryAttributeTranslationsSource.value = result.source
-      const count = Object.values(result.translations).filter((item) => item.label).length
-      addLog(`属性翻译已加载：${count} 项${result.source === 'cache' ? '（缓存）' : '（AI）'}。`)
+      categoryAttributeTranslations.value = attributeTranslationsFromText(categoryForTranslation, translated, slots)
+      categoryAttributeTranslationsSource.value = 'ai'
+      addLog(`属性翻译已加载：${Object.keys(translated).length} 段文本（AI）。`)
     } catch (exc) {
       if (requestId === requestSequence.categoryAttributeTranslation) setError(exc instanceof Error ? exc.message : '翻译类目属性失败')
     } finally {
@@ -375,31 +430,25 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
 
   async function translateCategoryResults() {
     if (!categoryResults.value.length) return
-    const target = selectedPublishTarget.value
-    if (!target.platform) return
     const requestId = ++requestSequence.categoryResultTranslation
     const results = categoryResults.value
     categoryResultTranslating.value = true
     try {
-      const result = await fetchCategoryResultTranslations(target.platform, results)
+      const { content, categoryIdsByKey } = categoryResultTranslationContent(results)
+      const translated = await translateText('zh-CN', content)
       if (requestId !== requestSequence.categoryResultTranslation) return
-      categoryResultTranslations.value = result.translations
-      categoryResultTranslationsSource.value = result.source
-      const count = Object.values(result.translations).filter(Boolean).length
-      addLog(`候选类目翻译已加载：${count} 项${result.source === 'provided' ? '（已有中文）' : '（AI）'}。`)
+      categoryResultTranslations.value = Object.fromEntries(
+        Object.entries(translated)
+          .map(([key, text]) => [categoryIdsByKey.get(key) || '', text])
+          .filter(([categoryKey]) => categoryKey),
+      ) as CategoryResultTranslations
+      categoryResultTranslationsSource.value = 'ai'
+      addLog(`候选类目翻译已加载：${Object.keys(translated).length} 项（AI）。`)
     } catch (exc) {
       if (requestId === requestSequence.categoryResultTranslation) setError(exc instanceof Error ? exc.message : '翻译候选类目失败')
     } finally {
       if (requestId === requestSequence.categoryResultTranslation) categoryResultTranslating.value = false
     }
-  }
-
-  function setCategoryAttributeTranslationEnabled(value: boolean) {
-    categoryAttributeTranslationEnabled.value = value
-    if (!value) return
-    void translateCategoryResults()
-    const categoryId = currentDraft.value.categoryId.trim()
-    if (categoryId || category.value) void translateCategoryAttributes()
   }
 
   async function fillAttributesByAi() {
@@ -575,7 +624,6 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
       invalidateCategoryAttributeLoad()
       activeMarketplace.value = value
       setMarketplaceSite(activeMarketplaceSite())
-      categoryAttributeTranslationEnabled.value = false
       categoryAttributeTranslations.value = {}
       categoryAttributeTranslationsSource.value = ''
       categoryResultTranslations.value = {}
@@ -611,7 +659,7 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
 
   return {
     searchCategory, suggestCategoryByAi, autoSuggestCategoriesForDraft, selectCategory, loadCategoryAttributes, translateCategoryAttributes,
-    translateCategoryResults, setCategoryAttributeTranslationEnabled, fillAttributesByAi, runCategoryOnlyPrecheck, runPrecheck, previewPayload,
+    translateCategoryResults, fillAttributesByAi, runCategoryOnlyPrecheck, runPrecheck, previewPayload,
     enqueuePublish, publishDirect, confirmRealPublish, setMarketplace, setMarketplaceSite, selectPublishTarget,
   }
 }

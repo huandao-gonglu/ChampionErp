@@ -146,16 +146,16 @@ describe('AuthSettingsPanel AI 功能绑定高级设置', () => {
     ],
     ai_use_cases: [
       {
-        id: 'category.attribute_translation',
-        label: '类目属性翻译',
+        id: 'text.translate',
+        label: '翻译',
         required_capabilities: ['chat', 'json'],
       },
     ],
     ai_use_case_bindings: {
-      'category.attribute_translation': { model_id: 'qwen_translation' },
+      'text.translate': { model_id: 'qwen_translation' },
     },
     ai_use_case_prompts: {
-      'category.attribute_translation': { path: 'config/prompts/category_attribute_translation.json' },
+      'text.translate': { path: 'config/prompts/text_translate.json' },
     },
     providers: [
       { id: 'openai', label: 'OpenAI', provider_family: 'openai', default_base_url: 'https://api.openai.com/v1', default_api_style: 'openai_responses', supported_api_styles: ['openai_compatible', 'openai_responses'] },
@@ -186,14 +186,14 @@ describe('AuthSettingsPanel AI 功能绑定高级设置', () => {
     const wrapper = mountPanel(qwenConfig)
     await wrapper.get('[data-testid="auth-settings-tab-ai_bindings"]').trigger('click')
 
-    await wrapper.get('[data-testid="generation-temperature-category.attribute_translation"]').setValue('0')
-    await wrapper.get('[data-testid="generation-max-output-category.attribute_translation"]').setValue('3000')
-    await wrapper.get('[data-testid="generation-reasoning-mode-category.attribute_translation"]').setValue('disabled')
+    await wrapper.get('[data-testid="generation-temperature-text.translate"]').setValue('0')
+    await wrapper.get('[data-testid="generation-max-output-text.translate"]').setValue('3000')
+    await wrapper.get('[data-testid="generation-reasoning-mode-text.translate"]').setValue('disabled')
     await wrapper.get('[data-testid="save-ai-bindings"]').trigger('click')
 
     const payload = wrapper.emitted('saveAi')?.[0]?.[0] as Record<string, unknown>
     const bindings = payload.ai_use_case_bindings as Record<string, Record<string, unknown>>
-    expect(bindings['category.attribute_translation']).toEqual({
+    expect(bindings['text.translate']).toEqual({
       model_id: 'qwen_translation',
       timeout_override_seconds: '',
       generation: {
@@ -264,13 +264,13 @@ describe('AuthSettingsPanel AI 功能绑定高级设置', () => {
     const wrapper = mountPanel(genericConfig)
     await wrapper.get('[data-testid="auth-settings-tab-ai_bindings"]').trigger('click')
 
-    expect(wrapper.get('[data-testid="generation-reasoning-mode-category.attribute_translation"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="generation-reasoning-mode-text.translate"]').attributes('disabled')).toBeDefined()
   })
 
   it('继承模式下可直接选择推理强度，并自动切换为开启', async () => {
     const wrapper = mountPanel(qwenConfig)
     await wrapper.get('[data-testid="auth-settings-tab-ai_bindings"]').trigger('click')
-    const effort = wrapper.get('[data-testid="generation-reasoning-effort-category.attribute_translation"]')
+    const effort = wrapper.get('[data-testid="generation-reasoning-effort-text.translate"]')
 
     expect(effort.attributes('disabled')).toBeUndefined()
     await effort.setValue('low')
@@ -278,7 +278,7 @@ describe('AuthSettingsPanel AI 功能绑定高级设置', () => {
 
     const payload = wrapper.emitted('saveAi')?.[0]?.[0] as Record<string, unknown>
     const bindings = payload.ai_use_case_bindings as Record<string, Record<string, unknown>>
-    expect(bindings['category.attribute_translation'].generation).toEqual({
+    expect(bindings['text.translate'].generation).toEqual({
       reasoning: { mode: 'enabled', effort: 'low' },
     })
   })

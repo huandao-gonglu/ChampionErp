@@ -1,10 +1,7 @@
-import {  apiClient } from '@/api/client'
+import { apiClient } from '@/api/client'
 import type {
-
-  CategoryAttributeTranslations,
   CategoryMatchResult,
   CategoryPrecheckResult,
-  CategoryResultTranslations,
   CategorySearchResult,
   CategorySelection,
   DraftIndexItem,
@@ -27,7 +24,6 @@ import type {
   UnknownRecord,
 } from '@/types/workflow'
 import type {
-
   DraftMutationResponse,
   PayloadPreviewResult,
   ProductOperationResult,
@@ -50,8 +46,6 @@ import {
   precheckIssues,
   stringList,
 } from './normalizers'
-
-
 import { requiredDraftTarget, requiredProductId } from './shared'
 
 export async function fetchPublishLogs(): Promise<PublishLogItem[]> {
@@ -559,48 +553,4 @@ export async function fillCategoryAttributes(draft: DraftDetail, target: Marketp
     needReview: Array.isArray(data.need_review) ? data.need_review : [],
     warning: getString(data, ['warning']),
   }
-}
-
-export async function fetchCategoryAttributeTranslations(category: CategorySelection, language = 'zh-CN'): Promise<{ translations: CategoryAttributeTranslations; source: string }> {
-  const response = await apiClient.post('/api/category-attribute-translations', {
-    platform: category.platform,
-    category_id: category.categoryId,
-    category_path: category.categoryPath,
-    language,
-    attributes: [...category.requiredAttributes, ...category.optionalAttributes],
-  })
-  const data = asRecord(response.data)
-  ensureOk(data, '翻译类目属性失败')
-  const rawTranslations = asRecord(data.translations)
-  const translations: CategoryAttributeTranslations = {}
-  for (const [attrId, value] of Object.entries(rawTranslations)) {
-    const record = asRecord(value)
-    translations[attrId] = {
-      label: getString(record, ['label', 'zh_label']),
-      help: getString(record, ['help', 'zh_help']),
-      values: Object.fromEntries(Object.entries(asRecord(record.values)).map(([key, text]) => [key, String(text || '')]).filter(([, text]) => text.trim())),
-    }
-  }
-  return { translations, source: getString(data, ['source']) }
-}
-
-export async function fetchCategoryResultTranslations(platform: Marketplace, categories: CategorySearchResult[], language = 'zh-CN'): Promise<{ translations: CategoryResultTranslations; source: string }> {
-  const response = await apiClient.post('/api/category-result-translations', {
-    platform,
-    language,
-    categories: categories.map((item) => ({
-      id: item.id,
-      name: item.name,
-      path: item.path,
-      raw: item.raw,
-    })),
-  })
-  const data = asRecord(response.data)
-  ensureOk(data, '翻译候选类目失败')
-  const translations = Object.fromEntries(
-    Object.entries(asRecord(data.translations))
-      .map(([key, value]) => [key, String(value || '').trim()])
-      .filter(([, value]) => value),
-  )
-  return { translations, source: getString(data, ['source']) }
 }

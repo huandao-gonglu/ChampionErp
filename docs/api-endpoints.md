@@ -259,19 +259,11 @@
   `category_record`：类目记录对象，可选
   ）；用 AI 为当前商品草稿补齐类目属性。
 
-- `POST /api/category-attribute-translations`（
-  `platform`：平台标识，可选
-  `category_id`：类目 ID，可选
-  `category_path`：类目路径，可选
-  `language`：目标语言，可选，默认 `zh-CN`
-  `attributes`：属性列表对象，可选
-  ）；翻译类目属性名称和值，用于中文辅助显示。
-
-- `POST /api/category-result-translations`（
-  `platform`：平台标识，可选
-  `language`：目标语言，可选，默认 `zh-CN`
-  `categories`：类目结果列表对象，可选
-  ）；翻译类目搜索结果，用于中文辅助显示。
+- `POST /api/text-translate`（
+  `target_language`：目标语言，必填
+  `content`：待翻译的扁平文本键值对象，必填
+  ）；通用文本翻译入口。请求方自行定义稳定 key，响应 `translations` 严格返回相同 key
+  的扁平 `{key: value}` 对象。类目候选和平台属性分别组装自己的文本后调用本入口。
 
 - `POST /api/category-precheck`（
   `product_id`：商品 ID，必填

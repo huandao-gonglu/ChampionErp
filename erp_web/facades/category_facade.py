@@ -14,12 +14,6 @@ from erp_web.product_model import validate_category_precheck
 from erp_web.runtime_units.category_attribute_ai_fill import (
     apply_ai_model_attribute_fill,
 )
-from erp_web.runtime_units.category_attribute_translation import (
-    translate_category_attributes,
-)
-from erp_web.runtime_units.category_result_translation import (
-    translate_category_results,
-)
 from erp_web.runtime_units.category_store import (
     fetch_category_attributes,
     fetch_category_record,
@@ -281,32 +275,6 @@ def category_ai_fill_payload(body: Payload) -> ResponseWithStatus:
     return _product_fill_payload(updated, platform, meta), 200
 
 
-def category_attribute_translations_payload(body: Payload) -> ResponseWithStatus:
-    attributes = (
-        body.get("attributes") if isinstance(body.get("attributes"), list) else []
-    )
-    result = translate_category_attributes(
-        _platform(body),
-        str(body.get("category_id") or "").strip(),
-        str(body.get("category_path") or "").strip(),
-        attributes,
-        language=str(body.get("language") or "zh-CN").strip() or "zh-CN",
-    )
-    return result, 200
-
-
-def category_result_translations_payload(body: Payload) -> ResponseWithStatus:
-    categories = (
-        body.get("categories") if isinstance(body.get("categories"), list) else []
-    )
-    result = translate_category_results(
-        _platform(body),
-        categories,
-        language=str(body.get("language") or "zh-CN").strip() or "zh-CN",
-    )
-    return result, 200
-
-
 def category_precheck_payload(body: Payload) -> ResponseWithStatus:
     category_id = str(body.get("category_id") or "").strip()
     product, _, platform, site, error, status = _load_category_subject(body)
@@ -331,9 +299,7 @@ def category_precheck_payload(body: Payload) -> ResponseWithStatus:
 __all__ = [
     "category_ai_fill_payload",
     "category_match_payload",
-    "category_attribute_translations_payload",
     "category_attrs_payload",
     "category_precheck_payload",
-    "category_result_translations_payload",
     "category_search_payload",
 ]

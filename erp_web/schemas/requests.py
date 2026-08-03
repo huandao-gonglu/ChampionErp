@@ -71,6 +71,7 @@ _COMMON_FIELD_RULES: dict[str, FieldRule] = {
     "category_record": OBJECT,
     "common": OBJECT,
     "config": OBJECT,
+    "content": OBJECT,
     "dimensions": OBJECT,
     "draft": OBJECT,
     "mock_snapshot": OBJECT,
@@ -194,9 +195,6 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
             ("site", "site_id", "country"),
         ),
     ),
-    "/api/category-attribute-translations": _contract(
-        required=("category_id",)
-    ),
     "/api/category-attrs": _contract(required=("category_id",)),
     "/api/category-precheck": _contract(
         required_any=(
@@ -204,7 +202,6 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
             ("category_id", "category_record"),
         )
     ),
-    "/api/category-result-translations": _EMPTY,
     "/api/category-search": _contract(
         required_any=(("query", "keyword"),)
     ),
@@ -279,6 +276,9 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     ),
     "/api/test-api-config": _contract(required=("kind",)),
     "/api/test-store-auth": _contract(required=("platform",)),
+    "/api/text-translate": _contract(
+        required=("target_language", "content")
+    ),
     "/api/upc-pool/import": _contract(required=("values",)),
     "/api/v1/product-research/hot-products/search": _EMPTY,
     "/api/v1/product-research/search-providers/test": _contract(

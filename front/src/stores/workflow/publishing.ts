@@ -40,7 +40,6 @@ export const useWorkflowPublishingStore = defineStore('workflow-publishing', () 
   const categoryAutoMatchCurrent = ref(0)
   const categoryAutoMatchTotal = ref(0)
   const categoryAutoMatchProductName = ref('')
-  const categoryAttributeTranslationEnabled = ref(false)
   const categoryAttributeTranslations = ref<CategoryAttributeTranslations>({})
   const categoryAttributeTranslationsSource = ref('')
   const categoryAttributeTranslating = ref(false)
@@ -175,7 +174,6 @@ export const useWorkflowPublishingStore = defineStore('workflow-publishing', () 
     categoryAutoMatchCurrent,
     categoryAutoMatchTotal,
     categoryAutoMatchProductName,
-    categoryAttributeTranslationEnabled,
     categoryAttributeTranslations,
     categoryAttributeTranslationsSource,
     categoryAttributeTranslating,

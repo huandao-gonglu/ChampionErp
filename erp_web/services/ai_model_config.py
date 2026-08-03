@@ -96,14 +96,9 @@ AI_USE_CASES: dict[str, dict[str, Any]] = {
         "budget_profile": "category.match.default",
         "result_schema": "category_match.v1",
     },
-    "category.attribute_translation": {
-        "id": "category.attribute_translation",
-        "label": "类目属性翻译",
-        "required_capabilities": [CAP_CHAT, CAP_JSON],
-    },
-    "category.result_translation": {
-        "id": "category.result_translation",
-        "label": "候选类目翻译",
+    "text.translate": {
+        "id": "text.translate",
+        "label": "翻译",
         "required_capabilities": [CAP_CHAT, CAP_JSON],
     },
     "research.web_search": {

@@ -178,7 +178,7 @@ def test_ai_use_case_binding_keeps_timeout_override_and_legacy_model_id() -> Non
 def test_ai_use_case_binding_normalizes_generation_overrides() -> None:
     bindings = ai_model_config.normalize_ai_use_case_bindings(
         {
-            "category.attribute_translation": {
+            "text.translate": {
                 "model_id": "qwen_model",
                 "generation": {
                     "temperature": "0",
@@ -189,7 +189,7 @@ def test_ai_use_case_binding_normalizes_generation_overrides() -> None:
         }
     )
 
-    assert bindings["category.attribute_translation"] == {
+    assert bindings["text.translate"] == {
         "model_id": "qwen_model",
         "generation": {
             "temperature": 0.0,
@@ -216,7 +216,7 @@ def test_merge_ai_config_rejects_reasoning_for_unmapped_deepseek_profile(app_dir
                     }
                 ],
                 "ai_use_case_bindings": {
-                    "category.attribute_translation": {
+                    "text.translate": {
                         "model_id": "deepseek_model",
                         "generation": {"reasoning": {"mode": "disabled"}},
                     }

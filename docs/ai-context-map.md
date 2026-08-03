@@ -173,6 +173,18 @@ runtime unit 中显式构造，不注册到动态全局表。
 `erp_web/runtime_units/category_store.py::search_categories_live` 与自动匹配内部工具
 共用 `CategorySearcher`，但 `POST /api/category-search` 仍只服务人工关键词搜索。
 
+## 通用文本翻译
+
+- `erp_web/http_route_units/translation_routes.py`：唯一公开入口 `POST /api/text-translate`；
+  只接受 `target_language` 与扁平 `content` 键值对象。
+- `erp_web/facades/translation_facade.py`：HTTP 状态映射，不包含类目或属性领域分支。
+- `erp_web/runtime_units/text_translation.py`：唯一 `text.translate` AI 用例调用方；校验请求与
+  模型响应拥有完全相同的 key 集合，并统一返回扁平 `{key: value}`。
+- `config/prompts/text_translate.json`：唯一“翻译” Prompt。调用方负责注入目标语言和具体文本；
+  类目候选与平台属性在前端各自独立组装内容并触发，不共享领域 payload。
+
+已退役的类目结果翻译、类目属性翻译端点、用例、Prompt 和 runtime unit 不提供兼容路径。
+
 ## 类目匹配 Capability
 
 - `erp_web/runtime_units/category_tools.py`：`category.search` 只读 ToolSet；只暴露

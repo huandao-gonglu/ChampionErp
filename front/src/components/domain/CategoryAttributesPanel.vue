@@ -15,7 +15,6 @@ const props = withDefaults(defineProps<{
   categoryResults: CategorySearchResult[]
   categoryAutoMatchProductName?: string
   categoryAutoMatchTargetError?: string
-  categoryAttributeTranslationEnabled: boolean
   categoryAttributeTranslations: CategoryAttributeTranslations
   categoryAttributeTranslationsSource: string
   categoryAttributeTranslating: boolean
@@ -41,7 +40,8 @@ const emit = defineEmits<{
   suggestCategory: []
   selectCategory: [item: CategorySearchResult]
   applyCategory: []
-  setTranslateAttributesEnabled: [value: boolean]
+  translateCategoryResults: []
+  translateCategoryAttributes: []
   fillAttributes: []
   categoryPrecheck: []
 }>()
@@ -106,22 +106,18 @@ const attributeFields = computed(() => {
 const requiredAttributeFields = computed(() => attributeFields.value.filter((attr) => attr.required))
 const optionalAttributeFields = computed(() => attributeFields.value.filter((attr) => !attr.required))
 const attributeFieldById = computed(() => new Map(attributeFields.value.map((attr) => [attr.id, attr])))
-const translateAttributesEnabled = computed({
-  get: () => props.categoryAttributeTranslationEnabled,
-  set: (value: boolean) => emit('setTranslateAttributesEnabled', value),
-})
 const translationCount = computed(() => Object.values(props.categoryAttributeTranslations || {}).filter((item) => item.label).length)
 const translationSourceLabel = computed(() => props.categoryAttributeTranslationsSource === 'cache' ? '缓存' : props.categoryAttributeTranslationsSource === 'ai' ? 'AI' : '')
-const showAttributeTranslationProgress = computed(() => translateAttributesEnabled.value && props.categoryAttributeTranslating)
+const showAttributeTranslationProgress = computed(() => props.categoryAttributeTranslating)
 const categoryResultTranslationCount = computed(() => Object.values(props.categoryResultTranslations || {}).filter(Boolean).length)
-const showCategoryResultTranslationProgress = computed(() => translateAttributesEnabled.value && props.categoryResultTranslating)
+const showCategoryResultTranslationProgress = computed(() => props.categoryResultTranslating)
 
 function attributeTranslation(attrId: string) {
   return props.categoryAttributeTranslations?.[attrId] || null
 }
 
 function attributeLabel(attr: { id: string; name: string }) {
-  const translation = translateAttributesEnabled.value ? attributeTranslation(attr.id) : null
+  const translation = attributeTranslation(attr.id)
   return translation?.label || attr.name || attr.id
 }
 
@@ -130,7 +126,7 @@ function attributeOriginalLabel(attr: { id: string; name: string }) {
 }
 
 function attributeOptionLabel(attrId: string, option: string) {
-  const translation = translateAttributesEnabled.value ? attributeTranslation(attrId) : null
+  const translation = attributeTranslation(attrId)
   const translated = translation?.values?.[option]
   return translated ? `${translated} / ${option}` : option
 }
@@ -144,7 +140,7 @@ function categoryResultTranslation(item: CategorySearchResult) {
 }
 
 function categoryResultTitle(item: CategorySearchResult) {
-  return translateAttributesEnabled.value && categoryResultTranslation(item) ? categoryResultTranslation(item) : item.name || item.id
+  return categoryResultTranslation(item) || item.name || item.id
 }
 
 function categoryResultSubtitle(item: CategorySearchResult) {
@@ -278,14 +274,10 @@ function selectTargetByKey(value: string) {
         <h2 class="card-title">类目/属性</h2>
         <p class="muted mt-1">在当前草稿的目标站点之间切换，并分别维护平台类目和必填属性。</p>
         <p v-if="props.categoryAutoMatchProductName" class="mt-1 text-xs font-semibold text-brand-700 dark:text-brand-300">AI 识别商品主体：{{ props.categoryAutoMatchProductName }}。请逐站点检查候选类目后再确认。</p>
-        <p v-if="showCategoryResultTranslationProgress || showAttributeTranslationProgress" class="mt-1 text-xs text-brand-700 dark:text-brand-300">正在调用 AI 模型翻译类目/属性...</p>
-        <p v-else-if="translateAttributesEnabled && (categoryResultTranslationCount || translationCount)" class="mt-1 text-xs text-accent-500 dark:text-accent-400">已翻译候选类目 {{ categoryResultTranslationCount }} 项 / 属性 {{ translationCount }} 项</p>
+        <p v-if="showCategoryResultTranslationProgress || showAttributeTranslationProgress" class="mt-1 text-xs text-brand-700 dark:text-brand-300">正在调用 AI 模型翻译文本...</p>
+        <p v-else-if="categoryResultTranslationCount || translationCount" class="mt-1 text-xs text-accent-500 dark:text-accent-400">已翻译候选类目 {{ categoryResultTranslationCount }} 项 / 属性 {{ translationCount }} 项</p>
       </div>
       <div class="flex flex-wrap items-center gap-2">
-        <label class="inline-flex items-center gap-2 rounded-full border border-accent-200 bg-white px-3 py-1.5 text-sm font-semibold text-accent-700 shadow-sm dark:border-dark-700 dark:bg-dark-900 dark:text-accent-200">
-          <input v-model="translateAttributesEnabled" type="checkbox" class="size-4 rounded border-accent-300" :disabled="props.loading || !hasCurrentDraft" />
-          翻译类目/属性
-        </label>
         <select :value="selectedTargetKey" class="input w-80 max-w-full" :disabled="props.loading || targetOptions.length <= 1" @change="selectTargetByKey(($event.target as HTMLSelectElement).value)">
           <option v-for="target in targetOptions" :key="target.key" :value="target.key">{{ target.label }}</option>
         </select>
@@ -302,6 +294,7 @@ function selectTargetByKey(value: string) {
             <h3 class="font-semibold text-accent-950 dark:text-white">类目候选与手动搜索</h3>
             <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">可手动输入关键词搜索当前目标站点，或按需使用 AI 识别商品主体并生成候选。</p>
           </div>
+          <button class="btn btn-outline" :disabled="props.loading || props.categoryResultTranslating || !props.categoryResults.length" @click="emit('translateCategoryResults')">翻译候选类目</button>
         </div>
         <p class="mt-3 text-xs text-accent-500 dark:text-accent-400">{{ props.loading ? '正在请求当前平台实时类目接口...' : '候选类目来自当前平台实时搜索；选中类目后再读取并保存平台属性定义。' }}</p>
         <p v-if="props.categoryAutoMatchTargetError" class="mt-2 text-xs text-amber-700 dark:text-amber-300">本目标站点自动匹配未完成：{{ props.categoryAutoMatchTargetError }}</p>
@@ -327,7 +320,7 @@ function selectTargetByKey(value: string) {
         <div class="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h3 class="font-semibold text-accent-950 dark:text-white">当前类目 / 平台属性</h3>
-            <p v-if="translateAttributesEnabled && translationCount" class="mt-1 text-xs text-accent-500 dark:text-accent-400">属性翻译：{{ translationCount }} 项{{ translationSourceLabel ? ` / ${translationSourceLabel}` : '' }}</p>
+            <p v-if="translationCount" class="mt-1 text-xs text-accent-500 dark:text-accent-400">属性翻译：{{ translationCount }} 项{{ translationSourceLabel ? ` / ${translationSourceLabel}` : '' }}</p>
           </div>
         </div>
         <label class="mt-4 block">
@@ -340,6 +333,7 @@ function selectTargetByKey(value: string) {
         </label>
         <div class="mt-4 flex flex-wrap gap-2">
           <button class="btn btn-outline" :disabled="props.loading || props.categoryAttributeLoading || !hasCurrentDraft || !hasSelectedCategory" @click="emit('applyCategory')">刷新平台属性</button>
+          <button class="btn btn-outline" :disabled="props.loading || props.categoryAttributeTranslating || categoryAttributeState !== 'ready'" @click="emit('translateCategoryAttributes')">翻译平台属性</button>
           <button class="btn btn-primary" :disabled="props.loading || categoryAttributeState !== 'ready'" @click="emit('fillAttributes')">AI 填充属性</button>
           <button class="btn btn-outline" :disabled="props.loading || categoryAttributeState !== 'ready'" @click="emit('categoryPrecheck')">类目预检</button>
         </div>
@@ -385,8 +379,8 @@ function selectTargetByKey(value: string) {
           <div v-if="showRequiredAttributes" class="mt-3 grid gap-2" data-testid="required-attribute-fields">
             <label v-for="attr in requiredAttributeFields" :key="attr.id" class="block">
               <span class="text-xs font-semibold" :class="isMissingAttribute(attr.id) ? 'text-rose-700' : 'text-slate-500'">* {{ attributeLabel(attr) }}</span>
-              <span v-if="translateAttributesEnabled && attributeTranslation(attr.id)" class="mt-0.5 block text-[11px] text-slate-400">{{ attributeOriginalLabel(attr) }}</span>
-              <span v-if="translateAttributesEnabled && attributeTranslation(attr.id)?.help" class="mt-0.5 block text-[11px] text-slate-500">{{ attributeTranslation(attr.id)?.help }}</span>
+              <span v-if="attributeTranslation(attr.id)" class="mt-0.5 block text-[11px] text-slate-400">{{ attributeOriginalLabel(attr) }}</span>
+              <span v-if="attributeTranslation(attr.id)?.help" class="mt-0.5 block text-[11px] text-slate-500">{{ attributeTranslation(attr.id)?.help }}</span>
               <span v-if="pendingReviewAttributeIds.includes(attr.id)" class="mt-0.5 block text-[11px] text-amber-600">AI 暂无法从商品信息判断，请人工确认。</span>
               <select
                 v-if="attr.options.length"
@@ -423,8 +417,8 @@ function selectTargetByKey(value: string) {
           <div v-if="showOptionalAttributes" class="mt-3 grid gap-2" data-testid="optional-attribute-fields">
             <label v-for="attr in optionalAttributeFields" :key="attr.id" class="block">
               <span class="text-xs font-semibold text-slate-500">{{ attributeLabel(attr) }}</span>
-              <span v-if="translateAttributesEnabled && attributeTranslation(attr.id)" class="mt-0.5 block text-[11px] text-slate-400">{{ attributeOriginalLabel(attr) }}</span>
-              <span v-if="translateAttributesEnabled && attributeTranslation(attr.id)?.help" class="mt-0.5 block text-[11px] text-slate-500">{{ attributeTranslation(attr.id)?.help }}</span>
+              <span v-if="attributeTranslation(attr.id)" class="mt-0.5 block text-[11px] text-slate-400">{{ attributeOriginalLabel(attr) }}</span>
+              <span v-if="attributeTranslation(attr.id)?.help" class="mt-0.5 block text-[11px] text-slate-500">{{ attributeTranslation(attr.id)?.help }}</span>
               <select v-if="attr.options.length" :ref="(el) => setAttributeInputRef(attr.id, el)" v-model="activeDraft.attributes[attr.id]" class="input mt-1" :data-attribute-id="attr.id">
                 <option value="">{{ attributePlaceholder(attr) }}</option>
                 <option v-for="option in attr.options" :key="option" :value="option">{{ attributeOptionLabel(attr.id, option) }}</option>

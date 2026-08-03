@@ -40,20 +40,6 @@ def handle_category_ai_fill(handler: JsonRequestHandler) -> None:
     handler.send_json(result, status)
 
 
-def handle_category_attribute_translations(handler: JsonRequestHandler) -> None:
-    result, status = category_facade.category_attribute_translations_payload(
-        validate_request_payload(handler.read_body(), endpoint=handler.path)
-    )
-    handler.send_json(result, status)
-
-
-def handle_category_result_translations(handler: JsonRequestHandler) -> None:
-    result, status = category_facade.category_result_translations_payload(
-        validate_request_payload(handler.read_body(), endpoint=handler.path)
-    )
-    handler.send_json(result, status)
-
-
 def handle_category_precheck(handler: JsonRequestHandler) -> None:
     result, status = category_facade.category_precheck_payload(
         validate_request_payload(handler.read_body(), endpoint=handler.path)
@@ -66,8 +52,6 @@ POST_HANDLERS: dict[str, PostHandler] = {
     "/api/category-search": handle_category_search,
     "/api/category-match": handle_category_match,
     "/api/category-ai-fill": handle_category_ai_fill,
-    "/api/category-attribute-translations": handle_category_attribute_translations,
-    "/api/category-result-translations": handle_category_result_translations,
     "/api/category-precheck": handle_category_precheck,
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)

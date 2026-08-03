@@ -64,7 +64,6 @@ const {
   categoryAutoMatchCurrent,
   categoryAutoMatchTotal,
   categoryAutoMatchProductName,
-  categoryAttributeTranslationEnabled,
   categoryAttributeTranslations,
   categoryAttributeTranslationsSource,
   categoryAttributeTranslating,
@@ -712,7 +711,6 @@ watch(
                 :category-results="categoryResults"
                 :category-auto-match-product-name="categoryAutoMatchProductName"
                 :category-auto-match-target-error="categoryAutoMatchTargetError"
-                :category-attribute-translation-enabled="categoryAttributeTranslationEnabled"
                 :category-attribute-translations="categoryAttributeTranslations"
                 :category-attribute-translations-source="categoryAttributeTranslationsSource"
                 :category-attribute-translating="categoryAttributeTranslating"
@@ -730,7 +728,8 @@ watch(
                 @suggest-category="store.suggestCategoryByAi"
                 @select-category="store.selectCategory"
                 @apply-category="store.loadCategoryAttributes"
-                @set-translate-attributes-enabled="store.setCategoryAttributeTranslationEnabled"
+                @translate-category-results="store.translateCategoryResults"
+                @translate-category-attributes="store.translateCategoryAttributes"
                 @fill-attributes="store.fillAttributesByAi"
                 @category-precheck="store.runCategoryOnlyPrecheck"
               />

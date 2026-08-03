@@ -23,7 +23,6 @@ function panelProps(draft: DraftDetail, category: CategorySelection | null) {
     category,
     categoryQuery: '',
     categoryResults: [],
-    categoryAttributeTranslationEnabled: false,
     categoryAttributeTranslations: {},
     categoryAttributeTranslationsSource: '',
     categoryAttributeTranslating: false,
@@ -41,6 +40,38 @@ afterEach(() => {
 })
 
 describe('CategoryAttributesPanel', () => {
+  it('uses separate category and attribute translation triggers', async () => {
+    const draft = createEmptyDraftDetail('ozon')
+    draft.draftId = 'draft-translation'
+    draft.site = 'global'
+    draft.categoryId = '971049422'
+    const category: CategorySelection = {
+      platform: 'ozon',
+      categoryId: '971049422',
+      categoryPath: 'Автотовары / Запчасти',
+      requiredAttributes: [{ id: '7236', name: 'Название модели', required: true, options: [] }],
+      optionalAttributes: [],
+      raw: {},
+    }
+    const wrapper = mount(CategoryAttributesPanel, {
+      props: {
+        ...panelProps(draft, category),
+        categoryResults: [{ id: '971049422', name: 'Запчасти', path: 'Автотовары / Запчасти', raw: {} }],
+      },
+    })
+
+    const categoryButton = wrapper.findAll('button').find((button) => button.text() === '翻译候选类目')
+    const attributeButton = wrapper.findAll('button').find((button) => button.text() === '翻译平台属性')
+    expect(categoryButton).toBeDefined()
+    expect(attributeButton).toBeDefined()
+
+    await categoryButton!.trigger('click')
+    await attributeButton!.trigger('click')
+
+    expect(wrapper.emitted('translateCategoryResults')).toHaveLength(1)
+    expect(wrapper.emitted('translateCategoryAttributes')).toHaveLength(1)
+  })
+
   it('平台属性定义未加载时不再用草稿属性生成临时输入框', async () => {
     const draft = createEmptyDraftDetail('ozon')
     draft.draftId = 'draft-schema-error'
