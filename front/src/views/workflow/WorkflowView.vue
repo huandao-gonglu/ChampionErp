@@ -217,6 +217,17 @@ async function ensureDraftWorkspaceImages() {
 async function switchDraftWorkspaceTab(tab: DraftWorkspaceTab) {
   if (tab === 'images') await ensureDraftWorkspaceImages()
   draftWorkspaceTab.value = tab
+  if (
+    tab === 'category'
+    && currentDraft.value.categoryId.trim()
+    && !categoryAttributeLoading.value
+    && !(
+      category.value?.categoryId === currentDraft.value.categoryId.trim()
+      && category.value.platform === selectedPublishTarget.value.platform
+    )
+  ) {
+    await store.loadCategoryAttributes()
+  }
 }
 
 async function translateEditorImages(imageIds: string[]) {
