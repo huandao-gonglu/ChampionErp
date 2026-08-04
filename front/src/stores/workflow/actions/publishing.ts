@@ -262,7 +262,27 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
     categoryAttributeError.value = ''
     categoryPrecheck.value = null
     precheck.value = null
+    precheckResults.value = {}
     payloadPreview.value = null
+    persistActiveTargetListingFields({
+      categoryPrecheck: {},
+      lastPrecheck: {},
+      lastPrecheckTarget: {},
+    })
+  }
+
+  function invalidateCategoryPrecheck() {
+    categoryPrecheck.value = null
+    precheck.value = null
+    precheckResults.value = {}
+    payloadPreview.value = null
+    currentDraft.value.lastPrecheck = {}
+    currentDraft.value.lastPrecheckTarget = {}
+    persistActiveTargetListingFields({
+      categoryPrecheck: {},
+      lastPrecheck: {},
+      lastPrecheckTarget: {},
+    })
   }
 
   async function autoSuggestCategoriesForDraft() {
@@ -659,7 +679,7 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
 
   return {
     searchCategory, suggestCategoryByAi, autoSuggestCategoriesForDraft, selectCategory, loadCategoryAttributes, translateCategoryAttributes,
-    translateCategoryResults, fillAttributesByAi, runCategoryOnlyPrecheck, runPrecheck, previewPayload,
+    translateCategoryResults, fillAttributesByAi, invalidateCategoryPrecheck, runCategoryOnlyPrecheck, runPrecheck, previewPayload,
     enqueuePublish, publishDirect, confirmRealPublish, setMarketplace, setMarketplaceSite, selectPublishTarget,
   }
 }

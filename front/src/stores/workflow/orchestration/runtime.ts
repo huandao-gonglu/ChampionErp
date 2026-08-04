@@ -719,6 +719,29 @@ export function createWorkflowRuntime() {
     pricingInput.value.targets = hasDraft ? pricingTargetsFromDraft(draftDetail).map((target) => pricingTargetInput(target, pricing)) : []
   }
 
+  function syncDraftPackageDimensionsFromPricingInput() {
+    const packageDimensions = {
+      lengthCm: String(pricingInput.value.lengthCm || ''),
+      widthCm: String(pricingInput.value.widthCm || ''),
+      heightCm: String(pricingInput.value.heightCm || ''),
+      weightKg: String(pricingInput.value.weightKg || ''),
+    }
+    const current = currentDraft.value.packageDimensions
+    const changed = Object.entries(packageDimensions).some(([key, value]) => (
+      current[key as keyof typeof packageDimensions] !== value
+    ))
+    currentDraft.value.packageDimensions = packageDimensions
+    if (changed) {
+      precheck.value = null
+      precheckResults.value = {}
+      payloadPreview.value = null
+      currentDraft.value.lastPrecheck = {}
+      currentDraft.value.lastPrecheckTarget = {}
+      persistActiveTargetListingFields({ lastPrecheck: {}, lastPrecheckTarget: {} })
+    }
+    return packageDimensions
+  }
+
   async function persistCurrentDraftForPublish() {
     if (!currentDraft.value.draftId) {
       throw new Error('请先从草稿箱选择一个草稿再进行发布预检。')
@@ -726,6 +749,7 @@ export function createWorkflowRuntime() {
     if (!currentPublishTargets.value.length) {
       throw new Error('当前草稿没有目标站点，请先在草稿箱选择目标市场。')
     }
+    syncDraftPackageDimensionsFromPricingInput()
     persistActiveTargetListingFields(categoryPrecheck.value ? { categoryPrecheck: categoryPrecheck.value.raw || categoryPrecheck.value } : {})
     syncActivePublishTarget()
     const target = selectedPublishTarget.value
@@ -760,7 +784,7 @@ export function createWorkflowRuntime() {
     applyTargetListingToDraft, configuredTargetsForLanguage, configuredSelectedTargets, targetPlatforms, pricingTargetKey, platformSite,
     pricingTargetDefaults, pricingTargetsFromDraft, normalizedDraftTargets, syncActivePublishTarget, pricingTargetRecord, recordNumber,
     pricingTargetInput, draftDetailFromProduct, applyMutationIndexes, restorePrecheckFromProduct, restoreCategoryFromProduct, syncCollectDiagnosticsFromProduct,
-    syncPricingInputFromProduct, persistCurrentDraftForPublish,
+    syncPricingInputFromProduct, syncDraftPackageDimensionsFromPricingInput, persistCurrentDraftForPublish,
   }
 }
 

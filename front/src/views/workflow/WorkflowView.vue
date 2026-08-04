@@ -731,6 +731,7 @@ watch(
                 @translate-category-results="store.translateCategoryResults"
                 @translate-category-attributes="store.translateCategoryAttributes"
                 @fill-attributes="store.fillAttributesByAi"
+                @invalidate-category-precheck="store.invalidateCategoryPrecheck"
                 @category-precheck="store.runCategoryOnlyPrecheck"
               />
               <div v-if="categoryAutoMatching" class="absolute inset-0 z-20 flex items-center justify-center rounded-3xl bg-white/90 p-6 text-center backdrop-blur-sm dark:bg-dark-950/90">

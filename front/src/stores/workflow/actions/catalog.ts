@@ -74,6 +74,7 @@ type WorkflowCatalogActionsPort = Pick<
   | 'restoreCategoryFromProduct'
   | 'syncCollectDiagnosticsFromProduct'
   | 'syncPricingInputFromProduct'
+  | 'syncDraftPackageDimensionsFromPricingInput'
 >
 
 export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort) {
@@ -85,7 +86,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     addLog, setError, currentStage, mergeTargetDetails, persistActiveTargetListingFields,
     invalidateCategoryAttributeLoad, configuredTargetsForLanguage, configuredSelectedTargets, targetPlatforms, syncActivePublishTarget,
     draftDetailFromProduct, applyMutationIndexes, restorePrecheckFromProduct, restoreCategoryFromProduct, syncCollectDiagnosticsFromProduct,
-    syncPricingInputFromProduct,
+    syncPricingInputFromProduct, syncDraftPackageDimensionsFromPricingInput,
   } = runtime
 
   async function refreshProductsIndex() {
@@ -586,6 +587,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     loading.value = true
     setError('')
     try {
+      syncDraftPackageDimensionsFromPricingInput()
       persistActiveTargetListingFields(categoryPrecheck.value ? { categoryPrecheck: categoryPrecheck.value.raw || categoryPrecheck.value } : {})
       const result = await saveDraftApi(currentDraft.value)
       currentDraft.value = result.draft

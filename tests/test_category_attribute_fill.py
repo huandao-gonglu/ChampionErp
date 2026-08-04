@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from erp_web.product_model import build_ai_attribute_fill, default_product_model
+from erp_web.product_model import (
+    build_ai_attribute_fill,
+    default_product_model,
+    validate_category_precheck,
+)
 from erp_web.runtime_units import category_attribute_ai_fill
 
 
@@ -82,3 +86,35 @@ def test_ai_model_attribute_fill_uses_product_context_and_validates_options(monk
     assert attrs["AIR_CONDITIONER_TYPE"] == "Portable"
     assert attrs["POWER_SUPPLY_TYPE"] == "Electric"
     assert updated["drafts"]["mercadolibre"]["validation_errors"] == []
+
+
+def test_category_precheck_only_reports_missing_required_category_attributes() -> None:
+    product = default_product_model()
+    draft = product["drafts"]["mercadolibre"]
+    draft["category_id"] = "MLM123"
+    draft["brand"] = ""
+    draft["model"] = ""
+    draft["package_dimensions"] = {
+        "length_cm": "21",
+        "width_cm": "",
+        "height_cm": "",
+        "weight_kg": "",
+    }
+    draft["attributes"] = {"REQUIRED_VALUE": "filled"}
+    category = {
+        "category_id": "MLM123",
+        "attributes": {
+            "required": [
+                {"id": "REQUIRED_VALUE", "required": True},
+                {"id": "PACKAGE_LENGTH", "required": True},
+                {"id": "MISSING_REQUIRED", "required": True},
+            ],
+            "optional": [
+                {"id": "OPTIONAL_VALUE", "required": False},
+            ],
+        },
+    }
+
+    result = validate_category_precheck(product, "mercadolibre", category)
+
+    assert result == ["attributes.MISSING_REQUIRED"]

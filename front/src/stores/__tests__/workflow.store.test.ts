@@ -619,6 +619,7 @@ describe('workflow store live API flow', () => {
         categoryId: 'MLM-OLD',
         categoryPath: '旧类目',
         attributes: { OLD_ATTRIBUTE: '旧值' },
+        categoryPrecheck: { ok: true },
       },
       {
         platform: 'mercadolibre',
@@ -671,6 +672,7 @@ describe('workflow store live API flow', () => {
       categoryPath: '家居 / 新类目',
       categoryAttributeSchema: null,
       attributes: {},
+      categoryPrecheck: {},
     }))
     expect(savedDrafts[0].targetSites[1]).toEqual(expect.objectContaining({
       site: 'CBT',
@@ -1002,6 +1004,62 @@ describe('workflow store live API flow', () => {
     expect(store.pricingInput.targets[0].targetKey).toBe('mercadolibre:cbt')
     expect(store.pricingInput.targets[0].appliedPrice).toBe(0)
     expect(store.currentDraft.price).toBe('94')
+  })
+
+  it('类目预检前会把核价页尺寸同步到草稿', async () => {
+    const draft = createEmptyDraftDetail('mercadolibre')
+    draft.draftId = 'draft-1'
+    draft.productId = 'product-1'
+    draft.sourceProductId = 'product-1'
+    draft.site = 'MLM'
+    draft.language = 'es'
+    draft.currency = 'MXN'
+    draft.categoryId = 'MLM123'
+    draft.targetSites = [{
+      platform: 'mercadolibre',
+      site: 'MLM',
+      language: 'es',
+      currency: 'MXN',
+      categoryId: 'MLM123',
+    }]
+    const productContext = createEmptyDraftProductContext()
+    productContext.weightKg = '0.419'
+    productContext.dimensions = { lengthCm: '21', widthCm: '15.5', heightCm: '12' }
+    vi.mocked(workflowApi.loadDraft).mockResolvedValue({
+      ...draftMutation(draft),
+      productContext,
+    })
+    vi.mocked(workflowApi.saveDraft).mockImplementation(async (savedDraft) => ({
+      ...draftMutation(savedDraft),
+      productContext,
+    }))
+    vi.mocked(workflowApi.runCategoryPrecheck).mockResolvedValue({
+      ok: true,
+      errors: [],
+      missingFields: [],
+      checkedAt: '2026-08-04T00:00:00Z',
+      raw: { ok: true, missing_fields: [] },
+    })
+
+    const store = useWorkflowStore()
+    store.platformOptions = [{
+      key: 'mercadolibre',
+      label: '美客多',
+      sites: [{ key: 'MLM', code: 'MLM', label: '墨西哥', language: 'es', currency: 'MXN' }],
+    }]
+    await store.loadDraftForPricing('draft-1')
+
+    await store.runCategoryOnlyPrecheck()
+
+    expect(workflowApi.saveDraft).toHaveBeenCalledWith(expect.objectContaining({
+      packageDimensions: {
+        lengthCm: '21',
+        widthCm: '15.5',
+        heightCm: '12',
+        weightKg: '0.419',
+      },
+    }))
+    expect(workflowApi.runCategoryPrecheck).toHaveBeenCalledOnce()
   })
 
   it('syncs calculated applied prices back into pricing inputs', async () => {

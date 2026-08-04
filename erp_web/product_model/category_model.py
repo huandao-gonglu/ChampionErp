@@ -244,17 +244,10 @@ def validate_category_precheck(product: dict[str, Any], platform: str, category_
     normalized = normalize_product_model(product or {})
     platform = str(platform or "").strip().lower()
     draft = normalized.get("drafts", {}).get(platform) if isinstance(normalized.get("drafts"), dict) else {}
-    errors: list[str] = []
+    missing_fields: list[str] = []
     if not str(draft.get("category_id") or "").strip():
-        errors.append("category_id")
-    if not str(draft.get("brand") or "").strip():
-        errors.append("brand")
-    if not str(draft.get("model") or "").strip():
-        errors.append("model")
+        missing_fields.append("category_id")
     pkg = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
-    for field in ["length_cm", "width_cm", "height_cm", "weight_kg"]:
-        if not str(pkg.get(field) or "").strip():
-            errors.append(f"package_dimensions.{field}")
     values = draft.get("attributes") if isinstance(draft.get("attributes"), dict) else {}
     package_attr_values = {
         "PACKAGE_LENGTH": str(pkg.get("length_cm") or "").strip(),
@@ -272,8 +265,8 @@ def validate_category_precheck(product: dict[str, Any], platform: str, category_
             continue
         if attr_id.upper() in {"GTIN", "UPC", "UNIVERSAL_PRODUCT_CODE"} and str(values.get("EMPTY_GTIN_REASON") or "").strip():
             continue
-        if package_attr_values.get(attr_id):
+        if package_attr_values.get(attr_id.upper()):
             continue
         if not str(values.get(attr_id) or "").strip():
-            errors.append(f"attributes.{attr_id}")
-    return list(dict.fromkeys(errors))
+            missing_fields.append(f"attributes.{attr_id}")
+    return list(dict.fromkeys(missing_fields))

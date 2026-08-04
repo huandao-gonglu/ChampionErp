@@ -225,6 +225,12 @@ def _draft_fill_payload(
     updated_draft = (
         drafts.get(platform) if isinstance(drafts.get(platform), dict) else {}
     )
+    updated_draft = {
+        **updated_draft,
+        "category_precheck": {},
+        "last_precheck": {},
+        "last_precheck_target": {},
+    }
     saved = save_draft_target_listing_result(context, updated_draft)
     saved_draft = saved.get("draft", {})
     return {
@@ -283,7 +289,7 @@ def category_precheck_payload(body: Payload) -> ResponseWithStatus:
     record, record_error = _category_record(body, platform, site)
     if record_error:
         return record_error
-    errors = validate_category_precheck(product, platform, record)
+    missing_fields = validate_category_precheck(product, platform, record)
     return {
         "ok": True,
         "platform": platform,
@@ -291,8 +297,7 @@ def category_precheck_payload(body: Payload) -> ResponseWithStatus:
         "category_id": category_id,
         "category_path": _category_path(record),
         "category_record": record,
-        "errors": errors,
-        "missing_fields": errors,
+        "missing_fields": missing_fields,
     }, 200
 
 

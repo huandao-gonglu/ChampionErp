@@ -138,4 +138,73 @@ describe('CategoryAttributesPanel', () => {
 
     wrapper.unmount()
   })
+
+  it('修改必填属性时使已有类目预检结果失效', async () => {
+    const draft = createEmptyDraftDetail('ozon')
+    draft.draftId = 'draft-precheck'
+    draft.site = 'global'
+    draft.categoryId = '971049422'
+    const category: CategorySelection = {
+      platform: 'ozon',
+      categoryId: '971049422',
+      categoryPath: '汽车用品',
+      requiredAttributes: [{ id: '7236', name: '模型名称', required: true, options: [] }],
+      optionalAttributes: [],
+      raw: {},
+    }
+    const wrapper = mount(CategoryAttributesPanel, {
+      props: panelProps(draft, category),
+    })
+
+    const requiredButton = wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))
+    await requiredButton!.trigger('click')
+    await wrapper.get('[data-attribute-id="7236"]').setValue('Desk fan')
+
+    expect(wrapper.emitted('invalidateCategoryPrecheck')).toHaveLength(1)
+  })
+
+  it('点击类目预检属性时复用待复核属性定位逻辑', async () => {
+    const scrollIntoView = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    })
+    const draft = createEmptyDraftDetail('ozon')
+    draft.draftId = 'draft-category-precheck-focus'
+    draft.site = 'global'
+    draft.categoryId = '971049422'
+    const category: CategorySelection = {
+      platform: 'ozon',
+      categoryId: '971049422',
+      categoryPath: '汽车用品',
+      requiredAttributes: [{ id: '9048', name: '体型', required: true, options: [] }],
+      optionalAttributes: [],
+      raw: {},
+    }
+    const wrapper = mount(CategoryAttributesPanel, {
+      attachTo: document.body,
+      props: {
+        ...panelProps(draft, category),
+        categoryPrecheck: {
+          ok: false,
+          errors: [],
+          missingFields: ['attributes.9048'],
+          checkedAt: '2026-08-04T00:00:00Z',
+          raw: {},
+        },
+      },
+    })
+
+    expect(wrapper.find('[data-testid="required-attribute-fields"]').exists()).toBe(false)
+    const issueButton = wrapper.findAll('button').find((button) => button.text() === 'attributes.9048')
+    expect(issueButton).toBeDefined()
+    await issueButton!.trigger('click')
+
+    const input = wrapper.get<HTMLInputElement>('[data-attribute-id="9048"]')
+    expect(wrapper.find('[data-testid="required-attribute-fields"]').exists()).toBe(true)
+    expect(document.activeElement).toBe(input.element)
+    expect(scrollIntoView).toHaveBeenCalledOnce()
+
+    wrapper.unmount()
+  })
 })

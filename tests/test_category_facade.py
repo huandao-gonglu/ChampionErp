@@ -88,7 +88,11 @@ def test_category_ai_fill_payload_keeps_draft_response_shape(monkeypatch) -> Non
     updated_draft = {
         "attributes": {"BRAND": "Champion"},
         "validation_errors": ["MODEL"],
+        "category_precheck": {"ok": True},
+        "last_precheck": {"ok": True},
+        "last_precheck_target": {"site": "MLM"},
     }
+    saved_draft: dict[str, Any] = {}
     monkeypatch.setattr(
         category_facade,
         "load_required_draft_publish_context",
@@ -102,15 +106,22 @@ def test_category_ai_fill_payload_keeps_draft_response_shape(monkeypatch) -> Non
             {"source": "ai_model", "ai_filled": ["BRAND"]},
         ),
     )
-    monkeypatch.setattr(
-        category_facade,
-        "save_draft_target_listing_result",
-        lambda supplied_context, draft: {
+    def fake_save_draft_target(
+        supplied_context: dict[str, Any], draft: dict[str, Any]
+    ) -> dict[str, Any]:
+        assert supplied_context is context
+        saved_draft.update(draft)
+        return {
             "draft": {"draft_id": "d-1", "attributes": {}},
             "productContext": {"productId": "p-1"},
             "productsIndex": [{"productId": "p-1"}],
             "draftsIndex": [{"draftId": "d-1"}],
-        },
+        }
+
+    monkeypatch.setattr(
+        category_facade,
+        "save_draft_target_listing_result",
+        fake_save_draft_target,
     )
 
     result, status = category_facade.category_ai_fill_payload(
@@ -126,6 +137,9 @@ def test_category_ai_fill_payload_keeps_draft_response_shape(monkeypatch) -> Non
     assert result["need_review"] == ["MODEL"]
     assert result["fill_source"] == "ai_model"
     assert result["ai_filled"] == ["BRAND"]
+    assert saved_draft["category_precheck"] == {}
+    assert saved_draft["last_precheck"] == {}
+    assert saved_draft["last_precheck_target"] == {}
 
 
 def test_category_precheck_payload_preserves_category_contract(monkeypatch) -> None:
@@ -180,7 +194,6 @@ def test_category_precheck_payload_preserves_category_contract(monkeypatch) -> N
         "category_id": "94765",
         "category_path": "家电 / 风扇",
         "category_record": record,
-        "errors": ["attributes.BRAND"],
         "missing_fields": ["attributes.BRAND"],
     }
 

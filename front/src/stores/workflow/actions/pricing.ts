@@ -16,13 +16,14 @@ type WorkflowPricingActionsPort = Pick<
   | 'currentStage'
   | 'applyMutationIndexes'
   | 'syncPricingInputFromProduct'
+  | 'syncDraftPackageDimensionsFromPricingInput'
 >
 
 export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort) {
   const {
     product, currentDraft, currentDraftProductContext, pricingInput, pricingResult,
     loading, addLog, setError, currentStage, applyMutationIndexes,
-    syncPricingInputFromProduct,
+    syncPricingInputFromProduct, syncDraftPackageDimensionsFromPricingInput,
   } = runtime
 
   function pricingResultRecord(result: PricingTargetResult): UnknownRecord {
@@ -103,16 +104,12 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
       if (pricingResult.value.mxnUsdRate > 0) pricingInput.value.mxnUsdRate = pricingResult.value.mxnUsdRate
       if (pricingResult.value.rubCnyRate > 0) pricingInput.value.rubCnyRate = pricingResult.value.rubCnyRate
       const primary = pricingResult.value.results[0]
+      const packageDimensions = syncDraftPackageDimensionsFromPricingInput()
       const draftToSave: DraftDetail = {
         ...currentDraft.value,
         price: primary ? String(primary.appliedPrice || primary.suggestedPrice || '') : currentDraft.value.price,
         pricing: buildDraftPricing(pricingResult.value),
-        packageDimensions: {
-          lengthCm: String(pricingInput.value.lengthCm || ''),
-          widthCm: String(pricingInput.value.widthCm || ''),
-          heightCm: String(pricingInput.value.heightCm || ''),
-          weightKg: String(pricingInput.value.weightKg || ''),
-        },
+        packageDimensions,
       }
       const saved = await saveDraftApi(draftToSave)
       currentDraft.value = saved.draft

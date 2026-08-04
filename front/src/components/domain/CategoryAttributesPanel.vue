@@ -43,6 +43,7 @@ const emit = defineEmits<{
   translateCategoryResults: []
   translateCategoryAttributes: []
   fillAttributes: []
+  invalidateCategoryPrecheck: []
   categoryPrecheck: []
 }>()
 
@@ -330,7 +331,7 @@ function selectTargetByKey(value: string) {
         </div>
         <label class="mt-4 block">
           <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">类目 ID</span>
-          <input v-model="activeDraft.categoryId" class="input mt-1" placeholder="例如 MLM12345" />
+          <input v-model="activeDraft.categoryId" class="input mt-1" placeholder="例如 MLM12345" @input="emit('invalidateCategoryPrecheck')" />
         </label>
         <label class="mt-3 block">
           <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">类目路径</span>
@@ -394,6 +395,7 @@ function selectTargetByKey(value: string) {
                 class="input mt-1"
                 :class="isMissingAttribute(attr.id) ? 'border-rose-300 bg-rose-50' : ''"
                 :data-attribute-id="attr.id"
+                @change="emit('invalidateCategoryPrecheck')"
               >
                 <option value="">{{ attributePlaceholder(attr) }}</option>
                 <option v-for="option in attr.options" :key="option" :value="option">{{ attributeOptionLabel(attr.id, option) }}</option>
@@ -406,6 +408,7 @@ function selectTargetByKey(value: string) {
                 :class="isMissingAttribute(attr.id) ? 'border-rose-300 bg-rose-50' : ''"
                 :data-attribute-id="attr.id"
                 :placeholder="attributePlaceholder(attr)"
+                @input="emit('invalidateCategoryPrecheck')"
               />
             </label>
           </div>
@@ -432,7 +435,7 @@ function selectTargetByKey(value: string) {
             </label>
           </div>
         </div>
-        <CategoryPrecheckPanel :result="props.categoryPrecheck" />
+        <CategoryPrecheckPanel :result="props.categoryPrecheck" @locate-attribute="focusAttribute" />
       </article>
     </div>
   </section>
