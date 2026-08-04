@@ -123,7 +123,14 @@ MARKETPLACE_SPECS: tuple[MarketplaceSpec, ...] = (
         sites=(
             {"key": "global", "code": "global", "label": "俄罗斯", "language": "ru-RU", "currency": "RUB"},
         ),
-        capabilities=frozenset({CAP_CATEGORY_SEARCH, CAP_CATEGORY_ATTRIBUTES}),
+        capabilities=frozenset(
+            {
+                CAP_PUBLISH,
+                CAP_PREVIEW_PAYLOAD,
+                CAP_CATEGORY_SEARCH,
+                CAP_CATEGORY_ATTRIBUTES,
+            }
+        ),
         preset_key="yandex",
         title_limit=120,
         description_limit=6000,

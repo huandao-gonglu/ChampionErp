@@ -18,7 +18,16 @@ from .publish_helpers import (
     validate_mercadolibre_publish_payload,
 )
 from .publish_mercadolibre import map_mercadolibre_publish_error
+from .publish_ozon import (
+    build_ozon_publish_payload,
+    map_ozon_publish_error,
+    ozon_category_pair,
+    ozon_required_attributes_missing,
+    publish_ozon_payload,
+    validate_ozon_publish_payload,
+)
 from .publish_validation import validate_mercadolibre_draft
+from .publish_validation import validate_ozon_draft
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +87,54 @@ class MercadoLibrePublishingAdapter:
         return publish_product(product, platform, config)
 
 
+class OzonPublishingAdapter:
+    """通过 Ozon Seller API 创建或更新商品，并确认异步导入终态。"""
+
+    platform = "ozon"
+
+    def resolve_category(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        product = normalize_product_fields(product)
+        type_id, _ = ozon_category_pair(product)
+        if type_id:
+            drafts = product.setdefault("drafts", {})
+            draft = drafts.setdefault(self.platform, default_draft(self.platform))
+            draft["category_id"] = type_id
+        return product
+
+    def required_attributes_missing(self, product: dict[str, Any], config: dict[str, Any]) -> list[str]:
+        return ozon_required_attributes_missing(product)
+
+    def validate_draft(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        return validate_ozon_draft(product, config)
+
+    def build_payload(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        return build_ozon_publish_payload(product, config)
+
+    def validate_payload(self, payload: Any, config: dict[str, Any]) -> list[str]:
+        return validate_ozon_publish_payload(payload, config)
+
+    def publish_payload(self, payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        store = config.get(self.platform) if isinstance(config.get(self.platform), dict) else {}
+        return publish_ozon_payload(
+            payload,
+            str(store.get("client_id") or "").strip(),
+            str(store.get("api_key") or "").strip(),
+            timeout_seconds=float(store.get("publish_timeout_seconds") or 30),
+            poll_interval_seconds=float(store.get("publish_poll_interval_seconds") or 0.5),
+        )
+
+    def map_publish_error(self, error: Exception) -> dict[str, Any]:
+        return map_ozon_publish_error(error)
+
+    def publish(self, product: dict[str, Any], platform: str, config: dict[str, Any]) -> dict[str, Any]:
+        from .runtime_api import publish_product
+
+        return publish_product(product, platform, config)
+
+
 _PUBLISHERS: dict[str, PlatformPublisher] = {
     MercadoLibrePublishingAdapter.platform: MercadoLibrePublishingAdapter(),
+    OzonPublishingAdapter.platform: OzonPublishingAdapter(),
 }
 
 
@@ -141,6 +196,7 @@ def resume_pending_publish_jobs() -> None:
 
 __all__ = [
     "MercadoLibrePublishingAdapter",
+    "OzonPublishingAdapter",
     "build_publishing_bus",
     "get_publishing_bus",
     "publishing_adapter_for",

@@ -38,7 +38,7 @@ function publicSafeAiModel(model: UnknownRecord): UnknownRecord {
   const safe = { ...model }
   if (safe.api_key) {
     delete safe.api_key
-    if (safe.api_key_configured === undefined) safe.api_key_configured = true
+    safe.api_key_configured = true
   }
   return safe
 }
@@ -50,10 +50,26 @@ function mergeAiConfigWithSubmitted(publicConfig: UnknownRecord, submittedConfig
   if (Array.isArray(submittedConfig.ai_models)) {
     const publicModels = Array.isArray(safePublicConfig.ai_models) ? safePublicConfig.ai_models.filter(isRecord) : []
     const publicById = new Map(publicModels.map((model) => [String(model.id || ''), publicSafeAiModel(model)]))
+    const rawSubmittedModels = submittedConfig.ai_models.filter(isRecord)
+    const rawSubmittedById = new Map(rawSubmittedModels.map((model) => [String(model.id || ''), model]))
     const submittedModels = Array.isArray(safeSubmittedConfig.ai_models) ? safeSubmittedConfig.ai_models : []
     merged.ai_models = submittedModels
       .filter(isRecord)
-      .map((model) => publicSafeAiModel({ ...(publicById.get(String(model.id || '')) || {}), ...model }))
+      .map((model, index) => {
+        const modelId = String(model.id || '')
+        const publicModel = publicById.get(modelId) || {}
+        const rawSubmittedModel = rawSubmittedById.get(modelId) || rawSubmittedModels[index] || {}
+        const mergedModel = { ...publicModel, ...model }
+        if (publicModel.api_key_configured !== undefined) {
+          mergedModel.api_key_configured = Boolean(publicModel.api_key_configured)
+        } else if (String(rawSubmittedModel.api_key || '').trim()) {
+          mergedModel.api_key_configured = true
+        }
+        if (publicModel.api_key_masked !== undefined) {
+          mergedModel.api_key_masked = publicModel.api_key_masked
+        }
+        return publicSafeAiModel(mergedModel)
+      })
   }
   if (isRecord(safeSubmittedConfig.ai_use_case_bindings)) merged.ai_use_case_bindings = safeSubmittedConfig.ai_use_case_bindings
   if (isRecord(safeSubmittedConfig.ai_use_case_prompts)) merged.ai_use_case_prompts = safeSubmittedConfig.ai_use_case_prompts
@@ -96,7 +112,7 @@ export const useWorkflowSettingsStore = defineStore('workflow-settings', () => {
     try {
       const result = await saveAiConfig(config)
       aiConfig.value = mergeAiConfigWithSubmitted(result.raw, config)
-      appConfig.value = mergeAiConfigWithSubmitted(appConfig.value, config)
+      appConfig.value = mergeAiConfigWithSubmitted({ ...appConfig.value, ...result.raw }, config)
       useWorkflowCollectionStore().fillFormFromState(appConfig.value)
       activity.addLog('平台授权设置已保存。')
     } catch (exc) {

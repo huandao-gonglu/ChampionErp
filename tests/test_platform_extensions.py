@@ -13,6 +13,7 @@ from erp_web.marketplace_registry import (
 from erp_web.runtime_units import ai_use_case
 from erp_web.runtime_units.publish_adapter import (
     MercadoLibrePublishingAdapter,
+    OzonPublishingAdapter,
     publishing_adapter_for,
     unsupported_publish_response,
 )
@@ -76,17 +77,18 @@ def test_marketplace_capabilities_only_enable_real_integrations() -> None:
     assert platform_has_capability("mercadolibre", CAP_PUBLISH)
     assert platform_has_capability("mercadolibre", CAP_PREVIEW_PAYLOAD)
     assert platform_has_capability("ozon", CAP_CATEGORY_SEARCH)
-    assert not platform_has_capability("ozon", CAP_PUBLISH)
+    assert platform_has_capability("ozon", CAP_PUBLISH)
+    assert platform_has_capability("ozon", CAP_PREVIEW_PAYLOAD)
     assert not platform_has_capability("yandex", CAP_PUBLISH)
 
     assert isinstance(publishing_adapter_for("mercadolibre"), MercadoLibrePublishingAdapter)
-    assert publishing_adapter_for("ozon") is None
-    assert unsupported_publish_response("ozon") == {
+    assert isinstance(publishing_adapter_for("ozon"), OzonPublishingAdapter)
+    assert unsupported_publish_response("yandex") == {
         "ok": False,
         "supported": False,
-        "platform": "ozon",
+        "platform": "yandex",
         "status": "unsupported",
-        "error": "Ozon发布未接入",
+        "error": "Yandex发布未接入",
     }
 
 

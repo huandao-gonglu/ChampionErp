@@ -280,6 +280,43 @@ describe('workflow store live API flow', () => {
     expect((store.appConfig.yunexpress as Record<string, unknown>).source_key).toBe('')
   })
 
+  it('keeps a newly saved API key configured when the provider model is still blank', async () => {
+    vi.mocked(workflowApi.saveAiConfig).mockResolvedValue({
+      raw: {
+        ai_models: [{
+          id: 'openai_text',
+          connection_type: 'api',
+          provider_id: 'openai',
+          model: '',
+          api_key_configured: true,
+          api_key_masked: 'sk-t...-key',
+        }],
+      },
+    })
+    const submitted = {
+      ai_models: [{
+        id: 'openai_text',
+        connection_type: 'api',
+        provider_id: 'openai',
+        model: '',
+        api_key: 'sk-transient-api-key',
+        api_key_configured: false,
+      }],
+    }
+
+    const store = useWorkflowStore()
+    await store.saveAiSettings(submitted)
+
+    for (const config of [store.aiConfig, store.appConfig]) {
+      const model = (config.ai_models as Array<Record<string, unknown>>)[0]
+      expect(model.model).toBe('')
+      expect(model.api_key_configured).toBe(true)
+      expect(model.api_key).toBe('')
+      expect(model.api_key_masked).toBe('sk-t...-key')
+    }
+    expect(JSON.stringify({ aiConfig: store.aiConfig, appConfig: store.appConfig })).not.toContain('sk-transient-api-key')
+  })
+
   it('keeps submitted store credentials out of global state', async () => {
     vi.mocked(workflowApi.saveStoreSettings).mockResolvedValue({
       storeConfig: {

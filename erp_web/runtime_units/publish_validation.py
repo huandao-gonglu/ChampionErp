@@ -17,6 +17,7 @@ from .publish_helpers import (
     _required_attribute_summary,
     precheck_item,
 )
+from .publish_ozon import ozon_category_pair, ozon_required_attributes_missing
 
 
 def _review_field_from_item(item: Any) -> str:
@@ -257,26 +258,43 @@ def validate_ozon_draft(product: dict[str, Any], config: dict[str, Any]) -> dict
         errors.append(precheck_item("TITLE_MISSING", "title", "缺少标题", "error", "前往商品编辑页补齐标题"))
     if not str(draft.get("description") or "").strip():
         errors.append(precheck_item("DESCRIPTION_MISSING", "description", "缺少描述", "error", "前往商品编辑页补齐描述"))
-    if not str(draft.get("category_id") or store.get("category_id") or "").strip():
+    type_id, description_category_id = ozon_category_pair(product)
+    if not type_id:
         errors.append(precheck_item("CATEGORY_MISSING", "category_id", "缺少 Ozon Category / Type ID", "error", "前往类目属性页选择类目"))
+    elif not description_category_id:
+        errors.append(precheck_item("CATEGORY_PAIR_MISSING", "category_id", "Ozon 类目缺少 type_id 与 description_category_id 配对", "error", "前往类目属性页重新选择 Ozon 实时类目"))
+    for field in ozon_required_attributes_missing(product):
+        attr_id = str(field).split(".", 1)[-1]
+        errors.append(precheck_item("REQUIRED_ATTRIBUTE_MISSING", field, f"缺少 Ozon 必填属性：{attr_id}", "error", "前往类目属性页补齐必填属性"))
     if not str(draft.get("brand") or "").strip():
         errors.append(precheck_item("BRAND_MISSING", "brand", "品牌为空", "error", "前往类目属性页确认 Brand"))
     if not str(draft.get("model") or "").strip():
         errors.append(precheck_item("MODEL_MISSING", "model", "型号为空", "error", "前往类目属性页确认 Model"))
     if not str(draft.get("sku") or product.get("sku") or "").strip():
         errors.append(precheck_item("SKU_MISSING", "sku", "SKU 为空", "error", "前往商品编辑页填写 SKU"))
-    if not str(draft.get("price") or "").strip():
+    try:
+        if float(str(draft.get("price") or "0").replace(",", ".")) <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
         errors.append(precheck_item("PRICE_MISSING", "price", "价格缺失", "error", "前往核价页应用 Ozon 价格"))
     if not str(draft.get("stock") or "").strip():
         errors.append(precheck_item("STOCK_MISSING", "stock", "库存缺失", "error", "前往商品编辑页填写库存"))
     images = _draft_images(product, "ozon", draft)
     if not images:
         errors.append(precheck_item("IMAGE_MISSING", "images", "缺少图片", "error", "前往图片池导入图片"))
+    elif any(not str(image).startswith(("https://", "http://")) for image in images):
+        errors.append(precheck_item("IMAGE_NOT_PUBLIC", "images", "Ozon 发布图片必须是平台可访问的 HTTP(S) 公网 URL", "error", "先将图片上传到公网对象存储，再更新图片池引用"))
     pkg = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
     for field in ("length_cm", "width_cm", "height_cm"):
-        if not str(pkg.get(field) or "").strip():
+        try:
+            if float(str(pkg.get(field) or "0").replace(",", ".")) <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
             errors.append(precheck_item("PACKAGE_DIMENSIONS_MISSING", f"package_dimensions.{field}", f"{field} 缺失", "error", "前往核价页补齐尺寸"))
-    if not str(pkg.get("weight_kg") or "").strip():
+    try:
+        if float(str(pkg.get("weight_kg") or "0").replace(",", ".")) <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
         errors.append(precheck_item("WEIGHT_MISSING", "package_dimensions.weight_kg", "重量缺失", "error", "前往核价页补齐重量"))
     pricing = draft.get("pricing") if isinstance(draft.get("pricing"), dict) else {}
     if not str(pricing.get("suggested_price") or "").strip():

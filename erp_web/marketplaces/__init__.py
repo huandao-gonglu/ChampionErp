@@ -22,13 +22,11 @@ from .config_http import (
 from .errors import normalize_mercadolibre_error_field, parse_mercadolibre_error
 from .payloads import (
     build_mercadolibre_payload,
-    build_ozon_payload,
 )
 from .publishing import publish_mercadolibre
 
 __all__ = [
     "build_mercadolibre_payload",
-    "build_ozon_payload",
     "exchange_mercadolibre_code",
     "fetch_mercadolibre_shop_name",
     "fetch_ozon_shop_name",

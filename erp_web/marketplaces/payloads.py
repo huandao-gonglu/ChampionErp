@@ -218,23 +218,3 @@ def build_mercadolibre_payload(
     if pictures:
         payload["pictures"] = pictures
     return payload
-
-
-def build_ozon_payload(product: dict[str, Any], plan: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
-    listing = listing_for(plan, "mercadolibre")
-    settings = config["listing"]
-    return {
-        "items": [
-            {
-                "name": listing.get("title") or product.get("name"),
-                "description": listing.get("description", ""),
-                "category_id": config.get("ozon", {}).get("category_id", ""),
-                "offer_id": settings.get("sku") or product.get("name") or "SKU-1",
-                "price": settings.get("ozon_price") or "",
-                "currency_code": "RUB",
-                "vat": "0",
-                "attributes": [],
-                "images": [],
-            }
-        ]
-    }

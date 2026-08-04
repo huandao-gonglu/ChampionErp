@@ -216,6 +216,26 @@ endpoint 内部只使用 `category_id/path_segments`。前端只在 API 边界�
 AI Work 保存脱敏且有界的 Agent 输入、每轮模型消息、工具参数/结果、trace 关联和最终业务摘要，
 用于区分模型选错、validator 拒绝、工具失败与资源上限。
 
+## 商品发布
+
+- `erp_web/http_route_units/publish_routes.py`：发布预检、payload 预览、同步发布与
+  发布队列 HTTP 入口。
+- `erp_web/facades/publish_facade.py`：HTTP 层唯一发布 facade；业务编排进入
+  `erp_web/runtime_units/publish_workflows.py`。
+- `erp_web/runtime_units/publish_adapter.py`：发布平台适配器注册表。只有这里注册且
+  在 `marketplace_registry.py` 声明 `CAP_PUBLISH` 的平台才允许进入真实发布流程。
+- `erp_web/runtime_units/publish_mercadolibre.py`：Mercado Libre 专属发布与错误处理。
+- `erp_web/runtime_units/publish_ozon.py`：Ozon `/v3/product/import` payload、
+  `type_id + description_category_id` 配对、异步导入终态确认及错误字段映射。
+- `erp_web/runtime_units/runtime_api.py::publish_product`：平台无关的预检、artifact、
+  日志与商品发布状态持久化。
+- `erp_web/runtime_units/publishing_bus_core.py`：SQLite 发布任务和并发执行；适配器
+  必须返回可验证的远端成功证据。
+
+Ozon 创建/更新商品是异步操作。提交 `/v3/product/import` 获得 `task_id` 后，必须
+轮询 `/v1/product/import/info`；只有每个商品返回 `status=imported` 且没有逐项错误，
+才写入 `real_publish_success`。拿到 `task_id` 本身不算发布成功。
+
 ## Product Research
 
 - `erp_web/http_route_units/product_research_routes.py`：调研 HTTP 入口。
