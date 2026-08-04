@@ -78,7 +78,7 @@ describe('CategoryAttributesPanel', () => {
     draft.site = 'global'
     draft.categoryId = '971049422'
     draft.attributes = { BRAND: '卡西道夫', 7236: '旧值' }
-    draft.validationErrors = ['7236']
+    draft.validationErrors = ['7236', '8229']
 
     const wrapper = mount(CategoryAttributesPanel, {
       props: {
@@ -124,6 +124,7 @@ describe('CategoryAttributesPanel', () => {
 
     expect(wrapper.find('[data-testid="required-attribute-fields"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="optional-attribute-fields"]').exists()).toBe(false)
+    expect(wrapper.findAll('button').some((button) => button.text() === 'Бренд')).toBe(false)
 
     const reviewButton = wrapper.findAll('button').find((button) => button.text() === 'Название модели')
     expect(reviewButton).toBeDefined()

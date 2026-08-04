@@ -85,13 +85,18 @@ const blockingIssues = computed(() => props.precheck?.errorItems || [])
 const warningIssues = computed(() => props.precheck?.warningItems || [])
 const pendingReviewAttributeIds = computed(() => {
   const ids = new Set<string>()
+  const requiredIds = new Set(
+    (props.category?.requiredAttributes || [])
+      .map((attr) => attr.id)
+      .filter(Boolean),
+  )
   for (const item of activeDraft.value.validationErrors) {
     collectReviewAttributeId(item, ids)
   }
   for (const issue of [...blockingIssues.value, ...warningIssues.value]) {
     collectReviewAttributeId(issue, ids)
   }
-  return [...ids].sort()
+  return [...ids].filter((attrId) => requiredIds.has(attrId)).sort()
 })
 const attributeFields = computed(() => {
   const fields = new Map<string, { id: string; name: string; required: boolean; options: string[] }>()
