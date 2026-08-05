@@ -133,6 +133,35 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
 
         self.with_temp_app(run)
 
+    def test_save_product_profile_does_not_create_default_platform_drafts(self) -> None:
+        def run(app_dir: Path) -> None:
+            profile = sample_product(
+                "Profile without draft",
+                "https://example.com/profile-without-draft",
+            )
+            profile.pop("drafts")
+            profile["attributes"] = {"source_attribute": "source value"}
+
+            saved = get_context().products.save_product_profile(profile)
+            get_context().products.save_product_profile(saved)
+
+            self.assertEqual(
+                get_context().db.list_draft_records(scope="all"),
+                [],
+            )
+
+            result = collect_helpers.claim_products_to_platforms(
+                [saved["product_id"]],
+                ["ozon"],
+            )
+            drafts = get_context().db.list_draft_records(scope="all")
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(len(drafts), 1)
+            self.assertEqual(drafts[0]["platform"], "ozon")
+
+        self.with_temp_app(run)
+
     def test_save_draft_detail_updates_only_selected_draft(self) -> None:
         def run(app_dir: Path) -> None:
             saved = get_context().products.save_product(sample_product("Draft boundary", "https://example.com/draft-boundary"))

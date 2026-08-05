@@ -416,7 +416,11 @@ def _draft_should_persist(draft: dict[str, Any]) -> bool:
     for key in ("title", "description", "category_id", "copy_generated_at"):
         if str(draft.get(key) or "").strip():
             return True
-    for key in ("attributes", "validation_errors", "images"):
+    # 商品规范化会把商品级 attributes 映射到每个平台的默认草稿模板。
+    # attributes 本身不能证明用户已经创建了平台草稿，否则保存一个带来源
+    # 属性的商品就会为所有平台各落一条草稿记录。真实草稿应由 draft_id、
+    # 文案、类目、图片或明确的工作流状态来标识。
+    for key in ("validation_errors", "images"):
         value = draft.get(key)
         if isinstance(value, (dict, list)) and bool(value):
             return True

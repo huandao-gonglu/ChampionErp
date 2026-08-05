@@ -238,19 +238,22 @@ export interface PricingInput {
   site: string
   purchaseCostCny: number
   domesticFreightCny: number
+  packagingCostCny: number
+  otherCostCny: number
   weightKg: number
   lengthCm: number
   widthCm: number
   heightCm: number
-  commissionPercent: number
-  targetMarginPercent: number
   usdCnyRate: number
   mxnUsdRate: number
   rubCnyRate: number
   exchangeRateMode: 'live' | 'manual'
-  displayCurrencyMode: 'platform' | 'cny'
   targets: PricingTargetInput[]
 }
+
+export type PricingMode = 'margin' | 'markup' | 'manual'
+export type ShippingQuoteMode = 'auto' | 'manual'
+export type ShippingCurrency = 'USD' | 'CNY'
 
 export interface PricingTargetInput {
   targetKey: string
@@ -259,10 +262,13 @@ export interface PricingTargetInput {
   currency: string
   commissionPercent: number
   paymentFeePercent: number
+  otherFeePercent: number
+  pricingMode: PricingMode
   targetMarginPercent: number
-  shippingCostUsd: number
-  shippingCostCny: number
-  russiaFreightRate: number
+  markupPercent: number
+  shippingQuoteMode: ShippingQuoteMode
+  shippingCurrency: ShippingCurrency
+  shippingAmount: number
   appliedPrice: number
 }
 
@@ -283,7 +289,19 @@ export interface PricingTargetResult {
   marginPercent: number
   commissionPercent: number
   paymentFeePercent: number
+  otherFeePercent: number
+  pricingMode: PricingMode
   targetMarginPercent: number
+  markupPercent: number
+  shippingQuoteMode: ShippingQuoteMode
+  shippingCurrency: ShippingCurrency
+  shippingAmount: number
+  shippingSource: string
+  commissionCny: number
+  paymentFeeCny: number
+  otherFeeCny: number
+  minimumPrice: number
+  billableWeightKg: number
   usdCnyRate: number
   mxnUsdRate: number
   rubCnyRate: number

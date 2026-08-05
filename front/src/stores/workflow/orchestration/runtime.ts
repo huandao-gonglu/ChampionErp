@@ -19,7 +19,9 @@ import type {
   MarketplaceDraft,
   MarketplaceTargetSite,
   PrecheckIssue,
+  PricingResult,
   PricingTargetInput,
+  PricingTargetResult,
   Product,
   ProductIndexItem,
   PublishJob,
@@ -551,11 +553,26 @@ export function createWorkflowRuntime() {
     return fallback
   }
 
+  function recordString(record: UnknownRecord, keys: string[], fallback = ''): string {
+    for (const key of keys) {
+      const value = record[key]
+      if (value !== undefined && value !== null && value !== '') return String(value)
+    }
+    return fallback
+  }
+
   function pricingTargetInput(target: MarketplaceTargetSite, pricing: UnknownRecord): PricingTargetInput {
     const site = platformSite(target.platform, target.site)
     const key = pricingTargetKey(target.platform, target.site)
     const saved = pricingTargetRecord(pricing, key)
     const defaults = pricingTargetDefaults(target.platform)
+    const legacyShippingUsd = recordNumber(saved, ['shippingCostUsd', 'shipping_cost_usd'], 0)
+    const legacyShippingCny = recordNumber(saved, ['shippingCostCny', 'shipping_cost_cny'], 0)
+    const savedShippingCurrency = recordString(saved, ['shippingCurrency', 'shipping_currency']).toUpperCase()
+    const shippingCurrency = savedShippingCurrency === 'USD' || savedShippingCurrency === 'CNY'
+      ? savedShippingCurrency
+      : legacyShippingUsd > 0 || target.platform === 'mercadolibre' ? 'USD' : 'CNY'
+    const savedShippingMode = recordString(saved, ['shippingQuoteMode', 'shipping_quote_mode'])
     return {
       targetKey: key,
       platform: target.platform,
@@ -563,11 +580,84 @@ export function createWorkflowRuntime() {
       currency: target.currency || site?.currency || 'USD',
       commissionPercent: recordNumber(saved, ['commissionPercent', 'commission_percent'], defaults.commissionPercent),
       paymentFeePercent: recordNumber(saved, ['paymentFeePercent', 'payment_fee_percent'], defaults.paymentFeePercent),
-      targetMarginPercent: recordNumber(saved, ['targetMarginPercent', 'target_margin_percent'], pricingInput.value.targetMarginPercent || defaults.targetMarginPercent),
-      shippingCostUsd: recordNumber(saved, ['shippingCostUsd', 'shipping_cost_usd'], 0),
-      shippingCostCny: recordNumber(saved, ['shippingCostCny', 'shipping_cost_cny'], 0),
-      russiaFreightRate: recordNumber(saved, ['russiaFreightRate', 'russia_freight_rate'], 0),
+      otherFeePercent: recordNumber(saved, ['otherFeePercent', 'other_fee_percent'], 0),
+      pricingMode: (recordString(saved, ['pricingMode', 'pricing_mode'], 'margin') || 'margin') as PricingTargetInput['pricingMode'],
+      targetMarginPercent: recordNumber(saved, ['targetMarginPercent', 'target_margin_percent'], defaults.targetMarginPercent),
+      markupPercent: recordNumber(saved, ['markupPercent', 'markup_percent'], 30),
+      shippingQuoteMode: (savedShippingMode || (legacyShippingUsd > 0 || legacyShippingCny > 0 ? 'manual' : target.platform === 'mercadolibre' ? 'auto' : 'manual')) as PricingTargetInput['shippingQuoteMode'],
+      shippingCurrency: shippingCurrency as PricingTargetInput['shippingCurrency'],
+      shippingAmount: recordNumber(saved, ['shippingAmount', 'shipping_amount'], shippingCurrency === 'USD' ? legacyShippingUsd : legacyShippingCny),
       appliedPrice: recordNumber(saved, ['appliedPrice', 'applied_price'], 0),
+    }
+  }
+
+  function pricingResultFromDraft(pricing: UnknownRecord, targets: PricingTargetInput[]): PricingResult | null {
+    const results = targets.map((target): PricingTargetResult | null => {
+      const saved = pricingTargetRecord(pricing, target.targetKey)
+      const hasResult = ['suggested_price', 'applied_price', 'profit_cny', 'errors'].some((key) => key in saved)
+      if (!hasResult) return null
+      return {
+        targetKey: target.targetKey,
+        platform: target.platform,
+        site: target.site,
+        currency: target.currency,
+        suggestedPrice: recordNumber(saved, ['suggested_price'], 0),
+        suggestedPriceUsd: recordNumber(saved, ['suggested_price_usd'], 0),
+        suggestedPriceCny: recordNumber(saved, ['suggested_price_cny'], 0),
+        appliedPrice: recordNumber(saved, ['applied_price'], 0),
+        shippingCostUsd: recordNumber(saved, ['shipping_cost_usd'], 0),
+        shippingCostCny: recordNumber(saved, ['shipping_cost_cny'], 0),
+        totalCostCny: recordNumber(saved, ['total_cost_cny'], 0),
+        netRevenueCny: recordNumber(saved, ['net_revenue_cny'], 0),
+        profitCny: recordNumber(saved, ['profit_cny'], 0),
+        marginPercent: recordNumber(saved, ['margin_percent'], 0),
+        commissionPercent: recordNumber(saved, ['commission_percent'], target.commissionPercent),
+        paymentFeePercent: recordNumber(saved, ['payment_fee_percent'], target.paymentFeePercent),
+        otherFeePercent: recordNumber(saved, ['other_fee_percent'], target.otherFeePercent),
+        pricingMode: recordString(saved, ['pricing_mode'], target.pricingMode) as PricingTargetResult['pricingMode'],
+        targetMarginPercent: recordNumber(saved, ['target_margin_percent'], target.targetMarginPercent),
+        markupPercent: recordNumber(saved, ['markup_percent'], target.markupPercent),
+        shippingQuoteMode: recordString(saved, ['shipping_quote_mode'], target.shippingQuoteMode) as PricingTargetResult['shippingQuoteMode'],
+        shippingCurrency: recordString(saved, ['shipping_currency'], target.shippingCurrency) as PricingTargetResult['shippingCurrency'],
+        shippingAmount: recordNumber(saved, ['shipping_amount'], target.shippingAmount),
+        shippingSource: recordString(saved, ['shipping_source']),
+        commissionCny: recordNumber(saved, ['commission_cny'], 0),
+        paymentFeeCny: recordNumber(saved, ['payment_fee_cny'], 0),
+        otherFeeCny: recordNumber(saved, ['other_fee_cny'], 0),
+        minimumPrice: recordNumber(saved, ['minimum_price'], 0),
+        billableWeightKg: recordNumber(saved, ['billable_weight_kg'], 0),
+        usdCnyRate: recordNumber(saved, ['usd_cny_rate'], pricingInput.value.usdCnyRate),
+        mxnUsdRate: recordNumber(saved, ['mxn_usd_rate'], pricingInput.value.mxnUsdRate),
+        rubCnyRate: recordNumber(saved, ['rub_cny_rate'], pricingInput.value.rubCnyRate),
+        isLoss: saved.is_loss === true,
+        errors: Array.isArray(saved.errors) ? saved.errors as Array<UnknownRecord | string> : [],
+        raw: saved,
+      }
+    }).filter((item): item is PricingTargetResult => Boolean(item))
+    if (!results.length) return null
+    const primary = results[0]
+    const common = isRecord(pricing.common) ? pricing.common as UnknownRecord : {}
+    const exchangeRates = isRecord(pricing.exchange_rates) ? pricing.exchange_rates as UnknownRecord : {}
+    return {
+      results,
+      suggestedPriceMxn: primary.currency === 'MXN' ? primary.suggestedPrice : 0,
+      suggestedPriceUsd: primary.suggestedPriceUsd,
+      suggestedPriceCny: primary.suggestedPriceCny,
+      wbPriceRub: primary.currency === 'RUB' ? primary.suggestedPrice : 0,
+      shippingCostUsd: primary.shippingCostUsd,
+      shippingCostCny: primary.shippingCostCny,
+      totalCostCny: primary.totalCostCny,
+      netRevenueCny: primary.netRevenueCny,
+      profitCny: primary.profitCny,
+      marginPercent: primary.marginPercent,
+      usdCnyRate: recordNumber(common, ['usd_cny_rate'], primary.usdCnyRate),
+      mxnUsdRate: recordNumber(common, ['mxn_usd_rate'], primary.mxnUsdRate),
+      rubUsdRate: recordNumber(common, ['rub_usd_rate'], 0),
+      rubCnyRate: recordNumber(common, ['rub_cny_rate'], primary.rubCnyRate),
+      exchangeRateMode: recordString(common, ['exchange_rate_mode'], 'manual'),
+      exchangeRateSource: recordString(exchangeRates, ['source']),
+      exchangeRateFetchedAt: recordString(exchangeRates, ['fetched_at']),
+      exchangeRateCached: exchangeRates.cached === true,
     }
   }
 
@@ -705,18 +795,19 @@ export function createWorkflowRuntime() {
     const pkg = draftDetail.packageDimensions
     pricingInput.value.purchaseCostCny = recordNumber(common, ['purchaseCostCny', 'purchase_cost_cny', 'purchase_cost'], parseNumber(context.cost || context.sourcePrice || product.value.cost || product.value.source.price || pricingInput.value.purchaseCostCny))
     pricingInput.value.domesticFreightCny = recordNumber(common, ['domesticFreightCny', 'domestic_freight_cny', 'domestic_freight'], pricingInput.value.domesticFreightCny)
+    pricingInput.value.packagingCostCny = recordNumber(common, ['packagingCostCny', 'packaging_cost_cny', 'packaging_cost'], pricingInput.value.packagingCostCny)
+    pricingInput.value.otherCostCny = recordNumber(common, ['otherCostCny', 'other_cost_cny', 'other_cost'], pricingInput.value.otherCostCny)
     pricingInput.value.weightKg = recordNumber(common, ['weightKg', 'weight_kg'], parseNumber(pkg.weightKg || context.weightKg || product.value.source.weightKg || pricingInput.value.weightKg))
     pricingInput.value.lengthCm = recordNumber(common, ['lengthCm', 'length_cm'], parseNumber(pkg.lengthCm || context.dimensions.lengthCm || product.value.source.dimensions.lengthCm || pricingInput.value.lengthCm))
     pricingInput.value.widthCm = recordNumber(common, ['widthCm', 'width_cm'], parseNumber(pkg.widthCm || context.dimensions.widthCm || product.value.source.dimensions.widthCm || pricingInput.value.widthCm))
     pricingInput.value.heightCm = recordNumber(common, ['heightCm', 'height_cm'], parseNumber(pkg.heightCm || context.dimensions.heightCm || product.value.source.dimensions.heightCm || pricingInput.value.heightCm))
-    pricingInput.value.commissionPercent = recordNumber(common, ['commissionPercent', 'commission_percent'], pricingInput.value.commissionPercent)
-    pricingInput.value.targetMarginPercent = recordNumber(common, ['targetMarginPercent', 'target_margin_percent'], pricingInput.value.targetMarginPercent)
     pricingInput.value.usdCnyRate = recordNumber(common, ['usdCnyRate', 'usd_cny_rate'], pricingInput.value.usdCnyRate)
     pricingInput.value.mxnUsdRate = recordNumber(common, ['mxnUsdRate', 'mxn_usd_rate'], pricingInput.value.mxnUsdRate)
     pricingInput.value.rubCnyRate = recordNumber(common, ['rubCnyRate', 'rub_cny_rate'], pricingInput.value.rubCnyRate)
     pricingInput.value.platform = hasDraft ? draftDetail.platform : activeMarketplace.value
     pricingInput.value.site = hasDraft ? draftDetail.site : activeMarketplaceSite()
     pricingInput.value.targets = hasDraft ? pricingTargetsFromDraft(draftDetail).map((target) => pricingTargetInput(target, pricing)) : []
+    pricingResult.value = hasDraft ? pricingResultFromDraft(pricing, pricingInput.value.targets) : null
   }
 
   function syncDraftPackageDimensionsFromPricingInput() {

@@ -340,3 +340,133 @@ def test_batch_pricing_treats_zero_applied_price_as_use_suggested_price() -> Non
     assert target["suggested_price"] > 0
     assert target["applied_price"] == target["suggested_price"]
     assert target["margin_percent"] == 30.0
+
+
+def test_invalid_percentage_budget_does_not_generate_extreme_price() -> None:
+    result = pricing_service.pricing_result(
+        {
+            "common": {
+                "purchase_cost": 100,
+                "usd_cny_rate": 7,
+                "rub_cny_rate": 12,
+            },
+            "targets": [
+                {
+                    "target_key": "ozon:global",
+                    "platform": "ozon",
+                    "site": "global",
+                    "currency": "RUB",
+                    "commission_percent": 50,
+                    "payment_fee_percent": 10,
+                    "target_margin_percent": 40,
+                    "pricing_mode": "margin",
+                    "shipping_quote_mode": "manual",
+                    "shipping_currency": "CNY",
+                    "shipping_amount": 20,
+                }
+            ],
+        }
+    )
+
+    target = result["results"][0]
+    assert target["ok"] is False
+    assert target["suggested_price"] == 0
+    assert target["applied_price"] == 0
+    assert target["profit_cny"] == 0
+    assert target["errors"] == [
+        {"field": "target_margin_percent", "message": "平台费用合计 + 目标销售利润率必须小于 100%"},
+    ]
+
+
+def test_cost_markup_can_be_one_hundred_percent_with_single_shipping_quote() -> None:
+    result = pricing_service.pricing_result(
+        {
+            "common": {
+                "purchase_cost": 100,
+                "domestic_freight": 10,
+                "packaging_cost": 5,
+                "other_cost": 5,
+                "usd_cny_rate": 7,
+            },
+            "targets": [
+                {
+                    "target_key": "mercadolibre:cbt",
+                    "platform": "mercadolibre",
+                    "site": "CBT",
+                    "currency": "USD",
+                    "commission_percent": 20,
+                    "payment_fee_percent": 2,
+                    "other_fee_percent": 3,
+                    "pricing_mode": "markup",
+                    "markup_percent": 100,
+                    "shipping_quote_mode": "manual",
+                    "shipping_currency": "USD",
+                    "shipping_amount": 10,
+                }
+            ],
+        }
+    )
+
+    target = result["results"][0]
+    assert target["ok"] is True
+    assert target["shipping_currency"] == "USD"
+    assert target["shipping_amount"] == 10
+    assert target["shipping_cost_cny"] == 70
+    assert target["total_cost_cny"] == 190
+    assert target["suggested_price"] == 72.38
+    assert target["profit_cny"] == 190
+    assert target["margin_percent"] == 37.5
+
+
+def test_russia_market_requires_a_manual_shipping_quote() -> None:
+    result = pricing_service.pricing_result(
+        {
+            "common": {"purchase_cost": 100, "usd_cny_rate": 7, "rub_cny_rate": 12},
+            "targets": [
+                {
+                    "target_key": "yandex:global",
+                    "platform": "yandex",
+                    "site": "global",
+                    "currency": "RUB",
+                    "pricing_mode": "margin",
+                    "shipping_quote_mode": "manual",
+                    "shipping_currency": "CNY",
+                    "shipping_amount": 0,
+                }
+            ],
+        }
+    )
+
+    target = result["results"][0]
+    assert target["ok"] is False
+    assert target["suggested_price"] == 0
+    assert {"field": "shipping_amount", "message": "物流报价金额必须大于 0"} in target["errors"]
+
+
+def test_cny_shipping_quote_is_not_treated_as_a_second_editable_amount() -> None:
+    result = pricing_service.pricing_result(
+        {
+            "common": {"purchase_cost": 50, "usd_cny_rate": 7, "rub_cny_rate": 12},
+            "targets": [
+                {
+                    "target_key": "ozon:global",
+                    "platform": "ozon",
+                    "site": "global",
+                    "currency": "RUB",
+                    "commission_percent": 20,
+                    "target_margin_percent": 30,
+                    "pricing_mode": "margin",
+                    "shipping_quote_mode": "manual",
+                    "shipping_currency": "CNY",
+                    "shipping_amount": 100,
+                }
+            ],
+        }
+    )
+
+    target = result["results"][0]
+    assert target["ok"] is True
+    assert target["shipping_currency"] == "CNY"
+    assert target["shipping_amount"] == 100
+    assert target["shipping_cost_cny"] == 100
+    assert target["suggested_price"] == 3600

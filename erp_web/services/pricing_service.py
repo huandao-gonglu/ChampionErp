@@ -6,6 +6,7 @@ primary target in stage 3, while WB/Ozon placeholders remain lightweight.
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -251,7 +252,12 @@ def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], ind
         default=defaults["commission_percent"],
     )
     payment_fee_percent = _target_number(target, source, "payment_fee_percent", "paymentFeePercent", default=defaults["payment_fee_percent"])
+    other_fee_percent = _target_number(target, source, "other_fee_percent", "otherFeePercent", default=0)
     target_margin_percent = _target_number(target, source, "target_margin_percent", "targetMarginPercent", "margin_percent", default=defaults["target_margin_percent"])
+    markup_percent = _target_number(target, source, "markup_percent", "markupPercent", default=30)
+    pricing_mode = str(_target_value(target, source, "pricing_mode", "pricingMode", default="margin") or "margin").strip().lower()
+    if pricing_mode not in {"margin", "markup", "manual"}:
+        pricing_mode = "margin"
     source.update(
         {
             "platform": platform,
@@ -259,6 +265,7 @@ def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], ind
             "commission_percent": commission_percent,
             "ml_commission_percent": commission_percent,
             "payment_fee_percent": payment_fee_percent,
+            "other_fee_percent": other_fee_percent,
             "target_margin_percent": target_margin_percent,
             "margin_percent": target_margin_percent,
         }
@@ -268,49 +275,109 @@ def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], ind
     errors: list[dict[str, str]] = []
     if values["cost_cny"] <= 0:
         errors.append({"field": "cost_cny", "message": "采购成本缺失"})
-    if base["billable_kg"] <= 0:
-        errors.append({"field": "weight_or_dimensions", "message": "重量或尺寸缺失"})
-    if values["usd_cny_rate"] <= 0:
-        errors.append({"field": "usd_cny_rate", "message": "USD/CNY 汇率缺失"})
+    for field, label, value in (
+        ("domestic_freight", "国内物流", values["freight_cny"]),
+        ("packaging_cost", "包装耗材", values["prep_fee_cny"]),
+        ("other_cost", "其他固定成本", values["other_cost_cny"]),
+    ):
+        if not math.isfinite(value) or value < 0:
+            errors.append({"field": field, "message": f"{label}不能小于 0"})
+
+    shipping_mode = str(_target_value(target, source, "shipping_quote_mode", "shippingQuoteMode", default="") or "").strip().lower()
+    if shipping_mode not in {"auto", "manual"}:
+        shipping_mode = "auto" if platform == "mercadolibre" else "manual"
+    raw_shipping_currency = str(_target_value(target, source, "shipping_currency", "shippingCurrency", default="") or "").strip().upper()
+    legacy_shipping_usd = _target_number(target, source, "shipping_cost_usd", "shippingCostUsd", "ml_shipping_usd", "shipping_usd", default=0)
+    legacy_shipping_cny = _target_number(target, source, "shipping_cost_cny", "shippingCostCny", default=0)
+    shipping_currency = raw_shipping_currency if raw_shipping_currency in {"USD", "CNY"} else ("USD" if legacy_shipping_usd > 0 or platform == "mercadolibre" else "CNY")
+    shipping_amount = _target_number(target, source, "shipping_amount", "shippingAmount", default=0)
+    if shipping_amount <= 0:
+        shipping_amount = legacy_shipping_usd if shipping_currency == "USD" else legacy_shipping_cny
 
     shipping_usd = 0.0
     shipping_cny = 0.0
-    prep_fee_cny = values["prep_fee_cny"] if platform == "mercadolibre" else 0.0
-    if platform == "mercadolibre":
-        shipping_usd_input = _target_number(target, source, "shipping_cost_usd", "shippingCostUsd", "ml_shipping_usd", "shipping_usd", default=0)
-        shipping_usd = shipping_usd_input if shipping_usd_input > 0 else values["ml_shipping_usd"]
-        shipping_cny = shipping_usd * values["usd_cny_rate"]
-        total_cost_cny = base["common_base_cny"] + prep_fee_cny + shipping_cny
+    shipping_source = "manual_quote"
+    if shipping_mode == "auto":
+        shipping_source = "system_estimate"
+        if platform != "mercadolibre":
+            errors.append({"field": "shipping_quote_mode", "message": "当前平台没有自动物流报价，请填写物流商报价"})
+        elif base["billable_kg"] <= 0:
+            errors.append({"field": "weight_or_dimensions", "message": "自动估算物流费需要重量或尺寸"})
+        elif values["usd_cny_rate"] <= 0:
+            errors.append({"field": "usd_cny_rate", "message": "自动估算物流费需要 USD/CNY 汇率"})
+        else:
+            shipping_currency = "USD"
+            shipping_usd = values["ml_shipping_usd"]
+            shipping_amount = shipping_usd
+            shipping_cny = shipping_usd * values["usd_cny_rate"]
     else:
-        shipping_cny = _target_number(target, source, "shipping_cost_cny", "shippingCostCny", default=0)
-        freight_rate = _target_number(target, source, "russia_freight_rate", "russiaFreightRate", default=values["russia_freight_rate"])
-        if shipping_cny <= 0 and freight_rate > 0:
-            shipping_cny = base["billable_kg"] * freight_rate
-        shipping_usd = shipping_cny / values["usd_cny_rate"] if values["usd_cny_rate"] > 0 else 0.0
-        total_cost_cny = base["common_base_cny"] + shipping_cny
+        if shipping_amount <= 0 or not math.isfinite(shipping_amount):
+            errors.append({"field": "shipping_amount", "message": "物流报价金额必须大于 0"})
+        elif shipping_currency == "USD":
+            if values["usd_cny_rate"] <= 0:
+                errors.append({"field": "usd_cny_rate", "message": "USD 物流报价需要 USD/CNY 汇率"})
+            else:
+                shipping_usd = shipping_amount
+                shipping_cny = shipping_amount * values["usd_cny_rate"]
+        else:
+            shipping_cny = shipping_amount
+            shipping_usd = shipping_amount / values["usd_cny_rate"] if values["usd_cny_rate"] > 0 else 0.0
+
+    packaging_cost_cny = values["prep_fee_cny"]
+    fixed_cost_cny = base["common_base_cny"] + packaging_cost_cny
+    total_cost_cny = fixed_cost_cny + shipping_cny
+
+    for field, label, value in (
+        ("commission_percent", "平台佣金", commission_percent),
+        ("payment_fee_percent", "支付/结算手续费", payment_fee_percent),
+        ("other_fee_percent", "其他平台费用", other_fee_percent),
+    ):
+        if not math.isfinite(value) or value < 0 or value >= 100:
+            errors.append({"field": field, "message": f"{label}必须在 0% 到 100% 之间"})
 
     commission = commission_percent / 100
     payment_fee = payment_fee_percent / 100
+    other_fee = other_fee_percent / 100
+    fee_rate = commission + payment_fee + other_fee
+    fee_denominator = 1 - fee_rate
+    if fee_denominator <= 0:
+        errors.append({"field": "platform_fee_percent", "message": "平台佣金、支付手续费和其他平台费用合计必须小于 100%"})
     margin = target_margin_percent / 100
-    denominator = 1 - commission - payment_fee - margin
-    if denominator <= 0:
-        errors.append({"field": "target_margin_percent", "message": "目标利润率 + 佣金 + 支付手续费不能大于等于 100%"})
+    if pricing_mode == "margin":
+        if not math.isfinite(target_margin_percent) or target_margin_percent < 0 or target_margin_percent >= 100:
+            errors.append({"field": "target_margin_percent", "message": "目标销售利润率必须在 0% 到 100% 之间"})
+        elif fee_rate + margin >= 1:
+            errors.append({"field": "target_margin_percent", "message": "平台费用合计 + 目标销售利润率必须小于 100%"})
+    elif pricing_mode == "markup" and (not math.isfinite(markup_percent) or markup_percent < 0):
+        errors.append({"field": "markup_percent", "message": "成本加价率不能小于 0%"})
+
     currency_rate_cny = _currency_per_cny(currency, source, values)
     if currency_rate_cny <= 0:
         errors.append({"field": "currency_rate", "message": f"{currency}/CNY 汇率缺失"})
-
-    safe_denominator = max(denominator, 0.01)
-    revenue_cny = total_cost_cny / safe_denominator if total_cost_cny > 0 else 0.0
-    suggested_price = revenue_cny * currency_rate_cny if currency_rate_cny > 0 else 0.0
-    suggested_price_usd = revenue_cny / values["usd_cny_rate"] if values["usd_cny_rate"] > 0 else 0.0
     applied_price_input = _target_number(target, source, "applied_price", "appliedPrice", "sale_price", "price", default=0)
-    applied_price = applied_price_input if applied_price_input > 0 else suggested_price
-    actual_revenue_cny = applied_price / currency_rate_cny if applied_price > 0 and currency_rate_cny > 0 else revenue_cny
+    if pricing_mode == "manual" and applied_price_input <= 0:
+        errors.append({"field": "applied_price", "message": "手动售价必须大于 0"})
+
+    revenue_cny = 0.0
+    if not errors and total_cost_cny > 0:
+        if pricing_mode == "margin":
+            revenue_cny = total_cost_cny / (1 - fee_rate - margin)
+        elif pricing_mode == "markup":
+            revenue_cny = total_cost_cny * (1 + markup_percent / 100) / fee_denominator
+        else:
+            revenue_cny = applied_price_input / currency_rate_cny
+    suggested_price = revenue_cny * currency_rate_cny if revenue_cny > 0 and currency_rate_cny > 0 else 0.0
+    suggested_price_usd = revenue_cny / values["usd_cny_rate"] if revenue_cny > 0 and values["usd_cny_rate"] > 0 else 0.0
+    applied_price = applied_price_input if applied_price_input > 0 and not errors else suggested_price
+    actual_revenue_cny = applied_price / currency_rate_cny if applied_price > 0 and currency_rate_cny > 0 else 0.0
     commission_cny = actual_revenue_cny * commission
     payment_fee_cny = actual_revenue_cny * payment_fee
-    profit_cny = actual_revenue_cny - commission_cny - payment_fee_cny - total_cost_cny
-    net_revenue_cny = actual_revenue_cny - commission_cny - payment_fee_cny - shipping_cny
+    other_fee_cny = actual_revenue_cny * other_fee
+    profit_cny = actual_revenue_cny - commission_cny - payment_fee_cny - other_fee_cny - total_cost_cny if not errors else 0.0
+    net_revenue_cny = actual_revenue_cny - commission_cny - payment_fee_cny - other_fee_cny
     profit_percent = (profit_cny / actual_revenue_cny * 100) if actual_revenue_cny else 0.0
+    minimum_revenue_cny = total_cost_cny / fee_denominator if total_cost_cny > 0 and fee_denominator > 0 else 0.0
+    minimum_price = minimum_revenue_cny * currency_rate_cny if currency_rate_cny > 0 else 0.0
     key = str(_target_value(target, source, "target_key", "targetKey", default=pricing_target_key(platform, site)) or "").strip() or pricing_target_key(platform, site)
     return {
         "ok": not errors,
@@ -325,6 +392,10 @@ def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], ind
         "applied_price": round(applied_price, 2),
         "shipping_cost_usd": round(shipping_usd, 2),
         "shipping_cost_cny": round(shipping_cny, 2),
+        "shipping_quote_mode": shipping_mode,
+        "shipping_currency": shipping_currency,
+        "shipping_amount": round(shipping_amount, 2),
+        "shipping_source": shipping_source,
         "total_cost_cny": round(total_cost_cny, 2),
         "net_revenue_cny": round(net_revenue_cny, 2),
         "profit_cny": round(profit_cny, 2),
@@ -332,7 +403,15 @@ def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], ind
         "margin_percent": round(profit_percent, 2),
         "commission_percent": round(commission_percent, 2),
         "payment_fee_percent": round(payment_fee_percent, 2),
+        "other_fee_percent": round(other_fee_percent, 2),
+        "pricing_mode": pricing_mode,
         "target_margin_percent": round(target_margin_percent, 2),
+        "markup_percent": round(markup_percent, 2),
+        "commission_cny": round(commission_cny, 2),
+        "payment_fee_cny": round(payment_fee_cny, 2),
+        "other_fee_cny": round(other_fee_cny, 2),
+        "minimum_price": round(minimum_price, 2),
+        "billable_weight_kg": base["billable_kg"],
         "usd_cny_rate": round(values["usd_cny_rate"], 4),
         "mxn_usd_rate": round(values["mxn_usd_rate"], 4),
         "rub_cny_rate": round(values["rub_cny_rate"], 6),
@@ -347,15 +426,22 @@ def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], ind
             "actual_weight_kg": values["weight_kg"],
             "volume_weight_kg": base["volume_weight_kg"],
             "common_base_cny": round(base["common_base_cny"], 2),
-            "prep_fee_cny": round(prep_fee_cny, 2),
+            "packaging_cost_cny": round(packaging_cost_cny, 2),
             "shipping_cny": round(shipping_cny, 2),
             "cost_cny": round(values["cost_cny"], 2),
             "freight_cny": round(values["freight_cny"], 2),
             "commission_cny": round(commission_cny, 2),
             "payment_fee_cny": round(payment_fee_cny, 2),
+            "other_fee_cny": round(other_fee_cny, 2),
             "target_margin_percent": round(target_margin_percent, 2),
+            "markup_percent": round(markup_percent, 2),
+            "minimum_price": round(minimum_price, 2),
         },
-        "formula": "建议售价 = 总成本 / (1 - 平台佣金 - 支付手续费 - 目标利润率)",
+        "formula": {
+            "margin": "建议售价 = 总成本 / (1 - 平台费用合计 - 目标销售利润率)",
+            "markup": "建议售价 = 总成本 × (1 + 成本加价率) / (1 - 平台费用合计)",
+            "manual": "实际利润率 = (售价 - 平台费用 - 总成本) / 售价",
+        }[pricing_mode],
     }
 
 
@@ -430,8 +516,12 @@ def calculate_pricing(data: dict[str, Any]) -> dict[str, Any]:
     if 1 - ml_fee - payment_fee - margin <= 0:
         errors.append({"field": "margin_percent", "message": "目标利润率 + Mercado Libre 佣金 + 支付手续费不能大于等于 100%"})
 
-    ml_denominator = max(1 - ml_fee - payment_fee - margin, 0.01)
-    suggested_price_usd = base["ml_base_cny"] / ml_denominator / values["usd_cny_rate"] if values["usd_cny_rate"] else 0.0
+    ml_denominator = 1 - ml_fee - payment_fee - margin
+    suggested_price_usd = (
+        base["ml_base_cny"] / ml_denominator / values["usd_cny_rate"]
+        if not errors and ml_denominator > 0 and values["usd_cny_rate"] > 0
+        else 0.0
+    )
     suggested_price_mxn = suggested_price_usd * values["mxn_usd_rate"]
     price_usd = values["sale_price_usd"] or (values["sale_price_mxn"] / values["mxn_usd_rate"] if values["sale_price_mxn"] else suggested_price_usd)
     price_mxn = values["sale_price_mxn"] or price_usd * values["mxn_usd_rate"]
@@ -443,8 +533,8 @@ def calculate_pricing(data: dict[str, Any]) -> dict[str, Any]:
     profit_percent = (profit_cny / revenue_cny * 100) if revenue_cny else 0.0
 
     wb_base = base["common_base_cny"] + base["billable_kg"] * values["russia_freight_rate"]
-    wb_denominator = max(1 - wb_fee - margin, 0.01)
-    wb_price_rub = wb_base / wb_denominator * values["rub_cny_rate"] if values["rub_cny_rate"] else 0.0
+    wb_denominator = 1 - wb_fee - margin
+    wb_price_rub = wb_base / wb_denominator * values["rub_cny_rate"] if wb_denominator > 0 and values["rub_cny_rate"] else 0.0
 
     return {
         "ok": not errors,

@@ -760,6 +760,7 @@ watch(
                 :platform-options="platformOptions"
                 :loading="loading"
                 @calculate="store.calculatePrice"
+                @apply="store.applyPrice"
               />
               <PricingChart :result="pricingResult" />
             </div>

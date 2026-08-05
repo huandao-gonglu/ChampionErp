@@ -1099,7 +1099,7 @@ describe('workflow store live API flow', () => {
     expect(workflowApi.runCategoryPrecheck).toHaveBeenCalledOnce()
   })
 
-  it('syncs calculated applied prices back into pricing inputs', async () => {
+  it('previews pricing without saving, then persists prices only when applied', async () => {
     const draft = createEmptyDraftDetail('mercadolibre')
     draft.draftId = 'draft-1'
     draft.productId = 'product-1'
@@ -1133,7 +1133,19 @@ describe('workflow store live API flow', () => {
           marginPercent: 30,
           commissionPercent: 16,
           paymentFeePercent: 0,
+          otherFeePercent: 0,
+          pricingMode: 'margin',
           targetMarginPercent: 30,
+          markupPercent: 30,
+          shippingQuoteMode: 'auto',
+          shippingCurrency: 'USD',
+          shippingAmount: 2.7,
+          shippingSource: 'system_estimate',
+          commissionCny: 25.47,
+          paymentFeeCny: 0,
+          otherFeeCny: 0,
+          minimumPrice: 18.63,
+          billableWeightKg: 0.3,
           usdCnyRate: 6.7892,
           mxnUsdRate: 17.521375,
           rubCnyRate: 11.489603,
@@ -1158,7 +1170,19 @@ describe('workflow store live API flow', () => {
           marginPercent: 30,
           commissionPercent: 16,
           paymentFeePercent: 0,
+          otherFeePercent: 0,
+          pricingMode: 'margin',
           targetMarginPercent: 30,
+          markupPercent: 30,
+          shippingQuoteMode: 'auto',
+          shippingCurrency: 'USD',
+          shippingAmount: 2.7,
+          shippingSource: 'system_estimate',
+          commissionCny: 25.47,
+          paymentFeeCny: 0,
+          otherFeeCny: 0,
+          minimumPrice: 326.1,
+          billableWeightKg: 0.3,
           usdCnyRate: 6.7892,
           mxnUsdRate: 17.521375,
           rubCnyRate: 11.489603,
@@ -1206,8 +1230,26 @@ describe('workflow store live API flow', () => {
 
     await store.calculatePrice()
 
+    expect(store.pricingInput.targets.map((target) => target.appliedPrice)).toEqual([0, 0])
+    expect(workflowApi.saveDraft).not.toHaveBeenCalled()
+
+    vi.mocked(workflowApi.calculatePrice).mockResolvedValueOnce({
+      ...pricingResult,
+      results: pricingResult.results.map((item, index) => index === 0 ? {
+        ...item,
+        suggestedPrice: 0,
+        appliedPrice: 0,
+        profitCny: 0,
+        errors: [{ field: 'target_margin_percent', message: '平台费用合计 + 目标销售利润率必须小于 100%' }],
+      } : item),
+    })
+    await store.applyPrice()
+    expect(workflowApi.saveDraft).not.toHaveBeenCalled()
+
+    await store.applyPrice()
+
     expect(store.pricingInput.targets.map((target) => target.appliedPrice)).toEqual([23.45, 410.88])
-    expect(store.pricingInput.targets.map((target) => target.shippingCostUsd)).toEqual([2.7, 2.7])
+    expect(store.pricingInput.targets.map((target) => target.shippingAmount)).toEqual([2.7, 2.7])
     expect(store.currentDraft.price).toBe('23.45')
     expect(workflowApi.saveDraft).toHaveBeenCalledWith(expect.objectContaining({
       pricing: expect.objectContaining({
