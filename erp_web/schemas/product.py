@@ -63,6 +63,7 @@ class DraftTargetSite(TypedDict, total=False):
     language: str
     currency: str
     category_id: str
+    description_category_id: str
     category_path: str
     category_attribute_schema: CategoryAttributeSchema
     attributes: dict[str, Any]
@@ -90,7 +91,9 @@ class PlatformDraft(TypedDict, total=False):
     brand: str
     model: str
     category_id: str
+    description_category_id: str
     category_path: str
+    category_attribute_schema: CategoryAttributeSchema
     target_sites: list[DraftTargetSite]
     attributes: dict[str, Any]
     price: str

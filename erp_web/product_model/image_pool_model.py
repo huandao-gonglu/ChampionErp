@@ -24,6 +24,10 @@ def default_image_pool_item() -> dict[str, Any]:
         "order": 0,
         "status": "ready",
         "preview_url": "",
+        "storage_key": "",
+        "content_sha256": "",
+        "delivery_provider": "",
+        "delivery_error": "",
         "note": "",
     }
 
@@ -125,6 +129,10 @@ def normalize_image_pool_item(item: Any, order: int = 0, origin_hint: str = "sou
         ("target_language", ("target_language",)),
         ("provider", ("provider",)),
         ("translate_job_id", ("translate_job_id",)),
+        ("storage_key", ("storage_key",)),
+        ("content_sha256", ("content_sha256",)),
+        ("delivery_provider", ("delivery_provider",)),
+        ("delivery_error", ("delivery_error",)),
     ):
         value = next(
             (

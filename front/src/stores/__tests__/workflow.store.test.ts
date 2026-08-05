@@ -771,6 +771,77 @@ describe('workflow store live API flow', () => {
     expect(store.categoryAttributeError).toBe('平台类目属性接口超时')
   })
 
+  it('persists the Ozon description category id returned for a selected type', async () => {
+    const draft = createEmptyDraftDetail('ozon')
+    draft.draftId = 'draft-ozon'
+    draft.productId = 'product-ozon'
+    draft.sourceProductId = 'product-ozon'
+    draft.site = 'global'
+    draft.targetSites = [{ platform: 'ozon', site: 'global', language: 'ru-RU', currency: 'RUB' }]
+    const savedDrafts: DraftDetail[] = []
+    vi.mocked(workflowApi.saveDraft).mockImplementation(async (draftToSave) => {
+      const saved = JSON.parse(JSON.stringify(draftToSave)) as DraftDetail
+      savedDrafts.push(saved)
+      return draftMutation(saved)
+    })
+    vi.mocked(workflowApi.fetchCategoryAttrs).mockResolvedValue({
+      platform: 'ozon',
+      categoryId: '91443',
+      categoryPath: 'Бытовая техника / Климатическая техника / Вентилятор',
+      requiredAttributes: [],
+      optionalAttributes: [],
+      source: 'ozon_live',
+      fetchedAt: '2026-08-05T12:00:00Z',
+      raw: {
+        category_id: '91443',
+        type_id: '91443',
+        description_category_id: '17039635',
+      },
+    })
+
+    const store = useWorkflowStore()
+    store.currentDraft = draft
+    await store.selectCategory({
+      id: '91443',
+      name: 'Вентилятор',
+      path: 'Бытовая техника / Климатическая техника / Вентилятор',
+      raw: {
+        category_id: '91443',
+        type_id: '91443',
+        description_category_id: '17039635',
+      },
+    })
+
+    expect(savedDrafts).toHaveLength(2)
+    expect(savedDrafts[0]?.descriptionCategoryId).toBe('17039635')
+    expect(savedDrafts[0]?.targetSites[0]?.descriptionCategoryId).toBe('17039635')
+    expect(savedDrafts[1]?.targetSites[0]?.descriptionCategoryId).toBe('17039635')
+    expect(store.currentDraft.descriptionCategoryId).toBe('17039635')
+  })
+
+  it('clears the Ozon description category id when type id is edited manually', () => {
+    const draft = createEmptyDraftDetail('ozon')
+    draft.draftId = 'draft-ozon'
+    draft.categoryId = '91443'
+    draft.descriptionCategoryId = '17039635'
+    draft.targetSites = [{
+      platform: 'ozon',
+      site: 'global',
+      language: 'ru-RU',
+      currency: 'RUB',
+      categoryId: '91443',
+      descriptionCategoryId: '17039635',
+    }]
+
+    const store = useWorkflowStore()
+    store.currentDraft = draft
+    store.currentDraft.categoryId = '99999'
+    store.invalidateCategoryPrecheck()
+
+    expect(store.currentDraft.descriptionCategoryId).toBe('')
+    expect(store.currentDraft.targetSites[0]?.descriptionCategoryId).toBe('')
+  })
+
   it('restores category attributes from the saved target schema when reopening a draft', async () => {
     const draft = createEmptyDraftDetail('mercadolibre')
     draft.draftId = 'draft-1'

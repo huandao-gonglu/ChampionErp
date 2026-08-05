@@ -37,6 +37,10 @@ class MercadoLibrePublishingAdapter:
 
     platform = "mercadolibre"
 
+    def prepare_product(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        # Mercado Libre 当前使用平台图片上传接口，不依赖公网 HTTPS 图片服务。
+        return normalize_product_fields(product)
+
     def resolve_category(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         product = normalize_product_fields(product)
         local_categories = product.get("local_platform_categories") if isinstance(product.get("local_platform_categories"), dict) else {}
@@ -91,6 +95,9 @@ class OzonPublishingAdapter:
     """通过 Ozon Seller API 创建或更新商品，并确认异步导入终态。"""
 
     platform = "ozon"
+
+    def prepare_product(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        return get_context().image_delivery.prepare_product(product, self.platform)
 
     def resolve_category(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         product = normalize_product_fields(product)

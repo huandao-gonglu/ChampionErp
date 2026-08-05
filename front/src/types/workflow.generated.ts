@@ -124,6 +124,10 @@ export interface BackendImageItem {
   target_language?: string
   provider?: string
   translate_job_id?: string
+  storage_key?: string
+  content_sha256?: string
+  delivery_provider?: string
+  delivery_error?: string
   raw?: Record<string, unknown>
 }
 
@@ -192,6 +196,7 @@ export interface BackendDraftTargetSite {
   language?: string
   currency?: string
   category_id?: string
+  description_category_id?: string
   category_path?: string
   category_attribute_schema?: BackendCategoryAttributeSchema
   attributes?: Record<string, unknown>
@@ -219,7 +224,9 @@ export interface BackendPlatformDraft {
   brand?: string
   model?: string
   category_id?: string
+  description_category_id?: string
   category_path?: string
+  category_attribute_schema?: BackendCategoryAttributeSchema
   target_sites?: Array<BackendDraftTargetSite>
   attributes?: Record<string, unknown>
   price?: string

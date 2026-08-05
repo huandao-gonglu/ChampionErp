@@ -27,7 +27,6 @@ from .publish_mercadolibre import (
     mercadolibre_close_remote_item,
     mercadolibre_real_publish,
 )
-from .publish_validation import validate_platform_draft
 from .runtime_api import publish_product
 
 ResponseWithStatus = tuple[ApiResponse, int]
@@ -71,7 +70,11 @@ def precheck_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
         return unsupported
     config = get_context().config.load_store_config()
     platform = str(context["platform"])
-    result = validate_platform_draft(context["product"], platform, config)
+    adapter = publishing_adapter_for(platform)
+    if adapter is None:
+        return unsupported_publish_response(platform), 501
+    context["product"] = adapter.prepare_product(context["product"], config)
+    result = adapter.validate_draft(context["product"], config)
     saved = save_draft_precheck_result(context, result)
     return {
         "ok": True,
@@ -102,6 +105,7 @@ def preview_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
     if adapter is None:
         return unsupported_publish_response(platform), 501
     config = get_context().config.load_store_config()
+    context["product"] = adapter.prepare_product(context["product"], config)
     precheck = adapter.validate_draft(context["product"], config)
     saved = save_draft_precheck_result(context, precheck)
     if not precheck.get("ok"):

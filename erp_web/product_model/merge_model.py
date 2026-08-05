@@ -164,6 +164,13 @@ def normalize_draft_target_site(
             or fallback.get("categoryId")
             or ""
         ).strip(),
+        "description_category_id": str(
+            raw.get("description_category_id")
+            or raw.get("descriptionCategoryId")
+            or fallback.get("description_category_id")
+            or fallback.get("descriptionCategoryId")
+            or ""
+        ).strip(),
         "category_path": str(
             raw.get("category_path")
             or raw.get("categoryPath")
@@ -501,6 +508,11 @@ def _merge_platform_draft(product: dict[str, Any], platform: str) -> dict[str, A
     current["category_id"] = str(
         current.get("category_id")
         or current.get("categoryId")
+        or ""
+    ).strip()
+    current["description_category_id"] = str(
+        current.get("description_category_id")
+        or current.get("descriptionCategoryId")
         or ""
     ).strip()
     current["category_path"] = str(

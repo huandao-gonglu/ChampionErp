@@ -13,6 +13,7 @@ from erp_web.stores.product_store import normalize_product_fields
 ResponseWithStatus = tuple[dict[str, Any], int]
 TARGET_LISTING_KEYS = (
     "category_id",
+    "description_category_id",
     "category_path",
     "category_attribute_schema",
     "attributes",
@@ -64,6 +65,7 @@ def _target_listing_fields(raw: dict[str, Any], fallback: dict[str, Any] | None 
         validation_errors = fallback_validation_errors
     return {
         "category_id": str(raw.get("category_id") or raw.get("categoryId") or fallback.get("category_id") or "").strip(),
+        "description_category_id": str(raw.get("description_category_id") or raw.get("descriptionCategoryId") or fallback.get("description_category_id") or "").strip(),
         "category_path": str(raw.get("category_path") or raw.get("categoryPath") or fallback.get("category_path") or "").strip(),
         "category_attribute_schema": deepcopy(category_attribute_schema),
         "attributes": deepcopy(attributes),

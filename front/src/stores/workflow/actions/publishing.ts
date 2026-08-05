@@ -252,6 +252,7 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
   }
 
   function clearCurrentCategoryDependentFields() {
+    currentDraft.value.descriptionCategoryId = ''
     currentDraft.value.attributes = {}
     currentDraft.value.validationErrors = []
     currentDraft.value.lastPrecheck = {}
@@ -265,6 +266,7 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
     precheckResults.value = {}
     payloadPreview.value = null
     persistActiveTargetListingFields({
+      descriptionCategoryId: '',
       categoryPrecheck: {},
       lastPrecheck: {},
       lastPrecheckTarget: {},
@@ -272,6 +274,11 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
   }
 
   function invalidateCategoryPrecheck() {
+    const categoryChanged = String(selectedPublishTarget.value.categoryId || '').trim()
+      !== currentDraft.value.categoryId.trim()
+    if (categoryChanged) {
+      currentDraft.value.descriptionCategoryId = ''
+    }
     categoryPrecheck.value = null
     precheck.value = null
     precheckResults.value = {}
@@ -279,6 +286,7 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
     currentDraft.value.lastPrecheck = {}
     currentDraft.value.lastPrecheckTarget = {}
     persistActiveTargetListingFields({
+      ...(categoryChanged ? { descriptionCategoryId: '' } : {}),
       categoryPrecheck: {},
       lastPrecheck: {},
       lastPrecheckTarget: {},
@@ -317,8 +325,9 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
   }
 
   async function selectCategory(item: CategorySearchResult) {
-    const previousCategoryId = String(selectedPublishTarget.value.categoryId || '').trim()
-    const categoryId = item.id.trim()
+    const target = { ...selectedPublishTarget.value }
+    const previousCategoryId = String(target.categoryId || '').trim()
+    const categoryId = String(item.raw.type_id || item.id).trim()
     if (!categoryId) {
       setError('所选类目缺少类目 ID。')
       return
@@ -331,10 +340,16 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
     if (categoryChanged) {
       clearCurrentCategoryDependentFields()
     }
+    currentDraft.value.descriptionCategoryId = target.platform === 'ozon'
+      ? String(item.raw.description_category_id || '')
+      : ''
     categoryAttributeTranslations.value = {}
     categoryAttributeTranslationsSource.value = ''
     if (categoryChanged) {
-      persistActiveTargetListingFields({ categoryAttributeSchema: null })
+      persistActiveTargetListingFields({
+        descriptionCategoryId: currentDraft.value.descriptionCategoryId,
+        categoryAttributeSchema: null,
+      })
     }
     loading.value = true
     setError('')
@@ -393,9 +408,16 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
       if (loadedCategory.categoryPath) {
         currentDraft.value.categoryPath = loadedCategory.categoryPath
       }
+      currentDraft.value.descriptionCategoryId = target.platform === 'ozon'
+        ? String(loadedCategory.raw?.description_category_id || '')
+        : ''
+      if (target.platform === 'ozon' && !currentDraft.value.descriptionCategoryId) {
+        throw new Error('Ozon 实时类目缺少 description_category_id')
+      }
       category.value = loadedCategory
       categoryAttributeError.value = ''
       persistActiveTargetListingFields({
+        descriptionCategoryId: currentDraft.value.descriptionCategoryId,
         categoryAttributeSchema: categoryAttributeSchemaFromSelection(loadedCategory, target),
       })
       await persistCurrentDraftForPublish()

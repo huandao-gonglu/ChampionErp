@@ -131,6 +131,7 @@ def default_draft(platform: str) -> dict[str, Any]:
         "country": "",
         "site": site["code"],
         "category_id": "",
+        "description_category_id": "",
         "category_path": "",
         "attributes": {},
         "brand": "",

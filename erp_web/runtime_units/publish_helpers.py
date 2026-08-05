@@ -15,7 +15,11 @@ from erp_web.stores.config_store import summarize_store_auth_states
 from erp_web.stores.product_store import normalize_product_fields
 
 from .copy_generation import apply_product_drafts_to_plan, build_plan_for_platform
-from .image_pool_core import current_image_pool, image_pool_refs_for_platform
+from .image_pool_core import (
+    _source_pool_items,
+    current_image_pool,
+    image_pool_refs_for_platform,
+)
 
 def assign_upc() -> dict[str, Any]:
     """在同一事务内为当前商品占用 UPC 并保存商品/草稿。"""
@@ -197,7 +201,9 @@ def _draft_images(product: dict[str, Any], platform: str, draft: dict[str, Any])
     refs = normalize_draft_image_refs(draft.get("images"))
     if not refs:
         return image_pool_refs_for_platform(product, platform)
-    pool = current_image_pool(product)
+    # 发布必须读取 canonical 图片池。展示图片池会为了本地预览把 URL 转成
+    # /file?...，不能作为平台 payload 的来源。
+    pool = _source_pool_items(product)
     asset_ref_map = {
         str(item.get("id") or item.get("asset_id") or "").strip(): str(item.get("url") or item.get("path") or item.get("preview_url") or "").strip()
         for item in pool
@@ -245,8 +251,22 @@ def _field_error_map(items: list[dict[str, Any]]) -> dict[str, list[str]]:
 def _required_attribute_summary(product: dict[str, Any], platform: str) -> dict[str, Any]:
     draft = _draft_for_platform(product, platform)
     category_id = str(draft.get("category_id") or "").strip()
-    categories = product.get("local_platform_categories") if isinstance(product.get("local_platform_categories"), dict) else {}
-    record = categories.get(platform) if isinstance(categories.get(platform), dict) else None
+    if platform == "ozon":
+        schema = (
+            draft.get("category_attribute_schema")
+            if isinstance(draft.get("category_attribute_schema"), dict)
+            else {}
+        )
+        record = {
+            "category_id": category_id,
+            "attributes": {
+                "required": list(schema.get("required") or []),
+                "optional": list(schema.get("optional") or []),
+            },
+        }
+    else:
+        categories = product.get("local_platform_categories") if isinstance(product.get("local_platform_categories"), dict) else {}
+        record = categories.get(platform) if isinstance(categories.get(platform), dict) else None
     record_id = str((record or {}).get("category_id") or (record or {}).get("subject_id") or (record or {}).get("type_id") or "").strip()
     if category_id and record_id and record_id != category_id:
         record = None

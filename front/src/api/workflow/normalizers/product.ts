@@ -94,11 +94,13 @@ export function normalizeDraft(value: unknown, language: string): MarketplaceDra
   const currency = getString(record, ['currency'], draft.currency)
   const draftLanguage = getString(record, ['language'], language)
   const categoryId = getString(record, ['category_id'])
+  const descriptionCategoryId = getString(record, ['description_category_id'])
   const categoryPath = getString(record, ['category_path'])
   const attributes = normalizeAttributes(record.attributes)
   const validationErrors = normalizeValidationErrors(record.validation_errors)
   const targetFallback: Partial<MarketplaceTargetSite> = {
     categoryId,
+    descriptionCategoryId,
     categoryPath,
     categoryAttributeSchema: normalizeCategoryAttributeSchema(record.category_attribute_schema),
     attributes,
@@ -120,6 +122,7 @@ export function normalizeDraft(value: unknown, language: string): MarketplaceDra
     description: getString(record, ['description']),
     bullets: wireStringList(record.bullets),
     categoryId,
+    descriptionCategoryId,
     categoryPath,
     attributes,
     price: getString(record, ['price']),
@@ -212,6 +215,10 @@ export function toBackendImageAsset(image: ImageAsset): UnknownRecord {
     target_language: image.targetLanguage,
     derived_from_id: image.derivedFromId,
     provider: image.provider,
+    storage_key: image.storageKey,
+    content_sha256: image.contentSha256,
+    delivery_provider: image.deliveryProvider,
+    delivery_error: image.deliveryError,
   }
 }
 
@@ -227,6 +234,7 @@ export function toBackendDraft(draft: MarketplaceDraft): UnknownRecord {
     description: draft.description,
     bullets: draft.bullets,
     category_id: draft.categoryId,
+    description_category_id: draft.descriptionCategoryId,
     category_path: draft.categoryPath,
     attributes: draft.attributes,
     price: draft.price,
@@ -266,6 +274,7 @@ export function normalizeDraftDetail(value: unknown): DraftDetail {
     platforms,
     targetSites: normalizeTargetSites(record.target_sites, primaryPlatform, getString(record, ['site']), draft.language, draft.currency, {
       categoryId: draft.categoryId,
+      descriptionCategoryId: draft.descriptionCategoryId,
       categoryPath: draft.categoryPath,
       attributes: draft.attributes,
       validationErrors: draft.validationErrors,

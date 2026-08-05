@@ -226,11 +226,25 @@ AI Work 保存脱敏且有界的 Agent 输入、每轮模型消息、工具参�
   在 `marketplace_registry.py` 声明 `CAP_PUBLISH` 的平台才允许进入真实发布流程。
 - `erp_web/runtime_units/publish_mercadolibre.py`：Mercado Libre 专属发布与错误处理。
 - `erp_web/runtime_units/publish_ozon.py`：Ozon `/v3/product/import` payload、
-  `type_id + description_category_id` 配对、异步导入终态确认及错误字段映射。
+  草稿目标站点中的 `type_id/category_id + description_category_id` 配对、异步导入
+  终态确认及错误字段映射；不得从商品级 `local_platform_categories` 回捞发布类目。
+- `erp_web/facades/product_facade.py`：保存 Ozon 草稿时，若只提供 `type_id/category_id`，
+  通过当前 Ozon 类目缓存自动解析并持久化隐藏的 `description_category_id`。
 - `erp_web/runtime_units/runtime_api.py::publish_product`：平台无关的预检、artifact、
   日志与商品发布状态持久化。
 - `erp_web/runtime_units/publishing_bus_core.py`：SQLite 发布任务和并发执行；适配器
   必须返回可验证的远端成功证据。
+- `erp_web/services/image_delivery_service.py`：发布图片 HTTPS delivery 唯一边界。
+  图片保存 provider-neutral 的 `storage_key`，公网 URL 只是根据当前 provider 与
+  `ERP_IMAGE_HTTPS_BASE_URL` 重新计算的缓存；平台发布模块不得读取隧道、磁盘根目录
+  或对象存储配置。`existing_url` 只接受已有公网 URL，`local_static` 把本地文件按内容
+  hash 复制到独立公开目录，可由 Quick Tunnel、Named Tunnel 或普通静态服务器暴露。
+- `scripts/dev.sh` 默认以 `ERP_IMAGE_HTTPS_TUNNEL=auto` 管理 Quick Tunnel 生命周期：
+  检测到 `cloudflared` 后先取得随机 HTTPS 地址并注入后端环境，开发服务退出时一并停止；
+  `required` 在 Tunnel 不可用时阻断启动，`off` 禁用自动 Tunnel。固定域名环境直接设置
+  `ERP_IMAGE_HTTPS_BASE_URL`，不会创建 Quick Tunnel。
+- Ozon 适配器在草稿校验和 payload 构造前调用图片 delivery；Mercado Libre 保持平台
+  图片上传接口与 `ml-id:*` 流程，不经过通用 HTTPS 图片服务。
 
 Ozon 创建/更新商品是异步操作。提交 `/v3/product/import` 获得 `task_id` 后，必须
 轮询 `/v1/product/import/info`；只有每个商品返回 `status=imported` 且没有逐项错误，

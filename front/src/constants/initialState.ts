@@ -15,6 +15,7 @@ export function createEmptyDraft(language = '', site = '', currency = ''): Marke
     description: '',
     bullets: [],
     categoryId: '',
+    descriptionCategoryId: '',
     categoryPath: '',
     attributes: {},
     price: '',

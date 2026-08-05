@@ -48,35 +48,41 @@ def _decimal_text(value: Any, field: str) -> str:
     return format(number, "f").rstrip("0").rstrip(".") if "." in format(number, "f") else format(number, "f")
 
 
-def _category_record(product: dict[str, Any]) -> dict[str, Any]:
-    categories = (
-        product.get("local_platform_categories")
-        if isinstance(product.get("local_platform_categories"), dict)
-        else {}
-    )
-    record = categories.get("ozon")
-    return record if isinstance(record, dict) else {}
-
-
 def ozon_category_pair(product: dict[str, Any]) -> tuple[str, str]:
     """返回 Ozon 发布所需的 ``type_id`` 与 ``description_category_id``。"""
 
     product = normalize_product_fields(product)
     draft = _draft_for_platform(product, "ozon")
-    record = _category_record(product)
-    draft_type_id = str(draft.get("category_id") or "").strip()
-    record_type_id = str(
-        record.get("type_id") or record.get("category_id") or ""
-    ).strip()
-    if draft_type_id and record_type_id and draft_type_id != record_type_id:
-        return draft_type_id, ""
-    type_id = draft_type_id or record_type_id
-    description_category_id = str(
-        record.get("description_category_id")
-        or record.get("subject_id")
-        or ""
-    ).strip()
-    return type_id, description_category_id
+    return (
+        str(draft.get("category_id") or "").strip(),
+        str(draft.get("description_category_id") or "").strip(),
+    )
+
+
+def _category_record(draft: dict[str, Any]) -> dict[str, Any]:
+    schema = (
+        draft.get("category_attribute_schema")
+        if isinstance(draft.get("category_attribute_schema"), dict)
+        else {}
+    )
+    return {
+        "category_id": str(draft.get("category_id") or "").strip(),
+        "description_category_id": str(
+            draft.get("description_category_id") or ""
+        ).strip(),
+        "attributes": {
+            "required": deepcopy(
+                schema.get("required")
+                if isinstance(schema.get("required"), list)
+                else []
+            ),
+            "optional": deepcopy(
+                schema.get("optional")
+                if isinstance(schema.get("optional"), list)
+                else []
+            ),
+        },
+    }
 
 
 def _attribute_definitions(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -153,7 +159,7 @@ def _ozon_attributes(
     product: dict[str, Any],
     draft: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    record = _category_record(product)
+    record = _category_record(draft)
     definitions = _attribute_definitions(record)
     raw_attributes = (
         deepcopy(draft.get("attributes"))

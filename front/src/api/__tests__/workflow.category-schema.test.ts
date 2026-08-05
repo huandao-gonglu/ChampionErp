@@ -3,6 +3,33 @@ import { createEmptyDraftDetail } from '@/constants/initialState'
 import { normalizeDraftDetail, toBackendDraft, toBackendDraftDetail } from '@/api/workflow/normalizers'
 
 describe('类目属性 Schema 映射', () => {
+  it('在 Ozon 草稿目标中读写隐藏的 description_category_id', () => {
+    const normalized = normalizeDraftDetail({
+      draft_id: 'draft-ozon',
+      product_id: 'product-ozon',
+      platform: 'ozon',
+      platforms: ['ozon'],
+      site: 'global',
+      category_id: '91443',
+      description_category_id: '17039635',
+      target_sites: [{
+        platform: 'ozon',
+        site: 'global',
+        language: 'ru-RU',
+        currency: 'RUB',
+        category_id: '91443',
+        description_category_id: '17039635',
+      }],
+    })
+
+    expect(normalized.descriptionCategoryId).toBe('17039635')
+    expect(normalized.targetSites[0]?.descriptionCategoryId).toBe('17039635')
+
+    const backend = toBackendDraft(normalized)
+    expect(backend.description_category_id).toBe('17039635')
+    expect((backend.target_sites as Array<Record<string, unknown>>)[0]?.description_category_id).toBe('17039635')
+  })
+
   it('在目标站点中读写规范化的类目属性定义', () => {
     const normalized = normalizeDraftDetail({
       draft_id: 'draft-1',

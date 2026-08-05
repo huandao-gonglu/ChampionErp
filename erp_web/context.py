@@ -21,6 +21,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, avoids import cycles
     from erp_web.runtime_units.publishing_bus_core import PublishingBus
     from erp_web.runtime_units.pricing_runtime import ExchangeRateService
     from erp_web.services.ai_work_service import AiWorkJournal
+    from erp_web.services.image_delivery_service import ImageDeliveryService
     from erp_web.services.product_research_service import ProductResearchRunRegistry
     from erp_web.stores.config_store import ConfigStore
     from erp_web.stores.product_store import ProductStore
@@ -138,6 +139,7 @@ class AppContext:
         self._research: "ProductResearchRunRegistry | None" = None
         self._ai_journal: "AiWorkJournal | None" = None
         self._exchange_rates: "ExchangeRateService | None" = None
+        self._image_delivery: "ImageDeliveryService | None" = None
         self._publishing_bus: "PublishingBus | None" = None
 
     @property
@@ -189,6 +191,16 @@ class AppContext:
 
                     self._exchange_rates = ExchangeRateService(self.db)
         return self._exchange_rates
+
+    @property
+    def image_delivery(self) -> "ImageDeliveryService":
+        if self._image_delivery is None:
+            with self._lazy_lock:
+                if self._image_delivery is None:
+                    from erp_web.services.image_delivery_service import ImageDeliveryService
+
+                    self._image_delivery = ImageDeliveryService(self.paths)
+        return self._image_delivery
 
     @property
     def publishing_bus(self) -> "PublishingBus":

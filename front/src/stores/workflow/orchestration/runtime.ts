@@ -186,6 +186,8 @@ export function categorySelectionFromAttributeSchema(schema: CategoryAttributeSc
       platform: target.platform,
       site: target.site,
       category_id: schema.categoryId,
+      type_id: schema.categoryId,
+      description_category_id: target.descriptionCategoryId || '',
       category_path: schema.categoryPath,
       attributes: {
         required: schema.required,
@@ -376,6 +378,7 @@ export function createWorkflowRuntime() {
       language: target.language || site?.language || draftDetail.language || '',
       currency: target.currency || site?.currency || draftDetail.currency || '',
       categoryId: String(target.categoryId || (useRootFallback ? draftDetail.categoryId : '') || ''),
+      descriptionCategoryId: String(target.descriptionCategoryId || (useRootFallback ? draftDetail.descriptionCategoryId : '') || ''),
       categoryPath: String(target.categoryPath || (useRootFallback ? draftDetail.categoryPath : '') || ''),
       categoryAttributeSchema: target.categoryAttributeSchema || null,
       attributes: Object.keys(target.attributes || {}).length ? cloneAttributes(target.attributes) : useRootFallback ? cloneAttributes(draftDetail.attributes) : {},
@@ -414,6 +417,7 @@ export function createWorkflowRuntime() {
     currentDraft.value.targetSites.splice(index, 1, {
       ...existing,
       categoryId: currentDraft.value.categoryId,
+      descriptionCategoryId: currentDraft.value.descriptionCategoryId,
       categoryPath: currentDraft.value.categoryPath,
       categoryAttributeSchema: activeSchema,
       attributes: cloneAttributes(currentDraft.value.attributes),
@@ -434,6 +438,7 @@ export function createWorkflowRuntime() {
 
   function applyTargetListingToDraft(target: MarketplaceTargetSite) {
     currentDraft.value.categoryId = String(target.categoryId || '')
+    currentDraft.value.descriptionCategoryId = String(target.descriptionCategoryId || '')
     currentDraft.value.categoryPath = String(target.categoryPath || '')
     currentDraft.value.attributes = cloneAttributes(target.attributes)
     currentDraft.value.validationErrors = cloneValidationErrors(target.validationErrors)

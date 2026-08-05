@@ -56,3 +56,28 @@ def test_target_listing_round_trip_preserves_category_attribute_schema() -> None
     assert target_draft["category_attribute_schema"] == schema
     assert merged["target_sites"][0]["category_attribute_schema"] == schema
     assert merged["target_sites"][0]["attributes"] == {"9048": "Compacto"}
+
+
+def test_ozon_target_round_trip_preserves_description_category_id() -> None:
+    draft = {
+        "platform": "ozon",
+        "site": "global",
+        "target_sites": [
+            {
+                "platform": "ozon",
+                "site": "global",
+                "language": "ru-RU",
+                "currency": "RUB",
+                "category_id": "91443",
+                "description_category_id": "17039635",
+            }
+        ],
+    }
+
+    target = draft_publish_targets(draft)[0]
+    target_draft = draft_for_publish_target(draft, target)
+    merged = merge_target_listing_into_draft(draft, target, target_draft)
+
+    assert target["description_category_id"] == "17039635"
+    assert target_draft["description_category_id"] == "17039635"
+    assert merged["target_sites"][0]["description_category_id"] == "17039635"

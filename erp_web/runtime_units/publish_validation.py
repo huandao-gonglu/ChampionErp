@@ -283,7 +283,18 @@ def validate_ozon_draft(product: dict[str, Any], config: dict[str, Any]) -> dict
     if not images:
         errors.append(precheck_item("IMAGE_MISSING", "images", "缺少图片", "error", "前往图片池导入图片"))
     elif any(not str(image).startswith(("https://", "http://")) for image in images):
-        errors.append(precheck_item("IMAGE_NOT_PUBLIC", "images", "Ozon 发布图片必须是平台可访问的 HTTP(S) 公网 URL", "error", "先将图片上传到公网对象存储，再更新图片池引用"))
+        source = product.get("source") if isinstance(product.get("source"), dict) else {}
+        delivery_errors = [
+            str(item.get("delivery_error") or "").strip()
+            for item in source.get("image_pool") or []
+            if isinstance(item, dict) and str(item.get("delivery_error") or "").strip()
+        ]
+        message = (
+            "；".join(dict.fromkeys(delivery_errors))
+            if delivery_errors
+            else "Ozon 发布图片必须是平台可访问的 HTTP(S) 公网 URL"
+        )
+        errors.append(precheck_item("IMAGE_NOT_PUBLIC", "images", message, "error", "配置图片 HTTPS provider 后重新执行发布预检"))
     pkg = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
     for field in ("length_cm", "width_cm", "height_cm"):
         try:

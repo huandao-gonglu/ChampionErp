@@ -53,6 +53,7 @@ def publish_product(product: dict[str, Any], platform: str, config: dict[str, An
     adapter = publishing_adapter_for(platform)
     if adapter is None:
         return unsupported_publish_response(platform)
+    product = adapter.prepare_product(product, config)
     product = adapter.resolve_category(product, config)
     precheck = adapter.validate_draft(product, config)
     if not precheck.get("ok"):

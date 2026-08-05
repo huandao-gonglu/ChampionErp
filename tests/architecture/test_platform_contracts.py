@@ -26,6 +26,7 @@ from .support import called_leaf_names
 
 def test_publish_capabilities_match_real_publishers() -> None:
     required_methods = {
+        "prepare_product",
         "resolve_category",
         "required_attributes_missing",
         "validate_draft",

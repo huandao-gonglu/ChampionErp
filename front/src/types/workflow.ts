@@ -68,6 +68,7 @@ export interface MarketplaceTargetSite {
   language: string
   currency: string
   categoryId?: string
+  descriptionCategoryId?: string
   categoryPath?: string
   categoryAttributeSchema?: CategoryAttributeSchema | null
   attributes?: Record<string, string>
@@ -112,6 +113,10 @@ export interface ImageAsset {
   targetLanguage?: string
   derivedFromId?: string
   provider?: string
+  storageKey?: string
+  contentSha256?: string
+  deliveryProvider?: string
+  deliveryError?: string
 }
 
 export type DraftImageRole = 'main' | 'detail' | 'size' | 'scene' | 'package' | 'selling_point' | 'material' | 'other'
@@ -157,6 +162,7 @@ export interface MarketplaceDraft {
   description: string
   bullets: string[]
   categoryId: string
+  descriptionCategoryId: string
   categoryPath: string
   attributes: Record<string, string>
   price: string

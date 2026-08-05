@@ -295,6 +295,7 @@ export function targetListingFields(record: UnknownRecord, fallback?: Partial<Ma
   const fallbackValidationErrors = fallback?.validationErrors || []
   const hasAnyField = (keys: string[]) => keys.some((key) => Object.prototype.hasOwnProperty.call(record, key))
   const hasCategoryId = hasAnyField(['category_id'])
+  const hasDescriptionCategoryId = hasAnyField(['description_category_id'])
   const hasCategoryPath = hasAnyField(['category_path'])
   const hasCategoryAttributeSchema = hasAnyField(['category_attribute_schema'])
   const hasAttributes = hasAnyField(['attributes'])
@@ -306,6 +307,9 @@ export function targetListingFields(record: UnknownRecord, fallback?: Partial<Ma
   const hasLastPrecheckTarget = hasAnyField(['last_precheck_target'])
   return {
     categoryId: hasCategoryId ? getString(record, ['category_id']) : fallback?.categoryId || '',
+    descriptionCategoryId: hasDescriptionCategoryId
+      ? getString(record, ['description_category_id'])
+      : fallback?.descriptionCategoryId || '',
     categoryPath: hasCategoryPath ? getString(record, ['category_path']) : fallback?.categoryPath || '',
     categoryAttributeSchema: hasCategoryAttributeSchema
       ? normalizeCategoryAttributeSchema(record.category_attribute_schema)
@@ -380,6 +384,10 @@ export function normalizeImageAsset(value: unknown): ImageAsset {
     targetLanguage: getString(record, ['target_language']) || undefined,
     derivedFromId: getString(record, ['derived_from_id']) || undefined,
     provider: getString(record, ['provider']) || undefined,
+    storageKey: getString(record, ['storage_key']) || undefined,
+    contentSha256: getString(record, ['content_sha256']) || undefined,
+    deliveryProvider: getString(record, ['delivery_provider']) || undefined,
+    deliveryError: getString(record, ['delivery_error']) || undefined,
   }
 }
 
@@ -475,6 +483,7 @@ export function toBackendTargetSite(target: MarketplaceTargetSite): UnknownRecor
     language: target.language,
     currency: target.currency,
     category_id: target.categoryId || '',
+    description_category_id: target.descriptionCategoryId || '',
     category_path: target.categoryPath || '',
     category_attribute_schema: toBackendCategoryAttributeSchema(target.categoryAttributeSchema),
     attributes: target.attributes || {},

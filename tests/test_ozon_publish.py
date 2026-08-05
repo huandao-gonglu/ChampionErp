@@ -32,12 +32,18 @@ def _product() -> dict:
                 }
             ]
         },
-        "local_platform_categories": {
+        "drafts": {
             "ozon": {
+                "platform": "ozon",
+                "site": "global",
+                "currency": "RUB",
+                "title": "Тестовый товар для Ozon",
+                "description": "Подробное описание товара.",
                 "category_id": "94765",
-                "type_id": "94765",
                 "description_category_id": "17027949",
-                "attributes": {
+                "category_path": "Категория / Тип",
+                "category_attribute_schema": {
+                    "category_id": "94765",
                     "required": [
                         {
                             "id": "85",
@@ -60,17 +66,6 @@ def _product() -> dict:
                         }
                     ],
                 },
-            }
-        },
-        "drafts": {
-            "ozon": {
-                "platform": "ozon",
-                "site": "global",
-                "currency": "RUB",
-                "title": "Тестовый товар для Ozon",
-                "description": "Подробное описание товара.",
-                "category_id": "94765",
-                "category_path": "Категория / Тип",
                 "brand": "Champion",
                 "model": "M1",
                 "sku": "OZON-SKU-1",
@@ -147,6 +142,39 @@ def test_build_ozon_publish_payload_uses_real_v3_contract() -> None:
             ]
         }
     ]
+
+
+def test_ozon_payload_prefers_delivery_url_over_local_preview(tmp_path) -> None:
+    product = _product()
+    local_image = tmp_path / "main.jpg"
+    local_image.write_bytes(b"local-preview")
+    pool_item = product["source"]["image_pool"][0]
+    pool_item["path"] = str(local_image)
+    pool_item["preview_url"] = f"/file?path={local_image}"
+
+    payload = build_ozon_publish_payload(product, _config())
+
+    assert payload["items"][0]["images"] == [
+        "https://cdn.example.com/ozon-main.jpg"
+    ]
+
+
+def test_ozon_category_pair_does_not_fall_back_to_product_category_record() -> None:
+    product = _product()
+    product["drafts"]["ozon"]["description_category_id"] = ""
+    product["local_platform_categories"] = {
+        "ozon": {
+            "type_id": "94765",
+            "description_category_id": "17027949",
+        }
+    }
+
+    result = validate_ozon_draft(product, _config())
+
+    assert any(
+        item["code"] == "CATEGORY_PAIR_MISSING"
+        for item in result["errors"]
+    )
 
 
 def test_ozon_payload_validation_requires_credentials_and_public_images() -> None:

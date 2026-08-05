@@ -26,6 +26,10 @@ class ImageItem(TypedDict, total=False):
     target_language: str
     provider: str
     translate_job_id: str
+    storage_key: str
+    content_sha256: str
+    delivery_provider: str
+    delivery_error: str
     raw: dict[str, Any]
 
 

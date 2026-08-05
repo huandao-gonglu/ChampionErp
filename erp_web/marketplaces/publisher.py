@@ -14,6 +14,9 @@ class PlatformPublisher(Protocol):
 
     platform: str
 
+    def prepare_product(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        ...
+
     def resolve_category(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         ...
 

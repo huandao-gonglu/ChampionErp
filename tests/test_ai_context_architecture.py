@@ -239,6 +239,25 @@ def test_image_pool_core_breaks_runtime_import_cycles() -> None:
     assert "from .image_pool_core import" in publish_mercadolibre
 
 
+def test_publish_image_https_delivery_has_a_single_provider_boundary() -> None:
+    service = ROOT / "erp_web/services/image_delivery_service.py"
+    adapter = (ROOT / "erp_web/runtime_units/publish_adapter.py").read_text(
+        encoding="utf-8"
+    )
+    ozon = (ROOT / "erp_web/runtime_units/publish_ozon.py").read_text(
+        encoding="utf-8"
+    )
+    mercadolibre = (
+        ROOT / "erp_web/runtime_units/publish_mercadolibre.py"
+    ).read_text(encoding="utf-8")
+
+    assert service.exists()
+    assert "image_delivery.prepare_product" in adapter
+    for platform_module in (ozon, mercadolibre):
+        assert "ERP_IMAGE_HTTPS_" not in platform_module
+        assert "LocalStaticHttpsProvider" not in platform_module
+
+
 def test_runtime_product_store_is_a_pure_delegation_layer() -> None:
     """产品持久化只归 stores.ProductStore，不再保留 runtime 委托层。"""
     assert not (ROOT / "erp_web/runtime_units/product_store.py").exists()
