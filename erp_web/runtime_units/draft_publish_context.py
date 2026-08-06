@@ -25,6 +25,16 @@ TARGET_LISTING_KEYS = (
     "last_precheck_target",
 )
 
+PRECHECK_TARGET_SNAPSHOT_KEYS = (
+    "platform",
+    "site",
+    "language",
+    "currency",
+    "category_id",
+    "description_category_id",
+    "category_path",
+)
+
 
 def _target_key(platform: str, site: str) -> str:
     return f"{str(platform or '').strip().lower()}:{str(site or '').strip().lower()}"
@@ -41,6 +51,24 @@ def _normalized_target(platform: str, site: str = "") -> dict[str, str]:
         "language": selected_site["language"],
         "currency": selected_site["currency"],
     }
+
+
+def _precheck_target_snapshot(raw: Any) -> dict[str, str]:
+    """只保留预检目标身份，禁止把历史目标再次嵌入草稿。"""
+
+    if not isinstance(raw, dict):
+        return {}
+    aliases = {
+        "category_id": "categoryId",
+        "description_category_id": "descriptionCategoryId",
+        "category_path": "categoryPath",
+    }
+    snapshot: dict[str, str] = {}
+    for key in PRECHECK_TARGET_SNAPSHOT_KEYS:
+        value = str(raw.get(key) or raw.get(aliases.get(key, "")) or "").strip()
+        if value:
+            snapshot[key] = value
+    return snapshot
 
 
 def _target_listing_fields(raw: dict[str, Any], fallback: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -74,7 +102,15 @@ def _target_listing_fields(raw: dict[str, Any], fallback: dict[str, Any] | None 
         "publish_status": str(raw.get("publish_status") or raw.get("publishStatus") or fallback.get("publish_status") or "").strip(),
         "status": str(raw.get("status") or fallback.get("status") or "").strip(),
         "last_precheck": deepcopy(raw.get("last_precheck") if isinstance(raw.get("last_precheck"), dict) else raw.get("lastPrecheck") if isinstance(raw.get("lastPrecheck"), dict) else fallback.get("last_precheck") if isinstance(fallback.get("last_precheck"), dict) else {}),
-        "last_precheck_target": deepcopy(raw.get("last_precheck_target") if isinstance(raw.get("last_precheck_target"), dict) else raw.get("lastPrecheckTarget") if isinstance(raw.get("lastPrecheckTarget"), dict) else fallback.get("last_precheck_target") if isinstance(fallback.get("last_precheck_target"), dict) else {}),
+        "last_precheck_target": _precheck_target_snapshot(
+            raw.get("last_precheck_target")
+            if isinstance(raw.get("last_precheck_target"), dict)
+            else raw.get("lastPrecheckTarget")
+            if isinstance(raw.get("lastPrecheckTarget"), dict)
+            else fallback.get("last_precheck_target")
+            if isinstance(fallback.get("last_precheck_target"), dict)
+            else {}
+        ),
     }
 
 
@@ -124,10 +160,12 @@ def draft_for_publish_target(draft: dict[str, Any], target: dict[str, Any]) -> d
     target_draft["site"] = target["site"]
     target_draft["language"] = target["language"]
     target_draft["currency"] = target["currency"]
-    target_draft["target_site"] = target
     for key in TARGET_LISTING_KEYS:
         if key in target:
             target_draft[key] = deepcopy(target[key])
+    # 发布上下文只服务当前目标；保留全部历史 target_sites 会把其他站点与旧
+    # 预检快照重复写入 job/result，且旧数据可能含递归 last_precheck_target。
+    target_draft["target_sites"] = [deepcopy(target)]
     return target_draft
 
 
@@ -230,7 +268,7 @@ def save_draft_precheck_result(context: dict[str, Any], precheck: dict[str, Any]
     target_updates = {
         "validation_errors": errors + warnings,
         "publish_status": publish_status,
-        "last_precheck_target": target,
+        "last_precheck_target": _precheck_target_snapshot(target),
         "last_precheck": precheck,
     }
     if precheck.get("ok") and publish_status not in {"published", "real_publish_success", "success"}:

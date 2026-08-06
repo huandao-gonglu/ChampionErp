@@ -172,6 +172,55 @@ def test_publishing_bus_requires_verified_success_and_runs_terminal_hook() -> No
     assert state["terminal_results_persisted"] is True
 
 
+def test_publishing_bus_does_not_duplicate_product_in_platform_result() -> None:
+    class FailedAdapter:
+        @staticmethod
+        def resolve_category(
+            product: dict[str, Any],
+            config: dict[str, Any],
+        ) -> dict[str, Any]:
+            return product
+
+        @staticmethod
+        def required_attributes_missing(
+            product: dict[str, Any],
+            config: dict[str, Any],
+        ) -> list[str]:
+            return []
+
+        @staticmethod
+        def publish(
+            product: dict[str, Any],
+            platform: str,
+            config: dict[str, Any],
+        ) -> dict[str, Any]:
+            return {
+                "ok": False,
+                "status": "failed",
+                "error": "远端拒绝",
+                "payload": {"items": []},
+                "product": {"duplicated": "x" * 10_000},
+            }
+
+    store = _MemoryPublishJobStore()
+    bus = PublishingBus(
+        store,
+        adapters={"ozon": FailedAdapter()},
+        max_retries=0,
+        auto_resume_pending=False,
+    )
+    try:
+        queued = bus.enqueue({"product_id": "product-1"}, ["ozon"])
+        bus.wait(queued["job_id"], timeout=2)
+        state = bus.get_status(queued["job_id"])
+    finally:
+        bus.executor.shutdown(wait=True)
+
+    result = state["platforms"]["ozon"]["result"]
+    assert "product" not in result
+    assert result["payload"] == {"items": []}
+
+
 def test_remote_publish_success_requires_explicit_evidence() -> None:
     assert not _remote_publish_succeeded(None)
     assert not _remote_publish_succeeded({})

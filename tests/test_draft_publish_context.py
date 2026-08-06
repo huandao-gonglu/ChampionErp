@@ -81,3 +81,52 @@ def test_ozon_target_round_trip_preserves_description_category_id() -> None:
     assert target["description_category_id"] == "17039635"
     assert target_draft["description_category_id"] == "17039635"
     assert merged["target_sites"][0]["description_category_id"] == "17039635"
+
+
+def test_publish_target_discards_recursive_precheck_target_history() -> None:
+    recursive_history = {
+        "platform": "ozon",
+        "site": "global",
+        "language": "ru-RU",
+        "currency": "RUB",
+        "category_id": "91443",
+        "description_category_id": "17039635",
+        "category_precheck": {"large": "history"},
+        "last_precheck_target": {
+            "platform": "ozon",
+            "site": "global",
+            "last_precheck_target": {"platform": "ozon"},
+        },
+    }
+    draft = {
+        "platform": "ozon",
+        "site": "global",
+        "language": "ru-RU",
+        "currency": "RUB",
+        "target_sites": [
+            {
+                "platform": "ozon",
+                "site": "global",
+                "language": "ru-RU",
+                "currency": "RUB",
+                "category_id": "91443",
+                "description_category_id": "17039635",
+                "last_precheck_target": recursive_history,
+            }
+        ],
+    }
+
+    target = draft_publish_targets(draft)[0]
+    target_draft = draft_for_publish_target(draft, target)
+
+    assert target["last_precheck_target"] == {
+        "platform": "ozon",
+        "site": "global",
+        "language": "ru-RU",
+        "currency": "RUB",
+        "category_id": "91443",
+        "description_category_id": "17039635",
+    }
+    assert "last_precheck_target" not in target["last_precheck_target"]
+    assert target_draft["target_sites"] == [target]
+    assert "target_site" not in target_draft

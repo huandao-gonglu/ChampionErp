@@ -74,6 +74,8 @@ def _product() -> dict:
                 "stock": "5",
                 "vat": "0",
                 "attributes": {
+                    "0": "不得发送零属性 ID",
+                    "16": "不得发送来源数字键",
                     "85": {
                         "values": [
                             {
@@ -83,6 +85,7 @@ def _product() -> dict:
                         ]
                     },
                     "21841": "https://example.com/video.mp4",
+                    "99999": "不得发送非类目数字属性",
                     "BRAND": "不得发送跨平台辅助字段",
                 },
                 "images": [
@@ -186,6 +189,24 @@ def test_ozon_payload_validation_requires_credentials_and_public_images() -> Non
     assert "Ozon Client ID" in errors
     assert "Ozon API Key" in errors
     assert "图片必须是 Ozon 可访问的 HTTP(S) 公网 URL" in errors
+
+
+def test_ozon_payload_validation_rejects_invalid_and_duplicate_attribute_ids() -> None:
+    payload = build_ozon_publish_payload(_product(), _config())
+    item = payload["items"][0]
+    item["attributes"].extend(
+        [
+            {"id": 0, "values": [{"value": "invalid"}]},
+            {"id": 85, "values": [{"value": "duplicate"}]},
+            {"id": 123, "values": []},
+        ]
+    )
+
+    errors = validate_ozon_publish_payload(payload, _config())
+
+    assert "Ozon 属性 ID 必须是正整数" in errors
+    assert "Ozon 属性 ID 重复：85" in errors
+    assert "Ozon 属性 123 缺少值" in errors
 
 
 def test_publish_ozon_waits_for_imported_terminal_state() -> None:

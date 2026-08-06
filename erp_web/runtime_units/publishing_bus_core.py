@@ -219,6 +219,15 @@ class PublishingBus:
                     return
                 self._set_platform(job_id, platform, stage="publishing", attempts=attempts)
                 result = adapter.publish(product, platform, config)
+                persisted_result = (
+                    copy.deepcopy(result)
+                    if isinstance(result, dict)
+                    else None
+                )
+                if isinstance(persisted_result, dict):
+                    # job 根节点已经保存恢复执行所需的 product；平台 result
+                    # 再存一次只会让 SQLite 与发布日志成倍膨胀。
+                    persisted_result.pop("product", None)
                 result_status = (
                     str(result.get("status") or "").strip().lower()
                     if isinstance(result, dict)
@@ -265,11 +274,18 @@ class PublishingBus:
                         stage=failure_status,
                         error=error
                         or "发布适配器未返回可验证的成功结果",
-                        result=result if isinstance(result, dict) else None,
+                        result=persisted_result,
                         attempts=attempts,
                     )
                     return
-                self._set_platform(job_id, platform, status="success", stage="finished", result=result, attempts=attempts)
+                self._set_platform(
+                    job_id,
+                    platform,
+                    status="success",
+                    stage="finished",
+                    result=persisted_result,
+                    attempts=attempts,
+                )
                 return
             except Exception as exc:
                 retryable = attempts < max_attempts

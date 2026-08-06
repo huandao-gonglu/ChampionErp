@@ -175,8 +175,13 @@ def _ozon_attributes(
     complex_groups: dict[int, list[dict[str, Any]]] = {}
     for raw_id, raw_value in raw_attributes.items():
         attr_id = str(raw_id or "").strip()
-        if not attr_id.isdigit():
-            # Ozon 的属性 ID 是整数；BRAND/MODEL 等跨平台辅助字段不得发给 API。
+        if (
+            not attr_id.isdigit()
+            or int(attr_id) <= 0
+            or attr_id not in definitions
+        ):
+            # 只发送当前实时类目定义中的正整数属性 ID。这样既排除
+            # BRAND/MODEL 等辅助字段，也避免 0、16 等来源数字键混入 API。
             continue
         values = _attribute_values(raw_value)
         if not values:
@@ -318,6 +323,37 @@ def validate_ozon_publish_payload(
     )
     if not attributes and not complex_attributes:
         errors.append("Ozon 类目属性")
+    attribute_ids: set[int] = set()
+    attribute_rows = [
+        *attributes,
+        *[
+            row
+            for group in complex_attributes
+            if isinstance(group, dict)
+            for row in (
+                group.get("attributes")
+                if isinstance(group.get("attributes"), list)
+                else []
+            )
+        ],
+    ]
+    for row in attribute_rows:
+        if not isinstance(row, dict):
+            errors.append("Ozon 属性必须是对象")
+            continue
+        try:
+            attr_id = int(row.get("id") or 0)
+        except (TypeError, ValueError):
+            attr_id = 0
+        if attr_id <= 0:
+            errors.append("Ozon 属性 ID 必须是正整数")
+            continue
+        if attr_id in attribute_ids:
+            errors.append(f"Ozon 属性 ID 重复：{attr_id}")
+        attribute_ids.add(attr_id)
+        values = row.get("values") if isinstance(row.get("values"), list) else []
+        if not values:
+            errors.append(f"Ozon 属性 {attr_id} 缺少值")
     images = item.get("images") if isinstance(item.get("images"), list) else []
     if not images:
         errors.append("图片")
