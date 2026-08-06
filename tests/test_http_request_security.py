@@ -632,7 +632,7 @@ def test_publish_bus_status_get_is_a_pure_status_read(
         "platforms": {"mercadolibre": {"status": "completed"}},
     }
     bus = SimpleNamespace(
-        get_status=lambda job_id: calls.append(job_id) or terminal_job
+        get_public_status=lambda job_id: calls.append(job_id) or terminal_job
     )
     monkeypatch.setattr(get_routes, "get_publishing_bus", lambda: bus)
     handler = StaticHandler()
@@ -646,3 +646,39 @@ def test_publish_bus_status_get_is_a_pure_status_read(
 
     assert calls == ["job-1"]
     assert sent == [({"ok": True, "job": terminal_job}, 200)]
+
+
+def test_publish_bus_jobs_get_lists_filtered_summaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    result = {
+        "items": [{"job_id": "job-2", "status": "failed"}],
+        "next_cursor": "job-2",
+    }
+    bus = SimpleNamespace(
+        list_jobs=lambda **kwargs: calls.append(kwargs) or result,
+    )
+    monkeypatch.setattr(get_routes, "get_publishing_bus", lambda: bus)
+    handler = StaticHandler()
+    sent: list[tuple[dict[str, Any], int]] = []
+    handler.send_json = lambda payload, status=200: sent.append((payload, status))  # type: ignore[attr-defined]
+
+    get_routes.handle_publish_bus_jobs(
+        handler,
+        urllib.parse.urlparse(
+            "/api/publish-bus/jobs?limit=25&cursor=job-3&status=failed"
+            "&platform=ozon&product_id=product-1"
+        ),
+    )
+
+    assert calls == [
+        {
+            "limit": 25,
+            "cursor": "job-3",
+            "status": "failed",
+            "platform": "ozon",
+            "product_id": "product-1",
+        }
+    ]
+    assert sent == [({"ok": True, **result}, 200)]

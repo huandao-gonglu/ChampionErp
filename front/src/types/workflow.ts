@@ -430,6 +430,37 @@ export interface PublishJob {
   targetKey?: string
 }
 
+export type PublishJobDisplayStatus = 'queued' | 'running' | 'success' | 'failed' | 'partial'
+
+export interface PublishJobPlatformSummary {
+  platform: Marketplace
+  status: string
+  stage: string
+  attempts: number
+  error: string
+  updatedAt: string
+}
+
+export interface PublishJobListItem {
+  jobId: string
+  productId: string
+  productName: string
+  draftId: string
+  status: PublishJobDisplayStatus
+  rawStatus: string
+  stage: string
+  attempts: number
+  error: string
+  platforms: PublishJobPlatformSummary[]
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PublishJobsPage {
+  items: PublishJobListItem[]
+  nextCursor: string
+}
+
 export interface CollectForm {
   productUrl: string
   productUrls: string

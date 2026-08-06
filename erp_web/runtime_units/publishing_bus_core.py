@@ -33,6 +33,116 @@ class PublishingJobStore(Protocol):
     def list_pending_publish_jobs(self) -> list[dict[str, Any]]:
         ...
 
+    def list_publish_jobs(
+        self,
+        *,
+        limit: int = 50,
+        cursor: str = "",
+        platform: str = "",
+        product_id: str = "",
+    ) -> tuple[list[dict[str, Any]], str]:
+        ...
+
+
+ACTIVE_JOB_STATUSES = frozenset({"pending", "queued", "running", "retrying"})
+SUCCESS_JOB_STATUSES = frozenset(
+    {"success", "finished", "published", "real_publish_success"}
+)
+FAILED_JOB_STATUSES = frozenset(
+    {"failed", "error", "blocked", "real_publish_failed"}
+)
+
+
+def _publish_job_display_status(state: dict[str, Any]) -> str:
+    raw_platforms = (
+        state.get("platforms") if isinstance(state.get("platforms"), dict) else {}
+    )
+    platform_states = [
+        item
+        for item in raw_platforms.values()
+        if isinstance(item, dict)
+    ]
+    statuses = {
+        str(item.get("status") or item.get("stage") or "").strip().lower()
+        for item in platform_states
+    }
+    if statuses & ACTIVE_JOB_STATUSES:
+        if statuses <= {"pending", "queued"}:
+            return "queued"
+        return "running"
+
+    has_success = bool(statuses & SUCCESS_JOB_STATUSES)
+    has_failure = bool(statuses & FAILED_JOB_STATUSES)
+    if has_success and has_failure:
+        return "partial"
+    if has_failure:
+        return "failed"
+    if has_success and statuses <= SUCCESS_JOB_STATUSES:
+        return "success"
+
+    root_status = str(state.get("status") or "").strip().lower()
+    if root_status in ACTIVE_JOB_STATUSES:
+        return "queued" if root_status in {"pending", "queued"} else "running"
+    if root_status in FAILED_JOB_STATUSES:
+        return "failed"
+    if root_status in SUCCESS_JOB_STATUSES:
+        return "success"
+    return root_status or "queued"
+
+
+def _publish_job_summary(state: dict[str, Any]) -> dict[str, Any]:
+    product = state.get("product") if isinstance(state.get("product"), dict) else {}
+    raw_platforms = (
+        state.get("platforms") if isinstance(state.get("platforms"), dict) else {}
+    )
+    platforms: list[dict[str, Any]] = []
+    for platform, raw in sorted(raw_platforms.items()):
+        item = raw if isinstance(raw, dict) else {}
+        platforms.append(
+            {
+                "platform": str(platform),
+                "status": str(item.get("status") or ""),
+                "stage": str(item.get("stage") or ""),
+                "attempts": int(item.get("attempts") or 0),
+                "error": str(item.get("error") or ""),
+                "updated_at": str(item.get("updated_at") or ""),
+            }
+        )
+
+    error = next((item["error"] for item in platforms if item["error"]), "")
+    attempts = max((item["attempts"] for item in platforms), default=0)
+    stage = next(
+        (item["stage"] for item in reversed(platforms) if item["stage"]),
+        "",
+    )
+    draft_id = str(
+        product.get("current_draft_id")
+        or product.get("draft_id")
+        or state.get("draft_id")
+        or ""
+    )
+    drafts = product.get("drafts") if isinstance(product.get("drafts"), dict) else {}
+    if not draft_id:
+        for platform in platforms:
+            draft = drafts.get(platform["platform"])
+            if isinstance(draft, dict) and draft.get("draft_id"):
+                draft_id = str(draft["draft_id"])
+                break
+    return {
+        "job_id": str(state.get("job_id") or ""),
+        "product_id": str(product.get("product_id") or state.get("product_id") or ""),
+        "product_name": str(state.get("product_name") or product.get("name") or ""),
+        "draft_id": draft_id,
+        "status": _publish_job_display_status(state),
+        "raw_status": str(state.get("status") or ""),
+        "stage": stage,
+        "attempts": attempts,
+        "error": error,
+        "platforms": platforms,
+        "created_at": str(state.get("created_at") or ""),
+        "updated_at": str(state.get("updated_at") or ""),
+    }
+
 
 class PublishingBus:
     """Publish queue with SQLite-backed job state.
@@ -127,6 +237,63 @@ class PublishingBus:
 
     def get_status(self, job_id: str) -> dict[str, Any]:
         return self._read_state(job_id)
+
+    def get_public_status(self, job_id: str) -> dict[str, Any]:
+        state = copy.deepcopy(self._read_state(job_id))
+        summary = _publish_job_summary(state)
+        state.pop("product", None)
+        state["product_id"] = summary["product_id"]
+        state["product_name"] = summary["product_name"]
+        state["draft_id"] = summary["draft_id"]
+        state["display_status"] = summary["status"]
+        platforms = state.get("platforms")
+        if isinstance(platforms, dict):
+            for item in platforms.values():
+                if not isinstance(item, dict):
+                    continue
+                result = item.get("result")
+                if isinstance(result, dict):
+                    result.pop("product", None)
+        return state
+
+    def list_jobs(
+        self,
+        *,
+        limit: int = 50,
+        cursor: str = "",
+        status: str = "",
+        platform: str = "",
+        product_id: str = "",
+    ) -> dict[str, Any]:
+        resolved_limit = max(1, min(int(limit or 50), 100))
+        status = str(status or "").strip().lower()
+        scan_cursor = str(cursor or "").strip()
+        summaries: list[dict[str, Any]] = []
+
+        while len(summaries) <= resolved_limit:
+            states, next_scan_cursor = self.store.list_publish_jobs(
+                limit=100,
+                cursor=scan_cursor,
+                platform=str(platform or "").strip().lower(),
+                product_id=str(product_id or "").strip(),
+            )
+            if not states:
+                break
+            for state in states:
+                summary = _publish_job_summary(state)
+                if status and summary["status"] != status:
+                    continue
+                summaries.append(summary)
+                if len(summaries) > resolved_limit:
+                    return {
+                        "items": summaries[:resolved_limit],
+                        "next_cursor": summaries[resolved_limit - 1]["job_id"],
+                    }
+            if not next_scan_cursor:
+                break
+            scan_cursor = next_scan_cursor
+
+        return {"items": summaries[:resolved_limit], "next_cursor": ""}
 
     def _submit_job(self, job_id: str, product: dict[str, Any], platforms: list[str]) -> None:
         futures = [

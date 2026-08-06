@@ -44,6 +44,38 @@ class _MemoryPublishJobStore:
     def list_pending_publish_jobs(self) -> list[dict[str, Any]]:
         return []
 
+    def list_publish_jobs(
+        self,
+        *,
+        limit: int = 50,
+        cursor: str = "",
+        platform: str = "",
+        product_id: str = "",
+    ) -> tuple[list[dict[str, Any]], str]:
+        states = sorted(
+            (deepcopy(state) for state in self.states.values()),
+            key=lambda state: (str(state.get("created_at") or ""), str(state.get("job_id") or "")),
+            reverse=True,
+        )
+        if cursor:
+            cursor_index = next(
+                (index for index, state in enumerate(states) if state.get("job_id") == cursor),
+                len(states),
+            )
+            states = states[cursor_index + 1 :]
+        if platform:
+            states = [state for state in states if platform in state.get("platforms", {})]
+        if product_id:
+            states = [
+                state
+                for state in states
+                if state.get("product", {}).get("product_id") == product_id
+            ]
+        has_more = len(states) > limit
+        items = states[:limit]
+        next_cursor = str(items[-1]["job_id"]) if has_more and items else ""
+        return items, next_cursor
+
 
 class _RequiredAttributeAdapter:
     def __init__(self) -> None:
@@ -115,6 +147,65 @@ def test_publishing_bus_blocks_before_publish_when_required_attributes_are_missi
     assert platform_state["stage"] == "failed"
     assert platform_state["error"] == "缺失必填属性：attributes.BRAND"
     assert adapter.publish_calls == 0
+
+
+def test_publishing_bus_lists_lightweight_business_status_summaries() -> None:
+    store = _MemoryPublishJobStore()
+    store.states = {
+        "job-failed": {
+            "job_id": "job-failed",
+            "status": "completed",
+            "created_at": "2026-08-06 22:01:40",
+            "updated_at": "2026-08-06 22:01:44",
+            "product_name": "测试商品",
+            "product": {"product_id": "product-1", "large": "x" * 10_000},
+            "platforms": {
+                "ozon": {
+                    "status": "failed",
+                    "stage": "failed",
+                    "attempts": 1,
+                    "error": "合同币种不匹配",
+                }
+            },
+        }
+    }
+    bus = PublishingBus(store, adapters={}, auto_resume_pending=False)
+    try:
+        result = bus.list_jobs(status="failed")
+    finally:
+        bus.executor.shutdown(wait=True)
+
+    assert result["next_cursor"] == ""
+    assert result["items"] == [
+        {
+            "job_id": "job-failed",
+            "product_id": "product-1",
+            "product_name": "测试商品",
+            "draft_id": "",
+            "status": "failed",
+            "raw_status": "completed",
+            "stage": "failed",
+            "attempts": 1,
+            "error": "合同币种不匹配",
+            "platforms": [
+                {
+                    "platform": "ozon",
+                    "status": "failed",
+                    "stage": "failed",
+                    "attempts": 1,
+                    "error": "合同币种不匹配",
+                    "updated_at": "",
+                }
+            ],
+            "created_at": "2026-08-06 22:01:40",
+            "updated_at": "2026-08-06 22:01:44",
+        }
+    ]
+    assert "large" not in result["items"][0]
+
+    public_detail = bus.get_public_status("job-failed")
+    assert public_detail["display_status"] == "failed"
+    assert "product" not in public_detail
 
 
 def test_publishing_bus_requires_verified_success_and_runs_terminal_hook() -> None:

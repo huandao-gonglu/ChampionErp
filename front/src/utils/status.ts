@@ -16,13 +16,13 @@ export function workflowStatusLabel(status: string): string {
 }
 
 export function statusBadgeClass(status: string): string {
-  if (['done', 'copy_ready', 'images_ready', 'ready_to_publish', 'published', 'completed', 'success', 'ready'].includes(status)) {
+  if (['done', 'copy_ready', 'images_ready', 'ready_to_publish', 'published', 'completed', 'success', 'finished', 'ready'].includes(status)) {
     return 'badge-success'
   }
-  if (['active', 'running', 'queued', 'claimed', 'collected'].includes(status)) {
+  if (['active', 'running', 'retrying', 'queued', 'claimed', 'collected', 'partial'].includes(status)) {
     return 'badge-info'
   }
-  if (['blocked', 'failed', 'not_ready'].includes(status)) {
+  if (['blocked', 'failed', 'error', 'real_publish_failed', 'not_ready'].includes(status)) {
     return 'badge-danger'
   }
   return 'badge-muted'

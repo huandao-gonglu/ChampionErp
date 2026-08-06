@@ -1559,6 +1559,16 @@ class ErpDatabase:
             return
         product = _dict(state.get("product"))
         platforms = _dict(state.get("platforms"))
+        draft_id = str(
+            product.get("current_draft_id") or product.get("draft_id") or ""
+        )
+        drafts = _dict(product.get("drafts"))
+        if not draft_id:
+            for platform in sorted(platforms):
+                draft = _dict(drafts.get(platform))
+                if draft.get("draft_id"):
+                    draft_id = str(draft["draft_id"])
+                    break
         platform_items = [item for item in platforms.values() if isinstance(item, dict)]
         stage = ""
         error = ""
@@ -1589,7 +1599,7 @@ class ErpDatabase:
                 (
                     job_id,
                     str(product.get("product_id") or ""),
-                    str(product.get("current_draft_id") or ""),
+                    draft_id,
                     ",".join(sorted(str(key) for key in platforms)),
                     str(state.get("status") or ""),
                     stage,
@@ -1642,6 +1652,71 @@ class ErpDatabase:
                     continue
                 states.append(state)
         return states
+
+    def list_publish_jobs(
+        self,
+        *,
+        limit: int = 50,
+        cursor: str = "",
+        platform: str = "",
+        product_id: str = "",
+    ) -> tuple[list[dict[str, Any]], str]:
+        resolved_limit = max(1, min(int(limit or 50), 100))
+        clauses: list[str] = []
+        values: list[Any] = []
+        platform = str(platform or "").strip().lower()
+        product_id = str(product_id or "").strip()
+
+        if platform:
+            clauses.append("instr(',' || lower(platform) || ',', ',' || ? || ',') > 0")
+            values.append(platform)
+        if product_id:
+            clauses.append("product_id = ?")
+            values.append(product_id)
+
+        cursor = str(cursor or "").strip()
+        with self._connect() as conn:
+            if cursor:
+                cursor_row = conn.execute(
+                    "SELECT created_at, job_id FROM publish_jobs WHERE job_id = ?",
+                    (cursor,),
+                ).fetchone()
+                if not cursor_row:
+                    return [], ""
+                clauses.append("(created_at < ? OR (created_at = ? AND job_id < ?))")
+                values.extend(
+                    [cursor_row["created_at"], cursor_row["created_at"], cursor_row["job_id"]]
+                )
+
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            rows = conn.execute(
+                f"""
+                SELECT job_id, product_id, draft_id, status, payload_json,
+                       created_at, updated_at
+                FROM publish_jobs
+                {where}
+                ORDER BY created_at DESC, job_id DESC
+                LIMIT ?
+                """,
+                (*values, resolved_limit + 1),
+            ).fetchall()
+
+        has_more = len(rows) > resolved_limit
+        selected_rows = rows[:resolved_limit]
+        states: list[dict[str, Any]] = []
+        for row in selected_rows:
+            state = json_loads(row["payload_json"], {})
+            if not isinstance(state, dict):
+                continue
+            state.setdefault("job_id", str(row["job_id"] or ""))
+            state.setdefault("product_id", str(row["product_id"] or ""))
+            state.setdefault("draft_id", str(row["draft_id"] or ""))
+            state.setdefault("status", str(row["status"] or ""))
+            state.setdefault("created_at", str(row["created_at"] or ""))
+            state.setdefault("updated_at", str(row["updated_at"] or ""))
+            states.append(state)
+        next_cursor = str(selected_rows[-1]["job_id"] or "") if has_more and selected_rows else ""
+        return states, next_cursor
 
     # -- research_runs / research_candidates -----------------------------------
 

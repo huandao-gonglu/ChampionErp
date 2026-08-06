@@ -131,6 +131,7 @@ type WorkflowPublishingActionsPort = Pick<
   | 'payloadPreview'
   | 'publishJob'
   | 'publishJobStatus'
+  | 'selectedPublishJobId'
   | 'publishLogs'
   | 'activeMarketplace'
   | 'platformOptions'
@@ -156,6 +157,7 @@ type WorkflowPublishingActionsPort = Pick<
   | 'restorePrecheckFromProduct'
   | 'restoreCategoryFromProduct'
   | 'persistCurrentDraftForPublish'
+  | 'refreshPublishJobs'
 >
 
 export function createWorkflowPublishingActions(runtime: WorkflowPublishingActionsPort) {
@@ -165,12 +167,12 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
     categoryAutoMatchCurrent, categoryAutoMatchTotal, categoryAutoMatchProductName, categoryAttributeTranslations,
     categoryAttributeTranslationsSource, categoryAttributeTranslating, categoryAttributeLoading, categoryAttributeError, categoryResultTranslations,
     categoryResultTranslationsSource, categoryResultTranslating, categoryPrecheck, precheck, precheckResults,
-    payloadPreview, publishJob, publishJobStatus, publishLogs, activeMarketplace, platformOptions,
+    payloadPreview, publishJob, publishJobStatus, selectedPublishJobId, publishLogs, activeMarketplace, platformOptions,
     publishResult, activePublishTargetKey, loading, addLog, setError,
     requestSequence, currentStage, currentPublishTargets, selectedPublishTarget, activeMarketplaceSite,
     targetSiteKey, applyCategoryRecommendationForTarget, setCategoryRecommendation, persistActiveTargetListingFields, invalidateCategoryAttributeLoad,
     applyTargetListingToDraft, pricingTargetKey, syncActivePublishTarget, applyMutationIndexes, restorePrecheckFromProduct,
-    restoreCategoryFromProduct, persistCurrentDraftForPublish,
+    restoreCategoryFromProduct, persistCurrentDraftForPublish, refreshPublishJobs,
   } = runtime
 
   function selectPublishTarget(target: MarketplaceTargetSite) {
@@ -612,7 +614,10 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
     setError('')
     try {
       await persistCurrentDraftForPublish()
+      publishJobStatus.value = null
       publishJob.value = await enqueuePublishApi(currentDraft.value, selectedPublishTarget.value)
+      selectedPublishJobId.value = publishJob.value.jobId
+      await refreshPublishJobs({ quiet: true })
       draftsIndex.value = await fetchDraftsIndex()
       currentStage.value = 8
       addLog(`发布任务已入队：${publishJob.value.jobId}`)

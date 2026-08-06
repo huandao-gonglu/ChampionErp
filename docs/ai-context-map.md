@@ -220,6 +220,7 @@ AI Work 保存脱敏且有界的 Agent 输入、每轮模型消息、工具参�
 
 - `erp_web/http_route_units/publish_routes.py`：发布预检、payload 预览、同步发布与
   发布队列 HTTP 入口。
+- `erp_web/http_route_units/get_routes.py`：发布任务列表与指定 Job 详情的只读查询入口。
 - `erp_web/facades/publish_facade.py`：HTTP 层唯一发布 facade；业务编排进入
   `erp_web/runtime_units/publish_workflows.py`。
 - `erp_web/runtime_units/publish_adapter.py`：发布平台适配器注册表。只有这里注册且
@@ -233,7 +234,9 @@ AI Work 保存脱敏且有界的 Agent 输入、每轮模型消息、工具参�
 - `erp_web/runtime_units/runtime_api.py::publish_product`：平台无关的预检、artifact、
   日志与商品发布状态持久化。
 - `erp_web/runtime_units/publishing_bus_core.py`：SQLite 发布任务和并发执行；适配器
-  必须返回可验证的远端成功证据。
+  必须返回可验证的远端成功证据。`GET /api/publish-bus/jobs` 返回按时间倒序的轻量任务摘要，
+  支持 cursor、状态、平台和商品筛选；`GET /api/publish-bus/status` 只返回指定 Job 的完整详情。
+  两个读取接口都不返回 worker 恢复专用的完整商品快照。
 - `erp_web/services/image_delivery_service.py`：发布图片 HTTPS delivery 唯一边界。
   图片保存 provider-neutral 的 `storage_key`，公网 URL 只是根据当前 provider 与
   `ERP_IMAGE_HTTPS_BASE_URL` 重新计算的缓存；平台发布模块不得读取隧道、磁盘根目录

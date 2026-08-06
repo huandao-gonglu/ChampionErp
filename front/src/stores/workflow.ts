@@ -37,6 +37,10 @@ export const useWorkflowStore = defineStore('workflow', () => {
       await combined.refreshDraftsIndex()
       return
     }
+    if (key === 'publish') {
+      await combined.refreshPublishJobs()
+      return
+    }
     if (key === 'logs') {
       await combined.refreshPublishLogs()
       return
@@ -84,6 +88,11 @@ export const useWorkflowStore = defineStore('workflow', () => {
     copyGenerating: combined.copyGenerating,
     publishJob: combined.publishJob,
     publishJobStatus: combined.publishJobStatus,
+    publishJobs: combined.publishJobs,
+    selectedPublishJobId: combined.selectedPublishJobId,
+    publishJobsNextCursor: combined.publishJobsNextCursor,
+    publishJobsLoading: combined.publishJobsLoading,
+    publishJobsLastUpdated: combined.publishJobsLastUpdated,
     publishLogs: combined.publishLogs,
     mercadoLibreOrders: combined.mercadoLibreOrders,
     mercadoLibreOrderNotifications: combined.mercadoLibreOrderNotifications,
@@ -181,6 +190,9 @@ export const useWorkflowStore = defineStore('workflow', () => {
     publishDirect: combined.publishDirect,
     confirmRealPublish: combined.confirmRealPublish,
     refreshPublishJob: combined.refreshPublishJob,
+    refreshPublishJobs: combined.refreshPublishJobs,
+    loadMorePublishJobs: combined.loadMorePublishJobs,
+    selectPublishJob: combined.selectPublishJob,
     refreshPublishLogs: combined.refreshPublishLogs,
     refreshMercadoLibreOrders: combined.refreshMercadoLibreOrders,
     refreshMercadoLibreRemoteItems: combined.refreshMercadoLibreRemoteItems,

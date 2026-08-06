@@ -54,6 +54,7 @@ vi.mock('@/api/workflow/publishing', () => ({
   fillCategoryAttributes: vi.fn(),
   fetchPublishLogs: vi.fn(),
   fetchPublishJob: vi.fn(),
+  fetchPublishJobs: vi.fn(),
   fetchMercadoLibreOrders: vi.fn(),
   fetchMercadoLibrePublishedItems: vi.fn(),
   closeMercadoLibrePublishedItem: vi.fn(),
@@ -393,6 +394,48 @@ describe('workflow store live API flow', () => {
     expect(workflowApi.fetchPublishLogs).toHaveBeenCalledOnce()
     expect(workflowApi.fetchMercadoLibreOrders).toHaveBeenCalledOnce()
     expect(workflowApi.fetchMercadoLibrePublishedItems).toHaveBeenCalledOnce()
+  })
+
+  it('restores the latest persisted publish job when the queue opens', async () => {
+    vi.mocked(workflowApi.fetchPublishJobs).mockResolvedValue({
+      items: [{
+        jobId: 'job-new',
+        productId: 'product-1',
+        productName: '测试商品',
+        draftId: 'draft-1',
+        status: 'failed',
+        rawStatus: 'completed',
+        stage: 'failed',
+        attempts: 1,
+        error: '合同币种不匹配',
+        platforms: [{
+          platform: 'ozon',
+          status: 'failed',
+          stage: 'failed',
+          attempts: 1,
+          error: '合同币种不匹配',
+          updatedAt: '2026-08-06 22:01:44',
+        }],
+        createdAt: '2026-08-06 22:01:40',
+        updatedAt: '2026-08-06 22:01:44',
+      }],
+      nextCursor: '',
+    })
+    vi.mocked(workflowApi.fetchPublishJob).mockResolvedValue({
+      job_id: 'job-new',
+      display_status: 'failed',
+    })
+
+    const store = useWorkflowStore()
+    await store.hydrateTab('publish')
+
+    expect(store.selectedPublishJobId).toBe('job-new')
+    expect(store.publishJobs[0]?.status).toBe('failed')
+    expect(store.publishJobStatus).toEqual({
+      job_id: 'job-new',
+      display_status: 'failed',
+    })
+    expect(workflowApi.fetchPublishJob).toHaveBeenCalledWith('job-new')
   })
 
   it('collects product through backend API and updates diagnostics', async () => {

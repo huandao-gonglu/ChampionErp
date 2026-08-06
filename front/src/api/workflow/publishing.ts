@@ -19,6 +19,8 @@ import type {
   Product,
   ProductIndexItem,
   PublishJob,
+  PublishJobListItem,
+  PublishJobsPage,
   PublishLogItem,
   PublishPrecheck,
   UnknownRecord,
@@ -53,6 +55,58 @@ export async function fetchPublishLogs(): Promise<PublishLogItem[]> {
   const data = asRecord(response.data)
   ensureOk(data, '读取发布日志失败')
   return normalizePublishLogs(data.items)
+}
+
+function normalizePublishJobListItem(value: unknown): PublishJobListItem {
+  const record = asRecord(value)
+  const platforms = Array.isArray(record.platforms)
+    ? record.platforms.map((value) => {
+      const item = asRecord(value)
+      return {
+        platform: getString(item, ['platform']) as Marketplace,
+        status: getString(item, ['status']),
+        stage: getString(item, ['stage']),
+        attempts: getNumber(item, ['attempts']),
+        error: getString(item, ['error']),
+        updatedAt: getString(item, ['updated_at', 'updatedAt']),
+      }
+    })
+    : []
+  return {
+    jobId: getString(record, ['job_id', 'jobId']),
+    productId: getString(record, ['product_id', 'productId']),
+    productName: getString(record, ['product_name', 'productName']),
+    draftId: getString(record, ['draft_id', 'draftId']),
+    status: getString(record, ['status'], 'queued') as PublishJobListItem['status'],
+    rawStatus: getString(record, ['raw_status', 'rawStatus']),
+    stage: getString(record, ['stage']),
+    attempts: getNumber(record, ['attempts']),
+    error: getString(record, ['error']),
+    platforms,
+    createdAt: getString(record, ['created_at', 'createdAt']),
+    updatedAt: getString(record, ['updated_at', 'updatedAt']),
+  }
+}
+
+export async function fetchPublishJobs(options: {
+  limit?: number
+  cursor?: string
+  status?: string
+  platform?: string
+  productId?: string
+} = {}): Promise<PublishJobsPage> {
+  const params = new URLSearchParams({ limit: String(options.limit || 50) })
+  if (options.cursor) params.set('cursor', options.cursor)
+  if (options.status) params.set('status', options.status)
+  if (options.platform) params.set('platform', options.platform)
+  if (options.productId) params.set('product_id', options.productId)
+  const response = await apiClient.get(`/api/publish-bus/jobs?${params.toString()}`)
+  const data = asRecord(response.data)
+  ensureOk(data, '读取发布任务失败')
+  return {
+    items: Array.isArray(data.items) ? data.items.map(normalizePublishJobListItem) : [],
+    nextCursor: getString(data, ['next_cursor', 'nextCursor']),
+  }
 }
 
 function normalizeMercadoLibreOrderLine(value: unknown): MercadoLibreOrderLine {

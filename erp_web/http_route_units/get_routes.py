@@ -58,6 +58,7 @@ GET_API_ROUTES = {
     "/api/mercadolibre/orders",
     "/api/drafts-index",
     "/api/products-index",
+    "/api/publish-bus/jobs",
     "/api/publish-bus/status",
     "/api/publish-logs",
     "/api/state",
@@ -171,9 +172,30 @@ def handle_publish_bus_status(handler: JsonRequestHandler, parsed: object) -> No
         handler.send_json({"ok": False, "error": "缺少 job_id"}, 400)
         return
     try:
-        handler.send_json({"ok": True, "job": get_publishing_bus().get_status(job_id)})
+        handler.send_json(
+            {"ok": True, "job": get_publishing_bus().get_public_status(job_id)}
+        )
     except Exception as exc:
         handler.send_json({"ok": False, "error": str(exc)}, 404)
+
+
+def handle_publish_bus_jobs(handler: JsonRequestHandler, parsed: object) -> None:
+    params = urllib.parse.parse_qs(parsed.query)
+    try:
+        limit = int((params.get("limit") or ["50"])[0] or 50)
+    except ValueError:
+        limit = 50
+    try:
+        result = get_publishing_bus().list_jobs(
+            limit=limit,
+            cursor=str((params.get("cursor") or [""])[0]),
+            status=str((params.get("status") or [""])[0]),
+            platform=str((params.get("platform") or [""])[0]),
+            product_id=str((params.get("product_id") or [""])[0]),
+        )
+        handler.send_json({"ok": True, **result})
+    except Exception as exc:
+        handler.send_json({"ok": False, "error": str(exc)}, 400)
 
 
 def handle_file(handler: JsonRequestHandler, parsed: object) -> None:
@@ -220,6 +242,7 @@ GET_HANDLERS: dict[str, GetHandler] = {
     "/api/mercadolibre/published-items": handle_mercadolibre_published_items,
     "/api/mercadolibre/orders": handle_mercadolibre_orders,
     "/api/ai-config": handle_ai_config,
+    "/api/publish-bus/jobs": handle_publish_bus_jobs,
     "/api/publish-bus/status": handle_publish_bus_status,
     "/file": handle_file,
     "/auth/mercadolibre": handle_mercadolibre_auth_page,

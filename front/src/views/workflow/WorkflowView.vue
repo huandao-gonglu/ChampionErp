@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
@@ -19,6 +19,7 @@ import PricingPanel from '@/components/domain/PricingPanel.vue'
 import ProductImageEditorPanel from '@/components/domain/ProductImageEditorPanel.vue'
 import ProductEditorPanel from '@/components/domain/ProductEditorPanel.vue'
 import ProductResearchPanel from '@/components/domain/ProductResearchPanel.vue'
+import PublishJobsPanel from '@/components/domain/PublishJobsPanel.vue'
 import RunLog from '@/components/domain/RunLog.vue'
 import { workflowNavItems } from '@/constants/navigation'
 import { useClipboard } from '@/composables/useClipboard'
@@ -78,6 +79,11 @@ const {
   copyGenerating,
   publishJob,
   publishJobStatus,
+  publishJobs,
+  selectedPublishJobId,
+  publishJobsNextCursor,
+  publishJobsLoading,
+  publishJobsLastUpdated,
   publishLogs,
   mercadoLibreOrders,
   mercadoLibreOrderNotifications,
@@ -155,6 +161,23 @@ const pendingItems = computed(() => productsIndex.value.filter((item) => {
   ].map((value) => String(value || '').toLowerCase())
   return values.some((value) => ['failed', 'not_ready', 'pending', 'partial'].includes(value))
 }))
+
+const hasActivePublishJobs = computed(() => publishJobs.value.some((job) => (
+  job.status === 'queued' || job.status === 'running'
+)))
+
+let publishJobsPollTimer: ReturnType<typeof setInterval> | undefined
+
+function syncPublishJobsPolling() {
+  if (publishJobsPollTimer) {
+    clearInterval(publishJobsPollTimer)
+    publishJobsPollTimer = undefined
+  }
+  if (activeNav.value !== 'publish' || !hasActivePublishJobs.value) return
+  publishJobsPollTimer = setInterval(() => {
+    void store.refreshPublishJobs({ quiet: true })
+  }, 2500)
+}
 
 async function openProductEditor(item?: ProductIndexItem) {
   if (item) await store.loadProduct(item)
@@ -325,6 +348,12 @@ onMounted(async () => {
   await refreshDomainForNav(activeNav.value)
 })
 
+onBeforeUnmount(() => {
+  if (publishJobsPollTimer) clearInterval(publishJobsPollTimer)
+})
+
+watch([activeNav, hasActivePublishJobs], syncPublishJobsPolling)
+
 watch(
   () => route.query,
   () => {
@@ -454,24 +483,25 @@ watch(
 
           <div v-else-if="activeNav === 'publish'" class="space-y-6">
             <PageHeader title="发布队列" description="发布队列、任务状态和运行日志。" />
-            <section class="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
-              <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
-                <div class="flex flex-wrap items-center justify-between gap-3">
-                  <div><h2 class="card-title">发布任务</h2><p class="muted mt-1">对应后端 `/api/publish-bus/enqueue` 和状态查询接口。</p></div>
-                  <div class="flex flex-wrap gap-2"><button class="btn btn-outline" :disabled="!publishJob" @click="store.refreshPublishJob">刷新任务状态</button><button class="btn btn-primary" :disabled="loading || !precheck?.ok" @click="() => store.enqueuePublish()">发布入队</button><button class="btn btn-outline" :disabled="loading || activeMarketplace === 'mercadolibre' || !precheck?.ok" @click="store.publishDirect">非 ML 直接发布</button><button class="btn btn-primary" :disabled="loading || activeMarketplace !== 'mercadolibre' || !precheck?.ok" @click="store.confirmRealPublish">确认 ML 真实发布</button></div>
-                </div>
-                <div class="mt-5 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
-                  <template v-if="publishJob">
-                    <p class="text-sm text-accent-500 dark:text-accent-400">Job ID</p><p class="mt-1 break-all font-semibold text-accent-950 dark:text-white">{{ publishJob.jobId }}</p>
-                    <div class="mt-4 flex flex-wrap gap-2"><span class="badge-success">{{ publishJob.status }}</span><span v-for="platform in publishJob.platforms" :key="platform" class="badge-info">{{ platform }}</span></div>
-                    <pre v-if="publishJobStatus" class="mt-4 max-h-80 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{{ JSON.stringify(publishJobStatus, null, 2) }}</pre>
-                  </template>
-                  <template v-else><p class="text-sm text-accent-600 dark:text-accent-300">通过预检后可加入发布队列，生成任务状态。</p></template>
-                  <pre v-if="publishResult" class="mt-4 max-h-80 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{{ JSON.stringify(publishResult, null, 2) }}</pre>
-                </div>
-              </section>
-              <RunLog :logs="logs" />
-            </section>
+            <PublishJobsPanel
+              :jobs="publishJobs"
+              :selected-job-id="selectedPublishJobId"
+              :selected-job-status="publishJobStatus"
+              :loading="publishJobsLoading"
+              :next-cursor="publishJobsNextCursor"
+              :last-updated="publishJobsLastUpdated"
+              :precheck-ok="Boolean(precheck?.ok)"
+              :active-marketplace="activeMarketplace"
+              :busy="loading"
+              @refresh="() => store.refreshPublishJobs()"
+              @select="store.selectPublishJob"
+              @load-more="store.loadMorePublishJobs"
+              @enqueue="store.enqueuePublish"
+              @publish-direct="store.publishDirect"
+              @confirm-real-publish="store.confirmRealPublish"
+            />
+            <RunLog :logs="logs" />
+            <pre v-if="publishResult" class="max-h-80 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{{ JSON.stringify(publishResult, null, 2) }}</pre>
           </div>
 
           <div v-else-if="activeNav === 'mlItems'" class="space-y-6">

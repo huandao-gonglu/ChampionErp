@@ -861,6 +861,28 @@ class ErpDbTests(unittest.TestCase):
             # job 状态里不得再存 config/凭据。
             self.assertNotIn("config", db.load_publish_job("job-running"))
 
+            first_page, next_cursor = db.list_publish_jobs(limit=2)
+            self.assertEqual(
+                [state["job_id"] for state in first_page],
+                ["job-running", "job-persisted"],
+            )
+            self.assertEqual(next_cursor, "job-persisted")
+
+            second_page, next_cursor = db.list_publish_jobs(
+                limit=2,
+                cursor=next_cursor,
+            )
+            self.assertEqual([state["job_id"] for state in second_page], ["job-done"])
+            self.assertEqual(next_cursor, "")
+
+            ozon_jobs, _ = db.list_publish_jobs(platform="ozon")
+            self.assertEqual(
+                [state["job_id"] for state in ozon_jobs],
+                ["job-persisted", "job-done"],
+            )
+            product_jobs, _ = db.list_publish_jobs(product_id="p1")
+            self.assertEqual([state["job_id"] for state in product_jobs], ["job-running"])
+
 
 if __name__ == "__main__":
     unittest.main()
