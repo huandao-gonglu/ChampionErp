@@ -27,6 +27,26 @@ const assistantOutput = computed(() =>
     .map((event) => event.delta || '')
     .join(''),
 )
+const reasoningOutput = computed(() => {
+  let output = ''
+  for (const event of latestEvents.value) {
+    if (event.type === 'REASONING_MESSAGE_START' && output) output += '\n\n'
+    if (event.type === 'REASONING_MESSAGE_CONTENT') output += event.delta || ''
+  }
+  return output
+})
+const reasoningStarted = computed(() => latestEvents.value.some(
+  (event) => event.type === 'REASONING_MESSAGE_START',
+))
+const reasoningEnded = computed(() => {
+  const start = [...latestEvents.value].reverse().find(
+    (event) => event.type === 'REASONING_MESSAGE_START',
+  )
+  const end = [...latestEvents.value].reverse().find(
+    (event) => event.type === 'REASONING_MESSAGE_END',
+  )
+  return Boolean(start && end && end.seq > start.seq)
+})
 const runError = computed(() =>
   [...latestEvents.value].reverse().find((event) => event.type === 'RUN_ERROR'),
 )
@@ -53,6 +73,8 @@ const progressText = computed(() => {
   if (liveStatus.value === 'waiting_approval') return '工具调用正在等待人工审批。'
   if (assistantOutput.value) return assistantOutput.value
   if (businessResult.value !== undefined) return pretty(businessResult.value)
+  if (reasoningOutput.value) return reasoningOutput.value
+  if (reasoningStarted.value) return 'Provider 已进入推理阶段，正在等待推理内容……'
   if (latestEvents.value.some((event) => (
     event.type === 'CUSTOM'
     && (
@@ -64,6 +86,17 @@ const progressText = computed(() => {
     return '请求已发送，正在等待 Provider 返回……'
   }
   return loading.value ? '正在读取最新对话……' : '正在准备 Provider 请求……'
+})
+const liveStageText = computed(() => {
+  if (isTerminal.value) return '最终结果'
+  if (assistantOutput.value) return '正在生成结果'
+  if (reasoningStarted.value && !reasoningEnded.value) return '正在推理'
+  if (reasoningStarted.value) return '正在整理推理结果'
+  if (latestEvents.value.some((event) => (
+    event.type === 'CUSTOM'
+    && ['provider.request', 'capability_probe.request', 'agent.request'].includes(String(event.name || ''))
+  ))) return '等待 Provider 响应'
+  return '正在准备请求'
 })
 
 function pretty(value: unknown): string {
@@ -225,7 +258,7 @@ onBeforeUnmount(closePanel)
                 class="size-2 rounded-full"
                 :class="liveStatus === 'running' ? 'animate-pulse bg-sky-500' : liveStatus === 'completed' ? 'bg-emerald-500' : 'bg-rose-500'"
               />
-              <span>{{ liveStatus === 'running' ? '实时输出' : '最终结果' }}</span>
+              <span>{{ liveStageText }}</span>
             </div>
             <pre
               ref="outputElement"

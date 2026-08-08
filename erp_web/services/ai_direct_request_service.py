@@ -18,6 +18,8 @@ from pydantic_ai.messages import (
     PartStartEvent,
     TextPart,
     TextPartDelta,
+    ThinkingPart,
+    ThinkingPartDelta,
     ToolCallPart,
     UserPromptPart,
 )
@@ -273,7 +275,8 @@ def _request(
     messages: Sequence[ModelMessage],
     parameters: ModelRequestParameters,
     stream: bool,
-    emit_delta: Callable[[str], None] | None,
+    emit_text_delta: Callable[[str], None] | None,
+    emit_reasoning_delta: Callable[[str], None] | None,
 ) -> ModelResponse:
     instrumentation = _instrumentation(app_dir)
 
@@ -295,17 +298,28 @@ def _request(
                 instrument=instrumentation.settings,
             ) as response_stream:
                 async for event in response_stream:
-                    delta = ""
+                    text_delta = ""
+                    reasoning_delta = ""
                     if isinstance(event, PartStartEvent) and isinstance(
                         event.part, TextPart
                     ):
-                        delta = event.part.content
+                        text_delta = event.part.content
+                    elif isinstance(event, PartStartEvent) and isinstance(
+                        event.part, ThinkingPart
+                    ):
+                        reasoning_delta = event.part.content
                     elif isinstance(event, PartDeltaEvent) and isinstance(
                         event.delta, TextPartDelta
                     ):
-                        delta = event.delta.content_delta
-                    if delta and emit_delta:
-                        emit_delta(delta)
+                        text_delta = event.delta.content_delta
+                    elif isinstance(event, PartDeltaEvent) and isinstance(
+                        event.delta, ThinkingPartDelta
+                    ):
+                        reasoning_delta = event.delta.content_delta or ""
+                    if reasoning_delta and emit_reasoning_delta:
+                        emit_reasoning_delta(reasoning_delta)
+                    if text_delta and emit_text_delta:
+                        emit_text_delta(text_delta)
                 return response_stream.get()
 
     try:
@@ -365,11 +379,15 @@ def chat_json(
         output_mode="prompted" if response_format else "text",
     )
 
-    def emit_delta(text: str) -> None:
+    def emit_text_delta(text: str) -> None:
         if recorder:
             recorder.emit_text_delta(text)
         if token_callback:
             token_callback(text)
+
+    def emit_reasoning_delta(text: str) -> None:
+        if recorder:
+            recorder.emit_reasoning_delta(text)
 
     try:
         response = _request(
@@ -379,9 +397,12 @@ def chat_json(
             messages=_messages(messages),
             parameters=parameters,
             stream=stream,
-            emit_delta=emit_delta,
+            emit_text_delta=emit_text_delta,
+            emit_reasoning_delta=emit_reasoning_delta,
         )
     except Exception as exc:
+        if recorder:
+            recorder.finish_reasoning_message()
         mapped = map_pydantic_model_error(
             exc,
             model_id=binding.model_id,
@@ -499,7 +520,8 @@ def _image_request(
         messages=[ModelRequest(parts=[UserPromptPart(user_content)])],
         parameters=parameters,
         stream=False,
-        emit_delta=None,
+        emit_text_delta=None,
+        emit_reasoning_delta=None,
     )
     provider_name = str(
         binding.model_config.get("provider")
@@ -667,7 +689,8 @@ def request_for_probe(
             messages=_probe_model_messages(messages),
             parameters=parameters,
             stream=False,
-            emit_delta=None,
+            emit_text_delta=None,
+            emit_reasoning_delta=None,
         )
     except Exception as exc:
         mapped = map_pydantic_model_error(

@@ -20,6 +20,7 @@ const loadingConversation = ref(false)
 const error = ref('')
 const activeTab = ref<ViewTab>('conversation')
 const outputElement = ref<HTMLElement | null>(null)
+const reasoningElement = ref<HTMLElement | null>(null)
 const tabs: Array<{ value: ViewTab; label: string }> = [
   { value: 'conversation', label: '对话' },
   { value: 'request', label: '原始请求' },
@@ -133,6 +134,39 @@ const assistantOutput = computed(() =>
     .join(''),
 )
 
+const reasoningOutput = computed(() => {
+  let output = ''
+  for (const event of selectedEvents.value) {
+    if (event.type === 'REASONING_MESSAGE_START' && output) output += '\n\n'
+    if (event.type === 'REASONING_MESSAGE_CONTENT') output += event.delta || ''
+  }
+  return output
+})
+
+const reasoningCharacterCount = computed(() => selectedEvents.value
+  .filter((event) => event.type === 'REASONING_MESSAGE_CONTENT')
+  .reduce((total, event) => total + (event.delta || '').length, 0))
+
+const reasoningStarted = computed(() => selectedEvents.value.some(
+  (event) => event.type === 'REASONING_MESSAGE_START',
+))
+
+const reasoningEnded = computed(() => {
+  const start = [...selectedEvents.value].reverse().find(
+    (event) => event.type === 'REASONING_MESSAGE_START',
+  )
+  const end = [...selectedEvents.value].reverse().find(
+    (event) => event.type === 'REASONING_MESSAGE_END',
+  )
+  return Boolean(start && end && end.seq > start.seq)
+})
+
+const providerRequestRecorded = computed(() => customEvents.value.some((event) => [
+  'provider.request',
+  'capability_probe.request',
+  'agent.request',
+].includes(String(event.name || ''))))
+
 const parsedResult = computed(() => {
   const event = [...customEvents.value].reverse().find((item) => item.name === 'business.result')
   if (event) return event.value
@@ -163,7 +197,9 @@ const conversationOutput = computed(() => {
   }
   if (result !== undefined) return pretty(result)
   if (selectedConversation.value?.status === 'completed') return 'Provider 已返回，任务已完成。'
-  return '等待 Provider 返回……'
+  if (reasoningStarted.value) return '模型正在推理，最终结果将在推理完成后显示。'
+  if (providerRequestRecorded.value) return '请求已发送，正在等待 Provider 响应……'
+  return '正在准备 Provider 请求……'
 })
 
 const runError = computed(() =>
@@ -173,6 +209,19 @@ const runError = computed(() =>
 const lastSeq = computed(() =>
   selectedEvents.value.reduce((highest, event) => Math.max(highest, event.seq || 0), 0),
 )
+
+const conversationPhase = computed(() => {
+  if (runError.value) return '执行失败'
+  if (selectedConversation.value?.status === 'waiting_approval') return '等待人工审批'
+  if (selectedEvents.value.some((event) => event.type === 'RUN_FINISHED')) return '任务完成'
+  if (assistantOutput.value || selectedEvents.value.some((event) => event.type === 'TEXT_MESSAGE_START')) {
+    return '正在生成结果'
+  }
+  if (reasoningStarted.value && !reasoningEnded.value) return '正在推理'
+  if (reasoningStarted.value) return '正在整理推理结果'
+  if (providerRequestRecorded.value) return '等待 Provider 响应'
+  return '正在准备请求'
+})
 
 function pretty(value: unknown): string {
   if (value === undefined) return '暂无数据'
@@ -310,10 +359,13 @@ async function pollSelectedConversation(conversationId: string, generation: numb
   }
 }
 
-watch(assistantOutput, async () => {
+watch([assistantOutput, reasoningOutput], async () => {
   await nextTick()
   if (outputElement.value) {
     outputElement.value.scrollTop = outputElement.value.scrollHeight
+  }
+  if (reasoningElement.value) {
+    reasoningElement.value.scrollTop = reasoningElement.value.scrollHeight
   }
 })
 
@@ -459,10 +511,28 @@ onBeforeUnmount(() => {
               <pre class="overflow-auto whitespace-pre-wrap break-words text-xs leading-5">{{ pretty(event.value) }}</pre>
             </article>
 
+            <details
+              v-if="reasoningStarted || reasoningOutput"
+              :open="!assistantOutput"
+              class="rounded-2xl border border-violet-200 bg-violet-50 dark:border-violet-500/30 dark:bg-violet-500/10"
+              data-testid="ai-work-reasoning"
+            >
+              <summary class="flex cursor-pointer items-center justify-between gap-3 px-4 py-3 text-xs font-black text-violet-700 dark:text-violet-200">
+                <span>思考过程</span>
+                <span class="font-bold">
+                  {{ reasoningEnded ? '推理完成' : '正在推理' }} · {{ reasoningCharacterCount }} 字符
+                </span>
+              </summary>
+              <pre
+                ref="reasoningElement"
+                class="max-h-[40vh] overflow-auto border-t border-violet-200 px-4 py-3 whitespace-pre-wrap break-words font-sans text-sm leading-6 dark:border-violet-500/30"
+              >{{ reasoningOutput || 'Provider 已进入推理阶段，正在等待推理内容……' }}</pre>
+            </details>
+
             <article class="rounded-2xl border border-primary-200 bg-primary-50 p-4 dark:border-primary-500/30 dark:bg-primary-500/10">
               <div class="mb-2 flex items-center justify-between gap-3">
                 <p class="text-xs font-black uppercase tracking-wide text-primary-700 dark:text-primary-200">assistant</p>
-                <span v-if="selectedConversation.status === 'running'" class="text-xs font-bold text-primary-600">正在输出</span>
+                <span class="text-xs font-bold text-primary-600">{{ conversationPhase }}</span>
               </div>
               <pre ref="outputElement" class="max-h-[55vh] overflow-auto whitespace-pre-wrap break-words font-sans text-sm leading-6">{{ conversationOutput }}</pre>
             </article>

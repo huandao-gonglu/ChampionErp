@@ -127,6 +127,29 @@ describe('AiWorkFloatingButton', () => {
     expect(output.scrollTop).toBe(420)
   })
 
+  it('实时展示 Provider 返回的推理字符', async () => {
+    mocks.fetchConversations.mockResolvedValue({ ok: true, conversations: [conversation] })
+    mocks.fetchConversation.mockResolvedValue({
+      ok: true,
+      conversation_id: conversation.conversation_id,
+      events: [
+        { seq: 1, type: 'RUN_STARTED' },
+        { seq: 2, type: 'REASONING_MESSAGE_START' },
+        { seq: 3, type: 'REASONING_MESSAGE_CONTENT', delta: '正在分析商品' },
+      ],
+    })
+    mocks.waitForEvents.mockReturnValue(new Promise(() => {}))
+
+    const wrapper = mount(AiWorkFloatingButton)
+    await wrapper.get('[data-testid="ai-work-floating"]').trigger('mouseenter')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="ai-work-latest"]').text()).toContain('正在推理')
+    expect(wrapper.get('[data-testid="ai-work-output"]').text()).toContain('正在分析商品')
+    expect(wrapper.get('[data-testid="ai-work-output"]').text()).not.toContain('等待 Provider')
+    wrapper.unmount()
+  })
+
   it('deferred run 显示等待审批并停止长轮询', async () => {
     mocks.fetchConversations.mockResolvedValue({
       ok: true,

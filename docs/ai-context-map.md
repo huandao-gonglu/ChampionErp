@@ -74,11 +74,13 @@ Model Requests，图片等能力使用锁定版本提供的 Pydantic capability/
 - `erp_web/services/ai_work_service.py`：AI Work conversation journal。能力探测使用专用
   `capability_probe.*` 事件保存实际探测消息、模型文本、工具往返和脱敏后的图片引用；普通业务
   `provider.request` 仍只保存摘要；Agent 内容通过独立 `agent.request` / `agent.transcript`
-  投影写入，不把认证字段或无限大小内容带入 journal。
+  投影写入；Direct Model 与 Agent 的 Provider 流式推理统一写为
+  `REASONING_MESSAGE_START/CONTENT/END`，最终正文继续使用 `TEXT_MESSAGE_*`，两者不得混合，
+  也不得把认证字段或无限大小内容带入 journal。
 - `erp_web/http_route_units/ai_work_routes.py`：AI Work 读取与等待 HTTP 入口。
 - `front/src/views/AiWorkView.vue`：AI Work 监视界面；支持通过 `conversation_id` query 定位会话，
-  按正常对话流展示探测或 Agent 输入、逐轮模型消息和工具事件；旧 Agent 记录以现存运行摘要与
-  终态回退，不显示空白页签。
+  按正常对话流分区展示 Provider 推理字符、最终正文、探测或 Agent 输入、逐轮模型消息和工具
+  事件；旧 Agent 记录以现存运行摘要与终态回退，不显示空白页签。
 
 ```text
 API use case

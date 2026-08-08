@@ -20,7 +20,7 @@ vi.mock('@/api/aiWork', () => ({
   waitForAiWorkEvents: mocks.waitForEvents,
 }))
 
-function conversation(status: 'completed' | 'failed') {
+function conversation(status: 'running' | 'completed' | 'failed') {
   return {
     conversation_id: 'agent-conversation-1',
     use_case_id: 'category.product_match',
@@ -169,6 +169,35 @@ describe('AiWorkView Agent 对话投影', () => {
     await openTab(wrapper, '处理结果')
     expect(wrapper.text()).toContain('selected_category_id')
     expect(wrapper.text()).toContain('91443')
+    wrapper.unmount()
+  })
+
+  it('独立展示实时推理字符，不再把推理阶段显示为等待 Provider', async () => {
+    mocks.fetchConversations.mockResolvedValue({
+      ok: true,
+      conversations: [conversation('running')],
+    })
+    mocks.fetchConversation.mockResolvedValue({
+      ok: true,
+      conversation_id: 'agent-conversation-1',
+      events: [
+        { seq: 1, type: 'RUN_STARTED' },
+        { seq: 2, type: 'REASONING_MESSAGE_START' },
+        { seq: 3, type: 'REASONING_MESSAGE_CONTENT', delta: '先检查类目属性' },
+        { seq: 4, type: 'REASONING_MESSAGE_CONTENT', delta: '，再生成 JSON' },
+      ],
+    })
+    mocks.waitForEvents.mockReturnValue(new Promise(() => {}))
+
+    const wrapper = mount(AiWorkView)
+    await flushPromises()
+
+    const reasoning = wrapper.get('[data-testid="ai-work-reasoning"]')
+    expect(reasoning.text()).toContain('思考过程')
+    expect(reasoning.text()).toContain('正在推理')
+    expect(reasoning.text()).toContain('先检查类目属性，再生成 JSON')
+    expect(reasoning.text()).toContain('16 字符')
+    expect(wrapper.text()).not.toContain('等待 Provider 返回')
     wrapper.unmount()
   })
 })

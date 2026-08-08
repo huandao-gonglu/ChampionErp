@@ -259,6 +259,44 @@ def test_chat_streams_provider_deltas_by_default(tmp_path: Path, journal, monkey
     assert events[-1]["type"] == "RUN_FINISHED"
 
 
+def test_reasoning_stream_is_persisted_before_assistant_text(journal) -> None:
+    conversation = journal.start_conversation(
+        use_case_id="category.attribute_fill",
+        capability="chat_json",
+        provider_id="fake",
+        model={"id": "one"},
+        stream=True,
+    )
+
+    conversation.emit_reasoning_delta("正在判断")
+    conversation.emit_reasoning_delta("商品属性")
+    conversation.emit_text_delta('{"ok":true}')
+    conversation.finish_assistant_message()
+    conversation.finish({"ok": True})
+
+    events = journal.read_events(conversation.conversation_id)
+    message_events = [
+        event
+        for event in events
+        if event["type"].startswith("REASONING_")
+        or event["type"].startswith("TEXT_MESSAGE_")
+    ]
+    assert [event["type"] for event in message_events] == [
+        "REASONING_MESSAGE_START",
+        "REASONING_MESSAGE_CONTENT",
+        "REASONING_MESSAGE_CONTENT",
+        "REASONING_MESSAGE_END",
+        "TEXT_MESSAGE_START",
+        "TEXT_MESSAGE_CONTENT",
+        "TEXT_MESSAGE_END",
+    ]
+    assert "".join(
+        str(event.get("delta") or "")
+        for event in message_events
+        if event["type"] == "REASONING_MESSAGE_CONTENT"
+    ) == "正在判断商品属性"
+
+
 def test_ai_work_routes_list_and_incrementally_read_conversations(journal) -> None:
     conversation = journal.start_conversation(
         use_case_id="copy.generate",

@@ -18,6 +18,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models import ModelRequestParameters
 from pydantic_ai.models.openai import OpenAIResponsesModel
+from pydantic_ai.models.function import DeltaThinkingPart, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.native_tools import ImageGenerationTool
 from pydantic_ai.providers import Provider
@@ -122,6 +123,69 @@ def test_direct_stream_emits_pydantic_text_events(
 
     assert result == {"streamed": True}
     assert "".join(deltas) == '{"streamed":true}'
+
+
+def test_direct_stream_records_reasoning_separately_from_text(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    async def stream_response(messages, agent_info):
+        del messages, agent_info
+        yield {0: DeltaThinkingPart(content="先分析属性")}
+        yield {0: DeltaThinkingPart(content="，再生成结果")}
+        yield '{"streamed":true}'
+
+    binding = replace(
+        _binding(output='{"streamed":true}'),
+        model=FunctionModel(stream_function=stream_response),
+    )
+    monkeypatch.setattr(
+        ai_direct_request_service,
+        "create_pydantic_model_binding",
+        lambda *args, **kwargs: binding,
+    )
+    conversation = get_context().ai_journal.start_conversation(
+        use_case_id="category.attribute_fill",
+        capability="chat_json",
+        provider_id="pydantic_direct",
+        model={"id": "test-model", "model": "test-model"},
+        stream=True,
+    )
+    text_deltas: list[str] = []
+
+    result = ai_direct_request_service.chat_json(
+        app_dir=tmp_path,
+        use_case_id="category.attribute_fill",
+        model={"id": "test-model"},
+        required_capabilities=("chat", "json"),
+        messages=[{"role": "user", "content": "Return JSON."}],
+        generation_settings=None,
+        temperature=0,
+        max_tokens=None,
+        timeout_seconds=30,
+        response_format=True,
+        stream=True,
+        recorder=conversation,
+        token_callback=text_deltas.append,
+    )
+
+    assert result == {"streamed": True}
+    assert text_deltas == ['{"streamed":true}']
+    events = get_context().ai_journal.read_events(conversation.conversation_id)
+    projected = [
+        (event["type"], event.get("delta"))
+        for event in events
+        if event["type"] not in {"RUN_STARTED", "CUSTOM"}
+    ]
+    assert projected == [
+        ("REASONING_MESSAGE_START", None),
+        ("REASONING_MESSAGE_CONTENT", "先分析属性"),
+        ("REASONING_MESSAGE_CONTENT", "，再生成结果"),
+        ("REASONING_MESSAGE_END", None),
+        ("TEXT_MESSAGE_START", None),
+        ("TEXT_MESSAGE_CONTENT", '{"streamed":true}'),
+        ("TEXT_MESSAGE_END", None),
+    ]
 
 
 def test_responses_json_direct_request_passes_system_prompt_as_instructions(

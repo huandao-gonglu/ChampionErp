@@ -24,7 +24,17 @@ from pydantic_ai.exceptions import (
     UnexpectedModelBehavior,
     UsageLimitExceeded,
 )
-from pydantic_ai.messages import DeferredToolRequests, ModelMessage
+from pydantic_ai.messages import (
+    DeferredToolRequests,
+    ModelMessage,
+    PartDeltaEvent,
+    PartEndEvent,
+    PartStartEvent,
+    TextPart,
+    TextPartDelta,
+    ThinkingPart,
+    ThinkingPartDelta,
+)
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
@@ -58,6 +68,45 @@ from .ai_tool_runtime import AiToolRuntime
 OutputT = TypeVar("OutputT")
 OutputValidator = Callable[[RunContext[AiAgentDependencies], OutputT], OutputT]
 ModelBindingFactory = Callable[..., PydanticModelBinding]
+
+
+async def _record_agent_stream_events(
+    recorder: AiWorkRecorder,
+    events: Any,
+) -> None:
+    """把 Pydantic Agent 模型流投影为 AI Work 的推理与正文事件。"""
+
+    async for event in events:
+        if isinstance(event, PartStartEvent):
+            if isinstance(event.part, ThinkingPart):
+                recorder.emit_reasoning_delta(event.part.content)
+            elif isinstance(event.part, TextPart):
+                recorder.emit_text_delta(event.part.content)
+        elif isinstance(event, PartDeltaEvent):
+            if isinstance(event.delta, ThinkingPartDelta):
+                recorder.emit_reasoning_delta(event.delta.content_delta or "")
+            elif isinstance(event.delta, TextPartDelta):
+                recorder.emit_text_delta(event.delta.content_delta)
+        elif isinstance(event, PartEndEvent) and isinstance(
+            event.part,
+            ThinkingPart,
+        ):
+            recorder.finish_reasoning_message()
+
+
+def _agent_event_stream_handler(
+    model: Model,
+    recorder: AiWorkRecorder,
+) -> Callable[..., Any] | None:
+    # FunctionModel 可以只实现同步 request；这种测试/本地模型若强制挂载
+    # event_stream_handler，Pydantic 会切换到其未实现的 request_stream。
+    if hasattr(model, "stream_function") and getattr(model, "stream_function") is None:
+        return None
+
+    async def handle(_context: Any, events: Any) -> None:
+        await _record_agent_stream_events(recorder, events)
+
+    return handle
 
 
 @dataclass(frozen=True)
@@ -561,7 +610,12 @@ class AiAgentFactory:
                             request_limit=profile.max_model_requests,
                             tool_calls_limit=profile.max_tool_calls,
                         ),
+                        event_stream_handler=_agent_event_stream_handler(
+                            model_override or binding.model,
+                            recorder,
+                        ),
                     )
+                    recorder.finish_assistant_message()
                     run_id = str(result.run_id or "")
                     execution_context.bounded_timeout_seconds()
                     technical_trace.set_agent_run_id(run_id)
@@ -887,7 +941,12 @@ class AiAgentFactory:
                             request_limit=profile.max_model_requests,
                             tool_calls_limit=profile.max_tool_calls,
                         ),
+                        event_stream_handler=_agent_event_stream_handler(
+                            model_override or binding.model,
+                            recorder,
+                        ),
                     )
+                    recorder.finish_assistant_message()
                     run_id = str(result.run_id or "")
                     execution_context.bounded_timeout_seconds()
                     technical_trace.set_agent_run_id(run_id)

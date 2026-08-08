@@ -197,6 +197,9 @@ class AiWorkConversation:
     path: Path
     metadata: dict[str, Any]
     _seq: int = 0
+    _reasoning_message_id: str = ""
+    _reasoning_started: bool = False
+    _reasoning_ended: bool = False
     _assistant_message_id: str = ""
     _assistant_started: bool = False
     _assistant_ended: bool = False
@@ -251,14 +254,51 @@ class AiWorkConversation:
             self._assistant_started = True
         return self._assistant_message_id
 
+    def start_reasoning_message(self) -> str:
+        if self._reasoning_ended:
+            self._reasoning_message_id = ""
+            self._reasoning_started = False
+            self._reasoning_ended = False
+        if not self._reasoning_message_id:
+            self._reasoning_message_id = f"reasoning_{uuid4().hex[:12]}"
+        if not self._reasoning_started:
+            self.emit(
+                "REASONING_MESSAGE_START",
+                messageId=self._reasoning_message_id,
+                role="assistant",
+            )
+            self._reasoning_started = True
+        return self._reasoning_message_id
+
+    def emit_reasoning_delta(self, delta: str) -> None:
+        text = str(delta or "")
+        if not text or self._reasoning_ended:
+            return
+        message_id = self.start_reasoning_message()
+        self.emit(
+            "REASONING_MESSAGE_CONTENT",
+            messageId=message_id,
+            delta=text,
+        )
+
+    def finish_reasoning_message(self) -> None:
+        if self._reasoning_started and not self._reasoning_ended:
+            self.emit(
+                "REASONING_MESSAGE_END",
+                messageId=self._reasoning_message_id,
+            )
+            self._reasoning_ended = True
+
     def emit_text_delta(self, delta: str) -> None:
         text = str(delta or "")
         if not text:
             return
+        self.finish_reasoning_message()
         message_id = self.start_assistant_message()
         self.emit("TEXT_MESSAGE_CONTENT", messageId=message_id, delta=text)
 
     def finish_assistant_message(self, raw_text: str = "") -> None:
+        self.finish_reasoning_message()
         if raw_text and not self._assistant_started:
             self.emit_text_delta(raw_text)
         if self._assistant_started and not self._assistant_ended:

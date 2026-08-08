@@ -29,6 +29,12 @@ class AiWorkRecorder(Protocol):
     def emit_text_delta(self, delta: str) -> None:
         ...
 
+    def emit_reasoning_delta(self, delta: str) -> None:
+        ...
+
+    def finish_reasoning_message(self) -> None:
+        ...
+
     def finish_assistant_message(self, raw_text: str = "") -> None:
         ...
 
@@ -62,6 +68,12 @@ class ConversationAiWorkRecorder:
     def emit_text_delta(self, delta: str) -> None:
         self.conversation.emit_text_delta(delta)
 
+    def emit_reasoning_delta(self, delta: str) -> None:
+        self.conversation.emit_reasoning_delta(delta)
+
+    def finish_reasoning_message(self) -> None:
+        self.conversation.finish_reasoning_message()
+
     def finish_assistant_message(self, raw_text: str = "") -> None:
         self.conversation.finish_assistant_message(raw_text)
 
@@ -70,6 +82,7 @@ class ConversationAiWorkRecorder:
         self.emit("RUN_FINISHED", result=result)
 
     def fail(self, error: Exception) -> None:
+        self.finish_assistant_message()
         payload = {
             key: value
             for key in ("trace_id", "run_id", "task_run_id")
