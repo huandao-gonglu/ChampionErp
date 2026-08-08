@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import urllib.parse
+import time
 from importlib import import_module
 from typing import Any, Callable
 
@@ -287,12 +288,49 @@ def _test_mercadolibre_auth(config: dict[str, Any], scope: str) -> dict[str, Any
     return {}
 
 
+def refresh_ozon_currency_capability(
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    """Refresh Ozon's account-locked publishing currency in store auth."""
+
+    ozon = config.get("ozon") if isinstance(config.get("ozon"), dict) else {}
+    client_id = str(ozon.get("client_id") or "").strip()
+    api_key = str(ozon.get("api_key") or "").strip()
+    if not client_id or not api_key:
+        raise RuntimeError("请先填写 Ozon Client ID 和 API Key。")
+    seller_info = publisher.fetch_ozon_seller_info(client_id, api_key)
+    company = (
+        seller_info.get("company")
+        if isinstance(seller_info.get("company"), dict)
+        else {}
+    )
+    contract_currency = str(company.get("currency") or "").strip().upper()
+    if not contract_currency:
+        raise RuntimeError("Ozon seller/info 未返回店铺合同币种")
+    store = config.setdefault("ozon", {})
+    store["contract_currency"] = contract_currency
+    store["listing_currency"] = contract_currency
+    store["currency_mode"] = "account_locked"
+    store["currency_source"] = "account_api"
+    store["currency_verified_at"] = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+    )
+    store["allowed_currencies"] = [contract_currency]
+    return {
+        "listing_currency": contract_currency,
+        "currency_mode": "account_locked",
+        "seller_info": seller_info,
+    }
+
+
 def _test_ozon_auth(config: dict[str, Any], scope: str) -> dict[str, Any]:
     ozon = config.get("ozon", {})
     client_id = str(ozon.get("client_id") or "").strip()
     api_key = str(ozon.get("api_key") or "").strip()
     if not client_id or not api_key:
         raise RuntimeError("请先填写 Ozon Client ID 和 API Key。")
+    currency_capability = refresh_ozon_currency_capability(config)
+    contract_currency = currency_capability["listing_currency"]
     category_summary: dict[str, Any] | None = None
     if scope == "category":
         from .ozon_category_api import fetch_ozon_category_tree_summary
@@ -307,7 +345,13 @@ def _test_ozon_auth(config: dict[str, Any], scope: str) -> dict[str, Any]:
     store.update(_store_auth_result_fields("ozon", "测试成功", name or client_id))
     store["auth_error_code"] = ""
     store["auth_error_message"] = ""
-    return {"category_tree": category_summary} if category_summary else {}
+    result: dict[str, Any] = {
+        "listing_currency": contract_currency,
+        "currency_mode": "account_locked",
+    }
+    if category_summary:
+        result["category_tree"] = category_summary
+    return result
 
 
 StoreAuthTester = Callable[[dict[str, Any], str], dict[str, Any]]
@@ -446,6 +490,7 @@ __all__ = [
     "build_mercadolibre_auth_link",
     "exchange_mercadolibre_code_from_body",
     "preview_mercadolibre_auth_link",
+    "refresh_ozon_currency_capability",
     "refresh_mercadolibre_token_from_body",
     "resolve_store_auth_tester",
     "StoreAuthTester",

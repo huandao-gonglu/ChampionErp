@@ -42,14 +42,43 @@ class CategorySearchResult(TypedDict):
     source: str
 
 
+CategoryTreeNodeLevel = Literal["branch", "product_type"]
+
+
+class CategoryTreeNode(TypedDict, total=False):
+    """类目树导航节点；只有 ``product_type`` 可以作为最终发布类目。"""
+
+    node_id: str
+    name: str
+    level: CategoryTreeNodeLevel
+    depth: int
+    parent_id: str
+    path_segments: list[str]
+    child_count: int
+    category_id: str
+    description_category_id: str
+    type_id: str
+    publishable: bool
+    platform: str
+    site: str
+
+
+class CategoryBrowseResult(TypedDict):
+    parent_ids: list[str]
+    nodes: list[CategoryTreeNode]
+    source: str
+
+
 @dataclass
 class CategoryCandidateLedger:
-    """记录当前 Agent run 中工具真实返回的候选与有效搜索。"""
+    """记录当前 Agent run 中工具真实返回的叶子候选与检索轨迹。"""
 
     _candidates: dict[str, CategoryCandidate] = field(default_factory=dict)
     searches: list[CategorySearchResult] = field(default_factory=list)
+    browses: list[CategoryBrowseResult] = field(default_factory=list)
     attempts: list[str] = field(default_factory=list)
     errors: list[Exception] = field(default_factory=list)
+    retrieval_mode: Literal["keyword_search", "tree_navigation"] = "keyword_search"
 
     def record_attempt(self, keyword: str) -> None:
         self.attempts.append(str(keyword or "").strip()[:300])
@@ -72,13 +101,65 @@ class CategoryCandidateLedger:
             self._candidates.setdefault(category_id, candidate)
         self.searches.append(stored_result)
 
+    def add_browse_result(self, result: CategoryBrowseResult) -> None:
+        stored_result: CategoryBrowseResult = {
+            "parent_ids": [
+                str(parent_id).strip()[:160]
+                for parent_id in result.get("parent_ids") or []
+                if str(parent_id).strip()
+            ],
+            "nodes": [],
+            "source": str(result.get("source") or "").strip()[:80],
+        }
+        for row in result.get("nodes") or []:
+            node = dict(row)
+            stored_result["nodes"].append(node)
+            if node.get("level") != "product_type":
+                continue
+            category_id = str(node.get("category_id") or node.get("node_id") or "").strip()
+            if not category_id:
+                continue
+            candidate: CategoryCandidate = {
+                "category_id": category_id,
+                "name": str(node.get("name") or category_id).strip()[:500],
+                "path_segments": [
+                    str(segment).strip()[:500]
+                    for segment in (node.get("path_segments") or [])[:20]
+                    if str(segment).strip()
+                ],
+                "search_rank": len(self._candidates),
+                "publishable": bool(node.get("publishable", True)),
+                "platform": str(node.get("platform") or "").strip(),
+                "site": str(node.get("site") or "").strip(),
+            }
+            for field_name in ("description_category_id", "type_id"):
+                value = str(node.get(field_name) or "").strip()
+                if value:
+                    candidate[field_name] = value
+            self._candidates.setdefault(category_id, candidate)
+        self.browses.append(stored_result)
+
     @property
     def search_count(self) -> int:
         return len(self.attempts)
 
     @property
     def successful_search_count(self) -> int:
-        return len(self.searches)
+        return len(self.searches) + len(self.browses)
+
+    @property
+    def navigation_count(self) -> int:
+        return len(self.browses)
+
+    @property
+    def has_leaf_candidates(self) -> bool:
+        return bool(self._candidates)
+
+    @property
+    def can_abstain(self) -> bool:
+        if self.retrieval_mode == "tree_navigation":
+            return self.has_leaf_candidates or self.navigation_count >= 4
+        return self.search_count >= 3
 
     @property
     def last_error(self) -> Exception | None:
@@ -86,7 +167,20 @@ class CategoryCandidateLedger:
 
     @property
     def last_keyword(self) -> str:
-        return self.searches[-1]["keyword"] if self.searches else ""
+        if self.searches:
+            return self.searches[-1]["keyword"]
+        if self.browses:
+            nodes = self.browses[-1].get("nodes") or []
+            if nodes:
+                parent_path = [
+                    str(segment).strip()
+                    for segment in (nodes[0].get("path_segments") or [])[:-1]
+                    if str(segment).strip()
+                ]
+                if parent_path:
+                    return " > ".join(parent_path)
+            return "tree:" + ",".join(self.browses[-1]["parent_ids"])
+        return ""
 
     def get(self, category_id: str) -> CategoryCandidate | None:
         candidate = self._candidates.get(str(category_id or "").strip())
@@ -143,8 +237,11 @@ __all__ = [
     "CATEGORY_SEARCH_TOOLSET_ID",
     "CategoryCandidate",
     "CategoryCandidateLedger",
+    "CategoryBrowseResult",
     "CategoryCorpusInfo",
     "CategorySearchResult",
+    "CategoryTreeNode",
+    "CategoryTreeNodeLevel",
     "CategoryConfidenceBand",
     "CategoryMatchDecision",
     "CategoryMatchFailure",

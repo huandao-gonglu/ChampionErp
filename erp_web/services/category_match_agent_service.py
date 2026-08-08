@@ -70,9 +70,9 @@ CATEGORY_MATCH_AGENT_PROFILE = AiAgentExecutionProfile(
     budget_profile=CATEGORY_MATCH_BUDGET_PROFILE,
     permissions=frozenset({CATEGORY_SEARCH_PERMISSION}),
     timeout_seconds=CATEGORY_MATCH_DEADLINE_SECONDS,
-    max_model_requests=5,
-    max_tool_calls=3,
-    max_tool_output_bytes=32 * 1024,
+    max_model_requests=6,
+    max_tool_calls=4,
+    max_tool_output_bytes=128 * 1024,
     retries=2,
     result_version=CATEGORY_MATCH_RESULT_VERSION,
 )
@@ -99,19 +99,25 @@ class CategoryMatchOutputValidator:
         if self.ledger.search_count == 0:
             self._retry(
                 "CATEGORY_SEARCH_REQUIRED",
-                "必须先调用 search_categories，再提交最终结果。",
+                "必须先调用当前类目检索工具，再提交最终结果。",
             )
         if output.abstained:
-            if self.ledger.search_count < 3:
+            if not self.ledger.can_abstain:
+                message = (
+                    "树导航必须先展开到真实商品类型；若分支不合适，应回退并"
+                    "改选之前保留的分支，最多完成 4 次导航后才能 abstain。"
+                    if self.ledger.retrieval_mode == "tree_navigation"
+                    else "没有匹配时必须改换关键词，完成 3 次不同的有效搜索后才能 abstain。"
+                )
                 self._retry(
                     "CATEGORY_SEARCH_INCOMPLETE",
-                    "没有匹配时必须改换关键词，完成 3 次不同的有效搜索后才能 abstain。",
+                    message,
                 )
             return output
         if self.ledger.get(output.selected_category_id) is None:
             self._retry(
                 "MODEL_SELECTED_UNKNOWN_CATEGORY",
-                "selected_category_id 必须来自本次 search_categories 的真实结果。",
+                "selected_category_id 必须来自本次检索工具真实返回的商品类型。",
             )
         return output
 
@@ -171,8 +177,8 @@ def run_category_match_agent(
         CATEGORY_MATCH_USE_CASE_ID,
     )
     instructions = prompt.get("system") or (
-        "必须先调用 search_categories，只能选择本次工具返回的 category_id；"
-        "无匹配时改换关键词搜索 3 次后 abstain。"
+        "必须先调用当前类目检索工具，只能选择工具真实返回的商品类型；"
+        "树导航按真实分支逐层展开，关键字模式最多搜索 3 次，无匹配时 abstain。"
     )
     user_prompt = render_prompt_template(
         prompt.get("user") or "请根据以下商品事实匹配类目：{$input_json}",

@@ -23,7 +23,6 @@ function draft(draftId: string, status: string, title: string): DraftIndexItem {
     sourceUrl: '',
     categoryId: '',
     categoryPath: '',
-    price: '',
     publishStatus: '',
     createdAt: '',
     updatedAt: '',

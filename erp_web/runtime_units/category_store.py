@@ -117,6 +117,27 @@ def fetch_category_attributes(
     }
 
 
+def fetch_category_attribute_values(
+    platform: str,
+    category_id: str,
+    attribute_id: str,
+    site: str = "",
+    *,
+    query: str = "",
+    limit: int = 50,
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
+    provider = require_category_provider(platform)
+    return provider.attribute_values(
+        category_id,
+        attribute_id,
+        site=site,
+        query=query,
+        limit=limit,
+        timeout_seconds=timeout_seconds,
+    )
+
+
 def search_categories_live(
     platform: str,
     query: str,
@@ -155,6 +176,7 @@ def search_categories_live(
 
 
 __all__ = [
+    "fetch_category_attribute_values",
     "fetch_category_attributes",
     "fetch_category_record",
     "read_json",

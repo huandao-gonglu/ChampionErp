@@ -19,6 +19,13 @@ def handle_category_attrs(handler: JsonRequestHandler) -> None:
     handler.send_json(result, status)
 
 
+def handle_category_attribute_values(handler: JsonRequestHandler) -> None:
+    result, status = category_facade.category_attribute_values_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
+    )
+    handler.send_json(result, status)
+
+
 def handle_category_search(handler: JsonRequestHandler) -> None:
     result, status = category_facade.category_search_payload(
         validate_request_payload(handler.read_body(), endpoint=handler.path)
@@ -48,6 +55,7 @@ def handle_category_precheck(handler: JsonRequestHandler) -> None:
 
 
 POST_HANDLERS: dict[str, PostHandler] = {
+    "/api/category-attribute-values": handle_category_attribute_values,
     "/api/category-attrs": handle_category_attrs,
     "/api/category-search": handle_category_search,
     "/api/category-match": handle_category_match,

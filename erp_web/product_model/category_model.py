@@ -9,6 +9,10 @@ from .merge_model import normalize_product_model
 
 def _normalize_category_attr(attr: Any) -> dict[str, Any]:
     attr = attr if isinstance(attr, dict) else {}
+    raw = attr.get("raw") if isinstance(attr.get("raw"), dict) else {}
+    dictionary_id = str(
+        attr.get("dictionary_id") or raw.get("dictionary_id") or ""
+    ).strip()
     value_type = str(attr.get("value_type") or "string").strip() or "string"
     options = attr.get("options") if isinstance(attr.get("options"), list) else normalize_list(attr.get("options"))
     return {
@@ -19,7 +23,31 @@ def _normalize_category_attr(attr: Any) -> dict[str, Any]:
         "unit": str(attr.get("unit") or "").strip(),
         "options": normalize_list(options),
         "description": str(attr.get("description") or "").strip(),
+        "dictionary_id": dictionary_id,
+        "is_dictionary": bool(attr.get("is_dictionary") or dictionary_id),
+        "is_collection": bool(
+            attr.get("is_collection") or raw.get("is_collection")
+        ),
+        "max_value_count": int(
+            attr.get("max_value_count") or raw.get("max_value_count") or 0
+        ),
+        "category_dependent": bool(
+            attr.get("category_dependent") or raw.get("category_dependent")
+        ),
     }
+
+
+def _dictionary_selection_has_value(value: Any) -> bool:
+    if not isinstance(value, dict) or not isinstance(value.get("values"), list):
+        return False
+    selected = [item for item in value.get("values") or [] if isinstance(item, dict)]
+    if not selected:
+        return False
+    return all(
+        item.get("dictionary_value_id") not in (None, "")
+        and str(item.get("value") or "").strip()
+        for item in selected
+    )
 
 
 def _category_attribute_schema(record: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -188,7 +216,15 @@ def build_ai_attribute_fill(product: dict[str, Any], platform: str, category_rec
         attr_id = str(attr.get("id") or "").strip()
         if not attr_id:
             continue
-        current_value = str(attributes.get(attr_id) or "").strip()
+        current_raw_value = attributes.get(attr_id)
+        if attr.get("is_dictionary"):
+            if _dictionary_selection_has_value(current_raw_value):
+                continue
+            attributes.pop(attr_id, None)
+            if attr.get("required"):
+                need_review.append(attr_id)
+            continue
+        current_value = str(current_raw_value or "").strip()
         if current_value and current_value.upper() == attr_id.upper():
             attributes.pop(attr_id, None)
         gtin_value = str(draft.get("upc") or normalized.get("upc") or "").strip()
@@ -267,6 +303,11 @@ def validate_category_precheck(product: dict[str, Any], platform: str, category_
             continue
         if package_attr_values.get(attr_id.upper()):
             continue
-        if not str(values.get(attr_id) or "").strip():
+        value = values.get(attr_id)
+        if attr.get("is_dictionary"):
+            has_value = _dictionary_selection_has_value(value)
+        else:
+            has_value = bool(str(value or "").strip())
+        if not has_value:
             missing_fields.append(f"attributes.{attr_id}")
     return list(dict.fromkeys(missing_fields))

@@ -701,7 +701,6 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
     if (!draft || !selected) return
     draft.site = selected.code
     draft.language = selected.language
-    draft.currency = selected.currency
   }
 
   return {

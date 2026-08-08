@@ -1,8 +1,8 @@
 """``category.match`` 的稳定业务能力入口。
 
-任务入口按当前平台创建一个绑定式 ``CategorySearcher``，AI 首轮只接收裁剪后的
-商品事实，并通过唯一工具 ``search_categories(keyword)`` 逐轮搜索。最终选择必须
-来自本次工具真实返回的候选；详情和属性只在服务端终检，不暴露给模型。
+任务入口按当前平台创建绑定式类目检索对象。拥有完整树的 Ozon 将真实顶层节点
+放入首轮输入，再通过工具逐层展开；Mercado Libre 继续使用远端关键字发现。
+最终选择必须来自工具真实返回的商品类型；详情和属性只在服务端终检。
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from erp_web.runtime_units.category_store import (
 )
 from erp_web.runtime_units.category_tools import (
     CategoryCandidateLedger,
-    build_category_search_toolset,
+    build_category_match_toolset,
 )
 from erp_web.schemas.category import (
     CategoryCandidate,
@@ -534,10 +534,11 @@ def match_category(
             timeout_seconds=min(8, _remaining_deadline_seconds(deadline_at)),
             deadline_at=deadline_at,
         )
-        toolset = build_category_search_toolset(
+        tool_bundle = build_category_match_toolset(
             searcher=scoped_searcher,
             ledger=ledger,
         )
+        toolset = tool_bundle.toolset
     except Exception as exc:
         return _result(
             ok=False,
@@ -552,6 +553,13 @@ def match_category(
         "target": normalized_target,
         "product": facts,
     }
+    if tool_bundle.retrieval_mode == "tree_navigation":
+        payload["category_navigation"] = {
+            "mode": "tree_navigation",
+            "root_nodes": tool_bundle.initial_options,
+            "max_parent_ids_per_call": 2,
+            "max_navigation_calls": 4,
+        }
     try:
         remaining_seconds = _remaining_deadline_seconds(deadline_at)
         if remaining_seconds < 1:
@@ -579,6 +587,33 @@ def match_category(
                 "trace_id": exc.trace_id,
             }
         decision["search_count"] = ledger.search_count
+        if (
+            isinstance(exc, AiAgentExecutionError)
+            and exc.code == "AI_AGENT_USAGE_LIMIT_EXCEEDED"
+            and ledger.search_count > 0
+        ):
+            decision.update(
+                confidence_band="low",
+                model_confidence=0.0,
+                decision_score=0.0,
+                abstained=True,
+                evidence=["类目检索达到本次运行上限，未静默选择候选。"],
+            )
+            return _result(
+                ok=True,
+                status="unresolved",
+                target=normalized_target,
+                ledger=ledger,
+                decision=decision,
+                failure={
+                    "code": "ABSTAIN_RETRIEVAL_LIMIT",
+                    "message": "类目分支仍无法确定，请人工确认。",
+                    "stage": "decision",
+                    "retryable": False,
+                },
+                trace=trace,
+                agent_run=agent_run,
+            )
         return _result(
             ok=False,
             status="failed",
@@ -600,7 +635,7 @@ def match_category(
             decision=decision,
             failure={
                 "code": "CATEGORY_SEARCH_REQUIRED",
-                "message": "模型必须至少调用一次 search_categories 后才能结束任务。",
+                "message": "模型必须至少调用一次类目检索工具后才能结束任务。",
                 "stage": "model",
                 "retryable": False,
             },
@@ -661,7 +696,7 @@ def match_category(
         evidence=evidence,
     )
     if abstained:
-        if ledger.search_count < 3:
+        if not ledger.can_abstain:
             return _result(
                 ok=False,
                 status="failed",
@@ -670,7 +705,11 @@ def match_category(
                 decision=decision,
                 failure={
                     "code": "CATEGORY_SEARCH_INCOMPLETE",
-                    "message": "未匹配到类目时必须更换关键字并完成最多 3 次搜索后再 abstain。",
+                    "message": (
+                        "树导航必须先到达商品类型，必要时回退改选分支后再 abstain。"
+                        if ledger.retrieval_mode == "tree_navigation"
+                        else "未匹配到类目时必须更换关键字并完成 3 次搜索后再 abstain。"
+                    ),
                     "stage": "model",
                     "retryable": False,
                 },

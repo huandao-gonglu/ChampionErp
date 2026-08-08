@@ -19,7 +19,6 @@ const props = defineProps<{
   draftId: string
   draftTitle: string
   productContext: DraftProductContext
-  draftPrice: string
   platformOptions: MarketplaceOption[]
   loading: boolean
   selectionLocked?: boolean
@@ -54,7 +53,7 @@ function siteLabel(target: PricingTargetInput) {
 function siteMeta(target: PricingTargetInput) {
   const option = platformOption(target.platform)
   const site = option?.sites.find((item) => item.code.toLowerCase() === target.site.toLowerCase())
-  return [target.site, site?.language, target.currency].filter(Boolean).join(' / ')
+  return [target.site, site?.language, target.listingCurrency || '发布币种待店铺核验'].filter(Boolean).join(' / ')
 }
 
 function resultFor(target: PricingTargetInput): PricingTargetResult | undefined {
@@ -108,7 +107,8 @@ function targetInputErrors(target: PricingTargetInput) {
     else if (feeTotal + margin >= 100) errors.push('平台费用合计 + 目标销售利润率必须小于 100%')
   }
   if (target.pricingMode === 'markup' && numeric(target.markupPercent) < 0) errors.push('成本加价率不能小于 0%')
-  if (target.pricingMode === 'manual' && numeric(target.appliedPrice) <= 0) errors.push('手动售价必须大于 0')
+  if (!target.listingCurrency) errors.push('发布币种尚未核验')
+  if (target.pricingMode === 'manual' && numeric(target.manualPrice?.amount) <= 0) errors.push('手动售价必须大于 0')
   if (target.shippingQuoteMode === 'auto') {
     if (target.platform !== 'mercadolibre') errors.push('当前平台没有自动物流报价，请改为手动报价')
     if (billableWeightKg.value <= 0) errors.push('自动估算物流费需要重量或尺寸')
@@ -142,19 +142,31 @@ function shippingCny(target: PricingTargetInput) {
 }
 
 function pricingStep(target: PricingTargetInput) {
-  if (target.currency === 'RUB') return 100
-  if (target.currency === 'MXN') return 10
+  if (target.listingCurrency === 'RUB') return 100
+  if (target.listingCurrency === 'MXN') return 10
   return 1
 }
 
 function applySuggested(target: PricingTargetInput) {
-  const suggested = resultFor(target)?.suggestedPrice || 0
-  if (suggested > 0) target.appliedPrice = suggested
+  const suggested = resultFor(target)?.suggestedPrice
+  if (suggested && numeric(suggested.amount) > 0) {
+    target.pricingMode = 'manual'
+    target.manualPrice = { ...suggested }
+  }
 }
 
 function adjustPrice(target: PricingTargetInput, multiplier: number) {
-  const base = numeric(target.appliedPrice) || resultFor(target)?.suggestedPrice || 0
-  target.appliedPrice = Math.max(0, Math.round((base + pricingStep(target) * multiplier) * 100) / 100)
+  const base = numeric(target.manualPrice?.amount) || numeric(resultFor(target)?.suggestedPrice.amount)
+  const amount = Math.max(0, Math.round((base + pricingStep(target) * multiplier) * 100) / 100)
+  target.pricingMode = 'manual'
+  target.manualPrice = { amount: String(amount), currency: target.listingCurrency }
+}
+
+function updateManualPrice(target: PricingTargetInput, event: Event) {
+  target.manualPrice = {
+    amount: String((event.target as HTMLInputElement).value || ''),
+    currency: target.listingCurrency,
+  }
 }
 
 function applyPrice() {
@@ -166,12 +178,12 @@ function targetStatus(target: PricingTargetInput) {
   const result = resultFor(target)
   if (!result) return '待预览'
   if (result.isLoss) return '亏损'
-  return numeric(target.appliedPrice) > 0 ? '售价已调整' : '建议价可用'
+  return target.pricingMode === 'manual' && numeric(target.manualPrice?.amount) > 0 ? '手动售价' : '建议价可用'
 }
 
 function targetStatusClass(target: PricingTargetInput) {
   const status = targetStatus(target)
-  if (status === '建议价可用' || status === '售价已调整') return 'badge-success'
+  if (status === '建议价可用' || status === '手动售价') return 'badge-success'
   if (status === '亏损' || status === '需处理') return 'badge-danger'
   return 'badge-muted'
 }
@@ -218,7 +230,7 @@ function exchangeRateText() {
       </div>
       <div class="rounded-xl bg-accent-50 p-3 dark:bg-dark-800">
         <p class="field-label">草稿当前主售价</p>
-        <p class="mt-2 text-sm font-semibold text-accent-950 dark:text-white">{{ props.draftPrice || '尚未应用' }}</p>
+        <p class="mt-2 text-sm font-semibold text-accent-950 dark:text-white">各目标市场独立保存</p>
       </div>
       <div class="rounded-xl bg-accent-50 p-3 dark:bg-dark-800">
         <p class="field-label">核价状态</p>
@@ -329,7 +341,7 @@ function exchangeRateText() {
               <div class="mt-3 grid gap-3 sm:grid-cols-[minmax(12rem,18rem)_1fr]">
                 <label v-if="target.pricingMode === 'margin'"><span class="field-label">目标销售利润率 %</span><input v-model.number="target.targetMarginPercent" class="input mt-1" type="number" min="0" max="99.99" step="0.01" /><p class="mt-1 text-[11px] text-accent-500 dark:text-accent-400">利润 ÷ 售价</p></label>
                 <label v-else-if="target.pricingMode === 'markup'"><span class="field-label">成本加价率 %</span><input v-model.number="target.markupPercent" class="input mt-1" type="number" min="0" step="0.01" /><p class="mt-1 text-[11px] text-accent-500 dark:text-accent-400">利润 ÷ 成本，可填写 100%</p></label>
-                <label v-else><span class="field-label">手动售价（{{ target.currency }}）</span><input v-model.number="target.appliedPrice" class="input mt-1" type="number" min="0" step="0.01" /></label>
+                <label v-else><span class="field-label">手动售价（{{ target.listingCurrency }}）</span><input :value="target.manualPrice?.amount || ''" class="input mt-1" type="number" min="0" step="0.01" @input="updateManualPrice(target, $event)" /></label>
                 <div class="rounded-lg bg-accent-50 p-3 dark:bg-dark-800">
                   <div class="flex items-center justify-between text-xs"><span class="font-semibold text-accent-600 dark:text-accent-300">比例预算</span><span :class="feeBudget(target) >= 100 ? 'text-rose-600 dark:text-rose-300' : 'text-accent-950 dark:text-white'">{{ feeBudget(target).toFixed(2) }}%</span></div>
                   <div class="mt-2 h-2 overflow-hidden rounded-full bg-accent-200 dark:bg-dark-700"><div class="h-full rounded-full" :class="feeBudget(target) >= 100 ? 'bg-rose-500' : 'bg-emerald-500'" :style="{ width: `${Math.min(100, Math.max(0, feeBudget(target)))}%` }" /></div>
@@ -352,10 +364,10 @@ function exchangeRateText() {
 
           <aside class="rounded-xl bg-accent-50 p-4 dark:bg-dark-800/80">
             <p class="field-label">建议售价</p>
-            <p class="mt-2 text-2xl font-black text-accent-950 dark:text-white">{{ resultFor(target) ? formatMoney(resultFor(target)!.suggestedPrice, target.currency) : '-' }}</p>
-            <button v-if="resultFor(target)?.suggestedPrice" class="mt-2 text-xs font-bold text-brand-700 hover:underline dark:text-brand-300" @click="applySuggested(target)">填入建议售价</button>
+            <p class="mt-2 text-2xl font-black text-accent-950 dark:text-white">{{ resultFor(target) ? formatMoney(numeric(resultFor(target)!.suggestedPrice.amount), resultFor(target)!.suggestedPrice.currency) : '-' }}</p>
+            <button v-if="numeric(resultFor(target)?.suggestedPrice.amount) > 0" class="mt-2 text-xs font-bold text-brand-700 hover:underline dark:text-brand-300" @click="applySuggested(target)">改为手动售价</button>
 
-            <label class="mt-4 block"><span class="field-label">应用售价（可调整）</span><input v-model.number="target.appliedPrice" class="input mt-1 text-lg font-bold" type="number" min="0" step="0.01" :placeholder="resultFor(target)?.suggestedPrice ? String(resultFor(target)!.suggestedPrice) : '先计算预览'" /></label>
+            <div class="mt-4"><span class="field-label">本次应用售价</span><p class="mt-1 text-lg font-bold">{{ resultFor(target) ? formatMoney(numeric(resultFor(target)!.appliedPrice.amount), resultFor(target)!.appliedPrice.currency) : '先计算预览' }}</p></div>
             <div class="mt-2 grid grid-cols-3 gap-2">
               <button class="btn btn-outline px-2 py-1.5 text-xs" @click="adjustPrice(target, -1)">-{{ pricingStep(target) }}</button>
               <button class="btn btn-outline px-2 py-1.5 text-xs" @click="adjustPrice(target, 1)">+{{ pricingStep(target) }}</button>
@@ -369,7 +381,7 @@ function exchangeRateText() {
               <div v-if="resultFor(target)!.otherFeeCny" class="flex justify-between gap-3"><span class="text-accent-500 dark:text-accent-400">其他平台费用</span><strong>{{ formatMoney(resultFor(target)!.otherFeeCny, 'CNY') }}</strong></div>
               <div class="flex justify-between gap-3 border-t border-accent-200 pt-2 dark:border-dark-700"><span class="font-bold text-accent-700 dark:text-accent-200">预计利润</span><strong :class="resultFor(target)!.isLoss ? 'text-rose-600 dark:text-rose-300' : 'text-emerald-600 dark:text-emerald-300'">{{ formatMoney(resultFor(target)!.profitCny, 'CNY') }}</strong></div>
               <div class="flex justify-between gap-3"><span class="text-accent-500 dark:text-accent-400">实际利润率</span><strong>{{ formatPercent(resultFor(target)!.marginPercent) }}</strong></div>
-              <div class="flex justify-between gap-3"><span class="text-accent-500 dark:text-accent-400">盈亏平衡售价</span><strong>{{ formatMoney(resultFor(target)!.minimumPrice, target.currency) }}</strong></div>
+              <div class="flex justify-between gap-3"><span class="text-accent-500 dark:text-accent-400">盈亏平衡售价</span><strong>{{ formatMoney(numeric(resultFor(target)!.minimumPrice.amount), resultFor(target)!.minimumPrice.currency) }}</strong></div>
             </div>
 
             <p v-if="targetInputErrors(target).length" class="mt-4 rounded-lg bg-amber-100 p-3 text-xs font-semibold text-amber-900 dark:bg-amber-950/60 dark:text-amber-200">{{ targetInputErrors(target).join('；') }}</p>

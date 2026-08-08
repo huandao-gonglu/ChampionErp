@@ -77,10 +77,10 @@ def build_mercadolibre_payload(
     listing = listing_for(plan, "mercadolibre")
     store = config["mercadolibre"]
     settings = config["listing"]
-    mxn_rate = number_or_zero(settings.get("mxn_usd_rate")) or 18.0
     price_input = number_or_zero(settings.get("mercadolibre_price") or settings.get("price"))
-    currency_id = str(settings.get("currency_id") or "MXN").upper()
-    price_usd = price_input if currency_id == "USD" else round(price_input / mxn_rate, 2)
+    currency_id = str(settings.get("currency_id") or "").upper()
+    if not currency_id:
+        raise RuntimeError("Mercado Libre 发布币种尚未解析。")
     logistic_type = str(settings.get("mercadolibre_logistic_type") or "remote").strip() or "remote"
     sku = settings.get("sku") or product.get("name") or "SKU-1"
     site_id = str(store.get("site_id") or "").strip().upper()
@@ -172,11 +172,6 @@ def build_mercadolibre_payload(
         for url in image_urls
         if url
     ]
-    commission_rate = number_or_zero(settings.get("mercadolibre_commission_percent")) / 100
-    shipping_usd = number_or_zero(settings.get("ml_shipping_usd"))
-    net_proceeds = number_or_zero(settings.get("mercadolibre_net_proceeds_usd"))
-    if not net_proceeds:
-        net_proceeds = max(0.01, round(price_usd * (1 - commission_rate) - shipping_usd, 2))
     sale_terms = settings.get("mercadolibre_sale_terms")
     if not isinstance(sale_terms, list) or not sale_terms:
         sale_terms = [
@@ -192,7 +187,7 @@ def build_mercadolibre_payload(
     site_entry: dict[str, Any] = {
         "site_id": site_id,
         "logistic_type": logistic_type,
-        "price": price_usd,
+        "price": price_input,
         "listing_type_id": settings.get("listing_type_id") or "gold_special",
         "title": title,
     }
@@ -201,8 +196,8 @@ def build_mercadolibre_payload(
         "_global_selling": is_global_selling,
         "title": title,
         "category_id": category_id,
-        "price": price_usd,
-        "currency_id": "USD",
+        "price": price_input,
+        "currency_id": currency_id,
         "available_quantity": int(settings.get("stock") or 1),
         "buying_mode": "buy_it_now",
         "catalog_listing": False,

@@ -52,11 +52,15 @@ def build_mercadolibre_publish_payload(
     if site_id:
         store["site_id"] = site_id
     listing = payload_config.setdefault("listing", {})
+    selected_price, listing_currency = _selected_price_and_currency(
+        draft, "mercadolibre", site_id
+    )
     package_dimensions = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
     shipping = draft.get("shipping") if isinstance(draft.get("shipping"), dict) else {}
     for key, value in {
-        "mercadolibre_price": draft.get("price"),
-        "price": draft.get("price"),
+        "mercadolibre_price": selected_price,
+        "price": selected_price,
+        "currency_id": listing_currency,
         "stock": draft.get("stock"),
         "sku": draft.get("sku"),
         "upc": draft.get("upc"),
@@ -195,6 +199,42 @@ def _draft_for_platform(product: dict[str, Any], platform: str) -> dict[str, Any
     drafts = product.get("drafts") if isinstance(product.get("drafts"), dict) else {}
     draft = drafts.get(platform) if isinstance(drafts, dict) else {}
     return draft if isinstance(draft, dict) else default_draft(platform)
+
+
+def _selected_price_and_currency(
+    draft: dict[str, Any], platform: str, site: str
+) -> tuple[str, str]:
+    currency = str(draft.get("listing_currency") or "").strip().upper()
+    price = str(draft.get("price") or "").strip()
+    if price and currency:
+        return price, currency
+    target_key = f"{str(platform).strip().lower()}:{str(site).strip().lower()}"
+    pricing = draft.get("pricing") if isinstance(draft.get("pricing"), dict) else {}
+    targets = pricing.get("targets") if isinstance(pricing.get("targets"), dict) else {}
+    record = next(
+        (item for key, item in targets.items() if str(key).strip().lower() == target_key and isinstance(item, dict)),
+        {},
+    )
+    applied = record.get("applied_price") if isinstance(record.get("applied_price"), dict) else {}
+    target_sites = draft.get("target_sites") if isinstance(draft.get("target_sites"), list) else []
+    selected_target = next(
+        (
+            item for item in target_sites
+            if isinstance(item, dict)
+            and str(item.get("platform") or "").lower() == str(platform).lower()
+            and str(item.get("site") or "").lower() == str(site).lower()
+        ),
+        {},
+    )
+    currency = str(
+        selected_target.get("listing_currency")
+        or record.get("listing_currency")
+        or applied.get("currency")
+        or ""
+    ).strip().upper()
+    if str(applied.get("currency") or "").strip().upper() != currency:
+        return "", currency
+    return str(applied.get("amount") or "").strip(), currency
 
 
 def _draft_images(product: dict[str, Any], platform: str, draft: dict[str, Any]) -> list[str]:

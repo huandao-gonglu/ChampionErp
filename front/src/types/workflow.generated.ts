@@ -4,7 +4,7 @@
  */
 
 export const API_SCHEMA_VERSION = 1 as const
-export const PRODUCT_SCHEMA_VERSION = 1 as const
+export const PRODUCT_SCHEMA_VERSION = 2 as const
 
 export interface BackendApiResponse {
   schemaVersion?: number
@@ -176,6 +176,12 @@ export interface BackendCategoryAttributeDefinition {
   value_type?: string
   unit?: string
   description?: string
+  dictionary_id?: string
+  is_dictionary?: boolean
+  is_collection?: boolean
+  max_value_count?: number
+  category_dependent?: boolean
+  raw?: Record<string, unknown>
 }
 
 export interface BackendCategoryAttributeSchema {
@@ -194,7 +200,9 @@ export interface BackendDraftTargetSite {
   platform?: string
   site?: string
   language?: string
-  currency?: string
+  market_currency?: string
+  listing_currency?: string
+  currency_resolution?: Record<string, unknown>
   category_id?: string
   description_category_id?: string
   category_path?: string
@@ -229,7 +237,6 @@ export interface BackendPlatformDraft {
   category_attribute_schema?: BackendCategoryAttributeSchema
   target_sites?: Array<BackendDraftTargetSite>
   attributes?: Record<string, unknown>
-  price?: string
   pricing?: Record<string, unknown>
   stock?: string
   sku?: string
@@ -237,7 +244,6 @@ export interface BackendPlatformDraft {
   bullets?: Array<string>
   search_terms?: Array<string>
   language?: string
-  currency?: string
   package_dimensions?: Record<string, string>
   validation_errors?: Array<unknown>
   images?: Array<BackendDraftImageRef>

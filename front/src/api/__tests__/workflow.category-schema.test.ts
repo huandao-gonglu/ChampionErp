@@ -120,7 +120,7 @@ describe('类目属性 Schema 映射', () => {
     expect(normalized.draftId).toBe('')
     expect(normalized.productId).toBe('')
     expect(normalized.categoryId).toBe('')
-    expect(normalized.price).toBe('')
+    expect(normalized.pricing).toEqual({})
     expect(normalized.packageDimensions.lengthCm).toBe('')
     expect(normalized.targetSites[0]?.categoryAttributeSchema).toBeNull()
   })
@@ -163,5 +163,58 @@ describe('类目属性 Schema 映射', () => {
       categoryPrecheck: {},
       publishStatus: '',
     }))
+  })
+
+  it('保留 Ozon 字典元数据和选中的 dictionary_value_id', () => {
+    const normalized = normalizeDraftDetail({
+      draft_id: 'draft-ozon-dictionary',
+      product_id: 'product-ozon-dictionary',
+      platform: 'ozon',
+      platforms: ['ozon'],
+      site: 'global',
+      category_id: '94765',
+      target_sites: [{
+        platform: 'ozon',
+        site: 'global',
+        language: 'ru-RU',
+        listing_currency: 'RUB',
+        category_id: '94765',
+        category_attribute_schema: {
+          version: 1,
+          platform: 'ozon',
+          site: 'global',
+          category_id: '94765',
+          required: [{
+            id: '85',
+            name: 'Бренд',
+            required: true,
+            dictionary_id: '28732849',
+            is_dictionary: true,
+            category_dependent: true,
+          }],
+          optional: [],
+        },
+        attributes: {
+          85: {
+            values: [{ dictionary_value_id: 126745801, value: 'Нет бренда' }],
+          },
+        },
+      }],
+    })
+
+    expect(normalized.targetSites[0]?.categoryAttributeSchema?.required[0]).toEqual(expect.objectContaining({
+      dictionaryId: '28732849',
+      isDictionary: true,
+      categoryDependent: true,
+    }))
+    expect(normalized.targetSites[0]?.attributes?.['85']).toEqual({
+      values: [{ dictionaryValueId: 126745801, value: 'Нет бренда' }],
+    })
+
+    const backend = toBackendDraft(normalized)
+    const target = (backend.target_sites as Array<Record<string, unknown>>)[0] as Record<string, unknown>
+    expect((target.attributes as Record<string, unknown>)['85']).toEqual({
+      values: [{ dictionary_value_id: 126745801, value: 'Нет бренда' }],
+    })
   })
 })

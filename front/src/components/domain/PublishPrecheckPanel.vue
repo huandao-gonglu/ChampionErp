@@ -113,7 +113,9 @@ function hasIssue(field: string, code = '') {
 function generateSku() {
   const source = activeDraft.value.draftId || props.productContext.sourceUrl || props.productContext.title || activeDraft.value.title || Date.now().toString()
   const suffix = source.replace(/[^a-zA-Z0-9]+/g, '').slice(-8).toUpperCase() || Date.now().toString().slice(-6)
-  const model = (activeDraft.value.attributes.MODEL || props.productContext.model || 'ML').replace(/[^a-zA-Z0-9]+/g, '').slice(0, 10).toUpperCase() || 'ML'
+  const rawModel = activeDraft.value.attributes.MODEL
+  const modelText = typeof rawModel === 'string' ? rawModel : props.productContext.model || 'ML'
+  const model = modelText.replace(/[^a-zA-Z0-9]+/g, '').slice(0, 10).toUpperCase() || 'ML'
   activeDraft.value.sku = `${model}-${suffix}`
 }
 
@@ -132,7 +134,7 @@ function targetLabel(target: MarketplaceTargetSite) {
   const platformLabel = platform?.label || target.platform || '目标平台'
   const siteLabel = site?.label || target.site || '默认站点'
   const language = target.language || site?.language || ''
-  const currency = target.currency || site?.currency || ''
+  const currency = target.listingCurrency || site?.listingCurrency || '待核验'
   return `${platformLabel} - ${siteLabel}（${target.site || site?.code || '-'} / ${language || '-'} / ${currency || '-'}）`
 }
 

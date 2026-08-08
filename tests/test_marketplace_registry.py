@@ -8,7 +8,8 @@ def test_marketplace_registry_exposes_parent_platforms_and_sites() -> None:
     assert [site["code"] for site in options[0]["sites"]] == ["CBT", "MLM", "MLB", "MLC", "MCO", "MLA"]
     assert default_marketplace_site("mercadolibre")["code"] == "CBT"
     assert default_marketplace_site("yandex")["code"] == "global"
-    assert default_marketplace_site("ozon")["currency"] == "RUB"
+    assert default_marketplace_site("ozon")["market_currency"] == "RUB"
+    assert default_marketplace_site("ozon")["listing_currency"] == ""
 
 
 def test_marketplace_site_includes_language_and_currency_defaults() -> None:
@@ -18,5 +19,6 @@ def test_marketplace_site_includes_language_and_currency_defaults() -> None:
         "code": "MLB",
         "label": "巴西",
         "language": "pt-BR",
-        "currency": "BRL",
+        "market_currency": "BRL",
+        "listing_currency": "BRL",
     }

@@ -20,6 +20,10 @@ def _normalize_list(value: Any) -> list[str]:
 
 def _normalize_attr(attr: Any, required_fallback: bool = False) -> dict[str, Any]:
     raw = attr if isinstance(attr, dict) else {}
+    provider_raw = raw.get("raw") if isinstance(raw.get("raw"), dict) else {}
+    dictionary_id = str(
+        raw.get("dictionary_id") or provider_raw.get("dictionary_id") or ""
+    ).strip()
     values = raw.get("values") if isinstance(raw.get("values"), list) else []
     options = _normalize_list(raw.get("options"))
     for item in values:
@@ -35,6 +39,8 @@ def _normalize_attr(attr: Any, required_fallback: bool = False) -> dict[str, Any
         "required": bool(raw.get("required", required_fallback)),
         "value_type": str(raw.get("value_type") or "").strip(),
         "options": list(dict.fromkeys(options))[:80],
+        "dictionary_id": dictionary_id,
+        "is_dictionary": bool(raw.get("is_dictionary") or dictionary_id),
     }
 
 
@@ -136,6 +142,13 @@ def _option_value(raw_value: Any, options: list[str]) -> str:
 
 
 def _is_meaningful_existing(attr_id: str, value: Any) -> bool:
+    if isinstance(value, dict) and isinstance(value.get("values"), list):
+        selected = [item for item in value.get("values") or [] if isinstance(item, dict)]
+        return bool(selected) and all(
+            item.get("dictionary_value_id") not in (None, "")
+            and str(item.get("value") or "").strip()
+            for item in selected
+        )
     text = str(value or "").strip()
     return bool(text) and text.upper() != attr_id.upper()
 
@@ -148,6 +161,8 @@ def _validated_ai_attributes(ai_result: dict[str, Any], schema: list[dict[str, A
         attr_id = str(attr_id or "").strip()
         attr = schema_by_id.get(attr_id)
         if not attr:
+            continue
+        if attr.get("is_dictionary"):
             continue
         options = attr.get("options") if isinstance(attr.get("options"), list) else []
         if options:
@@ -201,7 +216,10 @@ def apply_ai_model_attribute_fill(product: dict[str, Any], platform: str, catego
         if not attrs.get(attr_id):
             need_review.add(attr_id)
     for attr_id, attr in schema_by_id.items():
-        if attr.get("required") and not str(attrs.get(attr_id) or "").strip():
+        if attr.get("required") and not _is_meaningful_existing(
+            attr_id,
+            attrs.get(attr_id),
+        ):
             need_review.add(attr_id)
 
     draft["attributes"] = attrs

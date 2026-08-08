@@ -457,7 +457,7 @@ describe('workflow store live API flow', () => {
     draft.draftId = 'draft-yandex'
     draft.platform = 'yandex'
     draft.platforms = ['yandex']
-    draft.price = '7990'
+    draft.pricing = { targets: { 'yandex:global': { applied_price: { amount: '7990', currency: 'RUB' } } } }
     draft.categoryId = 'yandex-category-1'
     draft.status = 'published'
 
@@ -550,7 +550,7 @@ describe('workflow store live API flow', () => {
     draft.productId = 'real-product-1'
     draft.sourceProductId = 'real-product-1'
     draft.site = 'CBT'
-    draft.targetSites = [{ platform: 'mercadolibre', site: 'CBT', language: 'es', currency: 'USD' }]
+    draft.targetSites = [{ platform: 'mercadolibre', site: 'CBT', language: 'es', listingCurrency: 'USD' }]
     draft.status = 'ready_to_publish'
     vi.mocked(workflowApi.saveDraft).mockResolvedValue(draftMutation(draft))
     vi.mocked(workflowApi.publishPrecheck).mockResolvedValue({
@@ -580,7 +580,7 @@ describe('workflow store live API flow', () => {
     draft.site = 'MLM'
     draft.title = 'Ventilador portátil'
     draft.targetSites = [
-      { platform: 'mercadolibre', site: 'MLM', language: 'es-MX', currency: 'MXN' },
+      { platform: 'mercadolibre', site: 'MLM', language: 'es-MX', listingCurrency: 'MXN' },
     ]
     vi.mocked(workflowApi.saveDraft).mockResolvedValue(draftMutation(draft))
     vi.mocked(workflowApi.matchCategory).mockResolvedValue({
@@ -695,7 +695,7 @@ describe('workflow store live API flow', () => {
         platform: 'mercadolibre',
         site: 'MLM',
         language: 'es-MX',
-        currency: 'MXN',
+        listingCurrency: 'MXN',
         categoryId: 'MLM-OLD',
         categoryPath: '旧类目',
         attributes: { OLD_ATTRIBUTE: '旧值' },
@@ -705,7 +705,7 @@ describe('workflow store live API flow', () => {
         platform: 'mercadolibre',
         site: 'CBT',
         language: 'en-US',
-        currency: 'USD',
+        listingCurrency: 'USD',
         categoryId: 'CBT-UNCHANGED',
         categoryPath: 'Unchanged',
         attributes: { BRAND: 'Keep' },
@@ -793,7 +793,7 @@ describe('workflow store live API flow', () => {
     draft.productId = 'real-product-1'
     draft.sourceProductId = 'real-product-1'
     draft.site = 'MLM'
-    draft.targetSites = [{ platform: 'mercadolibre', site: 'MLM', language: 'es-MX', currency: 'MXN' }]
+    draft.targetSites = [{ platform: 'mercadolibre', site: 'MLM', language: 'es-MX', listingCurrency: 'MXN' }]
     vi.mocked(workflowApi.saveDraft).mockImplementation(async (draftToSave) => draftMutation(draftToSave))
     vi.mocked(workflowApi.fetchCategoryAttrs).mockRejectedValue(new Error('平台类目属性接口超时'))
 
@@ -820,7 +820,7 @@ describe('workflow store live API flow', () => {
     draft.productId = 'product-ozon'
     draft.sourceProductId = 'product-ozon'
     draft.site = 'global'
-    draft.targetSites = [{ platform: 'ozon', site: 'global', language: 'ru-RU', currency: 'RUB' }]
+    draft.targetSites = [{ platform: 'ozon', site: 'global', language: 'ru-RU', listingCurrency: 'RUB' }]
     const savedDrafts: DraftDetail[] = []
     vi.mocked(workflowApi.saveDraft).mockImplementation(async (draftToSave) => {
       const saved = JSON.parse(JSON.stringify(draftToSave)) as DraftDetail
@@ -871,7 +871,7 @@ describe('workflow store live API flow', () => {
       platform: 'ozon',
       site: 'global',
       language: 'ru-RU',
-      currency: 'RUB',
+      listingCurrency: 'RUB',
       categoryId: '91443',
       descriptionCategoryId: '17039635',
     }]
@@ -897,7 +897,7 @@ describe('workflow store live API flow', () => {
       platform: 'mercadolibre',
       site: 'MLM',
       language: 'es-MX',
-      currency: 'MXN',
+      listingCurrency: 'MXN',
       categoryId: 'MLM-NEW',
       categoryPath: '家居 / 新类目',
       categoryAttributeSchema: {
@@ -931,7 +931,6 @@ describe('workflow store live API flow', () => {
       sourceUrl: '',
       categoryId: 'MLM-NEW',
       categoryPath: '家居 / 新类目',
-      price: '',
       publishStatus: '',
       createdAt: '',
       updatedAt: '',
@@ -1014,15 +1013,14 @@ describe('workflow store live API flow', () => {
     draft.platforms = ['yandex']
     draft.site = 'global'
     draft.language = 'ru-RU'
-    draft.currency = 'RUB'
-    draft.targetSites = [{ platform: 'yandex', site: 'global', language: 'ru-RU', currency: 'RUB' }]
+    draft.targetSites = [{ platform: 'yandex', site: 'global', language: 'ru-RU', listingCurrency: 'RUB' }]
     const item: DraftIndexItem = {
       draftId: 'draft-1',
       productId: 'product-1',
       sourceProductId: 'product-1',
       platform: 'yandex',
       platforms: ['yandex'],
-      targetSites: [{ platform: 'yandex', site: 'global', language: 'ru-RU', currency: 'RUB' }],
+      targetSites: [{ platform: 'yandex', site: 'global', language: 'ru-RU', listingCurrency: 'RUB' }],
       site: 'global',
       language: 'ru-RU',
       status: 'claimed',
@@ -1033,14 +1031,13 @@ describe('workflow store live API flow', () => {
       sourceUrl: 'https://example.com/source',
       categoryId: '',
       categoryPath: '',
-      price: '',
       publishStatus: '',
       createdAt: '',
       updatedAt: '',
       productFilePath: '',
       raw: {},
     }
-    const savedTargets = [{ platform: 'yandex', site: 'global', language: 'ru-RU', currency: 'RUB' }, { platform: 'ozon', site: 'global', language: 'ru-RU', currency: 'RUB' }]
+    const savedTargets = [{ platform: 'yandex', site: 'global', language: 'ru-RU', listingCurrency: 'RUB' }, { platform: 'ozon', site: 'global', language: 'ru-RU', listingCurrency: 'RUB' }]
     const savedDraft = { ...draft, platforms: ['yandex', 'ozon'], targetSites: savedTargets }
     const sibling = { ...item, draftId: 'draft-2', title: 'Sibling draft', platforms: ['yandex'] as DraftIndexItem['platforms'] }
     const savedIndex = [{ ...item, targetSites: savedDraft.targetSites, site: savedDraft.site, platforms: savedDraft.platforms }, sibling]
@@ -1049,8 +1046,8 @@ describe('workflow store live API flow', () => {
 
     const store = useWorkflowStore()
     store.platformOptions = [
-      { key: 'yandex', label: 'Yandex', sites: [{ key: 'global', code: 'global', label: '俄罗斯', language: 'ru-RU', currency: 'RUB' }] },
-      { key: 'ozon', label: 'Ozon', sites: [{ key: 'global', code: 'global', label: '俄罗斯', language: 'ru-RU', currency: 'RUB' }] },
+      { key: 'yandex', label: 'Yandex', sites: [{ key: 'global', code: 'global', label: '俄罗斯', language: 'ru-RU', listingCurrency: 'RUB' }] },
+      { key: 'ozon', label: 'Ozon', sites: [{ key: 'global', code: 'global', label: '俄罗斯', language: 'ru-RU', listingCurrency: 'RUB' }] },
     ]
     await store.updateDraftTargets(item, savedTargets)
 
@@ -1060,7 +1057,6 @@ describe('workflow store live API flow', () => {
       platforms: ['yandex', 'ozon'],
       site: 'global',
       language: 'ru-RU',
-      currency: 'RUB',
       targetSites: savedTargets.map((target) => expect.objectContaining(target)),
     }))
     expect(store.currentDraft.draftId).toBe('')
@@ -1078,15 +1074,14 @@ describe('workflow store live API flow', () => {
     draft.platforms = ['yandex']
     draft.site = 'global'
     draft.language = 'ru-RU'
-    draft.currency = 'RUB'
-    draft.targetSites = [{ platform: 'yandex', site: 'global', language: 'ru-RU', currency: 'RUB' }]
+    draft.targetSites = [{ platform: 'yandex', site: 'global', language: 'ru-RU', listingCurrency: 'RUB' }]
     const item: DraftIndexItem = {
       draftId: 'draft-1',
       productId: 'product-1',
       sourceProductId: 'product-1',
       platform: 'yandex',
       platforms: ['yandex'],
-      targetSites: [{ platform: 'yandex', site: 'global', language: 'ru-RU', currency: 'RUB' }],
+      targetSites: [{ platform: 'yandex', site: 'global', language: 'ru-RU', listingCurrency: 'RUB' }],
       site: 'global',
       language: 'ru-RU',
       status: 'claimed',
@@ -1097,25 +1092,24 @@ describe('workflow store live API flow', () => {
       sourceUrl: 'https://example.com/source',
       categoryId: '',
       categoryPath: '',
-      price: '',
       publishStatus: '',
       createdAt: '',
       updatedAt: '',
       productFilePath: '',
       raw: {},
     }
-    const selectedTarget = { platform: 'mercadolibre', site: 'CBT', language: 'es', currency: 'USD' }
-    const savedDraft = { ...draft, platform: 'mercadolibre', platforms: ['mercadolibre'], site: 'CBT', language: 'es', currency: 'USD', targetSites: [selectedTarget] }
+    const selectedTarget = { platform: 'mercadolibre', site: 'CBT', language: 'es', listingCurrency: 'USD' }
+    const savedDraft = { ...draft, platform: 'mercadolibre', platforms: ['mercadolibre'], site: 'CBT', language: 'es', targetSites: [selectedTarget] }
     vi.mocked(workflowApi.loadDraft).mockResolvedValue(draftMutation(draft, [item]))
     vi.mocked(workflowApi.saveDraft).mockResolvedValue(draftMutation(savedDraft, [{ ...item, ...savedDraft }]))
 
     const store = useWorkflowStore()
     store.platformOptions = [
       { key: 'mercadolibre', label: '美客多', sites: [
-        { key: 'CBT', code: 'CBT', label: '全局', language: 'es', currency: 'USD' },
-        { key: 'MLB', code: 'MLB', label: '巴西', language: 'pt-BR', currency: 'BRL' },
+        { key: 'CBT', code: 'CBT', label: '全局', language: 'es', listingCurrency: 'USD' },
+        { key: 'MLB', code: 'MLB', label: '巴西', language: 'pt-BR', listingCurrency: 'BRL' },
       ] },
-      { key: 'yandex', label: 'Yandex', sites: [{ key: 'global', code: 'global', label: '俄罗斯', language: 'ru-RU', currency: 'RUB' }] },
+      { key: 'yandex', label: 'Yandex', sites: [{ key: 'global', code: 'global', label: '俄罗斯', language: 'ru-RU', listingCurrency: 'RUB' }] },
     ]
     await store.updateDraftLanguage(item, 'es')
 
@@ -1125,7 +1119,6 @@ describe('workflow store live API flow', () => {
       platforms: ['mercadolibre'],
       site: 'CBT',
       language: 'es',
-      currency: 'USD',
       targetSites: [expect.objectContaining(selectedTarget)],
     }))
   })
@@ -1139,22 +1132,19 @@ describe('workflow store live API flow', () => {
     draft.platforms = ['mercadolibre']
     draft.site = 'CBT'
     draft.language = 'es'
-    draft.currency = 'USD'
-    draft.price = '94'
-    draft.targetSites = [{ platform: 'mercadolibre', site: 'CBT', language: 'es', currency: 'USD' }]
+    draft.targetSites = [{ platform: 'mercadolibre', site: 'CBT', language: 'es', listingCurrency: 'USD' }]
     draft.pricing = {}
     vi.mocked(workflowApi.loadDraft).mockResolvedValue(draftMutation(draft))
 
     const store = useWorkflowStore()
     store.platformOptions = [
-      { key: 'mercadolibre', label: '美客多', sites: [{ key: 'CBT', code: 'CBT', label: '全局', language: 'es', currency: 'USD' }] },
+      { key: 'mercadolibre', label: '美客多', sites: [{ key: 'CBT', code: 'CBT', label: '全局', language: 'es', listingCurrency: 'USD' }] },
     ]
     await store.loadDraftForPricing('draft-1')
 
     expect(store.pricingInput.targets).toHaveLength(1)
     expect(store.pricingInput.targets[0].targetKey).toBe('mercadolibre:cbt')
-    expect(store.pricingInput.targets[0].appliedPrice).toBe(0)
-    expect(store.currentDraft.price).toBe('94')
+    expect(store.pricingInput.targets[0].manualPrice).toBeNull()
   })
 
   it('类目预检前会把核价页尺寸同步到草稿', async () => {
@@ -1164,13 +1154,12 @@ describe('workflow store live API flow', () => {
     draft.sourceProductId = 'product-1'
     draft.site = 'MLM'
     draft.language = 'es'
-    draft.currency = 'MXN'
     draft.categoryId = 'MLM123'
     draft.targetSites = [{
       platform: 'mercadolibre',
       site: 'MLM',
       language: 'es',
-      currency: 'MXN',
+      listingCurrency: 'MXN',
       categoryId: 'MLM123',
     }]
     const productContext = createEmptyDraftProductContext()
@@ -1196,7 +1185,7 @@ describe('workflow store live API flow', () => {
     store.platformOptions = [{
       key: 'mercadolibre',
       label: '美客多',
-      sites: [{ key: 'MLM', code: 'MLM', label: '墨西哥', language: 'es', currency: 'MXN' }],
+      sites: [{ key: 'MLM', code: 'MLM', label: '墨西哥', language: 'es', listingCurrency: 'MXN' }],
     }]
     await store.loadDraftForPricing('draft-1')
 
@@ -1222,10 +1211,9 @@ describe('workflow store live API flow', () => {
     draft.platforms = ['mercadolibre']
     draft.site = 'CBT'
     draft.language = 'es'
-    draft.currency = 'USD'
     draft.targetSites = [
-      { platform: 'mercadolibre', site: 'CBT', language: 'es', currency: 'USD' },
-      { platform: 'mercadolibre', site: 'MLM', language: 'es', currency: 'MXN' },
+      { platform: 'mercadolibre', site: 'CBT', language: 'es', listingCurrency: 'USD' },
+      { platform: 'mercadolibre', site: 'MLM', language: 'es', listingCurrency: 'MXN' },
     ]
     draft.pricing = {}
     const pricingResult: PricingResult = {
@@ -1234,11 +1222,12 @@ describe('workflow store live API flow', () => {
           targetKey: 'mercadolibre:cbt',
           platform: 'mercadolibre',
           site: 'CBT',
-          currency: 'USD',
-          suggestedPrice: 23.45,
-          suggestedPriceUsd: 23.45,
-          suggestedPriceCny: 159.2,
-          appliedPrice: 23.45,
+          listingCurrency: 'USD',
+          suggestedPrice: { amount: '23.45', currency: 'USD' },
+          appliedPrice: { amount: '23.45', currency: 'USD' },
+          convertedPrices: { USD: '23.45', CNY: '159.20' },
+          calculationBasis: {},
+          calculationFingerprint: 'fingerprint-cbt',
           shippingCostUsd: 2.7,
           shippingCostCny: 18.33,
           totalCostCny: 112.33,
@@ -1258,7 +1247,7 @@ describe('workflow store live API flow', () => {
           commissionCny: 25.47,
           paymentFeeCny: 0,
           otherFeeCny: 0,
-          minimumPrice: 18.63,
+          minimumPrice: { amount: '18.63', currency: 'USD' },
           billableWeightKg: 0.3,
           usdCnyRate: 6.7892,
           mxnUsdRate: 17.521375,
@@ -1271,11 +1260,12 @@ describe('workflow store live API flow', () => {
           targetKey: 'mercadolibre:mlm',
           platform: 'mercadolibre',
           site: 'MLM',
-          currency: 'MXN',
-          suggestedPrice: 410.88,
-          suggestedPriceUsd: 23.45,
-          suggestedPriceCny: 159.2,
-          appliedPrice: 410.88,
+          listingCurrency: 'MXN',
+          suggestedPrice: { amount: '410.88', currency: 'MXN' },
+          appliedPrice: { amount: '410.88', currency: 'MXN' },
+          convertedPrices: { USD: '23.45', CNY: '159.20' },
+          calculationBasis: {},
+          calculationFingerprint: 'fingerprint-mlm',
           shippingCostUsd: 2.7,
           shippingCostCny: 18.33,
           totalCostCny: 112.33,
@@ -1295,7 +1285,7 @@ describe('workflow store live API flow', () => {
           commissionCny: 25.47,
           paymentFeeCny: 0,
           otherFeeCny: 0,
-          minimumPrice: 326.1,
+          minimumPrice: { amount: '326.10', currency: 'MXN' },
           billableWeightKg: 0.3,
           usdCnyRate: 6.7892,
           mxnUsdRate: 17.521375,
@@ -1305,10 +1295,6 @@ describe('workflow store live API flow', () => {
           raw: {},
         },
       ],
-      suggestedPriceMxn: 0,
-      suggestedPriceUsd: 23.45,
-      suggestedPriceCny: 159.2,
-      wbPriceRub: 0,
       shippingCostUsd: 2.7,
       shippingCostCny: 18.33,
       totalCostCny: 112.33,
@@ -1334,25 +1320,25 @@ describe('workflow store live API flow', () => {
         key: 'mercadolibre',
         label: '美客多',
         sites: [
-          { key: 'CBT', code: 'CBT', label: '全局', language: 'es', currency: 'USD' },
-          { key: 'MLM', code: 'MLM', label: '墨西哥', language: 'es', currency: 'MXN' },
+          { key: 'CBT', code: 'CBT', label: '全局', language: 'es', listingCurrency: 'USD' },
+          { key: 'MLM', code: 'MLM', label: '墨西哥', language: 'es', listingCurrency: 'MXN' },
         ],
       },
     ]
     await store.loadDraftForPricing('draft-1')
-    expect(store.pricingInput.targets.map((target) => target.appliedPrice)).toEqual([0, 0])
+    expect(store.pricingInput.targets.map((target) => target.manualPrice)).toEqual([null, null])
 
     await store.calculatePrice()
 
-    expect(store.pricingInput.targets.map((target) => target.appliedPrice)).toEqual([0, 0])
+    expect(store.pricingInput.targets.map((target) => target.manualPrice)).toEqual([null, null])
     expect(workflowApi.saveDraft).not.toHaveBeenCalled()
 
     vi.mocked(workflowApi.calculatePrice).mockResolvedValueOnce({
       ...pricingResult,
       results: pricingResult.results.map((item, index) => index === 0 ? {
         ...item,
-        suggestedPrice: 0,
-        appliedPrice: 0,
+        suggestedPrice: { amount: '0', currency: item.listingCurrency },
+        appliedPrice: { amount: '0', currency: item.listingCurrency },
         profitCny: 0,
         errors: [{ field: 'target_margin_percent', message: '平台费用合计 + 目标销售利润率必须小于 100%' }],
       } : item),
@@ -1362,14 +1348,13 @@ describe('workflow store live API flow', () => {
 
     await store.applyPrice()
 
-    expect(store.pricingInput.targets.map((target) => target.appliedPrice)).toEqual([23.45, 410.88])
+    expect(store.pricingInput.targets.map((target) => target.manualPrice)).toEqual([null, null])
     expect(store.pricingInput.targets.map((target) => target.shippingAmount)).toEqual([2.7, 2.7])
-    expect(store.currentDraft.price).toBe('23.45')
     expect(workflowApi.saveDraft).toHaveBeenCalledWith(expect.objectContaining({
       pricing: expect.objectContaining({
         targets: expect.objectContaining({
-          'mercadolibre:cbt': expect.objectContaining({ applied_price: 23.45 }),
-          'mercadolibre:mlm': expect.objectContaining({ applied_price: 410.88 }),
+          'mercadolibre:cbt': expect.objectContaining({ applied_price: { amount: '23.45', currency: 'USD' } }),
+          'mercadolibre:mlm': expect.objectContaining({ applied_price: { amount: '410.88', currency: 'MXN' } }),
         }),
         exchange_rates: expect.objectContaining({ source: 'test://rates' }),
         updated_at: expect.any(String),

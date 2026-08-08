@@ -59,12 +59,8 @@ def load_store_config(path: Path) -> dict[str, Any]:
             "auth_next_action": "",
         },
         "listing": {
-            "mercadolibre_price": "",
-            "yandex_price": "",
-            "ozon_price": "",
             "stock": "10",
             "sku": "",
-            "currency_id": "MXN",
             "condition": "new",
             "listing_type_id": "gold_special",
             "mercadolibre_logistic_type": "remote",

@@ -65,6 +65,12 @@ _STORE_AUTH_DETAIL_FIELDS = {
     "auth_error_message",
     "auth_next_action",
     "shop_name",
+    "contract_currency",
+    "listing_currency",
+    "currency_mode",
+    "currency_source",
+    "currency_verified_at",
+    "allowed_currencies",
 }
 _STORE_DB_OWNED_FIELDS = _STORE_CREDENTIAL_FIELDS | _STORE_AUTH_DETAIL_FIELDS | {"auth_status", "auth_checked_at"}
 

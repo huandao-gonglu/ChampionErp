@@ -15,6 +15,7 @@ from erp_web.runtime_units.category_attribute_ai_fill import (
     apply_ai_model_attribute_fill,
 )
 from erp_web.runtime_units.category_store import (
+    fetch_category_attribute_values,
     fetch_category_attributes,
     fetch_category_record,
     search_categories_live,
@@ -123,6 +124,30 @@ def category_attrs_payload(body: Payload) -> ResponseWithStatus:
         }, 400
     try:
         return fetch_category_attributes(platform, category_id, site=site), 200
+    except Exception as exc:
+        return _category_error(exc)
+
+
+def category_attribute_values_payload(body: Payload) -> ResponseWithStatus:
+    platform = _platform(body)
+    site = _site(body)
+    category_id = str(body.get("category_id") or "").strip()
+    attribute_id = str(body.get("attribute_id") or "").strip()
+    if not category_id or not attribute_id:
+        return {
+            "ok": False,
+            "error": "缺少 category_id 或 attribute_id",
+            "error_code": "CATEGORY_ATTRIBUTE_VALUE_INPUT_REQUIRED",
+        }, 400
+    try:
+        return fetch_category_attribute_values(
+            platform,
+            category_id,
+            attribute_id,
+            site=site,
+            query=str(body.get("query") or "").strip(),
+            limit=int(body.get("limit") or 50),
+        ), 200
     except Exception as exc:
         return _category_error(exc)
 

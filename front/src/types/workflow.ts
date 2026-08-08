@@ -31,7 +31,8 @@ export interface MarketplaceSiteOption {
   code: string
   label: string
   language: string
-  currency: string
+  marketCurrency?: string
+  listingCurrency: string
 }
 
 export interface MarketplaceOption {
@@ -48,7 +49,30 @@ export interface CategoryAttributeDefinition {
   valueType?: string
   unit?: string
   description?: string
+  dictionaryId?: string
+  isDictionary?: boolean
+  isCollection?: boolean
+  maxValueCount?: number
+  categoryDependent?: boolean
 }
+
+export interface CategoryAttributeOption {
+  id: string
+  value: string
+  info?: string
+  picture?: string
+}
+
+export interface CategoryDictionaryValue {
+  dictionaryValueId: number
+  value: string
+}
+
+export interface CategoryDictionarySelection {
+  values: CategoryDictionaryValue[]
+}
+
+export type CategoryAttributeValue = string | CategoryDictionarySelection
 
 export interface CategoryAttributeSchema {
   version: number
@@ -66,12 +90,14 @@ export interface MarketplaceTargetSite {
   platform: Marketplace
   site: string
   language: string
-  currency: string
+  marketCurrency?: string
+  listingCurrency: string
+  currencyResolution?: CurrencyResolution
   categoryId?: string
   descriptionCategoryId?: string
   categoryPath?: string
   categoryAttributeSchema?: CategoryAttributeSchema | null
-  attributes?: Record<string, string>
+  attributes?: Record<string, CategoryAttributeValue>
   validationErrors?: Array<UnknownRecord | string>
   categoryPrecheck?: UnknownRecord
   publishStatus?: string
@@ -96,6 +122,19 @@ export type WorkflowStatus =
 export type CollectMode = 'browser' | 'http' | 'manual' | 'extension' | 'api'
 
 export type UnknownRecord = Record<string, unknown>
+
+export interface Money {
+  amount: string
+  currency: string
+}
+
+export interface CurrencyResolution {
+  mode: 'account_locked' | 'site_locked' | 'campaign_locked' | 'selectable' | 'manual_verified' | 'unresolved'
+  listingCurrency: string
+  allowedCurrencies: string[]
+  source: string
+  verifiedAt: string
+}
 
 export interface ImageAsset {
   id: string
@@ -145,7 +184,7 @@ export interface ProductSource {
   }
   weightKg: string
   imagePool: ImageAsset[]
-  attributes: Record<string, string>
+  attributes: Record<string, CategoryAttributeValue>
   attributeMatches: UnknownRecord
   collectStatus: string
   collectDiagnostics: UnknownRecord
@@ -156,7 +195,6 @@ export interface MarketplaceDraft {
   platforms: Marketplace[]
   targetSites: MarketplaceTargetSite[]
   site: string
-  currency: string
   enabled: boolean
   title: string
   description: string
@@ -164,8 +202,7 @@ export interface MarketplaceDraft {
   categoryId: string
   descriptionCategoryId: string
   categoryPath: string
-  attributes: Record<string, string>
-  price: string
+  attributes: Record<string, CategoryAttributeValue>
   pricing: UnknownRecord
   images: DraftImageRef[]
   status: WorkflowStatus
@@ -265,7 +302,8 @@ export interface PricingTargetInput {
   targetKey: string
   platform: Marketplace
   site: string
-  currency: string
+  listingCurrency: string
+  currencyResolution?: CurrencyResolution
   commissionPercent: number
   paymentFeePercent: number
   otherFeePercent: number
@@ -275,18 +313,20 @@ export interface PricingTargetInput {
   shippingQuoteMode: ShippingQuoteMode
   shippingCurrency: ShippingCurrency
   shippingAmount: number
-  appliedPrice: number
+  manualPrice: Money | null
 }
 
 export interface PricingTargetResult {
   targetKey: string
   platform: Marketplace
   site: string
-  currency: string
-  suggestedPrice: number
-  suggestedPriceUsd: number
-  suggestedPriceCny: number
-  appliedPrice: number
+  listingCurrency: string
+  currencyResolution?: CurrencyResolution
+  suggestedPrice: Money
+  appliedPrice: Money
+  convertedPrices: Record<string, string>
+  calculationBasis: UnknownRecord
+  calculationFingerprint: string
   shippingCostUsd: number
   shippingCostCny: number
   totalCostCny: number
@@ -306,7 +346,7 @@ export interface PricingTargetResult {
   commissionCny: number
   paymentFeeCny: number
   otherFeeCny: number
-  minimumPrice: number
+  minimumPrice: Money
   billableWeightKg: number
   usdCnyRate: number
   mxnUsdRate: number
@@ -318,10 +358,6 @@ export interface PricingTargetResult {
 
 export interface PricingResult {
   results: PricingTargetResult[]
-  suggestedPriceMxn: number
-  suggestedPriceUsd: number
-  suggestedPriceCny: number
-  wbPriceRub: number
   shippingCostUsd: number
   shippingCostCny: number
   totalCostCny: number
@@ -577,7 +613,6 @@ export interface DraftIndexItem {
   sourceUrl: string
   categoryId: string
   categoryPath: string
-  price: string
   publishStatus: string
   createdAt: string
   updatedAt: string

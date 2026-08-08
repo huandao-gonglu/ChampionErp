@@ -13,7 +13,7 @@ from erp_web.context import get_context
 from erp_web.schemas.ai_tools import AiToolDefinition
 from erp_web.runtime_units.category_tools import (
     CategoryCandidateLedger,
-    build_category_search_toolset,
+    build_category_match_toolset,
 )
 from erp_web.services.ai_agent_factory import AiAgentExecutionError, AiAgentFactory
 from erp_web.services.ai_model_factory import PydanticModelBinding
@@ -75,6 +75,13 @@ def factory_for(model: FunctionModel) -> AiAgentFactory:
     )
 
 
+def toolset_for(searcher: Searcher, ledger: CategoryCandidateLedger) -> AiToolSet:
+    return build_category_match_toolset(
+        searcher=searcher,
+        ledger=ledger,
+    ).toolset
+
+
 def final_output(agent_info: AgentInfo, payload: dict[str, Any], call_id: str) -> ModelResponse:
     assert len(agent_info.output_tools) == 1
     return ModelResponse(
@@ -85,7 +92,7 @@ def final_output(agent_info: AgentInfo, payload: dict[str, Any], call_id: str) -
 def test_agent_uses_native_tool_call_and_typed_output() -> None:
     searcher = Searcher([[candidate("MLM-FAN")]])
     ledger = CategoryCandidateLedger()
-    toolset = build_category_search_toolset(searcher=searcher, ledger=ledger)
+    toolset = toolset_for(searcher, ledger)
     turns = 0
 
     def model(messages: list[Any], agent_info: AgentInfo) -> ModelResponse:
@@ -139,7 +146,8 @@ def test_agent_uses_native_tool_call_and_typed_output() -> None:
     events = get_context().ai_journal.read_events(result.trace["conversation_id"])
     request_event = next(event for event in events if event.get("name") == "agent.request")
     assert "风扇" in str(request_event["value"])
-    assert request_event["value"]["limits"]["max_model_requests"] == 5
+    assert request_event["value"]["limits"]["max_model_requests"] == 6
+    assert request_event["value"]["limits"]["max_tool_calls"] == 4
     transcript_event = next(
         event for event in events if event.get("name") == "agent.transcript"
     )
@@ -159,7 +167,7 @@ def test_agent_uses_native_tool_call_and_typed_output() -> None:
 def test_output_validator_retries_before_any_search() -> None:
     searcher = Searcher([[candidate("MLM-FAN")]])
     ledger = CategoryCandidateLedger()
-    toolset = build_category_search_toolset(searcher=searcher, ledger=ledger)
+    toolset = toolset_for(searcher, ledger)
     turns = 0
 
     def model(messages: list[Any], agent_info: AgentInfo) -> ModelResponse:
@@ -201,7 +209,7 @@ def test_output_validator_retries_before_any_search() -> None:
 def test_unknown_category_stays_a_stable_agent_error_after_retries() -> None:
     searcher = Searcher([[candidate("MLM-FAN")]])
     ledger = CategoryCandidateLedger()
-    toolset = build_category_search_toolset(searcher=searcher, ledger=ledger)
+    toolset = toolset_for(searcher, ledger)
     turns = 0
 
     def model(messages: list[Any], agent_info: AgentInfo) -> ModelResponse:
@@ -246,14 +254,14 @@ def test_unknown_category_stays_a_stable_agent_error_after_retries() -> None:
     )
     transcript = str(transcript_event["value"])
     assert "MLM-INVENTED" in transcript
-    assert "selected_category_id 必须来自本次 search_categories 的真实结果" in transcript
+    assert "selected_category_id 必须来自本次检索工具真实返回的商品类型" in transcript
     assert events[-1]["type"] == "RUN_ERROR"
 
 
 def test_abstain_requires_three_different_effective_searches() -> None:
     searcher = Searcher([[], [], []])
     ledger = CategoryCandidateLedger()
-    toolset = build_category_search_toolset(searcher=searcher, ledger=ledger)
+    toolset = toolset_for(searcher, ledger)
     keywords = iter(["ventilador", "ventilador de mesa", "aparato de ventilación"])
     turns = 0
 
@@ -301,7 +309,7 @@ def test_abstain_requires_three_different_effective_searches() -> None:
 def test_duplicate_keyword_is_deduplicated_and_does_not_count_as_three_searches() -> None:
     searcher = Searcher([[]])
     ledger = CategoryCandidateLedger()
-    toolset = build_category_search_toolset(searcher=searcher, ledger=ledger)
+    toolset = toolset_for(searcher, ledger)
     turns = 0
 
     def model(messages: list[Any], agent_info: AgentInfo) -> ModelResponse:
@@ -343,10 +351,10 @@ def test_duplicate_keyword_is_deduplicated_and_does_not_count_as_three_searches(
     assert ledger.search_count == 1
 
 
-def test_fourth_unique_search_is_stopped_by_profile_tool_limit() -> None:
+def test_search_limit_feedback_precedes_profile_tool_limit() -> None:
     searcher = Searcher([[], [], []])
     ledger = CategoryCandidateLedger()
-    toolset = build_category_search_toolset(searcher=searcher, ledger=ledger)
+    toolset = toolset_for(searcher, ledger)
     turns = 0
 
     def model(messages: list[Any], agent_info: AgentInfo) -> ModelResponse:
@@ -379,7 +387,7 @@ def test_fourth_unique_search_is_stopped_by_profile_tool_limit() -> None:
 
 def test_provider_exception_is_normalized_without_fallback_or_secret() -> None:
     ledger = CategoryCandidateLedger()
-    toolset = build_category_search_toolset(searcher=Searcher([[]]), ledger=ledger)
+    toolset = toolset_for(Searcher([[]]), ledger)
     secret = "provider-secret-body"
 
     def model(messages: list[Any], agent_info: AgentInfo) -> ModelResponse:

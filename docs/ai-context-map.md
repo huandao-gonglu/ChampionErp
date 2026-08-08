@@ -154,13 +154,14 @@ runtime unit 中显式构造，不注册到动态全局表。
 
 ## 类目平台搜索层
 
-- `erp_web/marketplaces/category_provider.py`：定义绑定式 `CategorySearcher`；唯一
-  方法是 `search_categories(keyword)`，不接收 platform/site。
+- `erp_web/marketplaces/category_provider.py`：定义绑定式 `CategorySearcher` 与
+  `CategoryNavigator`；前者按关键词发现，后者读取顶层节点并按 parent IDs 展开，
+  两者的方法都不接收 platform/site。
 - `erp_web/runtime_units/category_searchers.py`：任务入口根据当前平台实例化具体
-  搜索器。Mercado Libre 调用 `domain_discovery/search`；Ozon 搜索服务端缓存类目
-  树。平台选择只发生在对象创建处，后续通过同一接口多态调用。
+  检索对象。Mercado Libre 调用 `domain_discovery/search`；Ozon 同一绑定对象同时
+  保留人工关键词搜索能力并为自动匹配实现树导航。平台选择只发生在对象创建处。
 - `erp_web/runtime_units/category_providers.py`：平台 API 与类目详情适配。
-- `erp_web/runtime_units/ozon_category_api.py`：Ozon 类目语料的刷新策略与搜索入口；
+- `erp_web/runtime_units/ozon_category_api.py`：Ozon 类目语料的刷新、人工搜索和树导航入口；
   24 小时内复用缓存，远端瞬时网络错误时最多使用 7 天旧语料，认证错误不允许
   stale fallback。完整树不会进入 AI 上下文。
 - `erp_web/runtime_units/ozon_category_cache.py`：Ozon 展平类目语料的版本化压缩 JSON
@@ -170,8 +171,8 @@ runtime unit 中显式构造，不注册到动态全局表。
 - `tests/test_category_searchers.py`、`tests/test_ozon_category_api.py`：平台对象选择、
   远端/缓存搜索、错误分类和 Ozon ID 配对测试。
 
-`erp_web/runtime_units/category_store.py::search_categories_live` 与自动匹配内部工具
-共用 `CategorySearcher`，但 `POST /api/category-search` 仍只服务人工关键词搜索。
+`erp_web/runtime_units/category_store.py::search_categories_live` 继续服务人工关键词搜索；
+自动匹配按绑定对象能力选择 `CategoryNavigator` 或 `CategorySearcher`，两者不互相 fallback。
 
 ## 通用文本翻译
 
@@ -187,13 +188,22 @@ runtime unit 中显式构造，不注册到动态全局表。
 
 ## 类目匹配 Capability
 
-- `erp_web/runtime_units/category_tools.py`：`category.search` 只读 ToolSet；只暴露
-  `search_categories(keyword)`。ToolSet 绑定一个已经实例化的 `CategorySearcher`，
-  工具 schema 与执行器均没有 platform/site 分支。
+- `POST /api/category-attrs` 返回平台类目属性定义；Ozon 字典字段保留
+  `dictionary_id/is_dictionary/is_collection/max_value_count/category_dependent`，不把大字典内联到类目响应。
+- `POST /api/category-attribute-values` 是平台枚举值的唯一公开读取入口；
+  `erp_web/runtime_units/category_store.py` 通过 `CategoryProvider.attribute_values` 分派，
+  Ozon 由 `erp_web/runtime_units/ozon_category_api.py` 调用独立的
+  `description-category/attribute/values` 接口并跨页搜索、短时缓存。
+- `front/src/components/domain/CategoryAttributesPanel.vue` 对字典字段只保存平台选项的
+  `dictionary_value_id + value`，搜索输入不进入草稿；发布预检拒绝自由文本字典值。
+
+- `erp_web/runtime_units/category_tools.py`：`category.search` 只读 ToolSet。绑定对象实现
+  `CategoryNavigator` 时只暴露 `browse_categories(parent_ids)`；否则只暴露
+  `search_categories(keyword)`。工具 schema 与执行器均没有 platform/site 参数。
 - `erp_web/facades/category_match_facade.py`：`category.match` 公开编排入口；
-  首轮只发送原语言/目标语言标题与描述及少量有效商品事实；模型必须调用搜索，
-  可换词重试，最多 3 轮/3 次。最终选择必须经过候选账本、站点、可发布状态、
-  详情、Ozon ID 配对和属性读取校验。
+  首轮发送裁剪后的双语商品事实；Ozon 同时发送真实顶层节点并允许最多四次树导航，
+  Mercado Libre 最多三次换词发现。最终选择必须经过叶子候选账本、站点、可发布状态、
+  详情、Ozon ID 配对和属性读取校验；达到资源上限时返回 unresolved，不静默改选。
 - `erp_web/services/category_match_agent_service.py`：`category.product_match` 的 focused
   Execution Profile、prompt 渲染、类型化 `CategoryMatchAgentOutput` 与 Ledger output
   validator；只通过统一 `AiAgentFactory` 运行。
@@ -208,13 +218,41 @@ runtime unit 中显式构造，不注册到动态全局表。
   自动匹配唯一入口，逐目标站点调用 `matchCategory`；不包含运行时开关或第二条
   自动匹配分支。
 - `tests/test_category_match_facade.py`、`tests/test_category_tools.py`：首次上下文裁剪、
-  多轮换词、强制搜索、未知 ID、deadline、凭据和工具去重测试。
+  Ozon 逐层导航与有限回退、Mercado Libre 多轮换词、未知 ID、deadline、凭据和工具去重测试。
 
 endpoint 内部只使用 `category_id/path_segments`。前端只在 API 边界转换成人工
 选择组件需要的 `id/path`，且不会自动写入模型首选；用户仍需点击候选确认。HTTP
-结果只返回最后搜索词与去重后的轻量候选。完整技术 spans 和 usage 进入 instrumentation；
+结果只返回最后检索位置与去重后的轻量叶子候选。完整技术 spans 和 usage 进入 instrumentation；
 AI Work 保存脱敏且有界的 Agent 输入、每轮模型消息、工具参数/结果、trace 关联和最终业务摘要，
 用于区分模型选错、validator 拒绝、工具失败与资源上限。
+
+Ozon 自动类目召回不再要求模型猜中平台类目关键词。后端从
+`erp_web/runtime_units/ozon_category_api.py` 的现有扁平商品类型语料恢复真实父子关系，
+首次输入提供顶层节点，`erp_web/runtime_units/category_tools.py::browse_categories`
+每次最多展开两个真实分支。标准流程逐层到达 `product_type`，必要时在最多四次导航内
+回退到尚未展开的备选分支；只有工具真实返回的叶子 `category_id` 可以进入详情终检。
+Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不作为 Ozon fallback。
+
+## 发布币种与核价
+
+- `erp_web/marketplace_registry.py`：只维护站点的 `market_currency`（市场展示）与
+  站点锁定的 `listing_currency`。Ozon 的刊登币种为空，禁止用俄罗斯市场的 RUB
+  作为发布默认值。
+- `erp_web/services/listing_currency_service.py`：发布币种解析唯一边界。Mercado Libre
+  按站点锁定，Yandex 按 campaign 规则锁定，Ozon 按店铺合同锁定；解析失败必须阻断
+  核价和发布，不允许回退到市场国家币种。
+- `erp_web/marketplaces/category_services.py::fetch_ozon_seller_info` 与
+  `erp_web/runtime_units/store_credentials.py::refresh_ozon_currency_capability`：通过
+  Ozon `/v1/seller/info` 发现并持久化店铺合同币种。授权测试会刷新；核价在能力缺失时
+  只补取一次。
+- `erp_web/services/pricing_service.py`：所有发布售价使用 `{amount, currency}` Money；
+  商品成本、物流与利润先统一在 CNY 核算，再按已解析的 `listing_currency` 换算。
+  每个目标分别保存 `calculation_basis` 与 SHA-256 指纹。
+- `erp_web/runtime_units/draft_publish_context.py`：从 `pricing.targets[platform:site]`
+  投影当前目标的发布价格。持久化草稿没有含义不明的顶层 `price/currency`。
+- `erp_web/runtime_units/publish_validation.py`：发布前核对目标币种、Money 币种、核价
+  指纹、商品成本及包装尺寸；任何变化都会把旧核价判为 stale 并要求重新核价。
+- 商品 schema v2 会读取 v1 数据，但旧数字售价和无指纹核价只标记失效，不自动猜币种。
 
 ## 商品发布
 

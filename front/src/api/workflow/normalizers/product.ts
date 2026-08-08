@@ -22,6 +22,7 @@ import {
   wireStringList,
   platformList,
   normalizeAttributes,
+  toBackendAttributes,
   normalizeValidationErrors,
   normalizeCategoryAttributeSchema,
   normalizeTargetSites,
@@ -91,7 +92,6 @@ export function normalizeDraft(value: unknown, language: string): MarketplaceDra
     ? record.sale_terms.map((item) => asRecord(item))
     : []
   const site = getString(record, ['site'], draft.site)
-  const currency = getString(record, ['currency'], draft.currency)
   const draftLanguage = getString(record, ['language'], language)
   const categoryId = getString(record, ['category_id'])
   const descriptionCategoryId = getString(record, ['description_category_id'])
@@ -114,9 +114,8 @@ export function normalizeDraft(value: unknown, language: string): MarketplaceDra
     ...draft,
     draftId: getString(record, ['draft_id']),
     platforms: platformList(record.platforms),
-    targetSites: normalizeTargetSites(record.target_sites, platformList(record.platforms)[0] || 'mercadolibre', site, draftLanguage, currency, targetFallback),
+    targetSites: normalizeTargetSites(record.target_sites, platformList(record.platforms)[0] || 'mercadolibre', site, draftLanguage, '', targetFallback),
     site,
-    currency,
     enabled: getBoolean(record, ['enabled'], draft.enabled),
     title: getString(record, ['title']),
     description: getString(record, ['description']),
@@ -125,7 +124,6 @@ export function normalizeDraft(value: unknown, language: string): MarketplaceDra
     descriptionCategoryId,
     categoryPath,
     attributes,
-    price: getString(record, ['price']),
     pricing: asRecord(record.pricing),
     images: normalizeDraftImageRefs(record.images),
     status: getString(record, ['status'], draft.status) as MarketplaceDraft['status'],
@@ -229,15 +227,13 @@ export function toBackendDraft(draft: MarketplaceDraft): UnknownRecord {
     platforms: draft.platforms,
     target_sites: draft.targetSites.map(toBackendTargetSite),
     site: draft.site,
-    currency: draft.currency,
     title: draft.title,
     description: draft.description,
     bullets: draft.bullets,
     category_id: draft.categoryId,
     description_category_id: draft.descriptionCategoryId,
     category_path: draft.categoryPath,
-    attributes: draft.attributes,
-    price: draft.price,
+    attributes: toBackendAttributes(draft.attributes),
     pricing: draft.pricing,
     images: draft.images.map(toBackendDraftImageRef),
     status: draft.status,
@@ -272,7 +268,7 @@ export function normalizeDraftDetail(value: unknown): DraftDetail {
     sourceProductId: getString(record, ['source_product_id']),
     platform: primaryPlatform,
     platforms,
-    targetSites: normalizeTargetSites(record.target_sites, primaryPlatform, getString(record, ['site']), draft.language, draft.currency, {
+    targetSites: normalizeTargetSites(record.target_sites, primaryPlatform, getString(record, ['site']), draft.language, '', {
       categoryId: draft.categoryId,
       descriptionCategoryId: draft.descriptionCategoryId,
       categoryPath: draft.categoryPath,

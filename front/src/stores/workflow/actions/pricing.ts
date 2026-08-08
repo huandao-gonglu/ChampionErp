@@ -31,11 +31,13 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
       target_key: result.targetKey,
       platform: result.platform,
       site: result.site,
-      currency: result.currency,
+      listing_currency: result.listingCurrency,
+      currency_resolution: result.currencyResolution || {},
       suggested_price: result.suggestedPrice,
-      suggested_price_usd: result.suggestedPriceUsd,
-      suggested_price_cny: result.suggestedPriceCny,
-      applied_price: result.appliedPrice || result.suggestedPrice,
+      applied_price: result.appliedPrice,
+      converted_prices: result.convertedPrices,
+      calculation_basis: result.calculationBasis,
+      calculation_fingerprint: result.calculationFingerprint,
       shipping_cost_usd: result.shippingCostUsd,
       shipping_cost_cny: result.shippingCostCny,
       total_cost_cny: result.totalCostCny,
@@ -67,7 +69,6 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
 
   function buildDraftPricing(result: PricingResult): UnknownRecord {
     const targets = Object.fromEntries(result.results.map((item) => [item.targetKey, pricingResultRecord(item)]))
-    const primary = result.results[0]
     return {
       common: {
         purchase_cost_cny: pricingInput.value.purchaseCostCny,
@@ -84,10 +85,6 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
         exchange_rate_mode: result.exchangeRateMode || pricingInput.value.exchangeRateMode,
       },
       targets,
-      suggested_price: primary?.suggestedPrice || 0,
-      applied_price: primary ? primary.appliedPrice || primary.suggestedPrice : 0,
-      currency: primary?.currency || '',
-      target_key: primary?.targetKey || '',
       exchange_rates: {
         mode: result.exchangeRateMode,
         source: result.exchangeRateSource,
@@ -118,6 +115,16 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
 
   function acceptPreview(result: PricingResult) {
     pricingResult.value = result
+    const resultsByTarget = new Map(result.results.map((item) => [item.targetKey.toLowerCase(), item]))
+    pricingInput.value.targets.forEach((target) => {
+      const resolved = resultsByTarget.get(target.targetKey.toLowerCase())
+      if (!resolved) return
+      if (target.manualPrice?.currency !== resolved.listingCurrency) {
+        target.manualPrice = null
+      }
+      target.listingCurrency = resolved.listingCurrency
+      target.currencyResolution = resolved.currencyResolution
+    })
     if (result.usdCnyRate > 0) pricingInput.value.usdCnyRate = result.usdCnyRate
     if (result.mxnUsdRate > 0) pricingInput.value.mxnUsdRate = result.mxnUsdRate
     if (result.rubCnyRate > 0) pricingInput.value.rubCnyRate = result.rubCnyRate
@@ -160,14 +167,23 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
         return
       }
       const primary = result.results[0]
-      if (!primary || primary.appliedPrice <= 0) {
+      if (!primary || Number(primary.appliedPrice.amount) <= 0) {
         setError('无法应用售价：请先生成或填写有效售价。')
         return
       }
       const packageDimensions = syncDraftPackageDimensionsFromPricingInput()
+      const resultsByTarget = new Map(result.results.map((item) => [item.targetKey.toLowerCase(), item]))
       const draftToSave: DraftDetail = {
         ...currentDraft.value,
-        price: String(primary.appliedPrice),
+        targetSites: currentDraft.value.targetSites.map((target) => {
+          const key = `${target.platform}:${target.site}`.toLowerCase()
+          const targetResult = resultsByTarget.get(key)
+          return targetResult ? {
+            ...target,
+            listingCurrency: targetResult.listingCurrency,
+            currencyResolution: targetResult.currencyResolution,
+          } : target
+        }),
         pricing: buildDraftPricing(result),
         packageDimensions,
       }

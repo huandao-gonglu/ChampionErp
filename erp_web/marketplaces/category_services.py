@@ -275,6 +275,25 @@ def fetch_ozon_shop_name(client_id: str, api_key: str) -> str:
     raise RuntimeError(" / ".join(errors))
 
 
+def fetch_ozon_seller_info(client_id: str, api_key: str) -> dict[str, Any]:
+    """Return Ozon seller account metadata used by publishing capabilities."""
+
+    data = request_ozon_json(
+        "POST",
+        "https://api-seller.ozon.ru/v1/seller/info",
+        client_id,
+        api_key,
+        {},
+    )
+    if not isinstance(data, dict):
+        raise RuntimeError("Ozon seller/info 返回异常")
+    company = data.get("company") if isinstance(data.get("company"), dict) else {}
+    currency = str(company.get("currency") or "").strip().upper()
+    if not currency:
+        raise RuntimeError("Ozon seller/info 未返回店铺合同币种")
+    return data
+
+
 def required_mercadolibre_attributes(category_id: str, token: str) -> list[dict[str, Any]]:
     attrs = mercadolibre_category_attributes_for_publish(category_id, token)
     required = []

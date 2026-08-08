@@ -98,7 +98,7 @@ function targetCompactLabel(platform: Marketplace, site: string) {
 }
 
 function targetMeta(target: MarketplaceTargetSite) {
-  return [target.site, target.language, target.currency].filter(Boolean).join(' / ')
+  return [target.site, target.language, target.listingCurrency || '币种待核验'].filter(Boolean).join(' / ')
 }
 
 function targetSitesForLanguage(language: string): MarketplaceTargetSite[] {
@@ -106,7 +106,13 @@ function targetSitesForLanguage(language: string): MarketplaceTargetSite[] {
   if (!selectedLanguage) return []
   return props.platformOptions.flatMap((platform) => platform.sites
     .filter((site) => languageKey(site.language) === selectedLanguage)
-    .map((site) => ({ platform: platform.key, site: site.code, language: site.language, currency: site.currency })))
+    .map((site) => ({
+      platform: platform.key,
+      site: site.code,
+      language: site.language,
+      marketCurrency: site.marketCurrency,
+      listingCurrency: site.listingCurrency,
+    })))
 }
 
 function matchingTargetSites(item: DraftIndexItem): MarketplaceTargetSite[] {

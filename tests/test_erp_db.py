@@ -12,6 +12,7 @@ from unittest import mock
 
 from erp_web import db as erp_db
 from erp_web.db import ErpDatabase
+from erp_web.services.pricing_service import pricing_calculation_fingerprint
 
 
 def sample_product(title: str = "Imported title", source_url: str = "https://example.com/item") -> dict:
@@ -56,7 +57,8 @@ def sample_product(title: str = "Imported title", source_url: str = "https://exa
                 "description": "Descripcion MX",
                 "category_id": "MLM123",
                 "attributes": {"BRAND": "BrandX"},
-                "price": "19.99",
+                "target_sites": [{"platform": "mercadolibre", "site": "MLM", "language": "es", "market_currency": "MXN", "listing_currency": "MXN"}],
+                "pricing": {"targets": {"mercadolibre:mlm": {"listing_currency": "MXN", "applied_price": {"amount": "19.99", "currency": "MXN"}}}},
                 "status": "copy_ready",
             }
         },
@@ -66,6 +68,41 @@ def sample_product(title: str = "Imported title", source_url: str = "https://exa
 class ErpDbTests(unittest.TestCase):
     def _db(self, app_dir: Path) -> ErpDatabase:
         return ErpDatabase(app_dir / erp_db.DEFAULT_DB_NAME)
+
+    def test_legacy_draft_price_and_currency_are_read_as_stale_v2_data(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(Path(tmp))
+            product_id = db.upsert_product_model(sample_product())
+            draft_id = db.list_draft_records(scope="all")[0]["draft_id"]
+            with db._connect() as conn:
+                row = conn.execute(
+                    "SELECT draft_json FROM platform_drafts WHERE draft_id = ?",
+                    (draft_id,),
+                ).fetchone()
+                legacy = json.loads(row[0])
+                legacy["price"] = "1999.90"
+                legacy["currency"] = "RUB"
+                legacy["pricing"] = {
+                    "targets": {
+                        "mercadolibre:mlm": {
+                            "applied_price": 1999.90,
+                            "currency": "RUB",
+                        }
+                    }
+                }
+                conn.execute(
+                    "UPDATE platform_drafts SET draft_json = ? WHERE draft_id = ?",
+                    (json.dumps(legacy), draft_id),
+                )
+                conn.commit()
+
+            loaded = db.load_draft_model(draft_id)
+
+            self.assertNotIn("price", loaded)
+            self.assertNotIn("currency", loaded)
+            target = loaded["pricing"]["targets"]["mercadolibre:mlm"]
+            self.assertNotIn("applied_price", target)
+            self.assertEqual(target["stale_reason"], "legacy_pricing_contract")
 
     @staticmethod
     def _create_v4_draft_table(
@@ -560,7 +597,12 @@ class ErpDbTests(unittest.TestCase):
                 product_id,
                 "mercadolibre",
                 {
-                    "price": "29.90",
+                    "pricing": {"targets": {"mercadolibre:mlm": {
+                        "listing_currency": "MXN",
+                        "applied_price": {"amount": "29.90", "currency": "MXN"},
+                        "calculation_basis": {"listing_currency": "MXN"},
+                        "calculation_fingerprint": pricing_calculation_fingerprint({"listing_currency": "MXN"}),
+                    }}},
                     "publish_status": "ready",
                     "target_sites": [
                         {
@@ -573,7 +615,7 @@ class ErpDbTests(unittest.TestCase):
             )
 
             loaded = db.load_draft_model(draft_id)
-            self.assertEqual(loaded["price"], "29.90")
+            self.assertEqual(loaded["pricing"]["targets"]["mercadolibre:mlm"]["applied_price"], {"amount": "29.90", "currency": "MXN"})
             self.assertEqual(loaded["publish_status"], "ready")
             target = loaded["target_sites"][0]
             self.assertEqual(target["category_id"], "MLM-1")

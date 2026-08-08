@@ -5,7 +5,7 @@ from typing import Any, TypedDict
 from .image import DraftImageRef, ImageItem
 
 
-PRODUCT_SCHEMA_VERSION = 1
+PRODUCT_SCHEMA_VERSION = 2
 
 
 class ProductSource(TypedDict, total=False):
@@ -43,6 +43,12 @@ class CategoryAttributeDefinition(TypedDict, total=False):
     value_type: str
     unit: str
     description: str
+    dictionary_id: str
+    is_dictionary: bool
+    is_collection: bool
+    max_value_count: int
+    category_dependent: bool
+    raw: dict[str, Any]
 
 
 class CategoryAttributeSchema(TypedDict, total=False):
@@ -61,7 +67,9 @@ class DraftTargetSite(TypedDict, total=False):
     platform: str
     site: str
     language: str
-    currency: str
+    market_currency: str
+    listing_currency: str
+    currency_resolution: dict[str, Any]
     category_id: str
     description_category_id: str
     category_path: str
@@ -96,7 +104,6 @@ class PlatformDraft(TypedDict, total=False):
     category_attribute_schema: CategoryAttributeSchema
     target_sites: list[DraftTargetSite]
     attributes: dict[str, Any]
-    price: str
     pricing: dict[str, Any]
     stock: str
     sku: str
@@ -104,7 +111,6 @@ class PlatformDraft(TypedDict, total=False):
     bullets: list[str]
     search_terms: list[str]
     language: str
-    currency: str
     package_dimensions: dict[str, str]
     validation_errors: list[Any]
     images: list[DraftImageRef]

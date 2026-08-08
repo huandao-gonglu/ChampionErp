@@ -27,9 +27,25 @@ from erp_web.runtime_units import (
 )
 from erp_web.runtime_units.publish_logs_runtime import mercadolibre_test_error_code
 from erp_web.services import image_service, image_translate_service
+from erp_web.services.pricing_service import pricing_calculation_fingerprint
 from erp_web.stores import config_store
 from tests.runtime_test_utils import temp_app_context
 from tests.test_erp_db import sample_product
+
+
+def pricing_targets(platform: str, site: str, currency: str, amount: str) -> dict:
+    basis = {"listing_currency": currency}
+    return {
+        "targets": {
+            f"{platform}:{site}".lower(): {
+                "listing_currency": currency,
+                "suggested_price": {"amount": amount, "currency": currency},
+                "applied_price": {"amount": amount, "currency": currency},
+                "calculation_basis": basis,
+                "calculation_fingerprint": pricing_calculation_fingerprint(basis),
+            }
+        }
+    }
 
 
 class ErpWebDbIntegrationTests(unittest.TestCase):
@@ -171,7 +187,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 {
                     "title": "Ozon original",
                     "description": "Ozon description",
-                    "price": "22",
+                    "pricing": {"targets": {"ozon:global": {"listing_currency": "RUB", "applied_price": {"amount": "22", "currency": "RUB"}}}},
                     "status": "copy_ready",
                 },
             )
@@ -180,7 +196,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 {
                     "title": "Yandex original",
                     "description": "Yandex description",
-                    "price": "21",
+                    "pricing": {"targets": {"yandex:global": {"listing_currency": "RUB", "applied_price": {"amount": "21", "currency": "RUB"}}}},
                     "status": "copy_ready",
                 },
             )
@@ -190,7 +206,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                     "draft_id": yandex_draft_id,
                     "title": "Yandex independent title",
                     "description": "Yandex independent description",
-                    "price": "33",
+                    "pricing": {"targets": {"yandex:global": {"listing_currency": "RUB", "applied_price": {"amount": "33", "currency": "RUB"}}}},
                     "status": "copy_ready",
                     "language": "ru-RU",
                     "target_sites": [
@@ -373,7 +389,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "images": [],
             "category_id": "",
             "attributes": {},
-            "price": "",
+            "pricing": {"targets": {}},
             "status": "claimed",
         }
         self.assertEqual(get_context().products.draft_workflow_status(product, "mercadolibre"), "claimed")
@@ -394,7 +410,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             {
                 "category_id": "MLM123",
                 "attributes": {"BRAND": "BrandX"},
-                "price": "19.99",
+                "pricing": pricing_targets("mercadolibre", "MLM", "MXN", "19.99"),
                 "stock": "5",
             }
         )
@@ -753,9 +769,9 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
                 "category_id": "MLM123",
                 "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
-                "price": "19.99",
+                "target_sites": [{"platform": "mercadolibre", "site": "MLM", "market_currency": "MXN", "listing_currency": "MXN"}],
                 "stock": "5",
-                "pricing": {"suggested_price": "19.99"},
+                "pricing": pricing_targets("mercadolibre", "MLM", "MXN", "19.99"),
                 "package_dimensions": {
                     "length_cm": "10",
                     "width_cm": "8",
@@ -807,7 +823,9 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
             "category_id": "MLM455865",
             "attributes": {"BRAND": "DraftBrand", "MODEL": "DraftModel", "MATERIAL": "ABS"},
-            "price": "9.59",
+            "site": "MLM",
+            "target_sites": [{"platform": "mercadolibre", "site": "MLM", "market_currency": "MXN", "listing_currency": "MXN"}],
+            "pricing": pricing_targets("mercadolibre", "MLM", "MXN", "9.59"),
             "stock": "10",
             "sku": "DRAFT-SKU-1",
             "upc": "123456789012",
@@ -838,7 +856,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
         self.assertEqual(payload["title"], "Draft title for ML")
         self.assertEqual(payload["category_id"], "MLM455865")
         self.assertEqual(payload["price"], 9.59)
-        self.assertEqual(payload["currency_id"], "USD")
+        self.assertEqual(payload["currency_id"], "MXN")
         self.assertEqual(payload["available_quantity"], 10)
         self.assertEqual(payload["pictures"], [{"source": "https://example.com/draft-main.jpg"}])
         self.assertEqual(attributes["SELLER_SKU"], "DRAFT-SKU-1")
@@ -870,7 +888,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
             "category_id": "CBT457856",
             "attributes": {"BRAND": "DraftBrand", "MODEL": "DraftModel"},
-            "price": "18.00",
+            "target_sites": [{"platform": "mercadolibre", "site": "CBT", "market_currency": "USD", "listing_currency": "USD"}],
+            "pricing": pricing_targets("mercadolibre", "CBT", "USD", "18.00"),
             "stock": "10",
             "sku": "DRAFT-CBT-SKU",
             "upc": "123456789012",
@@ -914,7 +933,6 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                     "description": "Published description",
                     "category_id": "MLM123",
                     "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
-                    "price": "19.99",
                     "stock": "5",
                     "publish_status": "real_publish_success",
                     "status": "published",
@@ -1112,9 +1130,9 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
             "category_id": "MLM123",
             "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
-            "price": "19.99",
+            "target_sites": [{"platform": "mercadolibre", "site": "MLM", "market_currency": "MXN", "listing_currency": "MXN"}],
             "stock": "5",
-            "pricing": {"suggested_price": "19.99"},
+            "pricing": pricing_targets("mercadolibre", "MLM", "MXN", "19.99"),
             "publish_status": "ready",
         }
         ready_product["publish_preview"] = {
@@ -1132,9 +1150,9 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
             "category_id": "MLM123",
             "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
-            "price": "19.99",
+            "target_sites": [{"platform": "mercadolibre", "site": "MLM", "market_currency": "MXN", "listing_currency": "MXN"}],
             "stock": "5",
-            "pricing": {"suggested_price": "19.99"},
+            "pricing": pricing_targets("mercadolibre", "MLM", "MXN", "19.99"),
             "publish_status": "not_ready",
         }
         pending_status = get_context().products.product_index_status(pending_product, "mercadolibre")
@@ -1155,7 +1173,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
             "category_id": "MLM123",
             "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
-            "price": "19.99",
+            "target_sites": [{"platform": "mercadolibre", "site": "MLM", "market_currency": "MXN", "listing_currency": "MXN"}],
+            "pricing": pricing_targets("mercadolibre", "MLM", "MXN", "19.99"),
             "stock": "5",
             "publish_status": "ready",
         }
@@ -1176,7 +1195,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
             "category_id": "MLM123",
             "attributes": {},
-            "price": "19.99",
+            "target_sites": [{"platform": "mercadolibre", "site": "MLM", "market_currency": "MXN", "listing_currency": "MXN"}],
+            "pricing": pricing_targets("mercadolibre", "MLM", "MXN", "19.99"),
             "stock": "5",
             "publish_status": "ready",
         }
@@ -1200,9 +1220,9 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
                 "category_id": "MLM123",
                 "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
-                "price": "19.99",
+                "target_sites": [{"platform": "mercadolibre", "site": "MLM", "market_currency": "MXN", "listing_currency": "MXN"}],
                 "stock": "5",
-                "pricing": {"suggested_price": "19.99"},
+                "pricing": pricing_targets("mercadolibre", "MLM", "MXN", "19.99"),
                 "publish_status": "ready",
             }
             product["publish_preview"] = {

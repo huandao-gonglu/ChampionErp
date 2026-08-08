@@ -16,16 +16,36 @@ describe('calculatePrice API mapping', () => {
     vi.mocked(apiClient.post).mockResolvedValueOnce({
       data: {
         ok: true,
-        suggested_price_mxn: 739.83,
-        suggested_price_usd: 43.52,
-        wb_price_rub: 3011,
-        shipping_cost_usd: 8,
-        shipping_cost_cny: 58,
-        total_cost_cny: 183,
-        net_revenue_cny: 203.88,
-        profit_cny: 78.88,
-        profit_percent: 25,
-        input: { usd_cny_rate: 7.25, mxn_usd_rate: 17, rub_cny_rate: 12 },
+        results: [{
+          target_key: 'mercadolibre:mlm',
+          platform: 'mercadolibre',
+          site: 'MLM',
+          listing_currency: 'MXN',
+          suggested_price: { amount: '739.83', currency: 'MXN' },
+          applied_price: { amount: '739.83', currency: 'MXN' },
+          minimum_price: { amount: '600.00', currency: 'MXN' },
+          converted_prices: { USD: '43.52', CNY: '315.52' },
+          calculation_basis: { listing_currency: 'MXN' },
+          calculation_fingerprint: 'fingerprint',
+          shipping_cost_usd: 8,
+          shipping_cost_cny: 58,
+          total_cost_cny: 183,
+          net_revenue_cny: 203.88,
+          profit_cny: 78.88,
+          margin_percent: 25,
+          commission_percent: 15,
+          pricing_mode: 'margin',
+          target_margin_percent: 25,
+          markup_percent: 30,
+          shipping_quote_mode: 'manual',
+          shipping_currency: 'USD',
+          shipping_amount: 8,
+          usd_cny_rate: 7.25,
+          mxn_usd_rate: 17,
+          rub_cny_rate: 12,
+          errors: [],
+        }],
+        input: { common: { usd_cny_rate: 7.25, mxn_usd_rate: 17, rub_cny_rate: 12 } },
         exchange_rate_mode: 'manual',
         exchange_rates: {
           ok: true,
@@ -55,7 +75,7 @@ describe('calculatePrice API mapping', () => {
           targetKey: 'mercadolibre:mlm',
           platform: 'mercadolibre',
           site: 'MLM',
-          currency: 'MXN',
+          listingCurrency: 'MXN',
           commissionPercent: 15,
           paymentFeePercent: 0,
           otherFeePercent: 0,
@@ -65,7 +85,7 @@ describe('calculatePrice API mapping', () => {
           shippingQuoteMode: 'manual',
           shippingCurrency: 'USD',
           shippingAmount: 8,
-          appliedPrice: 0,
+          manualPrice: null,
         },
       ],
     })
@@ -104,7 +124,7 @@ describe('calculatePrice API mapping', () => {
           target_key: 'mercadolibre:mlm',
           platform: 'mercadolibre',
           site: 'MLM',
-          currency: 'MXN',
+          listing_currency: 'MXN',
           commission_percent: 15,
           payment_fee_percent: 0,
           other_fee_percent: 0,
@@ -114,7 +134,7 @@ describe('calculatePrice API mapping', () => {
           shipping_quote_mode: 'manual',
           shipping_currency: 'USD',
           shipping_amount: 8,
-          applied_price: 0,
+          manual_price: null,
         },
       ],
     })
@@ -124,11 +144,12 @@ describe('calculatePrice API mapping', () => {
           targetKey: 'mercadolibre:mlm',
           platform: 'mercadolibre',
           site: 'MLM',
-          currency: 'MXN',
-          suggestedPrice: 739.83,
-          suggestedPriceUsd: 43.52,
-          suggestedPriceCny: 0,
-          appliedPrice: 739.83,
+          listingCurrency: 'MXN',
+          suggestedPrice: { amount: '739.83', currency: 'MXN' },
+          appliedPrice: { amount: '739.83', currency: 'MXN' },
+          convertedPrices: { USD: '43.52', CNY: '315.52' },
+          calculationBasis: { listing_currency: 'MXN' },
+          calculationFingerprint: 'fingerprint',
           shippingCostUsd: 8,
           shippingCostCny: 58,
           totalCostCny: 183,
@@ -148,7 +169,7 @@ describe('calculatePrice API mapping', () => {
           commissionCny: 0,
           paymentFeeCny: 0,
           otherFeeCny: 0,
-          minimumPrice: 0,
+          minimumPrice: { amount: '600.00', currency: 'MXN' },
           billableWeightKg: 0,
           usdCnyRate: 7.25,
           mxnUsdRate: 17,
@@ -158,10 +179,6 @@ describe('calculatePrice API mapping', () => {
           raw: expect.any(Object),
         },
       ],
-      suggestedPriceMxn: 739.83,
-      suggestedPriceUsd: 43.52,
-      suggestedPriceCny: 315.52,
-      wbPriceRub: 3011,
       shippingCostUsd: 8,
       shippingCostCny: 58,
       totalCostCny: 183,
@@ -293,14 +310,14 @@ describe('publishPrecheck API mapping', () => {
       description: '可折叠收纳盒，适用于厨房和衣柜。',
       bullets: ['可折叠收纳', '节省空间'],
     }))
-    expect(result.schema_version).toBe(1)
+    expect(result.schema_version).toBe(2)
     expect(result).not.toHaveProperty('id')
     expect(result).not.toHaveProperty('source_url')
   })
 
   it('only reads canonical fields from a versioned product', () => {
     const product = normalizeBackendProduct({
-      schema_version: 1,
+      schema_version: 2,
       product_id: 'canonical-id',
       name: '规范名称',
       source: {
@@ -327,10 +344,10 @@ describe('publishPrecheck API mapping', () => {
     expect(() => normalizeBackendProduct({
       schema_version: 0,
       product_id: 'old-version',
-    })).toThrow('当前仅接受 1')
+    })).toThrow('当前仅接受 2')
 
     expect(() => normalizeBackendProduct({
-      schema_version: 1,
+      schema_version: 2,
       product_id: 'legacy-fields',
       title: '旧商品',
       source: {},
@@ -340,7 +357,7 @@ describe('publishPrecheck API mapping', () => {
   it('keeps structured backend issues readable for the UI', async () => {
     const draft = createEmptyDraftDetail('mercadolibre')
     draft.draftId = 'draft-1'
-    draft.targetSites = [{ platform: 'mercadolibre', site: 'CBT', language: 'es', currency: 'USD' }]
+    draft.targetSites = [{ platform: 'mercadolibre', site: 'CBT', language: 'es', marketCurrency: 'USD', listingCurrency: 'USD' }]
     vi.mocked(apiClient.post).mockResolvedValueOnce({
       data: {
         ok: true,

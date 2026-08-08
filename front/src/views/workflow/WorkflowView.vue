@@ -786,7 +786,6 @@ watch(
                 :draft-id="currentDraft.draftId"
                 :draft-title="pricingDraftTitle"
                 :product-context="currentDraftProductContext"
-                :draft-price="currentDraft.price"
                 :platform-options="platformOptions"
                 :loading="loading"
                 @calculate="store.calculatePrice"

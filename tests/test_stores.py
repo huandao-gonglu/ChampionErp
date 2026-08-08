@@ -552,7 +552,7 @@ def test_product_schema_rejects_future_and_filters_unknown_write_fields() -> Non
         "future_image_field",
     }.isdisjoint(image)
     draft = normalized["drafts"]["mercadolibre"]
-    assert draft["price"] == "44.90"
+    assert "price" not in draft
     assert draft["search_terms"] == ["legacy keyword"]
     assert draft["package_dimensions"] == {
         "length_cm": "10",
@@ -573,11 +573,12 @@ def test_product_schema_rejects_future_and_filters_unknown_write_fields() -> Non
         "futureTargetField",
     }.isdisjoint(target)
     pricing = draft["pricing"]
-    assert pricing["suggested_price"] == 19.9
+    assert "suggested_price" not in pricing
     assert "suggestedPrice" not in pricing
     assert "exchangeRates" not in pricing
-    pricing_target = pricing["targets"]["mercadolibre:MLM"]
-    assert pricing_target["applied_price"] == 21.5
+    pricing_target = pricing["targets"]["mercadolibre:mlm"]
+    assert "applied_price" not in pricing_target
+    assert pricing_target["stale_reason"] == "legacy_pricing_contract"
     assert "appliedPrice" not in pricing_target
 
 

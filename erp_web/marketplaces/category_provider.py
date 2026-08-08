@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-from erp_web.schemas.category import CategorySearchResult
+from erp_web.schemas.category import CategoryBrowseResult, CategorySearchResult
 
 
 class CategoryProvider(Protocol):
@@ -23,6 +23,18 @@ class CategoryProvider(Protocol):
     ) -> dict[str, Any]:
         ...
 
+    def attribute_values(
+        self,
+        category_id: str,
+        attribute_id: str,
+        site: str = "",
+        *,
+        query: str = "",
+        limit: int = 50,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        ...
+
 
 @runtime_checkable
 class CategorySearcher(Protocol):
@@ -32,7 +44,19 @@ class CategorySearcher(Protocol):
         ...
 
 
+@runtime_checkable
+class CategoryNavigator(Protocol):
+    """已绑定平台、站点和 deadline 的类目树导航对象。"""
+
+    def root_categories(self) -> CategoryBrowseResult:
+        ...
+
+    def browse_categories(self, parent_ids: list[str]) -> CategoryBrowseResult:
+        ...
+
+
 __all__ = [
+    "CategoryNavigator",
     "CategoryProvider",
     "CategorySearcher",
 ]

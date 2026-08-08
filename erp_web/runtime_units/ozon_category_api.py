@@ -21,7 +21,11 @@ from typing import Any
 import urllib.error
 
 from erp_web.marketplaces.config_http import request_ozon_json
-from erp_web.schemas.category import CategoryCorpusInfo
+from erp_web.schemas.category import (
+    CategoryBrowseResult,
+    CategoryCorpusInfo,
+    CategoryTreeNode,
+)
 
 from .ozon_category_cache import (
     OZON_CATEGORY_CACHE_FRESH_TTL,
@@ -37,7 +41,13 @@ logger = logging.getLogger(__name__)
 
 OZON_CATEGORY_TREE_URL = "https://api-seller.ozon.ru/v1/description-category/tree"
 OZON_CATEGORY_ATTRIBUTES_URL = "https://api-seller.ozon.ru/v1/description-category/attribute"
+OZON_CATEGORY_ATTRIBUTE_VALUES_URL = (
+    "https://api-seller.ozon.ru/v1/description-category/attribute/values"
+)
 _STALE_RETRY_COOLDOWN_SECONDS = 60
+_ATTRIBUTE_VALUE_PAGE_SIZE = 2000
+_ATTRIBUTE_VALUE_MAX_PAGES = 20
+_ATTRIBUTE_VALUE_CACHE_TTL_SECONDS = 15 * 60
 
 
 @dataclass
@@ -71,6 +81,7 @@ class _MemoryCorpusCache:
 
 
 _corpus_cache = _MemoryCorpusCache()
+_attribute_values_cache = _MemoryCorpusCache()
 _corpus_load_lock = threading.RLock()
 
 
@@ -525,6 +536,130 @@ def search_ozon_categories(
     return matches[: max(1, min(50, int(limit or 20)))]
 
 
+def _category_navigation_index(
+    records: list[dict[str, Any]],
+) -> tuple[dict[str, CategoryTreeNode], dict[str, list[str]]]:
+    """从扁平商品类型恢复 Ozon 分支节点和父子关系。"""
+
+    nodes: dict[str, CategoryTreeNode] = {}
+    children: dict[str, set[str]] = {}
+    for record in records:
+        names = [
+            _text(name)
+            for name in record.get("path_original", [])
+            if _text(name)
+        ]
+        branch_ids = [
+            _text(node_id)
+            for node_id in record.get("path_ids", [])
+            if _text(node_id)
+        ]
+        category_id = _text(record.get("category_id") or record.get("type_id"))
+        branch_count = max(0, len(names) - 1)
+        if not category_id or not names or len(branch_ids) < branch_count:
+            continue
+        node_ids = [*branch_ids[:branch_count], category_id]
+        for index, (node_id, name) in enumerate(zip(node_ids, names)):
+            parent_id = node_ids[index - 1] if index else ""
+            is_product_type = index == len(names) - 1
+            node: CategoryTreeNode = {
+                "node_id": node_id,
+                "name": name,
+                "level": "product_type" if is_product_type else "branch",
+                "depth": index + 1,
+                "parent_id": parent_id,
+                "path_segments": names[: index + 1],
+                "child_count": 0,
+                "publishable": is_product_type,
+                "platform": "ozon",
+                "site": "global",
+            }
+            if is_product_type:
+                node.update(
+                    {
+                        "category_id": category_id,
+                        "description_category_id": _text(
+                            record.get("description_category_id")
+                        ),
+                        "type_id": _text(record.get("type_id")) or category_id,
+                    }
+                )
+            nodes.setdefault(node_id, node)
+            children.setdefault(parent_id, set()).add(node_id)
+
+    ordered_children: dict[str, list[str]] = {}
+    for parent_id, child_ids in children.items():
+        ordered_children[parent_id] = sorted(
+            child_ids,
+            key=lambda node_id: (
+                str(nodes[node_id].get("name") or "").casefold(),
+                node_id,
+            ),
+        )
+    for node_id, node in nodes.items():
+        node["child_count"] = len(ordered_children.get(node_id, []))
+    return nodes, ordered_children
+
+
+def _browse_result(
+    records: list[dict[str, Any]],
+    corpus_info: CategoryCorpusInfo,
+    parent_ids: list[str],
+) -> CategoryBrowseResult:
+    nodes, children = _category_navigation_index(records)
+    normalized_parent_ids = list(
+        dict.fromkeys(
+            _text(parent_id)
+            for parent_id in parent_ids[:2]
+            if _text(parent_id)
+        )
+    )
+    unknown = [parent_id for parent_id in normalized_parent_ids if parent_id not in nodes]
+    if unknown:
+        raise RuntimeError("Ozon 类目导航包含未知 parent_id。")
+    child_ids: list[str] = []
+    seen: set[str] = set()
+    for parent_id in normalized_parent_ids or [""]:
+        for child_id in children.get(parent_id, []):
+            if child_id in seen:
+                continue
+            seen.add(child_id)
+            child_ids.append(child_id)
+    return {
+        "parent_ids": normalized_parent_ids,
+        "nodes": [deepcopy(nodes[child_id]) for child_id in child_ids],
+        "source": str(corpus_info.get("cache_source") or "ozon_cache"),
+    }
+
+
+def fetch_ozon_category_roots(
+    *,
+    timeout_seconds: float | None = None,
+) -> CategoryBrowseResult:
+    records, corpus_info = load_ozon_category_corpus(
+        timeout_seconds=timeout_seconds
+    )
+    return _browse_result(records, corpus_info, [])
+
+
+def fetch_ozon_category_children(
+    parent_ids: list[str],
+    *,
+    timeout_seconds: float | None = None,
+) -> CategoryBrowseResult:
+    normalized_parent_ids = [
+        _text(parent_id) for parent_id in parent_ids if _text(parent_id)
+    ]
+    if not normalized_parent_ids:
+        raise ValueError("类目树导航至少需要一个 parent_id。")
+    if len(set(normalized_parent_ids)) > 2:
+        raise ValueError("类目树导航每次最多展开两个父节点。")
+    records, corpus_info = load_ozon_category_corpus(
+        timeout_seconds=timeout_seconds
+    )
+    return _browse_result(records, corpus_info, normalized_parent_ids)
+
+
 def fetch_ozon_category_tree_summary(
     *,
     force_refresh: bool = False,
@@ -577,16 +712,175 @@ def _record_for_type_id(type_id: str, records: list[dict[str, Any]]) -> dict[str
 
 
 def _normalize_attribute(item: dict[str, Any]) -> dict[str, Any]:
+    dictionary_id = _text(item.get("dictionary_id"))
     return {
         "id": _text(item.get("id")),
         "name": _text(item.get("name") or item.get("id")),
         "required": bool(item.get("is_required")),
         "value_type": _text(item.get("type")) or "string",
         "unit": _text(item.get("unit")),
-        # Ozon 将枚举值放在单独的 attribute/values 接口；这里不额外逐属性请求。
+        "dictionary_id": dictionary_id,
+        "is_dictionary": bool(dictionary_id),
+        "is_collection": bool(item.get("is_collection")),
+        "max_value_count": int(item.get("max_value_count") or 0),
+        "category_dependent": bool(item.get("category_dependent")),
+        # 枚举值通过独立端点按字段、按搜索词加载，避免类目详情一次性展开品牌等大字典。
         "options": [],
         "description": _text(item.get("description")),
         "raw": deepcopy(item),
+    }
+
+
+def _attribute_value_page(
+    *,
+    description_category_id: int,
+    type_id: int,
+    attribute_id: int,
+    last_value_id: int,
+    client_id: str,
+    api_key: str,
+    timeout_seconds: float,
+) -> list[dict[str, Any]]:
+    cache_key = ":".join(
+        (
+            _credential_scope_hash(client_id),
+            str(description_category_id),
+            str(type_id),
+            str(attribute_id),
+            str(last_value_id),
+        )
+    )
+    cached = _attribute_values_cache.get(cache_key)
+    if isinstance(cached, list):
+        return cached
+    response = request_ozon_json(
+        "POST",
+        OZON_CATEGORY_ATTRIBUTE_VALUES_URL,
+        client_id,
+        api_key,
+        {
+            "description_category_id": description_category_id,
+            "type_id": type_id,
+            "attribute_id": attribute_id,
+            "language": "DEFAULT",
+            "last_value_id": last_value_id,
+            "limit": _ATTRIBUTE_VALUE_PAGE_SIZE,
+        },
+        timeout_seconds=timeout_seconds,
+    )
+    raw_values = response.get("result") if isinstance(response, dict) else None
+    if not isinstance(raw_values, list):
+        raise RuntimeError("Ozon 属性枚举响应缺少 result 列表。")
+    values = [
+        {
+            "id": _text(item.get("id")),
+            "value": _text(item.get("value")),
+            "info": _text(item.get("info")),
+            "picture": _text(item.get("picture")),
+        }
+        for item in raw_values
+        if isinstance(item, dict)
+        and _text(item.get("id"))
+        and _text(item.get("value"))
+    ]
+    _attribute_values_cache.set(
+        cache_key,
+        values,
+        ttl_seconds=_ATTRIBUTE_VALUE_CACHE_TTL_SECONDS,
+    )
+    return values
+
+
+def fetch_ozon_category_attribute_values(
+    category_id: str,
+    attribute_id: str,
+    *,
+    query: str = "",
+    limit: int = 50,
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
+    """按商品类型和属性读取 Ozon 字典值，并在服务端完成跨页搜索。"""
+
+    type_id_text = _text(category_id)
+    attribute_id_text = _text(attribute_id)
+    if not type_id_text or not attribute_id_text:
+        raise ValueError("缺少 Ozon 商品类型 ID 或属性 ID。")
+    try:
+        type_id = int(type_id_text)
+        requested_attribute_id = int(attribute_id_text)
+    except ValueError as exc:
+        raise ValueError("Ozon 商品类型 ID 和属性 ID 必须是整数。") from exc
+
+    deadline_at = (
+        time.monotonic() + float(timeout_seconds)
+        if timeout_seconds is not None
+        else time.monotonic() + 30
+    )
+    records, _ = load_ozon_category_corpus(
+        timeout_seconds=max(0.1, deadline_at - time.monotonic())
+    )
+    record = _record_for_type_id(type_id_text, records)
+    try:
+        description_category_id = int(
+            _text(record.get("description_category_id"))
+        )
+    except ValueError as exc:
+        raise RuntimeError("Ozon description_category_id 格式无效。") from exc
+    client_id, api_key = _ozon_credentials()
+    normalized_query = _text(query).casefold()
+    safe_limit = max(1, min(100, int(limit or 50)))
+    matches: list[dict[str, Any]] = []
+    last_value_id = 0
+    scanned = 0
+    complete = False
+    for _ in range(_ATTRIBUTE_VALUE_MAX_PAGES):
+        remaining = deadline_at - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Ozon 属性枚举搜索超时。")
+        page = _attribute_value_page(
+            description_category_id=description_category_id,
+            type_id=type_id,
+            attribute_id=requested_attribute_id,
+            last_value_id=last_value_id,
+            client_id=client_id,
+            api_key=api_key,
+            timeout_seconds=remaining,
+        )
+        scanned += len(page)
+        matches_before_page = len(matches)
+        for option in page:
+            if normalized_query and normalized_query not in str(
+                option.get("value") or ""
+            ).casefold():
+                continue
+            matches.append(option)
+            if len(matches) >= safe_limit:
+                break
+        if len(matches) >= safe_limit:
+            break
+        if normalized_query and len(matches) > matches_before_page:
+            # 交互式搜索只需要先返回一页命中项；后续输入会再次缩小范围。
+            break
+        if len(page) < _ATTRIBUTE_VALUE_PAGE_SIZE:
+            complete = True
+            break
+        next_value_id = int(page[-1].get("id") or 0)
+        if next_value_id <= 0 or next_value_id == last_value_id:
+            complete = True
+            break
+        last_value_id = next_value_id
+        if not normalized_query:
+            break
+    return {
+        "ok": True,
+        "platform": "ozon",
+        "category_id": type_id_text,
+        "description_category_id": str(description_category_id),
+        "attribute_id": attribute_id_text,
+        "query": _text(query),
+        "values": matches[:safe_limit],
+        "scanned": scanned,
+        "complete": complete,
     }
 
 
@@ -677,6 +971,7 @@ def clear_ozon_category_tree_cache(
 
     with _corpus_load_lock:
         _corpus_cache.clear()
+        _attribute_values_cache.clear()
         if not include_persistent:
             return 0
         return clear_ozon_category_cache(
@@ -686,9 +981,13 @@ def clear_ozon_category_tree_cache(
 
 
 __all__ = [
+    "OZON_CATEGORY_ATTRIBUTE_VALUES_URL",
     "OZON_CATEGORY_ATTRIBUTES_URL",
     "OZON_CATEGORY_TREE_URL",
     "clear_ozon_category_tree_cache",
+    "fetch_ozon_category_children",
+    "fetch_ozon_category_attribute_values",
+    "fetch_ozon_category_roots",
     "fetch_ozon_category_tree_summary",
     "fetch_ozon_category_record",
     "load_ozon_category_corpus",

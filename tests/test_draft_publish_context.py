@@ -88,7 +88,6 @@ def test_publish_target_discards_recursive_precheck_target_history() -> None:
         "platform": "ozon",
         "site": "global",
         "language": "ru-RU",
-        "currency": "RUB",
         "category_id": "91443",
         "description_category_id": "17039635",
         "category_precheck": {"large": "history"},
@@ -102,13 +101,11 @@ def test_publish_target_discards_recursive_precheck_target_history() -> None:
         "platform": "ozon",
         "site": "global",
         "language": "ru-RU",
-        "currency": "RUB",
         "target_sites": [
             {
                 "platform": "ozon",
                 "site": "global",
                 "language": "ru-RU",
-                "currency": "RUB",
                 "category_id": "91443",
                 "description_category_id": "17039635",
                 "last_precheck_target": recursive_history,
@@ -123,10 +120,11 @@ def test_publish_target_discards_recursive_precheck_target_history() -> None:
         "platform": "ozon",
         "site": "global",
         "language": "ru-RU",
-        "currency": "RUB",
         "category_id": "91443",
         "description_category_id": "17039635",
     }
+    assert target["listing_currency"] == ""
+    assert target["currency_resolution"]["mode"] == "unresolved"
     assert "last_precheck_target" not in target["last_precheck_target"]
     assert target_draft["target_sites"] == [target]
     assert "target_site" not in target_draft

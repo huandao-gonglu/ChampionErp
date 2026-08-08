@@ -191,14 +191,24 @@ def _draft_images_ready(draft: dict[str, Any]) -> bool:
     return bool(normalize_draft_image_refs(draft.get("images")))
 
 
+def _draft_pricing_ready(draft: dict[str, Any]) -> bool:
+    pricing = draft.get("pricing") if isinstance(draft.get("pricing"), dict) else {}
+    targets = pricing.get("targets") if isinstance(pricing.get("targets"), dict) else {}
+    return any(
+        isinstance(item, dict)
+        and isinstance(item.get("applied_price"), dict)
+        and str(item["applied_price"].get("amount") or "").strip()
+        for item in targets.values()
+    )
+
+
 def _draft_publish_fields_ready(draft: dict[str, Any]) -> bool:
     attrs = draft.get("attributes") if isinstance(draft.get("attributes"), dict) else {}
-    pricing = draft.get("pricing") if isinstance(draft.get("pricing"), dict) else {}
     return all(
         [
             str(draft.get("category_id") or "").strip(),
             bool(attrs),
-            str(draft.get("price") or pricing.get("suggested_price") or "").strip(),
+            _draft_pricing_ready(draft),
             str(draft.get("stock") or "").strip(),
         ]
     )
@@ -231,7 +241,8 @@ def _normalized_target_payload(target: dict[str, Any], platform: str, selected_s
             "platform": platform,
             "site": selected_site["code"],
             "language": selected_site["language"],
-            "currency": selected_site["currency"],
+            "market_currency": selected_site["market_currency"],
+            "listing_currency": selected_site["listing_currency"],
         },
     )
 
@@ -307,7 +318,7 @@ class ProductStore:
             "image_status": "done" if workflow_status in {"images_ready", "ready_to_publish", "published"} or pool else "pending",
             "category_status": "done" if draft.get("category_id") else "pending",
             "attributes_status": "done" if isinstance(draft.get("attributes"), dict) and draft.get("attributes") else "pending",
-            "pricing_status": "done" if draft.get("price") or (isinstance(draft.get("pricing"), dict) and draft["pricing"].get("suggested_price")) else "pending",
+            "pricing_status": "done" if _draft_pricing_ready(draft) else "pending",
             "precheck_status": ((product.get("publish_preview") or {}).get(platform) or {}).get("ok", "pending") if isinstance(product.get("publish_preview"), dict) else "pending",
             "publish_status": draft.get("publish_status") or "not_ready",
             "publish_queue_ready": bool(queue_platforms),
@@ -596,7 +607,6 @@ class ProductStore:
             "site": primary_target["site"],
             "target_sites": targets,
             "language": primary_target["language"],
-            "currency": primary_target["currency"],
         }
         merged["images"] = normalize_draft_image_refs(merged.get("images"))
         merged = normalize_platform_draft(

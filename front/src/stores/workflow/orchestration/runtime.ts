@@ -9,6 +9,7 @@ import { useWorkflowCollectionStore } from '@/stores/workflow/collection'
 import { useWorkflowPublishingStore } from '@/stores/workflow/publishing'
 import { useWorkflowSettingsStore } from '@/stores/workflow/settings'
 import type {
+  CategoryAttributeValue,
   CategoryAttributeSchema,
   CategoryPrecheckResult,
   CategorySearchResult,
@@ -121,11 +122,18 @@ export function categorySelectionFromProduct(product: Product, platform: Marketp
   const attrs = isRecord(record.attributes) ? record.attributes : {}
   const normalizeAttr = (item: unknown, requiredFallback: boolean) => {
     const attr = isRecord(item) ? item : {}
+    const raw = isRecord(attr.raw) ? attr.raw : {}
+    const dictionaryId = String(attr.dictionary_id || raw.dictionary_id || '')
     return {
       id: String(attr.id || attr.attribute_id || ''),
       name: String(attr.name || attr.label || attr.id || attr.attribute_id || ''),
       required: typeof attr.required === 'boolean' ? attr.required : requiredFallback,
       options: Array.isArray(attr.options) ? attr.options.map(String) : [],
+      dictionaryId,
+      isDictionary: Boolean(attr.is_dictionary || dictionaryId),
+      isCollection: Boolean(attr.is_collection || raw.is_collection),
+      maxValueCount: Number(attr.max_value_count || raw.max_value_count || 0),
+      categoryDependent: Boolean(attr.category_dependent || raw.category_dependent),
     }
   }
   const requiredAttributes = Array.isArray(attrs.required)
@@ -155,9 +163,14 @@ export function categoryAttributeSchemaFromSelection(selection: CategorySelectio
     valueType: item.valueType || 'string',
     unit: item.unit || '',
     description: item.description || '',
+    dictionaryId: item.dictionaryId || '',
+    isDictionary: Boolean(item.isDictionary || item.dictionaryId),
+    isCollection: Boolean(item.isCollection),
+    maxValueCount: item.maxValueCount || 0,
+    categoryDependent: Boolean(item.categoryDependent),
   }))
   return {
-    version: 1,
+    version: target.platform === 'ozon' ? 2 : 1,
     platform: target.platform,
     site: target.site,
     categoryId: selection.categoryId,
@@ -171,6 +184,7 @@ export function categoryAttributeSchemaFromSelection(selection: CategorySelectio
 
 export function categorySelectionFromAttributeSchema(schema: CategoryAttributeSchema | null | undefined, target: MarketplaceTargetSite): CategorySelection | null {
   if (!schema || !schema.categoryId) return null
+  if (target.platform === 'ozon' && schema.version < 2) return null
   if (schema.platform && schema.platform !== target.platform) return null
   if (schema.site && schema.site !== target.site) return null
   if (target.categoryId && schema.categoryId !== target.categoryId) return null
@@ -327,9 +341,25 @@ export function createWorkflowRuntime() {
     return targetKey(target.platform, target.site)
   }
 
-  function cloneAttributes(value: unknown): Record<string, string> {
+  function cloneAttributes(value: unknown): Record<string, CategoryAttributeValue> {
     const record = isRecord(value) ? value : {}
-    return Object.fromEntries(Object.entries(record).map(([key, rawValue]) => [key, String(rawValue ?? '')]))
+    return Object.fromEntries(Object.entries(record).map(([key, rawValue]) => {
+      if (typeof rawValue === 'string' || typeof rawValue === 'number') {
+        return [key, String(rawValue)]
+      }
+      const selection = isRecord(rawValue) ? rawValue : {}
+      const values = Array.isArray(selection.values)
+        ? selection.values.flatMap((item) => {
+          const option = isRecord(item) ? item : {}
+          const dictionaryValueId = Number(option.dictionaryValueId || 0)
+          const optionValue = String(option.value || '').trim()
+          return dictionaryValueId > 0 && optionValue
+            ? [{ dictionaryValueId, value: optionValue }]
+            : []
+        })
+        : []
+      return [key, values.length ? { values } : '']
+    }))
   }
 
   function cloneValidationErrors(value: unknown): Array<UnknownRecord | string> {
@@ -384,7 +414,9 @@ export function createWorkflowRuntime() {
       platform: target.platform,
       site: target.site || site?.code || '',
       language: target.language || site?.language || draftDetail.language || '',
-      currency: target.currency || site?.currency || draftDetail.currency || '',
+      marketCurrency: target.marketCurrency || site?.marketCurrency || '',
+      listingCurrency: target.listingCurrency || site?.listingCurrency || '',
+      currencyResolution: target.currencyResolution,
       categoryId: String(target.categoryId || (useRootFallback ? draftDetail.categoryId : '') || ''),
       descriptionCategoryId: String(target.descriptionCategoryId || (useRootFallback ? draftDetail.descriptionCategoryId : '') || ''),
       categoryPath: String(target.categoryPath || (useRootFallback ? draftDetail.categoryPath : '') || ''),
@@ -469,7 +501,13 @@ export function createWorkflowRuntime() {
     if (!selectedLanguage) return []
     return platformOptions.value.flatMap((platform) => platform.sites
       .filter((site) => String(site.language || '').trim().toLowerCase() === selectedLanguage)
-      .map((site) => ({ platform: platform.key, site: site.code, language: site.language, currency: site.currency })))
+      .map((site) => ({
+        platform: platform.key,
+        site: site.code,
+        language: site.language,
+        marketCurrency: site.marketCurrency,
+        listingCurrency: site.listingCurrency,
+      })))
   }
 
   function configuredSelectedTargets(language: string, targets: MarketplaceTargetSite[]): MarketplaceTargetSite[] {
@@ -505,7 +543,8 @@ export function createWorkflowRuntime() {
       platform: draftDetail.platform,
       site: draftDetail.site || site?.code || '',
       language: draftDetail.language || site?.language || '',
-      currency: draftDetail.currency || site?.currency || '',
+      marketCurrency: site?.marketCurrency || '',
+      listingCurrency: site?.listingCurrency || '',
     }].filter((target) => target.platform && target.site)
   }
 
@@ -519,7 +558,8 @@ export function createWorkflowRuntime() {
       platform: draftDetail.platform,
       site: draftDetail.site || site?.code || '',
       language: draftDetail.language || site?.language || '',
-      currency: draftDetail.currency || site?.currency || '',
+      marketCurrency: site?.marketCurrency || '',
+      listingCurrency: site?.listingCurrency || '',
     }].map((target) => normalizeDraftTarget(target, draftDetail, true)).filter((target) => target.platform && target.site)
   }
 
@@ -527,7 +567,7 @@ export function createWorkflowRuntime() {
 
   const selectedPublishTarget = computed<MarketplaceTargetSite>(() => {
     const targets = currentPublishTargets.value
-    if (!targets.length) return { platform: '', site: '', language: '', currency: '' }
+    if (!targets.length) return { platform: '', site: '', language: '', marketCurrency: '', listingCurrency: '' }
     const selected = targets.find((target) => pricingTargetKey(target.platform, target.site) === activePublishTargetKey.value)
     return selected || targets[0]
   })
@@ -574,6 +614,17 @@ export function createWorkflowRuntime() {
     return fallback
   }
 
+  function recordMoney(record: UnknownRecord, keys: string[], currency: string) {
+    for (const key of keys) {
+      const value = record[key]
+      if (!isRecord(value)) continue
+      const amount = recordString(value, ['amount'], '0')
+      const moneyCurrency = recordString(value, ['currency'], currency).toUpperCase()
+      return { amount, currency: moneyCurrency }
+    }
+    return { amount: '0', currency }
+  }
+
   function pricingTargetInput(target: MarketplaceTargetSite, pricing: UnknownRecord): PricingTargetInput {
     const site = platformSite(target.platform, target.site)
     const key = pricingTargetKey(target.platform, target.site)
@@ -586,38 +637,53 @@ export function createWorkflowRuntime() {
       ? savedShippingCurrency
       : legacyShippingUsd > 0 || target.platform === 'mercadolibre' ? 'USD' : 'CNY'
     const savedShippingMode = recordString(saved, ['shippingQuoteMode', 'shipping_quote_mode'])
+    const listingCurrency = target.listingCurrency || site?.listingCurrency || ''
+    const savedListingCurrency = recordString(saved, ['listing_currency']).toUpperCase()
+    const savedAppliedPrice = recordMoney(saved, ['applied_price'], listingCurrency)
+    const pricingMode = (recordString(saved, ['pricingMode', 'pricing_mode'], 'margin') || 'margin') as PricingTargetInput['pricingMode']
+    const reusableManualPrice = pricingMode === 'manual'
+      && savedListingCurrency === listingCurrency
+      && savedAppliedPrice.currency === listingCurrency
+      && recordNumber(savedAppliedPrice, ['amount']) > 0
+      ? savedAppliedPrice
+      : null
     return {
       targetKey: key,
       platform: target.platform,
       site: target.site || site?.code || '',
-      currency: target.currency || site?.currency || 'USD',
+      listingCurrency,
+      currencyResolution: target.currencyResolution,
       commissionPercent: recordNumber(saved, ['commissionPercent', 'commission_percent'], defaults.commissionPercent),
       paymentFeePercent: recordNumber(saved, ['paymentFeePercent', 'payment_fee_percent'], defaults.paymentFeePercent),
       otherFeePercent: recordNumber(saved, ['otherFeePercent', 'other_fee_percent'], 0),
-      pricingMode: (recordString(saved, ['pricingMode', 'pricing_mode'], 'margin') || 'margin') as PricingTargetInput['pricingMode'],
+      pricingMode,
       targetMarginPercent: recordNumber(saved, ['targetMarginPercent', 'target_margin_percent'], defaults.targetMarginPercent),
       markupPercent: recordNumber(saved, ['markupPercent', 'markup_percent'], 30),
       shippingQuoteMode: (savedShippingMode || (legacyShippingUsd > 0 || legacyShippingCny > 0 ? 'manual' : target.platform === 'mercadolibre' ? 'auto' : 'manual')) as PricingTargetInput['shippingQuoteMode'],
       shippingCurrency: shippingCurrency as PricingTargetInput['shippingCurrency'],
       shippingAmount: recordNumber(saved, ['shippingAmount', 'shipping_amount'], shippingCurrency === 'USD' ? legacyShippingUsd : legacyShippingCny),
-      appliedPrice: recordNumber(saved, ['appliedPrice', 'applied_price'], 0),
+      manualPrice: reusableManualPrice,
     }
   }
 
   function pricingResultFromDraft(pricing: UnknownRecord, targets: PricingTargetInput[]): PricingResult | null {
     const results = targets.map((target): PricingTargetResult | null => {
       const saved = pricingTargetRecord(pricing, target.targetKey)
-      const hasResult = ['suggested_price', 'applied_price', 'profit_cny', 'errors'].some((key) => key in saved)
+      const savedCurrency = recordString(saved, ['listing_currency']).toUpperCase()
+      const hasResult = savedCurrency === target.listingCurrency
+        && ['suggested_price', 'applied_price', 'profit_cny', 'errors'].some((key) => key in saved)
       if (!hasResult) return null
       return {
         targetKey: target.targetKey,
         platform: target.platform,
         site: target.site,
-        currency: target.currency,
-        suggestedPrice: recordNumber(saved, ['suggested_price'], 0),
-        suggestedPriceUsd: recordNumber(saved, ['suggested_price_usd'], 0),
-        suggestedPriceCny: recordNumber(saved, ['suggested_price_cny'], 0),
-        appliedPrice: recordNumber(saved, ['applied_price'], 0),
+        listingCurrency: target.listingCurrency,
+        currencyResolution: target.currencyResolution,
+        suggestedPrice: recordMoney(saved, ['suggested_price'], target.listingCurrency),
+        appliedPrice: recordMoney(saved, ['applied_price'], target.listingCurrency),
+        convertedPrices: Object.fromEntries(Object.entries(isRecord(saved.converted_prices) ? saved.converted_prices : {}).map(([currency, amount]) => [currency, String(amount ?? '0')])),
+        calculationBasis: isRecord(saved.calculation_basis) ? saved.calculation_basis : {},
+        calculationFingerprint: recordString(saved, ['calculation_fingerprint']),
         shippingCostUsd: recordNumber(saved, ['shipping_cost_usd'], 0),
         shippingCostCny: recordNumber(saved, ['shipping_cost_cny'], 0),
         totalCostCny: recordNumber(saved, ['total_cost_cny'], 0),
@@ -637,7 +703,7 @@ export function createWorkflowRuntime() {
         commissionCny: recordNumber(saved, ['commission_cny'], 0),
         paymentFeeCny: recordNumber(saved, ['payment_fee_cny'], 0),
         otherFeeCny: recordNumber(saved, ['other_fee_cny'], 0),
-        minimumPrice: recordNumber(saved, ['minimum_price'], 0),
+        minimumPrice: recordMoney(saved, ['minimum_price'], target.listingCurrency),
         billableWeightKg: recordNumber(saved, ['billable_weight_kg'], 0),
         usdCnyRate: recordNumber(saved, ['usd_cny_rate'], pricingInput.value.usdCnyRate),
         mxnUsdRate: recordNumber(saved, ['mxn_usd_rate'], pricingInput.value.mxnUsdRate),
@@ -653,10 +719,6 @@ export function createWorkflowRuntime() {
     const exchangeRates = isRecord(pricing.exchange_rates) ? pricing.exchange_rates as UnknownRecord : {}
     return {
       results,
-      suggestedPriceMxn: primary.currency === 'MXN' ? primary.suggestedPrice : 0,
-      suggestedPriceUsd: primary.suggestedPriceUsd,
-      suggestedPriceCny: primary.suggestedPriceCny,
-      wbPriceRub: primary.currency === 'RUB' ? primary.suggestedPrice : 0,
       shippingCostUsd: primary.shippingCostUsd,
       shippingCostCny: primary.shippingCostCny,
       totalCostCny: primary.totalCostCny,
@@ -719,7 +781,10 @@ export function createWorkflowRuntime() {
         || ['images_ready', 'ready_to_publish', 'published'].includes(progressDraft.status)
       ),
     )
-    const hasPrice = Boolean(progressDraft?.price || pricingResult.value?.results.length)
+    const savedPricingTargets = progressDraft && isRecord(progressDraft.pricing.targets)
+      ? Object.keys(progressDraft.pricing.targets as UnknownRecord).length
+      : 0
+    const hasPrice = Boolean(savedPricingTargets || pricingResult.value?.results.length)
     const hasCategory = Boolean(progressDraft?.categoryId || category.value)
     const hasPrecheck = Boolean(precheck.value?.ok || ['ready_to_publish', 'published'].includes(progressDraft?.status || ''))
     const publishJobMatches = publishJobMatchesProgressContext(

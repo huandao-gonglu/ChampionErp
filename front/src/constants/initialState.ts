@@ -3,13 +3,12 @@ import { listingLanguageLabel } from '@/constants/locales'
 
 export const marketplaces: Marketplace[] = ['mercadolibre', 'yandex', 'ozon']
 
-export function createEmptyDraft(language = '', site = '', currency = ''): MarketplaceDraft {
+export function createEmptyDraft(language = '', site = ''): MarketplaceDraft {
   return {
     draftId: '',
     platforms: [],
     targetSites: [],
     site,
-    currency,
     enabled: true,
     title: '',
     description: '',
@@ -18,7 +17,6 @@ export function createEmptyDraft(language = '', site = '', currency = ''): Marke
     descriptionCategoryId: '',
     categoryPath: '',
     attributes: {},
-    price: '',
     pricing: {},
     images: [],
     status: 'pending',
@@ -75,9 +73,9 @@ export function createEmptyProduct(): Product {
       collectDiagnostics: {},
     },
     drafts: {
-      mercadolibre: createEmptyDraft(listingLanguageLabel('mercadolibre'), 'CBT', 'USD'),
-      yandex: createEmptyDraft(listingLanguageLabel('yandex'), 'global', 'RUB'),
-      ozon: createEmptyDraft(listingLanguageLabel('ozon'), 'global', 'RUB'),
+      mercadolibre: createEmptyDraft(listingLanguageLabel('mercadolibre'), 'CBT'),
+      yandex: createEmptyDraft(listingLanguageLabel('yandex'), 'global'),
+      ozon: createEmptyDraft(listingLanguageLabel('ozon'), 'global'),
     },
     raw: {},
   }

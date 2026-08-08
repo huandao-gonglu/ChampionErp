@@ -1,5 +1,6 @@
 import { apiClient } from '@/api/client'
 import type {
+  CategoryAttributeOption,
   CategoryMatchResult,
   CategoryPrecheckResult,
   CategorySearchResult,
@@ -221,24 +222,37 @@ export async function closeMercadoLibrePublishedItem(itemId: string): Promise<Un
   return data
 }
 
+function normalizeMoney(value: unknown, currency: string) {
+  const record = asRecord(value)
+  return {
+    amount: getString(record, ['amount'], '0'),
+    currency: getString(record, ['currency'], currency),
+  }
+}
+
 function normalizePricingTargetResult(value: unknown, fallback: Partial<PricingTargetResult> = {}): PricingTargetResult {
   const record = asRecord(value)
   const input = asRecord(record.input)
-  const currency = getString(record, ['currency'], fallback.currency || 'USD')
-  const currencySuggested = currency === 'MXN'
-    ? getNumber(record, ['suggested_price_mxn', 'sale_price_mxn', 'price_mxn'])
-    : currency === 'RUB'
-      ? getNumber(record, ['wb_price_rub', 'suggested_price_rub', 'price_rub'])
-      : getNumber(record, ['suggested_price_usd', 'sale_price_usd', 'price_usd'])
+  const listingCurrency = getString(record, ['listing_currency'], fallback.listingCurrency || '')
+  const convertedPrices = asRecord(record.converted_prices)
+  const resolution = asRecord(record.currency_resolution)
   return {
     targetKey: getString(record, ['target_key', 'targetKey'], fallback.targetKey || ''),
     platform: (getString(record, ['platform'], fallback.platform || 'mercadolibre')) as Marketplace,
     site: getString(record, ['site'], fallback.site || ''),
-    currency,
-    suggestedPrice: getNumber(record, ['suggested_price', 'suggestedPrice'], fallback.suggestedPrice || currencySuggested),
-    suggestedPriceUsd: getNumber(record, ['suggested_price_usd', 'suggestedPriceUsd'], fallback.suggestedPriceUsd || 0),
-    suggestedPriceCny: getNumber(record, ['suggested_price_cny', 'suggestedPriceCny'], fallback.suggestedPriceCny || 0),
-    appliedPrice: getNumber(record, ['applied_price', 'appliedPrice'], fallback.appliedPrice || currencySuggested),
+    listingCurrency,
+    currencyResolution: Object.keys(resolution).length ? {
+      mode: getString(resolution, ['mode'], 'unresolved') as NonNullable<PricingTargetResult['currencyResolution']>['mode'],
+      listingCurrency: getString(resolution, ['listing_currency'], listingCurrency),
+      allowedCurrencies: Array.isArray(resolution.allowed_currencies) ? resolution.allowed_currencies.map(String) : [],
+      source: getString(resolution, ['source']),
+      verifiedAt: getString(resolution, ['verified_at']),
+    } : fallback.currencyResolution,
+    suggestedPrice: normalizeMoney(record.suggested_price, listingCurrency),
+    appliedPrice: normalizeMoney(record.applied_price, listingCurrency),
+    convertedPrices: Object.fromEntries(Object.entries(convertedPrices).map(([key, amount]) => [key, String(amount ?? '0')])),
+    calculationBasis: asRecord(record.calculation_basis),
+    calculationFingerprint: getString(record, ['calculation_fingerprint']),
     shippingCostUsd: getNumber(record, ['shipping_cost_usd', 'shippingCostUsd'], fallback.shippingCostUsd || 0),
     shippingCostCny: getNumber(record, ['shipping_cost_cny', 'shippingCostCny'], fallback.shippingCostCny || 0),
     totalCostCny: getNumber(record, ['total_cost_cny', 'totalCostCny'], fallback.totalCostCny || 0),
@@ -258,7 +272,7 @@ function normalizePricingTargetResult(value: unknown, fallback: Partial<PricingT
     commissionCny: getNumber(record, ['commission_cny', 'commissionCny']),
     paymentFeeCny: getNumber(record, ['payment_fee_cny', 'paymentFeeCny']),
     otherFeeCny: getNumber(record, ['other_fee_cny', 'otherFeeCny']),
-    minimumPrice: getNumber(record, ['minimum_price', 'minimumPrice']),
+    minimumPrice: normalizeMoney(record.minimum_price, listingCurrency),
     billableWeightKg: getNumber(record, ['billable_weight_kg', 'billableWeightKg']),
     usdCnyRate: getNumber(record, ['usd_cny_rate', 'usdCnyRate'], getNumber(input, ['usd_cny_rate', 'usdCnyRate'], fallback.usdCnyRate || 0)),
     mxnUsdRate: getNumber(record, ['mxn_usd_rate', 'mxnUsdRate'], getNumber(input, ['mxn_usd_rate', 'mxnUsdRate'], fallback.mxnUsdRate || 0)),
@@ -289,7 +303,7 @@ export async function calculatePrice(input: PricingInput): Promise<PricingResult
       target_key: target.targetKey,
       platform: target.platform,
       site: target.site,
-      currency: target.currency,
+      listing_currency: target.listingCurrency,
       commission_percent: target.commissionPercent,
       payment_fee_percent: target.paymentFeePercent,
       other_fee_percent: target.otherFeePercent,
@@ -299,7 +313,7 @@ export async function calculatePrice(input: PricingInput): Promise<PricingResult
       shipping_quote_mode: target.shippingQuoteMode,
       shipping_currency: target.shippingCurrency,
       shipping_amount: target.shippingAmount,
-      applied_price: target.appliedPrice,
+      manual_price: target.manualPrice,
     }))
     : []
   const response = await apiClient.post('/api/calculate-price', {
@@ -323,14 +337,9 @@ export async function calculatePrice(input: PricingInput): Promise<PricingResult
     platform: input.platform,
     site: input.site,
   })
-  const suggestedPriceUsd = getNumber(data, ['suggested_price_usd', 'sale_price_usd', 'price_usd'], primary.suggestedPriceUsd)
   const usdCnyRate = getNumber(commonInput, ['usd_cny_rate'], getNumber(backendInput, ['usd_cny_rate'], getNumber(rates, ['usd_cny_rate'], primary.usdCnyRate)))
   return {
     results,
-    suggestedPriceMxn: getNumber(data, ['suggested_price_mxn', 'sale_price_mxn', 'price_mxn'], primary.currency === 'MXN' ? primary.suggestedPrice : 0),
-    suggestedPriceUsd,
-    suggestedPriceCny: getNumber(data, ['suggested_price_cny'], primary.suggestedPriceCny || Math.round(suggestedPriceUsd * usdCnyRate * 100) / 100),
-    wbPriceRub: getNumber(data, ['wb_price_rub']),
     shippingCostUsd: getNumber(data, ['shipping_cost_usd', 'international_shipping_usd'], primary.shippingCostUsd),
     shippingCostCny: getNumber(data, ['shipping_cost_cny'], primary.shippingCostCny),
     totalCostCny: getNumber(data, ['total_cost_cny'], primary.totalCostCny),
@@ -462,6 +471,17 @@ export async function fetchCategoryAttrs(platform: Marketplace, categoryId: stri
     }
     return stringList(record.options)
   }
+  const attributeMetadata = (record: UnknownRecord) => {
+    const raw = asRecord(record.raw)
+    const dictionaryId = getString(record, ['dictionary_id'], getString(raw, ['dictionary_id']))
+    return {
+      dictionaryId,
+      isDictionary: getBoolean(record, ['is_dictionary'], Boolean(dictionaryId)),
+      isCollection: getBoolean(record, ['is_collection'], getBoolean(raw, ['is_collection'])),
+      maxValueCount: getNumber(record, ['max_value_count'], getNumber(raw, ['max_value_count'])),
+      categoryDependent: getBoolean(record, ['category_dependent'], getBoolean(raw, ['category_dependent'])),
+    }
+  }
   const required = Array.isArray(data.required)
     ? data.required.map((item) => {
       const record = asRecord(item)
@@ -473,6 +493,7 @@ export async function fetchCategoryAttrs(platform: Marketplace, categoryId: stri
         valueType: getString(record, ['value_type', 'valueType'], 'string'),
         unit: getString(record, ['unit']),
         description: getString(record, ['description', 'help', 'tooltip']),
+        ...attributeMetadata(record),
       }
     })
     : []
@@ -489,6 +510,7 @@ export async function fetchCategoryAttrs(platform: Marketplace, categoryId: stri
         valueType: getString(record, ['value_type', 'valueType'], 'string'),
         unit: getString(record, ['unit']),
         description: getString(record, ['description', 'help', 'tooltip']),
+        ...attributeMetadata(record),
       }
     })
     : []
@@ -502,6 +524,41 @@ export async function fetchCategoryAttrs(platform: Marketplace, categoryId: stri
     fetchedAt: new Date().toISOString(),
     raw: asRecord(data.category),
   }
+}
+
+export async function fetchCategoryAttributeValues(
+  platform: Marketplace,
+  categoryId: string,
+  attributeId: string,
+  site = '',
+  query = '',
+  limit = 50,
+): Promise<CategoryAttributeOption[]> {
+  const response = await apiClient.post('/api/category-attribute-values', {
+    platform,
+    category_id: categoryId,
+    attribute_id: attributeId,
+    site,
+    query,
+    limit,
+  })
+  const data = asRecord(response.data)
+  ensureOk(data, '读取平台枚举值失败')
+  return Array.isArray(data.values)
+    ? data.values.flatMap((item) => {
+      const record = asRecord(item)
+      const id = getString(record, ['id'])
+      const value = getString(record, ['value'])
+      return id && value
+        ? [{
+          id,
+          value,
+          info: getString(record, ['info']),
+          picture: getString(record, ['picture']),
+        }]
+        : []
+    })
+    : []
 }
 
 export async function searchCategories(platform: Marketplace, query: string, site = '', limit = 20): Promise<{ results: CategorySearchResult[] }> {
@@ -596,12 +653,22 @@ function categorySelectionToBackendRecord(category: CategorySelection | null): U
         name: attr.name,
         required: attr.required,
         options: attr.options || [],
+        dictionary_id: attr.dictionaryId || '',
+        is_dictionary: Boolean(attr.isDictionary || attr.dictionaryId),
+        is_collection: Boolean(attr.isCollection),
+        max_value_count: attr.maxValueCount || 0,
+        category_dependent: Boolean(attr.categoryDependent),
       })),
       optional: category.optionalAttributes.map((attr) => ({
         id: attr.id,
         name: attr.name,
         required: false,
         options: attr.options || [],
+        dictionary_id: attr.dictionaryId || '',
+        is_dictionary: Boolean(attr.isDictionary || attr.dictionaryId),
+        is_collection: Boolean(attr.isCollection),
+        max_value_count: attr.maxValueCount || 0,
+        category_dependent: Boolean(attr.categoryDependent),
       })),
     },
   }

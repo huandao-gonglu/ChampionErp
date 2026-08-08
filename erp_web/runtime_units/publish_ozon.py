@@ -17,6 +17,7 @@ from .publish_helpers import (
     _draft_for_platform,
     _draft_images,
     _required_attribute_summary,
+    _selected_price_and_currency,
 )
 
 
@@ -66,6 +67,7 @@ def _category_record(draft: dict[str, Any]) -> dict[str, Any]:
         else {}
     )
     return {
+        "schema_version": int(schema.get("version") or 0),
         "category_id": str(draft.get("category_id") or "").strip(),
         "description_category_id": str(
             draft.get("description_category_id") or ""
@@ -140,6 +142,19 @@ def _attribute_values(value: Any) -> list[dict[str, Any]]:
     return values
 
 
+def _attribute_dictionary_id(definition: dict[str, Any]) -> str:
+    raw = definition.get("raw") if isinstance(definition.get("raw"), dict) else {}
+    return str(
+        definition.get("dictionary_id") or raw.get("dictionary_id") or ""
+    ).strip()
+
+
+def _dictionary_values_have_ids(values: list[dict[str, Any]]) -> bool:
+    return bool(values) and all(
+        value.get("dictionary_value_id") not in (None, "") for value in values
+    )
+
+
 def _attribute_complex_id(definition: dict[str, Any]) -> int:
     raw = definition.get("raw") if isinstance(definition.get("raw"), dict) else {}
     value = (
@@ -158,6 +173,8 @@ def _attribute_complex_id(definition: dict[str, Any]) -> int:
 def _ozon_attributes(
     product: dict[str, Any],
     draft: dict[str, Any],
+    *,
+    reject_invalid_dictionary: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     record = _category_record(draft)
     definitions = _attribute_definitions(record)
@@ -183,10 +200,16 @@ def _ozon_attributes(
             # 只发送当前实时类目定义中的正整数属性 ID。这样既排除
             # BRAND/MODEL 等辅助字段，也避免 0、16 等来源数字键混入 API。
             continue
+        definition = definitions.get(attr_id, {})
         values = _attribute_values(raw_value)
         if not values:
             continue
-        definition = definitions.get(attr_id, {})
+        if _attribute_dictionary_id(definition) and not _dictionary_values_have_ids(values):
+            if reject_invalid_dictionary:
+                raise ValueError(
+                    f"Ozon 字典属性 {attr_id} 必须从平台选项中选择，不能手动输入"
+                )
+            continue
         complex_id = _attribute_complex_id(definition)
         item = {
             "complex_id": complex_id,
@@ -210,7 +233,11 @@ def ozon_required_attributes_missing(product: dict[str, Any]) -> list[str]:
 
     product = normalize_product_fields(product)
     draft = _draft_for_platform(product, "ozon")
-    regular, complex_attributes = _ozon_attributes(product, draft)
+    regular, complex_attributes = _ozon_attributes(
+        product,
+        draft,
+        reject_invalid_dictionary=False,
+    )
     filled_ids = {str(item.get("id") or "") for item in regular}
     for group in complex_attributes:
         for item in group.get("attributes", []):
@@ -223,12 +250,38 @@ def ozon_required_attributes_missing(product: dict[str, Any]) -> list[str]:
     ]
 
 
+def ozon_invalid_dictionary_attributes(product: dict[str, Any]) -> list[str]:
+    product = normalize_product_fields(product)
+    draft = _draft_for_platform(product, "ozon")
+    definitions = _attribute_definitions(_category_record(draft))
+    raw_attributes = (
+        draft.get("attributes")
+        if isinstance(draft.get("attributes"), dict)
+        else {}
+    )
+    invalid: list[str] = []
+    for attr_id, definition in definitions.items():
+        if not _attribute_dictionary_id(definition) or attr_id not in raw_attributes:
+            continue
+        values = _attribute_values(raw_attributes.get(attr_id))
+        if values and not _dictionary_values_have_ids(values):
+            invalid.append(attr_id)
+    return invalid
+
+
 def build_ozon_publish_payload(
     product: dict[str, Any],
     config: dict[str, Any],
 ) -> dict[str, Any]:
     product = normalize_product_fields(product)
     draft = _draft_for_platform(product, "ozon")
+    schema = (
+        draft.get("category_attribute_schema")
+        if isinstance(draft.get("category_attribute_schema"), dict)
+        else {}
+    )
+    if int(schema.get("version") or 0) < 2:
+        raise ValueError("Ozon 类目属性定义已过期，请刷新平台属性后重新选择枚举值")
     type_id, description_category_id = ozon_category_pair(product)
     package = (
         draft.get("package_dimensions")
@@ -238,15 +291,17 @@ def build_ozon_publish_payload(
     attributes, complex_attributes = _ozon_attributes(product, draft)
     images = _draft_images(product, "ozon", draft)[:15]
     store = config.get("ozon") if isinstance(config.get("ozon"), dict) else {}
-    pricing = draft.get("pricing") if isinstance(draft.get("pricing"), dict) else {}
+    selected_price, listing_currency = _selected_price_and_currency(
+        draft, "ozon", str(draft.get("site") or "global")
+    )
+    if not listing_currency:
+        raise ValueError("Ozon 发布币种尚未核验")
 
     item: dict[str, Any] = {
         "attributes": attributes,
         "description_category_id": int(description_category_id),
         "complex_attributes": complex_attributes,
-        "currency_code": str(
-            draft.get("currency") or store.get("currency_code") or "RUB"
-        ).strip().upper(),
+        "currency_code": listing_currency,
         "depth": _positive_int(
             _positive_decimal(package.get("length_cm"), "包装长度") * 10,
             "包装长度",
@@ -259,7 +314,7 @@ def build_ozon_publish_payload(
         "images": images,
         "name": str(draft.get("title") or product.get("name") or "").strip(),
         "offer_id": str(draft.get("sku") or product.get("sku") or "").strip(),
-        "price": _decimal_text(draft.get("price"), "价格"),
+        "price": _decimal_text(selected_price, "价格"),
         "type_id": int(type_id),
         "vat": str(draft.get("vat") or store.get("vat") or "0").strip(),
         "weight": _positive_int(
@@ -275,14 +330,6 @@ def build_ozon_publish_payload(
     barcode = str(draft.get("upc") or product.get("upc") or "").strip()
     if barcode:
         item["barcode"] = barcode
-    old_price = str(
-        draft.get("old_price")
-        or pricing.get("old_price")
-        or pricing.get("list_price")
-        or ""
-    ).strip()
-    if old_price:
-        item["old_price"] = old_price
     return {"items": [item]}
 
 
@@ -374,6 +421,11 @@ def _item_errors(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         rows = item.get("errors") if isinstance(item.get("errors"), list) else []
         for row in rows:
             if isinstance(row, dict):
+                if str(row.get("level") or "").strip().casefold() in {
+                    "warning",
+                    "info",
+                }:
+                    continue
                 errors.append(row)
             elif row:
                 errors.append({"message": str(row)})
@@ -483,6 +535,11 @@ def map_ozon_publish_error(error: Exception) -> dict[str, Any]:
             if isinstance(row, dict)
         )
     for row in rows:
+        if str(row.get("level") or "").strip().casefold() in {
+            "warning",
+            "info",
+        }:
+            continue
         message = str(
             row.get("description")
             or row.get("message")
@@ -525,6 +582,7 @@ __all__ = [
     "build_ozon_publish_payload",
     "map_ozon_publish_error",
     "ozon_category_pair",
+    "ozon_invalid_dictionary_attributes",
     "ozon_required_attributes_missing",
     "publish_ozon_payload",
     "validate_ozon_publish_payload",

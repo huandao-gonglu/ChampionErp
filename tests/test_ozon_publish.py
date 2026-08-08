@@ -14,9 +14,17 @@ from erp_web.runtime_units.publish_ozon import (
     validate_ozon_publish_payload,
 )
 from erp_web.runtime_units.publish_validation import validate_ozon_draft
+from erp_web.services.pricing_service import pricing_calculation_fingerprint
 
 
 def _product() -> dict:
+    basis = {
+        "listing_currency": "RUB",
+        "length_cm": "12.3",
+        "width_cm": "4.5",
+        "height_cm": "6.7",
+        "weight_kg": "0.25",
+    }
     return {
         "product_id": "product-ozon",
         "name": "Тестовый товар",
@@ -36,13 +44,14 @@ def _product() -> dict:
             "ozon": {
                 "platform": "ozon",
                 "site": "global",
-                "currency": "RUB",
+                "target_sites": [{"platform": "ozon", "site": "global", "language": "ru-RU", "market_currency": "RUB", "listing_currency": "RUB"}],
                 "title": "Тестовый товар для Ozon",
                 "description": "Подробное описание товара.",
                 "category_id": "94765",
                 "description_category_id": "17027949",
                 "category_path": "Категория / Тип",
                 "category_attribute_schema": {
+                    "version": 2,
                     "category_id": "94765",
                     "required": [
                         {
@@ -70,7 +79,6 @@ def _product() -> dict:
                 "model": "M1",
                 "sku": "OZON-SKU-1",
                 "upc": "123456789012",
-                "price": "1999.90",
                 "stock": "5",
                 "vat": "0",
                 "attributes": {
@@ -97,7 +105,13 @@ def _product() -> dict:
                     "height_cm": "6.7",
                     "weight_kg": "0.25",
                 },
-                "pricing": {"suggested_price": "1999.90"},
+                "pricing": {"targets": {"ozon:global": {
+                    "listing_currency": "RUB",
+                    "suggested_price": {"amount": "1999.90", "currency": "RUB"},
+                    "applied_price": {"amount": "1999.90", "currency": "RUB"},
+                    "calculation_basis": basis,
+                    "calculation_fingerprint": pricing_calculation_fingerprint(basis),
+                }}},
                 "validation_errors": [],
             }
         },
@@ -110,6 +124,7 @@ def _config() -> dict:
             "client_id": "client-id",
             "api_key": "api-key",
             "auth_status": "success",
+            "contract_currency": "RUB",
         },
         "listing": {},
     }
@@ -262,6 +277,12 @@ def test_publish_ozon_rejects_item_level_errors_and_maps_attribute() -> None:
                         "status": "failed",
                         "errors": [
                             {
+                                "code": "ATTRIBUTE_WARNING",
+                                "attribute_id": 23102,
+                                "level": "warning",
+                                "description": "可选属性值不在列表中",
+                            },
+                            {
                                 "code": "ATTRIBUTE_INVALID",
                                 "attribute_id": 85,
                                 "description": "Значение бренда не найдено",
@@ -287,6 +308,58 @@ def test_publish_ozon_rejects_item_level_errors_and_maps_attribute() -> None:
     assert mapped["field_errors"] == {
         "attributes.85": ["Значение бренда не найдено"]
     }
+
+
+def test_publish_ozon_does_not_treat_item_warning_as_failure() -> None:
+    responses = [
+        {"result": {"task_id": 11}},
+        {
+            "result": {
+                "items": [
+                    {
+                        "offer_id": "OZON-SKU-1",
+                        "product_id": 22,
+                        "status": "imported",
+                        "errors": [
+                            {
+                                "code": "ATTRIBUTE_WARNING",
+                                "attribute_id": 23102,
+                                "level": "warning",
+                                "description": "可选属性值不在列表中",
+                            }
+                        ],
+                    }
+                ]
+            }
+        },
+    ]
+    with patch(
+        "erp_web.runtime_units.publish_ozon.request_ozon_json",
+        side_effect=responses,
+    ):
+        result = publish_ozon_payload(
+            {"items": [{"offer_id": "OZON-SKU-1"}]},
+            "client-id",
+            "api-key",
+        )
+
+    assert result["ok"] is True
+    assert result["product_id"] == 22
+
+
+def test_ozon_precheck_rejects_free_text_dictionary_attribute() -> None:
+    product = _product()
+    product["drafts"]["ozon"]["attributes"]["85"] = "Champion"
+
+    result = validate_ozon_draft(product, _config())
+
+    assert any(
+        item["code"] == "ATTRIBUTE_DICTIONARY_VALUE_REQUIRED"
+        and item["field"] == "attributes.85"
+        for item in result["errors"]
+    )
+    with pytest.raises(ValueError, match="必须从平台选项中选择"):
+        build_ozon_publish_payload(product, _config())
 
 
 def test_ozon_adapter_and_draft_precheck_are_publish_ready() -> None:

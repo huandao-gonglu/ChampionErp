@@ -642,7 +642,7 @@ def test_category_match_vertical_slice_has_explicit_stable_boundaries() -> None:
     assert "run_category_match_agent" in match_text
     assert "AiAgentFactory" in agent_text
     assert "CategoryMatchOutputValidator" in agent_text
-    assert "build_category_search_toolset(" in match_text
+    assert "build_category_match_toolset(" in match_text
     assert "CATEGORY_SEARCH_TOOL_DEFINITIONS" in tool_text
     assert "side_effect=\"write\"" not in tool_text
     assert '"category.product_match"' in model_config
@@ -690,11 +690,14 @@ def test_category_search_uses_bound_polymorphism_and_normalized_shapes() -> None
     assert not (ROOT / "erp_web/runtime_units/category_retrieval.py").exists()
     assert "class CategorySearcher(Protocol)" in provider_contract_text
     assert "def search_categories(self, keyword: str)" in provider_contract_text
+    assert "class CategoryNavigator(Protocol)" in provider_contract_text
+    assert "def browse_categories(self, parent_ids: list[str])" in provider_contract_text
     assert "FullTreeCategoryProvider" not in provider_contract_text
     assert "RemoteDiscoveryCategoryProvider" not in provider_contract_text
     assert "_CATEGORY_SEARCHER_FACTORIES" in searcher_text
     assert "isinstance(provider" not in searcher_text
     assert 'name="search_categories"' in tool_text
+    assert 'name="browse_categories"' in tool_text
     assert '"platform":' not in tool_text
     assert '"site":' not in tool_text
     assert "retrieve_category_candidates" not in tool_text
@@ -984,14 +987,14 @@ def test_frontend_workflow_action_factories_use_explicit_narrow_ports() -> None:
         assert f"{factory_name}(runtime: WorkflowRuntime)" not in action_text
 
 
-def test_frontend_product_contract_rejects_old_and_writes_version_one() -> None:
+def test_frontend_product_contract_rejects_future_and_writes_current_version() -> None:
     generated = (
         ROOT / "front/src/types/workflow.generated.ts"
     ).read_text(encoding="utf-8")
     product_normalizer = (
         ROOT / "front/src/api/workflow/normalizers/product.ts"
     ).read_text(encoding="utf-8")
-    assert "export const PRODUCT_SCHEMA_VERSION = 1 as const" in generated
+    assert "export const PRODUCT_SCHEMA_VERSION = 2 as const" in generated
     assert "assertCurrentProductWireSchema(record)" in product_normalizer
     assert "REMOVED_PRODUCT_FIELDS" in product_normalizer
     assert "const currentSchema =" not in product_normalizer
@@ -1013,3 +1016,17 @@ def test_frontend_product_contract_rejects_old_and_writes_version_one() -> None:
         "sale_price",
     ):
         assert f"  {retired_field}?:" not in backend_product
+
+
+def test_publish_currency_contract_has_no_market_or_draft_fallback() -> None:
+    ozon_publish = (ROOT / "erp_web/runtime_units/publish_ozon.py").read_text(encoding="utf-8")
+    draft_schema = (ROOT / "erp_web/schemas/product.py").read_text(encoding="utf-8")
+    registry = (ROOT / "erp_web/marketplace_registry.py").read_text(encoding="utf-8")
+
+    assert 'or "RUB"' not in ozon_publish
+    assert 'draft.get("currency")' not in ozon_publish
+    assert "class PlatformDraft" in draft_schema
+    platform_draft = draft_schema.split("class PlatformDraft", 1)[1].split("class Product", 1)[0]
+    assert "\n    price:" not in platform_draft
+    assert "\n    currency:" not in platform_draft
+    assert '"market_currency": "RUB", "listing_currency": ""' in registry

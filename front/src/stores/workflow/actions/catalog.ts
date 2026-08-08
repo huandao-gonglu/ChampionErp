@@ -231,7 +231,6 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
         targetSites: mergeTargetDetails(validTargets, loaded.draft.targetSites || [], loaded.draft),
         site: primaryTarget.site,
         language: primaryTarget.language,
-        currency: primaryTarget.currency,
       }
       const result = await saveDraftApi(draftToSave)
       if (currentDraft.value.draftId === draftId) {

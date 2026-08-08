@@ -115,6 +115,80 @@ def test_ozon_category_search_and_attributes_use_official_api() -> None:
     ]
 
 
+def test_ozon_dictionary_metadata_and_values_are_loaded_separately() -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def request(
+        method: str,
+        url: str,
+        client_id: str,
+        api_key: str,
+        payload: dict[str, object] | None = None,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        del method, client_id, api_key, kwargs
+        body = payload or {}
+        calls.append((url, body))
+        if url == ozon_category_api.OZON_CATEGORY_TREE_URL:
+            return OZON_TREE
+        if url == ozon_category_api.OZON_CATEGORY_ATTRIBUTES_URL:
+            return {
+                "result": [
+                    {
+                        "id": 85,
+                        "name": "Бренд",
+                        "is_required": True,
+                        "type": "String",
+                        "dictionary_id": 28732849,
+                        "category_dependent": True,
+                    }
+                ]
+            }
+        if url == ozon_category_api.OZON_CATEGORY_ATTRIBUTE_VALUES_URL:
+            return {
+                "result": [
+                    {
+                        "id": 126745801,
+                        "value": "Нет бренда",
+                        "info": "Товар не имеет бренда",
+                        "picture": "",
+                    }
+                ]
+            }
+        raise AssertionError(url)
+
+    with (
+        patch.object(ozon_category_api, "_load_store_config", _store_config),
+        patch.object(ozon_category_api, "request_ozon_json", side_effect=request),
+    ):
+        attrs = category_store.fetch_category_attributes("ozon", "94765")
+        values = category_store.fetch_category_attribute_values(
+            "ozon",
+            "94765",
+            "85",
+            query="нет бренда",
+        )
+
+    brand = attrs["required"][0]
+    assert brand["dictionary_id"] == "28732849"
+    assert brand["is_dictionary"] is True
+    assert brand["category_dependent"] is True
+    assert brand["options"] == []
+    assert values["values"] == [
+        {
+            "id": "126745801",
+            "value": "Нет бренда",
+            "info": "Товар не имеет бренда",
+            "picture": "",
+        }
+    ]
+    assert [call[0] for call in calls] == [
+        ozon_category_api.OZON_CATEGORY_TREE_URL,
+        ozon_category_api.OZON_CATEGORY_ATTRIBUTES_URL,
+        ozon_category_api.OZON_CATEGORY_ATTRIBUTE_VALUES_URL,
+    ]
+
+
 def test_ozon_category_tree_summary_reuses_the_live_tree() -> None:
     ozon_category_api.clear_ozon_category_tree_cache()
     with (
@@ -132,6 +206,73 @@ def test_ozon_category_tree_summary_reuses_the_live_tree() -> None:
         "api-key",
         {"language": "DEFAULT"},
     )
+
+
+def test_ozon_category_navigation_rebuilds_three_levels_from_flat_corpus() -> None:
+    tree = {
+        "result": [
+            {
+                "description_category_id": 17027495,
+                "category_name": "Автотовары",
+                "children": [
+                    {
+                        "description_category_id": 17039878,
+                        "category_name": "Автомагнитолы",
+                        "children": [
+                            {
+                                "type_id": 971326576,
+                                "type_name": "Аксессуар для автомагнитолы",
+                                "disabled": False,
+                                "children": [],
+                            },
+                            {
+                                "type_id": 95858,
+                                "type_name": "Автомагнитола",
+                                "disabled": False,
+                                "children": [],
+                            },
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+    with (
+        patch.object(ozon_category_api, "_load_store_config", _store_config),
+        patch.object(
+            ozon_category_api,
+            "request_ozon_json",
+            return_value=tree,
+        ) as request,
+    ):
+        roots = ozon_category_api.fetch_ozon_category_roots()
+        groups = ozon_category_api.fetch_ozon_category_children(["17027495"])
+        product_types = ozon_category_api.fetch_ozon_category_children(
+            ["17039878"]
+        )
+
+    assert [(node["node_id"], node["level"]) for node in roots["nodes"]] == [
+        ("17027495", "branch")
+    ]
+    assert groups["nodes"][0]["node_id"] == "17039878"
+    assert groups["nodes"][0]["path_segments"] == [
+        "Автотовары",
+        "Автомагнитолы",
+    ]
+    assert {
+        node["category_id"]: node["name"] for node in product_types["nodes"]
+    } == {
+        "95858": "Автомагнитола",
+        "971326576": "Аксессуар для автомагнитолы",
+    }
+    selected = next(
+        node
+        for node in product_types["nodes"]
+        if node["category_id"] == "971326576"
+    )
+    assert selected["description_category_id"] == "17039878"
+    assert selected["type_id"] == "971326576"
+    request.assert_called_once()
 
 
 def test_ozon_bound_searcher_searches_the_server_cache_by_keyword() -> None:
@@ -240,16 +381,19 @@ def test_ozon_category_auth_test_reads_the_category_tree_without_a_category_id()
         patch.object(get_context().config, "save_store_config") as save_config,
         patch.object(store_credentials, "summarize_store_auth_states", return_value={"ozon": {"status": "测试成功"}}),
         patch("erp_web.runtime_units.ozon_category_api.fetch_ozon_category_tree_summary", return_value={"product_type_count": 2, "sample": {"type_id": "94765"}}) as fetch_tree,
+        patch.object(publisher, "fetch_ozon_seller_info", return_value={"company": {"currency": "CNY"}}) as fetch_seller,
         patch.object(publisher, "fetch_ozon_shop_name") as fetch_shop,
     ):
         result = store_credentials.test_store_auth("ozon", "category")
 
     fetch_tree.assert_called_once_with(force_refresh=True)
     fetch_shop.assert_not_called()
+    fetch_seller.assert_called_once_with("client-id", "api-key")
     save_config.assert_called_once_with(config)
     assert result["ok"] is True
     assert result["message"] == "类目读取测试成功：已读取 2 个可发布商品类型。"
     assert result["category_tree"] == {"product_type_count": 2, "sample": {"type_id": "94765"}}
+    assert result["listing_currency"] == "CNY"
 
 
 def test_ozon_category_corpus_persists_across_memory_cache_clear(

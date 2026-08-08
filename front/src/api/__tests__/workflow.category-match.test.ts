@@ -23,7 +23,8 @@ describe('category.product_match API contract', () => {
       platform: 'mercadolibre',
       site: 'MLM',
       language: 'es-MX',
-      currency: 'MXN',
+      marketCurrency: 'MXN',
+      listingCurrency: 'MXN',
     }
     vi.mocked(apiClient.post).mockResolvedValueOnce({
       data: {

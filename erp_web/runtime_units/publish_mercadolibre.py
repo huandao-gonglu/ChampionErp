@@ -28,6 +28,7 @@ from .collect_helpers import collect_time_iso
 from .image_pool_core import _local_path_from_image_item, _source_pool_items, image_pool_refs_for_platform
 from .publish_helpers import (
     _draft_for_platform,
+    _selected_price_and_currency,
     _field_error_map,
     build_mercadolibre_publish_payload,
     build_publish_payload,
@@ -703,9 +704,13 @@ def mercadolibre_config_for_payload(config: dict[str, Any], product: dict[str, A
     if site_id:
         store["site_id"] = site_id
     listing = cfg.setdefault("listing", {})
+    selected_price, listing_currency = _selected_price_and_currency(
+        draft, "mercadolibre", site_id
+    )
     for key, value in {
-        "mercadolibre_price": draft.get("price"),
-        "price": draft.get("price"),
+        "mercadolibre_price": selected_price,
+        "price": selected_price,
+        "currency_id": listing_currency,
         "stock": draft.get("stock"),
         "sku": draft.get("sku"),
         "upc": draft.get("upc"),

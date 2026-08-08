@@ -1,7 +1,7 @@
 """后端唯一的平台及站点注册表。
 
 授权按一级平台保存；商品、类目、定价等市场化数据使用 ``platform + site``。
-站点默认语言和币种集中维护，避免各业务页面重复硬编码。
+站点默认语言、市场展示币种和刊登币种规则集中维护，避免各业务页面重复硬编码。
 
 每个平台一条 :class:`MarketplaceSpec`：能力集合（capabilities）、字段映射
 （preset_key / title_limit / description_limit / language）和
@@ -76,12 +76,12 @@ MARKETPLACE_SPECS: tuple[MarketplaceSpec, ...] = (
         key=Marketplace.MERCADO_LIBRE.value,
         label="美客多",
         sites=(
-            {"key": "CBT", "code": "CBT", "label": "全局", "language": "es", "currency": "USD"},
-            {"key": "MLM", "code": "MLM", "label": "墨西哥", "language": "es", "currency": "MXN"},
-            {"key": "MLB", "code": "MLB", "label": "巴西", "language": "pt-BR", "currency": "BRL"},
-            {"key": "MLC", "code": "MLC", "label": "智利", "language": "es", "currency": "CLP"},
-            {"key": "MCO", "code": "MCO", "label": "哥伦比亚", "language": "es", "currency": "COP"},
-            {"key": "MLA", "code": "MLA", "label": "阿根廷", "language": "es", "currency": "ARS"},
+            {"key": "CBT", "code": "CBT", "label": "全局", "language": "es", "market_currency": "USD", "listing_currency": "USD"},
+            {"key": "MLM", "code": "MLM", "label": "墨西哥", "language": "es", "market_currency": "MXN", "listing_currency": "MXN"},
+            {"key": "MLB", "code": "MLB", "label": "巴西", "language": "pt-BR", "market_currency": "BRL", "listing_currency": "BRL"},
+            {"key": "MLC", "code": "MLC", "label": "智利", "language": "es", "market_currency": "CLP", "listing_currency": "CLP"},
+            {"key": "MCO", "code": "MCO", "label": "哥伦比亚", "language": "es", "market_currency": "COP", "listing_currency": "COP"},
+            {"key": "MLA", "code": "MLA", "label": "阿根廷", "language": "es", "market_currency": "ARS", "listing_currency": "ARS"},
         ),
         capabilities=frozenset({CAP_PUBLISH, CAP_PREVIEW_PAYLOAD, CAP_CATEGORY_SEARCH, CAP_CATEGORY_ATTRIBUTES, CAP_ORDERS}),
         preset_key="mercadolibre",
@@ -103,7 +103,7 @@ MARKETPLACE_SPECS: tuple[MarketplaceSpec, ...] = (
         key=Marketplace.YANDEX.value,
         label="Yandex",
         sites=(
-            {"key": "global", "code": "global", "label": "俄罗斯", "language": "ru-RU", "currency": "RUB"},
+            {"key": "global", "code": "global", "label": "俄罗斯", "language": "ru-RU", "market_currency": "RUB", "listing_currency": "RUB"},
         ),
         capabilities=frozenset(),
         preset_key="yandex",
@@ -121,7 +121,7 @@ MARKETPLACE_SPECS: tuple[MarketplaceSpec, ...] = (
         key=Marketplace.OZON.value,
         label="Ozon",
         sites=(
-            {"key": "global", "code": "global", "label": "俄罗斯", "language": "ru-RU", "currency": "RUB"},
+            {"key": "global", "code": "global", "label": "俄罗斯", "language": "ru-RU", "market_currency": "RUB", "listing_currency": ""},
         ),
         capabilities=frozenset(
             {
@@ -205,7 +205,7 @@ def marketplace_site(platform: str, site: str = "") -> dict[str, str]:
 
     spec = marketplace_spec(platform)
     if not spec:
-        return {"key": "", "code": "", "label": "", "language": "", "currency": ""}
+        return {"key": "", "code": "", "label": "", "language": "", "market_currency": "", "listing_currency": ""}
     site_key = str(site or "").strip().lower()
     selected = next(
         (item for item in spec.sites if item["key"].lower() == site_key or item["code"].lower() == site_key),

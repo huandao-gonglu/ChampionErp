@@ -6,6 +6,7 @@ from typing import Any
 
 from erp_web.context import get_context
 from erp_web.product_model import validate_category_precheck
+from erp_web.services.pricing_service import pricing_calculation_fingerprint
 from erp_web.stores.product_store import normalize_product_fields
 
 from .collect_helpers import collect_time_iso
@@ -17,7 +18,11 @@ from .publish_helpers import (
     _required_attribute_summary,
     precheck_item,
 )
-from .publish_ozon import ozon_category_pair, ozon_required_attributes_missing
+from .publish_ozon import (
+    ozon_category_pair,
+    ozon_invalid_dictionary_attributes,
+    ozon_required_attributes_missing,
+)
 
 
 def _review_field_from_item(item: Any) -> str:
@@ -66,6 +71,74 @@ def _local_category_record(product: dict[str, Any], platform: str, category_id: 
     return record
 
 
+def _normalized_number(value: Any) -> str:
+    try:
+        return format(float(str(value or "0").replace(",", ".")), ".8f").rstrip("0").rstrip(".") or "0"
+    except (TypeError, ValueError):
+        return "0"
+
+
+def _selected_price_errors(product: dict[str, Any], draft: dict[str, Any]) -> list[dict[str, str]]:
+    listing_currency = str(draft.get("listing_currency") or "").strip().upper()
+    selected = draft.get("selected_pricing") if isinstance(draft.get("selected_pricing"), dict) else {}
+    if not selected:
+        platform = str(draft.get("platform") or "").strip().lower()
+        site = str(draft.get("site") or draft.get("site_id") or "").strip().lower()
+        target_key = f"{platform}:{site}"
+        pricing = draft.get("pricing") if isinstance(draft.get("pricing"), dict) else {}
+        targets = pricing.get("targets") if isinstance(pricing.get("targets"), dict) else {}
+        selected = next(
+            (item for key, item in targets.items() if str(key).lower() == target_key and isinstance(item, dict)),
+            {},
+        )
+        target_sites = draft.get("target_sites") if isinstance(draft.get("target_sites"), list) else []
+        target = next(
+            (
+                item for item in target_sites
+                if isinstance(item, dict)
+                and str(item.get("platform") or "").lower() == platform
+                and str(item.get("site") or "").lower() == site
+            ),
+            {},
+        )
+        listing_currency = str(
+            target.get("listing_currency")
+            or selected.get("listing_currency")
+            or listing_currency
+        ).strip().upper()
+    applied = selected.get("applied_price") if isinstance(selected.get("applied_price"), dict) else {}
+    applied_currency = str(applied.get("currency") or "").strip().upper()
+    basis = selected.get("calculation_basis") if isinstance(selected.get("calculation_basis"), dict) else {}
+    fingerprint = str(selected.get("calculation_fingerprint") or "").strip()
+    try:
+        amount_valid = float(str(applied.get("amount") or "0").replace(",", ".")) > 0
+    except (TypeError, ValueError):
+        amount_valid = False
+    if not listing_currency:
+        return [precheck_item("LISTING_CURRENCY_UNRESOLVED", "listing_currency", "发布币种尚未核验", "error", "先测试店铺授权，再重新核价")]
+    if not amount_valid or applied_currency != listing_currency:
+        return [precheck_item("PRICING_STALE", "pricing", f"{listing_currency} 发布目标没有有效核价结果", "error", "前往核价页重新计算并应用该目标售价")]
+    if (
+        not basis
+        or fingerprint != pricing_calculation_fingerprint(basis)
+        or str(basis.get("listing_currency") or "").upper() != listing_currency
+    ):
+        return [precheck_item("PRICING_STALE", "pricing", "核价依据缺失或已变化", "error", "前往核价页重新计算并应用售价")]
+    product_cost = product.get("cost")
+    if product_cost not in (None, "") and _normalized_number(product_cost) != _normalized_number(basis.get("cost_cny")):
+        return [precheck_item("PRICING_STALE", "pricing", "商品成本已变化，旧核价结果已失效", "error", "前往核价页重新计算并应用售价")]
+    package = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
+    for package_key, basis_key in (
+        ("weight_kg", "weight_kg"),
+        ("length_cm", "length_cm"),
+        ("width_cm", "width_cm"),
+        ("height_cm", "height_cm"),
+    ):
+        if _normalized_number(package.get(package_key)) != _normalized_number(basis.get(basis_key)):
+            return [precheck_item("PRICING_STALE", "pricing", "重量或包装尺寸已变化，旧核价结果已失效", "error", "前往核价页重新计算并应用售价")]
+    return []
+
+
 def validate_mercadolibre_draft(product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
     product = normalize_product_fields(product)
     draft = _draft_for_platform(product, "mercadolibre")
@@ -86,7 +159,6 @@ def validate_mercadolibre_draft(product: dict[str, Any], config: dict[str, Any])
     category_path = str(draft.get("category_path") or "").strip()
     attrs = draft.get("attributes") if isinstance(draft.get("attributes"), dict) else {}
     pkg = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
-    pricing = draft.get("pricing") if isinstance(draft.get("pricing"), dict) else {}
     images = _draft_images(product, "mercadolibre", draft)
     if auth_status in {"未配置", "已保存，未测试", "测试失败", "Token 过期", "权限不足", "被限流"}:
         code = "AUTH_TOKEN_EXPIRED" if auth_status == "Token 过期" else "AUTH_NOT_CONFIGURED"
@@ -115,11 +187,7 @@ def validate_mercadolibre_draft(product: dict[str, Any], config: dict[str, Any])
         errors.append(precheck_item("MODEL_MISSING", "model", "Model 为空", "error", "前往类目属性页确认 Model"))
     if not str(draft.get("sku") or product.get("sku") or "").strip():
         errors.append(precheck_item("SKU_MISSING", "sku", "SKU 为空", "error", "前往商品编辑页填写 SKU"))
-    try:
-        if float(str(draft.get("price") or "0").strip() or "0") <= 0:
-            raise ValueError
-    except Exception:
-        errors.append(precheck_item("PRICE_MISSING", "price", "价格缺失或无效", "error", "前往核价页计算并应用售价"))
+    errors.extend(_selected_price_errors(product, draft))
     try:
         if int(float(str(draft.get("stock") or "0").strip() or "0")) <= 0:
             raise ValueError
@@ -136,10 +204,6 @@ def validate_mercadolibre_draft(product: dict[str, Any], config: dict[str, Any])
             errors.append(precheck_item("PACKAGE_DIMENSIONS_MISSING", f"package_dimensions.{field}", f"{field} 缺失", "error", "前往核价页或类目属性页补齐尺寸"))
     if not str(pkg.get("weight_kg") or "").strip():
         errors.append(precheck_item("WEIGHT_MISSING", "package_dimensions.weight_kg", "重量缺失", "error", "前往核价页或类目属性页补齐重量"))
-    if not str(pricing.get("suggested_price") or "").strip() and not str(draft.get("price") or "").strip():
-        errors.append(precheck_item("PRICING_NOT_APPLIED", "pricing", "尚未应用核价结果", "error", "前往核价页应用售价"))
-    elif not str(pricing.get("suggested_price") or "").strip():
-        warnings.append(precheck_item("PRICING_NOT_APPLIED", "pricing", "当前使用草稿售价，建议回核价页确认已应用最新核价结果", "warning", "前往核价页复核售价"))
 
     def review_item_resolved(item: str) -> bool:
         field = str(item or "").strip()
@@ -219,8 +283,7 @@ def validate_yandex_draft(product: dict[str, Any], config: dict[str, Any]) -> di
         errors.append(precheck_item("MODEL_MISSING", "model", "型号为空", "error", "前往类目属性页确认 Model"))
     if not str(draft.get("sku") or product.get("sku") or "").strip():
         errors.append(precheck_item("SKU_MISSING", "sku", "SKU 为空", "error", "前往商品编辑页填写 SKU"))
-    if not str(draft.get("price") or "").strip():
-        errors.append(precheck_item("PRICE_MISSING", "price", "价格缺失", "error", "前往核价页应用 Yandex 价格"))
+    errors.extend(_selected_price_errors(product, draft))
     if not str(draft.get("stock") or "").strip():
         errors.append(precheck_item("STOCK_MISSING", "stock", "库存缺失", "error", "前往商品编辑页填写库存"))
     images = _draft_images(product, "yandex", draft)
@@ -234,9 +297,6 @@ def validate_yandex_draft(product: dict[str, Any], config: dict[str, Any]) -> di
             errors.append(precheck_item("PACKAGE_DIMENSIONS_MISSING", f"package_dimensions.{field}", f"{field} 缺失", "error", "前往核价页补齐尺寸"))
     if not str(pkg.get("weight_kg") or "").strip():
         errors.append(precheck_item("WEIGHT_MISSING", "package_dimensions.weight_kg", "重量缺失", "error", "前往核价页补齐重量"))
-    pricing = draft.get("pricing") if isinstance(draft.get("pricing"), dict) else {}
-    if not str(pricing.get("suggested_price") or "").strip():
-        errors.append(precheck_item("PRICING_NOT_APPLIED", "pricing", "尚未应用核价结果", "error", "前往核价页应用 Yandex 价格"))
     need_review = [field for item in draft.get("validation_errors") or [] if (field := _review_field_from_item(item))]
     if need_review:
         warnings.extend(_review_precheck_items(need_review, "warning"))
@@ -263,8 +323,36 @@ def validate_ozon_draft(product: dict[str, Any], config: dict[str, Any]) -> dict
         errors.append(precheck_item("CATEGORY_MISSING", "category_id", "缺少 Ozon Category / Type ID", "error", "前往类目属性页选择类目"))
     elif not description_category_id:
         errors.append(precheck_item("CATEGORY_PAIR_MISSING", "category_id", "Ozon 类目缺少 type_id 与 description_category_id 配对", "error", "前往类目属性页重新选择 Ozon 实时类目"))
+    schema = (
+        draft.get("category_attribute_schema")
+        if isinstance(draft.get("category_attribute_schema"), dict)
+        else {}
+    )
+    if int(schema.get("version") or 0) < 2:
+        errors.append(
+            precheck_item(
+                "CATEGORY_ATTRIBUTE_SCHEMA_STALE",
+                "category_attribute_schema",
+                "Ozon 类目属性定义缺少枚举元数据",
+                "error",
+                "前往类目属性页刷新平台属性，并重新选择枚举值",
+            )
+        )
+    invalid_dictionary_ids = set(ozon_invalid_dictionary_attributes(product))
+    for attr_id in sorted(invalid_dictionary_ids):
+        errors.append(
+            precheck_item(
+                "ATTRIBUTE_DICTIONARY_VALUE_REQUIRED",
+                f"attributes.{attr_id}",
+                f"Ozon 属性 {attr_id} 必须从平台枚举中选择",
+                "error",
+                "前往类目属性页搜索并选择平台允许的值",
+            )
+        )
     for field in ozon_required_attributes_missing(product):
         attr_id = str(field).split(".", 1)[-1]
+        if attr_id in invalid_dictionary_ids:
+            continue
         errors.append(precheck_item("REQUIRED_ATTRIBUTE_MISSING", field, f"缺少 Ozon 必填属性：{attr_id}", "error", "前往类目属性页补齐必填属性"))
     if not str(draft.get("brand") or "").strip():
         errors.append(precheck_item("BRAND_MISSING", "brand", "品牌为空", "error", "前往类目属性页确认 Brand"))
@@ -272,11 +360,7 @@ def validate_ozon_draft(product: dict[str, Any], config: dict[str, Any]) -> dict
         errors.append(precheck_item("MODEL_MISSING", "model", "型号为空", "error", "前往类目属性页确认 Model"))
     if not str(draft.get("sku") or product.get("sku") or "").strip():
         errors.append(precheck_item("SKU_MISSING", "sku", "SKU 为空", "error", "前往商品编辑页填写 SKU"))
-    try:
-        if float(str(draft.get("price") or "0").replace(",", ".")) <= 0:
-            raise ValueError
-    except (TypeError, ValueError):
-        errors.append(precheck_item("PRICE_MISSING", "price", "价格缺失", "error", "前往核价页应用 Ozon 价格"))
+    errors.extend(_selected_price_errors(product, draft))
     if not str(draft.get("stock") or "").strip():
         errors.append(precheck_item("STOCK_MISSING", "stock", "库存缺失", "error", "前往商品编辑页填写库存"))
     images = _draft_images(product, "ozon", draft)
@@ -307,9 +391,6 @@ def validate_ozon_draft(product: dict[str, Any], config: dict[str, Any]) -> dict
             raise ValueError
     except (TypeError, ValueError):
         errors.append(precheck_item("WEIGHT_MISSING", "package_dimensions.weight_kg", "重量缺失", "error", "前往核价页补齐重量"))
-    pricing = draft.get("pricing") if isinstance(draft.get("pricing"), dict) else {}
-    if not str(pricing.get("suggested_price") or "").strip():
-        errors.append(precheck_item("PRICING_NOT_APPLIED", "pricing", "尚未应用核价结果", "error", "前往核价页应用 Ozon 价格"))
     need_review = [field for item in draft.get("validation_errors") or [] if (field := _review_field_from_item(item))]
     if need_review:
         warnings.extend(_review_precheck_items(need_review, "warning"))

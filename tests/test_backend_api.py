@@ -51,7 +51,7 @@ def test_state_contract_is_versioned_and_never_returns_plaintext_secrets(
     state = get_json(backend_server, "/api/state")
 
     assert state["schemaVersion"] == 1
-    assert state["product"]["schema_version"] == 1
+    assert state["product"]["schema_version"] == 2
     assert state["storeConfig"]["ozon"]["client_id"] == "state-ozon-client"
     serialized = json.dumps({"saved": saved, "state": state}, ensure_ascii=False)
     for secret in (
@@ -163,20 +163,33 @@ def test_calculate_price_api_returns_frontend_fields(backend_server: str) -> Non
         {
             "platform": "mercadolibre",
             "site": "MLM",
-            "purchase_cost": 30,
-            "weight_kg": 0.5,
-            "length_cm": 20,
-            "width_cm": 15,
-            "height_cm": 10,
-            "target_margin_percent": 30,
-            "commission_percent": 16,
+            "exchange_rate_mode": "manual",
             "usd_cny_rate": 7.2,
             "mxn_usd_rate": 18,
+            "common": {
+                "purchase_cost": 30,
+                "weight_kg": 0.5,
+                "length_cm": 20,
+                "width_cm": 15,
+                "height_cm": 10,
+                "usd_cny_rate": 7.2,
+                "mxn_usd_rate": 18,
+            },
+            "targets": [{
+                "target_key": "mercadolibre:mlm",
+                "platform": "mercadolibre",
+                "site": "MLM",
+                "listing_currency": "MXN",
+                "target_margin_percent": 30,
+                "commission_percent": 16,
+                "shipping_quote_mode": "auto",
+            }],
         },
     )
 
-    assert data["suggested_price_mxn"] > 0
-    assert data["suggested_price_usd"] > 0
+    assert float(data["suggested_price"]["amount"]) > 0
+    assert data["suggested_price"]["currency"] == "MXN"
+    assert float(data["converted_prices"]["USD"]) > 0
     assert data["net_revenue_cny"] > 0
     assert data["profit_cny"] > 0
     assert data["shipping_cost_usd"] > 0

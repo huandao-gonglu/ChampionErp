@@ -348,7 +348,6 @@ def draft_copy_from_product(product: dict[str, Any], platform: str) -> dict[str,
             "model": str(normalized.get("model") or source.get("model") or "General"),
             "sku": str(normalized.get("sku") or source.get("sku") or ""),
             "stock": str(normalized.get("stock") or ""),
-            "price": "",
             "status": "claimed",
             "package_dimensions": {
                 "length_cm": str(dims.get("length_cm") or dims.get("lengthCm") or ""),

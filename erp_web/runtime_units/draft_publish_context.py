@@ -7,6 +7,7 @@ from typing import Any
 from erp_web.context import get_context
 from erp_web.marketplace_registry import marketplace_site
 from erp_web.product_model import PLATFORMS, normalize_platform_draft
+from erp_web.services.listing_currency_service import resolve_listing_currency
 from erp_web.stores.product_store import normalize_product_fields
 
 
@@ -29,7 +30,8 @@ PRECHECK_TARGET_SNAPSHOT_KEYS = (
     "platform",
     "site",
     "language",
-    "currency",
+    "market_currency",
+    "listing_currency",
     "category_id",
     "description_category_id",
     "category_path",
@@ -40,16 +42,36 @@ def _target_key(platform: str, site: str) -> str:
     return f"{str(platform or '').strip().lower()}:{str(site or '').strip().lower()}"
 
 
-def _normalized_target(platform: str, site: str = "") -> dict[str, str]:
+def _normalized_target(platform: str, site: str = "") -> dict[str, Any]:
     platform_key = str(platform or "").strip().lower()
     selected_site = marketplace_site(platform_key, site)
     if platform_key not in PLATFORMS or not selected_site.get("code"):
-        return {"platform": "", "site": "", "language": "", "currency": ""}
+        return {
+            "platform": "",
+            "site": "",
+            "language": "",
+            "market_currency": "",
+            "listing_currency": "",
+            "currency_resolution": {},
+        }
+    store_config = get_context().config.load_store_config()
+    store = (
+        store_config.get(platform_key)
+        if isinstance(store_config.get(platform_key), dict)
+        else {}
+    )
+    resolution = resolve_listing_currency(
+        platform_key,
+        str(selected_site["code"]),
+        store,
+    )
     return {
         "platform": platform_key,
         "site": selected_site["code"],
         "language": selected_site["language"],
-        "currency": selected_site["currency"],
+        "market_currency": selected_site["market_currency"],
+        "listing_currency": resolution["listing_currency"],
+        "currency_resolution": deepcopy(resolution),
     }
 
 
@@ -130,7 +152,7 @@ def draft_publish_targets(draft: dict[str, Any]) -> list[dict[str, Any]]:
     return [target] if target["platform"] else []
 
 
-def _select_target(draft: dict[str, Any], platform: str, site: str) -> tuple[dict[str, str], dict[str, Any] | None, int]:
+def _select_target(draft: dict[str, Any], platform: str, site: str) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
     targets = draft_publish_targets(draft)
     if not targets:
         return {}, {"ok": False, "error": "当前草稿没有可发布目标站点", "error_code": "DRAFT_TARGET_MISSING"}, 400
@@ -159,7 +181,30 @@ def draft_for_publish_target(draft: dict[str, Any], target: dict[str, Any]) -> d
     target_draft["platform"] = target["platform"]
     target_draft["site"] = target["site"]
     target_draft["language"] = target["language"]
-    target_draft["currency"] = target["currency"]
+    target_draft["market_currency"] = target["market_currency"]
+    target_draft["listing_currency"] = target["listing_currency"]
+    target_key = _target_key(target["platform"], target["site"])
+    pricing = draft.get("pricing") if isinstance(draft.get("pricing"), dict) else {}
+    pricing_targets = pricing.get("targets") if isinstance(pricing.get("targets"), dict) else {}
+    pricing_target = (
+        pricing_targets.get(target_key)
+        if isinstance(pricing_targets.get(target_key), dict)
+        else {}
+    )
+    applied = (
+        pricing_target.get("applied_price")
+        if isinstance(pricing_target.get("applied_price"), dict)
+        else {}
+    )
+    applied_currency = str(applied.get("currency") or "").strip().upper()
+    applied_amount = str(applied.get("amount") or "").strip()
+    if applied_amount and applied_currency == str(target["listing_currency"]).upper():
+        # Adapter payload builders consume this selected-target projection only;
+        # the persisted draft has no ambiguous top-level price.
+        target_draft["price"] = applied_amount
+    else:
+        target_draft["price"] = ""
+    target_draft["selected_pricing"] = deepcopy(pricing_target)
     for key in TARGET_LISTING_KEYS:
         if key in target:
             target_draft[key] = deepcopy(target[key])

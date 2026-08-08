@@ -10,7 +10,8 @@ const target: MarketplaceTargetSite = {
   platform: 'ozon',
   site: 'global',
   language: 'ru-RU',
-  currency: 'RUB',
+  marketCurrency: 'RUB',
+  listingCurrency: 'RUB',
 }
 
 function panelProps() {

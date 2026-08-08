@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
 import CategoryPrecheckPanel from '@/components/domain/CategoryPrecheckPanel.vue'
-import type { CategoryAttributeTranslations, CategoryPrecheckResult, CategoryResultTranslations, CategorySearchResult, CategorySelection, DraftDetail, DraftProductContext, MarketplaceOption, MarketplaceTargetSite, PrecheckIssue, PublishPrecheck, UnknownRecord } from '@/types/workflow'
+import { fetchCategoryAttributeValues } from '@/api/workflow/publishing'
+import type { CategoryAttributeDefinition, CategoryAttributeOption, CategoryAttributeTranslations, CategoryDictionaryValue, CategoryPrecheckResult, CategoryResultTranslations, CategorySearchResult, CategorySelection, DraftDetail, DraftProductContext, MarketplaceOption, MarketplaceTargetSite, PrecheckIssue, PublishPrecheck, UnknownRecord } from '@/types/workflow'
 
 const props = withDefaults(defineProps<{
   draft: DraftDetail
@@ -57,6 +58,16 @@ const targetOptions = computed(() => props.publishTargets.map((target) => ({
 const showRequiredAttributes = ref(false)
 const showOptionalAttributes = ref(false)
 const attributeInputRefs = ref<Record<string, HTMLInputElement | HTMLSelectElement | null>>({})
+interface DictionaryFieldState {
+  query: string
+  options: CategoryAttributeOption[]
+  loading: boolean
+  error: string
+  open: boolean
+  requestId: number
+}
+const dictionaryFieldStates = ref<Record<string, DictionaryFieldState>>({})
+const dictionarySearchTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 const hasCurrentDraft = computed(() => Boolean(props.draft.draftId))
 const currentDraftTitle = computed(() => props.draft.title || props.productContext.title || props.productContext.sourceTitle || props.draft.draftId || '尚未选择草稿')
@@ -100,12 +111,12 @@ const pendingReviewAttributeIds = computed(() => {
   return [...ids].filter((attrId) => requiredIds.has(attrId)).sort()
 })
 const attributeFields = computed(() => {
-  const fields = new Map<string, { id: string; name: string; required: boolean; options: string[] }>()
+  const fields = new Map<string, CategoryAttributeDefinition>()
   for (const attr of props.category?.requiredAttributes || []) {
-    if (attr.id) fields.set(attr.id, { id: attr.id, name: attr.name || attr.id, required: attr.required, options: attr.options || [] })
+    if (attr.id) fields.set(attr.id, { ...attr, name: attr.name || attr.id, options: attr.options || [] })
   }
   for (const attr of props.category?.optionalAttributes || []) {
-    if (attr.id && !fields.has(attr.id)) fields.set(attr.id, { id: attr.id, name: attr.name || attr.id, required: false, options: attr.options || [] })
+    if (attr.id && !fields.has(attr.id)) fields.set(attr.id, { ...attr, name: attr.name || attr.id, required: false, options: attr.options || [] })
   }
   return [...fields.values()]
 })
@@ -137,8 +148,133 @@ function attributeOptionLabel(attrId: string, option: string) {
   return translated ? `${translated} / ${option}` : option
 }
 
-function attributePlaceholder(attr: { id: string; options?: string[] }) {
+function attributePlaceholder(attr: CategoryAttributeDefinition) {
+  if (attr.isDictionary || attr.dictionaryId) return '搜索并选择平台允许的值'
   return attr.options?.length ? '请选择平台允许的选项' : '请输入属性值'
+}
+
+function selectedDictionaryValues(attrId: string): CategoryDictionaryValue[] {
+  const raw = activeDraft.value.attributes[attrId]
+  if (!raw || typeof raw === 'string' || !Array.isArray(raw.values)) return []
+  return raw.values
+}
+
+function selectedDictionaryValue(attrId: string): CategoryDictionaryValue | null {
+  return selectedDictionaryValues(attrId)[0] || null
+}
+
+function dictionaryState(attr: CategoryAttributeDefinition): DictionaryFieldState {
+  const existing = dictionaryFieldStates.value[attr.id]
+  if (existing) return existing
+  const selected = selectedDictionaryValue(attr.id)
+  const legacy = activeDraft.value.attributes[attr.id]
+  const state: DictionaryFieldState = {
+    query: attr.isCollection ? '' : selected?.value || (typeof legacy === 'string' ? legacy : ''),
+    options: [],
+    loading: false,
+    error: '',
+    open: false,
+    requestId: 0,
+  }
+  dictionaryFieldStates.value[attr.id] = state
+  return state
+}
+
+function legacyDictionaryValue(attrId: string) {
+  const value = activeDraft.value.attributes[attrId]
+  return typeof value === 'string' && value.trim() ? value.trim() : ''
+}
+
+async function loadDictionaryOptions(attr: CategoryAttributeDefinition) {
+  const state = dictionaryState(attr)
+  const requestId = ++state.requestId
+  state.loading = true
+  state.error = ''
+  try {
+    const options = await fetchCategoryAttributeValues(
+      props.selectedPublishTarget.platform,
+      activeDraft.value.categoryId,
+      attr.id,
+      props.selectedPublishTarget.site,
+      state.query.trim(),
+    )
+    if (requestId !== state.requestId) return
+    state.options = options
+  } catch (error) {
+    if (requestId !== state.requestId) return
+    state.options = []
+    state.error = error instanceof Error ? error.message : '读取平台枚举值失败'
+  } finally {
+    if (requestId === state.requestId) state.loading = false
+  }
+}
+
+function openDictionary(attr: CategoryAttributeDefinition) {
+  const state = dictionaryState(attr)
+  state.open = true
+  if (!state.options.length && !state.loading) void loadDictionaryOptions(attr)
+}
+
+function scheduleDictionarySearch(attr: CategoryAttributeDefinition, value: string) {
+  const state = dictionaryState(attr)
+  state.query = value
+  state.open = true
+  const selected = selectedDictionaryValue(attr.id)
+  if (!attr.isCollection && (!selected || selected.value !== value)) {
+    delete activeDraft.value.attributes[attr.id]
+    emit('invalidateCategoryPrecheck')
+  }
+  const previous = dictionarySearchTimers.get(attr.id)
+  if (previous) clearTimeout(previous)
+  dictionarySearchTimers.set(attr.id, setTimeout(() => {
+    void loadDictionaryOptions(attr)
+  }, 250))
+}
+
+function selectDictionaryOption(attr: CategoryAttributeDefinition, option: CategoryAttributeOption) {
+  const dictionaryValueId = Number(option.id)
+  if (!Number.isInteger(dictionaryValueId) || dictionaryValueId <= 0) return
+  const existing = selectedDictionaryValues(attr.id)
+  const selected = attr.isCollection
+    ? [
+      ...existing.filter((item) => item.dictionaryValueId !== dictionaryValueId),
+      { dictionaryValueId, value: option.value },
+    ].slice(0, attr.maxValueCount && attr.maxValueCount > 0 ? attr.maxValueCount : undefined)
+    : [{ dictionaryValueId, value: option.value }]
+  activeDraft.value.attributes[attr.id] = { values: selected }
+  const state = dictionaryState(attr)
+  state.query = attr.isCollection ? '' : option.value
+  state.open = Boolean(attr.isCollection)
+  state.error = ''
+  emit('invalidateCategoryPrecheck')
+}
+
+function removeDictionaryOption(attr: CategoryAttributeDefinition, dictionaryValueId: number) {
+  const values = selectedDictionaryValues(attr.id).filter(
+    (item) => item.dictionaryValueId !== dictionaryValueId,
+  )
+  if (values.length) {
+    activeDraft.value.attributes[attr.id] = { values }
+  } else {
+    delete activeDraft.value.attributes[attr.id]
+  }
+  emit('invalidateCategoryPrecheck')
+}
+
+function clearDictionaryValue(attr: CategoryAttributeDefinition) {
+  delete activeDraft.value.attributes[attr.id]
+  const state = dictionaryState(attr)
+  state.query = ''
+  state.options = []
+  state.open = false
+  emit('invalidateCategoryPrecheck')
+}
+
+function closeDictionary(attr: CategoryAttributeDefinition) {
+  setTimeout(() => {
+    const state = dictionaryFieldStates.value[attr.id]
+    if (state) state.open = false
+  }, 150)
 }
 
 function categoryResultTranslation(item: CategorySearchResult) {
@@ -217,8 +353,16 @@ watch(
     showRequiredAttributes.value = false
     showOptionalAttributes.value = false
     attributeInputRefs.value = {}
+    for (const timer of dictionarySearchTimers.values()) clearTimeout(timer)
+    dictionarySearchTimers.clear()
+    dictionaryFieldStates.value = {}
   },
 )
+
+onBeforeUnmount(() => {
+  for (const timer of dictionarySearchTimers.values()) clearTimeout(timer)
+  dictionarySearchTimers.clear()
+})
 
 function targetKey(target: MarketplaceTargetSite) {
   return `${String(target.platform || '').trim().toLowerCase()}:${String(target.site || '').trim().toLowerCase()}`
@@ -231,7 +375,7 @@ function targetLabel(target: MarketplaceTargetSite) {
   const platformLabel = platform?.label || target.platform || '目标平台'
   const siteLabel = site?.label || target.site || '默认站点'
   const language = target.language || site?.language || ''
-  const currency = target.currency || site?.currency || ''
+  const currency = target.listingCurrency || site?.listingCurrency || '待核验'
   return `${platformLabel} - ${siteLabel}（${target.site || site?.code || '-'} / ${language || '-'} / ${currency || '-'}）`
 }
 
@@ -388,8 +532,49 @@ function selectTargetByKey(value: string) {
               <span v-if="attributeTranslation(attr.id)" class="mt-0.5 block text-[11px] text-slate-400">{{ attributeOriginalLabel(attr) }}</span>
               <span v-if="attributeTranslation(attr.id)?.help" class="mt-0.5 block text-[11px] text-slate-500">{{ attributeTranslation(attr.id)?.help }}</span>
               <span v-if="pendingReviewAttributeIds.includes(attr.id)" class="mt-0.5 block text-[11px] text-amber-600">AI 暂无法从商品信息判断，请人工确认。</span>
+              <div v-if="attr.isDictionary || attr.dictionaryId" class="relative mt-1">
+                <div v-if="attr.isCollection && selectedDictionaryValues(attr.id).length" class="mb-2 flex flex-wrap gap-2">
+                  <span v-for="item in selectedDictionaryValues(attr.id)" :key="item.dictionaryValueId" class="inline-flex items-center gap-1 rounded-full bg-brand-50 px-2.5 py-1 text-xs text-brand-800 ring-1 ring-brand-200 dark:bg-brand-950/30 dark:text-brand-200 dark:ring-brand-900/60">
+                    {{ item.value }}
+                    <button type="button" aria-label="移除选项" @click="removeDictionaryOption(attr, item.dictionaryValueId)">×</button>
+                  </span>
+                </div>
+                <div class="flex gap-2">
+                  <input
+                    :ref="(el) => setAttributeInputRef(attr.id, el)"
+                    :value="dictionaryState(attr).query"
+                    class="input"
+                    :class="isMissingAttribute(attr.id) ? 'border-rose-300 bg-rose-50' : ''"
+                    :data-attribute-id="attr.id"
+                    :placeholder="attributePlaceholder(attr)"
+                    autocomplete="off"
+                    @focus="openDictionary(attr)"
+                    @blur="closeDictionary(attr)"
+                    @input="scheduleDictionarySearch(attr, ($event.target as HTMLInputElement).value)"
+                  />
+                  <button v-if="dictionaryState(attr).query" class="btn btn-outline shrink-0" type="button" @click="clearDictionaryValue(attr)">清除</button>
+                </div>
+                <div v-if="dictionaryState(attr).open" class="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-accent-200 bg-white p-1 shadow-xl dark:border-dark-700 dark:bg-dark-900">
+                  <div v-if="dictionaryState(attr).loading" class="p-3 text-xs text-accent-500">正在读取平台选项…</div>
+                  <div v-else-if="dictionaryState(attr).error" class="p-3 text-xs text-rose-700">{{ dictionaryState(attr).error }}</div>
+                  <button
+                    v-for="option in dictionaryState(attr).options"
+                    :key="option.id"
+                    class="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-brand-50 dark:hover:bg-dark-800"
+                    type="button"
+                    @mousedown.prevent
+                    @click="selectDictionaryOption(attr, option)"
+                  >
+                    <span class="block font-medium text-accent-900 dark:text-white">{{ option.value }}</span>
+                    <span v-if="option.info" class="mt-0.5 block text-xs text-accent-500">{{ option.info }}</span>
+                  </button>
+                  <div v-if="!dictionaryState(attr).loading && !dictionaryState(attr).error && !dictionaryState(attr).options.length" class="p-3 text-xs text-accent-500">没有匹配的平台选项，请更换关键词或检查类目。</div>
+                </div>
+                <p v-if="legacyDictionaryValue(attr.id)" class="mt-1 text-xs text-rose-700">旧值“{{ legacyDictionaryValue(attr.id) }}”不是平台选项，请重新选择。</p>
+                <p v-else class="mt-1 text-xs text-accent-500">平台枚举字段，只会保存从列表选中的值。</p>
+              </div>
               <select
-                v-if="attr.options.length"
+                v-else-if="attr.options?.length"
                 :ref="(el) => setAttributeInputRef(attr.id, el)"
                 v-model="activeDraft.attributes[attr.id]"
                 class="input mt-1"
@@ -427,11 +612,51 @@ function selectTargetByKey(value: string) {
               <span class="text-xs font-semibold text-slate-500">{{ attributeLabel(attr) }}</span>
               <span v-if="attributeTranslation(attr.id)" class="mt-0.5 block text-[11px] text-slate-400">{{ attributeOriginalLabel(attr) }}</span>
               <span v-if="attributeTranslation(attr.id)?.help" class="mt-0.5 block text-[11px] text-slate-500">{{ attributeTranslation(attr.id)?.help }}</span>
-              <select v-if="attr.options.length" :ref="(el) => setAttributeInputRef(attr.id, el)" v-model="activeDraft.attributes[attr.id]" class="input mt-1" :data-attribute-id="attr.id">
+              <div v-if="attr.isDictionary || attr.dictionaryId" class="relative mt-1">
+                <div v-if="attr.isCollection && selectedDictionaryValues(attr.id).length" class="mb-2 flex flex-wrap gap-2">
+                  <span v-for="item in selectedDictionaryValues(attr.id)" :key="item.dictionaryValueId" class="inline-flex items-center gap-1 rounded-full bg-brand-50 px-2.5 py-1 text-xs text-brand-800 ring-1 ring-brand-200 dark:bg-brand-950/30 dark:text-brand-200 dark:ring-brand-900/60">
+                    {{ item.value }}
+                    <button type="button" aria-label="移除选项" @click="removeDictionaryOption(attr, item.dictionaryValueId)">×</button>
+                  </span>
+                </div>
+                <div class="flex gap-2">
+                  <input
+                    :ref="(el) => setAttributeInputRef(attr.id, el)"
+                    :value="dictionaryState(attr).query"
+                    class="input"
+                    :data-attribute-id="attr.id"
+                    :placeholder="attributePlaceholder(attr)"
+                    autocomplete="off"
+                    @focus="openDictionary(attr)"
+                    @blur="closeDictionary(attr)"
+                    @input="scheduleDictionarySearch(attr, ($event.target as HTMLInputElement).value)"
+                  />
+                  <button v-if="dictionaryState(attr).query" class="btn btn-outline shrink-0" type="button" @click="clearDictionaryValue(attr)">清除</button>
+                </div>
+                <div v-if="dictionaryState(attr).open" class="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-accent-200 bg-white p-1 shadow-xl dark:border-dark-700 dark:bg-dark-900">
+                  <div v-if="dictionaryState(attr).loading" class="p-3 text-xs text-accent-500">正在读取平台选项…</div>
+                  <div v-else-if="dictionaryState(attr).error" class="p-3 text-xs text-rose-700">{{ dictionaryState(attr).error }}</div>
+                  <button
+                    v-for="option in dictionaryState(attr).options"
+                    :key="option.id"
+                    class="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-brand-50 dark:hover:bg-dark-800"
+                    type="button"
+                    @mousedown.prevent
+                    @click="selectDictionaryOption(attr, option)"
+                  >
+                    <span class="block font-medium text-accent-900 dark:text-white">{{ option.value }}</span>
+                    <span v-if="option.info" class="mt-0.5 block text-xs text-accent-500">{{ option.info }}</span>
+                  </button>
+                  <div v-if="!dictionaryState(attr).loading && !dictionaryState(attr).error && !dictionaryState(attr).options.length" class="p-3 text-xs text-accent-500">没有匹配的平台选项，请更换关键词或检查类目。</div>
+                </div>
+                <p v-if="legacyDictionaryValue(attr.id)" class="mt-1 text-xs text-rose-700">旧值“{{ legacyDictionaryValue(attr.id) }}”不是平台选项，请重新选择。</p>
+                <p v-else class="mt-1 text-xs text-accent-500">平台枚举字段，只会保存从列表选中的值。</p>
+              </div>
+              <select v-else-if="attr.options?.length" :ref="(el) => setAttributeInputRef(attr.id, el)" v-model="activeDraft.attributes[attr.id]" class="input mt-1" :data-attribute-id="attr.id" @change="emit('invalidateCategoryPrecheck')">
                 <option value="">{{ attributePlaceholder(attr) }}</option>
                 <option v-for="option in attr.options" :key="option" :value="option">{{ attributeOptionLabel(attr.id, option) }}</option>
               </select>
-              <input v-else :ref="(el) => setAttributeInputRef(attr.id, el)" v-model="activeDraft.attributes[attr.id]" class="input mt-1" :data-attribute-id="attr.id" :placeholder="attributePlaceholder(attr)" />
+              <input v-else :ref="(el) => setAttributeInputRef(attr.id, el)" v-model="activeDraft.attributes[attr.id]" class="input mt-1" :data-attribute-id="attr.id" :placeholder="attributePlaceholder(attr)" @input="emit('invalidateCategoryPrecheck')" />
             </label>
           </div>
         </div>

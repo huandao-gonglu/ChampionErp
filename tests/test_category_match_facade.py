@@ -62,6 +62,125 @@ class FakeSearcher:
         }
 
 
+def tree_node(
+    node_id: str,
+    name: str,
+    *,
+    level: str,
+    depth: int,
+    parent_id: str,
+    path: list[str],
+    child_count: int = 0,
+) -> dict[str, Any]:
+    node = {
+        "node_id": node_id,
+        "name": name,
+        "level": level,
+        "depth": depth,
+        "parent_id": parent_id,
+        "path_segments": path,
+        "child_count": child_count,
+        "publishable": level == "product_type",
+        "platform": "ozon",
+        "site": "global",
+    }
+    if level == "product_type":
+        node.update(
+            category_id=node_id,
+            description_category_id=parent_id,
+            type_id=node_id,
+        )
+    return node
+
+
+class FakeNavigator:
+    def __init__(self) -> None:
+        self.parents: list[list[str]] = []
+
+    def root_categories(self) -> dict[str, Any]:
+        return {
+            "parent_ids": [],
+            "source": "test",
+            "nodes": [
+                tree_node(
+                    "17027495",
+                    "Автотовары",
+                    level="branch",
+                    depth=1,
+                    parent_id="",
+                    path=["Автотовары"],
+                    child_count=2,
+                ),
+                tree_node(
+                    "15621042",
+                    "Электроника",
+                    level="branch",
+                    depth=1,
+                    parent_id="",
+                    path=["Электроника"],
+                    child_count=1,
+                ),
+            ],
+        }
+
+    def browse_categories(self, parent_ids: list[str]) -> dict[str, Any]:
+        self.parents.append(parent_ids)
+        if parent_ids == ["17027495"]:
+            nodes = [
+                tree_node(
+                    "17039877",
+                    "Электроника для автомобиля",
+                    level="branch",
+                    depth=2,
+                    parent_id="17027495",
+                    path=["Автотовары", "Электроника для автомобиля"],
+                    child_count=1,
+                ),
+                tree_node(
+                    "17039878",
+                    "Автомагнитолы",
+                    level="branch",
+                    depth=2,
+                    parent_id="17027495",
+                    path=["Автотовары", "Автомагнитолы"],
+                    child_count=1,
+                ),
+            ]
+        elif parent_ids == ["17039877"]:
+            nodes = [
+                tree_node(
+                    "900000001",
+                    "Автомобильный инвертор",
+                    level="product_type",
+                    depth=3,
+                    parent_id="17039877",
+                    path=[
+                        "Автотовары",
+                        "Электроника для автомобиля",
+                        "Автомобильный инвертор",
+                    ],
+                )
+            ]
+        elif parent_ids == ["17039878"]:
+            nodes = [
+                tree_node(
+                    "971326576",
+                    "Аксессуар для автомагнитолы",
+                    level="product_type",
+                    depth=3,
+                    parent_id="17039878",
+                    path=[
+                        "Автотовары",
+                        "Автомагнитолы",
+                        "Аксессуар для автомагнитолы",
+                    ],
+                )
+            ]
+        else:
+            raise AssertionError(parent_ids)
+        return {"parent_ids": parent_ids, "nodes": nodes, "source": "test"}
+
+
 PRODUCT = {
     "name": "Portable fan",
     "brand": "Champion",
@@ -97,6 +216,12 @@ def search(toolset, keyword: str) -> dict[str, Any]:
     binding = toolset.get("search_categories")
     assert binding is not None
     return binding.executor({"keyword": keyword}, execution_context())
+
+
+def browse(toolset, parent_ids: list[str]) -> dict[str, Any]:
+    binding = toolset.get("browse_categories")
+    assert binding is not None
+    return binding.executor({"parent_ids": parent_ids}, execution_context())
 
 
 def detail_loader(
@@ -196,6 +321,92 @@ def test_model_can_change_keyword_until_a_candidate_matches() -> None:
         "name",
         "path_segments",
     }
+
+
+def test_ozon_model_navigates_real_tree_and_can_backtrack_once() -> None:
+    navigator = FakeNavigator()
+    product = {
+        "source": {
+            "title": "车载接收器FM发射器无线蓝牙接收器",
+            "description": "连接手机并向汽车收音机发送 FM 信号。",
+        }
+    }
+    draft = {
+        "language": "ru-RU",
+        "title": "Автомобильный FM-трансмиттер Bluetooth адаптер",
+        "description": "Передает музыку со смартфона на автомагнитолу.",
+    }
+
+    def run(payload, toolset):
+        navigation = payload["category_navigation"]
+        assert navigation["mode"] == "tree_navigation"
+        assert {node["node_id"] for node in navigation["root_nodes"]} == {
+            "17027495",
+            "15621042",
+        }
+        groups = browse(toolset, ["17027495"])
+        assert {node["node_id"] for node in groups["nodes"]} == {
+            "17039877",
+            "17039878",
+        }
+        wrong_leaves = browse(toolset, ["17039877"])
+        assert wrong_leaves["nodes"][0]["category_id"] == "900000001"
+        corrected = browse(toolset, ["17039878"])
+        assert corrected["nodes"][0]["category_id"] == "971326576"
+        return selected("971326576", confidence=0.9), TRACE
+
+    result = match_category(
+        product,
+        draft,
+        {"platform": "ozon", "site": "global", "language": "ru-RU"},
+        searcher=navigator,
+        agent_service=fake_agent_service(run),
+        detail_loader=lambda *args, **kwargs: {
+            "category_id": "971326576",
+            "platform": "ozon",
+            "site": "global",
+            "description_category_id": "17039878",
+            "type_id": "971326576",
+            "attributes": {"required": [], "optional": []},
+        },
+    )
+
+    assert result["status"] == "completed"
+    assert result["selected_category_id"] == "971326576"
+    assert result["decision"]["search_count"] == 3
+    assert result["query"] == "Автотовары > Автомагнитолы"
+    assert navigator.parents == [
+        ["17027495"],
+        ["17039877"],
+        ["17039878"],
+    ]
+
+
+def test_navigation_usage_limit_returns_unresolved_instead_of_502() -> None:
+    navigator = FakeNavigator()
+
+    def run(payload, toolset):
+        del payload
+        browse(toolset, ["17027495"])
+        raise AiAgentExecutionError(
+            "AI_AGENT_USAGE_LIMIT_EXCEEDED",
+            "导航达到上限",
+            conversation_id="aic-limit",
+            task_run_id="task-limit",
+        )
+
+    result = match_category(
+        PRODUCT,
+        {"language": "ru-RU", "title": "Автомобильный адаптер"},
+        {"platform": "ozon", "site": "global", "language": "ru-RU"},
+        searcher=navigator,
+        agent_service=fake_agent_service(run),
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "unresolved"
+    assert result["failure"]["code"] == "ABSTAIN_RETRIEVAL_LIMIT"
+    assert result["decision"]["abstained"] is True
 
 
 def test_model_cannot_finish_before_searching() -> None:

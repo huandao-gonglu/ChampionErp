@@ -151,11 +151,35 @@ def normalize_draft_target_site(
             or selected.get("language")
             or ""
         ),
-        "currency": str(
-            raw.get("currency")
-            or fallback.get("currency")
-            or selected.get("currency")
+        "market_currency": str(
+            raw.get("market_currency")
+            or raw.get("marketCurrency")
+            or fallback.get("market_currency")
+            or fallback.get("marketCurrency")
+            or selected.get("market_currency")
             or ""
+        ).strip().upper(),
+        "listing_currency": str(
+            raw.get("listing_currency")
+            or raw.get("listingCurrency")
+            or fallback.get("listing_currency")
+            or fallback.get("listingCurrency")
+            or (
+                raw.get("currency")
+                if target_platform != "ozon"
+                else ""
+            )
+            or selected.get("listing_currency")
+            or ""
+        ).strip().upper(),
+        "currency_resolution": deepcopy(
+            raw.get("currency_resolution")
+            if isinstance(raw.get("currency_resolution"), dict)
+            else raw.get("currencyResolution")
+            if isinstance(raw.get("currencyResolution"), dict)
+            else fallback.get("currency_resolution")
+            if isinstance(fallback.get("currency_resolution"), dict)
+            else {}
         ),
         "category_id": str(
             raw.get("category_id")
@@ -301,6 +325,37 @@ def _canonical_pricing_mapping(
     return result
 
 
+def _invalidate_legacy_pricing_targets(pricing: dict[str, Any]) -> dict[str, Any]:
+    result = deepcopy(pricing)
+    targets = result.get("targets") if isinstance(result.get("targets"), dict) else {}
+    normalized_targets: dict[str, Any] = {}
+    for key, value in targets.items():
+        record = deepcopy(value) if isinstance(value, dict) else {}
+        applied = record.get("applied_price") if isinstance(record.get("applied_price"), dict) else {}
+        basis = record.get("calculation_basis") if isinstance(record.get("calculation_basis"), dict) else {}
+        fingerprint = str(record.get("calculation_fingerprint") or "").strip()
+        valid_current_contract = bool(
+            str(applied.get("amount") or "").strip()
+            and str(applied.get("currency") or "").strip()
+            and basis
+            and fingerprint
+        )
+        if not valid_current_contract:
+            for field in (
+                "suggested_price",
+                "applied_price",
+                "minimum_price",
+                "converted_prices",
+                "calculation_basis",
+                "calculation_fingerprint",
+            ):
+                record.pop(field, None)
+            record["stale_reason"] = "legacy_pricing_contract"
+        normalized_targets[str(key).strip().lower()] = record
+    result["targets"] = normalized_targets
+    return result
+
+
 def _canonical_platform_draft_output(
     draft: dict[str, Any],
 ) -> dict[str, Any]:
@@ -427,7 +482,6 @@ def _apply_source_mappings_to_draft(product: dict[str, Any], platform: str, curr
     if site_config["code"]:
         current["site"] = site_config["code"]
         current["language"] = str(current.get("language") or product.get("marketplace_terms", {}).get(platform, {}).get("language") or site_config["language"]).strip()
-        current["currency"] = str(current.get("currency") or site_config["currency"]).strip()
         current["country"] = str(current.get("country") or site_config["label"]).strip()
 
     current["brand"] = str(current.get("brand") or product.get("brand") or source.get("brand") or "Generic").strip() or "Generic"
@@ -438,12 +492,6 @@ def _apply_source_mappings_to_draft(product: dict[str, Any], platform: str, curr
         or current.get("gtin")
         or current.get("barcode")
         or product.get("upc")
-        or ""
-    ).strip()
-    current["price"] = str(
-        current.get("price")
-        or current.get("sale_price")
-        or source.get("price")
         or ""
     ).strip()
     current["stock"] = str(current.get("stock") or product.get("stock") or "").strip()
@@ -500,11 +548,6 @@ def _merge_platform_draft(product: dict[str, Any], platform: str) -> dict[str, A
         or current.get("site_id")
         or ""
     ).strip()
-    current["currency"] = str(
-        current.get("currency")
-        or current.get("currency_id")
-        or ""
-    ).strip()
     current["category_id"] = str(
         current.get("category_id")
         or current.get("categoryId")
@@ -535,17 +578,15 @@ def _merge_platform_draft(product: dict[str, Any], platform: str) -> dict[str, A
     )
     current["attributes"] = deepcopy(current.get("attributes") or {})
     pricing = (
-        _canonical_pricing_mapping(current.get("pricing"))
+        _invalidate_legacy_pricing_targets(
+            _canonical_pricing_mapping(current.get("pricing"))
+        )
         if isinstance(current.get("pricing"), dict)
         else {}
     )
     merged_pricing = default_pricing(platform)
     merged_pricing.update({key: deepcopy(value) for key, value in pricing.items() if key in merged_pricing and value not in (None, "")})
     merged_pricing["platform"] = platform
-    merged_pricing["weight_kg"] = str(merged_pricing.get("weight_kg") or current["package_dimensions"].get("weight_kg") or "").strip()
-    merged_pricing["length_cm"] = str(merged_pricing.get("length_cm") or current["package_dimensions"].get("length_cm") or "").strip()
-    merged_pricing["width_cm"] = str(merged_pricing.get("width_cm") or current["package_dimensions"].get("width_cm") or "").strip()
-    merged_pricing["height_cm"] = str(merged_pricing.get("height_cm") or current["package_dimensions"].get("height_cm") or "").strip()
     current["pricing"] = merged_pricing
     current["allow_gtin_exemption"] = bool(
         current.get("allow_gtin_exemption")
@@ -595,11 +636,6 @@ def _merge_platform_draft(product: dict[str, Any], platform: str) -> dict[str, A
             or ""
         ).strip(),
     }
-    current["price"] = str(
-        current.get("price")
-        or current.get("sale_price")
-        or ""
-    ).strip()
     current["publish_status"] = str(
         current.get("publish_status")
         or current.get("publishStatus")
@@ -831,10 +867,10 @@ def normalize_product_model(product: dict[str, Any] | None) -> dict[str, Any]:
             incoming_schema_version = int(raw_schema_version)
         except (TypeError, ValueError) as exc:
             raise ValueError("产品 schema_version 必须是整数") from exc
-        if incoming_schema_version != PRODUCT_SCHEMA_VERSION:
+        if incoming_schema_version < 1 or incoming_schema_version > PRODUCT_SCHEMA_VERSION:
             raise ValueError(
                 "产品 schema_version "
-                f"{incoming_schema_version} 不是当前版本 "
+                f"{incoming_schema_version} 不在可迁移范围 1.."
                 f"{PRODUCT_SCHEMA_VERSION}，拒绝降级写入或读取"
             )
     normalized = default_product_model()

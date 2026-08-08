@@ -195,6 +195,9 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
             ("site", "site_id", "country"),
         ),
     ),
+    "/api/category-attribute-values": _contract(
+        required=("platform", "category_id", "attribute_id"),
+    ),
     "/api/category-attrs": _contract(required=("category_id",)),
     "/api/category-precheck": _contract(
         required_any=(

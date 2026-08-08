@@ -21,7 +21,10 @@ from .category_refresh import (
     mercadolibre_category_record,
 )
 from .ozon_category_api import (
+    fetch_ozon_category_attribute_values,
+    fetch_ozon_category_children,
     fetch_ozon_category_record,
+    fetch_ozon_category_roots,
     search_ozon_categories,
 )
 
@@ -174,6 +177,69 @@ class MercadoLibreCategoryProvider:
             )
         return discoveries
 
+    def attribute_values(
+        self,
+        category_id: str,
+        attribute_id: str,
+        site: str = "",
+        *,
+        query: str = "",
+        limit: int = 50,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        record = self.detail(
+            category_id,
+            site=site,
+            include_attributes=True,
+            timeout_seconds=timeout_seconds,
+        )
+        attributes = (
+            record.get("attributes")
+            if isinstance(record.get("attributes"), dict)
+            else {}
+        )
+        definition = next(
+            (
+                item
+                for group in ("required", "optional")
+                for item in (
+                    attributes.get(group)
+                    if isinstance(attributes.get(group), list)
+                    else []
+                )
+                if isinstance(item, dict)
+                and str(item.get("id") or "").strip() == str(attribute_id).strip()
+            ),
+            {},
+        )
+        raw_options = (
+            definition.get("options")
+            if isinstance(definition.get("options"), list)
+            else []
+        )
+        normalized_query = str(query or "").strip().casefold()
+        values = []
+        for raw in raw_options:
+            if isinstance(raw, dict):
+                option_id = str(raw.get("id") or raw.get("value") or "").strip()
+                value = str(raw.get("name") or raw.get("value") or option_id).strip()
+            else:
+                option_id = value = str(raw or "").strip()
+            if not value or normalized_query not in value.casefold():
+                continue
+            values.append({"id": option_id, "value": value, "info": "", "picture": ""})
+            if len(values) >= max(1, min(100, int(limit or 50))):
+                break
+        return {
+            "ok": True,
+            "platform": self.platform,
+            "category_id": str(category_id),
+            "attribute_id": str(attribute_id),
+            "query": str(query or "").strip(),
+            "values": values,
+            "complete": True,
+        }
+
 class OzonCategoryProvider:
     platform = "ozon"
 
@@ -208,6 +274,43 @@ class OzonCategoryProvider:
         return search_ozon_categories(
             query,
             limit=limit,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def attribute_values(
+        self,
+        category_id: str,
+        attribute_id: str,
+        site: str = "",
+        *,
+        query: str = "",
+        limit: int = 50,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        del site
+        return fetch_ozon_category_attribute_values(
+            category_id,
+            attribute_id,
+            query=query,
+            limit=limit,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def roots(
+        self,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        return fetch_ozon_category_roots(timeout_seconds=timeout_seconds)
+
+    def browse(
+        self,
+        parent_ids: list[str],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        return fetch_ozon_category_children(
+            parent_ids,
             timeout_seconds=timeout_seconds,
         )
 

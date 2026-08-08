@@ -12,7 +12,10 @@ from typing import Any
 from erp_web import app_config as app_config_runtime
 from erp_web.context import get_context
 from erp_web.db import ErpDatabase
+from erp_web.services.listing_currency_service import require_listing_currency
 from erp_web.services import pricing_service
+
+from .store_credentials import refresh_ozon_currency_capability
 
 
 def _pricing_exchange_rate_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -193,6 +196,36 @@ def fetch_pricing_exchange_rates(force_refresh: bool = False, config: dict[str, 
 
 def calculate_price(input_data: dict[str, Any]) -> dict[str, Any]:
     source = dict(input_data) if isinstance(input_data, dict) else {}
+    raw_targets = source.get("targets")
+    if not isinstance(raw_targets, list) or not raw_targets:
+        return {"ok": False, "error": "核价必须指定至少一个发布目标。"}
+
+    store_config = get_context().config.load_store_config()
+    normalized_targets: list[dict[str, Any]] = []
+    ozon_capability_refreshed = False
+    for raw_target in raw_targets:
+        target = dict(raw_target) if isinstance(raw_target, dict) else {}
+        platform = str(target.get("platform") or "").strip().lower()
+        site = str(target.get("site") or target.get("site_id") or "").strip()
+        platform_store = (
+            store_config.get(platform)
+            if isinstance(store_config.get(platform), dict)
+            else {}
+        )
+        if platform == "ozon" and not str(
+            platform_store.get("contract_currency") or ""
+        ).strip():
+            refresh_ozon_currency_capability(store_config)
+            ozon_capability_refreshed = True
+            platform_store = store_config.get("ozon", {})
+        resolution = require_listing_currency(platform, site, platform_store)
+        target["listing_currency"] = resolution["listing_currency"]
+        target["currency_resolution"] = resolution
+        normalized_targets.append(target)
+    source["targets"] = normalized_targets
+    if ozon_capability_refreshed:
+        get_context().config.save_store_config(store_config)
+
     has_manual_rates = source.get("usd_cny_rate") not in (None, "") and source.get("mxn_usd_rate") not in (None, "")
     exchange_mode = str(source.get("exchange_rate_mode") or ("manual" if has_manual_rates else "live")).strip().lower()
     exchange_rates: dict[str, Any] | None = None
@@ -230,13 +263,6 @@ def calculate_price(input_data: dict[str, Any]) -> dict[str, Any]:
             },
         }
         result["exchange_rate_mode"] = "manual"
-    result.setdefault("suggested_price", result.get("suggested_price_mxn", 0))
-    result.setdefault("reverse_price", result.get("reverse_price_mxn", 0))
-    result.setdefault("profit", result.get("profit_cny", 0))
-    result.setdefault("profit_rate", result.get("profit_percent", 0))
-    result.setdefault("foreign_price", result.get("sale_price_usd", 0))
-    result.setdefault("expected_profit", result.get("profit_cny", 0))
-    result.setdefault("net_profit", result.get("profit_cny", 0))
     return result
 
 

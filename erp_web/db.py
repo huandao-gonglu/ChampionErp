@@ -393,7 +393,6 @@ def _load_current_draft_json(value: Any) -> dict[str, Any]:
         raise RuntimeError(
             "platform_drafts.draft_json 必须是 JSON object"
         )
-    validate_platform_draft_root_fields(draft)
     return draft
 
 
@@ -862,6 +861,11 @@ class ErpDatabase:
                     "updated_at": row["updated_at"],
                 }
             )
+            draft = normalize_platform_draft(
+                draft,
+                platform,
+                {"product_id": row["product_id"]},
+            )
             if platform not in seen_platforms:
                 drafts[platform] = draft
                 seen_platforms.add(platform)
@@ -883,7 +887,11 @@ class ErpDatabase:
                 "updated_at": row["updated_at"],
             }
         )
-        return draft
+        return normalize_platform_draft(
+            draft,
+            str(row["platform"]),
+            {"product_id": row["product_id"]},
+        )
 
     def load_draft_model(self, draft_id: str) -> dict[str, Any]:
         draft_id = _slug(str(draft_id or "").strip()) if str(draft_id or "").strip() else ""
@@ -1057,9 +1065,8 @@ class ErpDatabase:
     def _draft_record_from_row(cls, row: sqlite3.Row) -> dict[str, Any]:
         product = json_loads(row["product_json"], {})
         draft = cls._draft_from_row(row)
-        pricing = _dict(draft.get("pricing"))
         status = str(draft.get("status") or draft.get("publish_status") or row["status"] or "claimed")
-        target_sites = draft.get("target_sites") if isinstance(draft.get("target_sites"), list) else [{"platform": row["platform"], "site": row["site"], "language": draft.get("language") or "", "currency": draft.get("currency") or ""}]
+        target_sites = draft.get("target_sites") if isinstance(draft.get("target_sites"), list) else [{"platform": row["platform"], "site": row["site"], "language": draft.get("language") or "", "market_currency": "", "listing_currency": ""}]
         return {
             "draft_id": row["draft_id"],
             "product_id": row["product_id"],
@@ -1077,11 +1084,6 @@ class ErpDatabase:
             "source_url": row["source_url"] or "",
             "category_id": draft.get("category_id") or "",
             "category_path": draft.get("category_path") or "",
-            "price": str(
-                draft.get("price")
-                or pricing.get("suggested_price")
-                or ""
-            ),
             "publish_status": str(draft.get("publish_status") or ""),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
@@ -1939,7 +1941,12 @@ def _record_from_row(row: sqlite3.Row, loaded_drafts: dict[str, Any] | None = No
         "image_status": "done" if draft_statuses.get("mercadolibre") in {"images_ready", "ready_to_publish", "published"} else "pending",
         "category_status": "done" if ml_draft.get("category_id") else "pending",
         "attributes_status": "done" if isinstance(ml_draft.get("attributes"), dict) and ml_draft.get("attributes") else "pending",
-        "pricing_status": "done" if ml_draft.get("price") or (_dict(ml_draft.get("pricing")).get("suggested_price")) else "pending",
+        "pricing_status": "done" if any(
+            isinstance(item, dict)
+            and isinstance(item.get("applied_price"), dict)
+            and str(item["applied_price"].get("amount") or "").strip()
+            for item in _dict(_dict(ml_draft.get("pricing")).get("targets")).values()
+        ) else "pending",
         "precheck_status": (_dict(_dict(product.get("publish_preview")).get("mercadolibre")).get("ok", "pending") if isinstance(product, dict) else "pending"),
         "publish_status": ml_draft.get("publish_status") or "not_ready",
         "optimized": draft_statuses.get("mercadolibre") in {"copy_ready", "images_ready", "ready_to_publish", "published"},

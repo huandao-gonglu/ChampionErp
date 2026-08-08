@@ -118,3 +118,43 @@ def test_category_precheck_only_reports_missing_required_category_attributes() -
     result = validate_category_precheck(product, "mercadolibre", category)
 
     assert result == ["attributes.MISSING_REQUIRED"]
+
+
+def test_dictionary_attribute_requires_a_selected_platform_value() -> None:
+    product = default_product_model()
+    draft = product["drafts"]["ozon"]
+    draft["category_id"] = "94765"
+    draft["attributes"] = {"85": "中性"}
+    category = {
+        "category_id": "94765",
+        "attributes": {
+            "required": [
+                {
+                    "id": "85",
+                    "name": "Бренд",
+                    "required": True,
+                    "dictionary_id": "28732849",
+                    "is_dictionary": True,
+                }
+            ],
+            "optional": [],
+        },
+    }
+
+    filled = build_ai_attribute_fill(product, "ozon", category)
+
+    assert "85" not in filled["attributes"]
+    assert filled["need_review"] == ["85"]
+    assert validate_category_precheck(product, "ozon", category) == [
+        "attributes.85"
+    ]
+
+    draft["attributes"]["85"] = {
+        "values": [
+            {
+                "dictionary_value_id": 126745801,
+                "value": "Нет бренда",
+            }
+        ]
+    }
+    assert validate_category_precheck(product, "ozon", category) == []

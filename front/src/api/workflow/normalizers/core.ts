@@ -3,6 +3,8 @@ import type {
 
   CategoryAttributeDefinition,
   CategoryAttributeSchema,
+  CategoryAttributeValue,
+  CurrencyResolution,
   DraftDetail,
   DraftImageRef,
   DraftIndexItem,
@@ -232,7 +234,8 @@ export function normalizeMarketplaceOptions(value: unknown): MarketplaceOption[]
           code,
           label: getString(siteRecord, ['label'], code),
           language: getString(siteRecord, ['language'], ''),
-          currency: getString(siteRecord, ['currency'], ''),
+          marketCurrency: getString(siteRecord, ['market_currency'], ''),
+          listingCurrency: getString(siteRecord, ['listing_currency'], ''),
         }]
       })
       : []
@@ -240,8 +243,39 @@ export function normalizeMarketplaceOptions(value: unknown): MarketplaceOption[]
   })
 }
 
-export function normalizeAttributes(value: unknown): Record<string, string> {
-  return Object.fromEntries(Object.entries(asRecord(value)).map(([key, rawValue]) => [key, String(rawValue ?? '')]))
+export function normalizeAttributes(value: unknown): Record<string, CategoryAttributeValue> {
+  return Object.fromEntries(Object.entries(asRecord(value)).map(([key, rawValue]) => {
+    const record = asRecord(rawValue)
+    const rawValues = Array.isArray(record.values) ? record.values : []
+    const values = rawValues.flatMap((item) => {
+      const option = asRecord(item)
+      const dictionaryValueId = getNumber(option, ['dictionary_value_id', 'dictionaryValueId'])
+      const optionValue = getString(option, ['value'])
+      return dictionaryValueId > 0 && optionValue
+        ? [{ dictionaryValueId, value: optionValue }]
+        : []
+    })
+    return [
+      key,
+      values.length
+        ? { values }
+        : typeof rawValue === 'string' || typeof rawValue === 'number'
+          ? String(rawValue)
+          : '',
+    ]
+  }))
+}
+
+export function toBackendAttributes(value: Record<string, CategoryAttributeValue>): UnknownRecord {
+  return Object.fromEntries(Object.entries(value || {}).map(([key, rawValue]) => {
+    if (typeof rawValue === 'string') return [key, rawValue]
+    return [key, {
+      values: (rawValue.values || []).map((item) => ({
+        dictionary_value_id: item.dictionaryValueId,
+        value: item.value,
+      })),
+    }]
+  }))
 }
 
 export function normalizeValidationErrors(value: unknown): Array<UnknownRecord | string> {
@@ -252,6 +286,7 @@ export function normalizeValidationErrors(value: unknown): Array<UnknownRecord |
 
 export function normalizeCategoryAttributeDefinition(value: unknown, requiredFallback: boolean): CategoryAttributeDefinition | null {
   const record = asRecord(value)
+  const raw = asRecord(record.raw)
   const id = getString(record, ['id'])
   if (!id) return null
   const options = (Array.isArray(record.options) ? record.options : [])
@@ -265,6 +300,11 @@ export function normalizeCategoryAttributeDefinition(value: unknown, requiredFal
     valueType: getString(record, ['value_type'], 'string'),
     unit: getString(record, ['unit']),
     description: getString(record, ['description']),
+    dictionaryId: getString(record, ['dictionary_id'], getString(raw, ['dictionary_id'])),
+    isDictionary: getBoolean(record, ['is_dictionary'], Boolean(getString(record, ['dictionary_id'], getString(raw, ['dictionary_id'])))),
+    isCollection: getBoolean(record, ['is_collection'], getBoolean(raw, ['is_collection'])),
+    maxValueCount: getNumber(record, ['max_value_count'], getNumber(raw, ['max_value_count'])),
+    categoryDependent: getBoolean(record, ['category_dependent'], getBoolean(raw, ['category_dependent'])),
   }
 }
 
@@ -332,7 +372,7 @@ export function targetListingFields(record: UnknownRecord, fallback?: Partial<Ma
   }
 }
 
-export function normalizeTargetSites(value: unknown, platform: Marketplace, site: string, language: string, currency: string, fallback?: Partial<MarketplaceTargetSite>): MarketplaceTargetSite[] {
+export function normalizeTargetSites(value: unknown, platform: Marketplace, site: string, language: string, listingCurrency: string, fallback?: Partial<MarketplaceTargetSite>): MarketplaceTargetSite[] {
   const rawItems = Array.isArray(value) ? value : []
   const targets = rawItems.flatMap((value, index): MarketplaceTargetSite[] => {
     const record = asRecord(value)
@@ -343,11 +383,22 @@ export function normalizeTargetSites(value: unknown, platform: Marketplace, site
       platform: targetPlatform,
       site: targetSite,
       language: getString(record, ['language'], language),
-      currency: getString(record, ['currency'], currency),
+      marketCurrency: getString(record, ['market_currency'], fallback?.marketCurrency || ''),
+      listingCurrency: getString(record, ['listing_currency'], listingCurrency),
+      currencyResolution: (() => {
+        const resolution = asRecord(record.currency_resolution)
+        return {
+          mode: getString(resolution, ['mode'], 'unresolved') as CurrencyResolution['mode'],
+          listingCurrency: getString(resolution, ['listing_currency']),
+          allowedCurrencies: wireStringList(resolution.allowed_currencies),
+          source: getString(resolution, ['source']),
+          verifiedAt: getString(resolution, ['verified_at']),
+        }
+      })(),
       ...targetListingFields(record, index === 0 ? fallback : undefined),
     }]
   })
-  return targets.length ? targets : [{ platform, site, language, currency, ...targetListingFields({}, fallback) }]
+  return targets.length ? targets : [{ platform, site, language, marketCurrency: fallback?.marketCurrency || '', listingCurrency, ...targetListingFields({}, fallback) }]
 }
 
 export function normalizeDimensions(value: unknown) {
@@ -458,6 +509,11 @@ export function toBackendCategoryAttributeDefinition(attribute: CategoryAttribut
     value_type: attribute.valueType || 'string',
     unit: attribute.unit || '',
     description: attribute.description || '',
+    dictionary_id: attribute.dictionaryId || '',
+    is_dictionary: Boolean(attribute.isDictionary || attribute.dictionaryId),
+    is_collection: Boolean(attribute.isCollection),
+    max_value_count: attribute.maxValueCount || 0,
+    category_dependent: Boolean(attribute.categoryDependent),
   }
 }
 
@@ -481,12 +537,20 @@ export function toBackendTargetSite(target: MarketplaceTargetSite): UnknownRecor
     platform: target.platform,
     site: target.site,
     language: target.language,
-    currency: target.currency,
+    market_currency: target.marketCurrency,
+    listing_currency: target.listingCurrency,
+    currency_resolution: target.currencyResolution ? {
+      mode: target.currencyResolution.mode,
+      listing_currency: target.currencyResolution.listingCurrency,
+      allowed_currencies: target.currencyResolution.allowedCurrencies,
+      source: target.currencyResolution.source,
+      verified_at: target.currencyResolution.verifiedAt,
+    } : {},
     category_id: target.categoryId || '',
     description_category_id: target.descriptionCategoryId || '',
     category_path: target.categoryPath || '',
     category_attribute_schema: toBackendCategoryAttributeSchema(target.categoryAttributeSchema),
-    attributes: target.attributes || {},
+    attributes: toBackendAttributes(target.attributes || {}),
     validation_errors: target.validationErrors || [],
     category_precheck: target.categoryPrecheck || {},
     publish_status: target.publishStatus || '',

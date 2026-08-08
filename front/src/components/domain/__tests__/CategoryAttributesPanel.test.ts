@@ -1,7 +1,11 @@
 // @vitest-environment jsdom
 
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+const fetchCategoryAttributeValues = vi.hoisted(() => vi.fn())
+vi.mock('@/api/workflow/publishing', () => ({ fetchCategoryAttributeValues }))
+
 import CategoryAttributesPanel from '@/components/domain/CategoryAttributesPanel.vue'
 import { createEmptyDraftDetail, createEmptyDraftProductContext } from '@/constants/initialState'
 import type { CategorySelection, DraftDetail, MarketplaceTargetSite } from '@/types/workflow'
@@ -10,7 +14,8 @@ const target: MarketplaceTargetSite = {
   platform: 'ozon',
   site: 'global',
   language: 'ru-RU',
-  currency: 'RUB',
+  marketCurrency: 'RUB',
+  listingCurrency: 'RUB',
 }
 
 function panelProps(draft: DraftDetail, category: CategorySelection | null) {
@@ -37,6 +42,7 @@ function panelProps(draft: DraftDetail, category: CategorySelection | null) {
 
 afterEach(() => {
   document.body.innerHTML = ''
+  vi.clearAllMocks()
 })
 
 describe('CategoryAttributesPanel', () => {
@@ -206,5 +212,53 @@ describe('CategoryAttributesPanel', () => {
     expect(scrollIntoView).toHaveBeenCalledOnce()
 
     wrapper.unmount()
+  })
+
+  it('Ozon 字典属性只能保存平台返回的选项 ID', async () => {
+    fetchCategoryAttributeValues.mockResolvedValueOnce([{
+      id: '126745801',
+      value: 'Нет бренда',
+      info: 'Товар не имеет бренда',
+    }])
+    const draft = createEmptyDraftDetail('ozon')
+    draft.draftId = 'draft-dictionary'
+    draft.site = 'global'
+    draft.categoryId = '94765'
+    draft.attributes = { 85: '中性' }
+    const category: CategorySelection = {
+      platform: 'ozon',
+      categoryId: '94765',
+      categoryPath: '汽车用品',
+      requiredAttributes: [{
+        id: '85',
+        name: 'Бренд',
+        required: true,
+        options: [],
+        dictionaryId: '28732849',
+        isDictionary: true,
+      }],
+      optionalAttributes: [],
+      raw: {},
+    }
+    const wrapper = mount(CategoryAttributesPanel, {
+      props: panelProps(draft, category),
+    })
+
+    const requiredButton = wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))
+    await requiredButton!.trigger('click')
+    expect(wrapper.text()).toContain('旧值“中性”不是平台选项')
+
+    await wrapper.get('[data-attribute-id="85"]').trigger('focus')
+    await flushPromises()
+    expect(fetchCategoryAttributeValues).toHaveBeenCalledWith('ozon', '94765', '85', 'global', '中性')
+
+    const option = wrapper.findAll('button').find((button) => button.text().includes('Нет бренда'))
+    expect(option).toBeDefined()
+    await option!.trigger('click')
+
+    expect(draft.attributes['85']).toEqual({
+      values: [{ dictionaryValueId: 126745801, value: 'Нет бренда' }],
+    })
+    expect(wrapper.emitted('invalidateCategoryPrecheck')).toHaveLength(1)
   })
 })
