@@ -10,6 +10,7 @@ from erp_web.runtime_units.publish_ozon import (
     OZON_PRODUCT_IMPORT_URL,
     build_ozon_publish_payload,
     map_ozon_publish_error,
+    poll_ozon_import_status,
     publish_ozon_payload,
     validate_ozon_publish_payload,
 )
@@ -162,6 +163,28 @@ def test_build_ozon_publish_payload_uses_real_v3_contract() -> None:
     ]
 
 
+def test_build_ozon_publish_payload_accepts_dictionary_id_zero_as_free_text() -> None:
+    product = _product()
+    draft = product["drafts"]["ozon"]
+    draft["category_attribute_schema"]["required"].append(
+        {
+            "id": "9048",
+            "name": "Название модели",
+            "required": True,
+            "dictionary_id": "0",
+            "is_dictionary": True,
+        }
+    )
+    draft["attributes"]["9048"] = "F30"
+
+    payload = build_ozon_publish_payload(product, _config())
+    model_attribute = next(
+        item for item in payload["items"][0]["attributes"] if item["id"] == 9048
+    )
+
+    assert model_attribute["values"] == [{"value": "F30"}]
+
+
 def test_ozon_payload_prefers_delivery_url_over_local_preview(tmp_path) -> None:
     product = _product()
     local_image = tmp_path / "main.jpg"
@@ -264,6 +287,61 @@ def test_publish_ozon_waits_for_imported_terminal_state() -> None:
         (OZON_PRODUCT_IMPORT_URL, {"items": [{"offer_id": "OZON-SKU-1"}]}),
         (OZON_PRODUCT_IMPORT_INFO_URL, {"task_id": 172549793}),
     ]
+
+
+def test_publish_ozon_returns_pending_confirmation_when_local_wait_expires() -> None:
+    responses = [
+        {"result": {"task_id": 172549793}},
+        {
+            "result": {
+                "items": [
+                    {
+                        "offer_id": "OZON-SKU-1",
+                        "status": "pending",
+                        "errors": [],
+                    }
+                ]
+            }
+        },
+    ]
+    with patch(
+        "erp_web.runtime_units.publish_ozon.request_ozon_json",
+        side_effect=responses,
+    ), patch(
+        "erp_web.runtime_units.publish_ozon.time.monotonic",
+        side_effect=[0.0, 1.0],
+    ):
+        result = publish_ozon_payload(
+            {"items": [{"offer_id": "OZON-SKU-1"}]},
+            "client-id",
+            "api-key",
+            timeout_seconds=0.1,
+        )
+
+    assert result["ok"] is True
+    assert result["status"] == "pending_confirmation"
+    assert result["task_id"] == 172549793
+    assert result["offer_id"] == "OZON-SKU-1"
+    assert "external_id" not in result
+
+
+def test_poll_ozon_import_status_rejects_failed_terminal_without_error_rows() -> None:
+    response = {
+        "result": {
+            "items": [
+                {
+                    "offer_id": "OZON-SKU-1",
+                    "status": "failed",
+                    "errors": [],
+                }
+            ]
+        }
+    }
+    with patch(
+        "erp_web.runtime_units.publish_ozon.request_ozon_json",
+        return_value=response,
+    ), pytest.raises(RuntimeError, match="Ozon 商品导入失败"):
+        poll_ozon_import_status(172549793, "client-id", "api-key")
 
 
 def test_publish_ozon_rejects_item_level_errors_and_maps_attribute() -> None:

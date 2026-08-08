@@ -3,6 +3,11 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from erp_web.schemas.category import (
+    category_attribute_dictionary_id,
+    is_category_dictionary_attribute,
+)
+
 from .common import normalize_list
 from .defaults import default_draft
 from .merge_model import normalize_product_model
@@ -10,9 +15,7 @@ from .merge_model import normalize_product_model
 def _normalize_category_attr(attr: Any) -> dict[str, Any]:
     attr = attr if isinstance(attr, dict) else {}
     raw = attr.get("raw") if isinstance(attr.get("raw"), dict) else {}
-    dictionary_id = str(
-        attr.get("dictionary_id") or raw.get("dictionary_id") or ""
-    ).strip()
+    dictionary_id = category_attribute_dictionary_id(attr)
     value_type = str(attr.get("value_type") or "string").strip() or "string"
     options = attr.get("options") if isinstance(attr.get("options"), list) else normalize_list(attr.get("options"))
     return {
@@ -24,7 +27,7 @@ def _normalize_category_attr(attr: Any) -> dict[str, Any]:
         "options": normalize_list(options),
         "description": str(attr.get("description") or "").strip(),
         "dictionary_id": dictionary_id,
-        "is_dictionary": bool(attr.get("is_dictionary") or dictionary_id),
+        "is_dictionary": is_category_dictionary_attribute(attr),
         "is_collection": bool(
             attr.get("is_collection") or raw.get("is_collection")
         ),

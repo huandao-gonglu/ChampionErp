@@ -11,6 +11,7 @@ import time
 from typing import Any
 
 from erp_web.marketplaces.config_http import request_ozon_json
+from erp_web.schemas.category import category_attribute_dictionary_id
 from erp_web.stores.product_store import normalize_product_fields
 
 from .publish_helpers import (
@@ -143,10 +144,7 @@ def _attribute_values(value: Any) -> list[dict[str, Any]]:
 
 
 def _attribute_dictionary_id(definition: dict[str, Any]) -> str:
-    raw = definition.get("raw") if isinstance(definition.get("raw"), dict) else {}
-    return str(
-        definition.get("dictionary_id") or raw.get("dictionary_id") or ""
-    ).strip()
+    return category_attribute_dictionary_id(definition)
 
 
 def _dictionary_values_have_ids(values: list[dict[str, Any]]) -> bool:
@@ -432,6 +430,67 @@ def _item_errors(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return errors
 
 
+def poll_ozon_import_status(
+    task_id: int | str,
+    client_id: str,
+    api_key: str,
+) -> dict[str, Any]:
+    """查询一次 Ozon 导入任务，并区分成功、明确失败和仍在处理。"""
+
+    response = request_ozon_json(
+        "POST",
+        OZON_PRODUCT_IMPORT_INFO_URL,
+        client_id,
+        api_key,
+        {"task_id": task_id},
+    )
+    items = _import_items(response)
+    item_errors = _item_errors(items)
+    if item_errors:
+        raise RuntimeError(
+            "Ozon 商品导入失败："
+            + json.dumps(
+                {"task_id": task_id, "items": items},
+                ensure_ascii=False,
+            )
+        )
+
+    statuses = {
+        str(item.get("status") or "").strip().lower()
+        for item in items
+        if str(item.get("status") or "").strip()
+    }
+    first = items[0] if items else {}
+    product_id = first.get("product_id")
+    offer_id = str(first.get("offer_id") or "")
+    if items and statuses == {"imported"}:
+        return {
+            "ok": True,
+            "status": "imported",
+            "task_id": task_id,
+            "external_id": str(product_id or task_id),
+            "product_id": product_id,
+            "offer_id": offer_id,
+            "import_info": response,
+        }
+    if "failed" in statuses:
+        raise RuntimeError(
+            "Ozon 商品导入失败："
+            + json.dumps(
+                {"task_id": task_id, "items": items},
+                ensure_ascii=False,
+            )
+        )
+    return {
+        "ok": True,
+        "status": "pending_confirmation",
+        "task_id": task_id,
+        "product_id": product_id,
+        "offer_id": offer_id,
+        "import_info": response,
+    }
+
+
 def publish_ozon_payload(
     payload: dict[str, Any],
     client_id: str,
@@ -440,7 +499,7 @@ def publish_ozon_payload(
     timeout_seconds: float = OZON_IMPORT_TIMEOUT_SECONDS,
     poll_interval_seconds: float = OZON_IMPORT_POLL_INTERVAL_SECONDS,
 ) -> dict[str, Any]:
-    """提交商品导入并等待 Ozon 返回逐商品 ``imported`` 终态。"""
+    """提交商品并在本地等待窗口内确认；超时则返回可继续轮询的 task_id。"""
 
     created = request_ozon_json(
         "POST",
@@ -458,50 +517,12 @@ def publish_ozon_payload(
         )
 
     deadline = time.monotonic() + max(0.1, float(timeout_seconds))
-    last_response: dict[str, Any] = {}
     while True:
-        last_response = request_ozon_json(
-            "POST",
-            OZON_PRODUCT_IMPORT_INFO_URL,
-            client_id,
-            api_key,
-            {"task_id": task_id},
-        )
-        items = _import_items(last_response)
-        item_errors = _item_errors(items)
-        if item_errors:
-            raise RuntimeError(
-                "Ozon 商品导入失败："
-                + json.dumps(
-                    {"task_id": task_id, "items": items},
-                    ensure_ascii=False,
-                )
-            )
-        statuses = {
-            str(item.get("status") or "").strip().lower()
-            for item in items
-            if str(item.get("status") or "").strip()
-        }
-        if items and statuses == {"imported"}:
-            first = items[0]
-            product_id = first.get("product_id")
-            return {
-                "ok": True,
-                "status": "imported",
-                "task_id": task_id,
-                "external_id": str(product_id or task_id),
-                "product_id": product_id,
-                "offer_id": str(first.get("offer_id") or ""),
-                "import_info": last_response,
-            }
+        status = poll_ozon_import_status(task_id, client_id, api_key)
+        if status["status"] == "imported":
+            return status
         if time.monotonic() >= deadline:
-            raise TimeoutError(
-                "Ozon 商品导入状态确认超时："
-                + json.dumps(
-                    {"task_id": task_id, "response": last_response},
-                    ensure_ascii=False,
-                )
-            )
+            return status
         time.sleep(max(0.05, float(poll_interval_seconds)))
 
 
@@ -584,6 +605,7 @@ __all__ = [
     "ozon_category_pair",
     "ozon_invalid_dictionary_attributes",
     "ozon_required_attributes_missing",
+    "poll_ozon_import_status",
     "publish_ozon_payload",
     "validate_ozon_publish_payload",
 ]

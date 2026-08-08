@@ -22,6 +22,7 @@ from erp_web.runtime_units.publish_bus import (
     persist_publish_bus_terminal_results,
 )
 from erp_web.runtime_units.runtime_api import (
+    _remote_publish_pending,
     _remote_publish_succeeded,
 )
 from erp_web.runtime_units.source_sites import (
@@ -261,6 +262,194 @@ def test_publishing_bus_requires_verified_success_and_runs_terminal_hook() -> No
     assert "可验证的成功结果" in platform_state["error"]
     assert len(terminal_states) == 1
     assert state["terminal_results_persisted"] is True
+
+
+def test_publishing_bus_polls_pending_publish_without_resubmitting() -> None:
+    class AsyncAdapter:
+        def __init__(self) -> None:
+            self.publish_calls = 0
+            self.poll_calls = 0
+
+        @staticmethod
+        def resolve_category(
+            product: dict[str, Any],
+            config: dict[str, Any],
+        ) -> dict[str, Any]:
+            return product
+
+        @staticmethod
+        def required_attributes_missing(
+            product: dict[str, Any],
+            config: dict[str, Any],
+        ) -> list[str]:
+            return []
+
+        def publish(
+            self,
+            product: dict[str, Any],
+            platform: str,
+            config: dict[str, Any],
+        ) -> dict[str, Any]:
+            self.publish_calls += 1
+            return {
+                "ok": True,
+                "status": "publish_pending_confirmation",
+                "result": {"task_id": 172549793, "status": "pending_confirmation"},
+                "product": {"large": "not persisted in platform result"},
+            }
+
+        def poll_publish_status(
+            self,
+            result: dict[str, Any],
+            config: dict[str, Any],
+        ) -> dict[str, Any]:
+            self.poll_calls += 1
+            assert result["result"]["task_id"] == 172549793
+            return {
+                "ok": True,
+                "status": "real_publish_success",
+                "result": {
+                    "status": "imported",
+                    "task_id": 172549793,
+                    "external_id": "137285792",
+                },
+            }
+
+        @staticmethod
+        def publish_poll_interval_seconds(config: dict[str, Any]) -> float:
+            return 0.01
+
+    store = _MemoryPublishJobStore()
+    adapter = AsyncAdapter()
+    bus = PublishingBus(
+        store,
+        adapters={"ozon": adapter},
+        max_retries=0,
+        auto_resume_pending=False,
+    )
+    try:
+        queued = bus.enqueue({"product_id": "product-1"}, ["ozon"])
+        bus.wait(queued["job_id"], timeout=2)
+        state = bus.get_status(queued["job_id"])
+    finally:
+        bus.executor.shutdown(wait=True)
+
+    assert adapter.publish_calls == 1
+    assert adapter.poll_calls == 1
+    assert state["status"] == "completed"
+    assert state["platforms"]["ozon"]["status"] == "success"
+    assert state["platforms"]["ozon"]["result"]["result"]["task_id"] == 172549793
+    assert "product" not in state["platforms"]["ozon"]["result"]
+
+
+def test_pending_remote_result_is_not_success_or_failure() -> None:
+    result = {
+        "ok": True,
+        "status": "pending_confirmation",
+        "task_id": 172549793,
+    }
+
+    assert _remote_publish_pending(result) is True
+    assert _remote_publish_succeeded(result) is False
+
+
+def test_publishing_bus_resumes_saved_platform_poll_without_resubmitting() -> None:
+    class RecoverableStore(_MemoryPublishJobStore):
+        def list_pending_publish_jobs(self) -> list[dict[str, Any]]:
+            return [deepcopy(state) for state in self.states.values()]
+
+    class ResumeAdapter:
+        def __init__(self) -> None:
+            self.publish_calls = 0
+            self.poll_calls = 0
+
+        @staticmethod
+        def resolve_category(
+            product: dict[str, Any],
+            config: dict[str, Any],
+        ) -> dict[str, Any]:
+            return product
+
+        @staticmethod
+        def required_attributes_missing(
+            product: dict[str, Any],
+            config: dict[str, Any],
+        ) -> list[str]:
+            return []
+
+        def publish(
+            self,
+            product: dict[str, Any],
+            platform: str,
+            config: dict[str, Any],
+        ) -> dict[str, Any]:
+            self.publish_calls += 1
+            raise AssertionError("恢复轮询时不应重新提交商品")
+
+        def poll_publish_status(
+            self,
+            result: dict[str, Any],
+            config: dict[str, Any],
+        ) -> dict[str, Any]:
+            self.poll_calls += 1
+            assert result["result"]["task_id"] == 172549793
+            return {
+                "ok": True,
+                "status": "real_publish_success",
+                "result": {
+                    "status": "imported",
+                    "task_id": 172549793,
+                    "external_id": "137285792",
+                },
+            }
+
+        @staticmethod
+        def publish_poll_interval_seconds(config: dict[str, Any]) -> float:
+            return 0.01
+
+    store = RecoverableStore()
+    store.states["job-pending"] = {
+        "job_id": "job-pending",
+        "status": "running",
+        "created_at": "2026-08-08 20:00:00",
+        "updated_at": "2026-08-08 20:00:01",
+        "product": {"product_id": "product-1"},
+        "platforms": {
+            "ozon": {
+                "platform": "ozon",
+                "status": "running",
+                "stage": "waiting_platform_confirmation",
+                "attempts": 1,
+                "error": "",
+                "result": {
+                    "ok": True,
+                    "status": "publish_pending_confirmation",
+                    "result": {
+                        "status": "pending_confirmation",
+                        "task_id": 172549793,
+                    },
+                },
+            }
+        },
+    }
+    adapter = ResumeAdapter()
+    bus = PublishingBus(
+        store,
+        adapters={"ozon": adapter},
+        max_retries=0,
+        auto_resume_pending=False,
+    )
+    try:
+        assert bus.recover_pending_jobs() == ["job-pending"]
+        bus.wait("job-pending", timeout=2)
+        state = bus.get_status("job-pending")
+    finally:
+        bus.executor.shutdown(wait=True)
+
+    assert adapter.publish_calls == 0
+    assert adapter.poll_calls == 1
+    assert state["status"] == "completed"
+    assert state["platforms"]["ozon"]["status"] == "success"
 
 
 def test_publishing_bus_does_not_duplicate_product_in_platform_result() -> None:

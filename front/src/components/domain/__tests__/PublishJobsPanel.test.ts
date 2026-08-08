@@ -65,4 +65,40 @@ describe('PublishJobsPanel', () => {
 
     expect(wrapper.emitted('select')).toEqual([[job.jobId]])
   })
+
+  it('shows platform confirmation polling as running instead of failed', () => {
+    const pendingJob = {
+      ...job,
+      status: 'running' as const,
+      rawStatus: 'running',
+      stage: 'waiting_platform_confirmation',
+      error: '',
+      platforms: [{
+        ...job.platforms[0],
+        status: 'running',
+        stage: 'waiting_platform_confirmation',
+        error: '',
+      }],
+    }
+    const wrapper = mount(PublishJobsPanel, {
+      props: {
+        jobs: [pendingJob],
+        selectedJobId: pendingJob.jobId,
+        selectedJobStatus: {
+          job_id: pendingJob.jobId,
+          display_status: 'running',
+        },
+        loading: false,
+        nextCursor: '',
+        lastUpdated: '',
+        precheckOk: true,
+        activeMarketplace: 'ozon',
+        busy: false,
+      },
+    })
+
+    expect(wrapper.text()).toContain('发布中')
+    expect(wrapper.text()).toContain('等待平台确认')
+    expect(wrapper.text()).not.toContain('失败原因')
+  })
 })

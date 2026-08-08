@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
 import CategoryPrecheckPanel from '@/components/domain/CategoryPrecheckPanel.vue'
 import { fetchCategoryAttributeValues } from '@/api/workflow/publishing'
+import { isCategoryDictionaryAttribute } from '@/api/workflow/normalizers'
 import type { CategoryAttributeDefinition, CategoryAttributeOption, CategoryAttributeTranslations, CategoryDictionaryValue, CategoryPrecheckResult, CategoryResultTranslations, CategorySearchResult, CategorySelection, DraftDetail, DraftProductContext, MarketplaceOption, MarketplaceTargetSite, PrecheckIssue, PublishPrecheck, UnknownRecord } from '@/types/workflow'
 
 const props = withDefaults(defineProps<{
@@ -149,7 +150,7 @@ function attributeOptionLabel(attrId: string, option: string) {
 }
 
 function attributePlaceholder(attr: CategoryAttributeDefinition) {
-  if (attr.isDictionary || attr.dictionaryId) return '搜索并选择平台允许的值'
+  if (isCategoryDictionaryAttribute(attr.dictionaryId, attr.isDictionary)) return '请选择平台允许的值'
   return attr.options?.length ? '请选择平台允许的选项' : '请输入属性值'
 }
 
@@ -159,17 +160,19 @@ function selectedDictionaryValues(attrId: string): CategoryDictionaryValue[] {
   return raw.values
 }
 
-function selectedDictionaryValue(attrId: string): CategoryDictionaryValue | null {
-  return selectedDictionaryValues(attrId)[0] || null
+function selectedDictionarySummary(attr: CategoryAttributeDefinition) {
+  const values = selectedDictionaryValues(attr.id)
+  if (!values.length) return ''
+  return attr.isCollection
+    ? `已选 ${values.length} 项`
+    : values[0]?.value || ''
 }
 
 function dictionaryState(attr: CategoryAttributeDefinition): DictionaryFieldState {
   const existing = dictionaryFieldStates.value[attr.id]
   if (existing) return existing
-  const selected = selectedDictionaryValue(attr.id)
-  const legacy = activeDraft.value.attributes[attr.id]
   const state: DictionaryFieldState = {
-    query: attr.isCollection ? '' : selected?.value || (typeof legacy === 'string' ? legacy : ''),
+    query: '',
     options: [],
     loading: false,
     error: '',
@@ -219,11 +222,6 @@ function scheduleDictionarySearch(attr: CategoryAttributeDefinition, value: stri
   const state = dictionaryState(attr)
   state.query = value
   state.open = true
-  const selected = selectedDictionaryValue(attr.id)
-  if (!attr.isCollection && (!selected || selected.value !== value)) {
-    delete activeDraft.value.attributes[attr.id]
-    emit('invalidateCategoryPrecheck')
-  }
   const previous = dictionarySearchTimers.get(attr.id)
   if (previous) clearTimeout(previous)
   dictionarySearchTimers.set(attr.id, setTimeout(() => {
@@ -243,7 +241,7 @@ function selectDictionaryOption(attr: CategoryAttributeDefinition, option: Categ
     : [{ dictionaryValueId, value: option.value }]
   activeDraft.value.attributes[attr.id] = { values: selected }
   const state = dictionaryState(attr)
-  state.query = attr.isCollection ? '' : option.value
+  state.query = ''
   state.open = Boolean(attr.isCollection)
   state.error = ''
   emit('invalidateCategoryPrecheck')
@@ -270,9 +268,23 @@ function clearDictionaryValue(attr: CategoryAttributeDefinition) {
   emit('invalidateCategoryPrecheck')
 }
 
+function clearDictionarySearch(attr: CategoryAttributeDefinition) {
+  const state = dictionaryState(attr)
+  state.query = ''
+  state.options = []
+  state.error = ''
+  state.open = true
+  void loadDictionaryOptions(attr)
+}
+
 function closeDictionary(attr: CategoryAttributeDefinition) {
   setTimeout(() => {
     const state = dictionaryFieldStates.value[attr.id]
+    const active = document.activeElement
+    if (
+      active instanceof HTMLElement
+      && (active.dataset.attributeId === attr.id || active.dataset.dictionarySearchId === attr.id)
+    ) return
     if (state) state.open = false
   }, 150)
 }
@@ -532,7 +544,7 @@ function selectTargetByKey(value: string) {
               <span v-if="attributeTranslation(attr.id)" class="mt-0.5 block text-[11px] text-slate-400">{{ attributeOriginalLabel(attr) }}</span>
               <span v-if="attributeTranslation(attr.id)?.help" class="mt-0.5 block text-[11px] text-slate-500">{{ attributeTranslation(attr.id)?.help }}</span>
               <span v-if="pendingReviewAttributeIds.includes(attr.id)" class="mt-0.5 block text-[11px] text-amber-600">AI 暂无法从商品信息判断，请人工确认。</span>
-              <div v-if="attr.isDictionary || attr.dictionaryId" class="relative mt-1">
+              <div v-if="isCategoryDictionaryAttribute(attr.dictionaryId, attr.isDictionary)" class="relative mt-1">
                 <div v-if="attr.isCollection && selectedDictionaryValues(attr.id).length" class="mb-2 flex flex-wrap gap-2">
                   <span v-for="item in selectedDictionaryValues(attr.id)" :key="item.dictionaryValueId" class="inline-flex items-center gap-1 rounded-full bg-brand-50 px-2.5 py-1 text-xs text-brand-800 ring-1 ring-brand-200 dark:bg-brand-950/30 dark:text-brand-200 dark:ring-brand-900/60">
                     {{ item.value }}
@@ -542,19 +554,32 @@ function selectTargetByKey(value: string) {
                 <div class="flex gap-2">
                   <input
                     :ref="(el) => setAttributeInputRef(attr.id, el)"
-                    :value="dictionaryState(attr).query"
+                    :value="selectedDictionarySummary(attr)"
                     class="input"
                     :class="isMissingAttribute(attr.id) ? 'border-rose-300 bg-rose-50' : ''"
                     :data-attribute-id="attr.id"
                     :placeholder="attributePlaceholder(attr)"
-                    autocomplete="off"
+                    readonly
                     @focus="openDictionary(attr)"
                     @blur="closeDictionary(attr)"
-                    @input="scheduleDictionarySearch(attr, ($event.target as HTMLInputElement).value)"
+                    @click="openDictionary(attr)"
                   />
-                  <button v-if="dictionaryState(attr).query" class="btn btn-outline shrink-0" type="button" @click="clearDictionaryValue(attr)">清除</button>
+                  <button v-if="selectedDictionaryValues(attr.id).length || legacyDictionaryValue(attr.id)" class="btn btn-outline shrink-0" type="button" @click="clearDictionaryValue(attr)">清除已选</button>
                 </div>
                 <div v-if="dictionaryState(attr).open" class="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-accent-200 bg-white p-1 shadow-xl dark:border-dark-700 dark:bg-dark-900">
+                  <div class="sticky top-0 flex gap-2 bg-white p-2 dark:bg-dark-900">
+                    <input
+                      :value="dictionaryState(attr).query"
+                      class="input"
+                      :data-dictionary-search-id="attr.id"
+                      placeholder="仅搜索平台选项，不会作为属性值保存"
+                      autocomplete="off"
+                      @focus="openDictionary(attr)"
+                      @blur="closeDictionary(attr)"
+                      @input="scheduleDictionarySearch(attr, ($event.target as HTMLInputElement).value)"
+                    />
+                    <button v-if="dictionaryState(attr).query" class="btn btn-outline shrink-0" type="button" @mousedown.prevent @click="clearDictionarySearch(attr)">清除搜索</button>
+                  </div>
                   <div v-if="dictionaryState(attr).loading" class="p-3 text-xs text-accent-500">正在读取平台选项…</div>
                   <div v-else-if="dictionaryState(attr).error" class="p-3 text-xs text-rose-700">{{ dictionaryState(attr).error }}</div>
                   <button
@@ -612,7 +637,7 @@ function selectTargetByKey(value: string) {
               <span class="text-xs font-semibold text-slate-500">{{ attributeLabel(attr) }}</span>
               <span v-if="attributeTranslation(attr.id)" class="mt-0.5 block text-[11px] text-slate-400">{{ attributeOriginalLabel(attr) }}</span>
               <span v-if="attributeTranslation(attr.id)?.help" class="mt-0.5 block text-[11px] text-slate-500">{{ attributeTranslation(attr.id)?.help }}</span>
-              <div v-if="attr.isDictionary || attr.dictionaryId" class="relative mt-1">
+              <div v-if="isCategoryDictionaryAttribute(attr.dictionaryId, attr.isDictionary)" class="relative mt-1">
                 <div v-if="attr.isCollection && selectedDictionaryValues(attr.id).length" class="mb-2 flex flex-wrap gap-2">
                   <span v-for="item in selectedDictionaryValues(attr.id)" :key="item.dictionaryValueId" class="inline-flex items-center gap-1 rounded-full bg-brand-50 px-2.5 py-1 text-xs text-brand-800 ring-1 ring-brand-200 dark:bg-brand-950/30 dark:text-brand-200 dark:ring-brand-900/60">
                     {{ item.value }}
@@ -622,18 +647,31 @@ function selectTargetByKey(value: string) {
                 <div class="flex gap-2">
                   <input
                     :ref="(el) => setAttributeInputRef(attr.id, el)"
-                    :value="dictionaryState(attr).query"
+                    :value="selectedDictionarySummary(attr)"
                     class="input"
                     :data-attribute-id="attr.id"
                     :placeholder="attributePlaceholder(attr)"
-                    autocomplete="off"
+                    readonly
                     @focus="openDictionary(attr)"
                     @blur="closeDictionary(attr)"
-                    @input="scheduleDictionarySearch(attr, ($event.target as HTMLInputElement).value)"
+                    @click="openDictionary(attr)"
                   />
-                  <button v-if="dictionaryState(attr).query" class="btn btn-outline shrink-0" type="button" @click="clearDictionaryValue(attr)">清除</button>
+                  <button v-if="selectedDictionaryValues(attr.id).length || legacyDictionaryValue(attr.id)" class="btn btn-outline shrink-0" type="button" @click="clearDictionaryValue(attr)">清除已选</button>
                 </div>
                 <div v-if="dictionaryState(attr).open" class="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-accent-200 bg-white p-1 shadow-xl dark:border-dark-700 dark:bg-dark-900">
+                  <div class="sticky top-0 flex gap-2 bg-white p-2 dark:bg-dark-900">
+                    <input
+                      :value="dictionaryState(attr).query"
+                      class="input"
+                      :data-dictionary-search-id="attr.id"
+                      placeholder="仅搜索平台选项，不会作为属性值保存"
+                      autocomplete="off"
+                      @focus="openDictionary(attr)"
+                      @blur="closeDictionary(attr)"
+                      @input="scheduleDictionarySearch(attr, ($event.target as HTMLInputElement).value)"
+                    />
+                    <button v-if="dictionaryState(attr).query" class="btn btn-outline shrink-0" type="button" @mousedown.prevent @click="clearDictionarySearch(attr)">清除搜索</button>
+                  </div>
                   <div v-if="dictionaryState(attr).loading" class="p-3 text-xs text-accent-500">正在读取平台选项…</div>
                   <div v-else-if="dictionaryState(attr).error" class="p-3 text-xs text-rose-700">{{ dictionaryState(attr).error }}</div>
                   <button

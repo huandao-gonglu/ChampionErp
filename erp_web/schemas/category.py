@@ -3,11 +3,40 @@ from __future__ import annotations
 """类目搜索与匹配的规范化数据形状。"""
 
 from dataclasses import dataclass, field
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
 
 CATEGORY_SEARCH_PERMISSION = "category.read"
 CATEGORY_SEARCH_TOOLSET_ID = "category.search"
+
+
+def normalize_category_dictionary_id(value: Any) -> str:
+    """规范化平台字典 ID；Ozon 用 ``0`` 表示普通非字典属性。"""
+
+    text = str(value or "").strip()
+    return "" if text == "0" else text
+
+
+def category_attribute_dictionary_id(definition: dict[str, Any]) -> str:
+    """读取规范化字典 ID，兼容平台原始定义嵌套在 ``raw`` 中。"""
+
+    raw = definition.get("raw") if isinstance(definition.get("raw"), dict) else {}
+    value = definition.get("dictionary_id")
+    if value in (None, ""):
+        value = raw.get("dictionary_id")
+    return normalize_category_dictionary_id(value)
+
+
+def is_category_dictionary_attribute(definition: dict[str, Any]) -> bool:
+    """判断属性是否必须从平台字典中选择。"""
+
+    raw = definition.get("raw") if isinstance(definition.get("raw"), dict) else {}
+    value = definition.get("dictionary_id")
+    if value in (None, ""):
+        value = raw.get("dictionary_id")
+    if value not in (None, ""):
+        return bool(normalize_category_dictionary_id(value))
+    return bool(definition.get("is_dictionary"))
 
 
 class CategoryCorpusInfo(TypedDict, total=False):
@@ -235,11 +264,14 @@ class CategoryMatchResult(TypedDict):
 __all__ = [
     "CATEGORY_SEARCH_PERMISSION",
     "CATEGORY_SEARCH_TOOLSET_ID",
+    "category_attribute_dictionary_id",
     "CategoryCandidate",
     "CategoryCandidateLedger",
     "CategoryBrowseResult",
     "CategoryCorpusInfo",
     "CategorySearchResult",
+    "is_category_dictionary_attribute",
+    "normalize_category_dictionary_id",
     "CategoryTreeNode",
     "CategoryTreeNodeLevel",
     "CategoryConfidenceBand",

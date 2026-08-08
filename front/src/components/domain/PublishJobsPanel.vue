@@ -41,6 +41,7 @@ const stageLabels: Record<string, string> = {
   resolving_category: '解析类目',
   validating: '校验商品',
   publishing: '提交平台',
+  waiting_platform_confirmation: '等待平台确认',
   retrying: '等待重试',
   finished: '已结束',
   failed: '已结束',

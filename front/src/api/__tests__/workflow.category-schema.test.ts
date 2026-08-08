@@ -217,4 +217,47 @@ describe('类目属性 Schema 映射', () => {
       values: [{ dictionary_value_id: 126745801, value: 'Нет бренда' }],
     })
   })
+
+  it('把 Ozon dictionary_id=0 规范化为普通文本属性', () => {
+    const normalized = normalizeDraftDetail({
+      draft_id: 'draft-ozon-free-text',
+      product_id: 'product-ozon-free-text',
+      platform: 'ozon',
+      platforms: ['ozon'],
+      site: 'global',
+      category_id: '91443',
+      target_sites: [{
+        platform: 'ozon',
+        site: 'global',
+        category_id: '91443',
+        category_attribute_schema: {
+          version: 2,
+          platform: 'ozon',
+          site: 'global',
+          category_id: '91443',
+          required: [{
+            id: '9048',
+            name: 'Название модели',
+            required: true,
+            dictionary_id: '0',
+            is_dictionary: true,
+          }],
+          optional: [],
+        },
+        attributes: { 9048: 'F30' },
+      }],
+    })
+
+    const attribute = normalized.targetSites[0]?.categoryAttributeSchema?.required[0]
+    expect(attribute?.dictionaryId).toBe('')
+    expect(attribute?.isDictionary).toBe(false)
+
+    const backend = toBackendDraft(normalized)
+    const target = (backend.target_sites as Array<Record<string, unknown>>)[0]
+    const backendAttribute = (target.category_attribute_schema as Record<string, unknown>).required as Array<Record<string, unknown>>
+    expect(backendAttribute[0]).toEqual(expect.objectContaining({
+      dictionary_id: '',
+      is_dictionary: false,
+    }))
+  })
 })

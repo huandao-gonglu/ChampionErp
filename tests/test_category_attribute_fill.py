@@ -88,6 +88,141 @@ def test_ai_model_attribute_fill_uses_product_context_and_validates_options(monk
     assert updated["drafts"]["mercadolibre"]["validation_errors"] == []
 
 
+def test_ai_model_attribute_fill_resolves_ozon_dictionary_values(monkeypatch) -> None:
+    product = default_product_model()
+    product["name"] = "共田 F30 手持风扇"
+    product["source"]["title"] = "F30 手持充电风扇"
+    category = {
+        "category_id": "91443",
+        "site": "global",
+        "attributes": {
+            "required": [
+                {
+                    "id": "8229",
+                    "name": "Тип",
+                    "required": True,
+                    "dictionary_id": "1960",
+                    "is_dictionary": True,
+                },
+                {
+                    "id": "85",
+                    "name": "Бренд",
+                    "required": True,
+                    "dictionary_id": "28732849",
+                    "is_dictionary": True,
+                },
+                {
+                    "id": "9048",
+                    "name": "Название модели",
+                    "required": True,
+                    "dictionary_id": "0",
+                    "is_dictionary": True,
+                },
+            ],
+            "optional": [],
+        },
+    }
+
+    monkeypatch.setattr(
+        category_attribute_ai_fill,
+        "_request_ai_fill",
+        lambda *args: {
+            "attributes": {
+                "8229": "Вентилятор",
+                "85": "Нет бренда",
+                "9048": "F30",
+            },
+            "need_review": [],
+        },
+    )
+
+    def fake_values(platform, category_id, attribute_id, **kwargs):
+        assert platform == "ozon"
+        assert category_id == "91443"
+        assert kwargs["site"] == "global"
+        values = {
+            "8229": [{"id": "91443", "value": "Вентилятор"}],
+            "85": [{"id": "126745801", "value": "Нет бренда"}],
+        }
+        return {"values": values[attribute_id]}
+
+    monkeypatch.setattr(
+        category_attribute_ai_fill,
+        "fetch_category_attribute_values",
+        fake_values,
+    )
+
+    updated, meta = category_attribute_ai_fill.apply_ai_model_attribute_fill(
+        product,
+        "ozon",
+        category,
+    )
+    draft = updated["drafts"]["ozon"]
+
+    assert draft["attributes"]["8229"] == {
+        "values": [{"dictionary_value_id": 91443, "value": "Вентилятор"}]
+    }
+    assert draft["attributes"]["85"] == {
+        "values": [{"dictionary_value_id": 126745801, "value": "Нет бренда"}]
+    }
+    assert draft["attributes"]["9048"] == "F30"
+    assert draft["validation_errors"] == []
+    assert meta["ai_filled"] == ["8229", "85", "9048"]
+
+
+def test_unresolved_optional_dictionary_attribute_is_not_a_blocking_error(
+    monkeypatch,
+) -> None:
+    product = default_product_model()
+    category = {
+        "category_id": "91443",
+        "site": "global",
+        "attributes": {
+            "required": [
+                {
+                    "id": "9048",
+                    "name": "Название модели",
+                    "required": True,
+                    "dictionary_id": "0",
+                }
+            ],
+            "optional": [
+                {
+                    "id": "20210",
+                    "name": "Вид вентилятора",
+                    "required": False,
+                    "dictionary_id": "1234",
+                }
+            ],
+        },
+    }
+    monkeypatch.setattr(
+        category_attribute_ai_fill,
+        "_request_ai_fill",
+        lambda *args: {
+            "attributes": {"9048": "F30", "20210": "Ручной"},
+            "need_review": [],
+        },
+    )
+    monkeypatch.setattr(
+        category_attribute_ai_fill,
+        "fetch_category_attribute_values",
+        lambda *args, **kwargs: {"values": []},
+    )
+
+    updated, meta = category_attribute_ai_fill.apply_ai_model_attribute_fill(
+        product,
+        "ozon",
+        category,
+    )
+    draft = updated["drafts"]["ozon"]
+
+    assert draft["attributes"]["9048"] == "F30"
+    assert "20210" not in draft["attributes"]
+    assert draft["validation_errors"] == []
+    assert meta["ai_filled"] == ["9048"]
+
+
 def test_category_precheck_only_reports_missing_required_category_attributes() -> None:
     product = default_product_model()
     draft = product["drafts"]["mercadolibre"]

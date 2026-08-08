@@ -6,8 +6,13 @@ from copy import deepcopy
 from typing import Any
 
 from erp_web.product_model import apply_ai_attribute_fill, normalize_product_model
+from erp_web.schemas.category import (
+    category_attribute_dictionary_id,
+    is_category_dictionary_attribute,
+)
 
 from .ai_use_case import run_ai_use_case
+from .category_store import fetch_category_attribute_values
 
 
 def _normalize_list(value: Any) -> list[str]:
@@ -20,10 +25,7 @@ def _normalize_list(value: Any) -> list[str]:
 
 def _normalize_attr(attr: Any, required_fallback: bool = False) -> dict[str, Any]:
     raw = attr if isinstance(attr, dict) else {}
-    provider_raw = raw.get("raw") if isinstance(raw.get("raw"), dict) else {}
-    dictionary_id = str(
-        raw.get("dictionary_id") or provider_raw.get("dictionary_id") or ""
-    ).strip()
+    dictionary_id = category_attribute_dictionary_id(raw)
     values = raw.get("values") if isinstance(raw.get("values"), list) else []
     options = _normalize_list(raw.get("options"))
     for item in values:
@@ -40,7 +42,7 @@ def _normalize_attr(attr: Any, required_fallback: bool = False) -> dict[str, Any
         "value_type": str(raw.get("value_type") or "").strip(),
         "options": list(dict.fromkeys(options))[:80],
         "dictionary_id": dictionary_id,
-        "is_dictionary": bool(raw.get("is_dictionary") or dictionary_id),
+        "is_dictionary": is_category_dictionary_attribute(raw),
     }
 
 
@@ -153,16 +155,31 @@ def _is_meaningful_existing(attr_id: str, value: Any) -> bool:
     return bool(text) and text.upper() != attr_id.upper()
 
 
-def _validated_ai_attributes(ai_result: dict[str, Any], schema: list[dict[str, Any]]) -> tuple[dict[str, str], set[str]]:
+def _dictionary_candidate_text(raw_value: Any) -> str:
+    if isinstance(raw_value, dict):
+        raw_value = raw_value.get("value") or raw_value.get("label")
+    if isinstance(raw_value, list):
+        raw_value = raw_value[0] if raw_value else ""
+    return str(raw_value or "").strip()[:255]
+
+
+def _validated_ai_attributes(
+    ai_result: dict[str, Any],
+    schema: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, str], set[str]]:
     schema_by_id = {str(attr.get("id") or ""): attr for attr in schema}
     raw_attrs = ai_result.get("attributes") if isinstance(ai_result.get("attributes"), dict) else {}
-    accepted: dict[str, str] = {}
+    accepted: dict[str, Any] = {}
+    dictionary_candidates: dict[str, str] = {}
     for attr_id, raw_value in raw_attrs.items():
         attr_id = str(attr_id or "").strip()
         attr = schema_by_id.get(attr_id)
         if not attr:
             continue
         if attr.get("is_dictionary"):
+            candidate = _dictionary_candidate_text(raw_value)
+            if candidate:
+                dictionary_candidates[attr_id] = candidate
             continue
         options = attr.get("options") if isinstance(attr.get("options"), list) else []
         if options:
@@ -182,7 +199,73 @@ def _validated_ai_attributes(ai_result: dict[str, Any], schema: list[dict[str, A
             attr_id = str(item or "").strip()
         if attr_id in schema_by_id:
             review.add(attr_id)
-    return accepted, review
+    return accepted, dictionary_candidates, review
+
+
+def _dictionary_selection(value: dict[str, Any]) -> dict[str, Any] | None:
+    value_id = value.get("id") or value.get("dictionary_value_id")
+    label = str(value.get("value") or value.get("name") or "").strip()
+    if value_id in (None, "") or not label:
+        return None
+    try:
+        normalized_id: int | str = int(value_id)
+    except (TypeError, ValueError):
+        normalized_id = str(value_id).strip()
+    if normalized_id == "":
+        return None
+    return {
+        "values": [
+            {
+                "dictionary_value_id": normalized_id,
+                "value": label,
+            }
+        ]
+    }
+
+
+def _resolve_dictionary_candidates(
+    platform: str,
+    category_record: dict[str, Any] | None,
+    candidates: dict[str, str],
+) -> tuple[dict[str, dict[str, Any]], set[str], list[str]]:
+    record = category_record if isinstance(category_record, dict) else {}
+    category_id = str(record.get("category_id") or "").strip()
+    site = str(record.get("site") or "").strip()
+    resolved: dict[str, dict[str, Any]] = {}
+    unresolved: set[str] = set()
+    failed: list[str] = []
+    if not category_id:
+        return resolved, set(candidates), failed
+
+    for attr_id, candidate in candidates.items():
+        try:
+            result = fetch_category_attribute_values(
+                platform,
+                category_id,
+                attr_id,
+                site=site,
+                query=candidate,
+                limit=20,
+                timeout_seconds=15,
+            )
+        except Exception:
+            unresolved.add(attr_id)
+            failed.append(attr_id)
+            continue
+        values = result.get("values") if isinstance(result, dict) else []
+        exact = [
+            item
+            for item in (values if isinstance(values, list) else [])
+            if isinstance(item, dict)
+            and str(item.get("value") or item.get("name") or "").strip().casefold()
+            == candidate.casefold()
+        ]
+        selection = _dictionary_selection(exact[0]) if len(exact) == 1 else None
+        if selection is None:
+            unresolved.add(attr_id)
+            continue
+        resolved[attr_id] = selection
+    return resolved, unresolved, failed
 
 
 def apply_ai_model_attribute_fill(product: dict[str, Any], platform: str, category_record: dict[str, Any] | None) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -193,10 +276,16 @@ def apply_ai_model_attribute_fill(product: dict[str, Any], platform: str, catego
     meta: dict[str, Any] = {"source": "rules"}
     try:
         ai_result = _request_ai_fill(normalize_product_model(product or {}), platform, category_record, schema)
-        ai_attrs, ai_review = _validated_ai_attributes(ai_result, schema)
+        ai_attrs, dictionary_candidates, ai_review = _validated_ai_attributes(ai_result, schema)
     except Exception as exc:
         meta["warning"] = f"AI 属性填充失败，已使用规则填充：{exc}"
         return base_product, meta
+
+    dictionary_attrs, unresolved_dictionary, failed_dictionary = (
+        _resolve_dictionary_candidates(platform, category_record, dictionary_candidates)
+    )
+    ai_attrs.update(dictionary_attrs)
+    ai_review.update(unresolved_dictionary)
 
     updated = normalize_product_model(deepcopy(base_product))
     draft = deepcopy(updated.get("drafts", {}).get(platform, {}))
@@ -213,7 +302,8 @@ def apply_ai_model_attribute_fill(product: dict[str, Any], platform: str, catego
 
     schema_by_id = {str(attr.get("id") or ""): attr for attr in schema}
     for attr_id in ai_review:
-        if not attrs.get(attr_id):
+        definition = schema_by_id.get(attr_id) or {}
+        if definition.get("required") and not attrs.get(attr_id):
             need_review.add(attr_id)
     for attr_id, attr in schema_by_id.items():
         if attr.get("required") and not _is_meaningful_existing(
@@ -227,4 +317,9 @@ def apply_ai_model_attribute_fill(product: dict[str, Any], platform: str, catego
     updated.setdefault("drafts", {})[platform] = draft
     meta["source"] = "ai_model"
     meta["ai_filled"] = sorted(ai_attrs)
+    if failed_dictionary:
+        meta["warning"] = (
+            "部分平台字典值查询失败，已保留待人工复核："
+            + "、".join(sorted(failed_dictionary))
+        )
     return normalize_product_model(updated), meta

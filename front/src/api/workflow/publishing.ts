@@ -47,6 +47,8 @@ import {
   platformList,
   precheckIssueSummary,
   precheckIssues,
+  isCategoryDictionaryAttribute,
+  normalizeCategoryDictionaryId,
   stringList,
 } from './normalizers'
 import { requiredDraftTarget, requiredProductId } from './shared'
@@ -473,10 +475,10 @@ export async function fetchCategoryAttrs(platform: Marketplace, categoryId: stri
   }
   const attributeMetadata = (record: UnknownRecord) => {
     const raw = asRecord(record.raw)
-    const dictionaryId = getString(record, ['dictionary_id'], getString(raw, ['dictionary_id']))
+    const rawDictionaryId = getString(record, ['dictionary_id'], getString(raw, ['dictionary_id']))
     return {
-      dictionaryId,
-      isDictionary: getBoolean(record, ['is_dictionary'], Boolean(dictionaryId)),
+      dictionaryId: normalizeCategoryDictionaryId(rawDictionaryId),
+      isDictionary: isCategoryDictionaryAttribute(rawDictionaryId, getBoolean(record, ['is_dictionary'])),
       isCollection: getBoolean(record, ['is_collection'], getBoolean(raw, ['is_collection'])),
       maxValueCount: getNumber(record, ['max_value_count'], getNumber(raw, ['max_value_count'])),
       categoryDependent: getBoolean(record, ['category_dependent'], getBoolean(raw, ['category_dependent'])),
@@ -653,8 +655,8 @@ function categorySelectionToBackendRecord(category: CategorySelection | null): U
         name: attr.name,
         required: attr.required,
         options: attr.options || [],
-        dictionary_id: attr.dictionaryId || '',
-        is_dictionary: Boolean(attr.isDictionary || attr.dictionaryId),
+        dictionary_id: normalizeCategoryDictionaryId(attr.dictionaryId),
+        is_dictionary: isCategoryDictionaryAttribute(attr.dictionaryId, attr.isDictionary),
         is_collection: Boolean(attr.isCollection),
         max_value_count: attr.maxValueCount || 0,
         category_dependent: Boolean(attr.categoryDependent),
@@ -664,8 +666,8 @@ function categorySelectionToBackendRecord(category: CategorySelection | null): U
         name: attr.name,
         required: false,
         options: attr.options || [],
-        dictionary_id: attr.dictionaryId || '',
-        is_dictionary: Boolean(attr.isDictionary || attr.dictionaryId),
+        dictionary_id: normalizeCategoryDictionaryId(attr.dictionaryId),
+        is_dictionary: isCategoryDictionaryAttribute(attr.dictionaryId, attr.isDictionary),
         is_collection: Boolean(attr.isCollection),
         max_value_count: attr.maxValueCount || 0,
         category_dependent: Boolean(attr.categoryDependent),

@@ -47,6 +47,15 @@ def _remote_publish_succeeded(result: Any) -> bool:
     )
 
 
+def _remote_publish_pending(result: Any) -> bool:
+    return bool(
+        isinstance(result, dict)
+        and str(result.get("status") or "").strip().lower()
+        == "pending_confirmation"
+        and result.get("task_id") not in (None, "", 0)
+    )
+
+
 def publish_product(product: dict[str, Any], platform: str, config: dict[str, Any]) -> dict[str, Any]:
     product = normalize_product_fields(product)
     platform = str(platform or "").strip().lower()
@@ -134,6 +143,57 @@ def publish_product(product: dict[str, Any], platform: str, config: dict[str, An
     started_at = collect_time_iso()
     try:
         result: Any = adapter.publish_payload(payload, config)
+        if _remote_publish_pending(result):
+            pending_status = "publish_pending_confirmation"
+            payload_path, response_path = _write_publish_artifacts(
+                platform,
+                payload,
+                result,
+            )
+            updated = apply_precheck_to_product(
+                product,
+                platform,
+                precheck,
+                status=pending_status,
+            )
+            draft = _draft_for_platform(updated, platform)
+            draft["last_publish_task"] = {
+                "status": pending_status,
+                "task_id": result.get("task_id"),
+                "offer_id": str(result.get("offer_id") or ""),
+                "product_id": result.get("product_id"),
+                "updated_at": collect_time_iso(),
+            }
+            append_publish_log(
+                {
+                    "product_id": _product_id_for_log(updated, platform),
+                    "platform": platform,
+                    "draft_id": _draft_id_for_log(updated, platform),
+                    "status": pending_status,
+                    "started_at": started_at,
+                    "finished_at": collect_time_iso(),
+                    "request_payload_path": payload_path,
+                    "response_body_path": response_path,
+                    "error_code": "",
+                    "error_message": "",
+                    "field_errors": {},
+                    "next_action": "系统将按 task_id 继续确认 Ozon 导入结果",
+                    "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "shop": platform,
+                    "sku": config.get("listing", {}).get("sku", ""),
+                    "error": "",
+                    "image": source_image_refs(updated)[:1],
+                }
+            )
+            saved = get_context().products.save_product(updated)
+            return {
+                "ok": True,
+                "status": pending_status,
+                "result": result,
+                "payload": payload,
+                "product": saved,
+                "precheck": precheck,
+            }
         status = (
             "real_publish_success"
             if _remote_publish_succeeded(result)

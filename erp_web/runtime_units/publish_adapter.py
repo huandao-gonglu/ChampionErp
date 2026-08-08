@@ -23,6 +23,7 @@ from .publish_ozon import (
     map_ozon_publish_error,
     ozon_category_pair,
     ozon_required_attributes_missing,
+    poll_ozon_import_status,
     publish_ozon_payload,
     validate_ozon_publish_payload,
 )
@@ -132,6 +133,55 @@ class OzonPublishingAdapter:
 
     def map_publish_error(self, error: Exception) -> dict[str, Any]:
         return map_ozon_publish_error(error)
+
+    def poll_publish_status(
+        self,
+        result: dict[str, Any],
+        config: dict[str, Any],
+    ) -> dict[str, Any]:
+        """继续确认已经提交的 Ozon task_id，不重新创建导入任务。"""
+
+        pending = (
+            result.get("result")
+            if isinstance(result.get("result"), dict)
+            else result
+        )
+        task_id = pending.get("task_id")
+        if task_id in (None, "", 0):
+            raise RuntimeError("Ozon 待确认发布结果缺少 task_id")
+        store = config.get(self.platform) if isinstance(config.get(self.platform), dict) else {}
+        try:
+            polled = poll_ozon_import_status(
+                task_id,
+                str(store.get("client_id") or "").strip(),
+                str(store.get("api_key") or "").strip(),
+            )
+        except RuntimeError as exc:
+            if not str(exc).startswith("Ozon 商品导入失败："):
+                raise
+            mapped = map_ozon_publish_error(exc)
+            return {
+                "ok": False,
+                "status": "real_publish_failed",
+                "error": mapped["summary"],
+                "error_code": mapped["error_code"],
+                "error_map": mapped,
+            }
+        if polled["status"] == "pending_confirmation":
+            return {
+                "ok": True,
+                "status": "publish_pending_confirmation",
+                "result": polled,
+            }
+        return {
+            "ok": True,
+            "status": "real_publish_success",
+            "result": polled,
+        }
+
+    def publish_poll_interval_seconds(self, config: dict[str, Any]) -> float:
+        store = config.get(self.platform) if isinstance(config.get(self.platform), dict) else {}
+        return max(0.05, float(store.get("publish_poll_interval_seconds") or 0.5))
 
     def publish(self, product: dict[str, Any], platform: str, config: dict[str, Any]) -> dict[str, Any]:
         from .runtime_api import publish_product

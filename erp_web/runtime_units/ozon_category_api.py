@@ -25,6 +25,7 @@ from erp_web.schemas.category import (
     CategoryBrowseResult,
     CategoryCorpusInfo,
     CategoryTreeNode,
+    normalize_category_dictionary_id,
 )
 
 from .ozon_category_cache import (
@@ -712,7 +713,7 @@ def _record_for_type_id(type_id: str, records: list[dict[str, Any]]) -> dict[str
 
 
 def _normalize_attribute(item: dict[str, Any]) -> dict[str, Any]:
-    dictionary_id = _text(item.get("dictionary_id"))
+    dictionary_id = normalize_category_dictionary_id(item.get("dictionary_id"))
     return {
         "id": _text(item.get("id")),
         "name": _text(item.get("name") or item.get("id")),

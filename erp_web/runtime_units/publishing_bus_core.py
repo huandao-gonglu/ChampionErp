@@ -350,51 +350,98 @@ class PublishingBus:
                 # 每次执行时现取店铺配置（凭据来自 store_auth 表），不落任何 job 持久化。
                 config = self.config_provider()
                 config = config if isinstance(config, dict) else {}
-                self._set_platform(job_id, platform, status="running", stage="resolving_category", attempts=attempts)
-                resolved = adapter.resolve_category(product, config)
-                product = resolved if isinstance(resolved, dict) else product
-                drafts = (
-                    product.get("drafts")
-                    if isinstance(product.get("drafts"), dict)
+                state = self._read_state(job_id)
+                platform_state = (
+                    state.get("platforms", {}).get(platform)
+                    if isinstance(state.get("platforms"), dict)
                     else {}
                 )
-                draft = (
-                    drafts.get(platform)
-                    if isinstance(drafts.get(platform), dict)
-                    else {}
+                stored_result = (
+                    platform_state.get("result")
+                    if isinstance(platform_state, dict)
+                    and isinstance(platform_state.get("result"), dict)
+                    else None
                 )
-                self._set_platform(
-                    job_id,
-                    platform,
-                    stage="validating_required_attributes",
-                    category_id=str(
-                        draft.get("category_id")
-                        or ""
-                    ),
-                    attempts=attempts,
-                )
-                missing = adapter.required_attributes_missing(product, config)
-                if missing:
+                if self._is_pending_publish_result(stored_result):
+                    result: Any = stored_result
                     self._set_platform(
                         job_id,
                         platform,
-                        status="failed",
-                        stage="failed",
-                        error="缺失必填属性：" + "，".join(str(item) for item in missing),
+                        status="running",
+                        stage="waiting_platform_confirmation",
+                        error="",
                         attempts=attempts,
                     )
-                    return
-                self._set_platform(job_id, platform, stage="publishing", attempts=attempts)
-                result = adapter.publish(product, platform, config)
+                else:
+                    self._set_platform(job_id, platform, status="running", stage="resolving_category", attempts=attempts)
+                    resolved = adapter.resolve_category(product, config)
+                    product = resolved if isinstance(resolved, dict) else product
+                    drafts = (
+                        product.get("drafts")
+                        if isinstance(product.get("drafts"), dict)
+                        else {}
+                    )
+                    draft = (
+                        drafts.get(platform)
+                        if isinstance(drafts.get(platform), dict)
+                        else {}
+                    )
+                    self._set_platform(
+                        job_id,
+                        platform,
+                        stage="validating_required_attributes",
+                        category_id=str(
+                            draft.get("category_id")
+                            or ""
+                        ),
+                        attempts=attempts,
+                    )
+                    missing = adapter.required_attributes_missing(product, config)
+                    if missing:
+                        self._set_platform(
+                            job_id,
+                            platform,
+                            status="failed",
+                            stage="failed",
+                            error="缺失必填属性：" + "，".join(str(item) for item in missing),
+                            attempts=attempts,
+                        )
+                        return
+                    self._set_platform(job_id, platform, stage="publishing", attempts=attempts)
+                    result = adapter.publish(product, platform, config)
+
+                while self._is_pending_publish_result(result):
+                    poller = getattr(adapter, "poll_publish_status", None)
+                    if not callable(poller):
+                        raise RuntimeError(
+                            f"{platform} 返回待确认状态，但发布适配器未实现状态轮询"
+                        )
+                    persisted_pending = self._persisted_platform_result(result)
+                    self._set_platform(
+                        job_id,
+                        platform,
+                        status="running",
+                        stage="waiting_platform_confirmation",
+                        error="",
+                        result=persisted_pending,
+                        attempts=attempts,
+                    )
+                    interval_provider = getattr(
+                        adapter,
+                        "publish_poll_interval_seconds",
+                        None,
+                    )
+                    interval = (
+                        interval_provider(config)
+                        if callable(interval_provider)
+                        else self.retry_delay_seconds
+                    )
+                    time.sleep(max(0.05, float(interval)))
+                    result = poller(result, config)
+
                 persisted_result = (
-                    copy.deepcopy(result)
-                    if isinstance(result, dict)
-                    else None
+                    self._persisted_platform_result(result)
                 )
-                if isinstance(persisted_result, dict):
-                    # job 根节点已经保存恢复执行所需的 product；平台 result
-                    # 再存一次只会让 SQLite 与发布日志成倍膨胀。
-                    persisted_result.pop("product", None)
                 result_status = (
                     str(result.get("status") or "").strip().lower()
                     if isinstance(result, dict)
@@ -468,6 +515,23 @@ class PublishingBus:
                     return
                 time.sleep(self.retry_delay_seconds)
         self._update_job_status(job_id)
+
+    @staticmethod
+    def _is_pending_publish_result(result: Any) -> bool:
+        return bool(
+            isinstance(result, dict)
+            and str(result.get("status") or "").strip().lower()
+            in {"pending_confirmation", "publish_pending_confirmation"}
+        )
+
+    @staticmethod
+    def _persisted_platform_result(result: Any) -> dict[str, Any] | None:
+        persisted = copy.deepcopy(result) if isinstance(result, dict) else None
+        if isinstance(persisted, dict):
+            # job 根节点已经保存恢复执行所需的 product；平台 result
+            # 再存一次只会让 SQLite 与发布日志成倍膨胀。
+            persisted.pop("product", None)
+        return persisted
 
     def _set_platform(self, job_id: str, platform: str, **updates: Any) -> None:
         with self._lock:

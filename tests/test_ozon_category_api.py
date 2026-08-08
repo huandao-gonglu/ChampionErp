@@ -141,7 +141,14 @@ def test_ozon_dictionary_metadata_and_values_are_loaded_separately() -> None:
                         "type": "String",
                         "dictionary_id": 28732849,
                         "category_dependent": True,
-                    }
+                    },
+                    {
+                        "id": 9048,
+                        "name": "Название модели",
+                        "is_required": True,
+                        "type": "String",
+                        "dictionary_id": 0,
+                    },
                 ]
             }
         if url == ozon_category_api.OZON_CATEGORY_ATTRIBUTE_VALUES_URL:
@@ -174,6 +181,9 @@ def test_ozon_dictionary_metadata_and_values_are_loaded_separately() -> None:
     assert brand["is_dictionary"] is True
     assert brand["category_dependent"] is True
     assert brand["options"] == []
+    model_name = attrs["required"][1]
+    assert model_name["dictionary_id"] == ""
+    assert model_name["is_dictionary"] is False
     assert values["values"] == [
         {
             "id": "126745801",

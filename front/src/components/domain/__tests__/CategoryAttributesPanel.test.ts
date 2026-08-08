@@ -248,9 +248,15 @@ describe('CategoryAttributesPanel', () => {
     await requiredButton!.trigger('click')
     expect(wrapper.text()).toContain('旧值“中性”不是平台选项')
 
-    await wrapper.get('[data-attribute-id="85"]').trigger('focus')
+    const selectedValue = wrapper.get<HTMLInputElement>('[data-attribute-id="85"]')
+    expect(selectedValue.attributes()).toHaveProperty('readonly')
+    await selectedValue.trigger('focus')
     await flushPromises()
-    expect(fetchCategoryAttributeValues).toHaveBeenCalledWith('ozon', '94765', '85', 'global', '中性')
+    expect(fetchCategoryAttributeValues).toHaveBeenCalledWith('ozon', '94765', '85', 'global', '')
+
+    const search = wrapper.get<HTMLInputElement>('[data-dictionary-search-id="85"]')
+    expect(search.attributes('placeholder')).toContain('不会作为属性值保存')
+    expect(draft.attributes['85']).toBe('中性')
 
     const option = wrapper.findAll('button').find((button) => button.text().includes('Нет бренда'))
     expect(option).toBeDefined()
@@ -259,6 +265,41 @@ describe('CategoryAttributesPanel', () => {
     expect(draft.attributes['85']).toEqual({
       values: [{ dictionaryValueId: 126745801, value: 'Нет бренда' }],
     })
+    expect(selectedValue.element.value).toBe('Нет бренда')
     expect(wrapper.emitted('invalidateCategoryPrecheck')).toHaveLength(1)
+  })
+
+  it('dictionary_id=0 的 Ozon 属性使用普通文本输入', async () => {
+    const draft = createEmptyDraftDetail('ozon')
+    draft.draftId = 'draft-free-text'
+    draft.site = 'global'
+    draft.categoryId = '91443'
+    const category: CategorySelection = {
+      platform: 'ozon',
+      categoryId: '91443',
+      categoryPath: 'Бытовая техника / Вентилятор',
+      requiredAttributes: [{
+        id: '9048',
+        name: 'Название модели',
+        required: true,
+        options: [],
+        dictionaryId: '0',
+        isDictionary: true,
+      }],
+      optionalAttributes: [],
+      raw: {},
+    }
+    const wrapper = mount(CategoryAttributesPanel, {
+      props: panelProps(draft, category),
+    })
+
+    const requiredButton = wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))
+    await requiredButton!.trigger('click')
+    const input = wrapper.get<HTMLInputElement>('[data-attribute-id="9048"]')
+
+    expect(input.attributes('placeholder')).toBe('请输入属性值')
+    await input.setValue('F30')
+    expect(draft.attributes['9048']).toBe('F30')
+    expect(fetchCategoryAttributeValues).not.toHaveBeenCalled()
   })
 })

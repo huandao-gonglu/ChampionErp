@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { saveDraft as saveDraftApi } from '@/api/workflow/catalog'
-import { diagnosticsToCollectDiagnostics } from '@/api/workflow/normalizers'
+import { diagnosticsToCollectDiagnostics, isCategoryDictionaryAttribute, normalizeCategoryDictionaryId } from '@/api/workflow/normalizers'
 import { createDefaultCollectDiagnostics } from '@/constants/initialState'
 import { useWorkflowActivityStore } from '@/stores/workflow/activity'
 import { useWorkflowCatalogStore } from '@/stores/workflow/catalog'
@@ -123,14 +123,14 @@ export function categorySelectionFromProduct(product: Product, platform: Marketp
   const normalizeAttr = (item: unknown, requiredFallback: boolean) => {
     const attr = isRecord(item) ? item : {}
     const raw = isRecord(attr.raw) ? attr.raw : {}
-    const dictionaryId = String(attr.dictionary_id || raw.dictionary_id || '')
+    const rawDictionaryId = String(attr.dictionary_id ?? raw.dictionary_id ?? '')
     return {
       id: String(attr.id || attr.attribute_id || ''),
       name: String(attr.name || attr.label || attr.id || attr.attribute_id || ''),
       required: typeof attr.required === 'boolean' ? attr.required : requiredFallback,
       options: Array.isArray(attr.options) ? attr.options.map(String) : [],
-      dictionaryId,
-      isDictionary: Boolean(attr.is_dictionary || dictionaryId),
+      dictionaryId: normalizeCategoryDictionaryId(rawDictionaryId),
+      isDictionary: isCategoryDictionaryAttribute(rawDictionaryId, Boolean(attr.is_dictionary)),
       isCollection: Boolean(attr.is_collection || raw.is_collection),
       maxValueCount: Number(attr.max_value_count || raw.max_value_count || 0),
       categoryDependent: Boolean(attr.category_dependent || raw.category_dependent),
@@ -163,8 +163,8 @@ export function categoryAttributeSchemaFromSelection(selection: CategorySelectio
     valueType: item.valueType || 'string',
     unit: item.unit || '',
     description: item.description || '',
-    dictionaryId: item.dictionaryId || '',
-    isDictionary: Boolean(item.isDictionary || item.dictionaryId),
+    dictionaryId: normalizeCategoryDictionaryId(item.dictionaryId),
+    isDictionary: isCategoryDictionaryAttribute(item.dictionaryId, item.isDictionary),
     isCollection: Boolean(item.isCollection),
     maxValueCount: item.maxValueCount || 0,
     categoryDependent: Boolean(item.categoryDependent),

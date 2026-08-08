@@ -37,6 +37,17 @@ export interface AppStateResponse {
 
 export { PRODUCT_SCHEMA_VERSION }
 
+export function normalizeCategoryDictionaryId(value: unknown): string {
+  const text = String(value ?? '').trim()
+  return text === '0' ? '' : text
+}
+
+export function isCategoryDictionaryAttribute(dictionaryId: unknown, explicit = false): boolean {
+  const rawId = String(dictionaryId ?? '').trim()
+  if (rawId === '0') return false
+  return Boolean(rawId) || explicit
+}
+
 export interface ProductMutationResponse {
   ok: boolean
   product: Product
@@ -292,6 +303,7 @@ export function normalizeCategoryAttributeDefinition(value: unknown, requiredFal
   const options = (Array.isArray(record.options) ? record.options : [])
     .map((item) => String(item ?? '').trim())
     .filter(Boolean)
+  const rawDictionaryId = getString(record, ['dictionary_id'], getString(raw, ['dictionary_id']))
   return {
     id,
     name: getString(record, ['name'], id),
@@ -300,8 +312,8 @@ export function normalizeCategoryAttributeDefinition(value: unknown, requiredFal
     valueType: getString(record, ['value_type'], 'string'),
     unit: getString(record, ['unit']),
     description: getString(record, ['description']),
-    dictionaryId: getString(record, ['dictionary_id'], getString(raw, ['dictionary_id'])),
-    isDictionary: getBoolean(record, ['is_dictionary'], Boolean(getString(record, ['dictionary_id'], getString(raw, ['dictionary_id'])))),
+    dictionaryId: normalizeCategoryDictionaryId(rawDictionaryId),
+    isDictionary: isCategoryDictionaryAttribute(rawDictionaryId, getBoolean(record, ['is_dictionary'])),
     isCollection: getBoolean(record, ['is_collection'], getBoolean(raw, ['is_collection'])),
     maxValueCount: getNumber(record, ['max_value_count'], getNumber(raw, ['max_value_count'])),
     categoryDependent: getBoolean(record, ['category_dependent'], getBoolean(raw, ['category_dependent'])),
@@ -501,6 +513,7 @@ export function toBackendDraftImageRef(ref: DraftImageRef): UnknownRecord {
 }
 
 export function toBackendCategoryAttributeDefinition(attribute: CategoryAttributeDefinition): UnknownRecord {
+  const dictionaryId = normalizeCategoryDictionaryId(attribute.dictionaryId)
   return {
     id: attribute.id,
     name: attribute.name,
@@ -509,8 +522,8 @@ export function toBackendCategoryAttributeDefinition(attribute: CategoryAttribut
     value_type: attribute.valueType || 'string',
     unit: attribute.unit || '',
     description: attribute.description || '',
-    dictionary_id: attribute.dictionaryId || '',
-    is_dictionary: Boolean(attribute.isDictionary || attribute.dictionaryId),
+    dictionary_id: dictionaryId,
+    is_dictionary: isCategoryDictionaryAttribute(attribute.dictionaryId, attribute.isDictionary),
     is_collection: Boolean(attribute.isCollection),
     max_value_count: attribute.maxValueCount || 0,
     category_dependent: Boolean(attribute.categoryDependent),
