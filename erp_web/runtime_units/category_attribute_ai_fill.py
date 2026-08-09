@@ -10,47 +10,103 @@ from erp_web.schemas.category import (
     category_attribute_dictionary_id,
     is_category_dictionary_attribute,
 )
+from erp_web.schemas.category_attribute import CategoryAttributeValueLedger
+from erp_web.services.category_attribute_fill_agent_service import (
+    CategoryAttributeFillAgentRun,
+    run_category_attribute_fill_agent,
+)
 
-from .ai_use_case import run_ai_use_case
-from .category_store import fetch_category_attribute_values
+from .category_attribute_tools import build_category_attribute_value_toolset
 
 
 def _normalize_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
     if isinstance(value, str):
-        return [item.strip() for item in re.split(r"[,，;；\n]+", value) if item.strip()]
+        return [
+            item.strip()
+            for item in re.split(r"[,，;；\n]+", value)
+            if item.strip()
+        ]
     return []
 
 
 def _normalize_attr(attr: Any, required_fallback: bool = False) -> dict[str, Any]:
     raw = attr if isinstance(attr, dict) else {}
+    platform_raw = raw.get("raw") if isinstance(raw.get("raw"), dict) else {}
     dictionary_id = category_attribute_dictionary_id(raw)
     values = raw.get("values") if isinstance(raw.get("values"), list) else []
     options = _normalize_list(raw.get("options"))
     for item in values:
         if isinstance(item, dict):
-            label = str(item.get("name") or item.get("value_name") or item.get("id") or "").strip()
+            label = str(
+                item.get("name")
+                or item.get("value_name")
+                or item.get("id")
+                or ""
+            ).strip()
         else:
             label = str(item or "").strip()
         if label:
             options.append(label)
+    strict_enum = is_category_dictionary_attribute(raw)
     return {
-        "id": str(raw.get("id") or raw.get("attribute_id") or raw.get("code") or "").strip(),
-        "name": str(raw.get("name") or raw.get("label") or raw.get("id") or "").strip(),
+        "id": str(
+            raw.get("id")
+            or raw.get("attribute_id")
+            or raw.get("code")
+            or ""
+        ).strip(),
+        "name": str(
+            raw.get("name") or raw.get("label") or raw.get("id") or ""
+        ).strip(),
         "required": bool(raw.get("required", required_fallback)),
         "value_type": str(raw.get("value_type") or "").strip(),
+        "unit": str(raw.get("unit") or "").strip(),
+        "description": _short_text(raw.get("description"), 1500),
         "options": list(dict.fromkeys(options))[:80],
         "dictionary_id": dictionary_id,
-        "is_dictionary": is_category_dictionary_attribute(raw),
+        "is_dictionary": strict_enum,
+        "strict_enum": strict_enum,
+        "allows_custom_value": not strict_enum,
+        "is_collection": bool(
+            raw.get("is_collection") or platform_raw.get("is_collection")
+        ),
+        "max_value_count": int(
+            raw.get("max_value_count")
+            or platform_raw.get("max_value_count")
+            or 0
+        ),
+        "category_dependent": bool(
+            raw.get("category_dependent")
+            or platform_raw.get("category_dependent")
+        ),
     }
 
 
 def _attribute_schema(category_record: dict[str, Any] | None) -> list[dict[str, Any]]:
     record = category_record if isinstance(category_record, dict) else {}
-    attrs = record.get("attributes") if isinstance(record.get("attributes"), dict) else {}
-    required = [_normalize_attr(attr, True) for attr in (attrs.get("required") if isinstance(attrs.get("required"), list) else [])]
-    optional = [_normalize_attr(attr, False) for attr in (attrs.get("optional") if isinstance(attrs.get("optional"), list) else [])]
+    attrs = (
+        record.get("attributes")
+        if isinstance(record.get("attributes"), dict)
+        else {}
+    )
+    required = [
+        _normalize_attr(attr, True)
+        for attr in (
+            attrs.get("required")
+            if isinstance(attrs.get("required"), list)
+            else []
+        )
+    ]
+    optional = [
+        _normalize_attr(attr, False)
+        for attr in (
+            attrs.get("optional")
+            if isinstance(attrs.get("optional"), list)
+            else []
+        )
+    ]
     return [attr for attr in required + optional if attr.get("id")]
 
 
@@ -63,7 +119,9 @@ def _category_path_text(record: dict[str, Any] | None) -> str:
     for key in ("path_original", "path_cn"):
         value = raw.get(key)
         if isinstance(value, list):
-            text = " / ".join(str(item).strip() for item in value if str(item).strip())
+            text = " / ".join(
+                str(item).strip() for item in value if str(item).strip()
+            )
             if text:
                 return text
     return ""
@@ -75,8 +133,14 @@ def _short_text(value: Any, limit: int = 3000) -> str:
 
 
 def _product_context(product: dict[str, Any], platform: str) -> dict[str, Any]:
-    source = product.get("source") if isinstance(product.get("source"), dict) else {}
-    draft = product.get("drafts", {}).get(platform) if isinstance(product.get("drafts"), dict) else {}
+    source = (
+        product.get("source") if isinstance(product.get("source"), dict) else {}
+    )
+    draft = (
+        product.get("drafts", {}).get(platform)
+        if isinstance(product.get("drafts"), dict)
+        else {}
+    )
     return {
         "product": {
             "name": product.get("name"),
@@ -93,8 +157,16 @@ def _product_context(product: dict[str, Any], platform: str) -> dict[str, Any]:
             "title": _short_text(source.get("title"), 500),
             "description": _short_text(source.get("description"), 2500),
             "bullets": _normalize_list(source.get("bullets"))[:30],
-            "attributes": source.get("attributes") if isinstance(source.get("attributes"), dict) else {},
-            "dimensions": source.get("dimensions") if isinstance(source.get("dimensions"), dict) else {},
+            "attributes": (
+                source.get("attributes")
+                if isinstance(source.get("attributes"), dict)
+                else {}
+            ),
+            "dimensions": (
+                source.get("dimensions")
+                if isinstance(source.get("dimensions"), dict)
+                else {}
+            ),
             "weight_kg": source.get("weight_kg"),
             "material": source.get("material"),
             "colors": source.get("colors"),
@@ -107,40 +179,35 @@ def _product_context(product: dict[str, Any], platform: str) -> dict[str, Any]:
             "model": draft.get("model"),
             "sku": draft.get("sku"),
             "upc": draft.get("upc"),
-            "attributes": draft.get("attributes") if isinstance(draft.get("attributes"), dict) else {},
-            "package_dimensions": draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {},
+            "attributes": (
+                draft.get("attributes")
+                if isinstance(draft.get("attributes"), dict)
+                else {}
+            ),
+            "package_dimensions": (
+                draft.get("package_dimensions")
+                if isinstance(draft.get("package_dimensions"), dict)
+                else {}
+            ),
         },
     }
 
 
-def _request_ai_fill(product: dict[str, Any], platform: str, category_record: dict[str, Any] | None, schema: list[dict[str, Any]]) -> dict[str, Any]:
-    payload = {
+def _agent_payload(
+    product: dict[str, Any],
+    platform: str,
+    category_record: dict[str, Any] | None,
+    schema: list[dict[str, Any]],
+) -> dict[str, Any]:
+    record = category_record if isinstance(category_record, dict) else {}
+    return {
         "platform": platform,
-        "category_id": str((category_record or {}).get("category_id") or ""),
+        "site": str(record.get("site") or ""),
+        "category_id": str(record.get("category_id") or ""),
         "category_path": _category_path_text(category_record),
         "product_context": _product_context(product, platform),
         "attributes": schema,
     }
-    return run_ai_use_case(
-        "category.attribute_fill",
-        payload,
-        lambda value: value if isinstance(value, dict) else {},
-        temperature=0,
-    )
-
-
-def _option_value(raw_value: Any, options: list[str]) -> str:
-    text = str(raw_value or "").strip()
-    if not text:
-        return ""
-    for option in options:
-        if text == option:
-            return option
-    lowered = text.lower()
-    for option in options:
-        if lowered == option.lower():
-            return option
-    return ""
 
 
 def _is_meaningful_existing(attr_id: str, value: Any) -> bool:
@@ -155,43 +222,113 @@ def _is_meaningful_existing(attr_id: str, value: Any) -> bool:
     return bool(text) and text.upper() != attr_id.upper()
 
 
-def _dictionary_candidate_text(raw_value: Any) -> str:
-    if isinstance(raw_value, dict):
-        raw_value = raw_value.get("value") or raw_value.get("label")
-    if isinstance(raw_value, list):
-        raw_value = raw_value[0] if raw_value else ""
-    return str(raw_value or "").strip()[:255]
-
-
-def _validated_ai_attributes(
-    ai_result: dict[str, Any],
+def _schema_for_agent(
+    product: dict[str, Any],
+    platform: str,
     schema: list[dict[str, Any]],
-) -> tuple[dict[str, Any], dict[str, str], set[str]]:
+) -> list[dict[str, Any]]:
+    drafts = (
+        product.get("drafts") if isinstance(product.get("drafts"), dict) else {}
+    )
+    draft = (
+        drafts.get(platform) if isinstance(drafts.get(platform), dict) else {}
+    )
+    existing = (
+        draft.get("attributes")
+        if isinstance(draft.get("attributes"), dict)
+        else {}
+    )
+    need_review = {
+        str(item).strip()
+        for item in (
+            draft.get("validation_errors")
+            if isinstance(draft.get("validation_errors"), list)
+            else []
+        )
+        if str(item).strip()
+    }
+    return [
+        attr
+        for attr in schema
+        if (attr_id := str(attr.get("id") or "").strip())
+        and (
+            attr_id in need_review
+            or not _is_meaningful_existing(attr_id, existing.get(attr_id))
+        )
+    ]
+
+
+def _dictionary_value_id(value: Any) -> int | str:
+    text = str(value or "").strip()
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return text
+
+
+def _validated_agent_attributes(
+    agent_output: dict[str, Any],
+    schema: list[dict[str, Any]],
+    ledger: CategoryAttributeValueLedger,
+) -> tuple[dict[str, Any], set[str]]:
     schema_by_id = {str(attr.get("id") or ""): attr for attr in schema}
-    raw_attrs = ai_result.get("attributes") if isinstance(ai_result.get("attributes"), dict) else {}
     accepted: dict[str, Any] = {}
-    dictionary_candidates: dict[str, str] = {}
-    for attr_id, raw_value in raw_attrs.items():
-        attr_id = str(attr_id or "").strip()
+    dictionary_values: dict[str, list[dict[str, Any]]] = {}
+    review: set[str] = set()
+    assignments = (
+        agent_output.get("assignments")
+        if isinstance(agent_output.get("assignments"), list)
+        else []
+    )
+    for assignment in assignments:
+        if not isinstance(assignment, dict):
+            continue
+        attr_id = str(assignment.get("attribute_id") or "").strip()
         attr = schema_by_id.get(attr_id)
         if not attr:
             continue
-        if attr.get("is_dictionary"):
-            candidate = _dictionary_candidate_text(raw_value)
-            if candidate:
-                dictionary_candidates[attr_id] = candidate
+        value = str(assignment.get("value") or "").strip()
+        if not value:
             continue
-        options = attr.get("options") if isinstance(attr.get("options"), list) else []
-        if options:
-            value = _option_value(raw_value, options)
-            if value:
-                accepted[attr_id] = value
+        if attr.get("strict_enum"):
+            value_id = str(assignment.get("dictionary_value_id") or "").strip()
+            candidate = ledger.get(attr_id, value_id)
+            if candidate is None:
+                review.add(attr_id)
+                continue
+            dictionary_values.setdefault(attr_id, []).append(
+                {
+                    "dictionary_value_id": _dictionary_value_id(
+                        candidate["dictionary_value_id"]
+                    ),
+                    "value": candidate["value"],
+                }
+            )
             continue
-        value = str(raw_value or "").strip()
-        if value and value.upper() != attr_id.upper():
+        if value.upper() != attr_id.upper():
+            options = (
+                attr.get("options")
+                if isinstance(attr.get("options"), list)
+                else []
+            )
+            canonical_option = next(
+                (
+                    str(option)
+                    for option in options
+                    if str(option).strip().casefold() == value.casefold()
+                ),
+                "",
+            )
+            if canonical_option:
+                value = canonical_option
             accepted[attr_id] = value[:255]
-    review: set[str] = set()
-    raw_review = ai_result.get("need_review") if isinstance(ai_result.get("need_review"), list) else []
+    for attr_id, values in dictionary_values.items():
+        accepted[attr_id] = {"values": values}
+    raw_review = (
+        agent_output.get("need_review")
+        if isinstance(agent_output.get("need_review"), list)
+        else []
+    )
     for item in raw_review:
         if isinstance(item, dict):
             attr_id = str(item.get("id") or item.get("attribute_id") or "").strip()
@@ -199,103 +336,84 @@ def _validated_ai_attributes(
             attr_id = str(item or "").strip()
         if attr_id in schema_by_id:
             review.add(attr_id)
-    return accepted, dictionary_candidates, review
+    return accepted, review
 
 
-def _dictionary_selection(value: dict[str, Any]) -> dict[str, Any] | None:
-    value_id = value.get("id") or value.get("dictionary_value_id")
-    label = str(value.get("value") or value.get("name") or "").strip()
-    if value_id in (None, "") or not label:
-        return None
-    try:
-        normalized_id: int | str = int(value_id)
-    except (TypeError, ValueError):
-        normalized_id = str(value_id).strip()
-    if normalized_id == "":
-        return None
-    return {
-        "values": [
-            {
-                "dictionary_value_id": normalized_id,
-                "value": label,
-            }
-        ]
-    }
-
-
-def _resolve_dictionary_candidates(
+def apply_ai_model_attribute_fill(
+    product: dict[str, Any],
     platform: str,
     category_record: dict[str, Any] | None,
-    candidates: dict[str, str],
-) -> tuple[dict[str, dict[str, Any]], set[str], list[str]]:
-    record = category_record if isinstance(category_record, dict) else {}
-    category_id = str(record.get("category_id") or "").strip()
-    site = str(record.get("site") or "").strip()
-    resolved: dict[str, dict[str, Any]] = {}
-    unresolved: set[str] = set()
-    failed: list[str] = []
-    if not category_id:
-        return resolved, set(candidates), failed
-
-    for attr_id, candidate in candidates.items():
-        try:
-            result = fetch_category_attribute_values(
-                platform,
-                category_id,
-                attr_id,
-                site=site,
-                query=candidate,
-                limit=20,
-                timeout_seconds=15,
-            )
-        except Exception:
-            unresolved.add(attr_id)
-            failed.append(attr_id)
-            continue
-        values = result.get("values") if isinstance(result, dict) else []
-        exact = [
-            item
-            for item in (values if isinstance(values, list) else [])
-            if isinstance(item, dict)
-            and str(item.get("value") or item.get("name") or "").strip().casefold()
-            == candidate.casefold()
-        ]
-        selection = _dictionary_selection(exact[0]) if len(exact) == 1 else None
-        if selection is None:
-            unresolved.add(attr_id)
-            continue
-        resolved[attr_id] = selection
-    return resolved, unresolved, failed
-
-
-def apply_ai_model_attribute_fill(product: dict[str, Any], platform: str, category_record: dict[str, Any] | None) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    platform = str(platform or "").strip().lower()
     base_product = apply_ai_attribute_fill(product, platform, category_record)
     schema = _attribute_schema(category_record)
     if not schema:
         return base_product, {"source": "rules", "warning": "当前类目没有可填属性。"}
     meta: dict[str, Any] = {"source": "rules"}
+    agent_run: CategoryAttributeFillAgentRun | None = None
     try:
-        ai_result = _request_ai_fill(normalize_product_model(product or {}), platform, category_record, schema)
-        ai_attrs, dictionary_candidates, ai_review = _validated_ai_attributes(ai_result, schema)
+        normalized_product = normalize_product_model(product or {})
+        agent_schema = _schema_for_agent(normalized_product, platform, schema)
+        if not agent_schema:
+            return base_product, {"source": "rules", "ai_filled": []}
+        ledger = CategoryAttributeValueLedger.from_schema(agent_schema)
+        toolset = build_category_attribute_value_toolset(
+            platform=platform,
+            category_record=category_record,
+            ledger=ledger,
+        )
+        agent_run = run_category_attribute_fill_agent(
+            _agent_payload(
+                normalized_product,
+                platform,
+                category_record,
+                agent_schema,
+            ),
+            toolset,
+            ledger,
+        )
+        ai_attrs, ai_review = _validated_agent_attributes(
+            agent_run.output,
+            agent_schema,
+            ledger,
+        )
     except Exception as exc:
         meta["warning"] = f"AI 属性填充失败，已使用规则填充：{exc}"
         return base_product, meta
 
-    dictionary_attrs, unresolved_dictionary, failed_dictionary = (
-        _resolve_dictionary_candidates(platform, category_record, dictionary_candidates)
-    )
-    ai_attrs.update(dictionary_attrs)
-    ai_review.update(unresolved_dictionary)
-
     updated = normalize_product_model(deepcopy(base_product))
     draft = deepcopy(updated.get("drafts", {}).get(platform, {}))
-    attrs = deepcopy(draft.get("attributes") if isinstance(draft.get("attributes"), dict) else {})
-    original_draft = (product.get("drafts", {}) if isinstance(product.get("drafts"), dict) else {}).get(platform, {})
-    original_attrs = original_draft.get("attributes") if isinstance(original_draft, dict) and isinstance(original_draft.get("attributes"), dict) else {}
-    need_review = {str(item).strip() for item in (draft.get("validation_errors") if isinstance(draft.get("validation_errors"), list) else []) if str(item).strip()}
+    attrs = deepcopy(
+        draft.get("attributes")
+        if isinstance(draft.get("attributes"), dict)
+        else {}
+    )
+    original_draft = (
+        product.get("drafts", {})
+        if isinstance(product.get("drafts"), dict)
+        else {}
+    ).get(platform, {})
+    original_attrs = (
+        original_draft.get("attributes")
+        if isinstance(original_draft, dict)
+        and isinstance(original_draft.get("attributes"), dict)
+        else {}
+    )
+    need_review = {
+        str(item).strip()
+        for item in (
+            draft.get("validation_errors")
+            if isinstance(draft.get("validation_errors"), list)
+            else []
+        )
+        if str(item).strip()
+    }
 
     for attr_id, value in ai_attrs.items():
-        if _is_meaningful_existing(attr_id, original_attrs.get(attr_id)) and attr_id not in need_review:
+        if (
+            _is_meaningful_existing(attr_id, original_attrs.get(attr_id))
+            and attr_id not in need_review
+        ):
             continue
         attrs[attr_id] = value
         need_review.discard(attr_id)
@@ -317,9 +435,21 @@ def apply_ai_model_attribute_fill(product: dict[str, Any], platform: str, catego
     updated.setdefault("drafts", {})[platform] = draft
     meta["source"] = "ai_model"
     meta["ai_filled"] = sorted(ai_attrs)
-    if failed_dictionary:
+    if ledger.failed_attribute_ids:
         meta["warning"] = (
             "部分平台字典值查询失败，已保留待人工复核："
-            + "、".join(sorted(failed_dictionary))
+            + "、".join(sorted(ledger.failed_attribute_ids))
+        )
+    if agent_run is not None:
+        meta["conversation_id"] = (
+            agent_run.outcome.conversation_id if agent_run.outcome is not None else ""
+        )
+        agent_run.finish_business_result(
+            {
+                "status": "completed",
+                "filled_attribute_ids": sorted(ai_attrs),
+                "need_review_attribute_ids": sorted(need_review),
+                "enum_lookup_count": len(ledger.attempts),
+            }
         )
     return normalize_product_model(updated), meta

@@ -6,6 +6,9 @@ from erp_web.product_model import (
     validate_category_precheck,
 )
 from erp_web.runtime_units import category_attribute_ai_fill
+from erp_web.services.category_attribute_fill_agent_service import (
+    CategoryAttributeFillAgentRun,
+)
 
 
 def test_ai_attribute_fill_treats_attribute_id_value_as_missing() -> None:
@@ -54,7 +57,13 @@ def test_ai_model_attribute_fill_uses_product_context_and_validates_options(monk
             "required": [
                 {"id": "BRAND", "name": "Marca", "required": True},
                 {"id": "MODEL", "name": "Modelo", "required": True},
-                {"id": "AIR_CONDITIONER_TYPE", "name": "Tipo de aire acondicionado", "required": True, "options": ["Portable", "Split"]},
+                {
+                    "id": "AIR_CONDITIONER_TYPE",
+                    "name": "Tipo de aire acondicionado",
+                    "required": True,
+                    "options": ["Portable", "Split"],
+                    "description": "Select the physical air conditioner type.",
+                },
                 {"id": "POWER_SUPPLY_TYPE", "name": "Tipo de alimentación", "required": True, "options": ["Electric", "Gas"]},
             ],
             "optional": [],
@@ -62,24 +71,45 @@ def test_ai_model_attribute_fill_uses_product_context_and_validates_options(monk
     }
     captured = {}
 
-    def fake_request_ai_fill(sent_product, platform, category_record, schema):
-        captured["title"] = sent_product["source"]["title"]
-        captured["schema_ids"] = [item["id"] for item in schema]
-        return {
-            "attributes": {
-                "AIR_CONDITIONER_TYPE": "Portable",
-                "POWER_SUPPLY_TYPE": "electric",
-            },
-            "need_review": [],
+    def fake_agent(payload, toolset, ledger):
+        del toolset, ledger
+        captured["title"] = payload["product_context"]["source"]["title"]
+        captured["schema_ids"] = [item["id"] for item in payload["attributes"]]
+        captured["descriptions"] = {
+            item["id"]: item["description"] for item in payload["attributes"]
         }
+        return CategoryAttributeFillAgentRun.for_test(
+            {
+                "assignments": [
+                    {
+                        "attribute_id": "AIR_CONDITIONER_TYPE",
+                        "value": "Portable",
+                        "dictionary_value_id": "",
+                    },
+                    {
+                        "attribute_id": "POWER_SUPPLY_TYPE",
+                        "value": "electric",
+                        "dictionary_value_id": "",
+                    },
+                ],
+                "need_review": [],
+            }
+        )
 
-    monkeypatch.setattr(category_attribute_ai_fill, "_request_ai_fill", fake_request_ai_fill)
+    monkeypatch.setattr(
+        category_attribute_ai_fill,
+        "run_category_attribute_fill_agent",
+        fake_agent,
+    )
 
     updated, meta = category_attribute_ai_fill.apply_ai_model_attribute_fill(product, "mercadolibre", category)
     attrs = updated["drafts"]["mercadolibre"]["attributes"]
 
     assert captured["title"] == "Portable electric air conditioner with cooling"
     assert "AIR_CONDITIONER_TYPE" in captured["schema_ids"]
+    assert captured["descriptions"]["AIR_CONDITIONER_TYPE"] == (
+        "Select the physical air conditioner type."
+    )
     assert meta["source"] == "ai_model"
     assert attrs["BRAND"] == "Generic"
     assert attrs["MODEL"] == "T-3A"
@@ -123,33 +153,43 @@ def test_ai_model_attribute_fill_resolves_ozon_dictionary_values(monkeypatch) ->
         },
     }
 
+    def fake_agent(payload, toolset, ledger):
+        del payload, toolset
+        ledger.add_values(
+            "8229",
+            [{"id": "91443", "value": "Вентилятор"}],
+        )
+        ledger.add_values(
+            "85",
+            [{"id": "126745801", "value": "Нет бренда"}],
+        )
+        return CategoryAttributeFillAgentRun.for_test(
+            {
+                "assignments": [
+                    {
+                        "attribute_id": "8229",
+                        "value": "Вентилятор",
+                        "dictionary_value_id": "91443",
+                    },
+                    {
+                        "attribute_id": "85",
+                        "value": "Нет бренда",
+                        "dictionary_value_id": "126745801",
+                    },
+                    {
+                        "attribute_id": "9048",
+                        "value": "F30",
+                        "dictionary_value_id": "",
+                    },
+                ],
+                "need_review": [],
+            }
+        )
+
     monkeypatch.setattr(
         category_attribute_ai_fill,
-        "_request_ai_fill",
-        lambda *args: {
-            "attributes": {
-                "8229": "Вентилятор",
-                "85": "Нет бренда",
-                "9048": "F30",
-            },
-            "need_review": [],
-        },
-    )
-
-    def fake_values(platform, category_id, attribute_id, **kwargs):
-        assert platform == "ozon"
-        assert category_id == "91443"
-        assert kwargs["site"] == "global"
-        values = {
-            "8229": [{"id": "91443", "value": "Вентилятор"}],
-            "85": [{"id": "126745801", "value": "Нет бренда"}],
-        }
-        return {"values": values[attribute_id]}
-
-    monkeypatch.setattr(
-        category_attribute_ai_fill,
-        "fetch_category_attribute_values",
-        fake_values,
+        "run_category_attribute_fill_agent",
+        fake_agent,
     )
 
     updated, meta = category_attribute_ai_fill.apply_ai_model_attribute_fill(
@@ -168,6 +208,54 @@ def test_ai_model_attribute_fill_resolves_ozon_dictionary_values(monkeypatch) ->
     assert draft["attributes"]["9048"] == "F30"
     assert draft["validation_errors"] == []
     assert meta["ai_filled"] == ["8229", "85", "9048"]
+
+
+def test_ai_model_attribute_fill_allows_custom_value_for_suggested_options(
+    monkeypatch,
+) -> None:
+    product = default_product_model()
+    category = {
+        "category_id": "MLM123",
+        "site": "MLM",
+        "attributes": {
+            "required": [
+                {
+                    "id": "MOUNT_TYPE",
+                    "name": "Mount type",
+                    "required": True,
+                    "options": ["Desk", "Floor"],
+                }
+            ],
+            "optional": [],
+        },
+    }
+    monkeypatch.setattr(
+        category_attribute_ai_fill,
+        "run_category_attribute_fill_agent",
+        lambda *args: CategoryAttributeFillAgentRun.for_test(
+            {
+                "assignments": [
+                    {
+                        "attribute_id": "MOUNT_TYPE",
+                        "value": "Wall mounted",
+                        "dictionary_value_id": "",
+                    }
+                ],
+                "need_review": [],
+            }
+        ),
+    )
+
+    updated, _ = category_attribute_ai_fill.apply_ai_model_attribute_fill(
+        product,
+        "mercadolibre",
+        category,
+    )
+
+    assert updated["drafts"]["mercadolibre"]["attributes"]["MOUNT_TYPE"] == (
+        "Wall mounted"
+    )
+    assert updated["drafts"]["mercadolibre"]["validation_errors"] == []
 
 
 def test_unresolved_optional_dictionary_attribute_is_not_a_blocking_error(
@@ -198,16 +286,21 @@ def test_unresolved_optional_dictionary_attribute_is_not_a_blocking_error(
     }
     monkeypatch.setattr(
         category_attribute_ai_fill,
-        "_request_ai_fill",
-        lambda *args: {
-            "attributes": {"9048": "F30", "20210": "Ручной"},
-            "need_review": [],
-        },
-    )
-    monkeypatch.setattr(
-        category_attribute_ai_fill,
-        "fetch_category_attribute_values",
-        lambda *args, **kwargs: {"values": []},
+        "run_category_attribute_fill_agent",
+        lambda *args: CategoryAttributeFillAgentRun.for_test(
+            {
+                "assignments": [
+                    {
+                        "attribute_id": "9048",
+                        "value": "F30",
+                        "dictionary_value_id": "",
+                    }
+                ],
+                "need_review": [
+                    {"id": "20210", "reason": "未找到合适的平台枚举值"}
+                ],
+            }
+        ),
     )
 
     updated, meta = category_attribute_ai_fill.apply_ai_model_attribute_fill(

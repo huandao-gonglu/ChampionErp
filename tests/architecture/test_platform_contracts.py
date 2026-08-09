@@ -91,12 +91,15 @@ def test_store_auth_testers_are_registry_driven() -> None:
 
 
 def test_business_ai_use_cases_share_one_executor() -> None:
-    for relative_path in (
-        "erp_web/runtime_units/text_translation.py",
-        "erp_web/runtime_units/category_attribute_ai_fill.py",
-    ):
+    executors = {
+        "erp_web/runtime_units/text_translation.py": "run_ai_use_case",
+        "erp_web/runtime_units/category_attribute_ai_fill.py": (
+            "run_category_attribute_fill_agent"
+        ),
+    }
+    for relative_path, executor in executors.items():
         calls = called_leaf_names(relative_path)
-        assert calls.count("run_ai_use_case") == 1
+        assert calls.count(executor) == 1
         duplicated = {
             name
             for name in calls

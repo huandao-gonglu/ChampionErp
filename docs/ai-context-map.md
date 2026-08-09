@@ -196,6 +196,16 @@ runtime unit 中显式构造，不注册到动态全局表。
   `erp_web/runtime_units/category_store.py` 通过 `CategoryProvider.attribute_values` 分派，
   Ozon 由 `erp_web/runtime_units/ozon_category_api.py` 调用独立的
   `description-category/attribute/values` 接口并跨页搜索、短时缓存。
+- `erp_web/runtime_units/category_attribute_ai_fill.py`：类目属性填充编排入口；先执行规则填充，
+  再装配枚举候选账本与只读工具，运行 Agent 并把类型化结果合并回草稿。
+- `erp_web/runtime_units/category_attribute_tools.py`：`category.attribute_values`
+  只读 ToolSet；平台、站点和类目在构建时绑定，AI 只能批量提交当前属性 ID 与搜索词。
+  `erp_web/services/category_attribute_fill_agent_service.py` 负责类型化输出和候选账本校验：
+  平台强制枚举只能选择本次工具返回的 `dictionary_value_id + value`；普通建议枚举没有
+  合适候选时允许填写有商品依据的自定义文本。最终校验仍拒绝自由文本字典值。
+- `config/prompts/category_attribute_fill.json`：`category.attribute_fill` Agent prompt；
+  明确区分发布必填、平台强制枚举、建议枚举和普通自定义属性，并要求技术参数、链接、
+  编码、证件与文件不得编造。
 - `front/src/components/domain/CategoryAttributesPanel.vue` 对字典字段只保存平台选项的
   `dictionary_value_id + value`，搜索输入不进入草稿；发布预检拒绝自由文本字典值。
 

@@ -340,6 +340,7 @@ def test_ai_provider_and_ai_work_entry_points_are_explicit() -> None:
         ROOT / "erp_web/services/ai_agent_observability.py",
         ROOT / "erp_web/services/ai_agent_state_store.py",
         ROOT / "erp_web/services/ai_tool_bridge.py",
+        ROOT / "erp_web/services/category_attribute_fill_agent_service.py",
         ROOT / "erp_web/services/category_match_agent_service.py",
         ROOT / "erp_web/services/ai_gateway_provider_profiles.py",
         ROOT / "erp_web/services/ai_gateway_provider_prompting.py",
@@ -399,6 +400,7 @@ def test_context_map_mentions_shared_ai_tool_execution_entry_points() -> None:
         "erp_web/services/ai_agent_observability.py",
         "erp_web/services/ai_agent_state_store.py",
         "erp_web/services/ai_tool_bridge.py",
+        "erp_web/services/category_attribute_fill_agent_service.py",
         "erp_web/services/category_match_agent_service.py",
     ]:
         assert entry_point in text
@@ -419,6 +421,7 @@ def test_pydantic_ai_types_stay_in_focused_runtime_boundaries() -> None:
         ROOT / "erp_web/services/ai_agent_instrumentation.py",
         ROOT / "erp_web/services/ai_agent_observability.py",
         ROOT / "erp_web/services/ai_agent_state_store.py",
+        ROOT / "erp_web/services/category_attribute_fill_agent_service.py",
         ROOT / "erp_web/services/category_match_agent_service.py",
     }
     offenders = [
@@ -656,6 +659,37 @@ def test_category_match_vertical_slice_has_explicit_stable_boundaries() -> None:
     assert "matchCategory(" in frontend_text
     assert "identifyProductForCategory" not in frontend_text
     assert "isCategoryProductMatchEnabled" not in frontend_text
+
+
+def test_category_attribute_fill_uses_agent_enum_tool_boundary() -> None:
+    context_map = (ROOT / "docs/ai-context-map.md").read_text(encoding="utf-8")
+    runtime = ROOT / "erp_web/runtime_units/category_attribute_ai_fill.py"
+    tools = ROOT / "erp_web/runtime_units/category_attribute_tools.py"
+    service = ROOT / "erp_web/services/category_attribute_fill_agent_service.py"
+    prompt = ROOT / "config/prompts/category_attribute_fill.json"
+    for path in (runtime, tools, service, prompt):
+        assert path.exists()
+        assert str(path.relative_to(ROOT)) in context_map
+
+    runtime_text = runtime.read_text(encoding="utf-8")
+    tool_text = tools.read_text(encoding="utf-8")
+    service_text = service.read_text(encoding="utf-8")
+    model_config = (
+        ROOT / "erp_web/services/ai_model_config.py"
+    ).read_text(encoding="utf-8")
+
+    assert "run_category_attribute_fill_agent" in runtime_text
+    assert "run_ai_use_case" not in runtime_text
+    assert 'name="search_attribute_values"' in tool_text
+    assert "side_effect=\"write\"" not in tool_text
+    assert "CategoryAttributeFillOutputValidator" in service_text
+    assert "AiAgentFactory" in service_text
+    for field in (
+        '"toolset_id": "category.attribute_values"',
+        '"budget_profile": "category.attribute_fill.default"',
+        '"result_schema": "category_attribute_fill.v2"',
+    ):
+        assert field in model_config
 
 
 def test_category_match_facade_is_the_only_owner_of_match_orchestration() -> None:
