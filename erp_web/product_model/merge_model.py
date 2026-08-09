@@ -17,6 +17,7 @@ from .common import PLATFORMS, SOURCE_IMAGE_ORIGINS, normalize_list, parse_dimen
 from .defaults import default_collect_diagnostics, default_draft, default_pricing, default_product_model, default_source
 from .draft_image_model import normalize_draft_image_refs
 from .image_pool_model import image_pool_refs, normalize_image_pool
+from .platform_sku import resolve_platform_draft_sku
 
 
 _REMOVED_PRODUCT_FIELDS = {
@@ -486,7 +487,8 @@ def _apply_source_mappings_to_draft(product: dict[str, Any], platform: str, curr
 
     current["brand"] = str(current.get("brand") or product.get("brand") or source.get("brand") or "Generic").strip() or "Generic"
     current["model"] = str(current.get("model") or product.get("model") or source.get("model") or "General").strip() or "General"
-    current["sku"] = str(current.get("sku") or product.get("sku") or "").strip()
+    # 来源 SKU 是供应商数据，不是平台刊登身份；平台草稿单独拥有 SKU。
+    current["sku"] = str(current.get("sku") or "").strip()
     current["upc"] = str(
         current.get("upc")
         or current.get("gtin")
@@ -681,6 +683,11 @@ def _merge_platform_draft(product: dict[str, Any], platform: str) -> dict[str, A
             or current.get(alias)
             or ""
         ).strip()
+    current["sku"] = resolve_platform_draft_sku(
+        current,
+        platform,
+        product_id=current.get("product_id") or product.get("product_id"),
+    )
     return _canonical_platform_draft_output(current)
 
 

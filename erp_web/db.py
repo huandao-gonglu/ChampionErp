@@ -727,6 +727,11 @@ class ErpDatabase:
             draft["draft_id"] = draft_id
             draft["platform"] = platform
             draft["platforms"] = _draft_platforms(draft, platform)
+            draft = normalize_platform_draft(
+                draft,
+                platform,
+                {"product_id": product_id},
+            )
             declared_product_id = str(
                 draft.get("source_product_id")
                 or draft.get("product_id")
@@ -956,14 +961,14 @@ class ErpDatabase:
             platform = draft_platform
         if not product_id or platform not in PLATFORMS:
             return ""
+        draft_id = draft_identity(draft)
+        draft["draft_id"] = draft_id
         draft = normalize_platform_draft(
             draft,
             platform,
             {"product_id": product_id},
         )
         with self._connect() as conn:
-            draft_id = draft_identity(draft)
-            draft["draft_id"] = draft_id
             draft["platform"] = platform
             draft["platforms"] = _draft_platforms(draft, platform)
             declared_product_id = str(

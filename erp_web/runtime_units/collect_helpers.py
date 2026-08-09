@@ -346,7 +346,8 @@ def draft_copy_from_product(product: dict[str, Any], platform: str) -> dict[str,
             "images": draft_image_refs_from_pool(normalized, platform),
             "brand": str(normalized.get("brand") or source.get("brand") or "Generic"),
             "model": str(normalized.get("model") or source.get("model") or "General"),
-            "sku": str(normalized.get("sku") or source.get("sku") or ""),
+            # 新草稿代表新的平台刊登；持久化时按 draft_id 生成唯一 SKU。
+            "sku": "",
             "stock": str(normalized.get("stock") or ""),
             "status": "claimed",
             "package_dimensions": {

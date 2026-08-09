@@ -10,7 +10,7 @@ from erp_web.services import html_extract_service
 from .collect_helpers import collect_time_iso
 from .draft_publish_context import merge_target_listing_into_draft
 from .image_pool_core import source_image_refs
-from .publish_helpers import precheck_item
+from .publish_helpers import precheck_item, remote_publish_identity
 
 if TYPE_CHECKING:
     from erp_web.context import AppContext
@@ -87,6 +87,7 @@ def apply_publish_bus_result_to_draft(
         "stage": str(item.get("stage") or ""),
         "error": str(item.get("error") or ""),
         "attempts": item.get("attempts", 0),
+        **remote_publish_identity(item.get("result")),
         "updated_at": str(item.get("updated_at") or job_state.get("updated_at") or collect_time_iso()),
     }
     target = {

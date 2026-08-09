@@ -82,12 +82,59 @@ def build_mercadolibre_publish_payload(
         if picture_refs is None
         else list(picture_refs)
     )
-    return publisher.build_mercadolibre_payload(
+    payload = publisher.build_mercadolibre_payload(
         product,
         plan,
         payload_config,
         refs,
     )
+    last_publish_task = (
+        draft.get("last_publish_task")
+        if isinstance(draft.get("last_publish_task"), dict)
+        else {}
+    )
+    item_id = str(
+        last_publish_task.get("item_id")
+        or last_publish_task.get("external_id")
+        or ""
+    ).strip()
+    if item_id:
+        payload["_item_id"] = item_id
+    return payload
+
+
+def remote_publish_identity(result: Any) -> dict[str, Any]:
+    """从各平台包装层中提取可持久化的远端刊登身份。"""
+
+    current = result if isinstance(result, dict) else {}
+    candidates: list[dict[str, Any]] = []
+    for _ in range(4):
+        if not isinstance(current, dict) or current in candidates:
+            break
+        candidates.append(current)
+        nested = current.get("result")
+        if not isinstance(nested, dict):
+            break
+        current = nested
+
+    identity: dict[str, Any] = {}
+    for candidate in candidates:
+        item_id = candidate.get("item_id") or candidate.get("id")
+        product_id = candidate.get("product_id")
+        offer_id = candidate.get("offer_id")
+        external_id = candidate.get("external_id") or item_id or product_id
+        operation = candidate.get("operation")
+        if item_id not in (None, "") and "item_id" not in identity:
+            identity["item_id"] = str(item_id)
+        if product_id not in (None, "", 0) and "product_id" not in identity:
+            identity["product_id"] = product_id
+        if offer_id not in (None, "") and "offer_id" not in identity:
+            identity["offer_id"] = str(offer_id)
+        if external_id not in (None, "", 0) and "external_id" not in identity:
+            identity["external_id"] = str(external_id)
+        if operation not in (None, "") and "operation" not in identity:
+            identity["operation"] = str(operation)
+    return identity
 
 
 def build_publish_payload(product: dict[str, Any], platform: str, config: dict[str, Any]) -> dict[str, Any]:

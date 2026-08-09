@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from unittest.mock import patch
 
 from erp_web import marketplaces as marketplace_publish
 
@@ -151,3 +152,32 @@ def test_local_site_payload_rejects_cbt_category() -> None:
             },
             ["ml-id:123-MLM456"],
         )
+
+
+def test_mercadolibre_republishes_same_draft_by_item_id() -> None:
+    payload = {
+        "_global_selling": False,
+        "_item_id": "MLM123",
+        "title": "Updated title",
+        "category_id": "MLM1",
+        "description": {"plain_text": "Updated description"},
+    }
+
+    with patch(
+        "erp_web.marketplaces.publishing.request_json",
+        side_effect=[{}, {}],
+    ) as request:
+        result = marketplace_publish.publish_mercadolibre(payload, "token")
+
+    assert result == {"id": "MLM123", "operation": "updated"}
+    assert request.call_args_list[0].args[:3] == (
+        "PUT",
+        "https://api.mercadolibre.com/items/MLM123",
+        "token",
+    )
+    assert "_item_id" not in request.call_args_list[0].args[3]
+    assert request.call_args_list[1].args[:3] == (
+        "PUT",
+        "https://api.mercadolibre.com/items/MLM123/description",
+        "token",
+    )

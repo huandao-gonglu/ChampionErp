@@ -939,6 +939,9 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 }
             )
             saved = get_context().products.save_product(product)
+            published_sku = str(
+                saved["drafts"]["mercadolibre"]["sku"]
+            )
 
             result = collect_helpers.claim_products_to_platforms([saved["product_id"]], ["mercadolibre"])
 
@@ -948,6 +951,10 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             statuses = sorted(item["status"] for item in all_drafts if item["platform"] == "mercadolibre")
             self.assertEqual(statuses, ["claimed", "published"])
             self.assertEqual([item["status"] for item in active_drafts], ["claimed"])
+            claimed = get_context().db.load_draft_model(
+                result["items"][0]["draft_ids"][0]
+            )
+            self.assertNotEqual(claimed["sku"], published_sku)
 
         self.with_temp_app(run)
 

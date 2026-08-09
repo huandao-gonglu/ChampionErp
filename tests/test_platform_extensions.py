@@ -682,6 +682,8 @@ def test_terminal_hook_updates_only_the_bound_draft(
     assert str(unchanged_first.get("publish_status") or "") != "published"
     assert published_second["publish_status"] == "published"
     assert published_second["last_publish_task"]["job_id"] == "job-bound-second"
+    assert published_second["last_publish_task"]["item_id"] == "MLM-2"
+    assert published_second["last_publish_task"]["external_id"] == "MLM-2"
     assert persisted["persisted_drafts"]["mercadolibre"]["draft_id"] == second_draft_id
     logs = [
         item

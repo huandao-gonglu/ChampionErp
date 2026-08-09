@@ -8,6 +8,7 @@ from typing import Any
 
 from erp_web.context import get_context
 from erp_web.http_request import safe_json_body
+from erp_web.product_model import draft_has_remote_listing
 from erp_web.stores.product_store import normalize_product_fields
 
 from erp_web import listing_planner as generator
@@ -19,6 +20,7 @@ from .publish_helpers import (
     _draft_for_platform,
     _field_error_map,
     precheck_item,
+    remote_publish_identity,
 )
 from .publish_adapter import publishing_adapter_for, unsupported_publish_response
 from .publish_logs_runtime import (
@@ -140,9 +142,15 @@ def publish_product(product: dict[str, Any], platform: str, config: dict[str, An
         return {"ok": False, "status": "not_ready", "error": "，".join(errors), "payload": payload, "product": saved}
 
     draft = _draft_for_platform(product, platform)
+    had_remote_listing = draft_has_remote_listing(draft)
     started_at = collect_time_iso()
     try:
         result: Any = adapter.publish_payload(payload, config)
+        if isinstance(result, dict):
+            result.setdefault(
+                "operation",
+                "updated" if had_remote_listing else "created",
+            )
         if _remote_publish_pending(result):
             pending_status = "publish_pending_confirmation"
             payload_path, response_path = _write_publish_artifacts(
@@ -162,6 +170,7 @@ def publish_product(product: dict[str, Any], platform: str, config: dict[str, An
                 "task_id": result.get("task_id"),
                 "offer_id": str(result.get("offer_id") or ""),
                 "product_id": result.get("product_id"),
+                "operation": str(result.get("operation") or ""),
                 "updated_at": collect_time_iso(),
             }
             append_publish_log(
@@ -245,6 +254,18 @@ def publish_product(product: dict[str, Any], platform: str, config: dict[str, An
     final_status = "real_publish_success" if ok else status
     payload_path, response_path = _write_publish_artifacts(platform, payload, result)
     updated = apply_precheck_to_product(product, platform, precheck, status=final_status if ok else status)
+    if ok:
+        updated_draft = _draft_for_platform(updated, platform)
+        updated_draft["last_publish_task"] = {
+            **(
+                updated_draft.get("last_publish_task")
+                if isinstance(updated_draft.get("last_publish_task"), dict)
+                else {}
+            ),
+            "status": final_status,
+            **remote_publish_identity(result),
+            "updated_at": collect_time_iso(),
+        }
     append_publish_log(
         {
             "product_id": _product_id_for_log(updated, platform),

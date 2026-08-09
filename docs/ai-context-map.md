@@ -268,6 +268,9 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 
 ## 商品发布
 
+- `erp_web/product_model/platform_sku.py`：卖家 SKU 的唯一生成规则。SKU 稳定绑定
+  `draft_id`：同一草稿编辑重发保持不变，同一商品重新推出的新草稿获得新 SKU；
+  未发布草稿中的“其他”等占位值会被替换，已绑定远端刊登的历史 SKU 不得静默变化。
 - `erp_web/http_route_units/publish_routes.py`：发布预检、payload 预览、同步发布与
   发布队列 HTTP 入口。
 - `erp_web/http_route_units/get_routes.py`：发布任务列表与指定 Job 详情的只读查询入口。
@@ -275,14 +278,16 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   `erp_web/runtime_units/publish_workflows.py`。
 - `erp_web/runtime_units/publish_adapter.py`：发布平台适配器注册表。只有这里注册且
   在 `marketplace_registry.py` 声明 `CAP_PUBLISH` 的平台才允许进入真实发布流程。
-- `erp_web/runtime_units/publish_mercadolibre.py`：Mercado Libre 专属发布与错误处理。
+- `erp_web/runtime_units/publish_mercadolibre.py`：Mercado Libre 专属发布与错误处理；
+  首次发布创建 item，后续同一草稿按已持久化的 `item_id` 更新。
 - `erp_web/runtime_units/publish_ozon.py`：Ozon `/v3/product/import` payload、
   草稿目标站点中的 `type_id/category_id + description_category_id` 配对、异步导入
   终态确认及错误字段映射；不得从商品级 `local_platform_categories` 回捞发布类目。
 - `erp_web/facades/product_facade.py`：保存 Ozon 草稿时，若只提供 `type_id/category_id`，
   通过当前 Ozon 类目缓存自动解析并持久化隐藏的 `description_category_id`。
 - `erp_web/runtime_units/runtime_api.py::publish_product`：平台无关的预检、artifact、
-  日志与商品发布状态持久化。
+  日志与商品发布状态持久化；成功结果中的 `item_id/product_id/offer_id` 会写入草稿
+  `last_publish_task`，作为后续更新同一远端刊登的身份依据。
 - `erp_web/runtime_units/publishing_bus_core.py`：SQLite 发布任务和并发执行；适配器
   必须返回可验证的远端成功证据。`GET /api/publish-bus/jobs` 返回按时间倒序的轻量任务摘要，
   支持 cursor、状态、平台和商品筛选；`GET /api/publish-bus/status` 只返回指定 Job 的完整详情。

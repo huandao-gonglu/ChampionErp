@@ -311,7 +311,7 @@ def build_ozon_publish_payload(
         ),
         "images": images,
         "name": str(draft.get("title") or product.get("name") or "").strip(),
-        "offer_id": str(draft.get("sku") or product.get("sku") or "").strip(),
+        "offer_id": str(draft.get("sku") or "").strip(),
         "price": _decimal_text(selected_price, "价格"),
         "type_id": int(type_id),
         "vat": str(draft.get("vat") or store.get("vat") or "0").strip(),

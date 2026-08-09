@@ -564,6 +564,47 @@ class ErpDbTests(unittest.TestCase):
             self.assertNotIn("ozon", draft_id)
             self.assertEqual(db.load_draft_model(draft_id)["platform"], "ozon")
 
+    def test_new_drafts_for_same_product_receive_different_stable_skus(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(Path(tmp))
+            product_id = db.upsert_product_model(sample_product())
+
+            first_id = db.upsert_draft_model(
+                product_id,
+                "ozon",
+                {"title": "First", "status": "claimed", "sku": "其他"},
+            )
+            second_id = db.upsert_draft_model(
+                product_id,
+                "ozon",
+                {"title": "Second", "status": "claimed", "sku": ""},
+            )
+            first = db.load_draft_model(first_id)
+            second = db.load_draft_model(second_id)
+
+            self.assertNotEqual(first_id, second_id)
+            self.assertNotEqual(first["sku"], second["sku"])
+            self.assertTrue(first["sku"].startswith("OZ-"))
+            self.assertEqual(
+                db.load_draft_model(first_id)["sku"],
+                first["sku"],
+            )
+
+            db.upsert_draft_model(
+                product_id,
+                "ozon",
+                {
+                    "draft_id": first_id,
+                    "title": "First updated",
+                    "status": "claimed",
+                    "sku": "",
+                },
+            )
+            self.assertEqual(
+                db.load_draft_model(first_id)["sku"],
+                first["sku"],
+            )
+
     def test_draft_persistence_rejects_non_canonical_root_fields(
         self,
     ) -> None:

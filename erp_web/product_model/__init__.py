@@ -50,6 +50,12 @@ from .merge_model import (
     validate_platform_draft_root_fields,
     validate_product_root_fields,
 )
+from .platform_sku import (
+    draft_has_remote_listing,
+    generated_platform_sku,
+    is_placeholder_sku,
+    resolve_platform_draft_sku,
+)
 
 __all__ = [
     "IMAGE_ORIGINS",
@@ -70,6 +76,8 @@ __all__ = [
     "draft_image_asset_ids",
     "draft_image_refs_from_assets",
     "draft_image_refs_from_pool",
+    "draft_has_remote_listing",
+    "generated_platform_sku",
     "image_pool_refs",
     "merge_source_partial_result",
     "normalize_draft_image_ref",
@@ -83,6 +91,8 @@ __all__ = [
     "normalize_platforms",
     "normalize_product_model",
     "parse_dimensions_text",
+    "is_placeholder_sku",
+    "resolve_platform_draft_sku",
     "text_or_empty",
     "validate_category_precheck",
     "validate_platform_draft_root_fields",

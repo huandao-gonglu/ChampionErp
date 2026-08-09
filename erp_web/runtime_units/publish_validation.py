@@ -185,7 +185,7 @@ def validate_mercadolibre_draft(product: dict[str, Any], config: dict[str, Any])
         errors.append(precheck_item("BRAND_MISSING", "brand", "Brand 为空", "error", "前往类目属性页确认 Brand"))
     if not str(draft.get("model") or "").strip():
         errors.append(precheck_item("MODEL_MISSING", "model", "Model 为空", "error", "前往类目属性页确认 Model"))
-    if not str(draft.get("sku") or product.get("sku") or "").strip():
+    if not str(draft.get("sku") or "").strip():
         errors.append(precheck_item("SKU_MISSING", "sku", "SKU 为空", "error", "前往商品编辑页填写 SKU"))
     errors.extend(_selected_price_errors(product, draft))
     try:
@@ -281,7 +281,7 @@ def validate_yandex_draft(product: dict[str, Any], config: dict[str, Any]) -> di
         errors.append(precheck_item("BRAND_MISSING", "brand", "品牌为空", "error", "前往类目属性页确认 Brand"))
     if not str(draft.get("model") or "").strip():
         errors.append(precheck_item("MODEL_MISSING", "model", "型号为空", "error", "前往类目属性页确认 Model"))
-    if not str(draft.get("sku") or product.get("sku") or "").strip():
+    if not str(draft.get("sku") or "").strip():
         errors.append(precheck_item("SKU_MISSING", "sku", "SKU 为空", "error", "前往商品编辑页填写 SKU"))
     errors.extend(_selected_price_errors(product, draft))
     if not str(draft.get("stock") or "").strip():
@@ -358,7 +358,7 @@ def validate_ozon_draft(product: dict[str, Any], config: dict[str, Any]) -> dict
         errors.append(precheck_item("BRAND_MISSING", "brand", "品牌为空", "error", "前往类目属性页确认 Brand"))
     if not str(draft.get("model") or "").strip():
         errors.append(precheck_item("MODEL_MISSING", "model", "型号为空", "error", "前往类目属性页确认 Model"))
-    if not str(draft.get("sku") or product.get("sku") or "").strip():
+    if not str(draft.get("sku") or "").strip():
         errors.append(precheck_item("SKU_MISSING", "sku", "SKU 为空", "error", "前往商品编辑页填写 SKU"))
     errors.extend(_selected_price_errors(product, draft))
     if not str(draft.get("stock") or "").strip():
