@@ -5,13 +5,12 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from erp_web.context import get_context
-from erp_web.product_model import default_draft
 from erp_web.services import html_extract_service
-from erp_web.stores.product_store import normalize_product_fields
 
 from .collect_helpers import collect_time_iso
+from .draft_publish_context import merge_target_listing_into_draft
 from .image_pool_core import source_image_refs
-from .publish_helpers import _draft_for_platform, precheck_item
+from .publish_helpers import precheck_item
 
 if TYPE_CHECKING:
     from erp_web.context import AppContext
@@ -57,19 +56,22 @@ def publish_bus_log_exists(
     )
 
 
-def apply_publish_bus_result_to_product(product: dict[str, Any], job_state: dict[str, Any], platform: str, item: dict[str, Any]) -> dict[str, Any]:
-    product = normalize_product_fields(product or {})
+def apply_publish_bus_result_to_draft(
+    draft: dict[str, Any],
+    job_state: dict[str, Any],
+    platform: str,
+    item: dict[str, Any],
+) -> dict[str, Any]:
+    draft = dict(draft or {})
     terminal_status = publish_bus_terminal_status(str(item.get("status") or ""))
     if not terminal_status:
-        return product
-    drafts = product.setdefault("drafts", {})
-    draft = drafts.get(platform) if isinstance(drafts.get(platform), dict) else default_draft(platform)
-    draft["publish_status"] = terminal_status
+        return draft
+    updates: dict[str, Any] = {"publish_status": terminal_status}
     if terminal_status == "published":
-        draft["status"] = "published"
-        draft["validation_errors"] = []
+        updates["status"] = "published"
+        updates["validation_errors"] = []
     elif str(item.get("error") or ""):
-        draft["validation_errors"] = [
+        updates["validation_errors"] = [
             precheck_item(
                 "PUBLISH_BUS_FAILED",
                 "publish",
@@ -78,7 +80,7 @@ def apply_publish_bus_result_to_product(product: dict[str, Any], job_state: dict
                 "按字段提示修复后重试",
             )
         ]
-    draft["last_publish_task"] = {
+    updates["last_publish_task"] = {
         "job_id": str(job_state.get("job_id") or ""),
         "status": terminal_status,
         "platform_status": str(item.get("status") or ""),
@@ -87,13 +89,16 @@ def apply_publish_bus_result_to_product(product: dict[str, Any], job_state: dict
         "attempts": item.get("attempts", 0),
         "updated_at": str(item.get("updated_at") or job_state.get("updated_at") or collect_time_iso()),
     }
-    drafts[platform] = draft
-    product["drafts"] = drafts
-    return product
+    target = {
+        "platform": platform,
+        "site": str(item.get("site") or draft.get("site") or ""),
+    }
+    return merge_target_listing_into_draft(draft, target, updates)
 
 
 def append_publish_bus_terminal_log(
     product: dict[str, Any],
+    draft: dict[str, Any],
     job_state: dict[str, Any],
     platform: str,
     item: dict[str, Any],
@@ -108,7 +113,6 @@ def append_publish_bus_terminal_log(
     ):
         return
     from .publish_logs_runtime import (
-        _draft_id_for_log,
         _product_id_for_log,
         _write_publish_artifacts,
     )
@@ -134,9 +138,9 @@ def append_publish_bus_terminal_log(
     runtime_context.db.insert_publish_log_once(
         {
             "job_id": job_id,
-            "product_id": str(product.get("product_id") or _product_id_for_log(product, platform)),
+            "product_id": str(item.get("product_id") or product.get("product_id") or _product_id_for_log(product, platform)),
             "platform": platform,
-            "draft_id": _draft_id_for_log(product, platform),
+            "draft_id": str(item.get("draft_id") or draft.get("draft_id") or ""),
             "status": terminal_status or str(item.get("status") or ""),
             "started_at": str(item.get("created_at") or job_state.get("created_at") or ""),
             "finished_at": str(item.get("updated_at") or job_state.get("updated_at") or collect_time_iso()),
@@ -148,7 +152,7 @@ def append_publish_bus_terminal_log(
             "next_action": "按字段提示修复后重试" if terminal_status in {"failed", "not_ready"} else "",
             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
             "shop": platform,
-            "sku": str(_draft_for_platform(product, platform).get("sku") or ""),
+            "sku": str(draft.get("sku") or ""),
             "error": str(item.get("error") or result.get("error") or ""),
             "image": source_image_refs(product)[:1],
         }
@@ -164,15 +168,8 @@ def persist_publish_bus_terminal_results(
         return {}
     runtime_context = context or get_context()
     product = job_state.get("product") if isinstance(job_state.get("product"), dict) else {}
-    product_id = str(product.get("product_id") or "").strip()
-    if product_id:
-        loaded = runtime_context.products.load_product_from_index(
-            product_id,
-            "",
-        )
-        if loaded:
-            product = loaded
-    changed = False
+    job_product_id = str(product.get("product_id") or "").strip()
+    persisted_drafts: dict[str, dict[str, Any]] = {}
     platforms = job_state.get("platforms") if isinstance(job_state.get("platforms"), dict) else {}
     for platform, item in platforms.items():
         if not isinstance(item, dict):
@@ -180,23 +177,62 @@ def persist_publish_bus_terminal_results(
         terminal_status = publish_bus_terminal_status(str(item.get("status") or ""))
         if not terminal_status:
             continue
-        product = apply_publish_bus_result_to_product(product, job_state, str(platform), item)
+        draft_id = str(item.get("draft_id") or "").strip()
+        target_product_id = str(item.get("product_id") or job_product_id).strip()
+        if not draft_id or not target_product_id:
+            raise RuntimeError(
+                f"发布任务 {job_state.get('job_id') or ''} 缺少 draft_id 或 product_id，已阻止不安全的终态回写。"
+            )
+        draft = runtime_context.db.load_draft_model(draft_id)
+        if not draft:
+            raise RuntimeError(f"发布任务绑定草稿不存在：{draft_id}")
+        stored_product_id = str(draft.get("product_id") or "").strip()
+        source_product_id = str(draft.get("source_product_id") or stored_product_id).strip()
+        stored_platform = str(draft.get("platform") or "").strip().lower()
+        if (
+            stored_product_id != target_product_id
+            or source_product_id != target_product_id
+            or stored_platform != str(platform).strip().lower()
+        ):
+            raise RuntimeError(
+                "发布任务草稿绑定不一致："
+                f"job={job_state.get('job_id') or ''}, draft={draft_id}, "
+                f"expected={target_product_id}/{platform}, "
+                f"actual={stored_product_id}/{source_product_id}/{stored_platform}"
+            )
+        draft = apply_publish_bus_result_to_draft(
+            draft,
+            job_state,
+            str(platform),
+            item,
+        )
+        runtime_context.db.upsert_draft_model(
+            target_product_id,
+            str(platform),
+            draft,
+        )
+        saved_draft = runtime_context.db.load_draft_model(draft_id)
         append_publish_bus_terminal_log(
             product,
+            saved_draft,
             job_state,
             str(platform),
             item,
             context=runtime_context,
         )
-        changed = True
-    if changed:
-        saved = runtime_context.products.save_product(product)
-        job_state["product"] = saved
+        persisted_drafts[str(platform)] = {
+            "draft_id": draft_id,
+            "product_id": target_product_id,
+            "site": str(item.get("site") or saved_draft.get("site") or ""),
+            "status": terminal_status,
+        }
+    if persisted_drafts:
+        job_state["persisted_drafts"] = persisted_drafts
     return job_state
 
 
 __all__ = [
-    "apply_publish_bus_result_to_product",
+    "apply_publish_bus_result_to_draft",
     "append_publish_bus_terminal_log",
     "load_publish_logs",
     "page_snapshot_from_html",

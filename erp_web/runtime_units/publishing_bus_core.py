@@ -101,6 +101,8 @@ def _publish_job_summary(state: dict[str, Any]) -> dict[str, Any]:
         platforms.append(
             {
                 "platform": str(platform),
+                "draft_id": str(item.get("draft_id") or ""),
+                "site": str(item.get("site") or ""),
                 "status": str(item.get("status") or ""),
                 "stage": str(item.get("stage") or ""),
                 "attempts": int(item.get("attempts") or 0),
@@ -116,11 +118,16 @@ def _publish_job_summary(state: dict[str, Any]) -> dict[str, Any]:
         "",
     )
     draft_id = str(
-        product.get("current_draft_id")
+        state.get("draft_id")
+        or product.get("current_draft_id")
         or product.get("draft_id")
-        or state.get("draft_id")
         or ""
     )
+    if not draft_id:
+        draft_id = next(
+            (item["draft_id"] for item in platforms if item["draft_id"]),
+            "",
+        )
     drafts = product.get("drafts") if isinstance(product.get("drafts"), dict) else {}
     if not draft_id:
         for platform in platforms:
@@ -176,10 +183,37 @@ class PublishingBus:
         if auto_resume_pending:
             self.recover_pending_jobs()
 
-    def enqueue(self, product: dict[str, Any], platforms: list[str]) -> dict[str, Any]:
+    def enqueue(
+        self,
+        product: dict[str, Any],
+        platforms: list[str],
+        *,
+        targets: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
         selected = [platform for platform in platforms if platform in self.adapters]
         if not selected:
             raise ValueError("请选择至少一个可发布平台。")
+
+        product_id = str(product.get("product_id") or "").strip()
+        if not product_id:
+            raise ValueError("发布任务缺少 product_id。")
+        bindings: dict[str, dict[str, str]] = {}
+        for platform in selected:
+            raw = targets.get(platform) if isinstance(targets.get(platform), dict) else {}
+            draft_id = str(raw.get("draft_id") or "").strip()
+            site = str(raw.get("site") or "").strip()
+            target_product_id = str(raw.get("product_id") or product_id).strip()
+            if not draft_id or not site:
+                raise ValueError(f"{platform} 发布任务缺少 draft_id 或 site。")
+            if target_product_id != product_id:
+                raise ValueError(
+                    f"{platform} 草稿绑定商品 {target_product_id} 与发布商品 {product_id} 不一致。"
+                )
+            bindings[platform] = {
+                "draft_id": draft_id,
+                "site": site,
+                "product_id": product_id,
+            }
 
         job_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8]
         now = current_time()
@@ -188,17 +222,28 @@ class PublishingBus:
             "status": "queued",
             "created_at": now,
             "updated_at": now,
+            "draft_id": next(iter(bindings.values()))["draft_id"] if len(bindings) == 1 else "",
             "product_name": str(product.get("name") or ""),
             "product": copy.deepcopy(product),
             "platforms": {
-                platform: self._new_platform_state(platform, now)
+                platform: self._new_platform_state(
+                    platform,
+                    now,
+                    bindings[platform],
+                )
                 for platform in selected
             },
         }
         self._write_state(job_id, state)
         self._submit_job(job_id, product, selected)
         self._update_job_status(job_id)
-        return {"ok": True, "job_id": job_id, "platforms": selected, "status": "queued"}
+        return {
+            "ok": True,
+            "job_id": job_id,
+            "platforms": selected,
+            "targets": bindings,
+            "status": "queued",
+        }
 
     def recover_pending_jobs(self) -> list[str]:
         recovered: list[str] = []
@@ -327,9 +372,18 @@ class PublishingBus:
         self._update_job_status(job_id)
         return True
 
-    def _new_platform_state(self, platform: str, now: str) -> dict[str, Any]:
+    def _new_platform_state(
+        self,
+        platform: str,
+        now: str,
+        target: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        target = target if isinstance(target, dict) else {}
         return {
             "platform": platform,
+            "draft_id": str(target.get("draft_id") or ""),
+            "site": str(target.get("site") or ""),
+            "product_id": str(target.get("product_id") or ""),
             "status": "queued",
             "created_at": now,
             "updated_at": now,

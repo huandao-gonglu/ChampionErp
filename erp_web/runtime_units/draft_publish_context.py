@@ -24,6 +24,7 @@ TARGET_LISTING_KEYS = (
     "status",
     "last_precheck",
     "last_precheck_target",
+    "last_publish_task",
 )
 
 PRECHECK_TARGET_SNAPSHOT_KEYS = (
@@ -276,7 +277,22 @@ def load_required_draft_publish_context(body: dict[str, Any]) -> tuple[dict[str,
     draft = db.load_draft_model(draft_id)
     if not draft:
         return {}, {"ok": False, "error": "草稿不存在", "error_code": "DRAFT_NOT_FOUND", "draft_id": draft_id}, 404
-    product_id = str(draft.get("source_product_id") or draft.get("product_id") or "").strip()
+    stored_product_id = str(draft.get("product_id") or "").strip()
+    source_product_id = str(draft.get("source_product_id") or "").strip()
+    if (
+        stored_product_id
+        and source_product_id
+        and stored_product_id != source_product_id
+    ):
+        return {}, {
+            "ok": False,
+            "error": "草稿关联商品不一致，已阻止发布；请先修复草稿归属。",
+            "error_code": "DRAFT_PRODUCT_MISMATCH",
+            "draft_id": draft_id,
+            "product_id": stored_product_id,
+            "source_product_id": source_product_id,
+        }, 409
+    product_id = source_product_id or stored_product_id
     product = db.load_product_model(product_id)
     if not product:
         return {}, {"ok": False, "error": "草稿关联商品不存在", "error_code": "DRAFT_PRODUCT_NOT_FOUND", "draft_id": draft_id}, 404

@@ -67,6 +67,8 @@ function normalizePublishJobListItem(value: unknown): PublishJobListItem {
       const item = asRecord(value)
       return {
         platform: getString(item, ['platform']) as Marketplace,
+        draftId: getString(item, ['draft_id', 'draftId']),
+        site: getString(item, ['site']),
         status: getString(item, ['status']),
         stage: getString(item, ['stage']),
         attempts: getNumber(item, ['attempts']),

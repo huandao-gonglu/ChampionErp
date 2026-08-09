@@ -410,6 +410,8 @@ describe('workflow store live API flow', () => {
         error: '合同币种不匹配',
         platforms: [{
           platform: 'ozon',
+          draftId: 'draft-1',
+          site: 'global',
           status: 'failed',
           stage: 'failed',
           attempts: 1,

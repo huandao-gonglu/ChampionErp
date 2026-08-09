@@ -243,7 +243,17 @@ def enqueue_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
             "target": context["target"],
         }, 400
     try:
-        result = get_publishing_bus().enqueue(product, eligible_platforms)
+        result = get_publishing_bus().enqueue(
+            product,
+            eligible_platforms,
+            targets={
+                str(context["platform"]): {
+                    "draft_id": str(context["draft"].get("draft_id") or ""),
+                    "site": str(context["site"] or ""),
+                    "product_id": str(product.get("product_id") or ""),
+                }
+            },
+        )
         result["eligible_platforms"] = eligible_platforms
         result["rejected_platforms"] = rejected_platforms
         result["draft_id"] = str(context["draft"].get("draft_id") or "")

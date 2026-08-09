@@ -289,7 +289,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
 
         self.with_temp_app(run)
 
-    def test_draft_ids_are_opaque_and_platform_lives_in_column(self) -> None:
+    def test_draft_ids_are_opaque_and_cannot_change_platform(self) -> None:
         def run(app_dir: Path) -> None:
             saved = get_context().products.save_product(sample_product("Opaque draft", "https://example.com/opaque-draft"))
             product_id = saved["product_id"]
@@ -302,17 +302,17 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             self.assertEqual(len(created_id), 13)
             self.assertNotIn("mercadolibre", created_id)
 
-            moved_id = get_context().db.upsert_draft_model(
-                product_id,
-                "ozon",
-                {"draft_id": created_id, "platform": "ozon", "title": "Ozon draft", "status": "claimed"},
-            )
+            with self.assertRaisesRegex(ValueError, "禁止静默换绑"):
+                get_context().db.upsert_draft_model(
+                    product_id,
+                    "ozon",
+                    {"draft_id": created_id, "platform": "ozon", "title": "Ozon draft", "status": "claimed"},
+                )
 
-            self.assertEqual(moved_id, created_id)
-            self.assertEqual(get_context().db.load_draft_model(created_id)["platform"], "ozon")
+            self.assertEqual(get_context().db.load_draft_model(created_id)["platform"], "mercadolibre")
             records = [record for record in get_context().db.list_draft_records(scope="all") if record["draft_id"] == created_id]
             self.assertEqual(len(records), 1)
-            self.assertEqual(records[0]["platform"], "ozon")
+            self.assertEqual(records[0]["platform"], "mercadolibre")
 
         self.with_temp_app(run)
 
@@ -1238,6 +1238,9 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 "platforms": {
                     "mercadolibre": {
                         "platform": "mercadolibre",
+                        "draft_id": str(saved["drafts"]["mercadolibre"]["draft_id"]),
+                        "site": str(saved["drafts"]["mercadolibre"].get("site") or "MLM"),
+                        "product_id": str(saved["product_id"]),
                         "status": "success",
                         "stage": "finished",
                         "error": "",

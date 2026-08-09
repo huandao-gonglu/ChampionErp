@@ -210,6 +210,7 @@ function selectJob(jobId: string) {
                 <span :class="statusBadgeClass(item.status)">{{ statusLabel(item.status) }}</span>
               </div>
               <p class="mt-2 text-xs text-accent-500 dark:text-accent-400">{{ stageLabel(item.stage) }} · 尝试 {{ item.attempts }} 次</p>
+              <p class="mt-1 break-all text-xs text-accent-500 dark:text-accent-400">{{ item.draftId || '-' }} · {{ item.site || '-' }}</p>
             </article>
           </div>
 

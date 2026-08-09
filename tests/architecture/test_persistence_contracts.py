@@ -85,6 +85,13 @@ def test_publish_jobs_never_persist_credentials(tmp_path) -> None:
                 "name": "安全发布任务",
             },
             ["mercadolibre"],
+            targets={
+                "mercadolibre": {
+                    "draft_id": "architecture-draft",
+                    "site": "mlm",
+                    "product_id": "architecture-product",
+                }
+            },
         )
         bus.wait(queued["job_id"], timeout=2)
         persisted = database.load_publish_job(

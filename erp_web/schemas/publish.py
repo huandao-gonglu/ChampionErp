@@ -7,6 +7,9 @@ from .product import Product
 
 class PublishPlatformState(TypedDict, total=False):
     platform: str
+    product_id: str
+    draft_id: str
+    site: str
     status: str
     stage: str
     error: str
@@ -19,10 +22,11 @@ class PublishPlatformState(TypedDict, total=False):
 
 class PublishJob(TypedDict, total=False):
     job_id: str
+    draft_id: str
     status: str
     product_name: str
     product: Product
-    config: dict[str, Any]
     platforms: dict[str, PublishPlatformState]
+    persisted_drafts: dict[str, dict[str, Any]]
     created_at: str
     updated_at: str

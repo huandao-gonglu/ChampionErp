@@ -301,6 +301,9 @@ export interface BackendProduct {
 
 export interface BackendPublishPlatformState {
   platform?: string
+  product_id?: string
+  draft_id?: string
+  site?: string
   status?: string
   stage?: string
   error?: string
@@ -313,11 +316,12 @@ export interface BackendPublishPlatformState {
 
 export interface BackendPublishJob {
   job_id?: string
+  draft_id?: string
   status?: string
   product_name?: string
   product?: BackendProduct
-  config?: Record<string, unknown>
   platforms?: Record<string, BackendPublishPlatformState>
+  persisted_drafts?: Record<string, Record<string, unknown>>
   created_at?: string
   updated_at?: string
 }

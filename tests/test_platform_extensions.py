@@ -3,6 +3,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+import pytest
+
 from erp_web.context import get_context
 from erp_web.marketplace_registry import (
     CAP_CATEGORY_SEARCH,
@@ -16,6 +18,9 @@ from erp_web.runtime_units.publish_adapter import (
     OzonPublishingAdapter,
     publishing_adapter_for,
     unsupported_publish_response,
+)
+from erp_web.runtime_units.draft_publish_context import (
+    load_required_draft_publish_context,
 )
 from erp_web.runtime_units.publishing_bus_core import PublishingBus
 from erp_web.runtime_units.publish_bus import (
@@ -136,7 +141,17 @@ def test_publishing_bus_blocks_before_publish_when_required_attributes_are_missi
         auto_resume_pending=False,
     )
     try:
-        queued = bus.enqueue({"name": "缺属性商品"}, ["mercadolibre"])
+        queued = bus.enqueue(
+            {"product_id": "product-1", "name": "缺属性商品"},
+            ["mercadolibre"],
+            targets={
+                "mercadolibre": {
+                    "draft_id": "draft-1",
+                    "site": "mlm",
+                    "product_id": "product-1",
+                }
+            },
+        )
         bus.wait(queued["job_id"], timeout=2)
         state = bus.get_status(queued["job_id"])
     finally:
@@ -189,9 +204,11 @@ def test_publishing_bus_lists_lightweight_business_status_summaries() -> None:
             "attempts": 1,
             "error": "合同币种不匹配",
             "platforms": [
-                {
-                    "platform": "ozon",
-                    "status": "failed",
+                    {
+                        "platform": "ozon",
+                        "draft_id": "",
+                        "site": "",
+                        "status": "failed",
                     "stage": "failed",
                     "attempts": 1,
                     "error": "合同币种不匹配",
@@ -251,6 +268,13 @@ def test_publishing_bus_requires_verified_success_and_runs_terminal_hook() -> No
         queued = bus.enqueue(
             {"product_id": "product-1"},
             ["mercadolibre"],
+            targets={
+                "mercadolibre": {
+                    "draft_id": "draft-1",
+                    "site": "mlm",
+                    "product_id": "product-1",
+                }
+            },
         )
         bus.wait(queued["job_id"], timeout=2)
         state = bus.get_status(queued["job_id"])
@@ -328,7 +352,17 @@ def test_publishing_bus_polls_pending_publish_without_resubmitting() -> None:
         auto_resume_pending=False,
     )
     try:
-        queued = bus.enqueue({"product_id": "product-1"}, ["ozon"])
+        queued = bus.enqueue(
+            {"product_id": "product-1"},
+            ["ozon"],
+            targets={
+                "ozon": {
+                    "draft_id": "draft-1",
+                    "site": "global",
+                    "product_id": "product-1",
+                }
+            },
+        )
         bus.wait(queued["job_id"], timeout=2)
         state = bus.get_status(queued["job_id"])
     finally:
@@ -490,7 +524,17 @@ def test_publishing_bus_does_not_duplicate_product_in_platform_result() -> None:
         auto_resume_pending=False,
     )
     try:
-        queued = bus.enqueue({"product_id": "product-1"}, ["ozon"])
+        queued = bus.enqueue(
+            {"product_id": "product-1"},
+            ["ozon"],
+            targets={
+                "ozon": {
+                    "draft_id": "draft-1",
+                    "site": "global",
+                    "product_id": "product-1",
+                }
+            },
+        )
         bus.wait(queued["job_id"], timeout=2)
         state = bus.get_status(queued["job_id"])
     finally:
@@ -556,7 +600,18 @@ def test_terminal_hook_persists_product_and_log_without_status_poll(
         auto_resume_pending=False,
     )
     try:
-        queued = bus.enqueue(saved, ["mercadolibre"])
+        persisted_draft = saved["drafts"]["mercadolibre"]
+        queued = bus.enqueue(
+            saved,
+            ["mercadolibre"],
+            targets={
+                "mercadolibre": {
+                    "draft_id": persisted_draft["draft_id"],
+                    "site": str(persisted_draft.get("site") or "mlm"),
+                    "product_id": saved["product_id"],
+                }
+            },
+        )
         bus.wait(queued["job_id"], timeout=2)
     finally:
         bus.executor.shutdown(wait=True)
@@ -576,12 +631,137 @@ def test_terminal_hook_persists_product_and_log_without_status_poll(
     assert logs[0]["draft_id"] == persisted_draft["draft_id"]
 
 
+def test_terminal_hook_updates_only_the_bound_draft(
+    sample_product: dict[str, Any],
+) -> None:
+    context = get_context()
+    saved = context.products.save_product(sample_product)
+    product_id = str(saved["product_id"])
+    first_draft = context.db.load_draft_model(
+        str(saved["drafts"]["mercadolibre"]["draft_id"])
+    )
+    second_draft = {
+        **deepcopy(first_draft),
+        "draft_id": "d-bound-second",
+        "title": "只允许这一条草稿接收发布结果",
+        "publish_status": "ready",
+        "status": "ready_to_publish",
+        "last_publish_task": {},
+    }
+    second_draft_id = context.db.upsert_draft_model(
+        product_id,
+        "mercadolibre",
+        second_draft,
+    )
+    state = {
+        "job_id": "job-bound-second",
+        "draft_id": second_draft_id,
+        "status": "completed",
+        "created_at": "2026-08-08 22:00:00",
+        "updated_at": "2026-08-08 22:00:01",
+        "product": deepcopy(saved),
+        "platforms": {
+            "mercadolibre": {
+                "platform": "mercadolibre",
+                "draft_id": second_draft_id,
+                "site": str(second_draft.get("site") or "mlm"),
+                "product_id": product_id,
+                "status": "success",
+                "stage": "finished",
+                "attempts": 1,
+                "error": "",
+                "result": {"ok": True, "status": "published", "id": "MLM-2"},
+            }
+        },
+    }
+
+    persisted = persist_publish_bus_terminal_results(state, context=context)
+
+    unchanged_first = context.db.load_draft_model(str(first_draft["draft_id"]))
+    published_second = context.db.load_draft_model(second_draft_id)
+    assert str(unchanged_first.get("publish_status") or "") != "published"
+    assert published_second["publish_status"] == "published"
+    assert published_second["last_publish_task"]["job_id"] == "job-bound-second"
+    assert persisted["persisted_drafts"]["mercadolibre"]["draft_id"] == second_draft_id
+    logs = [
+        item
+        for item in context.db.list_publish_logs()
+        if item.get("job_id") == "job-bound-second"
+    ]
+    assert len(logs) == 1
+    assert logs[0]["draft_id"] == second_draft_id
+
+
+def test_database_rejects_reparenting_existing_draft(
+    sample_product: dict[str, Any],
+) -> None:
+    context = get_context()
+    first = context.products.save_product(sample_product)
+    other_product = deepcopy(sample_product)
+    other_product["product_id"] = "other-product"
+    other_product["source"] = {
+        **deepcopy(sample_product["source"]),
+        "source_url": "https://example.com/other-product",
+    }
+    other = context.products.save_product(other_product)
+    draft = context.db.load_draft_model(
+        str(first["drafts"]["mercadolibre"]["draft_id"])
+    )
+    draft["product_id"] = str(other["product_id"])
+    draft["source_product_id"] = str(other["product_id"])
+
+    with pytest.raises(ValueError, match="禁止静默换绑"):
+        context.db.upsert_draft_model(
+            str(other["product_id"]),
+            "mercadolibre",
+            draft,
+        )
+
+    persisted = context.db.load_draft_model(str(draft["draft_id"]))
+    assert persisted["product_id"] == first["product_id"]
+
+
+def test_publish_context_blocks_legacy_mismatched_draft(
+    sample_product: dict[str, Any],
+) -> None:
+    context = get_context()
+    first = context.products.save_product(sample_product)
+    other_product = deepcopy(sample_product)
+    other_product["source"] = {
+        **deepcopy(sample_product["source"]),
+        "source_url": "https://example.com/mismatch-owner",
+    }
+    other = context.products.save_product(other_product)
+    draft_id = str(first["drafts"]["mercadolibre"]["draft_id"])
+    with context.db._connect() as connection:
+        connection.execute(
+            "UPDATE platform_drafts SET product_id = ? WHERE draft_id = ?",
+            (str(other["product_id"]), draft_id),
+        )
+        connection.commit()
+
+    result, error, status = load_required_draft_publish_context(
+        {
+            "draft_id": draft_id,
+            "platform": "mercadolibre",
+            "site": "mlm",
+        }
+    )
+
+    assert result == {}
+    assert status == 409
+    assert error is not None
+    assert error["error_code"] == "DRAFT_PRODUCT_MISMATCH"
+
+
 def _completed_publish_state(
     product: dict[str, Any],
     job_id: str,
 ) -> dict[str, Any]:
+    draft = product["drafts"]["mercadolibre"]
     return {
         "job_id": job_id,
+        "draft_id": str(draft["draft_id"]),
         "status": "completed",
         "created_at": "2026-07-29 10:00:00",
         "updated_at": "2026-07-29 10:00:01",
@@ -589,6 +769,9 @@ def _completed_publish_state(
         "platforms": {
             "mercadolibre": {
                 "platform": "mercadolibre",
+                "draft_id": str(draft["draft_id"]),
+                "site": str(draft.get("site") or "mlm"),
+                "product_id": str(product["product_id"]),
                 "status": "success",
                 "stage": "finished",
                 "created_at": "2026-07-29 10:00:00",

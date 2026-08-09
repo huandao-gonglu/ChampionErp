@@ -470,6 +470,8 @@ export type PublishJobDisplayStatus = 'queued' | 'running' | 'success' | 'failed
 
 export interface PublishJobPlatformSummary {
   platform: Marketplace
+  draftId: string
+  site: string
   status: string
   stage: string
   attempts: number

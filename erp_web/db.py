@@ -727,6 +727,26 @@ class ErpDatabase:
             draft["draft_id"] = draft_id
             draft["platform"] = platform
             draft["platforms"] = _draft_platforms(draft, platform)
+            declared_product_id = str(
+                draft.get("source_product_id")
+                or draft.get("product_id")
+                or ""
+            ).strip()
+            if declared_product_id and declared_product_id != product_id:
+                raise ValueError(
+                    f"草稿 {draft_id} 声明商品 {declared_product_id}，不能保存到商品 {product_id}。"
+                )
+            existing = conn.execute(
+                "SELECT product_id, platform FROM platform_drafts WHERE draft_id = ?",
+                (draft_id,),
+            ).fetchone()
+            if existing and (
+                str(existing["product_id"] or "") != product_id
+                or str(existing["platform"] or "") != platform
+            ):
+                raise ValueError(
+                    f"草稿 {draft_id} 已绑定商品 {existing['product_id']} / 平台 {existing['platform']}，禁止静默换绑。"
+                )
             site = str(draft.get("site") or draft.get("site_id") or "").strip()
             conn.execute(
                 """
@@ -735,8 +755,6 @@ class ErpDatabase:
                     created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(draft_id) DO UPDATE SET
-                    product_id=excluded.product_id,
-                    platform=excluded.platform,
                     site=excluded.site,
                     status=excluded.status,
                     draft_json=excluded.draft_json,
@@ -948,6 +966,26 @@ class ErpDatabase:
             draft["draft_id"] = draft_id
             draft["platform"] = platform
             draft["platforms"] = _draft_platforms(draft, platform)
+            declared_product_id = str(
+                draft.get("source_product_id")
+                or draft.get("product_id")
+                or ""
+            ).strip()
+            if declared_product_id and declared_product_id != product_id:
+                raise ValueError(
+                    f"草稿 {draft_id} 声明商品 {declared_product_id}，不能保存到商品 {product_id}。"
+                )
+            existing = conn.execute(
+                "SELECT product_id, platform FROM platform_drafts WHERE draft_id = ?",
+                (draft_id,),
+            ).fetchone()
+            if existing and (
+                str(existing["product_id"] or "") != product_id
+                or str(existing["platform"] or "") != platform
+            ):
+                raise ValueError(
+                    f"草稿 {draft_id} 已绑定商品 {existing['product_id']} / 平台 {existing['platform']}，禁止静默换绑。"
+                )
             site = str(draft.get("site") or draft.get("site_id") or "").strip()
             conn.execute(
                 """
@@ -956,8 +994,6 @@ class ErpDatabase:
                     created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(draft_id) DO UPDATE SET
-                    product_id=excluded.product_id,
-                    platform=excluded.platform,
                     site=excluded.site,
                     status=excluded.status,
                     draft_json=excluded.draft_json,
@@ -1565,6 +1601,12 @@ class ErpDatabase:
             product.get("current_draft_id") or product.get("draft_id") or ""
         )
         drafts = _dict(product.get("drafts"))
+        draft_id = str(state.get("draft_id") or draft_id)
+        if not draft_id:
+            for item in platforms.values():
+                if isinstance(item, dict) and item.get("draft_id"):
+                    draft_id = str(item["draft_id"])
+                    break
         if not draft_id:
             for platform in sorted(platforms):
                 draft = _dict(drafts.get(platform))
