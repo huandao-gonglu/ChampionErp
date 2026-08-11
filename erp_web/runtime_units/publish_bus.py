@@ -8,7 +8,10 @@ from erp_web.context import get_context
 from erp_web.services import html_extract_service
 
 from .collect_helpers import collect_time_iso
-from .draft_publish_context import merge_target_listing_into_draft
+from .draft_publish_context import (
+    draft_publish_targets,
+    merge_target_listing_into_draft,
+)
 from .image_pool_core import source_image_refs
 from .publish_helpers import precheck_item, remote_publish_identity
 
@@ -189,17 +192,30 @@ def persist_publish_bus_terminal_results(
             raise RuntimeError(f"发布任务绑定草稿不存在：{draft_id}")
         stored_product_id = str(draft.get("product_id") or "").strip()
         source_product_id = str(draft.get("source_product_id") or stored_product_id).strip()
-        stored_platform = str(draft.get("platform") or "").strip().lower()
+        target_platform = str(platform).strip().lower()
+        target_site = str(item.get("site") or "").strip().lower()
+        allowed_target_keys = {
+            (
+                str(target.get("platform") or "").strip().lower(),
+                str(target.get("site") or "").strip().lower(),
+            )
+            for target in draft_publish_targets(draft)
+        }
         if (
             stored_product_id != target_product_id
             or source_product_id != target_product_id
-            or stored_platform != str(platform).strip().lower()
         ):
             raise RuntimeError(
                 "发布任务草稿绑定不一致："
                 f"job={job_state.get('job_id') or ''}, draft={draft_id}, "
-                f"expected={target_product_id}/{platform}, "
-                f"actual={stored_product_id}/{source_product_id}/{stored_platform}"
+                f"expected_product={target_product_id}, "
+                f"actual_product={stored_product_id}/{source_product_id}"
+            )
+        if not target_site or (target_platform, target_site) not in allowed_target_keys:
+            raise RuntimeError(
+                "发布任务目标不属于绑定草稿："
+                f"job={job_state.get('job_id') or ''}, draft={draft_id}, "
+                f"target={target_platform}/{target_site or '-'}"
             )
         draft = apply_publish_bus_result_to_draft(
             draft,
@@ -209,7 +225,7 @@ def persist_publish_bus_terminal_results(
         )
         runtime_context.db.upsert_draft_model(
             target_product_id,
-            str(platform),
+            str(draft.get("platform") or ""),
             draft,
         )
         saved_draft = runtime_context.db.load_draft_model(draft_id)

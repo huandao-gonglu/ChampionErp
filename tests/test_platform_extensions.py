@@ -694,6 +694,105 @@ def test_terminal_hook_updates_only_the_bound_draft(
     assert logs[0]["draft_id"] == second_draft_id
 
 
+def test_terminal_hook_updates_a_bound_non_primary_target(
+    sample_product: dict[str, Any],
+) -> None:
+    context = get_context()
+    saved = context.products.save_product(sample_product)
+    product_id = str(saved["product_id"])
+    draft_id = str(saved["drafts"]["mercadolibre"]["draft_id"])
+    draft = context.db.load_draft_model(draft_id)
+    primary_site = str(draft.get("site") or "mlm")
+    draft["platform"] = "mercadolibre"
+    draft["platforms"] = ["mercadolibre", "ozon"]
+    draft["target_sites"] = [
+        {
+            "platform": "mercadolibre",
+            "site": primary_site,
+            "publish_status": "ready",
+            "status": "ready_to_publish",
+        },
+        {
+            "platform": "ozon",
+            "site": "global",
+            "publish_status": "ready",
+            "status": "ready_to_publish",
+        },
+    ]
+    context.db.upsert_draft_model(product_id, "mercadolibre", draft)
+    state = {
+        "job_id": "job-bound-secondary-target",
+        "draft_id": draft_id,
+        "status": "completed",
+        "created_at": "2026-08-08 22:10:00",
+        "updated_at": "2026-08-08 22:10:01",
+        "product": deepcopy(saved),
+        "platforms": {
+            "ozon": {
+                "platform": "ozon",
+                "draft_id": draft_id,
+                "site": "global",
+                "product_id": product_id,
+                "status": "success",
+                "stage": "finished",
+                "attempts": 1,
+                "error": "",
+                "result": {
+                    "ok": True,
+                    "status": "published",
+                    "id": "OZON-SECONDARY-1",
+                },
+            }
+        },
+    }
+
+    persisted = persist_publish_bus_terminal_results(state, context=context)
+
+    saved_draft = context.db.load_draft_model(draft_id)
+    targets = {
+        (str(item.get("platform") or ""), str(item.get("site") or "")): item
+        for item in saved_draft["target_sites"]
+    }
+    assert saved_draft["platform"] == "mercadolibre"
+    assert targets[("mercadolibre", primary_site)]["publish_status"] == "ready"
+    assert targets[("ozon", "global")]["publish_status"] == "published"
+    assert targets[("ozon", "global")]["last_publish_task"]["job_id"] == "job-bound-secondary-target"
+    assert persisted["persisted_drafts"]["ozon"]["draft_id"] == draft_id
+
+
+def test_terminal_hook_rejects_a_target_not_bound_to_the_draft(
+    sample_product: dict[str, Any],
+) -> None:
+    context = get_context()
+    saved = context.products.save_product(sample_product)
+    product_id = str(saved["product_id"])
+    draft_id = str(saved["drafts"]["mercadolibre"]["draft_id"])
+    state = {
+        "job_id": "job-unbound-target",
+        "status": "completed",
+        "product": deepcopy(saved),
+        "platforms": {
+            "ozon": {
+                "platform": "ozon",
+                "draft_id": draft_id,
+                "site": "global",
+                "product_id": product_id,
+                "status": "success",
+                "stage": "finished",
+                "attempts": 1,
+                "error": "",
+                "result": {"ok": True, "status": "published"},
+            }
+        },
+    }
+
+    with pytest.raises(RuntimeError, match="发布任务目标不属于绑定草稿"):
+        persist_publish_bus_terminal_results(state, context=context)
+
+    persisted = context.db.load_draft_model(draft_id)
+    assert str(persisted.get("publish_status") or "") != "published"
+
+
 def test_database_rejects_reparenting_existing_draft(
     sample_product: dict[str, Any],
 ) -> None:

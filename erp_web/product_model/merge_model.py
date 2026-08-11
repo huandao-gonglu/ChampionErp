@@ -275,6 +275,15 @@ def normalize_draft_target_site(
             )
             else {}
         ),
+        "last_publish_task": deepcopy(
+            raw.get("last_publish_task")
+            if isinstance(raw.get("last_publish_task"), dict)
+            else raw.get("lastPublishTask")
+            if isinstance(raw.get("lastPublishTask"), dict)
+            else fallback.get("last_publish_task")
+            if isinstance(fallback.get("last_publish_task"), dict)
+            else {}
+        ),
     }
     return {
         key: item
@@ -655,6 +664,11 @@ def _merge_platform_draft(product: dict[str, Any], platform: str) -> dict[str, A
         for item in raw_targets
         if isinstance(item, dict)
     ] or [normalize_draft_target_site({}, platform, current)]
+    primary_target = current["target_sites"][0]
+    current["site"] = str(primary_target.get("site") or current.get("site") or "").strip()
+    current["language"] = str(
+        primary_target.get("language") or current.get("language") or ""
+    ).strip()
     for field, alias in (
         ("category_precheck", "categoryPrecheck"),
         ("last_precheck", "lastPrecheck"),

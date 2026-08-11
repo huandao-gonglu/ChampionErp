@@ -134,6 +134,15 @@ def _target_listing_fields(raw: dict[str, Any], fallback: dict[str, Any] | None 
             if isinstance(fallback.get("last_precheck_target"), dict)
             else {}
         ),
+        "last_publish_task": deepcopy(
+            raw.get("last_publish_task")
+            if isinstance(raw.get("last_publish_task"), dict)
+            else raw.get("lastPublishTask")
+            if isinstance(raw.get("lastPublishTask"), dict)
+            else fallback.get("last_publish_task")
+            if isinstance(fallback.get("last_publish_task"), dict)
+            else {}
+        ),
     }
 
 

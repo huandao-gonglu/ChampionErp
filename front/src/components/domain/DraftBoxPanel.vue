@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useClipboard } from '@/composables/useClipboard'
+import DraftLanguageSelect from '@/components/domain/DraftLanguageSelect.vue'
+import DraftMarketSelect from '@/components/domain/DraftMarketSelect.vue'
 import { statusBadgeClass, workflowStatusLabel } from '@/utils/status'
 import type { DraftIndexItem, Marketplace, MarketplaceOption, MarketplaceTargetSite } from '@/types/workflow'
 
@@ -24,28 +26,9 @@ const platformFilter = ref<'all' | Marketplace>('all')
 const draftScope = ref<'active' | 'published' | 'all'>('active')
 const selectedDraftIds = ref<string[]>([])
 const copiedDraftId = ref('')
-const editingTargetDraftId = ref('')
-const editingTargetKeys = ref<string[]>([])
-const targetEditError = ref('')
 const { copy: copyToClipboard } = useClipboard()
 let copiedDraftTimer: number | null = null
 const isPublishedDraft = (item: DraftIndexItem) => String(item.status || '').trim().toLowerCase() === 'published'
-const languageOptions = computed(() => {
-  const languages = new Map<string, { value: string; siteCount: number }>()
-  props.platformOptions.forEach((platform) => {
-    platform.sites.forEach((site) => {
-      const language = String(site.language || '').trim()
-      if (!language) return
-      const key = language.toLowerCase()
-      const current = languages.get(key) || { value: language, siteCount: 0 }
-      current.siteCount += 1
-      languages.set(key, current)
-    })
-  })
-  return Array.from(languages.values()).map((language) => ({
-    ...language,
-  }))
-})
 const allDraftRows = computed(() => props.drafts.filter((item) => {
   if (platformFilter.value !== 'all' && !draftMatchesPlatform(item, platformFilter.value)) return false
   return true
@@ -68,120 +51,9 @@ function draftIdOf(item: DraftIndexItem) {
   return String(item.draftId || '').trim()
 }
 
-function platformOption(platform: Marketplace) {
-  return props.platformOptions.find((option) => option.key === platform)
-}
-
 function draftMatchesPlatform(item: DraftIndexItem, platform: Marketplace) {
   if (item.platform === platform || (item.platforms || []).includes(platform)) return true
   return (item.targetSites || []).some((target) => target.platform === platform)
-}
-
-function languageKey(language: string) {
-  return String(language || '').trim().toLowerCase()
-}
-
-function targetKey(platform: Marketplace, site: string) {
-  return `${platform}:${site}`.toLowerCase()
-}
-
-function targetLabel(platform: Marketplace, site: string) {
-  const option = platformOption(platform)
-  const selected = option?.sites.find((item) => item.code.toLowerCase() === String(site || '').toLowerCase())
-  return selected ? `${option?.label} · ${selected.label}（${selected.code}）` : `${option?.label || platform} · ${site || '-'}`
-}
-
-function targetCompactLabel(platform: Marketplace, site: string) {
-  const option = platformOption(platform)
-  const selected = option?.sites.find((item) => item.code.toLowerCase() === String(site || '').toLowerCase())
-  return selected ? `${option?.label} · ${selected.code}` : `${option?.label || platform} · ${site || '-'}`
-}
-
-function targetMeta(target: MarketplaceTargetSite) {
-  return [target.site, target.language, target.listingCurrency || '币种待核验'].filter(Boolean).join(' / ')
-}
-
-function targetSitesForLanguage(language: string): MarketplaceTargetSite[] {
-  const selectedLanguage = languageKey(language)
-  if (!selectedLanguage) return []
-  return props.platformOptions.flatMap((platform) => platform.sites
-    .filter((site) => languageKey(site.language) === selectedLanguage)
-    .map((site) => ({
-      platform: platform.key,
-      site: site.code,
-      language: site.language,
-      marketCurrency: site.marketCurrency,
-      listingCurrency: site.listingCurrency,
-    })))
-}
-
-function matchingTargetSites(item: DraftIndexItem): MarketplaceTargetSite[] {
-  return targetSitesForLanguage(item.language)
-}
-
-function targetSites(item: DraftIndexItem): MarketplaceTargetSite[] {
-  const allowedTargets = matchingTargetSites(item)
-  const selectedKeys = new Set((item.targetSites || []).map((target) => targetKey(target.platform, target.site)))
-  return allowedTargets.filter((target) => selectedKeys.has(targetKey(target.platform, target.site)))
-}
-
-function compactTargetLabels(item: DraftIndexItem) {
-  const selectedTargets = targetSites(item)
-  return selectedTargets.length
-    ? selectedTargets.map((target) => targetCompactLabel(target.platform, target.site)).join('、')
-    : '未选择市场'
-}
-
-function selectedTargetCount(item: DraftIndexItem) {
-  return targetSites(item).length
-}
-
-function targetOptionCount(item: DraftIndexItem) {
-  return matchingTargetSites(item).length
-}
-
-function selectedEditingCount(item: DraftIndexItem) {
-  const allowedKeys = new Set(matchingTargetSites(item).map((target) => targetKey(target.platform, target.site)))
-  return editingTargetKeys.value.filter((key) => allowedKeys.has(key)).length
-}
-
-function startTargetEdit(item: DraftIndexItem) {
-  editingTargetDraftId.value = draftIdOf(item)
-  const selectedTargets = targetSites(item)
-  const fallbackTargets = selectedTargets.length ? selectedTargets : matchingTargetSites(item).slice(0, 1)
-  editingTargetKeys.value = fallbackTargets.map((target) => targetKey(target.platform, target.site))
-  targetEditError.value = ''
-}
-
-function toggleTarget(target: MarketplaceTargetSite, checked: boolean) {
-  const key = targetKey(target.platform, target.site)
-  editingTargetKeys.value = checked
-    ? Array.from(new Set([...editingTargetKeys.value, key]))
-    : editingTargetKeys.value.filter((value) => value !== key)
-  targetEditError.value = ''
-}
-
-function saveTargets(item: DraftIndexItem) {
-  const targets = matchingTargetSites(item).filter((target) => editingTargetKeys.value.includes(targetKey(target.platform, target.site)))
-  if (!targets.length) {
-    targetEditError.value = '至少选择一个与当前语言匹配的市场。'
-    return
-  }
-  emit('updateTargets', item, targets)
-  editingTargetDraftId.value = ''
-  targetEditError.value = ''
-}
-
-function cancelTargetEdit() {
-  editingTargetDraftId.value = ''
-  editingTargetKeys.value = []
-  targetEditError.value = ''
-}
-
-function changeLanguage(item: DraftIndexItem, language: string) {
-  if (languageKey(language) === languageKey(item.language)) return
-  if (editingTargetDraftId.value === draftIdOf(item)) cancelTargetEdit()
-  emit('updateLanguage', item, language)
 }
 
 function toggleDraftSelection(item: DraftIndexItem, checked: boolean) {
@@ -224,7 +96,6 @@ async function copyDraftId(item: DraftIndexItem) {
 watch(() => props.drafts.map(draftIdOf), (draftIds) => {
   const existingIds = new Set(draftIds)
   selectedDraftIds.value = selectedDraftIds.value.filter((id) => existingIds.has(id))
-  if (editingTargetDraftId.value && !existingIds.has(editingTargetDraftId.value)) cancelTargetEdit()
 })
 
 onBeforeUnmount(() => {
@@ -307,56 +178,23 @@ onBeforeUnmount(() => {
               </div>
             </td>
             <td class="p-2">
-              <select class="input h-8 w-full min-w-0 px-2 py-1 text-xs" :value="row.language" :title="`可选市场 ${targetOptionCount(row)} 个`" :disabled="props.loading || !languageOptions.length" @change="changeLanguage(row, ($event.target as HTMLSelectElement).value)">
-                <option value="" disabled>选择语言</option>
-                <option v-for="language in languageOptions" :key="language.value" :value="language.value">{{ language.value }}</option>
-              </select>
+              <DraftLanguageSelect
+                compact
+                :language="row.language"
+                :platform-options="props.platformOptions"
+                :loading="props.loading"
+                @update-language="emit('updateLanguage', row, $event)"
+              />
             </td>
             <td class="p-2">
-              <div class="relative">
-                <button
-                  type="button"
-                  class="input flex h-8 w-full items-center justify-between gap-1 px-2 py-1 text-left text-xs"
-                  :title="targetSites(row).map((target) => targetLabel(target.platform, target.site)).join('、') || compactTargetLabels(row)"
-                  :disabled="props.loading || !targetOptionCount(row)"
-                  :aria-expanded="editingTargetDraftId === draftIdOf(row)"
-                  @click="editingTargetDraftId === draftIdOf(row) ? cancelTargetEdit() : startTargetEdit(row)"
-                >
-                  <span class="min-w-0 truncate">{{ compactTargetLabels(row) }}</span>
-                  <span class="shrink-0 text-[11px] text-accent-400 dark:text-accent-500">{{ selectedTargetCount(row) }}/{{ targetOptionCount(row) }}</span>
-                </button>
-                <div v-if="editingTargetDraftId === draftIdOf(row)" class="absolute left-0 z-20 mt-1 w-64 rounded-lg border border-accent-200 bg-white p-2 text-xs shadow-sm dark:border-dark-700 dark:bg-dark-900">
-                  <div class="mb-2 flex items-center justify-between gap-2 text-[11px] font-semibold text-accent-500 dark:text-accent-400">
-                    <span>市场列表</span>
-                    <span>{{ row.language || '-' }} · 已选 {{ selectedEditingCount(row) }}</span>
-                  </div>
-                  <div class="max-h-48 space-y-1 overflow-y-auto pr-1">
-                    <label
-                      v-for="target in matchingTargetSites(row)"
-                      :key="targetKey(target.platform, target.site)"
-                      class="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 transition hover:bg-accent-50 dark:hover:bg-dark-800"
-                    >
-                      <input
-                        class="mt-0.5 size-4 rounded border-accent-300 text-primary-600"
-                        type="checkbox"
-                        :checked="editingTargetKeys.includes(targetKey(target.platform, target.site))"
-                        :disabled="props.loading"
-                        @change="toggleTarget(target, ($event.target as HTMLInputElement).checked)"
-                      />
-                      <span class="min-w-0">
-                        <span class="block truncate font-semibold text-accent-800 dark:text-accent-100">{{ targetLabel(target.platform, target.site) }}</span>
-                        <span class="block truncate text-[11px] text-accent-500 dark:text-accent-400">{{ targetMeta(target) }}</span>
-                      </span>
-                    </label>
-                    <p v-if="!matchingTargetSites(row).length" class="rounded-md bg-rose-50 px-2 py-1.5 text-rose-700 dark:bg-rose-500/10 dark:text-rose-200">当前语言没有配置可选站点。</p>
-                  </div>
-                  <p v-if="targetEditError" class="mt-2 text-[11px] font-semibold text-rose-600 dark:text-rose-200">{{ targetEditError }}</p>
-                  <div class="mt-2 flex gap-1.5">
-                    <button class="btn btn-primary px-2 py-1 text-[11px]" :disabled="props.loading || !editingTargetKeys.length" @click="saveTargets(row)">保存</button>
-                    <button class="btn btn-outline px-2 py-1 text-[11px]" :disabled="props.loading" @click="cancelTargetEdit">取消</button>
-                  </div>
-                </div>
-              </div>
+              <DraftMarketSelect
+                compact
+                :language="row.language"
+                :target-sites="row.targetSites"
+                :platform-options="props.platformOptions"
+                :loading="props.loading"
+                @update-targets="emit('updateTargets', row, $event)"
+              />
             </td>
             <td class="min-w-0 p-2"><span class="inline-flex max-w-full truncate" :class="statusBadgeClass(row.status)" :title="workflowStatusLabel(row.status)">{{ workflowStatusLabel(row.status) }}</span></td>
             <td class="min-w-0 p-2">

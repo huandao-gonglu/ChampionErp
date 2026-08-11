@@ -214,6 +214,7 @@ export interface BackendDraftTargetSite {
   status?: string
   last_precheck?: Record<string, unknown>
   last_precheck_target?: Record<string, unknown>
+  last_publish_task?: Record<string, unknown>
 }
 
 export interface BackendPlatformDraft {

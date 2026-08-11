@@ -104,6 +104,7 @@ export interface MarketplaceTargetSite {
   status?: WorkflowStatus | string
   lastPrecheck?: UnknownRecord
   lastPrecheckTarget?: UnknownRecord
+  lastPublishTask?: UnknownRecord
   publishLogs?: UnknownRecord[]
 }
 

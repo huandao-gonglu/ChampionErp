@@ -1,0 +1,21 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "ERP 后端：断点调试",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "erp_web.server",
+      "cwd": "${workspaceFolder}",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "env": {
+        "ERP_PORT": "5050",
+        "ERP_NO_BROWSER": "1",
+        "ERP_SKIP_OPEN_BROWSER": "1",
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  ]
+}

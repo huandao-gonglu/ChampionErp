@@ -81,6 +81,7 @@ class DraftTargetSite(TypedDict, total=False):
     status: str
     last_precheck: dict[str, Any]
     last_precheck_target: dict[str, Any]
+    last_publish_task: dict[str, Any]
 
 
 class PlatformDraft(TypedDict, total=False):

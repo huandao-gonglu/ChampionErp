@@ -289,7 +289,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
 
         self.with_temp_app(run)
 
-    def test_draft_ids_are_opaque_and_cannot_change_platform(self) -> None:
+    def test_draft_ids_are_opaque_and_primary_platform_can_change(self) -> None:
         def run(app_dir: Path) -> None:
             saved = get_context().products.save_product(sample_product("Opaque draft", "https://example.com/opaque-draft"))
             product_id = saved["product_id"]
@@ -302,17 +302,26 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             self.assertEqual(len(created_id), 13)
             self.assertNotIn("mercadolibre", created_id)
 
-            with self.assertRaisesRegex(ValueError, "禁止静默换绑"):
-                get_context().db.upsert_draft_model(
-                    product_id,
-                    "ozon",
-                    {"draft_id": created_id, "platform": "ozon", "title": "Ozon draft", "status": "claimed"},
-                )
+            result, error, status = get_context().products.save_draft_detail(
+                {
+                    "draft_id": created_id,
+                    "language": "ru-RU",
+                    "target_sites": [
+                        {"platform": "ozon", "site": "global"},
+                    ],
+                }
+            )
 
-            self.assertEqual(get_context().db.load_draft_model(created_id)["platform"], "mercadolibre")
+            self.assertIsNone(error)
+            self.assertEqual(status, 200)
+            self.assertEqual(result["draft"]["draft_id"], created_id)
+            self.assertEqual(result["draft"]["platform"], "ozon")
+            self.assertEqual(result["draft"]["site"], "global")
+            self.assertEqual(result["draft"]["language"], "ru-RU")
+            self.assertEqual(get_context().db.load_draft_model(created_id)["platform"], "ozon")
             records = [record for record in get_context().db.list_draft_records(scope="all") if record["draft_id"] == created_id]
             self.assertEqual(len(records), 1)
-            self.assertEqual(records[0]["platform"], "mercadolibre")
+            self.assertEqual(records[0]["platform"], "ozon")
 
         self.with_temp_app(run)
 

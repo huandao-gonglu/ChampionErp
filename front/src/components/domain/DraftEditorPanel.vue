@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { DraftDetail, DraftProductContext } from '@/types/workflow'
+import DraftLanguageSelect from '@/components/domain/DraftLanguageSelect.vue'
+import DraftMarketSelect from '@/components/domain/DraftMarketSelect.vue'
+import type { DraftDetail, DraftProductContext, MarketplaceOption, MarketplaceTargetSite } from '@/types/workflow'
 
 const props = withDefaults(defineProps<{
   draft: DraftDetail
   productContext: DraftProductContext
+  platformOptions: MarketplaceOption[]
   loading: boolean
   embedded?: boolean
 }>(), {
@@ -15,6 +18,8 @@ const emit = defineEmits<{
   save: []
   generateCopy: []
   close: []
+  updateLanguage: [draft: DraftDetail, language: string]
+  updateTargets: [draft: DraftDetail, targets: MarketplaceTargetSite[]]
 }>()
 
 function listModel(getter: () => string[], setter: (value: string[]) => void) {
@@ -43,9 +48,30 @@ const canGenerateCopy = computed(() => Boolean(props.draft.productId || props.pr
     </div>
 
     <section class="space-y-4">
-      <div class="flex items-center gap-2 text-sm">
-        <span class="text-xs font-semibold text-slate-500 dark:text-accent-300">发布语言</span>
-        <span class="badge-muted">{{ props.draft.language || '未设置' }}</span>
+      <div class="grid gap-4 lg:grid-cols-[minmax(0,16rem)_minmax(0,1fr)]">
+        <label class="block">
+          <span class="text-xs font-semibold text-slate-500 dark:text-accent-300">发布语言</span>
+          <DraftLanguageSelect
+            class="mt-1"
+            :language="props.draft.language"
+            :platform-options="props.platformOptions"
+            :loading="props.loading"
+            @update-language="emit('updateLanguage', props.draft, $event)"
+          />
+          <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">切换语言后会重新选择匹配的目标市场；已有文案需要重新生成或检查。</span>
+        </label>
+
+        <div class="min-w-0">
+          <span class="text-xs font-semibold text-slate-500 dark:text-accent-300">目标市场</span>
+          <DraftMarketSelect
+            class="mt-1"
+            :language="props.draft.language"
+            :target-sites="props.draft.targetSites"
+            :platform-options="props.platformOptions"
+            :loading="props.loading"
+            @update-targets="emit('updateTargets', props.draft, $event)"
+          />
+        </div>
       </div>
       <label class="block">
         <span class="text-xs font-semibold text-slate-500">平台标题</span>

@@ -3,6 +3,35 @@ import { createEmptyDraftDetail } from '@/constants/initialState'
 import { normalizeDraftDetail, toBackendDraft, toBackendDraftDetail } from '@/api/workflow/normalizers'
 
 describe('类目属性 Schema 映射', () => {
+  it('在目标站点中往返保留发布任务快照', () => {
+    const normalized = normalizeDraftDetail({
+      draft_id: 'draft-publish-task',
+      product_id: 'product-publish-task',
+      platform: 'ozon',
+      platforms: ['ozon'],
+      site: 'global',
+      target_sites: [{
+        platform: 'ozon',
+        site: 'global',
+        language: 'ru-RU',
+        last_publish_task: {
+          job_id: 'job-publish-task',
+          status: 'published',
+        },
+      }],
+    })
+
+    expect(normalized.targetSites[0]?.lastPublishTask).toEqual({
+      job_id: 'job-publish-task',
+      status: 'published',
+    })
+    const backend = toBackendDraft(normalized)
+    expect((backend.target_sites as Array<Record<string, unknown>>)[0]?.last_publish_task).toEqual({
+      job_id: 'job-publish-task',
+      status: 'published',
+    })
+  })
+
   it('在 Ozon 草稿目标中读写隐藏的 description_category_id', () => {
     const normalized = normalizeDraftDetail({
       draft_id: 'draft-ozon',

@@ -742,15 +742,12 @@ class ErpDatabase:
                     f"草稿 {draft_id} 声明商品 {declared_product_id}，不能保存到商品 {product_id}。"
                 )
             existing = conn.execute(
-                "SELECT product_id, platform FROM platform_drafts WHERE draft_id = ?",
+                "SELECT product_id FROM platform_drafts WHERE draft_id = ?",
                 (draft_id,),
             ).fetchone()
-            if existing and (
-                str(existing["product_id"] or "") != product_id
-                or str(existing["platform"] or "") != platform
-            ):
+            if existing and str(existing["product_id"] or "") != product_id:
                 raise ValueError(
-                    f"草稿 {draft_id} 已绑定商品 {existing['product_id']} / 平台 {existing['platform']}，禁止静默换绑。"
+                    f"草稿 {draft_id} 已绑定商品 {existing['product_id']}，禁止静默换绑到商品 {product_id}。"
                 )
             site = str(draft.get("site") or draft.get("site_id") or "").strip()
             conn.execute(
@@ -760,6 +757,7 @@ class ErpDatabase:
                     created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(draft_id) DO UPDATE SET
+                    platform=excluded.platform,
                     site=excluded.site,
                     status=excluded.status,
                     draft_json=excluded.draft_json,
@@ -981,15 +979,12 @@ class ErpDatabase:
                     f"草稿 {draft_id} 声明商品 {declared_product_id}，不能保存到商品 {product_id}。"
                 )
             existing = conn.execute(
-                "SELECT product_id, platform FROM platform_drafts WHERE draft_id = ?",
+                "SELECT product_id FROM platform_drafts WHERE draft_id = ?",
                 (draft_id,),
             ).fetchone()
-            if existing and (
-                str(existing["product_id"] or "") != product_id
-                or str(existing["platform"] or "") != platform
-            ):
+            if existing and str(existing["product_id"] or "") != product_id:
                 raise ValueError(
-                    f"草稿 {draft_id} 已绑定商品 {existing['product_id']} / 平台 {existing['platform']}，禁止静默换绑。"
+                    f"草稿 {draft_id} 已绑定商品 {existing['product_id']}，禁止静默换绑到商品 {product_id}。"
                 )
             site = str(draft.get("site") or draft.get("site_id") or "").strip()
             conn.execute(
@@ -999,6 +994,7 @@ class ErpDatabase:
                     created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(draft_id) DO UPDATE SET
+                    platform=excluded.platform,
                     site=excluded.site,
                     status=excluded.status,
                     draft_json=excluded.draft_json,

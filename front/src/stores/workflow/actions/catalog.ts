@@ -77,6 +77,8 @@ type WorkflowCatalogActionsPort = Pick<
   | 'syncDraftPackageDimensionsFromPricingInput'
 >
 
+type DraftTargetSelectionSource = Pick<DraftDetail, 'draftId' | 'language' | 'targetSites'>
+
 export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort) {
   const {
     product, productsIndex, draftsIndex, selectedProductIds, currentDraft,
@@ -189,7 +191,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     }
   }
 
-  async function updateDraftTargets(item: DraftIndexItem, targets: MarketplaceTargetSite[]) {
+  async function updateDraftTargets(item: DraftTargetSelectionSource, targets: MarketplaceTargetSite[]) {
     const draftId = String(item.draftId || '').trim()
     if (!draftId) {
       setError('草稿缺少 ID，无法保存站点。')
@@ -249,7 +251,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     }
   }
 
-  async function updateDraftLanguage(item: DraftIndexItem, language: string) {
+  async function updateDraftLanguage(item: DraftTargetSelectionSource, language: string) {
     const selectedLanguage = String(language || '').trim()
     if (!selectedLanguage) {
       setError('请选择草稿语言。')

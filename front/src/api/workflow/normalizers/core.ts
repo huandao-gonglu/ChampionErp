@@ -357,6 +357,7 @@ export function targetListingFields(record: UnknownRecord, fallback?: Partial<Ma
   const hasStatus = hasAnyField(['status'])
   const hasLastPrecheck = hasAnyField(['last_precheck'])
   const hasLastPrecheckTarget = hasAnyField(['last_precheck_target'])
+  const hasLastPublishTask = hasAnyField(['last_publish_task'])
   return {
     categoryId: hasCategoryId ? getString(record, ['category_id']) : fallback?.categoryId || '',
     descriptionCategoryId: hasDescriptionCategoryId
@@ -381,6 +382,9 @@ export function targetListingFields(record: UnknownRecord, fallback?: Partial<Ma
     lastPrecheckTarget: hasLastPrecheckTarget
       ? asRecord(record.last_precheck_target)
       : fallback?.lastPrecheckTarget || {},
+    lastPublishTask: hasLastPublishTask
+      ? asRecord(record.last_publish_task)
+      : fallback?.lastPublishTask || {},
   }
 }
 
@@ -570,5 +574,6 @@ export function toBackendTargetSite(target: MarketplaceTargetSite): UnknownRecor
     status: target.status || '',
     last_precheck: target.lastPrecheck || {},
     last_precheck_target: target.lastPrecheckTarget || {},
+    last_publish_task: target.lastPublishTask || {},
   }
 }

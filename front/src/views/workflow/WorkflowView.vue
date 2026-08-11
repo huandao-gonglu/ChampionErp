@@ -704,7 +704,10 @@ watch(
               embedded
               :draft="currentDraft"
               :product-context="currentDraftProductContext"
+              :platform-options="platformOptions"
               :loading="loading"
+              @update-language="store.updateDraftLanguage"
+              @update-targets="store.updateDraftTargets"
             />
           </template>
 
