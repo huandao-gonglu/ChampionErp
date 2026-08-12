@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from erp_web.marketplaces.category_provider import CategoryNavigator, CategorySearcher
-from erp_web.schemas.ai_tools import AiToolDefinition
+from erp_web.schemas.ai_tools import AiToolDefinition, AiToolExecutionError
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.category import (
     CATEGORY_SEARCH_PERMISSION,
@@ -275,7 +275,11 @@ def build_category_match_toolset(
         roots = searcher.root_categories()
         root_options = _ai_browse_nodes(roots)
         if not root_options:
-            raise RuntimeError("类目树未返回可导航的顶层节点。")
+            raise AiToolExecutionError(
+                "CATEGORY_ROOTS_UNAVAILABLE",
+                "类目树未返回可导航的顶层节点。",
+                retryable=True,
+            )
         available_parent_ids = {
             str(node.get("node_id") or "").strip()
             for node in roots.get("nodes") or []
@@ -291,11 +295,15 @@ def build_category_match_toolset(
             context.bounded_timeout_seconds()
             parent_ids = [str(item).strip() for item in arguments["parent_ids"]]
             if any(parent_id not in available_parent_ids for parent_id in parent_ids):
-                raise RuntimeError(
-                    "只能展开首次输入或之前工具结果中真实返回的 branch node_id。"
+                raise AiToolExecutionError(
+                    "CATEGORY_BRANCH_NOT_AVAILABLE",
+                    "只能展开首次输入或之前工具结果中真实返回的 branch node_id。",
                 )
             if any(parent_id in expanded_parent_ids for parent_id in parent_ids):
-                raise RuntimeError("类目分支已经展开，必须改选其他备选分支。")
+                raise AiToolExecutionError(
+                    "CATEGORY_BRANCH_ALREADY_EXPANDED",
+                    "类目分支已经展开，必须改选其他备选分支。",
+                )
             ledger.record_attempt("tree:" + ",".join(parent_ids))
             try:
                 result = searcher.browse_categories(parent_ids)

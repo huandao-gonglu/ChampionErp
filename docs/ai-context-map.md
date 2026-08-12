@@ -45,7 +45,8 @@ Model Requests，图片等能力使用锁定版本提供的 Pydantic capability/
   对应 capability，旧版无指纹配置仍可读取并通过重新探测升级。
 - `erp_web/services/ai_model_discovery.py`：与推理解耦的远端模型目录发现；按 Catalog 的可选发现
   策略复用 Pydantic Provider 持有的 client，目录不可用不改变推理能力判定。
-- `erp_web/services/ai_model_errors.py`：Pydantic Model 错误到项目稳定错误的脱敏转换。
+- `erp_web/services/ai_model_errors.py`：Provider/Pydantic Model 错误的最薄脱敏透传边界；保留
+  HTTP 状态、Provider code/message/request ID，不得改写为其他业务含义。
 - `erp_web/services/ai_gateway_cli_provider.py`：CLI Provider 实现。
 - `erp_web/services/ai_gateway_browser_provider.py`：浏览器 Provider 实现。
 - `erp_web/services/ai_gateway_provider_types.py`：Provider 共享请求 shape。
@@ -120,13 +121,20 @@ CLI / Browser use case
 - `erp_web/schemas/ai_trace.py`：执行 ID、deadline、权限和预算上下文。
 - `erp_web/services/ai_invocation.py`：解析后的 model/provider、execution context
   与 recorder 单次创建边界。
-- `erp_web/services/ai_tool_registry.py`：不可变 ToolSet 与显式
-  definition/executor 映射；不通过动态全局表注册业务工具。同步 executor 必须通过
+- `erp_web/services/ai_tool_declaration.py`：dependency-light `@ai_tool`、`Injected` 与
+  不可变契约元数据；装饰时不注册、不读取配置，也不执行领域逻辑。
+- `erp_web/services/ai_tool_compiler.py`：受限同步函数签名、Pydantic `TypeAdapter`、本地
+  `$defs/$ref` 展开、Schema 支持子集和机械 executor adapter 的唯一编译 owner。
+- `erp_web/services/ai_tool_catalog.py`：调用方显式函数清单、场景 allowlist、Execution Profile
+  权限与独立可信 Binding Scope 的唯一 Catalog 抽象；不扫描包或依赖 import side effect。
+- `erp_web/services/ai_tool_registry.py`：不可变 run-scoped ToolSet 与
+  definition/executor 映射；旧 `AiToolRegistry` 容器已删除。同步 executor 必须通过
   `deadline_aware_tool_executor` 显式声明 cooperative deadline 契约，并把
   `AiExecutionContext.bounded_timeout_seconds()` 用于每个阻塞 I/O；Runtime 不用
   无法安全中止的后台线程伪装 hard cancellation。
 - `erp_web/services/ai_tool_runtime.py`：工具查找、校验、权限、去重、预算、执行和
-  最小业务审计；恢复写工具在真正调用 executor 前先持久化执行检查点。
+  最小业务审计；写工具在 executor 前检查可信幂等键，恢复写工具在真正调用 executor 前先
+  持久化执行检查点。
 - `erp_web/services/ai_agent_dependencies.py`：请求级 Agent dependencies，绑定唯一
   execution context、recorder、Tool Runtime、tenant、business scope、审批、幂等和
   use-case state。
@@ -144,7 +152,9 @@ facade / focused Agent service
       → Pydantic Agent → centralized Model Factory
       → Pydantic Tool Bridge
           → AiToolRuntime
-              → explicit AiToolSet → domain executor
+              → run-scoped AiToolSet
+                  ← explicit AiToolCatalog + scene allowlist + Binding Scope
+                      ← @ai_tool + AiToolCompiler ← typed domain capability
 ```
 
 `AiToolRuntime` 不得 import 类目、平台、发布或其他具体领域模块。Main Agent、
@@ -196,13 +206,20 @@ runtime unit 中显式构造，不注册到动态全局表。
   `erp_web/runtime_units/category_store.py` 通过 `CategoryProvider.attribute_values` 分派，
   Ozon 由 `erp_web/runtime_units/ozon_category_api.py` 调用独立的
   `description-category/attribute/values` 接口并跨页搜索、短时缓存。
+- `erp_web/product_model/category_model.py`：类目属性有效性和未解决必填项的唯一确定性判断；
+  `strict_enum/open_enum/free_text` 三种值模式同时供规则填充、Agent target 和发布预检使用。
 - `erp_web/runtime_units/category_attribute_ai_fill.py`：类目属性填充编排入口；先执行规则填充，
-  再装配枚举候选账本与只读工具，运行 Agent 并把类型化结果合并回草稿。
-- `erp_web/runtime_units/category_attribute_tools.py`：`category.attribute_values`
-  只读 ToolSet；平台、站点和类目在构建时绑定，AI 只能批量提交当前属性 ID 与搜索词。
+  只把规则处理后仍未解决的必填属性交给 Agent，合并后重新计算最终阻塞项。重复执行时
+  已有效的开放枚举或文本值不会再次进入 Agent。
+- `erp_web/runtime_units/category_attribute_tools.py`：类型化
+  `search_category_attribute_values(...)` 能力通过 `@ai_tool` 声明唯一工具
+  `category_attribute_values_search`；该工具只接受 `value_mode=strict_enum` 的平台强制枚举。
+  显式 Catalog 与场景 allowlist 绑定平台、站点、类目和 request-scoped Ledger，AI 只能
+  批量提交当前属性 ID 与搜索词。Definition、Schema 与机械
+  executor adapter 均由 Compiler 生成，不存在旧手写工具名或闭包 executor。
   `erp_web/services/category_attribute_fill_agent_service.py` 负责类型化输出和候选账本校验：
-  平台强制枚举只能选择本次工具返回的 `dictionary_value_id + value`；普通建议枚举没有
-  合适候选时允许填写有商品依据的自定义文本。最终校验仍拒绝自由文本字典值。
+  平台强制枚举只能选择本次工具返回的 `dictionary_value_id + value`；开放枚举优先使用
+  schema options，没有匹配选项时允许填写有商品依据的自定义文本且不得提交枚举 ID。
 - `config/prompts/category_attribute_fill.json`：`category.attribute_fill` Agent prompt；
   明确区分发布必填、平台强制枚举、建议枚举和普通自定义属性，并要求技术参数、链接、
   编码、证件与文件不得编造。
@@ -319,6 +336,8 @@ Ozon 创建/更新商品是异步操作。提交 `/v3/product/import` 获得 `ta
 
 - `tests/test_ai_context_architecture.py`：静态依赖与公共入口守卫。
 - `tests/test_ai_tools.py`：工具 schema、ToolSet 和 Runtime。
+- `tests/test_ai_tool_catalog.py`：注解元数据、TypeAdapter Compiler、Schema 规范化、可信 Scope、
+  allowlist、幂等策略与类目试点契约指纹快照。
 - `tests/test_category_match_agent_service.py`：真实 `FunctionModel + Agent` 的类目工具循环、
   类型化 output 与 validator 契约。
 - `tests/test_ai_agent_instrumentation.py`：技术 spans、usage、trace 关联、脱敏和故障隔离。

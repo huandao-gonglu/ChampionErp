@@ -92,6 +92,7 @@ class ConversationAiWorkRecorder:
             "RUN_ERROR",
             message=str(error),
             code=getattr(error, "code", error.__class__.__name__),
+            retryable=bool(getattr(error, "retryable", False)),
             **payload,
         )
 

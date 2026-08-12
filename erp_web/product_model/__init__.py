@@ -7,6 +7,7 @@ from .category_model import (
     apply_ai_attribute_fill,
     apply_category_selection,
     build_ai_attribute_fill,
+    unresolved_required_category_attributes,
     validate_category_precheck,
 )
 from .common import (
@@ -94,6 +95,7 @@ __all__ = [
     "is_placeholder_sku",
     "resolve_platform_draft_sku",
     "text_or_empty",
+    "unresolved_required_category_attributes",
     "validate_category_precheck",
     "validate_platform_draft_root_fields",
     "validate_product_root_fields",

@@ -212,7 +212,7 @@ def run_category_match_agent(
     )
     if isinstance(outcome.output, DeferredToolRequests):
         error = AiAgentExecutionError(
-            "AI_TOOL_APPROVAL_REQUIRED",
+            "TOOL_APPROVAL_REQUIRED",
             "类目匹配只允许只读工具，不应产生审批请求。",
             conversation_id=outcome.conversation_id,
             task_run_id=outcome.task_run_id,

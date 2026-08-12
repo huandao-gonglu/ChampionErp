@@ -86,9 +86,13 @@ def test_agents_guidance_points_to_current_architecture_owners() -> None:
         "erp_web/app_config.py",
         "erp_web/runtime_units/store_credentials.py",
         "erp_web/runtime_units/publish_workflows.py",
+        "erp_web/services/ai_tool_declaration.py",
+        "erp_web/services/ai_tool_compiler.py",
+        "erp_web/services/ai_tool_catalog.py",
         "erp_web/services/ai_tool_runtime.py",
     ):
         assert current_owner in guidance
+    assert "erp_web/services/ai_tool_annotation.py" not in guidance
     assert "validate_request_payload(..., endpoint=handler.path)" in guidance
     assert ".venv/bin/python -m pytest tests -q" in guidance
     assert "`POST /api/" not in guidance
@@ -386,6 +390,9 @@ def test_context_map_mentions_shared_ai_tool_execution_entry_points() -> None:
         "erp_web/schemas/ai_tools.py",
         "erp_web/schemas/ai_trace.py",
         "erp_web/services/ai_invocation.py",
+        "erp_web/services/ai_tool_declaration.py",
+        "erp_web/services/ai_tool_compiler.py",
+        "erp_web/services/ai_tool_catalog.py",
         "erp_web/services/ai_tool_registry.py",
         "erp_web/services/ai_tool_runtime.py",
         "erp_web/services/ai_provider_catalog.py",
@@ -404,6 +411,19 @@ def test_context_map_mentions_shared_ai_tool_execution_entry_points() -> None:
         "erp_web/services/category_match_agent_service.py",
     ]:
         assert entry_point in text
+    assert "erp_web/services/ai_tool_annotation.py" not in text
+
+
+def test_agent_provider_errors_keep_provider_semantics() -> None:
+    factory_text = (
+        ROOT / "erp_web/services/ai_agent_factory.py"
+    ).read_text(encoding="utf-8")
+    context_map = (ROOT / "docs/ai-context-map.md").read_text(encoding="utf-8")
+
+    assert '"MODEL_PROVIDER_ERROR"' not in factory_text
+    assert "model_http_error_payload" in factory_text
+    assert '"AI_PROVIDER_RESPONSE_INVALID"' in factory_text
+    assert "不得改写为其他业务含义" in context_map
 
 
 def test_pydantic_ai_types_stay_in_focused_runtime_boundaries() -> None:
@@ -564,18 +584,136 @@ def test_provider_specific_generation_fields_have_one_owner() -> None:
 
 
 def test_ai_tool_runtime_is_domain_agnostic_and_toolsets_are_explicit() -> None:
-    runtime_text = (
-        ROOT / "erp_web/services/ai_tool_runtime.py"
-    ).read_text(encoding="utf-8")
-    registry_text = (
-        ROOT / "erp_web/services/ai_tool_registry.py"
-    ).read_text(encoding="utf-8")
-    for domain_marker in ("category_", "mercadolibre", "ozon_", "publish_"):
-        assert domain_marker not in runtime_text.lower()
+    services = ROOT / "erp_web/services"
+    declaration = services / "ai_tool_declaration.py"
+    compiler = services / "ai_tool_compiler.py"
+    catalog = services / "ai_tool_catalog.py"
+    registry = services / "ai_tool_registry.py"
+    runtime = services / "ai_tool_runtime.py"
+    core_paths = [declaration, compiler, catalog, registry, runtime]
+    texts = {
+        path: path.read_text(encoding="utf-8")
+        for path in core_paths
+    }
+
+    banned_domain_roots = (
+        "erp_web.facades",
+        "erp_web.http_route_units",
+        "erp_web.marketplaces",
+        "erp_web.product_model",
+        "erp_web.runtime_units",
+        "erp_web.stores",
+    )
+    banned_domain_markers = (
+        "category",
+        "image_pool",
+        "mercadolibre",
+        "ozon",
+        "product",
+        "publish",
+        "source_collect",
+        "store_credentials",
+    )
+    domain_import_offenders = [
+        f"{path.relative_to(ROOT)} -> {target}"
+        for path, target in imported_targets(core_paths)
+        if target.startswith(banned_domain_roots)
+        or any(marker in target.casefold() for marker in banned_domain_markers)
+    ]
+    assert not domain_import_offenders, (
+        "AI Tool 基础设施不得反向依赖领域模块：\n"
+        + "\n".join(domain_import_offenders)
+    )
+
+    banned_layer_dependencies = {
+        declaration: (
+            "ai_tool_compiler",
+            "ai_tool_catalog",
+            "ai_tool_registry",
+            "ai_tool_runtime",
+        ),
+        compiler: ("ai_tool_catalog", "ai_tool_runtime"),
+        catalog: ("ai_tool_declaration", "ai_tool_runtime"),
+        registry: (
+            "ai_tool_declaration",
+            "ai_tool_compiler",
+            "ai_tool_catalog",
+            "ai_tool_runtime",
+        ),
+        runtime: (
+            "ai_tool_declaration",
+            "ai_tool_compiler",
+            "ai_tool_catalog",
+        ),
+    }
+    layer_import_offenders = [
+        f"{path.relative_to(ROOT)} -> {target}"
+        for path, target in imported_targets(core_paths)
+        if any(
+            dependency in target
+            for dependency in banned_layer_dependencies[path]
+        )
+    ]
+    assert not layer_import_offenders, (
+        "AI Tool 声明、编译、Catalog、Registry、Runtime 依赖方向错误：\n"
+        + "\n".join(layer_import_offenders)
+    )
+
+    for path, text in texts.items():
+        for dynamic_import_marker in ("importlib", "import_module", "__import__("):
+            assert dynamic_import_marker not in text, (
+                f"{path.relative_to(ROOT)} 不得扫描包或动态导入工具"
+            )
+
+    registry_text = texts[registry]
+    catalog_text = texts[catalog]
     assert "MappingProxyType" in registry_text
-    assert "EMPTY_AI_TOOL_REGISTRY = AiToolRegistry({})" in registry_text
-    assert "importlib" not in registry_text
-    assert "import_module" not in registry_text
+    assert "class AiToolRegistry" not in registry_text
+    assert "EMPTY_AI_TOOL_REGISTRY" not in registry_text
+    assert "class AiToolCatalog" in catalog_text
+
+
+def test_ai_tool_core_symbols_have_single_owners_and_retired_alias_stays_removed() -> None:
+    services = ROOT / "erp_web/services"
+    expected_owners = {
+        "Injected": services / "ai_tool_declaration.py",
+        "AiToolMetadata": services / "ai_tool_declaration.py",
+        "ai_tool": services / "ai_tool_declaration.py",
+        "get_ai_tool_metadata": services / "ai_tool_declaration.py",
+        "CompiledAiTool": services / "ai_tool_compiler.py",
+        "AiToolCompiler": services / "ai_tool_compiler.py",
+        "AiToolBindingScope": services / "ai_tool_catalog.py",
+        "AiToolCatalog": services / "ai_tool_catalog.py",
+    }
+    actual_owners: dict[str, list[Path]] = {
+        symbol: [] for symbol in expected_owners
+    }
+    for path in sorted((ROOT / "erp_web").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in tree.body:
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name in actual_owners:
+                    actual_owners[node.name].append(path)
+    for symbol, expected_owner in expected_owners.items():
+        assert actual_owners[symbol] == [expected_owner], (
+            f"{symbol} 必须只由 {expected_owner.relative_to(ROOT)} 定义，"
+            f"实际为 {[str(path.relative_to(ROOT)) for path in actual_owners[symbol]]}"
+        )
+
+    retired_alias = services / "ai_tool_annotation.py"
+    assert not retired_alias.exists(), "不得恢复第二套 @ai_tool 声明入口"
+    annotation_imports = [
+        f"{path.relative_to(ROOT)} -> {target}"
+        for path, target in imported_targets(
+            sorted((ROOT / "erp_web").rglob("*.py"))
+            + sorted((ROOT / "tests").rglob("*.py"))
+        )
+        if "ai_tool_annotation" in target
+    ]
+    assert not annotation_imports, (
+        "生产代码和测试不得依赖已退役 ai_tool_annotation：\n"
+        + "\n".join(annotation_imports)
+    )
 
 
 def test_pydantic_agent_is_the_only_tool_loop_owner() -> None:
@@ -680,7 +818,11 @@ def test_category_attribute_fill_uses_agent_enum_tool_boundary() -> None:
 
     assert "run_category_attribute_fill_agent" in runtime_text
     assert "run_ai_use_case" not in runtime_text
-    assert 'name="search_attribute_values"' in tool_text
+    assert 'name=CATEGORY_ATTRIBUTE_VALUE_SEARCH_TOOL' in tool_text
+    assert '"category_attribute_values_search"' in tool_text
+    assert "AiToolCatalog.compile" in tool_text
+    assert "AiToolDefinition(" not in tool_text
+    assert "def search_executor(" not in tool_text
     assert "side_effect=\"write\"" not in tool_text
     assert "CategoryAttributeFillOutputValidator" in service_text
     assert "AiAgentFactory" in service_text

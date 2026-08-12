@@ -12,6 +12,7 @@ import time
 from typing import Any, Callable, Mapping
 
 from erp_web.marketplaces.category_provider import CategoryProvider, CategorySearcher
+from erp_web.schemas.ai_tools import AiToolExecutionError
 from erp_web.schemas.category import (
     CategoryBrowseResult,
     CategoryCandidate,
@@ -22,19 +23,8 @@ from erp_web.schemas.category import (
 from .category_providers import require_category_provider
 
 
-class CategorySearchError(RuntimeError):
+class CategorySearchError(AiToolExecutionError):
     """平台类目搜索失败；零候选是正常结果，不使用异常表示。"""
-
-    def __init__(
-        self,
-        code: str,
-        message: str,
-        *,
-        retryable: bool = False,
-    ) -> None:
-        self.code = str(code)
-        self.retryable = bool(retryable)
-        super().__init__(message)
 
 
 def _classified_error(exc: Exception) -> CategorySearchError:

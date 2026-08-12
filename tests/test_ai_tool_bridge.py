@@ -14,7 +14,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from erp_web.schemas.ai_tools import AiToolDefinition
+from erp_web.schemas.ai_tools import AiToolDefinition, AiToolExecutionError
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.services.ai_agent_dependencies import AiAgentDependencies
 from erp_web.services.ai_tool_bridge import AiToolBridgeError, PydanticToolBridge
@@ -85,6 +85,8 @@ def tool_definition(
         required_permission=permission,
         side_effect=side_effect,  # type: ignore[arg-type]
         approval_required=approval_required,
+        idempotency="required" if side_effect == "write" else "none",
+        idempotency_keys=("request_id",) if side_effect == "write" else (),
     )
 
 
@@ -480,7 +482,41 @@ def test_bridge_enforces_deadline_and_output_limit() -> None:
     assert finished[-1]["truncated"] is True
 
 
-def test_bridge_error_does_not_expose_runtime_message() -> None:
+def test_bridge_preserves_public_error_without_code_enumeration() -> None:
+    def executor(arguments: dict[str, Any], context: AiExecutionContext) -> Any:
+        del arguments, context
+        raise AiToolExecutionError(
+            "DOMAIN_CUSTOM_FAILURE",
+            "领域服务暂时不可用。",
+            retryable=True,
+        )
+
+    toolset = bind_toolset(tool_definition(), executor)
+    dependencies, _, recorder = bind_dependencies(toolset, execution_context())
+
+    with pytest.raises(AiToolBridgeError) as captured:
+        execute_bridge(
+            PydanticToolBridge(toolset),
+            dependencies,
+            call_id="public-failure",
+        )
+
+    assert captured.value.code == "DOMAIN_CUSTOM_FAILURE"
+    assert str(captured.value) == "领域服务暂时不可用。"
+    assert captured.value.retryable is True
+    finished = [
+        payload
+        for event_type, payload in recorder.events
+        if event_type == "TOOL_CALL_FINISHED"
+    ]
+    assert finished[-1]["error"] == {
+        "code": "DOMAIN_CUSTOM_FAILURE",
+        "message": "领域服务暂时不可用。",
+        "retryable": True,
+    }
+
+
+def test_bridge_error_does_not_expose_unknown_runtime_message() -> None:
     executions = 0
 
     def executor(arguments: dict[str, Any], context: AiExecutionContext) -> Any:
@@ -503,6 +539,8 @@ def test_bridge_error_does_not_expose_runtime_message() -> None:
         )
 
     assert captured.value.code == "TOOL_EXECUTION_FAILED"
+    assert str(captured.value) == "工具执行失败，请稍后重试。"
+    assert captured.value.retryable is True
     assert "internal-runtime-secret-token" not in str(captured.value)
     assert "internal-runtime-secret-token" not in repr(captured.value)
     assert executions == 1

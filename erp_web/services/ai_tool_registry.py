@@ -1,9 +1,11 @@
-"""不可变 ToolSet 与显式 definition/executor 绑定。"""
+"""不可变 ToolSet 与 definition/executor 绑定。"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import wraps
+import hashlib
+import json
 from types import MappingProxyType
 from typing import Any, Callable, Iterable, Mapping
 
@@ -107,36 +109,44 @@ class AiToolSet:
     def get(self, tool_name: str) -> AiToolBinding | None:
         return self.bindings.get(tool_name)
 
+    @property
+    def legacy_toolset_signature(self) -> str:
+        """仅用于读取旧 deferred envelope 的 name@version 签名。"""
 
-@dataclass(frozen=True)
-class AiToolRegistry:
-    toolsets: Mapping[str, AiToolSet]
+        return "|".join(
+            f"{definition.name}@{definition.version}"
+            for definition in sorted(self.definitions, key=lambda item: item.name)
+        )
 
-    def __post_init__(self) -> None:
-        copied = dict(self.toolsets)
-        for toolset_id, toolset in copied.items():
-            if toolset_id != toolset.toolset_id:
-                raise ValueError(
-                    f"ToolSet registry key {toolset_id} 与 {toolset.toolset_id} 不一致"
+    @property
+    def toolset_contract_fingerprint(self) -> str:
+        """覆盖 ToolSet 全部工具契约的规范化指纹。"""
+
+        payload = {
+            "toolset_id": self.toolset_id,
+            "tools": [
+                {
+                    "name": definition.name,
+                    "contract_fingerprint": definition.contract_fingerprint,
+                }
+                for definition in sorted(
+                    self.definitions,
+                    key=lambda item: item.name,
                 )
-        object.__setattr__(self, "toolsets", MappingProxyType(copied))
-
-    def require(self, toolset_id: str) -> AiToolSet:
-        toolset = self.toolsets.get(toolset_id)
-        if toolset is None:
-            raise KeyError(f"未注册 ToolSet：{toolset_id}")
-        return toolset
-
-
-# PR 1 不注册任何真实业务工具。后续 profile 必须显式提供自己的 registry。
-EMPTY_AI_TOOL_REGISTRY = AiToolRegistry({})
+            ],
+        }
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
 
 
 __all__ = [
     "AiToolBinding",
     "AiToolExecutor",
-    "AiToolRegistry",
     "AiToolSet",
-    "EMPTY_AI_TOOL_REGISTRY",
     "deadline_aware_tool_executor",
 ]

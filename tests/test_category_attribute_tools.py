@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from erp_web.runtime_units import category_attribute_tools
 from erp_web.schemas.ai_trace import AiExecutionContext
+from erp_web.schemas.ai_tools import AiToolExecutionError
 from erp_web.schemas.category_attribute import CategoryAttributeValueLedger
 
 
@@ -13,7 +16,7 @@ def execution_context() -> AiExecutionContext:
         attempt_id="attempt_attribute_values",
         deadline_at=datetime.now(timezone.utc) + timedelta(seconds=30),
         budget_profile="category.attribute_fill.default",
-        permissions=frozenset({"category.read"}),
+        permissions=frozenset({"category.attribute.read"}),
     )
 
 
@@ -24,7 +27,7 @@ def test_attribute_value_tool_queries_strict_dictionary_and_records_ids(
         {
             "id": "8229",
             "name": "Тип",
-            "strict_enum": True,
+            "value_mode": "strict_enum",
             "options": [],
         }
     ]
@@ -53,7 +56,7 @@ def test_attribute_value_tool_queries_strict_dictionary_and_records_ids(
         ledger=ledger,
     )
 
-    output = toolset.get("search_attribute_values").executor(
+    output = toolset.get("category_attribute_values_search").executor(
         {
             "requests": [
                 {"attribute_id": "8229", "query": "вентилятор"}
@@ -66,8 +69,6 @@ def test_attribute_value_tool_queries_strict_dictionary_and_records_ids(
         {
             "attribute_id": "8229",
             "query": "вентилятор",
-            "strict_enum": True,
-            "allows_custom_value": False,
             "values": [
                 {
                     "dictionary_value_id": "91443",
@@ -86,13 +87,13 @@ def test_attribute_value_tool_queries_strict_dictionary_and_records_ids(
     }
 
 
-def test_suggested_enum_reports_that_custom_text_is_allowed() -> None:
+def test_attribute_value_tool_rejects_open_enum() -> None:
     ledger = CategoryAttributeValueLedger.from_schema(
         [
             {
                 "id": "STYLE",
                 "name": "Style",
-                "strict_enum": False,
+                "value_mode": "open_enum",
                 "options": ["Desk", "Floor"],
             }
         ]
@@ -103,12 +104,8 @@ def test_suggested_enum_reports_that_custom_text_is_allowed() -> None:
         ledger=ledger,
     )
 
-    output = toolset.get("search_attribute_values").executor(
-        {"requests": [{"attribute_id": "STYLE", "query": "wall"}]},
-        execution_context(),
-    )
-
-    assert output["results"][0]["values"] == []
-    assert output["results"][0]["strict_enum"] is False
-    assert output["results"][0]["allows_custom_value"] is True
-
+    with pytest.raises(AiToolExecutionError, match="只有强制枚举属性"):
+        toolset.get("category_attribute_values_search").executor(
+            {"requests": [{"attribute_id": "STYLE", "query": "wall"}]},
+            execution_context(),
+        )

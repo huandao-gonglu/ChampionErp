@@ -40,6 +40,7 @@ class AiWorkEvent(TypedDict, total=False):
     value: Any
     message: str
     code: str
+    retryable: bool
     result: Any
     rawEvent: Any
     task_run_id: str

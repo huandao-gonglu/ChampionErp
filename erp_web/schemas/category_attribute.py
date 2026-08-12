@@ -3,11 +3,60 @@ from __future__ import annotations
 """类目属性枚举查询的稳定数据形状与候选账本。"""
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Annotated, Any
+
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 
-CATEGORY_ATTRIBUTE_VALUE_PERMISSION = "category.read"
+CATEGORY_ATTRIBUTE_VALUE_PERMISSION = "category.attribute.read"
 CATEGORY_ATTRIBUTE_VALUE_TOOLSET_ID = "category.attribute_values"
+
+
+class CategoryAttributeValueQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    attribute_id: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=160),
+    ]
+    query: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, max_length=255),
+    ]
+
+
+class CategoryAttributeValueSearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    requests: list[CategoryAttributeValueQuery] = Field(min_length=1, max_length=8)
+
+
+class CategoryAttributeValueCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    dictionary_value_id: Annotated[str, StringConstraints(max_length=160)]
+    value: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=500),
+    ]
+
+
+class CategoryAttributeValueLookupResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    attribute_id: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=160),
+    ]
+    query: Annotated[str, StringConstraints(max_length=255)]
+    values: list[CategoryAttributeValueCandidate] = Field(max_length=20)
+    error_code: Annotated[str, StringConstraints(max_length=80)] = ""
+
+
+class CategoryAttributeValueSearchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    results: list[CategoryAttributeValueLookupResult] = Field(max_length=8)
 
 
 def _text(value: Any, limit: int = 500) -> str:
@@ -94,5 +143,10 @@ class CategoryAttributeValueLedger:
 __all__ = [
     "CATEGORY_ATTRIBUTE_VALUE_PERMISSION",
     "CATEGORY_ATTRIBUTE_VALUE_TOOLSET_ID",
+    "CategoryAttributeValueCandidate",
     "CategoryAttributeValueLedger",
+    "CategoryAttributeValueLookupResult",
+    "CategoryAttributeValueQuery",
+    "CategoryAttributeValueSearchRequest",
+    "CategoryAttributeValueSearchResult",
 ]

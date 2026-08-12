@@ -8,6 +8,7 @@ import pytest
 from erp_web.schemas.ai_tools import (
     AiToolCommand,
     AiToolDefinition,
+    AiToolExecutionError,
     AiToolResult,
     AiToolSchemaError,
 )
@@ -49,11 +50,12 @@ class RecordingRecorder:
 
 def tool_definition(
     *,
+    name: str = "lookup_item",
     permission: str = "catalog.read",
     side_effect: str = "none",
 ) -> AiToolDefinition:
     return AiToolDefinition(
-        name="lookup_item",
+        name=name,
         version="1",
         description="按 ID 读取测试数据",
         input_schema={
@@ -71,6 +73,8 @@ def tool_definition(
         required_permission=permission,
         side_effect=side_effect,
         approval_required=False,
+        idempotency="required" if side_effect == "write" else "none",
+        idempotency_keys=("operation_id",) if side_effect == "write" else (),
     )
 
 
@@ -102,6 +106,7 @@ def execution_context(
         deadline_at=now - timedelta(seconds=1) if expired else now + timedelta(seconds=30),
         budget_profile="test.default",
         permissions=permissions,
+        idempotency_context={"operation_id": "operation-test"},
         allow_write=allow_write,
     )
 
@@ -135,6 +140,8 @@ def runtime(
 
 
 def test_ai_tool_schema_rejects_invalid_definitions_commands_and_arguments() -> None:
+    with pytest.raises(AiToolSchemaError, match="只能包含"):
+        tool_definition(name="catalog.lookup_item")
     with pytest.raises(AiToolSchemaError, match="side_effect"):
         AiToolDefinition(
             name="bad",
@@ -319,8 +326,42 @@ def test_runtime_aborts_before_side_effect_when_checkpoint_persistence_fails() -
     assert result.error == {
         "code": "TOOL_EXECUTION_CHECKPOINT_FAILED",
         "message": "工具执行前检查点无法持久化",
+        "retryable": True,
     }
     assert executions == 0
+
+
+def test_runtime_preserves_public_execution_error_without_code_enumeration() -> None:
+    def executor(arguments, context):
+        del arguments, context
+        raise AiToolExecutionError(
+            "DOMAIN_CUSTOM_FAILURE",
+            "领域服务暂时不可用。",
+            retryable=True,
+        )
+
+    result = runtime(executor).execute(tool_command())
+
+    assert result.error == {
+        "code": "DOMAIN_CUSTOM_FAILURE",
+        "message": "领域服务暂时不可用。",
+        "retryable": True,
+    }
+
+
+def test_runtime_hides_unknown_execution_exception_details() -> None:
+    def executor(arguments, context):
+        del arguments, context
+        raise RuntimeError("internal-runtime-secret-token")
+
+    result = runtime(executor).execute(tool_command())
+
+    assert result.error == {
+        "code": "TOOL_EXECUTION_FAILED",
+        "message": "工具执行失败，请稍后重试。",
+        "retryable": True,
+    }
+    assert "internal-runtime-secret-token" not in str(result.to_dict())
 
 
 def test_runtime_rejects_same_call_id_with_different_arguments() -> None:

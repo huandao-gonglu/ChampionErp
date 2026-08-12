@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -47,11 +48,16 @@ PROFILE = AiAgentExecutionProfile(
 )
 
 
-def write_toolset(executor, *, version: str = "1") -> AiToolSet:
+def write_toolset(
+    executor,
+    *,
+    version: str = "1",
+    description: str = "保存库存数量",
+) -> AiToolSet:
     definition = AiToolDefinition(
         name="save_inventory",
         version=version,
-        description="保存库存数量",
+        description=description,
         input_schema={
             "type": "object",
             "required": ["sku", "quantity"],
@@ -70,6 +76,8 @@ def write_toolset(executor, *, version: str = "1") -> AiToolSet:
         required_permission="inventory.write",
         side_effect="write",
         approval_required=True,
+        idempotency="required",
+        idempotency_keys=("operation_id",),
     )
     return AiToolSet.bind(
         "inventory.write",
@@ -177,6 +185,10 @@ def test_approval_persists_and_resumes_with_fresh_runtime_exactly_once() -> None
     pending = first_factory.state_store.load(paused.deferred_state_id)
     assert pending.status == "pending"
     assert pending.references["conversation_id"] == paused.conversation_id
+    assert pending.references["toolset_contract_fingerprint"] == (
+        write_toolset(executor).toolset_contract_fingerprint
+    )
+    assert "toolset_signature" not in pending.references
     assert pending.security.required_permissions == {
         "inventory.write",
         "inventory.approve",
@@ -489,6 +501,13 @@ def test_invalid_tool_arguments_are_rejected_before_approval_is_created() -> Non
         start_deferred(agent_factory, write_toolset(executor))
 
     assert captured.value.code == "TOOL_INPUT_SCHEMA_INVALID"
+    assert str(captured.value) == "$ 缺少必填字段：sku, quantity"
+    assert captured.value.retryable is False
+    events = get_context().ai_journal.read_events(captured.value.conversation_id)
+    terminal = next(event for event in events if event["type"] == "RUN_ERROR")
+    assert terminal["code"] == "TOOL_INPUT_SCHEMA_INVALID"
+    assert terminal["message"] == "$ 缺少必填字段：sku, quantity"
+    assert terminal["retryable"] is False
     assert executions == 0
     assert not list(agent_factory.state_store.root.glob("*.json"))
 
@@ -517,3 +536,67 @@ def test_resume_rejects_changed_tool_version_before_claim() -> None:
 
     assert captured.value.code == "AI_AGENT_STATE_TOOLSET_MISMATCH"
     assert agent_factory.state_store.load(paused.deferred_state_id).status == "pending"
+
+
+def test_resume_rejects_same_version_contract_change_before_claim() -> None:
+    def executor(arguments: dict[str, Any], context: AiExecutionContext) -> Any:
+        del arguments, context
+        raise AssertionError("工具契约不一致时不得执行")
+
+    agent_factory = factory(FunctionModel(model_function))
+    paused = start_deferred(agent_factory, write_toolset(executor))
+
+    with pytest.raises(AiAgentExecutionError) as captured:
+        agent_factory.resume_sync(
+            state_id=paused.deferred_state_id,
+            profile=PROFILE,
+            instructions="调用写工具保存库存。",
+            toolset=write_toolset(executor, description="同版本但语义已变化"),
+            approval_decisions={"write-call-1": True},
+            approver_id="approver-4",
+            tenant_id="tenant-1",
+            permissions={"inventory.write", "inventory.approve"},
+            business_scope=RUN_SCOPE,
+            idempotency_context=IDEMPOTENCY,
+        )
+
+    assert captured.value.code == "AI_AGENT_STATE_TOOLSET_MISMATCH"
+    assert agent_factory.state_store.load(paused.deferred_state_id).status == "pending"
+
+
+def test_resume_migrates_legacy_name_version_signature() -> None:
+    executions = 0
+
+    def executor(arguments: dict[str, Any], context: AiExecutionContext) -> Any:
+        nonlocal executions
+        del arguments, context
+        executions += 1
+        return {"saved": True}
+
+    agent_factory = factory(FunctionModel(model_function))
+    toolset = write_toolset(executor)
+    paused = start_deferred(agent_factory, toolset)
+    state_path = agent_factory.state_store.state_path(paused.deferred_state_id)
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    payload["references"].pop("toolset_contract_fingerprint")
+    payload["references"]["toolset_signature"] = toolset.legacy_toolset_signature
+    state_path.write_text(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+
+    resumed = agent_factory.resume_sync(
+        state_id=paused.deferred_state_id,
+        profile=PROFILE,
+        instructions="调用写工具保存库存。",
+        toolset=toolset,
+        approval_decisions={"write-call-1": True},
+        approver_id="approver-legacy",
+        tenant_id="tenant-1",
+        permissions={"inventory.write", "inventory.approve"},
+        business_scope=RUN_SCOPE,
+        idempotency_context=IDEMPOTENCY,
+    )
+
+    assert resumed.output == WriteOutput(saved=True)
+    assert executions == 1

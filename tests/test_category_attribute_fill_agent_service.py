@@ -26,7 +26,7 @@ SCHEMA = [
         "id": "8229",
         "name": "Тип",
         "required": True,
-        "strict_enum": True,
+        "value_mode": "strict_enum",
         "is_collection": False,
         "max_value_count": 0,
         "options": [],
@@ -35,7 +35,7 @@ SCHEMA = [
         "id": "STYLE",
         "name": "Style",
         "required": True,
-        "strict_enum": False,
+        "value_mode": "open_enum",
         "is_collection": False,
         "max_value_count": 0,
         "options": ["Desk", "Floor"],
@@ -91,7 +91,7 @@ def final_output(
     )
 
 
-def test_agent_queries_strict_enum_and_allows_custom_nonstrict_value(
+def test_agent_queries_only_strict_enum_and_allows_custom_open_enum_value(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
@@ -116,14 +116,13 @@ def test_agent_queries_strict_enum_and_allows_custom_nonstrict_value(
             return ModelResponse(
                 parts=[
                     ToolCallPart(
-                        "search_attribute_values",
+                        "category_attribute_values_search",
                         {
                             "requests": [
                                 {
                                     "attribute_id": "8229",
                                     "query": "вентилятор",
                                 },
-                                {"attribute_id": "STYLE", "query": "wall"},
                             ]
                         },
                         tool_call_id="values-1",
@@ -141,7 +140,6 @@ def test_agent_queries_strict_enum_and_allows_custom_nonstrict_value(
             "dictionary_value_id": "91443",
             "value": "Вентилятор",
         }
-        assert returns[-1].content["results"][1]["allows_custom_value"] is True
         return final_output(
             agent_info,
             {
@@ -197,4 +195,3 @@ def test_validator_rejects_strict_enum_not_returned_by_tool() -> None:
 
     with pytest.raises(ModelRetry, match="只能选择本次工具真实返回"):
         validator(None, output)  # type: ignore[arg-type]
-

@@ -4,61 +4,13 @@ from copy import deepcopy
 from typing import Any
 
 from erp_web.schemas.category import (
-    category_attribute_dictionary_id,
-    is_category_dictionary_attribute,
+    category_attribute_schema,
+    category_attribute_value_is_valid,
 )
 
 from .common import normalize_list
 from .defaults import default_draft
 from .merge_model import normalize_product_model
-
-def _normalize_category_attr(attr: Any) -> dict[str, Any]:
-    attr = attr if isinstance(attr, dict) else {}
-    raw = attr.get("raw") if isinstance(attr.get("raw"), dict) else {}
-    dictionary_id = category_attribute_dictionary_id(attr)
-    value_type = str(attr.get("value_type") or "string").strip() or "string"
-    options = attr.get("options") if isinstance(attr.get("options"), list) else normalize_list(attr.get("options"))
-    return {
-        "id": str(attr.get("id") or attr.get("code") or "").strip(),
-        "name": str(attr.get("name") or attr.get("label") or attr.get("id") or "").strip(),
-        "required": bool(attr.get("required", False)),
-        "value_type": value_type,
-        "unit": str(attr.get("unit") or "").strip(),
-        "options": normalize_list(options),
-        "description": str(attr.get("description") or "").strip(),
-        "dictionary_id": dictionary_id,
-        "is_dictionary": is_category_dictionary_attribute(attr),
-        "is_collection": bool(
-            attr.get("is_collection") or raw.get("is_collection")
-        ),
-        "max_value_count": int(
-            attr.get("max_value_count") or raw.get("max_value_count") or 0
-        ),
-        "category_dependent": bool(
-            attr.get("category_dependent") or raw.get("category_dependent")
-        ),
-    }
-
-
-def _dictionary_selection_has_value(value: Any) -> bool:
-    if not isinstance(value, dict) or not isinstance(value.get("values"), list):
-        return False
-    selected = [item for item in value.get("values") or [] if isinstance(item, dict)]
-    if not selected:
-        return False
-    return all(
-        item.get("dictionary_value_id") not in (None, "")
-        and str(item.get("value") or "").strip()
-        for item in selected
-    )
-
-
-def _category_attribute_schema(record: dict[str, Any] | None) -> list[dict[str, Any]]:
-    record = record if isinstance(record, dict) else {}
-    attrs = record.get("attributes") if isinstance(record.get("attributes"), dict) else {}
-    required = [_normalize_category_attr(attr) for attr in (attrs.get("required") if isinstance(attrs.get("required"), list) else [])]
-    optional = [_normalize_category_attr(attr) for attr in (attrs.get("optional") if isinstance(attrs.get("optional"), list) else [])]
-    return required + optional
 
 
 def _category_path_text(record: dict[str, Any] | None) -> str:
@@ -195,66 +147,133 @@ def _attribute_value_from_source(product: dict[str, Any], platform: str, attr: d
     return result("", False)
 
 
-def build_ai_attribute_fill(product: dict[str, Any], platform: str, category_record: dict[str, Any] | None) -> dict[str, Any]:
+_PACKAGE_ATTRIBUTE_FIELDS = {
+    "PACKAGE_LENGTH": "length_cm",
+    "PACKAGE_WIDTH": "width_cm",
+    "PACKAGE_HEIGHT": "height_cm",
+    "PACKAGE_WEIGHT": "weight_kg",
+}
+_GTIN_ATTRIBUTE_IDS = {"GTIN", "UPC", "UNIVERSAL_PRODUCT_CODE"}
+
+
+def _required_attribute_is_satisfied(
+    normalized: dict[str, Any],
+    draft: dict[str, Any],
+    definition: dict[str, Any],
+) -> bool:
+    attr_id = str(definition.get("id") or "").strip()
+    attr_id_upper = attr_id.upper()
+    attributes = (
+        draft.get("attributes")
+        if isinstance(draft.get("attributes"), dict)
+        else {}
+    )
+    gtin_value = str(
+        draft.get("upc")
+        or normalized.get("upc")
+        or attributes.get("GTIN")
+        or ""
+    ).strip()
+    if attr_id_upper == "EMPTY_GTIN_REASON" and gtin_value:
+        return True
+    if attr_id_upper in _GTIN_ATTRIBUTE_IDS and str(
+        attributes.get("EMPTY_GTIN_REASON") or ""
+    ).strip():
+        return True
+    package_field = _PACKAGE_ATTRIBUTE_FIELDS.get(attr_id_upper)
+    package = (
+        draft.get("package_dimensions")
+        if isinstance(draft.get("package_dimensions"), dict)
+        else {}
+    )
+    if package_field and str(package.get(package_field) or "").strip():
+        return True
+    return category_attribute_value_is_valid(definition, attributes.get(attr_id))
+
+
+def unresolved_required_category_attributes(
+    product: dict[str, Any],
+    platform: str,
+    category_record: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """返回规则、Agent 与发布预检共同认可的未解决必填属性。"""
+
     normalized = normalize_product_model(product or {})
-    draft = deepcopy(normalized.get("drafts", {}).get(platform) if isinstance(normalized.get("drafts"), dict) else default_draft(platform))
-    schema = _category_attribute_schema(category_record)
+    platform = str(platform or "").strip().lower()
+    drafts = (
+        normalized.get("drafts")
+        if isinstance(normalized.get("drafts"), dict)
+        else {}
+    )
+    draft = drafts.get(platform) if isinstance(drafts.get(platform), dict) else {}
+    return [
+        definition
+        for definition in category_attribute_schema(category_record)
+        if definition.get("required")
+        and not _required_attribute_is_satisfied(normalized, draft, definition)
+    ]
+
+
+def build_ai_attribute_fill(
+    product: dict[str, Any],
+    platform: str,
+    category_record: dict[str, Any] | None,
+) -> dict[str, Any]:
+    normalized = normalize_product_model(product or {})
+    platform = str(platform or "").strip().lower()
+    draft = deepcopy(
+        normalized.get("drafts", {}).get(platform)
+        if isinstance(normalized.get("drafts"), dict)
+        else default_draft(platform)
+    )
     attributes = deepcopy(draft.get("attributes") or {})
-    need_review: list[str] = []
-    safe_auto_fill_ids = {
-        "BRAND",
-        "MODEL",
-        "GTIN",
-        "UPC",
-        "UNIVERSAL_PRODUCT_CODE",
-        "EMPTY_GTIN_REASON",
-        "PACKAGE_LENGTH",
-        "PACKAGE_WIDTH",
-        "PACKAGE_HEIGHT",
-        "PACKAGE_WEIGHT",
-        "SELLER_SKU",
-        "SKU",
-    }
-    for attr in schema:
-        attr_id = str(attr.get("id") or "").strip()
-        if not attr_id:
-            continue
-        current_raw_value = attributes.get(attr_id)
-        if attr.get("is_dictionary"):
-            if _dictionary_selection_has_value(current_raw_value):
-                continue
+    gtin_value = str(draft.get("upc") or normalized.get("upc") or "").strip()
+    if gtin_value:
+        attributes.pop("EMPTY_GTIN_REASON", None)
+    elif draft.get("allow_gtin_exemption"):
+        for attr_id in _GTIN_ATTRIBUTE_IDS:
             attributes.pop(attr_id, None)
-            if attr.get("required"):
-                need_review.append(attr_id)
+    for definition in unresolved_required_category_attributes(
+        normalized,
+        platform,
+        category_record,
+    ):
+        attr_id = str(definition.get("id") or "").strip()
+        attributes.pop(attr_id, None)
+        if definition.get("value_mode") == "strict_enum":
             continue
-        current_value = str(current_raw_value or "").strip()
-        if current_value and current_value.upper() == attr_id.upper():
-            attributes.pop(attr_id, None)
-        gtin_value = str(draft.get("upc") or normalized.get("upc") or "").strip()
-        if attr_id.upper() == "EMPTY_GTIN_REASON" and gtin_value:
-            attributes.pop(attr_id, None)
+        value, confident = _attribute_value_from_source(
+            normalized,
+            platform,
+            definition,
+        )
+        if not value or not confident:
             continue
-        if attr_id.upper() in {"GTIN", "UPC", "UNIVERSAL_PRODUCT_CODE"} and not gtin_value and draft.get("allow_gtin_exemption"):
-            attributes.pop(attr_id, None)
-            continue
-        attr_required = bool(attr.get("required"))
-        can_auto_fill = attr_required or attr_id.upper() in safe_auto_fill_ids or attr_id in attributes
-        if not can_auto_fill:
-            continue
-        value, confident = _attribute_value_from_source(normalized, platform, attr)
-        if value:
-            attributes[attr_id] = value
-        elif attr_required:
-            need_review.append(attr_id)
-        if attr_required and not confident:
-            need_review.append(attr_id)
-    if not attributes.get("BRAND"):
-        attributes["BRAND"] = str(draft.get("brand") or normalized.get("brand") or normalized.get("source", {}).get("brand") or "Generic").strip() or "Generic"
-    if not attributes.get("MODEL"):
-        attributes["MODEL"] = str(draft.get("model") or normalized.get("model") or normalized.get("source", {}).get("model") or "General").strip() or "General"
+        canonical_option = next(
+            (
+                str(option)
+                for option in definition.get("options") or []
+                if str(option).strip().casefold() == value.casefold()
+            ),
+            "",
+        )
+        attributes[attr_id] = canonical_option or value
+
+    candidate = normalize_product_model(deepcopy(normalized))
+    candidate_draft = deepcopy(draft)
+    candidate_draft["attributes"] = attributes
+    candidate.setdefault("drafts", {})[platform] = candidate_draft
+    need_review = [
+        str(definition.get("id") or "").strip()
+        for definition in unresolved_required_category_attributes(
+            candidate,
+            platform,
+            category_record,
+        )
+    ]
     return {
         "attributes": attributes,
-        "need_review": sorted({str(item).strip() for item in need_review if str(item).strip()}),
+        "need_review": need_review,
         "category_id": str(draft.get("category_id") or "").strip(),
         "category_path": str(draft.get("category_path") or "").strip(),
     }
@@ -286,31 +305,12 @@ def validate_category_precheck(product: dict[str, Any], platform: str, category_
     missing_fields: list[str] = []
     if not str(draft.get("category_id") or "").strip():
         missing_fields.append("category_id")
-    pkg = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
-    values = draft.get("attributes") if isinstance(draft.get("attributes"), dict) else {}
-    package_attr_values = {
-        "PACKAGE_LENGTH": str(pkg.get("length_cm") or "").strip(),
-        "PACKAGE_WIDTH": str(pkg.get("width_cm") or "").strip(),
-        "PACKAGE_HEIGHT": str(pkg.get("height_cm") or "").strip(),
-        "PACKAGE_WEIGHT": str(pkg.get("weight_kg") or "").strip(),
-    }
-    for attr in _category_attribute_schema(category_record):
-        if not attr.get("required"):
-            continue
-        attr_id = str(attr.get("id") or "").strip()
-        if not attr_id:
-            continue
-        if attr_id.upper() == "EMPTY_GTIN_REASON" and str(draft.get("upc") or normalized.get("upc") or values.get("GTIN") or "").strip():
-            continue
-        if attr_id.upper() in {"GTIN", "UPC", "UNIVERSAL_PRODUCT_CODE"} and str(values.get("EMPTY_GTIN_REASON") or "").strip():
-            continue
-        if package_attr_values.get(attr_id.upper()):
-            continue
-        value = values.get(attr_id)
-        if attr.get("is_dictionary"):
-            has_value = _dictionary_selection_has_value(value)
-        else:
-            has_value = bool(str(value or "").strip())
-        if not has_value:
-            missing_fields.append(f"attributes.{attr_id}")
+    missing_fields.extend(
+        f"attributes.{definition['id']}"
+        for definition in unresolved_required_category_attributes(
+            normalized,
+            platform,
+            category_record,
+        )
+    )
     return list(dict.fromkeys(missing_fields))

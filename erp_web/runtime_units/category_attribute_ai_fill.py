@@ -5,11 +5,12 @@ import re
 from copy import deepcopy
 from typing import Any
 
-from erp_web.product_model import apply_ai_attribute_fill, normalize_product_model
-from erp_web.schemas.category import (
-    category_attribute_dictionary_id,
-    is_category_dictionary_attribute,
+from erp_web.product_model import (
+    apply_ai_attribute_fill,
+    normalize_product_model,
+    unresolved_required_category_attributes,
 )
+from erp_web.schemas.category import category_attribute_schema
 from erp_web.schemas.category_attribute import CategoryAttributeValueLedger
 from erp_web.services.category_attribute_fill_agent_service import (
     CategoryAttributeFillAgentRun,
@@ -29,85 +30,6 @@ def _normalize_list(value: Any) -> list[str]:
             if item.strip()
         ]
     return []
-
-
-def _normalize_attr(attr: Any, required_fallback: bool = False) -> dict[str, Any]:
-    raw = attr if isinstance(attr, dict) else {}
-    platform_raw = raw.get("raw") if isinstance(raw.get("raw"), dict) else {}
-    dictionary_id = category_attribute_dictionary_id(raw)
-    values = raw.get("values") if isinstance(raw.get("values"), list) else []
-    options = _normalize_list(raw.get("options"))
-    for item in values:
-        if isinstance(item, dict):
-            label = str(
-                item.get("name")
-                or item.get("value_name")
-                or item.get("id")
-                or ""
-            ).strip()
-        else:
-            label = str(item or "").strip()
-        if label:
-            options.append(label)
-    strict_enum = is_category_dictionary_attribute(raw)
-    return {
-        "id": str(
-            raw.get("id")
-            or raw.get("attribute_id")
-            or raw.get("code")
-            or ""
-        ).strip(),
-        "name": str(
-            raw.get("name") or raw.get("label") or raw.get("id") or ""
-        ).strip(),
-        "required": bool(raw.get("required", required_fallback)),
-        "value_type": str(raw.get("value_type") or "").strip(),
-        "unit": str(raw.get("unit") or "").strip(),
-        "description": _short_text(raw.get("description"), 1500),
-        "options": list(dict.fromkeys(options))[:80],
-        "dictionary_id": dictionary_id,
-        "is_dictionary": strict_enum,
-        "strict_enum": strict_enum,
-        "allows_custom_value": not strict_enum,
-        "is_collection": bool(
-            raw.get("is_collection") or platform_raw.get("is_collection")
-        ),
-        "max_value_count": int(
-            raw.get("max_value_count")
-            or platform_raw.get("max_value_count")
-            or 0
-        ),
-        "category_dependent": bool(
-            raw.get("category_dependent")
-            or platform_raw.get("category_dependent")
-        ),
-    }
-
-
-def _attribute_schema(category_record: dict[str, Any] | None) -> list[dict[str, Any]]:
-    record = category_record if isinstance(category_record, dict) else {}
-    attrs = (
-        record.get("attributes")
-        if isinstance(record.get("attributes"), dict)
-        else {}
-    )
-    required = [
-        _normalize_attr(attr, True)
-        for attr in (
-            attrs.get("required")
-            if isinstance(attrs.get("required"), list)
-            else []
-        )
-    ]
-    optional = [
-        _normalize_attr(attr, False)
-        for attr in (
-            attrs.get("optional")
-            if isinstance(attrs.get("optional"), list)
-            else []
-        )
-    ]
-    return [attr for attr in required + optional if attr.get("id")]
 
 
 def _category_path_text(record: dict[str, Any] | None) -> str:
@@ -210,54 +132,6 @@ def _agent_payload(
     }
 
 
-def _is_meaningful_existing(attr_id: str, value: Any) -> bool:
-    if isinstance(value, dict) and isinstance(value.get("values"), list):
-        selected = [item for item in value.get("values") or [] if isinstance(item, dict)]
-        return bool(selected) and all(
-            item.get("dictionary_value_id") not in (None, "")
-            and str(item.get("value") or "").strip()
-            for item in selected
-        )
-    text = str(value or "").strip()
-    return bool(text) and text.upper() != attr_id.upper()
-
-
-def _schema_for_agent(
-    product: dict[str, Any],
-    platform: str,
-    schema: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    drafts = (
-        product.get("drafts") if isinstance(product.get("drafts"), dict) else {}
-    )
-    draft = (
-        drafts.get(platform) if isinstance(drafts.get(platform), dict) else {}
-    )
-    existing = (
-        draft.get("attributes")
-        if isinstance(draft.get("attributes"), dict)
-        else {}
-    )
-    need_review = {
-        str(item).strip()
-        for item in (
-            draft.get("validation_errors")
-            if isinstance(draft.get("validation_errors"), list)
-            else []
-        )
-        if str(item).strip()
-    }
-    return [
-        attr
-        for attr in schema
-        if (attr_id := str(attr.get("id") or "").strip())
-        and (
-            attr_id in need_review
-            or not _is_meaningful_existing(attr_id, existing.get(attr_id))
-        )
-    ]
-
-
 def _dictionary_value_id(value: Any) -> int | str:
     text = str(value or "").strip()
     try:
@@ -270,11 +144,10 @@ def _validated_agent_attributes(
     agent_output: dict[str, Any],
     schema: list[dict[str, Any]],
     ledger: CategoryAttributeValueLedger,
-) -> tuple[dict[str, Any], set[str]]:
+) -> dict[str, Any]:
     schema_by_id = {str(attr.get("id") or ""): attr for attr in schema}
     accepted: dict[str, Any] = {}
     dictionary_values: dict[str, list[dict[str, Any]]] = {}
-    review: set[str] = set()
     assignments = (
         agent_output.get("assignments")
         if isinstance(agent_output.get("assignments"), list)
@@ -290,11 +163,10 @@ def _validated_agent_attributes(
         value = str(assignment.get("value") or "").strip()
         if not value:
             continue
-        if attr.get("strict_enum"):
+        if attr.get("value_mode") == "strict_enum":
             value_id = str(assignment.get("dictionary_value_id") or "").strip()
             candidate = ledger.get(attr_id, value_id)
             if candidate is None:
-                review.add(attr_id)
                 continue
             dictionary_values.setdefault(attr_id, []).append(
                 {
@@ -324,19 +196,7 @@ def _validated_agent_attributes(
             accepted[attr_id] = value[:255]
     for attr_id, values in dictionary_values.items():
         accepted[attr_id] = {"values": values}
-    raw_review = (
-        agent_output.get("need_review")
-        if isinstance(agent_output.get("need_review"), list)
-        else []
-    )
-    for item in raw_review:
-        if isinstance(item, dict):
-            attr_id = str(item.get("id") or item.get("attribute_id") or "").strip()
-        else:
-            attr_id = str(item or "").strip()
-        if attr_id in schema_by_id:
-            review.add(attr_id)
-    return accepted, review
+    return accepted
 
 
 def apply_ai_model_attribute_fill(
@@ -346,14 +206,17 @@ def apply_ai_model_attribute_fill(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     platform = str(platform or "").strip().lower()
     base_product = apply_ai_attribute_fill(product, platform, category_record)
-    schema = _attribute_schema(category_record)
+    schema = category_attribute_schema(category_record)
     if not schema:
         return base_product, {"source": "rules", "warning": "当前类目没有可填属性。"}
     meta: dict[str, Any] = {"source": "rules"}
     agent_run: CategoryAttributeFillAgentRun | None = None
     try:
-        normalized_product = normalize_product_model(product or {})
-        agent_schema = _schema_for_agent(normalized_product, platform, schema)
+        agent_schema = unresolved_required_category_attributes(
+            base_product,
+            platform,
+            category_record,
+        )
         if not agent_schema:
             return base_product, {"source": "rules", "ai_filled": []}
         ledger = CategoryAttributeValueLedger.from_schema(agent_schema)
@@ -364,7 +227,7 @@ def apply_ai_model_attribute_fill(
         )
         agent_run = run_category_attribute_fill_agent(
             _agent_payload(
-                normalized_product,
+                base_product,
                 platform,
                 category_record,
                 agent_schema,
@@ -372,7 +235,7 @@ def apply_ai_model_attribute_fill(
             toolset,
             ledger,
         )
-        ai_attrs, ai_review = _validated_agent_attributes(
+        ai_attrs = _validated_agent_attributes(
             agent_run.output,
             agent_schema,
             ledger,
@@ -388,51 +251,21 @@ def apply_ai_model_attribute_fill(
         if isinstance(draft.get("attributes"), dict)
         else {}
     )
-    original_draft = (
-        product.get("drafts", {})
-        if isinstance(product.get("drafts"), dict)
-        else {}
-    ).get(platform, {})
-    original_attrs = (
-        original_draft.get("attributes")
-        if isinstance(original_draft, dict)
-        and isinstance(original_draft.get("attributes"), dict)
-        else {}
-    )
-    need_review = {
-        str(item).strip()
-        for item in (
-            draft.get("validation_errors")
-            if isinstance(draft.get("validation_errors"), list)
-            else []
-        )
-        if str(item).strip()
-    }
-
     for attr_id, value in ai_attrs.items():
-        if (
-            _is_meaningful_existing(attr_id, original_attrs.get(attr_id))
-            and attr_id not in need_review
-        ):
-            continue
         attrs[attr_id] = value
-        need_review.discard(attr_id)
-
-    schema_by_id = {str(attr.get("id") or ""): attr for attr in schema}
-    for attr_id in ai_review:
-        definition = schema_by_id.get(attr_id) or {}
-        if definition.get("required") and not attrs.get(attr_id):
-            need_review.add(attr_id)
-    for attr_id, attr in schema_by_id.items():
-        if attr.get("required") and not _is_meaningful_existing(
-            attr_id,
-            attrs.get(attr_id),
-        ):
-            need_review.add(attr_id)
 
     draft["attributes"] = attrs
-    draft["validation_errors"] = sorted(need_review)
     updated.setdefault("drafts", {})[platform] = draft
+    need_review = sorted(
+        str(definition.get("id") or "").strip()
+        for definition in unresolved_required_category_attributes(
+            updated,
+            platform,
+            category_record,
+        )
+    )
+    draft["validation_errors"] = need_review
+    updated["drafts"][platform] = draft
     meta["source"] = "ai_model"
     meta["ai_filled"] = sorted(ai_attrs)
     if ledger.failed_attribute_ids:
@@ -448,7 +281,7 @@ def apply_ai_model_attribute_fill(
             {
                 "status": "completed",
                 "filled_attribute_ids": sorted(ai_attrs),
-                "need_review_attribute_ids": sorted(need_review),
+                "need_review_attribute_ids": need_review,
                 "enum_lookup_count": len(ledger.attempts),
             }
         )

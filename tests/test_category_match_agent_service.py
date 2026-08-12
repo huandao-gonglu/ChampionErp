@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
-from pydantic_ai.exceptions import ModelAPIError
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 from pydantic_ai.settings import ModelSettings
 
 from erp_web.context import get_context
@@ -385,14 +385,14 @@ def test_search_limit_feedback_precedes_profile_tool_limit() -> None:
     assert ledger.search_count == 3
 
 
-def test_provider_exception_is_normalized_without_fallback_or_secret() -> None:
+def test_provider_api_error_keeps_original_type_and_redacts_secret() -> None:
     ledger = CategoryCandidateLedger()
     toolset = toolset_for(Searcher([[]]), ledger)
-    secret = "provider-secret-body"
+    secret = "sk-very-secret-provider-key"
 
     def model(messages: list[Any], agent_info: AgentInfo) -> ModelResponse:
         del messages, agent_info
-        raise ModelAPIError("test-model", secret)
+        raise ModelAPIError("test-model", f"Provider connection failed for {secret}")
 
     with pytest.raises(AiAgentExecutionError) as captured:
         run_category_match_agent(
@@ -403,7 +403,8 @@ def test_provider_exception_is_normalized_without_fallback_or_secret() -> None:
             factory=factory_for(FunctionModel(model)),
         )
 
-    assert captured.value.code == "MODEL_PROVIDER_ERROR"
+    assert captured.value.code == "ModelAPIError"
+    assert "Provider connection failed" in str(captured.value)
     assert secret not in str(captured.value)
     assert captured.value.trace_id
     assert captured.value.run_id
@@ -413,6 +414,73 @@ def test_provider_exception_is_normalized_without_fallback_or_secret() -> None:
     assert events[-1]["trace_id"] == captured.value.trace_id
     assert events[-1]["run_id"] == captured.value.run_id
     assert secret not in str(events)
+
+
+def test_provider_http_error_keeps_status_code_message_and_request_id() -> None:
+    ledger = CategoryCandidateLedger()
+    toolset = toolset_for(Searcher([[]]), ledger)
+
+    def model(messages: list[Any], agent_info: AgentInfo) -> ModelResponse:
+        del messages, agent_info
+        raise ModelHTTPError(
+            403,
+            "test-model",
+            {
+                "error": {
+                    "code": "PERMISSION_DENIED",
+                    "message": "Free quota exhausted.",
+                },
+                "request_id": "request-403",
+            },
+        )
+
+    with pytest.raises(AiAgentExecutionError) as captured:
+        run_category_match_agent(
+            PAYLOAD,
+            toolset,
+            ledger,
+            timeout_seconds=10,
+            factory=factory_for(FunctionModel(model)),
+        )
+
+    assert captured.value.code == "PERMISSION_DENIED"
+    assert str(captured.value) == (
+        "HTTP 403: Free quota exhausted. (request_id=request-403)"
+    )
+    assert captured.value.retryable is False
+    events = get_context().ai_journal.read_events(captured.value.conversation_id)
+    assert events[-1]["code"] == "PERMISSION_DENIED"
+    assert events[-1]["message"] == str(captured.value)
+
+
+def test_empty_provider_response_reports_observed_response_instead_of_schema_error() -> None:
+    ledger = CategoryCandidateLedger()
+    toolset = toolset_for(Searcher([[]]), ledger)
+
+    def model(messages: list[Any], agent_info: AgentInfo) -> ModelResponse:
+        del messages, agent_info
+        return ModelResponse(
+            parts=[],
+            provider_name="alibaba",
+            provider_response_id=None,
+            provider_details={"background": True},
+        )
+
+    with pytest.raises(AiAgentExecutionError) as captured:
+        run_category_match_agent(
+            PAYLOAD,
+            toolset,
+            ledger,
+            timeout_seconds=10,
+            factory=factory_for(FunctionModel(model)),
+        )
+
+    assert captured.value.code == "AI_PROVIDER_RESPONSE_INVALID"
+    message = str(captured.value)
+    assert "provider=alibaba" in message
+    assert "background=true" in message
+    assert "response_id=null" in message
+    assert "parts=0" in message
 
 
 def test_unexpected_category_approval_finishes_persisted_pending_state() -> None:
@@ -468,7 +536,7 @@ def test_unexpected_category_approval_finishes_persisted_pending_state() -> None
             factory=agent_factory,
         )
 
-    assert captured.value.code == "AI_TOOL_APPROVAL_REQUIRED"
+    assert captured.value.code == "TOOL_APPROVAL_REQUIRED"
     assert executions == 0
     created = set(agent_factory.state_store.root.glob("*.json")) - before
     assert len(created) == 1

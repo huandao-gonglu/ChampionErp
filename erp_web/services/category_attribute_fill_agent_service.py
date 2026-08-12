@@ -117,8 +117,8 @@ class CategoryAttributeFillOutputValidator:
                 )
             assignment_counts[attr_id] = assignment_counts.get(attr_id, 0) + 1
             assigned_ids.add(attr_id)
-            strict_enum = bool(definition.get("strict_enum"))
-            if strict_enum:
+            value_mode = str(definition.get("value_mode") or "free_text")
+            if value_mode == "strict_enum":
                 if not assignment.dictionary_value_id:
                     self._retry(
                         "ATTRIBUTE_ENUM_ID_REQUIRED",
@@ -148,7 +148,7 @@ class CategoryAttributeFillOutputValidator:
             definition = self.ledger.definition(attr_id) or {}
             maximum = int(definition.get("max_value_count") or 0)
             if (
-                not definition.get("strict_enum")
+                definition.get("value_mode") != "strict_enum"
                 or not definition.get("is_collection")
             ) and count > 1:
                 self._retry(
@@ -236,8 +236,9 @@ def run_category_attribute_fill_agent(
         CATEGORY_ATTRIBUTE_FILL_USE_CASE_ID,
     )
     instructions = prompt.get("system") or (
-        "强制枚举必须先调用 search_attribute_values，并且只能选择工具返回的值；"
-        "非强制枚举没有合适候选时允许填写有依据的自定义文本。"
+        "value_mode=strict_enum 必须先调用 category_attribute_values_search，并且只能"
+        "选择工具返回的值；value_mode=open_enum 优先使用 options，也允许填写有依据的"
+        "自定义文本；value_mode=free_text 直接填写有依据的文本。"
     )
     user_prompt = render_prompt_template(
         prompt.get("user") or "请填写以下类目属性：{$input_json}",
@@ -275,7 +276,7 @@ def run_category_attribute_fill_agent(
     )
     if isinstance(outcome.output, DeferredToolRequests):
         error = AiAgentExecutionError(
-            "AI_TOOL_APPROVAL_REQUIRED",
+            "TOOL_APPROVAL_REQUIRED",
             "类目属性填充只允许只读工具，不应产生审批请求。",
             conversation_id=outcome.conversation_id,
             task_run_id=outcome.task_run_id,

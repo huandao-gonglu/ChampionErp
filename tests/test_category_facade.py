@@ -338,10 +338,10 @@ def test_category_match_agent_error_http_status_contract() -> None:
         return {"status": "failed", "failure": {"code": code}}
 
     assert category_facade._category_match_http_status(
-        failed("AI_TOOL_PERMISSION_DENIED")
+        failed("TOOL_PERMISSION_DENIED")
     ) == 403
     assert category_facade._category_match_http_status(
-        failed("AI_TOOL_APPROVAL_REQUIRED")
+        failed("TOOL_APPROVAL_REQUIRED")
     ) == 409
     assert category_facade._category_match_http_status(
         failed("AI_MODEL_CONFIGURATION_INVALID")

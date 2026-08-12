@@ -75,36 +75,45 @@ def _detail_text(value: Any) -> str:
     return text[:1000]
 
 
-def model_http_error_detail(exc: ModelHTTPError) -> str:
-    """提取可安全展示和记录的 Provider 错误码、消息与请求 ID。"""
+def safe_model_error_text(value: Any) -> str:
+    """只脱敏和收敛长度，不改变 Provider/Pydantic 的错误语义。"""
+
+    return _detail_text(value)
+
+
+def model_http_error_payload(exc: ModelHTTPError) -> dict[str, Any]:
+    """保留 Provider HTTP 错误的原始状态、代码、消息与 request ID。"""
 
     body = exc.body
-    if not isinstance(body, dict):
-        return _detail_text(body)
-
-    raw_error = body.get("error")
+    raw_error = body.get("error") if isinstance(body, dict) else None
     error = raw_error if isinstance(raw_error, dict) else {}
-    code = error.get("code") or body.get("code")
+    code = (
+        error.get("code")
+        or (body.get("code") if isinstance(body, dict) else "")
+    )
     message = (
         error.get("message")
         or error.get("detail")
-        or body.get("message")
-        or body.get("detail")
+        or (body.get("message") if isinstance(body, dict) else "")
+        or (body.get("detail") if isinstance(body, dict) else "")
         or (raw_error if isinstance(raw_error, str) else "")
+        or (body if not isinstance(body, dict) else "")
     )
-    request_id = next(
-        (
-            value
-            for value in (
-                body.get("request_id"),
-                body.get("requestId"),
-                error.get("request_id"),
-                error.get("requestId"),
-            )
-            if value not in (None, "")
-        ),
-        "",
-    )
+    request_id = ""
+    if isinstance(body, dict):
+        request_id = next(
+            (
+                value
+                for value in (
+                    body.get("request_id"),
+                    body.get("requestId"),
+                    error.get("request_id"),
+                    error.get("requestId"),
+                )
+                if value not in (None, "")
+            ),
+            "",
+        )
     if not request_id and exc.headers:
         headers = {str(key).lower(): value for key, value in exc.headers.items()}
         request_id = next(
@@ -120,16 +129,29 @@ def model_http_error_detail(exc: ModelHTTPError) -> str:
             "",
         )
 
-    parts: list[str] = []
-    if code not in (None, ""):
-        parts.append(f"code={_detail_text(code)}")
-    if message not in (None, ""):
-        parts.append(f"message={_detail_text(message)}")
-    if request_id not in (None, ""):
-        parts.append(f"request_id={_detail_text(request_id)}")
-    if parts:
-        return "; ".join(parts)[:1000]
-    return "Provider 返回了未识别的错误响应。"
+    status_code = int(exc.status_code)
+    return {
+        "status_code": status_code,
+        "code": (_detail_text(code)[:160] or f"HTTP_{status_code}"),
+        "message": (
+            _detail_text(message)
+            or f"Provider 返回 HTTP {status_code}，但没有提供错误消息。"
+        ),
+        "request_id": _detail_text(request_id)[:200],
+    }
+
+
+def model_http_error_detail(exc: ModelHTTPError) -> str:
+    """提取可安全展示和记录的 Provider 错误码、消息与请求 ID。"""
+
+    payload = model_http_error_payload(exc)
+    parts = [
+        f"code={payload['code']}",
+        f"message={payload['message']}",
+    ]
+    if payload["request_id"]:
+        parts.append(f"request_id={payload['request_id']}")
+    return "; ".join(parts)[:1000]
 
 
 def safe_provider_endpoint(base_url: str, api_style: str) -> str:
@@ -164,7 +186,8 @@ def map_pydantic_model_error(
         )
     if isinstance(exc, ModelAPIError):
         return AIModelRequestError(
-            f"AI 模型请求失败：{model_id or model_name or 'unknown'} ({api_style})。"
+            safe_model_error_text(exc.message)
+            or f"{exc.__class__.__name__}: {model_id or model_name or 'unknown'}"
         )
     return exc
 
@@ -174,5 +197,7 @@ __all__ = [
     "AIModelRequestError",
     "map_pydantic_model_error",
     "model_http_error_detail",
+    "model_http_error_payload",
+    "safe_model_error_text",
     "safe_provider_endpoint",
 ]

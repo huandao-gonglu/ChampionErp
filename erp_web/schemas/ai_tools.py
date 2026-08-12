@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import hashlib
 import json
+import re
 from types import MappingProxyType
 from typing import Any, Literal, Mapping, Sequence
 
 
 AiToolSideEffect = Literal["none", "write"]
+AiToolIdempotency = Literal["none", "required"]
 _JSON_SCHEMA_TYPES = frozenset(
     {"null", "boolean", "integer", "number", "string", "array", "object"}
 )
+_AI_TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 class AiToolSchemaError(ValueError):
@@ -63,6 +67,34 @@ def _require_string(value: Any, *, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise AiToolSchemaError(f"{label} 必须是非空字符串")
     return value.strip()
+
+
+def normalize_ai_tool_name(value: Any, *, label: str = "tool.name") -> str:
+    """规范化 Provider 可见工具名，并执行跨 Provider 的最小公共约束。"""
+
+    normalized = _require_string(value, label=label)
+    if _AI_TOOL_NAME_PATTERN.fullmatch(normalized) is None:
+        raise AiToolSchemaError(
+            f"{label} 只能包含字母、数字、下划线或短划线，且长度不得超过 64"
+        )
+    return normalized
+
+
+class AiToolExecutionError(RuntimeError):
+    """executor 可安全公开给模型和用户的结构化错误。"""
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        retryable: bool = False,
+    ) -> None:
+        self.code = _require_string(code, label="tool_error.code")
+        if not isinstance(retryable, bool):
+            raise AiToolSchemaError("tool_error.retryable 必须是布尔值")
+        self.retryable = retryable
+        super().__init__(_require_string(message, label="tool_error.message"))
 
 
 def _require_exact_fields(
@@ -372,9 +404,12 @@ class AiToolDefinition:
     required_permission: str
     side_effect: AiToolSideEffect = "none"
     approval_required: bool = False
+    idempotency: AiToolIdempotency = "none"
+    idempotency_keys: tuple[str, ...] = ()
+    injected_type_names: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "name", _require_string(self.name, label="tool.name"))
+        object.__setattr__(self, "name", normalize_ai_tool_name(self.name))
         object.__setattr__(self, "version", _require_string(self.version, label="tool.version"))
         object.__setattr__(
             self,
@@ -390,6 +425,41 @@ class AiToolDefinition:
             raise AiToolSchemaError("tool.side_effect 只允许 none 或 write")
         if not isinstance(self.approval_required, bool):
             raise AiToolSchemaError("tool.approval_required 必须是布尔值")
+        if self.idempotency not in {"none", "required"}:
+            raise AiToolSchemaError("tool.idempotency 只允许 none 或 required")
+        if not isinstance(self.idempotency_keys, Sequence) or isinstance(
+            self.idempotency_keys,
+            (str, bytes),
+        ):
+            raise AiToolSchemaError("tool.idempotency_keys 必须是字符串数组")
+        idempotency_keys = tuple(
+            _require_string(value, label="tool.idempotency_keys")
+            for value in self.idempotency_keys
+        )
+        if len(idempotency_keys) != len(set(idempotency_keys)):
+            raise AiToolSchemaError("tool.idempotency_keys 不得重复")
+        if not isinstance(self.injected_type_names, Sequence) or isinstance(
+            self.injected_type_names,
+            (str, bytes),
+        ):
+            raise AiToolSchemaError("tool.injected_type_names 必须是字符串数组")
+        injected_type_names = tuple(
+            sorted(
+                {
+                    _require_string(value, label="tool.injected_type_names")
+                    for value in self.injected_type_names
+                }
+            )
+        )
+        if self.side_effect == "write":
+            if self.idempotency != "required" or not idempotency_keys:
+                raise AiToolSchemaError(
+                    "写工具必须声明 required idempotency 和非空 idempotency_keys"
+                )
+        elif self.idempotency != "none" or idempotency_keys:
+            raise AiToolSchemaError("只读工具不得声明写入幂等策略")
+        object.__setattr__(self, "idempotency_keys", idempotency_keys)
+        object.__setattr__(self, "injected_type_names", injected_type_names)
         input_schema = _require_object(self.input_schema, label="tool.input_schema")
         output_schema = _require_object(self.output_schema, label="tool.output_schema")
         input_schema = _copy_json(input_schema, label="tool.input_schema")
@@ -423,7 +493,24 @@ class AiToolDefinition:
             "required_permission": self.required_permission,
             "side_effect": self.side_effect,
             "approval_required": self.approval_required,
+            "idempotency": self.idempotency,
+            "idempotency_keys": list(self.idempotency_keys),
+            "injected_type_names": list(self.injected_type_names),
         }
+
+    @property
+    def contract_fingerprint(self) -> str:
+        """覆盖可恢复工具契约的规范化 SHA-256 指纹。"""
+
+        payload = self.to_dict()
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "AiToolDefinition":
@@ -439,6 +526,9 @@ class AiToolDefinition:
                 "required_permission",
                 "side_effect",
                 "approval_required",
+                "idempotency",
+                "idempotency_keys",
+                "injected_type_names",
             },
             optional=set(),
             label="AiToolDefinition",
@@ -452,6 +542,9 @@ class AiToolDefinition:
             required_permission=data["required_permission"],
             side_effect=data["side_effect"],
             approval_required=data["approval_required"],
+            idempotency=data["idempotency"],
+            idempotency_keys=tuple(data["idempotency_keys"]),
+            injected_type_names=tuple(data["injected_type_names"]),
         )
 
 
@@ -528,6 +621,8 @@ class AiToolResult:
             error = _require_object(self.error, label="result.error")
             _require_string(error.get("code"), label="result.error.code")
             _require_string(error.get("message"), label="result.error.message")
+            if not isinstance(error.get("retryable"), bool):
+                raise AiToolSchemaError("result.error.retryable 必须是布尔值")
             object.__setattr__(
                 self,
                 "error",
@@ -596,9 +691,12 @@ def validate_ai_tool_result(payload: Mapping[str, Any]) -> AiToolResult:
 __all__ = [
     "AiToolCommand",
     "AiToolDefinition",
+    "AiToolExecutionError",
+    "AiToolIdempotency",
     "AiToolResult",
     "AiToolSchemaError",
     "AiToolSideEffect",
+    "normalize_ai_tool_name",
     "validate_ai_tool_definition",
     "validate_ai_tool_result",
     "validate_json_schema",

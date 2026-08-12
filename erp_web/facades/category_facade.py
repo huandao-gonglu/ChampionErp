@@ -183,9 +183,9 @@ def _category_match_http_status(result: Payload) -> int:
     code = str(failure.get("code") or "")
     if code in {"INPUT_INVALID", "TARGET_REQUIRED"}:
         return 400
-    if code in {"AI_TOOL_PERMISSION_DENIED", "TOOL_NOT_ALLOWED"}:
+    if code in {"TOOL_PERMISSION_DENIED", "TOOL_NOT_ALLOWED"}:
         return 403
-    if code == "AI_TOOL_APPROVAL_REQUIRED":
+    if code == "TOOL_APPROVAL_REQUIRED":
         return 409
     if code == "CATEGORY_RATE_LIMITED":
         return 429

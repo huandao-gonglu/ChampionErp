@@ -27,6 +27,7 @@ from pydantic_ai.exceptions import (
 from pydantic_ai.messages import (
     DeferredToolRequests,
     ModelMessage,
+    ModelResponse,
     PartDeltaEvent,
     PartEndEvent,
     PartStartEvent,
@@ -60,6 +61,7 @@ from .ai_model_factory import (
     PydanticModelBinding,
     create_pydantic_model_binding_for_use_case,
 )
+from .ai_model_errors import model_http_error_payload, safe_model_error_text
 from .ai_tool_bridge import AiToolBridgeError, build_pydantic_toolset
 from .ai_tool_registry import AiToolSet
 from .ai_tool_runtime import AiToolRuntime
@@ -234,13 +236,6 @@ def _safe_usage(value: Any) -> dict[str, int]:
     }
 
 
-def _toolset_signature(toolset: AiToolSet) -> str:
-    return "|".join(
-        f"{definition.name}@{definition.version}"
-        for definition in sorted(toolset.definitions, key=lambda item: item.name)
-    )
-
-
 def _dump_typed_output(output_type: type[OutputT], output: OutputT) -> Any:
     try:
         return TypeAdapter(output_type).dump_python(output, mode="json")
@@ -265,6 +260,7 @@ def _safe_agent_error(
     exc: Exception,
     *,
     validator: Any,
+    model_messages: list[ModelMessage] | None = None,
     conversation_id: str,
     task_run_id: str,
     run_id: str = "",
@@ -276,6 +272,49 @@ def _safe_agent_error(
         "run_id": run_id,
         "trace_id": trace_id,
     }
+    if isinstance(exc, ModelHTTPError):
+        provider_error = model_http_error_payload(exc)
+        message = f"HTTP {provider_error['status_code']}: {provider_error['message']}"
+        if provider_error["request_id"]:
+            message += f" (request_id={provider_error['request_id']})"
+        status_code = int(provider_error["status_code"])
+        return AiAgentExecutionError(
+            str(provider_error["code"]),
+            message,
+            retryable=(status_code in {408, 425, 429} or status_code >= 500),
+            **correlation,
+        )
+    if isinstance(exc, ModelAPIError):
+        return AiAgentExecutionError(
+            exc.__class__.__name__,
+            safe_model_error_text(exc.message) or exc.__class__.__name__,
+            retryable=True,
+            **correlation,
+        )
+    if isinstance(exc, UnexpectedModelBehavior):
+        empty_response = next(
+            (
+                message
+                for message in reversed(model_messages or [])
+                if isinstance(message, ModelResponse) and not message.parts
+            ),
+            None,
+        )
+        if empty_response is not None:
+            details = empty_response.provider_details or {}
+            usage = _safe_usage(empty_response.usage)
+            return AiAgentExecutionError(
+                "AI_PROVIDER_RESPONSE_INVALID",
+                "Provider 返回无法使用的空响应："
+                f"provider={empty_response.provider_name or 'unknown'}; "
+                f"background={str(bool(details.get('background'))).lower()}; "
+                f"response_id={empty_response.provider_response_id or 'null'}; "
+                f"finish_reason={empty_response.finish_reason or 'null'}; "
+                f"state={empty_response.state}; parts=0; "
+                f"input_tokens={usage.get('input_tokens', 0)}; "
+                f"output_tokens={usage.get('output_tokens', 0)}。",
+                **correlation,
+            )
     validation_code = str(getattr(validator, "error_code", "") or "")
     if validation_code:
         return AiAgentExecutionError(
@@ -296,19 +335,10 @@ def _safe_agent_error(
             **correlation,
         )
     if isinstance(exc, AiToolBridgeError):
-        code = {
-            "TOOL_PERMISSION_DENIED": "AI_TOOL_PERMISSION_DENIED",
-            "TOOL_APPROVAL_REQUIRED": "AI_TOOL_APPROVAL_REQUIRED",
-        }.get(exc.code, exc.code)
         return AiAgentExecutionError(
-            code,
-            "Agent 工具调用被安全 Runtime 拒绝。",
-            retryable=code
-            in {
-                "TASK_DEADLINE_EXCEEDED",
-                "TOOL_EXECUTION_FAILED",
-                "TOOL_EXECUTION_CHECKPOINT_FAILED",
-            },
+            exc.code,
+            str(exc),
+            retryable=exc.retryable,
             **correlation,
         )
     if isinstance(exc, (TimeoutError,)):
@@ -324,17 +354,10 @@ def _safe_agent_error(
             "AI Agent 已达到当前 execution profile 的资源上限。",
             **correlation,
         )
-    if isinstance(exc, (ModelHTTPError, ModelAPIError)):
-        return AiAgentExecutionError(
-            "MODEL_PROVIDER_ERROR",
-            "AI 模型服务暂时不可用。",
-            retryable=True,
-            **correlation,
-        )
     if isinstance(exc, (UnexpectedModelBehavior, AgentRunError)):
         return AiAgentExecutionError(
-            "MODEL_RESPONSE_SCHEMA_INVALID",
-            "AI 模型未返回满足约束的结果。",
+            exc.__class__.__name__,
+            safe_model_error_text(str(exc)) or exc.__class__.__name__,
             **correlation,
         )
     return AiAgentExecutionError(
@@ -652,7 +675,9 @@ class AiAgentFactory:
                         "task_run_id": execution_context.task_run_id,
                         "run_id": run_id,
                         "trace_id": technical_trace.trace_id,
-                        "toolset_signature": _toolset_signature(toolset),
+                        "toolset_contract_fingerprint": (
+                            toolset.toolset_contract_fingerprint
+                        ),
                     },
                 )
                 deferred_state_id = envelope.state_id
@@ -684,6 +709,7 @@ class AiAgentFactory:
             error = _safe_agent_error(
                 exc,
                 validator=output_validator,
+                model_messages=captured_messages,
                 conversation_id=(conversation.conversation_id if conversation else ""),
                 task_run_id=execution_context.task_run_id,
                 run_id=run_id,
@@ -732,13 +758,23 @@ class AiAgentFactory:
         try:
             now = datetime.now(timezone.utc)
             envelope = self.state_store.load(state_id)
-            stored_toolset_signature = str(
+            stored_contract_fingerprint = str(
+                envelope.references.get("toolset_contract_fingerprint") or ""
+            )
+            legacy_toolset_signature = str(
                 envelope.references.get("toolset_signature") or ""
             )
-            if (
-                stored_toolset_signature
-                and stored_toolset_signature != _toolset_signature(toolset)
-            ):
+            contract_mismatch = bool(
+                stored_contract_fingerprint
+                and stored_contract_fingerprint
+                != toolset.toolset_contract_fingerprint
+            )
+            legacy_mismatch = bool(
+                not stored_contract_fingerprint
+                and legacy_toolset_signature
+                and legacy_toolset_signature != toolset.legacy_toolset_signature
+            )
+            if contract_mismatch or legacy_mismatch:
                 raise AiAgentStateError(
                     "AI_AGENT_STATE_TOOLSET_MISMATCH",
                     "Agent 恢复工具集与持久化状态不一致。",
@@ -1029,6 +1065,7 @@ class AiAgentFactory:
             error = _safe_agent_error(
                 exc,
                 validator=output_validator,
+                model_messages=captured_messages,
                 conversation_id=conversation_id,
                 task_run_id=task_run_id,
                 run_id=run_id,

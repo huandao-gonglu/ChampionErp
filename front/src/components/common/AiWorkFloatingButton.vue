@@ -7,6 +7,7 @@ import {
   waitForAiWorkEvents,
 } from '@/api/aiWork'
 import type { AiWorkConversationSummary, AiWorkEvent } from '@/types/aiWork'
+import { formatAiWorkError } from '@/utils/aiWorkError'
 
 const route = useRoute()
 const panelVisible = ref(false)
@@ -69,7 +70,7 @@ const liveStatus = computed<AiWorkConversationSummary['status']>(() => {
 })
 const isTerminal = computed(() => ['waiting_approval', 'completed', 'failed', 'interrupted'].includes(liveStatus.value))
 const progressText = computed(() => {
-  if (runError.value) return runError.value.message || 'AI 执行失败'
+  if (runError.value) return formatAiWorkError(runError.value)
   if (liveStatus.value === 'waiting_approval') return '工具调用正在等待人工审批。'
   if (assistantOutput.value) return assistantOutput.value
   if (businessResult.value !== undefined) return pretty(businessResult.value)

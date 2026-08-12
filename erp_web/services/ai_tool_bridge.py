@@ -16,11 +16,20 @@ from .ai_tool_registry import AiToolSet
 class AiToolBridgeError(RuntimeError):
     """ERP Runtime 拒绝或无法完成一次 Pydantic tool call。"""
 
-    def __init__(self, *, code: str, tool_name: str, tool_call_id: str) -> None:
+    def __init__(
+        self,
+        *,
+        code: str,
+        message: str,
+        tool_name: str,
+        tool_call_id: str,
+        retryable: bool = False,
+    ) -> None:
         self.code = str(code or "TOOL_EXECUTION_FAILED")
+        self.retryable = bool(retryable)
         self.tool_name = tool_name
         self.tool_call_id = tool_call_id
-        super().__init__(f"工具 {tool_name} 执行失败（{self.code}）。")
+        super().__init__(str(message or "").strip() or f"工具 {tool_name} 执行失败。")
 
 
 @dataclass(frozen=True)
@@ -33,6 +42,7 @@ class PydanticToolBridge:
         if dependencies.tool_runtime.toolset is not self.toolset:
             raise AiToolBridgeError(
                 code="TOOLSET_BINDING_MISMATCH",
+                message="Agent ToolSet 与 Runtime 绑定不一致。",
                 tool_name=self.toolset.toolset_id,
                 tool_call_id="unbound",
             )
@@ -53,6 +63,7 @@ class PydanticToolBridge:
         if not call_id:
             raise AiToolBridgeError(
                 code="TOOL_CALL_INVALID",
+                message="工具调用缺少 call_id。",
                 tool_name=tool_name,
                 tool_call_id="missing",
             )
@@ -60,6 +71,7 @@ class PydanticToolBridge:
         if binding is None:
             raise AiToolBridgeError(
                 code="TOOL_NOT_ALLOWED",
+                message=f"当前 ToolSet 未允许工具 {tool_name}。",
                 tool_name=tool_name,
                 tool_call_id=call_id,
             )
@@ -86,8 +98,10 @@ class PydanticToolBridge:
                 )
             raise AiToolBridgeError(
                 code=error_code,
+                message=str(error.get("message") or ""),
                 tool_name=tool_name,
                 tool_call_id=call_id,
+                retryable=bool(error.get("retryable")),
             )
         return payload.get("output")
 

@@ -173,6 +173,33 @@ describe('AiWorkFloatingButton', () => {
     expect(mocks.waitForEvents).not.toHaveBeenCalled()
   })
 
+  it('失败时同时展示真实错误码和消息', async () => {
+    mocks.fetchConversations.mockResolvedValue({
+      ok: true,
+      conversations: [{ ...conversation, status: 'failed' }],
+    })
+    mocks.fetchConversation.mockResolvedValue({
+      ok: true,
+      conversation_id: conversation.conversation_id,
+      events: [
+        {
+          seq: 1,
+          type: 'RUN_ERROR',
+          code: 'TOOL_INPUT_SCHEMA_INVALID',
+          message: '$ 缺少必填字段：requests',
+        },
+      ],
+    })
+
+    const wrapper = mount(AiWorkFloatingButton)
+    await wrapper.get('[data-testid="ai-work-floating"]').trigger('mouseenter')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="ai-work-output"]').text()).toContain(
+      'TOOL_INPUT_SCHEMA_INVALID：$ 缺少必填字段：requests',
+    )
+  })
+
   it('能力探测请求已发出时显示等待 Provider', async () => {
     mocks.fetchConversations.mockResolvedValue({
       ok: true,

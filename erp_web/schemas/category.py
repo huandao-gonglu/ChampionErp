@@ -3,11 +3,13 @@ from __future__ import annotations
 """类目搜索与匹配的规范化数据形状。"""
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypedDict
+import re
+from typing import Any, Literal, TypedDict, cast
 
 
 CATEGORY_SEARCH_PERMISSION = "category.read"
 CATEGORY_SEARCH_TOOLSET_ID = "category.search"
+CategoryAttributeValueMode = Literal["strict_enum", "open_enum", "free_text"]
 
 
 def normalize_category_dictionary_id(value: Any) -> str:
@@ -37,6 +39,153 @@ def is_category_dictionary_attribute(definition: dict[str, Any]) -> bool:
     if value not in (None, ""):
         return bool(normalize_category_dictionary_id(value))
     return bool(definition.get("is_dictionary"))
+
+
+def _category_attribute_options(definition: dict[str, Any]) -> list[str]:
+    raw_options = definition.get("options")
+    if isinstance(raw_options, list):
+        options = [str(item).strip() for item in raw_options if str(item).strip()]
+    elif isinstance(raw_options, str):
+        options = [
+            item.strip()
+            for item in re.split(r"[,，;；\n]+", raw_options)
+            if item.strip()
+        ]
+    else:
+        options = []
+    for item in definition.get("values") or []:
+        if isinstance(item, dict):
+            label = str(
+                item.get("name")
+                or item.get("value_name")
+                or item.get("value")
+                or item.get("id")
+                or ""
+            ).strip()
+        else:
+            label = str(item or "").strip()
+        if label:
+            options.append(label)
+    return list(dict.fromkeys(options))[:80]
+
+
+def category_attribute_value_mode(
+    definition: dict[str, Any],
+) -> CategoryAttributeValueMode:
+    """返回平台属性的唯一值约束模式。"""
+
+    declared = str(definition.get("value_mode") or "").strip()
+    if declared in {"strict_enum", "open_enum", "free_text"}:
+        return cast(CategoryAttributeValueMode, declared)
+    if is_category_dictionary_attribute(definition):
+        return "strict_enum"
+    raw = definition.get("raw") if isinstance(definition.get("raw"), dict) else {}
+    if (
+        definition.get("is_dictionary")
+        or raw.get("is_dictionary")
+        or _category_attribute_options(definition)
+    ):
+        return "open_enum"
+    return "free_text"
+
+
+def normalize_category_attribute_definition(
+    definition: Any,
+    *,
+    required_fallback: bool = False,
+) -> dict[str, Any]:
+    """规范化类目属性定义，供规则、Agent 和发布预检共同使用。"""
+
+    source = definition if isinstance(definition, dict) else {}
+    raw = source.get("raw") if isinstance(source.get("raw"), dict) else {}
+    value_mode = category_attribute_value_mode(source)
+    return {
+        "id": str(
+            source.get("id")
+            or source.get("attribute_id")
+            or source.get("code")
+            or ""
+        ).strip(),
+        "name": str(
+            source.get("name")
+            or source.get("label")
+            or source.get("id")
+            or ""
+        ).strip(),
+        "required": bool(source.get("required", required_fallback)),
+        "value_type": str(source.get("value_type") or "").strip(),
+        "value_mode": value_mode,
+        "unit": str(source.get("unit") or "").strip(),
+        "description": str(source.get("description") or "").strip()[:1500],
+        "options": _category_attribute_options(source),
+        "dictionary_id": category_attribute_dictionary_id(source),
+        "is_collection": bool(
+            source.get("is_collection") or raw.get("is_collection")
+        ),
+        "max_value_count": int(
+            source.get("max_value_count") or raw.get("max_value_count") or 0
+        ),
+        "category_dependent": bool(
+            source.get("category_dependent") or raw.get("category_dependent")
+        ),
+    }
+
+
+def category_attribute_schema(
+    category_record: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """返回去除无 ID 项后的规范化类目属性定义。"""
+
+    record = category_record if isinstance(category_record, dict) else {}
+    attributes = (
+        record.get("attributes")
+        if isinstance(record.get("attributes"), dict)
+        else {}
+    )
+    required = [
+        normalize_category_attribute_definition(item, required_fallback=True)
+        for item in (
+            attributes.get("required")
+            if isinstance(attributes.get("required"), list)
+            else []
+        )
+    ]
+    optional = [
+        normalize_category_attribute_definition(item)
+        for item in (
+            attributes.get("optional")
+            if isinstance(attributes.get("optional"), list)
+            else []
+        )
+    ]
+    return [item for item in required + optional if item.get("id")]
+
+
+def category_attribute_value_is_valid(
+    definition: dict[str, Any],
+    value: Any,
+) -> bool:
+    """按唯一值模式判断草稿属性值是否满足平台结构约束。"""
+
+    attr_id = str(definition.get("id") or "").strip()
+    if category_attribute_value_mode(definition) != "strict_enum":
+        if isinstance(value, (dict, list, tuple, set)):
+            return False
+        text = str(value or "").strip()
+        return bool(text) and text.upper() != attr_id.upper()
+    if not isinstance(value, dict) or not isinstance(value.get("values"), list):
+        return False
+    selected = [item for item in value.get("values") or [] if isinstance(item, dict)]
+    if not selected or not all(
+        item.get("dictionary_value_id") not in (None, "")
+        and str(item.get("value") or "").strip()
+        for item in selected
+    ):
+        return False
+    maximum = int(definition.get("max_value_count") or 0)
+    if not definition.get("is_collection") and len(selected) > 1:
+        return False
+    return maximum <= 0 or len(selected) <= maximum
 
 
 class CategoryCorpusInfo(TypedDict, total=False):
@@ -265,12 +414,17 @@ __all__ = [
     "CATEGORY_SEARCH_PERMISSION",
     "CATEGORY_SEARCH_TOOLSET_ID",
     "category_attribute_dictionary_id",
+    "category_attribute_schema",
+    "category_attribute_value_is_valid",
+    "category_attribute_value_mode",
+    "CategoryAttributeValueMode",
     "CategoryCandidate",
     "CategoryCandidateLedger",
     "CategoryBrowseResult",
     "CategoryCorpusInfo",
     "CategorySearchResult",
     "is_category_dictionary_attribute",
+    "normalize_category_attribute_definition",
     "normalize_category_dictionary_id",
     "CategoryTreeNode",
     "CategoryTreeNodeLevel",

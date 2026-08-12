@@ -6,7 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 from pydantic_ai.messages import (
     BinaryContent,
     FilePart,
@@ -28,7 +28,11 @@ from openai.types.responses.response import Response
 from erp_web.context import get_context
 from erp_web.services import ai_direct_request_service, ai_model_probe_service
 from erp_web.services.ai_model_factory import PydanticModelBinding
-from erp_web.services.ai_model_errors import AIHTTPError, map_pydantic_model_error
+from erp_web.services.ai_model_errors import (
+    AIHTTPError,
+    AIModelRequestError,
+    map_pydantic_model_error,
+)
 from erp_web.services.ai_pydantic_image_model import OpenAIImagesModel
 
 
@@ -525,3 +529,20 @@ def test_pydantic_http_error_keeps_code_message_and_request_id() -> None:
         "code=invalid_tool_schema; message=Tool schema is not supported.; "
         "request_id=request-123"
     )
+
+
+def test_pydantic_api_error_keeps_provider_message_and_only_redacts_secret() -> None:
+    mapped = map_pydantic_model_error(
+        ModelAPIError(
+            "test-model",
+            "Provider connection failed for sk-very-secret-provider-key",
+        ),
+        model_id="model-1",
+        model_name="test-model",
+        api_style="openai_responses",
+        base_url="https://api.example.com/v1",
+    )
+
+    assert isinstance(mapped, AIModelRequestError)
+    assert "Provider connection failed" in str(mapped)
+    assert "very-secret-provider-key" not in str(mapped)

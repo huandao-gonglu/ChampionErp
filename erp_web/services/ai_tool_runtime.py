@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from erp_web.schemas.ai_tools import (
     AiToolCommand,
+    AiToolExecutionError,
     AiToolResult,
     AiToolSchemaError,
     validate_json_schema,
@@ -18,6 +19,21 @@ from erp_web.schemas.ai_trace import AiExecutionContext
 from .ai_agent_observability import sanitize_ai_work_value
 from .ai_invocation import AiWorkRecorder
 from .ai_tool_registry import AiToolSet
+
+
+_HIDDEN_EXECUTION_ERROR_MESSAGE = "工具执行失败，请稍后重试。"
+
+
+def _executor_error_details(exc: Exception) -> tuple[str, str, bool]:
+    """只公开显式安全错误；未知异常不得穿透工具边界。"""
+
+    if isinstance(exc, TimeoutError):
+        return "TASK_DEADLINE_EXCEEDED", "工具执行超时。", True
+    if isinstance(exc, AiToolExecutionError):
+        return exc.code, str(exc), exc.retryable
+    if isinstance(exc, AiToolSchemaError):
+        return exc.code, str(exc), False
+    return "TOOL_EXECUTION_FAILED", _HIDDEN_EXECUTION_ERROR_MESSAGE, True
 
 
 class AiToolRuntime:
@@ -94,9 +110,7 @@ class AiToolRuntime:
         if result.ok:
             payload["output"] = sanitize_ai_work_value(result.output)
         else:
-            payload["error"] = {
-                "code": str((result.error or {}).get("code") or "TOOL_EXECUTION_FAILED")
-            }
+            payload["error"] = sanitize_ai_work_value(dict(result.error or {}))
         self.recorder.record(
             "TOOL_CALL_FINISHED",
             **payload,
@@ -108,6 +122,7 @@ class AiToolRuntime:
         *,
         code: str,
         message: str,
+        retryable: bool = False,
         duration_ms: int = 0,
         truncated: bool = False,
     ) -> AiToolResult:
@@ -115,7 +130,11 @@ class AiToolRuntime:
             call_id=command.call_id,
             tool_name=command.tool_name,
             ok=False,
-            error={"code": code, "message": message},
+            error={
+                "code": code,
+                "message": message,
+                "retryable": retryable,
+            },
             duration_ms=max(0, duration_ms),
             truncated=truncated,
         )
@@ -162,6 +181,7 @@ class AiToolRuntime:
                     command,
                     code="TASK_DEADLINE_EXCEEDED",
                     message="AI Task 总 deadline 已耗尽",
+                    retryable=True,
                 ),
                 cache_signature=False,
             )
@@ -230,6 +250,28 @@ class AiToolRuntime:
                     message=f"当前 invocation 不允许执行写工具 {command.tool_name}",
                 ),
             )
+        if definition.idempotency == "required":
+            missing_idempotency_keys = [
+                key
+                for key in definition.idempotency_keys
+                if not str(
+                    self.execution_context.idempotency_context.get(key) or ""
+                ).strip()
+            ]
+            if missing_idempotency_keys:
+                return self._remember(
+                    command,
+                    signature,
+                    self._error_result(
+                        command,
+                        code="TOOL_IDEMPOTENCY_CONTEXT_REQUIRED",
+                        message=(
+                            "可信幂等上下文缺少工具要求的键："
+                            + "、".join(missing_idempotency_keys)
+                        ),
+                    ),
+                    cache_signature=False,
+                )
         arguments = command.arguments_dict()
         try:
             validate_json_schema(arguments, definition.input_schema)
@@ -268,6 +310,7 @@ class AiToolRuntime:
                         command,
                         code="TOOL_EXECUTION_CHECKPOINT_FAILED",
                         message="工具执行前检查点无法持久化",
+                        retryable=True,
                     ),
                     cache_signature=False,
                 )
@@ -280,18 +323,15 @@ class AiToolRuntime:
             )
         except Exception as exc:
             duration_ms = round((time.monotonic() - started_at) * 1000)
-            error_code = (
-                "TASK_DEADLINE_EXCEEDED"
-                if isinstance(exc, TimeoutError)
-                else str(getattr(exc, "code", "") or "TOOL_EXECUTION_FAILED")
-            )
+            error_code, error_message, retryable = _executor_error_details(exc)
             return self._remember(
                 command,
                 signature,
                 self._error_result(
                     command,
                     code=error_code,
-                    message=str(exc) or exc.__class__.__name__,
+                    message=error_message,
+                    retryable=retryable,
                     duration_ms=duration_ms,
                 ),
             )
@@ -304,6 +344,7 @@ class AiToolRuntime:
                     command,
                     code="TASK_DEADLINE_EXCEEDED",
                     message="工具执行完成时 AI Task 总 deadline 已耗尽",
+                    retryable=True,
                     duration_ms=duration_ms,
                 ),
                 cache_signature=False,

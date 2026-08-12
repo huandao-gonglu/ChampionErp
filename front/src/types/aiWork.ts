@@ -31,6 +31,7 @@ export interface AiWorkEvent {
   value?: unknown
   message?: string
   code?: string
+  retryable?: boolean
   input?: unknown
   result?: unknown
   event?: unknown

@@ -42,7 +42,7 @@ def test_ai_attribute_fill_treats_attribute_id_value_as_missing() -> None:
 def test_ai_model_attribute_fill_uses_product_context_and_validates_options(monkeypatch) -> None:
     product = default_product_model()
     product["name"] = "Portable air conditioner"
-    product["source"]["title"] = "Portable electric air conditioner with cooling"
+    product["source"]["title"] = "Cooling appliance with configurable installation"
     product["drafts"]["mercadolibre"]["brand"] = "Generic"
     product["drafts"]["mercadolibre"]["model"] = "T-3A"
     product["drafts"]["mercadolibre"]["attributes"] = {
@@ -105,7 +105,7 @@ def test_ai_model_attribute_fill_uses_product_context_and_validates_options(monk
     updated, meta = category_attribute_ai_fill.apply_ai_model_attribute_fill(product, "mercadolibre", category)
     attrs = updated["drafts"]["mercadolibre"]["attributes"]
 
-    assert captured["title"] == "Portable electric air conditioner with cooling"
+    assert captured["title"] == "Cooling appliance with configurable installation"
     assert "AIR_CONDITIONER_TYPE" in captured["schema_ids"]
     assert captured["descriptions"]["AIR_CONDITIONER_TYPE"] == (
         "Select the physical air conditioner type."
@@ -154,7 +154,12 @@ def test_ai_model_attribute_fill_resolves_ozon_dictionary_values(monkeypatch) ->
     }
 
     def fake_agent(payload, toolset, ledger):
-        del payload, toolset
+        del toolset
+        assert {item["id"]: item["value_mode"] for item in payload["attributes"]} == {
+            "8229": "strict_enum",
+            "85": "strict_enum",
+            "9048": "open_enum",
+        }
         ledger.add_values(
             "8229",
             [{"id": "91443", "value": "Вентилятор"}],
@@ -210,7 +215,7 @@ def test_ai_model_attribute_fill_resolves_ozon_dictionary_values(monkeypatch) ->
     assert meta["ai_filled"] == ["8229", "85", "9048"]
 
 
-def test_ai_model_attribute_fill_allows_custom_value_for_suggested_options(
+def test_ai_model_attribute_fill_allows_custom_value_for_open_enum(
     monkeypatch,
 ) -> None:
     product = default_product_model()
@@ -284,10 +289,11 @@ def test_unresolved_optional_dictionary_attribute_is_not_a_blocking_error(
             ],
         },
     }
-    monkeypatch.setattr(
-        category_attribute_ai_fill,
-        "run_category_attribute_fill_agent",
-        lambda *args: CategoryAttributeFillAgentRun.for_test(
+    captured = {}
+
+    def fake_agent(payload, *args):
+        captured["schema_ids"] = [item["id"] for item in payload["attributes"]]
+        return CategoryAttributeFillAgentRun.for_test(
             {
                 "assignments": [
                     {
@@ -296,11 +302,14 @@ def test_unresolved_optional_dictionary_attribute_is_not_a_blocking_error(
                         "dictionary_value_id": "",
                     }
                 ],
-                "need_review": [
-                    {"id": "20210", "reason": "未找到合适的平台枚举值"}
-                ],
+                "need_review": [],
             }
-        ),
+        )
+
+    monkeypatch.setattr(
+        category_attribute_ai_fill,
+        "run_category_attribute_fill_agent",
+        fake_agent,
     )
 
     updated, meta = category_attribute_ai_fill.apply_ai_model_attribute_fill(
@@ -312,8 +321,64 @@ def test_unresolved_optional_dictionary_attribute_is_not_a_blocking_error(
 
     assert draft["attributes"]["9048"] == "F30"
     assert "20210" not in draft["attributes"]
+    assert captured["schema_ids"] == ["9048"]
     assert draft["validation_errors"] == []
     assert meta["ai_filled"] == ["9048"]
+
+
+def test_existing_required_open_enum_is_idempotent_and_clears_stale_error(
+    monkeypatch,
+) -> None:
+    product = default_product_model()
+    draft = product["drafts"]["ozon"]
+    draft["attributes"] = {"9048": "F30"}
+    draft["validation_errors"] = ["9048"]
+    category = {
+        "category_id": "91443",
+        "site": "global",
+        "attributes": {
+            "required": [
+                {
+                    "id": "9048",
+                    "name": "Название модели",
+                    "required": True,
+                    "dictionary_id": "0",
+                    "is_dictionary": True,
+                }
+            ],
+            "optional": [],
+        },
+    }
+    calls = 0
+
+    def unexpected_agent(*args):
+        nonlocal calls
+        calls += 1
+        raise AssertionError("已有有效开放枚举值时不应调用 Agent")
+
+    monkeypatch.setattr(
+        category_attribute_ai_fill,
+        "run_category_attribute_fill_agent",
+        unexpected_agent,
+    )
+
+    first, first_meta = category_attribute_ai_fill.apply_ai_model_attribute_fill(
+        product,
+        "ozon",
+        category,
+    )
+    second, second_meta = category_attribute_ai_fill.apply_ai_model_attribute_fill(
+        first,
+        "ozon",
+        category,
+    )
+
+    assert calls == 0
+    assert first["drafts"]["ozon"]["attributes"]["9048"] == "F30"
+    assert first["drafts"]["ozon"]["validation_errors"] == []
+    assert second["drafts"]["ozon"] == first["drafts"]["ozon"]
+    assert first_meta == {"source": "rules", "ai_filled": []}
+    assert second_meta == first_meta
 
 
 def test_category_precheck_only_reports_missing_required_category_attributes() -> None:

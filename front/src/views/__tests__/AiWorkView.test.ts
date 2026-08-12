@@ -90,6 +90,9 @@ describe('AiWorkView Agent 对话投影', () => {
 
     expect(wrapper.text()).toContain('TOOL_CALL_STARTED')
     expect(wrapper.text()).toContain('MODEL_SELECTED_UNKNOWN_CATEGORY')
+    expect(wrapper.text()).toContain(
+      'MODEL_SELECTED_UNKNOWN_CATEGORY：模型输出未满足当前业务约束。',
+    )
 
     await openTab(wrapper, '原始请求')
     expect(wrapper.text()).toContain('历史 Agent 输入摘要')

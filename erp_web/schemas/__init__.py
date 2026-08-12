@@ -4,6 +4,7 @@ from .api import API_SCHEMA_VERSION, ApiResponse, AppStateResponse, validate_app
 from .ai_tools import (
     AiToolCommand,
     AiToolDefinition,
+    AiToolExecutionError,
     AiToolResult,
     AiToolSchemaError,
     validate_ai_tool_definition,
@@ -49,6 +50,7 @@ __all__ = [
     "AiExecutionContext",
     "AiToolCommand",
     "AiToolDefinition",
+    "AiToolExecutionError",
     "AiToolResult",
     "AiToolSchemaError",
     "AiTraceIdentifiers",

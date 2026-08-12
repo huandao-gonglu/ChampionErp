@@ -8,6 +8,7 @@ import {
   waitForAiWorkEvents,
 } from '@/api/aiWork'
 import type { AiWorkConversationSummary, AiWorkEvent } from '@/types/aiWork'
+import { formatAiWorkError } from '@/utils/aiWorkError'
 
 type ViewTab = 'conversation' | 'request' | 'result' | 'events'
 
@@ -167,6 +168,10 @@ const providerRequestRecorded = computed(() => customEvents.value.some((event) =
   'agent.request',
 ].includes(String(event.name || ''))))
 
+const runError = computed(() =>
+  [...selectedEvents.value].reverse().find((event) => event.type === 'RUN_ERROR'),
+)
+
 const parsedResult = computed(() => {
   const event = [...customEvents.value].reverse().find((item) => item.name === 'business.result')
   if (event) return event.value
@@ -187,6 +192,7 @@ const parsedResult = computed(() => {
 })
 
 const conversationOutput = computed(() => {
+  if (runError.value) return formatAiWorkError(runError.value)
   if (assistantOutput.value) return assistantOutput.value
   const result = parsedResult.value
   if (result && typeof result === 'object') {
@@ -201,10 +207,6 @@ const conversationOutput = computed(() => {
   if (providerRequestRecorded.value) return '请求已发送，正在等待 Provider 响应……'
   return '正在准备 Provider 请求……'
 })
-
-const runError = computed(() =>
-  [...selectedEvents.value].reverse().find((event) => event.type === 'RUN_ERROR'),
-)
 
 const lastSeq = computed(() =>
   selectedEvents.value.reduce((highest, event) => Math.max(highest, event.seq || 0), 0),
