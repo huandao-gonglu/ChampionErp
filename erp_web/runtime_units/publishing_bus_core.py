@@ -2,12 +2,17 @@
 from __future__ import annotations
 
 import copy
+import hmac
 import threading
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, Protocol
 
+from .publish_confirmation import (
+    canonical_publish_digest,
+    resolve_publish_store_binding,
+)
 
 
 class PublishingAdapter(Protocol):
@@ -20,14 +25,37 @@ class PublishingAdapter(Protocol):
     def publish(self, product: dict[str, Any], platform: str, config: dict[str, Any]) -> dict[str, Any]:
         ...
 
+    def validate_payload(self, payload: Any, config: dict[str, Any]) -> list[str]:
+        ...
+
+    def publish_payload(
+        self,
+        payload: dict[str, Any],
+        config: dict[str, Any],
+    ) -> dict[str, Any]:
+        ...
+
 
 class PublishingJobStore(Protocol):
     """Persistence contract implemented by ``erp_web.db.ErpDatabase``."""
+
+    def create_publish_job(
+        self,
+        state: dict[str, Any],
+    ) -> tuple[dict[str, Any], bool]:
+        """原子保存新幂等映射；键已存在时返回绑定的任务。"""
+        ...
 
     def save_publish_job(self, state: dict[str, Any]) -> None:
         ...
 
     def load_publish_job(self, job_id: str) -> dict[str, Any]:
+        ...
+
+    def load_publish_job_by_idempotency_key(
+        self,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
         ...
 
     def list_pending_publish_jobs(self) -> list[dict[str, Any]]:
@@ -42,6 +70,21 @@ class PublishingJobStore(Protocol):
         product_id: str = "",
     ) -> tuple[list[dict[str, Any]], str]:
         ...
+
+
+class PublishIdempotencyConflictError(RuntimeError):
+    """可信幂等键被用于不同的发布事实。"""
+
+    code = "PUBLISH_IDEMPOTENCY_CONFLICT"
+
+    def __init__(self) -> None:
+        super().__init__("发布幂等键已绑定到不同的商品、平台、目标或发布确认。")
+
+
+class PublishApprovalBindingError(RuntimeError):
+    """持久化的人工确认与 worker 即将外发的事实不再一致。"""
+
+    code = "PUBLISH_APPROVAL_BINDING_INVALID"
 
 
 ACTIVE_JOB_STATUSES = frozenset({"pending", "queued", "running", "retrying"})
@@ -189,8 +232,18 @@ class PublishingBus:
         platforms: list[str],
         *,
         targets: dict[str, dict[str, Any]],
+        idempotency_key: str,
+        approved_publications: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        selected = [platform for platform in platforms if platform in self.adapters]
+        trusted_key = str(idempotency_key or "").strip()
+        if not trusted_key:
+            raise ValueError("发布任务缺少可信 idempotency_key。")
+
+        selected: list[str] = []
+        for raw_platform in platforms:
+            platform = str(raw_platform or "").strip().lower()
+            if platform in self.adapters and platform not in selected:
+                selected.append(platform)
         if not selected:
             raise ValueError("请选择至少一个可发布平台。")
 
@@ -215,16 +268,39 @@ class PublishingBus:
                 "product_id": product_id,
             }
 
+        approvals = self._normalize_approved_publications(
+            approved_publications,
+            selected,
+        )
+        self._validate_approved_publications(
+            product_id=product_id,
+            bindings=bindings,
+            approved_publications=approvals,
+        )
+        idempotency_facts = self._build_idempotency_facts(
+            product_id=product_id,
+            platforms=selected,
+            bindings=bindings,
+            approved_publications=approvals,
+        )
+
         job_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8]
         now = current_time()
         state = {
             "job_id": job_id,
+            "idempotency_key": trusted_key,
+            "idempotency_facts": idempotency_facts,
             "status": "queued",
             "created_at": now,
             "updated_at": now,
             "draft_id": next(iter(bindings.values()))["draft_id"] if len(bindings) == 1 else "",
             "product_name": str(product.get("name") or ""),
             "product": copy.deepcopy(product),
+            **(
+                {"approved_publications": approvals}
+                if approvals
+                else {}
+            ),
             "platforms": {
                 platform: self._new_platform_state(
                     platform,
@@ -234,15 +310,240 @@ class PublishingBus:
                 for platform in selected
             },
         }
-        self._write_state(job_id, state)
+        persisted_state, created = self.store.create_publish_job(state)
+        if not created:
+            if persisted_state.get("idempotency_facts") != idempotency_facts:
+                raise PublishIdempotencyConflictError()
+            return self._enqueue_result(
+                persisted_state,
+                idempotent_replay=True,
+            )
+
         self._submit_job(job_id, product, selected)
         self._update_job_status(job_id)
+        return self._enqueue_result(state, idempotent_replay=False)
+
+    def recover_publish_job(
+        self,
+        *,
+        idempotency_key: str,
+        product_id: str,
+        draft_id: str,
+        validation_digest: str,
+        platform: str,
+        site: str,
+    ) -> dict[str, Any] | None:
+        """在重校验/准入前，按完整规范化确认事实恢复已有任务。"""
+
+        trusted_key = str(idempotency_key or "").strip()
+        expected_product = str(product_id or "").strip()
+        expected_draft = str(draft_id or "").strip()
+        expected_digest = str(validation_digest or "").strip().lower()
+        expected_platform = str(platform or "").strip().lower()
+        expected_site = str(site or "").strip().lower()
+        if not all(
+            (
+                trusted_key,
+                expected_product,
+                expected_draft,
+                expected_digest,
+                expected_platform,
+                expected_site,
+            )
+        ):
+            raise ValueError("发布任务恢复缺少完整可信事实。")
+
+        state = self.store.load_publish_job_by_idempotency_key(trusted_key)
+        if not state:
+            return None
+        if str(state.get("idempotency_key") or "").strip() != trusted_key:
+            raise PublishIdempotencyConflictError()
+
+        product = state.get("product") if isinstance(state.get("product"), dict) else {}
+        persisted_product = str(product.get("product_id") or "").strip()
+        raw_platforms = state.get("platforms") if isinstance(state.get("platforms"), dict) else {}
+        selected = sorted(
+            {
+                str(item or "").strip().lower()
+                for item in raw_platforms
+                if str(item or "").strip()
+            }
+        )
+        if selected != [expected_platform]:
+            raise PublishIdempotencyConflictError()
+        raw_target = raw_platforms.get(expected_platform)
+        if not isinstance(raw_target, dict):
+            raise PublishIdempotencyConflictError()
+        bindings = {
+            expected_platform: {
+                "draft_id": str(raw_target.get("draft_id") or "").strip(),
+                "site": str(raw_target.get("site") or "").strip(),
+                "product_id": str(raw_target.get("product_id") or "").strip(),
+            }
+        }
+        try:
+            approvals = self._normalize_approved_publications(
+                state.get("approved_publications"),
+                selected,
+            )
+        except ValueError as exc:
+            raise PublishIdempotencyConflictError() from exc
+        if not approvals:
+            raise PublishIdempotencyConflictError()
+        try:
+            self._validate_approved_publications(
+                product_id=persisted_product,
+                bindings=bindings,
+                approved_publications=approvals,
+            )
+        except PublishApprovalBindingError as exc:
+            raise PublishIdempotencyConflictError() from exc
+        canonical_facts = self._build_idempotency_facts(
+            product_id=persisted_product,
+            platforms=selected,
+            bindings=bindings,
+            approved_publications=approvals,
+        )
+        approval = approvals[expected_platform]
+        if (
+            state.get("idempotency_facts") != canonical_facts
+            or persisted_product != expected_product
+            or bindings[expected_platform]["product_id"] != expected_product
+            or bindings[expected_platform]["draft_id"] != expected_draft
+            or bindings[expected_platform]["site"].strip().lower() != expected_site
+            or str(approval.get("validation_digest") or "").strip().lower()
+            != expected_digest
+        ):
+            raise PublishIdempotencyConflictError()
+        return self._enqueue_result(state, idempotent_replay=True)
+
+    @staticmethod
+    def _normalize_approved_publications(
+        raw_approvals: Any,
+        platforms: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        if raw_approvals in (None, {}):
+            return {}
+        if not isinstance(raw_approvals, dict):
+            raise ValueError("发布确认 payload 必须是平台映射。")
+        selected = sorted(platforms)
+        normalized_keys = sorted(
+            str(key or "").strip().lower() for key in raw_approvals
+        )
+        if normalized_keys != selected:
+            raise ValueError("发布确认 payload 必须精确覆盖入队平台。")
+        approvals: dict[str, dict[str, Any]] = {}
+        for raw_platform, raw_approval in raw_approvals.items():
+            platform = str(raw_platform or "").strip().lower()
+            if not isinstance(raw_approval, dict):
+                raise ValueError(f"{platform} 发布确认不是对象。")
+            payload = raw_approval.get("payload")
+            digest = str(raw_approval.get("validation_digest") or "").strip().lower()
+            store_identity = str(raw_approval.get("store_identity") or "").strip()
+            if not isinstance(payload, dict):
+                raise ValueError(f"{platform} 发布确认缺少 payload。")
+            if (
+                len(digest) != 64
+                or any(char not in "0123456789abcdef" for char in digest)
+            ):
+                raise ValueError(f"{platform} 发布确认 digest 无效。")
+            if not store_identity.startswith(f"{platform}:"):
+                raise ValueError(f"{platform} 发布确认的店铺身份无效。")
+            approvals[platform] = {
+                "payload": copy.deepcopy(payload),
+                "validation_digest": digest,
+                "store_identity": store_identity,
+            }
+        return approvals
+
+    @staticmethod
+    def _build_idempotency_facts(
+        *,
+        product_id: str,
+        platforms: list[str],
+        bindings: dict[str, dict[str, str]],
+        approved_publications: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        selected = sorted(str(item or "").strip().lower() for item in platforms)
+        facts: dict[str, Any] = {
+            "product_id": str(product_id or "").strip(),
+            "platforms": selected,
+            "targets": {
+                platform: {
+                    "draft_id": str(bindings[platform].get("draft_id") or "").strip(),
+                    "site": str(bindings[platform].get("site") or "").strip().lower(),
+                    "product_id": str(bindings[platform].get("product_id") or "").strip(),
+                }
+                for platform in selected
+            },
+        }
+        if approved_publications:
+            facts["confirmation_digests"] = {
+                platform: str(
+                    approved_publications[platform].get("validation_digest") or ""
+                ).strip().lower()
+                for platform in selected
+            }
+        return facts
+
+    @staticmethod
+    def _validate_approved_publications(
+        *,
+        product_id: str,
+        bindings: dict[str, dict[str, str]],
+        approved_publications: dict[str, dict[str, Any]],
+    ) -> None:
+        for platform, approval in approved_publications.items():
+            binding = bindings.get(platform) or {}
+            payload = approval.get("payload")
+            if not isinstance(payload, dict):
+                raise PublishApprovalBindingError(
+                    f"{platform} 发布确认缺少 payload。"
+                )
+            actual_digest = canonical_publish_digest(
+                product_id=product_id,
+                draft_id=str(binding.get("draft_id") or ""),
+                platform=platform,
+                site=str(binding.get("site") or ""),
+                store_identity=str(approval.get("store_identity") or ""),
+                payload=payload,
+            )
+            expected_digest = str(
+                approval.get("validation_digest") or ""
+            ).strip().lower()
+            if not hmac.compare_digest(actual_digest, expected_digest):
+                raise PublishApprovalBindingError(
+                    f"{platform} 发布确认 digest 与 payload/目标不一致。"
+                )
+
+    @staticmethod
+    def _enqueue_result(
+        state: dict[str, Any],
+        *,
+        idempotent_replay: bool,
+    ) -> dict[str, Any]:
+        raw_platforms = (
+            state.get("platforms")
+            if isinstance(state.get("platforms"), dict)
+            else {}
+        )
+        platforms = sorted(str(platform) for platform in raw_platforms)
+        targets = {
+            platform: {
+                "draft_id": str(raw_platforms[platform].get("draft_id") or ""),
+                "site": str(raw_platforms[platform].get("site") or ""),
+                "product_id": str(raw_platforms[platform].get("product_id") or ""),
+            }
+            for platform in platforms
+            if isinstance(raw_platforms.get(platform), dict)
+        }
         return {
             "ok": True,
-            "job_id": job_id,
-            "platforms": selected,
-            "targets": bindings,
-            "status": "queued",
+            "job_id": str(state.get("job_id") or ""),
+            "platforms": platforms,
+            "targets": targets,
+            "status": str(state.get("status") or "queued"),
+            "idempotent_replay": idempotent_replay,
         }
 
     def recover_pending_jobs(self) -> list[str]:
@@ -287,6 +588,9 @@ class PublishingBus:
         state = copy.deepcopy(self._read_state(job_id))
         summary = _publish_job_summary(state)
         state.pop("product", None)
+        state.pop("idempotency_key", None)
+        state.pop("idempotency_facts", None)
+        state.pop("approved_publications", None)
         state["product_id"] = summary["product_id"]
         state["product_name"] = summary["product_name"]
         state["draft_id"] = summary["draft_id"]
@@ -299,6 +603,10 @@ class PublishingBus:
                 result = item.get("result")
                 if isinstance(result, dict):
                     result.pop("product", None)
+                    result.pop("payload", None)
+                    result.pop("approved_payload", None)
+                    result.pop("validation_digest", None)
+                    result.pop("store_identity", None)
         return state
 
     def list_jobs(
@@ -416,7 +724,25 @@ class PublishingBus:
                     and isinstance(platform_state.get("result"), dict)
                     else None
                 )
+                approvals = (
+                    state.get("approved_publications")
+                    if isinstance(state.get("approved_publications"), dict)
+                    else {}
+                )
+                approval = (
+                    approvals.get(platform)
+                    if isinstance(approvals.get(platform), dict)
+                    else None
+                )
                 if self._is_pending_publish_result(stored_result):
+                    if approval is not None:
+                        self._approved_payload_for_worker(
+                            platform=platform,
+                            state=state,
+                            approval=approval,
+                            adapter=adapter,
+                            config=config,
+                        )
                     result: Any = stored_result
                     self._set_platform(
                         job_id,
@@ -427,42 +753,53 @@ class PublishingBus:
                         attempts=attempts,
                     )
                 else:
-                    self._set_platform(job_id, platform, status="running", stage="resolving_category", attempts=attempts)
-                    resolved = adapter.resolve_category(product, config)
-                    product = resolved if isinstance(resolved, dict) else product
-                    drafts = (
-                        product.get("drafts")
-                        if isinstance(product.get("drafts"), dict)
-                        else {}
-                    )
-                    draft = (
-                        drafts.get(platform)
-                        if isinstance(drafts.get(platform), dict)
-                        else {}
-                    )
-                    self._set_platform(
-                        job_id,
-                        platform,
-                        stage="validating_required_attributes",
-                        category_id=str(
-                            draft.get("category_id")
-                            or ""
-                        ),
-                        attempts=attempts,
-                    )
-                    missing = adapter.required_attributes_missing(product, config)
-                    if missing:
+                    if approval is not None:
+                        result = self._publish_approved_payload(
+                            job_id=job_id,
+                            platform=platform,
+                            state=state,
+                            approval=approval,
+                            adapter=adapter,
+                            config=config,
+                            attempts=attempts,
+                        )
+                    else:
+                        self._set_platform(job_id, platform, status="running", stage="resolving_category", attempts=attempts)
+                        resolved = adapter.resolve_category(product, config)
+                        product = resolved if isinstance(resolved, dict) else product
+                        drafts = (
+                            product.get("drafts")
+                            if isinstance(product.get("drafts"), dict)
+                            else {}
+                        )
+                        draft = (
+                            drafts.get(platform)
+                            if isinstance(drafts.get(platform), dict)
+                            else {}
+                        )
                         self._set_platform(
                             job_id,
                             platform,
-                            status="failed",
-                            stage="failed",
-                            error="缺失必填属性：" + "，".join(str(item) for item in missing),
+                            stage="validating_required_attributes",
+                            category_id=str(
+                                draft.get("category_id")
+                                or ""
+                            ),
                             attempts=attempts,
                         )
-                        return
-                    self._set_platform(job_id, platform, stage="publishing", attempts=attempts)
-                    result = adapter.publish(product, platform, config)
+                        missing = adapter.required_attributes_missing(product, config)
+                        if missing:
+                            self._set_platform(
+                                job_id,
+                                platform,
+                                status="failed",
+                                stage="failed",
+                                error="缺失必填属性：" + "，".join(str(item) for item in missing),
+                                attempts=attempts,
+                            )
+                            return
+                        self._set_platform(job_id, platform, stage="publishing", attempts=attempts)
+                        result = adapter.publish(product, platform, config)
 
                 while self._is_pending_publish_result(result):
                     poller = getattr(adapter, "poll_publish_status", None)
@@ -556,7 +893,10 @@ class PublishingBus:
                 )
                 return
             except Exception as exc:
-                retryable = attempts < max_attempts
+                retryable = (
+                    not isinstance(exc, PublishApprovalBindingError)
+                    and attempts < max_attempts
+                )
                 self._set_platform(
                     job_id,
                     platform,
@@ -569,6 +909,98 @@ class PublishingBus:
                     return
                 time.sleep(self.retry_delay_seconds)
         self._update_job_status(job_id)
+
+    def _publish_approved_payload(
+        self,
+        *,
+        job_id: str,
+        platform: str,
+        state: dict[str, Any],
+        approval: dict[str, Any],
+        adapter: PublishingAdapter,
+        config: dict[str, Any],
+        attempts: int,
+    ) -> dict[str, Any]:
+        payload = self._approved_payload_for_worker(
+            platform=platform,
+            state=state,
+            approval=approval,
+            adapter=adapter,
+            config=config,
+        )
+        self._set_platform(
+            job_id,
+            platform,
+            status="running",
+            stage="publishing_approved_payload",
+            error="",
+            attempts=attempts,
+        )
+        return adapter.publish_payload(copy.deepcopy(payload), config)
+
+    @staticmethod
+    def _approved_payload_for_worker(
+        *,
+        platform: str,
+        state: dict[str, Any],
+        approval: dict[str, Any],
+        adapter: PublishingAdapter,
+        config: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = approval.get("payload")
+        if not isinstance(payload, dict):
+            raise PublishApprovalBindingError(
+                "发布确认缺少已批准 payload，已阻止外发。"
+            )
+        expected_digest = str(
+            approval.get("validation_digest") or ""
+        ).strip().lower()
+        expected_identity = str(
+            approval.get("store_identity") or ""
+        ).strip()
+        try:
+            current_binding = resolve_publish_store_binding(platform, config)
+        except ValueError as exc:
+            raise PublishApprovalBindingError(
+                "当前店铺缺少稳定账号身份，已阻止使用旧确认外发。"
+            ) from exc
+        if not hmac.compare_digest(current_binding.identity, expected_identity):
+            raise PublishApprovalBindingError(
+                "当前店铺账号与人工确认绑定的账号不一致，已阻止外发。"
+            )
+
+        product = (
+            state.get("product")
+            if isinstance(state.get("product"), dict)
+            else {}
+        )
+        platform_state = (
+            state.get("platforms", {}).get(platform)
+            if isinstance(state.get("platforms"), dict)
+            else {}
+        )
+        actual_digest = canonical_publish_digest(
+            product_id=str(product.get("product_id") or ""),
+            draft_id=str(platform_state.get("draft_id") or ""),
+            platform=platform,
+            site=str(platform_state.get("site") or ""),
+            store_identity=current_binding.identity,
+            payload=payload,
+        )
+        if not hmac.compare_digest(actual_digest, expected_digest):
+            raise PublishApprovalBindingError(
+                "已批准 payload、目标或店铺身份与确认 digest 不一致，已阻止外发。"
+            )
+        payload_errors = adapter.validate_payload(
+            copy.deepcopy(payload),
+            copy.deepcopy(config),
+        ) or []
+        if payload_errors:
+            raise PublishApprovalBindingError(
+                "已批准 payload 在当前店铺配置下无效："
+                + "，".join(str(item) for item in payload_errors)
+            )
+        return copy.deepcopy(payload)
 
     @staticmethod
     def _is_pending_publish_result(result: Any) -> bool:

@@ -69,6 +69,41 @@ class ErpDbTests(unittest.TestCase):
     def _db(self, app_dir: Path) -> ErpDatabase:
         return ErpDatabase(app_dir / erp_db.DEFAULT_DB_NAME)
 
+    @staticmethod
+    def _downgrade_ai_sessions_to_v7(
+        conn: sqlite3.Connection,
+    ) -> None:
+        conn.execute("DROP INDEX idx_ai_sessions_parent_updated")
+        conn.execute("DROP INDEX idx_ai_sessions_updated")
+        conn.execute("ALTER TABLE ai_sessions RENAME TO ai_sessions_v8")
+        conn.execute(
+            """
+            CREATE TABLE ai_sessions (
+                session_id TEXT PRIMARY KEY,
+                day TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT '',
+                last_seq INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO ai_sessions (
+                session_id, day, status, last_seq, updated_at
+            )
+            SELECT session_id, day, status, last_seq, updated_at
+            FROM ai_sessions_v8
+            """
+        )
+        conn.execute("DROP TABLE ai_sessions_v8")
+        conn.execute(
+            """
+            CREATE INDEX idx_ai_sessions_updated
+            ON ai_sessions(updated_at DESC)
+            """
+        )
+
     def test_legacy_draft_price_and_currency_are_read_as_stale_v2_data(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = self._db(Path(tmp))
@@ -247,6 +282,297 @@ class ErpDbTests(unittest.TestCase):
                             sidecar.stat().st_mode & 0o777,
                             0o600,
                         )
+
+    def test_current_schema_without_critical_unique_index_is_rejected(
+        self,
+    ) -> None:
+        for index_name in (
+            "idx_publish_jobs_idempotency_key",
+            "idx_global_tasks_one_active_conversation",
+            "idx_ai_sessions_parent_updated",
+        ):
+            with self.subTest(index_name=index_name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    app_dir = Path(tmp)
+                    database = self._db(app_dir)
+                    with database._connect() as conn:
+                        conn.execute(f'DROP INDEX "{index_name}"')
+                        conn.commit()
+
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "仅接受空库或当前完整 schema",
+                    ):
+                        self._db(app_dir)
+
+    def test_current_schema_with_non_root_ai_session_parent_is_rejected(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app_dir = Path(tmp)
+            database = self._db(app_dir)
+            database.upsert_ai_session(
+                "root",
+                day="2026-08-13",
+                status="running",
+                last_seq=1,
+                updated_at="2026-08-13T08:00:00+08:00",
+            )
+            database.upsert_ai_session(
+                "child",
+                parent_session_id="root",
+                day="2026-08-13",
+                status="completed",
+                last_seq=2,
+                updated_at="2026-08-13T08:01:00+08:00",
+            )
+            with database._connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE ai_sessions
+                    SET parent_session_id = 'child'
+                    WHERE session_id = 'root'
+                    """
+                )
+                conn.commit()
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "仅接受空库或当前完整 schema",
+            ):
+                self._db(app_dir)
+
+    def test_complete_v5_schema_is_migrated_atomically_without_data_loss(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app_dir = Path(tmp)
+            database = self._db(app_dir)
+            product_id = database.upsert_product_model(sample_product())
+            old_state = {
+                "job_id": "legacy-job",
+                "idempotency_key": "temporary-v7-key",
+                "status": "completed",
+                "created_at": "2026-08-01T00:00:00Z",
+                "updated_at": "2026-08-01T00:01:00Z",
+                "product": {"product_id": product_id},
+                "platforms": {
+                    "mercadolibre": {
+                        "draft_id": "legacy-draft",
+                        "site": "MLM",
+                        "status": "success",
+                    }
+                },
+            }
+            database.create_publish_job(old_state)
+
+            db_path = app_dir / erp_db.DEFAULT_DB_NAME
+            conn = sqlite3.connect(db_path)
+            try:
+                payload = dict(old_state)
+                payload.pop("idempotency_key")
+                conn.execute("ALTER TABLE publish_jobs RENAME TO publish_jobs_v7")
+                conn.execute(
+                    """
+                    CREATE TABLE publish_jobs (
+                        job_id TEXT PRIMARY KEY,
+                        product_id TEXT NOT NULL DEFAULT '',
+                        draft_id TEXT NOT NULL DEFAULT '',
+                        platform TEXT NOT NULL DEFAULT '',
+                        status TEXT NOT NULL DEFAULT '',
+                        stage TEXT NOT NULL DEFAULT '',
+                        attempts INTEGER NOT NULL DEFAULT 0,
+                        error TEXT NOT NULL DEFAULT '',
+                        payload_json TEXT NOT NULL DEFAULT '{}',
+                        created_at TEXT NOT NULL DEFAULT '',
+                        updated_at TEXT NOT NULL DEFAULT ''
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO publish_jobs (
+                        job_id, product_id, draft_id, platform, status,
+                        stage, attempts, error, payload_json,
+                        created_at, updated_at
+                    )
+                    SELECT job_id, product_id, draft_id, platform, status,
+                           stage, attempts, error, ?, created_at, updated_at
+                    FROM publish_jobs_v7
+                    """,
+                    (json.dumps(payload),),
+                )
+                conn.execute("DROP TABLE publish_jobs_v7")
+                conn.execute("DROP TABLE global_tasks")
+                conn.execute("DROP TABLE draft_query_snapshots")
+                self._downgrade_ai_sessions_to_v7(conn)
+                conn.execute("PRAGMA user_version = 5")
+                conn.commit()
+            finally:
+                conn.close()
+
+            migrated = self._db(app_dir)
+
+            self.assertEqual(
+                migrated.load_product_model(product_id)["product_id"],
+                product_id,
+            )
+            migrated_job = migrated.load_publish_job("legacy-job")
+            self.assertEqual(
+                migrated_job["idempotency_key"],
+                "migrated-publish-job:legacy-job",
+            )
+            self.assertEqual(
+                migrated_job["idempotency_facts"],
+                {
+                    "product_id": product_id,
+                    "platforms": ["mercadolibre"],
+                    "targets": {
+                        "mercadolibre": {
+                            "draft_id": "legacy-draft",
+                            "site": "MLM",
+                            "product_id": product_id,
+                        }
+                    },
+                },
+            )
+            conn = sqlite3.connect(db_path)
+            try:
+                version = conn.execute("PRAGMA user_version").fetchone()[0]
+                tables = {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    )
+                }
+                stored_key = conn.execute(
+                    """
+                    SELECT idempotency_key FROM publish_jobs
+                    WHERE job_id = 'legacy-job'
+                    """
+                ).fetchone()[0]
+            finally:
+                conn.close()
+            self.assertEqual(version, erp_db.SCHEMA_VERSION)
+            self.assertTrue(set(erp_db.REQUIRED_TABLES).issubset(tables))
+            self.assertEqual(stored_key, "migrated-publish-job:legacy-job")
+
+    def test_complete_v7_schema_migrates_and_backfills_ai_session_parents(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app_dir = Path(tmp)
+            database = self._db(app_dir)
+            day = "2026-08-13"
+            timestamp = "2026-08-13T08:00:00+08:00"
+            session_ids = (
+                "parent-task",
+                "child-task",
+                "parent-log",
+                "child-log",
+                "parent-conflict-one",
+                "parent-conflict-two",
+                "child-conflict",
+            )
+            for session_id in session_ids:
+                database.upsert_ai_session(
+                    session_id,
+                    day=day,
+                    status="completed",
+                    last_seq=1,
+                    updated_at=timestamp,
+                )
+            with database._connect() as conn:
+                tasks = (
+                    (
+                        "task-one",
+                        "parent-task",
+                        ["child-task", "child-conflict"],
+                    ),
+                    (
+                        "task-two",
+                        "parent-conflict-two",
+                        ["child-conflict"],
+                    ),
+                )
+                for task_id, parent_id, child_ids in tasks:
+                    conn.execute(
+                        """
+                        INSERT INTO global_tasks (
+                            task_id, ai_work_conversation_id, status,
+                            task_json, created_at, updated_at
+                        ) VALUES (?, ?, 'completed', ?, ?, ?)
+                        """,
+                        (
+                            task_id,
+                            parent_id,
+                            json.dumps(
+                                {
+                                    "agent_execution_conversation_ids": (
+                                        child_ids
+                                    )
+                                }
+                            ),
+                            timestamp,
+                            timestamp,
+                        ),
+                    )
+                conn.commit()
+
+            journal_dir = app_dir / "data" / "logs" / "ai_work" / day
+            journal_dir.mkdir(parents=True)
+            (journal_dir / "parent-log.jsonl").write_text(
+                "\n".join(
+                    json.dumps(event)
+                    for event in (
+                        {
+                            "seq": 1,
+                            "type": "RUN_STARTED",
+                            "rawEvent": {
+                                "use_case_id": "global.agent.chat"
+                            },
+                        },
+                        {
+                            "seq": 2,
+                            "type": "CUSTOM",
+                            "name": "global.agent_execution_link",
+                            "value": {"conversation_id": "child-log"},
+                        },
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with database._connect() as conn:
+                self._downgrade_ai_sessions_to_v7(conn)
+                conn.execute("PRAGMA user_version = 7")
+                conn.commit()
+
+            migrated = self._db(app_dir)
+
+            self.assertEqual(
+                migrated.get_ai_session("child-task")[
+                    "parent_session_id"
+                ],
+                "parent-task",
+            )
+            self.assertEqual(
+                migrated.get_ai_session("child-log")[
+                    "parent_session_id"
+                ],
+                "parent-log",
+            )
+            self.assertIsNone(
+                migrated.get_ai_session("child-conflict")[
+                    "parent_session_id"
+                ]
+            )
+            with migrated._connect() as conn:
+                self.assertEqual(
+                    conn.execute("PRAGMA user_version").fetchone()[0],
+                    erp_db.SCHEMA_VERSION,
+                )
 
     def test_future_schema_is_rejected_without_any_file_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -912,6 +1238,7 @@ class ErpDbTests(unittest.TestCase):
             db = self._db(Path(tmp))
             running = {
                 "job_id": "job-running",
+                "idempotency_key": "test:job-running",
                 "status": "running",
                 "created_at": "2026-07-26 09:00:00",
                 "updated_at": "2026-07-26 09:00:01",
@@ -920,6 +1247,7 @@ class ErpDbTests(unittest.TestCase):
             }
             done = {
                 "job_id": "job-done",
+                "idempotency_key": "test:job-done",
                 "status": "completed",
                 "created_at": "2026-07-26 08:00:00",
                 "updated_at": "2026-07-26 08:00:05",
@@ -929,11 +1257,25 @@ class ErpDbTests(unittest.TestCase):
             persisted = {
                 **done,
                 "job_id": "job-persisted",
+                "idempotency_key": "test:job-persisted",
                 "terminal_results_persisted": True,
             }
+            for state in (running, done, persisted):
+                stored, created = db.create_publish_job(state)
+                self.assertTrue(created)
+                self.assertEqual(stored["job_id"], state["job_id"])
+
+            replay, created = db.create_publish_job(
+                {
+                    **running,
+                    "job_id": "must-not-be-created",
+                }
+            )
+            self.assertFalse(created)
+            self.assertEqual(replay["job_id"], "job-running")
+
+            running["updated_at"] = "2026-07-26 09:00:02"
             db.save_publish_job(running)
-            db.save_publish_job(done)
-            db.save_publish_job(persisted)
 
             self.assertEqual(db.load_publish_job("job-running")["status"], "running")
             self.assertEqual(db.load_publish_job("missing"), {})

@@ -19,6 +19,9 @@ GLOBAL_PROMPT_USE_CASES = tuple(
 )
 
 DEFAULT_AI_USE_CASE_PROMPTS: dict[str, dict[str, str]] = {
+    "global.task.plan": {
+        "path": "config/prompts/global_task_plan.json",
+    },
     "copy.generate": {
         "path": "config/prompts/copy_generate.json",
     },

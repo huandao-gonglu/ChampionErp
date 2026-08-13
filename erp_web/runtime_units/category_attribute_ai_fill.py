@@ -203,6 +203,8 @@ def apply_ai_model_attribute_fill(
     product: dict[str, Any],
     platform: str,
     category_record: dict[str, Any] | None,
+    *,
+    parent_conversation_id: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     platform = str(platform or "").strip().lower()
     base_product = apply_ai_attribute_fill(product, platform, category_record)
@@ -234,6 +236,11 @@ def apply_ai_model_attribute_fill(
             ),
             toolset,
             ledger,
+            **(
+                {"parent_conversation_id": parent_conversation_id}
+                if parent_conversation_id
+                else {}
+            ),
         )
         ai_attrs = _validated_agent_attributes(
             agent_run.output,

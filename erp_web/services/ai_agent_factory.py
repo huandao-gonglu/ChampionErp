@@ -524,6 +524,7 @@ class AiAgentFactory:
         input_summary: Mapping[str, Any] | None = None,
         timeout_seconds: float | None = None,
         model_override: Model | None = None,
+        parent_conversation_id: str | None = None,
     ) -> AiAgentRunOutcome[OutputT]:
         if toolset.toolset_id != profile.toolset_id:
             raise AiAgentExecutionError(
@@ -571,6 +572,7 @@ class AiAgentFactory:
                 timeout_seconds=max(1, int(effective_timeout)),
                 input_payload=dict(input_summary or {}),
                 trace_context=execution_context.trace_payload(),
+                parent_conversation_id=parent_conversation_id,
             )
             recorder = ConversationAiWorkRecorder(conversation, execution_context)
             runtime = AiToolRuntime(

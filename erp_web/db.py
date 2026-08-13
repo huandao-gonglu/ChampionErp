@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-"""SQLite persistence layer.
+"""SQLite 持久化边界。
 
-``ErpDatabase`` owns the schema, the connection settings and every read/write
-path.  The schema is versioned via ``PRAGMA user_version``. Only an empty
-database or the current complete schema is accepted; old, partial, unknown and
-future schemas are rejected before any connection setting mutates the file.
-The only seed path is the UPC pool: purchased UPC codes in ``upc_pool.json``
-are imported once when the table is empty.
+``ErpDatabase`` 统一拥有 schema、连接设置和读写路径。数据库通过
+``PRAGMA user_version`` 版本化；接受空库、当前完整 schema，以及有真实本地
+数据证据的完整 v5 / v7 schema。迁移会在单个事务内升级到当前版本；其他旧版、
+残缺、未知或未来格式在任何写入前拒绝。唯一 seed 路径是 UPC 池：表为空时，
+从数据库旁的 ``upc_pool.json`` 一次性导入已购买的 UPC。
 """
 
 import hashlib
@@ -30,7 +29,7 @@ from erp_web.product_model.merge_model import (
 )
 
 DEFAULT_DB_NAME = "erp.sqlite3"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 8
 
 REQUIRED_TABLES = (
     "store_auth",
@@ -46,6 +45,28 @@ REQUIRED_TABLES = (
     "research_candidates",
     "ai_sessions",
     "exchange_rates",
+    "global_tasks",
+    "draft_query_snapshots",
+)
+
+# v5 是本功能落地前真实本地数据库的已持久化格式。只支持这一条有明确
+# 数据证据的迁移，不恢复更早的历史兼容链。
+_V5_REQUIRED_TABLES = frozenset(
+    {
+        "store_auth",
+        "runtime_secrets",
+        "products",
+        "platform_drafts",
+        "media_assets",
+        "publish_logs",
+        "upc_pool",
+        "order_notifications",
+        "publish_jobs",
+        "research_runs",
+        "research_candidates",
+        "ai_sessions",
+        "exchange_rates",
+    }
 )
 
 # Research run statuses that never change again (mirrors product_research_service).
@@ -153,6 +174,7 @@ CREATE TABLE IF NOT EXISTS order_notifications (
 
 CREATE TABLE IF NOT EXISTS publish_jobs (
     job_id TEXT PRIMARY KEY,
+    idempotency_key TEXT NOT NULL,
     product_id TEXT NOT NULL DEFAULT '',
     draft_id TEXT NOT NULL DEFAULT '',
     platform TEXT NOT NULL DEFAULT '',
@@ -185,16 +207,36 @@ CREATE TABLE IF NOT EXISTS research_candidates (
 
 CREATE TABLE IF NOT EXISTS ai_sessions (
     session_id TEXT PRIMARY KEY,
+    parent_session_id TEXT DEFAULT NULL,
     day TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT '',
     last_seq INTEGER NOT NULL DEFAULT 0,
-    updated_at TEXT NOT NULL DEFAULT ''
+    updated_at TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY(parent_session_id) REFERENCES ai_sessions(session_id)
+        ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS exchange_rates (
     pair TEXT PRIMARY KEY,
     rate REAL NOT NULL DEFAULT 0,
     fetched_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS global_tasks (
+    task_id TEXT PRIMARY KEY,
+    ai_work_conversation_id TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT '',
+    task_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS draft_query_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    ordered_draft_ids_json TEXT NOT NULL DEFAULT '[]',
+    query_json TEXT NOT NULL DEFAULT '{}',
+    aggregates_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_products_updated_at ON products(updated_at DESC);
@@ -204,9 +246,18 @@ CREATE INDEX IF NOT EXISTS idx_media_assets_product ON media_assets(product_id);
 CREATE INDEX IF NOT EXISTS idx_publish_logs_product ON publish_logs(product_id, platform);
 CREATE INDEX IF NOT EXISTS idx_upc_pool_status ON upc_pool(status);
 CREATE INDEX IF NOT EXISTS idx_publish_jobs_status ON publish_jobs(status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_publish_jobs_idempotency_key
+ON publish_jobs(idempotency_key);
 CREATE INDEX IF NOT EXISTS idx_research_runs_updated ON research_runs(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_research_candidates_run ON research_candidates(run_id, rank);
 CREATE INDEX IF NOT EXISTS idx_ai_sessions_updated ON ai_sessions(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_sessions_parent_updated
+ON ai_sessions(parent_session_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_global_tasks_updated ON global_tasks(updated_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_global_tasks_one_active_conversation
+ON global_tasks(ai_work_conversation_id)
+WHERE ai_work_conversation_id != ''
+  AND status NOT IN ('completed', 'failed', 'cancelled');
 """
 
 _CURRENT_PLATFORM_DRAFT_COLUMNS = frozenset(
@@ -222,19 +273,379 @@ _CURRENT_PLATFORM_DRAFT_COLUMNS = frozenset(
     }
 )
 
+_CURRENT_PUBLISH_JOB_COLUMNS = frozenset(
+    {
+        "job_id",
+        "idempotency_key",
+        "product_id",
+        "draft_id",
+        "platform",
+        "status",
+        "stage",
+        "attempts",
+        "error",
+        "payload_json",
+        "created_at",
+        "updated_at",
+    }
+)
+
+_V5_PUBLISH_JOB_COLUMNS = _CURRENT_PUBLISH_JOB_COLUMNS - {"idempotency_key"}
+
+_CURRENT_GLOBAL_TASK_COLUMNS = frozenset(
+    {
+        "task_id",
+        "ai_work_conversation_id",
+        "status",
+        "task_json",
+        "created_at",
+        "updated_at",
+    }
+)
+
+_CURRENT_DRAFT_QUERY_SNAPSHOT_COLUMNS = frozenset(
+    {
+        "snapshot_id",
+        "ordered_draft_ids_json",
+        "query_json",
+        "aggregates_json",
+        "created_at",
+    }
+)
+
+_CURRENT_AI_SESSION_COLUMNS = frozenset(
+    {
+        "session_id",
+        "parent_session_id",
+        "day",
+        "status",
+        "last_seq",
+        "updated_at",
+    }
+)
+
+_V7_AI_SESSION_COLUMNS = _CURRENT_AI_SESSION_COLUMNS - {
+    "parent_session_id"
+}
+
+_PUBLISH_JOB_IDEMPOTENCY_INDEX = "idx_publish_jobs_idempotency_key"
+_GLOBAL_TASK_ACTIVE_CONVERSATION_INDEX = (
+    "idx_global_tasks_one_active_conversation"
+)
+_AI_SESSION_PARENT_INDEX = "idx_ai_sessions_parent_updated"
+_AI_WORK_JOURNAL_RELATIVE_DIR = Path("data") / "logs" / "ai_work"
+
 
 # ---------------------------------------------------------------------------
 # Pure helpers (no database access)
 # ---------------------------------------------------------------------------
 
 def _execute_schema_statements(conn: sqlite3.Connection) -> None:
-    """Execute schema DDL one statement at a time in the caller's transaction."""
+    """在调用方事务中逐条执行 schema DDL。"""
     if not conn.in_transaction:
         raise RuntimeError("schema DDL 必须在显式事务内执行")
     for statement in _SCHEMA_SQL.split(";"):
         sql = statement.strip()
         if sql:
             conn.execute(sql)
+
+
+def _has_required_unique_index(
+    conn: sqlite3.Connection,
+    *,
+    table: str,
+    name: str,
+    columns: tuple[str, ...],
+    partial: bool,
+) -> bool:
+    """验证关键唯一约束的列与 partial 属性，而不只相信索引名称。"""
+
+    rows = conn.execute(f'PRAGMA index_list("{table}")').fetchall()
+    matched = next(
+        (
+            row
+            for row in rows
+            if str(row[1]) == name
+            and bool(row[2])
+            and bool(row[4]) is partial
+        ),
+        None,
+    )
+    if matched is None:
+        return False
+    indexed_columns = tuple(
+        str(row[2])
+        for row in conn.execute(f'PRAGMA index_info("{name}")').fetchall()
+    )
+    return indexed_columns == columns
+
+
+def _has_required_non_unique_index(
+    conn: sqlite3.Connection,
+    *,
+    table: str,
+    name: str,
+    columns: tuple[str, ...],
+) -> bool:
+    """验证会话层级查询依赖的普通索引。"""
+
+    rows = conn.execute(f'PRAGMA index_list("{table}")').fetchall()
+    matched = next(
+        (
+            row
+            for row in rows
+            if str(row[1]) == name
+            and not bool(row[2])
+            and not bool(row[4])
+        ),
+        None,
+    )
+    if matched is None:
+        return False
+    indexed_columns = tuple(
+        str(row[2])
+        for row in conn.execute(f'PRAGMA index_info("{name}")').fetchall()
+    )
+    return indexed_columns == columns
+
+
+def _has_valid_ai_session_parent_reference(
+    conn: sqlite3.Connection,
+) -> bool:
+    """验证自引用外键定义及现存父子数据完整性。"""
+
+    foreign_keys = conn.execute(
+        'PRAGMA foreign_key_list("ai_sessions")'
+    ).fetchall()
+    has_expected_reference = any(
+        str(row[2]) == "ai_sessions"
+        and str(row[3]) == "parent_session_id"
+        and str(row[4]) == "session_id"
+        and str(row[6]).upper() == "SET NULL"
+        for row in foreign_keys
+    )
+    if not has_expected_reference:
+        return False
+    invalid_hierarchy = conn.execute(
+        """
+        SELECT 1
+        FROM ai_sessions AS child
+        LEFT JOIN ai_sessions AS parent
+          ON parent.session_id = child.parent_session_id
+        WHERE child.parent_session_id IS NOT NULL
+          AND (
+              parent.session_id IS NULL
+              OR child.session_id = child.parent_session_id
+              OR parent.parent_session_id IS NOT NULL
+          )
+        LIMIT 1
+        """
+    ).fetchone()
+    return invalid_hierarchy is None
+
+
+def _legacy_publish_idempotency_facts(state: dict[str, Any]) -> dict[str, Any]:
+    """从 v5 job 状态提取只用于既有任务恢复的稳定发布事实。"""
+
+    product = _dict(state.get("product"))
+    product_id = str(
+        product.get("product_id") or state.get("product_id") or ""
+    ).strip()
+    raw_platforms = _dict(state.get("platforms"))
+    platforms = sorted(str(key or "").strip().lower() for key in raw_platforms)
+    platforms = [key for key in platforms if key]
+    targets: dict[str, dict[str, str]] = {}
+    for platform in platforms:
+        item = _dict(raw_platforms.get(platform))
+        targets[platform] = {
+            "draft_id": str(item.get("draft_id") or "").strip(),
+            "site": str(item.get("site") or "").strip(),
+            "product_id": str(item.get("product_id") or product_id).strip(),
+        }
+    return {
+        "product_id": product_id,
+        "platforms": platforms,
+        "targets": targets,
+    }
+
+
+def _add_ai_session_parent_column(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        ALTER TABLE ai_sessions
+        ADD COLUMN parent_session_id TEXT DEFAULT NULL
+            REFERENCES ai_sessions(session_id) ON DELETE SET NULL
+        """
+    )
+
+
+def _backfill_ai_session_parent_links(
+    conn: sqlite3.Connection,
+    journal_root: Path,
+) -> None:
+    """一次性从稳定全局会话投影恢复历史父子关系。
+
+    迁移只绑定父会话唯一且父子元数据均存在的链接；历史日志若把同一执行
+    会话链接到多个父会话，则保持根会话，避免启动时任意选择一个 owner。
+    """
+
+    rows = conn.execute(
+        "SELECT session_id, day FROM ai_sessions ORDER BY session_id"
+    ).fetchall()
+    known_sessions = {str(row["session_id"] or "") for row in rows}
+    parents_by_child: dict[str, set[str]] = {}
+    if "global_tasks" in {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }:
+        task_rows = conn.execute(
+            """
+            SELECT ai_work_conversation_id, task_json
+            FROM global_tasks
+            WHERE ai_work_conversation_id != ''
+            """
+        ).fetchall()
+        for task_row in task_rows:
+            parent_id = str(
+                task_row["ai_work_conversation_id"] or ""
+            ).strip()
+            task = json_loads(task_row["task_json"], {})
+            raw_child_ids = (
+                task.get("agent_execution_conversation_ids")
+                if isinstance(task, dict)
+                else []
+            )
+            if (
+                parent_id not in known_sessions
+                or not isinstance(raw_child_ids, list)
+            ):
+                continue
+            for raw_child_id in raw_child_ids:
+                child_id = str(raw_child_id or "").strip()
+                if (
+                    child_id
+                    and child_id != parent_id
+                    and child_id in known_sessions
+                ):
+                    parents_by_child.setdefault(child_id, set()).add(
+                        parent_id
+                    )
+    for row in rows:
+        parent_id = str(row["session_id"] or "").strip()
+        day = str(row["day"] or "").strip()
+        if not parent_id or not day:
+            continue
+        path = journal_root / day / f"{parent_id}.jsonl"
+        try:
+            source = path.open("r", encoding="utf-8")
+        except OSError:
+            continue
+        with source:
+            is_global_parent: bool | None = None
+            for raw_line in source:
+                try:
+                    event = json.loads(raw_line)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                if is_global_parent is None:
+                    metadata = event.get("rawEvent")
+                    is_global_parent = bool(
+                        isinstance(metadata, dict)
+                        and metadata.get("use_case_id")
+                        == "global.agent.chat"
+                    )
+                    if not is_global_parent:
+                        break
+                if (
+                    event.get("type") != "CUSTOM"
+                    or event.get("name")
+                    != "global.agent_execution_link"
+                ):
+                    continue
+                value = event.get("value")
+                child_id = str(
+                    value.get("conversation_id")
+                    if isinstance(value, dict)
+                    else ""
+                ).strip()
+                if (
+                    not child_id
+                    or child_id == parent_id
+                    or child_id not in known_sessions
+                ):
+                    continue
+                parents_by_child.setdefault(child_id, set()).add(parent_id)
+    proposed_child_ids = set(parents_by_child)
+    for child_id, parent_ids in parents_by_child.items():
+        if len(parent_ids) != 1:
+            continue
+        parent_id = next(iter(parent_ids))
+        if parent_id in proposed_child_ids:
+            continue
+        conn.execute(
+            """
+            UPDATE ai_sessions
+            SET parent_session_id = ?
+            WHERE session_id = ?
+              AND parent_session_id IS NULL
+            """,
+            (parent_id, child_id),
+        )
+
+
+def _migrate_v5_to_v8(
+    conn: sqlite3.Connection,
+    journal_root: Path,
+) -> None:
+    """原子增加全局任务状态、发布幂等和 AI 会话层级。"""
+
+    if not conn.in_transaction:
+        raise RuntimeError("数据库迁移必须在显式事务内执行")
+    conn.execute(
+        "ALTER TABLE publish_jobs ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT ''"
+    )
+    _add_ai_session_parent_column(conn)
+    rows = conn.execute(
+        "SELECT job_id, product_id, payload_json FROM publish_jobs"
+    ).fetchall()
+    for row in rows:
+        job_id = str(row["job_id"] or "").strip()
+        state = json_loads(row["payload_json"], {})
+        state = state if isinstance(state, dict) else {}
+        state.setdefault("job_id", job_id)
+        state.setdefault("product_id", str(row["product_id"] or ""))
+        idempotency_key = f"migrated-publish-job:{job_id}"
+        state["idempotency_key"] = idempotency_key
+        state["idempotency_facts"] = _legacy_publish_idempotency_facts(state)
+        conn.execute(
+            """
+            UPDATE publish_jobs
+            SET idempotency_key = ?, payload_json = ?
+            WHERE job_id = ?
+            """,
+            (idempotency_key, json_dumps(state), job_id),
+        )
+    _execute_schema_statements(conn)
+    _backfill_ai_session_parent_links(conn, journal_root)
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
+def _migrate_v7_to_v8(
+    conn: sqlite3.Connection,
+    journal_root: Path,
+) -> None:
+    """原子增加 AI 会话层级并一次性回填历史 execution links。"""
+
+    if not conn.in_transaction:
+        raise RuntimeError("数据库迁移必须在显式事务内执行")
+    _add_ai_session_parent_column(conn)
+    _execute_schema_statements(conn)
+    _backfill_ai_session_parent_links(conn, journal_root)
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
 def utc_now() -> str:
@@ -524,10 +935,34 @@ class ErpDatabase:
 
     def _inspect_schema_without_mutation(
         self,
-    ) -> tuple[int, frozenset[str], frozenset[str]]:
+    ) -> tuple[
+        int,
+        frozenset[str],
+        frozenset[str],
+        frozenset[str],
+        frozenset[str],
+        frozenset[str],
+        frozenset[str],
+        bool,
+        bool,
+        bool,
+        bool,
+    ]:
         """Read an existing database through SQLite's read-only URI mode."""
         if not self.db_path.exists():
-            return 0, frozenset(), frozenset()
+            return (
+                0,
+                frozenset(),
+                frozenset(),
+                frozenset(),
+                frozenset(),
+                frozenset(),
+                frozenset(),
+                False,
+                False,
+                False,
+                False,
+            )
         uri = f"{self.db_path.resolve().as_uri()}?mode=ro"
         conn = sqlite3.connect(uri, uri=True, timeout=10)
         try:
@@ -554,7 +989,96 @@ class ErpDatabase:
                 if "platform_drafts" in tables
                 else frozenset()
             )
-            return version, tables, draft_columns
+            publish_job_columns = (
+                frozenset(
+                    str(row[1])
+                    for row in conn.execute(
+                        'PRAGMA table_info("publish_jobs")'
+                    )
+                )
+                if "publish_jobs" in tables
+                else frozenset()
+            )
+            global_task_columns = (
+                frozenset(
+                    str(row[1])
+                    for row in conn.execute(
+                        'PRAGMA table_info("global_tasks")'
+                    )
+                )
+                if "global_tasks" in tables
+                else frozenset()
+            )
+            snapshot_columns = (
+                frozenset(
+                    str(row[1])
+                    for row in conn.execute(
+                        'PRAGMA table_info("draft_query_snapshots")'
+                    )
+                )
+                if "draft_query_snapshots" in tables
+                else frozenset()
+            )
+            ai_session_columns = (
+                frozenset(
+                    str(row[1])
+                    for row in conn.execute(
+                        'PRAGMA table_info("ai_sessions")'
+                    )
+                )
+                if "ai_sessions" in tables
+                else frozenset()
+            )
+            publish_idempotency_index_valid = (
+                _has_required_unique_index(
+                    conn,
+                    table="publish_jobs",
+                    name=_PUBLISH_JOB_IDEMPOTENCY_INDEX,
+                    columns=("idempotency_key",),
+                    partial=False,
+                )
+                if "publish_jobs" in tables
+                else False
+            )
+            active_conversation_index_valid = (
+                _has_required_unique_index(
+                    conn,
+                    table="global_tasks",
+                    name=_GLOBAL_TASK_ACTIVE_CONVERSATION_INDEX,
+                    columns=("ai_work_conversation_id",),
+                    partial=True,
+                )
+                if "global_tasks" in tables
+                else False
+            )
+            ai_session_parent_index_valid = (
+                _has_required_non_unique_index(
+                    conn,
+                    table="ai_sessions",
+                    name=_AI_SESSION_PARENT_INDEX,
+                    columns=("parent_session_id", "updated_at"),
+                )
+                if "parent_session_id" in ai_session_columns
+                else False
+            )
+            ai_session_parent_reference_valid = (
+                _has_valid_ai_session_parent_reference(conn)
+                if "parent_session_id" in ai_session_columns
+                else False
+            )
+            return (
+                version,
+                tables,
+                draft_columns,
+                publish_job_columns,
+                global_task_columns,
+                snapshot_columns,
+                ai_session_columns,
+                publish_idempotency_index_valid,
+                active_conversation_index_valid,
+                ai_session_parent_index_valid,
+                ai_session_parent_reference_valid,
+            )
         finally:
             conn.close()
 
@@ -564,32 +1088,97 @@ class ErpDatabase:
             inspected_version,
             inspected_tables,
             inspected_draft_columns,
+            inspected_publish_job_columns,
+            inspected_global_task_columns,
+            inspected_snapshot_columns,
+            inspected_ai_session_columns,
+            inspected_publish_idempotency_index_valid,
+            inspected_active_conversation_index_valid,
+            inspected_ai_session_parent_index_valid,
+            inspected_ai_session_parent_reference_valid,
         ) = (
             self._inspect_schema_without_mutation()
         )
         is_empty_database = (
             inspected_version == 0 and not inspected_tables
         )
+        is_migratable_v5_database = (
+            inspected_version == 5
+            and inspected_tables == _V5_REQUIRED_TABLES
+            and inspected_draft_columns == _CURRENT_PLATFORM_DRAFT_COLUMNS
+            and inspected_publish_job_columns == _V5_PUBLISH_JOB_COLUMNS
+            and inspected_ai_session_columns == _V7_AI_SESSION_COLUMNS
+            and not inspected_global_task_columns
+            and not inspected_snapshot_columns
+        )
+        is_migratable_v7_database = (
+            inspected_version == 7
+            and inspected_tables == frozenset(REQUIRED_TABLES)
+            and inspected_draft_columns
+            == _CURRENT_PLATFORM_DRAFT_COLUMNS
+            and inspected_publish_job_columns
+            == _CURRENT_PUBLISH_JOB_COLUMNS
+            and inspected_global_task_columns
+            == _CURRENT_GLOBAL_TASK_COLUMNS
+            and inspected_snapshot_columns
+            == _CURRENT_DRAFT_QUERY_SNAPSHOT_COLUMNS
+            and inspected_ai_session_columns == _V7_AI_SESSION_COLUMNS
+            and inspected_publish_idempotency_index_valid
+            and inspected_active_conversation_index_valid
+            and not inspected_ai_session_parent_index_valid
+            and not inspected_ai_session_parent_reference_valid
+        )
         is_current_database = (
             inspected_version == SCHEMA_VERSION
             and inspected_tables == frozenset(REQUIRED_TABLES)
             and inspected_draft_columns
             == _CURRENT_PLATFORM_DRAFT_COLUMNS
+            and inspected_publish_job_columns
+            == _CURRENT_PUBLISH_JOB_COLUMNS
+            and inspected_global_task_columns
+            == _CURRENT_GLOBAL_TASK_COLUMNS
+            and inspected_snapshot_columns
+            == _CURRENT_DRAFT_QUERY_SNAPSHOT_COLUMNS
+            and inspected_ai_session_columns
+            == _CURRENT_AI_SESSION_COLUMNS
+            and inspected_publish_idempotency_index_valid
+            and inspected_active_conversation_index_valid
+            and inspected_ai_session_parent_index_valid
+            and inspected_ai_session_parent_reference_valid
         )
-        if not is_empty_database and not is_current_database:
+        if (
+            not is_empty_database
+            and not is_migratable_v5_database
+            and not is_migratable_v7_database
+            and not is_current_database
+        ):
             raise RuntimeError(
                 "数据库 schema 版本 "
                 f"{inspected_version} 不受支持（当前版本 {SCHEMA_VERSION}）；"
-                "仅接受空库或当前完整 schema，未自动迁移或重建。"
+                "仅接受空库或当前完整 schema；完整 v5 / v7 本地库会执行原子迁移，"
+                "未对未知/不完整格式自动迁移或重建。"
             )
         with self._connect() as conn:
-            if is_empty_database:
+            if (
+                is_empty_database
+                or is_migratable_v5_database
+                or is_migratable_v7_database
+            ):
                 conn.execute("BEGIN IMMEDIATE")
                 try:
-                    _execute_schema_statements(conn)
-                    conn.execute(
-                        f"PRAGMA user_version = {SCHEMA_VERSION}"
+                    journal_root = (
+                        self.db_path.parent
+                        / _AI_WORK_JOURNAL_RELATIVE_DIR
                     )
+                    if is_migratable_v5_database:
+                        _migrate_v5_to_v8(conn, journal_root)
+                    elif is_migratable_v7_database:
+                        _migrate_v7_to_v8(conn, journal_root)
+                    else:
+                        _execute_schema_statements(conn)
+                        conn.execute(
+                            f"PRAGMA user_version = {SCHEMA_VERSION}"
+                        )
                     conn.commit()
                 except BaseException:
                     conn.rollback()
@@ -1591,11 +2180,15 @@ class ErpDatabase:
 
     # -- publish_jobs ------------------------------------------------------------
 
-    def save_publish_job(self, state: dict[str, Any]) -> None:
+    @staticmethod
+    def _publish_job_record(state: dict[str, Any]) -> dict[str, Any]:
         state = _dict(state)
         job_id = str(state.get("job_id") or "").strip()
         if not job_id:
-            return
+            raise ValueError("发布任务缺少 job_id。")
+        idempotency_key = str(state.get("idempotency_key") or "").strip()
+        if not idempotency_key:
+            raise ValueError("发布任务缺少 idempotency_key。")
         product = _dict(state.get("product"))
         platforms = _dict(state.get("platforms"))
         draft_id = str(
@@ -1623,44 +2216,128 @@ class ErpDatabase:
             if not error:
                 error = str(item.get("error") or "")
             attempts = max(attempts, int(item.get("attempts") or 0))
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO publish_jobs (
-                    job_id, product_id, draft_id, platform, status, stage, attempts,
-                    error, payload_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(job_id) DO UPDATE SET
-                    product_id=excluded.product_id,
-                    draft_id=excluded.draft_id,
-                    platform=excluded.platform,
-                    status=excluded.status,
-                    stage=excluded.stage,
-                    attempts=excluded.attempts,
-                    error=excluded.error,
-                    payload_json=excluded.payload_json,
-                    updated_at=excluded.updated_at
-                """,
-                (
-                    job_id,
-                    str(product.get("product_id") or ""),
-                    draft_id,
-                    ",".join(sorted(str(key) for key in platforms)),
-                    str(state.get("status") or ""),
-                    stage,
-                    attempts,
-                    error,
-                    json_dumps(state),
-                    str(state.get("created_at") or "") or utc_now(),
-                    str(state.get("updated_at") or "") or utc_now(),
-                ),
-            )
-            conn.commit()
+
+        return {
+            "job_id": job_id,
+            "idempotency_key": idempotency_key,
+            "product_id": str(product.get("product_id") or ""),
+            "draft_id": draft_id,
+            "platform": ",".join(sorted(str(key) for key in platforms)),
+            "status": str(state.get("status") or ""),
+            "stage": stage,
+            "attempts": attempts,
+            "error": error,
+            "payload_json": json_dumps(state),
+            "created_at": str(state.get("created_at") or "") or utc_now(),
+            "updated_at": str(state.get("updated_at") or "") or utc_now(),
+        }
+
+    def create_publish_job(
+        self,
+        state: dict[str, Any],
+    ) -> tuple[dict[str, Any], bool]:
+        """为一个发布任务原子占用 ``idempotency_key``。"""
+        record = self._publish_job_record(state)
+        with self._write_lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    existing = conn.execute(
+                        """
+                        SELECT payload_json
+                        FROM publish_jobs
+                        WHERE idempotency_key = ?
+                        """,
+                        (record["idempotency_key"],),
+                    ).fetchone()
+                    if existing:
+                        conn.commit()
+                        persisted = json_loads(existing["payload_json"], {})
+                        if not isinstance(persisted, dict):
+                            raise RuntimeError("发布任务持久化数据不是 JSON object。")
+                        return persisted, False
+                    conn.execute(
+                        """
+                        INSERT INTO publish_jobs (
+                            job_id, idempotency_key, product_id, draft_id,
+                            platform, status, stage, attempts, error,
+                            payload_json, created_at, updated_at
+                        ) VALUES (
+                            :job_id, :idempotency_key, :product_id, :draft_id,
+                            :platform, :status, :stage, :attempts, :error,
+                            :payload_json, :created_at, :updated_at
+                        )
+                        """,
+                        record,
+                    )
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
+        return dict(state), True
+
+    def save_publish_job(self, state: dict[str, Any]) -> None:
+        """更新已有发布任务，且禁止改变其幂等绑定。"""
+        record = self._publish_job_record(state)
+        with self._write_lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    cursor = conn.execute(
+                        """
+                        UPDATE publish_jobs
+                        SET product_id = :product_id,
+                            draft_id = :draft_id,
+                            platform = :platform,
+                            status = :status,
+                            stage = :stage,
+                            attempts = :attempts,
+                            error = :error,
+                            payload_json = :payload_json,
+                            updated_at = :updated_at
+                        WHERE job_id = :job_id
+                          AND idempotency_key = :idempotency_key
+                        """,
+                        record,
+                    )
+                    if cursor.rowcount != 1:
+                        exists = conn.execute(
+                            "SELECT 1 FROM publish_jobs WHERE job_id = ?",
+                            (record["job_id"],),
+                        ).fetchone()
+                        if exists:
+                            raise ValueError(
+                                "发布任务的 idempotency_key 不可变更。"
+                            )
+                        raise FileNotFoundError(
+                            f"发布任务不存在：{record['job_id']}"
+                        )
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
 
     def load_publish_job(self, job_id: str) -> dict[str, Any]:
         job_id = str(job_id or "").strip()
         with self._connect() as conn:
             row = conn.execute("SELECT payload_json FROM publish_jobs WHERE job_id = ?", (job_id,)).fetchone()
+        if not row:
+            return {}
+        state = json_loads(row["payload_json"], {})
+        return state if isinstance(state, dict) else {}
+
+    def load_publish_job_by_idempotency_key(
+        self,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        trusted_key = str(idempotency_key or "").strip()
+        if not trusted_key:
+            return {}
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT payload_json FROM publish_jobs WHERE idempotency_key = ?",
+                (trusted_key,),
+            ).fetchone()
         if not row:
             return {}
         state = json_loads(row["payload_json"], {})
@@ -1869,26 +2546,348 @@ class ErpDatabase:
             conn.commit()
             return int(cursor.rowcount or 0)
 
+    # -- global_tasks / draft_query_snapshots ---------------------------------
+
+    def create_global_task(self, state: dict[str, Any]) -> None:
+        """原子创建任务，并由数据库约束同一对话只有一个活动任务。"""
+
+        payload = _dict(state)
+        task_id = str(payload.get("task_id") or "").strip()
+        conversation_id = str(
+            payload.get("ai_work_conversation_id") or ""
+        ).strip()
+        status = str(payload.get("status") or "").strip()
+        created_at = str(payload.get("created_at") or "") or utc_now()
+        updated_at = str(payload.get("updated_at") or "") or created_at
+        if not task_id or not conversation_id or not status:
+            raise ValueError("全局任务缺少 task_id、对话 ID 或状态。")
+        with self._write_lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    active = conn.execute(
+                        """
+                        SELECT task_id
+                        FROM global_tasks
+                        WHERE ai_work_conversation_id = ?
+                          AND status NOT IN ('completed', 'failed', 'cancelled')
+                        LIMIT 1
+                        """,
+                        (conversation_id,),
+                    ).fetchone()
+                    if active:
+                        raise ValueError(
+                            "同一全局 Agent 对话已有未完成任务："
+                            f"{str(active['task_id'] or '')}"
+                        )
+                    conn.execute(
+                        """
+                        INSERT INTO global_tasks (
+                            task_id, ai_work_conversation_id, status,
+                            task_json, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            task_id,
+                            conversation_id,
+                            status,
+                            json_dumps(payload),
+                            created_at,
+                            updated_at,
+                        ),
+                    )
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
+
+    def save_global_task(self, state: dict[str, Any]) -> None:
+        payload = _dict(state)
+        task_id = str(payload.get("task_id") or "").strip()
+        conversation_id = str(
+            payload.get("ai_work_conversation_id") or ""
+        ).strip()
+        status = str(payload.get("status") or "").strip()
+        updated_at = str(payload.get("updated_at") or "") or utc_now()
+        if not task_id or not conversation_id or not status:
+            raise ValueError("全局任务缺少 task_id、对话 ID 或状态。")
+        with self._write_lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    cursor = conn.execute(
+                        """
+                        UPDATE global_tasks
+                        SET ai_work_conversation_id = ?, status = ?,
+                            task_json = ?, updated_at = ?
+                        WHERE task_id = ?
+                        """,
+                        (
+                            conversation_id,
+                            status,
+                            json_dumps(payload),
+                            updated_at,
+                            task_id,
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        raise FileNotFoundError(
+                            f"全局任务不存在：{task_id}"
+                        )
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
+
+    def load_global_task(self, task_id: str) -> dict[str, Any]:
+        task_id = str(task_id or "").strip()
+        if not task_id:
+            return {}
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT task_json FROM global_tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+        payload = json_loads(row["task_json"], {}) if row else {}
+        return payload if isinstance(payload, dict) else {}
+
+    def find_active_global_task(
+        self,
+        ai_work_conversation_id: str,
+    ) -> dict[str, Any]:
+        conversation_id = str(ai_work_conversation_id or "").strip()
+        if not conversation_id:
+            return {}
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT task_json
+                FROM global_tasks
+                WHERE ai_work_conversation_id = ?
+                  AND status NOT IN ('completed', 'failed', 'cancelled')
+                ORDER BY updated_at DESC, task_id DESC
+                LIMIT 1
+                """,
+                (conversation_id,),
+            ).fetchone()
+        payload = json_loads(row["task_json"], {}) if row else {}
+        return payload if isinstance(payload, dict) else {}
+
+    def list_unfinished_global_tasks(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT task_json
+                FROM global_tasks
+                WHERE status NOT IN ('completed', 'failed', 'cancelled')
+                ORDER BY created_at ASC, task_id ASC
+                """
+            ).fetchall()
+        return [
+            payload
+            for row in rows
+            if isinstance(
+                payload := json_loads(row["task_json"], {}),
+                dict,
+            )
+        ]
+
+    def save_draft_query_snapshot(self, snapshot: dict[str, Any]) -> None:
+        """持久化不可变轻量快照；不复制草稿业务数据。"""
+
+        payload = _dict(snapshot)
+        snapshot_id = str(payload.get("snapshot_id") or "").strip()
+        ordered_ids = payload.get("draft_ids")
+        query = payload.get("query")
+        aggregates = {
+            "total": payload.get("total"),
+            "count_by_platform": payload.get("count_by_platform"),
+            "count_by_status": payload.get("count_by_status"),
+        }
+        created_at = str(payload.get("created_at") or "") or utc_now()
+        if (
+            not snapshot_id
+            or not isinstance(ordered_ids, list)
+            or not isinstance(query, dict)
+            or not isinstance(aggregates["total"], int)
+            or not isinstance(aggregates["count_by_platform"], dict)
+            or not isinstance(aggregates["count_by_status"], dict)
+        ):
+            raise ValueError("草稿查询快照缺少 ID、有序草稿 ID、查询条件或聚合统计。")
+        normalized_ids = [
+            str(item or "").strip()
+            for item in ordered_ids
+            if str(item or "").strip()
+        ]
+        with self._write_lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    row = conn.execute(
+                        """
+                        SELECT ordered_draft_ids_json, query_json,
+                               aggregates_json, created_at
+                        FROM draft_query_snapshots
+                        WHERE snapshot_id = ?
+                        """,
+                        (snapshot_id,),
+                    ).fetchone()
+                    if row:
+                        existing_ids = json_loads(
+                            row["ordered_draft_ids_json"],
+                            [],
+                        )
+                        existing_query = json_loads(row["query_json"], {})
+                        existing_aggregates = json_loads(
+                            row["aggregates_json"],
+                            {},
+                        )
+                        if (
+                            existing_ids != normalized_ids
+                            or existing_query != query
+                            or existing_aggregates != aggregates
+                        ):
+                            raise ValueError("草稿查询 snapshot_id 已绑定其他查询结果。")
+                        conn.commit()
+                        return
+                    conn.execute(
+                        """
+                        INSERT INTO draft_query_snapshots (
+                            snapshot_id, ordered_draft_ids_json,
+                            query_json, aggregates_json, created_at
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            snapshot_id,
+                            json_dumps(normalized_ids),
+                            json_dumps(query),
+                            json_dumps(aggregates),
+                            created_at,
+                        ),
+                    )
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
+
+    def load_draft_query_snapshot(self, snapshot_id: str) -> dict[str, Any]:
+        snapshot_id = str(snapshot_id or "").strip()
+        if not snapshot_id:
+            return {}
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT ordered_draft_ids_json, query_json,
+                       aggregates_json, created_at
+                FROM draft_query_snapshots
+                WHERE snapshot_id = ?
+                """,
+                (snapshot_id,),
+            ).fetchone()
+        if not row:
+            return {}
+        ordered_ids = json_loads(row["ordered_draft_ids_json"], [])
+        query = json_loads(row["query_json"], {})
+        aggregates = json_loads(row["aggregates_json"], {})
+        aggregates = aggregates if isinstance(aggregates, dict) else {}
+        return {
+            "snapshot_id": snapshot_id,
+            "draft_ids": (
+                ordered_ids if isinstance(ordered_ids, list) else []
+            ),
+            "query": query if isinstance(query, dict) else {},
+            "total": int(aggregates.get("total") or 0),
+            "count_by_platform": (
+                aggregates.get("count_by_platform")
+                if isinstance(aggregates.get("count_by_platform"), dict)
+                else {}
+            ),
+            "count_by_status": (
+                aggregates.get("count_by_status")
+                if isinstance(aggregates.get("count_by_status"), dict)
+                else {}
+            ),
+            "created_at": str(row["created_at"] or ""),
+        }
+
     # -- ai_sessions ------------------------------------------------------------
 
-    def upsert_ai_session(self, session_id: str, *, day: str, status: str, last_seq: int, updated_at: str) -> None:
+    def upsert_ai_session(
+        self,
+        session_id: str,
+        *,
+        parent_session_id: str | None = None,
+        day: str,
+        status: str,
+        last_seq: int,
+        updated_at: str,
+    ) -> None:
         session_id = str(session_id or "").strip()
         if not session_id:
             return
+        parent_id = str(parent_session_id or "").strip() or None
         with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO ai_sessions (session_id, day, status, last_seq, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(session_id) DO UPDATE SET
-                    day=excluded.day,
-                    status=excluded.status,
-                    last_seq=excluded.last_seq,
-                    updated_at=excluded.updated_at
-                """,
-                (session_id, str(day or ""), str(status or ""), int(last_seq or 0), str(updated_at or "") or utc_now()),
-            )
-            conn.commit()
+            try:
+                if parent_id:
+                    parent = conn.execute(
+                        """
+                        SELECT parent_session_id FROM ai_sessions
+                        WHERE session_id = ?
+                        """,
+                        (parent_id,),
+                    ).fetchone()
+                    if parent is None:
+                        raise ValueError(
+                            "AI 父对话不存在，无法创建子对话。"
+                        )
+                    if parent["parent_session_id"] is not None:
+                        raise ValueError("AI 父对话必须是根对话。")
+                    existing = conn.execute(
+                        """
+                        SELECT parent_session_id FROM ai_sessions
+                        WHERE session_id = ?
+                        """,
+                        (session_id,),
+                    ).fetchone()
+                    if (
+                        existing is not None
+                        and existing["parent_session_id"] is not None
+                        and str(existing["parent_session_id"])
+                        != parent_id
+                    ):
+                        raise ValueError(
+                            "AI 执行对话已属于其他父对话，禁止重新绑定。"
+                        )
+                conn.execute(
+                    """
+                    INSERT INTO ai_sessions (
+                        session_id, parent_session_id, day, status,
+                        last_seq, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(session_id) DO UPDATE SET
+                        day=excluded.day,
+                        status=excluded.status,
+                        last_seq=excluded.last_seq,
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        session_id,
+                        parent_id,
+                        str(day or ""),
+                        str(status or ""),
+                        int(last_seq or 0),
+                        str(updated_at or "") or utc_now(),
+                    ),
+                )
+                conn.commit()
+            except sqlite3.IntegrityError as exc:
+                conn.rollback()
+                raise ValueError(
+                    "AI 父对话不存在，无法创建子对话。"
+                ) from exc
+            except BaseException:
+                conn.rollback()
+                raise
 
     def get_ai_session(self, session_id: str) -> dict[str, Any]:
         session_id = str(session_id or "").strip()
@@ -1900,28 +2899,127 @@ class ErpDatabase:
             return {}
         return {
             "session_id": session_id,
+            "parent_session_id": (
+                str(row["parent_session_id"])
+                if row["parent_session_id"] is not None
+                else None
+            ),
             "day": str(row["day"] or ""),
             "status": str(row["status"] or ""),
             "last_seq": int(row["last_seq"] or 0),
             "updated_at": str(row["updated_at"] or ""),
         }
 
-    def list_ai_sessions(self, limit: int = 50) -> list[dict[str, Any]]:
+    def bind_ai_session_parent(
+        self,
+        session_id: str,
+        parent_session_id: str,
+    ) -> None:
+        """幂等绑定直接父会话；已经属于其他父会话时拒绝抢占。"""
+
+        child_id = str(session_id or "").strip()
+        parent_id = str(parent_session_id or "").strip()
+        if not child_id or not parent_id:
+            raise ValueError("AI 会话父子绑定缺少会话 ID。")
+        if child_id == parent_id:
+            raise ValueError("AI 对话不能绑定为自己的子对话。")
+        with self._write_lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    parent = conn.execute(
+                        """
+                        SELECT parent_session_id FROM ai_sessions
+                        WHERE session_id = ?
+                        """,
+                        (parent_id,),
+                    ).fetchone()
+                    if parent is None:
+                        raise ValueError("AI 父对话不存在，无法关联。")
+                    if parent["parent_session_id"] is not None:
+                        raise ValueError("AI 父对话必须是根对话。")
+                    child = conn.execute(
+                        """
+                        SELECT parent_session_id FROM ai_sessions
+                        WHERE session_id = ?
+                        """,
+                        (child_id,),
+                    ).fetchone()
+                    if child is None:
+                        raise ValueError("AI 执行对话不存在，无法关联。")
+                    existing_parent = child["parent_session_id"]
+                    if existing_parent is None:
+                        conn.execute(
+                            """
+                            UPDATE ai_sessions
+                            SET parent_session_id = ?
+                            WHERE session_id = ?
+                            """,
+                            (parent_id, child_id),
+                        )
+                    elif str(existing_parent) != parent_id:
+                        raise ValueError(
+                            "AI 执行对话已属于其他父对话，禁止重新绑定。"
+                        )
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
+
+    @staticmethod
+    def _ai_session_row(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "session_id": str(row["session_id"] or ""),
+            "parent_session_id": (
+                str(row["parent_session_id"])
+                if row["parent_session_id"] is not None
+                else None
+            ),
+            "day": str(row["day"] or ""),
+            "status": str(row["status"] or ""),
+            "last_seq": int(row["last_seq"] or 0),
+            "updated_at": str(row["updated_at"] or ""),
+        }
+
+    def list_ai_sessions(
+        self,
+        limit: int = 50,
+        *,
+        include_children: bool = False,
+    ) -> list[dict[str, Any]]:
+        where = "" if include_children else "WHERE parent_session_id IS NULL"
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM ai_sessions ORDER BY updated_at DESC, session_id DESC LIMIT ?",
+                f"""
+                SELECT * FROM ai_sessions
+                {where}
+                ORDER BY updated_at DESC, session_id DESC
+                LIMIT ?
+                """,
                 (max(1, int(limit or 50)),),
             ).fetchall()
-        return [
-            {
-                "session_id": str(row["session_id"] or ""),
-                "day": str(row["day"] or ""),
-                "status": str(row["status"] or ""),
-                "last_seq": int(row["last_seq"] or 0),
-                "updated_at": str(row["updated_at"] or ""),
-            }
-            for row in rows
-        ]
+        return [self._ai_session_row(row) for row in rows]
+
+    def list_ai_session_children(
+        self,
+        parent_session_id: str,
+        *,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        parent_id = str(parent_session_id or "").strip()
+        if not parent_id:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM ai_sessions
+                WHERE parent_session_id = ?
+                ORDER BY updated_at DESC, session_id DESC
+                LIMIT ?
+                """,
+                (parent_id, max(1, int(limit or 50))),
+            ).fetchall()
+        return [self._ai_session_row(row) for row in rows]
 
     # -- exchange_rates -----------------------------------------------------------
 

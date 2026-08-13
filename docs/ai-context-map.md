@@ -72,14 +72,18 @@ Model Requests，图片等能力使用锁定版本提供的 Pydantic capability/
 - `erp_web/services/ai_pydantic_image_model.py`：登记过的 focused 例外，见下文；它是仅支持
   Images API 的 Pydantic `Model`，只能由 `ai_model_factory` 创建，并且只能经 Pydantic Direct
   Request 调用。
-- `erp_web/services/ai_work_service.py`：AI Work conversation journal。能力探测使用专用
+- `erp_web/services/ai_work_service.py`：AI Work conversation journal。`ai_sessions.parent_session_id`
+  保存主对话与 planning / focused Agent 执行记录的直接父子关系；默认列表只返回根会话，子会话通过
+  children 查询或 ID 直达读取。能力探测使用专用
   `capability_probe.*` 事件保存实际探测消息、模型文本、工具往返和脱敏后的图片引用；普通业务
   `provider.request` 仍只保存摘要；Agent 内容通过独立 `agent.request` / `agent.transcript`
   投影写入；Direct Model 与 Agent 的 Provider 流式推理统一写为
   `REASONING_MESSAGE_START/CONTENT/END`，最终正文继续使用 `TEXT_MESSAGE_*`，两者不得混合，
   也不得把认证字段或无限大小内容带入 journal。
 - `erp_web/http_route_units/ai_work_routes.py`：AI Work 读取与等待 HTTP 入口。
-- `front/src/views/AiWorkView.vue`：AI Work 监视界面；支持通过 `conversation_id` query 定位会话，
+- `front/src/views/AiWorkView.vue`：AI Work 监视界面；左侧默认只展示用户根会话，内部 Agent 执行记录
+  收纳在主对话的可折叠执行详情中，开发者可显式打开“显示内部执行会话”；支持通过
+  `conversation_id` query 定位根会话或隐藏的子会话，
   按正常对话流分区展示 Provider 推理字符、最终正文、探测或 Agent 输入、逐轮模型消息和工具
   事件；旧 Agent 记录以现存运行摘要与终态回退，不显示空白页签。
 
@@ -157,12 +161,116 @@ facade / focused Agent service
                       ← @ai_tool + AiToolCompiler ← typed domain capability
 ```
 
-`AiToolRuntime` 不得 import 类目、平台、发布或其他具体领域模块。Main Agent、
-Planner、Memory 和 Policy Engine 仍不属于当前切片；真实领域 ToolSet 在所属
-runtime unit 中显式构造，不注册到动态全局表。
+`AiToolRuntime` 不得 import 类目、平台、发布或其他具体领域模块。全局 Agent 的 planning
+service 属于上层用例编排，不进入通用 Tool Runtime；Memory 和 Policy Engine 仍不属于当前切片。
+真实领域 ToolSet 在所属 runtime unit 中显式构造，不注册到动态全局表。
 
 旧自定义 runner、JSON Tool Protocol 和 Agent tool-turn provider adapter 已物理删除。当前
 不存在 feature flag、shadow run、fallback、旧 API HTTP/SDK 请求栈或第二条 Agent 生产路径。
+
+## 全局 Agent 顺序任务流
+
+全局 Agent 已按单用户、本地运行的轻量方案落地。稳定业务对话、每次主 Agent planning run 和
+focused Agent 执行记录是三类不同身份；任务与发布终态不由 AI Work 事件推断。
+
+```text
+/aiWork GlobalAgentChatPanel
+  → erp_web/http_route_units/global_agent_routes.py
+      → erp_web/facades/global_agent_facade.py
+          → erp_web/services/global_task_controller.py
+              ├─ erp_web/stores/global_task_store.py
+              ├─ erp_web/services/global_agent_service.py
+              │   → AiAgentFactory
+              │   → erp_web/runtime_units/global_task_tools.py
+              ├─ 静态九项业务 Capability
+              └─ PublishingBus
+```
+
+### HTTP 与持久化入口
+
+- `erp_web/http_route_units/global_agent_routes.py`：五个显式 POST 入口：
+  `/api/global-task-start`、`/api/global-task-state`、`/api/global-task-input`、
+  `/api/global-task-publish-confirm`、`/api/global-task-cancel`。不存在
+  `/api/global-task-wait`；页面只有限频率读取 state。
+- `erp_web/facades/global_agent_facade.py`：唯一 composition root 和 HTTP shape 映射；装配
+  Controller、主 Agent planning service、只读 ToolSet、九项 Capability、PublishingBus 状态读取与
+  AI Work 投影。route 不直接依赖 runtime unit。
+- `erp_web/services/global_task_controller.py`：计划保存、严格顺序推进、暂停/补资料、发布确认、
+  发布终态刷新和重启后继续的 owner；直接调用类型化 Capability，不调用 Tool executor。
+- `erp_web/stores/global_task_store.py`：`LocalGlobalTaskState` 与 `DraftQuerySnapshot` 的唯一 Store；
+  SQLite 对同一 AI Work 对话建立“最多一个非终态任务”的唯一约束。
+- `erp_web/schemas/global_tasks.py`、`erp_web/schemas/draft_capabilities.py`：任务、步骤、
+  `pending_input_owner`、带 `input_type/input_owner` 的类型化 `RequiredInput`、受控计划参数、发布确认和
+  草稿快照 shape。补充值由 Controller 按 owner 合并到 step、属性或核价输入，不靠 facade 字段白名单。
+- `front/src/components/ai-work/GlobalAgentChatPanel.vue`、`front/src/api/globalTasks.ts`：稳定对话、
+  任务恢复、缺资料卡片、独立发布确认按钮和有限频率状态读取。
+
+`DraftQuerySnapshot.total` 和聚合统计覆盖完整匹配集合；为限制模型上下文和本地状态大小，
+`draft_ids/items` 只保存按 `limit` 截取的当前有序页。`draft_position` 是该页内的一基序号，Controller
+再把它解析为稳定 `draft_id` 并读取当前 ProductStore 事实；模型输出的数字或 ID 不直接进入写操作。
+`view=summary/workflow/publish_readiness/detail` 采用同一稳定 `DraftSummary` schema 的分级字段投影，
+快照重放保持创建时 view，不把 view 当作无效果展示提示。
+
+### Planning ToolSet 与静态 Capability map
+
+`erp_web/services/global_agent_service.py` 是主 Agent 唯一 planning profile。planning run 只绑定
+`erp_web/runtime_units/global_task_tools.py::drafts_query`：工具声明
+`side_effect="none"`、只拥有 `global.task.read` 权限，ProductStore、任务 Store 和最近 snapshot ID
+通过可信 Scope 注入。九项业务能力只出现在 Controller 的静态 map，不会作为主 Agent 写 Tool：
+
+- `drafts.query`
+- `draft.prepare_for_market`
+- `product.read`
+- `category.match`
+- `product.attributes.fill`
+- `product.attributes.update`
+- `product.images.prepare`
+- `product.publish.validate`
+- `product.publish.request`
+
+`action=answer` 只允许引用真实 `query_snapshot_id`；当前数量答复由 Controller 根据 snapshot 的
+`total` 确定性渲染，不采信模型自行组织的数字。`draft_position`、`target_platform` 和受控
+`GlobalTaskPlanParameters` 进入类型化计划；商品、草稿、店铺和资产等稳定身份仍由任务上下文、
+查询快照或领域 owner 注入并复核。补资料使用类型化 `RequiredInput`：带候选项的类目/枚举是单选，
+草稿序号和图片资产是多值输入；facade 统一归一化 `target_platform` / `platform`。发布上下文遇到多个
+候选目标且请求未明确平台/站点时返回 `DRAFT_TARGET_AMBIGUOUS`；平台下仍有多个站点时返回
+`DRAFT_TARGET_SITE_AMBIGUOUS`，不会静默选择首项或默认站点。
+
+### 目标市场 Capability 拆分
+
+- `erp_web/runtime_units/market_capability_support.py`：草稿定位、目标选择、类目详情与持久化共享支撑。
+- `erp_web/runtime_units/category_capabilities.py`：`category.match` 的稳定草稿 adapter；focused
+  类目匹配函数由 facade 注入，runtime 不反向 import facade。
+- `erp_web/runtime_units/attribute_fill_capabilities.py`：规则填充与 focused 属性 Agent adapter；
+  未解决的真实必填属性返回类型化 `RequiredInput`。
+- `erp_web/runtime_units/market_pricing_capability.py`：确定性核价和草稿持久化。
+- `erp_web/runtime_units/market_prepare_capabilities.py`：`draft.prepare_for_market` 的高层顺序编排；
+  复用现有目标草稿、文案、图片、类目、属性和核价 owner，不复制领域实现；文案重生成以稳定
+  task/step operation key 与文案同次持久化，重启后不会重复消费同一次 `regenerate_copy`。
+- `erp_web/runtime_units/product_capabilities.py`、`erp_web/runtime_units/publish_capabilities.py`：
+  商品读取/幂等字段更新/图片准备，以及确定性发布校验/确认后队列提交的 focused adapter。
+
+focused 类目和属性执行在完成、暂停或后处理失败时都返回自己的 AI Work `conversation_id`；高层市场
+准备聚合为 `agent_execution_conversation_ids`，Controller 先持久化这些 ID 再投影链接，不复制
+transcript 或 Tool 输出。
+
+### AI Work 稳定对话投影
+
+`erp_web/services/ai_work_service.py` 为 `use_case_id=global.agent.chat` 提供独立稳定对话，并只接受
+`global.user_message`、`global.assistant_message`、`global.task_state`、
+`global.agent_execution_link` 四种有界事件。追加业务投影不会伪造 `RUN_RESUMED`；普通 Agent 执行
+conversation 不能被当作全局对话复用。LocalGlobalTaskStore 仍是任务真相，PublishingBus 仍是发布
+job 与平台终态真相，投影失败不会反向改变业务状态。稳定业务对话保留创建首事件和最近 500 条展示
+投影；序号由 SQLite `ai_sessions.last_seq` 单调分配，压缩历史不会伪造 run 事件或改变任务状态。
+
+planning 与 focused Agent 在创建 AI Work conversation 时就写入稳定业务对话的 parent ID，执行链接投影
+同时执行幂等关系复核。根会话列表在 SQLite 中先按 `parent_session_id IS NULL` 过滤再排序和限量，避免
+最近的内部执行挤掉用户对话；`/{conversation_id}/children` 只返回直接子会话。单会话详情附带 summary
+与 parent 引用，因此隐藏子会话仍可安全直达并返回主对话。稳定业务对话自身的 lifecycle status 与最近
+LocalGlobalTask 的 `latest_task_status` 分离：某次任务结束不会错误终止长期聊天的后续事件读取。
+
+完整设计基线见 [全局 Agent 已实施方案](./global-agent-next-stage.md)；实施时相对基线的架构更正与
+理由见 [nextStateDoingChange.md](../nextStateDoingChange.md)。
 
 ## 类目平台搜索层
 
@@ -306,9 +414,21 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   日志与商品发布状态持久化；成功结果中的 `item_id/product_id/offer_id` 会写入草稿
   `last_publish_task`，作为后续更新同一远端刊登的身份依据。
 - `erp_web/runtime_units/publishing_bus_core.py`：SQLite 发布任务和并发执行；适配器
-  必须返回可验证的远端成功证据。`GET /api/publish-bus/jobs` 返回按时间倒序的轻量任务摘要，
+  必须返回可验证的远端成功证据。所有 enqueue 都必须提供可信 `idempotency_key`；SQLite 原子占用
+  该键，并把 `product_id + platforms + draft_id/site/product_id targets + confirmation digests` 保存为
+  不可变事实。同键同事实
+  返回原 job 且不重复提交，同键不同事实返回 `PUBLISH_IDEMPOTENCY_CONFLICT`。人工页面队列入口使用
+  服务端生成的 `manual:<uuid>`，不复用全局任务的稳定键。`GET /api/publish-bus/jobs` 返回按时间倒序的轻量任务摘要，
   支持 cursor、状态、平台和商品筛选；`GET /api/publish-bus/status` 只返回指定 Job 的完整详情。
-  两个读取接口都不返回 worker 恢复专用的完整商品快照。
+  两个读取接口都不返回 worker 恢复专用的完整商品快照、approved payload、digest、店铺 identity 或
+  幂等事实。
+- `erp_web/runtime_units/publish_capabilities.py`：发布摘要包含当前已授权店铺的脱敏稳定
+  `store_identity`；validation digest 同时绑定商品、草稿、平台、站点、店铺身份和最终 payload。
+  确认后提交会重新执行确定性校验并常量时间比较 digest，随后把已批准 payload/digest/identity 写入
+  PublishingBus job。worker 现取凭据，但外发前复核店铺身份与完整 digest，并直接发送冻结 payload；
+  不会重新构造已确认内容。Capability 还会在重校验与队列准入前按完整确认事实恢复既有 job，封闭
+  “job 已落库、GlobalTask 尚未保存 job_id”的崩溃窗口。店铺切换、payload 篡改或事实冲突都会在网络
+  调用前安全失败。
 - `erp_web/services/image_delivery_service.py`：发布图片 HTTPS delivery 唯一边界。
   图片保存 provider-neutral 的 `storage_key`，公网 URL 只是根据当前 provider 与
   `ERP_IMAGE_HTTPS_BASE_URL` 重新计算的缓存；平台发布模块不得读取隧道、磁盘根目录
@@ -343,6 +463,14 @@ Ozon 创建/更新商品是异步操作。提交 `/v3/product/import` 获得 `ta
 - `tests/test_ai_agent_instrumentation.py`：技术 spans、usage、trace 关联、脱敏和故障隔离。
 - `tests/test_ai_agent_state_store.py`、`tests/test_ai_agent_deferred_runtime.py`：公开消息
   serialization、版本迁移、审批/拒绝、跨进程恢复、权限/scope/deadline 与幂等 claim。
+- `tests/test_global_agent_service.py`、`tests/test_global_task_controller.py`、
+  `tests/test_global_task_store.py`：只读 planning profile、静态九能力、顺序状态机、暂停恢复、
+  发布确认与本地持久化。
+- `tests/test_draft_query_service.py`、`tests/test_market_prepare_capabilities.py`、
+  `tests/test_product_capability_service.py`、`tests/test_publish_capability_service.py`：查询快照、
+  目标市场纵向能力、商品 mutation、店铺身份 digest 和幂等发布 adapter。
+- `tests/test_global_agent_routes.py`、前端 `GlobalAgentChatPanel` 测试：五个 HTTP 入口、稳定对话恢复、
+  RequiredInput 与独立发布确认交互。
 - `tests/test_backend_api.py` 与 `tests/test_http_request_security.py`：HTTP contract
   与本机请求安全边界。
 - `tests/architecture/`：长期模块边界、持久化与平台契约。

@@ -166,6 +166,7 @@ def run_category_match_agent(
     timeout_seconds: float,
     factory: AiAgentFactory | None = None,
     model_override: Model | None = None,
+    parent_conversation_id: str | None = None,
 ) -> CategoryMatchAgentRun:
     """运行 Pydantic Agent；不存在旧协议或 Provider fallback。"""
 
@@ -209,6 +210,7 @@ def run_category_match_agent(
         },
         timeout_seconds=timeout_seconds,
         model_override=model_override,
+        parent_conversation_id=parent_conversation_id,
     )
     if isinstance(outcome.output, DeferredToolRequests):
         error = AiAgentExecutionError(

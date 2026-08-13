@@ -53,6 +53,7 @@ class AiWorkEvent(TypedDict, total=False):
 
 class AiWorkConversationSummary(TypedDict, total=False):
     conversation_id: str
+    parent_conversation_id: str | None
     use_case_id: str
     capability: str
     provider_id: str
@@ -63,6 +64,7 @@ class AiWorkConversationSummary(TypedDict, total=False):
     required_capabilities: list[str]
     timeout_seconds: int | None
     status: str
+    latest_task_status: str | None
     created_at: str
     updated_at: str
     last_seq: int

@@ -41,6 +41,28 @@
   无参数
   ）；读取脱敏后的 AI 模型、用途绑定和提示词配置。
 
+- `GET /api/v1/ai-work/conversations`（
+  `limit`：返回数量，可选，默认 `50`
+  `include_children`：是否同时返回内部执行子会话，可选，默认 `false`
+  ）；读取 AI Work 会话摘要。默认只返回用户主会话，过滤后再按更新时间排序和应用数量限制。
+
+- `GET /api/v1/ai-work/conversations/{conversation_id}`（
+  `after_seq`：只返回该序号之后的事件，可选，默认 `0`
+  ）；读取单个 AI Work 会话摘要和事件。子会话即使不在默认列表中，也可以通过 ID 直接读取。
+
+- `GET /api/v1/ai-work/conversations/{conversation_id}/children`（
+  `limit`：返回数量，可选，默认 `50`
+  ）；读取一个主会话的直接执行子会话。
+
+- `GET /api/v1/ai-work/conversations/{conversation_id}/events`（
+  `after_seq`：只返回该序号之后的事件，可选，默认 `0`
+  `wait_ms`：等待新事件的最长毫秒数，可选，默认 `0`
+  ）；以 NDJSON 返回 AI Work 增量事件，可用于有限长轮询。
+
+- `GET /api/v1/ai-work/conversations/{conversation_id}/raw`（
+  `after_seq`：只返回该序号之后的事件，可选，默认 `0`
+  ）；不等待新事件，直接以 NDJSON 返回现有增量事件。
+
 - `GET /api/publish-bus/status`（
   `job_id`：发布任务 ID，必填
   ）；查询发布队列任务状态。
@@ -158,6 +180,36 @@
   `model`：AI 模型配置对象，可选
   `config`：AI 模型配置对象别名，可选
   ）；测试 AI 模型配置连接和能力探测。
+
+### 全局 Agent 任务
+
+
+- `POST /api/global-task-start`（
+  `goal`：用户目标，必填
+  `ai_work_conversation_id`：复用的全局 Agent 主会话 ID，可选
+  `task_kind`：任务类型，可选，当前使用 `global.agent.chat`
+  `product_id`：目标商品 ID，可选
+  `platform`：目标平台，可选
+  `draft_query_snapshot_id`：草稿查询快照 ID，可选
+  ）；创建全局 Agent 顺序任务，或在同一稳定主会话中开始一个新目标。
+
+- `POST /api/global-task-state`（
+  `task_id`：全局任务 ID，必填
+  ）；读取并推进可恢复任务状态；等待发布结果时会同步 PublishingBus 的真实终态。
+
+- `POST /api/global-task-input`（
+  `task_id`：全局任务 ID，必填
+  `message`：用户补充说明，可选
+  `inputs`：类型化补充字段对象，可选
+  ）；向处于 `needs_input` 的任务提交补充资料；`message` 与 `inputs` 至少提供一项。
+
+- `POST /api/global-task-publish-confirm`（
+  `task_id`：全局任务 ID，必填
+  ）；确认与当前确定性校验摘要绑定的发布动作。确认不会绕过校验，也不会重复创建发布任务。
+
+- `POST /api/global-task-cancel`（
+  `task_id`：全局任务 ID，必填
+  ）；取消尚未进入终态的全局任务。
 
 ### 授权与配置
 

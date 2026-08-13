@@ -62,6 +62,9 @@
   ],
   "ai_use_case_bindings": {},
   "ai_use_case_prompts": {
+    "global.task.plan": {
+      "path": "config/prompts/global_task_plan.json"
+    },
     "copy.generate": {
       "path": "config/prompts/copy_generate.json"
     },

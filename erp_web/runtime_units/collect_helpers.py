@@ -9,7 +9,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from erp_web.context import get_context
+from erp_web.context import AppContext, get_context
 from erp_web.product_model import (
     PLATFORMS,
     SOURCE_IMAGE_ORIGINS,
@@ -361,14 +361,21 @@ def draft_copy_from_product(product: dict[str, Any], platform: str) -> dict[str,
     return draft
 
 
-def claim_products_to_platforms(product_ids: list[str], platforms: list[str] | None = None) -> dict[str, Any]:
+def claim_products_to_platforms(
+    product_ids: list[str],
+    platforms: list[str] | None = None,
+    *,
+    context: AppContext | None = None,
+) -> dict[str, Any]:
+    active_context = context or get_context()
+    products = active_context.products
     targets = normalize_platforms(platforms) or ["mercadolibre"]
     targets = [platform for platform in targets if platform in PLATFORMS]
     if not targets:
         return {"ok": False, "claimed_count": 0, "items": [], "error": "没有可用的草稿目标"}
     items: list[dict[str, Any]] = []
     for product_id in [str(item or "").strip() for item in product_ids if str(item or "").strip()]:
-        product = get_context().products.load_product_from_index(
+        product = products.load_product_from_index(
             product_id,
             "",
         )
@@ -379,7 +386,11 @@ def claim_products_to_platforms(product_ids: list[str], platforms: list[str] | N
         draft_ids: list[str] = []
         for platform in targets:
             draft = draft_copy_from_product(product, platform)
-            draft_id = get_context().db.upsert_draft_model(product_id, platform, draft)
+            draft_id = active_context.db.upsert_draft_model(
+                product_id,
+                platform,
+                draft,
+            )
             if draft_id:
                 draft_ids.append(draft_id)
         items.append(
@@ -396,8 +407,8 @@ def claim_products_to_platforms(product_ids: list[str], platforms: list[str] | N
         "ok": True,
         "claimed_count": sum(1 for item in items if item.get("ok")),
         "items": items,
-        "productsIndex": get_context().products.load_products_index(),
-        "draftsIndex": get_context().products.load_drafts_index(),
+        "productsIndex": products.load_products_index(),
+        "draftsIndex": products.load_drafts_index(),
     }
 
 

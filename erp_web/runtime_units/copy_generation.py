@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from erp_web import listing_planner as generator
@@ -82,10 +83,12 @@ def generate_ai_copy_bundle(
     language: str,
     mode: str,
     app_cfg: dict[str, Any],
+    *,
+    app_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     source_key = platform_to_preset_key(source_platform)
     result = copy_service.generate_copy(
-        str(get_context().paths.app_dir),
+        str(app_dir or get_context().paths.app_dir),
         product,
         app_cfg,
         target_market=(target_market or source_key),

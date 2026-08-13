@@ -125,6 +125,7 @@ class PlatformDraft(TypedDict, total=False):
     ai_copy_ready: bool
     copy_generated_at: str
     copy_source: str
+    copy_operation_key: str
     created_at: str
     updated_at: str
 

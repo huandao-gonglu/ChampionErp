@@ -21,6 +21,7 @@ vi.mock('@/api/aiWork', () => ({
 
 const conversation = {
   conversation_id: 'conversation-1',
+  parent_conversation_id: null,
   use_case_id: 'copy.generate',
   capability: 'chat_json',
   provider_id: 'openai_compatible',
@@ -28,6 +29,8 @@ const conversation = {
   model_id: 'model-1',
   model: 'deepseek-chat',
   stream: true,
+  required_capabilities: ['chat'],
+  timeout_seconds: 60,
   status: 'running',
   created_at: '2026-07-26T10:00:00+08:00',
   updated_at: '2026-07-26T10:00:01+08:00',
@@ -246,5 +249,142 @@ describe('AiWorkFloatingButton', () => {
       '请求已发送，正在等待 Provider 返回',
     )
     wrapper.unmount()
+  })
+
+  it('稳定全局对话展示最近回复和任务状态，并继续按 lifecycle 轮询', async () => {
+    const globalConversation = {
+      ...conversation,
+      use_case_id: 'global.agent.chat',
+      capability: 'agent',
+      stream: false,
+      latest_task_status: 'needs_input' as const,
+    }
+    mocks.fetchConversations.mockResolvedValue({
+      ok: true,
+      conversations: [globalConversation],
+    })
+    mocks.fetchConversation.mockResolvedValue({
+      ok: true,
+      conversation_id: globalConversation.conversation_id,
+      conversation: globalConversation,
+      events: [
+        {
+          seq: 1,
+          type: 'CUSTOM',
+          name: 'global.task_state',
+          value: {
+            task_id: 'task-1',
+            status: 'needs_input',
+            summary: '还缺少目标站点。',
+          },
+        },
+        {
+          seq: 2,
+          type: 'CUSTOM',
+          name: 'global.assistant_message',
+          value: {
+            task_id: 'task-1',
+            message: '请告诉我需要准备哪个站点。',
+          },
+        },
+      ],
+    })
+    mocks.waitForEvents.mockReturnValue(new Promise(() => {}))
+
+    const wrapper = mount(AiWorkFloatingButton)
+    await wrapper.get('[data-testid="ai-work-floating"]').trigger('mouseenter')
+    await flushPromises()
+
+    const panel = wrapper.get('[data-testid="ai-work-latest"]')
+    expect(panel.text()).toContain('全局 Agent 对话')
+    expect(panel.text()).toContain('等待补充资料')
+    expect(panel.text()).toContain('请告诉我需要准备哪个站点。')
+    expect(panel.text()).not.toContain('正在准备 Provider 请求')
+    expect(mocks.waitForEvents).toHaveBeenCalledWith(
+      globalConversation.conversation_id,
+      2,
+      5_000,
+      expect.anything(),
+    )
+    wrapper.unmount()
+  })
+
+  it('键盘焦点打开预览，焦点与鼠标共同决定关闭，并提供展开语义', async () => {
+    mocks.fetchConversations.mockResolvedValue({ ok: true, conversations: [] })
+    const wrapper = mount(AiWorkFloatingButton)
+    const floating = wrapper.get('[data-testid="ai-work-floating"]')
+    const link = wrapper.get('a')
+
+    expect(link.attributes('aria-controls')).toBe('ai-work-latest-panel')
+    expect(link.attributes('aria-expanded')).toBe('false')
+
+    await floating.trigger('mouseenter')
+    await link.trigger('focusin')
+    await flushPromises()
+
+    expect(wrapper.get('#ai-work-latest-panel').attributes('role')).toBe('region')
+    expect(link.attributes('aria-expanded')).toBe('true')
+
+    await floating.trigger('mouseleave')
+    expect(wrapper.find('#ai-work-latest-panel').exists()).toBe(true)
+
+    const outside = document.createElement('button')
+    document.body.append(outside)
+    await link.trigger('focusout', { relatedTarget: outside })
+    expect(wrapper.find('#ai-work-latest-panel').exists()).toBe(false)
+    expect(link.attributes('aria-expanded')).toBe('false')
+    outside.remove()
+  })
+
+  it('Escape 关闭键盘打开的预览', async () => {
+    mocks.fetchConversations.mockResolvedValue({ ok: true, conversations: [] })
+    const wrapper = mount(AiWorkFloatingButton)
+    const link = wrapper.get('a')
+
+    await link.trigger('focusin')
+    await flushPromises()
+    expect(wrapper.find('#ai-work-latest-panel').exists()).toBe(true)
+
+    await link.trigger('keydown', { key: 'Escape' })
+    expect(wrapper.find('#ai-work-latest-panel').exists()).toBe(false)
+    expect(link.attributes('aria-expanded')).toBe('false')
+  })
+
+  it('关闭与卸载会真正中止当前长轮询', async () => {
+    const signals: AbortSignal[] = []
+    mocks.fetchConversations.mockResolvedValue({ ok: true, conversations: [conversation] })
+    mocks.fetchConversation.mockResolvedValue({
+      ok: true,
+      conversation_id: conversation.conversation_id,
+      conversation,
+      events: [],
+    })
+    mocks.waitForEvents.mockImplementation((
+      _conversationId: string,
+      _afterSeq: number,
+      _waitMs: number,
+      signal: AbortSignal,
+    ) => {
+      signals.push(signal)
+      return new Promise(() => {})
+    })
+    const wrapper = mount(AiWorkFloatingButton)
+    const floating = wrapper.get('[data-testid="ai-work-floating"]')
+
+    await floating.trigger('mouseenter')
+    await flushPromises()
+    expect(signals).toHaveLength(1)
+    expect(signals[0].aborted).toBe(false)
+
+    await floating.trigger('mouseleave')
+    expect(signals[0].aborted).toBe(true)
+
+    await floating.trigger('mouseenter')
+    await flushPromises()
+    expect(signals).toHaveLength(2)
+    expect(signals[1].aborted).toBe(false)
+
+    wrapper.unmount()
+    expect(signals[1].aborted).toBe(true)
   })
 })

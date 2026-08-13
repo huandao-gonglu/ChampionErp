@@ -8,7 +8,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from erp_web.context import AppContext, AppPaths, get_context, set_context
+from erp_web.context import (
+    AppContext,
+    AppPaths,
+    clear_context,
+    peek_context,
+    set_context,
+)
 from erp_web.db import ErpDatabase
 
 
@@ -21,7 +27,9 @@ def temp_app_context(app_dir: Path) -> Iterator[AppContext]:
     context is restored on exit. 退出时会先关闭临时上下文已经创建的资源，再
     恢复外层上下文；外层上下文本身不会被 ``set_context`` 自动关闭。
     """
-    previous = get_context()
+    # 不通过 get_context() 获取 previous：首次测试若这样做会先打开真实仓库
+    # 数据库，既破坏测试隔离，也会让 schema 升级被本地旧库阻断。
+    previous = peek_context()
     paths = AppPaths.from_app_dir(Path(app_dir))
     bundled_presets = Path(__file__).resolve().parents[1] / "config" / "presets"
     if bundled_presets.exists():
@@ -38,4 +46,7 @@ def temp_app_context(app_dir: Path) -> Iterator[AppContext]:
         try:
             context.close()
         finally:
-            set_context(previous)
+            if previous is None:
+                clear_context()
+            else:
+                set_context(previous)

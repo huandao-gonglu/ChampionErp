@@ -24,6 +24,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, avoids import cycles
     from erp_web.services.image_delivery_service import ImageDeliveryService
     from erp_web.services.product_research_service import ProductResearchRunRegistry
     from erp_web.stores.config_store import ConfigStore
+    from erp_web.stores.global_task_store import LocalGlobalTaskStore
     from erp_web.stores.product_store import ProductStore
 
 _DEFAULT_APP_DIR = Path(
@@ -141,6 +142,7 @@ class AppContext:
         self._exchange_rates: "ExchangeRateService | None" = None
         self._image_delivery: "ImageDeliveryService | None" = None
         self._publishing_bus: "PublishingBus | None" = None
+        self._global_tasks: "LocalGlobalTaskStore | None" = None
 
     @property
     def products(self) -> "ProductStore":
@@ -214,6 +216,16 @@ class AppContext:
             return self._publishing_bus
 
     @property
+    def global_tasks(self) -> "LocalGlobalTaskStore":
+        if self._global_tasks is None:
+            with self._lazy_lock:
+                if self._global_tasks is None:
+                    from erp_web.stores.global_task_store import LocalGlobalTaskStore
+
+                    self._global_tasks = LocalGlobalTaskStore(self.db)
+        return self._global_tasks
+
+    @property
     def closed(self) -> bool:
         with self._lazy_lock:
             return self._closed
@@ -253,6 +265,13 @@ def get_context() -> AppContext:
     return context
 
 
+def peek_context() -> AppContext | None:
+    """读取已安装上下文但不触发默认数据库构造，供生命周期编排使用。"""
+
+    with _context_lock:
+        return _context
+
+
 def set_context(context: AppContext) -> None:
     """安装当前上下文，但不自动关闭此前的上下文。
 
@@ -262,3 +281,11 @@ def set_context(context: AppContext) -> None:
     global _context
     with _context_lock:
         _context = context
+
+
+def clear_context() -> None:
+    """移除当前上下文但不关闭它；资源生命周期仍由调用方持有。"""
+
+    global _context
+    with _context_lock:
+        _context = None

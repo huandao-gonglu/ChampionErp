@@ -12,6 +12,7 @@ from .http_route_units import (
     collect_routes,
     copy_routes,
     get_routes,
+    global_agent_routes,
     logistics_routes,
     mercadolibre_routes,
     product_routes,
@@ -38,6 +39,7 @@ GET_API_ROUTES = frozenset(
     for path in getattr(route_unit, "GET_API_ROUTES", frozenset())
 )
 POST_ROUTE_UNITS = (
+    global_agent_routes,
     collect_routes,
     copy_routes,
     auth_config_routes,

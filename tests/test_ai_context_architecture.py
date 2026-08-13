@@ -32,6 +32,38 @@ def imported_targets(paths: list[Path]) -> list[tuple[Path, str]]:
     return targets
 
 
+def assigned_string_set(path: Path, variable_name: str) -> set[str]:
+    """读取模块顶层由 frozenset/set/tuple/list 声明的字符串清单。"""
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in tree.body:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if not any(
+            isinstance(target, ast.Name) and target.id == variable_name
+            for target in targets
+        ):
+            continue
+        value = node.value
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id in {"frozenset", "set", "tuple", "list"}
+            and len(value.args) == 1
+        ):
+            value = value.args[0]
+        assert isinstance(value, (ast.Set, ast.Tuple, ast.List)), (
+            f"{path.relative_to(ROOT)}::{variable_name} 必须是显式静态清单"
+        )
+        assert all(
+            isinstance(item, ast.Constant) and isinstance(item.value, str)
+            for item in value.elts
+        ), f"{path.relative_to(ROOT)}::{variable_name} 只能包含字符串字面量"
+        return {str(item.value) for item in value.elts if isinstance(item, ast.Constant)}
+    raise AssertionError(f"{path.relative_to(ROOT)} 缺少 {variable_name}")
+
+
 def test_compatibility_runtime_entry_points_are_not_imported() -> None:
     production_paths = sorted((ROOT / "erp_web").rglob("*.py"))
     test_paths = sorted((ROOT / "tests").rglob("*.py"))
@@ -346,6 +378,7 @@ def test_ai_provider_and_ai_work_entry_points_are_explicit() -> None:
         ROOT / "erp_web/services/ai_tool_bridge.py",
         ROOT / "erp_web/services/category_attribute_fill_agent_service.py",
         ROOT / "erp_web/services/category_match_agent_service.py",
+        ROOT / "erp_web/services/global_agent_service.py",
         ROOT / "erp_web/services/ai_gateway_provider_profiles.py",
         ROOT / "erp_web/services/ai_gateway_provider_prompting.py",
         ROOT / "erp_web/services/ai_work_service.py",
@@ -382,6 +415,24 @@ def test_ai_provider_and_ai_work_entry_points_are_explicit() -> None:
         ROOT / "erp_web/http_route_units/ai_work_routes.py"
     ).read_text(encoding="utf-8")
     assert "get_context().ai_journal" in ai_route
+
+
+def test_ai_work_conversation_hierarchy_has_one_indexed_backend_contract() -> None:
+    database = (ROOT / "erp_web/db.py").read_text(encoding="utf-8")
+    service = (
+        ROOT / "erp_web/services/ai_work_service.py"
+    ).read_text(encoding="utf-8")
+    route = (
+        ROOT / "erp_web/http_route_units/ai_work_routes.py"
+    ).read_text(encoding="utf-8")
+
+    assert "parent_session_id TEXT DEFAULT NULL" in database
+    assert "idx_ai_sessions_parent_updated" in database
+    assert "def bind_ai_session_parent(" in database
+    assert "parent_conversation_id: str | None = None" in service
+    assert "def list_child_conversations(" in service
+    assert 'action == "children"' in route
+    assert '"include_children"' in route
 
 
 def test_context_map_mentions_shared_ai_tool_execution_entry_points() -> None:
@@ -443,6 +494,7 @@ def test_pydantic_ai_types_stay_in_focused_runtime_boundaries() -> None:
         ROOT / "erp_web/services/ai_agent_state_store.py",
         ROOT / "erp_web/services/category_attribute_fill_agent_service.py",
         ROOT / "erp_web/services/category_match_agent_service.py",
+        ROOT / "erp_web/services/global_agent_service.py",
     }
     offenders = [
         f"{path.relative_to(ROOT)} -> {target}"
@@ -1206,3 +1258,184 @@ def test_publish_currency_contract_has_no_market_or_draft_fallback() -> None:
     assert "\n    price:" not in platform_draft
     assert "\n    currency:" not in platform_draft
     assert '"market_currency": "RUB", "listing_currency": ""' in registry
+
+
+def test_global_agent_static_capability_map_has_exactly_nine_entries() -> None:
+    expected = {
+        "drafts.query",
+        "draft.prepare_for_market",
+        "product.read",
+        "category.match",
+        "product.attributes.fill",
+        "product.attributes.update",
+        "product.images.prepare",
+        "product.publish.validate",
+        "product.publish.request",
+    }
+    facade = ROOT / "erp_web/facades/global_agent_facade.py"
+    service = ROOT / "erp_web/services/global_agent_service.py"
+
+    assert assigned_string_set(facade, "GLOBAL_TASK_CAPABILITY_NAMES") == expected
+    assert assigned_string_set(service, "GLOBAL_TASK_PLAN_CAPABILITIES") == expected
+
+    tree = ast.parse(facade.read_text(encoding="utf-8"), filename=str(facade))
+    static_maps = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        if not all(
+            isinstance(key, ast.Constant) and isinstance(key.value, str)
+            for key in node.keys
+        ):
+            continue
+        static_maps.append({str(key.value) for key in node.keys})
+    assert expected in static_maps, "facade 必须显式绑定九项 Capability 函数"
+
+
+def test_global_agent_http_and_controller_keep_narrow_boundaries() -> None:
+    route = ROOT / "erp_web/http_route_units/global_agent_routes.py"
+    controller = ROOT / "erp_web/services/global_task_controller.py"
+    route_text = route.read_text(encoding="utf-8")
+    controller_text = controller.read_text(encoding="utf-8")
+
+    expected_paths = {
+        "/api/global-task-start",
+        "/api/global-task-state",
+        "/api/global-task-input",
+        "/api/global-task-publish-confirm",
+        "/api/global-task-cancel",
+    }
+    route_tree = ast.parse(route_text, filename=str(route))
+    handled_paths: set[str] = set()
+    for node in ast.walk(route_tree):
+        if isinstance(node, ast.Dict):
+            values = {
+                str(key.value)
+                for key in node.keys
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            }
+            if values == expected_paths:
+                handled_paths = values
+                break
+    assert handled_paths == expected_paths
+
+    route_imports = {target for _, target in imported_targets([route])}
+    assert any("facades.global_agent_facade" in target for target in route_imports)
+    assert not any("runtime_units" in target for target in route_imports)
+
+    controller_imports = {target for _, target in imported_targets([controller])}
+    banned_import_parts = (
+        "ai_tool_bridge",
+        "ai_tool_catalog",
+        "ai_tool_compiler",
+        "ai_tool_registry",
+        "ai_tool_runtime",
+        "global_task_tools",
+    )
+    assert not any(
+        part in target
+        for target in controller_imports
+        for part in banned_import_parts
+    ), "Controller 只能直接调用静态 Capability，不得依赖 Tool executor"
+    for banned_symbol in (
+        "AiToolRuntime",
+        "AiToolBinding",
+        "build_global_task_planning_toolset",
+        ".executor",
+    ):
+        assert banned_symbol not in controller_text
+
+    wait_contract_text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            route,
+            ROOT / "erp_web/http_routes.py",
+            ROOT / "erp_web/schemas/requests.py",
+            ROOT / "front/src/api/globalTasks.ts",
+        )
+    )
+    for retired_wait_name in (
+        "/api/global-task-wait",
+        "global_task_wait",
+        "waitGlobalTask",
+    ):
+        assert retired_wait_name not in wait_contract_text
+
+
+def test_global_agent_planning_toolset_is_one_explicit_read_only_tool() -> None:
+    tools_path = ROOT / "erp_web/runtime_units/global_task_tools.py"
+    service_path = ROOT / "erp_web/services/global_agent_service.py"
+    tool_text = tools_path.read_text(encoding="utf-8")
+    service_text = service_path.read_text(encoding="utf-8")
+
+    assert "GLOBAL_TASK_AI_TOOLS = (drafts_query,)" in tool_text
+    assert "GLOBAL_TASK_TOOL_CATALOG = AiToolCatalog.compile(" in tool_text
+    assert "allowed_tools=(DRAFTS_QUERY_TOOL,)" in tool_text
+    assert 'side_effect="none"' in tool_text
+    assert 'permission=GLOBAL_TASK_READ_PERMISSION' in tool_text
+    assert 'side_effect="write"' not in tool_text
+    assert "allow_write=False" in service_text
+    assert "GLOBAL_TASK_PLAN_PERMISSION = \"global.task.read\"" in service_text
+
+
+def test_global_agent_market_runtime_uses_injection_without_facade_reverse_imports() -> None:
+    runtime_paths = [
+        ROOT / "erp_web/runtime_units/global_task_tools.py",
+        ROOT / "erp_web/runtime_units/market_capability_support.py",
+        ROOT / "erp_web/runtime_units/category_capabilities.py",
+        ROOT / "erp_web/runtime_units/attribute_fill_capabilities.py",
+        ROOT / "erp_web/runtime_units/market_pricing_capability.py",
+        ROOT / "erp_web/runtime_units/market_prepare_capabilities.py",
+        ROOT / "erp_web/runtime_units/product_capabilities.py",
+        ROOT / "erp_web/runtime_units/publish_capabilities.py",
+    ]
+    reverse_imports = [
+        f"{path.relative_to(ROOT)} -> {target}"
+        for path, target in imported_targets(runtime_paths)
+        if target == "erp_web.facades" or target.startswith("erp_web.facades.")
+    ]
+    assert not reverse_imports, (
+        "全局 Agent runtime unit 不得反向依赖 facade：\n"
+        + "\n".join(reverse_imports)
+    )
+
+    category_text = (
+        ROOT / "erp_web/runtime_units/category_capabilities.py"
+    ).read_text(encoding="utf-8")
+    market_text = (
+        ROOT / "erp_web/runtime_units/market_prepare_capabilities.py"
+    ).read_text(encoding="utf-8")
+    facade_text = (
+        ROOT / "erp_web/facades/global_agent_facade.py"
+    ).read_text(encoding="utf-8")
+    assert "matcher: CategoryMatcher" in category_text
+    assert "category_capability: CategoryCapability | None = None" in market_text
+    assert "matcher=run_category_match" in facade_text
+    assert "category_capability=lambda request" in facade_text
+
+
+def test_context_map_documents_global_agent_vertical_entry_points() -> None:
+    context_map = (ROOT / "docs/ai-context-map.md").read_text(encoding="utf-8")
+    required_entries = (
+        "## 全局 Agent 顺序任务流",
+        "erp_web/http_route_units/global_agent_routes.py",
+        "erp_web/facades/global_agent_facade.py",
+        "erp_web/services/global_task_controller.py",
+        "erp_web/stores/global_task_store.py",
+        "erp_web/services/global_agent_service.py",
+        "erp_web/runtime_units/global_task_tools.py",
+        "erp_web/runtime_units/market_capability_support.py",
+        "erp_web/runtime_units/category_capabilities.py",
+        "erp_web/runtime_units/attribute_fill_capabilities.py",
+        "erp_web/runtime_units/market_pricing_capability.py",
+        "erp_web/runtime_units/market_prepare_capabilities.py",
+        "erp_web/services/ai_work_service.py",
+        "/api/global-task-start",
+        "/api/global-task-state",
+        "/api/global-task-input",
+        "/api/global-task-publish-confirm",
+        "/api/global-task-cancel",
+        "global.agent_execution_link",
+    )
+    missing = [entry for entry in required_entries if entry not in context_map]
+    assert not missing, f"AI Context Map 缺少全局 Agent 入口：{missing}"

@@ -27,11 +27,51 @@ def test_database_owns_schema_and_connection_policy(tmp_path) -> None:
         busy_timeout = connection.execute(
             "PRAGMA busy_timeout"
         ).fetchone()[0]
+        publish_job_indexes = connection.execute(
+            'PRAGMA index_list("publish_jobs")'
+        ).fetchall()
+        unique_publish_job_columns = {
+            tuple(
+                str(column["name"])
+                for column in connection.execute(
+                    f'PRAGMA index_info("{index["name"]}")'
+                ).fetchall()
+            )
+            for index in publish_job_indexes
+            if int(index["unique"] or 0) == 1
+        }
+        ai_session_indexes = connection.execute(
+            'PRAGMA index_list("ai_sessions")'
+        ).fetchall()
+        ai_session_index_columns = {
+            tuple(
+                str(column["name"])
+                for column in connection.execute(
+                    f'PRAGMA index_info("{index["name"]}")'
+                ).fetchall()
+            )
+            for index in ai_session_indexes
+        }
+        ai_session_foreign_keys = connection.execute(
+            'PRAGMA foreign_key_list("ai_sessions")'
+        ).fetchall()
     assert set(REQUIRED_TABLES).issubset(tables)
     assert user_version == SCHEMA_VERSION
     assert str(journal_mode).lower() == "wal"
     assert foreign_keys == 1
     assert busy_timeout >= 5_000
+    assert ("idempotency_key",) in unique_publish_job_columns
+    assert (
+        "parent_session_id",
+        "updated_at",
+    ) in ai_session_index_columns
+    assert any(
+        str(reference["table"]) == "ai_sessions"
+        and str(reference["from"]) == "parent_session_id"
+        and str(reference["to"]) == "session_id"
+        and str(reference["on_delete"]).upper() == "SET NULL"
+        for reference in ai_session_foreign_keys
+    )
 
 
 def test_publish_jobs_never_persist_credentials(tmp_path) -> None:
@@ -85,6 +125,7 @@ def test_publish_jobs_never_persist_credentials(tmp_path) -> None:
                 "name": "安全发布任务",
             },
             ["mercadolibre"],
+            idempotency_key="architecture:publish-credentials",
             targets={
                 "mercadolibre": {
                     "draft_id": "architecture-draft",

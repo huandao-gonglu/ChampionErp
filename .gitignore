@@ -48,8 +48,6 @@ data/logs/
 front/release/
 # soft-delete staging area used by remote sessions
 _to_delete/
-# 本地审查、分析和过程记录，不作为项目正式文档提交
+# 本地临时审查、分析和过程记录放在 doc/，不作为项目正式文档提交。
+# docs/ 保存正式架构、方案和接口文档，必须纳入版本控制。
 /doc/
-/docs/*
-# 仅反向排除需要纳入版本控制的正式文档
-!/docs/ai-context-map.md

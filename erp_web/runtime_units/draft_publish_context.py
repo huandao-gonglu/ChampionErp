@@ -4,8 +4,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from erp_web.context import get_context
-from erp_web.marketplace_registry import marketplace_site
+from erp_web.context import AppContext, get_context
+from erp_web.marketplace_registry import marketplace_site, marketplace_spec
 from erp_web.product_model import PLATFORMS, normalize_platform_draft
 from erp_web.services.listing_currency_service import resolve_listing_currency
 from erp_web.stores.product_store import normalize_product_fields
@@ -43,8 +43,28 @@ def _target_key(platform: str, site: str) -> str:
     return f"{str(platform or '').strip().lower()}:{str(site or '').strip().lower()}"
 
 
-def _normalized_target(platform: str, site: str = "") -> dict[str, Any]:
+def _normalized_target(
+    platform: str,
+    site: str = "",
+    *,
+    context: AppContext | None = None,
+) -> dict[str, Any]:
     platform_key = str(platform or "").strip().lower()
+    raw_site = str(site or "").strip()
+    spec = marketplace_spec(platform_key)
+    if raw_site and spec is not None and not any(
+        str(item.get("key") or "").casefold() == raw_site.casefold()
+        or str(item.get("code") or "").casefold() == raw_site.casefold()
+        for item in spec.sites
+    ):
+        return {
+            "platform": "",
+            "site": "",
+            "language": "",
+            "market_currency": "",
+            "listing_currency": "",
+            "currency_resolution": {},
+        }
     selected_site = marketplace_site(platform_key, site)
     if platform_key not in PLATFORMS or not selected_site.get("code"):
         return {
@@ -55,7 +75,8 @@ def _normalized_target(platform: str, site: str = "") -> dict[str, Any]:
             "listing_currency": "",
             "currency_resolution": {},
         }
-    store_config = get_context().config.load_store_config()
+    active_context = context or get_context()
+    store_config = active_context.config.load_store_config()
     store = (
         store_config.get(platform_key)
         if isinstance(store_config.get(platform_key), dict)
@@ -146,44 +167,99 @@ def _target_listing_fields(raw: dict[str, Any], fallback: dict[str, Any] | None 
     }
 
 
-def draft_publish_targets(draft: dict[str, Any]) -> list[dict[str, Any]]:
+def draft_publish_targets(
+    draft: dict[str, Any],
+    *,
+    context: AppContext | None = None,
+) -> list[dict[str, Any]]:
     targets: list[dict[str, Any]] = []
     raw_targets = draft.get("target_sites") if isinstance(draft.get("target_sites"), list) else draft.get("targetSites")
     for index, raw in enumerate(raw_targets if isinstance(raw_targets, list) else []):
         item = raw if isinstance(raw, dict) else {}
-        target = _normalized_target(str(item.get("platform") or ""), str(item.get("site") or item.get("site_id") or ""))
+        target = _normalized_target(
+            str(item.get("platform") or ""),
+            str(item.get("site") or item.get("site_id") or ""),
+            context=context,
+        )
         if target["platform"] and _target_key(target["platform"], target["site"]) not in {_target_key(t["platform"], t["site"]) for t in targets}:
             target.update(_target_listing_fields(item, draft if index == 0 else None))
             targets.append(target)
     if targets:
         return targets
-    target = _normalized_target(str(draft.get("platform") or ""), str(draft.get("site") or draft.get("site_id") or ""))
+    target = _normalized_target(
+        str(draft.get("platform") or ""),
+        str(draft.get("site") or draft.get("site_id") or ""),
+        context=context,
+    )
     target.update(_target_listing_fields({}, draft))
     return [target] if target["platform"] else []
 
 
-def _select_target(draft: dict[str, Any], platform: str, site: str) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
-    targets = draft_publish_targets(draft)
+def _select_target(
+    draft: dict[str, Any],
+    platform: str,
+    site: str,
+    *,
+    context: AppContext | None = None,
+) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
+    targets = draft_publish_targets(draft, context=context)
     if not targets:
         return {}, {"ok": False, "error": "当前草稿没有可发布目标站点", "error_code": "DRAFT_TARGET_MISSING"}, 400
     requested_platform = str(platform or "").strip().lower()
     requested_site = str(site or "").strip()
     if not requested_platform and not requested_site:
+        if len(targets) > 1:
+            return {}, {
+                "ok": False,
+                "error": "当前草稿包含多个发布目标，请明确目标平台和站点。",
+                "error_code": "DRAFT_TARGET_AMBIGUOUS",
+                "allowed_targets": targets,
+            }, 400
         return targets[0], None, 200
-    normalized = _normalized_target(requested_platform or targets[0]["platform"], requested_site)
-    if not normalized["platform"]:
+    if requested_platform and requested_platform not in PLATFORMS:
         return {}, {"ok": False, "error": "目标平台或站点不支持", "error_code": "TARGET_UNSUPPORTED"}, 400
-    normalized_key = _target_key(normalized["platform"], normalized["site"])
-    selected = next((target for target in targets if _target_key(target["platform"], target["site"]) == normalized_key), None)
-    if selected is None:
+    candidates = [
+        target
+        for target in targets
+        if (
+            not requested_platform
+            or str(target.get("platform") or "").strip().lower()
+            == requested_platform
+        )
+        and (
+            not requested_site
+            or str(target.get("site") or "").strip().casefold()
+            == requested_site.casefold()
+        )
+    ]
+    if not candidates:
         return {}, {
             "ok": False,
             "error": "预检目标不属于当前草稿的目标站点",
             "error_code": "TARGET_NOT_IN_DRAFT",
-            "target": normalized,
+            "target": {
+                "platform": requested_platform,
+                "site": requested_site,
+            },
             "allowed_targets": targets,
         }, 400
-    return selected, None, 200
+    if len(candidates) > 1:
+        site_ambiguous = bool(requested_platform)
+        return {}, {
+            "ok": False,
+            "error": (
+                "当前平台包含多个发布站点，请明确目标站点。"
+                if site_ambiguous
+                else "当前草稿包含多个发布目标，请明确目标平台。"
+            ),
+            "error_code": (
+                "DRAFT_TARGET_SITE_AMBIGUOUS"
+                if site_ambiguous
+                else "DRAFT_TARGET_AMBIGUOUS"
+            ),
+            "allowed_targets": candidates,
+        }, 400
+    return candidates[0], None, 200
 
 
 def draft_for_publish_target(draft: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
@@ -228,10 +304,16 @@ def _target_update_from_draft(draft: dict[str, Any]) -> dict[str, Any]:
     return {key: deepcopy(draft[key]) for key in TARGET_LISTING_KEYS if key in draft}
 
 
-def merge_target_listing_into_draft(draft: dict[str, Any], target: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
+def merge_target_listing_into_draft(
+    draft: dict[str, Any],
+    target: dict[str, Any],
+    updates: dict[str, Any],
+    *,
+    context: AppContext | None = None,
+) -> dict[str, Any]:
     merged = deepcopy(draft)
     selected_key = _target_key(str(target.get("platform") or ""), str(target.get("site") or ""))
-    targets = draft_publish_targets(merged)
+    targets = draft_publish_targets(merged, context=context)
     if not targets and target.get("platform") and target.get("site"):
         targets = [deepcopy(target)]
     next_targets: list[dict[str, Any]] = []
@@ -251,10 +333,16 @@ def merge_target_listing_into_draft(draft: dict[str, Any], target: dict[str, Any
     return merged
 
 
-def _save_updated_draft(draft: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    db = get_context().db
-    product_id = str(draft.get("product_id") or context.get("product", {}).get("product_id") or "").strip()
-    platform = str(draft.get("platform") or context.get("platform") or "").strip().lower()
+def _save_updated_draft(
+    draft: dict[str, Any],
+    publish_context: dict[str, Any],
+    *,
+    context: AppContext | None = None,
+) -> dict[str, Any]:
+    active_context = context or get_context()
+    db = active_context.db
+    product_id = str(draft.get("product_id") or publish_context.get("product", {}).get("product_id") or "").strip()
+    platform = str(draft.get("platform") or publish_context.get("platform") or "").strip().lower()
     canonical_draft = normalize_platform_draft(
         draft,
         platform,
@@ -270,19 +358,24 @@ def _save_updated_draft(draft: dict[str, Any], context: dict[str, Any]) -> dict[
     return {
         "ok": True,
         "draft": saved_draft,
-        "productContext": get_context().products.draft_product_context(
+        "productContext": active_context.products.draft_product_context(
             source_product
         ),
-        "productsIndex": get_context().products.load_products_index(),
-        "draftsIndex": get_context().products.load_drafts_index(),
+        "productsIndex": active_context.products.load_products_index(),
+        "draftsIndex": active_context.products.load_drafts_index(),
     }
 
 
-def load_required_draft_publish_context(body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
+def load_required_draft_publish_context(
+    body: dict[str, Any],
+    *,
+    context: AppContext | None = None,
+) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
     draft_id = str(body.get("draft_id") or body.get("draftId") or "").strip()
     if not draft_id:
         return {}, {"ok": False, "error": "draft_id 不能为空", "error_code": "DRAFT_ID_REQUIRED"}, 400
-    db = get_context().db
+    active_context = context or get_context()
+    db = active_context.db
     draft = db.load_draft_model(draft_id)
     if not draft:
         return {}, {"ok": False, "error": "草稿不存在", "error_code": "DRAFT_NOT_FOUND", "draft_id": draft_id}, 404
@@ -305,7 +398,12 @@ def load_required_draft_publish_context(body: dict[str, Any]) -> tuple[dict[str,
     product = db.load_product_model(product_id)
     if not product:
         return {}, {"ok": False, "error": "草稿关联商品不存在", "error_code": "DRAFT_PRODUCT_NOT_FOUND", "draft_id": draft_id}, 404
-    target, error_response, status = _select_target(draft, str(body.get("platform") or ""), str(body.get("site") or body.get("site_id") or ""))
+    target, error_response, status = _select_target(
+        draft,
+        str(body.get("platform") or ""),
+        str(body.get("site") or body.get("site_id") or ""),
+        context=active_context,
+    )
     if error_response:
         return {}, error_response, status
 
@@ -315,17 +413,23 @@ def load_required_draft_publish_context(body: dict[str, Any]) -> tuple[dict[str,
     return {
         "draft": draft,
         "product": product_for_publish,
-        "productContext": get_context().products.draft_product_context(product),
+        "productContext": active_context.products.draft_product_context(product),
         "target": target,
-        "targets": draft_publish_targets(draft),
+        "targets": draft_publish_targets(draft, context=active_context),
         "platform": target["platform"],
         "site": target["site"],
     }, None, 200
 
 
-def save_draft_precheck_result(context: dict[str, Any], precheck: dict[str, Any]) -> dict[str, Any]:
-    draft = deepcopy(context.get("draft") if isinstance(context.get("draft"), dict) else {})
-    target = context.get("target") if isinstance(context.get("target"), dict) else {}
+def save_draft_precheck_result(
+    publish_context: dict[str, Any],
+    precheck: dict[str, Any],
+    *,
+    context: AppContext | None = None,
+) -> dict[str, Any]:
+    active_context = context or get_context()
+    draft = deepcopy(publish_context.get("draft") if isinstance(publish_context.get("draft"), dict) else {})
+    target = publish_context.get("target") if isinstance(publish_context.get("target"), dict) else {}
     errors = list(precheck.get("errors") or [])
     warnings = list(precheck.get("warnings") or [])
     requested_status = "ready" if precheck.get("ok") else "not_ready"
@@ -345,15 +449,39 @@ def save_draft_precheck_result(context: dict[str, Any], precheck: dict[str, Any]
         target_updates["status"] = "ready_to_publish"
     elif not precheck.get("ok"):
         target_updates["status"] = "not_ready"
-    draft = merge_target_listing_into_draft(draft, target, target_updates)
-    return _save_updated_draft(draft, context)
+    draft = merge_target_listing_into_draft(
+        draft,
+        target,
+        target_updates,
+        context=active_context,
+    )
+    return _save_updated_draft(
+        draft,
+        publish_context,
+        context=active_context,
+    )
 
 
-def save_draft_target_listing_result(context: dict[str, Any], target_draft: dict[str, Any]) -> dict[str, Any]:
-    draft = deepcopy(context.get("draft") if isinstance(context.get("draft"), dict) else {})
-    target = context.get("target") if isinstance(context.get("target"), dict) else {}
-    draft = merge_target_listing_into_draft(draft, target, target_draft)
-    return _save_updated_draft(draft, context)
+def save_draft_target_listing_result(
+    publish_context: dict[str, Any],
+    target_draft: dict[str, Any],
+    *,
+    context: AppContext | None = None,
+) -> dict[str, Any]:
+    active_context = context or get_context()
+    draft = deepcopy(publish_context.get("draft") if isinstance(publish_context.get("draft"), dict) else {})
+    target = publish_context.get("target") if isinstance(publish_context.get("target"), dict) else {}
+    draft = merge_target_listing_into_draft(
+        draft,
+        target,
+        target_draft,
+        context=active_context,
+    )
+    return _save_updated_draft(
+        draft,
+        publish_context,
+        context=active_context,
+    )
 
 
 __all__ = [

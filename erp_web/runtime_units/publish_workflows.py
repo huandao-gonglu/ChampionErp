@@ -7,6 +7,7 @@ HTTP facade 只负责传入请求字典；本模块拥有预检、payload 预览
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from erp_web.context import get_context
@@ -246,6 +247,7 @@ def enqueue_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
         result = get_publishing_bus().enqueue(
             product,
             eligible_platforms,
+            idempotency_key=f"manual:{uuid.uuid4().hex}",
             targets={
                 str(context["platform"]): {
                     "draft_id": str(context["draft"].get("draft_id") or ""),

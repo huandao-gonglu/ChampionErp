@@ -126,6 +126,7 @@ def default_draft(platform: str) -> dict[str, Any]:
         "validation_errors": [],
         "status": "collected",
         "publish_status": "",
+        "copy_operation_key": "",
     }
 
 

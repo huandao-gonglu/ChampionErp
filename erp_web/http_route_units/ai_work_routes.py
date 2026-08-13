@@ -20,34 +20,82 @@ def _int_param(params: dict[str, list[str]], name: str, default: int) -> int:
         return default
 
 
+def _bool_param(
+    params: dict[str, list[str]],
+    name: str,
+    default: bool = False,
+) -> bool:
+    raw = str((params.get(name) or [""])[0] or "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
 def handle_conversation_list(handler: JsonRequestHandler, parsed: object) -> None:
     params = urllib.parse.parse_qs(parsed.query)
     limit = _int_param(params, "limit", 50)
+    include_children = _bool_param(params, "include_children")
     handler.send_json(
         {
             "ok": True,
-            "conversations": get_context().ai_journal.list_conversations(limit=limit),
+            "conversations": get_context().ai_journal.list_conversations(
+                limit=limit,
+                include_children=include_children,
+            ),
         }
     )
 
 
-def _conversation_parts(path: str) -> tuple[str, str]:
+def _conversation_parts(path: str) -> tuple[str, str, bool]:
     suffix = path[len(CONVERSATIONS_PATH) :].strip("/")
     if not suffix:
-        return "", ""
+        return "", "", False
     parts = suffix.split("/")
-    return parts[0], parts[1] if len(parts) > 1 else ""
+    if len(parts) > 2 or any(not part for part in parts):
+        return "", "", False
+    return parts[0], parts[1] if len(parts) > 1 else "", True
 
 
 def handle_conversation(handler: JsonRequestHandler, parsed: object) -> None:
-    conversation_id, action = _conversation_parts(parsed.path)
+    conversation_id, action, valid_path = _conversation_parts(parsed.path)
+    if not valid_path:
+        handler.send_json({"ok": False, "error": "未知的 AI Work 操作。"}, 404)
+        return
     journal = get_context().ai_journal
-    path = journal.find_conversation_path(conversation_id)
+    try:
+        path = journal.find_conversation_path(conversation_id)
+    except ValueError:
+        handler.send_json(
+            {
+                "ok": False,
+                "error": "AI 对话 ID 无效。",
+                "error_code": "AI_WORK_CONVERSATION_ID_INVALID",
+            },
+            400,
+        )
+        return
     if path is None:
         handler.send_json({"ok": False, "error": "AI 对话不存在。"}, 404)
         return
     params = urllib.parse.parse_qs(parsed.query)
     after_seq = max(_int_param(params, "after_seq", 0), 0)
+    if action == "children":
+        limit = _int_param(params, "limit", 50)
+        try:
+            children = journal.list_child_conversations(
+                conversation_id,
+                limit=limit,
+            )
+        except ValueError as exc:
+            handler.send_json({"ok": False, "error": str(exc)}, 400)
+            return
+        handler.send_json(
+            {
+                "ok": True,
+                "conversations": children,
+            }
+        )
+        return
     if action in {"events", "raw"}:
         wait_ms = 0 if action == "raw" else _int_param(params, "wait_ms", 0)
         events = journal.wait_for_events(
@@ -64,6 +112,9 @@ def handle_conversation(handler: JsonRequestHandler, parsed: object) -> None:
         {
             "ok": True,
             "conversation_id": conversation_id,
+            "conversation": journal.get_conversation_summary(
+                conversation_id
+            ),
             "events": journal.read_events(
                 conversation_id,
                 after_seq=after_seq,

@@ -4,9 +4,11 @@ import { useRoute } from 'vue-router'
 import {
   aiWorkRawUrl,
   fetchAiWorkConversation,
+  fetchAiWorkConversationChildren,
   fetchAiWorkConversations,
   waitForAiWorkEvents,
 } from '@/api/aiWork'
+import GlobalAgentChatPanel from '@/components/ai-work/GlobalAgentChatPanel.vue'
 import type { AiWorkConversationSummary, AiWorkEvent } from '@/types/aiWork'
 import { formatAiWorkError } from '@/utils/aiWorkError'
 
@@ -15,11 +17,18 @@ type ViewTab = 'conversation' | 'request' | 'result' | 'events'
 const route = useRoute()
 const conversations = ref<AiWorkConversationSummary[]>([])
 const selectedId = ref('')
+const selectedSummary = ref<AiWorkConversationSummary | null>(null)
 const selectedEvents = ref<AiWorkEvent[]>([])
+const executionConversations = ref<AiWorkConversationSummary[]>([])
+const executionConversationsState = ref<'loading' | 'loaded' | 'failed'>('loaded')
 const loadingList = ref(false)
 const loadingConversation = ref(false)
 const error = ref('')
 const activeTab = ref<ViewTab>('conversation')
+const isNewConversation = ref(false)
+const newConversationId = ref('')
+const SHOW_INTERNAL_STORAGE_KEY = 'ai-work.show-internal-conversations'
+const showInternalConversations = ref(readShowInternalConversations())
 const outputElement = ref<HTMLElement | null>(null)
 const reasoningElement = ref<HTMLElement | null>(null)
 const tabs: Array<{ value: ViewTab; label: string }> = [
@@ -31,10 +40,64 @@ const tabs: Array<{ value: ViewTab; label: string }> = [
 
 let listTimer: number | null = null
 let pollGeneration = 0
+let pollAbortController: AbortController | null = null
 
-const selectedConversation = computed(
-  () => conversations.value.find((item) => item.conversation_id === selectedId.value) || null,
-)
+interface SidebarConversation {
+  conversation: AiWorkConversationSummary
+  depth: number
+  internal: boolean
+}
+
+const selectedConversation = computed(() => selectedSummary.value)
+
+const rootConversations = computed(() => conversations.value.filter((item) => (
+  !item.parent_conversation_id
+)))
+
+const sidebarConversations = computed<SidebarConversation[]>(() => {
+  if (!showInternalConversations.value) {
+    return rootConversations.value.map((conversation) => ({
+      conversation,
+      depth: 0,
+      internal: false,
+    }))
+  }
+  const children = new Map<string, AiWorkConversationSummary[]>()
+  for (const conversation of conversations.value) {
+    if (!conversation.parent_conversation_id) continue
+    const rows = children.get(conversation.parent_conversation_id) || []
+    rows.push(conversation)
+    children.set(conversation.parent_conversation_id, rows)
+  }
+  const rows: SidebarConversation[] = []
+  const appended = new Set<string>()
+  const append = (conversation: AiWorkConversationSummary, depth: number) => {
+    if (appended.has(conversation.conversation_id)) return
+    appended.add(conversation.conversation_id)
+    rows.push({ conversation, depth, internal: depth > 0 })
+    for (const child of children.get(conversation.conversation_id) || []) {
+      append(child, depth + 1)
+    }
+  }
+  // 根会话始终保持 API 返回的最近排序；子会话只收纳在所属根会话下。
+  for (const conversation of rootConversations.value) append(conversation, 0)
+  for (const conversation of conversations.value) {
+    if (!appended.has(conversation.conversation_id)) append(conversation, 1)
+  }
+  return rows
+})
+
+const selectedSidebarId = computed(() => (
+  showInternalConversations.value
+    ? selectedId.value
+    : selectedConversation.value?.parent_conversation_id || selectedId.value
+))
+
+const parentConversation = computed(() => {
+  const parentId = selectedConversation.value?.parent_conversation_id
+  if (!parentId) return null
+  return conversations.value.find((item) => item.conversation_id === parentId) || null
+})
 
 const customEvents = computed(() =>
   selectedEvents.value.filter((event) => event.type === 'CUSTOM'),
@@ -266,6 +329,12 @@ function shortId(value: string): string {
 }
 
 function conversationTitle(conversation: AiWorkConversationSummary): string {
+  if (conversation.use_case_id === 'global.agent.chat') {
+    return '全局 Agent 对话'
+  }
+  if (conversation.use_case_id === 'global.task.plan') return '任务规划'
+  if (conversation.use_case_id === 'category.product_match') return '类目匹配'
+  if (conversation.use_case_id === 'category.attribute_fill') return '属性补全'
   if (conversation.use_case_id === 'config.ai_model_probe') {
     return `能力探测 · ${conversation.capability || '未知能力'}`
   }
@@ -289,6 +358,22 @@ function statusText(status: AiWorkConversationSummary['status']): string {
   }[status]
 }
 
+function conversationStatusText(conversation: AiWorkConversationSummary): string {
+  if (conversation.use_case_id !== 'global.agent.chat' || !conversation.latest_task_status) {
+    return statusText(conversation.status)
+  }
+  return {
+    planning: '正在规划',
+    running: '正在执行',
+    needs_input: '等待补充资料',
+    waiting_publish_confirmation: '等待发布确认',
+    waiting_publish_result: '等待平台结果',
+    completed: '任务已完成',
+    failed: '任务失败',
+    cancelled: '任务已取消',
+  }[conversation.latest_task_status]
+}
+
 function statusClass(status: AiWorkConversationSummary['status']): string {
   if (status === 'running') return 'bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-200'
   if (status === 'waiting_approval') return 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-200'
@@ -296,17 +381,56 @@ function statusClass(status: AiWorkConversationSummary['status']): string {
   return 'bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-200'
 }
 
+function conversationStatusClass(conversation: AiWorkConversationSummary): string {
+  const taskStatus = conversation.use_case_id === 'global.agent.chat'
+    ? conversation.latest_task_status
+    : null
+  if (!taskStatus) return statusClass(conversation.status)
+  if (taskStatus === 'completed') {
+    return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200'
+  }
+  if (taskStatus === 'failed' || taskStatus === 'cancelled') {
+    return 'bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-200'
+  }
+  if (taskStatus === 'needs_input' || taskStatus === 'waiting_publish_confirmation') {
+    return 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-200'
+  }
+  return 'bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-200'
+}
+
 async function refreshConversations(selectFirst = false) {
   if (loadingList.value) return
   loadingList.value = true
   try {
-    const response = await fetchAiWorkConversations()
-    conversations.value = response.conversations || []
-    if ((selectFirst || !selectedId.value) && conversations.value.length) {
+    const response = await fetchAiWorkConversations(50, showInternalConversations.value)
+    conversations.value = (response.conversations || []).filter((item) => (
+      showInternalConversations.value || !item.parent_conversation_id
+    ))
+    if (selectedId.value) {
+      const refreshed = conversations.value.find((item) => (
+        item.conversation_id === selectedId.value
+      ))
+      if (refreshed) selectedSummary.value = refreshed
+    }
+    if (isNewConversation.value && newConversationId.value) {
+      const created = conversations.value.find(
+        (item) => item.conversation_id === newConversationId.value,
+      )
+      if (created) {
+        isNewConversation.value = false
+        newConversationId.value = ''
+        await selectConversation(created.conversation_id)
+        return
+      }
+    }
+    if (!isNewConversation.value && (selectFirst || !selectedId.value)) {
       const requestedId = requestedConversationId.value
       const target = conversations.value.find((item) => item.conversation_id === requestedId)
-        || conversations.value[0]
-      await selectConversation(target.conversation_id)
+      if (requestedId && !target) {
+        await selectConversation(requestedId)
+      } else if (target || rootConversations.value.length) {
+        await selectConversation((target || rootConversations.value[0]).conversation_id)
+      }
     }
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : String(cause)
@@ -315,18 +439,34 @@ async function refreshConversations(selectFirst = false) {
   }
 }
 
-async function selectConversation(conversationId: string) {
+async function selectConversation(
+  conversationId: string,
+  knownSummary: AiWorkConversationSummary | null = null,
+) {
   if (!conversationId) return
-  pollGeneration += 1
+  isNewConversation.value = false
+  newConversationId.value = ''
+  cancelActivePoll()
   const generation = pollGeneration
   selectedId.value = conversationId
+  selectedSummary.value = knownSummary || conversations.value.find((item) => (
+    item.conversation_id === conversationId
+  )) || null
   selectedEvents.value = []
+  executionConversations.value = []
+  executionConversationsState.value = 'loading'
   loadingConversation.value = true
   error.value = ''
   try {
     const response = await fetchAiWorkConversation(conversationId)
     if (generation !== pollGeneration) return
+    selectedSummary.value = response.conversation || selectedSummary.value
     selectedEvents.value = response.events || []
+    if (selectedConversation.value?.use_case_id === 'global.agent.chat') {
+      void refreshExecutionConversations(conversationId, generation)
+    } else {
+      executionConversationsState.value = 'loaded'
+    }
     void pollSelectedConversation(conversationId, generation)
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : String(cause)
@@ -335,30 +475,143 @@ async function selectConversation(conversationId: string) {
   }
 }
 
-async function pollSelectedConversation(conversationId: string, generation: number) {
-  while (
-    generation === pollGeneration
-    && selectedId.value === conversationId
-    && selectedConversation.value
-    && !['waiting_approval', 'completed', 'failed', 'interrupted'].includes(
-      selectedConversation.value.status,
-    )
-  ) {
-    try {
-      const events = await waitForAiWorkEvents(conversationId, lastSeq.value)
-      if (generation !== pollGeneration || selectedId.value !== conversationId) return
-      if (events.length) {
-        const known = new Set(selectedEvents.value.map((event) => event.seq))
-        selectedEvents.value.push(...events.filter((event) => !known.has(event.seq)))
-        void refreshConversations()
-        if (events.some((event) => event.type === 'RUN_DEFERRED')) return
-      }
-    } catch (cause) {
-      if (generation !== pollGeneration) return
-      error.value = cause instanceof Error ? cause.message : String(cause)
-      await new Promise((resolve) => window.setTimeout(resolve, 1_000))
+function openNewConversation() {
+  cancelActivePoll()
+  selectedId.value = ''
+  selectedSummary.value = null
+  selectedEvents.value = []
+  executionConversations.value = []
+  executionConversationsState.value = 'loaded'
+  loadingConversation.value = false
+  error.value = ''
+  activeTab.value = 'conversation'
+  isNewConversation.value = true
+  newConversationId.value = ''
+}
+
+async function handleGlobalConversationCreated(payload: { conversationId: string; taskId: string }) {
+  newConversationId.value = payload.conversationId
+  selectedId.value = payload.conversationId
+  await Promise.all([
+    refreshGlobalProjection(payload.conversationId),
+    refreshConversations(),
+  ])
+}
+
+async function refreshGlobalProjection(conversationId: string) {
+  if (!conversationId) return
+  try {
+    const response = await fetchAiWorkConversation(conversationId)
+    const currentId = isNewConversation.value ? newConversationId.value : selectedId.value
+    if (currentId !== conversationId) return
+    selectedEvents.value = response.events || []
+    if (selectedConversation.value?.use_case_id === 'global.agent.chat') {
+      void refreshExecutionConversations(conversationId, pollGeneration)
     }
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : String(cause)
   }
+}
+
+async function refreshExecutionConversations(conversationId: string, generation: number) {
+  if (!conversationId) return
+  executionConversationsState.value = 'loading'
+  try {
+    const response = await fetchAiWorkConversationChildren(conversationId, 200)
+    if (generation !== pollGeneration || selectedId.value !== conversationId) return
+    executionConversations.value = response.conversations || []
+    executionConversationsState.value = 'loaded'
+  } catch (cause) {
+    if (generation !== pollGeneration || selectedId.value !== conversationId) return
+    executionConversationsState.value = 'failed'
+    error.value = cause instanceof Error ? cause.message : String(cause)
+  }
+}
+
+async function openExecutionConversation(conversationId: string) {
+  const summary = executionConversations.value.find((item) => (
+    item.conversation_id === conversationId
+  )) || conversations.value.find((item) => item.conversation_id === conversationId) || null
+  activeTab.value = 'conversation'
+  await selectConversation(conversationId, summary)
+}
+
+async function returnToParentConversation() {
+  const parent = parentConversation.value
+  const parentId = selectedConversation.value?.parent_conversation_id
+  if (!parentId) return
+  activeTab.value = 'conversation'
+  await selectConversation(parentId, parent)
+}
+
+async function toggleInternalConversations() {
+  writeShowInternalConversations(showInternalConversations.value)
+  await refreshConversations()
+}
+
+function readShowInternalConversations(): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    return window.localStorage.getItem(SHOW_INTERNAL_STORAGE_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+function writeShowInternalConversations(value: boolean) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(SHOW_INTERNAL_STORAGE_KEY, String(value))
+  } catch {
+    // 隐私模式或受限 WebView 可能禁用 localStorage；开关在当前页面仍然有效。
+  }
+}
+
+async function pollSelectedConversation(conversationId: string, generation: number) {
+  const abortController = new AbortController()
+  pollAbortController?.abort()
+  pollAbortController = abortController
+  try {
+    while (
+      generation === pollGeneration
+      && selectedId.value === conversationId
+      && selectedConversation.value
+      && !['waiting_approval', 'completed', 'failed', 'interrupted'].includes(
+        selectedConversation.value.status,
+      )
+    ) {
+      try {
+        const events = await waitForAiWorkEvents(
+          conversationId,
+          lastSeq.value,
+          20_000,
+          abortController.signal,
+        )
+        if (generation !== pollGeneration || selectedId.value !== conversationId) return
+        if (events.length) {
+          const known = new Set(selectedEvents.value.map((event) => event.seq))
+          selectedEvents.value.push(...events.filter((event) => !known.has(event.seq)))
+          if (selectedConversation.value?.use_case_id === 'global.agent.chat') {
+            void refreshExecutionConversations(conversationId, generation)
+          }
+          void refreshConversations()
+          if (events.some((event) => event.type === 'RUN_DEFERRED')) return
+        }
+      } catch (cause) {
+        if (abortController.signal.aborted || generation !== pollGeneration) return
+        error.value = cause instanceof Error ? cause.message : String(cause)
+        await new Promise((resolve) => window.setTimeout(resolve, 1_000))
+      }
+    }
+  } finally {
+    if (pollAbortController === abortController) pollAbortController = null
+  }
+}
+
+function cancelActivePoll() {
+  pollGeneration += 1
+  pollAbortController?.abort()
+  pollAbortController = null
 }
 
 watch([assistantOutput, reasoningOutput], async () => {
@@ -383,7 +636,7 @@ watch(requestedConversationId, (conversationId) => {
 })
 
 onBeforeUnmount(() => {
-  pollGeneration += 1
+  cancelActivePoll()
   if (listTimer !== null) window.clearInterval(listTimer)
 })
 </script>
@@ -402,60 +655,115 @@ onBeforeUnmount(() => {
               刷新
             </button>
           </div>
+          <button
+            type="button"
+            class="btn btn-primary mt-4 w-full"
+            data-testid="new-global-conversation"
+            @click="openNewConversation"
+          >
+            <span aria-hidden="true">＋</span>
+            新建对话
+          </button>
+          <label class="mt-3 flex cursor-pointer items-center justify-between gap-3 text-xs text-slate-600 dark:text-accent-200">
+            <span>显示内部执行会话</span>
+            <input
+              v-model="showInternalConversations"
+              type="checkbox"
+              class="h-4 w-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500"
+              data-testid="show-internal-conversations"
+              @change="toggleInternalConversations"
+            />
+          </label>
         </header>
 
         <div class="min-h-0 flex-1 overflow-y-auto">
           <button
-            v-for="conversation in conversations"
-            :key="conversation.conversation_id"
+            v-for="row in sidebarConversations"
+            :key="row.conversation.conversation_id"
+            type="button"
             class="w-full border-b border-slate-100 p-4 text-left transition hover:bg-slate-50 dark:border-dark-800 dark:hover:bg-dark-800"
-            :class="{ 'bg-primary-50 dark:bg-primary-500/10': selectedId === conversation.conversation_id }"
-            @click="selectConversation(conversation.conversation_id)"
+            :class="{
+              'bg-primary-50 dark:bg-primary-500/10': selectedSidebarId === row.conversation.conversation_id,
+              'border-l-4 border-l-slate-300 bg-slate-50/70 pl-7 dark:border-l-dark-600 dark:bg-dark-800/40': row.internal,
+            }"
+            :data-testid="row.internal ? `internal-conversation-${row.conversation.conversation_id}` : `root-conversation-${row.conversation.conversation_id}`"
+            @click="selectConversation(row.conversation.conversation_id, row.conversation)"
           >
             <div class="flex items-start justify-between gap-2">
-              <p class="truncate text-sm font-bold">{{ conversationTitle(conversation) }}</p>
-              <span class="rounded-full px-2 py-1 text-[10px] font-bold" :class="statusClass(conversation.status)">
-                {{ statusText(conversation.status) }}
+              <div class="flex min-w-0 items-center gap-2">
+                <span v-if="row.internal" aria-hidden="true" class="text-slate-400">↳</span>
+                <p class="truncate text-sm font-bold">{{ conversationTitle(row.conversation) }}</p>
+              </div>
+              <span class="rounded-full px-2 py-1 text-[10px] font-bold" :class="conversationStatusClass(row.conversation)">
+                {{ conversationStatusText(row.conversation) }}
               </span>
             </div>
+            <p v-if="row.internal" class="mt-1 text-[10px] font-black uppercase tracking-wide text-slate-400">
+              内部执行会话
+            </p>
             <p class="mt-2 truncate text-xs text-slate-600 dark:text-accent-200">
-              {{ conversation.provider_id }} · {{ conversation.model || conversation.model_id || '-' }}
+              {{ row.conversation.provider_id }} · {{ row.conversation.model || row.conversation.model_id || '-' }}
             </p>
             <div class="mt-2 flex items-center justify-between text-[11px] text-slate-400">
-              <span :title="conversation.conversation_id">{{ shortId(conversation.conversation_id) }}</span>
-              <span>{{ formatTime(conversation.updated_at) }}</span>
+              <span :title="row.conversation.conversation_id">{{ shortId(row.conversation.conversation_id) }}</span>
+              <span>{{ formatTime(row.conversation.updated_at) }}</span>
             </div>
           </button>
-          <p v-if="!conversations.length && !loadingList" class="p-8 text-center text-sm text-slate-500">
-            暂无 AI 对话。执行任意 AI 功能后会自动出现。
+          <!--
+            子 Agent 只在显式开关开启后参与这一渲染列表；默认根会话顺序来自
+            后端 root-only API，内部执行不会改变用户最近对话的排序。
+          -->
+          <p v-if="!sidebarConversations.length && !loadingList" class="p-8 text-center text-sm text-slate-500">
+            暂无 AI 对话。发送目标或执行任意 AI 功能后会自动出现。
           </p>
         </div>
       </aside>
 
       <section class="flex min-w-0 flex-1 flex-col">
         <header class="border-b border-slate-200 px-5 py-4 dark:border-dark-700">
-          <div v-if="selectedConversation" class="flex flex-wrap items-center justify-between gap-3">
+          <div v-if="isNewConversation" class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 class="text-base font-black">全局 Agent 新对话</h2>
+              <p class="mt-1 text-xs text-slate-500 dark:text-accent-300">
+                第一条消息发送后才会创建对话和任务记录。
+              </p>
+            </div>
+            <span class="badge-muted">尚未创建</span>
+          </div>
+          <div v-else-if="selectedConversation" class="flex flex-wrap items-center justify-between gap-3">
             <div class="min-w-0">
               <div class="flex flex-wrap items-center gap-2">
                 <h2 class="truncate text-base font-black">{{ conversationTitle(selectedConversation) }}</h2>
-                <span class="rounded-full px-2 py-1 text-[10px] font-bold" :class="statusClass(selectedConversation.status)">
-                  {{ statusText(selectedConversation.status) }}
+                <span class="rounded-full px-2 py-1 text-[10px] font-bold" :class="conversationStatusClass(selectedConversation)">
+                  {{ conversationStatusText(selectedConversation) }}
                 </span>
                 <span v-if="selectedConversation.stream" class="badge-info">流式</span>
+                <span v-if="selectedConversation.parent_conversation_id" class="badge-muted">内部执行 · 只读</span>
               </div>
               <p class="mt-1 text-xs text-slate-500 dark:text-accent-300">
                 {{ selectedConversation.provider_id }} · {{ selectedConversation.model || '-' }} ·
                 {{ selectedConversation.conversation_id }}
               </p>
             </div>
-            <a class="btn btn-outline px-3 py-1.5 text-xs" :href="aiWorkRawUrl(selectedConversation.conversation_id)" target="_blank">
-              查看原始 JSONL
-            </a>
+            <div class="flex flex-wrap gap-2">
+              <button
+                v-if="selectedConversation.parent_conversation_id"
+                type="button"
+                class="btn btn-outline px-3 py-1.5 text-xs"
+                data-testid="return-to-parent-conversation"
+                @click="returnToParentConversation"
+              >
+                返回主对话
+              </button>
+              <a class="btn btn-outline px-3 py-1.5 text-xs" :href="aiWorkRawUrl(selectedConversation.conversation_id)" target="_blank">
+                查看原始 JSONL
+              </a>
+            </div>
           </div>
           <p v-else class="text-sm text-slate-500">请选择一个对话。</p>
         </header>
 
-        <nav v-if="selectedConversation" class="flex gap-1 border-b border-slate-200 px-5 pt-3 dark:border-dark-700">
+        <nav v-if="selectedConversation && !isNewConversation" class="flex gap-1 border-b border-slate-200 px-5 pt-3 dark:border-dark-700">
           <button
             v-for="tab in tabs"
             :key="tab.value"
@@ -471,8 +779,31 @@ onBeforeUnmount(() => {
           {{ error }}
         </div>
 
-        <div v-if="selectedConversation" class="min-h-0 flex-1 overflow-y-auto p-5">
+        <div v-if="isNewConversation" class="min-h-0 flex-1 overflow-hidden p-5">
+          <GlobalAgentChatPanel
+            :conversation-id="newConversationId"
+            :events="selectedEvents"
+            :execution-conversations="executionConversations"
+            :execution-conversations-state="executionConversationsState"
+            @conversation-created="handleGlobalConversationCreated"
+            @open-execution="openExecutionConversation"
+            @refresh-events="refreshGlobalProjection"
+          />
+        </div>
+
+        <div v-else-if="selectedConversation" class="min-h-0 flex-1 overflow-y-auto p-5">
           <div v-if="loadingConversation" class="py-12 text-center text-sm text-slate-500">正在读取对话……</div>
+
+          <GlobalAgentChatPanel
+            v-else-if="activeTab === 'conversation' && selectedConversation.use_case_id === 'global.agent.chat'"
+            :conversation-id="selectedConversation.conversation_id"
+            :events="selectedEvents"
+            :execution-conversations="executionConversations"
+            :execution-conversations-state="executionConversationsState"
+            @conversation-created="handleGlobalConversationCreated"
+            @open-execution="openExecutionConversation"
+            @refresh-events="refreshGlobalProjection"
+          />
 
           <div v-else-if="activeTab === 'conversation'" class="mx-auto max-w-5xl space-y-4">
             <article

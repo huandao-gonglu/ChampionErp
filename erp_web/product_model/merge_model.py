@@ -689,6 +689,7 @@ def _merge_platform_draft(product: dict[str, Any], platform: str) -> dict[str, A
     for field, alias in (
         ("copy_generated_at", "copyGeneratedAt"),
         ("copy_source", "copySource"),
+        ("copy_operation_key", "copyOperationKey"),
         ("created_at", "createdAt"),
         ("updated_at", "updatedAt"),
     ):

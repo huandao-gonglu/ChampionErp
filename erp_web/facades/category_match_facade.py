@@ -87,6 +87,7 @@ class CategoryMatchAgentService(Protocol):
         ledger: CategoryCandidateLedger,
         *,
         timeout_seconds: float,
+        parent_conversation_id: str | None = None,
     ) -> CategoryMatchAgentRun:
         ...
 
@@ -480,6 +481,7 @@ def match_category(
     searcher_factory: CategorySearcherFactory = create_category_searcher,
     agent_service: CategoryMatchAgentService = run_category_match_agent,
     detail_loader: Callable[..., dict[str, Any]] = fetch_category_record,
+    parent_conversation_id: str | None = None,
 ) -> CategoryMatchResult:
     """运行一次同步、最多三次搜索且允许 abstain 的 ``category.match``。"""
 
@@ -569,12 +571,10 @@ def match_category(
                 stage="model",
                 retryable=True,
             )
-        agent_run = agent_service(
-            payload,
-            toolset,
-            ledger,
-            timeout_seconds=remaining_seconds,
-        )
+        agent_kwargs: dict[str, Any] = {"timeout_seconds": remaining_seconds}
+        if parent_conversation_id:
+            agent_kwargs["parent_conversation_id"] = parent_conversation_id
+        agent_run = agent_service(payload, toolset, ledger, **agent_kwargs)
         model_result = agent_run.output
         trace = agent_run.trace
         _remaining_deadline_seconds(deadline_at)

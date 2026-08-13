@@ -7,6 +7,7 @@ import {
   waitForAiWorkEvents,
 } from '@/api/aiWork'
 import type { AiWorkConversationSummary, AiWorkEvent } from '@/types/aiWork'
+import type { GlobalTaskStatus } from '@/types/globalTasks'
 import { formatAiWorkError } from '@/utils/aiWorkError'
 
 const route = useRoute()
@@ -15,10 +16,17 @@ const loading = ref(false)
 const error = ref('')
 const latestConversation = ref<AiWorkConversationSummary | null>(null)
 const latestEvents = ref<AiWorkEvent[]>([])
+const floatingElement = ref<HTMLElement | null>(null)
 const outputElement = ref<HTMLElement | null>(null)
+const pointerWithin = ref(false)
+const focusWithin = ref(false)
 let pollGeneration = 0
+let pollAbortController: AbortController | null = null
 
 const shouldRender = computed(() => route.name !== 'AiWork')
+const isGlobalConversation = computed(() => (
+  latestConversation.value?.use_case_id === 'global.agent.chat'
+))
 const lastSeq = computed(() =>
   latestEvents.value.reduce((highest, event) => Math.max(highest, event.seq || 0), 0),
 )
@@ -62,14 +70,55 @@ const businessResult = computed(() => {
   }
   return value
 })
+const globalAssistantMessage = computed(() => {
+  const event = [...latestEvents.value].reverse().find((item) => (
+    item.type === 'CUSTOM' && item.name === 'global.assistant_message'
+  ))
+  return String(asRecord(event?.value)?.message || '').trim()
+})
+const globalTaskProjection = computed(() => {
+  const event = [...latestEvents.value].reverse().find((item) => (
+    item.type === 'CUSTOM' && item.name === 'global.task_state'
+  ))
+  return asRecord(event?.value)
+})
 const liveStatus = computed<AiWorkConversationSummary['status']>(() => {
   if (latestEvents.value.some((event) => event.type === 'RUN_ERROR')) return 'failed'
   if (latestEvents.value.some((event) => event.type === 'RUN_FINISHED')) return 'completed'
   if (latestEvents.value.some((event) => event.type === 'RUN_DEFERRED')) return 'waiting_approval'
   return latestConversation.value?.status || 'running'
 })
-const isTerminal = computed(() => ['waiting_approval', 'completed', 'failed', 'interrupted'].includes(liveStatus.value))
+type DisplayStatus = AiWorkConversationSummary['status'] | GlobalTaskStatus
+
+const displayStatus = computed<DisplayStatus>(() => {
+  if (!isGlobalConversation.value) return liveStatus.value
+  const projected = String(globalTaskProjection.value?.status || '') as GlobalTaskStatus
+  return projected || latestConversation.value?.latest_task_status || liveStatus.value
+})
+const displayTerminal = computed(() => [
+  'waiting_approval',
+  'needs_input',
+  'waiting_publish_confirmation',
+  'completed',
+  'failed',
+  'interrupted',
+  'cancelled',
+].includes(displayStatus.value))
+const stopPolling = computed(() => {
+  if (isGlobalConversation.value) {
+    return ['waiting_approval', 'completed', 'failed', 'interrupted'].includes(
+      latestConversation.value?.status || 'running',
+    )
+  }
+  return displayTerminal.value
+})
 const progressText = computed(() => {
+  if (isGlobalConversation.value) {
+    if (globalAssistantMessage.value) return globalAssistantMessage.value
+    const summary = String(globalTaskProjection.value?.summary || '').trim()
+    if (summary) return summary
+    return globalTaskFallback(displayStatus.value)
+  }
   if (runError.value) return formatAiWorkError(runError.value)
   if (liveStatus.value === 'waiting_approval') return '工具调用正在等待人工审批。'
   if (assistantOutput.value) return assistantOutput.value
@@ -89,7 +138,8 @@ const progressText = computed(() => {
   return loading.value ? '正在读取最新对话……' : '正在准备 Provider 请求……'
 })
 const liveStageText = computed(() => {
-  if (isTerminal.value) return '最终结果'
+  if (isGlobalConversation.value) return globalTaskStage(displayStatus.value)
+  if (displayTerminal.value) return '最终结果'
   if (assistantOutput.value) return '正在生成结果'
   if (reasoningStarted.value && !reasoningEnded.value) return '正在推理'
   if (reasoningStarted.value) return '正在整理推理结果'
@@ -108,21 +158,75 @@ function pretty(value: unknown): string {
   }
 }
 
-function statusText(status: AiWorkConversationSummary['status']): string {
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : null
+}
+
+function statusText(status: DisplayStatus): string {
   return {
+    planning: '正在规划',
     running: '进行中',
+    needs_input: '等待补充资料',
+    waiting_publish_confirmation: '等待发布确认',
+    waiting_publish_result: '等待平台结果',
     waiting_approval: '等待审批',
     completed: '已完成',
     failed: '失败',
     interrupted: '已中断',
+    cancelled: '已取消',
   }[status]
 }
 
-function statusClass(status: AiWorkConversationSummary['status']): string {
-  if (status === 'running') return 'bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-200'
-  if (status === 'waiting_approval') return 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-200'
+function statusClass(status: DisplayStatus): string {
+  if (['planning', 'running', 'waiting_publish_result'].includes(status)) {
+    return 'bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-200'
+  }
+  if (['waiting_approval', 'needs_input', 'waiting_publish_confirmation'].includes(status)) {
+    return 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-200'
+  }
   if (status === 'completed') return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200'
   return 'bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-200'
+}
+
+function globalTaskStage(status: DisplayStatus): string {
+  return {
+    planning: '正在规划',
+    running: '正在执行',
+    needs_input: '等待补充资料',
+    waiting_publish_confirmation: '等待发布确认',
+    waiting_publish_result: '等待平台结果',
+    completed: '最近任务已完成',
+    failed: '最近任务失败',
+    cancelled: '最近任务已取消',
+    waiting_approval: '等待审批',
+    interrupted: '任务已中断',
+  }[status]
+}
+
+function globalTaskFallback(status: DisplayStatus): string {
+  return {
+    planning: '全局 Agent 正在生成执行计划。',
+    running: '全局 Agent 正在执行当前任务。',
+    needs_input: '当前任务需要你补充资料，请前往 AI Work 继续。',
+    waiting_publish_confirmation: '发布前检查已完成，请前往 AI Work 确认。',
+    waiting_publish_result: '发布已提交，正在等待平台真实结果。',
+    completed: '最近一次任务已完成。',
+    failed: '最近一次任务执行失败，请前往 AI Work 查看详情。',
+    cancelled: '最近一次任务已取消。',
+    waiting_approval: '当前任务正在等待审批。',
+    interrupted: '最近一次任务已中断。',
+  }[status]
+}
+
+function progressDotClass(status: DisplayStatus): string {
+  if (['planning', 'running', 'waiting_publish_result'].includes(status)) {
+    return 'animate-pulse bg-sky-500'
+  }
+  if (status === 'completed') return 'bg-emerald-500'
+  if (['needs_input', 'waiting_publish_confirmation', 'waiting_approval'].includes(status)) {
+    return 'bg-amber-500'
+  }
+  return 'bg-rose-500'
 }
 
 function formatTime(value: string): string {
@@ -132,6 +236,7 @@ function formatTime(value: string): string {
 }
 
 function conversationTitle(conversation: AiWorkConversationSummary): string {
+  if (conversation.use_case_id === 'global.agent.chat') return '全局 Agent 对话'
   if (conversation.use_case_id === 'config.ai_model_probe') {
     return `能力探测 · ${conversation.capability || '未知能力'}`
   }
@@ -139,32 +244,45 @@ function conversationTitle(conversation: AiWorkConversationSummary): string {
 }
 
 async function pollConversation(conversationId: string, generation: number) {
-  while (
-    generation === pollGeneration
-    && panelVisible.value
-    && latestConversation.value?.conversation_id === conversationId
-    && !isTerminal.value
-  ) {
-    try {
-      const events = await waitForAiWorkEvents(conversationId, lastSeq.value, 5_000)
-      if (
-        generation !== pollGeneration
-        || !panelVisible.value
-        || latestConversation.value?.conversation_id !== conversationId
-      ) return
-      if (events.length) {
-        const known = new Set(latestEvents.value.map((event) => event.seq))
-        latestEvents.value.push(...events.filter((event) => !known.has(event.seq)))
+  const abortController = new AbortController()
+  pollAbortController?.abort()
+  pollAbortController = abortController
+  try {
+    while (
+      generation === pollGeneration
+      && panelVisible.value
+      && latestConversation.value?.conversation_id === conversationId
+      && !stopPolling.value
+    ) {
+      try {
+        const events = await waitForAiWorkEvents(
+          conversationId,
+          lastSeq.value,
+          5_000,
+          abortController.signal,
+        )
+        if (
+          generation !== pollGeneration
+          || !panelVisible.value
+          || latestConversation.value?.conversation_id !== conversationId
+        ) return
+        if (events.length) {
+          const known = new Set(latestEvents.value.map((event) => event.seq))
+          latestEvents.value.push(...events.filter((event) => !known.has(event.seq)))
+        }
+      } catch (cause) {
+        if (abortController.signal.aborted || generation !== pollGeneration || !panelVisible.value) return
+        error.value = cause instanceof Error ? cause.message : String(cause)
+        return
       }
-    } catch (cause) {
-      if (generation !== pollGeneration || !panelVisible.value) return
-      error.value = cause instanceof Error ? cause.message : String(cause)
-      return
     }
+  } finally {
+    if (pollAbortController === abortController) pollAbortController = null
   }
 }
 
 async function openPanel() {
+  if (panelVisible.value) return
   panelVisible.value = true
   const generation = ++pollGeneration
   loading.value = true
@@ -178,6 +296,7 @@ async function openPanel() {
     const conversationId = latestConversation.value.conversation_id
     const detail = await fetchAiWorkConversation(conversationId)
     if (generation !== pollGeneration || !panelVisible.value) return
+    latestConversation.value = detail.conversation || latestConversation.value
     latestEvents.value = detail.events || []
     void pollConversation(conversationId, generation)
   } catch (cause) {
@@ -191,6 +310,34 @@ async function openPanel() {
 function closePanel() {
   panelVisible.value = false
   pollGeneration += 1
+  pollAbortController?.abort()
+  pollAbortController = null
+}
+
+function handleMouseEnter() {
+  pointerWithin.value = true
+  void openPanel()
+}
+
+function handleMouseLeave() {
+  pointerWithin.value = false
+  if (!focusWithin.value) closePanel()
+}
+
+function handleFocusIn() {
+  focusWithin.value = true
+  void openPanel()
+}
+
+function handleFocusOut(event: FocusEvent) {
+  const nextTarget = event.relatedTarget as Node | null
+  if (nextTarget && floatingElement.value?.contains(nextTarget)) return
+  focusWithin.value = false
+  if (!pointerWithin.value) closePanel()
+}
+
+function handleEscape() {
+  closePanel()
 }
 
 watch(shouldRender, (visible) => {
@@ -210,13 +357,20 @@ onBeforeUnmount(closePanel)
 <template>
   <div
     v-if="shouldRender"
+    ref="floatingElement"
     data-testid="ai-work-floating"
     class="fixed bottom-5 right-5 z-[70] flex flex-col items-end gap-3"
-    @mouseenter="openPanel"
-    @mouseleave="closePanel"
+    @mouseenter="handleMouseEnter"
+    @mouseleave="handleMouseLeave"
+    @focusin="handleFocusIn"
+    @focusout="handleFocusOut"
+    @keydown.esc="handleEscape"
   >
     <section
       v-if="panelVisible"
+      id="ai-work-latest-panel"
+      role="region"
+      aria-label="最新 AI 对话预览"
       data-testid="ai-work-latest"
       class="w-[360px] max-w-[calc(100vw-2.5rem)] overflow-hidden rounded-2xl border border-slate-200 bg-white text-slate-900 shadow-2xl shadow-slate-950/20 dark:border-dark-700 dark:bg-dark-900 dark:text-white"
     >
@@ -232,9 +386,9 @@ onBeforeUnmount(closePanel)
         <span
           v-if="latestConversation"
           class="shrink-0 rounded-full px-2 py-1 text-[10px] font-bold"
-          :class="statusClass(liveStatus)"
+          :class="statusClass(displayStatus)"
         >
-          {{ statusText(liveStatus) }}
+          {{ statusText(displayStatus) }}
         </span>
       </header>
 
@@ -257,7 +411,7 @@ onBeforeUnmount(closePanel)
             <div class="mb-2 flex items-center gap-2 text-xs font-bold text-slate-600 dark:text-accent-200">
               <span
                 class="size-2 rounded-full"
-                :class="liveStatus === 'running' ? 'animate-pulse bg-sky-500' : liveStatus === 'completed' ? 'bg-emerald-500' : 'bg-rose-500'"
+                :class="progressDotClass(displayStatus)"
               />
               <span>{{ liveStageText }}</span>
             </div>
@@ -276,6 +430,8 @@ onBeforeUnmount(closePanel)
       target="_blank"
       rel="noopener noreferrer"
       aria-label="打开 AI 对话记录"
+      aria-controls="ai-work-latest-panel"
+      :aria-expanded="panelVisible"
       class="flex size-14 items-center justify-center rounded-full border border-white/60 bg-primary-600 text-white shadow-xl shadow-primary-950/25 transition duration-200 hover:-translate-y-1 hover:bg-primary-500 hover:shadow-2xl hover:shadow-primary-950/30 focus:outline-none focus-visible:ring-4 focus-visible:ring-primary-300 dark:border-primary-300/20 dark:bg-primary-500 dark:hover:bg-primary-400"
     >
       <svg

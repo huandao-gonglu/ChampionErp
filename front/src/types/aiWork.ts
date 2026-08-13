@@ -43,6 +43,7 @@ export interface AiWorkEvent {
 
 export interface AiWorkConversationSummary {
   conversation_id: string
+  parent_conversation_id: string | null
   use_case_id: string
   capability: string
   provider_id: string
@@ -53,6 +54,16 @@ export interface AiWorkConversationSummary {
   required_capabilities: string[]
   timeout_seconds: number | null
   status: 'running' | 'waiting_approval' | 'completed' | 'failed' | 'interrupted'
+  latest_task_status?:
+    | 'planning'
+    | 'running'
+    | 'needs_input'
+    | 'waiting_publish_confirmation'
+    | 'waiting_publish_result'
+    | 'completed'
+    | 'failed'
+    | 'cancelled'
+    | null
   created_at: string
   updated_at: string
   last_seq: number
@@ -65,8 +76,11 @@ export interface AiWorkConversationListResponse {
   conversations: AiWorkConversationSummary[]
 }
 
+export type AiWorkConversationChildrenResponse = AiWorkConversationListResponse
+
 export interface AiWorkConversationResponse {
   ok: boolean
   conversation_id: string
+  conversation: AiWorkConversationSummary
   events: AiWorkEvent[]
 }

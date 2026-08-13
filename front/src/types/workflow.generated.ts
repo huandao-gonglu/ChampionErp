@@ -258,6 +258,7 @@ export interface BackendPlatformDraft {
   ai_copy_ready?: boolean
   copy_generated_at?: string
   copy_source?: string
+  copy_operation_key?: string
   created_at?: string
   updated_at?: string
 }

@@ -227,6 +227,7 @@ def run_category_attribute_fill_agent(
     timeout_seconds: float = CATEGORY_ATTRIBUTE_FILL_DEADLINE_SECONDS,
     factory: AiAgentFactory | None = None,
     model_override: Model | None = None,
+    parent_conversation_id: str | None = None,
 ) -> CategoryAttributeFillAgentRun:
     context = get_context()
     app_config = context.config.load_app_config()
@@ -273,6 +274,7 @@ def run_category_attribute_fill_agent(
         },
         timeout_seconds=timeout_seconds,
         model_override=model_override,
+        parent_conversation_id=parent_conversation_id,
     )
     if isinstance(outcome.output, DeferredToolRequests):
         error = AiAgentExecutionError(

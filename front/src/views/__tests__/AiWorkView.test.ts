@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   route: { query: {} as Record<string, string> },
   fetchConversations: vi.fn(),
   fetchConversation: vi.fn(),
+  fetchChildren: vi.fn(),
   waitForEvents: vi.fn(),
 }))
 
@@ -17,12 +18,17 @@ vi.mock('@/api/aiWork', () => ({
   aiWorkRawUrl: (conversationId: string) => `/api/ai-work/${conversationId}/raw`,
   fetchAiWorkConversations: mocks.fetchConversations,
   fetchAiWorkConversation: mocks.fetchConversation,
+  fetchAiWorkConversationChildren: mocks.fetchChildren,
   waitForAiWorkEvents: mocks.waitForEvents,
 }))
 
-function conversation(status: 'running' | 'completed' | 'failed') {
+function conversation(
+  status: 'running' | 'completed' | 'failed',
+  overrides: Record<string, unknown> = {},
+) {
   return {
     conversation_id: 'agent-conversation-1',
+    parent_conversation_id: null,
     use_case_id: 'category.product_match',
     capability: 'agent',
     provider_id: 'alibaba',
@@ -38,6 +44,7 @@ function conversation(status: 'running' | 'completed' | 'failed') {
     last_seq: 4,
     event_count: 4,
     error: status === 'failed' ? '模型输出未满足当前业务约束。' : '',
+    ...overrides,
   }
 }
 
@@ -49,9 +56,11 @@ async function openTab(wrapper: ReturnType<typeof mount>, label: string) {
 
 describe('AiWorkView Agent 对话投影', () => {
   beforeEach(() => {
+    window.localStorage.removeItem('ai-work.show-internal-conversations')
     mocks.route.query = {}
     mocks.fetchConversations.mockReset()
     mocks.fetchConversation.mockReset()
+    mocks.fetchChildren.mockReset()
     mocks.waitForEvents.mockReset()
   })
 
@@ -202,5 +211,216 @@ describe('AiWorkView Agent 对话投影', () => {
     expect(reasoning.text()).toContain('16 字符')
     expect(wrapper.text()).not.toContain('等待 Provider 返回')
     wrapper.unmount()
+  })
+
+  it('新建对话只打开空白全局 Agent 面板', async () => {
+    mocks.fetchConversations.mockResolvedValue({ ok: true, conversations: [] })
+
+    const wrapper = mount(AiWorkView)
+    await flushPromises()
+    await wrapper.get('[data-testid="new-global-conversation"]').trigger('click')
+
+    expect(wrapper.text()).toContain('全局 Agent 新对话')
+    expect(wrapper.get('[data-testid="global-agent-chat"]').text()).toContain(
+      '告诉全局 Agent 你想完成什么',
+    )
+    expect(mocks.fetchConversation).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('默认只展示根会话，并把子 Agent 收纳到主对话的执行详情', async () => {
+    const root = conversation('running', {
+      conversation_id: 'global-conversation-1',
+      use_case_id: 'global.agent.chat',
+      latest_task_status: 'completed',
+    })
+    const child = conversation('completed', {
+      conversation_id: 'planning-conversation-1',
+      parent_conversation_id: 'global-conversation-1',
+      use_case_id: 'global.task.plan',
+      created_at: '2026-08-13T10:00:00+08:00',
+      updated_at: '2026-08-13T10:00:07+08:00',
+    })
+    mocks.fetchConversations.mockResolvedValue({
+      ok: true,
+      // 即使旧服务意外混入 child，前端默认列表也要守住 root-only 边界。
+      conversations: [child, root],
+    })
+    mocks.fetchChildren.mockResolvedValue({ ok: true, conversations: [child] })
+    mocks.fetchConversation.mockImplementation(async (conversationId: string) => {
+      if (conversationId === child.conversation_id) {
+        return {
+          ok: true,
+          conversation_id: child.conversation_id,
+          conversation: child,
+          events: [
+            { seq: 1, type: 'RUN_STARTED', rawEvent: { capability: 'agent' } },
+            { seq: 2, type: 'RUN_FINISHED', result: { status: 'completed' } },
+          ],
+        }
+      }
+      return {
+        ok: true,
+        conversation_id: root.conversation_id,
+        conversation: root,
+        events: [{
+          seq: 1,
+          type: 'CUSTOM',
+          name: 'global.agent_execution_link',
+          value: {
+            task_id: 'task-1',
+            conversation_id: child.conversation_id,
+          },
+        }],
+      }
+    })
+    mocks.waitForEvents.mockReturnValue(new Promise(() => {}))
+
+    const wrapper = mount(AiWorkView)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="root-conversation-global-conversation-1"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="internal-conversation-planning-conversation-1"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('任务已完成')
+
+    const details = wrapper.get('[data-testid="agent-execution-details"]')
+    expect(details.text()).toContain('1 个子 Agent，全部完成')
+    expect(details.text()).toContain('任务规划')
+    expect(details.text()).toContain('耗时 7 秒')
+
+    await wrapper.get('[data-testid="open-agent-execution-planning-conversation-1"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('内部执行 · 只读')
+    expect(wrapper.text()).toContain('任务规划')
+    expect(wrapper.find('[data-testid="return-to-parent-conversation"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="internal-conversation-planning-conversation-1"]').exists()).toBe(false)
+
+    await wrapper.get('[data-testid="return-to-parent-conversation"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="global-agent-chat"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('内部会话开关显式请求完整列表，并按主从层级渲染', async () => {
+    const root = conversation('running', {
+      conversation_id: 'global-conversation-1',
+      use_case_id: 'global.agent.chat',
+    })
+    const child = conversation('completed', {
+      conversation_id: 'planning-conversation-1',
+      parent_conversation_id: 'global-conversation-1',
+      use_case_id: 'global.task.plan',
+    })
+    mocks.fetchConversations
+      .mockResolvedValueOnce({ ok: true, conversations: [root] })
+      .mockResolvedValue({ ok: true, conversations: [child, root] })
+    mocks.fetchChildren.mockResolvedValue({ ok: true, conversations: [child] })
+    mocks.fetchConversation.mockResolvedValue({
+      ok: true,
+      conversation_id: root.conversation_id,
+      conversation: root,
+      events: [],
+    })
+    mocks.waitForEvents.mockReturnValue(new Promise(() => {}))
+
+    const wrapper = mount(AiWorkView)
+    await flushPromises()
+    await wrapper.get('[data-testid="show-internal-conversations"]').setValue(true)
+    await flushPromises()
+
+    expect(mocks.fetchConversations).toHaveBeenLastCalledWith(50, true)
+    const rows = wrapper.findAll('[data-testid^="root-conversation-"], [data-testid^="internal-conversation-"]')
+    expect(rows.map((row) => row.attributes('data-testid'))).toEqual([
+      'root-conversation-global-conversation-1',
+      'internal-conversation-planning-conversation-1',
+    ])
+    expect(rows[1].text()).toContain('内部执行会话')
+    wrapper.unmount()
+  })
+
+  it('route 直达子会话时读取详情但不把它注入默认侧栏', async () => {
+    const root = conversation('running', {
+      conversation_id: 'global-conversation-1',
+      use_case_id: 'global.agent.chat',
+    })
+    const child = conversation('completed', {
+      conversation_id: 'planning-conversation-1',
+      parent_conversation_id: 'global-conversation-1',
+      use_case_id: 'global.task.plan',
+    })
+    mocks.route.query = { conversation_id: child.conversation_id }
+    mocks.fetchConversations.mockResolvedValue({ ok: true, conversations: [root] })
+    mocks.fetchChildren.mockResolvedValue({ ok: true, conversations: [] })
+    mocks.fetchConversation.mockImplementation(async (conversationId: string) => ({
+      ok: true,
+      conversation_id: conversationId,
+      conversation: conversationId === child.conversation_id ? child : root,
+      events: [],
+    }))
+    mocks.waitForEvents.mockReturnValue(new Promise(() => {}))
+
+    const wrapper = mount(AiWorkView)
+    await flushPromises()
+
+    expect(mocks.fetchConversation).toHaveBeenCalledWith(child.conversation_id)
+    expect(wrapper.text()).toContain('任务规划')
+    expect(wrapper.text()).toContain('内部执行 · 只读')
+    expect(wrapper.find('[data-testid="root-conversation-global-conversation-1"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="internal-conversation-planning-conversation-1"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('切换会话、新建对话和卸载都会中止当前长轮询', async () => {
+    const first = conversation('running')
+    const second = conversation('running', {
+      conversation_id: 'agent-conversation-2',
+      use_case_id: 'copy.generate',
+    })
+    const signals: AbortSignal[] = []
+    mocks.fetchConversations.mockResolvedValue({
+      ok: true,
+      conversations: [first, second],
+    })
+    mocks.fetchConversation.mockImplementation(async (conversationId: string) => {
+      const selected = conversationId === second.conversation_id ? second : first
+      return {
+        ok: true,
+        conversation_id: conversationId,
+        conversation: selected,
+        events: [],
+      }
+    })
+    mocks.waitForEvents.mockImplementation((
+      _conversationId: string,
+      _afterSeq: number,
+      _waitMs: number,
+      signal: AbortSignal,
+    ) => {
+      signals.push(signal)
+      return new Promise(() => {})
+    })
+
+    const wrapper = mount(AiWorkView)
+    await flushPromises()
+    expect(signals).toHaveLength(1)
+    expect(signals[0].aborted).toBe(false)
+
+    await wrapper.get('[data-testid="root-conversation-agent-conversation-2"]').trigger('click')
+    await flushPromises()
+    expect(signals[0].aborted).toBe(true)
+    expect(signals).toHaveLength(2)
+    expect(signals[1].aborted).toBe(false)
+
+    await wrapper.get('[data-testid="new-global-conversation"]').trigger('click')
+    expect(signals[1].aborted).toBe(true)
+
+    await wrapper.get('[data-testid="root-conversation-agent-conversation-1"]').trigger('click')
+    await flushPromises()
+    expect(signals).toHaveLength(3)
+    expect(signals[2].aborted).toBe(false)
+
+    wrapper.unmount()
+    expect(signals[2].aborted).toBe(true)
   })
 })
