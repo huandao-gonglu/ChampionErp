@@ -41,6 +41,8 @@ erp.sqlite3
 *.tsbuildinfo
 logo-cart-verification.png
 data/logs/
+# 本地界面审查截图和检查证据，不属于产品源码或正式文档。
+data/audits/
 .codex-audit/
 # git worktrees kept inside the repo
 .worktrees/
