@@ -11,7 +11,7 @@ import tempfile
 from typing import Any, Callable
 
 from . import ai_gateway_probe as probe_runtime
-from . import ai_model_config, ai_work_service
+from . import ai_model_config
 from .ai_gateway_parsing import _sanitize_cli_error, parse_json_text
 from .ai_gateway_provider_profiles import non_http_capability_profile
 from .ai_gateway_provider_prompting import _cli_prompt
@@ -89,7 +89,6 @@ def _chat_json_via_cli(
     response_format: bool = True,
     stream: bool = False,
     token_callback: Callable[[str], None] | None = None,
-    conversation: ai_work_service.AiWorkConversation | None = None,
 ) -> dict[str, Any]:
     cli_tool = ai_model_config.model_cli_tool(model)
     if cli_tool != ai_model_config.CLI_TOOL_CODEX:
@@ -97,20 +96,9 @@ def _chat_json_via_cli(
     timeout = int(timeout_seconds or model.get("timeout_seconds") or 180)
     allow_external_read = ai_model_config.CAP_WEB_SEARCH in required_capabilities
     prompt = _cli_prompt(messages, response_format=response_format, allow_external_read=allow_external_read)
-    if conversation:
-        conversation.emit_custom(
-            "provider.request",
-            {
-                "command": ai_model_config.model_cli_command(model),
-                "messages": messages,
-                "provider_payload": {"prompt": prompt, "stream": bool(stream)},
-            },
-        )
     text = _run_codex_cli_text(app_dir, model, prompt, timeout)
     if stream and token_callback and text:
         token_callback(text)
-    if conversation:
-        conversation.finish_assistant_message(text)
     return parse_json_text(text)
 
 def _cli_json_probe(
@@ -187,7 +175,6 @@ class CodexCliProvider(AiChatProvider):
             response_format=request.response_format,
             stream=request.stream,
             token_callback=request.emit_delta,
-            conversation=request.conversation,
         )
 
     def _probe_chat(
@@ -196,21 +183,12 @@ class CodexCliProvider(AiChatProvider):
         messages: list[dict[str, str]],
     ) -> None:
         prompt = _cli_prompt(messages, response_format=False)
-        probe_runtime._record_probe_request(
-            context,
-            messages,
-            details={
-                "command": ai_model_config.model_cli_command(context.model),
-                "provider_payload": {"prompt": prompt},
-            },
-        )
         text = _run_codex_cli_text(
             context.app_dir or ".",
             context.model,
             prompt,
             context.timeout,
         )
-        probe_runtime._record_probe_output(context, text)
         probe_runtime._validate_chat_probe_text(text, context.probe_token)
 
     def _probe_json(
@@ -219,21 +197,12 @@ class CodexCliProvider(AiChatProvider):
         messages: list[dict[str, str]],
     ) -> None:
         prompt = _cli_prompt(messages, response_format=True)
-        probe_runtime._record_probe_request(
-            context,
-            messages,
-            details={
-                "command": ai_model_config.model_cli_command(context.model),
-                "provider_payload": {"prompt": prompt},
-            },
-        )
         text = _run_codex_cli_text(
             context.app_dir or ".",
             context.model,
             prompt,
             context.timeout,
         )
-        probe_runtime._record_probe_output(context, text)
         data = parse_json_text(text)
         probe_runtime._validate_json_probe_data(data, context.probe_token)
 
@@ -247,24 +216,12 @@ class CodexCliProvider(AiChatProvider):
             response_format=True,
             allow_external_read=True,
         )
-        probe_runtime._record_probe_request(
-            context,
-            messages,
-            details={
-                "command": ai_model_config.model_cli_command(context.model),
-                "provider_payload": {
-                    "prompt": prompt,
-                    "allow_external_read": True,
-                },
-            },
-        )
         text = _run_codex_cli_text(
             context.app_dir or ".",
             context.model,
             prompt,
             context.timeout,
         )
-        probe_runtime._record_probe_output(context, text)
         data = parse_json_text(text)
         probe_runtime._validate_web_search_probe_data(data)
 
@@ -279,17 +236,6 @@ class CodexCliProvider(AiChatProvider):
             response_format=True,
             allow_generated_artifacts=True,
         )
-        probe_runtime._record_probe_request(
-            context,
-            messages,
-            details={
-                "command": ai_model_config.model_cli_command(context.model),
-                "provider_payload": {
-                    "prompt": prompt,
-                    "allow_generated_artifacts": True,
-                },
-            },
-        )
         text = _run_codex_cli_text(
             app_dir,
             context.model,
@@ -297,7 +243,6 @@ class CodexCliProvider(AiChatProvider):
             context.timeout,
         )
         data = probe_runtime._cli_image_probe_data_from_text(text)
-        probe_runtime._record_probe_image_results(context, [data])
         probe_runtime._validate_cli_image_generate_probe(data, app_dir)
 
     def probe_capability(

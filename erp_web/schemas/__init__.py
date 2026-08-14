@@ -13,7 +13,10 @@ from .ai_tools import (
     validate_json_schema_definition,
 )
 from .ai_trace import AiExecutionContext, AiTraceIdentifiers
-from .ai_work import AiWorkConversationSummary, AiWorkEvent, AiWorkEventType
+from .ai_work import (
+    PydanticMessageHistoryDetail,
+    PydanticMessageHistorySummary,
+)
 from .category import (
     CategoryCandidate,
     CategoryCorpusInfo,
@@ -54,9 +57,8 @@ __all__ = [
     "AiToolResult",
     "AiToolSchemaError",
     "AiTraceIdentifiers",
-    "AiWorkConversationSummary",
-    "AiWorkEvent",
-    "AiWorkEventType",
+    "PydanticMessageHistoryDetail",
+    "PydanticMessageHistorySummary",
     "AppConfig",
     "CategoryCandidate",
     "CategoryCorpusInfo",

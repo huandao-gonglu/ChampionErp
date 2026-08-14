@@ -31,7 +31,9 @@ class GlobalTaskPlanningScope:
 @ai_tool(
     name=DRAFTS_QUERY_TOOL,
     description=(
-        "受限查询本地草稿，返回总数、稳定排序摘要与 query_snapshot_id；"
+        "受限查询本地草稿；target_platform 只表示发布目标，摘要会分别返回"
+        " source_platform、target_platform、target_site；并返回总数、稳定排序"
+        "摘要与 query_snapshot_id；"
         "解析‘第一个/第二个’时必须传已有 snapshot_id 和 positions。"
     ),
     permission=GLOBAL_TASK_READ_PERMISSION,

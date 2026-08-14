@@ -580,69 +580,6 @@ def _envelope_payload(envelope: AiAgentStateEnvelope) -> dict[str, Any]:
     }
 
 
-def _migrate_v0(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """读取最初的扁平 v0 envelope；writer 永远只写 v1。"""
-
-    legacy = dict(payload)
-    _require_exact_keys(
-        legacy,
-        required=frozenset(
-            {
-                "schema_version",
-                "state_id",
-                "status",
-                "use_case_id",
-                "profile_version",
-                "toolset_id",
-                "created_at",
-                "updated_at",
-                "deadline_at",
-                "actor_id",
-                "tenant_id",
-                "required_permissions",
-                "business_scope",
-                "idempotency_context",
-                "references",
-                "message_history",
-                "deferred_requests",
-            }
-        ),
-        optional=frozenset({"revision", "approval_records"}),
-    )
-    status = legacy["status"]
-    if status == "waiting_approval":
-        status = "pending"
-    return {
-        "schema_version": AI_AGENT_STATE_SCHEMA_VERSION,
-        "state_id": legacy["state_id"],
-        "status": status,
-        "revision": legacy.get("revision", 0),
-        "profile": {
-            "use_case_id": legacy["use_case_id"],
-            "profile_version": legacy["profile_version"],
-            "toolset_id": legacy["toolset_id"],
-        },
-        "timestamps": {
-            "created_at": legacy["created_at"],
-            "updated_at": legacy["updated_at"],
-            "deadline_at": legacy["deadline_at"],
-        },
-        "security": {
-            "actor_id": legacy["actor_id"],
-            "tenant_id": legacy["tenant_id"],
-            "required_permissions": legacy["required_permissions"],
-            "business_scope": legacy["business_scope"],
-            "idempotency_context": legacy["idempotency_context"],
-        },
-        "references": legacy["references"],
-        "message_history": legacy["message_history"],
-        "deferred_requests": legacy["deferred_requests"],
-        "approval_records": legacy.get("approval_records", []),
-        "resume_claim": None,
-        "resume_result": None,
-    }
-
-
 def _decode_resume_claim(value: Any) -> AiAgentResumeClaim | None:
     if value is None:
         return None
@@ -707,9 +644,7 @@ def _decode_envelope(payload: Any) -> AiAgentStateEnvelope:
         version = root.get("schema_version")
         if isinstance(version, bool) or not isinstance(version, int):
             raise ValueError
-        if version == 0:
-            root = _migrate_v0(root)
-        elif version != AI_AGENT_STATE_SCHEMA_VERSION:
+        if version != AI_AGENT_STATE_SCHEMA_VERSION:
             raise AiAgentStateError(
                 "AI_AGENT_STATE_VERSION_UNSUPPORTED",
                 "Agent 恢复状态版本不受支持。",
@@ -729,9 +664,10 @@ def _decode_envelope(payload: Any) -> AiAgentStateEnvelope:
                     "message_history",
                     "deferred_requests",
                     "approval_records",
+                    "resume_claim",
+                    "resume_result",
                 }
             ),
-            optional=frozenset({"resume_claim", "resume_result"}),
         )
         profile = _as_mapping(root["profile"])
         timestamps = _as_mapping(root["timestamps"])

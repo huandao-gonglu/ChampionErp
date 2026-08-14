@@ -23,9 +23,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic_ai.exceptions import ModelHTTPError
 
-from erp_web.context import get_context
-
-from . import ai_model_config, ai_work_service, browser_ai_runtime
+from . import ai_model_config, browser_ai_runtime
 from .ai_gateway_parsing import parse_json_text
 from .ai_model_errors import AIHTTPError, model_http_error_detail
 
@@ -82,7 +80,6 @@ class CapabilityProbeContext:
     model_name: str = ""
     probe_token: str = ""
     capability: str = ""
-    conversation: ai_work_service.AiWorkConversation | None = None
 
 
 class CapabilityProbeProvider(Protocol):
@@ -106,147 +103,6 @@ def empty_capability_probe_report() -> dict[str, Any]:
     }
 
 
-def _probe_provider_id(model: dict[str, Any]) -> str:
-    connection_type = ai_model_config.model_connection_type(model)
-    if connection_type == ai_model_config.CONNECTION_TYPE_API:
-        return str(model.get("provider_id") or "api").strip() or "api"
-    if connection_type == ai_model_config.CONNECTION_TYPE_CLI:
-        return ai_model_config.model_cli_tool(model) or "cli"
-    return str(model.get("browser_provider") or "browser").strip() or "browser"
-
-
-def _start_capability_probe_conversation(
-    context: CapabilityProbeContext,
-    capability: str,
-) -> ai_work_service.AiWorkConversation:
-    return get_context().ai_journal.start_conversation(
-        use_case_id="config.ai_model_probe",
-        capability=capability,
-        provider_id=_probe_provider_id(context.model),
-        model=context.model,
-        stream=False,
-        required_capabilities=[capability],
-        timeout_seconds=context.timeout,
-        input_payload={
-            "use_case_id": "config.ai_model_probe",
-            "status": "probe_started",
-        },
-    )
-
-
-def _record_probe_request(
-    context: CapabilityProbeContext,
-    messages: list[dict[str, str]],
-    *,
-    phase: str = "request",
-    details: dict[str, Any] | None = None,
-) -> None:
-    if context.conversation is None:
-        return
-    context.conversation.emit_custom(
-        "capability_probe.request",
-        {
-            "capability": context.capability,
-            "phase": phase,
-            "messages": _normalize_probe_messages(messages),
-            **dict(details or {}),
-        },
-    )
-
-
-def _record_probe_output(
-    context: CapabilityProbeContext,
-    text: str,
-    *,
-    phase: str = "response",
-) -> None:
-    if context.conversation is None:
-        return
-    output = str(text or "")
-    context.conversation.emit_custom(
-        "capability_probe.response",
-        {
-            "capability": context.capability,
-            "phase": phase,
-            "character_count": len(output),
-        },
-    )
-    if output:
-        context.conversation.emit_text_delta(output)
-
-
-def _record_probe_tool_result(
-    context: CapabilityProbeContext,
-    *,
-    tool_name: str,
-    tool_call_id: str,
-    result: Any,
-) -> None:
-    if context.conversation is None:
-        return
-    context.conversation.emit_custom(
-        "capability_probe.tool_result",
-        {
-            "tool_name": tool_name,
-            "tool_call_id": tool_call_id,
-            "result": result,
-        },
-    )
-
-
-def _record_probe_image_results(
-    context: CapabilityProbeContext,
-    results: list[dict[str, Any]],
-) -> None:
-    if context.conversation is None:
-        return
-    safe_results: list[dict[str, Any]] = []
-    for result in results:
-        if not isinstance(result, dict):
-            continue
-        safe = {
-            key: result[key]
-            for key in (
-                "provider",
-                "mode",
-                "source_id",
-                "suffix",
-                "image_path",
-                "path",
-                "local_path",
-                "mime_type",
-            )
-            if result.get(key) not in (None, "")
-        }
-        for key in ("url", "image_url"):
-            reference = str(result.get(key) or "").strip()
-            if not reference:
-                continue
-            if reference.startswith("data:image/"):
-                safe["data_url_length"] = len(reference)
-            else:
-                safe[key] = reference
-        encoded = str(
-            result.get("b64_json")
-            or result.get("image_base64")
-            or result.get("base64")
-            or result.get("data_url")
-            or result.get("dataUrl")
-            or ""
-        )
-        if encoded:
-            safe["image_base64_length"] = len(encoded)
-        safe_results.append(safe)
-    context.conversation.emit_custom(
-        "capability_probe.image_result",
-        {
-            "capability": context.capability,
-            "count": len(results),
-            "images": safe_results,
-        },
-    )
-
-
 def run_capability_probes(
     provider: CapabilityProbeProvider,
     context: CapabilityProbeContext,
@@ -259,12 +115,10 @@ def run_capability_probes(
     inconclusive: list[str] = []
     results: dict[str, dict[str, Any]] = {}
     for capability in ai_model_config.normalize_capabilities(capabilities):
-        conversation = _start_capability_probe_conversation(context, capability)
         probe_context = replace(
             context,
             probe_token=secrets.token_hex(12),
             capability=capability,
-            conversation=conversation,
         )
         try:
             capability_profile = provider.probe_capability(
@@ -286,24 +140,7 @@ def run_capability_probes(
                 "error_code": code,
                 "error": error_text,
                 "retryable": status == PROBE_STATUS_INCONCLUSIVE,
-                "conversation_id": conversation.conversation_id,
             }
-            conversation.finish_assistant_message()
-            conversation.emit_custom(
-                "business.result",
-                {
-                    "capability": capability,
-                    "status": status,
-                    "ok": False,
-                    "error_code": code,
-                    "error": error_text,
-                },
-            )
-            conversation.emit(
-                "RUN_ERROR",
-                message=error_text,
-                code=code,
-            )
             if isinstance(exc, (AIHTTPError, ModelHTTPError)):
                 logger.warning(
                     "AI 模型能力探测被 Provider 拒绝：model_id=%s "
@@ -322,29 +159,11 @@ def run_capability_probes(
             "error": "",
             "retryable": False,
             "capability_profile": capability_profile,
-            "conversation_id": conversation.conversation_id,
         }
         if capability == ai_model_config.CAP_WEB_SEARCH:
             result["request_mode"] = capability_profile.get("request_mode", "")
             result["api_style"] = capability_profile.get("api_style", "")
         results[capability] = result
-        conversation.finish_assistant_message()
-        conversation.emit_custom(
-            "business.result",
-            {
-                "capability": capability,
-                "status": PROBE_STATUS_SUPPORTED,
-                "ok": True,
-                "capability_profile": capability_profile,
-            },
-        )
-        conversation.finish(
-            {
-                "capability": capability,
-                "status": PROBE_STATUS_SUPPORTED,
-                "ok": True,
-            }
-        )
     return {
         "supported": supported,
         "unsupported": unsupported,

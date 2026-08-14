@@ -198,7 +198,6 @@ def test_category_match_persists_focused_agent_selection() -> None:
             "candidates": [{"category_id": "CAT-1", "name": "Fans"}],
             "decision": {"model_confidence": 0.91},
             "failure": None,
-            "trace": {"conversation_id": "conv-category"},
         }
 
     result = match_category(
@@ -214,7 +213,6 @@ def test_category_match_persists_focused_agent_selection() -> None:
 
     assert result.category_id == "CAT-1"
     assert result.platform == "mercadolibre"
-    assert result.conversation_id == "conv-category"
     assert products.drafts["draft-1"]["category_id"] == "CAT-1"
     assert products.drafts["draft-1"]["category_attribute_schema"]["required"][0]["id"] == "COLOR"
     assert products.product["local_platform_categories"]["mercadolibre"]["category_id"] == "CAT-1"
@@ -239,7 +237,6 @@ def test_category_match_abstain_requires_explicit_category() -> None:
                 "message": "需要人工确认。",
                 "retryable": False,
             },
-            "trace": {"conversation_id": "conv-category-abstain"},
         }
 
     with pytest.raises(CapabilityInputRequired) as exc_info:
@@ -256,13 +253,10 @@ def test_category_match_abstain_requires_explicit_category() -> None:
     assert exc_info.value.key == "category_id"
     assert exc_info.value.options == ("CAT-1", "CAT-2")
     assert exc_info.value.input_type == "select"
-    assert exc_info.value.agent_execution_conversation_ids == (
-        "conv-category-abstain",
-    )
     assert products.save_product_calls == 0
 
 
-def test_category_post_run_failure_keeps_focused_execution_link() -> None:
+def test_category_post_run_failure_preserves_domain_error() -> None:
     products = _Products()
 
     def matcher(*_args, **_kwargs) -> dict:
@@ -271,7 +265,6 @@ def test_category_post_run_failure_keeps_focused_execution_link() -> None:
             "status": "completed",
             "selected_category_id": "CAT-1",
             "decision": {"model_confidence": 0.9},
-            "trace": {"conversation_id": "conv-category-before-loader-failure"},
         }
 
     def failing_record_loader(*_args, **_kwargs) -> dict:
@@ -292,9 +285,6 @@ def test_category_post_run_failure_keeps_focused_execution_link() -> None:
         )
 
     assert exc_info.value.code == "CATEGORY_RECORD_BROKEN"
-    assert exc_info.value.agent_execution_conversation_ids == (
-        "conv-category-before-loader-failure",
-    )
 
 
 def test_attribute_fill_persists_partial_result_then_requests_missing_fact() -> None:
@@ -320,7 +310,6 @@ def test_attribute_fill_persists_partial_result_then_requests_missing_fact() -> 
         return updated, {
             "source": "rules",
             "warning": "Agent 未能确定电池型号。",
-            "conversation_id": "conv-attributes-partial",
         }
 
     with pytest.raises(CapabilityInputRequired) as exc_info:
@@ -338,9 +327,6 @@ def test_attribute_fill_persists_partial_result_then_requests_missing_fact() -> 
     assert exc_info.value.options == ("AA", "AAA")
     assert exc_info.value.input_type == "select"
     assert exc_info.value.input_owner == "provided_attributes"
-    assert exc_info.value.agent_execution_conversation_ids == (
-        "conv-attributes-partial",
-    )
     assert products.drafts["draft-1"]["attributes"] == {"COLOR": "Red"}
     assert products.drafts["draft-1"]["validation_errors"] == ["BATTERY_TYPE"]
 
@@ -441,7 +427,6 @@ def test_prepare_claims_target_and_runs_real_owner_boundaries_in_order() -> None
             site="MLM",
             category_id="CAT-1",
             category_path="Home > Fans",
-            conversation_id="conv-category-prepare",
             changed=True,
         )
 
@@ -456,7 +441,6 @@ def test_prepare_claims_target_and_runs_real_owner_boundaries_in_order() -> None
             site="MLM",
             attributes={"COLOR": "Red"},
             filled_attribute_ids=["COLOR"],
-            conversation_id="conv-attributes-prepare",
             changed=True,
         )
 
@@ -512,10 +496,6 @@ def test_prepare_claims_target_and_runs_real_owner_boundaries_in_order() -> None
     ]
     assert result.readiness.image_count == 1
     assert result.readiness.attribute_count == 1
-    assert result.agent_execution_conversation_ids == [
-        "conv-category-prepare",
-        "conv-attributes-prepare",
-    ]
     assert products.drafts["draft-target"]["pricing"]["targets"]["mercadolibre:mlm"]["applied_price"]["amount"] == "299.00"
 
 
@@ -549,7 +529,6 @@ def test_prepare_returns_input_required_for_unresolved_pricing_fact() -> None:
             platform="mercadolibre",
             site="MLM",
             category_id="CAT-1",
-            conversation_id="conv-category-before-pricing",
             changed=True,
         )
 
@@ -560,7 +539,6 @@ def test_prepare_returns_input_required_for_unresolved_pricing_fact() -> None:
             site="MLM",
             attributes={"COLOR": "Red"},
             filled_attribute_ids=["COLOR"],
-            conversation_id="conv-attributes-before-pricing",
             changed=False,
         )
 
@@ -592,10 +570,6 @@ def test_prepare_returns_input_required_for_unresolved_pricing_fact() -> None:
     assert exc_info.value.code == "PRICING_INPUT_REQUIRED"
     assert exc_info.value.key == "shipping_quote_mode"
     assert exc_info.value.input_owner == "pricing_input"
-    assert exc_info.value.agent_execution_conversation_ids == (
-        "conv-category-before-pricing",
-        "conv-attributes-before-pricing",
-    )
 
 
 def test_regenerate_copy_operation_marker_skips_retry_after_domain_save() -> None:

@@ -13,31 +13,6 @@ from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.services.ai_tool_runtime import AiToolRuntime
 
 
-class Recorder:
-    conversation_id = "aic-category-tools"
-
-    def record(self, event_type: str, **payload: Any) -> None:
-        pass
-
-    def emit(self, event_type: str, **payload: Any) -> None:
-        pass
-
-    def emit_custom(self, name: str, value: Any) -> None:
-        pass
-
-    def emit_text_delta(self, delta: str) -> None:
-        pass
-
-    def finish_assistant_message(self, raw_text: str = "") -> None:
-        pass
-
-    def finish(self, result: Any) -> None:
-        pass
-
-    def fail(self, error: Exception) -> None:
-        pass
-
-
 class BoundSearcher:
     def __init__(self) -> None:
         self.keywords: list[str] = []
@@ -163,7 +138,6 @@ def test_category_toolset_only_exposes_keyword_search() -> None:
     runtime = AiToolRuntime(
         toolset=toolset,
         execution_context=context(),
-        recorder=Recorder(),
         max_tool_calls=3,
         max_output_bytes=32 * 1024,
     )
@@ -204,7 +178,6 @@ def test_tool_output_hides_bound_scope_and_provider_metadata() -> None:
             ledger=CategoryCandidateLedger(),
         ).toolset,
         execution_context=context(),
-        recorder=Recorder(),
     ).execute(
         AiToolCommand(
             call_id="call-search",
@@ -239,7 +212,6 @@ def test_tool_rejects_platform_or_site_arguments() -> None:
             ledger=CategoryCandidateLedger(),
         ).toolset,
         execution_context=context(),
-        recorder=Recorder(),
     ).execute(
         AiToolCommand(
             call_id="call-search",
@@ -266,7 +238,6 @@ def test_ozon_navigation_exposes_roots_then_records_only_leaf_candidates() -> No
     runtime = AiToolRuntime(
         toolset=bundle.toolset,
         execution_context=context(),
-        recorder=Recorder(),
         max_tool_calls=4,
         max_output_bytes=128 * 1024,
     )

@@ -637,7 +637,6 @@ export async function matchCategory(
       }
       : null,
     trace: {
-      conversationId: getString(trace, ['conversation_id']),
       taskRunId: getString(trace, ['task_run_id']),
     },
   }

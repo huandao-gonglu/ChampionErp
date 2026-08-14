@@ -4,7 +4,13 @@ from typing import Any
 
 import pytest
 from pydantic_ai import ModelRetry
-from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import (
+    ModelMessagesTypeAdapter,
+    ModelRequest,
+    ModelResponse,
+    ToolCallPart,
+    ToolReturnPart,
+)
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.settings import ModelSettings
 
@@ -70,7 +76,7 @@ def factory_for(model: FunctionModel) -> AiAgentFactory:
     return AiAgentFactory(
         app_dir=context.paths.app_dir,
         app_config={},
-        journal=context.ai_journal,
+        message_store=context.pydantic_messages,
         model_binding_factory=binding,
     )
 
@@ -108,20 +114,9 @@ def test_agent_queries_only_strict_enum_and_allows_custom_open_enum_value(
         ledger=ledger,
     )
     turns = 0
-    journal = get_context().ai_journal
-    parent_conversation_id = journal.start_global_agent_conversation()
-    started_with_parents: list[str | None] = []
-    start_conversation = journal.start_conversation
-
-    def capture_start_conversation(**kwargs: Any):
-        started_with_parents.append(kwargs.get("parent_conversation_id"))
-        return start_conversation(**kwargs)
-
-    monkeypatch.setattr(journal, "start_conversation", capture_start_conversation)
 
     def model(messages: list[Any], agent_info: AgentInfo) -> ModelResponse:
         nonlocal turns
-        assert started_with_parents == [parent_conversation_id]
         turns += 1
         if turns == 1:
             return ModelResponse(
@@ -177,16 +172,17 @@ def test_agent_queries_only_strict_enum_and_allows_custom_open_enum_value(
         ledger,
         timeout_seconds=10,
         factory=factory_for(FunctionModel(model)),
-        parent_conversation_id=parent_conversation_id,
     )
 
     assert result.output["assignments"][0]["dictionary_value_id"] == "91443"
     assert result.output["assignments"][1]["value"] == "Wall mounted"
     assert result.outcome is not None
     assert result.outcome.usage["tool_calls"] == 1
-    summary = journal.get_conversation_summary(result.outcome.conversation_id)
-    assert summary is not None
-    assert summary["parent_conversation_id"] == parent_conversation_id
+    history = get_context().pydantic_messages.get(result.outcome.conversation_id)
+    assert history is not None
+    assert history.messages_json == ModelMessagesTypeAdapter.dump_json(
+        result.outcome.messages
+    )
     result.finish_business_result({"status": "completed"})
 
 

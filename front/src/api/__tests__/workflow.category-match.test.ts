@@ -54,7 +54,6 @@ describe('category.product_match API contract', () => {
         },
         failure: null,
         trace: {
-          conversation_id: 'aic-1',
           task_run_id: 'task-1',
         },
       },

@@ -16,8 +16,6 @@ from erp_web.schemas.ai_tools import (
 )
 from erp_web.schemas.ai_trace import AiExecutionContext
 
-from .ai_agent_observability import sanitize_ai_work_value
-from .ai_invocation import AiWorkRecorder
 from .ai_tool_registry import AiToolSet
 
 
@@ -37,7 +35,7 @@ def _executor_error_details(exc: Exception) -> tuple[str, str, bool]:
 
 
 class AiToolRuntime:
-    """查找、校验、授权、去重、执行并记录一个 ToolSet 中的调用。
+    """查找、校验、授权、去重并执行一个 ToolSet 中的调用。
 
     Runtime 不创建无法安全取消的后台线程。同步 executor 必须在注册时声明
     cooperative deadline，并把 execution context 给出的 timeout 用于全部阻塞 I/O。
@@ -48,7 +46,6 @@ class AiToolRuntime:
         *,
         toolset: AiToolSet,
         execution_context: AiExecutionContext,
-        recorder: AiWorkRecorder,
         max_tool_calls: int = 4,
         max_output_bytes: int = 64 * 1024,
         before_executor: Callable[[AiToolCommand], None] | None = None,
@@ -59,7 +56,6 @@ class AiToolRuntime:
             raise ValueError("max_output_bytes 必须大于 0")
         self.toolset = toolset
         self.execution_context = execution_context
-        self.recorder = recorder
         self.max_tool_calls = max_tool_calls
         self.max_output_bytes = max_output_bytes
         self.before_executor = before_executor
@@ -84,37 +80,6 @@ class AiToolRuntime:
             separators=(",", ":"),
         ).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
-
-    def _record_started(self, command: AiToolCommand) -> None:
-        self.recorder.record(
-            "TOOL_CALL_STARTED",
-            tool_call_id=command.call_id,
-            tool_name=command.tool_name,
-            tool_version=command.tool_version,
-            round=command.round,
-            arguments=sanitize_ai_work_value(command.arguments_dict()),
-        )
-
-    def _record_finished(self, result: AiToolResult) -> None:
-        payload = {
-            "tool_call_id": result.call_id,
-            "tool_name": result.tool_name,
-            "ok": result.ok,
-            "error_code": (
-                (result.error or {}).get("code") if not result.ok else ""
-            ),
-            "duration_ms": result.duration_ms,
-            "truncated": result.truncated,
-            "deduplicated": result.deduplicated,
-        }
-        if result.ok:
-            payload["output"] = sanitize_ai_work_value(result.output)
-        else:
-            payload["error"] = sanitize_ai_work_value(dict(result.error or {}))
-        self.recorder.record(
-            "TOOL_CALL_FINISHED",
-            **payload,
-        )
 
     @staticmethod
     def _error_result(
@@ -150,7 +115,6 @@ class AiToolRuntime:
         self._calls_by_id[command.call_id] = (signature, result)
         if cache_signature:
             self._results_by_signature[signature] = result
-        self._record_finished(result)
         return result
 
     def execute(self, command: AiToolCommand) -> AiToolResult:
@@ -164,15 +128,10 @@ class AiToolRuntime:
                     code="TOOL_CALL_INVALID",
                     message="同一 call_id 不能使用不同工具、版本或参数",
                 )
-                self._record_started(command)
-                self._record_finished(conflict)
                 return conflict
             result = previous_result.as_deduplicated()
-            self._record_started(command)
-            self._record_finished(result)
             return result
 
-        self._record_started(command)
         if self.execution_context.expired():
             return self._remember(
                 command,

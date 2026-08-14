@@ -11,7 +11,6 @@ from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.test import TestModel
 
-from erp_web.context import get_context
 from erp_web.services import ai_gateway_probe, ai_model_probe_service
 from erp_web.services.ai_model_factory import PydanticModelBinding
 
@@ -130,57 +129,6 @@ def test_chat_and_json_probes_validate_nonce_without_declared_capabilities(
     assert len(profile["configuration_fingerprint"]) == 64
     assert "secret" not in json.dumps(profile)
     assert model["capabilities"] == []
-
-
-def test_probe_result_links_to_ai_work_with_real_prompt_and_model_output(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    model = _model()
-    _install_probe_binding(monkeypatch, model)
-    token = "journal-probe-token"
-    expected = ai_gateway_probe._json_probe_expected_data(token)
-    output = json.dumps(expected)
-    monkeypatch.setattr(ai_gateway_probe.secrets, "token_hex", lambda _: token)
-
-    def request_json_for_probe(**kwargs):
-        recorder = kwargs["recorder"]
-        recorder.emit_custom(
-            "capability_probe.response",
-            {"phase": "response", "character_count": len(output)},
-        )
-        recorder.emit_text_delta(output)
-        return json.loads(output), ""
-
-    monkeypatch.setattr(
-        ai_model_probe_service.ai_direct_request_service,
-        "request_json_for_probe",
-        request_json_for_probe,
-    )
-
-    report = _run(tmp_path, model, "json")
-
-    conversation_id = report["results"]["json"]["conversation_id"]
-    events = get_context().ai_journal.read_events(conversation_id)
-    request_event = next(
-        event
-        for event in events
-        if event.get("name") == "capability_probe.request"
-    )
-    request_payload = json.loads(
-        request_event["value"]["messages"][-1]["content"]
-    )
-    assert request_payload == ai_gateway_probe._json_probe_challenge_payload(token)
-    assert request_payload != expected
-    assert [
-        event.get("delta")
-        for event in events
-        if event["type"] == "TEXT_MESSAGE_CONTENT"
-    ] == [output]
-    assert next(
-        event for event in events if event.get("name") == "business.result"
-    )["value"]["status"] == "supported"
-    assert events[-1]["type"] == "RUN_FINISHED"
 
 
 def test_json_probe_requires_exact_array_transformation() -> None:
@@ -369,15 +317,7 @@ def test_image_generate_and_edit_probes_validate_real_image_data(
 
     assert generated_report["results"]["image_generate"]["status"] == "supported"
     assert edited_report["results"]["image_edit"]["status"] == "supported"
-    conversation_id = edited_report["results"]["image_edit"]["conversation_id"]
-    events = get_context().ai_journal.read_events(conversation_id)
-    image_event = next(
-        event
-        for event in events
-        if event.get("name") == "capability_probe.image_result"
-    )
-    assert image_event["value"]["images"][0]["image_base64_length"] == len(edited)
-    assert edited not in json.dumps(events)
+    assert "conversation_id" not in edited_report["results"]["image_edit"]
 
 
 def test_transient_provider_failure_is_inconclusive_instead_of_unsupported(
@@ -403,8 +343,7 @@ def test_transient_provider_failure_is_inconclusive_instead_of_unsupported(
     assert report["inconclusive"] == ["chat"]
     assert result["status"] == "inconclusive"
     assert result["retryable"] is True
-    events = get_context().ai_journal.read_events(result["conversation_id"])
-    assert events[-1]["type"] == "RUN_ERROR"
+    assert "conversation_id" not in result
 
 
 def test_provider_error_keeps_safe_diagnostics_in_result_and_log(

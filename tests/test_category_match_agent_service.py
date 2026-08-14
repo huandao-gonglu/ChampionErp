@@ -4,7 +4,13 @@ from collections import deque
 from typing import Any
 
 import pytest
-from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import (
+    ModelMessagesTypeAdapter,
+    ModelRequest,
+    ModelResponse,
+    ToolCallPart,
+    ToolReturnPart,
+)
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 from pydantic_ai.settings import ModelSettings
@@ -70,7 +76,7 @@ def factory_for(model: FunctionModel) -> AiAgentFactory:
     return AiAgentFactory(
         app_dir=context.paths.app_dir,
         app_config={},
-        journal=context.ai_journal,
+        message_store=context.pydantic_messages,
         model_binding_factory=binding,
     )
 
@@ -89,27 +95,13 @@ def final_output(agent_info: AgentInfo, payload: dict[str, Any], call_id: str) -
     )
 
 
-def test_agent_uses_native_tool_call_and_typed_output(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_agent_uses_native_tool_call_and_typed_output() -> None:
     searcher = Searcher([[candidate("MLM-FAN")]])
     ledger = CategoryCandidateLedger()
     toolset = toolset_for(searcher, ledger)
     turns = 0
-    journal = get_context().ai_journal
-    parent_conversation_id = journal.start_global_agent_conversation()
-    started_with_parents: list[str | None] = []
-    start_conversation = journal.start_conversation
-
-    def capture_start_conversation(**kwargs: Any):
-        started_with_parents.append(kwargs.get("parent_conversation_id"))
-        return start_conversation(**kwargs)
-
-    monkeypatch.setattr(journal, "start_conversation", capture_start_conversation)
-
     def model(messages: list[Any], agent_info: AgentInfo) -> ModelResponse:
         nonlocal turns
-        assert started_with_parents == [parent_conversation_id]
         turns += 1
         if turns == 1:
             assert "candidates" not in str(messages)
@@ -147,38 +139,28 @@ def test_agent_uses_native_tool_call_and_typed_output(
         ledger,
         timeout_seconds=10,
         factory=factory_for(FunctionModel(model)),
-        parent_conversation_id=parent_conversation_id,
     )
 
     assert result.output["selected_category_id"] == "MLM-FAN"
     assert result.output["model_confidence"] == 0.91
     assert searcher.keywords == ["ventilador"]
-    assert result.trace["conversation_id"].startswith("aic_")
     assert result.trace["task_run_id"].startswith("task_")
-    summary = journal.get_conversation_summary(result.trace["conversation_id"])
-    assert summary is not None
-    assert summary["parent_conversation_id"] == parent_conversation_id
     assert result.outcome is not None
     assert result.outcome.usage["tool_calls"] == 1
-    events = get_context().ai_journal.read_events(result.trace["conversation_id"])
-    request_event = next(event for event in events if event.get("name") == "agent.request")
-    assert "风扇" in str(request_event["value"])
-    assert request_event["value"]["limits"]["max_model_requests"] == 6
-    assert request_event["value"]["limits"]["max_tool_calls"] == 4
-    transcript_event = next(
-        event for event in events if event.get("name") == "agent.transcript"
+    history = get_context().pydantic_messages.get(result.outcome.conversation_id)
+    assert history is not None
+    assert history.messages_json == ModelMessagesTypeAdapter.dump_json(
+        result.outcome.messages
     )
-    assert [row["kind"] for row in transcript_event["value"]["messages"]] == [
-        "request",
-        "response",
-        "request",
-        "response",
-        "request",
-    ]
-    started = next(event for event in events if event.get("name") == "TOOL_CALL_STARTED")
-    finished = next(event for event in events if event.get("name") == "TOOL_CALL_FINISHED")
-    assert started["value"]["arguments"] == {"keyword": "ventilador"}
-    assert finished["value"]["output"]["candidates"][0]["category_id"] == "MLM-FAN"
+    persisted = history.model_messages()
+    assert "风扇" in str(persisted)
+    assert "MLM-FAN" in str(persisted)
+    assert any(
+        isinstance(part, ToolReturnPart) and part.tool_call_id == "search-1"
+        for message in persisted
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+    )
 
 
 def test_output_validator_retries_before_any_search() -> None:
@@ -265,14 +247,14 @@ def test_unknown_category_stays_a_stable_agent_error_after_retries() -> None:
     assert captured.value.code == "MODEL_SELECTED_UNKNOWN_CATEGORY"
     assert "MLM-INVENTED" not in str(captured.value)
     assert searcher.keywords == ["ventilador"]
-    events = get_context().ai_journal.read_events(captured.value.conversation_id)
-    transcript_event = next(
-        event for event in events if event.get("name") == "agent.transcript"
-    )
-    transcript = str(transcript_event["value"])
+    history = get_context().pydantic_messages.get(captured.value.conversation_id)
+    assert history is not None
+    transcript = str(history.model_messages())
     assert "MLM-INVENTED" in transcript
-    assert "selected_category_id 必须来自本次检索工具真实返回的商品类型" in transcript
-    assert events[-1]["type"] == "RUN_ERROR"
+    assert (
+        "selected_category_id 必须来自本次检索工具真实返回的商品类型"
+        in transcript
+    )
 
 
 def test_abstain_requires_three_different_effective_searches() -> None:
@@ -426,11 +408,9 @@ def test_provider_api_error_keeps_original_type_and_redacts_secret() -> None:
     assert captured.value.trace_id
     assert captured.value.run_id
     assert captured.value.conversation_id
-    events = get_context().ai_journal.read_events(captured.value.conversation_id)
-    assert events[-1]["type"] == "RUN_ERROR"
-    assert events[-1]["trace_id"] == captured.value.trace_id
-    assert events[-1]["run_id"] == captured.value.run_id
-    assert secret not in str(events)
+    history = get_context().pydantic_messages.get(captured.value.conversation_id)
+    assert history is not None
+    assert secret not in str(history.model_messages())
 
 
 def test_provider_http_error_keeps_status_code_message_and_request_id() -> None:
@@ -465,9 +445,9 @@ def test_provider_http_error_keeps_status_code_message_and_request_id() -> None:
         "HTTP 403: Free quota exhausted. (request_id=request-403)"
     )
     assert captured.value.retryable is False
-    events = get_context().ai_journal.read_events(captured.value.conversation_id)
-    assert events[-1]["code"] == "PERMISSION_DENIED"
-    assert events[-1]["message"] == str(captured.value)
+    history = get_context().pydantic_messages.get(captured.value.conversation_id)
+    assert history is not None
+    assert history.model_messages()
 
 
 def test_empty_provider_response_reports_observed_response_instead_of_schema_error() -> None:
@@ -555,6 +535,9 @@ def test_unexpected_category_approval_finishes_persisted_pending_state() -> None
 
     assert captured.value.code == "TOOL_APPROVAL_REQUIRED"
     assert executions == 0
+    history = agent_factory.message_store.get(captured.value.conversation_id)
+    assert history is not None
+    assert history.model_messages()
     created = set(agent_factory.state_store.root.glob("*.json")) - before
     assert len(created) == 1
     assert agent_factory.state_store.load(next(iter(created)).stem).status == "failed"

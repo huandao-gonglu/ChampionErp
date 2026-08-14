@@ -364,7 +364,6 @@ def prepare_draft_for_market(
     attribute_capability: AttributeCapability = fill_product_attributes,
     pricing_calculator: PricingCalculator = calculate_price,
     copy_operation_key: str = "",
-    parent_conversation_id: str | None = None,
 ) -> DraftPrepareForMarketResult:
     """按稳定目标草稿串联准备步骤；不执行发布或发布预检。"""
 
@@ -375,7 +374,6 @@ def prepare_draft_for_market(
         claim_target_drafts=claim_target_drafts,
     )
     completed_parts = ["target_draft"]
-    execution_ids: list[str] = []
 
     target_draft, _target_product = load_draft(product_store, target_draft_id)
     target = select_target(target_draft, platform=platform, site=request.site)
@@ -410,30 +408,19 @@ def prepare_draft_for_market(
                 "CATEGORY_CAPABILITY_NOT_BOUND",
                 "目标市场准备尚未绑定类目匹配 Capability。",
             )
-        try:
-            category_result = category_capability(
-                CategoryMatchRequest(
-                    draft_id=target_draft_id,
-                    target_platform=platform,
-                    site=text(target.get("site")),
-                    category_id=request.category_id,
-                ),
-                product_store=product_store,
-                **(
-                    {"parent_conversation_id": parent_conversation_id}
-                    if parent_conversation_id
-                    else {}
-                ),
-            )
-        except BusinessCapabilityError as exc:
-            exc.prepend_agent_execution_conversation_ids(execution_ids)
-            raise
-        if category_result.conversation_id:
-            execution_ids.append(category_result.conversation_id)
+        category_capability(
+            CategoryMatchRequest(
+                draft_id=target_draft_id,
+                target_platform=platform,
+                site=text(target.get("site")),
+                category_id=request.category_id,
+            ),
+            product_store=product_store,
+        )
     completed_parts.append("category")
 
     try:
-        attribute_result = attribute_capability(
+        attribute_capability(
             ProductAttributesFillRequest(
                 draft_id=target_draft_id,
                 target_platform=platform,
@@ -441,21 +428,10 @@ def prepare_draft_for_market(
                 provided_attributes=request.provided_attributes,
             ),
             product_store=product_store,
-            **(
-                {"parent_conversation_id": parent_conversation_id}
-                if parent_conversation_id
-                else {}
-            ),
         )
     except CapabilityInputRequired as exc:
         exc.set_input_owner("provided_attributes")
-        exc.prepend_agent_execution_conversation_ids(execution_ids)
         raise
-    except BusinessCapabilityError as exc:
-        exc.prepend_agent_execution_conversation_ids(execution_ids)
-        raise
-    if attribute_result.conversation_id:
-        execution_ids.append(attribute_result.conversation_id)
     completed_parts.append("attributes")
 
     try:
@@ -467,23 +443,15 @@ def prepare_draft_for_market(
         )
     except CapabilityInputRequired as exc:
         exc.set_input_owner("pricing_input")
-        exc.prepend_agent_execution_conversation_ids(execution_ids)
-        raise
-    except BusinessCapabilityError as exc:
-        exc.prepend_agent_execution_conversation_ids(execution_ids)
         raise
     completed_parts.append("pricing")
 
-    try:
-        readiness = _finalize_readiness(
-            target_draft_id=target_draft_id,
-            platform=platform,
-            site=text(target.get("site")),
-            product_store=product_store,
-        )
-    except BusinessCapabilityError as exc:
-        exc.prepend_agent_execution_conversation_ids(execution_ids)
-        raise
+    readiness = _finalize_readiness(
+        target_draft_id=target_draft_id,
+        platform=platform,
+        site=text(target.get("site")),
+        product_store=product_store,
+    )
     return DraftPrepareForMarketResult(
         draft_id=target_draft_id,
         source_draft_id=request.draft_id,
@@ -491,7 +459,6 @@ def prepare_draft_for_market(
         site=text(target.get("site")),
         completed_parts=completed_parts,
         readiness=readiness,
-        agent_execution_conversation_ids=list(dict.fromkeys(execution_ids)),
     )
 
 

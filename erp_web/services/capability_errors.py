@@ -12,16 +12,6 @@ from collections.abc import Sequence
 _INPUT_OWNERS = frozenset({"step", "provided_attributes", "pricing_input"})
 
 
-def _deduplicate_conversation_ids(values: Sequence[str]) -> tuple[str, ...]:
-    return tuple(
-        dict.fromkeys(
-            str(value or "").strip()
-            for value in values
-            if str(value or "").strip()
-        )
-    )
-
-
 class BusinessCapabilityError(RuntimeError):
     """可由上层稳定映射的业务 Capability 错误。"""
 
@@ -31,24 +21,10 @@ class BusinessCapabilityError(RuntimeError):
         message: str,
         *,
         retryable: bool = False,
-        agent_execution_conversation_ids: Sequence[str] = (),
     ) -> None:
         self.code = str(code or "CAPABILITY_FAILED").strip() or "CAPABILITY_FAILED"
         self.retryable = bool(retryable)
-        self.agent_execution_conversation_ids = _deduplicate_conversation_ids(
-            agent_execution_conversation_ids
-        )
         super().__init__(str(message or "业务能力执行失败").strip())
-
-    def prepend_agent_execution_conversation_ids(
-        self,
-        conversation_ids: Sequence[str],
-    ) -> None:
-        """把此前已执行的 focused Agent 链接按实际顺序并入错误。"""
-
-        self.agent_execution_conversation_ids = _deduplicate_conversation_ids(
-            (*conversation_ids, *self.agent_execution_conversation_ids)
-        )
 
 
 class CapabilityInputRequired(BusinessCapabilityError):
@@ -65,7 +41,6 @@ class CapabilityInputRequired(BusinessCapabilityError):
         options: Sequence[str] = (),
         input_type: str = "text",
         input_owner: str = "step",
-        agent_execution_conversation_ids: Sequence[str] = (),
     ) -> None:
         self.key = str(key or "").strip()
         self.label = str(label or self.key).strip()
@@ -89,7 +64,6 @@ class CapabilityInputRequired(BusinessCapabilityError):
         super().__init__(
             code,
             message,
-            agent_execution_conversation_ids=agent_execution_conversation_ids,
         )
 
     def set_input_owner(self, input_owner: str) -> None:

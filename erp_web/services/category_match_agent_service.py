@@ -139,19 +139,10 @@ class CategoryMatchAgentRun:
         return cls(dict(output), dict(trace or {}), None)
 
     def finish_business_result(self, result: Mapping[str, Any]) -> None:
+        del result
         if self.outcome is None:
             return
-        decision = result.get("decision") if isinstance(result.get("decision"), Mapping) else {}
-        failure = result.get("failure") if isinstance(result.get("failure"), Mapping) else {}
-        self.outcome.complete(
-            {
-                "result_version": CATEGORY_MATCH_RESULT_VERSION,
-                "status": str(result.get("status") or "failed"),
-                "selected_category_id": str(result.get("selected_category_id") or ""),
-                "search_count": int(decision.get("search_count") or 0),
-                "error_code": str(failure.get("code") or ""),
-            }
-        )
+        self.outcome.complete()
 
 
 def _prompt_payload(payload: Mapping[str, Any]) -> str:
@@ -166,7 +157,6 @@ def run_category_match_agent(
     timeout_seconds: float,
     factory: AiAgentFactory | None = None,
     model_override: Model | None = None,
-    parent_conversation_id: str | None = None,
 ) -> CategoryMatchAgentRun:
     """运行 Pydantic Agent；不存在旧协议或 Provider fallback。"""
 
@@ -188,7 +178,7 @@ def run_category_match_agent(
     agent_factory = factory or AiAgentFactory(
         app_dir=context.paths.app_dir,
         app_config=app_config,
-        journal=context.ai_journal,
+        message_store=context.pydantic_messages,
     )
     target = payload.get("target") if isinstance(payload.get("target"), Mapping) else {}
     outcome = agent_factory.run_sync(
@@ -203,14 +193,8 @@ def run_category_match_agent(
             "site": str(target.get("site") or ""),
         },
         idempotency_context={"result_version": CATEGORY_MATCH_RESULT_VERSION},
-        input_summary={
-            "platform": str(target.get("platform") or ""),
-            "site": str(target.get("site") or ""),
-            "result_version": CATEGORY_MATCH_RESULT_VERSION,
-        },
         timeout_seconds=timeout_seconds,
         model_override=model_override,
-        parent_conversation_id=parent_conversation_id,
     )
     if isinstance(outcome.output, DeferredToolRequests):
         error = AiAgentExecutionError(
@@ -227,7 +211,6 @@ def run_category_match_agent(
     return CategoryMatchAgentRun(
         output=output,
         trace={
-            "conversation_id": outcome.conversation_id,
             "task_run_id": outcome.task_run_id,
             "run_id": outcome.run_id,
             "trace_id": outcome.trace_id,

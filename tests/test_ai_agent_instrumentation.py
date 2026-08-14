@@ -54,7 +54,7 @@ def test_pydantic_agent_spans_keep_usage_tools_and_trace_correlation(tmp_path: P
 
     with instrumentation.start_run_span(
         use_case_id="category.product_match",
-        ai_work_task_id="work-1",
+        conversation_id="conversation-1",
         invocation_id="invocation-1",
         business_entity_ids={
             "product_id": "product-1",
@@ -76,7 +76,7 @@ def test_pydantic_agent_spans_keep_usage_tools_and_trace_correlation(tmp_path: P
 
     outer = next(span for span in spans if span["name"] == "erp.ai.agent.run")
     outer_attributes = outer["attributes"]
-    assert outer_attributes["erp.ai.ai_work.task_id"] == "work-1"
+    assert outer_attributes["erp.ai.conversation_id"] == "conversation-1"
     assert outer_attributes["erp.ai.invocation_id"] == "invocation-1"
     assert outer_attributes["erp.ai.entity.product_id"] == "product-1"
     assert "erp.ai.entity.title" not in outer_attributes
@@ -174,7 +174,7 @@ def test_observability_writer_failure_never_changes_agent_result(tmp_path: Path)
 
     with instrumentation.start_run_span(
         use_case_id="category.product_match",
-        ai_work_task_id="work-3",
+        conversation_id="conversation-3",
         invocation_id="invocation-3",
     ):
         result = agent.run_sync("business input")
@@ -187,7 +187,7 @@ def test_observability_writer_failure_never_changes_agent_result(tmp_path: Path)
 def test_safe_business_attributes_only_accept_fixed_ids() -> None:
     attributes = build_safe_trace_attributes(
         use_case_id="category.product_match",
-        ai_work_task_id="work-4",
+        conversation_id="conversation-4",
         invocation_id="invocation-4",
         business_entity_ids={
             "product_id": "product-4",
@@ -200,7 +200,7 @@ def test_safe_business_attributes_only_accept_fixed_ids() -> None:
 
     assert attributes == {
         "erp.ai.use_case_id": "category.product_match",
-        "erp.ai.ai_work.task_id": "work-4",
+        "erp.ai.conversation_id": "conversation-4",
         "erp.ai.invocation_id": "invocation-4",
         "erp.ai.entity.product_id": "product-4",
         "erp.ai.entity.store_id": "store-4",

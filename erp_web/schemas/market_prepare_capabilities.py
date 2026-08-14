@@ -48,7 +48,6 @@ class CategoryMatchCapabilityResult(BaseModel):
     category_path: Annotated[TrimmedText, StringConstraints(max_length=1000)] = ""
     query: Annotated[TrimmedText, StringConstraints(max_length=500)] = ""
     model_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    conversation_id: Annotated[TrimmedText, StringConstraints(max_length=200)] = ""
     changed: bool
 
 
@@ -77,7 +76,6 @@ class ProductAttributesFillResult(BaseModel):
     need_review_attribute_ids: list[str] = Field(default_factory=list, max_length=500)
     fill_source: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
     warning: Annotated[TrimmedText, StringConstraints(max_length=1000)] = ""
-    conversation_id: Annotated[TrimmedText, StringConstraints(max_length=200)] = ""
     changed: bool
 
 
@@ -109,9 +107,6 @@ class DraftPrepareForMarketResult(BaseModel):
     site: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
     completed_parts: list[str] = Field(min_length=1, max_length=20)
     readiness: DraftPublishReadiness
-    agent_execution_conversation_ids: list[
-        Annotated[TrimmedText, StringConstraints(min_length=1, max_length=200)]
-    ] = Field(default_factory=list, max_length=20)
 
 
 __all__ = [

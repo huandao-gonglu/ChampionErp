@@ -5,7 +5,13 @@ from typing import Any
 
 import pytest
 from pydantic import BaseModel, ConfigDict
-from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import (
+    ModelMessagesTypeAdapter,
+    ModelRequest,
+    ModelResponse,
+    ToolCallPart,
+    ToolReturnPart,
+)
 from pydantic_ai.exceptions import ModelAPIError
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.settings import ModelSettings
@@ -23,6 +29,7 @@ from erp_web.services.ai_tool_registry import (
     AiToolSet,
     deadline_aware_tool_executor,
 )
+from erp_web.stores.pydantic_message_store import PydanticMessageStore
 
 
 class WriteOutput(BaseModel):
@@ -134,25 +141,13 @@ def factory(model: FunctionModel) -> AiAgentFactory:
     return AiAgentFactory(
         app_dir=context.paths.app_dir,
         app_config={},
-        journal=context.ai_journal,
+        message_store=PydanticMessageStore(context.db),
         model_binding_factory=binding,
     )
 
 
 RUN_SCOPE = {"store_id": "store-1", "sku_id": "sku-1"}
 IDEMPOTENCY = {"operation_id": "operation-1"}
-
-
-class BrokenTerminalRecorder:
-    """模拟 AI Work 终态投影在状态提交前失败。"""
-
-    def finish(self, result: Any) -> None:
-        del result
-        raise OSError("journal unavailable")
-
-    def fail(self, error: Exception) -> None:
-        del error
-        raise OSError("journal unavailable")
 
 
 def start_deferred(agent_factory: AiAgentFactory, toolset: AiToolSet):
@@ -164,7 +159,6 @@ def start_deferred(agent_factory: AiAgentFactory, toolset: AiToolSet):
         tenant_id="tenant-1",
         business_scope=RUN_SCOPE,
         idempotency_context=IDEMPOTENCY,
-        input_summary={"store_id": "store-1", "sku_id": "sku-1"},
     )
 
 
@@ -193,10 +187,11 @@ def test_approval_persists_and_resumes_with_fresh_runtime_exactly_once() -> None
         "inventory.write",
         "inventory.approve",
     }
-    journal = get_context().ai_journal
-    paused_events = journal.read_events(paused.conversation_id)
-    assert paused_events[-1]["type"] == "RUN_DEFERRED"
-    assert journal.list_conversations()[0]["status"] == "waiting_approval"
+    paused_history = first_factory.message_store.get(paused.conversation_id)
+    assert paused_history is not None
+    assert paused_history.messages_json == ModelMessagesTypeAdapter.dump_json(
+        paused.messages
+    )
 
     restarted_factory = factory(FunctionModel(model_function))
     resumed = restarted_factory.resume_sync(
@@ -224,6 +219,12 @@ def test_approval_persists_and_resumes_with_fresh_runtime_exactly_once() -> None
     assert ready.status == "ready"
     assert ready.resume_result is not None
     assert ready.resume_result.output_payload == {"saved": True}
+    resumed_history = restarted_factory.message_store.get(paused.conversation_id)
+    assert resumed_history is not None
+    assert resumed_history.messages_json == ModelMessagesTypeAdapter.dump_json(
+        resumed.messages
+    )
+    assert len(resumed.messages) > len(paused.messages)
 
     replayed = factory(FunctionModel(model_function)).resume_sync(
         state_id=paused.deferred_state_id,
@@ -241,11 +242,8 @@ def test_approval_persists_and_resumes_with_fresh_runtime_exactly_once() -> None
     assert replayed.run_id == resumed.run_id
     assert len(executions) == 1
 
-    replayed.complete({"status": "completed", "saved": True})
+    replayed.complete()
     assert restarted_factory.state_store.load(paused.deferred_state_id).status == "completed"
-    resumed_events = journal.read_events(paused.conversation_id)
-    assert any(event["type"] == "RUN_RESUMED" for event in resumed_events)
-    assert resumed_events[-1]["type"] == "RUN_FINISHED"
 
     with pytest.raises(AiAgentExecutionError) as duplicate:
         restarted_factory.resume_sync(
@@ -265,7 +263,7 @@ def test_approval_persists_and_resumes_with_fresh_runtime_exactly_once() -> None
 
 
 @pytest.mark.parametrize("terminal_action", ["complete", "fail"])
-def test_terminal_state_is_not_committed_before_ai_work_projection(
+def test_terminal_action_commits_durable_state_once(
     terminal_action: str,
 ) -> None:
     executions = 0
@@ -290,26 +288,8 @@ def test_terminal_state_is_not_committed_before_ai_work_projection(
         business_scope=RUN_SCOPE,
         idempotency_context=IDEMPOTENCY,
     )
-    original_recorder = resumed.recorder
-    resumed.recorder = BrokenTerminalRecorder()  # type: ignore[assignment]
-
-    with pytest.raises(OSError, match="journal unavailable"):
-        if terminal_action == "complete":
-            resumed.complete({"status": "completed", "saved": True})
-        else:
-            resumed.fail(
-                AiAgentExecutionError(
-                    "BUSINESS_VALIDATION_FAILED",
-                    "业务终检失败。",
-                )
-            )
-
-    assert agent_factory.state_store.load(paused.deferred_state_id).status == "ready"
-    assert executions == 1
-
-    resumed.recorder = original_recorder
     if terminal_action == "complete":
-        resumed.complete({"status": "completed", "saved": True})
+        resumed.complete()
         expected_status = "completed"
     else:
         resumed.fail(
@@ -321,6 +301,11 @@ def test_terminal_state_is_not_committed_before_ai_work_projection(
         expected_status = "failed"
     assert agent_factory.state_store.load(paused.deferred_state_id).status == expected_status
     assert executions == 1
+    if terminal_action == "complete":
+        resumed.complete()
+    else:
+        resumed.fail(AiAgentExecutionError("IGNORED", "重复终态调用。"))
+    assert agent_factory.state_store.load(paused.deferred_state_id).status == expected_status
 
 
 def test_denial_resumes_model_but_never_executes_write() -> None:
@@ -349,7 +334,7 @@ def test_denial_resumes_model_but_never_executes_write() -> None:
 
     assert executions == 0
     assert resumed.output == WriteOutput(saved=False)
-    resumed.complete({"status": "denied", "saved": False})
+    resumed.complete()
     denied = agent_factory.state_store.load(paused.deferred_state_id)
     assert denied.status == "denied"
     assert denied.approval_records[0].decision == "denied"
@@ -408,11 +393,9 @@ def test_provider_failure_after_write_becomes_in_doubt_and_is_never_replayed() -
     assert captured.value.run_id
     assert executions == 1
     assert agent_factory.state_store.load(paused.deferred_state_id).status == "in_doubt"
-    events = get_context().ai_journal.read_events(paused.conversation_id)
-    assert events[-1]["type"] == "RUN_ERROR"
-    assert events[-1]["trace_id"] == captured.value.trace_id
-    assert events[-1]["run_id"] == captured.value.run_id
-    assert events[-1]["code"] == "AI_AGENT_STATE_EXECUTION_IN_DOUBT"
+    failed_history = agent_factory.message_store.get(paused.conversation_id)
+    assert failed_history is not None
+    assert len(failed_history.model_messages()) > len(paused.messages)
 
     with pytest.raises(AiAgentExecutionError) as duplicate:
         agent_factory.resume_sync(
@@ -503,11 +486,9 @@ def test_invalid_tool_arguments_are_rejected_before_approval_is_created() -> Non
     assert captured.value.code == "TOOL_INPUT_SCHEMA_INVALID"
     assert str(captured.value) == "$ 缺少必填字段：sku, quantity"
     assert captured.value.retryable is False
-    events = get_context().ai_journal.read_events(captured.value.conversation_id)
-    terminal = next(event for event in events if event["type"] == "RUN_ERROR")
-    assert terminal["code"] == "TOOL_INPUT_SCHEMA_INVALID"
-    assert terminal["message"] == "$ 缺少必填字段：sku, quantity"
-    assert terminal["retryable"] is False
+    failed_history = agent_factory.message_store.get(captured.value.conversation_id)
+    assert failed_history is not None
+    assert failed_history.model_messages()
     assert executions == 0
     assert not list(agent_factory.state_store.root.glob("*.json"))
 
@@ -564,7 +545,7 @@ def test_resume_rejects_same_version_contract_change_before_claim() -> None:
     assert agent_factory.state_store.load(paused.deferred_state_id).status == "pending"
 
 
-def test_resume_migrates_legacy_name_version_signature() -> None:
+def test_resume_rejects_legacy_name_version_signature() -> None:
     executions = 0
 
     def executor(arguments: dict[str, Any], context: AiExecutionContext) -> Any:
@@ -585,18 +566,19 @@ def test_resume_migrates_legacy_name_version_signature() -> None:
         encoding="utf-8",
     )
 
-    resumed = agent_factory.resume_sync(
-        state_id=paused.deferred_state_id,
-        profile=PROFILE,
-        instructions="调用写工具保存库存。",
-        toolset=toolset,
-        approval_decisions={"write-call-1": True},
-        approver_id="approver-legacy",
-        tenant_id="tenant-1",
-        permissions={"inventory.write", "inventory.approve"},
-        business_scope=RUN_SCOPE,
-        idempotency_context=IDEMPOTENCY,
-    )
+    with pytest.raises(AiAgentExecutionError) as caught:
+        agent_factory.resume_sync(
+            state_id=paused.deferred_state_id,
+            profile=PROFILE,
+            instructions="调用写工具保存库存。",
+            toolset=toolset,
+            approval_decisions={"write-call-1": True},
+            approver_id="approver-legacy",
+            tenant_id="tenant-1",
+            permissions={"inventory.write", "inventory.approve"},
+            business_scope=RUN_SCOPE,
+            idempotency_context=IDEMPOTENCY,
+        )
 
-    assert resumed.output == WriteOutput(saved=True)
-    assert executions == 1
+    assert caught.value.code == "AI_AGENT_STATE_TOOLSET_MISMATCH"
+    assert executions == 0

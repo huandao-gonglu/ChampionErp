@@ -42,23 +42,11 @@ class _Config:
         return {"ai": {}}
 
 
-class _Journal:
-    @staticmethod
-    def project_global_agent_event(
-        _conversation_id: str,
-        _name: str,
-        _value: dict[str, Any],
-    ) -> None:
-        return None
-
-
 def _planning_task() -> LocalGlobalTaskState:
     return LocalGlobalTaskState(
         task_id="task-lazy-planner",
-        task_kind="global.agent.chat",
         goal="读取当前商品",
         status="planning",
-        ai_work_conversation_id="conversation-lazy-planner",
         assistant_message="正在规划。",
         created_at=NOW,
         updated_at=NOW,
@@ -68,7 +56,6 @@ def _planning_task() -> LocalGlobalTaskState:
 def _running_task(*, publish_confirmed: bool = False) -> LocalGlobalTaskState:
     return LocalGlobalTaskState(
         task_id="task-capability",
-        task_kind="global.agent.chat",
         goal="处理草稿",
         status="running",
         publish_confirmation=(
@@ -95,6 +82,11 @@ def _step(capability: str, **inputs: Any) -> LocalTaskStep:
         capability=capability,
         objective="执行专项能力",
         status="running",
+        operation_key=(
+            "task-capability:publish"
+            if capability == "product.publish.request"
+            else f"task-capability:{capability}"
+        ),
         inputs=inputs,
     )
 
@@ -120,7 +112,7 @@ def test_controller_composition_keeps_model_config_and_publishing_bus_lazy(
         config=config,
         products=object(),
         global_tasks=global_tasks,
-        ai_journal=_Journal(),
+        pydantic_messages=object(),
         publishing_bus=_FailOnAccess("publishing_bus"),
     )
     capabilities = {"product.read": object()}
@@ -153,7 +145,7 @@ def test_model_config_is_loaded_only_when_composed_planner_actually_runs(
         config=config,
         products=object(),
         global_tasks=object(),
-        ai_journal=_Journal(),
+        pydantic_messages=object(),
         publishing_bus=_FailOnAccess("publishing_bus"),
     )
     capabilities = {"product.read": object()}
@@ -178,7 +170,6 @@ def test_model_config_is_loaded_only_when_composed_planner_actually_runs(
                         ]
                     ),
                 ),
-                conversation_id="planning-execution-1",
                 finish=None,
             )
 
@@ -206,16 +197,14 @@ def test_model_config_is_loaded_only_when_composed_planner_actually_runs(
     assert config.calls == 1
     assert len(services) == 1
     assert services[0].kwargs["app_config"] == {"ai": {}}
+    assert services[0].kwargs["message_store"] is context.pydantic_messages
     assert services[0].kwargs["allowed_capabilities"] == frozenset(
         {"product.read"}
     )
     assert services[0].plan_calls[0]["goal"] == (
         "读取当前商品\n用户补充说明：补充：只读即可"
     )
-    assert services[0].plan_calls[0]["parent_conversation_id"] == (
-        "conversation-lazy-planner"
-    )
-    assert outcome.execution_conversation_id == "planning-execution-1"
+    assert outcome.decision.action == "plan"
 
 
 @pytest.mark.parametrize(
@@ -341,11 +330,9 @@ def test_pricing_required_inputs_resume_through_controller_into_prepare_request(
     store = LocalGlobalTaskStore(ErpDatabase(tmp_path / "erp.sqlite3"))
     task = LocalGlobalTaskState(
         task_id="task-pricing-resume",
-        task_kind="global.agent.chat",
         goal="补充核价后继续准备草稿",
         platform="mercadolibre",
         status="needs_input",
-        ai_work_conversation_id="conversation-pricing-resume",
         steps=[
             LocalTaskStep(
                 step_id="step-prepare-pricing",
@@ -385,6 +372,7 @@ def test_pricing_required_inputs_resume_through_controller_into_prepare_request(
         planner=lambda _task, _supplement: pytest.fail("不应重新规划"),
         capabilities=capabilities,
         publish_status_reader=lambda _job_id: {},
+        answer_resolver=lambda _task, _decision: pytest.fail("不应解析只读答案"),
     )
 
     completed = controller.submit_input(

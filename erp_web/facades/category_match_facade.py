@@ -87,7 +87,6 @@ class CategoryMatchAgentService(Protocol):
         ledger: CategoryCandidateLedger,
         *,
         timeout_seconds: float,
-        parent_conversation_id: str | None = None,
     ) -> CategoryMatchAgentRun:
         ...
 
@@ -349,7 +348,7 @@ def _result(
         "candidates": public_candidates,
         "decision": decision,
         "failure": failure,
-        "trace": trace or {"conversation_id": "", "task_run_id": ""},
+        "trace": trace or {"task_run_id": ""},
     }
     if agent_run is not None:
         agent_run.finish_business_result(result)
@@ -481,7 +480,6 @@ def match_category(
     searcher_factory: CategorySearcherFactory = create_category_searcher,
     agent_service: CategoryMatchAgentService = run_category_match_agent,
     detail_loader: Callable[..., dict[str, Any]] = fetch_category_record,
-    parent_conversation_id: str | None = None,
 ) -> CategoryMatchResult:
     """运行一次同步、最多三次搜索且允许 abstain 的 ``category.match``。"""
 
@@ -495,7 +493,7 @@ def match_category(
     }
     ledger = CategoryCandidateLedger()
     decision = _empty_decision()
-    trace: CategoryMatchTrace = {"conversation_id": "", "task_run_id": ""}
+    trace: CategoryMatchTrace = {"task_run_id": ""}
     agent_run: CategoryMatchAgentRun | None = None
     if not platform or not site:
         return _result(
@@ -571,17 +569,22 @@ def match_category(
                 stage="model",
                 retryable=True,
             )
-        agent_kwargs: dict[str, Any] = {"timeout_seconds": remaining_seconds}
-        if parent_conversation_id:
-            agent_kwargs["parent_conversation_id"] = parent_conversation_id
-        agent_run = agent_service(payload, toolset, ledger, **agent_kwargs)
+        agent_run = agent_service(
+            payload,
+            toolset,
+            ledger,
+            timeout_seconds=remaining_seconds,
+        )
         model_result = agent_run.output
-        trace = agent_run.trace
+        trace = {
+            key: value
+            for key in ("task_run_id", "run_id", "trace_id")
+            if (value := _text(agent_run.trace.get(key), 200))
+        }
         _remaining_deadline_seconds(deadline_at)
     except Exception as exc:
         if isinstance(exc, AiAgentExecutionError):
             trace = {
-                "conversation_id": exc.conversation_id,
                 "task_run_id": exc.task_run_id,
                 "run_id": exc.run_id,
                 "trace_id": exc.trace_id,

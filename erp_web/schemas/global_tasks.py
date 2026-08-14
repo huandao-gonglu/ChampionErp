@@ -16,6 +16,7 @@ from pydantic import (
 
 
 CapabilityStatus = Literal["completed", "needs_input", "in_progress", "failed"]
+GlobalAnswerKind = Literal["active_draft_count", "draft_market_context"]
 TaskStepStatus = Literal[
     "pending",
     "running",
@@ -23,6 +24,7 @@ TaskStepStatus = Literal[
     "completed",
     "failed",
 ]
+TaskStepRecoveryPolicy = Literal["manual", "retry_safe", "idempotent"]
 GlobalTaskStatus = Literal[
     "planning",
     "running",
@@ -76,25 +78,6 @@ class CapabilityResult(StrictTaskModel, Generic[CapabilityResultT]):
     required_inputs: list[RequiredInput] = Field(default_factory=list, max_length=100)
     job_id: str | None = Field(default=None, max_length=200)
     error: CapabilityError | None = None
-    agent_execution_conversation_ids: list[str] = Field(
-        default_factory=list,
-        max_length=100,
-    )
-
-    @field_validator("agent_execution_conversation_ids", mode="before")
-    @classmethod
-    def deduplicate_execution_conversation_ids(cls, value: object) -> list[str]:
-        if value is None:
-            return []
-        if not isinstance(value, (list, tuple)):
-            raise ValueError("agent_execution_conversation_ids 必须是列表")
-        return list(
-            dict.fromkeys(
-                str(item or "").strip()
-                for item in value
-                if str(item or "").strip()
-            )
-        )
 
     @model_validator(mode="after")
     def validate_status_shape(self) -> "CapabilityResult[CapabilityResultT]":
@@ -165,10 +148,13 @@ class GlobalTaskPlanProposal(StrictTaskModel):
 
 
 class GlobalPlanningDecision(StrictTaskModel):
+    """模型只选择回答意图与可信引用，不提交最终事实或文案。"""
+
     action: Literal["plan", "answer", "ask_user"]
     plan: GlobalTaskPlanProposal | None = None
     query_snapshot_id: str = Field(default="", max_length=160)
-    answer: str = Field(default="", max_length=4000)
+    answer_kind: GlobalAnswerKind | None = None
+    answer_draft_position: int | None = Field(default=None, ge=1, le=100)
     question: str = Field(default="", max_length=1000)
     explanation: str = Field(default="", max_length=2000)
 
@@ -177,21 +163,63 @@ class GlobalPlanningDecision(StrictTaskModel):
         if self.action == "plan":
             if self.plan is None:
                 raise ValueError("action=plan 时必须返回 plan")
-            if self.answer or self.question:
-                raise ValueError("action=plan 时不得返回 answer/question")
+            if self.answer_kind is not None or self.answer_draft_position is not None:
+                raise ValueError("action=plan 时不得返回回答意图")
+            if self.question:
+                raise ValueError("action=plan 时不得返回 question")
         elif self.action == "answer":
             if not self.query_snapshot_id:
                 raise ValueError("action=answer 时必须引用 query_snapshot_id")
-            if not self.answer:
-                raise ValueError("action=answer 时必须说明回答意图")
+            if self.answer_kind is None:
+                raise ValueError("action=answer 时必须声明 answer_kind")
             if self.plan is not None or self.question:
                 raise ValueError("action=answer 时不得返回 plan/question")
+            if (
+                self.answer_kind == "active_draft_count"
+                and self.answer_draft_position is not None
+            ):
+                raise ValueError("草稿数量回答不得引用单个草稿序号")
         else:
             if not self.question:
                 raise ValueError("action=ask_user 时必须返回具体问题")
-            if self.plan is not None or self.answer or self.query_snapshot_id:
+            if (
+                self.plan is not None
+                or self.answer_kind is not None
+                or self.answer_draft_position is not None
+                or self.query_snapshot_id
+            ):
                 raise ValueError("action=ask_user 时不得返回计划、答案或查询快照")
         return self
+
+
+class AnswerResolutionScope(StrictTaskModel):
+    """由任务边界注入、模型不可修改的可信只读回答绑定。"""
+
+    expected_product_id: str = Field(default="", max_length=200)
+    expected_target_platform: str = Field(default="", max_length=80)
+
+    @field_validator("expected_product_id", mode="before")
+    @classmethod
+    def normalize_product_id(cls, value: object) -> str:
+        return str(value or "").strip()
+
+    @field_validator("expected_target_platform", mode="before")
+    @classmethod
+    def normalize_target_platform(cls, value: object) -> str:
+        return str(value or "").strip().lower()
+
+
+class TrustedGlobalAnswer(StrictTaskModel):
+    """由本地事实解析器生成、可直接展示的只读答案。"""
+
+    result_version: Literal["trusted_global_answer.v1"] = "trusted_global_answer.v1"
+    answer_kind: GlobalAnswerKind
+    # 这是事实解析器实际使用的规范查询快照。它可能不同于 Planner 引用的
+    # 历史快照，例如“当前活跃草稿数”会在回答前重新执行一次实时查询。
+    query_snapshot_id: str = Field(min_length=1, max_length=160)
+    message: str = Field(min_length=1, max_length=4000)
+    facts: dict[str, JsonValue] = Field(default_factory=dict, max_length=100)
+    evidence_refs: list[str] = Field(min_length=1, max_length=20)
 
 
 class LocalTaskStep(StrictTaskModel):
@@ -199,11 +227,22 @@ class LocalTaskStep(StrictTaskModel):
     capability: str = Field(min_length=1, max_length=120)
     objective: str = Field(min_length=1, max_length=500)
     status: TaskStepStatus = "pending"
+    # operation_key 在计划创建时生成，任何重试都必须复用同一个值。只有
+    # recovery_policy 明确允许的步骤才会在 running 状态恢复后再次调用。
+    operation_key: str = Field(default="", max_length=320)
+    recovery_policy: TaskStepRecoveryPolicy = "manual"
+    attempt_execution_id: str = Field(default="", max_length=200)
     # 文档示例漏掉了补充资料的 durable owner；字段必须随步骤持久化，重启后才能继续。
     inputs: dict[str, JsonValue] = Field(default_factory=dict)
     result_summary: str = Field(default="", max_length=2000)
     result_ref: str = Field(default="", max_length=500)
     error_code: str = Field(default="", max_length=120)
+
+    @model_validator(mode="after")
+    def validate_recovery_contract(self) -> "LocalTaskStep":
+        if self.recovery_policy != "manual" and not self.operation_key:
+            raise ValueError("可自动恢复步骤必须持久化稳定 operation_key")
+        return self
 
 
 class PublishConfirmation(StrictTaskModel):
@@ -230,8 +269,12 @@ class PublishConfirmation(StrictTaskModel):
 
 class LocalGlobalTaskState(StrictTaskModel):
     schema_version: Literal[1] = 1
+    # 每次持久化状态变更都会由 SQLite CAS 原子递增；调用方不得自行跳号。
+    revision: int = Field(default=1, ge=1)
+    # 一次显式执行领取的稳定 ID。进程崩溃后重新领取会生成新 ID，便于
+    # 审计把重试归到不同 attempt。
+    execution_id: str = Field(default="", max_length=200)
     task_id: str = Field(min_length=1, max_length=160)
-    task_kind: str = Field(min_length=1, max_length=120)
     goal: str = Field(min_length=1, max_length=4000)
     product_id: str = Field(default="", max_length=200)
     platform: str = Field(default="", max_length=80)
@@ -244,8 +287,6 @@ class LocalGlobalTaskState(StrictTaskModel):
     publish_idempotency_key: str = Field(default="", max_length=320)
     publish_job_id: str = Field(default="", max_length=200)
     draft_query_snapshot_id: str = Field(default="", max_length=160)
-    ai_work_conversation_id: str = Field(default="", max_length=200)
-    agent_execution_conversation_ids: list[str] = Field(default_factory=list, max_length=100)
     assistant_message: str = Field(default="", max_length=4000)
     plan_explanation: str = Field(default="", max_length=2000)
     error_code: str = Field(default="", max_length=120)
@@ -280,8 +321,6 @@ class PublishConfirmationContext(StrictTaskModel):
 
 class GlobalTaskStartRequest(StrictTaskModel):
     goal: str = Field(min_length=1, max_length=4000)
-    ai_work_conversation_id: str = Field(default="", max_length=200)
-    task_kind: Literal["global.agent.chat"] = "global.agent.chat"
     product_id: str = Field(default="", max_length=200)
     platform: str = Field(default="", max_length=80)
     draft_query_snapshot_id: str = Field(default="", max_length=160)
@@ -308,21 +347,20 @@ class GlobalTaskResponse(StrictTaskModel):
     ok: Literal[True] = True
     task: LocalGlobalTaskState
     task_id: str = Field(min_length=1, max_length=160)
-    ai_work_conversation_id: str = Field(min_length=1, max_length=200)
 
     @model_validator(mode="after")
     def validate_references(self) -> "GlobalTaskResponse":
         if self.task_id != self.task.task_id:
             raise ValueError("响应 task_id 与任务状态不一致")
-        if self.ai_work_conversation_id != self.task.ai_work_conversation_id:
-            raise ValueError("响应对话 ID 与任务状态不一致")
         return self
 
 
 __all__ = [
+    "AnswerResolutionScope",
     "CapabilityError",
     "CapabilityResult",
     "CapabilityStatus",
+    "GlobalAnswerKind",
     "GlobalPlanningDecision",
     "GlobalTaskIdRequest",
     "GlobalTaskInputRequest",
@@ -340,4 +378,5 @@ __all__ = [
     "RequiredInput",
     "TERMINAL_GLOBAL_TASK_STATUSES",
     "TaskStepStatus",
+    "TrustedGlobalAnswer",
 ]

@@ -117,13 +117,6 @@ def write_catalog_value(
     return WriteResult(saved=True)
 
 
-class RecordingRecorder:
-    conversation_id = "aic_catalog_test"
-
-    def record(self, event_type: str, **payload: object) -> None:
-        del event_type, payload
-
-
 def execution_context(
     *,
     permissions: frozenset[str] = frozenset({"test.read"}),
@@ -219,7 +212,6 @@ def test_catalog_binds_scope_and_exact_type_adapters() -> None:
     runtime = AiToolRuntime(
         toolset=toolset,
         execution_context=execution_context(),
-        recorder=RecordingRecorder(),
     )
     runtime_result = runtime.execute(
         AiToolCommand(
@@ -300,7 +292,6 @@ def test_runtime_rejects_missing_trusted_idempotency_before_write_executor() -> 
             permissions=frozenset({"test.write"}),
             allow_write=True,
         ),
-        recorder=RecordingRecorder(),
     )
     result = runtime.execute(
         AiToolCommand(
@@ -392,7 +383,6 @@ def test_compiler_reports_output_adapter_failures_with_stable_code() -> None:
     runtime = AiToolRuntime(
         toolset=toolset,
         execution_context=execution_context(),
-        recorder=RecordingRecorder(),
     )
     result = runtime.execute(
         AiToolCommand(

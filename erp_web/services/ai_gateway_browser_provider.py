@@ -68,17 +68,6 @@ class BrowserAiProvider(AiChatProvider):
             response_format=request.response_format,
             allow_external_read=ai_model_config.CAP_WEB_SEARCH in request.required_capabilities,
         )
-        if request.conversation:
-            request.conversation.emit_custom(
-                "provider.request",
-                {
-                    "browser_provider": browser_ai_runtime.normalize_browser_provider(
-                        request.model.get("browser_provider")
-                    ),
-                    "messages": request.messages,
-                    "provider_payload": {"prompt": prompt, "stream": bool(request.stream)},
-                },
-            )
         result = browser_ai_runtime.run_browser_ai_chat(
             request.app_dir,
             request.model,
@@ -87,8 +76,6 @@ class BrowserAiProvider(AiChatProvider):
         )
         if request.stream and result.text:
             request.emit_delta(result.text)
-        if request.conversation:
-            request.conversation.finish_assistant_message(result.text)
         return parse_json_text(result.text)
 
     def _run_probe(
@@ -99,29 +86,8 @@ class BrowserAiProvider(AiChatProvider):
         response_format: bool,
         allow_external_read: bool = False,
         allow_generated_artifacts: bool = False,
-        record_text_output: bool = True,
     ) -> browser_ai_runtime.BrowserAiRunResult:
-        prompt = _browser_prompt(
-            messages,
-            response_format=response_format,
-            allow_external_read=allow_external_read,
-            allow_generated_artifacts=allow_generated_artifacts,
-        )
-        probe_runtime._record_probe_request(
-            context,
-            messages,
-            details={
-                "browser_provider": browser_ai_runtime.normalize_browser_provider(
-                    context.model.get("browser_provider")
-                ),
-                "provider_payload": {
-                    "prompt": prompt,
-                    "allow_external_read": allow_external_read,
-                    "allow_generated_artifacts": allow_generated_artifacts,
-                },
-            },
-        )
-        result = _browser_chat_result(
+        return _browser_chat_result(
             context.app_dir or ".",
             context.model,
             messages,
@@ -130,18 +96,6 @@ class BrowserAiProvider(AiChatProvider):
             allow_external_read=allow_external_read,
             allow_generated_artifacts=allow_generated_artifacts,
         )
-        if record_text_output:
-            probe_runtime._record_probe_output(context, result.text)
-        if context.conversation:
-            context.conversation.emit_custom(
-                "capability_probe.browser_result",
-                {
-                    "provider": result.provider,
-                    "page_url": result.page_url,
-                    "image_count": len(result.image_urls),
-                },
-            )
-        return result
 
     def _probe_chat(
         self,
@@ -189,13 +143,8 @@ class BrowserAiProvider(AiChatProvider):
             messages,
             response_format=True,
             allow_generated_artifacts=True,
-            record_text_output=False,
         )
         data = probe_runtime._browser_image_probe_data_from_result(result)
-        probe_runtime._record_probe_image_results(
-            context,
-            [data, *[{"image_url": url} for url in result.image_urls]],
-        )
         probe_runtime._validate_browser_image_generate_probe(
             data,
             result,

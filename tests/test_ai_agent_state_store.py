@@ -100,10 +100,11 @@ def _create_pending(
         message_history=_messages(),
         deferred_requests=_deferred(),
         references={
-            "ai_work_id": "conversation_1",
-            "invocation_id": "invocation_1",
-            "agent_run_id": "run_1",
+            "conversation_id": "conversation_1",
+            "task_run_id": "task_1",
+            "run_id": "run_1",
             "trace_id": "trace_1",
+            "toolset_contract_fingerprint": "fingerprint_1",
         },
         now=NOW,
     )
@@ -165,10 +166,11 @@ def test_v1_round_trip_uses_public_pydantic_serializers_and_private_files(
         "ai.approve",
     }
     assert dict(loaded.references) == {
-        "ai_work_id": "conversation_1",
-        "invocation_id": "invocation_1",
-        "agent_run_id": "run_1",
+        "conversation_id": "conversation_1",
+        "task_run_id": "task_1",
+        "run_id": "run_1",
         "trace_id": "trace_1",
+        "toolset_contract_fingerprint": "fingerprint_1",
     }
     assert ModelMessagesTypeAdapter.dump_python(
         list(loaded.message_history), mode="json"
@@ -209,7 +211,9 @@ def test_v1_round_trip_uses_public_pydantic_serializers_and_private_files(
         assert store.state_path(created.state_id).stat().st_mode & 0o777 == 0o600
 
 
-def test_v0_flat_envelope_is_migrated_on_read(tmp_path: Path) -> None:
+def test_v0_flat_envelope_is_rejected_without_compatibility_read(
+    tmp_path: Path,
+) -> None:
     store = AiAgentStateStore(tmp_path)
     created = _create_pending(store)
     path = store.state_path(created.state_id)
@@ -229,15 +233,13 @@ def test_v0_flat_envelope_is_migrated_on_read(tmp_path: Path) -> None:
     }
     path.write_text(json.dumps(legacy, ensure_ascii=False), encoding="utf-8")
 
-    loaded = store.load(created.state_id)
+    with pytest.raises(AiAgentStateError) as caught:
+        store.load(created.state_id)
 
-    assert loaded.schema_version == 1
-    assert loaded.status == "pending"
-    assert loaded.use_case_id == "inventory.adjust"
-    assert loaded.deferred_requests.approvals[0].tool_call_id == "call_1"
+    assert caught.value.code == "AI_AGENT_STATE_VERSION_UNSUPPORTED"
 
 
-def test_original_v1_without_claim_or_result_fields_remains_readable(
+def test_incomplete_v1_envelope_is_rejected_without_compatibility_read(
     tmp_path: Path,
 ) -> None:
     store = AiAgentStateStore(tmp_path)
@@ -248,14 +250,13 @@ def test_original_v1_without_claim_or_result_fields_remains_readable(
     original_v1.pop("resume_result")
     path.write_text(json.dumps(original_v1, ensure_ascii=False), encoding="utf-8")
 
-    loaded = store.load(created.state_id)
+    with pytest.raises(AiAgentStateError) as caught:
+        store.load(created.state_id)
 
-    assert loaded.status == "pending"
-    assert loaded.resume_claim is None
-    assert loaded.resume_result is None
+    assert caught.value.code == "AI_AGENT_STATE_CORRUPT"
 
 
-def test_original_v1_resuming_without_claim_recovers_as_in_doubt(
+def test_resuming_envelope_without_current_claim_fields_is_rejected(
     tmp_path: Path,
 ) -> None:
     store = AiAgentStateStore(tmp_path)
@@ -268,13 +269,13 @@ def test_original_v1_resuming_without_claim_recovers_as_in_doubt(
     original_v1.pop("resume_result")
     path.write_text(json.dumps(original_v1, ensure_ascii=False), encoding="utf-8")
 
-    recovered = store.recover_expired_claim(
-        created.state_id,
-        now=NOW + timedelta(seconds=2),
-    )
+    with pytest.raises(AiAgentStateError) as caught:
+        store.recover_expired_claim(
+            created.state_id,
+            now=NOW + timedelta(seconds=2),
+        )
 
-    assert recovered.status == "in_doubt"
-    assert recovered.resume_claim is None
+    assert caught.value.code == "AI_AGENT_STATE_CORRUPT"
 
 
 @pytest.mark.parametrize(

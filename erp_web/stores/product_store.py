@@ -13,7 +13,7 @@ constructed by ``AppContext`` and handed its database.
 import re
 from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Iterator
 
 from erp_web.db import ErpDatabase, product_identity
 from erp_web.marketplace_registry import marketplace_site
@@ -385,6 +385,14 @@ class ProductStore:
 
     def load_drafts_index(self, scope: str = "active") -> list[dict[str, Any]]:
         return self.sanitize_products_index(self._db.list_draft_records(scope=scope))
+
+    def iter_drafts_index(self, scope: str = "active") -> Iterator[dict[str, Any]]:
+        """流式读取完整草稿集合；供需要精确 total/count 的服务使用。"""
+
+        for item in self._db.iter_draft_records(scope=scope):
+            sanitized = self.sanitize_products_index([item])
+            if sanitized:
+                yield sanitized[0]
 
     def delete_products_from_index(self, product_ids: list[Any]) -> dict[str, Any]:
         ids = _normalize_delete_ids(product_ids if isinstance(product_ids, list) else [product_ids])

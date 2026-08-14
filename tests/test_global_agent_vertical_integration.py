@@ -76,7 +76,6 @@ class _PlannerBoundary:
                 query_snapshot_id=self.snapshot_id,
                 explanation="按市场准备、确定性校验和确认后发布的顺序执行。",
             ),
-            execution_conversation_id="planning-execution-vertical",
         )
 
 
@@ -271,6 +270,7 @@ def _controller(
         planner=planner,
         capabilities=capabilities,
         publish_status_reader=bus.get_public_status,
+        answer_resolver=lambda _task, _decision: pytest.fail("不应解析只读答案"),
     )
 
 
@@ -312,7 +312,7 @@ def test_global_agent_real_vertical_publish_flow(
             total=1,
             count_by_platform={"ozon": 1},
             count_by_status={"claimed": 1},
-            query=DraftQueryCriteria(scope="all", platform="ozon"),
+            query=DraftQueryCriteria(scope="all", target_platform="ozon"),
             created_at=datetime.now(timezone.utc),
         )
     )
@@ -350,7 +350,6 @@ def test_global_agent_real_vertical_publish_flow(
         }
 
     def focused_category_boundary(*_args, **kwargs) -> dict[str, Any]:
-        assert kwargs["parent_conversation_id"] == "conversation-vertical"
         boundary_calls["category"] += 1
         return {
             "ok": True,
@@ -373,10 +372,7 @@ def test_global_agent_real_vertical_publish_flow(
         product: dict[str, Any],
         platform: str,
         _record: dict[str, Any] | None,
-        *,
-        parent_conversation_id: str | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        assert parent_conversation_id == "conversation-vertical"
         boundary_calls["attributes"] += 1
         updated = deepcopy(product)
         draft = updated["drafts"][platform]
@@ -398,28 +394,24 @@ def test_global_agent_real_vertical_publish_flow(
         *,
         product_store,
         matcher,
-        parent_conversation_id=None,
     ):
         return real_match_category(
             request,
             product_store=product_store,
             matcher=matcher,
             category_record_loader=_category_record,
-            parent_conversation_id=parent_conversation_id,
         )
 
     def attribute_capability_boundary(
         request,
         *,
         product_store,
-        parent_conversation_id=None,
     ):
         return real_fill_product_attributes(
             request,
             product_store=product_store,
             attribute_filler=focused_attribute_boundary,
             category_record_loader=_category_record,
-            parent_conversation_id=parent_conversation_id,
         )
 
     monkeypatch.setattr(
@@ -474,7 +466,6 @@ def test_global_agent_real_vertical_publish_flow(
                 platform="ozon",
                 draft_query_snapshot_id=snapshot_id,
             ),
-            ai_work_conversation_id="conversation-vertical",
         )
         assert category_pause.status == "needs_input"
         assert category_pause.pending_input_owner == "capability"
@@ -482,10 +473,6 @@ def test_global_agent_real_vertical_publish_flow(
             "category_id"
         ]
         assert category_pause.pending_inputs[0].input_owner == "step"
-        assert category_pause.agent_execution_conversation_ids == [
-            "planning-execution-vertical",
-            "focused-category-vertical",
-        ]
         assert boundary_calls == {"copy": 1, "category": 1, "attributes": 0}
         operation_key = (
             f"global-task:{category_pause.task_id}:"
@@ -495,36 +482,10 @@ def test_global_agent_real_vertical_publish_flow(
             "copy_operation_key"
         ] == operation_key
 
-        # 模拟领域草稿已原子写入文案+marker，但进程在 Capability 返回、任务
-        # 状态保存前退出：SQLite 任务仍是 running，且尚未记录 focused link。
-        crashed_steps = list(category_pause.steps)
-        crashed_steps[0] = crashed_steps[0].model_copy(update={"status": "running"})
-        task_store.save_task(
-            category_pause.model_copy(
-                update={
-                    "status": "running",
-                    "steps": crashed_steps,
-                    "pending_inputs": [],
-                    "pending_input_owner": "none",
-                    "agent_execution_conversation_ids": [
-                        "planning-execution-vertical"
-                    ],
-                }
-            )
-        )
-        controller = _controller(
-            store=LocalGlobalTaskStore(context.db),
-            planner=planner,
-            capabilities=capabilities,
-            bus=initial_bus,
-        )
-        category_pause = controller.get_state(category_pause.task_id)
-        assert category_pause.status == "needs_input"
-        assert category_pause.agent_execution_conversation_ids == [
-            "planning-execution-vertical",
-            "focused-category-vertical",
-        ]
-        assert boundary_calls == {"copy": 1, "category": 2, "attributes": 0}
+        # draft.prepare_for_market 涵盖多个领域写入，当前没有覆盖整个复合步骤
+        # 的真实幂等 owner，因此 running 中断不会静默重放；完整流程从已持久化
+        # needs_input 状态继续。
+        assert category_pause.steps[0].recovery_policy == "manual"
 
         # 每次补资料都重建 Controller/Store，证明暂停状态来自 SQLite owner。
         controller = _controller(
@@ -544,12 +505,7 @@ def test_global_agent_real_vertical_publish_flow(
         assert attribute_pause.pending_inputs[0].input_owner == (
             "provided_attributes"
         )
-        assert attribute_pause.agent_execution_conversation_ids == [
-            "planning-execution-vertical",
-            "focused-category-vertical",
-            "focused-attributes-vertical",
-        ]
-        assert boundary_calls == {"copy": 1, "category": 2, "attributes": 1}
+        assert boundary_calls == {"copy": 1, "category": 1, "attributes": 1}
 
         controller = _controller(
             store=LocalGlobalTaskStore(context.db),
@@ -569,7 +525,7 @@ def test_global_agent_real_vertical_publish_flow(
         assert confirmation.steps[1].status == "completed"
         assert confirmation.steps[2].status == "pending"
         assert planner.calls == 1
-        assert boundary_calls == {"copy": 1, "category": 2, "attributes": 2}
+        assert boundary_calls == {"copy": 1, "category": 1, "attributes": 2}
         prepared_draft = context.db.load_draft_model(draft_id)
         assert prepared_draft["title"] == "Портативный вентилятор"
         assert prepared_draft["category_id"] == "94765"
@@ -582,11 +538,6 @@ def test_global_agent_real_vertical_publish_flow(
         assert prepared_draft["publish_status"] == "ready"
         assert confirmation.publish_confirmation.summary["category_id"] == "94765"
         assert confirmation.publish_confirmation.summary["image_count"] == 1
-        assert confirmation.agent_execution_conversation_ids == [
-            "planning-execution-vertical",
-            "focused-category-vertical",
-            "focused-attributes-vertical",
-        ]
 
         submitted = controller.confirm_publish(confirmation.task_id)
         confirmed_at = submitted.publish_confirmation.confirmed_at
@@ -645,7 +596,14 @@ def test_global_agent_real_vertical_publish_flow(
             capabilities=capabilities,
             bus=restarted_bus,
         )
-        terminal = terminal_controller.get_state(confirmation.task_id)
+        persisted_snapshot = terminal_controller.get_state(
+            confirmation.task_id
+        )
+        terminal = (
+            terminal_controller.resume_task(confirmation.task_id)
+            if persisted_snapshot.status == "waiting_publish_result"
+            else persisted_snapshot
+        )
         assert terminal.status == expected_task_status
         assert terminal.steps[-1].status == (
             "completed" if remote_success else "failed"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime, timezone
-from typing import Any, Protocol
+from typing import Any, Iterator, Protocol
 from uuid import uuid4
 
 from erp_web.schemas.draft_capabilities import (
@@ -15,6 +15,11 @@ from erp_web.schemas.draft_capabilities import (
     DraftQuerySnapshot,
     DraftSummary,
 )
+from erp_web.schemas.global_tasks import (
+    AnswerResolutionScope,
+    GlobalPlanningDecision,
+    TrustedGlobalAnswer,
+)
 from erp_web.services.capability_errors import (
     BusinessCapabilityError,
     CapabilityInputRequired,
@@ -22,7 +27,7 @@ from erp_web.services.capability_errors import (
 
 
 class DraftIndexReader(Protocol):
-    def load_drafts_index(self, scope: str = "active") -> list[dict[str, Any]]:
+    def iter_drafts_index(self, scope: str = "active") -> Iterator[dict[str, Any]]:
         ...
 
 
@@ -49,6 +54,8 @@ def _raw_draft(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _platforms(item: dict[str, Any]) -> list[str]:
+    """返回草稿的目标平台集合。"""
+
     values = item.get("platforms") if isinstance(item.get("platforms"), list) else []
     primary = _text(item.get("platform")).lower()
     normalized = [
@@ -93,9 +100,10 @@ def _summary(item: dict[str, Any], *, view: str = "detail") -> DraftSummary:
         product_id=_text(item.get("source_product_id") or item.get("product_id")),
         title=_text(item.get("title")),
         product_title=_text(item.get("product_title")),
-        platform=_text(item.get("platform")).lower(),
-        platforms=_platforms(item),
-        site=_text(item.get("site")),
+        source_platform=_text(item.get("source_platform")).lower(),
+        target_platform=_text(item.get("platform")).lower(),
+        target_platforms=_platforms(item),
+        target_site=_text(item.get("site")),
         language=_text(item.get("language")),
         category_id=_text(item.get("category_id")),
         category_path=_text(item.get("category_path")),
@@ -119,9 +127,10 @@ def _summary(item: dict[str, Any], *, view: str = "detail") -> DraftSummary:
         "draft_id": summary.draft_id,
         "product_id": summary.product_id,
         "title": summary.title,
-        "platform": summary.platform,
-        "platforms": summary.platforms,
-        "site": summary.site,
+        "source_platform": summary.source_platform,
+        "target_platform": summary.target_platform,
+        "target_platforms": summary.target_platforms,
+        "target_site": summary.target_site,
         "created_at": summary.created_at,
         "updated_at": summary.updated_at,
     }
@@ -161,7 +170,7 @@ def _summary(item: dict[str, Any], *, view: str = "detail") -> DraftSummary:
 
 
 def _matches(item: dict[str, Any], query: DraftQueryCriteria) -> bool:
-    platform = query.platform.lower()
+    platform = query.target_platform.lower()
     if platform and platform not in _platforms(item):
         return False
     status = query.status.lower()
@@ -214,18 +223,52 @@ def _sort_items(
     )
 
 
-def _counts(items: list[DraftSummary]) -> tuple[dict[str, int], dict[str, int]]:
-    platform_counts: Counter[str] = Counter()
-    for item in items:
-        platforms = list(dict.fromkeys(item.platforms or [item.platform]))
-        if not platforms:
-            platforms = ["unknown"]
-        platform_counts.update(platform or "unknown" for platform in platforms)
-    status_counts = Counter(
-        item.readiness.workflow_status or item.readiness.publish_status or "unknown"
-        for item in items
+def _add_counts(
+    item: DraftSummary,
+    platform_counts: Counter[str],
+    status_counts: Counter[str],
+) -> None:
+    platforms = list(dict.fromkeys(item.target_platforms or [item.target_platform]))
+    if not platforms:
+        platforms = ["unknown"]
+    platform_counts.update(platform or "unknown" for platform in platforms)
+    status_counts.update(
+        [item.readiness.workflow_status or item.readiness.publish_status or "unknown"]
     )
-    return dict(sorted(platform_counts.items())), dict(sorted(status_counts.items()))
+
+
+def _retain_sorted_item(
+    items: list[dict[str, Any]],
+    item: dict[str, Any],
+    *,
+    sort: str,
+    limit: int,
+) -> None:
+    """只保留排序后的前 ``limit`` 条，内存占用不随草稿总量增长。"""
+
+    items.append(item)
+    items[:] = _sort_items(items, sort)
+    if len(items) > limit:
+        items.pop()
+
+
+def _records_by_id(
+    product_store: DraftIndexReader,
+    draft_ids: list[str],
+) -> dict[str, dict[str, Any]]:
+    remaining = set(draft_ids)
+    records: dict[str, dict[str, Any]] = {}
+    if not remaining:
+        return records
+    for item in product_store.iter_drafts_index("all"):
+        draft_id = _text(item.get("draft_id")) if isinstance(item, dict) else ""
+        if draft_id not in remaining:
+            continue
+        records[draft_id] = item
+        remaining.remove(draft_id)
+        if not remaining:
+            break
+    return records
 
 
 def _snapshot_or_error(
@@ -273,11 +316,8 @@ def resolve_draft_positions(
             options=[str(index) for index in range(1, min(maximum, 10) + 1)],
             input_type="string_list",
         )
-    records = {
-        _text(item.get("draft_id")): item
-        for item in product_store.load_drafts_index("all")
-        if _text(item.get("draft_id"))
-    }
+    selected_ids = [snapshot.draft_ids[position - 1] for position in positions]
+    records = _records_by_id(product_store, selected_ids)
     selected: list[DraftSummary] = []
     for position in positions:
         draft_id = snapshot.draft_ids[position - 1]
@@ -313,11 +353,7 @@ def query_drafts(
 
     if request.snapshot_id:
         snapshot = _snapshot_or_error(snapshot_repository, request.snapshot_id)
-        records = {
-            _text(item.get("draft_id")): item
-            for item in product_store.load_drafts_index("all")
-            if _text(item.get("draft_id"))
-        }
+        records = _records_by_id(product_store, snapshot.draft_ids)
         summaries = [
             _summary(records[draft_id], view=snapshot.query.view)
             for draft_id in snapshot.draft_ids
@@ -341,26 +377,34 @@ def query_drafts(
     query = DraftQueryCriteria.model_validate(
         request.model_dump(exclude={"snapshot_id", "positions"})
     )
-    records = [
-        item
-        for item in product_store.load_drafts_index(query.scope)
-        if isinstance(item, dict) and _matches(item, query)
-    ]
-    records = _sort_items(records, query.sort)
-    total = len(records)
+    records: list[dict[str, Any]] = []
+    total = 0
+    platform_counts: Counter[str] = Counter()
+    status_counts: Counter[str] = Counter()
+    for item in product_store.iter_drafts_index(query.scope):
+        if not isinstance(item, dict) or not _matches(item, query):
+            continue
+        detail = _summary(item, view="detail")
+        total += 1
+        _add_counts(detail, platform_counts, status_counts)
+        _retain_sorted_item(
+            records,
+            item,
+            sort=query.sort,
+            limit=query.limit,
+        )
     summaries = [
         _summary(item, view=query.view)
-        for item in records[: query.limit]
+        for item in records
     ]
-    platform_counts, status_counts = _counts(
-        [_summary(item, view="detail") for item in records]
-    )
+    serialized_platform_counts = dict(sorted(platform_counts.items()))
+    serialized_status_counts = dict(sorted(status_counts.items()))
     snapshot = DraftQuerySnapshot(
         snapshot_id=f"dqs_{uuid4().hex}",
         draft_ids=[item.draft_id for item in summaries],
         total=total,
-        count_by_platform=platform_counts,
-        count_by_status=status_counts,
+        count_by_platform=serialized_platform_counts,
+        count_by_status=serialized_status_counts,
         query=query,
         created_at=datetime.now(timezone.utc),
     )
@@ -370,10 +414,156 @@ def query_drafts(
     return DraftQueryResult(
         total=total,
         items=summaries,
-        count_by_platform=platform_counts,
-        count_by_status=status_counts,
+        count_by_platform=serialized_platform_counts,
+        count_by_status=serialized_status_counts,
         snapshot_id=snapshot.snapshot_id,
         selected_items=[],
+    )
+
+
+def resolve_trusted_draft_answer(
+    decision: GlobalPlanningDecision,
+    *,
+    product_store: DraftIndexReader,
+    snapshot_repository: DraftSnapshotRepository,
+    resolution_scope: AnswerResolutionScope | None = None,
+) -> TrustedGlobalAnswer:
+    """从查询快照重放当前事实，生成不可由模型覆写的展示答案。"""
+
+    scope = AnswerResolutionScope.model_validate(resolution_scope or {})
+    if decision.action != "answer" or decision.answer_kind is None:
+        raise BusinessCapabilityError(
+            "GLOBAL_ANSWER_DECISION_INVALID",
+            "只有结构化只读回答决策可以解析可信答案。",
+        )
+    snapshot = _snapshot_or_error(
+        snapshot_repository,
+        decision.query_snapshot_id,
+    )
+    if decision.answer_kind == "active_draft_count":
+        if scope.expected_product_id or scope.expected_target_platform:
+            raise BusinessCapabilityError(
+                "GLOBAL_ANSWER_COUNT_SCOPE_CONFLICT",
+                "活跃草稿总数不能绑定到单个商品或目标平台上下文。",
+            )
+        if (
+            snapshot.query.scope != "active"
+            or snapshot.query.target_platform
+            or snapshot.query.status
+            or snapshot.query.keyword
+        ):
+            raise BusinessCapabilityError(
+                "GLOBAL_ANSWER_ACTIVE_SCOPE_REQUIRED",
+                "活跃草稿总数必须引用未附带平台、状态或关键词过滤的 active 查询快照。",
+            )
+        return resolve_fresh_active_draft_count_answer(
+            product_store=product_store,
+            snapshot_repository=snapshot_repository,
+        )
+
+    position = decision.answer_draft_position
+    if position is None:
+        if snapshot.total != 1 or len(snapshot.draft_ids) != 1:
+            maximum = min(len(snapshot.draft_ids), 10)
+            raise CapabilityInputRequired(
+                "GLOBAL_ANSWER_DRAFT_AMBIGUOUS",
+                "当前查询结果不能唯一指向一个草稿。",
+                key="draft_position",
+                label="草稿序号",
+                reason="请说明要查看第几个草稿的来源与目标市场。",
+                options=[str(index) for index in range(1, maximum + 1)],
+                input_type="select",
+            )
+        position = 1
+    result = query_drafts(
+        DraftQueryRequest(
+            snapshot_id=snapshot.snapshot_id,
+            positions=[position],
+        ),
+        product_store=product_store,
+        snapshot_repository=snapshot_repository,
+    )
+    if len(result.selected_items) != 1:
+        raise BusinessCapabilityError(
+            "GLOBAL_ANSWER_DRAFT_NOT_RESOLVED",
+            "查询快照未能解析出唯一草稿。",
+        )
+    draft = result.selected_items[0]
+    if (
+        scope.expected_product_id
+        and draft.product_id != scope.expected_product_id
+    ):
+        raise BusinessCapabilityError(
+            "GLOBAL_ANSWER_PRODUCT_SCOPE_MISMATCH",
+            "查询快照指向的草稿不属于当前任务商品。",
+        )
+    if (
+        scope.expected_target_platform
+        and draft.target_platform != scope.expected_target_platform
+    ):
+        raise BusinessCapabilityError(
+            "GLOBAL_ANSWER_PLATFORM_SCOPE_MISMATCH",
+            "查询快照指向的草稿目标平台与当前任务上下文不一致。",
+        )
+    source_text = (
+        f"该商品来源于 {draft.source_platform}"
+        if draft.source_platform
+        else "该商品未记录来源平台"
+    )
+    target_text = (
+        f"当前草稿的目标平台是 {draft.target_platform}"
+        if draft.target_platform
+        else "当前草稿未记录目标平台"
+    )
+    site_text = (
+        f"目标站点代码为 {draft.target_site}"
+        if draft.target_site
+        else "未记录目标站点代码"
+    )
+    evidence_refs = [
+        f"draft_query_snapshot:{snapshot.snapshot_id}",
+        f"draft:{draft.draft_id}",
+    ]
+    if draft.product_id:
+        evidence_refs.append(f"product:{draft.product_id}")
+    return TrustedGlobalAnswer(
+        answer_kind="draft_market_context",
+        query_snapshot_id=snapshot.snapshot_id,
+        message=f"{source_text}；{target_text}，{site_text}。",
+        facts={
+            "draft_id": draft.draft_id,
+            "product_id": draft.product_id,
+            "draft_position": position,
+            "source_platform": draft.source_platform,
+            "target_platform": draft.target_platform,
+            "target_platforms": draft.target_platforms,
+            "target_site": draft.target_site,
+        },
+        evidence_refs=evidence_refs,
+    )
+
+
+def resolve_fresh_active_draft_count_answer(
+    *,
+    product_store: DraftIndexReader,
+    snapshot_repository: DraftSnapshotRepository,
+) -> TrustedGlobalAnswer:
+    """查询此刻的无过滤 active 集合并生成同一新快照上的可信答案。"""
+
+    result = query_drafts(
+        DraftQueryRequest(scope="active", view="summary", limit=100),
+        product_store=product_store,
+        snapshot_repository=snapshot_repository,
+    )
+    return TrustedGlobalAnswer(
+        answer_kind="active_draft_count",
+        query_snapshot_id=result.snapshot_id,
+        message=f"当前共有 {result.total} 个活跃草稿。",
+        facts={
+            "scope": "active",
+            "active_draft_count": result.total,
+        },
+        evidence_refs=[f"draft_query_snapshot:{result.snapshot_id}"],
     )
 
 
@@ -381,5 +571,7 @@ __all__ = [
     "DraftIndexReader",
     "DraftSnapshotRepository",
     "query_drafts",
+    "resolve_fresh_active_draft_count_answer",
+    "resolve_trusted_draft_answer",
     "resolve_draft_positions",
 ]

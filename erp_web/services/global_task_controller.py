@@ -1,14 +1,16 @@
-"""单进程、本地全局任务的顺序状态机。"""
+"""持久化执行归属保护下的本地全局任务顺序状态机。"""
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Iterator, Literal, Mapping, Protocol
 from uuid import uuid4
 
 from erp_web.schemas.global_tasks import (
+    AnswerResolutionScope,
     CapabilityError,
     CapabilityResult,
     GlobalPlanningDecision,
@@ -19,6 +21,7 @@ from erp_web.schemas.global_tasks import (
     PublishConfirmation,
     RequiredInput,
     TERMINAL_GLOBAL_TASK_STATUSES,
+    TrustedGlobalAnswer,
 )
 from erp_web.stores.global_task_store import (
     GlobalTaskStoreError,
@@ -39,8 +42,8 @@ class GlobalTaskControllerError(RuntimeError):
 @dataclass(frozen=True)
 class GlobalTaskPlanningOutcome:
     decision: GlobalPlanningDecision
-    execution_conversation_id: str = ""
     finish: Callable[[], None] | None = None
+    trusted_answer: TrustedGlobalAnswer | None = None
 
 
 class GlobalTaskPlanner(Protocol):
@@ -61,12 +64,57 @@ class GlobalTaskCapability(Protocol):
         ...
 
 
+CapabilityRecoveryPolicy = Literal["manual", "retry_safe", "idempotent"]
+
+
+@dataclass(frozen=True)
+class DeclaredGlobalTaskCapability:
+    """静态 Capability handler 与其崩溃恢复语义。"""
+
+    handler: GlobalTaskCapability
+    recovery_policy: CapabilityRecoveryPolicy
+
+    def __call__(
+        self,
+        task: LocalGlobalTaskState,
+        step: LocalTaskStep,
+    ) -> CapabilityResult[Any]:
+        return self.handler(task, step)
+
+
+def declare_global_task_capability(
+    capability: GlobalTaskCapability,
+    *,
+    recovery_policy: CapabilityRecoveryPolicy,
+) -> DeclaredGlobalTaskCapability:
+    """把 handler 与明确恢复语义组成不可变静态 Binding。"""
+
+    if recovery_policy not in {"manual", "retry_safe", "idempotent"}:
+        raise ValueError(f"未知 Capability recovery_policy：{recovery_policy}")
+    return DeclaredGlobalTaskCapability(
+        handler=capability,
+        recovery_policy=recovery_policy,
+    )
+
+
+def _capability_recovery_policy(
+    capability: GlobalTaskCapability,
+) -> CapabilityRecoveryPolicy:
+    value = str(getattr(capability, "recovery_policy", "manual"))
+    if value in {"retry_safe", "idempotent"}:
+        return value  # type: ignore[return-value]
+    return "manual"
+
+
 class PublishStatusReader(Protocol):
     def __call__(self, job_id: str) -> dict[str, Any]:
         ...
 
 
-ProjectionWriter = Callable[[str, str, dict[str, Any]], None]
+TrustedAnswerResolver = Callable[
+    [LocalGlobalTaskState, GlobalPlanningDecision],
+    TrustedGlobalAnswer,
+]
 
 
 def _now() -> datetime:
@@ -80,6 +128,45 @@ def _result_mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def _validate_trusted_answer_scope(
+    task: LocalGlobalTaskState,
+    answer: TrustedGlobalAnswer,
+) -> None:
+    """终检预解析答案仍属于当前任务的可信商品与平台作用域。"""
+
+    scope = AnswerResolutionScope(
+        expected_product_id=task.product_id,
+        expected_target_platform=task.platform,
+    )
+    if answer.answer_kind == "active_draft_count" and (
+        scope.expected_product_id or scope.expected_target_platform
+    ):
+        raise GlobalTaskControllerError(
+            "GLOBAL_ANSWER_COUNT_SCOPE_CONFLICT",
+            "活跃草稿总数不能绑定到单个商品或目标平台上下文。",
+        )
+    if answer.answer_kind != "draft_market_context":
+        return
+    actual_product_id = str(answer.facts.get("product_id") or "").strip()
+    if (
+        scope.expected_product_id
+        and actual_product_id != scope.expected_product_id
+    ):
+        raise GlobalTaskControllerError(
+            "GLOBAL_ANSWER_PRODUCT_SCOPE_MISMATCH",
+            "可信答案引用的草稿不属于当前任务商品。",
+        )
+    actual_platform = str(answer.facts.get("target_platform") or "").strip().lower()
+    if (
+        scope.expected_target_platform
+        and actual_platform != scope.expected_target_platform
+    ):
+        raise GlobalTaskControllerError(
+            "GLOBAL_ANSWER_PLATFORM_SCOPE_MISMATCH",
+            "可信答案引用的草稿目标平台与当前任务上下文不一致。",
+        )
+
+
 class GlobalTaskController:
     """严格顺序推进 Capability；不实现 model/tool loop。"""
 
@@ -90,62 +177,26 @@ class GlobalTaskController:
         planner: GlobalTaskPlanner,
         capabilities: Mapping[str, GlobalTaskCapability],
         publish_status_reader: PublishStatusReader,
-        projection_writer: ProjectionWriter | None = None,
+        answer_resolver: TrustedAnswerResolver,
+        execution_lease_seconds: float = 30.0,
     ) -> None:
         self.store = store
         self.planner = planner
         self.capabilities = dict(capabilities)
         self.publish_status_reader = publish_status_reader
-        self.projection_writer = projection_writer
+        self.answer_resolver = answer_resolver
+        self.execution_lease_seconds = max(1.0, float(execution_lease_seconds))
 
-    def _project(
-        self,
-        task: LocalGlobalTaskState,
-        name: str,
-        value: dict[str, Any],
-    ) -> None:
-        if self.projection_writer is None or not task.ai_work_conversation_id:
-            return
-        try:
-            self.projection_writer(
-                task.ai_work_conversation_id,
-                name,
-                {"task_id": task.task_id, **value},
-            )
-        except Exception:
-            logger.exception(
-                "全局任务 %s 的 AI Work 投影写入失败",
-                task.task_id,
-            )
-
-    def _save(
-        self,
-        task: LocalGlobalTaskState,
-        *,
-        project_state: bool = True,
-    ) -> LocalGlobalTaskState:
-        saved = self.store.save_task(task)
-        if project_state:
-            self._project(
-                saved,
-                "global.task_state",
-                {
-                    "status": saved.status,
-                    "summary": saved.assistant_message,
-                },
-            )
-        return saved
+    def _save(self, task: LocalGlobalTaskState) -> LocalGlobalTaskState:
+        return self.store.save_task(task)
 
     def create_task(
         self,
         request: GlobalTaskStartRequest,
-        *,
-        ai_work_conversation_id: str,
     ) -> LocalGlobalTaskState:
         now = _now()
         task = LocalGlobalTaskState(
             task_id=f"gtask_{uuid4().hex}",
-            task_kind=request.task_kind,
             goal=request.goal.strip(),
             product_id=request.product_id.strip(),
             platform=request.platform.strip().lower(),
@@ -153,44 +204,165 @@ class GlobalTaskController:
             steps=[],
             current_step_index=0,
             draft_query_snapshot_id=request.draft_query_snapshot_id.strip(),
-            ai_work_conversation_id=ai_work_conversation_id,
             assistant_message="正在理解目标并制定计划。",
             created_at=now,
             updated_at=now,
         )
-        task = self.store.create_task(task)
-        self._project(
-            task,
-            "global.user_message",
-            {"message": task.goal},
-        )
-        self._project(
-            task,
-            "global.task_state",
-            {"status": task.status, "summary": task.assistant_message},
-        )
-        return self._plan_and_run(task)
+        with self.store.task_lock(task.task_id):
+            with self.store.create_task_claimed(
+                task,
+                lease_seconds=self.execution_lease_seconds,
+            ) as claimed:
+                return self._resume_claimed(claimed)
 
-    def _record_planning_outcome(
+    @contextmanager
+    def _optional_mutation_claim(
+        self,
+        task_id: str,
+        *,
+        allowed_statuses: frozenset[str] | None = None,
+    ) -> Iterator[LocalGlobalTaskState | None]:
+        """领取可选写权；状态不匹配与 lease busy 均以 None 交给调用方判定。"""
+
+        with self.store.task_lock(task_id):
+            with self.store.execution_claim(
+                task_id,
+                lease_seconds=self.execution_lease_seconds,
+                allowed_statuses=allowed_statuses,
+            ) as task:
+                yield task
+
+    def _fail_unsafe_running_step(
         self,
         task: LocalGlobalTaskState,
-        outcome: GlobalTaskPlanningOutcome,
+        index: int,
     ) -> LocalGlobalTaskState:
-        if outcome.execution_conversation_id:
-            execution_ids = list(task.agent_execution_conversation_ids)
-            if outcome.execution_conversation_id not in execution_ids:
-                execution_ids.append(outcome.execution_conversation_id)
-            task = task.model_copy(
-                update={"agent_execution_conversation_ids": execution_ids}
-            )
-            self._project(
-                task,
-                "global.agent_execution_link",
-                {"conversation_id": outcome.execution_conversation_id},
-            )
-        if outcome.finish is not None:
-            outcome.finish()
+        step = task.steps[index]
+        steps = list(task.steps)
+        steps[index] = step.model_copy(
+            update={
+                "status": "failed",
+                "error_code": "GLOBAL_TASK_STEP_RECOVERY_UNSAFE",
+            }
+        )
+        failed = task.model_copy(
+            update={
+                "steps": steps,
+                "status": "failed",
+                "pending_inputs": [],
+                "pending_input_owner": "none",
+                "error_code": "GLOBAL_TASK_STEP_RECOVERY_UNSAFE",
+                "error_message": (
+                    f"步骤 {step.step_id} 的上一次副作用结果不明确，"
+                    "且 Capability 未声明可安全重放。"
+                ),
+                "assistant_message": (
+                    "任务在业务步骤执行期间中断。为避免重复副作用，"
+                    "系统未自动重放，请人工核对业务结果。"
+                ),
+            }
+        )
+        return self._save(failed)
+
+    def _resume_claimed(
+        self,
+        task: LocalGlobalTaskState,
+    ) -> LocalGlobalTaskState:
+        if task.status == "planning":
+            return self._plan_and_run(task)
+        if task.status == "running":
+            steps = list(task.steps)
+            if task.current_step_index < len(steps):
+                current = steps[task.current_step_index]
+                if current.status == "running":
+                    capability = self.capabilities.get(current.capability)
+                    declared_policy = (
+                        _capability_recovery_policy(capability)
+                        if capability is not None
+                        else "manual"
+                    )
+                    if (
+                        current.recovery_policy != declared_policy
+                        or declared_policy == "manual"
+                        or not current.operation_key
+                    ):
+                        return self._fail_unsafe_running_step(
+                            task,
+                            task.current_step_index,
+                        )
+                    steps[task.current_step_index] = current.model_copy(
+                        update={
+                            "status": "pending",
+                            "attempt_execution_id": "",
+                        }
+                    )
+                    task = self._save(task.model_copy(update={"steps": steps}))
+            return self._advance(task)
+        if task.status == "waiting_publish_result":
+            return self.refresh(task)
         return task
+
+    def _resume_task(
+        self,
+        task_id: str,
+        *,
+        wait_for_local_lock: bool,
+    ) -> LocalGlobalTaskState:
+        recoverable = frozenset({"planning", "running", "waiting_publish_result"})
+        with self.store.task_lock(
+            task_id,
+            blocking=wait_for_local_lock,
+        ) as acquired:
+            if not acquired:
+                raise GlobalTaskControllerError(
+                    "GLOBAL_TASK_EXECUTION_BUSY",
+                    "任务正在由另一个执行者处理，请稍后重试。",
+                    status_code=409,
+                )
+            persisted = self.store.require_task(task_id)
+            if persisted.status not in recoverable:
+                return persisted
+            with self.store.execution_claim(
+                task_id,
+                lease_seconds=self.execution_lease_seconds,
+                allowed_statuses=recoverable,
+            ) as task:
+                if task is None:
+                    current = self.store.require_task(task_id)
+                    if current.status not in recoverable:
+                        return current
+                    raise GlobalTaskControllerError(
+                        "GLOBAL_TASK_EXECUTION_BUSY",
+                        "任务正在由另一个执行者处理，请稍后重试。",
+                        status_code=409,
+                    )
+                return self._resume_claimed(task)
+
+    def resume_task(self, task_id: str) -> LocalGlobalTaskState:
+        """显式恢复单个任务；这是唯一允许重启后继续执行的入口。"""
+
+        return self._resume_task(task_id, wait_for_local_lock=True)
+
+    def recover_unfinished_tasks(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[LocalGlobalTaskState]:
+        """供应用启动/可信后台任务显式调用的有界恢复机制。"""
+
+        recovered: list[LocalGlobalTaskState] = []
+        for task in self.store.list_recoverable_tasks(limit=limit):
+            try:
+                recovered.append(
+                    self._resume_task(
+                        task.task_id,
+                        wait_for_local_lock=False,
+                    )
+                )
+            except GlobalTaskControllerError as exc:
+                if exc.code != "GLOBAL_TASK_EXECUTION_BUSY":
+                    raise
+        return recovered
 
     def _validate_plan_contract(
         self,
@@ -201,6 +373,23 @@ class GlobalTaskController:
 
         assert decision.plan is not None
         proposals = list(decision.plan.steps)
+        planned_platform = decision.plan.target_platform.strip().lower()
+        task_platform = task.platform.strip().lower()
+        if planned_platform and task_platform and planned_platform != task_platform:
+            return task.model_copy(
+                update={
+                    "status": "failed",
+                    "pending_inputs": [],
+                    "pending_input_owner": "none",
+                    "error_code": "GLOBAL_PLAN_PLATFORM_SCOPE_MISMATCH",
+                    "error_message": (
+                        "计划目标平台与任务显式绑定的平台不一致。"
+                    ),
+                    "assistant_message": (
+                        "任务计划试图覆盖已绑定的平台，未执行业务操作。"
+                    ),
+                }
+            )
         completed_prefix_count = sum(
             step.status == "completed"
             for step in task.steps[: task.current_step_index]
@@ -293,8 +482,10 @@ class GlobalTaskController:
     ) -> LocalGlobalTaskState:
         try:
             outcome = self.planner(task, supplement)
-            task = self._record_planning_outcome(task, outcome)
+            if outcome.finish is not None:
+                outcome.finish()
             decision = outcome.decision
+            trusted_planning_answer = outcome.trusted_answer
         except Exception as exc:
             task = task.model_copy(
                 update={
@@ -308,13 +499,7 @@ class GlobalTaskController:
                     "error_message": str(exc),
                 }
             )
-            saved = self._save(task)
-            self._project(
-                saved,
-                "global.assistant_message",
-                {"message": saved.assistant_message},
-            )
-            return saved
+            return self._save(task)
 
         if decision.action == "ask_user":
             required = RequiredInput(
@@ -331,59 +516,53 @@ class GlobalTaskController:
                     "plan_explanation": decision.explanation,
                 }
             )
-            saved = self._save(task)
-            self._project(
-                saved,
-                "global.assistant_message",
-                {"message": saved.assistant_message},
-            )
-            return saved
+            return self._save(task)
 
         if decision.action == "answer":
-            snapshot = self.store.load_draft_query_snapshot(
-                decision.query_snapshot_id
-            )
-            if snapshot is None:
+            try:
+                trusted = TrustedGlobalAnswer.model_validate(
+                    trusted_planning_answer or self.answer_resolver(task, decision)
+                )
+                _validate_trusted_answer_scope(task, trusted)
+            except Exception as exc:
+                stable_code = str(
+                    getattr(exc, "code", "GLOBAL_ANSWER_RESOLUTION_FAILED")
+                )
+                if hasattr(exc, "code"):
+                    public_error = str(exc)
+                else:
+                    logger.exception(
+                        "全局任务 %s 的可信答案解析发生未知异常",
+                        task.task_id,
+                    )
+                    public_error = "可信答案解析失败。"
                 task = task.model_copy(
                     update={
                         "status": "failed",
                         "pending_inputs": [],
                         "pending_input_owner": "none",
-                        "error_code": "GLOBAL_PLAN_SNAPSHOT_NOT_FOUND",
-                        "error_message": "规划引用的草稿查询快照不存在。",
-                        "assistant_message": "无法验证查询结果，请重新查询。",
+                        "error_code": stable_code,
+                        "error_message": public_error,
+                        "assistant_message": "无法验证只读回答，请重新查询。",
                     }
                 )
             else:
-                total = int(getattr(snapshot, "total", len(snapshot.draft_ids)))
                 task = task.model_copy(
                     update={
                         "status": "completed",
                         "pending_inputs": [],
                         "pending_input_owner": "none",
-                        "draft_query_snapshot_id": snapshot.snapshot_id,
-                        "assistant_message": f"当前查询匹配 {total} 个草稿。",
+                        "draft_query_snapshot_id": trusted.query_snapshot_id,
+                        "assistant_message": trusted.message,
                         "plan_explanation": decision.explanation,
                     }
                 )
-            saved = self._save(task)
-            self._project(
-                saved,
-                "global.assistant_message",
-                {"message": saved.assistant_message},
-            )
-            return saved
+            return self._save(task)
 
         assert decision.plan is not None
         invalid_task = self._validate_plan_contract(task, decision)
         if invalid_task is not None:
-            saved = self._save(invalid_task)
-            self._project(
-                saved,
-                "global.assistant_message",
-                {"message": saved.assistant_message},
-            )
-            return saved
+            return self._save(invalid_task)
         snapshot_id = decision.query_snapshot_id or task.draft_query_snapshot_id
         completed_prefix = list(task.steps[: task.current_step_index])
         if any(step.status != "completed" for step in completed_prefix):
@@ -413,13 +592,7 @@ class GlobalTaskController:
                         "assistant_message": "草稿选择已经失效，请重新查询。",
                     }
                 )
-                saved = self._save(task)
-                self._project(
-                    saved,
-                    "global.assistant_message",
-                    {"message": saved.assistant_message},
-                )
-                return saved
+                return self._save(task)
             shared_inputs["draft_id"] = snapshot.draft_ids[
                 decision.plan.draft_position - 1
             ]
@@ -427,11 +600,20 @@ class GlobalTaskController:
         if snapshot_id:
             shared_inputs["snapshot_id"] = snapshot_id
         parameters = decision.plan.parameters
-        planned_steps = [
-            LocalTaskStep(
-                step_id=f"step_{index + 1}_{proposal.local_key}",
+        planned_steps: list[LocalTaskStep] = []
+        for index, proposal in enumerate(
+            decision.plan.steps,
+            start=len(completed_prefix),
+        ):
+            step_id = f"step_{index + 1}_{proposal.local_key}"
+            capability = self.capabilities[proposal.capability]
+            operation_key = f"global-task:{task.task_id}:step:{step_id}"
+            planned_steps.append(LocalTaskStep(
+                step_id=step_id,
                 capability=proposal.capability,
                 objective=proposal.objective,
+                operation_key=operation_key,
+                recovery_policy=_capability_recovery_policy(capability),
                 inputs={
                     **shared_inputs,
                     **(
@@ -467,12 +649,7 @@ class GlobalTaskController:
                         else {}
                     ),
                 },
-            )
-            for index, proposal in enumerate(
-                decision.plan.steps,
-                start=len(completed_prefix),
-            )
-        ]
+            ))
         steps = completed_prefix + planned_steps
         publish_step = next(
             (
@@ -519,9 +696,6 @@ class GlobalTaskController:
                 message=str(exc) or "业务步骤执行失败。",
                 retryable=bool(getattr(exc, "retryable", False)),
             ),
-            agent_execution_conversation_ids=list(
-                getattr(exc, "agent_execution_conversation_ids", ())
-            ),
         )
 
     def _advance(self, task: LocalGlobalTaskState) -> LocalGlobalTaskState:
@@ -537,17 +711,27 @@ class GlobalTaskController:
                 )
                 continue
             running_step = step.model_copy(update={"status": "running"})
+            operation_key = (
+                running_step.operation_key
+                or f"global-task:{task.task_id}:step:{running_step.step_id}"
+            )
+            capability = self.capabilities[running_step.capability]
+            running_step = running_step.model_copy(
+                update={
+                    "operation_key": operation_key,
+                    "recovery_policy": _capability_recovery_policy(capability),
+                    "attempt_execution_id": task.execution_id,
+                }
+            )
             steps = list(task.steps)
             steps[index] = running_step
             task = self._save(task.model_copy(update={"steps": steps}))
-            capability = self.capabilities[running_step.capability]
             try:
                 result = CapabilityResult[Any].model_validate(
                     capability(task, running_step)
                 )
             except Exception as exc:
                 result = self._failed_capability_result(exc)
-            task = self._persist_capability_execution_links(task, result)
             task = self._apply_capability_result(task, index, result)
             task = self._save(task)
         if task.status == "running" and task.current_step_index >= len(task.steps):
@@ -558,57 +742,7 @@ class GlobalTaskController:
                 }
             )
             task = self._save(task)
-            self._project(
-                task,
-                "global.assistant_message",
-                {"message": task.assistant_message},
-            )
         return task
-
-    def _persist_capability_execution_links(
-        self,
-        task: LocalGlobalTaskState,
-        result: CapabilityResult[Any],
-    ) -> LocalGlobalTaskState:
-        raw_ids: list[Any] = list(result.agent_execution_conversation_ids)
-        mapping = _result_mapping(result.result)
-        if mapping.get("conversation_id"):
-            raw_ids.append(mapping["conversation_id"])
-        nested_ids = mapping.get("agent_execution_conversation_ids")
-        if isinstance(nested_ids, list):
-            raw_ids.extend(nested_ids)
-        discovered = list(
-            dict.fromkeys(
-                str(value or "").strip()
-                for value in raw_ids
-                if str(value or "").strip()
-            )
-        )
-        if not discovered:
-            return task
-        existing = list(task.agent_execution_conversation_ids)
-        added: list[str] = []
-        for conversation_id in discovered:
-            if conversation_id not in existing:
-                existing.append(conversation_id)
-                added.append(conversation_id)
-        if not added:
-            return task
-        # execution link 是 Capability 已经发生的事实。先将事实写入 durable
-        # task，再做 AI Work 投影和状态迁移，避免 needs_input/failed 分支丢链。
-        saved = self._save(
-            task.model_copy(
-                update={"agent_execution_conversation_ids": existing}
-            ),
-            project_state=False,
-        )
-        for conversation_id in added:
-            self._project(
-                saved,
-                "global.agent_execution_link",
-                {"conversation_id": conversation_id},
-            )
-        return saved
 
     def _apply_capability_result(
         self,
@@ -703,11 +837,6 @@ class GlobalTaskController:
                     "assistant_message": result.summary,
                 }
             )
-            self._project(
-                paused,
-                "global.assistant_message",
-                {"message": paused.assistant_message},
-            )
             return paused
 
         if result.status == "in_progress":
@@ -782,12 +911,22 @@ class GlobalTaskController:
         self,
         request: GlobalTaskInputRequest,
     ) -> LocalGlobalTaskState:
-        with self.store.task_lock(request.task_id):
-            task = self.store.require_task(request.task_id)
-            if task.status != "needs_input":
+        allowed_statuses = frozenset({"needs_input"})
+        with self._optional_mutation_claim(
+            request.task_id,
+            allowed_statuses=allowed_statuses,
+        ) as task:
+            if task is None:
+                current = self.store.require_task(request.task_id)
+                if current.status != "needs_input":
+                    raise GlobalTaskControllerError(
+                        "GLOBAL_TASK_INPUT_NOT_EXPECTED",
+                        "当前任务不在等待补充资料。",
+                        status_code=409,
+                    )
                 raise GlobalTaskControllerError(
-                    "GLOBAL_TASK_INPUT_NOT_EXPECTED",
-                    "当前任务不在等待补充资料。",
+                    "GLOBAL_TASK_EXECUTION_BUSY",
+                    "任务正在由另一个执行者处理，请稍后重试。",
                     status_code=409,
                 )
             expected = {item.key for item in task.pending_inputs}
@@ -796,17 +935,6 @@ class GlobalTaskController:
                 raise GlobalTaskControllerError(
                     "GLOBAL_TASK_INPUT_FIELD_UNKNOWN",
                     "提交了当前步骤未请求的字段：" + "、".join(unknown),
-                )
-            projected_message = request.message.strip()
-            if not projected_message and request.inputs:
-                projected_message = "已补充字段：" + "、".join(
-                    sorted(request.inputs)
-                )
-            if projected_message:
-                self._project(
-                    task,
-                    "global.user_message",
-                    {"message": projected_message},
                 )
             if task.pending_input_owner == "planning":
                 clarification = request.inputs.get("clarification")
@@ -880,14 +1008,34 @@ class GlobalTaskController:
             return task if remaining else self._advance(task)
 
     def confirm_publish(self, task_id: str) -> LocalGlobalTaskState:
-        with self.store.task_lock(task_id):
-            task = self.store.require_task(task_id)
-            if task.status in {"waiting_publish_result", "completed", "failed"}:
-                return self.refresh(task)
-            if (
-                task.status != "waiting_publish_confirmation"
-                or task.publish_confirmation.status != "pending"
-            ):
+        persisted = self.store.require_task(task_id)
+        idempotent_statuses = {
+            "waiting_publish_result",
+            *TERMINAL_GLOBAL_TASK_STATUSES,
+        }
+        if persisted.status in idempotent_statuses:
+            return persisted
+        allowed_statuses = frozenset({"waiting_publish_confirmation"})
+        with self._optional_mutation_claim(
+            task_id,
+            allowed_statuses=allowed_statuses,
+        ) as task:
+            if task is None:
+                current = self.store.require_task(task_id)
+                if current.status in idempotent_statuses:
+                    return current
+                if current.status != "waiting_publish_confirmation":
+                    raise GlobalTaskControllerError(
+                        "GLOBAL_TASK_PUBLISH_CONFIRM_NOT_EXPECTED",
+                        "当前任务不在等待发布确认。",
+                        status_code=409,
+                    )
+                raise GlobalTaskControllerError(
+                    "GLOBAL_TASK_EXECUTION_BUSY",
+                    "任务正在由另一个执行者处理，请稍后重试。",
+                    status_code=409,
+                )
+            if task.publish_confirmation.status != "pending":
                 raise GlobalTaskControllerError(
                     "GLOBAL_TASK_PUBLISH_CONFIRM_NOT_EXPECTED",
                     "当前任务不在等待发布确认。",
@@ -908,14 +1056,52 @@ class GlobalTaskController:
             return self._advance(self._save(task))
 
     def cancel(self, task_id: str) -> LocalGlobalTaskState:
-        with self.store.task_lock(task_id):
-            task = self.store.require_task(task_id)
-            if task.status in TERMINAL_GLOBAL_TASK_STATUSES:
-                return task
-            if task.status == "waiting_publish_result":
+        persisted = self.store.require_task(task_id)
+        # 终态不可再变化，幂等取消无需改写 execution_id 或 revision。
+        if persisted.status in TERMINAL_GLOBAL_TASK_STATUSES:
+            return persisted
+        if persisted.status == "waiting_publish_result":
+            raise GlobalTaskControllerError(
+                "GLOBAL_TASK_PUBLISH_ALREADY_SUBMITTED",
+                "发布已经提交，不能用取消任务撤回外部平台操作。",
+                status_code=409,
+            )
+        cancellable = frozenset(
+            {
+                "planning",
+                "running",
+                "needs_input",
+                "waiting_publish_confirmation",
+            }
+        )
+        with self._optional_mutation_claim(
+            task_id,
+            allowed_statuses=cancellable,
+        ) as task:
+            if task is None:
+                current = self.store.require_task(task_id)
+                if current.status in TERMINAL_GLOBAL_TASK_STATUSES:
+                    return current
+                if current.status == "waiting_publish_result":
+                    raise GlobalTaskControllerError(
+                        "GLOBAL_TASK_PUBLISH_ALREADY_SUBMITTED",
+                        "发布已经提交，不能用取消任务撤回外部平台操作。",
+                        status_code=409,
+                    )
                 raise GlobalTaskControllerError(
-                    "GLOBAL_TASK_PUBLISH_ALREADY_SUBMITTED",
-                    "发布已经提交，不能用取消任务撤回外部平台操作。",
+                    "GLOBAL_TASK_EXECUTION_BUSY",
+                    "任务正在由另一个执行者处理，请稍后重试。",
+                    status_code=409,
+                )
+            if (
+                task.status == "running"
+                and task.current_step_index < len(task.steps)
+                and task.steps[task.current_step_index].status == "running"
+            ):
+                raise GlobalTaskControllerError(
+                    "GLOBAL_TASK_STEP_OUTCOME_UNKNOWN",
+                    "当前业务步骤的执行结果尚不明确，不能直接取消；"
+                    "请先恢复任务或人工核对业务结果。",
                     status_code=409,
                 )
             task = task.model_copy(
@@ -997,40 +1183,23 @@ class GlobalTaskController:
                     "assistant_message": "平台返回发布失败，任务未完成。",
                 }
             )
-        saved = self._save(task)
-        self._project(
-            saved,
-            "global.assistant_message",
-            {"message": saved.assistant_message},
-        )
-        return saved
+        return self._save(task)
 
     def get_state(self, task_id: str) -> LocalGlobalTaskState:
-        with self.store.task_lock(task_id):
-            task = self.store.require_task(task_id)
-            if task.status == "planning":
-                return self._plan_and_run(task)
-            if task.status == "running":
-                steps = list(task.steps)
-                if task.current_step_index < len(steps):
-                    current = steps[task.current_step_index]
-                    if current.status == "running":
-                        steps[task.current_step_index] = current.model_copy(
-                            update={"status": "pending"}
-                        )
-                        task = self._save(
-                            task.model_copy(update={"steps": steps})
-                        )
-                return self._advance(task)
-            return self.refresh(task)
+        """纯读已持久化快照；禁止隐式规划、Capability 或发布状态刷新。"""
+
+        return self.store.require_task(task_id)
 
 
 __all__ = [
+    "CapabilityRecoveryPolicy",
+    "DeclaredGlobalTaskCapability",
     "GlobalTaskCapability",
     "GlobalTaskController",
     "GlobalTaskControllerError",
     "GlobalTaskPlanningOutcome",
     "GlobalTaskPlanner",
-    "ProjectionWriter",
     "PublishStatusReader",
+    "TrustedAnswerResolver",
+    "declare_global_task_capability",
 ]

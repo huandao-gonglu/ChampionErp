@@ -1,11 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { apiClient } from '@/api/client'
-import {
-  fetchAiWorkConversation,
-  fetchAiWorkConversationChildren,
-  fetchAiWorkConversations,
-  waitForAiWorkEvents,
-} from '@/api/aiWork'
+import * as aiWorkApi from '@/api/aiWork'
 
 vi.mock('@/api/client', () => ({
   apiClient: {
@@ -13,58 +8,34 @@ vi.mock('@/api/client', () => ({
   },
 }))
 
-describe('AI Work 会话层级 API', () => {
+describe('AI Work 只读 API', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(apiClient.get).mockResolvedValue({ data: { ok: true, conversations: [] } })
   })
 
-  it('默认只请求根会话，显式开关才包含内部会话', async () => {
-    await fetchAiWorkConversations()
-    await fetchAiWorkConversations(80, true)
-
-    expect(vi.mocked(apiClient.get).mock.calls).toEqual([
-      ['/api/v1/ai-work/conversations', { params: { limit: 50 } }],
-      ['/api/v1/ai-work/conversations', {
-        params: { limit: 80, include_children: true },
-      }],
+  it('只导出 conversation list/detail 两个读取函数', () => {
+    expect(Object.keys(aiWorkApi).sort()).toEqual([
+      'fetchPydanticConversation',
+      'fetchPydanticConversations',
     ])
   })
 
-  it('主会话的子执行列表和单会话详情使用独立只读端点', async () => {
-    await fetchAiWorkConversationChildren('root/id', 200)
-    await fetchAiWorkConversation('child/id')
+  it('读取 conversation 索引并使用显式 limit', async () => {
+    await aiWorkApi.fetchPydanticConversations()
+    await aiWorkApi.fetchPydanticConversations(25)
 
     expect(vi.mocked(apiClient.get).mock.calls).toEqual([
-      ['/api/v1/ai-work/conversations/root%2Fid/children', { params: { limit: 200 } }],
-      ['/api/v1/ai-work/conversations/child%2Fid'],
+      ['/api/v1/ai-work/conversations', { params: { limit: 100 } }],
+      ['/api/v1/ai-work/conversations', { params: { limit: 25 } }],
     ])
   })
 
-  it('长轮询透传 AbortSignal 并解析 NDJSON 事件', async () => {
-    const abortController = new AbortController()
-    vi.mocked(apiClient.get).mockResolvedValue({
-      data: '{"seq":8,"type":"RUN_STARTED"}\n{"seq":9,"type":"RUN_FINISHED"}\n',
-    })
+  it('详情只请求 conversation 本身并编码 ID', async () => {
+    await aiWorkApi.fetchPydanticConversation('conversation/id')
 
-    const events = await waitForAiWorkEvents(
-      'conversation/id',
-      7,
-      5_000,
-      abortController.signal,
+    expect(apiClient.get).toHaveBeenCalledWith(
+      '/api/v1/ai-work/conversations/conversation%2Fid',
     )
-
-    expect(vi.mocked(apiClient.get)).toHaveBeenCalledWith(
-      '/api/v1/ai-work/conversations/conversation%2Fid/events',
-      expect.objectContaining({
-        params: { after_seq: 7, wait_ms: 5_000 },
-        signal: abortController.signal,
-        timeout: 15_000,
-      }),
-    )
-    expect(events).toEqual([
-      { seq: 8, type: 'RUN_STARTED' },
-      { seq: 9, type: 'RUN_FINISHED' },
-    ])
   })
 })

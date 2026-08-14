@@ -25,34 +25,6 @@ from erp_web.services.ai_tool_registry import (
 from erp_web.services.ai_tool_runtime import AiToolRuntime
 
 
-class RecordingRecorder:
-    conversation_id = "aic_tool_bridge_test"
-
-    def __init__(self) -> None:
-        self.events: list[tuple[str, dict[str, Any]]] = []
-
-    def record(self, event_type: str, **payload: Any) -> None:
-        self.events.append((event_type, payload))
-
-    def emit(self, event_type: str, **payload: Any) -> None:
-        self.record(event_type, **payload)
-
-    def emit_custom(self, name: str, value: Any) -> None:
-        self.record("CUSTOM", name=name, value=value)
-
-    def emit_text_delta(self, delta: str) -> None:
-        self.record("TEXT_MESSAGE_CONTENT", delta=delta)
-
-    def finish_assistant_message(self, raw_text: str = "") -> None:
-        self.record("TEXT_MESSAGE_END", raw_text=raw_text)
-
-    def finish(self, result: Any) -> None:
-        self.record("RUN_FINISHED", result=result)
-
-    def fail(self, error: Exception) -> None:
-        self.record("RUN_ERROR", error=str(error))
-
-
 ToolExecutor = Callable[[dict[str, Any], AiExecutionContext], Any]
 
 
@@ -134,21 +106,18 @@ def bind_dependencies(
     context: AiExecutionContext,
     *,
     max_output_bytes: int = 64 * 1024,
-) -> tuple[AiAgentDependencies, AiToolRuntime, RecordingRecorder]:
-    recorder = RecordingRecorder()
+) -> tuple[AiAgentDependencies, AiToolRuntime]:
     runtime = AiToolRuntime(
         toolset=toolset,
         execution_context=context,
-        recorder=recorder,
         max_output_bytes=max_output_bytes,
     )
     dependencies = AiAgentDependencies(
         use_case_id="test.tool_bridge",
         execution_context=context,
-        recorder=recorder,
         tool_runtime=runtime,
     )
-    return dependencies, runtime, recorder
+    return dependencies, runtime
 
 
 def execute_bridge(
@@ -177,7 +146,7 @@ def test_real_agent_function_model_round_trip_preserves_schema_and_tool_call_id(
     definition = tool_definition()
     toolset = bind_toolset(definition, executor)
     context = execution_context(business_scope={"platform": "mercadolibre"})
-    dependencies, runtime, recorder = bind_dependencies(toolset, context)
+    dependencies, runtime = bind_dependencies(toolset, context)
     bridge = PydanticToolBridge(toolset)
     model_turns = 0
     returned_tool_parts: list[ToolReturnPart] = []
@@ -234,14 +203,6 @@ def test_real_agent_function_model_round_trip_preserves_schema_and_tool_call_id(
     assert len(returned_tool_parts) == 1
     assert returned_tool_parts[0].tool_call_id == "pydantic-call-17"
     assert returned_tool_parts[0].content == {"item_id": "sku-agent"}
-    started = [
-        payload
-        for event_type, payload in recorder.events
-        if event_type == "TOOL_CALL_STARTED"
-    ]
-    assert len(started) == 1
-    assert started[0]["tool_call_id"] == "pydantic-call-17"
-    assert started[0]["tool_version"] == "1"
 
 
 def test_bridge_routes_permission_denial_through_runtime_without_executor_call() -> None:
@@ -254,7 +215,7 @@ def test_bridge_routes_permission_denial_through_runtime_without_executor_call()
         return {"item_id": "unreachable"}
 
     toolset = bind_toolset(tool_definition(), executor)
-    dependencies, runtime, recorder = bind_dependencies(
+    dependencies, runtime = bind_dependencies(
         toolset,
         execution_context(permissions=frozenset()),
     )
@@ -266,13 +227,6 @@ def test_bridge_routes_permission_denial_through_runtime_without_executor_call()
     assert captured.value.tool_call_id == "denied-call"
     assert executions == 0
     assert runtime.unique_call_count == 1
-    finished = [
-        payload
-        for event_type, payload in recorder.events
-        if event_type == "TOOL_CALL_FINISHED"
-    ]
-    assert finished[-1]["error_code"] == "TOOL_PERMISSION_DENIED"
-    assert "result" not in finished[-1]
 
 
 def test_bridge_keeps_business_scope_out_of_model_schema_and_passes_it_to_executor() -> None:
@@ -287,7 +241,7 @@ def test_bridge_keeps_business_scope_out_of_model_schema_and_passes_it_to_execut
 
     definition = tool_definition()
     toolset = bind_toolset(definition, executor)
-    dependencies, runtime, _ = bind_dependencies(
+    dependencies, runtime = bind_dependencies(
         toolset,
         execution_context(
             business_scope={"platform": "mercadolibre", "site": "MLM"}
@@ -338,7 +292,7 @@ def test_bridge_enforces_write_and_approval_before_executor() -> None:
     toolset = bind_toolset(definition, executor)
     bridge = PydanticToolBridge(toolset)
 
-    write_denied, denied_runtime, _ = bind_dependencies(
+    write_denied, denied_runtime = bind_dependencies(
         toolset,
         execution_context(
             permissions={"catalog.write"},
@@ -352,7 +306,7 @@ def test_bridge_enforces_write_and_approval_before_executor() -> None:
     assert denied_runtime.unique_call_count == 1
     assert execution_call_ids == []
 
-    approval_missing, approval_runtime, _ = bind_dependencies(
+    approval_missing, approval_runtime = bind_dependencies(
         toolset,
         execution_context(
             permissions={"catalog.write"},
@@ -369,7 +323,7 @@ def test_bridge_enforces_write_and_approval_before_executor() -> None:
     assert approval_runtime.unique_call_count == 1
     assert execution_call_ids == []
 
-    approved, approved_runtime, _ = bind_dependencies(
+    approved, approved_runtime = bind_dependencies(
         toolset,
         execution_context(
             permissions={"catalog.write"},
@@ -395,7 +349,7 @@ def test_bridge_preserves_runtime_idempotency_across_distinct_call_ids() -> None
         return {"item_id": arguments["item_id"]}
 
     toolset = bind_toolset(tool_definition(), executor)
-    dependencies, runtime, recorder = bind_dependencies(
+    dependencies, runtime = bind_dependencies(
         toolset,
         execution_context(),
     )
@@ -407,14 +361,6 @@ def test_bridge_preserves_runtime_idempotency_across_distinct_call_ids() -> None
     assert first == second == {"item_id": "sku-1"}
     assert executions == ["sku-1"]
     assert runtime.unique_call_count == 2
-    finished = [
-        payload
-        for event_type, payload in recorder.events
-        if event_type == "TOOL_CALL_FINISHED"
-    ]
-    assert [item["tool_call_id"] for item in finished] == ["call-one", "call-two"]
-    assert finished[0]["deduplicated"] is False
-    assert finished[1]["deduplicated"] is True
 
 
 def test_bridge_enforces_deadline_and_output_limit() -> None:
@@ -429,7 +375,7 @@ def test_bridge_enforces_deadline_and_output_limit() -> None:
         return {"item_id": "unreachable"}
 
     deadline_toolset = bind_toolset(tool_definition(), deadline_executor)
-    expired_dependencies, expired_runtime, _ = bind_dependencies(
+    expired_dependencies, expired_runtime = bind_dependencies(
         deadline_toolset,
         execution_context(expired=True),
     )
@@ -460,7 +406,7 @@ def test_bridge_enforces_deadline_and_output_limit() -> None:
         }
     )
     large_toolset = bind_toolset(large_definition, large_executor)
-    large_dependencies, large_runtime, recorder = bind_dependencies(
+    large_dependencies, large_runtime = bind_dependencies(
         large_toolset,
         execution_context(),
         max_output_bytes=32,
@@ -474,12 +420,6 @@ def test_bridge_enforces_deadline_and_output_limit() -> None:
     assert too_large.value.code == "TOOL_OUTPUT_TOO_LARGE"
     assert large_runtime.unique_call_count == 1
     assert size_executions == 1
-    finished = [
-        payload
-        for event_type, payload in recorder.events
-        if event_type == "TOOL_CALL_FINISHED"
-    ]
-    assert finished[-1]["truncated"] is True
 
 
 def test_bridge_preserves_public_error_without_code_enumeration() -> None:
@@ -492,7 +432,7 @@ def test_bridge_preserves_public_error_without_code_enumeration() -> None:
         )
 
     toolset = bind_toolset(tool_definition(), executor)
-    dependencies, _, recorder = bind_dependencies(toolset, execution_context())
+    dependencies, _ = bind_dependencies(toolset, execution_context())
 
     with pytest.raises(AiToolBridgeError) as captured:
         execute_bridge(
@@ -504,16 +444,6 @@ def test_bridge_preserves_public_error_without_code_enumeration() -> None:
     assert captured.value.code == "DOMAIN_CUSTOM_FAILURE"
     assert str(captured.value) == "领域服务暂时不可用。"
     assert captured.value.retryable is True
-    finished = [
-        payload
-        for event_type, payload in recorder.events
-        if event_type == "TOOL_CALL_FINISHED"
-    ]
-    assert finished[-1]["error"] == {
-        "code": "DOMAIN_CUSTOM_FAILURE",
-        "message": "领域服务暂时不可用。",
-        "retryable": True,
-    }
 
 
 def test_bridge_error_does_not_expose_unknown_runtime_message() -> None:
@@ -526,7 +456,7 @@ def test_bridge_error_does_not_expose_unknown_runtime_message() -> None:
         raise RuntimeError("internal-runtime-secret-token")
 
     toolset = bind_toolset(tool_definition(), executor)
-    dependencies, runtime, recorder = bind_dependencies(
+    dependencies, runtime = bind_dependencies(
         toolset,
         execution_context(),
     )
@@ -545,13 +475,6 @@ def test_bridge_error_does_not_expose_unknown_runtime_message() -> None:
     assert "internal-runtime-secret-token" not in repr(captured.value)
     assert executions == 1
     assert runtime.unique_call_count == 1
-    finished = [
-        payload
-        for event_type, payload in recorder.events
-        if event_type == "TOOL_CALL_FINISHED"
-    ]
-    assert finished[-1]["error_code"] == "TOOL_EXECUTION_FAILED"
-    assert "internal-runtime-secret-token" not in str(recorder.events)
 
 
 def test_bridge_rejects_structurally_equal_but_distinct_toolset_binding() -> None:
@@ -567,7 +490,7 @@ def test_bridge_rejects_structurally_equal_but_distinct_toolset_binding() -> Non
     bridge_toolset = bind_toolset(definition, executor)
     runtime_toolset = bind_toolset(definition, executor)
     assert bridge_toolset is not runtime_toolset
-    dependencies, runtime, recorder = bind_dependencies(
+    dependencies, runtime = bind_dependencies(
         runtime_toolset,
         execution_context(),
     )
@@ -583,4 +506,3 @@ def test_bridge_rejects_structurally_equal_but_distinct_toolset_binding() -> Non
     assert captured.value.tool_call_id == "unbound"
     assert executions == 0
     assert runtime.unique_call_count == 0
-    assert recorder.events == []

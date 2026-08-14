@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import threading
 from typing import Any
 
 import pytest
@@ -22,15 +23,31 @@ from erp_web.schemas.global_tasks import (
     LocalGlobalTaskState,
     LocalTaskStep,
     RequiredInput,
+    TrustedGlobalAnswer,
 )
 from erp_web.services.global_task_controller import (
     GlobalTaskController,
+    GlobalTaskControllerError,
     GlobalTaskPlanningOutcome,
+    declare_global_task_capability,
 )
 from erp_web.stores.global_task_store import LocalGlobalTaskStore
 
 
 NOW = datetime(2026, 8, 13, 8, 0, tzinfo=timezone.utc)
+
+
+def _answer_resolver(
+    _task: LocalGlobalTaskState,
+    decision: GlobalPlanningDecision,
+) -> TrustedGlobalAnswer:
+    return TrustedGlobalAnswer(
+        answer_kind=decision.answer_kind or "active_draft_count",
+        query_snapshot_id=decision.query_snapshot_id,
+        message="当前共有 137 个活跃草稿。",
+        facts={"active_draft_count": 137},
+        evidence_refs=[f"draft_query_snapshot:{decision.query_snapshot_id}"],
+    )
 
 
 class _Planner:
@@ -94,7 +111,7 @@ def _snapshot(
         total=len(draft_ids) if total is None else total,
         count_by_platform={"ozon": len(draft_ids)},
         count_by_status={"ready_to_publish": len(draft_ids)},
-        query=DraftQueryCriteria(scope="all", platform="ozon"),
+        query=DraftQueryCriteria(scope="all", target_platform="ozon"),
         created_at=NOW,
     )
 
@@ -105,7 +122,7 @@ def _controller(
     planner: _Planner,
     capabilities: dict[str, Any],
     publish_status: _PublishStatus | None = None,
-    projection_writer: Any | None = None,
+    answer_resolver: Any = _answer_resolver,
 ) -> tuple[GlobalTaskController, LocalGlobalTaskStore]:
     store = LocalGlobalTaskStore(ErpDatabase(tmp_path / "erp.sqlite3"))
     controller = GlobalTaskController(
@@ -113,7 +130,7 @@ def _controller(
         planner=planner,
         capabilities=capabilities,
         publish_status_reader=publish_status or _PublishStatus(),
-        projection_writer=projection_writer,
+        answer_resolver=answer_resolver,
     )
     return controller, store
 
@@ -121,7 +138,6 @@ def _controller(
 def _start(
     controller: GlobalTaskController,
     *,
-    conversation_id: str = "conversation-1",
     snapshot_id: str = "",
 ):
     return controller.create_task(
@@ -129,7 +145,6 @@ def _start(
             goal="完成当前商品处理",
             draft_query_snapshot_id=snapshot_id,
         ),
-        ai_work_conversation_id=conversation_id,
     )
 
 
@@ -162,16 +177,16 @@ def test_controller_executes_plan_strictly_in_order(tmp_path) -> None:
     assert store.require_task(task.task_id) == task
 
 
-def test_get_state_resumes_persisted_planning_task_after_restart(tmp_path) -> None:
+def test_get_state_is_pure_read_and_explicit_recovery_resumes_planning_task(
+    tmp_path,
+) -> None:
     database_path = tmp_path / "erp.sqlite3"
     initial_store = LocalGlobalTaskStore(ErpDatabase(database_path))
     initial_store.create_task(
         LocalGlobalTaskState(
             task_id="task-planning-restart",
-            task_kind="global.agent.chat",
             goal="读取商品",
             status="planning",
-            ai_work_conversation_id="conversation-planning-restart",
             assistant_message="正在理解目标并制定计划。",
             created_at=NOW,
             updated_at=NOW,
@@ -193,9 +208,16 @@ def test_get_state_resumes_persisted_planning_task_after_restart(tmp_path) -> No
         planner=planner,
         capabilities={"product.read": read_capability},
         publish_status_reader=_PublishStatus(),
+        answer_resolver=_answer_resolver,
     )
 
-    completed = restarted.get_state("task-planning-restart")
+    snapshot = restarted.get_state("task-planning-restart")
+
+    assert snapshot.status == "planning"
+    assert planner.calls == []
+    assert calls == []
+
+    [completed] = restarted.recover_unfinished_tasks()
 
     assert completed.status == "completed"
     assert planner.calls == [("task-planning-restart", "")]
@@ -203,7 +225,183 @@ def test_get_state_resumes_persisted_planning_task_after_restart(tmp_path) -> No
     assert restarted.store.require_task(completed.task_id) == completed
 
 
-def test_get_state_resumes_running_task_without_replaying_completed_prefix(
+def test_recovery_limit_is_applied_after_skipping_user_waiting_tasks(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "erp.sqlite3"
+    store = LocalGlobalTaskStore(ErpDatabase(database_path))
+    for index in range(100):
+        created_at = NOW + timedelta(seconds=index)
+        store.create_task(
+            LocalGlobalTaskState(
+                task_id=f"task-waiting-{index:03d}",
+                goal="等待用户补充资料",
+                status="needs_input",
+                pending_inputs=[
+                    RequiredInput(
+                        key="clarification",
+                        label="补充说明",
+                        reason="请补充说明后继续。",
+                    )
+                ],
+                pending_input_owner="planning",
+                assistant_message="请补充说明后继续。",
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+    planning_at = NOW + timedelta(seconds=101)
+    store.create_task(
+        LocalGlobalTaskState(
+            task_id="task-recoverable-after-waiting",
+            goal="读取商品",
+            status="planning",
+            assistant_message="正在规划。",
+            created_at=planning_at,
+            updated_at=planning_at,
+        )
+    )
+    capability_calls: list[str] = []
+
+    def read_capability(_task, step):
+        capability_calls.append(step.step_id)
+        return CapabilityResult(
+            status="completed",
+            summary="商品读取完成。",
+            result={"product_id": "product-1"},
+        )
+
+    controller = GlobalTaskController(
+        store=store,
+        planner=_Planner(_plan("product.read")),
+        capabilities={"product.read": read_capability},
+        publish_status_reader=_PublishStatus(),
+        answer_resolver=_answer_resolver,
+    )
+
+    [recovered] = controller.recover_unfinished_tasks(limit=1)
+
+    assert recovered.task_id == "task-recoverable-after-waiting"
+    assert recovered.status == "completed"
+    assert capability_calls == ["step_1_step-1"]
+
+
+def test_recovery_skips_locally_locked_leased_task_and_advances_next(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LocalGlobalTaskStore(ErpDatabase(tmp_path / "erp.sqlite3"))
+    first = store.create_task(
+        LocalGlobalTaskState(
+            task_id="task-locked-lease-1",
+            goal="正在由前台执行",
+            status="planning",
+            assistant_message="正在规划。",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+    )
+    second = store.create_task(
+        LocalGlobalTaskState(
+            task_id="task-locked-lease-2",
+            goal="应由恢复 worker 推进",
+            status="planning",
+            assistant_message="正在规划。",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+    )
+    holder_ready = threading.Event()
+    release_holder = threading.Event()
+
+    def hold_first_task() -> None:
+        with store.task_lock(first.task_id):
+            with store.execution_claim(first.task_id, lease_seconds=30) as claimed:
+                assert claimed is not None
+                holder_ready.set()
+                assert release_holder.wait(timeout=5)
+
+    holder = threading.Thread(target=hold_first_task)
+    holder.start()
+    assert holder_ready.wait(timeout=5)
+    capability_calls: list[str] = []
+
+    def read_capability(_task, step):
+        capability_calls.append(step.step_id)
+        return CapabilityResult(
+            status="completed",
+            summary="读取完成。",
+            result={"product_id": "product-1"},
+        )
+
+    controller = GlobalTaskController(
+        store=store,
+        planner=_Planner(_plan("product.read")),
+        capabilities={"product.read": read_capability},
+        publish_status_reader=_PublishStatus(),
+        answer_resolver=_answer_resolver,
+    )
+    # 模拟 SQL 列表返回后、resume 前才被另一线程领取的 TOCTOU；恢复 worker
+    # 必须非阻塞跳过第一个本地锁，继续处理后续候选。
+    monkeypatch.setattr(
+        store,
+        "list_recoverable_tasks",
+        lambda *, limit=100: [first, second][:limit],
+    )
+    recovery_finished = threading.Event()
+    recovered: list[LocalGlobalTaskState] = []
+
+    def recover_once() -> None:
+        recovered.extend(controller.recover_unfinished_tasks(limit=2))
+        recovery_finished.set()
+
+    recovery_thread = threading.Thread(target=recover_once)
+    recovery_thread.start()
+    try:
+        assert recovery_finished.wait(timeout=1)
+    finally:
+        release_holder.set()
+    recovery_thread.join(timeout=5)
+    holder.join(timeout=5)
+
+    assert [task.task_id for task in recovered] == [second.task_id]
+    assert recovered[0].status == "completed"
+    assert capability_calls == ["step_1_step-1"]
+
+
+def test_resume_nonrecoverable_task_does_not_claim_or_mutate_snapshot(tmp_path) -> None:
+    controller, store = _controller(
+        tmp_path,
+        planner=_Planner(_plan("product.read")),
+        capabilities={},
+    )
+    created = store.create_task(
+        LocalGlobalTaskState(
+            task_id="task-needs-input-no-resume",
+            goal="等待用户选择草稿",
+            status="needs_input",
+            pending_inputs=[
+                RequiredInput(
+                    key="draft_position",
+                    label="草稿序号",
+                    reason="请说明要处理第几个草稿。",
+                )
+            ],
+            pending_input_owner="planning",
+            assistant_message="请说明要处理第几个草稿。",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+    )
+
+    resumed = controller.resume_task(created.task_id)
+
+    assert resumed == created
+    assert resumed.execution_id == ""
+    assert resumed.revision == created.revision
+
+
+def test_explicit_resume_continues_running_task_without_replaying_completed_prefix(
     tmp_path,
 ) -> None:
     database_path = tmp_path / "erp.sqlite3"
@@ -211,7 +409,6 @@ def test_get_state_resumes_running_task_without_replaying_completed_prefix(
     initial_store.create_task(
         LocalGlobalTaskState(
             task_id="task-running-restart",
-            task_kind="global.agent.chat",
             goal="继续执行中断任务",
             status="running",
             steps=[
@@ -228,6 +425,11 @@ def test_get_state_resumes_running_task_without_replaying_completed_prefix(
                     capability="product.attributes.update",
                     objective="保存属性",
                     status="running",
+                    operation_key=(
+                        "global-task:task-running-restart:"
+                        "step:step_2_attributes"
+                    ),
+                    recovery_policy="retry_safe",
                     inputs={"updates": {"BRAND": "Acme"}},
                 ),
                 LocalTaskStep(
@@ -238,7 +440,6 @@ def test_get_state_resumes_running_task_without_replaying_completed_prefix(
                 ),
             ],
             current_step_index=1,
-            ai_work_conversation_id="conversation-running-restart",
             assistant_message="正在保存属性。",
             created_at=NOW,
             updated_at=NOW,
@@ -254,6 +455,11 @@ def test_get_state_resumes_running_task_without_replaying_completed_prefix(
             result={"draft_id": "draft-1"},
         )
 
+    capability = declare_global_task_capability(
+        capability,
+        recovery_policy="retry_safe",
+    )
+
     planner = _Planner()
     restarted = GlobalTaskController(
         store=LocalGlobalTaskStore(ErpDatabase(database_path)),
@@ -264,9 +470,14 @@ def test_get_state_resumes_running_task_without_replaying_completed_prefix(
             "product.images.prepare": capability,
         },
         publish_status_reader=_PublishStatus(),
+        answer_resolver=_answer_resolver,
     )
 
-    completed = restarted.get_state("task-running-restart")
+    snapshot = restarted.get_state("task-running-restart")
+    assert snapshot.status == "running"
+    assert calls == []
+
+    completed = restarted.resume_task("task-running-restart")
 
     assert completed.status == "completed"
     assert completed.current_step_index == 3
@@ -277,6 +488,296 @@ def test_get_state_resumes_running_task_without_replaying_completed_prefix(
     ]
     assert calls == ["product.attributes.update", "product.images.prepare"]
     assert planner.calls == []
+
+
+def test_two_controllers_compete_for_planning_and_only_one_executes(tmp_path) -> None:
+    database_path = tmp_path / "erp.sqlite3"
+    seed = LocalGlobalTaskStore(ErpDatabase(database_path))
+    task = seed.create_task(
+        LocalGlobalTaskState(
+            task_id="task-concurrent-resume",
+            goal="并发恢复",
+            status="planning",
+            assistant_message="等待恢复。",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+    )
+    planner_started = threading.Event()
+    release_planner = threading.Event()
+    planner_calls: list[str] = []
+
+    def planner(current, _supplement):
+        planner_calls.append(current.execution_id)
+        planner_started.set()
+        assert release_planner.wait(timeout=5)
+        return GlobalTaskPlanningOutcome(decision=_plan("product.read"))
+
+    capability_calls: list[str] = []
+
+    def capability(_task, step):
+        capability_calls.append(step.step_id)
+        return CapabilityResult(
+            status="completed",
+            summary="读取完成。",
+            result={"product_id": "product-1"},
+        )
+
+    controllers = [
+        GlobalTaskController(
+            store=LocalGlobalTaskStore(ErpDatabase(database_path)),
+            planner=planner,
+            capabilities={"product.read": capability},
+            publish_status_reader=_PublishStatus(),
+            answer_resolver=_answer_resolver,
+        )
+        for _ in range(2)
+    ]
+    outcomes: list[str] = []
+
+    def resume(controller):
+        try:
+            outcomes.append(controller.resume_task(task.task_id).status)
+        except Exception as exc:
+            outcomes.append(str(getattr(exc, "code", type(exc).__name__)))
+
+    first = threading.Thread(target=resume, args=(controllers[0],))
+    second = threading.Thread(target=resume, args=(controllers[1],))
+    first.start()
+    assert planner_started.wait(timeout=5)
+    second.start()
+    second.join(timeout=5)
+    release_planner.set()
+    first.join(timeout=5)
+
+    assert planner_calls and len(planner_calls) == 1
+    assert capability_calls == ["step_1_step-1"]
+    assert sorted(outcomes) == ["GLOBAL_TASK_EXECUTION_BUSY", "completed"]
+
+
+def test_unsafe_running_step_is_failed_without_replaying_side_effect(
+    tmp_path,
+) -> None:
+    store = LocalGlobalTaskStore(ErpDatabase(tmp_path / "erp.sqlite3"))
+    task = store.create_task(
+        LocalGlobalTaskState(
+            task_id="task-unsafe-recovery",
+            goal="恢复未知结果的写步骤",
+            status="running",
+            steps=[
+                LocalTaskStep(
+                    step_id="step_1_write",
+                    capability="product.attributes.update",
+                    objective="保存属性",
+                    status="running",
+                    operation_key=(
+                        "global-task:task-unsafe-recovery:step:step_1_write"
+                    ),
+                    recovery_policy="manual",
+                    attempt_execution_id="gexec_crashed",
+                )
+            ],
+            current_step_index=0,
+            assistant_message="正在保存属性。",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+    )
+    calls: list[str] = []
+
+    def write_capability(_task, step):
+        calls.append(step.operation_key)
+        return CapabilityResult(
+            status="completed",
+            summary="保存完成。",
+            result={"draft_id": "draft-1"},
+        )
+
+    controller = GlobalTaskController(
+        store=LocalGlobalTaskStore(ErpDatabase(tmp_path / "erp.sqlite3")),
+        planner=_Planner(),
+        capabilities={"product.attributes.update": write_capability},
+        publish_status_reader=_PublishStatus(),
+        answer_resolver=_answer_resolver,
+    )
+
+    with pytest.raises(GlobalTaskControllerError) as cancel_error:
+        controller.cancel(task.task_id)
+    assert cancel_error.value.code == "GLOBAL_TASK_STEP_OUTCOME_UNKNOWN"
+    assert controller.get_state(task.task_id) == task
+
+    failed = controller.resume_task(task.task_id)
+
+    assert calls == []
+    assert failed.status == "failed"
+    assert failed.error_code == "GLOBAL_TASK_STEP_RECOVERY_UNSAFE"
+    assert failed.steps[0].status == "failed"
+    assert failed.steps[0].error_code == "GLOBAL_TASK_STEP_RECOVERY_UNSAFE"
+
+
+def test_invalid_input_after_status_claim_does_not_change_persisted_row(
+    tmp_path,
+) -> None:
+    database = ErpDatabase(tmp_path / "erp.sqlite3")
+    store = LocalGlobalTaskStore(database)
+    task = store.create_task(
+        LocalGlobalTaskState(
+            task_id="task-invalid-input-claim",
+            goal="等待品牌字段",
+            status="needs_input",
+            steps=[
+                LocalTaskStep(
+                    step_id="step_1_update",
+                    capability="product.attributes.update",
+                    objective="更新属性",
+                    status="needs_input",
+                    operation_key=(
+                        "global-task:task-invalid-input-claim:step:step_1_update"
+                    ),
+                )
+            ],
+            current_step_index=0,
+            pending_inputs=[
+                RequiredInput(
+                    key="brand",
+                    label="品牌",
+                    reason="请填写品牌。",
+                )
+            ],
+            pending_input_owner="capability",
+            assistant_message="请填写品牌。",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+    )
+    controller = GlobalTaskController(
+        store=store,
+        planner=_Planner(),
+        capabilities={},
+        publish_status_reader=_PublishStatus(),
+        answer_resolver=_answer_resolver,
+    )
+    with database._connect() as conn:
+        before = dict(
+            conn.execute(
+                "SELECT * FROM global_tasks WHERE task_id = ?",
+                (task.task_id,),
+            ).fetchone()
+        )
+
+    with pytest.raises(GlobalTaskControllerError) as error:
+        controller.submit_input(
+            GlobalTaskInputRequest(
+                task_id=task.task_id,
+                inputs={"unknown": "value"},
+            )
+        )
+    assert error.value.code == "GLOBAL_TASK_INPUT_FIELD_UNKNOWN"
+
+    with database._connect() as conn:
+        after = dict(
+            conn.execute(
+                "SELECT * FROM global_tasks WHERE task_id = ?",
+                (task.task_id,),
+            ).fetchone()
+        )
+    assert after == before
+
+
+def test_lease_takeover_reuses_operation_key_and_true_owner_effects_once(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "erp.sqlite3"
+    database = ErpDatabase(database_path)
+    store = LocalGlobalTaskStore(database)
+    operation_key = "global-task:task-fenced-effect:step:step_1_write"
+    task = store.create_task(
+        LocalGlobalTaskState(
+            task_id="task-fenced-effect",
+            goal="执行带幂等 owner 的写步骤",
+            status="running",
+            steps=[
+                LocalTaskStep(
+                    step_id="step_1_write",
+                    capability="test.idempotent.write",
+                    objective="写入一次",
+                    operation_key=operation_key,
+                    recovery_policy="idempotent",
+                )
+            ],
+            current_step_index=0,
+            assistant_message="准备写入。",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+    )
+    owner_lock = threading.Lock()
+    applied_keys: set[str] = set()
+    effects: list[str] = []
+    attempts: list[tuple[str, str]] = []
+    first_entered = threading.Event()
+    release_first = threading.Event()
+
+    def idempotent_capability(current, step):
+        with owner_lock:
+            attempts.append((current.execution_id, step.operation_key))
+            first_attempt = len(attempts) == 1
+            if step.operation_key not in applied_keys:
+                applied_keys.add(step.operation_key)
+                effects.append(step.operation_key)
+        if first_attempt:
+            first_entered.set()
+            assert release_first.wait(timeout=5)
+        return CapabilityResult(
+            status="completed",
+            summary="幂等写入完成。",
+            result={"draft_id": "draft-1"},
+        )
+
+    idempotent_capability = declare_global_task_capability(
+        idempotent_capability,
+        recovery_policy="idempotent",
+    )
+    controllers = [
+        GlobalTaskController(
+            store=LocalGlobalTaskStore(ErpDatabase(database_path)),
+            planner=_Planner(),
+            capabilities={"test.idempotent.write": idempotent_capability},
+            publish_status_reader=_PublishStatus(),
+            answer_resolver=_answer_resolver,
+        )
+        for _ in range(2)
+    ]
+    first_errors: list[str] = []
+
+    def run_first() -> None:
+        try:
+            controllers[0].resume_task(task.task_id)
+        except Exception as exc:
+            first_errors.append(str(getattr(exc, "code", type(exc).__name__)))
+
+    first_thread = threading.Thread(target=run_first)
+    first_thread.start()
+    assert first_entered.wait(timeout=5)
+    # 模拟进程停止续租，但尚未从外部 owner 返回；第二个执行者随后接管。
+    with database._connect() as conn:
+        conn.execute(
+            "UPDATE global_tasks SET execution_lease_expires_at = 0 "
+            "WHERE task_id = ?",
+            (task.task_id,),
+        )
+        conn.commit()
+
+    completed = controllers[1].resume_task(task.task_id)
+    release_first.set()
+    first_thread.join(timeout=5)
+
+    assert completed.status == "completed"
+    assert effects == [operation_key]
+    assert len(attempts) == 2
+    assert {key for _execution_id, key in attempts} == {operation_key}
+    assert len({execution_id for execution_id, _key in attempts}) == 2
+    assert first_errors == ["GLOBAL_TASK_REVISION_CONFLICT"]
 
 
 def test_validate_only_plan_completes_without_requesting_publish_confirmation(
@@ -410,6 +911,64 @@ def test_planning_clarification_inputs_replan_instead_of_requiring_a_step(
     assert planner.calls[1][1] == "Ozon"
 
 
+def test_controller_rejects_plan_overriding_explicit_task_platform(
+    tmp_path,
+) -> None:
+    capability_calls: list[str] = []
+    planner = _Planner(_plan("product.read", target_platform="mercadolibre"))
+
+    def capability(_task, _step):
+        capability_calls.append("called")
+        return CapabilityResult(
+            status="completed",
+            summary="不应执行。",
+            result={"product_id": "product-1"},
+        )
+
+    controller, _store = _controller(
+        tmp_path,
+        planner=planner,
+        capabilities={"product.read": capability},
+    )
+
+    task = controller.create_task(
+        GlobalTaskStartRequest(
+            goal="读取商品",
+            platform="ozon",
+        ),
+    )
+
+    assert task.status == "failed"
+    assert task.error_code == "GLOBAL_PLAN_PLATFORM_SCOPE_MISMATCH"
+    assert capability_calls == []
+
+
+def test_controller_allows_plan_platform_when_task_platform_is_unbound(
+    tmp_path,
+) -> None:
+    captured_platforms: list[str] = []
+    planner = _Planner(_plan("product.read", target_platform="ozon"))
+
+    def capability(_task, step):
+        captured_platforms.append(str(step.inputs.get("platform") or ""))
+        return CapabilityResult(
+            status="completed",
+            summary="商品读取完成。",
+            result={"product_id": "product-1"},
+        )
+
+    controller, _store = _controller(
+        tmp_path,
+        planner=planner,
+        capabilities={"product.read": capability},
+    )
+
+    task = _start(controller)
+
+    assert task.status == "completed"
+    assert captured_platforms == ["ozon"]
+
+
 def test_planning_and_capability_clarifications_follow_durable_owner(
     tmp_path,
 ) -> None:
@@ -468,6 +1027,7 @@ def test_planning_and_capability_clarifications_follow_durable_owner(
         planner=planner,
         capabilities={"product.attributes.update": capability},
         publish_status_reader=_PublishStatus(),
+        answer_resolver=_answer_resolver,
     )
     completed = restarted.submit_input(
         GlobalTaskInputRequest(
@@ -488,143 +1048,6 @@ def test_planning_and_capability_clarifications_follow_durable_owner(
         },
     ]
     assert store.require_task(completed.task_id).pending_input_owner == "none"
-
-
-def test_planning_and_focused_capability_execution_links_are_deduplicated(
-    tmp_path,
-) -> None:
-    projections: list[tuple[str, str, dict[str, Any]]] = []
-
-    class PlannerWithExecutionLink:
-        calls = 0
-
-        def __call__(self, _task, _supplement):
-            self.calls += 1
-            return GlobalTaskPlanningOutcome(
-                decision=_plan("draft.prepare_for_market"),
-                execution_conversation_id="planning-execution-1",
-            )
-
-    planner = PlannerWithExecutionLink()
-
-    def focused_capability(_task, _step):
-        return CapabilityResult(
-            status="completed",
-            summary="目标市场准备完成。",
-            result={
-                "draft_id": "draft-1",
-            },
-            agent_execution_conversation_ids=[
-                "focused-category-1",
-                "focused-attributes-1",
-                "planning-execution-1",
-                "focused-category-1",
-            ],
-        )
-
-    controller, store = _controller(
-        tmp_path,
-        planner=planner,  # type: ignore[arg-type]
-        capabilities={"draft.prepare_for_market": focused_capability},
-        projection_writer=lambda conversation_id, name, value: projections.append(
-            (conversation_id, name, value)
-        ),
-    )
-
-    completed = _start(controller)
-
-    assert completed.status == "completed"
-    assert completed.agent_execution_conversation_ids == [
-        "planning-execution-1",
-        "focused-category-1",
-        "focused-attributes-1",
-    ]
-    assert store.require_task(completed.task_id) == completed
-    linked_ids = [
-        value["conversation_id"]
-        for _conversation_id, name, value in projections
-        if name == "global.agent_execution_link"
-    ]
-    assert linked_ids == [
-        "planning-execution-1",
-        "focused-category-1",
-        "focused-attributes-1",
-    ]
-
-
-@pytest.mark.parametrize(
-    ("result", "expected_status"),
-    [
-        (
-            CapabilityResult(
-                status="completed",
-                summary="完成。",
-                result={"product_id": "product-1"},
-                agent_execution_conversation_ids=["focused-status-1"],
-            ),
-            "completed",
-        ),
-        (
-            CapabilityResult(
-                status="needs_input",
-                summary="需要输入。",
-                required_inputs=[
-                    RequiredInput(key="brand", label="品牌", reason="缺少品牌")
-                ],
-                agent_execution_conversation_ids=["focused-status-1"],
-            ),
-            "needs_input",
-        ),
-        (
-            CapabilityResult(
-                status="in_progress",
-                summary="处理中。",
-                job_id="job-focused-status",
-                agent_execution_conversation_ids=["focused-status-1"],
-            ),
-            "waiting_publish_result",
-        ),
-        (
-            CapabilityResult(
-                status="failed",
-                summary="失败。",
-                error={"code": "FOCUSED_FAILED", "message": "focused 失败"},
-                agent_execution_conversation_ids=["focused-status-1"],
-            ),
-            "failed",
-        ),
-    ],
-)
-def test_every_capability_status_persists_execution_link_before_projection(
-    tmp_path,
-    result: CapabilityResult[Any],
-    expected_status: str,
-) -> None:
-    store_holder: dict[str, LocalGlobalTaskStore] = {}
-
-    def project(_conversation_id: str, name: str, value: dict[str, Any]) -> None:
-        if name != "global.agent_execution_link":
-            return
-        persisted = store_holder["store"].require_task(value["task_id"])
-        assert value["conversation_id"] in (
-            persisted.agent_execution_conversation_ids
-        )
-
-    controller, store = _controller(
-        tmp_path,
-        planner=_Planner(_plan("product.read")),
-        capabilities={"product.read": lambda _task, _step: result},
-        projection_writer=project,
-    )
-    store_holder["store"] = store
-
-    task = _start(controller)
-
-    assert task.status == expected_status
-    assert task.agent_execution_conversation_ids == ["focused-status-1"]
-    assert store.require_task(task.task_id).agent_execution_conversation_ids == [
-        "focused-status-1"
-    ]
 
 
 def test_submitted_capability_fields_merge_into_structured_input_owners(
@@ -785,53 +1208,6 @@ def test_plan_parameters_are_mapped_only_to_their_intended_capabilities(
     assert captured["product.images.prepare"] == trusted
 
 
-def test_submitted_fields_are_projected_as_bounded_user_message(tmp_path) -> None:
-    projections: list[tuple[str, str, dict[str, Any]]] = []
-
-    def capability(_task, step):
-        if "brand" not in step.inputs:
-            return CapabilityResult(
-                status="needs_input",
-                summary="请补充品牌。",
-                required_inputs=[
-                    RequiredInput(
-                        key="brand",
-                        label="品牌",
-                        reason="发布需要品牌。",
-                    )
-                ],
-            )
-        return CapabilityResult(
-            status="completed",
-            summary="品牌已保存。",
-            result={"draft_id": "draft-1"},
-        )
-
-    controller, _store = _controller(
-        tmp_path,
-        planner=_Planner(_plan("product.attributes.update")),
-        capabilities={"product.attributes.update": capability},
-        projection_writer=lambda conversation_id, name, value: projections.append(
-            (conversation_id, name, value)
-        ),
-    )
-    paused = _start(controller)
-    projections.clear()
-
-    controller.submit_input(
-        GlobalTaskInputRequest(
-            task_id=paused.task_id,
-            inputs={"brand": "Acme"},
-        )
-    )
-
-    assert projections[0] == (
-        "conversation-1",
-        "global.user_message",
-        {"task_id": paused.task_id, "message": "已补充字段：brand"},
-    )
-
-
 def test_failed_publish_validation_never_enters_confirmation_or_submission(
     tmp_path,
 ) -> None:
@@ -954,7 +1330,8 @@ def test_controller_defensively_rejects_more_than_twelve_steps(tmp_path) -> None
         action="plan",
         plan=oversized_plan,
         query_snapshot_id="",
-        answer="",
+        answer_kind=None,
+        answer_draft_position=None,
         question="",
         explanation="",
     )
@@ -1052,7 +1429,8 @@ def test_confirmation_submits_once_and_duplicate_confirmation_only_refreshes(
     assert submitted["idempotency_key"] == (
         f"global-task:{task.task_id}:step:step_2_step-2"
     )
-    assert status.calls == ["publish-job-1"]
+    assert status.calls == []
+    assert duplicate == waiting
     assert store.require_task(task.task_id).publish_job_id == "publish-job-1"
 
 
@@ -1087,7 +1465,9 @@ def test_platform_terminal_status_controls_task_terminal_status(
     )
     waiting = controller.confirm_publish(task.task_id)
 
-    terminal = controller.get_state(waiting.task_id)
+    # GET 只读；发布状态也只由显式恢复入口刷新。
+    assert controller.get_state(waiting.task_id).status == "waiting_publish_result"
+    terminal = controller.resume_task(waiting.task_id)
 
     assert len(publish_calls) == 1
     assert terminal.status == expected_status
@@ -1110,17 +1490,75 @@ def test_cancel_before_confirmation_never_submits_publish(tmp_path) -> None:
     assert cancelled.status == "cancelled"
     assert repeated == cancelled
     assert publish_calls == []
-    assert store.find_active_task(task.ai_work_conversation_id) is None
 
 
-def test_answer_uses_snapshot_total_and_ignores_model_generated_number(
+def test_terminal_operations_keep_complete_persisted_snapshot_unchanged(
     tmp_path,
 ) -> None:
+    controller, store = _controller(
+        tmp_path,
+        planner=_Planner(_plan("product.read")),
+        capabilities={
+            "product.read": lambda _task, _step: CapabilityResult(
+                status="completed",
+                summary="读取完成。",
+                result={"product_id": "product-1"},
+            )
+        },
+    )
+    terminal = _start(controller)
+    assert terminal.status == "completed"
+    database = store._db
+    with database._connect() as conn:
+        row_before = dict(
+            conn.execute(
+                "SELECT * FROM global_tasks WHERE task_id = ?",
+                (terminal.task_id,),
+            ).fetchone()
+        )
+
+    assert controller.cancel(terminal.task_id) == terminal
+    assert controller.confirm_publish(terminal.task_id) == terminal
+    with pytest.raises(GlobalTaskControllerError) as error:
+        controller.submit_input(
+            GlobalTaskInputRequest(
+                task_id=terminal.task_id,
+                message="错误的终态补充",
+            )
+        )
+    assert getattr(error.value, "code", "") == "GLOBAL_TASK_INPUT_NOT_EXPECTED"
+
+    with database._connect() as conn:
+        row_after = dict(
+            conn.execute(
+                "SELECT * FROM global_tasks WHERE task_id = ?",
+                (terminal.task_id,),
+            ).fetchone()
+        )
+    assert row_after == row_before
+    assert store.require_task(terminal.task_id) == terminal
+
+
+def test_answer_uses_injected_trusted_resolver_and_persists_canonical_result(
+    tmp_path,
+) -> None:
+    def fresh_answer_resolver(
+        _task: LocalGlobalTaskState,
+        _decision: GlobalPlanningDecision,
+    ) -> TrustedGlobalAnswer:
+        return TrustedGlobalAnswer(
+            answer_kind="active_draft_count",
+            query_snapshot_id="snapshot-fresh",
+            message="当前共有 2 个活跃草稿。",
+            facts={"active_draft_count": 2},
+            evidence_refs=["draft_query_snapshot:snapshot-fresh"],
+        )
+
     planner = _Planner(
         GlobalPlanningDecision(
             action="answer",
             query_snapshot_id="snapshot-answer",
-            answer="模型声称当前有 999 个草稿。",
+            answer_kind="active_draft_count",
             explanation="读取最近一次查询结果。",
         )
     )
@@ -1128,6 +1566,7 @@ def test_answer_uses_snapshot_total_and_ignores_model_generated_number(
         tmp_path,
         planner=planner,
         capabilities={},
+        answer_resolver=fresh_answer_resolver,
     )
     store.save_draft_query_snapshot(
         _snapshot("snapshot-answer", ["draft-1", "draft-2"], total=137)
@@ -1136,8 +1575,67 @@ def test_answer_uses_snapshot_total_and_ignores_model_generated_number(
     task = _start(controller)
 
     assert task.status == "completed"
-    assert task.assistant_message == "当前查询匹配 137 个草稿。"
-    assert "999" not in task.assistant_message
+    assert task.assistant_message == "当前共有 2 个活跃草稿。"
+    assert task.draft_query_snapshot_id == "snapshot-fresh"
+    assert store.require_task(task.task_id) == task
+
+
+@pytest.mark.parametrize(
+    ("product_id", "platform", "expected_code"),
+    [
+        ("product-p1", "", "GLOBAL_ANSWER_PRODUCT_SCOPE_MISMATCH"),
+        ("", "mercadolibre", "GLOBAL_ANSWER_PLATFORM_SCOPE_MISMATCH"),
+    ],
+)
+def test_controller_rejects_precomputed_answer_outside_task_scope(
+    tmp_path,
+    product_id: str,
+    platform: str,
+    expected_code: str,
+) -> None:
+    decision = GlobalPlanningDecision(
+        action="answer",
+        query_snapshot_id="snapshot-p2",
+        answer_kind="draft_market_context",
+    )
+    precomputed = TrustedGlobalAnswer(
+        answer_kind="draft_market_context",
+        query_snapshot_id="snapshot-p2",
+        message="当前草稿的目标平台是 ozon。",
+        facts={
+            "product_id": "product-p2",
+            "target_platform": "ozon",
+        },
+        evidence_refs=["draft_query_snapshot:snapshot-p2", "draft:p2"],
+    )
+
+    def planner(_task, _supplement: str) -> GlobalTaskPlanningOutcome:
+        return GlobalTaskPlanningOutcome(
+            decision=decision,
+            trusted_answer=precomputed,
+        )
+
+    controller, _store = _controller(
+        tmp_path,
+        planner=planner,  # type: ignore[arg-type]
+        capabilities={},
+        answer_resolver=lambda _task, _decision: pytest.fail(
+            "已有预解析答案时不应重复查询"
+        ),
+    )
+
+    task = controller.create_task(
+        GlobalTaskStartRequest(
+            goal="查看当前草稿目标平台",
+            product_id=product_id,
+            platform=platform,
+            draft_query_snapshot_id="snapshot-p2",
+        ),
+    )
+
+    assert task.status == "failed"
+    assert task.error_code == expected_code
+    assert task.assistant_message == "无法验证只读回答，请重新查询。"
 
 
 def test_draft_position_resolves_from_referenced_snapshot_not_newer_order(

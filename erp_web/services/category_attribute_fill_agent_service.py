@@ -206,13 +206,9 @@ class CategoryAttributeFillAgentRun:
         return cls(dict(output), None)
 
     def finish_business_result(self, result: Mapping[str, Any]) -> None:
+        del result
         if self.outcome is not None:
-            self.outcome.complete(
-                {
-                    "result_version": CATEGORY_ATTRIBUTE_FILL_RESULT_VERSION,
-                    **dict(result),
-                }
-            )
+            self.outcome.complete()
 
 
 def _prompt_payload(payload: Mapping[str, Any]) -> str:
@@ -227,7 +223,6 @@ def run_category_attribute_fill_agent(
     timeout_seconds: float = CATEGORY_ATTRIBUTE_FILL_DEADLINE_SECONDS,
     factory: AiAgentFactory | None = None,
     model_override: Model | None = None,
-    parent_conversation_id: str | None = None,
 ) -> CategoryAttributeFillAgentRun:
     context = get_context()
     app_config = context.config.load_app_config()
@@ -248,7 +243,7 @@ def run_category_attribute_fill_agent(
     agent_factory = factory or AiAgentFactory(
         app_dir=context.paths.app_dir,
         app_config=app_config,
-        journal=context.ai_journal,
+        message_store=context.pydantic_messages,
     )
     outcome = agent_factory.run_sync(
         profile=CATEGORY_ATTRIBUTE_FILL_AGENT_PROFILE,
@@ -265,16 +260,8 @@ def run_category_attribute_fill_agent(
         idempotency_context={
             "result_version": CATEGORY_ATTRIBUTE_FILL_RESULT_VERSION
         },
-        input_summary={
-            "platform": str(payload.get("platform") or ""),
-            "site": str(payload.get("site") or ""),
-            "category_id": str(payload.get("category_id") or ""),
-            "attribute_count": len(ledger.definitions),
-            "result_version": CATEGORY_ATTRIBUTE_FILL_RESULT_VERSION,
-        },
         timeout_seconds=timeout_seconds,
         model_override=model_override,
-        parent_conversation_id=parent_conversation_id,
     )
     if isinstance(outcome.output, DeferredToolRequests):
         error = AiAgentExecutionError(

@@ -176,7 +176,7 @@ def sanitize_trace_value(
 def build_safe_trace_attributes(
     *,
     use_case_id: str,
-    ai_work_task_id: str | None = None,
+    conversation_id: str | None = None,
     invocation_id: str | None = None,
     agent_run_id: str | None = None,
     business_entity_ids: Mapping[str, str] | None = None,
@@ -185,7 +185,7 @@ def build_safe_trace_attributes(
 
     candidates: list[tuple[str, Any]] = [
         ("erp.ai.use_case_id", use_case_id),
-        ("erp.ai.ai_work.task_id", ai_work_task_id),
+        ("erp.ai.conversation_id", conversation_id),
         ("erp.ai.invocation_id", invocation_id),
         ("erp.ai.agent_run_id", agent_run_id),
     ]
@@ -381,14 +381,14 @@ class AiAgentInstrumentation:
         self,
         *,
         use_case_id: str,
-        ai_work_task_id: str | None = None,
+        conversation_id: str | None = None,
         invocation_id: str | None = None,
         agent_run_id: str | None = None,
         business_entity_ids: Mapping[str, str] | None = None,
     ) -> Iterator[AiAgentTrace]:
         attributes = build_safe_trace_attributes(
             use_case_id=use_case_id,
-            ai_work_task_id=ai_work_task_id,
+            conversation_id=conversation_id,
             invocation_id=invocation_id,
             agent_run_id=agent_run_id,
             business_entity_ids=business_entity_ids,

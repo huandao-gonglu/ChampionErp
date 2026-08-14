@@ -20,12 +20,12 @@ from erp_web.db import DEFAULT_DB_NAME, ErpDatabase
 if TYPE_CHECKING:  # pragma: no cover - typing only, avoids import cycles
     from erp_web.runtime_units.publishing_bus_core import PublishingBus
     from erp_web.runtime_units.pricing_runtime import ExchangeRateService
-    from erp_web.services.ai_work_service import AiWorkJournal
     from erp_web.services.image_delivery_service import ImageDeliveryService
     from erp_web.services.product_research_service import ProductResearchRunRegistry
     from erp_web.stores.config_store import ConfigStore
     from erp_web.stores.global_task_store import LocalGlobalTaskStore
     from erp_web.stores.product_store import ProductStore
+    from erp_web.stores.pydantic_message_store import PydanticMessageStore
 
 _DEFAULT_APP_DIR = Path(
     os.environ.get("ERP_APP_DIR", str(Path(__file__).resolve().parents[1]))
@@ -138,7 +138,7 @@ class AppContext:
         self._products: "ProductStore | None" = None
         self._config: "ConfigStore | None" = None
         self._research: "ProductResearchRunRegistry | None" = None
-        self._ai_journal: "AiWorkJournal | None" = None
+        self._pydantic_messages: "PydanticMessageStore | None" = None
         self._exchange_rates: "ExchangeRateService | None" = None
         self._image_delivery: "ImageDeliveryService | None" = None
         self._publishing_bus: "PublishingBus | None" = None
@@ -175,14 +175,16 @@ class AppContext:
         return self._research
 
     @property
-    def ai_journal(self) -> "AiWorkJournal":
-        if self._ai_journal is None:
+    def pydantic_messages(self) -> "PydanticMessageStore":
+        if self._pydantic_messages is None:
             with self._lazy_lock:
-                if self._ai_journal is None:
-                    from erp_web.services.ai_work_service import AiWorkJournal
+                if self._pydantic_messages is None:
+                    from erp_web.stores.pydantic_message_store import (
+                        PydanticMessageStore,
+                    )
 
-                    self._ai_journal = AiWorkJournal(self.paths, self.db)
-        return self._ai_journal
+                    self._pydantic_messages = PydanticMessageStore(self.db)
+        return self._pydantic_messages
 
     @property
     def exchange_rates(self) -> "ExchangeRateService":

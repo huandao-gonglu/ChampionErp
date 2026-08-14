@@ -28,34 +28,23 @@ from pydantic_ai.messages import (
     DeferredToolRequests,
     ModelMessage,
     ModelResponse,
-    PartDeltaEvent,
-    PartEndEvent,
-    PartStartEvent,
-    TextPart,
-    TextPartDelta,
-    ThinkingPart,
-    ThinkingPartDelta,
 )
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
 from erp_web.schemas.ai_trace import AiExecutionContext
+from erp_web.stores.pydantic_message_store import (
+    PydanticMessageStore,
+    PydanticMessageStoreError,
+)
 
 from .ai_agent_dependencies import AiAgentDependencies
 from .ai_agent_instrumentation import AiAgentInstrumentation
-from .ai_agent_observability import (
-    AGENT_REQUEST_EVENT,
-    AGENT_TRANSCRIPT_EVENT,
-    build_agent_request_observation,
-    build_agent_transcript_observation,
-    sanitize_ai_work_value,
-)
 from .ai_agent_state_store import (
     AiAgentApprovalRecord,
     AiAgentStateError,
     AiAgentStateStore,
 )
-from .ai_invocation import AiWorkRecorder, ConversationAiWorkRecorder
 from .ai_model_factory import (
     AiModelFactoryError,
     PydanticModelBinding,
@@ -70,45 +59,6 @@ from .ai_tool_runtime import AiToolRuntime
 OutputT = TypeVar("OutputT")
 OutputValidator = Callable[[RunContext[AiAgentDependencies], OutputT], OutputT]
 ModelBindingFactory = Callable[..., PydanticModelBinding]
-
-
-async def _record_agent_stream_events(
-    recorder: AiWorkRecorder,
-    events: Any,
-) -> None:
-    """把 Pydantic Agent 模型流投影为 AI Work 的推理与正文事件。"""
-
-    async for event in events:
-        if isinstance(event, PartStartEvent):
-            if isinstance(event.part, ThinkingPart):
-                recorder.emit_reasoning_delta(event.part.content)
-            elif isinstance(event.part, TextPart):
-                recorder.emit_text_delta(event.part.content)
-        elif isinstance(event, PartDeltaEvent):
-            if isinstance(event.delta, ThinkingPartDelta):
-                recorder.emit_reasoning_delta(event.delta.content_delta or "")
-            elif isinstance(event.delta, TextPartDelta):
-                recorder.emit_text_delta(event.delta.content_delta)
-        elif isinstance(event, PartEndEvent) and isinstance(
-            event.part,
-            ThinkingPart,
-        ):
-            recorder.finish_reasoning_message()
-
-
-def _agent_event_stream_handler(
-    model: Model,
-    recorder: AiWorkRecorder,
-) -> Callable[..., Any] | None:
-    # FunctionModel 可以只实现同步 request；这种测试/本地模型若强制挂载
-    # event_stream_handler，Pydantic 会切换到其未实现的 request_stream。
-    if hasattr(model, "stream_function") and getattr(model, "stream_function") is None:
-        return None
-
-    async def handle(_context: Any, events: Any) -> None:
-        await _record_agent_stream_events(recorder, events)
-
-    return handle
 
 
 @dataclass(frozen=True)
@@ -178,7 +128,6 @@ class AiAgentRunOutcome(Generic[OutputT]):
     trace_id: str
     usage: dict[str, int]
     messages: list[ModelMessage] = field(repr=False)
-    recorder: AiWorkRecorder = field(repr=False)
     deferred_state_id: str = ""
     resume_claim_id: str = ""
     _state_store: AiAgentStateStore | None = field(default=None, repr=False)
@@ -188,16 +137,9 @@ class AiAgentRunOutcome(Generic[OutputT]):
     def deferred(self) -> bool:
         return isinstance(self.output, DeferredToolRequests)
 
-    def complete(self, summary: Mapping[str, Any]) -> None:
+    def complete(self) -> None:
         if self._terminal:
             return
-        # 先落业务投影，再提交 durable state 终态。若进程在两步之间退出，
-        # ready 结果仍可安全重放，且不会再次执行 model/tool；反向顺序会留下
-        # completed 但缺少 RUN_FINISHED、之后也无法补写的不可恢复窗口。
-        projected = sanitize_ai_work_value(dict(summary))
-        if not isinstance(projected, dict):
-            projected = {}
-        self.recorder.finish(projected)
         if self._state_store is not None and self.deferred_state_id:
             envelope = self._state_store.load(self.deferred_state_id)
             if envelope.status == "ready":
@@ -210,10 +152,7 @@ class AiAgentRunOutcome(Generic[OutputT]):
     def fail(self, error: AiAgentExecutionError) -> None:
         if self._terminal:
             return
-        # 与 complete() 使用相同的可恢复提交顺序：投影失败时保持原状态，
-        # 调用方可重试；投影成功而状态尚未提交时，durable ready/pending 状态
-        # 仍保留恢复依据，而不会出现终态已锁死但 AI Work 永久缺失 RUN_ERROR。
-        self.recorder.fail(error)
+        del error
         if self._state_store is not None and self.deferred_state_id:
             envelope = self._state_store.load(self.deferred_state_id)
             if envelope.status in {"pending", "resuming", "ready"}:
@@ -334,6 +273,12 @@ def _safe_agent_error(
             str(exc),
             **correlation,
         )
+    if isinstance(exc, PydanticMessageStoreError):
+        return AiAgentExecutionError(
+            exc.code,
+            str(exc),
+            **correlation,
+        )
     if isinstance(exc, AiToolBridgeError):
         return AiAgentExecutionError(
             exc.code,
@@ -376,7 +321,7 @@ class AiAgentFactory:
         *,
         app_dir: Path | str,
         app_config: dict[str, Any] | None,
-        journal: Any,
+        message_store: PydanticMessageStore,
         model_binding_factory: ModelBindingFactory = (
             create_pydantic_model_binding_for_use_case
         ),
@@ -385,7 +330,7 @@ class AiAgentFactory:
     ) -> None:
         self.app_dir = Path(app_dir)
         self.app_config = dict(app_config or {})
-        self.journal = journal
+        self.message_store = message_store
         self.model_binding_factory = model_binding_factory
         self.instrumentation = instrumentation or AiAgentInstrumentation(
             self.app_dir / "data" / "logs" / "ai_traces" / "agent_spans.jsonl"
@@ -439,7 +384,6 @@ class AiAgentFactory:
         *,
         state_id: str,
         profile: AiAgentExecutionProfile[OutputT],
-        approver_id: str,
         tenant_id: str,
         permissions: frozenset[str] | set[str] | tuple[str, ...],
         business_scope: Mapping[str, str],
@@ -466,43 +410,15 @@ class AiAgentFactory:
             )
         output = _load_typed_output(profile.output_type, result.output_payload)
         conversation_id = str(envelope.references.get("conversation_id") or "")
-        execution_context = AiExecutionContext(
-            task_run_id=str(envelope.references.get("task_run_id") or ""),
-            attempt_id=result.attempt_id,
-            deadline_at=envelope.deadline_at,
-            budget_profile=profile.budget_profile,
-            actor_id=approver_id,
-            tenant_id=tenant_id,
-            permissions=frozenset(permissions),
-            business_scope=business_scope,
-            idempotency_context=idempotency_context,
-            allow_write=profile.allow_write,
-        )
-        conversation = self.journal.resume_conversation(
-            conversation_id,
-            trace_context={
-                **execution_context.trace_payload(),
-                "trace_id": result.trace_id,
-                "run_id": result.run_id,
-            },
-        )
-        recorder = ConversationAiWorkRecorder(conversation, execution_context)
-        recorder.record(
-            "AGENT_RESUME_RESULT_REPLAYED",
-            state_id=state_id,
-            trace_id=result.trace_id,
-            run_id=result.run_id,
-        )
         return AiAgentRunOutcome(
             output=output,
             conversation_id=conversation_id,
-            task_run_id=execution_context.task_run_id,
+            task_run_id=str(envelope.references.get("task_run_id") or ""),
             attempt_id=result.attempt_id,
             run_id=result.run_id,
             trace_id=result.trace_id,
             usage={key: int(value) for key, value in result.usage.items()},
             messages=list(result.message_history),
-            recorder=recorder,
             deferred_state_id=state_id,
             resume_claim_id=claim.claim_id,
             _state_store=self.state_store,
@@ -521,10 +437,8 @@ class AiAgentFactory:
         tenant_id: str = "local",
         business_scope: Mapping[str, str] | None = None,
         idempotency_context: Mapping[str, str] | None = None,
-        input_summary: Mapping[str, Any] | None = None,
         timeout_seconds: float | None = None,
         model_override: Model | None = None,
-        parent_conversation_id: str | None = None,
     ) -> AiAgentRunOutcome[OutputT]:
         if toolset.toolset_id != profile.toolset_id:
             raise AiAgentExecutionError(
@@ -545,12 +459,11 @@ class AiAgentFactory:
             idempotency_context=idempotency_context,
             allow_write=profile.allow_write,
         )
-        conversation = None
-        recorder: AiWorkRecorder | None = None
+        conversation_id = f"conversation_{uuid4().hex}"
         run_id = execution_context.attempt_id
         trace_id = ""
         captured_messages: list[ModelMessage] = []
-        transcript_recorded = False
+        history_persisted = False
         try:
             binding = self.model_binding_factory(
                 self.app_dir,
@@ -559,37 +472,18 @@ class AiAgentFactory:
                 timeout_seconds=effective_timeout,
                 default_timeout_seconds=profile.timeout_seconds,
             )
-            conversation = self.journal.start_conversation(
-                use_case_id=profile.use_case_id,
-                capability="agent",
-                provider_id=binding.provider_id,
-                model={
-                    "id": binding.model_id,
-                    "provider_id": binding.provider_id,
-                    "model": binding.model_name,
-                },
-                required_capabilities=["chat", "json", "tool_calling"],
-                timeout_seconds=max(1, int(effective_timeout)),
-                input_payload=dict(input_summary or {}),
-                trace_context=execution_context.trace_payload(),
-                parent_conversation_id=parent_conversation_id,
-            )
-            recorder = ConversationAiWorkRecorder(conversation, execution_context)
             runtime = AiToolRuntime(
                 toolset=toolset,
                 execution_context=execution_context,
-                recorder=recorder,
                 max_tool_calls=profile.max_tool_calls,
                 max_output_bytes=profile.max_tool_output_bytes,
             )
             dependencies = AiAgentDependencies(
                 use_case_id=profile.use_case_id,
                 execution_context=execution_context,
-                recorder=recorder,
                 tool_runtime=runtime,
                 use_case_state=use_case_state,
                 invocation_id=execution_context.attempt_id,
-                ai_work_id=conversation.conversation_id,
             )
             agent = self._build_agent(
                 profile=profile,
@@ -599,19 +493,6 @@ class AiAgentFactory:
                 output_validator=output_validator,
                 model_override=model_override,
             )
-            recorder.emit_custom(
-                AGENT_REQUEST_EVENT,
-                build_agent_request_observation(
-                    instructions=instructions,
-                    user_prompt=user_prompt,
-                    output_type=profile.output_type,
-                    toolset=toolset,
-                    model_settings=binding.model_settings,
-                    max_model_requests=profile.max_model_requests,
-                    max_tool_calls=profile.max_tool_calls,
-                    timeout_seconds=effective_timeout,
-                ),
-            )
             entity_ids = {
                 key: value
                 for key, value in dict(business_scope or {}).items()
@@ -620,7 +501,7 @@ class AiAgentFactory:
             with capture_run_messages() as captured_messages:
                 with self.instrumentation.start_run_span(
                     use_case_id=profile.use_case_id,
-                    ai_work_task_id=conversation.conversation_id,
+                    conversation_id=conversation_id,
                     invocation_id=execution_context.attempt_id,
                     business_entity_ids=entity_ids,
                 ) as technical_trace:
@@ -629,32 +510,20 @@ class AiAgentFactory:
                     result = agent.run_sync(
                         user_prompt,
                         deps=dependencies,
-                        conversation_id=conversation.conversation_id,
+                        conversation_id=conversation_id,
                         run_id=run_id,
                         usage_limits=UsageLimits(
                             request_limit=profile.max_model_requests,
                             tool_calls_limit=profile.max_tool_calls,
                         ),
-                        event_stream_handler=_agent_event_stream_handler(
-                            model_override or binding.model,
-                            recorder,
-                        ),
                     )
-                    recorder.finish_assistant_message()
                     run_id = str(result.run_id or "")
                     execution_context.bounded_timeout_seconds()
                     technical_trace.set_agent_run_id(run_id)
-            recorder.emit_custom(
-                AGENT_TRANSCRIPT_EVENT,
-                build_agent_transcript_observation(captured_messages),
-            )
-            transcript_recorded = True
-            recorder.record(
-                "AGENT_TRACE_LINKED",
-                trace_id=technical_trace.trace_id,
-                run_id=run_id,
-            )
             messages = list(result.all_messages())
+            if messages:
+                self.message_store.save(conversation_id, messages)
+                history_persisted = True
             deferred_state_id = ""
             if isinstance(result.output, DeferredToolRequests):
                 required_permissions = set(profile.permissions)
@@ -673,7 +542,7 @@ class AiAgentFactory:
                     message_history=messages,
                     deferred_requests=result.output,
                     references={
-                        "conversation_id": conversation.conversation_id,
+                        "conversation_id": conversation_id,
                         "task_run_id": execution_context.task_run_id,
                         "run_id": run_id,
                         "trace_id": technical_trace.trace_id,
@@ -683,42 +552,33 @@ class AiAgentFactory:
                     },
                 )
                 deferred_state_id = envelope.state_id
-                recorder.emit(
-                    "RUN_DEFERRED",
-                    state_id=envelope.state_id,
-                    approval_count=len(result.output.approvals),
-                    external_call_count=len(result.output.calls),
-                )
             return AiAgentRunOutcome(
                 output=result.output,
-                conversation_id=conversation.conversation_id,
+                conversation_id=conversation_id,
                 task_run_id=execution_context.task_run_id,
                 attempt_id=execution_context.attempt_id,
                 run_id=run_id,
                 trace_id=technical_trace.trace_id,
                 usage=_safe_usage(result.usage),
                 messages=messages,
-                recorder=recorder,
                 deferred_state_id=deferred_state_id,
                 _state_store=self.state_store,
             )
         except Exception as exc:
-            if recorder is not None and captured_messages and not transcript_recorded:
-                recorder.emit_custom(
-                    AGENT_TRANSCRIPT_EVENT,
-                    build_agent_transcript_observation(captured_messages),
-                )
+            if captured_messages and not history_persisted:
+                try:
+                    self.message_store.save(conversation_id, captured_messages)
+                except Exception as persistence_exc:
+                    exc = persistence_exc
             error = _safe_agent_error(
                 exc,
                 validator=output_validator,
                 model_messages=captured_messages,
-                conversation_id=(conversation.conversation_id if conversation else ""),
+                conversation_id=conversation_id,
                 task_run_id=execution_context.task_run_id,
                 run_id=run_id,
                 trace_id=trace_id,
             )
-            if recorder is not None:
-                recorder.fail(error)
             raise error from None
 
     def resume_sync(
@@ -746,37 +606,28 @@ class AiAgentFactory:
                 "TOOLSET_BINDING_MISMATCH",
                 "Agent execution profile 与 ToolSet 不一致。",
             )
-        conversation = None
-        recorder: AiWorkRecorder | None = None
         claimed = False
         denied = False
         ready_persisted = False
         envelope = None
         claim_id = ""
+        conversation_id = ""
         run_id = ""
         trace_id = ""
         captured_messages: list[ModelMessage] = []
-        transcript_recorded = False
+        history_persisted = False
         try:
             now = datetime.now(timezone.utc)
             envelope = self.state_store.load(state_id)
+            conversation_id = str(envelope.references.get("conversation_id") or "")
             stored_contract_fingerprint = str(
                 envelope.references.get("toolset_contract_fingerprint") or ""
             )
-            legacy_toolset_signature = str(
-                envelope.references.get("toolset_signature") or ""
-            )
-            contract_mismatch = bool(
-                stored_contract_fingerprint
-                and stored_contract_fingerprint
-                != toolset.toolset_contract_fingerprint
-            )
-            legacy_mismatch = bool(
+            if (
                 not stored_contract_fingerprint
-                and legacy_toolset_signature
-                and legacy_toolset_signature != toolset.legacy_toolset_signature
-            )
-            if contract_mismatch or legacy_mismatch:
+                or stored_contract_fingerprint
+                != toolset.toolset_contract_fingerprint
+            ):
                 raise AiAgentStateError(
                     "AI_AGENT_STATE_TOOLSET_MISMATCH",
                     "Agent 恢复工具集与持久化状态不一致。",
@@ -792,7 +643,6 @@ class AiAgentFactory:
                 return self._replay_ready_outcome(
                     state_id=state_id,
                     profile=profile,
-                    approver_id=approver_id,
                     tenant_id=tenant_id,
                     permissions=permissions,
                     business_scope=business_scope,
@@ -901,16 +751,9 @@ class AiAgentFactory:
                 allow_write=profile.allow_write,
             )
             run_id = execution_context.attempt_id
-            conversation_id = str(envelope.references.get("conversation_id") or "")
-            conversation = self.journal.resume_conversation(
-                conversation_id,
-                trace_context=execution_context.trace_payload(),
-            )
-            recorder = ConversationAiWorkRecorder(conversation, execution_context)
             runtime = AiToolRuntime(
                 toolset=toolset,
                 execution_context=execution_context,
-                recorder=recorder,
                 max_tool_calls=profile.max_tool_calls,
                 max_output_bytes=profile.max_tool_output_bytes,
                 before_executor=(
@@ -925,11 +768,9 @@ class AiAgentFactory:
             dependencies = AiAgentDependencies(
                 use_case_id=profile.use_case_id,
                 execution_context=execution_context,
-                recorder=recorder,
                 tool_runtime=runtime,
                 use_case_state=use_case_state,
                 invocation_id=execution_context.attempt_id,
-                ai_work_id=conversation_id,
             )
             agent = self._build_agent(
                 profile=profile,
@@ -939,21 +780,6 @@ class AiAgentFactory:
                 output_validator=output_validator,
                 model_override=model_override,
             )
-            recorder.emit_custom(
-                AGENT_REQUEST_EVENT,
-                build_agent_request_observation(
-                    instructions=instructions,
-                    user_prompt=None,
-                    output_type=profile.output_type,
-                    toolset=toolset,
-                    model_settings=binding.model_settings,
-                    max_model_requests=profile.max_model_requests,
-                    max_tool_calls=profile.max_tool_calls,
-                    timeout_seconds=execution_context.bounded_timeout_seconds(),
-                    mode="resume",
-                    message_history_count=len(envelope.message_history),
-                ),
-            )
             entity_ids = {
                 key: value
                 for key, value in dict(business_scope).items()
@@ -962,7 +788,7 @@ class AiAgentFactory:
             with capture_run_messages() as captured_messages:
                 with self.instrumentation.start_run_span(
                     use_case_id=profile.use_case_id,
-                    ai_work_task_id=conversation_id,
+                    conversation_id=conversation_id,
                     invocation_id=execution_context.attempt_id,
                     business_entity_ids=entity_ids,
                 ) as technical_trace:
@@ -979,26 +805,14 @@ class AiAgentFactory:
                             request_limit=profile.max_model_requests,
                             tool_calls_limit=profile.max_tool_calls,
                         ),
-                        event_stream_handler=_agent_event_stream_handler(
-                            model_override or binding.model,
-                            recorder,
-                        ),
                     )
-                    recorder.finish_assistant_message()
                     run_id = str(result.run_id or "")
                     execution_context.bounded_timeout_seconds()
                     technical_trace.set_agent_run_id(run_id)
             messages = list(result.all_messages())
-            recorder.emit_custom(
-                AGENT_TRANSCRIPT_EVENT,
-                build_agent_transcript_observation(captured_messages),
-            )
-            transcript_recorded = True
-            recorder.record(
-                "AGENT_TRACE_LINKED",
-                trace_id=technical_trace.trace_id,
-                run_id=run_id,
-            )
+            if messages:
+                self.message_store.save(conversation_id, messages)
+                history_persisted = True
             usage = _safe_usage(result.usage)
             if isinstance(result.output, DeferredToolRequests):
                 if denied:
@@ -1013,12 +827,6 @@ class AiAgentFactory:
                     deferred_requests=result.output,
                 )
                 claim_id = ""
-                recorder.emit(
-                    "RUN_DEFERRED",
-                    state_id=state_id,
-                    approval_count=len(result.output.approvals),
-                    external_call_count=len(result.output.calls),
-                )
             elif not denied:
                 self.state_store.mark_resume_ready(
                     state_id,
@@ -1043,24 +851,18 @@ class AiAgentFactory:
                 trace_id=technical_trace.trace_id,
                 usage=usage,
                 messages=messages,
-                recorder=recorder,
                 deferred_state_id=state_id,
                 resume_claim_id=claim_id,
                 _state_store=self.state_store,
             )
         except Exception as exc:
-            if recorder is not None and captured_messages and not transcript_recorded:
-                recorder.emit_custom(
-                    AGENT_TRANSCRIPT_EVENT,
-                    build_agent_transcript_observation(captured_messages),
-                )
+            if conversation_id and captured_messages and not history_persisted:
+                try:
+                    self.message_store.save(conversation_id, captured_messages)
+                except Exception as persistence_exc:
+                    exc = persistence_exc
             task_run_id = (
                 str(envelope.references.get("task_run_id") or "")
-                if envelope is not None
-                else ""
-            )
-            conversation_id = (
-                str(envelope.references.get("conversation_id") or "")
                 if envelope is not None
                 else ""
             )
@@ -1113,8 +915,6 @@ class AiAgentFactory:
                     error.retryable = False
             elif denied:
                 error.retryable = False
-            if recorder is not None:
-                recorder.fail(error)
             raise error from None
 
 

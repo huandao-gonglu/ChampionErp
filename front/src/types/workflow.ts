@@ -428,7 +428,6 @@ export interface CategoryMatchResult {
   decision: CategoryMatchDecision
   failure: CategoryMatchFailure | null
   trace: {
-    conversationId: string
     taskRunId: string
   }
 }

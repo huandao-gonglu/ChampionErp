@@ -13,7 +13,17 @@ from pydantic_ai.models import Model
 
 from erp_web.marketplace_registry import PLATFORMS
 from erp_web.schemas.draft_capabilities import DraftQuerySnapshot
-from erp_web.schemas.global_tasks import GlobalPlanningDecision
+from erp_web.schemas.global_tasks import (
+    AnswerResolutionScope,
+    GlobalPlanningDecision,
+    TrustedGlobalAnswer,
+)
+from erp_web.services.capability_errors import BusinessCapabilityError
+from erp_web.services.draft_query_service import (
+    DraftIndexReader,
+    resolve_trusted_draft_answer,
+)
+from erp_web.stores.pydantic_message_store import PydanticMessageStore
 
 from .ai_agent_dependencies import AiAgentDependencies
 from .ai_agent_factory import (
@@ -29,7 +39,7 @@ from .ai_tool_registry import AiToolSet
 GLOBAL_TASK_PLAN_USE_CASE_ID = "global.task.plan"
 GLOBAL_TASK_PLAN_TOOLSET_ID = "global.task.plan"
 GLOBAL_TASK_PLAN_PERMISSION = "global.task.read"
-GLOBAL_TASK_PLAN_RESULT_VERSION = "global_task_plan.v1"
+GLOBAL_TASK_PLAN_RESULT_VERSION = "global_task_plan.v2"
 GLOBAL_TASK_PLAN_CAPABILITIES = frozenset(
     {
         "drafts.query",
@@ -62,6 +72,12 @@ GLOBAL_TASK_PLAN_PROFILE = AiAgentExecutionProfile(
 
 
 class DraftSnapshotReader(Protocol):
+    def save_draft_query_snapshot(
+        self,
+        snapshot: DraftQuerySnapshot,
+    ) -> DraftQuerySnapshot:
+        ...
+
     def load_draft_query_snapshot(
         self,
         snapshot_id: str,
@@ -77,9 +93,13 @@ class GlobalPlanningOutputValidator:
         snapshot_reader: DraftSnapshotReader,
         *,
         allowed_capabilities: frozenset[str] = GLOBAL_TASK_PLAN_CAPABILITIES,
+        resolution_scope: AnswerResolutionScope | None = None,
     ) -> None:
         self.snapshot_reader = snapshot_reader
         self.allowed_capabilities = allowed_capabilities
+        self.resolution_scope = AnswerResolutionScope.model_validate(
+            resolution_scope or {}
+        )
         self.error_code = ""
 
     def _retry(self, code: str, message: str) -> None:
@@ -106,6 +126,42 @@ class GlobalPlanningOutputValidator:
                     "query_snapshot_id 必须来自本次或既有 drafts_query 真实返回。",
                 )
         if output.action == "answer":
+            assert output.answer_kind is not None
+            if output.answer_kind == "active_draft_count" and (
+                self.resolution_scope.expected_product_id
+                or self.resolution_scope.expected_target_platform
+            ):
+                self._retry(
+                    "GLOBAL_PLAN_COUNT_SCOPE_CONFLICT",
+                    "active_draft_count 不能用于带商品或平台绑定的任务上下文。",
+                )
+            if (
+                output.answer_kind == "active_draft_count"
+                and snapshot is not None
+                and (
+                    snapshot.query.scope != "active"
+                    or bool(snapshot.query.target_platform)
+                    or bool(snapshot.query.status)
+                    or bool(snapshot.query.keyword)
+                )
+            ):
+                self._retry(
+                    "GLOBAL_PLAN_ACTIVE_SNAPSHOT_REQUIRED",
+                    "active_draft_count 必须引用没有平台、状态或关键词过滤的 active 查询快照。",
+                )
+            if output.answer_kind == "draft_market_context":
+                assert snapshot is not None
+                if output.answer_draft_position is not None:
+                    if output.answer_draft_position > len(snapshot.draft_ids):
+                        self._retry(
+                            "GLOBAL_PLAN_DRAFT_POSITION_INVALID",
+                            "answer_draft_position 超出查询快照范围。",
+                        )
+                elif snapshot.total != 1 or len(snapshot.draft_ids) != 1:
+                    self._retry(
+                        "GLOBAL_PLAN_DRAFT_REFERENCE_AMBIGUOUS",
+                        "draft_market_context 必须引用唯一草稿或明确序号。",
+                    )
             return output
 
         assert output.plan is not None
@@ -154,6 +210,12 @@ class GlobalPlanningOutputValidator:
                     "draft_position 超出查询快照范围。",
                 )
         platform = output.plan.target_platform.strip().lower()
+        expected_platform = self.resolution_scope.expected_target_platform
+        if platform and expected_platform and platform != expected_platform:
+            self._retry(
+                "GLOBAL_PLAN_PLATFORM_SCOPE_MISMATCH",
+                "计划 target_platform 不得覆盖任务显式绑定的平台。",
+            )
         if platform and platform not in PLATFORMS:
             self._retry(
                 "GLOBAL_PLAN_PLATFORM_INVALID",
@@ -165,23 +227,29 @@ class GlobalPlanningOutputValidator:
 @dataclass
 class GlobalAgentPlanningRun:
     decision: GlobalPlanningDecision
-    conversation_id: str
     outcome: AiAgentRunOutcome[GlobalPlanningDecision] | None = None
+    trusted_answer: TrustedGlobalAnswer | None = None
 
     def finish(self) -> None:
         if self.outcome is not None:
-            self.outcome.complete(
-                {
-                    "result_version": GLOBAL_TASK_PLAN_RESULT_VERSION,
-                    "action": self.decision.action,
-                    "step_count": (
-                        len(self.decision.plan.steps)
-                        if self.decision.plan is not None
-                        else 0
-                    ),
-                    "query_snapshot_id": self.decision.query_snapshot_id,
-                }
+            canonical_snapshot_id = (
+                self.trusted_answer.query_snapshot_id
+                if self.trusted_answer is not None
+                else self.decision.query_snapshot_id
             )
+            result: dict[str, Any] = {
+                "result_version": GLOBAL_TASK_PLAN_RESULT_VERSION,
+                "action": self.decision.action,
+                "step_count": (
+                    len(self.decision.plan.steps)
+                    if self.decision.plan is not None
+                    else 0
+                ),
+                "query_snapshot_id": canonical_snapshot_id,
+            }
+            if self.trusted_answer is not None:
+                result["trusted_answer"] = self.trusted_answer.model_dump(mode="json")
+            self.outcome.complete(result)
 
 
 class GlobalAgentService:
@@ -192,14 +260,16 @@ class GlobalAgentService:
         *,
         app_dir: Path | str,
         app_config: dict[str, Any],
-        journal: Any,
+        message_store: PydanticMessageStore,
         snapshot_reader: DraftSnapshotReader,
+        product_store: DraftIndexReader,
         allowed_capabilities: frozenset[str] = GLOBAL_TASK_PLAN_CAPABILITIES,
         factory: AiAgentFactory | None = None,
     ) -> None:
         self.app_dir = Path(app_dir)
         self.app_config = dict(app_config)
         self.snapshot_reader = snapshot_reader
+        self.product_store = product_store
         self.allowed_capabilities = frozenset(allowed_capabilities)
         if not self.allowed_capabilities:
             raise ValueError("全局 Agent 至少需要一个可规划 Capability")
@@ -211,7 +281,20 @@ class GlobalAgentService:
         self.factory = factory or AiAgentFactory(
             app_dir=self.app_dir,
             app_config=self.app_config,
-            journal=journal,
+            message_store=message_store,
+        )
+
+    def _resolve_answer(
+        self,
+        decision: GlobalPlanningDecision,
+        *,
+        resolution_scope: AnswerResolutionScope,
+    ) -> TrustedGlobalAnswer:
+        return resolve_trusted_draft_answer(
+            decision,
+            product_store=self.product_store,
+            snapshot_repository=self.snapshot_reader,
+            resolution_scope=resolution_scope,
         )
 
     def plan(
@@ -223,8 +306,11 @@ class GlobalAgentService:
         platform: str = "",
         recent_snapshot_id: str = "",
         model_override: Model | None = None,
-        parent_conversation_id: str | None = None,
     ) -> GlobalAgentPlanningRun:
+        resolution_scope = AnswerResolutionScope(
+            expected_product_id=product_id,
+            expected_target_platform=platform,
+        )
         prompt = load_ai_use_case_prompt_pair(
             self.app_dir,
             self.app_config,
@@ -261,6 +347,7 @@ class GlobalAgentService:
             output_validator=GlobalPlanningOutputValidator(
                 self.snapshot_reader,
                 allowed_capabilities=self.allowed_capabilities,
+                resolution_scope=resolution_scope,
             ),
             business_scope={
                 "product_id": str(product_id or "").strip(),
@@ -269,13 +356,7 @@ class GlobalAgentService:
             idempotency_context={
                 "result_version": GLOBAL_TASK_PLAN_RESULT_VERSION
             },
-            input_summary={
-                "use_case_id": GLOBAL_TASK_PLAN_USE_CASE_ID,
-                "product_id": str(product_id or "").strip(),
-                "platform": str(platform or "").strip().lower(),
-            },
             model_override=model_override,
-            parent_conversation_id=parent_conversation_id,
         )
         if isinstance(outcome.output, DeferredToolRequests):
             error = AiAgentExecutionError(
@@ -288,10 +369,28 @@ class GlobalAgentService:
             )
             outcome.fail(error)
             raise error
+        trusted_answer = None
+        if outcome.output.action == "answer":
+            try:
+                trusted_answer = self._resolve_answer(
+                    outcome.output,
+                    resolution_scope=resolution_scope,
+                )
+            except BusinessCapabilityError as exc:
+                error = AiAgentExecutionError(
+                    exc.code,
+                    str(exc),
+                    conversation_id=outcome.conversation_id,
+                    task_run_id=outcome.task_run_id,
+                    run_id=outcome.run_id,
+                    trace_id=outcome.trace_id,
+                )
+                outcome.fail(error)
+                raise error from exc
         return GlobalAgentPlanningRun(
             decision=outcome.output,
-            conversation_id=outcome.conversation_id,
             outcome=outcome,
+            trusted_answer=trusted_answer,
         )
 
 

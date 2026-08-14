@@ -39,26 +39,12 @@ from erp_web.services.capability_errors import (
 AttributeFiller = Callable[..., tuple[dict[str, Any], dict[str, Any]]]
 
 
-def _after_focused_execution(
-    operation: Callable[[], Any],
-    conversation_id: str,
-) -> Any:
-    """保留 focused run 已发生的事实，同时不改写领域错误。"""
-
-    try:
-        return operation()
-    except BusinessCapabilityError as exc:
-        exc.prepend_agent_execution_conversation_ids((conversation_id,))
-        raise
-
-
 def fill_product_attributes(
     request: ProductAttributesFillRequest,
     *,
     product_store: MarketPrepareStore,
     attribute_filler: AttributeFiller = apply_ai_model_attribute_fill,
     category_record_loader: CategoryRecordLoader = fetch_category_record,
-    parent_conversation_id: str | None = None,
 ) -> ProductAttributesFillResult:
     """复用规则/focused Agent；未解决的真实必填属性会暂停步骤。"""
 
@@ -94,16 +80,7 @@ def fill_product_attributes(
     }
     projected = product_with_target(product, platform, input_draft)
     try:
-        updated_product, meta = attribute_filler(
-            projected,
-            platform,
-            record,
-            **(
-                {"parent_conversation_id": parent_conversation_id}
-                if parent_conversation_id
-                else {}
-            ),
-        )
+        updated_product, meta = attribute_filler(projected, platform, record)
     except (BusinessCapabilityError, CapabilityInputRequired):
         raise
     except Exception as exc:
@@ -117,7 +94,6 @@ def fill_product_attributes(
             "PRODUCT_ATTRIBUTES_FILL_RESULT_INVALID",
             "属性填写 owner 返回了无效结果。",
         )
-    conversation_id = text(meta.get("conversation_id"))
     drafts = (
         updated_product.get("drafts")
         if isinstance(updated_product.get("drafts"), dict)
@@ -130,59 +106,43 @@ def fill_product_attributes(
         raise BusinessCapabilityError(
             "PRODUCT_ATTRIBUTES_FILL_RESULT_INVALID",
             "属性填写结果缺少目标平台草稿。",
-            agent_execution_conversation_ids=(conversation_id,),
         )
     attributes = (
         updated_draft.get("attributes")
         if isinstance(updated_draft.get("attributes"), dict)
         else {}
     )
-    updated_draft["category_attribute_schema"] = _after_focused_execution(
-        lambda: category_schema(
-            record,
-            platform=platform,
-            site=text(target.get("site")),
-            selected_category_id=selected_category_id,
-        ),
-        conversation_id,
+    updated_draft["category_attribute_schema"] = category_schema(
+        record,
+        platform=platform,
+        site=text(target.get("site")),
+        selected_category_id=selected_category_id,
     )
-    unresolved = _after_focused_execution(
-        lambda: unresolved_required_category_attributes(
-            product_with_target(updated_product, platform, updated_draft),
-            platform,
-            record,
-        ),
-        conversation_id,
+    unresolved = unresolved_required_category_attributes(
+        product_with_target(updated_product, platform, updated_draft),
+        platform,
+        record,
     )
     updated_draft["validation_errors"] = [
         text(definition.get("id"))
         for definition in unresolved
         if text(definition.get("id"))
     ]
-    invalidated = _after_focused_execution(
-        lambda: invalidate_target_publish_preparation(
-            product_store=product_store,
-            product=updated_product,
-            draft=draft,
-            target=target,
-            target_draft=updated_draft,
-        ),
-        conversation_id,
+    invalidated = invalidate_target_publish_preparation(
+        product_store=product_store,
+        product=updated_product,
+        draft=draft,
+        target=target,
+        target_draft=updated_draft,
     )
-    invalidated_target = _after_focused_execution(
-        lambda: select_target(
-            invalidated,
-            platform=platform,
-            site=text(target.get("site")),
-        ),
-        conversation_id,
+    invalidated_target = select_target(
+        invalidated,
+        platform=platform,
+        site=text(target.get("site")),
     )
-    invalidated_projection = _after_focused_execution(
-        lambda: draft_for_publish_target(
-            invalidated,
-            invalidated_target,
-        ),
-        conversation_id,
+    invalidated_projection = draft_for_publish_target(
+        invalidated,
+        invalidated_target,
     )
     for key in (
         "category_precheck",
@@ -206,16 +166,13 @@ def fill_product_attributes(
             "status",
         )
     )
-    _after_focused_execution(
-        lambda: persist_target_projection(
-            product_store=product_store,
-            product=product,
-            draft=draft,
-            target=target,
-            updated_product=updated_product,
-            updated_target_draft=updated_draft,
-        ),
-        conversation_id,
+    persist_target_projection(
+        product_store=product_store,
+        product=product,
+        draft=draft,
+        target=target,
+        updated_product=updated_product,
+        updated_target_draft=updated_draft,
     )
 
     if unresolved:
@@ -244,9 +201,6 @@ def fill_product_attributes(
             options=options,
             input_type="select" if options else "text",
             input_owner="provided_attributes",
-            agent_execution_conversation_ids=(
-                conversation_id,
-            ),
         )
 
     return ProductAttributesFillResult(
@@ -258,7 +212,6 @@ def fill_product_attributes(
         need_review_attribute_ids=[],
         fill_source=text(meta.get("source")),
         warning=text(meta.get("warning")),
-        conversation_id=conversation_id,
         changed=changed,
     )
 

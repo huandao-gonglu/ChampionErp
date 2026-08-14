@@ -203,8 +203,6 @@ def apply_ai_model_attribute_fill(
     product: dict[str, Any],
     platform: str,
     category_record: dict[str, Any] | None,
-    *,
-    parent_conversation_id: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     platform = str(platform or "").strip().lower()
     base_product = apply_ai_attribute_fill(product, platform, category_record)
@@ -236,11 +234,6 @@ def apply_ai_model_attribute_fill(
             ),
             toolset,
             ledger,
-            **(
-                {"parent_conversation_id": parent_conversation_id}
-                if parent_conversation_id
-                else {}
-            ),
         )
         ai_attrs = _validated_agent_attributes(
             agent_run.output,
@@ -281,9 +274,6 @@ def apply_ai_model_attribute_fill(
             + "、".join(sorted(ledger.failed_attribute_ids))
         )
     if agent_run is not None:
-        meta["conversation_id"] = (
-            agent_run.outcome.conversation_id if agent_run.outcome is not None else ""
-        )
         agent_run.finish_business_result(
             {
                 "status": "completed",

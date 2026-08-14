@@ -33,7 +33,7 @@ if str(APP_DIR) not in sys.path:
 def _isolated_app_context(tmp_path: Path) -> Iterator[None]:
     """每个测试自动换到独立 AppContext（tmp 下的 SQLite/配置根）。
 
-    context 挂载的有状态服务（db/products/config/research/ai_journal/
+    context 挂载的有状态服务（db/products/config/research/pydantic_messages/
     exchange_rates）因此绝不会把测试数据写进真实仓库；需要把 context 绑定
     到测试自己目录的用例，再嵌套一层 temp_app_context 即可。
     """

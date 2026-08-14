@@ -201,7 +201,7 @@ DRAFT = {
     "description": "Ventilador silencioso para escritorio.",
 }
 TARGET = {"platform": "mercadolibre", "site": "MLM", "language": "es-MX"}
-TRACE = {"conversation_id": "aic-test", "task_run_id": "task-test"}
+TRACE = {"task_run_id": "task-test"}
 
 
 def execution_context() -> AiExecutionContext:

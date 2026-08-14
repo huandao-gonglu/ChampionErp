@@ -392,7 +392,6 @@ class CategoryMatchDecision(TypedDict):
 
 
 class CategoryMatchTrace(TypedDict, total=False):
-    conversation_id: str
     task_run_id: str
     run_id: str
     trace_id: str

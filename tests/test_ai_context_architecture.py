@@ -373,7 +373,6 @@ def test_ai_provider_and_ai_work_entry_points_are_explicit() -> None:
         ROOT / "erp_web/services/ai_agent_dependencies.py",
         ROOT / "erp_web/services/ai_agent_factory.py",
         ROOT / "erp_web/services/ai_agent_instrumentation.py",
-        ROOT / "erp_web/services/ai_agent_observability.py",
         ROOT / "erp_web/services/ai_agent_state_store.py",
         ROOT / "erp_web/services/ai_tool_bridge.py",
         ROOT / "erp_web/services/category_attribute_fill_agent_service.py",
@@ -381,7 +380,7 @@ def test_ai_provider_and_ai_work_entry_points_are_explicit() -> None:
         ROOT / "erp_web/services/global_agent_service.py",
         ROOT / "erp_web/services/ai_gateway_provider_profiles.py",
         ROOT / "erp_web/services/ai_gateway_provider_prompting.py",
-        ROOT / "erp_web/services/ai_work_service.py",
+        ROOT / "erp_web/stores/pydantic_message_store.py",
         ROOT / "erp_web/http_route_units/ai_work_routes.py",
         ROOT / "front/src/views/AiWorkView.vue",
     ]
@@ -414,25 +413,38 @@ def test_ai_provider_and_ai_work_entry_points_are_explicit() -> None:
     ai_route = (
         ROOT / "erp_web/http_route_units/ai_work_routes.py"
     ).read_text(encoding="utf-8")
-    assert "get_context().ai_journal" in ai_route
+    assert "get_context().pydantic_messages" in ai_route
 
 
-def test_ai_work_conversation_hierarchy_has_one_indexed_backend_contract() -> None:
+def test_ai_work_has_one_pydantic_message_storage_contract() -> None:
     database = (ROOT / "erp_web/db.py").read_text(encoding="utf-8")
-    service = (
-        ROOT / "erp_web/services/ai_work_service.py"
+    store = (
+        ROOT / "erp_web/stores/pydantic_message_store.py"
     ).read_text(encoding="utf-8")
     route = (
         ROOT / "erp_web/http_route_units/ai_work_routes.py"
     ).read_text(encoding="utf-8")
 
-    assert "parent_session_id TEXT DEFAULT NULL" in database
-    assert "idx_ai_sessions_parent_updated" in database
-    assert "def bind_ai_session_parent(" in database
-    assert "parent_conversation_id: str | None = None" in service
-    assert "def list_child_conversations(" in service
-    assert 'action == "children"' in route
-    assert '"include_children"' in route
+    assert "CREATE TABLE IF NOT EXISTS pydantic_message_histories" in database
+    assert "messages_json BLOB NOT NULL" in database
+    assert "ModelMessagesTypeAdapter.dump_json" in store
+    assert "ModelMessagesTypeAdapter.validate_json" in store
+    assert 'CONVERSATIONS_PATH = "/api/v1/ai-work/conversations"' in route
+    storage_contract = database + store
+    for retired in (
+        "ai_" + "sessions",
+        "AiWork" + "Journal",
+        "AiWork" + "Event",
+    ):
+        assert retired not in storage_contract
+    for retired_route_contract in (
+        "after_" + "seq",
+        "wait_" + "ms",
+        '"child' + 'ren"',
+        '"eve' + 'nts"',
+        '"ra' + 'w"',
+    ):
+        assert retired_route_contract not in route
 
 
 def test_context_map_mentions_shared_ai_tool_execution_entry_points() -> None:
@@ -440,7 +452,6 @@ def test_context_map_mentions_shared_ai_tool_execution_entry_points() -> None:
     for entry_point in [
         "erp_web/schemas/ai_tools.py",
         "erp_web/schemas/ai_trace.py",
-        "erp_web/services/ai_invocation.py",
         "erp_web/services/ai_tool_declaration.py",
         "erp_web/services/ai_tool_compiler.py",
         "erp_web/services/ai_tool_catalog.py",
@@ -455,7 +466,7 @@ def test_context_map_mentions_shared_ai_tool_execution_entry_points() -> None:
         "erp_web/services/ai_agent_dependencies.py",
         "erp_web/services/ai_agent_factory.py",
         "erp_web/services/ai_agent_instrumentation.py",
-        "erp_web/services/ai_agent_observability.py",
+        "erp_web/stores/pydantic_message_store.py",
         "erp_web/services/ai_agent_state_store.py",
         "erp_web/services/ai_tool_bridge.py",
         "erp_web/services/category_attribute_fill_agent_service.py",
@@ -490,8 +501,8 @@ def test_pydantic_ai_types_stay_in_focused_runtime_boundaries() -> None:
         ROOT / "erp_web/services/ai_tool_bridge.py",
         ROOT / "erp_web/services/ai_agent_factory.py",
         ROOT / "erp_web/services/ai_agent_instrumentation.py",
-        ROOT / "erp_web/services/ai_agent_observability.py",
         ROOT / "erp_web/services/ai_agent_state_store.py",
+        ROOT / "erp_web/stores/pydantic_message_store.py",
         ROOT / "erp_web/services/category_attribute_fill_agent_service.py",
         ROOT / "erp_web/services/category_match_agent_service.py",
         ROOT / "erp_web/services/global_agent_service.py",
@@ -937,32 +948,26 @@ def test_category_search_uses_bound_polymorphism_and_normalized_shapes() -> None
     assert "category_path:" not in schema_text
 
 
-def test_ai_work_keeps_tool_projection_readable_and_technical_spans_separate() -> None:
-    event_schema = (ROOT / "erp_web/schemas/ai_work.py").read_text(
-        encoding="utf-8"
-    )
-    recorder = (ROOT / "erp_web/services/ai_invocation.py").read_text(
+def test_ai_work_does_not_recreate_tool_or_event_projection() -> None:
+    api_schema = (ROOT / "erp_web/schemas/ai_work.py").read_text(
         encoding="utf-8"
     )
     runtime = (ROOT / "erp_web/services/ai_tool_runtime.py").read_text(
         encoding="utf-8"
     )
-    for technical_event_type in (
-        '"TASK_STARTED"',
-        '"MODEL_CALL_STARTED"',
-        '"MODEL_CALL_FINISHED"',
-        '"TASK_FINISHED"',
-        '"TASK_FAILED"',
+    factory = (ROOT / "erp_web/services/ai_agent_factory.py").read_text(
+        encoding="utf-8"
+    )
+    for retired in (
+        "AiWork" + "Event",
+        "AiWork" + "Recorder",
+        "Conversation" + "AiWork" + "Recorder",
+        "TOOL_CALL_" + "STARTED",
+        "TOOL_CALL_" + "FINISHED",
+        "agent." + "request",
+        "agent." + "transcript",
     ):
-        assert technical_event_type not in event_schema
-    assert "self.emit_custom(event_type, payload)" in recorder
-    assert '"TOOL_CALL_STARTED"' in runtime
-    assert '"TOOL_CALL_FINISHED"' in runtime
-    started = runtime[runtime.index("def _record_started"):runtime.index("def _record_finished")]
-    finished = runtime[runtime.index("def _record_finished"):runtime.index("def _error_result")]
-    assert "arguments=sanitize_ai_work_value" in started
-    assert 'payload["output"] = sanitize_ai_work_value' in finished
-    assert 'payload["error"]' in finished
+        assert retired not in api_schema + runtime + factory
 
 
 def test_ai_gateway_stays_a_small_stable_facade() -> None:
@@ -1351,7 +1356,6 @@ def test_global_agent_http_and_controller_keep_narrow_boundaries() -> None:
             route,
             ROOT / "erp_web/http_routes.py",
             ROOT / "erp_web/schemas/requests.py",
-            ROOT / "front/src/api/globalTasks.ts",
         )
     )
     for retired_wait_name in (
@@ -1376,6 +1380,17 @@ def test_global_agent_planning_toolset_is_one_explicit_read_only_tool() -> None:
     assert 'side_effect="write"' not in tool_text
     assert "allow_write=False" in service_text
     assert "GLOBAL_TASK_PLAN_PERMISSION = \"global.task.read\"" in service_text
+    for retired_fast_path_symbol in (
+        "_try_fast_answer",
+        "_is_active_draft_count_goal",
+        "_is_draft_market_goal",
+        "resolve_fresh_active_draft_count_answer",
+    ):
+        assert retired_fast_path_symbol not in service_text
+    assert "query_drafts(" not in service_text, (
+        "自然语言必须先由主 Agent 理解，并通过只读 drafts_query Tool 进入 "
+        "AiToolRuntime；GlobalAgentService 不得直接查询草稿"
+    )
 
 
 def test_global_agent_market_runtime_uses_injection_without_facade_reverse_imports() -> None:
@@ -1429,13 +1444,13 @@ def test_context_map_documents_global_agent_vertical_entry_points() -> None:
         "erp_web/runtime_units/attribute_fill_capabilities.py",
         "erp_web/runtime_units/market_pricing_capability.py",
         "erp_web/runtime_units/market_prepare_capabilities.py",
-        "erp_web/services/ai_work_service.py",
+        "erp_web/stores/pydantic_message_store.py",
         "/api/global-task-start",
         "/api/global-task-state",
         "/api/global-task-input",
         "/api/global-task-publish-confirm",
         "/api/global-task-cancel",
-        "global.agent_execution_link",
+        "/api/v1/ai-work/conversations",
     )
     missing = [entry for entry in required_entries if entry not in context_map]
     assert not missing, f"AI Context Map 缺少全局 Agent 入口：{missing}"

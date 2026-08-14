@@ -6,13 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from erp_web.context import get_context
-from erp_web.schemas.ai_trace import AiExecutionContext
-
 from . import (
     ai_direct_request_service,
     ai_model_config,
-    ai_work_service,
     config_service,
 )
 from .ai_gateway_browser_provider import (
@@ -21,7 +17,6 @@ from .ai_gateway_browser_provider import (
 )
 from .ai_gateway_cli_provider import CodexCliProvider, probe_cli_model_capabilities
 from .ai_gateway_provider_types import AiChatRequest
-from .ai_invocation import AiInvocation, ConversationAiWorkRecorder
 from .ai_model_discovery import list_remote_models
 from .ai_model_errors import AIHTTPError
 from .ai_model_probe_service import probe_model_capabilities, test_api_model
@@ -161,82 +156,6 @@ class AiProviderClient:
     def provider_for(self, capability: str) -> AiProvider:
         return _provider_for_model(self.model, capability)
 
-    def start_conversation(
-        self,
-        capability: str,
-        provider_id: str,
-        input_payload: dict[str, Any],
-        *,
-        stream: bool = False,
-        trace_context: dict[str, Any] | None = None,
-    ) -> ai_work_service.AiWorkConversation:
-        return get_context().ai_journal.start_conversation(
-            use_case_id=self.use_case_id,
-            capability=capability,
-            provider_id=provider_id,
-            model=self.model,
-            stream=stream,
-            required_capabilities=self.required_capabilities,
-            timeout_seconds=self.timeout_seconds,
-            input_payload=input_payload,
-            trace_context=trace_context,
-        )
-
-    def start_invocation(
-        self,
-        capability: str,
-        provider_id: str,
-        input_payload: dict[str, Any],
-        *,
-        stream: bool = False,
-        budget_profile: str = "",
-        task_run_id: str = "",
-        attempt_id: str = "",
-        workflow_run_id: str | None = None,
-        parent_task_run_id: str | None = None,
-        actor_id: str = "local-user",
-        tenant_id: str = "local",
-        permissions: frozenset[str] | set[str] | tuple[str, ...] = frozenset(),
-        business_scope: dict[str, str] | None = None,
-        idempotency_context: dict[str, str] | None = None,
-        approved_tool_call_ids: frozenset[str] | set[str] | tuple[str, ...] = frozenset(),
-        allow_write: bool = False,
-    ) -> AiInvocation:
-        execution_context = AiExecutionContext.create(
-            timeout_seconds=self.timeout_seconds,
-            budget_profile=budget_profile or f"{self.use_case_id}.default",
-            task_run_id=task_run_id,
-            attempt_id=attempt_id,
-            workflow_run_id=workflow_run_id,
-            parent_task_run_id=parent_task_run_id,
-            actor_id=actor_id,
-            tenant_id=tenant_id,
-            permissions=permissions,
-            business_scope=business_scope,
-            idempotency_context=idempotency_context,
-            approved_tool_call_ids=approved_tool_call_ids,
-            allow_write=allow_write,
-        )
-        conversation = self.start_conversation(
-            capability,
-            provider_id,
-            input_payload,
-            stream=stream,
-            trace_context=execution_context.trace_payload(),
-        )
-        return AiInvocation(
-            use_case_id=self.use_case_id,
-            capability=capability,
-            provider_id=provider_id,
-            model=self.model,
-            required_capabilities=self.required_capabilities,
-            timeout_seconds=self.timeout_seconds,
-            execution_context=execution_context,
-            recorder=ConversationAiWorkRecorder(conversation, execution_context),
-            generation_settings=self.generation_settings,
-        )
-
-
 def chat_json(
     app_dir: Path | str,
     app_config: dict[str, Any] | None,
@@ -266,69 +185,40 @@ def chat_json(
             raise ValueError(
                 "API 请求不允许业务层传入 extra_body；请使用模型配置的受控字段。"
             )
-        provider_id = ai_direct_request_service.PYDANTIC_DIRECT_PROVIDER_ID
-        invocation = client.start_invocation(
-            CAPABILITY_CHAT_JSON,
-            provider_id,
-            {"message_count": len(messages)},
+        return ai_direct_request_service.chat_json(
+            app_dir=client.app_dir,
+            use_case_id=client.use_case_id,
+            model=client.model,
+            required_capabilities=client.required_capabilities,
+            messages=messages,
+            generation_settings=client.generation_settings,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout_seconds=client.timeout_seconds,
+            response_format=response_format,
             stream=effective_stream,
+            token_callback=token_callback,
         )
-        recorder = invocation.recorder
-        try:
-            parsed = ai_direct_request_service.chat_json(
-                app_dir=client.app_dir,
-                use_case_id=client.use_case_id,
-                model=client.model,
-                required_capabilities=client.required_capabilities,
-                messages=messages,
-                generation_settings=client.generation_settings,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                timeout_seconds=client.timeout_seconds,
-                response_format=response_format,
-                stream=effective_stream,
-                recorder=recorder,
-                token_callback=token_callback,
-            )
-            recorder.finish({"parsed": parsed})
-            return parsed
-        except Exception as exc:
-            recorder.fail(exc)
-            raise
 
     provider = client.provider_for(CAPABILITY_CHAT_JSON)
     if not isinstance(provider, AiChatProvider):
         raise RuntimeError(f"Provider {provider.provider_id} 未实现文本对话能力。")
-    invocation = client.start_invocation(
-        CAPABILITY_CHAT_JSON,
-        provider.provider_id,
-        {"message_count": len(messages)},
-        stream=effective_stream,
-    )
-    recorder = invocation.recorder
-    try:
-        parsed = provider.chat_json(
-            AiChatRequest(
-                app_dir=client.app_dir,
-                model=client.model,
-                messages=messages,
-                required_capabilities=client.required_capabilities,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                timeout_seconds=client.timeout_seconds,
-                response_format=response_format,
-                extra_body=extra_body,
-                stream=effective_stream,
-                token_callback=token_callback,
-                conversation=recorder,
-                generation_settings=client.generation_settings,
-            )
+    return provider.chat_json(
+        AiChatRequest(
+            app_dir=client.app_dir,
+            model=client.model,
+            messages=messages,
+            required_capabilities=client.required_capabilities,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout_seconds=client.timeout_seconds,
+            response_format=response_format,
+            extra_body=extra_body,
+            stream=effective_stream,
+            token_callback=token_callback,
+            generation_settings=client.generation_settings,
         )
-        recorder.finish({"parsed": parsed})
-        return parsed
-    except Exception as exc:
-        recorder.fail(exc)
-        raise
+    )
 
 
 def _image_client(
@@ -379,31 +269,18 @@ def generate_images(
             (*client.required_capabilities, ai_model_config.CAP_IMAGE_GENERATE)
         )
     )
-    conversation = client.start_conversation(
-        CAPABILITY_IMAGE_GENERATE,
-        ai_direct_request_service.PYDANTIC_DIRECT_PROVIDER_ID,
-        {"prompt_length": len(prompt), "requested_count": count},
+    return ai_direct_request_service.generate_images(
+        app_dir=client.app_dir,
+        use_case_id=client.use_case_id,
+        model=client.model,
+        required_capabilities=required,
+        prompt=prompt,
+        mode=mode,
+        size=size,
+        quality=quality,
+        count=count,
+        timeout_seconds=client.timeout_seconds,
     )
-    try:
-        results = ai_direct_request_service.generate_images(
-            app_dir=client.app_dir,
-            use_case_id=client.use_case_id,
-            model=client.model,
-            required_capabilities=required,
-            prompt=prompt,
-            mode=mode,
-            size=size,
-            quality=quality,
-            count=count,
-            timeout_seconds=client.timeout_seconds,
-        )
-        summary = {"generated_count": len(results)}
-        conversation.emit_custom("business.result", summary)
-        conversation.finish(summary)
-        return results
-    except Exception as exc:
-        conversation.fail(exc)
-        raise
 
 
 def edit_images(
@@ -427,35 +304,19 @@ def edit_images(
         model_id=model_id,
         timeout_seconds=timeout_seconds,
     )
-    conversation = client.start_conversation(
-        CAPABILITY_IMAGE_EDIT,
-        ai_direct_request_service.PYDANTIC_DIRECT_PROVIDER_ID,
-        {
-            "prompt_length": len(prompt),
-            "source_image_ids": [str(item.get("id") or "") for item in images],
-        },
+    return ai_direct_request_service.edit_images(
+        app_dir=client.app_dir,
+        use_case_id=client.use_case_id,
+        model=client.model,
+        required_capabilities=client.required_capabilities,
+        prompt=prompt,
+        images=images,
+        mode=mode,
+        size=size,
+        quality=quality,
+        count=count,
+        timeout_seconds=client.timeout_seconds,
     )
-    try:
-        results = ai_direct_request_service.edit_images(
-            app_dir=client.app_dir,
-            use_case_id=client.use_case_id,
-            model=client.model,
-            required_capabilities=client.required_capabilities,
-            prompt=prompt,
-            images=images,
-            mode=mode,
-            size=size,
-            quality=quality,
-            count=count,
-            timeout_seconds=client.timeout_seconds,
-        )
-        summary = {"generated_count": len(results)}
-        conversation.emit_custom("business.result", summary)
-        conversation.finish(summary)
-        return results
-    except Exception as exc:
-        conversation.fail(exc)
-        raise
 
 
 def test_ai_model(app_dir: Path | str, model: dict[str, Any]) -> dict[str, Any]:

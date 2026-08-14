@@ -605,7 +605,7 @@ describe('workflow store live API flow', () => {
         searchCount: 1,
       },
       failure: null,
-      trace: { conversationId: 'aic-1', taskRunId: 'task-1' },
+      trace: { taskRunId: 'task-1' },
     })
 
     const store = useWorkflowStore()

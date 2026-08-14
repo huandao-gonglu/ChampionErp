@@ -40,38 +40,42 @@ def test_database_owns_schema_and_connection_policy(tmp_path) -> None:
             for index in publish_job_indexes
             if int(index["unique"] or 0) == 1
         }
-        ai_session_indexes = connection.execute(
-            'PRAGMA index_list("ai_sessions")'
+        message_history_columns = connection.execute(
+            'PRAGMA table_info("pydantic_message_histories")'
         ).fetchall()
-        ai_session_index_columns = {
+        message_history_indexes = connection.execute(
+            'PRAGMA index_list("pydantic_message_histories")'
+        ).fetchall()
+        message_history_index_columns = {
             tuple(
                 str(column["name"])
                 for column in connection.execute(
                     f'PRAGMA index_info("{index["name"]}")'
                 ).fetchall()
             )
-            for index in ai_session_indexes
+            for index in message_history_indexes
         }
-        ai_session_foreign_keys = connection.execute(
-            'PRAGMA foreign_key_list("ai_sessions")'
-        ).fetchall()
     assert set(REQUIRED_TABLES).issubset(tables)
     assert user_version == SCHEMA_VERSION
     assert str(journal_mode).lower() == "wal"
     assert foreign_keys == 1
     assert busy_timeout >= 5_000
     assert ("idempotency_key",) in unique_publish_job_columns
-    assert (
-        "parent_session_id",
-        "updated_at",
-    ) in ai_session_index_columns
-    assert any(
-        str(reference["table"]) == "ai_sessions"
-        and str(reference["from"]) == "parent_session_id"
-        and str(reference["to"]) == "session_id"
-        and str(reference["on_delete"]).upper() == "SET NULL"
-        for reference in ai_session_foreign_keys
-    )
+    assert {
+        str(column["name"]): (
+            str(column["type"]).upper(),
+            int(column["notnull"] or 0),
+            int(column["pk"] or 0),
+        )
+        for column in message_history_columns
+    } == {
+        "conversation_id": ("TEXT", 0, 1),
+        "messages_json": ("BLOB", 1, 0),
+        "created_at": ("TEXT", 1, 0),
+        "updated_at": ("TEXT", 1, 0),
+    }
+    assert ("updated_at",) in message_history_index_columns
+    assert "ai_" + "sessions" not in tables
 
 
 def test_publish_jobs_never_persist_credentials(tmp_path) -> None:

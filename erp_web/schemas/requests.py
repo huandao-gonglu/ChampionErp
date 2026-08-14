@@ -121,8 +121,6 @@ _COMMON_FIELD_RULES: dict[str, FieldRule] = {
     "goal": STRING,
     "message": STRING,
     "task_id": STRING,
-    "task_kind": STRING,
-    "ai_work_conversation_id": STRING,
     "draft_query_snapshot_id": STRING,
     "kind": STRING,
     "keyword": STRING,

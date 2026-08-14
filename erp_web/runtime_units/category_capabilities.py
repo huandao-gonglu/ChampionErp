@@ -37,26 +37,12 @@ from erp_web.services.capability_errors import (
 CategoryMatcher = Callable[..., Mapping[str, Any]]
 
 
-def _after_focused_execution(
-    operation: Callable[[], Any],
-    conversation_id: str,
-) -> Any:
-    """保留 focused run 已发生的事实，同时不改写领域错误。"""
-
-    try:
-        return operation()
-    except BusinessCapabilityError as exc:
-        exc.prepend_agent_execution_conversation_ids((conversation_id,))
-        raise
-
-
 def match_category(
     request: CategoryMatchRequest,
     *,
     product_store: MarketPrepareStore,
     matcher: CategoryMatcher,
     category_record_loader: CategoryRecordLoader = fetch_category_record,
-    parent_conversation_id: str | None = None,
 ) -> CategoryMatchCapabilityResult:
     """复用现有 focused Agent，并把终检通过的类目写入稳定目标草稿。"""
 
@@ -68,7 +54,6 @@ def match_category(
     selected_category_id = request.category_id or text(target_draft.get("category_id"))
     query = ""
     confidence = 0.0
-    conversation_id = ""
 
     if not selected_category_id:
         try:
@@ -77,16 +62,7 @@ def match_category(
                 target_draft,
                 target,
             )
-            match_result = dict(
-                matcher(
-                    *match_args,
-                    **(
-                        {"parent_conversation_id": parent_conversation_id}
-                        if parent_conversation_id
-                        else {}
-                    ),
-                )
-            )
+            match_result = dict(matcher(*match_args))
         except (BusinessCapabilityError, CapabilityInputRequired):
             raise
         except Exception as exc:
@@ -96,12 +72,6 @@ def match_category(
                 retryable=True,
             ) from exc
         status = text(match_result.get("status")).lower()
-        trace = (
-            match_result.get("trace")
-            if isinstance(match_result.get("trace"), Mapping)
-            else {}
-        )
-        conversation_id = text(trace.get("conversation_id"))
         failure = (
             match_result.get("failure")
             if isinstance(match_result.get("failure"), Mapping)
@@ -127,7 +97,6 @@ def match_category(
                 reason=text(failure.get("message")) or "请选择一个候选类目。",
                 options=candidate_options,
                 input_type="select" if candidate_options else "text",
-                agent_execution_conversation_ids=(conversation_id,),
             )
         if status != "completed" or not bool(match_result.get("ok")):
             code = text(failure.get("code")) or "CATEGORY_MATCH_FAILED"
@@ -139,7 +108,6 @@ def match_category(
                     key="title",
                     label="商品标题",
                     reason="请先补充能识别商品类型的标题。",
-                    agent_execution_conversation_ids=(conversation_id,),
                 )
             if code == "TARGET_REQUIRED":
                 raise CapabilityInputRequired(
@@ -148,20 +116,17 @@ def match_category(
                     key="site",
                     label="目标站点",
                     reason="请明确类目匹配的目标站点。",
-                    agent_execution_conversation_ids=(conversation_id,),
                 )
             raise BusinessCapabilityError(
                 code,
                 message,
                 retryable=bool(failure.get("retryable")),
-                agent_execution_conversation_ids=(conversation_id,),
             )
         selected_category_id = text(match_result.get("selected_category_id"))
         if not selected_category_id:
             raise BusinessCapabilityError(
                 "CATEGORY_MATCH_RESULT_INVALID",
                 "类目匹配完成但没有返回 category_id。",
-                agent_execution_conversation_ids=(conversation_id,),
             )
         query = text(match_result.get("query"))
         decision = (
@@ -174,20 +139,14 @@ def match_category(
         except (TypeError, ValueError):
             confidence = 0.0
         confidence = min(1.0, max(0.0, confidence))
-    record = _after_focused_execution(
-        lambda: load_category_record(
-            category_record_loader,
-            platform=platform,
-            site=text(target.get("site")),
-            selected_category_id=selected_category_id,
-        ),
-        conversation_id,
+    record = load_category_record(
+        category_record_loader,
+        platform=platform,
+        site=text(target.get("site")),
+        selected_category_id=selected_category_id,
     )
     projected = product_with_target(product, platform, target_draft)
-    updated_product = _after_focused_execution(
-        lambda: apply_category_selection(projected, platform, record),
-        conversation_id,
-    )
+    updated_product = apply_category_selection(projected, platform, record)
     updated_draft = deepcopy(updated_product["drafts"][platform])
     updated_draft.update(
         {
@@ -196,41 +155,29 @@ def match_category(
                 record.get("description_category_id")
             ),
             "category_path": category_path(record),
-            "category_attribute_schema": _after_focused_execution(
-                lambda: category_schema(
-                    record,
-                    platform=platform,
-                    site=text(target.get("site")),
-                    selected_category_id=selected_category_id,
-                ),
-                conversation_id,
+            "category_attribute_schema": category_schema(
+                record,
+                platform=platform,
+                site=text(target.get("site")),
+                selected_category_id=selected_category_id,
             ),
         }
     )
-    invalidated = _after_focused_execution(
-        lambda: invalidate_target_publish_preparation(
-            product_store=product_store,
-            product=updated_product,
-            draft=draft,
-            target=target,
-            target_draft=updated_draft,
-        ),
-        conversation_id,
+    invalidated = invalidate_target_publish_preparation(
+        product_store=product_store,
+        product=updated_product,
+        draft=draft,
+        target=target,
+        target_draft=updated_draft,
     )
-    invalidated_target = _after_focused_execution(
-        lambda: select_target(
-            invalidated,
-            platform=platform,
-            site=text(target.get("site")),
-        ),
-        conversation_id,
+    invalidated_target = select_target(
+        invalidated,
+        platform=platform,
+        site=text(target.get("site")),
     )
-    invalidated_projection = _after_focused_execution(
-        lambda: draft_for_publish_target(
-            invalidated,
-            invalidated_target,
-        ),
-        conversation_id,
+    invalidated_projection = draft_for_publish_target(
+        invalidated,
+        invalidated_target,
     )
     for key in (
         "validation_errors",
@@ -257,34 +204,24 @@ def match_category(
             "status",
         )
     )
-    saved = _after_focused_execution(
-        lambda: persist_target_projection(
-            product_store=product_store,
-            product=product,
-            draft=draft,
-            target=target,
-            updated_product=updated_product,
-            updated_target_draft=updated_draft,
-        ),
-        conversation_id,
+    saved = persist_target_projection(
+        product_store=product_store,
+        product=product,
+        draft=draft,
+        target=target,
+        updated_product=updated_product,
+        updated_target_draft=updated_draft,
     )
-    saved_target = _after_focused_execution(
-        lambda: select_target(
-            saved,
-            platform=platform,
-            site=text(target.get("site")),
-        ),
-        conversation_id,
+    saved_target = select_target(
+        saved,
+        platform=platform,
+        site=text(target.get("site")),
     )
-    saved_projection = _after_focused_execution(
-        lambda: draft_for_publish_target(saved, saved_target),
-        conversation_id,
-    )
+    saved_projection = draft_for_publish_target(saved, saved_target)
     if text(saved_projection.get("category_id")) != selected_category_id:
         raise BusinessCapabilityError(
             "CATEGORY_MATCH_PERSIST_INCOMPLETE",
             "类目匹配结果保存后无法从目标草稿验证。",
-            agent_execution_conversation_ids=(conversation_id,),
         )
     return CategoryMatchCapabilityResult(
         draft_id=request.draft_id,
@@ -294,7 +231,6 @@ def match_category(
         category_path=text(saved_projection.get("category_path")),
         query=query,
         model_confidence=confidence,
-        conversation_id=conversation_id,
         changed=changed,
     )
 

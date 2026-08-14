@@ -115,12 +115,10 @@ def _probe_capability(
         raise ai_gateway_probe.CapabilityProbeInconclusive(str(exc)) from None
     if capability == ai_model_config.CAP_CHAT:
         messages = ai_gateway_probe._chat_probe_default_messages(probe_token)
-        ai_gateway_probe._record_probe_request(context, messages)
         response = ai_direct_request_service.request_for_probe(
             app_dir=app_dir,
             binding=binding,
             messages=messages,
-            recorder=context.conversation,
         )
         ai_gateway_probe._validate_chat_probe_text(
             response.text or "",
@@ -133,12 +131,10 @@ def _probe_capability(
         )
     if capability == ai_model_config.CAP_JSON:
         messages = ai_gateway_probe._json_probe_default_messages(probe_token)
-        ai_gateway_probe._record_probe_request(context, messages)
         data, _ = ai_direct_request_service.request_json_for_probe(
             app_dir=app_dir,
             binding=binding,
             messages=messages,
-            recorder=context.conversation,
         )
         ai_gateway_probe._validate_json_probe_data(data, probe_token)
         return ai_gateway_probe.build_capability_profile(
@@ -151,17 +147,11 @@ def _probe_capability(
             options,
             ai_gateway_probe._web_search_probe_prompt(),
         )
-        ai_gateway_probe._record_probe_request(
-            context,
-            messages,
-            details={"web_search": True},
-        )
         data, request_mode = ai_direct_request_service.request_json_for_probe(
             app_dir=app_dir,
             binding=binding,
             messages=messages,
             web_search=True,
-            recorder=context.conversation,
         )
         ai_gateway_probe._validate_web_search_probe_data(data)
         return ai_gateway_probe.build_capability_profile(
@@ -195,21 +185,6 @@ def _probe_capability(
                 ),
             }
         ]
-        ai_gateway_probe._record_probe_request(
-            context,
-            messages,
-            phase="tool_selection",
-            details={
-                "tools": [
-                    {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters_json_schema": tool.parameters_json_schema,
-                    }
-                ],
-                "allow_text_output": True,
-            },
-        )
         response = ai_direct_request_service.request_for_probe(
             app_dir=app_dir,
             binding=binding,
@@ -218,8 +193,6 @@ def _probe_capability(
             # Qwen 思考模式不接受 tool_choice=required/object；允许文本会让
             # Pydantic 发送 tool_choice=auto，是否真的调用工具仍由下方严格校验。
             allow_text_output=True,
-            recorder=context.conversation,
-            response_phase="tool_selection",
         )
         tool_calls = [
             part for part in response.parts if isinstance(part, ToolCallPart)
@@ -245,12 +218,6 @@ def _probe_capability(
             "probe_token": probe_token,
             "status": "ok",
         }
-        ai_gateway_probe._record_probe_tool_result(
-            context,
-            tool_name="noop",
-            tool_call_id=tool_call.tool_call_id,
-            result=tool_result,
-        )
         final_response = ai_direct_request_service.request_for_probe(
             app_dir=app_dir,
             binding=binding,
@@ -269,8 +236,6 @@ def _probe_capability(
             ],
             function_tools=[tool],
             allow_text_output=True,
-            recorder=context.conversation,
-            response_phase="tool_followup",
         )
         if (final_response.text or "").strip() != expected_final:
             raise ai_gateway_probe.CapabilityProbeUnsupported(
@@ -286,17 +251,11 @@ def _probe_capability(
             options,
             "single small blue square",
         )
-        ai_gateway_probe._record_probe_request(
-            context,
-            [{"role": "user", "content": prompt}],
-            details={"image_action": "generate"},
-        )
         results = ai_direct_request_service.generate_images_for_probe(
             app_dir=app_dir,
             binding=binding,
             prompt=prompt,
         )
-        ai_gateway_probe._record_probe_image_results(context, results)
         _validate_api_image_results(results)
         return ai_gateway_probe.build_capability_profile(
             model,
@@ -309,25 +268,12 @@ def _probe_capability(
             options,
             "Change the red image to blue while preserving its dimensions.",
         )
-        ai_gateway_probe._record_probe_request(
-            context,
-            [{"role": "user", "content": prompt}],
-            details={
-                "image_action": "edit",
-                "source": {
-                    "name": _IMAGE_EDIT_PROBE_PATH.name,
-                    "mime_type": "image/png",
-                    "byte_length": len(source),
-                },
-            },
-        )
         results = ai_direct_request_service.edit_image_for_probe(
             app_dir=app_dir,
             binding=binding,
             prompt=prompt,
             source=source,
         )
-        ai_gateway_probe._record_probe_image_results(context, results)
         _validate_api_image_results(results, source=source)
         return ai_gateway_probe.build_capability_profile(
             model,

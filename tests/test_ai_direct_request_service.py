@@ -25,7 +25,6 @@ from pydantic_ai.providers import Provider
 from pydantic_ai.profiles import ModelProfile
 from openai.types.responses.response import Response
 
-from erp_web.context import get_context
 from erp_web.services import ai_direct_request_service, ai_model_probe_service
 from erp_web.services.ai_model_factory import PydanticModelBinding
 from erp_web.services.ai_model_errors import (
@@ -129,7 +128,7 @@ def test_direct_stream_emits_pydantic_text_events(
     assert "".join(deltas) == '{"streamed":true}'
 
 
-def test_direct_stream_records_reasoning_separately_from_text(
+def test_direct_stream_only_exposes_text_through_the_token_callback(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -148,13 +147,6 @@ def test_direct_stream_records_reasoning_separately_from_text(
         "create_pydantic_model_binding",
         lambda *args, **kwargs: binding,
     )
-    conversation = get_context().ai_journal.start_conversation(
-        use_case_id="category.attribute_fill",
-        capability="chat_json",
-        provider_id="pydantic_direct",
-        model={"id": "test-model", "model": "test-model"},
-        stream=True,
-    )
     text_deltas: list[str] = []
 
     result = ai_direct_request_service.chat_json(
@@ -169,27 +161,11 @@ def test_direct_stream_records_reasoning_separately_from_text(
         timeout_seconds=30,
         response_format=True,
         stream=True,
-        recorder=conversation,
         token_callback=text_deltas.append,
     )
 
     assert result == {"streamed": True}
     assert text_deltas == ['{"streamed":true}']
-    events = get_context().ai_journal.read_events(conversation.conversation_id)
-    projected = [
-        (event["type"], event.get("delta"))
-        for event in events
-        if event["type"] not in {"RUN_STARTED", "CUSTOM"}
-    ]
-    assert projected == [
-        ("REASONING_MESSAGE_START", None),
-        ("REASONING_MESSAGE_CONTENT", "先分析属性"),
-        ("REASONING_MESSAGE_CONTENT", "，再生成结果"),
-        ("REASONING_MESSAGE_END", None),
-        ("TEXT_MESSAGE_START", None),
-        ("TEXT_MESSAGE_CONTENT", '{"streamed":true}'),
-        ("TEXT_MESSAGE_END", None),
-    ]
 
 
 def test_responses_json_direct_request_passes_system_prompt_as_instructions(
@@ -275,7 +251,7 @@ def test_responses_json_direct_request_passes_system_prompt_as_instructions(
     assert calls[0]["text"] == {"format": {"type": "json_object"}}
 
 
-def test_probe_direct_request_records_text_and_function_call_parts(
+def test_probe_direct_request_returns_native_text_and_function_call_parts(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -294,39 +270,15 @@ def test_probe_direct_request_records_text_and_function_call_parts(
         "_request",
         lambda **kwargs: response,
     )
-    conversation = get_context().ai_journal.start_conversation(
-        use_case_id="config.ai_model_probe",
-        capability="tool_calling",
-        provider_id="openai",
-        model={"id": "probe", "model": "probe"},
-    )
-
     actual = ai_direct_request_service.request_for_probe(
         app_dir=tmp_path,
         binding=_binding(required=("tool_calling",)),
         messages=[{"role": "user", "content": "call noop"}],
-        recorder=conversation,
-        response_phase="tool_selection",
     )
 
     assert actual is response
-    events = get_context().ai_journal.read_events(conversation.conversation_id)
-    assert [
-        event.get("delta")
-        for event in events
-        if event["type"] == "TEXT_MESSAGE_CONTENT"
-    ] == ["provider-text"]
-    tool_event = next(
-        event
-        for event in events
-        if event.get("name") == "capability_probe.tool_call"
-    )
-    assert tool_event["value"] == {
-        "phase": "tool_selection",
-        "tool_name": "noop",
-        "tool_call_id": "call-1",
-        "args": {"probe_token": "nonce"},
-    }
+    assert actual.text == "provider-text"
+    assert isinstance(actual.parts[1], ToolCallPart)
 
 
 def test_web_search_uses_the_verified_capability_profile_recipe() -> None:

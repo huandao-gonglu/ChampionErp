@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any
 
 import pytest
 
@@ -18,34 +17,6 @@ from erp_web.services.ai_tool_registry import (
     deadline_aware_tool_executor,
 )
 from erp_web.services.ai_tool_runtime import AiToolRuntime
-
-
-class RecordingRecorder:
-    conversation_id = "aic_test"
-
-    def __init__(self) -> None:
-        self.events: list[tuple[str, dict[str, Any]]] = []
-
-    def record(self, event_type: str, **payload: Any) -> None:
-        self.events.append((event_type, payload))
-
-    def emit(self, event_type: str, **payload: Any) -> None:
-        self.record(event_type, **payload)
-
-    def emit_custom(self, name: str, value: Any) -> None:
-        self.record("CUSTOM", name=name, value=value)
-
-    def emit_text_delta(self, delta: str) -> None:
-        self.record("TEXT_MESSAGE_CONTENT", delta=delta)
-
-    def finish_assistant_message(self, raw_text: str = "") -> None:
-        self.record("TEXT_MESSAGE_END", raw_text=raw_text)
-
-    def finish(self, result: Any) -> None:
-        self.record("RUN_FINISHED", result=result)
-
-    def fail(self, error: Exception) -> None:
-        self.record("RUN_ERROR", error=str(error))
 
 
 def tool_definition(
@@ -133,7 +104,6 @@ def runtime(
             expired=expired,
             allow_write=side_effect == "write",
         ),
-        recorder=RecordingRecorder(),
         max_tool_calls=max_tool_calls,
         before_executor=before_executor,
     )
@@ -452,7 +422,6 @@ def test_runtime_preserves_json_arrays_for_validation_and_executor() -> None:
             {definition.name: deadline_aware_tool_executor(execute)},
         ),
         execution_context=execution_context(),
-        recorder=RecordingRecorder(),
     )
     result = tool_runtime.execute(
         AiToolCommand(

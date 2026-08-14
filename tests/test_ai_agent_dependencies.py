@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
-from datetime import datetime, timezone
 from typing import Any
 
 import pytest
@@ -14,33 +13,6 @@ from erp_web.services.ai_tool_registry import (
     deadline_aware_tool_executor,
 )
 from erp_web.services.ai_tool_runtime import AiToolRuntime
-
-
-class RecordingRecorder:
-    def __init__(self, conversation_id: str) -> None:
-        self.conversation_id = conversation_id
-        self.events: list[tuple[str, dict[str, Any]]] = []
-
-    def record(self, event_type: str, **payload: Any) -> None:
-        self.events.append((event_type, payload))
-
-    def emit(self, event_type: str, **payload: Any) -> None:
-        self.record(event_type, **payload)
-
-    def emit_custom(self, name: str, value: Any) -> None:
-        self.record("CUSTOM", name=name, value=value)
-
-    def emit_text_delta(self, delta: str) -> None:
-        self.record("TEXT_MESSAGE_CONTENT", delta=delta)
-
-    def finish_assistant_message(self, raw_text: str = "") -> None:
-        self.record("TEXT_MESSAGE_END", raw_text=raw_text)
-
-    def finish(self, result: Any) -> None:
-        self.record("RUN_FINISHED", result=result)
-
-    def fail(self, error: Exception) -> None:
-        self.record("RUN_ERROR", error=str(error))
 
 
 def _toolset() -> AiToolSet:
@@ -120,21 +92,17 @@ def _dependencies(
         actor_id=actor_id,
         store_id=store_id,
     )
-    recorder = RecordingRecorder(f"conversation_{run}")
     runtime = AiToolRuntime(
         toolset=toolset or _toolset(),
         execution_context=context,
-        recorder=recorder,
     )
     state = {"run": run, "secret": f"state-secret-{run}"}
     return AiAgentDependencies(
         use_case_id=" category.product_match ",
         execution_context=context,
-        recorder=recorder,
         tool_runtime=runtime,
         use_case_state=state,
         invocation_id=f"invocation_{run}",
-        ai_work_id=f"ai_work_{run}",
     )
 
 
@@ -159,7 +127,6 @@ def test_dependencies_transmit_the_complete_request_execution_boundary() -> None
 
     assert dependencies.use_case_id == "category.product_match"
     assert dependencies.invocation_id == "invocation_one"
-    assert dependencies.ai_work_id == "ai_work_one"
     assert dependencies.user_id == "user-one"
     assert dependencies.tenant_id == "tenant-one"
     assert dependencies.permissions == frozenset(
@@ -176,8 +143,6 @@ def test_dependencies_transmit_the_complete_request_execution_boundary() -> None
     assert dependencies.approved_tool_call_ids is context.approved_tool_call_ids
     assert dependencies.idempotency_context == {"request_id": "request_one"}
     assert dependencies.idempotency_context is context.idempotency_context
-    assert dependencies.recorder is dependencies.tool_runtime.recorder
-    assert dependencies.business_event_recorder is dependencies.recorder
     assert dependencies.use_case_state == {
         "run": "one",
         "secret": "state-secret-one",
@@ -216,7 +181,7 @@ def test_execution_context_copies_and_freezes_security_mappings() -> None:
         context.tenant_id = "forbidden"  # type: ignore[misc]
 
 
-def test_each_agent_run_owns_independent_runtime_dedupe_and_recorder_state() -> None:
+def test_each_agent_run_owns_independent_runtime_dedupe_and_use_case_state() -> None:
     toolset = _toolset()
     first = _dependencies(
         run="first",
@@ -243,7 +208,6 @@ def test_each_agent_run_owns_independent_runtime_dedupe_and_recorder_state() -> 
     }
     assert first.tool_runtime.unique_call_count == 1
     assert second.tool_runtime.unique_call_count == 0
-    assert second.recorder.events == []
 
     second_result = second.tool_runtime.execute(_tool_command())
 
@@ -257,43 +221,28 @@ def test_each_agent_run_owns_independent_runtime_dedupe_and_recorder_state() -> 
     assert second.tool_runtime.unique_call_count == 1
     assert first.execution_context is not second.execution_context
     assert first.tool_runtime is not second.tool_runtime
-    assert first.recorder is not second.recorder
     assert first.use_case_state is not second.use_case_state
-    assert all(
-        event_payload["tool_call_id"] == "same_pydantic_call_id"
-        for event_type, event_payload in first.recorder.events
-        if event_type in {"TOOL_CALL_STARTED", "TOOL_CALL_FINISHED"}
-    )
-    assert all(
-        event_payload["tool_call_id"] == "same_pydantic_call_id"
-        for event_type, event_payload in second.recorder.events
-        if event_type in {"TOOL_CALL_STARTED", "TOOL_CALL_FINISHED"}
-    )
 
 
-def test_dependencies_default_run_ids_stay_bound_to_context_and_recorder() -> None:
+def test_dependencies_default_invocation_id_stays_bound_to_context() -> None:
     context = _execution_context(
         run="default",
         tenant_id="tenant-default",
         actor_id="user-default",
         store_id="store-default",
     )
-    recorder = RecordingRecorder("conversation-default")
     runtime = AiToolRuntime(
         toolset=_toolset(),
         execution_context=context,
-        recorder=recorder,
     )
 
     dependencies = AiAgentDependencies(
         use_case_id="category.product_match",
         execution_context=context,
-        recorder=recorder,
         tool_runtime=runtime,
     )
 
     assert dependencies.invocation_id == context.attempt_id
-    assert dependencies.ai_work_id == recorder.conversation_id
 
 
 def test_dependencies_repr_exposes_ids_but_not_security_or_business_payloads() -> None:
@@ -308,15 +257,14 @@ def test_dependencies_repr_exposes_ids_but_not_security_or_business_payloads() -
 
     assert rendered == (
         "AiAgentDependencies(use_case_id='category.product_match', "
-        "invocation_id='invocation_repr', ai_work_id='ai_work_repr', "
-        "user_id='user-repr', tenant_id='tenant-repr')"
+        "invocation_id='invocation_repr', user_id='user-repr', "
+        "tenant_id='tenant-repr')"
     )
     assert "catalog.read" not in rendered
     assert "approved_repr" not in rendered
     assert "request_repr" not in rendered
     assert "store-secret" not in rendered
     assert "state-secret-repr" not in rendered
-    assert "RecordingRecorder" not in rendered
 
 
 def test_dependencies_reject_runtime_execution_context_identity_mismatch() -> None:
@@ -332,41 +280,14 @@ def test_dependencies_reject_runtime_execution_context_identity_mismatch() -> No
         actor_id="user-supplied",
         store_id="store-supplied",
     )
-    recorder = RecordingRecorder("conversation-context-mismatch")
     runtime = AiToolRuntime(
         toolset=_toolset(),
         execution_context=bound_context,
-        recorder=recorder,
     )
 
     with pytest.raises(ValueError, match="execution context 不一致"):
         AiAgentDependencies(
             use_case_id="category.product_match",
             execution_context=supplied_context,
-            recorder=recorder,
-            tool_runtime=runtime,
-        )
-
-
-def test_dependencies_reject_runtime_recorder_identity_mismatch() -> None:
-    context = _execution_context(
-        run="recorder",
-        tenant_id="tenant-recorder",
-        actor_id="user-recorder",
-        store_id="store-recorder",
-    )
-    bound_recorder = RecordingRecorder("conversation-bound")
-    supplied_recorder = RecordingRecorder("conversation-supplied")
-    runtime = AiToolRuntime(
-        toolset=_toolset(),
-        execution_context=context,
-        recorder=bound_recorder,
-    )
-
-    with pytest.raises(ValueError, match="recorder 不一致"):
-        AiAgentDependencies(
-            use_case_id="category.product_match",
-            execution_context=context,
-            recorder=supplied_recorder,
             tool_runtime=runtime,
         )

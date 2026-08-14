@@ -35,6 +35,7 @@ from erp_web.runtime_units.publish_capabilities import (
 )
 from erp_web.schemas.draft_capabilities import DraftQueryRequest
 from erp_web.schemas.global_tasks import (
+    AnswerResolutionScope,
     CapabilityError,
     CapabilityResult,
     GlobalTaskIdRequest,
@@ -64,13 +65,17 @@ from erp_web.services.capability_errors import (
     BusinessCapabilityError,
     CapabilityInputRequired,
 )
-from erp_web.services.draft_query_service import query_drafts
+from erp_web.services.draft_query_service import (
+    query_drafts,
+    resolve_trusted_draft_answer,
+)
 from erp_web.services.global_agent_service import GlobalAgentService
 from erp_web.services.global_task_controller import (
     GlobalTaskCapability,
     GlobalTaskController,
     GlobalTaskControllerError,
     GlobalTaskPlanningOutcome,
+    declare_global_task_capability,
 )
 from erp_web.stores.global_task_store import GlobalTaskStoreError
 
@@ -89,18 +94,10 @@ def _json_result(value: Any) -> Any:
 
 def _completed(summary: str, result: Any) -> CapabilityResult[Any]:
     payload = _json_result(result)
-    mapping = payload if isinstance(payload, dict) else {}
-    raw_execution_ids: list[Any] = []
-    if mapping.get("conversation_id"):
-        raw_execution_ids.append(mapping["conversation_id"])
-    nested_ids = mapping.get("agent_execution_conversation_ids")
-    if isinstance(nested_ids, list):
-        raw_execution_ids.extend(nested_ids)
     return CapabilityResult(
         status="completed",
         summary=summary,
         result=payload,
-        agent_execution_conversation_ids=raw_execution_ids,
     )
 
 
@@ -123,9 +120,6 @@ def _run_capability(
                     input_owner=exc.input_owner,
                 )
             ],
-            agent_execution_conversation_ids=(
-                exc.agent_execution_conversation_ids
-            ),
         )
     except BusinessCapabilityError as exc:
         return CapabilityResult(
@@ -135,9 +129,6 @@ def _run_capability(
                 code=exc.code,
                 message=str(exc),
                 retryable=exc.retryable,
-            ),
-            agent_execution_conversation_ids=(
-                exc.agent_execution_conversation_ids
             ),
         )
     except (ValidationError, ValueError) as exc:
@@ -203,25 +194,19 @@ def _build_base_capabilities(
 ) -> dict[str, GlobalTaskCapability]:
     def category_match_for_context(
         request: CategoryMatchRequest,
-        *,
-        parent_conversation_id: str | None = None,
     ):
         return match_category(
             request,
             product_store=context.products,
             matcher=run_category_match,
-            parent_conversation_id=parent_conversation_id,
         )
 
     def attributes_fill_for_context(
         request: ProductAttributesFillRequest,
-        *,
-        parent_conversation_id: str | None = None,
     ):
         return fill_product_attributes(
             request,
             product_store=context.products,
-            parent_conversation_id=parent_conversation_id,
         )
 
     def drafts_query_capability(
@@ -233,7 +218,9 @@ def _build_base_capabilities(
             positions = inputs.get("positions")
             request = DraftQueryRequest(
                 scope=_text(inputs.get("scope")) or "active",
-                platform=_text(inputs.get("platform")),
+                target_platform=_text(
+                    inputs.get("target_platform") or inputs.get("platform")
+                ),
                 status=_text(inputs.get("status")),
                 keyword=_text(inputs.get("keyword")),
                 view=_text(inputs.get("view")) or "summary",
@@ -309,7 +296,6 @@ def _build_base_capabilities(
                     site=_text(step.inputs.get("site")),
                     category_id=_text(step.inputs.get("category_id")),
                 ),
-                parent_conversation_id=task.ai_work_conversation_id,
             )
             return _completed("目标市场类目已匹配并保存。", result)
 
@@ -341,7 +327,6 @@ def _build_base_capabilities(
                     site=_text(step.inputs.get("site")),
                     provided_attributes=values,
                 ),
-                parent_conversation_id=task.ai_work_conversation_id,
             )
             return _completed("平台必填属性已填写并保存。", result)
 
@@ -417,25 +402,14 @@ def _build_base_capabilities(
                 ),
                 app_config_loader=context.config.load_app_config,
                 category_capability=lambda request, **kwargs: (
-                    category_match_for_context(
-                        request,
-                        parent_conversation_id=_text(
-                            kwargs.get("parent_conversation_id")
-                        ),
-                    )
+                    category_match_for_context(request)
                 ),
                 attribute_capability=lambda request, **kwargs: (
-                    attributes_fill_for_context(
-                        request,
-                        parent_conversation_id=_text(
-                            kwargs.get("parent_conversation_id")
-                        ),
-                    )
+                    attributes_fill_for_context(request)
                 ),
                 copy_operation_key=(
                     f"global-task:{task.task_id}:step:{step.step_id}:copy"
                 ),
-                parent_conversation_id=task.ai_work_conversation_id,
             )
             return _completed("目标市场草稿已准备完成。", result)
 
@@ -546,7 +520,8 @@ def _build_base_capabilities(
             if (
                 task.publish_confirmation.status != "confirmed"
                 or task.publish_confirmation.confirmed_at is None
-                or not task.publish_idempotency_key
+                or not step.operation_key
+                or task.publish_idempotency_key != step.operation_key
             ):
                 raise BusinessCapabilityError(
                     "PUBLISH_CONFIRMATION_REQUIRED",
@@ -565,7 +540,7 @@ def _build_base_capabilities(
                     draft_id=draft_id,
                     platform=_step_target_platform(task, step),
                     site=_text(step.inputs.get("site")),
-                    idempotency_key=task.publish_idempotency_key,
+                    idempotency_key=step.operation_key,
                     confirmation=PublishRequestConfirmation(
                         task_id=task.task_id,
                         step_id=step.step_id,
@@ -586,16 +561,46 @@ def _build_base_capabilities(
 
         return _run_capability(execute)
 
+    # 只读/确定性校验可安全重放；写能力必须由真实 owner 消费稳定
+    # operation_key。当前 publish bus 已具备该契约；其余写能力若在 running
+    # 中断则明确停在人工核对，不做未知副作用重放。
     return {
-        "drafts.query": drafts_query_capability,
-        "draft.prepare_for_market": draft_prepare_capability,
-        "product.read": product_read_capability,
-        "category.match": category_match_capability,
-        "product.attributes.fill": attributes_fill_capability,
-        "product.attributes.update": attributes_update_capability,
-        "product.images.prepare": images_prepare_capability,
-        "product.publish.validate": publish_validate_capability,
-        "product.publish.request": publish_request_capability,
+        "drafts.query": declare_global_task_capability(
+            drafts_query_capability,
+            recovery_policy="retry_safe",
+        ),
+        "draft.prepare_for_market": declare_global_task_capability(
+            draft_prepare_capability,
+            recovery_policy="manual",
+        ),
+        "product.read": declare_global_task_capability(
+            product_read_capability,
+            recovery_policy="retry_safe",
+        ),
+        "category.match": declare_global_task_capability(
+            category_match_capability,
+            recovery_policy="manual",
+        ),
+        "product.attributes.fill": declare_global_task_capability(
+            attributes_fill_capability,
+            recovery_policy="manual",
+        ),
+        "product.attributes.update": declare_global_task_capability(
+            attributes_update_capability,
+            recovery_policy="manual",
+        ),
+        "product.images.prepare": declare_global_task_capability(
+            images_prepare_capability,
+            recovery_policy="manual",
+        ),
+        "product.publish.validate": declare_global_task_capability(
+            publish_validate_capability,
+            recovery_policy="retry_safe",
+        ),
+        "product.publish.request": declare_global_task_capability(
+            publish_request_capability,
+            recovery_policy="idempotent",
+        ),
     }
 
 
@@ -638,8 +643,9 @@ def build_global_task_controller(
         agent_service = GlobalAgentService(
             app_dir=context.paths.app_dir,
             app_config=context.config.load_app_config(),
-            journal=context.ai_journal,
+            message_store=context.pydantic_messages,
             snapshot_reader=context.global_tasks,
+            product_store=context.products,
             allowed_capabilities=frozenset(capabilities),
         )
         toolset = build_global_task_planning_toolset(
@@ -656,12 +662,11 @@ def build_global_task_controller(
             product_id=task.product_id,
             platform=task.platform,
             recent_snapshot_id=task.draft_query_snapshot_id,
-            parent_conversation_id=task.ai_work_conversation_id,
         )
         return GlobalTaskPlanningOutcome(
             decision=run.decision,
-            execution_conversation_id=run.conversation_id,
             finish=run.finish,
+            trusted_answer=getattr(run, "trusted_answer", None),
         )
 
     return GlobalTaskController(
@@ -671,7 +676,17 @@ def build_global_task_controller(
         publish_status_reader=(
             lambda job_id: context.publishing_bus.get_public_status(job_id)
         ),
-        projection_writer=context.ai_journal.project_global_agent_event,
+        answer_resolver=(
+            lambda task, decision: resolve_trusted_draft_answer(
+                decision,
+                product_store=context.products,
+                snapshot_repository=context.global_tasks,
+                resolution_scope=AnswerResolutionScope(
+                    expected_product_id=task.product_id,
+                    expected_target_platform=task.platform,
+                ),
+            )
+        ),
     )
 
 
@@ -679,7 +694,6 @@ def _success(task: LocalGlobalTaskState) -> ResponseWithStatus:
     response = GlobalTaskResponse(
         task=task,
         task_id=task.task_id,
-        ai_work_conversation_id=task.ai_work_conversation_id,
     )
     return response.model_dump(mode="json"), 200
 
@@ -716,24 +730,7 @@ def start_global_task_payload(body: dict[str, Any]) -> ResponseWithStatus:
     try:
         request = GlobalTaskStartRequest.model_validate(body)
         context = get_context()
-        conversation_id = request.ai_work_conversation_id
-        if conversation_id:
-            try:
-                context.ai_journal.require_global_agent_conversation(
-                    conversation_id
-                )
-            except ValueError as exc:
-                raise GlobalTaskControllerError(
-                    "GLOBAL_TASK_CONVERSATION_INVALID",
-                    str(exc),
-                    status_code=400,
-                ) from None
-        else:
-            conversation_id = context.ai_journal.start_global_agent_conversation()
-        task = build_global_task_controller(context).create_task(
-            request,
-            ai_work_conversation_id=conversation_id,
-        )
+        task = build_global_task_controller(context).create_task(request)
         return _success(task)
     except Exception as exc:
         return _error(exc)

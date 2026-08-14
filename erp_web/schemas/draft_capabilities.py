@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, StringConstraints
 
 
 TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True)]
@@ -20,7 +20,13 @@ class DraftQueryCriteria(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     scope: DraftQueryScope = "active"
-    platform: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
+    target_platform: Annotated[
+        TrimmedText,
+        StringConstraints(max_length=80),
+    ] = Field(
+        default="",
+        validation_alias=AliasChoices("target_platform", "platform"),
+    )
     status: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
     keyword: Annotated[TrimmedText, StringConstraints(max_length=255)] = ""
     view: DraftQueryView = "summary"
@@ -72,6 +78,13 @@ class DraftPublishReadiness(BaseModel):
 
 
 class DraftSummary(BaseModel):
+    """草稿及其来源/目标市场的只读事实。
+
+    ``source_platform`` 来自商品来源记录；``target_platform`` 与
+    ``target_site`` 来自平台草稿。这里刻意不保留语义含糊的 ``platform`` /
+    ``site`` 字段，避免调用方把发布目标误说成商品来源。
+    """
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     draft_id: Annotated[
@@ -81,12 +94,15 @@ class DraftSummary(BaseModel):
     product_id: Annotated[TrimmedText, StringConstraints(max_length=160)] = ""
     title: Annotated[TrimmedText, StringConstraints(max_length=500)] = ""
     product_title: Annotated[TrimmedText, StringConstraints(max_length=500)] = ""
-    platform: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
-    platforms: list[Annotated[TrimmedText, StringConstraints(max_length=80)]] = Field(
+    source_platform: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
+    target_platform: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
+    target_platforms: list[
+        Annotated[TrimmedText, StringConstraints(max_length=80)]
+    ] = Field(
         default_factory=list,
         max_length=20,
     )
-    site: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
+    target_site: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
     language: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
     category_id: Annotated[TrimmedText, StringConstraints(max_length=160)] = ""
     category_path: Annotated[TrimmedText, StringConstraints(max_length=1000)] = ""
@@ -101,6 +117,7 @@ class DraftQueryResult(BaseModel):
 
     total: int = Field(ge=0)
     items: list[DraftSummary] = Field(max_length=100)
+    # 持久化查询快照仍使用该字段名；其语义始终是“按目标平台计数”。
     count_by_platform: dict[str, int]
     count_by_status: dict[str, int]
     snapshot_id: Annotated[

@@ -20,7 +20,6 @@ from pydantic_ai.messages import (
     TextPartDelta,
     ThinkingPart,
     ThinkingPartDelta,
-    ToolCallPart,
     UserPromptPart,
 )
 from pydantic_ai.models import ModelRequestParameters
@@ -31,7 +30,6 @@ from pydantic_ai.tools import ToolDefinition
 from . import ai_generation_settings, ai_model_config, image_service
 from .ai_agent_instrumentation import AiAgentInstrumentation
 from .ai_gateway_parsing import parse_json_text
-from .ai_invocation import AiWorkRecorder
 from .ai_model_errors import map_pydantic_model_error
 from .ai_model_factory import PydanticModelBinding, create_pydantic_model_binding
 
@@ -343,7 +341,6 @@ def chat_json(
     timeout_seconds: int,
     response_format: bool,
     stream: bool,
-    recorder: AiWorkRecorder | None = None,
     token_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """通过 Pydantic Direct Model 执行普通文本/JSON/流式请求。"""
@@ -380,14 +377,8 @@ def chat_json(
     )
 
     def emit_text_delta(text: str) -> None:
-        if recorder:
-            recorder.emit_text_delta(text)
         if token_callback:
             token_callback(text)
-
-    def emit_reasoning_delta(text: str) -> None:
-        if recorder:
-            recorder.emit_reasoning_delta(text)
 
     try:
         response = _request(
@@ -398,11 +389,9 @@ def chat_json(
             parameters=parameters,
             stream=stream,
             emit_text_delta=emit_text_delta,
-            emit_reasoning_delta=emit_reasoning_delta,
+            emit_reasoning_delta=None,
         )
     except Exception as exc:
-        if recorder:
-            recorder.finish_reasoning_message()
         mapped = map_pydantic_model_error(
             exc,
             model_id=binding.model_id,
@@ -414,8 +403,6 @@ def chat_json(
             raise
         raise mapped from None
     raw_text = response.text or ""
-    if recorder:
-        recorder.finish_assistant_message(raw_text)
     return parse_json_text(raw_text)
 
 
@@ -670,8 +657,6 @@ def request_for_probe(
     native_tools: list[Any] | None = None,
     function_tools: list[ToolDefinition] | None = None,
     allow_text_output: bool = True,
-    recorder: AiWorkRecorder | None = None,
-    response_phase: str = "response",
 ) -> ModelResponse:
     """模型配置页能力探测复用的 Pydantic Direct 请求。"""
 
@@ -703,30 +688,6 @@ def request_for_probe(
         if mapped is exc:
             raise
         raise mapped from None
-    if recorder:
-        text = response.text or ""
-        recorder.emit_custom(
-            "capability_probe.response",
-            {
-                "phase": response_phase,
-                "character_count": len(text),
-                "part_types": [part.__class__.__name__ for part in response.parts],
-            },
-        )
-        if text:
-            recorder.emit_text_delta(text)
-        for part in response.parts:
-            if not isinstance(part, ToolCallPart):
-                continue
-            recorder.emit_custom(
-                "capability_probe.tool_call",
-                {
-                    "phase": response_phase,
-                    "tool_name": part.tool_name,
-                    "tool_call_id": part.tool_call_id,
-                    "args": part.args,
-                },
-            )
     return response
 
 
@@ -736,8 +697,6 @@ def request_json_for_probe(
     binding: PydanticModelBinding,
     messages: Sequence[dict[str, str] | ModelMessage],
     web_search: bool = False,
-    recorder: AiWorkRecorder | None = None,
-    response_phase: str = "response",
 ) -> tuple[dict[str, Any], str]:
     """使用既有 probe binding 验证 JSON，并可复用正式联网参数生成逻辑。"""
 
@@ -767,8 +726,6 @@ def request_json_for_probe(
         messages=messages,
         response_format=True,
         native_tools=native_tools,
-        recorder=recorder,
-        response_phase=response_phase,
     )
     return parse_json_text(response.text or ""), request_mode
 
