@@ -14,6 +14,8 @@ import {
 import { translateText, type TextTranslationMap } from '@/api/workflow/translation'
 import { fetchDraftsIndex } from '@/api/workflow/catalog'
 import { marketplaces } from '@/constants/initialState'
+import { withAiForeground } from '@/services/withAiForeground'
+import { useAiWorkDisplayStore } from '@/stores/aiWorkDisplay'
 import type {
   CategoryAttributeTranslations,
   CategoryResultTranslations,
@@ -296,6 +298,10 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
   }
 
   async function autoSuggestCategoriesForDraft() {
+    if (useAiWorkDisplayStore().foregroundOccupied) {
+      setError('已有前台 AI 任务运行，请等待完成后再试。')
+      return false
+    }
     if (!currentDraft.value.draftId) {
       setError('请先从草稿箱选择要匹配类目的草稿。')
       return false
@@ -496,6 +502,10 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
   }
 
   async function fillAttributesByAi() {
+    if (useAiWorkDisplayStore().foregroundOccupied) {
+      setError('已有前台 AI 任务运行，请等待完成后再试。')
+      return
+    }
     const categoryId = currentDraft.value.categoryId.trim()
     if (!categoryId) {
       setError('请先选择类目。')
@@ -514,7 +524,18 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
         category.value = await fetchCategoryAttrs(target.platform, categoryId, target.site)
       }
       const before = { ...currentDraft.value.attributes }
-      const result = await fillCategoryAttributes(currentDraft.value, target, categoryId, category.value)
+      // 同一个通用 wrapper：reserve → observe stream → 业务 header 关联。
+      // 业务 response（含 rules-only / fallback warning）是唯一结果事实。
+      const result = await withAiForeground(
+        { displayTitle: 'AI 填充属性' },
+        ({ presentationId }) => fillCategoryAttributes(
+          currentDraft.value,
+          target,
+          categoryId,
+          category.value,
+          { presentationId },
+        ),
+      )
       currentDraft.value = result.draft
       currentDraftProductContext.value = result.productContext
       syncActivePublishTarget(target)

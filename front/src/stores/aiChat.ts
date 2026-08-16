@@ -75,7 +75,16 @@ export const useAiChatStore = defineStore('aiChat', () => {
   const reactivating = ref(false)
 
   const status = computed<ChatStatus>(() => chat.value?.status ?? 'ready')
-  const messages = computed<UIMessage[]>(() => chat.value?.messages ?? [])
+  // AI SDK 的流式增量通过 `replaceMessage` 做数组索引赋值（`messagesRef.value[index] = { ...message }`），
+  // 新消息对象复用同一 parts/part 引用，且 SDK 在非响应式对象上原地改写 `part.text`，
+  // 直接返回原数组引用无法可靠触发气泡重渲染。这里遍历活动 Chat 的消息建立索引级依赖，
+  // 并返回结构化新副本作为渲染桥；唯一事实源仍是 `chat.messages`（及服务端 Pydantic 历史），
+  // 该副本仅为渲染派生，不落库、不双写、不当可信历史。
+  const messages = computed<UIMessage[]>(() => {
+    const current = chat.value?.messages
+    if (!current || current.length === 0) return []
+    return JSON.parse(JSON.stringify(current)) as UIMessage[]
+  })
   const error = computed<AiChatError | undefined>(() => chat.value?.error as AiChatError | undefined)
   const isBusy = computed(() => status.value === 'submitted' || status.value === 'streaming')
   const canSend = computed(() => input.value.trim().length > 0 && !isBusy.value)

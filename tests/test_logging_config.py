@@ -196,7 +196,7 @@ def test_http_access_log_never_records_query_string(caplog) -> None:
 
 def test_http_json_failure_logs_safe_business_diagnostics(caplog) -> None:
     request_handler = object.__new__(Handler)
-    request_handler.path = "/api/category-match?token=query-secret"
+    request_handler.path = "/api/v1/category-match?token=query-secret"
     request_handler.send_response = lambda status: None  # type: ignore[method-assign]
     request_handler.send_header = lambda key, value: None  # type: ignore[method-assign]
     request_handler.end_headers = lambda: None  # type: ignore[method-assign]
@@ -216,7 +216,7 @@ def test_http_json_failure_logs_safe_business_diagnostics(caplog) -> None:
             424,
         )
 
-    assert "path=/api/category-match status=424" in caplog.text
+    assert "path=/api/v1/category-match status=424" in caplog.text
     assert "error_code=AI_MODEL_TOOL_CALLING_UNSUPPORTED" in caplog.text
     assert "error_stage=model" in caplog.text
     assert "当前模型缺少 tool_calling" in caplog.text

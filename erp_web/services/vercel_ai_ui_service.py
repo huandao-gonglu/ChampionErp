@@ -57,6 +57,19 @@ _GLOBAL_CHAT_CONVERSATION_PATTERN = re.compile(
 )
 
 
+def new_event_stream(conversation_id: str) -> VercelAIEventStream[Any, Any]:
+    """创建最小安全 ``run_input`` 的官方 Vercel 事件流。
+
+    本模块是 ``pydantic_ai.ui`` 协议类型的唯一 import 边界；其他展示服务
+    （如业务根运行的 observe 编码）必须通过该工厂获得事件流，不得自行
+    构造 ``SubmitMessage`` / ``VercelAIEventStream``。``messages=[]`` 表示
+    该流不代表一条新的用户聊天消息，只作为展示编码会话键。
+    """
+
+    run_input = SubmitMessage(id=str(conversation_id or ""), messages=[])
+    return VercelAIEventStream(run_input, sdk_version=VERCEL_SDK_VERSION)
+
+
 class VercelUiProtocolError(Exception):
     """流开始前的协议错误；按 status_code 映射项目标准 JSON 响应。"""
 
@@ -400,4 +413,5 @@ __all__ = [
     "VercelAiChatRun",
     "VercelAiUiService",
     "VercelUiProtocolError",
+    "new_event_stream",
 ]

@@ -25,6 +25,7 @@ from erp_web.services.category_attribute_fill_agent_service import (
     CategoryAttributeFillOutputValidator,
     run_category_attribute_fill_agent,
 )
+from tests.ai_function_model_streaming import streaming_function_model
 
 
 SCHEMA = [
@@ -60,11 +61,12 @@ PAYLOAD = {
 
 def factory_for(model: FunctionModel) -> AiAgentFactory:
     context = get_context()
+    streaming_model = streaming_function_model(model)
 
     def binding(*args, **kwargs):
         del args, kwargs
         return PydanticModelBinding(
-            model=model,
+            model=streaming_model,
             model_settings=ModelSettings(temperature=0),
             model_id="test-model",
             model_name="test-model",

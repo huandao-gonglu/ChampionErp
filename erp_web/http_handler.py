@@ -107,6 +107,12 @@ class Handler(BaseHTTPRequestHandler):
             size,
         )
 
+    def send_response(self, code: int, message: str | None = None) -> None:
+        """记录本次响应状态：HTTP 公共边界按它裁定 presentation 请求成败。"""
+
+        self.response_status = int(code)
+        super().send_response(code, message)
+
     def send_json(self, data: Any, status: int = 200) -> None:
         path = urllib.parse.urlsplit(getattr(self, "path", "")).path or "/"
         diagnostics = _response_diagnostics(data)

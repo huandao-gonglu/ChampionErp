@@ -618,6 +618,68 @@ describe('workflow store live API flow', () => {
     expect(store.currentDraft.categoryId).toBe('')
   })
 
+  it('rejects a second AI business trigger while a foreground presentation is active', async () => {
+    const { useAiWorkDisplayStore } = await import('@/stores/aiWorkDisplay')
+    const display = useAiWorkDisplayStore()
+    display.attachForegroundPresentation(
+      {
+        presentationId: 'presentation_existing',
+        conversationId: 'conversation_existing',
+        displayTitle: 'AI 匹配类目',
+        status: 'running',
+      },
+      { id: 'presentation_existing', messages: [] } as never,
+    )
+
+    const draft = createEmptyDraftDetail('mercadolibre')
+    draft.draftId = 'draft-guard'
+    draft.productId = 'real-product-1'
+    draft.title = 'Ventilador'
+    draft.targetSites = [
+      { platform: 'mercadolibre', site: 'MLM', language: 'es-MX', listingCurrency: 'MXN' },
+    ]
+
+    const store = useWorkflowStore()
+    store.currentDraft = draft
+    const ok = await store.autoSuggestCategoriesForDraft()
+
+    expect(ok).toBe(false)
+    expect(store.error).toContain('已有前台 AI 任务运行')
+    expect(workflowApi.matchCategory).not.toHaveBeenCalled()
+    expect(workflowApi.fillCategoryAttributes).not.toHaveBeenCalled()
+
+    await store.fillAttributesByAi()
+    expect(store.error).toContain('已有前台 AI 任务运行')
+    expect(workflowApi.fillCategoryAttributes).not.toHaveBeenCalled()
+  })
+
+  it('rejects AI business triggers while a foreground start is pending (atomic occupancy)', async () => {
+    const { useAiWorkDisplayStore } = await import('@/stores/aiWorkDisplay')
+    const display = useAiWorkDisplayStore()
+    // 只有启动期同步占用（reserve POST 进行中），尚未 attach。
+    display.beginForegroundStart()
+
+    const draft = createEmptyDraftDetail('mercadolibre')
+    draft.draftId = 'draft-guard'
+    draft.productId = 'real-product-1'
+    draft.title = 'Ventilador'
+    draft.targetSites = [
+      { platform: 'mercadolibre', site: 'MLM', language: 'es-MX', listingCurrency: 'MXN' },
+    ]
+
+    const store = useWorkflowStore()
+    store.currentDraft = draft
+    const ok = await store.autoSuggestCategoriesForDraft()
+
+    expect(ok).toBe(false)
+    expect(store.error).toContain('已有前台 AI 任务运行')
+    expect(workflowApi.matchCategory).not.toHaveBeenCalled()
+
+    await store.fillAttributesByAi()
+    expect(store.error).toContain('已有前台 AI 任务运行')
+    expect(workflowApi.fillCategoryAttributes).not.toHaveBeenCalled()
+  })
+
   it('translates category candidates through the generic flat text contract', async () => {
     vi.mocked(workflowApi.translateText).mockResolvedValue({
       'category.0.path': '家居 / 风扇',

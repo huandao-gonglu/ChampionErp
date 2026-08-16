@@ -114,6 +114,7 @@ _COMMON_FIELD_RULES: dict[str, FieldRule] = {
     "code": STRING,
     "code_or_url": STRING,
     "country": STRING,
+    "display_title": STRING,
     "draft_id": STRING,
     "draftId": STRING,
     "html": STRING,
@@ -184,6 +185,7 @@ _SHIPMENT = _contract(
 # 写入口时由测试发现遗漏，而不是悄悄退化到“任意 dict”。
 REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/ai-config/save": _EMPTY,
+    "/api/v1/ai-presentations": _EMPTY,
     "/api/assign-upc": _EMPTY,
     "/api/browser-debug/open-profile": _EMPTY,
     "/api/calculate-price": _EMPTY,
@@ -201,7 +203,7 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
             ("category_id", "category_record"),
         )
     ),
-    "/api/category-match": _contract(
+    "/api/v1/category-match": _contract(
         required=("platform",),
         required_any=(
             ("product_id", "draft_id", "draftId"),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections import deque
 from typing import Any
 
@@ -15,6 +16,10 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 from pydantic_ai.settings import ModelSettings
 
+from tests.ai_function_model_streaming import (
+    streaming_function_model as _streaming_model,
+)
+
 from erp_web.context import get_context
 from erp_web.schemas.ai_tools import AiToolDefinition
 from erp_web.runtime_units.category_tools import (
@@ -23,6 +28,15 @@ from erp_web.runtime_units.category_tools import (
 )
 from erp_web.services.ai_agent_factory import AiAgentExecutionError, AiAgentFactory
 from erp_web.services.ai_model_factory import PydanticModelBinding
+from erp_web.services.ai_presentation_context import bind_presentation_context
+from erp_web.services.ai_presentation_registry import (
+    COMPLETED,
+    AiPresentationRegistry,
+)
+from erp_web.services.ai_presentation_service import (
+    claim_presentation_scope,
+    reserve_presentation,
+)
 from erp_web.services.ai_tool_registry import AiToolSet, deadline_aware_tool_executor
 from erp_web.services.category_match_agent_service import run_category_match_agent
 
@@ -60,11 +74,12 @@ PAYLOAD = {
 
 def factory_for(model: FunctionModel) -> AiAgentFactory:
     context = get_context()
+    streaming_model = _streaming_model(model)
 
     def binding(*args, **kwargs):
         del args, kwargs
         return PydanticModelBinding(
-            model=model,
+            model=streaming_model,
             model_settings=ModelSettings(temperature=0),
             model_id="test-model",
             model_name="test-model",
@@ -451,29 +466,33 @@ def test_provider_http_error_keeps_status_code_message_and_request_id() -> None:
 
 
 def test_empty_provider_response_reports_observed_response_instead_of_schema_error() -> None:
-    ledger = CategoryCandidateLedger()
-    toolset = toolset_for(Searcher([[]]), ledger)
+    """空响应详情映射在 factory 脱敏边界验证。
 
-    def model(messages: list[Any], agent_info: AgentInfo) -> ModelResponse:
-        del messages, agent_info
-        return ModelResponse(
-            parts=[],
-            provider_name="alibaba",
-            provider_response_id=None,
-            provider_details={"background": True},
-        )
+    类目匹配统一走流式装配后，FunctionModel 无法构造“零事件流”
+    （pydantic_ai 会直接拒绝空流），因此这里直接断言 factory 的安全
+    错误映射仍把观察到的空 ModelResponse 详情保留下来。
+    """
 
-    with pytest.raises(AiAgentExecutionError) as captured:
-        run_category_match_agent(
-            PAYLOAD,
-            toolset,
-            ledger,
-            timeout_seconds=10,
-            factory=factory_for(FunctionModel(model)),
-        )
+    from pydantic_ai.exceptions import UnexpectedModelBehavior
 
-    assert captured.value.code == "AI_PROVIDER_RESPONSE_INVALID"
-    message = str(captured.value)
+    from erp_web.services.ai_agent_factory import _safe_agent_error
+
+    empty_response = ModelResponse(
+        parts=[],
+        provider_name="alibaba",
+        provider_response_id=None,
+        provider_details={"background": True},
+    )
+    error = _safe_agent_error(
+        UnexpectedModelBehavior("Provider returned no parts"),
+        validator=None,
+        model_messages=[empty_response],
+        conversation_id="conversation_x",
+        task_run_id="task_x",
+    )
+
+    assert error.code == "AI_PROVIDER_RESPONSE_INVALID"
+    message = str(error)
     assert "provider=alibaba" in message
     assert "background=true" in message
     assert "response_id=null" in message
@@ -538,6 +557,99 @@ def test_unexpected_category_approval_finishes_persisted_pending_state() -> None
     history = agent_factory.message_store.get(captured.value.conversation_id)
     assert history is not None
     assert history.model_messages()
+    # 流式入口不产生 deferred pending state：审批请求被直接拒绝，
+    # 不留下任何待恢复状态文件。
     created = set(agent_factory.state_store.root.glob("*.json")) - before
-    assert len(created) == 1
-    assert agent_factory.state_store.load(next(iter(created)).stem).status == "failed"
+    assert len(created) == 0
+
+
+def test_category_match_run_publishes_presentation_chunks_under_bound_scope() -> None:
+    """同步入口绑定 presentation scope 时自动发布官方展示 chunk（阶段5）。
+
+    业务 HTTP 边界负责 reserve/claim 与 ``finish_request`` 收尾；Agent 运行
+    本身只通过 factory 统一内核把 native events 编码成官方 Vercel chunk 写入
+    registry。业务结果是唯一真相：即使这里不消费展示流，类型化结果照常返回。
+    """
+
+    searcher = Searcher([[candidate("MLM-FAN")]])
+    ledger = CategoryCandidateLedger()
+    toolset = toolset_for(searcher, ledger)
+    turns = 0
+
+    def model(messages: list[Any], agent_info: AgentInfo) -> ModelResponse:
+        nonlocal turns
+        turns += 1
+        if turns == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "search_categories",
+                        {"keyword": "ventilador"},
+                        tool_call_id="search-presentation",
+                    )
+                ]
+            )
+        return final_output(
+            agent_info,
+            {
+                "selected_category_id": "MLM-FAN",
+                "abstained": False,
+                "model_confidence": 0.9,
+                "evidence": ["商品主体一致"],
+            },
+            "final-presentation",
+        )
+
+    registry = AiPresentationRegistry()
+    reserved = reserve_presentation(registry, display_title="AI 匹配类目")
+    presentation_id = str(reserved["presentation_id"])
+    scope = claim_presentation_scope(registry, presentation_id=presentation_id)
+    assert scope is not None
+
+    with bind_presentation_context(scope):
+        result = run_category_match_agent(
+            PAYLOAD,
+            toolset,
+            ledger,
+            timeout_seconds=10,
+            factory=factory_for(FunctionModel(model)),
+        )
+
+    assert result.output["selected_category_id"] == "MLM-FAN"
+    result.finish_business_result({"ok": True})
+    registry.finish_request(presentation_id, request_failed=False)
+
+    payload = registry.status_payload(presentation_id)
+    assert payload is not None
+    assert payload["status"] == COMPLETED
+    assert payload["terminal"] is True
+    assert payload["had_agent_run"] is True
+    assert payload["error_code"] == ""
+    assert payload["display_title"] == "AI 匹配类目"
+    assert payload["conversation_id"] == reserved["conversation_id"]
+
+    text = b"".join(
+        registry.iter_chunks(presentation_id, wait_timeout=0.2)
+    ).decode("utf-8")
+    frames = [
+        json.loads(line[len("data: ") :])
+        for line in text.splitlines()
+        if line.startswith("data: ") and line != "data: [DONE]"
+    ]
+    types = [str(frame.get("type")) for frame in frames]
+    assert "start" in types
+    assert any(frame_type.startswith("tool-") for frame_type in types)
+    assert "finish" in types
+    assert "error" not in types
+
+    # 未绑定 scope 的同款运行不产生任何 presentation 状态（旧语义不受影响）。
+    turns = 0
+    plain_ledger = CategoryCandidateLedger()
+    plain = run_category_match_agent(
+        PAYLOAD,
+        toolset_for(Searcher([[candidate("MLM-FAN")]]), plain_ledger),
+        plain_ledger,
+        timeout_seconds=10,
+        factory=factory_for(FunctionModel(model)),
+    )
+    assert plain.output["selected_category_id"] == "MLM-FAN"

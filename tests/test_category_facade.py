@@ -230,128 +230,101 @@ def test_category_route_only_validates_delegates_and_sends_status(
     ]
 
 
-def test_category_match_payload_is_the_only_automatic_matching_route(
-    monkeypatch,
-) -> None:
-    context = {
-        "product": {"product_id": "p-1"},
-        "draft": {"draft_id": "d-1", "title": "Ventilador"},
-        "platform": "mercadolibre",
-        "site": "MLM",
+# -- 同步 focused 类目匹配入口（阶段5） -------------------------------------
+
+
+def test_category_match_payload_returns_typed_result_200(monkeypatch) -> None:
+    typed: dict[str, Any] = {
+        "ok": True,
+        "status": "completed",
+        "target": {"platform": "mercadolibre", "site": "MLM"},
+        "selected_category_id": "MLM-100",
+        "query": "ventilador",
+        "candidates": [],
+        "decision": {},
+        "failure": None,
+        "trace": {"task_run_id": "t-1"},
     }
-    captured: dict[str, Any] = {}
+
     monkeypatch.setattr(
         category_facade,
-        "_load_category_subject",
+        "load_category_match_subject",
         lambda body: (
-            context["product"],
-            context,
-            context["platform"],
-            context["site"],
+            {"product_id": "p-1"},
+            {},
+            {"platform": "mercadolibre", "site": "MLM", "language": ""},
             None,
-            200,
         ),
     )
+    seen: dict[str, Any] = {}
 
-    def fake_match(product, draft, target):
-        captured.update(product=product, draft=draft, target=target)
-        return {
-            "ok": True,
-            "status": "unresolved",
-            "target": {"platform": "mercadolibre", "site": "MLM"},
-            "selected_category_id": None,
-            "candidates": [],
-            "query": "",
-            "decision": {},
-            "failure": {
-                "code": "ABSTAIN_LOW_CONFIDENCE",
-                "message": "人工确认",
-            },
-            "trace": {},
-        }
+    def fake_match(product: Any, draft: Any, target: Any, **kwargs: Any):
+        seen["product"] = product
+        seen["draft"] = draft
+        seen["target"] = target
+        return typed
 
     monkeypatch.setattr(category_facade, "match_category", fake_match)
 
     result, status = category_facade.category_match_payload(
-        {"draft_id": "d-1", "language": "es-MX"}
+        {"draft_id": "d-1", "platform": "mercadolibre", "site": "MLM"}
     )
 
     assert status == 200
-    assert result["status"] == "unresolved"
-    assert captured == {
-        "product": context["product"],
-        "draft": context["draft"],
-        "target": {
-            "platform": "mercadolibre",
-            "site": "MLM",
-            "language": "es-MX",
-        },
-    }
-    assert "/api/category-match" in category_routes.HANDLED_PATHS
-    assert "/api/category-search" in category_routes.HANDLED_PATHS
-    assert "/api/category-ai-identify-product" not in category_routes.HANDLED_PATHS
-    assert "/api/category-ai-suggest" not in category_routes.HANDLED_PATHS
+    assert result == typed
+    assert seen["product"] == {"product_id": "p-1"}
+    assert seen["target"]["platform"] == "mercadolibre"
 
 
-def test_category_match_failed_taxonomy_maps_to_new_http_contract(monkeypatch) -> None:
-    monkeypatch.setattr(
-        category_facade,
-        "_load_category_subject",
-        lambda body: (
-            {"product_id": "p-1"},
-            {"draft": {"draft_id": "d-1"}},
-            "ozon",
-            "global",
-            None,
-            200,
-        ),
+def test_category_match_payload_propagates_subject_error(monkeypatch) -> None:
+    error_payload = (
+        {"ok": False, "error": "缺少商品", "error_code": "PRODUCT_NOT_FOUND"},
+        404,
     )
     monkeypatch.setattr(
         category_facade,
-        "match_category",
-        lambda *args, **kwargs: {
-            "ok": False,
-            "status": "failed",
-            "target": {"platform": "ozon", "site": "global"},
-            "selected_category_id": None,
-            "candidates": [],
-            "query": "",
-            "decision": {},
-            "failure": {
-                "code": "CATEGORY_CREDENTIALS_MISSING",
-                "message": "缺少 Ozon 凭据",
-            },
-            "trace": {},
-        },
+        "load_category_match_subject",
+        lambda body: ({}, {}, {}, error_payload),
     )
+
+    def should_not_run(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("subject 校验失败时不得运行类目匹配")
+
+    monkeypatch.setattr(category_facade, "match_category", should_not_run)
 
     result, status = category_facade.category_match_payload(
-        {"draft_id": "d-1"}
+        {"draft_id": "missing", "platform": "mercadolibre", "site": "MLM"}
+    )
+    assert (result, status) == error_payload
+
+
+def test_category_match_sync_route_dispatches_and_is_registered(
+    monkeypatch,
+) -> None:
+    assert "/api/v1/category-match" in category_routes.HANDLED_PATHS
+    assert "/api/v1/category-match" in category_routes.POST_HANDLERS
+    # 旧 run 协议路由已删除：同步端点是类目匹配唯一 HTTP 入口。
+    assert not any(path.endswith("/runs") for path in category_routes.HANDLED_PATHS)
+
+    calls: list[dict[str, Any]] = []
+
+    class Handler:
+        path = "/api/v1/category-match"
+
+        @staticmethod
+        def read_body() -> dict[str, Any]:
+            return {"platform": "mercadolibre", "site": "MLM", "draft_id": "d-1"}
+
+        @staticmethod
+        def send_json(payload: dict[str, Any], status: int = 200) -> None:
+            calls.append({"payload": payload, "status": status})
+
+    monkeypatch.setattr(
+        category_routes.category_facade,
+        "category_match_payload",
+        lambda body: ({"ok": True, "status": "completed"}, 200),
     )
 
-    assert status == 424
-    assert result["failure"]["code"] == "CATEGORY_CREDENTIALS_MISSING"
+    category_routes.handle_category_match(Handler())
 
-
-def test_category_match_agent_error_http_status_contract() -> None:
-    def failed(code: str) -> dict:
-        return {"status": "failed", "failure": {"code": code}}
-
-    assert category_facade._category_match_http_status(
-        failed("TOOL_PERMISSION_DENIED")
-    ) == 403
-    assert category_facade._category_match_http_status(
-        failed("TOOL_APPROVAL_REQUIRED")
-    ) == 409
-    assert category_facade._category_match_http_status(
-        failed("AI_MODEL_CONFIGURATION_INVALID")
-    ) == 424
-    assert category_facade._category_match_http_status(
-        failed("AI_MODEL_TOOL_CALLING_UNSUPPORTED")
-    ) == 424
-    assert category_facade._category_match_http_status(
-        failed("AI_AGENT_USAGE_LIMIT_EXCEEDED")
-    ) == 502
-    assert category_facade._category_match_http_status(
-        failed("TASK_DEADLINE_EXCEEDED")
-    ) == 504
+    assert calls == [{"payload": {"ok": True, "status": "completed"}, "status": 200}]

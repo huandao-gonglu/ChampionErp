@@ -30,6 +30,7 @@ from erp_web.services.ai_tool_registry import (
     deadline_aware_tool_executor,
 )
 from erp_web.stores.pydantic_message_store import PydanticMessageStore
+from tests.ai_function_model_streaming import streaming_function_model
 
 
 class WriteOutput(BaseModel):
@@ -125,11 +126,12 @@ def model_function(messages: list[Any], info: AgentInfo) -> ModelResponse:
 
 def factory(model: FunctionModel) -> AiAgentFactory:
     context = get_context()
+    streaming_model = streaming_function_model(model)
 
     def binding(*args, **kwargs):
         del args, kwargs
         return PydanticModelBinding(
-            model=model,
+            model=streaming_model,
             model_settings=ModelSettings(temperature=0),
             model_id="test-write-model",
             model_name="test-write-model",

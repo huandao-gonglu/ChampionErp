@@ -19,6 +19,7 @@ from erp_web.services.ai_agent_factory import (
 from erp_web.services.ai_model_factory import PydanticModelBinding
 from erp_web.services.ai_tool_registry import AiToolSet
 from erp_web.stores.pydantic_message_store import PydanticMessageStore
+from tests.ai_function_model_streaming import streaming_function_model
 
 
 class Answer(BaseModel):
@@ -47,11 +48,12 @@ def _factory(
     model: FunctionModel,
 ) -> tuple[AiAgentFactory, PydanticMessageStore]:
     message_store = PydanticMessageStore(ErpDatabase(tmp_path / "erp.sqlite3"))
+    streaming_model = streaming_function_model(model)
 
     def binding(*args: Any, **kwargs: Any) -> PydanticModelBinding:
         del args, kwargs
         return PydanticModelBinding(
-            model=model,
+            model=streaming_model,
             model_settings=ModelSettings(temperature=0),
             model_id="test-model",
             model_name="test-model",

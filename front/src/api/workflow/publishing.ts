@@ -1,4 +1,5 @@
 import { apiClient } from '@/api/client'
+import { withAiForeground } from '@/services/withAiForeground'
 import type {
   CategoryAttributeOption,
   CategoryMatchResult,
@@ -583,16 +584,15 @@ export async function searchCategories(platform: Marketplace, query: string, sit
   return { results }
 }
 
-export async function matchCategory(
-  draft: DraftDetail,
-  target: MarketplaceTargetSite,
-): Promise<CategoryMatchResult> {
-  const response = await apiClient.post('/api/category-match', {
-    ...requiredDraftTarget(draft, target, '匹配类目'),
-    language: target.language,
-  })
-  const data = asRecord(response.data)
-  ensureOk(data, '匹配类目失败')
+export const CATEGORY_MATCH_PATH = '/api/v1/category-match'
+
+/**
+ * 类目匹配业务请求 timeout：必须大于后端 Agent deadline（60s）并保留网络余量，
+ * 不能沿用低于业务 deadline 的全局默认 timeout。
+ */
+export const CATEGORY_MATCH_REQUEST_TIMEOUT_MS = 75_000
+
+function normalizeCategoryMatchResult(data: UnknownRecord): CategoryMatchResult {
   const selectedCategoryId = getString(data, ['selected_category_id', 'selectedCategoryId'])
   const candidates = Array.isArray(data.candidates)
     ? data.candidates.map((item) => {
@@ -642,6 +642,39 @@ export async function matchCategory(
   }
 }
 
+export async function matchCategory(
+  draft: DraftDetail,
+  target: MarketplaceTargetSite,
+): Promise<CategoryMatchResult> {
+  // 同步 focused 业务 response 是唯一结果事实；withAiForeground 只提供前台
+  // 实时展示（reserve → observe stream → 业务 header 关联）。业务判断失败
+  // （ok=false）仍是合法 200 结果，不抛错，由 caller 读取 failure/status。
+  return withAiForeground(
+    {
+      displayTitle: 'AI 匹配类目',
+      successNotice: (result) => (
+        result.status === 'completed'
+          ? '类目匹配完成'
+          : '类目匹配结束，仍需人工确认候选'
+      ),
+    },
+    async ({ presentationId }) => {
+      const response = await apiClient.post(
+        CATEGORY_MATCH_PATH,
+        {
+          ...requiredDraftTarget(draft, target, '匹配类目'),
+          language: target.language,
+        },
+        {
+          aiPresentationId: presentationId,
+          timeout: CATEGORY_MATCH_REQUEST_TIMEOUT_MS,
+        },
+      )
+      return normalizeCategoryMatchResult(asRecord(response.data))
+    },
+  )
+}
+
 function categorySelectionToBackendRecord(category: CategorySelection | null): UnknownRecord | null {
   if (!category) return null
   return {
@@ -677,11 +710,24 @@ function categorySelectionToBackendRecord(category: CategorySelection | null): U
   }
 }
 
-export async function fillCategoryAttributes(draft: DraftDetail, target: MarketplaceTargetSite, categoryId: string, category: CategorySelection | null = null): Promise<DraftMutationResponse & { needReview: unknown[]; warning?: string }> {
+/** 仅传输层的 presentation 关联 option：转成 `X-AI-Presentation-ID` header。 */
+export interface AiPresentationTransport {
+  presentationId?: string
+}
+
+export async function fillCategoryAttributes(
+  draft: DraftDetail,
+  target: MarketplaceTargetSite,
+  categoryId: string,
+  category: CategorySelection | null = null,
+  presentation: AiPresentationTransport = {},
+): Promise<DraftMutationResponse & { needReview: unknown[]; warning?: string }> {
   const response = await apiClient.post('/api/category-ai-fill', {
     ...requiredDraftTarget(draft, target, '填充类目属性'),
     category_id: categoryId,
     category_record: categorySelectionToBackendRecord(category),
+  }, {
+    aiPresentationId: presentation.presentationId,
   })
   const data = asRecord(response.data)
   ensureOk(data, 'AI 填充属性失败')

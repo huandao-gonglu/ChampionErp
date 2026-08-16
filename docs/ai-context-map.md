@@ -35,8 +35,8 @@ Model Requests，图片等能力使用锁定版本提供的 Pydantic capability/
   Pydantic Direct Model 执行入口，负责公开 Pydantic message/event 转换和项目结果归一化。
 - `erp_web/services/ai_gateway_probe.py`：API/CLI/Browser 共用的能力探测编排、四态结果
   （`supported` / `unsupported` / `unavailable` / `inconclusive`）、确定性探测素材、连接指纹与
-  versioned capability profile owner；每项真实探测创建独立 AI Work conversation，结果返回
-  `conversation_id`；未接入能力不得静默跳过，临时网络错误不得记为不支持。
+  versioned capability profile owner；探测结果归一化进 capability profile；
+  未接入能力不得静默跳过，临时网络错误不得记为不支持。
 - `erp_web/services/ai_model_probe_service.py`：API 模型能力探测 adapter；chat、JSON、联网、
   Function Call、图片生成和图片编辑全部使用独立 probe binding。探测不读取待测 capability
   声明，Function Call 必须完成 tool call → tool result → final response 的完整往返。
@@ -72,20 +72,10 @@ Model Requests，图片等能力使用锁定版本提供的 Pydantic capability/
 - `erp_web/services/ai_pydantic_image_model.py`：登记过的 focused 例外，见下文；它是仅支持
   Images API 的 Pydantic `Model`，只能由 `ai_model_factory` 创建，并且只能经 Pydantic Direct
   Request 调用。
-- `erp_web/services/ai_work_service.py`：AI Work conversation journal。`ai_sessions.parent_session_id`
-  保存主对话与 planning / focused Agent 执行记录的直接父子关系；默认列表只返回根会话，子会话通过
-  children 查询或 ID 直达读取。能力探测使用专用
-  `capability_probe.*` 事件保存实际探测消息、模型文本、工具往返和脱敏后的图片引用；普通业务
-  `provider.request` 仍只保存摘要；Agent 内容通过独立 `agent.request` / `agent.transcript`
-  投影写入；Direct Model 与 Agent 的 Provider 流式推理统一写为
-  `REASONING_MESSAGE_START/CONTENT/END`，最终正文继续使用 `TEXT_MESSAGE_*`，两者不得混合，
-  也不得把认证字段或无限大小内容带入 journal。
-- `erp_web/http_route_units/ai_work_routes.py`：AI Work 读取与等待 HTTP 入口。
-- `front/src/views/AiWorkView.vue`：AI Work 监视界面；左侧默认只展示用户根会话，内部 Agent 执行记录
-  收纳在主对话的可折叠执行详情中，开发者可显式打开“显示内部执行会话”；支持通过
-  `conversation_id` query 定位根会话或隐藏的子会话，
-  按正常对话流分区展示 Provider 推理字符、最终正文、探测或 Agent 输入、逐轮模型消息和工具
-  事件；旧 Agent 记录以现存运行摘要与终态回退，不显示空白页签。
+- `front/src/views/AiWorkView.vue`：AI Work 页面。左侧 conversation 列表按 `updated_at` 倒序；
+  右侧按优先级选择数据源——前台 presentation（observe Chat 实时消息）、活动 `global.chat`
+  （共享 `Chat.messages`）或服务端 `/ui-messages` 只读派生历史；“原始消息”辅助标签提供
+  规范 Pydantic JSON 树、Raw JSON 与下载；支持 `conversation_id` / `presentation_id` query 定位。
 
 ```text
 API use case
@@ -294,6 +284,74 @@ Profile 与权限，再调用 `AiAgentFactory.open_stream_run(...)`。它与 `Gl
 历史展示链是 `PydanticMessageStore → ModelMessage[] → VercelAIAdapter.dump_messages() → UIMessage[]`。
 消息事实唯一来源是 `pydantic_message_histories.messages_json`，不存在第二张 UI 消息表或消息双写。
 
+### AI Presentation 通用可观测层
+
+用户直接触发的 AI 能力保持业务 HTTP 接口自有 start 与类型化结果，实时展示由通用
+presentation 层统一提供：前端触发前预留 presentation，业务请求在 HTTP 公共边界用
+`X-AI-Presentation-ID` header claim 该预留，此后请求范围内任何经 `AiAgentFactory`
+运行的 Pydantic Agent 都会把 native event 流自动发布为官方 Vercel chunk；前端用
+AI SDK 官方 reconnect 约定只读观察展示流。Agent 不感知前端协议，业务类型化结果仍由
+focused service/store 拥有，前端不从消息解析业务结果；展示断连或失败不改变业务结果
+裁定。
+
+- `erp_web/services/ai_presentation_context.py`：dependency-light presentation 运行上下文
+  与 observer 协议。`AiPresentationContext` 不可变描述一次 Agent 运行在请求调用范围中的
+  位置（root/child）；`bind_presentation_context()` / `current_presentation_context()` 是
+  contextvar 唯一绑定/读取点。HTTP 边界在 claim 后建立 root scope；factory 内第一个 Agent
+  派生 presentation root run，运行内部再次进入 factory 派生 child，继承 presentation 与
+  observer。`AiRunObserver` / `AiNativeEventPublisher` 是窄展示观察协议；无 presentation
+  scope 时 observer no-op，业务执行语义不因是否有浏览器观察而改变。
+- `erp_web/services/ai_presentation_registry.py`：`AppContext` 单例持有。进程内短期
+  presentation 状态机（`reserved/bound/running/finalizing/completed/failed/expired`）与
+  有界官方编码 chunk 缓冲；提供唯一 presentation stream lease；`claim_root_run` 原子领取
+  唯一 root run 槽位（首个顺序 Agent 成功，后续返回已领取的 root），保证一次前台交互最多
+  一个根流；`finish_request` 由边界统一收尾请求生命周期（区分 `request_failed`）；TTL 清理
+  过期预留与终态缓冲。规范消息仍由 `PydanticMessageStore` 持久化，chunk 缓冲只是短期展示
+  副本，不是第二份消息事实源。
+- `erp_web/services/ai_presentation_service.py`：`reserve_presentation` 服务端生成
+  presentation/conversation ID 并预留（短 TTL；不执行 Agent、不读取业务数据）；
+  `claim_presentation_scope` 在 HTTP 公共边界原子 claim 并构造携带
+  `RegistryAiPresentationObserver` 的 root scope，非法/过期/重复 claim 返回 None，由边界
+  映射稳定 409（`AI_PRESENTATION_CLAIM_INVALID`），不静默创建第二个展示；
+  `RegistryAiPresentationObserver` 透传 Agent native events，同时经
+  `vercel_ai_ui_service.new_event_stream()` 的官方 `transform_stream()` / `encode_stream()`
+  编码为 chunk 发布到 registry，发布失败（含缓冲溢出）只停止发布，不改写 Agent 执行语义；
+  装配期失败经 `publish_error_chunks` 也只发布官方 error/finish chunk。
+- `erp_web/http_routes.py`：POST 公共边界。浏览器边界校验后读取
+  `X-AI-Presentation-ID` 并 claim，拒绝返回 409；成功后 contextvar scope 覆盖整个
+  dispatch，handler 正常返回或抛错都由 finally 的 `finish_request` 收尾 presentation
+  请求生命周期；请求成败按实际 HTTP 响应状态裁定（正常返回的 4xx/5xx 标记 failed，
+  200 + ok=false 的业务判断型结果仍 completed）。业务 route 不读取该 header。
+- `erp_web/http_route_units/ai_presentation_routes.py`：`POST /api/v1/ai-presentations`
+  预留（display title 仅清洗后用于 UI）；`GET /api/v1/ai-presentations/{id}` 只读展示
+  元数据状态（含脱敏展示错误，不返回业务结果）；
+  `GET /api/v1/ai-presentations/{id}/stream` 官方 Vercel UI SSE observe 流——领取唯一
+  lease，从游标 0 重放已缓冲 chunk 并实时转发；未知、过期或 lease 已占用返回 204
+  （Vercel reconnect 约定的“无可用流”）；浏览器断连只释放 lease，不取消业务请求与 Agent。
+  不存在通用 result endpoint，业务结果始终来自原业务接口。
+- `erp_web/services/ai_agent_factory.py` 执行内核：从当前 contextvar scope 派生本次运行
+  的 presentation 上下文，经 observer 原子领取 registry 唯一 root run 槽位决定 root/child
+  （一次前台交互最多一个根流，后续顺序 Agent 一律 child）；root run 的规范历史用
+  `scope.conversation_id` 持久化，实时流与 `PydanticMessageStore` 历史同一 ID；
+  `resume_sync()` 复用同一 native-event 内核（经 `deferred_tool_results` 注入审批结果），
+  恢复运行同样发布 presentation 事件。存在 observer 时 `session.events()` 返回包装流，消费
+  它同时驱动官方转换/发布，事件原样透传；生命周期通知（run_started/running/finalizing/
+  completed/failed）与子运行紧凑状态卡全部故障隔离，展示失败只降级展示。无
+  presentation scope 的后台 Agent 不产生 SSE；child Agent 不产生第二条 SSE。
+- 前端：`front/src/api/aiPresentations.ts`（reserve/status transport 与 observe Chat；
+  `DefaultChatTransport` 的 reconnect URL 即
+  `GET /api/v1/ai-presentations/{id}/stream`）、
+  `front/src/services/withAiForeground.ts`（通用前台 wrapper：原子占用 → reserve →
+  attach observe Chat → 展示流与业务请求并发 → 业务 response 唯一裁定成败 → 有界流收尾
+  → finish 与终态提示）、`front/src/stores/aiWorkDisplay.ts`（通用 presentation 展示协调
+  store；`AiChatStore` 仍是全局聊天唯一 owner，接管只改变展示选择）。
+  `front/src/components/common/AiWorkFloatingButton.vue` 按 displayMode 渲染
+  global-chat / presentation 分支；`front/src/views/AiWorkView.vue` 按 presentation 实时、
+  global.chat、历史三档选择数据源，支持 `conversation_id` / `presentation_id` query 定位。
+- 已迁移：类目匹配（`matchCategory`）与类目属性填充（`fillAttributesByAi`）使用同一
+  wrapper；不存在业务专用展示 start/result 协议。新增第三个前台能力时后端 Agent service
+  无需改动，前端只增加 wrapper 声明与业务提示映射。完整契约见 `docs/aiworkpage.md`。
+
 ## 类目平台搜索层
 
 - `erp_web/marketplaces/category_provider.py`：定义绑定式 `CategorySearcher` 与
@@ -359,23 +417,32 @@ Profile 与权限，再调用 `AiAgentFactory.open_stream_run(...)`。它与 `Gl
 - `erp_web/runtime_units/category_tools.py`：`category.search` 只读 ToolSet。绑定对象实现
   `CategoryNavigator` 时只暴露 `browse_categories(parent_ids)`；否则只暴露
   `search_categories(keyword)`。工具 schema 与执行器均没有 platform/site 参数。
-- `erp_web/facades/category_match_facade.py`：`category.match` 公开编排入口；
+- `erp_web/facades/category_match_facade.py`：`category.match` 共享业务阶段；
   首轮发送裁剪后的双语商品事实；Ozon 同时发送真实顶层节点并允许最多四次树导航，
   Mercado Libre 最多三次换词发现。最终选择必须经过叶子候选账本、站点、可发布状态、
   详情、Ozon ID 配对和属性读取校验；达到资源上限时返回 unresolved，不静默改选。
+  `prepare_category_match_input / setup_category_match_search / finalize_category_match`
+  被 Global Task capability 与同步 focused HTTP 入口共用，行为一致。
 - `erp_web/services/category_match_agent_service.py`：`category.product_match` 的 focused
   Execution Profile、prompt 渲染、类型化 `CategoryMatchAgentOutput` 与 Ledger output
-  validator；只通过统一 `AiAgentFactory` 运行。
+  validator；只通过统一 `AiAgentFactory` 的流式 `open_stream_run` 运行（同步执行路径已删除）。
 - `erp_web/http_route_units/category_routes.py::handle_category_match`：
-  `POST /api/category-match` 薄路由入口。`category_facade.py` 只做草稿上下文与
-  HTTP status 映射；其完整路径为 `erp_web/facades/category_facade.py`。
+  `POST /api/v1/category-match` 同步 focused 入口。类型化业务结果由本接口独占，始终
+  返回 200 与类型化 `CategoryMatchResult`（`ok=false` 属于业务判断型结果；subject
+  错误仍映射其 4xx）；实时展示关联由 HTTP 公共边界的 `X-AI-Presentation-ID` claim
+  完成，route 不读取 presentation header，不导入 registry/SSE。
+  `category_facade.py::load_category_match_subject` 只做草稿上下文加载；其完整路径为
+  `erp_web/facades/category_facade.py`。
 - `config/prompts/category_product_match.json`：`category.product_match`
   Execution Profile 的可配置 prompt。
-- `front/src/api/workflow/publishing.ts::matchCategory`：HTTP 契约到现有人工
-  候选 shape 的边界适配。
+- `front/src/api/workflow/publishing.ts::matchCategory`：经通用 `withAiForeground`
+  wrapper 调用同步 `POST /api/v1/category-match`；presentation ID 通过 axios config
+  `aiPresentationId` 注入并由拦截器转换为 `X-AI-Presentation-ID` header，不进入 JSON
+  body；显式 timeout 大于后端 deadline 并留余量；类型化结果适配到现有人工候选 shape。
 - `front/src/stores/workflow/actions/publishing.ts::autoSuggestCategoriesForDraft`：
   自动匹配唯一入口，逐目标站点调用 `matchCategory`；不包含运行时开关或第二条
-  自动匹配分支。
+  自动匹配分支。属性填充分支 `fillAttributesByAi` 使用同一 wrapper 触发
+  `POST /api/category-ai-fill`（见“类目匹配 Capability”属性填充段）。
 - `tests/test_category_match_facade.py`、`tests/test_category_tools.py`：首次上下文裁剪、
   Ozon 逐层导航与有限回退、Mercado Libre 多轮换词、未知 ID、deadline、凭据和工具去重测试。
 
@@ -481,7 +548,14 @@ Ozon 创建/更新商品是异步操作。提交 `/v3/product/import` 获得 `ta
 - `tests/test_ai_tool_catalog.py`：注解元数据、TypeAdapter Compiler、Schema 规范化、可信 Scope、
   allowlist、幂等策略与类目试点契约指纹快照。
 - `tests/test_category_match_agent_service.py`：真实 `FunctionModel + Agent` 的类目工具循环、
-  类型化 output 与 validator 契约。
+  类型化 output、validator 契约，以及绑定 presentation scope 下发布官方展示 chunk 的
+  端到端测试。
+- `tests/test_ai_presentation_registry.py`、`tests/test_ai_presentation_routes.py`、
+  `tests/test_ai_presentation_context.py`：presentation 预留/claim/lease/TTL 与 chunk
+  缓冲边界，reserve/status/stream HTTP 契约（204 无流约定、单 lease、晚 attach 重放、
+  断连不取消业务），contextvar scope 派生与 observer 协议。
+- `tests/test_ai_agent_factory_presentation.py`：factory 执行内核的 presentation 集成——
+  绑定 scope 自动发布官方 chunk、无 scope 运行不产生 SSE、发布失败只降级展示。
 - `tests/test_ai_agent_instrumentation.py`：技术 spans、usage、trace 关联、脱敏和故障隔离。
 - `tests/test_ai_agent_state_store.py`、`tests/test_ai_agent_deferred_runtime.py`：公开消息
   serialization、版本迁移、审批/拒绝、跨进程恢复、权限/scope/deadline 与幂等 claim。

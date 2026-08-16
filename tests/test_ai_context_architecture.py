@@ -980,10 +980,19 @@ def test_category_match_vertical_slice_has_explicit_stable_boundaries() -> None:
     ).read_text(encoding="utf-8")
     frontend_text = frontend_actions.read_text(encoding="utf-8")
 
-    assert '"/api/category-match": handle_category_match' in route_text
+    # 同步 focused 入口：类型化结果由 /api/v1/category-match 独占；
+    # 专用 run 协议（start/result routes）已删除，实时展示关联由
+    # HTTP 公共边界的 presentation claim 完成。
+    assert '"/api/category-match"' not in route_text
+    assert '"/api/v1/category-match"' in route_text
+    assert "handle_category_match" in route_text
+    assert "handle_category_match_start" not in route_text
+    assert "/runs" not in route_text
     assert "/api/category-ai-identify-product" not in route_text
     assert "/api/category-ai-suggest" not in route_text
+    assert "load_category_match_subject" in http_facade_text
     assert "category_match_payload" in http_facade_text
+    assert "run_sync(" not in agent_text
     assert "def match_category(" in match_text
     assert "run_category_match_agent" in match_text
     assert "AiAgentFactory" in agent_text

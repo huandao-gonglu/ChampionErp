@@ -21,6 +21,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, avoids import cycles
     from erp_web.runtime_units.publishing_bus_core import PublishingBus
     from erp_web.runtime_units.pricing_runtime import ExchangeRateService
     from erp_web.services.ai_chat_run_registry import AiChatRunRegistry
+    from erp_web.services.ai_presentation_registry import (
+        AiPresentationRegistry,
+    )
     from erp_web.services.image_delivery_service import ImageDeliveryService
     from erp_web.services.product_research_service import ProductResearchRunRegistry
     from erp_web.stores.ai_chat_turn_claim_store import AiChatTurnClaimStore
@@ -149,6 +152,7 @@ class AppContext:
         self._image_delivery: "ImageDeliveryService | None" = None
         self._publishing_bus: "PublishingBus | None" = None
         self._global_tasks: "LocalGlobalTaskStore | None" = None
+        self._ai_presentations: "AiPresentationRegistry | None" = None
 
     @property
     def products(self) -> "ProductStore":
@@ -270,6 +274,20 @@ class AppContext:
 
                     self._global_tasks = LocalGlobalTaskStore(self.db)
         return self._global_tasks
+
+    @property
+    def ai_presentations(self) -> "AiPresentationRegistry":
+        """进程内通用 presentation registry（reservation/claim/lease/chunk 缓冲）。"""
+
+        if self._ai_presentations is None:
+            with self._lazy_lock:
+                if self._ai_presentations is None:
+                    from erp_web.services.ai_presentation_registry import (
+                        AiPresentationRegistry,
+                    )
+
+                    self._ai_presentations = AiPresentationRegistry()
+        return self._ai_presentations
 
     @property
     def closed(self) -> bool:

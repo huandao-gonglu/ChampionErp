@@ -1,8 +1,9 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { Chat } from '@ai-sdk/vue'
 import type { UIMessage } from 'ai'
-import { useAiChatStore } from '@/stores'
+import { useAiChatStore, useAiWorkDisplayStore } from '@/stores'
 import AiWorkView from '../AiWorkView.vue'
 
 const GLOBAL_CHAT_ID = `conversation_global_chat_${'ab'.repeat(16)}`
@@ -87,8 +88,30 @@ function setupView() {
   const pinia = createPinia()
   setActivePinia(pinia)
   const store = useAiChatStore()
+  const display = useAiWorkDisplayStore()
   const mountNow = () => mount(AiWorkView, { global: { plugins: [pinia] } })
-  return { store, mountNow }
+  return { store, display, mountNow }
+}
+
+const PRESENTATION_CONVERSATION_ID = 'conversation_presentation_x'
+
+function fakeObserveChat(messages: UIMessage[] = []): Chat<UIMessage> {
+  return new Chat<UIMessage>({ id: 'presentation_x', messages })
+}
+
+function attachPresentation(
+  display: ReturnType<typeof useAiWorkDisplayStore>,
+  messages: UIMessage[] = [],
+): void {
+  display.attachForegroundPresentation(
+    {
+      presentationId: 'presentation_x',
+      conversationId: PRESENTATION_CONVERSATION_ID,
+      displayTitle: 'AI 匹配类目',
+      status: 'running',
+    },
+    fakeObserveChat(messages),
+  )
 }
 
 describe('AiWorkView 对话与历史', () => {
@@ -98,6 +121,10 @@ describe('AiWorkView 对话与历史', () => {
     mocks.fetchConversations.mockResolvedValue({ ok: true, conversations })
     mocks.fetchConversation.mockImplementation(async (conversationId: string) => detail(conversationId))
     mocks.fetchUiMessages.mockImplementation(async (conversationId: string) => uiMessages(conversationId))
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
   })
 
   it('加载列表、按 updated_at 倒序默认选中首项，并以派生气泡展示', async () => {
@@ -169,9 +196,13 @@ describe('AiWorkView 对话与历史', () => {
     mocks.route.query = { conversation_id: conversationId }
 
     const wrapper = mountNow()
+    // query 指向活动会话：立即绑定实时 Chat，不等待列表请求完成。
+    expect(wrapper.find('[data-testid="ai-work-live-chat"]').exists()).toBe(true)
     await flushPromises()
 
     expect(mocks.fetchUiMessages).not.toHaveBeenCalled()
+    // 尚未持久化的活动会话不发起规范 detail 请求，避免必然 404。
+    expect(mocks.fetchConversation).not.toHaveBeenCalled()
     expect(wrapper.find('[data-testid="ai-work-live-chat"]').exists()).toBe(true)
     // 尚未持久化的活动会话以临时条目出现在左侧。
     expect(wrapper.find('[data-testid="ai-work-conversation-temporary"]').exists()).toBe(true)
@@ -217,6 +248,97 @@ describe('AiWorkView 对话与历史', () => {
     expect(wrapper.find(`[data-testid="ai-work-conversation-${conversationId}"]`).exists()).toBe(true)
     expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe(conversationId)
     expect(wrapper.find('[data-testid="ai-work-live-chat"]').exists()).toBe(true)
+
+    // 持久化完成后读取一次规范 detail，原始消息标签可正常检查。
+    expect(mocks.fetchConversation).toHaveBeenCalledTimes(1)
+    expect(mocks.fetchConversation).toHaveBeenCalledWith(conversationId)
+    await wrapper.get('[data-testid="ai-work-view-raw-tab"]').trigger('click')
+    expect(wrapper.get('[data-testid="ai-work-json-tree"]').text()).toContain(
+      `原始内容-${conversationId}`,
+    )
+    expect(wrapper.find('[data-testid="ai-work-raw-pending"]').exists()).toBe(false)
+  })
+
+  it('未持久化活动 conversation 无 404 错误，原始标签显示待完成状态', async () => {
+    const { store, mountNow } = setupView()
+    const conversationId = store.startConversation()
+    mocks.route.query = { conversation_id: conversationId }
+
+    const wrapper = mountNow()
+    await flushPromises()
+
+    expect(mocks.fetchConversation).not.toHaveBeenCalled()
+    expect(mocks.fetchUiMessages).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="ai-work-detail-error"]').exists()).toBe(false)
+
+    await wrapper.get('[data-testid="ai-work-view-raw-tab"]').trigger('click')
+    expect(wrapper.find('[data-testid="ai-work-detail-error"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="ai-work-raw-pending"]').text()).toContain(
+      '运行完成后可检查规范历史',
+    )
+  })
+
+  it('活动会话已有持久化历史且新一轮流式中时，原始标签提示上一终态历史', async () => {
+    const { store, mountNow } = setupView()
+    const conversationId = store.startConversation()
+    mocks.fetchConversations.mockResolvedValue({
+      ok: true,
+      conversations: [
+        ...conversations,
+        {
+          conversation_id: conversationId,
+          created_at: '2026-08-14T10:00:00+08:00',
+          updated_at: '2026-08-14T10:05:00+08:00',
+        },
+      ],
+    })
+    mocks.route.query = { conversation_id: conversationId }
+
+    let controller: ReadableStreamDefaultController<Uint8Array> | undefined
+    const fetchMock = vi.fn(async () => new Response(
+      new ReadableStream<Uint8Array>({ start(value) { controller = value } }),
+      {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'x-vercel-ai-ui-message-stream': 'v1',
+        },
+      },
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+
+    store.input = '继续上一轮'
+    store.sendMessage()
+    await vi.waitFor(() => {
+      expect(store.isBusy).toBe(true)
+    })
+
+    const wrapper = mountNow()
+    await flushPromises()
+
+    await wrapper.get('[data-testid="ai-work-view-raw-tab"]').trigger('click')
+    expect(wrapper.get('[data-testid="ai-work-raw-streaming-note"]').text()).toContain(
+      '服务端已保存的上一终态历史',
+    )
+    expect(wrapper.get('[data-testid="ai-work-json-tree"]').text()).toContain(
+      `原始内容-${conversationId}`,
+    )
+
+    // 收尾流，避免残留未完成的异步任务。
+    const encoder = new TextEncoder()
+    const chunk = (payload: Record<string, unknown> | '[DONE]') => {
+      const value = payload === '[DONE]' ? payload : JSON.stringify(payload)
+      return encoder.encode(`data: ${value}\n\n`)
+    }
+    controller!.enqueue(chunk({ type: 'start', messageId: 'assistant-1' }))
+    controller!.enqueue(chunk({ type: 'start-step' }))
+    controller!.enqueue(chunk({ type: 'finish-step' }))
+    controller!.enqueue(chunk({ type: 'finish', finishReason: 'stop' }))
+    controller!.enqueue(chunk('[DONE]'))
+    controller!.close()
+    await vi.waitFor(() => {
+      expect(store.isBusy).toBe(false)
+    })
   })
 
   it('global.chat 历史可以重新激活后继续发送', async () => {
@@ -329,5 +451,142 @@ describe('AiWorkView 对话与历史', () => {
     click.mockRestore()
     Reflect.deleteProperty(URL, 'createObjectURL')
     Reflect.deleteProperty(URL, 'revokeObjectURL')
+  })
+
+  describe('前台 presentation 展示', () => {
+    it('query 指向活动前台 presentation 时绑定 observe Chat 实时消息，不请求历史', async () => {
+      const { display, mountNow } = setupView()
+      attachPresentation(display, [
+        {
+          id: 'b1',
+          role: 'assistant',
+          parts: [{ type: 'text', text: '正在检索类目：ventilador' }],
+        },
+      ])
+      mocks.route.query = {
+        conversation_id: PRESENTATION_CONVERSATION_ID,
+        presentation_id: 'presentation_x',
+      }
+
+      const wrapper = mountNow()
+      // 首帧即绑定 presentation observe Chat，不等待列表请求。
+      const live = wrapper.get('[data-testid="ai-work-presentation-live"]')
+      expect(live.text()).toContain('AI 匹配类目')
+      expect(live.text()).toContain('运行中')
+      expect(live.text()).toContain('正在检索类目：ventilador')
+      expect(wrapper.find('[data-testid="ai-work-live-chat"]').exists()).toBe(false)
+
+      await flushPromises()
+
+      // 活动前台 presentation 不请求尚不存在的服务端历史。
+      expect(mocks.fetchUiMessages).not.toHaveBeenCalledWith(PRESENTATION_CONVERSATION_ID)
+      // observe Chat 消息增量继续渲染到同一分支。
+      display.foregroundPresentation!.chat.messages = [
+        {
+          id: 'b1',
+          role: 'assistant',
+          parts: [{ type: 'text', text: '已找到候选：Ventiladores' }],
+        },
+      ] as UIMessage[]
+      await flushPromises()
+      expect(wrapper.get('[data-testid="ai-work-presentation-live"]').text())
+        .toContain('已找到候选：Ventiladores')
+      // 左侧列表出现 presentation 临时条目。
+      expect(wrapper.find('[data-testid="ai-work-conversation-temporary"]').exists()).toBe(true)
+    })
+
+    it('presentation 期间点击其他历史 conversation：展示该历史自身消息，不串显实时消息', async () => {
+      const { display, mountNow } = setupView()
+      attachPresentation(display, [
+        {
+          id: 'b1',
+          role: 'assistant',
+          parts: [{ type: 'text', text: '正在检索类目：ventilador' }],
+        },
+      ])
+      mocks.route.query = {
+        conversation_id: PRESENTATION_CONVERSATION_ID,
+        presentation_id: 'presentation_x',
+      }
+
+      const wrapper = mountNow()
+      await flushPromises()
+      expect(wrapper.find('[data-testid="ai-work-presentation-live"]').exists()).toBe(true)
+
+      // presentation 期间点击左侧其他历史：选中项与展示必须同步切换。
+      await wrapper.get('[data-testid="ai-work-conversation-conversation-1"]').trigger('click')
+      await flushPromises()
+
+      expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe('conversation-1')
+      // query 残留 presentation_id 不是替代选择条件：不得在该历史标题下串显实时消息。
+      expect(wrapper.find('[data-testid="ai-work-presentation-live"]').exists()).toBe(false)
+      const chatView = wrapper.get('[data-testid="ai-work-chat-view"]')
+      expect(chatView.text()).toContain('派生回答-conversation-1')
+      expect(chatView.text()).not.toContain('正在检索类目')
+      expect(mocks.fetchUiMessages).toHaveBeenCalledWith('conversation-1')
+
+      // 点回 presentation 临时条目：重新绑定 observe Chat 的实时展示。
+      await wrapper.get('[data-testid="ai-work-conversation-temporary"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.get('[data-testid="ai-work-selected-id"]').text())
+        .toBe(PRESENTATION_CONVERSATION_ID)
+      expect(wrapper.get('[data-testid="ai-work-presentation-live"]').text())
+        .toContain('正在检索类目：ventilador')
+    })
+
+    it('query 只带 presentation_id 时解析为 presentation conversation，不落到其他历史标题下', async () => {
+      const { display, mountNow } = setupView()
+      attachPresentation(display, [
+        {
+          id: 'b1',
+          role: 'assistant',
+          parts: [{ type: 'text', text: '正在检索类目：ventilador' }],
+        },
+      ])
+      mocks.route.query = { presentation_id: 'presentation_x' }
+
+      const wrapper = mountNow()
+      // 首帧即把 presentation_id 解析为该 presentation 的 conversation 并绑定 observe Chat。
+      expect(wrapper.get('[data-testid="ai-work-selected-id"]').text())
+        .toBe(PRESENTATION_CONVERSATION_ID)
+      expect(wrapper.find('[data-testid="ai-work-presentation-live"]').exists()).toBe(true)
+
+      await flushPromises()
+
+      // 列表刷新后仍保持 presentation conversation 选中，不默认落到其他历史。
+      expect(wrapper.get('[data-testid="ai-work-selected-id"]').text())
+        .toBe(PRESENTATION_CONVERSATION_ID)
+      expect(wrapper.find('[data-testid="ai-work-presentation-live"]').exists()).toBe(true)
+      expect(mocks.fetchUiMessages).not.toHaveBeenCalledWith(PRESENTATION_CONVERSATION_ID)
+    })
+
+    it('presentation terminal 后保持 conversation 只读并切换到服务端历史', async () => {
+      const { display, mountNow } = setupView()
+      attachPresentation(display)
+      mocks.route.query = {
+        conversation_id: PRESENTATION_CONVERSATION_ID,
+        presentation_id: 'presentation_x',
+      }
+
+      const wrapper = mountNow()
+      await flushPromises()
+      expect(wrapper.find('[data-testid="ai-work-presentation-live"]').exists()).toBe(true)
+
+      display.finishForegroundPresentation({ kind: 'success', text: '类目匹配完成' })
+      await flushPromises()
+
+      // 刷新列表一次，并用服务端派生历史替换临时 observe 展示。
+      expect(mocks.fetchConversations).toHaveBeenCalledTimes(2)
+      expect(mocks.fetchUiMessages).toHaveBeenCalledWith(PRESENTATION_CONVERSATION_ID)
+      expect(wrapper.find('[data-testid="ai-work-presentation-live"]').exists()).toBe(false)
+      expect(wrapper.get('[data-testid="ai-work-selected-id"]').text())
+        .toBe(PRESENTATION_CONVERSATION_ID)
+      const chatView = wrapper.get('[data-testid="ai-work-chat-view"]')
+      expect(chatView.text()).toContain(`派生回答-${PRESENTATION_CONVERSATION_ID}`)
+      expect(chatView.text()).toContain('只读历史')
+      // 页面不自动跳回 global.chat，也不提供继续此对话入口。
+      expect(wrapper.find('[data-testid="ai-work-live-chat"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="ai-work-reactivate"]').exists()).toBe(false)
+    })
   })
 })

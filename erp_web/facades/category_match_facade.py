@@ -3,6 +3,10 @@
 任务入口按当前平台创建绑定式类目检索对象。拥有完整树的 Ozon 将真实顶层节点
 放入首轮输入，再通过工具逐层展开；Mercado Libre 继续使用远端关键字发现。
 最终选择必须来自工具真实返回的商品类型；详情和属性只在服务端终检。
+
+同步入口（Global Task 等 child 场景）与 focused 流式根运行共享同一套输入
+校验、检索装配和业务终检（``finalize_category_match``），保证两条路径的
+类型化 ``CategoryMatchResult`` 语义一致。
 """
 
 from __future__ import annotations
@@ -276,7 +280,7 @@ def _empty_decision() -> CategoryMatchDecision:
     }
 
 
-def _failure_from_exception(exc: Exception, *, stage: str) -> CategoryMatchFailure:
+def failure_from_exception(exc: Exception, *, stage: str) -> CategoryMatchFailure:
     if isinstance(exc, CategoryMatchError):
         return exc.to_dict()
     cause = exc
@@ -363,7 +367,7 @@ def _confidence_band(score: float) -> str:
     return "low"
 
 
-def _remaining_deadline_seconds(deadline_at: float) -> float:
+def remaining_deadline_seconds(deadline_at: float) -> float:
     remaining = deadline_at - time.monotonic()
     if remaining <= 0:
         raise CategoryMatchError(
@@ -471,19 +475,20 @@ def _validate_selected_category(
     return candidate
 
 
-def match_category(
+# -- 同步/流式共享阶段 ------------------------------------------------------
+
+
+def prepare_category_match_input(
     product: Mapping[str, Any],
     draft: Mapping[str, Any],
     target: Mapping[str, Any],
-    *,
-    searcher: CategorySearcher | None = None,
-    searcher_factory: CategorySearcherFactory = create_category_searcher,
-    agent_service: CategoryMatchAgentService = run_category_match_agent,
-    detail_loader: Callable[..., dict[str, Any]] = fetch_category_record,
-) -> CategoryMatchResult:
-    """运行一次同步、最多三次搜索且允许 abstain 的 ``category.match``。"""
+) -> tuple[dict[str, Any], dict[str, Any], CategoryMatchFailure | None]:
+    """归一化目标与商品事实；输入不合法时返回失败描述。
 
-    deadline_at = time.monotonic() + CATEGORY_MATCH_DEADLINE_SECONDS
+    返回 ``(normalized_target, facts, failure)``；``failure`` 非空时不得继续
+    启动 Agent。focused start endpoint 在同步阶段执行同一校验。
+    """
+
     platform = _text(target.get("platform"), 80).lower()
     site = _text(target.get("site") or target.get("site_id"), 80)
     normalized_target = {
@@ -491,67 +496,49 @@ def match_category(
         "site": site,
         "language": _text(target.get("language") or target.get("locale"), 80),
     }
-    ledger = CategoryCandidateLedger()
-    decision = _empty_decision()
-    trace: CategoryMatchTrace = {"task_run_id": ""}
-    agent_run: CategoryMatchAgentRun | None = None
     if not platform or not site:
-        return _result(
-            ok=False,
-            status="failed",
-            target=normalized_target,
-            ledger=ledger,
-            decision=decision,
-            failure={
-                "code": "TARGET_REQUIRED",
-                "message": "类目匹配需要 platform 和 site。",
-                "stage": "input",
-                "retryable": False,
-            },
-        )
-
+        return normalized_target, {}, {
+            "code": "TARGET_REQUIRED",
+            "message": "类目匹配需要 platform 和 site。",
+            "stage": "input",
+            "retryable": False,
+        }
     facts = category_product_facts(product, draft, normalized_target)
     if not facts["source"]["title"] and not facts["target"]["title"]:
-        return _result(
-            ok=False,
-            status="failed",
-            target=normalized_target,
-            ledger=ledger,
-            decision=decision,
-            failure={
-                "code": "INPUT_INVALID",
-                "message": "商品缺少可用于类目匹配的原文或目标语言标题。",
-                "stage": "input",
-                "retryable": False,
-            },
-        )
+        return normalized_target, facts, {
+            "code": "INPUT_INVALID",
+            "message": "商品缺少可用于类目匹配的原文或目标语言标题。",
+            "stage": "input",
+            "retryable": False,
+        }
+    return normalized_target, facts, None
 
-    try:
-        scoped_searcher = searcher or searcher_factory(
-            platform,
-            site=site,
-            limit=8,
-            timeout_seconds=min(8, _remaining_deadline_seconds(deadline_at)),
-            deadline_at=deadline_at,
-        )
-        tool_bundle = build_category_match_toolset(
-            searcher=scoped_searcher,
-            ledger=ledger,
-        )
-        toolset = tool_bundle.toolset
-    except Exception as exc:
-        return _result(
-            ok=False,
-            status="failed",
-            target=normalized_target,
-            ledger=ledger,
-            decision=decision,
-            failure=_failure_from_exception(exc, stage="searcher_setup"),
-        )
 
-    payload = {
-        "target": normalized_target,
-        "product": facts,
+def setup_category_match_search(
+    normalized_target: Mapping[str, Any],
+    facts: Mapping[str, Any],
+    ledger: CategoryCandidateLedger,
+    deadline_at: float,
+    *,
+    searcher: CategorySearcher | None = None,
+    searcher_factory: CategorySearcherFactory = create_category_searcher,
+) -> tuple[dict[str, Any], AiToolSet]:
+    """创建绑定式 searcher 与 ToolSet，并组装首轮 payload；失败抛异常。"""
+
+    scoped_searcher = searcher or searcher_factory(
+        str(normalized_target.get("platform") or ""),
+        site=str(normalized_target.get("site") or ""),
+        limit=8,
+        timeout_seconds=min(8, remaining_deadline_seconds(deadline_at)),
+        deadline_at=deadline_at,
+    )
+    tool_bundle = build_category_match_toolset(
+        searcher=scoped_searcher,
+        ledger=ledger,
+    )
+    payload: dict[str, Any] = {
+        "target": dict(normalized_target),
+        "product": dict(facts),
     }
     if tool_bundle.retrieval_mode == "tree_navigation":
         payload["category_navigation"] = {
@@ -560,29 +547,49 @@ def match_category(
             "max_parent_ids_per_call": 2,
             "max_navigation_calls": 4,
         }
-    try:
-        remaining_seconds = _remaining_deadline_seconds(deadline_at)
-        if remaining_seconds < 1:
-            raise CategoryMatchError(
-                "TASK_DEADLINE_EXCEEDED",
-                "类目匹配剩余 deadline 不足以启动模型调用。",
-                stage="model",
-                retryable=True,
-            )
-        agent_run = agent_service(
-            payload,
-            toolset,
-            ledger,
-            timeout_seconds=remaining_seconds,
-        )
-        model_result = agent_run.output
-        trace = {
-            key: value
-            for key in ("task_run_id", "run_id", "trace_id")
-            if (value := _text(agent_run.trace.get(key), 200))
-        }
-        _remaining_deadline_seconds(deadline_at)
-    except Exception as exc:
+    return payload, tool_bundle.toolset
+
+
+def failed_category_match(
+    *,
+    normalized_target: Mapping[str, Any],
+    ledger: CategoryCandidateLedger,
+    failure: CategoryMatchFailure,
+) -> CategoryMatchResult:
+    """Agent 启动前阶段（输入/检索装配）的类型化失败结果。"""
+
+    return _result(
+        ok=False,
+        status="failed",
+        target=normalized_target,
+        ledger=ledger,
+        decision=_empty_decision(),
+        failure=failure,
+    )
+
+
+def finalize_category_match(
+    *,
+    normalized_target: Mapping[str, Any],
+    ledger: CategoryCandidateLedger,
+    deadline_at: float,
+    detail_loader: Callable[..., dict[str, Any]] = fetch_category_record,
+    agent_run: CategoryMatchAgentRun | None = None,
+    agent_error: Exception | None = None,
+) -> CategoryMatchResult:
+    """Agent 运行结束（或运行失败）后的共享业务终检。
+
+    同步入口与 focused 流式任务共用；业务校验、领域终检和类型化 response
+    组装成功后才允许把根运行标记为 completed。
+    """
+
+    platform = _text(normalized_target.get("platform"), 80).lower()
+    site = _text(normalized_target.get("site"), 80)
+    decision = _empty_decision()
+    trace: CategoryMatchTrace = {"task_run_id": ""}
+
+    if agent_error is not None:
+        exc = agent_error
         if isinstance(exc, AiAgentExecutionError):
             trace = {
                 "task_run_id": exc.task_run_id,
@@ -623,7 +630,29 @@ def match_category(
             target=normalized_target,
             ledger=ledger,
             decision=decision,
-            failure=_failure_from_exception(exc, stage="model"),
+            failure=failure_from_exception(exc, stage="model"),
+            trace=trace,
+            agent_run=agent_run,
+        )
+
+    assert agent_run is not None
+    model_result = agent_run.output
+    trace = {
+        key: value
+        for key in ("task_run_id", "run_id", "trace_id")
+        if (value := _text(agent_run.trace.get(key), 200))
+    }
+    try:
+        remaining_deadline_seconds(deadline_at)
+    except Exception as exc:
+        decision["search_count"] = ledger.search_count
+        return _result(
+            ok=False,
+            status="failed",
+            target=normalized_target,
+            ledger=ledger,
+            decision=decision,
+            failure=failure_from_exception(exc, stage="model"),
             trace=trace,
             agent_run=agent_run,
         )
@@ -652,7 +681,7 @@ def match_category(
             target=normalized_target,
             ledger=ledger,
             decision=decision,
-            failure=_failure_from_exception(ledger.last_error, stage="search"),
+            failure=failure_from_exception(ledger.last_error, stage="search"),
             trace=trace,
             agent_run=agent_run,
         )
@@ -742,10 +771,10 @@ def match_category(
             site=site,
             ledger=ledger,
             detail_loader=detail_loader,
-            ensure_deadline=lambda: _remaining_deadline_seconds(deadline_at),
+            ensure_deadline=lambda: remaining_deadline_seconds(deadline_at),
         )
     except Exception as exc:
-        failure = _failure_from_exception(exc, stage="validation")
+        failure = failure_from_exception(exc, stage="validation")
         if failure["code"] in {
             "MODEL_SELECTED_UNKNOWN_CATEGORY",
             "TASK_DEADLINE_EXCEEDED",
@@ -783,11 +812,93 @@ def match_category(
     )
 
 
+def match_category(
+    product: Mapping[str, Any],
+    draft: Mapping[str, Any],
+    target: Mapping[str, Any],
+    *,
+    searcher: CategorySearcher | None = None,
+    searcher_factory: CategorySearcherFactory = create_category_searcher,
+    agent_service: CategoryMatchAgentService = run_category_match_agent,
+    detail_loader: Callable[..., dict[str, Any]] = fetch_category_record,
+) -> CategoryMatchResult:
+    """运行一次同步、最多三次搜索且允许 abstain 的 ``category.match``。
+
+    供 Global Task 等 child 场景使用；用户直接触发的业务根运行走 focused
+    start/stream/result endpoint 并复用同一套共享阶段。
+    """
+
+    deadline_at = time.monotonic() + CATEGORY_MATCH_DEADLINE_SECONDS
+    ledger = CategoryCandidateLedger()
+    normalized_target, facts, failure = prepare_category_match_input(
+        product, draft, target
+    )
+    if failure is not None:
+        return failed_category_match(
+            normalized_target=normalized_target,
+            ledger=ledger,
+            failure=failure,
+        )
+    try:
+        payload, toolset = setup_category_match_search(
+            normalized_target,
+            facts,
+            ledger,
+            deadline_at,
+            searcher=searcher,
+            searcher_factory=searcher_factory,
+        )
+    except Exception as exc:
+        return failed_category_match(
+            normalized_target=normalized_target,
+            ledger=ledger,
+            failure=failure_from_exception(exc, stage="searcher_setup"),
+        )
+    agent_run: CategoryMatchAgentRun | None = None
+    try:
+        remaining_seconds = remaining_deadline_seconds(deadline_at)
+        if remaining_seconds < 1:
+            raise CategoryMatchError(
+                "TASK_DEADLINE_EXCEEDED",
+                "类目匹配剩余 deadline 不足以启动模型调用。",
+                stage="model",
+                retryable=True,
+            )
+        agent_run = agent_service(
+            payload,
+            toolset,
+            ledger,
+            timeout_seconds=remaining_seconds,
+        )
+    except Exception as exc:
+        return finalize_category_match(
+            normalized_target=normalized_target,
+            ledger=ledger,
+            deadline_at=deadline_at,
+            detail_loader=detail_loader,
+            agent_run=None,
+            agent_error=exc,
+        )
+    return finalize_category_match(
+        normalized_target=normalized_target,
+        ledger=ledger,
+        deadline_at=deadline_at,
+        detail_loader=detail_loader,
+        agent_run=agent_run,
+    )
+
+
 __all__ = [
     "CATEGORY_MATCH_BUDGET_PROFILE",
     "CATEGORY_MATCH_DEADLINE_SECONDS",
     "CATEGORY_MATCH_USE_CASE_ID",
     "CategoryMatchError",
     "category_product_facts",
+    "failed_category_match",
+    "failure_from_exception",
+    "finalize_category_match",
     "match_category",
+    "prepare_category_match_input",
+    "remaining_deadline_seconds",
+    "setup_category_match_search",
 ]

@@ -176,52 +176,18 @@ def category_search_payload(body: Payload) -> ResponseWithStatus:
     }, 200
 
 
-def _category_match_http_status(result: Payload) -> int:
-    if result.get("status") != "failed":
-        return 200
-    failure = result.get("failure") if isinstance(result.get("failure"), dict) else {}
-    code = str(failure.get("code") or "")
-    if code in {"INPUT_INVALID", "TARGET_REQUIRED"}:
-        return 400
-    if code in {"TOOL_PERMISSION_DENIED", "TOOL_NOT_ALLOWED"}:
-        return 403
-    if code == "TOOL_APPROVAL_REQUIRED":
-        return 409
-    if code == "CATEGORY_RATE_LIMITED":
-        return 429
-    if code in {
-        "MODEL_TIMEOUT",
-        "TASK_DEADLINE_EXCEEDED",
-        "CATEGORY_PROVIDER_TIMEOUT",
-    }:
-        return 504
-    if code in {
-        "MODEL_RESPONSE_SCHEMA_INVALID",
-        "MODEL_SELECTED_UNKNOWN_CATEGORY",
-        "MODEL_PROVIDER_ERROR",
-        "AI_AGENT_RUN_FAILED",
-        "AI_AGENT_USAGE_LIMIT_EXCEEDED",
-        "CATEGORY_SEARCH_REQUIRED",
-        "CATEGORY_SEARCH_INCOMPLETE",
-    }:
-        return 502
-    if code in {
-        "AI_MODEL_CONFIGURATION_INVALID",
-        "AI_MODEL_TOOL_CALLING_UNSUPPORTED",
-        "AI_MODEL_CAPABILITY_UNSUPPORTED",
-    }:
-        return 424
-    if code.startswith("CATEGORY_"):
-        return 424
-    return 500
+def load_category_match_subject(
+    body: Payload,
+) -> tuple[Payload, Payload, Payload, ResponseWithStatus | None]:
+    """解析类目匹配 subject：返回 ``(product, draft, target, error)``。
 
-
-def category_match_payload(body: Payload) -> ResponseWithStatus:
-    """``category.match`` 自动类目匹配的唯一 HTTP 边界。"""
+    旧同步 endpoint 删除后，focused start endpoint 继续用同一合同读取
+    商品/草稿与目标站点；``error`` 非空时不得继续启动运行。
+    """
 
     product, context, platform, site, error, status = _load_category_subject(body)
     if error:
-        return error, status
+        return {}, {}, {}, (error, status)
     draft = (
         context.get("draft")
         if isinstance(context, dict) and isinstance(context.get("draft"), dict)
@@ -236,8 +202,7 @@ def category_match_payload(body: Payload) -> ResponseWithStatus:
         "site": site,
         "language": str(body.get("language") or body.get("locale") or "").strip(),
     }
-    result = match_category(product, draft or {}, target)
-    return result, _category_match_http_status(result)
+    return product, draft or {}, target, None
 
 
 def _draft_fill_payload(
@@ -306,6 +271,23 @@ def category_ai_fill_payload(body: Payload) -> ResponseWithStatus:
     return _product_fill_payload(updated, platform, meta), 200
 
 
+def category_match_payload(body: Payload) -> ResponseWithStatus:
+    """同步 focused 类目匹配唯一入口：业务控制与类型化结果。
+
+    复用 ``match_category()`` 共享编排（输入校验、检索装配、Agent 运行、
+    业务终检），同步返回当前类型化 ``CategoryMatchResult``。业务判断型失败
+    保留 ``ok=false`` 的类型化结果（HTTP 200），由 caller 读取
+    failure/status；实时展示由 HTTP 公共边界的 presentation 上下文自动
+    关联，本 facade 不感知 SSE/registry/presentation。
+    """
+
+    product, draft, target, error = load_category_match_subject(body)
+    if error is not None:
+        return error
+    result = match_category(product, draft, target)
+    return dict(result), 200
+
+
 def category_precheck_payload(body: Payload) -> ResponseWithStatus:
     category_id = str(body.get("category_id") or "").strip()
     product, _, platform, site, error, status = _load_category_subject(body)
@@ -328,8 +310,9 @@ def category_precheck_payload(body: Payload) -> ResponseWithStatus:
 
 __all__ = [
     "category_ai_fill_payload",
-    "category_match_payload",
     "category_attrs_payload",
+    "category_match_payload",
     "category_precheck_payload",
     "category_search_payload",
+    "load_category_match_subject",
 ]
