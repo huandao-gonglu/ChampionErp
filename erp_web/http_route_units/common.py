@@ -17,6 +17,16 @@ class JsonRequestHandler(Protocol):
     def send_ndjson(self, items: list[dict[str, Any]], status: int = 200) -> None:
         ...
 
+    def send_sse_headers(
+        self,
+        headers: dict[str, str],
+        status: int = 200,
+    ) -> None:
+        ...
+
+    def write_sse_chunk(self, chunk: bytes) -> None:
+        ...
+
     def read_body(self) -> dict[str, Any]:
         ...
 

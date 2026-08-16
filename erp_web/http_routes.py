@@ -6,6 +6,7 @@ import urllib.parse
 
 from erp_web.http_route_units import image_routes
 from .http_route_units import (
+    ai_chat_routes,
     ai_work_routes,
     auth_config_routes,
     category_routes,
@@ -39,6 +40,7 @@ GET_API_ROUTES = frozenset(
     for path in getattr(route_unit, "GET_API_ROUTES", frozenset())
 )
 POST_ROUTE_UNITS = (
+    ai_chat_routes,
     global_agent_routes,
     collect_routes,
     copy_routes,

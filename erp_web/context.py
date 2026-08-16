@@ -20,9 +20,12 @@ from erp_web.db import DEFAULT_DB_NAME, ErpDatabase
 if TYPE_CHECKING:  # pragma: no cover - typing only, avoids import cycles
     from erp_web.runtime_units.publishing_bus_core import PublishingBus
     from erp_web.runtime_units.pricing_runtime import ExchangeRateService
+    from erp_web.services.ai_chat_run_registry import AiChatRunRegistry
     from erp_web.services.image_delivery_service import ImageDeliveryService
     from erp_web.services.product_research_service import ProductResearchRunRegistry
+    from erp_web.stores.ai_chat_turn_claim_store import AiChatTurnClaimStore
     from erp_web.stores.config_store import ConfigStore
+    from erp_web.stores.draft_query_snapshot_store import DraftQuerySnapshotStore
     from erp_web.stores.global_task_store import LocalGlobalTaskStore
     from erp_web.stores.product_store import ProductStore
     from erp_web.stores.pydantic_message_store import PydanticMessageStore
@@ -139,6 +142,9 @@ class AppContext:
         self._config: "ConfigStore | None" = None
         self._research: "ProductResearchRunRegistry | None" = None
         self._pydantic_messages: "PydanticMessageStore | None" = None
+        self._chat_turn_claims: "AiChatTurnClaimStore | None" = None
+        self._chat_runs: "AiChatRunRegistry | None" = None
+        self._draft_query_snapshots: "DraftQuerySnapshotStore | None" = None
         self._exchange_rates: "ExchangeRateService | None" = None
         self._image_delivery: "ImageDeliveryService | None" = None
         self._publishing_bus: "PublishingBus | None" = None
@@ -185,6 +191,44 @@ class AppContext:
 
                     self._pydantic_messages = PydanticMessageStore(self.db)
         return self._pydantic_messages
+
+    @property
+    def chat_turn_claims(self) -> "AiChatTurnClaimStore":
+        if self._chat_turn_claims is None:
+            with self._lazy_lock:
+                if self._chat_turn_claims is None:
+                    from erp_web.stores.ai_chat_turn_claim_store import (
+                        AiChatTurnClaimStore,
+                    )
+
+                    self._chat_turn_claims = AiChatTurnClaimStore(self.db)
+        return self._chat_turn_claims
+
+    @property
+    def chat_runs(self) -> "AiChatRunRegistry":
+        if self._chat_runs is None:
+            with self._lazy_lock:
+                if self._chat_runs is None:
+                    from erp_web.services.ai_chat_run_registry import (
+                        AiChatRunRegistry,
+                    )
+
+                    self._chat_runs = AiChatRunRegistry()
+        return self._chat_runs
+
+    @property
+    def draft_query_snapshots(self) -> "DraftQuerySnapshotStore":
+        if self._draft_query_snapshots is None:
+            with self._lazy_lock:
+                if self._draft_query_snapshots is None:
+                    from erp_web.stores.draft_query_snapshot_store import (
+                        DraftQuerySnapshotStore,
+                    )
+
+                    self._draft_query_snapshots = DraftQuerySnapshotStore(
+                        self.db
+                    )
+        return self._draft_query_snapshots
 
     @property
     def exchange_rates(self) -> "ExchangeRateService":

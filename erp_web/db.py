@@ -3,9 +3,11 @@ from __future__ import annotations
 """SQLite 持久化边界。
 
 ``ErpDatabase`` 统一拥有 schema、连接设置和读写路径。数据库通过
-``PRAGMA user_version`` 版本化；只接受空库或当前完整 schema。旧消息 schema
-不迁移、不修复，也不会从 JSONL 恢复。唯一 seed 路径是 UPC 池：表为空时，
-从数据库旁的 ``upc_pool.json`` 一次性导入已购买的 UPC。
+``PRAGMA user_version`` 版本化；只接受空库、当前完整 schema，或可非破坏性
+升级的前一版本（v10 → v11 只加 ``ai_chat_turn_claims`` 表，保留既有 Pydantic
+消息历史）。更早的旧消息 schema 不迁移、不修复，也不会从 JSONL 恢复。唯一
+seed 路径是 UPC 池：表为空时，从数据库旁的 ``upc_pool.json`` 一次性导入已
+购买的 UPC。
 """
 
 import hashlib
@@ -28,7 +30,10 @@ from erp_web.product_model.merge_model import (
 )
 
 DEFAULT_DB_NAME = "erp.sqlite3"
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
+
+# v10 → v11 只做非破坏性加表（ai_chat_turn_claims），保留既有 Pydantic 消息历史。
+PREVIOUS_UPGRADABLE_VERSION = 10
 
 REQUIRED_TABLES = (
     "store_auth",
@@ -46,7 +51,10 @@ REQUIRED_TABLES = (
     "global_tasks",
     "draft_query_snapshots",
     "pydantic_message_histories",
+    "ai_chat_turn_claims",
 )
+
+_V10_REQUIRED_TABLES = frozenset(REQUIRED_TABLES) - {"ai_chat_turn_claims"}
 
 # Research run statuses that never change again (mirrors product_research_service).
 _TERMINAL_RESEARCH_STATUSES = ("completed", "failed")
@@ -217,6 +225,19 @@ CREATE TABLE IF NOT EXISTS pydantic_message_histories (
     updated_at TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS ai_chat_turn_claims (
+    claim_id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    client_message_id TEXT NOT NULL,
+    profile_id TEXT NOT NULL DEFAULT '',
+    actor_id TEXT NOT NULL DEFAULT '',
+    tenant_id TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'claimed',
+    claimed_at TEXT NOT NULL DEFAULT '',
+    finished_at TEXT NOT NULL DEFAULT '',
+    UNIQUE(conversation_id, client_message_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_products_updated_at ON products(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_products_source_url ON products(source_url);
 CREATE INDEX IF NOT EXISTS idx_platform_drafts_product ON platform_drafts(product_id);
@@ -296,10 +317,40 @@ _CURRENT_PYDANTIC_MESSAGE_HISTORY_COLUMNS = frozenset(
     }
 )
 
+_CURRENT_AI_CHAT_TURN_CLAIM_COLUMNS = frozenset(
+    {
+        "claim_id",
+        "conversation_id",
+        "client_message_id",
+        "profile_id",
+        "actor_id",
+        "tenant_id",
+        "status",
+        "claimed_at",
+        "finished_at",
+    }
+)
+
 _PUBLISH_JOB_IDEMPOTENCY_INDEX = "idx_publish_jobs_idempotency_key"
 _PYDANTIC_MESSAGE_HISTORY_UPDATED_INDEX = (
     "idx_pydantic_message_histories_updated"
 )
+
+# v10 → v11 升级只执行这条加表 DDL；其余结构保持 v10 原样。
+_V10_TO_V11_UPGRADE_SQL = """
+CREATE TABLE IF NOT EXISTS ai_chat_turn_claims (
+    claim_id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    client_message_id TEXT NOT NULL,
+    profile_id TEXT NOT NULL DEFAULT '',
+    actor_id TEXT NOT NULL DEFAULT '',
+    tenant_id TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'claimed',
+    claimed_at TEXT NOT NULL DEFAULT '',
+    finished_at TEXT NOT NULL DEFAULT '',
+    UNIQUE(conversation_id, client_message_id)
+)
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -670,6 +721,7 @@ class ErpDatabase:
         frozenset[str],
         frozenset[str],
         frozenset[str],
+        frozenset[str],
         bool,
         bool,
     ]:
@@ -677,6 +729,7 @@ class ErpDatabase:
         if not self.db_path.exists():
             return (
                 0,
+                frozenset(),
                 frozenset(),
                 frozenset(),
                 frozenset(),
@@ -752,6 +805,16 @@ class ErpDatabase:
                 if "pydantic_message_histories" in tables
                 else frozenset()
             )
+            chat_turn_claim_columns = (
+                frozenset(
+                    str(row[1])
+                    for row in conn.execute(
+                        'PRAGMA table_info("ai_chat_turn_claims")'
+                    )
+                )
+                if "ai_chat_turn_claims" in tables
+                else frozenset()
+            )
             publish_idempotency_index_valid = (
                 _has_required_unique_index(
                     conn,
@@ -781,6 +844,7 @@ class ErpDatabase:
                 global_task_columns,
                 snapshot_columns,
                 message_history_columns,
+                chat_turn_claim_columns,
                 publish_idempotency_index_valid,
                 message_history_updated_index_valid,
             )
@@ -797,6 +861,7 @@ class ErpDatabase:
             inspected_global_task_columns,
             inspected_snapshot_columns,
             inspected_message_history_columns,
+            inspected_chat_turn_claim_columns,
             inspected_publish_idempotency_index_valid,
             inspected_message_history_updated_index_valid,
         ) = (
@@ -805,10 +870,8 @@ class ErpDatabase:
         is_empty_database = (
             inspected_version == 0 and not inspected_tables
         )
-        is_current_database = (
-            inspected_version == SCHEMA_VERSION
-            and inspected_tables == frozenset(REQUIRED_TABLES)
-            and inspected_draft_columns
+        shared_v10_shape_valid = (
+            inspected_draft_columns
             == _CURRENT_PLATFORM_DRAFT_COLUMNS
             and inspected_publish_job_columns
             == _CURRENT_PUBLISH_JOB_COLUMNS
@@ -821,7 +884,23 @@ class ErpDatabase:
             and inspected_publish_idempotency_index_valid
             and inspected_message_history_updated_index_valid
         )
-        if not is_empty_database and not is_current_database:
+        is_current_database = (
+            inspected_version == SCHEMA_VERSION
+            and inspected_tables == frozenset(REQUIRED_TABLES)
+            and inspected_chat_turn_claim_columns
+            == _CURRENT_AI_CHAT_TURN_CLAIM_COLUMNS
+            and shared_v10_shape_valid
+        )
+        is_upgradable_v10_database = (
+            inspected_version == PREVIOUS_UPGRADABLE_VERSION
+            and inspected_tables == _V10_REQUIRED_TABLES
+            and shared_v10_shape_valid
+        )
+        if (
+            not is_empty_database
+            and not is_current_database
+            and not is_upgradable_v10_database
+        ):
             raise RuntimeError(
                 "数据库 schema 版本 "
                 f"{inspected_version} 不受支持（当前版本 {SCHEMA_VERSION}）；"
@@ -832,6 +911,20 @@ class ErpDatabase:
                 conn.execute("BEGIN IMMEDIATE")
                 try:
                     _execute_schema_statements(conn)
+                    conn.execute(
+                        f"PRAGMA user_version = {SCHEMA_VERSION}"
+                    )
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
+            elif is_upgradable_v10_database:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    for statement in _V10_TO_V11_UPGRADE_SQL.split(";"):
+                        sql = statement.strip()
+                        if sql:
+                            conn.execute(sql)
                     conn.execute(
                         f"PRAGMA user_version = {SCHEMA_VERSION}"
                     )
@@ -2802,6 +2895,169 @@ class ErpDatabase:
                 )
                 conn.commit()
         return cursor.rowcount == 1
+
+    # -- ai_chat_turn_claims -------------------------------------------------------
+
+    _AI_CHAT_TURN_CLAIM_COLUMNS = (
+        "claim_id",
+        "conversation_id",
+        "client_message_id",
+        "profile_id",
+        "actor_id",
+        "tenant_id",
+        "status",
+        "claimed_at",
+        "finished_at",
+    )
+
+    @classmethod
+    def _ai_chat_turn_claim_row(
+        cls,
+        row: sqlite3.Row,
+    ) -> dict[str, Any]:
+        return {
+            column: str(row[column] or "")
+            for column in cls._AI_CHAT_TURN_CLAIM_COLUMNS
+        }
+
+    def insert_ai_chat_turn_claim(
+        self,
+        *,
+        claim_id: str,
+        conversation_id: str,
+        client_message_id: str,
+        profile_id: str,
+        actor_id: str,
+        tenant_id: str,
+        now: str,
+    ) -> dict[str, Any]:
+        """原子领取一轮对话；重复的 (conversation_id, client_message_id) 抛 IntegrityError。"""
+
+        if not str(claim_id or "").strip():
+            raise ValueError("AI chat turn claim 缺少 claim_id。")
+        if not str(conversation_id or "").strip():
+            raise ValueError("AI chat turn claim 缺少 conversation_id。")
+        if not str(client_message_id or "").strip():
+            raise ValueError("AI chat turn claim 缺少 client_message_id。")
+        timestamp = str(now or "").strip()
+        if not timestamp:
+            raise ValueError("AI chat turn claim 缺少领取时间。")
+        with self._write_lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO ai_chat_turn_claims (
+                        claim_id, conversation_id, client_message_id,
+                        profile_id, actor_id, tenant_id,
+                        status, claimed_at, finished_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'claimed', ?, '')
+                    """,
+                    (
+                        str(claim_id).strip(),
+                        str(conversation_id).strip(),
+                        str(client_message_id).strip(),
+                        str(profile_id or "").strip(),
+                        str(actor_id or "").strip(),
+                        str(tenant_id or "").strip(),
+                        timestamp,
+                    ),
+                )
+                row = conn.execute(
+                    """
+                    SELECT * FROM ai_chat_turn_claims
+                    WHERE claim_id = ?
+                    """,
+                    (str(claim_id).strip(),),
+                ).fetchone()
+                conn.commit()
+        assert row is not None
+        return self._ai_chat_turn_claim_row(row)
+
+    def update_ai_chat_turn_claim_status(
+        self,
+        claim_id: str,
+        *,
+        status: str,
+        now: str,
+    ) -> dict[str, Any] | None:
+        """只允许把仍处于 claimed 的领取推进到终态；返回更新后的行。"""
+
+        normalized_claim_id = str(claim_id or "").strip()
+        normalized_status = str(status or "").strip()
+        if not normalized_claim_id or not normalized_status:
+            return None
+        timestamp = str(now or "").strip()
+        if not timestamp:
+            raise ValueError("AI chat turn claim 缺少终态时间。")
+        with self._write_lock:
+            with self._connect() as conn:
+                cursor = conn.execute(
+                    """
+                    UPDATE ai_chat_turn_claims
+                    SET status = ?, finished_at = ?
+                    WHERE claim_id = ? AND status = 'claimed'
+                    """,
+                    (normalized_status, timestamp, normalized_claim_id),
+                )
+                row = conn.execute(
+                    """
+                    SELECT * FROM ai_chat_turn_claims
+                    WHERE claim_id = ?
+                    """,
+                    (normalized_claim_id,),
+                ).fetchone()
+                conn.commit()
+        if row is None or cursor.rowcount != 1:
+            return None
+        return self._ai_chat_turn_claim_row(row)
+
+    def get_ai_chat_turn_claim(
+        self,
+        conversation_id: str,
+        client_message_id: str,
+    ) -> dict[str, Any] | None:
+        conversation = str(conversation_id or "").strip()
+        message_id = str(client_message_id or "").strip()
+        if not conversation or not message_id:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM ai_chat_turn_claims
+                WHERE conversation_id = ? AND client_message_id = ?
+                """,
+                (conversation, message_id),
+            ).fetchone()
+        return (
+            self._ai_chat_turn_claim_row(row)
+            if row is not None
+            else None
+        )
+
+    def latest_ai_chat_turn_claim_for_conversation(
+        self,
+        conversation_id: str,
+    ) -> dict[str, Any] | None:
+        """返回该 conversation 最近一次领取，用于归属校验；不读取消息内容。"""
+
+        conversation = str(conversation_id or "").strip()
+        if not conversation:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM ai_chat_turn_claims
+                WHERE conversation_id = ?
+                ORDER BY claimed_at DESC, claim_id DESC
+                LIMIT 1
+                """,
+                (conversation,),
+            ).fetchone()
+        return (
+            self._ai_chat_turn_claim_row(row)
+            if row is not None
+            else None
+        )
 
     # -- exchange_rates -----------------------------------------------------------
 

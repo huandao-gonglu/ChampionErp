@@ -296,6 +296,14 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
         required=("target_language", "content")
     ),
     "/api/upc-pool/import": _contract(required=("values",)),
+    "/api/v1/ai-chat/runs": _contract(
+        fields={
+            "trigger": STRING,
+            "id": STRING,
+            "messages": ARRAY,
+        },
+        required=("id", "messages"),
+    ),
     "/api/v1/product-research/hot-products/search": _EMPTY,
     "/api/v1/product-research/search-providers/test": _contract(
         required=("provider",)

@@ -14,6 +14,7 @@ from .ai_tools import (
 )
 from .ai_trace import AiExecutionContext, AiTraceIdentifiers
 from .ai_work import (
+    AiWorkUiMessagesDetail,
     PydanticMessageHistoryDetail,
     PydanticMessageHistorySummary,
 )
@@ -57,6 +58,7 @@ __all__ = [
     "AiToolResult",
     "AiToolSchemaError",
     "AiTraceIdentifiers",
+    "AiWorkUiMessagesDetail",
     "PydanticMessageHistoryDetail",
     "PydanticMessageHistorySummary",
     "AppConfig",

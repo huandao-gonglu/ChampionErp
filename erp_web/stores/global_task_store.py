@@ -1,4 +1,4 @@
-"""LocalGlobalTaskState 与 DraftQuerySnapshot 的唯一持久化 owner。"""
+"""LocalGlobalTaskState 的持久化 owner。"""
 
 from __future__ import annotations
 
@@ -11,6 +11,10 @@ from uuid import uuid4
 from erp_web.db import ErpDatabase
 from erp_web.schemas.draft_capabilities import DraftQuerySnapshot
 from erp_web.schemas.global_tasks import LocalGlobalTaskState
+from erp_web.stores.draft_query_snapshot_store import (
+    DraftQuerySnapshotStore,
+    DraftQuerySnapshotStoreError,
+)
 
 
 class GlobalTaskStoreError(RuntimeError):
@@ -28,6 +32,7 @@ class LocalGlobalTaskStore:
 
     def __init__(self, db: ErpDatabase) -> None:
         self._db = db
+        self._draft_query_snapshots = DraftQuerySnapshotStore(db)
         self._locks_guard = threading.Lock()
         self._task_locks: dict[str, threading.RLock] = {}
         self._execution_owner = f"global-task-owner:{uuid4().hex}"
@@ -247,22 +252,21 @@ class LocalGlobalTaskStore:
         self,
         snapshot: DraftQuerySnapshot,
     ) -> DraftQuerySnapshot:
-        validated = DraftQuerySnapshot.model_validate(snapshot)
         try:
-            self._db.save_draft_query_snapshot(validated.model_dump(mode="json"))
-        except ValueError as exc:
+            return self._draft_query_snapshots.save_draft_query_snapshot(
+                snapshot
+            )
+        except DraftQuerySnapshotStoreError as exc:
             raise GlobalTaskStoreError(
-                "DRAFT_QUERY_SNAPSHOT_CONFLICT",
+                exc.code,
                 str(exc),
             ) from None
-        return validated
 
     def load_draft_query_snapshot(
         self,
         snapshot_id: str,
     ) -> DraftQuerySnapshot | None:
-        payload = self._db.load_draft_query_snapshot(snapshot_id)
-        return DraftQuerySnapshot.model_validate(payload) if payload else None
+        return self._draft_query_snapshots.load_draft_query_snapshot(snapshot_id)
 
 
 __all__ = ["GlobalTaskStoreError", "LocalGlobalTaskStore"]

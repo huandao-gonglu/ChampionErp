@@ -155,6 +155,24 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def send_sse_headers(
+        self,
+        headers: dict[str, str],
+        status: int = 200,
+    ) -> None:
+        """开始一个 Server-Sent Events 响应；头部由调用方提供，不设置 Content-Length。"""
+
+        self.send_response(status)
+        for keyword, value in headers.items():
+            self.send_header(keyword, value)
+        self.end_headers()
+
+    def write_sse_chunk(self, chunk: bytes) -> None:
+        """逐块写 SSE 并立即 flush，保证增量实时送达。"""
+
+        self.wfile.write(chunk)
+        self.wfile.flush()
+
     def read_body(self) -> dict[str, Any]:
         return safe_json_body(self)
 

@@ -467,6 +467,7 @@ def test_context_map_mentions_shared_ai_tool_execution_entry_points() -> None:
         "erp_web/services/ai_agent_factory.py",
         "erp_web/services/ai_agent_instrumentation.py",
         "erp_web/stores/pydantic_message_store.py",
+        "erp_web/stores/draft_query_snapshot_store.py",
         "erp_web/services/ai_agent_state_store.py",
         "erp_web/services/ai_tool_bridge.py",
         "erp_web/services/category_attribute_fill_agent_service.py",
@@ -506,6 +507,8 @@ def test_pydantic_ai_types_stay_in_focused_runtime_boundaries() -> None:
         ROOT / "erp_web/services/category_attribute_fill_agent_service.py",
         ROOT / "erp_web/services/category_match_agent_service.py",
         ROOT / "erp_web/services/global_agent_service.py",
+        ROOT / "erp_web/services/global_agent_chat_service.py",
+        ROOT / "erp_web/services/vercel_ai_ui_service.py",
     }
     offenders = [
         f"{path.relative_to(ROOT)} -> {target}"
@@ -516,6 +519,145 @@ def test_pydantic_ai_types_stay_in_focused_runtime_boundaries() -> None:
         "Pydantic AI 类型只能存在于集中 Agent/Model/Bridge/持久化边界：\n"
         + "\n".join(offenders)
     )
+
+
+def test_pydantic_ui_protocol_has_single_owner() -> None:
+    ui_owner = ROOT / "erp_web/services/vercel_ai_ui_service.py"
+    offenders = [
+        f"{path.relative_to(ROOT)} -> {target}"
+        for path, target in imported_targets(sorted((ROOT / "erp_web").rglob("*.py")))
+        if target.startswith("pydantic_ai.ui") and path != ui_owner
+    ]
+    assert not offenders, (
+        "Vercel UI 协议类型只能由 vercel_ai_ui_service 导入：\n"
+        + "\n".join(offenders)
+    )
+    # 协议 service 不得装配 Agent，也不直接调用第二个 run loop。
+    text = ui_owner.read_text(encoding="utf-8")
+    assert "Agent(" not in text
+    assert "run_stream_events(" not in text
+    assert "run_sync(" not in text
+
+
+def test_ai_chat_turn_claims_are_run_control_only() -> None:
+    database = (ROOT / "erp_web/db.py").read_text(encoding="utf-8")
+    marker = "CREATE TABLE IF NOT EXISTS ai_chat_turn_claims"
+    assert marker in database
+    ddl = database.split(marker, 1)[1].split(");", 1)[0]
+    columns: set[str] = set()
+    for line in ddl.splitlines():
+        stripped = line.strip().rstrip(",")
+        if not stripped:
+            continue
+        upper = stripped.upper()
+        if upper.startswith(("PRIMARY", "UNIQUE", "FOREIGN", "CONSTRAINT", "CHECK")):
+            continue
+        first = stripped.split()[0]
+        if first in {"(", ")"}:
+            continue
+        columns.add(first)
+    assert columns == {
+        "claim_id",
+        "conversation_id",
+        "client_message_id",
+        "profile_id",
+        "actor_id",
+        "tenant_id",
+        "status",
+        "claimed_at",
+        "finished_at",
+    }, f"ai_chat_turn_claims 只能保存运行控制元数据：{columns}"
+
+
+def test_ai_chat_run_registry_is_context_singleton() -> None:
+    context = (ROOT / "erp_web/context.py").read_text(encoding="utf-8")
+    registry = (
+        ROOT / "erp_web/services/ai_chat_run_registry.py"
+    ).read_text(encoding="utf-8")
+    assert "AiChatRunRegistry" in context
+    assert "chat_runs" in context
+    assert "class AiChatRunRegistry" in registry
+    # registry 只是并发屏障，不持久化消息或业务状态。
+    assert "sqlite" not in registry.lower()
+    assert "message_store" not in registry
+
+
+def test_no_ui_message_persistence_or_dual_write() -> None:
+    database = (ROOT / "erp_web/db.py").read_text(encoding="utf-8")
+    store = (
+        ROOT / "erp_web/stores/pydantic_message_store.py"
+    ).read_text(encoding="utf-8")
+    assert "ui_messages" not in database.lower()
+    assert "UIMessage" not in database
+    assert "UIMessage" not in store
+    # 唯一消息事实来源仍是 pydantic_message_histories.messages_json。
+    assert "messages_json BLOB NOT NULL" in database
+
+
+def test_sse_payload_uses_official_encoding_only() -> None:
+    service = (
+        ROOT / "erp_web/services/vercel_ai_ui_service.py"
+    ).read_text(encoding="utf-8")
+    route = (
+        ROOT / "erp_web/http_route_units/ai_chat_routes.py"
+    ).read_text(encoding="utf-8")
+    # 项目代码不手写 Vercel chunk / SSE data 行。
+    for text in (service, route):
+        assert "data: " not in text
+        assert '"type":"' not in text
+    assert "encode_stream(" in service
+    assert "transform_stream(" in service
+    assert "write_sse_chunk" in route
+
+
+def test_chat_entry_points_do_not_depend_on_global_task_orchestration() -> None:
+    chat_modules = [
+        ROOT / "erp_web/services/global_agent_chat_service.py",
+        ROOT / "erp_web/services/vercel_ai_ui_service.py",
+        ROOT / "erp_web/facades/ai_chat_facade.py",
+        ROOT / "erp_web/services/global_chat_tools.py",
+    ]
+    banned = (
+        "erp_web.services.global_task_controller",
+        "erp_web.schemas.global_tasks",
+        "erp_web.stores.global_task_store",
+        "erp_web.runtime_units.global_task_tools",
+    )
+    for path in chat_modules:
+        targets = {target for _, target in imported_targets([path])}
+        offenders = {
+            target
+            for target in targets
+            if any(target == item or target.startswith(item + ".") for item in banned)
+        }
+        assert not offenders, (
+            f"{path.relative_to(ROOT)} 不得依赖 Global Task 编排：{offenders}"
+        )
+    business_service = chat_modules[0].read_text(encoding="utf-8")
+    protocol_service = chat_modules[1].read_text(encoding="utf-8")
+    chat_facade = chat_modules[2].read_text(encoding="utf-8")
+    assert "build_global_chat_toolset(" in business_service
+    assert "self.toolset" in business_service
+    assert "AiToolSet" not in protocol_service
+    assert "toolset=" not in protocol_service
+    assert "context.global_tasks" not in chat_facade
+    assert "context.draft_query_snapshots" in chat_facade
+
+
+def test_draft_query_snapshot_store_is_independent_context_owner() -> None:
+    context = (ROOT / "erp_web/context.py").read_text(encoding="utf-8")
+    store = (
+        ROOT / "erp_web/stores/draft_query_snapshot_store.py"
+    ).read_text(encoding="utf-8")
+    global_task_store = (
+        ROOT / "erp_web/stores/global_task_store.py"
+    ).read_text(encoding="utf-8")
+
+    assert "def draft_query_snapshots(" in context
+    assert "class DraftQuerySnapshotStore" in store
+    assert "schemas.global_tasks" not in store
+    assert "save_draft_query_snapshot(" in store
+    assert "DraftQuerySnapshotStore(db)" in global_task_store
 
 
 def test_pydantic_tool_bridge_can_only_execute_through_erp_runtime() -> None:

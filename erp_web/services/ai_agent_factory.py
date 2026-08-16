@@ -1,16 +1,20 @@
-"""Pydantic Agent 的集中装配与同步运行入口。"""
+"""Pydantic Agent 的集中装配与同步/流式运行入口。"""
 
 from __future__ import annotations
 
+import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Generic, Mapping, TypeVar
+from typing import Any, Callable, Generic, Mapping, Sequence, TypeVar
 from uuid import uuid4
 
 from pydantic import TypeAdapter
 from pydantic_ai import (
     Agent,
+    AgentRunResult,
     RunContext,
     ToolApproved,
     ToolDenied,
@@ -25,11 +29,13 @@ from pydantic_ai.exceptions import (
     UsageLimitExceeded,
 )
 from pydantic_ai.messages import (
+    AgentStreamEvent,
     DeferredToolRequests,
     ModelMessage,
     ModelResponse,
 )
 from pydantic_ai.models import Model
+from pydantic_ai.run import AgentRunResultEvent
 from pydantic_ai.settings import ModelSettings
 
 from erp_web.schemas.ai_trace import AiExecutionContext
@@ -39,7 +45,7 @@ from erp_web.stores.pydantic_message_store import (
 )
 
 from .ai_agent_dependencies import AiAgentDependencies
-from .ai_agent_instrumentation import AiAgentInstrumentation
+from .ai_agent_instrumentation import AiAgentInstrumentation, AiAgentTrace
 from .ai_agent_state_store import (
     AiAgentApprovalRecord,
     AiAgentStateError,
@@ -55,6 +61,8 @@ from .ai_tool_bridge import AiToolBridgeError, build_pydantic_toolset
 from .ai_tool_registry import AiToolSet
 from .ai_tool_runtime import AiToolRuntime
 
+
+_logger = logging.getLogger(__name__)
 
 OutputT = TypeVar("OutputT")
 OutputValidator = Callable[[RunContext[AiAgentDependencies], OutputT], OutputT]
@@ -311,6 +319,162 @@ def _safe_agent_error(
         retryable=True,
         **correlation,
     )
+
+
+class AiAgentStreamSession(Generic[OutputT]):
+    """一次流式 run 的 opaque owner。
+
+    协议层只能通过 ``events()`` 拿到已脱敏边界的 native event iterator 和相关
+    ID；raw Agent、deps、usage limits 不外泄，``agent.run_stream_events()``
+    也只发生在这里。
+    """
+
+    def __init__(
+        self,
+        *,
+        factory: "AiAgentFactory",
+        profile: AiAgentExecutionProfile[OutputT],
+        agent: Agent[AiAgentDependencies, OutputT],
+        dependencies: AiAgentDependencies,
+        execution_context: AiExecutionContext,
+        conversation_id: str,
+        message_history: list[ModelMessage],
+        captured_messages: list[ModelMessage],
+        technical_trace: AiAgentTrace,
+    ) -> None:
+        self._factory = factory
+        self._profile = profile
+        self._agent = agent
+        self._dependencies = dependencies
+        self._execution_context = execution_context
+        self._conversation_id = conversation_id
+        self._message_history = list(message_history)
+        self._captured_messages = captured_messages
+        self._technical_trace = technical_trace
+        self._run_id = execution_context.attempt_id
+        self._started = False
+        self._history_persisted = False
+        self._completed = False
+        self._events: AsyncIterator[
+            AgentStreamEvent | AgentRunResultEvent[Any]
+        ] | None = None
+
+    @property
+    def conversation_id(self) -> str:
+        return self._conversation_id
+
+    @property
+    def task_run_id(self) -> str:
+        return self._execution_context.task_run_id
+
+    @property
+    def attempt_id(self) -> str:
+        return self._execution_context.attempt_id
+
+    @property
+    def run_id(self) -> str:
+        return self._run_id
+
+    @property
+    def trace_id(self) -> str:
+        return self._technical_trace.trace_id
+
+    @property
+    def history_persisted(self) -> bool:
+        return self._history_persisted
+
+    @property
+    def completed(self) -> bool:
+        """run 正常完成并且结果消息已经持久化。"""
+
+        return self._completed
+
+    def events(
+        self,
+        new_messages: Sequence[ModelMessage],
+    ) -> AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]]:
+        """启动本轮流式运行；同一 session 只允许调用一次。"""
+
+        if self._started:
+            raise AiAgentExecutionError(
+                "AI_AGENT_STREAM_ALREADY_STARTED",
+                "当前流式 session 已经启动，不能再次注入消息。",
+                conversation_id=self._conversation_id,
+                task_run_id=self.task_run_id,
+            )
+        self._started = True
+        iterator = self._stream(list(new_messages))
+        self._events = iterator
+        return iterator
+
+    async def aclose_events(self) -> None:
+        """关闭未消费完的 native event iterator，幂等。"""
+
+        iterator = self._events
+        if iterator is not None:
+            self._events = None
+            try:
+                await iterator.aclose()
+            except Exception:
+                pass
+
+    async def _stream(
+        self,
+        new_messages: list[ModelMessage],
+    ) -> AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]]:
+        try:
+            async with self._agent.run_stream_events(
+                None,
+                message_history=[*self._message_history, *new_messages],
+                conversation_id=self._conversation_id,
+                run_id=self._execution_context.attempt_id,
+                deps=self._dependencies,
+                usage_limits=UsageLimits(
+                    request_limit=self._profile.max_model_requests,
+                    tool_calls_limit=self._profile.max_tool_calls,
+                ),
+            ) as native_events:
+                async for event in native_events:
+                    if isinstance(event, AgentRunResultEvent):
+                        self._complete_with_result(event.result)
+                    yield event
+        except AiAgentExecutionError:
+            raise
+        except Exception as exc:
+            if self._captured_messages and not self._history_persisted:
+                try:
+                    self._factory.message_store.save(
+                        self._conversation_id,
+                        list(self._captured_messages),
+                    )
+                    self._history_persisted = True
+                except Exception as persistence_exc:
+                    exc = persistence_exc
+            raise _safe_agent_error(
+                exc,
+                validator=None,
+                model_messages=self._captured_messages,
+                conversation_id=self._conversation_id,
+                task_run_id=self.task_run_id,
+                run_id=self._run_id,
+                trace_id=self.trace_id,
+            ) from None
+
+    def _complete_with_result(self, result: AgentRunResult[Any]) -> None:
+        """成功完成：用官方结果原子替换 conversation 历史。"""
+
+        self._run_id = str(result.run_id or "") or self._run_id
+        self._technical_trace.set_agent_run_id(self._run_id)
+        self._execution_context.bounded_timeout_seconds()
+        if not self._history_persisted:
+            messages = list(result.all_messages())
+            if messages:
+                self._factory.message_store.save(
+                    self._conversation_id,
+                    messages,
+                )
+                self._history_persisted = True
+        self._completed = True
 
 
 class AiAgentFactory:
@@ -580,6 +744,147 @@ class AiAgentFactory:
                 trace_id=trace_id,
             )
             raise error from None
+
+    @asynccontextmanager
+    async def open_stream_run(
+        self,
+        *,
+        profile: AiAgentExecutionProfile[OutputT],
+        instructions: str,
+        toolset: AiToolSet,
+        conversation_id: str,
+        message_history: Sequence[ModelMessage] | None = None,
+        use_case_state: Any = None,
+        actor_id: str = "local-user",
+        tenant_id: str = "local",
+        business_scope: Mapping[str, str] | None = None,
+        idempotency_context: Mapping[str, str] | None = None,
+        timeout_seconds: float | None = None,
+        model_override: Model | None = None,
+    ) -> AsyncIterator[AiAgentStreamSession[OutputT]]:
+        """协议无关的流式运行入口，装配语义与 ``run_sync`` 完全一致。
+
+        一次用户发送不是向正在运行的 Agent 注入消息，而是用服务端可信历史
+        加本轮用户输入启动一次新 run；run 完成后用 ``result.all_messages()``
+        原子替换该 conversation 的完整历史。
+        """
+
+        if toolset.toolset_id != profile.toolset_id:
+            raise AiAgentExecutionError(
+                "TOOLSET_BINDING_MISMATCH",
+                "Agent execution profile 与 ToolSet 不一致。",
+            )
+        normalized_conversation_id = str(conversation_id or "").strip()
+        if not normalized_conversation_id:
+            raise AiAgentExecutionError(
+                "AI_CHAT_CONVERSATION_ID_INVALID",
+                "流式运行必须携带 conversation ID。",
+            )
+        effective_timeout = min(
+            profile.timeout_seconds,
+            float(timeout_seconds or profile.timeout_seconds),
+        )
+        execution_context = AiExecutionContext.create(
+            timeout_seconds=effective_timeout,
+            budget_profile=profile.budget_profile,
+            actor_id=actor_id,
+            tenant_id=tenant_id,
+            permissions=profile.permissions,
+            business_scope=business_scope,
+            idempotency_context=idempotency_context,
+            allow_write=profile.allow_write,
+        )
+        run_id = execution_context.attempt_id
+        trace_id = ""
+        captured_messages: list[ModelMessage] = []
+        session: AiAgentStreamSession[OutputT] | None = None
+        try:
+            binding = self.model_binding_factory(
+                self.app_dir,
+                self.app_config,
+                profile.use_case_id,
+                timeout_seconds=effective_timeout,
+                default_timeout_seconds=profile.timeout_seconds,
+            )
+            runtime = AiToolRuntime(
+                toolset=toolset,
+                execution_context=execution_context,
+                max_tool_calls=profile.max_tool_calls,
+                max_output_bytes=profile.max_tool_output_bytes,
+            )
+            dependencies = AiAgentDependencies(
+                use_case_id=profile.use_case_id,
+                execution_context=execution_context,
+                tool_runtime=runtime,
+                use_case_state=use_case_state,
+                invocation_id=execution_context.attempt_id,
+            )
+            agent = self._build_agent(
+                profile=profile,
+                binding=binding,
+                instructions=instructions,
+                toolset=toolset,
+                output_validator=None,
+                model_override=model_override,
+            )
+            entity_ids = {
+                key: value
+                for key, value in dict(business_scope or {}).items()
+                if str(key).endswith("_id")
+            }
+            with capture_run_messages() as captured_messages:
+                with self.instrumentation.start_run_span(
+                    use_case_id=profile.use_case_id,
+                    conversation_id=normalized_conversation_id,
+                    invocation_id=execution_context.attempt_id,
+                    business_entity_ids=entity_ids,
+                ) as technical_trace:
+                    trace_id = technical_trace.trace_id
+                    technical_trace.set_agent_run_id(run_id)
+                    session = AiAgentStreamSession(
+                        factory=self,
+                        profile=profile,
+                        agent=agent,
+                        dependencies=dependencies,
+                        execution_context=execution_context,
+                        conversation_id=normalized_conversation_id,
+                        message_history=list(message_history or []),
+                        captured_messages=captured_messages,
+                        technical_trace=technical_trace,
+                    )
+                    try:
+                        yield session
+                    finally:
+                        await session.aclose_events()
+        except AiAgentExecutionError:
+            raise
+        except Exception as exc:
+            error = _safe_agent_error(
+                exc,
+                validator=None,
+                model_messages=captured_messages,
+                conversation_id=normalized_conversation_id,
+                task_run_id=execution_context.task_run_id,
+                run_id=run_id,
+                trace_id=trace_id,
+            )
+            raise error from None
+        finally:
+            if (
+                session is not None
+                and captured_messages
+                and not session.history_persisted
+            ):
+                try:
+                    self.message_store.save(
+                        normalized_conversation_id,
+                        list(captured_messages),
+                    )
+                except Exception as persistence_exc:
+                    _logger.warning(
+                        "流式运行捕获消息持久化失败：%s",
+                        persistence_exc,
+                    )
 
     def resume_sync(
         self,

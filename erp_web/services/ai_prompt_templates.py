@@ -22,6 +22,9 @@ DEFAULT_AI_USE_CASE_PROMPTS: dict[str, dict[str, str]] = {
     "global.task.plan": {
         "path": "config/prompts/global_task_plan.json",
     },
+    "global.chat": {
+        "path": "config/prompts/global_chat.json",
+    },
     "copy.generate": {
         "path": "config/prompts/copy_generate.json",
     },

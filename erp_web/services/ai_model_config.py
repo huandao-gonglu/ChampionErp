@@ -75,6 +75,14 @@ AI_USE_CASES: dict[str, dict[str, Any]] = {
         "budget_profile": "global.task.plan.default",
         "result_schema": "global_task_plan.v1",
     },
+    "global.chat": {
+        "id": "global.chat",
+        "label": "全局对话",
+        "required_capabilities": [CAP_CHAT, CAP_TOOL_CALLING],
+        "toolset_id": "global.chat",
+        "budget_profile": "global.chat.default",
+        "result_schema": "global_chat.v1",
+    },
     "copy.generate": {
         "id": "copy.generate",
         "label": "商品 AI 文案",

@@ -146,14 +146,20 @@ def _validate_json_content_type(
         )
 
 
-def safe_json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    """读取 JSON 对象请求体，并把客户端格式错误稳定映射为 HTTP 输入错误。"""
+def safe_json_body_with_raw(
+    handler: BaseHTTPRequestHandler,
+) -> tuple[dict[str, Any], bytes]:
+    """一次 socket 读取 JSON 请求体，返回解析结果与同一份原始字节。
+
+    Vercel ``build_run_input()`` 需要原始字节，路由契约校验需要解析后的副本；
+    两者必须来自同一次读取，不能二次消费 socket。
+    """
 
     validate_request_metadata(handler)
     length = _content_length(handler)
     _validate_json_content_type(handler, length)
     if not length:
-        return {}
+        return {}, b""
 
     raw_bytes = handler.rfile.read(length)
     if len(raw_bytes) != length:
@@ -173,11 +179,19 @@ def safe_json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             "请求体必须是 JSON 对象",
             error_code="INVALID_JSON_OBJECT",
         )
+    return payload, raw_bytes
+
+
+def safe_json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    """读取 JSON 对象请求体，并把客户端格式错误稳定映射为 HTTP 输入错误。"""
+
+    payload, _raw = safe_json_body_with_raw(handler)
     return payload
 
 
 __all__ = [
     "MAX_JSON_BODY_BYTES",
     "safe_json_body",
+    "safe_json_body_with_raw",
     "validate_request_metadata",
 ]
