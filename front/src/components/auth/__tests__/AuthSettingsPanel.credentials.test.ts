@@ -113,6 +113,27 @@ describe('AuthSettingsPanel credential lifecycle', () => {
     expect((sourceKey.element as HTMLInputElement).value).toBe('')
   })
 
+  it('Ozon 授权测试直接提交尚未保存的表单凭据', async () => {
+    const wrapper = mountPanel({}, [{ key: 'ozon', label: 'Ozon', sites: [] }])
+
+    await wrapper.get('[data-testid="auth-settings-tab-stores"]').trigger('click')
+    await wrapper.get('[data-testid="store-platform-select"]').setValue('ozon')
+    await wrapper.get('[data-testid="ozon-client-id"]').setValue('unsaved-client')
+    await wrapper.get('[data-testid="ozon-api-key"]').setValue('unsaved-api-key')
+    await wrapper.get('[data-testid="test-ozon-auth"]').trigger('click')
+
+    expect(wrapper.emitted('testAuth')?.[0]).toEqual([
+      'ozon',
+      '',
+      {
+        ozon: {
+          client_id: 'unsaved-client',
+          api_key: 'unsaved-api-key',
+        },
+      },
+    ])
+  })
+
 })
 
 describe('AuthSettingsPanel AI 功能绑定高级设置', () => {

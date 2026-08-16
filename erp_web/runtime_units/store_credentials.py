@@ -336,7 +336,10 @@ def _test_ozon_auth(config: dict[str, Any], scope: str) -> dict[str, Any]:
         from .ozon_category_api import fetch_ozon_category_tree_summary
 
         # 授权测试必须命中远端，不能让有效缓存掩盖已失效的凭据。
-        category_summary = fetch_ozon_category_tree_summary(force_refresh=True)
+        category_summary = fetch_ozon_category_tree_summary(
+            force_refresh=True,
+            credentials=(client_id, api_key),
+        )
         name = str(ozon.get("shop_name") or client_id)
     else:
         name = publisher.fetch_ozon_shop_name(client_id, api_key)
@@ -426,7 +429,12 @@ def _auth_test_failure_exception(message: str) -> RuntimeError:
     return RuntimeError(text if text.startswith("测试失败") else f"测试失败：{text}")
 
 
-def test_store_auth(platform: str, scope: str = "") -> dict[str, Any]:
+def test_store_auth(
+    platform: str,
+    scope: str = "",
+    *,
+    config_override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     platform = (platform or "").strip().lower()
     scope = (scope or "").strip().lower()
     spec = marketplace_spec(platform)
@@ -435,10 +443,22 @@ def test_store_auth(platform: str, scope: str = "") -> dict[str, Any]:
     tester = resolve_store_auth_tester(spec)
     if tester is None:
         raise RuntimeError(f"{platform_label(platform)}授权已支持保存；在线校验尚未接入。")
-    config = get_context().config.load_store_config()
+    saved_config = get_context().config.load_store_config()
+    is_preview = isinstance(config_override, dict)
+    config = (
+        get_context().config.merge_store_config_fields(
+            saved_config,
+            config_override,
+            preserve_empty_sensitive=True,
+        )
+        if is_preview
+        else saved_config
+    )
     try:
         extra = tester(config, scope)
     except Exception as exc:
+        if is_preview:
+            raise _auth_test_failure_exception(str(exc)) from exc
         message = _persist_store_auth_test_failure(
             config,
             platform,
@@ -446,6 +466,8 @@ def test_store_auth(platform: str, scope: str = "") -> dict[str, Any]:
         )
         raise _auth_test_failure_exception(message) from exc
     if not isinstance(extra, dict):
+        if is_preview:
+            raise _auth_test_failure_exception("授权校验器返回格式无效。")
         message = _persist_store_auth_test_failure(
             config,
             platform,
@@ -454,20 +476,24 @@ def test_store_auth(platform: str, scope: str = "") -> dict[str, Any]:
         )
         raise _auth_test_failure_exception(message)
     if _auth_test_result_failed(extra):
+        error_message = str(
+            extra.get("error_message")
+            or extra.get("error")
+            or extra.get("message")
+            or ""
+        )
+        if is_preview:
+            raise _auth_test_failure_exception(error_message)
         message = _persist_store_auth_test_failure(
             config,
             platform,
-            error_message=str(
-                extra.get("error_message")
-                or extra.get("error")
-                or extra.get("message")
-                or ""
-            ),
+            error_message=error_message,
             error_code=str(extra.get("error_code") or ""),
             next_action=str(extra.get("next_action") or ""),
         )
         raise _auth_test_failure_exception(message)
-    get_context().config.save_store_config(config)
+    if not is_preview:
+        get_context().config.save_store_config(config)
     response = {
         "ok": True,
         "platform": platform,

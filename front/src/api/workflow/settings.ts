@@ -101,8 +101,10 @@ export async function exchangeMercadoLibreCode(codeOrUrl: string, params: Unknow
   return normalizeAuthResult(response.data)
 }
 
-export async function testStoreAuth(platform: Marketplace, scope = ''): Promise<AuthResult> {
-  const response = await apiClient.post('/api/test-store-auth', { platform, scope }, { validateStatus: () => true })
+export async function testStoreAuth(platform: Marketplace, scope = '', config: UnknownRecord = {}): Promise<AuthResult> {
+  const payload: UnknownRecord = { platform, scope }
+  if (Object.keys(config).length) payload.config = config
+  const response = await apiClient.post('/api/test-store-auth', payload, { validateStatus: () => true })
   return normalizeAuthResult(response.data)
 }
 

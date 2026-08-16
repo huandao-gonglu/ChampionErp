@@ -1702,6 +1702,59 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
 
         self.with_temp_app(run)
 
+    def test_store_auth_preview_uses_unsaved_ozon_credentials_without_persisting_them(self) -> None:
+        def run(app_dir: Path) -> None:
+            get_context().config.save_store_config(
+                {
+                    "ozon": {
+                        "client_id": "saved-client",
+                        "api_key": "saved-api-key",
+                    }
+                }
+            )
+
+            def tester(config: dict, scope: str) -> dict:
+                self.assertEqual(scope, "")
+                self.assertEqual(config["ozon"]["client_id"], "unsaved-client")
+                self.assertEqual(config["ozon"]["api_key"], "unsaved-api-key")
+                config["ozon"].update(
+                    config_store._store_auth_result_fields(
+                        "ozon",
+                        "测试成功",
+                        "preview-shop",
+                    )
+                )
+                config["ozon"]["shop_name"] = "preview-shop"
+                return {"listing_currency": "RUB"}
+
+            with (
+                patch.object(
+                    store_credentials,
+                    "resolve_store_auth_tester",
+                    return_value=tester,
+                ),
+                patch.object(get_context().config, "save_store_config") as save_config,
+            ):
+                result = store_credentials.test_store_auth(
+                    "ozon",
+                    config_override={
+                        "ozon": {
+                            "client_id": "unsaved-client",
+                            "api_key": "unsaved-api-key",
+                        }
+                    },
+                )
+
+            save_config.assert_not_called()
+            saved = get_context().config.load_store_config()["ozon"]
+            self.assertEqual(saved["client_id"], "saved-client")
+            self.assertEqual(saved["api_key"], "saved-api-key")
+            self.assertNotEqual(saved.get("shop_name"), "preview-shop")
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["shop_name"], "preview-shop")
+
+        self.with_temp_app(run)
+
     def test_mercadolibre_ssl_eof_error_returns_network_guidance(self) -> None:
         message = "<urlopen error [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1081)>"
 

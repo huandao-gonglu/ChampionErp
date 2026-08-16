@@ -189,11 +189,11 @@ export const useWorkflowSettingsStore = defineStore('workflow-settings', () => {
     }
   }
 
-  async function testAuth(platform: Marketplace, scope = '') {
+  async function testAuth(platform: Marketplace, scope = '', config: UnknownRecord = {}) {
     activity.loading = true
     activity.setError('')
     try {
-      lastAuthResult.value = await testStoreAuth(platform, scope)
+      lastAuthResult.value = await testStoreAuth(platform, scope, config)
       if (!lastAuthResult.value.ok) throw new Error(authResultError(lastAuthResult.value, '测试授权失败'))
       activity.addLog(`${platform} 授权测试：${lastAuthResult.value.message || lastAuthResult.value.error || '完成'}`)
     } catch (exc) {

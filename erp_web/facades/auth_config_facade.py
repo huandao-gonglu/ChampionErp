@@ -198,8 +198,13 @@ def run_mercadolibre_auth_test_payload(
 
 def test_store_auth_payload(body: dict[str, Any]) -> ResponseWithStatus:
     platform = str(body.get("platform") or "").strip().lower()
+    config_override = body.get("config") if isinstance(body.get("config"), dict) else None
     try:
-        result = test_store_auth(platform, str(body.get("scope") or ""))
+        result = test_store_auth(
+            platform,
+            str(body.get("scope") or ""),
+            config_override=config_override,
+        )
         return result, 200
     except Exception as exc:
         message = str(exc)

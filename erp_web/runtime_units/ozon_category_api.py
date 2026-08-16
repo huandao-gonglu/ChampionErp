@@ -367,6 +367,7 @@ def load_ozon_category_corpus(
     *,
     timeout_seconds: float | None = None,
     force_refresh: bool = False,
+    credentials: tuple[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], CategoryCorpusInfo]:
     """返回可发布商品类型，并按 24 小时新鲜期管理持久化缓存。
 
@@ -374,7 +375,11 @@ def load_ozon_category_corpus(
     7 天内的旧缓存，认证错误、无效响应和空语料都不会被旧数据掩盖。
     """
 
-    client_id, api_key = _ozon_credentials()
+    client_id, api_key = credentials or _ozon_credentials()
+    client_id = _text(client_id)
+    api_key = _text(api_key)
+    if not client_id or not api_key:
+        raise RuntimeError("请先填写 Ozon Client ID 和 API Key。")
     credential_scope_hash = _credential_scope_hash(client_id)
     deadline_at = (
         time.monotonic() + float(timeout_seconds)
@@ -664,11 +669,13 @@ def fetch_ozon_category_children(
 def fetch_ozon_category_tree_summary(
     *,
     force_refresh: bool = False,
+    credentials: tuple[str, str] | None = None,
 ) -> dict[str, Any]:
     """读取类目树并返回适合授权设置页展示的摘要。"""
 
     product_types, corpus_info = load_ozon_category_corpus(
-        force_refresh=force_refresh
+        force_refresh=force_refresh,
+        credentials=credentials,
     )
     if not product_types:
         raise RuntimeError("Ozon 类目树未返回可发布的商品类型。")

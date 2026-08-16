@@ -22,7 +22,7 @@ const emit = defineEmits<{
   testAi: [model: UnknownRecord]
   testApi: [kind: 'exchange_rate' | '1688' | 'yunexpress', config: UnknownRecord, testValue?: string]
   saveStore: [config: UnknownRecord]
-  testAuth: [platform: Marketplace, scope?: string]
+  testAuth: [platform: Marketplace, scope?: string, config?: UnknownRecord]
   refreshChecklist: []
   generateMlLink: [appId: string, redirectUri: string]
   openMlLink: [url: string, browser?: string]
@@ -1532,6 +1532,10 @@ function selectedStorePayload(): UnknownRecord {
   return { [selectedStorePlatform.value]: asRecord(storePayload()[selectedStorePlatform.value]) }
 }
 
+function testOzonAuth(scope = ''): void {
+  emit('testAuth', 'ozon', scope, selectedStorePayload())
+}
+
 const selectedStorePlatformMeta = computed(() => (
   storePlatforms.value.find((item) => item.key === selectedStorePlatform.value)
   || storePlatforms.value[0]
@@ -2021,7 +2025,7 @@ function handleYunexpressEnvironmentChange(value: string) {
               <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">选择一个平台，只显示该平台的授权配置和检测结果。</p>
             </div>
             <div class="flex flex-wrap gap-2">
-              <select v-model="selectedStorePlatform" class="input w-64">
+              <select v-model="selectedStorePlatform" data-testid="store-platform-select" class="input w-64">
                 <option v-for="platform in storePlatforms" :key="platform.key" :value="platform.key">{{ platform.label }}</option>
               </select>
               <button class="btn btn-primary" :disabled="props.loading" @click="emit('saveStore', selectedStorePayload())">保存当前平台授权</button>
@@ -2088,11 +2092,11 @@ function handleYunexpressEnvironmentChange(value: string) {
             </template>
 
             <template v-else>
-              <input v-model="form.ozonClientId" class="input mt-3" placeholder="Client ID" />
-              <input v-model="form.ozonApiKey" type="password" class="input mt-2" placeholder="API Key" />
+              <input v-model="form.ozonClientId" data-testid="ozon-client-id" class="input mt-3" placeholder="Client ID" />
+              <input v-model="form.ozonApiKey" data-testid="ozon-api-key" type="password" class="input mt-2" placeholder="API Key" />
               <div class="mt-3 flex flex-wrap gap-2">
-                <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('testAuth', 'ozon')">测试授权</button>
-                <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('testAuth', 'ozon', 'category')">读取类目测试</button>
+                <button data-testid="test-ozon-auth" class="btn btn-outline py-1.5" :disabled="props.loading" @click="testOzonAuth()">测试授权</button>
+                <button data-testid="test-ozon-category-auth" class="btn btn-outline py-1.5" :disabled="props.loading" @click="testOzonAuth('category')">读取类目测试</button>
                 <button class="btn btn-outline py-1.5 text-rose-700" :disabled="props.loading" @click="emit('clearAuth', 'ozon')">清除授权</button>
               </div>
             </template>

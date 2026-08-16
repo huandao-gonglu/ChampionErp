@@ -396,7 +396,10 @@ def test_ozon_category_auth_test_reads_the_category_tree_without_a_category_id()
     ):
         result = store_credentials.test_store_auth("ozon", "category")
 
-    fetch_tree.assert_called_once_with(force_refresh=True)
+    fetch_tree.assert_called_once_with(
+        force_refresh=True,
+        credentials=("client-id", "api-key"),
+    )
     fetch_shop.assert_not_called()
     fetch_seller.assert_called_once_with("client-id", "api-key")
     save_config.assert_called_once_with(config)
