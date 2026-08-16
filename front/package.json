@@ -22,7 +22,9 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@ai-sdk/vue": "4.0.65",
     "@vueuse/core": "^11.3.0",
+    "ai": "7.0.65",
     "axios": "^1.16.1",
     "chart.js": "^4.5.1",
     "pinia": "^2.3.1",
