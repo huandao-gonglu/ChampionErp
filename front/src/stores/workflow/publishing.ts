@@ -21,6 +21,7 @@ import type {
   MercadoLibreOrderItem,
   MercadoLibreOrderNotification,
   MercadoLibreRemoteItem,
+  PayloadPreviewState,
   PricingInput,
   PricingResult,
   PublishJob,
@@ -53,7 +54,7 @@ export const useWorkflowPublishingStore = defineStore('workflow-publishing', () 
   const categoryPrecheck = ref<CategoryPrecheckResult | null>(null)
   const precheck = ref<PublishPrecheck | null>(null)
   const precheckResults = ref<UnknownRecord>({})
-  const payloadPreview = ref<UnknownRecord | null>(null)
+  const payloadPreview = ref<PayloadPreviewState | null>(null)
   const copyGenerating = ref(false)
   const publishJob = ref<PublishJob | null>(null)
   const publishJobStatus = ref<UnknownRecord | null>(null)

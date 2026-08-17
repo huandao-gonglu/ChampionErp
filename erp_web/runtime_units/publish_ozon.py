@@ -11,6 +11,7 @@ import time
 from typing import Any
 
 from erp_web.marketplaces.config_http import request_ozon_json
+from erp_web.marketplaces.publisher import PublishAdapterError
 from erp_web.schemas.category import category_attribute_dictionary_id
 from erp_web.stores.product_store import normalize_product_fields
 
@@ -531,12 +532,15 @@ def map_ozon_publish_error(error: Exception) -> dict[str, Any]:
     lowered = raw.casefold()
     field_errors: dict[str, list[str]] = {}
     error_code = "OZON_PUBLISH_FAILED"
-    if any(marker in lowered for marker in ("403", "unauthorized", "api-key", "client-id")):
+    if any(marker in lowered for marker in ("401", "403", "unauthorized", "api-key", "client-id")):
         field_errors["auth"] = ["Ozon Client ID 或 API Key 无效或权限不足"]
         error_code = "OZON_AUTH_FAILED"
     if "timeout" in lowered or "超时" in raw:
         field_errors["publish"] = ["Ozon 已接收导入任务，但未在等待时间内返回终态"]
         error_code = "OZON_IMPORT_TIMEOUT"
+    if isinstance(error, PublishAdapterError) and error.retryable:
+        # HTTP 边界已分类的瞬时失败（限流/5xx/网络）：保留可重试提示。
+        field_errors.setdefault("publish", ["Ozon 接口瞬时失败，稍后重试"])
 
     json_start = raw.find("{")
     json_end = raw.rfind("}")
@@ -589,10 +593,19 @@ def map_ozon_publish_error(error: Exception) -> dict[str, Any]:
         ),
         raw[:500] or "Ozon 发布失败",
     )
+    retryable = isinstance(error, PublishAdapterError) and bool(error.retryable)
+    if (
+        isinstance(error, PublishAdapterError)
+        and error.code
+        and error_code == "OZON_PUBLISH_FAILED"
+    ):
+        # HTTP 边界已给出更精确的类型化错误码（限流/5xx/网络等）。
+        error_code = error.code
     return {
         "summary": summary,
         "field_errors": field_errors,
         "error_code": error_code,
+        "retryable": retryable,
         "raw": raw,
     }
 

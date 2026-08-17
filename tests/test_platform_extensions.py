@@ -9,7 +9,9 @@ import pytest
 from erp_web.context import get_context
 from erp_web.db import ErpDatabase
 from erp_web.marketplace_registry import (
+    CAP_CATEGORY_ATTRIBUTES,
     CAP_CATEGORY_SEARCH,
+    CAP_ORDERS,
     CAP_PREVIEW_PAYLOAD,
     CAP_PUBLISH,
     platform_has_capability,
@@ -18,6 +20,7 @@ from erp_web.runtime_units import ai_use_case
 from erp_web.runtime_units.publish_adapter import (
     MercadoLibrePublishingAdapter,
     OzonPublishingAdapter,
+    YandexPublishingAdapter,
     publishing_adapter_for,
     unsupported_publish_response,
 )
@@ -254,16 +257,25 @@ def test_marketplace_capabilities_only_enable_real_integrations() -> None:
     assert platform_has_capability("ozon", CAP_CATEGORY_SEARCH)
     assert platform_has_capability("ozon", CAP_PUBLISH)
     assert platform_has_capability("ozon", CAP_PREVIEW_PAYLOAD)
-    assert not platform_has_capability("yandex", CAP_PUBLISH)
+    # Yandex 已完成真实接入：发布/预览/类目检索/类目属性全部开放，
+    # 未接入的能力（如订单）保持关闭。
+    assert platform_has_capability("yandex", CAP_PUBLISH)
+    assert platform_has_capability("yandex", CAP_PREVIEW_PAYLOAD)
+    assert platform_has_capability("yandex", CAP_CATEGORY_SEARCH)
+    assert platform_has_capability("yandex", CAP_CATEGORY_ATTRIBUTES)
+    assert not platform_has_capability("yandex", CAP_ORDERS)
+    # 注册表之外的平台保持 fail-closed。
+    assert not platform_has_capability("wildberries", CAP_PUBLISH)
 
     assert isinstance(publishing_adapter_for("mercadolibre"), MercadoLibrePublishingAdapter)
     assert isinstance(publishing_adapter_for("ozon"), OzonPublishingAdapter)
-    assert unsupported_publish_response("yandex") == {
+    assert isinstance(publishing_adapter_for("yandex"), YandexPublishingAdapter)
+    assert unsupported_publish_response("wildberries") == {
         "ok": False,
         "supported": False,
-        "platform": "yandex",
+        "platform": "wildberries",
         "status": "unsupported",
-        "error": "Yandex发布未接入",
+        "error": "wildberries发布未接入",
     }
 
 

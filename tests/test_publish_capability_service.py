@@ -238,7 +238,7 @@ def test_publish_request_recovers_lost_job_id_before_revalidation(
     }
     monkeypatch.setattr(
         publish_capabilities,
-        "_evaluate_publish_validation",
+        "evaluate_publish_validation",
         lambda *_args, **_kwargs: pytest.fail("恢复已有 job 时不应重新校验"),
     )
 

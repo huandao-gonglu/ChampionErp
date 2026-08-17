@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-"""Mercado Libre 与 Ozon 的统一类目 Provider 注册表。"""
+"""Mercado Libre、Ozon 与 Yandex 的统一类目 Provider 注册表。"""
 
 import time
 import urllib.parse
@@ -20,12 +20,18 @@ from .category_refresh import (
     mercadolibre_category_detail,
     mercadolibre_category_record,
 )
+from .collect_helpers import collect_time_iso
 from .ozon_category_api import (
     fetch_ozon_category_attribute_values,
     fetch_ozon_category_children,
     fetch_ozon_category_record,
     fetch_ozon_category_roots,
     search_ozon_categories,
+)
+from .yandex_category_api import (
+    fetch_yandex_category_parameter_definitions,
+    fetch_yandex_leaf_record,
+    search_yandex_categories,
 )
 
 
@@ -315,9 +321,209 @@ class OzonCategoryProvider:
         )
 
 
+def _yandex_parameter_definition(parameter: dict[str, Any]) -> dict[str, Any]:
+    """Yandex 类目参数 → 共享 CategoryAttributeDefinition 的机械转换。
+
+    ``parameterId`` → 通用 ``id``；ENUM 按官方 ``allowCustomValues`` 区分
+    ``strict_enum``（只能选平台枚举值）与 ``open_enum``（允许自定义文本）；
+    ``multivalue`` → ``is_collection``；``unit.units[]``/``defaultUnitId``
+    → 共享 ``unit_options/default_unit`` 与发布期解析 ``unitId`` 所需的
+    ``unit_ids``；官方 ``constraints`` 原样带入草稿校验。Yandex wire 字段
+    只保留在 ``raw`` 中。
+    """
+
+    parameter_id = str(parameter.get("parameter_id") or "").strip()
+    values = [
+        item
+        for item in (parameter.get("values") or [])
+        if isinstance(item, dict)
+    ]
+    parameter_type = str(parameter.get("parameter_type") or "TEXT").strip()
+    is_enum = parameter_type.upper() == "ENUM" or bool(values)
+    allow_custom_values = bool(parameter.get("allow_custom_values"))
+    if is_enum:
+        value_mode = "open_enum" if allow_custom_values else "strict_enum"
+    else:
+        value_mode = "free_text"
+    dictionary_id = f"yandex-parameter-{parameter_id}" if is_enum and parameter_id else ""
+    units = [
+        item for item in (parameter.get("units") or []) if isinstance(item, dict)
+    ]
+    unit_ids = {
+        str(item.get("name") or "").strip(): str(item.get("id") or "").strip()
+        for item in units
+        if str(item.get("name") or "").strip() and str(item.get("id") or "").strip()
+    }
+    return {
+        "id": parameter_id,
+        "name": str(parameter.get("name") or parameter_id).strip(),
+        "required": bool(parameter.get("required")),
+        "value_type": parameter_type.lower(),
+        "value_mode": value_mode,
+        "allow_custom_values": allow_custom_values,
+        "unit": str(parameter.get("unit") or "").strip(),
+        "unit_options": [
+            str(item).strip()
+            for item in (parameter.get("unit_options") or [])
+            if str(item or "").strip()
+        ],
+        "default_unit": str(parameter.get("default_unit") or "").strip(),
+        # 单位名称 → Yandex unitId；发布期把选中单位编译为 wire unitId。
+        "unit_ids": unit_ids,
+        "default_unit_id": str(parameter.get("default_unit_id") or "").strip(),
+        "constraints": dict(parameter.get("constraints") or {}),
+        "dictionary_id": dictionary_id,
+        "is_dictionary": bool(dictionary_id),
+        "is_collection": bool(parameter.get("is_collection")),
+        "max_value_count": int(parameter.get("max_value_count") or 0),
+        "category_dependent": False,
+        "options": [str(item.get("value") or "").strip() for item in values][:80],
+        # 共享选项 shape：id 为字符串 dictionary_value_id。
+        "values": [
+            {
+                "id": str(item.get("value_id") or "").strip(),
+                "value": str(item.get("value") or "").strip(),
+                "name": str(item.get("value") or "").strip(),
+            }
+            for item in values
+            if str(item.get("value") or "").strip()
+        ],
+        "description": "",
+        "raw": dict(parameter.get("raw") or {}),
+    }
+
+
+def _yandex_shared_record(record: dict[str, Any]) -> dict[str, Any]:
+    """平台 shape 类目记录 → 通用 CategoryProvider shape。"""
+
+    attributes = (
+        record.get("attributes")
+        if isinstance(record.get("attributes"), dict)
+        else {}
+    )
+    shared = dict(record)
+    shared.update(
+        {
+            # 与 Ozon 一致：version=2 表示属性定义带枚举元数据。
+            "version": 2,
+            "source": "yandex_live",
+            "fetched_at": collect_time_iso(),
+            "attributes": {
+                "required": [
+                    _yandex_parameter_definition(item)
+                    for item in (attributes.get("required") or [])
+                    if isinstance(item, dict)
+                ],
+                "optional": [
+                    _yandex_parameter_definition(item)
+                    for item in (attributes.get("optional") or [])
+                    if isinstance(item, dict)
+                ],
+            },
+        }
+    )
+    return shared
+
+
+class YandexCategoryProvider:
+    """Yandex 官方类目树/类目参数的通用 Provider。
+
+    只允许选择叶子类目；类目树使用本地缓存搜索，不为每次输入发远端请求。
+    """
+
+    platform = "yandex"
+
+    def resolve_site(self, site: str = "") -> str:
+        del site
+        return "global"
+
+    def detail(
+        self,
+        category_id: str,
+        site: str = "",
+        *,
+        include_attributes: bool = False,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        del site
+        record = fetch_yandex_leaf_record(
+            category_id,
+            include_attributes=include_attributes,
+            timeout_seconds=timeout_seconds,
+        )
+        return _yandex_shared_record(record)
+
+    def search(
+        self,
+        query: str,
+        site: str = "",
+        limit: int = 5,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> list[dict[str, Any]]:
+        del site
+        return search_yandex_categories(
+            query,
+            limit=limit,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def attribute_values(
+        self,
+        category_id: str,
+        attribute_id: str,
+        site: str = "",
+        *,
+        query: str = "",
+        limit: int = 50,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        del site
+        parameters = fetch_yandex_category_parameter_definitions(
+            category_id,
+            timeout_seconds=timeout_seconds,
+        )
+        parameter = next(
+            (
+                item
+                for item in parameters
+                if str(item.get("parameter_id") or "").strip()
+                == str(attribute_id or "").strip()
+            ),
+            None,
+        )
+        normalized_query = str(query or "").strip().casefold()
+        values: list[dict[str, str]] = []
+        for row in (parameter.get("values") or []) if isinstance(parameter, dict) else []:
+            value = str(row.get("value") or "").strip()
+            if not value or normalized_query not in value.casefold():
+                continue
+            values.append(
+                {
+                    # valueId 规范化为字符串 dictionary_value_id。
+                    "id": str(row.get("value_id") or "").strip(),
+                    "value": value,
+                    "info": "",
+                    "picture": "",
+                }
+            )
+            if len(values) >= max(1, min(100, int(limit or 50))):
+                break
+        return {
+            "ok": True,
+            "platform": self.platform,
+            "category_id": str(category_id or "").strip(),
+            "attribute_id": str(attribute_id or "").strip(),
+            "query": str(query or "").strip(),
+            "values": values,
+            "complete": True,
+        }
+
+
 _CATEGORY_PROVIDERS: dict[str, CategoryProvider] = {
     MercadoLibreCategoryProvider.platform: MercadoLibreCategoryProvider(),
     OzonCategoryProvider.platform: OzonCategoryProvider(),
+    YandexCategoryProvider.platform: YandexCategoryProvider(),
 }
 
 
@@ -338,6 +544,7 @@ def require_category_provider(platform: str) -> CategoryProvider:
 __all__ = [
     "MercadoLibreCategoryProvider",
     "OzonCategoryProvider",
+    "YandexCategoryProvider",
     "category_provider_for",
     "require_category_provider",
 ]

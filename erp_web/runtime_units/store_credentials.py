@@ -17,6 +17,7 @@ from erp_web.stores.config_store import (
 )
 from erp_web.stores.product_store import mask_secret
 
+from .collect_helpers import collect_time_iso
 from .publish_logs_runtime import append_ml_auth_test_log
 
 def _merge_saved_ai_model_config(model_config: dict[str, Any]) -> dict[str, Any]:
@@ -357,6 +358,222 @@ def _test_ozon_auth(config: dict[str, Any], scope: str) -> dict[str, Any]:
     return result
 
 
+_YANDEX_WAREHOUSE_PLACEMENT_MODELS = frozenset({"FBS", "DBS", "EXPRESS"})
+
+
+def _yandex_partner_warehouse_usable(
+    warehouse: dict[str, Any],
+    placement_type: str,
+) -> bool:
+    """无分组仓库是否可用作库存写入目标。
+
+    官方 v3 仓库项的 ``models[]`` 元素为 ``{placementType: FBS|DBS|EXPRESS,
+    apiAvailability: AVAILABLE|DISABLED_*|MANUALLY_DISABLED}``。只有
+    ``models`` 非空、存在 API 状态为 ``AVAILABLE``、且（店铺投放模型已知时）
+    与店铺投放模型一致的仓库才可发布库存；``models: []`` 或非 AVAILABLE
+    的仓库一律排除。
+    """
+
+    models = warehouse.get("models")
+    if not isinstance(models, list) or not models:
+        return False
+    expected = str(placement_type or "").strip().upper()
+    if expected not in _YANDEX_WAREHOUSE_PLACEMENT_MODELS:
+        expected = ""
+    for model in models:
+        if not isinstance(model, dict):
+            continue
+        if str(model.get("apiAvailability") or "").strip().upper() != "AVAILABLE":
+            continue
+        model_placement = str(model.get("placementType") or "").strip().upper()
+        if expected and model_placement != expected:
+            continue
+        return True
+    return False
+
+
+def _test_yandex_auth(config: dict[str, Any], scope: str) -> dict[str, Any]:
+    """在线校验 Yandex API-Key、scope、店铺可用状态并派生店铺能力。
+
+    只更新传入的内存配置对象；持久化统一由 ``test_store_auth()`` 经
+    ``ConfigStore.save_store_config()`` 完成（preview 使用副本不落盘）。
+    """
+
+    from erp_web.marketplaces.yandex_http import (
+        YandexApiError,
+        fetch_yandex_business_settings,
+        fetch_yandex_campaign,
+        fetch_yandex_partner_warehouses,
+        fetch_yandex_token_info,
+        fetch_yandex_warehouses,
+        yandex_missing_publish_scopes,
+    )
+    from erp_web.schemas.yandex import YandexCampaignInfo, YandexTokenInfo
+
+    yandex = config.get("yandex") if isinstance(config.get("yandex"), dict) else {}
+    api_token = str(yandex.get("api_token") or "").strip()
+    campaign_id = str(yandex.get("campaign_id") or "").strip()
+    if not api_token or not campaign_id:
+        raise RuntimeError("请先填写 Yandex API-Key Token 和 Campaign ID。")
+
+    token_info = YandexTokenInfo(**fetch_yandex_token_info(api_token))
+    missing_scopes = yandex_missing_publish_scopes(token_info.auth_scopes)
+    if missing_scopes:
+        raise RuntimeError(
+            "测试失败：Yandex API-Key 权限不足，缺少 "
+            + "、".join(missing_scopes)
+            + "。请到卖家后台为 token 增加商品管理、价格管理以及"
+            "库存与订单处理（INVENTORY_AND_ORDER_PROCESSING）权限。"
+        )
+
+    campaign_raw = fetch_yandex_campaign(api_token, campaign_id)
+    campaign = YandexCampaignInfo(
+        campaign_id=campaign_id,
+        business_id=str(
+            (campaign_raw.get("business") or {}).get("id")
+            if isinstance(campaign_raw.get("business"), dict)
+            else ""
+        ).strip(),
+        business_name=str(
+            (campaign_raw.get("business") or {}).get("name")
+            if isinstance(campaign_raw.get("business"), dict)
+            else ""
+        ).strip(),
+        shop_name=str(campaign_raw.get("domain") or "").strip(),
+        placement_type=str(campaign_raw.get("placementType") or "").strip(),
+        api_availability=str(campaign_raw.get("apiAvailability") or "").strip(),
+    )
+    if not campaign.business_id:
+        raise RuntimeError("Yandex campaign 响应缺少 business.id，无法派生店铺能力。")
+    if not campaign.api_available:
+        raise RuntimeError(
+            f"测试失败：Yandex 店铺 API 状态为 {campaign.api_availability or '未知'}，"
+            "店铺不可用。请到卖家后台恢复店铺或联系 Yandex 支持后重试。"
+        )
+
+    settings = fetch_yandex_business_settings(api_token, campaign.business_id)
+    only_default_price = bool(settings.get("onlyDefaultPrice"))
+    stock_update_mode = "none"
+    warehouse_ids: list[int] = []
+    placement_type = campaign.placement_type.strip().upper()
+    if placement_type not in {"FBY"}:
+        # 仓库组判定依据官方 v2 仓库响应中的 groupInfo；无仓库组时改用
+        # v3 Business 仓库（其 id 即库存写入所需的 partnerWarehouseId）。
+        grouped_warehouses = fetch_yandex_warehouses(
+            api_token,
+            campaign.business_id,
+            campaign_ids=[campaign_id] if campaign_id.isdigit() else None,
+        )
+        v2_ids = [
+            int(str(item.get("id")).strip())
+            for item in grouped_warehouses
+            if str(item.get("id") or "").strip().isdigit()
+        ]
+        group_ids = [
+            int(str(item.get("id")).strip())
+            for item in grouped_warehouses
+            if isinstance(item.get("groupInfo"), dict)
+            and str(item.get("id") or "").strip().isdigit()
+        ]
+        if group_ids:
+            stock_update_mode = "campaign_warehouses"
+            warehouse_ids = v2_ids
+        else:
+            try:
+                partner_warehouses = fetch_yandex_partner_warehouses(
+                    api_token, campaign.business_id
+                )
+            except YandexApiError as exc:
+                if exc.retryable:
+                    raise RuntimeError(
+                        f"测试失败：Yandex 仓库探测遇到临时错误（{exc.code}），请稍后重试。"
+                    ) from exc
+                partner_warehouses = []
+            partner_ids = [
+                int(str(item.get("id")).strip())
+                for item in partner_warehouses
+                if str(item.get("id") or "").strip().isdigit()
+            ]
+            usable = [
+                item
+                for item in partner_warehouses
+                if str(item.get("id") or "").strip().isdigit()
+                and _yandex_partner_warehouse_usable(item, placement_type)
+            ]
+            if usable:
+                # 草稿只保存单一库存数，而 Business 库存按仓库写入：必须
+                # 选定唯一发布仓库（确定性取最小 id），不能把同一数量复制
+                # 到所有仓库造成可售库存成倍放大。
+                selected = min(
+                    usable,
+                    key=lambda item: int(str(item.get("id")).strip()),
+                )
+                stock_update_mode = "business"
+                warehouse_ids = [int(str(selected.get("id")).strip())]
+            elif partner_ids:
+                raise RuntimeError(
+                    "测试失败：探测到 Yandex 仓库，但没有与店铺投放模型"
+                    f"（{placement_type or '未知'}）匹配且 API 状态为 AVAILABLE 的仓库。"
+                    "请到卖家后台检查仓库投放模型与 API 可用性后重试。"
+                )
+            elif v2_ids:
+                # v2 有仓库但无 groupInfo：Campaign 库存接口不依赖仓库 ID。
+                stock_update_mode = "campaign_warehouses"
+                warehouse_ids = v2_ids
+            else:
+                raise RuntimeError(
+                    "测试失败：未探测到可用的 Yandex 仓库。"
+                    "请到卖家后台确认店铺仓库配置后重试。"
+                )
+
+    verified_at = collect_time_iso()
+    store = config.setdefault("yandex", {})
+    store["campaign_id"] = campaign_id
+    store["business_id"] = campaign.business_id
+    store["business_name"] = campaign.business_name
+    store["placement_type"] = campaign.placement_type
+    store["api_availability"] = campaign.api_availability
+    store["api_key_name"] = token_info.name
+    store["auth_scopes"] = list(token_info.auth_scopes)
+    store["only_default_price"] = only_default_price
+    store["stock_update_mode"] = stock_update_mode
+    store["warehouse_ids"] = warehouse_ids
+    store["capabilities_verified_at"] = verified_at
+    store["shop_name"] = campaign.shop_name or campaign.business_name or store.get("shop_name", "")
+    store.update(
+        _store_auth_result_fields(
+            "yandex",
+            "测试成功",
+            campaign.shop_name or campaign.business_name or campaign_id,
+        )
+    )
+    store["auth_error_code"] = ""
+    store["auth_error_message"] = ""
+
+    result: dict[str, Any] = {
+        "campaign_id": campaign.campaign_id,
+        "business_id": campaign.business_id,
+        "business_name": campaign.business_name,
+        "placement_type": campaign.placement_type,
+        "api_availability": campaign.api_availability,
+        "api_key_name": token_info.name,
+        "auth_scopes": list(token_info.auth_scopes),
+        "only_default_price": only_default_price,
+        "stock_update_mode": stock_update_mode,
+        "warehouse_ids": warehouse_ids,
+        "capabilities_verified_at": verified_at,
+    }
+    if scope == "category":
+        from .yandex_category_api import fetch_yandex_category_tree_summary
+
+        # 授权测试必须命中远端，不能让有效缓存掩盖已失效的凭据。
+        result["category_tree"] = fetch_yandex_category_tree_summary(
+            force_refresh=True,
+            credentials=(api_token,),
+        )
+    return result
+
+
 StoreAuthTester = Callable[[dict[str, Any], str], dict[str, Any]]
 
 
@@ -459,10 +676,19 @@ def test_store_auth(
     except Exception as exc:
         if is_preview:
             raise _auth_test_failure_exception(str(exc)) from exc
+        # 类型化错误（如 YandexApiError）携带平台侧错误码与下一步动作；
+        # 持久化时保留它们，避免全部退化为通用失败码。
+        details = getattr(exc, "details", None)
         message = _persist_store_auth_test_failure(
             config,
             platform,
             error_message=str(exc),
+            error_code=str(getattr(exc, "code", "") or "").strip(),
+            next_action=(
+                str(details.get("next_action") or "").strip()
+                if isinstance(details, dict)
+                else ""
+            ),
         )
         raise _auth_test_failure_exception(message) from exc
     if not isinstance(extra, dict):

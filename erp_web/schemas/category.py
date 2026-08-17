@@ -99,6 +99,38 @@ def normalize_category_attribute_definition(
     source = definition if isinstance(definition, dict) else {}
     raw = source.get("raw") if isinstance(source.get("raw"), dict) else {}
     value_mode = category_attribute_value_mode(source)
+    unit_options_source = (
+        source.get("unit_options")
+        if isinstance(source.get("unit_options"), list)
+        else raw.get("unit_options") if isinstance(raw.get("unit_options"), list) else []
+    )
+    unit_options = [
+        str(item).strip() for item in unit_options_source if str(item or "").strip()
+    ]
+    default_unit = str(
+        source.get("default_unit") or raw.get("default_unit") or ""
+    ).strip()
+    unit = str(source.get("unit") or "").strip()
+    unit_ids_source = (
+        source.get("unit_ids")
+        if isinstance(source.get("unit_ids"), dict)
+        else raw.get("unit_ids") if isinstance(raw.get("unit_ids"), dict) else {}
+    )
+    unit_ids = {
+        str(key or "").strip(): str(value or "").strip()
+        for key, value in unit_ids_source.items()
+        if str(key or "").strip() and str(value or "").strip()
+    }
+    constraints_source = (
+        source.get("constraints")
+        if isinstance(source.get("constraints"), dict)
+        else raw.get("constraints") if isinstance(raw.get("constraints"), dict) else {}
+    )
+    constraints = {
+        str(key): value
+        for key, value in constraints_source.items()
+        if value is not None
+    }
     return {
         "id": str(
             source.get("id")
@@ -115,7 +147,21 @@ def normalize_category_attribute_definition(
         "required": bool(source.get("required", required_fallback)),
         "value_type": str(source.get("value_type") or "").strip(),
         "value_mode": value_mode,
-        "unit": str(source.get("unit") or "").strip(),
+        "allow_custom_values": bool(
+            source.get("allow_custom_values") or raw.get("allow_custom_values")
+        ),
+        "unit": unit or default_unit,
+        # 需要选择单位的平台属性通过通用 unit_options/default_unit 暴露，
+        # 通用面板只消费共享字段，不理解平台专用单位键。
+        "unit_options": list(dict.fromkeys(unit_options))[:80],
+        "default_unit": default_unit or unit,
+        # 单位名称 → 平台单位 ID 的映射供发布边界编译 wire unitId；
+        # 通用面板不消费该字段。
+        "unit_ids": unit_ids,
+        "default_unit_id": str(
+            source.get("default_unit_id") or raw.get("default_unit_id") or ""
+        ).strip(),
+        "constraints": constraints,
         "description": str(source.get("description") or "").strip()[:1500],
         "options": _category_attribute_options(source),
         "dictionary_id": category_attribute_dictionary_id(source),
@@ -161,6 +207,26 @@ def category_attribute_schema(
     return [item for item in required + optional if item.get("id")]
 
 
+def category_attribute_unit_is_valid(
+    definition: dict[str, Any],
+    unit: Any,
+) -> bool:
+    """单位选择约束：无单位选项时任意非空单位放行，有选项时必须命中。"""
+
+    unit_options = [
+        str(item).strip()
+        for item in (definition.get("unit_options") or [])
+        if str(item or "").strip()
+    ]
+    text = str(unit or "").strip()
+    if not text:
+        # 未显式选择单位：构造 payload 时回落 default_unit。
+        return True
+    if not unit_options:
+        return True
+    return text in unit_options
+
+
 def category_attribute_value_is_valid(
     definition: dict[str, Any],
     value: Any,
@@ -169,11 +235,21 @@ def category_attribute_value_is_valid(
 
     attr_id = str(definition.get("id") or "").strip()
     if category_attribute_value_mode(definition) != "strict_enum":
-        if isinstance(value, (dict, list, tuple, set)):
+        if isinstance(value, dict):
+            # 带单位的共享值 shape：{"value": 文本, "unit": 可选单位}。
+            text = str(value.get("value") or "").strip()
+            if not text or text.upper() == attr_id.upper():
+                return False
+            return category_attribute_unit_is_valid(
+                definition, value.get("unit")
+            )
+        if isinstance(value, (list, tuple, set)):
             return False
         text = str(value or "").strip()
         return bool(text) and text.upper() != attr_id.upper()
     if not isinstance(value, dict) or not isinstance(value.get("values"), list):
+        return False
+    if not category_attribute_unit_is_valid(definition, value.get("unit")):
         return False
     selected = [item for item in value.get("values") or [] if isinstance(item, dict)]
     if not selected or not all(
@@ -414,6 +490,7 @@ __all__ = [
     "CATEGORY_SEARCH_TOOLSET_ID",
     "category_attribute_dictionary_id",
     "category_attribute_schema",
+    "category_attribute_unit_is_valid",
     "category_attribute_value_is_valid",
     "category_attribute_value_mode",
     "CategoryAttributeValueMode",

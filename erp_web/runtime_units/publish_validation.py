@@ -23,6 +23,13 @@ from .publish_ozon import (
     ozon_invalid_dictionary_attributes,
     ozon_required_attributes_missing,
 )
+from .publish_yandex import (
+    _public_picture_invalid,
+    yandex_invalid_dictionary_attributes,
+    yandex_invalid_unit_attributes,
+    yandex_offer_identity_conflict,
+    yandex_required_attributes_missing,
+)
 
 
 def _review_field_from_item(item: Any) -> str:
@@ -269,19 +276,77 @@ def validate_yandex_draft(product: dict[str, Any], config: dict[str, Any]) -> di
     errors: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []
     auth_status, auth_next = _masked_auth_status("yandex", config)
-    if auth_status in {"未配置", "测试失败", "Token 过期", "权限不足", "被限流"}:
-        errors.append(precheck_item("AUTH_NOT_CONFIGURED", "auth", f"Yandex 授权状态：{auth_status}", "error", auth_next or "前往授权页保存 Token"))
-    if not str(draft.get("title") or "").strip():
+    # “已保存，未测试”同样阻断发布：凭证或 Campaign ID 切换后必须重新
+    # 通过在线授权校验，才能派生 business_id 与价格/库存能力。
+    if auth_status in {"未配置", "已保存，未测试", "测试失败", "Token 过期", "权限不足", "被限流"}:
+        code = "AUTH_TOKEN_EXPIRED" if auth_status == "Token 过期" else "AUTH_NOT_CONFIGURED"
+        errors.append(precheck_item(code, "auth", f"Yandex 授权状态：{auth_status}", "error", auth_next or "前往授权页测试授权"))
+    if auth_status == "测试成功" and not str(store.get("business_id") or "").strip():
+        errors.append(precheck_item("AUTH_DETAIL_MISSING", "auth", "Yandex business_id 尚未通过在线授权校验派生", "error", "前往授权页重新测试授权"))
+    title = str(draft.get("title") or "").strip()
+    description = str(draft.get("description") or "").strip()
+    category_id = str(draft.get("category_id") or store.get("category_id") or "").strip()
+    sku = str(draft.get("sku") or "").strip()
+    if not title:
         errors.append(precheck_item("TITLE_MISSING", "title", "缺少标题", "error", "前往商品编辑页补齐标题"))
-    if not str(draft.get("description") or "").strip():
+    if not description:
         errors.append(precheck_item("DESCRIPTION_MISSING", "description", "缺少描述", "error", "前往商品编辑页补齐描述"))
-    if not str(draft.get("category_id") or store.get("category_id") or "").strip():
-        errors.append(precheck_item("CATEGORY_MISSING", "category_id", "缺少 Yandex 类目 ID", "error", "前往类目属性页选择类目"))
+    if not category_id:
+        errors.append(precheck_item("CATEGORY_MISSING", "category_id", "缺少 Yandex 类目 ID", "error", "前往类目属性页选择叶子类目"))
+    elif not category_id.isdigit() or int(category_id) <= 0:
+        errors.append(precheck_item("CATEGORY_INVALID", "category_id", "Yandex 类目 ID 必须是正整数（只能选择叶子类目）", "error", "前往类目属性页重新选择叶子类目"))
+    schema = (
+        draft.get("category_attribute_schema")
+        if isinstance(draft.get("category_attribute_schema"), dict)
+        else {}
+    )
+    if category_id and int(schema.get("version") or 0) < 2:
+        errors.append(
+            precheck_item(
+                "CATEGORY_ATTRIBUTE_SCHEMA_STALE",
+                "category_attribute_schema",
+                "Yandex 类目属性定义缺少枚举元数据",
+                "error",
+                "前往类目属性页刷新平台属性，并重新选择枚举值",
+            )
+        )
+    # 稳定 offerId 身份：服务端比较 draft.sku 与历史发布身份，前端锁定
+    # 输入只是交互提示，不能充当约束。
+    conflict = yandex_offer_identity_conflict(draft)
+    if conflict:
+        errors.append(precheck_item("OFFER_IDENTITY_CHANGED", "sku", conflict, "error", "确认要创建新的远端商品，或恢复原 SKU 后再发布"))
+    invalid_dictionary_ids = set(yandex_invalid_dictionary_attributes(product))
+    for attr_id in sorted(invalid_dictionary_ids):
+        errors.append(
+            precheck_item(
+                "ATTRIBUTE_DICTIONARY_VALUE_REQUIRED",
+                f"attributes.{attr_id}",
+                f"Yandex 属性 {attr_id} 必须从平台枚举中选择",
+                "error",
+                "前往类目属性页搜索并选择平台允许的值",
+            )
+        )
+    for attr_id in yandex_invalid_unit_attributes(product):
+        errors.append(
+            precheck_item(
+                "ATTRIBUTE_UNIT_INVALID",
+                f"attributes.{attr_id}",
+                f"Yandex 属性 {attr_id} 的单位不在类目允许范围内",
+                "error",
+                "前往类目属性页选择类目允许的单位",
+            )
+        )
+    # 必填属性是否解决由共享 owner 唯一裁定，这里不复制规则。
+    for field in yandex_required_attributes_missing(product):
+        attr_id = str(field).split(".", 1)[-1]
+        if attr_id in invalid_dictionary_ids:
+            continue
+        errors.append(precheck_item("REQUIRED_ATTRIBUTE_MISSING", field, f"缺少 Yandex 必填属性：{attr_id}", "error", "前往类目属性页补齐必填属性"))
     if not str(draft.get("brand") or "").strip():
         errors.append(precheck_item("BRAND_MISSING", "brand", "品牌为空", "error", "前往类目属性页确认 Brand"))
     if not str(draft.get("model") or "").strip():
         errors.append(precheck_item("MODEL_MISSING", "model", "型号为空", "error", "前往类目属性页确认 Model"))
-    if not str(draft.get("sku") or "").strip():
+    if not sku:
         errors.append(precheck_item("SKU_MISSING", "sku", "SKU 为空", "error", "前往商品编辑页填写 SKU"))
     errors.extend(_selected_price_errors(product, draft))
     if not str(draft.get("stock") or "").strip():
@@ -289,13 +354,30 @@ def validate_yandex_draft(product: dict[str, Any], config: dict[str, Any]) -> di
     images = _draft_images(product, "yandex", draft)
     if not images:
         errors.append(precheck_item("IMAGE_MISSING", "images", "缺少图片", "error", "前往图片池导入图片"))
-    elif len(images) < 1:
-        errors.append(precheck_item("IMAGE_MISSING", "images", "图片数量不足", "error", "前往图片池补图"))
+    elif any(_public_picture_invalid(image) for image in images):
+        source = product.get("source") if isinstance(product.get("source"), dict) else {}
+        delivery_errors = [
+            str(item.get("delivery_error") or "").strip()
+            for item in source.get("image_pool") or []
+            if isinstance(item, dict) and str(item.get("delivery_error") or "").strip()
+        ]
+        message = (
+            "；".join(dict.fromkeys(delivery_errors))
+            if delivery_errors
+            else "Yandex 发布图片必须是平台可访问的 HTTPS 公网 URL"
+        )
+        errors.append(precheck_item("IMAGE_NOT_PUBLIC", "images", message, "error", "配置图片 HTTPS provider 后重新执行发布预检"))
     pkg = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
     for field in ("length_cm", "width_cm", "height_cm"):
-        if not str(pkg.get(field) or "").strip():
+        try:
+            if float(str(pkg.get(field) or "0").replace(",", ".")) <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
             errors.append(precheck_item("PACKAGE_DIMENSIONS_MISSING", f"package_dimensions.{field}", f"{field} 缺失", "error", "前往核价页补齐尺寸"))
-    if not str(pkg.get("weight_kg") or "").strip():
+    try:
+        if float(str(pkg.get("weight_kg") or "0").replace(",", ".")) <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
         errors.append(precheck_item("WEIGHT_MISSING", "package_dimensions.weight_kg", "重量缺失", "error", "前往核价页补齐重量"))
     need_review = [field for item in draft.get("validation_errors") or [] if (field := _review_field_from_item(item))]
     if need_review:

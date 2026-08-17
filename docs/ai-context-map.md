@@ -359,17 +359,27 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
   两者的方法都不接收 platform/site。
 - `erp_web/runtime_units/category_searchers.py`：任务入口根据当前平台实例化具体
   检索对象。Mercado Libre 调用 `domain_discovery/search`；Ozon 同一绑定对象同时
-  保留人工关键词搜索能力并为自动匹配实现树导航。平台选择只发生在对象创建处。
+  保留人工关键词搜索能力并为自动匹配实现树导航；Yandex 只在本地缓存类目树上做
+  规范化关键词匹配（source `yandex_cache`），并把限流/认证/缺凭据错误统一分类。
+  平台选择只发生在对象创建处。
 - `erp_web/runtime_units/category_providers.py`：平台 API 与类目详情适配。
 - `erp_web/runtime_units/ozon_category_api.py`：Ozon 类目语料的刷新、人工搜索和树导航入口；
   24 小时内复用缓存，远端瞬时网络错误时最多使用 7 天旧语料，认证错误不允许
   stale fallback。完整树不会进入 AI 上下文。
 - `erp_web/runtime_units/ozon_category_cache.py`：Ozon 展平类目语料的版本化压缩 JSON
   持久化 owner；使用原子替换写入，文件只含 Client ID 单向摘要，不保存凭据。
+- `erp_web/runtime_units/yandex_category_api.py`：Yandex 类目树与类目参数语料的刷新
+  与缓存 owner；类目树按语言与凭据作用域缓存（内存 + gzip 持久化 JSON），6 小时
+  新鲜窗口用于避开 Yandex 每小时限额，远端瞬时错误最多使用 7 天旧语料；类目参数
+  按类目 ID 短 TTL 内存缓存。缓存文件只含凭据作用域单向摘要，不保存凭据。
+  平台 shape → 通用 CategoryProvider shape 的机械转换发生在 `category_providers.py`
+  平台边界。
 - `erp_web/schemas/category.py`：规范化候选、搜索结果、匹配结果 shape，以及
-  Agent Service 与领域工具共同使用的请求级 `CategoryCandidateLedger`。
+  Agent Service 与领域工具共同使用的请求级 `CategoryCandidateLedger`；
+  `normalize_category_attribute_definition` 为带单位属性暴露 `unit_options/default_unit`。
 - `tests/test_category_searchers.py`、`tests/test_ozon_category_api.py`：平台对象选择、
-  远端/缓存搜索、错误分类和 Ozon ID 配对测试。
+  远端/缓存搜索、错误分类和 Ozon ID 配对测试；含 Yandex 关键词搜索与
+  HTTP 420 限流（可重试）/401 认证失败（终态）分类。
 
 `erp_web/runtime_units/category_store.py::search_categories_live` 继续服务人工关键词搜索；
 自动匹配按绑定对象能力选择 `CategoryNavigator` 或 `CategorySearcher`，两者不互相 fallback。
@@ -390,6 +400,9 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
 
 - `POST /api/category-attrs` 返回平台类目属性定义；Ozon 字典字段保留
   `dictionary_id/is_dictionary/is_collection/max_value_count/category_dependent`，不把大字典内联到类目响应。
+  带单位的平台属性（Yandex）通过共享的 `unit_options/default_unit` 暴露可选单位，
+  属性值以 `{value, unit}` 提交；`dictionary_value_id` 按字符串传输与校验，
+  不做数值化（Yandex 字典 ID 超出安全整数范围）。
 - `POST /api/category-attribute-values` 是平台枚举值的唯一公开读取入口；
   `erp_web/runtime_units/category_store.py` 通过 `CategoryProvider.attribute_values` 分派，
   Ozon 由 `erp_web/runtime_units/ozon_category_api.py` 调用独立的
@@ -412,7 +425,9 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
   明确区分发布必填、平台强制枚举、建议枚举和普通自定义属性，并要求技术参数、链接、
   编码、证件与文件不得编造。
 - `front/src/components/domain/CategoryAttributesPanel.vue` 对字典字段只保存平台选项的
-  `dictionary_value_id + value`，搜索输入不进入草稿；发布预检拒绝自由文本字典值。
+  `dictionary_value_id + value`（ID 原样按字符串存取，不做数值化），搜索输入不进入草稿；
+  带 `unit_options` 的属性通过数值输入 + 单位下拉生成 `{value, unit}`；
+  发布预检拒绝自由文本字典值。
 
 - `erp_web/runtime_units/category_tools.py`：`category.search` 只读 ToolSet。绑定对象实现
   `CategoryNavigator` 时只暴露 `browse_categories(parent_ids)`；否则只暴露
@@ -461,9 +476,11 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 
 ## 发布币种与核价
 
-- `erp_web/marketplace_registry.py`：只维护站点的 `market_currency`（市场展示）与
-  站点锁定的 `listing_currency`。Ozon 的刊登币种为空，禁止用俄罗斯市场的 RUB
-  作为发布默认值。
+- `erp_web/marketplace_registry.py`：维护站点的 `market_currency`（市场展示）与
+  站点锁定的 `listing_currency`，并声明平台能力与店铺绑定字段。Ozon 的刊登币种为空，
+  禁止用俄罗斯市场的 RUB 作为发布默认值。Yandex 声明
+  `store_binding_fields=("business_id", "campaign_id")`：发布确认的店铺身份要求两个字段
+  同时存在，可变的 `shop_name`、脱敏 token 或单独 `business_id` 都不能作为绑定身份。
 - `erp_web/services/listing_currency_service.py`：发布币种解析唯一边界。Mercado Libre
   按站点锁定，Yandex 按 campaign 规则锁定，Ozon 按店铺合同锁定；解析失败必须阻断
   核价和发布，不允许回退到市场国家币种。
@@ -497,6 +514,27 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 - `erp_web/runtime_units/publish_ozon.py`：Ozon `/v3/product/import` payload、
   草稿目标站点中的 `type_id/category_id + description_category_id` 配对、异步导入
   终态确认及错误字段映射；不得从商品级 `local_platform_categories` 回捞发布类目。
+- `erp_web/marketplaces/yandex_http.py`：Yandex Market Partner API 的唯一 HTTP 边界
+  （Api-Key 认证、HTTP 420 限流识别、`errors[]/warnings[]` 解析），覆盖 token 信息、
+  campaign、商品映射、价格、库存与类目请求；HTTP/网络错误分类为类型化
+  `PublishAdapterError(retryable)`，不包含发布编排。
+  `GET /v2/campaigns/{campaignId}` 响应按顶层 `campaign` 解析（无 result 包装）；
+  HTTPError 响应体中的平台 `errors[]/warnings[]` 同样解析并逐字段脱敏后保留。
+  403/404 按请求上下文分类，不得一律判定为“API-Key 权限不足”：Campaign 端点的
+  403/404 提示 Campaign ID 不属于当前 API-Key 所在柜台（确认填写的不是 Business ID），
+  token/仓库/价格端点的 403 分别提示对应方法权限（如 INVENTORY_AND_ORDER_PROCESSING、PRICING）。
+- `erp_web/runtime_units/publish_yandex.py`：Yandex 发布 payload 构造（按
+  “目录商品 / 上架条件 / 价格 / 库存”分组）、`validate_yandex_draft()` 平台校验、
+  checkpoint 状态机与错误映射。`publish_yandex_payload()` 只执行第一个尚未完成的
+  远端 mutation；`poll_yandex_publish_status()` 只依据已持久化 checkpoint 推进，
+  重启恢复不重复执行已完成写步骤。价格写入按已验证 `only_default_price` 分流
+  Business/Campaign 级接口，价格进入隔离区时阻断自动确认。
+- `erp_web/schemas/yandex.py`：Yandex wire 与发布状态机 shape（token/campaign/
+  checkpoint/result 等）的唯一 owner。
+- `erp_web/stores/config_store.py`：店铺授权摘要与 `_auth_status_label`。Yandex 在线
+  派生的动态授权元数据（`business_id`、scopes、价格/库存能力、仓库等）只持久化到
+  SQLite `store_auth` auth detail，不进入静态 JSON；真实 token 或 Campaign ID 变化时，
+  同一次保存原子清除旧派生能力与成功态，状态回到“已保存，未测试”。
 - `erp_web/facades/product_facade.py`：保存 Ozon 草稿时，若只提供 `type_id/category_id`，
   通过当前 Ozon 类目缓存自动解析并持久化隐藏的 `description_category_id`。
 - `erp_web/runtime_units/runtime_api.py::publish_product`：平台无关的预检、artifact、
@@ -518,6 +556,12 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   不会重新构造已确认内容。Capability 还会在重校验与队列准入前按完整确认事实恢复既有 job，封闭
   “job 已落库、GlobalTask 尚未保存 job_id”的崩溃窗口。店铺切换、payload 篡改或事实冲突都会在网络
   调用前安全失败。
+- 发布错误类型化重试契约：PublishingBus 只在适配器抛出
+  `PublishAdapterError(retryable=True)` 且未耗尽重试次数时重试；店铺绑定校验失败
+  （`PublishApprovalBindingError`）与未分类异常一律立即终态失败。
+  `erp_web/marketplaces/config_http.py` 按状态码把 HTTP 失败分类为平台类型化错误
+  （401/403 认证失败、404 资源不存在、408/420/423/425/429 与 5xx 可重试），
+  网络/超时错误同样类型化；既有消息格式保持不变，字符串解析方不受影响。
 - `erp_web/services/image_delivery_service.py`：发布图片 HTTPS delivery 唯一边界。
   图片保存 provider-neutral 的 `storage_key`，公网 URL 只是根据当前 provider 与
   `ERP_IMAGE_HTTPS_BASE_URL` 重新计算的缓存；平台发布模块不得读取隧道、磁盘根目录
@@ -527,12 +571,21 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   检测到 `cloudflared` 后先取得随机 HTTPS 地址并注入后端环境，开发服务退出时一并停止；
   `required` 在 Tunnel 不可用时阻断启动，`off` 禁用自动 Tunnel。固定域名环境直接设置
   `ERP_IMAGE_HTTPS_BASE_URL`，不会创建 Quick Tunnel。
-- Ozon 适配器在草稿校验和 payload 构造前调用图片 delivery；Mercado Libre 保持平台
-  图片上传接口与 `ml-id:*` 流程，不经过通用 HTTPS 图片服务。
+- Ozon 与 Yandex 适配器在草稿校验和 payload 构造前调用图片 delivery（Yandex 以公网
+  URL 列表投递 `pictures`）；Mercado Libre 保持平台图片上传接口与 `ml-id:*` 流程，
+  不经过通用 HTTPS 图片服务。
 
 Ozon 创建/更新商品是异步操作。提交 `/v3/product/import` 获得 `task_id` 后，必须
 轮询 `/v1/product/import/info`；只有每个商品返回 `status=imported` 且没有逐项错误，
 才写入 `real_publish_success`。拿到 `task_id` 本身不算发布成功。
+
+Yandex 上架确认同样是异步操作。`offer-mappings/update` 提交后必须由 poll 回读
+Business 商品映射与 Campaign 商品状态确认终态；确认轮询超过上限仍未终态时任务失败，
+pending 状态不得记为发布成功。确认时 cardStatus（官方 OfferCardStatusType，无
+PUBLISHED 值）先于 Campaign 状态裁决：`HAS_CARD_CAN_UPDATE_ERRORS`/`NO_CARD_ERRORS`
+表示本次变更未被接受（即使 Campaign 仍为 PUBLISHED），审核中状态继续有界轮询；
+只有卡片接受态配合 Campaign `PUBLISHED` 才判定成功。Business 级库存（无仓库组）
+写入单一选定发布仓库，避免单一库存数复制到多个仓库造成放大。
 
 ## Product Research
 
@@ -565,6 +618,13 @@ Ozon 创建/更新商品是异步操作。提交 `/v3/product/import` 获得 `ta
 - `tests/test_draft_query_service.py`、`tests/test_market_prepare_capabilities.py`、
   `tests/test_product_capability_service.py`、`tests/test_publish_capability_service.py`：查询快照、
   目标市场纵向能力、商品 mutation、店铺身份 digest 和幂等发布 adapter。
+- `tests/test_yandex_publish.py`：Yandex 适配器确定性 payload（目录商品/上架条件/价格/库存
+  分组）、checkpoint 状态机、草稿校验与错误映射、首次 mutation 才调用发布接口。
+- `tests/test_publish_retry_contract.py`：发布错误类型化重试契约——仅
+  `PublishAdapterError(retryable=True)` 重试，绑定错误与未分类异常终态失败，
+  `config_http` 状态码分类与既有消息格式保持。
+- `tests/test_yandex_publish_workflows.py`：Yandex 预览 digest、确认入队与状态回读的
+  HTTP 契约，含 400 需确认 / 409 确认过期路径。
 - `tests/test_global_agent_routes.py`、前端 `GlobalAgentChatPanel` 测试：五个 HTTP 入口、稳定对话恢复、
   RequiredInput 与独立发布确认交互。
 - `tests/test_backend_api.py` 与 `tests/test_http_request_security.py`：HTTP contract

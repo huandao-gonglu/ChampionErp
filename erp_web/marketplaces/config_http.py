@@ -15,6 +15,68 @@ from typing import Any
 
 from erp_web import http_client
 
+from .publisher import PublishAdapterError
+
+# 平台 HTTP 边界把远端失败分类为类型化 PublishAdapterError：
+# PublishingBus 只对 retryable=True 的失败重试，确定性 4xx 不再被反复外发。
+_RETRYABLE_HTTP_STATUS_CODES = frozenset({408, 420, 423, 425, 429})
+
+
+def _http_failure_retryable(status_code: int) -> bool:
+    try:
+        code = int(status_code)
+    except (TypeError, ValueError):
+        return False
+    return code in _RETRYABLE_HTTP_STATUS_CODES or 500 <= code <= 599
+
+
+def _typed_http_failure(
+    *,
+    platform_prefix: str,
+    message: str,
+    status_code: int,
+) -> PublishAdapterError:
+    details: dict[str, Any] = {"http_status": int(status_code)}
+    if status_code in (401, 403):
+        code = f"{platform_prefix}_AUTH_FAILED"
+        retryable = False
+    elif status_code == 404:
+        code = f"{platform_prefix}_NOT_FOUND"
+        retryable = False
+    elif status_code in (420, 429):
+        code = f"{platform_prefix}_RATE_LIMITED"
+        retryable = True
+    elif _http_failure_retryable(status_code):
+        code = f"{platform_prefix}_SERVER_ERROR"
+        retryable = True
+    else:
+        code = f"{platform_prefix}_REQUEST_INVALID"
+        retryable = False
+    return PublishAdapterError(code, message, retryable=retryable, details=details)
+
+
+def _typed_network_failure(
+    *,
+    platform_prefix: str,
+    method: str,
+    url: str,
+    exc: Exception,
+    message_prefix: str = "",
+) -> PublishAdapterError:
+    # 连接失败/超时属于瞬时错误：保留可重试语义，消息沿用 "failed:" 格式
+    # 以便既有字符串解析（错误码/字段提取）继续工作。
+    reason = getattr(exc, "reason", None)
+    summary = str(reason) if reason is not None and str(reason) else str(exc)
+    is_timeout = isinstance(exc, TimeoutError) or "timed out" in summary.lower()
+    code = f"{platform_prefix}_TIMEOUT" if is_timeout else f"{platform_prefix}_NETWORK"
+    prefix = message_prefix or f"{method} {url}"
+    message = (
+        f"{prefix} failed: timeout {summary}"
+        if is_timeout
+        else f"{prefix} failed: {summary}"
+    )
+    return PublishAdapterError(code, message, retryable=True)
+
 def load_store_config(path: Path) -> dict[str, Any]:
     if path.exists():
         return json.loads(path.read_text(encoding="utf-8"))
@@ -38,6 +100,9 @@ def load_store_config(path: Path) -> dict[str, Any]:
         },
         "yandex": {
             "api_token": "",
+            # Campaign ID 是用户输入的非敏感静态配置；token 与在线派生能力
+            # 只存 SQLite store_auth。
+            "campaign_id": "",
             "shop_name": "",
             "auth_status": "",
             "auth_checked_at": "",
@@ -113,7 +178,18 @@ def request_json(
         return http_client.request_json(url, method=method, headers=headers, data=data, timeout=30)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"{method} {url} failed: {exc.code} {detail}") from exc
+        raise _typed_http_failure(
+            platform_prefix="MERCADOLIBRE",
+            message=f"{method} {url} failed: {exc.code} {detail}",
+            status_code=exc.code,
+        ) from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise _typed_network_failure(
+            platform_prefix="MERCADOLIBRE",
+            method=method,
+            url=url,
+            exc=exc,
+        ) from exc
 
 
 def request_form_json(method: str, url: str, payload: dict[str, str]) -> dict[str, Any]:
@@ -154,7 +230,19 @@ def upload_mercadolibre_picture(path: str | Path, token: str) -> dict[str, Any]:
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"POST Mercado Libre picture upload failed: {exc.code} {detail}") from exc
+        raise _typed_http_failure(
+            platform_prefix="MERCADOLIBRE",
+            message=f"POST Mercado Libre picture upload failed: {exc.code} {detail}",
+            status_code=exc.code,
+        ) from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise _typed_network_failure(
+            platform_prefix="MERCADOLIBRE",
+            method="POST",
+            url="https://api.mercadolibre.com/pictures/items/upload",
+            exc=exc,
+            message_prefix="POST Mercado Libre picture upload",
+        ) from exc
 
 
 def extract_oauth_code(value: str) -> str:
@@ -284,7 +372,18 @@ def request_ozon_json(
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"{method} {url} failed: {exc.code} {detail}") from exc
+        raise _typed_http_failure(
+            platform_prefix="OZON",
+            message=f"{method} {url} failed: {exc.code} {detail}",
+            status_code=exc.code,
+        ) from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise _typed_network_failure(
+            platform_prefix="OZON",
+            method=method,
+            url=url,
+            exc=exc,
+        ) from exc
 
 
 def fetch_mercadolibre_shop_name(token: str) -> str:

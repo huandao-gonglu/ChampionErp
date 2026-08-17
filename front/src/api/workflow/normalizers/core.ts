@@ -99,6 +99,9 @@ export interface PayloadPreviewResult {
   path: string
   payload: UnknownRecord
   warning: string
+  validationDigest: string
+  summary: UnknownRecord
+  warnings: PrecheckIssue[]
 }
 
 export interface ProductOperationResult {
@@ -260,19 +263,30 @@ export function normalizeAttributes(value: unknown): Record<string, CategoryAttr
     const rawValues = Array.isArray(record.values) ? record.values : []
     const values = rawValues.flatMap((item) => {
       const option = asRecord(item)
-      const dictionaryValueId = getNumber(option, ['dictionary_value_id', 'dictionaryValueId'])
+      const rawId = option.dictionary_value_id ?? option.dictionaryValueId
+      // 按字符串保留枚举值 ID：Yandex 的大 ID 经过 Number() 会精度丢失。
+      const dictionaryValueId = rawId === undefined || rawId === null ? '' : String(rawId).trim()
       const optionValue = getString(option, ['value'])
-      return dictionaryValueId > 0 && optionValue
+      return dictionaryValueId && dictionaryValueId !== '0' && optionValue
         ? [{ dictionaryValueId, value: optionValue }]
         : []
     })
+    const isUnitValue = typeof rawValue === 'object'
+      && rawValue !== null
+      && !values.length
+      && String((rawValue as UnknownRecord).unit ?? '').trim() !== ''
     return [
       key,
       values.length
         ? { values }
         : typeof rawValue === 'string' || typeof rawValue === 'number'
           ? String(rawValue)
-          : '',
+          : isUnitValue
+            ? {
+              value: String((rawValue as UnknownRecord).value ?? ''),
+              unit: String((rawValue as UnknownRecord).unit ?? ''),
+            }
+            : '',
     ]
   }))
 }
@@ -280,12 +294,15 @@ export function normalizeAttributes(value: unknown): Record<string, CategoryAttr
 export function toBackendAttributes(value: Record<string, CategoryAttributeValue>): UnknownRecord {
   return Object.fromEntries(Object.entries(value || {}).map(([key, rawValue]) => {
     if (typeof rawValue === 'string') return [key, rawValue]
-    return [key, {
-      values: (rawValue.values || []).map((item) => ({
-        dictionary_value_id: item.dictionaryValueId,
-        value: item.value,
-      })),
-    }]
+    if ('values' in rawValue) {
+      return [key, {
+        values: (rawValue.values || []).map((item) => ({
+          dictionary_value_id: item.dictionaryValueId,
+          value: item.value,
+        })),
+      }]
+    }
+    return [key, { value: rawValue.value, unit: rawValue.unit }]
   }))
 }
 

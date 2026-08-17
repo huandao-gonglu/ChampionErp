@@ -29,6 +29,15 @@ from .publish_ozon import (
 )
 from .publish_validation import validate_mercadolibre_draft
 from .publish_validation import validate_ozon_draft
+from .publish_validation import validate_yandex_draft
+from .publish_yandex import (
+    build_yandex_publish_payload,
+    map_yandex_publish_error,
+    poll_yandex_publish_status,
+    publish_yandex_payload,
+    validate_yandex_publish_payload,
+    yandex_required_attributes_missing,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -189,9 +198,85 @@ class OzonPublishingAdapter:
         return publish_product(product, platform, config)
 
 
+class YandexPublishingAdapter:
+    """Yandex Market Seller API 的创建/编辑发布适配器。
+
+    发布状态机按“目录商品 → 上架条件 → 价格 → 库存 → 只读回读”执行；
+    每次调用只推进一个确定性 mutation，checkpoint 由 PublishingBus 持久化。
+    """
+
+    platform = "yandex"
+
+    def prepare_product(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        return get_context().image_delivery.prepare_product(product, self.platform)
+
+    def resolve_category(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        product = normalize_product_fields(product)
+        local_categories = (
+            product.get("local_platform_categories")
+            if isinstance(product.get("local_platform_categories"), dict)
+            else {}
+        )
+        record = local_categories.get(self.platform)
+        category_id = str(
+            (record or {}).get("category_id")
+            if isinstance(record, dict)
+            else ""
+        ).strip()
+        drafts = product.get("drafts") if isinstance(product.get("drafts"), dict) else {}
+        draft = drafts.get(self.platform) if isinstance(drafts.get(self.platform), dict) else {}
+        if not category_id:
+            category_id = str(draft.get("category_id") or "").strip()
+        if category_id:
+            drafts = product.setdefault("drafts", {})
+            target_draft = drafts.setdefault(
+                self.platform,
+                default_draft(self.platform),
+            )
+            target_draft["category_id"] = category_id
+        return product
+
+    def required_attributes_missing(self, product: dict[str, Any], config: dict[str, Any]) -> list[str]:
+        return yandex_required_attributes_missing(product)
+
+    def validate_draft(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        return validate_yandex_draft(product, config)
+
+    def build_payload(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        return build_yandex_publish_payload(product, config)
+
+    def validate_payload(self, payload: Any, config: dict[str, Any]) -> list[str]:
+        return validate_yandex_publish_payload(payload, config)
+
+    def publish_payload(self, payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        return publish_yandex_payload(payload, config)
+
+    def map_publish_error(self, error: Exception) -> dict[str, Any]:
+        return map_yandex_publish_error(error)
+
+    def poll_publish_status(
+        self,
+        result: dict[str, Any],
+        config: dict[str, Any],
+    ) -> dict[str, Any]:
+        """根据已持久化 checkpoint 推进下一个 mutation 或只读确认。"""
+
+        return poll_yandex_publish_status(result, config)
+
+    def publish_poll_interval_seconds(self, config: dict[str, Any]) -> float:
+        store = config.get(self.platform) if isinstance(config.get(self.platform), dict) else {}
+        return min(30.0, max(0.5, float(store.get("publish_poll_interval_seconds") or 2.0)))
+
+    def publish(self, product: dict[str, Any], platform: str, config: dict[str, Any]) -> dict[str, Any]:
+        from .runtime_api import publish_product
+
+        return publish_product(product, platform, config)
+
+
 _PUBLISHERS: dict[str, PlatformPublisher] = {
     MercadoLibrePublishingAdapter.platform: MercadoLibrePublishingAdapter(),
     OzonPublishingAdapter.platform: OzonPublishingAdapter(),
+    YandexPublishingAdapter.platform: YandexPublishingAdapter(),
 }
 
 
@@ -254,6 +339,7 @@ def resume_pending_publish_jobs() -> None:
 __all__ = [
     "MercadoLibrePublishingAdapter",
     "OzonPublishingAdapter",
+    "YandexPublishingAdapter",
     "build_publishing_bus",
     "get_publishing_bus",
     "publishing_adapter_for",

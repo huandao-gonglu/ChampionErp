@@ -237,13 +237,13 @@ describe('类目属性 Schema 映射', () => {
       categoryDependent: true,
     }))
     expect(normalized.targetSites[0]?.attributes?.['85']).toEqual({
-      values: [{ dictionaryValueId: 126745801, value: 'Нет бренда' }],
+      values: [{ dictionaryValueId: '126745801', value: 'Нет бренда' }],
     })
 
     const backend = toBackendDraft(normalized)
     const target = (backend.target_sites as Array<Record<string, unknown>>)[0] as Record<string, unknown>
     expect((target.attributes as Record<string, unknown>)['85']).toEqual({
-      values: [{ dictionary_value_id: 126745801, value: 'Нет бренда' }],
+      values: [{ dictionary_value_id: '126745801', value: 'Нет бренда' }],
     })
   })
 

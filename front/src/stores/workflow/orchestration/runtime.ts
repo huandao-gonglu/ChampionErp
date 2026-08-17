@@ -351,14 +351,20 @@ export function createWorkflowRuntime() {
       const values = Array.isArray(selection.values)
         ? selection.values.flatMap((item) => {
           const option = isRecord(item) ? item : {}
-          const dictionaryValueId = Number(option.dictionaryValueId || 0)
+          // 枚举值 ID 按字符串保留：大 ID 经过 Number() 会精度丢失。
+          const dictionaryValueId = String(option.dictionaryValueId ?? '').trim()
           const optionValue = String(option.value || '').trim()
-          return dictionaryValueId > 0 && optionValue
+          return dictionaryValueId && dictionaryValueId !== '0' && optionValue
             ? [{ dictionaryValueId, value: optionValue }]
             : []
         })
         : []
-      return [key, values.length ? { values } : '']
+      if (values.length) return [key, { values }]
+      const unit = String(selection.unit ?? '').trim()
+      if (unit) {
+        return [key, { value: String(selection.value ?? ''), unit }]
+      }
+      return [key, '']
     }))
   }
 

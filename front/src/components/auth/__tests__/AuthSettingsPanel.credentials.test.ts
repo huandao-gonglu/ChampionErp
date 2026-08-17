@@ -10,7 +10,7 @@ const defaultPlatformOptions = [
   },
 ]
 
-function mountPanel(aiConfig = {}, platformOptions = defaultPlatformOptions) {
+function mountPanel(aiConfig = {}, platformOptions = defaultPlatformOptions, storeConfig: Record<string, unknown> = {}) {
   return mount(AuthSettingsPanel, {
     props: {
       appConfig: {
@@ -41,7 +41,7 @@ function mountPanel(aiConfig = {}, platformOptions = defaultPlatformOptions) {
         },
       },
       aiConfig,
-      storeConfig: {},
+      storeConfig,
       storeAuthSummary: {},
       platformOptions,
       mercadolibreChecklist: null,
@@ -132,6 +132,93 @@ describe('AuthSettingsPanel credential lifecycle', () => {
         },
       },
     ])
+  })
+
+  it('Yandex 授权测试提交未保存的 Token 与 Campaign ID', async () => {
+    const wrapper = mountPanel({}, [{ key: 'yandex', label: 'Yandex', sites: [] }])
+
+    await wrapper.get('[data-testid="auth-settings-tab-stores"]').trigger('click')
+    await wrapper.get('[data-testid="store-platform-select"]').setValue('yandex')
+    expect(wrapper.text()).not.toContain('在线授权校验将在接入对应 API 后启用')
+
+    await wrapper.get('[data-testid="yandex-api-token"]').setValue('unsaved-token')
+    await wrapper.get('[data-testid="yandex-campaign-id"]').setValue('123456')
+    await wrapper.get('[data-testid="test-yandex-auth"]').trigger('click')
+
+    expect(wrapper.emitted('testAuth')?.[0]).toEqual([
+      'yandex',
+      '',
+      {
+        yandex: {
+          api_token: 'unsaved-token',
+          campaign_id: '123456',
+        },
+      },
+    ])
+  })
+
+  it('Yandex Campaign ID 输入提示区分 Campaign ID 与 Business ID', async () => {
+    const wrapper = mountPanel({}, [{ key: 'yandex', label: 'Yandex', sites: [] }])
+
+    await wrapper.get('[data-testid="auth-settings-tab-stores"]').trigger('click')
+    await wrapper.get('[data-testid="store-platform-select"]').setValue('yandex')
+
+    const hint = wrapper.get('[data-testid="yandex-campaign-id-hint"]')
+    expect(hint.text()).toContain('请填写 Campaign ID（店铺 ID）')
+    expect(hint.text()).toContain('不要填写 Business ID（柜台 ID）')
+    expect(hint.text()).toContain('API 和模块')
+  })
+
+  it('Yandex 保存授权时一并提交 Campaign ID', async () => {
+    const wrapper = mountPanel({}, [{ key: 'yandex', label: 'Yandex', sites: [] }])
+
+    await wrapper.get('[data-testid="auth-settings-tab-stores"]').trigger('click')
+    await wrapper.get('[data-testid="store-platform-select"]').setValue('yandex')
+    await wrapper.get('[data-testid="yandex-api-token"]').setValue('saved-token')
+    await wrapper.get('[data-testid="yandex-campaign-id"]').setValue('654321')
+
+    const saveButton = wrapper.findAll('button').find((button) => button.text() === '保存当前平台授权')
+    expect(saveButton).toBeDefined()
+    await saveButton!.trigger('click')
+
+    expect(wrapper.emitted('saveStore')?.[0]).toEqual([{
+      yandex: { api_token: 'saved-token', campaign_id: '654321' },
+    }])
+  })
+
+  it('Yandex 回填已保存 Campaign ID 并展示已验证店铺元数据', async () => {
+    const wrapper = mountPanel({}, [{ key: 'yandex', label: 'Yandex', sites: [] }], {
+      yandex: {
+        api_token: 'tok...ken',
+        campaign_id: '111',
+        business_id: '222',
+        business_name: 'Example Business',
+        shop_name: 'example-shop.market',
+        placement_type: 'FBS',
+        api_availability: 'AVAILABLE',
+        api_key_name: 'erp-publish-key',
+        auth_scopes: ['marketplace:offers', 'marketplace:prices'],
+        only_default_price: false,
+        stock_update_mode: 'campaign_warehouses',
+        warehouse_ids: [9, 7],
+        capabilities_verified_at: '2026-08-17T00:00:00Z',
+        auth_status: '测试成功',
+      },
+    })
+
+    await wrapper.get('[data-testid="auth-settings-tab-stores"]').trigger('click')
+    await wrapper.get('[data-testid="store-platform-select"]').setValue('yandex')
+
+    expect((wrapper.get('[data-testid="yandex-campaign-id"]').element as HTMLInputElement).value).toBe('111')
+    const text = wrapper.text()
+    expect(text).toContain('已验证店铺信息')
+    expect(text).toContain('222')
+    expect(text).toContain('example-shop.market')
+    expect(text).toContain('FBS')
+    expect(text).toContain('AVAILABLE')
+    expect(text).toContain('marketplace:offers、marketplace:prices')
+    expect(text).toContain('仓库 9、7')
+    expect(text).toContain('Campaign 级价格')
   })
 
 })

@@ -414,6 +414,9 @@ export async function previewPublishPayload(draft: DraftDetail, target: Marketpl
     path: getString(data, ['path']),
     payload: asRecord(data.payload),
     warning: getString(data, ['warning']),
+    validationDigest: getString(data, ['validation_digest', 'validationDigest']),
+    summary: asRecord(data.summary),
+    warnings: precheckIssues(data.warnings, 'warning'),
     draft: mutation?.draft,
     productContext: mutation?.productContext,
     productsIndex: mutation?.productsIndex,
@@ -421,8 +424,12 @@ export async function previewPublishPayload(draft: DraftDetail, target: Marketpl
   }
 }
 
-export async function enqueuePublish(draft: DraftDetail, target: MarketplaceTargetSite): Promise<PublishJob> {
-  const response = await apiClient.post('/api/publish-bus/enqueue', requiredDraftTarget(draft, target, '发布入队'))
+export async function enqueuePublish(draft: DraftDetail, target: MarketplaceTargetSite, validationDigest: string): Promise<PublishJob> {
+  const response = await apiClient.post('/api/publish-bus/enqueue', {
+    ...requiredDraftTarget(draft, target, '发布入队'),
+    confirm: true,
+    validation_digest: validationDigest,
+  })
   const data = asRecord(response.data)
   ensureOk(data, '发布入队失败')
   const responseTarget = asRecord(data.target)
@@ -485,6 +492,8 @@ export async function fetchCategoryAttrs(platform: Marketplace, categoryId: stri
       isCollection: getBoolean(record, ['is_collection'], getBoolean(raw, ['is_collection'])),
       maxValueCount: getNumber(record, ['max_value_count'], getNumber(raw, ['max_value_count'])),
       categoryDependent: getBoolean(record, ['category_dependent'], getBoolean(raw, ['category_dependent'])),
+      unitOptions: stringList(record.unit_options ?? record.unitOptions ?? raw.unit_options),
+      defaultUnit: getString(record, ['default_unit', 'defaultUnit'], getString(raw, ['default_unit', 'defaultUnit'])),
     }
   }
   const required = Array.isArray(data.required)
@@ -689,6 +698,10 @@ function categorySelectionToBackendRecord(category: CategorySelection | null): U
         name: attr.name,
         required: attr.required,
         options: attr.options || [],
+        value_type: attr.valueType || '',
+        unit: attr.unit || '',
+        unit_options: attr.unitOptions || [],
+        default_unit: attr.defaultUnit || '',
         dictionary_id: normalizeCategoryDictionaryId(attr.dictionaryId),
         is_dictionary: isCategoryDictionaryAttribute(attr.dictionaryId, attr.isDictionary),
         is_collection: Boolean(attr.isCollection),
@@ -700,6 +713,10 @@ function categorySelectionToBackendRecord(category: CategorySelection | null): U
         name: attr.name,
         required: false,
         options: attr.options || [],
+        value_type: attr.valueType || '',
+        unit: attr.unit || '',
+        unit_options: attr.unitOptions || [],
+        default_unit: attr.defaultUnit || '',
         dictionary_id: normalizeCategoryDictionaryId(attr.dictionaryId),
         is_dictionary: isCategoryDictionaryAttribute(attr.dictionaryId, attr.isDictionary),
         is_collection: Boolean(attr.isCollection),

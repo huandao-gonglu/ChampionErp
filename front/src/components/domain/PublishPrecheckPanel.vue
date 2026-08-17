@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { DraftDetail, DraftProductContext, MarketplaceOption, MarketplaceTargetSite, PrecheckIssue, PublishPrecheck, UnknownRecord } from '@/types/workflow'
+import type { DraftDetail, DraftProductContext, MarketplaceOption, MarketplaceTargetSite, PayloadPreviewState, PrecheckIssue, PublishPrecheck, UnknownRecord } from '@/types/workflow'
 
 const props = defineProps<{
   draft: DraftDetail
@@ -9,7 +9,7 @@ const props = defineProps<{
   selectedPublishTarget: MarketplaceTargetSite
   platformOptions: MarketplaceOption[]
   precheck: PublishPrecheck | null
-  payloadPreview: UnknownRecord | null
+  payloadPreview: PayloadPreviewState | null
   loading: boolean
 }>()
 
@@ -59,12 +59,18 @@ const activeDraft = computed(() => {
 })
 const blockingIssues = computed(() => props.precheck?.errorItems || [])
 const warningIssues = computed(() => props.precheck?.warningItems || [])
-const canQueuePublish = computed(() => Boolean(hasCurrentDraft.value && (props.precheck?.ok || activeDraft.value.status === 'ready_to_publish')))
+const hasPayloadConfirmation = computed(() => Boolean(props.payloadPreview?.validationDigest))
+const canQueuePublish = computed(() => Boolean(
+  hasCurrentDraft.value
+  && (props.precheck?.ok || activeDraft.value.status === 'ready_to_publish')
+  && hasPayloadConfirmation.value,
+))
 const publishReadiness = computed(() => {
-  if (!props.precheck && activeDraft.value.status === 'ready_to_publish') return '已保存为校验通过，可以加入发布队列。'
+  if (!props.precheck && activeDraft.value.status === 'ready_to_publish') return '已保存为校验通过。生成 Payload 预览并确认摘要后，即可加入发布队列。'
   if (!props.precheck) return '点击上架预检后，这里会变成可处理清单。'
-  if (props.precheck.ok) return '预检通过，可以加入发布队列。'
-  return `还剩 ${blockingIssues.value.length} 个阻断项，先在本页补齐能直接处理的字段。`
+  if (!props.precheck.ok) return `还剩 ${blockingIssues.value.length} 个阻断项，先在本页补齐能直接处理的字段。`
+  if (!hasPayloadConfirmation.value) return '预检通过。请点击 Payload 预览生成确认摘要，再加入发布队列。'
+  return '预检通过且 Payload 已确认，可以加入发布队列。'
 })
 const selectedWarrantyType = computed<WarrantyType>({
   get() {
@@ -317,8 +323,43 @@ function applyWarrantyTerms(type: WarrantyType, durationValue = '3', unit: Warra
       </article>
 
       <article class="min-w-0 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
-        <h3 class="font-semibold text-accent-950 dark:text-white">Payload 预览</h3>
-        <pre class="mt-3 max-h-80 w-full max-w-full overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-100">{{ props.payloadPreview ? JSON.stringify(props.payloadPreview, null, 2) : '尚未生成 payload。' }}</pre>
+        <div class="flex flex-wrap items-start justify-between gap-3">
+          <div class="min-w-0">
+            <h3 class="font-semibold text-accent-950 dark:text-white">Payload 预览</h3>
+            <p v-if="props.payloadPreview?.validationDigest" class="mt-1 text-xs text-accent-500 dark:text-accent-400">
+              确认指纹 <span class="font-mono">{{ props.payloadPreview.validationDigest.slice(0, 16) }}…</span>，入队时将校验该指纹与当前草稿一致。
+            </p>
+            <p v-else class="mt-1 text-xs text-accent-500 dark:text-accent-400">尚未生成预览。入队发布前必须先预览并确认以下摘要。</p>
+          </div>
+          <span v-if="hasPayloadConfirmation" class="badge-info">已确认预览</span>
+        </div>
+        <div v-if="props.payloadPreview?.summary" class="mt-3 grid gap-2 md:grid-cols-2">
+          <div class="rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm dark:border-dark-700 dark:bg-dark-900">
+            <div class="text-xs font-semibold text-accent-500 dark:text-accent-400">店铺身份</div>
+            <div class="mt-1 truncate font-mono text-accent-700 dark:text-accent-200">{{ props.payloadPreview.summary.storeIdentity || '-' }}</div>
+            <div v-if="props.payloadPreview.summary.storeLabel" class="mt-0.5 truncate text-xs text-accent-500 dark:text-accent-400">{{ props.payloadPreview.summary.storeLabel }}</div>
+          </div>
+          <div class="rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm dark:border-dark-700 dark:bg-dark-900">
+            <div class="text-xs font-semibold text-accent-500 dark:text-accent-400">标题 / 类目</div>
+            <div class="mt-1 truncate text-accent-700 dark:text-accent-200">{{ props.payloadPreview.summary.title || '-' }}</div>
+            <div class="mt-0.5 truncate text-xs text-accent-500 dark:text-accent-400">{{ props.payloadPreview.summary.categoryId || '无类目' }}</div>
+          </div>
+          <div class="rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm dark:border-dark-700 dark:bg-dark-900">
+            <div class="text-xs font-semibold text-accent-500 dark:text-accent-400">价格 / 库存</div>
+            <div class="mt-1 text-accent-700 dark:text-accent-200">{{ props.payloadPreview.summary.price || '-' }} {{ props.payloadPreview.summary.listingCurrency }}</div>
+            <div class="mt-0.5 text-xs text-accent-500 dark:text-accent-400">库存 {{ props.payloadPreview.summary.stock || '-' }} · 图片 {{ props.payloadPreview.summary.imageCount }} 张</div>
+          </div>
+          <div class="rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm dark:border-dark-700 dark:bg-dark-900">
+            <div class="text-xs font-semibold text-accent-500 dark:text-accent-400">草稿 / 平台</div>
+            <div class="mt-1 truncate font-mono text-accent-700 dark:text-accent-200">{{ props.payloadPreview.summary.draftId || '-' }}</div>
+            <div class="mt-0.5 truncate text-xs text-accent-500 dark:text-accent-400">{{ props.payloadPreview.summary.platform }}{{ props.payloadPreview.summary.site ? ` / ${props.payloadPreview.summary.site}` : '' }}</div>
+          </div>
+        </div>
+        <p v-if="props.payloadPreview?.warning" class="mt-3 text-sm text-amber-700">{{ props.payloadPreview.warning }}</p>
+        <ul v-if="props.payloadPreview?.warnings.length" class="mt-3 space-y-1 text-sm text-amber-700">
+          <li v-for="issue in props.payloadPreview.warnings" :key="`${issue.code}-${issue.field}-${issue.message}`">⚠ {{ issue.field ? `${issue.field}：` : '' }}{{ issue.message }}</li>
+        </ul>
+        <pre class="mt-3 max-h-80 w-full max-w-full overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-100">{{ props.payloadPreview ? JSON.stringify(props.payloadPreview.payload, null, 2) : '尚未生成 payload。' }}</pre>
       </article>
     </div>
   </section>

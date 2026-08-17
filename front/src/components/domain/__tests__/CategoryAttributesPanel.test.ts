@@ -18,6 +18,14 @@ const target: MarketplaceTargetSite = {
   listingCurrency: 'RUB',
 }
 
+const yandexTarget: MarketplaceTargetSite = {
+  platform: 'yandex',
+  site: 'global',
+  language: 'ru',
+  marketCurrency: 'RUB',
+  listingCurrency: 'RUB',
+}
+
 function panelProps(draft: DraftDetail, category: CategorySelection | null) {
   return {
     draft,
@@ -263,7 +271,7 @@ describe('CategoryAttributesPanel', () => {
     await option!.trigger('click')
 
     expect(draft.attributes['85']).toEqual({
-      values: [{ dictionaryValueId: 126745801, value: 'Нет бренда' }],
+      values: [{ dictionaryValueId: '126745801', value: 'Нет бренда' }],
     })
     expect(selectedValue.element.value).toBe('Нет бренда')
     expect(wrapper.emitted('invalidateCategoryPrecheck')).toHaveLength(1)
@@ -301,5 +309,105 @@ describe('CategoryAttributesPanel', () => {
     await input.setValue('F30')
     expect(draft.attributes['9048']).toBe('F30')
     expect(fetchCategoryAttributeValues).not.toHaveBeenCalled()
+  })
+
+  it('Yandex 大枚举值 ID 按字符串保存，不经过 Number 精度截断', async () => {
+    const hugeId = '9007199254740993123'
+    expect(Number.isSafeInteger(Number(hugeId))).toBe(false)
+    fetchCategoryAttributeValues.mockResolvedValueOnce([{
+      id: hugeId,
+      value: 'Белый',
+      info: '',
+    }])
+    const draft = createEmptyDraftDetail('yandex')
+    draft.draftId = 'draft-yandex-dictionary'
+    draft.site = 'global'
+    draft.categoryId = '91596'
+    const category: CategorySelection = {
+      platform: 'yandex',
+      categoryId: '91596',
+      categoryPath: 'Бытовая техника',
+      requiredAttributes: [{
+        id: '85',
+        name: 'Цвет',
+        required: true,
+        options: [],
+        dictionaryId: '1494',
+        isDictionary: true,
+        isCollection: true,
+        maxValueCount: 2,
+      }],
+      optionalAttributes: [],
+      raw: {},
+    }
+    const wrapper = mount(CategoryAttributesPanel, {
+      props: {
+        ...panelProps(draft, category),
+        publishTargets: [yandexTarget],
+        selectedPublishTarget: yandexTarget,
+      },
+    })
+
+    const requiredButton = wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))
+    await requiredButton!.trigger('click')
+    await wrapper.get<HTMLInputElement>('[data-attribute-id="85"]').trigger('focus')
+    await flushPromises()
+
+    const option = wrapper.findAll('button').find((button) => button.text().includes('Белый'))
+    await option!.trigger('click')
+
+    expect(draft.attributes['85']).toEqual({
+      values: [{ dictionaryValueId: hugeId, value: 'Белый' }],
+    })
+
+    const chip = wrapper.findAll('button').find((button) => button.attributes('aria-label') === '移除选项')
+    expect(chip).toBeDefined()
+    await chip!.trigger('click')
+    expect(draft.attributes['85']).toBeUndefined()
+  })
+
+  it('Yandex 带单位属性写入 value/unit 结构并支持切换单位', async () => {
+    const draft = createEmptyDraftDetail('yandex')
+    draft.draftId = 'draft-yandex-unit'
+    draft.site = 'global'
+    draft.categoryId = '91596'
+    const category: CategorySelection = {
+      platform: 'yandex',
+      categoryId: '91596',
+      categoryPath: 'Бытовая техника',
+      requiredAttributes: [{
+        id: '9048',
+        name: 'Вес',
+        required: true,
+        options: [],
+        unitOptions: ['г', 'кг'],
+        defaultUnit: 'г',
+      }],
+      optionalAttributes: [],
+      raw: {},
+    }
+    const wrapper = mount(CategoryAttributesPanel, {
+      props: {
+        ...panelProps(draft, category),
+        publishTargets: [yandexTarget],
+        selectedPublishTarget: yandexTarget,
+      },
+    })
+
+    const requiredButton = wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))
+    await requiredButton!.trigger('click')
+
+    const input = wrapper.get<HTMLInputElement>('[data-attribute-id="9048"]')
+    await input.setValue('500')
+    expect(draft.attributes['9048']).toEqual({ value: '500', unit: 'г' })
+
+    const unitSelect = wrapper.get<HTMLSelectElement>('select[aria-label="单位（Вес）"]')
+    expect(unitSelect.element.value).toBe('г')
+    await unitSelect.setValue('кг')
+    expect(draft.attributes['9048']).toEqual({ value: '500', unit: 'кг' })
+    expect(wrapper.emitted('invalidateCategoryPrecheck')!.length).toBeGreaterThanOrEqual(2)
+
+    await input.setValue('')
+    expect(draft.attributes['9048']).toBeUndefined()
   })
 })

@@ -63,6 +63,7 @@ const form = reactive({
   mlCode: '',
   mlCategoryId: '',
   yandexApiToken: '',
+  yandexCampaignId: '',
   ozonClientId: '',
   ozonApiKey: '',
 })
@@ -464,6 +465,7 @@ function fillFromProps() {
   form.mlRedirectUri = String(ml.redirect_uri || DEFAULT_ML_REDIRECT_URI)
   form.mlNotificationUrl = String(ml.notification_url || ml.notifications_url || ml.webhook_url || '')
   form.yandexApiToken = String(yandex.api_token || '')
+  form.yandexCampaignId = String(yandex.campaign_id || '')
   form.ozonClientId = String(ozon.client_id || '')
   form.ozonApiKey = String(ozon.api_key || '')
 }
@@ -1523,7 +1525,7 @@ watch(() => props.loading, (loading) => {
 function storePayload(): UnknownRecord {
   return {
     mercadolibre: { app_id: form.mlAppId, client_secret: form.mlClientSecret, app_secret: form.mlClientSecret, redirect_uri: form.mlRedirectUri, notification_url: form.mlNotificationUrl },
-    yandex: { api_token: form.yandexApiToken },
+    yandex: { api_token: form.yandexApiToken, campaign_id: form.yandexCampaignId },
     ozon: { client_id: form.ozonClientId, api_key: form.ozonApiKey },
   }
 }
@@ -1535,6 +1537,30 @@ function selectedStorePayload(): UnknownRecord {
 function testOzonAuth(scope = ''): void {
   emit('testAuth', 'ozon', scope, selectedStorePayload())
 }
+
+function testYandexAuth(): void {
+  // 预览测试：提交未保存表单值，后端使用内存副本校验，不落盘。
+  emit('testAuth', 'yandex', '', selectedStorePayload())
+}
+
+const yandexStoreMeta = computed(() => {
+  const store = asRecord(props.storeConfig.yandex)
+  const scopes = asStringArray(store.auth_scopes)
+  const warehouses = asStringArray(store.warehouse_ids)
+  return {
+    businessId: firstText(store.business_id),
+    shopName: firstText(store.shop_name, store.business_name),
+    placementType: firstText(store.placement_type),
+    apiAvailability: firstText(store.api_availability),
+    apiKeyName: firstText(store.api_key_name),
+    scopes,
+    onlyDefaultPrice: Boolean(store.only_default_price),
+    stockUpdateMode: firstText(store.stock_update_mode),
+    warehouses,
+    verifiedAt: firstText(store.capabilities_verified_at),
+    hasMetadata: Boolean(firstText(store.business_id) || firstText(store.placement_type) || scopes.length),
+  }
+})
 
 const selectedStorePlatformMeta = computed(() => (
   storePlatforms.value.find((item) => item.key === selectedStorePlatform.value)
@@ -2084,11 +2110,30 @@ function handleYunexpressEnvironmentChange(value: string) {
             </template>
 
             <template v-else-if="selectedStorePlatform === 'yandex'">
-              <input v-model="form.yandexApiToken" type="password" class="input mt-3" placeholder="Yandex API Token" />
+              <input v-model="form.yandexApiToken" data-testid="yandex-api-token" type="password" class="input mt-3" placeholder="Yandex API-Key Token" autocomplete="off" />
+              <input v-model="form.yandexCampaignId" data-testid="yandex-campaign-id" class="input mt-2" placeholder="Campaign ID，例如 123456" />
+              <p data-testid="yandex-campaign-id-hint" class="mt-1 text-xs text-accent-500 dark:text-accent-400">请填写 Campaign ID（店铺 ID），不要填写 Business ID（柜台 ID）。可在 Yandex 卖家后台 → 设置 → API 和模块中查看。</p>
               <div class="mt-3 flex flex-wrap gap-2">
+                <button data-testid="test-yandex-auth" class="btn btn-outline py-1.5" :disabled="props.loading" @click="testYandexAuth()">测试授权</button>
                 <button class="btn btn-outline py-1.5 text-rose-700" :disabled="props.loading" @click="emit('clearAuth', 'yandex')">清除授权</button>
               </div>
-              <p class="mt-2 text-xs text-accent-500">当前仅保存一级平台凭证；Yandex 在线授权校验将在接入对应 API 后启用。</p>
+              <p class="mt-2 text-xs text-accent-500">保存前可直接测试未保存的 Token 与 Campaign ID；保存成功后会自动用已保存配置复测，并写入可信授权状态。</p>
+              <div v-if="yandexStoreMeta.hasMetadata" class="mt-3 rounded-lg border border-accent-200 bg-accent-50 p-3 text-sm dark:border-dark-700 dark:bg-dark-950/60">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <div class="font-semibold text-accent-950 dark:text-white">已验证店铺信息</div>
+                  <span v-if="yandexStoreMeta.verifiedAt" class="text-xs text-accent-500 dark:text-accent-400">验证于 {{ yandexStoreMeta.verifiedAt }}</span>
+                </div>
+                <dl class="mt-2 grid gap-x-8 gap-y-1.5 text-xs text-accent-700 dark:text-accent-200 sm:grid-cols-2">
+                  <div class="flex items-center justify-between gap-2"><dt class="text-accent-500 dark:text-accent-400">Business ID</dt><dd class="font-mono">{{ yandexStoreMeta.businessId || '-' }}</dd></div>
+                  <div class="flex items-center justify-between gap-2"><dt class="text-accent-500 dark:text-accent-400">店铺名</dt><dd class="truncate">{{ yandexStoreMeta.shopName || '-' }}</dd></div>
+                  <div class="flex items-center justify-between gap-2"><dt class="text-accent-500 dark:text-accent-400">投放模型</dt><dd>{{ yandexStoreMeta.placementType || '-' }}</dd></div>
+                  <div class="flex items-center justify-between gap-2"><dt class="text-accent-500 dark:text-accent-400">API 可用状态</dt><dd>{{ yandexStoreMeta.apiAvailability || '-' }}</dd></div>
+                  <div class="flex items-center justify-between gap-2"><dt class="text-accent-500 dark:text-accent-400">价格模式</dt><dd>{{ yandexStoreMeta.onlyDefaultPrice ? 'Business 级默认价' : 'Campaign 级价格' }}</dd></div>
+                  <div class="flex items-center justify-between gap-2"><dt class="text-accent-500 dark:text-accent-400">库存更新</dt><dd>{{ yandexStoreMeta.stockUpdateMode || '-' }}{{ yandexStoreMeta.warehouses.length ? `（仓库 ${yandexStoreMeta.warehouses.join('、')}）` : '' }}</dd></div>
+                  <div class="flex items-center justify-between gap-2"><dt class="text-accent-500 dark:text-accent-400">Token 名称</dt><dd class="truncate">{{ yandexStoreMeta.apiKeyName || '-' }}</dd></div>
+                  <div class="flex items-center justify-between gap-2"><dt class="text-accent-500 dark:text-accent-400">Scope 检查</dt><dd class="truncate" :title="yandexStoreMeta.scopes.join('、')">{{ yandexStoreMeta.scopes.length ? yandexStoreMeta.scopes.join('、') : '-' }}</dd></div>
+                </dl>
+              </div>
             </template>
 
             <template v-else>

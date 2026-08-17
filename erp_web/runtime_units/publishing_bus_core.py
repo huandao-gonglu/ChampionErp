@@ -9,6 +9,8 @@ import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, Protocol
 
+from erp_web.marketplaces.publisher import PublishAdapterError
+
 from .publish_confirmation import (
     canonical_publish_digest,
     resolve_publish_store_binding,
@@ -85,6 +87,23 @@ class PublishApprovalBindingError(RuntimeError):
     """持久化的人工确认与 worker 即将外发的事实不再一致。"""
 
     code = "PUBLISH_APPROVAL_BINDING_INVALID"
+
+
+def _publish_exception_retryable(exc: BaseException) -> bool:
+    """按类型化错误契约决定总线是否重试。
+
+    - 确认绑定失效是确定性失败，重试只会再次被阻止；
+    - 平台 HTTP 边界分类出的 :class:`PublishAdapterError` 以自身
+      ``retryable`` 为准（限流/锁/5xx/超时等瞬时失败才重试）；
+    - 未被分类的异常默认不可重试，避免确定性 4xx 或本地错误
+      被总线反复外发。
+    """
+
+    if isinstance(exc, PublishApprovalBindingError):
+        return False
+    if isinstance(exc, PublishAdapterError):
+        return bool(exc.retryable)
+    return False
 
 
 ACTIVE_JOB_STATUSES = frozenset({"pending", "queued", "running", "retrying"})
@@ -893,10 +912,7 @@ class PublishingBus:
                 )
                 return
             except Exception as exc:
-                retryable = (
-                    not isinstance(exc, PublishApprovalBindingError)
-                    and attempts < max_attempts
-                )
+                retryable = _publish_exception_retryable(exc) and attempts < max_attempts
                 self._set_platform(
                     job_id,
                     platform,

@@ -140,6 +140,7 @@ _COMMON_FIELD_RULES: dict[str, FieldRule] = {
     "target_language": STRING,
     "text": STRING,
     "url": STRING,
+    "validation_digest": STRING,
     "limit": LIMIT,
     "port": PORT,
     "apply_to_draft": BOOLEAN,
@@ -279,7 +280,12 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/mercadolibre/refresh-token": _EMPTY,
     "/api/open-1688-browser": _EMPTY,
     "/api/open-auth-link": _contract(required=("url",)),
-    "/api/publish-bus/enqueue": _DRAFT,
+    "/api/publish-bus/enqueue": _contract(
+        # 人工确认摘要指纹：HTTP 边界声明字符串类型；业务判空与绑定校验
+        # 在发布 Capability 完成。
+        fields={"validation_digest": STRING},
+        required_any=(("draft_id", "draftId"),),
+    ),
     "/api/publish-payload-preview": _DRAFT,
     "/api/publish-precheck": _DRAFT,
     "/api/publish-product": _PRODUCT,

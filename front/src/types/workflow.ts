@@ -48,6 +48,10 @@ export interface CategoryAttributeDefinition {
   options?: string[]
   valueType?: string
   unit?: string
+  /** 平台允许的计量单位列表（如 Yandex 带单位参数），空 = 无需选单位。 */
+  unitOptions?: string[]
+  /** 平台默认计量单位；unitOptions 非空时作为初始选中。 */
+  defaultUnit?: string
   description?: string
   dictionaryId?: string
   isDictionary?: boolean
@@ -64,7 +68,8 @@ export interface CategoryAttributeOption {
 }
 
 export interface CategoryDictionaryValue {
-  dictionaryValueId: number
+  /** 平台枚举值 ID；大 ID 平台（如 Yandex）按字符串保存避免精度丢失。 */
+  dictionaryValueId: string | number
   value: string
 }
 
@@ -72,7 +77,12 @@ export interface CategoryDictionarySelection {
   values: CategoryDictionaryValue[]
 }
 
-export type CategoryAttributeValue = string | CategoryDictionarySelection
+export interface CategoryAttributeUnitValue {
+  value: string
+  unit: string
+}
+
+export type CategoryAttributeValue = string | CategoryDictionarySelection | CategoryAttributeUnitValue
 
 export interface CategoryAttributeSchema {
   version: number
@@ -84,6 +94,36 @@ export interface CategoryAttributeSchema {
   fetchedAt: string
   required: CategoryAttributeDefinition[]
   optional: CategoryAttributeDefinition[]
+}
+
+/** 发布 payload 预览摘要（脱敏后由后端随预览返回）。 */
+export interface PublishPayloadSummary {
+  productId: string
+  draftId: string
+  platform: string
+  site: string
+  storeIdentity: string
+  storeLabel: string
+  title: string
+  categoryId: string
+  listingCurrency: string
+  price: string
+  stock: string
+  imageCount: number
+}
+
+/** 发布预览确认态：payload、digest 与摘要同生命周期，预览被清空即失效。 */
+export interface PayloadPreviewState {
+  platform: Marketplace
+  site: string
+  targetKey: string
+  status: string
+  path: string
+  payload: UnknownRecord
+  warning: string
+  validationDigest: string
+  summary: PublishPayloadSummary | null
+  warnings: PrecheckIssue[]
 }
 
 export interface MarketplaceTargetSite {

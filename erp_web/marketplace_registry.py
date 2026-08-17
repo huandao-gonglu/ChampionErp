@@ -56,6 +56,9 @@ class MarketplaceSpec:
     masked_account_fields: tuple[str, ...] = ()
     # store_auth_failure_code 的平台兜底错误码。
     auth_failure_code: str = "auth_failed"
+    # 发布确认的稳定店铺身份字段组：非空时要求组内字段全部存在，
+    # identity 由全部字段共同构成；空 = 由 publish_confirmation 兜底规则解析。
+    store_binding_fields: tuple[str, ...] = ()
 
     @property
     def language(self) -> str:
@@ -105,17 +108,27 @@ MARKETPLACE_SPECS: tuple[MarketplaceSpec, ...] = (
         sites=(
             {"key": "global", "code": "global", "label": "俄罗斯", "language": "ru-RU", "market_currency": "RUB", "listing_currency": "RUB"},
         ),
-        capabilities=frozenset(),
+        capabilities=frozenset(
+            {
+                CAP_PUBLISH,
+                CAP_PREVIEW_PAYLOAD,
+                CAP_CATEGORY_SEARCH,
+                CAP_CATEGORY_ATTRIBUTES,
+            }
+        ),
         preset_key="yandex",
         title_limit=120,
         description_limit=6000,
         credential_fields=(
-            CredentialField("api_token", "API Token", secret=True),
+            CredentialField("api_token", "API-Key Token", secret=True),
             CredentialField("campaign_id", "Campaign ID"),
         ),
-        test_auth="",
+        test_auth="erp_web.runtime_units.store_credentials:_test_yandex_auth",
         masked_account_fields=("shop_name", "api_token"),
         auth_failure_code="yandex_auth_failed",
+        # 发布确认必须同时绑定在线校验派生的 business_id 与用户输入的
+        # campaign_id；shop_name、脱敏 token 或单独 business_id 都不算稳定身份。
+        store_binding_fields=("business_id", "campaign_id"),
     ),
     MarketplaceSpec(
         key=Marketplace.OZON.value,

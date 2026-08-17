@@ -11,6 +11,8 @@ import hashlib
 import json
 from typing import Any
 
+from erp_web.marketplace_registry import marketplace_spec
+
 
 @dataclass(frozen=True)
 class PublishStoreBinding:
@@ -28,6 +30,36 @@ def resolve_publish_store_binding(
         if isinstance(config.get(platform_key), dict)
         else {}
     )
+    spec = marketplace_spec(platform_key)
+    label = str(
+        store.get("shop_name")
+        or store.get("nickname")
+        or store.get("auth_masked_account")
+        or "已授权账号"
+    ).strip()
+    binding_fields = spec.store_binding_fields if spec else ()
+    if binding_fields:
+        # 注册表声明式绑定：组内字段必须全部存在，identity 由全部字段共同
+        # 构成。Yandex 即 business_id + campaign_id，二者缺一都不允许发布。
+        values = [str(store.get(field) or "").strip() for field in binding_fields]
+        missing = [
+            field
+            for field, value in zip(binding_fields, values)
+            if not value
+        ]
+        if missing:
+            raise ValueError(
+                "当前店铺缺少可绑定发布确认的稳定账号身份："
+                + "、".join(missing)
+                + " 尚未通过在线授权校验。"
+            )
+        identity_digest = hashlib.sha256(
+            "\0".join([platform_key, *values]).encode("utf-8")
+        ).hexdigest()
+        return PublishStoreBinding(
+            identity=f"{platform_key}:{identity_digest[:24]}",
+            label=label,
+        )
     identity_keys = (
         ("user_id", "seller_id", "auth_masked_account", "shop_name")
         if platform_key == "mercadolibre"
@@ -52,12 +84,6 @@ def resolve_publish_store_binding(
     identity_digest = hashlib.sha256(
         f"{platform_key}\0{identity_value}".encode("utf-8")
     ).hexdigest()
-    label = str(
-        store.get("shop_name")
-        or store.get("nickname")
-        or store.get("auth_masked_account")
-        or "已授权账号"
-    ).strip()
     return PublishStoreBinding(
         identity=f"{platform_key}:{identity_digest[:24]}",
         label=label,

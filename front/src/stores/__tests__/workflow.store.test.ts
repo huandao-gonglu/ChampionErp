@@ -355,6 +355,72 @@ describe('workflow store live API flow', () => {
     })
   })
 
+  it('保存 Yandex 授权后自动用已保存配置复测授权', async () => {
+    vi.mocked(workflowApi.saveStoreSettings).mockResolvedValue({
+      storeConfig: { yandex: { campaign_id: '111', api_token: 'tok...ken' } },
+      storeAuthSummary: { yandex: { platform: 'yandex', status: '已保存，未测试' } },
+    })
+    vi.mocked(workflowApi.fetchMercadoLibreAuthChecklist).mockResolvedValue({
+      platform: 'mercadolibre',
+      readyForAuthLink: false,
+      tokenReady: false,
+      missingCodes: [],
+      fields: [],
+      nextAction: '',
+      copyText: '',
+      raw: {},
+    })
+    vi.mocked(workflowApi.testStoreAuth).mockResolvedValue({
+      ok: true,
+      message: '测试成功：授权可用。',
+      error: '',
+      errorCode: '',
+      nextAction: '',
+      raw: {
+        ok: true,
+        platform: 'yandex',
+        business_id: '222',
+        storeAuthSummary: { yandex: { platform: 'yandex', status: '测试成功' } },
+      },
+    })
+
+    const store = useWorkflowStore()
+    await store.saveStoreConfig({
+      yandex: { api_token: 'secret-token-value', campaign_id: '111' },
+    })
+
+    expect(workflowApi.testStoreAuth).toHaveBeenCalledTimes(1)
+    expect(workflowApi.testStoreAuth).toHaveBeenCalledWith('yandex', '', {})
+    expect(store.storeAuthSummary).toEqual({
+      yandex: { platform: 'yandex', status: '测试成功' },
+    })
+  })
+
+  it('Yandex 凭证为空时保存不触发自动授权测试', async () => {
+    vi.mocked(workflowApi.saveStoreSettings).mockResolvedValue({
+      storeConfig: { yandex: {} },
+      storeAuthSummary: { yandex: { platform: 'yandex', status: '未配置' } },
+    })
+    vi.mocked(workflowApi.fetchMercadoLibreAuthChecklist).mockResolvedValue({
+      platform: 'mercadolibre',
+      readyForAuthLink: false,
+      tokenReady: false,
+      missingCodes: [],
+      fields: [],
+      nextAction: '',
+      copyText: '',
+      raw: {},
+    })
+
+    const store = useWorkflowStore()
+    await store.saveStoreConfig({ yandex: { api_token: '', campaign_id: '' } })
+
+    expect(workflowApi.testStoreAuth).not.toHaveBeenCalled()
+    expect(store.storeAuthSummary).toEqual({
+      yandex: { platform: 'yandex', status: '未配置' },
+    })
+  })
+
   it('hydrates dashboard domain data after the bootstrap state is split', async () => {
     vi.mocked(workflowApi.fetchProductsIndex).mockResolvedValue([])
     vi.mocked(workflowApi.fetchPublishLogs).mockResolvedValue([])

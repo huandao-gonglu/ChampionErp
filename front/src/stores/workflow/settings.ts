@@ -182,6 +182,16 @@ export const useWorkflowSettingsStore = defineStore('workflow-settings', () => {
       storeAuthSummary.value = saved.storeAuthSummary
       mercadolibreAuthChecklist.value = await fetchMercadoLibreAuthChecklist()
       activity.addLog('平台授权配置已保存。')
+      const yandexSection = isRecord(config.yandex) ? config.yandex : null
+      const hasYandexCredentials = Boolean(
+        yandexSection
+        && (String(yandexSection.api_token || '').trim() || String(yandexSection.campaign_id || '').trim()),
+      )
+      if (hasYandexCredentials) {
+        // 保存成功后自动对已保存配置执行一次在线测试，持久化可信授权状态；
+        // 客户端不直接提交 auth_status/business_id 等派生字段。
+        await testAuth('yandex')
+      }
     } catch (exc) {
       activity.setError(exc instanceof Error ? exc.message : '保存平台授权失败')
     } finally {
@@ -194,6 +204,10 @@ export const useWorkflowSettingsStore = defineStore('workflow-settings', () => {
     activity.setError('')
     try {
       lastAuthResult.value = await testStoreAuth(platform, scope, config)
+      // 只有针对已保存配置（未提交表单副本）的测试结果才允许刷新授权摘要；
+      // 未保存预览测试不更新持久化状态展示。
+      const summary = authSummary(lastAuthResult.value.raw)
+      if (summary && !Object.keys(config).length) storeAuthSummary.value = summary
       if (!lastAuthResult.value.ok) throw new Error(authResultError(lastAuthResult.value, '测试授权失败'))
       activity.addLog(`${platform} 授权测试：${lastAuthResult.value.message || lastAuthResult.value.error || '完成'}`)
     } catch (exc) {

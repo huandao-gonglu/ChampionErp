@@ -23,6 +23,7 @@ import type {
   CategorySelection,
   Marketplace,
   MarketplaceTargetSite,
+  PublishPayloadSummary,
   UnknownRecord,
 } from '@/types/workflow'
 import {
@@ -161,6 +162,32 @@ type WorkflowPublishingActionsPort = Pick<
   | 'persistCurrentDraftForPublish'
   | 'refreshPublishJobs'
 >
+
+function normalizePayloadPreviewSummary(value: UnknownRecord): PublishPayloadSummary | null {
+  if (!Object.keys(value).length) return null
+  const text = (...keys: string[]) => {
+    for (const key of keys) {
+      const item = value[key]
+      if (item !== undefined && item !== null && String(item).trim()) return String(item)
+    }
+    return ''
+  }
+  const imageCount = Number(value.image_count ?? value.imageCount ?? 0)
+  return {
+    productId: text('product_id', 'productId'),
+    draftId: text('draft_id', 'draftId'),
+    platform: text('platform'),
+    site: text('site'),
+    storeIdentity: text('store_identity', 'storeIdentity'),
+    storeLabel: text('store_label', 'storeLabel'),
+    title: text('title'),
+    categoryId: text('category_id', 'categoryId'),
+    listingCurrency: text('listing_currency', 'listingCurrency'),
+    price: text('price'),
+    stock: text('stock'),
+    imageCount: Number.isFinite(imageCount) ? imageCount : 0,
+  }
+}
 
 export function createWorkflowPublishingActions(runtime: WorkflowPublishingActionsPort) {
   const {
@@ -617,7 +644,18 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
       if (result.productContext) currentDraftProductContext.value = result.productContext
       syncActivePublishTarget(target)
       applyMutationIndexes(result)
-      payloadPreview.value = result.payload
+      payloadPreview.value = {
+        platform: result.platform,
+        site: result.site,
+        targetKey: pricingTargetKey(result.platform, result.site),
+        status: result.status,
+        path: result.path,
+        payload: result.payload,
+        warning: result.warning,
+        validationDigest: result.validationDigest,
+        summary: normalizePayloadPreviewSummary(result.summary),
+        warnings: result.warnings,
+      }
       addLog(`Payload 已生成：${result.path || result.status}`)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '生成 Payload 失败')
@@ -631,12 +669,18 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
       setError('请先从草稿箱选择要发布的草稿。')
       return
     }
+    const preview = payloadPreview.value
+    const target = selectedPublishTarget.value
+    if (!preview?.validationDigest || preview.targetKey !== pricingTargetKey(target.platform, target.site)) {
+      setError('请先生成当前目标站点的 Payload 预览并确认摘要后，再加入发布队列。')
+      return
+    }
     loading.value = true
     setError('')
     try {
       await persistCurrentDraftForPublish()
       publishJobStatus.value = null
-      publishJob.value = await enqueuePublishApi(currentDraft.value, selectedPublishTarget.value)
+      publishJob.value = await enqueuePublishApi(currentDraft.value, target, preview.validationDigest)
       selectedPublishJobId.value = publishJob.value.jobId
       await refreshPublishJobs({ quiet: true })
       draftsIndex.value = await fetchDraftsIndex()

@@ -38,9 +38,12 @@ const statusLabels: Record<string, string> = {
 
 const stageLabels: Record<string, string> = {
   queued: '等待执行',
+  resuming: '恢复执行',
   resolving_category: '解析类目',
   validating: '校验商品',
+  validating_required_attributes: '校验必填属性',
   publishing: '提交平台',
+  publishing_approved_payload: '提交已确认 Payload',
   waiting_platform_confirmation: '等待平台确认',
   retrying: '等待重试',
   finished: '已结束',

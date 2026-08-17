@@ -16,6 +16,7 @@ import json
 import logging
 import threading
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 from erp_web import app_config as app_config_runtime
@@ -71,6 +72,17 @@ _STORE_AUTH_DETAIL_FIELDS = {
     "currency_source",
     "currency_verified_at",
     "allowed_currencies",
+    # Yandex 在线派生的动态授权/店铺能力（仅存 SQLite store_auth）。
+    "business_id",
+    "business_name",
+    "placement_type",
+    "api_availability",
+    "api_key_name",
+    "auth_scopes",
+    "only_default_price",
+    "stock_update_mode",
+    "warehouse_ids",
+    "capabilities_verified_at",
 }
 _STORE_DB_OWNED_FIELDS = _STORE_CREDENTIAL_FIELDS | _STORE_AUTH_DETAIL_FIELDS | {"auth_status", "auth_checked_at"}
 
@@ -497,6 +509,66 @@ class ConfigStore:
         self.save_store_config(updated)
         return updated
 
+    def _invalidate_auth_on_identity_change(
+        self,
+        config: dict[str, Any],
+        *,
+        preserve_empty_sensitive: bool,
+    ) -> None:
+        """身份字段变化时原子清除旧授权能力与成功态。
+
+        对声明了 ``store_binding_fields`` 的平台（Yandex）：真实 token 或
+        Campaign ID 任一变化时，在同一次保存中清除旧 business_id、scopes、
+        价格/库存能力和旧成功态，并把状态置为“已保存，未测试”。这样即使
+        保存后、前端自动测试前进程退出，新 Campaign ID 也不会继承旧店铺
+        的授权证明。
+        """
+
+        stored_config: dict[str, Any] | None = None
+        for spec in MARKETPLACE_SPECS:
+            if not spec.store_binding_fields:
+                continue
+            platform = spec.key
+            section = config.get(platform)
+            if not isinstance(section, dict):
+                continue
+            if stored_config is None:
+                try:
+                    stored_config = self.load_store_config()
+                except RuntimeError:
+                    stored_config = {}
+            stored_section = stored_config.get(platform)
+            stored_section = (
+                stored_section if isinstance(stored_section, dict) else {}
+            )
+            changed = False
+            for field in spec.credential_fields:
+                incoming_value = section.get(field.key)
+                stored_value = stored_section.get(field.key)
+                if (
+                    field.secret
+                    and preserve_empty_sensitive
+                    and str(stored_value or "").strip()
+                    and (
+                        incoming_value in (None, "")
+                        or mask_nested_config(stored_value, field.key)
+                        == incoming_value
+                    )
+                ):
+                    # 空值或脱敏回显视为保留原秘密，不构成身份切换。
+                    continue
+                if str(
+                    incoming_value if incoming_value is not None else ""
+                ) != str(stored_value if stored_value is not None else ""):
+                    changed = True
+                    break
+            if not changed:
+                continue
+            for field_name in _STORE_AUTH_DETAIL_FIELDS:
+                section[field_name] = ""
+            section["auth_status"] = "已保存，未测试"
+            section["auth_checked_at"] = ""
+
     def _save_store_auth_sections(self, config: dict[str, Any], *, preserve_empty_sensitive: bool) -> None:
         """Route secrets and dynamic auth state of each platform into store_auth."""
         for platform in _STORE_AUTH_PLATFORMS:
@@ -525,6 +597,10 @@ class ConfigStore:
             config = config if isinstance(config, dict) else {}
             previous_auth = self._db.list_store_auth()
             try:
+                self._invalidate_auth_on_identity_change(
+                    config,
+                    preserve_empty_sensitive=preserve_empty_sensitive,
+                )
                 self._save_store_auth_sections(
                     config,
                     preserve_empty_sensitive=preserve_empty_sensitive,
@@ -624,30 +700,68 @@ class ConfigStore:
 
 # -- pure auth-status presentation helpers -----------------------------------
 
-def _auth_status_label(status: Any, store: dict[str, Any]) -> str:
+# 未注册平台的兜底凭证判断键；已注册平台一律用
+# ``MarketplaceSpec.credential_fields`` 判断，不再往这里追加新平台凭据。
+_LEGACY_CREDENTIAL_KEYS = (
+    "access_token",
+    "refresh_token",
+    "app_id",
+    "app_secret",
+    "code_verifier",
+    "content_token",
+    "prices_token",
+    "marketplace_token",
+    "stocks_token",
+    "client_id",
+    "api_key",
+)
+
+_DEFAULT_STORE_SECTION_CACHE: dict[str, Any] | None = None
+
+
+def _default_store_section(platform: str) -> dict[str, Any]:
+    """返回平台在默认 store config 中的静态字段，用于排除默认值凭证。"""
+
+    global _DEFAULT_STORE_SECTION_CACHE
+    if _DEFAULT_STORE_SECTION_CACHE is None:
+        _DEFAULT_STORE_SECTION_CACHE = publisher.load_store_config(
+            Path("__default_store_config_probe__.json")
+        )
+    section = _DEFAULT_STORE_SECTION_CACHE.get(platform)
+    return section if isinstance(section, dict) else {}
+
+
+def _has_registry_credentials(platform: str, store: dict[str, Any]) -> bool:
+    """按注册表凭据描述符判断是否存在已保存凭证。
+
+    与默认值相同的字段（例如 ML 的 ``site_id=CBT``）不算凭证，避免未配置
+    平台永远显示“已保存，未测试”。
+    """
+
+    spec = marketplace_spec(platform)
+    if spec is None:
+        return any(
+            str(store.get(key) or "").strip() for key in _LEGACY_CREDENTIAL_KEYS
+        )
+    defaults = _default_store_section(platform)
+    for field in spec.credential_fields:
+        value = str(store.get(field.key) or "").strip()
+        if not value:
+            continue
+        if value == str(defaults.get(field.key) or "").strip():
+            continue
+        return True
+    return False
+
+
+def _auth_status_label(status: Any, store: dict[str, Any], has_credentials: bool = False) -> str:
     text = str(status or "").strip().lower()
     error_code = str(store.get("auth_error_code") or "").strip().lower()
     error_message = str(store.get("auth_error_message") or "").strip().lower()
-    has_credentials = any(
-        str(store.get(key) or "").strip()
-        for key in (
-            "access_token",
-            "refresh_token",
-            "app_id",
-            "app_secret",
-            "code_verifier",
-            "content_token",
-            "prices_token",
-            "marketplace_token",
-            "stocks_token",
-            "client_id",
-            "api_key",
-        )
-    )
     if text in {"ok", "success", "tested", "测试成功"}:
         return "测试成功"
     if text in {"failed", "error", "测试失败"}:
-        if "429" in error_code or "429" in error_message or "rate" in error_code or "too many requests" in error_message:
+        if "429" in error_code or "429" in error_message or "420" in error_code or "420" in error_message or "rate" in error_code or "too many requests" in error_message or "限流" in error_message:
             return "被限流"
         if "expired" in error_code or "expired" in error_message:
             return "Token 过期"
@@ -778,7 +892,11 @@ def explain_mercadolibre_auth_error(error_code: str = "", error_message: str = "
 def summarize_store_auth(platform: str, store: dict[str, Any]) -> dict[str, Any]:
     platform = str(platform or "").strip().lower()
     store = store if isinstance(store, dict) else {}
-    status_label = _auth_status_label(store.get("auth_status"), store)
+    status_label = _auth_status_label(
+        store.get("auth_status"),
+        store,
+        _has_registry_credentials(platform, store),
+    )
     error_code = str(store.get("auth_error_code") or "").strip()
     error_message = str(store.get("auth_error_message") or "").strip()
     masked_account = str(store.get("auth_masked_account") or "").strip()
@@ -826,7 +944,14 @@ def summarize_store_auth_states(store_config: dict[str, Any]) -> dict[str, Any]:
 def store_auth_failure_code(platform: str, message: str) -> str:
     text = str(message or "").lower()
     platform = str(platform or "").strip().lower()
-    if "429" in text or "too many requests" in text:
+    # Yandex 用 HTTP 420 表示限流；不能只识别 429。
+    if (
+        "429" in text
+        or "420" in text
+        or "too many requests" in text
+        or "限流" in text
+        or "rate limit" in text
+    ):
         return "rate_limited"
     if "401" in text or "403" in text or "unauthorized" in text:
         return "permission_denied"

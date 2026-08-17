@@ -7,11 +7,20 @@ HTTP facade 只负责传入请求字典；本模块拥有预检、payload 预览
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import uuid
 from typing import Any
 
+from pydantic import ValidationError
+
 from erp_web.context import get_context
 from erp_web.schemas.api import ApiResponse
+from erp_web.schemas.publish_capabilities import (
+    ProductPublishRequest,
+    ProductPublishValidateRequest,
+    PublishRequestConfirmation,
+)
+from erp_web.services.capability_errors import BusinessCapabilityError
 
 from . import publish_logs_runtime
 from .collect_helpers import collect_time_iso
@@ -20,9 +29,12 @@ from .draft_publish_context import (
     save_draft_precheck_result,
 )
 from .publish_adapter import (
-    get_publishing_bus,
     publishing_adapter_for,
     unsupported_publish_response,
+)
+from .publish_capabilities import (
+    evaluate_publish_validation,
+    request_product_publish,
 )
 from .publish_mercadolibre import (
     mercadolibre_close_remote_item,
@@ -92,6 +104,8 @@ def precheck_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
 
 
 def preview_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    """人工 payload 预览：与发布确认共用同一次评估/digest 算法。"""
+
     unsupported = _unsupported_if_explicit(body)
     if unsupported:
         return unsupported
@@ -101,31 +115,42 @@ def preview_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
     unsupported = _unsupported_context_response(context)
     if unsupported:
         return unsupported
-    platform = str(context["platform"])
-    adapter = publishing_adapter_for(platform)
-    if adapter is None:
-        return unsupported_publish_response(platform), 501
-    config = get_context().config.load_store_config()
-    context["product"] = adapter.prepare_product(context["product"], config)
-    precheck = adapter.validate_draft(context["product"], config)
-    saved = save_draft_precheck_result(context, precheck)
-    if not precheck.get("ok"):
+    try:
+        evaluation = evaluate_publish_validation(
+            ProductPublishValidateRequest(
+                draft_id=str(body.get("draft_id") or body.get("draftId") or ""),
+                platform=str(context["platform"]),
+                site=str(context["site"]),
+            )
+        )
+    except BusinessCapabilityError as exc:
+        return {"ok": False, "error": str(exc), "error_code": exc.code}, 400
+    result = evaluation.result
+    saved = evaluation.saved_precheck
+    platform = evaluation.platform
+    site = evaluation.site
+    if not result.passed:
         return {
             "ok": False,
             "platform": platform,
-            "site": context["site"],
+            "site": site,
             "target": context["target"],
             "status": "precheck_failed",
             "error": "发布前预检未通过，已停止生成 payload。",
-            "precheck": precheck,
-            "draft": saved["draft"],
-            "productContext": saved["productContext"],
-            "productsIndex": saved["productsIndex"],
-            "draftsIndex": saved["draftsIndex"],
+            "precheck": {
+                "errors": [item.model_dump() for item in result.errors],
+                "warnings": [item.model_dump() for item in result.warnings],
+            },
+            "draft": saved.get("draft") or context.get("draft") or {},
+            "productContext": saved.get("productContext")
+            or context.get("productContext")
+            or {},
+            "productsIndex": saved.get("productsIndex"),
+            "draftsIndex": saved.get("draftsIndex"),
         }, 400
     try:
         payload = publish_logs_runtime._sanitize_for_log(
-            adapter.build_payload(context["product"], config)
+            dict(evaluation.approved_payload or {})
         )
         payload_path, _ = publish_logs_runtime.append_platform_publish_log(
             context["product"],
@@ -136,27 +161,33 @@ def preview_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
             {"ok": True, "status": "payload_preview"},
             next_action="仅预览 payload，未调用真实发布",
         )
-        return {
-            "ok": True,
-            "platform": platform,
-            "site": context["site"],
-            "target": context["target"],
-            "status": "preview_only",
-            "payload": payload,
-            "path": payload_path,
-            "draft": saved["draft"],
-            "productContext": saved["productContext"],
-            "productsIndex": saved["productsIndex"],
-            "draftsIndex": saved["draftsIndex"],
-        }, 200
     except Exception as exc:
         return {
             "ok": False,
             "platform": platform,
-            "site": context["site"],
+            "site": site,
             "target": context["target"],
             "error": str(exc),
         }, 400
+    return {
+        "ok": True,
+        "platform": platform,
+        "site": site,
+        "target": context["target"],
+        "status": "preview_only",
+        "payload": payload,
+        # sanitized payload、摘要与 digest 一并返回，供页面展示与人工确认。
+        "summary": result.summary.model_dump(),
+        "validation_digest": result.validation_digest,
+        "warnings": [item.model_dump() for item in result.warnings],
+        "path": payload_path,
+        "draft": saved.get("draft") or context.get("draft") or {},
+        "productContext": saved.get("productContext")
+        or context.get("productContext")
+        or {},
+        "productsIndex": saved.get("productsIndex"),
+        "draftsIndex": saved.get("draftsIndex"),
+    }, 200
 
 
 def publish_product_payload(body: dict[str, Any]) -> ResponseWithStatus:
@@ -209,6 +240,13 @@ def close_mercadolibre_item(body: dict[str, Any]) -> ResponseWithStatus:
 
 
 def enqueue_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
+    """人工确认入队：必须携带显式确认与预览 digest。
+
+    可信 idempotency key 与确认时间只由服务端生成；客户端不能提交幂等键，
+    也不能伪造 ``confirmed_at``。入队统一走 ``request_product_publish()``，
+    由其重校验 digest 并写入 ``approved_publications``。
+    """
+
     unsupported = _unsupported_if_explicit(body)
     if unsupported:
         return unsupported
@@ -218,51 +256,78 @@ def enqueue_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
     unsupported = _unsupported_context_response(context)
     if unsupported:
         return unsupported
-    product = context["product"]
-    platforms = [str(context["platform"])]
-    eligible_platforms = get_context().products.publish_queue_platforms(
-        product,
-        platforms,
+
+    platform = str(context["platform"])
+    draft_id = str(context["draft"].get("draft_id") or "")
+    site = str(context["site"] or "")
+    validation_digest = str(body.get("validation_digest") or "").strip().lower()
+    confirmed = bool(
+        body.get("confirm") or body.get("confirmed") or body.get("confirm_publish")
     )
-    rejected_platforms = [
-        platform for platform in platforms if platform not in eligible_platforms
-    ]
-    if not eligible_platforms:
+    if not confirmed or not validation_digest:
         return {
             "ok": False,
-            "error": "当前草稿目标未通过发布队列准入：请先完成发布预检。",
-            "error_code": "PUBLISH_QUEUE_NOT_READY",
-            "eligible_platforms": [],
-            "rejected_platforms": rejected_platforms,
-            "workflow_statuses": (
-                get_context()
-                .products.sync_product_workflow_statuses(product)
-                .get("workflow_statuses")
-                or {}
-            ),
-            "draft": context["draft"],
+            "error": "发布任务需要显式确认（confirm）与预览返回的 validation_digest。",
+            "error_code": "PUBLISH_CONFIRMATION_REQUIRED",
+            "draft_id": draft_id,
             "target": context["target"],
         }, 400
+
+    # 服务端生成可信幂等键；task_id 复用同一 key 作为确认归属标识。
+    idempotency_key = f"manual:{uuid.uuid4().hex}"
     try:
-        result = get_publishing_bus().enqueue(
-            product,
-            eligible_platforms,
-            idempotency_key=f"manual:{uuid.uuid4().hex}",
-            targets={
-                str(context["platform"]): {
-                    "draft_id": str(context["draft"].get("draft_id") or ""),
-                    "site": str(context["site"] or ""),
-                    "product_id": str(product.get("product_id") or ""),
-                }
-            },
+        request = ProductPublishRequest(
+            draft_id=draft_id,
+            platform=platform,
+            site=site,
+            idempotency_key=idempotency_key,
+            confirmation=PublishRequestConfirmation(
+                task_id=idempotency_key,
+                step_id="manual_enqueue",
+                validation_digest=validation_digest,
+                confirmed_at=datetime.now(timezone.utc),
+            ),
         )
-        result["eligible_platforms"] = eligible_platforms
-        result["rejected_platforms"] = rejected_platforms
-        result["draft_id"] = str(context["draft"].get("draft_id") or "")
-        result["target"] = context["target"]
-        return result, 200
-    except Exception as exc:
-        return {"ok": False, "error": str(exc)}, 400
+    except ValidationError as exc:
+        return {
+            "ok": False,
+            "error": f"发布请求无效：{exc}",
+            "error_code": "PUBLISH_REQUEST_INVALID",
+            "draft_id": draft_id,
+            "target": context["target"],
+        }, 400
+
+    try:
+        result = request_product_publish(request)
+    except BusinessCapabilityError as exc:
+        status_code = (
+            409
+            if exc.code
+            in {
+                "PUBLISH_CONFIRMATION_STALE",
+                "PUBLISH_IDEMPOTENCY_CONFLICT",
+            }
+            else 400
+        )
+        return {
+            "ok": False,
+            "error": str(exc),
+            "error_code": exc.code,
+            "draft_id": draft_id,
+            "target": context["target"],
+        }, status_code
+
+    return {
+        "ok": True,
+        "job_id": result.job_id,
+        "status": result.status,
+        "platform": result.platform,
+        "draft_id": result.draft_id,
+        "idempotent_replay": result.idempotent_replay,
+        "eligible_platforms": [result.platform],
+        "rejected_platforms": [],
+        "target": context["target"],
+    }, 200
 
 
 __all__ = [

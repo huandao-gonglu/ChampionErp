@@ -55,7 +55,7 @@ def _classified_error(exc: Exception) -> CategorySearchError:
             message,
             retryable=False,
         )
-    if " 429" in lowered or "rate limit" in lowered:
+    if " 429" in lowered or " 420" in lowered or "rate limit" in lowered or "限流" in lowered:
         return CategorySearchError(
             "CATEGORY_RATE_LIMITED",
             message,
@@ -317,6 +317,67 @@ class OzonCategorySearcher:
 
 
 @dataclass(frozen=True)
+class YandexCategorySearcher:
+    """Yandex 类目搜索：本地缓存树上的规范化匹配。"""
+
+    provider: Any
+    site: str
+    limit: int = 8
+    timeout_seconds: float | None = 8
+    deadline_at: float | None = None
+
+    def _timeout(self) -> float | None:
+        if self.deadline_at is None:
+            return self.timeout_seconds
+        remaining = self.deadline_at - time.monotonic()
+        if remaining <= 0:
+            raise CategorySearchError(
+                "CATEGORY_PROVIDER_TIMEOUT",
+                "类目搜索总 deadline 已耗尽。",
+                retryable=True,
+            )
+        return (
+            remaining
+            if self.timeout_seconds is None
+            else min(self.timeout_seconds, remaining)
+        )
+
+    def search_categories(self, keyword: str) -> CategorySearchResult:
+        normalized = str(keyword or "").strip()[:300]
+        if not normalized:
+            return {"keyword": "", "candidates": [], "source": "yandex_cache"}
+        try:
+            rows = self.provider.search(
+                normalized,
+                site=self.site,
+                limit=self.limit,
+                timeout_seconds=self._timeout(),
+            )
+        except Exception as exc:
+            raise _classified_error(exc) from exc
+        candidates = _candidates(
+            rows,
+            platform="yandex",
+            site=self.site,
+            limit=self.limit,
+        )
+        source_rows = rows if isinstance(rows, list) else []
+        cache_source = next(
+            (
+                str(row.get("cache_source") or "").strip()
+                for row in source_rows
+                if isinstance(row, Mapping) and row.get("cache_source")
+            ),
+            "yandex_cache",
+        )
+        return {
+            "keyword": normalized,
+            "candidates": candidates,
+            "source": cache_source,
+        }
+
+
+@dataclass(frozen=True)
 class MercadoLibreCategorySearcher:
     provider: Any
     site: str
@@ -402,9 +463,20 @@ def _mercadolibre_searcher(
     )
 
 
+def _yandex_searcher(
+    provider: CategoryProvider,
+    site: str,
+    limit: int,
+    timeout_seconds: float | None,
+    deadline_at: float | None,
+) -> CategorySearcher:
+    return YandexCategorySearcher(provider, site, limit, timeout_seconds, deadline_at)
+
+
 _CATEGORY_SEARCHER_FACTORIES: dict[str, CategorySearcherFactory] = {
     "ozon": _ozon_searcher,
     "mercadolibre": _mercadolibre_searcher,
+    "yandex": _yandex_searcher,
 }
 
 

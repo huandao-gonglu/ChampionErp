@@ -63,6 +63,8 @@ class _ValidationEvaluation:
     context: dict[str, Any]
     prepared_product: dict[str, Any]
     approved_payload: dict[str, Any] | None
+    # save_draft_precheck_result 的落盘结果（draft/上下文/索引快照）。
+    saved_precheck: dict[str, Any]
 
 
 def _text(value: Any) -> str:
@@ -188,7 +190,7 @@ def _load_context(
     return loaded
 
 
-def _evaluate_publish_validation(
+def evaluate_publish_validation(
     request: ProductPublishValidateRequest,
     *,
     context: AppContext | None = None,
@@ -273,7 +275,7 @@ def _evaluate_publish_validation(
     }
     publish_context["product"] = prepared_product
     try:
-        save_draft_precheck_result(
+        saved_precheck = save_draft_precheck_result(
             publish_context,
             combined_precheck,
             context=active_context,
@@ -309,6 +311,7 @@ def _evaluate_publish_validation(
         context=publish_context,
         prepared_product=prepared_product,
         approved_payload=payload,
+        saved_precheck=saved_precheck if isinstance(saved_precheck, dict) else {},
     )
 
 
@@ -319,7 +322,7 @@ def validate_product_publish(
 ) -> ProductPublishValidationResult:
     """复用平台 adapter 完成草稿预检、payload 校验与摘要 digest。"""
 
-    return _evaluate_publish_validation(request, context=context).result
+    return evaluate_publish_validation(request, context=context).result
 
 
 def request_product_publish(
@@ -376,7 +379,7 @@ def request_product_publish(
             idempotent_replay=True,
         )
 
-    evaluation = _evaluate_publish_validation(
+    evaluation = evaluate_publish_validation(
         validation_request,
         context=active_context,
     )

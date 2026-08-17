@@ -338,7 +338,9 @@ def _field_error_map(items: list[dict[str, Any]]) -> dict[str, list[str]]:
 def _required_attribute_summary(product: dict[str, Any], platform: str) -> dict[str, Any]:
     draft = _draft_for_platform(product, platform)
     category_id = str(draft.get("category_id") or "").strip()
-    if platform == "ozon":
+    if platform in {"ozon", "yandex"}:
+        # 必填属性以草稿上的实时类目 schema 为唯一事实来源，
+        # 与 payload builder 消费同一份定义。
         schema = (
             draft.get("category_attribute_schema")
             if isinstance(draft.get("category_attribute_schema"), dict)

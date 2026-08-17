@@ -156,7 +156,7 @@ function attributePlaceholder(attr: CategoryAttributeDefinition) {
 
 function selectedDictionaryValues(attrId: string): CategoryDictionaryValue[] {
   const raw = activeDraft.value.attributes[attrId]
-  if (!raw || typeof raw === 'string' || !Array.isArray(raw.values)) return []
+  if (!raw || typeof raw === 'string' || !('values' in raw) || !Array.isArray(raw.values)) return []
   return raw.values
 }
 
@@ -166,6 +166,32 @@ function selectedDictionarySummary(attr: CategoryAttributeDefinition) {
   return attr.isCollection
     ? `已选 ${values.length} 项`
     : values[0]?.value || ''
+}
+
+function unitAttributeValue(attrId: string): { value: string; unit: string } {
+  const raw = activeDraft.value.attributes[attrId]
+  if (!raw || typeof raw === 'string') {
+    return { value: typeof raw === 'string' ? raw : '', unit: '' }
+  }
+  if ('values' in raw) return { value: '', unit: '' }
+  return { value: String(raw.value ?? ''), unit: String(raw.unit ?? '') }
+}
+
+function unitAttributeSelectedUnit(attr: CategoryAttributeDefinition) {
+  const current = unitAttributeValue(attr.id).unit
+  return current || attr.defaultUnit || attr.unitOptions?.[0] || ''
+}
+
+function setUnitAttributeValue(attr: CategoryAttributeDefinition, patch: { value?: string; unit?: string }) {
+  const current = unitAttributeValue(attr.id)
+  const value = (patch.value ?? current.value).trim()
+  const unit = (patch.unit ?? unitAttributeSelectedUnit(attr)).trim()
+  if (!value) {
+    delete activeDraft.value.attributes[attr.id]
+  } else {
+    activeDraft.value.attributes[attr.id] = { value, unit }
+  }
+  emit('invalidateCategoryPrecheck')
 }
 
 function dictionaryState(attr: CategoryAttributeDefinition): DictionaryFieldState {
@@ -230,12 +256,14 @@ function scheduleDictionarySearch(attr: CategoryAttributeDefinition, value: stri
 }
 
 function selectDictionaryOption(attr: CategoryAttributeDefinition, option: CategoryAttributeOption) {
-  const dictionaryValueId = Number(option.id)
-  if (!Number.isInteger(dictionaryValueId) || dictionaryValueId <= 0) return
+  // 按字符串保存枚举值 ID：Yandex 等平台的 dictionary_value_id 可能超出
+  // Number 安全整数范围，Number() 会造成精度丢失并选错枚举值。
+  const dictionaryValueId = String(option.id ?? '').trim()
+  if (!dictionaryValueId || dictionaryValueId === '0') return
   const existing = selectedDictionaryValues(attr.id)
   const selected = attr.isCollection
     ? [
-      ...existing.filter((item) => item.dictionaryValueId !== dictionaryValueId),
+      ...existing.filter((item) => String(item.dictionaryValueId) !== dictionaryValueId),
       { dictionaryValueId, value: option.value },
     ].slice(0, attr.maxValueCount && attr.maxValueCount > 0 ? attr.maxValueCount : undefined)
     : [{ dictionaryValueId, value: option.value }]
@@ -247,9 +275,10 @@ function selectDictionaryOption(attr: CategoryAttributeDefinition, option: Categ
   emit('invalidateCategoryPrecheck')
 }
 
-function removeDictionaryOption(attr: CategoryAttributeDefinition, dictionaryValueId: number) {
+function removeDictionaryOption(attr: CategoryAttributeDefinition, dictionaryValueId: string | number) {
+  const removed = String(dictionaryValueId)
   const values = selectedDictionaryValues(attr.id).filter(
-    (item) => item.dictionaryValueId !== dictionaryValueId,
+    (item) => String(item.dictionaryValueId) !== removed,
   )
   if (values.length) {
     activeDraft.value.attributes[attr.id] = { values }
@@ -598,6 +627,25 @@ function selectTargetByKey(value: string) {
                 <p v-if="legacyDictionaryValue(attr.id)" class="mt-1 text-xs text-rose-700">旧值“{{ legacyDictionaryValue(attr.id) }}”不是平台选项，请重新选择。</p>
                 <p v-else class="mt-1 text-xs text-accent-500">平台枚举字段，只会保存从列表选中的值。</p>
               </div>
+              <div v-else-if="attr.unitOptions?.length" class="mt-1 flex gap-2">
+                <input
+                  :ref="(el) => setAttributeInputRef(attr.id, el)"
+                  :value="unitAttributeValue(attr.id).value"
+                  class="input"
+                  :class="isMissingAttribute(attr.id) ? 'border-rose-300 bg-rose-50' : ''"
+                  :data-attribute-id="attr.id"
+                  :placeholder="attributePlaceholder(attr)"
+                  @input="setUnitAttributeValue(attr, { value: ($event.target as HTMLInputElement).value })"
+                />
+                <select
+                  :value="unitAttributeSelectedUnit(attr)"
+                  class="input w-28 shrink-0"
+                  :aria-label="`单位（${attributeLabel(attr)}）`"
+                  @change="setUnitAttributeValue(attr, { unit: ($event.target as HTMLSelectElement).value })"
+                >
+                  <option v-for="unitOption in attr.unitOptions" :key="unitOption" :value="unitOption">{{ unitOption }}</option>
+                </select>
+              </div>
               <select
                 v-else-if="attr.options?.length"
                 :ref="(el) => setAttributeInputRef(attr.id, el)"
@@ -689,6 +737,24 @@ function selectTargetByKey(value: string) {
                 </div>
                 <p v-if="legacyDictionaryValue(attr.id)" class="mt-1 text-xs text-rose-700">旧值“{{ legacyDictionaryValue(attr.id) }}”不是平台选项，请重新选择。</p>
                 <p v-else class="mt-1 text-xs text-accent-500">平台枚举字段，只会保存从列表选中的值。</p>
+              </div>
+              <div v-else-if="attr.unitOptions?.length" class="mt-1 flex gap-2">
+                <input
+                  :ref="(el) => setAttributeInputRef(attr.id, el)"
+                  :value="unitAttributeValue(attr.id).value"
+                  class="input"
+                  :data-attribute-id="attr.id"
+                  :placeholder="attributePlaceholder(attr)"
+                  @input="setUnitAttributeValue(attr, { value: ($event.target as HTMLInputElement).value })"
+                />
+                <select
+                  :value="unitAttributeSelectedUnit(attr)"
+                  class="input w-28 shrink-0"
+                  :aria-label="`单位（${attributeLabel(attr)}）`"
+                  @change="setUnitAttributeValue(attr, { unit: ($event.target as HTMLSelectElement).value })"
+                >
+                  <option v-for="unitOption in attr.unitOptions" :key="unitOption" :value="unitOption">{{ unitOption }}</option>
+                </select>
               </div>
               <select v-else-if="attr.options?.length" :ref="(el) => setAttributeInputRef(attr.id, el)" v-model="activeDraft.attributes[attr.id]" class="input mt-1" :data-attribute-id="attr.id" @change="emit('invalidateCategoryPrecheck')">
                 <option value="">{{ attributePlaceholder(attr) }}</option>
