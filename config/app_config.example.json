@@ -14,7 +14,10 @@
       "api_key_env": "DEEPSEEK_API_KEY",
       "model": "deepseek-chat",
       "model_env": "DEEPSEEK_MODEL",
-      "capabilities": ["chat", "json"],
+      "capabilities": [
+        "chat",
+        "json"
+      ],
       "enabled": true
     },
     {
@@ -29,7 +32,10 @@
       "api_key_env": "OPENAI_API_KEY",
       "model": "gpt-image-1",
       "model_env": "OPENAI_IMAGE_MODEL",
-      "capabilities": ["image_generate", "image_edit"],
+      "capabilities": [
+        "image_generate",
+        "image_edit"
+      ],
       "quality": "medium",
       "enabled": true
     },
@@ -41,7 +47,12 @@
       "cli_tool": "codex",
       "command": "codex",
       "model": "",
-      "capabilities": ["chat", "json", "web_search", "image_generate"],
+      "capabilities": [
+        "chat",
+        "json",
+        "web_search",
+        "image_generate"
+      ],
       "timeout_seconds": "180",
       "sandbox": "read-only",
       "enabled": false
@@ -55,16 +66,16 @@
       "browser_mode": "managed_profile",
       "browser_profile": "",
       "model": "",
-      "capabilities": ["chat", "json"],
+      "capabilities": [
+        "chat",
+        "json"
+      ],
       "timeout_seconds": "180",
       "enabled": false
     }
   ],
   "ai_use_case_bindings": {},
   "ai_use_case_prompts": {
-    "global.task.plan": {
-      "path": "config/prompts/global_task_plan.json"
-    },
     "copy.generate": {
       "path": "config/prompts/copy_generate.json"
     },

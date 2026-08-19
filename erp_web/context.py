@@ -24,6 +24,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, avoids import cycles
     from erp_web.services.ai_presentation_registry import (
         AiPresentationRegistry,
     )
+    from erp_web.services.approval_session import ApprovalSession
     from erp_web.services.image_delivery_service import ImageDeliveryService
     from erp_web.services.product_research_service import ProductResearchRunRegistry
     from erp_web.stores.ai_chat_turn_claim_store import AiChatTurnClaimStore
@@ -153,6 +154,7 @@ class AppContext:
         self._publishing_bus: "PublishingBus | None" = None
         self._global_tasks: "LocalGlobalTaskStore | None" = None
         self._ai_presentations: "AiPresentationRegistry | None" = None
+        self._approval_session: "ApprovalSession | None" = None
 
     @property
     def products(self) -> "ProductStore":
@@ -288,6 +290,18 @@ class AppContext:
 
                     self._ai_presentations = AiPresentationRegistry()
         return self._ai_presentations
+
+    @property
+    def approval_session(self) -> "ApprovalSession":
+        """进程级可信审批凭据；token 只随受信 UI bootstrap 下发，不进入模型上下文。"""
+
+        if self._approval_session is None:
+            with self._lazy_lock:
+                if self._approval_session is None:
+                    from erp_web.services.approval_session import ApprovalSession
+
+                    self._approval_session = ApprovalSession()
+        return self._approval_session
 
     @property
     def closed(self) -> bool:

@@ -114,6 +114,7 @@ class VercelAiChatRun:
                 async with self._service.chat_service.open_chat_run(
                     conversation_id=self.conversation_id,
                     new_messages=self.new_messages,
+                    client_message_id=self.client_message_id,
                 ) as chat_session:
                     session = chat_session
                     native = chat_session.events(self.new_messages)

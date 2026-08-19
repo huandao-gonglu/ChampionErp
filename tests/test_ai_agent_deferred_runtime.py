@@ -17,7 +17,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.settings import ModelSettings
 
 from erp_web.context import get_context
-from erp_web.schemas.ai_tools import AiToolDefinition
+from erp_web.schemas.ai_tools import AiToolDefinition, TaskApprovalSnapshot
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.services.ai_agent_factory import (
     AiAgentExecutionError,
@@ -91,6 +91,7 @@ def write_toolset(
         "inventory.write",
         [definition],
         {"save_inventory": deadline_aware_tool_executor(executor)},
+        approval_preparers={"save_inventory": _approval_snapshot},
     )
 
 
@@ -150,6 +151,14 @@ def factory(model: FunctionModel) -> AiAgentFactory:
 
 RUN_SCOPE = {"store_id": "store-1", "sku_id": "sku-1"}
 IDEMPOTENCY = {"operation_id": "operation-1"}
+
+
+def _approval_snapshot(arguments: dict[str, Any]) -> TaskApprovalSnapshot:
+    # 审批工具必须由服务端准备快照；此处返回规范化参数冻结快照。
+    return TaskApprovalSnapshot(
+        summary=f"保存库存 {arguments.get('sku')}",
+        canonical_payload=dict(arguments),
+    )
 
 
 def start_deferred(agent_factory: AiAgentFactory, toolset: AiToolSet):

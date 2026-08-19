@@ -2630,7 +2630,7 @@ class ErpDatabase:
                 """
                 SELECT task_json
                 FROM global_tasks
-                WHERE status IN ('planning', 'running', 'waiting_publish_result')
+                WHERE status IN ('running', 'in_progress')
                   AND (
                       execution_owner = ''
                       OR execution_lease_expires_at <= ?

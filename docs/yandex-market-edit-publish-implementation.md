@@ -169,7 +169,7 @@ erp_web/runtime_units/publish_capabilities.py
 PublishingBus 继续负责在 worker 外发前复核冻结 payload、digest 和当前店铺身份。
 `YandexPublishingAdapter` 只处理平台 payload 与远端 I/O，不读取、生成或校验确认 digest。
 
-全局任务已经通过 `product.publish.validate` / `product.publish.request` 使用这条链路。人工页面也要
+全局任务已经通过 `product_publish_validate` / `product_publish_request` 使用这条链路。人工页面也要
 复用同一个共享发布评估结果：预览接口返回 payload、summary 和 `validation_digest`；用户确认后，
 通用 enqueue facade 用服务端生成的 `manual:<uuid>`、服务端确认时间和客户端回传的 digest 构造
 `ProductPublishRequest`，再调用 `request_product_publish()`。不得把当前“单独预览 + 无 digest 直接入队”

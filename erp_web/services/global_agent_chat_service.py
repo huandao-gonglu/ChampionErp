@@ -1,7 +1,8 @@
-"""global.chat 对话 profile 的业务入口。
+"""global.chat 唯一主 Agent service。
 
-只负责选择 prompt、只读 ToolSet、Execution Profile 和权限，再调用
-``AiAgentFactory``；不负责协议转换，也不接触 Global Task 规划/执行链。
+负责选择 prompt、合并后的 Direct + 任务控制 ToolSet、Execution Profile 和
+权限，再调用 ``AiAgentFactory``；不负责协议转换。对话是唯一的模型入口：
+任务计划通过 ``global_task_start`` 类型化参数提交，不存在第二个 Planner。
 """
 
 from __future__ import annotations
@@ -14,20 +15,17 @@ from typing import Any
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models import Model
 
-from erp_web.services.global_chat_tools import (
-    GLOBAL_CHAT_READ_PERMISSION,
-    build_global_chat_toolset,
+from erp_web.ai_capability_composition import (
+    application_capability_permissions,
 )
+from erp_web.schemas.global_tasks import TASK_CONTROL_PERMISSION
 from erp_web.services.ai_agent_factory import (
     AiAgentExecutionProfile,
     AiAgentFactory,
     AiAgentStreamSession,
 )
 from erp_web.services.ai_prompt_templates import load_ai_use_case_prompt_pair
-from erp_web.services.draft_query_service import (
-    DraftIndexReader,
-    DraftSnapshotRepository,
-)
+from erp_web.services.ai_tool_registry import AiToolSet
 from erp_web.stores.pydantic_message_store import PydanticMessageStore
 
 
@@ -43,19 +41,21 @@ GLOBAL_CHAT_PROFILE = AiAgentExecutionProfile(
     output_type=str,
     toolset_id=GLOBAL_CHAT_TOOLSET_ID,
     budget_profile="global.chat.default",
-    permissions=frozenset({GLOBAL_CHAT_READ_PERMISSION}),
+    permissions=application_capability_permissions() | {TASK_CONTROL_PERMISSION},
     timeout_seconds=180,
     max_model_requests=12,
     max_tool_calls=8,
     max_tool_output_bytes=256 * 1024,
     retries=1,
     result_version="global_chat.v1",
+    allow_write=True,
 )
 
 _FALLBACK_INSTRUCTIONS = (
     "你是单用户本地 ERP 的全局对话 Agent，用自然语言回答用户问题；"
-    "涉及草稿事实时先调用只读 drafts_query 工具，不得编造数据，"
-    "也不执行任何写操作。"
+    "涉及草稿事实时先调用只读查询工具，不得编造数据。"
+    "需要修改商品、准备目标市场或发布等业务操作时，"
+    "用 global_task_start 提交类型化任务步骤，并用任务控制工具跟踪状态。"
 )
 
 
@@ -68,17 +68,17 @@ class GlobalAgentChatService:
         app_dir: Path | str,
         app_config: dict[str, Any] | None,
         message_store: PydanticMessageStore,
-        products: DraftIndexReader,
-        draft_snapshots: DraftSnapshotRepository,
+        toolset: AiToolSet,
         factory: AiAgentFactory | None = None,
     ) -> None:
         self.app_dir = Path(app_dir)
         self.app_config = dict(app_config or {})
         self.message_store = message_store
-        self.toolset = build_global_chat_toolset(
-            products=products,
-            draft_snapshots=draft_snapshots,
-        )
+        if toolset.toolset_id != GLOBAL_CHAT_TOOLSET_ID:
+            raise ValueError(
+                f"global.chat ToolSet 标识必须是 {GLOBAL_CHAT_TOOLSET_ID}"
+            )
+        self.toolset = toolset
         self.factory = factory or AiAgentFactory(
             app_dir=self.app_dir,
             app_config=self.app_config,
@@ -110,11 +110,22 @@ class GlobalAgentChatService:
         *,
         conversation_id: str,
         new_messages: Sequence[ModelMessage],
+        client_message_id: str = "",
         model_override: Model | None = None,
     ) -> AsyncIterator[AiAgentStreamSession[str]]:
-        """用可信历史加本轮用户输入启动一次新的流式 run。"""
+        """用可信历史加本轮用户输入启动一次新的流式 run。
+
+        conversation 与 message ID 进入可信 business/idempotency Scope，
+        供任务控制 Capability 绑定幂等上下文。
+        """
 
         message_history = self.trusted_history(conversation_id)
+        business_scope = {"conversation_id": conversation_id}
+        idempotency_context = {"conversation_id": conversation_id}
+        normalized_message_id = str(client_message_id or "").strip()
+        if normalized_message_id:
+            business_scope["message_id"] = normalized_message_id
+            idempotency_context["message_id"] = normalized_message_id
         async with self.factory.open_stream_run(
             profile=GLOBAL_CHAT_PROFILE,
             instructions=self.instructions(),
@@ -123,6 +134,8 @@ class GlobalAgentChatService:
             message_history=message_history,
             actor_id=GLOBAL_CHAT_ACTOR_ID,
             tenant_id=GLOBAL_CHAT_TENANT_ID,
+            business_scope=business_scope,
+            idempotency_context=idempotency_context,
             model_override=model_override,
         ) as session:
             yield session
@@ -144,7 +157,6 @@ __all__ = [
     "GLOBAL_CHAT_CONVERSATION_PREFIX",
     "GLOBAL_CHAT_PROFILE",
     "GLOBAL_CHAT_PROFILE_ID",
-    "GLOBAL_CHAT_READ_PERMISSION",
     "GLOBAL_CHAT_TENANT_ID",
     "GLOBAL_CHAT_TOOLSET_ID",
     "GLOBAL_CHAT_USE_CASE_ID",

@@ -143,6 +143,8 @@ def search_categories_live(
     query: str,
     site: str = "",
     limit: int = 5,
+    *,
+    timeout_seconds: float | None = None,
 ) -> list[dict[str, Any]]:
     query = str(query or "").strip()
     if not query:
@@ -151,7 +153,7 @@ def search_categories_live(
         platform,
         site=site,
         limit=limit,
-        timeout_seconds=None,
+        timeout_seconds=timeout_seconds,
     ).search_categories(query)
     return [
         {

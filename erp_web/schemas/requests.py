@@ -190,14 +190,14 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/assign-upc": _EMPTY,
     "/api/browser-debug/open-profile": _EMPTY,
     "/api/calculate-price": _EMPTY,
-    "/api/global-task-start": _contract(required=("goal",)),
     "/api/global-task-state": _contract(required=("task_id",)),
     "/api/global-task-input": _contract(
-        required=("task_id",),
-        required_any=(("message", "inputs"),),
+        required=("task_id", "arguments"),
     ),
-    "/api/global-task-publish-confirm": _contract(required=("task_id",)),
+    "/api/global-task-approve": _contract(required=("task_id",)),
+    "/api/global-task-reject": _contract(required=("task_id", "reason")),
     "/api/global-task-cancel": _contract(required=("task_id",)),
+    "/api/global-task-refresh": _contract(required=("task_id",)),
     "/api/category-ai-fill": _contract(
         required_any=(
             ("product_id", "draft_id", "draftId"),

@@ -3,7 +3,8 @@ from __future__ import annotations
 """商品事实读取、幂等属性设置与确定性草稿图片准备。"""
 
 from copy import deepcopy
-from typing import Any, Protocol
+from dataclasses import dataclass
+from typing import Annotated, Any, Protocol
 
 from erp_web.product_model import (
     draft_image_refs_from_assets,
@@ -15,6 +16,7 @@ from erp_web.runtime_units.draft_publish_context import (
     draft_publish_targets,
     merge_target_listing_into_draft,
 )
+from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.product_capabilities import (
     ProductAttributesUpdateRequest,
     ProductAttributesUpdateResult,
@@ -25,6 +27,7 @@ from erp_web.schemas.product_capabilities import (
     ProductReadRequest,
     ProductReadResult,
 )
+from erp_web.services.ai_tool_declaration import Injected, ai_tool
 from erp_web.services.capability_errors import (
     BusinessCapabilityError,
     CapabilityInputRequired,
@@ -590,9 +593,91 @@ def prepare_product_images(
     )
 
 
+@dataclass(frozen=True)
+class ProductCapabilityScope:
+    """商品 Capability 的可信商品存储边界。"""
+
+    products: ProductCapabilityStore
+
+
+PRODUCT_READ_TOOL = "product_read"
+PRODUCT_ATTRIBUTES_UPDATE_TOOL = "product_attributes_update"
+PRODUCT_IMAGES_PREPARE_TOOL = "product_images_prepare"
+
+
+@ai_tool(
+    name=PRODUCT_READ_TOOL,
+    description="读取可信商品与草稿事实；支持按 product_id 或 draft_id 查询。",
+    permission="product.read",
+    side_effect="none",
+    recovery_policy="retry_safe",
+    version="1",
+)
+def product_read(
+    request: ProductReadRequest,
+    scope: Annotated[ProductCapabilityScope, Injected()],
+) -> ProductReadResult:
+    return read_product(request, product_store=scope.products)
+
+
+@ai_tool(
+    name=PRODUCT_ATTRIBUTES_UPDATE_TOOL,
+    description="按目标值设置草稿平台属性；相同请求不会重复写入。",
+    permission="product.write",
+    side_effect="write",
+    approval_required=False,
+    idempotency="required",
+    idempotency_keys=("operation_key",),
+    recovery_policy="manual",
+    version="1",
+)
+def product_attributes_update(
+    request: ProductAttributesUpdateRequest,
+    scope: Annotated[ProductCapabilityScope, Injected()],
+    execution: Annotated[AiExecutionContext, Injected()],
+) -> ProductAttributesUpdateResult:
+    del execution
+    return update_product_attributes(request, product_store=scope.products)
+
+
+@ai_tool(
+    name=PRODUCT_IMAGES_PREPARE_TOOL,
+    description="把已就绪的图片资产集合覆盖到草稿图片引用。",
+    permission="product.write",
+    side_effect="write",
+    approval_required=False,
+    idempotency="required",
+    idempotency_keys=("operation_key",),
+    recovery_policy="manual",
+    version="1",
+)
+def product_images_prepare(
+    request: ProductImagesPrepareRequest,
+    scope: Annotated[ProductCapabilityScope, Injected()],
+    execution: Annotated[AiExecutionContext, Injected()],
+) -> ProductImagesPrepareResult:
+    del execution
+    return prepare_product_images(request, product_store=scope.products)
+
+
+PRODUCT_AI_CAPABILITIES = (
+    product_read,
+    product_attributes_update,
+    product_images_prepare,
+)
+
+
 __all__ = [
+    "PRODUCT_AI_CAPABILITIES",
+    "PRODUCT_ATTRIBUTES_UPDATE_TOOL",
+    "PRODUCT_IMAGES_PREPARE_TOOL",
+    "PRODUCT_READ_TOOL",
+    "ProductCapabilityScope",
     "ProductCapabilityStore",
     "prepare_product_images",
+    "product_attributes_update",
+    "product_images_prepare",
+    "product_read",
     "read_product",
     "update_product_attributes",
 ]

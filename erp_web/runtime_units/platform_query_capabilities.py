@@ -1,0 +1,290 @@
+from __future__ import annotations
+
+"""平台商品/订单与发布队列的只读查询 Capability。"""
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Annotated, Any, Protocol
+
+from erp_web.schemas.platform_query_capabilities import (
+    PlatformOrdersQueryRequest,
+    PlatformOrdersQueryResult,
+    PlatformPublishedItemsQueryRequest,
+    PlatformPublishedItemsQueryResult,
+    ProductsIndexQueryRequest,
+    ProductsIndexQueryResult,
+    PublishJobStatusQueryRequest,
+    PublishJobStatusQueryResult,
+    PublishJobsQueryRequest,
+    PublishJobsQueryResult,
+    PublishLogsQueryRequest,
+    PublishLogsQueryResult,
+)
+from erp_web.services.ai_tool_declaration import Injected, ai_tool
+from erp_web.services.capability_errors import BusinessCapabilityError
+
+
+class ProductsIndexReader(Protocol):
+    def load_products_index(self) -> list[dict[str, Any]]:
+        ...
+
+
+class PublishingBusQueryLike(Protocol):
+    def list_jobs(
+        self,
+        *,
+        limit: int,
+        cursor: str,
+        status: str,
+        platform: str,
+        product_id: str,
+    ) -> dict[str, Any]:
+        ...
+
+    def get_public_status(self, job_id: str) -> dict[str, Any]:
+        ...
+
+
+@dataclass(frozen=True)
+class PlatformQueryCapabilityScope:
+    """平台/发布队列查询的可信依赖边界。"""
+
+    products: ProductsIndexReader
+    published_items_loader: Callable[..., dict[str, Any]]
+    orders_loader: Callable[..., dict[str, Any]]
+    publish_logs_loader: Callable[..., list[dict[str, Any]]]
+    publishing_bus: PublishingBusQueryLike
+
+
+def _text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _require_ok(
+    result: Any,
+    *,
+    default_code: str,
+    default_message: str,
+) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        raise BusinessCapabilityError(default_code, default_message)
+    if not result.get("ok"):
+        raise BusinessCapabilityError(
+            _text(result.get("error_code")) or default_code,
+            _text(result.get("error")) or default_message,
+        )
+    return result
+
+
+def _dict_rows(value: Any) -> tuple[dict[str, Any], ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(item for item in value if isinstance(item, dict))
+
+
+def _require_platform(platform: str) -> str:
+    normalized = _text(platform).lower()
+    if normalized != "mercadolibre":
+        raise BusinessCapabilityError(
+            "PLATFORM_QUERY_UNSUPPORTED",
+            f"平台 {platform} 暂未接入平台查询能力。",
+        )
+    return normalized
+
+
+PRODUCTS_INDEX_QUERY_TOOL = "products_index_query"
+PLATFORM_PUBLISHED_ITEMS_QUERY_TOOL = "platform_published_items_query"
+PLATFORM_ORDERS_QUERY_TOOL = "platform_orders_query"
+PUBLISH_LOGS_QUERY_TOOL = "publish_logs_query"
+PUBLISH_JOBS_QUERY_TOOL = "publish_jobs_query"
+PUBLISH_JOB_STATUS_QUERY_TOOL = "publish_job_status_query"
+
+
+@ai_tool(
+    name=PRODUCTS_INDEX_QUERY_TOOL,
+    description="读取本地可信商品索引摘要列表。",
+    permission="product.read",
+    side_effect="none",
+    recovery_policy="retry_safe",
+    version="1",
+)
+def products_index_query(
+    request: ProductsIndexQueryRequest,
+    scope: Annotated[PlatformQueryCapabilityScope, Injected()],
+) -> ProductsIndexQueryResult:
+    del request
+    items = _dict_rows(scope.products.load_products_index())
+    return ProductsIndexQueryResult(items=items, count=len(items))
+
+
+@ai_tool(
+    name=PLATFORM_PUBLISHED_ITEMS_QUERY_TOOL,
+    description="查询目标平台店铺已发布商品列表（远端只读）。",
+    permission="platform.read",
+    side_effect="none",
+    recovery_policy="retry_safe",
+    version="1",
+)
+def platform_published_items_query(
+    request: PlatformPublishedItemsQueryRequest,
+    scope: Annotated[PlatformQueryCapabilityScope, Injected()],
+) -> PlatformPublishedItemsQueryResult:
+    platform = _require_platform(request.platform)
+    result = _require_ok(
+        scope.published_items_loader(
+            status=_text(request.status).lower() or "active",
+            page=request.page,
+            per_page=request.per_page,
+        ),
+        default_code="PLATFORM_ITEMS_QUERY_FAILED",
+        default_message="平台商品查询失败。",
+    )
+    pagination = (
+        result.get("pagination")
+        if isinstance(result.get("pagination"), dict)
+        else {}
+    )
+    return PlatformPublishedItemsQueryResult(
+        platform=platform,
+        status=_text(result.get("status")),
+        items=_dict_rows(result.get("items")),
+        item_ids=tuple(_text(item) for item in result.get("item_ids") or ()),
+        pagination=dict(pagination),
+        checked_at=_text(result.get("checked_at")),
+    )
+
+
+@ai_tool(
+    name=PLATFORM_ORDERS_QUERY_TOOL,
+    description="查询目标平台店铺最近订单列表（远端只读）。",
+    permission="platform.read",
+    side_effect="none",
+    recovery_policy="retry_safe",
+    version="1",
+)
+def platform_orders_query(
+    request: PlatformOrdersQueryRequest,
+    scope: Annotated[PlatformQueryCapabilityScope, Injected()],
+) -> PlatformOrdersQueryResult:
+    platform = _require_platform(request.platform)
+    result = _require_ok(
+        scope.orders_loader(limit=request.limit, offset=request.offset),
+        default_code="PLATFORM_ORDERS_QUERY_FAILED",
+        default_message="平台订单查询失败。",
+    )
+    pagination = (
+        result.get("pagination")
+        if isinstance(result.get("pagination"), dict)
+        else {}
+    )
+    return PlatformOrdersQueryResult(
+        platform=platform,
+        items=_dict_rows(result.get("items")),
+        notifications=_dict_rows(result.get("notifications")),
+        pagination=dict(pagination),
+        checked_at=_text(result.get("checked_at")),
+    )
+
+
+@ai_tool(
+    name=PUBLISH_LOGS_QUERY_TOOL,
+    description="查询本地发布日志（最近 N 条）。",
+    permission="publish.read",
+    side_effect="none",
+    recovery_policy="retry_safe",
+    version="1",
+)
+def publish_logs_query(
+    request: PublishLogsQueryRequest,
+    scope: Annotated[PlatformQueryCapabilityScope, Injected()],
+) -> PublishLogsQueryResult:
+    items = _dict_rows(scope.publish_logs_loader(limit=request.limit))
+    return PublishLogsQueryResult(items=items, count=len(items))
+
+
+@ai_tool(
+    name=PUBLISH_JOBS_QUERY_TOOL,
+    description="查询 PublishingBus 发布任务队列列表（可按状态/平台/商品过滤）。",
+    permission="publish.read",
+    side_effect="none",
+    recovery_policy="retry_safe",
+    version="1",
+)
+def publish_jobs_query(
+    request: PublishJobsQueryRequest,
+    scope: Annotated[PlatformQueryCapabilityScope, Injected()],
+) -> PublishJobsQueryResult:
+    result = scope.publishing_bus.list_jobs(
+        limit=request.limit,
+        cursor=request.cursor,
+        status=_text(request.status).lower(),
+        platform=_text(request.platform).lower(),
+        product_id=request.product_id,
+    )
+    if not isinstance(result, dict):
+        raise BusinessCapabilityError(
+            "PUBLISH_JOBS_QUERY_FAILED",
+            "发布任务查询失败。",
+        )
+    jobs = _dict_rows(result.get("jobs") or result.get("items"))
+    next_cursor = _text(result.get("cursor") or result.get("next_cursor"))
+    return PublishJobsQueryResult(jobs=jobs, next_cursor=next_cursor, count=len(jobs))
+
+
+@ai_tool(
+    name=PUBLISH_JOB_STATUS_QUERY_TOOL,
+    description="按 job_id 查询单个发布任务的公开状态。",
+    permission="publish.read",
+    side_effect="none",
+    recovery_policy="retry_safe",
+    version="1",
+)
+def publish_job_status_query(
+    request: PublishJobStatusQueryRequest,
+    scope: Annotated[PlatformQueryCapabilityScope, Injected()],
+) -> PublishJobStatusQueryResult:
+    try:
+        job = scope.publishing_bus.get_public_status(request.job_id)
+    except BusinessCapabilityError:
+        raise
+    except Exception as exc:
+        raise BusinessCapabilityError(
+            "PUBLISH_JOB_NOT_FOUND",
+            f"发布任务不存在或状态不可读：{exc}",
+        ) from exc
+    if not isinstance(job, dict):
+        raise BusinessCapabilityError(
+            "PUBLISH_JOB_NOT_FOUND",
+            "发布任务状态不可读。",
+        )
+    return PublishJobStatusQueryResult(job=dict(job))
+
+
+PLATFORM_QUERY_AI_CAPABILITIES = (
+    products_index_query,
+    platform_published_items_query,
+    platform_orders_query,
+    publish_logs_query,
+    publish_jobs_query,
+    publish_job_status_query,
+)
+
+
+__all__ = [
+    "PLATFORM_ORDERS_QUERY_TOOL",
+    "PLATFORM_PUBLISHED_ITEMS_QUERY_TOOL",
+    "PLATFORM_QUERY_AI_CAPABILITIES",
+    "PRODUCTS_INDEX_QUERY_TOOL",
+    "PUBLISH_JOBS_QUERY_TOOL",
+    "PUBLISH_JOB_STATUS_QUERY_TOOL",
+    "PUBLISH_LOGS_QUERY_TOOL",
+    "PlatformQueryCapabilityScope",
+    "ProductsIndexReader",
+    "PublishingBusQueryLike",
+    "platform_orders_query",
+    "platform_published_items_query",
+    "products_index_query",
+    "publish_job_status_query",
+    "publish_jobs_query",
+    "publish_logs_query",
+]

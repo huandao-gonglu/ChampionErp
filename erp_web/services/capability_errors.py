@@ -6,14 +6,20 @@ from __future__ import annotations
 机械转换为 ``CapabilityResult.failed`` 或 ``CapabilityResult.needs_input``。
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 
 _INPUT_OWNERS = frozenset({"step", "provided_attributes", "pricing_input"})
 
 
 class BusinessCapabilityError(RuntimeError):
-    """可由上层稳定映射的业务 Capability 错误。"""
+    """可由上层稳定映射的业务 Capability 错误。
+
+    ``details`` 允许能力附带结构化语义，例如副作用已发出但结果未知的
+    ``{"outcome_unknown": True}``；Controller 必须据此区分普通失败与
+    不可自动重试的结果未知。
+    """
 
     def __init__(
         self,
@@ -21,9 +27,13 @@ class BusinessCapabilityError(RuntimeError):
         message: str,
         *,
         retryable: bool = False,
+        details: Mapping[str, Any] | None = None,
     ) -> None:
         self.code = str(code or "CAPABILITY_FAILED").strip() or "CAPABILITY_FAILED"
         self.retryable = bool(retryable)
+        self.details: Mapping[str, Any] | None = (
+            dict(details) if isinstance(details, Mapping) and details else None
+        )
         super().__init__(str(message or "业务能力执行失败").strip())
 
 

@@ -117,7 +117,6 @@ def _context() -> dict:
 @pytest.fixture()
 def publish_boundary(monkeypatch):
     adapter = _Adapter()
-    saved: list[dict] = []
     monkeypatch.setattr(
         publish_capabilities,
         "load_required_draft_publish_context",
@@ -127,13 +126,6 @@ def publish_boundary(monkeypatch):
         publish_capabilities,
         "publishing_adapter_for",
         lambda platform: adapter,
-    )
-    monkeypatch.setattr(
-        publish_capabilities,
-        "save_draft_precheck_result",
-        lambda publish_context, precheck, **_kwargs: (
-            saved.append(deepcopy(precheck)) or {}
-        ),
     )
     store_config = {
         "mercadolibre": {
@@ -148,17 +140,41 @@ def publish_boundary(monkeypatch):
         products=_Products(),
     )
     monkeypatch.setattr(publish_capabilities, "get_context", lambda: context)
-    return adapter, saved, store_config
+    # 提交发布是写路径：允许预检落盘；测试用轻量 stub 代替真实 DB 写入。
+    monkeypatch.setattr(
+        publish_capabilities,
+        "save_draft_precheck_result",
+        lambda publish_context, precheck, **_kwargs: deepcopy(
+            publish_context.get("draft") or {}
+        ),
+    )
+    return adapter, store_config
 
 
-def test_publish_validate_returns_stable_digest_and_persists_combined_precheck(
+def test_publish_validate_returns_stable_digest_and_is_pure(
     publish_boundary,
+    monkeypatch,
 ) -> None:
-    _adapter, saved, _store_config = publish_boundary
+    adapter, _store_config = publish_boundary
     request = ProductPublishValidateRequest(
         draft_id="draft-1",
         platform="mercadolibre",
         site="MLM",
+    )
+
+    # 纯计算边界：评估绝不持久化预检结果（side_effect="none" 契约）。
+    def _explode(*args, **kwargs):
+        pytest.fail("发布校验评估不得持久化预检结果")
+
+    monkeypatch.setattr(
+        "erp_web.runtime_units.draft_publish_context.save_draft_precheck_result",
+        _explode,
+    )
+    # 同时守卫 capability 模块内的引用，防止评估路径经由它落盘。
+    monkeypatch.setattr(
+        publish_capabilities,
+        "save_draft_precheck_result",
+        _explode,
     )
 
     first = publish_capabilities.validate_product_publish(request)
@@ -170,13 +186,16 @@ def test_publish_validate_returns_stable_digest_and_persists_combined_precheck(
     assert first.summary.price == "199"
     assert first.summary.store_label == "示例店铺"
     assert "seller-1" not in first.summary.store_identity
-    assert saved[-1]["ok"] is True
+
+    evaluation = publish_capabilities.evaluate_publish_validation(request)
+    assert evaluation.precheck["ok"] is True
+    assert evaluation.approved_payload is not None
 
 
 def test_publish_request_revalidates_digest_and_forwards_idempotency_key(
     publish_boundary,
 ) -> None:
-    _adapter, _saved, _store_config = publish_boundary
+    _adapter, _store_config = publish_boundary
     validation = publish_capabilities.validate_product_publish(
         ProductPublishValidateRequest(
             draft_id="draft-1",
@@ -304,7 +323,7 @@ def test_publish_request_rejects_stale_confirmation_before_enqueue(
 def test_publish_request_rejects_confirmation_after_store_account_changes(
     publish_boundary,
 ) -> None:
-    _adapter, _saved, store_config = publish_boundary
+    _adapter, store_config = publish_boundary
     validation = publish_capabilities.validate_product_publish(
         ProductPublishValidateRequest(
             draft_id="draft-1",
@@ -339,7 +358,7 @@ def test_publish_request_rejects_confirmation_after_store_account_changes(
 def test_publish_validate_returns_structured_hard_errors(
     publish_boundary,
 ) -> None:
-    adapter, saved, _store_config = publish_boundary
+    adapter, _store_config = publish_boundary
     adapter.errors = [
         {
             "code": "TITLE_MISSING",
@@ -349,11 +368,13 @@ def test_publish_validate_returns_structured_hard_errors(
         }
     ]
 
-    result = publish_capabilities.validate_product_publish(
-        ProductPublishValidateRequest(draft_id="draft-1")
-    )
+    request = ProductPublishValidateRequest(draft_id="draft-1")
+    result = publish_capabilities.validate_product_publish(request)
 
     assert result.passed is False
     assert result.validation_digest == ""
     assert result.errors[0].code == "TITLE_MISSING"
-    assert saved[-1]["ok"] is False
+
+    evaluation = publish_capabilities.evaluate_publish_validation(request)
+    assert evaluation.precheck["ok"] is False
+    assert evaluation.approved_payload is None

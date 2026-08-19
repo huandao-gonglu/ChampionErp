@@ -1,15 +1,30 @@
 import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AiUiPart } from '@/types/aiWork'
+import {
+  approveGlobalTask,
+  fetchGlobalTask,
+  rejectGlobalTask,
+} from '@/api/globalTasks'
 import AiMessagePart from '../AiMessagePart.vue'
 
-function mountPart(part: Record<string, unknown>) {
+vi.mock('@/api/globalTasks', () => ({
+  approveGlobalTask: vi.fn(),
+  fetchGlobalTask: vi.fn(),
+  rejectGlobalTask: vi.fn(),
+}))
+
+function mountPart(part: Record<string, unknown>, taskActionsEnabled = false) {
   return mount(AiMessagePart, {
-    props: { part: part as AiUiPart },
+    props: { part: part as AiUiPart, taskActionsEnabled },
   })
 }
 
 describe('AiMessagePart', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
   it('渲染 text 与默认折叠的 reasoning', () => {
     const text = mountPart({ type: 'text', text: '回答正文' })
     expect(text.get('[data-testid="ai-part-text"]').text()).toBe('回答正文')
@@ -75,5 +90,104 @@ describe('AiMessagePart', () => {
     const wrapper = mountPart({ type: 'data-custom', data: { value: 1 } })
     expect(wrapper.get('[data-testid="ai-part-debug"]').text()).toContain('data-custom')
     expect(wrapper.text()).toContain('"value": 1')
+  })
+
+  it('在活动全局对话中展示服务端审批摘要并执行批准', async () => {
+    const pending = {
+      ok: true,
+      task_id: 'gtask-delete-1',
+      task: {
+        task_id: 'gtask-delete-1',
+        goal: '删除指定商品',
+        status: 'pending_approval',
+        current_step_index: 0,
+        steps: [{
+          step_id: 'step-1',
+          capability_name: 'product_delete',
+          status: 'pending',
+        }],
+        pending_approval: {
+          step_id: 'step-1',
+          capability_name: 'product_delete',
+          capability_version: '1',
+          task_revision: 2,
+          digest: 'digest-1',
+          requested_at: '2026-08-19T12:00:00Z',
+          payload: {
+            summary: '删除 2 个本地商品：product-1、product-2',
+            canonical_payload: { product_ids: ['product-1', 'product-2'] },
+          },
+        },
+      },
+    }
+    const completed = {
+      ...pending,
+      task: {
+        ...pending.task,
+        status: 'completed',
+        pending_approval: null,
+        steps: [{
+          ...pending.task.steps[0],
+          status: 'completed',
+          result: { deleted: 2 },
+        }],
+        assistant_message: '任务已完成。',
+      },
+    }
+    vi.mocked(fetchGlobalTask).mockResolvedValue(pending as never)
+    vi.mocked(approveGlobalTask).mockResolvedValue(completed as never)
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    const wrapper = mountPart({
+      type: 'tool-global_task_start',
+      toolCallId: 'call-delete',
+      state: 'output-available',
+      output: pending,
+    }, true)
+    await vi.waitFor(() => {
+      expect(fetchGlobalTask).toHaveBeenCalledWith('gtask-delete-1')
+    })
+
+    const card = wrapper.get('[data-testid="global-task-card"]')
+    expect(card.text()).toContain('等待你的审批')
+    expect(card.text()).toContain('删除 2 个本地商品')
+
+    await wrapper.get('[data-testid="global-task-approve"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(approveGlobalTask).toHaveBeenCalledWith('gtask-delete-1', 'step-1')
+    })
+    expect(wrapper.get('[data-testid="global-task-card"]').text()).toContain('已完成')
+    expect(rejectGlobalTask).not.toHaveBeenCalled()
+  })
+
+  it('只读消息展示审批摘要但不提供审批按钮', () => {
+    const wrapper = mountPart({
+      type: 'tool-global_task_start',
+      state: 'output-available',
+      output: {
+        ok: true,
+        task_id: 'gtask-readonly',
+        task: {
+          task_id: 'gtask-readonly',
+          goal: '删除草稿',
+          status: 'pending_approval',
+          current_step_index: 0,
+          steps: [],
+          pending_approval: {
+            step_id: 'step-1',
+            capability_name: 'draft_delete',
+            capability_version: '1',
+            task_revision: 2,
+            digest: 'digest-2',
+            requested_at: '2026-08-19T12:00:00Z',
+            payload: { summary: '删除一个草稿' },
+          },
+        },
+      },
+    })
+
+    expect(wrapper.text()).toContain('只读消息不能审批')
+    expect(wrapper.find('[data-testid="global-task-approve"]').exists()).toBe(false)
+    expect(fetchGlobalTask).not.toHaveBeenCalled()
   })
 })

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hmac
-from typing import Any, Protocol
+from typing import Annotated, Any, Protocol
 
 from erp_web.context import AppContext, get_context
 from erp_web.product_model import normalize_draft_image_refs
@@ -19,15 +19,25 @@ from erp_web.runtime_units.publish_confirmation import (
     canonical_publish_digest,
     resolve_publish_store_binding,
 )
+from erp_web.schemas.ai_tools import (
+    PUBLISH_JOB_TYPE,
+    JobReferenceResult,
+    TaskApprovalSnapshot,
+)
+from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.publish_capabilities import (
+    ProductPublishCapabilityRequest,
     ProductPublishRequest,
     ProductPublishRequestResult,
     ProductPublishSummary,
     ProductPublishValidateRequest,
     ProductPublishValidationResult,
+    PublishRequestConfirmation,
     PublishValidationIssue,
 )
+from erp_web.services.ai_tool_declaration import Injected, ai_tool
 from erp_web.services.capability_errors import BusinessCapabilityError
+from erp_web.services.task_approval import verify_execution_approval
 
 
 class PublishingBusLike(Protocol):
@@ -63,8 +73,8 @@ class _ValidationEvaluation:
     context: dict[str, Any]
     prepared_product: dict[str, Any]
     approved_payload: dict[str, Any] | None
-    # save_draft_precheck_result 的落盘结果（draft/上下文/索引快照）。
-    saved_precheck: dict[str, Any]
+    # 合并后的预检结果；评估本身是纯计算，是否落盘由调用方决定。
+    precheck: dict[str, Any]
 
 
 def _text(value: Any) -> str:
@@ -274,18 +284,8 @@ def evaluate_publish_validation(
         "warnings": [item.model_dump() for item in warnings],
     }
     publish_context["product"] = prepared_product
-    try:
-        saved_precheck = save_draft_precheck_result(
-            publish_context,
-            combined_precheck,
-            context=active_context,
-        )
-    except Exception as exc:
-        raise BusinessCapabilityError(
-            "PUBLISH_PRECHECK_PERSIST_FAILED",
-            f"发布校验结果保存失败：{exc}",
-            retryable=True,
-        ) from exc
+    # 纯计算边界：评估不持久化任何预检结果；需要落盘的受信 HTTP 工作流
+    # （preview/precheck）在评估之后自行调用 save_draft_precheck_result。
     summary = _summary(publish_context, prepared_product, config)
     digest = ""
     if not errors and payload is not None:
@@ -311,7 +311,7 @@ def evaluate_publish_validation(
         context=publish_context,
         prepared_product=prepared_product,
         approved_payload=payload,
-        saved_precheck=saved_precheck if isinstance(saved_precheck, dict) else {},
+        precheck=combined_precheck,
     )
 
 
@@ -397,6 +397,22 @@ def request_product_publish(
             "商品或发布 payload 已变化，原发布确认已失效。",
         )
 
+    # 提交发布是写路径：以最新评估结果落盘预检，作为发布队列准入的可信事实。
+    # 纯只读的 product_publish_validate 不落盘（side_effect="none" 契约），
+    # 预检持久化统一发生在受信的写入口。
+    try:
+        save_draft_precheck_result(
+            evaluation.context,
+            evaluation.precheck,
+            context=active_context,
+        )
+    except Exception as exc:
+        raise BusinessCapabilityError(
+            "PUBLISH_PRECHECK_PERSIST_FAILED",
+            f"发布预检落盘失败：{exc}",
+            retryable=True,
+        ) from exc
+
     refreshed = _load_context(validation_request, context=active_context)
     product = refreshed["product"]
     try:
@@ -463,8 +479,183 @@ def request_product_publish(
     )
 
 
+@dataclass(frozen=True)
+class PublishCapabilityScope:
+    """发布 Capability 的可信依赖边界。"""
+
+    context: AppContext
+    publishing_bus: PublishingBusLike
+
+
+PRODUCT_PUBLISH_VALIDATE_TOOL = "product_publish_validate"
+PRODUCT_PUBLISH_REQUEST_TOOL = "product_publish_request"
+
+
+@ai_tool(
+    name=PRODUCT_PUBLISH_VALIDATE_TOOL,
+    description=(
+        "对草稿目标市场执行确定性发布校验，返回摘要、校验错误与 "
+        "validation_digest；通过后才允许提交发布。"
+    ),
+    permission="product.publish",
+    side_effect="none",
+    recovery_policy="retry_safe",
+    version="1",
+)
+def product_publish_validate(
+    request: ProductPublishValidateRequest,
+    scope: Annotated[PublishCapabilityScope, Injected()],
+) -> ProductPublishValidationResult:
+    return validate_product_publish(request, context=scope.context)
+
+
+def _publish_request_approval_snapshot(
+    request: ProductPublishCapabilityRequest,
+    scope: PublishCapabilityScope,
+) -> TaskApprovalSnapshot:
+    """服务端生成的发布审批快照：冻结发布校验摘要与 validation_digest。
+
+    审批页面展示它与执行真正提交的内容同源；任务创建与执行复核两个时点
+    都重算它，任何草稿/配置/payload 变化都会使旧审批失效。
+    """
+
+    evaluation = evaluate_publish_validation(
+        ProductPublishValidateRequest(
+            draft_id=request.draft_id,
+            platform=request.platform,
+            site=request.site,
+        ),
+        context=scope.context,
+    )
+    if not evaluation.result.passed:
+        raise BusinessCapabilityError(
+            "PUBLISH_VALIDATION_FAILED",
+            "发布条件当前不满足，请修复校验错误后重试。",
+        )
+    summary = evaluation.result.summary
+    return TaskApprovalSnapshot(
+        summary=(
+            f"发布草稿 {summary.draft_id} 到 {summary.platform}："
+            f"《{summary.title}》 {summary.listing_currency} {summary.price}"
+            f"，图片 {summary.image_count} 张"
+        ),
+        canonical_payload={
+            "draft_id": summary.draft_id,
+            "image_count": summary.image_count,
+            "listing_currency": summary.listing_currency,
+            "platform": summary.platform,
+            "price": summary.price,
+            "product_id": summary.product_id,
+            "site": summary.site,
+            "stock": summary.stock,
+            "store_identity": summary.store_identity,
+            "title": summary.title,
+            "validation_digest": evaluation.result.validation_digest,
+        },
+    )
+
+
+@ai_tool(
+    name=PRODUCT_PUBLISH_REQUEST_TOOL,
+    description=(
+        "提交真实发布；破坏性操作，需要人工在受信界面批准后才会执行，"
+        "执行时会重新校验并核对冻结的审批快照。"
+    ),
+    permission="product.publish",
+    side_effect="write",
+    approval_required=True,
+    approval_snapshot=_publish_request_approval_snapshot,
+    idempotency="required",
+    idempotency_keys=("operation_key",),
+    recovery_policy="idempotent",
+    execution_mode="persistent_job",
+    version="1",
+)
+def product_publish_request(
+    request: ProductPublishCapabilityRequest,
+    scope: Annotated[PublishCapabilityScope, Injected()],
+    execution: Annotated[AiExecutionContext, Injected()],
+) -> JobReferenceResult:
+    from datetime import datetime
+
+    operation_key = str(
+        execution.idempotency_context.get("operation_key") or ""
+    ).strip()
+    if not operation_key:
+        raise BusinessCapabilityError(
+            "PUBLISH_OPERATION_KEY_REQUIRED",
+            "发布请求缺少可信 operation_key。",
+        )
+    task_id = str(execution.business_scope.get("task_id") or "").strip()
+    step_id = str(execution.business_scope.get("step_id") or "").strip()
+    confirmed_at_raw = str(
+        execution.business_scope.get("approval_confirmed_at") or ""
+    ).strip()
+    if not task_id or not step_id or not confirmed_at_raw:
+        raise BusinessCapabilityError(
+            "PUBLISH_APPROVAL_CONTEXT_REQUIRED",
+            "发布请求缺少可信审批上下文。",
+        )
+    try:
+        confirmed_at = datetime.fromisoformat(confirmed_at_raw)
+    except ValueError as exc:
+        raise BusinessCapabilityError(
+            "PUBLISH_APPROVAL_CONTEXT_INVALID",
+            "发布审批确认时间无效。",
+        ) from exc
+    snapshot = _publish_request_approval_snapshot(request, scope)
+    verify_execution_approval(
+        execution,
+        snapshot=snapshot,
+        capability_name=PRODUCT_PUBLISH_REQUEST_TOOL,
+        capability_version="1",
+        stale_code="PUBLISH_CONFIRMATION_STALE",
+    )
+    validation_digest = str(
+        snapshot.canonical_payload.get("validation_digest") or ""
+    )
+    result = request_product_publish(
+        ProductPublishRequest(
+            draft_id=request.draft_id,
+            platform=request.platform,
+            site=request.site,
+            idempotency_key=operation_key,
+            confirmation=PublishRequestConfirmation(
+                task_id=task_id,
+                step_id=step_id,
+                validation_digest=validation_digest,
+                confirmed_at=confirmed_at,
+            ),
+        ),
+        publishing_bus=scope.publishing_bus,
+        context=scope.context,
+    )
+    return JobReferenceResult(
+        job_id=result.job_id,
+        job_type=PUBLISH_JOB_TYPE,
+        status=(
+            result.status
+            if result.status in {"queued", "pending", "running", "retrying"}
+            else "queued"
+        ),
+        summary="发布任务已提交，正在等待平台真实终态。",
+    )
+
+
+PUBLISH_AI_CAPABILITIES = (
+    product_publish_validate,
+    product_publish_request,
+)
+
+
 __all__ = [
+    "PRODUCT_PUBLISH_REQUEST_TOOL",
+    "PRODUCT_PUBLISH_VALIDATE_TOOL",
+    "PUBLISH_AI_CAPABILITIES",
+    "PublishCapabilityScope",
     "PublishingBusLike",
+    "product_publish_request",
+    "product_publish_validate",
     "request_product_publish",
     "validate_product_publish",
 ]

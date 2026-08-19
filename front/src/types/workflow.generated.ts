@@ -33,6 +33,7 @@ export interface BackendAppStateResponse {
   generatedImages: Array<Record<string, unknown>>
   platformOptions: Array<Record<string, unknown>>
   outputDir: string
+  approvalToken: string
 }
 
 export interface BackendAiCapabilityProfile {

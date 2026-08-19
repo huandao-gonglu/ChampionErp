@@ -4,14 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Annotated, Any
 
 from erp_web.context import get_context
 from erp_web.product_model import normalize_draft_image_refs, normalize_list
 from erp_web.runtime_units.attribute_fill_capabilities import (
     fill_product_attributes,
 )
+from erp_web.runtime_units.category_capabilities import CategoryMatcher
 from erp_web.runtime_units.collect_helpers import claim_products_to_platforms
 from erp_web.runtime_units.copy_generation import generate_ai_copy_bundle
 from erp_web.runtime_units.draft_publish_context import (
@@ -36,6 +38,7 @@ from erp_web.runtime_units.market_pricing_capability import (
 )
 from erp_web.runtime_units.pricing_runtime import calculate_price
 from erp_web.runtime_units.product_capabilities import prepare_product_images
+from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.draft_capabilities import DraftPublishReadiness
 from erp_web.schemas.market_prepare_capabilities import (
     CategoryMatchCapabilityResult,
@@ -49,6 +52,7 @@ from erp_web.schemas.product_capabilities import (
     ProductImagesPrepareRequest,
     ProductImagesPrepareResult,
 )
+from erp_web.services.ai_tool_declaration import Injected, ai_tool
 from erp_web.services.capability_errors import (
     BusinessCapabilityError,
     CapabilityInputRequired,
@@ -462,4 +466,66 @@ def prepare_draft_for_market(
     )
 
 
-__all__ = ["prepare_draft_for_market"]
+__all__ = ["MarketPrepareCapabilityScope", "draft_prepare_for_market", "prepare_draft_for_market", "DRAFT_PREPARE_FOR_MARKET_TOOL", "MARKET_PREPARE_AI_CAPABILITIES"]
+
+
+@dataclass(frozen=True)
+class MarketPrepareCapabilityScope:
+    """目标市场准备 Capability 的可信依赖边界。"""
+
+    products: MarketPrepareStore
+    category_matcher: CategoryMatcher
+    claim_target_drafts: ClaimTargetDrafts
+    copy_generator: CopyGenerator
+    app_config_loader: AppConfigLoader
+
+
+DRAFT_PREPARE_FOR_MARKET_TOOL = "draft_prepare_for_market"
+
+
+@ai_tool(
+    name=DRAFT_PREPARE_FOR_MARKET_TOOL,
+    description=(
+        "把来源草稿准备为目标市场草稿：认领、文案、图片、类目、属性与定价。"
+    ),
+    permission="product.write",
+    side_effect="write",
+    approval_required=False,
+    idempotency="required",
+    idempotency_keys=("operation_key",),
+    recovery_policy="manual",
+    version="1",
+)
+def draft_prepare_for_market(
+    request: DraftPrepareForMarketRequest,
+    scope: Annotated[MarketPrepareCapabilityScope, Injected()],
+    execution: Annotated[AiExecutionContext, Injected()],
+) -> DraftPrepareForMarketResult:
+    from erp_web.runtime_units.category_capabilities import match_category
+
+    def category_capability(
+        category_request: CategoryMatchRequest,
+        **kwargs: Any,
+    ) -> CategoryMatchCapabilityResult:
+        del kwargs
+        return match_category(
+            category_request,
+            product_store=scope.products,
+            matcher=scope.category_matcher,
+        )
+
+    operation_key = str(
+        execution.idempotency_context.get("operation_key") or ""
+    ).strip()
+    return prepare_draft_for_market(
+        request,
+        product_store=scope.products,
+        claim_target_drafts=scope.claim_target_drafts,
+        copy_generator=scope.copy_generator,
+        app_config_loader=scope.app_config_loader,
+        category_capability=category_capability,
+        copy_operation_key=f"{operation_key}:copy" if operation_key else "",
+    )
+
+
+MARKET_PREPARE_AI_CAPABILITIES = (draft_prepare_for_market,)

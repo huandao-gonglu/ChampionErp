@@ -82,7 +82,7 @@ def _platform_values(
     ),
     permission=CATEGORY_ATTRIBUTE_VALUE_PERMISSION,
     side_effect="none",
-    version="2",
+    version="3",
 )
 def search_category_attribute_values(
     request: CategoryAttributeValueSearchRequest,

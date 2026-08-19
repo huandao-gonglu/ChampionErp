@@ -35,6 +35,8 @@ class AppStateResponse(TypedDict):
     generatedImages: list[dict[str, Any]]
     platformOptions: list[dict[str, Any]]
     outputDir: str
+    # 可信审批凭据：只随受信 UI bootstrap 下发，从不进入模型工具结果。
+    approvalToken: str
 
 
 def validate_app_state_response(payload: dict[str, Any]) -> AppStateResponse:
@@ -73,6 +75,10 @@ def validate_app_state_response(payload: dict[str, Any]) -> AppStateResponse:
             raise TypeError(f"state response {field} 必须是数组")
     if not isinstance(payload.get("outputDir"), str):
         raise TypeError("state response outputDir 必须是字符串")
+    if not isinstance(payload.get("approvalToken"), str) or not str(
+        payload.get("approvalToken") or ""
+    ).strip():
+        raise TypeError("state response approvalToken 必须是非空字符串")
     return payload
 
 

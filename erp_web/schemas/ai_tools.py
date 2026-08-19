@@ -9,9 +9,17 @@ import re
 from types import MappingProxyType
 from typing import Any, Literal, Mapping, Sequence
 
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
+
 
 AiToolSideEffect = Literal["none", "write"]
 AiToolIdempotency = Literal["none", "required"]
+AiToolExecutionMode = Literal["sync", "persistent_job"]
+AiToolRecoveryPolicy = Literal["manual", "retry_safe", "idempotent"]
+AI_TOOL_EXECUTION_MODES = ("sync", "persistent_job")
+AI_TOOL_RECOVERY_POLICIES = ("manual", "retry_safe", "idempotent")
+TOOL_INPUT_REQUIRED = "TOOL_INPUT_REQUIRED"
+TOOL_APPROVAL_REQUIRED = "TOOL_APPROVAL_REQUIRED"
 _JSON_SCHEMA_TYPES = frozenset(
     {"null", "boolean", "integer", "number", "string", "array", "object"}
 )
@@ -89,11 +97,19 @@ class AiToolExecutionError(RuntimeError):
         message: str,
         *,
         retryable: bool = False,
+        details: Mapping[str, Any] | None = None,
     ) -> None:
         self.code = _require_string(code, label="tool_error.code")
         if not isinstance(retryable, bool):
             raise AiToolSchemaError("tool_error.retryable 必须是布尔值")
         self.retryable = retryable
+        if details is None:
+            frozen_details: Mapping[str, Any] | None = None
+        else:
+            frozen_details = _freeze_json(
+                _copy_json(dict(details), label="tool_error.details")
+            )
+        self.details = frozen_details
         super().__init__(_require_string(message, label="tool_error.message"))
 
 
@@ -245,11 +261,48 @@ def validate_json_schema_definition(
     if items is not None:
         validate_json_schema_definition(items, path=f"{path}.items")
 
+    one_of = schema.get("oneOf")
+    if one_of is not None:
+        if (
+            not isinstance(one_of, Sequence)
+            or isinstance(one_of, (str, bytes))
+            or len(one_of) < 1
+        ):
+            raise AiToolSchemaError(
+                f"{path}.oneOf 必须是非空数组",
+                code="TOOL_SCHEMA_INVALID",
+            )
+        for index, branch in enumerate(one_of):
+            validate_json_schema_definition(
+                branch,
+                path=f"{path}.oneOf[{index}]",
+            )
+    discriminator = schema.get("discriminator")
+    if discriminator is not None:
+        if not isinstance(discriminator, Mapping):
+            raise AiToolSchemaError(
+                f"{path}.discriminator 必须是对象",
+                code="TOOL_SCHEMA_INVALID",
+            )
+        property_name = discriminator.get("propertyName")
+        if not isinstance(property_name, str) or not property_name:
+            raise AiToolSchemaError(
+                f"{path}.discriminator.propertyName 必须是非空字符串",
+                code="TOOL_SCHEMA_INVALID",
+            )
+
     additional = schema.get("additionalProperties")
     if additional is not None and not isinstance(additional, bool):
         validate_json_schema_definition(
             additional,
             path=f"{path}.additionalProperties",
+        )
+
+    property_names = schema.get("propertyNames")
+    if property_names is not None:
+        validate_json_schema_definition(
+            property_names,
+            path=f"{path}.propertyNames",
         )
 
     bound_pairs = (
@@ -330,10 +383,64 @@ def validate_json_schema(value: Any, schema: Mapping[str, Any], *, path: str = "
         if value not in enum_values:
             raise AiToolSchemaError(f"{path} 不在允许枚举中")
 
+    one_of = schema.get("oneOf")
+    if one_of is not None:
+        if (
+            not isinstance(one_of, Sequence)
+            or isinstance(one_of, (str, bytes))
+            or not one_of
+        ):
+            raise AiToolSchemaError(
+                f"{path} 的 schema.oneOf 必须是数组",
+                code="TOOL_SCHEMA_INVALID",
+            )
+        discriminator = schema.get("discriminator")
+        if not isinstance(discriminator, Mapping):
+            raise AiToolSchemaError(
+                f"{path} 的 oneOf 只支持带 discriminator 的可判别 union",
+                code="TOOL_SCHEMA_INVALID",
+            )
+        property_name = discriminator.get("propertyName")
+        if not isinstance(property_name, str) or not property_name:
+            raise AiToolSchemaError(
+                f"{path} 的 discriminator.propertyName 无效",
+                code="TOOL_SCHEMA_INVALID",
+            )
+        if not isinstance(value, Mapping):
+            raise AiToolSchemaError(
+                f"{path} 必须是对象才能按 discriminator 选择 union 分支"
+            )
+        discriminator_value = value.get(property_name)
+        selected: Mapping[str, Any] | None = None
+        for branch in one_of:
+            if not isinstance(branch, Mapping):
+                raise AiToolSchemaError(
+                    f"{path} 的 oneOf 分支必须是对象",
+                    code="TOOL_SCHEMA_INVALID",
+                )
+            branch_property = (
+                branch.get("properties", {}).get(property_name)
+                if isinstance(branch.get("properties"), Mapping)
+                else None
+            )
+            if (
+                isinstance(branch_property, Mapping)
+                and "const" in branch_property
+                and branch_property["const"] == discriminator_value
+            ):
+                selected = branch
+                break
+        if selected is None:
+            raise AiToolSchemaError(
+                f"{path}.{property_name} 的值不匹配任何允许的 union 分支"
+            )
+        validate_json_schema(value, selected, path=path)
+
     if isinstance(value, Mapping):
         required = schema.get("required", [])
         properties = schema.get("properties", {})
         additional = schema.get("additionalProperties", True)
+        property_names = schema.get("propertyNames")
         if (
             not isinstance(required, Sequence)
             or isinstance(required, (str, bytes))
@@ -348,11 +455,22 @@ def validate_json_schema(value: Any, schema: Mapping[str, Any], *, path: str = "
                 f"{path} 的 schema.properties 必须是对象",
                 code="TOOL_SCHEMA_INVALID",
             )
+        if property_names is not None and not isinstance(property_names, Mapping):
+            raise AiToolSchemaError(
+                f"{path} 的 schema.propertyNames 必须是对象",
+                code="TOOL_SCHEMA_INVALID",
+            )
         missing = [key for key in required if key not in value]
         if missing:
             raise AiToolSchemaError(f"{path} 缺少必填字段：{', '.join(missing)}")
         for key, item in value.items():
             child_path = f"{path}.{key}"
+            if property_names is not None:
+                validate_json_schema(
+                    key,
+                    property_names,
+                    path=f"{child_path}（键名）",
+                )
             if key in properties:
                 validate_json_schema(item, properties[key], path=child_path)
             elif additional is False:
@@ -407,6 +525,8 @@ class AiToolDefinition:
     idempotency: AiToolIdempotency = "none"
     idempotency_keys: tuple[str, ...] = ()
     injected_type_names: tuple[str, ...] = ()
+    execution_mode: AiToolExecutionMode = "sync"
+    recovery_policy: AiToolRecoveryPolicy = "manual"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", normalize_ai_tool_name(self.name))
@@ -427,6 +547,14 @@ class AiToolDefinition:
             raise AiToolSchemaError("tool.approval_required 必须是布尔值")
         if self.idempotency not in {"none", "required"}:
             raise AiToolSchemaError("tool.idempotency 只允许 none 或 required")
+        if self.execution_mode not in set(AI_TOOL_EXECUTION_MODES):
+            raise AiToolSchemaError(
+                "tool.execution_mode 只允许 sync 或 persistent_job"
+            )
+        if self.recovery_policy not in set(AI_TOOL_RECOVERY_POLICIES):
+            raise AiToolSchemaError(
+                "tool.recovery_policy 只允许 manual、retry_safe 或 idempotent"
+            )
         if not isinstance(self.idempotency_keys, Sequence) or isinstance(
             self.idempotency_keys,
             (str, bytes),
@@ -496,6 +624,8 @@ class AiToolDefinition:
             "idempotency": self.idempotency,
             "idempotency_keys": list(self.idempotency_keys),
             "injected_type_names": list(self.injected_type_names),
+            "execution_mode": self.execution_mode,
+            "recovery_policy": self.recovery_policy,
         }
 
     @property
@@ -529,6 +659,8 @@ class AiToolDefinition:
                 "idempotency",
                 "idempotency_keys",
                 "injected_type_names",
+                "execution_mode",
+                "recovery_policy",
             },
             optional=set(),
             label="AiToolDefinition",
@@ -545,6 +677,8 @@ class AiToolDefinition:
             idempotency=data["idempotency"],
             idempotency_keys=tuple(data["idempotency_keys"]),
             injected_type_names=tuple(data["injected_type_names"]),
+            execution_mode=data["execution_mode"],
+            recovery_policy=data["recovery_policy"],
         )
 
 
@@ -688,14 +822,75 @@ def validate_ai_tool_result(payload: Mapping[str, Any]) -> AiToolResult:
     return AiToolResult.from_dict(payload)
 
 
+class JobReferenceResult(BaseModel):
+    """persistent_job Capability 的统一同步返回：已提交 Job 的可信引用。
+
+    ``job_type`` 是领域无关的 Job 类别标识；Controller 通过 Job Status
+    Reader 注册表按 ``job_type`` 解析状态读取器，不直接依赖领域模块。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    result_version: Literal["job_reference.v1"] = "job_reference.v1"
+    job_id: str = Field(min_length=1, max_length=200)
+    job_type: str = Field(min_length=1, max_length=80)
+    status: Literal["queued", "pending", "running", "retrying"] = "queued"
+    summary: str = Field(default="", max_length=2000)
+
+
+# 领域无关的 Job 类别常量；Job Status Reader 注册表按它们解析读取器。
+PUBLISH_JOB_TYPE = "publish"
+PRODUCT_RESEARCH_JOB_TYPE = "product_research"
+
+
+class TaskApprovalSnapshot(BaseModel):
+    """服务端生成的审批冻结快照：人类可读摘要 + 规范化执行参数。
+
+    审批展示内容与执行绑定都由它派生；模型不能提交最终用于展示的审批
+    摘要。由 approval-required Capability 声明的快照函数在任务创建与执行
+    复核两个时点分别重算。
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    summary: str = Field(min_length=1, max_length=2000)
+    canonical_payload: dict[str, JsonValue] = Field(
+        default_factory=dict,
+        max_length=100,
+    )
+
+
+class AiToolRequiredInput(BaseModel):
+    """needs_input 标准错误中携带的类型化待补字段。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=1, max_length=120)
+    label: str = Field(min_length=1, max_length=200)
+    reason: str = Field(min_length=1, max_length=500)
+    input_type: Literal["text", "select", "json_object", "string_list"] = "text"
+    options: list[str] = Field(default_factory=list, max_length=100)
+
+
 __all__ = [
+    "AI_TOOL_EXECUTION_MODES",
+    "AI_TOOL_RECOVERY_POLICIES",
     "AiToolCommand",
     "AiToolDefinition",
     "AiToolExecutionError",
+    "AiToolExecutionMode",
     "AiToolIdempotency",
+    "AiToolRecoveryPolicy",
+    "AiToolRequiredInput",
     "AiToolResult",
     "AiToolSchemaError",
     "AiToolSideEffect",
+    "JobReferenceResult",
+    "PRODUCT_RESEARCH_JOB_TYPE",
+    "PUBLISH_JOB_TYPE",
+    "TOOL_APPROVAL_REQUIRED",
+    "TOOL_INPUT_REQUIRED",
+    "TaskApprovalSnapshot",
     "normalize_ai_tool_name",
     "validate_ai_tool_definition",
     "validate_ai_tool_result",

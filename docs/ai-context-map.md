@@ -162,42 +162,68 @@ service 属于上层用例编排，不进入通用 Tool Runtime；Memory 和 Pol
 旧自定义 runner、JSON Tool Protocol 和 Agent tool-turn provider adapter 已物理删除。当前
 不存在 feature flag、shadow run、fallback、旧 API HTTP/SDK 请求栈或第二条 Agent 生产路径。
 
-## 全局 Agent 顺序任务流
+## 单主 Agent（global.chat）与全局任务 Capability 化
 
-全局 Agent 已按单用户、本地运行的轻量方案落地。任务与发布终态由 Controller 和 PublishingBus
-持久化，不从对话事件推断；全局任务规划/执行与 `global.chat` 气泡对话是两条互不耦合的链。
+全局只有 `global.chat` 一个主 Agent / 对话入口 / 全局模型绑定。不存在独立 Planner，
+也不存在第二次计划模型调用：主 Agent 在对话回合内直接选择类型化任务步骤，经
+`global_task_start` 提交，Controller 严格顺序执行。任务与发布终态由 Controller 和
+PublishingBus 持久化，不从对话事件推断。
 
 ```text
-/api/global-task-*
+global.chat（唯一主 Agent）
+  → erp_web/facades/global_task_facade.py::build_global_chat_toolset
+      ├─ Direct 只读 Capability（GLOBAL_CHAT_DIRECT_CAPABILITIES）
+      └─ 任务控制 ToolSet（global_ai_control_tools.py）
+          → global_task_start（类型化 step union）
+              → erp_web/services/global_task_controller.py
+                  ├─ APPLICATION_CAPABILITY_CATALOG（唯一业务 Catalog）
+                  ├─ erp_web/stores/global_task_store.py
+                  └─ PublishingBus（发布终态）
+
+/api/global-task-{state,input,approve,reject,cancel,refresh}
   → erp_web/http_route_units/global_agent_routes.py
-      → erp_web/facades/global_agent_facade.py
-          → erp_web/services/global_task_controller.py
-              ├─ erp_web/stores/global_task_store.py
-              ├─ erp_web/services/global_agent_service.py
-              │   → AiAgentFactory
-              │   → erp_web/runtime_units/global_task_tools.py
-              ├─ 静态九项业务 Capability
-              └─ PublishingBus
+      → erp_web/facades/global_task_facade.py（受信任务 UI HTTP 门面）
 ```
 
-### HTTP 与持久化入口
+### 唯一 Capability 组合根
 
-- `erp_web/http_route_units/global_agent_routes.py`：五个显式 POST 入口：
-  `/api/global-task-start`、`/api/global-task-state`、`/api/global-task-input`、
-  `/api/global-task-publish-confirm`、`/api/global-task-cancel`。不存在
-  `/api/global-task-wait`；页面只有限频率读取 state。
-- `erp_web/facades/global_agent_facade.py`：唯一 composition root 和 HTTP shape 映射；装配
-  Controller、主 Agent planning service、只读 ToolSet、九项 Capability 与 PublishingBus 状态读取。
-  route 不直接依赖 runtime unit。
-- `erp_web/services/global_task_controller.py`：计划保存、严格顺序推进、暂停/补资料、发布确认、
-  发布终态刷新和重启后继续的 owner；直接调用类型化 Capability，不调用 Tool executor。
-- `erp_web/stores/global_task_store.py`：`LocalGlobalTaskState` 的唯一 Store；为现有任务控制器保留的
-  草稿快照方法委托给 `erp_web/stores/draft_query_snapshot_store.py`。
-- `erp_web/stores/draft_query_snapshot_store.py`：`DraftQuerySnapshot` 的唯一持久化 owner，供全局任务与
-  `global.chat` 共享，但不依赖任务状态或任务 schema。
-- `erp_web/schemas/global_tasks.py`、`erp_web/schemas/draft_capabilities.py`：任务、步骤、
-  `pending_input_owner`、带 `input_type/input_owner` 的类型化 `RequiredInput`、受控计划参数、发布确认和
-  草稿快照 shape。补充值由 Controller 按 owner 合并到 step、属性或核价输入，不靠 facade 字段白名单。
+- `erp_web/ai_capability_composition.py`：唯一业务 Capability 组合根。全部领域能力
+  tuple 在此显式汇总，由 `AiToolCatalog.compile` 编译为唯一
+  `APPLICATION_CAPABILITY_CATALOG`；不扫描包、不动态发现、不存在第二个 Schema
+  compiler 或 Task Spec 层。`GLOBAL_CHAT_DIRECT_CAPABILITIES`（只读、主 Agent 可
+  直接调用）、`GLOBAL_TASK_CAPABILITIES`（可作为任务步骤）、
+  `INTERNAL_ONLY_CAPABILITIES`（当前为空，预留 focused Agent 内部用途）是三个互斥
+  exposure 集合；`validate_capability_exposure()` 校验每个 Catalog Capability 至少
+  进入一个 exposure 集合、Internal 与 Direct/Task 互斥、Direct allowlist 不含写能力。
+- `erp_web/facades/global_task_facade.py`：唯一应用装配入口。
+  `build_capability_binding_scope` 按 Scope 类型构造可信 Binding Scope 并注入领域
+  依赖（采集 cookie/密钥只从已保存配置解析，模型输入永远不提供凭据）；
+  `build_global_task_controller` 装配 Controller 与 Task ToolSet；
+  `build_global_chat_toolset` 把 Direct 只读能力与四个任务控制工具合并为
+  `global.chat` ToolSet。六个 `/api/global-task-*` HTTP 门面只是受信任务 UI 的
+  状态读取、补资料、审批确认/拒绝、取消与终态刷新入口；审批确认/拒绝必须携带
+  服务端下发给受信 UI 的 token，主 Agent 不具备对应工具。任务创建只经由
+  `global_task_start` 工具，不存在 `/api/global-task-start` 或发布确认专用入口。
+- `erp_web/runtime_units/global_ai_control_tools.py`：四个任务控制工具
+  （`global_task_start/get/submit_input/cancel`）。
+  `global_task_start` 的 steps 由 `project_task_step_union` 从每个 Task Capability 的
+  Pydantic Request 机械投影为 discriminated union：每步携带该 Capability 的真实
+  参数 Schema；不存在逐 Capability 手写 step model、任意字典参数或 Controller 内的
+  Capability 名称分支。
+- `erp_web/services/global_task_controller.py`：任务状态机、严格顺序推进、暂停/补
+  资料、审批门与终态刷新的 owner；执行步骤只依赖 Catalog 的类型化
+  request/executor。Controller 与 `erp_web/schemas/global_tasks.py` 不含 Capability
+  名称分支、Planner 或旧 `global.task.plan` 引用（架构测试守卫）。
+- `erp_web/stores/global_task_store.py`：`LocalGlobalTaskState` 的唯一 Store；草稿
+  快照方法委托给 `erp_web/stores/draft_query_snapshot_store.py`。后者是
+  `DraftQuerySnapshot` 的唯一持久化 owner，不依赖任务状态或任务 schema。
+- `erp_web/schemas/global_tasks.py`：任务、步骤、`pending_input_owner`、带
+  `input_type/input_owner` 的类型化 `RequiredInput`、审批与拒绝 shape。补充值由
+  Controller 按 owner 合并到 step、属性或核价输入，不靠 facade 字段白名单。
+
+声明 `approval_required` 的 Capability 只能进入 `GLOBAL_TASK_CAPABILITIES`，主
+Agent 不得直接触发破坏性写入；审批 payload 携带确定性 digest，Capability 执行时
+重算并比较，目标或事实被篡改时以 `*_APPROVAL_STALE` 稳定码安全失败。
 
 `DraftQuerySnapshot.total` 和聚合统计覆盖完整匹配集合；为限制模型上下文和本地状态大小，
 `draft_ids/items` 只保存按 `limit` 截取的当前有序页。`draft_position` 是该页内的一基序号，Controller
@@ -205,40 +231,25 @@ service 属于上层用例编排，不进入通用 Tool Runtime；Memory 和 Pol
 `view=summary/workflow/publish_readiness/detail` 采用同一稳定 `DraftSummary` schema 的分级字段投影，
 快照重放保持创建时 view，不把 view 当作无效果展示提示。
 
-### Planning ToolSet 与静态 Capability map
+发布上下文遇到多个候选目标且请求未明确平台/站点时返回 `DRAFT_TARGET_AMBIGUOUS`；
+平台下仍有多个站点时返回 `DRAFT_TARGET_SITE_AMBIGUOUS`，不会静默选择首项或默认站点。
 
-`erp_web/services/global_agent_service.py` 是主 Agent 唯一 planning profile。planning run 只绑定
-`erp_web/runtime_units/global_task_tools.py::drafts_query`：工具声明
-`side_effect="none"`、只拥有 `global.task.read` 权限，ProductStore、草稿快照 repository 和最近 snapshot ID
-通过可信 Scope 注入。九项业务能力只出现在 Controller 的静态 map，不会作为主 Agent 写 Tool：
+### Endpoint Coverage Manifest
 
-- `drafts.query`
-- `draft.prepare_for_market`
-- `product.read`
-- `category.match`
-- `product.attributes.fill`
-- `product.attributes.update`
-- `product.images.prepare`
-- `product.publish.validate`
-- `product.publish.request`
-
-`action=answer` 只允许引用真实 `query_snapshot_id`；当前数量答复由 Controller 根据 snapshot 的
-`total` 确定性渲染，不采信模型自行组织的数字。`draft_position`、`target_platform` 和受控
-`GlobalTaskPlanParameters` 进入类型化计划；商品、草稿、店铺和资产等稳定身份仍由任务上下文、
-查询快照或领域 owner 注入并复核。补资料使用类型化 `RequiredInput`：带候选项的类目/枚举是单选，
-草稿序号和图片资产是多值输入；facade 统一归一化 `target_platform` / `platform`。发布上下文遇到多个
-候选目标且请求未明确平台/站点时返回 `DRAFT_TARGET_AMBIGUOUS`；平台下仍有多个站点时返回
-`DRAFT_TARGET_SITE_AMBIGUOUS`，不会静默选择首项或默认站点。
+`erp_web/ai_capability_coverage.py` 为全部已处理 HTTP 端点维护静态声明清单：每个
+端点标注 `business_domain` 与处置——`capability` 必须列出能力名，`internal_only` /
+`excluded` 必须给出原因。`all_handled_endpoints()` 汇总 GET/POST 路由 owner 的全部
+入口；架构测试要求清单零未分类、零遗漏，业务域端点不允许无原因排除。
 
 ### 目标市场 Capability 拆分
 
 - `erp_web/runtime_units/market_capability_support.py`：草稿定位、目标选择、类目详情与持久化共享支撑。
-- `erp_web/runtime_units/category_capabilities.py`：`category.match` 的稳定草稿 adapter；focused
+- `erp_web/runtime_units/category_capabilities.py`：`category_match` 的稳定草稿 adapter；focused
   类目匹配函数由 facade 注入，runtime 不反向 import facade。
 - `erp_web/runtime_units/attribute_fill_capabilities.py`：规则填充与 focused 属性 Agent adapter；
   未解决的真实必填属性返回类型化 `RequiredInput`。
 - `erp_web/runtime_units/market_pricing_capability.py`：确定性核价和草稿持久化。
-- `erp_web/runtime_units/market_prepare_capabilities.py`：`draft.prepare_for_market` 的高层顺序编排；
+- `erp_web/runtime_units/market_prepare_capabilities.py`：`draft_prepare_for_market` 的高层顺序编排；
   复用现有目标草稿、文案、图片、类目、属性和核价 owner，不复制领域实现；文案重生成以稳定
   task/step operation key 与文案同次持久化，重启后不会重复消费同一次 `regenerate_copy`。
 - `erp_web/runtime_units/product_capabilities.py`、`erp_web/runtime_units/publish_capabilities.py`：
@@ -262,10 +273,12 @@ Global Task 聊天耦合已全部删除。当前 AiWork 只围绕 Pydantic 官�
 
 ### 全局对话（global.chat）与实时消息流
 
-`global.chat` 是独立对话 profile：输出自然语言文本，业务入口
-`erp_web/services/global_agent_chat_service.py`，只选择服务端 prompt、只读 ToolSet、Execution
-Profile 与权限，再调用 `AiAgentFactory.open_stream_run(...)`。它与 `GlobalAgentService.plan()`、
-`/api/global-task-*` 的独立规划/执行职责并行，但不接入气泡消息链，也不写 task 与 conversation 关联。
+`global.chat` 是唯一主 Agent 对话入口：输出自然语言文本，业务入口
+`erp_web/services/global_agent_chat_service.py`，只选择服务端 prompt、`global.chat`
+ToolSet、Execution Profile 与权限，再调用 `AiAgentFactory.open_stream_run(...)`。
+ToolSet 由 `erp_web/facades/global_task_facade.py::build_global_chat_toolset` 装配：
+Direct 只读能力加六个任务控制工具；写与审批能力只经类型化任务步骤执行，主 Agent
+没有直接写工具，也不存在并行的第二条规划链。
 
 - `erp_web/http_route_units/ai_chat_routes.py`：`POST /api/v1/ai-chat/runs` 薄路由，预流校验返回
   标准 JSON，开始输出后只发送官方 Vercel SSE chunk。
@@ -277,8 +290,9 @@ Profile 与权限，再调用 `AiAgentFactory.open_stream_run(...)`。它与 `Gl
 - `erp_web/stores/ai_chat_turn_claim_store.py` + `ai_chat_turn_claims` 表：`client_message_id`
   幂等领取与 profile/owner 归属，只存运行控制元数据，不存消息正文。
 - `erp_web/stores/draft_query_snapshot_store.py`：草稿查询快照的独立持久化 owner，不依赖 Global Task。
-- `erp_web/services/global_chat_tools.py`：global.chat 独立的只读 `drafts_query` ToolSet，使用
-  `global.chat.read` 权限与独立快照 store，不复用 Global Task scope/store。
+- `erp_web/facades/global_task_facade.py`：装配 `global.chat` ToolSet 的 Direct 只读
+  能力绑定；`drafts_query` 与任务步骤共用同一 Capability，快照经独立 snapshot store
+  持久化，不依赖任务状态。
 
 实时展示链是 `AgentStreamEvent → VercelAIAdapter/VercelAIEventStream → SSE → @ai-sdk/vue Chat`；
 历史展示链是 `PydanticMessageStore → ModelMessage[] → VercelAIAdapter.dump_messages() → UIMessage[]`。
@@ -432,7 +446,7 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
 - `erp_web/runtime_units/category_tools.py`：`category.search` 只读 ToolSet。绑定对象实现
   `CategoryNavigator` 时只暴露 `browse_categories(parent_ids)`；否则只暴露
   `search_categories(keyword)`。工具 schema 与执行器均没有 platform/site 参数。
-- `erp_web/facades/category_match_facade.py`：`category.match` 共享业务阶段；
+- `erp_web/facades/category_match_facade.py`：`category_match` 共享业务阶段；
   首轮发送裁剪后的双语商品事实；Ozon 同时发送真实顶层节点并允许最多四次树导航，
   Mercado Libre 最多三次换词发现。最终选择必须经过叶子候选账本、站点、可发布状态、
   详情、Ozon ID 配对和属性读取校验；达到资源上限时返回 unresolved，不静默改选。
@@ -597,6 +611,13 @@ PUBLISHED 值）先于 Campaign 状态裁决：`HAS_CARD_CAN_UPDATE_ERRORS`/`NO_
 ## 架构守卫
 
 - `tests/test_ai_context_architecture.py`：静态依赖与公共入口守卫。
+- `tests/test_ai_capability_architecture.py`：单主 Agent 与全业务 Capability 化守卫——
+  exposure 覆盖规则、审批能力只能进 Task allowlist、写能力幂等/恢复元数据与只读能力
+  不得声明幂等、`global_task_start` step union 与 Task allowlist 同源机械投影、
+  Controller/Task schema 无 Capability 名称分支与 Planner 残留、业务 Catalog 只在
+  组合根编译一次。
+- `tests/test_ai_capability_coverage.py`：Endpoint Coverage Manifest 零未分类、零遗漏，
+  业务域端点排除必须带原因。
 - `tests/test_ai_tools.py`：工具 schema、ToolSet 和 Runtime。
 - `tests/test_ai_tool_catalog.py`：注解元数据、TypeAdapter Compiler、Schema 规范化、可信 Scope、
   allowlist、幂等策略与类目试点契约指纹快照。
@@ -612,9 +633,12 @@ PUBLISHED 值）先于 Campaign 状态裁决：`HAS_CARD_CAN_UPDATE_ERRORS`/`NO_
 - `tests/test_ai_agent_instrumentation.py`：技术 spans、usage、trace 关联、脱敏和故障隔离。
 - `tests/test_ai_agent_state_store.py`、`tests/test_ai_agent_deferred_runtime.py`：公开消息
   serialization、版本迁移、审批/拒绝、跨进程恢复、权限/scope/deadline 与幂等 claim。
-- `tests/test_global_agent_service.py`、`tests/test_global_task_controller.py`、
-  `tests/test_global_task_store.py`：只读 planning profile、静态九能力、顺序状态机、暂停恢复、
-  发布确认与本地持久化。
+- `tests/test_global_task_controller.py`、`tests/test_global_task_store.py`、
+  `tests/test_global_agent_vertical_integration.py`：capability-name-agnostic Controller
+  状态机、类型化步骤执行、审批门、暂停恢复与本地持久化。
+- `tests/test_domain_write_capabilities.py`、`tests/test_domain_collect_capabilities.py`、
+  `tests/test_publish_admin_capabilities.py`：商品/草稿写能力、采集凭据规则与
+  发布管理审批 digest 的行为测试。
 - `tests/test_draft_query_service.py`、`tests/test_market_prepare_capabilities.py`、
   `tests/test_product_capability_service.py`、`tests/test_publish_capability_service.py`：查询快照、
   目标市场纵向能力、商品 mutation、店铺身份 digest 和幂等发布 adapter。
@@ -625,8 +649,8 @@ PUBLISHED 值）先于 Campaign 状态裁决：`HAS_CARD_CAN_UPDATE_ERRORS`/`NO_
   `config_http` 状态码分类与既有消息格式保持。
 - `tests/test_yandex_publish_workflows.py`：Yandex 预览 digest、确认入队与状态回读的
   HTTP 契约，含 400 需确认 / 409 确认过期路径。
-- `tests/test_global_agent_routes.py`、前端 `GlobalAgentChatPanel` 测试：五个 HTTP 入口、稳定对话恢复、
-  RequiredInput 与独立发布确认交互。
+- `tests/test_global_agent_routes.py`、前端 `GlobalAgentChatPanel` 测试：六个受信任务
+  HTTP 门面、稳定对话恢复、RequiredInput 与审批确认/拒绝交互。
 - `tests/test_backend_api.py` 与 `tests/test_http_request_security.py`：HTTP contract
   与本机请求安全边界。
 - `tests/architecture/`：长期模块边界、持久化与平台契约。

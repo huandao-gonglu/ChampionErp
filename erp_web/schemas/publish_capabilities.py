@@ -111,7 +111,26 @@ class ProductPublishRequestResult(BaseModel):
     idempotent_replay: bool = False
 
 
+class ProductPublishCapabilityRequest(BaseModel):
+    """``product_publish_request`` Capability 的模型可见契约。
+
+    审批摘要与 validation_digest 由服务端快照函数从发布校验结果生成；
+    确认事实（task/step/confirmed_at）来自可信执行上下文。模型只提交
+    发布目标（草稿 + 平台/站点），不提供任何审批 payload。
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    draft_id: Annotated[
+        TrimmedText,
+        StringConstraints(min_length=1, max_length=160),
+    ]
+    platform: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
+    site: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
+
+
 __all__ = [
+    "ProductPublishCapabilityRequest",
     "ProductPublishRequest",
     "ProductPublishRequestResult",
     "ProductPublishSummary",

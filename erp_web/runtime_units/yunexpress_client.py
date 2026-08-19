@@ -153,7 +153,9 @@ class YunExpressClient:
     def base_url(self) -> str:
         return str(self.config.get("base_url") or SANDBOX_BASE_URL).rstrip("/")
 
-    def request_access_token(self) -> dict[str, Any]:
+    def request_access_token(
+        self, *, timeout_seconds: float | None = None
+    ) -> dict[str, Any]:
         ensure_yunexpress_config_ready(self.config)
         payload = {
             "grantType": "client_credentials",
@@ -162,7 +164,9 @@ class YunExpressClient:
             # 云途沙盒实际校验小写 sourcekey；sourceKey 会被误报为应用密钥错误。
             "sourcekey": self.config["source_key"],
         }
-        result = self._post_json(TOKEN_PATH, payload, signed=False)
+        result = self._post_json(
+            TOKEN_PATH, payload, signed=False, timeout_seconds=timeout_seconds
+        )
         result_payload = result.get("result") if isinstance(result.get("result"), dict) else {}
         access_token = _text(result.get("accessToken") or result.get("access_token") or result_payload.get("accessToken") or result_payload.get("access_token"))
         if not access_token:
@@ -174,16 +178,36 @@ class YunExpressClient:
             "raw": result,
         }
 
-    def create_package_order(self, payload: dict[str, Any], access_token: str = "") -> dict[str, Any]:
+    def create_package_order(
+        self,
+        payload: dict[str, Any],
+        access_token: str = "",
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
         token = _text(access_token)
         token_result: dict[str, Any] = {}
         if not token:
-            token_result = self.request_access_token()
+            token_result = self.request_access_token(timeout_seconds=timeout_seconds)
             token = str(token_result.get("access_token") or "")
-        result = self._post_json(CREATE_PACKAGE_PATH, payload, signed=True, access_token=token)
+        result = self._post_json(
+            CREATE_PACKAGE_PATH,
+            payload,
+            signed=True,
+            access_token=token,
+            timeout_seconds=timeout_seconds,
+        )
         return {"request_payload": payload, "token": {"expires_in": token_result.get("expires_in", "")}, "response": result}
 
-    def _post_json(self, path: str, payload: dict[str, Any], *, signed: bool, access_token: str = "") -> dict[str, Any]:
+    def _post_json(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        signed: bool,
+        access_token: str = "",
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
         body_text = canonical_json(payload)
         headers = {"Content-Type": "application/json;charset=utf-8", "Accept": "application/json"}
         if signed:
@@ -200,12 +224,19 @@ class YunExpressClient:
             headers=headers,
             method="POST",
         )
+        # 有界超时：Capability 传入 execution.bounded_timeout_seconds() 得到的
+        # 外层剩余时间；未提供时退回配置默认值。
+        effective_timeout = self.timeout if timeout_seconds is None else timeout_seconds
         try:
-            with self.urlopen(request, timeout=self.timeout) as response:
+            with self.urlopen(request, timeout=effective_timeout) as response:
                 return _response_json(response)
+        except TimeoutError as exc:
+            raise TimeoutError(f"云途 API 请求超时：{path}") from exc
         except urllib.error.HTTPError as exc:
             raise RuntimeError(_request_error_message(exc)) from exc
         except urllib.error.URLError as exc:
+            if isinstance(getattr(exc, "reason", None), TimeoutError):
+                raise TimeoutError(f"云途 API 连接超时：{path}") from exc
             raise RuntimeError(f"云途 API 连接失败：{exc.reason}") from exc
 
 

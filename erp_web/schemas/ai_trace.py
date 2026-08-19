@@ -36,6 +36,10 @@ class AiExecutionContext:
     parent_task_run_id: str | None = None
     approved_tool_call_ids: frozenset[str] = frozenset()
     allow_write: bool = False
+    # 审批绑定：Controller 在批准执行时注入已持久化审批请求的 digest 与
+    # 任务版本；approval-required Capability 必须在执行侧重算快照并复核。
+    approval_digest: str = ""
+    approval_task_revision: int = 0
 
     def __post_init__(self) -> None:
         if not self.task_run_id:
@@ -94,11 +98,16 @@ class AiExecutionContext:
         idempotency_context: Mapping[str, str] | None = None,
         approved_tool_call_ids: frozenset[str] | set[str] | tuple[str, ...] = frozenset(),
         allow_write: bool = False,
+        approval_digest: str = "",
+        approval_task_revision: int = 0,
         now: datetime | None = None,
     ) -> "AiExecutionContext":
         safe_timeout = float(timeout_seconds)
         if safe_timeout <= 0:
             raise ValueError("timeout_seconds 必须大于 0")
+        safe_revision = int(approval_task_revision)
+        if safe_revision < 0:
+            raise ValueError("approval_task_revision 不能为负数")
         started_at = now or datetime.now(timezone.utc)
         if started_at.tzinfo is None:
             raise ValueError("now 必须包含时区")
@@ -116,6 +125,8 @@ class AiExecutionContext:
             budget_profile=budget_profile,
             approved_tool_call_ids=frozenset(approved_tool_call_ids),
             allow_write=bool(allow_write),
+            approval_digest=str(approval_digest or "").strip(),
+            approval_task_revision=safe_revision,
         )
 
     def remaining_seconds(self, *, now: datetime | None = None) -> float:

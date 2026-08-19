@@ -67,17 +67,9 @@ AI_HTTP_USER_AGENT = (
 )
 
 AI_USE_CASES: dict[str, dict[str, Any]] = {
-    "global.task.plan": {
-        "id": "global.task.plan",
-        "label": "全局 Agent 任务规划",
-        "required_capabilities": [CAP_CHAT, CAP_JSON, CAP_TOOL_CALLING],
-        "toolset_id": "global.task.plan",
-        "budget_profile": "global.task.plan.default",
-        "result_schema": "global_task_plan.v1",
-    },
     "global.chat": {
         "id": "global.chat",
-        "label": "全局对话",
+        "label": "全局 AI",
         "required_capabilities": [CAP_CHAT, CAP_TOOL_CALLING],
         "toolset_id": "global.chat",
         "budget_profile": "global.chat.default",

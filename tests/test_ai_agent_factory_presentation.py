@@ -34,7 +34,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.settings import ModelSettings
 
 from erp_web.db import ErpDatabase
-from erp_web.schemas.ai_tools import AiToolDefinition
+from erp_web.schemas.ai_tools import AiToolDefinition, TaskApprovalSnapshot
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.services.ai_agent_factory import (
     AiAgentExecutionError,
@@ -913,6 +913,14 @@ def _write_toolset(executor) -> AiToolSet:
         "presentation.kernel.write",
         [definition],
         {"save_note": deadline_aware_tool_executor(executor)},
+        approval_preparers={
+            "save_note": (
+                lambda arguments: TaskApprovalSnapshot(
+                    summary=f"保存笔记 {arguments.get('note')}",
+                    canonical_payload=dict(arguments),
+                )
+            )
+        },
     )
 
 

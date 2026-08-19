@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from copy import deepcopy
-from typing import Any
+from dataclasses import dataclass
+from typing import Annotated, Any
 
 from erp_web.product_model import unresolved_required_category_attributes
 from erp_web.runtime_units.category_attribute_ai_fill import (
@@ -26,10 +27,12 @@ from erp_web.runtime_units.market_capability_support import (
     select_target,
     text,
 )
+from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.market_prepare_capabilities import (
     ProductAttributesFillRequest,
     ProductAttributesFillResult,
 )
+from erp_web.services.ai_tool_declaration import Injected, ai_tool
 from erp_web.services.capability_errors import (
     BusinessCapabilityError,
     CapabilityInputRequired,
@@ -216,4 +219,44 @@ def fill_product_attributes(
     )
 
 
-__all__ = ["AttributeFiller", "fill_product_attributes"]
+@dataclass(frozen=True)
+class AttributeFillCapabilityScope:
+    """属性填写 Capability 的可信依赖边界。"""
+
+    products: MarketPrepareStore
+
+
+PRODUCT_ATTRIBUTES_FILL_TOOL = "product_attributes_fill"
+
+
+@ai_tool(
+    name=PRODUCT_ATTRIBUTES_FILL_TOOL,
+    description="为草稿目标市场填写平台必填属性；无法确定时暂停并请求补充。",
+    permission="product.write",
+    side_effect="write",
+    approval_required=False,
+    idempotency="required",
+    idempotency_keys=("operation_key",),
+    recovery_policy="manual",
+    version="1",
+)
+def product_attributes_fill(
+    request: ProductAttributesFillRequest,
+    scope: Annotated[AttributeFillCapabilityScope, Injected()],
+    execution: Annotated[AiExecutionContext, Injected()],
+) -> ProductAttributesFillResult:
+    del execution
+    return fill_product_attributes(request, product_store=scope.products)
+
+
+ATTRIBUTE_FILL_AI_CAPABILITIES = (product_attributes_fill,)
+
+
+__all__ = [
+    "ATTRIBUTE_FILL_AI_CAPABILITIES",
+    "AttributeFillCapabilityScope",
+    "AttributeFiller",
+    "PRODUCT_ATTRIBUTES_FILL_TOOL",
+    "fill_product_attributes",
+    "product_attributes_fill",
+]

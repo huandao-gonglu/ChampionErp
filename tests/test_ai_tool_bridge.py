@@ -14,7 +14,11 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from erp_web.schemas.ai_tools import AiToolDefinition, AiToolExecutionError
+from erp_web.schemas.ai_tools import (
+    AiToolDefinition,
+    AiToolExecutionError,
+    TaskApprovalSnapshot,
+)
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.services.ai_agent_dependencies import AiAgentDependencies
 from erp_web.services.ai_tool_bridge import AiToolBridgeError, PydanticToolBridge
@@ -94,10 +98,23 @@ def bind_toolset(
     *,
     toolset_id: str = "test.tool_bridge",
 ) -> AiToolSet:
+    preparers = (
+        {
+            definition.name: (
+                lambda arguments: TaskApprovalSnapshot(
+                    summary=f"执行 {definition.name}",
+                    canonical_payload=dict(arguments),
+                )
+            )
+        }
+        if definition.approval_required
+        else None
+    )
     return AiToolSet.bind(
         toolset_id,
         [definition],
         {definition.name: deadline_aware_tool_executor(executor)},
+        approval_preparers=preparers,
     )
 
 

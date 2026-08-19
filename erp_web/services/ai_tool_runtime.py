@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from erp_web.schemas.ai_tools import (
     AiToolCommand,
@@ -22,16 +22,18 @@ from .ai_tool_registry import AiToolSet
 _HIDDEN_EXECUTION_ERROR_MESSAGE = "工具执行失败，请稍后重试。"
 
 
-def _executor_error_details(exc: Exception) -> tuple[str, str, bool]:
+def _executor_error_details(
+    exc: Exception,
+) -> tuple[str, str, bool, Mapping[str, Any] | None]:
     """只公开显式安全错误；未知异常不得穿透工具边界。"""
 
     if isinstance(exc, TimeoutError):
-        return "TASK_DEADLINE_EXCEEDED", "工具执行超时。", True
+        return "TASK_DEADLINE_EXCEEDED", "工具执行超时。", True, None
     if isinstance(exc, AiToolExecutionError):
-        return exc.code, str(exc), exc.retryable
+        return exc.code, str(exc), exc.retryable, exc.details
     if isinstance(exc, AiToolSchemaError):
-        return exc.code, str(exc), False
-    return "TOOL_EXECUTION_FAILED", _HIDDEN_EXECUTION_ERROR_MESSAGE, True
+        return exc.code, str(exc), False, None
+    return "TOOL_EXECUTION_FAILED", _HIDDEN_EXECUTION_ERROR_MESSAGE, True, None
 
 
 class AiToolRuntime:
@@ -90,16 +92,20 @@ class AiToolRuntime:
         retryable: bool = False,
         duration_ms: int = 0,
         truncated: bool = False,
+        details: Mapping[str, Any] | None = None,
     ) -> AiToolResult:
+        error: dict[str, Any] = {
+            "code": code,
+            "message": message,
+            "retryable": retryable,
+        }
+        if details is not None:
+            error["details"] = dict(details)
         return AiToolResult(
             call_id=command.call_id,
             tool_name=command.tool_name,
             ok=False,
-            error={
-                "code": code,
-                "message": message,
-                "retryable": retryable,
-            },
+            error=error,
             duration_ms=max(0, duration_ms),
             truncated=truncated,
         )
@@ -282,7 +288,9 @@ class AiToolRuntime:
             )
         except Exception as exc:
             duration_ms = round((time.monotonic() - started_at) * 1000)
-            error_code, error_message, retryable = _executor_error_details(exc)
+            error_code, error_message, retryable, error_details = (
+                _executor_error_details(exc)
+            )
             return self._remember(
                 command,
                 signature,
@@ -292,6 +300,7 @@ class AiToolRuntime:
                     message=error_message,
                     retryable=retryable,
                     duration_ms=duration_ms,
+                    details=error_details,
                 ),
             )
         duration_ms = round((time.monotonic() - started_at) * 1000)

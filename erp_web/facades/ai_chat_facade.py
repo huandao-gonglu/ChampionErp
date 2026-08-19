@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from erp_web.context import get_context
+from erp_web.facades.global_task_facade import build_global_chat_toolset
 from erp_web.services.global_agent_chat_service import GlobalAgentChatService
 from erp_web.services.vercel_ai_ui_service import (
     VercelAiChatRun,
@@ -28,8 +29,7 @@ def _build_ui_service() -> VercelAiUiService:
         app_dir=context.paths.app_dir,
         app_config=app_config,
         message_store=context.pydantic_messages,
-        products=context.products,
-        draft_snapshots=context.draft_query_snapshots,
+        toolset=build_global_chat_toolset(context),
     )
     return VercelAiUiService(
         chat_service=chat_service,

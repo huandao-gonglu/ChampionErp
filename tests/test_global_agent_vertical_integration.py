@@ -1,82 +1,47 @@
+"""global.chat 单主 Agent 纵向集成测试。
+
+覆盖：
+- 主 Agent ToolSet 组合：Direct 只读能力 + 任务控制能力，且 Direct 不含写工具；
+- ``global_task_start`` 的模型可见契约由真实 Task Capability Request Schema
+  机械投影，任务计划以类型化参数进入 Controller（无第二次计划模型调用）；
+- prepare → validate → 审批 → 发布长任务 → 通用终态刷新的完整纵向流程
+  （真实 Capability + 真实 Ozon 确定性逻辑 + 只替代最终外部网络边界）；
+- HTTP 受信门面与 Controller/AI 路径读取到等价任务状态。
+"""
+
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime, timezone
 from typing import Any
 
 import pytest
 
 from erp_web.context import get_context
-from erp_web.facades import global_agent_facade
-from erp_web.facades.global_agent_facade import (
-    GLOBAL_TASK_CAPABILITY_NAMES,
-    build_global_task_capabilities,
-)
-from erp_web.runtime_units.attribute_fill_capabilities import (
-    fill_product_attributes as real_fill_product_attributes,
-)
-from erp_web.runtime_units.category_capabilities import (
-    match_category as real_match_category,
+from erp_web.facades import global_task_facade
+from erp_web.runtime_units import category_attribute_ai_fill, category_store
+from erp_web.runtime_units.global_ai_control_tools import (
+    GlobalTaskStartControlRequest,
+    TASK_CONTROL_PERMISSION,
 )
 from erp_web.runtime_units.publish_adapter import OzonPublishingAdapter
 from erp_web.runtime_units.publish_bus import (
     persist_publish_bus_terminal_results,
 )
 from erp_web.runtime_units.publishing_bus_core import PublishingBus
-from erp_web.schemas.draft_capabilities import (
-    DraftQueryCriteria,
-    DraftQuerySnapshot,
-)
 from erp_web.schemas.global_tasks import (
-    GlobalPlanningDecision,
+    GlobalTaskApproveRequest,
     GlobalTaskInputRequest,
-    GlobalTaskPlanParameters,
-    GlobalTaskPlanProposal,
-    GlobalTaskStartRequest,
-    GlobalTaskStepProposal,
 )
-from erp_web.services.global_task_controller import (
-    GlobalTaskController,
-    GlobalTaskPlanningOutcome,
+from erp_web.ai_capability_composition import (
+    APPLICATION_CAPABILITY_CATALOG,
+    GLOBAL_CHAT_DIRECT_CAPABILITIES,
+    GLOBAL_TASK_CAPABILITIES,
 )
+from erp_web.services.category_attribute_fill_agent_service import (
+    CategoryAttributeFillAgentRun,
+)
+from erp_web.services.global_task_controller import GlobalTaskControllerError
 from erp_web.services.pricing_service import pricing_calculation_fingerprint
-from erp_web.stores.global_task_store import LocalGlobalTaskStore
-
-
-class _PlannerBoundary:
-    """主 Agent 模型边界；测试计划本身仍由真实 Controller 校验。"""
-
-    def __init__(self, snapshot_id: str) -> None:
-        self.snapshot_id = snapshot_id
-        self.calls = 0
-
-    def __call__(self, _task, _supplement: str) -> GlobalTaskPlanningOutcome:
-        self.calls += 1
-        capabilities = (
-            "draft.prepare_for_market",
-            "product.publish.validate",
-            "product.publish.request",
-        )
-        return GlobalTaskPlanningOutcome(
-            decision=GlobalPlanningDecision(
-                action="plan",
-                plan=GlobalTaskPlanProposal(
-                    steps=[
-                        GlobalTaskStepProposal(
-                            local_key=f"vertical-{index}",
-                            capability=capability,
-                            objective=f"纵向执行 {capability}",
-                        )
-                        for index, capability in enumerate(capabilities, start=1)
-                    ],
-                    draft_position=1,
-                    target_platform="ozon",
-                    parameters=GlobalTaskPlanParameters(regenerate_copy=True),
-                ),
-                query_snapshot_id=self.snapshot_id,
-                explanation="按市场准备、确定性校验和确认后发布的顺序执行。",
-            ),
-        )
 
 
 class _PlatformNetworkBoundary(OzonPublishingAdapter):
@@ -116,19 +81,29 @@ class _PlatformNetworkBoundary(OzonPublishingAdapter):
         }
 
 
-def _category_record(
-    platform: str,
-    category_id: str,
-    *,
-    site: str,
-    include_attributes: bool,
-) -> dict[str, Any]:
-    assert (platform, category_id, site, include_attributes) == (
-        "ozon",
-        "94765",
-        "global",
-        True,
-    )
+class _FakeCategoryProvider:
+    """类目明细边界的可信替代：只覆盖 detail 读取。"""
+
+    def __init__(self, records: dict[str, dict[str, Any]]) -> None:
+        self.records = records
+        self.detail_calls: list[tuple[str, str, bool]] = []
+
+    def detail(
+        self,
+        category_id: str,
+        site: str = "",
+        include_attributes: bool = False,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        del kwargs
+        self.detail_calls.append((category_id, site, include_attributes))
+        record = self.records.get(str(category_id))
+        if record is None:
+            raise ValueError(f"未找到类目 {category_id}")
+        return deepcopy(record)
+
+
+def _category_record() -> dict[str, Any]:
     return {
         "category_id": "94765",
         "description_category_id": "17027949",
@@ -258,34 +233,46 @@ def _source_product() -> dict[str, Any]:
     }
 
 
-def _controller(
-    *,
-    store: LocalGlobalTaskStore,
-    planner: _PlannerBoundary,
-    capabilities,
-    bus: PublishingBus,
-) -> GlobalTaskController:
-    return GlobalTaskController(
-        store=store,
-        planner=planner,
-        capabilities=capabilities,
-        publish_status_reader=bus.get_public_status,
-        answer_resolver=lambda _task, _decision: pytest.fail("不应解析只读答案"),
-    )
+def test_global_chat_toolset_is_direct_read_only_plus_task_control() -> None:
+    context = get_context()
+    toolset = global_task_facade.build_global_chat_toolset(context)
+
+    assert toolset.toolset_id == "global.chat"
+    expected_direct = set(GLOBAL_CHAT_DIRECT_CAPABILITIES)
+    # 审批/拒绝不进入模型可绑定 ToolSet：只能走受信 UI/API（P1-1）。
+    expected_control = {
+        "global_task_start",
+        "global_task_get",
+        "global_task_submit_input",
+        "global_task_cancel",
+    }
+    assert set(toolset.bindings) == expected_direct | expected_control
+    assert "global_task_approve" not in toolset.bindings
+    assert "global_task_reject" not in toolset.bindings
+
+    # Direct 能力必须是只读：主 Agent 不允许在对话里直接执行业务写操作。
+    for name in expected_direct:
+        definition = toolset.bindings[name].definition
+        assert definition.side_effect == "none", name
+        assert definition.approval_required is False, name
+
+    # 任务控制工具集 ID 与权限来自组合根，而不是逐处硬编码。
+    controller = global_task_facade.build_global_task_controller(context)
+    assert set(controller.task_toolset.bindings) == set(GLOBAL_TASK_CAPABILITIES)
+    assert controller.task_toolset.toolset_id == "global.task"
+    permissions = global_task_facade.global_chat_permissions()
+    assert TASK_CONTROL_PERMISSION in permissions
+    assert permissions == {
+        tool.definition.required_permission
+        for tool in APPLICATION_CAPABILITY_CATALOG.tools.values()
+        if tool.definition.required_permission
+    } | {TASK_CONTROL_PERMISSION}
 
 
-@pytest.mark.parametrize(
-    ("remote_success", "expected_task_status", "expected_publish_status"),
-    [
-        (True, "completed", "published"),
-        (False, "failed", "failed"),
-    ],
-)
-def test_global_agent_real_vertical_publish_flow(
+@pytest.mark.parametrize("remote_success", [True, False])
+def test_global_chat_typed_task_vertical_publish_flow(
     monkeypatch: pytest.MonkeyPatch,
     remote_success: bool,
-    expected_task_status: str,
-    expected_publish_status: str,
 ) -> None:
     context = get_context()
     context.config.update_store_config_fields(
@@ -303,19 +290,6 @@ def test_global_agent_real_vertical_publish_flow(
     )
     saved_product = context.products.save_product(_source_product())
     draft_id = str(saved_product["drafts"]["ozon"]["draft_id"])
-    snapshot_id = f"snapshot-vertical-{'success' if remote_success else 'failed'}"
-    task_store = LocalGlobalTaskStore(context.db)
-    task_store.save_draft_query_snapshot(
-        DraftQuerySnapshot(
-            snapshot_id=snapshot_id,
-            draft_ids=[draft_id],
-            total=1,
-            count_by_platform={"ozon": 1},
-            count_by_status={"claimed": 1},
-            query=DraftQueryCriteria(scope="all", target_platform="ozon"),
-            created_at=datetime.now(timezone.utc),
-        )
-    )
 
     boundary_calls = {"copy": 0, "category": 0, "attributes": 0}
 
@@ -351,14 +325,13 @@ def test_global_agent_real_vertical_publish_flow(
 
     def focused_category_boundary(*_args, **kwargs) -> dict[str, Any]:
         boundary_calls["category"] += 1
+        del kwargs
         return {
             "ok": True,
             "status": "unresolved",
             "selected_category_id": None,
             "query": "portable fan",
-            "candidates": [
-                {"category_id": "94765", "name": "Вентиляторы"}
-            ],
+            "candidates": [{"category_id": "94765", "name": "Вентиляторы"}],
             "decision": {"model_confidence": 0.4},
             "failure": {
                 "code": "CATEGORY_MATCH_UNRESOLVED",
@@ -368,75 +341,57 @@ def test_global_agent_real_vertical_publish_flow(
             "trace": {"conversation_id": "focused-category-vertical"},
         }
 
-    def focused_attribute_boundary(
-        product: dict[str, Any],
-        platform: str,
-        _record: dict[str, Any] | None,
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
+    def deterministic_attribute_agent(
+        payload,
+        toolset,
+        ledger,
+        **kwargs,
+    ) -> CategoryAttributeFillAgentRun:
         boundary_calls["attributes"] += 1
-        updated = deepcopy(product)
-        draft = updated["drafts"][platform]
-        draft["attributes"] = {
-            **(
-                draft.get("attributes")
-                if isinstance(draft.get("attributes"), dict)
-                else {}
-            ),
-            "4191": draft["description"],
-        }
-        return updated, {
-            "source": "focused_agent",
-            "conversation_id": "focused-attributes-vertical",
-        }
-
-    def category_capability_boundary(
-        request,
-        *,
-        product_store,
-        matcher,
-    ):
-        return real_match_category(
-            request,
-            product_store=product_store,
-            matcher=matcher,
-            category_record_loader=_category_record,
+        del toolset, ledger, kwargs
+        product_context = payload.get("product_context")
+        draft_context = (
+            product_context.get("draft")
+            if isinstance(product_context, dict)
+            else {}
         )
-
-    def attribute_capability_boundary(
-        request,
-        *,
-        product_store,
-    ):
-        return real_fill_product_attributes(
-            request,
-            product_store=product_store,
-            attribute_filler=focused_attribute_boundary,
-            category_record_loader=_category_record,
+        description = (
+            draft_context.get("description")
+            if isinstance(draft_context, dict)
+            else ""
+        )
+        return CategoryAttributeFillAgentRun.for_test(
+            {
+                "assignments": [
+                    {"attribute_id": "4191", "value": str(description or "")}
+                ]
+            }
         )
 
     monkeypatch.setattr(
-        global_agent_facade,
+        global_task_facade,
         "generate_ai_copy_bundle",
         direct_copy_boundary,
     )
     monkeypatch.setattr(
-        global_agent_facade,
+        global_task_facade,
         "run_category_match",
         focused_category_boundary,
     )
+    provider = _FakeCategoryProvider({"94765": _category_record()})
     monkeypatch.setattr(
-        global_agent_facade,
-        "match_category",
-        category_capability_boundary,
+        category_store,
+        "require_category_provider",
+        lambda platform: provider,
     )
     monkeypatch.setattr(
-        global_agent_facade,
-        "fill_product_attributes",
-        attribute_capability_boundary,
+        category_attribute_ai_fill,
+        "run_category_attribute_fill_agent",
+        deterministic_attribute_agent,
     )
 
     network_adapter = _PlatformNetworkBoundary(succeed=remote_success)
-    initial_bus = PublishingBus(
+    bus = PublishingBus(
         context.db,
         adapters={"ozon": network_adapter},
         config_provider=context.config.load_store_config,
@@ -447,179 +402,179 @@ def test_global_agent_real_vertical_publish_flow(
         max_retries=0,
         auto_resume_pending=False,
     )
-    context._publishing_bus = initial_bus
-    restarted_bus: PublishingBus | None = None
+    context._publishing_bus = bus
     try:
-        capabilities = build_global_task_capabilities(context)
-        assert frozenset(capabilities) == GLOBAL_TASK_CAPABILITY_NAMES
-        planner = _PlannerBoundary(snapshot_id)
-        controller = _controller(
-            store=task_store,
-            planner=planner,
-            capabilities=capabilities,
-            bus=initial_bus,
-        )
+        controller = global_task_facade.build_global_task_controller(context)
 
-        category_pause = controller.create_task(
-            GlobalTaskStartRequest(
-                goal="把第一个草稿准备到 Ozon 并发布",
-                platform="ozon",
-                draft_query_snapshot_id=snapshot_id,
+        # 阶段一：类型化任务准备 + 确定性校验；补资料经统一 submit_input 合并重放。
+        prepare_task = controller.start_task(
+            GlobalTaskStartControlRequest.model_validate(
+                {
+                    "goal": "把第一个草稿准备到 Ozon 并完成发布校验",
+                    "product_id": saved_product["product_id"],
+                    "platform": "ozon",
+                    "steps": [
+                        {
+                            "capability_name": "draft_prepare_for_market",
+                            "arguments": {
+                                "draft_id": draft_id,
+                                "target_platform": "ozon",
+                                "regenerate_copy": True,
+                            },
+                        },
+                        {
+                            "capability_name": "product_publish_validate",
+                            "arguments": {"draft_id": draft_id},
+                        },
+                    ],
+                }
             ),
-        )
-        assert category_pause.status == "needs_input"
-        assert category_pause.pending_input_owner == "capability"
-        assert [item.key for item in category_pause.pending_inputs] == [
+            conversation_id="conversation-vertical",
+            message_id="message-vertical-1",
+        ).task
+        assert prepare_task.status == "needs_input"
+        assert [item.key for item in prepare_task.pending_inputs] == [
             "category_id"
         ]
-        assert category_pause.pending_inputs[0].input_owner == "step"
         assert boundary_calls == {"copy": 1, "category": 1, "attributes": 0}
-        operation_key = (
-            f"global-task:{category_pause.task_id}:"
-            "step:step_1_vertical-1:copy"
-        )
-        assert context.db.load_draft_model(draft_id)[
-            "copy_operation_key"
-        ] == operation_key
 
-        # draft.prepare_for_market 涵盖多个领域写入，当前没有覆盖整个复合步骤
-        # 的真实幂等 owner，因此 running 中断不会静默重放；完整流程从已持久化
-        # needs_input 状态继续。
-        assert category_pause.steps[0].recovery_policy == "manual"
-
-        # 每次补资料都重建 Controller/Store，证明暂停状态来自 SQLite owner。
-        controller = _controller(
-            store=LocalGlobalTaskStore(context.db),
-            planner=planner,
-            capabilities=capabilities,
-            bus=initial_bus,
-        )
+        # 每次补资料都重建 Controller，证明暂停状态来自 SQLite owner。
+        controller = global_task_facade.build_global_task_controller(context)
         attribute_pause = controller.submit_input(
             GlobalTaskInputRequest(
-                task_id=category_pause.task_id,
-                inputs={"category_id": "94765"},
+                task_id=prepare_task.task_id,
+                arguments={"category_id": "94765"},
             )
-        )
+        ).task
         assert attribute_pause.status == "needs_input"
         assert [item.key for item in attribute_pause.pending_inputs] == ["85"]
-        assert attribute_pause.pending_inputs[0].input_owner == (
-            "provided_attributes"
-        )
         assert boundary_calls == {"copy": 1, "category": 1, "attributes": 1}
 
-        controller = _controller(
-            store=LocalGlobalTaskStore(context.db),
-            planner=planner,
-            capabilities=capabilities,
-            bus=initial_bus,
-        )
-        confirmation = controller.submit_input(
+        controller = global_task_facade.build_global_task_controller(context)
+        prepared = controller.submit_input(
             GlobalTaskInputRequest(
                 task_id=attribute_pause.task_id,
-                inputs={"85": "Champion"},
+                arguments={"provided_attributes": {"85": "Champion"}},
             )
-        )
-        assert confirmation.status == "waiting_publish_confirmation"
-        assert confirmation.publish_confirmation.status == "pending"
-        assert confirmation.steps[0].status == "completed"
-        assert confirmation.steps[1].status == "completed"
-        assert confirmation.steps[2].status == "pending"
-        assert planner.calls == 1
-        assert boundary_calls == {"copy": 1, "category": 1, "attributes": 2}
+        ).task
+        assert prepared.status == "completed"
+        # 第二次重放时 4191 已持久化、85 由补充资料提供，无需再次 AI 填充。
+        assert boundary_calls == {"copy": 1, "category": 1, "attributes": 1}
         prepared_draft = context.db.load_draft_model(draft_id)
         assert prepared_draft["title"] == "Портативный вентилятор"
         assert prepared_draft["category_id"] == "94765"
         assert prepared_draft["description_category_id"] == "17027949"
         assert prepared_draft["attributes"]["85"] == "Champion"
-        assert prepared_draft["attributes"]["4191"] == prepared_draft["description"]
+        assert prepared_draft["attributes"]["4191"] == prepared_draft[
+            "description"
+        ]
         assert prepared_draft["images"] == [
             {"asset_id": "image-vertical-1", "role": "main", "order": 0}
         ]
-        assert prepared_draft["publish_status"] == "ready"
-        assert confirmation.publish_confirmation.summary["category_id"] == "94765"
-        assert confirmation.publish_confirmation.summary["image_count"] == 1
 
-        submitted = controller.confirm_publish(confirmation.task_id)
-        confirmed_at = submitted.publish_confirmation.confirmed_at
-        assert submitted.publish_confirmation.status == "confirmed"
-        assert confirmed_at is not None
-        assert submitted.publish_job_id
+        # 校验结果（含 digest）是任务状态里的可信事实，供下一步审批引用。
+        validate_result = prepared.steps[1].result
+        assert validate_result is not None
+        assert validate_result["passed"] is True
+        validation_digest = str(validate_result["validation_digest"])
+        assert len(validation_digest) == 64
 
-        duplicate_confirmation = controller.confirm_publish(confirmation.task_id)
-        assert duplicate_confirmation.publish_job_id == submitted.publish_job_id
-        assert duplicate_confirmation.publish_confirmation.confirmed_at == confirmed_at
-
-        initial_bus.wait(submitted.publish_job_id, timeout=3)
-        initial_bus.executor.shutdown(wait=True)
-
-        # 重建 PublishingBus 后按原可信事实重放 enqueue。完整 publish Capability
-        # 已在确认时真实执行；这里专门模拟提交后的进程重试，避免在平台终态后
-        # 额外重做业务预检而改变终态展示字段。
-        restarted_bus = PublishingBus(
-            context.db,
-            adapters={"ozon": network_adapter},
-            config_provider=context.config.load_store_config,
-            terminal_callback=lambda state: persist_publish_bus_terminal_results(
-                state,
-                context=context,
-            ),
-            max_retries=0,
-            auto_resume_pending=False,
-        )
-        context._publishing_bus = restarted_bus
-        persisted_task = LocalGlobalTaskStore(context.db).require_task(
-            confirmation.task_id
-        )
-        persisted_job = context.db.load_publish_job(submitted.publish_job_id)
-        persisted_product = persisted_job["product"]
-        replay = restarted_bus.enqueue(
-            persisted_product,
-            ["ozon"],
-            targets={
-                "ozon": {
-                    "draft_id": draft_id,
-                    "site": "global",
-                    "product_id": str(persisted_product["product_id"]),
+        # 阶段二：发布步骤进入任务；审批快照/摘要由服务端生成，模型不提交 approval。
+        publish_task = controller.start_task(
+            GlobalTaskStartControlRequest.model_validate(
+                {
+                    "goal": "提交 Ozon 真实发布",
+                    "product_id": saved_product["product_id"],
+                    "platform": "ozon",
+                    "steps": [
+                        {
+                            "capability_name": "product_publish_request",
+                            "arguments": {
+                                "draft_id": draft_id,
+                                "platform": "ozon",
+                            },
+                        }
+                    ],
                 }
-            },
-            idempotency_key=persisted_task.publish_idempotency_key,
-            approved_publications=persisted_job.get("approved_publications"),
+            ),
+            conversation_id="conversation-vertical",
+            message_id="message-vertical-2",
+        ).task
+        assert publish_task.status == "pending_approval"
+        assert publish_task.pending_approval is not None
+        # 审批展示与执行参数都来自服务端冻结快照（P1-2）。
+        approval_payload = publish_task.pending_approval.payload
+        assert approval_payload["summary"]
+        assert approval_payload["canonical_payload"]["validation_digest"] == (
+            validation_digest
         )
-        assert replay["idempotent_replay"] is True
-        assert replay["job_id"] == submitted.publish_job_id
-        assert network_adapter.publish_calls == 1
-        assert len(context.db.list_publish_jobs(limit=10)[0]) == 1
+        assert approval_payload["canonical_payload"]["draft_id"] == draft_id
+        assert network_adapter.publish_calls == 0
+        assert boundary_calls["copy"] == 1
 
-        terminal_controller = _controller(
-            store=LocalGlobalTaskStore(context.db),
-            planner=planner,
-            capabilities=capabilities,
-            bus=restarted_bus,
-        )
-        persisted_snapshot = terminal_controller.get_state(
-            confirmation.task_id
-        )
-        terminal = (
-            terminal_controller.resume_task(confirmation.task_id)
-            if persisted_snapshot.status == "waiting_publish_result"
-            else persisted_snapshot
-        )
+        # 阶段三：受信审批者确认后以原 operation_key 执行，长任务进入通用 in_progress。
+        submitted = controller.approve_task(
+            GlobalTaskApproveRequest(task_id=publish_task.task_id),
+            conversation_id="conversation-vertical",
+            message_id="message-vertical-3",
+            approver="local-ui:vertical-test",
+        ).task
+        assert submitted.status == "in_progress"
+        assert submitted.active_job is not None
+        job_id = submitted.active_job.job_id
+        assert submitted.steps[0].status == "running"
+
+        # 审批已消费：重复确认被稳定拒绝，且不会二次提交。
+        with pytest.raises(GlobalTaskControllerError) as error:
+            controller.approve_task(
+                GlobalTaskApproveRequest(task_id=publish_task.task_id),
+                approver="local-ui:vertical-test",
+            )
+        assert error.value.code == "GLOBAL_TASK_APPROVAL_NOT_EXPECTED"
+
+        bus.wait(job_id, timeout=5)
+        bus.executor.shutdown(wait=True)
+        assert network_adapter.publish_calls == 1
+
+        # 阶段四：受信刷新把平台真实终态映射为任务终态。
+        terminal = controller.refresh_task(publish_task.task_id).task
+        expected_task_status = "completed" if remote_success else "failed"
         assert terminal.status == expected_task_status
-        assert terminal.steps[-1].status == (
+        assert terminal.active_job is None
+        assert terminal.steps[0].status == (
             "completed" if remote_success else "failed"
         )
-        if not remote_success:
-            assert terminal.error_code == "PUBLISH_PLATFORM_FAILED"
+        if remote_success:
+            assert terminal.steps[0].result == {
+                "job_id": job_id,
+                "job_status": "success",
+            }
+        else:
+            assert terminal.error_code == "GLOBAL_TASK_JOB_FAILED"
             assert terminal.error_message == "平台拒绝纵向测试商品"
 
         persisted_draft = context.db.load_draft_model(draft_id)
-        assert persisted_draft["publish_status"] == expected_publish_status
-        assert persisted_draft["last_publish_task"]["job_id"] == (
-            submitted.publish_job_id
+        assert persisted_draft["publish_status"] == (
+            "published" if remote_success else "failed"
         )
-        assert context.db.publish_log_exists(submitted.publish_job_id, "ozon")
+        assert persisted_draft["last_publish_task"]["job_id"] == job_id
+        assert context.db.publish_log_exists(job_id, "ozon")
+
+        # HTTP 受信门面与 Controller 读取到等价任务状态。
+        payload, status = global_task_facade.get_global_task_payload(
+            {"task_id": publish_task.task_id}
+        )
+        assert status == 200
+        assert payload["ok"] is True
+        assert payload["task"] == controller.get_state(
+            publish_task.task_id
+        ).model_dump(mode="json")
+        state_payload, state_status = (
+            global_task_facade.get_global_task_payload(
+                {"task_id": prepare_task.task_id}
+            )
+        )
+        assert state_status == 200
+        assert state_payload["task"]["status"] == "completed"
     finally:
-        # shutdown 可重复；这里显式释放被替换的两个线程池。
-        initial_bus.executor.shutdown(wait=True)
-        if restarted_bus is not None:
-            restarted_bus.executor.shutdown(wait=True)
+        bus.executor.shutdown(wait=True)

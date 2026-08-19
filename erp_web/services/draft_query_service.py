@@ -15,11 +15,6 @@ from erp_web.schemas.draft_capabilities import (
     DraftQuerySnapshot,
     DraftSummary,
 )
-from erp_web.schemas.global_tasks import (
-    AnswerResolutionScope,
-    GlobalPlanningDecision,
-    TrustedGlobalAnswer,
-)
 from erp_web.services.capability_errors import (
     BusinessCapabilityError,
     CapabilityInputRequired,
@@ -421,157 +416,9 @@ def query_drafts(
     )
 
 
-def resolve_trusted_draft_answer(
-    decision: GlobalPlanningDecision,
-    *,
-    product_store: DraftIndexReader,
-    snapshot_repository: DraftSnapshotRepository,
-    resolution_scope: AnswerResolutionScope | None = None,
-) -> TrustedGlobalAnswer:
-    """从查询快照重放当前事实，生成不可由模型覆写的展示答案。"""
-
-    scope = AnswerResolutionScope.model_validate(resolution_scope or {})
-    if decision.action != "answer" or decision.answer_kind is None:
-        raise BusinessCapabilityError(
-            "GLOBAL_ANSWER_DECISION_INVALID",
-            "只有结构化只读回答决策可以解析可信答案。",
-        )
-    snapshot = _snapshot_or_error(
-        snapshot_repository,
-        decision.query_snapshot_id,
-    )
-    if decision.answer_kind == "active_draft_count":
-        if scope.expected_product_id or scope.expected_target_platform:
-            raise BusinessCapabilityError(
-                "GLOBAL_ANSWER_COUNT_SCOPE_CONFLICT",
-                "活跃草稿总数不能绑定到单个商品或目标平台上下文。",
-            )
-        if (
-            snapshot.query.scope != "active"
-            or snapshot.query.target_platform
-            or snapshot.query.status
-            or snapshot.query.keyword
-        ):
-            raise BusinessCapabilityError(
-                "GLOBAL_ANSWER_ACTIVE_SCOPE_REQUIRED",
-                "活跃草稿总数必须引用未附带平台、状态或关键词过滤的 active 查询快照。",
-            )
-        return resolve_fresh_active_draft_count_answer(
-            product_store=product_store,
-            snapshot_repository=snapshot_repository,
-        )
-
-    position = decision.answer_draft_position
-    if position is None:
-        if snapshot.total != 1 or len(snapshot.draft_ids) != 1:
-            maximum = min(len(snapshot.draft_ids), 10)
-            raise CapabilityInputRequired(
-                "GLOBAL_ANSWER_DRAFT_AMBIGUOUS",
-                "当前查询结果不能唯一指向一个草稿。",
-                key="draft_position",
-                label="草稿序号",
-                reason="请说明要查看第几个草稿的来源与目标市场。",
-                options=[str(index) for index in range(1, maximum + 1)],
-                input_type="select",
-            )
-        position = 1
-    result = query_drafts(
-        DraftQueryRequest(
-            snapshot_id=snapshot.snapshot_id,
-            positions=[position],
-        ),
-        product_store=product_store,
-        snapshot_repository=snapshot_repository,
-    )
-    if len(result.selected_items) != 1:
-        raise BusinessCapabilityError(
-            "GLOBAL_ANSWER_DRAFT_NOT_RESOLVED",
-            "查询快照未能解析出唯一草稿。",
-        )
-    draft = result.selected_items[0]
-    if (
-        scope.expected_product_id
-        and draft.product_id != scope.expected_product_id
-    ):
-        raise BusinessCapabilityError(
-            "GLOBAL_ANSWER_PRODUCT_SCOPE_MISMATCH",
-            "查询快照指向的草稿不属于当前任务商品。",
-        )
-    if (
-        scope.expected_target_platform
-        and draft.target_platform != scope.expected_target_platform
-    ):
-        raise BusinessCapabilityError(
-            "GLOBAL_ANSWER_PLATFORM_SCOPE_MISMATCH",
-            "查询快照指向的草稿目标平台与当前任务上下文不一致。",
-        )
-    source_text = (
-        f"该商品来源于 {draft.source_platform}"
-        if draft.source_platform
-        else "该商品未记录来源平台"
-    )
-    target_text = (
-        f"当前草稿的目标平台是 {draft.target_platform}"
-        if draft.target_platform
-        else "当前草稿未记录目标平台"
-    )
-    site_text = (
-        f"目标站点代码为 {draft.target_site}"
-        if draft.target_site
-        else "未记录目标站点代码"
-    )
-    evidence_refs = [
-        f"draft_query_snapshot:{snapshot.snapshot_id}",
-        f"draft:{draft.draft_id}",
-    ]
-    if draft.product_id:
-        evidence_refs.append(f"product:{draft.product_id}")
-    return TrustedGlobalAnswer(
-        answer_kind="draft_market_context",
-        query_snapshot_id=snapshot.snapshot_id,
-        message=f"{source_text}；{target_text}，{site_text}。",
-        facts={
-            "draft_id": draft.draft_id,
-            "product_id": draft.product_id,
-            "draft_position": position,
-            "source_platform": draft.source_platform,
-            "target_platform": draft.target_platform,
-            "target_platforms": draft.target_platforms,
-            "target_site": draft.target_site,
-        },
-        evidence_refs=evidence_refs,
-    )
-
-
-def resolve_fresh_active_draft_count_answer(
-    *,
-    product_store: DraftIndexReader,
-    snapshot_repository: DraftSnapshotRepository,
-) -> TrustedGlobalAnswer:
-    """查询此刻的无过滤 active 集合并生成同一新快照上的可信答案。"""
-
-    result = query_drafts(
-        DraftQueryRequest(scope="active", view="summary", limit=100),
-        product_store=product_store,
-        snapshot_repository=snapshot_repository,
-    )
-    return TrustedGlobalAnswer(
-        answer_kind="active_draft_count",
-        query_snapshot_id=result.snapshot_id,
-        message=f"当前共有 {result.total} 个活跃草稿。",
-        facts={
-            "scope": "active",
-            "active_draft_count": result.total,
-        },
-        evidence_refs=[f"draft_query_snapshot:{result.snapshot_id}"],
-    )
-
-
 __all__ = [
     "DraftIndexReader",
     "DraftSnapshotRepository",
     "query_drafts",
-    "resolve_fresh_active_draft_count_answer",
-    "resolve_trusted_draft_answer",
     "resolve_draft_positions",
 ]

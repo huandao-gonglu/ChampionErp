@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Literal, ParamSpec, TypeVar, cast
+from typing import Any, Callable, Literal, ParamSpec, TypeVar, cast
 
-from erp_web.schemas.ai_tools import normalize_ai_tool_name
+from erp_web.schemas.ai_tools import (
+    AI_TOOL_EXECUTION_MODES,
+    AI_TOOL_RECOVERY_POLICIES,
+    normalize_ai_tool_name,
+)
 
 
 ToolFunctionP = ParamSpec("ToolFunctionP")
@@ -13,6 +17,8 @@ ToolResultT = TypeVar("ToolResultT")
 ToolFunctionT = Callable[ToolFunctionP, ToolResultT]
 AiToolSideEffect = Literal["none", "write"]
 AiToolIdempotency = Literal["none", "required"]
+AiToolExecutionMode = Literal["sync", "persistent_job"]
+AiToolRecoveryPolicy = Literal["manual", "retry_safe", "idempotent"]
 _AI_TOOL_METADATA_ATTRIBUTE = "__ai_tool_metadata__"
 
 
@@ -31,6 +37,11 @@ class AiToolMetadata:
     idempotency: AiToolIdempotency
     idempotency_keys: tuple[str, ...]
     version: str
+    execution_mode: AiToolExecutionMode
+    recovery_policy: AiToolRecoveryPolicy
+    # approval_required=True 时必须提供：(request, scope) -> TaskApprovalSnapshot。
+    # 服务端在任务创建与执行复核两个时点调用，生成人类可读摘要与规范化参数。
+    approval_snapshot: Callable[..., Any] | None = None
 
 
 def _required_text(value: str, *, label: str) -> str:
@@ -47,9 +58,12 @@ def ai_tool(
     permission: str,
     side_effect: AiToolSideEffect = "none",
     approval_required: bool | None = None,
+    approval_snapshot: Callable[..., Any] | None = None,
     idempotency: AiToolIdempotency = "none",
     idempotency_keys: tuple[str, ...] = (),
     version: str = "1",
+    execution_mode: AiToolExecutionMode = "sync",
+    recovery_policy: AiToolRecoveryPolicy | None = None,
 ) -> Callable[[ToolFunctionT], ToolFunctionT]:
     """给类型化能力函数附加不可变契约，不执行注册或领域逻辑。"""
 
@@ -61,6 +75,14 @@ def ai_tool(
         raise ValueError("tool.side_effect 只允许 none 或 write")
     if idempotency not in {"none", "required"}:
         raise ValueError("tool.idempotency 只允许 none 或 required")
+    if execution_mode not in set(AI_TOOL_EXECUTION_MODES):
+        raise ValueError("tool.execution_mode 只允许 sync 或 persistent_job")
+    if recovery_policy is not None and recovery_policy not in set(
+        AI_TOOL_RECOVERY_POLICIES
+    ):
+        raise ValueError(
+            "tool.recovery_policy 只允许 manual、retry_safe 或 idempotent"
+        )
     normalized_keys = tuple(
         _required_text(value, label="tool.idempotency_keys")
         for value in idempotency_keys
@@ -74,10 +96,23 @@ def ai_tool(
             raise ValueError(
                 "写工具必须声明 required idempotency 和非空 idempotency_keys"
             )
+        if recovery_policy is None:
+            raise ValueError("写工具必须显式声明 recovery_policy")
     elif idempotency != "none" or normalized_keys:
         raise ValueError("只读工具不得声明写入幂等策略")
     normalized_approval = (
         bool(approval_required) if approval_required is not None else False
+    )
+    if normalized_approval:
+        if approval_snapshot is None or not callable(approval_snapshot):
+            raise ValueError(
+                "审批工具必须声明服务端 approval_snapshot 快照函数"
+            )
+    elif approval_snapshot is not None:
+        raise ValueError("非审批工具不得声明 approval_snapshot")
+    # 只读/纯计算能力默认可以安全重放；写能力必须显式声明恢复语义。
+    normalized_recovery: AiToolRecoveryPolicy = (
+        recovery_policy if recovery_policy is not None else "retry_safe"
     )
     metadata = AiToolMetadata(
         name=normalized_name,
@@ -88,6 +123,9 @@ def ai_tool(
         idempotency=idempotency,
         idempotency_keys=normalized_keys,
         version=normalized_version,
+        execution_mode=execution_mode,
+        recovery_policy=normalized_recovery,
+        approval_snapshot=approval_snapshot if normalized_approval else None,
     )
 
     def decorate(function: ToolFunctionT) -> ToolFunctionT:

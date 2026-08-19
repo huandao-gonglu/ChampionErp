@@ -126,7 +126,20 @@ def preview_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
     except BusinessCapabilityError as exc:
         return {"ok": False, "error": str(exc), "error_code": exc.code}, 400
     result = evaluation.result
-    saved = evaluation.saved_precheck
+    # 评估本身是纯计算；受信 HTTP 预览入口在这里负责预检结果落盘。
+    try:
+        saved = save_draft_precheck_result(
+            evaluation.context,
+            evaluation.precheck,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"发布校验结果保存失败：{exc}",
+            "error_code": "PUBLISH_PRECHECK_PERSIST_FAILED",
+        }, 500
+    if not isinstance(saved, dict):
+        saved = {}
     platform = evaluation.platform
     site = evaluation.site
     if not result.passed:

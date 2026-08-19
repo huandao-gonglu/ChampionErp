@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { AiUiPart } from '@/types/aiWork'
+import GlobalTaskApprovalCard from './GlobalTaskApprovalCard.vue'
 
 interface ToolPartLike {
   type: string
@@ -14,6 +15,7 @@ interface ToolPartLike {
 
 const props = defineProps<{
   part: AiUiPart
+  taskActionsEnabled?: boolean
 }>()
 
 const partType = computed(() => (props.part as { type: string }).type)
@@ -73,6 +75,13 @@ function formatJson(value: unknown): string {
 
 const toolInputJson = computed(() => formatJson(tool.value.input))
 const toolOutputJson = computed(() => formatJson(tool.value.output))
+
+const hasGlobalTaskOutput = computed(() => {
+  const output = tool.value.output
+  if (!output || typeof output !== 'object' || Array.isArray(output)) return false
+  const record = output as Record<string, unknown>
+  return Boolean(record.task && (record.task_id || (record.task as Record<string, unknown>).task_id))
+})
 
 const sourceTitle = computed(() => {
   const part = props.part as unknown as { title?: string; url?: string; sourceId?: string }
@@ -148,6 +157,11 @@ const reasoningStreaming = computed(() => (
     <p v-if="tool.state === 'output-error' && tool.errorText" class="mt-2 break-words text-xs text-rose-600 dark:text-rose-300">
       {{ tool.errorText }}
     </p>
+    <GlobalTaskApprovalCard
+      v-if="hasGlobalTaskOutput"
+      :response="tool.output"
+      :enabled="Boolean(taskActionsEnabled)"
+    />
     <details v-if="toolInputJson" class="mt-2">
       <summary class="cursor-pointer select-none text-[11px] font-bold text-slate-500 dark:text-accent-300">输入</summary>
       <pre class="mt-1 overflow-auto whitespace-pre-wrap break-words rounded bg-white p-2 font-mono text-[11px] leading-5 text-slate-700 dark:bg-dark-950 dark:text-accent-200">{{ toolInputJson }}</pre>

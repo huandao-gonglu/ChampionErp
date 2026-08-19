@@ -43,6 +43,8 @@ def deadline_aware_tool_executor(executor: AiToolExecutor) -> AiToolExecutor:
 class AiToolBinding:
     definition: AiToolDefinition
     executor: AiToolExecutor
+    # 审批工具专属：arguments → 服务端审批快照；非审批工具为 None。
+    approval_preparer: Callable[[dict[str, Any]], Any] | None = None
 
     def __post_init__(self) -> None:
         if not callable(self.executor):
@@ -50,6 +52,16 @@ class AiToolBinding:
         if not getattr(self.executor, _DEADLINE_AWARE_ATTRIBUTE, False):
             raise ValueError(
                 f"工具 {self.definition.name} 的 executor 未声明 cooperative deadline 契约"
+            )
+        if self.definition.approval_required and not callable(
+            self.approval_preparer
+        ):
+            raise ValueError(
+                f"审批工具 {self.definition.name} 缺少服务端审批准备器"
+            )
+        if not self.definition.approval_required and self.approval_preparer is not None:
+            raise ValueError(
+                f"非审批工具 {self.definition.name} 不得携带审批准备器"
             )
 
 
@@ -79,7 +91,12 @@ class AiToolSet:
         toolset_id: str,
         definitions: Iterable[AiToolDefinition],
         executors: Mapping[str, AiToolExecutor],
+        approval_preparers: Mapping[
+            str, Callable[[dict[str, Any]], Any]
+        ]
+        | None = None,
     ) -> "AiToolSet":
+        preparers = dict(approval_preparers or {})
         definition_map: dict[str, AiToolDefinition] = {}
         for definition in definitions:
             if definition.name in definition_map:
@@ -94,10 +111,19 @@ class AiToolSet:
             if extra:
                 parts.append(f"存在未定义 executor：{', '.join(extra)}")
             raise ValueError(f"ToolSet {toolset_id} 绑定不完整；{'；'.join(parts)}")
+        unknown_preparers = sorted(set(preparers.keys()) - definition_map.keys())
+        if unknown_preparers:
+            raise ValueError(
+                f"ToolSet {toolset_id} 审批准备器对应未定义工具：{', '.join(unknown_preparers)}"
+            )
         return cls(
             toolset_id=toolset_id,
             bindings={
-                name: AiToolBinding(definition, executors[name])
+                name: AiToolBinding(
+                    definition,
+                    executors[name],
+                    preparers.get(name),
+                )
                 for name, definition in definition_map.items()
             },
         )

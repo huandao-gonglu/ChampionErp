@@ -10,8 +10,20 @@ from typing import Annotated, Any, Callable, Mapping, get_args, get_origin, get_
 
 from pydantic import BaseModel, TypeAdapter
 
-from erp_web.schemas.ai_tools import AiToolDefinition, AiToolSchemaError
+from erp_web.schemas.ai_tools import (
+    AiToolDefinition,
+    AiToolExecutionError,
+    AiToolRequiredInput,
+    AiToolSchemaError,
+    JobReferenceResult,
+    TaskApprovalSnapshot,
+    TOOL_INPUT_REQUIRED,
+)
 from erp_web.schemas.ai_trace import AiExecutionContext
+from erp_web.services.capability_errors import (
+    BusinessCapabilityError,
+    CapabilityInputRequired,
+)
 
 from .ai_tool_declaration import AiToolMetadata, Injected, get_ai_tool_metadata
 from .ai_tool_registry import AiToolExecutor, deadline_aware_tool_executor
@@ -32,18 +44,22 @@ _SCHEMA_KEYWORDS = frozenset(
         "maxItems",
         "minProperties",
         "maxProperties",
+        "propertyNames",
         "minimum",
         "maximum",
         "title",
         "description",
+        "format",
         "default",
         "examples",
         "anyOf",
+        "oneOf",
+        "discriminator",
         "$ref",
     }
 )
 _NON_ASSERTION_KEYWORDS = frozenset(
-    {"title", "description", "default", "examples"}
+    {"title", "description", "format", "default", "examples"}
 )
 
 
@@ -83,6 +99,76 @@ def _copy_json(value: Any, *, label: str) -> Any:
         )
     except (TypeError, ValueError) as exc:
         raise AiToolCompilerError(f"{label} 不是稳定 JSON：{exc}") from exc
+
+
+def _compile_discriminated_union(
+    node: dict[str, Any],
+    *,
+    path: str,
+    resolve: Any,
+    stack: tuple[str, ...],
+) -> dict[str, Any]:
+    """编译受限可判别 union；拒绝任意复杂 union 与歧义分支。"""
+
+    branches = node.get("oneOf")
+    if not isinstance(branches, list) or not branches:
+        raise AiToolCompilerError(f"{path}.oneOf 必须是非空数组")
+    discriminator = node.get("discriminator")
+    if not isinstance(discriminator, dict):
+        raise AiToolCompilerError(
+            f"{path}.oneOf 只支持带 discriminator 的可判别 union"
+        )
+    property_name = discriminator.get("propertyName")
+    if not isinstance(property_name, str) or not property_name:
+        raise AiToolCompilerError(
+            f"{path}.discriminator.propertyName 必须是非空字符串"
+        )
+    compiled_branches: list[dict[str, Any]] = []
+    seen_discriminator_values: set[Any] = set()
+    for index, branch in enumerate(branches):
+        compiled = resolve(
+            branch,
+            path=f"{path}.oneOf[{index}]",
+            stack=stack,
+        )
+        if compiled.get("type") != "object":
+            raise AiToolCompilerError(
+                f"{path}.oneOf[{index}] 分支必须是 object"
+            )
+        if compiled.get("additionalProperties") is not False:
+            raise AiToolCompilerError(
+                f"{path}.oneOf[{index}] 分支 Model 必须声明 extra='forbid'"
+            )
+        properties = compiled.get("properties")
+        required = compiled.get("required")
+        branch_property = (
+            properties.get(property_name)
+            if isinstance(properties, dict)
+            else None
+        )
+        if not isinstance(branch_property, dict) or "const" not in branch_property:
+            raise AiToolCompilerError(
+                f"{path}.oneOf[{index}] 分支必须把 discriminator 属性声明为 const"
+            )
+        if not isinstance(required, list) or property_name not in required:
+            raise AiToolCompilerError(
+                f"{path}.oneOf[{index}] 分支必须把 discriminator 属性列为 required"
+            )
+        discriminator_value = branch_property["const"]
+        if not isinstance(discriminator_value, str) or not discriminator_value:
+            raise AiToolCompilerError(
+                f"{path}.oneOf[{index}] discriminator const 必须是非空字符串"
+            )
+        if discriminator_value in seen_discriminator_values:
+            raise AiToolCompilerError(
+                f"{path}.oneOf 存在重复 discriminator 值 {discriminator_value}"
+            )
+        seen_discriminator_values.add(discriminator_value)
+        compiled_branches.append(compiled)
+    normalized = dict(node)
+    normalized["oneOf"] = compiled_branches
+    normalized["discriminator"] = {"propertyName": property_name}
+    return normalized
 
 
 def _compile_schema(raw_schema: Mapping[str, Any], *, label: str) -> dict[str, Any]:
@@ -158,6 +244,9 @@ def _compile_schema(raw_schema: Mapping[str, Any], *, label: str) -> dict[str, A
                 normalized[key] = value
             node = normalized
 
+        if "oneOf" in node:
+            node = _compile_discriminated_union(node, path=path, resolve=resolve, stack=stack)
+
         result = dict(node)
         properties = result.get("properties")
         if properties is not None:
@@ -184,7 +273,23 @@ def _compile_schema(raw_schema: Mapping[str, Any], *, label: str) -> dict[str, A
                 path=f"{path}.additionalProperties",
                 stack=stack,
             )
-        if not any(key in result for key in ("type", "enum", "const")):
+        property_names = result.get("propertyNames")
+        if isinstance(property_names, dict):
+            normalized_names = dict(property_names)
+            if "type" not in normalized_names:
+                # JSON Schema 的 propertyNames 只约束属性名，而属性名恒为字符串；
+                # pydantic 输出会省略 type，这里补齐以保持 Runtime 类型断言明确。
+                normalized_names["type"] = "string"
+            result["propertyNames"] = resolve(
+                normalized_names,
+                path=f"{path}.propertyNames",
+                stack=stack,
+            )
+        if not result:
+            # pydantic JsonValue 等“任意 JSON 值”输出空 Schema；
+            # Runtime 的空 Schema 语义即不做任何断言，可无损执行。
+            return {}
+        if not any(key in result for key in ("type", "enum", "const", "oneOf")):
             raise AiToolCompilerError(
                 f"{path} 缺少 Runtime 可执行的明确类型或枚举约束"
             )
@@ -198,6 +303,20 @@ def _compile_schema(raw_schema: Mapping[str, Any], *, label: str) -> dict[str, A
             f"{label} 对应的 Pydantic Model 必须声明 extra='forbid'"
         )
     return compiled
+
+
+def _forbid_model_approval_argument(
+    tool_name: str,
+    input_schema: Mapping[str, Any],
+) -> None:
+    """审批工具的冻结快照只能由服务端生成；模型参数不得包含 approval 字段。"""
+
+    properties = input_schema.get("properties")
+    if isinstance(properties, dict) and "approval" in properties:
+        raise AiToolCompilerError(
+            f"审批工具 {tool_name} 的 request 不得包含模型提交的 approval 字段；"
+            "审批摘要与 digest 由服务端快照生成。"
+        )
 
 
 @dataclass(frozen=True)
@@ -218,6 +337,54 @@ class CompiledAiTool:
             "injected_parameters",
             MappingProxyType(dict(self.injected_parameters)),
         )
+
+    @property
+    def scope_parameter(self) -> str:
+        """审批快照绑定的唯一非 execution 注入参数名。"""
+
+        scope_parameters = [
+            parameter_name
+            for parameter_name, injected_type in self.injected_parameters.items()
+            if injected_type is not AiExecutionContext
+        ]
+        if len(scope_parameters) != 1:
+            raise AiToolCompilerError(
+                f"审批工具 {self.definition.name} 必须恰好声明一个 Scope 注入参数"
+            )
+        return scope_parameters[0]
+
+    def bind_approval_preparer(
+        self,
+        providers: Mapping[type[Any], Any],
+    ) -> Callable[[dict[str, Any]], TaskApprovalSnapshot]:
+        """绑定可信 Scope 后返回 arguments → 服务端审批快照 的准备器。"""
+
+        if self.metadata.approval_snapshot is None:
+            raise AiToolCompilerError(
+                f"工具 {self.definition.name} 不是审批工具，无法绑定审批准备器"
+            )
+        snapshot_function = self.metadata.approval_snapshot
+        scope_parameter = self.scope_parameter
+        scope_type = self.injected_parameters[scope_parameter]
+        scope_provider = providers[scope_type]
+
+        def prepare(arguments: dict[str, Any]) -> TaskApprovalSnapshot:
+            try:
+                request = self.request_adapter.validate_python(arguments)
+            except Exception:
+                raise AiToolSchemaError(
+                    "审批准备输入未通过精确类型校验。",
+                    code="TOOL_INPUT_SCHEMA_INVALID",
+                ) from None
+            snapshot = snapshot_function(request, scope_provider)
+            if not isinstance(snapshot, TaskApprovalSnapshot):
+                raise AiToolSchemaError(
+                    f"审批快照函数必须返回 TaskApprovalSnapshot：{self.definition.name}",
+                    code="TOOL_APPROVAL_SNAPSHOT_INVALID",
+                )
+            return snapshot
+
+        return prepare
 
     def bind_executor(self, providers: Mapping[type[Any], Any]) -> AiToolExecutor:
         bound_providers = dict(providers)
@@ -240,7 +407,33 @@ class CompiledAiTool:
                     if injected_type is AiExecutionContext
                     else bound_providers[injected_type]
                 )
-            result = self.function(**keyword_arguments)
+            try:
+                result = self.function(**keyword_arguments)
+            except AiToolExecutionError:
+                raise
+            except CapabilityInputRequired as exc:
+                raise AiToolExecutionError(
+                    TOOL_INPUT_REQUIRED,
+                    str(exc),
+                    details={
+                        "required_inputs": [
+                            AiToolRequiredInput(
+                                key=exc.key,
+                                label=exc.label,
+                                reason=exc.reason,
+                                input_type=exc.input_type,
+                                options=list(exc.options),
+                            ).model_dump(mode="json")
+                        ]
+                    },
+                ) from None
+            except BusinessCapabilityError as exc:
+                raise AiToolExecutionError(
+                    exc.code,
+                    str(exc),
+                    retryable=exc.retryable,
+                    details=exc.details,
+                ) from None
             try:
                 validated = self.result_adapter.validate_python(result)
                 dumped = self.result_adapter.dump_python(validated, mode="json")
@@ -305,6 +498,12 @@ class AiToolCompiler:
             and AiExecutionContext not in injected_parameters.values()
         ):
             raise AiToolCompilerError("写工具必须注入 AiExecutionContext")
+        if metadata.execution_mode == "persistent_job" and (
+            result_type is not JobReferenceResult
+        ):
+            raise AiToolCompilerError(
+                "persistent_job 工具必须返回类型化 JobReferenceResult"
+            )
 
         request_adapter = TypeAdapter(request_type)
         result_adapter = TypeAdapter(result_type)
@@ -321,6 +520,17 @@ class AiToolCompiler:
             raise
         except Exception:
             raise AiToolCompilerError("Pydantic Schema 无法编译") from None
+        if metadata.approval_required:
+            _forbid_model_approval_argument(metadata.name, input_schema)
+            scope_parameters = [
+                injected_type
+                for injected_type in injected_parameters.values()
+                if injected_type is not AiExecutionContext
+            ]
+            if len(scope_parameters) != 1:
+                raise AiToolCompilerError(
+                    f"审批工具 {metadata.name} 必须恰好声明一个 Scope 注入参数"
+                )
         injected_type_names = tuple(
             sorted({_qualified_type_name(item) for item in injected_parameters.values()})
         )
@@ -336,6 +546,8 @@ class AiToolCompiler:
             idempotency=metadata.idempotency,
             idempotency_keys=metadata.idempotency_keys,
             injected_type_names=injected_type_names,
+            execution_mode=metadata.execution_mode,
+            recovery_policy=metadata.recovery_policy,
         )
         return CompiledAiTool(
             function=function,

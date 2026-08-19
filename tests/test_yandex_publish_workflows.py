@@ -117,8 +117,9 @@ def workflow_boundary(monkeypatch):
     monkeypatch.setattr(publish_capabilities, "load_required_draft_publish_context", fake_context_loader)
     monkeypatch.setattr(publish_capabilities, "publishing_adapter_for", lambda platform: adapter)
     monkeypatch.setattr(publish_workflows, "publishing_adapter_for", lambda platform: adapter)
+    # 评估是纯计算；受信预览入口在 publish_workflows 里负责预检落盘。
     monkeypatch.setattr(
-        publish_capabilities,
+        publish_workflows,
         "save_draft_precheck_result",
         lambda publish_context, precheck, **_kwargs: {
             "draft": deepcopy(publish_context.get("draft") or {}),
@@ -128,6 +129,15 @@ def workflow_boundary(monkeypatch):
         },
     )
     monkeypatch.setattr(publish_capabilities, "get_context", lambda: context)
+    # 提交发布（enqueue → request_product_publish）是写路径：允许预检落盘；
+    # 测试用轻量 stub 代替真实 DB 写入。
+    monkeypatch.setattr(
+        publish_capabilities,
+        "save_draft_precheck_result",
+        lambda publish_context, precheck, **_kwargs: deepcopy(
+            publish_context.get("draft") or {}
+        ),
+    )
     monkeypatch.setattr(
         publish_workflows,
         "publish_logs_runtime",

@@ -46,12 +46,12 @@ watch(() => props.messages, () => {
         </div>
         <h3 class="mt-4 text-base font-black">告诉全局 Agent 你想了解什么</h3>
         <p class="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-500 dark:text-accent-300">
-          可以查询草稿、来源平台与目标市场等只读信息；发布等写操作请使用对应的全局任务流程。
+          可以查询业务事实，也可以让全局 Agent 创建修改、删除或发布任务；高风险操作会等待你确认。
         </p>
       </div>
 
       <!-- 消息气泡 -->
-      <AiMessageList v-else :messages="messages" />
+      <AiMessageList v-else :messages="messages" task-actions-enabled />
 
       <!-- 流式状态提示 -->
       <p

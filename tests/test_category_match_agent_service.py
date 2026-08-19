@@ -21,7 +21,7 @@ from tests.ai_function_model_streaming import (
 )
 
 from erp_web.context import get_context
-from erp_web.schemas.ai_tools import AiToolDefinition
+from erp_web.schemas.ai_tools import AiToolDefinition, TaskApprovalSnapshot
 from erp_web.runtime_units.category_tools import (
     CategoryCandidateLedger,
     build_category_match_toolset,
@@ -527,6 +527,14 @@ def test_unexpected_category_approval_finishes_persisted_pending_state() -> None
         "category.search",
         [definition],
         {definition.name: deadline_aware_tool_executor(executor)},
+        approval_preparers={
+            definition.name: (
+                lambda arguments: TaskApprovalSnapshot(
+                    summary=f"类目匹配 {arguments.get('keyword')}",
+                    canonical_payload=dict(arguments),
+                )
+            )
+        },
     )
 
     def model(messages: list[Any], agent_info: AgentInfo) -> ModelResponse:

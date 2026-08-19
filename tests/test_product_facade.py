@@ -27,8 +27,7 @@ def test_save_draft_resolves_and_persists_ozon_description_category_id(
         lambda: SimpleNamespace(products=products),
     )
     monkeypatch.setattr(
-        product_facade,
-        "fetch_category_record",
+        "erp_web.runtime_units.draft_category_resolution.fetch_category_record",
         lambda platform, category_id, site="": {
             "platform": platform,
             "site": site,
@@ -71,8 +70,7 @@ def test_save_draft_rejects_unresolvable_ozon_type_id(monkeypatch) -> None:
         lambda: SimpleNamespace(products=products),
     )
     monkeypatch.setattr(
-        product_facade,
-        "fetch_category_record",
+        "erp_web.runtime_units.draft_category_resolution.fetch_category_record",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             RuntimeError("未找到 Ozon 商品类型")
         ),

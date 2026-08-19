@@ -8,7 +8,7 @@ import webbrowser
 from http.server import ThreadingHTTPServer
 
 from .context import build_default_context, get_context, set_context
-from .facades.global_agent_facade import build_global_task_controller
+from .facades.global_task_facade import build_global_task_controller
 from .http_handler import Handler
 from .logging_config import configure_logging
 from .runtime_units.publish_adapter import resume_pending_publish_jobs

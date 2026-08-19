@@ -85,7 +85,8 @@ def handle_frontend_page(handler: JsonRequestHandler, parsed: object) -> None:
 
 
 def handle_state(handler: JsonRequestHandler, parsed: object) -> None:
-    paths = get_context().paths
+    context = get_context()
+    paths = context.paths
     prod = load_product()
     store_cfg = load_store_config()
     app_cfg = load_app_config()
@@ -102,6 +103,8 @@ def handle_state(handler: JsonRequestHandler, parsed: object) -> None:
         "generatedImages": current_generated_images(),
         "platformOptions": marketplace_options(),
         "outputDir": str(paths.output_dir),
+        # 审批凭据只在这里下发给受信 UI；模型工具结果与对话上下文永远拿不到它。
+        "approvalToken": context.approval_session.token,
     }
     handler.send_json(validate_app_state_response(state))
 

@@ -132,9 +132,15 @@ class AiToolCatalog:
                 if injected_type is AiExecutionContext:
                     continue
                 bound_providers[injected_type] = scope.require(injected_type)
+            approval_preparer = (
+                tool.bind_approval_preparer(bound_providers)
+                if definition.approval_required
+                else None
+            )
             bindings[name] = AiToolBinding(
                 definition=definition,
                 executor=tool.bind_executor(bound_providers),
+                approval_preparer=approval_preparer,
             )
         return AiToolSet(toolset_id=toolset_id, bindings=bindings)
 

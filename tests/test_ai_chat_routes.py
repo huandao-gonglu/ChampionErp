@@ -31,14 +31,23 @@ from pydantic_ai.models.function import (
 )
 from pydantic_ai.settings import ModelSettings
 
+from erp_web.ai_capability_composition import GLOBAL_CHAT_DIRECT_CAPABILITIES
 from erp_web.context import get_context
 from erp_web.http_handler import Handler
+from erp_web.runtime_units.global_ai_control_tools import (
+    GLOBAL_TASK_CONTROL_CATALOG,
+)
 from erp_web.services.ai_model_factory import PydanticModelBinding
 from erp_web.services.vercel_ai_ui_service import VERCEL_SDK_VERSION
 
 
 CHAT_PATH = "/api/v1/ai-chat/runs"
 CONVERSATION = "conversation_global_chat_" + "f" * 32
+
+#: global.chat 主 Agent 工具 = Direct 只读能力 + 任务控制能力（动态同源）。
+EXPECTED_GLOBAL_CHAT_TOOLS = set(GLOBAL_CHAT_DIRECT_CAPABILITIES) | set(
+    GLOBAL_TASK_CONTROL_CATALOG.tools
+)
 
 
 def _submit_body(conversation_id: str, message_id: str, text: str) -> dict:
@@ -168,6 +177,7 @@ def chat_server(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any]]:
 def chat_service(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """不经过 HTTP 的 VercelAiUiService，便于测试流生命周期与断连。"""
 
+    from erp_web.facades.global_task_facade import build_global_chat_toolset
     from erp_web.services.global_agent_chat_service import (
         GlobalAgentChatService,
     )
@@ -179,8 +189,7 @@ def chat_service(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         app_dir=context.paths.app_dir,
         app_config={},
         message_store=context.pydantic_messages,
-        products=context.products,
-        draft_snapshots=context.draft_query_snapshots,
+        toolset=build_global_chat_toolset(context),
     )
     service = VercelAiUiService(
         chat_service=agent_chat,
@@ -248,9 +257,11 @@ def test_sse_run_streams_official_tool_chunks(
         nonlocal turns
         turns += 1
         if turns == 1:
-            assert [tool.name for tool in agent_info.function_tools] == [
-                "drafts_query"
-            ]
+            # global.chat 主 Agent 暴露 Direct 只读能力 + 任务控制能力。
+            assert (
+                {tool.name for tool in agent_info.function_tools}
+                == EXPECTED_GLOBAL_CHAT_TOOLS
+            )
             yield {
                 0: DeltaThinkingPart(content="先查询当前草稿。"),
                 1: DeltaToolCall(

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from copy import deepcopy
-from typing import Any
+from dataclasses import dataclass
+from typing import Annotated, Any
 
 from erp_web.product_model import apply_category_selection
 from erp_web.runtime_units.category_store import fetch_category_record
@@ -24,10 +25,12 @@ from erp_web.runtime_units.market_capability_support import (
     select_target,
     text,
 )
+from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.market_prepare_capabilities import (
     CategoryMatchCapabilityResult,
     CategoryMatchRequest,
 )
+from erp_web.services.ai_tool_declaration import Injected, ai_tool
 from erp_web.services.capability_errors import (
     BusinessCapabilityError,
     CapabilityInputRequired,
@@ -235,4 +238,49 @@ def match_category(
     )
 
 
-__all__ = ["CategoryMatcher", "match_category"]
+@dataclass(frozen=True)
+class CategoryCapabilityScope:
+    """类目匹配 Capability 的可信依赖边界。"""
+
+    products: MarketPrepareStore
+    matcher: CategoryMatcher
+
+
+CATEGORY_MATCH_TOOL = "category_match"
+
+
+@ai_tool(
+    name=CATEGORY_MATCH_TOOL,
+    description="为草稿目标市场匹配并保存平台类目；无法消歧时返回候选。",
+    permission="category.write",
+    side_effect="write",
+    approval_required=False,
+    idempotency="required",
+    idempotency_keys=("operation_key",),
+    recovery_policy="manual",
+    version="1",
+)
+def category_match(
+    request: CategoryMatchRequest,
+    scope: Annotated[CategoryCapabilityScope, Injected()],
+    execution: Annotated[AiExecutionContext, Injected()],
+) -> CategoryMatchCapabilityResult:
+    del execution
+    return match_category(
+        request,
+        product_store=scope.products,
+        matcher=scope.matcher,
+    )
+
+
+CATEGORY_AI_CAPABILITIES = (category_match,)
+
+
+__all__ = [
+    "CATEGORY_AI_CAPABILITIES",
+    "CATEGORY_MATCH_TOOL",
+    "CategoryCapabilityScope",
+    "CategoryMatcher",
+    "category_match",
+    "match_category",
+]

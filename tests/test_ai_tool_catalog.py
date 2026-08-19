@@ -108,6 +108,7 @@ class RecursiveRequest(BaseModel):
     approval_required=False,
     idempotency="required",
     idempotency_keys=("operation_id",),
+    recovery_policy="idempotent",
 )
 def write_catalog_value(
     request: WriteRequest,

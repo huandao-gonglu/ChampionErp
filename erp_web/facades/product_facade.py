@@ -3,7 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 from erp_web.context import get_context
-from erp_web.runtime_units.category_store import fetch_category_record
+from erp_web.runtime_units.draft_category_resolution import (
+    resolve_draft_category_pairs as _resolve_draft_category_pairs,
+)
 from erp_web.runtime_units.image_pool import current_image_pool, current_source_images
 from erp_web.runtime_units.pricing_runtime import calculate_price
 from erp_web.runtime_units.publish_helpers import assign_upc
@@ -11,61 +13,6 @@ from erp_web.schemas.api import ApiResponse
 from erp_web.schemas.product import Product
 
 ResponseWithStatus = tuple[ApiResponse, int]
-
-
-def _resolve_ozon_category_pair(target: dict[str, Any]) -> dict[str, Any]:
-    resolved = dict(target)
-    type_id = str(
-        resolved.get("category_id") or resolved.get("type_id") or ""
-    ).strip()
-    if not type_id:
-        resolved["description_category_id"] = ""
-        return resolved
-    if str(resolved.get("description_category_id") or "").strip():
-        resolved["category_id"] = type_id
-        return resolved
-    record = fetch_category_record(
-        "ozon",
-        type_id,
-        site=str(resolved.get("site") or "").strip(),
-    )
-    resolved_type_id = str(
-        record.get("type_id") or record.get("category_id") or ""
-    ).strip()
-    description_category_id = str(
-        record.get("description_category_id") or ""
-    ).strip()
-    if resolved_type_id != type_id or not description_category_id:
-        raise ValueError("Ozon 类目 ID 无效或已下架，请重新选择实时类目")
-    resolved["category_id"] = resolved_type_id
-    resolved["description_category_id"] = description_category_id
-    return resolved
-
-
-def _resolve_draft_category_pairs(draft: dict[str, Any]) -> dict[str, Any]:
-    resolved = dict(draft)
-    raw_targets = (
-        resolved.get("target_sites")
-        if isinstance(resolved.get("target_sites"), list)
-        else resolved.get("targetSites")
-    )
-    targets: list[dict[str, Any]] = []
-    for raw_target in raw_targets if isinstance(raw_targets, list) else []:
-        target = dict(raw_target) if isinstance(raw_target, dict) else {}
-        if str(target.get("platform") or "").strip().lower() == "ozon":
-            target = _resolve_ozon_category_pair(target)
-        targets.append(target)
-    if targets:
-        resolved["target_sites"] = targets
-        primary = targets[0]
-        if str(primary.get("platform") or "").strip().lower() == "ozon":
-            resolved["category_id"] = str(primary.get("category_id") or "")
-            resolved["description_category_id"] = str(
-                primary.get("description_category_id") or ""
-            )
-    elif str(resolved.get("platform") or "").strip().lower() == "ozon":
-        resolved = _resolve_ozon_category_pair(resolved)
-    return resolved
 
 
 def save_product_payload(body: dict[str, Any]) -> ApiResponse:
