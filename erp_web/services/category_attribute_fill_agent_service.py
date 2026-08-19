@@ -8,7 +8,6 @@ from typing import Annotated, Any, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from pydantic_ai import ModelRetry, RunContext
-from pydantic_ai.messages import DeferredToolRequests
 from pydantic_ai.models import Model
 
 from erp_web.context import get_context
@@ -20,7 +19,6 @@ from erp_web.schemas.category_attribute import (
 
 from .ai_agent_dependencies import AiAgentDependencies
 from .ai_agent_factory import (
-    AiAgentExecutionError,
     AiAgentExecutionProfile,
     AiAgentFactory,
     AiAgentRunOutcome,
@@ -201,10 +199,6 @@ class CategoryAttributeFillAgentRun:
     output: dict[str, Any]
     outcome: AiAgentRunOutcome[CategoryAttributeFillAgentOutput] | None = None
 
-    @classmethod
-    def for_test(cls, output: Mapping[str, Any]) -> "CategoryAttributeFillAgentRun":
-        return cls(dict(output), None)
-
     def finish_business_result(self, result: Mapping[str, Any]) -> None:
         del result
         if self.outcome is not None:
@@ -263,17 +257,6 @@ def run_category_attribute_fill_agent(
         timeout_seconds=timeout_seconds,
         model_override=model_override,
     )
-    if isinstance(outcome.output, DeferredToolRequests):
-        error = AiAgentExecutionError(
-            "TOOL_APPROVAL_REQUIRED",
-            "类目属性填充只允许只读工具，不应产生审批请求。",
-            conversation_id=outcome.conversation_id,
-            task_run_id=outcome.task_run_id,
-            run_id=outcome.run_id,
-            trace_id=outcome.trace_id,
-        )
-        outcome.fail(error)
-        raise error
     return CategoryAttributeFillAgentRun(
         output=outcome.output.model_dump(mode="json"),
         outcome=outcome,

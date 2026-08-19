@@ -63,10 +63,20 @@ class AiToolRuntime:
         self.before_executor = before_executor
         self._calls_by_id: dict[str, tuple[str, AiToolResult]] = {}
         self._results_by_signature: dict[str, AiToolResult] = {}
+        self._model_visible_error_signatures: set[str] = set()
 
     @property
     def unique_call_count(self) -> int:
         return len(self._calls_by_id)
+
+    def is_model_visible_error(self, call_id: str) -> bool:
+        """该调用是否因显式安全的 executor 业务错误失败。"""
+
+        recorded = self._calls_by_id.get(str(call_id or "").strip())
+        return bool(
+            recorded
+            and recorded[0] in self._model_visible_error_signatures
+        )
 
     @staticmethod
     def _signature(command: AiToolCommand) -> str:
@@ -288,6 +298,10 @@ class AiToolRuntime:
             )
         except Exception as exc:
             duration_ms = round((time.monotonic() - started_at) * 1000)
+            if isinstance(exc, AiToolExecutionError):
+                # 业务 executor 显式声明的安全错误可回到模型；鉴权、预算、
+                # schema、deadline 与未知异常都不进入这个集合。
+                self._model_visible_error_signatures.add(signature)
             error_code, error_message, retryable, error_details = (
                 _executor_error_details(exc)
             )

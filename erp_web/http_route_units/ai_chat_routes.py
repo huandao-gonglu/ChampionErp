@@ -45,7 +45,10 @@ def handle_chat_run(handler: JsonRequestHandler) -> None:
     except Exception:
         _logger.exception("AI chat SSE 流异常结束：%s", run.conversation_id)
     finally:
-        loop.close()
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        finally:
+            loop.close()
 
 
 POST_HANDLERS = {

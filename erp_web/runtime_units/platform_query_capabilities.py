@@ -2,6 +2,8 @@ from __future__ import annotations
 
 """平台商品/订单与发布队列的只读查询 Capability。"""
 
+import hashlib
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Annotated, Any, Protocol
@@ -82,6 +84,19 @@ def _dict_rows(value: Any) -> tuple[dict[str, Any], ...]:
     return tuple(item for item in value if isinstance(item, dict))
 
 
+def _products_index_snapshot_id(items: tuple[dict[str, Any], ...]) -> str:
+    """为模型看到的有序商品列表生成内容寻址快照。"""
+
+    encoded = json.dumps(
+        items,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return f"products_{hashlib.sha256(encoded).hexdigest()[:32]}"
+
+
 def _require_platform(platform: str) -> str:
     normalized = _text(platform).lower()
     if normalized != "mercadolibre":
@@ -102,19 +117,43 @@ PUBLISH_JOB_STATUS_QUERY_TOOL = "publish_job_status_query"
 
 @ai_tool(
     name=PRODUCTS_INDEX_QUERY_TOOL,
-    description="读取本地可信商品索引摘要列表。",
+    description="读取本地可信商品索引；可用快照 ID 和一基位置安全解析第几个商品。",
     permission="product.read",
     side_effect="none",
     recovery_policy="retry_safe",
-    version="1",
+    version="2",
 )
 def products_index_query(
     request: ProductsIndexQueryRequest,
     scope: Annotated[PlatformQueryCapabilityScope, Injected()],
 ) -> ProductsIndexQueryResult:
-    del request
     items = _dict_rows(scope.products.load_products_index())
-    return ProductsIndexQueryResult(items=items, count=len(items))
+    snapshot_id = _products_index_snapshot_id(items)
+    selected_items: tuple[dict[str, Any], ...] = ()
+    if request.positions:
+        if not request.snapshot_id:
+            raise BusinessCapabilityError(
+                "PRODUCTS_INDEX_SNAPSHOT_REQUIRED",
+                "按位置选择商品时必须提交最近一次查询返回的 snapshot_id。",
+            )
+        if request.snapshot_id != snapshot_id:
+            raise BusinessCapabilityError(
+                "PRODUCTS_INDEX_SNAPSHOT_STALE",
+                "商品列表已变化，请重新查询后再按位置选择。",
+            )
+        invalid = [position for position in request.positions if position > len(items)]
+        if invalid:
+            raise BusinessCapabilityError(
+                "PRODUCTS_INDEX_POSITION_INVALID",
+                f"商品位置超出当前列表范围：{invalid[0]}。",
+            )
+        selected_items = tuple(items[position - 1] for position in request.positions)
+    return ProductsIndexQueryResult(
+        items=items,
+        count=len(items),
+        snapshot_id=snapshot_id,
+        selected_items=selected_items,
+    )
 
 
 @ai_tool(

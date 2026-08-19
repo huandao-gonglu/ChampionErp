@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from collections.abc import AsyncIterator, Callable, Sequence
@@ -107,7 +108,9 @@ class VercelAiChatRun:
         """消费官方事件流并写 SSE；终态与锁在 finally 统一收尾。"""
 
         session: AiAgentStreamSession[str] | None = None
+        failure_error: AiAgentExecutionError | None = None
         client_disconnected = False
+        coroutine_cancelled = False
         iterators: list[AsyncIterator[Any]] = []
         try:
             try:
@@ -127,9 +130,13 @@ class VercelAiChatRun:
                     except OSError:
                         client_disconnected = True
             except AiAgentExecutionError as error:
+                failure_error = error
                 await self._write_error_stream(write_chunk, error)
             except OSError:
                 client_disconnected = True
+            except asyncio.CancelledError:
+                coroutine_cancelled = True
+                raise
         finally:
             for iterator in reversed(iterators):
                 try:
@@ -138,7 +145,7 @@ class VercelAiChatRun:
                     pass
             if session is not None and session.completed:
                 terminal_status = COMPLETED
-            elif client_disconnected:
+            elif client_disconnected or coroutine_cancelled:
                 terminal_status = CANCELLED
             else:
                 terminal_status = FAILED
@@ -146,6 +153,16 @@ class VercelAiChatRun:
                 self._service.claim_store.finish_turn(
                     self.claim.claim_id,
                     status=terminal_status,
+                    error_code=(
+                        failure_error.code
+                        if terminal_status == FAILED and failure_error is not None
+                        else ""
+                    ),
+                    trace_id=(
+                        failure_error.trace_id
+                        if terminal_status == FAILED and failure_error is not None
+                        else ""
+                    ),
                 )
             except AiChatTurnClaimError:
                 _logger.warning(

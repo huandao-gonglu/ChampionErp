@@ -360,7 +360,7 @@ def test_global_chat_typed_task_vertical_publish_flow(
             if isinstance(draft_context, dict)
             else ""
         )
-        return CategoryAttributeFillAgentRun.for_test(
+        return CategoryAttributeFillAgentRun(
             {
                 "assignments": [
                     {"attribute_id": "4191", "value": str(description or "")}

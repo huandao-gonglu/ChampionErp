@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 import pytest
-from pydantic_ai import Agent, ApprovalRequired
+from pydantic_ai import Agent
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
@@ -330,13 +330,9 @@ def test_bridge_enforces_write_and_approval_before_executor() -> None:
             allow_write=True,
         ),
     )
-    with pytest.raises(ApprovalRequired) as approval:
+    with pytest.raises(AiToolBridgeError) as approval:
         execute_bridge(bridge, approval_missing, call_id="approval-missing")
-    assert approval.value.metadata == {
-        "use_case_id": "test.tool_bridge",
-        "tool_name": "lookup_item",
-        "tool_call_id": "approval-missing",
-    }
+    assert approval.value.code == "TOOL_APPROVAL_REQUIRED"
     assert approval_runtime.unique_call_count == 1
     assert execution_call_ids == []
 
@@ -461,6 +457,65 @@ def test_bridge_preserves_public_error_without_code_enumeration() -> None:
     assert captured.value.code == "DOMAIN_CUSTOM_FAILURE"
     assert str(captured.value) == "领域服务暂时不可用。"
     assert captured.value.retryable is True
+
+
+def test_agent_can_recover_from_public_business_tool_error() -> None:
+    """业务失败应回到模型上下文，而不是中断整轮 Agent。
+
+    该规格不限定 Bridge 最终选择 ToolReturnPart 还是 RetryPromptPart；只要求
+    模型能看到稳定错误码与安全消息，并继续生成面向用户的最终答复。
+    """
+
+    def executor(arguments: dict[str, Any], context: AiExecutionContext) -> Any:
+        del arguments, context
+        raise AiToolExecutionError(
+            "PRODUCT_NOT_FOUND",
+            "商品不存在。",
+            retryable=False,
+        )
+
+    toolset = bind_toolset(tool_definition(), executor)
+    dependencies, _runtime = bind_dependencies(toolset, execution_context())
+    bridge = PydanticToolBridge(toolset)
+    model_turns = 0
+
+    def model_function(
+        messages: list[ModelRequest | ModelResponse],
+        agent_info: AgentInfo,
+    ) -> ModelResponse:
+        nonlocal model_turns
+        model_turns += 1
+        if model_turns == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        agent_info.function_tools[0].name,
+                        {"item_id": "deleted-product"},
+                        tool_call_id="missing-product-call",
+                    )
+                ]
+            )
+
+        feedback = "\n".join(
+            str(getattr(part, "content", ""))
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+        )
+        assert "PRODUCT_NOT_FOUND" in feedback
+        assert "商品不存在" in feedback
+        return ModelResponse(parts=[TextPart("商品已不存在，我会重新查询商品列表。")])
+
+    agent = Agent(
+        FunctionModel(model_function),
+        deps_type=AiAgentDependencies,
+        toolsets=[bridge.as_toolset()],
+    )
+
+    result = agent.run_sync("读取已删除商品", deps=dependencies)
+
+    assert result.output == "商品已不存在，我会重新查询商品列表。"
+    assert model_turns == 2
 
 
 def test_bridge_error_does_not_expose_unknown_runtime_message() -> None:

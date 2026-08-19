@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -13,7 +14,12 @@ from erp_web.runtime_units.category_attribute_tools import (
     CATEGORY_ATTRIBUTE_TOOL_CATALOG,
     build_category_attribute_value_toolset,
 )
-from erp_web.schemas.ai_tools import AiToolCommand, AiToolSchemaError
+from erp_web.runtime_units.collect_capabilities import collect_from_browser_tab
+from erp_web.schemas.ai_tools import (
+    AiToolCommand,
+    AiToolSchemaError,
+    validate_json_schema,
+)
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.category_attribute import CategoryAttributeValueLedger
 from erp_web.services.ai_tool_catalog import AiToolBindingScope, AiToolCatalog
@@ -151,6 +157,27 @@ def test_compiler_expands_models_and_hides_all_injected_parameters() -> None:
         "erp_web.schemas.ai_trace.AiExecutionContext",
         "test_ai_tool_catalog.LookupScope",
     )
+
+
+def test_compiled_browser_collect_schema_matches_runtime_validation() -> None:
+    """模型可见 Schema 与 request adapter 必须对同一输入给出相同结论。"""
+
+    tool = AiToolCompiler.compile(collect_from_browser_tab)
+    payload = {"platform_hint": "1688"}
+
+    schema_accepts = True
+    try:
+        validate_json_schema(payload, tool.definition.input_schema)
+    except AiToolSchemaError:
+        schema_accepts = False
+
+    runtime_accepts = True
+    try:
+        tool.request_adapter.validate_python(payload)
+    except Exception:
+        runtime_accepts = False
+
+    assert schema_accepts is runtime_accepts
 
 
 def test_decorator_rejects_incomplete_metadata_and_write_policy() -> None:
@@ -321,14 +348,19 @@ def test_compiler_rejects_unsupported_signatures_and_schema_constraints() -> Non
 
     @ai_tool(
         name="test_catalog_union",
-        description="不支持的复杂 union",
+        description="受 Runtime 校验的一般 union",
         permission="test.read",
     )
     def union_tool(request: UnionRequest) -> LookupResult:
         return LookupResult(value=str(request.value), tenant_id="test")
 
-    with pytest.raises(AiToolCompilerError, match="nullable"):
-        AiToolCompiler.compile(union_tool)
+    compiled_union = AiToolCompiler.compile(union_tool)
+    union_schema = compiled_union.definition.input_schema["properties"]["value"]
+    assert "anyOf" in union_schema
+    validate_json_schema("sku-1", union_schema)
+    validate_json_schema(7, union_schema)
+    with pytest.raises(AiToolSchemaError):
+        validate_json_schema([], union_schema)
 
     @ai_tool(
         name="test_catalog_recursive",
@@ -411,6 +443,22 @@ def test_category_attribute_contract_snapshot_requires_explicit_version_upgrade(
         "version": tool.definition.version,
         "contract_fingerprint": tool.definition.contract_fingerprint,
     }
-    assert snapshot["toolsets"]["category.attribute_values"] == (
-        toolset.toolset_contract_fingerprint
-    )
+    payload = {
+        "toolset_id": toolset.toolset_id,
+        "tools": [
+            {
+                "name": definition.name,
+                "contract_fingerprint": definition.contract_fingerprint,
+            }
+            for definition in sorted(toolset.definitions, key=lambda item: item.name)
+        ],
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    assert snapshot["toolsets"]["category.attribute_values"] == fingerprint

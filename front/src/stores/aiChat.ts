@@ -137,6 +137,11 @@ export const useAiChatStore = defineStore('aiChat', () => {
   function sendMessage(): void {
     const text = input.value.trim()
     if (!text || isBusy.value) return
+    if (text === '/new') {
+      input.value = ''
+      startConversation()
+      return
+    }
     if (!chat.value) {
       startConversation()
     }

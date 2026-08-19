@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import {
   approveGlobalTask,
   fetchGlobalTask,
+  refreshGlobalTask,
   rejectGlobalTask,
 } from '@/api/globalTasks'
 import type { GlobalTaskResponse, GlobalTaskStatus } from '@/types/aiWork'
@@ -73,7 +74,9 @@ async function refreshTask(showBusy = true): Promise<void> {
   if (showBusy) busyAction.value = 'refresh'
   actionError.value = ''
   try {
-    refreshedResponse.value = await fetchGlobalTask(taskId)
+    refreshedResponse.value = task.value?.status === 'in_progress'
+      ? await refreshGlobalTask(taskId)
+      : await fetchGlobalTask(taskId)
   } catch (error) {
     if (showBusy) actionError.value = errorMessage(error)
   } finally {

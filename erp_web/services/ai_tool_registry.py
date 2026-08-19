@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import wraps
-import hashlib
-import json
 from types import MappingProxyType
 from typing import Any, Callable, Iterable, Mapping
 
@@ -134,41 +132,6 @@ class AiToolSet:
 
     def get(self, tool_name: str) -> AiToolBinding | None:
         return self.bindings.get(tool_name)
-
-    @property
-    def legacy_toolset_signature(self) -> str:
-        """仅用于读取旧 deferred envelope 的 name@version 签名。"""
-
-        return "|".join(
-            f"{definition.name}@{definition.version}"
-            for definition in sorted(self.definitions, key=lambda item: item.name)
-        )
-
-    @property
-    def toolset_contract_fingerprint(self) -> str:
-        """覆盖 ToolSet 全部工具契约的规范化指纹。"""
-
-        payload = {
-            "toolset_id": self.toolset_id,
-            "tools": [
-                {
-                    "name": definition.name,
-                    "contract_fingerprint": definition.contract_fingerprint,
-                }
-                for definition in sorted(
-                    self.definitions,
-                    key=lambda item: item.name,
-                )
-            ],
-        }
-        encoded = json.dumps(
-            payload,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        return hashlib.sha256(encoded).hexdigest()
-
 
 __all__ = [
     "AiToolBinding",

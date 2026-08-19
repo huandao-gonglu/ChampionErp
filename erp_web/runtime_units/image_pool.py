@@ -1,11 +1,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import base64
-import os
-import re
-import time
-from pathlib import Path
 from typing import Any
 
 from erp_web.context import get_context
@@ -17,7 +12,6 @@ from erp_web.product_model import (
     normalize_image_pool_item,
 )
 from erp_web.services import image_service
-from erp_web.services.browser_debug_service import file_url
 from erp_web.stores.product_store import normalize_product_fields
 
 from .image_pool_core import (
@@ -78,58 +72,6 @@ def sync_generated_images_into_pool(product: dict[str, Any]) -> dict[str, Any]:
     )
     normalized["source"] = source
     return sync_draft_images_from_pool(normalized)
-
-
-def _uploaded_image_path(filename: str, suffix: str) -> Path:
-    upload_dir = get_context().paths.upload_dir
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(filename or "image").stem).strip("._") or "image"
-    safe_suffix = suffix if suffix.startswith(".") else f".{suffix.lstrip('.')}" if suffix else ".png"
-    stamp = time.strftime("%Y%m%d_%H%M%S")
-    rand = os.urandom(3).hex()
-    return upload_dir / f"{stamp}_{safe_name}_{rand}{safe_suffix}"
-
-
-def _decode_data_url(data_url: str) -> tuple[bytes, str]:
-    raw = str(data_url or "").strip()
-    if not raw:
-        return b"", ".png"
-    if raw.startswith("data:") and "," in raw:
-        header, body = raw.split(",", 1)
-        match = re.match(r"data:([^;]+);base64", header, flags=re.I)
-        mime = (match.group(1) if match else "image/png").lower()
-        suffix = {
-            "image/jpeg": ".jpg",
-            "image/jpg": ".jpg",
-            "image/png": ".png",
-            "image/webp": ".webp",
-        }.get(mime, ".png")
-        return base64.b64decode(body), suffix
-    try:
-        return base64.b64decode(raw), ".png"
-    except Exception:
-        return b"", ".png"
-
-
-def _image_pool_item_from_path(path: Path, origin: str, usage: str, platforms: list[str], note: str, is_main: bool = False, selected: bool = False) -> dict[str, Any]:
-    return enrich_image_pool_item_dimensions(normalize_image_pool_item(
-        {
-            "id": path.stem,
-            "path": str(path),
-            "url": file_url(path),
-            "preview_url": file_url(path),
-            "origin": origin,
-            "usage": usage,
-            "platforms": platforms or [],
-            "is_main": is_main,
-            "selected": selected,
-            "order": 0,
-            "status": "ready",
-            "note": note,
-        },
-        order=0,
-        origin_hint=origin,
-    ))
 
 
 def append_images_to_product_pool(product: dict[str, Any], items: list[dict[str, Any]]) -> dict[str, Any]:

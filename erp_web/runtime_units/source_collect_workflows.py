@@ -325,15 +325,13 @@ def collect_from_browser_tab(
     port: int | None = None,
     claim_platforms: list[str] | None = None,
     save_only: bool = False,
-    mock_tabs: list[dict[str, Any]] | None = None,
-    mock_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if port is None:
         port = get_context().paths.browser_debug_port
     original_product = get_context().products.load_product()
     started_at = collect_time_iso()
-    status = browser_debug_status(port, mock_tabs)
-    if not status.get("connected") and mock_snapshot is None:
+    status = browser_debug_status(port)
+    if not status.get("connected"):
         diagnostics = default_collect_diagnostics()
         diagnostics.update(
             {
@@ -355,18 +353,12 @@ def collect_from_browser_tab(
         saved = get_context().products.save_product(merged)
         return {"ok": False, "product": saved, "imagePool": current_image_pool(saved), "productsIndex": get_context().products.load_products_index(), "diagnostics": diagnostics, "browserStatus": status, "error": diagnostics["error_message"], "next_action": diagnostics["next_action"], "real_publish_called": False}
     try:
-        if mock_snapshot is not None:
-            snapshot = deepcopy(mock_snapshot)
-            snapshot.setdefault("text", html_extract_service.html_to_text(str(snapshot.get("html") or "")))
-            snapshot.setdefault("title", html_extract_service.extract_page_title(str(snapshot.get("html") or "")))
-            snapshot.setdefault("image_urls", html_extract_service.extract_product_image_urls(str(snapshot.get("html") or ""), str(snapshot.get("url") or product_url or tab_url), limit=80))
-        else:
-            raw_tabs = http_json(f"http://127.0.0.1:{port}/json")
-            raw_tabs = raw_tabs if isinstance(raw_tabs, list) else []
-            target = choose_browser_tab(raw_tabs, tab_url, product_url, platform_hint)
-            if not target:
-                raise RuntimeError("NO_PRODUCT_TAB_FOUND")
-            snapshot = snapshot_from_cdp_target(target, platform_hint)
+        raw_tabs = http_json(f"http://127.0.0.1:{port}/json")
+        raw_tabs = raw_tabs if isinstance(raw_tabs, list) else []
+        target = choose_browser_tab(raw_tabs, tab_url, product_url, platform_hint)
+        if not target:
+            raise RuntimeError("NO_PRODUCT_TAB_FOUND")
+        snapshot = snapshot_from_cdp_target(target, platform_hint)
         final_url = str(snapshot.get("final_url") or snapshot.get("url") or product_url or tab_url or "")
         html_text = str(snapshot.get("html") or "")
         text = str(snapshot.get("text") or "")

@@ -63,13 +63,6 @@ def build_image_edit_prompt(user_prompt: str) -> str:
     return str(user_prompt or "").strip()
 
 
-def _image_mock_enabled() -> bool:
-    return any(
-        os.environ.get(name, "").strip().lower() in {"1", "true", "yes"}
-        for name in ("ERP_IMAGE_EDIT_MOCK", "ERP_IMAGE_TRANSLATE_MOCK")
-    )
-
-
 def select_source_images(
     product: dict[str, Any],
     image_ids: list[str] | None = None,
@@ -259,23 +252,6 @@ def _store_edited_item(
     return item
 
 
-def _mock_provider(_: dict[str, Any], request: dict[str, Any]) -> list[dict[str, Any]]:
-    """Deterministic local provider used only when explicitly enabled."""
-    if not _image_mock_enabled():
-        return []
-    if image_service.Image is None:
-        # 1x1 transparent PNG fallback.
-        tiny_png = base64.b64decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
-        )
-        return [{"bytes": tiny_png, "suffix": ".png", "provider": "mock"}]
-    from io import BytesIO
-
-    output = BytesIO()
-    image_service.Image.new("RGB", (1200, 1200), (245, 245, 245)).save(output, format="PNG")
-    return [{"bytes": output.getvalue(), "suffix": ".png", "provider": "mock"}]
-
-
 def translate_images(
     app_dir: Path | str,
     product: dict[str, Any],
@@ -335,8 +311,7 @@ def translate_images(
         "prompt": prompt,
         "app_dir": str(app_dir),
     }
-    use_mock = _image_mock_enabled()
-    if provider is None and not use_mock and not any(_local_source_path(app_dir, item) for item in selected):
+    if provider is None and not any(_local_source_path(app_dir, item) for item in selected):
         message = "当前图片翻译服务需要本地源图片，请先采集下载或上传图片后再翻译。"
         return {
             "ok": False,
@@ -351,8 +326,6 @@ def translate_images(
         }
     if provider is not None:
         generated = provider(cfg, request)
-    elif use_mock:
-        generated = _mock_provider(cfg, request)
     else:
         generated = ai_gateway.edit_images(
             app_dir,
@@ -370,7 +343,7 @@ def translate_images(
             message = f"当前未配置可用图片翻译模型：{config_error}"
         elif not api_key:
             message = "当前未配置图片翻译模型 API Key，请在系统设置中配置后使用。"
-        elif provider is None and not use_mock:
+        elif provider is None:
             message = "图片模型没有返回图片，请检查模型是否支持图片生成/重绘，并确认 Base URL 使用 OpenAI 兼容的 /v1 地址。"
         else:
             message = "当前图片翻译服务尚未接入真实图片模型。"
@@ -471,8 +444,7 @@ def edit_images(
         "prompt": user_prompt,
         "app_dir": str(app_dir),
     }
-    use_mock = _image_mock_enabled()
-    if provider is None and not use_mock and not any(_local_source_path(app_dir, item) for item in selected):
+    if provider is None and not any(_local_source_path(app_dir, item) for item in selected):
         message = "当前图片编辑服务需要本地源图片，请先采集下载或上传图片后再使用图生图。"
         return {
             "ok": False,
@@ -486,8 +458,6 @@ def edit_images(
 
     if provider is not None:
         generated = provider(cfg, request)
-    elif use_mock:
-        generated = _mock_provider(cfg, request)
     else:
         generated = ai_gateway.edit_images(
             app_dir,
@@ -505,7 +475,7 @@ def edit_images(
             message = f"当前未配置可用图片编辑模型：{config_error}"
         elif not api_key:
             message = "当前未配置图片编辑模型 API Key，请在系统设置中配置后使用。"
-        elif provider is None and not use_mock:
+        elif provider is None:
             message = "图片模型没有返回图片，请检查模型是否支持图片编辑，并确认 Base URL 使用 OpenAI 兼容的 /v1 地址。"
         else:
             message = "当前图片编辑服务尚未接入真实图片模型。"

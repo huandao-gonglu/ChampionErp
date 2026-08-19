@@ -258,7 +258,7 @@ def fake_agent_service(run):
         del ledger
         assert timeout_seconds > 0
         output, trace = run(payload, toolset)
-        return CategoryMatchAgentRun.for_test(output, trace)
+        return CategoryMatchAgentRun(output, trace)
 
     return service
 

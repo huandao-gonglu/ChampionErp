@@ -7,18 +7,14 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Generic, Mapping, Sequence, TypeVar
 from uuid import uuid4
 
-from pydantic import TypeAdapter
 from pydantic_ai import (
     Agent,
     AgentRunResult,
     RunContext,
-    ToolApproved,
-    ToolDenied,
     UsageLimits,
     capture_run_messages,
 )
@@ -31,7 +27,6 @@ from pydantic_ai.exceptions import (
 )
 from pydantic_ai.messages import (
     AgentStreamEvent,
-    DeferredToolRequests,
     ModelMessage,
     ModelRequest,
     ModelResponse,
@@ -49,11 +44,6 @@ from erp_web.stores.pydantic_message_store import (
 
 from .ai_agent_dependencies import AiAgentDependencies
 from .ai_agent_instrumentation import AiAgentInstrumentation, AiAgentTrace
-from .ai_agent_state_store import (
-    AiAgentApprovalRecord,
-    AiAgentStateError,
-    AiAgentStateStore,
-)
 from .ai_model_factory import (
     AiModelFactoryError,
     PydanticModelBinding,
@@ -93,7 +83,6 @@ class AiAgentExecutionProfile(Generic[OutputT]):
     retries: int = 2
     result_version: str = "v1"
     allow_write: bool = False
-    approval_permission: str = ""
 
     def __post_init__(self) -> None:
         if not self.use_case_id or not self.toolset_id or not self.budget_profile:
@@ -136,7 +125,7 @@ class AiAgentExecutionError(RuntimeError):
 class AiAgentRunOutcome(Generic[OutputT]):
     """从 Pydantic 边界返回的项目类型；终态由业务终检决定。"""
 
-    output: OutputT | DeferredToolRequests
+    output: OutputT
     conversation_id: str
     task_run_id: str
     attempt_id: str
@@ -144,16 +133,9 @@ class AiAgentRunOutcome(Generic[OutputT]):
     trace_id: str
     usage: dict[str, int]
     messages: list[ModelMessage] = field(repr=False)
-    deferred_state_id: str = ""
-    resume_claim_id: str = ""
-    _state_store: AiAgentStateStore | None = field(default=None, repr=False)
     _observer: Any = field(default=None, repr=False)
     _presentation_run_id: str = field(default="", repr=False)
     _terminal: bool = field(default=False, init=False, repr=False)
-
-    @property
-    def deferred(self) -> bool:
-        return isinstance(self.output, DeferredToolRequests)
 
     def _notify_observer_completed(self) -> None:
         if self._observer is None:
@@ -189,26 +171,12 @@ class AiAgentRunOutcome(Generic[OutputT]):
     def complete(self) -> None:
         if self._terminal:
             return
-        if self._state_store is not None and self.deferred_state_id:
-            envelope = self._state_store.load(self.deferred_state_id)
-            if envelope.status == "ready":
-                self._state_store.mark_completed(
-                    self.deferred_state_id,
-                    claim_id=self.resume_claim_id,
-                )
         self._notify_observer_completed()
         self._terminal = True
 
     def fail(self, error: AiAgentExecutionError) -> None:
         if self._terminal:
             return
-        if self._state_store is not None and self.deferred_state_id:
-            envelope = self._state_store.load(self.deferred_state_id)
-            if envelope.status in {"pending", "resuming", "ready"}:
-                self._state_store.mark_failed(
-                    self.deferred_state_id,
-                    claim_id=self.resume_claim_id,
-                )
         self._notify_observer_failed(error)
         self._terminal = True
 
@@ -223,26 +191,6 @@ def _safe_usage(value: Any) -> dict[str, int]:
         for key, item in payload.items()
         if isinstance(item, int) and not isinstance(item, bool)
     }
-
-
-def _dump_typed_output(output_type: type[OutputT], output: OutputT) -> Any:
-    try:
-        return TypeAdapter(output_type).dump_python(output, mode="json")
-    except Exception:
-        raise AiAgentStateError(
-            "AI_AGENT_STATE_RESULT_INVALID",
-            "Agent 恢复结果无法持久化。",
-        ) from None
-
-
-def _load_typed_output(output_type: type[OutputT], payload: Any) -> OutputT:
-    try:
-        return TypeAdapter(output_type).validate_python(payload)
-    except Exception:
-        raise AiAgentStateError(
-            "AI_AGENT_STATE_RESULT_INVALID",
-            "Agent 恢复结果损坏或与当前 profile 不一致。",
-        ) from None
 
 
 def _safe_agent_error(
@@ -317,12 +265,6 @@ def _safe_agent_error(
             "当前 AI 模型配置无效。",
             **correlation,
         )
-    if isinstance(exc, AiAgentStateError):
-        return AiAgentExecutionError(
-            exc.code,
-            str(exc),
-            **correlation,
-        )
     if isinstance(exc, PydanticMessageStoreError):
         return AiAgentExecutionError(
             exc.code,
@@ -385,7 +327,6 @@ class AiAgentStreamSession(Generic[OutputT]):
         technical_trace: AiAgentTrace,
         output_validator: OutputValidator[OutputT] | None = None,
         presentation_context: AiPresentationContext | None = None,
-        deferred_tool_results: Any = None,
     ) -> None:
         self._factory = factory
         self._profile = profile
@@ -398,7 +339,6 @@ class AiAgentStreamSession(Generic[OutputT]):
         self._technical_trace = technical_trace
         self._output_validator = output_validator
         self._presentation = presentation_context
-        self._deferred_tool_results = deferred_tool_results
         self._run_id = execution_context.attempt_id
         self._started = False
         self._history_persisted = False
@@ -547,7 +487,6 @@ class AiAgentStreamSession(Generic[OutputT]):
             async with self._agent.run_stream_events(
                 None,
                 message_history=[*self._message_history, *new_messages],
-                deferred_tool_results=self._deferred_tool_results,
                 conversation_id=self._conversation_id,
                 run_id=self._execution_context.attempt_id,
                 deps=self._dependencies,
@@ -677,10 +616,8 @@ class AiAgentStreamSession(Generic[OutputT]):
 
         只暴露 ``AiAgentRunOutcome``，不外泄 raw Agent、deps 或原始 iterator；
         focused business service 用它取得 output 并执行领域收尾（``complete()`` /
-        ``fail()``）。session 本身不产生 deferred pending state，
-        ``deferred_state_id`` 初始为空（``run_sync`` 内核会在取得 outcome 后
-        统一补做 deferred 处理）；流式协议侧遇到 ``DeferredToolRequests``
-        输出应显式 ``fail()``。
+        ``fail()``）。审批和长任务恢复统一由 ``GlobalTaskController`` 负责，
+        Agent session 不产生第二套 deferred pending state。
         """
 
         if self._result is None or not self._completed:
@@ -724,8 +661,6 @@ class AiAgentStreamSession(Generic[OutputT]):
             trace_id=self.trace_id,
             usage=_safe_usage(result.usage),
             messages=list(result.all_messages()),
-            deferred_state_id="",
-            _state_store=self._factory.state_store,
             _observer=observer,
             _presentation_run_id=presentation_run_id,
         )
@@ -744,7 +679,6 @@ class AiAgentFactory:
             create_pydantic_model_binding_for_use_case
         ),
         instrumentation: AiAgentInstrumentation | None = None,
-        state_store: AiAgentStateStore | None = None,
     ) -> None:
         self.app_dir = Path(app_dir)
         self.app_config = dict(app_config or {})
@@ -753,7 +687,6 @@ class AiAgentFactory:
         self.instrumentation = instrumentation or AiAgentInstrumentation(
             self.app_dir / "data" / "logs" / "ai_traces" / "agent_spans.jsonl"
         )
-        self.state_store = state_store or AiAgentStateStore(self.app_dir)
 
     @staticmethod
     def _bounded_model_settings(
@@ -780,11 +713,23 @@ class AiAgentFactory:
         output_validator: OutputValidator[OutputT] | None,
         model_override: Model | None,
     ) -> Agent[AiAgentDependencies, OutputT]:
-        """集中装配初始运行和恢复运行共用的唯一 Agent 定义。"""
+        """集中装配唯一 Agent 定义；审批写工具必须交给 Global Task。"""
+
+        approval_tools = sorted(
+            definition.name
+            for definition in toolset.definitions
+            if definition.approval_required
+        )
+        if approval_tools:
+            raise AiAgentExecutionError(
+                "TOOL_APPROVAL_REQUIRED",
+                "需审批工具只能通过 GlobalTaskController 执行："
+                + "、".join(approval_tools),
+            )
 
         agent: Agent[AiAgentDependencies, OutputT] = Agent(
             model_override or binding.model,
-            output_type=[profile.output_type, DeferredToolRequests],
+            output_type=profile.output_type,
             instructions=instructions,
             deps_type=AiAgentDependencies,
             model_settings=self._bounded_model_settings(binding.model_settings),
@@ -796,51 +741,6 @@ class AiAgentFactory:
         if output_validator is not None:
             agent.output_validator(output_validator)
         return agent
-
-    def _replay_ready_outcome(
-        self,
-        *,
-        state_id: str,
-        profile: AiAgentExecutionProfile[OutputT],
-        tenant_id: str,
-        permissions: frozenset[str] | set[str] | tuple[str, ...],
-        business_scope: Mapping[str, str],
-        idempotency_context: Mapping[str, str],
-    ) -> AiAgentRunOutcome[OutputT]:
-        """只读取 durable ready 结果，不再次调用 model 或工具。"""
-
-        envelope = self.state_store.load_ready_for_replay(
-            state_id,
-            use_case_id=profile.use_case_id,
-            profile_version=profile.result_version,
-            toolset_id=profile.toolset_id,
-            tenant_id=tenant_id,
-            business_scope=business_scope,
-            idempotency_context=idempotency_context,
-            permissions=permissions,
-        )
-        result = envelope.resume_result
-        claim = envelope.resume_claim
-        if result is None or claim is None:
-            raise AiAgentStateError(
-                "AI_AGENT_STATE_RESULT_INVALID",
-                "Agent 恢复结果损坏或与当前 profile 不一致。",
-            )
-        output = _load_typed_output(profile.output_type, result.output_payload)
-        conversation_id = str(envelope.references.get("conversation_id") or "")
-        return AiAgentRunOutcome(
-            output=output,
-            conversation_id=conversation_id,
-            task_run_id=str(envelope.references.get("task_run_id") or ""),
-            attempt_id=result.attempt_id,
-            run_id=result.run_id,
-            trace_id=result.trace_id,
-            usage={key: int(value) for key, value in result.usage.items()},
-            messages=list(result.message_history),
-            deferred_state_id=state_id,
-            resume_claim_id=claim.claim_id,
-            _state_store=self.state_store,
-        )
 
     def run_sync(
         self,
@@ -971,33 +871,6 @@ class AiAgentFactory:
                     run_id = outcome.run_id
                     execution_context.bounded_timeout_seconds()
                     technical_trace.set_agent_run_id(run_id)
-            if isinstance(outcome.output, DeferredToolRequests):
-                required_permissions = set(profile.permissions)
-                if profile.approval_permission:
-                    required_permissions.add(profile.approval_permission)
-                envelope = self.state_store.create_pending(
-                    use_case_id=profile.use_case_id,
-                    profile_version=profile.result_version,
-                    toolset_id=profile.toolset_id,
-                    deadline_at=execution_context.deadline_at,
-                    actor_id=execution_context.actor_id,
-                    tenant_id=execution_context.tenant_id,
-                    required_permissions=required_permissions,
-                    business_scope=execution_context.business_scope,
-                    idempotency_context=execution_context.idempotency_context,
-                    message_history=outcome.messages,
-                    deferred_requests=outcome.output,
-                    references={
-                        "conversation_id": conversation_id,
-                        "task_run_id": execution_context.task_run_id,
-                        "run_id": run_id,
-                        "trace_id": trace_id,
-                        "toolset_contract_fingerprint": (
-                            toolset.toolset_contract_fingerprint
-                        ),
-                    },
-                )
-                outcome.deferred_state_id = envelope.state_id
             return outcome
         except AiAgentExecutionError as error:
             self._notify_pre_stream_failure(
@@ -1302,379 +1175,6 @@ class AiAgentFactory:
                         "流式运行捕获消息持久化失败：%s",
                         persistence_exc,
                     )
-
-    def resume_sync(
-        self,
-        *,
-        state_id: str,
-        profile: AiAgentExecutionProfile[OutputT],
-        instructions: str,
-        toolset: AiToolSet,
-        approval_decisions: Mapping[str, bool] | None = None,
-        external_results: Mapping[str, Any] | None = None,
-        approver_id: str,
-        tenant_id: str,
-        permissions: frozenset[str] | set[str] | tuple[str, ...],
-        business_scope: Mapping[str, str],
-        idempotency_context: Mapping[str, str],
-        use_case_state: Any = None,
-        output_validator: OutputValidator[OutputT] | None = None,
-        model_override: Model | None = None,
-    ) -> AiAgentRunOutcome[OutputT]:
-        """以新 dependencies/Runtime 恢复一次持久化 deferred Agent run。"""
-
-        if toolset.toolset_id != profile.toolset_id:
-            raise AiAgentExecutionError(
-                "TOOLSET_BINDING_MISMATCH",
-                "Agent execution profile 与 ToolSet 不一致。",
-            )
-        claimed = False
-        denied = False
-        ready_persisted = False
-        envelope = None
-        claim_id = ""
-        conversation_id = ""
-        run_id = ""
-        trace_id = ""
-        captured_messages: list[ModelMessage] = []
-        history_persisted = False
-        session: AiAgentStreamSession[OutputT] | None = None
-        presentation: AiPresentationContext | None = None
-        try:
-            now = datetime.now(timezone.utc)
-            envelope = self.state_store.load(state_id)
-            conversation_id = str(envelope.references.get("conversation_id") or "")
-            stored_contract_fingerprint = str(
-                envelope.references.get("toolset_contract_fingerprint") or ""
-            )
-            if (
-                not stored_contract_fingerprint
-                or stored_contract_fingerprint
-                != toolset.toolset_contract_fingerprint
-            ):
-                raise AiAgentStateError(
-                    "AI_AGENT_STATE_TOOLSET_MISMATCH",
-                    "Agent 恢复工具集与持久化状态不一致。",
-                )
-            if envelope.status == "resuming":
-                claim = envelope.resume_claim
-                if claim is None or now >= claim.lease_expires_at:
-                    envelope = self.state_store.recover_expired_claim(
-                        state_id,
-                        now=now,
-                    )
-            if envelope.status == "ready":
-                return self._replay_ready_outcome(
-                    state_id=state_id,
-                    profile=profile,
-                    tenant_id=tenant_id,
-                    permissions=permissions,
-                    business_scope=business_scope,
-                    idempotency_context=idempotency_context,
-                )
-            if envelope.status == "in_doubt":
-                raise AiAgentStateError(
-                    "AI_AGENT_STATE_EXECUTION_IN_DOUBT",
-                    "Agent 恢复期间可能已经执行写工具，禁止自动重放。",
-                )
-            if envelope.status != "pending":
-                raise AiAgentStateError(
-                    "AI_AGENT_STATE_ALREADY_CLAIMED",
-                    "Agent 恢复状态已被领取或已经结束。",
-                )
-            approval_ids = {
-                str(part.tool_call_id or "")
-                for part in envelope.deferred_requests.approvals
-            }
-            decisions = {
-                str(call_id): bool(decision)
-                for call_id, decision in dict(approval_decisions or {}).items()
-            }
-            if set(decisions) != approval_ids:
-                raise AiAgentStateError(
-                    "AI_AGENT_STATE_APPROVAL_REQUIRED",
-                    "Agent 恢复所需的工具审批尚未全部决定。",
-                )
-            approval_records = [
-                AiAgentApprovalRecord(
-                    tool_call_id=call_id,
-                    decision="approved" if decision else "denied",
-                    actor_id=approver_id,
-                    decided_at=now,
-                )
-                for call_id, decision in decisions.items()
-            ]
-            resume_kwargs = {
-                "use_case_id": profile.use_case_id,
-                "profile_version": profile.result_version,
-                "toolset_id": profile.toolset_id,
-                "tenant_id": tenant_id,
-                "business_scope": business_scope,
-                "idempotency_context": idempotency_context,
-                "permissions": permissions,
-                "approval_records": approval_records,
-                "now": now,
-            }
-            denied = any(not decision for decision in decisions.values())
-            deferred_results = envelope.deferred_requests.build_results(
-                approvals={
-                    call_id: ToolApproved()
-                    if decision
-                    else ToolDenied("工具审批已拒绝。")
-                    for call_id, decision in decisions.items()
-                },
-                calls=dict(external_results or {}),
-                metadata={
-                    call_id: {"approval_actor_id": approver_id}
-                    for call_id in decisions
-                },
-            )
-            binding = self.model_binding_factory(
-                self.app_dir,
-                self.app_config,
-                profile.use_case_id,
-                timeout_seconds=max(
-                    0.001,
-                    (envelope.deadline_at - now).total_seconds(),
-                ),
-                default_timeout_seconds=profile.timeout_seconds,
-            )
-            if denied:
-                envelope = self.state_store.mark_denied(state_id, **resume_kwargs)
-            else:
-                envelope = self.state_store.claim_for_resume(
-                    state_id,
-                    lease_seconds=min(
-                        300.0,
-                        max(0.001, (envelope.deadline_at - now).total_seconds()),
-                    ),
-                    **resume_kwargs,
-                )
-                if envelope.resume_claim is None:
-                    raise AiAgentStateError(
-                        "AI_AGENT_STATE_CLAIM_MISMATCH",
-                        "Agent 恢复 claim 未正确持久化。",
-                    )
-                claim_id = envelope.resume_claim.claim_id
-                claimed = True
-
-            approved_ids = frozenset(
-                call_id for call_id, decision in decisions.items() if decision
-            )
-            execution_context = AiExecutionContext(
-                task_run_id=str(envelope.references.get("task_run_id") or ""),
-                attempt_id=f"attempt_{uuid4().hex}",
-                deadline_at=envelope.deadline_at,
-                budget_profile=profile.budget_profile,
-                actor_id=approver_id,
-                tenant_id=tenant_id,
-                permissions=frozenset(permissions),
-                business_scope=business_scope,
-                idempotency_context=idempotency_context,
-                approved_tool_call_ids=approved_ids,
-                allow_write=profile.allow_write,
-            )
-            run_id = execution_context.attempt_id
-            # 统一 presentation 内核：恢复运行同样经原子领取决定 root/child。
-            # 若本次恢复是 presentation root，规范历史必须落在该 presentation
-            # 预留的 conversation 上（实时展示与持久化历史同一 ID）；envelope
-            # 里的 conversation 只在 child/无 scope 场景保留。
-            presentation = self._derive_presentation_context(run_id)
-            if presentation is not None and presentation.is_root_run:
-                conversation_id = presentation.conversation_id
-            runtime = AiToolRuntime(
-                toolset=toolset,
-                execution_context=execution_context,
-                max_tool_calls=profile.max_tool_calls,
-                max_output_bytes=profile.max_tool_output_bytes,
-                before_executor=(
-                    lambda command: self.state_store.mark_tool_execution_started(
-                        state_id,
-                        claim_id=claim_id,
-                    )
-                )
-                if claimed
-                else None,
-            )
-            dependencies = AiAgentDependencies(
-                use_case_id=profile.use_case_id,
-                execution_context=execution_context,
-                tool_runtime=runtime,
-                use_case_state=use_case_state,
-                invocation_id=execution_context.attempt_id,
-            )
-            agent = self._build_agent(
-                profile=profile,
-                binding=binding,
-                instructions=instructions,
-                toolset=toolset,
-                output_validator=output_validator,
-                model_override=model_override,
-            )
-            entity_ids = {
-                key: value
-                for key, value in dict(business_scope).items()
-                if str(key).endswith("_id")
-            }
-            with capture_run_messages() as captured_messages:
-                with self.instrumentation.start_run_span(
-                    use_case_id=profile.use_case_id,
-                    conversation_id=conversation_id,
-                    invocation_id=execution_context.attempt_id,
-                    business_entity_ids=entity_ids,
-                ) as technical_trace:
-                    trace_id = technical_trace.trace_id
-                    technical_trace.set_agent_run_id(run_id)
-                    session = AiAgentStreamSession(
-                        factory=self,
-                        profile=profile,
-                        agent=agent,
-                        dependencies=dependencies,
-                        execution_context=execution_context,
-                        conversation_id=conversation_id,
-                        message_history=list(envelope.message_history),
-                        captured_messages=captured_messages,
-                        technical_trace=technical_trace,
-                        output_validator=output_validator,
-                        presentation_context=presentation,
-                        deferred_tool_results=deferred_results,
-                    )
-                    if presentation is not None:
-                        # contextvar 在整个恢复调用范围内绑定：运行内部再次
-                        # 进入 factory 时派生 child，工具执行也可见该上下文。
-                        with bind_presentation_context(presentation):
-                            outcome = asyncio.run(
-                                self._consume_stream(session, [])
-                            )
-                    else:
-                        outcome = asyncio.run(
-                            self._consume_stream(session, [])
-                        )
-                    run_id = outcome.run_id
-                    execution_context.bounded_timeout_seconds()
-                    technical_trace.set_agent_run_id(run_id)
-            messages = list(outcome.messages)
-            history_persisted = session.history_persisted
-            usage = outcome.usage
-            if isinstance(outcome.output, DeferredToolRequests):
-                if denied:
-                    raise AiAgentStateError(
-                        "AI_AGENT_STATE_DENIED",
-                        "工具审批已拒绝，本次 Agent 运行已经结束。",
-                    )
-                self.state_store.replace_pending_after_resume(
-                    state_id,
-                    claim_id=claim_id,
-                    message_history=messages,
-                    deferred_requests=outcome.output,
-                )
-                claim_id = ""
-            elif not denied:
-                self.state_store.mark_resume_ready(
-                    state_id,
-                    claim_id=claim_id,
-                    message_history=messages,
-                    output_payload=_dump_typed_output(
-                        profile.output_type,
-                        outcome.output,
-                    ),
-                    run_id=run_id,
-                    attempt_id=execution_context.attempt_id,
-                    trace_id=technical_trace.trace_id,
-                    usage=usage,
-                )
-                ready_persisted = True
-            return AiAgentRunOutcome(
-                output=outcome.output,
-                conversation_id=conversation_id,
-                task_run_id=execution_context.task_run_id,
-                attempt_id=execution_context.attempt_id,
-                run_id=run_id,
-                trace_id=technical_trace.trace_id,
-                usage=usage,
-                messages=messages,
-                deferred_state_id=state_id,
-                resume_claim_id=claim_id,
-                _state_store=self.state_store,
-                _observer=outcome._observer,
-                _presentation_run_id=outcome._presentation_run_id,
-            )
-        except Exception as exc:
-            already_persisted = history_persisted or (
-                session is not None and session.history_persisted
-            )
-            if conversation_id and captured_messages and not already_persisted:
-                try:
-                    self.message_store.save(conversation_id, captured_messages)
-                except Exception as persistence_exc:
-                    exc = persistence_exc
-            task_run_id = (
-                str(envelope.references.get("task_run_id") or "")
-                if envelope is not None
-                else ""
-            )
-            if isinstance(exc, AiAgentExecutionError):
-                # 统一内核已完成稳定码映射；避免再次映射时被 validator 分支
-                # 用过期 error_code 覆盖真实错误码。
-                error = exc
-            else:
-                error = _safe_agent_error(
-                    exc,
-                    validator=output_validator,
-                    model_messages=captured_messages,
-                    conversation_id=conversation_id,
-                    task_run_id=task_run_id,
-                    run_id=run_id,
-                    trace_id=trace_id,
-                )
-            if claimed and claim_id:
-                try:
-                    if ready_persisted:
-                        terminal = self.state_store.mark_failed(
-                            state_id,
-                            claim_id=claim_id,
-                        )
-                    elif error.retryable:
-                        terminal = self.state_store.release_claim_for_retry(
-                            state_id,
-                            claim_id=claim_id,
-                        )
-                    else:
-                        terminal = self.state_store.mark_failed(
-                            state_id,
-                            claim_id=claim_id,
-                        )
-                    if terminal.status == "in_doubt":
-                        error = AiAgentExecutionError(
-                            "AI_AGENT_STATE_EXECUTION_IN_DOUBT",
-                            "Agent 恢复期间可能已经执行写工具，禁止自动重放。",
-                            conversation_id=conversation_id,
-                            task_run_id=task_run_id,
-                            run_id=run_id,
-                            trace_id=trace_id,
-                        )
-                    elif terminal.status != "pending":
-                        error.retryable = False
-                except AiAgentStateError as state_exc:
-                    error = _safe_agent_error(
-                        state_exc,
-                        validator=None,
-                        conversation_id=conversation_id,
-                        task_run_id=task_run_id,
-                        run_id=run_id,
-                        trace_id=trace_id,
-                    )
-                    error.retryable = False
-            elif denied:
-                error.retryable = False
-            self._notify_pre_stream_failure(
-                presentation,
-                session,
-                error,
-                use_case_id=profile.use_case_id,
-            )
-            raise error from None
-
 
 __all__ = [
     "AiAgentExecutionError",

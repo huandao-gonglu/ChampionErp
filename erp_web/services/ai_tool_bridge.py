@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from pydantic_ai import ApprovalRequired, FunctionToolset, RunContext, Tool
+from pydantic_ai import FunctionToolset, RunContext, Tool
 
 from erp_web.schemas.ai_tools import AiToolCommand, AiToolDefinition
 
@@ -24,11 +24,13 @@ class AiToolBridgeError(RuntimeError):
         tool_name: str,
         tool_call_id: str,
         retryable: bool = False,
+        model_visible: bool = False,
     ) -> None:
         self.code = str(code or "TOOL_EXECUTION_FAILED")
         self.retryable = bool(retryable)
         self.tool_name = tool_name
         self.tool_call_id = tool_call_id
+        self.model_visible = bool(model_visible)
         super().__init__(str(message or "").strip() or f"工具 {tool_name} 执行失败。")
 
 
@@ -88,20 +90,15 @@ class PydanticToolBridge:
         if not result.ok:
             error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
             error_code = str(error.get("code") or "TOOL_EXECUTION_FAILED")
-            if error_code == "TOOL_APPROVAL_REQUIRED":
-                raise ApprovalRequired(
-                    metadata={
-                        "use_case_id": dependencies.use_case_id,
-                        "tool_name": tool_name,
-                        "tool_call_id": call_id,
-                    }
-                )
             raise AiToolBridgeError(
                 code=error_code,
                 message=str(error.get("message") or ""),
                 tool_name=tool_name,
                 tool_call_id=call_id,
                 retryable=bool(error.get("retryable")),
+                model_visible=dependencies.tool_runtime.is_model_visible_error(
+                    call_id
+                ),
             )
         return payload.get("output")
 
@@ -113,13 +110,25 @@ class PydanticToolBridge:
             ctx: RunContext[AiAgentDependencies],
             **arguments: Any,
         ) -> Any:
-            return self.execute(
-                dependencies=ctx.deps,
-                tool_name=definition.name,
-                tool_call_id=str(ctx.tool_call_id or ""),
-                arguments=arguments,
-                round_number=ctx.run_step,
-            )
+            try:
+                return self.execute(
+                    dependencies=ctx.deps,
+                    tool_name=definition.name,
+                    tool_call_id=str(ctx.tool_call_id or ""),
+                    arguments=arguments,
+                    round_number=ctx.run_step,
+                )
+            except AiToolBridgeError as exc:
+                if not exc.model_visible:
+                    raise
+                return {
+                    "ok": False,
+                    "error": {
+                        "code": exc.code,
+                        "message": str(exc),
+                        "retryable": exc.retryable,
+                    },
+                }
 
         invoke.__name__ = definition.name
         return Tool.from_schema(

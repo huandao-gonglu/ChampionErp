@@ -160,6 +160,43 @@ def test_products_index_query_matches_http_loader() -> None:
     assert [dict(item)["product_id"] for item in result.items] == [
         str(item.get("product_id")) for item in http_items
     ]
+    assert result.snapshot_id.startswith("products_")
+
+    selected = products_index_query(
+        ProductsIndexQueryRequest(
+            snapshot_id=result.snapshot_id,
+            positions=(2,),
+        ),
+        scope=scope,
+    )
+    assert [dict(item)["product_id"] for item in selected.selected_items] == [
+        str(http_items[1].get("product_id"))
+    ]
+
+
+def test_products_index_position_resolution_rejects_stale_snapshot() -> None:
+    context = get_context()
+    _seed_product("product-before")
+    scope = PlatformQueryCapabilityScope(
+        products=context.products,
+        published_items_loader=lambda **kwargs: {"ok": True},
+        orders_loader=lambda **kwargs: {"ok": True},
+        publish_logs_loader=lambda limit=200: [],
+        publishing_bus=context.publishing_bus,
+    )
+    initial = products_index_query(ProductsIndexQueryRequest(), scope=scope)
+    _seed_product("product-after")
+
+    with pytest.raises(BusinessCapabilityError) as stale:
+        products_index_query(
+            ProductsIndexQueryRequest(
+                snapshot_id=initial.snapshot_id,
+                positions=(1,),
+            ),
+            scope=scope,
+        )
+
+    assert stale.value.code == "PRODUCTS_INDEX_SNAPSHOT_STALE"
 
 
 def test_platform_item_and_order_queries_map_error_codes() -> None:

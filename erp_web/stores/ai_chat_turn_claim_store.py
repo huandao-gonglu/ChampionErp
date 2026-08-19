@@ -1,8 +1,8 @@
 """AI 对话轮次领取（turn claim）的持久化边界。
 
-claim 只保存运行控制元数据（conversation/client message ID、profile、actor、
-tenant、状态和时间），不保存 prompt、response、UI part、工具内容或业务任务
-状态，因此不是第二份消息事实源。
+claim 只保存运行控制元数据与安全诊断标识（conversation/client message ID、
+profile、actor、tenant、状态、错误码、trace ID、最后工具名和时间），不保存
+prompt、response、UI part、工具参数/结果或业务任务状态，因此不是第二份消息事实源。
 """
 
 from __future__ import annotations
@@ -51,6 +51,9 @@ class AiChatTurnClaim:
     status: str
     claimed_at: str
     finished_at: str
+    error_code: str
+    trace_id: str
+    last_tool_name: str
 
 
 def _required_value(name: str, value: Any) -> str:
@@ -75,6 +78,9 @@ def _claim_from_row(row: dict[str, Any]) -> AiChatTurnClaim:
             status=str(row["status"] or ""),
             claimed_at=str(row["claimed_at"] or ""),
             finished_at=str(row["finished_at"] or ""),
+            error_code=str(row["error_code"] or ""),
+            trace_id=str(row["trace_id"] or ""),
+            last_tool_name=str(row["last_tool_name"] or ""),
         )
     except Exception:
         raise AiChatTurnClaimError(
@@ -136,6 +142,9 @@ class AiChatTurnClaimStore:
         claim_id: str,
         *,
         status: str,
+        error_code: str = "",
+        trace_id: str = "",
+        last_tool_name: str = "",
     ) -> AiChatTurnClaim | None:
         """把 claimed 领取推进到 completed/failed/cancelled 终态。"""
 
@@ -149,6 +158,9 @@ class AiChatTurnClaimStore:
             _required_value("claim_id", claim_id),
             status=normalized_status,
             now=datetime.now(timezone.utc).isoformat(),
+            error_code=str(error_code or "").strip(),
+            trace_id=str(trace_id or "").strip(),
+            last_tool_name=str(last_tool_name or "").strip(),
         )
         return _claim_from_row(updated) if updated is not None else None
 

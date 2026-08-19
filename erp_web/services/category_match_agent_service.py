@@ -23,11 +23,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 from pydantic_ai import ModelRetry, RunContext
-from pydantic_ai.messages import (
-    DeferredToolRequests,
-    ModelRequest,
-    UserPromptPart,
-)
+from pydantic_ai.messages import ModelRequest, UserPromptPart
 from pydantic_ai.models import Model
 
 from erp_web.context import get_context
@@ -150,14 +146,6 @@ class CategoryMatchAgentRun:
     trace: CategoryMatchTrace
     outcome: AiAgentRunOutcome[CategoryMatchAgentOutput] | None = None
 
-    @classmethod
-    def for_test(
-        cls,
-        output: Mapping[str, Any],
-        trace: CategoryMatchTrace | None = None,
-    ) -> "CategoryMatchAgentRun":
-        return cls(dict(output), dict(trace or {}), None)
-
     def finish_business_result(self, result: Mapping[str, Any]) -> None:
         del result
         if self.outcome is None:
@@ -221,19 +209,8 @@ def _user_prompt_messages(user_prompt: str) -> list[ModelRequest]:
 def category_match_run_from_outcome(
     outcome: AiAgentRunOutcome[CategoryMatchAgentOutput],
 ) -> CategoryMatchAgentRun:
-    """把类型化 outcome 转成领域结果；流式入口不允许 deferred 审批。"""
+    """把类型化 outcome 转成领域结果。"""
 
-    if isinstance(outcome.output, DeferredToolRequests):
-        error = AiAgentExecutionError(
-            "TOOL_APPROVAL_REQUIRED",
-            "类目匹配只允许只读工具，不应产生审批请求。",
-            conversation_id=outcome.conversation_id,
-            task_run_id=outcome.task_run_id,
-            run_id=outcome.run_id,
-            trace_id=outcome.trace_id,
-        )
-        outcome.fail(error)
-        raise error
     output = outcome.output.model_dump(mode="json")
     return CategoryMatchAgentRun(
         output=output,

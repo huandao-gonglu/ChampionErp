@@ -216,8 +216,8 @@ def _compile_schema(raw_schema: Mapping[str, Any], *, label: str) -> dict[str, A
 
         if "anyOf" in node:
             branches = node.get("anyOf")
-            if not isinstance(branches, list) or len(branches) != 2:
-                raise AiToolCompilerError(f"{path}.anyOf 只支持简单 nullable union")
+            if not isinstance(branches, list) or not branches:
+                raise AiToolCompilerError(f"{path}.anyOf 必须是非空数组")
             compiled_branches = [
                 resolve(branch, path=f"{path}.anyOf[{index}]", stack=stack)
                 for index, branch in enumerate(branches)
@@ -229,20 +229,29 @@ def _compile_schema(raw_schema: Mapping[str, Any], *, label: str) -> dict[str, A
                 and set(branch).issubset({"type", *_NON_ASSERTION_KEYWORDS})
             ]
             non_null = [branch for branch in compiled_branches if branch not in nullable]
-            if len(nullable) != 1 or len(non_null) != 1:
-                raise AiToolCompilerError(f"{path}.anyOf 无法规范化为 nullable type")
-            normalized = dict(non_null[0])
-            branch_type = normalized.get("type")
-            if not isinstance(branch_type, str) or branch_type == "null":
-                raise AiToolCompilerError(f"{path}.anyOf 的非空分支缺少简单 type")
-            normalized["type"] = [branch_type, "null"]
-            for key, value in node.items():
-                if key == "anyOf":
-                    continue
-                if key in normalized and normalized[key] != value:
-                    raise AiToolCompilerError(f"{path}.anyOf sibling 无法无损合并")
-                normalized[key] = value
-            node = normalized
+            if len(branches) == 2 and len(nullable) == 1 and len(non_null) == 1:
+                normalized = dict(non_null[0])
+                branch_type = normalized.get("type")
+                if not isinstance(branch_type, str) or branch_type == "null":
+                    raise AiToolCompilerError(
+                        f"{path}.anyOf 的非空分支缺少简单 type"
+                    )
+                normalized["type"] = [branch_type, "null"]
+                for key, value in node.items():
+                    if key == "anyOf":
+                        continue
+                    if key in normalized and normalized[key] != value:
+                        raise AiToolCompilerError(
+                            f"{path}.anyOf sibling 无法无损合并"
+                        )
+                    normalized[key] = value
+                node = normalized
+            else:
+                # 保留一般 anyOf 断言，例如“两个字段至少提供一个”。Runtime
+                # 会执行同一组分支，因此模型 Schema 与 request adapter 不再分叉。
+                normalized = dict(node)
+                normalized["anyOf"] = compiled_branches
+                node = normalized
 
         if "oneOf" in node:
             node = _compile_discriminated_union(node, path=path, resolve=resolve, stack=stack)
@@ -289,7 +298,10 @@ def _compile_schema(raw_schema: Mapping[str, Any], *, label: str) -> dict[str, A
             # pydantic JsonValue 等“任意 JSON 值”输出空 Schema；
             # Runtime 的空 Schema 语义即不做任何断言，可无损执行。
             return {}
-        if not any(key in result for key in ("type", "enum", "const", "oneOf")):
+        if not any(
+            key in result
+            for key in ("type", "enum", "const", "anyOf", "oneOf")
+        ):
             raise AiToolCompilerError(
                 f"{path} 缺少 Runtime 可执行的明确类型或枚举约束"
             )

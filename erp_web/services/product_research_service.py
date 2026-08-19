@@ -651,36 +651,6 @@ def append_product_research_run_log(app_dir: Path | str, run: ProductResearchRun
     return path
 
 
-def create_hot_product_run(
-    app_dir: Path | str,
-    body: dict[str, Any],
-    config: dict[str, Any],
-    app_config: dict[str, Any] | None = None,
-) -> ProductResearchRun:
-    normalized_config = normalize_product_research_config(config)
-    request = normalize_search_request(body if isinstance(body, dict) else {}, normalized_config)
-    created_at = _utc_now()
-    items, source_status = build_hot_product_candidates(request, normalized_config, app_dir, app_config)
-    run: ProductResearchRun = {
-        "run_id": f"prr_{_stable_digest([created_at, request, len(items)])}",
-        "status": "completed",
-        "search_mode": request["search_mode"],
-        "created_at": created_at,
-        "completed_at": _utc_now(),
-        "request": request,
-        "items": items,
-        "source_status": source_status,
-        "description": _run_completion_description(items, source_status),
-        "progress_description": "",
-    }
-    run = get_context().research.store(run)
-    try:
-        append_product_research_run_log(app_dir, run)
-    except Exception:
-        logger.exception("Failed to write product research run log: %s", run.get("run_id"))
-    return run
-
-
 def _run_hot_product_worker(
     registry: ProductResearchRunRegistry,
     app_dir: Path | str,
@@ -1040,7 +1010,6 @@ __all__ = [
     "build_run_log_record",
     "build_run_not_found_response",
     "build_run_response",
-    "create_hot_product_run",
     "create_hot_product_run_async",
     "get_active_hot_product_run",
     "get_hot_product_run",

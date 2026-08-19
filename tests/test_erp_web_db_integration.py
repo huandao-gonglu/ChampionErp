@@ -18,6 +18,7 @@ from erp_web.runtime_units import (
     collect_helpers,
     copy_generation,
     image_pool,
+    publish_adapter,
     publish_bus,
     publish_helpers,
     publish_mercadolibre,
@@ -859,7 +860,9 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             },
         }
 
-        payload = publish_helpers.build_publish_payload(product, "mercadolibre", config)
+        payload = publish_adapter.require_publishing_adapter(
+            "mercadolibre"
+        ).build_payload(product, config)
         attributes = {item["id"]: item["value_name"] for item in payload["attributes"]}
 
         self.assertEqual(payload["title"], "Draft title for ML")
@@ -923,7 +926,9 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             },
         }
 
-        payload = publish_helpers.build_publish_payload(product, "mercadolibre", config)
+        payload = publish_adapter.require_publishing_adapter(
+            "mercadolibre"
+        ).build_payload(product, config)
         attributes = {item["id"]: item["value_name"] for item in payload["attributes"]}
 
         self.assertTrue(payload["_global_selling"])

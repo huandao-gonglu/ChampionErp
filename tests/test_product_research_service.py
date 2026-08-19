@@ -52,6 +52,30 @@ def patch_ai_search(monkeypatch, items: list[dict], seen: dict | None = None) ->
     monkeypatch.setattr(product_research_methods.ai_gateway, "chat_json", fake_chat_json)
 
 
+def complete_hot_product_run(
+    app_dir,
+    body: dict,
+    config: dict,
+    app_config: dict | None = None,
+) -> dict:
+    """通过当前异步生产入口启动任务并等待确定性终态。"""
+
+    queued = product_research_service.create_hot_product_run_async(
+        app_dir,
+        body,
+        config,
+        app_config,
+    )
+    deadline = time.monotonic() + 5
+    current = queued
+    while current.get("status") not in {"completed", "failed"}:
+        if time.monotonic() >= deadline:
+            pytest.fail(f"选品任务未在测试时限内结束：{queued['run_id']}")
+        time.sleep(0.01)
+        current = product_research_service.get_hot_product_run(queued["run_id"]) or current
+    return current
+
+
 def web_search_app_config_with_prompt_file(tmp_path, user_prompt: str, system_prompt: str = "System prompt from file.") -> dict:
     prompt_dir = tmp_path / "config"
     prompt_dir.mkdir(parents=True, exist_ok=True)
@@ -126,7 +150,7 @@ def test_create_hot_product_run_returns_ai_search_candidates(tmp_path, monkeypat
     )
     config = normalize_product_research_config(default_product_research_config())
 
-    run = product_research_service.create_hot_product_run(tmp_path, hot_product_payload(), config, web_search_app_config())
+    run = complete_hot_product_run(tmp_path, hot_product_payload(), config, web_search_app_config())
 
     assert run["status"] == "completed"
     assert run["run_id"].startswith("prr_")
@@ -268,7 +292,7 @@ def test_ai_search_retries_without_stream_when_stream_is_forbidden(tmp_path, mon
     monkeypatch.setattr(product_research_methods.ai_gateway, "chat_json", fake_chat_json)
     config = normalize_product_research_config(default_product_research_config())
 
-    run = product_research_service.create_hot_product_run(tmp_path, hot_product_payload(), config, web_search_app_config())
+    run = complete_hot_product_run(tmp_path, hot_product_payload(), config, web_search_app_config())
 
     assert calls == [True, False]
     assert run["status"] == "completed"
@@ -296,7 +320,7 @@ def test_ai_search_does_not_retry_official_client_forbidden_error(tmp_path, monk
     monkeypatch.setattr(product_research_methods.ai_gateway, "chat_json", fake_chat_json)
     config = normalize_product_research_config(default_product_research_config())
 
-    run = product_research_service.create_hot_product_run(tmp_path, hot_product_payload(), config, web_search_app_config())
+    run = complete_hot_product_run(tmp_path, hot_product_payload(), config, web_search_app_config())
 
     assert calls == [True]
     assert run["status"] == "completed"
@@ -320,7 +344,7 @@ def test_hot_product_run_restores_completed_run_from_db_after_restart(tmp_path, 
         ],
     )
     config = normalize_product_research_config(default_product_research_config())
-    run = product_research_service.create_hot_product_run(tmp_path, hot_product_payload(), config, web_search_app_config())
+    run = complete_hot_product_run(tmp_path, hot_product_payload(), config, web_search_app_config())
 
     # 新 Registry = 模拟进程重启后的空内存；历史 run 必须能从表里查回。
     registry = ProductResearchRunRegistry(get_context().db)
@@ -403,7 +427,7 @@ def test_incoming_keywords_are_ignored_for_market_hot_products(tmp_path, monkeyp
     body["keywords"] = ["pet storage", "desk organizer"]
     body["result_options"]["limit"] = 5
 
-    run = product_research_service.create_hot_product_run(tmp_path, body, config, web_search_app_config())
+    run = complete_hot_product_run(tmp_path, body, config, web_search_app_config())
 
     assert [item["rank"] for item in run["items"]] == [1, 2, 3]
     assert [item["keyword"] for item in run["items"]] == ["kitchen", "travel", "office"]
@@ -424,7 +448,7 @@ def test_hot_product_run_returns_empty_when_ai_returns_no_traceable_items(tmp_pa
         }
     ]
 
-    run = product_research_service.create_hot_product_run(
+    run = complete_hot_product_run(
         tmp_path,
         hot_product_payload(),
         normalize_product_research_config(config),
@@ -448,7 +472,7 @@ def test_hot_product_run_returns_empty_when_market_has_no_search_methods(tmp_pat
         }
     ]
 
-    run = product_research_service.create_hot_product_run(tmp_path, hot_product_payload(), normalize_product_research_config(config))
+    run = complete_hot_product_run(tmp_path, hot_product_payload(), normalize_product_research_config(config))
 
     assert run["items"] == []
     assert run["source_status"][0]["status"] == "empty"
@@ -497,7 +521,7 @@ def test_ai_search_renders_prompt_template_from_file(tmp_path, monkeypatch) -> N
         }
     ]
 
-    product_research_service.create_hot_product_run(
+    complete_hot_product_run(
         tmp_path,
         hot_product_payload(),
         normalize_product_research_config(config),
@@ -546,7 +570,7 @@ def test_ai_search_uses_target_market_saved_prompt(tmp_path, monkeypatch) -> Non
         }
     ]
 
-    product_research_service.create_hot_product_run(
+    complete_hot_product_run(
         tmp_path,
         hot_product_payload(),
         normalize_product_research_config(config),
@@ -594,7 +618,7 @@ def test_ai_search_filters_candidates_without_image_url(tmp_path, monkeypatch) -
     )
     config = normalize_product_research_config(default_product_research_config())
 
-    run = product_research_service.create_hot_product_run(tmp_path, hot_product_payload(), config, web_search_app_config())
+    run = complete_hot_product_run(tmp_path, hot_product_payload(), config, web_search_app_config())
 
     assert [item["title"] for item in run["items"]] == ["Direct image candidate"]
     assert run["items"][0]["image_url"] == "https://example.com/direct-image.jpg"

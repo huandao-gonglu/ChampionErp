@@ -137,12 +137,6 @@ def remote_publish_identity(result: Any) -> dict[str, Any]:
     return identity
 
 
-def build_publish_payload(product: dict[str, Any], platform: str, config: dict[str, Any]) -> dict[str, Any]:
-    from .publish_adapter import require_publishing_adapter
-
-    return require_publishing_adapter(platform).build_payload(product, config)
-
-
 def validate_mercadolibre_publish_payload(payload: Any, config: dict[str, Any]) -> list[str]:
     missing: list[str] = []
     payload = payload if isinstance(payload, dict) else {}
@@ -390,7 +384,6 @@ __all__ = [
     "_required_attribute_summary",
     "assign_upc",
     "build_mercadolibre_publish_payload",
-    "build_publish_payload",
     "compact_precheck",
     "compact_precheck_items",
     "compact_publish_failure_response",

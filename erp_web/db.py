@@ -4,8 +4,9 @@ from __future__ import annotations
 
 ``ErpDatabase`` 统一拥有 schema、连接设置和读写路径。数据库通过
 ``PRAGMA user_version`` 版本化；只接受空库、当前完整 schema，或可非破坏性
-升级的前一版本（v10 → v11 只加 ``ai_chat_turn_claims`` 表，保留既有 Pydantic
-消息历史）。更早的旧消息 schema 不迁移、不修复，也不会从 JSONL 恢复。唯一
+升级的已知版本。v10/v11 → v12 只增加 ``ai_chat_turn_claims`` 及其安全诊断
+字段，保留既有 Pydantic 消息历史。更早的旧消息 schema 不迁移、不修复，
+也不会从 JSONL 恢复。唯一
 seed 路径是 UPC 池：表为空时，从数据库旁的 ``upc_pool.json`` 一次性导入已
 购买的 UPC。
 """
@@ -30,10 +31,7 @@ from erp_web.product_model.merge_model import (
 )
 
 DEFAULT_DB_NAME = "erp.sqlite3"
-SCHEMA_VERSION = 11
-
-# v10 → v11 只做非破坏性加表（ai_chat_turn_claims），保留既有 Pydantic 消息历史。
-PREVIOUS_UPGRADABLE_VERSION = 10
+SCHEMA_VERSION = 12
 
 REQUIRED_TABLES = (
     "store_auth",
@@ -235,6 +233,9 @@ CREATE TABLE IF NOT EXISTS ai_chat_turn_claims (
     status TEXT NOT NULL DEFAULT 'claimed',
     claimed_at TEXT NOT NULL DEFAULT '',
     finished_at TEXT NOT NULL DEFAULT '',
+    error_code TEXT NOT NULL DEFAULT '',
+    trace_id TEXT NOT NULL DEFAULT '',
+    last_tool_name TEXT NOT NULL DEFAULT '',
     UNIQUE(conversation_id, client_message_id)
 );
 
@@ -328,16 +329,25 @@ _CURRENT_AI_CHAT_TURN_CLAIM_COLUMNS = frozenset(
         "status",
         "claimed_at",
         "finished_at",
+        "error_code",
+        "trace_id",
+        "last_tool_name",
     }
 )
+
+_V11_AI_CHAT_TURN_CLAIM_COLUMNS = _CURRENT_AI_CHAT_TURN_CLAIM_COLUMNS - {
+    "error_code",
+    "trace_id",
+    "last_tool_name",
+}
 
 _PUBLISH_JOB_IDEMPOTENCY_INDEX = "idx_publish_jobs_idempotency_key"
 _PYDANTIC_MESSAGE_HISTORY_UPDATED_INDEX = (
     "idx_pydantic_message_histories_updated"
 )
 
-# v10 → v11 升级只执行这条加表 DDL；其余结构保持 v10 原样。
-_V10_TO_V11_UPGRADE_SQL = """
+# v10 → v12 创建当前 claim 表；其余结构保持 v10 原样。
+_V10_TO_V12_UPGRADE_SQL = """
 CREATE TABLE IF NOT EXISTS ai_chat_turn_claims (
     claim_id TEXT PRIMARY KEY,
     conversation_id TEXT NOT NULL,
@@ -348,9 +358,18 @@ CREATE TABLE IF NOT EXISTS ai_chat_turn_claims (
     status TEXT NOT NULL DEFAULT 'claimed',
     claimed_at TEXT NOT NULL DEFAULT '',
     finished_at TEXT NOT NULL DEFAULT '',
+    error_code TEXT NOT NULL DEFAULT '',
+    trace_id TEXT NOT NULL DEFAULT '',
+    last_tool_name TEXT NOT NULL DEFAULT '',
     UNIQUE(conversation_id, client_message_id)
 )
 """
+
+_V11_TO_V12_UPGRADE_STATEMENTS = (
+    "ALTER TABLE ai_chat_turn_claims ADD COLUMN error_code TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE ai_chat_turn_claims ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE ai_chat_turn_claims ADD COLUMN last_tool_name TEXT NOT NULL DEFAULT ''",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -892,19 +911,28 @@ class ErpDatabase:
             and shared_v10_shape_valid
         )
         is_upgradable_v10_database = (
-            inspected_version == PREVIOUS_UPGRADABLE_VERSION
+            inspected_version == 10
             and inspected_tables == _V10_REQUIRED_TABLES
+            and shared_v10_shape_valid
+        )
+        is_upgradable_v11_database = (
+            inspected_version == 11
+            and inspected_tables == frozenset(REQUIRED_TABLES)
+            and inspected_chat_turn_claim_columns
+            == _V11_AI_CHAT_TURN_CLAIM_COLUMNS
             and shared_v10_shape_valid
         )
         if (
             not is_empty_database
             and not is_current_database
             and not is_upgradable_v10_database
+            and not is_upgradable_v11_database
         ):
             raise RuntimeError(
                 "数据库 schema 版本 "
                 f"{inspected_version} 不受支持（当前版本 {SCHEMA_VERSION}）；"
-                "仅接受空库或当前完整 schema，不迁移、修复或重建旧消息格式。"
+                "仅接受空库、当前完整 schema 或受支持的 v10/v11 升级结构；"
+                "不迁移、修复或重建更早的旧消息格式。"
             )
         with self._connect() as conn:
             if is_empty_database:
@@ -921,10 +949,22 @@ class ErpDatabase:
             elif is_upgradable_v10_database:
                 conn.execute("BEGIN IMMEDIATE")
                 try:
-                    for statement in _V10_TO_V11_UPGRADE_SQL.split(";"):
+                    for statement in _V10_TO_V12_UPGRADE_SQL.split(";"):
                         sql = statement.strip()
                         if sql:
                             conn.execute(sql)
+                    conn.execute(
+                        f"PRAGMA user_version = {SCHEMA_VERSION}"
+                    )
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
+            elif is_upgradable_v11_database:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    for statement in _V11_TO_V12_UPGRADE_STATEMENTS:
+                        conn.execute(statement)
                     conn.execute(
                         f"PRAGMA user_version = {SCHEMA_VERSION}"
                     )
@@ -2908,6 +2948,9 @@ class ErpDatabase:
         "status",
         "claimed_at",
         "finished_at",
+        "error_code",
+        "trace_id",
+        "last_tool_name",
     )
 
     @classmethod
@@ -2979,6 +3022,9 @@ class ErpDatabase:
         *,
         status: str,
         now: str,
+        error_code: str = "",
+        trace_id: str = "",
+        last_tool_name: str = "",
     ) -> dict[str, Any] | None:
         """只允许把仍处于 claimed 的领取推进到终态；返回更新后的行。"""
 
@@ -2994,10 +3040,18 @@ class ErpDatabase:
                 cursor = conn.execute(
                     """
                     UPDATE ai_chat_turn_claims
-                    SET status = ?, finished_at = ?
+                    SET status = ?, finished_at = ?, error_code = ?,
+                        trace_id = ?, last_tool_name = ?
                     WHERE claim_id = ? AND status = 'claimed'
                     """,
-                    (normalized_status, timestamp, normalized_claim_id),
+                    (
+                        normalized_status,
+                        timestamp,
+                        str(error_code or "").strip(),
+                        str(trace_id or "").strip(),
+                        str(last_tool_name or "").strip(),
+                        normalized_claim_id,
+                    ),
                 )
                 row = conn.execute(
                     """

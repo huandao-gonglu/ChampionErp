@@ -80,6 +80,9 @@ def test_claim_table_has_no_message_content_columns(tmp_path: Path) -> None:
         "status",
         "claimed_at",
         "finished_at",
+        "error_code",
+        "trace_id",
+        "last_tool_name",
     }
 
 
@@ -138,6 +141,28 @@ def test_finish_turn_moves_claimed_to_each_terminal_status(
     assert finished is not None
     assert finished.status == status
     assert finished.finished_at
+
+
+def test_failed_turn_records_safe_structured_diagnostics(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    claim = store.claim_turn(
+        conversation_id=CONVERSATION,
+        client_message_id="ui-message-failed",
+        profile_id="global.chat",
+    )
+
+    finished = store.finish_turn(
+        claim.claim_id,
+        status=FAILED,
+        error_code="PRODUCT_NOT_FOUND",
+        trace_id="trace-safe-1",
+        last_tool_name="product_read",
+    )
+
+    assert finished is not None
+    assert finished.error_code == "PRODUCT_NOT_FOUND"
+    assert finished.trace_id == "trace-safe-1"
+    assert finished.last_tool_name == "product_read"
 
 
 def test_finish_turn_rejects_non_terminal_status(tmp_path: Path) -> None:

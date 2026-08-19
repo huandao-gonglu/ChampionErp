@@ -7,6 +7,8 @@ from __future__ import annotations
 模型伪造审批或批准后目标漂移。
 """
 
+import hashlib
+import json
 from dataclasses import dataclass
 from typing import Annotated, Any, Protocol
 
@@ -39,6 +41,13 @@ class ProductDraftWriteStore(Protocol):
     def delete_products_from_index(
         self,
         product_ids: list[Any],
+    ) -> dict[str, Any]:
+        ...
+
+    def load_product_from_index(
+        self,
+        product_id: str = "",
+        file_path: str = "",
     ) -> dict[str, Any]:
         ...
 
@@ -106,19 +115,64 @@ def _normalized_ids(ids: Any) -> list[str]:
     )
 
 
+def _state_token(value: dict[str, Any] | None) -> str:
+    """返回不泄露资源正文的稳定状态指纹；空资源有明确哨兵。"""
+
+    if not value:
+        return "missing"
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _product_delete_states(
+    ids: list[str],
+    scope: ProductWriteCapabilityScope,
+) -> dict[str, str]:
+    states: dict[str, str] = {}
+    for product_id in ids:
+        loaded = scope.products.load_product_from_index(product_id, "")
+        exact = (
+            loaded
+            if _text(loaded.get("product_id")) == product_id
+            else {}
+        )
+        states[product_id] = _state_token(exact)
+    return states
+
+
+def _draft_delete_states(
+    ids: list[str],
+    scope: ProductWriteCapabilityScope,
+) -> dict[str, str]:
+    states: dict[str, str] = {}
+    for draft_id in ids:
+        result, error, _status = scope.products.load_draft_detail_from_index(draft_id)
+        draft = result.get("draft") if error is None and isinstance(result, dict) else {}
+        states[draft_id] = _state_token(draft if isinstance(draft, dict) else {})
+    return states
+
+
 def _product_delete_approval_snapshot(
     request: ProductDeleteRequest,
     scope: ProductWriteCapabilityScope,
 ) -> TaskApprovalSnapshot:
     """服务端生成的删除审批快照；模型不提供摘要也不提供参数。"""
 
-    del scope
     ids = _normalized_ids(request.product_ids)
     preview = "、".join(ids[:5])
     more = f"（另有 {len(ids) - 5} 个）" if len(ids) > 5 else ""
     return TaskApprovalSnapshot(
         summary=f"删除 {len(ids)} 个本地商品：{preview}{more}",
-        canonical_payload={"product_ids": ids},
+        canonical_payload={
+            "product_ids": ids,
+            "resource_states": _product_delete_states(ids, scope),
+        },
     )
 
 
@@ -128,13 +182,15 @@ def _draft_delete_approval_snapshot(
 ) -> TaskApprovalSnapshot:
     """服务端生成的草稿删除审批快照；模型不提供摘要也不提供参数。"""
 
-    del scope
     ids = _normalized_ids(request.draft_ids)
     preview = "、".join(ids[:5])
     more = f"（另有 {len(ids) - 5} 个）" if len(ids) > 5 else ""
     return TaskApprovalSnapshot(
         summary=f"删除 {len(ids)} 个本地草稿：{preview}{more}",
-        canonical_payload={"draft_ids": ids},
+        canonical_payload={
+            "draft_ids": ids,
+            "resource_states": _draft_delete_states(ids, scope),
+        },
     )
 
 

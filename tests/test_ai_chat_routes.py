@@ -483,6 +483,101 @@ def test_client_disconnect_marks_claim_cancelled_and_releases(
     assert claim.status == "cancelled"
 
 
+def test_coroutine_cancellation_marks_claim_cancelled_and_releases(
+    chat_service: dict[str, Any],
+) -> None:
+    service = chat_service["service"]
+    conversation = "conversation_global_chat_" + "4" * 32
+
+    async def wait_until_cancelled(
+        _messages: list[ModelRequest | ModelResponse],
+        _agent_info: AgentInfo,
+    ) -> Any:
+        await asyncio.Event().wait()
+        yield "不会返回"
+
+    chat_service["model"]["model"] = FunctionModel(
+        stream_function=wait_until_cancelled
+    )
+    run = service.prepare_run(
+        json.dumps(_submit_body(conversation, "cancel-1", "取消测试")).encode(),
+    )
+
+    async def cancel_active_run() -> None:
+        task = asyncio.create_task(run.stream(lambda _chunk: None))
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(cancel_active_run())
+
+    context = get_context()
+    assert context.chat_runs.is_active(conversation) is False
+    claim = context.chat_turn_claims.find_for_conversation(conversation)
+    assert claim is not None
+    assert claim.status == "cancelled"
+
+
+def test_chat_route_closes_pending_async_generators_before_return(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from erp_web.http_route_units import ai_chat_routes
+
+    class RunWithPendingResource:
+        conversation_id = "conversation_global_chat_" + "5" * 32
+
+        def __init__(self) -> None:
+            self.resource_closed = False
+            self.resource: Any = None
+
+        def sse_headers(self) -> dict[str, str]:
+            return {"Content-Type": "text/event-stream"}
+
+        async def stream(self, _writer: Any) -> None:
+            async def resource() -> Any:
+                try:
+                    yield object()
+                finally:
+                    self.resource_closed = True
+
+            self.resource = resource()
+            await anext(self.resource)
+
+    class HandlerStub:
+        path = CHAT_PATH
+
+        def send_sse_headers(self, _headers: dict[str, str]) -> None:
+            return None
+
+        def write_sse_chunk(self, _chunk: bytes) -> None:
+            return None
+
+    run = RunWithPendingResource()
+    monkeypatch.setattr(
+        ai_chat_routes,
+        "safe_json_body_with_raw",
+        lambda _handler: ({}, b"{}"),
+    )
+    monkeypatch.setattr(
+        ai_chat_routes,
+        "validate_request_payload",
+        lambda _payload, *, endpoint: None,
+    )
+    monkeypatch.setattr(
+        ai_chat_routes.ai_chat_facade,
+        "run_chat_stream",
+        lambda _raw: run,
+    )
+
+    try:
+        ai_chat_routes.handle_chat_run(HandlerStub())  # type: ignore[arg-type]
+        assert run.resource_closed is True
+    finally:
+        if run.resource is not None and not run.resource_closed:
+            asyncio.run(run.resource.aclose())
+
+
 def test_disconnect_after_delta_persists_validated_partial_history(
     chat_service: dict[str, Any],
 ) -> None:
@@ -515,6 +610,138 @@ def test_disconnect_after_delta_persists_validated_partial_history(
         isinstance(message, ModelResponse) and message.state == "interrupted"
         for message in messages
     )
+
+
+def test_disconnect_during_multi_tool_turn_persists_complete_tool_pairs(
+    chat_service: dict[str, Any],
+) -> None:
+    """Provider 返回多工具时，中断历史也必须满足 call/return 成对不变量。"""
+
+    service = chat_service["service"]
+    conversation = "conversation_global_chat_" + "9" * 32
+    turns = 0
+
+    async def two_tool_model(
+        _messages: list[ModelRequest | ModelResponse],
+        _agent_info: AgentInfo,
+    ) -> Any:
+        nonlocal turns
+        turns += 1
+        if turns == 1:
+            yield {
+                0: DeltaToolCall(
+                    name="drafts_query",
+                    json_args='{"scope":"active","view":"summary"}',
+                    tool_call_id="disconnect-drafts",
+                ),
+                1: DeltaToolCall(
+                    name="products_index_query",
+                    json_args="{}",
+                    tool_call_id="disconnect-products",
+                ),
+            }
+            return
+        yield "查询完成。"
+
+    chat_service["model"]["model"] = FunctionModel(
+        stream_function=two_tool_model
+    )
+    run = service.prepare_run(
+        json.dumps(
+            _submit_body(conversation, "multi-tool-disconnect", "查询商品和草稿")
+        ).encode(),
+    )
+
+    def disconnect_after_first_output(chunk: bytes) -> None:
+        if b'"type":"tool-output-available"' in chunk:
+            raise BrokenPipeError("disconnect after first tool output")
+
+    asyncio.run(run.stream(disconnect_after_first_output))
+
+    history = get_context().pydantic_messages.get(conversation)
+    assert history is not None
+    messages = history.model_messages()
+    call_ids = [
+        part.tool_call_id
+        for message in messages
+        if isinstance(message, ModelResponse)
+        for part in message.parts
+        if isinstance(part, ToolCallPart)
+    ]
+    return_ids = [
+        part.tool_call_id
+        for message in messages
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, ToolReturnPart)
+    ]
+
+    assert sorted(call_ids) == ["disconnect-drafts", "disconnect-products"]
+    assert sorted(return_ids) == sorted(call_ids)
+
+
+def test_business_failure_in_multi_tool_turn_persists_complete_tool_pairs(
+    chat_service: dict[str, Any],
+) -> None:
+    """复现真实对话中的“首个读取成功、第二个商品已删除”失败序列。"""
+
+    service = chat_service["service"]
+    conversation = "conversation_global_chat_" + "a" * 32
+    turns = 0
+
+    async def partially_failing_model(
+        _messages: list[ModelRequest | ModelResponse],
+        _agent_info: AgentInfo,
+    ) -> Any:
+        nonlocal turns
+        turns += 1
+        if turns == 1:
+            yield {
+                0: DeltaToolCall(
+                    name="drafts_query",
+                    json_args='{"scope":"active","view":"summary"}',
+                    tool_call_id="success-before-failure",
+                ),
+                1: DeltaToolCall(
+                    name="product_read",
+                    json_args='{"product_id":"already-deleted"}',
+                    tool_call_id="missing-product",
+                ),
+            }
+            return
+        yield "已发现商品不存在。"
+
+    chat_service["model"]["model"] = FunctionModel(
+        stream_function=partially_failing_model
+    )
+    run = service.prepare_run(
+        json.dumps(
+            _submit_body(conversation, "multi-tool-failure", "读取已删除商品")
+        ).encode(),
+    )
+
+    asyncio.run(run.stream(lambda _chunk: None))
+
+    history = get_context().pydantic_messages.get(conversation)
+    assert history is not None
+    messages = history.model_messages()
+    call_ids = [
+        part.tool_call_id
+        for message in messages
+        if isinstance(message, ModelResponse)
+        for part in message.parts
+        if isinstance(part, ToolCallPart)
+    ]
+    return_ids = [
+        part.tool_call_id
+        for message in messages
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, ToolReturnPart)
+    ]
+
+    assert sorted(call_ids) == ["missing-product", "success-before-failure"]
+    assert sorted(return_ids) == sorted(call_ids)
 
 
 def test_pre_stream_conversion_failure_finishes_claim_and_releases_lock(

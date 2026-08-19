@@ -4,6 +4,7 @@ import type { AiUiPart } from '@/types/aiWork'
 import {
   approveGlobalTask,
   fetchGlobalTask,
+  refreshGlobalTask,
   rejectGlobalTask,
 } from '@/api/globalTasks'
 import AiMessagePart from '../AiMessagePart.vue'
@@ -11,6 +12,7 @@ import AiMessagePart from '../AiMessagePart.vue'
 vi.mock('@/api/globalTasks', () => ({
   approveGlobalTask: vi.fn(),
   fetchGlobalTask: vi.fn(),
+  refreshGlobalTask: vi.fn(),
   rejectGlobalTask: vi.fn(),
 }))
 
@@ -188,6 +190,40 @@ describe('AiMessagePart', () => {
 
     expect(wrapper.text()).toContain('只读消息不能审批')
     expect(wrapper.find('[data-testid="global-task-approve"]').exists()).toBe(false)
+    expect(fetchGlobalTask).not.toHaveBeenCalled()
+  })
+
+  it('后台任务刷新会推进任务状态而不只读取旧快照', async () => {
+    const running = {
+      ok: true,
+      task_id: 'gtask-running',
+      task: {
+        task_id: 'gtask-running',
+        goal: '等待后台发布',
+        status: 'in_progress',
+        current_step_index: 0,
+        steps: [],
+      },
+    }
+    vi.mocked(refreshGlobalTask).mockResolvedValue({
+      ...running,
+      task: {
+        ...running.task,
+        status: 'completed',
+        assistant_message: '后台任务已完成。',
+      },
+    } as never)
+
+    const wrapper = mountPart({
+      type: 'tool-global_task_start',
+      state: 'output-available',
+      output: running,
+    }, true)
+
+    await vi.waitFor(() => {
+      expect(refreshGlobalTask).toHaveBeenCalledWith('gtask-running')
+      expect(wrapper.get('[data-testid="global-task-card"]').text()).toContain('已完成')
+    })
     expect(fetchGlobalTask).not.toHaveBeenCalled()
   })
 })

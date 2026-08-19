@@ -292,6 +292,31 @@ def test_product_delete_requires_trusted_approval_context() -> None:
     assert context.products.load_products_index() == []
 
 
+def test_product_delete_rejects_approval_when_target_disappeared() -> None:
+    """批准后、执行前资源消失时，旧审批必须失效而非成功删除 0 个。"""
+
+    context = get_context()
+    _seed_product("product-stale-approval", with_draft=False)
+    scope = _write_scope()
+    request = ProductDeleteRequest(product_ids=("product-stale-approval",))
+    approved_snapshot = _product_delete_approval_snapshot(request, scope)
+
+    # 模拟另一个任务先完成了同一商品的删除。
+    context.products.delete_products_from_index(["product-stale-approval"])
+
+    with pytest.raises(AiToolExecutionError) as stale:
+        product_delete(
+            request,
+            scope=scope,
+            execution=_approved_execution(
+                approved_snapshot,
+                PRODUCT_DELETE_TOOL,
+            ),
+        )
+
+    assert stale.value.code == "PRODUCT_DELETE_APPROVAL_STALE"
+
+
 def test_draft_delete_approval_flow() -> None:
     context = get_context()
     saved_product = _seed_product("product-draft-del")

@@ -3,6 +3,7 @@ import { apiClient } from '@/api/client'
 import {
   approveGlobalTask,
   fetchGlobalTask,
+  refreshGlobalTask,
   rejectGlobalTask,
 } from '@/api/globalTasks'
 
@@ -39,6 +40,15 @@ describe('全局任务受信审批 API', () => {
 
     expect(apiClient.get).not.toHaveBeenCalled()
     expect(apiClient.post).toHaveBeenCalledWith('/api/global-task-state', {
+      task_id: 'gtask-1',
+    })
+  })
+
+  it('刷新后台任务时调用推进终态的 refresh 端点', async () => {
+    await expect(refreshGlobalTask('gtask-1')).resolves.toEqual(response)
+
+    expect(apiClient.get).not.toHaveBeenCalled()
+    expect(apiClient.post).toHaveBeenCalledWith('/api/global-task-refresh', {
       task_id: 'gtask-1',
     })
   })

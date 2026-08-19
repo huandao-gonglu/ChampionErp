@@ -28,6 +28,10 @@ from erp_web.runtime_units.global_ai_control_tools import (
     GLOBAL_TASK_CONTROL_CATALOG,
     GlobalTaskStartControlRequest,
 )
+from erp_web.schemas.platform_query_capabilities import (
+    ProductsIndexQueryRequest,
+    ProductsIndexQueryResult,
+)
 from erp_web.services.global_task_controller import GlobalTaskController
 
 
@@ -147,6 +151,40 @@ def test_global_chat_prompt_routes_writes_to_typed_tasks() -> None:
     assert "product_delete" in system
     assert "draft_delete" in system
     assert "pending_approval" in system
+
+
+def test_global_chat_prompt_distinguishes_claim_from_market_prepare() -> None:
+    prompt_path = APP_ROOT / "config" / "prompts" / "global_chat.json"
+    prompt = json.loads(prompt_path.read_text(encoding="utf-8"))
+    system = str(prompt.get("system") or "")
+
+    assert "claim_products" in system
+    assert "draft_prepare_for_market" in system
+    assert "草稿箱" in system
+    assert "认领" in system
+
+
+def test_product_index_query_supports_snapshot_bound_position_resolution() -> None:
+    """“第几个商品”必须绑定服务端快照，不能由模型用历史列表换算 ID。"""
+
+    request_fields = ProductsIndexQueryRequest.model_fields
+    result_fields = ProductsIndexQueryResult.model_fields
+
+    assert "snapshot_id" in request_fields
+    assert "positions" in request_fields
+    assert "snapshot_id" in result_fields
+    assert "selected_items" in result_fields
+
+
+def test_global_chat_prompt_explains_browser_session_boundary() -> None:
+    prompt_path = APP_ROOT / "config" / "prompts" / "global_chat.json"
+    prompt = json.loads(prompt_path.read_text(encoding="utf-8"))
+    system = str(prompt.get("system") or "")
+
+    assert "collect_from_browser_tab" in system
+    assert "已连接" in system
+    assert "打开" in system
+    assert "用户" in system or "受信界面" in system
 
 
 # -- P1-2：审批摘要由服务端快照生成，模型不提交 approval 字段 ---------------

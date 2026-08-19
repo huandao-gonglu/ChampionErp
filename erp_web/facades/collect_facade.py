@@ -109,8 +109,6 @@ def collect_from_browser_tab_payload(body: dict[str, Any]) -> ApiResponse:
         port=int(body.get("port") or debug_port),
         claim_platforms=body.get("platforms") if isinstance(body.get("platforms"), list) else None,
         save_only=bool(body.get("save_only")),
-        mock_tabs=body.get("mock_tabs") if isinstance(body.get("mock_tabs"), list) else None,
-        mock_snapshot=body.get("mock_snapshot") if isinstance(body.get("mock_snapshot"), dict) else None,
     )
 
 

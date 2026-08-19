@@ -78,7 +78,7 @@ def test_ai_model_attribute_fill_uses_product_context_and_validates_options(monk
         captured["descriptions"] = {
             item["id"]: item["description"] for item in payload["attributes"]
         }
-        return CategoryAttributeFillAgentRun.for_test(
+        return CategoryAttributeFillAgentRun(
             {
                 "assignments": [
                     {
@@ -168,7 +168,7 @@ def test_ai_model_attribute_fill_resolves_ozon_dictionary_values(monkeypatch) ->
             "85",
             [{"id": "126745801", "value": "Нет бренда"}],
         )
-        return CategoryAttributeFillAgentRun.for_test(
+        return CategoryAttributeFillAgentRun(
             {
                 "assignments": [
                     {
@@ -237,7 +237,7 @@ def test_ai_model_attribute_fill_allows_custom_value_for_open_enum(
     monkeypatch.setattr(
         category_attribute_ai_fill,
         "run_category_attribute_fill_agent",
-        lambda *args: CategoryAttributeFillAgentRun.for_test(
+        lambda *args: CategoryAttributeFillAgentRun(
             {
                 "assignments": [
                     {
@@ -293,7 +293,7 @@ def test_unresolved_optional_dictionary_attribute_is_not_a_blocking_error(
 
     def fake_agent(payload, *args):
         captured["schema_ids"] = [item["id"] for item in payload["attributes"]]
-        return CategoryAttributeFillAgentRun.for_test(
+        return CategoryAttributeFillAgentRun(
             {
                 "assignments": [
                     {

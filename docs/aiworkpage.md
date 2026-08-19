@@ -51,7 +51,7 @@ flowchart LR
 
 | 层 | Owner | 职责 |
 | --- | --- | --- |
-| Agent 执行 | `AiAgentFactory` | 统一装配、运行、恢复、历史保存和 native event 输出 |
+| Agent 执行 | `AiAgentFactory` | 统一装配、同步/流式运行、历史保存和 native event 输出 |
 | 展示上下文 | `ai_presentation_context.py` | contextvar、root/child 关系和 observer 协议 |
 | 展示状态 | `AiPresentationRegistry` | reservation、claim、单 lease、短期 chunk 缓冲和终态 |
 | 展示转换 | `ai_presentation_service.py` | 将 Agent native events 转成官方 Vercel chunk |
@@ -145,7 +145,7 @@ return withAiForeground(
 - 多进程/多 worker 共享 registry；
 - 页面刷新后自动恢复活动 presentation；
 - child Agent 的完整独立消息流；
-- deferred tool approval 的聊天内交互。
+- Global Task 审批卡的跨页面恢复与多窗口一致性。
 
 HTTP 公共边界记录最终响应状态：正常返回的 4xx/5xx 将 presentation 标记为 `failed`；“200 + 业务判断失败”仍按成功完成请求处理，以保持业务判断结果与请求/基础设施失败的区别。
 
@@ -156,7 +156,7 @@ HTTP 公共边界记录最终响应状态：正常返回的 4xx/5xx 将 presenta
 - presentation 接管期间 global.chat 的消息、输入和连接保持不变，业务收尾后恢复。
 - 业务 response 是唯一结果事实，展示连接故障不改变业务结果。
 - root conversation 与持久化历史 ID 一致；同一请求最多一个 root stream；child 不建立第二条 SSE。
-- `run_sync()`、流式运行和 `resume_sync()` 共享统一 native-event 执行内核。
+- `run_sync()` 与流式运行共享统一 native-event 执行内核；需审批写工具只走 Global Task。
 - 无 Agent 路径、业务失败、观察断连和缓冲溢出都能确定收尾。
 - 新增一个基于 `AiAgentFactory` 的前台能力时，不增加业务专用 SSE、run facade 或 result endpoint。
 - 旧 category-specific run 协议和自研 UI 消息投影无生产代码残留。

@@ -13,12 +13,17 @@ TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True)]
 class ProductsIndexQueryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    snapshot_id: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
+    positions: tuple[Annotated[int, Field(ge=1)], ...] = ()
+
 
 class ProductsIndexQueryResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     items: tuple[dict[str, JsonValue], ...] = ()
     count: int = Field(default=0, ge=0)
+    snapshot_id: TrimmedText
+    selected_items: tuple[dict[str, JsonValue], ...] = ()
 
 
 class PlatformPublishedItemsQueryRequest(BaseModel):

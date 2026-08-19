@@ -31,7 +31,6 @@ from .publish_helpers import (
     _selected_price_and_currency,
     _field_error_map,
     build_mercadolibre_publish_payload,
-    build_publish_payload,
     compact_precheck_items,
     compact_publish_failure_response,
     mercadolibre_picture_upload_error_message,

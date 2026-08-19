@@ -86,4 +86,21 @@ describe('AiChatStore 实时流', () => {
       { type: 'text', text: '第一段第二段', state: 'done' },
     ])
   })
+
+  it('输入 /new 会切换到新的空白全局对话且不发送请求', () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useAiChatStore()
+    const previousConversationId = store.startConversation()
+
+    store.input = '  /new  '
+    store.sendMessage()
+
+    expect(store.activeConversationId).toMatch(/^conversation_global_chat_[0-9a-f]{32}$/)
+    expect(store.activeConversationId).not.toBe(previousConversationId)
+    expect(store.chat?.id).toBe(store.activeConversationId)
+    expect(store.messages).toEqual([])
+    expect(store.input).toBe('')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
 })

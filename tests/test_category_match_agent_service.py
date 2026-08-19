@@ -499,7 +499,7 @@ def test_empty_provider_response_reports_observed_response_instead_of_schema_err
     assert "parts=0" in message
 
 
-def test_unexpected_category_approval_finishes_persisted_pending_state() -> None:
+def test_unexpected_category_approval_is_rejected_before_execution() -> None:
     executions = 0
 
     def executor(arguments, context):
@@ -550,7 +550,6 @@ def test_unexpected_category_approval_finishes_persisted_pending_state() -> None
         )
 
     agent_factory = factory_for(FunctionModel(model))
-    before = set(agent_factory.state_store.root.glob("*.json"))
     with pytest.raises(AiAgentExecutionError) as captured:
         run_category_match_agent(
             PAYLOAD,
@@ -562,13 +561,6 @@ def test_unexpected_category_approval_finishes_persisted_pending_state() -> None
 
     assert captured.value.code == "TOOL_APPROVAL_REQUIRED"
     assert executions == 0
-    history = agent_factory.message_store.get(captured.value.conversation_id)
-    assert history is not None
-    assert history.model_messages()
-    # 流式入口不产生 deferred pending state：审批请求被直接拒绝，
-    # 不留下任何待恢复状态文件。
-    created = set(agent_factory.state_store.root.glob("*.json")) - before
-    assert len(created) == 0
 
 
 def test_category_match_run_publishes_presentation_chunks_under_bound_scope() -> None:

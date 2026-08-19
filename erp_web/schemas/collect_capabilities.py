@@ -57,7 +57,24 @@ class CollectBatchResult(BaseModel):
 
 
 class CollectFromBrowserTabRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={
+            "anyOf": [
+                {
+                    "type": "object",
+                    "required": ["tab_url"],
+                    "properties": {"tab_url": {"type": "string", "minLength": 1}},
+                },
+                {
+                    "type": "object",
+                    "required": ["product_url"],
+                    "properties": {"product_url": {"type": "string", "minLength": 1}},
+                },
+            ]
+        },
+    )
 
     tab_url: Annotated[TrimmedText, StringConstraints(max_length=2000)] = ""
     product_url: Annotated[TrimmedText, StringConstraints(max_length=2000)] = ""
@@ -85,7 +102,24 @@ class CollectFromBrowserTabResult(BaseModel):
 
 
 class Collect1688Request(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={
+            "anyOf": [
+                {
+                    "type": "object",
+                    "required": ["url"],
+                    "properties": {"url": {"type": "string", "minLength": 1}},
+                },
+                {
+                    "type": "object",
+                    "required": ["text"],
+                    "properties": {"text": {"type": "string", "minLength": 1}},
+                },
+            ]
+        },
+    )
 
     url: Annotated[TrimmedText, StringConstraints(max_length=2000)] = ""
     text: Annotated[str, StringConstraints(strip_whitespace=True, max_length=200000)] = ""

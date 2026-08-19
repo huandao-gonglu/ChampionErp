@@ -261,6 +261,23 @@ def validate_json_schema_definition(
     if items is not None:
         validate_json_schema_definition(items, path=f"{path}.items")
 
+    any_of = schema.get("anyOf")
+    if any_of is not None:
+        if (
+            not isinstance(any_of, Sequence)
+            or isinstance(any_of, (str, bytes))
+            or len(any_of) < 1
+        ):
+            raise AiToolSchemaError(
+                f"{path}.anyOf 必须是非空数组",
+                code="TOOL_SCHEMA_INVALID",
+            )
+        for index, branch in enumerate(any_of):
+            validate_json_schema_definition(
+                branch,
+                path=f"{path}.anyOf[{index}]",
+            )
+
     one_of = schema.get("oneOf")
     if one_of is not None:
         if (
@@ -382,6 +399,33 @@ def validate_json_schema(value: Any, schema: Mapping[str, Any], *, path: str = "
             )
         if value not in enum_values:
             raise AiToolSchemaError(f"{path} 不在允许枚举中")
+
+    any_of = schema.get("anyOf")
+    if any_of is not None:
+        if (
+            not isinstance(any_of, Sequence)
+            or isinstance(any_of, (str, bytes))
+            or not any_of
+        ):
+            raise AiToolSchemaError(
+                f"{path} 的 schema.anyOf 必须是非空数组",
+                code="TOOL_SCHEMA_INVALID",
+            )
+        matched = False
+        for branch in any_of:
+            if not isinstance(branch, Mapping):
+                raise AiToolSchemaError(
+                    f"{path} 的 anyOf 分支必须是对象",
+                    code="TOOL_SCHEMA_INVALID",
+                )
+            try:
+                validate_json_schema(value, branch, path=path)
+            except AiToolSchemaError:
+                continue
+            matched = True
+            break
+        if not matched:
+            raise AiToolSchemaError(f"{path} 不满足 schema.anyOf 的任何分支")
 
     one_of = schema.get("oneOf")
     if one_of is not None:

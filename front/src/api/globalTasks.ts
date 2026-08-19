@@ -3,6 +3,7 @@ import type { BackendAppStateResponse } from '@/types/workflow.generated'
 import type { GlobalTaskResponse } from '@/types/aiWork'
 
 const GLOBAL_TASK_STATE_PATH = '/api/global-task-state'
+const GLOBAL_TASK_REFRESH_PATH = '/api/global-task-refresh'
 const GLOBAL_TASK_APPROVE_PATH = '/api/global-task-approve'
 const GLOBAL_TASK_REJECT_PATH = '/api/global-task-reject'
 const APPROVAL_TOKEN_HEADER = 'X-Approval-Token'
@@ -18,6 +19,13 @@ async function loadApprovalToken(): Promise<string> {
 
 export async function fetchGlobalTask(taskId: string): Promise<GlobalTaskResponse> {
   const response = await apiClient.post<GlobalTaskResponse>(GLOBAL_TASK_STATE_PATH, {
+    task_id: taskId,
+  })
+  return response.data
+}
+
+export async function refreshGlobalTask(taskId: string): Promise<GlobalTaskResponse> {
+  const response = await apiClient.post<GlobalTaskResponse>(GLOBAL_TASK_REFRESH_PATH, {
     task_id: taskId,
   })
   return response.data
@@ -49,4 +57,3 @@ export async function rejectGlobalTask(
   )
   return response.data
 }
-

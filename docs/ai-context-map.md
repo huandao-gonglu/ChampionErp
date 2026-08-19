@@ -58,17 +58,14 @@ Model Requests，图片等能力使用锁定版本提供的 Pydantic capability/
   `create_pydantic_probe_binding`，只根据待测操作选择 Chat/Responses/Images Model，不允许用
   尚未产生的 capability 声明阻断探测。两条入口共享私有构造器和同一套 API style、认证、
   timeout、模型类型与密钥脱敏规则。
-- `erp_web/services/ai_agent_factory.py`：Pydantic Agent 的唯一主要装配、运行、暂停与
-  恢复入口；创建请求级 dependencies、usage limits、instrumentation 和版本化 deferred
-  状态，不包含领域终检。
+- `erp_web/services/ai_agent_factory.py`：Pydantic Agent 的唯一装配与同步/流式运行入口；
+  创建请求级 dependencies、usage limits 和 instrumentation，不包含领域终检。需审批
+  写工具只能交给 `GlobalTaskController`，Factory 不维护第二套 deferred 状态机。
 - `erp_web/services/ai_agent_instrumentation.py`：独立 OpenTelemetry 技术 trace owner；
   关闭 prompt/tool 内容采集并在 JSONL exporter 再次脱敏。观测写失败不影响业务结果。
 - `erp_web/services/ai_agent_observability.py`：Agent 的 AI Work 内容投影 owner；保存有界且
   脱敏的初始输入、逐轮 Pydantic model request/response 与工具往返，失败运行同样保留模型
   被拒绝的输出和 retry feedback。
-- `erp_web/services/ai_agent_state_store.py`：公开 Pydantic 消息与
-  `DeferredToolRequests` 的版本化 envelope、有限 lease 原子 claim、写工具执行前检查点、
-  durable `ready` 结果、`in_doubt` 防重放状态、审批记录和恢复安全校验。
 - `erp_web/services/ai_pydantic_image_model.py`：登记过的 focused 例外，见下文；它是仅支持
   Images API 的 Pydantic `Model`，只能由 `ai_model_factory` 创建，并且只能经 Pydantic Direct
   Request 调用。
@@ -136,9 +133,10 @@ CLI / Browser use case
   `FunctionToolset`；Pydantic tool 只调用 `AiToolRuntime.execute(...)`，不直接调用
   领域 executor，并强制串行执行以保护 Runtime 的预算和去重状态。
 - `erp_web/services/ai_agent_factory.py`：由 Pydantic Agent 独占 model → tool → model
-  循环、类型化 output、重试、usage limit 和公开 deferred 协议；`open_stream_run(...)` 是协议
-  无关的流式运行入口，装配语义与 `run_sync` 一致，成功时用官方 `result.all_messages()` 原子
-  替换 conversation 历史。
+  循环、类型化 output、重试和 usage limit；`run_sync(...)` 与 `open_stream_run(...)`
+  是统一同步/流式入口，成功时用官方 `result.all_messages()` 原子替换 conversation
+  历史。需审批与长任务恢复只由 `GlobalTaskController` 承担，Agent Factory 不保存第二套
+  deferred state。
 - `erp_web/stores/pydantic_message_store.py`：Pydantic 官方 `ModelMessage` 历史的唯一持久化
   边界；`messages_json` 用 `ModelMessagesTypeAdapter` 校验与序列化，是消息的唯一事实来源。
 
@@ -277,7 +275,7 @@ Global Task 聊天耦合已全部删除。当前 AiWork 只围绕 Pydantic 官�
 `erp_web/services/global_agent_chat_service.py`，只选择服务端 prompt、`global.chat`
 ToolSet、Execution Profile 与权限，再调用 `AiAgentFactory.open_stream_run(...)`。
 ToolSet 由 `erp_web/facades/global_task_facade.py::build_global_chat_toolset` 装配：
-Direct 只读能力加六个任务控制工具；写与审批能力只经类型化任务步骤执行，主 Agent
+Direct 只读能力加四个任务控制工具；写与审批能力只经类型化任务步骤执行，主 Agent
 没有直接写工具，也不存在并行的第二条规划链。
 
 - `erp_web/http_route_units/ai_chat_routes.py`：`POST /api/v1/ai-chat/runs` 薄路由，预流校验返回
@@ -288,7 +286,8 @@ Direct 只读能力加六个任务控制工具；写与审批能力只经类型�
 - `erp_web/services/ai_chat_run_registry.py`：进程内按 conversation ID 的活动 run 互斥屏障，由
   `AppContext` 单例持有。
 - `erp_web/stores/ai_chat_turn_claim_store.py` + `ai_chat_turn_claims` 表：`client_message_id`
-  幂等领取与 profile/owner 归属，只存运行控制元数据，不存消息正文。
+  幂等领取与 profile/owner 归属；只存运行控制元数据及安全的 error code、trace ID、
+  最后工具名，不存消息正文、工具参数或工具结果。
 - `erp_web/stores/draft_query_snapshot_store.py`：草稿查询快照的独立持久化 owner，不依赖 Global Task。
 - `erp_web/facades/global_task_facade.py`：装配 `global.chat` ToolSet 的 Direct 只读
   能力绑定；`drafts_query` 与任务步骤共用同一 Capability，快照经独立 snapshot store
@@ -346,9 +345,8 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
 - `erp_web/services/ai_agent_factory.py` 执行内核：从当前 contextvar scope 派生本次运行
   的 presentation 上下文，经 observer 原子领取 registry 唯一 root run 槽位决定 root/child
   （一次前台交互最多一个根流，后续顺序 Agent 一律 child）；root run 的规范历史用
-  `scope.conversation_id` 持久化，实时流与 `PydanticMessageStore` 历史同一 ID；
-  `resume_sync()` 复用同一 native-event 内核（经 `deferred_tool_results` 注入审批结果），
-  恢复运行同样发布 presentation 事件。存在 observer 时 `session.events()` 返回包装流，消费
+  `scope.conversation_id` 持久化，实时流与 `PydanticMessageStore` 历史同一 ID。存在
+  observer 时 `session.events()` 返回包装流，消费
   它同时驱动官方转换/发布，事件原样透传；生命周期通知（run_started/running/finalizing/
   completed/failed）与子运行紧凑状态卡全部故障隔离，展示失败只降级展示。无
   presentation scope 的后台 Agent 不产生 SSE；child Agent 不产生第二条 SSE。
@@ -631,8 +629,6 @@ PUBLISHED 值）先于 Campaign 状态裁决：`HAS_CARD_CAN_UPDATE_ERRORS`/`NO_
 - `tests/test_ai_agent_factory_presentation.py`：factory 执行内核的 presentation 集成——
   绑定 scope 自动发布官方 chunk、无 scope 运行不产生 SSE、发布失败只降级展示。
 - `tests/test_ai_agent_instrumentation.py`：技术 spans、usage、trace 关联、脱敏和故障隔离。
-- `tests/test_ai_agent_state_store.py`、`tests/test_ai_agent_deferred_runtime.py`：公开消息
-  serialization、版本迁移、审批/拒绝、跨进程恢复、权限/scope/deadline 与幂等 claim。
 - `tests/test_global_task_controller.py`、`tests/test_global_task_store.py`、
   `tests/test_global_agent_vertical_integration.py`：capability-name-agnostic Controller
   状态机、类型化步骤执行、审批门、暂停恢复与本地持久化。

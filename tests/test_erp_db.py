@@ -290,6 +290,69 @@ class ErpDbTests(unittest.TestCase):
                 database.get_pydantic_message_history("conversation-1")
             )
 
+    def test_v11_claim_schema_upgrades_without_losing_claims(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app_dir = Path(tmp)
+            database = self._db(app_dir)
+            database.insert_ai_chat_turn_claim(
+                claim_id="claim-before-v12",
+                conversation_id="conversation-before-v12",
+                client_message_id="message-before-v12",
+                profile_id="global.chat",
+                actor_id="local-user",
+                tenant_id="local",
+                now="2026-08-19T00:00:00Z",
+            )
+            with database._connect() as conn:
+                conn.execute(
+                    "ALTER TABLE ai_chat_turn_claims RENAME TO ai_chat_turn_claims_v12"
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE ai_chat_turn_claims (
+                        claim_id TEXT PRIMARY KEY,
+                        conversation_id TEXT NOT NULL,
+                        client_message_id TEXT NOT NULL,
+                        profile_id TEXT NOT NULL DEFAULT '',
+                        actor_id TEXT NOT NULL DEFAULT '',
+                        tenant_id TEXT NOT NULL DEFAULT '',
+                        status TEXT NOT NULL DEFAULT 'claimed',
+                        claimed_at TEXT NOT NULL DEFAULT '',
+                        finished_at TEXT NOT NULL DEFAULT '',
+                        UNIQUE(conversation_id, client_message_id)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO ai_chat_turn_claims (
+                        claim_id, conversation_id, client_message_id,
+                        profile_id, actor_id, tenant_id, status,
+                        claimed_at, finished_at
+                    )
+                    SELECT claim_id, conversation_id, client_message_id,
+                        profile_id, actor_id, tenant_id, status,
+                        claimed_at, finished_at
+                    FROM ai_chat_turn_claims_v12
+                    """
+                )
+                conn.execute("DROP TABLE ai_chat_turn_claims_v12")
+                conn.execute("PRAGMA user_version = 11")
+                conn.commit()
+
+            upgraded = self._db(app_dir)
+            claim = upgraded.get_ai_chat_turn_claim(
+                "conversation-before-v12",
+                "message-before-v12",
+            )
+
+            self.assertIsNotNone(claim)
+            assert claim is not None
+            self.assertEqual(claim["claim_id"], "claim-before-v12")
+            self.assertEqual(claim["error_code"], "")
+            self.assertEqual(claim["trace_id"], "")
+            self.assertEqual(claim["last_tool_name"], "")
+
     def test_current_schema_without_critical_index_is_rejected(
         self,
     ) -> None:
@@ -307,7 +370,7 @@ class ErpDbTests(unittest.TestCase):
 
                     with self.assertRaisesRegex(
                         RuntimeError,
-                        "仅接受空库或当前完整 schema",
+                        "仅接受空库、当前完整 schema 或受支持的 v10/v11 升级结构",
                     ):
                         self._db(app_dir)
 
@@ -324,7 +387,7 @@ class ErpDbTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 RuntimeError,
-                "不迁移、修复或重建旧消息格式",
+                "不迁移、修复或重建更早的旧消息格式",
             ):
                 self._db(app_dir)
 
@@ -367,7 +430,7 @@ class ErpDbTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 RuntimeError,
-                "仅接受空库或当前完整 schema",
+                "仅接受空库、当前完整 schema 或受支持的 v10/v11 升级结构",
             ):
                 self._db(app_dir)
 
@@ -417,7 +480,7 @@ class ErpDbTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 RuntimeError,
-                "仅接受空库或当前完整 schema",
+                "仅接受空库、当前完整 schema 或受支持的 v10/v11 升级结构",
             ):
                 self._db(app_dir)
 
@@ -449,7 +512,7 @@ class ErpDbTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 RuntimeError,
-                "仅接受空库或当前完整 schema",
+                "仅接受空库、当前完整 schema 或受支持的 v10/v11 升级结构",
             ):
                 self._db(app_dir)
 
@@ -510,7 +573,7 @@ class ErpDbTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 RuntimeError,
-                "仅接受空库或当前完整 schema",
+                "仅接受空库、当前完整 schema 或受支持的 v10/v11 升级结构",
             ):
                 self._db(app_dir)
 
@@ -548,7 +611,7 @@ class ErpDbTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 RuntimeError,
-                "仅接受空库或当前完整 schema",
+                "仅接受空库、当前完整 schema 或受支持的 v10/v11 升级结构",
             ):
                 self._db(app_dir)
 
@@ -595,7 +658,7 @@ class ErpDbTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 RuntimeError,
-                "仅接受空库或当前完整 schema",
+                "仅接受空库、当前完整 schema 或受支持的 v10/v11 升级结构",
             ):
                 self._db(app_dir)
 
