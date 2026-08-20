@@ -8,6 +8,7 @@ AI 与网络边界以可信替代注入，持久化走隔离 AppContext 的真�
 """
 
 import base64
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -27,6 +28,7 @@ from erp_web.runtime_units.global_ai_control_tools import (
 )
 from erp_web.runtime_units.image_capabilities import (
     ImageCapabilityScope,
+    image_edit,
     image_pool_action,
     image_pool_save,
     image_pool_sync_generated,
@@ -55,6 +57,7 @@ from erp_web.schemas.content_capabilities import (
 )
 from erp_web.schemas.global_tasks import GlobalTaskApproveRequest
 from erp_web.schemas.image_capabilities import (
+    ImageEditRequest,
     ImagePoolActionRequest,
     ImagePoolSaveRequest,
     ImagePoolSyncGeneratedRequest,
@@ -211,6 +214,22 @@ def test_product_save_updates_product_profile() -> None:
     reloaded = context.products.load_product_from_index("product-save-1", "")
     assert str(reloaded.get("name")) == "Portable fan Pro"
 
+    facts = product_save(
+        ProductSaveRequest(
+            product={
+                "product_id": "product-save-1",
+                "dimensions": "30x20x10cm",
+                "weight_kg": "0.8",
+            }
+        ),
+        scope=scope,
+        execution=_execution("op-facts"),
+    )
+    assert dict(facts.product)["dimensions"] == "30x20x10cm"
+    assert dict(facts.product)["weight_kg"] == "0.8"
+    assert dict(facts.product)["name"] == "Portable fan Pro"
+    assert dict(facts.product)["source"]["source_url"].endswith("product-save-1")
+
 
 def test_draft_read_save_roundtrip_and_missing_draft() -> None:
     context = get_context()
@@ -249,6 +268,29 @@ def test_draft_read_save_roundtrip_and_missing_draft() -> None:
             execution=_execution(),
         )
     assert missing_save.value.code == "DRAFT_NOT_FOUND"
+
+
+def test_draft_read_omits_unbounded_raw_product_context() -> None:
+    context = get_context()
+    saved_product = _seed_product("product-draft-large-context")
+    draft_id = str(saved_product["drafts"]["mercadolibre"]["draft_id"])
+    product = context.products.load_product_from_index(
+        "product-draft-large-context",
+        "",
+    )
+    product["source"]["description"] = "x" * 300_000
+    context.products.save_product(product)
+
+    read = draft_read(DraftReadRequest(draft_id=draft_id), scope=_write_scope())
+    serialized = json.dumps(
+        read.model_dump(mode="json"),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    assert "raw" not in read.product_context
+    assert read.product_context["product_id"] == "product-draft-large-context"
+    assert len(serialized) < 262_144
 
 
 def test_product_delete_requires_trusted_approval_context() -> None:
@@ -608,7 +650,10 @@ def test_text_translate_and_invalid_request(
     def fake_translate(
         target_language: str,
         content: dict[str, Any],
+        *,
+        preserve_terms: tuple[str, ...] = (),
     ) -> dict[str, str]:
+        assert preserve_terms == ("Generic", "MODEL-1")
         return {
             str(key): f"[{target_language}] {value}"
             for key, value in content.items()
@@ -622,6 +667,7 @@ def test_text_translate_and_invalid_request(
         TextTranslateRequest(
             target_language="es",
             content={"title": "Portable fan", "bullets": "Light"},
+            preserve_terms=("Generic", "MODEL-1"),
         ),
         scope=scope,
     )
@@ -630,7 +676,13 @@ def test_text_translate_and_invalid_request(
         "bullets": "[es] Light",
     }
 
-    def failing_translate(target_language: str, content: dict[str, Any]) -> Any:
+    def failing_translate(
+        target_language: str,
+        content: dict[str, Any],
+        *,
+        preserve_terms: tuple[str, ...] = (),
+    ) -> Any:
+        del preserve_terms
         raise TranslationRequestError("target_language 不支持")
 
     monkeypatch.setattr(
@@ -757,3 +809,94 @@ def test_image_pool_sync_generated_keeps_pool_when_nothing_generated() -> None:
     )
     synced_ids = [str(dict(item).get("id")) for item in result.image_pool]
     assert sorted(before_ids) == sorted(synced_ids)
+
+
+def test_image_edit_uses_trusted_main_image_when_ids_are_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_product("product-image-main")
+    captured: dict[str, Any] = {}
+
+    def fake_edit_images(
+        app_dir: Any,
+        product: dict[str, Any],
+        app_config: dict[str, Any],
+        *,
+        prompt: str,
+        platform: str,
+        image_ids: list[str],
+    ) -> dict[str, Any]:
+        del app_dir, product, app_config, prompt, platform
+        captured["image_ids"] = image_ids
+        return {
+            "ok": False,
+            "error_code": "IMAGE_SERVICE_UNSUPPORTED",
+            "error": "当前图片服务不支持编辑。",
+        }
+
+    monkeypatch.setattr(
+        "erp_web.runtime_units.image_capabilities.image_translate_service.edit_images",
+        fake_edit_images,
+    )
+
+    with pytest.raises(BusinessCapabilityError) as error:
+        image_edit(
+            ImageEditRequest(
+                product_id="product-image-main",
+                prompt="纯白背景",
+            ),
+            scope=_image_scope(),
+            execution=_execution(),
+        )
+
+    assert error.value.code == "IMAGE_SERVICE_UNSUPPORTED"
+    assert captured["image_ids"] == ["product-image-main-image-1"]
+
+
+def test_image_edit_can_persist_generated_image_as_main(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = get_context()
+    _seed_product("product-image-replace-main")
+
+    def fake_edit_images(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        del args, kwargs
+        return {
+            "ok": True,
+            "message": "编辑完成。",
+            "imagePoolItems": [
+                {
+                    "id": "generated-main-1",
+                    "url": "https://cdn.example.com/generated-main-1.png",
+                    "origin": "ai_generated",
+                    "status": "ready",
+                    "selected": True,
+                    "is_main": False,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "erp_web.runtime_units.image_capabilities.image_translate_service.edit_images",
+        fake_edit_images,
+    )
+
+    result = image_edit(
+        ImageEditRequest(
+            product_id="product-image-replace-main",
+            prompt="纯白背景",
+            set_as_main=True,
+        ),
+        scope=_image_scope(),
+        execution=_execution(),
+    )
+
+    assert result.main_image_id == "generated-main-1"
+    saved = context.products.load_product_from_index(
+        "product-image-replace-main",
+        "",
+    )
+    pool = list(dict(saved.get("source") or {}).get("image_pool") or [])
+    assert [item["id"] for item in pool if item.get("is_main")] == [
+        "generated-main-1"
+    ]

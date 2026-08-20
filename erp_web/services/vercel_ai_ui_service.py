@@ -138,6 +138,11 @@ class VercelAiChatRun:
                 coroutine_cancelled = True
                 raise
         finally:
+            if failure_error is None and session is not None:
+                # 官方 Vercel transform 会把 native 异常转换成 error chunk 并
+                # 消费掉异常；从 session 取回稳定错误，才能把 claim 写成可诊断
+                # 的终态，而不是 failed + 空 error_code。
+                failure_error = session.failure_error
             for iterator in reversed(iterators):
                 try:
                     await iterator.aclose()

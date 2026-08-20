@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, TypedDict
 
+from .task_approval import TaskApprovalMode
+
 
 class AiCapabilityProfile(TypedDict, total=False):
     version: int
@@ -54,6 +56,7 @@ class AiUseCaseBinding(TypedDict, total=False):
 
 
 class AppConfig(TypedDict, total=False):
+    task_approval_mode: TaskApprovalMode
     ai_models: list[AiModelConfig]
     ai_use_case_bindings: dict[str, AiUseCaseBinding]
     ai_use_case_prompts: dict[str, dict[str, str]]

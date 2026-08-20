@@ -4,10 +4,39 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    JsonValue,
+    StringConstraints,
+)
 
 
 TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True)]
+
+
+def _normalize_numeric_input(value: object) -> object:
+    """兼容部分 Provider 把 JSON 数字参数序列化为字符串的行为。"""
+
+    if isinstance(value, str):
+        normalized = value.strip()
+        if normalized:
+            try:
+                return float(normalized)
+            except ValueError:
+                return value
+    return value
+
+
+NumericInput = Annotated[
+    float,
+    BeforeValidator(
+        _normalize_numeric_input,
+        json_schema_input_type=float | str,
+    ),
+]
 
 
 class PricingCalculateRequest(BaseModel):
@@ -15,15 +44,42 @@ class PricingCalculateRequest(BaseModel):
 
     targets: Annotated[
         tuple[dict[str, JsonValue], ...],
-        Field(min_length=1),
+        Field(
+            min_length=1,
+            description=(
+                "发布目标数组。每项使用 platform、site；手动运费必须使用 "
+                "shipping_quote_mode='manual'、shipping_currency='CNY' 或 "
+                "'USD'、shipping_amount；目标利润率使用 "
+                "target_margin_percent。"
+            ),
+        ),
     ]
     exchange_rate_mode: Annotated[TrimmedText, StringConstraints(max_length=40)] = ""
-    usd_cny_rate: float | None = None
-    mxn_usd_rate: float | None = None
-    rub_usd_rate: float | None = None
-    rub_cny_rate: float | None = None
+    usd_cny_rate: NumericInput | None = Field(
+        default=None,
+        description="USD/CNY 手动汇率；可传 JSON number 或数字字符串。",
+    )
+    mxn_usd_rate: NumericInput | None = Field(
+        default=None,
+        description="MXN/USD 手动汇率；可传 JSON number 或数字字符串。",
+    )
+    rub_usd_rate: NumericInput | None = Field(
+        default=None,
+        description="RUB/USD 手动汇率；可传 JSON number 或数字字符串。",
+    )
+    rub_cny_rate: NumericInput | None = Field(
+        default=None,
+        description="RUB/CNY 手动汇率；可传 JSON number 或数字字符串。",
+    )
     force_exchange_rate_refresh: bool = False
-    common: dict[str, JsonValue] = Field(default_factory=dict)
+    common: dict[str, JsonValue] = Field(
+        default_factory=dict,
+        description=(
+            "所有目标共享的核价输入。采购成本字段必须是 cost_cny；可选字段 "
+            "包括 weight_kg、length_cm、width_cm、height_cm。不要使用 cost、"
+            "target_profit_pct、pricing_input 等别名。"
+        ),
+    )
 
 
 class PricingCalculateResult(BaseModel):

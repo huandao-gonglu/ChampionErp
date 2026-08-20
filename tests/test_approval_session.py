@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from erp_web.context import get_context
-from erp_web.facades import global_task_facade
+from erp_web.facades import auth_config_facade, global_task_facade
 from erp_web.services.approval_session import (
     ApprovalSession,
     ApprovalSessionError,
@@ -97,3 +97,39 @@ def test_facade_accepts_bootstrap_token_and_derives_identity() -> None:
         payload,
         status,
     )
+
+
+def test_save_approval_mode_requires_trusted_ui_token() -> None:
+    payload, status = auth_config_facade.save_settings_payload(
+        {"appConfig": {"task_approval_mode": "full"}},
+        approval_token="",
+    )
+
+    assert status == 403
+    assert payload["error_code"] == "GLOBAL_TASK_APPROVAL_UNAUTHORIZED"
+    assert get_context().config.load_app_config()["task_approval_mode"] == "ask"
+
+
+def test_save_approval_mode_accepts_bootstrap_token() -> None:
+    token = get_context().approval_session.token
+
+    payload, status = auth_config_facade.save_settings_payload(
+        {"appConfig": {"task_approval_mode": "full"}},
+        approval_token=token,
+    )
+
+    assert status == 200
+    assert payload["appConfig"]["task_approval_mode"] == "full"
+    assert get_context().config.load_app_config()["task_approval_mode"] == "full"
+
+
+def test_save_approval_mode_rejects_unknown_value() -> None:
+    token = get_context().approval_session.token
+
+    payload, status = auth_config_facade.save_settings_payload(
+        {"appConfig": {"task_approval_mode": "allow"}},
+        approval_token=token,
+    )
+
+    assert status == 400
+    assert payload["error_code"] == "APP_CONFIG_INVALID"

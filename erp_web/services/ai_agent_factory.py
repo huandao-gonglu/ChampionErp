@@ -211,10 +211,17 @@ def _safe_agent_error(
     }
     if isinstance(exc, ModelHTTPError):
         provider_error = model_http_error_payload(exc)
+        status_code = int(provider_error["status_code"])
+        if status_code == 402:
+            return AiAgentExecutionError(
+                "AI_PROVIDER_PAYMENT_REQUIRED",
+                "AI Provider 拒绝请求（HTTP 402）：余额不足或计费配置不可用。",
+                retryable=False,
+                **correlation,
+            )
         message = f"HTTP {provider_error['status_code']}: {provider_error['message']}"
         if provider_error["request_id"]:
             message += f" (request_id={provider_error['request_id']})"
-        status_code = int(provider_error["status_code"])
         return AiAgentExecutionError(
             str(provider_error["code"]),
             message,
@@ -343,6 +350,7 @@ class AiAgentStreamSession(Generic[OutputT]):
         self._started = False
         self._history_persisted = False
         self._completed = False
+        self._failure_error: AiAgentExecutionError | None = None
         self._running_notified = False
         self._finalizing_notified = False
         self._result: AgentRunResult[Any] | None = None
@@ -390,6 +398,12 @@ class AiAgentStreamSession(Generic[OutputT]):
         """run 正常完成并且结果消息已经持久化。"""
 
         return self._completed
+
+    @property
+    def failure_error(self) -> AiAgentExecutionError | None:
+        """流被协议适配器消费后仍可读取的稳定失败终态。"""
+
+        return self._failure_error
 
     def events(
         self,
@@ -501,6 +515,7 @@ class AiAgentStreamSession(Generic[OutputT]):
                         self._complete_with_result(event.result)
                     yield event
         except AiAgentExecutionError as exc:
+            self._failure_error = exc
             self._notify_presentation_failed(exc.code, str(exc))
             raise
         except Exception as exc:
@@ -522,6 +537,7 @@ class AiAgentStreamSession(Generic[OutputT]):
                 run_id=self._run_id,
                 trace_id=self.trace_id,
             )
+            self._failure_error = error
             self._notify_presentation_failed(error.code, str(error))
             raise error from None
 

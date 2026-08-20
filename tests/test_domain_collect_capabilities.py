@@ -23,6 +23,7 @@ from erp_web.runtime_units.collect_capabilities import (
     source_collect,
 )
 from erp_web.runtime_units.collect_helpers import claim_products_to_platforms
+from erp_web.runtime_units import source_collect_workflows
 from erp_web.runtime_units.research_capabilities import (
     ResearchCapabilityScope,
     research_hot_products_search,
@@ -241,11 +242,44 @@ def test_collect_from_browser_tab_success_and_not_connected() -> None:
     )
     with pytest.raises(BusinessCapabilityError) as error:
         collect_from_browser_tab(
-            CollectFromBrowserTabRequest(tab_url="1688"),
+            CollectFromBrowserTabRequest(),
             scope=disconnected_scope,
             execution=_execution(),
         )
     assert error.value.code == "REMOTE_DEBUGGING_NOT_CONNECTED"
+
+
+def test_disconnected_browser_probe_does_not_mutate_recent_product(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = get_context()
+    before = context.products.save_product(
+        {
+            "product_id": "product-before-browser-probe",
+            "name": "Keep me unchanged",
+            "source": {"title": "Keep me unchanged"},
+        }
+    )
+    monkeypatch.setattr(
+        source_collect_workflows,
+        "browser_debug_status",
+        lambda _port: {
+            "connected": False,
+            "error_code": "REMOTE_DEBUGGING_NOT_CONNECTED",
+            "error_message": "未连接 Chrome remote debugging",
+            "next_action": "请启动专用 Chrome 后重试。",
+        },
+    )
+
+    result = source_collect_workflows.collect_from_browser_tab()
+    after = context.products.load_product_from_index(
+        "product-before-browser-probe",
+        "",
+    )
+
+    assert result["ok"] is False
+    assert result["diagnostics"]["error_code"] == "REMOTE_DEBUGGING_NOT_CONNECTED"
+    assert after == before
 
 
 def test_collect_1688_body_contract_and_cleaned_mapping() -> None:

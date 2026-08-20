@@ -94,6 +94,7 @@ from erp_web.schemas.global_tasks import (
     GlobalTaskResponse,
     LocalGlobalTaskState,
 )
+from erp_web.schemas.task_approval import normalize_task_approval_mode
 from erp_web.ai_capability_composition import (
     APPLICATION_CAPABILITY_CATALOG,
     application_capability_permissions,
@@ -425,6 +426,9 @@ def build_global_task_controller(
             ),
             PRODUCT_RESEARCH_JOB_TYPE: ResearchJobStatusReader(),
         },
+        approval_mode_loader=lambda: normalize_task_approval_mode(
+            active_context.config.load_app_config().get("task_approval_mode")
+        ),
     )
 
 

@@ -11,7 +11,7 @@ from typing import Any, Iterator
 
 import http.client
 import pytest
-from pydantic_ai.exceptions import ModelAPIError
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 from pydantic_ai.messages import (
     ModelMessagesTypeAdapter,
     ModelRequest,
@@ -38,6 +38,7 @@ from erp_web.runtime_units.global_ai_control_tools import (
     GLOBAL_TASK_CONTROL_CATALOG,
 )
 from erp_web.services.ai_model_factory import PydanticModelBinding
+from erp_web.services.global_agent_chat_service import GLOBAL_CHAT_PROFILE
 from erp_web.services.vercel_ai_ui_service import VERCEL_SDK_VERSION
 
 
@@ -48,6 +49,11 @@ CONVERSATION = "conversation_global_chat_" + "f" * 32
 EXPECTED_GLOBAL_CHAT_TOOLS = set(GLOBAL_CHAT_DIRECT_CAPABILITIES) | set(
     GLOBAL_TASK_CONTROL_CATALOG.tools
 )
+
+
+def test_global_chat_profile_supports_bounded_multi_step_task_observation() -> None:
+    assert GLOBAL_CHAT_PROFILE.max_model_requests == 16
+    assert GLOBAL_CHAT_PROFILE.max_tool_calls == 12
 
 
 def _submit_body(conversation_id: str, message_id: str, text: str) -> dict:
@@ -114,6 +120,15 @@ class _BlockingModel(TestModel):
 class _FailingModel(TestModel):
     def _request(self, *args: Any, **kwargs: Any) -> Any:
         raise ModelAPIError("test-model", "provider failure")
+
+
+class _PaymentRequiredModel(TestModel):
+    def _request(self, *args: Any, **kwargs: Any) -> Any:
+        raise ModelHTTPError(
+            402,
+            "test-model",
+            {"error": {"code": "invalid_request_error", "message": "余额不足"}},
+        )
 
 
 class _SecretLeakModel(TestModel):
@@ -883,6 +898,39 @@ def test_provider_secret_does_not_leak_into_sse(
             if line.startswith("data: ") and line[len("data: ") :] != "[DONE]"
         )
     )
+
+
+def test_provider_payment_required_has_stable_sse_and_claim_error(
+    chat_server: dict[str, Any],
+) -> None:
+    conversation = "conversation_global_chat_" + "e" * 32
+    message_id = "payment-required-1"
+    chat_server["model"]["model"] = _PaymentRequiredModel(call_tools=[])
+
+    status, headers, data = _post(
+        chat_server["port"],
+        CHAT_PATH,
+        _submit_body(conversation, message_id, "测试计费错误"),
+    )
+
+    assert status == 200
+    assert headers["content-type"] == "text/event-stream"
+    chunks = [
+        json.loads(line[len("data: ") :])
+        for line in data.decode("utf-8").splitlines()
+        if line.startswith("data: ") and line[len("data: ") :] != "[DONE]"
+    ]
+    errors = [item for item in chunks if item.get("type") == "error"]
+    assert errors == [
+        {
+            "type": "error",
+            "errorText": "AI Provider 拒绝请求（HTTP 402）：余额不足或计费配置不可用。",
+        }
+    ]
+    claim = get_context().chat_turn_claims.get(conversation, message_id)
+    assert claim is not None
+    assert claim.status == "failed"
+    assert claim.error_code == "AI_PROVIDER_PAYMENT_REQUIRED"
 
 
 @pytest.mark.parametrize(

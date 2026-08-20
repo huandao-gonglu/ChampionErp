@@ -4,6 +4,10 @@ from __future__ import annotations
 from typing import Any
 
 from erp_web.services import ai_model_config, ai_prompt_templates
+from erp_web.schemas.task_approval import (
+    TASK_APPROVAL_MODE_ASK,
+    normalize_task_approval_mode,
+)
 
 from .product_research_config import default_product_research_config, normalize_product_research_config
 
@@ -63,6 +67,7 @@ def mask_secret(value: Any) -> str:
 def default_app_config() -> dict[str, Any]:
     return {
         "auto_ai_recognition": "0",
+        "task_approval_mode": TASK_APPROVAL_MODE_ASK,
         "alibaba_cookie": "",
         "1688_api": {
             "app_key": "",
@@ -159,6 +164,9 @@ def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
 
     canonical = {key: incoming[key] for key in PRESERVED_APP_CONFIG_KEYS if key in incoming}
     canonical["auto_ai_recognition"] = str(canonical.get("auto_ai_recognition") or defaults["auto_ai_recognition"])
+    canonical["task_approval_mode"] = normalize_task_approval_mode(
+        incoming.get("task_approval_mode")
+    )
     canonical["alibaba_cookie"] = str(canonical.get("alibaba_cookie") or defaults["alibaba_cookie"])
     raw_1688_api = incoming.get("1688_api") if isinstance(incoming.get("1688_api"), dict) else {}
     defaults_1688_api = defaults["1688_api"]

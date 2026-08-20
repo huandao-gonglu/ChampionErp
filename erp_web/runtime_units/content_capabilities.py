@@ -258,7 +258,10 @@ def image_prompts_generate(
 
 @ai_tool(
     name=TEXT_TRANSLATE_TOOL,
-    description="把键值文本翻译为目标语言（不修改商品数据）。",
+    description=(
+        "把调用方明确提供的键值文本翻译为目标语言（不修改商品数据）；"
+        "品牌、型号或标识符需要原样保留时放入 preserve_terms。"
+    ),
     permission="content.read",
     side_effect="none",
     recovery_policy="retry_safe",
@@ -273,6 +276,7 @@ def text_translate(
         translations = translate_texts(
             request.target_language,
             dict(request.content),
+            preserve_terms=request.preserve_terms,
         )
     except TranslationRequestError as exc:
         raise BusinessCapabilityError(

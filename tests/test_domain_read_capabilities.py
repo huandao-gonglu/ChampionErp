@@ -434,12 +434,16 @@ def test_pricing_calculate_passthrough_and_failure() -> None:
     result = pricing_calculate(
         PricingCalculateRequest(
             targets=({"platform": "mercadolibre"},),
-            usd_cny_rate=7.2,
+            usd_cny_rate="7.2",
         ),
         scope=scope,
     )
     assert dict(result.targets[0])["price"] == "99"
     assert result.exchange_rate_mode == "manual"
+    assert PricingCalculateRequest(
+        targets=({"platform": "mercadolibre"},),
+        mxn_usd_rate="17",
+    ).mxn_usd_rate == 17.0
 
     def failing(input_data: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": "核价失败：缺少成本"}

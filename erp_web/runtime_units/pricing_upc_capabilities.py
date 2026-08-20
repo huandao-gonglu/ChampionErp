@@ -70,7 +70,10 @@ UPC_IMPORT_TOOL = "upc_import"
     name=PRICING_CALCULATE_TOOL,
     description=(
         "按发布目标执行确定性核价计算；targets 为发布目标数组，"
-        "可选提供汇率模式与手动汇率。"
+        "可选提供汇率模式与手动汇率。共享采购成本放 common.cost_cny；"
+        "每个目标的手动运费使用 shipping_quote_mode=manual、"
+        "shipping_currency 与 shipping_amount，目标销售利润率使用 "
+        "target_margin_percent。"
     ),
     permission="pricing.read",
     side_effect="none",

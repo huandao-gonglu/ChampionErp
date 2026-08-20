@@ -140,13 +140,55 @@ def _dictionary_value_id(value: Any) -> int | str:
         return text
 
 
+def _evidence_values(value: Any) -> list[str]:
+    if isinstance(value, dict):
+        return [
+            evidence
+            for item in value.values()
+            for evidence in _evidence_values(item)
+        ]
+    if isinstance(value, (list, tuple)):
+        return [
+            evidence
+            for item in value
+            for evidence in _evidence_values(item)
+        ]
+    if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+        text = str(value).strip()
+        return [text] if text else []
+    return []
+
+
+def _normalized_evidence_text(value: Any) -> str:
+    return " ".join(str(value or "").casefold().split())
+
+
+def _has_product_evidence(value: str, product_context: dict[str, Any]) -> bool:
+    """模型建议值必须在可信商品事实中有可复核文本锚点。"""
+
+    candidate = _normalized_evidence_text(value)
+    if not candidate:
+        return False
+    for raw_evidence in _evidence_values(product_context):
+        evidence = _normalized_evidence_text(raw_evidence)
+        if candidate == evidence:
+            return True
+        # 品牌、型号、规格和选项常作为更长标题/描述的一部分出现；过短值
+        # 不做子串匹配，避免数字或单字符碰巧命中。
+        if len(candidate) >= 3 and candidate in evidence:
+            return True
+    return False
+
+
 def _validated_agent_attributes(
     agent_output: dict[str, Any],
     schema: list[dict[str, Any]],
     ledger: CategoryAttributeValueLedger,
-) -> dict[str, Any]:
+    product_context: dict[str, Any],
+) -> tuple[dict[str, Any], set[str]]:
     schema_by_id = {str(attr.get("id") or ""): attr for attr in schema}
     accepted: dict[str, Any] = {}
+    evidence_rejected: set[str] = set()
     dictionary_values: dict[str, list[dict[str, Any]]] = {}
     assignments = (
         agent_output.get("assignments")
@@ -162,6 +204,9 @@ def _validated_agent_attributes(
             continue
         value = str(assignment.get("value") or "").strip()
         if not value:
+            continue
+        if not _has_product_evidence(value, product_context):
+            evidence_rejected.add(attr_id)
             continue
         if attr.get("value_mode") == "strict_enum":
             value_id = str(assignment.get("dictionary_value_id") or "").strip()
@@ -196,7 +241,7 @@ def _validated_agent_attributes(
             accepted[attr_id] = value[:255]
     for attr_id, values in dictionary_values.items():
         accepted[attr_id] = {"values": values}
-    return accepted
+    return accepted, evidence_rejected
 
 
 def apply_ai_model_attribute_fill(
@@ -225,20 +270,22 @@ def apply_ai_model_attribute_fill(
             category_record=category_record,
             ledger=ledger,
         )
+        payload = _agent_payload(
+            base_product,
+            platform,
+            category_record,
+            agent_schema,
+        )
         agent_run = run_category_attribute_fill_agent(
-            _agent_payload(
-                base_product,
-                platform,
-                category_record,
-                agent_schema,
-            ),
+            payload,
             toolset,
             ledger,
         )
-        ai_attrs = _validated_agent_attributes(
+        ai_attrs, evidence_rejected = _validated_agent_attributes(
             agent_run.output,
             agent_schema,
             ledger,
+            payload["product_context"],
         )
     except Exception as exc:
         meta["warning"] = f"AI 属性填充失败，已使用规则填充：{exc}"
@@ -268,10 +315,21 @@ def apply_ai_model_attribute_fill(
     updated["drafts"][platform] = draft
     meta["source"] = "ai_model"
     meta["ai_filled"] = sorted(ai_attrs)
-    if ledger.failed_attribute_ids:
+    if evidence_rejected:
+        meta["evidence_rejected"] = sorted(evidence_rejected)
         meta["warning"] = (
+            "以下属性的模型建议缺少商品事实证据，已保留待人工复核："
+            + "、".join(sorted(evidence_rejected))
+        )
+    if ledger.failed_attribute_ids:
+        dictionary_warning = (
             "部分平台字典值查询失败，已保留待人工复核："
             + "、".join(sorted(ledger.failed_attribute_ids))
+        )
+        meta["warning"] = "；".join(
+            item
+            for item in (str(meta.get("warning") or ""), dictionary_warning)
+            if item
         )
     if agent_run is not None:
         agent_run.finish_business_result(

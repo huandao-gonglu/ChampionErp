@@ -361,6 +361,7 @@ def _controller(
     *,
     catalog: AiToolCatalog | None = None,
     reader: _JobStatusReader | None = None,
+    approval_mode: str = "ask",
 ) -> tuple[GlobalTaskController, LocalGlobalTaskStore]:
     RECORDED.clear()
     active_catalog = catalog or AiToolCatalog.compile(FAKE_CAPABILITIES)
@@ -370,6 +371,7 @@ def _controller(
         catalog=active_catalog,
         task_toolset=_build_toolset(active_catalog),
         job_status_readers={FAKE_JOB_TYPE: reader or _JobStatusReader()},
+        approval_mode_loader=lambda: approval_mode,  # type: ignore[return-value]
     )
     return controller, store
 
@@ -450,6 +452,42 @@ def test_start_executes_typed_steps_strictly_in_order_via_runtime(tmp_path) -> N
     assert step.operation_key == f"global-task:{task.task_id}:step:{step.step_id}"
     assert execution["allow_write"] is True
     assert execution["budget_profile"] == "global.task"
+
+
+def test_model_scoped_multistep_task_checkpoints_and_refreshes(tmp_path) -> None:
+    controller, store = _controller(tmp_path)
+
+    response = controller.start_task(
+        _start_request(
+            _Selection("fake_read", FakeReadRequest(product_id="p-1")),
+            _Selection("fake_read", FakeReadRequest(product_id="p-2")),
+        ),
+        conversation_id="conversation-1",
+        message_id="message-1",
+        outer_remaining_seconds=120,
+    )
+
+    assert response.task.status == "running"
+    assert response.task.current_step_index == 1
+    assert [step.status for step in response.task.steps] == [
+        "completed",
+        "pending",
+    ]
+    assert list(RECORDED["fake_read"]) == [{"product_id": "p-1"}]
+    assert store.require_task(response.task_id) == response.task
+
+    refreshed = controller.refresh_task(response.task_id)
+
+    assert refreshed.task.status == "completed"
+    assert refreshed.task.current_step_index == 2
+    assert [step.status for step in refreshed.task.steps] == [
+        "completed",
+        "completed",
+    ]
+    assert list(RECORDED["fake_read"]) == [
+        {"product_id": "p-1"},
+        {"product_id": "p-2"},
+    ]
 
 
 def test_start_revalidates_arguments_with_capability_request_adapter(
@@ -746,6 +784,38 @@ def test_approve_executes_with_approved_call_id_and_confirmed_at(
     assert approval is not None
     assert execution["approval_digest"] == approval.digest
     assert execution["approval_task_revision"] == approval.task_revision
+
+
+def test_full_approval_mode_preauthorizes_and_executes_without_pending_gate(
+    tmp_path,
+) -> None:
+    controller, store = _controller(tmp_path, approval_mode="full")
+
+    task = _start_approval_task(controller)
+
+    assert task.status == "completed"
+    assert task.pending_approval is None
+    assert store.require_task(task.task_id) == task
+    record = task.steps[0].approval
+    assert record is not None
+    assert record.approver == "local-settings:full"
+    assert record.decision == "approved"
+    assert record.reason == "用户已选择完全授权"
+    execution = RECORDED["fake_approval"][0]["execution"]
+    assert execution["business_scope"]["approver"] == "local-settings:full"
+    assert execution["business_scope"]["approval_confirmed_at"]
+    assert execution["approval_digest"] == record.digest
+    assert execution["approval_task_revision"] == record.task_revision
+    assert len(execution["approved_tool_call_ids"]) == 1
+
+
+def test_invalid_approval_mode_fails_closed_to_pending_approval(tmp_path) -> None:
+    controller, _store = _controller(tmp_path, approval_mode="invalid")
+
+    task = _start_approval_task(controller)
+
+    assert task.status == "pending_approval"
+    assert "fake_approval" not in RECORDED
 
 
 def test_approve_without_identity_is_rejected(tmp_path) -> None:

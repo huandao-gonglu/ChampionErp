@@ -43,6 +43,7 @@ def test_ai_model_attribute_fill_uses_product_context_and_validates_options(monk
     product = default_product_model()
     product["name"] = "Portable air conditioner"
     product["source"]["title"] = "Cooling appliance with configurable installation"
+    product["attributes"] = {"form_factor": "Portable"}
     product["drafts"]["mercadolibre"]["brand"] = "Generic"
     product["drafts"]["mercadolibre"]["model"] = "T-3A"
     product["drafts"]["mercadolibre"]["attributes"] = {
@@ -114,8 +115,11 @@ def test_ai_model_attribute_fill_uses_product_context_and_validates_options(monk
     assert attrs["BRAND"] == "Generic"
     assert attrs["MODEL"] == "T-3A"
     assert attrs["AIR_CONDITIONER_TYPE"] == "Portable"
-    assert attrs["POWER_SUPPLY_TYPE"] == "Electric"
-    assert updated["drafts"]["mercadolibre"]["validation_errors"] == []
+    assert "POWER_SUPPLY_TYPE" not in attrs
+    assert updated["drafts"]["mercadolibre"]["validation_errors"] == [
+        "POWER_SUPPLY_TYPE"
+    ]
+    assert meta["evidence_rejected"] == ["POWER_SUPPLY_TYPE"]
 
 
 def test_ai_model_attribute_fill_resolves_ozon_dictionary_values(monkeypatch) -> None:
@@ -204,15 +208,12 @@ def test_ai_model_attribute_fill_resolves_ozon_dictionary_values(monkeypatch) ->
     )
     draft = updated["drafts"]["ozon"]
 
-    assert draft["attributes"]["8229"] == {
-        "values": [{"dictionary_value_id": 91443, "value": "Вентилятор"}]
-    }
-    assert draft["attributes"]["85"] == {
-        "values": [{"dictionary_value_id": 126745801, "value": "Нет бренда"}]
-    }
+    assert "8229" not in draft["attributes"]
+    assert "85" not in draft["attributes"]
     assert draft["attributes"]["9048"] == "F30"
-    assert draft["validation_errors"] == []
-    assert meta["ai_filled"] == ["8229", "85", "9048"]
+    assert draft["validation_errors"] == ["8229", "85"]
+    assert meta["ai_filled"] == ["9048"]
+    assert meta["evidence_rejected"] == ["8229", "85"]
 
 
 def test_ai_model_attribute_fill_allows_custom_value_for_open_enum(
@@ -257,16 +258,17 @@ def test_ai_model_attribute_fill_allows_custom_value_for_open_enum(
         category,
     )
 
-    assert updated["drafts"]["mercadolibre"]["attributes"]["MOUNT_TYPE"] == (
-        "Wall mounted"
-    )
-    assert updated["drafts"]["mercadolibre"]["validation_errors"] == []
+    assert "MOUNT_TYPE" not in updated["drafts"]["mercadolibre"]["attributes"]
+    assert updated["drafts"]["mercadolibre"]["validation_errors"] == [
+        "MOUNT_TYPE"
+    ]
 
 
 def test_unresolved_optional_dictionary_attribute_is_not_a_blocking_error(
     monkeypatch,
 ) -> None:
     product = default_product_model()
+    product["source"]["title"] = "F30 handheld fan"
     category = {
         "category_id": "91443",
         "site": "global",
@@ -324,6 +326,59 @@ def test_unresolved_optional_dictionary_attribute_is_not_a_blocking_error(
     assert captured["schema_ids"] == ["9048"]
     assert draft["validation_errors"] == []
     assert meta["ai_filled"] == ["9048"]
+
+
+def test_ai_model_attribute_fill_rejects_market_default_without_product_evidence(
+    monkeypatch,
+) -> None:
+    product = default_product_model()
+    product["source"]["title"] = "Portable USB desk fan"
+    product["source"]["description"] = (
+        "Portable rechargeable USB desk fan for home and office."
+    )
+    category = {
+        "category_id": "MLM457530",
+        "site": "MLM",
+        "attributes": {
+            "required": [
+                {
+                    "id": "VOLTAGE",
+                    "name": "Voltaje",
+                    "required": True,
+                    "options": ["127V", "220V"],
+                }
+            ],
+            "optional": [],
+        },
+    }
+    monkeypatch.setattr(
+        category_attribute_ai_fill,
+        "run_category_attribute_fill_agent",
+        lambda *args: CategoryAttributeFillAgentRun(
+            {
+                "assignments": [
+                    {
+                        "attribute_id": "VOLTAGE",
+                        "value": "127V",
+                        "dictionary_value_id": "",
+                    }
+                ],
+                "need_review": [],
+            }
+        ),
+    )
+
+    updated, meta = category_attribute_ai_fill.apply_ai_model_attribute_fill(
+        product,
+        "mercadolibre",
+        category,
+    )
+
+    draft = updated["drafts"]["mercadolibre"]
+    assert "VOLTAGE" not in draft["attributes"]
+    assert draft["validation_errors"] == ["VOLTAGE"]
+    assert meta["ai_filled"] == []
+    assert meta["evidence_rejected"] == ["VOLTAGE"]
 
 
 def test_existing_required_open_enum_is_idempotent_and_clears_stale_error(

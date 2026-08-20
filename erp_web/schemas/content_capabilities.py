@@ -91,6 +91,14 @@ class TextTranslateRequest(BaseModel):
         StringConstraints(min_length=1, max_length=80),
     ]
     content: dict[str, JsonValue] = Field(default_factory=dict)
+    preserve_terms: tuple[
+        Annotated[TrimmedText, StringConstraints(min_length=1, max_length=500)],
+        ...,
+    ] = Field(
+        default=(),
+        max_length=100,
+        description="翻译结果中必须逐字保留的品牌、型号、标识符或技术术语。",
+    )
 
     @model_validator(mode="after")
     def require_content(self) -> "TextTranslateRequest":

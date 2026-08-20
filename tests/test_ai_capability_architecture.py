@@ -142,6 +142,44 @@ def test_task_control_toolset_has_exactly_four_tools_and_no_approval() -> None:
             assert name not in {"global_task_approve", "global_task_reject"}, name
 
 
+def test_approval_level_is_not_model_controlled_and_retired_debug_surface_is_absent() -> None:
+    all_model_schemas = repr(
+        {
+            name: tool.definition.input_schema
+            for catalog in (
+                GLOBAL_TASK_CONTROL_CATALOG,
+                APPLICATION_CAPABILITY_CATALOG,
+            )
+            for name, tool in catalog.tools.items()
+        }
+    )
+    assert "task_approval_mode" not in all_model_schemas
+
+    retired_files = (
+        APP_ROOT / "erp_web" / "debug_autonomy_gate.py",
+        APP_ROOT / "erp_web" / "facades" / "debug_autonomy_facade.py",
+        APP_ROOT / "erp_web" / "http_route_units" / "debug_autonomy_routes.py",
+        APP_ROOT / "erp_web" / "schemas" / "debug_autonomy.py",
+        APP_ROOT / "erp_web" / "services" / "debug_autonomy_service.py",
+        APP_ROOT / "front" / "src" / "api" / "debugAutonomy.ts",
+        APP_ROOT / "front" / "src" / "stores" / "debugAutonomy.ts",
+    )
+    assert not [path for path in retired_files if path.exists()]
+
+    retired_command = "/" + "allow"
+    retired_endpoint = "/api/v1/" + "debug-autonomy"
+    guarded_files = (
+        APP_ROOT / "config" / "prompts" / "global_chat.json",
+        APP_ROOT / "erp_web" / "http_routes.py",
+        APP_ROOT / "erp_web" / "services" / "vercel_ai_ui_service.py",
+        APP_ROOT / "front" / "src" / "stores" / "aiChat.ts",
+    )
+    for path in guarded_files:
+        source = path.read_text(encoding="utf-8")
+        assert retired_command not in source, path
+        assert retired_endpoint not in source, path
+
+
 def test_global_chat_prompt_routes_writes_to_typed_tasks() -> None:
     prompt_path = APP_ROOT / "config" / "prompts" / "global_chat.json"
     prompt = json.loads(prompt_path.read_text(encoding="utf-8"))

@@ -15,7 +15,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import logging
-from typing import Any, Iterator, Mapping, Protocol
+from typing import Any, Callable, Iterator, Mapping, Protocol, cast
 from uuid import uuid4
 
 from erp_web.schemas.ai_tools import (
@@ -42,6 +42,12 @@ from erp_web.schemas.global_tasks import (
     TaskActiveJob,
     TaskApprovalRequest,
     TaskStepApprovalRecord,
+)
+from erp_web.schemas.task_approval import (
+    TASK_APPROVAL_MODE_ASK,
+    TASK_APPROVAL_MODE_FULL,
+    TASK_APPROVAL_MODES,
+    TaskApprovalMode,
 )
 from erp_web.services.ai_tool_catalog import AiToolCatalog
 from erp_web.services.ai_tool_registry import AiToolSet
@@ -84,6 +90,7 @@ class GlobalTaskStartRequestLike(Protocol):
 
     goal: str
     product_id: str
+    draft_id: str
     platform: str
     steps: list[TaskStepSelectionLike]
 
@@ -119,6 +126,7 @@ class GlobalTaskController:
         catalog: AiToolCatalog,
         task_toolset: AiToolSet,
         job_status_readers: Mapping[str, JobStatusReader],
+        approval_mode_loader: Callable[[], TaskApprovalMode] | None = None,
         execution_timeout_seconds: float = 600.0,
         execution_lease_seconds: float = 30.0,
     ) -> None:
@@ -134,12 +142,28 @@ class GlobalTaskController:
         self.catalog = catalog
         self.task_toolset = task_toolset
         self.job_status_readers: Mapping[str, JobStatusReader] = readers
+        self.approval_mode_loader = approval_mode_loader
         self.execution_timeout_seconds = max(1.0, float(execution_timeout_seconds))
         self.execution_lease_seconds = max(1.0, float(execution_lease_seconds))
         self._permissions = frozenset(
             definition.required_permission
             for definition in task_toolset.definitions
         )
+
+    def _approval_mode(self) -> TaskApprovalMode:
+        """读取当前设置；任何无效或读取失败都安全回落为询问审批。"""
+
+        if self.approval_mode_loader is None:
+            return TASK_APPROVAL_MODE_ASK
+        try:
+            mode = str(self.approval_mode_loader() or "").strip().lower()
+        except Exception:
+            logger.exception("读取全局任务审批等级失败，已回落为询问审批")
+            return TASK_APPROVAL_MODE_ASK
+        if mode not in TASK_APPROVAL_MODES:
+            logger.error("未知全局任务审批等级 %r，已回落为询问审批", mode)
+            return TASK_APPROVAL_MODE_ASK
+        return cast(TaskApprovalMode, mode)
 
     def _resolve_step_timeout(
         self,
@@ -270,6 +294,7 @@ class GlobalTaskController:
             task_id=task_id,
             goal=request.goal.strip(),
             product_id=request.product_id.strip(),
+            draft_id=str(getattr(request, "draft_id", "") or "").strip(),
             platform=request.platform.strip().lower(),
             status="running",
             steps=steps,
@@ -288,6 +313,12 @@ class GlobalTaskController:
                     conversation_id=conversation_id,
                     message_id=message_id,
                     step_timeout_seconds=step_timeout,
+                    # 模型工具调用受外层聊天 deadline 约束。每次只推进一个
+                    # 已持久化步骤，剩余步骤由受信刷新入口继续，避免多步骤
+                    # 总耗时吞掉外层响应，导致已完成结果无法返回。
+                    max_step_executions=(
+                        1 if outer_remaining_seconds is not None else None
+                    ),
                 )
         return self._response(executed)
 
@@ -397,6 +428,73 @@ class GlobalTaskController:
             task_revision=task.revision,
         )
         return digest, snapshot.model_dump(mode="json")
+
+    def _record_automatic_approval(
+        self,
+        task: LocalGlobalTaskState,
+        index: int,
+    ) -> tuple[LocalGlobalTaskState, str, int, str, str]:
+        """按“完全授权”设置预授权当前步骤，并在副作用前持久化审计记录。"""
+
+        step = task.steps[index]
+        digest, _payload = self._prepare_step_approval(task, step)
+        approved_revision = task.revision
+        confirmed_at = _now()
+        approver = "local-settings:full"
+        steps = list(task.steps)
+        steps[index] = step.model_copy(
+            update={
+                "approval": TaskStepApprovalRecord(
+                    approver=approver,
+                    decision="approved",
+                    decided_at=confirmed_at,
+                    digest=digest,
+                    task_revision=approved_revision,
+                    reason="用户已选择完全授权",
+                )
+            }
+        )
+        saved = self._save(
+            task.model_copy(
+                update={
+                    "steps": steps,
+                    "assistant_message": "已按完全授权设置预授权，继续执行。",
+                }
+            )
+        )
+        return (
+            saved,
+            confirmed_at.isoformat(),
+            approved_revision,
+            digest,
+            approver,
+        )
+
+    def _fail_approval_preparation(
+        self,
+        task: LocalGlobalTaskState,
+        index: int,
+        error: GlobalTaskControllerError,
+    ) -> LocalGlobalTaskState:
+        step = task.steps[index]
+        steps = list(task.steps)
+        steps[index] = step.model_copy(
+            update={
+                "status": "failed",
+                "error": CapabilityError(code=error.code, message=str(error)),
+            }
+        )
+        return task.model_copy(
+            update={
+                "steps": steps,
+                "status": "failed",
+                "pending_inputs": [],
+                "pending_approval": None,
+                "error_code": error.code,
+                "error_message": str(error),
+                "assistant_message": str(error),
+            }
+        )
 
     def _apply_result(
         self,
@@ -515,23 +613,7 @@ class GlobalTaskController:
             try:
                 digest, approval_payload = self._prepare_step_approval(task, step)
             except GlobalTaskControllerError as exc:
-                steps[index] = step.model_copy(
-                    update={
-                        "status": "failed",
-                        "error": CapabilityError(code=exc.code, message=str(exc)),
-                    }
-                )
-                return task.model_copy(
-                    update={
-                        "steps": steps,
-                        "status": "failed",
-                        "pending_inputs": [],
-                        "pending_approval": None,
-                        "error_code": exc.code,
-                        "error_message": str(exc),
-                        "assistant_message": str(exc),
-                    }
-                )
+                return self._fail_approval_preparation(task, index, exc)
             steps[index] = step.model_copy(update={"status": "pending"})
             return task.model_copy(
                 update={
@@ -602,16 +684,23 @@ class GlobalTaskController:
         approval_task_revision: int = 0,
         approver: str = "",
         step_timeout_seconds: float | None = None,
+        max_step_executions: int | None = None,
     ) -> LocalGlobalTaskState:
         resolved_timeout = (
             float(step_timeout_seconds)
             if step_timeout_seconds is not None
             else self.execution_timeout_seconds
         )
+        executed_steps = 0
         while (
             task.status == "running"
             and task.current_step_index < len(task.steps)
         ):
+            if (
+                max_step_executions is not None
+                and executed_steps >= max_step_executions
+            ):
+                break
             index = task.current_step_index
             step = task.steps[index]
             if step.status == "completed":
@@ -630,18 +719,42 @@ class GlobalTaskController:
                 steps[index] = step.model_copy(update={"status": "running"})
                 task = self._save(task.model_copy(update={"steps": steps}))
                 step = steps[index]
+            execution_approved = approved
+            execution_confirmed_at = approval_confirmed_at
+            execution_digest = approval_digest
+            execution_revision = approval_task_revision
+            execution_approver = approver
+            if (
+                not execution_approved
+                and binding.definition.approval_required
+                and self._approval_mode() == TASK_APPROVAL_MODE_FULL
+            ):
+                try:
+                    (
+                        task,
+                        execution_confirmed_at,
+                        execution_revision,
+                        execution_digest,
+                        execution_approver,
+                    ) = self._record_automatic_approval(task, index)
+                    step = task.steps[index]
+                    execution_approved = True
+                except GlobalTaskControllerError as exc:
+                    failed = self._fail_approval_preparation(task, index, exc)
+                    return self._save(failed)
             result = self._execute_step(
                 task,
                 step,
                 conversation_id=conversation_id,
                 message_id=message_id,
                 step_timeout_seconds=resolved_timeout,
-                approved=approved,
-                approval_confirmed_at=approval_confirmed_at,
-                approval_digest=approval_digest,
-                approval_task_revision=approval_task_revision,
-                approver=approver,
+                approved=execution_approved,
+                approval_confirmed_at=execution_confirmed_at,
+                approval_digest=execution_digest,
+                approval_task_revision=execution_revision,
+                approver=execution_approver,
             )
+            executed_steps += 1
             # 审批授权只对触发它的那一次执行有效。
             approved = False
             approval_confirmed_at = ""
@@ -958,26 +1071,53 @@ class GlobalTaskController:
                     "当前任务不在等待审批。",
                     status_code=409,
                 )
+            if request.step_id and request.step_id != approval.step_id:
+                raise GlobalTaskControllerError(
+                    "GLOBAL_TASK_APPROVAL_STEP_MISMATCH",
+                    "拒绝请求与当前待审批步骤不一致。",
+                    status_code=409,
+                )
+            if task.revision != approval.task_revision + 1:
+                raise GlobalTaskControllerError(
+                    "GLOBAL_TASK_APPROVAL_REVISION_STALE",
+                    "任务在审批请求创建后已被修改，原审批已过期。",
+                    status_code=409,
+                )
             index = task.current_step_index
             steps = list(task.steps)
-            if index < len(steps):
-                steps[index] = steps[index].model_copy(
-                    update={
-                        "status": "failed",
-                        "error": CapabilityError(
-                            code="GLOBAL_TASK_APPROVAL_REJECTED",
-                            message=request.reason.strip(),
-                        ),
-                        "approval": TaskStepApprovalRecord(
-                            approver=safe_approver,
-                            decision="rejected",
-                            decided_at=_now(),
-                            digest=approval.digest,
-                            task_revision=approval.task_revision,
-                            reason=request.reason.strip(),
-                        ),
-                    }
+            if index >= len(steps) or steps[index].step_id != approval.step_id:
+                raise GlobalTaskControllerError(
+                    "GLOBAL_TASK_APPROVAL_STEP_MISMATCH",
+                    "拒绝请求与当前步骤不一致。",
+                    status_code=409,
                 )
+            recomputed_digest, _payload = self._prepare_step_approval(
+                task.model_copy(update={"revision": approval.task_revision}),
+                steps[index],
+            )
+            if recomputed_digest != approval.digest:
+                raise GlobalTaskControllerError(
+                    "GLOBAL_TASK_APPROVAL_DIGEST_MISMATCH",
+                    "审批内容与请求参数已不一致，不能拒绝旧快照。",
+                    status_code=409,
+                )
+            steps[index] = steps[index].model_copy(
+                update={
+                    "status": "failed",
+                    "error": CapabilityError(
+                        code="GLOBAL_TASK_APPROVAL_REJECTED",
+                        message=request.reason.strip(),
+                    ),
+                    "approval": TaskStepApprovalRecord(
+                        approver=safe_approver,
+                        decision="rejected",
+                        decided_at=_now(),
+                        digest=approval.digest,
+                        task_revision=approval.task_revision,
+                        reason=request.reason.strip(),
+                    ),
+                }
+            )
             rejected = task.model_copy(
                 update={
                     "steps": steps,
@@ -1194,20 +1334,29 @@ class GlobalTaskController:
         )
 
     def refresh_task(self, task_id: str) -> GlobalTaskResponse:
-        """受信 UI 轮询长任务终态；非 in_progress 任务原样返回。"""
+        """受信 UI 推进一个已持久化步骤，或轮询长任务终态。"""
 
         persisted = self.store.require_task(task_id)
-        if persisted.status != "in_progress":
+        if persisted.status not in {"running", "in_progress"}:
             return self._response(persisted)
         with self._optional_mutation_claim(
             task_id,
-            allowed_statuses=frozenset({"in_progress"}),
+            allowed_statuses=frozenset({"running", "in_progress"}),
         ) as task:
             if task is None:
                 return self._response(self.store.require_task(task_id))
-            return self._response(self._refresh_claimed(task))
+            if task.status == "in_progress":
+                return self._response(self._refresh_claimed(task))
+            return self._response(
+                self._resume_claimed(task, max_step_executions=1)
+            )
 
-    def _resume_claimed(self, task: LocalGlobalTaskState) -> LocalGlobalTaskState:
+    def _resume_claimed(
+        self,
+        task: LocalGlobalTaskState,
+        *,
+        max_step_executions: int | None = None,
+    ) -> LocalGlobalTaskState:
         if task.status == "running":
             if task.current_step_index < len(task.steps):
                 current = task.steps[task.current_step_index]
@@ -1228,7 +1377,10 @@ class GlobalTaskController:
                         update={"status": "pending"}
                     )
                     task = self._save(task.model_copy(update={"steps": steps}))
-            return self._advance(task)
+            return self._advance(
+                task,
+                max_step_executions=max_step_executions,
+            )
         if task.status == "in_progress":
             return self._refresh_claimed(task)
         return task

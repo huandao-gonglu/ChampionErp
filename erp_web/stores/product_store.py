@@ -363,6 +363,22 @@ class ProductStore:
     def save_product_profile(self, data: dict[str, Any]) -> dict[str, Any]:
         product_data = dict(data or {})
         product_data.pop("drafts", None)
+        product_id = str(product_data.get("product_id") or "").strip()
+        existing = self.load_product_from_index(product_id, "") if product_id else {}
+        if str(existing.get("product_id") or "").strip() == product_id:
+            existing.pop("drafts", None)
+            existing_source = (
+                existing.get("source")
+                if isinstance(existing.get("source"), dict)
+                else {}
+            )
+            patch_source = (
+                product_data.get("source")
+                if isinstance(product_data.get("source"), dict)
+                else {}
+            )
+            product_data = {**existing, **product_data}
+            product_data["source"] = {**existing_source, **patch_source}
         source = product_data.get("source") if isinstance(product_data.get("source"), dict) else None
         if source is not None and "name" in product_data:
             source["title"] = str(product_data.get("name") or source.get("title") or "").strip()

@@ -183,6 +183,17 @@ global.chat（唯一主 Agent）
       → erp_web/facades/global_task_facade.py（受信任务 UI HTTP 门面）
 ```
 
+`app_config.task_approval_mode` 是唯一审批等级设置：`ask`（询问审批，默认）和
+`full`（完全授权）。`ask` 模式下，高风险步骤进入 `pending_approval`，只能由携带
+进程级 `X-Approval-Token` 的受信 UI 调用正式 approve/reject 入口；`full` 模式下，
+Controller 在副作用前为当前步骤生成冻结快照、digest 和审批审计记录，再通过同一个
+`AiToolRuntime` 执行。完全授权不扩大 ToolSet、Binding Scope 或权限集合，也不绕过
+输入校验、Capability version、operation key 与执行侧 digest 重核。
+
+审批等级通过现有 `/api/save-settings` 保存；修改该字段同样必须携带
+`X-Approval-Token`。主 Agent ToolSet 不包含设置、approve 或 reject 工具，因此模型
+无法读取、修改审批等级或自行批准任务。不存在测试专用授权端点、命令或旁路。
+
 ### 唯一 Capability 组合根
 
 - `erp_web/ai_capability_composition.py`：唯一业务 Capability 组合根。全部领域能力

@@ -10,6 +10,17 @@ from ..facades import auth_config_facade
 
 
 PostHandler = Callable[[JsonRequestHandler], None]
+APPROVAL_TOKEN_HEADER = "X-Approval-Token"
+
+
+def _approval_token(handler: JsonRequestHandler) -> str:
+    headers = getattr(handler, "headers", None)
+    get = getattr(headers, "get", None)
+    return (
+        str(get(APPROVAL_TOKEN_HEADER) or "").strip()
+        if callable(get)
+        else ""
+    )
 
 
 def _send(
@@ -100,7 +111,8 @@ def handle_save_settings(handler: JsonRequestHandler) -> None:
     _send(
         handler,
         auth_config_facade.save_settings_payload(
-            validate_request_payload(handler.read_body(), endpoint=handler.path)
+            validate_request_payload(handler.read_body(), endpoint=handler.path),
+            approval_token=_approval_token(handler),
         ),
     )
 

@@ -5,7 +5,6 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
-
 class RequestValidationError(ValueError):
     """HTTP 请求不满足公开契约，并携带稳定的 HTTP 错误状态。"""
 
@@ -316,7 +315,6 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     ),
     "/api/v1/product-research/source-registry/save": _EMPTY,
 }
-
 
 def _is_present(value: Any) -> bool:
     if value is None:

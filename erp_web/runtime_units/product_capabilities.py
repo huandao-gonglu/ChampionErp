@@ -79,6 +79,14 @@ def _text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _text_list(value: Any, *, limit: int = 100) -> list[str]:
+    if isinstance(value, str):
+        return [_text(value)] if _text(value) else []
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [_text(item) for item in value[:limit] if _text(item)]
+
+
 def _raise_store_error(
     error: dict[str, Any] | None,
     *,
@@ -347,6 +355,14 @@ def _product_facts(product: dict[str, Any]) -> ProductFacts:
         sku=_text(product.get("sku")),
         stock=_text(product.get("stock")),
         cost=_text(product.get("cost") or product.get("source_price_cny_for_cost")),
+        description=_text(product.get("description") or source.get("description"))[:4000],
+        materials=_text_list(
+            product.get("materials") or source.get("material") or []
+        ),
+        selling_points=_text_list(product.get("selling_points")),
+        package_includes=_text_list(product.get("package_includes")),
+        dimensions=_text(product.get("dimensions")),
+        weight_kg=_text(product.get("weight_kg") or source.get("weight_kg")),
         source_platform=_text(source.get("source_platform")),
         source_url=_text(source.get("source_url")),
         source_image_count=len(pool or source_images),

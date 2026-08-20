@@ -89,6 +89,80 @@ def _dict_value(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def _bounded_text(value: Any, *, max_length: int = 4_000) -> str:
+    """把面向模型的自由文本限制在单字段可控范围内。"""
+
+    return _text(value)[:max_length]
+
+
+def _ai_draft_product_context(value: Any) -> dict[str, Any]:
+    """返回 ``draft_read`` 所需的精简商品上下文。
+
+    ProductStore 的 ``productContext`` 同时服务前端编辑器，因此包含完整
+    ``raw`` 商品与图片池。AI 工具若原样返回，会重复草稿关联商品并可能
+    超过工具输出上限。这里是 AI Capability 的专属投影：保留判断草稿、
+    定价和发布所需的事实，明确不暴露 ``raw``，并对图片元数据做有界化。
+    """
+
+    context = _dict_value(value)
+    scalar_fields = (
+        "product_id",
+        "source_product_id",
+        "title",
+        "source_title",
+        "source_platform",
+        "source_url",
+        "brand",
+        "model",
+        "sku",
+        "stock",
+        "cost",
+        "source_price",
+        "currency",
+        "weight_kg",
+    )
+    compact: dict[str, Any] = {
+        field: _bounded_text(context.get(field)) for field in scalar_fields
+    }
+    dimensions = _dict_value(context.get("dimensions"))
+    compact["dimensions"] = {
+        field: _bounded_text(dimensions.get(field), max_length=80)
+        for field in ("length_cm", "width_cm", "height_cm")
+    }
+
+    image_pool = context.get("image_pool")
+    images = image_pool if isinstance(image_pool, list) else []
+    compact_images: list[dict[str, Any]] = []
+    for value in images[:20]:
+        image = _dict_value(value)
+        compact_image: dict[str, Any] = {}
+        for field in (
+            "id",
+            "url",
+            "preview_url",
+            "origin",
+            "status",
+            "mime_type",
+        ):
+            if field in image:
+                compact_image[field] = _bounded_text(
+                    image.get(field),
+                    max_length=2_048,
+                )
+        for field in ("selected", "is_main", "order", "width", "height"):
+            if field in image and isinstance(image[field], (bool, int, float)):
+                compact_image[field] = image[field]
+        platforms = image.get("platforms")
+        if isinstance(platforms, list):
+            compact_image["platforms"] = [
+                _bounded_text(item, max_length=80) for item in platforms[:10]
+            ]
+        compact_images.append(compact_image)
+    compact["image_pool"] = compact_images
+    compact["image_count"] = len(images)
+    return compact
+
+
 def _id_tuple(value: Any) -> tuple[str, ...]:
     if not isinstance(value, (list, tuple)):
         return ()
@@ -211,7 +285,9 @@ def product_save(
     execution: Annotated[AiExecutionContext, Injected()],
 ) -> ProductSaveResult:
     del execution
-    saved = scope.products.save_product_profile(dict(request.product))
+    saved = scope.products.save_product_profile(
+        request.product.model_dump(mode="json", exclude_unset=True)
+    )
     return ProductSaveResult(product=_dict_value(saved))
 
 
@@ -258,7 +334,7 @@ def product_delete(
 
 @ai_tool(
     name=DRAFT_READ_TOOL,
-    description="按 draft_id 读取完整草稿详情与关联商品上下文。",
+    description="按 draft_id 读取完整草稿详情与精简关联商品上下文。",
     permission="draft.read",
     side_effect="none",
     recovery_policy="retry_safe",
@@ -278,7 +354,7 @@ def draft_read(
     )
     return DraftReadResult(
         draft=_dict_value(result.get("draft")),
-        product_context=_dict_value(result.get("productContext")),
+        product_context=_ai_draft_product_context(result.get("productContext")),
     )
 
 

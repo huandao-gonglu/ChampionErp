@@ -348,10 +348,9 @@ def collect_from_browser_tab(
                 "checked_at": collect_time_iso(),
             }
         )
-        merged = merge_source_partial_result(original_product, {}, diagnostics)
-        merged["source"]["collect_diagnostics"] = diagnostics
-        saved = get_context().products.save_product(merged)
-        return {"ok": False, "product": saved, "imagePool": current_image_pool(saved), "productsIndex": get_context().products.load_products_index(), "diagnostics": diagnostics, "browserStatus": status, "error": diagnostics["error_message"], "next_action": diagnostics["next_action"], "real_publish_called": False}
+        # 尚未定位到任何目标标签时不得把失败诊断写进“最近商品”；失败事实
+        # 由 Task/对话保存，避免一次环境检查意外修改无关业务数据。
+        return {"ok": False, "product": original_product, "imagePool": current_image_pool(original_product), "productsIndex": get_context().products.load_products_index(), "diagnostics": diagnostics, "browserStatus": status, "error": diagnostics["error_message"], "next_action": diagnostics["next_action"], "real_publish_called": False}
     try:
         raw_tabs = http_json(f"http://127.0.0.1:{port}/json")
         raw_tabs = raw_tabs if isinstance(raw_tabs, list) else []

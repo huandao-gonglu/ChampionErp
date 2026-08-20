@@ -15,14 +15,61 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints,
 TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True)]
 
 
+class ProductProfilePatch(BaseModel):
+    """模型可见的 canonical 商品主档补丁；平台草稿不属于此能力。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: int | None = None
+    product_id: str = ""
+    name: str = ""
+    brand: str = ""
+    model: str = ""
+    category: str = ""
+    target_customer: str = ""
+    sku: str = ""
+    stock: str = ""
+    upc: str = ""
+    cost: str = ""
+    materials: list[str] = Field(default_factory=list)
+    selling_points: list[str] = Field(default_factory=list)
+    package_includes: list[str] = Field(default_factory=list)
+    colors: list[str] = Field(default_factory=list)
+    avoid_claims: list[str] = Field(default_factory=list)
+    description: str = ""
+    dimensions: str = Field(
+        default="",
+        description="商品尺寸文本，例如 30x20x10cm。",
+    )
+    weight_kg: str = Field(
+        default="",
+        description="商品重量（kg），例如 0.8。字段名必须是 weight_kg。",
+    )
+    source: dict[str, JsonValue] = Field(default_factory=dict)
+    marketplace_terms: dict[str, JsonValue] = Field(default_factory=dict)
+    attributes: dict[str, JsonValue] = Field(default_factory=dict)
+    listing_overrides: dict[str, JsonValue] = Field(default_factory=dict)
+    copy_results: dict[str, JsonValue] = Field(default_factory=dict)
+    sku_items: list[dict[str, JsonValue]] = Field(default_factory=list)
+    selected_sku_indices: list[int] = Field(default_factory=list)
+    pricing_defaults: dict[str, JsonValue] = Field(default_factory=dict)
+    publish_preview: dict[str, JsonValue] = Field(default_factory=dict)
+    collect_status: str = ""
+    collect_logs: list[JsonValue] = Field(default_factory=list)
+    local_platform_categories: dict[str, JsonValue] = Field(default_factory=dict)
+    workflow_statuses: dict[str, str] = Field(default_factory=dict)
+    created_at: str = ""
+    updated_at: str = ""
+
+
 class ProductSaveRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    product: dict[str, JsonValue] = Field(default_factory=dict)
+    product: ProductProfilePatch
 
     @model_validator(mode="after")
     def require_product(self) -> "ProductSaveRequest":
-        if not self.product:
+        if not self.product.model_fields_set:
             raise ValueError("product 不能为空")
         return self
 
@@ -108,4 +155,5 @@ __all__ = [
     "ProductDeleteResult",
     "ProductSaveRequest",
     "ProductSaveResult",
+    "ProductProfilePatch",
 ]

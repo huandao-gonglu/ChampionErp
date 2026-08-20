@@ -74,7 +74,7 @@ async function refreshTask(showBusy = true): Promise<void> {
   if (showBusy) busyAction.value = 'refresh'
   actionError.value = ''
   try {
-    refreshedResponse.value = task.value?.status === 'in_progress'
+    refreshedResponse.value = ['running', 'in_progress'].includes(task.value?.status || '')
       ? await refreshGlobalTask(taskId)
       : await fetchGlobalTask(taskId)
   } catch (error) {

@@ -130,6 +130,7 @@ class LocalGlobalTaskState(StrictTaskModel):
     task_id: str = Field(min_length=1, max_length=160)
     goal: str = Field(min_length=1, max_length=4000)
     product_id: str = Field(default="", max_length=200)
+    draft_id: str = Field(default="", max_length=200)
     platform: str = Field(default="", max_length=80)
     status: GlobalTaskStatus
     steps: list[LocalTaskStep] = Field(default_factory=list, max_length=GLOBAL_TASK_MAX_STEPS)

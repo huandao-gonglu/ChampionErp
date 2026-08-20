@@ -112,7 +112,14 @@ class ImageEditRequest(BaseModel):
     platform: Annotated[TrimmedText, StringConstraints(max_length=80)] = (
         "mercadolibre"
     )
-    source_image_ids: tuple[str, ...] = ()
+    source_image_ids: tuple[str, ...] = Field(
+        default=(),
+        description="显式源图片 ID；省略时由服务端选择商品主图。",
+    )
+    set_as_main: bool = Field(
+        default=False,
+        description="编辑成功后是否把第一张生成图设为商品主图。",
+    )
     apply_to_draft: bool = False
     draft_id: Annotated[TrimmedText, StringConstraints(max_length=160)] = ""
     draft_image_strategy: Annotated[TrimmedText, StringConstraints(max_length=40)] = (
@@ -127,6 +134,7 @@ class ImageGenerationResult(BaseModel):
     generated_count: int = Field(default=0, ge=0)
     image_pool_items: tuple[dict[str, JsonValue], ...] = ()
     draft_id: TrimmedText = ""
+    main_image_id: TrimmedText = ""
     message: TrimmedText = ""
 
 

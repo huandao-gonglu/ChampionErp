@@ -53,6 +53,30 @@ def test_text_translation_rejects_model_key_drift() -> None:
         text_translation.translate_texts("zh-CN", {"attribute.0.label": "Marca"})
 
 
+def test_text_translation_protects_explicit_brand_and_model_terms() -> None:
+    def translate(*args: object, **kwargs: object) -> dict[str, str]:
+        del kwargs
+        messages = args[3]
+        input_payload = json.loads(str(messages[1]["content"]).split("Input:\n", 1)[1])
+        protected = input_payload["content"]["title"]
+        assert "Generic" not in protected
+        assert "MODEL-1" not in protected
+        assert "__ERP_PRESERVE_0__" in protected
+        assert "__ERP_PRESERVE_1__" in protected
+        return {"title": f"Ventilador {protected}"}
+
+    with patch.object(ai_use_case.ai_gateway, "chat_json", side_effect=translate):
+        result = text_translation.translate_texts(
+            "es",
+            {"title": "Generic Portable fan MODEL-1"},
+            preserve_terms=("Generic", "MODEL-1"),
+        )
+
+    assert "Generic" in result["title"]
+    assert "MODEL-1" in result["title"]
+    assert "__ERP_PRESERVE_" not in result["title"]
+
+
 def test_text_translation_facade_returns_flat_map() -> None:
     with patch.object(
         translation_facade,

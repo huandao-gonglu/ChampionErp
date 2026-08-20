@@ -57,37 +57,13 @@ class CollectBatchResult(BaseModel):
 
 
 class CollectFromBrowserTabRequest(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-        frozen=True,
-        json_schema_extra={
-            "anyOf": [
-                {
-                    "type": "object",
-                    "required": ["tab_url"],
-                    "properties": {"tab_url": {"type": "string", "minLength": 1}},
-                },
-                {
-                    "type": "object",
-                    "required": ["product_url"],
-                    "properties": {"product_url": {"type": "string", "minLength": 1}},
-                },
-            ]
-        },
-    )
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     tab_url: Annotated[TrimmedText, StringConstraints(max_length=2000)] = ""
     product_url: Annotated[TrimmedText, StringConstraints(max_length=2000)] = ""
     platform_hint: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
     claim_platforms: tuple[str, ...] = ()
     save_only: bool = False
-
-    @model_validator(mode="after")
-    def require_target(self) -> "CollectFromBrowserTabRequest":
-        if not self.tab_url and not self.product_url:
-            raise ValueError("tab_url 与 product_url 至少填写一个")
-        return self
-
 
 class CollectFromBrowserTabResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)

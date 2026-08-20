@@ -719,6 +719,23 @@ def test_normalize_app_config_rejects_legacy_ai_aliases(
         )
 
 
+def test_normalize_app_config_defaults_to_ask_and_accepts_full() -> None:
+    defaulted = app_config.normalize_app_config({})
+    authorized = app_config.normalize_app_config(
+        {"task_approval_mode": "full"}
+    )
+
+    assert defaulted["task_approval_mode"] == "ask"
+    assert authorized["task_approval_mode"] == "full"
+
+
+def test_normalize_app_config_rejects_unknown_approval_mode() -> None:
+    with pytest.raises(ValueError, match="task_approval_mode"):
+        app_config.normalize_app_config(
+            {"task_approval_mode": "legacy-test-grant"}
+        )
+
+
 def test_normalize_app_config_keeps_1688_api_credentials() -> None:
     saved = app_config.normalize_app_config(
         {

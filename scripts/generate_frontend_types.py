@@ -6,10 +6,11 @@ from __future__ import annotations
 import argparse
 import difflib
 import importlib
+import json
 import sys
 import types
 from pathlib import Path
-from typing import Any, ForwardRef, Union, get_args, get_origin, get_type_hints, is_typeddict
+from typing import Any, ForwardRef, Literal, Union, get_args, get_origin, get_type_hints, is_typeddict
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -78,6 +79,11 @@ def _typescript_type(annotation: object) -> str:
     if origin in (Union, types.UnionType):
         rendered = dict.fromkeys(_typescript_type(item) for item in args)
         return " | ".join(rendered)
+    if origin is Literal:
+        return " | ".join(
+            json.dumps(item, ensure_ascii=False)
+            for item in args
+        )
     if origin is not None:
         origin_name = getattr(origin, "__name__", "")
         if origin_name in {"Required", "NotRequired"} and args:

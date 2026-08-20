@@ -82,14 +82,15 @@ def normalize_image_pool_item(item: Any, order: int = 0, origin_hint: str = "sou
         or item.get("platforms_json")
     )
     normalized["platforms"] = platforms
-    normalized["is_main"] = bool(
-        item.get("is_main")
-        or item.get("is_primary")
-        or (
-            order == 0
-            and normalized["usage"] == "main"
+    if "is_main" in item:
+        # 显式 False 表示调用方正在撤销旧主图，不能再被 usage/order 推断覆盖。
+        normalized["is_main"] = bool(item.get("is_main"))
+    elif "is_primary" in item:
+        normalized["is_main"] = bool(item.get("is_primary"))
+    else:
+        normalized["is_main"] = bool(
+            order == 0 and normalized["usage"] == "main"
         )
-    )
     normalized["selected"] = bool(item.get("selected", False))
     try:
         normalized["order"] = int(

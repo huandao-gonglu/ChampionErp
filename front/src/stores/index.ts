@@ -1,4 +1,5 @@
 export { useAiChatStore } from './aiChat'
 export { useAppStore } from './app'
 export { useAiWorkDisplayStore } from './aiWorkDisplay'
+export { useTaskApprovalModeStore } from './taskApprovalMode'
 export { useWorkflowStore } from './workflow'

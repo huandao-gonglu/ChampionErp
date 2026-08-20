@@ -48,6 +48,28 @@ def _dict_rows(value: Any) -> tuple[dict[str, Any], ...]:
     return tuple(item for item in value if isinstance(item, dict))
 
 
+def _main_image_ids(product: dict[str, Any]) -> list[str]:
+    """从可信商品图片池选择主图；无主图标记时按选择状态与顺序回退。"""
+
+    pool = [dict(item) for item in current_image_pool(product)]
+    candidates = [
+        item
+        for item in pool
+        if _text(item.get("id"))
+        and _text(item.get("status")).lower() != "empty"
+    ]
+    if not candidates:
+        return []
+    candidates.sort(
+        key=lambda item: (
+            0 if bool(item.get("is_main")) else 1,
+            0 if bool(item.get("selected")) else 1,
+            int(item.get("order") or 0),
+        )
+    )
+    return [_text(candidates[0].get("id"))]
+
+
 @dataclass(frozen=True)
 class ImageCapabilityScope:
     """图片能力的可信依赖边界。"""
@@ -244,7 +266,24 @@ def _apply_generated_result(
             or "图片生成失败。",
         )
     items = _dict_rows(result.get("imagePoolItems"))
-    saved = _save_product(scope, append_images_to_product_pool(product, list(items)))
+    updated = append_images_to_product_pool(product, list(items))
+    main_image_id = ""
+    if isinstance(request, ImageEditRequest) and request.set_as_main and items:
+        main_image_id = _text(items[0].get("id"))
+        if not main_image_id:
+            raise BusinessCapabilityError(
+                "IMAGE_GENERATED_ID_MISSING",
+                "生成图片缺少稳定 ID，不能设为主图。",
+            )
+        updated = apply_service_image_pool(
+            updated,
+            image_service.set_main_image(
+                [dict(item) for item in current_image_pool(updated)],
+                main_image_id,
+                scope.context.paths.app_dir,
+            ),
+        )
+    saved = _save_product(scope, updated)
     draft_id = ""
     if request.apply_to_draft:
         draft_result, draft_error, _status = scope.context.products.apply_image_assets_to_draft(
@@ -268,6 +307,7 @@ def _apply_generated_result(
         generated_count=len(items),
         image_pool_items=items,
         draft_id=draft_id,
+        main_image_id=main_image_id,
         message=_text(result.get("message")),
     )
 
@@ -304,7 +344,11 @@ def image_translate(
 
 @ai_tool(
     name=IMAGE_EDIT_TOOL,
-    description="按提示词编辑商品图片并写回图片池（AI 生成）。",
+    description=(
+        "按提示词编辑商品图片并写回图片池（AI 生成）；"
+        "source_image_ids 省略时自动使用商品主图；用户要求替换或设为主图时"
+        "必须传 set_as_main=true。"
+    ),
     permission="image.write",
     side_effect="write",
     approval_required=False,
@@ -320,13 +364,18 @@ def image_edit(
 ) -> ImageGenerationResult:
     del execution
     product = _load_product(scope, request.product_id)
+    source_image_ids = (
+        list(request.source_image_ids)
+        if request.source_image_ids
+        else _main_image_ids(product)
+    )
     result = image_translate_service.edit_images(
         scope.context.paths.app_dir,
         product,
         scope.context.config.load_app_config(),
         prompt=request.prompt,
         platform=request.platform or "mercadolibre",
-        image_ids=list(request.source_image_ids),
+        image_ids=source_image_ids,
     )
     return _apply_generated_result(scope, product, request, result)
 

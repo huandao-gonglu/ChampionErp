@@ -226,4 +226,42 @@ describe('AiMessagePart', () => {
     })
     expect(fetchGlobalTask).not.toHaveBeenCalled()
   })
+
+  it('分步任务处于 running 时刷新会继续执行下一步', async () => {
+    const running = {
+      ok: true,
+      task_id: 'gtask-checkpointed',
+      task: {
+        task_id: 'gtask-checkpointed',
+        goal: '依次准备多个市场',
+        status: 'running',
+        current_step_index: 1,
+        steps: [
+          { step_id: 'step-1', status: 'completed' },
+          { step_id: 'step-2', status: 'pending' },
+        ],
+      },
+    }
+    vi.mocked(refreshGlobalTask).mockResolvedValue({
+      ...running,
+      task: {
+        ...running.task,
+        status: 'completed',
+        current_step_index: 2,
+        steps: running.task.steps.map((step) => ({ ...step, status: 'completed' })),
+      },
+    } as never)
+
+    const wrapper = mountPart({
+      type: 'tool-global_task_start',
+      state: 'output-available',
+      output: running,
+    }, true)
+
+    await vi.waitFor(() => {
+      expect(refreshGlobalTask).toHaveBeenCalledWith('gtask-checkpointed')
+      expect(wrapper.get('[data-testid="global-task-card"]').text()).toContain('已完成')
+    })
+    expect(fetchGlobalTask).not.toHaveBeenCalled()
+  })
 })

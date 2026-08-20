@@ -45,6 +45,12 @@ class ProductFacts(BaseModel):
     sku: Annotated[TrimmedText, StringConstraints(max_length=255)] = ""
     stock: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
     cost: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
+    description: Annotated[TrimmedText, StringConstraints(max_length=4000)] = ""
+    materials: list[str] = Field(default_factory=list, max_length=100)
+    selling_points: list[str] = Field(default_factory=list, max_length=100)
+    package_includes: list[str] = Field(default_factory=list, max_length=100)
+    dimensions: Annotated[TrimmedText, StringConstraints(max_length=255)] = ""
+    weight_kg: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
     source_platform: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
     source_url: Annotated[TrimmedText, StringConstraints(max_length=2000)] = ""
     source_image_count: int = Field(default=0, ge=0)

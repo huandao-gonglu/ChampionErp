@@ -103,4 +103,5 @@ describe('AiChatStore 实时流', () => {
     expect(store.input).toBe('')
     expect(fetchMock).not.toHaveBeenCalled()
   })
+
 })

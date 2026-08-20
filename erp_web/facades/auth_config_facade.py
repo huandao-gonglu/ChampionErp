@@ -6,6 +6,7 @@ from typing import Any
 
 from erp_web.context import get_context
 from erp_web.services import config_service
+from erp_web.services.approval_session import ApprovalSessionError
 from erp_web.services.browser_debug_service import (
     open_auth_link_in_browser,
 )
@@ -231,25 +232,49 @@ def test_api_config_payload(body: dict[str, Any]) -> ResponseWithStatus:
         }, 400
 
 
-def save_settings_payload(body: dict[str, Any]) -> ResponseWithStatus:
-    app_dir = _app_dir()
-    incoming_app = body.get("appConfig")
-    if isinstance(incoming_app, dict) and incoming_app:
-        save_app_config(
-            merge_app_config_fields(load_app_config(), incoming_app)
-        )
-    incoming_store = body.get("storeConfig")
-    if isinstance(incoming_store, dict) and incoming_store:
-        save_store_config(
-            merge_store_config_fields(load_store_config(), incoming_store)
-        )
-    store_config = load_store_config()
-    return {
-        "ok": True,
-        "appConfig": config_service.public_app_config(app_dir, load_app_config()),
-        "storeConfig": config_service.public_store_config(store_config),
-        "storeAuthSummary": summarize_store_auth_states(store_config),
-    }, 200
+def save_settings_payload(
+    body: dict[str, Any],
+    *,
+    approval_token: str = "",
+) -> ResponseWithStatus:
+    try:
+        app_dir = _app_dir()
+        incoming_app = body.get("appConfig")
+        if isinstance(incoming_app, dict) and incoming_app:
+            if "task_approval_mode" in incoming_app:
+                get_context().approval_session.require_approver(
+                    approval_token
+                )
+            save_app_config(
+                merge_app_config_fields(load_app_config(), incoming_app)
+            )
+        incoming_store = body.get("storeConfig")
+        if isinstance(incoming_store, dict) and incoming_store:
+            save_store_config(
+                merge_store_config_fields(load_store_config(), incoming_store)
+            )
+        store_config = load_store_config()
+        return {
+            "ok": True,
+            "appConfig": config_service.public_app_config(
+                app_dir,
+                load_app_config(),
+            ),
+            "storeConfig": config_service.public_store_config(store_config),
+            "storeAuthSummary": summarize_store_auth_states(store_config),
+        }, 200
+    except ApprovalSessionError as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "error_code": exc.code,
+        }, 403
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "error_code": "APP_CONFIG_INVALID",
+        }, 400
 
 
 def clear_store_auth_payload(body: dict[str, Any]) -> ResponseWithStatus:
