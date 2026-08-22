@@ -8,6 +8,9 @@ const encoder = new TextEncoder()
 const mocks = vi.hoisted(() => ({
   fetchUiMessages: vi.fn(),
   fetchConversationTaskLink: vi.fn(),
+  approveGlobalTask: vi.fn(),
+  rejectGlobalTask: vi.fn(),
+  cancelGlobalTask: vi.fn(),
 }))
 
 vi.mock('@/api/aiWork', () => ({
@@ -18,6 +21,12 @@ vi.mock('@/api/aiWork', () => ({
   ),
   fetchConversationTaskLink: mocks.fetchConversationTaskLink,
   fetchUiMessages: mocks.fetchUiMessages,
+}))
+
+vi.mock('@/api/globalTasks', () => ({
+  approveGlobalTask: mocks.approveGlobalTask,
+  rejectGlobalTask: mocks.rejectGlobalTask,
+  cancelGlobalTask: mocks.cancelGlobalTask,
 }))
 
 function encodedChunk(payload: Record<string, unknown> | '[DONE]'): Uint8Array {
@@ -792,5 +801,159 @@ describe('AiChatStore 反序响应防护（报告 R-04/R-06）', () => {
 
     store.newConversation()
     vi.useRealTimers()
+  })
+})
+
+describe('AiChatStore 斜杠命令注册表分发', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    mocks.fetchUiMessages.mockReset()
+    mocks.fetchConversationTaskLink.mockReset()
+    mocks.approveGlobalTask.mockReset()
+    mocks.rejectGlobalTask.mockReset()
+    mocks.cancelGlobalTask.mockReset()
+    mocks.approveGlobalTask.mockResolvedValue({ ok: true, task_id: 'gtask-9', task: {} })
+    mocks.rejectGlobalTask.mockResolvedValue({ ok: true, task_id: 'gtask-9', task: {} })
+    mocks.cancelGlobalTask.mockResolvedValue({ ok: true, task_id: 'gtask-9', task: {} })
+    FakeEventSource.instances = []
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  function pendingApprovalTaskLink(conversationId: string) {
+    return {
+      ok: true,
+      conversation_id: conversationId,
+      task_id: 'gtask-9',
+      link_status: 'ready',
+      task: {
+        task_id: 'gtask-9',
+        goal: '删除商品',
+        status: 'pending_approval',
+        steps: [],
+        current_step_index: 0,
+        pending_approval: {
+          step_id: 'step-1',
+          capability_name: 'product_delete',
+          capability_version: '1',
+          task_revision: 1,
+          digest: 'digest',
+          payload: { summary: '删除 3 个商品' },
+          requested_at: '',
+        },
+        pending_inputs: [],
+      },
+    }
+  }
+
+  async function createStoreWithPendingApproval() {
+    const store = useAiChatStore()
+    const conversationId = store.startConversation()
+    mocks.fetchConversationTaskLink.mockResolvedValue(
+      pendingApprovalTaskLink(conversationId),
+    )
+    await store.refreshTaskLink()
+    expect(store.hasUnresolvedTask).toBe(true)
+    return store
+  }
+
+  it('待审批任务存在时 /approve 经命令批准任务且不发送消息', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const store = await createStoreWithPendingApproval()
+
+    store.input = '/approve'
+    store.sendMessage()
+
+    await vi.waitFor(() => {
+      expect(mocks.approveGlobalTask).toHaveBeenCalledWith('gtask-9', 'step-1')
+    })
+    await vi.waitFor(() => {
+      expect(store.input).toBe('')
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('/approve 确认弹窗取消时保留输入且不调用 API', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const store = await createStoreWithPendingApproval()
+
+    store.input = '/approve'
+    store.sendMessage()
+
+    await Promise.resolve()
+    expect(mocks.approveGlobalTask).not.toHaveBeenCalled()
+    expect(store.input).toBe('/approve')
+  })
+
+  it('/reject 缺少原因时保留输入供用户补充', async () => {
+    const store = await createStoreWithPendingApproval()
+
+    store.input = '/reject'
+    store.sendMessage()
+
+    await Promise.resolve()
+    expect(mocks.rejectGlobalTask).not.toHaveBeenCalled()
+    expect(store.input).toBe('/reject')
+  })
+
+  it('/reject 附原因时拒绝任务并清空输入', async () => {
+    const store = await createStoreWithPendingApproval()
+
+    store.input = '/reject 太危险'
+    store.sendMessage()
+
+    await vi.waitFor(() => {
+      expect(mocks.rejectGlobalTask).toHaveBeenCalledWith('gtask-9', 'step-1', '太危险')
+    })
+    await vi.waitFor(() => {
+      expect(store.input).toBe('')
+    })
+  })
+
+  it('任务执行中 /cancel 不可用，按发送锁定拦截', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useAiChatStore()
+    const conversationId = store.startConversation()
+    mocks.fetchConversationTaskLink.mockResolvedValue({
+      ok: true,
+      conversation_id: conversationId,
+      task_id: 'gtask-9',
+      link_status: 'ready',
+      task: {
+        task_id: 'gtask-9',
+        goal: '采集商品',
+        status: 'in_progress',
+        steps: [],
+        current_step_index: 0,
+        pending_approval: null,
+        pending_inputs: [],
+      },
+    })
+    await store.refreshTaskLink()
+
+    store.input = '/cancel'
+    store.sendMessage()
+
+    expect(mocks.cancelGlobalTask).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(store.input).toBe('/cancel')
+  })
+
+  it('未注册命令文本按普通消息流程处理（锁定期被拦截）', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const store = await createStoreWithPendingApproval()
+
+    store.input = '/unknown'
+    store.sendMessage()
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(store.input).toBe('/unknown')
   })
 })

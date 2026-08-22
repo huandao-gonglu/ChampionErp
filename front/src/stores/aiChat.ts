@@ -9,6 +9,8 @@ import {
   fetchConversationTaskLink,
   fetchUiMessages,
 } from '@/api/aiWork'
+import { matchChatCommand } from '@/services/chatCommands'
+import type { ChatCommandContext } from '@/services/chatCommands'
 import { GLOBAL_CHAT_CONVERSATION_PREFIX } from '@/types/aiWork'
 import type { ConversationTaskLinkResponse } from '@/types/aiWork'
 
@@ -413,15 +415,44 @@ export const useAiChatStore = defineStore('aiChat', () => {
     resetRetryState()
   }
 
+  /** 构建命令执行所需的状态快照与动作；注册表不 import store，避免循环依赖。 */
+  function buildCommandContext(): ChatCommandContext {
+    const linkedTask = taskLink.value?.task ?? null
+    return {
+      isBusy: isBusy.value,
+      hasUnresolvedTask: hasUnresolvedTask.value,
+      taskStatus: linkedTask?.status ?? '',
+      taskId: taskLink.value?.task_id ?? '',
+      approvalStepId: linkedTask?.pending_approval?.step_id ?? '',
+      approvalSummary: String(linkedTask?.pending_approval?.payload?.summary ?? '').trim(),
+      startConversation,
+      stopStreaming,
+      refreshTaskLink,
+    }
+  }
+
   function sendMessage(): void {
     const text = input.value.trim()
     if (!text || isBusy.value) return
-    if (text === '/new') {
-      input.value = ''
-      startConversation()
+    // 斜杠命令经统一注册表分发（services/chatCommands）：与既有 /new 语义一致，
+    // 绕过任务发送锁、不发送消息；同步命令成功即清空输入，异步命令在结果
+    // 返回后清空，失败则保留输入便于重试。
+    const context = buildCommandContext()
+    const matched = matchChatCommand(text)
+    if (matched && matched.command.available(context)) {
+      const result = matched.command.execute(context, matched.arg)
+      if (result instanceof Promise) {
+        result.then((consumed) => {
+          if (consumed) input.value = ''
+        }).catch(() => {
+          // 命令失败保留输入。
+        })
+      } else if (result) {
+        input.value = ''
+      }
       return
     }
-    // 未解决 Deferred 任务存在时锁定普通发送；/new 与审批/输入/取消不受影响。
+    // 未解决 Deferred 任务存在时锁定普通发送；审批/输入/取消经命令或任务卡片入口，不受影响。
     if (hasUnresolvedTask.value) return
     if (!chat.value) {
       startConversation()
