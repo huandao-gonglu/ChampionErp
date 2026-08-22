@@ -27,6 +27,7 @@ from .publish_yandex import (
     _public_picture_invalid,
     yandex_invalid_dictionary_attributes,
     yandex_invalid_unit_attributes,
+    yandex_mapped_parameter_count,
     yandex_offer_identity_conflict,
     yandex_required_attributes_missing,
 )
@@ -327,6 +328,18 @@ def validate_yandex_draft(product: dict[str, Any], config: dict[str, Any]) -> di
         if attr_id in invalid_dictionary_ids:
             continue
         errors.append(precheck_item("REQUIRED_ATTRIBUTE_MISSING", field, f"缺少 Yandex 必填属性：{attr_id}", "error", "前往类目属性页补齐必填属性"))
+    # Yandex 发布接口要求 parameterValues 至少 1 个，即使类目没有任何
+    # 必填参数；零必填类目的草稿也必须先填至少一个平台参数。
+    if yandex_mapped_parameter_count(product) == 0:
+        errors.append(
+            precheck_item(
+                "YANDEX_PARAMETER_VALUES_MISSING",
+                "attributes",
+                "Yandex 要求至少提交 1 个类目参数值，当前草稿没有任何已填写的平台参数",
+                "error",
+                "运行属性自动补全，或前往类目属性页填写类目参数",
+            )
+        )
     if not str(draft.get("brand") or "").strip():
         errors.append(precheck_item("BRAND_MISSING", "brand", "品牌为空", "error", "前往类目属性页确认 Brand"))
     if not str(draft.get("model") or "").strip():

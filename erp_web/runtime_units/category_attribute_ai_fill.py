@@ -10,7 +10,10 @@ from erp_web.product_model import (
     normalize_product_model,
     unresolved_required_category_attributes,
 )
-from erp_web.schemas.category import category_attribute_schema
+from erp_web.schemas.category import (
+    category_attribute_schema,
+    category_attribute_value_is_valid,
+)
 from erp_web.schemas.category_attribute import CategoryAttributeValueLedger
 from erp_web.services.category_attribute_fill_agent_service import (
     CategoryAttributeFillAgentRun,
@@ -18,6 +21,10 @@ from erp_web.services.category_attribute_fill_agent_service import (
 )
 
 from .category_attribute_tools import build_category_attribute_value_toolset
+
+
+#: 单次运行纳入 AI 填充的可选属性上限；控制 prompt 体量与字典查询预算。
+OPTIONAL_ATTRIBUTE_FILL_LIMIT = 20
 
 
 def _normalize_list(value: Any) -> list[str]:
@@ -244,6 +251,48 @@ def _validated_agent_attributes(
     return accepted, evidence_rejected
 
 
+def unresolved_optional_category_attributes(
+    product: dict[str, Any],
+    platform: str,
+    category_record: dict[str, Any] | None,
+    *,
+    limit: int = OPTIONAL_ATTRIBUTE_FILL_LIMIT,
+) -> list[dict[str, Any]]:
+    """草稿中尚未填写的可选类目属性，作为 best-effort 填充对象。
+
+    与必填属性不同：可选属性填不出时静默跳过，不进入 need_review，
+    也不阻断步骤。平台类目可以没有任何必填参数（如部分 Yandex
+    类目），但发布仍要求至少一个参数值，因此可选属性也必须尝试填充。
+    """
+
+    normalized = normalize_product_model(product or {})
+    platform = str(platform or "").strip().lower()
+    drafts = (
+        normalized.get("drafts")
+        if isinstance(normalized.get("drafts"), dict)
+        else {}
+    )
+    draft = drafts.get(platform) if isinstance(drafts.get(platform), dict) else {}
+    attributes = (
+        draft.get("attributes")
+        if isinstance(draft.get("attributes"), dict)
+        else {}
+    )
+    result: list[dict[str, Any]] = []
+    for definition in category_attribute_schema(category_record):
+        if definition.get("required"):
+            continue
+        attr_id = str(definition.get("id") or "").strip()
+        if not attr_id:
+            continue
+        if category_attribute_value_is_valid(definition, attributes.get(attr_id)):
+            continue
+        result.append(definition)
+        if len(result) >= max(0, int(limit)):
+            break
+    return result
+
+
 def apply_ai_model_attribute_fill(
     product: dict[str, Any],
     platform: str,
@@ -258,6 +307,10 @@ def apply_ai_model_attribute_fill(
     agent_run: CategoryAttributeFillAgentRun | None = None
     try:
         agent_schema = unresolved_required_category_attributes(
+            base_product,
+            platform,
+            category_record,
+        ) + unresolved_optional_category_attributes(
             base_product,
             platform,
             category_record,

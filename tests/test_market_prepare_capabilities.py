@@ -492,6 +492,45 @@ def test_attribute_fill_resolves_user_text_into_dictionary_value() -> None:
     assert products.drafts["draft-1"]["validation_errors"] == []
 
 
+def test_attribute_fill_completes_for_category_without_required_attributes() -> None:
+    """零必填参数类目：没有可填的必填属性时正常完成，不得 needs_input。"""
+
+    draft = _draft("draft-1")
+    draft["category_id"] = "CAT-1"
+    products = _Products([draft])
+
+    def record(*_args, **_kwargs) -> dict:
+        category = _category_record()
+        category["attributes"]["required"] = []
+        category["attributes"]["optional"] = [
+            {
+                "id": "PURPOSE",
+                "name": "Предназначено для",
+                "required": False,
+                "is_dictionary": True,
+                "dictionary_id": "749",
+                "options": [],
+            }
+        ]
+        return category
+
+    def filler(product: dict, platform: str, category: dict | None):
+        return deepcopy(product), {"source": "rules", "ai_filled": []}
+
+    result = fill_product_attributes(
+        ProductAttributesFillRequest(
+            draft_id="draft-1",
+            target_platform="mercadolibre",
+        ),
+        product_store=products,
+        attribute_filler=filler,
+        category_record_loader=record,
+    )
+
+    assert result.draft_id == "draft-1"
+    assert products.drafts["draft-1"]["validation_errors"] == []
+
+
 def test_attribute_fill_accepts_explicit_user_value_and_completes() -> None:
     draft = _draft("draft-1")
     draft["category_id"] = "CAT-1"

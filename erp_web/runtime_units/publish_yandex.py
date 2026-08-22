@@ -266,6 +266,44 @@ def yandex_invalid_unit_attributes(product: dict[str, Any]) -> list[str]:
     return sorted(invalid)
 
 
+def _yandex_attribute_value_empty(raw_value: Any) -> bool:
+    if isinstance(raw_value, dict):
+        values = raw_value.get("values")
+        if isinstance(values, list) and values:
+            return False
+        return not str(raw_value.get("value") or "").strip()
+    if isinstance(raw_value, (list, tuple, set)):
+        return not bool(raw_value)
+    return not str(raw_value or "").strip()
+
+
+def yandex_mapped_parameter_count(product: dict[str, Any]) -> int:
+    """草稿中可映射为 Yandex ``parameterValues`` 的已填参数数量。
+
+    与 ``_compile_parameter_values`` 同源的映射规则：属性 ID 必须是当前
+    类目参数定义中的正整数且值非空。Yandex 发布要求至少 1 个参数值
+    （即使类目没有任何必填参数），预检与发布边界共用该计数。
+    """
+
+    product = normalize_product_fields(product)
+    draft = _draft_for_platform(product, "yandex")
+    definitions = _draft_schema_definitions(draft)
+    attributes = (
+        draft.get("attributes")
+        if isinstance(draft.get("attributes"), dict)
+        else {}
+    )
+    count = 0
+    for raw_id, raw_value in attributes.items():
+        attr_id = str(raw_id or "").strip()
+        if not attr_id.isdigit() or int(attr_id) <= 0 or attr_id not in definitions:
+            continue
+        if _yandex_attribute_value_empty(raw_value):
+            continue
+        count += 1
+    return count
+
+
 def _resolve_unit_id(definition: dict[str, Any], unit: Any) -> int | None:
     """把选中的单位名称解析为 Yandex ``unitId``。
 
@@ -587,6 +625,10 @@ def build_yandex_publish_payload(
 
     definitions = _draft_schema_definitions(draft)
     parameter_values = _compile_parameter_values(draft, definitions)
+    if not parameter_values:
+        raise ValueError(
+            "Yandex 发布至少需要 1 个类目参数值，请先填写类目属性再发布"
+        )
     price_value_text, currency = _resolved_price(draft)
     wire_currency = yandex_wire_currency(currency)
     price_value = _price_number(price_value_text)

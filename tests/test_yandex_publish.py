@@ -1296,3 +1296,38 @@ def test_validate_yandex_draft_requires_package_dimensions_and_price() -> None:
         _config(),
     )
     assert "PRICING_STALE" in _error_codes(pricing_result)
+
+
+def test_validate_yandex_draft_requires_at_least_one_parameter_value() -> None:
+    """Yandex 发布要求 parameterValues ≥1：零必填类目也必须填参数。"""
+
+    from erp_web.runtime_units.publish_validation import validate_yandex_draft
+
+    # 属性全空（如零必填类目从未跑过属性填充）
+    empty = validate_yandex_draft(
+        _validatable_product(attributes={}),
+        _config(),
+    )
+    assert "YANDEX_PARAMETER_VALUES_MISSING" in _error_codes(empty)
+
+    # 只有采集来源的中文属性：无法映射为平台参数，同样拦截
+    source_only = validate_yandex_draft(
+        _validatable_product(attributes={"主营": "宠物用品", "产地": "浙江"}),
+        _config(),
+    )
+    assert "YANDEX_PARAMETER_VALUES_MISSING" in _error_codes(source_only)
+
+    # 已填 1 个平台参数 → 不再拦截
+    filled = validate_yandex_draft(_validatable_product(), _config())
+    assert "YANDEX_PARAMETER_VALUES_MISSING" not in _error_codes(filled)
+
+
+def test_build_payload_requires_at_least_one_parameter_value() -> None:
+    with pytest.raises(ValueError, match="至少需要 1 个类目参数值"):
+        build_yandex_publish_payload(
+            _product(attributes={"主营": "宠物用品"}),
+            _config(),
+        )
+
+    payload = build_yandex_publish_payload(_product(), _config())
+    assert len(payload["catalog"]["offer"]["parameterValues"]) >= 1

@@ -323,9 +323,89 @@ def test_unresolved_optional_dictionary_attribute_is_not_a_blocking_error(
 
     assert draft["attributes"]["9048"] == "F30"
     assert "20210" not in draft["attributes"]
-    assert captured["schema_ids"] == ["9048"]
+    # 可选属性现在也会纳入 AI 填充范围；未填出时静默跳过，不阻断。
+    assert captured["schema_ids"] == ["9048", "20210"]
     assert draft["validation_errors"] == []
     assert meta["ai_filled"] == ["9048"]
+
+
+def test_zero_required_category_fills_optional_attributes_best_effort(
+    monkeypatch,
+) -> None:
+    """零必填参数类目（如部分 Yandex 类目）：AI 也要填可选属性。
+
+    发布接口仍要求至少一个参数值；能确定的可选属性被填充，
+    且整个过程不产生阻断错误。
+    """
+
+    product = default_product_model()
+    product["source"]["title"] = "Шлейка для собак Y-образная"
+    category = {
+        "category_id": "16088928",
+        "site": "global",
+        "attributes": {
+            "required": [],
+            "optional": [
+                {
+                    "id": "21194330",
+                    "name": "Тип",
+                    "required": False,
+                    "dictionary_id": "955",
+                    "is_dictionary": True,
+                },
+                {
+                    "id": "17352854",
+                    "name": "Материал",
+                    "required": False,
+                    "dictionary_id": "1494",
+                    "is_dictionary": True,
+                },
+            ],
+        },
+    }
+    captured = {}
+
+    def fake_agent(payload, toolset, ledger):
+        del toolset
+        captured["schema_ids"] = [item["id"] for item in payload["attributes"]]
+        ledger.add_values(
+            "21194330",
+            [{"id": "971224534", "value": "Шлейка"}],
+        )
+        # Материал 找不到合适候选：不填，验证 best-effort 跳过不阻断。
+        return CategoryAttributeFillAgentRun(
+            {
+                "assignments": [
+                    {
+                        "attribute_id": "21194330",
+                        "value": "Шлейка",
+                        "dictionary_value_id": "971224534",
+                    }
+                ],
+                "need_review": [],
+            }
+        )
+
+    monkeypatch.setattr(
+        category_attribute_ai_fill,
+        "run_category_attribute_fill_agent",
+        fake_agent,
+    )
+
+    updated, meta = category_attribute_ai_fill.apply_ai_model_attribute_fill(
+        product,
+        "yandex",
+        category,
+    )
+    draft = updated["drafts"]["yandex"]
+
+    assert captured["schema_ids"] == ["21194330", "17352854"]
+    assert draft["attributes"]["21194330"] == {
+        "values": [{"dictionary_value_id": 971224534, "value": "Шлейка"}]
+    }
+    assert "17352854" not in draft["attributes"]
+    assert draft["validation_errors"] == []
+    assert meta["ai_filled"] == ["21194330"]
 
 
 def test_ai_model_attribute_fill_rejects_market_default_without_product_evidence(

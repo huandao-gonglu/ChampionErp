@@ -226,9 +226,11 @@ def run_category_attribute_fill_agent(
         CATEGORY_ATTRIBUTE_FILL_USE_CASE_ID,
     )
     instructions = prompt.get("system") or (
-        "value_mode=strict_enum 必须先调用 category_attribute_values_search，并且只能"
-        "选择工具返回的值；value_mode=open_enum 优先使用 options，也允许填写有依据的"
-        "自定义文本；value_mode=free_text 直接填写有依据的文本。"
+        "required=true 的属性必须填写或进入 need_review；required=false 的可选属性"
+        "只在能由商品事实确定时填写，不确定时直接跳过。value_mode=strict_enum 必须先"
+        "调用 category_attribute_values_search，并且只能选择工具返回的值；value_mode="
+        "open_enum 优先使用 options，也允许填写有依据的自定义文本；value_mode="
+        "free_text 直接填写有依据的文本。"
     )
     user_prompt = render_prompt_template(
         prompt.get("user") or "请填写以下类目属性：{$input_json}",
