@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import type { UIMessage } from 'ai'
 import {
+  fetchConversationTaskLink,
   fetchPydanticConversation,
   fetchPydanticConversations,
   fetchUiMessages,
@@ -334,6 +335,25 @@ async function loadSelection(conversationId: string, resetView = false): Promise
     loadConversation(conversationId),
     loadUiMessages(conversationId),
   ])
+  // 报告 A-12：重载/选中一个存在未解决任务的 global.chat 会话时，自动把它
+  // 恢复为可操作的活动会话，任务卡随之挂载，无需手动点击“继续此对话”。
+  await autoReactivateIfLocked(conversationId)
+}
+
+/** 报告 A-12：只读选中项若是有未解决任务的 global.chat，自动重新激活。 */
+async function autoReactivateIfLocked(conversationId: string): Promise<void> {
+  if (!conversationId.startsWith(GLOBAL_CHAT_CONVERSATION_PREFIX)) return
+  if (chatStore.chat?.id === conversationId) return
+  if (chatStore.isBusy || chatStore.reactivating) return
+  try {
+    const link = await fetchConversationTaskLink(conversationId)
+    // 选中项已切换、或没有未解决任务时不做自动恢复。
+    if (selectedId.value !== conversationId) return
+    if (!link?.ok || !link.task_id) return
+    await chatStore.reactivateConversation(conversationId)
+  } catch {
+    // 自动恢复失败不影响只读展示；用户仍可手动“继续此对话”。
+  }
 }
 
 async function selectConversation(conversationId: string): Promise<void> {
@@ -679,6 +699,8 @@ onMounted(() => {
                 :busy="chatStore.isBusy"
                 :error="liveErrorText"
                 :input="chatStore.input"
+                :conversation-id="chatStore.chat?.id ?? ''"
+                :history-version="chatStore.historyVersion"
                 @update:input="chatStore.input = $event"
                 @send="chatStore.sendMessage()"
                 @stop="chatStore.stopStreaming()"

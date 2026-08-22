@@ -141,6 +141,13 @@ class LocalGlobalTaskState(StrictTaskModel):
     assistant_message: str = Field(default="", max_length=4000)
     error_code: str = Field(default="", max_length=120)
     error_message: str = Field(default="", max_length=2000)
+    # 取消审计（修复计划第 7 节）：cancelled 终态仍保留可追溯的取消者与取消前
+    # 状态、原因及最后一个 blocker 摘要；默认空值兼容既有持久化任务。
+    cancelled_by: str = Field(default="", max_length=200)
+    cancelled_at: datetime | None = None
+    cancel_reason: str = Field(default="", max_length=2000)
+    previous_status: str = Field(default="", max_length=40)
+    last_blocker_summary: str = Field(default="", max_length=2000)
     created_at: datetime
     updated_at: datetime
 
@@ -234,9 +241,24 @@ class GlobalTaskResponse(StrictTaskModel):
         return self
 
 
+class GlobalTaskAcceptance(StrictTaskModel):
+    """``global_task_start`` Deferred 握手成功后的类型化受理结果。
+
+    Task 与 provisional link 已在同一事务创建；此时任务尚未执行任何步骤，
+    Bridge 用它携带的 task_id 抛出官方 ``CallDeferred`` 暂停 Agent。
+    """
+
+    ok: Literal[True] = True
+    task_id: str = Field(min_length=1, max_length=160)
+    conversation_id: str = Field(min_length=1, max_length=200)
+    tool_call_id: str = Field(min_length=1, max_length=320)
+    link_id: str = Field(min_length=1, max_length=160)
+
+
 __all__ = [
     "CapabilityError",
     "GLOBAL_TASK_MAX_STEPS",
+    "GlobalTaskAcceptance",
     "GlobalTaskApproveRequest",
     "GlobalTaskIdRequest",
     "GlobalTaskInputRequest",

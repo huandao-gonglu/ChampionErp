@@ -97,6 +97,24 @@ def pricing_calculate(
         input_data["common"] = dict(request.common)
     result = scope.pricing_calculator(input_data)
     if not isinstance(result, dict) or not result.get("ok"):
+        # 确定性核价把字段级错误放进 errors 数组；只有基础设施异常才用
+        # 顶层 error。不得把具体字段错误抹成统一 PRICING_CALCULATE_FAILED。
+        field_errors = [
+            dict(item)
+            for item in (
+                result.get("errors") if isinstance(result, dict) else None
+            )
+            or []
+            if isinstance(item, dict)
+        ]
+        if field_errors:
+            first_message = _text(field_errors[0].get("message")) or "核价资料不完整。"
+            raise BusinessCapabilityError(
+                "PRICING_INPUT_INVALID",
+                first_message,
+                retryable=False,
+                details={"errors": field_errors},
+            )
         message = _text(
             result.get("error") if isinstance(result, dict) else ""
         ) or "核价计算失败。"

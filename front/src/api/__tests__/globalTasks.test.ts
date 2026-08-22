@@ -2,9 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { apiClient } from '@/api/client'
 import {
   approveGlobalTask,
+  cancelGlobalTask,
   fetchGlobalTask,
-  refreshGlobalTask,
   rejectGlobalTask,
+  submitGlobalTaskInput,
 } from '@/api/globalTasks'
 
 vi.mock('@/api/client', () => ({
@@ -26,7 +27,7 @@ const response = {
   },
 }
 
-describe('全局任务受信审批 API', () => {
+describe('全局任务只读与受信操作 API', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(apiClient.get).mockResolvedValue({
@@ -35,20 +36,40 @@ describe('全局任务受信审批 API', () => {
     vi.mocked(apiClient.post).mockResolvedValue({ data: response })
   })
 
-  it('读取任务状态不获取审批凭据', async () => {
+  it('读取任务状态走纯 GET，不获取审批凭据也不触发写操作', async () => {
+    vi.mocked(apiClient.get).mockResolvedValue({ data: response })
+
     await expect(fetchGlobalTask('gtask-1')).resolves.toEqual(response)
 
+    expect(apiClient.get).toHaveBeenCalledTimes(1)
+    expect(apiClient.get).toHaveBeenCalledWith('/api/v1/global-tasks/gtask-1')
+    expect(apiClient.post).not.toHaveBeenCalled()
+  })
+
+  it('task_id 中的特殊字符按 URL 编码读取', async () => {
+    vi.mocked(apiClient.get).mockResolvedValue({ data: response })
+
+    await fetchGlobalTask('gtask 1/2')
+
+    expect(apiClient.get).toHaveBeenCalledWith('/api/v1/global-tasks/gtask%201%2F2')
+  })
+
+  it('提交补充资料走 global-task-input，不携带审批 token', async () => {
+    await expect(
+      submitGlobalTaskInput('gtask-1', { category_name: '连衣裙' }),
+    ).resolves.toEqual(response)
+
     expect(apiClient.get).not.toHaveBeenCalled()
-    expect(apiClient.post).toHaveBeenCalledWith('/api/global-task-state', {
+    expect(apiClient.post).toHaveBeenCalledWith('/api/global-task-input', {
       task_id: 'gtask-1',
+      arguments: { category_name: '连衣裙' },
     })
   })
 
-  it('刷新后台任务时调用推进终态的 refresh 端点', async () => {
-    await expect(refreshGlobalTask('gtask-1')).resolves.toEqual(response)
+  it('取消任务走 global-task-cancel', async () => {
+    await expect(cancelGlobalTask('gtask-1')).resolves.toEqual(response)
 
-    expect(apiClient.get).not.toHaveBeenCalled()
-    expect(apiClient.post).toHaveBeenCalledWith('/api/global-task-refresh', {
+    expect(apiClient.post).toHaveBeenCalledWith('/api/global-task-cancel', {
       task_id: 'gtask-1',
     })
   })

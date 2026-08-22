@@ -2,12 +2,9 @@
 import type { UIMessage } from 'ai'
 import AiMessagePart from './AiMessagePart.vue'
 
-withDefaults(defineProps<{
+defineProps<{
   messages: UIMessage[]
-  taskActionsEnabled?: boolean
-}>(), {
-  taskActionsEnabled: false,
-})
+}>()
 </script>
 
 <template>
@@ -35,7 +32,6 @@ withDefaults(defineProps<{
             v-for="(part, index) in message.parts"
             :key="`${message.id}-${index}`"
             :part="part"
-            :task-actions-enabled="taskActionsEnabled"
           />
         </div>
       </div>

@@ -440,8 +440,10 @@ def prepare_draft_for_market(
 
     try:
         prepare_target_pricing(
-            request,
             target_draft_id=target_draft_id,
+            target_platform=platform,
+            site=text(target.get("site")),
+            pricing_input=request.pricing_input,
             product_store=product_store,
             pricing_calculator=pricing_calculator,
         )

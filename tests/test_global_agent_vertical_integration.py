@@ -4,8 +4,9 @@
 - 主 Agent ToolSet 组合：Direct 只读能力 + 任务控制能力，且 Direct 不含写工具；
 - ``global_task_start`` 的模型可见契约由真实 Task Capability Request Schema
   机械投影，任务计划以类型化参数进入 Controller（无第二次计划模型调用）；
-- prepare → validate → 审批 → 发布长任务 → 通用终态刷新的完整纵向流程
+- prepare → validate → 审批 → 发布长任务 → worker 轮询终态的完整纵向流程
   （真实 Capability + 真实 Ozon 确定性逻辑 + 只替代最终外部网络边界）；
+  任务创建走 Deferred 受理 + 首次 history ready 屏障 + worker 唯一执行；
 - HTTP 受信门面与 Controller/AI 路径读取到等价任务状态。
 """
 
@@ -15,6 +16,7 @@ from copy import deepcopy
 from typing import Any
 
 import pytest
+from pydantic_ai.messages import ModelRequest, UserPromptPart
 
 from erp_web.context import get_context
 from erp_web.facades import global_task_facade
@@ -403,11 +405,36 @@ def test_global_chat_typed_task_vertical_publish_flow(
         auto_resume_pending=False,
     )
     context._publishing_bus = bus
+    links = context.deferred_task_links
+    call_counter = {"value": 0}
+
+    def _accept_and_run(controller, request, *, conversation_id: str):
+        """完整 Deferred 生命周期：受理 → 首次 history 提交 → worker 推进。"""
+
+        call_counter["value"] += 1
+        acceptance = controller.accept_deferred_task(
+            request,
+            conversation_id=conversation_id,
+            request_run_id=f"run-vertical-{call_counter['value']}",
+            tool_call_id=f"call-vertical-{call_counter['value']}",
+            message_id=f"message-vertical-{call_counter['value']}",
+        )
+        links.commit_initial_deferred_history(
+            conversation_id,
+            [ModelRequest(parts=[UserPromptPart("创建任务")])],
+            link_id=acceptance.link_id,
+            request_run_id=f"run-vertical-{call_counter['value']}",
+            encoded_chunks=[],
+        )
+        return controller.resume_task(acceptance.task_id)
+
     try:
         controller = global_task_facade.build_global_task_controller(context)
 
-        # 阶段一：类型化任务准备 + 确定性校验；补资料经统一 submit_input 合并重放。
-        prepare_task = controller.start_task(
+        # 阶段一：类型化任务准备 + 确定性校验；补资料经统一 submit_input 合并，
+        # 执行始终由 worker（resume_task）推进。
+        prepare_task = _accept_and_run(
+            controller,
             GlobalTaskStartControlRequest.model_validate(
                 {
                     "goal": "把第一个草稿准备到 Ozon 并完成发布校验",
@@ -429,9 +456,8 @@ def test_global_chat_typed_task_vertical_publish_flow(
                     ],
                 }
             ),
-            conversation_id="conversation-vertical",
-            message_id="message-vertical-1",
-        ).task
+            conversation_id="conversation_global_chat_" + "1" * 32,
+        )
         assert prepare_task.status == "needs_input"
         assert [item.key for item in prepare_task.pending_inputs] == [
             "category_id"
@@ -446,6 +472,8 @@ def test_global_chat_typed_task_vertical_publish_flow(
                 arguments={"category_id": "94765"},
             )
         ).task
+        assert attribute_pause.status == "running"
+        attribute_pause = controller.resume_task(prepare_task.task_id)
         assert attribute_pause.status == "needs_input"
         assert [item.key for item in attribute_pause.pending_inputs] == ["85"]
         assert boundary_calls == {"copy": 1, "category": 1, "attributes": 1}
@@ -457,6 +485,8 @@ def test_global_chat_typed_task_vertical_publish_flow(
                 arguments={"provided_attributes": {"85": "Champion"}},
             )
         ).task
+        assert prepared.status == "running"
+        prepared = controller.resume_task(attribute_pause.task_id)
         assert prepared.status == "completed"
         # 第二次重放时 4191 已持久化、85 由补充资料提供，无需再次 AI 填充。
         assert boundary_calls == {"copy": 1, "category": 1, "attributes": 1}
@@ -480,7 +510,8 @@ def test_global_chat_typed_task_vertical_publish_flow(
         assert len(validation_digest) == 64
 
         # 阶段二：发布步骤进入任务；审批快照/摘要由服务端生成，模型不提交 approval。
-        publish_task = controller.start_task(
+        publish_task = _accept_and_run(
+            controller,
             GlobalTaskStartControlRequest.model_validate(
                 {
                     "goal": "提交 Ozon 真实发布",
@@ -497,9 +528,8 @@ def test_global_chat_typed_task_vertical_publish_flow(
                     ],
                 }
             ),
-            conversation_id="conversation-vertical",
-            message_id="message-vertical-2",
-        ).task
+            conversation_id="conversation_global_chat_" + "2" * 32,
+        )
         assert publish_task.status == "pending_approval"
         assert publish_task.pending_approval is not None
         # 审批展示与执行参数都来自服务端冻结快照（P1-2）。
@@ -512,13 +542,16 @@ def test_global_chat_typed_task_vertical_publish_flow(
         assert network_adapter.publish_calls == 0
         assert boundary_calls["copy"] == 1
 
-        # 阶段三：受信审批者确认后以原 operation_key 执行，长任务进入通用 in_progress。
+        # 阶段三：受信审批者确认只改变业务状态；worker 领取后以原
+        # operation_key 执行，长任务进入通用 in_progress。
         submitted = controller.approve_task(
             GlobalTaskApproveRequest(task_id=publish_task.task_id),
-            conversation_id="conversation-vertical",
+            conversation_id="conversation_global_chat_" + "2" * 32,
             message_id="message-vertical-3",
             approver="local-ui:vertical-test",
         ).task
+        assert submitted.status == "running"
+        submitted = controller.resume_task(publish_task.task_id)
         assert submitted.status == "in_progress"
         assert submitted.active_job is not None
         job_id = submitted.active_job.job_id
@@ -536,8 +569,8 @@ def test_global_chat_typed_task_vertical_publish_flow(
         bus.executor.shutdown(wait=True)
         assert network_adapter.publish_calls == 1
 
-        # 阶段四：受信刷新把平台真实终态映射为任务终态。
-        terminal = controller.refresh_task(publish_task.task_id).task
+        # 阶段四：worker 轮询把平台真实终态映射为任务终态。
+        terminal = controller.resume_task(publish_task.task_id)
         expected_task_status = "completed" if remote_success else "failed"
         assert terminal.status == expected_task_status
         assert terminal.active_job is None
@@ -561,8 +594,8 @@ def test_global_chat_typed_task_vertical_publish_flow(
         assert context.db.publish_log_exists(job_id, "ozon")
 
         # HTTP 受信门面与 Controller 读取到等价任务状态。
-        payload, status = global_task_facade.get_global_task_payload(
-            {"task_id": publish_task.task_id}
+        payload, status = global_task_facade.read_global_task_state_payload(
+            publish_task.task_id
         )
         assert status == 200
         assert payload["ok"] is True
@@ -570,8 +603,8 @@ def test_global_chat_typed_task_vertical_publish_flow(
             publish_task.task_id
         ).model_dump(mode="json")
         state_payload, state_status = (
-            global_task_facade.get_global_task_payload(
-                {"task_id": prepare_task.task_id}
+            global_task_facade.read_global_task_state_payload(
+                prepare_task.task_id
             )
         )
         assert state_status == 200

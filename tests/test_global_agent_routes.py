@@ -32,12 +32,10 @@ class _Handler:
 @pytest.mark.parametrize(
     ("path", "facade_name"),
     [
-        ("/api/global-task-state", "get_global_task_payload"),
         ("/api/global-task-input", "submit_global_task_input_payload"),
         ("/api/global-task-approve", "approve_global_task_payload"),
         ("/api/global-task-reject", "reject_global_task_payload"),
         ("/api/global-task-cancel", "cancel_global_task_payload"),
-        ("/api/global-task-refresh", "refresh_global_task_payload"),
     ],
 )
 def test_each_global_task_route_validates_with_its_endpoint_and_dispatches_to_facade(
@@ -100,25 +98,28 @@ def test_each_global_task_route_validates_with_its_endpoint_and_dispatches_to_fa
     assert handler.response == ({"ok": True, "path": path}, 200)
 
 
-def test_global_task_route_contract_has_no_task_creation_or_publish_confirm_route() -> None:
+def test_global_task_route_contract_has_no_task_creation_or_write_refresh_route() -> None:
     # 任务创建只通过 global.chat 的 global_task_start 类型化参数进入；
-    # HTTP 不再暴露创建入口，也不再有发布专用确认入口。
+    # HTTP 不暴露创建入口，也不存在任何可推进任务的写刷新入口
+    # （任务推进只由后台 recovery worker 完成）。
     assert "/api/global-task-start" not in global_agent_routes.HANDLED_PATHS
+    assert "/api/global-task-refresh" not in global_agent_routes.HANDLED_PATHS
     assert (
         "/api/global-task-publish-confirm"
         not in global_agent_routes.HANDLED_PATHS
     )
+    # 任务状态读取已迁移为纯 GET /api/v1/global-tasks/<task_id>，
+    # POST 门面不再保留 state 端点。
+    assert "/api/global-task-state" not in global_agent_routes.HANDLED_PATHS
 
 
-def test_global_agent_route_contract_has_exactly_six_explicit_post_handlers() -> None:
+def test_global_agent_route_contract_has_exactly_four_explicit_post_handlers() -> None:
     assert global_agent_routes.HANDLED_PATHS == frozenset(
         {
-            "/api/global-task-state",
             "/api/global-task-input",
             "/api/global-task-approve",
             "/api/global-task-reject",
             "/api/global-task-cancel",
-            "/api/global-task-refresh",
         }
     )
     assert set(global_agent_routes.POST_HANDLERS) == set(

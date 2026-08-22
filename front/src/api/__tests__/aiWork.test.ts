@@ -14,9 +14,11 @@ describe('AI Work 只读 API', () => {
     vi.mocked(apiClient.get).mockResolvedValue({ data: { ok: true, conversations: [] } })
   })
 
-  it('只导出规范读取、派生读取与流路径常量', () => {
+  it('只导出规范读取、派生读取、任务关联读取、事件订阅 URL 与流路径常量', () => {
     expect(Object.keys(aiWorkApi).sort()).toEqual([
       'AI_CHAT_RUNS_PATH',
+      'conversationEventsUrl',
+      'fetchConversationTaskLink',
       'fetchPydanticConversation',
       'fetchPydanticConversations',
       'fetchUiMessages',
@@ -46,6 +48,25 @@ describe('AI Work 只读 API', () => {
 
     expect(apiClient.get).toHaveBeenCalledWith(
       '/api/v1/ai-work/conversations/conversation_global_chat_abc/ui-messages',
+    )
+  })
+
+  it('任务关联读取 /task-link 子路径并编码 ID', async () => {
+    await aiWorkApi.fetchConversationTaskLink('conversation_global_chat_abc')
+
+    expect(apiClient.get).toHaveBeenCalledWith(
+      '/api/v1/ai-work/conversations/conversation_global_chat_abc/task-link',
+    )
+  })
+
+  it('事件订阅 URL 携带已应用 history version 游标', () => {
+    expect(aiWorkApi.conversationEventsUrl('conversation_global_chat_abc', 7)).toBe(
+      '/api/v1/ai-work/conversations/conversation_global_chat_abc/events'
+      + '?after_history_version=7',
+    )
+    expect(aiWorkApi.conversationEventsUrl('conversation_global_chat_abc', -3)).toBe(
+      '/api/v1/ai-work/conversations/conversation_global_chat_abc/events'
+      + '?after_history_version=0',
     )
   })
 

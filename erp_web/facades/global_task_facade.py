@@ -426,6 +426,7 @@ def build_global_task_controller(
             ),
             PRODUCT_RESEARCH_JOB_TYPE: ResearchJobStatusReader(),
         },
+        deferred_links=active_context.deferred_task_links,
         approval_mode_loader=lambda: normalize_task_approval_mode(
             active_context.config.load_app_config().get("task_approval_mode")
         ),
@@ -498,12 +499,70 @@ def _error(exc: Exception) -> ResponseWithStatus:
     }, 500
 
 
-def get_global_task_payload(body: dict[str, Any]) -> ResponseWithStatus:
+def read_global_task_state_payload(task_id: str) -> ResponseWithStatus:
+    """按 task_id 纯读任务状态；供任务卡 GET 刷新使用，不推进任务。"""
+
     try:
-        request = GlobalTaskIdRequest.model_validate(body)
+        normalized = str(task_id or "").strip()
+        if not normalized:
+            return {
+                "ok": False,
+                "error": "task_id 不能为空。",
+                "error_code": "GLOBAL_TASK_REQUEST_INVALID",
+            }, 400
         return _state_success(
-            build_global_task_controller().get_state(request.task_id)
+            build_global_task_controller().get_state(normalized)
         )
+    except Exception as exc:
+        return _error(exc)
+
+
+def conversation_task_link_payload(
+    conversation_id: str,
+) -> ResponseWithStatus:
+    """conversation → 未解决 Deferred 任务的纯读关联。
+
+    只返回 ``link_status='ready'`` 的 link；``awaiting_history`` provisional
+    link 仅供服务端恢复/清理，不向前端宣告任务已受理。任务终结并 continuation
+    提交后 link 变为 resolved，本接口回到空任务。
+
+    报告 A-15：本接口只返回最小公开状态（conversation_id、task_id、
+    link_status），不再内嵌完整 Task。任务的步骤、参数、结果与审批内容由前端
+    通过规范 Task GET（单一 owner）读取，避免同一数据两个暴露入口。
+    """
+
+    from erp_web.stores.pydantic_deferred_task_link_store import READY
+
+    try:
+        context = get_context()
+        normalized = str(conversation_id or "").strip()
+        if not normalized:
+            return {
+                "ok": False,
+                "error": "conversation_id 不能为空。",
+                "error_code": "AI_CHAT_CONVERSATION_ID_INVALID",
+            }, 400
+        link = context.deferred_task_links.active_for_conversation(normalized)
+        if link is None or link.link_status != READY:
+            return {
+                "ok": True,
+                "conversation_id": normalized,
+                "task": None,
+                "task_id": "",
+                "link_status": "",
+            }, 200
+        # 校验任务存在（不存在则按 404 返回），但不把任务详情内嵌到关联响应。
+        build_global_task_controller(context).get_state(link.task_id)
+        return {
+            "ok": True,
+            "conversation_id": normalized,
+            "task_id": link.task_id,
+            "link_status": link.link_status,
+            "task": None,
+        }, 200
+    except GlobalTaskStoreError as exc:
+        status = 404 if exc.code == "GLOBAL_TASK_NOT_FOUND" else 409
+        return {"ok": False, "error": str(exc), "error_code": exc.code}, status
     except Exception as exc:
         return _error(exc)
 
@@ -568,16 +627,6 @@ def cancel_global_task_payload(body: dict[str, Any]) -> ResponseWithStatus:
         return _error(exc)
 
 
-def refresh_global_task_payload(body: dict[str, Any]) -> ResponseWithStatus:
-    try:
-        request = GlobalTaskIdRequest.model_validate(body)
-        return _success(
-            build_global_task_controller().refresh_task(request.task_id)
-        )
-    except Exception as exc:
-        return _error(exc)
-
-
 __all__ = [
     "GLOBAL_CHAT_TOOLSET_ID",
     "PRODUCT_RESEARCH_JOB_TYPE",
@@ -591,9 +640,9 @@ __all__ = [
     "build_global_chat_toolset",
     "build_global_task_controller",
     "cancel_global_task_payload",
-    "get_global_task_payload",
+    "conversation_task_link_payload",
     "global_chat_permissions",
-    "refresh_global_task_payload",
+    "read_global_task_state_payload",
     "reject_global_task_payload",
     "submit_global_task_input_payload",
 ]

@@ -1,7 +1,8 @@
-"""GlobalTaskController 测试：类型化计划、统一 Runtime 执行、审批与恢复。
+"""GlobalTaskController 测试：Deferred 受理、worker 唯一执行、审批与恢复。
 
-Controller 不再有 Planner、手写 executor 或按 Capability 名称分支；
-这些测试全部通过真实 ``@ai_tool`` 编译链与 ``AiToolRuntime`` 执行。
+新生命周期：``accept_deferred_task`` 同事务创建 Task 与 provisional link，
+首次 Deferred history 原子提交（link ready）之后，recovery worker 通过既有
+execution lease 独占推进全部步骤；补资料/批准/拒绝/取消只改变业务状态。
 """
 
 from __future__ import annotations
@@ -14,11 +15,13 @@ from typing import Annotated, Any
 
 import pytest
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic_ai.messages import ModelRequest, UserPromptPart
 
 from erp_web.db import ErpDatabase
 from erp_web.schemas.ai_tools import JobReferenceResult, TaskApprovalSnapshot
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.global_tasks import (
+    GlobalTaskAcceptance,
     GlobalTaskApproveRequest,
     GlobalTaskIdRequest,
     GlobalTaskInputRequest,
@@ -37,6 +40,9 @@ from erp_web.services.global_task_controller import (
 )
 from erp_web.services.task_approval import verify_execution_approval
 from erp_web.stores.global_task_store import LocalGlobalTaskStore
+from erp_web.stores.pydantic_deferred_task_link_store import (
+    PydanticDeferredTaskLinkStore,
+)
 
 
 NOW = datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc)
@@ -44,6 +50,8 @@ RECORDED: dict[str, list[dict[str, Any]]] = {}
 
 # 测试用长任务 Job 类别；Job Status Reader 注册表按它解析读取器。
 FAKE_JOB_TYPE = "fake"
+
+CONVERSATION = "conversation_global_chat_" + "c" * 32
 
 
 def _record(name: str, **payload: Any) -> None:
@@ -123,6 +131,44 @@ def fake_input(request: FakeInputRequest) -> FakeInputResult:
         )
     _record("fake_input", clarification=request.clarification)
     return FakeInputResult(summary=f"已补充：{request.clarification}")
+
+
+class FakeImageInputRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_ids: list[str] = Field(default_factory=list, max_length=10)
+
+
+class FakeImageInputResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str
+    asset_ids: list[str]
+
+
+@ai_tool(
+    name="fake_image_input",
+    description="需要 string_list 图片资产的测试能力。",
+    permission="fake.read",
+    side_effect="none",
+    recovery_policy="retry_safe",
+    version="1",
+)
+def fake_image_input(request: FakeImageInputRequest) -> FakeImageInputResult:
+    if not request.asset_ids:
+        raise CapabilityInputRequired(
+            "FAKE_ASSETS_REQUIRED",
+            "请选择要用于发布的图片资产。",
+            key="asset_ids",
+            label="图片资产",
+            reason="请从已就绪的图片池中选择。",
+            input_type="string_list",
+        )
+    _record("fake_image_input", asset_ids=list(request.asset_ids))
+    return FakeImageInputResult(
+        summary=f"已选择 {len(request.asset_ids)} 张图片。",
+        asset_ids=list(request.asset_ids),
+    )
 
 
 class FakeWriteRequest(BaseModel):
@@ -321,15 +367,113 @@ def fake_outcome_unknown(
     )
 
 
+class FakeProfilePatch(BaseModel):
+    """模拟商品主档补丁：多字段默认空值，必须以部分补丁执行。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    product_id: str = Field(default="", max_length=64)
+    stock: str = Field(default="", max_length=64)
+    brand: str = Field(default="", max_length=120)
+    model: str = Field(default="", max_length=120)
+    cost: str = Field(default="", max_length=64)
+    weight_kg: str = Field(default="", max_length=64)
+
+
+class FakeProfilePatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    product: FakeProfilePatch
+
+
+class FakeProfilePatchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    product_id: str = ""
+    changed_fields: tuple[str, ...] = ()
+
+
+@ai_tool(
+    name="fake_profile_patch",
+    description="多字段部分补丁测试能力。",
+    permission="fake.write",
+    side_effect="write",
+    approval_required=False,
+    idempotency="required",
+    idempotency_keys=("operation_key",),
+    recovery_policy="retry_safe",
+    version="1",
+)
+def fake_profile_patch(
+    request: FakeProfilePatchRequest,
+    execution: Annotated[AiExecutionContext, Injected()],
+) -> FakeProfilePatchResult:
+    del execution
+    # 与 product_save 一致：写能力按 exclude_unset 应用部分补丁。
+    patch = request.product.model_dump(mode="json", exclude_unset=True)
+    _record("fake_profile_patch", patch=patch)
+    return FakeProfilePatchResult(
+        product_id=request.product.product_id,
+        changed_fields=tuple(
+            sorted(key for key in patch if key != "product_id")
+        ),
+    )
+
+
+class FakeNestedInputRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    draft_id: str = Field(default="", max_length=64)
+    provided_attributes: dict[str, str] = Field(default_factory=dict)
+
+
+class FakeNestedInputResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str
+    provided_attributes: dict[str, str] = Field(default_factory=dict)
+
+
+@ai_tool(
+    name="fake_nested_input",
+    description="需要嵌套 provided_attributes 补资料的测试能力。",
+    permission="fake.read",
+    side_effect="none",
+    recovery_policy="retry_safe",
+    version="1",
+)
+def fake_nested_input(request: FakeNestedInputRequest) -> FakeNestedInputResult:
+    if not request.provided_attributes:
+        raise CapabilityInputRequired(
+            "FAKE_ATTRIBUTES_REQUIRED",
+            "请补充属性后继续。",
+            key="85",
+            label="品牌属性",
+            reason="缺少必填属性。",
+            input_owner="provided_attributes",
+        )
+    _record(
+        "fake_nested_input",
+        provided_attributes=dict(request.provided_attributes),
+    )
+    return FakeNestedInputResult(
+        summary="已补充属性。",
+        provided_attributes=dict(request.provided_attributes),
+    )
+
+
 FAKE_CAPABILITIES = (
     fake_read,
     fake_input,
+    fake_image_input,
     fake_write_manual,
     fake_write_retry,
     fake_approval,
     fake_job,
     fake_fail,
     fake_outcome_unknown,
+    fake_profile_patch,
+    fake_nested_input,
 )
 FAKE_PERMISSIONS = frozenset({"fake.read", "fake.write"})
 
@@ -365,12 +509,15 @@ def _controller(
 ) -> tuple[GlobalTaskController, LocalGlobalTaskStore]:
     RECORDED.clear()
     active_catalog = catalog or AiToolCatalog.compile(FAKE_CAPABILITIES)
-    store = LocalGlobalTaskStore(ErpDatabase(tmp_path / "erp.sqlite3"))
+    db = ErpDatabase(tmp_path / "erp.sqlite3")
+    store = LocalGlobalTaskStore(db)
+    links = PydanticDeferredTaskLinkStore(db)
     controller = GlobalTaskController(
         store=store,
         catalog=active_catalog,
         task_toolset=_build_toolset(active_catalog),
         job_status_readers={FAKE_JOB_TYPE: reader or _JobStatusReader()},
+        deferred_links=links,
         approval_mode_loader=lambda: approval_mode,  # type: ignore[return-value]
     )
     return controller, store
@@ -393,49 +540,217 @@ class _Selection:
         self.arguments = arguments
 
 
+_CALL_COUNTER = {"value": 0}
+
+
+def _next_call_id() -> str:
+    _CALL_COUNTER["value"] += 1
+    return f"tool-call-{_CALL_COUNTER['value']}"
+
+
+def _accept_task(
+    controller: GlobalTaskController,
+    request: Any,
+    *,
+    conversation_id: str = CONVERSATION,
+) -> GlobalTaskAcceptance:
+    """Deferred 握手：只创建 Task + provisional link，不执行任何步骤。"""
+
+    return controller.accept_deferred_task(
+        request,
+        conversation_id=conversation_id,
+        request_run_id="run-1",
+        tool_call_id=_next_call_id(),
+        message_id="message-1",
+    )
+
+
+def _commit_first_history(
+    controller: GlobalTaskController,
+    acceptance: GlobalTaskAcceptance,
+) -> None:
+    """模拟协议层在同一事务提交首次 Deferred history 并置 link ready。"""
+
+    assert controller.deferred_links is not None
+    controller.deferred_links.commit_initial_deferred_history(
+        acceptance.conversation_id,
+        [ModelRequest(parts=[UserPromptPart("创建任务")])],
+        link_id=acceptance.link_id,
+        request_run_id="run-1",
+        encoded_chunks=[],
+    )
+
+
+def _start_and_run(
+    controller: GlobalTaskController,
+    request: Any,
+    *,
+    conversation_id: str = CONVERSATION,
+) -> LocalGlobalTaskState:
+    """完整生命周期：受理 → 首次 history 提交 → worker 推进。"""
+
+    acceptance = _accept_task(
+        controller,
+        request,
+        conversation_id=conversation_id,
+    )
+    _commit_first_history(controller, acceptance)
+    return controller.resume_task(acceptance.task_id)
+
+
 def _seed_running_task_with_running_step(
     controller: GlobalTaskController,
     store: LocalGlobalTaskStore,
     capability_name: str,
     arguments: BaseModel,
 ) -> LocalGlobalTaskState:
-    """模拟进程在业务步骤执行期间崩溃：步骤已持久化为 running 且无结果。"""
+    """模拟进程在业务步骤执行期间崩溃：步骤已持久化为 running 且无结果。
 
-    task_id = "gtask_crashed"
-    steps = controller._build_steps(
-        task_id,
-        [_Selection(capability_name, arguments)],
+    报告 R-07：夹具使用正式 Task+link 创建流程（accept_deferred_task →
+    首次 history 提交置 link ready），再改写步骤状态模拟崩溃现场；不再直接
+    创建无 Deferred link 的任务。
+    """
+
+    acceptance = _accept_task(
+        controller,
+        _start_request(
+            _Selection(capability_name, arguments),
+            goal="崩溃恢复测试",
+        ),
     )
-    crashed_step = steps[0].model_copy(update={"status": "running"})
-    task = LocalGlobalTaskState(
-        task_id=task_id,
-        goal="崩溃恢复测试",
-        status="running",
-        steps=[crashed_step],
-        current_step_index=0,
-        created_at=NOW,
-        updated_at=NOW,
-    )
-    return store.create_task(task)
+    _commit_first_history(controller, acceptance)
+    task = store.require_task(acceptance.task_id)
+    steps = list(task.steps)
+    steps[0] = steps[0].model_copy(update={"status": "running"})
+    return store.save_task(task.model_copy(update={"steps": steps}))
 
 
-# -- 顺序执行 ----------------------------------------------------------------
+# -- Deferred 受理与 ready 屏障 ----------------------------------------------
 
 
-def test_start_executes_typed_steps_strictly_in_order_via_runtime(tmp_path) -> None:
+def test_accept_creates_task_and_provisional_link_without_execution(
+    tmp_path,
+) -> None:
     controller, store = _controller(tmp_path)
 
-    response = controller.start_task(
+    acceptance = _accept_task(
+        controller,
+        _start_request(_Selection("fake_read", FakeReadRequest(product_id="p-1"))),
+    )
+
+    assert acceptance.ok is True
+    assert acceptance.conversation_id == CONVERSATION
+    task = store.require_task(acceptance.task_id)
+    assert task.status == "running"
+    assert task.current_step_index == 0
+    # 受理阶段不执行任何步骤。
+    assert RECORDED == {}
+    assert controller.deferred_links is not None
+    link = controller.deferred_links.get(acceptance.link_id)
+    assert link is not None
+    assert link.link_status == "awaiting_history"
+    assert link.ready_at == ""
+    assert link.task_id == acceptance.task_id
+    assert link.tool_call_id == acceptance.tool_call_id
+
+
+def test_ready_barrier_blocks_worker_until_first_history_committed(
+    tmp_path,
+) -> None:
+    controller, store = _controller(tmp_path)
+    acceptance = _accept_task(
+        controller,
+        _start_request(_Selection("fake_read", FakeReadRequest(product_id="p-1"))),
+    )
+
+    # provisional link：worker 不得领取执行。
+    blocked = controller.resume_task(acceptance.task_id)
+    assert blocked.status == "running"
+    assert RECORDED == {}
+    assert controller.recover_unfinished_tasks() == []
+    assert RECORDED == {}
+
+    _commit_first_history(controller, acceptance)
+    resumed = controller.resume_task(acceptance.task_id)
+    assert resumed.status == "completed"
+    assert list(RECORDED["fake_read"]) == [{"product_id": "p-1"}]
+    assert store.require_task(acceptance.task_id) == resumed
+
+
+def test_second_deferred_task_on_same_conversation_is_rejected(
+    tmp_path,
+) -> None:
+    controller, store = _controller(tmp_path)
+    request = _start_request(_Selection("fake_read", FakeReadRequest()))
+
+    first = _accept_task(controller, request)
+    with pytest.raises(GlobalTaskControllerError) as error:
+        controller.accept_deferred_task(
+            request,
+            conversation_id=CONVERSATION,
+            request_run_id="run-1",
+            tool_call_id=_next_call_id(),
+        )
+    assert error.value.code == "GLOBAL_TASK_DEFERRED_ALREADY_PENDING"
+
+    # 拒绝不得留下孤儿 Task 或 link。
+    assert store.list_unfinished_tasks()[0].task_id == first.task_id
+    assert len(store.list_unfinished_tasks()) == 1
+
+    # 另一个 conversation 不受影响。
+    other = controller.accept_deferred_task(
+        request,
+        conversation_id="conversation_global_chat_" + "d" * 32,
+        request_run_id="run-2",
+        tool_call_id=_next_call_id(),
+    )
+    assert other.task_id != first.task_id
+
+    # 首个任务终结后，同一 conversation 允许新的 Deferred。
+    _commit_first_history(controller, first)
+    controller.resume_task(first.task_id)
+    assert store.require_task(first.task_id).status == "completed"
+    resolved_link = controller.deferred_links.get(first.link_id)
+    assert resolved_link is not None
+    # 任务终结但 continuation 尚未提交：link 仍是 active，仍拒绝新任务。
+    with pytest.raises(GlobalTaskControllerError):
+        controller.accept_deferred_task(
+            request,
+            conversation_id=CONVERSATION,
+            request_run_id="run-3",
+            tool_call_id=_next_call_id(),
+        )
+
+
+def test_accept_missing_context_is_rejected(tmp_path) -> None:
+    controller, _store = _controller(tmp_path)
+
+    with pytest.raises(GlobalTaskControllerError) as error:
+        controller.accept_deferred_task(
+            _start_request(_Selection("fake_read", FakeReadRequest())),
+            conversation_id="",
+            request_run_id="run-1",
+            tool_call_id="call-x",
+        )
+    assert error.value.code == "TASK_CONTROL_CONTEXT_MISSING"
+
+
+# -- 顺序执行（worker 唯一执行路径） ----------------------------------------
+
+
+def test_worker_executes_typed_steps_strictly_in_order_via_runtime(
+    tmp_path,
+) -> None:
+    controller, store = _controller(tmp_path)
+
+    task = _start_and_run(
+        controller,
         _start_request(
             _Selection("fake_read", FakeReadRequest(product_id="p-1")),
             _Selection("fake_write_retry", FakeWriteRequest(value="v-1")),
         ),
-        conversation_id="conversation-1",
-        message_id="message-1",
     )
-    task = response.task
 
-    assert response.task_id == task.task_id
     assert task.status == "completed"
     assert task.current_step_index == 2
     assert [step.status for step in task.steps] == ["completed", "completed"]
@@ -447,50 +762,36 @@ def test_start_executes_typed_steps_strictly_in_order_via_runtime(tmp_path) -> N
     step = task.steps[1]
     assert execution["business_scope"]["task_id"] == task.task_id
     assert execution["business_scope"]["step_id"] == step.step_id
-    assert execution["business_scope"]["conversation_id"] == "conversation-1"
+    assert execution["business_scope"]["conversation_id"] == CONVERSATION
     assert execution["idempotency_context"]["operation_key"] == step.operation_key
     assert step.operation_key == f"global-task:{task.task_id}:step:{step.step_id}"
     assert execution["allow_write"] is True
     assert execution["budget_profile"] == "global.task"
 
 
-def test_model_scoped_multistep_task_checkpoints_and_refreshes(tmp_path) -> None:
+def test_worker_advances_all_steps_in_single_recovery_pass(tmp_path) -> None:
     controller, store = _controller(tmp_path)
-
-    response = controller.start_task(
+    acceptance = _accept_task(
+        controller,
         _start_request(
             _Selection("fake_read", FakeReadRequest(product_id="p-1")),
             _Selection("fake_read", FakeReadRequest(product_id="p-2")),
         ),
-        conversation_id="conversation-1",
-        message_id="message-1",
-        outer_remaining_seconds=120,
     )
+    _commit_first_history(controller, acceptance)
 
-    assert response.task.status == "running"
-    assert response.task.current_step_index == 1
-    assert [step.status for step in response.task.steps] == [
-        "completed",
-        "pending",
-    ]
-    assert list(RECORDED["fake_read"]) == [{"product_id": "p-1"}]
-    assert store.require_task(response.task_id) == response.task
+    resumed = controller.resume_task(acceptance.task_id)
 
-    refreshed = controller.refresh_task(response.task_id)
-
-    assert refreshed.task.status == "completed"
-    assert refreshed.task.current_step_index == 2
-    assert [step.status for step in refreshed.task.steps] == [
-        "completed",
-        "completed",
-    ]
+    assert resumed.status == "completed"
+    assert resumed.current_step_index == 2
     assert list(RECORDED["fake_read"]) == [
         {"product_id": "p-1"},
         {"product_id": "p-2"},
     ]
+    assert store.require_task(acceptance.task_id) == resumed
 
 
-def test_start_revalidates_arguments_with_capability_request_adapter(
+def test_accept_revalidates_arguments_with_capability_request_adapter(
     tmp_path,
 ) -> None:
     controller, store = _controller(tmp_path)
@@ -501,19 +802,117 @@ def test_start_revalidates_arguments_with_capability_request_adapter(
         value: str = "ok"
         extra_field: str = "不受目标 Schema 允许"
 
+    # 部分补丁语义下，未显式设置的字段不会进入持久化参数；
+    # 显式设置的不允许字段仍必须被目标 request adapter 拒绝。
     with pytest.raises(GlobalTaskControllerError) as error:
-        controller.start_task(
-            _start_request(_Selection("fake_write_retry", LooseArguments()))
+        _accept_task(
+            controller,
+            _start_request(
+                _Selection(
+                    "fake_write_retry",
+                    LooseArguments(extra_field="不受目标 Schema 允许"),
+                )
+            ),
         )
     assert error.value.code == "GLOBAL_TASK_STEP_ARGUMENTS_INVALID"
+    # 校验失败不得留下任何 Task 或 link。
+    assert store.list_unfinished_tasks() == []
 
 
-def test_start_rejects_capability_missing_from_task_toolset(tmp_path) -> None:
+def test_partial_patch_arguments_persist_without_default_expansion(
+    tmp_path,
+) -> None:
+    """只提供 product_id + stock 时，未提供字段不得展开成显式空值。
+
+    覆盖：创建时持久化参数、Task store round-trip、worker 重新校验执行。
+    """
+
+    controller, store = _controller(tmp_path)
+
+    acceptance = _accept_task(
+        controller,
+        _start_request(
+            _Selection(
+                "fake_profile_patch",
+                FakeProfilePatchRequest(
+                    product={"product_id": "p-1", "stock": "200"}
+                ),
+            ),
+        ),
+    )
+    task = store.require_task(acceptance.task_id)
+    # 持久化参数只包含实际提供的字段（嵌套 model 的 fields_set 保留）。
+    assert task.steps[0].arguments == {
+        "product": {"product_id": "p-1", "stock": "200"}
+    }
+
+    _commit_first_history(controller, acceptance)
+    resumed = controller.resume_task(acceptance.task_id)
+    assert resumed.status == "completed"
+    # worker 重新校验不会重新引入默认空字段；执行的就是部分补丁。
+    assert RECORDED["fake_profile_patch"][0]["patch"] == {
+        "product_id": "p-1",
+        "stock": "200",
+    }
+    assert resumed.steps[0].result is not None
+    assert resumed.steps[0].result["changed_fields"] == ["stock"]
+
+    # Task store round-trip 后仍只包含实际提供字段。
+    reloaded = store.require_task(acceptance.task_id)
+    assert reloaded.steps[0].arguments == {
+        "product": {"product_id": "p-1", "stock": "200"}
+    }
+
+
+def test_partial_patch_does_not_overwrite_unprovided_fields(tmp_path) -> None:
+    """更新库存不得把 brand/model/cost/weight 等未提供字段变成空值。
+
+    模拟商品主档已有完整资料；部分补丁执行后，已有字段保持原值。
+    """
+
+    controller, store = _controller(tmp_path)
+    existing_profile = {
+        "product_id": "p-existing",
+        "stock": "5",
+        "brand": "金诚海蓝",
+        "model": "bxt-cq2",
+        "cost": "9",
+        "weight_kg": "0.04",
+    }
+
+    acceptance = _accept_task(
+        controller,
+        _start_request(
+            _Selection(
+                "fake_profile_patch",
+                FakeProfilePatchRequest(
+                    product={"product_id": "p-existing", "stock": "200"}
+                ),
+            ),
+        ),
+    )
+    _commit_first_history(controller, acceptance)
+    resumed = controller.resume_task(acceptance.task_id)
+    assert resumed.status == "completed"
+
+    patch = RECORDED["fake_profile_patch"][0]["patch"]
+    # 执行收到的补丁只有 stock（和定位键），不含任何空默认字段。
+    assert set(patch) == {"product_id", "stock"}
+    merged = {**existing_profile, **patch}
+    assert merged["stock"] == "200"
+    assert merged["brand"] == "金诚海蓝"
+    assert merged["model"] == "bxt-cq2"
+    assert merged["cost"] == "9"
+    assert merged["weight_kg"] == "0.04"
+
+
+def test_accept_rejects_capability_missing_from_task_toolset(tmp_path) -> None:
     controller, _store = _controller(tmp_path)
 
     with pytest.raises(GlobalTaskControllerError) as error:
-        controller.start_task(
-            _start_request(_Selection("not_a_capability", FakeReadRequest()))
+        _accept_task(
+            controller,
+            _start_request(_Selection("not_a_capability", FakeReadRequest())),
         )
     assert error.value.code == "GLOBAL_TASK_CAPABILITY_UNAVAILABLE"
 
@@ -521,13 +920,13 @@ def test_start_rejects_capability_missing_from_task_toolset(tmp_path) -> None:
 def test_failed_capability_stops_task_with_stable_code(tmp_path) -> None:
     controller, _store = _controller(tmp_path)
 
-    response = controller.start_task(
+    task = _start_and_run(
+        controller,
         _start_request(
             _Selection("fake_fail", FakeFailRequest()),
             _Selection("fake_read", FakeReadRequest()),
-        )
+        ),
     )
-    task = response.task
 
     assert task.status == "failed"
     assert task.error_code == "FAKE_FAILED"
@@ -544,10 +943,10 @@ def test_capability_reported_outcome_unknown_is_not_retryable(tmp_path) -> None:
 
     controller, _store = _controller(tmp_path)
 
-    response = controller.start_task(
-        _start_request(_Selection("fake_outcome_unknown", FakeFailRequest()))
+    task = _start_and_run(
+        controller,
+        _start_request(_Selection("fake_outcome_unknown", FakeFailRequest())),
     )
-    task = response.task
 
     assert task.status == "failed"
     assert task.error_code == "FAKE_OUTCOME_UNKNOWN"
@@ -561,10 +960,12 @@ def test_version_freeze_refuses_execution_after_capability_upgrade(
     tmp_path,
 ) -> None:
     controller, store = _controller(tmp_path)
-    response = controller.start_task(
-        _start_request(_Selection("fake_input", FakeInputRequest()))
+    acceptance = _accept_task(
+        controller,
+        _start_request(_Selection("fake_input", FakeInputRequest())),
     )
-    task = response.task
+    _commit_first_history(controller, acceptance)
+    task = controller.resume_task(acceptance.task_id)
     assert task.status == "needs_input"
 
     upgraded = tuple(
@@ -588,32 +989,36 @@ def test_version_freeze_refuses_execution_after_capability_upgrade(
         catalog=upgraded_catalog,
         task_toolset=_build_toolset(upgraded_catalog),
         job_status_readers={FAKE_JOB_TYPE: _JobStatusReader()},
+        deferred_links=controller.deferred_links,
     )
 
-    resumed = upgraded_controller.submit_input(
+    resumed_state = upgraded_controller.submit_input(
         GlobalTaskInputRequest(
             task_id=task.task_id,
             arguments={"clarification": "补充说明"},
         )
-    )
+    ).task
+    # submit_input 只做状态变更，执行在 worker。
+    assert resumed_state.status == "running"
+    resumed = upgraded_controller.resume_task(task.task_id)
     # 版本不一致必须在执行前被 Controller 拒绝，而不是静默重放。
-    assert resumed.task.status == "failed"
-    assert resumed.task.error_code == "GLOBAL_TASK_CAPABILITY_VERSION_MISMATCH"
+    assert resumed.status == "failed"
+    assert resumed.error_code == "GLOBAL_TASK_CAPABILITY_VERSION_MISMATCH"
     assert "fake_input" not in RECORDED
 
 
 # -- 补充资料 ----------------------------------------------------------------
 
 
-def test_needs_input_then_submit_input_merges_arguments_and_resumes(
+def test_needs_input_then_submit_input_merges_arguments_and_worker_resumes(
     tmp_path,
 ) -> None:
     controller, _store = _controller(tmp_path)
 
-    response = controller.start_task(
-        _start_request(_Selection("fake_input", FakeInputRequest()))
+    task = _start_and_run(
+        controller,
+        _start_request(_Selection("fake_input", FakeInputRequest())),
     )
-    task = response.task
     assert task.status == "needs_input"
     assert task.steps[0].status == "needs_input"
     # 待补字段必须来自 Capability 的类型化 details，而不是通用 fallback。
@@ -621,48 +1026,148 @@ def test_needs_input_then_submit_input_merges_arguments_and_resumes(
     assert task.pending_inputs[0].label == "补充说明"
     assert task.pending_inputs[0].reason == "缺少说明。"
 
-    resumed = controller.submit_input(
+    submitted = controller.submit_input(
         GlobalTaskInputRequest(
             task_id=task.task_id,
             arguments={"clarification": "需要红色包装"},
         )
     )
+    # 补资料只改变业务状态：任务回到 running，等待 worker 领取。
+    assert submitted.task.status == "running"
+    assert submitted.task.pending_inputs == []
+    assert RECORDED.get("fake_input") is None
 
-    assert resumed.task.status == "completed"
-    assert resumed.task.pending_inputs == []
+    resumed = controller.resume_task(task.task_id)
+    assert resumed.status == "completed"
     assert RECORDED["fake_input"] == [{"clarification": "需要红色包装"}]
+
+
+def test_needs_input_string_list_accepts_list_and_rejects_plain_string(
+    tmp_path,
+) -> None:
+    """报告 A-08（纵向）：string_list 待补字段必须按列表提交。
+
+    真实能力（如 prepare_product_images）以 ``input_type="string_list"`` 要求
+    ``asset_ids``。前端旧实现把所有类型按字符串提交，会在这里触发 Pydantic
+    list_type 校验失败。本测试固化任务级契约：待补字段声明为 string_list，
+    提交列表可合并并继续执行；提交普通字符串被 schema 拒绝。
+    """
+
+    controller, store = _controller(tmp_path)
+    task = _start_and_run(
+        controller,
+        _start_request(_Selection("fake_image_input", FakeImageInputRequest())),
+    )
+    assert task.status == "needs_input"
+    assert [item.key for item in task.pending_inputs] == ["asset_ids"]
+    assert task.pending_inputs[0].input_type == "string_list"
+
+    # 旧前端的字符串提交：合并后不满足 list[str] schema，被确定性拒绝。
+    with pytest.raises(GlobalTaskControllerError) as string_error:
+        controller.submit_input(
+            GlobalTaskInputRequest(
+                task_id=task.task_id,
+                arguments={"asset_ids": "image-1, image-2"},
+            )
+        )
+    assert string_error.value.code == "GLOBAL_TASK_INPUT_SCHEMA_INVALID"
+    assert store.require_task(task.task_id).status == "needs_input"
+
+    # 类型化列表提交：合并通过，任务回到 running 并由 worker 继续。
+    submitted = controller.submit_input(
+        GlobalTaskInputRequest(
+            task_id=task.task_id,
+            arguments={"asset_ids": ["image-1", "image-2"]},
+        )
+    )
+    assert submitted.task.status == "running"
+
+    resumed = controller.resume_task(task.task_id)
+    assert resumed.status == "completed"
+    assert RECORDED["fake_image_input"] == [
+        {"asset_ids": ["image-1", "image-2"]}
+    ]
+    # 成功步骤的业务结果（含所选资产）随任务状态持久化。
+    assert resumed.steps[0].result is not None
+    assert resumed.steps[0].result["asset_ids"] == ["image-1", "image-2"]
+
+
+def test_needs_input_nested_owner_merges_into_provided_attributes(
+    tmp_path,
+) -> None:
+    """嵌套补资料：input_owner 决定提交字段合并到 provided_attributes 路径。
+
+    旧实现把属性 ID 作为顶层参数提交、Controller 只做顶层浅合并，导致
+    GLOBAL_TASK_INPUT_SCHEMA_INVALID。修复后 pending input 携带 input_owner，
+    Controller 按路径合并，同一任务可恢复执行。
+    """
+
+    controller, store = _controller(tmp_path)
+    task = _start_and_run(
+        controller,
+        _start_request(
+            _Selection("fake_nested_input", FakeNestedInputRequest(draft_id="d-1"))
+        ),
+    )
+    assert task.status == "needs_input"
+    assert [item.key for item in task.pending_inputs] == ["85"]
+    # 待补字段携带稳定 input_owner，供受信 UI 与 Controller 按路径合并。
+    assert task.pending_inputs[0].input_owner == "provided_attributes"
+
+    # UI 提交属性值；Controller 按 input_owner 合并进嵌套 provided_attributes。
+    submitted = controller.submit_input(
+        GlobalTaskInputRequest(
+            task_id=task.task_id,
+            arguments={"85": "Нет бренда"},
+        )
+    )
+    assert submitted.task.status == "running"
+    step_arguments = submitted.task.steps[0].arguments
+    assert step_arguments.get("provided_attributes") == {"85": "Нет бренда"}
+    # 原有顶层参数保留，且未把属性键泄漏到顶层。
+    assert step_arguments.get("draft_id") == "d-1"
+    assert "85" not in step_arguments
+
+    resumed = controller.resume_task(task.task_id)
+    assert resumed.status == "completed"
+    assert RECORDED["fake_nested_input"] == [
+        {"provided_attributes": {"85": "Нет бренда"}}
+    ]
+    assert store.require_task(task.task_id).status == "completed"
 
 
 def test_submit_input_rejects_merged_arguments_that_fail_schema(
     tmp_path,
 ) -> None:
     controller, store = _controller(tmp_path)
-    response = controller.start_task(
-        _start_request(_Selection("fake_input", FakeInputRequest()))
+    task = _start_and_run(
+        controller,
+        _start_request(_Selection("fake_input", FakeInputRequest())),
     )
-    before = store.require_task(response.task_id)
+    before = store.require_task(task.task_id)
 
     with pytest.raises(GlobalTaskControllerError) as error:
         controller.submit_input(
             GlobalTaskInputRequest(
-                task_id=response.task_id,
+                task_id=task.task_id,
                 arguments={"clarification": "x" * 500},
             )
         )
     assert error.value.code == "GLOBAL_TASK_INPUT_SCHEMA_INVALID"
-    assert store.require_task(response.task_id) == before
+    assert store.require_task(task.task_id) == before
 
 
 def test_submit_input_on_task_without_pending_input_is_rejected(tmp_path) -> None:
     controller, _store = _controller(tmp_path)
-    response = controller.start_task(
-        _start_request(_Selection("fake_read", FakeReadRequest()))
+    task = _start_and_run(
+        controller,
+        _start_request(_Selection("fake_read", FakeReadRequest())),
     )
 
     with pytest.raises(GlobalTaskControllerError) as error:
         controller.submit_input(
             GlobalTaskInputRequest(
-                task_id=response.task_id,
+                task_id=task.task_id,
                 arguments={"product_id": "p-2"},
             )
         )
@@ -674,18 +1179,27 @@ def test_submit_input_on_task_without_pending_input_is_rejected(tmp_path) -> Non
 APPROVER = "local-ui:test"
 
 
-def _start_approval_task(controller) -> LocalGlobalTaskState:
-    response = controller.start_task(
+def _accept_approval_task(
+    controller: GlobalTaskController,
+    *,
+    conversation_id: str = "conversation_global_chat_" + "9" * 32,
+) -> GlobalTaskAcceptance:
+    return _accept_task(
+        controller,
         _start_request(
             _Selection(
                 "fake_approval",
                 FakeApprovalRequest(draft_id="draft-9", price="199"),
             )
         ),
-        conversation_id="conversation-9",
-        message_id="message-9",
+        conversation_id=conversation_id,
     )
-    return response.task
+
+
+def _pending_approval_task(controller: GlobalTaskController) -> LocalGlobalTaskState:
+    acceptance = _accept_approval_task(controller)
+    _commit_first_history(controller, acceptance)
+    return controller.resume_task(acceptance.task_id)
 
 
 def test_approval_gate_persists_digest_bound_to_step_and_revision(
@@ -693,7 +1207,7 @@ def test_approval_gate_persists_digest_bound_to_step_and_revision(
 ) -> None:
     controller, _store = _controller(tmp_path)
 
-    task = _start_approval_task(controller)
+    task = _pending_approval_task(controller)
 
     assert task.status == "pending_approval"
     assert task.steps[0].status == "pending"
@@ -731,27 +1245,28 @@ def test_model_cannot_forge_approval_display_summary(tmp_path) -> None:
         approval: dict = {"summary": "模型伪造的摘要"}
 
     with pytest.raises(GlobalTaskControllerError) as error:
-        controller.start_task(
+        _accept_task(
+            controller,
             _start_request(
                 _Selection("fake_approval", ForgedApprovalArguments())
-            )
+            ),
         )
     assert error.value.code == "GLOBAL_TASK_STEP_ARGUMENTS_INVALID"
     assert "fake_approval" not in RECORDED
 
     # 正常路径下，展示内容依然是服务端生成的快照，与伪造输入无关。
-    task = _start_approval_task(controller)
+    task = _pending_approval_task(controller)
     approval = task.pending_approval
     assert approval is not None
     assert approval.payload["summary"] == "发布摘要 draft-9"
     assert "伪造" not in approval.payload["summary"]
 
 
-def test_approve_executes_with_approved_call_id_and_confirmed_at(
+def test_approve_then_worker_executes_with_persisted_approval_record(
     tmp_path,
 ) -> None:
     controller, _store = _controller(tmp_path)
-    task = _start_approval_task(controller)
+    task = _pending_approval_task(controller)
 
     approved = controller.approve_task(
         GlobalTaskApproveRequest(task_id=task.task_id),
@@ -759,14 +1274,18 @@ def test_approve_executes_with_approved_call_id_and_confirmed_at(
         conversation_id="conversation-9",
         message_id="message-10",
     )
-
-    assert approved.task.status == "completed"
+    # 批准只改变业务状态：任务回到 running，执行在 worker。
+    assert approved.task.status == "running"
     assert approved.task.pending_approval is None
-    # 审批决定审计记录：审批人、决定、digest 与任务版本。
     record = approved.task.steps[0].approval
     assert record is not None
     assert record.approver == APPROVER
     assert record.decision == "approved"
+    assert "fake_approval" not in RECORDED
+
+    resumed = controller.resume_task(task.task_id)
+    assert resumed.status == "completed"
+
     execution = RECORDED["fake_approval"][0]["execution"]
     # Runtime 审批闸门要求 call_id 在可信 approved_tool_call_ids 中，
     # call_id 由 task_id/step_id/execution_id 组成，模型无法伪造。
@@ -786,12 +1305,14 @@ def test_approve_executes_with_approved_call_id_and_confirmed_at(
     assert execution["approval_task_revision"] == approval.task_revision
 
 
-def test_full_approval_mode_preauthorizes_and_executes_without_pending_gate(
+def test_full_approval_mode_preauthorizes_and_worker_executes_without_gate(
     tmp_path,
 ) -> None:
     controller, store = _controller(tmp_path, approval_mode="full")
 
-    task = _start_approval_task(controller)
+    acceptance = _accept_approval_task(controller)
+    _commit_first_history(controller, acceptance)
+    task = controller.resume_task(acceptance.task_id)
 
     assert task.status == "completed"
     assert task.pending_approval is None
@@ -812,7 +1333,7 @@ def test_full_approval_mode_preauthorizes_and_executes_without_pending_gate(
 def test_invalid_approval_mode_fails_closed_to_pending_approval(tmp_path) -> None:
     controller, _store = _controller(tmp_path, approval_mode="invalid")
 
-    task = _start_approval_task(controller)
+    task = _pending_approval_task(controller)
 
     assert task.status == "pending_approval"
     assert "fake_approval" not in RECORDED
@@ -820,7 +1341,7 @@ def test_invalid_approval_mode_fails_closed_to_pending_approval(tmp_path) -> Non
 
 def test_approve_without_identity_is_rejected(tmp_path) -> None:
     controller, store = _controller(tmp_path)
-    task = _start_approval_task(controller)
+    task = _pending_approval_task(controller)
 
     with pytest.raises(GlobalTaskControllerError) as error:
         controller.approve_task(
@@ -836,7 +1357,7 @@ def test_approve_with_mismatched_step_id_is_rejected_without_execution(
     tmp_path,
 ) -> None:
     controller, store = _controller(tmp_path)
-    task = _start_approval_task(controller)
+    task = _pending_approval_task(controller)
 
     with pytest.raises(GlobalTaskControllerError) as error:
         controller.approve_task(
@@ -852,7 +1373,7 @@ def test_approve_after_task_modified_is_rejected_as_stale_revision(
     tmp_path,
 ) -> None:
     controller, store = _controller(tmp_path)
-    task = _start_approval_task(controller)
+    task = _pending_approval_task(controller)
 
     # 直接篡改已持久化步骤参数（模拟审批创建后的另一次写入）；
     # 任务 revision 随之前进，原审批版本立即过期。
@@ -876,7 +1397,7 @@ def test_approve_after_task_modified_is_rejected_as_stale_revision(
 
 def test_reject_approval_fails_task_with_stable_reason(tmp_path) -> None:
     controller, _store = _controller(tmp_path)
-    task = _start_approval_task(controller)
+    task = _pending_approval_task(controller)
 
     rejected = controller.reject_task(
         GlobalTaskRejectRequest(task_id=task.task_id, reason="价格不对"),
@@ -897,7 +1418,7 @@ def test_reject_approval_fails_task_with_stable_reason(tmp_path) -> None:
 
 def test_reject_without_identity_is_rejected(tmp_path) -> None:
     controller, store = _controller(tmp_path)
-    task = _start_approval_task(controller)
+    task = _pending_approval_task(controller)
 
     with pytest.raises(GlobalTaskControllerError) as error:
         controller.reject_task(
@@ -910,13 +1431,14 @@ def test_reject_without_identity_is_rejected(tmp_path) -> None:
 
 def test_approve_on_task_without_pending_approval_is_rejected(tmp_path) -> None:
     controller, _store = _controller(tmp_path)
-    response = controller.start_task(
-        _start_request(_Selection("fake_read", FakeReadRequest()))
+    task = _start_and_run(
+        controller,
+        _start_request(_Selection("fake_read", FakeReadRequest())),
     )
 
     with pytest.raises(GlobalTaskControllerError) as error:
         controller.approve_task(
-            GlobalTaskApproveRequest(task_id=response.task_id),
+            GlobalTaskApproveRequest(task_id=task.task_id),
             approver=APPROVER,
         )
     assert error.value.code == "GLOBAL_TASK_APPROVAL_NOT_EXPECTED"
@@ -930,10 +1452,10 @@ def test_persistent_job_moves_task_to_in_progress_with_generic_active_job(
 ) -> None:
     controller, _store = _controller(tmp_path)
 
-    response = controller.start_task(
-        _start_request(_Selection("fake_job", FakeWriteRequest(value="go")))
+    task = _start_and_run(
+        controller,
+        _start_request(_Selection("fake_job", FakeWriteRequest(value="go"))),
     )
-    task = response.task
 
     assert task.status == "in_progress"
     assert task.active_job is not None
@@ -944,59 +1466,47 @@ def test_persistent_job_moves_task_to_in_progress_with_generic_active_job(
     assert task.assistant_message == "已提交。"
 
 
-def test_refresh_completes_task_when_job_succeeds_and_advances(
-    tmp_path,
-) -> None:
+def test_worker_polls_job_until_success_and_advances(tmp_path) -> None:
     reader = _JobStatusReader({"status": "running"}, {"status": "success"})
     controller, _store = _controller(tmp_path, reader=reader)
-    response = controller.start_task(
+    task = _start_and_run(
+        controller,
         _start_request(
             _Selection("fake_job", FakeWriteRequest(value="go")),
             _Selection("fake_read", FakeReadRequest(product_id="p-9")),
-        )
+        ),
     )
-    task = response.task
     assert task.status == "in_progress"
 
-    unchanged = controller.refresh_task(task.task_id)
-    assert unchanged.task.status == "in_progress"
+    unchanged = controller.resume_task(task.task_id)
+    assert unchanged.status == "in_progress"
 
-    finished = controller.refresh_task(task.task_id)
-    assert finished.task.status == "completed"
-    assert finished.task.active_job is None
-    assert finished.task.steps[0].status == "completed"
-    assert finished.task.steps[0].result == {
+    finished = controller.resume_task(task.task_id)
+    assert finished.status == "completed"
+    assert finished.active_job is None
+    assert finished.steps[0].status == "completed"
+    assert finished.steps[0].result == {
         "job_id": "job-1",
         "job_status": "success",
     }
-    assert finished.task.steps[1].status == "completed"
+    assert finished.steps[1].status == "completed"
     assert reader.calls == ["job-1", "job-1"]
 
 
-def test_refresh_fails_task_with_generic_job_error(tmp_path) -> None:
+def test_worker_fails_task_with_generic_job_error(tmp_path) -> None:
     reader = _JobStatusReader({"status": "failed", "error": "平台拒绝。"})
     controller, _store = _controller(tmp_path, reader=reader)
-    response = controller.start_task(
-        _start_request(_Selection("fake_job", FakeWriteRequest(value="go")))
+    task = _start_and_run(
+        controller,
+        _start_request(_Selection("fake_job", FakeWriteRequest(value="go"))),
     )
 
-    finished = controller.refresh_task(response.task_id)
+    finished = controller.resume_task(task.task_id)
 
-    assert finished.task.status == "failed"
-    assert finished.task.error_code == "GLOBAL_TASK_JOB_FAILED"
-    assert finished.task.error_message == "平台拒绝。"
-    assert finished.task.active_job is None
-
-
-def test_refresh_is_noop_for_non_in_progress_tasks(tmp_path) -> None:
-    controller, _store = _controller(tmp_path)
-    response = controller.start_task(
-        _start_request(_Selection("fake_read", FakeReadRequest()))
-    )
-
-    refreshed = controller.refresh_task(response.task_id)
-
-    assert refreshed.task == response.task
+    assert finished.status == "failed"
+    assert finished.error_code == "GLOBAL_TASK_JOB_FAILED"
+    assert finished.error_message == "平台拒绝。"
+    assert finished.active_job is None
 
 
 # -- 取消 --------------------------------------------------------------------
@@ -1004,41 +1514,53 @@ def test_refresh_is_noop_for_non_in_progress_tasks(tmp_path) -> None:
 
 def test_cancel_is_idempotent_on_terminal_tasks(tmp_path) -> None:
     controller, _store = _controller(tmp_path)
-    response = controller.start_task(
-        _start_request(_Selection("fake_read", FakeReadRequest()))
+    task = _start_and_run(
+        controller,
+        _start_request(_Selection("fake_read", FakeReadRequest())),
     )
 
     cancelled = controller.cancel_task(
-        GlobalTaskIdRequest(task_id=response.task_id)
+        GlobalTaskIdRequest(task_id=task.task_id)
     )
 
-    assert cancelled.task == response.task
+    assert cancelled.task == task
 
 
 def test_cancel_refuses_in_progress_job_submission(tmp_path) -> None:
     controller, _store = _controller(tmp_path)
-    response = controller.start_task(
-        _start_request(_Selection("fake_job", FakeWriteRequest(value="go")))
+    task = _start_and_run(
+        controller,
+        _start_request(_Selection("fake_job", FakeWriteRequest(value="go"))),
     )
 
     with pytest.raises(GlobalTaskControllerError) as error:
-        controller.cancel_task(GlobalTaskIdRequest(task_id=response.task_id))
+        controller.cancel_task(GlobalTaskIdRequest(task_id=task.task_id))
     assert error.value.code == "GLOBAL_TASK_JOB_ALREADY_SUBMITTED"
 
 
 def test_cancel_needs_input_task(tmp_path) -> None:
     controller, _store = _controller(tmp_path)
-    response = controller.start_task(
-        _start_request(_Selection("fake_input", FakeInputRequest()))
+    task = _start_and_run(
+        controller,
+        _start_request(_Selection("fake_input", FakeInputRequest())),
     )
-    assert response.task.status == "needs_input"
+    assert task.status == "needs_input"
 
     cancelled = controller.cancel_task(
-        GlobalTaskIdRequest(task_id=response.task_id)
+        GlobalTaskIdRequest(task_id=task.task_id),
+        canceller="local-ui:test",
+        reason="用户主动取消",
     )
 
     assert cancelled.task.status == "cancelled"
     assert cancelled.task.pending_inputs == []
+    # 取消审计：保留取消者、时间、原因、取消前状态与最后一个 blocker 摘要。
+    audit = cancelled.task
+    assert audit.cancelled_by == "local-ui:test"
+    assert audit.cancelled_at is not None
+    assert audit.cancel_reason == "用户主动取消"
+    assert audit.previous_status == "needs_input"
+    assert "clarification" in audit.last_blocker_summary
 
 
 def test_cancel_refuses_when_running_step_outcome_unknown(tmp_path) -> None:
@@ -1096,8 +1618,9 @@ def test_recovery_replays_retry_safe_step_with_same_operation_key(
     assert execution["idempotency_context"]["operation_key"] == (
         original_operation_key
     )
-    # 恢复不依赖会话历史：business_scope 不包含 conversation/message。
-    assert "conversation_id" not in execution["business_scope"]
+    # 正式 Task+link 流程下，business_scope 携带 link 的 conversation 关联；
+    # 恢复不依赖回合消息：message_id 不进入 business_scope。
+    assert execution["business_scope"]["conversation_id"] == CONVERSATION
     assert "message_id" not in execution["business_scope"]
 
 
@@ -1105,15 +1628,14 @@ def test_recovery_refreshes_in_progress_job_without_conversation(
     tmp_path,
 ) -> None:
     reader = _JobStatusReader({"status": "success"})
-    controller, store = _controller(tmp_path, reader=reader)
-    response = controller.start_task(
-        _start_request(_Selection("fake_job", FakeWriteRequest(value="go")))
+    controller, _store = _controller(tmp_path, reader=reader)
+    task = _start_and_run(
+        controller,
+        _start_request(_Selection("fake_job", FakeWriteRequest(value="go"))),
     )
-    assert response.task.status == "in_progress"
-    # 模拟重启后由恢复 worker 推进。
-    store.require_task(response.task_id)
+    assert task.status == "in_progress"
 
-    resumed = controller.resume_task(response.task_id)
+    resumed = controller.resume_task(task.task_id)
 
     assert resumed.status == "completed"
     assert resumed.active_job is None
@@ -1138,21 +1660,63 @@ def test_recover_unfinished_tasks_processes_recoverable_tasks(
     assert controller.recover_unfinished_tasks() == []
 
 
+def test_unlinked_recoverable_task_is_quarantined_not_executed(
+    tmp_path,
+) -> None:
+    """报告 R-07：接线 ledger 后，无 Deferred link 任务不再有执行 fallback。
+
+    迁移前孤儿任务（直接落库、无 link）在 resume_task 与
+    recover_unfinished_tasks 两个入口都必须被确定性隔离取消，绝不执行步骤。
+    """
+
+    controller, store = _controller(tmp_path)
+    steps = controller._build_steps(
+        "gtask_orphan",
+        [_Selection("fake_write_retry", FakeWriteRequest(value="v"))],
+    )
+    orphan = LocalGlobalTaskState(
+        task_id="gtask_orphan",
+        goal="迁移前孤儿任务",
+        status="running",
+        steps=steps,
+        current_step_index=0,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    store.create_task(orphan)
+
+    quarantined = controller.resume_task(orphan.task_id)
+
+    assert quarantined.status == "cancelled"
+    assert quarantined.error_code == "GLOBAL_TASK_ORPHAN_QUARANTINED"
+    assert quarantined.pending_inputs == []
+    assert quarantined.pending_approval is None
+    # 隔离不得执行任何步骤。
+    assert RECORDED == {}
+
+    # recovery worker 入口同样隔离，且二次恢复幂等（终态不再处理）。
+    recovered = controller.recover_unfinished_tasks()
+    assert recovered == []
+    assert store.require_task(orphan.task_id).status == "cancelled"
+    assert RECORDED == {}
+
+
 # -- 读取 --------------------------------------------------------------------
 
 
 def test_get_state_is_pure_read_without_execution(tmp_path) -> None:
     controller, _store = _controller(tmp_path)
-    response = controller.start_task(
-        _start_request(_Selection("fake_input", FakeInputRequest()))
+    task = _start_and_run(
+        controller,
+        _start_request(_Selection("fake_input", FakeInputRequest())),
     )
     RECORDED.clear()
 
-    state = controller.get_state(response.task_id)
-    via_tool = controller.get_task(GlobalTaskIdRequest(task_id=response.task_id))
+    state = controller.get_state(task.task_id)
+    via_tool = controller.get_task(GlobalTaskIdRequest(task_id=task.task_id))
 
-    assert state == response.task
-    assert via_tool.task == response.task
+    assert state == task
+    assert via_tool.task == task
     assert RECORDED == {}
 
 

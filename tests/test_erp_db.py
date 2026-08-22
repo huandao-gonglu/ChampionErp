@@ -337,6 +337,20 @@ class ErpDbTests(unittest.TestCase):
                     """
                 )
                 conn.execute("DROP TABLE ai_chat_turn_claims_v12")
+                # 真实 v11 库也没有 v13 新增的表/索引/列，一并降级。
+                conn.execute(
+                    "DROP INDEX idx_deferred_task_links_active_conversation"
+                )
+                conn.execute("DROP INDEX idx_deferred_task_links_ready")
+                conn.execute(
+                    "DROP INDEX idx_pydantic_ai_event_outbox_conversation"
+                )
+                conn.execute("DROP TABLE pydantic_deferred_task_links")
+                conn.execute("DROP TABLE pydantic_ai_event_outbox")
+                conn.execute(
+                    "ALTER TABLE pydantic_message_histories "
+                    "DROP COLUMN history_version"
+                )
                 conn.execute("PRAGMA user_version = 11")
                 conn.commit()
 
@@ -353,12 +367,146 @@ class ErpDbTests(unittest.TestCase):
             self.assertEqual(claim["trace_id"], "")
             self.assertEqual(claim["last_tool_name"], "")
 
+    def _downgrade_to_v10_shape(self, database: ErpDatabase) -> None:
+        """把当前库降级为真实 v10 结构：无 claim 表、无 v13 新增结构。"""
+
+        with database._connect() as conn:
+            conn.execute("DROP TABLE ai_chat_turn_claims")
+            conn.execute(
+                "DROP INDEX idx_deferred_task_links_active_conversation"
+            )
+            conn.execute("DROP INDEX idx_deferred_task_links_ready")
+            conn.execute(
+                "DROP INDEX idx_pydantic_ai_event_outbox_conversation"
+            )
+            conn.execute("DROP TABLE pydantic_deferred_task_links")
+            conn.execute("DROP TABLE pydantic_ai_event_outbox")
+            conn.execute(
+                "ALTER TABLE pydantic_message_histories "
+                "DROP COLUMN history_version"
+            )
+            conn.execute("PRAGMA user_version = 10")
+            conn.commit()
+
+    def test_v10_schema_upgrades_without_duplicate_claim_columns(self) -> None:
+        """报告 A-04：v10→当前版本升级不得重复添加 claim 列。
+
+        v10 路径的 CREATE 已包含全部当前列；旧实现在其后仍执行 v11 的三条
+        ALTER TABLE，稳定失败 duplicate column name: error_code。
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            app_dir = Path(tmp)
+            database = self._db(app_dir)
+            self._downgrade_to_v10_shape(database)
+
+            upgraded = self._db(app_dir)
+            with upgraded._connect() as conn:
+                columns = {
+                    row[1]
+                    for row in conn.execute(
+                        "PRAGMA table_info(ai_chat_turn_claims)"
+                    )
+                }
+                version = conn.execute(
+                    "PRAGMA user_version"
+                ).fetchone()[0]
+
+            self.assertEqual(version, erp_db.SCHEMA_VERSION)
+            self.assertTrue(
+                {"error_code", "trace_id", "last_tool_name"} <= columns
+            )
+
+            # 升级后 claim API 可用。
+            upgraded.insert_ai_chat_turn_claim(
+                claim_id="claim-v10-upgrade",
+                conversation_id="conversation-v10",
+                client_message_id="message-v10",
+                profile_id="global.chat",
+                actor_id="local-user",
+                tenant_id="local",
+                now="2026-08-21T00:00:00Z",
+            )
+            claim = upgraded.get_ai_chat_turn_claim(
+                "conversation-v10",
+                "message-v10",
+            )
+            self.assertIsNotNone(claim)
+
+    def test_repeated_startup_after_upgrade_is_idempotent(self) -> None:
+        """v10/v11 升级后重复启动不得再次触发升级或报错。"""
+
+        for downgrade in ("v10", "v11"):
+            with self.subTest(downgrade=downgrade):
+                with tempfile.TemporaryDirectory() as tmp:
+                    app_dir = Path(tmp)
+                    database = self._db(app_dir)
+                    if downgrade == "v10":
+                        self._downgrade_to_v10_shape(database)
+                    else:
+                        with database._connect() as conn:
+                            conn.execute(
+                                "ALTER TABLE ai_chat_turn_claims "
+                                "RENAME TO ai_chat_turn_claims_v12"
+                            )
+                            conn.execute(
+                                """
+                                CREATE TABLE ai_chat_turn_claims (
+                                    claim_id TEXT PRIMARY KEY,
+                                    conversation_id TEXT NOT NULL,
+                                    client_message_id TEXT NOT NULL,
+                                    profile_id TEXT NOT NULL DEFAULT '',
+                                    actor_id TEXT NOT NULL DEFAULT '',
+                                    tenant_id TEXT NOT NULL DEFAULT '',
+                                    status TEXT NOT NULL DEFAULT 'claimed',
+                                    claimed_at TEXT NOT NULL DEFAULT '',
+                                    finished_at TEXT NOT NULL DEFAULT '',
+                                    UNIQUE(conversation_id, client_message_id)
+                                )
+                                """
+                            )
+                            conn.execute("DROP TABLE ai_chat_turn_claims_v12")
+                            conn.execute(
+                                "DROP INDEX "
+                                "idx_deferred_task_links_active_conversation"
+                            )
+                            conn.execute(
+                                "DROP INDEX idx_deferred_task_links_ready"
+                            )
+                            conn.execute(
+                                "DROP INDEX "
+                                "idx_pydantic_ai_event_outbox_conversation"
+                            )
+                            conn.execute(
+                                "DROP TABLE pydantic_deferred_task_links"
+                            )
+                            conn.execute(
+                                "DROP TABLE pydantic_ai_event_outbox"
+                            )
+                            conn.execute(
+                                "ALTER TABLE pydantic_message_histories "
+                                "DROP COLUMN history_version"
+                            )
+                            conn.execute("PRAGMA user_version = 11")
+                            conn.commit()
+
+                    first = self._db(app_dir)
+                    second = self._db(app_dir)
+                    third = self._db(app_dir)
+                    with third._connect() as conn:
+                        version = conn.execute(
+                            "PRAGMA user_version"
+                        ).fetchone()[0]
+                    self.assertEqual(version, erp_db.SCHEMA_VERSION)
+                    del first, second
+
     def test_current_schema_without_critical_index_is_rejected(
         self,
     ) -> None:
         for index_name in (
             "idx_publish_jobs_idempotency_key",
             "idx_pydantic_message_histories_updated",
+            "idx_deferred_task_links_active_conversation",
         ):
             with self.subTest(index_name=index_name):
                 with tempfile.TemporaryDirectory() as tmp:
@@ -370,18 +518,20 @@ class ErpDbTests(unittest.TestCase):
 
                     with self.assertRaisesRegex(
                         RuntimeError,
-                        "仅接受空库、当前完整 schema 或受支持的 v10/v11 升级结构",
+                        "仅接受空库、当前完整 schema 或受支持的 v10/v11/v12 升级结构",
                     ):
                         self._db(app_dir)
 
     def test_previous_schema_version_is_rejected_without_migration(self) -> None:
+        # v12 仍是受支持的升级起点；这里回退到更早的不受支持版本。
+        unsupported_version = 9
         with tempfile.TemporaryDirectory() as tmp:
             app_dir = Path(tmp)
             database = self._db(app_dir)
             product_id = database.upsert_product_model(sample_product())
             with database._connect() as conn:
                 conn.execute(
-                    f"PRAGMA user_version = {erp_db.SCHEMA_VERSION - 1}"
+                    f"PRAGMA user_version = {unsupported_version}"
                 )
                 conn.commit()
 
@@ -400,7 +550,7 @@ class ErpDbTests(unittest.TestCase):
                 ).fetchone()[0]
             finally:
                 conn.close()
-            self.assertEqual(version, erp_db.SCHEMA_VERSION - 1)
+            self.assertEqual(version, unsupported_version)
             self.assertEqual(stored_id, product_id)
 
     def test_future_schema_is_rejected_without_any_file_mutation(self) -> None:
@@ -430,7 +580,7 @@ class ErpDbTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 RuntimeError,
-                "仅接受空库、当前完整 schema 或受支持的 v10/v11 升级结构",
+                "仅接受空库、当前完整 schema 或受支持的 v10/v11/v12 升级结构",
             ):
                 self._db(app_dir)
 
@@ -480,7 +630,7 @@ class ErpDbTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 RuntimeError,
-                "仅接受空库、当前完整 schema 或受支持的 v10/v11 升级结构",
+                "仅接受空库、当前完整 schema 或受支持的 v10/v11/v12 升级结构",
             ):
                 self._db(app_dir)
 
@@ -512,7 +662,7 @@ class ErpDbTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 RuntimeError,
-                "仅接受空库、当前完整 schema 或受支持的 v10/v11 升级结构",
+                "仅接受空库、当前完整 schema 或受支持的 v10/v11/v12 升级结构",
             ):
                 self._db(app_dir)
 
@@ -573,7 +723,7 @@ class ErpDbTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 RuntimeError,
-                "仅接受空库、当前完整 schema 或受支持的 v10/v11 升级结构",
+                "仅接受空库、当前完整 schema 或受支持的 v10/v11/v12 升级结构",
             ):
                 self._db(app_dir)
 
@@ -611,7 +761,7 @@ class ErpDbTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 RuntimeError,
-                "仅接受空库、当前完整 schema 或受支持的 v10/v11 升级结构",
+                "仅接受空库、当前完整 schema 或受支持的 v10/v11/v12 升级结构",
             ):
                 self._db(app_dir)
 
@@ -658,7 +808,7 @@ class ErpDbTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 RuntimeError,
-                "仅接受空库、当前完整 schema 或受支持的 v10/v11 升级结构",
+                "仅接受空库、当前完整 schema 或受支持的 v10/v11/v12 升级结构",
             ):
                 self._db(app_dir)
 

@@ -180,9 +180,11 @@ def test_store_accepts_complete_tool_call_pair(tmp_path: Path) -> None:
     assert saved.model_messages() == messages
 
 
-def test_store_repairs_unmatched_tool_call_when_history_is_loaded(
+def test_open_tool_call_history_is_preserved_without_synthesis(
     tmp_path: Path,
 ) -> None:
+    """Deferred 开口历史合法且必须保留；读取不得补造 tool return。"""
+
     store = PydanticMessageStore(ErpDatabase(tmp_path / "erp.sqlite3"))
     incomplete = [
         ModelResponse(
@@ -197,25 +199,25 @@ def test_store_repairs_unmatched_tool_call_when_history_is_loaded(
     ]
 
     saved = store.save("conversation-incomplete", incomplete)
-    repaired = saved.model_messages()
+    reloaded = saved.model_messages()
     returns = [
         part
-        for message in repaired
+        for message in reloaded
         if isinstance(message, ModelRequest)
         for part in message.parts
         if isinstance(part, ToolReturnPart)
     ]
 
-    assert len(returns) == 1
-    assert returns[0].tool_call_id == "orphan-call"
-    assert returns[0].outcome == "interrupted"
-    assert "interrupted" in str(returns[0].content).lower()
+    assert returns == []
+    assert reloaded == incomplete
 
 
-def test_repaired_history_is_stable_across_repeated_reads(tmp_path: Path) -> None:
+def test_open_tool_call_history_is_stable_across_repeated_reads(
+    tmp_path: Path,
+) -> None:
     store = PydanticMessageStore(ErpDatabase(tmp_path / "erp.sqlite3"))
     store.save(
-        "conversation-stable-repair",
+        "conversation-stable-open",
         [
             ModelResponse(
                 parts=[
@@ -229,8 +231,8 @@ def test_repaired_history_is_stable_across_repeated_reads(tmp_path: Path) -> Non
         ],
     )
 
-    first = store.get("conversation-stable-repair")
-    second = store.get("conversation-stable-repair")
+    first = store.get("conversation-stable-open")
+    second = store.get("conversation-stable-open")
 
     assert first is not None
     assert second is not None

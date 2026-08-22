@@ -38,11 +38,25 @@ def handle_chat_run(handler: JsonRequestHandler) -> None:
             exc.status_code,
         )
         return
-    handler.send_sse_headers(run.sse_headers())
-    loop = asyncio.new_event_loop()
+    # 报告 A-02：registry/claim 已在 run_chat_stream() 内领取。此后写响应头
+    # 或创建 loop 的任何失败都必须进入确定性收尾（claim failed + 释放 run
+    # lock），否则 conversation 永久锁死（后续请求全部 AI_CHAT_RUN_ACTIVE）。
+    # stream 一旦启动，收尾由进程级 runner 上的 producer 负责，此处不重复。
+    try:
+        handler.send_sse_headers(run.sse_headers())
+    except BaseException:
+        run.abort_before_stream()
+        raise
+    try:
+        loop = asyncio.new_event_loop()
+    except BaseException:
+        run.abort_before_stream()
+        raise
     try:
         loop.run_until_complete(run.stream(handler.write_sse_chunk))
     except Exception:
+        # stream() 在提交 producer 之前失败时已自行执行 abort_before_stream；
+        # 提交之后的异常由 producer 收尾，这里只记录。
         _logger.exception("AI chat SSE 流异常结束：%s", run.conversation_id)
     finally:
         try:

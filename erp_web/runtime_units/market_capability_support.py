@@ -122,7 +122,7 @@ def assert_target_mutable(target_draft: Mapping[str, Any]) -> None:
 
 def invalidate_target_publish_preparation(
     *,
-    product_store: MarketPrepareStore,
+    product_store: ProductCapabilityStore,
     product: dict[str, Any],
     draft: dict[str, Any],
     target: dict[str, Any],

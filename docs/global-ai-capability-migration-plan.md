@@ -1,8 +1,18 @@
-# 单主 Agent 与全业务 Capability 化实施计划
+# 单主 Agent 与全业务 Capability 化实施计划（已完成）
 
-> 状态：当前阶段待实施方案（2026-08-18）。
+> 状态：已实施基线记录（2026-08-18）。
 >
-> 本文只解决当前阶段的两项工作：
+> 本文记录的“单主 Agent + 全业务 Capability 化”已经完成实施，是后续 AI
+> 重构的现行代码基线，不是本轮待实施计划。
+>
+> 后续的
+> [Pydantic AI Deferred Tools 与 Global Task 恢复链路增量重构计划](pydantic-ai-global-task-deferred-migration-plan.md)
+> 是建立在该基线之上的增量修复，不会重做 Catalog、类型化 Request/Result、
+> 单主 Agent 或 Capability 执行边界。它只取代本文中有关 Global Task 的 Agent
+> 等待、审批暂停、长任务恢复和主对话回传生命周期的设计；本文对应段落不再作为
+> 该生命周期链路的实施依据。
+>
+> 本文当时的实施范围是：
 >
 > 1. `global.chat` 成为唯一主 Agent、唯一对话入口和唯一全局 AI 模型绑定；
 > 2. 所有面向用户的业务功能完成 Capability 化，并复用现有 Pydantic

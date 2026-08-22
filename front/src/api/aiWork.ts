@@ -1,6 +1,7 @@
 import { apiClient } from './client'
 import type {
   AiWorkUiMessagesResponse,
+  ConversationTaskLinkResponse,
   PydanticConversationDetailResponse,
   PydanticConversationListResponse,
 } from '@/types/aiWork'
@@ -32,6 +33,28 @@ export async function fetchUiMessages(
     `${CONVERSATIONS_PATH}/${encodeURIComponent(conversationId)}/ui-messages`,
   )
   return response.data
+}
+
+/** conversation → 未解决 Deferred 任务的只读关联（仅返回 ready link）。 */
+export async function fetchConversationTaskLink(
+  conversationId: string,
+): Promise<ConversationTaskLinkResponse> {
+  const response = await apiClient.get<ConversationTaskLinkResponse>(
+    `${CONVERSATIONS_PATH}/${encodeURIComponent(conversationId)}/task-link`,
+  )
+  return response.data
+}
+
+/** 后台官方事件订阅 SSE URL；断线重连时携带已应用的 history version。 */
+export function conversationEventsUrl(
+  conversationId: string,
+  afterHistoryVersion: number,
+): string {
+  const encoded = encodeURIComponent(conversationId)
+  return (
+    `${CONVERSATIONS_PATH}/${encoded}/events`
+    + `?after_history_version=${Math.max(0, Math.floor(afterHistoryVersion))}`
+  )
 }
 
 /** 聊天流接口不走 Axios；此路径常量供共享 Chat transport 使用。 */

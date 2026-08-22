@@ -571,6 +571,11 @@ class AiToolDefinition:
     injected_type_names: tuple[str, ...] = ()
     execution_mode: AiToolExecutionMode = "sync"
     recovery_policy: AiToolRecoveryPolicy = "manual"
+    # Agent 控制 Tool 的 Pydantic Deferred 握手标记：只允许极少量控制工具
+    # （当前唯一是 global_task_start），不得扩散为第二套 Capability execution
+    # mode。Runtime 仍然完成校验/授权/幂等；Bridge 在成功创建后抛出
+    # CallDeferred，领域 Capability 不感知 Pydantic 生命周期类型。
+    agent_deferred: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", normalize_ai_tool_name(self.name))
@@ -589,6 +594,17 @@ class AiToolDefinition:
             raise AiToolSchemaError("tool.side_effect 只允许 none 或 write")
         if not isinstance(self.approval_required, bool):
             raise AiToolSchemaError("tool.approval_required 必须是布尔值")
+        if not isinstance(self.agent_deferred, bool):
+            raise AiToolSchemaError("tool.agent_deferred 必须是布尔值")
+        if self.agent_deferred:
+            if self.side_effect != "write":
+                raise AiToolSchemaError(
+                    "agent_deferred 只允许写控制工具（Deferred 握手会创建持久化任务）"
+                )
+            if self.approval_required:
+                raise AiToolSchemaError(
+                    "agent_deferred 控制工具不得声明 Capability 审批"
+                )
         if self.idempotency not in {"none", "required"}:
             raise AiToolSchemaError("tool.idempotency 只允许 none 或 required")
         if self.execution_mode not in set(AI_TOOL_EXECUTION_MODES):
@@ -670,6 +686,7 @@ class AiToolDefinition:
             "injected_type_names": list(self.injected_type_names),
             "execution_mode": self.execution_mode,
             "recovery_policy": self.recovery_policy,
+            "agent_deferred": self.agent_deferred,
         }
 
     @property
@@ -705,6 +722,7 @@ class AiToolDefinition:
                 "injected_type_names",
                 "execution_mode",
                 "recovery_policy",
+                "agent_deferred",
             },
             optional=set(),
             label="AiToolDefinition",
@@ -723,6 +741,7 @@ class AiToolDefinition:
             injected_type_names=tuple(data["injected_type_names"]),
             execution_mode=data["execution_mode"],
             recovery_policy=data["recovery_policy"],
+            agent_deferred=data["agent_deferred"],
         )
 
 
@@ -905,7 +924,12 @@ class TaskApprovalSnapshot(BaseModel):
 
 
 class AiToolRequiredInput(BaseModel):
-    """needs_input 标准错误中携带的类型化待补字段。"""
+    """needs_input 标准错误中携带的类型化待补字段。
+
+    ``input_owner`` 标记补充字段的提交归属路径：``step`` 表示顶层步骤参数，
+    ``provided_attributes`` / ``pricing_input`` 表示嵌套路径。Controller 依此
+    把 UI 提交的字段合并到正确的嵌套位置，而不是只做顶层浅合并。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -914,6 +938,7 @@ class AiToolRequiredInput(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
     input_type: Literal["text", "select", "json_object", "string_list"] = "text"
     options: list[str] = Field(default_factory=list, max_length=100)
+    input_owner: Literal["step", "provided_attributes", "pricing_input"] = "step"
 
 
 __all__ = [

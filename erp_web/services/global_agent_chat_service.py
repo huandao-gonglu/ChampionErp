@@ -14,6 +14,7 @@ from typing import Any
 
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models import Model
+from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
 from erp_web.ai_capability_composition import (
     application_capability_permissions,
@@ -38,7 +39,10 @@ GLOBAL_CHAT_TENANT_ID = "local"
 
 GLOBAL_CHAT_PROFILE = AiAgentExecutionProfile(
     use_case_id=GLOBAL_CHAT_USE_CASE_ID,
-    output_type=str,
+    # 包含 DeferredToolRequests 后，global_task_start 的 CallDeferred 才会让
+    # run 以官方 Deferred 语义暂停；任务终结后由 continuation 用
+    # DeferredToolResults 恢复同一 conversation，模型不需要忙轮询。
+    output_type=str | DeferredToolRequests,
     toolset_id=GLOBAL_CHAT_TOOLSET_ID,
     budget_profile="global.chat.default",
     permissions=application_capability_permissions() | {TASK_CONTROL_PERMISSION},
@@ -55,7 +59,9 @@ _FALLBACK_INSTRUCTIONS = (
     "你是单用户本地 ERP 的全局对话 Agent，用自然语言回答用户问题；"
     "涉及草稿事实时先调用只读查询工具，不得编造数据。"
     "需要修改商品、准备目标市场或发布等业务操作时，"
-    "用 global_task_start 提交类型化任务步骤，并用任务控制工具跟踪状态。"
+    "用 global_task_start 提交类型化任务步骤。提交任务后你的本轮结束，"
+    "任务终结时系统会通过 Deferred 机制自动恢复并生成最终回复，"
+    "你不要忙轮询任务状态。"
 )
 
 
@@ -116,7 +122,8 @@ class GlobalAgentChatService:
         """用可信历史加本轮用户输入启动一次新的流式 run。
 
         conversation 与 message ID 进入可信 business/idempotency Scope，
-        供任务控制 Capability 绑定幂等上下文。
+        供任务控制 Capability 绑定幂等上下文。首次 Deferred 握手的 history
+        由协议层与 link ready/outbox 同事务提交，session 不自动保存。
         """
 
         message_history = self.trusted_history(conversation_id)
@@ -132,10 +139,43 @@ class GlobalAgentChatService:
             toolset=self.toolset,
             conversation_id=conversation_id,
             message_history=message_history,
+            external_deferred_commit=True,
             actor_id=GLOBAL_CHAT_ACTOR_ID,
             tenant_id=GLOBAL_CHAT_TENANT_ID,
             business_scope=business_scope,
             idempotency_context=idempotency_context,
+            model_override=model_override,
+        ) as session:
+            yield session
+
+    @asynccontextmanager
+    async def open_continuation_run(
+        self,
+        *,
+        conversation_id: str,
+        deferred_tool_results: DeferredToolResults,
+        model_override: Model | None = None,
+    ) -> AsyncIterator[AiAgentStreamSession[str]]:
+        """后台 continuation 的唯一入口：同一 ``global.chat`` 运行路径。
+
+        复用相同 conversation_id、生成新 run_id，不合成新的
+        ``UserPromptPart``；最终 history 由恢复服务按 link 冻结版本 CAS 提交
+        （``external_final_commit``），Factory/session 不自动落消息。
+        """
+
+        message_history = self.trusted_history(conversation_id)
+        async with self.factory.open_stream_run(
+            profile=GLOBAL_CHAT_PROFILE,
+            instructions=self.instructions(),
+            toolset=self.toolset,
+            conversation_id=conversation_id,
+            message_history=message_history,
+            deferred_tool_results=deferred_tool_results,
+            external_final_commit=True,
+            actor_id=GLOBAL_CHAT_ACTOR_ID,
+            tenant_id=GLOBAL_CHAT_TENANT_ID,
+            business_scope={"conversation_id": conversation_id},
+            idempotency_context={"conversation_id": conversation_id},
             model_override=model_override,
         ) as session:
             yield session

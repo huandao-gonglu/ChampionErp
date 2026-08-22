@@ -116,14 +116,20 @@ GLOBAL_CHAT_DIRECT_CAPABILITIES = frozenset(
 )
 
 #: 可以作为 Global Task step 执行的能力。
+#:
+#: 高频写入已迁移到 focused Capability：库存/售价以平台草稿为 owner
+#: （draft_stock_update / draft_pricing_apply），商品主档走部分补丁
+#: （product_profile_patch）。通用 product_save / draft_save 容易误选
+#: owner 并膨胀上下文，已从常用 allowlist 移除，只保留为 internal。
 GLOBAL_TASK_CAPABILITIES = frozenset(
     {
         "drafts_query",
         "product_read",
         "draft_read",
-        "product_save",
+        "product_profile_patch",
         "product_delete",
-        "draft_save",
+        "draft_stock_update",
+        "draft_pricing_apply",
         "draft_delete",
         "product_attributes_update",
         "product_images_prepare",
@@ -161,7 +167,14 @@ GLOBAL_TASK_CAPABILITIES = frozenset(
 )
 
 #: 仅供其他 Capability/focused Agent 内部使用；与 Direct/Task 互斥。
-INTERNAL_ONLY_CAPABILITIES = frozenset[str]()
+#: product_save / draft_save 是通用整对象保存，已被 focused write 取代，
+#: 不再暴露给模型做任务规划；HTTP 门面走独立 facade，不经过 Capability。
+INTERNAL_ONLY_CAPABILITIES = frozenset[str](
+    {
+        "product_save",
+        "draft_save",
+    }
+)
 
 GLOBAL_CHAT_DIRECT_TOOLSET_ID = "global.chat.direct"
 GLOBAL_TASK_TOOLSET_ID = "global.task"

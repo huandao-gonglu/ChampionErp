@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import subprocess
 import sys
 
@@ -118,3 +119,38 @@ def test_app_context_owns_stateful_services(tmp_path) -> None:
     finally:
         first.close()
         second.close()
+
+
+def test_production_global_task_controller_always_wires_deferred_links() -> None:
+    """报告 R-07：生产装配的 GlobalTaskController 必须接线 Deferred ledger。
+
+    无 link 任务的执行 fallback 已删除：接线 ledger 后，recovery 对无 link 的
+    recoverable 任务只做隔离取消。若生产装配漏接 deferred_links，孤儿任务会
+    重新获得执行路径，因此用 AST 检查固化该接线。
+    """
+
+    offenders: list[str] = []
+    for path in python_files("erp_web"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = (
+                func.id
+                if isinstance(func, ast.Name)
+                else func.attr
+                if isinstance(func, ast.Attribute)
+                else ""
+            )
+            if name != "GlobalTaskController":
+                continue
+            keywords = {keyword.arg for keyword in node.keywords}
+            if "deferred_links" not in keywords:
+                offenders.append(
+                    f"{path.relative_to(ROOT)}:{node.lineno}"
+                )
+    assert not offenders, (
+        "生产代码装配 GlobalTaskController 必须显式接线 deferred_links，"
+        "否则无 link 任务会绕过隔离：\n" + "\n".join(offenders)
+    )

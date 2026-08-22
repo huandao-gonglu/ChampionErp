@@ -75,9 +75,17 @@ class ProductSaveRequest(BaseModel):
 
 
 class ProductSaveResult(BaseModel):
+    """写回执：有界、类型化的 mutation receipt。
+
+    禁止携带完整商品聚合对象；完整数据只能由 focused read 能力读取。
+    """
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    product: dict[str, JsonValue] = Field(default_factory=dict)
+    product_id: str = Field(default="", max_length=160)
+    changed_fields: Annotated[tuple[str, ...], Field(max_length=200)] = ()
+    updated_at: str = Field(default="", max_length=64)
+    changed: bool = False
 
 
 class ProductDeleteRequest(BaseModel):
@@ -123,10 +131,20 @@ class DraftSaveRequest(BaseModel):
 
 
 class DraftSaveResult(BaseModel):
+    """写回执：有界、类型化的 mutation receipt。
+
+    禁止返回完整 draft、完整 product_context（含 raw）、products/drafts
+    index、图片池或完整类目 Schema；保存后详情通过独立只读 Capability 获取。
+    """
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    draft: dict[str, JsonValue] = Field(default_factory=dict)
-    product_context: dict[str, JsonValue] = Field(default_factory=dict)
+    draft_id: str = Field(default="", max_length=160)
+    product_id: str = Field(default="", max_length=160)
+    platform: str = Field(default="", max_length=40)
+    changed_fields: Annotated[tuple[str, ...], Field(max_length=200)] = ()
+    updated_at: str = Field(default="", max_length=64)
+    changed: bool = False
 
 
 class DraftDeleteRequest(BaseModel):
@@ -144,16 +162,116 @@ class DraftDeleteResult(BaseModel):
     affected_product_ids: tuple[str, ...] = ()
 
 
+class DraftStockUpdateRequest(BaseModel):
+    """Focused write：平台草稿库存的唯一 owner 写入。
+
+    发布流程中的库存以平台草稿为 owner；商品主档库存只能作为默认值或
+    来源事实，不得替代目标市场草稿库存。
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    draft_id: Annotated[
+        TrimmedText,
+        StringConstraints(min_length=1, max_length=160),
+    ]
+    stock: Annotated[
+        TrimmedText,
+        StringConstraints(min_length=1, max_length=40),
+    ]
+
+    @model_validator(mode="after")
+    def require_numeric_stock(self) -> "DraftStockUpdateRequest":
+        if not self.stock.isdigit():
+            raise ValueError("stock 必须是非负整数字符串，例如 10。")
+        return self
+
+
+class DraftStockUpdateResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    draft_id: str = Field(default="", max_length=160)
+    stock: str = Field(default="", max_length=40)
+    updated_at: str = Field(default="", max_length=64)
+    changed: bool = False
+
+
+class DraftPricingApplyRequest(BaseModel):
+    """Focused write：把确定性核价结果持久化为平台草稿的最终售价。
+
+    ``pricing_input`` 与 ``draft_prepare_for_market.pricing_input`` 同形：
+    common 共享成本、target/targets 目标输入；只计算不应用不会落库。
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    draft_id: Annotated[
+        TrimmedText,
+        StringConstraints(min_length=1, max_length=160),
+    ]
+    target_platform: Annotated[
+        TrimmedText,
+        StringConstraints(max_length=40),
+    ] = ""
+    site: Annotated[TrimmedText, StringConstraints(max_length=40)] = ""
+    pricing_input: dict[str, JsonValue] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def require_pricing_input(self) -> "DraftPricingApplyRequest":
+        if not self.pricing_input:
+            raise ValueError("pricing_input 不能为空；只计算不应用不会落库。")
+        return self
+
+
+class DraftPricingApplyResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    draft_id: str = Field(default="", max_length=160)
+    target_key: str = Field(default="", max_length=120)
+    applied_price: str = Field(default="", max_length=80)
+    fingerprint: str = Field(default="", max_length=160)
+    changed: bool = False
+
+
+class ProductProfilePatchRequest(BaseModel):
+    """Focused write：商品主档部分补丁；未提供字段保持原值。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    product: ProductProfilePatch
+
+    @model_validator(mode="after")
+    def require_product(self) -> "ProductProfilePatchRequest":
+        if not self.product.model_fields_set:
+            raise ValueError("product 不能为空")
+        return self
+
+
+class ProductProfilePatchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    product_id: str = Field(default="", max_length=160)
+    changed_fields: Annotated[tuple[str, ...], Field(max_length=200)] = ()
+    updated_at: str = Field(default="", max_length=64)
+    changed: bool = False
+
+
 __all__ = [
     "DraftDeleteRequest",
     "DraftDeleteResult",
+    "DraftPricingApplyRequest",
+    "DraftPricingApplyResult",
     "DraftReadRequest",
     "DraftReadResult",
     "DraftSaveRequest",
     "DraftSaveResult",
+    "DraftStockUpdateRequest",
+    "DraftStockUpdateResult",
     "ProductDeleteRequest",
     "ProductDeleteResult",
+    "ProductProfilePatch",
+    "ProductProfilePatchRequest",
+    "ProductProfilePatchResult",
     "ProductSaveRequest",
     "ProductSaveResult",
-    "ProductProfilePatch",
 ]

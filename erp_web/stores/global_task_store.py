@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import threading
-from typing import Iterator
+from typing import Any, Iterator
 from uuid import uuid4
 
 from erp_web.db import ErpDatabase
@@ -73,36 +73,38 @@ class LocalGlobalTaskStore:
             ) from None
         return LocalGlobalTaskState.model_validate(payload)
 
-    @contextmanager
-    def create_task_claimed(
+    def create_task_with_deferred_link(
         self,
         state: LocalGlobalTaskState,
         *,
-        lease_seconds: float = 30.0,
-    ) -> Iterator[LocalGlobalTaskState]:
-        """在 INSERT 事务内领取首次执行权，并在上下文内维持续租。"""
+        link_id: str,
+        conversation_id: str,
+        request_run_id: str,
+        tool_call_id: str,
+    ) -> tuple[LocalGlobalTaskState, dict[str, Any]]:
+        """同一事务创建 Deferred 任务与 provisional link。
+
+        不领取执行权：任务步骤只能由 recovery worker 在 link ready 屏障之后
+        通过既有 execution lease 执行。conversation 级 active link 唯一约束
+        在这里兜底拒绝第二个未解决 Deferred。
+        """
 
         validated = LocalGlobalTaskState.model_validate(state)
-        execution_id = f"gexec_{uuid4().hex}"
         try:
-            payload = self._db.create_global_task(
+            payload, link_row = self._db.create_global_task_with_deferred_link(
                 validated.model_dump(mode="json"),
-                execution_owner=self._execution_owner,
-                execution_id=execution_id,
-                lease_seconds=lease_seconds,
+                link_id=link_id,
+                conversation_id=conversation_id,
+                request_run_id=request_run_id,
+                tool_call_id=tool_call_id,
+                now=_now().isoformat(),
             )
         except ValueError as exc:
             raise GlobalTaskStoreError(
                 "GLOBAL_TASK_CREATE_INVALID",
                 str(exc),
             ) from None
-        with self._claimed_execution(
-            validated.task_id,
-            execution_id=execution_id,
-            payload=payload,
-            lease_seconds=lease_seconds,
-        ) as claimed:
-            yield claimed
+        return LocalGlobalTaskState.model_validate(payload), link_row
 
     def save_task(
         self,

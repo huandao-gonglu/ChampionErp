@@ -26,12 +26,19 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, avoids import cycles
     )
     from erp_web.services.approval_session import ApprovalSession
     from erp_web.services.image_delivery_service import ImageDeliveryService
+    from erp_web.services.ai_conversation_event_bus import AiConversationEventBus
     from erp_web.services.product_research_service import ProductResearchRunRegistry
     from erp_web.stores.ai_chat_turn_claim_store import AiChatTurnClaimStore
     from erp_web.stores.config_store import ConfigStore
     from erp_web.stores.draft_query_snapshot_store import DraftQuerySnapshotStore
     from erp_web.stores.global_task_store import LocalGlobalTaskStore
     from erp_web.stores.product_store import ProductStore
+    from erp_web.stores.pydantic_ai_event_outbox_store import (
+        PydanticAiEventOutboxStore,
+    )
+    from erp_web.stores.pydantic_deferred_task_link_store import (
+        PydanticDeferredTaskLinkStore,
+    )
     from erp_web.stores.pydantic_message_store import PydanticMessageStore
 
 _DEFAULT_APP_DIR = Path(
@@ -153,6 +160,9 @@ class AppContext:
         self._image_delivery: "ImageDeliveryService | None" = None
         self._publishing_bus: "PublishingBus | None" = None
         self._global_tasks: "LocalGlobalTaskStore | None" = None
+        self._deferred_task_links: "PydanticDeferredTaskLinkStore | None" = None
+        self._ai_event_outbox: "PydanticAiEventOutboxStore | None" = None
+        self._conversation_event_bus: "AiConversationEventBus | None" = None
         self._ai_presentations: "AiPresentationRegistry | None" = None
         self._approval_session: "ApprovalSession | None" = None
 
@@ -276,6 +286,44 @@ class AppContext:
 
                     self._global_tasks = LocalGlobalTaskStore(self.db)
         return self._global_tasks
+
+    @property
+    def deferred_task_links(self) -> "PydanticDeferredTaskLinkStore":
+        if self._deferred_task_links is None:
+            with self._lazy_lock:
+                if self._deferred_task_links is None:
+                    from erp_web.stores.pydantic_deferred_task_link_store import (
+                        PydanticDeferredTaskLinkStore,
+                    )
+
+                    self._deferred_task_links = PydanticDeferredTaskLinkStore(
+                        self.db
+                    )
+        return self._deferred_task_links
+
+    @property
+    def ai_event_outbox(self) -> "PydanticAiEventOutboxStore":
+        if self._ai_event_outbox is None:
+            with self._lazy_lock:
+                if self._ai_event_outbox is None:
+                    from erp_web.stores.pydantic_ai_event_outbox_store import (
+                        PydanticAiEventOutboxStore,
+                    )
+
+                    self._ai_event_outbox = PydanticAiEventOutboxStore(self.db)
+        return self._ai_event_outbox
+
+    @property
+    def conversation_event_bus(self) -> "AiConversationEventBus":
+        if self._conversation_event_bus is None:
+            with self._lazy_lock:
+                if self._conversation_event_bus is None:
+                    from erp_web.services.ai_conversation_event_bus import (
+                        AiConversationEventBus,
+                    )
+
+                    self._conversation_event_bus = AiConversationEventBus()
+        return self._conversation_event_bus
 
     @property
     def ai_presentations(self) -> "AiPresentationRegistry":

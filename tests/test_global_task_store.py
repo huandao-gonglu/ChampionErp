@@ -183,24 +183,30 @@ def test_stale_revision_save_is_rejected_without_lost_update(tmp_path) -> None:
     assert saved.revision == created.revision + 1
 
 
-def test_create_task_claimed_holds_execution_until_context_exit(tmp_path) -> None:
+def test_create_task_with_deferred_link_is_atomic_and_unclaimed(tmp_path) -> None:
     database_path = tmp_path / "erp.sqlite3"
-    first = LocalGlobalTaskStore(ErpDatabase(database_path))
+    database = ErpDatabase(database_path)
+    store = LocalGlobalTaskStore(database)
+    state = _task("task-deferred-create")
+
+    created, link_row = store.create_task_with_deferred_link(
+        state,
+        link_id="dlink_1",
+        conversation_id="conversation_global_chat_" + "a" * 32,
+        request_run_id="run-1",
+        tool_call_id="call-1",
+    )
+
+    assert created.task_id == state.task_id
+    # Deferred 创建不领取执行权：worker ready 屏障之前没有任何执行者。
+    assert created.execution_id == ""
+    assert link_row["link_status"] == "awaiting_history"
+    assert link_row["ready_at"] == ""
+    assert link_row["task_id"] == state.task_id
+    # 没有执行 lease：其他执行者也不会“看到”首次 claim。
     second = LocalGlobalTaskStore(ErpDatabase(database_path))
-    state = _task("task-claimed-create")
-
-    with first.create_task_claimed(state, lease_seconds=30) as claimed:
-        assert claimed.task_id == state.task_id
-        assert claimed.execution_id.startswith("gexec_")
-        saved = first.save_task(
-            claimed.model_copy(update={"assistant_message": "执行中。"})
-        )
-        assert saved.revision == claimed.revision + 1
-        with second.execution_claim(state.task_id, lease_seconds=30) as busy:
-            assert busy is None
-
-    with second.execution_claim(state.task_id, lease_seconds=30) as released:
-        assert released is not None
+    with second.execution_claim(state.task_id, lease_seconds=30) as claimed:
+        assert claimed is not None
 
 
 def test_execution_claim_blocks_other_owner_then_allows_release_and_expiry(

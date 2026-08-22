@@ -25,6 +25,7 @@ from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.global_tasks import (
     GLOBAL_TASK_MAX_STEPS,
     TASK_CONTROL_PERMISSION,
+    GlobalTaskAcceptance,
     GlobalTaskIdRequest,
     GlobalTaskInputRequest,
     GlobalTaskResponse,
@@ -97,14 +98,15 @@ class GlobalTaskStartControlRequest(BaseModel):
 class GlobalTaskControllerLike(Protocol):
     """控制 Capability 依赖的 Controller 最小可信接口。"""
 
-    def start_task(
+    def accept_deferred_task(
         self,
         request: GlobalTaskStartControlRequest,
         *,
         conversation_id: str,
+        request_run_id: str,
+        tool_call_id: str,
         message_id: str,
-        outer_remaining_seconds: float | None,
-    ) -> GlobalTaskResponse:
+    ) -> GlobalTaskAcceptance:
         ...
 
     def get_task(self, request: GlobalTaskIdRequest) -> GlobalTaskResponse:
@@ -116,7 +118,6 @@ class GlobalTaskControllerLike(Protocol):
         *,
         conversation_id: str,
         message_id: str,
-        outer_remaining_seconds: float | None,
     ) -> GlobalTaskResponse:
         ...
 
@@ -154,9 +155,31 @@ def _chat_idempotency_ids(
     return conversation_id, message_id
 
 
-def _run_control(action: Any) -> GlobalTaskResponse:
+def _deferred_handshake_context(
+    execution: AiExecutionContext,
+) -> tuple[str, str, str]:
+    """Deferred 握手需要的可信上下文：conversation、request_run、tool_call。
+
+    ``tool_call_id`` 由 ``AiToolRuntime`` 在 agent_deferred 调用时从 Bridge 的
+    ``AiToolCommand.call_id`` 注入本次 business scope；缺失即握手上下文不完整。
+    """
+
+    conversation_id = str(
+        execution.idempotency_context.get("conversation_id") or ""
+    ).strip()
+    tool_call_id = str(execution.business_scope.get("tool_call_id") or "").strip()
+    request_run_id = str(execution.attempt_id or "").strip()
+    if not conversation_id or not tool_call_id or not request_run_id:
+        raise AiToolExecutionError(
+            "TASK_CONTROL_CONTEXT_MISSING",
+            "Deferred 任务握手缺少可信 conversation/run/tool_call 上下文。",
+        )
+    return conversation_id, request_run_id, tool_call_id
+
+
+def _run_control(action: Any) -> Any:
     try:
-        return cast(GlobalTaskResponse, action())
+        return action()
     except AiToolExecutionError:
         raise
     except BusinessCapabilityError as exc:
@@ -188,9 +211,11 @@ GLOBAL_TASK_CANCEL_TOOL = "global_task_cancel"
 @ai_tool(
     name=GLOBAL_TASK_START_TOOL,
     description=(
-        "创建并启动一个全局任务：steps 必须是已选择好的 Task Capability 步骤，"
+        "创建一个全局任务：steps 必须是已选择好的 Task Capability 步骤，"
         "每一步都携带该 Capability 的类型化参数；不会触发第二次计划模型调用。"
-        "需要审批的步骤会进入待审批状态，由人工在受信界面确认，模型不能自批。"
+        "调用成功后本轮对话即挂起，任务由后台执行，终结时系统自动恢复并给出"
+        "最终回复；不要轮询任务状态。需要审批的步骤会进入待审批状态，由人工"
+        "在受信界面确认，模型不能自批。"
     ),
     permission=TASK_CONTROL_PERMISSION,
     side_effect="write",
@@ -198,21 +223,31 @@ GLOBAL_TASK_CANCEL_TOOL = "global_task_cancel"
     idempotency="required",
     idempotency_keys=("conversation_id", "message_id"),
     recovery_policy="idempotent",
-    version="1",
+    version="2",
+    agent_deferred=True,
 )
 def global_task_start(
     request: GlobalTaskStartControlRequest,
     scope: Annotated[GlobalTaskControlScope, Injected()],
     execution: Annotated[AiExecutionContext, Injected()],
-) -> GlobalTaskResponse:
-    conversation_id, message_id = _chat_idempotency_ids(execution)
-    return _run_control(
-        lambda: scope.controller.start_task(
-            request,
-            conversation_id=conversation_id,
-            message_id=message_id,
-            outer_remaining_seconds=execution.remaining_seconds(),
-        )
+) -> GlobalTaskAcceptance:
+    conversation_id, request_run_id, tool_call_id = _deferred_handshake_context(
+        execution
+    )
+    message_id = str(
+        execution.idempotency_context.get("message_id") or ""
+    ).strip()
+    return cast(
+        GlobalTaskAcceptance,
+        _run_control(
+            lambda: scope.controller.accept_deferred_task(
+                request,
+                conversation_id=conversation_id,
+                request_run_id=request_run_id,
+                tool_call_id=tool_call_id,
+                message_id=message_id,
+            )
+        ),
     )
 
 
@@ -256,7 +291,6 @@ def global_task_submit_input(
             request,
             conversation_id=conversation_id,
             message_id=message_id,
-            outer_remaining_seconds=execution.remaining_seconds(),
         )
     )
 

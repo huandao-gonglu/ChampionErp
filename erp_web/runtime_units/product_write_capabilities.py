@@ -15,22 +15,34 @@ from typing import Annotated, Any, Protocol
 from erp_web.runtime_units.draft_category_resolution import (
     resolve_draft_category_pairs,
 )
+from erp_web.runtime_units.market_pricing_capability import (
+    prepare_target_pricing,
+)
 from erp_web.schemas.ai_tools import TaskApprovalSnapshot
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.product_write_capabilities import (
     DraftDeleteRequest,
     DraftDeleteResult,
+    DraftPricingApplyRequest,
+    DraftPricingApplyResult,
     DraftReadRequest,
     DraftReadResult,
     DraftSaveRequest,
     DraftSaveResult,
+    DraftStockUpdateRequest,
+    DraftStockUpdateResult,
     ProductDeleteRequest,
     ProductDeleteResult,
+    ProductProfilePatchRequest,
+    ProductProfilePatchResult,
     ProductSaveRequest,
     ProductSaveResult,
 )
 from erp_web.services.ai_tool_declaration import Injected, ai_tool
-from erp_web.services.capability_errors import BusinessCapabilityError
+from erp_web.services.capability_errors import (
+    BusinessCapabilityError,
+    CapabilityInputRequired,
+)
 from erp_web.services.task_approval import verify_execution_approval
 
 
@@ -64,6 +76,13 @@ class ProductDraftWriteStore(Protocol):
         ...
 
     def delete_draft_from_index(self, draft_id: Any) -> dict[str, Any]:
+        ...
+
+    def draft_workflow_status(
+        self,
+        product: dict[str, Any],
+        platform: str = "mercadolibre",
+    ) -> str:
         ...
 
 
@@ -169,6 +188,31 @@ def _id_tuple(value: Any) -> tuple[str, ...]:
     return tuple(_text(item) for item in value if _text(item))
 
 
+# 写回执 changed_fields 的有界化：键名截断 + 总数上限，保证 receipt 永远
+# 落在设计预算内（<= 8 KiB），不会因异常输入膨胀成无界输出。
+_CHANGED_FIELD_MAX_NAME = 80
+_CHANGED_FIELD_MAX_COUNT = 200
+
+
+def _changed_field_names(
+    patch: Any,
+    *,
+    ignore: frozenset[str],
+) -> tuple[str, ...]:
+    """从模型提交的 patch 派生有界、去重、排序的变更字段名。"""
+
+    if not isinstance(patch, dict):
+        return ()
+    names = sorted(
+        {
+            str(key)[:_CHANGED_FIELD_MAX_NAME]
+            for key in patch
+            if str(key) not in ignore
+        }
+    )
+    return tuple(names[:_CHANGED_FIELD_MAX_COUNT])
+
+
 @dataclass(frozen=True)
 class ProductWriteCapabilityScope:
     """商品/草稿写入的可信商品存储边界。"""
@@ -178,9 +222,12 @@ class ProductWriteCapabilityScope:
 
 PRODUCT_SAVE_TOOL = "product_save"
 PRODUCT_DELETE_TOOL = "product_delete"
+PRODUCT_PROFILE_PATCH_TOOL = "product_profile_patch"
 DRAFT_READ_TOOL = "draft_read"
 DRAFT_SAVE_TOOL = "draft_save"
 DRAFT_DELETE_TOOL = "draft_delete"
+DRAFT_STOCK_UPDATE_TOOL = "draft_stock_update"
+DRAFT_PRICING_APPLY_TOOL = "draft_pricing_apply"
 
 
 def _normalized_ids(ids: Any) -> list[str]:
@@ -285,10 +332,18 @@ def product_save(
     execution: Annotated[AiExecutionContext, Injected()],
 ) -> ProductSaveResult:
     del execution
-    saved = scope.products.save_product_profile(
-        request.product.model_dump(mode="json", exclude_unset=True)
+    patch = request.product.model_dump(mode="json", exclude_unset=True)
+    saved = scope.products.save_product_profile(patch)
+    # 写回执只投影紧凑 mutation receipt；完整 saved 对象不得进入 Tool Result。
+    return ProductSaveResult(
+        product_id=_text(saved.get("product_id"))[:160],
+        changed_fields=_changed_field_names(
+            patch,
+            ignore=frozenset({"product_id"}),
+        ),
+        updated_at=_text(saved.get("updated_at"))[:64],
+        changed=True,
     )
-    return ProductSaveResult(product=_dict_value(saved))
 
 
 @ai_tool(
@@ -375,8 +430,9 @@ def draft_save(
     execution: Annotated[AiExecutionContext, Injected()],
 ) -> DraftSaveResult:
     del execution
+    patch = dict(request.draft)
     try:
-        resolved = resolve_draft_category_pairs(dict(request.draft))
+        resolved = resolve_draft_category_pairs(dict(patch))
     except (RuntimeError, TimeoutError, ValueError) as exc:
         raise BusinessCapabilityError(
             "OZON_CATEGORY_PAIR_RESOLVE_FAILED",
@@ -388,9 +444,19 @@ def draft_save(
         default_code="DRAFT_NOT_FOUND" if status == 404 else "DRAFT_SAVE_FAILED",
         default_message="草稿不存在。" if status == 404 else "草稿保存失败。",
     )
+    # 写回执只投影紧凑 mutation receipt：禁止返回完整 draft、
+    # product_context（含 raw）、index、图片池或完整类目 Schema。
+    saved_draft = _dict_value(result.get("draft"))
     return DraftSaveResult(
-        draft=_dict_value(result.get("draft")),
-        product_context=_dict_value(result.get("productContext")),
+        draft_id=_text(saved_draft.get("draft_id"))[:160],
+        product_id=_text(saved_draft.get("product_id"))[:160],
+        platform=_text(saved_draft.get("platform"))[:40],
+        changed_fields=_changed_field_names(
+            patch,
+            ignore=frozenset({"draft_id", "draftId"}),
+        ),
+        updated_at=_text(saved_draft.get("updated_at"))[:64],
+        changed=True,
     )
 
 
@@ -436,31 +502,171 @@ def draft_delete(
     )
 
 
+@ai_tool(
+    name=PRODUCT_PROFILE_PATCH_TOOL,
+    description=(
+        "按部分补丁更新本地商品主档：只提供要改的字段，未提供字段保持原值。"
+        "发布草稿的库存/售价不属于此能力，请用对应草稿 focused write。"
+    ),
+    permission="product.write",
+    side_effect="write",
+    approval_required=False,
+    idempotency="required",
+    idempotency_keys=("operation_key",),
+    recovery_policy="manual",
+    version="1",
+)
+def product_profile_patch(
+    request: ProductProfilePatchRequest,
+    scope: Annotated[ProductWriteCapabilityScope, Injected()],
+    execution: Annotated[AiExecutionContext, Injected()],
+) -> ProductProfilePatchResult:
+    del execution
+    patch = request.product.model_dump(mode="json", exclude_unset=True)
+    saved = scope.products.save_product_profile(patch)
+    return ProductProfilePatchResult(
+        product_id=_text(saved.get("product_id"))[:160],
+        changed_fields=_changed_field_names(
+            patch,
+            ignore=frozenset({"product_id"}),
+        ),
+        updated_at=_text(saved.get("updated_at"))[:64],
+        changed=True,
+    )
+
+
+@ai_tool(
+    name=DRAFT_STOCK_UPDATE_TOOL,
+    description=(
+        "更新平台草稿的库存；发布流程中的库存以平台草稿为 owner，"
+        "商品主档库存只是默认值，不能用 product 主档库存替代草稿库存。"
+    ),
+    permission="draft.write",
+    side_effect="write",
+    approval_required=False,
+    idempotency="required",
+    idempotency_keys=("operation_key",),
+    recovery_policy="manual",
+    version="1",
+)
+def draft_stock_update(
+    request: DraftStockUpdateRequest,
+    scope: Annotated[ProductWriteCapabilityScope, Injected()],
+    execution: Annotated[AiExecutionContext, Injected()],
+) -> DraftStockUpdateResult:
+    del execution
+    result, error, status = scope.products.save_draft_detail(
+        {"draft_id": request.draft_id, "stock": request.stock}
+    )
+    _raise_store_error(
+        error,
+        default_code="DRAFT_NOT_FOUND" if status == 404 else "DRAFT_SAVE_FAILED",
+        default_message="草稿不存在。" if status == 404 else "草稿库存更新失败。",
+    )
+    saved_draft = _dict_value(result.get("draft"))
+    return DraftStockUpdateResult(
+        draft_id=_text(saved_draft.get("draft_id"))[:160],
+        stock=_text(saved_draft.get("stock"))[:40] or request.stock,
+        updated_at=_text(saved_draft.get("updated_at"))[:64],
+        changed=True,
+    )
+
+
+@ai_tool(
+    name=DRAFT_PRICING_APPLY_TOOL,
+    description=(
+        "把确定性核价结果持久化为平台草稿的最终售价；只计算不应用不会落库。"
+        "pricing_input 与 draft_prepare_for_market.pricing_input 同形。"
+    ),
+    permission="draft.write",
+    side_effect="write",
+    approval_required=False,
+    idempotency="required",
+    idempotency_keys=("operation_key",),
+    recovery_policy="manual",
+    version="1",
+)
+def draft_pricing_apply(
+    request: DraftPricingApplyRequest,
+    scope: Annotated[ProductWriteCapabilityScope, Injected()],
+    execution: Annotated[AiExecutionContext, Injected()],
+) -> DraftPricingApplyResult:
+    del execution
+    result, error, _status = scope.products.load_draft_detail_from_index(
+        request.draft_id
+    )
+    _raise_store_error(
+        error,
+        default_code="DRAFT_NOT_FOUND",
+        default_message="草稿不存在。",
+    )
+    draft = _dict_value(result.get("draft"))
+    platform = request.target_platform or _text(draft.get("platform"))
+    if not platform:
+        raise BusinessCapabilityError(
+            "DRAFT_PLATFORM_MISSING",
+            "无法确定草稿的目标平台。",
+        )
+    try:
+        applied = prepare_target_pricing(
+            target_draft_id=request.draft_id,
+            target_platform=platform,
+            site=request.site,
+            pricing_input=dict(request.pricing_input),
+            product_store=scope.products,  # type: ignore[arg-type]
+        )
+    except CapabilityInputRequired:
+        raise
+    applied_price = applied.get("applied_price")
+    amount = _text(
+        applied_price.get("amount") if isinstance(applied_price, dict) else ""
+    )
+    currency = _text(
+        applied_price.get("currency") if isinstance(applied_price, dict) else ""
+    )
+    return DraftPricingApplyResult(
+        draft_id=request.draft_id,
+        target_key=_text(applied.get("target_key"))[:120],
+        applied_price=f"{amount} {currency}".strip()[:80],
+        fingerprint=_text(applied.get("calculation_fingerprint"))[:160],
+        changed=bool(amount),
+    )
+
+
 PRODUCT_WRITE_AI_CAPABILITIES = (
     product_save,
     product_delete,
+    product_profile_patch,
 )
 
 DRAFT_WRITE_AI_CAPABILITIES = (
     draft_read,
     draft_save,
     draft_delete,
+    draft_stock_update,
+    draft_pricing_apply,
 )
 
 
 __all__ = [
     "DRAFT_DELETE_TOOL",
+    "DRAFT_PRICING_APPLY_TOOL",
     "DRAFT_READ_TOOL",
     "DRAFT_SAVE_TOOL",
+    "DRAFT_STOCK_UPDATE_TOOL",
     "DRAFT_WRITE_AI_CAPABILITIES",
     "PRODUCT_DELETE_TOOL",
+    "PRODUCT_PROFILE_PATCH_TOOL",
     "PRODUCT_SAVE_TOOL",
     "PRODUCT_WRITE_AI_CAPABILITIES",
     "ProductDraftWriteStore",
     "ProductWriteCapabilityScope",
     "draft_delete",
+    "draft_pricing_apply",
     "draft_read",
     "draft_save",
+    "draft_stock_update",
     "product_delete",
+    "product_profile_patch",
     "product_save",
 ]

@@ -378,6 +378,185 @@ def test_runtime_validates_output_schema() -> None:
     assert result.error["code"] == "TOOL_OUTPUT_SCHEMA_INVALID"
 
 
+def test_write_projection_failure_marks_outcome_unknown() -> None:
+    """写 executor 完成后的投影失败必须携带 outcome_unknown。
+
+    覆盖三类结果投影阶段错误：输出 Schema 校验失败、输出 JSON 编码失败、
+    输出超过大小上限。业务写入已经发出，不能被解释成“没有执行”。
+    """
+
+    executions = 0
+
+    def write_executor(arguments, context):
+        nonlocal executions
+        del context
+        executions += 1
+        return {"unexpected": arguments["item_id"]}
+
+    schema_invalid = runtime(write_executor, side_effect="write").execute(
+        tool_command()
+    )
+    assert schema_invalid.ok is False
+    assert schema_invalid.error["code"] == "TOOL_OUTPUT_SCHEMA_INVALID"
+    assert dict(schema_invalid.error["details"]) == {
+        "outcome_unknown": True,
+        "failure_stage": "result_projection",
+        "side_effect_may_have_completed": True,
+    }
+    assert schema_invalid.error["retryable"] is False
+    assert executions == 1
+
+    def large_write_executor(arguments, context):
+        del context
+        return {"item_id": arguments["item_id"], "padding": "x" * 4096}
+
+    large_definition = AiToolDefinition(
+        name="large_write",
+        version="1",
+        description="输出超限的写工具",
+        input_schema={
+            "type": "object",
+            "required": ["item_id"],
+            "properties": {"item_id": {"type": "string", "minLength": 1}},
+            "additionalProperties": False,
+        },
+        output_schema={
+            "type": "object",
+            "required": ["item_id", "padding"],
+            "properties": {
+                "item_id": {"type": "string"},
+                "padding": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+        required_permission="catalog.read",
+        side_effect="write",
+        approval_required=False,
+        idempotency="required",
+        idempotency_keys=("operation_id",),
+    )
+    large_toolset = AiToolSet.bind(
+        "test.write.large",
+        [large_definition],
+        {
+            large_definition.name: deadline_aware_tool_executor(
+                large_write_executor
+            )
+        },
+    )
+    large_runtime = AiToolRuntime(
+        toolset=large_toolset,
+        execution_context=execution_context(allow_write=True),
+        max_output_bytes=1024,
+    )
+    too_large = large_runtime.execute(tool_command(tool_name="large_write"))
+    assert too_large.ok is False
+    assert too_large.error["code"] == "TOOL_OUTPUT_TOO_LARGE"
+    assert too_large.truncated is True
+    assert dict(too_large.error["details"]) == {
+        "outcome_unknown": True,
+        "failure_stage": "result_projection",
+        "side_effect_may_have_completed": True,
+    }
+
+    def nan_write_executor(arguments, context):
+        del arguments, context
+        return float("nan")
+
+    nan_definition = AiToolDefinition(
+        name="nan_write",
+        version="1",
+        description="返回无法 JSON 编码输出的写工具",
+        input_schema={
+            "type": "object",
+            "required": ["item_id"],
+            "properties": {"item_id": {"type": "string", "minLength": 1}},
+            "additionalProperties": False,
+        },
+        output_schema={"type": "number"},
+        required_permission="catalog.read",
+        side_effect="write",
+        approval_required=False,
+        idempotency="required",
+        idempotency_keys=("operation_id",),
+    )
+    nan_toolset = AiToolSet.bind(
+        "test.write.nan",
+        [nan_definition],
+        {
+            nan_definition.name: deadline_aware_tool_executor(
+                nan_write_executor
+            )
+        },
+    )
+    nan_runtime = AiToolRuntime(
+        toolset=nan_toolset,
+        execution_context=execution_context(allow_write=True),
+    )
+    encoding_failed = nan_runtime.execute(tool_command(tool_name="nan_write"))
+    assert encoding_failed.ok is False
+    assert encoding_failed.error["code"] == "TOOL_OUTPUT_SCHEMA_INVALID"
+    assert dict(encoding_failed.error["details"]) == {
+        "outcome_unknown": True,
+        "failure_stage": "result_projection",
+        "side_effect_may_have_completed": True,
+    }
+
+
+def test_read_projection_failure_does_not_claim_side_effect() -> None:
+    """只读 Capability 的投影失败不得伪造写入语义。"""
+
+    def large_read_executor(arguments, context):
+        del context
+        return {"item_id": arguments["item_id"], "padding": "x" * 4096}
+
+    definition = AiToolDefinition(
+        name="large_read",
+        version="1",
+        description="输出超限的只读工具",
+        input_schema={
+            "type": "object",
+            "required": ["item_id"],
+            "properties": {"item_id": {"type": "string", "minLength": 1}},
+            "additionalProperties": False,
+        },
+        output_schema={
+            "type": "object",
+            "required": ["item_id", "padding"],
+            "properties": {
+                "item_id": {"type": "string"},
+                "padding": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+        required_permission="catalog.read",
+        side_effect="none",
+        approval_required=False,
+    )
+    toolset = AiToolSet.bind(
+        "test.read.large",
+        [definition],
+        {definition.name: deadline_aware_tool_executor(large_read_executor)},
+    )
+    read_runtime = AiToolRuntime(
+        toolset=toolset,
+        execution_context=execution_context(),
+        max_output_bytes=1024,
+    )
+    result = read_runtime.execute(tool_command(tool_name="large_read"))
+    assert result.ok is False
+    assert result.error["code"] == "TOOL_OUTPUT_TOO_LARGE"
+    assert "details" not in result.error
+
+    schema_invalid = runtime(
+        lambda arguments, context: {"unexpected": arguments["item_id"]},
+        side_effect="none",
+    ).execute(tool_command("call_read_schema"))
+    assert schema_invalid.ok is False
+    assert schema_invalid.error["code"] == "TOOL_OUTPUT_SCHEMA_INVALID"
+    assert "details" not in schema_invalid.error
+
+
 def test_runtime_preserves_json_arrays_for_validation_and_executor() -> None:
     definition = AiToolDefinition(
         name="join_tags",

@@ -209,6 +209,8 @@ onBeforeUnmount(() => {
             :busy="chatStore.isBusy"
             :error="panelError"
             :input="chatStore.input"
+            :conversation-id="chatStore.chat?.id ?? ''"
+            :history-version="chatStore.historyVersion"
             @update:input="chatStore.input = $event"
             @send="chatStore.sendMessage()"
             @stop="chatStore.stopStreaming()"

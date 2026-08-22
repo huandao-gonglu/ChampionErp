@@ -6,7 +6,36 @@ import { Chat } from '@ai-sdk/vue'
 import type { UIMessage } from 'ai'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAiChatStore, useAiWorkDisplayStore } from '@/stores'
+import AiChatPanel from '@/components/ai-work/AiChatPanel.vue'
 import AiWorkFloatingButton from '../AiWorkFloatingButton.vue'
+
+const mocks = vi.hoisted(() => ({
+  fetchUiMessages: vi.fn(),
+  fetchConversationTaskLink: vi.fn(),
+  fetchGlobalTask: vi.fn(),
+  approveGlobalTask: vi.fn(),
+  rejectGlobalTask: vi.fn(),
+  submitGlobalTaskInput: vi.fn(),
+  cancelGlobalTask: vi.fn(),
+}))
+
+vi.mock('@/api/aiWork', () => ({
+  AI_CHAT_RUNS_PATH: '/api/v1/ai-chat/runs',
+  conversationEventsUrl: (conversationId: string, afterHistoryVersion: number) => (
+    `/api/v1/ai-work/conversations/${conversationId}/events`
+    + `?after_history_version=${Math.max(0, Math.floor(afterHistoryVersion))}`
+  ),
+  fetchConversationTaskLink: mocks.fetchConversationTaskLink,
+  fetchUiMessages: mocks.fetchUiMessages,
+}))
+
+vi.mock('@/api/globalTasks', () => ({
+  fetchGlobalTask: mocks.fetchGlobalTask,
+  approveGlobalTask: mocks.approveGlobalTask,
+  rejectGlobalTask: mocks.rejectGlobalTask,
+  submitGlobalTaskInput: mocks.submitGlobalTaskInput,
+  cancelGlobalTask: mocks.cancelGlobalTask,
+}))
 
 const NoopView = defineComponent({ render: () => null })
 
@@ -54,6 +83,24 @@ function attachPresentation(
 describe('AiWorkFloatingButton', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.fetchConversationTaskLink.mockImplementation(async (conversationId: string) => ({
+      ok: true,
+      conversation_id: conversationId,
+      task_id: '',
+      link_status: '',
+      task: null,
+    }))
+    mocks.fetchGlobalTask.mockImplementation(async (taskId: string) => ({
+      ok: true,
+      task_id: taskId,
+      task: {
+        task_id: taskId,
+        goal: '后台任务',
+        status: 'in_progress',
+        steps: [],
+        current_step_index: 0,
+      },
+    }))
   })
 
   it('默认渲染 SPA 链接，指向 /aiWork 且不携带 target/rel', async () => {
@@ -99,6 +146,32 @@ describe('AiWorkFloatingButton', () => {
 
     await wrapper.get('[data-testid="ai-chat-composer"]').trigger('submit')
     expect(sendSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('浮层面板把 conversation id 传给 AiChatPanel 并在未解决任务存在时挂载任务卡', async () => {
+    const { wrapper, store } = await mountFloatingButton()
+    const conversationId = store.startConversation()
+    mocks.fetchConversationTaskLink.mockResolvedValue({
+      ok: true,
+      conversation_id: conversationId,
+      task_id: 'gtask-7',
+      link_status: 'ready',
+      task: null,
+    })
+
+    await wrapper.get('[data-testid="ai-work-floating"]').trigger('mouseenter')
+
+    const panel = wrapper.findComponent(AiChatPanel)
+    expect(panel.exists()).toBe(true)
+    expect(panel.props('conversationId')).toBe(conversationId)
+
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="global-task-card"]').exists()).toBe(true)
+    })
+    expect(mocks.fetchGlobalTask).toHaveBeenCalledWith('gtask-7')
+    expect(wrapper.find('[data-testid="ai-chat-send-blocked"]').exists()).toBe(true)
+
+    wrapper.unmount()
   })
 
   it('关闭按钮收起面板', async () => {

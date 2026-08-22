@@ -83,7 +83,8 @@ def test_missing_history_returns_404() -> None:
 def test_retired_event_raw_and_children_endpoints_return_404() -> None:
     _save_history()
 
-    for action in ("events", "raw", "children"):
+    # events 已由 Deferred 迁移恢复为正式订阅端点，不再是 retired。
+    for action in ("raw", "children"):
         handler = _get(
             f"/api/v1/ai-work/conversations/conversation_1/{action}"
         )

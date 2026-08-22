@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from pydantic_ai import FunctionToolset, RunContext, Tool
+from pydantic_ai.exceptions import CallDeferred
 
 from erp_web.schemas.ai_tools import AiToolCommand, AiToolDefinition
 
@@ -106,12 +107,14 @@ class PydanticToolBridge:
         self,
         definition: AiToolDefinition,
     ) -> Tool[AiAgentDependencies]:
+        agent_deferred = definition.agent_deferred
+
         def invoke(
             ctx: RunContext[AiAgentDependencies],
             **arguments: Any,
         ) -> Any:
             try:
-                return self.execute(
+                output = self.execute(
                     dependencies=ctx.deps,
                     tool_name=definition.name,
                     tool_call_id=str(ctx.tool_call_id or ""),
@@ -121,6 +124,8 @@ class PydanticToolBridge:
             except AiToolBridgeError as exc:
                 if not exc.model_visible:
                     raise
+                # Deferred 控制工具创建失败时必须以稳定错误闭合本次调用，
+                # 不能产生第二个未解决 Deferred。
                 return {
                     "ok": False,
                     "error": {
@@ -129,6 +134,26 @@ class PydanticToolBridge:
                         "retryable": exc.retryable,
                     },
                 }
+            if not agent_deferred:
+                return output
+            task_id = str(
+                (output or {}).get("task_id")
+                if isinstance(output, Mapping)
+                else ""
+            ).strip()
+            if not task_id:
+                raise AiToolBridgeError(
+                    code="GLOBAL_TASK_DEFERRED_ACCEPTANCE_INVALID",
+                    message="Deferred 控制工具未返回可信 task_id，不能挂起。",
+                    tool_name=definition.name,
+                    tool_call_id=str(ctx.tool_call_id or ""),
+                )
+            # CallDeferred 是 Pydantic 异常，不是返回值；它不进入 ERP JSON
+            # result 序列化，也不会被 AiToolRuntime 捕获成 TOOL_EXECUTION_FAILED。
+            # 置位 run 级标志：协议层从该时刻起把官方编码事件切入「事务提交
+            # 后才发布」的有界缓冲，终态事件不得先于 history/link/outbox 提交。
+            ctx.deps.tool_runtime.deferred_call_started = True
+            raise CallDeferred(metadata={"task_id": task_id})
 
         invoke.__name__ = definition.name
         return Tool.from_schema(

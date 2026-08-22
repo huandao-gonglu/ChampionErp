@@ -55,6 +55,14 @@ def test_database_owns_schema_and_connection_policy(tmp_path) -> None:
             )
             for index in message_history_indexes
         }
+        deferred_link_indexes = connection.execute(
+            'PRAGMA index_list("pydantic_deferred_task_links")'
+        ).fetchall()
+        deferred_link_unique_partial = {
+            (str(index["name"]), int(index["partial"] or 0))
+            for index in deferred_link_indexes
+            if int(index["unique"] or 0) == 1
+        }
     assert set(REQUIRED_TABLES).issubset(tables)
     assert user_version == SCHEMA_VERSION
     assert str(journal_mode).lower() == "wal"
@@ -71,10 +79,16 @@ def test_database_owns_schema_and_connection_policy(tmp_path) -> None:
     } == {
         "conversation_id": ("TEXT", 0, 1),
         "messages_json": ("BLOB", 1, 0),
+        "history_version": ("INTEGER", 1, 0),
         "created_at": ("TEXT", 1, 0),
         "updated_at": ("TEXT", 1, 0),
     }
     assert ("updated_at",) in message_history_index_columns
+    # 每个 conversation 最多一个未解决 Deferred link：partial unique index。
+    assert (
+        "idx_deferred_task_links_active_conversation",
+        1,
+    ) in deferred_link_unique_partial
     assert "ai_" + "sessions" not in tables
 
 

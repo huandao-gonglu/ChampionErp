@@ -3,10 +3,14 @@ import { computed } from 'vue'
 import { PhPlus } from '@phosphor-icons/vue'
 import TaskApprovalModeSelect from './TaskApprovalModeSelect.vue'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   modelValue: string
   busy: boolean
-}>()
+  /** 非空时锁定普通发送（例如存在未解决的全局任务），并展示原因。 */
+  sendDisabledReason?: string
+}>(), {
+  sendDisabledReason: '',
+})
 
 const emit = defineEmits<{
   (event: 'update:modelValue', value: string): void
@@ -14,7 +18,9 @@ const emit = defineEmits<{
   (event: 'stop'): void
 }>()
 
-const canSend = computed(() => props.modelValue.trim().length > 0 && !props.busy)
+const canSend = computed(() => (
+  props.modelValue.trim().length > 0 && !props.busy && !props.sendDisabledReason
+))
 
 function onInput(event: Event) {
   emit('update:modelValue', (event.target as HTMLTextAreaElement).value)
@@ -69,17 +75,26 @@ function onKeydown(event: KeyboardEvent) {
         >
           停止
         </button>
-        <button
-          v-else
-          type="submit"
-          class="btn btn-primary px-3 py-1.5 text-xs"
-          :disabled="!canSend"
-          data-testid="ai-chat-send"
-        >
-          发送
-        </button>
+        <template v-else>
+          <button
+            type="submit"
+            class="btn btn-primary px-3 py-1.5 text-xs"
+            :disabled="!canSend"
+            data-testid="ai-chat-send"
+          >
+            发送
+          </button>
+        </template>
       </div>
     </div>
+    <p
+      v-if="sendDisabledReason"
+      role="status"
+      class="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/30"
+      data-testid="ai-chat-send-blocked"
+    >
+      {{ sendDisabledReason }}
+    </p>
     <p class="mt-2 text-xs text-slate-400">
       Enter 发送，Shift + Enter 换行。完全授权只跳过人工审批，不会绕过资料校验或扩大工具权限。
     </p>

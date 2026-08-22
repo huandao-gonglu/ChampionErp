@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -11,17 +10,13 @@ from pydantic_ai.messages import (
     ModelResponse,
     TextPart,
     ToolCallPart,
-    ToolReturnPart,
     UserPromptPart,
 )
 
 from erp_web.db import ErpDatabase
 from erp_web.stores.pydantic_message_store import (
-    INTERRUPTED_TOOL_RETURN_CONTENT,
     PydanticMessageStore,
     PydanticMessageStoreError,
-    SYNTHESIZED_TOOL_RETURN_METADATA_KEY,
-    repair_orphaned_tool_returns,
 )
 
 
@@ -44,6 +39,31 @@ def _messages(*, answered: bool = True) -> list[ModelMessage]:
             )
         )
     return messages
+
+
+def _deferred_open_history() -> list[ModelMessage]:
+    """合法 Deferred 开口：存在 ToolCallPart 但没有对应 ToolReturnPart。"""
+
+    return [
+        ModelRequest(
+            parts=[UserPromptPart("创建任务")],
+            run_id="run_1",
+            conversation_id="conversation_1",
+        ),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "global_task_start",
+                    {"goal": "发布商品"},
+                    tool_call_id="call-deferred-1",
+                )
+            ],
+            model_name="test-model",
+            provider_name="test",
+            run_id="run_1",
+            conversation_id="conversation_1",
+        ),
+    ]
 
 
 def _store(tmp_path: Path) -> tuple[ErpDatabase, PydanticMessageStore]:
@@ -126,145 +146,44 @@ def test_delete_removes_only_the_requested_conversation(tmp_path: Path) -> None:
     assert [item.conversation_id for item in store.list()] == ["conversation_2"]
 
 
-# -- repair_orphaned_tool_returns：工具调用/返回配对修复 --------------------
-
-_TS = datetime(2026, 8, 19, 13, 51, 39, tzinfo=timezone.utc)
+# -- history version：每次保存递增，供 Deferred CAS 与订阅 cursor 使用 -------
 
 
-def _call_response(*calls: tuple[str, str]) -> ModelResponse:
-    return ModelResponse(
-        parts=[
-            ToolCallPart(tool_name, {}, tool_call_id=call_id)
-            for tool_name, call_id in calls
-        ],
-        timestamp=_TS,
-    )
+def test_save_increments_history_version(tmp_path: Path) -> None:
+    _, store = _store(tmp_path)
+
+    first = store.save("conversation_1", _messages(answered=False))
+    second = store.save("conversation_1", _messages())
+
+    assert first.history_version == 1
+    assert second.history_version == 2
+    assert store.get_version("conversation_1") == 2
+    assert store.get_version("conversation_missing") == 0
 
 
-def _return_request(tool_name: str, call_id: str) -> ModelRequest:
-    return ModelRequest(
-        parts=[
-            ToolReturnPart(
-                tool_name,
-                {"ok": True},
-                tool_call_id=call_id,
-                timestamp=_TS,
-            )
-        ]
-    )
+# -- Deferred 开口历史：读取保持官方原貌，不合成 tool return -----------------
 
 
-def _returned_ids(messages: list[ModelMessage]) -> set[str]:
-    return {
-        str(part.tool_call_id)
-        for message in messages
-        for part in getattr(message, "parts", ())
-        if isinstance(part, ToolReturnPart)
-    }
+def test_read_preserves_deferred_open_history_without_synthesis(
+    tmp_path: Path,
+) -> None:
+    _, store = _store(tmp_path)
+    messages = _deferred_open_history()
 
+    store.save("conversation_1", messages)
+    loaded = store.get("conversation_1")
 
-def test_repair_fills_return_for_trailing_orphan_tool_call() -> None:
-    messages: list[ModelMessage] = [
-        ModelRequest(parts=[UserPromptPart("查询产品")]),
-        _call_response(("product_read", "call-a")),
-    ]
-
-    repaired = repair_orphaned_tool_returns(messages)
-
-    assert _returned_ids(repaired) == {"call-a"}
-    synthesized = [
-        part
-        for message in repaired
-        for part in getattr(message, "parts", ())
-        if isinstance(part, ToolReturnPart) and part.tool_call_id == "call-a"
-    ]
-    assert len(synthesized) == 1
-    assert synthesized[0].outcome == "interrupted"
-    assert synthesized[0].content == INTERRUPTED_TOOL_RETURN_CONTENT
-    assert synthesized[0].metadata == {SYNTHESIZED_TOOL_RETURN_METADATA_KEY: True}
-    # 使用来源响应的时间戳，保证确定性。
-    assert synthesized[0].timestamp == _TS
-
-
-def test_repair_handles_partial_parallel_batch_mid_conversation() -> None:
-    """并行批中一个调用有返回、另一个被打断：只补缺失的那个。"""
-
-    messages: list[ModelMessage] = [
-        _call_response(("drafts_query", "call-kept"), ("product_read", "call-lost")),
-        ModelRequest(
-            parts=[
-                ToolReturnPart(
-                    "drafts_query",
-                    {"total": 0},
-                    tool_call_id="call-kept",
-                    timestamp=_TS,
-                ),
-                UserPromptPart("查询一下产品"),
-            ]
-        ),
-        _call_response(("product_read", "call-tail")),
-    ]
-
-    repaired = repair_orphaned_tool_returns(messages)
-
-    assert _returned_ids(repaired) == {"call-kept", "call-lost", "call-tail"}
-    # call-kept 已有真实返回，不能被重复合成。
-    kept_returns = [
-        part
-        for message in repaired
-        for part in getattr(message, "parts", ())
-        if isinstance(part, ToolReturnPart) and part.tool_call_id == "call-kept"
-    ]
-    assert len(kept_returns) == 1
-    assert kept_returns[0].outcome == "success"
-
-
-def test_repair_is_idempotent_and_deterministic() -> None:
-    messages: list[ModelMessage] = [
-        _call_response(("product_read", "call-a"), ("products_index_query", "call-b")),
-    ]
-
-    first = repair_orphaned_tool_returns(messages)
-    second = repair_orphaned_tool_returns(first)
-
-    assert ModelMessagesTypeAdapter.dump_json(first) == (
-        ModelMessagesTypeAdapter.dump_json(second)
-    )
-
-
-def test_repair_leaves_complete_history_unchanged() -> None:
-    messages: list[ModelMessage] = [
-        _call_response(("lookup_item", "call-1")),
-        _return_request("lookup_item", "call-1"),
-    ]
-
-    repaired = repair_orphaned_tool_returns(messages)
-
-    assert len(repaired) == len(messages)
-    assert ModelMessagesTypeAdapter.dump_json(repaired) == (
+    assert loaded is not None
+    reloaded = loaded.model_messages()
+    # 读取不得补造任何 ToolReturnPart；Deferred 开口必须留给官方
+    # DeferredToolResults 的后续 run 显式闭合。
+    assert ModelMessagesTypeAdapter.dump_json(reloaded) == (
         ModelMessagesTypeAdapter.dump_json(messages)
     )
-
-
-def test_store_read_repairs_legacy_dirty_blob_without_writing(tmp_path: Path) -> None:
-    """历史遗留的脏数据（读取路径）也必须被修复，且不改变存储内容。"""
-
-    db, store = _store(tmp_path)
-    dirty = [
-        _call_response(("product_read", "legacy-orphan")),
-    ]
-    # 直接写入未修复的原始 blob，模拟历史遗留脏数据。
-    db.replace_pydantic_message_history(
-        "conversation_legacy",
-        ModelMessagesTypeAdapter.dump_json(dirty),
-        now="2026-08-19T00:00:00+00:00",
-    )
-
-    loaded = store.get("conversation_legacy")
-    assert loaded is not None
-    assert _returned_ids(loaded.model_messages()) == {"legacy-orphan"}
-
-    # 读取是纯修复：存储的原始 blob 不被改写。
-    raw = db.get_pydantic_message_history("conversation_legacy")
-    assert raw is not None
-    assert ModelMessagesTypeAdapter.validate_json(raw["messages_json"]) == dirty
+    returned_ids = {
+        str(getattr(part, "tool_call_id", "") or "")
+        for message in reloaded
+        for part in getattr(message, "parts", ())
+        if type(part).__name__.endswith("ToolReturnPart")
+    }
+    assert returned_ids == set()

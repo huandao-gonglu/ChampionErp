@@ -73,6 +73,11 @@ Model Requests，图片等能力使用锁定版本提供的 Pydantic capability/
   右侧按优先级选择数据源——前台 presentation（observe Chat 实时消息）、活动 `global.chat`
   （共享 `Chat.messages`）或服务端 `/ui-messages` 只读派生历史；“原始消息”辅助标签提供
   规范 Pydantic JSON 树、Raw JSON 与下载；支持 `conversation_id` / `presentation_id` query 定位。
+  活动 conversation 把 `conversation_id` 传给 `AiChatPanel`，由 conversation 级 `task-link`
+  纯读接口驱动挂载唯一 `GlobalTaskApprovalCard`；存在未解决任务时普通发送被锁定，
+  审批/补资料/取消等明确命令不受影响。`front/src/stores/aiChat.ts` 订阅后台官方事件 SSE
+  （按单调递增 `history_version` 应用，`resync_required` 时重读 `/ui-messages` 再重连），
+  后台 continuation 提交的最终回复经该通道只读进入对话。
 
 ```text
 API use case
@@ -164,7 +169,10 @@ service 属于上层用例编排，不进入通用 Tool Runtime；Memory 和 Pol
 
 全局只有 `global.chat` 一个主 Agent / 对话入口 / 全局模型绑定。不存在独立 Planner，
 也不存在第二次计划模型调用：主 Agent 在对话回合内直接选择类型化任务步骤，经
-`global_task_start` 提交，Controller 严格顺序执行。任务与发布终态由 Controller 和
+`global_task_start` 提交。`global_task_start` 受理成功后 Bridge 抛出 Pydantic 官方
+`CallDeferred`，当前 run 以官方 Deferred 语义挂起；任务执行只由后台 recovery
+worker 完成，任务终结后 continuation run 用官方 `DeferredToolResults` 恢复同一
+conversation 并生成最终 Assistant 回复。任务与发布终态由 Controller 和
 PublishingBus 持久化，不从对话事件推断。
 
 ```text
@@ -172,15 +180,27 @@ global.chat（唯一主 Agent）
   → erp_web/facades/global_task_facade.py::build_global_chat_toolset
       ├─ Direct 只读 Capability（GLOBAL_CHAT_DIRECT_CAPABILITIES）
       └─ 任务控制 ToolSet（global_ai_control_tools.py）
-          → global_task_start（类型化 step union）
-              → erp_web/services/global_task_controller.py
+          → global_task_start（类型化 step union，agent_deferred）
+              → erp_web/services/global_task_controller.py::accept_deferred_task
                   ├─ APPLICATION_CAPABILITY_CATALOG（唯一业务 Catalog）
                   ├─ erp_web/stores/global_task_store.py
+                  ├─ erp_web/stores/pydantic_deferred_task_link_store.py
+                  │   （conversation → task 关联 + history ready 屏障）
                   └─ PublishingBus（发布终态）
 
-/api/global-task-{state,input,approve,reject,cancel,refresh}
-  → erp_web/http_route_units/global_agent_routes.py
-      → erp_web/facades/global_task_facade.py（受信任务 UI HTTP 门面）
+后台推进（不依赖原始请求连接）：
+  server.py::start_global_task_recovery_worker
+    → GlobalTaskController.recover_unfinished_tasks（worker 执行步骤）
+    → GlobalTaskContinuationService.recover_pending
+        （任务终结 → DeferredToolResults 续跑 → 最终回复原子提交）
+
+受信任务 UI（只读 + 明确用户命令）：
+  GET /api/v1/global-tasks/<task_id>（纯读任务状态）
+  GET /api/v1/ai-work/conversations/<id>/task-link（conversation → 未解决任务）
+  GET /api/v1/ai-work/conversations/<id>/events（官方事件订阅 SSE）
+  POST /api/global-task-{input,approve,reject,cancel}
+    → erp_web/http_route_units/global_agent_routes.py
+        → erp_web/facades/global_task_facade.py（受信任务 UI HTTP 门面）
 ```
 
 `app_config.task_approval_mode` 是唯一审批等级设置：`ask`（询问审批，默认）和
@@ -209,8 +229,10 @@ Controller 在副作用前为当前步骤生成冻结快照、digest 和审批�
   依赖（采集 cookie/密钥只从已保存配置解析，模型输入永远不提供凭据）；
   `build_global_task_controller` 装配 Controller 与 Task ToolSet；
   `build_global_chat_toolset` 把 Direct 只读能力与四个任务控制工具合并为
-  `global.chat` ToolSet。六个 `/api/global-task-*` HTTP 门面只是受信任务 UI 的
-  状态读取、补资料、审批确认/拒绝、取消与终态刷新入口；审批确认/拒绝必须携带
+  `global.chat` ToolSet。四个 `/api/global-task-*` POST 门面只是受信任务 UI 的
+  补资料、审批确认/拒绝与取消入口；任务状态读取是纯 GET
+  （`/api/v1/global-tasks/<task_id>` 与 conversation 级 `task-link`），不存在任何
+  可推进任务的写刷新。审批确认/拒绝必须携带
   服务端下发给受信 UI 的 token，主 Agent 不具备对应工具。任务创建只经由
   `global_task_start` 工具，不存在 `/api/global-task-start` 或发布确认专用入口。
 - `erp_web/runtime_units/global_ai_control_tools.py`：四个任务控制工具
@@ -220,12 +242,27 @@ Controller 在副作用前为当前步骤生成冻结快照、digest 和审批�
   参数 Schema；不存在逐 Capability 手写 step model、任意字典参数或 Controller 内的
   Capability 名称分支。
 - `erp_web/services/global_task_controller.py`：任务状态机、严格顺序推进、暂停/补
-  资料、审批门与终态刷新的 owner；执行步骤只依赖 Catalog 的类型化
+  资料与审批门的 owner；`accept_deferred_task` 只受理任务与创建 deferred link，
+  不执行任何步骤。任务推进只由后台 recovery worker 完成，HTTP 门面与前端读取
+  都不能推进任务；执行步骤只依赖 Catalog 的类型化
   request/executor。Controller 与 `erp_web/schemas/global_tasks.py` 不含 Capability
   名称分支、Planner 或旧 `global.task.plan` 引用（架构测试守卫）。
 - `erp_web/stores/global_task_store.py`：`LocalGlobalTaskState` 的唯一 Store；草稿
   快照方法委托给 `erp_web/stores/draft_query_snapshot_store.py`。后者是
   `DraftQuerySnapshot` 的唯一持久化 owner，不依赖任务状态或任务 schema。
+- `erp_web/stores/pydantic_deferred_task_link_store.py`：conversation → 未解决
+  Deferred 任务的唯一关联表（schema v13）。`awaiting_history` provisional link 只
+  供服务端恢复/清理；`ready` link 是前端任务卡与发送锁定的唯一依据；任务终结并
+  continuation 提交后 link 变 `resolved`。
+- `erp_web/stores/pydantic_ai_event_outbox_store.py`：官方编码事件 outbox。事件
+  批次只在 history/link/outbox 原子提交成功后发布；订阅端按单调递增
+  `history_version` 重放，游标超出保留窗口时明确 `resync_required`。
+- `erp_web/services/global_task_continuation_service.py`：任务终结后用官方
+  `DeferredToolResults` 续跑同一 conversation，最终 Assistant 回复与
+  history/link/outbox 原子提交；不合成项目自有 Assistant message shape。
+- `erp_web/services/vercel_ai_ui_service.py`：`/api/v1/ai-chat/runs` 的服务端
+  drain；接受普通回合前原子拒绝存在未解决 link 的 conversation
+  （`AI_CHAT_CONVERSATION_TASK_PENDING`），客户端断线不取消已接受的 run。
 - `erp_web/schemas/global_tasks.py`：任务、步骤、`pending_input_owner`、带
   `input_type/input_owner` 的类型化 `RequiredInput`、审批与拒绝 shape。补充值由
   Controller 按 owner 合并到 step、属性或核价输入，不靠 facade 字段白名单。
@@ -276,15 +313,27 @@ Global Task 聊天耦合已全部删除。当前 AiWork 只围绕 Pydantic 官�
 - `erp_web/http_route_units/ai_work_routes.py`：只读检查入口。
   `GET /api/v1/ai-work/conversations` 列出历史索引；
   `GET /api/v1/ai-work/conversations/{id}` 返回规范 `ModelMessage` JSON；
-  `GET /api/v1/ai-work/conversations/{id}/ui-messages` 用官方 Adapter 派生只读 `UIMessage[]`。
-- `erp_web/stores/pydantic_message_store.py`：`ModelMessage` 历史唯一持久化边界。
-- 已退役的 `/events`、`/raw`、`/children`、wait/after_seq 参数继续返回 404。
+  `GET /api/v1/ai-work/conversations/{id}/ui-messages` 用官方 Adapter 派生只读
+  `UIMessage[]`（含 `history_version` 订阅游标）；
+  `GET /api/v1/ai-work/conversations/{id}/task-link` 返回 conversation → 未解决
+  Deferred 任务的纯读关联（只含 `ready` link）；
+  `GET /api/v1/ai-work/conversations/{id}/events` 官方编码事件订阅 SSE：先从
+  outbox 重放 `after_history_version` 之后的保留批次再转 live，游标超出保留窗口
+  时返回 `resync_required`；
+  `GET /api/v1/global-tasks/{task_id}` 纯读任务状态。
+- `erp_web/stores/pydantic_message_store.py`：`ModelMessage` 历史唯一持久化边界；
+  每次提交递增 `history_version`，不合成 orphan tool return。
+- 已退役的 `/raw`、`/children`、wait/after_seq 参数继续返回 404。
 
 ### 全局对话（global.chat）与实时消息流
 
 `global.chat` 是唯一主 Agent 对话入口：输出自然语言文本，业务入口
 `erp_web/services/global_agent_chat_service.py`，只选择服务端 prompt、`global.chat`
 ToolSet、Execution Profile 与权限，再调用 `AiAgentFactory.open_stream_run(...)`。
+Execution Profile 的 output type 是 `str | DeferredToolRequests`：
+`global_task_start` 受理成功时 Bridge 抛出官方 `CallDeferred`，run 以 Deferred 语义
+挂起；任务终结后 `open_continuation_run(...)` 用官方 `DeferredToolResults` 恢复同一
+conversation 并生成最终回复。
 ToolSet 由 `erp_web/facades/global_task_facade.py::build_global_chat_toolset` 装配：
 Direct 只读能力加四个任务控制工具；写与审批能力只经类型化任务步骤执行，主 Agent
 没有直接写工具，也不存在并行的第二条规划链。
@@ -656,8 +705,11 @@ PUBLISHED 值）先于 Campaign 状态裁决：`HAS_CARD_CAN_UPDATE_ERRORS`/`NO_
   `config_http` 状态码分类与既有消息格式保持。
 - `tests/test_yandex_publish_workflows.py`：Yandex 预览 digest、确认入队与状态回读的
   HTTP 契约，含 400 需确认 / 409 确认过期路径。
-- `tests/test_global_agent_routes.py`、前端 `GlobalAgentChatPanel` 测试：六个受信任务
-  HTTP 门面、稳定对话恢复、RequiredInput 与审批确认/拒绝交互。
+- `tests/test_global_agent_routes.py`、前端 `AiChatPanel` / `GlobalTaskApprovalCard`
+  测试：四个受信任务 POST 门面与纯读 GET、conversation 级任务卡挂载、发送锁定、
+  RequiredInput 与审批确认/拒绝交互、后台事件订阅重连。
+- `tests/test_ai_context_architecture.py`：禁止第二 Agent loop、自研 deferred codec
+  与前端任务推进的架构守卫。
 - `tests/test_backend_api.py` 与 `tests/test_http_request_security.py`：HTTP contract
   与本机请求安全边界。
 - `tests/architecture/`：长期模块边界、持久化与平台契约。

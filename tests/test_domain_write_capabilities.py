@@ -41,9 +41,12 @@ from erp_web.runtime_units.product_write_capabilities import (
     _draft_delete_approval_snapshot,
     _product_delete_approval_snapshot,
     draft_delete,
+    draft_pricing_apply,
     draft_read,
     draft_save,
+    draft_stock_update,
     product_delete,
+    product_profile_patch,
     product_save,
 )
 from erp_web.runtime_units.text_translation import TranslationRequestError
@@ -65,9 +68,12 @@ from erp_web.schemas.image_capabilities import (
 )
 from erp_web.schemas.product_write_capabilities import (
     DraftDeleteRequest,
+    DraftPricingApplyRequest,
     DraftReadRequest,
     DraftSaveRequest,
+    DraftStockUpdateRequest,
     ProductDeleteRequest,
+    ProductProfilePatchRequest,
     ProductSaveRequest,
 )
 from erp_web.services.capability_errors import BusinessCapabilityError
@@ -210,7 +216,10 @@ def test_product_save_updates_product_profile() -> None:
         scope=scope,
         execution=_execution(),
     )
-    assert dict(saved.product)["name"] == "Portable fan Pro"
+    # 写回执是有界 mutation receipt，不再携带完整商品对象。
+    assert saved.product_id == "product-save-1"
+    assert saved.changed_fields == ("brand", "name")
+    assert saved.changed is True
     reloaded = context.products.load_product_from_index("product-save-1", "")
     assert str(reloaded.get("name")) == "Portable fan Pro"
 
@@ -225,10 +234,16 @@ def test_product_save_updates_product_profile() -> None:
         scope=scope,
         execution=_execution("op-facts"),
     )
-    assert dict(facts.product)["dimensions"] == "30x20x10cm"
-    assert dict(facts.product)["weight_kg"] == "0.8"
-    assert dict(facts.product)["name"] == "Portable fan Pro"
-    assert dict(facts.product)["source"]["source_url"].endswith("product-save-1")
+    assert facts.product_id == "product-save-1"
+    assert facts.changed_fields == ("dimensions", "weight_kg")
+    # 部分补丁不得覆盖未提供字段（name/brand 保持上一次写入的值）。
+    reloaded = context.products.load_product_from_index("product-save-1", "")
+    assert str(reloaded.get("dimensions")) == "30x20x10cm"
+    assert str(reloaded.get("weight_kg")) == "0.8"
+    assert str(reloaded.get("name")) == "Portable fan Pro"
+    assert str(reloaded.get("brand")) == "Champion"
+    source = dict(reloaded.get("source") or {})
+    assert str(source.get("source_url")).endswith("product-save-1")
 
 
 def test_draft_read_save_roundtrip_and_missing_draft() -> None:
@@ -253,7 +268,12 @@ def test_draft_read_save_roundtrip_and_missing_draft() -> None:
         scope=scope,
         execution=_execution(),
     )
-    assert dict(updated.draft)["title"] == "Ventilador Pro Max"
+    # 写回执是有界 mutation receipt，不再携带完整 draft/product_context。
+    assert updated.draft_id == draft_id
+    assert updated.product_id == "product-draft-1"
+    assert updated.platform == "mercadolibre"
+    assert updated.changed_fields == ("platform", "title")
+    assert updated.changed is True
     persisted = context.db.load_draft_model(draft_id)
     assert persisted["title"] == "Ventilador Pro Max"
 
@@ -291,6 +311,155 @@ def test_draft_read_omits_unbounded_raw_product_context() -> None:
     assert "raw" not in read.product_context
     assert read.product_context["product_id"] == "product-draft-large-context"
     assert len(serialized) < 262_144
+
+
+def _receipt_bytes(result: Any) -> int:
+    return len(
+        json.dumps(
+            result.model_dump(mode="json"),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    )
+
+
+def test_write_receipts_are_bounded_and_exclude_full_aggregates() -> None:
+    """大商品/大草稿写入后，回执必须小于 8 KiB 且不含完整聚合对象。"""
+
+    context = get_context()
+    saved_product = _seed_product("product-receipt-large")
+    draft_id = str(saved_product["drafts"]["mercadolibre"]["draft_id"])
+    scope = _write_scope()
+
+    # 把商品和草稿膨胀到远超旧 64 KiB 上限的真实规模。
+    product = context.products.load_product_from_index("product-receipt-large", "")
+    product["description"] = "长描述" * 60_000
+    product["source"]["description"] = "来源长描述" * 60_000
+    context.products.save_product(product)
+    big_draft = context.db.load_draft_model(draft_id)
+    big_draft["description"] = "草稿长描述" * 60_000
+    context.db.upsert_draft_model(
+        str(big_draft.get("product_id") or ""),
+        str(big_draft.get("platform") or ""),
+        big_draft,
+    )
+
+    product_receipt = product_save(
+        ProductSaveRequest(
+            product={"product_id": "product-receipt-large", "stock": "200"}
+        ),
+        scope=scope,
+        execution=_execution("op-receipt-product"),
+    )
+    dumped_product_receipt = product_receipt.model_dump(mode="json")
+    assert set(dumped_product_receipt) == {
+        "product_id",
+        "changed_fields",
+        "updated_at",
+        "changed",
+    }
+    assert "description" not in json.dumps(dumped_product_receipt)
+    assert _receipt_bytes(product_receipt) < 8 * 1024
+
+    draft_receipt = draft_save(
+        DraftSaveRequest(
+            draft={"draft_id": draft_id, "stock": "10", "platform": "mercadolibre"}
+        ),
+        scope=scope,
+        execution=_execution("op-receipt-draft"),
+    )
+    dumped_draft_receipt = draft_receipt.model_dump(mode="json")
+    assert set(dumped_draft_receipt) == {
+        "draft_id",
+        "product_id",
+        "platform",
+        "changed_fields",
+        "updated_at",
+        "changed",
+    }
+    assert "product_context" not in dumped_draft_receipt
+    assert "raw" not in json.dumps(dumped_draft_receipt, ensure_ascii=False)
+    assert _receipt_bytes(draft_receipt) < 8 * 1024
+
+    # 写入确实生效（回执紧凑不等于丢数据）。
+    reloaded = context.products.load_product_from_index("product-receipt-large", "")
+    assert str(reloaded.get("stock")) == "200"
+    assert str(context.db.load_draft_model(draft_id).get("stock")) == "10"
+
+
+def test_draft_stock_update_owns_publish_stock() -> None:
+    """库存 focused write：只改平台草稿库存，不触碰商品主档库存。"""
+
+    context = get_context()
+    saved_product = _seed_product("product-stock-focused")
+    draft_id = str(saved_product["drafts"]["mercadolibre"]["draft_id"])
+    scope = _write_scope()
+
+    result = draft_stock_update(
+        DraftStockUpdateRequest(draft_id=draft_id, stock="10"),
+        scope=scope,
+        execution=_execution("op-stock-focused"),
+    )
+    assert result.draft_id == draft_id
+    assert result.stock == "10"
+    assert result.changed is True
+    assert _receipt_bytes(result) < 8 * 1024
+
+    # 草稿库存已更新；商品主档库存不受影响（owner 分离）。
+    assert str(context.db.load_draft_model(draft_id).get("stock")) == "10"
+    reloaded = context.products.load_product_from_index("product-stock-focused", "")
+    assert str(reloaded.get("stock")) != "10"
+
+    with pytest.raises(BusinessCapabilityError) as missing:
+        draft_stock_update(
+            DraftStockUpdateRequest(draft_id="draft-missing", stock="5"),
+            scope=scope,
+            execution=_execution("op-stock-missing"),
+        )
+    assert missing.value.code == "DRAFT_NOT_FOUND"
+
+    with pytest.raises(Exception):
+        DraftStockUpdateRequest(draft_id=draft_id, stock="not-a-number")
+
+
+def test_product_profile_patch_is_partial() -> None:
+    """focused 部分补丁：未提供字段保持原值，回执有界。"""
+
+    context = get_context()
+    _seed_product("product-patch-focused", with_draft=False)
+    scope = _write_scope()
+
+    result = product_profile_patch(
+        ProductProfilePatchRequest(
+            product={"product_id": "product-patch-focused", "stock": "200"}
+        ),
+        scope=scope,
+        execution=_execution("op-patch-focused"),
+    )
+    assert result.product_id == "product-patch-focused"
+    assert result.changed_fields == ("stock",)
+    assert result.changed is True
+
+    reloaded = context.products.load_product_from_index("product-patch-focused", "")
+    assert str(reloaded.get("stock")) == "200"
+    # 未提供字段保持原值（seed 的 name/brand 不被清空）。
+    assert str(reloaded.get("name")) == "Portable fan"
+    assert str(reloaded.get("brand")) == "Champion"
+
+
+def test_draft_pricing_apply_requires_existing_draft() -> None:
+    scope = _write_scope()
+    with pytest.raises(BusinessCapabilityError) as missing:
+        draft_pricing_apply(
+            DraftPricingApplyRequest(
+                draft_id="draft-missing",
+                pricing_input={"target": {"manual_price": "1"}},
+            ),
+            scope=scope,
+            execution=_execution("op-pricing-missing"),
+        )
+    assert missing.value.code == "DRAFT_NOT_FOUND"
 
 
 def test_product_delete_requires_trusted_approval_context() -> None:
@@ -397,13 +566,18 @@ def test_draft_delete_approval_flow() -> None:
 
 
 def test_product_delete_through_global_task_approval_gate() -> None:
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
     context = get_context()
     _seed_product("product-task-del", with_draft=False)
     controller = global_task_facade.build_global_task_controller(context)
+    links = context.deferred_task_links
     target_ids = ["product-task-del"]
+    conversation_id = "conversation_global_chat_" + "d" * 32
 
     # 模型只提供业务参数；审批摘要与 payload 由服务端快照生成。
-    response = controller.start_task(
+    # Deferred 生命周期：受理 → 首次 history 提交 → worker 推进。
+    acceptance = controller.accept_deferred_task(
         GlobalTaskStartControlRequest.model_validate(
             {
                 "goal": "清理测试商品",
@@ -417,10 +591,19 @@ def test_product_delete_through_global_task_approval_gate() -> None:
                 ],
             }
         ),
-        conversation_id="conversation-d2",
+        conversation_id=conversation_id,
+        request_run_id="run-d2-1",
+        tool_call_id="call-d2-1",
         message_id="message-d2-1",
     )
-    task = response.task
+    links.commit_initial_deferred_history(
+        conversation_id,
+        [ModelRequest(parts=[UserPromptPart("创建任务")])],
+        link_id=acceptance.link_id,
+        request_run_id="run-d2-1",
+        encoded_chunks=[],
+    )
+    task = controller.resume_task(acceptance.task_id)
     assert task.status == "pending_approval"
     approval = task.pending_approval
     assert approval is not None
@@ -439,12 +622,15 @@ def test_product_delete_through_global_task_approval_gate() -> None:
     assert no_identity.value.code == "GLOBAL_TASK_APPROVAL_IDENTITY_REQUIRED"
     assert len(context.products.load_products_index()) == 1
 
+    # 批准只改变业务状态；执行由 worker 领取。
     approved = controller.approve_task(
         GlobalTaskApproveRequest(task_id=task.task_id),
         approver="local-ui:test",
-        conversation_id="conversation-d2",
+        conversation_id=conversation_id,
         message_id="message-d2-2",
     ).task
+    assert approved.status == "running"
+    approved = controller.resume_task(task.task_id)
     assert approved.status == "completed"
     record = approved.steps[0].approval
     assert record is not None

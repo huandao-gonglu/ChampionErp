@@ -435,6 +435,7 @@ class CompiledAiTool:
                                 reason=exc.reason,
                                 input_type=exc.input_type,
                                 options=list(exc.options),
+                                input_owner=exc.input_owner,
                             ).model_dump(mode="json")
                         ]
                     },
@@ -560,6 +561,7 @@ class AiToolCompiler:
             injected_type_names=injected_type_names,
             execution_mode=metadata.execution_mode,
             recovery_policy=metadata.recovery_policy,
+            agent_deferred=metadata.agent_deferred,
         )
         return CompiledAiTool(
             function=function,

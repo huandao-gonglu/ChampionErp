@@ -1,15 +1,24 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type { UIMessage } from 'ai'
 import AiChatComposer from './AiChatComposer.vue'
 import AiMessageList from './AiMessageList.vue'
+import GlobalTaskApprovalCard from './GlobalTaskApprovalCard.vue'
+import { useAiChatStore } from '@/stores'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   messages: UIMessage[]
   busy: boolean
   error?: string
   input: string
-}>()
+  /** 当前活动 conversation；切换、首次进入与 history version 变化时探测任务关联。 */
+  conversationId?: string
+  historyVersion?: number
+}>(), {
+  error: '',
+  conversationId: '',
+  historyVersion: 0,
+})
 
 const emit = defineEmits<{
   (event: 'update:input', value: string): void
@@ -18,6 +27,24 @@ const emit = defineEmits<{
 }>()
 
 const scrollRef = ref<HTMLElement | null>(null)
+const chatStore = useAiChatStore()
+
+// conversation 级任务卡只依赖 task-link 纯读接口；不依赖消息 part 或 ToolReturn。
+const activeTaskId = computed(() => (
+  chatStore.taskLink?.conversation_id === props.conversationId
+    ? (chatStore.taskLink?.task_id || '')
+    : ''
+))
+const sendDisabledReason = computed(() => chatStore.sendBlockedReason)
+
+function syncTaskLink(): void {
+  if (props.conversationId && props.conversationId === chatStore.activeConversationId) {
+    void chatStore.refreshTaskLink()
+  }
+}
+
+onMounted(syncTaskLink)
+watch(() => [props.conversationId, props.historyVersion], syncTaskLink)
 
 async function scrollToBottom() {
   await nextTick()
@@ -51,7 +78,7 @@ watch(() => props.messages, () => {
       </div>
 
       <!-- 消息气泡 -->
-      <AiMessageList v-else :messages="messages" task-actions-enabled />
+      <AiMessageList v-else :messages="messages" />
 
       <!-- 流式状态提示 -->
       <p
@@ -73,10 +100,18 @@ watch(() => props.messages, () => {
       </p>
     </div>
 
+    <!-- conversation 级全局任务卡：独立于消息 part 挂载，仅纯 GET 读取 -->
+    <GlobalTaskApprovalCard
+      v-if="activeTaskId"
+      :task-id="activeTaskId"
+      :enabled="true"
+    />
+
     <!-- 输入框 -->
     <AiChatComposer
       :model-value="input"
       :busy="busy"
+      :send-disabled-reason="sendDisabledReason"
       @update:model-value="emit('update:input', $event)"
       @send="emit('send')"
       @stop="emit('stop')"

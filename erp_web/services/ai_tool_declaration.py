@@ -42,6 +42,8 @@ class AiToolMetadata:
     # approval_required=True 时必须提供：(request, scope) -> TaskApprovalSnapshot。
     # 服务端在任务创建与执行复核两个时点调用，生成人类可读摘要与规范化参数。
     approval_snapshot: Callable[..., Any] | None = None
+    # Pydantic Deferred 握手只允许极少量 Agent 控制 Tool 声明。
+    agent_deferred: bool = False
 
 
 def _required_text(value: str, *, label: str) -> str:
@@ -64,6 +66,7 @@ def ai_tool(
     version: str = "1",
     execution_mode: AiToolExecutionMode = "sync",
     recovery_policy: AiToolRecoveryPolicy | None = None,
+    agent_deferred: bool = False,
 ) -> Callable[[ToolFunctionT], ToolFunctionT]:
     """给类型化能力函数附加不可变契约，不执行注册或领域逻辑。"""
 
@@ -110,6 +113,13 @@ def ai_tool(
             )
     elif approval_snapshot is not None:
         raise ValueError("非审批工具不得声明 approval_snapshot")
+    if agent_deferred:
+        if side_effect != "write":
+            raise ValueError(
+                "agent_deferred 只允许写控制工具（Deferred 握手会创建持久化任务）"
+            )
+        if normalized_approval:
+            raise ValueError("agent_deferred 控制工具不得声明 Capability 审批")
     # 只读/纯计算能力默认可以安全重放；写能力必须显式声明恢复语义。
     normalized_recovery: AiToolRecoveryPolicy = (
         recovery_policy if recovery_policy is not None else "retry_safe"
@@ -126,6 +136,7 @@ def ai_tool(
         execution_mode=execution_mode,
         recovery_policy=normalized_recovery,
         approval_snapshot=approval_snapshot if normalized_approval else None,
+        agent_deferred=bool(agent_deferred),
     )
 
     def decorate(function: ToolFunctionT) -> ToolFunctionT:

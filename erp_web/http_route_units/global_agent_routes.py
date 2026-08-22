@@ -1,9 +1,11 @@
 """全局任务受信 UI 的薄 HTTP 路由。
 
-任务创建只通过 ``global.chat`` 的类型化 ``global_task_start`` 工具参数进入；
-这里保留状态、补资料、取消、审批与长任务刷新的受信接口。批准/拒绝必须
-携带 ``X-Approval-Token`` 请求头（只随 /api/state 下发给受信 UI），服务端
-从校验通过的凭据派生审批身份；模型工具不暴露 approve/reject。
+任务创建只通过 ``global.chat`` 的类型化 ``global_task_start`` 工具参数进入，
+并以 Pydantic Deferred 语义挂起；任务的推进只由后台 recovery worker 完成，
+这里保留补资料、取消、审批的受信接口，不存在任何可推进任务的写刷新。
+任务状态的纯读入口是 ``GET /api/v1/global-tasks/<task_id>``（ai_work_routes）。
+批准/拒绝必须携带 ``X-Approval-Token`` 请求头（只随 /api/state 下发给受信
+UI），服务端从校验通过的凭据派生审批身份；模型工具不暴露 approve/reject。
 """
 
 from __future__ import annotations
@@ -33,13 +35,6 @@ def _approval_token(handler: JsonRequestHandler) -> str:
     if callable(get):
         return str(get(APPROVAL_TOKEN_HEADER) or "").strip()
     return ""
-
-
-def handle_global_task_state(handler: JsonRequestHandler) -> None:
-    result, status = global_task_facade.get_global_task_payload(
-        _validated_body(handler)
-    )
-    handler.send_json(result, status)
 
 
 def handle_global_task_input(handler: JsonRequestHandler) -> None:
@@ -72,20 +67,11 @@ def handle_global_task_cancel(handler: JsonRequestHandler) -> None:
     handler.send_json(result, status)
 
 
-def handle_global_task_refresh(handler: JsonRequestHandler) -> None:
-    result, status = global_task_facade.refresh_global_task_payload(
-        _validated_body(handler)
-    )
-    handler.send_json(result, status)
-
-
 POST_HANDLERS: dict[str, PostHandler] = {
-    "/api/global-task-state": handle_global_task_state,
     "/api/global-task-input": handle_global_task_input,
     "/api/global-task-approve": handle_global_task_approve,
     "/api/global-task-reject": handle_global_task_reject,
     "/api/global-task-cancel": handle_global_task_cancel,
-    "/api/global-task-refresh": handle_global_task_refresh,
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)
 

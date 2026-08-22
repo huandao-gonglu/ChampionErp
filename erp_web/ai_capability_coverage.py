@@ -305,6 +305,27 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         disposition="excluded",
         reason="会话消息读取，chat/会话 transport，不属于业务能力。",
     ),
+    AiCapabilityCoverageEntry(
+        method="GET",
+        path="/api/v1/ai-work/conversations/<conversation_id>/task-link",
+        business_domain="AI 会话运输",
+        disposition="excluded",
+        reason="conversation→未解决 Deferred 任务的只读关联，chat/会话 transport。",
+    ),
+    AiCapabilityCoverageEntry(
+        method="GET",
+        path="/api/v1/ai-work/conversations/<conversation_id>/events",
+        business_domain="AI 会话运输",
+        disposition="excluded",
+        reason="活动 conversation 官方事件订阅 SSE，chat/会话 transport。",
+    ),
+    AiCapabilityCoverageEntry(
+        method="GET",
+        path="/api/v1/global-tasks/<task_id>",
+        business_domain="全局任务",
+        disposition="internal_only",
+        reason="受信任务卡的纯读任务状态；主 Agent 等价路径是 global_task_get。",
+    ),
     # -------------------------------------------------- 主 Agent 运输（POST）
     AiCapabilityCoverageEntry(
         method="POST",
@@ -321,13 +342,6 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         reason="AI 演示 SSE transport，协议基础设施。",
     ),
     # -------------------------------------------------- 全局任务门面（POST）
-    AiCapabilityCoverageEntry(
-        method="POST",
-        path="/api/global-task-state",
-        business_domain="全局任务",
-        disposition="internal_only",
-        reason="受信任务 UI 的 HTTP 门面；主 Agent 等价路径是 global_task_get。",
-    ),
     AiCapabilityCoverageEntry(
         method="POST",
         path="/api/global-task-input",
@@ -355,13 +369,6 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         business_domain="全局任务",
         disposition="internal_only",
         reason="受信任务 UI 的 HTTP 门面；主 Agent 等价路径是 global_task_cancel。",
-    ),
-    AiCapabilityCoverageEntry(
-        method="POST",
-        path="/api/global-task-refresh",
-        business_domain="全局任务",
-        disposition="internal_only",
-        reason="受信任务 UI 的受信终态刷新门面，长任务状态收敛由 Controller 完成。",
     ),
     # -------------------------------------------------- 商品与草稿（POST）
     AiCapabilityCoverageEntry(

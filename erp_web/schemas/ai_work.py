@@ -22,9 +22,11 @@ class AiWorkUiMessagesDetail(PydanticMessageHistorySummary):
 
     这里不复制第三方 ``UIMessagePart`` 联合类型；展示消息由
     ``VercelAIAdapter.dump_messages(...)`` 官方派生并以 JSON alias 序列化。
+    ``history_version`` 作为事件订阅游标，供前端断线重连时按版本重放。
     """
 
     ok: bool
+    history_version: int
     messages: list[dict[str, Any]]
 
 

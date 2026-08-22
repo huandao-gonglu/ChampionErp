@@ -51,9 +51,12 @@ describe('浮动气泡同标签页导航到 AiWork 的实时流集成', () => {
     mocks.fetchUiMessages.mockImplementation(async (conversationId: string) => ({
       ok: true,
       conversation_id: conversationId,
+      // 完成流之后以服务端已提交历史对齐游标：回显当前 Chat 消息，
+      // 保证 id/内容与流式结果一致。
+      history_version: 1,
       created_at: '2026-08-16T08:00:00+08:00',
       updated_at: '2026-08-16T08:05:00+08:00',
-      messages: [],
+      messages: [...(useAiChatStore().chat?.messages ?? [])],
     }))
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {

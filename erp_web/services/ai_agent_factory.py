@@ -18,6 +18,7 @@ from pydantic_ai import (
     UsageLimits,
     capture_run_messages,
 )
+from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.exceptions import (
     AgentRunError,
     ModelAPIError,
@@ -35,6 +36,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.models import Model
 from pydantic_ai.run import AgentRunResultEvent
 from pydantic_ai.settings import ModelSettings
+from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.stores.pydantic_message_store import (
@@ -49,6 +51,7 @@ from .ai_model_factory import (
     PydanticModelBinding,
     create_pydantic_model_binding_for_use_case,
 )
+from .ai_model_context_projection import project_model_context_for_model
 from .ai_model_errors import model_http_error_payload, safe_model_error_text
 from .ai_presentation_context import (
     AiPresentationContext,
@@ -57,7 +60,10 @@ from .ai_presentation_context import (
 )
 from .ai_tool_bridge import AiToolBridgeError, build_pydantic_toolset
 from .ai_tool_registry import AiToolSet
-from .ai_tool_runtime import AiToolRuntime
+from .ai_tool_runtime import (
+    DEFERRED_CONTINUATION_SCOPE_KEY,
+    AiToolRuntime,
+)
 
 
 _logger = logging.getLogger(__name__)
@@ -69,10 +75,15 @@ ModelBindingFactory = Callable[..., PydanticModelBinding]
 
 @dataclass(frozen=True)
 class AiAgentExecutionProfile(Generic[OutputT]):
-    """项目稳定的 Agent execution profile，不透传任意 Agent 参数。"""
+    """项目稳定的 Agent execution profile，不透传任意 Agent 参数。
+
+    ``output_type`` 允许单一类型或官方 union（例如
+    ``str | DeferredToolRequests``）：包含 ``DeferredToolRequests`` 时 Pydantic
+    才接受 external deferred tool call，并以它作为 run output 暂停 Agent。
+    """
 
     use_case_id: str
-    output_type: type[OutputT]
+    output_type: Any
     toolset_id: str
     budget_profile: str
     permissions: frozenset[str]
@@ -334,7 +345,23 @@ class AiAgentStreamSession(Generic[OutputT]):
         technical_trace: AiAgentTrace,
         output_validator: OutputValidator[OutputT] | None = None,
         presentation_context: AiPresentationContext | None = None,
+        deferred_tool_results: DeferredToolResults | None = None,
+        external_deferred_commit: bool = False,
+        external_final_commit: bool = False,
     ) -> None:
+        """一次流式 run 的 owner。
+
+        ``deferred_tool_results`` 只用于后台 continuation：同一 conversation、
+        新 run_id、不合成新用户 prompt，用官方 ``DeferredToolResults`` 闭合
+        上一轮悬空的 external deferred tool call。
+
+        ``external_deferred_commit=True``：首次 Deferred 握手的 history 由协议
+        层与 link ready/outbox 同事务提交，session 遇到
+        ``DeferredToolRequests`` output 时不自动保存历史。
+        ``external_final_commit=True``：continuation 的最终 history 由恢复服务
+        按 CAS 提交，session 全程不自动保存，也不在失败时落 captured 消息。
+        """
+
         self._factory = factory
         self._profile = profile
         self._agent = agent
@@ -346,6 +373,9 @@ class AiAgentStreamSession(Generic[OutputT]):
         self._technical_trace = technical_trace
         self._output_validator = output_validator
         self._presentation = presentation_context
+        self._deferred_tool_results = deferred_tool_results
+        self._external_deferred_commit = bool(external_deferred_commit)
+        self._external_final_commit = bool(external_final_commit)
         self._run_id = execution_context.attempt_id
         self._started = False
         self._history_persisted = False
@@ -392,6 +422,26 @@ class AiAgentStreamSession(Generic[OutputT]):
     @property
     def history_persisted(self) -> bool:
         return self._history_persisted
+
+    @property
+    def external_final_commit(self) -> bool:
+        """True 时最终历史由调用方按 CAS 提交，Factory 不落任何消息。"""
+
+        return self._external_final_commit
+
+    @property
+    def external_deferred_commit(self) -> bool:
+        """True 时首次 Deferred 历史由协议层组合事务提交，Factory 不落消息。"""
+
+        return self._external_deferred_commit
+
+    @property
+    def deferred_handshake_started(self) -> bool:
+        """Deferred 控制工具已抛出 CallDeferred；官方终态事件必须延迟发布。"""
+
+        return bool(
+            getattr(self._dependencies.tool_runtime, "deferred_call_started", False)
+        )
 
     @property
     def completed(self) -> bool:
@@ -501,6 +551,7 @@ class AiAgentStreamSession(Generic[OutputT]):
             async with self._agent.run_stream_events(
                 None,
                 message_history=[*self._message_history, *new_messages],
+                deferred_tool_results=self._deferred_tool_results,
                 conversation_id=self._conversation_id,
                 run_id=self._execution_context.attempt_id,
                 deps=self._dependencies,
@@ -519,7 +570,17 @@ class AiAgentStreamSession(Generic[OutputT]):
             self._notify_presentation_failed(exc.code, str(exc))
             raise
         except Exception as exc:
-            if self._captured_messages and not self._history_persisted:
+            # continuation 的 history 只能由恢复服务按 CAS 提交；首次 Deferred
+            # 握手的 history 只能由协议层组合事务提交（报告 A-03：两类 external
+            # commit 都必须排除，否则 result 之后的收尾异常会单独保存 captured
+            # history，把 history 与 ready link/outbox 拆成两个事实）。失败时
+            # 保存部分 captured 消息会破坏 link 冻结版本与恢复语义。
+            if (
+                self._captured_messages
+                and not self._history_persisted
+                and not self._external_final_commit
+                and not self._external_deferred_commit
+            ):
                 try:
                     self._factory.message_store.save(
                         self._conversation_id,
@@ -604,12 +665,20 @@ class AiAgentStreamSession(Generic[OutputT]):
             )
 
     def _complete_with_result(self, result: AgentRunResult[Any]) -> None:
-        """成功完成：用官方结果原子替换 conversation 历史。"""
+        """成功完成：默认用官方结果原子替换 conversation 历史。
+
+        Deferred 握手与 continuation 的最终历史由协议层/恢复服务执行组合或
+        CAS 提交；这两类 run 在这里不自动保存。
+        """
 
         self._run_id = str(result.run_id or "") or self._run_id
         self._technical_trace.set_agent_run_id(self._run_id)
         self._execution_context.bounded_timeout_seconds()
-        if not self._history_persisted:
+        deferred_output = isinstance(result.output, DeferredToolRequests)
+        externally_committed = self._external_final_commit or (
+            deferred_output and self._external_deferred_commit
+        )
+        if not self._history_persisted and not externally_committed:
             messages = list(result.all_messages())
             if messages:
                 self._factory.message_store.save(
@@ -620,6 +689,21 @@ class AiAgentStreamSession(Generic[OutputT]):
         self._result = result
         self._completed = True
         self._notify_finalizing_once()
+
+    @property
+    def result(self) -> AgentRunResult[Any] | None:
+        """完成后的官方 run result；未完成返回 None。"""
+
+        return self._result
+
+    @property
+    def deferred_output(self) -> DeferredToolRequests | None:
+        """run 以 external deferred tool call 暂停时的官方请求对象。"""
+
+        result = self._result
+        if result is not None and isinstance(result.output, DeferredToolRequests):
+            return result.output
+        return None
 
     @property
     def finalizing(self) -> bool:
@@ -752,6 +836,12 @@ class AiAgentFactory:
             retries=profile.retries,
             toolsets=[build_pydantic_toolset(toolset)],
             name=profile.use_case_id.replace(".", "_"),
+            capabilities=[
+                # 修复计划第 15 节：模型输入历史由官方 ProcessHistory 在请求
+                # 边界投影。processor 的工具可见性安全门保证暴露工具时完整保留
+                # ThinkingPart；仅在工具不可见时删除旧完成轮次可省略 thinking。
+                ProcessHistory(processor=project_model_context_for_model),
+            ],
         )
         agent.instrument = self.instrumentation.settings
         if output_validator is not None:
@@ -1032,6 +1122,9 @@ class AiAgentFactory:
         toolset: AiToolSet,
         conversation_id: str,
         message_history: Sequence[ModelMessage] | None = None,
+        deferred_tool_results: DeferredToolResults | None = None,
+        external_deferred_commit: bool = False,
+        external_final_commit: bool = False,
         use_case_state: Any = None,
         output_validator: OutputValidator[OutputT] | None = None,
         actor_id: str = "local-user",
@@ -1046,6 +1139,11 @@ class AiAgentFactory:
         一次用户发送不是向正在运行的 Agent 注入消息，而是用服务端可信历史
         加本轮用户输入启动一次新 run；run 完成后用 ``result.all_messages()``
         原子替换该 conversation 的完整历史。
+
+        ``deferred_tool_results`` 供后台 continuation 使用：同一
+        ``conversation_id``、新 run_id、不注入新的 ``UserPromptPart``，用官方
+        结果闭合上一轮悬空的 external deferred tool call。Factory 不维护第二套
+        deferred 状态机；关联、屏障与提交状态由 link ledger 负责。
         """
 
         if toolset.toolset_id != profile.toolset_id:
@@ -1063,13 +1161,19 @@ class AiAgentFactory:
             profile.timeout_seconds,
             float(timeout_seconds or profile.timeout_seconds),
         )
+        effective_business_scope: dict[str, str] = dict(business_scope or {})
+        if deferred_tool_results is not None:
+            # 报告 A-05：continuation 正在闭合一个已存在的 Deferred 任务。
+            # 标记本 run，让 Runtime 把其中再次调用 Deferred 控制工具的请求
+            # 转为稳定、模型可见的拒绝，而不是终止 run 的不可见错误。
+            effective_business_scope[DEFERRED_CONTINUATION_SCOPE_KEY] = "true"
         execution_context = AiExecutionContext.create(
             timeout_seconds=effective_timeout,
             budget_profile=profile.budget_profile,
             actor_id=actor_id,
             tenant_id=tenant_id,
             permissions=profile.permissions,
-            business_scope=business_scope,
+            business_scope=effective_business_scope,
             idempotency_context=idempotency_context,
             allow_write=profile.allow_write,
         )
@@ -1139,6 +1243,9 @@ class AiAgentFactory:
                         technical_trace=technical_trace,
                         output_validator=output_validator,
                         presentation_context=presentation,
+                        deferred_tool_results=deferred_tool_results,
+                        external_deferred_commit=external_deferred_commit,
+                        external_final_commit=external_final_commit,
                     )
                     try:
                         if presentation is not None:
@@ -1176,10 +1283,17 @@ class AiAgentFactory:
             )
             raise error from None
         finally:
+            # continuation 的 history 只能由恢复服务按 CAS 提交；这里保存部分
+            # captured 消息会污染 link 冻结版本。首次 Deferred 握手同理：正式
+            # history 只能由协议层的 history/link/outbox 组合事务提交，提前单独
+            # 落盘会在提交前暴露开放 ToolCall 并造成双版本；崩溃场景由
+            # provisional link 的 repair/abandon 恢复链路对账，不做读时修补。
             if (
                 session is not None
                 and captured_messages
                 and not session.history_persisted
+                and not session.external_final_commit
+                and not session.external_deferred_commit
             ):
                 try:
                     self.message_store.save(

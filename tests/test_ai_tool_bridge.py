@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 import pytest
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import CallDeferred
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
@@ -13,6 +14,7 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.tools import DeferredToolRequests
 
 from erp_web.schemas.ai_tools import (
     AiToolDefinition,
@@ -578,3 +580,179 @@ def test_bridge_rejects_structurally_equal_but_distinct_toolset_binding() -> Non
     assert captured.value.tool_call_id == "unbound"
     assert executions == 0
     assert runtime.unique_call_count == 0
+
+
+# -- agent_deferred 控制 Tool：CallDeferred 由 Bridge 抛出 ------------------
+
+
+def deferred_tool_definition() -> AiToolDefinition:
+    return AiToolDefinition(
+        name="global_task_start",
+        version="1",
+        description="创建全局任务并挂起等待后台终态",
+        input_schema={
+            "type": "object",
+            "required": ["goal"],
+            "properties": {"goal": {"type": "string", "minLength": 1}},
+            "additionalProperties": False,
+        },
+        output_schema={
+            "type": "object",
+            "required": ["task_id"],
+            "properties": {"task_id": {"type": "string"}},
+            "additionalProperties": False,
+        },
+        required_permission="task.control",
+        side_effect="write",
+        approval_required=False,
+        idempotency="required",
+        idempotency_keys=("request_id",),
+        agent_deferred=True,
+    )
+
+
+def test_agent_deferred_definition_rejects_read_only_and_approval() -> None:
+    with pytest.raises(Exception):
+        AiToolDefinition(
+            name="deferred_read",
+            version="1",
+            description="只读不能 deferred",
+            input_schema={"type": "object", "properties": {}},
+            output_schema={"type": "object", "properties": {}},
+            required_permission="task.control",
+            side_effect="none",
+            agent_deferred=True,
+        )
+
+
+def test_deferred_control_tool_raises_calldeferred_with_task_metadata() -> None:
+    def executor(arguments: dict[str, Any], context: AiExecutionContext) -> Any:
+        del arguments
+        # Runtime 必须把可信 tool_call_id 注入本次调用的 business scope。
+        assert context.business_scope["tool_call_id"] == "deferred-call-1"
+        return {"task_id": "gtask_deferred"}
+
+    toolset = bind_toolset(
+        deferred_tool_definition(),
+        executor,
+        toolset_id="test.deferred",
+    )
+    dependencies, runtime = bind_dependencies(
+        toolset,
+        execution_context(
+            permissions={"task.control"},
+            allow_write=True,
+        ),
+    )
+    bridge = PydanticToolBridge(toolset)
+    pydantic_toolset = bridge.as_toolset()
+    pydantic_tool = pydantic_toolset.tools["global_task_start"]
+    # Deferred 控制 Tool 必须顺序执行，避免并行创建窗口。
+    assert pydantic_tool.tool_def.sequential is True
+
+    def model_function(
+        messages: list[ModelRequest | ModelResponse],
+        agent_info: AgentInfo,
+    ) -> ModelResponse:
+        if not any(isinstance(m, ModelResponse) for m in messages):
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        agent_info.function_tools[0].name,
+                        {"goal": "发布商品"},
+                        tool_call_id="deferred-call-1",
+                    )
+                ]
+            )
+        return ModelResponse(parts=[TextPart("不应到达")])
+
+    agent = Agent(
+        FunctionModel(model_function),
+        output_type=str | DeferredToolRequests,
+        deps_type=AiAgentDependencies,
+        toolsets=[pydantic_toolset],
+    )
+    result = agent.run_sync("创建任务", deps=dependencies)
+
+    # run 以官方 DeferredToolRequests 暂停，metadata 携带 task_id。
+    assert isinstance(result.output, DeferredToolRequests)
+    assert [call.tool_call_id for call in result.output.calls] == [
+        "deferred-call-1"
+    ]
+    assert result.output.metadata["deferred-call-1"] == {
+        "task_id": "gtask_deferred"
+    }
+    # 历史保留未闭合的 ToolCallPart，没有合成 ToolReturnPart。
+    returned = [
+        part
+        for message in result.all_messages()
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, ToolReturnPart)
+    ]
+    assert returned == []
+    assert runtime.unique_call_count == 1
+
+
+def test_deferred_control_tool_failure_closes_with_stable_error() -> None:
+    def executor(arguments: dict[str, Any], context: AiExecutionContext) -> Any:
+        del arguments, context
+        raise AiToolExecutionError(
+            "GLOBAL_TASK_DEFERRED_ALREADY_PENDING",
+            "该会话已有未解决任务。",
+            retryable=False,
+        )
+
+    toolset = bind_toolset(
+        deferred_tool_definition(),
+        executor,
+        toolset_id="test.deferred.failure",
+    )
+    dependencies, runtime = bind_dependencies(
+        toolset,
+        execution_context(
+            permissions={"task.control"},
+            allow_write=True,
+        ),
+    )
+    bridge = PydanticToolBridge(toolset)
+    model_turns = 0
+
+    def model_function(
+        messages: list[ModelRequest | ModelResponse],
+        agent_info: AgentInfo,
+    ) -> ModelResponse:
+        nonlocal model_turns
+        model_turns += 1
+        if model_turns == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        agent_info.function_tools[0].name,
+                        {"goal": "重复任务"},
+                        tool_call_id="deferred-dup",
+                    )
+                ]
+            )
+        feedback = "\n".join(
+            str(getattr(part, "content", ""))
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+        )
+        assert "GLOBAL_TASK_DEFERRED_ALREADY_PENDING" in feedback
+        return ModelResponse(parts=[TextPart("已有任务在进行中。")])
+
+    agent = Agent(
+        FunctionModel(model_function),
+        output_type=str | DeferredToolRequests,
+        deps_type=AiAgentDependencies,
+        toolsets=[bridge.as_toolset()],
+    )
+    result = agent.run_sync("创建重复任务", deps=dependencies)
+
+    # 失败必须稳定闭合为文本输出，而不是产生未解决 Deferred。
+    assert result.output == "已有任务在进行中。"
+    assert not isinstance(result.output, DeferredToolRequests)
+    assert model_turns == 2
+    assert runtime.unique_call_count == 1

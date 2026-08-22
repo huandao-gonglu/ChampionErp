@@ -358,6 +358,29 @@ def test_platform_item_close_post_dispatch_error_is_outcome_unknown() -> None:
     assert outcome.value.details == {"outcome_unknown": True}
 
 
+def _accept_and_run(controller, request, *, conversation_id: str, suffix: str):
+    """Deferred 生命周期：受理 → 首次 history 提交 → worker 推进。"""
+
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    context = get_context()
+    acceptance = controller.accept_deferred_task(
+        request,
+        conversation_id=conversation_id,
+        request_run_id=f"run-{suffix}",
+        tool_call_id=f"call-{suffix}",
+        message_id=f"message-{suffix}",
+    )
+    context.deferred_task_links.commit_initial_deferred_history(
+        conversation_id,
+        [ModelRequest(parts=[UserPromptPart("创建任务")])],
+        link_id=acceptance.link_id,
+        request_run_id=f"run-{suffix}",
+        encoded_chunks=[],
+    )
+    return controller.resume_task(acceptance.task_id)
+
+
 def test_platform_item_close_through_global_task_approval_gate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -372,8 +395,10 @@ def test_platform_item_close_through_global_task_approval_gate(
         ),
     )
     controller = global_task_facade.build_global_task_controller(context)
+    conversation_id = "conversation_global_chat_" + "4" * 32
 
-    response = controller.start_task(
+    task = _accept_and_run(
+        controller,
         GlobalTaskStartControlRequest.model_validate(
             {
                 "goal": "下架远端商品",
@@ -389,10 +414,9 @@ def test_platform_item_close_through_global_task_approval_gate(
                 ],
             }
         ),
-        conversation_id="conversation-d4",
-        message_id="message-d4-1",
+        conversation_id=conversation_id,
+        suffix="d4-1",
     )
-    task = response.task
     assert task.status == "pending_approval"
     approval = task.pending_approval
     assert approval is not None
@@ -402,12 +426,15 @@ def test_platform_item_close_through_global_task_approval_gate(
     assert approval.payload["canonical_payload"]["item_id"] == "MLB456"
     assert closed == []
 
+    # 批准只改变业务状态；执行由 worker 领取。
     approved = controller.approve_task(
         GlobalTaskApproveRequest(task_id=task.task_id),
         approver="local-ui:test",
-        conversation_id="conversation-d4",
+        conversation_id=conversation_id,
         message_id="message-d4-2",
     ).task
+    assert approved.status == "running"
+    approved = controller.resume_task(task.task_id)
     assert approved.status == "completed"
     record = approved.steps[0].approval
     assert record is not None
@@ -436,8 +463,10 @@ def test_platform_item_close_stale_task_revision_rejected(
         ),
     )
     controller = global_task_facade.build_global_task_controller(context)
+    conversation_id = "conversation_global_chat_" + "5" * 32
 
-    response = controller.start_task(
+    task = _accept_and_run(
+        controller,
         GlobalTaskStartControlRequest.model_validate(
             {
                 "goal": "下架远端商品",
@@ -453,10 +482,9 @@ def test_platform_item_close_stale_task_revision_rejected(
                 ],
             }
         ),
-        conversation_id="conversation-d4",
-        message_id="message-d4-3",
+        conversation_id=conversation_id,
+        suffix="d4-3",
     )
-    task = response.task
     assert task.status == "pending_approval"
 
     # 模拟审批创建后任务又被别的写入修改：步骤参数漂移且 revision 前进。
@@ -491,8 +519,10 @@ def test_platform_item_close_reject_records_decision(
         ),
     )
     controller = global_task_facade.build_global_task_controller(context)
+    conversation_id = "conversation_global_chat_" + "6" * 32
 
-    response = controller.start_task(
+    task = _accept_and_run(
+        controller,
         GlobalTaskStartControlRequest.model_validate(
             {
                 "goal": "下架远端商品",
@@ -508,10 +538,9 @@ def test_platform_item_close_reject_records_decision(
                 ],
             }
         ),
-        conversation_id="conversation-d4",
-        message_id="message-d4-5",
+        conversation_id=conversation_id,
+        suffix="d4-5",
     )
-    task = response.task
     assert task.status == "pending_approval"
 
     rejected = controller.reject_task(

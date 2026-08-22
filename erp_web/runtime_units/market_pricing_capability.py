@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-"""目标市场准备流程中的确定性核价与草稿持久化。"""
+"""目标市场准备流程中的确定性核价与草稿持久化。
+
+``prepare_target_pricing`` 是核价落库的唯一路径：``draft_prepare_for_market``
+与 focused write ``draft_pricing_apply`` 都通过它把确定性核价结果持久化为
+平台草稿 ``pricing.targets[target_key]``，不保留第二条定价写入路径。
+"""
 
 from collections.abc import Callable, Mapping
 from copy import deepcopy
@@ -9,7 +14,6 @@ from typing import Any
 
 from erp_web.runtime_units.draft_publish_context import draft_for_publish_target
 from erp_web.runtime_units.market_capability_support import (
-    MarketPrepareStore,
     invalidate_target_publish_preparation,
     load_draft,
     raise_store_error,
@@ -18,7 +22,7 @@ from erp_web.runtime_units.market_capability_support import (
     text,
 )
 from erp_web.runtime_units.pricing_runtime import calculate_price
-from erp_web.schemas.market_prepare_capabilities import DraftPrepareForMarketRequest
+from erp_web.runtime_units.product_capabilities import ProductCapabilityStore
 from erp_web.services.capability_errors import (
     BusinessCapabilityError,
     CapabilityInputRequired,
@@ -32,7 +36,9 @@ def _target_key(platform: str, site: str) -> str:
     return f"{text(platform).lower()}:{text(site).lower()}"
 
 
-def _existing_pricing_is_usable(target_draft: dict[str, Any]) -> bool:
+def _selected_pricing_target(target_draft: dict[str, Any]) -> dict[str, Any]:
+    """草稿当前生效的定价目标：优先 selected_pricing，回退 pricing.targets。"""
+
     selected = (
         target_draft.get("selected_pricing")
         if isinstance(target_draft.get("selected_pricing"), dict)
@@ -50,6 +56,13 @@ def _existing_pricing_is_usable(target_draft: dict[str, Any]) -> bool:
             text(target_draft.get("site")),
         )
         selected = targets.get(key) if isinstance(targets.get(key), dict) else {}
+    return selected
+
+
+def _pricing_target_is_usable(
+    target_draft: dict[str, Any],
+    selected: dict[str, Any],
+) -> bool:
     applied = selected.get("applied_price") if isinstance(selected.get("applied_price"), dict) else {}
     basis = selected.get("calculation_basis") if isinstance(selected.get("calculation_basis"), dict) else {}
     try:
@@ -65,14 +78,19 @@ def _existing_pricing_is_usable(target_draft: dict[str, Any]) -> bool:
     )
 
 
+def _existing_pricing_is_usable(target_draft: dict[str, Any]) -> bool:
+    selected = _selected_pricing_target(target_draft)
+    return bool(selected) and _pricing_target_is_usable(target_draft, selected)
+
+
 def _pricing_payload(
-    request: DraftPrepareForMarketRequest,
+    pricing_input: Mapping[str, Any],
     *,
     product: dict[str, Any],
     draft: dict[str, Any],
     target: dict[str, Any],
 ) -> dict[str, Any]:
-    raw = deepcopy(request.pricing_input)
+    raw = deepcopy(dict(pricing_input))
     pricing = draft.get("pricing") if isinstance(draft.get("pricing"), dict) else {}
     stored_common = pricing.get("common") if isinstance(pricing.get("common"), dict) else {}
     product_defaults = (
@@ -157,20 +175,31 @@ def _pricing_payload(
 
 
 def prepare_target_pricing(
-    request: DraftPrepareForMarketRequest,
     *,
     target_draft_id: str,
-    product_store: MarketPrepareStore,
+    target_platform: str,
+    site: str = "",
+    pricing_input: Mapping[str, Any] | None = None,
+    product_store: ProductCapabilityStore,
     pricing_calculator: PricingCalculator = calculate_price,
-) -> None:
+) -> dict[str, Any]:
+    """确定性核价并持久化到草稿 ``pricing.targets``；返回生效的定价目标。
+
+    未提供 ``pricing_input`` 且现有定价仍可用时直接复用现有目标（幂等），
+    否则必须跑完整确定性核价并把结果落库。只计算不落库不是合法路径。
+    """
+
+    safe_input = dict(pricing_input or {})
     draft, product = load_draft(product_store, target_draft_id)
-    platform = require_platform(request.target_platform)
-    target = select_target(draft, platform=platform, site=request.site)
+    platform = require_platform(target_platform)
+    target = select_target(draft, platform=platform, site=site)
     target_projection = draft_for_publish_target(draft, target)
-    if not request.pricing_input and _existing_pricing_is_usable(target_projection):
-        return
+    if not safe_input:
+        selected = _selected_pricing_target(target_projection)
+        if selected and _pricing_target_is_usable(target_projection, selected):
+            return deepcopy(selected)
     payload = _pricing_payload(
-        request,
+        safe_input,
         product=product,
         draft=target_projection,
         target=target,
@@ -266,6 +295,18 @@ def prepare_target_pricing(
             "PRICING_PERSIST_INCOMPLETE",
             "核价结果保存后无法验证稳定目标草稿。",
         )
+    saved_pricing = (
+        saved_draft.get("pricing")
+        if isinstance(saved_draft.get("pricing"), dict)
+        else {}
+    )
+    saved_targets = (
+        saved_pricing.get("targets")
+        if isinstance(saved_pricing.get("targets"), dict)
+        else {}
+    )
+    persisted = saved_targets.get(key) if isinstance(saved_targets.get(key), dict) else {}
+    return deepcopy(persisted) if persisted else deepcopy(pricing_target)
 
 
 __all__ = ["PricingCalculator", "prepare_target_pricing"]

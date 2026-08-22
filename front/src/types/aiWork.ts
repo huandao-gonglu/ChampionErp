@@ -32,6 +32,7 @@ export type AiUiPart = UIMessage['parts'][number]
 export interface AiWorkUiMessagesResponse {
   ok: boolean
   conversation_id: string
+  history_version: number
   created_at: string
   updated_at: string
   messages: UIMessage[]
@@ -64,6 +65,21 @@ export interface GlobalTaskStep {
   error?: { code?: string; message?: string } | null
 }
 
+/** needs_input 类型化待补字段的输入类型；与后端 AiToolRequiredInput 对齐。 */
+export type GlobalTaskInputType = 'text' | 'select' | 'json_object' | 'string_list'
+
+/** 待补字段的提交归属路径；与后端 AiToolRequiredInput.input_owner 对齐。 */
+export type GlobalTaskInputOwner = 'step' | 'provided_attributes' | 'pricing_input'
+
+export interface GlobalTaskRequiredInput {
+  key: string
+  label: string
+  reason?: string
+  input_type?: GlobalTaskInputType
+  options?: string[]
+  input_owner?: GlobalTaskInputOwner
+}
+
 export interface GlobalTaskState {
   task_id: string
   goal: string
@@ -71,6 +87,7 @@ export interface GlobalTaskState {
   steps: GlobalTaskStep[]
   current_step_index: number
   pending_approval?: GlobalTaskApprovalRequest | null
+  pending_inputs?: GlobalTaskRequiredInput[]
   assistant_message?: string
   error_code?: string
   error_message?: string
@@ -80,4 +97,13 @@ export interface GlobalTaskResponse {
   ok: true
   task_id: string
   task: GlobalTaskState
+}
+
+/** conversation → 未解决 Deferred 任务的只读关联；无 ready 任务时 task 为 null。 */
+export interface ConversationTaskLinkResponse {
+  ok: boolean
+  conversation_id: string
+  task_id: string
+  link_status: string
+  task: GlobalTaskState | null
 }

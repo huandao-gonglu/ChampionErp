@@ -17,6 +17,8 @@ from .services.config_service import load_env
 
 logger = logging.getLogger(__name__)
 GLOBAL_TASK_RECOVERY_INTERVAL_SECONDS = 2.5
+# provisional link 超过该 TTL 仍未形成首次 history 时进入清理/修复。
+DEFERRED_PROVISIONAL_LINK_TTL_SECONDS = 120.0
 
 
 def start_global_task_recovery_worker(
@@ -24,18 +26,49 @@ def start_global_task_recovery_worker(
     stop_event: threading.Event | None = None,
     interval_seconds: float = GLOBAL_TASK_RECOVERY_INTERVAL_SECONDS,
 ) -> threading.Thread:
-    """低频协调可恢复任务；执行 claim 保证不会与 HTTP 写命令并行推进。"""
+    """低频协调可恢复任务；执行 claim 保证不会与 HTTP 写命令并行推进。
+
+    每轮依次：推进 ready 屏障之后的可恢复 Task；清理/修复过期 provisional
+    Deferred link；对已终结任务发起 continuation，把最终回复写回主对话；重投
+    已提交但尚未广播的官方编码事件 outbox 批次。
+    """
+
+    from .facades.ai_chat_facade import (
+        build_continuation_service,
+        build_outbox_publisher,
+    )
 
     context = get_context()
     stopped = stop_event or threading.Event()
 
     def recover() -> None:
         controller = build_global_task_controller(context)
+        continuation = build_continuation_service(context)
+        outbox_publisher = build_outbox_publisher(context)
         while not stopped.is_set():
             try:
                 controller.recover_unfinished_tasks()
             except Exception:
                 logger.exception("协调未完成的全局任务失败")
+            try:
+                continuation.sweep_provisional_links(
+                    ttl_seconds=DEFERRED_PROVISIONAL_LINK_TTL_SECONDS
+                )
+            except Exception:
+                logger.exception("清理过期 provisional Deferred link 失败")
+            try:
+                continuation.recover_pending()
+            except Exception:
+                logger.exception("恢复 Deferred continuation 失败")
+            try:
+                outbox_publisher.publish_pending()
+            except Exception:
+                logger.exception("重投官方编码事件 outbox 批次失败")
+            try:
+                # 报告 A-14：重投后按保留窗口清理已发布批次，约束 outbox 增长。
+                outbox_publisher.prune_published()
+            except Exception:
+                logger.exception("清理官方编码事件 outbox 保留窗口失败")
             stopped.wait(max(0.1, float(interval_seconds)))
 
     worker = threading.Thread(

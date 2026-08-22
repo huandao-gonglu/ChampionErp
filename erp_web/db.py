@@ -4,11 +4,13 @@ from __future__ import annotations
 
 ``ErpDatabase`` 统一拥有 schema、连接设置和读写路径。数据库通过
 ``PRAGMA user_version`` 版本化；只接受空库、当前完整 schema，或可非破坏性
-升级的已知版本。v10/v11 → v12 只增加 ``ai_chat_turn_claims`` 及其安全诊断
-字段，保留既有 Pydantic 消息历史。更早的旧消息 schema 不迁移、不修复，
-也不会从 JSONL 恢复。唯一
-seed 路径是 UPC 池：表为空时，从数据库旁的 ``upc_pool.json`` 一次性导入已
-购买的 UPC。
+升级的已知版本。v12 → v13 增加 Pydantic Deferred Task link ledger、官方
+编码事件 outbox，并给消息历史增加 ``history_version`` CAS 版本；升级时把
+没有 Deferred link 的旧未终结任务明确标记为已取消（它们没有真实
+``tool_call_id``，不得伪造 Deferred call）。v10/v11 先按既有规则升到 v12，
+再应用 v12 → v13。更早的旧消息 schema 不迁移、不修复，也不会从 JSONL
+恢复。唯一 seed 路径是 UPC 池：表为空时，从数据库旁的 ``upc_pool.json``
+一次性导入已购买的 UPC。
 """
 
 import hashlib
@@ -20,7 +22,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence
 
 from erp_web.marketplace_registry import PLATFORMS
 from erp_web.product_model.merge_model import (
@@ -31,7 +33,7 @@ from erp_web.product_model.merge_model import (
 )
 
 DEFAULT_DB_NAME = "erp.sqlite3"
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 REQUIRED_TABLES = (
     "store_auth",
@@ -50,9 +52,15 @@ REQUIRED_TABLES = (
     "draft_query_snapshots",
     "pydantic_message_histories",
     "ai_chat_turn_claims",
+    "pydantic_deferred_task_links",
+    "pydantic_ai_event_outbox",
 )
 
-_V10_REQUIRED_TABLES = frozenset(REQUIRED_TABLES) - {"ai_chat_turn_claims"}
+_V12_REQUIRED_TABLES = frozenset(REQUIRED_TABLES) - {
+    "pydantic_deferred_task_links",
+    "pydantic_ai_event_outbox",
+}
+_V10_REQUIRED_TABLES = _V12_REQUIRED_TABLES - {"ai_chat_turn_claims"}
 
 # Research run statuses that never change again (mirrors product_research_service).
 _TERMINAL_RESEARCH_STATUSES = ("completed", "failed")
@@ -219,6 +227,7 @@ CREATE TABLE IF NOT EXISTS draft_query_snapshots (
 CREATE TABLE IF NOT EXISTS pydantic_message_histories (
     conversation_id TEXT PRIMARY KEY,
     messages_json BLOB NOT NULL,
+    history_version INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL DEFAULT ''
 );
@@ -239,6 +248,40 @@ CREATE TABLE IF NOT EXISTS ai_chat_turn_claims (
     UNIQUE(conversation_id, client_message_id)
 );
 
+CREATE TABLE IF NOT EXISTS pydantic_deferred_task_links (
+    link_id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    request_run_id TEXT NOT NULL DEFAULT '',
+    tool_call_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    link_status TEXT NOT NULL DEFAULT 'awaiting_history'
+        CHECK (link_status IN (
+            'awaiting_history', 'ready', 'resolved', 'abandoned'
+        )),
+    history_version INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT '',
+    ready_at TEXT NOT NULL DEFAULT '',
+    lease_id TEXT NOT NULL DEFAULT '',
+    lease_expires_at REAL NOT NULL DEFAULT 0,
+    continuation_run_id TEXT NOT NULL DEFAULT '',
+    resolved_at TEXT NOT NULL DEFAULT '',
+    abandoned_at TEXT NOT NULL DEFAULT '',
+    last_error_code TEXT NOT NULL DEFAULT '',
+    UNIQUE(task_id),
+    UNIQUE(conversation_id, tool_call_id)
+);
+
+CREATE TABLE IF NOT EXISTS pydantic_ai_event_outbox (
+    outbox_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    run_id TEXT NOT NULL DEFAULT '',
+    history_version INTEGER NOT NULL,
+    kind TEXT NOT NULL DEFAULT '',
+    events_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT '',
+    published_at TEXT NOT NULL DEFAULT ''
+);
+
 CREATE INDEX IF NOT EXISTS idx_products_updated_at ON products(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_products_source_url ON products(source_url);
 CREATE INDEX IF NOT EXISTS idx_platform_drafts_product ON platform_drafts(product_id);
@@ -253,6 +296,13 @@ CREATE INDEX IF NOT EXISTS idx_research_candidates_run ON research_candidates(ru
 CREATE INDEX IF NOT EXISTS idx_global_tasks_updated ON global_tasks(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_pydantic_message_histories_updated
 ON pydantic_message_histories(updated_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_deferred_task_links_active_conversation
+ON pydantic_deferred_task_links(conversation_id)
+WHERE link_status IN ('awaiting_history', 'ready');
+CREATE INDEX IF NOT EXISTS idx_deferred_task_links_ready
+ON pydantic_deferred_task_links(link_status, ready_at);
+CREATE INDEX IF NOT EXISTS idx_pydantic_ai_event_outbox_conversation
+ON pydantic_ai_event_outbox(conversation_id, history_version);
 """
 
 _CURRENT_PLATFORM_DRAFT_COLUMNS = frozenset(
@@ -313,8 +363,46 @@ _CURRENT_PYDANTIC_MESSAGE_HISTORY_COLUMNS = frozenset(
     {
         "conversation_id",
         "messages_json",
+        "history_version",
         "created_at",
         "updated_at",
+    }
+)
+
+_V12_PYDANTIC_MESSAGE_HISTORY_COLUMNS = (
+    _CURRENT_PYDANTIC_MESSAGE_HISTORY_COLUMNS - {"history_version"}
+)
+
+_CURRENT_DEFERRED_TASK_LINK_COLUMNS = frozenset(
+    {
+        "link_id",
+        "conversation_id",
+        "request_run_id",
+        "tool_call_id",
+        "task_id",
+        "link_status",
+        "history_version",
+        "created_at",
+        "ready_at",
+        "lease_id",
+        "lease_expires_at",
+        "continuation_run_id",
+        "resolved_at",
+        "abandoned_at",
+        "last_error_code",
+    }
+)
+
+_CURRENT_AI_EVENT_OUTBOX_COLUMNS = frozenset(
+    {
+        "outbox_id",
+        "conversation_id",
+        "run_id",
+        "history_version",
+        "kind",
+        "events_json",
+        "created_at",
+        "published_at",
     }
 )
 
@@ -345,6 +433,7 @@ _PUBLISH_JOB_IDEMPOTENCY_INDEX = "idx_publish_jobs_idempotency_key"
 _PYDANTIC_MESSAGE_HISTORY_UPDATED_INDEX = (
     "idx_pydantic_message_histories_updated"
 )
+_DEFERRED_TASK_LINKS_ACTIVE_INDEX = "idx_deferred_task_links_active_conversation"
 
 # v10 → v12 创建当前 claim 表；其余结构保持 v10 原样。
 _V10_TO_V12_UPGRADE_SQL = """
@@ -371,6 +460,62 @@ _V11_TO_V12_UPGRADE_STATEMENTS = (
     "ALTER TABLE ai_chat_turn_claims ADD COLUMN last_tool_name TEXT NOT NULL DEFAULT ''",
 )
 
+# v12 → v13：消息历史增加 CAS 版本；新增 Deferred link ledger 与官方编码
+# 事件 outbox。旧未终结任务的取消是同一升级事务中的数据迁移（见
+# ``_cancel_legacy_unfinished_global_tasks``），不通过 DDL 表达。
+_V12_TO_V13_UPGRADE_SQL = """
+ALTER TABLE pydantic_message_histories
+ADD COLUMN history_version INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS pydantic_deferred_task_links (
+    link_id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    request_run_id TEXT NOT NULL DEFAULT '',
+    tool_call_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    link_status TEXT NOT NULL DEFAULT 'awaiting_history'
+        CHECK (link_status IN (
+            'awaiting_history', 'ready', 'resolved', 'abandoned'
+        )),
+    history_version INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT '',
+    ready_at TEXT NOT NULL DEFAULT '',
+    lease_id TEXT NOT NULL DEFAULT '',
+    lease_expires_at REAL NOT NULL DEFAULT 0,
+    continuation_run_id TEXT NOT NULL DEFAULT '',
+    resolved_at TEXT NOT NULL DEFAULT '',
+    abandoned_at TEXT NOT NULL DEFAULT '',
+    last_error_code TEXT NOT NULL DEFAULT '',
+    UNIQUE(task_id),
+    UNIQUE(conversation_id, tool_call_id)
+);
+
+CREATE TABLE IF NOT EXISTS pydantic_ai_event_outbox (
+    outbox_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    run_id TEXT NOT NULL DEFAULT '',
+    history_version INTEGER NOT NULL,
+    kind TEXT NOT NULL DEFAULT '',
+    events_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT '',
+    published_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_deferred_task_links_active_conversation
+ON pydantic_deferred_task_links(conversation_id)
+WHERE link_status IN ('awaiting_history', 'ready');
+
+CREATE INDEX IF NOT EXISTS idx_deferred_task_links_ready
+ON pydantic_deferred_task_links(link_status, ready_at);
+
+CREATE INDEX IF NOT EXISTS idx_pydantic_ai_event_outbox_conversation
+ON pydantic_ai_event_outbox(conversation_id, history_version)
+"""
+
+_LEGACY_MIGRATION_CANCEL_MESSAGE = (
+    "旧任务没有可信的 Deferred 关联，已在 schema 升级中取消；请重新提交。"
+)
+
 
 # ---------------------------------------------------------------------------
 # Pure helpers (no database access)
@@ -384,6 +529,56 @@ def _execute_schema_statements(conn: sqlite3.Connection) -> None:
         sql = statement.strip()
         if sql:
             conn.execute(sql)
+
+
+def _execute_upgrade_sql(conn: sqlite3.Connection, upgrade_sql: str) -> None:
+    """在调用方事务中逐条执行升级 DDL。"""
+    if not conn.in_transaction:
+        raise RuntimeError("schema 升级必须在显式事务内执行")
+    for statement in upgrade_sql.split(";"):
+        sql = statement.strip()
+        if sql:
+            conn.execute(sql)
+
+
+def _cancel_legacy_unfinished_global_tasks(conn: sqlite3.Connection) -> int:
+    """v12 → v13 数据迁移：明确取消没有 Deferred link 的旧未终结任务。
+
+    旧任务没有真实 Pydantic ``tool_call_id``，不得伪造 Deferred call；这里
+    保留任务快照用于诊断，只把状态改为 cancelled 并记录迁移原因，随后提示
+    用户重新提交。返回取消的任务数。
+    """
+
+    rows = conn.execute(
+        """
+        SELECT task_id, task_json
+        FROM global_tasks
+        WHERE status IN ('running', 'in_progress', 'needs_input', 'pending_approval')
+        """
+    ).fetchall()
+    now = utc_now()
+    for row in rows:
+        payload = json_loads(row["task_json"], {})
+        payload = payload if isinstance(payload, dict) else {}
+        payload["status"] = "cancelled"
+        payload["pending_inputs"] = []
+        payload["pending_approval"] = None
+        payload["active_job"] = None
+        payload["error_code"] = "GLOBAL_TASK_LEGACY_MIGRATION_CANCELLED"
+        payload["error_message"] = _LEGACY_MIGRATION_CANCEL_MESSAGE
+        payload["assistant_message"] = _LEGACY_MIGRATION_CANCEL_MESSAGE
+        payload["updated_at"] = now
+        conn.execute(
+            """
+            UPDATE global_tasks
+            SET status = 'cancelled', task_json = ?, updated_at = ?,
+                execution_id = '', execution_owner = '',
+                execution_lease_expires_at = 0
+            WHERE task_id = ?
+            """,
+            (json_dumps(payload), now, str(row["task_id"] or "")),
+        )
+    return len(rows)
 
 
 def _has_required_unique_index(
@@ -741,6 +936,9 @@ class ErpDatabase:
         frozenset[str],
         frozenset[str],
         frozenset[str],
+        frozenset[str],
+        frozenset[str],
+        bool,
         bool,
         bool,
     ]:
@@ -755,6 +953,9 @@ class ErpDatabase:
                 frozenset(),
                 frozenset(),
                 frozenset(),
+                frozenset(),
+                frozenset(),
+                False,
                 False,
                 False,
             )
@@ -834,6 +1035,26 @@ class ErpDatabase:
                 if "ai_chat_turn_claims" in tables
                 else frozenset()
             )
+            deferred_task_link_columns = (
+                frozenset(
+                    str(row[1])
+                    for row in conn.execute(
+                        'PRAGMA table_info("pydantic_deferred_task_links")'
+                    )
+                )
+                if "pydantic_deferred_task_links" in tables
+                else frozenset()
+            )
+            ai_event_outbox_columns = (
+                frozenset(
+                    str(row[1])
+                    for row in conn.execute(
+                        'PRAGMA table_info("pydantic_ai_event_outbox")'
+                    )
+                )
+                if "pydantic_ai_event_outbox" in tables
+                else frozenset()
+            )
             publish_idempotency_index_valid = (
                 _has_required_unique_index(
                     conn,
@@ -855,6 +1076,17 @@ class ErpDatabase:
                 if "pydantic_message_histories" in tables
                 else False
             )
+            deferred_links_active_index_valid = (
+                _has_required_unique_index(
+                    conn,
+                    table="pydantic_deferred_task_links",
+                    name=_DEFERRED_TASK_LINKS_ACTIVE_INDEX,
+                    columns=("conversation_id",),
+                    partial=True,
+                )
+                if "pydantic_deferred_task_links" in tables
+                else False
+            )
             return (
                 version,
                 tables,
@@ -864,8 +1096,11 @@ class ErpDatabase:
                 snapshot_columns,
                 message_history_columns,
                 chat_turn_claim_columns,
+                deferred_task_link_columns,
+                ai_event_outbox_columns,
                 publish_idempotency_index_valid,
                 message_history_updated_index_valid,
+                deferred_links_active_index_valid,
             )
         finally:
             conn.close()
@@ -881,8 +1116,11 @@ class ErpDatabase:
             inspected_snapshot_columns,
             inspected_message_history_columns,
             inspected_chat_turn_claim_columns,
+            inspected_deferred_link_columns,
+            inspected_outbox_columns,
             inspected_publish_idempotency_index_valid,
             inspected_message_history_updated_index_valid,
+            inspected_deferred_links_active_index_valid,
         ) = (
             self._inspect_schema_without_mutation()
         )
@@ -898,40 +1136,58 @@ class ErpDatabase:
             == _CURRENT_GLOBAL_TASK_COLUMNS
             and inspected_snapshot_columns
             == _CURRENT_DRAFT_QUERY_SNAPSHOT_COLUMNS
-            and inspected_message_history_columns
-            == _CURRENT_PYDANTIC_MESSAGE_HISTORY_COLUMNS
             and inspected_publish_idempotency_index_valid
             and inspected_message_history_updated_index_valid
+        )
+        shared_v12_shape_valid = (
+            shared_v10_shape_valid
+            and inspected_message_history_columns
+            == _V12_PYDANTIC_MESSAGE_HISTORY_COLUMNS
         )
         is_current_database = (
             inspected_version == SCHEMA_VERSION
             and inspected_tables == frozenset(REQUIRED_TABLES)
             and inspected_chat_turn_claim_columns
             == _CURRENT_AI_CHAT_TURN_CLAIM_COLUMNS
+            and inspected_message_history_columns
+            == _CURRENT_PYDANTIC_MESSAGE_HISTORY_COLUMNS
+            and inspected_deferred_link_columns
+            == _CURRENT_DEFERRED_TASK_LINK_COLUMNS
+            and inspected_outbox_columns
+            == _CURRENT_AI_EVENT_OUTBOX_COLUMNS
+            and inspected_deferred_links_active_index_valid
             and shared_v10_shape_valid
         )
         is_upgradable_v10_database = (
             inspected_version == 10
             and inspected_tables == _V10_REQUIRED_TABLES
-            and shared_v10_shape_valid
+            and shared_v12_shape_valid
         )
         is_upgradable_v11_database = (
             inspected_version == 11
-            and inspected_tables == frozenset(REQUIRED_TABLES)
+            and inspected_tables == _V12_REQUIRED_TABLES
             and inspected_chat_turn_claim_columns
             == _V11_AI_CHAT_TURN_CLAIM_COLUMNS
-            and shared_v10_shape_valid
+            and shared_v12_shape_valid
+        )
+        is_upgradable_v12_database = (
+            inspected_version == 12
+            and inspected_tables == _V12_REQUIRED_TABLES
+            and inspected_chat_turn_claim_columns
+            == _CURRENT_AI_CHAT_TURN_CLAIM_COLUMNS
+            and shared_v12_shape_valid
         )
         if (
             not is_empty_database
             and not is_current_database
             and not is_upgradable_v10_database
             and not is_upgradable_v11_database
+            and not is_upgradable_v12_database
         ):
             raise RuntimeError(
                 "数据库 schema 版本 "
                 f"{inspected_version} 不受支持（当前版本 {SCHEMA_VERSION}）；"
-                "仅接受空库、当前完整 schema 或受支持的 v10/v11 升级结构；"
+                "仅接受空库、当前完整 schema 或受支持的 v10/v11/v12 升级结构；"
                 "不迁移、修复或重建更早的旧消息格式。"
             )
         with self._connect() as conn:
@@ -946,25 +1202,25 @@ class ErpDatabase:
                 except BaseException:
                     conn.rollback()
                     raise
-            elif is_upgradable_v10_database:
+            elif (
+                is_upgradable_v10_database
+                or is_upgradable_v11_database
+                or is_upgradable_v12_database
+            ):
+                # v10/v11 先升到 v12，再统一应用 v12 → v13；全部升级步骤与
+                # 旧未终结任务取消在同一事务内完成。
                 conn.execute("BEGIN IMMEDIATE")
                 try:
-                    for statement in _V10_TO_V12_UPGRADE_SQL.split(";"):
-                        sql = statement.strip()
-                        if sql:
-                            conn.execute(sql)
-                    conn.execute(
-                        f"PRAGMA user_version = {SCHEMA_VERSION}"
-                    )
-                    conn.commit()
-                except BaseException:
-                    conn.rollback()
-                    raise
-            elif is_upgradable_v11_database:
-                conn.execute("BEGIN IMMEDIATE")
-                try:
-                    for statement in _V11_TO_V12_UPGRADE_STATEMENTS:
-                        conn.execute(statement)
+                    if is_upgradable_v10_database:
+                        # v10 的 CREATE 已包含全部当前 claim 列；v11 的
+                        # ALTER 只用于补齐 v11 缺失的三列（报告 A-04：
+                        # 两条语句叠加会 duplicate column name）。
+                        _execute_upgrade_sql(conn, _V10_TO_V12_UPGRADE_SQL)
+                    if is_upgradable_v11_database:
+                        for statement in _V11_TO_V12_UPGRADE_STATEMENTS:
+                            conn.execute(statement)
+                    _execute_upgrade_sql(conn, _V12_TO_V13_UPGRADE_SQL)
+                    _cancel_legacy_unfinished_global_tasks(conn)
                     conn.execute(
                         f"PRAGMA user_version = {SCHEMA_VERSION}"
                     )
@@ -2814,9 +3070,17 @@ class ErpDatabase:
         return {
             "conversation_id": str(row["conversation_id"] or ""),
             "messages_json": bytes(row["messages_json"]),
+            "history_version": int(row["history_version"] or 0),
             "created_at": str(row["created_at"] or ""),
             "updated_at": str(row["updated_at"] or ""),
         }
+
+    _PYDANTIC_MESSAGE_HISTORY_SELECT = """
+        SELECT conversation_id, messages_json, history_version,
+               created_at, updated_at
+        FROM pydantic_message_histories
+        WHERE conversation_id = ?
+        """
 
     def replace_pydantic_message_history(
         self,
@@ -2825,7 +3089,7 @@ class ErpDatabase:
         *,
         now: str,
     ) -> dict[str, Any]:
-        """原子替换规范 Pydantic 消息 JSON，并保留首次创建时间。"""
+        """原子替换规范 Pydantic 消息 JSON，并递增 history_version。"""
 
         normalized_id = str(conversation_id or "").strip()
         if not normalized_id:
@@ -2842,11 +3106,13 @@ class ErpDatabase:
                     conn.execute(
                         """
                         INSERT INTO pydantic_message_histories (
-                            conversation_id, messages_json,
+                            conversation_id, messages_json, history_version,
                             created_at, updated_at
-                        ) VALUES (?, ?, ?, ?)
+                        ) VALUES (?, ?, 1, ?, ?)
                         ON CONFLICT(conversation_id) DO UPDATE SET
                             messages_json = excluded.messages_json,
+                            history_version =
+                                pydantic_message_histories.history_version + 1,
                             updated_at = excluded.updated_at
                         """,
                         (
@@ -2857,12 +3123,7 @@ class ErpDatabase:
                         ),
                     )
                     row = conn.execute(
-                        """
-                        SELECT conversation_id, messages_json,
-                               created_at, updated_at
-                        FROM pydantic_message_histories
-                        WHERE conversation_id = ?
-                        """,
+                        self._PYDANTIC_MESSAGE_HISTORY_SELECT,
                         (normalized_id,),
                     ).fetchone()
                     conn.commit()
@@ -2881,11 +3142,7 @@ class ErpDatabase:
             return None
         with self._connect() as conn:
             row = conn.execute(
-                """
-                SELECT conversation_id, messages_json, created_at, updated_at
-                FROM pydantic_message_histories
-                WHERE conversation_id = ?
-                """,
+                self._PYDANTIC_MESSAGE_HISTORY_SELECT,
                 (normalized_id,),
             ).fetchone()
         return (
@@ -2893,6 +3150,26 @@ class ErpDatabase:
             if row is not None
             else None
         )
+
+    def get_pydantic_message_history_version(
+        self,
+        conversation_id: str,
+    ) -> int:
+        """读取当前 history version；不存在时返回 0。"""
+
+        normalized_id = str(conversation_id or "").strip()
+        if not normalized_id:
+            return 0
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT history_version
+                FROM pydantic_message_histories
+                WHERE conversation_id = ?
+                """,
+                (normalized_id,),
+            ).fetchone()
+        return int(row["history_version"] or 0) if row is not None else 0
 
     def list_pydantic_message_histories(
         self,
@@ -2935,6 +3212,822 @@ class ErpDatabase:
                 )
                 conn.commit()
         return cursor.rowcount == 1
+
+    # -- pydantic_deferred_task_links / pydantic_ai_event_outbox ------------------
+
+    _DEFERRED_TASK_LINK_COLUMNS = (
+        "link_id",
+        "conversation_id",
+        "request_run_id",
+        "tool_call_id",
+        "task_id",
+        "link_status",
+        "history_version",
+        "created_at",
+        "ready_at",
+        "lease_id",
+        "lease_expires_at",
+        "continuation_run_id",
+        "resolved_at",
+        "abandoned_at",
+        "last_error_code",
+    )
+
+    _DEFERRED_TASK_LINK_SELECT = """
+        SELECT {columns}
+        FROM pydantic_deferred_task_links
+        """.format(columns=", ".join(_DEFERRED_TASK_LINK_COLUMNS))
+
+    _AI_EVENT_OUTBOX_COLUMNS = (
+        "outbox_id",
+        "conversation_id",
+        "run_id",
+        "history_version",
+        "kind",
+        "events_json",
+        "created_at",
+        "published_at",
+    )
+
+    @classmethod
+    def _deferred_task_link_row(cls, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            column: (
+                int(row[column])
+                if column in {"history_version"}
+                else float(row[column])
+                if column == "lease_expires_at"
+                else str(row[column] or "")
+            )
+            for column in cls._DEFERRED_TASK_LINK_COLUMNS
+        }
+
+    @staticmethod
+    def _ai_event_outbox_row(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "outbox_id": int(row["outbox_id"] or 0),
+            "conversation_id": str(row["conversation_id"] or ""),
+            "run_id": str(row["run_id"] or ""),
+            "history_version": int(row["history_version"] or 0),
+            "kind": str(row["kind"] or ""),
+            "events_json": str(row["events_json"] or "[]"),
+            "created_at": str(row["created_at"] or ""),
+            "published_at": str(row["published_at"] or ""),
+        }
+
+    @staticmethod
+    def _require_link_identifiers(
+        *,
+        link_id: str,
+        conversation_id: str,
+        tool_call_id: str,
+        task_id: str,
+    ) -> None:
+        for label, value in (
+            ("link_id", link_id),
+            ("conversation_id", conversation_id),
+            ("tool_call_id", tool_call_id),
+            ("task_id", task_id),
+        ):
+            if not str(value or "").strip():
+                raise ValueError(f"Deferred task link 缺少 {label}。")
+
+    def create_global_task_with_deferred_link(
+        self,
+        state: dict[str, Any],
+        *,
+        link_id: str,
+        conversation_id: str,
+        request_run_id: str,
+        tool_call_id: str,
+        now: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """同一事务原子创建 Deferred 任务与 provisional link。
+
+        link 初始为 ``awaiting_history`` 且 ``ready_at`` 为空：首次 Agent
+        history 提交前 worker 禁止执行任务。conversation 级 active link 唯一
+        约束（partial unique index）在这里兜底拒绝第二个未解决 Deferred。
+        """
+
+        payload = _dict(state)
+        task_id = str(payload.get("task_id") or "").strip()
+        status = str(payload.get("status") or "").strip()
+        normalized_link_id = str(link_id or "").strip()
+        normalized_conversation_id = str(conversation_id or "").strip()
+        normalized_tool_call_id = str(tool_call_id or "").strip()
+        normalized_request_run_id = str(request_run_id or "").strip()
+        timestamp = str(now or "").strip()
+        self._require_link_identifiers(
+            link_id=normalized_link_id,
+            conversation_id=normalized_conversation_id,
+            tool_call_id=normalized_tool_call_id,
+            task_id=task_id,
+        )
+        if not status or not timestamp:
+            raise ValueError("Deferred 任务创建缺少状态或时间。")
+        payload["revision"] = 1
+        payload["execution_id"] = ""
+        created_at = str(payload.get("created_at") or "") or timestamp
+        payload["created_at"] = created_at
+        payload["updated_at"] = str(payload.get("updated_at") or "") or timestamp
+        with self._write_lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO global_tasks (
+                            task_id, status, revision,
+                            execution_id, execution_owner,
+                            execution_lease_expires_at,
+                            task_json, created_at, updated_at
+                        ) VALUES (?, ?, 1, '', '', 0, ?, ?, ?)
+                        """,
+                        (
+                            task_id,
+                            status,
+                            json_dumps(payload),
+                            payload["created_at"],
+                            payload["updated_at"],
+                        ),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO pydantic_deferred_task_links (
+                            link_id, conversation_id, request_run_id,
+                            tool_call_id, task_id, link_status,
+                            history_version, created_at
+                        ) VALUES (?, ?, ?, ?, ?, 'awaiting_history', 0, ?)
+                        """,
+                        (
+                            normalized_link_id,
+                            normalized_conversation_id,
+                            normalized_request_run_id,
+                            normalized_tool_call_id,
+                            task_id,
+                            timestamp,
+                        ),
+                    )
+                    link_row = conn.execute(
+                        f"{self._DEFERRED_TASK_LINK_SELECT} WHERE link_id = ?",
+                        (normalized_link_id,),
+                    ).fetchone()
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
+        assert link_row is not None
+        return payload, self._deferred_task_link_row(link_row)
+
+    def get_deferred_task_link(
+        self,
+        link_id: str,
+    ) -> dict[str, Any] | None:
+        normalized = str(link_id or "").strip()
+        if not normalized:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                f"{self._DEFERRED_TASK_LINK_SELECT} WHERE link_id = ?",
+                (normalized,),
+            ).fetchone()
+        return self._deferred_task_link_row(row) if row is not None else None
+
+    def get_deferred_task_link_by_task(
+        self,
+        task_id: str,
+    ) -> dict[str, Any] | None:
+        normalized = str(task_id or "").strip()
+        if not normalized:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                f"{self._DEFERRED_TASK_LINK_SELECT} WHERE task_id = ?",
+                (normalized,),
+            ).fetchone()
+        return self._deferred_task_link_row(row) if row is not None else None
+
+    def active_deferred_task_link_for_conversation(
+        self,
+        conversation_id: str,
+    ) -> dict[str, Any] | None:
+        """读取 conversation 当前未解决 link（awaiting_history/ready）。"""
+
+        normalized = str(conversation_id or "").strip()
+        if not normalized:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""
+                {self._DEFERRED_TASK_LINK_SELECT}
+                WHERE conversation_id = ?
+                  AND link_status IN ('awaiting_history', 'ready')
+                """,
+                (normalized,),
+            ).fetchone()
+        return self._deferred_task_link_row(row) if row is not None else None
+
+    def list_continuable_deferred_task_links(
+        self,
+        *,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """link 已 ready、Task 已终结且 link 未解决的可恢复记录。"""
+
+        bounded_limit = max(1, int(limit))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT {", ".join("link." + column for column in self._DEFERRED_TASK_LINK_COLUMNS)}
+                FROM pydantic_deferred_task_links AS link
+                JOIN global_tasks AS task ON task.task_id = link.task_id
+                WHERE link.link_status = 'ready'
+                  AND link.ready_at != ''
+                  AND link.resolved_at = ''
+                  AND link.abandoned_at = ''
+                  AND task.status IN ('completed', 'failed', 'cancelled')
+                  AND (
+                      link.lease_id = ''
+                      OR link.lease_expires_at <= ?
+                  )
+                ORDER BY link.ready_at ASC, link.link_id ASC
+                LIMIT ?
+                """,
+                (time.time(), bounded_limit),
+            ).fetchall()
+        return [self._deferred_task_link_row(row) for row in rows]
+
+    def list_expired_provisional_deferred_links(
+        self,
+        *,
+        cutoff_iso: str,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """早于 cutoff 仍未形成首次 history 的 provisional link。
+
+        ``created_at`` 使用同一 UTC ISO 格式写入，可按字典序比较；调用方负责
+        用 ``datetime.now(timezone.utc) - TTL`` 计算 cutoff。
+        """
+
+        normalized_cutoff = str(cutoff_iso or "").strip()
+        if not normalized_cutoff:
+            raise ValueError("provisional link sweep 缺少 cutoff 时间。")
+        bounded_limit = max(1, int(limit))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                {self._DEFERRED_TASK_LINK_SELECT}
+                WHERE link_status = 'awaiting_history'
+                  AND created_at != ''
+                  AND created_at < ?
+                ORDER BY created_at ASC, link_id ASC
+                LIMIT ?
+                """,
+                (normalized_cutoff, bounded_limit),
+            ).fetchall()
+        return [self._deferred_task_link_row(row) for row in rows]
+
+    def claim_deferred_task_link(
+        self,
+        link_id: str,
+        *,
+        lease_id: str,
+        lease_seconds: float,
+    ) -> dict[str, Any] | None:
+        """原子领取 continuation claim；lease 只防重复 continuation。"""
+
+        normalized_link_id = str(link_id or "").strip()
+        normalized_lease_id = str(lease_id or "").strip()
+        if not normalized_link_id or not normalized_lease_id:
+            raise ValueError("领取 Deferred link 需要 link_id 和 lease_id。")
+        now = time.time()
+        expires_at = now + max(1.0, float(lease_seconds))
+        with self._write_lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    cursor = conn.execute(
+                        """
+                        UPDATE pydantic_deferred_task_links
+                        SET lease_id = ?, lease_expires_at = ?
+                        WHERE link_id = ?
+                          AND link_status = 'ready'
+                          AND resolved_at = ''
+                          AND abandoned_at = ''
+                          AND (lease_id = '' OR lease_expires_at <= ?)
+                        """,
+                        (
+                            normalized_lease_id,
+                            expires_at,
+                            normalized_link_id,
+                            now,
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        conn.rollback()
+                        return None
+                    row = conn.execute(
+                        f"{self._DEFERRED_TASK_LINK_SELECT} WHERE link_id = ?",
+                        (normalized_link_id,),
+                    ).fetchone()
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
+        assert row is not None
+        return self._deferred_task_link_row(row)
+
+    def release_deferred_task_link_claim(
+        self,
+        link_id: str,
+        *,
+        lease_id: str,
+    ) -> bool:
+        with self._write_lock:
+            with self._connect() as conn:
+                cursor = conn.execute(
+                    """
+                    UPDATE pydantic_deferred_task_links
+                    SET lease_id = '', lease_expires_at = 0
+                    WHERE link_id = ? AND lease_id = ?
+                      AND link_status = 'ready'
+                      AND resolved_at = ''
+                    """,
+                    (str(link_id or "").strip(), str(lease_id or "").strip()),
+                )
+                conn.commit()
+                return cursor.rowcount == 1
+
+    def update_deferred_task_link_last_error(
+        self,
+        link_id: str,
+        *,
+        error_code: str,
+    ) -> None:
+        with self._write_lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE pydantic_deferred_task_links
+                    SET last_error_code = ?
+                    WHERE link_id = ?
+                    """,
+                    (
+                        str(error_code or "").strip()[:120],
+                        str(link_id or "").strip(),
+                    ),
+                )
+                conn.commit()
+
+    def commit_deferred_history_ready(
+        self,
+        conversation_id: str,
+        messages_json: bytes,
+        *,
+        now: str,
+        link_id: str,
+        outbox_run_id: str,
+        outbox_kind: str,
+        outbox_events_json: str,
+    ) -> dict[str, Any]:
+        """首次 Deferred history + link ready + outbox 的同事务提交。"""
+
+        normalized_id = str(conversation_id or "").strip()
+        normalized_link_id = str(link_id or "").strip()
+        timestamp = str(now or "").strip()
+        if not normalized_id or not normalized_link_id or not timestamp:
+            raise ValueError("Deferred history 提交缺少必要标识。")
+        if not isinstance(messages_json, bytes):
+            raise TypeError("Pydantic 消息历史必须以 bytes 保存。")
+        with self._write_lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO pydantic_message_histories (
+                            conversation_id, messages_json, history_version,
+                            created_at, updated_at
+                        ) VALUES (?, ?, 1, ?, ?)
+                        ON CONFLICT(conversation_id) DO UPDATE SET
+                            messages_json = excluded.messages_json,
+                            history_version =
+                                pydantic_message_histories.history_version + 1,
+                            updated_at = excluded.updated_at
+                        """,
+                        (
+                            normalized_id,
+                            sqlite3.Binary(messages_json),
+                            timestamp,
+                            timestamp,
+                        ),
+                    )
+                    history_row = conn.execute(
+                        self._PYDANTIC_MESSAGE_HISTORY_SELECT,
+                        (normalized_id,),
+                    ).fetchone()
+                    assert history_row is not None
+                    history_version = int(history_row["history_version"] or 0)
+                    cursor = conn.execute(
+                        """
+                        UPDATE pydantic_deferred_task_links
+                        SET link_status = 'ready', ready_at = ?,
+                            history_version = ?, last_error_code = ''
+                        WHERE link_id = ?
+                          AND link_status = 'awaiting_history'
+                        """,
+                        (timestamp, history_version, normalized_link_id),
+                    )
+                    if cursor.rowcount != 1:
+                        raise RuntimeError(
+                            "Deferred link 不在 awaiting_history 状态，"
+                            f"无法提交首次 history：{normalized_link_id}"
+                        )
+                    self._insert_outbox_in_conn(
+                        conn,
+                        conversation_id=normalized_id,
+                        run_id=str(outbox_run_id or "").strip(),
+                        history_version=history_version,
+                        kind=str(outbox_kind or "").strip(),
+                        events_json=str(outbox_events_json or "[]"),
+                        now=timestamp,
+                    )
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
+        return self._pydantic_message_history_row(history_row)
+
+    def commit_continuation_history_resolved(
+        self,
+        conversation_id: str,
+        messages_json: bytes,
+        *,
+        now: str,
+        link_id: str,
+        expected_version: int,
+        continuation_run_id: str,
+        lease_id: str,
+        outbox_kind: str,
+        outbox_events_json: str,
+    ) -> dict[str, Any] | None:
+        """continuation history CAS + link resolved + outbox 的同事务提交。
+
+        history version 与 link 冻结版本不一致时整体回滚并返回 None，调用方
+        重新读取对账，不得盲目追加消息。link 更新同时校验当前 ``lease_id``：
+        lease 过期后被第二个 worker 领取时，第一个 worker 的最终提交必须失败，
+        避免越过租约写入别人正在重跑的 link。
+        """
+
+        normalized_id = str(conversation_id or "").strip()
+        normalized_link_id = str(link_id or "").strip()
+        normalized_run_id = str(continuation_run_id or "").strip()
+        normalized_lease_id = str(lease_id or "").strip()
+        timestamp = str(now or "").strip()
+        expected = int(expected_version)
+        if not normalized_id or not normalized_link_id or not timestamp:
+            raise ValueError("continuation 提交缺少必要标识。")
+        if not normalized_run_id:
+            raise ValueError("continuation 提交缺少 run_id。")
+        if not normalized_lease_id:
+            raise ValueError("continuation 提交缺少 lease_id。")
+        if not isinstance(messages_json, bytes):
+            raise TypeError("Pydantic 消息历史必须以 bytes 保存。")
+        with self._write_lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    cursor = conn.execute(
+                        """
+                        UPDATE pydantic_message_histories
+                        SET messages_json = ?,
+                            history_version = history_version + 1,
+                            updated_at = ?
+                        WHERE conversation_id = ? AND history_version = ?
+                        """,
+                        (
+                            sqlite3.Binary(messages_json),
+                            timestamp,
+                            normalized_id,
+                            expected,
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        conn.rollback()
+                        return None
+                    cursor = conn.execute(
+                        """
+                        UPDATE pydantic_deferred_task_links
+                        SET link_status = 'resolved', resolved_at = ?,
+                            continuation_run_id = ?,
+                            lease_id = '', lease_expires_at = 0,
+                            last_error_code = ''
+                        WHERE link_id = ?
+                          AND link_status = 'ready'
+                          AND resolved_at = ''
+                          AND lease_id = ?
+                        """,
+                        (
+                            timestamp,
+                            normalized_run_id,
+                            normalized_link_id,
+                            normalized_lease_id,
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        conn.rollback()
+                        return None
+                    self._insert_outbox_in_conn(
+                        conn,
+                        conversation_id=normalized_id,
+                        run_id=normalized_run_id,
+                        history_version=expected + 1,
+                        kind=str(outbox_kind or "").strip(),
+                        events_json=str(outbox_events_json or "[]"),
+                        now=timestamp,
+                    )
+                    row = conn.execute(
+                        self._PYDANTIC_MESSAGE_HISTORY_SELECT,
+                        (normalized_id,),
+                    ).fetchone()
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
+        assert row is not None
+        return self._pydantic_message_history_row(row)
+
+    def abandon_deferred_link_and_cancel_task(
+        self,
+        link_id: str,
+        *,
+        now: str,
+        cancel_assistant_message: str,
+    ) -> dict[str, Any] | None:
+        """无法形成首次 history 的 provisional link：abandon 并取消任务。
+
+        只有 ``awaiting_history`` 且 Task 仍处于初始 running 状态时才允许；
+        已 ready/resolved 的 link 必须走标准恢复链路，不能在这里被放弃。
+        """
+
+        normalized_link_id = str(link_id or "").strip()
+        timestamp = str(now or "").strip()
+        if not normalized_link_id or not timestamp:
+            raise ValueError("abandon Deferred link 缺少必要标识。")
+        with self._write_lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    cursor = conn.execute(
+                        """
+                        UPDATE pydantic_deferred_task_links
+                        SET link_status = 'abandoned', abandoned_at = ?,
+                            lease_id = '', lease_expires_at = 0
+                        WHERE link_id = ?
+                          AND link_status = 'awaiting_history'
+                          AND ready_at = ''
+                        """,
+                        (timestamp, normalized_link_id),
+                    )
+                    if cursor.rowcount != 1:
+                        conn.rollback()
+                        return None
+                    row = conn.execute(
+                        f"""
+                        SELECT task_id FROM pydantic_deferred_task_links
+                        WHERE link_id = ?
+                        """,
+                        (normalized_link_id,),
+                    ).fetchone()
+                    task_id = str(row["task_id"] or "") if row else ""
+                    task_row = conn.execute(
+                        "SELECT task_json FROM global_tasks WHERE task_id = ?",
+                        (task_id,),
+                    ).fetchone()
+                    if task_row is not None:
+                        payload = json_loads(task_row["task_json"], {})
+                        payload = payload if isinstance(payload, dict) else {}
+                        if str(payload.get("status") or "") == "running":
+                            payload["status"] = "cancelled"
+                            payload["pending_inputs"] = []
+                            payload["pending_approval"] = None
+                            payload["assistant_message"] = str(
+                                cancel_assistant_message or ""
+                            )
+                            payload["updated_at"] = timestamp
+                            conn.execute(
+                                """
+                                UPDATE global_tasks
+                                SET status = 'cancelled', task_json = ?,
+                                    updated_at = ?,
+                                    execution_id = '', execution_owner = '',
+                                    execution_lease_expires_at = 0
+                                WHERE task_id = ? AND status = 'running'
+                                """,
+                                (json_dumps(payload), timestamp, task_id),
+                            )
+                    link_row = conn.execute(
+                        f"{self._DEFERRED_TASK_LINK_SELECT} WHERE link_id = ?",
+                        (normalized_link_id,),
+                    ).fetchone()
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
+        assert link_row is not None
+        return self._deferred_task_link_row(link_row)
+
+    def mark_deferred_link_ready_from_history(
+        self,
+        link_id: str,
+        *,
+        now: str,
+        history_version: int,
+    ) -> dict[str, Any] | None:
+        """恢复协调：已存在匹配 Deferred history 的 provisional link 修复为 ready。"""
+
+        normalized_link_id = str(link_id or "").strip()
+        timestamp = str(now or "").strip()
+        version = int(history_version)
+        if not normalized_link_id or not timestamp or version < 1:
+            raise ValueError("修复 Deferred link 缺少必要标识或版本。")
+        with self._write_lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    cursor = conn.execute(
+                        """
+                        UPDATE pydantic_deferred_task_links
+                        SET link_status = 'ready', ready_at = ?,
+                            history_version = ?, last_error_code = ''
+                        WHERE link_id = ?
+                          AND link_status = 'awaiting_history'
+                        """,
+                        (timestamp, version, normalized_link_id),
+                    )
+                    if cursor.rowcount != 1:
+                        conn.rollback()
+                        return None
+                    row = conn.execute(
+                        f"{self._DEFERRED_TASK_LINK_SELECT} WHERE link_id = ?",
+                        (normalized_link_id,),
+                    ).fetchone()
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
+        assert row is not None
+        return self._deferred_task_link_row(row)
+
+    @staticmethod
+    def _insert_outbox_in_conn(
+        conn: sqlite3.Connection,
+        *,
+        conversation_id: str,
+        run_id: str,
+        history_version: int,
+        kind: str,
+        events_json: str,
+        now: str,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO pydantic_ai_event_outbox (
+                conversation_id, run_id, history_version, kind,
+                events_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                conversation_id,
+                run_id,
+                int(history_version),
+                kind,
+                events_json,
+                now,
+            ),
+        )
+
+    def list_outbox_events_after(
+        self,
+        conversation_id: str,
+        *,
+        after_history_version: int,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """按 history_version 升序重放该版本之后的官方编码事件批次。"""
+
+        normalized_id = str(conversation_id or "").strip()
+        if not normalized_id:
+            return []
+        bounded_limit = max(1, min(int(limit), 1000))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT {columns}
+                FROM pydantic_ai_event_outbox
+                WHERE conversation_id = ? AND history_version > ?
+                ORDER BY history_version ASC, outbox_id ASC
+                LIMIT ?
+                """.format(columns=", ".join(self._AI_EVENT_OUTBOX_COLUMNS)),
+                (normalized_id, int(after_history_version), bounded_limit),
+            ).fetchall()
+        return [self._ai_event_outbox_row(row) for row in rows]
+
+    def latest_outbox_history_version(
+        self,
+        conversation_id: str,
+    ) -> int:
+        normalized_id = str(conversation_id or "").strip()
+        if not normalized_id:
+            return 0
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT MAX(history_version) AS latest
+                FROM pydantic_ai_event_outbox
+                WHERE conversation_id = ?
+                """,
+                (normalized_id,),
+            ).fetchone()
+        return int((row["latest"] if row else 0) or 0)
+
+    def mark_outbox_published(self, outbox_ids: Sequence[int]) -> None:
+        identifiers = [int(item) for item in outbox_ids if int(item) > 0]
+        if not identifiers:
+            return
+        now = utc_now()
+        with self._write_lock:
+            with self._connect() as conn:
+                conn.execute(
+                    f"""
+                    UPDATE pydantic_ai_event_outbox
+                    SET published_at = ?
+                    WHERE outbox_id IN ({",".join("?" for _ in identifiers)})
+                      AND published_at = ''
+                    """,
+                    (now, *identifiers),
+                )
+                conn.commit()
+
+    def list_unpublished_outbox_events(
+        self,
+        *,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """按提交顺序列出尚未投递的官方编码事件批次（供后台 publisher 重投）。"""
+
+        bounded_limit = max(1, min(int(limit), 1000))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT {columns}
+                FROM pydantic_ai_event_outbox
+                WHERE published_at = ''
+                ORDER BY outbox_id ASC
+                LIMIT ?
+                """.format(columns=", ".join(self._AI_EVENT_OUTBOX_COLUMNS)),
+                (bounded_limit,),
+            ).fetchall()
+        return [self._ai_event_outbox_row(row) for row in rows]
+
+    def prune_published_outbox_events(self, *, keep_latest: int) -> int:
+        """报告 A-14：按保留窗口清理已投递批次，约束 outbox 无限增长。
+
+        每个 conversation 只保留最近 ``keep_latest`` 条已发布（published_at
+        非空）批次，删除更早的已发布批次。绝不删除未发布批次——它们仍在等待
+        后台重投。订阅端游标早于最早保留版本时由 SSE 端回 ``resync_required``，
+        客户端重读 ``/ui-messages`` 即可对齐，不依赖被清理的旧批次。
+        """
+
+        bounded_keep = max(1, int(keep_latest))
+        with self._write_lock:
+            with self._connect() as conn:
+                cursor = conn.execute(
+                    """
+                    DELETE FROM pydantic_ai_event_outbox
+                    WHERE published_at != ''
+                      AND (
+                        SELECT COUNT(*)
+                        FROM pydantic_ai_event_outbox AS newer
+                        WHERE newer.conversation_id
+                              = pydantic_ai_event_outbox.conversation_id
+                          AND newer.published_at != ''
+                          AND (
+                            newer.history_version
+                              > pydantic_ai_event_outbox.history_version
+                            OR (
+                              newer.history_version
+                                = pydantic_ai_event_outbox.history_version
+                              AND newer.outbox_id
+                                > pydantic_ai_event_outbox.outbox_id
+                            )
+                          )
+                      ) >= ?
+                    """,
+                    (bounded_keep,),
+                )
+                conn.commit()
+                return max(0, int(cursor.rowcount or 0))
 
     # -- ai_chat_turn_claims -------------------------------------------------------
 
