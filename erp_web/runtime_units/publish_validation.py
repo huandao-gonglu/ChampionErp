@@ -295,21 +295,6 @@ def validate_yandex_draft(product: dict[str, Any], config: dict[str, Any]) -> di
         errors.append(precheck_item("CATEGORY_MISSING", "category_id", "缺少 Yandex 类目 ID", "error", "前往类目属性页选择叶子类目"))
     elif not category_id.isdigit() or int(category_id) <= 0:
         errors.append(precheck_item("CATEGORY_INVALID", "category_id", "Yandex 类目 ID 必须是正整数（只能选择叶子类目）", "error", "前往类目属性页重新选择叶子类目"))
-    schema = (
-        draft.get("category_attribute_schema")
-        if isinstance(draft.get("category_attribute_schema"), dict)
-        else {}
-    )
-    if category_id and int(schema.get("version") or 0) < 2:
-        errors.append(
-            precheck_item(
-                "CATEGORY_ATTRIBUTE_SCHEMA_STALE",
-                "category_attribute_schema",
-                "Yandex 类目属性定义缺少枚举元数据",
-                "error",
-                "前往类目属性页刷新平台属性，并重新选择枚举值",
-            )
-        )
     # 稳定 offerId 身份：服务端比较 draft.sku 与历史发布身份，前端锁定
     # 输入只是交互提示，不能充当约束。
     conflict = yandex_offer_identity_conflict(draft)
@@ -405,21 +390,6 @@ def validate_ozon_draft(product: dict[str, Any], config: dict[str, Any]) -> dict
         errors.append(precheck_item("CATEGORY_MISSING", "category_id", "缺少 Ozon Category / Type ID", "error", "前往类目属性页选择类目"))
     elif not description_category_id:
         errors.append(precheck_item("CATEGORY_PAIR_MISSING", "category_id", "Ozon 类目缺少 type_id 与 description_category_id 配对", "error", "前往类目属性页重新选择 Ozon 实时类目"))
-    schema = (
-        draft.get("category_attribute_schema")
-        if isinstance(draft.get("category_attribute_schema"), dict)
-        else {}
-    )
-    if int(schema.get("version") or 0) < 2:
-        errors.append(
-            precheck_item(
-                "CATEGORY_ATTRIBUTE_SCHEMA_STALE",
-                "category_attribute_schema",
-                "Ozon 类目属性定义缺少枚举元数据",
-                "error",
-                "前往类目属性页刷新平台属性，并重新选择枚举值",
-            )
-        )
     invalid_dictionary_ids = set(ozon_invalid_dictionary_attributes(product))
     for attr_id in sorted(invalid_dictionary_ids):
         errors.append(

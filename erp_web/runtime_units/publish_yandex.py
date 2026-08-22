@@ -567,13 +567,6 @@ def build_yandex_publish_payload(
     product = normalize_product_fields(product)
     draft = _draft_for_platform(product, "yandex")
     store = _yandex_store(config)
-    schema = (
-        draft.get("category_attribute_schema")
-        if isinstance(draft.get("category_attribute_schema"), dict)
-        else {}
-    )
-    if int(schema.get("version") or 0) < 2:
-        raise ValueError("Yandex 类目属性定义已过期，请刷新平台属性后重新选择枚举值")
     conflict = yandex_offer_identity_conflict(draft)
     if conflict:
         raise ValueError(conflict)

@@ -69,7 +69,6 @@ def _category_record(draft: dict[str, Any]) -> dict[str, Any]:
         else {}
     )
     return {
-        "schema_version": int(schema.get("version") or 0),
         "category_id": str(draft.get("category_id") or "").strip(),
         "description_category_id": str(
             draft.get("description_category_id") or ""
@@ -274,13 +273,6 @@ def build_ozon_publish_payload(
 ) -> dict[str, Any]:
     product = normalize_product_fields(product)
     draft = _draft_for_platform(product, "ozon")
-    schema = (
-        draft.get("category_attribute_schema")
-        if isinstance(draft.get("category_attribute_schema"), dict)
-        else {}
-    )
-    if int(schema.get("version") or 0) < 2:
-        raise ValueError("Ozon 类目属性定义已过期，请刷新平台属性后重新选择枚举值")
     type_id, description_category_id = ozon_category_pair(product)
     package = (
         draft.get("package_dimensions")

@@ -14,7 +14,6 @@ from erp_web.runtime_units.draft_publish_context import (
 
 def test_target_listing_round_trip_preserves_category_attribute_schema() -> None:
     schema = {
-        "version": 1,
         "platform": "mercadolibre",
         "site": "MLM",
         "category_id": "MLM123",

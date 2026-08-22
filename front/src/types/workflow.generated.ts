@@ -187,7 +187,6 @@ export interface BackendCategoryAttributeDefinition {
 }
 
 export interface BackendCategoryAttributeSchema {
-  version?: number
   platform?: string
   site?: string
   category_id?: string

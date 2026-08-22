@@ -347,7 +347,6 @@ export function normalizeCategoryAttributeSchema(value: unknown): CategoryAttrib
       .filter((item): item is CategoryAttributeDefinition => Boolean(item))
     : []
   return {
-    version: Math.max(1, getNumber(record, ['version'], 1)),
     platform: getString(record, ['platform']).toLowerCase(),
     site: getString(record, ['site']),
     categoryId,
@@ -554,7 +553,6 @@ export function toBackendCategoryAttributeDefinition(attribute: CategoryAttribut
 export function toBackendCategoryAttributeSchema(schema: CategoryAttributeSchema | null | undefined): UnknownRecord {
   if (!schema) return {}
   return {
-    version: schema.version,
     platform: schema.platform,
     site: schema.site,
     category_id: schema.categoryId,

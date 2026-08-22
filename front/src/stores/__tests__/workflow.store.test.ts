@@ -896,7 +896,6 @@ describe('workflow store live API flow', () => {
       .toBeLessThan(vi.mocked(workflowApi.saveDraft).mock.invocationCallOrder[1])
     expect(workflowApi.fetchCategoryAttrs).toHaveBeenCalledWith('mercadolibre', 'MLM-NEW', 'MLM', {})
     expect(savedDrafts[1].targetSites[0]?.categoryAttributeSchema).toEqual(expect.objectContaining({
-      version: 1,
       platform: 'mercadolibre',
       site: 'MLM',
       categoryId: 'MLM-NEW',
@@ -1031,7 +1030,6 @@ describe('workflow store live API flow', () => {
       categoryId: 'MLM-NEW',
       categoryPath: '家居 / 新类目',
       categoryAttributeSchema: {
-        version: 1,
         platform: 'mercadolibre',
         site: 'MLM',
         categoryId: 'MLM-NEW',

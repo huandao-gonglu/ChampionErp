@@ -202,6 +202,20 @@ def test_global_chat_prompt_distinguishes_claim_from_market_prepare() -> None:
     assert "认领" in system
 
 
+def test_global_chat_prompt_chains_category_match_before_attribute_fill() -> None:
+    """无类目草稿必须先排 category_match，不得落入 needs_input 让用户手填。"""
+
+    prompt_path = APP_ROOT / "config" / "prompts" / "global_chat.json"
+    prompt = json.loads(prompt_path.read_text(encoding="utf-8"))
+    system = str(prompt.get("system") or "")
+
+    assert "category_match" in system
+    assert "product_attributes_fill" in system
+    assert "drafts_query" in system
+    assert "category_id" in system
+    assert "needs_input" in system
+
+
 def test_product_index_query_supports_snapshot_bound_position_resolution() -> None:
     """“第几个商品”必须绑定服务端快照，不能由模型用历史列表换算 ID。"""
 

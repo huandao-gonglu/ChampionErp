@@ -76,7 +76,6 @@ describe('类目属性 Schema 映射', () => {
         category_id: 'MLM-NEW',
         category_path: '家居 / 新类目',
         category_attribute_schema: {
-          version: 1,
           platform: 'mercadolibre',
           site: 'MLM',
           category_id: 'MLM-NEW',
@@ -209,7 +208,6 @@ describe('类目属性 Schema 映射', () => {
         listing_currency: 'RUB',
         category_id: '94765',
         category_attribute_schema: {
-          version: 1,
           platform: 'ozon',
           site: 'global',
           category_id: '94765',
@@ -260,7 +258,6 @@ describe('类目属性 Schema 映射', () => {
         site: 'global',
         category_id: '91443',
         category_attribute_schema: {
-          version: 2,
           platform: 'ozon',
           site: 'global',
           category_id: '91443',

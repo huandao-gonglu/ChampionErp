@@ -170,7 +170,6 @@ export function categoryAttributeSchemaFromSelection(selection: CategorySelectio
     categoryDependent: Boolean(item.categoryDependent),
   }))
   return {
-    version: target.platform === 'ozon' ? 2 : 1,
     platform: target.platform,
     site: target.site,
     categoryId: selection.categoryId,
@@ -184,7 +183,6 @@ export function categoryAttributeSchemaFromSelection(selection: CategorySelectio
 
 export function categorySelectionFromAttributeSchema(schema: CategoryAttributeSchema | null | undefined, target: MarketplaceTargetSite): CategorySelection | null {
   if (!schema || !schema.categoryId) return null
-  if (target.platform === 'ozon' && schema.version < 2) return null
   if (schema.platform && schema.platform !== target.platform) return null
   if (schema.site && schema.site !== target.site) return null
   if (target.categoryId && schema.categoryId !== target.categoryId) return null

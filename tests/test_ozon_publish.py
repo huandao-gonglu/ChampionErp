@@ -52,7 +52,6 @@ def _product() -> dict:
                 "description_category_id": "17027949",
                 "category_path": "Категория / Тип",
                 "category_attribute_schema": {
-                    "version": 2,
                     "category_id": "94765",
                     "required": [
                         {

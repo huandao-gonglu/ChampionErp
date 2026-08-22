@@ -85,7 +85,6 @@ export interface CategoryAttributeUnitValue {
 export type CategoryAttributeValue = string | CategoryDictionarySelection | CategoryAttributeUnitValue
 
 export interface CategoryAttributeSchema {
-  version: number
   platform: Marketplace
   site: string
   categoryId: string

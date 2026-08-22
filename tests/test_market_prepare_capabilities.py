@@ -331,6 +331,167 @@ def test_attribute_fill_persists_partial_result_then_requests_missing_fact() -> 
     assert products.drafts["draft-1"]["validation_errors"] == ["BATTERY_TYPE"]
 
 
+def test_attribute_fill_dictionary_attribute_requests_live_options() -> None:
+    """字典属性待输入时必须实时拉取平台合法候选值，而不是空文本框。"""
+
+    draft = _draft("draft-1")
+    draft["category_id"] = "CAT-1"
+    products = _Products([draft])
+
+    def record(*_args, **_kwargs) -> dict:
+        category = _category_record()
+        category["attributes"]["required"].append(
+            {
+                "id": "PURPOSE",
+                "name": "Предназначено для",
+                "required": True,
+                "is_dictionary": True,
+                "dictionary_id": "749",
+                "options": [],
+            }
+        )
+        return category
+
+    def filler(product: dict, platform: str, category: dict | None):
+        updated = deepcopy(product)
+        updated["drafts"][platform]["attributes"] = {"COLOR": "Red"}
+        return updated, {"source": "rules"}
+
+    calls: list[tuple[str, str, str, str]] = []
+
+    def values_loader(platform, category_id, attribute_id, site="", **_kwargs):
+        calls.append((platform, category_id, attribute_id, site))
+        return {
+            "ok": True,
+            "values": [
+                {"id": "33746", "value": "Для собак"},
+                {"id": "33754", "value": "Для кошек"},
+                {"id": "33751", "value": "Для птиц"},
+            ],
+        }
+
+    with pytest.raises(CapabilityInputRequired) as exc_info:
+        fill_product_attributes(
+            ProductAttributesFillRequest(
+                draft_id="draft-1",
+                target_platform="mercadolibre",
+            ),
+            product_store=products,
+            attribute_filler=filler,
+            category_record_loader=record,
+            attribute_values_loader=values_loader,
+        )
+
+    assert exc_info.value.key == "PURPOSE"
+    assert exc_info.value.options == ("Для собак", "Для кошек", "Для птиц")
+    assert exc_info.value.input_type == "select"
+    assert "枚举" in exc_info.value.reason
+    assert calls == [("mercadolibre", "CAT-1", "PURPOSE", "MLM")]
+
+
+def test_attribute_fill_dictionary_lookup_failure_falls_back_to_text() -> None:
+    draft = _draft("draft-1")
+    draft["category_id"] = "CAT-1"
+    products = _Products([draft])
+
+    def record(*_args, **_kwargs) -> dict:
+        category = _category_record()
+        category["attributes"]["required"].append(
+            {
+                "id": "PURPOSE",
+                "name": "Предназначено для",
+                "required": True,
+                "is_dictionary": True,
+                "dictionary_id": "749",
+                "options": [],
+            }
+        )
+        return category
+
+    def filler(product: dict, platform: str, category: dict | None):
+        updated = deepcopy(product)
+        updated["drafts"][platform]["attributes"] = {"COLOR": "Red"}
+        return updated, {"source": "rules"}
+
+    def broken_values_loader(*_args, **_kwargs):
+        raise RuntimeError("dictionary unavailable")
+
+    with pytest.raises(CapabilityInputRequired) as exc_info:
+        fill_product_attributes(
+            ProductAttributesFillRequest(
+                draft_id="draft-1",
+                target_platform="mercadolibre",
+            ),
+            product_store=products,
+            attribute_filler=filler,
+            category_record_loader=record,
+            attribute_values_loader=broken_values_loader,
+        )
+
+    assert exc_info.value.key == "PURPOSE"
+    assert exc_info.value.options == ()
+    assert exc_info.value.input_type == "text"
+
+
+def test_attribute_fill_resolves_user_text_into_dictionary_value() -> None:
+    """待输入提交的候选文本必须解析为带 dictionary_value_id 的结构化值。"""
+
+    draft = _draft("draft-1")
+    draft["category_id"] = "CAT-1"
+    draft["attributes"] = {}
+    products = _Products([draft])
+
+    def record(*_args, **_kwargs) -> dict:
+        category = _category_record()
+        category["attributes"]["required"].append(
+            {
+                "id": "PURPOSE",
+                "name": "Предназначено для",
+                "required": True,
+                "is_dictionary": True,
+                "dictionary_id": "749",
+                "is_collection": True,
+                "max_value_count": 3,
+                "options": [],
+            }
+        )
+        return category
+
+    def filler(product: dict, platform: str, category: dict | None):
+        updated = deepcopy(product)
+        attrs = dict(updated["drafts"][platform].get("attributes") or {})
+        attrs["COLOR"] = "Red"
+        updated["drafts"][platform]["attributes"] = attrs
+        return updated, {"source": "rules"}
+
+    def values_loader(platform, category_id, attribute_id, site="", **_kwargs):
+        return {
+            "ok": True,
+            "values": [
+                {"id": "33746", "value": "Для собак"},
+                {"id": "33754", "value": "Для кошек"},
+            ],
+        }
+
+    result = fill_product_attributes(
+        ProductAttributesFillRequest(
+            draft_id="draft-1",
+            target_platform="mercadolibre",
+            provided_attributes={"PURPOSE": "для собак"},
+        ),
+        product_store=products,
+        attribute_filler=filler,
+        category_record_loader=record,
+        attribute_values_loader=values_loader,
+    )
+
+    assert result.attributes["PURPOSE"] == {
+        "values": [{"dictionary_value_id": "33746", "value": "Для собак"}]
+    }
+    assert result.attributes["COLOR"] == "Red"
+    assert products.drafts["draft-1"]["validation_errors"] == []
+
+
 def test_attribute_fill_accepts_explicit_user_value_and_completes() -> None:
     draft = _draft("draft-1")
     draft["category_id"] = "CAT-1"

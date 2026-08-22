@@ -404,8 +404,6 @@ def _yandex_shared_record(record: dict[str, Any]) -> dict[str, Any]:
     shared = dict(record)
     shared.update(
         {
-            # 与 Ozon 一致：version=2 表示属性定义带枚举元数据。
-            "version": 2,
             "source": "yandex_live",
             "fetched_at": collect_time_iso(),
             "attributes": {

@@ -112,7 +112,6 @@ def _category_record() -> dict[str, Any]:
         "category_path": "Электроника / Вентиляторы",
         "platform": "ozon",
         "site": "global",
-        "version": 2,
         "source": "vertical-test-boundary",
         "attributes": {
             "required": [

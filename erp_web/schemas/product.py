@@ -52,7 +52,6 @@ class CategoryAttributeDefinition(TypedDict, total=False):
 
 
 class CategoryAttributeSchema(TypedDict, total=False):
-    version: int
     platform: str
     site: str
     category_id: str

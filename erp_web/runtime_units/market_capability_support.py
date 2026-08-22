@@ -258,7 +258,6 @@ def category_schema(
         else {}
     )
     return {
-        "version": max(1, int(record.get("version") or 1)),
         "platform": platform,
         "site": site,
         "category_id": selected_category_id,

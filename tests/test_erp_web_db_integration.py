@@ -216,7 +216,6 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                             "site": "global",
                             "category_id": "yandex-category-1",
                             "category_attribute_schema": {
-                                "version": 1,
                                 "platform": "yandex",
                                 "site": "global",
                                 "category_id": "yandex-category-1",

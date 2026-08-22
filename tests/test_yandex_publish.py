@@ -82,7 +82,6 @@ def _draft(**overrides: Any) -> dict[str, Any]:
             }
         },
         "category_attribute_schema": {
-            "version": 2,
             "required": [
                 {
                     "id": "85",
@@ -286,7 +285,6 @@ def test_build_payload_business_price_level_when_only_default_price() -> None:
 
 def test_build_payload_multivalue_rows_and_unit_id() -> None:
     schema = {
-        "version": 2,
         "required": [
             {
                 "id": "31",
@@ -333,7 +331,6 @@ def test_build_payload_multivalue_rows_and_unit_id() -> None:
 
 def test_build_payload_open_enum_custom_value_and_default_unit() -> None:
     schema = {
-        "version": 2,
         "required": [],
         "optional": [
             {"id": "44", "name": "Особенности", "required": False, "value_mode": "open_enum"},
@@ -367,7 +364,6 @@ def test_build_payload_open_enum_custom_value_and_default_unit() -> None:
 
 def test_build_payload_blocks_stale_non_default_unit() -> None:
     schema = {
-        "version": 2,
         "required": [],
         "optional": [
             {
@@ -392,7 +388,6 @@ def test_build_payload_blocks_stale_non_default_unit() -> None:
 
 def test_build_payload_enforces_numeric_constraints() -> None:
     schema = {
-        "version": 2,
         "required": [],
         "optional": [
             {
@@ -441,12 +436,6 @@ def test_build_payload_fby_stock_mode_is_none() -> None:
 
 
 def test_build_payload_rejects_invalid_inputs() -> None:
-    # 过期类目 schema
-    with pytest.raises(ValueError, match="类目属性定义已过期"):
-        build_yandex_publish_payload(
-            _product(category_attribute_schema={"version": 1}),
-            _config(),
-        )
     # offerId 身份变化
     with pytest.raises(ValueError, match="SKU 已变化"):
         build_yandex_publish_payload(
@@ -1236,12 +1225,6 @@ def test_validate_yandex_draft_flags_category_schema_and_identity() -> None:
         _config(),
     )
     assert "CATEGORY_INVALID" in _error_codes(invalid_category)
-
-    stale_schema = validate_yandex_draft(
-        _validatable_product(category_attribute_schema={"version": 1}),
-        _config(),
-    )
-    assert "CATEGORY_ATTRIBUTE_SCHEMA_STALE" in _error_codes(stale_schema)
 
     identity = validate_yandex_draft(
         _validatable_product(last_publish_task={"offer_id": "OLD-SKU"}),
