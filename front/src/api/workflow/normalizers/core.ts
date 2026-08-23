@@ -1,8 +1,6 @@
 import { PRODUCT_SCHEMA_VERSION } from '@/types/workflow.generated'
 import type {
 
-  CategoryAttributeDefinition,
-  CategoryAttributeSchema,
   CategoryAttributeValue,
   CurrencyResolution,
   DraftDetail,
@@ -312,52 +310,6 @@ export function normalizeValidationErrors(value: unknown): Array<UnknownRecord |
     : []
 }
 
-export function normalizeCategoryAttributeDefinition(value: unknown, requiredFallback: boolean): CategoryAttributeDefinition | null {
-  const record = asRecord(value)
-  const raw = asRecord(record.raw)
-  const id = getString(record, ['id'])
-  if (!id) return null
-  const options = (Array.isArray(record.options) ? record.options : [])
-    .map((item) => String(item ?? '').trim())
-    .filter(Boolean)
-  const rawDictionaryId = getString(record, ['dictionary_id'], getString(raw, ['dictionary_id']))
-  return {
-    id,
-    name: getString(record, ['name'], id),
-    required: getBoolean(record, ['required'], requiredFallback),
-    options,
-    valueType: getString(record, ['value_type'], 'string'),
-    unit: getString(record, ['unit']),
-    description: getString(record, ['description']),
-    dictionaryId: normalizeCategoryDictionaryId(rawDictionaryId),
-    isDictionary: isCategoryDictionaryAttribute(rawDictionaryId, getBoolean(record, ['is_dictionary'])),
-    isCollection: getBoolean(record, ['is_collection'], getBoolean(raw, ['is_collection'])),
-    maxValueCount: getNumber(record, ['max_value_count'], getNumber(raw, ['max_value_count'])),
-    categoryDependent: getBoolean(record, ['category_dependent'], getBoolean(raw, ['category_dependent'])),
-  }
-}
-
-export function normalizeCategoryAttributeSchema(value: unknown): CategoryAttributeSchema | null {
-  const record = asRecord(value)
-  const categoryId = getString(record, ['category_id'])
-  if (!categoryId) return null
-  const normalizeList = (items: unknown, requiredFallback: boolean) => Array.isArray(items)
-    ? items
-      .map((item) => normalizeCategoryAttributeDefinition(item, requiredFallback))
-      .filter((item): item is CategoryAttributeDefinition => Boolean(item))
-    : []
-  return {
-    platform: getString(record, ['platform']).toLowerCase(),
-    site: getString(record, ['site']),
-    categoryId,
-    categoryPath: getString(record, ['category_path']),
-    source: getString(record, ['source']),
-    fetchedAt: getString(record, ['fetched_at']),
-    required: normalizeList(record.required, true),
-    optional: normalizeList(record.optional, false),
-  }
-}
-
 export function targetListingFields(record: UnknownRecord, fallback?: Partial<MarketplaceTargetSite>): Partial<MarketplaceTargetSite> {
   const fallbackAttributes = fallback?.attributes || {}
   const fallbackValidationErrors = fallback?.validationErrors || []
@@ -365,7 +317,6 @@ export function targetListingFields(record: UnknownRecord, fallback?: Partial<Ma
   const hasCategoryId = hasAnyField(['category_id'])
   const hasDescriptionCategoryId = hasAnyField(['description_category_id'])
   const hasCategoryPath = hasAnyField(['category_path'])
-  const hasCategoryAttributeSchema = hasAnyField(['category_attribute_schema'])
   const hasAttributes = hasAnyField(['attributes'])
   const hasValidationErrors = hasAnyField(['validation_errors'])
   const hasCategoryPrecheck = hasAnyField(['category_precheck'])
@@ -380,9 +331,6 @@ export function targetListingFields(record: UnknownRecord, fallback?: Partial<Ma
       ? getString(record, ['description_category_id'])
       : fallback?.descriptionCategoryId || '',
     categoryPath: hasCategoryPath ? getString(record, ['category_path']) : fallback?.categoryPath || '',
-    categoryAttributeSchema: hasCategoryAttributeSchema
-      ? normalizeCategoryAttributeSchema(record.category_attribute_schema)
-      : fallback?.categoryAttributeSchema || null,
     attributes: hasAttributes ? normalizeAttributes(record.attributes) : { ...fallbackAttributes },
     validationErrors: hasValidationErrors
       ? normalizeValidationErrors(record.validation_errors)
@@ -532,38 +480,6 @@ export function toBackendDraftImageRef(ref: DraftImageRef): UnknownRecord {
   }
 }
 
-export function toBackendCategoryAttributeDefinition(attribute: CategoryAttributeDefinition): UnknownRecord {
-  const dictionaryId = normalizeCategoryDictionaryId(attribute.dictionaryId)
-  return {
-    id: attribute.id,
-    name: attribute.name,
-    required: attribute.required,
-    options: attribute.options || [],
-    value_type: attribute.valueType || 'string',
-    unit: attribute.unit || '',
-    description: attribute.description || '',
-    dictionary_id: dictionaryId,
-    is_dictionary: isCategoryDictionaryAttribute(attribute.dictionaryId, attribute.isDictionary),
-    is_collection: Boolean(attribute.isCollection),
-    max_value_count: attribute.maxValueCount || 0,
-    category_dependent: Boolean(attribute.categoryDependent),
-  }
-}
-
-export function toBackendCategoryAttributeSchema(schema: CategoryAttributeSchema | null | undefined): UnknownRecord {
-  if (!schema) return {}
-  return {
-    platform: schema.platform,
-    site: schema.site,
-    category_id: schema.categoryId,
-    category_path: schema.categoryPath,
-    source: schema.source,
-    fetched_at: schema.fetchedAt,
-    required: schema.required.map(toBackendCategoryAttributeDefinition),
-    optional: schema.optional.map(toBackendCategoryAttributeDefinition),
-  }
-}
-
 export function toBackendTargetSite(target: MarketplaceTargetSite): UnknownRecord {
   return {
     platform: target.platform,
@@ -581,7 +497,6 @@ export function toBackendTargetSite(target: MarketplaceTargetSite): UnknownRecor
     category_id: target.categoryId || '',
     description_category_id: target.descriptionCategoryId || '',
     category_path: target.categoryPath || '',
-    category_attribute_schema: toBackendCategoryAttributeSchema(target.categoryAttributeSchema),
     attributes: toBackendAttributes(target.attributes || {}),
     validation_errors: target.validationErrors || [],
     category_precheck: target.categoryPrecheck || {},

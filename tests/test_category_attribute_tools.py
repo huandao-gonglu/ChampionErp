@@ -109,3 +109,58 @@ def test_attribute_value_tool_rejects_open_enum() -> None:
             {"requests": [{"attribute_id": "STYLE", "query": "wall"}]},
             execution_context(),
         )
+
+
+def test_brand_value_tool_maps_no_brand_alias_to_platform_query(
+    monkeypatch,
+) -> None:
+    ledger = CategoryAttributeValueLedger.from_schema(
+        [
+            {
+                "id": "85",
+                "name": "Бренд",
+                "value_mode": "strict_enum",
+                "dictionary_id": "28732849",
+                "is_dictionary": True,
+            }
+        ]
+    )
+    captured: dict[str, object] = {}
+
+    def fake_values(*args, **kwargs):
+        del args
+        captured.update(kwargs)
+        return {"values": [{"id": "live-id", "value": "Нет бренда"}]}
+
+    monkeypatch.setattr(
+        category_attribute_tools,
+        "fetch_category_attribute_values",
+        fake_values,
+    )
+    toolset = category_attribute_tools.build_category_attribute_value_toolset(
+        platform="ozon",
+        category_record={"category_id": "94953", "site": "global"},
+        ledger=ledger,
+    )
+
+    output = toolset.get("category_attribute_values_search").executor(
+        {"requests": [{"attribute_id": "85", "query": "无品牌"}]},
+        execution_context(),
+    )
+
+    assert captured["query"] == "нет бренда"
+    assert output["results"][0] == {
+        "attribute_id": "85",
+        "query": "无品牌",
+        "values": [
+            {
+                "dictionary_value_id": "live-id",
+                "value": "Нет бренда",
+            }
+        ],
+        "error_code": "",
+    }
+    assert ledger.get("85", "live-id") == {
+        "dictionary_value_id": "live-id",
+        "value": "Нет бренда",
+    }

@@ -215,24 +215,6 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                             "platform": "yandex",
                             "site": "global",
                             "category_id": "yandex-category-1",
-                            "category_attribute_schema": {
-                                "platform": "yandex",
-                                "site": "global",
-                                "category_id": "yandex-category-1",
-                                "category_path": "测试类目",
-                                "source": "platform_live",
-                                "fetched_at": "2026-07-25T12:00:00Z",
-                                "required": [
-                                    {
-                                        "id": "BRAND",
-                                        "name": "Brand",
-                                        "required": True,
-                                        "options": [],
-                                        "value_type": "string",
-                                    }
-                                ],
-                                "optional": [],
-                            },
                             "attributes": {"BRAND": "Test Brand"},
                         },
                         {"platform": "ozon", "site": "global"},
@@ -245,8 +227,31 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             self.assertEqual(result["draft"]["title"], "Yandex independent title")
             self.assertEqual(result["draft"]["platforms"], ["yandex", "ozon"])
             self.assertEqual(
-                result["draft"]["target_sites"][0]["category_attribute_schema"]["required"][0]["id"],
-                "BRAND",
+                result["draft"]["target_sites"][0]["category_id"],
+                "yandex-category-1",
+            )
+            self.assertEqual(
+                result["draft"]["target_sites"][0]["attributes"],
+                {"BRAND": "Test Brand"},
+            )
+            # 已退役的类目 Schema 字段必须被保存入口显式拒绝。
+            _rejected, rejected_error, rejected_status = (
+                get_context().products.save_draft_detail(
+                    {
+                        "draft_id": yandex_draft_id,
+                        "target_sites": [
+                            {
+                                "platform": "yandex",
+                                "site": "global",
+                                "category_attribute_schema": {"required": []},
+                            }
+                        ],
+                    }
+                )
+            )
+            self.assertEqual(rejected_status, 400)
+            self.assertEqual(
+                rejected_error["error_code"], "RETIRED_CATEGORY_SCHEMA_FIELD"
             )
             self.assertEqual(get_context().db.load_draft_model(yandex_draft_id)["title"], "Yandex independent title")
             self.assertEqual(get_context().db.load_draft_model(yandex_draft_id)["platforms"], ["yandex", "ozon"])
@@ -747,8 +752,9 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             product = sample_product()
             product["drafts"]["mercadolibre"]["category_id"] = "MLM999"
             product["drafts"]["mercadolibre"]["attributes"] = {}
-            product["local_platform_categories"] = {"mercadolibre": attrs["category"]}
-            summary = publish_helpers._required_attribute_summary(product, "mercadolibre")
+            summary = publish_helpers._required_attribute_summary(
+                product, "mercadolibre", attrs["category"]
+            )
 
             self.assertEqual(results[0]["category_id"], "MLM999")
             self.assertEqual(results[0]["path"], "Necklaces")
@@ -859,9 +865,20 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             },
         }
 
+        from erp_web.runtime_units.publish_context import PreparedPublishContext
+
         payload = publish_adapter.require_publishing_adapter(
             "mercadolibre"
-        ).build_payload(product, config)
+        ).build_payload(
+            PreparedPublishContext(
+                product=product,
+                draft=product["drafts"]["mercadolibre"],
+                target=product["drafts"]["mercadolibre"]["target_sites"][0],
+                category_definition=None,
+                platform="mercadolibre",
+            ),
+            config,
+        )
         attributes = {item["id"]: item["value_name"] for item in payload["attributes"]}
 
         self.assertEqual(payload["title"], "Draft title for ML")
@@ -925,9 +942,20 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             },
         }
 
+        from erp_web.runtime_units.publish_context import PreparedPublishContext
+
         payload = publish_adapter.require_publishing_adapter(
             "mercadolibre"
-        ).build_payload(product, config)
+        ).build_payload(
+            PreparedPublishContext(
+                product=product,
+                draft=product["drafts"]["mercadolibre"],
+                target=product["drafts"]["mercadolibre"]["target_sites"][0],
+                category_definition=None,
+                platform="mercadolibre",
+            ),
+            config,
+        )
         attributes = {item["id"]: item["value_name"] for item in payload["attributes"]}
 
         self.assertTrue(payload["_global_selling"])

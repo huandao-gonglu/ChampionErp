@@ -880,10 +880,10 @@ describe('workflow store live API flow', () => {
       site: 'MLM',
       categoryId: 'MLM-NEW',
       categoryPath: '家居 / 新类目',
-      categoryAttributeSchema: null,
       attributes: {},
       categoryPrecheck: {},
     }))
+    expect(savedDrafts[0].targetSites[0]).not.toHaveProperty('categoryAttributeSchema')
     expect(savedDrafts[0].targetSites[1]).toEqual(expect.objectContaining({
       site: 'CBT',
       categoryId: 'CBT-UNCHANGED',
@@ -894,26 +894,26 @@ describe('workflow store live API flow', () => {
       .toBeLessThan(vi.mocked(workflowApi.fetchCategoryAttrs).mock.invocationCallOrder[0])
     expect(vi.mocked(workflowApi.fetchCategoryAttrs).mock.invocationCallOrder[0])
       .toBeLessThan(vi.mocked(workflowApi.saveDraft).mock.invocationCallOrder[1])
-    expect(workflowApi.fetchCategoryAttrs).toHaveBeenCalledWith('mercadolibre', 'MLM-NEW', 'MLM', {})
-    expect(savedDrafts[1].targetSites[0]?.categoryAttributeSchema).toEqual(expect.objectContaining({
-      platform: 'mercadolibre',
-      site: 'MLM',
+    expect(workflowApi.fetchCategoryAttrs).toHaveBeenCalledWith('mercadolibre', 'MLM-NEW', 'MLM')
+    // 属性定义只瞬时保存在编辑态，不写入保存 payload。
+    expect(savedDrafts[1].targetSites[0]).not.toHaveProperty('categoryAttributeSchema')
+    expect(savedDrafts[1].targetSites[0]).toEqual(expect.objectContaining({
       categoryId: 'MLM-NEW',
       categoryPath: '家居 / 新类目',
-      source: 'mercadolibre_live',
-      fetchedAt: '2026-07-25T12:00:00Z',
-      required: [expect.objectContaining({ id: 'BRAND', name: 'Brand', required: true })],
-      optional: [],
     }))
     expect(store.category?.requiredAttributes[0]?.id).toBe('BRAND')
     expect(store.loading).toBe(false)
     expect(store.categoryAttributeLoading).toBe(false)
     expect(store.categoryAttributeError).toBe('')
 
+    // 切换目标站点只恢复类目身份，属性定义需重新从实时接口加载。
     store.selectPublishTarget(store.currentDraft.targetSites[1])
-    expect(store.category).toBeNull()
+    expect(store.category?.categoryId).toBe('CBT-UNCHANGED')
+    expect(store.category?.requiredAttributes).toEqual([])
     store.selectPublishTarget(store.currentDraft.targetSites[0])
-    expect(store.category?.requiredAttributes[0]?.id).toBe('BRAND')
+    expect(store.category?.categoryId).toBe('MLM-NEW')
+    expect(store.category?.requiredAttributes).toEqual([])
+    expect(store.category?.fetchedAt).toBeUndefined()
   })
 
   it('keeps a selected category saved when loading its attributes fails', async () => {
@@ -1014,7 +1014,7 @@ describe('workflow store live API flow', () => {
     expect(store.currentDraft.targetSites[0]?.descriptionCategoryId).toBe('')
   })
 
-  it('restores category attributes from the saved target schema when reopening a draft', async () => {
+  it('restores the category identity from the draft and refetches attribute definitions live when reopening a draft', async () => {
     const draft = createEmptyDraftDetail('mercadolibre')
     draft.draftId = 'draft-1'
     draft.productId = 'real-product-1'
@@ -1029,19 +1029,20 @@ describe('workflow store live API flow', () => {
       listingCurrency: 'MXN',
       categoryId: 'MLM-NEW',
       categoryPath: '家居 / 新类目',
-      categoryAttributeSchema: {
-        platform: 'mercadolibre',
-        site: 'MLM',
-        categoryId: 'MLM-NEW',
-        categoryPath: '家居 / 新类目',
-        source: 'mercadolibre_live',
-        fetchedAt: '2026-07-25T12:00:00Z',
-        required: [{ id: 'BRAND', name: 'Brand', required: true, options: [] }],
-        optional: [],
-      },
       attributes: {},
     }]
     vi.mocked(workflowApi.loadDraft).mockResolvedValue(draftMutation(draft))
+    vi.mocked(workflowApi.saveDraft).mockImplementation(async (draftToSave) => draftMutation(JSON.parse(JSON.stringify(draftToSave)) as DraftDetail))
+    vi.mocked(workflowApi.fetchCategoryAttrs).mockResolvedValue({
+      platform: 'mercadolibre',
+      categoryId: 'MLM-NEW',
+      categoryPath: '家居 / 新类目',
+      requiredAttributes: [{ id: 'BRAND', name: 'Brand', required: true, options: [] }],
+      optionalAttributes: [],
+      source: 'mercadolibre_live',
+      fetchedAt: '2026-07-25T12:00:00Z',
+      raw: {},
+    })
     const item: DraftIndexItem = {
       draftId: 'draft-1',
       productId: 'real-product-1',
@@ -1069,11 +1070,25 @@ describe('workflow store live API flow', () => {
     const store = useWorkflowStore()
     await store.loadDraft(item)
 
+    // 重开草稿只恢复类目身份，属性定义不再从持久化 schema 读取。
     expect(store.category?.categoryId).toBe('MLM-NEW')
+    expect(store.category?.categoryPath).toBe('家居 / 新类目')
+    expect(store.category?.requiredAttributes).toEqual([])
+    expect(store.category?.fetchedAt).toBeUndefined()
+    expect(workflowApi.fetchCategoryAttrs).not.toHaveBeenCalled()
+
+    // 进入类目/属性页时经实时接口瞬时加载定义，只保留在编辑态。
+    await store.loadCategoryAttributes()
+
+    expect(workflowApi.fetchCategoryAttrs).toHaveBeenCalledWith('mercadolibre', 'MLM-NEW', 'MLM')
     expect(store.category?.requiredAttributes).toEqual([
       expect.objectContaining({ id: 'BRAND', name: 'Brand', required: true }),
     ])
-    expect(workflowApi.fetchCategoryAttrs).not.toHaveBeenCalled()
+    expect(store.category?.fetchedAt).toBe('2026-07-25T12:00:00Z')
+    // 保存 payload 不包含已废弃的 category_attribute_schema。
+    const saveCalls = vi.mocked(workflowApi.saveDraft).mock.calls
+    const savedDraft = saveCalls[saveCalls.length - 1]?.[0]
+    expect(savedDraft?.targetSites[0]).not.toHaveProperty('categoryAttributeSchema')
   })
 
   it('surfaces Mercado Libre refresh token failures instead of logging them as complete', async () => {

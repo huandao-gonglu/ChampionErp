@@ -265,13 +265,20 @@ def _category_scope(**overrides: Any) -> CategoryQueryCapabilityScope:
                 "category_path": "Home / Fans",
             }
         ],
-        attributes_loader=lambda platform, category_id, site="", timeout_seconds=None: {
+        attributes_loader=lambda platform,
+        category_id,
+        site="",
+        cursor="",
+        limit=50,
+        timeout_seconds=None: {
             "ok": True,
             "platform": platform,
             "site": site,
             "category_id": category_id,
             "category_path": "Home / Fans",
             "attributes": [{"id": "BRAND", "name": "Marca"}],
+            "next_cursor": "",
+            "has_more": False,
         },
         attribute_values_loader=(
             lambda platform,
@@ -279,12 +286,15 @@ def _category_scope(**overrides: Any) -> CategoryQueryCapabilityScope:
             attribute_id,
             site="",
             query="",
+            cursor="",
             limit=50,
             timeout_seconds=None: {
                 "ok": True,
                 "category_id": category_id,
                 "attribute_id": attribute_id,
                 "values": [{"id": "V1", "name": "Champion"}],
+                "next_cursor": "",
+                "has_more": False,
             }
         ),
         record_loader=lambda platform,
@@ -386,9 +396,17 @@ def test_category_queries_thread_bounded_timeout_to_live_io() -> None:
         captured["search"] = timeout_seconds
         return [{"category_id": "MLB1", "name": "Fans", "category_path": "Home"}]
 
-    def attributes_loader(platform, category_id, site="", *, timeout_seconds=None):
+    def attributes_loader(
+        platform, category_id, site="", *, cursor="", limit=50, timeout_seconds=None
+    ):
         captured["attributes"] = timeout_seconds
-        return {"ok": True, "category_id": category_id, "attributes": []}
+        return {
+            "ok": True,
+            "category_id": category_id,
+            "attributes": [],
+            "next_cursor": "",
+            "has_more": False,
+        }
 
     scope = _category_scope(searcher=searcher, attributes_loader=attributes_loader)
 

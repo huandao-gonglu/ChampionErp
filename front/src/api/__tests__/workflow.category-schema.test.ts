@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { createEmptyDraftDetail } from '@/constants/initialState'
-import { normalizeDraftDetail, toBackendDraft, toBackendDraftDetail } from '@/api/workflow/normalizers'
+import { createEmptyDraftDetail, createEmptyProduct } from '@/constants/initialState'
+import { normalizeDraftDetail, toBackendDraft, toBackendDraftDetail, toBackendProduct } from '@/api/workflow/normalizers'
+import type { DraftDetail } from '@/types/workflow'
 
-describe('类目属性 Schema 映射', () => {
+describe('类目 Schema 分离（废弃字段不再读写）', () => {
   it('在目标站点中往返保留发布任务快照', () => {
     const normalized = normalizeDraftDetail({
       draft_id: 'draft-publish-task',
@@ -59,7 +60,7 @@ describe('类目属性 Schema 映射', () => {
     expect((backend.target_sites as Array<Record<string, unknown>>)[0]?.description_category_id).toBe('17039635')
   })
 
-  it('在目标站点中读写规范化的类目属性定义', () => {
+  it('忽略历史 category_attribute_schema，保存 payload 不再包含该字段', () => {
     const normalized = normalizeDraftDetail({
       draft_id: 'draft-1',
       product_id: 'product-1',
@@ -68,6 +69,10 @@ describe('类目属性 Schema 映射', () => {
       site: 'MLM',
       language: 'es-MX',
       currency: 'MXN',
+      category_attribute_schema: {
+        platform: 'mercadolibre',
+        category_id: 'MLM-ROOT',
+      },
       target_sites: [{
         platform: 'mercadolibre',
         site: 'MLM',
@@ -95,18 +100,11 @@ describe('类目属性 Schema 映射', () => {
       }],
     })
 
-    expect(normalized.targetSites[0]?.categoryAttributeSchema).toEqual(expect.objectContaining({
-      categoryId: 'MLM-NEW',
-      source: 'mercadolibre_live',
-      required: [expect.objectContaining({
-        id: 'BRAND',
-        required: true,
-        options: ['Brand A'],
-        valueType: 'list',
-      })],
-    }))
+    // 历史 schema 读取时被忽略：编辑态定义改由 /api/category-attrs 瞬时加载。
+    expect(normalized.targetSites[0]).not.toHaveProperty('categoryAttributeSchema')
+    expect(normalized.targetSites[0]?.categoryId).toBe('MLM-NEW')
 
-    const draft = {
+    const draft: DraftDetail = {
       ...createEmptyDraftDetail('mercadolibre'),
       ...normalized,
       raw: {
@@ -116,18 +114,15 @@ describe('类目属性 Schema 映射', () => {
     }
     const backend = toBackendDraft(draft)
     const target = (backend.target_sites as Array<Record<string, unknown>>)[0]
-    expect(target.category_attribute_schema).toEqual(expect.objectContaining({
-      category_id: 'MLM-NEW',
-      fetched_at: '2026-07-25T12:00:00Z',
-      required: [expect.objectContaining({
-        id: 'BRAND',
-        value_type: 'list',
-      })],
-    }))
+    expect(backend).not.toHaveProperty('category_attribute_schema')
+    expect(target).not.toHaveProperty('category_attribute_schema')
+    expect(target?.attributes).toEqual({ BRAND: 'Brand A' })
     expect(backend).not.toHaveProperty('sale_price')
     expect(target).not.toHaveProperty('publish_logs')
 
     const backendDetail = toBackendDraftDetail(draft)
+    expect(backendDetail).not.toHaveProperty('category_attribute_schema')
+    expect((backendDetail.target_sites as Array<Record<string, unknown>>)[0]).not.toHaveProperty('category_attribute_schema')
     expect(backendDetail).not.toHaveProperty('sale_price')
     expect(backendDetail).not.toHaveProperty('future_draft_field')
   })
@@ -150,7 +145,7 @@ describe('类目属性 Schema 映射', () => {
     expect(normalized.categoryId).toBe('')
     expect(normalized.pricing).toEqual({})
     expect(normalized.packageDimensions.lengthCm).toBe('')
-    expect(normalized.targetSites[0]?.categoryAttributeSchema).toBeNull()
+    expect(normalized.targetSites[0]).not.toHaveProperty('categoryAttributeSchema')
   })
 
   it('目标站点明确清空后不会恢复草稿根级属性和待复核提示', () => {
@@ -185,15 +180,15 @@ describe('类目属性 Schema 映射', () => {
     expect(normalized.targetSites[0]).toEqual(expect.objectContaining({
       categoryId: 'MLM-NEW',
       categoryPath: '新类目',
-      categoryAttributeSchema: null,
       attributes: {},
       validationErrors: [],
       categoryPrecheck: {},
       publishStatus: '',
     }))
+    expect(normalized.targetSites[0]).not.toHaveProperty('categoryAttributeSchema')
   })
 
-  it('保留 Ozon 字典元数据和选中的 dictionary_value_id', () => {
+  it('保留 Ozon 选中的 dictionary_value_id，且不携带废弃 schema', () => {
     const normalized = normalizeDraftDetail({
       draft_id: 'draft-ozon-dictionary',
       product_id: 'product-ozon-dictionary',
@@ -229,11 +224,7 @@ describe('类目属性 Schema 映射', () => {
       }],
     })
 
-    expect(normalized.targetSites[0]?.categoryAttributeSchema?.required[0]).toEqual(expect.objectContaining({
-      dictionaryId: '28732849',
-      isDictionary: true,
-      categoryDependent: true,
-    }))
+    expect(normalized.targetSites[0]).not.toHaveProperty('categoryAttributeSchema')
     expect(normalized.targetSites[0]?.attributes?.['85']).toEqual({
       values: [{ dictionaryValueId: '126745801', value: 'Нет бренда' }],
     })
@@ -243,47 +234,20 @@ describe('类目属性 Schema 映射', () => {
     expect((target.attributes as Record<string, unknown>)['85']).toEqual({
       values: [{ dictionary_value_id: '126745801', value: 'Нет бренда' }],
     })
+    expect(target).not.toHaveProperty('category_attribute_schema')
+    expect(backend).not.toHaveProperty('category_attribute_schema')
   })
 
-  it('把 Ozon dictionary_id=0 规范化为普通文本属性', () => {
-    const normalized = normalizeDraftDetail({
-      draft_id: 'draft-ozon-free-text',
-      product_id: 'product-ozon-free-text',
-      platform: 'ozon',
-      platforms: ['ozon'],
-      site: 'global',
-      category_id: '91443',
-      target_sites: [{
-        platform: 'ozon',
-        site: 'global',
-        category_id: '91443',
-        category_attribute_schema: {
-          platform: 'ozon',
-          site: 'global',
-          category_id: '91443',
-          required: [{
-            id: '9048',
-            name: 'Название модели',
-            required: true,
-            dictionary_id: '0',
-            is_dictionary: true,
-          }],
-          optional: [],
-        },
-        attributes: { 9048: 'F30' },
-      }],
-    })
+  it('保存商品时不回写 local_platform_categories', () => {
+    const product = createEmptyProduct()
+    product.productId = 'product-1'
+    product.raw = {
+      local_platform_categories: { ozon: { category_id: '91443' } },
+      localPlatformCategories: { ozon: { category_id: '91443' } },
+    }
 
-    const attribute = normalized.targetSites[0]?.categoryAttributeSchema?.required[0]
-    expect(attribute?.dictionaryId).toBe('')
-    expect(attribute?.isDictionary).toBe(false)
-
-    const backend = toBackendDraft(normalized)
-    const target = (backend.target_sites as Array<Record<string, unknown>>)[0]
-    const backendAttribute = (target.category_attribute_schema as Record<string, unknown>).required as Array<Record<string, unknown>>
-    expect(backendAttribute[0]).toEqual(expect.objectContaining({
-      dictionary_id: '',
-      is_dictionary: false,
-    }))
+    const backend = toBackendProduct(product)
+    expect(backend).not.toHaveProperty('local_platform_categories')
+    expect(backend).not.toHaveProperty('localPlatformCategories')
   })
 })

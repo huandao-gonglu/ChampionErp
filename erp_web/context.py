@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from erp_web.db import DEFAULT_DB_NAME, ErpDatabase
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, avoids import cycles
+    from erp_web.runtime_units.category_catalog import CategoryCatalog
     from erp_web.runtime_units.publishing_bus_core import PublishingBus
     from erp_web.runtime_units.pricing_runtime import ExchangeRateService
     from erp_web.services.ai_chat_run_registry import AiChatRunRegistry
@@ -165,6 +166,7 @@ class AppContext:
         self._conversation_event_bus: "AiConversationEventBus | None" = None
         self._ai_presentations: "AiPresentationRegistry | None" = None
         self._approval_session: "ApprovalSession | None" = None
+        self._category_catalog: "CategoryCatalog | None" = None
 
     @property
     def products(self) -> "ProductStore":
@@ -276,6 +278,20 @@ class AppContext:
 
                 self._publishing_bus = build_publishing_bus(self)
             return self._publishing_bus
+
+    @property
+    def category_catalog(self) -> "CategoryCatalog":
+        """统一类目读取入口；业务模块一律通过它获取平台类目事实。"""
+
+        if self._category_catalog is None:
+            with self._lazy_lock:
+                if self._category_catalog is None:
+                    from erp_web.runtime_units.category_catalog import (
+                        build_category_catalog,
+                    )
+
+                    self._category_catalog = build_category_catalog()
+        return self._category_catalog
 
     @property
     def global_tasks(self) -> "LocalGlobalTaskStore":

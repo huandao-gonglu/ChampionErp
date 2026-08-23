@@ -536,22 +536,19 @@ Pydantic 2.22 的 Vercel encoder 不会把 external `CallDeferred.metadata.task_
 - `tests/test_ai_capability_architecture.py`：继续保证类型化 Task Capability union 与 allowlist；
 - Global Task、Agent stream、message store、HTTP route 与前端组件的现行行为测试。
 
-## 5. 数据迁移策略
+## 5. 当前数据库初始化与版本门禁
 
-新增关联表必须使用正式 SQLite schema migration，不允许运行时猜测列或双写旧表。
+Deferred link、message history version 和 event outbox 直接属于当前 v14 建库结构，不提供
+旧数据库逐级升级。运行时只接受真正空库或结构完整的当前 v14：
 
-已有终态 Task 可以继续作为历史只读记录。已有非终态 Task 没有真实 Pydantic
-`tool_call_id`，不得伪造 Deferred call：
+1. 数据库缺失或 `user_version=0` 且没有用户 schema object 时，单事务创建完整当前结构；
+2. 完整 v14 可以重复打开；
+3. 非空 v0、v1–v13、未来版本以及缺列、缺索引、额外 object 等残缺结构在写入前失败；
+4. 不迁移或取消旧 Task，不恢复旧 history，也不伪造 `tool_call_id`；
+5. 需要保留的配置与授权先显式导出，旧 DB/sidecar 由用户删除后创建全新 v14 并导回配置。
 
-1. 实施前先查询是否存在 `running`、`in_progress`、`needs_input` 或
-   `pending_approval` 的旧任务；
-2. 如果不存在，直接迁移；
-3. 如果存在，保留快照用于诊断，并用一次性迁移将其明确标记为不可恢复/已取消，提示用户重新
-   提交；
-4. 不为旧任务创建虚假 tool call，不保留旧执行链 fallback。
-
-由于项目仍处于 Demo 阶段，新写入数据只使用新格式。旧终态记录的读取能力属于真实持久化数据
-迁移，不意味着保留旧运行流程。
+应用不得自动删除、修复或重建拒绝的数据库；UPC seed 是独立的显式资产导入，不构成旧
+schema compatibility。
 
 ## 6. 主要影响文件
 
@@ -569,7 +566,7 @@ Pydantic 2.22 的 Vercel encoder 不会把 external `CallDeferred.metadata.task_
 - `erp_web/server.py`
 - `erp_web/services/vercel_ai_ui_service.py`
 - `erp_web/http_route_units/` 下对应 AI chat / Global Task route
-- `erp_web/db.py` 与对应 schema migration
+- `erp_web/db.py` 的当前 schema 初始化与完整版本门禁
 
 ### Frontend
 
@@ -591,7 +588,7 @@ Pydantic 2.22 的 Vercel encoder 不会把 external `CallDeferred.metadata.task_
 - Deferred link store、conversation lock、continuation CAS 与断线 drain 专项测试
 - 官方编码事件 outbox 的提交后发布、重放与前端去重测试
 - `tests/test_ai_context_architecture.py`
-- Global Task route、worker recovery 和 DB migration 测试
+- Global Task route、worker recovery、空库初始化与非当前数据库无写入拒绝测试
 - `docs/ai-context-map.md`
 
 ## 7. 验收标准
@@ -642,14 +639,14 @@ pnpm build
 为避免长期双轨运行，按以下顺序在同一迁移分支完成，最终一次切换：
 
 1. 契约测试、并发测试、故障注入与架构守卫；
-2. 正式 schema migration、Deferred link ready/resolved 状态与唯一约束、conversation run
-   claim；
+2. 当前 schema 一次切换、Deferred link ready/resolved 状态与唯一约束、conversation run
+   claim，以及非当前数据库 fail-fast 门禁；
 3. Pydantic Factory / Tool Bridge / message history 原生 Deferred 支持，以及与客户端连接解耦的
    server-side event drain；
 4. `global_task_start` 抛出 Deferred、首次 history/ready 原子提交、worker ready barrier，
    一次性切换 Task 执行 owner；
 5. continuation history CAS、history + resolved + 官方事件 outbox 原子提交和提交后通知；
 6. conversation → unresolved task 纯读 API、后台订阅、前端只读任务卡与 input/cancel；
-7. 旧刷新/轮询/repair/fallback 删除、旧数据迁移、架构文档更新与全量回归。
+7. 旧刷新/轮询/repair/fallback 与数据库兼容链删除、架构文档更新和全量回归。
 
 每一步允许形成独立可审查提交，但主分支最终状态不得同时保留旧等待链和新 Deferred 链。

@@ -62,36 +62,11 @@ def ozon_category_pair(product: dict[str, Any]) -> tuple[str, str]:
     )
 
 
-def _category_record(draft: dict[str, Any]) -> dict[str, Any]:
-    schema = (
-        draft.get("category_attribute_schema")
-        if isinstance(draft.get("category_attribute_schema"), dict)
-        else {}
-    )
-    return {
-        "category_id": str(draft.get("category_id") or "").strip(),
-        "description_category_id": str(
-            draft.get("description_category_id") or ""
-        ).strip(),
-        "attributes": {
-            "required": deepcopy(
-                schema.get("required")
-                if isinstance(schema.get("required"), list)
-                else []
-            ),
-            "optional": deepcopy(
-                schema.get("optional")
-                if isinstance(schema.get("optional"), list)
-                else []
-            ),
-        },
-    }
-
-
-def _attribute_definitions(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def _attribute_definitions(record: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
     attributes = (
         record.get("attributes")
-        if isinstance(record.get("attributes"), dict)
+        if isinstance(record, dict)
+        and isinstance(record.get("attributes"), dict)
         else {}
     )
     definitions: dict[str, dict[str, Any]] = {}
@@ -172,9 +147,10 @@ def _ozon_attributes(
     product: dict[str, Any],
     draft: dict[str, Any],
     *,
+    category_record: dict[str, Any] | None = None,
     reject_invalid_dictionary: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    record = _category_record(draft)
+    record = category_record if isinstance(category_record, dict) else None
     definitions = _attribute_definitions(record)
     raw_attributes = (
         deepcopy(draft.get("attributes"))
@@ -226,7 +202,10 @@ def _ozon_attributes(
     return regular, complex_attributes
 
 
-def ozon_required_attributes_missing(product: dict[str, Any]) -> list[str]:
+def ozon_required_attributes_missing(
+    product: dict[str, Any],
+    category_record: dict[str, Any] | None = None,
+) -> list[str]:
     """返回排除发布构造器可自动补齐字段后的 Ozon 必填属性。"""
 
     product = normalize_product_fields(product)
@@ -234,6 +213,7 @@ def ozon_required_attributes_missing(product: dict[str, Any]) -> list[str]:
     regular, complex_attributes = _ozon_attributes(
         product,
         draft,
+        category_record=category_record,
         reject_invalid_dictionary=False,
     )
     filled_ids = {str(item.get("id") or "") for item in regular}
@@ -243,15 +223,21 @@ def ozon_required_attributes_missing(product: dict[str, Any]) -> list[str]:
                 filled_ids.add(str(item.get("id") or ""))
     return [
         field
-        for field in _required_attribute_summary(product, "ozon").get("missing") or []
+        for field in _required_attribute_summary(
+            product, "ozon", category_record
+        ).get("missing")
+        or []
         if str(field).split(".", 1)[-1] not in filled_ids
     ]
 
 
-def ozon_invalid_dictionary_attributes(product: dict[str, Any]) -> list[str]:
+def ozon_invalid_dictionary_attributes(
+    product: dict[str, Any],
+    category_record: dict[str, Any] | None = None,
+) -> list[str]:
     product = normalize_product_fields(product)
     draft = _draft_for_platform(product, "ozon")
-    definitions = _attribute_definitions(_category_record(draft))
+    definitions = _attribute_definitions(category_record)
     raw_attributes = (
         draft.get("attributes")
         if isinstance(draft.get("attributes"), dict)
@@ -270,6 +256,7 @@ def ozon_invalid_dictionary_attributes(product: dict[str, Any]) -> list[str]:
 def build_ozon_publish_payload(
     product: dict[str, Any],
     config: dict[str, Any],
+    category_record: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     product = normalize_product_fields(product)
     draft = _draft_for_platform(product, "ozon")
@@ -279,7 +266,11 @@ def build_ozon_publish_payload(
         if isinstance(draft.get("package_dimensions"), dict)
         else {}
     )
-    attributes, complex_attributes = _ozon_attributes(product, draft)
+    attributes, complex_attributes = _ozon_attributes(
+        product,
+        draft,
+        category_record=category_record,
+    )
     images = _draft_images(product, "ozon", draft)[:15]
     store = config.get("ozon") if isinstance(config.get("ozon"), dict) else {}
     selected_price, listing_currency = _selected_price_and_currency(

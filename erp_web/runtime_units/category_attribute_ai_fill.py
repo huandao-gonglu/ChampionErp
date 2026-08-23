@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 from copy import deepcopy
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from erp_web.product_model import (
@@ -15,12 +16,20 @@ from erp_web.schemas.category import (
     category_attribute_value_is_valid,
 )
 from erp_web.schemas.category_attribute import CategoryAttributeValueLedger
+from erp_web.schemas.category_brand import (
+    is_brand_attribute,
+    is_no_brand_fact,
+    is_official_no_brand_value,
+    product_context_declares_no_brand,
+)
 from erp_web.services.category_attribute_fill_agent_service import (
     CategoryAttributeFillAgentRun,
     run_category_attribute_fill_agent,
 )
 
 from .category_attribute_tools import build_category_attribute_value_toolset
+from .category_brand_values import apply_no_brand_attribute
+from .category_store import fetch_category_attribute_values
 
 
 #: 单次运行纳入 AI 填充的可选属性上限；控制 prompt 体量与字典查询预算。
@@ -75,6 +84,7 @@ def _product_context(product: dict[str, Any], platform: str) -> dict[str, Any]:
             "name": product.get("name"),
             "brand": product.get("brand"),
             "model": product.get("model"),
+            "weight_kg": product.get("weight_kg"),
             "category": product.get("category"),
             "colors": product.get("colors"),
             "materials": product.get("materials"),
@@ -82,6 +92,7 @@ def _product_context(product: dict[str, Any], platform: str) -> dict[str, Any]:
         },
         "source": {
             "platform": source.get("source_platform"),
+            "brand": source.get("brand"),
             "url": source.get("source_url"),
             "title": _short_text(source.get("title"), 500),
             "description": _short_text(source.get("description"), 2500),
@@ -187,11 +198,163 @@ def _has_product_evidence(value: str, product_context: dict[str, Any]) -> bool:
     return False
 
 
+def _brand_fact_values(product_context: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for scope_name in ("draft", "product", "source"):
+        scope = product_context.get(scope_name)
+        if not isinstance(scope, dict):
+            continue
+        value = str(scope.get("brand") or "").strip()
+        if value:
+            values.append(value)
+    return values
+
+
+def _has_brand_evidence(
+    value: str,
+    product_context: dict[str, Any],
+    *,
+    platform: str,
+) -> bool:
+    """品牌枚举只能落到明确无品牌或商品品牌字段的精确候选。"""
+
+    if is_official_no_brand_value(platform, value):
+        return product_context_declares_no_brand(product_context)
+    candidate = _normalized_evidence_text(value)
+    if not candidate:
+        return False
+    concrete_brands = {
+        normalized
+        for fact in _brand_fact_values(product_context)
+        if not is_no_brand_fact(fact)
+        and (normalized := _normalized_evidence_text(fact))
+    }
+    # source/product/draft 若给出了相互冲突的真实品牌，不能任选其中一个落库。
+    return concrete_brands == {candidate}
+
+
+def _decimal_value(value: Any) -> Decimal | None:
+    text = str(value or "").strip().replace(",", ".")
+    if not re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)", text):
+        return None
+    try:
+        result = Decimal(text)
+    except InvalidOperation:
+        return None
+    return result if result.is_finite() else None
+
+
+def _attribute_expects_weight_grams(
+    attr: dict[str, Any],
+    *,
+    platform: str,
+) -> bool:
+    attr_id = str(attr.get("id") or "").strip()
+    # 只对已确认语义为“包装重量（克）”的平台字段做换算。不能仅凭名称中的
+    # “重量/克”推断，否则净重、最大承重等字段会误用 package weight。
+    return platform == "ozon" and attr_id == "4497"
+
+
+def _has_deterministic_attribute_evidence(
+    value: str,
+    attr: dict[str, Any],
+    product_context: dict[str, Any],
+    *,
+    platform: str,
+) -> bool:
+    """接受可由结构化商品事实精确推导的单位换算，不放宽任意技术参数。"""
+
+    if not _attribute_expects_weight_grams(attr, platform=platform):
+        return False
+    candidate = _decimal_value(value)
+    if candidate is None or candidate <= 0:
+        return False
+    source = product_context.get("source")
+    product = product_context.get("product")
+    draft = product_context.get("draft")
+    package = draft.get("package_dimensions") if isinstance(draft, dict) else {}
+    draft_weight = _decimal_value(
+        package.get("weight_kg") if isinstance(package, dict) else None
+    )
+    if draft_weight is not None and draft_weight > 0:
+        # 平台草稿是当前发布目标；用户已改过草稿重量时，旧来源值不能反向覆盖。
+        return candidate == draft_weight * 1000
+    fallback_weights = {
+        weight
+        for weight in (
+            _decimal_value(
+                product.get("weight_kg") if isinstance(product, dict) else None
+            ),
+            _decimal_value(
+                source.get("weight_kg") if isinstance(source, dict) else None
+            ),
+        )
+        if weight is not None and weight > 0
+    }
+    # 无草稿值时，商品与来源若互相冲突也不属于“确定性”换算。
+    return (
+        len(fallback_weights) == 1
+        and candidate == next(iter(fallback_weights)) * 1000
+    )
+
+
+_CATEGORY_TYPE_ATTRIBUTE_NAMES = frozenset(
+    {
+        "тип",
+        "тип товара",
+        "type",
+        "product type",
+        "tipo",
+        "tipo de producto",
+        "类型",
+        "商品类型",
+        "产品类型",
+    }
+)
+
+
+def _has_category_type_evidence(
+    attr: dict[str, Any],
+    candidate: dict[str, str],
+    *,
+    platform: str,
+    category_id: str,
+    category_path: str,
+) -> bool:
+    """类目“类型”枚举可由已确认类目身份/路径提供跨语言证据。"""
+
+    name = _normalized_evidence_text(attr.get("name"))
+    if name not in _CATEGORY_TYPE_ATTRIBUTE_NAMES:
+        return False
+    attr_id = str(attr.get("id") or "").strip()
+    candidate_id = str(candidate.get("dictionary_value_id") or "").strip()
+    selected_category_id = str(category_id or "").strip()
+    if (
+        platform == "ozon"
+        and attr_id == "8229"
+        and candidate_id
+        and selected_category_id
+        and candidate_id == selected_category_id
+    ):
+        return True
+    candidate_value = _normalized_evidence_text(candidate.get("value"))
+    path_segments = {
+        _normalized_evidence_text(segment)
+        for segment in re.split(r"\s*(?:/|>|›|→)\s*", category_path)
+        if _normalized_evidence_text(segment)
+    }
+    return bool(candidate_value) and candidate_value in path_segments
+
+
 def _validated_agent_attributes(
     agent_output: dict[str, Any],
     schema: list[dict[str, Any]],
     ledger: CategoryAttributeValueLedger,
     product_context: dict[str, Any],
+    *,
+    platform: str,
+    category_id: str,
+    category_path: str,
 ) -> tuple[dict[str, Any], set[str]]:
     schema_by_id = {str(attr.get("id") or ""): attr for attr in schema}
     accepted: dict[str, Any] = {}
@@ -212,13 +375,33 @@ def _validated_agent_attributes(
         value = str(assignment.get("value") or "").strip()
         if not value:
             continue
-        if not _has_product_evidence(value, product_context):
-            evidence_rejected.add(attr_id)
-            continue
         if attr.get("value_mode") == "strict_enum":
             value_id = str(assignment.get("dictionary_value_id") or "").strip()
             candidate = ledger.get(attr_id, value_id)
             if candidate is None:
+                continue
+            if is_brand_attribute(attr, platform=platform):
+                has_enum_evidence = _has_brand_evidence(
+                    candidate["value"],
+                    product_context,
+                    platform=platform,
+                )
+            else:
+                # Ledger 证明候选来自当前平台，但不证明技术规格适用于当前商品。
+                # 普通枚举仍需商品事实；“类型”枚举额外接受已确认类目身份/路径，
+                # 从而不会因中俄文字面不同把真实的类目类型候选误拒。
+                has_enum_evidence = _has_product_evidence(
+                    candidate["value"],
+                    product_context,
+                ) or _has_category_type_evidence(
+                    attr,
+                    candidate,
+                    platform=platform,
+                    category_id=category_id,
+                    category_path=category_path,
+                )
+            if not has_enum_evidence:
+                evidence_rejected.add(attr_id)
                 continue
             dictionary_values.setdefault(attr_id, []).append(
                 {
@@ -228,6 +411,20 @@ def _validated_agent_attributes(
                     "value": candidate["value"],
                 }
             )
+            continue
+        if _attribute_expects_weight_grams(attr, platform=platform):
+            # 包装重量字段只认结构化 kg 事实的精确换算；标题、SKU 或其他
+            # 属性里碰巧出现相同数字，不能作为该技术参数的证据。
+            has_evidence = _has_deterministic_attribute_evidence(
+                value,
+                attr,
+                product_context,
+                platform=platform,
+            )
+        else:
+            has_evidence = _has_product_evidence(value, product_context)
+        if not has_evidence:
+            evidence_rejected.add(attr_id)
             continue
         if value.upper() != attr_id.upper():
             options = (
@@ -300,10 +497,51 @@ def apply_ai_model_attribute_fill(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     platform = str(platform or "").strip().lower()
     base_product = apply_ai_attribute_fill(product, platform, category_record)
+    record = category_record if isinstance(category_record, dict) else {}
+    drafts = (
+        base_product.get("drafts")
+        if isinstance(base_product.get("drafts"), dict)
+        else {}
+    )
+    base_draft = deepcopy(
+        drafts.get(platform) if isinstance(drafts.get(platform), dict) else {}
+    )
+    rule_filled: list[str] = []
+    if base_draft:
+        brand_attr_id = apply_no_brand_attribute(
+            base_draft,
+            product=base_product,
+            platform=platform,
+            record=record,
+            category_id=str(record.get("category_id") or "").strip(),
+            site=str(record.get("site") or "").strip(),
+            loader=fetch_category_attribute_values,
+        )
+        if brand_attr_id:
+            base_draft["validation_errors"] = [
+                str(definition.get("id") or "").strip()
+                for definition in unresolved_required_category_attributes(
+                    {
+                        **base_product,
+                        "drafts": {
+                            **drafts,
+                            platform: base_draft,
+                        },
+                    },
+                    platform,
+                    category_record,
+                )
+                if str(definition.get("id") or "").strip()
+            ]
+            base_product.setdefault("drafts", {})[platform] = base_draft
+            base_product = normalize_product_model(base_product)
+            rule_filled.append(brand_attr_id)
     schema = category_attribute_schema(category_record)
     if not schema:
         return base_product, {"source": "rules", "warning": "当前类目没有可填属性。"}
     meta: dict[str, Any] = {"source": "rules"}
+    if rule_filled:
+        meta["rule_filled"] = rule_filled
     agent_run: CategoryAttributeFillAgentRun | None = None
     try:
         agent_schema = unresolved_required_category_attributes(
@@ -316,7 +554,13 @@ def apply_ai_model_attribute_fill(
             category_record,
         )
         if not agent_schema:
-            return base_product, {"source": "rules", "ai_filled": []}
+            result_meta: dict[str, Any] = {
+                "source": "rules",
+                "ai_filled": [],
+            }
+            if rule_filled:
+                result_meta["rule_filled"] = rule_filled
+            return base_product, result_meta
         ledger = CategoryAttributeValueLedger.from_schema(agent_schema)
         toolset = build_category_attribute_value_toolset(
             platform=platform,
@@ -339,6 +583,9 @@ def apply_ai_model_attribute_fill(
             agent_schema,
             ledger,
             payload["product_context"],
+            platform=platform,
+            category_id=str(payload.get("category_id") or ""),
+            category_path=str(payload.get("category_path") or ""),
         )
     except Exception as exc:
         meta["warning"] = f"AI 属性填充失败，已使用规则填充：{exc}"

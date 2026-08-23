@@ -33,22 +33,18 @@ def _source_dimension_dict(product: dict[str, Any]) -> dict[str, str]:
 
 
 def apply_category_selection(product: dict[str, Any], platform: str, category_record: dict[str, Any] | None) -> dict[str, Any]:
+    """保存类目身份到平台草稿；平台规则不再持久化进商品模型。"""
+
     normalized = normalize_product_model(product or {})
     platform = str(platform or "").strip().lower()
     record = category_record if isinstance(category_record, dict) else {}
     category_id = str(record.get("category_id") or record.get("subject_id") or record.get("type_id") or "").strip()
-    category_path = _category_path_text(record)
-    local_categories = deepcopy(normalized.get("local_platform_categories") if isinstance(normalized.get("local_platform_categories"), dict) else {})
-    if category_id:
-        local_categories[platform] = {
-            **deepcopy(record),
-            "category_id": category_id,
-            "category_path": category_path,
-        }
-    normalized["local_platform_categories"] = local_categories
+    category_path = _category_path_text(record) or str(record.get("category_path") or "").strip()
     draft = deepcopy(normalized.get("drafts", {}).get(platform) if isinstance(normalized.get("drafts"), dict) else default_draft(platform))
     draft["category_id"] = category_id or str(draft.get("category_id") or "").strip()
     draft["category_path"] = category_path or str(draft.get("category_path") or "").strip()
+    if str(record.get("description_category_id") or "").strip():
+        draft["description_category_id"] = str(record["description_category_id"]).strip()
     draft["attributes"] = deepcopy(draft.get("attributes") or {})
     draft["brand"] = str(draft.get("brand") or normalized.get("brand") or normalized.get("source", {}).get("brand") or "Generic").strip() or "Generic"
     draft["model"] = str(draft.get("model") or normalized.get("model") or normalized.get("source", {}).get("model") or "General").strip() or "General"
@@ -280,6 +276,8 @@ def build_ai_attribute_fill(
 
 
 def apply_ai_attribute_fill(product: dict[str, Any], platform: str, category_record: dict[str, Any] | None) -> dict[str, Any]:
+    """规则填充只持久化属性值与校验结果；不保存平台规则副本。"""
+
     normalized = normalize_product_model(product or {})
     platform = str(platform or "").strip().lower()
     filled = build_ai_attribute_fill(normalized, platform, category_record)
@@ -287,14 +285,6 @@ def apply_ai_attribute_fill(product: dict[str, Any], platform: str, category_rec
     draft["attributes"] = deepcopy(filled.get("attributes") or {})
     draft["validation_errors"] = list(filled.get("need_review") or [])
     normalized.setdefault("drafts", {})[platform] = draft
-    local_categories = deepcopy(normalized.get("local_platform_categories") if isinstance(normalized.get("local_platform_categories"), dict) else {})
-    if isinstance(category_record, dict) and str(category_record.get("category_id") or category_record.get("subject_id") or category_record.get("type_id") or "").strip():
-        local_categories[platform] = {
-            **deepcopy(category_record),
-            "category_id": str(category_record.get("category_id") or category_record.get("subject_id") or category_record.get("type_id") or "").strip(),
-            "category_path": _category_path_text(category_record),
-        }
-    normalized["local_platform_categories"] = local_categories
     return normalize_product_model(normalized)
 
 

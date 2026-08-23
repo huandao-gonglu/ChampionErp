@@ -45,9 +45,11 @@ OZON_CATEGORY_ATTRIBUTES_URL = "https://api-seller.ozon.ru/v1/description-catego
 OZON_CATEGORY_ATTRIBUTE_VALUES_URL = (
     "https://api-seller.ozon.ru/v1/description-category/attribute/values"
 )
+OZON_CATEGORY_ATTRIBUTE_VALUES_SEARCH_URL = (
+    "https://api-seller.ozon.ru/v1/description-category/attribute/values/search"
+)
 _STALE_RETRY_COOLDOWN_SECONDS = 60
 _ATTRIBUTE_VALUE_PAGE_SIZE = 2000
-_ATTRIBUTE_VALUE_MAX_PAGES = 20
 _ATTRIBUTE_VALUE_CACHE_TTL_SECONDS = 15 * 60
 
 
@@ -107,6 +109,16 @@ def _ozon_credentials() -> tuple[str, str]:
     if not client_id or not api_key:
         raise RuntimeError("请先填写 Ozon Client ID 和 API Key。")
     return client_id, api_key
+
+
+def ozon_credential_scope_hash() -> str:
+    """当前已配置 Ozon 凭据的作用域哈希（定义缓存键的一部分）。
+
+    凭据缺失时抛出确定性错误；stale 缓存不得掩盖该错误。
+    """
+
+    client_id, _ = _ozon_credentials()
+    return _credential_scope_hash(client_id)
 
 
 def _text(value: Any) -> str:
@@ -799,15 +811,84 @@ def _attribute_value_page(
     return values
 
 
+def _search_attribute_values(
+    *,
+    description_category_id: int,
+    type_id: int,
+    attribute_id: int,
+    value: str,
+    limit: int,
+    client_id: str,
+    api_key: str,
+    timeout_seconds: float,
+) -> list[dict[str, Any]]:
+    """通过 Ozon 专用搜索端点查询大字典，不受本地跨页扫描上限影响。"""
+
+    cache_key = ":".join(
+        (
+            "search",
+            _credential_scope_hash(client_id),
+            str(description_category_id),
+            str(type_id),
+            str(attribute_id),
+            value.casefold(),
+            str(limit),
+        )
+    )
+    cached = _attribute_values_cache.get(cache_key)
+    if isinstance(cached, list):
+        return cached
+    response = request_ozon_json(
+        "POST",
+        OZON_CATEGORY_ATTRIBUTE_VALUES_SEARCH_URL,
+        client_id,
+        api_key,
+        {
+            "attribute_id": attribute_id,
+            "description_category_id": description_category_id,
+            "limit": limit,
+            "type_id": type_id,
+            "value": value,
+        },
+        timeout_seconds=timeout_seconds,
+    )
+    raw_values = response.get("result") if isinstance(response, dict) else None
+    if not isinstance(raw_values, list):
+        raise RuntimeError("Ozon 属性枚举搜索响应缺少 result 列表。")
+    values = [
+        {
+            "id": _text(item.get("id")),
+            "value": _text(item.get("value")),
+            "info": _text(item.get("info")),
+            "picture": _text(item.get("picture")),
+        }
+        for item in raw_values
+        if isinstance(item, dict)
+        and _text(item.get("id"))
+        and _text(item.get("value"))
+    ]
+    _attribute_values_cache.set(
+        cache_key,
+        values,
+        ttl_seconds=_ATTRIBUTE_VALUE_CACHE_TTL_SECONDS,
+    )
+    return values
+
+
 def fetch_ozon_category_attribute_values(
     category_id: str,
     attribute_id: str,
     *,
     query: str = "",
     limit: int = 50,
+    start_after_value_id: int | str = 0,
     timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
-    """按商品类型和属性读取 Ozon 字典值，并在服务端完成跨页搜索。"""
+    """按商品类型和属性读取 Ozon 字典值。
+
+    ``start_after_value_id`` 为分页游标：只返回 ID 大于该值的候选，调用方
+    用上一页最后一个候选 ID 续读；非空查询使用 Ozon 的大字典搜索端点。
+    """
 
     type_id_text = _text(category_id)
     attribute_id_text = _text(attribute_id)
@@ -818,6 +899,15 @@ def fetch_ozon_category_attribute_values(
         requested_attribute_id = int(attribute_id_text)
     except ValueError as exc:
         raise ValueError("Ozon 商品类型 ID 和属性 ID 必须是整数。") from exc
+    try:
+        last_value_id = int(str(start_after_value_id or "0").strip() or 0)
+    except ValueError:
+        last_value_id = 0
+    if last_value_id < 0:
+        last_value_id = 0
+    raw_query = _text(query)
+    if raw_query and len(raw_query) < 2:
+        raise ValueError("Ozon 属性枚举搜索词至少需要 2 个字符。")
 
     deadline_at = (
         time.monotonic() + float(timeout_seconds)
@@ -835,60 +925,59 @@ def fetch_ozon_category_attribute_values(
     except ValueError as exc:
         raise RuntimeError("Ozon description_category_id 格式无效。") from exc
     client_id, api_key = _ozon_credentials()
-    normalized_query = _text(query).casefold()
+    normalized_query = raw_query.casefold()
     safe_limit = max(1, min(100, int(limit or 50)))
-    matches: list[dict[str, Any]] = []
-    last_value_id = 0
-    scanned = 0
-    complete = False
-    for _ in range(_ATTRIBUTE_VALUE_MAX_PAGES):
+    if normalized_query:
         remaining = deadline_at - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("Ozon 属性枚举搜索超时。")
-        page = _attribute_value_page(
+        matches = _search_attribute_values(
             description_category_id=description_category_id,
             type_id=type_id,
             attribute_id=requested_attribute_id,
-            last_value_id=last_value_id,
+            value=raw_query,
+            limit=safe_limit,
             client_id=client_id,
             api_key=api_key,
             timeout_seconds=remaining,
         )
-        scanned += len(page)
-        matches_before_page = len(matches)
-        for option in page:
-            if normalized_query and normalized_query not in str(
-                option.get("value") or ""
-            ).casefold():
-                continue
-            matches.append(option)
-            if len(matches) >= safe_limit:
-                break
-        if len(matches) >= safe_limit:
-            break
-        if normalized_query and len(matches) > matches_before_page:
-            # 交互式搜索只需要先返回一页命中项；后续输入会再次缩小范围。
-            break
-        if len(page) < _ATTRIBUTE_VALUE_PAGE_SIZE:
-            complete = True
-            break
-        next_value_id = int(page[-1].get("id") or 0)
-        if next_value_id <= 0 or next_value_id == last_value_id:
-            complete = True
-            break
-        last_value_id = next_value_id
-        if not normalized_query:
-            break
+        return {
+            "ok": True,
+            "platform": "ozon",
+            "category_id": type_id_text,
+            "description_category_id": str(description_category_id),
+            "attribute_id": attribute_id_text,
+            "query": raw_query,
+            "values": matches[:safe_limit],
+            "scanned": len(matches),
+            "complete": True,
+            "has_more": False,
+        }
+    remaining = deadline_at - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("Ozon 属性枚举读取超时。")
+    page = _attribute_value_page(
+        description_category_id=description_category_id,
+        type_id=type_id,
+        attribute_id=requested_attribute_id,
+        last_value_id=last_value_id,
+        client_id=client_id,
+        api_key=api_key,
+        timeout_seconds=remaining,
+    )
+    result_values = page[:safe_limit]
+    has_more = len(page) > safe_limit or len(page) >= _ATTRIBUTE_VALUE_PAGE_SIZE
     return {
         "ok": True,
         "platform": "ozon",
         "category_id": type_id_text,
         "description_category_id": str(description_category_id),
         "attribute_id": attribute_id_text,
-        "query": _text(query),
-        "values": matches[:safe_limit],
-        "scanned": scanned,
-        "complete": complete,
+        "query": raw_query,
+        "values": result_values,
+        "scanned": len(page),
+        "complete": not has_more,
+        "has_more": has_more,
     }
 
 
@@ -990,6 +1079,7 @@ def clear_ozon_category_tree_cache(
 
 __all__ = [
     "OZON_CATEGORY_ATTRIBUTE_VALUES_URL",
+    "OZON_CATEGORY_ATTRIBUTE_VALUES_SEARCH_URL",
     "OZON_CATEGORY_ATTRIBUTES_URL",
     "OZON_CATEGORY_TREE_URL",
     "clear_ozon_category_tree_cache",
@@ -999,6 +1089,7 @@ __all__ = [
     "fetch_ozon_category_tree_summary",
     "fetch_ozon_category_record",
     "load_ozon_category_corpus",
+    "ozon_credential_scope_hash",
     "refresh_ozon_category_corpus",
     "search_ozon_categories",
 ]

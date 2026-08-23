@@ -65,6 +65,7 @@ describe('CategoryAttributesPanel', () => {
       categoryPath: 'Автотовары / Запчасти',
       requiredAttributes: [{ id: '7236', name: 'Название модели', required: true, options: [] }],
       optionalAttributes: [],
+      fetchedAt: '2026-08-05T00:00:00Z',
       raw: {},
     }
     const wrapper = mount(CategoryAttributesPanel, {
@@ -129,6 +130,7 @@ describe('CategoryAttributesPanel', () => {
       categoryPath: 'Автотовары / Запчасти',
       requiredAttributes: [{ id: '7236', name: 'Название модели', required: true, options: [] }],
       optionalAttributes: [{ id: '8229', name: 'Бренд', required: false, options: [] }],
+      fetchedAt: '2026-08-05T00:00:00Z',
       raw: {},
     }
     const wrapper = mount(CategoryAttributesPanel, {
@@ -164,6 +166,7 @@ describe('CategoryAttributesPanel', () => {
       categoryPath: '汽车用品',
       requiredAttributes: [{ id: '7236', name: '模型名称', required: true, options: [] }],
       optionalAttributes: [],
+      fetchedAt: '2026-08-05T00:00:00Z',
       raw: {},
     }
     const wrapper = mount(CategoryAttributesPanel, {
@@ -193,6 +196,7 @@ describe('CategoryAttributesPanel', () => {
       categoryPath: '汽车用品',
       requiredAttributes: [{ id: '9048', name: '体型', required: true, options: [] }],
       optionalAttributes: [],
+      fetchedAt: '2026-08-05T00:00:00Z',
       raw: {},
     }
     const wrapper = mount(CategoryAttributesPanel, {
@@ -223,11 +227,16 @@ describe('CategoryAttributesPanel', () => {
   })
 
   it('Ozon 字典属性只能保存平台返回的选项 ID', async () => {
-    fetchCategoryAttributeValues.mockResolvedValueOnce([{
-      id: '126745801',
-      value: 'Нет бренда',
-      info: 'Товар не имеет бренда',
-    }])
+    fetchCategoryAttributeValues.mockResolvedValueOnce({
+      values: [{
+        id: '126745801',
+        value: 'Нет бренда',
+        info: 'Товар не имеет бренда',
+      }],
+      nextCursor: '',
+      hasMore: false,
+      complete: true,
+    })
     const draft = createEmptyDraftDetail('ozon')
     draft.draftId = 'draft-dictionary'
     draft.site = 'global'
@@ -246,6 +255,7 @@ describe('CategoryAttributesPanel', () => {
         isDictionary: true,
       }],
       optionalAttributes: [],
+      fetchedAt: '2026-08-05T00:00:00Z',
       raw: {},
     }
     const wrapper = mount(CategoryAttributesPanel, {
@@ -260,7 +270,7 @@ describe('CategoryAttributesPanel', () => {
     expect(selectedValue.attributes()).toHaveProperty('readonly')
     await selectedValue.trigger('focus')
     await flushPromises()
-    expect(fetchCategoryAttributeValues).toHaveBeenCalledWith('ozon', '94765', '85', 'global', '')
+    expect(fetchCategoryAttributeValues).toHaveBeenCalledWith('ozon', '94765', '85', 'global', '', 50, '')
 
     const search = wrapper.get<HTMLInputElement>('[data-dictionary-search-id="85"]')
     expect(search.attributes('placeholder')).toContain('不会作为属性值保存')
@@ -275,6 +285,115 @@ describe('CategoryAttributesPanel', () => {
     })
     expect(selectedValue.element.value).toBe('Нет бренда')
     expect(wrapper.emitted('invalidateCategoryPrecheck')).toHaveLength(1)
+  })
+
+  it('品牌字典可按游标加载后续候选并选择无品牌', async () => {
+    fetchCategoryAttributeValues
+      .mockResolvedValueOnce({
+        values: [{ id: 'brand-1', value: 'Alpha', info: '' }],
+        nextCursor: 'brand-1',
+        hasMore: true,
+        complete: false,
+      })
+      .mockResolvedValueOnce({
+        values: [{ id: 'no-brand-id', value: 'Нет бренда', info: '' }],
+        nextCursor: '',
+        hasMore: false,
+        complete: true,
+      })
+    const draft = createEmptyDraftDetail('ozon')
+    draft.draftId = 'draft-paginated-brand'
+    draft.site = 'global'
+    draft.categoryId = '94765'
+    const category: CategorySelection = {
+      platform: 'ozon',
+      categoryId: '94765',
+      categoryPath: '汽车用品',
+      requiredAttributes: [{
+        id: '85',
+        name: 'Бренд',
+        required: true,
+        options: [],
+        dictionaryId: '28732849',
+        isDictionary: true,
+      }],
+      optionalAttributes: [],
+      fetchedAt: '2026-08-05T00:00:00Z',
+      raw: {},
+    }
+    const wrapper = mount(CategoryAttributesPanel, {
+      props: panelProps(draft, category),
+    })
+
+    await wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))!.trigger('click')
+    await wrapper.get<HTMLInputElement>('[data-attribute-id="85"]').trigger('focus')
+    await flushPromises()
+
+    const loadMore = wrapper.findAll('button').find((button) => button.text() === '加载更多平台选项')
+    expect(loadMore).toBeDefined()
+    await loadMore!.trigger('click')
+    await flushPromises()
+
+    expect(fetchCategoryAttributeValues).toHaveBeenNthCalledWith(
+      2,
+      'ozon',
+      '94765',
+      '85',
+      'global',
+      '',
+      50,
+      'brand-1',
+    )
+    expect(wrapper.text()).toContain('Alpha')
+    const noBrand = wrapper.findAll('button').find((button) => button.text().includes('Нет бренда'))
+    expect(noBrand).toBeDefined()
+    await noBrand!.trigger('click')
+    expect(draft.attributes['85']).toEqual({
+      values: [{ dictionaryValueId: 'no-brand-id', value: 'Нет бренда' }],
+    })
+  })
+
+  it('Ozon 单字符字典查询在前端提示且不请求平台', async () => {
+    fetchCategoryAttributeValues.mockResolvedValueOnce({
+      values: [{ id: 'brand-1', value: 'Alpha', info: '' }],
+      nextCursor: '',
+      hasMore: false,
+      complete: true,
+    })
+    const draft = createEmptyDraftDetail('ozon')
+    draft.draftId = 'draft-short-brand-query'
+    draft.site = 'global'
+    draft.categoryId = '94765'
+    const category: CategorySelection = {
+      platform: 'ozon',
+      categoryId: '94765',
+      categoryPath: '汽车用品',
+      requiredAttributes: [{
+        id: '85',
+        name: 'Бренд',
+        required: true,
+        options: [],
+        dictionaryId: '28732849',
+        isDictionary: true,
+      }],
+      optionalAttributes: [],
+      fetchedAt: '2026-08-05T00:00:00Z',
+      raw: {},
+    }
+    const wrapper = mount(CategoryAttributesPanel, {
+      props: panelProps(draft, category),
+    })
+
+    await wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))!.trigger('click')
+    await wrapper.get<HTMLInputElement>('[data-attribute-id="85"]').trigger('focus')
+    await flushPromises()
+    expect(fetchCategoryAttributeValues).toHaveBeenCalledTimes(1)
+
+    await wrapper.get<HTMLInputElement>('[data-dictionary-search-id="85"]').setValue('A')
+    await flushPromises()
+
+    expect(fetchCategoryAttributeValues).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).toContain('Ozon 平台枚举搜索至少需要 2 个字符')
   })
 
   it('dictionary_id=0 的 Ozon 属性使用普通文本输入', async () => {
@@ -295,6 +414,7 @@ describe('CategoryAttributesPanel', () => {
         isDictionary: true,
       }],
       optionalAttributes: [],
+      fetchedAt: '2026-08-05T00:00:00Z',
       raw: {},
     }
     const wrapper = mount(CategoryAttributesPanel, {
@@ -314,11 +434,16 @@ describe('CategoryAttributesPanel', () => {
   it('Yandex 大枚举值 ID 按字符串保存，不经过 Number 精度截断', async () => {
     const hugeId = '9007199254740993123'
     expect(Number.isSafeInteger(Number(hugeId))).toBe(false)
-    fetchCategoryAttributeValues.mockResolvedValueOnce([{
-      id: hugeId,
-      value: 'Белый',
-      info: '',
-    }])
+    fetchCategoryAttributeValues.mockResolvedValueOnce({
+      values: [{
+        id: hugeId,
+        value: 'Белый',
+        info: '',
+      }],
+      nextCursor: '',
+      hasMore: false,
+      complete: true,
+    })
     const draft = createEmptyDraftDetail('yandex')
     draft.draftId = 'draft-yandex-dictionary'
     draft.site = 'global'
@@ -338,6 +463,7 @@ describe('CategoryAttributesPanel', () => {
         maxValueCount: 2,
       }],
       optionalAttributes: [],
+      fetchedAt: '2026-08-05T00:00:00Z',
       raw: {},
     }
     const wrapper = mount(CategoryAttributesPanel, {
@@ -384,6 +510,7 @@ describe('CategoryAttributesPanel', () => {
         defaultUnit: 'г',
       }],
       optionalAttributes: [],
+      fetchedAt: '2026-08-05T00:00:00Z',
       raw: {},
     }
     const wrapper = mount(CategoryAttributesPanel, {

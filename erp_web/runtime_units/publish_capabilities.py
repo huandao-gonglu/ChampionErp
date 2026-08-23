@@ -19,6 +19,7 @@ from erp_web.runtime_units.publish_confirmation import (
     canonical_publish_digest,
     resolve_publish_store_binding,
 )
+from erp_web.runtime_units.publish_context import prepare_publish_context
 from erp_web.schemas.ai_tools import (
     PUBLISH_JOB_TYPE,
     JobReferenceResult,
@@ -222,7 +223,9 @@ def evaluate_publish_validation(
         )
         if not isinstance(prepared_product, dict):
             raise TypeError("平台 adapter 返回的商品不是对象")
-        precheck = adapter.validate_draft(prepared_product, config)
+        # 一次评估只加载一次类目定义；预检与 payload 编译共享该上下文。
+        prepared_context = prepare_publish_context(prepared_product, platform)
+        precheck = adapter.validate_draft(prepared_context, config)
         if not isinstance(precheck, dict):
             raise TypeError("平台 adapter 返回的校验结果不是对象")
     except Exception as exc:
@@ -243,7 +246,7 @@ def evaluate_publish_validation(
     payload: dict[str, Any] | None = None
     if not errors:
         try:
-            built = adapter.build_payload(prepared_product, config)
+            built = adapter.build_payload(prepared_context, config)
             if not isinstance(built, dict):
                 raise TypeError("payload 不是对象")
             payload = built

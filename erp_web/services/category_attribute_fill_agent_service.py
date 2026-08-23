@@ -230,7 +230,10 @@ def run_category_attribute_fill_agent(
         "只在能由商品事实确定时填写，不确定时直接跳过。value_mode=strict_enum 必须先"
         "调用 category_attribute_values_search，并且只能选择工具返回的值；value_mode="
         "open_enum 优先使用 options，也允许填写有依据的自定义文本；value_mode="
-        "free_text 直接填写有依据的文本。"
+        "free_text 直接填写有依据的文本。商品品牌为 Generic、其他、无品牌、白牌或"
+        "同义占位值时，应把它视为无品牌事实，并为 strict_enum 品牌属性查询、"
+        "选择平台工具返回的官方无品牌候选。非品牌 strict_enum 允许依据商品事实和"
+        "已确认类目路径进行跨语言语义匹配，但不得猜测技术规格。"
     )
     user_prompt = render_prompt_template(
         prompt.get("user") or "请填写以下类目属性：{$input_json}",

@@ -145,6 +145,20 @@ def _credential_scope_hash(api_token: str) -> str:
     return f"sha256:{digest}"
 
 
+def yandex_credential_scope_hash() -> str:
+    """当前已配置 Yandex 凭据的作用域哈希（定义缓存键的一部分）。
+
+    参数定义按 ``(api_token, business_id)`` 隔离；凭据缺失时抛出确定性
+    错误，stale 缓存不得掩盖该错误。
+    """
+
+    api_token, business_id = _yandex_credentials()
+    digest = hashlib.sha256(
+        f"{api_token}|{business_id}".encode("utf-8")
+    ).hexdigest()
+    return f"sha256:{digest}"
+
+
 def _language_key(language: str) -> str:
     return _text(language).upper() or "RU"
 
@@ -789,6 +803,7 @@ __all__ = [
     "YANDEX_CATEGORY_CACHE_FRESH_TTL",
     "YANDEX_CATEGORY_CACHE_MAX_AGE",
     "YANDEX_CATEGORY_CACHE_SCHEMA",
+    "YANDEX_CATEGORY_PARAMETERS_TTL_SECONDS",
     "YandexCategoryCacheEntry",
     "clear_yandex_category_cache",
     "fetch_yandex_category_parameter_definitions",
@@ -797,4 +812,5 @@ __all__ = [
     "load_yandex_category_corpus",
     "refresh_yandex_category_corpus",
     "search_yandex_categories",
+    "yandex_credential_scope_hash",
 ]

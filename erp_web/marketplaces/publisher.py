@@ -6,7 +6,10 @@ from __future__ import annotations
 真实发布和错误映射。未注册适配器即表示该平台没有发布能力，不能返回假成功。
 """
 
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, avoids import cycle
+    from erp_web.runtime_units.publish_context import PreparedPublishContext
 
 
 class PublishAdapterError(RuntimeError):
@@ -55,13 +58,25 @@ class PlatformPublisher(Protocol):
     def resolve_category(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         ...
 
-    def required_attributes_missing(self, product: dict[str, Any], config: dict[str, Any]) -> list[str]:
+    def required_attributes_missing(
+        self,
+        context: "PreparedPublishContext",
+        config: dict[str, Any],
+    ) -> list[str]:
         ...
 
-    def validate_draft(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    def validate_draft(
+        self,
+        context: "PreparedPublishContext",
+        config: dict[str, Any],
+    ) -> dict[str, Any]:
         ...
 
-    def build_payload(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    def build_payload(
+        self,
+        context: "PreparedPublishContext",
+        config: dict[str, Any],
+    ) -> dict[str, Any]:
         ...
 
     def validate_payload(self, payload: Any, config: dict[str, Any]) -> list[str]:

@@ -15,7 +15,6 @@ from erp_web.runtime_units.market_capability_support import (
     MarketPrepareStore,
     assert_target_mutable,
     category_path,
-    category_schema,
     invalidate_target_publish_preparation,
     load_category_record,
     load_draft,
@@ -158,12 +157,6 @@ def match_category(
                 record.get("description_category_id")
             ),
             "category_path": category_path(record),
-            "category_attribute_schema": category_schema(
-                record,
-                platform=platform,
-                site=text(target.get("site")),
-                selected_category_id=selected_category_id,
-            ),
         }
     )
     invalidated = invalidate_target_publish_preparation(
@@ -198,7 +191,6 @@ def match_category(
             "category_id",
             "description_category_id",
             "category_path",
-            "category_attribute_schema",
             "category_precheck",
             "last_precheck",
             "last_precheck_target",

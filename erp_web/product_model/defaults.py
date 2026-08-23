@@ -178,7 +178,6 @@ def default_product_model() -> dict[str, Any]:
         "upc": "",
         "collect_status": "",
         "collect_logs": [],
-        "local_platform_categories": {},
         "description": "",
         "source": default_source(),
         "drafts": {platform: default_draft(platform) for platform in PLATFORMS},

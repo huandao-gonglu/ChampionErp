@@ -67,18 +67,6 @@ def _review_precheck_items(need_review: list[str], severity: str) -> list[dict[s
     ]
 
 
-def _local_category_record(product: dict[str, Any], platform: str, category_id: str) -> dict[str, Any] | None:
-    categories = product.get("local_platform_categories") if isinstance(product.get("local_platform_categories"), dict) else {}
-    record = categories.get(platform)
-    if not isinstance(record, dict):
-        return None
-    wanted = str(category_id or "").strip()
-    record_id = str(record.get("category_id") or record.get("subject_id") or record.get("type_id") or "").strip()
-    if wanted and record_id and wanted != record_id:
-        return None
-    return record
-
-
 def _normalized_number(value: Any) -> str:
     try:
         return format(float(str(value or "0").replace(",", ".")), ".8f").rstrip("0").rstrip(".") or "0"
@@ -147,11 +135,15 @@ def _selected_price_errors(product: dict[str, Any], draft: dict[str, Any]) -> li
     return []
 
 
-def validate_mercadolibre_draft(product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+def validate_mercadolibre_draft(
+    product: dict[str, Any],
+    config: dict[str, Any],
+    category_record: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     product = normalize_product_fields(product)
     draft = _draft_for_platform(product, "mercadolibre")
     store = config.get("mercadolibre", {}) if isinstance(config.get("mercadolibre"), dict) else {}
-    summary = _required_attribute_summary(product, "mercadolibre")
+    summary = _required_attribute_summary(product, "mercadolibre", category_record)
     errors: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []
     auth_status, auth_next = _masked_auth_status("mercadolibre", config)
@@ -231,12 +223,11 @@ def validate_mercadolibre_draft(product: dict[str, Any], config: dict[str, Any])
         return bool(attr_id and str(attrs.get(attr_id) or "").strip())
 
     need_review: list[str] = []
-    local_record = _local_category_record(product, "mercadolibre", category_id)
     local_missing_attributes = [
         field
-        for field in validate_category_precheck(product, "mercadolibre", local_record)
+        for field in validate_category_precheck(product, "mercadolibre", category_record)
         if str(field).startswith("attributes.") and not review_item_resolved(str(field))
-    ] if local_record else []
+    ] if isinstance(category_record, dict) else []
     for item in draft.get("validation_errors") or []:
         raw_field = _review_field_from_item(item)
         if raw_field == "attributes":
@@ -270,7 +261,11 @@ def validate_mercadolibre_draft(product: dict[str, Any], config: dict[str, Any])
     return {"platform": "mercadolibre", "ok": not errors, "errors": errors, "warnings": warnings, "checked_at": collect_time_iso()}
 
 
-def validate_yandex_draft(product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+def validate_yandex_draft(
+    product: dict[str, Any],
+    config: dict[str, Any],
+    category_record: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     product = normalize_product_fields(product)
     draft = _draft_for_platform(product, "yandex")
     store = config.get("yandex", {}) if isinstance(config.get("yandex"), dict) else {}
@@ -301,7 +296,7 @@ def validate_yandex_draft(product: dict[str, Any], config: dict[str, Any]) -> di
     conflict = yandex_offer_identity_conflict(draft)
     if conflict:
         errors.append(precheck_item("OFFER_IDENTITY_CHANGED", "sku", conflict, "error", "确认要创建新的远端商品，或恢复原 SKU 后再发布"))
-    invalid_dictionary_ids = set(yandex_invalid_dictionary_attributes(product))
+    invalid_dictionary_ids = set(yandex_invalid_dictionary_attributes(product, category_record))
     for attr_id in sorted(invalid_dictionary_ids):
         errors.append(
             precheck_item(
@@ -312,7 +307,7 @@ def validate_yandex_draft(product: dict[str, Any], config: dict[str, Any]) -> di
                 "前往类目属性页搜索并选择平台允许的值",
             )
         )
-    for attr_id in yandex_invalid_unit_attributes(product):
+    for attr_id in yandex_invalid_unit_attributes(product, category_record):
         errors.append(
             precheck_item(
                 "ATTRIBUTE_UNIT_INVALID",
@@ -323,14 +318,14 @@ def validate_yandex_draft(product: dict[str, Any], config: dict[str, Any]) -> di
             )
         )
     # 必填属性是否解决由共享 owner 唯一裁定，这里不复制规则。
-    for field in yandex_required_attributes_missing(product):
+    for field in yandex_required_attributes_missing(product, category_record):
         attr_id = str(field).split(".", 1)[-1]
         if attr_id in invalid_dictionary_ids:
             continue
         errors.append(precheck_item("REQUIRED_ATTRIBUTE_MISSING", field, f"缺少 Yandex 必填属性：{attr_id}", "error", "前往类目属性页补齐必填属性"))
     # Yandex 发布接口要求 parameterValues 至少 1 个，即使类目没有任何
     # 必填参数；零必填类目的草稿也必须先填至少一个平台参数。
-    if yandex_mapped_parameter_count(product) == 0:
+    if yandex_mapped_parameter_count(product, category_record) == 0:
         errors.append(
             precheck_item(
                 "YANDEX_PARAMETER_VALUES_MISSING",
@@ -385,7 +380,11 @@ def validate_yandex_draft(product: dict[str, Any], config: dict[str, Any]) -> di
     return {"platform": "yandex", "ok": not errors, "errors": errors, "warnings": warnings, "checked_at": collect_time_iso()}
 
 
-def validate_ozon_draft(product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+def validate_ozon_draft(
+    product: dict[str, Any],
+    config: dict[str, Any],
+    category_record: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     product = normalize_product_fields(product)
     draft = _draft_for_platform(product, "ozon")
     store = config.get("ozon", {}) if isinstance(config.get("ozon"), dict) else {}
@@ -403,7 +402,7 @@ def validate_ozon_draft(product: dict[str, Any], config: dict[str, Any]) -> dict
         errors.append(precheck_item("CATEGORY_MISSING", "category_id", "缺少 Ozon Category / Type ID", "error", "前往类目属性页选择类目"))
     elif not description_category_id:
         errors.append(precheck_item("CATEGORY_PAIR_MISSING", "category_id", "Ozon 类目缺少 type_id 与 description_category_id 配对", "error", "前往类目属性页重新选择 Ozon 实时类目"))
-    invalid_dictionary_ids = set(ozon_invalid_dictionary_attributes(product))
+    invalid_dictionary_ids = set(ozon_invalid_dictionary_attributes(product, category_record))
     for attr_id in sorted(invalid_dictionary_ids):
         errors.append(
             precheck_item(
@@ -414,7 +413,7 @@ def validate_ozon_draft(product: dict[str, Any], config: dict[str, Any]) -> dict
                 "前往类目属性页搜索并选择平台允许的值",
             )
         )
-    for field in ozon_required_attributes_missing(product):
+    for field in ozon_required_attributes_missing(product, category_record):
         attr_id = str(field).split(".", 1)[-1]
         if attr_id in invalid_dictionary_ids:
             continue
@@ -462,14 +461,19 @@ def validate_ozon_draft(product: dict[str, Any], config: dict[str, Any]) -> dict
     return {"platform": "ozon", "ok": not errors, "errors": errors, "warnings": warnings, "checked_at": collect_time_iso()}
 
 
-def validate_platform_draft(product: dict[str, Any], platform: str, config: dict[str, Any]) -> dict[str, Any]:
+def validate_platform_draft(
+    product: dict[str, Any],
+    platform: str,
+    config: dict[str, Any],
+    category_record: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     platform = str(platform or "").strip().lower()
     if platform == "mercadolibre":
-        return validate_mercadolibre_draft(product, config)
+        return validate_mercadolibre_draft(product, config, category_record)
     if platform == "yandex":
-        return validate_yandex_draft(product, config)
+        return validate_yandex_draft(product, config, category_record)
     if platform == "ozon":
-        return validate_ozon_draft(product, config)
+        return validate_ozon_draft(product, config, category_record)
     return {
         "platform": platform,
         "ok": False,

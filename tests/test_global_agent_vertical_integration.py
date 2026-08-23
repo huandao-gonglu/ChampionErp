@@ -20,7 +20,17 @@ from pydantic_ai.messages import ModelRequest, UserPromptPart
 
 from erp_web.context import get_context
 from erp_web.facades import global_task_facade
-from erp_web.runtime_units import category_attribute_ai_fill, category_store
+from erp_web.marketplaces.category_provider import CategoryProvider
+from erp_web.runtime_units import (
+    category_attribute_ai_fill,
+    category_catalog,
+    category_store,
+)
+from erp_web.runtime_units.category_catalog import CategoryCatalog
+from erp_web.runtime_units.category_definition_support import (
+    definition_from_legacy_attributes,
+    paginate_value_candidates,
+)
 from erp_web.runtime_units.global_ai_control_tools import (
     GlobalTaskStartControlRequest,
     TASK_CONTROL_PERMISSION,
@@ -30,6 +40,11 @@ from erp_web.runtime_units.publish_bus import (
     persist_publish_bus_terminal_results,
 )
 from erp_web.runtime_units.publishing_bus_core import PublishingBus
+from erp_web.schemas.category_definition import (
+    CategoryAttributeValuePage,
+    CategoryDefinition,
+    CategoryDetail,
+)
 from erp_web.schemas.global_tasks import (
     GlobalTaskApproveRequest,
     GlobalTaskInputRequest,
@@ -83,26 +98,84 @@ class _PlatformNetworkBoundary(OzonPublishingAdapter):
         }
 
 
-class _FakeCategoryProvider:
-    """类目明细边界的可信替代：只覆盖 detail 读取。"""
+class _FakeCategoryProvider(CategoryProvider):
+    """类目明细边界的可信替代：只覆盖 detail 与定义读取。"""
+
+    platform = "ozon"
 
     def __init__(self, records: dict[str, dict[str, Any]]) -> None:
         self.records = records
         self.detail_calls: list[tuple[str, str, bool]] = []
 
-    def detail(
-        self,
-        category_id: str,
-        site: str = "",
-        include_attributes: bool = False,
-        **kwargs: Any,
-    ) -> dict[str, Any]:
-        del kwargs
-        self.detail_calls.append((category_id, site, include_attributes))
+    def _record(self, category_id: str) -> dict[str, Any]:
         record = self.records.get(str(category_id))
         if record is None:
             raise ValueError(f"未找到类目 {category_id}")
         return deepcopy(record)
+
+    def resolve_site(self, site: str = "") -> str:
+        return "global"
+
+    def category_detail(
+        self,
+        category_id: str,
+        *,
+        site: str = "",
+        timeout_seconds: float | None = None,
+    ) -> CategoryDetail:
+        self.detail_calls.append((category_id, site, False))
+        record = self._record(category_id)
+        return CategoryDetail(
+            platform=self.platform,
+            site="global",
+            category_id=str(record.get("category_id") or category_id),
+            path=str(record.get("category_path") or ""),
+            is_leaf=True,
+        )
+
+    def attribute_definitions(
+        self,
+        category_id: str,
+        *,
+        site: str = "",
+        timeout_seconds: float | None = None,
+    ) -> CategoryDefinition:
+        self.detail_calls.append((category_id, site, True))
+        record = self._record(category_id)
+        attributes = (
+            record.get("attributes") if isinstance(record.get("attributes"), dict) else {}
+        )
+        return definition_from_legacy_attributes(
+            platform=self.platform,
+            site="global",
+            category_id=str(record.get("category_id") or category_id),
+            category_path=str(record.get("category_path") or ""),
+            description_category_id=str(record.get("description_category_id") or ""),
+            required=list(attributes.get("required") or []),
+            optional=list(attributes.get("optional") or []),
+        )
+
+    def attribute_values(
+        self,
+        category_id: str,
+        attribute_id: str,
+        *,
+        site: str = "",
+        query: str = "",
+        cursor: str = "",
+        limit: int = 50,
+        timeout_seconds: float | None = None,
+    ) -> CategoryAttributeValuePage:
+        return paginate_value_candidates(
+            [],
+            platform=self.platform,
+            site="global",
+            category_id=str(category_id),
+            attribute_id=str(attribute_id),
+            query=query,
+            cursor=cursor,
+            limit=limit,
+        )
 
 
 def _category_record() -> dict[str, Any]:
@@ -380,10 +453,17 @@ def test_global_chat_typed_task_vertical_publish_flow(
         focused_category_boundary,
     )
     provider = _FakeCategoryProvider({"94765": _category_record()})
+    fake_catalog = CategoryCatalog({"ozon": provider})
     monkeypatch.setattr(
         category_store,
-        "require_category_provider",
-        lambda platform: provider,
+        "get_category_catalog",
+        lambda: fake_catalog,
+    )
+    # 发布预检/payload 编译经 prepare_publish_context 读取同一 Catalog。
+    monkeypatch.setattr(
+        category_catalog,
+        "get_category_catalog",
+        lambda: fake_catalog,
     )
     monkeypatch.setattr(
         category_attribute_ai_fill,

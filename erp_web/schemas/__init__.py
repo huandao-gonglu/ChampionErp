@@ -27,8 +27,6 @@ from .config import AppConfig, StoreConfig
 from .image import ImageItem
 from .product import (
     PRODUCT_SCHEMA_VERSION,
-    CategoryAttributeDefinition,
-    CategoryAttributeSchema,
     DraftTargetSite,
     PlatformDraft,
     Product,
@@ -65,8 +63,6 @@ __all__ = [
     "CategoryCandidate",
     "CategoryCorpusInfo",
     "CategorySearchResult",
-    "CategoryAttributeDefinition",
-    "CategoryAttributeSchema",
     "DraftTargetSite",
     "ImageItem",
     "HotProductCandidate",

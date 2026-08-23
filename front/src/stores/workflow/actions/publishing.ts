@@ -27,7 +27,6 @@ import type {
   UnknownRecord,
 } from '@/types/workflow'
 import {
-  categoryAttributeSchemaFromSelection,
   publishJobMatchesProgressContext,
   workflowProgressDraft,
   type WorkflowRuntime,
@@ -383,7 +382,6 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
     if (categoryChanged) {
       persistActiveTargetListingFields({
         descriptionCategoryId: currentDraft.value.descriptionCategoryId,
-        categoryAttributeSchema: null,
       })
     }
     loading.value = true
@@ -400,10 +398,10 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
     } finally {
       loading.value = false
     }
-    await loadCategoryAttributes(item.raw)
+    await loadCategoryAttributes()
   }
 
-  async function loadCategoryAttributes(categoryRecord?: UnknownRecord) {
+  async function loadCategoryAttributes() {
     const target = { ...selectedPublishTarget.value }
     const categoryId = currentDraft.value.categoryId.trim()
     if (!categoryId) {
@@ -432,10 +430,7 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
     loading.value = true
     setError('')
     try {
-      const matchingLoadedRecord = category.value?.categoryId === categoryId && category.value.platform === target.platform
-        ? category.value.raw
-        : undefined
-      const loadedCategory = await fetchCategoryAttrs(target.platform, categoryId, target.site, categoryRecord || matchingLoadedRecord)
+      const loadedCategory = await fetchCategoryAttrs(target.platform, categoryId, target.site)
       if (!requestIsCurrent()) return
       if (String(target.categoryId || '').trim() !== categoryId) {
         clearCurrentCategoryDependentFields()
@@ -443,23 +438,30 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
       if (loadedCategory.categoryPath) {
         currentDraft.value.categoryPath = loadedCategory.categoryPath
       }
-      currentDraft.value.descriptionCategoryId = target.platform === 'ozon'
-        ? String(loadedCategory.raw?.description_category_id || '')
-        : ''
-      if (target.platform === 'ozon' && !currentDraft.value.descriptionCategoryId) {
-        throw new Error('Ozon 实时类目缺少 description_category_id')
+      if (target.platform === 'ozon') {
+        // 新版分页属性页不再回传类目记录：实时响应带 description_category_id 时优先采用，
+        // 否则沿用草稿/目标站点已持久化的类目身份。
+        const liveDescriptionCategoryId = String(loadedCategory.raw?.description_category_id ?? '').trim()
+        if (liveDescriptionCategoryId) {
+          currentDraft.value.descriptionCategoryId = liveDescriptionCategoryId
+        }
+        if (!currentDraft.value.descriptionCategoryId) {
+          throw new Error('Ozon 实时类目缺少 description_category_id')
+        }
+      } else {
+        currentDraft.value.descriptionCategoryId = ''
       }
+      // 属性定义仅保存在编辑态 category ref（瞬时），持久化只写类目身份字段。
       category.value = loadedCategory
       categoryAttributeError.value = ''
       persistActiveTargetListingFields({
         descriptionCategoryId: currentDraft.value.descriptionCategoryId,
-        categoryAttributeSchema: categoryAttributeSchemaFromSelection(loadedCategory, target),
       })
       await persistCurrentDraftForPublish()
       categoryAttributeTranslations.value = {}
       categoryAttributeTranslationsSource.value = ''
       currentStage.value = 6
-      addLog(`已读取并保存类目属性：${categoryId}`)
+      addLog(`已读取类目属性定义并保存类目：${categoryId}`)
     } catch (exc) {
       if (!requestIsCurrent()) return
       const message = exc instanceof Error ? exc.message : '读取或保存类目属性失败'
@@ -547,7 +549,7 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
     try {
       await persistCurrentDraftForPublish()
       const target = selectedPublishTarget.value
-      if (!category.value || category.value.categoryId !== categoryId || category.value.platform !== target.platform) {
+      if (!category.value || category.value.categoryId !== categoryId || category.value.platform !== target.platform || !category.value.fetchedAt) {
         category.value = await fetchCategoryAttrs(target.platform, categoryId, target.site)
       }
       const before = { ...currentDraft.value.attributes }

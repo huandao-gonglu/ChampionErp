@@ -151,7 +151,14 @@ def test_ozon_dictionary_metadata_and_values_are_loaded_separately() -> None:
                     },
                 ]
             }
-        if url == ozon_category_api.OZON_CATEGORY_ATTRIBUTE_VALUES_URL:
+        if url == ozon_category_api.OZON_CATEGORY_ATTRIBUTE_VALUES_SEARCH_URL:
+            assert body == {
+                "attribute_id": 85,
+                "description_category_id": 17027949,
+                "limit": 50,
+                "type_id": 94765,
+                "value": "нет бренда",
+            }
             return {
                 "result": [
                     {
@@ -184,19 +191,136 @@ def test_ozon_dictionary_metadata_and_values_are_loaded_separately() -> None:
     model_name = attrs["required"][1]
     assert model_name["dictionary_id"] == ""
     assert model_name["is_dictionary"] is False
+    # 枚举公共视图有界化：只保留字典 ID 与值，不再携带 info/picture 元数据。
     assert values["values"] == [
         {
             "id": "126745801",
             "value": "Нет бренда",
-            "info": "Товар не имеет бренда",
+            "info": "",
             "picture": "",
         }
     ]
     assert [call[0] for call in calls] == [
         ozon_category_api.OZON_CATEGORY_TREE_URL,
         ozon_category_api.OZON_CATEGORY_ATTRIBUTES_URL,
-        ozon_category_api.OZON_CATEGORY_ATTRIBUTE_VALUES_URL,
+        ozon_category_api.OZON_CATEGORY_ATTRIBUTE_VALUES_SEARCH_URL,
     ]
+
+
+def test_ozon_no_brand_alias_uses_platform_search_for_large_dictionary() -> None:
+    search_payloads: list[dict[str, object]] = []
+
+    def request(
+        method: str,
+        url: str,
+        client_id: str,
+        api_key: str,
+        payload: dict[str, object] | None = None,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        del method, client_id, api_key, kwargs
+        body = payload or {}
+        if url == ozon_category_api.OZON_CATEGORY_TREE_URL:
+            return OZON_TREE
+        if url != ozon_category_api.OZON_CATEGORY_ATTRIBUTE_VALUES_SEARCH_URL:
+            raise AssertionError(url)
+        search_payloads.append(body)
+        return {
+            "result": [
+                {"id": 2001, "value": "Нет бренда"},
+            ]
+        }
+
+    with (
+        patch.object(ozon_category_api, "_load_store_config", _store_config),
+        patch.object(ozon_category_api, "request_ozon_json", side_effect=request),
+    ):
+        values = category_store.fetch_category_attribute_values(
+            "ozon",
+            "94765",
+            "85",
+            query="无品牌",
+            limit=1,
+        )
+
+    assert search_payloads == [
+        {
+            "attribute_id": 85,
+            "description_category_id": 17027949,
+            "limit": 1,
+            "type_id": 94765,
+            "value": "нет бренда",
+        }
+    ]
+    assert values["query"] == "无品牌"
+    assert values["values"] == [
+        {
+            "id": "2001",
+            "value": "Нет бренда",
+            "info": "",
+            "picture": "",
+        }
+    ]
+
+
+def test_ozon_dictionary_search_rejects_single_character_before_request() -> None:
+    with pytest.raises(ValueError, match="至少需要 2 个字符"):
+        ozon_category_api.fetch_ozon_category_attribute_values(
+            "94765",
+            "85",
+            query="A",
+        )
+
+
+def test_ozon_empty_dictionary_query_keeps_cursor_pagination() -> None:
+    value_payloads: list[dict[str, object]] = []
+
+    def request(
+        method: str,
+        url: str,
+        client_id: str,
+        api_key: str,
+        payload: dict[str, object] | None = None,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        del method, client_id, api_key, kwargs
+        body = payload or {}
+        if url == ozon_category_api.OZON_CATEGORY_TREE_URL:
+            return OZON_TREE
+        if url != ozon_category_api.OZON_CATEGORY_ATTRIBUTE_VALUES_URL:
+            raise AssertionError(url)
+        value_payloads.append(body)
+        return {
+            "result": [
+                {"id": value_id, "value": f"Значение {value_id}"}
+                for value_id in range(1, 52)
+            ]
+        }
+
+    with (
+        patch.object(ozon_category_api, "_load_store_config", _store_config),
+        patch.object(ozon_category_api, "request_ozon_json", side_effect=request),
+    ):
+        values = category_store.fetch_category_attribute_values(
+            "ozon",
+            "94765",
+            "8229",
+            limit=50,
+        )
+
+    assert value_payloads == [
+        {
+            "description_category_id": 17027949,
+            "type_id": 94765,
+            "attribute_id": 8229,
+            "language": "DEFAULT",
+            "last_value_id": 0,
+            "limit": 2000,
+        }
+    ]
+    assert len(values["values"]) == 50
+    assert values["next_cursor"] == "50"
+    assert values["has_more"] is True
 
 
 def test_ozon_category_tree_summary_reuses_the_live_tree() -> None:

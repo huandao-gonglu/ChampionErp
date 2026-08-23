@@ -54,6 +54,53 @@ def product_id_from_body(body: dict[str, Any]) -> str:
     return str(body.get("product_id") or "").strip()
 
 
+RETIRED_CATEGORY_SCHEMA_FIELD = "RETIRED_CATEGORY_SCHEMA_FIELD"
+
+_RETIRED_PRODUCT_CATEGORY_KEYS = ("local_platform_categories", "localPlatformCategories")
+_RETIRED_DRAFT_SCHEMA_KEYS = ("category_attribute_schema", "categoryAttributeSchema")
+
+
+class RetiredCategorySchemaFieldError(ValueError):
+    """保存入口收到已退役的平台规则副本字段；调用方须重新读取当前契约。"""
+
+    def __init__(self, fields: list[str]) -> None:
+        self.code = RETIRED_CATEGORY_SCHEMA_FIELD
+        self.fields = list(fields)
+        super().__init__(
+            "请求包含已退役的类目规则字段："
+            + "、".join(self.fields)
+            + "；平台类目规则改由 CategoryCatalog 实时读取，请移除这些字段。"
+        )
+
+
+def reject_retired_product_category_fields(data: dict[str, Any]) -> None:
+    found = [key for key in _RETIRED_PRODUCT_CATEGORY_KEYS if key in data]
+    if found:
+        raise RetiredCategorySchemaFieldError(found)
+
+
+def reject_retired_draft_schema_fields(draft_payload: dict[str, Any]) -> None:
+    found: list[str] = []
+    for key in _RETIRED_DRAFT_SCHEMA_KEYS:
+        if key in draft_payload:
+            found.append(key)
+    raw_targets = (
+        draft_payload.get("target_sites")
+        if isinstance(draft_payload.get("target_sites"), list)
+        else draft_payload.get("targetSites")
+        if isinstance(draft_payload.get("targetSites"), list)
+        else []
+    )
+    for site in raw_targets:
+        if not isinstance(site, dict):
+            continue
+        for key in _RETIRED_DRAFT_SCHEMA_KEYS:
+            if key in site:
+                found.append(f"target_sites[].{key}")
+    if found:
+        raise RetiredCategorySchemaFieldError(sorted(set(found)))
+
+
 def normalize_sku_items(product: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     source = product.get("source") if isinstance(product.get("source"), dict) else {}
@@ -337,6 +384,7 @@ class ProductStore:
         return normalize_product_fields(default_product_model())
 
     def save_product(self, data: dict[str, Any]) -> dict[str, Any]:
+        reject_retired_product_category_fields(data)
         validate_product_root_fields(data)
         product = self.sync_product_workflow_statuses(enrich_product_image_dimensions(normalize_product_fields(data)))
         product["product_id"] = product_identity(product)
@@ -583,6 +631,19 @@ class ProductStore:
         draft_id = str(draft_payload.get("draft_id") or draft_payload.get("draftId") or "").strip()
         if not draft_id:
             return {}, {"ok": False, "error": "draft_id 不能为空"}, 400
+        try:
+            reject_retired_draft_schema_fields(draft_payload)
+        except RetiredCategorySchemaFieldError as exc:
+            return (
+                {},
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "error_code": exc.code,
+                    "draft_id": draft_id,
+                },
+                400,
+            )
         existing = self._db.load_draft_model(draft_id)
         if not existing:
             return {}, {"ok": False, "error": "草稿不存在", "draft_id": draft_id}, 404

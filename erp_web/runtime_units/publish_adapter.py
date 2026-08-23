@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from erp_web import marketplaces as marketplace_api
 from erp_web.context import AppContext, get_context
@@ -15,8 +15,12 @@ from erp_web.stores.product_store import normalize_product_fields
 from .publish_helpers import (
     _required_attribute_summary,
     build_mercadolibre_publish_payload,
+    precheck_item,
     validate_mercadolibre_publish_payload,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .publish_context import PreparedPublishContext
 from .publish_mercadolibre import map_mercadolibre_publish_error
 from .publish_ozon import (
     build_ozon_publish_payload,
@@ -42,6 +46,28 @@ from .publish_yandex import (
 logger = logging.getLogger(__name__)
 
 
+def _flag_definition_unavailable(
+    context: "PreparedPublishContext",
+    precheck: dict[str, Any],
+) -> dict[str, Any]:
+    """草稿已选类目但当次定义加载失败时，预检必须显式报错而非静默放行。"""
+
+    if context.category_id and context.category_definition is None:
+        errors = list(precheck.get("errors") or [])
+        errors.append(
+            precheck_item(
+                "CATEGORY_ATTRIBUTES_UNAVAILABLE",
+                "category_id",
+                "类目属性定义暂时不可用，无法完成发布校验",
+                "error",
+                context.definition_error
+                or "稍后重试；若持续失败请检查平台授权与类目接口",
+            )
+        )
+        return {**precheck, "ok": False, "errors": errors}
+    return precheck
+
+
 class MercadoLibrePublishingAdapter:
     """Mercado Libre 的完整发布适配器；也是当前唯一可入队的平台。"""
 
@@ -52,21 +78,15 @@ class MercadoLibrePublishingAdapter:
         return normalize_product_fields(product)
 
     def resolve_category(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        # 类目身份只来自平台草稿；不再回落到商品级规则副本。
         product = normalize_product_fields(product)
-        local_categories = product.get("local_platform_categories") if isinstance(product.get("local_platform_categories"), dict) else {}
-        platform_category = local_categories.get(self.platform) if isinstance(local_categories, dict) else None
-        if isinstance(platform_category, dict):
-            category_id = str(platform_category.get("category_id") or platform_category.get("platform_category_id") or "").strip()
-        else:
-            category_id = str(platform_category or "").strip()
-        if not category_id:
-            drafts = product.get("drafts") if isinstance(product.get("drafts"), dict) else {}
-            draft = drafts.get(self.platform) if isinstance(drafts.get(self.platform), dict) else {}
-            category_id = str(
-                draft.get("category_id")
-                or config.get(self.platform, {}).get("category_id")
-                or ""
-            ).strip()
+        drafts = product.get("drafts") if isinstance(product.get("drafts"), dict) else {}
+        draft = drafts.get(self.platform) if isinstance(drafts.get(self.platform), dict) else {}
+        category_id = str(
+            draft.get("category_id")
+            or config.get(self.platform, {}).get("category_id")
+            or ""
+        ).strip()
         if category_id:
             drafts = product.setdefault("drafts", {})
             draft = drafts.setdefault(
@@ -76,14 +96,34 @@ class MercadoLibrePublishingAdapter:
             draft["category_id"] = category_id
         return product
 
-    def required_attributes_missing(self, product: dict[str, Any], config: dict[str, Any]) -> list[str]:
-        return list(_required_attribute_summary(product, self.platform).get("missing") or [])
+    def required_attributes_missing(
+        self,
+        context: "PreparedPublishContext",
+        config: dict[str, Any],
+    ) -> list[str]:
+        return list(
+            _required_attribute_summary(
+                context.product, self.platform, context.category_record
+            ).get("missing")
+            or []
+        )
 
-    def validate_draft(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
-        return validate_mercadolibre_draft(product, config)
+    def validate_draft(
+        self,
+        context: "PreparedPublishContext",
+        config: dict[str, Any],
+    ) -> dict[str, Any]:
+        result = validate_mercadolibre_draft(
+            context.product, config, context.category_record
+        )
+        return _flag_definition_unavailable(context, result)
 
-    def build_payload(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
-        return build_mercadolibre_publish_payload(product, config)
+    def build_payload(
+        self,
+        context: "PreparedPublishContext",
+        config: dict[str, Any],
+    ) -> dict[str, Any]:
+        return build_mercadolibre_publish_payload(context.product, config)
 
     def validate_payload(self, payload: Any, config: dict[str, Any]) -> list[str]:
         return validate_mercadolibre_publish_payload(payload, config)
@@ -118,14 +158,33 @@ class OzonPublishingAdapter:
             draft["category_id"] = type_id
         return product
 
-    def required_attributes_missing(self, product: dict[str, Any], config: dict[str, Any]) -> list[str]:
-        return ozon_required_attributes_missing(product)
+    def required_attributes_missing(
+        self,
+        context: "PreparedPublishContext",
+        config: dict[str, Any],
+    ) -> list[str]:
+        return ozon_required_attributes_missing(
+            context.product, context.category_record
+        )
 
-    def validate_draft(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
-        return validate_ozon_draft(product, config)
+    def validate_draft(
+        self,
+        context: "PreparedPublishContext",
+        config: dict[str, Any],
+    ) -> dict[str, Any]:
+        result = validate_ozon_draft(
+            context.product, config, context.category_record
+        )
+        return _flag_definition_unavailable(context, result)
 
-    def build_payload(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
-        return build_ozon_publish_payload(product, config)
+    def build_payload(
+        self,
+        context: "PreparedPublishContext",
+        config: dict[str, Any],
+    ) -> dict[str, Any]:
+        return build_ozon_publish_payload(
+            context.product, config, context.category_record
+        )
 
     def validate_payload(self, payload: Any, config: dict[str, Any]) -> list[str]:
         return validate_ozon_publish_payload(payload, config)
@@ -211,22 +270,11 @@ class YandexPublishingAdapter:
         return get_context().image_delivery.prepare_product(product, self.platform)
 
     def resolve_category(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        # 类目身份只来自平台草稿；不再回落到商品级规则副本。
         product = normalize_product_fields(product)
-        local_categories = (
-            product.get("local_platform_categories")
-            if isinstance(product.get("local_platform_categories"), dict)
-            else {}
-        )
-        record = local_categories.get(self.platform)
-        category_id = str(
-            (record or {}).get("category_id")
-            if isinstance(record, dict)
-            else ""
-        ).strip()
         drafts = product.get("drafts") if isinstance(product.get("drafts"), dict) else {}
         draft = drafts.get(self.platform) if isinstance(drafts.get(self.platform), dict) else {}
-        if not category_id:
-            category_id = str(draft.get("category_id") or "").strip()
+        category_id = str(draft.get("category_id") or "").strip()
         if category_id:
             drafts = product.setdefault("drafts", {})
             target_draft = drafts.setdefault(
@@ -236,14 +284,33 @@ class YandexPublishingAdapter:
             target_draft["category_id"] = category_id
         return product
 
-    def required_attributes_missing(self, product: dict[str, Any], config: dict[str, Any]) -> list[str]:
-        return yandex_required_attributes_missing(product)
+    def required_attributes_missing(
+        self,
+        context: "PreparedPublishContext",
+        config: dict[str, Any],
+    ) -> list[str]:
+        return yandex_required_attributes_missing(
+            context.product, context.category_record
+        )
 
-    def validate_draft(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
-        return validate_yandex_draft(product, config)
+    def validate_draft(
+        self,
+        context: "PreparedPublishContext",
+        config: dict[str, Any],
+    ) -> dict[str, Any]:
+        result = validate_yandex_draft(
+            context.product, config, context.category_record
+        )
+        return _flag_definition_unavailable(context, result)
 
-    def build_payload(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
-        return build_yandex_publish_payload(product, config)
+    def build_payload(
+        self,
+        context: "PreparedPublishContext",
+        config: dict[str, Any],
+    ) -> dict[str, Any]:
+        return build_yandex_publish_payload(
+            context.product, config, context.category_record
+        )
 
     def validate_payload(self, payload: Any, config: dict[str, Any]) -> list[str]:
         return validate_yandex_publish_payload(payload, config)

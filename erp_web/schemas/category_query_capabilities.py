@@ -42,16 +42,24 @@ class CategoryAttributesQueryRequest(BaseModel):
         TrimmedText,
         StringConstraints(min_length=1, max_length=160),
     ]
+    cursor: Annotated[TrimmedText, StringConstraints(max_length=160)] = ""
+    limit: int = Field(default=50, ge=1, le=100)
 
 
 class CategoryAttributesQueryResult(BaseModel):
+    """类目属性分页有界摘要；不含 raw/platform_binding/完整枚举。"""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     platform: TrimmedText
     site: TrimmedText = ""
     category_id: TrimmedText = ""
     category_path: TrimmedText = ""
+    limit: int = 50
+    cursor: TrimmedText = ""
     attributes: tuple[dict[str, JsonValue], ...] = ()
+    next_cursor: TrimmedText = ""
+    has_more: bool = False
 
 
 class CategoryAttributeValuesQueryRequest(BaseModel):
@@ -70,17 +78,23 @@ class CategoryAttributeValuesQueryRequest(BaseModel):
         StringConstraints(min_length=1, max_length=160),
     ]
     query: Annotated[TrimmedText, StringConstraints(max_length=500)] = ""
+    cursor: Annotated[TrimmedText, StringConstraints(max_length=160)] = ""
     limit: int = Field(default=50, ge=1, le=200)
 
 
 class CategoryAttributeValuesQueryResult(BaseModel):
+    """枚举候选当前页；候选全集只能分页读取。"""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     platform: TrimmedText
     category_id: TrimmedText = ""
     attribute_id: TrimmedText = ""
     query: TrimmedText = ""
+    cursor: TrimmedText = ""
     values: tuple[dict[str, JsonValue], ...] = ()
+    next_cursor: TrimmedText = ""
+    has_more: bool = False
 
 
 class CategoryPrecheckRequest(BaseModel):

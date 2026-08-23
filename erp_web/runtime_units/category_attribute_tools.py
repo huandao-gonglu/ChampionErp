@@ -16,6 +16,11 @@ from erp_web.schemas.category_attribute import (
     CategoryAttributeValueSearchRequest,
     CategoryAttributeValueSearchResult,
 )
+from erp_web.schemas.category_brand import (
+    is_brand_attribute,
+    is_no_brand_fact,
+    no_brand_query_term,
+)
 from erp_web.services.ai_tool_catalog import AiToolBindingScope, AiToolCatalog
 from erp_web.services.ai_tool_declaration import Injected, ai_tool
 from erp_web.services.ai_tool_registry import AiToolSet
@@ -78,11 +83,12 @@ def _platform_values(
     name=CATEGORY_ATTRIBUTE_VALUE_SEARCH_TOOL,
     description=(
         "批量查询当前类目强制枚举属性的真实平台候选。每项使用目标市场语言的"
-        "简短核心词搜索；最终只能选择本工具返回的 dictionary_value_id 和 value。"
+        "简短核心词搜索；品牌查询接受 Generic、无品牌、no brand 等语义别名并"
+        "转换为平台官方检索词。最终只能选择本工具返回的 dictionary_value_id 和 value。"
     ),
     permission=CATEGORY_ATTRIBUTE_VALUE_PERMISSION,
     side_effect="none",
-    version="3",
+    version="4",
 )
 def search_category_attribute_values(
     request: CategoryAttributeValueSearchRequest,
@@ -108,12 +114,19 @@ def search_category_attribute_values(
                 "只有强制枚举属性可以查询平台枚举值。",
             )
         scope.ledger.record_attempt(attribute_id, query)
+        platform_query = query
+        if (
+            query
+            and is_brand_attribute(definition, platform=scope.platform)
+            and is_no_brand_fact(query)
+        ):
+            platform_query = no_brand_query_term(scope.platform) or query
         error_code = ""
         try:
             values = _platform_values(
                 scope,
                 attribute_id,
-                query,
+                platform_query,
                 execution,
             )
         except Exception:

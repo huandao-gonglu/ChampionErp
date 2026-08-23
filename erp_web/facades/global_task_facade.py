@@ -24,8 +24,8 @@ from erp_web.runtime_units.category_query_capabilities import (
     CategoryQueryCapabilityScope,
 )
 from erp_web.runtime_units.category_store import (
+    fetch_category_attribute_page,
     fetch_category_attribute_values,
-    fetch_category_attributes,
     fetch_category_record,
     search_categories_live,
 )
@@ -227,7 +227,7 @@ def build_capability_binding_scope(
             ),
             CategoryQueryCapabilityScope: CategoryQueryCapabilityScope(
                 searcher=search_categories_live,
-                attributes_loader=fetch_category_attributes,
+                attributes_loader=fetch_category_attribute_page,
                 attribute_values_loader=fetch_category_attribute_values,
                 record_loader=fetch_category_record,
                 draft_context_loader=(

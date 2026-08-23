@@ -10,6 +10,18 @@
 - 新 HTTP 行为从 `erp_web/http_route_units/` 的显式 handler map 进入；路由把编排交给
   `erp_web/facades/` 或职责单一的 service。
 
+## SQLite 数据库版本边界
+
+- `erp_web/db.py` 是 SQLite schema 与版本门禁的唯一 owner，当前
+  `SCHEMA_VERSION=14`。数据库文件不存在或 `user_version=0` 且没有任何用户 schema
+  object 时，才会在单事务内创建当前结构。
+- 现有数据库只在版本为 14 且全部 table、column、constraint、index、view、trigger 与当前
+  建库 SQL 的完整结构签名一致时打开。非空 v0、v1–v13、未来版本和结构残缺/额外的 v14
+  都在写入前失败；运行时不升级、修复、删除或重建数据库。
+- 旧库切换是显式运维流程：先导出需保留的配置与授权，再停止应用、删除主库及
+  `-wal`/`-shm`，创建全新 v14 后导回配置。`upc_pool.json` 是已购买 UPC 的显式资产导入，
+  不是旧 schema 兼容路径。
+
 ## AI Provider 与 AI Work
 
 ### 当前统一边界
@@ -251,7 +263,7 @@ Controller 在副作用前为当前步骤生成冻结快照、digest 和审批�
   快照方法委托给 `erp_web/stores/draft_query_snapshot_store.py`。后者是
   `DraftQuerySnapshot` 的唯一持久化 owner，不依赖任务状态或任务 schema。
 - `erp_web/stores/pydantic_deferred_task_link_store.py`：conversation → 未解决
-  Deferred 任务的唯一关联表（schema v13）。`awaiting_history` provisional link 只
+  Deferred 任务的唯一关联表（当前 schema v14）。`awaiting_history` provisional link 只
   供服务端恢复/清理；`ready` link 是前端任务卡与发送锁定的唯一依据；任务终结并
   continuation 提交后 link 变 `resolved`。
 - `erp_web/stores/pydantic_ai_event_outbox_store.py`：官方编码事件 outbox。事件
@@ -424,17 +436,28 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
   wrapper；不存在业务专用展示 start/result 协议。新增第三个前台能力时后端 Agent service
   无需改动，前端只增加 wrapper 声明与业务提示映射。完整契约见 `docs/aiworkpage.md`。
 
-## 类目平台搜索层
+## 类目平台搜索与规则读取层
 
 - `erp_web/marketplaces/category_provider.py`：定义绑定式 `CategorySearcher` 与
-  `CategoryNavigator`；前者按关键词发现，后者读取顶层节点并按 parent IDs 展开，
-  两者的方法都不接收 platform/site。
+  `CategoryNavigator`，以及类目详情、属性定义和枚举分页的 `CategoryProvider` ABC；
+  注册平台必须显式实现核心规则读取契约。
+- `erp_web/schemas/category_definition.py`：内部 `CategoryDefinition`、有界公共属性/枚举
+  分页 View 与稳定 fingerprint 的唯一 shape owner。内部定义不含平台原始 `raw` 或完整
+  枚举全集，公共 View 也不暴露 `platform_binding`。
+- `erp_web/runtime_units/category_catalog.py`：业务消费者的统一类目读取入口；负责 Provider
+  解析、定义 Loader 注入与有界公共投影。类目匹配、属性填充、预检、payload 编译、前端和
+  Agent 工具不得绕过 Catalog/注入 Loader 直接读取平台规则。
+- `erp_web/runtime_units/category_providers.py`：Mercado Libre、Ozon、Yandex 的显式
+  `CategoryProvider` 实现与注册表；平台 API shape 在这里归一化为当前定义和明确
+  `platform_binding`。
+- `erp_web/runtime_units/category_definition_cache.py`：统一属性定义持久缓存 owner；24 小时
+  fresh、最多 7 天 transient stale，401/403、凭据缺失、禁用类目和结构错误不得用 stale
+  掩盖。缓存不进入商品、草稿、任务或 Agent history。
 - `erp_web/runtime_units/category_searchers.py`：任务入口根据当前平台实例化具体
   检索对象。Mercado Libre 调用 `domain_discovery/search`；Ozon 同一绑定对象同时
   保留人工关键词搜索能力并为自动匹配实现树导航；Yandex 只在本地缓存类目树上做
   规范化关键词匹配（source `yandex_cache`），并把限流/认证/缺凭据错误统一分类。
   平台选择只发生在对象创建处。
-- `erp_web/runtime_units/category_providers.py`：平台 API 与类目详情适配。
 - `erp_web/runtime_units/ozon_category_api.py`：Ozon 类目语料的刷新、人工搜索和树导航入口；
   24 小时内复用缓存，远端瞬时网络错误时最多使用 7 天旧语料，认证错误不允许
   stale fallback。完整树不会进入 AI 上下文。
@@ -442,10 +465,9 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
   持久化 owner；使用原子替换写入，文件只含 Client ID 单向摘要，不保存凭据。
 - `erp_web/runtime_units/yandex_category_api.py`：Yandex 类目树与类目参数语料的刷新
   与缓存 owner；类目树按语言与凭据作用域缓存（内存 + gzip 持久化 JSON），6 小时
-  新鲜窗口用于避开 Yandex 每小时限额，远端瞬时错误最多使用 7 天旧语料；类目参数
-  按类目 ID 短 TTL 内存缓存。缓存文件只含凭据作用域单向摘要，不保存凭据。
-  平台 shape → 通用 CategoryProvider shape 的机械转换发生在 `category_providers.py`
-  平台边界。
+  新鲜窗口用于避开 Yandex 每小时限额，远端瞬时错误最多使用 7 天旧语料；底层类目参数
+  还有短 TTL 内存缓存，归一化后的 `CategoryDefinition` 统一进入上述持久定义缓存。
+  缓存文件只含凭据作用域单向摘要，不保存凭据。
 - `erp_web/schemas/category.py`：规范化候选、搜索结果、匹配结果 shape，以及
   Agent Service 与领域工具共同使用的请求级 `CategoryCandidateLedger`；
   `normalize_category_attribute_definition` 为带单位属性暴露 `unit_options/default_unit`。
@@ -478,7 +500,13 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
 - `POST /api/category-attribute-values` 是平台枚举值的唯一公开读取入口；
   `erp_web/runtime_units/category_store.py` 通过 `CategoryProvider.attribute_values` 分派，
   Ozon 由 `erp_web/runtime_units/ozon_category_api.py` 调用独立的
-  `description-category/attribute/values` 接口并跨页搜索、短时缓存。
+  `description-category/attribute/values` 接口分页，并把非空检索交给平台的
+  `description-category/attribute/values/search` 大字典搜索接口；结果短时缓存。品牌空查询首屏
+  会用当前类目的实时搜索结果置顶官方“无品牌”候选；`无品牌/其他/Generic/no brand` 等查询别名
+  只转换为平台原文检索词，枚举 ID 不做跨类目硬编码。
+- `erp_web/schemas/category_brand.py` 与
+  `erp_web/runtime_units/category_brand_values.py`：平台作用域内的品牌属性识别、无品牌事实
+  等价关系及官方 strict-enum 候选解析；Ozon 属性 85 不得扩散为其他平台的品牌身份。
 - `erp_web/product_model/category_model.py`：类目属性有效性和未解决必填项的唯一确定性判断；
   `strict_enum/open_enum/free_text` 三种值模式同时供规则填充、Agent target 和发布预检使用。
 - `erp_web/runtime_units/category_attribute_ai_fill.py`：类目属性填充编排入口；先执行规则填充，
@@ -492,12 +520,17 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
   executor adapter 均由 Compiler 生成，不存在旧手写工具名或闭包 executor。
   `erp_web/services/category_attribute_fill_agent_service.py` 负责类型化输出和候选账本校验：
   平台强制枚举只能选择本次工具返回的 `dictionary_value_id + value`；开放枚举优先使用
-  schema options，没有匹配选项时允许填写有商品依据的自定义文本且不得提交枚举 ID。
+  schema options，没有匹配选项时允许填写有商品依据的自定义文本且不得提交枚举 ID。非品牌
+  `strict_enum` 的候选真实性以 request-scoped Ledger 为边界，候选适用性仍需商品事实；类目
+  “类型”枚举可由已确认的类目 ID/路径提供跨语言证据。品牌只接受明确无品牌语义或与唯一、
+  一致的商品品牌字段精确匹配的候选，禁止相似品牌替换。自由文本仍需商品事实证据，包装重量
+  等结构化事实只允许通过确定性单位换算放行。
 - `config/prompts/category_attribute_fill.json`：`category.attribute_fill` Agent prompt；
   明确区分发布必填、平台强制枚举、建议枚举和普通自定义属性，并要求技术参数、链接、
   编码、证件与文件不得编造。
 - `front/src/components/domain/CategoryAttributesPanel.vue` 对字典字段只保存平台选项的
   `dictionary_value_id + value`（ID 原样按字符串存取，不做数值化），搜索输入不进入草稿；
+  实时候选按 `next_cursor/has_more` 追加并按 ID 去重，大品牌字典通过“加载更多”继续读取；
   带 `unit_options` 的属性通过数值输入 + 单位下拉生成 `{value, unit}`；
   发布预检拒绝自由文本字典值。
 
@@ -567,7 +600,8 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   投影当前目标的发布价格。持久化草稿没有含义不明的顶层 `price/currency`。
 - `erp_web/runtime_units/publish_validation.py`：发布前核对目标币种、Money 币种、核价
   指纹、商品成本及包装尺寸；任何变化都会把旧核价判为 stale 并要求重新核价。
-- 商品 schema v2 会读取 v1 数据，但旧数字售价和无指纹核价只标记失效，不自动猜币种。
+- 商品 schema v2 仍会在输入归一化边界读取 v1 payload，但旧数字售价和无指纹核价只标记
+  失效，不自动猜币种；这是商品 payload 兼容，不是 SQLite 旧版本运行时迁移。
 
 ## 商品发布
 

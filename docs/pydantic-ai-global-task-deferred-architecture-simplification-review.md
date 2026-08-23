@@ -1,6 +1,6 @@
 # Pydantic AI Deferred 与 Global Task 架构瘦身评审建议
 
-> 状态：待评审  
+> 状态：评审中（R-05 已决策并完成）
 > 日期：2026-08-22  
 > 适用范围：`docs/pydantic-ai-global-task-deferred-migration-plan.md` 对应的当前实现  
 > 目标：在不削弱原子提交、崩溃恢复、断线恢复和业务安全边界的前提下，判断当前实现是否还能进一步使用 Pydantic AI 原生能力并减少无效基础设施  
@@ -16,7 +16,7 @@
 - 请求断线后继续运行的 server-side producer；
 - history/link/outbox 组合事务；
 - 后台通知、重放和前端 conversation 恢复；
-- 旧数据库 schema 的升级与 legacy Task 处置。
+- 数据库版本门禁与当前 schema 完整性校验（旧版本升级和 legacy Task 处置已删除）。
 
 这些能力不能仅凭“代码变多”判断为重复造轮子。但当前实现仍有若干可以进一步收敛的设计点。本文件只定义五项架构评审，不直接授权实施重写。
 
@@ -38,7 +38,7 @@
 | R-02 | 将完整 event-chunk outbox 简化为真实使用的通知契约 | 优先选择最小 durable history-version notification | 高 | 评审确认后实施 |
 | R-03 | 集中提交后发布 owner，删除重复与死入口 | 应当收敛 | 中 | 可以独立实施 |
 | R-04 | 评估 `DetachedChatRunner` 的保留边界 | 当前服务器架构下保留，设定明确移除条件 | 中 | 当前不重写服务器 |
-| R-05 | 依据真实数据决定 v10/v11/v12 migration | 先做数据与部署证据审计；无证据则删除兼容链 | 中 | 证据确认后实施 |
+| R-05 | 依据真实数据决定旧数据库 migration | 无真实兼容契约；仅支持全新/完整当前库，兼容链已删除 | 中 | 已完成 |
 
 ## 4. R-01：评估用 `ExternalToolset` 取代自定义 `agent_deferred` 特判链
 
@@ -329,57 +329,32 @@ AiConversationOutboxPublisher
 4. runner 不成为新的业务协调 owner；
 5. 多进程部署限制在架构文档中明确记录。
 
-## 8. R-05：以真实数据证据决定旧数据库 migration
+## 8. R-05：旧数据库 migration 决策（已完成）
 
-### 8.1 当前兼容范围
+### 8.1 证据与最终结论
 
-`erp_web/db.py` 当前支持：
+已确认项目不存在必须保留的旧业务数据库、已部署旧版本或依赖旧 schema 的外部调用方。
+仍需保留的 AI Provider 配置和店铺授权已先导出，旧商品、草稿、conversation、Task、审批
+与发布记录允许直接放弃。因此 v10–v13 不构成兼容契约，不能继续冻结运行时升级成本。
 
-- v10 → v12；
-- v11 → v12；
-- v12 → v13；
-- legacy unfinished Global Task 的明确取消；
-- 对缺少真实 Pydantic `tool_call_id` 的旧 Task 不伪造 Deferred link。
+### 8.2 已实施范围
 
-迁移本身符合持久化安全原则，但项目处于 Demo/初始开发阶段。是否保留这部分成本，必须由真实数据和部署证据决定，不能仅因“代码已经存在”自动形成兼容契约。
+- 删除 v10/v11/v12/v13 upgrade 分支、DDL 和列/表常量；
+- 删除 legacy unfinished Global Task 一次性取消逻辑；
+- 删除只验证旧升级行为的 migration fixture/test；
+- `erp_web/db.py` 仅将真正空库初始化为当前 v14；
+- 现有库必须为结构完整的 v14，其他版本、未来版本和残缺/额外结构均在写入前失败；
+- 旧库由用户显式导出所需配置后删除并重建，应用不自动迁移、修复、删除或重建。
 
-### 8.2 证据审计
+### 8.3 验收证据
 
-评审前应确认：
-
-1. 是否存在需要保留的用户数据库或团队共享数据库；
-2. 是否有任何已部署实例仍运行 v10/v11/v12；
-3. 旧数据是否包含不可重新生成的 conversation、Task、审批或业务记录；
-4. 是否存在外部脚本或发布版本依赖旧 schema；
-5. 是否已经有备份、导出或一次性迁移方案；
-6. legacy unfinished Task 是应取消、导出还是允许直接丢弃。
-
-### 8.3 决策分支
-
-#### 存在真实不可丢数据
-
-保留 migration，并要求：
-
-- 使用真实 v10/v11/v12 schema fixture 测试逐级升级；
-- 重复启动迁移幂等；
-- migration 与当前 schema 创建路径最终完全一致；
-- legacy Task 的取消有审计记录且不伪造 `tool_call_id`；
-- 文档明确支持的最低版本和未来移除策略。
-
-#### 不存在真实兼容契约
-
-按项目 Demo 策略删除：
-
-- v10/v11/v12 upgrade 分支；
-- legacy Task 一次性取消逻辑；
-- 只验证旧行为的 migration fixture/test；
-- 旧 schema 常量、错误说明和文档描述。
-
-当前 schema 直接作为唯一初始化格式；开发数据库通过明确重建或一次性导出/导入处理，不保留 runtime compatibility path。
+测试覆盖空库初始化、完整 v14 重复打开、所有旧版本/未来版本拒绝、缺列、缺索引、额外
+table/view 与非空 v0 拒绝，并验证拒绝前后主库、WAL/SHM sidecar 和业务数据不变。
 
 ### 8.4 安全边界
 
-在证据审计完成前不得直接删除旧数据库或破坏现有文件。即使最终决定不保留 runtime migration，也应先明确哪些数据库可重建、哪些需要备份或导出。
+“不支持旧库”不等于“应用可以删除旧库”。运行时只做只读预检和 fail-fast；导出、停服、
+删除与重建始终是用户或运维显式操作。
 
 ## 9. 推荐评审顺序
 
@@ -388,7 +363,7 @@ AiConversationOutboxPublisher
 1. **先验证 R-01 ExternalToolset。** 它会直接影响 provisional link、事件缓冲和 UI Deferred part；
 2. **再决定 R-02 事件契约。** 明确前端究竟消费官方 events 还是只消费 history-version notification；
 3. **根据前两项结果实施 R-03 owner 收敛。** 避免先重构随后再次推翻 publisher；
-4. **独立完成 R-05 数据证据审计。** 该结论不依赖 Agent 流程；
+4. **R-05 已独立完成。** 当前数据库门禁不依赖其余 Agent 流程评审；
 5. **R-04 当前只记录边界与移除条件。** 不在本轮同时迁移 HTTP server。
 
 ## 10. 建议形成的正式决策记录
@@ -401,7 +376,7 @@ AiConversationOutboxPublisher
 | R-02 | 待定 |  |  |  |  |  |  |
 | R-03 | 待定 |  |  |  |  |  |  |
 | R-04 | 建议保留 | 当前同步 HTTP 生命周期需要独立 producer owner | 本轮迁移 ASGI：范围扩大 | 未来满足移除条件后整体删除 | 仅补边界/停机验证 | 断线、异常、shutdown |  |
-| R-05 | 待数据审计 |  |  |  |  | migration fixtures |  |
+| R-05 | 删除旧库兼容链 | 无真实旧 DB 契约，必要配置可独立导出 | 保留 migration：持续维护无消费者的分支 | v10–v13 upgrade、legacy Task 取消、旧 fixture | 当前 v14 完整结构门禁 | 空库初始化；当前库重复打开；旧/未来/残缺库无写入拒绝 | 已完成 |
 
 任何“保留当前实现”的决定也必须写明原生方案为什么不适用，避免未来再次重复讨论。
 
@@ -413,7 +388,7 @@ AiConversationOutboxPublisher
 2. 项目只保存真正有消费者的数据；
 3. history/link/notification 各自只有一个提交和发布 owner；
 4. 同步 HTTP 带来的临时基础设施不会继续扩张为第二套 durable runtime；
-5. 数据库兼容成本与真实持久数据价值匹配；
+5. 数据库不承担没有真实契约的历史兼容成本；
 6. 迁移计划、代码、测试和产品实际行为使用同一套契约。
 
 即使最终保留大部分可靠性代码，只要以上职责边界成立，本次迁移仍然是合理的；如果评审确认 ExternalToolset 和最小 version notification 可行，则应在正式合入前完成相应收敛，避免长期维护无消费者的事件与跨层 Deferred 特判。

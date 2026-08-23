@@ -1,12 +1,10 @@
-"""Deferred task link ledger 的持久化契约与 v12 → v13 迁移测试。"""
+"""Deferred task link ledger 的当前持久化契约测试。"""
 
 from __future__ import annotations
 
 import json
 import sqlite3
-import tempfile
 import time
-import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -20,7 +18,6 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from erp_web import db as erp_db
 from erp_web.db import ErpDatabase
 from erp_web.stores.pydantic_ai_event_outbox_store import (
     PydanticAiEventOutboxStore,
@@ -590,96 +587,3 @@ def test_has_active_blocks_conversation_until_resolved(stores) -> None:
         encoded_chunks=[],
     )
     assert links.has_active(CONVERSATION) is False
-
-
-class DeferredSchemaMigrationTest(unittest.TestCase):
-    """v12 → v13：结构升级 + 旧未终结任务取消的数据迁移。"""
-
-    def _db(self, app_dir: Path) -> ErpDatabase:
-        return ErpDatabase(app_dir / erp_db.DEFAULT_DB_NAME)
-
-    def _downgrade_to_v12(self, database: ErpDatabase) -> None:
-        with database._connect() as conn:
-            conn.execute("DROP INDEX idx_deferred_task_links_active_conversation")
-            conn.execute("DROP INDEX idx_deferred_task_links_ready")
-            conn.execute("DROP INDEX idx_pydantic_ai_event_outbox_conversation")
-            conn.execute("DROP TABLE pydantic_deferred_task_links")
-            conn.execute("DROP TABLE pydantic_ai_event_outbox")
-            conn.execute(
-                "ALTER TABLE pydantic_message_histories DROP COLUMN history_version"
-            )
-            conn.execute("PRAGMA user_version = 12")
-            conn.commit()
-
-    def test_v12_upgrade_cancels_unfinished_tasks_and_keeps_terminal(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            app_dir = Path(tmp)
-            now = datetime.now(timezone.utc).isoformat()
-            # 先用当前代码写入任务与历史，再降级到 v12 模拟真实旧数据。
-            raw = self._db(app_dir)
-            for task_id, status in (
-                ("gtask_running", "running"),
-                ("gtask_approval", "pending_approval"),
-                ("gtask_done", "completed"),
-            ):
-                payload = _task_payload(task_id)
-                payload["status"] = status
-                raw.create_global_task(payload)
-            raw.replace_pydantic_message_history(
-                CONVERSATION,
-                b"[]",
-                now=now,
-            )
-            self._downgrade_to_v12(raw)
-
-            upgraded = self._db(app_dir)
-
-            self.assertEqual(
-                upgraded.load_global_task("gtask_running")["status"],
-                "cancelled",
-            )
-            self.assertEqual(
-                upgraded.load_global_task("gtask_approval")["status"],
-                "cancelled",
-            )
-            migrated = upgraded.load_global_task("gtask_running")
-            self.assertEqual(
-                migrated["error_code"],
-                "GLOBAL_TASK_LEGACY_MIGRATION_CANCELLED",
-            )
-            self.assertEqual(
-                upgraded.load_global_task("gtask_done")["status"],
-                "completed",
-            )
-            history = upgraded.get_pydantic_message_history(CONVERSATION)
-            assert history is not None
-            self.assertEqual(int(history["history_version"]), 0)
-            # 升级后第一次保存从 1 开始递增。
-            replaced = upgraded.replace_pydantic_message_history(
-                CONVERSATION,
-                b"[]",
-                now=now,
-            )
-            self.assertEqual(int(replaced["history_version"]), 1)
-
-    def test_v12_upgrade_restores_full_current_shape(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            app_dir = Path(tmp)
-            database = self._db(app_dir)
-            self._downgrade_to_v12(database)
-
-            upgraded = self._db(app_dir)
-
-            conn = sqlite3.connect(upgraded.db_path)
-            try:
-                version = conn.execute("PRAGMA user_version").fetchone()[0]
-                tables = {
-                    row[0]
-                    for row in conn.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'"
-                    )
-                }
-            finally:
-                conn.close()
-            self.assertEqual(version, erp_db.SCHEMA_VERSION)
-            self.assertTrue(set(erp_db.REQUIRED_TABLES).issubset(tables))

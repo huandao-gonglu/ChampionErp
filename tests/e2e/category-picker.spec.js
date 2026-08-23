@@ -9,11 +9,14 @@ test("category picker searches live categories and fills attributes", async ({ p
       contentType: "application/json",
       body: JSON.stringify({
         ok: true,
-        required: [
-          { id: "BRAND", name: "Brand", required: true },
-          { id: "MODEL", name: "Model", required: true },
+        category_id: "MLM-200",
+        category_path: "水瓶",
+        attributes: [
+          { id: "BRAND", name: "Brand", required: true, value_type: "string", value_mode: "free_text", is_dictionary: false, options: [], has_more_values: false },
+          { id: "MODEL", name: "Model", required: true, value_type: "string", value_mode: "free_text", is_dictionary: false, options: [], has_more_values: false },
         ],
-        optional: [],
+        next_cursor: "",
+        has_more: false,
       }),
     });
   });
@@ -98,7 +101,7 @@ test("publish page shows confirmation card before queue enqueue", async ({ page 
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ ok: true, required: [], optional: [] }),
+      body: JSON.stringify({ ok: true, attributes: [], next_cursor: "", has_more: false }),
     });
   });
 
@@ -238,11 +241,15 @@ test("selecting a category auto-loads attributes and runs local precheck", async
       contentType: "application/json",
       body: JSON.stringify({
         ok: true,
-        required: [
-          { id: "BRAND", name: "Brand", required: true },
-          { id: "MODEL", name: "Model", required: true },
+        category_id: "MLM-200",
+        category_path: "水瓶",
+        attributes: [
+          { id: "BRAND", name: "Brand", required: true, value_type: "string", value_mode: "free_text", is_dictionary: false, options: [], has_more_values: false },
+          { id: "MODEL", name: "Model", required: true, value_type: "string", value_mode: "free_text", is_dictionary: false, options: [], has_more_values: false },
+          { id: "COLOR", name: "Color", required: false, value_type: "string", value_mode: "free_text", is_dictionary: false, options: [], has_more_values: false },
         ],
-        optional: [{ id: "COLOR", name: "Color", required: false }],
+        next_cursor: "",
+        has_more: false,
       }),
     });
   });
@@ -299,11 +306,14 @@ test("missing required category attributes highlight fields and disable publish 
       contentType: "application/json",
       body: JSON.stringify({
         ok: true,
-        required: [
-          { id: "BRAND", name: "Brand", required: true },
-          { id: "MODEL", name: "Model", required: true },
+        category_id: "MLM-200",
+        category_path: "水瓶",
+        attributes: [
+          { id: "BRAND", name: "Brand", required: true, value_type: "string", value_mode: "free_text", is_dictionary: false, options: [], has_more_values: false },
+          { id: "MODEL", name: "Model", required: true, value_type: "string", value_mode: "free_text", is_dictionary: false, options: [], has_more_values: false },
         ],
-        optional: [],
+        next_cursor: "",
+        has_more: false,
       }),
     });
   });

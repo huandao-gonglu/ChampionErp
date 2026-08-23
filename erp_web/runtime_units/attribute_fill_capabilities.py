@@ -11,6 +11,14 @@ from erp_web.product_model import unresolved_required_category_attributes
 from erp_web.runtime_units.category_attribute_ai_fill import (
     apply_ai_model_attribute_fill,
 )
+from erp_web.runtime_units.category_brand_values import (
+    AttributeValuesLoader,
+    apply_no_brand_attribute,
+    definition_is_brand,
+    dictionary_value_rows as _dictionary_value_rows,
+    is_no_brand_fact,
+    resolve_no_brand_option,
+)
 from erp_web.runtime_units.category_store import (
     fetch_category_attribute_values,
     fetch_category_record,
@@ -20,7 +28,6 @@ from erp_web.runtime_units.market_capability_support import (
     CategoryRecordLoader,
     MarketPrepareStore,
     assert_target_mutable,
-    category_schema,
     invalidate_target_publish_preparation,
     load_category_record,
     load_draft,
@@ -47,7 +54,6 @@ from erp_web.services.capability_errors import (
 
 
 AttributeFiller = Callable[..., tuple[dict[str, Any], dict[str, Any]]]
-AttributeValuesLoader = Callable[..., dict[str, Any]]
 
 #: 字典属性候选值拉取上限；超出时保留前 N 个合法值供人工选择。
 DICTIONARY_OPTIONS_LIMIT = 50
@@ -75,28 +81,6 @@ def _fetch_dictionary_values(
     except Exception:
         return {}
     return payload if isinstance(payload, Mapping) else {}
-
-
-def _dictionary_value_rows(payload: Mapping[str, Any]) -> list[dict[str, str]]:
-    rows: list[dict[str, str]] = []
-    values = payload.get("values") if isinstance(payload, Mapping) else None
-    if not isinstance(values, list):
-        return rows
-    for item in values:
-        if not isinstance(item, Mapping):
-            continue
-        value = text(item.get("value"))
-        if not value:
-            continue
-        rows.append(
-            {
-                "dictionary_value_id": text(item.get("id")),
-                "value": value,
-            }
-        )
-        if len(rows) >= DICTIONARY_OPTIONS_LIMIT:
-            break
-    return rows
 
 
 def _load_dictionary_options(
@@ -183,6 +167,23 @@ def _normalize_provided_dictionary_values(
         texts = [text(item) for item in tokens if text(item)]
         if not texts or any(isinstance(item, Mapping) for item in tokens):
             continue
+        # 品牌属性：提交"无品牌"候选或占位值时，直接落到平台官方"无品牌"
+        # 字典值（品牌字典首页通常不含它，按页匹配会漏）。
+        if (
+            definition_is_brand(definition, platform=platform)
+            and all(is_no_brand_fact(item) for item in texts)
+        ):
+            no_brand = resolve_no_brand_option(
+                loader,
+                platform=platform,
+                category_id=category_id,
+                attribute_id=text(attr_id),
+                site=site,
+            )
+            no_brand_value = text((no_brand or {}).get("value"))
+            if no_brand_value:
+                normalized[text(attr_id)] = {"values": [dict(no_brand)]}
+                continue
         payload = _fetch_dictionary_values(
             loader,
             platform=platform,
@@ -280,16 +281,26 @@ def fill_product_attributes(
             "PRODUCT_ATTRIBUTES_FILL_RESULT_INVALID",
             "属性填写结果缺少目标平台草稿。",
         )
+    # 无品牌商品：把平台品牌字典属性落到官方"无品牌"值，避免卡待输入。
+    brand_autofilled = apply_no_brand_attribute(
+        updated_draft,
+        product=updated_product,
+        platform=platform,
+        record=record,
+        category_id=selected_category_id,
+        site=text(target.get("site")),
+        loader=attribute_values_loader,
+    )
+    if brand_autofilled:
+        drafts[platform] = updated_draft
+        meta = {
+            **meta,
+            "brand_autofilled": brand_autofilled,
+        }
     attributes = (
         updated_draft.get("attributes")
         if isinstance(updated_draft.get("attributes"), dict)
         else {}
-    )
-    updated_draft["category_attribute_schema"] = category_schema(
-        record,
-        platform=platform,
-        site=text(target.get("site")),
-        selected_category_id=selected_category_id,
     )
     unresolved = unresolved_required_category_attributes(
         product_with_target(updated_product, platform, updated_draft),
@@ -329,7 +340,6 @@ def fill_product_attributes(
     changed = existing_attributes != attributes or any(
         target_draft.get(key) != updated_draft.get(key)
         for key in (
-            "category_attribute_schema",
             "validation_errors",
             "category_precheck",
             "last_precheck",
@@ -372,6 +382,24 @@ def fill_product_attributes(
                 attribute_id=attr_id,
                 site=text(target.get("site")),
             )
+        if dictionary_attribute and definition_is_brand(
+            definition,
+            platform=platform,
+        ):
+            # 品牌属性必须提供官方"无品牌"候选：字典首页通常不含它，
+            # 无品牌商品 otherwise 无从选择。
+            no_brand_option = resolve_no_brand_option(
+                attribute_values_loader,
+                platform=platform,
+                category_id=selected_category_id,
+                attribute_id=attr_id,
+                site=text(target.get("site")),
+            )
+            no_brand_value = text(
+                (no_brand_option or {}).get("value")
+            )
+            if no_brand_value and no_brand_value not in options:
+                options = [no_brand_value, *options]
         warning = text(meta.get("warning"))
         reason = f"平台类目要求填写 {label}。"
         if dictionary_attribute:

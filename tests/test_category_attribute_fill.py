@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from erp_web.product_model import (
     build_ai_attribute_fill,
     default_product_model,
@@ -129,6 +131,7 @@ def test_ai_model_attribute_fill_resolves_ozon_dictionary_values(monkeypatch) ->
     category = {
         "category_id": "91443",
         "site": "global",
+        "category_path": "Бытовая техника / Вентилятор",
         "attributes": {
             "required": [
                 {
@@ -208,12 +211,356 @@ def test_ai_model_attribute_fill_resolves_ozon_dictionary_values(monkeypatch) ->
     )
     draft = updated["drafts"]["ozon"]
 
-    assert "8229" not in draft["attributes"]
-    assert "85" not in draft["attributes"]
+    assert draft["attributes"]["8229"] == {
+        "values": [
+            {
+                "dictionary_value_id": 91443,
+                "value": "Вентилятор",
+            }
+        ]
+    }
+    assert draft["attributes"]["85"] == {
+        "values": [
+            {
+                "dictionary_value_id": 126745801,
+                "value": "Нет бренда",
+            }
+        ]
+    }
     assert draft["attributes"]["9048"] == "F30"
-    assert draft["validation_errors"] == ["8229", "85"]
-    assert meta["ai_filled"] == ["9048"]
-    assert meta["evidence_rejected"] == ["8229", "85"]
+    assert draft["validation_errors"] == []
+    assert meta["ai_filled"] == ["8229", "85", "9048"]
+    assert "evidence_rejected" not in meta
+
+
+def test_ai_model_attribute_fill_accepts_other_no_brand_and_exact_weight_conversion(
+    monkeypatch,
+) -> None:
+    """回归 conversation_94cb...：跨语言枚举与 kg→g 不应被后置证据全拒。"""
+
+    product = default_product_model()
+    product["name"] = "木工墨斗划线器"
+    product["brand"] = "其他"
+    product["weight_kg"] = "1"
+    product["source"].update(
+        {
+            "title": "木工自动卷线墨斗划线器",
+            "description": "适合木工和建筑施工的手动划线工具。",
+            "brand": "其他",
+            "weight_kg": "1",
+        }
+    )
+    product["drafts"]["ozon"]["brand"] = "其他"
+    product["drafts"]["ozon"]["package_dimensions"]["weight_kg"] = "1"
+    category = {
+        "category_id": "94953",
+        "site": "global",
+        "category_path": "Строительство и ремонт / Разметочный инструмент",
+        "attributes": {
+            "required": [
+                {
+                    "id": "85",
+                    "name": "Бренд",
+                    "required": True,
+                    "dictionary_id": "28732849",
+                    "is_dictionary": True,
+                },
+                {
+                    "id": "8229",
+                    "name": "Тип",
+                    "required": True,
+                    "dictionary_id": "1960",
+                    "is_dictionary": True,
+                },
+            ],
+            "optional": [
+                {
+                    "id": "4497",
+                    "name": "Вес с упаковкой, г",
+                    "required": False,
+                    "dictionary_id": "0",
+                    "is_dictionary": False,
+                }
+            ],
+        },
+    }
+
+    # 强制走 Agent 回退路径，验证后置规则本身；实时规则路径另有独立测试。
+    monkeypatch.setattr(
+        category_attribute_ai_fill,
+        "fetch_category_attribute_values",
+        lambda *args, **kwargs: {"values": []},
+    )
+
+    def fake_agent(payload, toolset, ledger):
+        del toolset
+        assert payload["category_path"].endswith("Разметочный инструмент")
+        assert [item["id"] for item in payload["attributes"]] == [
+            "85",
+            "8229",
+            "4497",
+        ]
+        ledger.add_values(
+            "85",
+            [{"id": "126745801", "value": "Нет бренда"}],
+        )
+        ledger.add_values(
+            "8229",
+            [{"id": "94953", "value": "Шнур разметочный"}],
+        )
+        return CategoryAttributeFillAgentRun(
+            {
+                "assignments": [
+                    {
+                        "attribute_id": "85",
+                        "value": "Нет бренда",
+                        "dictionary_value_id": "126745801",
+                    },
+                    {
+                        "attribute_id": "8229",
+                        "value": "Шнур разметочный",
+                        "dictionary_value_id": "94953",
+                    },
+                    {
+                        "attribute_id": "4497",
+                        "value": "1000",
+                        "dictionary_value_id": "",
+                    },
+                ],
+                "need_review": [],
+            }
+        )
+
+    monkeypatch.setattr(
+        category_attribute_ai_fill,
+        "run_category_attribute_fill_agent",
+        fake_agent,
+    )
+
+    updated, meta = category_attribute_ai_fill.apply_ai_model_attribute_fill(
+        product,
+        "ozon",
+        category,
+    )
+    draft = updated["drafts"]["ozon"]
+
+    assert draft["attributes"] == {
+        "85": {
+            "values": [
+                {
+                    "dictionary_value_id": 126745801,
+                    "value": "Нет бренда",
+                }
+            ]
+        },
+        "8229": {
+            "values": [
+                {
+                    "dictionary_value_id": 94953,
+                    "value": "Шнур разметочный",
+                }
+            ]
+        },
+        "4497": "1000",
+    }
+    assert draft["validation_errors"] == []
+    assert meta["ai_filled"] == ["4497", "8229", "85"]
+    assert "evidence_rejected" not in meta
+
+
+def test_ai_model_attribute_fill_rejects_conflicting_concrete_brand_facts(
+    monkeypatch,
+) -> None:
+    product = default_product_model()
+    product["brand"] = "Bosch"
+    product["source"]["brand"] = "Bosch"
+    product["drafts"]["ozon"]["brand"] = "Makita"
+    category = {
+        "category_id": "94953",
+        "site": "global",
+        "attributes": {
+            "required": [
+                {
+                    "id": "85",
+                    "name": "Бренд",
+                    "required": True,
+                    "dictionary_id": "28732849",
+                    "is_dictionary": True,
+                }
+            ],
+            "optional": [],
+        },
+    }
+
+    def fake_agent(payload, toolset, ledger):
+        del payload, toolset
+        ledger.add_values("85", [{"id": "bosch-id", "value": "Bosch"}])
+        return CategoryAttributeFillAgentRun(
+            {
+                "assignments": [
+                    {
+                        "attribute_id": "85",
+                        "value": "Bosch",
+                        "dictionary_value_id": "bosch-id",
+                    }
+                ],
+                "need_review": [],
+            }
+        )
+
+    monkeypatch.setattr(
+        category_attribute_ai_fill,
+        "run_category_attribute_fill_agent",
+        fake_agent,
+    )
+
+    updated, meta = category_attribute_ai_fill.apply_ai_model_attribute_fill(
+        product,
+        "ozon",
+        category,
+    )
+
+    assert "85" not in updated["drafts"]["ozon"]["attributes"]
+    assert updated["drafts"]["ozon"]["validation_errors"] == ["85"]
+    assert meta["evidence_rejected"] == ["85"]
+
+
+def test_ai_model_attribute_fill_accepts_only_exact_concrete_brand_candidate(
+    monkeypatch,
+) -> None:
+    category = {
+        "category_id": "94953",
+        "site": "global",
+        "attributes": {
+            "required": [
+                {
+                    "id": "85",
+                    "name": "Бренд",
+                    "required": True,
+                    "dictionary_id": "28732849",
+                    "is_dictionary": True,
+                }
+            ],
+            "optional": [],
+        },
+    }
+
+    def run(candidate_value: str, candidate_id: str):
+        product = default_product_model()
+        product["brand"] = "Bosch"
+        product["source"]["brand"] = "Bosch"
+        product["source"]["title"] = "Compatible with Bosch Professional"
+        product["drafts"]["ozon"]["brand"] = "Bosch"
+
+        def fake_agent(payload, toolset, ledger):
+            del payload, toolset
+            ledger.add_values(
+                "85",
+                [{"id": candidate_id, "value": candidate_value}],
+            )
+            return CategoryAttributeFillAgentRun(
+                {
+                    "assignments": [
+                        {
+                            "attribute_id": "85",
+                            "value": candidate_value,
+                            "dictionary_value_id": candidate_id,
+                        }
+                    ],
+                    "need_review": [],
+                }
+            )
+
+        monkeypatch.setattr(
+            category_attribute_ai_fill,
+            "run_category_attribute_fill_agent",
+            fake_agent,
+        )
+        return category_attribute_ai_fill.apply_ai_model_attribute_fill(
+            product,
+            "ozon",
+            category,
+        )
+
+    exact, exact_meta = run("Bosch", "bosch-id")
+    similar, similar_meta = run("Bosch Professional", "bosch-pro-id")
+
+    assert exact["drafts"]["ozon"]["attributes"]["85"] == {
+        "values": [
+            {
+                "dictionary_value_id": "bosch-id",
+                "value": "Bosch",
+            }
+        ]
+    }
+    assert exact_meta["ai_filled"] == ["85"]
+    assert "85" not in similar["drafts"]["ozon"]["attributes"]
+    assert similar["drafts"]["ozon"]["validation_errors"] == ["85"]
+    assert similar_meta["evidence_rejected"] == ["85"]
+
+
+@pytest.mark.parametrize(
+    ("draft_weight", "suggested_value"),
+    [("1", "999"), ("2", "1000")],
+)
+def test_ai_model_attribute_fill_rejects_inexact_or_stale_weight_conversion(
+    monkeypatch,
+    draft_weight: str,
+    suggested_value: str,
+) -> None:
+    product = default_product_model()
+    product["name"] = f"型号 {suggested_value} 的划线器"
+    product["weight_kg"] = "1"
+    product["source"]["weight_kg"] = "1"
+    product["source"]["title"] = (
+        f"型号 {suggested_value}，包装重量另见规格"
+    )
+    product["drafts"]["ozon"]["package_dimensions"]["weight_kg"] = (
+        draft_weight
+    )
+    category = {
+        "category_id": "94953",
+        "site": "global",
+        "attributes": {
+            "required": [],
+            "optional": [
+                {
+                    "id": "4497",
+                    "name": "Вес с упаковкой, г",
+                    "required": False,
+                    "dictionary_id": "0",
+                    "is_dictionary": False,
+                }
+            ],
+        },
+    }
+    monkeypatch.setattr(
+        category_attribute_ai_fill,
+        "run_category_attribute_fill_agent",
+        lambda *args: CategoryAttributeFillAgentRun(
+            {
+                "assignments": [
+                    {
+                        "attribute_id": "4497",
+                        "value": suggested_value,
+                        "dictionary_value_id": "",
+                    }
+                ],
+                "need_review": [],
+            }
+        ),
+    )
+
+    updated, meta = category_attribute_ai_fill.apply_ai_model_attribute_fill(
+        product,
+        "ozon",
+        category,
+    )
+
+    assert "4497" not in updated["drafts"]["ozon"]["attributes"]
+    assert updated["drafts"]["ozon"]["validation_errors"] == []
+    assert meta["ai_filled"] == []
+    assert meta["evidence_rejected"] == ["4497"]
 
 
 def test_ai_model_attribute_fill_allows_custom_value_for_open_enum(
@@ -458,6 +805,62 @@ def test_ai_model_attribute_fill_rejects_market_default_without_product_evidence
     assert "VOLTAGE" not in draft["attributes"]
     assert draft["validation_errors"] == ["VOLTAGE"]
     assert meta["ai_filled"] == []
+    assert meta["evidence_rejected"] == ["VOLTAGE"]
+
+
+def test_ai_model_attribute_fill_rejects_unsupported_strict_enum_specification(
+    monkeypatch,
+) -> None:
+    product = default_product_model()
+    product["source"]["title"] = "Portable USB desk fan"
+    category = {
+        "category_id": "91443",
+        "site": "global",
+        "category_path": "Бытовая техника / Вентилятор",
+        "attributes": {
+            "required": [
+                {
+                    "id": "VOLTAGE",
+                    "name": "Напряжение",
+                    "required": True,
+                    "dictionary_id": "voltage-dictionary",
+                    "is_dictionary": True,
+                }
+            ],
+            "optional": [],
+        },
+    }
+
+    def fake_agent(payload, toolset, ledger):
+        del payload, toolset
+        ledger.add_values("VOLTAGE", [{"id": "220", "value": "220 В"}])
+        return CategoryAttributeFillAgentRun(
+            {
+                "assignments": [
+                    {
+                        "attribute_id": "VOLTAGE",
+                        "value": "220 В",
+                        "dictionary_value_id": "220",
+                    }
+                ],
+                "need_review": [],
+            }
+        )
+
+    monkeypatch.setattr(
+        category_attribute_ai_fill,
+        "run_category_attribute_fill_agent",
+        fake_agent,
+    )
+
+    updated, meta = category_attribute_ai_fill.apply_ai_model_attribute_fill(
+        product,
+        "ozon",
+        category,
+    )
+
+    assert "VOLTAGE" not in updated["drafts"]["ozon"]["attributes"]
+    assert updated["drafts"]["ozon"]["validation_errors"] == ["VOLTAGE"]
     assert meta["evidence_rejected"] == ["VOLTAGE"]
 
 

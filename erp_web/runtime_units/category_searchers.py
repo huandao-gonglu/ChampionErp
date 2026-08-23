@@ -197,7 +197,7 @@ class OzonCategorySearcher:
         if not normalized:
             return {"keyword": "", "candidates": [], "source": "ozon_cache"}
         try:
-            rows = self.provider.search(
+            rows = self.provider.search_categories(
                 normalized,
                 site=self.site,
                 limit=self.limit,
@@ -228,7 +228,7 @@ class OzonCategorySearcher:
 
     def root_categories(self) -> CategoryBrowseResult:
         try:
-            result = self.provider.roots(timeout_seconds=self._timeout())
+            result = self.provider.root_categories(timeout_seconds=self._timeout())
         except Exception as exc:
             raise _classified_error(exc) from exc
         return self._browse_result(result)
@@ -252,7 +252,7 @@ class OzonCategorySearcher:
                 "类目树导航每次最多展开两个父节点。",
             )
         try:
-            result = self.provider.browse(
+            result = self.provider.browse_categories(
                 normalized,
                 timeout_seconds=self._timeout(),
             )
@@ -347,7 +347,7 @@ class YandexCategorySearcher:
         if not normalized:
             return {"keyword": "", "candidates": [], "source": "yandex_cache"}
         try:
-            rows = self.provider.search(
+            rows = self.provider.search_categories(
                 normalized,
                 site=self.site,
                 limit=self.limit,
@@ -410,7 +410,7 @@ class MercadoLibreCategorySearcher:
                 "source": "mercadolibre_api",
             }
         try:
-            rows = self.provider.discover(
+            rows = self.provider.search_categories(
                 normalized,
                 site=self.site,
                 limit=self.limit,

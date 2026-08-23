@@ -27,6 +27,7 @@ from erp_web.schemas.product_write_capabilities import (
     DraftPricingApplyResult,
     DraftReadRequest,
     DraftReadResult,
+    DraftReadView,
     DraftSaveRequest,
     DraftSaveResult,
     DraftStockUpdateRequest,
@@ -186,6 +187,142 @@ def _id_tuple(value: Any) -> tuple[str, ...]:
     if not isinstance(value, (list, tuple)):
         return ()
     return tuple(_text(item) for item in value if _text(item))
+
+
+_DRAFT_VIEW_ATTRIBUTE_MAX = 200
+_DRAFT_VIEW_TARGET_MAX = 8
+_DRAFT_VIEW_TARGET_KEYS = (
+    "platform",
+    "site",
+    "language",
+    "category_id",
+    "description_category_id",
+    "category_path",
+    "status",
+    "publish_status",
+)
+_DRAFT_VIEW_PUBLISH_TASK_KEYS = (
+    "status",
+    "task_id",
+    "offer_id",
+    "external_id",
+    "product_id",
+    "operation",
+    "updated_at",
+)
+
+
+def _bounded_dict_subset(
+    value: Any,
+    keys: tuple[str, ...],
+    *,
+    max_length: int = 4_000,
+) -> dict[str, Any]:
+    source = _dict_value(value)
+    return {key: _bounded_text(source.get(key), max_length=max_length) for key in keys}
+
+
+def _bounded_attribute_value(value: Any) -> Any:
+    """属性取值有界化：字符串截断、字典限键、列表限长，杜绝无界枚举全集。"""
+
+    if isinstance(value, str):
+        return _bounded_text(value)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if isinstance(value, dict):
+        bounded: dict[str, Any] = {}
+        for inner_key, inner_value in list(value.items())[:20]:
+            bounded[str(inner_key)[:80]] = _bounded_attribute_value(inner_value)
+        return bounded
+    if isinstance(value, (list, tuple)):
+        return [_bounded_attribute_value(item) for item in list(value)[:20]]
+    return None
+
+
+def _ai_draft_read_view(value: Any) -> DraftReadView:
+    """完整草稿 → 类型化有界视图（draft_read 专属投影）。
+
+    视图只保留排查与下一步决策所需的业务事实；平台类目规则、完整图片列表、
+    发布日志等无界内容一律不进入模型上下文。
+    """
+
+    draft = _dict_value(value)
+    attributes = draft.get("attributes") if isinstance(draft.get("attributes"), dict) else {}
+    bounded_attributes: dict[str, Any] = {}
+    for index, (attr_id, attr_value) in enumerate(attributes.items()):
+        if index >= _DRAFT_VIEW_ATTRIBUTE_MAX:
+            break
+        bounded_attributes[_text(attr_id)[:80]] = _bounded_attribute_value(attr_value)
+    images = draft.get("images") if isinstance(draft.get("images"), list) else []
+    validation_errors = (
+        draft.get("validation_errors")
+        if isinstance(draft.get("validation_errors"), list)
+        else []
+    )
+    bounded_errors: list[Any] = []
+    for item in validation_errors[:50]:
+        if isinstance(item, dict):
+            bounded_errors.append(_bounded_dict_subset(item, ("code", "field", "message", "severity"), max_length=500))
+        else:
+            bounded_errors.append(_bounded_text(item, max_length=500))
+    target_sites = (
+        draft.get("target_sites") if isinstance(draft.get("target_sites"), list) else []
+    )
+    bounded_targets: list[dict[str, Any]] = []
+    for site in target_sites[:_DRAFT_VIEW_TARGET_MAX]:
+        if isinstance(site, dict):
+            bounded_targets.append(_bounded_dict_subset(site, _DRAFT_VIEW_TARGET_KEYS))
+    pricing = draft.get("pricing") if isinstance(draft.get("pricing"), dict) else {}
+    pricing_targets = pricing.get("targets") if isinstance(pricing.get("targets"), dict) else {}
+    pricing_summary: dict[str, Any] = {}
+    for target_key, target_value in list(pricing_targets.items())[:16]:
+        applied = (
+            target_value.get("applied_price")
+            if isinstance(target_value, dict)
+            and isinstance(target_value.get("applied_price"), dict)
+            else {}
+        )
+        pricing_summary[_text(target_key)[:80]] = {
+            "listing_currency": _bounded_text(
+                (target_value or {}).get("listing_currency"), max_length=16
+            )
+            if isinstance(target_value, dict)
+            else "",
+            "amount": _bounded_text(applied.get("amount"), max_length=40),
+            "currency": _bounded_text(applied.get("currency"), max_length=16),
+        }
+    return DraftReadView(
+        draft_id=_bounded_text(draft.get("draft_id"), max_length=160),
+        product_id=_bounded_text(draft.get("product_id"), max_length=160),
+        source_product_id=_bounded_text(draft.get("source_product_id"), max_length=160),
+        platform=_bounded_text(draft.get("platform"), max_length=80),
+        site=_bounded_text(draft.get("site"), max_length=80),
+        status=_bounded_text(draft.get("status"), max_length=80),
+        publish_status=_bounded_text(draft.get("publish_status"), max_length=80),
+        title=_bounded_text(draft.get("title")),
+        description=_bounded_text(draft.get("description"), max_length=8_000),
+        brand=_bounded_text(draft.get("brand"), max_length=200),
+        model=_bounded_text(draft.get("model"), max_length=200),
+        sku=_bounded_text(draft.get("sku"), max_length=160),
+        upc=_bounded_text(draft.get("upc"), max_length=80),
+        stock=_bounded_text(draft.get("stock"), max_length=40),
+        language=_bounded_text(draft.get("language"), max_length=40),
+        category_id=_bounded_text(draft.get("category_id"), max_length=160),
+        description_category_id=_bounded_text(
+            draft.get("description_category_id"), max_length=160
+        ),
+        category_path=_bounded_text(draft.get("category_path"), max_length=500),
+        attributes=bounded_attributes,
+        image_count=len(images),
+        validation_errors=tuple(bounded_errors),
+        category_precheck=_dict_value(draft.get("category_precheck")),
+        last_precheck=_dict_value(draft.get("last_precheck")),
+        last_publish_task=_bounded_dict_subset(
+            draft.get("last_publish_task"), _DRAFT_VIEW_PUBLISH_TASK_KEYS
+        ),
+        pricing_summary=pricing_summary,
+        target_sites=tuple(bounded_targets),
+    )
 
 
 # 写回执 changed_fields 的有界化：键名截断 + 总数上限，保证 receipt 永远
@@ -389,11 +526,11 @@ def product_delete(
 
 @ai_tool(
     name=DRAFT_READ_TOOL,
-    description="按 draft_id 读取完整草稿详情与精简关联商品上下文。",
+    description="按 draft_id 读取草稿的类型化有界视图与精简关联商品上下文。",
     permission="draft.read",
     side_effect="none",
     recovery_policy="retry_safe",
-    version="1",
+    version="2",
 )
 def draft_read(
     request: DraftReadRequest,
@@ -408,7 +545,7 @@ def draft_read(
         default_message="草稿不存在。",
     )
     return DraftReadResult(
-        draft=_dict_value(result.get("draft")),
+        draft=_ai_draft_read_view(result.get("draft")),
         product_context=_ai_draft_product_context(result.get("productContext")),
     )
 

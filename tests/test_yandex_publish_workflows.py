@@ -17,7 +17,7 @@ class _Adapter:
     def prepare_product(self, product: dict, config: dict) -> dict:
         return deepcopy(product)
 
-    def validate_draft(self, product: dict, config: dict) -> dict:
+    def validate_draft(self, context, config: dict) -> dict:
         return {
             "platform": "yandex",
             "ok": True,
@@ -26,8 +26,8 @@ class _Adapter:
             "checked_at": "2026-08-16T00:00:00Z",
         }
 
-    def build_payload(self, product: dict, config: dict) -> dict:
-        draft = product["drafts"]["yandex"]
+    def build_payload(self, context, config: dict) -> dict:
+        draft = context.product["drafts"]["yandex"]
         return {
             "platform": "yandex",
             "offer_id": draft["sku"],
@@ -108,6 +108,13 @@ def workflow_boundary(monkeypatch):
         config=SimpleNamespace(load_store_config=lambda: deepcopy(store_config)),
         products=_Products(),
         publishing_bus=bus,
+    )
+
+    # 纯工作流单测不触网：跳过当次类目定义加载。
+    from erp_web.runtime_units import category_providers
+
+    monkeypatch.setattr(
+        category_providers, "category_provider_for", lambda platform: None
     )
 
     def fake_context_loader(body, **_kwargs):
@@ -224,7 +231,7 @@ def test_preview_precheck_failure_returns_structured_errors(
     workflow_boundary,
 ) -> None:
     adapter, _store, _bus = workflow_boundary
-    adapter.validate_draft = lambda product, config: {
+    adapter.validate_draft = lambda context, config: {
         "platform": "yandex",
         "ok": False,
         "errors": [

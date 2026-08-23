@@ -4,23 +4,21 @@ from erp_web.runtime_units.publish_validation import validate_mercadolibre_draft
 
 
 def test_mercadolibre_review_summary_restores_local_attribute_ids() -> None:
+    category_record = {
+        "category_id": "MLM1",
+        "category_path": "Protectores y Folios",
+        "attributes": {
+            "required": [
+                {"id": "GTIN", "name": "Código universal de producto", "required": True},
+                {"id": "RECOMMENDED_AGE_GROUP", "name": "Edad recomendada", "required": True},
+                {"id": "TRADING_CARD_GAME_ACCESSORY_TYPE", "name": "Tipo de accesorio", "required": True},
+                {"id": "EMPTY_GTIN_REASON", "name": "Motivo de GTIN vacío", "required": True},
+            ],
+            "optional": [],
+        },
+    }
     product = {
         "sku": "SKU-1",
-        "local_platform_categories": {
-            "mercadolibre": {
-                "category_id": "MLM1",
-                "category_path": "Protectores y Folios",
-                "attributes": {
-                    "required": [
-                        {"id": "GTIN", "name": "Código universal de producto", "required": True},
-                        {"id": "RECOMMENDED_AGE_GROUP", "name": "Edad recomendada", "required": True},
-                        {"id": "TRADING_CARD_GAME_ACCESSORY_TYPE", "name": "Tipo de accesorio", "required": True},
-                        {"id": "EMPTY_GTIN_REASON", "name": "Motivo de GTIN vacío", "required": True},
-                    ],
-                    "optional": [],
-                },
-            }
-        },
         "drafts": {
             "mercadolibre": {
                 "title": "Sample title",
@@ -51,7 +49,11 @@ def test_mercadolibre_review_summary_restores_local_attribute_ids() -> None:
         "images": [{"url": "https://example.com/a.jpg", "selected": True, "platforms": ["mercadolibre"], "is_main": True}],
     }
 
-    result = validate_mercadolibre_draft(product, {"mercadolibre": {"access_token": "x"}, "listing": {}})
+    result = validate_mercadolibre_draft(
+        product,
+        {"mercadolibre": {"access_token": "x"}, "listing": {}},
+        category_record,
+    )
     fields = [item["field"] for item in result["errors"] if item["code"] == "NEED_REVIEW_ATTRIBUTES"]
 
     assert fields == [

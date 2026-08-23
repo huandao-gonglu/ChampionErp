@@ -214,8 +214,10 @@ def test_category_match_persists_focused_agent_selection() -> None:
     assert result.category_id == "CAT-1"
     assert result.platform == "mercadolibre"
     assert products.drafts["draft-1"]["category_id"] == "CAT-1"
-    assert products.drafts["draft-1"]["category_attribute_schema"]["required"][0]["id"] == "COLOR"
-    assert products.product["local_platform_categories"]["mercadolibre"]["category_id"] == "CAT-1"
+    assert products.drafts["draft-1"]["category_path"] == "Home > Fans"
+    # 平台规则不再持久化：草稿不含 Schema，商品不含完整 category record。
+    assert "category_attribute_schema" not in products.drafts["draft-1"]
+    assert not products.product.get("local_platform_categories")
 
 
 def test_category_match_abstain_requires_explicit_category() -> None:

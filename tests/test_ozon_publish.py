@@ -17,6 +17,44 @@ from erp_web.runtime_units.publish_ozon import (
 from erp_web.runtime_units.publish_validation import validate_ozon_draft
 from erp_web.services.pricing_service import pricing_calculation_fingerprint
 
+from tests.publish_category_support import record_from_schema
+
+#: 测试类目定义（当次临时规则，不再持久化进草稿）。
+_CATEGORY_SCHEMA: dict = {
+    "category_id": "94765",
+    "required": [
+        {
+            "id": "85",
+            "name": "Бренд",
+            "required": True,
+            "raw": {"dictionary_id": 1},
+        },
+        {
+            "id": "4191",
+            "name": "Аннотация",
+            "required": True,
+        },
+    ],
+    "optional": [
+        {
+            "id": "21841",
+            "name": "Видео",
+            "required": False,
+            "raw": {"attribute_complex_id": 100001},
+        }
+    ],
+}
+
+
+def _record(schema: dict | None = None) -> dict:
+    return record_from_schema(
+        platform="ozon",
+        category_id="94765",
+        schema=schema if schema is not None else _CATEGORY_SCHEMA,
+        category_path="Категория / Тип",
+        description_category_id="17027949",
+    )
+
 
 def _product() -> dict:
     basis = {
@@ -51,30 +89,6 @@ def _product() -> dict:
                 "category_id": "94765",
                 "description_category_id": "17027949",
                 "category_path": "Категория / Тип",
-                "category_attribute_schema": {
-                    "category_id": "94765",
-                    "required": [
-                        {
-                            "id": "85",
-                            "name": "Бренд",
-                            "required": True,
-                            "raw": {"dictionary_id": 1},
-                        },
-                        {
-                            "id": "4191",
-                            "name": "Аннотация",
-                            "required": True,
-                        },
-                    ],
-                    "optional": [
-                        {
-                            "id": "21841",
-                            "name": "Видео",
-                            "required": False,
-                            "raw": {"attribute_complex_id": 100001},
-                        }
-                    ],
-                },
                 "brand": "Champion",
                 "model": "M1",
                 "sku": "OZON-SKU-1",
@@ -131,7 +145,7 @@ def _config() -> dict:
 
 
 def test_build_ozon_publish_payload_uses_real_v3_contract() -> None:
-    payload = build_ozon_publish_payload(_product(), _config())
+    payload = build_ozon_publish_payload(_product(), _config(), _record())
 
     assert list(payload) == ["items"]
     item = payload["items"][0]
@@ -164,19 +178,22 @@ def test_build_ozon_publish_payload_uses_real_v3_contract() -> None:
 
 def test_build_ozon_publish_payload_accepts_dictionary_id_zero_as_free_text() -> None:
     product = _product()
-    draft = product["drafts"]["ozon"]
-    draft["category_attribute_schema"]["required"].append(
-        {
-            "id": "9048",
-            "name": "Название модели",
-            "required": True,
-            "dictionary_id": "0",
-            "is_dictionary": True,
-        }
-    )
-    draft["attributes"]["9048"] = "F30"
+    product["drafts"]["ozon"]["attributes"]["9048"] = "F30"
+    schema = {
+        "required": [
+            *_CATEGORY_SCHEMA["required"],
+            {
+                "id": "9048",
+                "name": "Название модели",
+                "required": True,
+                "dictionary_id": "0",
+                "is_dictionary": True,
+            },
+        ],
+        "optional": list(_CATEGORY_SCHEMA["optional"]),
+    }
 
-    payload = build_ozon_publish_payload(product, _config())
+    payload = build_ozon_publish_payload(product, _config(), _record(schema))
     model_attribute = next(
         item for item in payload["items"][0]["attributes"] if item["id"] == 9048
     )
@@ -192,7 +209,7 @@ def test_ozon_payload_prefers_delivery_url_over_local_preview(tmp_path) -> None:
     pool_item["path"] = str(local_image)
     pool_item["preview_url"] = f"/file?path={local_image}"
 
-    payload = build_ozon_publish_payload(product, _config())
+    payload = build_ozon_publish_payload(product, _config(), _record())
 
     assert payload["items"][0]["images"] == [
         "https://cdn.example.com/ozon-main.jpg"
@@ -200,16 +217,12 @@ def test_ozon_payload_prefers_delivery_url_over_local_preview(tmp_path) -> None:
 
 
 def test_ozon_category_pair_does_not_fall_back_to_product_category_record() -> None:
+    # 类目身份只来自草稿；description_category_id 缺失时必须显式报错，
+    # 不存在任何商品级规则副本回退路径（副本字段已退役）。
     product = _product()
     product["drafts"]["ozon"]["description_category_id"] = ""
-    product["local_platform_categories"] = {
-        "ozon": {
-            "type_id": "94765",
-            "description_category_id": "17027949",
-        }
-    }
 
-    result = validate_ozon_draft(product, _config())
+    result = validate_ozon_draft(product, _config(), _record())
 
     assert any(
         item["code"] == "CATEGORY_PAIR_MISSING"
@@ -218,7 +231,7 @@ def test_ozon_category_pair_does_not_fall_back_to_product_category_record() -> N
 
 
 def test_ozon_payload_validation_requires_credentials_and_public_images() -> None:
-    payload = build_ozon_publish_payload(_product(), _config())
+    payload = build_ozon_publish_payload(_product(), _config(), _record())
     payload["items"][0]["images"] = ["/file?path=/tmp/local.jpg"]
 
     errors = validate_ozon_publish_payload(payload, {"ozon": {}})
@@ -229,7 +242,7 @@ def test_ozon_payload_validation_requires_credentials_and_public_images() -> Non
 
 
 def test_ozon_payload_validation_rejects_invalid_and_duplicate_attribute_ids() -> None:
-    payload = build_ozon_publish_payload(_product(), _config())
+    payload = build_ozon_publish_payload(_product(), _config(), _record())
     item = payload["items"][0]
     item["attributes"].extend(
         [
@@ -428,7 +441,7 @@ def test_ozon_precheck_rejects_free_text_dictionary_attribute() -> None:
     product = _product()
     product["drafts"]["ozon"]["attributes"]["85"] = "Champion"
 
-    result = validate_ozon_draft(product, _config())
+    result = validate_ozon_draft(product, _config(), _record())
 
     assert any(
         item["code"] == "ATTRIBUTE_DICTIONARY_VALUE_REQUIRED"
@@ -436,13 +449,28 @@ def test_ozon_precheck_rejects_free_text_dictionary_attribute() -> None:
         for item in result["errors"]
     )
     with pytest.raises(ValueError, match="必须从平台选项中选择"):
-        build_ozon_publish_payload(product, _config())
+        build_ozon_publish_payload(product, _config(), _record())
 
 
 def test_ozon_adapter_and_draft_precheck_are_publish_ready() -> None:
+    from erp_web.runtime_units.publish_context import PreparedPublishContext
+
+    from tests.publish_category_support import definition_from_record
+
     product = _product()
     adapter = OzonPublishingAdapter()
+    record = _record()
+    context = PreparedPublishContext(
+        product=product,
+        draft=product["drafts"]["ozon"],
+        target=product["drafts"]["ozon"]["target_sites"][0],
+        category_definition=definition_from_record(record),
+        platform="ozon",
+    )
 
-    assert adapter.required_attributes_missing(product, _config()) == []
-    assert validate_ozon_draft(product, _config())["ok"] is True
-    assert adapter.validate_payload(adapter.build_payload(product, _config()), _config()) == []
+    assert adapter.required_attributes_missing(context, _config()) == []
+    assert adapter.validate_draft(context, _config())["ok"] is True
+    assert (
+        adapter.validate_payload(adapter.build_payload(context, _config()), _config())
+        == []
+    )

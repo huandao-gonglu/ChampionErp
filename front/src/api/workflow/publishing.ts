@@ -1,7 +1,8 @@
 import { apiClient } from '@/api/client'
 import { withAiForeground } from '@/services/withAiForeground'
 import type {
-  CategoryAttributeOption,
+  CategoryAttributeDefinition,
+  CategoryAttributeValuesPage,
   CategoryMatchResult,
   CategoryPrecheckResult,
   CategorySearchResult,
@@ -462,81 +463,53 @@ export async function confirmMercadoLibreRealPublish(product: Product, confirm =
   return normalizeProductOperation(response.data)
 }
 
-export async function fetchCategoryAttrs(platform: Marketplace, categoryId: string, site = '', categoryRecord?: UnknownRecord): Promise<CategorySelection> {
+export async function fetchCategoryAttrs(platform: Marketplace, categoryId: string, site = ''): Promise<CategorySelection> {
+  // 类目属性定义只从实时类目接口瞬时加载（编辑态使用），不再持久化进草稿/商品。
+  // 单页 limit=100 请求；若 has_more=true，分页信息保留在 raw 中供诊断。
   const response = await apiClient.post('/api/category-attrs', {
     platform,
     category_id: categoryId,
     site,
-    category_record: categoryRecord,
+    limit: 100,
   })
   const data = asRecord(response.data)
   ensureOk(data, '读取类目属性失败')
-  const attributeOptions = (record: UnknownRecord) => {
-    if (Array.isArray(record.options)) return record.options.map(String).filter(Boolean)
-    if (Array.isArray(record.values)) {
-      return record.values
-        .map((item) => {
-          const option = asRecord(item)
-          return getString(option, ['name', 'value_name', 'id'])
-        })
-        .filter(Boolean)
-    }
-    return stringList(record.options)
-  }
-  const attributeMetadata = (record: UnknownRecord) => {
-    const raw = asRecord(record.raw)
-    const rawDictionaryId = getString(record, ['dictionary_id'], getString(raw, ['dictionary_id']))
-    return {
-      dictionaryId: normalizeCategoryDictionaryId(rawDictionaryId),
-      isDictionary: isCategoryDictionaryAttribute(rawDictionaryId, getBoolean(record, ['is_dictionary'])),
-      isCollection: getBoolean(record, ['is_collection'], getBoolean(raw, ['is_collection'])),
-      maxValueCount: getNumber(record, ['max_value_count'], getNumber(raw, ['max_value_count'])),
-      categoryDependent: getBoolean(record, ['category_dependent'], getBoolean(raw, ['category_dependent'])),
-      unitOptions: stringList(record.unit_options ?? record.unitOptions ?? raw.unit_options),
-      defaultUnit: getString(record, ['default_unit', 'defaultUnit'], getString(raw, ['default_unit', 'defaultUnit'])),
-    }
-  }
-  const required = Array.isArray(data.required)
-    ? data.required.map((item) => {
+  const attributes = (Array.isArray(data.attributes) ? data.attributes : [])
+    .map((item): CategoryAttributeDefinition | null => {
       const record = asRecord(item)
+      const id = getString(record, ['id', 'attribute_id'])
+      if (!id) return null
+      const dictionaryId = normalizeCategoryDictionaryId(getString(record, ['dictionary_id']))
       return {
-        id: getString(record, ['id', 'attribute_id']),
-        name: getString(record, ['name', 'label']),
-        required: getBoolean(record, ['required'], false),
-        options: attributeOptions(record),
+        id,
+        name: getString(record, ['name', 'label'], id),
+        required: getBoolean(record, ['required']),
+        options: Array.isArray(record.options)
+          ? record.options.map((option) => getString(asRecord(option), ['value'])).filter(Boolean)
+          : [],
         valueType: getString(record, ['value_type', 'valueType'], 'string'),
-        unit: getString(record, ['unit']),
+        unitOptions: Array.isArray(record.unit_options)
+          ? record.unit_options.map((option) => getString(asRecord(option), ['name'])).filter(Boolean)
+          : stringList(record.unit_options),
+        defaultUnit: getString(record, ['default_unit', 'defaultUnit']),
         description: getString(record, ['description', 'help', 'tooltip']),
-        ...attributeMetadata(record),
+        dictionaryId,
+        isDictionary: isCategoryDictionaryAttribute(dictionaryId, getBoolean(record, ['is_dictionary'])),
+        isCollection: getBoolean(record, ['is_collection']),
+        maxValueCount: getNumber(record, ['max_value_count']),
+        categoryDependent: getBoolean(record, ['category_dependent']),
       }
     })
-    : []
-  const optionalFromRequired = required.filter((item) => !item.required)
-  const requiredOnly = required.filter((item) => item.required)
-  const optional = Array.isArray(data.optional)
-    ? data.optional.map((item) => {
-      const record = asRecord(item)
-      return {
-        id: getString(record, ['id', 'attribute_id']),
-        name: getString(record, ['name', 'label']),
-        required: false,
-        options: attributeOptions(record),
-        valueType: getString(record, ['value_type', 'valueType'], 'string'),
-        unit: getString(record, ['unit']),
-        description: getString(record, ['description', 'help', 'tooltip']),
-        ...attributeMetadata(record),
-      }
-    })
-    : []
+    .filter((attribute): attribute is CategoryAttributeDefinition => Boolean(attribute))
   return {
     platform,
-    categoryId,
+    categoryId: getString(data, ['category_id'], categoryId),
     categoryPath: getString(data, ['category_path', 'path', 'name']),
-    requiredAttributes: requiredOnly,
-    optionalAttributes: [...optionalFromRequired, ...optional].filter((item, index, items) => item.id && items.findIndex((candidate) => candidate.id === item.id) === index),
+    requiredAttributes: attributes.filter((attribute) => attribute.required),
+    optionalAttributes: attributes.filter((attribute) => !attribute.required),
     source: getString(data, ['source'], `${platform}_live`),
     fetchedAt: new Date().toISOString(),
-    raw: asRecord(data.category),
+    raw: data,
   }
 }
 
@@ -547,7 +520,8 @@ export async function fetchCategoryAttributeValues(
   site = '',
   query = '',
   limit = 50,
-): Promise<CategoryAttributeOption[]> {
+  cursor = '',
+): Promise<CategoryAttributeValuesPage> {
   const response = await apiClient.post('/api/category-attribute-values', {
     platform,
     category_id: categoryId,
@@ -555,10 +529,11 @@ export async function fetchCategoryAttributeValues(
     site,
     query,
     limit,
+    cursor,
   })
   const data = asRecord(response.data)
   ensureOk(data, '读取平台枚举值失败')
-  return Array.isArray(data.values)
+  const values = Array.isArray(data.values)
     ? data.values.flatMap((item) => {
       const record = asRecord(item)
       const id = getString(record, ['id'])
@@ -573,6 +548,13 @@ export async function fetchCategoryAttributeValues(
         : []
     })
     : []
+  const hasMore = getBoolean(data, ['has_more', 'hasMore'])
+  return {
+    values,
+    nextCursor: getString(data, ['next_cursor', 'nextCursor']),
+    hasMore,
+    complete: getBoolean(data, ['complete'], !hasMore),
+  }
 }
 
 export async function searchCategories(platform: Marketplace, query: string, site = '', limit = 20): Promise<{ results: CategorySearchResult[] }> {

@@ -12,7 +12,7 @@ from erp_web.runtime_units.draft_publish_context import (
 )
 
 
-def test_target_listing_round_trip_preserves_category_attribute_schema() -> None:
+def test_target_listing_round_trip_drops_retired_category_schema() -> None:
     schema = {
         "platform": "mercadolibre",
         "site": "MLM",
@@ -35,6 +35,7 @@ def test_target_listing_round_trip_preserves_category_attribute_schema() -> None
         "site": "MLM",
         "language": "es-MX",
         "currency": "MXN",
+        "category_attribute_schema": schema,
         "target_sites": [
             {
                 "platform": "mercadolibre",
@@ -56,9 +57,10 @@ def test_target_listing_round_trip_preserves_category_attribute_schema() -> None
         {"attributes": {"9048": "Compacto"}},
     )
 
-    assert target["category_attribute_schema"] == schema
-    assert target_draft["category_attribute_schema"] == schema
-    assert merged["target_sites"][0]["category_attribute_schema"] == schema
+    # 平台规则副本不再随目标往返；类目身份与属性值照常保留。
+    assert "category_attribute_schema" not in target
+    assert "category_attribute_schema" not in target_draft
+    assert target["category_id"] == "MLM123"
     assert merged["target_sites"][0]["attributes"] == {"9048": "Compacto"}
 
 

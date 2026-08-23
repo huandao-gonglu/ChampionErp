@@ -57,6 +57,8 @@ def test_publish_capabilities_match_real_publishers() -> None:
 
 
 def test_category_capabilities_match_real_providers() -> None:
+    from erp_web.marketplaces.category_provider import CategoryProvider
+
     for spec in MARKETPLACE_SPECS:
         has_category_capability = bool(
             spec.capabilities
@@ -65,8 +67,12 @@ def test_category_capabilities_match_real_providers() -> None:
         provider = category_provider_for(spec.key)
         assert (provider is not None) is has_category_capability
         if provider is not None:
+            # 注册项必须显式继承统一 ABC，核心契约完整。
+            assert isinstance(provider, CategoryProvider)
             assert provider.platform == spec.key
-            assert callable(provider.detail)
+            assert callable(provider.category_detail)
+            assert callable(provider.attribute_definitions)
+            assert callable(provider.attribute_values)
             assert callable(provider.resolve_site)
         if CAP_CATEGORY_SEARCH in spec.capabilities:
             searcher = create_category_searcher(

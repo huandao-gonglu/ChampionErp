@@ -7,6 +7,8 @@
   白名单模块，其它模块不得自定义等价编解码；
 - 禁止前端任务推进：前端只允许纯 GET 读取与明确用户命令，不得保留任何
   写刷新调用。
+- 禁止恢复旧数据库中的 Deferred/Global Task：当前数据库没有 legacy Task
+  取消或旧版本 upgrade 路径。
 
 AI 工具上下文边界与写入一致性守卫（修复计划第 11 节）：
 - side_effect="write" 的 Capability 输出不得包含无界完整业务聚合对象；
@@ -50,6 +52,18 @@ SANCTIONED_DEFERRED_MODULES = frozenset(
 
 def _relative_posix(path) -> str:
     return path.relative_to(ROOT).as_posix()
+
+
+def test_database_has_no_legacy_deferred_task_migration() -> None:
+    source = (ROOT / "erp_web/db.py").read_text(encoding="utf-8")
+    for retired_symbol in (
+        "_cancel_legacy_unfinished_global_tasks",
+        "GLOBAL_TASK_LEGACY_MIGRATION_CANCELLED",
+        "_V12_TO_V13_UPGRADE_SQL",
+    ):
+        assert retired_symbol not in source, (
+            f"当前数据库不得恢复旧 Deferred/Global Task：{retired_symbol}"
+        )
 
 
 def test_global_task_business_layer_has_no_pydantic_ai_dependency() -> None:
@@ -303,5 +317,4 @@ def test_history_projection_uses_official_process_history_capability() -> None:
     # 不得调用私有 _agent_graph 或读取 Pydantic 内部 new_message_index。
     assert "_agent_graph" not in source
     assert "new_message_index" not in source
-
 

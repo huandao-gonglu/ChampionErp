@@ -56,7 +56,6 @@ class ProductProfilePatch(BaseModel):
     publish_preview: dict[str, JsonValue] = Field(default_factory=dict)
     collect_status: str = ""
     collect_logs: list[JsonValue] = Field(default_factory=list)
-    local_platform_categories: dict[str, JsonValue] = Field(default_factory=dict)
     workflow_statuses: dict[str, str] = Field(default_factory=dict)
     created_at: str = ""
     updated_at: str = ""
@@ -111,10 +110,48 @@ class DraftReadRequest(BaseModel):
     ]
 
 
+class DraftReadView(BaseModel):
+    """draft_read 的类型化有界视图。
+
+    只返回排查与下一步决策需要的字段：身份、状态、类目身份、已填写属性、
+    价格/库存摘要、图片计数与预检/发布摘要。完整图片、发布日志、平台枚举
+    值等通过 focused 分页工具读取；平台类目规则一律不进入视图。
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    draft_id: TrimmedText = ""
+    product_id: TrimmedText = ""
+    source_product_id: TrimmedText = ""
+    platform: TrimmedText = ""
+    site: TrimmedText = ""
+    status: TrimmedText = ""
+    publish_status: TrimmedText = ""
+    title: TrimmedText = ""
+    description: TrimmedText = ""
+    brand: TrimmedText = ""
+    model: TrimmedText = ""
+    sku: TrimmedText = ""
+    upc: TrimmedText = ""
+    stock: TrimmedText = ""
+    language: TrimmedText = ""
+    category_id: TrimmedText = ""
+    description_category_id: TrimmedText = ""
+    category_path: TrimmedText = ""
+    attributes: dict[str, JsonValue] = Field(default_factory=dict)
+    image_count: int = 0
+    validation_errors: tuple[JsonValue, ...] = ()
+    category_precheck: dict[str, JsonValue] = Field(default_factory=dict)
+    last_precheck: dict[str, JsonValue] = Field(default_factory=dict)
+    last_publish_task: dict[str, JsonValue] = Field(default_factory=dict)
+    pricing_summary: dict[str, JsonValue] = Field(default_factory=dict)
+    target_sites: tuple[dict[str, JsonValue], ...] = ()
+
+
 class DraftReadResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    draft: dict[str, JsonValue] = Field(default_factory=dict)
+    draft: DraftReadView = Field(default_factory=DraftReadView)
     product_context: dict[str, JsonValue] = Field(default_factory=dict)
 
 

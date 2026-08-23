@@ -161,15 +161,20 @@ def _yandex_publish_credentials(
     return api_token, campaign_id, business_id
 
 
-def _draft_schema_definitions(draft: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    schema = (
-        draft.get("category_attribute_schema")
-        if isinstance(draft.get("category_attribute_schema"), dict)
+def _record_schema_definitions(
+    category_record: dict[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    """当次临时类目定义 → 按属性 ID 索引；不再读取草稿持久化 Schema。"""
+
+    attributes = (
+        category_record.get("attributes")
+        if isinstance(category_record, dict)
+        and isinstance(category_record.get("attributes"), dict)
         else {}
     )
     definitions: dict[str, dict[str, Any]] = {}
     for group in ("required", "optional"):
-        rows = schema.get(group) if isinstance(schema.get(group), list) else []
+        rows = attributes.get(group) if isinstance(attributes.get(group), list) else []
         for raw in rows:
             if not isinstance(raw, dict):
                 continue
@@ -201,19 +206,26 @@ def yandex_offer_identity_conflict(draft: dict[str, Any]) -> str:
     return ""
 
 
-def yandex_required_attributes_missing(product: dict[str, Any]) -> list[str]:
+def yandex_required_attributes_missing(
+    product: dict[str, Any],
+    category_record: dict[str, Any] | None = None,
+) -> list[str]:
     product = normalize_product_fields(product)
     return list(
-        _required_attribute_summary(product, "yandex").get("missing") or []
+        _required_attribute_summary(product, "yandex", category_record).get("missing")
+        or []
     )
 
 
-def yandex_invalid_dictionary_attributes(product: dict[str, Any]) -> list[str]:
+def yandex_invalid_dictionary_attributes(
+    product: dict[str, Any],
+    category_record: dict[str, Any] | None = None,
+) -> list[str]:
     """返回草稿中缺少平台枚举选择的 strict_enum 属性 ID。"""
 
     product = normalize_product_fields(product)
     draft = _draft_for_platform(product, "yandex")
-    definitions = _draft_schema_definitions(draft)
+    definitions = _record_schema_definitions(category_record)
     attributes = (
         draft.get("attributes")
         if isinstance(draft.get("attributes"), dict)
@@ -242,12 +254,15 @@ def yandex_invalid_dictionary_attributes(product: dict[str, Any]) -> list[str]:
     return sorted(invalid)
 
 
-def yandex_invalid_unit_attributes(product: dict[str, Any]) -> list[str]:
+def yandex_invalid_unit_attributes(
+    product: dict[str, Any],
+    category_record: dict[str, Any] | None = None,
+) -> list[str]:
     """返回草稿值单位不在类目允许范围内的属性 ID。"""
 
     product = normalize_product_fields(product)
     draft = _draft_for_platform(product, "yandex")
-    definitions = _draft_schema_definitions(draft)
+    definitions = _record_schema_definitions(category_record)
     attributes = (
         draft.get("attributes")
         if isinstance(draft.get("attributes"), dict)
@@ -277,7 +292,10 @@ def _yandex_attribute_value_empty(raw_value: Any) -> bool:
     return not str(raw_value or "").strip()
 
 
-def yandex_mapped_parameter_count(product: dict[str, Any]) -> int:
+def yandex_mapped_parameter_count(
+    product: dict[str, Any],
+    category_record: dict[str, Any] | None = None,
+) -> int:
     """草稿中可映射为 Yandex ``parameterValues`` 的已填参数数量。
 
     与 ``_compile_parameter_values`` 同源的映射规则：属性 ID 必须是当前
@@ -287,7 +305,7 @@ def yandex_mapped_parameter_count(product: dict[str, Any]) -> int:
 
     product = normalize_product_fields(product)
     draft = _draft_for_platform(product, "yandex")
-    definitions = _draft_schema_definitions(draft)
+    definitions = _record_schema_definitions(category_record)
     attributes = (
         draft.get("attributes")
         if isinstance(draft.get("attributes"), dict)
@@ -599,6 +617,7 @@ def _stock_plan(
 def build_yandex_publish_payload(
     product: dict[str, Any],
     config: dict[str, Any],
+    category_record: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """构造确定性复合 payload：目录商品 / 上架条件 / 价格 / 库存。"""
 
@@ -623,7 +642,7 @@ def build_yandex_publish_payload(
     if not images:
         raise ValueError("缺少商品图片")
 
-    definitions = _draft_schema_definitions(draft)
+    definitions = _record_schema_definitions(category_record)
     parameter_values = _compile_parameter_values(draft, definitions)
     if not parameter_values:
         raise ValueError(

@@ -61,11 +61,15 @@ const showOptionalAttributes = ref(false)
 const attributeInputRefs = ref<Record<string, HTMLInputElement | HTMLSelectElement | null>>({})
 interface DictionaryFieldState {
   query: string
+  loadedQuery: string | null
   options: CategoryAttributeOption[]
   loading: boolean
+  loadingMore: boolean
   error: string
   open: boolean
   requestId: number
+  nextCursor: string
+  hasMore: boolean
 }
 const dictionaryFieldStates = ref<Record<string, DictionaryFieldState>>({})
 const dictionarySearchTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -84,7 +88,8 @@ const hasSelectedCategory = computed(() => Boolean(activeDraft.value.categoryId.
 const hasLoadedCategoryDefinition = computed(() => Boolean(
   props.category
   && props.category.categoryId === activeDraft.value.categoryId.trim()
-  && props.category.platform === props.selectedPublishTarget.platform,
+  && props.category.platform === props.selectedPublishTarget.platform
+  && props.category.fetchedAt,
 ))
 const categoryAttributeState = computed<'empty' | 'loading' | 'ready' | 'error'>(() => {
   if (!hasSelectedCategory.value) return 'empty'
@@ -199,11 +204,15 @@ function dictionaryState(attr: CategoryAttributeDefinition): DictionaryFieldStat
   if (existing) return existing
   const state: DictionaryFieldState = {
     query: '',
+    loadedQuery: null,
     options: [],
     loading: false,
+    loadingMore: false,
     error: '',
     open: false,
     requestId: 0,
+    nextCursor: '',
+    hasMore: false,
   }
   dictionaryFieldStates.value[attr.id] = state
   return state
@@ -214,42 +223,87 @@ function legacyDictionaryValue(attrId: string) {
   return typeof value === 'string' && value.trim() ? value.trim() : ''
 }
 
-async function loadDictionaryOptions(attr: CategoryAttributeDefinition) {
+function mergeDictionaryOptions(
+  current: CategoryAttributeOption[],
+  incoming: CategoryAttributeOption[],
+) {
+  const options = new Map(current.map((option) => [String(option.id), option]))
+  for (const option of incoming) options.set(String(option.id), option)
+  return [...options.values()]
+}
+
+async function loadDictionaryOptions(attr: CategoryAttributeDefinition, append = false) {
   const state = dictionaryState(attr)
+  if (append && (!state.hasMore || !state.nextCursor || state.loading || state.loadingMore)) return
+  const query = state.query.trim()
+  const cursor = append ? state.nextCursor : ''
   const requestId = ++state.requestId
-  state.loading = true
+  state.loading = !append
+  state.loadingMore = append
   state.error = ''
+  if (!append) {
+    state.options = []
+    state.nextCursor = ''
+    state.hasMore = false
+  }
   try {
-    const options = await fetchCategoryAttributeValues(
+    const page = await fetchCategoryAttributeValues(
       props.selectedPublishTarget.platform,
       activeDraft.value.categoryId,
       attr.id,
       props.selectedPublishTarget.site,
-      state.query.trim(),
+      query,
+      50,
+      cursor,
     )
     if (requestId !== state.requestId) return
-    state.options = options
+    state.options = append
+      ? mergeDictionaryOptions(state.options, page.values)
+      : page.values
+    state.loadedQuery = query
+    state.nextCursor = page.nextCursor
+    state.hasMore = page.hasMore && Boolean(page.nextCursor)
   } catch (error) {
     if (requestId !== state.requestId) return
-    state.options = []
+    if (!append) state.options = []
     state.error = error instanceof Error ? error.message : '读取平台枚举值失败'
   } finally {
-    if (requestId === state.requestId) state.loading = false
+    if (requestId === state.requestId) {
+      state.loading = false
+      state.loadingMore = false
+    }
   }
 }
 
 function openDictionary(attr: CategoryAttributeDefinition) {
   const state = dictionaryState(attr)
   state.open = true
-  if (!state.options.length && !state.loading) void loadDictionaryOptions(attr)
+  if (
+    state.loadedQuery !== state.query.trim()
+    && !state.loading
+    && !state.loadingMore
+  ) void loadDictionaryOptions(attr)
 }
 
 function scheduleDictionarySearch(attr: CategoryAttributeDefinition, value: string) {
   const state = dictionaryState(attr)
   state.query = value
   state.open = true
+  state.requestId += 1
+  state.nextCursor = ''
+  state.hasMore = false
+  state.loadingMore = false
+  state.error = ''
   const previous = dictionarySearchTimers.get(attr.id)
   if (previous) clearTimeout(previous)
+  const query = value.trim()
+  if (props.selectedPublishTarget.platform === 'ozon' && query.length === 1) {
+    state.options = []
+    state.loadedQuery = query
+    state.loading = false
+    state.error = 'Ozon 平台枚举搜索至少需要 2 个字符'
+    return
+  }
   dictionarySearchTimers.set(attr.id, setTimeout(() => {
     void loadDictionaryOptions(attr)
   }, 250))
@@ -270,8 +324,13 @@ function selectDictionaryOption(attr: CategoryAttributeDefinition, option: Categ
   activeDraft.value.attributes[attr.id] = { values: selected }
   const state = dictionaryState(attr)
   state.query = ''
+  state.loadedQuery = null
+  state.options = []
+  state.nextCursor = ''
+  state.hasMore = false
   state.open = Boolean(attr.isCollection)
   state.error = ''
+  if (attr.isCollection) void loadDictionaryOptions(attr)
   emit('invalidateCategoryPrecheck')
 }
 
@@ -292,7 +351,10 @@ function clearDictionaryValue(attr: CategoryAttributeDefinition) {
   delete activeDraft.value.attributes[attr.id]
   const state = dictionaryState(attr)
   state.query = ''
+  state.loadedQuery = null
   state.options = []
+  state.nextCursor = ''
+  state.hasMore = false
   state.open = false
   emit('invalidateCategoryPrecheck')
 }
@@ -300,10 +362,17 @@ function clearDictionaryValue(attr: CategoryAttributeDefinition) {
 function clearDictionarySearch(attr: CategoryAttributeDefinition) {
   const state = dictionaryState(attr)
   state.query = ''
+  state.loadedQuery = null
   state.options = []
+  state.nextCursor = ''
+  state.hasMore = false
   state.error = ''
   state.open = true
   void loadDictionaryOptions(attr)
+}
+
+function loadMoreDictionaryOptions(attr: CategoryAttributeDefinition) {
+  void loadDictionaryOptions(attr, true)
 }
 
 function closeDictionary(attr: CategoryAttributeDefinition) {
@@ -622,6 +691,16 @@ function selectTargetByKey(value: string) {
                     <span class="block font-medium text-accent-900 dark:text-white">{{ option.value }}</span>
                     <span v-if="option.info" class="mt-0.5 block text-xs text-accent-500">{{ option.info }}</span>
                   </button>
+                  <button
+                    v-if="dictionaryState(attr).hasMore"
+                    class="mt-1 block w-full rounded-md border border-dashed border-accent-300 px-3 py-2 text-center text-xs font-semibold text-brand-700 hover:bg-brand-50 disabled:cursor-wait disabled:opacity-60 dark:border-dark-600 dark:text-brand-300 dark:hover:bg-dark-800"
+                    type="button"
+                    :disabled="dictionaryState(attr).loadingMore"
+                    @mousedown.prevent
+                    @click="loadMoreDictionaryOptions(attr)"
+                  >
+                    {{ dictionaryState(attr).loadingMore ? '正在加载更多…' : '加载更多平台选项' }}
+                  </button>
                   <div v-if="!dictionaryState(attr).loading && !dictionaryState(attr).error && !dictionaryState(attr).options.length" class="p-3 text-xs text-accent-500">没有匹配的平台选项，请更换关键词或检查类目。</div>
                 </div>
                 <p v-if="legacyDictionaryValue(attr.id)" class="mt-1 text-xs text-rose-700">旧值“{{ legacyDictionaryValue(attr.id) }}”不是平台选项，请重新选择。</p>
@@ -732,6 +811,16 @@ function selectTargetByKey(value: string) {
                   >
                     <span class="block font-medium text-accent-900 dark:text-white">{{ option.value }}</span>
                     <span v-if="option.info" class="mt-0.5 block text-xs text-accent-500">{{ option.info }}</span>
+                  </button>
+                  <button
+                    v-if="dictionaryState(attr).hasMore"
+                    class="mt-1 block w-full rounded-md border border-dashed border-accent-300 px-3 py-2 text-center text-xs font-semibold text-brand-700 hover:bg-brand-50 disabled:cursor-wait disabled:opacity-60 dark:border-dark-600 dark:text-brand-300 dark:hover:bg-dark-800"
+                    type="button"
+                    :disabled="dictionaryState(attr).loadingMore"
+                    @mousedown.prevent
+                    @click="loadMoreDictionaryOptions(attr)"
+                  >
+                    {{ dictionaryState(attr).loadingMore ? '正在加载更多…' : '加载更多平台选项' }}
                   </button>
                   <div v-if="!dictionaryState(attr).loading && !dictionaryState(attr).error && !dictionaryState(attr).options.length" class="p-3 text-xs text-accent-500">没有匹配的平台选项，请更换关键词或检查类目。</div>
                 </div>

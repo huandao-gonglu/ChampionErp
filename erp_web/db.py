@@ -3,14 +3,10 @@ from __future__ import annotations
 """SQLite 持久化边界。
 
 ``ErpDatabase`` 统一拥有 schema、连接设置和读写路径。数据库通过
-``PRAGMA user_version`` 版本化；只接受空库、当前完整 schema，或可非破坏性
-升级的已知版本。v12 → v13 增加 Pydantic Deferred Task link ledger、官方
-编码事件 outbox，并给消息历史增加 ``history_version`` CAS 版本；升级时把
-没有 Deferred link 的旧未终结任务明确标记为已取消（它们没有真实
-``tool_call_id``，不得伪造 Deferred call）。v10/v11 先按既有规则升到 v12，
-再应用 v12 → v13。更早的旧消息 schema 不迁移、不修复，也不会从 JSONL
-恢复。唯一 seed 路径是 UPC 池：表为空时，从数据库旁的 ``upc_pool.json``
-一次性导入已购买的 UPC。
+``PRAGMA user_version`` 版本化；运行时只接受真正空库或结构完整的当前版本。
+其他版本和残缺结构会在任何写入前失败，不迁移、不修复，也不自动删除。
+唯一 seed 路径是 UPC 池：表为空时，从数据库旁的 ``upc_pool.json`` 一次性
+导入已购买的 UPC。
 """
 
 import hashlib
@@ -21,6 +17,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator, Sequence
 
@@ -33,7 +30,7 @@ from erp_web.product_model.merge_model import (
 )
 
 DEFAULT_DB_NAME = "erp.sqlite3"
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 REQUIRED_TABLES = (
     "store_auth",
@@ -55,12 +52,6 @@ REQUIRED_TABLES = (
     "pydantic_deferred_task_links",
     "pydantic_ai_event_outbox",
 )
-
-_V12_REQUIRED_TABLES = frozenset(REQUIRED_TABLES) - {
-    "pydantic_deferred_task_links",
-    "pydantic_ai_event_outbox",
-}
-_V10_REQUIRED_TABLES = _V12_REQUIRED_TABLES - {"ai_chat_turn_claims"}
 
 # Research run statuses that never change again (mirrors product_research_service).
 _TERMINAL_RESEARCH_STATUSES = ("completed", "failed")
@@ -305,220 +296,8 @@ CREATE INDEX IF NOT EXISTS idx_pydantic_ai_event_outbox_conversation
 ON pydantic_ai_event_outbox(conversation_id, history_version);
 """
 
-_CURRENT_PLATFORM_DRAFT_COLUMNS = frozenset(
-    {
-        "draft_id",
-        "product_id",
-        "platform",
-        "site",
-        "status",
-        "draft_json",
-        "created_at",
-        "updated_at",
-    }
-)
-
-_CURRENT_PUBLISH_JOB_COLUMNS = frozenset(
-    {
-        "job_id",
-        "idempotency_key",
-        "product_id",
-        "draft_id",
-        "platform",
-        "status",
-        "stage",
-        "attempts",
-        "error",
-        "payload_json",
-        "created_at",
-        "updated_at",
-    }
-)
-
-_CURRENT_GLOBAL_TASK_COLUMNS = frozenset(
-    {
-        "task_id",
-        "status",
-        "revision",
-        "execution_id",
-        "execution_owner",
-        "execution_lease_expires_at",
-        "task_json",
-        "created_at",
-        "updated_at",
-    }
-)
-
-_CURRENT_DRAFT_QUERY_SNAPSHOT_COLUMNS = frozenset(
-    {
-        "snapshot_id",
-        "ordered_draft_ids_json",
-        "query_json",
-        "aggregates_json",
-        "created_at",
-    }
-)
-
-_CURRENT_PYDANTIC_MESSAGE_HISTORY_COLUMNS = frozenset(
-    {
-        "conversation_id",
-        "messages_json",
-        "history_version",
-        "created_at",
-        "updated_at",
-    }
-)
-
-_V12_PYDANTIC_MESSAGE_HISTORY_COLUMNS = (
-    _CURRENT_PYDANTIC_MESSAGE_HISTORY_COLUMNS - {"history_version"}
-)
-
-_CURRENT_DEFERRED_TASK_LINK_COLUMNS = frozenset(
-    {
-        "link_id",
-        "conversation_id",
-        "request_run_id",
-        "tool_call_id",
-        "task_id",
-        "link_status",
-        "history_version",
-        "created_at",
-        "ready_at",
-        "lease_id",
-        "lease_expires_at",
-        "continuation_run_id",
-        "resolved_at",
-        "abandoned_at",
-        "last_error_code",
-    }
-)
-
-_CURRENT_AI_EVENT_OUTBOX_COLUMNS = frozenset(
-    {
-        "outbox_id",
-        "conversation_id",
-        "run_id",
-        "history_version",
-        "kind",
-        "events_json",
-        "created_at",
-        "published_at",
-    }
-)
-
-_CURRENT_AI_CHAT_TURN_CLAIM_COLUMNS = frozenset(
-    {
-        "claim_id",
-        "conversation_id",
-        "client_message_id",
-        "profile_id",
-        "actor_id",
-        "tenant_id",
-        "status",
-        "claimed_at",
-        "finished_at",
-        "error_code",
-        "trace_id",
-        "last_tool_name",
-    }
-)
-
-_V11_AI_CHAT_TURN_CLAIM_COLUMNS = _CURRENT_AI_CHAT_TURN_CLAIM_COLUMNS - {
-    "error_code",
-    "trace_id",
-    "last_tool_name",
-}
-
-_PUBLISH_JOB_IDEMPOTENCY_INDEX = "idx_publish_jobs_idempotency_key"
-_PYDANTIC_MESSAGE_HISTORY_UPDATED_INDEX = (
-    "idx_pydantic_message_histories_updated"
-)
-_DEFERRED_TASK_LINKS_ACTIVE_INDEX = "idx_deferred_task_links_active_conversation"
-
-# v10 → v12 创建当前 claim 表；其余结构保持 v10 原样。
-_V10_TO_V12_UPGRADE_SQL = """
-CREATE TABLE IF NOT EXISTS ai_chat_turn_claims (
-    claim_id TEXT PRIMARY KEY,
-    conversation_id TEXT NOT NULL,
-    client_message_id TEXT NOT NULL,
-    profile_id TEXT NOT NULL DEFAULT '',
-    actor_id TEXT NOT NULL DEFAULT '',
-    tenant_id TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'claimed',
-    claimed_at TEXT NOT NULL DEFAULT '',
-    finished_at TEXT NOT NULL DEFAULT '',
-    error_code TEXT NOT NULL DEFAULT '',
-    trace_id TEXT NOT NULL DEFAULT '',
-    last_tool_name TEXT NOT NULL DEFAULT '',
-    UNIQUE(conversation_id, client_message_id)
-)
-"""
-
-_V11_TO_V12_UPGRADE_STATEMENTS = (
-    "ALTER TABLE ai_chat_turn_claims ADD COLUMN error_code TEXT NOT NULL DEFAULT ''",
-    "ALTER TABLE ai_chat_turn_claims ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''",
-    "ALTER TABLE ai_chat_turn_claims ADD COLUMN last_tool_name TEXT NOT NULL DEFAULT ''",
-)
-
-# v12 → v13：消息历史增加 CAS 版本；新增 Deferred link ledger 与官方编码
-# 事件 outbox。旧未终结任务的取消是同一升级事务中的数据迁移（见
-# ``_cancel_legacy_unfinished_global_tasks``），不通过 DDL 表达。
-_V12_TO_V13_UPGRADE_SQL = """
-ALTER TABLE pydantic_message_histories
-ADD COLUMN history_version INTEGER NOT NULL DEFAULT 0;
-
-CREATE TABLE IF NOT EXISTS pydantic_deferred_task_links (
-    link_id TEXT PRIMARY KEY,
-    conversation_id TEXT NOT NULL,
-    request_run_id TEXT NOT NULL DEFAULT '',
-    tool_call_id TEXT NOT NULL,
-    task_id TEXT NOT NULL,
-    link_status TEXT NOT NULL DEFAULT 'awaiting_history'
-        CHECK (link_status IN (
-            'awaiting_history', 'ready', 'resolved', 'abandoned'
-        )),
-    history_version INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT '',
-    ready_at TEXT NOT NULL DEFAULT '',
-    lease_id TEXT NOT NULL DEFAULT '',
-    lease_expires_at REAL NOT NULL DEFAULT 0,
-    continuation_run_id TEXT NOT NULL DEFAULT '',
-    resolved_at TEXT NOT NULL DEFAULT '',
-    abandoned_at TEXT NOT NULL DEFAULT '',
-    last_error_code TEXT NOT NULL DEFAULT '',
-    UNIQUE(task_id),
-    UNIQUE(conversation_id, tool_call_id)
-);
-
-CREATE TABLE IF NOT EXISTS pydantic_ai_event_outbox (
-    outbox_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    conversation_id TEXT NOT NULL,
-    run_id TEXT NOT NULL DEFAULT '',
-    history_version INTEGER NOT NULL,
-    kind TEXT NOT NULL DEFAULT '',
-    events_json TEXT NOT NULL DEFAULT '[]',
-    created_at TEXT NOT NULL DEFAULT '',
-    published_at TEXT NOT NULL DEFAULT ''
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_deferred_task_links_active_conversation
-ON pydantic_deferred_task_links(conversation_id)
-WHERE link_status IN ('awaiting_history', 'ready');
-
-CREATE INDEX IF NOT EXISTS idx_deferred_task_links_ready
-ON pydantic_deferred_task_links(link_status, ready_at);
-
-CREATE INDEX IF NOT EXISTS idx_pydantic_ai_event_outbox_conversation
-ON pydantic_ai_event_outbox(conversation_id, history_version)
-"""
-
-_LEGACY_MIGRATION_CANCEL_MESSAGE = (
-    "旧任务没有可信的 Deferred 关联，已在 schema 升级中取消；请重新提交。"
-)
-
-
 # ---------------------------------------------------------------------------
-# Pure helpers (no database access)
+# Schema helpers
 # ---------------------------------------------------------------------------
 
 def _execute_schema_statements(conn: sqlite3.Connection) -> None:
@@ -531,113 +310,46 @@ def _execute_schema_statements(conn: sqlite3.Connection) -> None:
             conn.execute(sql)
 
 
-def _execute_upgrade_sql(conn: sqlite3.Connection, upgrade_sql: str) -> None:
-    """在调用方事务中逐条执行升级 DDL。"""
-    if not conn.in_transaction:
-        raise RuntimeError("schema 升级必须在显式事务内执行")
-    for statement in upgrade_sql.split(";"):
-        sql = statement.strip()
-        if sql:
-            conn.execute(sql)
+def _schema_signature(
+    conn: sqlite3.Connection,
+) -> tuple[tuple[str, str, str, str], ...]:
+    """返回全部用户 schema object 的稳定签名。
 
-
-def _cancel_legacy_unfinished_global_tasks(conn: sqlite3.Connection) -> int:
-    """v12 → v13 数据迁移：明确取消没有 Deferred link 的旧未终结任务。
-
-    旧任务没有真实 Pydantic ``tool_call_id``，不得伪造 Deferred call；这里
-    保留任务快照用于诊断，只把状态改为 cancelled 并记录迁移原因，随后提示
-    用户重新提交。返回取消的任务数。
+    表定义中的列、约束与外键，以及显式 index/view/trigger 都来自
+    ``sqlite_master.sql``。排除 SQLite 自有的 ``sqlite_*`` object；任何额外
+    或缺失的用户 object 都会使当前 schema 校验失败。
     """
 
     rows = conn.execute(
         """
-        SELECT task_id, task_json
-        FROM global_tasks
-        WHERE status IN ('running', 'in_progress', 'needs_input', 'pending_approval')
+        SELECT type, name, tbl_name, sql
+        FROM sqlite_master
+        WHERE name NOT LIKE 'sqlite_%'
+        ORDER BY type, name
         """
     ).fetchall()
-    now = utc_now()
-    for row in rows:
-        payload = json_loads(row["task_json"], {})
-        payload = payload if isinstance(payload, dict) else {}
-        payload["status"] = "cancelled"
-        payload["pending_inputs"] = []
-        payload["pending_approval"] = None
-        payload["active_job"] = None
-        payload["error_code"] = "GLOBAL_TASK_LEGACY_MIGRATION_CANCELLED"
-        payload["error_message"] = _LEGACY_MIGRATION_CANCEL_MESSAGE
-        payload["assistant_message"] = _LEGACY_MIGRATION_CANCEL_MESSAGE
-        payload["updated_at"] = now
-        conn.execute(
-            """
-            UPDATE global_tasks
-            SET status = 'cancelled', task_json = ?, updated_at = ?,
-                execution_id = '', execution_owner = '',
-                execution_lease_expires_at = 0
-            WHERE task_id = ?
-            """,
-            (json_dumps(payload), now, str(row["task_id"] or "")),
+    return tuple(
+        (
+            str(row[0]),
+            str(row[1]),
+            str(row[2]),
+            " ".join(str(row[3] or "").split()),
         )
-    return len(rows)
-
-
-def _has_required_unique_index(
-    conn: sqlite3.Connection,
-    *,
-    table: str,
-    name: str,
-    columns: tuple[str, ...],
-    partial: bool,
-) -> bool:
-    """验证关键唯一约束的列与 partial 属性，而不只相信索引名称。"""
-
-    rows = conn.execute(f'PRAGMA index_list("{table}")').fetchall()
-    matched = next(
-        (
-            row
-            for row in rows
-            if str(row[1]) == name
-            and bool(row[2])
-            and bool(row[4]) is partial
-        ),
-        None,
+        for row in rows
     )
-    if matched is None:
-        return False
-    indexed_columns = tuple(
-        str(row[2])
-        for row in conn.execute(f'PRAGMA index_info("{name}")').fetchall()
-    )
-    return indexed_columns == columns
 
 
-def _has_required_non_unique_index(
-    conn: sqlite3.Connection,
-    *,
-    table: str,
-    name: str,
-    columns: tuple[str, ...],
-) -> bool:
-    """验证关键普通索引的列与完整索引属性。"""
+@lru_cache(maxsize=1)
+def _current_schema_signature() -> tuple[tuple[str, str, str, str], ...]:
+    """从唯一建库 SQL 生成当前 schema 的完整结构签名。"""
 
-    rows = conn.execute(f'PRAGMA index_list("{table}")').fetchall()
-    matched = next(
-        (
-            row
-            for row in rows
-            if str(row[1]) == name
-            and not bool(row[2])
-            and not bool(row[4])
-        ),
-        None,
-    )
-    if matched is None:
-        return False
-    indexed_columns = tuple(
-        str(row[2])
-        for row in conn.execute(f'PRAGMA index_info("{name}")').fetchall()
-    )
-    return indexed_columns == columns
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute("BEGIN")
+        _execute_schema_statements(conn)
+        return _schema_signature(conn)
+    finally:
+        conn.close()
 
 
 def utc_now() -> str:
@@ -927,181 +639,17 @@ class ErpDatabase:
 
     def _inspect_schema_without_mutation(
         self,
-    ) -> tuple[
-        int,
-        frozenset[str],
-        frozenset[str],
-        frozenset[str],
-        frozenset[str],
-        frozenset[str],
-        frozenset[str],
-        frozenset[str],
-        frozenset[str],
-        frozenset[str],
-        bool,
-        bool,
-        bool,
-    ]:
+    ) -> tuple[int, tuple[tuple[str, str, str, str], ...]]:
         """Read an existing database through SQLite's read-only URI mode."""
         if not self.db_path.exists():
-            return (
-                0,
-                frozenset(),
-                frozenset(),
-                frozenset(),
-                frozenset(),
-                frozenset(),
-                frozenset(),
-                frozenset(),
-                frozenset(),
-                frozenset(),
-                False,
-                False,
-                False,
-            )
+            return 0, ()
         uri = f"{self.db_path.resolve().as_uri()}?mode=ro"
         conn = sqlite3.connect(uri, uri=True, timeout=10)
         try:
             version = int(
                 conn.execute("PRAGMA user_version").fetchone()[0] or 0
             )
-            tables = frozenset(
-                str(row[0])
-                for row in conn.execute(
-                    """
-                    SELECT name FROM sqlite_master
-                    WHERE type = 'table'
-                      AND name NOT LIKE 'sqlite_%'
-                    """
-                )
-            )
-            draft_columns = (
-                frozenset(
-                    str(row[1])
-                    for row in conn.execute(
-                        'PRAGMA table_info("platform_drafts")'
-                    )
-                )
-                if "platform_drafts" in tables
-                else frozenset()
-            )
-            publish_job_columns = (
-                frozenset(
-                    str(row[1])
-                    for row in conn.execute(
-                        'PRAGMA table_info("publish_jobs")'
-                    )
-                )
-                if "publish_jobs" in tables
-                else frozenset()
-            )
-            global_task_columns = (
-                frozenset(
-                    str(row[1])
-                    for row in conn.execute(
-                        'PRAGMA table_info("global_tasks")'
-                    )
-                )
-                if "global_tasks" in tables
-                else frozenset()
-            )
-            snapshot_columns = (
-                frozenset(
-                    str(row[1])
-                    for row in conn.execute(
-                        'PRAGMA table_info("draft_query_snapshots")'
-                    )
-                )
-                if "draft_query_snapshots" in tables
-                else frozenset()
-            )
-            message_history_columns = (
-                frozenset(
-                    str(row[1])
-                    for row in conn.execute(
-                        'PRAGMA table_info("pydantic_message_histories")'
-                    )
-                )
-                if "pydantic_message_histories" in tables
-                else frozenset()
-            )
-            chat_turn_claim_columns = (
-                frozenset(
-                    str(row[1])
-                    for row in conn.execute(
-                        'PRAGMA table_info("ai_chat_turn_claims")'
-                    )
-                )
-                if "ai_chat_turn_claims" in tables
-                else frozenset()
-            )
-            deferred_task_link_columns = (
-                frozenset(
-                    str(row[1])
-                    for row in conn.execute(
-                        'PRAGMA table_info("pydantic_deferred_task_links")'
-                    )
-                )
-                if "pydantic_deferred_task_links" in tables
-                else frozenset()
-            )
-            ai_event_outbox_columns = (
-                frozenset(
-                    str(row[1])
-                    for row in conn.execute(
-                        'PRAGMA table_info("pydantic_ai_event_outbox")'
-                    )
-                )
-                if "pydantic_ai_event_outbox" in tables
-                else frozenset()
-            )
-            publish_idempotency_index_valid = (
-                _has_required_unique_index(
-                    conn,
-                    table="publish_jobs",
-                    name=_PUBLISH_JOB_IDEMPOTENCY_INDEX,
-                    columns=("idempotency_key",),
-                    partial=False,
-                )
-                if "publish_jobs" in tables
-                else False
-            )
-            message_history_updated_index_valid = (
-                _has_required_non_unique_index(
-                    conn,
-                    table="pydantic_message_histories",
-                    name=_PYDANTIC_MESSAGE_HISTORY_UPDATED_INDEX,
-                    columns=("updated_at",),
-                )
-                if "pydantic_message_histories" in tables
-                else False
-            )
-            deferred_links_active_index_valid = (
-                _has_required_unique_index(
-                    conn,
-                    table="pydantic_deferred_task_links",
-                    name=_DEFERRED_TASK_LINKS_ACTIVE_INDEX,
-                    columns=("conversation_id",),
-                    partial=True,
-                )
-                if "pydantic_deferred_task_links" in tables
-                else False
-            )
-            return (
-                version,
-                tables,
-                draft_columns,
-                publish_job_columns,
-                global_task_columns,
-                snapshot_columns,
-                message_history_columns,
-                chat_turn_claim_columns,
-                deferred_task_link_columns,
-                ai_event_outbox_columns,
-                publish_idempotency_index_valid,
-                message_history_updated_index_valid,
-                deferred_links_active_index_valid,
-            )
+            return version, _schema_signature(conn)
         finally:
             conn.close()
 
@@ -1109,118 +657,27 @@ class ErpDatabase:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         (
             inspected_version,
-            inspected_tables,
-            inspected_draft_columns,
-            inspected_publish_job_columns,
-            inspected_global_task_columns,
-            inspected_snapshot_columns,
-            inspected_message_history_columns,
-            inspected_chat_turn_claim_columns,
-            inspected_deferred_link_columns,
-            inspected_outbox_columns,
-            inspected_publish_idempotency_index_valid,
-            inspected_message_history_updated_index_valid,
-            inspected_deferred_links_active_index_valid,
-        ) = (
-            self._inspect_schema_without_mutation()
-        )
+            inspected_schema,
+        ) = self._inspect_schema_without_mutation()
         is_empty_database = (
-            inspected_version == 0 and not inspected_tables
-        )
-        shared_v10_shape_valid = (
-            inspected_draft_columns
-            == _CURRENT_PLATFORM_DRAFT_COLUMNS
-            and inspected_publish_job_columns
-            == _CURRENT_PUBLISH_JOB_COLUMNS
-            and inspected_global_task_columns
-            == _CURRENT_GLOBAL_TASK_COLUMNS
-            and inspected_snapshot_columns
-            == _CURRENT_DRAFT_QUERY_SNAPSHOT_COLUMNS
-            and inspected_publish_idempotency_index_valid
-            and inspected_message_history_updated_index_valid
-        )
-        shared_v12_shape_valid = (
-            shared_v10_shape_valid
-            and inspected_message_history_columns
-            == _V12_PYDANTIC_MESSAGE_HISTORY_COLUMNS
+            inspected_version == 0 and not inspected_schema
         )
         is_current_database = (
             inspected_version == SCHEMA_VERSION
-            and inspected_tables == frozenset(REQUIRED_TABLES)
-            and inspected_chat_turn_claim_columns
-            == _CURRENT_AI_CHAT_TURN_CLAIM_COLUMNS
-            and inspected_message_history_columns
-            == _CURRENT_PYDANTIC_MESSAGE_HISTORY_COLUMNS
-            and inspected_deferred_link_columns
-            == _CURRENT_DEFERRED_TASK_LINK_COLUMNS
-            and inspected_outbox_columns
-            == _CURRENT_AI_EVENT_OUTBOX_COLUMNS
-            and inspected_deferred_links_active_index_valid
-            and shared_v10_shape_valid
+            and inspected_schema == _current_schema_signature()
         )
-        is_upgradable_v10_database = (
-            inspected_version == 10
-            and inspected_tables == _V10_REQUIRED_TABLES
-            and shared_v12_shape_valid
-        )
-        is_upgradable_v11_database = (
-            inspected_version == 11
-            and inspected_tables == _V12_REQUIRED_TABLES
-            and inspected_chat_turn_claim_columns
-            == _V11_AI_CHAT_TURN_CLAIM_COLUMNS
-            and shared_v12_shape_valid
-        )
-        is_upgradable_v12_database = (
-            inspected_version == 12
-            and inspected_tables == _V12_REQUIRED_TABLES
-            and inspected_chat_turn_claim_columns
-            == _CURRENT_AI_CHAT_TURN_CLAIM_COLUMNS
-            and shared_v12_shape_valid
-        )
-        if (
-            not is_empty_database
-            and not is_current_database
-            and not is_upgradable_v10_database
-            and not is_upgradable_v11_database
-            and not is_upgradable_v12_database
-        ):
+        if not is_empty_database and not is_current_database:
             raise RuntimeError(
                 "数据库 schema 版本 "
                 f"{inspected_version} 不受支持（当前版本 {SCHEMA_VERSION}）；"
-                "仅接受空库、当前完整 schema 或受支持的 v10/v11/v12 升级结构；"
-                "不迁移、修复或重建更早的旧消息格式。"
+                "仅接受真正空库或结构完整的当前 schema。旧数据库请先显式导出"
+                "所需配置，删除后重新初始化；运行时不会迁移、修复或删除数据库。"
             )
-        with self._connect() as conn:
-            if is_empty_database:
+        if is_empty_database:
+            with self._connect() as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 try:
                     _execute_schema_statements(conn)
-                    conn.execute(
-                        f"PRAGMA user_version = {SCHEMA_VERSION}"
-                    )
-                    conn.commit()
-                except BaseException:
-                    conn.rollback()
-                    raise
-            elif (
-                is_upgradable_v10_database
-                or is_upgradable_v11_database
-                or is_upgradable_v12_database
-            ):
-                # v10/v11 先升到 v12，再统一应用 v12 → v13；全部升级步骤与
-                # 旧未终结任务取消在同一事务内完成。
-                conn.execute("BEGIN IMMEDIATE")
-                try:
-                    if is_upgradable_v10_database:
-                        # v10 的 CREATE 已包含全部当前 claim 列；v11 的
-                        # ALTER 只用于补齐 v11 缺失的三列（报告 A-04：
-                        # 两条语句叠加会 duplicate column name）。
-                        _execute_upgrade_sql(conn, _V10_TO_V12_UPGRADE_SQL)
-                    if is_upgradable_v11_database:
-                        for statement in _V11_TO_V12_UPGRADE_STATEMENTS:
-                            conn.execute(statement)
-                    _execute_upgrade_sql(conn, _V12_TO_V13_UPGRADE_SQL)
-                    _cancel_legacy_unfinished_global_tasks(conn)
                     conn.execute(
                         f"PRAGMA user_version = {SCHEMA_VERSION}"
                     )

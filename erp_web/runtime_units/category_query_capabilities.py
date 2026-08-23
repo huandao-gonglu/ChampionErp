@@ -102,11 +102,11 @@ def category_search(
 
 @ai_tool(
     name=CATEGORY_ATTRIBUTES_QUERY_TOOL,
-    description="查询目标类目的属性定义（必填/可选属性列表）。",
+    description="分页查询目标类目的属性定义摘要；用 cursor 继续读取后续页。",
     permission="category.read",
     side_effect="none",
     recovery_policy="retry_safe",
-    version="1",
+    version="2",
 )
 def category_attributes_query(
     request: CategoryAttributesQueryRequest,
@@ -120,6 +120,8 @@ def category_attributes_query(
             platform,
             request.category_id,
             site=site,
+            cursor=request.cursor,
+            limit=request.limit,
             timeout_seconds=execution.bounded_timeout_seconds(),
         )
     except BusinessCapabilityError:
@@ -135,18 +137,22 @@ def category_attributes_query(
         platform=_text(payload.get("platform")) or platform,
         site=_text(payload.get("site")) or site,
         category_id=_text(payload.get("category_id")) or request.category_id,
-        category_path=_text(payload.get("category_path") or payload.get("path")),
+        category_path=_text(payload.get("category_path")),
+        limit=request.limit,
+        cursor=request.cursor,
         attributes=_dict_rows(payload.get("attributes")),
+        next_cursor=_text(payload.get("next_cursor")),
+        has_more=bool(payload.get("has_more")),
     )
 
 
 @ai_tool(
     name=CATEGORY_ATTRIBUTE_VALUES_QUERY_TOOL,
-    description="查询类目属性的候选枚举值（支持关键词过滤）。",
+    description="分页查询类目属性的候选枚举值（支持关键词过滤）；用 cursor 继续读取。",
     permission="category.read",
     side_effect="none",
     recovery_policy="retry_safe",
-    version="1",
+    version="2",
 )
 def category_attribute_values_query(
     request: CategoryAttributeValuesQueryRequest,
@@ -161,6 +167,7 @@ def category_attribute_values_query(
             request.attribute_id,
             site=_text(request.site),
             query=request.query,
+            cursor=request.cursor,
             limit=request.limit,
             timeout_seconds=execution.bounded_timeout_seconds(),
         )
@@ -181,7 +188,10 @@ def category_attribute_values_query(
         category_id=_text(payload.get("category_id")) or request.category_id,
         attribute_id=_text(payload.get("attribute_id")) or request.attribute_id,
         query=request.query,
+        cursor=request.cursor,
         values=_dict_rows(values),
+        next_cursor=_text(payload.get("next_cursor")),
+        has_more=bool(payload.get("has_more")),
     )
 
 

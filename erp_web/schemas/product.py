@@ -35,33 +35,6 @@ class ProductSource(TypedDict, total=False):
     created_at: str
 
 
-class CategoryAttributeDefinition(TypedDict, total=False):
-    id: str
-    name: str
-    required: bool
-    options: list[str]
-    value_type: str
-    unit: str
-    description: str
-    dictionary_id: str
-    is_dictionary: bool
-    is_collection: bool
-    max_value_count: int
-    category_dependent: bool
-    raw: dict[str, Any]
-
-
-class CategoryAttributeSchema(TypedDict, total=False):
-    platform: str
-    site: str
-    category_id: str
-    category_path: str
-    source: str
-    fetched_at: str
-    required: list[CategoryAttributeDefinition]
-    optional: list[CategoryAttributeDefinition]
-
-
 class DraftTargetSite(TypedDict, total=False):
     platform: str
     site: str
@@ -72,7 +45,6 @@ class DraftTargetSite(TypedDict, total=False):
     category_id: str
     description_category_id: str
     category_path: str
-    category_attribute_schema: CategoryAttributeSchema
     attributes: dict[str, Any]
     validation_errors: list[Any]
     category_precheck: dict[str, Any]
@@ -101,7 +73,6 @@ class PlatformDraft(TypedDict, total=False):
     category_id: str
     description_category_id: str
     category_path: str
-    category_attribute_schema: CategoryAttributeSchema
     target_sites: list[DraftTargetSite]
     attributes: dict[str, Any]
     pricing: dict[str, Any]
@@ -161,7 +132,6 @@ class Product(TypedDict, total=False):
     publish_preview: dict[str, Any]
     collect_status: str
     collect_logs: list[Any]
-    local_platform_categories: dict[str, Any]
     workflow_statuses: dict[str, str]
     created_at: str
     updated_at: str
@@ -169,8 +139,6 @@ class Product(TypedDict, total=False):
 
 __all__ = [
     "PRODUCT_SCHEMA_VERSION",
-    "CategoryAttributeDefinition",
-    "CategoryAttributeSchema",
     "DraftTargetSite",
     "PlatformDraft",
     "Product",

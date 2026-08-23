@@ -38,10 +38,13 @@ _REMOVED_PRODUCT_FIELDS = {
     "yandex_category_id",
     "ozon_category_id",
     "sale_price",
+    "local_platform_categories",
 }
 _REMOVED_DRAFT_FIELDS = {
     "barcode",
     "gtin",
+    "category_attribute_schema",
+    "categoryAttributeSchema",
 }
 _CANONICAL_PRODUCT_FIELDS = frozenset(Product.__annotations__)
 _CANONICAL_DRAFT_FIELDS = frozenset(PlatformDraft.__annotations__)
@@ -203,21 +206,6 @@ def normalize_draft_target_site(
             or fallback.get("categoryPath")
             or ""
         ).strip(),
-        "category_attribute_schema": deepcopy(
-            raw.get("category_attribute_schema")
-            if isinstance(
-                raw.get("category_attribute_schema"),
-                dict,
-            )
-            else raw.get("categoryAttributeSchema")
-            if isinstance(raw.get("categoryAttributeSchema"), dict)
-            else fallback.get("category_attribute_schema")
-            if isinstance(
-                fallback.get("category_attribute_schema"),
-                dict,
-            )
-            else {}
-        ),
         "attributes": deepcopy(
             raw.get("attributes")
             if isinstance(raw.get("attributes"), dict)
@@ -466,28 +454,17 @@ def _draft_sources(product: dict[str, Any], platform: str) -> dict[str, Any]:
 def _apply_source_mappings_to_draft(product: dict[str, Any], platform: str, current: dict[str, Any]) -> dict[str, Any]:
     source = product.get("source") if isinstance(product.get("source"), dict) else {}
     current = deepcopy(current if isinstance(current, dict) else default_draft(platform))
-    local_categories = product.get("local_platform_categories") if isinstance(product.get("local_platform_categories"), dict) else {}
-    selected = local_categories.get(platform) if isinstance(local_categories.get(platform), dict) else {}
     site_config = marketplace_site(
         platform,
         str(
             current.get("site")
             or current.get("site_id")
-            or selected.get("site")
             or ""
         ),
     )
 
-    current["category_id"] = str(
-        current.get("category_id")
-        or selected.get("category_id")
-        or ""
-    ).strip()
-    current["category_path"] = str(
-        current.get("category_path")
-        or selected.get("category_path")
-        or ""
-    ).strip()
+    current["category_id"] = str(current.get("category_id") or "").strip()
+    current["category_path"] = str(current.get("category_path") or "").strip()
 
     if site_config["code"]:
         current["site"] = site_config["code"]

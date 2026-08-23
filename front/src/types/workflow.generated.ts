@@ -170,33 +170,6 @@ export interface BackendProductSource {
   created_at?: string
 }
 
-export interface BackendCategoryAttributeDefinition {
-  id?: string
-  name?: string
-  required?: boolean
-  options?: Array<string>
-  value_type?: string
-  unit?: string
-  description?: string
-  dictionary_id?: string
-  is_dictionary?: boolean
-  is_collection?: boolean
-  max_value_count?: number
-  category_dependent?: boolean
-  raw?: Record<string, unknown>
-}
-
-export interface BackendCategoryAttributeSchema {
-  platform?: string
-  site?: string
-  category_id?: string
-  category_path?: string
-  source?: string
-  fetched_at?: string
-  required?: Array<BackendCategoryAttributeDefinition>
-  optional?: Array<BackendCategoryAttributeDefinition>
-}
-
 export interface BackendDraftTargetSite {
   platform?: string
   site?: string
@@ -207,7 +180,6 @@ export interface BackendDraftTargetSite {
   category_id?: string
   description_category_id?: string
   category_path?: string
-  category_attribute_schema?: BackendCategoryAttributeSchema
   attributes?: Record<string, unknown>
   validation_errors?: Array<unknown>
   category_precheck?: Record<string, unknown>
@@ -236,7 +208,6 @@ export interface BackendPlatformDraft {
   category_id?: string
   description_category_id?: string
   category_path?: string
-  category_attribute_schema?: BackendCategoryAttributeSchema
   target_sites?: Array<BackendDraftTargetSite>
   attributes?: Record<string, unknown>
   pricing?: Record<string, unknown>
@@ -296,7 +267,6 @@ export interface BackendProduct {
   publish_preview?: Record<string, unknown>
   collect_status?: string
   collect_logs?: Array<unknown>
-  local_platform_categories?: Record<string, unknown>
   workflow_statuses?: Record<string, string>
   created_at?: string
   updated_at?: string

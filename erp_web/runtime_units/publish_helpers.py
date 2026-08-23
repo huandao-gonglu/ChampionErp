@@ -329,27 +329,16 @@ def _field_error_map(items: list[dict[str, Any]]) -> dict[str, list[str]]:
     return mapped
 
 
-def _required_attribute_summary(product: dict[str, Any], platform: str) -> dict[str, Any]:
+def _required_attribute_summary(
+    product: dict[str, Any],
+    platform: str,
+    category_record: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """必填属性摘要；规则只来自当次注入的定义，不再读商品/草稿副本。"""
+
     draft = _draft_for_platform(product, platform)
     category_id = str(draft.get("category_id") or "").strip()
-    if platform in {"ozon", "yandex"}:
-        # 必填属性以草稿上的实时类目 schema 为唯一事实来源，
-        # 与 payload builder 消费同一份定义。
-        schema = (
-            draft.get("category_attribute_schema")
-            if isinstance(draft.get("category_attribute_schema"), dict)
-            else {}
-        )
-        record = {
-            "category_id": category_id,
-            "attributes": {
-                "required": list(schema.get("required") or []),
-                "optional": list(schema.get("optional") or []),
-            },
-        }
-    else:
-        categories = product.get("local_platform_categories") if isinstance(product.get("local_platform_categories"), dict) else {}
-        record = categories.get(platform) if isinstance(categories.get(platform), dict) else None
+    record = category_record if isinstance(category_record, dict) else None
     record_id = str((record or {}).get("category_id") or (record or {}).get("subject_id") or (record or {}).get("type_id") or "").strip()
     if category_id and record_id and record_id != category_id:
         record = None

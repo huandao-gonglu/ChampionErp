@@ -16,7 +16,6 @@ TARGET_LISTING_KEYS = (
     "category_id",
     "description_category_id",
     "category_path",
-    "category_attribute_schema",
     "attributes",
     "validation_errors",
     "category_precheck",
@@ -117,17 +116,6 @@ def _precheck_target_snapshot(raw: Any) -> dict[str, str]:
 
 def _target_listing_fields(raw: dict[str, Any], fallback: dict[str, Any] | None = None) -> dict[str, Any]:
     fallback = fallback if isinstance(fallback, dict) else {}
-    category_attribute_schema = (
-        raw.get("category_attribute_schema")
-        if isinstance(raw.get("category_attribute_schema"), dict)
-        else raw.get("categoryAttributeSchema")
-        if isinstance(raw.get("categoryAttributeSchema"), dict)
-        else fallback.get("category_attribute_schema")
-        if isinstance(fallback.get("category_attribute_schema"), dict)
-        else fallback.get("categoryAttributeSchema")
-        if isinstance(fallback.get("categoryAttributeSchema"), dict)
-        else {}
-    )
     raw_attributes = raw.get("attributes") if isinstance(raw.get("attributes"), dict) else {}
     fallback_attributes = fallback.get("attributes") if isinstance(fallback.get("attributes"), dict) else {}
     attributes = raw_attributes if raw_attributes else fallback_attributes
@@ -139,7 +127,6 @@ def _target_listing_fields(raw: dict[str, Any], fallback: dict[str, Any] | None 
         "category_id": str(raw.get("category_id") or raw.get("categoryId") or fallback.get("category_id") or "").strip(),
         "description_category_id": str(raw.get("description_category_id") or raw.get("descriptionCategoryId") or fallback.get("description_category_id") or "").strip(),
         "category_path": str(raw.get("category_path") or raw.get("categoryPath") or fallback.get("category_path") or "").strip(),
-        "category_attribute_schema": deepcopy(category_attribute_schema),
         "attributes": deepcopy(attributes),
         "validation_errors": deepcopy(validation_errors),
         "category_precheck": deepcopy(raw.get("category_precheck") if isinstance(raw.get("category_precheck"), dict) else raw.get("categoryPrecheck") if isinstance(raw.get("categoryPrecheck"), dict) else fallback.get("category_precheck") if isinstance(fallback.get("category_precheck"), dict) else {}),
@@ -264,6 +251,9 @@ def _select_target(
 
 def draft_for_publish_target(draft: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
     target_draft = deepcopy(draft)
+    # 已退役的平台规则副本不得进入发布投影（即使旧输入仍携带）。
+    for retired in ("category_attribute_schema", "categoryAttributeSchema"):
+        target_draft.pop(retired, None)
     target_draft["platform"] = target["platform"]
     target_draft["site"] = target["site"]
     target_draft["language"] = target["language"]

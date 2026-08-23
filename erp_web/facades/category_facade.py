@@ -15,8 +15,8 @@ from erp_web.runtime_units.category_attribute_ai_fill import (
     apply_ai_model_attribute_fill,
 )
 from erp_web.runtime_units.category_store import (
+    fetch_category_attribute_page,
     fetch_category_attribute_values,
-    fetch_category_attributes,
     fetch_category_record,
     search_categories_live,
 )
@@ -123,7 +123,20 @@ def category_attrs_payload(body: Payload) -> ResponseWithStatus:
             "error_code": "CATEGORY_ID_REQUIRED",
         }, 400
     try:
-        return fetch_category_attributes(platform, category_id, site=site), 200
+        limit = int(body.get("limit") or 50)
+    except (TypeError, ValueError):
+        limit = 50
+    try:
+        return (
+            fetch_category_attribute_page(
+                platform,
+                category_id,
+                site=site,
+                cursor=str(body.get("cursor") or "").strip(),
+                limit=limit,
+            ),
+            200,
+        )
     except Exception as exc:
         return _category_error(exc)
 
@@ -140,14 +153,18 @@ def category_attribute_values_payload(body: Payload) -> ResponseWithStatus:
             "error_code": "CATEGORY_ATTRIBUTE_VALUE_INPUT_REQUIRED",
         }, 400
     try:
-        return fetch_category_attribute_values(
-            platform,
-            category_id,
-            attribute_id,
-            site=site,
-            query=str(body.get("query") or "").strip(),
-            limit=int(body.get("limit") or 50),
-        ), 200
+        return (
+            fetch_category_attribute_values(
+                platform,
+                category_id,
+                attribute_id,
+                site=site,
+                query=str(body.get("query") or "").strip(),
+                cursor=str(body.get("cursor") or "").strip(),
+                limit=int(body.get("limit") or 50),
+            ),
+            200,
+        )
     except Exception as exc:
         return _category_error(exc)
 
@@ -303,7 +320,6 @@ def category_precheck_payload(body: Payload) -> ResponseWithStatus:
         "site": site,
         "category_id": category_id,
         "category_path": _category_path(record),
-        "category_record": record,
         "missing_fields": missing_fields,
     }, 200
 

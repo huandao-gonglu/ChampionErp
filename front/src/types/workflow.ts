@@ -14,8 +14,6 @@ export {
   type BackendImageItem,
   type BackendDraftImageRef,
   type BackendProductSource,
-  type BackendCategoryAttributeDefinition,
-  type BackendCategoryAttributeSchema,
   type BackendDraftTargetSite,
   type BackendPlatformDraft,
   type BackendProduct,
@@ -84,15 +82,12 @@ export interface CategoryAttributeUnitValue {
 
 export type CategoryAttributeValue = string | CategoryDictionarySelection | CategoryAttributeUnitValue
 
-export interface CategoryAttributeSchema {
-  platform: Marketplace
-  site: string
-  categoryId: string
-  categoryPath: string
-  source: string
-  fetchedAt: string
-  required: CategoryAttributeDefinition[]
-  optional: CategoryAttributeDefinition[]
+/** /api/category-attribute-values 返回的单页枚举值；全集需按 nextCursor 翻页。 */
+export interface CategoryAttributeValuesPage {
+  values: CategoryAttributeOption[]
+  nextCursor: string
+  hasMore: boolean
+  complete: boolean
 }
 
 /** 发布 payload 预览摘要（脱敏后由后端随预览返回）。 */
@@ -135,7 +130,6 @@ export interface MarketplaceTargetSite {
   categoryId?: string
   descriptionCategoryId?: string
   categoryPath?: string
-  categoryAttributeSchema?: CategoryAttributeSchema | null
   attributes?: Record<string, CategoryAttributeValue>
   validationErrors?: Array<UnknownRecord | string>
   categoryPrecheck?: UnknownRecord
@@ -421,6 +415,7 @@ export interface CategorySelection {
   requiredAttributes: CategoryAttributeDefinition[]
   optionalAttributes: CategoryAttributeDefinition[]
   source?: string
+  /** 属性定义从实时类目接口加载完成的时间戳；仅恢复类目身份（未加载定义）时为空。 */
   fetchedAt?: string
   raw?: UnknownRecord
 }

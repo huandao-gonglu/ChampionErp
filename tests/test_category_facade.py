@@ -21,7 +21,7 @@ def test_category_attrs_payload_preserves_validation_and_live_error_contract(
     def fail_fetch(*args: Any, **kwargs: Any) -> dict[str, Any]:
         raise RuntimeError("远端类目不可用")
 
-    monkeypatch.setattr(category_facade, "fetch_category_attributes", fail_fetch)
+    monkeypatch.setattr(category_facade, "fetch_category_attribute_page", fail_fetch)
     result, status = category_facade.category_attrs_payload(
         {"platform": "ozon", "category_id": "123"}
     )
@@ -193,7 +193,6 @@ def test_category_precheck_payload_preserves_category_contract(monkeypatch) -> N
         "site": "global",
         "category_id": "94765",
         "category_path": "家电 / 风扇",
-        "category_record": record,
         "missing_fields": ["attributes.BRAND"],
     }
 

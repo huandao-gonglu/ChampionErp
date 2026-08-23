@@ -23,6 +23,7 @@ from .publish_helpers import (
     remote_publish_identity,
 )
 from .publish_adapter import publishing_adapter_for, unsupported_publish_response
+from .publish_context import prepare_publish_context
 from .publish_logs_runtime import (
     _draft_id_for_log,
     _product_id_for_log,
@@ -66,7 +67,9 @@ def publish_product(product: dict[str, Any], platform: str, config: dict[str, An
         return unsupported_publish_response(platform)
     product = adapter.prepare_product(product, config)
     product = adapter.resolve_category(product, config)
-    precheck = adapter.validate_draft(product, config)
+    # 同一次发布评估只加载一次类目定义；预检与 payload 编译共享该上下文。
+    publish_context = prepare_publish_context(product, platform)
+    precheck = adapter.validate_draft(publish_context, config)
     if not precheck.get("ok"):
         updated = apply_precheck_to_product(product, platform, precheck, status="not_ready")
         payload_path, response_path = _write_publish_artifacts(platform, {"precheck": precheck}, {"ok": False, "status": "not_ready"})
@@ -101,7 +104,8 @@ def publish_product(product: dict[str, Any], platform: str, config: dict[str, An
         }
 
     product = apply_precheck_to_product(product, platform, precheck, status="local_precheck_passed")
-    payload = adapter.build_payload(product, config)
+    publish_context = publish_context.with_product(product)
+    payload = adapter.build_payload(publish_context, config)
     errors = adapter.validate_payload(payload, config)
     if errors:
         updated = apply_precheck_to_product(

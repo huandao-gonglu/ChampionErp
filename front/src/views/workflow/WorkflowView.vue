@@ -246,6 +246,7 @@ async function switchDraftWorkspaceTab(tab: DraftWorkspaceTab) {
     && !(
       category.value?.categoryId === currentDraft.value.categoryId.trim()
       && category.value.platform === selectedPublishTarget.value.platform
+      && Boolean(category.value.fetchedAt)
     )
   ) {
     await store.loadCategoryAttributes()

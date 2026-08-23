@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { saveDraft as saveDraftApi } from '@/api/workflow/catalog'
-import { diagnosticsToCollectDiagnostics, isCategoryDictionaryAttribute, normalizeCategoryDictionaryId } from '@/api/workflow/normalizers'
+import { diagnosticsToCollectDiagnostics } from '@/api/workflow/normalizers'
 import { createDefaultCollectDiagnostics } from '@/constants/initialState'
 import { useWorkflowActivityStore } from '@/stores/workflow/activity'
 import { useWorkflowCatalogStore } from '@/stores/workflow/catalog'
@@ -10,7 +10,6 @@ import { useWorkflowPublishingStore } from '@/stores/workflow/publishing'
 import { useWorkflowSettingsStore } from '@/stores/workflow/settings'
 import type {
   CategoryAttributeValue,
-  CategoryAttributeSchema,
   CategoryPrecheckResult,
   CategorySearchResult,
   CategorySelection,
@@ -116,96 +115,17 @@ export function precheckMessages(items: unknown): string[] {
 }
 
 export function categorySelectionFromProduct(product: Product, platform: Marketplace): CategorySelection | null {
-  const categories = isRecord(product.raw.local_platform_categories) ? product.raw.local_platform_categories : {}
-  const record = isRecord(categories[platform]) ? categories[platform] as UnknownRecord : null
-  if (!record) return null
-  const attrs = isRecord(record.attributes) ? record.attributes : {}
-  const normalizeAttr = (item: unknown, requiredFallback: boolean) => {
-    const attr = isRecord(item) ? item : {}
-    const raw = isRecord(attr.raw) ? attr.raw : {}
-    const rawDictionaryId = String(attr.dictionary_id ?? raw.dictionary_id ?? '')
-    return {
-      id: String(attr.id || attr.attribute_id || ''),
-      name: String(attr.name || attr.label || attr.id || attr.attribute_id || ''),
-      required: typeof attr.required === 'boolean' ? attr.required : requiredFallback,
-      options: Array.isArray(attr.options) ? attr.options.map(String) : [],
-      dictionaryId: normalizeCategoryDictionaryId(rawDictionaryId),
-      isDictionary: isCategoryDictionaryAttribute(rawDictionaryId, Boolean(attr.is_dictionary)),
-      isCollection: Boolean(attr.is_collection || raw.is_collection),
-      maxValueCount: Number(attr.max_value_count || raw.max_value_count || 0),
-      categoryDependent: Boolean(attr.category_dependent || raw.category_dependent),
-    }
-  }
-  const requiredAttributes = Array.isArray(attrs.required)
-    ? attrs.required.map((item) => normalizeAttr(item, true)).filter((item) => item.id && item.required)
-    : []
-  const optionalAttributes = Array.isArray(attrs.optional)
-    ? attrs.optional.map((item) => normalizeAttr(item, false)).filter((item) => item.id)
-    : []
-  const categoryId = String(record.category_id || record.subject_id || record.type_id || product.drafts[platform].categoryId || '')
-  if (!categoryId && !requiredAttributes.length && !optionalAttributes.length) return null
+  // 平台类目规则不再持久化：只从草稿恢复类目身份（category_id/category_path），
+  // 属性定义在编辑时经 /api/category-attrs 瞬时加载（fetchedAt 为空表示尚未加载）。
+  const draft = product.drafts[platform]
+  const categoryId = String(draft?.categoryId || '').trim()
+  if (!categoryId) return null
   return {
     platform,
     categoryId,
-    categoryPath: String(record.category_path || record.path || record.name_original || product.drafts[platform].categoryPath || ''),
-    requiredAttributes,
-    optionalAttributes,
-    raw: record,
-  }
-}
-
-export function categoryAttributeSchemaFromSelection(selection: CategorySelection, target: MarketplaceTargetSite): CategoryAttributeSchema {
-  const normalizeAttributes = (items: CategorySelection['requiredAttributes']) => items.map((item) => ({
-    id: item.id,
-    name: item.name || item.id,
-    required: Boolean(item.required),
-    options: [...(item.options || [])],
-    valueType: item.valueType || 'string',
-    unit: item.unit || '',
-    description: item.description || '',
-    dictionaryId: normalizeCategoryDictionaryId(item.dictionaryId),
-    isDictionary: isCategoryDictionaryAttribute(item.dictionaryId, item.isDictionary),
-    isCollection: Boolean(item.isCollection),
-    maxValueCount: item.maxValueCount || 0,
-    categoryDependent: Boolean(item.categoryDependent),
-  }))
-  return {
-    platform: target.platform,
-    site: target.site,
-    categoryId: selection.categoryId,
-    categoryPath: selection.categoryPath || String(target.categoryPath || ''),
-    source: selection.source || `${target.platform}_live`,
-    fetchedAt: selection.fetchedAt || new Date().toISOString(),
-    required: normalizeAttributes(selection.requiredAttributes),
-    optional: normalizeAttributes(selection.optionalAttributes).map((item) => ({ ...item, required: false })),
-  }
-}
-
-export function categorySelectionFromAttributeSchema(schema: CategoryAttributeSchema | null | undefined, target: MarketplaceTargetSite): CategorySelection | null {
-  if (!schema || !schema.categoryId) return null
-  if (schema.platform && schema.platform !== target.platform) return null
-  if (schema.site && schema.site !== target.site) return null
-  if (target.categoryId && schema.categoryId !== target.categoryId) return null
-  return {
-    platform: target.platform,
-    categoryId: schema.categoryId,
-    categoryPath: schema.categoryPath || String(target.categoryPath || ''),
-    requiredAttributes: schema.required.map((item) => ({ ...item, options: [...(item.options || [])] })),
-    optionalAttributes: schema.optional.map((item) => ({ ...item, required: false, options: [...(item.options || [])] })),
-    source: schema.source,
-    fetchedAt: schema.fetchedAt,
-    raw: {
-      platform: target.platform,
-      site: target.site,
-      category_id: schema.categoryId,
-      type_id: schema.categoryId,
-      description_category_id: target.descriptionCategoryId || '',
-      category_path: schema.categoryPath,
-      attributes: {
-        required: schema.required,
-        optional: schema.optional,
-      },
-    },
+    categoryPath: String(draft?.categoryPath || ''),
+    requiredAttributes: [],
+    optionalAttributes: [],
   }
 }
 
@@ -424,7 +344,6 @@ export function createWorkflowRuntime() {
       categoryId: String(target.categoryId || (useRootFallback ? draftDetail.categoryId : '') || ''),
       descriptionCategoryId: String(target.descriptionCategoryId || (useRootFallback ? draftDetail.descriptionCategoryId : '') || ''),
       categoryPath: String(target.categoryPath || (useRootFallback ? draftDetail.categoryPath : '') || ''),
-      categoryAttributeSchema: target.categoryAttributeSchema || null,
       attributes: Object.keys(target.attributes || {}).length ? cloneAttributes(target.attributes) : useRootFallback ? cloneAttributes(draftDetail.attributes) : {},
       validationErrors: (target.validationErrors || []).length ? cloneValidationErrors(target.validationErrors) : useRootFallback ? cloneValidationErrors(draftDetail.validationErrors) : [],
       categoryPrecheck: target.categoryPrecheck || {},
@@ -453,17 +372,13 @@ export function createWorkflowRuntime() {
     const index = currentDraft.value.targetSites.findIndex((target) => targetSiteKey(target) === key)
     if (index < 0) return
     const existing = currentDraft.value.targetSites[index]
-    const activeSchema = category.value
-      && category.value.categoryId === currentDraft.value.categoryId
-      && category.value.platform === existing.platform
-      ? categoryAttributeSchemaFromSelection(category.value, existing)
-      : existing.categoryAttributeSchema || null
+    // 类目属性定义不再写入目标站点：只持久化类目身份与草稿级字段，
+    // 属性定义由编辑态 category ref 瞬时持有。
     currentDraft.value.targetSites.splice(index, 1, {
       ...existing,
       categoryId: currentDraft.value.categoryId,
       descriptionCategoryId: currentDraft.value.descriptionCategoryId,
       categoryPath: currentDraft.value.categoryPath,
-      categoryAttributeSchema: activeSchema,
       attributes: cloneAttributes(currentDraft.value.attributes),
       validationErrors: cloneValidationErrors(currentDraft.value.validationErrors),
       publishStatus: currentDraft.value.publishStatus,
@@ -490,7 +405,21 @@ export function createWorkflowRuntime() {
     currentDraft.value.lastPrecheck = isRecord(target.lastPrecheck) ? target.lastPrecheck : {}
     currentDraft.value.lastPrecheckTarget = isRecord(target.lastPrecheckTarget) ? target.lastPrecheckTarget : {}
     categoryPrecheck.value = categoryPrecheckFromTarget(target.categoryPrecheck)
-    category.value = categorySelectionFromAttributeSchema(target.categoryAttributeSchema, target)
+    // 类目属性定义不做持久化：切换目标站点时只恢复类目身份；
+    // 已实时加载（fetchedAt 非空）且身份一致的编辑态定义保持不变。
+    const targetCategoryId = String(target.categoryId || '').trim()
+    const existingCategory = category.value
+    category.value = !targetCategoryId
+      ? null
+      : existingCategory && existingCategory.platform === target.platform && existingCategory.categoryId === targetCategoryId
+        ? existingCategory
+        : {
+          platform: target.platform,
+          categoryId: targetCategoryId,
+          categoryPath: String(target.categoryPath || ''),
+          requiredAttributes: [],
+          optionalAttributes: [],
+        }
     applyCategoryRecommendationForTarget(target)
     requestSequence.categoryAttributeTranslation += 1
     requestSequence.categoryResultTranslation += 1

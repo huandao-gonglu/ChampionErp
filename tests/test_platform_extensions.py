@@ -794,7 +794,7 @@ def test_publishing_bus_requires_verified_success_and_runs_terminal_hook() -> No
 
         @staticmethod
         def required_attributes_missing(
-            product: dict[str, Any],
+            context: Any,
             config: dict[str, Any],
         ) -> list[str]:
             return []
@@ -861,7 +861,7 @@ def test_publishing_bus_polls_pending_publish_without_resubmitting() -> None:
 
         @staticmethod
         def required_attributes_missing(
-            product: dict[str, Any],
+            context: Any,
             config: dict[str, Any],
         ) -> list[str]:
             return []
@@ -965,7 +965,7 @@ def test_publishing_bus_resumes_saved_platform_poll_without_resubmitting() -> No
 
         @staticmethod
         def required_attributes_missing(
-            product: dict[str, Any],
+            context: Any,
             config: dict[str, Any],
         ) -> list[str]:
             return []
@@ -1071,7 +1071,7 @@ def test_publishing_bus_does_not_duplicate_product_in_platform_result() -> None:
 
         @staticmethod
         def required_attributes_missing(
-            product: dict[str, Any],
+            context: Any,
             config: dict[str, Any],
         ) -> list[str]:
             return []
@@ -1132,7 +1132,15 @@ def test_remote_publish_success_requires_explicit_evidence() -> None:
 
 def test_terminal_hook_persists_product_and_log_without_status_poll(
     sample_product: dict[str, Any],
+    monkeypatch,
 ) -> None:
+    # 总线终态钩子测试不触网：跳过当次类目定义加载。
+    from erp_web.runtime_units import category_providers
+
+    monkeypatch.setattr(
+        category_providers, "category_provider_for", lambda platform: None
+    )
+
     class SuccessfulAdapter:
         @staticmethod
         def resolve_category(
@@ -1143,7 +1151,7 @@ def test_terminal_hook_persists_product_and_log_without_status_poll(
 
         @staticmethod
         def required_attributes_missing(
-            product: dict[str, Any],
+            context: Any,
             config: dict[str, Any],
         ) -> list[str]:
             return []
@@ -1594,7 +1602,11 @@ def test_source_site_registry_dispatches_detection_checks_and_parser() -> None:
     assert parsed["name"] == "通用商品标题"
 
 
-def test_mercadolibre_adapter_reads_required_attributes_from_local_category() -> None:
+def test_mercadolibre_adapter_reads_required_attributes_from_definition() -> None:
+    from erp_web.runtime_units.publish_context import PreparedPublishContext
+
+    from tests.publish_category_support import definition_from_record
+
     adapter = MercadoLibrePublishingAdapter()
     product = {
         "drafts": {
@@ -1611,19 +1623,26 @@ def test_mercadolibre_adapter_reads_required_attributes_from_local_category() ->
                 "attributes": {},
             },
         },
-        "local_platform_categories": {
-            "mercadolibre": {
-                "category_id": "MLM-1",
-                "attributes": {
-                    "required": [
-                        {"id": "BRAND", "name": "Marca", "required": True},
-                    ],
-                },
-            },
+    }
+    record = {
+        "platform": "mercadolibre",
+        "category_id": "MLM-1",
+        "attributes": {
+            "required": [
+                {"id": "BRAND", "name": "Marca", "required": True},
+            ],
+            "optional": [],
         },
     }
+    context = PreparedPublishContext(
+        product=product,
+        draft=product["drafts"]["mercadolibre"],
+        target={},
+        category_definition=definition_from_record(record),
+        platform="mercadolibre",
+    )
 
-    assert adapter.required_attributes_missing(product, {}) == ["attributes.BRAND"]
+    assert adapter.required_attributes_missing(context, {}) == ["attributes.BRAND"]
 
 
 def test_run_ai_use_case_renders_payload_and_normalizes_result(monkeypatch) -> None:

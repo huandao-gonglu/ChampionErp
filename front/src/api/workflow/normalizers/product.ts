@@ -24,7 +24,6 @@ import {
   normalizeAttributes,
   toBackendAttributes,
   normalizeValidationErrors,
-  normalizeCategoryAttributeSchema,
   normalizeTargetSites,
   normalizeDimensions,
   normalizeImageAsset,
@@ -102,7 +101,6 @@ export function normalizeDraft(value: unknown, language: string): MarketplaceDra
     categoryId,
     descriptionCategoryId,
     categoryPath,
-    categoryAttributeSchema: normalizeCategoryAttributeSchema(record.category_attribute_schema),
     attributes,
     validationErrors,
     publishStatus: getString(record, ['publish_status']),
@@ -378,7 +376,6 @@ export function toBackendProduct(product: Product): BackendProduct {
     publish_preview: asRecord(rawProduct.publish_preview),
     collect_status: getString(rawProduct, ['collect_status']),
     collect_logs: Array.isArray(rawProduct.collect_logs) ? rawProduct.collect_logs : [],
-    local_platform_categories: asRecord(rawProduct.local_platform_categories),
     workflow_statuses: Object.fromEntries(
       Object.entries(asRecord(rawProduct.workflow_statuses)).map(([key, value]) => [key, String(value ?? '')]),
     ),

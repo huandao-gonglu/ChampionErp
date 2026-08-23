@@ -24,28 +24,38 @@ class Provider:
             return "global"
         return site.upper() if site else "MLM"
 
-    def detail(
+    def category_detail(
         self,
         category_id: str,
-        site: str = "",
         *,
-        include_attributes: bool = False,
+        site: str = "",
         timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         return {"category_id": category_id, "site": site}
 
-    def discover(
+    def attribute_definitions(
         self,
-        keyword: str,
-        site: str = "",
-        limit: int = 8,
+        category_id: str,
         *,
-        timeout_seconds: float,
-    ) -> list[dict[str, Any]]:
-        self.calls.append((keyword, site, limit, timeout_seconds))
-        return [{"category_id": "MLM-1", "name": "Ventiladores"}]
+        site: str = "",
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        raise AssertionError("searcher 不应读取属性定义")
 
-    def search(
+    def attribute_values(
+        self,
+        category_id: str,
+        attribute_id: str,
+        *,
+        site: str = "",
+        query: str = "",
+        cursor: str = "",
+        limit: int = 50,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        raise AssertionError("searcher 不应读取枚举值")
+
+    def search_categories(
         self,
         keyword: str,
         site: str = "",
@@ -56,6 +66,8 @@ class Provider:
         self.calls.append((keyword, site, limit, timeout_seconds))
         if self.search_error is not None:
             raise self.search_error
+        if self.platform == "mercadolibre":
+            return [{"category_id": "MLM-1", "name": "Ventiladores"}]
         return [
             {
                 "category_id": "1001",

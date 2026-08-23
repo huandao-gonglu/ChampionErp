@@ -245,38 +245,6 @@ def category_path(record: Mapping[str, Any]) -> str:
     return " > ".join(text(item) for item in raw_path if text(item))
 
 
-def category_schema(
-    record: Mapping[str, Any],
-    *,
-    platform: str,
-    site: str,
-    selected_category_id: str,
-) -> dict[str, Any]:
-    attributes = (
-        record.get("attributes")
-        if isinstance(record.get("attributes"), Mapping)
-        else {}
-    )
-    return {
-        "platform": platform,
-        "site": site,
-        "category_id": selected_category_id,
-        "category_path": category_path(record),
-        "source": text(record.get("source")),
-        "fetched_at": text(record.get("fetched_at")),
-        "required": deepcopy(
-            attributes.get("required")
-            if isinstance(attributes.get("required"), list)
-            else []
-        ),
-        "optional": deepcopy(
-            attributes.get("optional")
-            if isinstance(attributes.get("optional"), list)
-            else []
-        ),
-    }
-
-
 def load_category_record(
     loader: CategoryRecordLoader,
     *,
@@ -284,6 +252,8 @@ def load_category_record(
     site: str,
     selected_category_id: str,
 ) -> dict[str, Any]:
+    """经注入 Loader 读取当次类目记录；失败分类为可重试业务错误。"""
+
     try:
         record = loader(
             platform,
@@ -331,6 +301,8 @@ def persist_target_projection(
     updated_product: dict[str, Any],
     updated_target_draft: dict[str, Any],
 ) -> dict[str, Any]:
+    """持久化目标草稿投影；不再携带平台规则副本（local_platform_categories）。"""
+
     platform = text(target.get("platform")).lower()
     merged_draft = merge_target_listing_into_draft(
         draft,
@@ -340,19 +312,7 @@ def persist_target_projection(
     next_product = deepcopy(product)
     drafts = next_product.get("drafts") if isinstance(next_product.get("drafts"), dict) else {}
     next_product["drafts"] = {**drafts, platform: merged_draft}
-    next_product["local_platform_categories"] = deepcopy(
-        updated_product.get("local_platform_categories")
-        if isinstance(updated_product.get("local_platform_categories"), dict)
-        else product.get("local_platform_categories")
-        if isinstance(product.get("local_platform_categories"), dict)
-        else {}
-    )
-    existing_categories = (
-        product.get("local_platform_categories")
-        if isinstance(product.get("local_platform_categories"), dict)
-        else {}
-    )
-    if merged_draft != draft or next_product["local_platform_categories"] != existing_categories:
+    if merged_draft != draft:
         try:
             product_store.save_product(next_product)
         except Exception as exc:
@@ -373,7 +333,6 @@ __all__ = [
     "MarketPrepareStore",
     "assert_target_mutable",
     "category_path",
-    "category_schema",
     "load_category_record",
     "load_draft",
     "invalidate_target_publish_preparation",

@@ -3,7 +3,7 @@ from __future__ import annotations
 from erp_web.db import REQUIRED_TABLES, SCHEMA_VERSION, ErpDatabase
 from erp_web.runtime_units.publishing_bus_core import PublishingBus
 
-from .support import sensitive_paths
+from .support import ROOT, sensitive_paths
 
 
 def test_database_owns_schema_and_connection_policy(tmp_path) -> None:
@@ -90,6 +90,24 @@ def test_database_owns_schema_and_connection_policy(tmp_path) -> None:
         1,
     ) in deferred_link_unique_partial
     assert "ai_" + "sessions" not in tables
+
+
+def test_database_has_only_current_schema_initialization_path() -> None:
+    source = (ROOT / "erp_web/db.py").read_text(encoding="utf-8")
+    assert "def _current_schema_signature(" in source
+    assert "仅接受真正空库或结构完整的当前 schema" in source
+    for retired_symbol in (
+        "is_upgradable_",
+        "_execute_upgrade_sql",
+        "_cancel_legacy_unfinished_global_tasks",
+        "_retire_persisted_category_rules",
+        "_V10_TO_V12_UPGRADE_SQL",
+        "_V11_TO_V12_UPGRADE_STATEMENTS",
+        "_V12_TO_V13_UPGRADE_SQL",
+    ):
+        assert retired_symbol not in source, (
+            f"数据库不得重建旧版本运行时升级路径：{retired_symbol}"
+        )
 
 
 def test_publish_jobs_never_persist_credentials(tmp_path) -> None:

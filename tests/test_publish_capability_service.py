@@ -15,6 +15,17 @@ from erp_web.services.capability_errors import BusinessCapabilityError
 from erp_web.runtime_units import publish_capabilities
 
 
+@pytest.fixture(autouse=True)
+def _no_live_category_provider(monkeypatch):
+    """纯 Capability 单测不触网：跳过当次类目定义加载。"""
+
+    from erp_web.runtime_units import category_providers
+
+    monkeypatch.setattr(
+        category_providers, "category_provider_for", lambda platform: None
+    )
+
+
 class _Adapter:
     def __init__(self, errors: list[dict] | None = None) -> None:
         self.errors = errors or []
@@ -22,7 +33,7 @@ class _Adapter:
     def prepare_product(self, product: dict, config: dict) -> dict:
         return deepcopy(product)
 
-    def validate_draft(self, product: dict, config: dict) -> dict:
+    def validate_draft(self, context, config: dict) -> dict:
         return {
             "platform": "mercadolibre",
             "ok": not self.errors,
@@ -31,8 +42,8 @@ class _Adapter:
             "checked_at": "2026-08-13T00:00:00Z",
         }
 
-    def build_payload(self, product: dict, config: dict) -> dict:
-        draft = product["drafts"]["mercadolibre"]
+    def build_payload(self, context, config: dict) -> dict:
+        draft = context.product["drafts"]["mercadolibre"]
         return {
             "title": draft["title"],
             "category_id": draft["category_id"],

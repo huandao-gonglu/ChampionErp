@@ -15,13 +15,18 @@ from .publish_confirmation import (
     canonical_publish_digest,
     resolve_publish_store_binding,
 )
+from .publish_context import PreparedPublishContext, prepare_publish_context
 
 
 class PublishingAdapter(Protocol):
     def resolve_category(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         ...
 
-    def required_attributes_missing(self, product: dict[str, Any], config: dict[str, Any]) -> list[str]:
+    def required_attributes_missing(
+        self,
+        context: PreparedPublishContext,
+        config: dict[str, Any],
+    ) -> list[str]:
         ...
 
     def publish(self, product: dict[str, Any], platform: str, config: dict[str, Any]) -> dict[str, Any]:
@@ -806,7 +811,10 @@ class PublishingBus:
                             ),
                             attempts=attempts,
                         )
-                        missing = adapter.required_attributes_missing(product, config)
+                        missing = adapter.required_attributes_missing(
+                            prepare_publish_context(product, platform),
+                            config,
+                        )
                         if missing:
                             self._set_platform(
                                 job_id,

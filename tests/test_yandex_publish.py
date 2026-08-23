@@ -25,7 +25,38 @@ from erp_web.runtime_units.publish_yandex import (
     yandex_required_attributes_missing,
 )
 
+from tests.publish_category_support import record_from_schema
+
 API_TOKEN = "secret-api-token-123"
+
+#: 测试类目定义（当次临时规则，不再持久化进草稿）。
+_CATEGORY_SCHEMA: dict[str, Any] = {
+    "required": [
+        {
+            "id": "85",
+            "name": "类型",
+            "required": True,
+            "dictionary_id": "1234",
+        },
+    ],
+    "optional": [
+        {
+            "id": "9048",
+            "name": "重量",
+            "required": False,
+            "unit_options": ["г", "кг"],
+        },
+    ],
+}
+
+
+def _record(schema: dict[str, Any] | None = None, category_id: str = "91596") -> dict[str, Any]:
+    return record_from_schema(
+        platform="yandex",
+        category_id=category_id,
+        schema=schema if schema is not None else _CATEGORY_SCHEMA,
+        category_path="Тестовая категория",
+    )
 
 
 def _config(**store_overrides: Any) -> dict[str, Any]:
@@ -80,24 +111,6 @@ def _draft(**overrides: Any) -> dict[str, Any]:
                     "calculation_fingerprint": pricing_calculation_fingerprint(basis),
                 }
             }
-        },
-        "category_attribute_schema": {
-            "required": [
-                {
-                    "id": "85",
-                    "name": "类型",
-                    "required": True,
-                    "dictionary_id": "1234",
-                },
-            ],
-            "optional": [
-                {
-                    "id": "9048",
-                    "name": "重量",
-                    "required": False,
-                    "unit_options": ["г", "кг"],
-                },
-            ],
         },
         "attributes": {
             "85": {"values": [{"dictionary_value_id": "61573", "value": "настольный"}]},
@@ -229,8 +242,8 @@ def _drive_to_terminal(
 
 def test_build_payload_is_deterministic_and_grouped() -> None:
     product = _product()
-    first = build_yandex_publish_payload(product, _config())
-    second = build_yandex_publish_payload(deepcopy(product), _config())
+    first = build_yandex_publish_payload(product, _config(), _record())
+    second = build_yandex_publish_payload(deepcopy(product), _config(), _record())
     assert json.dumps(first, sort_keys=True, ensure_ascii=False) == json.dumps(
         second, sort_keys=True, ensure_ascii=False
     )
@@ -279,7 +292,7 @@ def test_build_payload_business_price_level_when_only_default_price() -> None:
     payload = build_yandex_publish_payload(
         _product(),
         _config(only_default_price=True),
-    )
+    _record(),)
     assert payload["price"]["level"] == "business"
 
 
@@ -306,7 +319,6 @@ def test_build_payload_multivalue_rows_and_unit_id() -> None:
         ],
     }
     product = _product(
-        category_attribute_schema=schema,
         attributes={
             "31": {
                 "values": [
@@ -318,7 +330,7 @@ def test_build_payload_multivalue_rows_and_unit_id() -> None:
         },
     )
 
-    payload = build_yandex_publish_payload(product, _config())
+    payload = build_yandex_publish_payload(product, _config(), _record(schema))
     rows = payload["catalog"]["offer"]["parameterValues"]
 
     # 官方多值：多个共享 parameterId 的对象；单位携带 wire unitId。
@@ -345,14 +357,13 @@ def test_build_payload_open_enum_custom_value_and_default_unit() -> None:
         ],
     }
     product = _product(
-        category_attribute_schema=schema,
         attributes={
             "44": "собственное значение",
             "9048": {"value": "500", "unit": "г"},
         },
     )
 
-    payload = build_yandex_publish_payload(product, _config())
+    payload = build_yandex_publish_payload(product, _config(), _record(schema))
     rows = payload["catalog"]["offer"]["parameterValues"]
 
     # 开放枚举自定义值只携带 value（不带 valueId）；默认单位也显式携带 unitId。
@@ -378,12 +389,11 @@ def test_build_payload_blocks_stale_non_default_unit() -> None:
         ],
     }
     product = _product(
-        category_attribute_schema=schema,
         attributes={"9048": {"value": "500", "unit": "кг"}},
     )
 
     with pytest.raises(ValueError, match="单位 ID"):
-        build_yandex_publish_payload(product, _config())
+        build_yandex_publish_payload(product, _config(), _record(schema))
 
 
 def test_build_payload_enforces_numeric_constraints() -> None:
@@ -400,12 +410,11 @@ def test_build_payload_enforces_numeric_constraints() -> None:
         ],
     }
     product = _product(
-        category_attribute_schema=schema,
         attributes={"9048": {"value": "500"}},
     )
 
     with pytest.raises(ValueError, match="不能大于"):
-        build_yandex_publish_payload(product, _config())
+        build_yandex_publish_payload(product, _config(), _record(schema))
 
 
 def test_build_payload_decimal_price_is_number() -> None:
@@ -414,7 +423,7 @@ def test_build_payload_decimal_price_is_number() -> None:
         "applied_price"
     ] = {"amount": "1299.50", "currency": "RUB"}
 
-    payload = build_yandex_publish_payload(product, _config())
+    payload = build_yandex_publish_payload(product, _config(), _record())
 
     # 官方 basicPrice.value / price.value 为 JSON number（小数保持 float）。
     assert payload["catalog"]["offer"]["basicPrice"] == {
@@ -431,7 +440,7 @@ def test_build_payload_fby_stock_mode_is_none() -> None:
     payload = build_yandex_publish_payload(
         _product(),
         _config(placement_type="FBY", stock_update_mode="", warehouse_ids=[]),
-    )
+    _record(),)
     assert payload["stock"]["mode"] == "none"
 
 
@@ -441,48 +450,48 @@ def test_build_payload_rejects_invalid_inputs() -> None:
         build_yandex_publish_payload(
             _product(last_publish_task={"offer_id": "OLD-SKU"}),
             _config(),
-        )
+        _record(),)
     # 空 SKU 会被规范化为稳定 offerId（平台身份不允许为空），
     # 且多次规范化结果一致。
-    generated_first = build_yandex_publish_payload(_product(sku=""), _config())
-    generated_second = build_yandex_publish_payload(_product(sku=""), _config())
+    generated_first = build_yandex_publish_payload(_product(sku=""), _config(), _record())
+    generated_second = build_yandex_publish_payload(_product(sku=""), _config(), _record())
     assert generated_first["offer_id"] == generated_second["offer_id"]
     assert generated_first["offer_id"].startswith("YDX-")
     # 类目不是正整数
     with pytest.raises(ValueError, match="类目 ID"):
-        build_yandex_publish_payload(_product(category_id="abc"), _config())
+        build_yandex_publish_payload(_product(category_id="abc"), _config(), _record())
     # 缺图片：草稿引用与 canonical 图片池同时为空才构成缺图
     no_images = _product(images=[])
     no_images["source"]["image_pool"] = []
     with pytest.raises(ValueError, match="图片"):
-        build_yandex_publish_payload(no_images, _config())
+        build_yandex_publish_payload(no_images, _config(), _record())
     # 库存写入方式不受支持
     with pytest.raises(ValueError, match="库存写入方式"):
         build_yandex_publish_payload(
             _product(),
             _config(stock_update_mode="warehouse_direct"),
-        )
+        _record(),)
     # campaign_warehouses 但缺少仓库
     with pytest.raises(ValueError, match="warehouse_ids"):
         build_yandex_publish_payload(
             _product(),
             _config(warehouse_ids=[]),
-        )
+        _record(),)
 
 
 def test_build_payload_requires_credentials() -> None:
     with pytest.raises(YandexApiError) as exc_info:
-        build_yandex_publish_payload(_product(), _config(api_token=""))
+        build_yandex_publish_payload(_product(), _config(api_token=""), _record())
     assert exc_info.value.code == "YANDEX_CREDENTIALS_MISSING"
     assert exc_info.value.retryable is False
 
     with pytest.raises(YandexApiError) as exc_info:
-        build_yandex_publish_payload(_product(), _config(business_id=""))
+        build_yandex_publish_payload(_product(), _config(business_id=""), _record())
     assert exc_info.value.code == "YANDEX_BUSINESS_ID_MISSING"
 
 
 def test_validate_payload_flags_binding_and_picture_issues() -> None:
-    payload = build_yandex_publish_payload(_product(), _config())
+    payload = build_yandex_publish_payload(_product(), _config(), _record())
     assert validate_yandex_publish_payload(payload, _config()) == []
 
     # 店铺绑定变化
@@ -503,7 +512,7 @@ def test_validate_payload_flags_binding_and_picture_issues() -> None:
 
 def test_publish_executes_only_first_mutation(remote) -> None:
     config = _config()
-    payload = build_yandex_publish_payload(_product(), config)
+    payload = build_yandex_publish_payload(_product(), config, _record())
 
     result = publish_yandex_payload(payload, config)
 
@@ -522,7 +531,7 @@ def test_publish_executes_only_first_mutation(remote) -> None:
 
 def test_full_flow_success_without_repeating_steps(remote) -> None:
     config = _config()
-    payload = build_yandex_publish_payload(_product(), config)
+    payload = build_yandex_publish_payload(_product(), config, _record())
 
     result = publish_yandex_payload(payload, config)
     result = _allow_poll(result)
@@ -551,7 +560,7 @@ def test_full_flow_success_without_repeating_steps(remote) -> None:
 
 def test_fby_stock_step_is_skipped_with_evidence(remote) -> None:
     config = _config(placement_type="FBY", stock_update_mode="", warehouse_ids=[])
-    payload = build_yandex_publish_payload(_product(), config)
+    payload = build_yandex_publish_payload(_product(), config, _record())
 
     result = publish_yandex_payload(payload, config)
     terminal = _drive_to_terminal(result, config)
@@ -565,7 +574,7 @@ def test_fby_stock_step_is_skipped_with_evidence(remote) -> None:
 
 def test_retryable_error_backs_off_then_continues(remote, monkeypatch) -> None:
     config = _config()
-    payload = build_yandex_publish_payload(_product(), config)
+    payload = build_yandex_publish_payload(_product(), config, _record())
 
     def flaky_mapping(*args: Any, **kwargs: Any) -> dict[str, Any]:
         recorder_calls.append(args)
@@ -607,7 +616,7 @@ def test_retryable_error_backs_off_then_continues(remote, monkeypatch) -> None:
 
 def test_deterministic_error_becomes_terminal_failure(remote, monkeypatch) -> None:
     config = _config()
-    payload = build_yandex_publish_payload(_product(), config)
+    payload = build_yandex_publish_payload(_product(), config, _record())
 
     def denied(*args: Any, **kwargs: Any) -> dict[str, Any]:
         raise YandexApiError(
@@ -627,7 +636,7 @@ def test_deterministic_error_becomes_terminal_failure(remote, monkeypatch) -> No
 
 
 def test_store_binding_change_blocks_publish(remote) -> None:
-    payload = build_yandex_publish_payload(_product(), _config())
+    payload = build_yandex_publish_payload(_product(), _config(), _record())
     with pytest.raises(YandexApiError) as exc_info:
         publish_yandex_payload(payload, _config(campaign_id="999"))
     assert exc_info.value.code == "YANDEX_STORE_BINDING_CHANGED"
@@ -641,7 +650,7 @@ def test_store_binding_change_blocks_publish(remote) -> None:
 def test_confirmation_no_stocks_is_not_success(remote) -> None:
     remote.mapping_status = "NO_STOCKS"
     config = _config()
-    payload = build_yandex_publish_payload(_product(), config)
+    payload = build_yandex_publish_payload(_product(), config, _record())
 
     terminal = _drive_to_terminal(publish_yandex_payload(payload, config), config)
 
@@ -653,7 +662,7 @@ def test_confirmation_no_stocks_is_not_success(remote) -> None:
 def test_confirmation_rejected_status_is_failure(remote) -> None:
     remote.mapping_status = "REJECTED_BY_MARKET"
     config = _config()
-    payload = build_yandex_publish_payload(_product(), config)
+    payload = build_yandex_publish_payload(_product(), config, _record())
 
     terminal = _drive_to_terminal(publish_yandex_payload(payload, config), config)
 
@@ -678,7 +687,7 @@ def test_confirmation_quarantine_blocks_success(remote) -> None:
         }
     ]
     config = _config()
-    payload = build_yandex_publish_payload(_product(), config)
+    payload = build_yandex_publish_payload(_product(), config, _record())
 
     terminal = _drive_to_terminal(publish_yandex_payload(payload, config), config)
 
@@ -690,7 +699,7 @@ def test_confirmation_quarantine_blocks_success(remote) -> None:
 def test_confirmation_pending_eventually_times_out(remote) -> None:
     remote.mapping_status = "CHECKING"
     config = _config(publish_confirmation_poll_limit=2)
-    payload = build_yandex_publish_payload(_product(), config)
+    payload = build_yandex_publish_payload(_product(), config, _record())
 
     terminal = _drive_to_terminal(publish_yandex_payload(payload, config), config)
 
@@ -705,7 +714,7 @@ def test_confirmation_edit_rejected_by_card_status_despite_published(remote) -> 
     remote.mapping_status = "PUBLISHED"
     remote.card_status = "HAS_CARD_CAN_UPDATE_ERRORS"
     config = _config()
-    payload = build_yandex_publish_payload(_product(), config)
+    payload = build_yandex_publish_payload(_product(), config, _record())
 
     terminal = _drive_to_terminal(publish_yandex_payload(payload, config), config)
 
@@ -722,7 +731,7 @@ def test_confirmation_no_card_errors_is_failure(remote) -> None:
     remote.mapping_status = "CHECKING"
     remote.card_status = "NO_CARD_ERRORS"
     config = _config()
-    payload = build_yandex_publish_payload(_product(), config)
+    payload = build_yandex_publish_payload(_product(), config, _record())
 
     terminal = _drive_to_terminal(publish_yandex_payload(payload, config), config)
 
@@ -737,7 +746,7 @@ def test_confirmation_card_processing_polls_then_times_out(remote) -> None:
     remote.mapping_status = "PUBLISHED"
     remote.card_status = "HAS_CARD_CAN_UPDATE_PROCESSING"
     config = _config(publish_confirmation_poll_limit=2)
-    payload = build_yandex_publish_payload(_product(), config)
+    payload = build_yandex_publish_payload(_product(), config, _record())
 
     terminal = _drive_to_terminal(publish_yandex_payload(payload, config), config)
 
@@ -751,7 +760,7 @@ def test_confirmation_published_with_action_required_card_fails(remote) -> None:
     remote.mapping_status = "PUBLISHED"
     remote.card_status = "NO_CARD_ADD_TO_CAMPAIGN"
     config = _config()
-    payload = build_yandex_publish_payload(_product(), config)
+    payload = build_yandex_publish_payload(_product(), config, _record())
 
     terminal = _drive_to_terminal(publish_yandex_payload(payload, config), config)
 
@@ -763,7 +772,7 @@ def test_confirmation_success_records_official_card_status(remote) -> None:
     remote.mapping_status = "PUBLISHED"
     remote.card_status = "HAS_CARD_CAN_UPDATE"
     config = _config()
-    payload = build_yandex_publish_payload(_product(), config)
+    payload = build_yandex_publish_payload(_product(), config, _record())
 
     terminal = _drive_to_terminal(publish_yandex_payload(payload, config), config)
 
@@ -782,14 +791,14 @@ def test_build_payload_business_stock_requires_single_warehouse() -> None:
         stock_update_mode="business", warehouse_ids=["31", "32"]
     )
     with pytest.raises(ValueError, match="唯一发布仓库"):
-        build_yandex_publish_payload(_product(), multiple)
+        build_yandex_publish_payload(_product(), multiple, _record())
 
     empty = _config(stock_update_mode="business", warehouse_ids=[])
     with pytest.raises(ValueError, match="发布仓库"):
-        build_yandex_publish_payload(_product(), empty)
+        build_yandex_publish_payload(_product(), empty, _record())
 
     single = _config(stock_update_mode="business", warehouse_ids=["31"])
-    payload = build_yandex_publish_payload(_product(), single)
+    payload = build_yandex_publish_payload(_product(), single, _record())
     assert payload["stock"] == {
         "mode": "business",
         "warehouse_ids": ["31"],
@@ -806,7 +815,7 @@ def test_build_payload_business_stock_requires_single_warehouse() -> None:
 
 def test_pending_result_never_leaks_credentials(remote) -> None:
     config = _config()
-    payload = build_yandex_publish_payload(_product(), config)
+    payload = build_yandex_publish_payload(_product(), config, _record())
     result = publish_yandex_payload(payload, config)
     terminal = _drive_to_terminal(result, config)
 
@@ -835,24 +844,28 @@ def test_offer_identity_conflict_message() -> None:
 
 def test_required_and_invalid_attribute_helpers() -> None:
     product = _product()
-    assert yandex_required_attributes_missing(product) == []
+    assert yandex_required_attributes_missing(product, _record()) == []
 
     missing = yandex_required_attributes_missing(
         _product(attributes={}),
+        _record(),
     )
     assert missing == ["attributes.85"]
 
     invalid_enum = yandex_invalid_dictionary_attributes(
         _product(attributes={"85": {"values": [{"value": "手动输入"}]}}),
+        _record(),
     )
     assert invalid_enum == ["85"]
 
     invalid_unit = yandex_invalid_unit_attributes(
         _product(attributes={"9048": {"value": "10", "unit": "磅"}}),
+        _record(),
     )
     assert invalid_unit == ["9048"]
     assert yandex_invalid_unit_attributes(
         _product(attributes={"9048": {"value": "10", "unit": "кг"}}),
+        _record(),
     ) == []
 
 
@@ -925,7 +938,7 @@ def test_yandex_adapter_end_to_end_through_publishing_bus(remote) -> None:
 
     config = _config(publish_poll_interval_seconds=0.5)
     product = _product()
-    payload = build_yandex_publish_payload(product, config)
+    payload = build_yandex_publish_payload(product, config, _record())
     binding = resolve_publish_store_binding("yandex", config)
     digest = canonical_publish_digest(
         product_id="product-y1",
@@ -1062,7 +1075,7 @@ def test_yandex_bus_end_to_end_through_real_http_layer(monkeypatch) -> None:
 
     config = _config(publish_poll_interval_seconds=0.5)
     product = _product()
-    payload = build_yandex_publish_payload(product, config)
+    payload = build_yandex_publish_payload(product, config, _record())
     binding = resolve_publish_store_binding("yandex", config)
     digest = canonical_publish_digest(
         product_id="product-y1",
@@ -1174,7 +1187,7 @@ def _validatable_product(**draft_overrides: Any) -> dict[str, Any]:
 def test_validate_yandex_draft_passes_for_complete_draft() -> None:
     from erp_web.runtime_units.publish_validation import validate_yandex_draft
 
-    result = validate_yandex_draft(_validatable_product(), _config())
+    result = validate_yandex_draft(_validatable_product(), _config(), _record())
     assert result["platform"] == "yandex"
     assert result["ok"] is True, result["errors"]
     assert result["errors"] == []
@@ -1201,7 +1214,7 @@ def test_validate_yandex_draft_blocks_unverified_auth_states() -> None:
         result = validate_yandex_draft(
             _validatable_product(),
             _config(**overrides),
-        )
+        _record(),)
         codes = _error_codes(result)
         assert result["ok"] is False, overrides
         assert expected_code in codes, (overrides, codes)
@@ -1213,7 +1226,7 @@ def test_validate_yandex_draft_requires_business_id_after_auth_success() -> None
     result = validate_yandex_draft(
         _validatable_product(),
         _config(business_id=""),
-    )
+    _record(),)
     assert "AUTH_DETAIL_MISSING" in _error_codes(result)
 
 
@@ -1223,13 +1236,13 @@ def test_validate_yandex_draft_flags_category_schema_and_identity() -> None:
     invalid_category = validate_yandex_draft(
         _validatable_product(category_id="yandex-category-1"),
         _config(),
-    )
+    _record(),)
     assert "CATEGORY_INVALID" in _error_codes(invalid_category)
 
     identity = validate_yandex_draft(
         _validatable_product(last_publish_task={"offer_id": "OLD-SKU"}),
         _config(),
-    )
+    _record(),)
     assert "OFFER_IDENTITY_CHANGED" in _error_codes(identity)
 
 
@@ -1243,12 +1256,12 @@ def test_validate_yandex_draft_dedups_required_and_invalid_enum() -> None:
             attributes={"85": {"values": [{"value": "手动输入"}]}}
         ),
         _config(),
-    )
+    _record(),)
     codes = _error_codes(result)
     assert "ATTRIBUTE_DICTIONARY_VALUE_REQUIRED" in codes
     assert "REQUIRED_ATTRIBUTE_MISSING" not in codes
 
-    missing = validate_yandex_draft(_validatable_product(attributes={}), _config())
+    missing = validate_yandex_draft(_validatable_product(attributes={}), _config(), _record())
     assert "REQUIRED_ATTRIBUTE_MISSING" in _error_codes(missing)
 
     invalid_unit = validate_yandex_draft(
@@ -1256,7 +1269,7 @@ def test_validate_yandex_draft_dedups_required_and_invalid_enum() -> None:
             attributes={"9048": {"value": "10", "unit": "磅"}}
         ),
         _config(),
-    )
+    _record(),)
     assert "ATTRIBUTE_UNIT_INVALID" in _error_codes(invalid_unit)
 
 
@@ -1265,7 +1278,7 @@ def test_validate_yandex_draft_rejects_non_public_images() -> None:
 
     product = _validatable_product()
     product["source"]["image_pool"][0]["url"] = "data:image/png;base64,xx"
-    result = validate_yandex_draft(product, _config())
+    result = validate_yandex_draft(product, _config(), _record())
     assert "IMAGE_NOT_PUBLIC" in _error_codes(result)
 
 
@@ -1277,7 +1290,7 @@ def test_validate_yandex_draft_requires_package_dimensions_and_price() -> None:
             package_dimensions={"weight_kg": "0", "length_cm": "", "width_cm": "", "height_cm": ""}
         ),
         _config(),
-    )
+    _record(),)
     codes = _error_codes(no_dimensions)
     assert "PACKAGE_DIMENSIONS_MISSING" in codes
     assert "WEIGHT_MISSING" in codes
@@ -1294,7 +1307,7 @@ def test_validate_yandex_draft_requires_package_dimensions_and_price() -> None:
     pricing_result = validate_yandex_draft(
         _validatable_product(pricing=stale_pricing),
         _config(),
-    )
+    _record(),)
     assert "PRICING_STALE" in _error_codes(pricing_result)
 
 
@@ -1307,18 +1320,18 @@ def test_validate_yandex_draft_requires_at_least_one_parameter_value() -> None:
     empty = validate_yandex_draft(
         _validatable_product(attributes={}),
         _config(),
-    )
+    _record(),)
     assert "YANDEX_PARAMETER_VALUES_MISSING" in _error_codes(empty)
 
     # 只有采集来源的中文属性：无法映射为平台参数，同样拦截
     source_only = validate_yandex_draft(
         _validatable_product(attributes={"主营": "宠物用品", "产地": "浙江"}),
         _config(),
-    )
+    _record(),)
     assert "YANDEX_PARAMETER_VALUES_MISSING" in _error_codes(source_only)
 
     # 已填 1 个平台参数 → 不再拦截
-    filled = validate_yandex_draft(_validatable_product(), _config())
+    filled = validate_yandex_draft(_validatable_product(), _config(), _record())
     assert "YANDEX_PARAMETER_VALUES_MISSING" not in _error_codes(filled)
 
 
@@ -1327,7 +1340,7 @@ def test_build_payload_requires_at_least_one_parameter_value() -> None:
         build_yandex_publish_payload(
             _product(attributes={"主营": "宠物用品"}),
             _config(),
-        )
+        _record(),)
 
-    payload = build_yandex_publish_payload(_product(), _config())
+    payload = build_yandex_publish_payload(_product(), _config(), _record())
     assert len(payload["catalog"]["offer"]["parameterValues"]) >= 1
