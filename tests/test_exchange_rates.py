@@ -150,6 +150,12 @@ def test_live_batch_pricing_uses_fetched_rates_when_common_rates_are_empty(monke
 
     monkeypatch.setattr(pricing_runtime, "fetch_pricing_exchange_rates", fake_fetch_pricing_exchange_rates)
 
+    # 发布币种唯一事实源是店铺授权配置：显式创建 ready 店铺配置后，
+    # 各站点目标共用同一店铺币种（MXN）。
+    from tests.runtime_test_utils import seed_store_currency
+
+    seed_store_currency("mercadolibre", "MXN", identity={"user_id": "99"})
+
     result = pricing_runtime.calculate_price(
         {
             "exchange_rate_mode": "live",
@@ -161,9 +167,9 @@ def test_live_batch_pricing_uses_fetched_rates_when_common_rates_are_empty(monke
                 "rub_cny_rate": "",
             },
             "targets": [
-                {"target_key": "mercadolibre:cbt", "platform": "mercadolibre", "site": "CBT", "listing_currency": "USD", "commission_percent": 16, "target_margin_percent": 30},
-                {"target_key": "mercadolibre:mlm", "platform": "mercadolibre", "site": "MLM", "listing_currency": "MXN", "commission_percent": 16, "target_margin_percent": 30},
-                {"target_key": "mercadolibre:mlc", "platform": "mercadolibre", "site": "MLC", "listing_currency": "CLP", "commission_percent": 16, "target_margin_percent": 30},
+                {"target_key": "mercadolibre:cbt", "platform": "mercadolibre", "site": "CBT", "commission_percent": 16, "target_margin_percent": 30},
+                {"target_key": "mercadolibre:mlm", "platform": "mercadolibre", "site": "MLM", "commission_percent": 16, "target_margin_percent": 30},
+                {"target_key": "mercadolibre:mlc", "platform": "mercadolibre", "site": "MLC", "commission_percent": 16, "target_margin_percent": 30},
             ],
         }
     )

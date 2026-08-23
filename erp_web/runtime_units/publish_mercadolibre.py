@@ -14,7 +14,6 @@ from erp_web.stores.config_store import (
     _store_auth_result_fields,
     auth_next_action,
     store_auth_failure_code,
-    summarize_store_auth_states,
 )
 from erp_web.stores.product_store import normalize_product_fields
 
@@ -68,38 +67,6 @@ def _07d_auth_link(ctx: dict[str, Any]) -> dict[str, Any]:
         }
     )
     append_ml_auth_test_log("auth_link", "success", {"redirect_uri": redirect_uri}, result, next_action="打开授权链接并完成回调，或手动粘贴 code。")
-    return result
-
-
-def _07d_user_info(ctx: dict[str, Any]) -> dict[str, Any]:
-    result = ctx["result"]
-    ml = ctx["ml"]
-    token = ctx["token"]
-    if not token:
-        raise RuntimeError("Mercado Libre access_token 为空。")
-    data = publisher.request_json("GET", "https://api.mercadolibre.com/users/me", token)
-    if not isinstance(data, dict):
-        raise RuntimeError(f"Mercado Libre users/me 返回异常: {data}")
-    ml["user_id"] = str(data.get("id") or ml.get("user_id") or "").strip()
-    ml["seller_id"] = str(data.get("id") or ml.get("seller_id") or "").strip()
-    ml["nickname"] = str(data.get("nickname") or ml.get("nickname") or "").strip()
-    ml["site_id"] = str(data.get("site_id") or ml.get("site_id") or "CBT").strip() or "CBT"
-    ml["shop_name"] = ml.get("nickname") or ml.get("shop_name") or ml.get("user_id") or ""
-    ml.update(_store_auth_result_fields("mercadolibre", "测试成功", ml.get("shop_name") or token))
-    ml["auth_error_code"] = ""
-    ml["auth_error_message"] = ""
-    get_context().config.save_store_config(ctx["config"])
-    result.update(
-        {
-            "status": "success",
-            "user_id_present": bool(ml.get("user_id")),
-            "seller_id_present": bool(ml.get("seller_id")),
-            "nickname_present": bool(ml.get("nickname")),
-            "site_id": ml.get("site_id") or "",
-            "storeAuthSummary": summarize_store_auth_states(ctx["config"]),
-        }
-    )
-    append_ml_auth_test_log("user_info", "success", {"endpoint": "users/me"}, result, next_action="授权可用于后续类目、图片和 payload 测试。")
     return result
 
 
@@ -221,7 +188,7 @@ def _07d_all(ctx: dict[str, Any]) -> dict[str, Any]:
     result = ctx["result"]
     product = ctx["product"]
     outputs = []
-    for sub_mode in ("auth_link", "user_info", "category_attrs", "payload_generate"):
+    for sub_mode in ("auth_link", "category_attrs", "payload_generate"):
         try:
             outputs.append(run_mercadolibre_07d_test(sub_mode, product))
         except Exception as exc:
@@ -232,9 +199,10 @@ def _07d_all(ctx: dict[str, Any]) -> dict[str, Any]:
 
 
 # "07D" is the historical wizard-step number this test suite belongs to.
+# 诊断模式不得写授权/币种状态；用户信息由统一授权服务接管（已移除
+# user_info 模式）。
 _07D_MODE_HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "auth_link": _07d_auth_link,
-    "user_info": _07d_user_info,
     "refresh_token": _07d_refresh_token,
     "category_attrs": _07d_category_attrs,
     "image_upload": _07d_image_upload,
@@ -634,21 +602,25 @@ def ensure_mercadolibre_pictures_uploaded(product: dict[str, Any], token: str) -
 
 
 def ensure_mercadolibre_auth_ready(config: dict[str, Any]) -> dict[str, Any]:
+    """发布前授权就绪检查：用户信息读取统一走 mercadolibre_auth 服务。"""
+
+    from .mercadolibre_auth import sync_mercadolibre_identity
+
     store = config.setdefault("mercadolibre", {})
     token = str(store.get("access_token") or "").strip()
     if not token:
         return {"ok": False, "error_code": "AUTH_NOT_CONFIGURED", "message": "Mercado Libre Access Token 为空", "next_action": "请先完成授权测试"}
-    try:
-        me = publisher.request_json("GET", "https://api.mercadolibre.com/users/me", token)
-        if not isinstance(me, dict):
-            raise RuntimeError("Mercado Libre users/me 返回异常")
-        name = str(me.get("nickname") or me.get("id") or "").strip()
-        store["shop_name"] = name or store.get("shop_name", "")
-        store["account_site_id"] = str(me.get("site_id") or store.get("account_site_id") or "").strip().upper()
-        store["user_id"] = str(me.get("id") or store.get("user_id") or "").strip()
-        store.update(_store_auth_result_fields("mercadolibre", "测试成功", name or token))
+
+    def _sync_identity(token_value: str) -> str:
+        profile = sync_mercadolibre_identity(store, token_value)
+        name = profile.get("nickname") or profile.get("user_id") or ""
+        store.update(_store_auth_result_fields("mercadolibre", "测试成功", name or token_value))
         store["auth_error_code"] = ""
         store["auth_error_message"] = ""
+        return name
+
+    try:
+        name = _sync_identity(token)
         get_context().config.save_store_config(config)
         return {"ok": True, "token": token, "seller": name or store.get("user_id") or ""}
     except Exception as exc:
@@ -659,16 +631,7 @@ def ensure_mercadolibre_auth_ready(config: dict[str, Any]) -> dict[str, Any]:
                 token = str(refreshed.get("access_token") or "").strip()
                 store["access_token"] = token
                 store["refresh_token"] = str(refreshed.get("refresh_token") or store.get("refresh_token") or "").strip()
-                me = publisher.request_json("GET", "https://api.mercadolibre.com/users/me", token)
-                if not isinstance(me, dict):
-                    raise RuntimeError("Mercado Libre users/me 返回异常")
-                name = str(me.get("nickname") or me.get("id") or "").strip()
-                store["shop_name"] = name or store.get("shop_name", "")
-                store["account_site_id"] = str(me.get("site_id") or store.get("account_site_id") or "").strip().upper()
-                store["user_id"] = str(me.get("id") or store.get("user_id") or "").strip()
-                store.update(_store_auth_result_fields("mercadolibre", "测试成功", name or token))
-                store["auth_error_code"] = ""
-                store["auth_error_message"] = ""
+                name = _sync_identity(token)
                 get_context().config.save_store_config(config)
                 return {"ok": True, "token": token, "seller": name or store.get("user_id") or "", "refreshed": True}
             except Exception as refresh_exc:

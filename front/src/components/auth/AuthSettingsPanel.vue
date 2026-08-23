@@ -22,6 +22,7 @@ const emit = defineEmits<{
   testAi: [model: UnknownRecord]
   testApi: [kind: 'exchange_rate' | '1688' | 'yunexpress', config: UnknownRecord, testValue?: string]
   saveStore: [config: UnknownRecord]
+  saveCurrency: [platform: Marketplace, currency: string]
   testAuth: [platform: Marketplace, scope?: string, config?: UnknownRecord]
   refreshChecklist: []
   generateMlLink: [appId: string, redirectUri: string]
@@ -1572,6 +1573,95 @@ const selectedStorePlatformMeta = computed(() => (
   }
 ))
 
+const CURRENCY_STATUS_LABELS: Record<string, string> = {
+  ready: '已就绪',
+  selection_required: '请选择',
+  manual_required: '需人工填写',
+  refresh_failed: '读取失败',
+  unresolved: '未验证',
+}
+const CURRENCY_SOURCE_LABELS: Record<string, string> = {
+  account_api: '平台账户',
+  business_settings: 'Business',
+  site_api: '站点 API',
+  manual: '人工配置',
+}
+
+const currencySelection = ref('')
+
+const storeCurrencyState = computed(() => {
+  const store = asRecord(props.storeConfig[selectedStorePlatform.value])
+  return {
+    listingCurrency: firstText(store.listing_currency),
+    allowedCurrencies: asStringArray(store.allowed_currencies),
+    mode: firstText(store.currency_mode) || 'unresolved',
+    status: firstText(store.currency_status) || 'unresolved',
+    source: firstText(store.currency_source),
+    verifiedAt: firstText(store.currency_verified_at),
+    errorCode: firstText(store.currency_error_code),
+    errorMessage: firstText(store.currency_error_message),
+  }
+})
+
+function currencyStatusLabelFor(status: string): string {
+  return CURRENCY_STATUS_LABELS[status] || CURRENCY_STATUS_LABELS.unresolved
+}
+
+const storeCurrencyStatusLabel = computed(() => currencyStatusLabelFor(storeCurrencyState.value.status))
+
+const storeCurrencyStatusClass = computed(() => {
+  switch (storeCurrencyState.value.status) {
+    case 'ready':
+      return 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-200'
+    case 'refresh_failed':
+      return 'bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-200'
+    case 'unresolved':
+      return 'bg-slate-200 text-slate-600 dark:bg-dark-700 dark:text-slate-300'
+    default:
+      return 'bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-200'
+  }
+})
+
+const storeCurrencySourceLabel = computed(() => {
+  const source = storeCurrencyState.value.source
+  if (!source) return '-'
+  return CURRENCY_SOURCE_LABELS[source] || source
+})
+
+const currencyPreview = computed(() => {
+  const result = selectedLastStoreResult.value
+  if (!result) return null
+  const raw = asRecord(result.raw)
+  if (raw.preview !== true) return null
+  const configuration = asRecord(raw.currency_configuration)
+  if (!Object.keys(configuration).length) return null
+  return {
+    listingCurrency: firstText(configuration.listing_currency),
+    status: firstText(configuration.currency_status),
+  }
+})
+
+watch(
+  () => [
+    selectedStorePlatform.value,
+    storeCurrencyState.value.listingCurrency,
+    storeCurrencyState.value.allowedCurrencies.join(','),
+  ],
+  () => {
+    currencySelection.value = storeCurrencyState.value.listingCurrency
+  },
+  { immediate: true },
+)
+
+function saveCurrencySelection(): void {
+  emit('saveCurrency', selectedStorePlatform.value, currencySelection.value.trim())
+}
+
+function retryStoreCurrency(): void {
+  // 读取失败后的重试针对已保存配置执行，不提交未保存表单副本。
+  emit('testAuth', selectedStorePlatform.value)
+}
+
 const selectedStoreSummary = computed(() => asRecord(props.storeAuthSummary[selectedStorePlatform.value]))
 
 const hasStoreSummary = computed(() => Object.keys(selectedStoreSummary.value).length > 0)
@@ -1588,6 +1678,8 @@ const selectedStoreResultDetails = computed(() => {
     const raw = asRecord(selectedLastStoreResult.value.raw)
     const details = { ...raw }
     delete details.storeAuthSummary
+    // storeConfig 已用于刷新卡片展示，不在结果详情里重复展示。
+    delete details.storeConfig
     return details
   }
   return selectedStoreSummary.value
@@ -2083,8 +2175,7 @@ function handleYunexpressEnvironmentChange(value: string) {
                 <button class="btn btn-outline py-1.5" :disabled="props.loading || !props.authLink" @click="emit('openMlLink', props.authLink)">打开授权链接</button>
                 <button class="btn btn-outline py-1.5" :disabled="props.loading || !mlCanExchangeCode" title="需要 App ID、Client Secret、https:// Redirect URI 和回跳 code" @click="emit('exchangeMlCode', form.mlCode, { app_id: form.mlAppId, client_secret: form.mlClientSecret, redirect_uri: form.mlRedirectUri })">用 code 换 token</button>
                 <button class="btn btn-outline py-1.5" :disabled="props.loading || !mlHasRefreshToken" title="需要先用 code 换到 Refresh Token" @click="emit('refreshMlToken', { app_id: form.mlAppId, client_secret: form.mlClientSecret })">刷新 token</button>
-                <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('testAuth', 'mercadolibre')">测试店铺授权</button>
-                <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('realMlTest', 'user_info')">07D 用户信息</button>
+                <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('testAuth', 'mercadolibre')">测试授权并读取发布货币</button>
                 <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('realMlTest', 'category_attrs', form.mlCategoryId)">07D 类目属性</button>
                 <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('realMlTest', 'payload_generate')">07D Payload</button>
                 <button class="btn btn-outline py-1.5 text-rose-700" :disabled="props.loading" @click="emit('clearAuth', 'mercadolibre')">清除 ML 授权</button>
@@ -2114,10 +2205,10 @@ function handleYunexpressEnvironmentChange(value: string) {
               <input v-model="form.yandexCampaignId" data-testid="yandex-campaign-id" class="input mt-2" placeholder="Campaign ID，例如 123456" />
               <p data-testid="yandex-campaign-id-hint" class="mt-1 text-xs text-accent-500 dark:text-accent-400">请填写 Campaign ID（店铺 ID），不要填写 Business ID（柜台 ID）。可在 Yandex 卖家后台 → 设置 → API 和模块中查看。</p>
               <div class="mt-3 flex flex-wrap gap-2">
-                <button data-testid="test-yandex-auth" class="btn btn-outline py-1.5" :disabled="props.loading" @click="testYandexAuth()">测试授权</button>
+                <button data-testid="test-yandex-auth" class="btn btn-outline py-1.5" :disabled="props.loading" @click="testYandexAuth()">测试授权并读取发布货币</button>
                 <button class="btn btn-outline py-1.5 text-rose-700" :disabled="props.loading" @click="emit('clearAuth', 'yandex')">清除授权</button>
               </div>
-              <p class="mt-2 text-xs text-accent-500">保存前可直接测试未保存的 Token 与 Campaign ID；保存成功后会自动用已保存配置复测，并写入可信授权状态。</p>
+              <p class="mt-2 text-xs text-accent-500">保存前可直接测试未保存的 Token 与 Campaign ID；预览结果不落库，界面会标注“预览，尚未保存”。可信授权与发布货币状态只能通过在线测试结果写入。</p>
               <div v-if="yandexStoreMeta.hasMetadata" class="mt-3 rounded-lg border border-accent-200 bg-accent-50 p-3 text-sm dark:border-dark-700 dark:bg-dark-950/60">
                 <div class="flex flex-wrap items-center justify-between gap-2">
                   <div class="font-semibold text-accent-950 dark:text-white">已验证店铺信息</div>
@@ -2140,11 +2231,57 @@ function handleYunexpressEnvironmentChange(value: string) {
               <input v-model="form.ozonClientId" data-testid="ozon-client-id" class="input mt-3" placeholder="Client ID" />
               <input v-model="form.ozonApiKey" data-testid="ozon-api-key" type="password" class="input mt-2" placeholder="API Key" />
               <div class="mt-3 flex flex-wrap gap-2">
-                <button data-testid="test-ozon-auth" class="btn btn-outline py-1.5" :disabled="props.loading" @click="testOzonAuth()">测试授权</button>
+                <button data-testid="test-ozon-auth" class="btn btn-outline py-1.5" :disabled="props.loading" @click="testOzonAuth()">测试授权并读取发布货币</button>
                 <button data-testid="test-ozon-category-auth" class="btn btn-outline py-1.5" :disabled="props.loading" @click="testOzonAuth('category')">读取类目测试</button>
                 <button class="btn btn-outline py-1.5 text-rose-700" :disabled="props.loading" @click="emit('clearAuth', 'ozon')">清除授权</button>
               </div>
             </template>
+
+            <div data-testid="store-currency-block" class="mt-4 rounded-lg border border-accent-200 bg-accent-50 p-3 dark:border-dark-700 dark:bg-dark-950/60">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div class="font-semibold text-accent-950 dark:text-white">发布货币</div>
+                <span data-testid="store-currency-status" class="rounded px-2 py-0.5 text-xs" :class="storeCurrencyStatusClass">{{ storeCurrencyStatusLabel }}</span>
+              </div>
+              <dl class="mt-2 grid gap-x-8 gap-y-1.5 text-xs text-accent-700 dark:text-accent-200 sm:grid-cols-2">
+                <div class="flex items-center justify-between gap-2"><dt class="text-accent-500 dark:text-accent-400">当前发布货币</dt><dd data-testid="store-currency-value" class="font-mono">{{ storeCurrencyState.listingCurrency || '-' }}</dd></div>
+                <div class="flex items-center justify-between gap-2"><dt class="text-accent-500 dark:text-accent-400">来源</dt><dd data-testid="store-currency-source">{{ storeCurrencySourceLabel }}</dd></div>
+                <div class="flex items-center justify-between gap-2"><dt class="text-accent-500 dark:text-accent-400">最近验证时间</dt><dd>{{ storeCurrencyState.verifiedAt || '-' }}</dd></div>
+                <div v-if="storeCurrencyState.allowedCurrencies.length" class="flex items-center justify-between gap-2"><dt class="text-accent-500 dark:text-accent-400">允许币种</dt><dd>{{ storeCurrencyState.allowedCurrencies.join('、') }}</dd></div>
+              </dl>
+
+              <div v-if="storeCurrencyState.status === 'refresh_failed'" class="mt-2 rounded bg-rose-50 p-2 text-xs text-rose-700 ring-1 ring-rose-100 dark:bg-rose-500/10 dark:text-rose-200 dark:ring-rose-500/30">
+                读取失败：{{ storeCurrencyState.errorMessage || storeCurrencyState.errorCode || '远端未返回可用币种' }}。上次读取值仅供参考，核价与发布已阻断。
+                <button data-testid="store-currency-retry" class="btn btn-outline ml-2 py-1 text-xs" :disabled="props.loading" @click="retryStoreCurrency()">重新验证授权并读取币种</button>
+              </div>
+
+              <div v-else-if="storeCurrencyState.mode === 'selectable'" class="mt-2 flex flex-wrap items-center gap-2">
+                <select v-model="currencySelection" data-testid="store-currency-select" class="input w-48" :disabled="props.loading">
+                  <option value="" disabled>请选择发布货币</option>
+                  <option v-for="code in storeCurrencyState.allowedCurrencies" :key="code" :value="code">{{ code }}</option>
+                </select>
+                <button data-testid="store-currency-save" class="btn btn-outline py-1.5 text-xs" :disabled="props.loading || !currencySelection" @click="saveCurrencySelection()">保存选择</button>
+                <span v-if="storeCurrencyState.status === 'selection_required'" class="text-xs text-amber-700 dark:text-amber-300">必须从允许币种中选择后才能核价与发布。</span>
+              </div>
+
+              <div v-else-if="storeCurrencyState.mode === 'manual'" class="mt-2 flex flex-wrap items-center gap-2">
+                <input v-model="currencySelection" data-testid="store-currency-manual" class="input w-56" placeholder="ISO 4217 三位代码，例如 USD" :disabled="props.loading" />
+                <button data-testid="store-currency-save" class="btn btn-outline py-1.5 text-xs" :disabled="props.loading || !currencySelection.trim()" @click="saveCurrencySelection()">保存发布货币</button>
+                <span v-if="storeCurrencyState.status === 'ready'" class="text-xs text-accent-500 dark:text-accent-400">修改后旧核价将失效，需要重新核价。</span>
+                <span v-else class="text-xs text-accent-500 dark:text-accent-400">平台不提供币种查询能力，请人工填写。</span>
+              </div>
+
+              <div v-else-if="storeCurrencyState.mode === 'locked'" class="mt-2 text-xs text-accent-500 dark:text-accent-400">
+                发布货币由平台账户锁定，不允许修改。
+              </div>
+
+              <div v-else class="mt-2 text-xs text-accent-500 dark:text-accent-400">
+                请先测试授权并读取发布货币；未就绪前不能核价与发布。
+              </div>
+
+              <div v-if="currencyPreview" data-testid="store-currency-preview" class="mt-2 rounded bg-blue-50 p-2 text-xs text-blue-900 ring-1 ring-blue-100 dark:bg-blue-500/10 dark:text-blue-100 dark:ring-blue-500/30">
+                预览，尚未保存：{{ currencyPreview.listingCurrency || '无可用币种' }}（{{ currencyStatusLabelFor(currencyPreview.status) }}）。保存凭据后重新测试才会落库。
+              </div>
+            </div>
 
             <div v-if="hasSelectedStoreResult" class="mt-4 rounded-lg bg-slate-900/80 p-3 text-sm text-slate-100 ring-1 ring-slate-600 dark:bg-dark-900 dark:ring-dark-700">
               <div class="font-semibold text-white">授权测试结果：{{ selectedStoreResultStatus }}</div>

@@ -29,8 +29,6 @@ export interface MarketplaceSiteOption {
   code: string
   label: string
   language: string
-  marketCurrency?: string
-  listingCurrency: string
 }
 
 export interface MarketplaceOption {
@@ -124,9 +122,10 @@ export interface MarketplaceTargetSite {
   platform: Marketplace
   site: string
   language: string
-  marketCurrency?: string
+  /** 核价时使用的店铺发布币种快照；事实源是店铺授权配置。 */
   listingCurrency: string
-  currencyResolution?: CurrencyResolution
+  /** 核价时的店铺币种配置指纹，用于发布前失效判断。 */
+  currencyFingerprint?: string
   categoryId?: string
   descriptionCategoryId?: string
   categoryPath?: string
@@ -160,14 +159,6 @@ export type UnknownRecord = Record<string, unknown>
 export interface Money {
   amount: string
   currency: string
-}
-
-export interface CurrencyResolution {
-  mode: 'account_locked' | 'site_locked' | 'campaign_locked' | 'selectable' | 'manual_verified' | 'unresolved'
-  listingCurrency: string
-  allowedCurrencies: string[]
-  source: string
-  verifiedAt: string
 }
 
 export interface ImageAsset {
@@ -337,7 +328,7 @@ export interface PricingTargetInput {
   platform: Marketplace
   site: string
   listingCurrency: string
-  currencyResolution?: CurrencyResolution
+  currencyFingerprint?: string
   commissionPercent: number
   paymentFeePercent: number
   otherFeePercent: number
@@ -355,7 +346,7 @@ export interface PricingTargetResult {
   platform: Marketplace
   site: string
   listingCurrency: string
-  currencyResolution?: CurrencyResolution
+  currencyFingerprint?: string
   suggestedPrice: Money
   appliedPrice: Money
   convertedPrices: Record<string, string>
@@ -898,7 +889,6 @@ export interface MercadoLibreAuthChecklist {
 
 export type MercadoLibreTestMode =
   | 'auth_link'
-  | 'user_info'
   | 'refresh_token'
   | 'category_attrs'
   | 'image_upload'

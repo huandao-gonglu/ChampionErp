@@ -10,6 +10,7 @@ from erp_web.runtime_units.draft_publish_context import (
     draft_publish_targets,
     merge_target_listing_into_draft,
 )
+from erp_web.services.listing_currency_service import compute_currency_fingerprint
 
 
 def test_target_listing_round_trip_drops_retired_category_schema() -> None:
@@ -130,7 +131,9 @@ def test_publish_target_discards_recursive_precheck_target_history() -> None:
         "description_category_id": "17039635",
     }
     assert target["listing_currency"] == ""
-    assert target["currency_resolution"]["mode"] == "unresolved"
+    assert target["currency_fingerprint"] == compute_currency_fingerprint(
+        "ozon", "", "", [], "unresolved", ""
+    )
     assert "last_precheck_target" not in target["last_precheck_target"]
     assert target_draft["target_sites"] == [target]
     assert "target_site" not in target_draft

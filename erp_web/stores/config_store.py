@@ -66,12 +66,19 @@ _STORE_AUTH_DETAIL_FIELDS = {
     "auth_error_message",
     "auth_next_action",
     "shop_name",
-    "contract_currency",
+    # 店铺发布币种状态（唯一事实源，见 listing_currency_service 状态机）。
     "listing_currency",
+    "allowed_currencies",
     "currency_mode",
+    "currency_status",
     "currency_source",
     "currency_verified_at",
-    "allowed_currencies",
+    "currency_fingerprint",
+    "currency_error_code",
+    "currency_error_message",
+    # Mercado Libre 远端授权身份（/users/me 的 site_id）；静态 site_id
+    # 只是默认目标站点设置，不承担账户身份语义。
+    "account_site_id",
     # Yandex 在线派生的动态授权/店铺能力（仅存 SQLite store_auth）。
     "business_id",
     "business_name",
@@ -85,6 +92,64 @@ _STORE_AUTH_DETAIL_FIELDS = {
     "capabilities_verified_at",
 }
 _STORE_DB_OWNED_FIELDS = _STORE_CREDENTIAL_FIELDS | _STORE_AUTH_DETAIL_FIELDS | {"auth_status", "auth_checked_at"}
+
+# 信任边界：币种与授权派生字段只能由后端授权/币种服务写入，客户端通用保存
+# 接口不得提交或伪造（迁移方案 §9.3）。平台段另有注册表凭据白名单兜底。
+_CLIENT_DERIVED_STORE_FIELDS = frozenset(
+    {
+        "allowed_currencies",
+        "currency_mode",
+        "currency_status",
+        "currency_source",
+        "currency_verified_at",
+        "currency_fingerprint",
+        "currency_error_code",
+        "currency_error_message",
+        "listing_currency",
+        "currency_resolution",
+        "currency_id",
+        "account_site_id",
+    }
+)
+# 平台段允许客户端提交的非敏感静态配置（注册表声明的凭据字段之外）。
+# client_secret 是 Mercado Libre app_secret 的别名，保存时由服务端同步。
+_STATIC_STORE_SETTING_FIELDS = frozenset(
+    {"category_id", "site_id", "client_secret"}
+)
+
+
+def sanitize_client_store_config(
+    updates: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """剥离客户端提交店铺配置中的派生字段。
+
+    平台段只保留平台注册表声明的凭据字段和非敏感静态字段；
+    ``allowed_currencies``/``currency_*``/``auth_*``/``listing_currency``/
+    ``account_site_id`` 等可信字段只能由后端授权/币种服务写入。其他段
+    （如 listing）按派生字段黑名单过滤。
+    """
+
+    updates = updates if isinstance(updates, dict) else {}
+    sanitized: dict[str, Any] = {}
+    for key, section in updates.items():
+        if not isinstance(section, dict):
+            sanitized[key] = deepcopy(section)
+            continue
+        spec = marketplace_spec(str(key or "").strip().lower())
+        if spec is None:
+            sanitized[key] = {
+                field: deepcopy(value)
+                for field, value in section.items()
+                if field not in _CLIENT_DERIVED_STORE_FIELDS
+            }
+            continue
+        allowed = set(spec.credential_keys()) | _STATIC_STORE_SETTING_FIELDS
+        sanitized[key] = {
+            field: deepcopy(value)
+            for field, value in section.items()
+            if field in allowed
+        }
+    return sanitized
 
 _APP_RUNTIME_SECRET_NAMESPACE = "app_config"
 _SECRET_SELECTOR_FIELDS = (
@@ -322,6 +387,13 @@ class ConfigStore:
         self._store_config_path = paths.store_config_path
         self._db = db
         self._save_lock = threading.RLock()
+        # 发布币种事实源切换的一次性内容迁移（幂等）：必须在首次读取配置
+        # 前执行，否则旧静态文件里的退役派生字段会触发 DB-owned 校验。
+        from erp_web.stores.store_currency_migration import (
+            migrate_store_currency_source,
+        )
+
+        migrate_store_currency_source(db, self._store_config_path)
 
     # -- app config -----------------------------------------------------------
 
@@ -515,19 +587,16 @@ class ConfigStore:
         *,
         preserve_empty_sensitive: bool,
     ) -> None:
-        """身份字段变化时原子清除旧授权能力与成功态。
+        """凭据或稳定店铺身份变化时原子清除旧授权能力、币种态与成功态。
 
-        对声明了 ``store_binding_fields`` 的平台（Yandex）：真实 token 或
-        Campaign ID 任一变化时，在同一次保存中清除旧 business_id、scopes、
-        价格/库存能力和旧成功态，并把状态置为“已保存，未测试”。这样即使
-        保存后、前端自动测试前进程退出，新 Campaign ID 也不会继承旧店铺
-        的授权证明。
+        对所有注册平台：真实凭据（token、Client ID、Campaign ID 等）任一变化
+        时，在同一次保存中清除旧授权明细（含发布币种 ready 状态），并把状态
+        置为“已保存，未测试”。这样即使保存后、重新测试前进程退出，新凭据/新
+        Campaign ID 也不会继承旧店铺的授权证明或旧币种可信状态。
         """
 
         stored_config: dict[str, Any] | None = None
         for spec in MARKETPLACE_SPECS:
-            if not spec.store_binding_fields:
-                continue
             platform = spec.key
             section = config.get(platform)
             if not isinstance(section, dict):
@@ -541,12 +610,25 @@ class ConfigStore:
             stored_section = (
                 stored_section if isinstance(stored_section, dict) else {}
             )
+            # 只比较用户可输入的凭据字段；business_id 等在线派生身份由
+            # tester 写回，不参与保存时的身份切换判定。部分提交时，未出现
+            # 在入参中的字段视为保留原值，不构成身份切换。
+            identity_fields = tuple(spec.credential_fields)
+            stored_identity_present = any(
+                str(stored_section.get(field.key) or "").strip()
+                for field in identity_fields
+            )
+            if not stored_identity_present:
+                # 首次保存没有可继承的旧授权/币种状态，无需失效处理。
+                continue
             changed = False
-            for field in spec.credential_fields:
+            for field in identity_fields:
+                if field.key not in section:
+                    continue
                 incoming_value = section.get(field.key)
                 stored_value = stored_section.get(field.key)
                 if (
-                    field.secret
+                    (field.secret or field.key in _STORE_SENSITIVE_FIELDS)
                     and preserve_empty_sensitive
                     and str(stored_value or "").strip()
                     and (
@@ -566,6 +648,7 @@ class ConfigStore:
                 continue
             for field_name in _STORE_AUTH_DETAIL_FIELDS:
                 section[field_name] = ""
+            section["allowed_currencies"] = []
             section["auth_status"] = "已保存，未测试"
             section["auth_checked_at"] = ""
 

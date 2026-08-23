@@ -23,6 +23,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import time
 from typing import Any
 
+from erp_web.marketplaces.yandex_currency import yandex_wire_currency
 from erp_web.marketplaces.yandex_http import (
     YandexApiError,
     fetch_yandex_campaign_offer,
@@ -104,17 +105,6 @@ def _price_text(value: Any, field: str) -> str:
     number = _positive_decimal(value, field)
     rendered = format(number, "f")
     return rendered.rstrip("0").rstrip(".") if "." in rendered else rendered
-
-
-# 内部市场币种使用标准 ISO 代码（RUB），Yandex wire 枚举使用 RUR。
-_YANDEX_WIRE_CURRENCY_MAP = {"RUB": "RUR"}
-
-
-def yandex_wire_currency(currency: Any) -> str:
-    """内部币种 → Yandex 平台 CurrencyType 枚举。"""
-
-    code = str(currency or "").strip().upper()
-    return _YANDEX_WIRE_CURRENCY_MAP.get(code, code)
 
 
 def _price_number(value: Any, field: str = "价格") -> int | float:

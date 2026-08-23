@@ -21,7 +21,13 @@ from erp_web.runtime_units.store_credentials import (
 )
 from erp_web.services import ai_model_config, ai_prompt_templates
 
-from .support import called_leaf_names
+from .support import (
+    ROOT,
+    called_leaf_names,
+    forbidden_calls,
+    imported_targets,
+    python_files,
+)
 
 
 def test_publish_capabilities_match_real_publishers() -> None:
@@ -94,6 +100,97 @@ def test_store_auth_testers_are_registry_driven() -> None:
             assert callable(tester)
         else:
             assert tester is None
+
+
+def test_marketplace_specs_do_not_carry_currency() -> None:
+    # 注册表只维护站点身份/标签/语言；发布币种唯一事实源是店铺授权配置，
+    # 站点 spec 不允许携带 listing_currency/market_currency（迁移方案 §16.5）。
+    for spec in MARKETPLACE_SPECS:
+        for site in spec.sites:
+            assert "listing_currency" not in site, f"{spec.key}:{site}"
+            assert "market_currency" not in site, f"{spec.key}:{site}"
+
+
+def test_draft_target_schema_has_no_retired_currency_fields() -> None:
+    from erp_web.schemas.product import DraftTargetSite
+
+    annotations = DraftTargetSite.__annotations__
+    assert "market_currency" not in annotations
+    assert "currency_resolution" not in annotations
+    assert "listing_currency" in annotations
+    assert "currency_fingerprint" in annotations
+
+
+def test_listing_currency_service_is_pure() -> None:
+    # 无平台分支的纯服务：不得依赖注册表、平台 HTTP 或 runtime 模块。
+    imports = imported_targets(
+        [ROOT / "erp_web/services/listing_currency_service.py"]
+    )
+    for _, target in imports:
+        assert not target.startswith("erp_web.marketplace_registry"), target
+        assert not target.startswith("erp_web.marketplaces"), target
+        assert not target.startswith("erp_web.runtime_units"), target
+        assert not target.startswith(".marketplace_registry"), target
+        assert not target.startswith(".marketplaces"), target
+
+
+def test_pricing_runtime_has_no_platform_currency_side_effects() -> None:
+    # 核价层不允许远端币种发现副作用（迁移方案 §11/§16.5）。
+    findings = forbidden_calls(
+        [ROOT / "erp_web/runtime_units/pricing_runtime.py"],
+        ["refresh_ozon_currency_capability", "fetch_ozon_seller_info"],
+    )
+    assert findings == []
+    imports = imported_targets(
+        [ROOT / "erp_web/runtime_units/pricing_runtime.py"]
+    )
+    for _, target in imports:
+        assert "store_credentials" not in target, target
+
+
+def test_retired_currency_source_strings_are_gone() -> None:
+    # 退役的静态币种来源字符串不得再出现在后端代码中；唯一例外是一次性
+    # 迁移模块（它必须识别旧键才能物理删除它们）。
+    retired = (
+        "site_rule",
+        "campaign_rule",
+        "account_api_required",
+        "contract_currency",
+        "account_locked",
+        "site_locked",
+        "campaign_locked",
+    )
+    exempt = {"store_currency_migration.py"}
+    for path in python_files("erp_web"):
+        if path.name in exempt:
+            continue
+        text = path.read_text(encoding="utf-8")
+        for marker in retired:
+            assert marker not in text, (
+                f"{path.relative_to(ROOT)} 含退役字符串 {marker}"
+            )
+
+
+def test_frontend_site_options_do_not_carry_currency() -> None:
+    # 前端平台 option 类型与 normalizer 不允许包含站点币种字段
+    #（迁移方案 §14.2/§16.5）。
+    types_text = (ROOT / "front/src/types/workflow.ts").read_text(
+        encoding="utf-8"
+    )
+    site_option_block = types_text.split("export interface MarketplaceSiteOption", 1)[1]
+    site_option_block = site_option_block.split("}", 1)[0]
+    assert "listingCurrency" not in site_option_block
+    assert "marketCurrency" not in site_option_block
+
+    normalizer_text = (
+        ROOT / "front/src/api/workflow/normalizers/core.ts"
+    ).read_text(encoding="utf-8")
+    normalize_block = normalizer_text.split(
+        "export function normalizeMarketplaceOptions", 1
+    )[1]
+    normalize_block = normalize_block.split("\n}", 1)[0]
+    assert "listing_currency" not in normalize_block
+    assert "market_currency" not in normalize_block
 
 
 def test_business_ai_use_cases_share_one_executor() -> None:

@@ -29,15 +29,8 @@ def _target_site(platform: str, site: str, currency: str) -> dict:
         "platform": platform,
         "site": site,
         "language": "es-MX" if platform == "mercadolibre" else "ru-RU",
-        "market_currency": currency,
         "listing_currency": currency,
-        "currency_resolution": {
-            "mode": "registry",
-            "listing_currency": currency,
-            "allowed_currencies": [currency],
-            "source": "test",
-            "verified_at": "2026-08-13T00:00:00Z",
-        },
+        "currency_fingerprint": f"sha256:test-{platform}-{site}-{currency}",
     }
 
 

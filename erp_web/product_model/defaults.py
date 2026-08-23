@@ -94,9 +94,10 @@ def default_draft(platform: str) -> dict[str, Any]:
             "platform": platform,
             "site": site["code"],
             "language": site["language"],
-            "market_currency": site["market_currency"],
-            "listing_currency": site["listing_currency"],
-            "currency_resolution": {},
+            # 默认草稿币种为空：发布币种只能来自店铺授权配置，不从站点
+            # 注册表复制静态值。
+            "listing_currency": "",
+            "currency_fingerprint": "",
         }],
         "enabled": True,
         "title": "",

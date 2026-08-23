@@ -60,7 +60,7 @@ export function normalizeDraftIndexItem(value: unknown): DraftIndexItem {
     sourceProductId: getString(record, ['source_product_id']),
     platform: primaryPlatform,
     platforms: effectivePlatforms,
-    targetSites: normalizeTargetSites(record.target_sites, primaryPlatform, getString(record, ['site']), getString(record, ['language']), '', {
+    targetSites: normalizeTargetSites(record.target_sites, primaryPlatform, getString(record, ['site']), getString(record, ['language']), {
       categoryId,
       categoryPath,
       publishStatus: getString(record, ['publish_status']),

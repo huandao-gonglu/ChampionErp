@@ -10,16 +10,16 @@ const platformOptions: MarketplaceOption[] = [
     key: 'mercadolibre',
     label: '美客多',
     sites: [
-      { key: 'CBT', code: 'CBT', label: '全局', language: 'es', marketCurrency: 'USD', listingCurrency: 'USD' },
-      { key: 'MLM', code: 'MLM', label: '墨西哥', language: 'es', marketCurrency: 'MXN', listingCurrency: 'MXN' },
-      { key: 'MLB', code: 'MLB', label: '巴西', language: 'pt-BR', marketCurrency: 'BRL', listingCurrency: 'BRL' },
+      { key: 'CBT', code: 'CBT', label: '全局', language: 'es' },
+      { key: 'MLM', code: 'MLM', label: '墨西哥', language: 'es' },
+      { key: 'MLB', code: 'MLB', label: '巴西', language: 'pt-BR' },
     ],
   },
   {
     key: 'ozon',
     label: 'Ozon',
     sites: [
-      { key: 'global', code: 'global', label: '俄罗斯', language: 'ru-RU', marketCurrency: 'RUB', listingCurrency: '' },
+      { key: 'global', code: 'global', label: '俄罗斯', language: 'ru-RU' },
     ],
   },
 ]
@@ -35,7 +35,6 @@ function draft(): DraftDetail {
       platform: 'mercadolibre',
       site: 'MLM',
       language: 'es',
-      marketCurrency: 'MXN',
       listingCurrency: 'MXN',
       categoryId: 'MLM-123',
     }],
@@ -137,8 +136,10 @@ describe('DraftEditorPanel', () => {
     await wrapper.get('[data-testid="draft-market-select-save"]').trigger('click')
 
     expect(wrapper.emitted('updateTargets')?.[0]?.[0]).toEqual(currentDraft)
+    // 新增市场目标不再从站点 option 携带币种：发布币种由店铺授权配置在
+    // 核价时写入；已有目标保留其币种快照。
     expect(wrapper.emitted('updateTargets')?.[0]?.[1]).toEqual([
-      expect.objectContaining({ platform: 'mercadolibre', site: 'CBT', language: 'es', listingCurrency: 'USD' }),
+      expect.objectContaining({ platform: 'mercadolibre', site: 'CBT', language: 'es', listingCurrency: '' }),
       expect.objectContaining({ platform: 'mercadolibre', site: 'MLM', language: 'es', listingCurrency: 'MXN' }),
     ])
   })

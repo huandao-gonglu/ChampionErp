@@ -290,6 +290,10 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/save-product": _contract(required=("product",)),
     "/api/save-settings": _EMPTY,
     "/api/store-auth/clear": _contract(required=("platform",)),
+    "/api/store-auth/currency": _contract(
+        fields={"listing_currency": STRING},
+        required=("platform", "listing_currency"),
+    ),
     "/api/test-ai-model": _contract(
         required_any=(("model", "config"),)
     ),

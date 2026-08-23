@@ -108,6 +108,23 @@ export async function testStoreAuth(platform: Marketplace, scope = '', config: U
   return normalizeAuthResult(response.data)
 }
 
+export interface StoreCurrencySelectionResult extends StoreSettingsResult {
+  publishReady: boolean
+  currencyConfiguration: UnknownRecord
+}
+
+export async function saveStoreCurrency(platform: Marketplace, listingCurrency: string): Promise<StoreCurrencySelectionResult> {
+  const response = await apiClient.post('/api/store-auth/currency', { platform, listing_currency: listingCurrency }, { validateStatus: () => true })
+  const data = asRecord(response.data)
+  ensureOk(data, getString(data, ['error'], '保存发布币种失败'))
+  return {
+    storeConfig: asRecord(data.storeConfig),
+    storeAuthSummary: asRecord(data.storeAuthSummary),
+    publishReady: data.publish_ready === true,
+    currencyConfiguration: asRecord(data.currencyConfiguration),
+  }
+}
+
 export async function clearStoreAuth(platform: Marketplace): Promise<StoreSettingsResult> {
   const response = await apiClient.post('/api/store-auth/clear', { platform })
   const data = asRecord(response.data)

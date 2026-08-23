@@ -107,7 +107,8 @@ function targetInputErrors(target: PricingTargetInput) {
     else if (feeTotal + margin >= 100) errors.push('平台费用合计 + 目标销售利润率必须小于 100%')
   }
   if (target.pricingMode === 'markup' && numeric(target.markupPercent) < 0) errors.push('成本加价率不能小于 0%')
-  if (!target.listingCurrency) errors.push('发布币种尚未核验')
+  // 发布币种就绪性由后端依据店铺授权配置确定性校验（STORE_CURRENCY_*），
+  // 前端不在核价前用目标快照拦截。
   if (target.pricingMode === 'manual' && numeric(target.manualPrice?.amount) <= 0) errors.push('手动售价必须大于 0')
   if (target.shippingQuoteMode === 'auto') {
     if (target.platform !== 'mercadolibre') errors.push('当前平台没有自动物流报价，请改为手动报价')

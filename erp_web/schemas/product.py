@@ -39,9 +39,8 @@ class DraftTargetSite(TypedDict, total=False):
     platform: str
     site: str
     language: str
-    market_currency: str
     listing_currency: str
-    currency_resolution: dict[str, Any]
+    currency_fingerprint: str
     category_id: str
     description_category_id: str
     category_path: str

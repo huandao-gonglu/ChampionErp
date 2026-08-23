@@ -1218,7 +1218,7 @@ class ErpDatabase:
         product = json_loads(row["product_json"], {})
         draft = cls._draft_from_row(row)
         status = str(draft.get("status") or draft.get("publish_status") or row["status"] or "claimed")
-        target_sites = draft.get("target_sites") if isinstance(draft.get("target_sites"), list) else [{"platform": row["platform"], "site": row["site"], "language": draft.get("language") or "", "market_currency": "", "listing_currency": ""}]
+        target_sites = draft.get("target_sites") if isinstance(draft.get("target_sites"), list) else [{"platform": row["platform"], "site": row["site"], "language": draft.get("language") or "", "listing_currency": ""}]
         return {
             "draft_id": row["draft_id"],
             "product_id": row["product_id"],

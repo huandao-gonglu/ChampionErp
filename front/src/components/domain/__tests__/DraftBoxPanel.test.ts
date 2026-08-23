@@ -9,9 +9,9 @@ const platformOptions: MarketplaceOption[] = [{
   key: 'mercadolibre',
   label: '美客多',
   sites: [
-    { key: 'CBT', code: 'CBT', label: '全局', language: 'es', marketCurrency: 'USD', listingCurrency: 'USD' },
-    { key: 'MLM', code: 'MLM', label: '墨西哥', language: 'es', marketCurrency: 'MXN', listingCurrency: 'MXN' },
-    { key: 'MLB', code: 'MLB', label: '巴西', language: 'pt-BR', marketCurrency: 'BRL', listingCurrency: 'BRL' },
+    { key: 'CBT', code: 'CBT', label: '全局', language: 'es' },
+    { key: 'MLM', code: 'MLM', label: '墨西哥', language: 'es' },
+    { key: 'MLB', code: 'MLB', label: '巴西', language: 'pt-BR' },
   ],
 }]
 
@@ -70,7 +70,7 @@ describe('DraftBoxPanel', () => {
 
   it('通过共享的两个选择器分别更新语言和市场', async () => {
     const row = draft('editable', 'claimed', '可编辑草稿')
-    row.targetSites = [{ platform: 'mercadolibre', site: 'MLM', language: 'es', marketCurrency: 'MXN', listingCurrency: 'MXN' }]
+    row.targetSites = [{ platform: 'mercadolibre', site: 'MLM', language: 'es', listingCurrency: 'MXN' }]
     const wrapper = mount(DraftBoxPanel, {
       props: {
         drafts: [row],

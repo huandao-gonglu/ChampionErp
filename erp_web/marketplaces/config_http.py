@@ -386,8 +386,36 @@ def request_ozon_json(
         ) from exc
 
 
-def fetch_mercadolibre_shop_name(token: str) -> str:
+def fetch_mercadolibre_user_profile(token: str) -> dict[str, Any]:
+    """读取 ``/users/me``：店铺稳定身份与账户站点。
+
+    授权测试、token 刷新和发布预检共用这一个入口，不再各自复制用户信息
+    更新逻辑。
+    """
+
     data = request_json("GET", "https://api.mercadolibre.com/users/me", token)
     if not isinstance(data, dict):
-        return ""
-    return data.get("nickname") or data.get("first_name") or str(data.get("id") or "")
+        return {}
+    return {
+        "user_id": str(data.get("id") or "").strip(),
+        "nickname": str(data.get("nickname") or "").strip(),
+        "site_id": str(data.get("site_id") or "").strip(),
+    }
+
+
+def fetch_mercadolibre_shop_name(token: str) -> str:
+    profile = fetch_mercadolibre_user_profile(token)
+    return profile.get("nickname") or profile.get("user_id") or ""
+
+
+def fetch_mercadolibre_site_listing(site_id: str) -> dict[str, Any]:
+    """读取远端站点元数据（公开接口），用于店铺级发布币种发现。"""
+
+    site = str(site_id or "").strip()
+    if not site:
+        return {}
+    data = request_json(
+        "GET",
+        f"https://api.mercadolibre.com/sites/{urllib.parse.quote(site)}",
+    )
+    return data if isinstance(data, dict) else {}

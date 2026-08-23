@@ -58,7 +58,14 @@ from erp_web.services.category_attribute_fill_agent_service import (
     CategoryAttributeFillAgentRun,
 )
 from erp_web.services.global_task_controller import GlobalTaskControllerError
+from erp_web.services.listing_currency_service import compute_currency_fingerprint
 from erp_web.services.pricing_service import pricing_calculation_fingerprint
+from tests.runtime_test_utils import seed_store_currency
+
+#: 纵向流程 Ozon 店铺的发布币种指纹（身份 client_id=vertical-client）。
+_VERTICAL_STORE_CURRENCY_FINGERPRINT = compute_currency_fingerprint(
+    "ozon", "vertical-client", "RUB", ["RUB"], "locked", "account_api"
+)
 
 
 class _PlatformNetworkBoundary(OzonPublishingAdapter):
@@ -210,6 +217,7 @@ def _source_product() -> dict[str, Any]:
     basis = {
         "cost_cny": "100",
         "listing_currency": "RUB",
+        "currency_fingerprint": _VERTICAL_STORE_CURRENCY_FINGERPRINT,
         "length_cm": "12.3",
         "width_cm": "4.5",
         "height_cm": "6.7",
@@ -262,7 +270,6 @@ def _source_product() -> dict[str, Any]:
                         "platform": "ozon",
                         "site": "global",
                         "language": "ru-RU",
-                        "market_currency": "RUB",
                         "listing_currency": "RUB",
                     }
                 ],
@@ -357,11 +364,11 @@ def test_global_chat_typed_task_vertical_publish_flow(
             "auth_status": "success",
             "auth_masked_account": "vertical-seller",
             "shop_name": "纵向测试店铺",
-            "contract_currency": "RUB",
-            "listing_currency": "RUB",
         },
         preserve_empty_sensitive=False,
     )
+    # 发布币种唯一事实源：显式创建 ready 店铺授权币种配置。
+    seed_store_currency("ozon", "RUB", identity={"client_id": "vertical-client"})
     saved_product = context.products.save_product(_source_product())
     draft_id = str(saved_product["drafts"]["ozon"]["draft_id"])
 

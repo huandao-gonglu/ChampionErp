@@ -581,27 +581,42 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 
 ## 发布币种与核价
 
-- `erp_web/marketplace_registry.py`：维护站点的 `market_currency`（市场展示）与
-  站点锁定的 `listing_currency`，并声明平台能力与店铺绑定字段。Ozon 的刊登币种为空，
-  禁止用俄罗斯市场的 RUB 作为发布默认值。Yandex 声明
+- 店铺授权配置（`store_auth.auth_detail_json`）中的 `listing_currency` 是核价与发布
+  的唯一币种事实源。注册表、国家、站点、草稿历史值和前端 option 都不是发布币种
+  来源，也不得作为 fallback。
+- `erp_web/marketplace_registry.py`：只维护站点身份、标签、语言、平台能力与店铺绑定
+  字段；不再携带 `market_currency`/`listing_currency`。Yandex 声明
   `store_binding_fields=("business_id", "campaign_id")`：发布确认的店铺身份要求两个字段
   同时存在，可变的 `shop_name`、脱敏 token 或单独 `business_id` 都不能作为绑定身份。
-- `erp_web/services/listing_currency_service.py`：发布币种解析唯一边界。Mercado Libre
-  按站点锁定，Yandex 按 campaign 规则锁定，Ozon 按店铺合同锁定；解析失败必须阻断
-  核价和发布，不允许回退到市场国家币种。
-- `erp_web/marketplaces/category_services.py::fetch_ozon_seller_info` 与
-  `erp_web/runtime_units/store_credentials.py::refresh_ozon_currency_capability`：通过
-  Ozon `/v1/seller/info` 发现并持久化店铺合同币种。授权测试会刷新；核价在能力缺失时
-  只补取一次。
+- `erp_web/services/listing_currency_service.py`：无平台分支的纯状态机服务。负责
+  远端发现结果归一化（单值锁定 / 多值待选 / 无能力人工 / 失败 refresh_failed）、
+  人工选择校验、ISO 4217 校验与币种指纹计算；不做网络请求、持久化或站点推断。
+- `erp_web/runtime_units/store_credentials.py` 与
+  `erp_web/runtime_units/mercadolibre_auth.py`：授权 tester 在凭据校验成功后调用平台
+  远端能力（Ozon `/v1/seller/info`、Yandex Business settings、Mercado Libre
+  `/users/me` + 站点元数据），返回统一发现结果，由共享状态机持久化到店铺授权配置。
+  授权失败或凭据/身份变化会清除币种 ready 状态；核价层不再有远端币种补取副作用。
+- `erp_web/http_route_units/auth_config_routes.py::/api/store-auth/currency`：受控人工
+  币种选择/填写接口；`/api/save-settings` 只接受注册表凭据字段与非敏感静态字段，
+  币种派生字段一律由后端授权/币种服务写入。
 - `erp_web/services/pricing_service.py`：所有发布售价使用 `{amount, currency}` Money；
-  商品成本、物流与利润先统一在 CNY 核算，再按已解析的 `listing_currency` 换算。
-  每个目标分别保存 `calculation_basis` 与 SHA-256 指纹。
+  商品成本、物流与利润先统一在 CNY 核算，再按店铺 `listing_currency` 换算。
+  每个目标分别保存 `calculation_basis`（含 `currency_fingerprint`）与 SHA-256 指纹。
 - `erp_web/runtime_units/draft_publish_context.py`：从 `pricing.targets[platform:site]`
-  投影当前目标的发布价格。持久化草稿没有含义不明的顶层 `price/currency`。
-- `erp_web/runtime_units/publish_validation.py`：发布前核对目标币种、Money 币种、核价
-  指纹、商品成本及包装尺寸；任何变化都会把旧核价判为 stale 并要求重新核价。
+  投影当前目标的发布价格，并提供 `build_store_publish_context()`。持久化草稿没有含义
+  不明的顶层 `price/currency`。
+- `erp_web/runtime_units/publish_validation.py`：发布前重新加载当前店铺配置，核对店铺
+  币种 ready 状态、草稿币种快照、币种指纹、Money 币种、核价指纹、商品成本及包装
+  尺寸；任何变化都会把旧核价判为 stale（STORE_CURRENCY_CHANGED/PRICING_STALE）并要求
+  重新核价。
+- `erp_web/marketplaces/yandex_currency.py`：Yandex wire 编码边界（内部 RUB ↔ wire
+  RUR），只作用于最终 payload 与发现归一化，不是币种来源。
 - 商品 schema v2 仍会在输入归一化边界读取 v1 payload，但旧数字售价和无指纹核价只标记
   失效，不自动猜币种；这是商品 payload 兼容，不是 SQLite 旧版本运行时迁移。
+- `erp_web/stores/store_currency_migration.py`：发布币种事实源切换的一次性内容迁移
+  （幂等）：Ozon 旧合同币种迁移为 locked+ready 并删除 `contract_currency`；Yandex /
+  Mercado Libre 的静态推断重置为 unresolved；静态 JSON 剥离派生币种字段并按授权状态
+  迁移 `account_site_id`。
 
 ## 商品发布
 

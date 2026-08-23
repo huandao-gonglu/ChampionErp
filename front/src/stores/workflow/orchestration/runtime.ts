@@ -225,6 +225,7 @@ export function createWorkflowRuntime() {
     testAiSettings,
     testPlatformApiConfig,
     saveStoreConfig,
+    saveStoreCurrency,
     testAuth,
     loadMercadoLibreChecklist,
     generateMercadoLibreAuthLink,
@@ -338,9 +339,9 @@ export function createWorkflowRuntime() {
       platform: target.platform,
       site: target.site || site?.code || '',
       language: target.language || site?.language || draftDetail.language || '',
-      marketCurrency: target.marketCurrency || site?.marketCurrency || '',
-      listingCurrency: target.listingCurrency || site?.listingCurrency || '',
-      currencyResolution: target.currencyResolution,
+      // 发布币种只信任核价时写入的店铺配置快照，不从站点 option 回填。
+      listingCurrency: target.listingCurrency || '',
+      currencyFingerprint: target.currencyFingerprint || '',
       categoryId: String(target.categoryId || (useRootFallback ? draftDetail.categoryId : '') || ''),
       descriptionCategoryId: String(target.descriptionCategoryId || (useRootFallback ? draftDetail.descriptionCategoryId : '') || ''),
       categoryPath: String(target.categoryPath || (useRootFallback ? draftDetail.categoryPath : '') || ''),
@@ -438,15 +439,28 @@ export function createWorkflowRuntime() {
         platform: platform.key,
         site: site.code,
         language: site.language,
-        marketCurrency: site.marketCurrency,
-        listingCurrency: site.listingCurrency,
+        listingCurrency: '',
       })))
   }
 
   function configuredSelectedTargets(language: string, targets: MarketplaceTargetSite[]): MarketplaceTargetSite[] {
     const configuredTargets = configuredTargetsForLanguage(language)
-    const selectedKeys = new Set(targets.map((target) => targetKey(target.platform, target.site)).filter(Boolean))
-    return configuredTargets.filter((target) => selectedKeys.has(targetKey(target.platform, target.site)))
+    const selectedByKey = new Map(
+      targets.map((target) => [targetKey(target.platform, target.site), target]),
+    )
+    return configuredTargets
+      .filter((target) => selectedByKey.has(targetKey(target.platform, target.site)))
+      .map((target) => {
+        const selected = selectedByKey.get(targetKey(target.platform, target.site))
+        if (!selected) return target
+        return {
+          ...selected,
+          ...target,
+          // 市场配置只提供站点身份与语言；币种快照保留草稿已有值。
+          listingCurrency: selected.listingCurrency,
+          currencyFingerprint: selected.currencyFingerprint,
+        }
+      })
   }
 
   function targetPlatforms(targets: MarketplaceTargetSite[]): Marketplace[] {
@@ -476,8 +490,7 @@ export function createWorkflowRuntime() {
       platform: draftDetail.platform,
       site: draftDetail.site || site?.code || '',
       language: draftDetail.language || site?.language || '',
-      marketCurrency: site?.marketCurrency || '',
-      listingCurrency: site?.listingCurrency || '',
+      listingCurrency: '',
     }].filter((target) => target.platform && target.site)
   }
 
@@ -491,8 +504,7 @@ export function createWorkflowRuntime() {
       platform: draftDetail.platform,
       site: draftDetail.site || site?.code || '',
       language: draftDetail.language || site?.language || '',
-      marketCurrency: site?.marketCurrency || '',
-      listingCurrency: site?.listingCurrency || '',
+      listingCurrency: '',
     }].map((target) => normalizeDraftTarget(target, draftDetail, true)).filter((target) => target.platform && target.site)
   }
 
@@ -500,7 +512,7 @@ export function createWorkflowRuntime() {
 
   const selectedPublishTarget = computed<MarketplaceTargetSite>(() => {
     const targets = currentPublishTargets.value
-    if (!targets.length) return { platform: '', site: '', language: '', marketCurrency: '', listingCurrency: '' }
+    if (!targets.length) return { platform: '', site: '', language: '', listingCurrency: '' }
     const selected = targets.find((target) => pricingTargetKey(target.platform, target.site) === activePublishTargetKey.value)
     return selected || targets[0]
   })
@@ -570,7 +582,8 @@ export function createWorkflowRuntime() {
       ? savedShippingCurrency
       : legacyShippingUsd > 0 || target.platform === 'mercadolibre' ? 'USD' : 'CNY'
     const savedShippingMode = recordString(saved, ['shippingQuoteMode', 'shipping_quote_mode'])
-    const listingCurrency = target.listingCurrency || site?.listingCurrency || ''
+    // 发布币种只来自店铺配置快照；站点 option 不再提供 fallback。
+    const listingCurrency = target.listingCurrency || ''
     const savedListingCurrency = recordString(saved, ['listing_currency']).toUpperCase()
     const savedAppliedPrice = recordMoney(saved, ['applied_price'], listingCurrency)
     const pricingMode = (recordString(saved, ['pricingMode', 'pricing_mode'], 'margin') || 'margin') as PricingTargetInput['pricingMode']
@@ -585,7 +598,7 @@ export function createWorkflowRuntime() {
       platform: target.platform,
       site: target.site || site?.code || '',
       listingCurrency,
-      currencyResolution: target.currencyResolution,
+      currencyFingerprint: target.currencyFingerprint,
       commissionPercent: recordNumber(saved, ['commissionPercent', 'commission_percent'], defaults.commissionPercent),
       paymentFeePercent: recordNumber(saved, ['paymentFeePercent', 'payment_fee_percent'], defaults.paymentFeePercent),
       otherFeePercent: recordNumber(saved, ['otherFeePercent', 'other_fee_percent'], 0),
@@ -611,7 +624,7 @@ export function createWorkflowRuntime() {
         platform: target.platform,
         site: target.site,
         listingCurrency: target.listingCurrency,
-        currencyResolution: target.currencyResolution,
+        currencyFingerprint: target.currencyFingerprint,
         suggestedPrice: recordMoney(saved, ['suggested_price'], target.listingCurrency),
         appliedPrice: recordMoney(saved, ['applied_price'], target.listingCurrency),
         convertedPrices: Object.fromEntries(Object.entries(isRecord(saved.converted_prices) ? saved.converted_prices : {}).map(([currency, amount]) => [currency, String(amount ?? '0')])),
@@ -878,7 +891,7 @@ export function createWorkflowRuntime() {
     refreshPublishJob, refreshPublishJobs, loadMorePublishJobs, selectPublishJob, refreshPublishLogs,
     refreshMercadoLibreRemoteItems, refreshMercadoLibreOrders, closeMercadoLibreRemoteItem, appConfig,
     aiConfig, storeConfig, storeAuthSummary, mercadolibreAuthChecklist, lastAuthResult, authLink,
-    loadAiConfig, saveAiSettings, testAiSettings, testPlatformApiConfig, saveStoreConfig, testAuth,
+    loadAiConfig, saveAiSettings, testAiSettings, testPlatformApiConfig, saveStoreConfig, saveStoreCurrency, testAuth,
     loadMercadoLibreChecklist, generateMercadoLibreAuthLink, openMercadoLibreAuth, refreshMercadoLibreAuthToken, runMercadoLibreAuthTest, exchangeMlCode,
     clearPlatformAuth, logs, loading, error, addLog, setError,
     requestSequence, currentStage, draft, currentPublishTargets, selectedPublishTarget, categoryAutoMatchTargetError,

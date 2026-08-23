@@ -21,6 +21,7 @@ describe('calculatePrice API mapping', () => {
           platform: 'mercadolibre',
           site: 'MLM',
           listing_currency: 'MXN',
+          currency_fingerprint: 'sha256:store-fingerprint',
           suggested_price: { amount: '739.83', currency: 'MXN' },
           applied_price: { amount: '739.83', currency: 'MXN' },
           minimum_price: { amount: '600.00', currency: 'MXN' },
@@ -145,6 +146,7 @@ describe('calculatePrice API mapping', () => {
           platform: 'mercadolibre',
           site: 'MLM',
           listingCurrency: 'MXN',
+          currencyFingerprint: 'sha256:store-fingerprint',
           suggestedPrice: { amount: '739.83', currency: 'MXN' },
           appliedPrice: { amount: '739.83', currency: 'MXN' },
           convertedPrices: { USD: '43.52', CNY: '315.52' },
@@ -357,7 +359,7 @@ describe('publishPrecheck API mapping', () => {
   it('keeps structured backend issues readable for the UI', async () => {
     const draft = createEmptyDraftDetail('mercadolibre')
     draft.draftId = 'draft-1'
-    draft.targetSites = [{ platform: 'mercadolibre', site: 'CBT', language: 'es', marketCurrency: 'USD', listingCurrency: 'USD' }]
+    draft.targetSites = [{ platform: 'mercadolibre', site: 'CBT', language: 'es', listingCurrency: 'USD' }]
     vi.mocked(apiClient.post).mockResolvedValueOnce({
       data: {
         ok: true,

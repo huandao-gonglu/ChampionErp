@@ -157,9 +157,7 @@ def _pricing_payload(
             "platform": text(target.get("platform")).lower(),
             "site": text(target.get("site")),
             "listing_currency": text(target.get("listing_currency")).upper(),
-            "currency_resolution": deepcopy(target.get("currency_resolution"))
-            if isinstance(target.get("currency_resolution"), dict)
-            else {},
+            "currency_fingerprint": text(target.get("currency_fingerprint")),
         }
     )
     passthrough = {

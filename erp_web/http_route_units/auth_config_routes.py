@@ -98,6 +98,15 @@ def handle_test_store_auth(handler: JsonRequestHandler) -> None:
     )
 
 
+def handle_store_currency_selection(handler: JsonRequestHandler) -> None:
+    _send(
+        handler,
+        auth_config_facade.store_currency_selection_payload(
+            validate_request_payload(handler.read_body(), endpoint=handler.path)
+        ),
+    )
+
+
 def handle_test_api_config(handler: JsonRequestHandler) -> None:
     _send(
         handler,
@@ -135,6 +144,7 @@ POST_HANDLERS: dict[str, PostHandler] = {
     "/api/mercadolibre/refresh-token": handle_mercadolibre_refresh_token,
     "/api/mercadolibre/real-auth-test": handle_mercadolibre_real_auth_test,
     "/api/test-store-auth": handle_test_store_auth,
+    "/api/store-auth/currency": handle_store_currency_selection,
     "/api/test-api-config": handle_test_api_config,
     "/api/save-settings": handle_save_settings,
     "/api/store-auth/clear": handle_clear_store_auth,

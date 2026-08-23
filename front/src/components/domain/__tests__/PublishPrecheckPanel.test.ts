@@ -10,7 +10,6 @@ const target: MarketplaceTargetSite = {
   platform: 'ozon',
   site: 'global',
   language: 'ru-RU',
-  marketCurrency: 'RUB',
   listingCurrency: 'RUB',
 }
 

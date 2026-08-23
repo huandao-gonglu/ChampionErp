@@ -72,6 +72,7 @@ vi.mock('@/api/workflow/settings', () => ({
   testStoreAuth: vi.fn(),
   testAiModel: vi.fn(),
   saveStoreSettings: vi.fn(),
+  saveStoreCurrency: vi.fn(),
   saveAiConfig: vi.fn(),
   openAuthLink: vi.fn(),
   fetchAiConfig: vi.fn(),
@@ -355,7 +356,7 @@ describe('workflow store live API flow', () => {
     })
   })
 
-  it('保存 Yandex 授权后自动用已保存配置复测授权', async () => {
+  it('保存凭据不触发任何在线测试；可信状态只来自测试结果', async () => {
     vi.mocked(workflowApi.saveStoreSettings).mockResolvedValue({
       storeConfig: { yandex: { campaign_id: '111', api_token: 'tok...ken' } },
       storeAuthSummary: { yandex: { platform: 'yandex', status: '已保存，未测试' } },
@@ -370,6 +371,59 @@ describe('workflow store live API flow', () => {
       copyText: '',
       raw: {},
     })
+
+    const store = useWorkflowStore()
+    await store.saveStoreConfig({
+      yandex: { api_token: 'secret-token-value', campaign_id: '111' },
+    })
+
+    // 删除“仅 Yandex 保存后自动复测”特殊分支：所有平台共用同一授权完成流程。
+    expect(workflowApi.testStoreAuth).not.toHaveBeenCalled()
+    expect(store.storeAuthSummary).toEqual({
+      yandex: { platform: 'yandex', status: '已保存，未测试' },
+    })
+  })
+
+  it('已保存配置的授权测试结果刷新 storeConfig 与币种状态', async () => {
+    vi.mocked(workflowApi.testStoreAuth).mockResolvedValue({
+      ok: true,
+      message: '测试成功：授权可用。',
+      error: '',
+      errorCode: '',
+      nextAction: '',
+      raw: {
+        ok: true,
+        platform: 'ozon',
+        publish_ready: true,
+        currency_configuration: {
+          listing_currency: 'CNY',
+          currency_mode: 'locked',
+          currency_status: 'ready',
+        },
+        storeConfig: {
+          ozon: {
+            client_id: 'client-1',
+            listing_currency: 'CNY',
+            currency_mode: 'locked',
+            currency_status: 'ready',
+          },
+        },
+        storeAuthSummary: { ozon: { platform: 'ozon', status: '测试成功' } },
+      },
+    })
+
+    const store = useWorkflowStore()
+    await store.testAuth('ozon')
+
+    expect(workflowApi.testStoreAuth).toHaveBeenCalledWith('ozon', '', {})
+    expect(store.storeAuthSummary).toEqual({ ozon: { platform: 'ozon', status: '测试成功' } })
+    expect(store.storeConfig.ozon).toMatchObject({
+      listing_currency: 'CNY',
+      currency_status: 'ready',
+    })
+  })
+
+  it('未保存 preview 测试不更新持久化展示', async () => {
     vi.mocked(workflowApi.testStoreAuth).mockResolvedValue({
       ok: true,
       message: '测试成功：授权可用。',
@@ -379,46 +433,18 @@ describe('workflow store live API flow', () => {
       raw: {
         ok: true,
         platform: 'yandex',
-        business_id: '222',
+        preview: true,
+        currency_configuration: { listing_currency: 'RUB', currency_status: 'ready' },
+        storeConfig: { yandex: { listing_currency: 'RUB' } },
         storeAuthSummary: { yandex: { platform: 'yandex', status: '测试成功' } },
       },
     })
 
     const store = useWorkflowStore()
-    await store.saveStoreConfig({
-      yandex: { api_token: 'secret-token-value', campaign_id: '111' },
-    })
+    await store.testAuth('yandex', '', { yandex: { api_token: 'unsaved', campaign_id: '111' } })
 
-    expect(workflowApi.testStoreAuth).toHaveBeenCalledTimes(1)
-    expect(workflowApi.testStoreAuth).toHaveBeenCalledWith('yandex', '', {})
-    expect(store.storeAuthSummary).toEqual({
-      yandex: { platform: 'yandex', status: '测试成功' },
-    })
-  })
-
-  it('Yandex 凭证为空时保存不触发自动授权测试', async () => {
-    vi.mocked(workflowApi.saveStoreSettings).mockResolvedValue({
-      storeConfig: { yandex: {} },
-      storeAuthSummary: { yandex: { platform: 'yandex', status: '未配置' } },
-    })
-    vi.mocked(workflowApi.fetchMercadoLibreAuthChecklist).mockResolvedValue({
-      platform: 'mercadolibre',
-      readyForAuthLink: false,
-      tokenReady: false,
-      missingCodes: [],
-      fields: [],
-      nextAction: '',
-      copyText: '',
-      raw: {},
-    })
-
-    const store = useWorkflowStore()
-    await store.saveStoreConfig({ yandex: { api_token: '', campaign_id: '' } })
-
-    expect(workflowApi.testStoreAuth).not.toHaveBeenCalled()
-    expect(store.storeAuthSummary).toEqual({
-      yandex: { platform: 'yandex', status: '未配置' },
-    })
+    expect(store.storeAuthSummary).toEqual({})
+    expect(store.storeConfig).toEqual({})
   })
 
   it('hydrates dashboard domain data after the bootstrap state is split', async () => {
@@ -1189,8 +1215,8 @@ describe('workflow store live API flow', () => {
 
     const store = useWorkflowStore()
     store.platformOptions = [
-      { key: 'yandex', label: 'Yandex', sites: [{ key: 'global', code: 'global', label: '俄罗斯', language: 'ru-RU', listingCurrency: 'RUB' }] },
-      { key: 'ozon', label: 'Ozon', sites: [{ key: 'global', code: 'global', label: '俄罗斯', language: 'ru-RU', listingCurrency: 'RUB' }] },
+      { key: 'yandex', label: 'Yandex', sites: [{ key: 'global', code: 'global', label: '俄罗斯', language: 'ru-RU' }] },
+      { key: 'ozon', label: 'Ozon', sites: [{ key: 'global', code: 'global', label: '俄罗斯', language: 'ru-RU' }] },
     ]
     await store.updateDraftTargets(item, savedTargets)
 
@@ -1241,7 +1267,9 @@ describe('workflow store live API flow', () => {
       productFilePath: '',
       raw: {},
     }
-    const selectedTarget = { platform: 'mercadolibre', site: 'CBT', language: 'es', listingCurrency: 'USD' }
+    // 切换语言会按市场配置重建目标；发布币种不再来自站点 option，
+    // 重建后的新目标币种为空，等待店铺授权配置在核价时写入。
+    const selectedTarget = { platform: 'mercadolibre', site: 'CBT', language: 'es', listingCurrency: '' }
     const savedDraft = { ...draft, platform: 'mercadolibre', platforms: ['mercadolibre'], site: 'CBT', language: 'es', targetSites: [selectedTarget] }
     vi.mocked(workflowApi.loadDraft).mockResolvedValue(draftMutation(draft, [item]))
     vi.mocked(workflowApi.saveDraft).mockResolvedValue(draftMutation(savedDraft, [{ ...item, ...savedDraft }]))
@@ -1249,10 +1277,10 @@ describe('workflow store live API flow', () => {
     const store = useWorkflowStore()
     store.platformOptions = [
       { key: 'mercadolibre', label: '美客多', sites: [
-        { key: 'CBT', code: 'CBT', label: '全局', language: 'es', listingCurrency: 'USD' },
-        { key: 'MLB', code: 'MLB', label: '巴西', language: 'pt-BR', listingCurrency: 'BRL' },
+        { key: 'CBT', code: 'CBT', label: '全局', language: 'es' },
+        { key: 'MLB', code: 'MLB', label: '巴西', language: 'pt-BR' },
       ] },
-      { key: 'yandex', label: 'Yandex', sites: [{ key: 'global', code: 'global', label: '俄罗斯', language: 'ru-RU', listingCurrency: 'RUB' }] },
+      { key: 'yandex', label: 'Yandex', sites: [{ key: 'global', code: 'global', label: '俄罗斯', language: 'ru-RU' }] },
     ]
     await store.updateDraftLanguage(item, 'es')
 
@@ -1281,7 +1309,7 @@ describe('workflow store live API flow', () => {
 
     const store = useWorkflowStore()
     store.platformOptions = [
-      { key: 'mercadolibre', label: '美客多', sites: [{ key: 'CBT', code: 'CBT', label: '全局', language: 'es', listingCurrency: 'USD' }] },
+      { key: 'mercadolibre', label: '美客多', sites: [{ key: 'CBT', code: 'CBT', label: '全局', language: 'es' }] },
     ]
     await store.loadDraftForPricing('draft-1')
 
@@ -1328,7 +1356,7 @@ describe('workflow store live API flow', () => {
     store.platformOptions = [{
       key: 'mercadolibre',
       label: '美客多',
-      sites: [{ key: 'MLM', code: 'MLM', label: '墨西哥', language: 'es', listingCurrency: 'MXN' }],
+      sites: [{ key: 'MLM', code: 'MLM', label: '墨西哥', language: 'es' }],
     }]
     await store.loadDraftForPricing('draft-1')
 
@@ -1463,8 +1491,8 @@ describe('workflow store live API flow', () => {
         key: 'mercadolibre',
         label: '美客多',
         sites: [
-          { key: 'CBT', code: 'CBT', label: '全局', language: 'es', listingCurrency: 'USD' },
-          { key: 'MLM', code: 'MLM', label: '墨西哥', language: 'es', listingCurrency: 'MXN' },
+          { key: 'CBT', code: 'CBT', label: '全局', language: 'es' },
+          { key: 'MLM', code: 'MLM', label: '墨西哥', language: 'es' },
         ],
       },
     ]

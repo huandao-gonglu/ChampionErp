@@ -58,7 +58,23 @@ function toggleTarget(target: MarketplaceTargetSite, checked: boolean) {
 }
 
 function saveTargets() {
-  const targets = availableTargets.value.filter((target) => editingTargetKeys.value.includes(draftTargetKey(target.platform, target.site)))
+  const existingByKey = new Map(
+    props.targetSites.map((target) => [draftTargetKey(target.platform, target.site), target]),
+  )
+  const targets = availableTargets.value
+    .filter((target) => editingTargetKeys.value.includes(draftTargetKey(target.platform, target.site)))
+    .map((target) => {
+      const existing = existingByKey.get(draftTargetKey(target.platform, target.site))
+      if (!existing) return target
+      return {
+        ...existing,
+        ...target,
+        // 发布货币快照与指纹来自已核价历史，市场选择不重置它们；
+        // 店铺币种变化由发布预检的交叉校验判定失效。
+        listingCurrency: existing.listingCurrency,
+        currencyFingerprint: existing.currencyFingerprint,
+      }
+    })
   if (!targets.length) {
     targetEditError.value = '至少选择一个与当前语言匹配的市场。'
     return

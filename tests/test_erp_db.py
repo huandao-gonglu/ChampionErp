@@ -68,7 +68,7 @@ def sample_product(title: str = "Imported title", source_url: str = "https://exa
                 "description": "Descripcion MX",
                 "category_id": "MLM123",
                 "attributes": {"BRAND": "BrandX"},
-                "target_sites": [{"platform": "mercadolibre", "site": "MLM", "language": "es", "market_currency": "MXN", "listing_currency": "MXN"}],
+                "target_sites": [{"platform": "mercadolibre", "site": "MLM", "language": "es", "listing_currency": "MXN"}],
                 "pricing": {"targets": {"mercadolibre:mlm": {"listing_currency": "MXN", "applied_price": {"amount": "19.99", "currency": "MXN"}}}},
                 "status": "copy_ready",
             }

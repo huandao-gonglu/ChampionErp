@@ -2,7 +2,6 @@ import { PRODUCT_SCHEMA_VERSION } from '@/types/workflow.generated'
 import type {
 
   CategoryAttributeValue,
-  CurrencyResolution,
   DraftDetail,
   DraftImageRef,
   DraftIndexItem,
@@ -246,8 +245,6 @@ export function normalizeMarketplaceOptions(value: unknown): MarketplaceOption[]
           code,
           label: getString(siteRecord, ['label'], code),
           language: getString(siteRecord, ['language'], ''),
-          marketCurrency: getString(siteRecord, ['market_currency'], ''),
-          listingCurrency: getString(siteRecord, ['listing_currency'], ''),
         }]
       })
       : []
@@ -352,7 +349,7 @@ export function targetListingFields(record: UnknownRecord, fallback?: Partial<Ma
   }
 }
 
-export function normalizeTargetSites(value: unknown, platform: Marketplace, site: string, language: string, listingCurrency: string, fallback?: Partial<MarketplaceTargetSite>): MarketplaceTargetSite[] {
+export function normalizeTargetSites(value: unknown, platform: Marketplace, site: string, language: string, fallback?: Partial<MarketplaceTargetSite>): MarketplaceTargetSite[] {
   const rawItems = Array.isArray(value) ? value : []
   const targets = rawItems.flatMap((value, index): MarketplaceTargetSite[] => {
     const record = asRecord(value)
@@ -363,22 +360,13 @@ export function normalizeTargetSites(value: unknown, platform: Marketplace, site
       platform: targetPlatform,
       site: targetSite,
       language: getString(record, ['language'], language),
-      marketCurrency: getString(record, ['market_currency'], fallback?.marketCurrency || ''),
-      listingCurrency: getString(record, ['listing_currency'], listingCurrency),
-      currencyResolution: (() => {
-        const resolution = asRecord(record.currency_resolution)
-        return {
-          mode: getString(resolution, ['mode'], 'unresolved') as CurrencyResolution['mode'],
-          listingCurrency: getString(resolution, ['listing_currency']),
-          allowedCurrencies: wireStringList(resolution.allowed_currencies),
-          source: getString(resolution, ['source']),
-          verifiedAt: getString(resolution, ['verified_at']),
-        }
-      })(),
+      // 发布币种是核价时写入的店铺配置快照，不再从站点 option 回填。
+      listingCurrency: getString(record, ['listing_currency']),
+      currencyFingerprint: getString(record, ['currency_fingerprint']),
       ...targetListingFields(record, index === 0 ? fallback : undefined),
     }]
   })
-  return targets.length ? targets : [{ platform, site, language, marketCurrency: fallback?.marketCurrency || '', listingCurrency, ...targetListingFields({}, fallback) }]
+  return targets.length ? targets : [{ platform, site, language, listingCurrency: '', ...targetListingFields({}, fallback) }]
 }
 
 export function normalizeDimensions(value: unknown) {
@@ -485,15 +473,8 @@ export function toBackendTargetSite(target: MarketplaceTargetSite): UnknownRecor
     platform: target.platform,
     site: target.site,
     language: target.language,
-    market_currency: target.marketCurrency,
     listing_currency: target.listingCurrency,
-    currency_resolution: target.currencyResolution ? {
-      mode: target.currencyResolution.mode,
-      listing_currency: target.currencyResolution.listingCurrency,
-      allowed_currencies: target.currencyResolution.allowedCurrencies,
-      source: target.currencyResolution.source,
-      verified_at: target.currencyResolution.verifiedAt,
-    } : {},
+    currency_fingerprint: target.currencyFingerprint || '',
     category_id: target.categoryId || '',
     description_category_id: target.descriptionCategoryId || '',
     category_path: target.categoryPath || '',

@@ -576,6 +576,7 @@ watch(
             @test-ai="store.testAiSettings"
             @test-api="store.testPlatformApiConfig"
             @save-store="store.saveStoreConfig"
+            @save-currency="store.saveStoreCurrency"
             @test-auth="store.testAuth"
             @refresh-checklist="store.loadMercadoLibreChecklist"
             @generate-ml-link="store.generateMercadoLibreAuthLink"

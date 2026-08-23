@@ -179,7 +179,6 @@ def build_legacy_draft_with_schema(
                 "platform": platform,
                 "site": site,
                 "language": "ru-RU",
-                "market_currency": "RUB",
                 "listing_currency": "RUB",
                 "category_id": category_id,
                 "category_path": schema["category_path"],

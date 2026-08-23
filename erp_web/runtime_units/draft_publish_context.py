@@ -7,7 +7,12 @@ from typing import Any
 from erp_web.context import AppContext, get_context
 from erp_web.marketplace_registry import marketplace_site, marketplace_spec
 from erp_web.product_model import PLATFORMS, normalize_platform_draft
-from erp_web.services.listing_currency_service import resolve_listing_currency
+from erp_web.schemas.currency import StorePublishContext
+from erp_web.services.listing_currency_service import (
+    require_store_listing_currency,
+    store_identity_for_platform,
+    store_listing_currency_from_auth,
+)
 from erp_web.stores.product_store import normalize_product_fields
 
 
@@ -30,7 +35,6 @@ PRECHECK_TARGET_SNAPSHOT_KEYS = (
     "platform",
     "site",
     "language",
-    "market_currency",
     "listing_currency",
     "category_id",
     "description_category_id",
@@ -60,9 +64,8 @@ def _normalized_target(
             "platform": "",
             "site": "",
             "language": "",
-            "market_currency": "",
             "listing_currency": "",
-            "currency_resolution": {},
+            "currency_fingerprint": "",
         }
     selected_site = marketplace_site(platform_key, site)
     if platform_key not in PLATFORMS or not selected_site.get("code"):
@@ -70,9 +73,8 @@ def _normalized_target(
             "platform": "",
             "site": "",
             "language": "",
-            "market_currency": "",
             "listing_currency": "",
-            "currency_resolution": {},
+            "currency_fingerprint": "",
         }
     active_context = context or get_context()
     store_config = active_context.config.load_store_config()
@@ -81,18 +83,45 @@ def _normalized_target(
         if isinstance(store_config.get(platform_key), dict)
         else {}
     )
-    resolution = resolve_listing_currency(
-        platform_key,
-        str(selected_site["code"]),
-        store,
-    )
+    identity = store_identity_for_platform(platform_key, store)
+    state = store_listing_currency_from_auth(platform_key, identity, store)
     return {
         "platform": platform_key,
         "site": selected_site["code"],
         "language": selected_site["language"],
-        "market_currency": selected_site["market_currency"],
-        "listing_currency": resolution["listing_currency"],
-        "currency_resolution": deepcopy(resolution),
+        "listing_currency": state["listing_currency"],
+        "currency_fingerprint": state["currency_fingerprint"],
+    }
+
+
+def build_store_publish_context(
+    platform: str,
+    site: str = "",
+    *,
+    context: AppContext | None = None,
+) -> StorePublishContext:
+    """发布前构造不可变店铺发布上下文。
+
+    只从店铺授权配置读取发布币种；未就绪时抛出
+    ``StoreCurrencyNotReadyError``，由调用方转为确定性阻断。
+    """
+
+    platform_key = str(platform or "").strip().lower()
+    selected_site = marketplace_site(platform_key, site)
+    active_context = context or get_context()
+    store_config = active_context.config.load_store_config()
+    store = (
+        store_config.get(platform_key)
+        if isinstance(store_config.get(platform_key), dict)
+        else {}
+    )
+    state = require_store_listing_currency(platform_key, store)
+    return {
+        "platform": platform_key,
+        "site": str(selected_site.get("code") or site or "").strip(),
+        "store_identity": store_identity_for_platform(platform_key, store),
+        "listing_currency": state["listing_currency"],
+        "currency_fingerprint": state["currency_fingerprint"],
     }
 
 
@@ -257,8 +286,8 @@ def draft_for_publish_target(draft: dict[str, Any], target: dict[str, Any]) -> d
     target_draft["platform"] = target["platform"]
     target_draft["site"] = target["site"]
     target_draft["language"] = target["language"]
-    target_draft["market_currency"] = target["market_currency"]
     target_draft["listing_currency"] = target["listing_currency"]
+    target_draft["currency_fingerprint"] = target.get("currency_fingerprint", "")
     target_key = _target_key(target["platform"], target["site"])
     pricing = draft.get("pricing") if isinstance(draft.get("pricing"), dict) else {}
     pricing_targets = pricing.get("targets") if isinstance(pricing.get("targets"), dict) else {}

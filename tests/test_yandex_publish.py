@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from erp_web.marketplaces.yandex_http import YandexApiError
+from erp_web.services.listing_currency_service import compute_currency_fingerprint
 from erp_web.services.pricing_service import pricing_calculation_fingerprint
 from erp_web.runtime_units import publish_yandex
 from erp_web.runtime_units.publish_yandex import (
@@ -26,8 +27,24 @@ from erp_web.runtime_units.publish_yandex import (
 )
 
 from tests.publish_category_support import record_from_schema
+from tests.runtime_test_utils import seed_store_currency
 
 API_TOKEN = "secret-api-token-123"
+
+#: 店铺授权配置是发布币种唯一事实源：测试显式创建 ready 店铺配置，
+#: 指纹与 _config() 的稳定身份（business_id=222）保持一致。
+_STORE_CURRENCY_FINGERPRINT = compute_currency_fingerprint(
+    "yandex", "222", "RUB", ["RUB"], "locked", "account_api"
+)
+
+
+@pytest.fixture(autouse=True)
+def _ready_store_currency() -> None:
+    seed_store_currency(
+        "yandex",
+        "RUB",
+        identity={"campaign_id": "111", "business_id": "222"},
+    )
 
 #: 测试类目定义（当次临时规则，不再持久化进草稿）。
 _CATEGORY_SCHEMA: dict[str, Any] = {
@@ -78,6 +95,7 @@ def _config(**store_overrides: Any) -> dict[str, Any]:
 def _draft(**overrides: Any) -> dict[str, Any]:
     basis = {
         "listing_currency": "RUB",
+        "currency_fingerprint": _STORE_CURRENCY_FINGERPRINT,
         "cost_cny": "35",
         "weight_kg": "0.5",
         "length_cm": "20",

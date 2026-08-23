@@ -10,6 +10,7 @@ import {
   refreshMercadoLibreToken,
   runMercadoLibreRealAuthTest,
   saveAiConfig,
+  saveStoreCurrency as saveStoreCurrencyRequest,
   saveStoreSettings,
   testAiModel,
   testApiConfig,
@@ -182,16 +183,8 @@ export const useWorkflowSettingsStore = defineStore('workflow-settings', () => {
       storeAuthSummary.value = saved.storeAuthSummary
       mercadolibreAuthChecklist.value = await fetchMercadoLibreAuthChecklist()
       activity.addLog('平台授权配置已保存。')
-      const yandexSection = isRecord(config.yandex) ? config.yandex : null
-      const hasYandexCredentials = Boolean(
-        yandexSection
-        && (String(yandexSection.api_token || '').trim() || String(yandexSection.campaign_id || '').trim()),
-      )
-      if (hasYandexCredentials) {
-        // 保存成功后自动对已保存配置执行一次在线测试，持久化可信授权状态；
-        // 客户端不直接提交 auth_status/business_id 等派生字段。
-        await testAuth('yandex')
-      }
+      // 保存凭据本身不伪造成功态；可信授权与发布币种状态只能通过
+      // “测试授权并读取发布货币”的在线测试结果写入。
     } catch (exc) {
       activity.setError(exc instanceof Error ? exc.message : '保存平台授权失败')
     } finally {
@@ -204,14 +197,35 @@ export const useWorkflowSettingsStore = defineStore('workflow-settings', () => {
     activity.setError('')
     try {
       lastAuthResult.value = await testStoreAuth(platform, scope, config)
-      // 只有针对已保存配置（未提交表单副本）的测试结果才允许刷新授权摘要；
-      // 未保存预览测试不更新持久化状态展示。
-      const summary = authSummary(lastAuthResult.value.raw)
-      if (summary && !Object.keys(config).length) storeAuthSummary.value = summary
+      // 是否刷新持久化展示以后端返回的 preview 标志为准：后端在“提交的凭据
+      // 与已保存配置一致”时会按已保存配置测试并落库（preview 缺省）；只有
+      // 真正改动了未保存凭据的预览测试才带 preview=true，不更新持久化展示。
+      const raw = lastAuthResult.value.raw
+      if (raw.preview !== true) {
+        const summary = authSummary(raw)
+        if (summary) storeAuthSummary.value = summary
+        const nextStoreConfig = raw.storeConfig
+        if (isRecord(nextStoreConfig)) storeConfig.value = nextStoreConfig
+      }
       if (!lastAuthResult.value.ok) throw new Error(authResultError(lastAuthResult.value, '测试授权失败'))
       activity.addLog(`${platform} 授权测试：${lastAuthResult.value.message || lastAuthResult.value.error || '完成'}`)
     } catch (exc) {
       activity.setError(exc instanceof Error ? exc.message : '测试授权失败')
+    } finally {
+      activity.loading = false
+    }
+  }
+
+  async function saveStoreCurrency(platform: Marketplace, listingCurrency: string) {
+    activity.loading = true
+    activity.setError('')
+    try {
+      const saved = await saveStoreCurrencyRequest(platform, listingCurrency)
+      storeConfig.value = saved.storeConfig
+      storeAuthSummary.value = saved.storeAuthSummary
+      activity.addLog(`${platform} 发布货币已更新为 ${listingCurrency.toUpperCase()}。`)
+    } catch (exc) {
+      activity.setError(exc instanceof Error ? exc.message : '保存发布货币失败')
     } finally {
       activity.loading = false
     }
@@ -336,6 +350,7 @@ export const useWorkflowSettingsStore = defineStore('workflow-settings', () => {
     testAiSettings,
     testPlatformApiConfig,
     saveStoreConfig,
+    saveStoreCurrency,
     testAuth,
     loadMercadoLibreChecklist,
     generateMercadoLibreAuthLink,

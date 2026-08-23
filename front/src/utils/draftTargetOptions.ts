@@ -40,8 +40,8 @@ export function draftTargetsForLanguage(
       platform: platform.key,
       site: site.code,
       language: site.language,
-      marketCurrency: site.marketCurrency,
-      listingCurrency: site.listingCurrency,
+      // 发布币种由店铺授权配置在核价时写入，站点 option 不再提供币种。
+      listingCurrency: '',
     })))
 }
 

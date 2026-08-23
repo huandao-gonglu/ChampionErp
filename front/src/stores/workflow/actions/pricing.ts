@@ -32,7 +32,7 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
       platform: result.platform,
       site: result.site,
       listing_currency: result.listingCurrency,
-      currency_resolution: result.currencyResolution || {},
+      currency_fingerprint: result.currencyFingerprint || '',
       suggested_price: result.suggestedPrice,
       applied_price: result.appliedPrice,
       converted_prices: result.convertedPrices,
@@ -123,7 +123,7 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
         target.manualPrice = null
       }
       target.listingCurrency = resolved.listingCurrency
-      target.currencyResolution = resolved.currencyResolution
+      target.currencyFingerprint = resolved.currencyFingerprint
     })
     if (result.usdCnyRate > 0) pricingInput.value.usdCnyRate = result.usdCnyRate
     if (result.mxnUsdRate > 0) pricingInput.value.mxnUsdRate = result.mxnUsdRate
@@ -181,7 +181,7 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
           return targetResult ? {
             ...target,
             listingCurrency: targetResult.listingCurrency,
-            currencyResolution: targetResult.currencyResolution,
+            currencyFingerprint: targetResult.currencyFingerprint,
           } : target
         }),
         pricing: buildDraftPricing(result),

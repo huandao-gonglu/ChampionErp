@@ -530,7 +530,10 @@ def test_ozon_category_auth_test_reads_the_category_tree_without_a_category_id()
     assert result["ok"] is True
     assert result["message"] == "类目读取测试成功：已读取 2 个可发布商品类型。"
     assert result["category_tree"] == {"product_type_count": 2, "sample": {"type_id": "94765"}}
-    assert result["listing_currency"] == "CNY"
+    assert result["publish_ready"] is True
+    assert result["currency_configuration"]["listing_currency"] == "CNY"
+    assert result["currency_configuration"]["currency_mode"] == "locked"
+    assert result["currency_configuration"]["currency_status"] == "ready"
 
 
 def test_ozon_category_corpus_persists_across_memory_cache_clear(

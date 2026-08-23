@@ -155,14 +155,6 @@ def normalize_draft_target_site(
             or selected.get("language")
             or ""
         ),
-        "market_currency": str(
-            raw.get("market_currency")
-            or raw.get("marketCurrency")
-            or fallback.get("market_currency")
-            or fallback.get("marketCurrency")
-            or selected.get("market_currency")
-            or ""
-        ).strip().upper(),
         "listing_currency": str(
             raw.get("listing_currency")
             or raw.get("listingCurrency")
@@ -173,18 +165,16 @@ def normalize_draft_target_site(
                 if target_platform != "ozon"
                 else ""
             )
-            or selected.get("listing_currency")
             or ""
         ).strip().upper(),
-        "currency_resolution": deepcopy(
-            raw.get("currency_resolution")
-            if isinstance(raw.get("currency_resolution"), dict)
-            else raw.get("currencyResolution")
-            if isinstance(raw.get("currencyResolution"), dict)
-            else fallback.get("currency_resolution")
-            if isinstance(fallback.get("currency_resolution"), dict)
-            else {}
-        ),
+        # 币种指纹是核价时的店铺配置快照，只透传，不由静态来源生成。
+        "currency_fingerprint": str(
+            raw.get("currency_fingerprint")
+            or raw.get("currencyFingerprint")
+            or fallback.get("currency_fingerprint")
+            or fallback.get("currencyFingerprint")
+            or ""
+        ).strip(),
         "category_id": str(
             raw.get("category_id")
             or raw.get("categoryId")

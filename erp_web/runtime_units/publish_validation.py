@@ -5,8 +5,20 @@ from copy import deepcopy
 from typing import Any
 
 from erp_web.context import get_context
+from erp_web.marketplaces import mercadolibre_category_allowed_currencies
 from erp_web.product_model import validate_category_precheck
 from erp_web.services.pricing_service import pricing_calculation_fingerprint
+from erp_web.services.listing_currency_service import (
+    PRICING_STALE,
+    STORE_CURRENCY_CHANGED,
+    STORE_CURRENCY_MANUAL_REQUIRED,
+    STORE_CURRENCY_REFRESH_FAILED,
+    STORE_CURRENCY_SELECTION_REQUIRED,
+    STORE_CURRENCY_UNRESOLVED,
+    store_identity_for_platform,
+    store_listing_currency_from_auth,
+    store_listing_currency_ready,
+)
 from erp_web.stores.product_store import normalize_product_fields
 
 from .collect_helpers import collect_time_iso
@@ -74,11 +86,56 @@ def _normalized_number(value: Any) -> str:
         return "0"
 
 
+_STORE_CURRENCY_PRECHECK_ERRORS: dict[str, tuple[str, str, str]] = {
+    # status -> (error_code, 消息, 下一步)
+    "unresolved": (
+        STORE_CURRENCY_UNRESOLVED,
+        "店铺发布币种未解析",
+        "前往授权页测试授权并读取发布货币，再重新核价",
+    ),
+    "selection_required": (
+        STORE_CURRENCY_SELECTION_REQUIRED,
+        "店铺发布币种待选择",
+        "前往授权页从允许币种中选择发布货币，再重新核价",
+    ),
+    "manual_required": (
+        STORE_CURRENCY_MANUAL_REQUIRED,
+        "店铺发布币种需人工填写",
+        "前往授权页填写 ISO 4217 币种代码，再重新核价",
+    ),
+    "refresh_failed": (
+        STORE_CURRENCY_REFRESH_FAILED,
+        "店铺发布币种读取失败",
+        "前往授权页重新验证授权并读取币种，再重新核价",
+    ),
+}
+
+
 def _selected_price_errors(product: dict[str, Any], draft: dict[str, Any]) -> list[dict[str, str]]:
-    listing_currency = str(draft.get("listing_currency") or "").strip().upper()
+    platform = str(draft.get("platform") or "").strip().lower()
+    # 发布前必须重新加载当前店铺配置：店铺授权配置是发布币种唯一事实源。
+    store_config = get_context().config.load_store_config()
+    store = (
+        store_config.get(platform)
+        if isinstance(store_config.get(platform), dict)
+        else {}
+    )
+    store_state = store_listing_currency_from_auth(
+        platform,
+        store_identity_for_platform(platform, store),
+        store,
+    )
+    if not store_listing_currency_ready(store_state):
+        code, message, next_action = _STORE_CURRENCY_PRECHECK_ERRORS.get(
+            store_state["currency_status"],
+            _STORE_CURRENCY_PRECHECK_ERRORS["unresolved"],
+        )
+        return [precheck_item(code, "listing_currency", message, "error", next_action)]
+    store_currency = store_state["listing_currency"]
+
+    snapshot_currency = str(draft.get("listing_currency") or "").strip().upper()
     selected = draft.get("selected_pricing") if isinstance(draft.get("selected_pricing"), dict) else {}
     if not selected:
-        platform = str(draft.get("platform") or "").strip().lower()
         site = str(draft.get("site") or draft.get("site_id") or "").strip().lower()
         target_key = f"{platform}:{site}"
         pricing = draft.get("pricing") if isinstance(draft.get("pricing"), dict) else {}
@@ -97,11 +154,22 @@ def _selected_price_errors(product: dict[str, Any], draft: dict[str, Any]) -> li
             ),
             {},
         )
-        listing_currency = str(
+        snapshot_currency = str(
             target.get("listing_currency")
             or selected.get("listing_currency")
-            or listing_currency
+            or snapshot_currency
         ).strip().upper()
+    if snapshot_currency != store_currency:
+        return [
+            precheck_item(
+                STORE_CURRENCY_CHANGED,
+                "listing_currency",
+                "草稿币种快照与当前店铺发布币种不一致",
+                "error",
+                "店铺发布币种已变化，前往核价页重新核价",
+            )
+        ]
+    listing_currency = store_currency
     applied = selected.get("applied_price") if isinstance(selected.get("applied_price"), dict) else {}
     applied_currency = str(applied.get("currency") or "").strip().upper()
     basis = selected.get("calculation_basis") if isinstance(selected.get("calculation_basis"), dict) else {}
@@ -110,16 +178,27 @@ def _selected_price_errors(product: dict[str, Any], draft: dict[str, Any]) -> li
         amount_valid = float(str(applied.get("amount") or "0").replace(",", ".")) > 0
     except (TypeError, ValueError):
         amount_valid = False
-    if not listing_currency:
-        return [precheck_item("LISTING_CURRENCY_UNRESOLVED", "listing_currency", "发布币种尚未核验", "error", "先测试店铺授权，再重新核价")]
     if not amount_valid or applied_currency != listing_currency:
-        return [precheck_item("PRICING_STALE", "pricing", f"{listing_currency} 发布目标没有有效核价结果", "error", "前往核价页重新计算并应用该目标售价")]
+        return [precheck_item(PRICING_STALE, "pricing", f"{listing_currency} 发布目标没有有效核价结果", "error", "前往核价页重新计算并应用该目标售价")]
     if (
         not basis
         or fingerprint != pricing_calculation_fingerprint(basis)
         or str(basis.get("listing_currency") or "").upper() != listing_currency
     ):
-        return [precheck_item("PRICING_STALE", "pricing", "核价依据缺失或已变化", "error", "前往核价页重新计算并应用售价")]
+        return [precheck_item(PRICING_STALE, "pricing", "核价依据缺失或已变化", "error", "前往核价页重新计算并应用售价")]
+    basis_currency_fingerprint = str(basis.get("currency_fingerprint") or "").strip()
+    if not basis_currency_fingerprint:
+        return [precheck_item(PRICING_STALE, "pricing", "核价依据缺少币种指纹", "error", "前往核价页重新计算并应用售价")]
+    if basis_currency_fingerprint != store_state["currency_fingerprint"]:
+        return [
+            precheck_item(
+                STORE_CURRENCY_CHANGED,
+                "pricing",
+                "店铺发布币种或店铺身份已变化，旧核价失效",
+                "error",
+                "前往核价页重新计算并应用售价",
+            )
+        ]
     product_cost = product.get("cost")
     if product_cost not in (None, "") and _normalized_number(product_cost) != _normalized_number(basis.get("cost_cny")):
         return [precheck_item("PRICING_STALE", "pricing", "商品成本已变化，旧核价结果已失效", "error", "前往核价页重新计算并应用售价")]
@@ -188,6 +267,31 @@ def validate_mercadolibre_draft(
     if not str(draft.get("sku") or "").strip():
         errors.append(precheck_item("SKU_MISSING", "sku", "SKU 为空", "error", "前往商品编辑页填写 SKU"))
     errors.extend(_selected_price_errors(product, draft))
+    # 类目级允许币种约束（迁移方案 §12 检查 5）：仅当店铺币种已 ready 且类目
+    # 返回允许集时校验；读取失败或类目无允许集视为无约束，绝不反向改店铺币种。
+    store_state = store_listing_currency_from_auth(
+        "mercadolibre",
+        store_identity_for_platform("mercadolibre", store),
+        store,
+    )
+    if store_listing_currency_ready(store_state) and category_id:
+        allowed_currencies = mercadolibre_category_allowed_currencies(
+            category_id,
+            str(store.get("access_token") or "").strip(),
+        )
+        if allowed_currencies and store_state["listing_currency"] not in allowed_currencies:
+            errors.append(
+                precheck_item(
+                    "CATEGORY_CURRENCY_MISMATCH",
+                    "listing_currency",
+                    (
+                        f"该类目仅允许 {('、'.join(allowed_currencies))} 发布，"
+                        f"店铺发布币种 {store_state['listing_currency']} 不在允许集内"
+                    ),
+                    "error",
+                    "前往类目属性页重新选择类目，或在授权页调整店铺发布币种后重新核价",
+                )
+            )
     try:
         if int(float(str(draft.get("stock") or "0").strip() or "0")) <= 0:
             raise ValueError

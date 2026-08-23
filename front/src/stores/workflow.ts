@@ -202,6 +202,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     testAiSettings: combined.testAiSettings,
     testPlatformApiConfig: combined.testPlatformApiConfig,
     saveStoreConfig: combined.saveStoreConfig,
+    saveStoreCurrency: combined.saveStoreCurrency,
     testAuth: combined.testAuth,
     loadMercadoLibreChecklist: combined.loadMercadoLibreChecklist,
     generateMercadoLibreAuthLink: combined.generateMercadoLibreAuthLink,

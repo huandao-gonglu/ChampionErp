@@ -14,7 +14,6 @@ const target: MarketplaceTargetSite = {
   platform: 'ozon',
   site: 'global',
   language: 'ru-RU',
-  marketCurrency: 'RUB',
   listingCurrency: 'RUB',
 }
 
@@ -22,7 +21,6 @@ const yandexTarget: MarketplaceTargetSite = {
   platform: 'yandex',
   site: 'global',
   language: 'ru',
-  marketCurrency: 'RUB',
   listingCurrency: 'RUB',
 }
 

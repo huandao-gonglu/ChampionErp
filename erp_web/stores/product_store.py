@@ -281,6 +281,7 @@ def _normalize_delete_ids(value: Any) -> list[str]:
 
 
 def _normalized_target_payload(target: dict[str, Any], platform: str, selected_site: dict[str, Any]) -> dict[str, Any]:
+    # 发布币种唯一事实源是店铺授权配置；站点注册表不再为草稿目标提供币种。
     return normalize_draft_target_site(
         target,
         platform,
@@ -288,8 +289,6 @@ def _normalized_target_payload(target: dict[str, Any], platform: str, selected_s
             "platform": platform,
             "site": selected_site["code"],
             "language": selected_site["language"],
-            "market_currency": selected_site["market_currency"],
-            "listing_currency": selected_site["listing_currency"],
         },
     )
 

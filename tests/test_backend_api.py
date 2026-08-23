@@ -156,7 +156,9 @@ def test_image_translate_api_returns_configuration_warning_without_key(backend_s
 
 
 
-def test_calculate_price_api_returns_frontend_fields(backend_server: str) -> None:
+def test_calculate_price_api_blocks_until_store_currency_ready(backend_server: str) -> None:
+    """店铺发布币种未就绪时，核价必须确定性阻断（迁移方案 §11/§17）。"""
+
     data = post_json(
         backend_server,
         "/api/calculate-price",
@@ -179,7 +181,6 @@ def test_calculate_price_api_returns_frontend_fields(backend_server: str) -> Non
                 "target_key": "mercadolibre:mlm",
                 "platform": "mercadolibre",
                 "site": "MLM",
-                "listing_currency": "MXN",
                 "target_margin_percent": 30,
                 "commission_percent": 16,
                 "shipping_quote_mode": "auto",
@@ -187,13 +188,9 @@ def test_calculate_price_api_returns_frontend_fields(backend_server: str) -> Non
         },
     )
 
-    assert float(data["suggested_price"]["amount"]) > 0
-    assert data["suggested_price"]["currency"] == "MXN"
-    assert float(data["converted_prices"]["USD"]) > 0
-    assert data["net_revenue_cny"] > 0
-    assert data["profit_cny"] > 0
-    assert data["shipping_cost_usd"] > 0
-    assert isinstance(data["breakdown"], dict)
+    assert data["ok"] is False
+    assert data["error_code"] == "STORE_CURRENCY_UNRESOLVED"
+    assert data["platform"] == "mercadolibre"
 
 
 def test_generate_copy_api_returns_error_without_key(backend_server: str, sample_product: dict) -> None:

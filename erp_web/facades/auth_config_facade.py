@@ -5,10 +5,20 @@ from __future__ import annotations
 from typing import Any
 
 from erp_web.context import get_context
+from erp_web.marketplace_registry import marketplace_spec
 from erp_web.services import config_service
 from erp_web.services.approval_session import ApprovalSessionError
 from erp_web.services.browser_debug_service import (
     open_auth_link_in_browser,
+)
+from erp_web.services.listing_currency_service import (
+    CurrencySelectionError,
+    apply_currency_selection,
+    public_currency_configuration,
+    store_identity_for_platform,
+    store_listing_currency_from_auth,
+    store_listing_currency_ready,
+    write_currency_state,
 )
 from erp_web.runtime_units.store_credentials import (
     build_mercadolibre_auth_link,
@@ -20,6 +30,7 @@ from erp_web.runtime_units.store_credentials import (
 from erp_web.stores.config_store import (
     auth_next_action,
     explain_mercadolibre_auth_error,
+    sanitize_client_store_config,
     summarize_store_auth_states,
 )
 from erp_web.runtime_units.publish_logs_runtime import (
@@ -200,6 +211,9 @@ def run_mercadolibre_auth_test_payload(
 def test_store_auth_payload(body: dict[str, Any]) -> ResponseWithStatus:
     platform = str(body.get("platform") or "").strip().lower()
     config_override = body.get("config") if isinstance(body.get("config"), dict) else None
+    if config_override is not None:
+        # preview 测试同样不得接受客户端伪造的派生字段。
+        config_override = sanitize_client_store_config(config_override)
     try:
         result = test_store_auth(
             platform,
@@ -212,6 +226,44 @@ def test_store_auth_payload(body: dict[str, Any]) -> ResponseWithStatus:
         if platform == "mercadolibre":
             return _mercadolibre_error_payload(message), 400
         return {"ok": False, "error": message}, 400
+
+
+def store_currency_selection_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    """受控人工币种选择/填写接口（迁移方案 §9.2）。"""
+
+    platform = str(body.get("platform") or "").strip().lower()
+    if marketplace_spec(platform) is None:
+        return {"ok": False, "error": "不支持的平台。"}, 400
+    config = load_store_config()
+    store = config.get(platform)
+    if not isinstance(store, dict):
+        store = {}
+        config[platform] = store
+    identity = store_identity_for_platform(platform, store)
+    current = store_listing_currency_from_auth(platform, identity, store)
+    try:
+        state = apply_currency_selection(
+            platform,
+            identity,
+            current,
+            str(body.get("listing_currency") or ""),
+        )
+    except CurrencySelectionError as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "error_code": "STORE_CURRENCY_SELECTION_INVALID",
+        }, 400
+    write_currency_state(store, state)
+    save_store_config(config)
+    store_config = load_store_config()
+    return {
+        "ok": True,
+        "publish_ready": store_listing_currency_ready(state),
+        "storeConfig": config_service.public_store_config(store_config),
+        "storeAuthSummary": summarize_store_auth_states(store_config),
+        "currencyConfiguration": public_currency_configuration(state),
+    }, 200
 
 
 def test_api_config_payload(body: dict[str, Any]) -> ResponseWithStatus:
@@ -250,8 +302,13 @@ def save_settings_payload(
             )
         incoming_store = body.get("storeConfig")
         if isinstance(incoming_store, dict) and incoming_store:
+            # 信任边界：只接受注册表凭据字段与非敏感静态字段；币种/授权
+            # 派生字段一律剥离，只能由后端授权/币种服务写入。
             save_store_config(
-                merge_store_config_fields(load_store_config(), incoming_store)
+                merge_store_config_fields(
+                    load_store_config(),
+                    sanitize_client_store_config(incoming_store),
+                )
             )
         store_config = load_store_config()
         return {
@@ -319,6 +376,7 @@ __all__ = [
     "run_mercadolibre_auth_test_payload",
     "save_ai_config_payload",
     "save_settings_payload",
+    "store_currency_selection_payload",
     "test_api_config_payload",
     "test_store_auth_payload",
 ]

@@ -96,6 +96,40 @@ def mercadolibre_category_path(category_id: str, token: str = "") -> str:
         return ""
 
 
+def mercadolibre_category_allowed_currencies(category_id: str, token: str = "") -> list[str]:
+    """读取类目级允许发布币种（``settings.currencies``）。
+
+    类目允许集是类目级约束（迁移方案 §7/§12）：它只用于在发布预检时校验店铺
+    币种，绝不反向修改全局店铺币种。读取失败或类目未返回允许集时返回空列表，
+    调用方把空视为“无约束”。
+    """
+
+    category = str(category_id or "").strip()
+    if not category:
+        return []
+    try:
+        data = request_json(
+            "GET",
+            f"https://api.mercadolibre.com/categories/{urllib.parse.quote(category)}",
+            token,
+        )
+    except Exception:
+        return []
+    settings = data.get("settings") if isinstance(data, dict) else None
+    if not isinstance(settings, dict):
+        return []
+    currencies: list[str] = []
+    raw = settings.get("currencies")
+    if isinstance(raw, list):
+        for item in raw:
+            code = str(
+                item.get("id") if isinstance(item, dict) else item or ""
+            ).strip().upper()
+            if len(code) == 3 and code.isalpha() and code not in currencies:
+                currencies.append(code)
+    return currencies
+
+
 def load_ml_category_shipping_cache() -> dict[str, dict[str, Any]]:
     try:
         if ML_CATEGORY_SHIPPING_CACHE_PATH.exists():

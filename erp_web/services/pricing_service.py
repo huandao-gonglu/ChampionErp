@@ -7,7 +7,6 @@ import json
 import math
 from decimal import Decimal, ROUND_HALF_UP
 import re
-from copy import deepcopy
 from typing import Any
 
 from erp_web.marketplace_registry import marketplace_site
@@ -434,7 +433,7 @@ def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], ind
         "platform": platform,
         "site": site,
         "listing_currency": currency,
-        "currency_resolution": deepcopy(target.get("currency_resolution")) if isinstance(target.get("currency_resolution"), dict) else {},
+        "currency_fingerprint": str(target.get("currency_fingerprint") or "").strip(),
         "cost_cny": _amount_text(values["cost_cny"]),
         "domestic_freight_cny": _amount_text(values["freight_cny"]),
         "packaging_cost_cny": _amount_text(packaging_cost_cny),
@@ -463,7 +462,7 @@ def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], ind
         "platform": platform,
         "site": site,
         "listing_currency": currency,
-        "currency_resolution": deepcopy(target.get("currency_resolution")) if isinstance(target.get("currency_resolution"), dict) else {},
+        "currency_fingerprint": str(target.get("currency_fingerprint") or "").strip(),
         "index": index,
         "suggested_price": _money(suggested_price, currency),
         "applied_price": _money(applied_price, currency),

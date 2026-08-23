@@ -61,7 +61,6 @@ function target() {
     platform: 'mercadolibre' as const,
     site: 'MLM',
     language: 'es-MX',
-    marketCurrency: 'MXN',
     listingCurrency: 'MXN',
   }
 }

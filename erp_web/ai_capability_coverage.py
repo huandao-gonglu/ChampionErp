@@ -756,6 +756,13 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         disposition="excluded",
         reason="清除已保存凭据，原始密钥读写不包装为能力。",
     ),
+    AiCapabilityCoverageEntry(
+        method="POST",
+        path="/api/store-auth/currency",
+        business_domain="授权基础设施",
+        disposition="excluded",
+        reason="店铺发布币种人工选择/填写，授权配置写入不包装为能力。",
+    ),
     # -------------------------------------------------- 平台通知（POST）
     AiCapabilityCoverageEntry(
         method="POST",

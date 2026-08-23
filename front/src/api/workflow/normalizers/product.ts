@@ -112,7 +112,7 @@ export function normalizeDraft(value: unknown, language: string): MarketplaceDra
     ...draft,
     draftId: getString(record, ['draft_id']),
     platforms: platformList(record.platforms),
-    targetSites: normalizeTargetSites(record.target_sites, platformList(record.platforms)[0] || 'mercadolibre', site, draftLanguage, '', targetFallback),
+    targetSites: normalizeTargetSites(record.target_sites, platformList(record.platforms)[0] || 'mercadolibre', site, draftLanguage, targetFallback),
     site,
     enabled: getBoolean(record, ['enabled'], draft.enabled),
     title: getString(record, ['title']),
@@ -266,7 +266,7 @@ export function normalizeDraftDetail(value: unknown): DraftDetail {
     sourceProductId: getString(record, ['source_product_id']),
     platform: primaryPlatform,
     platforms,
-    targetSites: normalizeTargetSites(record.target_sites, primaryPlatform, getString(record, ['site']), draft.language, '', {
+    targetSites: normalizeTargetSites(record.target_sites, primaryPlatform, getString(record, ['site']), draft.language, {
       categoryId: draft.categoryId,
       descriptionCategoryId: draft.descriptionCategoryId,
       categoryPath: draft.categoryPath,

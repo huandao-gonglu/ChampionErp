@@ -30,12 +30,12 @@ from erp_web.runtime_units.publish_logs_runtime import mercadolibre_test_error_c
 from erp_web.services import image_service, image_translate_service
 from erp_web.services.pricing_service import pricing_calculation_fingerprint
 from erp_web.stores import config_store
-from tests.runtime_test_utils import temp_app_context
+from tests.runtime_test_utils import seed_store_currency, temp_app_context
 from tests.test_erp_db import sample_product
 
 
-def pricing_targets(platform: str, site: str, currency: str, amount: str) -> dict:
-    basis = {"listing_currency": currency}
+def pricing_targets(platform: str, site: str, currency: str, amount: str, currency_fingerprint: str = "") -> dict:
+    basis = {"listing_currency": currency, "currency_fingerprint": currency_fingerprint}
     return {
         "targets": {
             f"{platform}:{site}".lower(): {
@@ -46,6 +46,19 @@ def pricing_targets(platform: str, site: str, currency: str, amount: str) -> dic
                 "calculation_fingerprint": pricing_calculation_fingerprint(basis),
             }
         }
+    }
+
+
+def _ml_profile_via_wire(token: str) -> dict:
+    """统一授权服务桥接：users/me 仍走被 patch 的 request_json，
+    保留 wire 级调用序列断言。"""
+
+    data = publisher.request_json("GET", "https://api.mercadolibre.com/users/me", token)
+    data = data if isinstance(data, dict) else {}
+    return {
+        "user_id": str(data.get("id") or "").strip(),
+        "nickname": str(data.get("nickname") or "").strip(),
+        "site_id": str(data.get("site_id") or "").strip(),
     }
 
 
@@ -784,7 +797,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
                 "category_id": "MLM123",
                 "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
-                "target_sites": [{"platform": "mercadolibre", "site": "MLM", "market_currency": "MXN", "listing_currency": "MXN"}],
+                "target_sites": [{"platform": "mercadolibre", "site": "MLM", "listing_currency": "MXN"}],
                 "stock": "5",
                 "pricing": pricing_targets("mercadolibre", "MLM", "MXN", "19.99"),
                 "package_dimensions": {
@@ -820,6 +833,10 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
         self.with_temp_app(run)
 
     def test_mercadolibre_publish_payload_uses_draft_fields_over_listing_defaults(self) -> None:
+        # 发布币种唯一事实源：显式创建 ready 店铺配置（MXN）。
+        store_fingerprint = seed_store_currency(
+            "mercadolibre", "MXN", identity={"user_id": "99"}
+        )
         product = sample_product("Draft payload source title", "https://example.com/draft-payload")
         product["source"]["image_pool"][0].update(
             {
@@ -839,8 +856,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "category_id": "MLM455865",
             "attributes": {"BRAND": "DraftBrand", "MODEL": "DraftModel", "MATERIAL": "ABS"},
             "site": "MLM",
-            "target_sites": [{"platform": "mercadolibre", "site": "MLM", "market_currency": "MXN", "listing_currency": "MXN"}],
-            "pricing": pricing_targets("mercadolibre", "MLM", "MXN", "9.59"),
+            "target_sites": [{"platform": "mercadolibre", "site": "MLM", "listing_currency": "MXN"}],
+            "pricing": pricing_targets("mercadolibre", "MLM", "MXN", "9.59", store_fingerprint),
             "stock": "10",
             "sku": "DRAFT-SKU-1",
             "upc": "123456789012",
@@ -897,6 +914,10 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
         self.assertEqual(payload["sale_terms"], [{"id": "WARRANTY_TYPE", "value_name": "Sin garantía", "value_id": "6150835"}])
 
     def test_mercadolibre_publish_payload_uses_draft_target_site_over_store_config(self) -> None:
+        # 发布币种唯一事实源：显式创建 ready 店铺配置（CBT 店铺 USD）。
+        store_fingerprint = seed_store_currency(
+            "mercadolibre", "USD", identity={"user_id": "99"}
+        )
         product = sample_product("Draft CBT payload", "https://example.com/draft-cbt-payload")
         product["source"]["image_pool"][0].update(
             {
@@ -916,8 +937,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
             "category_id": "CBT457856",
             "attributes": {"BRAND": "DraftBrand", "MODEL": "DraftModel"},
-            "target_sites": [{"platform": "mercadolibre", "site": "CBT", "market_currency": "USD", "listing_currency": "USD"}],
-            "pricing": pricing_targets("mercadolibre", "CBT", "USD", "18.00"),
+            "target_sites": [{"platform": "mercadolibre", "site": "CBT", "listing_currency": "USD"}],
+            "pricing": pricing_targets("mercadolibre", "CBT", "USD", "18.00", store_fingerprint),
             "stock": "10",
             "sku": "DRAFT-CBT-SKU",
             "upc": "123456789012",
@@ -1016,7 +1037,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 raise AssertionError(f"Unexpected request: {method} {url}")
 
             with (
-                patch.object(publisher, "fetch_mercadolibre_shop_name", return_value="shop"),
+                patch.object(publisher, "fetch_mercadolibre_user_profile", side_effect=_ml_profile_via_wire),
                 patch.object(publisher, "request_json", side_effect=fake_request),
             ):
                 result = publish_mercadolibre.mercadolibre_remote_items("active")
@@ -1051,7 +1072,10 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                     ]
                 raise AssertionError(f"Unexpected request: {method} {url}")
 
-            with patch.object(publisher, "request_json", side_effect=fake_request):
+            with (
+                patch.object(publisher, "fetch_mercadolibre_user_profile", side_effect=_ml_profile_via_wire),
+                patch.object(publisher, "request_json", side_effect=fake_request),
+            ):
                 result = publish_mercadolibre.mercadolibre_remote_items("active", page=2, per_page=50)
 
             self.assertTrue(result["ok"])
@@ -1078,7 +1102,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 return {"id": "MLM1", "title": "First", "status": "closed"}
 
             with (
-                patch.object(publisher, "fetch_mercadolibre_shop_name", return_value="shop"),
+                patch.object(publisher, "fetch_mercadolibre_user_profile", side_effect=_ml_profile_via_wire),
                 patch.object(publisher, "request_json", side_effect=fake_request),
             ):
                 result = publish_mercadolibre.mercadolibre_close_remote_item("MLM1")
@@ -1108,7 +1132,10 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                     return {"id": "CBT3475477379", "title": "First", "status": "active" if item_gets == 1 else "paused"}
                 return {}
 
-            with patch.object(publisher, "request_json", side_effect=fake_request):
+            with (
+                patch.object(publisher, "fetch_mercadolibre_user_profile", side_effect=_ml_profile_via_wire),
+                patch.object(publisher, "request_json", side_effect=fake_request),
+            ):
                 result = publish_mercadolibre.mercadolibre_close_remote_item("CBT3475477379")
 
             self.assertTrue(result["ok"])
@@ -1135,7 +1162,10 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                     return {"id": "CBT3475477379", "title": "First", "status": "paused"}
                 return {}
 
-            with patch.object(publisher, "request_json", side_effect=fake_request):
+            with (
+                patch.object(publisher, "fetch_mercadolibre_user_profile", side_effect=_ml_profile_via_wire),
+                patch.object(publisher, "request_json", side_effect=fake_request),
+            ):
                 result = publish_mercadolibre.mercadolibre_close_remote_item("CBT3475477379")
 
             self.assertTrue(result["ok"])
@@ -1158,7 +1188,10 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                     return {"id": "CBT3475477379", "title": "First", "status": "active"}
                 return {}
 
-            with patch.object(publisher, "request_json", side_effect=fake_request):
+            with (
+                patch.object(publisher, "fetch_mercadolibre_user_profile", side_effect=_ml_profile_via_wire),
+                patch.object(publisher, "request_json", side_effect=fake_request),
+            ):
                 result = publish_mercadolibre.mercadolibre_close_remote_item("CBT3475477379")
 
             self.assertFalse(result["ok"])
@@ -1178,7 +1211,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
             "category_id": "MLM123",
             "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
-            "target_sites": [{"platform": "mercadolibre", "site": "MLM", "market_currency": "MXN", "listing_currency": "MXN"}],
+            "target_sites": [{"platform": "mercadolibre", "site": "MLM", "listing_currency": "MXN"}],
             "stock": "5",
             "pricing": pricing_targets("mercadolibre", "MLM", "MXN", "19.99"),
             "publish_status": "ready",
@@ -1198,7 +1231,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
             "category_id": "MLM123",
             "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
-            "target_sites": [{"platform": "mercadolibre", "site": "MLM", "market_currency": "MXN", "listing_currency": "MXN"}],
+            "target_sites": [{"platform": "mercadolibre", "site": "MLM", "listing_currency": "MXN"}],
             "stock": "5",
             "pricing": pricing_targets("mercadolibre", "MLM", "MXN", "19.99"),
             "publish_status": "not_ready",
@@ -1221,7 +1254,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
             "category_id": "MLM123",
             "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
-            "target_sites": [{"platform": "mercadolibre", "site": "MLM", "market_currency": "MXN", "listing_currency": "MXN"}],
+            "target_sites": [{"platform": "mercadolibre", "site": "MLM", "listing_currency": "MXN"}],
             "pricing": pricing_targets("mercadolibre", "MLM", "MXN", "19.99"),
             "stock": "5",
             "publish_status": "ready",
@@ -1243,7 +1276,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
             "category_id": "MLM123",
             "attributes": {},
-            "target_sites": [{"platform": "mercadolibre", "site": "MLM", "market_currency": "MXN", "listing_currency": "MXN"}],
+            "target_sites": [{"platform": "mercadolibre", "site": "MLM", "listing_currency": "MXN"}],
             "pricing": pricing_targets("mercadolibre", "MLM", "MXN", "19.99"),
             "stock": "5",
             "publish_status": "ready",
@@ -1268,7 +1301,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
                 "category_id": "MLM123",
                 "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
-                "target_sites": [{"platform": "mercadolibre", "site": "MLM", "market_currency": "MXN", "listing_currency": "MXN"}],
+                "target_sites": [{"platform": "mercadolibre", "site": "MLM", "listing_currency": "MXN"}],
                 "stock": "5",
                 "pricing": pricing_targets("mercadolibre", "MLM", "MXN", "19.99"),
                 "publish_status": "ready",

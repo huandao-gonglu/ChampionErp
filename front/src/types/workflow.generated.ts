@@ -174,9 +174,8 @@ export interface BackendDraftTargetSite {
   platform?: string
   site?: string
   language?: string
-  market_currency?: string
   listing_currency?: string
-  currency_resolution?: Record<string, unknown>
+  currency_fingerprint?: string
   category_id?: string
   description_category_id?: string
   category_path?: string

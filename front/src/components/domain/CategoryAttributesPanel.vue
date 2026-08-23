@@ -485,7 +485,8 @@ function targetLabel(target: MarketplaceTargetSite) {
   const platformLabel = platform?.label || target.platform || '目标平台'
   const siteLabel = site?.label || target.site || '默认站点'
   const language = target.language || site?.language || ''
-  const currency = target.listingCurrency || site?.listingCurrency || '待核验'
+  // 发布币种只展示店铺配置快照；未就绪统一提示待配置，不回退站点币种。
+  const currency = target.listingCurrency || '店铺发布货币待配置'
   return `${platformLabel} - ${siteLabel}（${target.site || site?.code || '-'} / ${language || '-'} / ${currency || '-'}）`
 }
 

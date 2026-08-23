@@ -15,9 +15,21 @@ from erp_web.runtime_units.publish_ozon import (
     validate_ozon_publish_payload,
 )
 from erp_web.runtime_units.publish_validation import validate_ozon_draft
+from erp_web.services.listing_currency_service import compute_currency_fingerprint
 from erp_web.services.pricing_service import pricing_calculation_fingerprint
 
 from tests.publish_category_support import record_from_schema
+from tests.runtime_test_utils import seed_store_currency
+
+#: 店铺授权配置是发布币种唯一事实源：测试显式创建 ready 店铺配置。
+_STORE_CURRENCY_FINGERPRINT = compute_currency_fingerprint(
+    "ozon", "client-id", "RUB", ["RUB"], "locked", "account_api"
+)
+
+
+@pytest.fixture(autouse=True)
+def _ready_store_currency() -> None:
+    seed_store_currency("ozon", "RUB", identity={"client_id": "client-id"})
 
 #: 测试类目定义（当次临时规则，不再持久化进草稿）。
 _CATEGORY_SCHEMA: dict = {
@@ -59,6 +71,7 @@ def _record(schema: dict | None = None) -> dict:
 def _product() -> dict:
     basis = {
         "listing_currency": "RUB",
+        "currency_fingerprint": _STORE_CURRENCY_FINGERPRINT,
         "length_cm": "12.3",
         "width_cm": "4.5",
         "height_cm": "6.7",
@@ -83,7 +96,7 @@ def _product() -> dict:
             "ozon": {
                 "platform": "ozon",
                 "site": "global",
-                "target_sites": [{"platform": "ozon", "site": "global", "language": "ru-RU", "market_currency": "RUB", "listing_currency": "RUB"}],
+                "target_sites": [{"platform": "ozon", "site": "global", "language": "ru-RU", "listing_currency": "RUB"}],
                 "title": "Тестовый товар для Ozon",
                 "description": "Подробное описание товара.",
                 "category_id": "94765",
@@ -138,7 +151,6 @@ def _config() -> dict:
             "client_id": "client-id",
             "api_key": "api-key",
             "auth_status": "success",
-            "contract_currency": "RUB",
         },
         "listing": {},
     }

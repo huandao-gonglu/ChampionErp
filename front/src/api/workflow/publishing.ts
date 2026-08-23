@@ -241,19 +241,12 @@ function normalizePricingTargetResult(value: unknown, fallback: Partial<PricingT
   const input = asRecord(record.input)
   const listingCurrency = getString(record, ['listing_currency'], fallback.listingCurrency || '')
   const convertedPrices = asRecord(record.converted_prices)
-  const resolution = asRecord(record.currency_resolution)
   return {
     targetKey: getString(record, ['target_key', 'targetKey'], fallback.targetKey || ''),
     platform: (getString(record, ['platform'], fallback.platform || 'mercadolibre')) as Marketplace,
     site: getString(record, ['site'], fallback.site || ''),
     listingCurrency,
-    currencyResolution: Object.keys(resolution).length ? {
-      mode: getString(resolution, ['mode'], 'unresolved') as NonNullable<PricingTargetResult['currencyResolution']>['mode'],
-      listingCurrency: getString(resolution, ['listing_currency'], listingCurrency),
-      allowedCurrencies: Array.isArray(resolution.allowed_currencies) ? resolution.allowed_currencies.map(String) : [],
-      source: getString(resolution, ['source']),
-      verifiedAt: getString(resolution, ['verified_at']),
-    } : fallback.currencyResolution,
+    currencyFingerprint: getString(record, ['currency_fingerprint'], fallback.currencyFingerprint || ''),
     suggestedPrice: normalizeMoney(record.suggested_price, listingCurrency),
     appliedPrice: normalizeMoney(record.applied_price, listingCurrency),
     convertedPrices: Object.fromEntries(Object.entries(convertedPrices).map(([key, amount]) => [key, String(amount ?? '0')])),

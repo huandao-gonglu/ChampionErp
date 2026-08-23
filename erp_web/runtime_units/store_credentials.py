@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import urllib.parse
-import time
 from importlib import import_module
 from typing import Any, Callable
 
@@ -10,6 +9,16 @@ from erp_web.context import get_context
 from erp_web.marketplace_registry import MarketplaceSpec, marketplace_spec, platform_label
 from erp_web import marketplaces as publisher
 from erp_web.services import ai_gateway, ai_model_config
+from erp_web.services.config_service import public_store_config
+from erp_web.services.listing_currency_service import (
+    apply_currency_discovery,
+    public_currency_configuration,
+    reset_currency_state_in_store,
+    store_identity_for_platform,
+    store_listing_currency_from_auth,
+    store_listing_currency_ready,
+    write_currency_state,
+)
 from erp_web.stores.config_store import (
     _store_auth_result_fields,
     store_auth_failure_code,
@@ -18,7 +27,26 @@ from erp_web.stores.config_store import (
 from erp_web.stores.product_store import mask_secret
 
 from .collect_helpers import collect_time_iso
+from .mercadolibre_auth import (
+    discover_mercadolibre_listing_currency,
+    sync_mercadolibre_auth_and_currency,
+    sync_mercadolibre_identity,
+)
 from .publish_logs_runtime import append_ml_auth_test_log
+
+
+def _apply_store_currency_discovery(
+    platform: str,
+    store: dict[str, Any],
+    discovery: dict[str, Any],
+) -> dict[str, Any]:
+    """共享发现状态机落库点：tester 只返回发现结果，不各自拼接状态。"""
+
+    identity = store_identity_for_platform(platform, store)
+    previous = store_listing_currency_from_auth(platform, identity, store)
+    state = apply_currency_discovery(platform, identity, discovery, previous=previous)
+    write_currency_state(store, state)
+    return state
 
 def _merge_saved_ai_model_config(model_config: dict[str, Any]) -> dict[str, Any]:
     incoming = dict(model_config if isinstance(model_config, dict) else {})
@@ -190,17 +218,13 @@ def exchange_mercadolibre_code_from_body(body: dict[str, Any]) -> dict[str, Any]
     try:
         result = publisher.exchange_mercadolibre_code(app_id, app_secret, redirect_uri, code_or_url, code_verifier)
         token = str(result.get("access_token") or "").strip()
-        shop_name = ""
-        if token:
-            try:
-                shop_name = publisher.fetch_mercadolibre_shop_name(token)
-            except Exception:
-                shop_name = ""
         ml["access_token"] = token
         if result.get("refresh_token"):
             ml["refresh_token"] = str(result.get("refresh_token") or "").strip()
-        ml["shop_name"] = shop_name or str(result.get("user_id") or "").strip() or ml.get("shop_name", "")
         ml["user_id"] = str(result.get("user_id") or ml.get("user_id") or "").strip()
+        # code 交换成功后自动执行用户信息与币种发现，不再要求用户额外点击
+        # 用户信息步骤才能补齐发布能力。
+        currency_state = sync_mercadolibre_auth_and_currency(config)
         ml.update(_store_auth_result_fields("mercadolibre", "测试成功", ml.get("shop_name") or ml.get("user_id") or token))
         ml["auth_error_code"] = ""
         ml["auth_error_message"] = ""
@@ -221,9 +245,12 @@ def exchange_mercadolibre_code_from_body(body: dict[str, Any]) -> dict[str, Any]
                 "user_id": ml.get("user_id") or "",
                 "shop_name": ml.get("shop_name") or "",
                 "site_id": ml.get("site_id") or "",
+                "account_site_id": ml.get("account_site_id") or "",
             },
             "masked_account": ml.get("auth_masked_account") or "",
             "checked_at": ml.get("auth_checked_at") or "",
+            "publish_ready": bool(currency_state.get("currency_status") == "ready" and currency_state.get("listing_currency")),
+            "currency_configuration": public_currency_configuration(currency_state) if currency_state else {},
             "storeAuthSummary": summarize_store_auth_states(config),
             "message": "Mercado Libre 授权成功，已自动读取用户信息。",
             "next_action": "授权成功。下一步到草稿的类目/属性页实时匹配 Mercado Libre 类目，并按选中类目读取必填属性。",
@@ -247,18 +274,13 @@ def refresh_mercadolibre_token_from_body(body: dict[str, Any]) -> dict[str, Any]
         raise RuntimeError("请先填写 App ID、App Secret 和 Refresh Token。")
     result = publisher.refresh_mercadolibre_token(app_id, app_secret, refresh_token)
     token = str(result.get("access_token") or "").strip()
-    shop_name = ""
-    if token:
-        try:
-            shop_name = publisher.fetch_mercadolibre_shop_name(token)
-        except Exception:
-            shop_name = ""
     ml["app_id"] = app_id
     ml["app_secret"] = app_secret
     ml["client_secret"] = ml.get("client_secret") or app_secret
     ml["refresh_token"] = str(result.get("refresh_token") or refresh_token).strip()
     ml["access_token"] = token
-    ml["shop_name"] = shop_name or ml.get("shop_name", "")
+    # 刷新成功后同步用户信息与币种发现，保持店铺币种状态与远端一致。
+    currency_state = sync_mercadolibre_auth_and_currency(config)
     ml.update(_store_auth_result_fields("mercadolibre", "测试成功", ml.get("shop_name") or token))
     ml["auth_error_code"] = ""
     ml["auth_error_message"] = ""
@@ -269,6 +291,8 @@ def refresh_mercadolibre_token_from_body(body: dict[str, Any]) -> dict[str, Any]
         "shop_name": ml.get("shop_name") or "",
         "masked_account": ml.get("auth_masked_account") or "",
         "checked_at": ml.get("auth_checked_at") or "",
+        "publish_ready": bool(currency_state.get("currency_status") == "ready" and currency_state.get("listing_currency")),
+        "currency_configuration": public_currency_configuration(currency_state) if currency_state else {},
         "storeAuthSummary": summarize_store_auth_states(config),
         "message": "Mercado Libre token 已刷新。",
         "next_action": "Token 已刷新。下一步到草稿的类目/属性页实时匹配 Mercado Libre 类目，并按选中类目读取必填属性。",
@@ -277,51 +301,17 @@ def refresh_mercadolibre_token_from_body(body: dict[str, Any]) -> dict[str, Any]
 
 def _test_mercadolibre_auth(config: dict[str, Any], scope: str) -> dict[str, Any]:
     del scope
-    token = str(config.get("mercadolibre", {}).get("access_token") or "").strip()
+    store = config.setdefault("mercadolibre", {})
+    token = str(store.get("access_token") or "").strip()
     if not token:
         raise RuntimeError("请先填写 Mercado Libre access token，或通过授权链接换取 token。")
-    name = publisher.fetch_mercadolibre_shop_name(token)
-    store = config.setdefault("mercadolibre", {})
-    store["shop_name"] = name or store.get("shop_name", "")
-    store.update(_store_auth_result_fields("mercadolibre", "测试成功", name or token))
+    # 统一服务：users/me 身份同步 + 远端站点币种发现。
+    profile = sync_mercadolibre_identity(store, token)
+    display = profile.get("nickname") or profile.get("user_id") or token
+    store.update(_store_auth_result_fields("mercadolibre", "测试成功", display))
     store["auth_error_code"] = ""
     store["auth_error_message"] = ""
-    return {}
-
-
-def refresh_ozon_currency_capability(
-    config: dict[str, Any],
-) -> dict[str, Any]:
-    """Refresh Ozon's account-locked publishing currency in store auth."""
-
-    ozon = config.get("ozon") if isinstance(config.get("ozon"), dict) else {}
-    client_id = str(ozon.get("client_id") or "").strip()
-    api_key = str(ozon.get("api_key") or "").strip()
-    if not client_id or not api_key:
-        raise RuntimeError("请先填写 Ozon Client ID 和 API Key。")
-    seller_info = publisher.fetch_ozon_seller_info(client_id, api_key)
-    company = (
-        seller_info.get("company")
-        if isinstance(seller_info.get("company"), dict)
-        else {}
-    )
-    contract_currency = str(company.get("currency") or "").strip().upper()
-    if not contract_currency:
-        raise RuntimeError("Ozon seller/info 未返回店铺合同币种")
-    store = config.setdefault("ozon", {})
-    store["contract_currency"] = contract_currency
-    store["listing_currency"] = contract_currency
-    store["currency_mode"] = "account_locked"
-    store["currency_source"] = "account_api"
-    store["currency_verified_at"] = time.strftime(
-        "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
-    )
-    store["allowed_currencies"] = [contract_currency]
-    return {
-        "listing_currency": contract_currency,
-        "currency_mode": "account_locked",
-        "seller_info": seller_info,
-    }
+    return {"currency_discovery": discover_mercadolibre_listing_currency(store)}
 
 
 def _test_ozon_auth(config: dict[str, Any], scope: str) -> dict[str, Any]:
@@ -330,8 +320,24 @@ def _test_ozon_auth(config: dict[str, Any], scope: str) -> dict[str, Any]:
     api_key = str(ozon.get("api_key") or "").strip()
     if not client_id or not api_key:
         raise RuntimeError("请先填写 Ozon Client ID 和 API Key。")
-    currency_capability = refresh_ozon_currency_capability(config)
-    contract_currency = currency_capability["listing_currency"]
+    # seller/info 既校验凭据，也是店铺发布币种的远端来源；币种解析交给
+    # 共享发现状态机，tester 不再自行持久化币种字段。
+    seller_info = publisher.fetch_ozon_seller_info(client_id, api_key)
+    company = (
+        seller_info.get("company")
+        if isinstance(seller_info.get("company"), dict)
+        else {}
+    )
+    currency = str(company.get("currency") or "").strip().upper()
+    currency_discovery: dict[str, Any] = (
+        {"supported": True, "currencies": [currency], "source": "account_api"}
+        if currency
+        else {
+            "supported": True,
+            "error_code": "OZON_CURRENCY_MISSING",
+            "error_message": "Ozon seller/info 未返回店铺发布币种",
+        }
+    )
     category_summary: dict[str, Any] | None = None
     if scope == "category":
         from .ozon_category_api import fetch_ozon_category_tree_summary
@@ -349,10 +355,7 @@ def _test_ozon_auth(config: dict[str, Any], scope: str) -> dict[str, Any]:
     store.update(_store_auth_result_fields("ozon", "测试成功", name or client_id))
     store["auth_error_code"] = ""
     store["auth_error_message"] = ""
-    result: dict[str, Any] = {
-        "listing_currency": contract_currency,
-        "currency_mode": "account_locked",
-    }
+    result: dict[str, Any] = {"currency_discovery": currency_discovery}
     if category_summary:
         result["category_tree"] = category_summary
     return result
@@ -399,6 +402,7 @@ def _test_yandex_auth(config: dict[str, Any], scope: str) -> dict[str, Any]:
     ``ConfigStore.save_store_config()`` 完成（preview 使用副本不落盘）。
     """
 
+    from erp_web.marketplaces.yandex_currency import yandex_internal_currency
     from erp_web.marketplaces.yandex_http import (
         YandexApiError,
         fetch_yandex_business_settings,
@@ -451,8 +455,38 @@ def _test_yandex_auth(config: dict[str, Any], scope: str) -> dict[str, Any]:
             "店铺不可用。请到卖家后台恢复店铺或联系 Yandex 支持后重试。"
         )
 
-    settings = fetch_yandex_business_settings(api_token, campaign.business_id)
+    settings: dict[str, Any] = {}
+    settings_error_code = ""
+    settings_error_message = ""
+    try:
+        settings = fetch_yandex_business_settings(api_token, campaign.business_id)
+    except YandexApiError as exc:
+        settings_error_code = str(getattr(exc, "code", "") or "YANDEX_SETTINGS_FAILED")
+        settings_error_message = str(exc)
+    except Exception as exc:
+        settings_error_code = "YANDEX_SETTINGS_FAILED"
+        settings_error_message = str(exc)
     only_default_price = bool(settings.get("onlyDefaultPrice"))
+    raw_currency = str(settings.get("currency") or "").strip()
+    if settings_error_code:
+        currency_discovery: dict[str, Any] = {
+            "supported": True,
+            "error_code": settings_error_code,
+            "error_message": settings_error_message,
+        }
+    elif raw_currency:
+        # wire RUR → 内部 ISO RUB；其他 ISO 代码保持大写。
+        currency_discovery = {
+            "supported": True,
+            "currencies": [yandex_internal_currency(raw_currency)],
+            "source": "business_settings",
+        }
+    else:
+        currency_discovery = {
+            "supported": True,
+            "error_code": "YANDEX_CURRENCY_MISSING",
+            "error_message": "Yandex Business settings 未返回 settings.currency",
+        }
     stock_update_mode = "none"
     warehouse_ids: list[int] = []
     placement_type = campaign.placement_type.strip().upper()
@@ -562,6 +596,7 @@ def _test_yandex_auth(config: dict[str, Any], scope: str) -> dict[str, Any]:
         "stock_update_mode": stock_update_mode,
         "warehouse_ids": warehouse_ids,
         "capabilities_verified_at": verified_at,
+        "currency_discovery": currency_discovery,
     }
     if scope == "category":
         from .yandex_category_api import fetch_yandex_category_tree_summary
@@ -637,6 +672,8 @@ def _persist_store_auth_test_failure(
             next_action=str(next_action or "").strip(),
         )
     )
+    # 授权失败时币种状态重置为 unresolved，不得保留旧可信币种。
+    reset_currency_state_in_store(platform, store)
     get_context().config.save_store_config(config)
     return message
 
@@ -644,6 +681,31 @@ def _persist_store_auth_test_failure(
 def _auth_test_failure_exception(message: str) -> RuntimeError:
     text = str(message or "").strip()
     return RuntimeError(text if text.startswith("测试失败") else f"测试失败：{text}")
+
+
+def _store_credentials_unchanged(
+    saved_config: dict[str, Any],
+    merged_config: dict[str, Any],
+    platform: str,
+) -> bool:
+    """客户端随测试提交的凭据与已保存凭据完全一致时返回 True。
+
+    preview 预览测试只应针对“确实改动了的未保存凭据”；当提交值与已保存值
+    相同（含脱敏回显 / 空值按原值保留）时，本次等价于对持久化配置的测试，
+    允许写入可信授权与币种状态。否则已保存凭据永远无法通过界面落库币种。
+    """
+
+    spec = marketplace_spec(platform)
+    if spec is None:
+        return False
+    saved_section = saved_config.get(platform)
+    saved_section = saved_section if isinstance(saved_section, dict) else {}
+    merged_section = merged_config.get(platform)
+    merged_section = merged_section if isinstance(merged_section, dict) else {}
+    for key in spec.credential_keys():
+        if str(saved_section.get(key) or "") != str(merged_section.get(key) or ""):
+            return False
+    return True
 
 
 def test_store_auth(
@@ -671,6 +733,9 @@ def test_store_auth(
         if is_preview
         else saved_config
     )
+    if is_preview and _store_credentials_unchanged(saved_config, config, platform):
+        # 提交的凭据与已保存配置一致：等价于测试持久化配置，落库可信状态。
+        is_preview = False
     try:
         extra = tester(config, scope)
     except Exception as exc:
@@ -718,20 +783,35 @@ def test_store_auth(
             next_action=str(extra.get("next_action") or ""),
         )
         raise _auth_test_failure_exception(message)
+    store = config.get(platform)
+    store = store if isinstance(store, dict) else {}
+    discovery = extra.pop("currency_discovery", None)
+    if isinstance(discovery, dict):
+        currency_state = _apply_store_currency_discovery(platform, store, discovery)
+    else:
+        identity = store_identity_for_platform(platform, store)
+        currency_state = store_listing_currency_from_auth(platform, identity, store)
     if not is_preview:
         get_context().config.save_store_config(config)
     response = {
         "ok": True,
         "platform": platform,
         "scope": scope,
-        "shop_name": str(config.get(platform, {}).get("shop_name") or "已授权店铺"),
-        "masked_account": str(config.get(platform, {}).get("auth_masked_account") or ""),
-        "checked_at": str(config.get(platform, {}).get("auth_checked_at") or ""),
-        "status": str(config.get(platform, {}).get("auth_status") or "ok"),
+        "shop_name": str(store.get("shop_name") or "已授权店铺"),
+        "masked_account": str(store.get("auth_masked_account") or ""),
+        "checked_at": str(store.get("auth_checked_at") or ""),
+        "status": str(store.get("auth_status") or "ok"),
+        # ok 表示授权请求本身成功；publish_ready 表示发布币种也已就绪，
+        # 两者不得混为一个状态。
+        "publish_ready": store_listing_currency_ready(currency_state),
         "message": "测试成功：授权可用。",
+        "currency_configuration": public_currency_configuration(currency_state),
+        "storeConfig": public_store_config(config),
         "storeAuthSummary": summarize_store_auth_states(config),
         **extra,
     }
+    if is_preview:
+        response["preview"] = True
     category_tree = extra.get("category_tree")
     if isinstance(category_tree, dict):
         response["message"] = f"类目读取测试成功：已读取 {category_tree.get('product_type_count', 0)} 个可发布商品类型。"
@@ -742,7 +822,6 @@ __all__ = [
     "build_mercadolibre_auth_link",
     "exchange_mercadolibre_code_from_body",
     "preview_mercadolibre_auth_link",
-    "refresh_ozon_currency_capability",
     "refresh_mercadolibre_token_from_body",
     "resolve_store_auth_tester",
     "StoreAuthTester",

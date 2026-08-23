@@ -160,7 +160,7 @@ def sample_product() -> dict:
                 "brand": "Generic",
                 "model": "T-3A",
                 "category_id": "MLM-100",
-                "target_sites": [{"platform": "mercadolibre", "site": "MLM", "language": "es", "market_currency": "MXN", "listing_currency": "MXN"}],
+                "target_sites": [{"platform": "mercadolibre", "site": "MLM", "language": "es", "listing_currency": "MXN"}],
                 "pricing": {"targets": {"mercadolibre:mlm": {"listing_currency": "MXN", "applied_price": {"amount": "199", "currency": "MXN"}}}},
                 "available_quantity": "3",
                 "condition": "new",

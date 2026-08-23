@@ -11,6 +11,7 @@ from erp_web.product_model import (
     normalize_draft_image_refs,
     validate_category_precheck,
 )
+from erp_web.services.listing_currency_service import require_store_listing_currency
 from erp_web.stores.config_store import summarize_store_auth_states
 from erp_web.stores.product_store import normalize_product_fields
 
@@ -245,11 +246,27 @@ def _draft_for_platform(product: dict[str, Any], platform: str) -> dict[str, Any
 def _selected_price_and_currency(
     draft: dict[str, Any], platform: str, site: str
 ) -> tuple[str, str]:
-    currency = str(draft.get("listing_currency") or "").strip().upper()
+    """发布 payload 的价格与币种。
+
+    币种只从店铺授权配置（发布上下文）读取，不从草稿/注册表猜值；价格取
+    已核价的生效售价或草稿投影价，其币种必须与店铺币种一致。店铺币种未
+    就绪时抛出 ``StoreCurrencyNotReadyError``，确定性阻断发布。
+    """
+
+    platform_key = str(platform or "").strip().lower()
+    store_config = get_context().config.load_store_config()
+    store = (
+        store_config.get(platform_key)
+        if isinstance(store_config.get(platform_key), dict)
+        else {}
+    )
+    state = require_store_listing_currency(platform_key, store)
+    currency = state["listing_currency"]
+
     price = str(draft.get("price") or "").strip()
-    if price and currency:
+    if price:
         return price, currency
-    target_key = f"{str(platform).strip().lower()}:{str(site).strip().lower()}"
+    target_key = f"{platform_key}:{str(site).strip().lower()}"
     pricing = draft.get("pricing") if isinstance(draft.get("pricing"), dict) else {}
     targets = pricing.get("targets") if isinstance(pricing.get("targets"), dict) else {}
     record = next(
@@ -257,22 +274,6 @@ def _selected_price_and_currency(
         {},
     )
     applied = record.get("applied_price") if isinstance(record.get("applied_price"), dict) else {}
-    target_sites = draft.get("target_sites") if isinstance(draft.get("target_sites"), list) else []
-    selected_target = next(
-        (
-            item for item in target_sites
-            if isinstance(item, dict)
-            and str(item.get("platform") or "").lower() == str(platform).lower()
-            and str(item.get("site") or "").lower() == str(site).lower()
-        ),
-        {},
-    )
-    currency = str(
-        selected_target.get("listing_currency")
-        or record.get("listing_currency")
-        or applied.get("currency")
-        or ""
-    ).strip().upper()
     if str(applied.get("currency") or "").strip().upper() != currency:
         return "", currency
     return str(applied.get("amount") or "").strip(), currency
