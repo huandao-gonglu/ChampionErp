@@ -2,6 +2,12 @@
 import { computed, reactive, ref, watch } from 'vue'
 import ProductResearchSettingsPanel from '@/components/auth/ProductResearchSettingsPanel.vue'
 import type { AuthResult, Marketplace, MarketplaceOption, MercadoLibreAuthChecklist, MercadoLibreTestMode, UnknownRecord } from '@/types/workflow'
+import {
+  mercadoLibreAccountSiteId,
+  mercadoLibreIsFullyManaged,
+  mercadoLibreMarketplaceBindings,
+  type MercadoLibreMarketplaceBinding,
+} from '@/utils/mercadolibreGlobalSelling'
 
 const DEFAULT_ML_REDIRECT_URI = 'https://example.com/callback'
 
@@ -1584,6 +1590,7 @@ const CURRENCY_SOURCE_LABELS: Record<string, string> = {
   account_api: '平台账户',
   business_settings: 'Business',
   site_api: '站点 API',
+  global_selling_contract: 'Global Selling 官方契约',
   manual: '人工配置',
 }
 
@@ -1627,6 +1634,27 @@ const storeCurrencySourceLabel = computed(() => {
   if (!source) return '-'
   return CURRENCY_SOURCE_LABELS[source] || source
 })
+
+const mercadoLibreGlobalSellingMeta = computed(() => ({
+  accountSiteId: mercadoLibreAccountSiteId(props.storeConfig),
+  bindings: mercadoLibreMarketplaceBindings(props.storeConfig),
+  fullyManaged: mercadoLibreIsFullyManaged(props.storeConfig),
+}))
+
+function mercadoLibreBindingSiteLabel(binding: MercadoLibreMarketplaceBinding): string {
+  const platform = props.platformOptions.find((option) => option.key === 'mercadolibre')
+  const site = platform?.sites.find((option) => option.code.toUpperCase() === binding.siteId)
+  return site ? `${site.label}（${binding.siteId}）` : binding.siteId
+}
+
+function mercadoLibreBindingMeta(binding: MercadoLibreMarketplaceBinding): string {
+  return [
+    `物流 ${binding.logisticType}`,
+    binding.businessModel ? `业务 ${binding.businessModel}` : '',
+    binding.pricingModel ? `计价 ${binding.pricingModel}` : '',
+    binding.sellerId ? `Seller ${binding.sellerId}` : '',
+  ].filter(Boolean).join(' · ')
+}
 
 const currencyPreview = computed(() => {
   const result = selectedLastStoreResult.value
@@ -2197,6 +2225,31 @@ function handleYunexpressEnvironmentChange(value: string) {
                   </li>
                 </ul>
                 <div class="mt-2 text-blue-700 dark:text-blue-200">下一步：{{ props.mercadolibreChecklist.nextAction }}</div>
+              </div>
+              <div
+                v-if="mercadoLibreGlobalSellingMeta.accountSiteId === 'CBT'"
+                data-testid="ml-global-selling-capabilities"
+                class="mt-3 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-950 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-100"
+              >
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <div class="font-semibold">CBT Global Selling 能力</div>
+                  <span class="rounded bg-white/80 px-2 py-0.5 text-xs dark:bg-dark-900/70">已同步 {{ mercadoLibreGlobalSellingMeta.bindings.length }} 个子市场/物流组合</span>
+                </div>
+                <p v-if="mercadoLibreGlobalSellingMeta.fullyManaged" data-testid="ml-fully-managed-warning" class="mt-2 rounded bg-amber-50 p-2 text-xs font-semibold text-amber-800 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/30">
+                  该账号包含 CBT CN Fulfillment Managed 业务模式，标准售价与销售目的地流程已阻断。
+                </p>
+                <div v-if="mercadoLibreGlobalSellingMeta.bindings.length" class="mt-2 grid gap-2 sm:grid-cols-2">
+                  <div
+                    v-for="binding in mercadoLibreGlobalSellingMeta.bindings"
+                    :key="`${binding.siteId}:${binding.logisticType}`"
+                    data-testid="ml-marketplace-binding"
+                    class="rounded bg-white/80 px-2.5 py-2 ring-1 ring-blue-100 dark:bg-dark-900/70 dark:ring-blue-500/20"
+                  >
+                    <div class="font-semibold">{{ mercadoLibreBindingSiteLabel(binding) }}</div>
+                    <div class="mt-0.5 text-xs text-blue-700 dark:text-blue-200">{{ mercadoLibreBindingMeta(binding) }}</div>
+                  </div>
+                </div>
+                <p v-else class="mt-2 text-xs text-amber-700 dark:text-amber-200">尚未同步到可用子市场。请重新验证授权；同步完成前不能为 CBT 草稿选择销售国家。</p>
               </div>
             </template>
 

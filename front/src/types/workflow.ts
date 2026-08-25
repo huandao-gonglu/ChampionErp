@@ -14,6 +14,7 @@ export {
   type BackendImageItem,
   type BackendDraftImageRef,
   type BackendProductSource,
+  type BackendMercadoLibreSiteToSell,
   type BackendDraftTargetSite,
   type BackendPlatformDraft,
   type BackendProduct,
@@ -104,6 +105,11 @@ export interface PublishPayloadSummary {
   imageCount: number
 }
 
+export interface MarketplaceSiteToSell {
+  siteId: string
+  logisticType: string
+}
+
 /** 发布预览确认态：payload、digest 与摘要同生命周期，预览被清空即失效。 */
 export interface PayloadPreviewState {
   platform: Marketplace
@@ -126,6 +132,8 @@ export interface MarketplaceTargetSite {
   listingCurrency: string
   /** 核价时的店铺币种配置指纹，用于发布前失效判断。 */
   currencyFingerprint?: string
+  /** CBT Global Selling 刊登实际投放的子市场与物流模式。 */
+  sitesToSell?: MarketplaceSiteToSell[]
   categoryId?: string
   descriptionCategoryId?: string
   categoryPath?: string
@@ -327,6 +335,8 @@ export interface PricingTargetInput {
   targetKey: string
   platform: Marketplace
   site: string
+  /** CBT Global Selling 核价所绑定的销售子市场。 */
+  sitesToSell: MarketplaceSiteToSell[]
   listingCurrency: string
   currencyFingerprint?: string
   commissionPercent: number

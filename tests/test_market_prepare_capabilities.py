@@ -9,7 +9,17 @@ from erp_web.runtime_units.attribute_fill_capabilities import (
     fill_product_attributes,
 )
 from erp_web.runtime_units.category_capabilities import match_category
-from erp_web.runtime_units.market_prepare_capabilities import prepare_draft_for_market
+from erp_web.runtime_units.market_prepare_capabilities import (
+    MarketPrepareCapabilityScope,
+    draft_prepare_for_market,
+    prepare_draft_for_market,
+)
+from erp_web.runtime_units.market_pricing_capability import (
+    _pricing_payload,
+    _pricing_target_is_usable,
+    prepare_target_pricing,
+)
+from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.market_prepare_capabilities import (
     CategoryMatchCapabilityResult,
     CategoryMatchRequest,
@@ -22,6 +32,7 @@ from erp_web.services.capability_errors import (
     BusinessCapabilityError,
     CapabilityInputRequired,
 )
+from erp_web.services.capability_input_provenance import encode_user_input_keys
 
 
 def _target_site(platform: str, site: str, currency: str) -> dict:
@@ -115,6 +126,7 @@ class _Products:
         self.product = product
         self.save_product_calls = 0
         self.save_draft_calls = 0
+        self.saved_draft_payloads: list[dict] = []
 
     def load_product_from_index(self, product_id: str = "", file_path: str = "") -> dict:
         return deepcopy(self.product) if product_id == "product-1" else {}
@@ -138,6 +150,7 @@ class _Products:
 
     def save_draft_detail(self, draft_payload: dict):
         self.save_draft_calls += 1
+        self.saved_draft_payloads.append(deepcopy(draft_payload))
         draft_id = str(draft_payload.get("draft_id") or "")
         self.drafts[draft_id] = deepcopy(draft_payload)
         platform = str(draft_payload.get("platform") or "")
@@ -174,6 +187,308 @@ def _category_record(*_args, **_kwargs) -> dict:
             "optional": [],
         },
     }
+
+
+def test_cbt_pricing_request_uses_canonical_sales_targets_from_draft() -> None:
+    draft = _draft("draft-cbt", site="CBT", currency="USD")
+    target = draft["target_sites"][0]
+    target["sites_to_sell"] = [
+        {"site_id": "MLM", "logistic_type": "remote"},
+        {"siteId": "mlb", "logisticType": "REMOTE"},
+    ]
+    products = _Products([draft])
+
+    payload = _pricing_payload(
+        {
+            "target": {
+                # 调用方不能用核价参数篡改草稿当前销售目标。
+                "sites_to_sell": [
+                    {"site_id": "MLC", "logistic_type": "remote"}
+                ]
+            }
+        },
+        product=products.product,
+        draft=draft,
+        target=target,
+    )
+
+    assert payload["targets"][0]["sites_to_sell"] == [
+        {"site_id": "MLB", "logistic_type": "remote"},
+        {"site_id": "MLM", "logistic_type": "remote"},
+    ]
+
+
+def test_cbt_pricing_without_sales_target_requests_trusted_selector() -> None:
+    draft = _draft("draft-cbt", site="CBT", currency="USD")
+    products = _Products([draft])
+
+    def pricing(payload: dict) -> dict:
+        assert payload["targets"][0]["sites_to_sell"] == []
+        return {
+            "ok": False,
+            "error_code": "MERCADOLIBRE_SITES_TO_SELL_REQUIRED",
+            "sales_target_options": ["MLB:fulfillment", "MLM:remote"],
+            "results": [],
+            "errors": [
+                {
+                    "field": "sites_to_sell",
+                    "message": "CBT 草稿尚未选择实际销售国家与物流方式",
+                }
+            ],
+        }
+
+    with pytest.raises(CapabilityInputRequired) as exc_info:
+        prepare_target_pricing(
+            target_draft_id="draft-cbt",
+            target_platform="mercadolibre",
+            site="CBT",
+            pricing_input={"common": {"purchase_cost": "100"}},
+            product_store=products,
+            pricing_calculator=pricing,
+        )
+
+    assert exc_info.value.code == "MERCADOLIBRE_SITES_TO_SELL_REQUIRED"
+    assert exc_info.value.key == "sales_target"
+    assert exc_info.value.input_type == "select"
+    assert exc_info.value.input_owner == "step"
+    assert exc_info.value.options == ("MLB:fulfillment", "MLM:remote")
+    assert products.save_draft_calls == 0
+
+
+def test_cbt_sales_target_selection_is_saved_before_pricing_result() -> None:
+    draft = _draft("draft-cbt", site="CBT", currency="USD")
+    products = _Products([draft])
+    canonical_target = [{"site_id": "MLM", "logistic_type": "remote"}]
+
+    def pricing(payload: dict) -> dict:
+        target = payload["targets"][0]
+        assert target["sites_to_sell"] == canonical_target
+        pricing_target = {
+            "ok": True,
+            "target_key": "mercadolibre:cbt",
+            "platform": "mercadolibre",
+            "site": "CBT",
+            "listing_currency": "USD",
+            "applied_price": {"amount": "39.99", "currency": "USD"},
+            "calculation_basis": {
+                "cost_cny": "100.00",
+                "sites_to_sell": canonical_target,
+            },
+            "calculation_fingerprint": "fingerprint-cbt-mlm-remote",
+            "errors": [],
+        }
+        return {
+            "ok": True,
+            "input": {"common": payload["common"], "targets": [target]},
+            "results": [pricing_target],
+            "errors": [],
+            "exchange_rates": {"ok": True, "source": "test"},
+        }
+
+    result = prepare_target_pricing(
+        target_draft_id="draft-cbt",
+        target_platform="mercadolibre",
+        site="CBT",
+        sales_target="MLM:remote",
+        pricing_input={"common": {"purchase_cost": "100"}},
+        product_store=products,
+        pricing_calculator=pricing,
+    )
+
+    assert result["applied_price"] == {"amount": "39.99", "currency": "USD"}
+    # 第一次写入只保存用户明确选择，让 Store 有机会清理旧核价/预检；
+    # 第二次写入再保存与该销售目标绑定的确定性核价结果。
+    assert products.save_draft_calls == 2
+    selected_snapshot, priced_snapshot = products.saved_draft_payloads
+    assert selected_snapshot["target_sites"][0]["sites_to_sell"] == canonical_target
+    assert (
+        selected_snapshot.get("pricing", {})
+        .get("targets", {})
+        .get("mercadolibre:cbt")
+        is None
+    )
+    assert priced_snapshot["target_sites"][0]["sites_to_sell"] == canonical_target
+    persisted_pricing = priced_snapshot["pricing"]["targets"]["mercadolibre:cbt"]
+    assert persisted_pricing["calculation_basis"]["sites_to_sell"] == canonical_target
+    assert (
+        products.drafts["draft-cbt"]["target_sites"][0]["sites_to_sell"]
+        == canonical_target
+    )
+
+
+def test_cbt_sales_target_remains_saved_when_other_pricing_input_is_missing() -> None:
+    draft = _draft("draft-cbt", site="CBT", currency="USD")
+    products = _Products([draft])
+    canonical_target = [{"site_id": "MLM", "logistic_type": "remote"}]
+
+    def pricing(payload: dict) -> dict:
+        assert payload["targets"][0]["sites_to_sell"] == canonical_target
+        return {
+            "ok": False,
+            "error_code": "PRICING_INPUT_REQUIRED",
+            "results": [],
+            "errors": [
+                {
+                    "field": "shipping_amount",
+                    "message": "缺少物流报价金额",
+                }
+            ],
+        }
+
+    with pytest.raises(CapabilityInputRequired) as exc_info:
+        prepare_target_pricing(
+            target_draft_id="draft-cbt",
+            target_platform="mercadolibre",
+            site="CBT",
+            sales_target="MLM:remote",
+            pricing_input={"common": {"purchase_cost": "100"}},
+            product_store=products,
+            pricing_calculator=pricing,
+        )
+
+    assert exc_info.value.key == "shipping_amount"
+    assert exc_info.value.input_owner == "pricing_input"
+    assert products.save_draft_calls == 1
+    assert (
+        products.drafts["draft-cbt"]["target_sites"][0]["sites_to_sell"]
+        == canonical_target
+    )
+
+
+@pytest.mark.parametrize(
+    ("selector", "error_code", "error_field", "expected_targets"),
+    [
+        (
+            "MLM",
+            "MERCADOLIBRE_SITES_TO_SELL_REQUIRED",
+            "sites_to_sell",
+            [],
+        ),
+        (
+            "MLC:remote",
+            "MERCADOLIBRE_SALES_TARGET_NOT_AUTHORIZED",
+            "sites_to_sell[0]",
+            [{"site_id": "MLC", "logistic_type": "remote"}],
+        ),
+    ],
+)
+def test_invalid_or_unauthorized_cbt_sales_target_is_not_persisted(
+    selector: str,
+    error_code: str,
+    error_field: str,
+    expected_targets: list[dict[str, str]],
+) -> None:
+    draft = _draft("draft-cbt", site="CBT", currency="USD")
+    products = _Products([draft])
+
+    def pricing(payload: dict) -> dict:
+        assert payload["targets"][0]["sites_to_sell"] == expected_targets
+        return {
+            "ok": False,
+            "error_code": error_code,
+            "sales_target_options": ["MLM:remote"],
+            "results": [],
+            "errors": [
+                {
+                    "field": error_field,
+                    "message": "销售目标不合法或当前账号未开通",
+                }
+            ],
+        }
+
+    with pytest.raises(CapabilityInputRequired) as exc_info:
+        prepare_target_pricing(
+            target_draft_id="draft-cbt",
+            target_platform="mercadolibre",
+            site="CBT",
+            sales_target=selector,
+            pricing_input={"common": {"purchase_cost": "100"}},
+            product_store=products,
+            pricing_calculator=pricing,
+        )
+
+    assert exc_info.value.code == error_code
+    assert exc_info.value.key == "sales_target"
+    assert exc_info.value.options == ("MLM:remote",)
+    assert products.save_draft_calls == 0
+    assert products.drafts["draft-cbt"]["target_sites"][0].get("sites_to_sell") in (
+        None,
+        [],
+    )
+
+
+def test_cbt_existing_pricing_is_not_usable_without_saved_sales_target() -> None:
+    selected = {
+        "applied_price": {"amount": "39.99", "currency": "USD"},
+        "calculation_basis": {"sites_to_sell": []},
+        "calculation_fingerprint": "fingerprint-without-sales-target",
+    }
+    target_draft = {
+        "platform": "mercadolibre",
+        "site": "CBT",
+        "listing_currency": "USD",
+        "sites_to_sell": [],
+    }
+
+    assert _pricing_target_is_usable(target_draft, selected) is False
+
+
+def test_prepare_for_market_only_accepts_user_submitted_sales_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received: list[str] = []
+
+    def fake_prepare(request: DraftPrepareForMarketRequest, **_kwargs):
+        received.append(request.sales_target)
+        return object()
+
+    monkeypatch.setattr(
+        "erp_web.runtime_units.market_prepare_capabilities.prepare_draft_for_market",
+        fake_prepare,
+    )
+    scope = MarketPrepareCapabilityScope(
+        products=_Products([_draft("draft-cbt", site="CBT", currency="USD")]),
+        category_matcher=lambda *_args, **_kwargs: {},
+        claim_target_drafts=lambda *_args, **_kwargs: {},
+        copy_generator=lambda *_args, **_kwargs: {},
+        app_config_loader=lambda: {},
+    )
+    request = DraftPrepareForMarketRequest(
+        draft_id="draft-cbt",
+        target_platform="mercadolibre",
+        site="CBT",
+        sales_target="MLM:remote",
+    )
+
+    def execution(*, trusted: bool) -> AiExecutionContext:
+        business_scope = {"task_id": "task-1", "step_id": "step-1"}
+        if trusted:
+            business_scope["user_input_keys"] = encode_user_input_keys(
+                ["sales_target"]
+            )
+        return AiExecutionContext.create(
+            timeout_seconds=30,
+            budget_profile="test",
+            task_run_id="task-1",
+            attempt_id="attempt-1",
+            permissions=frozenset({"product.write"}),
+            business_scope=business_scope,
+            idempotency_context={"operation_key": "op-prepare"},
+            allow_write=True,
+        )
+
+    draft_prepare_for_market(
+        request,
+        scope=scope,
+        execution=execution(trusted=False),
+    )
+    draft_prepare_for_market(
+        request,
+        scope=scope,
+        execution=execution(trusted=True),
+    )
+
+    assert received == ["", "MLM:remote"]
 
 
 def test_category_match_persists_focused_agent_selection() -> None:

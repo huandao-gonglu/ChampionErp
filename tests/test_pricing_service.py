@@ -152,6 +152,55 @@ def test_cost_markup_can_be_one_hundred_percent_with_single_shipping_quote() -> 
     assert target["margin_percent"] == 37.5
 
 
+def test_cbt_pricing_basis_canonicalizes_sales_targets_into_fingerprint() -> None:
+    common = {
+        "purchase_cost": 100,
+        "usd_cny_rate": 7,
+    }
+    target = {
+        "target_key": "mercadolibre:cbt",
+        "platform": "mercadolibre",
+        "site": "CBT",
+        "listing_currency": "USD",
+        "commission_percent": 16,
+        "target_margin_percent": 30,
+        "shipping_quote_mode": "manual",
+        "shipping_currency": "USD",
+        "shipping_amount": 10,
+        "sitesToSell": [
+            {"siteId": "mlm", "logisticType": "REMOTE"},
+            {"site_id": "MLB", "logistic_type": "remote"},
+            {"site_id": "MLM", "logistic_type": "remote"},
+        ],
+    }
+
+    first = pricing_service.pricing_result(
+        {"common": common, "targets": [target]}
+    )["results"][0]
+    second = pricing_service.pricing_result(
+        {
+            "common": common,
+            "targets": [
+                {
+                    **target,
+                    "sitesToSell": [
+                        {"site_id": "MLM", "logistic_type": "remote"}
+                    ],
+                }
+            ],
+        }
+    )["results"][0]
+
+    assert first["calculation_basis"]["sites_to_sell"] == [
+        {"site_id": "MLB", "logistic_type": "remote"},
+        {"site_id": "MLM", "logistic_type": "remote"},
+    ]
+    assert (
+        first["calculation_fingerprint"]
+        != second["calculation_fingerprint"]
+    )
+
+
 def test_russia_market_requires_a_manual_shipping_quote() -> None:
     result = pricing_service.pricing_result(
         {

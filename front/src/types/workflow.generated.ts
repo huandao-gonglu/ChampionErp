@@ -170,6 +170,11 @@ export interface BackendProductSource {
   created_at?: string
 }
 
+export interface BackendMercadoLibreSiteToSell {
+  site_id: string
+  logistic_type: string
+}
+
 export interface BackendDraftTargetSite {
   platform?: string
   site?: string
@@ -187,6 +192,7 @@ export interface BackendDraftTargetSite {
   last_precheck?: Record<string, unknown>
   last_precheck_target?: Record<string, unknown>
   last_publish_task?: Record<string, unknown>
+  sites_to_sell?: Array<BackendMercadoLibreSiteToSell>
 }
 
 export interface BackendPlatformDraft {

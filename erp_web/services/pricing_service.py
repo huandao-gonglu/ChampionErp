@@ -10,6 +10,7 @@ import re
 from typing import Any
 
 from erp_web.marketplace_registry import marketplace_site
+from erp_web.product_model import normalize_mercadolibre_sites_to_sell
 
 
 ML_SHIPPING_FALLBACK_TABLE = [
@@ -456,6 +457,14 @@ def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], ind
         "shipping_amount": _amount_text(shipping_amount),
         "manual_price": _money(applied_price_input, currency) if pricing_mode == "manual" else None,
     }
+    if platform == "mercadolibre" and site.upper() == "CBT":
+        calculation_basis["sites_to_sell"] = (
+            normalize_mercadolibre_sites_to_sell(
+                target.get("sites_to_sell")
+                if isinstance(target.get("sites_to_sell"), list)
+                else target.get("sitesToSell")
+            )
+        )
     return {
         "ok": not errors,
         "target_key": key,

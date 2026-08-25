@@ -12,11 +12,18 @@ from typing import Any
 from erp_web import app_config as app_config_runtime
 from erp_web.context import get_context
 from erp_web.db import ErpDatabase
+from erp_web.services.mercadolibre_target_contract import (
+    MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED,
+    MERCADOLIBRE_SALES_TARGET_NOT_AUTHORIZED,
+    mercadolibre_global_target_contract,
+    mercadolibre_sales_target_selectors,
+)
 from erp_web.services import pricing_service
 from erp_web.services.listing_currency_service import (
     StoreCurrencyNotReadyError,
     require_store_listing_currency,
 )
+from erp_web.product_model import normalize_mercadolibre_sites_to_sell
 
 
 def _pricing_exchange_rate_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -224,6 +231,55 @@ def calculate_price(input_data: dict[str, Any]) -> dict[str, Any]:
             }
         target["listing_currency"] = state["listing_currency"]
         target["currency_fingerprint"] = state["currency_fingerprint"]
+        if (
+            platform == "mercadolibre"
+            and str(target.get("site") or target.get("site_id") or "")
+            .strip()
+            .upper()
+            == "CBT"
+        ):
+            sites_to_sell = normalize_mercadolibre_sites_to_sell(
+                target.get("sites_to_sell")
+                if isinstance(target.get("sites_to_sell"), list)
+                else target.get("sitesToSell")
+            )
+            target["sites_to_sell"] = sites_to_sell
+            _, target_issues = mercadolibre_global_target_contract(
+                sites_to_sell,
+                platform_store.get("marketplace_bindings"),
+            )
+            if target_issues:
+                issue = target_issues[0]
+                if issue["code"] == MERCADOLIBRE_SALES_TARGET_NOT_AUTHORIZED:
+                    next_action = "前往授权页重新验证账号并读取已开通市场"
+                elif issue["code"] == MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED:
+                    next_action = (
+                        "当前 Fully Managed 账号需接入 global_net_proceeds "
+                        "价格流程后才能核价"
+                    )
+                else:
+                    next_action = "先在 CBT 草稿中选择已开通的销售国家与物流方式"
+                return {
+                    "ok": False,
+                    "error": issue["message"],
+                    "error_code": issue["code"],
+                    "field": issue["field"],
+                    "sales_target_options": (
+                        mercadolibre_sales_target_selectors(
+                            platform_store.get("marketplace_bindings")
+                        )
+                    ),
+                    "next_action": next_action,
+                    "errors": [
+                        {
+                            **issue,
+                            "next_action": next_action,
+                        }
+                    ],
+                    "results": [],
+                    "platform": platform,
+                    "site": "CBT",
+                }
         normalized_targets.append(target)
     source["targets"] = normalized_targets
 

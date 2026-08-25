@@ -150,7 +150,10 @@ def normalize_draft_target_site(
         "platform": target_platform,
         "site": str(selected.get("code") or raw_site),
         "language": str(
-            raw.get("language")
+            selected.get("language")
+            if target_platform == "mercadolibre"
+            and str(selected.get("code") or raw_site).strip().upper() == "CBT"
+            else raw.get("language")
             or fallback.get("language")
             or selected.get("language")
             or ""
@@ -196,6 +199,15 @@ def normalize_draft_target_site(
             or fallback.get("categoryPath")
             or ""
         ).strip(),
+        # Mercado Libre Global Selling 的实际销售国家属于当前刊登目标；
+        # 不得从 target.site=CBT 或草稿 shipping 自动推导。
+        "sites_to_sell": normalize_mercadolibre_sites_to_sell(
+            raw.get("sites_to_sell")
+            if isinstance(raw.get("sites_to_sell"), list)
+            else raw.get("sitesToSell")
+            if isinstance(raw.get("sitesToSell"), list)
+            else []
+        ),
         "attributes": deepcopy(
             raw.get("attributes")
             if isinstance(raw.get("attributes"), dict)
@@ -268,6 +280,41 @@ def normalize_draft_target_site(
         for key, item in canonical.items()
         if key in _CANONICAL_TARGET_FIELDS
     }
+
+
+def normalize_mercadolibre_sites_to_sell(value: Any) -> list[dict[str, str]]:
+    """规范化 Global Selling 销售目标，不从 CBT 刊登站点推导默认值。"""
+
+    rows = value if isinstance(value, list) else []
+    normalized: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        site_id = str(
+            raw.get("site_id")
+            or raw.get("siteId")
+            or raw.get("site")
+            or ""
+        ).strip().upper()
+        logistic_type = str(
+            raw.get("logistic_type")
+            or raw.get("logisticType")
+            or ""
+        ).strip().lower()
+        if not site_id and not logistic_type:
+            continue
+        key = (site_id, logistic_type)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(
+            {"site_id": site_id, "logistic_type": logistic_type}
+        )
+    return sorted(
+        normalized,
+        key=lambda item: (item["site_id"], item["logistic_type"]),
+    )
 
 
 def _snake_pricing_key(value: str) -> str:

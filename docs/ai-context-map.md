@@ -257,7 +257,9 @@ Controller 在副作用前为当前步骤生成冻结快照、digest 和审批�
   资料与审批门的 owner；`accept_deferred_task` 只受理任务与创建 deferred link，
   不执行任何步骤。任务推进只由后台 recovery worker 完成，HTTP 门面与前端读取
   都不能推进任务；执行步骤只依赖 Catalog 的类型化
-  request/executor。Controller 与 `erp_web/schemas/global_tasks.py` 不含 Capability
+  request/executor。`submit_input` 会随步骤保存用户实际提交过的顶层字段名，执行时
+  只通过可信 `business_scope` 传递该来源标记；模型在初始计划中主动生成同名值不能
+  冒充用户选择。Controller 与 `erp_web/schemas/global_tasks.py` 不含 Capability
   名称分支、Planner 或旧 `global.task.plan` 引用（架构测试守卫）。
 - `erp_web/stores/global_task_store.py`：`LocalGlobalTaskState` 的唯一 Store；草稿
   快照方法委托给 `erp_web/stores/draft_query_snapshot_store.py`。后者是
@@ -449,7 +451,9 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
   Agent 工具不得绕过 Catalog/注入 Loader 直接读取平台规则。
 - `erp_web/runtime_units/category_providers.py`：Mercado Libre、Ozon、Yandex 的显式
   `CategoryProvider` 实现与注册表；平台 API shape 在这里归一化为当前定义和明确
-  `platform_binding`。
+  `platform_binding`。Mercado Libre CBT 类目预测固定调用
+  `/marketplace/domain_discovery/search`，并从受信店铺配置读取 Global Selling
+  Access Token 作为 Bearer；区域站点仍调用 `/sites/{site}/domain_discovery/search`。
 - `erp_web/runtime_units/category_definition_cache.py`：统一属性定义持久缓存 owner；24 小时
   fresh、最多 7 天 transient stale，401/403、凭据缺失、禁用类目和结构错误不得用 stale
   掩盖。缓存不进入商品、草稿、任务或 Agent history。
@@ -458,6 +462,9 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
   保留人工关键词搜索能力并为自动匹配实现树导航；Yandex 只在本地缓存类目树上做
   规范化关键词匹配（source `yandex_cache`），并把限流/认证/缺凭据错误统一分类。
   平台选择只发生在对象创建处。
+- Mercado Libre OAuth 的 `code_verifier` 只在生成授权链接到兑换 code 期间存在；兑换
+  成功后必须删除，授权检查清单在 Access Token 与 Refresh Token 已就绪时不再把它显示为
+  缺失项。
 - `erp_web/runtime_units/ozon_category_api.py`：Ozon 类目语料的刷新、人工搜索和树导航入口；
   24 小时内复用缓存，远端瞬时网络错误时最多使用 7 天旧语料，认证错误不允许
   stale fallback。完整树不会进入 AI 上下文。
@@ -594,7 +601,12 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 - `erp_web/runtime_units/store_credentials.py` 与
   `erp_web/runtime_units/mercadolibre_auth.py`：授权 tester 在凭据校验成功后调用平台
   远端能力（Ozon `/v1/seller/info`、Yandex Business settings、Mercado Libre
-  `/users/me` + 站点元数据），返回统一发现结果，由共享状态机持久化到店铺授权配置。
+  `/users/me` + `/marketplace/users/{user_id}` 账号映射；区域账号再读取站点元数据），
+  返回统一发现结果，由共享状态机持久化到店铺授权配置。CBT 是 Global Selling
+  父账号/全局刊登命名空间，不是普通国家站点：禁止请求 `/sites/CBT`；标准 CBT 按
+  官方发布契约把 USD 作为 `locked` 发现结果持久化，来源为
+  `global_selling_contract`。账号实际启用的子市场与物流方式持久化在
+  `marketplace_bindings`，不得从静态注册表推断。
   授权失败或凭据/身份变化会清除币种 ready 状态；核价层不再有远端币种补取副作用。
 - `erp_web/http_route_units/auth_config_routes.py::/api/store-auth/currency`：受控人工
   币种选择/填写接口；`/api/save-settings` 只接受注册表凭据字段与非敏感静态字段，
@@ -609,6 +621,21 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   币种 ready 状态、草稿币种快照、币种指纹、Money 币种、核价指纹、商品成本及包装
   尺寸；任何变化都会把旧核价判为 stale（STORE_CURRENCY_CHANGED/PRICING_STALE）并要求
   重新核价。
+- Mercado Libre CBT 草稿中的 `site=CBT` 只表示 Global Selling 刊登范围与 CBT 类目
+  命名空间；真实销售目的地保存在当前目标的 `sites_to_sell[]`，每项必须精确匹配
+  授权同步的 `marketplace_bindings` 中的 `site_id + logistic_type`。不得把 CBT 写入
+  `sites_to_sell[].site_id`，也不得自动选择账号的全部子市场。Fully Managed 账号在
+  标准售价流程中显式阻断，不能误用 `price/currency_id` 流程。
+- CBT 草稿缺少或包含未授权目的地时，核价 Capability 返回受限
+  `sales_target` 下拉项；选项由当前账号 `marketplace_bindings` 机械生成，稳定值为
+  `SITE_ID:logistic_type`（例如 `MLM:remote`）。仅任务卡经 `submit_input` 明确提交的
+  选择会生效，初始计划中的模型值会被忽略；单独的 `MLM` 因无法区分物流方式而无效。
+  选择通过账号目标契约后先规范化保存到 `target_sites[].sites_to_sell`，由 ProductStore
+  清除旧核价/预检，再继续当前核价步骤；该字段不属于 `pricing_input`。
+- `sites_to_sell[]` 同时属于核价指纹和发布审批快照：任一销售国家或物流方式
+  变化都会清除旧核价、预检与发布就绪状态，撤销旧发布预览，但保留已发生的远端
+  商品身份。人工审批摘要必须可读地列出每个 `site_id/logistic_type`，目的地或
+  店铺映射在批准后变化时，旧批准必须判定为 stale。
 - `erp_web/marketplaces/yandex_currency.py`：Yandex wire 编码边界（内部 RUB ↔ wire
   RUR），只作用于最终 payload 与发现归一化，不是币种来源。
 - 商品 schema v2 仍会在输入归一化边界读取 v1 payload，但旧数字售价和无指纹核价只标记

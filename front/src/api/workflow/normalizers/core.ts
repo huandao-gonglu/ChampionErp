@@ -307,6 +307,21 @@ export function normalizeValidationErrors(value: unknown): Array<UnknownRecord |
     : []
 }
 
+export function normalizeSitesToSell(value: unknown): NonNullable<MarketplaceTargetSite['sitesToSell']> {
+  if (!Array.isArray(value)) return []
+  const seen = new Set<string>()
+  return value.flatMap((item) => {
+    const record = asRecord(item)
+    const siteId = getString(record, ['site_id']).toUpperCase()
+    const logisticType = getString(record, ['logistic_type']).toLowerCase()
+    if (!siteId || siteId === 'CBT' || !logisticType) return []
+    const key = `${siteId}:${logisticType}`
+    if (seen.has(key)) return []
+    seen.add(key)
+    return [{ siteId, logisticType }]
+  })
+}
+
 export function targetListingFields(record: UnknownRecord, fallback?: Partial<MarketplaceTargetSite>): Partial<MarketplaceTargetSite> {
   const fallbackAttributes = fallback?.attributes || {}
   const fallbackValidationErrors = fallback?.validationErrors || []
@@ -322,7 +337,11 @@ export function targetListingFields(record: UnknownRecord, fallback?: Partial<Ma
   const hasLastPrecheck = hasAnyField(['last_precheck'])
   const hasLastPrecheckTarget = hasAnyField(['last_precheck_target'])
   const hasLastPublishTask = hasAnyField(['last_publish_task'])
+  const hasSitesToSell = hasAnyField(['sites_to_sell'])
   return {
+    sitesToSell: hasSitesToSell
+      ? normalizeSitesToSell(record.sites_to_sell)
+      : (fallback?.sitesToSell || []).map((item) => ({ ...item })),
     categoryId: hasCategoryId ? getString(record, ['category_id']) : fallback?.categoryId || '',
     descriptionCategoryId: hasDescriptionCategoryId
       ? getString(record, ['description_category_id'])
@@ -475,6 +494,13 @@ export function toBackendTargetSite(target: MarketplaceTargetSite): UnknownRecor
     language: target.language,
     listing_currency: target.listingCurrency,
     currency_fingerprint: target.currencyFingerprint || '',
+    sites_to_sell: (target.sitesToSell || [])
+      .filter((item) => String(item.siteId || '').trim().toUpperCase() !== 'CBT')
+      .map((item) => ({
+        site_id: String(item.siteId || '').trim().toUpperCase(),
+        logistic_type: String(item.logisticType || '').trim().toLowerCase(),
+      }))
+      .filter((item) => item.site_id && item.logistic_type),
     category_id: target.categoryId || '',
     description_category_id: target.descriptionCategoryId || '',
     category_path: target.categoryPath || '',

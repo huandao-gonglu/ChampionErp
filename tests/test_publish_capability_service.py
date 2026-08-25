@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from erp_web.schemas.publish_capabilities import (
+    ProductPublishCapabilityRequest,
     ProductPublishRequest,
     ProductPublishValidateRequest,
     PublishRequestConfirmation,
@@ -44,12 +45,15 @@ class _Adapter:
 
     def build_payload(self, context, config: dict) -> dict:
         draft = context.product["drafts"]["mercadolibre"]
-        return {
+        payload = {
             "title": draft["title"],
             "category_id": draft["category_id"],
             "price": draft["price"],
             "pictures": [{"id": "image-1"}],
         }
+        if isinstance(draft.get("sites_to_sell"), list):
+            payload["sites_to_sell"] = deepcopy(draft["sites_to_sell"])
+        return payload
 
     def validate_payload(self, payload: dict, config: dict) -> list[str]:
         return []
@@ -246,6 +250,83 @@ def test_publish_request_revalidates_digest_and_forwards_idempotency_key(
     assert approval["validation_digest"] == validation.validation_digest
     assert approval["payload"]["price"] == "199"
     assert "seller-1" not in approval["store_identity"]
+
+
+def test_cbt_publish_approval_shows_and_binds_actual_destinations(
+    publish_boundary,
+    monkeypatch,
+) -> None:
+    _adapter, _store_config = publish_boundary
+    loaded = _context()
+    draft = loaded["product"]["drafts"]["mercadolibre"]
+    draft.update(
+        {
+            "site": "CBT",
+            "category_id": "CBT123",
+            "listing_currency": "USD",
+            "price": "18",
+            "sites_to_sell": [
+                {"site_id": "MLB", "logistic_type": "remote"},
+                {"site_id": "MLM", "logistic_type": "remote"},
+            ],
+            "selected_pricing": {
+                "applied_price": {"amount": "18", "currency": "USD"}
+            },
+        }
+    )
+    loaded["draft"] = deepcopy(draft)
+    loaded["site"] = "CBT"
+    loaded["target"] = {
+        "platform": "mercadolibre",
+        "site": "CBT",
+        "sites_to_sell": deepcopy(draft["sites_to_sell"]),
+    }
+    loaded["targets"] = [deepcopy(loaded["target"])]
+    monkeypatch.setattr(
+        publish_capabilities,
+        "load_required_draft_publish_context",
+        lambda body, **_kwargs: (deepcopy(loaded), None, 200),
+    )
+    request = ProductPublishCapabilityRequest(
+        draft_id="draft-1",
+        platform="mercadolibre",
+        site="CBT",
+    )
+    scope = publish_capabilities.PublishCapabilityScope(
+        context=publish_capabilities.get_context(),
+        publishing_bus=_Bus(),
+    )
+
+    first = publish_capabilities._publish_request_approval_snapshot(
+        request,
+        scope,
+    )
+
+    assert "MLB/remote" in first.summary
+    assert "MLM/remote" in first.summary
+    assert first.canonical_payload["destinations"] == [
+        {"site_id": "MLB", "logistic_type": "remote"},
+        {"site_id": "MLM", "logistic_type": "remote"},
+    ]
+
+    loaded["product"]["drafts"]["mercadolibre"]["sites_to_sell"] = [
+        {"site_id": "MLM", "logistic_type": "remote"}
+    ]
+    loaded["draft"]["sites_to_sell"] = [
+        {"site_id": "MLM", "logistic_type": "remote"}
+    ]
+    second = publish_capabilities._publish_request_approval_snapshot(
+        request,
+        scope,
+    )
+
+    assert second.canonical_payload["destinations"] == [
+        {"site_id": "MLM", "logistic_type": "remote"}
+    ]
+    assert (
+        second.canonical_payload["validation_digest"]
+        != first.canonical_payload["validation_digest"]
+    )
 
 
 def test_publish_request_recovers_lost_job_id_before_revalidation(

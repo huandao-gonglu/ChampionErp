@@ -214,6 +214,93 @@ def test_product_publish_direct_failure_mapping() -> None:
     assert missing.value.code == "PRODUCT_NOT_FOUND"
 
 
+def test_product_publish_direct_approval_expires_when_cbt_destinations_change() -> None:
+    product = {
+        "product_id": "product-cbt-approval",
+        "title": "CBT 测试商品",
+        "drafts": {
+            "mercadolibre": {
+                "target_sites": [
+                    {
+                        "platform": "mercadolibre",
+                        "site": "CBT",
+                        "sites_to_sell": [
+                            {"site_id": "MLM", "logistic_type": "remote"}
+                        ],
+                    }
+                ]
+            }
+        },
+    }
+    scope = _publish_scope(
+        product_loader=lambda body: (product, None, 200),
+    )
+    request = ProductPublishDirectRequest(
+        product_id="product-cbt-approval",
+        platform="mercadolibre",
+    )
+    snapshot = _publish_direct_approval_snapshot(request, scope)
+
+    product["drafts"]["mercadolibre"]["target_sites"][0][
+        "sites_to_sell"
+    ] = [{"site_id": "MLB", "logistic_type": "remote"}]
+
+    with pytest.raises(AiToolExecutionError) as stale:
+        product_publish_direct(
+            request,
+            scope=scope,
+            execution=_approved_execution(
+                snapshot,
+                PRODUCT_PUBLISH_DIRECT_TOOL,
+            ),
+        )
+
+    assert stale.value.code == "PUBLISH_DIRECT_APPROVAL_STALE"
+
+
+def test_product_publish_direct_snapshot_binds_config_without_exposing_secrets() -> None:
+    config = {
+        "mercadolibre": {
+            "access_token": "access-secret",
+            "refresh_token": "refresh-secret",
+            "app_secret": "app-secret",
+            "account_site_id": "CBT",
+            "currency_fingerprint": "currency-v1",
+            "marketplace_bindings": [
+                {"site_id": "MLM", "logistic_type": "remote"}
+            ],
+        },
+        "listing": {"listing_type_id": "gold_special"},
+    }
+    scope = _publish_scope(store_config_loader=lambda: config)
+    request = ProductPublishDirectRequest(
+        product_id="product-config-approval",
+        platform="mercadolibre",
+    )
+    snapshot = _publish_direct_approval_snapshot(request, scope)
+    serialized = str(snapshot.canonical_payload)
+
+    assert "publish_config_fingerprint" in snapshot.canonical_payload
+    assert "access-secret" not in serialized
+    assert "refresh-secret" not in serialized
+    assert "app-secret" not in serialized
+
+    config["mercadolibre"]["marketplace_bindings"] = [
+        {"site_id": "MLB", "logistic_type": "remote"}
+    ]
+    with pytest.raises(AiToolExecutionError) as stale:
+        product_publish_direct(
+            request,
+            scope=scope,
+            execution=_approved_execution(
+                snapshot,
+                PRODUCT_PUBLISH_DIRECT_TOOL,
+            ),
+        )
+
+    assert stale.value.code == "PUBLISH_DIRECT_APPROVAL_STALE"
+
+
 def test_publish_real_confirm_approval_gate_and_success() -> None:
     captured: dict[str, Any] = {}
 

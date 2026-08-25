@@ -9,8 +9,9 @@ const platformOptions: MarketplaceOption[] = [{
   key: 'mercadolibre',
   label: '美客多',
   sites: [
-    { key: 'CBT', code: 'CBT', label: '全局', language: 'es' },
+    { key: 'CBT', code: 'CBT', label: '全局', language: 'en-US' },
     { key: 'MLM', code: 'MLM', label: '墨西哥', language: 'es' },
+    { key: 'MCO', code: 'MCO', label: '哥伦比亚', language: 'es' },
     { key: 'MLB', code: 'MLB', label: '巴西', language: 'pt-BR' },
   ],
 }]
@@ -84,13 +85,13 @@ describe('DraftBoxPanel', () => {
 
     await wrapper.get('[data-testid="draft-market-select-button"]').trigger('click')
     const checkboxes = wrapper.findAll('[data-testid="draft-target-checkbox"]')
-    await checkboxes[0].setValue(true)
+    await checkboxes[1].setValue(true)
     await wrapper.get('[data-testid="draft-market-select-save"]').trigger('click')
 
     expect(wrapper.emitted('updateTargets')?.[0]?.[0]).toEqual(row)
     expect(wrapper.emitted('updateTargets')?.[0]?.[1]).toEqual([
-      expect.objectContaining({ platform: 'mercadolibre', site: 'CBT' }),
       expect.objectContaining({ platform: 'mercadolibre', site: 'MLM' }),
+      expect.objectContaining({ platform: 'mercadolibre', site: 'MCO' }),
     ])
   })
 })

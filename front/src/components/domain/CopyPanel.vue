@@ -15,7 +15,7 @@ const emit = defineEmits<{
 }>()
 
 const marketplaces: Array<{ key: Marketplace; label: string; language: string }> = [
-  { key: 'mercadolibre', label: '美客多', language: '西班牙语 / 葡萄牙语' },
+  { key: 'mercadolibre', label: '美客多', language: '英语（Global）/ 西班牙语 / 葡萄牙语' },
   { key: 'yandex', label: 'Yandex', language: '俄语' },
   { key: 'ozon', label: 'Ozon', language: '俄语' },
 ]

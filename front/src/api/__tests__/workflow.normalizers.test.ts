@@ -3,6 +3,8 @@ import {
   normalizeDraftsIndex,
   normalizeProductsIndex,
   normalizePublishLogs,
+  normalizeTargetSites,
+  toBackendTargetSite,
 } from '@/api/workflow/normalizers'
 
 describe('workflow 当前 wire schema', () => {
@@ -90,5 +92,39 @@ describe('workflow 当前 wire schema', () => {
       errorMessage: '当前日志错误详情',
       requestPayloadPath: '/current/request.json',
     }))
+  })
+
+  it('CBT 销售子市场使用 sites_to_sell 双向转换且不会保留 CBT 目的地', () => {
+    const [target] = normalizeTargetSites([{
+      platform: 'mercadolibre',
+      site: 'CBT',
+      language: 'en-US',
+      listing_currency: 'USD',
+      sites_to_sell: [
+        { site_id: 'MLM', logistic_type: 'remote' },
+        { site_id: 'MLM', logistic_type: 'remote' },
+        { site_id: 'CBT', logistic_type: 'remote' },
+        { site_id: 'MLB', logistic_type: 'fulfillment' },
+      ],
+    }], 'mercadolibre', 'CBT', 'en-US')
+
+    expect(target?.sitesToSell).toEqual([
+      { siteId: 'MLM', logisticType: 'remote' },
+      { siteId: 'MLB', logisticType: 'fulfillment' },
+    ])
+    expect(toBackendTargetSite(target!)).toMatchObject({
+      sites_to_sell: [
+        { site_id: 'MLM', logistic_type: 'remote' },
+        { site_id: 'MLB', logistic_type: 'fulfillment' },
+      ],
+    })
+
+    const [oldTarget] = normalizeTargetSites([{
+      platform: 'mercadolibre',
+      site: 'CBT',
+      language: 'en-US',
+      listing_currency: 'USD',
+    }], 'mercadolibre', 'CBT', 'en-US')
+    expect(oldTarget?.sitesToSell).toEqual([])
   })
 })

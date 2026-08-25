@@ -14,6 +14,10 @@ from pathlib import Path
 from typing import Any
 
 from erp_web import http_client
+from erp_web.schemas.mercadolibre import (
+    MercadoLibreMarketplaceBinding,
+    MercadoLibreMarketplaceUser,
+)
 
 from .publisher import PublishAdapterError
 
@@ -408,14 +412,97 @@ def fetch_mercadolibre_shop_name(token: str) -> str:
     return profile.get("nickname") or profile.get("user_id") or ""
 
 
-def fetch_mercadolibre_site_listing(site_id: str) -> dict[str, Any]:
-    """读取远端站点元数据（公开接口），用于店铺级发布币种发现。"""
+def _mercadolibre_boolean(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def fetch_mercadolibre_marketplace_user(
+    user_id: str,
+    token: str,
+) -> MercadoLibreMarketplaceUser:
+    """读取并规范化 Global Selling 父账号的本地市场映射。
+
+    Mercado Libre wire 字段 ``marketplaces[].user_id`` 在内部统一命名为
+    ``seller_id``，避免与 CBT 父账号 ``user_id`` 混淆。Fully Managed
+    判定所需字段始终存在于规范化 binding 中，缺失时使用空值/``False``。
+    """
+
+    normalized_user_id = str(user_id or "").strip()
+    if not normalized_user_id:
+        return {"user_id": "", "site_id": "", "marketplace_bindings": []}
+    data = request_json(
+        "GET",
+        "https://api.mercadolibre.com/marketplace/users/"
+        + urllib.parse.quote(normalized_user_id, safe=""),
+        token,
+    )
+    payload = data if isinstance(data, dict) else {}
+    bindings: list[MercadoLibreMarketplaceBinding] = []
+    seen: set[tuple[str, str, str]] = set()
+    raw_marketplaces = payload.get("marketplaces")
+    if isinstance(raw_marketplaces, list):
+        for raw_binding in raw_marketplaces:
+            if not isinstance(raw_binding, dict):
+                continue
+            seller_id = str(
+                raw_binding.get("user_id") or raw_binding.get("seller_id") or ""
+            ).strip()
+            site_id = str(raw_binding.get("site_id") or "").strip().upper()
+            logistic_type = str(
+                raw_binding.get("logistic_type") or ""
+            ).strip().lower()
+            # CBT 是父账号/全局刊登命名空间，不是可投放的子市场。
+            if not seller_id or not site_id or site_id == "CBT" or not logistic_type:
+                continue
+            identity = (seller_id, site_id, logistic_type)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            bindings.append(
+                {
+                    "seller_id": seller_id,
+                    "site_id": site_id,
+                    "logistic_type": logistic_type,
+                    "business_model": str(
+                        raw_binding.get("business_model") or ""
+                    ).strip(),
+                    "pricing_model": str(
+                        raw_binding.get("pricing_model") or ""
+                    ).strip().lower(),
+                    "user_product": _mercadolibre_boolean(
+                        raw_binding.get("user_product")
+                    ),
+                }
+            )
+    return {
+        "user_id": str(payload.get("user_id") or normalized_user_id).strip(),
+        "site_id": str(payload.get("site_id") or "").strip().upper(),
+        "marketplace_bindings": bindings,
+    }
+
+
+def fetch_mercadolibre_site_listing(
+    site_id: str,
+    token: str = "",
+) -> dict[str, Any]:
+    """读取远端站点元数据，用于区域账号的店铺级发布币种发现。"""
 
     site = str(site_id or "").strip()
     if not site:
         return {}
+    if site.upper() == "CBT":
+        raise PublishAdapterError(
+            "MERCADOLIBRE_SITE_SCOPE_INVALID",
+            "CBT 是 Global Selling 父账号范围，不能通过 /sites/CBT 读取站点元数据",
+            retryable=False,
+        )
     data = request_json(
         "GET",
         f"https://api.mercadolibre.com/sites/{urllib.parse.quote(site)}",
+        token,
     )
     return data if isinstance(data, dict) else {}

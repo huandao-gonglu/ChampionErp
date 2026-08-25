@@ -35,6 +35,11 @@ class ProductSource(TypedDict, total=False):
     created_at: str
 
 
+class MercadoLibreSiteToSell(TypedDict):
+    site_id: str
+    logistic_type: str
+
+
 class DraftTargetSite(TypedDict, total=False):
     platform: str
     site: str
@@ -52,6 +57,7 @@ class DraftTargetSite(TypedDict, total=False):
     last_precheck: dict[str, Any]
     last_precheck_target: dict[str, Any]
     last_publish_task: dict[str, Any]
+    sites_to_sell: list[MercadoLibreSiteToSell]
 
 
 class PlatformDraft(TypedDict, total=False):
@@ -139,6 +145,7 @@ class Product(TypedDict, total=False):
 __all__ = [
     "PRODUCT_SCHEMA_VERSION",
     "DraftTargetSite",
+    "MercadoLibreSiteToSell",
     "PlatformDraft",
     "Product",
     "ProductSource",

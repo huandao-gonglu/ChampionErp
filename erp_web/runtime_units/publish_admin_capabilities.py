@@ -11,6 +11,8 @@ digest 绑定冻结参数、步骤、任务版本与 Capability 版本；执行�
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import hashlib
+import json
 from typing import Annotated, Any
 
 from erp_web.schemas.ai_tools import TaskApprovalSnapshot
@@ -34,6 +36,59 @@ def _text(value: Any) -> str:
 
 def _dict_value(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
+
+
+def _state_fingerprint(value: Any) -> str:
+    """返回不泄露商品正文的稳定状态指纹，用于绑定破坏性审批。"""
+
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+_PUBLISH_CONFIG_SECRET_FIELDS = frozenset(
+    {
+        "access_token",
+        "api_key",
+        "api_token",
+        "app_secret",
+        "client_secret",
+        "code_verifier",
+        "cookie",
+        "password",
+        "refresh_token",
+    }
+)
+
+
+def _non_secret_publish_config(
+    config: dict[str, Any],
+    platform: str,
+) -> dict[str, Any]:
+    """冻结会影响 payload 的配置，同时禁止把凭据写进审批快照。"""
+
+    def sanitized(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                str(key): sanitized(item)
+                for key, item in value.items()
+                if str(key).strip().lower() not in _PUBLISH_CONFIG_SECRET_FIELDS
+            }
+        if isinstance(value, list):
+            return [sanitized(item) for item in value]
+        return value
+
+    store = config.get(platform) if isinstance(config.get(platform), dict) else {}
+    listing = config.get("listing") if isinstance(config.get("listing"), dict) else {}
+    return {
+        "listing": sanitized(listing),
+        "store": sanitized(store),
+    }
 
 
 @dataclass(frozen=True)
@@ -77,9 +132,11 @@ def _publish_target_snapshot(
     platform: str,
     action: str,
 ) -> TaskApprovalSnapshot:
-    """发布目标审批快照：冻结 product_id/platform 与商品标题等服务端事实。"""
+    """发布目标审批快照：冻结发布目标与完整商品状态指纹。"""
 
     product = _load_product(scope, product_id)
+    config = scope.store_config_loader()
+    config = config if isinstance(config, dict) else {}
     title = _text(product.get("title")) or "（无标题）"
     return TaskApprovalSnapshot(
         summary=f"{action}：《{title}》({product_id}) → {platform}",
@@ -87,6 +144,12 @@ def _publish_target_snapshot(
             "action": action,
             "platform": platform,
             "product_id": product_id,
+            # 只把摘要哈希写入审批，不暴露商品正文；草稿的销售国家、核价、
+            # 图片或属性在批准后发生任何变化，执行侧重算都会判定 stale。
+            "product_fingerprint": _state_fingerprint(product),
+            "publish_config_fingerprint": _state_fingerprint(
+                _non_secret_publish_config(config, platform)
+            ),
             "title": title,
         },
     )

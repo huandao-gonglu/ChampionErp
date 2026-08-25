@@ -186,11 +186,17 @@ platform
 |---|---|---|---|
 | Yandex | `POST /v2/businesses/{businessId}/settings` 的 `settings.currency` | 将 wire `RUR` 规范化为内部 `RUB`；其他 ISO 代码保持大写 | 接口失败为 `refresh_failed`，不再使用注册表 RUB |
 | Ozon | `POST /v1/seller/info` 的 `company.currency` | 单值保存为 `locked`，来源 `account_api` | 接口失败为 `refresh_failed`，核价不再现场补取 |
-| Mercado Libre | 先用 `/users/me` 确认 `account_site_id`，再读取远端 site/category currency metadata | 店铺级返回单值则锁定；返回多值则待选；仅有类目允许集时作为发布前约束 | 无法从店铺级接口得到币种时进入 `manual_required`，不得从本地站点注册表推断 |
+| Mercado Libre | 先用 `/users/me` 确认 `account_site_id`；CBT 再读取 `/marketplace/users/{user_id}` 的子市场映射，区域账号读取远端 site currency metadata | 标准 CBT 按官方发布契约把 USD 作为单值发现结果持久化并锁定，来源 `global_selling_contract`；区域账号按远端单值/多值处理 | CBT 子市场映射失败或区域站点请求失败进入 `refresh_failed`；不得请求 `/sites/CBT`，也不得从本地站点注册表推断 |
 
 补充约束：
 
-- Mercado Libre CBT/Global Selling 即使官方发布契约固定 USD，也必须先把发现结果持久化到店铺配置；核价和发布不得直接读取代码常量。若运行时接口没有返回可确认的币种，则遵循本方案进入人工配置。
+- Mercado Libre CBT/Global Selling 的 USD 来自官方发布契约，但仍必须在授权同步时作为
+  发现结果持久化到店铺配置；核价和发布只能读取该持久化状态，不得现场读取代码常量。
+  `/marketplace/users/{user_id}` 必须同时成功并持久化 `marketplace_bindings`，否则状态为
+  `refresh_failed`，不能仅凭 USD 宣告可发布。
+- CBT `site_id` 是父账号与全局刊登命名空间，不是销售国家。草稿中的
+  `sites_to_sell[]` 必须由用户从 `marketplace_bindings` 显式选择，禁止写入 CBT，也禁止
+  自动选中全部已开通市场。
 - Mercado Libre 类目 `settings.currencies` 是类目级约束。它可以在类目确认和发布预检时验证店铺配置，但不能静默修改全局店铺币种。
 - “多个币种下拉选择”只用于店铺级发现确实返回多个值的情况；商品类目级多币种不会自动变成草稿 override。
 
@@ -202,7 +208,7 @@ platform
 
 - 当前发布货币
 - 配置状态：已就绪、请选择、需人工填写、读取失败、未验证
-- 来源：平台账户、Business、站点 API、人工配置
+- 来源：平台账户、Business、站点 API、Global Selling 官方契约、人工配置
 - 最近验证时间
 - 允许币种列表（存在时）
 - 读取失败原因和“重新验证授权并读取币种”按钮
@@ -542,7 +548,7 @@ cd front && pnpm lint:check && pnpm test:run && pnpm build
 - [x] 授权页每个平台都展示发布货币状态、当前值、来源和验证时间。
 - [x] Yandex 授权完成后自动保存远端 Business currency。
 - [x] Ozon 授权完成后自动保存 `company.currency`。
-- [x] Mercado Libre 能获取时自动保存；返回多值时必须选择；无法获取时保持空白并要求人工填写。
+- [x] Mercado Libre 区域账号能获取时自动保存；返回多值时必须选择；标准 CBT 在账号映射同步成功后持久化 locked USD，不调用 `/sites/CBT`。
 - [x] 任一平台币种未 ready 时，核价和发布都被确定性阻断。
 - [x] 核价、预检和 payload 使用同一店铺配置币种及指纹。
 - [x] 店铺币种或店铺身份变化后，所有旧核价失效。
@@ -561,7 +567,9 @@ cd front && pnpm lint:check && pnpm test:run && pnpm build
   （发现归一化、人工选择、ISO 4217 校验、指纹计算），不导入注册表/平台 HTTP/runtime。
 - **远端发现与持久化**：三个平台 tester 在凭据校验成功后返回统一发现结果，由共享
   状态机写入 `store_auth.auth_detail_json`；新增 `erp_web/runtime_units/mercadolibre_auth.py`
-  统一 `/users/me` 身份同步与站点币种发现；`/api/test-store-auth` 响应分离 `ok` 与
+  统一 `/users/me` 身份同步、CBT `/marketplace/users/{user_id}` 子市场映射与区域站点币种
+  发现；标准 CBT 将官方 USD 契约持久化为 `locked`，不再请求 `/sites/CBT`；
+  `/api/test-store-auth` 响应分离 `ok` 与
   `publish_ready`，并返回 `currency_configuration` / 最新 `storeConfig`；新增受控接口
   `/api/store-auth/currency`；`/api/save-settings` 只接受注册表凭据与静态字段，派生
   币种字段一律剥离。
@@ -586,4 +594,5 @@ cd front && pnpm lint:check && pnpm test:run && pnpm build
 - [Ozon Product Import：`currency_code`](https://docs.ozon.ru/api/seller/#operation/ProductAPI_ImportProductsV3)
 - [Mercado Libre 站点与默认币种](https://developers.mercadolibre.com.mx/en_us/categories-and-listings)
 - [Mercado Libre 类目 `settings.currencies`](https://developers.mercadolivre.com.br/en_us/category-prediction-resource/categories-and-attributes)
-- [Mercado Libre Global Listing](https://global-selling.mercadolibre.com/devsite/en_us/create-application/global-listing)
+- [Mercado Libre Global Listing](https://global-selling.mercadolibre.com/devsite/global-listing)
+- [Mercado Libre Global Selling 用户与子市场映射](https://global-selling.mercadolibre.com/devsite/en_us/price-per-variation-cbt/manage-users-global-selling)

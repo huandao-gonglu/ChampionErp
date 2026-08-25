@@ -7,7 +7,10 @@ import hmac
 from typing import Annotated, Any, Protocol
 
 from erp_web.context import AppContext, get_context
-from erp_web.product_model import normalize_draft_image_refs
+from erp_web.product_model import (
+    normalize_draft_image_refs,
+    normalize_mercadolibre_sites_to_sell,
+)
 from erp_web.runtime_units.draft_publish_context import (
     load_required_draft_publish_context,
     save_draft_precheck_result,
@@ -28,6 +31,7 @@ from erp_web.schemas.ai_tools import (
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.publish_capabilities import (
     ProductPublishCapabilityRequest,
+    ProductPublishDestination,
     ProductPublishRequest,
     ProductPublishRequestResult,
     ProductPublishSummary,
@@ -129,6 +133,7 @@ def _summary(
     context: dict[str, Any],
     prepared_product: dict[str, Any],
     config: dict[str, Any],
+    payload: dict[str, Any] | None = None,
 ) -> ProductPublishSummary:
     platform = _text(context.get("platform")).lower()
     drafts = (
@@ -154,6 +159,18 @@ def _summary(
             "PUBLISH_STORE_IDENTITY_MISSING",
             "当前店铺缺少可绑定发布确认的稳定账号身份，请先完成店铺授权测试。",
         ) from exc
+    destinations = ()
+    if platform == "mercadolibre" and _text(context.get("site")).upper() == "CBT":
+        source_targets = (
+            payload.get("sites_to_sell")
+            if isinstance(payload, dict) and isinstance(payload.get("sites_to_sell"), list)
+            else draft.get("sites_to_sell")
+        )
+        destinations = tuple(
+            ProductPublishDestination(**target)
+            for target in normalize_mercadolibre_sites_to_sell(source_targets)
+            if target.get("site_id") and target.get("logistic_type")
+        )
     return ProductPublishSummary(
         product_id=_text(prepared_product.get("product_id")),
         draft_id=_text(context.get("draft", {}).get("draft_id")),
@@ -169,6 +186,7 @@ def _summary(
         price=_text(applied.get("amount") or draft.get("price")),
         stock=_text(draft.get("stock")),
         image_count=len(normalize_draft_image_refs(draft.get("images"))),
+        destinations=destinations,
     )
 
 
@@ -289,7 +307,7 @@ def evaluate_publish_validation(
     publish_context["product"] = prepared_product
     # 纯计算边界：评估不持久化任何预检结果；需要落盘的受信 HTTP 工作流
     # （preview/precheck）在评估之后自行调用 save_draft_precheck_result。
-    summary = _summary(publish_context, prepared_product, config)
+    summary = _summary(publish_context, prepared_product, config, payload)
     digest = ""
     if not errors and payload is not None:
         digest = _canonical_digest(
@@ -536,13 +554,20 @@ def _publish_request_approval_snapshot(
             "发布条件当前不满足，请修复校验错误后重试。",
         )
     summary = evaluation.result.summary
+    destination_rows = [item.model_dump() for item in summary.destinations]
+    destination_text = "、".join(
+        f"{item.site_id}/{item.logistic_type}"
+        for item in summary.destinations
+    )
     return TaskApprovalSnapshot(
         summary=(
             f"发布草稿 {summary.draft_id} 到 {summary.platform}："
             f"《{summary.title}》 {summary.listing_currency} {summary.price}"
             f"，图片 {summary.image_count} 张"
+            + (f"，销售目标 {destination_text}" if destination_text else "")
         ),
         canonical_payload={
+            "destinations": destination_rows,
             "draft_id": summary.draft_id,
             "image_count": summary.image_count,
             "listing_currency": summary.listing_currency,

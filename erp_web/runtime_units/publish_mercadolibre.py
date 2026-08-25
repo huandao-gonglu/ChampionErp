@@ -9,7 +9,10 @@ from typing import Any, Callable
 
 from erp_web import marketplaces as publisher
 from erp_web.context import get_context
-from erp_web.product_model import default_draft
+from erp_web.product_model import (
+    default_draft,
+    normalize_mercadolibre_sites_to_sell,
+)
 from erp_web.stores.config_store import (
     _store_auth_result_fields,
     auth_next_action,
@@ -27,6 +30,7 @@ from .collect_helpers import collect_time_iso
 from .image_pool_core import _local_path_from_image_item, _source_pool_items, image_pool_refs_for_platform
 from .publish_helpers import (
     _draft_for_platform,
+    _draft_for_selected_target,
     _selected_price_and_currency,
     _field_error_map,
     build_mercadolibre_publish_payload,
@@ -642,7 +646,8 @@ def ensure_mercadolibre_auth_ready(config: dict[str, Any]) -> dict[str, Any]:
 
 def mercadolibre_product_for_payload(product: dict[str, Any]) -> dict[str, Any]:
     normalized = normalize_product_fields(product)
-    draft = _draft_for_platform(normalized, "mercadolibre")
+    draft = _draft_for_selected_target(normalized, "mercadolibre")
+    normalized.setdefault("drafts", {})["mercadolibre"] = draft
     pkg = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
     normalized["category_id"] = str(draft.get("category_id") or "").strip()
     normalized["attributes"] = draft.get("attributes") if isinstance(draft.get("attributes"), dict) else {}
@@ -658,7 +663,7 @@ def mercadolibre_product_for_payload(product: dict[str, Any]) -> dict[str, Any]:
 
 def mercadolibre_config_for_payload(config: dict[str, Any], product: dict[str, Any]) -> dict[str, Any]:
     cfg = deepcopy(config)
-    draft = _draft_for_platform(product, "mercadolibre")
+    draft = _draft_for_selected_target(product, "mercadolibre")
     pkg = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
     store = cfg.setdefault("mercadolibre", {})
     store["category_id"] = str(draft.get("category_id") or "").strip()
@@ -686,12 +691,11 @@ def mercadolibre_config_for_payload(config: dict[str, Any], product: dict[str, A
     }.items():
         if value not in (None, ""):
             listing[key] = value
+    listing["mercadolibre_sites_to_sell"] = (
+        normalize_mercadolibre_sites_to_sell(draft.get("sites_to_sell"))
+    )
     if isinstance(draft.get("sale_terms"), list) and draft.get("sale_terms"):
         listing["mercadolibre_sale_terms"] = draft.get("sale_terms")
-    shipping = draft.get("shipping") if isinstance(draft.get("shipping"), dict) else {}
-    logistic_type = str(shipping.get("logistic_type") or shipping.get("mode") or "").strip()
-    if logistic_type:
-        listing["mercadolibre_logistic_type"] = logistic_type
     return cfg
 
 

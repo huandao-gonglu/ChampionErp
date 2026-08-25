@@ -6,7 +6,11 @@ from typing import Any
 
 from erp_web.context import AppContext, get_context
 from erp_web.marketplace_registry import marketplace_site, marketplace_spec
-from erp_web.product_model import PLATFORMS, normalize_platform_draft
+from erp_web.product_model import (
+    PLATFORMS,
+    normalize_mercadolibre_sites_to_sell,
+    normalize_platform_draft,
+)
 from erp_web.schemas.currency import StorePublishContext
 from erp_web.services.listing_currency_service import (
     require_store_listing_currency,
@@ -29,6 +33,7 @@ TARGET_LISTING_KEYS = (
     "last_precheck",
     "last_precheck_target",
     "last_publish_task",
+    "sites_to_sell",
 )
 
 PRECHECK_TARGET_SNAPSHOT_KEYS = (
@@ -179,6 +184,13 @@ def _target_listing_fields(raw: dict[str, Any], fallback: dict[str, Any] | None 
             else fallback.get("last_publish_task")
             if isinstance(fallback.get("last_publish_task"), dict)
             else {}
+        ),
+        "sites_to_sell": normalize_mercadolibre_sites_to_sell(
+            raw.get("sites_to_sell")
+            if isinstance(raw.get("sites_to_sell"), list)
+            else raw.get("sitesToSell")
+            if isinstance(raw.get("sitesToSell"), list)
+            else []
         ),
     }
 
@@ -347,7 +359,8 @@ def merge_target_listing_into_draft(
     merged["target_sites"] = next_targets
     if selected_key == _target_key(str(merged.get("platform") or ""), str(merged.get("site") or merged.get("site_id") or "")):
         for key in TARGET_LISTING_KEYS:
-            if key in updates:
+            # sites_to_sell 只属于 target_sites[]；根字段仅存在于当前发布投影。
+            if key != "sites_to_sell" and key in updates:
                 merged[key] = deepcopy(updates[key])
     return merged
 

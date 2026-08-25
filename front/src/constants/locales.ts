@@ -24,8 +24,8 @@ export interface ListingLocaleOption {
 
 export const MARKETPLACE_LISTING_LOCALES: Record<Marketplace, ListingLocaleOption> = {
   mercadolibre: {
-    value: 'es',
-    label: 'Spanish',
+    value: 'en-US',
+    label: 'English',
     marketplaceLabel: 'Mercado Libre Global',
   },
   yandex: {
@@ -42,8 +42,8 @@ export const MARKETPLACE_LISTING_LOCALES: Record<Marketplace, ListingLocaleOptio
 
 export const LISTING_LANGUAGE_OPTIONS: ListingLocaleOption[] = [
   MARKETPLACE_LISTING_LOCALES.mercadolibre,
+  { value: 'es', label: 'Spanish', marketplaceLabel: 'Mercado Libre regional sites' },
   { value: 'pt-BR', label: 'Portuguese (Brazil)', marketplaceLabel: 'Mercado Livre Brazil' },
-  { value: 'en-US', label: 'English', marketplaceLabel: 'Generic English' },
   MARKETPLACE_LISTING_LOCALES.yandex,
 ]
 

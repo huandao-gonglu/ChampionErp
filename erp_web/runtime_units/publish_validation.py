@@ -6,7 +6,16 @@ from typing import Any
 
 from erp_web.context import get_context
 from erp_web.marketplaces import mercadolibre_category_allowed_currencies
-from erp_web.product_model import validate_category_precheck
+from erp_web.services.mercadolibre_target_contract import (
+    MERCADOLIBRE_CBT_CURRENCY_INVALID,
+    MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED,
+    MERCADOLIBRE_SALES_TARGET_NOT_AUTHORIZED,
+    mercadolibre_global_target_contract,
+)
+from erp_web.product_model import (
+    normalize_mercadolibre_sites_to_sell,
+    validate_category_precheck,
+)
 from erp_web.services.pricing_service import pricing_calculation_fingerprint
 from erp_web.services.listing_currency_service import (
     PRICING_STALE,
@@ -24,6 +33,7 @@ from erp_web.stores.product_store import normalize_product_fields
 from .collect_helpers import collect_time_iso
 from .publish_helpers import (
     _draft_for_platform,
+    _draft_for_selected_target,
     _draft_images,
     _has_main_image,
     _masked_auth_status,
@@ -186,6 +196,28 @@ def _selected_price_errors(product: dict[str, Any], draft: dict[str, Any]) -> li
         or str(basis.get("listing_currency") or "").upper() != listing_currency
     ):
         return [precheck_item(PRICING_STALE, "pricing", "核价依据缺失或已变化", "error", "前往核价页重新计算并应用售价")]
+    if (
+        platform == "mercadolibre"
+        and str(draft.get("site") or draft.get("site_id") or "")
+        .strip()
+        .upper()
+        == "CBT"
+        and normalize_mercadolibre_sites_to_sell(
+            basis.get("sites_to_sell")
+        )
+        != normalize_mercadolibre_sites_to_sell(
+            draft.get("sites_to_sell")
+        )
+    ):
+        return [
+            precheck_item(
+                PRICING_STALE,
+                "pricing",
+                "CBT 销售国家或物流方式已变化，旧核价结果失效",
+                "error",
+                "前往核价页重新计算并应用售价",
+            )
+        ]
     basis_currency_fingerprint = str(basis.get("currency_fingerprint") or "").strip()
     if not basis_currency_fingerprint:
         return [precheck_item(PRICING_STALE, "pricing", "核价依据缺少币种指纹", "error", "前往核价页重新计算并应用售价")]
@@ -220,7 +252,7 @@ def validate_mercadolibre_draft(
     category_record: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     product = normalize_product_fields(product)
-    draft = _draft_for_platform(product, "mercadolibre")
+    draft = _draft_for_selected_target(product, "mercadolibre")
     store = config.get("mercadolibre", {}) if isinstance(config.get("mercadolibre"), dict) else {}
     summary = _required_attribute_summary(product, "mercadolibre", category_record)
     errors: list[dict[str, str]] = []
@@ -274,6 +306,44 @@ def validate_mercadolibre_draft(
         store_identity_for_platform("mercadolibre", store),
         store,
     )
+    if site_id == "CBT":
+        if (
+            store_listing_currency_ready(store_state)
+            and store_state["listing_currency"] != "USD"
+        ):
+            errors.append(
+                precheck_item(
+                    MERCADOLIBRE_CBT_CURRENCY_INVALID,
+                    "listing_currency",
+                    "标准 CBT Global Selling 刊登币种必须为 USD",
+                    "error",
+                    "前往授权页重新验证 CBT 店铺币种，再重新核价",
+                )
+            )
+        _, target_issues = mercadolibre_global_target_contract(
+            draft.get("sites_to_sell"),
+            store.get("marketplace_bindings"),
+        )
+        for issue in target_issues:
+            code = issue["code"]
+            if code == MERCADOLIBRE_SALES_TARGET_NOT_AUTHORIZED:
+                next_action = "前往授权页重新验证账号并读取已开通市场"
+            elif code == MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED:
+                next_action = (
+                    "改选账号已开通的标准 CBT 市场；Fully Managed 需另行接入 "
+                    "global_net_proceeds 价格流程"
+                )
+            else:
+                next_action = "前往商品草稿选择账号已开通的销售国家与物流方式"
+            errors.append(
+                precheck_item(
+                    code,
+                    issue["field"],
+                    issue["message"],
+                    "error",
+                    next_action,
+                )
+            )
     if store_listing_currency_ready(store_state) and category_id:
         allowed_currencies = mercadolibre_category_allowed_currencies(
             category_id,
@@ -358,10 +428,11 @@ def validate_mercadolibre_draft(
         sale_terms = config.get("listing", {}).get("mercadolibre_sale_terms") if isinstance(config.get("listing"), dict) else []
     if not sale_terms:
         errors.append(precheck_item("SALE_TERMS_MISSING", "sale_terms", "sale_terms / warranty 尚未配置完整", "error", "前往平台属性页补齐保修条款"))
-    draft_shipping = draft.get("shipping") if isinstance(draft.get("shipping"), dict) else {}
-    logistic_type = str(draft_shipping.get("logistic_type") or draft_shipping.get("mode") or config.get("listing", {}).get("mercadolibre_logistic_type") or "").strip()
-    if not logistic_type:
-        errors.append(precheck_item("LOGISTIC_MODE_MISSING", "logistic_type", "未读取 shipping / logistics mode", "error", "发布前在店铺后台确认物流模式，不要自动修改后台模式"))
+    if site_id != "CBT":
+        draft_shipping = draft.get("shipping") if isinstance(draft.get("shipping"), dict) else {}
+        logistic_type = str(draft_shipping.get("logistic_type") or draft_shipping.get("mode") or config.get("listing", {}).get("mercadolibre_logistic_type") or "").strip()
+        if not logistic_type:
+            errors.append(precheck_item("LOGISTIC_MODE_MISSING", "logistic_type", "未读取 shipping / logistics mode", "error", "发布前在店铺后台确认物流模式，不要自动修改后台模式"))
     return {"platform": "mercadolibre", "ok": not errors, "errors": errors, "warnings": warnings, "checked_at": collect_time_iso()}
 
 

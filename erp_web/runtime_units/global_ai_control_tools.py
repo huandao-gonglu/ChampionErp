@@ -223,7 +223,7 @@ GLOBAL_TASK_CANCEL_TOOL = "global_task_cancel"
     idempotency="required",
     idempotency_keys=("conversation_id", "message_id"),
     recovery_policy="idempotent",
-    version="2",
+    version="3",
     agent_deferred=True,
 )
 def global_task_start(

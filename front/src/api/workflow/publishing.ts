@@ -302,6 +302,12 @@ export async function calculatePrice(input: PricingInput): Promise<PricingResult
       target_key: target.targetKey,
       platform: target.platform,
       site: target.site,
+      sites_to_sell: (target.sitesToSell || [])
+        .map((item) => ({
+          site_id: String(item.siteId || '').trim().toUpperCase(),
+          logistic_type: String(item.logisticType || '').trim().toLowerCase(),
+        }))
+        .filter((item) => item.site_id && item.site_id !== 'CBT' && item.logistic_type),
       listing_currency: target.listingCurrency,
       commission_percent: target.commissionPercent,
       payment_fee_percent: target.paymentFeePercent,

@@ -79,7 +79,12 @@ MARKETPLACE_SPECS: tuple[MarketplaceSpec, ...] = (
         key=Marketplace.MERCADO_LIBRE.value,
         label="美客多",
         sites=(
-            {"key": "CBT", "code": "CBT", "label": "全局", "language": "es"},
+            {
+                "key": "CBT",
+                "code": "CBT",
+                "label": "Global Selling 全局刊登",
+                "language": "en-US",
+            },
             {"key": "MLM", "code": "MLM", "label": "墨西哥", "language": "es"},
             {"key": "MLB", "code": "MLB", "label": "巴西", "language": "pt-BR"},
             {"key": "MLC", "code": "MLC", "label": "智利", "language": "es"},

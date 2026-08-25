@@ -53,6 +53,7 @@ from erp_web.schemas.product_capabilities import (
     ProductImagesPrepareResult,
 )
 from erp_web.services.ai_tool_declaration import Injected, ai_tool
+from erp_web.services.capability_input_provenance import user_supplied_input
 from erp_web.services.capability_errors import (
     BusinessCapabilityError,
     CapabilityInputRequired,
@@ -438,18 +439,15 @@ def prepare_draft_for_market(
         raise
     completed_parts.append("attributes")
 
-    try:
-        prepare_target_pricing(
-            target_draft_id=target_draft_id,
-            target_platform=platform,
-            site=text(target.get("site")),
-            pricing_input=request.pricing_input,
-            product_store=product_store,
-            pricing_calculator=pricing_calculator,
-        )
-    except CapabilityInputRequired as exc:
-        exc.set_input_owner("pricing_input")
-        raise
+    prepare_target_pricing(
+        target_draft_id=target_draft_id,
+        target_platform=platform,
+        site=text(target.get("site")),
+        sales_target=request.sales_target,
+        pricing_input=request.pricing_input,
+        product_store=product_store,
+        pricing_calculator=pricing_calculator,
+    )
     completed_parts.append("pricing")
 
     readiness = _finalize_readiness(
@@ -496,7 +494,7 @@ DRAFT_PREPARE_FOR_MARKET_TOOL = "draft_prepare_for_market"
     idempotency="required",
     idempotency_keys=("operation_key",),
     recovery_policy="manual",
-    version="1",
+    version="2",
 )
 def draft_prepare_for_market(
     request: DraftPrepareForMarketRequest,
@@ -519,8 +517,16 @@ def draft_prepare_for_market(
     operation_key = str(
         execution.idempotency_context.get("operation_key") or ""
     ).strip()
+    trusted_request = request
+    if request.sales_target and not user_supplied_input(
+        execution.business_scope,
+        "sales_target",
+    ):
+        # 目标站点必须由用户在受信补充资料入口明确选择，不能接受模型在初始
+        # 计划里主动生成的值。
+        trusted_request = request.model_copy(update={"sales_target": ""})
     return prepare_draft_for_market(
-        request,
+        trusted_request,
         product_store=scope.products,
         claim_target_drafts=scope.claim_target_drafts,
         copy_generator=scope.copy_generator,

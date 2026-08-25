@@ -24,6 +24,7 @@ import RunLog from '@/components/domain/RunLog.vue'
 import { workflowNavItems } from '@/constants/navigation'
 import { useClipboard } from '@/composables/useClipboard'
 import { useBackdropDismiss } from '@/composables/useBackdropDismiss'
+import { cbtDestinationSelectionReady } from '@/utils/mercadolibreGlobalSelling'
 import { useAppStore } from '@/stores/app'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useWorkflowActivityStore } from '@/stores/workflow/activity'
@@ -140,6 +141,10 @@ const navItems = workflowNavItems
 const pricingDraftItems = computed(() => draftsIndex.value.filter((item) => item.draftId))
 const pricingDraftTitle = computed(() => currentDraft.value.title || currentDraftProductContext.value.title || currentDraftProductContext.value.sourceTitle || currentDraft.value.draftId)
 const draftWorkspaceTitle = computed(() => currentDraft.value.title || currentDraftProductContext.value.title || currentDraftProductContext.value.sourceTitle || '草稿编辑')
+const draftDestinationSelectionReady = computed(() => cbtDestinationSelectionReady(currentDraft.value, storeConfig.value))
+const draftSaveBlockedReason = computed(() => (
+  draftDestinationSelectionReady.value ? '' : 'CBT 草稿至少需要选择一个已授权的销售国家/物流。'
+))
 
 const mercadolibreNotificationUrl = computed(() => {
   const ml = storeConfig.value.mercadolibre as UnknownRecord | undefined
@@ -698,7 +703,7 @@ watch(
             <button v-if="draftWorkspaceTab === 'text'" class="btn btn-outline" :disabled="loading || !(currentDraft.productId || currentDraftProductContext.productId)" @click="() => store.generateCopy(true)">
               {{ copyGenerating ? '正在生成本地化文案…' : '生成/改写本地化文案' }}
             </button>
-            <button class="btn btn-primary" :disabled="loading || !currentDraft.draftId" @click="store.saveCurrentDraft">保存草稿</button>
+            <button class="btn btn-primary" :disabled="loading || !currentDraft.draftId || !draftDestinationSelectionReady" :title="draftSaveBlockedReason" @click="store.saveCurrentDraft">保存草稿</button>
           </template>
 
           <template #text>
@@ -707,8 +712,10 @@ watch(
               :draft="currentDraft"
               :product-context="currentDraftProductContext"
               :platform-options="platformOptions"
+              :store-config="storeConfig"
               :loading="loading"
               @update-language="store.updateDraftLanguage"
+              @update-sites-to-sell="store.updateDraftSitesToSell"
               @update-targets="store.updateDraftTargets"
             />
           </template>

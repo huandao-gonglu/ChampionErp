@@ -120,7 +120,10 @@ class FakeInputResult(BaseModel):
     recovery_policy="retry_safe",
     version="1",
 )
-def fake_input(request: FakeInputRequest) -> FakeInputResult:
+def fake_input(
+    request: FakeInputRequest,
+    execution: Annotated[AiExecutionContext, Injected()],
+) -> FakeInputResult:
     if not request.clarification.strip():
         raise CapabilityInputRequired(
             "FAKE_CLARIFICATION_REQUIRED",
@@ -129,7 +132,11 @@ def fake_input(request: FakeInputRequest) -> FakeInputResult:
             label="补充说明",
             reason="缺少说明。",
         )
-    _record("fake_input", clarification=request.clarification)
+    _record(
+        "fake_input",
+        clarification=request.clarification,
+        execution=_snapshot_execution(execution),
+    )
     return FakeInputResult(summary=f"已补充：{request.clarification}")
 
 
@@ -1013,7 +1020,7 @@ def test_version_freeze_refuses_execution_after_capability_upgrade(
 def test_needs_input_then_submit_input_merges_arguments_and_worker_resumes(
     tmp_path,
 ) -> None:
-    controller, _store = _controller(tmp_path)
+    controller, store = _controller(tmp_path)
 
     task = _start_and_run(
         controller,
@@ -1035,11 +1042,20 @@ def test_needs_input_then_submit_input_merges_arguments_and_worker_resumes(
     # 补资料只改变业务状态：任务回到 running，等待 worker 领取。
     assert submitted.task.status == "running"
     assert submitted.task.pending_inputs == []
+    assert submitted.task.steps[0].user_input_keys == ("clarification",)
+    assert store.require_task(task.task_id).steps[0].user_input_keys == (
+        "clarification",
+    )
     assert RECORDED.get("fake_input") is None
 
     resumed = controller.resume_task(task.task_id)
     assert resumed.status == "completed"
-    assert RECORDED["fake_input"] == [{"clarification": "需要红色包装"}]
+    recorded = RECORDED["fake_input"]
+    assert len(recorded) == 1
+    assert recorded[0]["clarification"] == "需要红色包装"
+    assert recorded[0]["execution"]["business_scope"]["user_input_keys"] == (
+        '["clarification"]'
+    )
 
 
 def test_needs_input_string_list_accepts_list_and_rejects_plain_string(

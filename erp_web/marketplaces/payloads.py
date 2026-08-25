@@ -3,6 +3,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from erp_web.services.mercadolibre_target_contract import (
+    MERCADOLIBRE_CBT_CURRENCY_INVALID,
+    mercadolibre_global_target_contract,
+)
+
 from .config_http import number_or_zero
 
 def listing_for(plan: dict[str, Any], platform_key: str) -> dict[str, Any]:
@@ -81,7 +86,6 @@ def build_mercadolibre_payload(
     currency_id = str(settings.get("currency_id") or "").upper()
     if not currency_id:
         raise RuntimeError("Mercado Libre 发布币种尚未解析。")
-    logistic_type = str(settings.get("mercadolibre_logistic_type") or "remote").strip() or "remote"
     sku = settings.get("sku") or product.get("name") or "SKU-1"
     site_id = str(store.get("site_id") or "").strip().upper()
     if not site_id:
@@ -94,6 +98,20 @@ def build_mercadolibre_payload(
         raise RuntimeError("CBT 发布必须使用真实 CBT 类目 ID，请在草稿的类目/属性里重新实时选择 CBT 类目。")
     if not is_global_selling and (category_id_upper.startswith("CBT") or (category_id_upper and not category_id_upper.startswith(site_id))):
         raise RuntimeError(f"{site_id} 发布必须使用 {site_id} 类目 ID，请在草稿的类目/属性里重新实时选择该站点类目。")
+    global_targets: list[dict[str, str]] = []
+    if is_global_selling:
+        if currency_id != "USD":
+            raise RuntimeError(
+                f"{MERCADOLIBRE_CBT_CURRENCY_INVALID}: "
+                "标准 CBT Global Selling 刊登币种必须为 USD"
+            )
+        global_targets, target_issues = mercadolibre_global_target_contract(
+            settings.get("mercadolibre_sites_to_sell"),
+            store.get("marketplace_bindings"),
+        )
+        if target_issues:
+            issue = target_issues[0]
+            raise RuntimeError(f"{issue['code']}: {issue['message']}")
     attributes = [
         {"id": "BRAND", "value_name": product.get("brand") or "Generic"},
         {"id": "SELLER_SKU", "value_name": sku},
@@ -184,14 +202,6 @@ def build_mercadolibre_payload(
         ]
     sale_terms = _normalize_mercadolibre_sale_terms(sale_terms, is_global_selling)
 
-    site_entry: dict[str, Any] = {
-        "site_id": site_id,
-        "logistic_type": logistic_type,
-        "price": price_input,
-        "listing_type_id": settings.get("listing_type_id") or "gold_special",
-        "title": title,
-    }
-
     payload = {
         "_global_selling": is_global_selling,
         "title": title,
@@ -208,7 +218,17 @@ def build_mercadolibre_payload(
         "description": {"plain_text": listing.get("description", "")},
     }
     if is_global_selling:
-        payload["sites_to_sell"] = [site_entry]
+        payload["sites_to_sell"] = [
+            {
+                "site_id": target["site_id"],
+                "logistic_type": target["logistic_type"],
+                "price": price_input,
+                "listing_type_id": settings.get("listing_type_id")
+                or "gold_special",
+                "title": title,
+            }
+            for target in global_targets
+        ]
         payload.pop("condition", None)
     if pictures:
         payload["pictures"] = pictures

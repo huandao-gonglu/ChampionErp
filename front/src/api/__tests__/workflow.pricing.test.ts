@@ -76,6 +76,7 @@ describe('calculatePrice API mapping', () => {
           targetKey: 'mercadolibre:mlm',
           platform: 'mercadolibre',
           site: 'MLM',
+          sitesToSell: [],
           listingCurrency: 'MXN',
           commissionPercent: 15,
           paymentFeePercent: 0,
@@ -125,6 +126,7 @@ describe('calculatePrice API mapping', () => {
           target_key: 'mercadolibre:mlm',
           platform: 'mercadolibre',
           site: 'MLM',
+          sites_to_sell: [],
           listing_currency: 'MXN',
           commission_percent: 15,
           payment_fee_percent: 0,
@@ -196,6 +198,70 @@ describe('calculatePrice API mapping', () => {
       exchangeRateFetchedAt: '',
       exchangeRateCached: false,
     })
+  })
+
+  it('sends CBT sales destinations in pricing targets', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({
+      data: {
+        ok: true,
+        results: [{
+          target_key: 'mercadolibre:cbt',
+          platform: 'mercadolibre',
+          site: 'CBT',
+          listing_currency: 'USD',
+          errors: [],
+        }],
+        input: { common: {} },
+        exchange_rates: { rates: {} },
+      },
+    })
+
+    await calculatePrice({
+      platform: 'mercadolibre',
+      site: 'CBT',
+      purchaseCostCny: 100,
+      domesticFreightCny: 0,
+      packagingCostCny: 0,
+      otherCostCny: 0,
+      weightKg: 1,
+      lengthCm: 10,
+      widthCm: 10,
+      heightCm: 10,
+      usdCnyRate: 0,
+      mxnUsdRate: 0,
+      rubCnyRate: 0,
+      exchangeRateMode: 'live',
+      targets: [{
+        targetKey: 'mercadolibre:cbt',
+        platform: 'mercadolibre',
+        site: 'CBT',
+        sitesToSell: [
+          { siteId: 'MLM', logisticType: 'remote' },
+          { siteId: 'MLB', logisticType: 'fulfillment' },
+        ],
+        listingCurrency: 'USD',
+        commissionPercent: 16,
+        paymentFeePercent: 0,
+        otherFeePercent: 0,
+        pricingMode: 'margin',
+        targetMarginPercent: 30,
+        markupPercent: 30,
+        shippingQuoteMode: 'auto',
+        shippingCurrency: 'USD',
+        shippingAmount: 0,
+        manualPrice: null,
+      }],
+    })
+
+    expect(apiClient.post).toHaveBeenCalledWith('/api/calculate-price', expect.objectContaining({
+      targets: [expect.objectContaining({
+        target_key: 'mercadolibre:cbt',
+        sites_to_sell: [
+          { site_id: 'MLM', logistic_type: 'remote' },
+          { site_id: 'MLB', logistic_type: 'fulfillment' },
+        ],
+      })],
+    }))
   })
 })
 
@@ -359,7 +425,7 @@ describe('publishPrecheck API mapping', () => {
   it('keeps structured backend issues readable for the UI', async () => {
     const draft = createEmptyDraftDetail('mercadolibre')
     draft.draftId = 'draft-1'
-    draft.targetSites = [{ platform: 'mercadolibre', site: 'CBT', language: 'es', listingCurrency: 'USD' }]
+    draft.targetSites = [{ platform: 'mercadolibre', site: 'CBT', language: 'en-US', listingCurrency: 'USD' }]
     vi.mocked(apiClient.post).mockResolvedValueOnce({
       data: {
         ok: true,
@@ -367,7 +433,7 @@ describe('publishPrecheck API mapping', () => {
           draft_id: 'draft-1',
           platform: 'mercadolibre',
           site: 'CBT',
-          target_sites: [{ platform: 'mercadolibre', site: 'CBT', language: 'es', currency: 'USD' }],
+          target_sites: [{ platform: 'mercadolibre', site: 'CBT', language: 'en-US', currency: 'USD' }],
           enabled: true,
           attributes: {},
         },

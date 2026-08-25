@@ -77,6 +77,7 @@ from erp_web.schemas.product_write_capabilities import (
     ProductSaveRequest,
 )
 from erp_web.services.capability_errors import BusinessCapabilityError
+from erp_web.services.capability_input_provenance import encode_user_input_keys
 from erp_web.services.global_task_controller import GlobalTaskControllerError
 from erp_web.services.task_approval import approval_binding_digest
 
@@ -460,6 +461,61 @@ def test_draft_pricing_apply_requires_existing_draft() -> None:
             execution=_execution("op-pricing-missing"),
         )
     assert missing.value.code == "DRAFT_NOT_FOUND"
+
+
+def test_draft_pricing_apply_only_accepts_user_submitted_sales_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """模型初始计划中的选择被忽略，Controller 标记的用户选择才可生效。"""
+
+    saved_product = _seed_product("product-pricing-sales-target")
+    draft_id = str(saved_product["drafts"]["mercadolibre"]["draft_id"])
+    received: list[str] = []
+
+    def fake_prepare_target_pricing(**kwargs: Any) -> dict[str, Any]:
+        received.append(str(kwargs.get("sales_target") or ""))
+        return {
+            "target_key": "mercadolibre:mlm",
+            "applied_price": {"amount": "100", "currency": "MXN"},
+            "calculation_fingerprint": "fingerprint-1",
+        }
+
+    monkeypatch.setattr(
+        "erp_web.runtime_units.product_write_capabilities.prepare_target_pricing",
+        fake_prepare_target_pricing,
+    )
+    request = DraftPricingApplyRequest(
+        draft_id=draft_id,
+        target_platform="mercadolibre",
+        site="MLM",
+        sales_target="MLM:remote",
+        pricing_input={"common": {"purchase_cost": "100"}},
+    )
+
+    draft_pricing_apply(
+        request,
+        scope=_write_scope(),
+        execution=_execution("op-pricing-model-target"),
+    )
+    trusted_execution = AiExecutionContext(
+        task_run_id="task-1",
+        attempt_id="attempt-1",
+        deadline_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        budget_profile="test",
+        business_scope={
+            "task_id": "task-1",
+            "step_id": "step-1",
+            "user_input_keys": encode_user_input_keys(["sales_target"]),
+        },
+        idempotency_context={"operation_key": "op-pricing-user-target"},
+    )
+    draft_pricing_apply(
+        request,
+        scope=_write_scope(),
+        execution=trusted_execution,
+    )
+
+    assert received == ["", "MLM:remote"]
 
 
 def test_product_delete_requires_trusted_approval_context() -> None:

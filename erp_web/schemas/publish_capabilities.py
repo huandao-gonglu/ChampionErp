@@ -32,6 +32,18 @@ class PublishValidationIssue(BaseModel):
     next_action: Annotated[TrimmedText, StringConstraints(max_length=1000)] = ""
 
 
+class ProductPublishDestination(BaseModel):
+    """审批与预检摘要中可读的实际销售站点/物流组合。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    site_id: Annotated[TrimmedText, StringConstraints(min_length=1, max_length=80)]
+    logistic_type: Annotated[
+        TrimmedText,
+        StringConstraints(min_length=1, max_length=80),
+    ]
+
+
 class ProductPublishSummary(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -50,6 +62,7 @@ class ProductPublishSummary(BaseModel):
     price: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
     stock: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
     image_count: int = Field(default=0, ge=0)
+    destinations: tuple[ProductPublishDestination, ...] = ()
 
 
 class ProductPublishValidationResult(BaseModel):
@@ -131,6 +144,7 @@ class ProductPublishCapabilityRequest(BaseModel):
 
 __all__ = [
     "ProductPublishCapabilityRequest",
+    "ProductPublishDestination",
     "ProductPublishRequest",
     "ProductPublishRequestResult",
     "ProductPublishSummary",

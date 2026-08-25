@@ -14,6 +14,8 @@ from erp_web.http_handler import Handler
 from erp_web.http_route_units import image_routes
 from erp_web.runtime_units import (
     category_providers,
+    category_refresh,
+    category_searchers,
     category_store,
     collect_helpers,
     copy_generation,
@@ -271,6 +273,151 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             updated_record = next(item for item in get_context().db.list_draft_records(scope="all") if item["draft_id"] == yandex_draft_id)
             self.assertEqual(updated_record["platforms"], ["yandex", "ozon"])
             self.assertEqual(get_context().db.load_draft_model(ozon_draft_id)["title"], "Ozon original")
+
+        self.with_temp_app(run)
+
+    def test_save_draft_detail_invalidates_changed_cbt_sales_targets(self) -> None:
+        def run(app_dir: Path) -> None:
+            product = sample_product(
+                "CBT target invalidation",
+                "https://example.com/cbt-target-invalidation",
+            )
+            publish_task = {
+                "item_id": "CBT123456",
+                "permalink": "https://global-selling.example/CBT123456",
+            }
+            stale_precheck = {
+                "ok": True,
+                "checked_at": "2026-08-24T08:00:00Z",
+            }
+            target = {
+                "platform": "mercadolibre",
+                "site": "CBT",
+                "language": "en-US",
+                "listing_currency": "USD",
+                "sites_to_sell": [
+                    {"site_id": "MLB", "logistic_type": "remote"},
+                    {"site_id": "MLM", "logistic_type": "remote"},
+                ],
+                "category_id": "CBT1000",
+                "attributes": {"BRAND": "BrandX"},
+                "validation_errors": [{"code": "OLD_WARNING"}],
+                "last_precheck": stale_precheck,
+                "last_precheck_target": {
+                    "sites_to_sell": [
+                        {"site_id": "MLB", "logistic_type": "remote"},
+                        {"site_id": "MLM", "logistic_type": "remote"},
+                    ]
+                },
+                "publish_status": "real_publish_success",
+                "status": "published",
+                "last_publish_task": publish_task,
+            }
+            product["drafts"]["mercadolibre"] = {
+                "enabled": True,
+                "site": "CBT",
+                "language": "en-US",
+                "title": "Global item",
+                "description": "Global item description",
+                "category_id": "CBT1000",
+                "attributes": {"BRAND": "BrandX"},
+                "stock": "5",
+                "pricing": {
+                    **pricing_targets(
+                        "mercadolibre",
+                        "CBT",
+                        "USD",
+                        "29.99",
+                    ),
+                    "updated_at": "2026-08-24T08:00:00Z",
+                },
+                "target_sites": [target],
+                "validation_errors": [{"code": "OLD_WARNING"}],
+                "last_precheck": stale_precheck,
+                "last_precheck_target": target,
+                "publish_status": "real_publish_success",
+                "status": "published",
+                "last_publish_task": publish_task,
+            }
+            product["publish_preview"] = {
+                "mercadolibre": stale_precheck,
+            }
+            saved = get_context().products.save_product(product)
+            draft_id = saved["drafts"]["mercadolibre"]["draft_id"]
+
+            # 顺序、大小写和字段别名变化不构成销售目标变化。
+            equivalent_target = dict(
+                saved["drafts"]["mercadolibre"]["target_sites"][0]
+            )
+            equivalent_target["sitesToSell"] = [
+                {"siteId": "mlm", "logisticType": "REMOTE"},
+                {"siteId": "mlb", "logisticType": "remote"},
+            ]
+            equivalent_target.pop("sites_to_sell", None)
+            equivalent, error, status = get_context().products.save_draft_detail(
+                {
+                    "draft_id": draft_id,
+                    "target_sites": [equivalent_target],
+                }
+            )
+            self.assertIsNone(error)
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                equivalent["draft"]["publish_status"],
+                "real_publish_success",
+            )
+            self.assertIn(
+                "mercadolibre",
+                equivalent["productContext"]["raw"]["publish_preview"],
+            )
+
+            changed_target = dict(equivalent["draft"]["target_sites"][0])
+            changed_target["sites_to_sell"] = [
+                {"site_id": "MLC", "logistic_type": "remote"}
+            ]
+            result, error, status = get_context().products.save_draft_detail(
+                {
+                    "draft_id": draft_id,
+                    # 模拟不可信写入方继续回传旧的 ready/success 字段。
+                    "status": "published",
+                    "publish_status": "real_publish_success",
+                    "validation_errors": [{"code": "OLD_WARNING"}],
+                    "last_precheck": stale_precheck,
+                    "last_precheck_target": target,
+                    "target_sites": [changed_target],
+                }
+            )
+
+            self.assertIsNone(error)
+            self.assertEqual(status, 200)
+            draft = result["draft"]
+            saved_target = draft["target_sites"][0]
+            self.assertEqual(draft["status"], "category_ready")
+            self.assertEqual(draft["publish_status"], "")
+            self.assertEqual(draft["validation_errors"], [])
+            self.assertEqual(draft["last_precheck"], {})
+            self.assertEqual(draft["last_precheck_target"], {})
+            self.assertEqual(draft["last_publish_task"], publish_task)
+            self.assertEqual(draft["pricing"]["targets"], {})
+            self.assertEqual(draft["pricing"]["updated_at"], "")
+            self.assertEqual(saved_target["status"], "category_ready")
+            self.assertEqual(saved_target["publish_status"], "")
+            self.assertEqual(saved_target["validation_errors"], [])
+            self.assertEqual(saved_target["last_precheck"], {})
+            self.assertEqual(saved_target["last_precheck_target"], {})
+            self.assertEqual(saved_target["last_publish_task"], publish_task)
+            self.assertNotIn(
+                "mercadolibre",
+                result["productContext"]["raw"]["publish_preview"],
+            )
+            product_index = next(
+                item
+                for item in result["productsIndex"]
+                if item["product_id"] == saved["product_id"]
+            )
+            self.assertEqual(product_index["workflow_status"], "category_ready")
+            self.assertEqual(product_index["precheck_status"], "pending")
+            self.assertEqual(product_index["publish_status"], "not_ready")
 
         self.with_temp_app(run)
 
@@ -785,6 +932,90 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
 
         self.with_temp_app(run)
 
+    def test_cbt_category_search_uses_saved_store_token_as_bearer(self) -> None:
+        def run(app_dir: Path) -> None:
+            del app_dir
+            get_context().config.save_store_config(
+                {
+                    "mercadolibre": {
+                        "app_id": "123",
+                        "app_secret": "secret",
+                        "redirect_uri": "https://example.com/callback",
+                        "site_id": "CBT",
+                        "access_token": "saved-token",
+                        "refresh_token": "saved-refresh-token",
+                    }
+                }
+            )
+            requests: list[tuple[str, dict[str, object]]] = []
+
+            def fake_request_json(url: str, **kwargs: object) -> object:
+                requests.append((url, kwargs))
+                return [
+                    {
+                        "domain_id": "CBT-WOODWORKING_TOOLS",
+                        "domain_name": "Woodworking Tools",
+                        "category_id": "CBT407134",
+                        "category_name": "Other",
+                    }
+                ]
+
+            with patch.object(
+                category_refresh.http_client,
+                "request_json",
+                side_effect=fake_request_json,
+            ):
+                results = category_store.search_categories_live(
+                    "mercadolibre",
+                    query="woodworking tool",
+                    site="CBT",
+                    limit=5,
+                    timeout_seconds=3,
+                )
+
+            self.assertEqual(results[0]["category_id"], "CBT407134")
+            self.assertEqual(
+                requests[0][0],
+                "https://api.mercadolibre.com/marketplace/domain_discovery/search?q=woodworking%20tool&limit=5",
+            )
+            self.assertEqual(
+                requests[0][1]["headers"]["Authorization"],
+                "Bearer saved-token",
+            )
+
+        self.with_temp_app(run)
+
+    def test_cbt_category_search_classifies_missing_saved_token(self) -> None:
+        def run(app_dir: Path) -> None:
+            del app_dir
+            get_context().config.save_store_config(
+                {
+                    "mercadolibre": {
+                        "app_id": "123",
+                        "app_secret": "secret",
+                        "redirect_uri": "https://example.com/callback",
+                        "site_id": "CBT",
+                    }
+                }
+            )
+
+            with patch.object(
+                category_refresh.http_client,
+                "request_json",
+                side_effect=AssertionError("缺少 Token 时不应发送请求"),
+            ), self.assertRaises(category_searchers.CategorySearchError) as raised:
+                category_store.search_categories_live(
+                    "mercadolibre",
+                    query="woodworking tool",
+                    site="CBT",
+                    limit=5,
+                )
+
+            self.assertEqual(raised.exception.code, "CATEGORY_CREDENTIALS_MISSING")
+            self.assertFalse(raised.exception.retryable)
+
+        self.with_temp_app(run)
+
     def test_apply_precheck_promotes_workflow_and_syncs_sqlite_index(self) -> None:
         def run(app_dir: Path) -> None:
             product = sample_product("Ready draft item", "https://example.com/ready-draft")
@@ -916,7 +1147,15 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
     def test_mercadolibre_publish_payload_uses_draft_target_site_over_store_config(self) -> None:
         # 发布币种唯一事实源：显式创建 ready 店铺配置（CBT 店铺 USD）。
         store_fingerprint = seed_store_currency(
-            "mercadolibre", "USD", identity={"user_id": "99"}
+            "mercadolibre",
+            "USD",
+            identity={
+                "user_id": "99",
+                "account_site_id": "CBT",
+                "marketplace_bindings": [
+                    {"site_id": "MLM", "logistic_type": "remote"}
+                ],
+            },
         )
         product = sample_product("Draft CBT payload", "https://example.com/draft-cbt-payload")
         product["source"]["image_pool"][0].update(
@@ -937,7 +1176,16 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
             "category_id": "CBT457856",
             "attributes": {"BRAND": "DraftBrand", "MODEL": "DraftModel"},
-            "target_sites": [{"platform": "mercadolibre", "site": "CBT", "listing_currency": "USD"}],
+            "target_sites": [
+                {
+                    "platform": "mercadolibre",
+                    "site": "CBT",
+                    "listing_currency": "USD",
+                    "sites_to_sell": [
+                        {"site_id": "MLM", "logistic_type": "remote"}
+                    ],
+                }
+            ],
             "pricing": pricing_targets("mercadolibre", "CBT", "USD", "18.00", store_fingerprint),
             "stock": "10",
             "sku": "DRAFT-CBT-SKU",
@@ -953,7 +1201,14 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "status": "ready_to_publish",
         }
         config = {
-            "mercadolibre": {"site_id": "MLM", "category_id": "WRONG-CATEGORY", "access_token": "token"},
+            "mercadolibre": {
+                "site_id": "MLM",
+                "category_id": "WRONG-CATEGORY",
+                "access_token": "token",
+                "marketplace_bindings": [
+                    {"site_id": "MLM", "logistic_type": "remote"}
+                ],
+            },
             "listing": {
                 "currency_id": "USD",
                 "price": "0",
@@ -981,7 +1236,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
 
         self.assertTrue(payload["_global_selling"])
         self.assertEqual(payload["category_id"], "CBT457856")
-        self.assertEqual(payload["sites_to_sell"][0]["site_id"], "CBT")
+        self.assertEqual(payload["sites_to_sell"][0]["site_id"], "MLM")
         self.assertEqual(attributes["PACKAGE_LENGTH"], "11.0 cm")
         self.assertNotIn("SELLER_PACKAGE_LENGTH", attributes)
 
@@ -1550,6 +1805,13 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             saved = get_context().config.load_store_config()["mercadolibre"]
             self.assertEqual(saved["access_token"], "token-123")
             self.assertNotIn("code_verifier", saved)
+            checklist = get_context().config.mercadolibre_auth_checklist()
+            self.assertTrue(checklist["token_ready"])
+            self.assertNotIn(
+                "code_verifier",
+                {field["key"] for field in checklist["fields"]},
+            )
+            self.assertNotIn("code_verifier", checklist["copy_text"])
 
         self.with_temp_app(run)
 

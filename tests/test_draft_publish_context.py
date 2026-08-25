@@ -10,6 +10,7 @@ from erp_web.runtime_units.draft_publish_context import (
     draft_publish_targets,
     merge_target_listing_into_draft,
 )
+from erp_web.product_model import normalize_platform_draft
 from erp_web.services.listing_currency_service import compute_currency_fingerprint
 
 
@@ -63,6 +64,72 @@ def test_target_listing_round_trip_drops_retired_category_schema() -> None:
     assert "category_attribute_schema" not in target_draft
     assert target["category_id"] == "MLM123"
     assert merged["target_sites"][0]["attributes"] == {"9048": "Compacto"}
+
+
+def test_cbt_sales_targets_are_canonical_target_fields_and_project_only_for_publish() -> None:
+    draft = normalize_platform_draft(
+        {
+            "platform": "mercadolibre",
+            "site": "CBT",
+            # 根字段不是持久化契约，必须被删除。
+            "sites_to_sell": [
+                {"site_id": "MLB", "logistic_type": "remote"}
+            ],
+            "target_sites": [
+                {
+                    "platform": "mercadolibre",
+                    "site": "CBT",
+                    "sitesToSell": [
+                        {
+                            "siteId": " mlm ",
+                            "logisticType": " REMOTE ",
+                            "ignored": "value",
+                        },
+                        {"site_id": "MLM", "logistic_type": "remote"},
+                    ],
+                }
+            ],
+        },
+        "mercadolibre",
+    )
+
+    assert "sites_to_sell" not in draft
+    assert draft["target_sites"][0]["sites_to_sell"] == [
+        {"site_id": "MLM", "logistic_type": "remote"}
+    ]
+
+    target = draft_publish_targets(draft)[0]
+    projection = draft_for_publish_target(draft, target)
+    merged = merge_target_listing_into_draft(draft, target, projection)
+
+    assert projection["sites_to_sell"] == [
+        {"site_id": "MLM", "logistic_type": "remote"}
+    ]
+    assert "sites_to_sell" not in merged
+    assert merged["target_sites"][0]["sites_to_sell"] == [
+        {"site_id": "MLM", "logistic_type": "remote"}
+    ]
+
+
+def test_legacy_cbt_spanish_language_migrates_to_global_english() -> None:
+    draft = normalize_platform_draft(
+        {
+            "platform": "mercadolibre",
+            "site": "CBT",
+            "language": "es",
+            "target_sites": [
+                {
+                    "platform": "mercadolibre",
+                    "site": "CBT",
+                    "language": "es",
+                }
+            ],
+        },
+        "mercadolibre",
+    )
+
+    assert draft["language"] == "en-US"
+    assert draft["target_sites"][0]["language"] == "en-US"
 
 
 def test_ozon_target_round_trip_preserves_description_category_id() -> None:

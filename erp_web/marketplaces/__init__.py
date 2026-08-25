@@ -12,6 +12,7 @@ from .category_services import (
 )
 from .config_http import (
     exchange_mercadolibre_code,
+    fetch_mercadolibre_marketplace_user,
     fetch_mercadolibre_shop_name,
     fetch_mercadolibre_site_listing,
     fetch_mercadolibre_user_profile,
@@ -32,6 +33,7 @@ from .publishing import publish_mercadolibre
 __all__ = [
     "build_mercadolibre_payload",
     "exchange_mercadolibre_code",
+    "fetch_mercadolibre_marketplace_user",
     "fetch_mercadolibre_shop_name",
     "fetch_mercadolibre_site_listing",
     "fetch_mercadolibre_user_profile",

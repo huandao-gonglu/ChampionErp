@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import patch
 
 from erp_web import marketplaces as marketplace_publish
+from erp_web.runtime_units.publish_confirmation import canonical_publish_digest
 
 
 def test_global_mercadolibre_payload_includes_top_level_pictures() -> None:
@@ -18,14 +19,29 @@ def test_global_mercadolibre_payload_includes_top_level_pictures() -> None:
         },
         {"platforms": {"mercadolibre": {"listing": {"title": "Test product", "description": "Description"}}}},
         {
-            "mercadolibre": {"site_id": "CBT", "category_id": "CBT123"},
-            "listing": {"price": "18", "currency_id": "USD", "stock": "5", "sku": "SKU-1"},
+            "mercadolibre": {
+                "site_id": "CBT",
+                "category_id": "CBT123",
+                "marketplace_bindings": [
+                    {"site_id": "MLM", "logistic_type": "remote"}
+                ],
+            },
+            "listing": {
+                "price": "18",
+                "currency_id": "USD",
+                "stock": "5",
+                "sku": "SKU-1",
+                "mercadolibre_sites_to_sell": [
+                    {"site_id": "mlm", "logistic_type": "REMOTE"}
+                ],
+            },
         },
         ["ml-id:123-CBT456"],
     )
 
     assert payload["pictures"] == [{"id": "123-CBT456"}]
-    assert payload["sites_to_sell"][0]["site_id"] == "CBT"
+    assert payload["sites_to_sell"][0]["site_id"] == "MLM"
+    assert payload["sites_to_sell"][0]["logistic_type"] == "remote"
     assert "pictures" not in payload["sites_to_sell"][0]
     assert "sale_terms" not in payload["sites_to_sell"][0]
     assert "package_length" not in payload
@@ -39,6 +55,126 @@ def test_global_mercadolibre_payload_includes_top_level_pictures() -> None:
     assert attributes["PACKAGE_WEIGHT"] == "500 g"
     assert "SELLER_PACKAGE_LENGTH" not in attributes
     assert attributes["ITEM_CONDITION"] == "New"
+
+
+@pytest.mark.parametrize(
+    ("sites_to_sell", "bindings", "error_code"),
+    [
+        ([], [{"site_id": "MLM", "logistic_type": "remote"}], "MERCADOLIBRE_SITES_TO_SELL_REQUIRED"),
+        ([{"site_id": "CBT", "logistic_type": "remote"}], [{"site_id": "CBT", "logistic_type": "remote"}], "MERCADOLIBRE_SALES_TARGET_CBT_INVALID"),
+        ([{"site_id": "MLM", "logistic_type": "drop_off"}], [{"site_id": "MLM", "logistic_type": "remote"}], "MERCADOLIBRE_SALES_TARGET_NOT_AUTHORIZED"),
+    ],
+)
+def test_global_mercadolibre_payload_rejects_invalid_sales_targets(
+    sites_to_sell: list[dict[str, str]],
+    bindings: list[dict[str, str]],
+    error_code: str,
+) -> None:
+    with pytest.raises(RuntimeError, match=error_code):
+        marketplace_publish.build_mercadolibre_payload(
+            {"name": "Test", "category_id": "CBT123"},
+            {"platforms": {"mercadolibre": {"listing": {}}}},
+            {
+                "mercadolibre": {
+                    "site_id": "CBT",
+                    "marketplace_bindings": bindings,
+                },
+                "listing": {
+                    "price": "18",
+                    "currency_id": "USD",
+                    "mercadolibre_sites_to_sell": sites_to_sell,
+                },
+            },
+            ["https://example.com/a.jpg"],
+        )
+
+
+def test_global_mercadolibre_payload_rejects_non_usd_currency() -> None:
+    with pytest.raises(RuntimeError, match="MERCADOLIBRE_CBT_CURRENCY_INVALID"):
+        marketplace_publish.build_mercadolibre_payload(
+            {"name": "Test", "category_id": "CBT123"},
+            {"platforms": {"mercadolibre": {"listing": {}}}},
+            {
+                "mercadolibre": {
+                    "site_id": "CBT",
+                    "marketplace_bindings": [
+                        {"site_id": "MLM", "logistic_type": "remote"}
+                    ],
+                },
+                "listing": {
+                    "price": "18",
+                    "currency_id": "MXN",
+                    "mercadolibre_sites_to_sell": [
+                        {"site_id": "MLM", "logistic_type": "remote"}
+                    ],
+                },
+            },
+            ["https://example.com/a.jpg"],
+        )
+
+
+def test_global_mercadolibre_payload_blocks_fully_managed_price_flow() -> None:
+    with pytest.raises(RuntimeError, match="MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED"):
+        marketplace_publish.build_mercadolibre_payload(
+            {"name": "Test", "category_id": "CBT123"},
+            {"platforms": {"mercadolibre": {"listing": {}}}},
+            {
+                "mercadolibre": {
+                    "site_id": "CBT",
+                    "marketplace_bindings": [
+                        {
+                            "site_id": "MLM",
+                            "logistic_type": "remote",
+                            "business_model": "standard",
+                        },
+                        {
+                            "site_id": "MLB",
+                            "logistic_type": "remote",
+                            "business_model": "CBT CN Fulfillment Managed",
+                        }
+                    ],
+                },
+                "listing": {
+                    "price": "18",
+                    "currency_id": "USD",
+                    "mercadolibre_sites_to_sell": [
+                        {"site_id": "MLM", "logistic_type": "remote"}
+                    ],
+                },
+            },
+            ["https://example.com/a.jpg"],
+        )
+
+
+def test_publish_confirmation_digest_changes_with_cbt_sales_targets() -> None:
+    identity = {
+        "product_id": "product-1",
+        "draft_id": "draft-1",
+        "platform": "mercadolibre",
+        "site": "CBT",
+        "store_identity": "mercadolibre:test-seller",
+    }
+
+    first = canonical_publish_digest(
+        **identity,
+        payload={
+            "category_id": "CBT123",
+            "sites_to_sell": [
+                {"site_id": "MLM", "logistic_type": "remote"}
+            ],
+        },
+    )
+    second = canonical_publish_digest(
+        **identity,
+        payload={
+            "category_id": "CBT123",
+            "sites_to_sell": [
+                {"site_id": "MLB", "logistic_type": "remote"}
+            ],
+        },
+    )
+
+    assert first != second
 
 
 def test_site_mercadolibre_payload_does_not_force_global_endpoint() -> None:

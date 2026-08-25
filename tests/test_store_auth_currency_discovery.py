@@ -4,25 +4,26 @@ from __future__ import annotations
 """店铺授权币种发现与持久化测试（迁移方案 §16.2/§9）。
 
 覆盖：Yandex Business settings 币种解析与 wire 归一化、Ozon seller/info
-币种锁定、Mercado Libre 站点元数据单值/多值/无能力/失败四种结果、授权测试
-响应契约（ok 与 publish_ready 分离）、人工选择接口与 save-settings 信任边界。
+币种锁定、Mercado Libre CBT 市场映射与 USD 合同币种、区域站点元数据、授权
+测试响应契约（ok 与 publish_ready 分离）、人工选择接口与 save-settings 信任边界。
 """
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
 from erp_web import marketplaces as publisher
 from erp_web.context import get_context
 from erp_web.facades import auth_config_facade
+from erp_web.marketplaces import config_http
 from erp_web.marketplaces.publisher import PublishAdapterError
 from erp_web.marketplaces.yandex_currency import (
     yandex_internal_currency,
     yandex_wire_currency,
 )
-from erp_web.runtime_units import store_credentials
+from erp_web.runtime_units import mercadolibre_auth, store_credentials
 from erp_web.stores.config_store import sanitize_client_store_config
 from tests.runtime_test_utils import temp_app_context
 from tests.test_yandex_http import (
@@ -263,7 +264,7 @@ def test_ozon_auth_preview_test_does_not_persist_currency() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Mercado Libre：站点元数据发现四种结果
+# Mercado Libre：CBT 市场映射与区域站点币种发现
 # ---------------------------------------------------------------------------
 
 
@@ -271,6 +272,7 @@ def _run_mercadolibre_auth_test(
     *,
     profile: dict[str, Any] | Exception | None = None,
     site_listing: dict[str, Any] | Exception | None = None,
+    marketplace_user: dict[str, Any] | Exception | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     config: dict[str, Any] = {
         "mercadolibre": {
@@ -302,6 +304,34 @@ def _run_mercadolibre_auth_test(
                 None if isinstance(site_listing, Exception) else site_listing
             ),
         ),
+        patch.object(
+            publisher,
+            "fetch_mercadolibre_marketplace_user",
+            side_effect=(
+                marketplace_user if isinstance(marketplace_user, Exception) else None
+            ),
+            return_value=(
+                None
+                if isinstance(marketplace_user, Exception)
+                else marketplace_user
+                or {
+                    "user_id": str(
+                        profile.get("user_id") if isinstance(profile, dict) else ""
+                    ),
+                    "site_id": "CBT",
+                    "marketplace_bindings": [
+                        {
+                            "seller_id": "991",
+                            "site_id": "MLM",
+                            "logistic_type": "remote",
+                            "business_model": "",
+                            "pricing_model": "",
+                            "user_product": False,
+                        }
+                    ],
+                }
+            ),
+        ),
     ):
         result = store_credentials.test_store_auth("mercadolibre")
     return result, config
@@ -326,6 +356,113 @@ def test_mercadolibre_auth_single_site_currency_is_locked() -> None:
     assert store["currency_status"] == "ready"
 
 
+def test_fetch_mercadolibre_marketplace_user_uses_bearer_and_normalizes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, str]] = []
+
+    def fake_request(method: str, url: str, token: str = "", **_: Any) -> dict[str, Any]:
+        calls.append((method, url, token))
+        return {
+            "user_id": 99,
+            "site_id": "cbt",
+            "marketplaces": [
+                {
+                    "user_id": 991,
+                    "site_id": "mlm",
+                    "logistic_type": "REMOTE",
+                },
+                {
+                    "user_id": 992,
+                    "site_id": "mco",
+                    "logistic_type": "FULFILLMENT",
+                    "business_model": "CBT CN Fulfillment Managed",
+                    "pricing_model": "NET_PROCEEDS",
+                    "user_product": True,
+                },
+            ],
+        }
+
+    monkeypatch.setattr(config_http, "request_json", fake_request)
+
+    result = config_http.fetch_mercadolibre_marketplace_user("99", "ml-token")
+
+    assert calls == [
+        (
+            "GET",
+            "https://api.mercadolibre.com/marketplace/users/99",
+            "ml-token",
+        )
+    ]
+    assert result == {
+        "user_id": "99",
+        "site_id": "CBT",
+        "marketplace_bindings": [
+            {
+                "seller_id": "991",
+                "site_id": "MLM",
+                "logistic_type": "remote",
+                "business_model": "",
+                "pricing_model": "",
+                "user_product": False,
+            },
+            {
+                "seller_id": "992",
+                "site_id": "MCO",
+                "logistic_type": "fulfillment",
+                "business_model": "CBT CN Fulfillment Managed",
+                "pricing_model": "net_proceeds",
+                "user_product": True,
+            },
+        ],
+    }
+
+
+def test_fetch_mercadolibre_marketplace_user_filters_parent_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        config_http,
+        "request_json",
+        lambda *_args, **_kwargs: {
+            "user_id": 99,
+            "site_id": "CBT",
+            "marketplaces": [
+                {
+                    "user_id": 99,
+                    "site_id": "CBT",
+                    "logistic_type": "remote",
+                },
+                {
+                    "user_id": 991,
+                    "site_id": "MLM",
+                    "logistic_type": "remote",
+                },
+            ],
+        },
+    )
+
+    result = config_http.fetch_mercadolibre_marketplace_user("99", "token")
+
+    assert [item["site_id"] for item in result["marketplace_bindings"]] == ["MLM"]
+
+
+def test_fetch_mercadolibre_site_listing_rejects_cbt_before_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = Mock()
+    monkeypatch.setattr(config_http, "request_json", request)
+
+    with pytest.raises(
+        PublishAdapterError,
+        match="不能通过 /sites/CBT",
+    ) as exc_info:
+        config_http.fetch_mercadolibre_site_listing("cbt", "token")
+
+    assert exc_info.value.code == "MERCADOLIBRE_SITE_SCOPE_INVALID"
+    request.assert_not_called()
+
+
 def test_mercadolibre_auth_multiple_currencies_require_selection() -> None:
     result, config = _run_mercadolibre_auth_test(
         profile={"user_id": "99", "nickname": "SHOP_MX", "site_id": "MLM"},
@@ -344,21 +481,239 @@ def test_mercadolibre_auth_multiple_currencies_require_selection() -> None:
     assert config["mercadolibre"]["listing_currency"] == ""
 
 
-def test_mercadolibre_auth_site_not_found_requires_manual() -> None:
+def test_mercadolibre_cbt_uses_marketplace_bindings_and_contract_usd() -> None:
+    marketplace_user = {
+        "user_id": "99",
+        "site_id": "CBT",
+        "marketplace_bindings": [
+            {
+                "seller_id": "991",
+                "site_id": "MCO",
+                "logistic_type": "fulfillment",
+                "business_model": "CBT CN Fulfillment Managed",
+                "pricing_model": "net_proceeds",
+                "user_product": True,
+            }
+        ],
+    }
+    store = {
+        "access_token": "ml-token",
+        "account_site_id": "CBT",
+        "user_id": "99",
+    }
+    with (
+        patch.object(
+            publisher,
+            "fetch_mercadolibre_marketplace_user",
+            return_value=marketplace_user,
+        ) as fetch_marketplace_user,
+        patch.object(
+            publisher, "fetch_mercadolibre_site_listing"
+        ) as fetch_site,
+    ):
+        discovery = mercadolibre_auth.discover_mercadolibre_listing_currency(store)
+
+    fetch_marketplace_user.assert_called_once_with("99", "ml-token")
+    fetch_site.assert_not_called()
+    assert discovery == {
+        "supported": True,
+        "currencies": ["USD"],
+        "source": "global_selling_contract",
+    }
+    assert store["marketplace_bindings"] == marketplace_user["marketplace_bindings"]
+
+    result, config = _run_mercadolibre_auth_test(
+        profile={
+            "user_id": "99",
+            "nickname": "GLOBAL_STORE",
+            "site_id": "CBT",
+        },
+        marketplace_user=marketplace_user,
+    )
+    assert result["ok"] is True
+    assert result["publish_ready"] is True
+    currency_configuration = result["currency_configuration"]
+    assert currency_configuration["currency_mode"] == "locked"
+    assert currency_configuration["currency_status"] == "ready"
+    assert currency_configuration["listing_currency"] == "USD"
+    assert currency_configuration["currency_source"] == "global_selling_contract"
+    assert config["mercadolibre"]["marketplace_bindings"] == marketplace_user[
+        "marketplace_bindings"
+    ]
+
+
+def test_mercadolibre_regional_site_request_carries_access_token() -> None:
+    store = {
+        "access_token": "ml-token",
+        "account_site_id": "MLM",
+        "marketplace_bindings": [{"site_id": "MCO"}],
+    }
+    with patch.object(
+        publisher,
+        "fetch_mercadolibre_site_listing",
+        return_value={"id": "MLM", "currency": "MXN"},
+    ) as fetch_site:
+        discovery = mercadolibre_auth.discover_mercadolibre_listing_currency(store)
+
+    fetch_site.assert_called_once_with("MLM", "ml-token")
+    assert discovery == {
+        "supported": True,
+        "currencies": ["MXN"],
+        "source": "site_api",
+    }
+    assert store["marketplace_bindings"] == []
+
+
+def test_mercadolibre_cbt_mapping_failure_blocks_currency_readiness() -> None:
     result, config = _run_mercadolibre_auth_test(
         profile={"user_id": "99", "nickname": "GLOBAL_STORE", "site_id": "CBT"},
-        site_listing=PublishAdapterError(
-            "MERCADOLIBRE_NOT_FOUND", "GET sites/CBT failed: 404"
+        marketplace_user=PublishAdapterError(
+            "MERCADOLIBRE_SERVER_ERROR",
+            "GET marketplace/users/99 failed: 503",
+            retryable=True,
         ),
     )
 
     assert result["ok"] is True
     assert result["publish_ready"] is False
     currency_configuration = result["currency_configuration"]
-    assert currency_configuration["currency_mode"] == "manual"
-    assert currency_configuration["currency_status"] == "manual_required"
-    assert currency_configuration["listing_currency"] == ""
-    assert config["mercadolibre"]["currency_status"] == "manual_required"
+    assert currency_configuration["currency_status"] == "refresh_failed"
+    assert currency_configuration["currency_error_code"] == "MERCADOLIBRE_SERVER_ERROR"
+    assert config["mercadolibre"]["marketplace_bindings"] == []
+
+
+@pytest.mark.parametrize(
+    "marketplace_user",
+    [
+        {
+            "user_id": "another-user",
+            "site_id": "CBT",
+            "marketplace_bindings": [
+                {
+                    "seller_id": "991",
+                    "site_id": "MLM",
+                    "logistic_type": "remote",
+                }
+            ],
+        },
+        {
+            "user_id": "99",
+            "site_id": "MLM",
+            "marketplace_bindings": [
+                {
+                    "seller_id": "991",
+                    "site_id": "MLM",
+                    "logistic_type": "remote",
+                }
+            ],
+        },
+    ],
+)
+def test_mercadolibre_cbt_rejects_mismatched_marketplace_parent(
+    marketplace_user: dict[str, Any],
+) -> None:
+    store = {
+        "access_token": "ml-token",
+        "account_site_id": "CBT",
+        "user_id": "99",
+        "marketplace_bindings": [{"site_id": "MLB"}],
+    }
+    with patch.object(
+        publisher,
+        "fetch_mercadolibre_marketplace_user",
+        return_value=marketplace_user,
+    ):
+        discovery = mercadolibre_auth.discover_mercadolibre_listing_currency(store)
+
+    assert discovery["error_code"] == "MERCADOLIBRE_MARKETPLACE_PARENT_MISMATCH"
+    assert store["marketplace_bindings"] == []
+
+
+def test_mercadolibre_cbt_rejects_parent_site_as_sales_binding() -> None:
+    store = {
+        "access_token": "ml-token",
+        "account_site_id": "CBT",
+        "user_id": "99",
+    }
+    with patch.object(
+        publisher,
+        "fetch_mercadolibre_marketplace_user",
+        return_value={
+            "user_id": "99",
+            "site_id": "CBT",
+            "marketplace_bindings": [
+                {
+                    "seller_id": "99",
+                    "site_id": "CBT",
+                    "logistic_type": "remote",
+                }
+            ],
+        },
+    ):
+        discovery = mercadolibre_auth.discover_mercadolibre_listing_currency(store)
+
+    assert discovery["error_code"] == "MERCADOLIBRE_MARKETPLACE_BINDINGS_EMPTY"
+    assert store["marketplace_bindings"] == []
+
+
+def test_mercadolibre_cbt_bindings_and_fully_managed_fields_persist_to_auth_detail(
+    tmp_path: Path,
+) -> None:
+    marketplace_user = {
+        "user_id": "99",
+        "site_id": "CBT",
+        "marketplace_bindings": [
+            {
+                "seller_id": "992",
+                "site_id": "MCO",
+                "logistic_type": "fulfillment",
+                "business_model": "CBT CN Fulfillment Managed",
+                "pricing_model": "net_proceeds",
+                "user_product": True,
+            }
+        ],
+    }
+    with temp_app_context(tmp_path):
+        get_context().config.save_store_config(
+            {"mercadolibre": {"access_token": "ml-token"}}
+        )
+        with (
+            patch.object(
+                publisher,
+                "fetch_mercadolibre_user_profile",
+                return_value={
+                    "user_id": "99",
+                    "nickname": "GLOBAL_STORE",
+                    "site_id": "CBT",
+                },
+            ),
+            patch.object(
+                publisher,
+                "fetch_mercadolibre_marketplace_user",
+                return_value=marketplace_user,
+            ),
+            patch.object(
+                publisher, "fetch_mercadolibre_site_listing"
+            ) as fetch_site,
+        ):
+            result = store_credentials.test_store_auth("mercadolibre")
+
+        fetch_site.assert_not_called()
+        assert result["publish_ready"] is True
+        auth_detail = get_context().db.get_store_auth("mercadolibre")["auth_detail"]
+        assert auth_detail["marketplace_bindings"] == marketplace_user[
+            "marketplace_bindings"
+        ]
+        assert auth_detail["listing_currency"] == "USD"
+        assert auth_detail["currency_mode"] == "locked"
+        assert auth_detail["currency_status"] == "ready"
+        assert auth_detail["currency_source"] == "global_selling_contract"
+
+        # 映射属于后端在线派生授权态，不得落到 store_config.json。
+        static_config = publisher.load_store_config(
+            get_context().paths.store_config_path
+        )
+        assert "marketplace_bindings" not in static_config["mercadolibre"]
 
 
 def test_mercadolibre_auth_site_without_currency_requires_manual() -> None:
@@ -544,6 +899,13 @@ def test_sanitize_client_store_config_strips_derived_fields() -> None:
                 "currency_fingerprint": "sha256:fake",
                 "auth_status": "测试成功",
                 "account_site_id": "CBT",
+                "marketplace_bindings": [
+                    {
+                        "seller_id": "forged",
+                        "site_id": "MLM",
+                        "logistic_type": "remote",
+                    }
+                ],
             },
             "listing": {"stock": "10", "currency_id": "MXN"},
         }
@@ -570,6 +932,13 @@ def test_save_settings_never_accepts_client_currency_state(tmp_path: Path) -> No
                         "currency_mode": "manual",
                         "allowed_currencies": ["USD"],
                         "auth_status": "测试成功",
+                        "marketplace_bindings": [
+                            {
+                                "seller_id": "forged",
+                                "site_id": "MLM",
+                                "logistic_type": "remote",
+                            }
+                        ],
                     }
                 }
             }
@@ -582,6 +951,7 @@ def test_save_settings_never_accepts_client_currency_state(tmp_path: Path) -> No
         assert saved.get("currency_status", "") == ""
         assert saved.get("currency_mode", "") == ""
         assert saved.get("allowed_currencies", []) == []
+        assert saved.get("marketplace_bindings", []) == []
         # 客户端伪造的“测试成功”被拒绝；有凭据未测试时为默认展示态。
         assert saved.get("auth_status", "") == "已保存，未测试"
 

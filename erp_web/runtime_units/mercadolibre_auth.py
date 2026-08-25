@@ -2,9 +2,9 @@ from __future__ import annotations
 
 """Mercado Libre 授权身份与发布币种发现的统一服务。
 
-``/users/me`` 身份同步、远端站点币种元数据读取与币种状态写入收敛在这里；
-授权测试、token 刷新与发布前检查不再各自复制用户信息更新逻辑。静态
-``site_id`` 只是默认目标站点设置，不参与账户身份或币种推断。
+``/users/me`` 身份同步、CBT 子市场能力映射、区域站点币种元数据读取与币种
+状态写入收敛在这里；授权测试、token 刷新与发布前检查不再各自复制用户信息
+更新逻辑。静态 ``site_id`` 只是默认目标站点设置，不参与账户身份或币种推断。
 """
 
 from typing import Any
@@ -28,7 +28,7 @@ def sync_mercadolibre_identity(
     profile = publisher.fetch_mercadolibre_user_profile(token)
     user_id = str(profile.get("user_id") or "").strip()
     nickname = str(profile.get("nickname") or "").strip()
-    account_site_id = str(profile.get("site_id") or "").strip()
+    account_site_id = str(profile.get("site_id") or "").strip().upper()
     if user_id:
         store["user_id"] = user_id
     if nickname:
@@ -65,20 +65,88 @@ def _mercadolibre_site_currencies(site_data: dict[str, Any]) -> list[str]:
 def discover_mercadolibre_listing_currency(
     store: dict[str, Any],
 ) -> dict[str, Any]:
-    """店铺级发布币种发现：只读远端站点元数据。
+    """发现账号市场能力与店铺级发布币种。
 
     - ``account_site_id`` 来自 ``/users/me``；缺失时不推断，直接进入人工配置；
+    - CBT 父账号先读取 ``/marketplace/users/{user_id}`` 并持久化规范化子市场
+      binding；标准 Global Selling 合同币种固定为 USD，不请求不存在的
+      ``/sites/CBT``；
     - 站点元数据返回币种 → 单值锁定 / 多值待选；
-    - 站点不存在（404）或无币种字段（如 CBT/Global Selling）→ 该店铺没有
-      店铺级可查询能力 → 人工配置；
+    - 区域账号继续读取 ``/sites/{site_id}``，且携带当前 Bearer token；
+    - 站点不存在（404）或无币种字段 → 该店铺没有店铺级可查询能力 → 人工配置；
     - 其他请求失败 → ``refresh_failed``，绝不回退本地站点注册表。
     """
 
-    site_id = str(store.get("account_site_id") or "").strip()
+    site_id = str(store.get("account_site_id") or "").strip().upper()
     if not site_id:
         return {"supported": False}
+    token = str(store.get("access_token") or "").strip()
+    if site_id == "CBT":
+        # 远端映射是发布目标与 Fully Managed 能力的唯一可信来源。读取失败
+        # 时清空旧值，避免新授权账号继承上次成功同步的目标市场。
+        store["marketplace_bindings"] = []
+        user_id = str(store.get("user_id") or "").strip()
+        if not user_id:
+            return {
+                "supported": True,
+                "error_code": "MERCADOLIBRE_MARKETPLACE_USER_ID_MISSING",
+                "error_message": "Mercado Libre CBT 父账号缺少 user_id，无法读取销售市场映射",
+            }
+        try:
+            marketplace_user = publisher.fetch_mercadolibre_marketplace_user(
+                user_id, token
+            )
+        except PublishAdapterError as exc:
+            return {
+                "supported": True,
+                "error_code": str(
+                    getattr(exc, "code", "")
+                    or "MERCADOLIBRE_MARKETPLACE_BINDINGS_FAILED"
+                ),
+                "error_message": str(exc),
+            }
+        except Exception as exc:
+            return {
+                "supported": True,
+                "error_code": "MERCADOLIBRE_MARKETPLACE_BINDINGS_FAILED",
+                "error_message": str(exc),
+            }
+        mapped_user_id = str(marketplace_user.get("user_id") or "").strip()
+        mapped_site_id = str(marketplace_user.get("site_id") or "").strip().upper()
+        if mapped_user_id != user_id or mapped_site_id != "CBT":
+            return {
+                "supported": True,
+                "error_code": "MERCADOLIBRE_MARKETPLACE_PARENT_MISMATCH",
+                "error_message": (
+                    "Mercado Libre 销售市场映射与当前 CBT 父账号不一致"
+                ),
+            }
+        bindings = marketplace_user.get("marketplace_bindings")
+        valid_bindings = [
+            dict(binding)
+            for binding in bindings
+            if isinstance(binding, dict)
+            and str(binding.get("seller_id") or "").strip()
+            and str(binding.get("site_id") or "").strip().upper() not in {"", "CBT"}
+            and str(binding.get("logistic_type") or "").strip()
+        ] if isinstance(bindings, list) else []
+        if not valid_bindings:
+            return {
+                "supported": True,
+                "error_code": "MERCADOLIBRE_MARKETPLACE_BINDINGS_EMPTY",
+                "error_message": "Mercado Libre 未返回当前 CBT 账号可用的销售市场映射",
+            }
+        store["marketplace_bindings"] = valid_bindings
+        return {
+            "supported": True,
+            "currencies": ["USD"],
+            "source": "global_selling_contract",
+        }
+
+    # 区域账号不使用 CBT 市场映射；切换账号时同步清除旧派生值。
+    store["marketplace_bindings"] = []
     try:
-        site_data = publisher.fetch_mercadolibre_site_listing(site_id)
+        site_data = publisher.fetch_mercadolibre_site_listing(site_id, token)
     except PublishAdapterError as exc:
         if str(getattr(exc, "code", "") or "").endswith("NOT_FOUND"):
             return {"supported": False}

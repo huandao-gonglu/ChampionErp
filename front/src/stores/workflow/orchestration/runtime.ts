@@ -8,6 +8,13 @@ import { useWorkflowCatalogStore } from '@/stores/workflow/catalog'
 import { useWorkflowCollectionStore } from '@/stores/workflow/collection'
 import { useWorkflowPublishingStore } from '@/stores/workflow/publishing'
 import { useWorkflowSettingsStore } from '@/stores/workflow/settings'
+import {
+  isMercadoLibreCbtTarget,
+  mercadoLibreAccountSiteId,
+  mercadoLibreDestinationKey,
+  mercadoLibreIsFullyManaged,
+  mercadoLibreMarketplaceBindings,
+} from '@/utils/mercadolibreGlobalSelling'
 import type {
   CategoryAttributeValue,
   CategoryPrecheckResult,
@@ -17,6 +24,7 @@ import type {
   DraftIndexItem,
   Marketplace,
   MarketplaceDraft,
+  MarketplaceSiteToSell,
   MarketplaceTargetSite,
   PrecheckIssue,
   PricingResult,
@@ -364,6 +372,80 @@ export function createWorkflowRuntime() {
     })
   }
 
+  function updateDraftSitesToSell(
+    draftDetail: Pick<DraftDetail, 'draftId'>,
+    target: MarketplaceTargetSite,
+    sitesToSell: MarketplaceSiteToSell[],
+  ): boolean {
+    if (draftDetail.draftId && draftDetail.draftId !== currentDraft.value.draftId) {
+      setError('当前编辑草稿已切换，请重新打开草稿后再选择销售国家。')
+      return false
+    }
+    const key = targetSiteKey(target)
+    const targetIndex = currentDraft.value.targetSites.findIndex((item) => targetSiteKey(item) === key)
+    if (targetIndex < 0) {
+      setError('当前草稿中找不到要更新的 CBT 目标。')
+      return false
+    }
+    const currentTarget = currentDraft.value.targetSites[targetIndex]
+    if (isMercadoLibreCbtTarget(currentTarget)) {
+      if (mercadoLibreAccountSiteId(storeConfig.value) !== 'CBT') {
+        setError('当前店铺尚未验证为 CBT Global Selling 账号。')
+        return false
+      }
+      if (mercadoLibreIsFullyManaged(storeConfig.value)) {
+        setError('当前 CBT 账号为 Fully Managed，不能使用标准售价与销售目的地流程。')
+        return false
+      }
+    }
+    const allowedKeys = new Set(mercadoLibreMarketplaceBindings(storeConfig.value).map((binding) => (
+      mercadoLibreDestinationKey(binding.siteId, binding.logisticType)
+    )))
+    const seen = new Set<string>()
+    const normalizedSites = sitesToSell.flatMap((item) => {
+      const siteId = String(item.siteId || '').trim().toUpperCase()
+      const logisticType = String(item.logisticType || '').trim().toLowerCase()
+      const destinationKey = mercadoLibreDestinationKey(siteId, logisticType)
+      if (!siteId || siteId === 'CBT' || !logisticType || seen.has(destinationKey)) return []
+      if (isMercadoLibreCbtTarget(currentTarget) && !allowedKeys.has(destinationKey)) return []
+      seen.add(destinationKey)
+      return [{ siteId, logisticType }]
+    })
+    const previousSignature = (currentTarget.sitesToSell || [])
+      .map((item) => mercadoLibreDestinationKey(item.siteId, item.logisticType)).sort().join(',')
+    const nextSignature = normalizedSites
+      .map((item) => mercadoLibreDestinationKey(item.siteId, item.logisticType)).sort().join(',')
+    if (previousSignature === nextSignature) return true
+
+    const updatedTarget: MarketplaceTargetSite = {
+      ...currentTarget,
+      sitesToSell: normalizedSites,
+      validationErrors: [],
+      lastPrecheck: {},
+      lastPrecheckTarget: {},
+      // 目的地变化开启新的发布流程；远端发布身份由 lastPublishTask 独立保留。
+      status: 'category_ready',
+      publishStatus: '',
+    }
+    currentDraft.value.targetSites.splice(targetIndex, 1, updatedTarget)
+
+    const selectedKey = activePublishTargetKey.value || targetSiteKey(selectedPublishTarget.value)
+    if (key === selectedKey) {
+      currentDraft.value.validationErrors = []
+      currentDraft.value.lastPrecheck = {}
+      currentDraft.value.lastPrecheckTarget = {}
+      currentDraft.value.status = 'category_ready'
+      currentDraft.value.publishStatus = ''
+    }
+    const pricingTarget = pricingInput.value.targets.find((item) => pricingTargetKey(item.platform, item.site) === key)
+    if (pricingTarget) pricingTarget.sitesToSell = normalizedSites.map((item) => ({ ...item }))
+    pricingResult.value = null
+    precheck.value = null
+    precheckResults.value = {}
+    payloadPreview.value = null
+    return true
+  }
+
   function persistActiveTargetListingFields(extra: Partial<MarketplaceTargetSite> = {}) {
     if (!currentDraft.value.draftId) return
     if (!currentDraft.value.targetSites.length && currentPublishTargets.value.length) {
@@ -598,6 +680,7 @@ export function createWorkflowRuntime() {
       platform: target.platform,
       site: target.site || site?.code || '',
       listingCurrency,
+      sitesToSell: (target.sitesToSell || []).map((item) => ({ ...item })),
       currencyFingerprint: target.currencyFingerprint,
       commissionPercent: recordNumber(saved, ['commissionPercent', 'commission_percent'], defaults.commissionPercent),
       paymentFeePercent: recordNumber(saved, ['paymentFeePercent', 'payment_fee_percent'], defaults.paymentFeePercent),
@@ -897,7 +980,7 @@ export function createWorkflowRuntime() {
     requestSequence, currentStage, draft, currentPublishTargets, selectedPublishTarget, categoryAutoMatchTargetError,
     imagePool, selectedImages, selectedProducts, workflowSteps, progressPercent, activeMarketplaceSite,
     targetKey, targetSiteKey, cloneAttributes, cloneValidationErrors, categoryRecommendationForTarget, applyCategoryRecommendationForTarget,
-    setCategoryRecommendation, categoryPrecheckFromTarget, normalizeDraftTarget, mergeTargetDetails, persistActiveTargetListingFields, invalidateCategoryAttributeLoad,
+    setCategoryRecommendation, categoryPrecheckFromTarget, normalizeDraftTarget, mergeTargetDetails, updateDraftSitesToSell, persistActiveTargetListingFields, invalidateCategoryAttributeLoad,
     applyTargetListingToDraft, configuredTargetsForLanguage, configuredSelectedTargets, targetPlatforms, pricingTargetKey, platformSite,
     pricingTargetDefaults, pricingTargetsFromDraft, normalizedDraftTargets, syncActivePublishTarget, pricingTargetRecord, recordNumber,
     pricingTargetInput, draftDetailFromProduct, applyMutationIndexes, restorePrecheckFromProduct, restoreCategoryFromProduct, syncCollectDiagnosticsFromProduct,

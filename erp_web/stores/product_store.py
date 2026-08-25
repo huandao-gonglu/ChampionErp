@@ -23,6 +23,7 @@ from erp_web.product_model import (
     default_product_model,
     normalize_draft_target_site,
     normalize_draft_image_refs,
+    normalize_mercadolibre_sites_to_sell,
     normalize_platform_draft,
     normalize_product_model,
     validate_product_root_fields,
@@ -291,6 +292,63 @@ def _normalized_target_payload(target: dict[str, Any], platform: str, selected_s
             "language": selected_site["language"],
         },
     )
+
+
+def _draft_target_identity(
+    target: dict[str, Any],
+    *,
+    fallback_platform: str = "",
+    fallback_site: str = "",
+) -> tuple[str, str]:
+    return (
+        str(target.get("platform") or fallback_platform).strip().lower(),
+        str(
+            target.get("site")
+            or target.get("site_id")
+            or fallback_site
+        ).strip().upper(),
+    )
+
+
+def _changed_mercadolibre_cbt_targets(
+    existing: dict[str, Any],
+    incoming_targets: list[dict[str, Any]],
+) -> dict[int, dict[str, Any]]:
+    """Return CBT targets whose canonical sales-country selection changed."""
+
+    existing_platform = str(existing.get("platform") or "").strip().lower()
+    existing_site = str(existing.get("site") or "").strip()
+    raw_existing_targets = (
+        existing.get("target_sites")
+        if isinstance(existing.get("target_sites"), list)
+        else []
+    )
+    existing_targets = {
+        _draft_target_identity(
+            target,
+            fallback_platform=existing_platform,
+            fallback_site=existing_site,
+        ): target
+        for target in raw_existing_targets
+        if isinstance(target, dict)
+    }
+    changed: dict[int, dict[str, Any]] = {}
+    for index, target in enumerate(incoming_targets):
+        identity = _draft_target_identity(target)
+        if identity != ("mercadolibre", "CBT"):
+            continue
+        previous = existing_targets.get(identity)
+        if not isinstance(previous, dict):
+            continue
+        previous_sites = normalize_mercadolibre_sites_to_sell(
+            previous.get("sites_to_sell")
+        )
+        incoming_sites = normalize_mercadolibre_sites_to_sell(
+            target.get("sites_to_sell")
+        )
+        if previous_sites != incoming_sites:
+            changed[index] = previous
+    return changed
 
 
 class ProductStore:
@@ -651,7 +709,34 @@ class ProductStore:
         existing_platform = str(existing.get("platform") or "").strip().lower()
         requested_language = str(draft_payload.get("language") or existing.get("language") or "").strip()
         raw_targets = draft_payload.get("target_sites") if isinstance(draft_payload.get("target_sites"), list) else draft_payload.get("targetSites")
-        targets: list[dict[str, str]] = []
+        requested_primary_target = (
+            raw_targets[0]
+            if isinstance(raw_targets, list)
+            and raw_targets
+            and isinstance(raw_targets[0], dict)
+            else {}
+        )
+        requested_primary_platform = str(
+            requested_primary_target.get("platform")
+            or draft_payload.get("platform")
+            or existing_platform
+        ).strip().lower()
+        requested_primary_site = str(
+            requested_primary_target.get("site")
+            or requested_primary_target.get("site_id")
+            or draft_payload.get("site")
+            or existing.get("site")
+            or ""
+        ).strip().upper()
+        # 迁移旧 CBT/es 草稿：Global Selling 全局刊登必须使用英语。
+        if (
+            requested_primary_platform == "mercadolibre"
+            and requested_primary_site == "CBT"
+        ):
+            requested_language = str(
+                marketplace_site("mercadolibre", "CBT").get("language") or "en-US"
+            )
+        targets: list[dict[str, Any]] = []
         for raw_target in raw_targets if isinstance(raw_targets, list) else []:
             target = raw_target if isinstance(raw_target, dict) else {}
             target_platform = str(target.get("platform") or "").strip().lower()
@@ -673,6 +758,32 @@ class ProductStore:
             if existing_targets:
                 fallback_target = existing_targets[0] if isinstance(existing_targets[0], dict) else {}
             targets = [_normalized_target_payload(fallback_target, platform, selected_site)]
+        changed_cbt_targets = _changed_mercadolibre_cbt_targets(
+            existing,
+            targets,
+        )
+        for index, previous_target in changed_cbt_targets.items():
+            previous_publish_task = (
+                previous_target.get("last_publish_task")
+                if isinstance(previous_target.get("last_publish_task"), dict)
+                else {}
+            )
+            if not previous_publish_task:
+                previous_publish_task = (
+                    existing.get("last_publish_task")
+                    if isinstance(existing.get("last_publish_task"), dict)
+                    else {}
+                )
+            targets[index] = {
+                **targets[index],
+                "validation_errors": [],
+                "last_precheck": {},
+                "last_precheck_target": {},
+                "publish_status": "",
+                "status": "category_ready",
+                # 远端商品身份是已发生的发布事实，不随新销售目标失效。
+                "last_publish_task": deepcopy(previous_publish_task),
+            }
         primary_target = targets[0]
         platform = primary_target["platform"]
         platforms = []
@@ -692,6 +803,22 @@ class ProductStore:
             "target_sites": targets,
             "language": primary_target["language"],
         }
+        if changed_cbt_targets:
+            merged.update(
+                {
+                    "validation_errors": [],
+                    "last_precheck": {},
+                    "last_precheck_target": {},
+                    "publish_status": "",
+                    "status": "category_ready",
+                    "pricing": {},
+                    "last_publish_task": deepcopy(
+                        existing.get("last_publish_task")
+                        if isinstance(existing.get("last_publish_task"), dict)
+                        else {}
+                    ),
+                }
+            )
         merged["images"] = normalize_draft_image_refs(merged.get("images"))
         merged = normalize_platform_draft(
             merged,
@@ -701,6 +828,20 @@ class ProductStore:
         saved_draft_id = self._db.upsert_draft_model(product_id, platform, merged)
         draft = self._db.load_draft_model(saved_draft_id)
         product = self._db.load_product_model(source_product_id or product_id)
+        if changed_cbt_targets and isinstance(product, dict):
+            publish_preview = (
+                dict(product.get("publish_preview"))
+                if isinstance(product.get("publish_preview"), dict)
+                else {}
+            )
+            if "mercadolibre" in publish_preview:
+                publish_preview.pop("mercadolibre", None)
+                product["publish_preview"] = publish_preview
+                self._db.upsert_product_model(product)
+                draft = self._db.load_draft_model(saved_draft_id)
+                product = self._db.load_product_model(
+                    source_product_id or product_id
+                )
         product = normalize_persisted_product_fields(product)
         return {
             "ok": True,

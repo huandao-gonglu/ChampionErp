@@ -1,6 +1,11 @@
 import { saveDraft as saveDraftApi } from '@/api/workflow/catalog'
 import { calculatePrice as calculatePriceApi } from '@/api/workflow/publishing'
 import type { DraftDetail, PricingResult, PricingTargetResult, UnknownRecord } from '@/types/workflow'
+import {
+  cbtDestinationSelectionReady,
+  isMercadoLibreCbtTarget,
+  mercadoLibreIsFullyManaged,
+} from '@/utils/mercadolibreGlobalSelling'
 import type { WorkflowRuntime } from '../orchestration/runtime'
 
 type WorkflowPricingActionsPort = Pick<
@@ -10,6 +15,7 @@ type WorkflowPricingActionsPort = Pick<
   | 'currentDraftProductContext'
   | 'pricingInput'
   | 'pricingResult'
+  | 'storeConfig'
   | 'loading'
   | 'addLog'
   | 'setError'
@@ -21,7 +27,7 @@ type WorkflowPricingActionsPort = Pick<
 
 export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort) {
   const {
-    product, currentDraft, currentDraftProductContext, pricingInput, pricingResult,
+    product, currentDraft, currentDraftProductContext, pricingInput, pricingResult, storeConfig,
     loading, addLog, setError, currentStage, applyMutationIndexes,
     syncPricingInputFromProduct, syncDraftPackageDimensionsFromPricingInput,
   } = runtime
@@ -99,6 +105,16 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
     if (!currentDraft.value.draftId) {
       setError('请先从草稿箱选择一个草稿再核价。')
       return false
+    }
+    if (currentDraft.value.targetSites.some(isMercadoLibreCbtTarget)) {
+      if (mercadoLibreIsFullyManaged(storeConfig.value)) {
+        setError('当前 CBT 账号为 Fully Managed，不能使用标准售价流程。')
+        return false
+      }
+      if (!cbtDestinationSelectionReady(currentDraft.value, storeConfig.value)) {
+        setError('CBT 草稿至少需要选择一个当前授权的销售国家/物流后才能核价。')
+        return false
+      }
     }
     if (!pricingInput.value.targets.length) {
       setError('当前草稿没有可核价的目标市场，请先在草稿箱选择市场。')

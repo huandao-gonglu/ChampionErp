@@ -300,6 +300,102 @@ def test_mercadolibre_definition_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     _assert_canonical_shape(definition)
 
 
+def test_mercadolibre_cbt_search_uses_saved_access_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str | None, float]] = []
+
+    def fake_http_json(
+        url: str,
+        access_token: str | None = None,
+        *,
+        timeout_seconds: float = 8,
+    ) -> list[dict[str, Any]]:
+        calls.append((url, access_token, timeout_seconds))
+        return [
+            {
+                "domain_id": "CBT-WOODWORKING_TOOLS",
+                "domain_name": "Woodworking Tools",
+                "category_id": "CBT407134",
+                "category_name": "Other",
+            }
+        ]
+
+    provider = category_providers.MercadoLibreCategoryProvider()
+    monkeypatch.setattr(
+        provider,
+        "_store_config",
+        lambda: {"site_id": "CBT", "access_token": "saved-token"},
+    )
+    monkeypatch.setattr(category_providers, "http_json", fake_http_json)
+
+    candidates = provider.search_categories(
+        "woodworking tool",
+        site="CBT",
+        limit=5,
+        timeout_seconds=3,
+    )
+
+    assert calls[0][:2] == (
+        "https://api.mercadolibre.com/marketplace/domain_discovery/search?q=woodworking%20tool&limit=5",
+        "saved-token",
+    )
+    assert calls[0][2] == pytest.approx(3, abs=0.1)
+    assert candidates[0]["category_id"] == "CBT407134"
+    assert candidates[0]["site"] == "CBT"
+
+
+def test_mercadolibre_cbt_search_rejects_missing_access_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = category_providers.MercadoLibreCategoryProvider()
+    monkeypatch.setattr(
+        provider,
+        "_store_config",
+        lambda: {"site_id": "CBT", "access_token": ""},
+    )
+    monkeypatch.setattr(
+        category_providers,
+        "http_json",
+        lambda *_args, **_kwargs: pytest.fail("缺少 Token 时不应发送请求"),
+    )
+
+    with pytest.raises(RuntimeError, match="Access Token.*请先填写"):
+        provider.search_categories("woodworking tool", site="CBT")
+
+
+def test_mercadolibre_regional_search_remains_public(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str | None]] = []
+
+    def fake_http_json(
+        url: str,
+        access_token: str | None = None,
+        *,
+        timeout_seconds: float = 8,
+    ) -> list[dict[str, Any]]:
+        del timeout_seconds
+        calls.append((url, access_token))
+        return []
+
+    provider = category_providers.MercadoLibreCategoryProvider()
+    monkeypatch.setattr(
+        provider,
+        "_store_config",
+        lambda: {"site_id": "CBT", "access_token": "saved-token"},
+    )
+    monkeypatch.setattr(category_providers, "http_json", fake_http_json)
+
+    assert provider.search_categories("necklace", site="MLM", limit=5) == []
+    assert calls == [
+        (
+            "https://api.mercadolibre.com/sites/MLM/domain_discovery/search?q=necklace&limit=5",
+            None,
+        )
+    ]
+
+
 def test_definition_from_legacy_drops_unidentified_attributes() -> None:
     definition = definition_from_legacy_attributes(
         platform="ozon",

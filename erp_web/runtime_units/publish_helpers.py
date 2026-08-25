@@ -9,13 +9,19 @@ from erp_web.context import get_context
 from erp_web.product_model import (
     default_draft,
     normalize_draft_image_refs,
+    normalize_draft_target_site,
+    normalize_mercadolibre_sites_to_sell,
     validate_category_precheck,
 )
 from erp_web.services.listing_currency_service import require_store_listing_currency
+from erp_web.services.mercadolibre_target_contract import (
+    mercadolibre_global_target_contract,
+)
 from erp_web.stores.config_store import summarize_store_auth_states
 from erp_web.stores.product_store import normalize_product_fields
 
 from .copy_generation import apply_product_drafts_to_plan, build_plan_for_platform
+from .draft_publish_context import draft_for_publish_target
 from .image_pool_core import (
     _source_pool_items,
     current_image_pool,
@@ -45,7 +51,7 @@ def build_mercadolibre_publish_payload(
     picture_refs: list[str] | None = None,
 ) -> dict[str, Any]:
     plan = apply_product_drafts_to_plan(product, build_plan_for_platform(product, "mercadolibre"))
-    draft = _draft_for_platform(product, "mercadolibre")
+    draft = _draft_for_selected_target(product, "mercadolibre")
     payload_config = deepcopy(config)
     store = payload_config.setdefault("mercadolibre", {})
     store["category_id"] = str(draft.get("category_id") or "").strip()
@@ -57,7 +63,6 @@ def build_mercadolibre_publish_payload(
         draft, "mercadolibre", site_id
     )
     package_dimensions = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
-    shipping = draft.get("shipping") if isinstance(draft.get("shipping"), dict) else {}
     for key, value in {
         "mercadolibre_price": selected_price,
         "price": selected_price,
@@ -71,11 +76,14 @@ def build_mercadolibre_publish_payload(
         "package_width_cm": package_dimensions.get("width_cm"),
         "package_height_cm": package_dimensions.get("height_cm"),
         "package_weight_kg": package_dimensions.get("weight_kg"),
-        "mercadolibre_logistic_type": shipping.get("logistic_type") or shipping.get("mode"),
         "mercadolibre_attributes": draft.get("attributes") if isinstance(draft.get("attributes"), dict) else {},
     }.items():
         if value not in (None, "", {}):
             listing[key] = value
+    # 空列表也必须覆盖配置副本，避免旧配置意外成为 Global Selling fallback。
+    listing["mercadolibre_sites_to_sell"] = (
+        normalize_mercadolibre_sites_to_sell(draft.get("sites_to_sell"))
+    )
     if isinstance(draft.get("sale_terms"), list) and draft.get("sale_terms"):
         listing["mercadolibre_sale_terms"] = draft.get("sale_terms")
     refs = (
@@ -151,7 +159,32 @@ def validate_mercadolibre_publish_payload(payload: Any, config: dict[str, Any]) 
         missing.append("价格")
     if not payload.get("attributes"):
         missing.append("类目属性")
-    pictures = payload.get("pictures") or payload.get("sites_to_sell", [{}])[0].get("pictures", [])
+    sites_to_sell = (
+        payload.get("sites_to_sell")
+        if isinstance(payload.get("sites_to_sell"), list)
+        else []
+    )
+    is_global_selling = bool(payload.get("_global_selling")) or str(
+        payload.get("category_id") or ""
+    ).strip().upper().startswith("CBT")
+    if is_global_selling:
+        if str(payload.get("currency_id") or "").strip().upper() != "USD":
+            missing.append("标准 CBT Global Selling 刊登币种必须为 USD")
+        _, target_issues = mercadolibre_global_target_contract(
+            sites_to_sell,
+            (config.get("mercadolibre") or {}).get("marketplace_bindings"),
+        )
+        missing.extend(issue["message"] for issue in target_issues)
+    pictures = payload.get("pictures")
+    if not pictures:
+        pictures = next(
+            (
+                site.get("pictures")
+                for site in sites_to_sell
+                if isinstance(site, dict) and isinstance(site.get("pictures"), list)
+            ),
+            [],
+        )
     if not pictures:
         missing.append("图片")
     return missing
@@ -241,6 +274,46 @@ def _draft_for_platform(product: dict[str, Any], platform: str) -> dict[str, Any
     drafts = product.get("drafts") if isinstance(product.get("drafts"), dict) else {}
     draft = drafts.get(platform) if isinstance(drafts, dict) else {}
     return draft if isinstance(draft, dict) else default_draft(platform)
+
+
+def _draft_for_selected_target(
+    product: dict[str, Any], platform: str
+) -> dict[str, Any]:
+    """把持久化 target_sites[] 的当前目标投影到临时 draft 根。"""
+
+    draft = _draft_for_platform(product, platform)
+    targets = (
+        draft.get("target_sites")
+        if isinstance(draft.get("target_sites"), list)
+        else []
+    )
+    if not targets:
+        return draft
+    platform_key = str(platform or "").strip().lower()
+    site_id = str(draft.get("site") or draft.get("site_id") or "").strip()
+    target = next(
+        (
+            item
+            for item in targets
+            if isinstance(item, dict)
+            and str(item.get("platform") or platform_key).strip().lower()
+            == platform_key
+            and (
+                not site_id
+                or str(item.get("site") or item.get("site_id") or "")
+                .strip()
+                .casefold()
+                == site_id.casefold()
+            )
+        ),
+        None,
+    )
+    if target is None:
+        return draft
+    return draft_for_publish_target(
+        draft,
+        normalize_draft_target_site(target, platform_key, draft),
+    )
 
 
 def _selected_price_and_currency(
@@ -367,6 +440,7 @@ def _masked_auth_status(platform: str, config: dict[str, Any]) -> tuple[str, str
 
 __all__ = [
     "_draft_for_platform",
+    "_draft_for_selected_target",
     "_draft_images",
     "_field_error_map",
     "_has_main_image",

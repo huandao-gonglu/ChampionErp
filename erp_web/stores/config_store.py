@@ -79,6 +79,9 @@ _STORE_AUTH_DETAIL_FIELDS = {
     # Mercado Libre 远端授权身份（/users/me 的 site_id）；静态 site_id
     # 只是默认目标站点设置，不承担账户身份语义。
     "account_site_id",
+    # Global Selling 父账号通过 /marketplace/users/{user_id} 在线派生的
+    # 本地站点、物流与 Fully Managed 能力映射。
+    "marketplace_bindings",
     # Yandex 在线派生的动态授权/店铺能力（仅存 SQLite store_auth）。
     "business_id",
     "business_name",
@@ -109,6 +112,7 @@ _CLIENT_DERIVED_STORE_FIELDS = frozenset(
         "currency_resolution",
         "currency_id",
         "account_site_id",
+        "marketplace_bindings",
     }
 )
 # 平台段允许客户端提交的非敏感静态配置（注册表声明的凭据字段之外）。
@@ -649,6 +653,7 @@ class ConfigStore:
             for field_name in _STORE_AUTH_DETAIL_FIELDS:
                 section[field_name] = ""
             section["allowed_currencies"] = []
+            section["marketplace_bindings"] = []
             section["auth_status"] = "已保存，未测试"
             section["auth_checked_at"] = ""
 
@@ -763,10 +768,26 @@ class ConfigStore:
             {"key": "app_secret", "label": "Client Secret", "ok": bool(app_secret), "value": mask_secret(app_secret) if app_secret else "缺失"},
             {"key": "redirect_uri", "label": "Redirect URI", "ok": bool(redirect_uri) and redirect_uri.lower().startswith("https://"), "value": redirect_uri or "缺失"},
             {"key": "site_id", "label": "Site", "ok": bool(site_id), "value": site_id},
-            {"key": "code_verifier", "label": "code_verifier", "ok": bool(code_verifier), "value": "已生成，等待 code 换 token" if code_verifier else "未生成"},
-            {"key": "access_token", "label": "Access Token", "ok": bool(access_token), "value": mask_secret(access_token) if access_token else "未保存"},
-            {"key": "refresh_token", "label": "Refresh Token", "ok": bool(refresh_token), "value": mask_secret(refresh_token) if refresh_token else "未保存"},
         ]
+        if not token_ready or code_verifier:
+            fields.append(
+                {
+                    "key": "code_verifier",
+                    "label": "code_verifier",
+                    "ok": bool(code_verifier),
+                    "value": (
+                        "已生成，等待 code 换 token"
+                        if code_verifier
+                        else "未生成"
+                    ),
+                }
+            )
+        fields.extend(
+            [
+                {"key": "access_token", "label": "Access Token", "ok": bool(access_token), "value": mask_secret(access_token) if access_token else "未保存"},
+                {"key": "refresh_token", "label": "Refresh Token", "ok": bool(refresh_token), "value": mask_secret(refresh_token) if refresh_token else "未保存"},
+            ]
+        )
         lines = ["Mercado Libre 授权配置检查清单"]
         lines.extend([f"- {item['label']}：{'OK' if item['ok'] else '缺失/需检查'}（{item['value']}）" for item in fields])
         lines.append(f"- 下一步：{next_action}")

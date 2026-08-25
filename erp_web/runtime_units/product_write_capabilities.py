@@ -40,10 +40,8 @@ from erp_web.schemas.product_write_capabilities import (
     ProductSaveResult,
 )
 from erp_web.services.ai_tool_declaration import Injected, ai_tool
-from erp_web.services.capability_errors import (
-    BusinessCapabilityError,
-    CapabilityInputRequired,
-)
+from erp_web.services.capability_input_provenance import user_supplied_input
+from erp_web.services.capability_errors import BusinessCapabilityError
 from erp_web.services.task_approval import verify_execution_approval
 
 
@@ -721,14 +719,13 @@ def draft_stock_update(
     idempotency="required",
     idempotency_keys=("operation_key",),
     recovery_policy="manual",
-    version="1",
+    version="2",
 )
 def draft_pricing_apply(
     request: DraftPricingApplyRequest,
     scope: Annotated[ProductWriteCapabilityScope, Injected()],
     execution: Annotated[AiExecutionContext, Injected()],
 ) -> DraftPricingApplyResult:
-    del execution
     result, error, _status = scope.products.load_draft_detail_from_index(
         request.draft_id
     )
@@ -744,16 +741,18 @@ def draft_pricing_apply(
             "DRAFT_PLATFORM_MISSING",
             "无法确定草稿的目标平台。",
         )
-    try:
-        applied = prepare_target_pricing(
-            target_draft_id=request.draft_id,
-            target_platform=platform,
-            site=request.site,
-            pricing_input=dict(request.pricing_input),
-            product_store=scope.products,  # type: ignore[arg-type]
-        )
-    except CapabilityInputRequired:
-        raise
+    applied = prepare_target_pricing(
+        target_draft_id=request.draft_id,
+        target_platform=platform,
+        site=request.site,
+        sales_target=(
+            request.sales_target
+            if user_supplied_input(execution.business_scope, "sales_target")
+            else ""
+        ),
+        pricing_input=dict(request.pricing_input),
+        product_store=scope.products,  # type: ignore[arg-type]
+    )
     applied_price = applied.get("applied_price")
     amount = _text(
         applied_price.get("amount") if isinstance(applied_price, dict) else ""

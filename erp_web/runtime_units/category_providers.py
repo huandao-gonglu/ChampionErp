@@ -92,20 +92,22 @@ def _cache_root():
 class MercadoLibreCategoryProvider(CategoryProvider):
     platform = "mercadolibre"
 
-    def resolve_site(self, site: str = "") -> str:
+    def _store_config(self) -> dict[str, Any]:
         from erp_web.context import get_context
 
-        configured = str(
-            (
-                get_context().config.load_store_config().get(self.platform)
-                or {}
-            ).get("site_id")
-            or ""
-        ).strip()
+        config = get_context().config.load_store_config().get(self.platform)
+        return config if isinstance(config, dict) else {}
+
+    @staticmethod
+    def _resolved_site(site: str, store_config: dict[str, Any]) -> str:
+        configured = str(store_config.get("site_id") or "").strip()
         return str(site or configured or "MLM").strip().upper()
 
+    def resolve_site(self, site: str = "") -> str:
+        return self._resolved_site(site, self._store_config())
+
     def _discovery_url(self, site: str, query: str, limit: int) -> str:
-        site = self.resolve_site(site)
+        site = str(site or "MLM").strip().upper()
         quoted_query = urllib.parse.quote(query)
         safe_limit = max(1, min(8, int(limit or 5)))
         if site == "CBT":
@@ -255,13 +257,23 @@ class MercadoLibreCategoryProvider(CategoryProvider):
         query = str(query or "").strip()
         if not query:
             return []
-        resolved_site = self.resolve_site(site)
+        store_config = self._store_config()
+        resolved_site = self._resolved_site(site, store_config)
         discovery_url = self._discovery_url(resolved_site, query, limit)
+        access_token: str | None = None
+        if resolved_site == "CBT":
+            access_token = str(store_config.get("access_token") or "").strip()
+            if not access_token:
+                raise RuntimeError(
+                    "Mercado Libre CBT 类目预测缺少 Access Token，"
+                    "请先填写有效凭据或重新授权。"
+                )
         if timeout_seconds is None:
-            data = http_json(discovery_url)
+            data = http_json(discovery_url, access_token)
         else:
             data = http_json(
                 discovery_url,
+                access_token,
                 timeout_seconds=_remaining_timeout(
                     _deadline_at(timeout_seconds),
                     8,

@@ -71,6 +71,9 @@ class LocalTaskStep(StrictTaskModel):
     # arguments 在任务持久化前已经由目标 Capability 的 request_adapter 校验，
     # 是规范化 JSON；补充资料也以整份 arguments 合并后重新校验。
     arguments: dict[str, JsonValue] = Field(default_factory=dict)
+    # 仅由受信 submit_input 入口写入；Capability 用它区分用户明确补充的值与
+    # 模型在初始计划中主动生成的同名参数。
+    user_input_keys: tuple[str, ...] = Field(default=(), max_length=100)
     # operation_key 在计划创建时生成，任何重试都必须复用同一个值。
     operation_key: str = Field(min_length=1, max_length=320)
     status: TaskStepStatus = "pending"

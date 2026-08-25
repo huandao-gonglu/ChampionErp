@@ -3,8 +3,10 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import erp_web.runtime_units.publish_validation as publish_validation
+from erp_web.context import get_context
 from erp_web.runtime_units.publish_validation import validate_mercadolibre_draft
 from erp_web.services.listing_currency_service import compute_currency_fingerprint
+from erp_web.services.pricing_service import pricing_calculation_fingerprint
 
 
 def test_mercadolibre_review_summary_restores_local_attribute_ids() -> None:
@@ -139,6 +141,162 @@ def _ml_product() -> dict:
         },
         "images": [{"url": "https://example.com/a.jpg", "selected": True, "platforms": ["mercadolibre"], "is_main": True}],
     }
+
+
+def _ml_cbt_product(sites_to_sell: list[dict[str, str]]) -> dict:
+    product = _ml_product()
+    draft = product["drafts"]["mercadolibre"]
+    draft["site"] = "CBT"
+    draft["category_id"] = "CBT1"
+    draft["category_path"] = "Global category"
+    draft["target_sites"] = [
+        {
+            "platform": "mercadolibre",
+            "site": "CBT",
+            "listing_currency": "USD",
+            "category_id": "CBT1",
+            "category_path": "Global category",
+            "sites_to_sell": sites_to_sell,
+        }
+    ]
+    return product
+
+
+def test_mercadolibre_precheck_requires_cbt_sales_targets() -> None:
+    config = _ml_ready_config("USD")
+    config["mercadolibre"]["marketplace_bindings"] = [
+        {"site_id": "MLM", "logistic_type": "remote"}
+    ]
+    with patch.object(
+        publish_validation, "mercadolibre_category_allowed_currencies", return_value=[]
+    ):
+        result = validate_mercadolibre_draft(_ml_cbt_product([]), config)
+
+    assert any(
+        item["code"] == "MERCADOLIBRE_SITES_TO_SELL_REQUIRED"
+        for item in result["errors"]
+    )
+
+
+def test_mercadolibre_precheck_rejects_unbound_cbt_sales_target() -> None:
+    config = _ml_ready_config("USD")
+    config["mercadolibre"]["marketplace_bindings"] = [
+        {"site_id": "MLM", "logistic_type": "remote"}
+    ]
+    with patch.object(
+        publish_validation, "mercadolibre_category_allowed_currencies", return_value=[]
+    ):
+        result = validate_mercadolibre_draft(
+            _ml_cbt_product(
+                [{"site_id": "MLM", "logistic_type": "drop_off"}]
+            ),
+            config,
+        )
+
+    assert any(
+        item["code"] == "MERCADOLIBRE_SALES_TARGET_NOT_AUTHORIZED"
+        for item in result["errors"]
+    )
+
+
+def test_mercadolibre_precheck_blocks_fully_managed_standard_price_flow() -> None:
+    config = _ml_ready_config("USD")
+    config["mercadolibre"]["marketplace_bindings"] = [
+        {
+            "site_id": "MLM",
+            "logistic_type": "remote",
+            "business_model": "standard",
+        },
+        {
+            "site_id": "MLB",
+            "logistic_type": "remote",
+            "business_model": "CBT CN Fulfillment Managed",
+        }
+    ]
+    with patch.object(
+        publish_validation, "mercadolibre_category_allowed_currencies", return_value=[]
+    ):
+        result = validate_mercadolibre_draft(
+            _ml_cbt_product([{"site_id": "MLM", "logistic_type": "remote"}]),
+            config,
+        )
+
+    assert any(
+        item["code"] == "MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED"
+        for item in result["errors"]
+    )
+
+
+def test_mercadolibre_precheck_requires_usd_for_standard_cbt() -> None:
+    config = _ml_ready_config("MXN")
+    config["mercadolibre"]["marketplace_bindings"] = [
+        {"site_id": "MLM", "logistic_type": "remote"}
+    ]
+    with patch.object(
+        publish_validation, "mercadolibre_category_allowed_currencies", return_value=[]
+    ):
+        result = validate_mercadolibre_draft(
+            _ml_cbt_product([{"site_id": "MLM", "logistic_type": "remote"}]),
+            config,
+        )
+
+    assert any(
+        item["code"] == "MERCADOLIBRE_CBT_CURRENCY_INVALID"
+        for item in result["errors"]
+    )
+
+
+def test_mercadolibre_precheck_invalidates_pricing_when_cbt_sales_targets_change() -> None:
+    config = _ml_ready_config("USD")
+    config["mercadolibre"]["marketplace_bindings"] = [
+        {"site_id": "MLM", "logistic_type": "remote"},
+        {"site_id": "MLB", "logistic_type": "remote"},
+    ]
+    product = _ml_cbt_product(
+        [{"site_id": "MLM", "logistic_type": "remote"}]
+    )
+    basis = {
+        "listing_currency": "USD",
+        "currency_fingerprint": config["mercadolibre"]["currency_fingerprint"],
+        "length_cm": "1",
+        "width_cm": "1",
+        "height_cm": "1",
+        "weight_kg": "0.1",
+        # 这是改销售国家之前的旧核价目标。
+        "sites_to_sell": [
+            {"site_id": "MLB", "logistic_type": "remote"}
+        ],
+    }
+    product["drafts"]["mercadolibre"]["pricing"] = {
+        "targets": {
+            "mercadolibre:cbt": {
+                "listing_currency": "USD",
+                "applied_price": {"amount": "18.00", "currency": "USD"},
+                "calculation_basis": basis,
+                "calculation_fingerprint": pricing_calculation_fingerprint(
+                    basis
+                ),
+            }
+        }
+    }
+
+    context = get_context()
+    with (
+        patch.object(context.config, "load_store_config", return_value=config),
+        patch.object(context.config, "load_app_config", return_value={}),
+        patch.object(
+            publish_validation,
+            "mercadolibre_category_allowed_currencies",
+            return_value=[],
+        ),
+    ):
+        result = validate_mercadolibre_draft(product, config)
+
+    assert any(
+        item["code"] == "PRICING_STALE"
+        and "销售国家或物流方式已变化" in item["message"]
+        for item in result["errors"]
+    )
 
 
 def test_mercadolibre_precheck_rejects_store_currency_outside_category_allowed_set() -> None:

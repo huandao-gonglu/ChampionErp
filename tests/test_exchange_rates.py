@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from erp_web.context import get_context
 from erp_web.runtime_units import pricing_runtime
 
@@ -167,7 +169,7 @@ def test_live_batch_pricing_uses_fetched_rates_when_common_rates_are_empty(monke
                 "rub_cny_rate": "",
             },
             "targets": [
-                {"target_key": "mercadolibre:cbt", "platform": "mercadolibre", "site": "CBT", "commission_percent": 16, "target_margin_percent": 30},
+                {"target_key": "mercadolibre:mlb", "platform": "mercadolibre", "site": "MLB", "commission_percent": 16, "target_margin_percent": 30},
                 {"target_key": "mercadolibre:mlm", "platform": "mercadolibre", "site": "MLM", "commission_percent": 16, "target_margin_percent": 30},
                 {"target_key": "mercadolibre:mlc", "platform": "mercadolibre", "site": "MLC", "commission_percent": 16, "target_margin_percent": 30},
             ],
@@ -181,3 +183,78 @@ def test_live_batch_pricing_uses_fetched_rates_when_common_rates_are_empty(monke
     assert result["input"]["common"]["mxn_usd_rate"] == 17.521375
     assert [target["errors"] for target in result["results"]] == [[], [], []]
     assert [float(target["suggested_price"]["amount"]) > 0 for target in result["results"]] == [True, True, True]
+
+
+@pytest.mark.parametrize(
+    ("sites_to_sell", "bindings", "error_code", "expected_options"),
+    [
+        (
+            [],
+            [{"site_id": "MLM", "logistic_type": "remote"}],
+            "MERCADOLIBRE_SITES_TO_SELL_REQUIRED",
+            ["MLM:remote"],
+        ),
+        (
+            [{"site_id": "MLM", "logistic_type": "drop_off"}],
+            [{"site_id": "MLM", "logistic_type": "remote"}],
+            "MERCADOLIBRE_SALES_TARGET_NOT_AUTHORIZED",
+            ["MLM:remote"],
+        ),
+        (
+            [{"site_id": "MLM", "logistic_type": "remote"}],
+            [
+                {
+                    "site_id": "MLM",
+                    "logistic_type": "remote",
+                    "business_model": "standard",
+                },
+                {
+                    "site_id": "MLB",
+                    "logistic_type": "remote",
+                    "business_model": "CBT CN Fulfillment Managed",
+                },
+            ],
+            "MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED",
+            [],
+        ),
+    ],
+)
+def test_cbt_pricing_blocks_invalid_sales_target_contract(
+    sites_to_sell: list[dict[str, str]],
+    bindings: list[dict[str, str]],
+    error_code: str,
+    expected_options: list[str],
+) -> None:
+    from tests.runtime_test_utils import seed_store_currency
+
+    seed_store_currency(
+        "mercadolibre",
+        "USD",
+        identity={
+            "user_id": "99",
+            "account_site_id": "CBT",
+            "marketplace_bindings": bindings,
+        },
+    )
+
+    result = pricing_runtime.calculate_price(
+        {
+            "exchange_rate_mode": "manual",
+            "usd_cny_rate": 7,
+            "mxn_usd_rate": 17,
+            "common": {"purchase_cost": 100, "weight_kg": 0.5},
+            "targets": [
+                {
+                    "platform": "mercadolibre",
+                    "site": "CBT",
+                    "sites_to_sell": sites_to_sell,
+                }
+            ],
+        }
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == error_code
+    assert result["field"]
+    assert result["next_action"]
+    assert result["sales_target_options"] == expected_options

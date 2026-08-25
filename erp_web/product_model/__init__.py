@@ -46,6 +46,7 @@ from .image_pool_model import (
 from .merge_model import (
     merge_source_partial_result,
     normalize_draft_target_site,
+    normalize_mercadolibre_sites_to_sell,
     normalize_platform_draft,
     normalize_product_model,
     validate_platform_draft_root_fields,
@@ -85,6 +86,7 @@ __all__ = [
     "normalize_draft_image_refs",
     "normalize_draft_image_role",
     "normalize_draft_target_site",
+    "normalize_mercadolibre_sites_to_sell",
     "normalize_image_pool",
     "normalize_image_pool_item",
     "normalize_list",

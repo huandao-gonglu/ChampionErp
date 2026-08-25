@@ -644,7 +644,7 @@ describe('workflow store live API flow', () => {
     draft.productId = 'real-product-1'
     draft.sourceProductId = 'real-product-1'
     draft.site = 'CBT'
-    draft.targetSites = [{ platform: 'mercadolibre', site: 'CBT', language: 'es', listingCurrency: 'USD' }]
+    draft.targetSites = [{ platform: 'mercadolibre', site: 'CBT', language: 'en-US', listingCurrency: 'USD' }]
     draft.status = 'ready_to_publish'
     vi.mocked(workflowApi.saveDraft).mockResolvedValue(draftMutation(draft))
     vi.mocked(workflowApi.publishPrecheck).mockResolvedValue({
@@ -664,6 +664,137 @@ describe('workflow store live API flow', () => {
       expect.objectContaining({ draftId: 'draft-1', productId: 'real-product-1' }),
       expect.objectContaining({ platform: 'mercadolibre', site: 'CBT', categoryId: '', attributes: {} }),
     )
+  })
+
+  it('发布成功后变更销售目的地会开启新流程并保留远端发布任务身份', () => {
+    const draft = createEmptyDraftDetail('mercadolibre')
+    draft.draftId = 'draft-cbt-destinations'
+    draft.site = 'CBT'
+    draft.status = 'published'
+    draft.publishStatus = 'success'
+    draft.validationErrors = ['旧发布校验']
+    draft.lastPrecheck = { ok: true }
+    draft.lastPrecheckTarget = { site: 'CBT', sites_to_sell: [{ site_id: 'MLM', logistic_type: 'remote' }] }
+    draft.targetSites = [{
+      platform: 'mercadolibre',
+      site: 'CBT',
+      language: 'en-US',
+      listingCurrency: 'USD',
+      sitesToSell: [{ siteId: 'MLM', logisticType: 'remote' }],
+      status: 'real_publish_success',
+      publishStatus: 'success',
+      validationErrors: ['旧目标校验'],
+      lastPrecheck: { ok: true },
+      lastPrecheckTarget: { site: 'CBT' },
+      lastPublishTask: { item_id: 'CBT-REMOTE-ITEM-1', status: 'success' },
+    }]
+
+    const store = useWorkflowStore()
+    store.currentDraft = draft
+    store.activePublishTargetKey = 'mercadolibre:cbt'
+    store.storeConfig = {
+      mercadolibre: {
+        account_site_id: 'CBT',
+        marketplace_bindings: [
+          { seller_id: 'seller-mx', site_id: 'MLM', logistic_type: 'remote', business_model: 'cross_border', pricing_model: '', user_product: false },
+          { seller_id: 'seller-br', site_id: 'MLB', logistic_type: 'fulfillment', business_model: 'cross_border', pricing_model: '', user_product: false },
+        ],
+      },
+    }
+    store.pricingInput.targets = [{
+      targetKey: 'mercadolibre:cbt',
+      platform: 'mercadolibre',
+      site: 'CBT',
+      sitesToSell: [{ siteId: 'MLM', logisticType: 'remote' }],
+      listingCurrency: 'USD',
+      commissionPercent: 16,
+      paymentFeePercent: 0,
+      otherFeePercent: 0,
+      pricingMode: 'margin',
+      targetMarginPercent: 30,
+      markupPercent: 30,
+      shippingQuoteMode: 'auto',
+      shippingCurrency: 'USD',
+      shippingAmount: 0,
+      manualPrice: null,
+    }]
+    store.precheck = { ok: true, errors: [], warnings: [], errorItems: [], warningItems: [], checkedAt: '2026-08-24T00:00:00Z' }
+    store.precheckResults = { mercadolibre: { ok: true } }
+    store.payloadPreview = {
+      platform: 'mercadolibre',
+      site: 'CBT',
+      targetKey: 'mercadolibre:cbt',
+      status: 'ready',
+      path: '/tmp/payload.json',
+      payload: { sites_to_sell: [{ site_id: 'MLM', logistic_type: 'remote' }] },
+      warning: '',
+      validationDigest: 'old-digest',
+      summary: null,
+      warnings: [],
+    }
+
+    expect(store.updateDraftSitesToSell(
+      draft,
+      draft.targetSites[0]!,
+      [{ siteId: 'MLB', logisticType: 'fulfillment' }],
+    )).toBe(true)
+
+    expect(store.currentDraft.targetSites[0]).toEqual(expect.objectContaining({
+      sitesToSell: [{ siteId: 'MLB', logisticType: 'fulfillment' }],
+      status: 'category_ready',
+      publishStatus: '',
+      validationErrors: [],
+      lastPrecheck: {},
+      lastPrecheckTarget: {},
+      lastPublishTask: { item_id: 'CBT-REMOTE-ITEM-1', status: 'success' },
+    }))
+    expect(store.currentDraft).toEqual(expect.objectContaining({
+      status: 'category_ready',
+      publishStatus: '',
+      validationErrors: [],
+      lastPrecheck: {},
+      lastPrecheckTarget: {},
+    }))
+    expect(store.pricingInput.targets[0]?.sitesToSell).toEqual([{ siteId: 'MLB', logisticType: 'fulfillment' }])
+    expect(store.precheck).toBeNull()
+    expect(store.precheckResults).toEqual({})
+    expect(store.payloadPreview).toBeNull()
+  })
+
+  it('Fully Managed 账号不能通过 store action 绕过目的地与标准核价阻断', async () => {
+    const draft = createEmptyDraftDetail('mercadolibre')
+    draft.draftId = 'draft-cbt-fully-managed'
+    draft.site = 'CBT'
+    draft.targetSites = [{
+      platform: 'mercadolibre',
+      site: 'CBT',
+      language: 'en-US',
+      listingCurrency: 'USD',
+      sitesToSell: [{ siteId: 'MLM', logisticType: 'remote' }],
+    }]
+    const store = useWorkflowStore()
+    store.currentDraft = draft
+    store.storeConfig = {
+      mercadolibre: {
+        account_site_id: 'CBT',
+        marketplace_bindings: [
+          { seller_id: 'seller-mx', site_id: 'MLM', logistic_type: 'remote', business_model: 'cross_border' },
+          { seller_id: 'seller-fm', site_id: 'MLB', logistic_type: 'fulfillment', business_model: 'CBT CN Fulfillment Managed' },
+        ],
+      },
+    }
+
+    expect(store.updateDraftSitesToSell(
+      draft,
+      draft.targetSites[0]!,
+      [{ siteId: 'MLB', logisticType: 'fulfillment' }],
+    )).toBe(false)
+    expect(store.currentDraft.targetSites[0]?.sitesToSell).toEqual([{ siteId: 'MLM', logisticType: 'remote' }])
+    expect(store.error).toContain('Fully Managed')
+
+    await store.calculatePrice()
+    expect(workflowApi.calculatePrice).not.toHaveBeenCalled()
+    expect(store.error).toContain('Fully Managed')
   })
 
   it('uses category.match as the only automatic matching path and still requires manual selection', async () => {
@@ -1269,27 +1400,27 @@ describe('workflow store live API flow', () => {
     }
     // 切换语言会按市场配置重建目标；发布币种不再来自站点 option，
     // 重建后的新目标币种为空，等待店铺授权配置在核价时写入。
-    const selectedTarget = { platform: 'mercadolibre', site: 'CBT', language: 'es', listingCurrency: '' }
-    const savedDraft = { ...draft, platform: 'mercadolibre', platforms: ['mercadolibre'], site: 'CBT', language: 'es', targetSites: [selectedTarget] }
+    const selectedTarget = { platform: 'mercadolibre', site: 'CBT', language: 'en-US', listingCurrency: '' }
+    const savedDraft = { ...draft, platform: 'mercadolibre', platforms: ['mercadolibre'], site: 'CBT', language: 'en-US', targetSites: [selectedTarget] }
     vi.mocked(workflowApi.loadDraft).mockResolvedValue(draftMutation(draft, [item]))
     vi.mocked(workflowApi.saveDraft).mockResolvedValue(draftMutation(savedDraft, [{ ...item, ...savedDraft }]))
 
     const store = useWorkflowStore()
     store.platformOptions = [
       { key: 'mercadolibre', label: '美客多', sites: [
-        { key: 'CBT', code: 'CBT', label: '全局', language: 'es' },
+        { key: 'CBT', code: 'CBT', label: '全局', language: 'en-US' },
         { key: 'MLB', code: 'MLB', label: '巴西', language: 'pt-BR' },
       ] },
       { key: 'yandex', label: 'Yandex', sites: [{ key: 'global', code: 'global', label: '俄罗斯', language: 'ru-RU' }] },
     ]
-    await store.updateDraftLanguage(item, 'es')
+    await store.updateDraftLanguage(item, 'en-US')
 
     expect(workflowApi.saveDraft).toHaveBeenCalledWith(expect.objectContaining({
       draftId: 'draft-1',
       platform: 'mercadolibre',
       platforms: ['mercadolibre'],
       site: 'CBT',
-      language: 'es',
+      language: 'en-US',
       targetSites: [expect.objectContaining(selectedTarget)],
     }))
   })
@@ -1302,14 +1433,14 @@ describe('workflow store live API flow', () => {
     draft.platform = 'mercadolibre'
     draft.platforms = ['mercadolibre']
     draft.site = 'CBT'
-    draft.language = 'es'
-    draft.targetSites = [{ platform: 'mercadolibre', site: 'CBT', language: 'es', listingCurrency: 'USD' }]
+    draft.language = 'en-US'
+    draft.targetSites = [{ platform: 'mercadolibre', site: 'CBT', language: 'en-US', listingCurrency: 'USD' }]
     draft.pricing = {}
     vi.mocked(workflowApi.loadDraft).mockResolvedValue(draftMutation(draft))
 
     const store = useWorkflowStore()
     store.platformOptions = [
-      { key: 'mercadolibre', label: '美客多', sites: [{ key: 'CBT', code: 'CBT', label: '全局', language: 'es' }] },
+      { key: 'mercadolibre', label: '美客多', sites: [{ key: 'CBT', code: 'CBT', label: '全局', language: 'en-US' }] },
     ]
     await store.loadDraftForPricing('draft-1')
 
@@ -1381,9 +1512,15 @@ describe('workflow store live API flow', () => {
     draft.platform = 'mercadolibre'
     draft.platforms = ['mercadolibre']
     draft.site = 'CBT'
-    draft.language = 'es'
+    draft.language = 'en-US'
     draft.targetSites = [
-      { platform: 'mercadolibre', site: 'CBT', language: 'es', listingCurrency: 'USD' },
+      {
+        platform: 'mercadolibre',
+        site: 'CBT',
+        language: 'en-US',
+        listingCurrency: 'USD',
+        sitesToSell: [{ siteId: 'MLM', logisticType: 'remote' }],
+      },
       { platform: 'mercadolibre', site: 'MLM', language: 'es', listingCurrency: 'MXN' },
     ]
     draft.pricing = {}
@@ -1486,12 +1623,20 @@ describe('workflow store live API flow', () => {
     vi.mocked(workflowApi.saveDraft).mockImplementation(async (savedDraft) => draftMutation(savedDraft))
 
     const store = useWorkflowStore()
+    store.storeConfig = {
+      mercadolibre: {
+        account_site_id: 'CBT',
+        marketplace_bindings: [
+          { seller_id: 'seller-mx', site_id: 'MLM', logistic_type: 'remote', business_model: 'cross_border' },
+        ],
+      },
+    }
     store.platformOptions = [
       {
         key: 'mercadolibre',
         label: '美客多',
         sites: [
-          { key: 'CBT', code: 'CBT', label: '全局', language: 'es' },
+          { key: 'CBT', code: 'CBT', label: '全局', language: 'en-US' },
           { key: 'MLM', code: 'MLM', label: '墨西哥', language: 'es' },
         ],
       },

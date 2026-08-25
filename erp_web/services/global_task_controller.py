@@ -59,6 +59,10 @@ from erp_web.schemas.task_approval import (
 from erp_web.services.ai_tool_catalog import AiToolCatalog
 from erp_web.services.ai_tool_registry import AiToolSet
 from erp_web.services.ai_tool_runtime import AiToolRuntime
+from erp_web.services.capability_input_provenance import (
+    USER_INPUT_KEYS_SCOPE_KEY,
+    encode_user_input_keys,
+)
 from erp_web.services.task_approval import approval_binding_digest
 from erp_web.stores.global_task_store import LocalGlobalTaskStore
 
@@ -400,6 +404,10 @@ class GlobalTaskController:
             business_scope["approval_confirmed_at"] = approval_confirmed_at
         if approver:
             business_scope["approver"] = approver
+        if step.user_input_keys:
+            business_scope[USER_INPUT_KEYS_SCOPE_KEY] = encode_user_input_keys(
+                step.user_input_keys
+            )
         idempotency_context: dict[str, str] = {
             "operation_key": step.operation_key,
         }
@@ -957,9 +965,17 @@ class GlobalTaskController:
                 exclude_unset=True,
             )
             steps = list(task.steps)
+            submitted_keys = {
+                str(key or "").strip()
+                for key in request.arguments
+                if str(key or "").strip()
+            }
             steps[index] = step.model_copy(
                 update={
                     "arguments": dumped if isinstance(dumped, dict) else {},
+                    "user_input_keys": tuple(
+                        sorted(set(step.user_input_keys) | submitted_keys)
+                    ),
                     "status": "pending",
                 }
             )
