@@ -192,7 +192,10 @@ def test_images_prepare_rejects_unpersisted_asset_id() -> None:
         )
 
     assert exc_info.value.code == "PRODUCT_IMAGE_ASSET_NOT_FOUND"
-    assert exc_info.value.options == ("image-1", "image-2")
+    assert [option.value for option in exc_info.value.options] == [
+        "image-1",
+        "image-2",
+    ]
     assert exc_info.value.input_type == "string_list"
 
 
@@ -270,7 +273,10 @@ def test_attributes_update_requires_target_when_draft_has_multiple_targets() -> 
 
     assert exc_info.value.code == "DRAFT_TARGET_AMBIGUOUS"
     assert exc_info.value.key == "platform"
-    assert exc_info.value.options == ("mercadolibre", "ozon")
+    assert [option.value for option in exc_info.value.options] == [
+        "mercadolibre",
+        "ozon",
+    ]
     assert exc_info.value.input_type == "select"
     assert products.save_calls == 0
 

@@ -7,10 +7,27 @@ from __future__ import annotations
 """
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 
 _INPUT_OWNERS = frozenset({"step", "provided_attributes", "pricing_input"})
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilityInputOption:
+    """待补字段的可选项；展示文案与真正提交值明确分离。"""
+
+    value: str
+    label: str
+
+    def __post_init__(self) -> None:
+        value = str(self.value or "").strip()
+        label = str(self.label or value).strip()
+        if not value:
+            raise ValueError("Capability 输入选项 value 不能为空")
+        object.__setattr__(self, "value", value)
+        object.__setattr__(self, "label", label or value)
 
 
 class BusinessCapabilityError(RuntimeError):
@@ -48,20 +65,31 @@ class CapabilityInputRequired(BusinessCapabilityError):
         key: str,
         label: str,
         reason: str = "",
-        options: Sequence[str] = (),
+        options: Sequence[str | CapabilityInputOption] = (),
         input_type: str = "text",
         input_owner: str = "step",
     ) -> None:
         self.key = str(key or "").strip()
         self.label = str(label or self.key).strip()
         self.reason = str(reason or message).strip()
-        self.options = tuple(
-            dict.fromkeys(
-                str(option).strip()
-                for option in options
-                if str(option).strip()
+        normalized_options: list[CapabilityInputOption] = []
+        seen_values: set[str] = set()
+        for option in options:
+            if (
+                not isinstance(option, CapabilityInputOption)
+                and not str(option).strip()
+            ):
+                continue
+            normalized = (
+                option
+                if isinstance(option, CapabilityInputOption)
+                else CapabilityInputOption(value=str(option), label=str(option))
             )
-        )
+            if normalized.value in seen_values:
+                continue
+            seen_values.add(normalized.value)
+            normalized_options.append(normalized)
+        self.options = tuple(normalized_options)
         normalized_type = str(input_type or "text").strip().lower()
         allowed_types = {"text", "select", "json_object", "string_list"}
         if normalized_type not in allowed_types:
@@ -83,4 +111,8 @@ class CapabilityInputRequired(BusinessCapabilityError):
         self.input_owner = normalized_owner
 
 
-__all__ = ["BusinessCapabilityError", "CapabilityInputRequired"]
+__all__ = [
+    "BusinessCapabilityError",
+    "CapabilityInputOption",
+    "CapabilityInputRequired",
+]

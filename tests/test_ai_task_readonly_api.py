@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
@@ -24,6 +25,12 @@ from erp_web.context import get_context
 from erp_web.facades import global_task_facade
 from erp_web.runtime_units.global_ai_control_tools import (
     GlobalTaskStartControlRequest,
+)
+from erp_web.schemas.ai_tools import PUBLISH_JOB_TYPE
+from erp_web.schemas.global_tasks import (
+    LocalGlobalTaskState,
+    LocalTaskStep,
+    TaskActiveJob,
 )
 from erp_web.services.ai_conversation_event_bus import (
     SUBSCRIPTION_QUEUE_MAXSIZE,
@@ -470,3 +477,88 @@ def test_event_stream_emits_resync_when_subscription_overflows() -> None:
 
     text = b"".join(chunks).decode("utf-8")
     assert '"type":"resync_required"' in text
+
+
+# -- GlobalTask GET 只读进度视图（进度计划 §11.2） -------------------------
+
+
+def _create_in_progress_publish_task() -> str:
+    """直接在 Store 落一个 in_progress + active_job 的任务，供 GET 纯读验证。"""
+
+    context = get_context()
+    now = datetime.now(timezone.utc)
+    task = LocalGlobalTaskState(
+        task_id="gtask_get_purity",
+        goal="验证 GET 纯读与进度视图",
+        status="in_progress",
+        steps=[
+            LocalTaskStep(
+                step_id="step_1",
+                capability_name="product_publish_request",
+                capability_version="1",
+                operation_key="op:get-purity:1",
+                status="running",
+            )
+        ],
+        current_step_index=0,
+        active_job=TaskActiveJob(
+            step_id="step_1",
+            capability_name="product_publish_request",
+            job_id="job-get-purity",
+            job_type=PUBLISH_JOB_TYPE,
+            started_at=now,
+        ),
+        created_at=now,
+        updated_at=now,
+    )
+    created = context.global_tasks.create_task(task)
+    return created.task_id
+
+
+def test_get_returns_typed_execution_progress() -> None:
+    task_id = _create_in_progress_publish_task()
+
+    payload, status = global_task_facade.read_global_task_state_payload(task_id)
+
+    assert status == 200
+    assert payload["ok"] is True
+    assert payload["task_id"] == task_id
+    assert payload["task"]["status"] == "in_progress"
+
+    progress = payload["execution_progress"]
+    assert progress is not None
+    assert progress["observed_at"]
+    assert progress["task_elapsed_seconds"] >= 0
+    current_step = progress["current_step"]
+    assert current_step is not None
+    assert current_step["ordinal"] == 1
+    assert current_step["total"] == 1
+    assert current_step["status"] == "running"
+    # Job 在 PublishingBus 中不存在 → 降级展示但 active_job 仍存在。
+    active_job = progress["active_job"]
+    assert active_job is not None
+    assert active_job["job_id"] == "job-get-purity"
+    assert active_job["summary"] == "暂时无法读取后台任务进度。"
+
+
+def test_consecutive_gets_do_not_mutate_task_or_job() -> None:
+    task_id = _create_in_progress_publish_task()
+    context = get_context()
+    before = context.global_tasks.require_task(task_id)
+
+    payload_first, status_first = global_task_facade.read_global_task_state_payload(
+        task_id
+    )
+    payload_second, status_second = global_task_facade.read_global_task_state_payload(
+        task_id
+    )
+
+    after = context.global_tasks.require_task(task_id)
+    assert status_first == 200
+    assert status_second == 200
+    # GET 不得递增 revision、不得刷新 updated_at、不得改变任务状态。
+    assert before.revision == after.revision
+    assert before.updated_at == after.updated_at
+    assert before.status == after.status
+    assert payload_first["task"]["revision"] == before.revision
+    assert payload_second["task"]["revision"] == before.revision

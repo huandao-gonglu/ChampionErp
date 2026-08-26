@@ -8,6 +8,7 @@ import {
   submitGlobalTaskInput,
 } from '@/api/globalTasks'
 import type {
+  GlobalTaskExecutionProgress,
   GlobalTaskInputType,
   GlobalTaskRequiredInput,
   GlobalTaskState,
@@ -22,6 +23,7 @@ const props = withDefaults(defineProps<{
 })
 
 const task = ref<GlobalTaskState | null>(null)
+const progress = ref<GlobalTaskExecutionProgress | null>(null)
 const busyAction = ref<'approve' | 'reject' | 'refresh' | 'input' | 'cancel' | ''>('')
 const actionError = ref('')
 const rejectionReason = ref('')
@@ -34,6 +36,14 @@ const POLL_INTERVAL_MS = 4000
 // 不得覆盖较新状态；写操作完成时也递增代次，使在途的旧只读响应作废。
 let loadGeneration = 0
 
+// -- 本地计时（进度计划 §8.3）----------------------------------------------
+// 服务端以 observed_at + 耗时秒数为基准；前端记录本地接收时刻，每秒用
+// Date.now() 差值刷新显示，下一次 GET 重新校准。基于时间戳差值而非累计
+// tick，浏览器后台节流不会造成计时漂移。
+const progressReceivedAt = ref(0)
+const tickNow = ref(Date.now())
+let tickTimer: ReturnType<typeof setInterval> | null = null
+
 const pendingApproval = computed(() => task.value?.pending_approval || null)
 const pendingInputs = computed(() => task.value?.pending_inputs || [])
 const approvalSummary = computed(() => String(pendingApproval.value?.payload?.summary || '').trim())
@@ -42,6 +52,124 @@ const isTerminal = computed(() => {
   const status = task.value?.status
   return status === 'completed' || status === 'failed' || status === 'cancelled'
 })
+
+const activeJob = computed(() => progress.value?.active_job || null)
+const currentStep = computed(() => progress.value?.current_step || null)
+const activities = computed(() => progress.value?.activities || [])
+
+const localElapsedSeconds = computed(() => {
+  if (!progress.value) return 0
+  return Math.max(0, Math.floor((tickNow.value - progressReceivedAt.value) / 1000))
+})
+
+const displayTaskElapsed = computed(() => {
+  const base = progress.value?.task_elapsed_seconds ?? 0
+  return isTerminal.value ? base : base + localElapsedSeconds.value
+})
+
+const displayJobElapsed = computed(() => {
+  const job = activeJob.value
+  if (!job) return 0
+  return isTerminal.value ? job.elapsed_seconds : job.elapsed_seconds + localElapsedSeconds.value
+})
+
+const currentStepLine = computed(() => {
+  const step = currentStep.value
+  if (!step || !step.total) return ''
+  return `第 ${step.ordinal}/${step.total} 步：${step.label || step.capability_name}`
+})
+
+const jobStatusLine = computed(() => {
+  const job = activeJob.value
+  if (!job) return ''
+  const label = job.stage_label || job.summary || '后台任务执行中'
+  return `${label} · 已耗时 ${displayJobElapsed.value}s`
+})
+
+const nextCheckCountdown = computed(() => {
+  const job = activeJob.value
+  if (!job || !job.next_check_at || !progress.value) return null
+  const nextMs = Date.parse(job.next_check_at)
+  const observedMs = Date.parse(progress.value.observed_at)
+  if (Number.isNaN(nextMs) || Number.isNaN(observedMs)) return null
+  // 以服务端 observed_at 为锚点推算当前服务端时间，再求剩余秒数。
+  const currentServerMs = observedMs + (tickNow.value - progressReceivedAt.value)
+  return Math.max(0, Math.floor((nextMs - currentServerMs) / 1000))
+})
+
+const externalStatusLine = computed(() => {
+  const job = activeJob.value
+  if (!job) return ''
+  const parts: string[] = []
+  if (job.last_external_status) parts.push(`最近状态：${job.last_external_status}`)
+  if (job.retry_count != null && job.retry_count > 0) parts.push(`已检查 ${job.retry_count} 次`)
+  if (nextCheckCountdown.value != null) parts.push(`${nextCheckCountdown.value}s 后再次检查`)
+  return parts.join(' · ')
+})
+
+// aria-live 只播报阶段/状态变化，不包含每秒跳动的耗时与倒计时。
+const stageAnnouncement = computed(() => {
+  const job = activeJob.value
+  const parts = [currentStepLine.value]
+  if (job) parts.push(job.stage_label || job.summary)
+  if (job?.last_external_status) parts.push(`最近状态：${job.last_external_status}`)
+  return parts.filter(Boolean).join('；')
+})
+
+const technicalDetail = computed(() => {
+  if (!progress.value) return ''
+  const job = activeJob.value
+  const lines: string[] = []
+  const step = currentStep.value
+  if (step) lines.push(`capability: ${step.capability_name}`)
+  if (job) {
+    lines.push(`job_id: ${job.job_id}`)
+    if (job.stage_code) lines.push(`stage: ${job.stage_code}`)
+    if (job.attempt != null) lines.push(`attempt: ${job.attempt}`)
+  }
+  if (activities.value.length) {
+    lines.push(`activities: ${activities.value.map((item) => item.code).join(', ')}`)
+  }
+  return lines.join('\n')
+})
+
+function activityIcon(status: string): string {
+  if (status === 'completed') return '✓'
+  if (status === 'running' || status === 'retrying' || status === 'waiting') return '●'
+  return '○'
+}
+
+function activityIconClass(status: string): string {
+  if (status === 'completed') return 'text-emerald-500'
+  if (status === 'failed') return 'text-rose-500'
+  if (status === 'running' || status === 'retrying' || status === 'waiting') return 'text-sky-500'
+  return 'text-slate-300 dark:text-dark-600'
+}
+
+function commitResponse(response: { task: GlobalTaskState; execution_progress?: GlobalTaskExecutionProgress | null }): void {
+  task.value = response.task
+  progress.value = response.execution_progress || null
+  progressReceivedAt.value = Date.now()
+  tickNow.value = Date.now()
+  syncTicker()
+}
+
+function syncTicker(): void {
+  const shouldTick = Boolean(progress.value) && !isTerminal.value
+  if (shouldTick && tickTimer === null) {
+    tickTimer = setInterval(() => {
+      tickNow.value = Date.now()
+    }, 1000)
+  } else if (!shouldTick && tickTimer !== null) {
+    clearInterval(tickTimer)
+    tickTimer = null
+  }
+}
+
+function handleVisibilityChange(): void {
+  // 标签页恢复时直接按时间差校准，不依赖后台被节流的 tick。
+  if (!document.hidden) tickNow.value = Date.now()
+}
 
 const statusLabel = computed(() => {
   const labels: Record<GlobalTaskStatus, string> = {
@@ -86,7 +214,7 @@ function serializeInputValue(
   if (type === 'select') {
     if (!trimmed) return { ok: false, error: `请选择${item.label}。` }
     const options = item.options || []
-    if (options.length && !options.includes(trimmed)) {
+    if (options.length && !options.some((option) => option.value === trimmed)) {
       return { ok: false, error: `${item.label}必须从给定选项中选择。` }
     }
     return { ok: true, value: trimmed }
@@ -127,7 +255,7 @@ async function loadTask(showBusy = true): Promise<void> {
     // 纯读 GET：任务推进只由后台 worker 完成，前端不触发任何写刷新。
     const response = await fetchGlobalTask(requestedTaskId)
     if (generation !== loadGeneration || requestedTaskId !== props.taskId) return
-    task.value = response.task
+    commitResponse(response)
   } catch (error) {
     if (generation !== loadGeneration || requestedTaskId !== props.taskId) return
     if (showBusy) actionError.value = errorMessage(error)
@@ -173,7 +301,7 @@ async function approve(): Promise<void> {
     if (requestedTaskId !== props.taskId) return
     // 写响应是较新事实，递增代次使在途旧只读响应作废。
     loadGeneration += 1
-    task.value = response.task
+    commitResponse(response)
   } catch (error) {
     if (requestedTaskId !== props.taskId) return
     actionError.value = errorMessage(error)
@@ -194,7 +322,7 @@ async function reject(): Promise<void> {
     const response = await rejectGlobalTask(requestedTaskId, approval.step_id, reason)
     if (requestedTaskId !== props.taskId) return
     loadGeneration += 1
-    task.value = response.task
+    commitResponse(response)
     rejectionReason.value = ''
   } catch (error) {
     if (requestedTaskId !== props.taskId) return
@@ -231,7 +359,7 @@ async function submitInput(): Promise<void> {
     const response = await submitGlobalTaskInput(requestedTaskId, args)
     if (requestedTaskId !== props.taskId) return
     loadGeneration += 1
-    task.value = response.task
+    commitResponse(response)
     inputValues.value = {}
   } catch (error) {
     if (requestedTaskId !== props.taskId) return
@@ -252,7 +380,7 @@ async function cancelTask(): Promise<void> {
     const response = await cancelGlobalTask(requestedTaskId)
     if (requestedTaskId !== props.taskId) return
     loadGeneration += 1
-    task.value = response.task
+    commitResponse(response)
   } catch (error) {
     if (requestedTaskId !== props.taskId) return
     actionError.value = errorMessage(error)
@@ -263,21 +391,29 @@ async function cancelTask(): Promise<void> {
 
 watch(() => props.taskId, () => {
   // 报告 A-10：taskId 切换时递增代次，旧任务的在途慢响应不得写入新任务卡；
-  // 同时清除旧任务的 busy 状态，新任务的按钮不再被旧在途操作禁用。
+  // 同时清除旧任务的 busy 状态与进度视图，新任务的按钮不再被旧在途操作禁用。
   loadGeneration += 1
   busyAction.value = ''
   task.value = null
+  progress.value = null
   actionError.value = ''
   inputValues.value = {}
+  syncTicker()
   void loadTask(false)
 })
 
 watch(isTerminal, (terminal) => {
-  if (terminal) stopPolling()
-  else startPolling()
+  if (terminal) {
+    stopPolling()
+    // 终态冻结耗时：停止本地计时。
+    syncTicker()
+  } else {
+    startPolling()
+  }
 })
 
 onMounted(() => {
+  document.addEventListener('visibilitychange', handleVisibilityChange)
   if (!props.taskId) return
   // 只读挂载也先做一次纯 GET 读取以展示状态；轮询仅在可操作入口启用。
   void loadTask(false)
@@ -285,7 +421,12 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
   stopPolling()
+  if (tickTimer !== null) {
+    clearInterval(tickTimer)
+    tickTimer = null
+  }
 })
 </script>
 
@@ -310,8 +451,64 @@ onBeforeUnmount(() => {
     </p>
     <p class="mt-1 text-[11px] text-slate-500 dark:text-accent-300">
       步骤 {{ completedSteps }}/{{ task.steps.length }}
+      <span v-if="progress"> · 已耗时 {{ displayTaskElapsed }}s</span>
       <span v-if="task.assistant_message"> · {{ task.assistant_message }}</span>
     </p>
+
+    <!-- 执行进度（进度计划 §8.2）：顶层步骤与 Job 内部活动分层展示；
+         aria-live 只播报阶段/状态变化，不播报每秒耗时。 -->
+    <div v-if="progress" class="mt-2" data-testid="global-task-progress">
+      <p aria-live="polite" class="sr-only">{{ stageAnnouncement }}</p>
+      <p
+        v-if="currentStepLine"
+        class="text-[11px] font-semibold text-slate-600 dark:text-accent-200"
+        data-testid="global-task-current-step"
+      >
+        {{ currentStepLine }}
+      </p>
+      <p
+        v-if="jobStatusLine"
+        class="mt-0.5 text-[11px] text-slate-500 dark:text-accent-300"
+        data-testid="global-task-job-line"
+      >
+        {{ jobStatusLine }}
+      </p>
+      <p
+        v-if="externalStatusLine"
+        class="mt-0.5 text-[11px] text-slate-500 dark:text-accent-300"
+        data-testid="global-task-external-line"
+      >
+        {{ externalStatusLine }}
+      </p>
+      <ul
+        v-if="activities.length"
+        class="mt-1.5 space-y-0.5"
+        data-testid="global-task-activities"
+      >
+        <li
+          v-for="activity in activities"
+          :key="activity.code"
+          class="flex items-center gap-1.5 text-[11px]"
+        >
+          <span class="w-3 text-center font-bold" :class="activityIconClass(activity.status)">
+            {{ activityIcon(activity.status) }}
+          </span>
+          <span
+            :class="activity.status === 'completed'
+              ? 'text-slate-400 dark:text-accent-300'
+              : 'text-slate-600 dark:text-accent-200'"
+          >
+            {{ activity.label || activity.code }}
+          </span>
+        </li>
+      </ul>
+      <details v-if="technicalDetail" class="mt-1.5">
+        <summary class="cursor-pointer text-[10px] text-slate-400 dark:text-accent-300">
+          技术详情
+        </summary>
+        <pre class="mt-1 overflow-auto whitespace-pre-wrap break-words rounded bg-slate-50 p-2 font-mono text-[10px] leading-4 text-slate-500 dark:bg-dark-950 dark:text-accent-300">{{ technicalDetail }}</pre>
+      </details>
+    </div>
 
     <!-- 待补资料 -->
     <div
@@ -335,8 +532,12 @@ onBeforeUnmount(() => {
           :data-testid="`global-task-input-${item.key}`"
         >
           <option disabled value="">请选择</option>
-          <option v-for="option in item.options || []" :key="option" :value="option">
-            {{ option }}
+          <option
+            v-for="option in item.options || []"
+            :key="option.value"
+            :value="option.value"
+          >
+            {{ option.label }}
           </option>
         </select>
         <textarea

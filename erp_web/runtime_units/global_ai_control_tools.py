@@ -257,7 +257,7 @@ def global_task_start(
     permission=TASK_CONTROL_PERMISSION,
     side_effect="none",
     recovery_policy="retry_safe",
-    version="1",
+    version="2",
 )
 def global_task_get(
     request: GlobalTaskIdRequest,
@@ -278,7 +278,7 @@ def global_task_get(
     idempotency="required",
     idempotency_keys=("conversation_id", "message_id"),
     recovery_policy="idempotent",
-    version="1",
+    version="2",
 )
 def global_task_submit_input(
     request: GlobalTaskInputRequest,
@@ -304,7 +304,7 @@ def global_task_submit_input(
     idempotency="required",
     idempotency_keys=("conversation_id", "message_id"),
     recovery_policy="idempotent",
-    version="1",
+    version="2",
 )
 def global_task_cancel(
     request: GlobalTaskIdRequest,

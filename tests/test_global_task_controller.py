@@ -26,6 +26,7 @@ from erp_web.schemas.global_tasks import (
     GlobalTaskIdRequest,
     GlobalTaskInputRequest,
     GlobalTaskRejectRequest,
+    JobStateSnapshot,
     LocalGlobalTaskState,
 )
 from erp_web.services.ai_tool_catalog import AiToolBindingScope, AiToolCatalog
@@ -490,11 +491,10 @@ class _JobStatusReader:
         self.states = deque(states)
         self.calls: list[str] = []
 
-    def read_job_state(self, job_id: str) -> dict[str, Any]:
+    def read_job_state(self, job_id: str) -> JobStateSnapshot:
         self.calls.append(job_id)
-        if self.states:
-            return self.states.popleft()
-        return {"status": "running"}
+        state = self.states.popleft() if self.states else {"status": "running"}
+        return JobStateSnapshot(**state)
 
 
 def _build_toolset(catalog: AiToolCatalog):

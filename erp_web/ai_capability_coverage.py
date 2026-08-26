@@ -324,7 +324,10 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         path="/api/v1/global-tasks/<task_id>",
         business_domain="全局任务",
         disposition="internal_only",
-        reason="受信任务卡的纯读任务状态；主 Agent 等价路径是 global_task_get。",
+        reason=(
+            "受信任务卡的纯读任务状态与计算型执行进度视图；"
+            "主 Agent 等价路径是 global_task_get。"
+        ),
     ),
     # -------------------------------------------------- 主 Agent 运输（POST）
     AiCapabilityCoverageEntry(

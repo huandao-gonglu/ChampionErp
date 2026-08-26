@@ -342,5 +342,5 @@ def test_snapshot_out_of_range_returns_explicit_position_requirement() -> None:
         )
 
     assert exc_info.value.code == "DRAFT_QUERY_POSITION_OUT_OF_RANGE"
-    assert exc_info.value.options == ("1",)
+    assert [option.value for option in exc_info.value.options] == ["1"]
     assert exc_info.value.input_type == "string_list"

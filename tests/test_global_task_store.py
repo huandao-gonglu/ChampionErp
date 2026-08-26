@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 import threading
 import time
 
@@ -112,6 +113,48 @@ def test_sqlite_roundtrip_preserves_complete_global_task_state(tmp_path) -> None
     assert loaded.steps[1].operation_key == (
         "global-task:task-x:step:step_2_publish"
     )
+
+
+def test_sqlite_load_migrates_legacy_required_input_string_options(tmp_path) -> None:
+    database = ErpDatabase(tmp_path / "erp.sqlite3")
+    store = LocalGlobalTaskStore(database)
+    state = LocalGlobalTaskState(
+        task_id="task-legacy-input-options",
+        goal="确认平台类目",
+        status="needs_input",
+        steps=[_step("step_1_category", "category_match", status="needs_input")],
+        pending_inputs=[
+            RequiredInput(
+                key="category_id",
+                label="平台类目",
+                reason="请选择一个候选类目。",
+                input_type="select",
+                options=["MLM194177"],
+            )
+        ],
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    store.create_task(state)
+
+    with database._connect() as conn:
+        row = conn.execute(
+            "SELECT task_json FROM global_tasks WHERE task_id = ?",
+            (state.task_id,),
+        ).fetchone()
+        payload = json.loads(row["task_json"])
+        payload["pending_inputs"][0]["options"] = ["MLM194177"]
+        conn.execute(
+            "UPDATE global_tasks SET task_json = ? WHERE task_id = ?",
+            (json.dumps(payload, ensure_ascii=False), state.task_id),
+        )
+        conn.commit()
+
+    loaded = LocalGlobalTaskStore(database).require_task(state.task_id)
+
+    assert loaded.pending_inputs[0].model_dump(mode="json")["options"] == [
+        {"value": "MLM194177", "label": "MLM194177"}
+    ]
 
 
 def test_sqlite_roundtrip_preserves_pending_approval_binding(tmp_path) -> None:

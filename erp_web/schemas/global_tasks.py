@@ -244,6 +244,151 @@ class GlobalTaskResponse(StrictTaskModel):
         return self
 
 
+# -- 执行进度只读视图 -------------------------------------------------------
+#
+# 进度是从当前任务与领域 Job 状态即时投影的计算型视图：不写回
+# ``LocalGlobalTaskState``，不进入 ``task_json`` 持久化，GET 读取也不触发
+# CAS/revision 递增。Reader 没有详细信息时只填充生命周期字段，任务卡必须
+# 安全降级；所有用户可见文本在此处限制长度，禁止透传原始平台对象。
+
+#: 领域 Job 生命周期状态；Controller 只消费它判定任务推进。
+JobLifecycleStatus = Literal[
+    "queued",
+    "pending",
+    "running",
+    "retrying",
+    "success",
+    "failed",
+]
+
+#: 任务卡展示用进度状态；由投影服务从生命周期状态派生。
+GlobalTaskProgressStatus = Literal[
+    "queued",
+    "running",
+    "waiting",
+    "retrying",
+    "completed",
+    "failed",
+]
+
+JobActivityStatus = Literal[
+    "queued",
+    "running",
+    "waiting",
+    "retrying",
+    "completed",
+    "failed",
+]
+
+
+class JobStateActivity(StrictTaskModel):
+    """领域 Job 内部子步骤；code/label 已由 Reader 白名单映射。"""
+
+    code: str = Field(min_length=1, max_length=80)
+    label: str = Field(default="", max_length=200)
+    status: JobActivityStatus
+    completed_at: datetime | None = None
+
+
+class JobStateSnapshot(StrictTaskModel):
+    """``JobStatusReader`` 的类型化通用快照。
+
+    ``status`` 与 ``error`` 是生命周期字段，Controller 只消费它们；
+    其余为可选展示字段，进度投影服务消费，缺失时保持默认空值。
+    """
+
+    status: JobLifecycleStatus
+    error: str = Field(default="", max_length=2000)
+    # Job 记录是否真实存在；缺失时生命周期仍按 running 处理（不误判终态），
+    # 任务卡展示降级为“暂时无法读取后台任务进度”。
+    available: bool = True
+    stage_code: str = Field(default="", max_length=120)
+    stage_label: str = Field(default="", max_length=200)
+    summary: str = Field(default="", max_length=500)
+    updated_at: datetime | None = None
+    attempt: int | None = Field(default=None, ge=1)
+    retry_count: int | None = Field(default=None, ge=0)
+    next_check_at: datetime | None = None
+    last_external_status: str = Field(default="", max_length=80)
+    phase_started_at: datetime | None = None
+    activities: tuple[JobStateActivity, ...] = Field(
+        default_factory=tuple,
+        max_length=50,
+    )
+
+
+class GlobalTaskProgressActivity(StrictTaskModel):
+    """任务卡展示的 Job 内部活动；与顶层步骤分层渲染。"""
+
+    code: str = Field(min_length=1, max_length=80)
+    label: str = Field(default="", max_length=200)
+    status: GlobalTaskProgressStatus
+    completed_at: datetime | None = None
+
+
+class GlobalTaskCurrentStepProgress(StrictTaskModel):
+    """当前顶层步骤投影；label 是用户可读名称，缺省回落 capability 名。"""
+
+    index: int = Field(ge=0)
+    ordinal: int = Field(ge=1)
+    total: int = Field(ge=1)
+    capability_name: str = Field(min_length=1, max_length=64)
+    label: str = Field(default="", max_length=200)
+    status: TaskStepStatus
+
+
+class GlobalTaskActiveJobProgress(StrictTaskModel):
+    """活跃领域 Job 的通用进度投影；不含平台专用字段。"""
+
+    job_id: str = Field(min_length=1, max_length=200)
+    job_type: str = Field(min_length=1, max_length=80)
+    status: GlobalTaskProgressStatus
+    stage_code: str = Field(default="", max_length=120)
+    stage_label: str = Field(default="", max_length=200)
+    summary: str = Field(default="", max_length=500)
+    started_at: datetime
+    updated_at: datetime | None = None
+    elapsed_seconds: int = Field(default=0, ge=0)
+    phase_started_at: datetime | None = None
+    phase_elapsed_seconds: int | None = Field(default=None, ge=0)
+    attempt: int | None = Field(default=None, ge=1)
+    retry_count: int | None = Field(default=None, ge=0)
+    next_check_at: datetime | None = None
+    last_external_status: str = Field(default="", max_length=80)
+
+
+class GlobalTaskExecutionProgress(StrictTaskModel):
+    """计算型只读进度视图；以 ``observed_at`` 作为前端计时锚点。"""
+
+    observed_at: datetime
+    task_elapsed_seconds: int = Field(default=0, ge=0)
+    current_step: GlobalTaskCurrentStepProgress | None = None
+    active_job: GlobalTaskActiveJobProgress | None = None
+    activities: list[GlobalTaskProgressActivity] = Field(
+        default_factory=list,
+        max_length=50,
+    )
+
+
+class GlobalTaskViewResponse(StrictTaskModel):
+    """HTTP/UI 专用读模型：持久化任务 + 计算型进度视图。
+
+    Pydantic 控制 Tool 继续使用原领域响应 ``GlobalTaskResponse``，
+    不引入这里的 UI 字段。
+    """
+
+    ok: Literal[True] = True
+    task_id: str = Field(min_length=1, max_length=160)
+    task: LocalGlobalTaskState
+    execution_progress: GlobalTaskExecutionProgress | None = None
+
+    @model_validator(mode="after")
+    def validate_references(self) -> "GlobalTaskViewResponse":
+        if self.task_id != self.task.task_id:
+            raise ValueError("响应 task_id 与任务状态不一致")
+        return self
+
+
 class GlobalTaskAcceptance(StrictTaskModel):
     """``global_task_start`` Deferred 握手成功后的类型化受理结果。
 
@@ -262,13 +407,23 @@ __all__ = [
     "CapabilityError",
     "GLOBAL_TASK_MAX_STEPS",
     "GlobalTaskAcceptance",
+    "GlobalTaskActiveJobProgress",
     "GlobalTaskApproveRequest",
+    "GlobalTaskCurrentStepProgress",
+    "GlobalTaskExecutionProgress",
     "GlobalTaskIdRequest",
     "GlobalTaskInputRequest",
+    "GlobalTaskProgressActivity",
+    "GlobalTaskProgressStatus",
     "GlobalTaskRejectRequest",
     "GlobalTaskResponse",
     "GlobalTaskStatus",
     "GlobalTaskStepCreate",
+    "GlobalTaskViewResponse",
+    "JobActivityStatus",
+    "JobLifecycleStatus",
+    "JobStateActivity",
+    "JobStateSnapshot",
     "LocalGlobalTaskState",
     "LocalTaskStep",
     "RECOVERABLE_GLOBAL_TASK_STATUSES",

@@ -13,6 +13,7 @@ from pydantic import BaseModel, TypeAdapter
 from erp_web.schemas.ai_tools import (
     AiToolDefinition,
     AiToolExecutionError,
+    AiToolInputOption,
     AiToolRequiredInput,
     AiToolSchemaError,
     JobReferenceResult,
@@ -434,7 +435,13 @@ class CompiledAiTool:
                                 label=exc.label,
                                 reason=exc.reason,
                                 input_type=exc.input_type,
-                                options=list(exc.options),
+                                options=[
+                                    AiToolInputOption(
+                                        value=option.value,
+                                        label=option.label,
+                                    )
+                                    for option in exc.options
+                                ],
                                 input_owner=exc.input_owner,
                             ).model_dump(mode="json")
                         ]

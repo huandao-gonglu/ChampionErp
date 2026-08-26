@@ -17,7 +17,9 @@ from erp_web.runtime_units.category_attribute_tools import (
 from erp_web.runtime_units.collect_capabilities import collect_from_browser_tab
 from erp_web.schemas.ai_tools import (
     AiToolCommand,
+    AiToolExecutionError,
     AiToolSchemaError,
+    TOOL_INPUT_REQUIRED,
     validate_json_schema,
 )
 from erp_web.schemas.ai_trace import AiExecutionContext
@@ -26,6 +28,10 @@ from erp_web.services.ai_tool_catalog import AiToolBindingScope, AiToolCatalog
 from erp_web.services.ai_tool_compiler import AiToolCompiler, AiToolCompilerError
 from erp_web.services.ai_tool_declaration import Injected, ai_tool
 from erp_web.services.ai_tool_runtime import AiToolRuntime
+from erp_web.services.capability_errors import (
+    CapabilityInputOption,
+    CapabilityInputRequired,
+)
 
 
 class NestedRequest(BaseModel):
@@ -74,6 +80,41 @@ def lookup_catalog_value(
         value=f"{scope.prefix}:{request.nested.keyword}",
         tenant_id=execution.tenant_id,
     )
+
+
+class ChoiceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    category_id: str = ""
+
+
+class ChoiceResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    category_id: str
+
+
+@ai_tool(
+    name="test_catalog_choice",
+    description="验证可读选项的测试能力",
+    permission="test.read",
+)
+def choose_category(request: ChoiceRequest) -> ChoiceResult:
+    if not request.category_id:
+        raise CapabilityInputRequired(
+            "CATEGORY_REQUIRED",
+            "请选择类目。",
+            key="category_id",
+            label="平台类目",
+            options=[
+                CapabilityInputOption(
+                    value="MLM194177",
+                    label="Panes（MLM194177）",
+                )
+            ],
+            input_type="select",
+        )
+    return ChoiceResult(category_id=request.category_id)
 
 
 class WriteRequest(BaseModel):
@@ -156,6 +197,22 @@ def test_compiler_expands_models_and_hides_all_injected_parameters() -> None:
     assert tool.definition.injected_type_names == (
         "erp_web.schemas.ai_trace.AiExecutionContext",
         "test_ai_tool_catalog.LookupScope",
+    )
+
+
+def test_compiler_preserves_input_option_label_and_value() -> None:
+    tool = AiToolCompiler.compile(choose_category)
+
+    with pytest.raises(AiToolExecutionError) as exc_info:
+        tool.bind_executor({})(
+            {"category_id": ""},
+            execution_context(),
+        )
+
+    assert exc_info.value.code == TOOL_INPUT_REQUIRED
+    assert exc_info.value.details is not None
+    assert exc_info.value.details["required_inputs"][0]["options"] == (
+        {"value": "MLM194177", "label": "Panes（MLM194177）"},
     )
 
 

@@ -251,7 +251,10 @@ def test_cbt_pricing_without_sales_target_requests_trusted_selector() -> None:
     assert exc_info.value.key == "sales_target"
     assert exc_info.value.input_type == "select"
     assert exc_info.value.input_owner == "step"
-    assert exc_info.value.options == ("MLB:fulfillment", "MLM:remote")
+    assert [option.value for option in exc_info.value.options] == [
+        "MLB:fulfillment",
+        "MLM:remote",
+    ]
     assert products.save_draft_calls == 0
 
 
@@ -409,7 +412,7 @@ def test_invalid_or_unauthorized_cbt_sales_target_is_not_persisted(
 
     assert exc_info.value.code == error_code
     assert exc_info.value.key == "sales_target"
-    assert exc_info.value.options == ("MLM:remote",)
+    assert [option.value for option in exc_info.value.options] == ["MLM:remote"]
     assert products.save_draft_calls == 0
     assert products.drafts["draft-cbt"]["target_sites"][0].get("sites_to_sell") in (
         None,
@@ -538,8 +541,15 @@ def test_category_match_abstain_requires_explicit_category() -> None:
             "selected_category_id": None,
             "query": "fan",
             "candidates": [
-                {"category_id": "CAT-1", "name": "Fans"},
+                {
+                    "category_id": "CAT-1",
+                    "name": "Fans",
+                    "path_segments": ["Home", "Ventilation", "Fans"],
+                },
                 {"category_id": "CAT-2", "name": "Ventilation"},
+                {"category_id": "CAT-3", "name": "", "path_segments": []},
+                {"category_id": "CAT-1", "name": "Duplicate"},
+                {"category_id": "", "name": "Missing ID"},
             ],
             "decision": {"model_confidence": 0.2},
             "failure": {
@@ -561,7 +571,16 @@ def test_category_match_abstain_requires_explicit_category() -> None:
         )
 
     assert exc_info.value.key == "category_id"
-    assert exc_info.value.options == ("CAT-1", "CAT-2")
+    assert [option.value for option in exc_info.value.options] == [
+        "CAT-1",
+        "CAT-2",
+        "CAT-3",
+    ]
+    assert [option.label for option in exc_info.value.options] == [
+        "Home › Ventilation › Fans（CAT-1）",
+        "Ventilation（CAT-2）",
+        "CAT-3",
+    ]
     assert exc_info.value.input_type == "select"
     assert products.save_product_calls == 0
 
@@ -634,7 +653,7 @@ def test_attribute_fill_persists_partial_result_then_requests_missing_fact() -> 
         )
 
     assert exc_info.value.key == "BATTERY_TYPE"
-    assert exc_info.value.options == ("AA", "AAA")
+    assert [option.value for option in exc_info.value.options] == ["AA", "AAA"]
     assert exc_info.value.input_type == "select"
     assert exc_info.value.input_owner == "provided_attributes"
     assert products.drafts["draft-1"]["attributes"] == {"COLOR": "Red"}
@@ -693,7 +712,11 @@ def test_attribute_fill_dictionary_attribute_requests_live_options() -> None:
         )
 
     assert exc_info.value.key == "PURPOSE"
-    assert exc_info.value.options == ("Для собак", "Для кошек", "Для птиц")
+    assert [option.value for option in exc_info.value.options] == [
+        "Для собак",
+        "Для кошек",
+        "Для птиц",
+    ]
     assert exc_info.value.input_type == "select"
     assert "枚举" in exc_info.value.reason
     assert calls == [("mercadolibre", "CAT-1", "PURPOSE", "MLM")]

@@ -9,7 +9,7 @@ import re
 from types import MappingProxyType
 from typing import Any, Literal, Mapping, Sequence
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
 
 AiToolSideEffect = Literal["none", "write"]
@@ -923,6 +923,15 @@ class TaskApprovalSnapshot(BaseModel):
     )
 
 
+class AiToolInputOption(BaseModel):
+    """待补字段选项：UI 展示 ``label``，提交稳定 ``value``。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    value: str = Field(min_length=1, max_length=1000)
+    label: str = Field(min_length=1, max_length=1000)
+
+
 class AiToolRequiredInput(BaseModel):
     """needs_input 标准错误中携带的类型化待补字段。
 
@@ -937,8 +946,22 @@ class AiToolRequiredInput(BaseModel):
     label: str = Field(min_length=1, max_length=200)
     reason: str = Field(min_length=1, max_length=500)
     input_type: Literal["text", "select", "json_object", "string_list"] = "text"
-    options: list[str] = Field(default_factory=list, max_length=100)
+    options: list[AiToolInputOption] = Field(default_factory=list, max_length=100)
     input_owner: Literal["step", "provided_attributes", "pricing_input"] = "step"
+
+    @field_validator("options", mode="before")
+    @classmethod
+    def migrate_legacy_string_options(cls, value: Any) -> Any:
+        """读取既有持久化任务时，把旧 ``string[]`` 收敛到当前对象契约。"""
+
+        if not isinstance(value, (list, tuple)):
+            return value
+        return [
+            {"value": option, "label": option}
+            if isinstance(option, str)
+            else option
+            for option in value
+        ]
 
 
 __all__ = [
@@ -949,6 +972,7 @@ __all__ = [
     "AiToolExecutionError",
     "AiToolExecutionMode",
     "AiToolIdempotency",
+    "AiToolInputOption",
     "AiToolRecoveryPolicy",
     "AiToolRequiredInput",
     "AiToolResult",

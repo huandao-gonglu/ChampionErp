@@ -216,6 +216,21 @@ def test_global_chat_prompt_chains_category_match_before_attribute_fill() -> Non
     assert "needs_input" in system
 
 
+def test_global_chat_prompt_orders_combined_draft_editing_steps() -> None:
+    """组合编辑任务必须先持久化文案和图片，再处理类目、属性与核价。"""
+
+    prompt_path = APP_ROOT / "config" / "prompts" / "global_chat.json"
+    prompt = json.loads(prompt_path.read_text(encoding="utf-8"))
+    system = str(prompt.get("system") or "")
+
+    assert (
+        "copy_generate → image_edit 或 image_translate → category_match → "
+        "product_attributes_fill → draft_pricing_apply"
+    ) in system
+    assert "apply_to_draft=true" in system
+    assert "剩余步骤不得改变相对顺序" in system
+
+
 def test_product_index_query_supports_snapshot_bound_position_resolution() -> None:
     """“第几个商品”必须绑定服务端快照，不能由模型用历史列表换算 ID。"""
 

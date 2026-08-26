@@ -41,6 +41,7 @@ from erp_web.schemas.global_tasks import (
     GlobalTaskInputRequest,
     GlobalTaskRejectRequest,
     GlobalTaskResponse,
+    JobStateSnapshot,
     LocalGlobalTaskState,
     LocalTaskStep,
     RECOVERABLE_GLOBAL_TASK_STATUSES,
@@ -78,10 +79,14 @@ class GlobalTaskControllerError(RuntimeError):
 
 
 class JobStatusReader(Protocol):
-    """通用长任务 Job 终态读取；只返回 job_id → 通用状态。"""
+    """通用长任务 Job 状态读取；返回类型化通用快照。
 
-    def read_job_state(self, job_id: str) -> Mapping[str, Any]:
-        """返回 ``{"status": ..., "error": str}``。
+    Controller 只消费生命周期字段 ``status`` / ``error``；可选展示字段
+    （阶段、重试、活动列表等）由进度投影服务消费，缺失时保持默认空值。
+    """
+
+    def read_job_state(self, job_id: str) -> JobStateSnapshot:
+        """返回类型化快照。
 
         status 取值：queued / pending / running / retrying（活跃）或
         success / failed（终态）。
@@ -1408,7 +1413,7 @@ class GlobalTaskController:
                 exc,
             )
             return task
-        status = str(state.get("status") or "").strip().lower()
+        status = str(state.status or "").strip().lower()
         if status in _ACTIVE_JOB_STATUSES:
             return task
         index = task.current_step_index
@@ -1436,7 +1441,7 @@ class GlobalTaskController:
                 )
             )
             return self._advance(task, conversation_id=conversation_id)
-        error_message = str(state.get("error") or "").strip() or "长任务执行失败。"
+        error_message = str(state.error or "").strip() or "长任务执行失败。"
         if index < len(steps):
             steps[index] = steps[index].model_copy(
                 update={

@@ -207,7 +207,7 @@ global.chat（唯一主 Agent）
         （任务终结 → DeferredToolResults 续跑 → 最终回复原子提交）
 
 受信任务 UI（只读 + 明确用户命令）：
-  GET /api/v1/global-tasks/<task_id>（纯读任务状态）
+  GET /api/v1/global-tasks/<task_id>（纯读任务状态 + 计算型执行进度视图）
   GET /api/v1/ai-work/conversations/<id>/task-link（conversation → 未解决任务）
   GET /api/v1/ai-work/conversations/<id>/events（官方事件订阅 SSE）
   POST /api/global-task-{input,approve,reject,cancel}
@@ -274,12 +274,21 @@ Controller 在副作用前为当前步骤生成冻结快照、digest 和审批�
 - `erp_web/services/global_task_continuation_service.py`：任务终结后用官方
   `DeferredToolResults` 续跑同一 conversation，最终 Assistant 回复与
   history/link/outbox 原子提交；不合成项目自有 Assistant message shape。
+- `erp_web/services/global_task_progress_service.py`：GlobalTask 执行进度投影
+  服务。把当前任务与领域 Job 已持久化状态即时投影为计算型只读
+  `GlobalTaskExecutionProgress`：不写回任务状态、不推进任务、不触发 CAS/revision
+  递增，进度读取失败只降级为通用运行信息。领域专用状态由按 `job_type` 注册的
+  `JobStatusReader` 类型化为 `JobStateSnapshot`（生命周期字段 status/error 供
+  Controller 消费，展示字段供投影服务消费），Reader 缺失/异常或 Job 缺失均安全降级。
 - `erp_web/services/vercel_ai_ui_service.py`：`/api/v1/ai-chat/runs` 的服务端
   drain；接受普通回合前原子拒绝存在未解决 link 的 conversation
   （`AI_CHAT_CONVERSATION_TASK_PENDING`），客户端断线不取消已接受的 run。
 - `erp_web/schemas/global_tasks.py`：任务、步骤、`pending_input_owner`、带
   `input_type/input_owner` 的类型化 `RequiredInput`、审批与拒绝 shape。补充值由
-  Controller 按 owner 合并到 step、属性或核价输入，不靠 facade 字段白名单。
+  Controller 按 owner 合并到 step、属性或核价输入，不靠 facade 字段白名单。另含
+  只读执行进度契约：`JobStateSnapshot`（Reader 类型化快照）、
+  `GlobalTaskExecutionProgress` / `GlobalTaskViewResponse`（HTTP/UI 进度读模型）；
+  进度字段均为白名单且限长，不透传凭据、完整 payload 或原始平台对象。
 
 声明 `approval_required` 的 Capability 只能进入 `GLOBAL_TASK_CAPABILITIES`，主
 Agent 不得直接触发破坏性写入；审批 payload 携带确定性 digest，Capability 执行时
@@ -334,7 +343,9 @@ Global Task 聊天耦合已全部删除。当前 AiWork 只围绕 Pydantic 官�
   `GET /api/v1/ai-work/conversations/{id}/events` 官方编码事件订阅 SSE：先从
   outbox 重放 `after_history_version` 之后的保留批次再转 live，游标超出保留窗口
   时返回 `resync_required`；
-  `GET /api/v1/global-tasks/{task_id}` 纯读任务状态。
+  `GET /api/v1/global-tasks/{task_id}` 纯读任务状态，并附带计算型只读
+  `execution_progress`（当前步骤、活跃 Job 阶段/重试/下次检查、内部活动与耗时）；
+  GET 不推进任务、不递增 revision，连续读取不产生任何写入。
 - `erp_web/stores/pydantic_message_store.py`：`ModelMessage` 历史唯一持久化边界；
   每次提交递增 `history_version`，不合成 orphan tool return。
 - 已退役的 `/raw`、`/children`、wait/after_seq 参数继续返回 404。

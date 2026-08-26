@@ -149,16 +149,19 @@ describe('GlobalTaskApprovalCard 只读任务卡', () => {
     wrapper.unmount()
   })
 
-  it('select 待补字段渲染选项下拉并提交所选字符串（A-08）', async () => {
+  it('select 待补字段显示可读文案并提交稳定值（A-08）', async () => {
     vi.mocked(fetchGlobalTask).mockResolvedValue(taskResponse({
       status: 'needs_input',
       pending_inputs: [
         {
-          key: 'target_platform',
-          label: '目标平台',
-          reason: '请确认发布平台',
+          key: 'category_id',
+          label: '平台类目',
+          reason: '请选择匹配类目',
           input_type: 'select',
-          options: ['mercadolibre', 'amazon'],
+          options: [
+            { value: 'MLM194177', label: 'Panes（MLM194177）' },
+            { value: 'MLM168005', label: 'Reglas（MLM168005）' },
+          ],
         },
       ],
     }) as never)
@@ -167,19 +170,20 @@ describe('GlobalTaskApprovalCard 只读任务卡', () => {
     const wrapper = mountCard()
     await flushPromises()
 
-    const select = wrapper.get('[data-testid="global-task-input-target_platform"]')
+    const select = wrapper.get('[data-testid="global-task-input-category_id"]')
     expect(select.element.tagName).toBe('SELECT')
-    const optionValues = wrapper.findAll('option').map((option) => option.element.value)
-    expect(optionValues).toContain('mercadolibre')
-    expect(optionValues).toContain('amazon')
+    const categoryOption = wrapper.findAll('option').find(
+      (option) => option.element.value === 'MLM194177',
+    )
+    expect(categoryOption?.text()).toBe('Panes（MLM194177）')
 
-    await select.setValue('mercadolibre')
+    await select.setValue('MLM194177')
     await wrapper.get('[data-testid="global-task-input-submit"]').trigger('click')
     await flushPromises()
 
     expect(submitGlobalTaskInput).toHaveBeenCalledWith(
       'gtask-1',
-      { target_platform: 'mercadolibre' },
+      { category_id: 'MLM194177' },
     )
     wrapper.unmount()
   })
@@ -565,5 +569,145 @@ describe('GlobalTaskApprovalCard 只读任务卡', () => {
     const cancelButton = wrapper.get('[data-testid="global-task-cancel"]')
     expect((cancelButton.element as HTMLButtonElement).disabled).toBe(false)
     wrapper.unmount()
+  })
+
+  describe('执行进度视图（进度计划 §8）', () => {
+    function progressResponse() {
+      const now = Date.now()
+      return {
+        ...taskResponse(),
+        execution_progress: {
+          observed_at: new Date(now).toISOString(),
+          task_elapsed_seconds: 295,
+          current_step: {
+            index: 1,
+            ordinal: 2,
+            total: 4,
+            capability_name: 'product_publish_request',
+            label: '提交商品发布',
+            status: 'running',
+          },
+          active_job: {
+            job_id: 'job-1',
+            job_type: 'publish',
+            status: 'waiting',
+            stage_code: 'confirmation',
+            stage_label: '等待平台确认',
+            summary: '远端写入已完成，正在确认店铺商品状态',
+            started_at: new Date(now - 282000).toISOString(),
+            updated_at: null,
+            elapsed_seconds: 282,
+            phase_started_at: null,
+            phase_elapsed_seconds: null,
+            attempt: 1,
+            retry_count: 7,
+            next_check_at: new Date(now + 12000).toISOString(),
+            last_external_status: 'CHECKING',
+          },
+          activities: [
+            { code: 'offer_mapping', label: '提交商品资料', status: 'completed', completed_at: null },
+            { code: 'campaign_offer', label: '加入店铺', status: 'completed', completed_at: null },
+            { code: 'price', label: '更新价格', status: 'completed', completed_at: null },
+            { code: 'stock', label: '更新库存', status: 'completed', completed_at: null },
+            { code: 'confirmation', label: '确认平台状态', status: 'running', completed_at: null },
+          ],
+        },
+      }
+    }
+
+    it('展示当前步骤、阶段、最近状态与内部活动', async () => {
+      vi.mocked(fetchGlobalTask).mockResolvedValue(progressResponse() as never)
+
+      const wrapper = mountCard()
+      await flushPromises()
+
+      expect(wrapper.get('[data-testid="global-task-current-step"]').text())
+        .toContain('第 2/4 步：提交商品发布')
+      expect(wrapper.get('[data-testid="global-task-job-line"]').text())
+        .toContain('等待平台确认')
+      const external = wrapper.get('[data-testid="global-task-external-line"]').text()
+      expect(external).toContain('最近状态：CHECKING')
+      expect(external).toContain('已检查 7 次')
+      expect(external).toContain('后再次检查')
+
+      const activities = wrapper.get('[data-testid="global-task-activities"]').text()
+      expect(activities).toContain('提交商品资料')
+      expect(activities).toContain('确认平台状态')
+      wrapper.unmount()
+    })
+
+    it('不显示百分比，技术详情折叠展示原始 code', async () => {
+      vi.mocked(fetchGlobalTask).mockResolvedValue(progressResponse() as never)
+
+      const wrapper = mountCard()
+      await flushPromises()
+
+      // 无真实分子/分母时不渲染百分比。
+      expect(wrapper.text()).not.toContain('%')
+      // 技术详情默认折叠但内容包含原始 code。
+      expect(wrapper.html()).toContain('offer_mapping')
+      wrapper.unmount()
+    })
+
+    it('缺少详细进度时展示降级文案且不渲染活动列表', async () => {
+      const now = Date.now()
+      vi.mocked(fetchGlobalTask).mockResolvedValue({
+        ...taskResponse(),
+        execution_progress: {
+          observed_at: new Date(now).toISOString(),
+          task_elapsed_seconds: 10,
+          current_step: null,
+          active_job: {
+            job_id: 'job-1',
+            job_type: 'publish',
+            status: 'running',
+            stage_code: '',
+            stage_label: '',
+            summary: '暂时无法读取后台任务进度。',
+            started_at: new Date(now - 5000).toISOString(),
+            updated_at: null,
+            elapsed_seconds: 5,
+            phase_started_at: null,
+            phase_elapsed_seconds: null,
+            attempt: null,
+            retry_count: null,
+            next_check_at: null,
+            last_external_status: '',
+          },
+          activities: [],
+        },
+      } as never)
+
+      const wrapper = mountCard()
+      await flushPromises()
+
+      expect(wrapper.get('[data-testid="global-task-job-line"]').text())
+        .toContain('暂时无法读取后台任务进度')
+      expect(wrapper.find('[data-testid="global-task-activities"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="global-task-external-line"]').exists()).toBe(false)
+      wrapper.unmount()
+    })
+
+    it('终态任务冻结耗时并停止进度计时', async () => {
+      const now = Date.now()
+      vi.mocked(fetchGlobalTask).mockResolvedValue({
+        ...taskResponse({ status: 'completed' }),
+        execution_progress: {
+          observed_at: new Date(now).toISOString(),
+          task_elapsed_seconds: 120,
+          current_step: null,
+          active_job: null,
+          activities: [],
+        },
+      } as never)
+
+      const wrapper = mountCard()
+      await flushPromises()
+
+      // 终态展示冻结耗时（120s），且不再出现进度计时块中的活动/外部状态行。
+      expect(wrapper.text()).toContain('已耗时 120s')
+      expect(wrapper.find('[data-testid="global-task-job-line"]').exists()).toBe(false)
+      wrapper.unmount()
+    })
   })
 })

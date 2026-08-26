@@ -32,11 +32,40 @@ from erp_web.schemas.market_prepare_capabilities import (
 from erp_web.services.ai_tool_declaration import Injected, ai_tool
 from erp_web.services.capability_errors import (
     BusinessCapabilityError,
+    CapabilityInputOption,
     CapabilityInputRequired,
 )
 
 
 CategoryMatcher = Callable[..., Mapping[str, Any]]
+_INPUT_OPTION_LABEL_MAX_LENGTH = 1000
+
+
+def _category_candidate_option(
+    candidate: Mapping[str, Any],
+) -> CapabilityInputOption | None:
+    """把类目候选转换为“可读文案 + 稳定 ID”的待选项。"""
+
+    category_id = text(candidate.get("category_id"))
+    if not category_id:
+        return None
+    raw_path = candidate.get("path_segments")
+    path_segments = (
+        [text(segment) for segment in raw_path if text(segment)]
+        if isinstance(raw_path, (list, tuple))
+        else []
+    )
+    description = " › ".join(path_segments) or text(candidate.get("name"))
+    if not description or description.casefold() == category_id.casefold():
+        return CapabilityInputOption(value=category_id, label=category_id)
+    suffix = f"（{category_id}）"
+    description = description[
+        : max(1, _INPUT_OPTION_LABEL_MAX_LENGTH - len(suffix))
+    ].rstrip()
+    return CapabilityInputOption(
+        value=category_id,
+        label=f"{description}{suffix}",
+    )
 
 
 def match_category(
@@ -85,12 +114,13 @@ def match_category(
             else []
         )
         if status == "unresolved":
-            candidate_options = [
-                text(candidate.get("category_id"))
-                for candidate in candidates
-                if isinstance(candidate, Mapping)
-                and text(candidate.get("category_id"))
-            ]
+            candidate_options: list[CapabilityInputOption] = []
+            for candidate in candidates:
+                if not isinstance(candidate, Mapping):
+                    continue
+                option = _category_candidate_option(candidate)
+                if option is not None:
+                    candidate_options.append(option)
             raise CapabilityInputRequired(
                 text(failure.get("code")) or "CATEGORY_MATCH_UNRESOLVED",
                 text(failure.get("message")) or "类目匹配需要人工确认。",

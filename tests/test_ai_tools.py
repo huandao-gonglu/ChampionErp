@@ -8,6 +8,7 @@ from erp_web.schemas.ai_tools import (
     AiToolCommand,
     AiToolDefinition,
     AiToolExecutionError,
+    AiToolRequiredInput,
     AiToolResult,
     AiToolSchemaError,
 )
@@ -47,6 +48,22 @@ def tool_definition(
         idempotency="required" if side_effect == "write" else "none",
         idempotency_keys=("operation_id",) if side_effect == "write" else (),
     )
+
+
+def test_required_input_migrates_persisted_string_options_to_current_shape() -> None:
+    required_input = AiToolRequiredInput.model_validate(
+        {
+            "key": "category_id",
+            "label": "平台类目",
+            "reason": "请选择一个候选类目。",
+            "input_type": "select",
+            "options": ["MLM194177"],
+        }
+    )
+
+    assert required_input.model_dump(mode="json")["options"] == [
+        {"value": "MLM194177", "label": "MLM194177"}
+    ]
 
 
 def tool_command(
