@@ -247,6 +247,15 @@ def calculate_price(input_data: dict[str, Any]) -> dict[str, Any]:
             _, target_issues = mercadolibre_global_target_contract(
                 sites_to_sell,
                 platform_store.get("marketplace_bindings"),
+                require_user_products=(
+                    str(platform_store.get("listing_model") or "").strip()
+                    != "traditional_global_items"
+                ),
+                enforce_binding_pricing_model=(
+                    str(platform_store.get("listing_model") or "").strip()
+                    != "traditional_global_items"
+                ),
+                language=str(target.get("language") or "").strip(),
             )
             if target_issues:
                 issue = target_issues[0]
@@ -254,8 +263,8 @@ def calculate_price(input_data: dict[str, Any]) -> dict[str, Any]:
                     next_action = "前往授权页重新验证账号并读取已开通市场"
                 elif issue["code"] == MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED:
                     next_action = (
-                        "当前 Fully Managed 账号需接入 global_net_proceeds "
-                        "价格流程后才能核价"
+                        "当前 CBT 卖家属于 Fully Managed，需接入 "
+                        "global_net_proceeds 价格流程后才能核价"
                     )
                 else:
                     next_action = "先在 CBT 草稿中选择已开通的销售国家与物流方式"
@@ -266,7 +275,12 @@ def calculate_price(input_data: dict[str, Any]) -> dict[str, Any]:
                     "field": issue["field"],
                     "sales_target_options": (
                         mercadolibre_sales_target_selectors(
-                            platform_store.get("marketplace_bindings")
+                            platform_store.get("marketplace_bindings"),
+                            require_user_products=(
+                                str(platform_store.get("listing_model") or "").strip()
+                                != "traditional_global_items"
+                            ),
+                            language=str(target.get("language") or "").strip(),
                         )
                     ),
                     "next_action": next_action,

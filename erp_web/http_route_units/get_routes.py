@@ -28,7 +28,7 @@ from ..facades.get_facade import (
     mask_secret,
     mercadolibre_auth_checklist,
     mercadolibre_recent_orders,
-    mercadolibre_remote_items,
+    mercadolibre_user_products,
     summarize_store_auth_states,
 )
 GetHandler = Callable[[JsonRequestHandler, object], None]
@@ -54,7 +54,7 @@ FRONTEND_PAGE_ROUTES = {
 GET_API_ROUTES = {
     "/api/ai-config",
     "/api/browser-debug/status",
-    "/api/mercadolibre/published-items",
+    "/api/mercadolibre/user-products",
     "/api/mercadolibre/orders",
     "/api/drafts-index",
     "/api/products-index",
@@ -135,13 +135,23 @@ def handle_publish_logs(handler: JsonRequestHandler, parsed: object) -> None:
     handler.send_json({"ok": True, "items": load_publish_logs(limit=limit)})
 
 
-def handle_mercadolibre_published_items(handler: JsonRequestHandler, parsed: object) -> None:
+def handle_mercadolibre_user_products(handler: JsonRequestHandler, parsed: object) -> None:
     params = urllib.parse.parse_qs(parsed.query)
-    status = str((params.get("status") or ["active"])[0] or "active")
+    status = str((params.get("status") or ["all"])[0] or "all")
     page = int((params.get("page") or ["1"])[0] or 1)
     per_page = int((params.get("per_page") or params.get("limit") or ["50"])[0] or 50)
+    refresh = str((params.get("refresh") or [""])[0]).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
     try:
-        result = mercadolibre_remote_items(status=status, page=page, per_page=per_page)
+        result = mercadolibre_user_products(
+            status=status,
+            page=page,
+            per_page=per_page,
+            refresh=refresh,
+        )
         handler.send_json(result, 200 if result.get("ok") else 400)
     except Exception as exc:
         handler.send_json({"ok": False, "error": str(exc)}, 400)
@@ -242,7 +252,7 @@ GET_HANDLERS: dict[str, GetHandler] = {
     "/api/drafts-index": handle_drafts_index,
     "/api/browser-debug/status": handle_browser_debug_status,
     "/api/publish-logs": handle_publish_logs,
-    "/api/mercadolibre/published-items": handle_mercadolibre_published_items,
+    "/api/mercadolibre/user-products": handle_mercadolibre_user_products,
     "/api/mercadolibre/orders": handle_mercadolibre_orders,
     "/api/ai-config": handle_ai_config,
     "/api/publish-bus/jobs": handle_publish_bus_jobs,

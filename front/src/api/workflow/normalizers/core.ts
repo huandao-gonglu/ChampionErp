@@ -248,7 +248,12 @@ export function normalizeMarketplaceOptions(value: unknown): MarketplaceOption[]
         }]
       })
       : []
-    return [{ key, label: getString(record, ['label'], key), sites }]
+    return [{
+      key,
+      label: getString(record, ['label'], key),
+      titleLimit: getNumber(record, ['title_limit'], 0) || undefined,
+      sites,
+    }]
   })
 }
 
@@ -262,9 +267,11 @@ export function normalizeAttributes(value: unknown): Record<string, CategoryAttr
       // 按字符串保留枚举值 ID：Yandex 的大 ID 经过 Number() 会精度丢失。
       const dictionaryValueId = rawId === undefined || rawId === null ? '' : String(rawId).trim()
       const optionValue = getString(option, ['value'])
-      return dictionaryValueId && dictionaryValueId !== '0' && optionValue
-        ? [{ dictionaryValueId, value: optionValue }]
-        : []
+      if (!optionValue || dictionaryValueId === '0') return []
+      return [{
+        ...(dictionaryValueId ? { dictionaryValueId } : {}),
+        value: optionValue,
+      }]
     })
     const isUnitValue = typeof rawValue === 'object'
       && rawValue !== null
@@ -292,7 +299,9 @@ export function toBackendAttributes(value: Record<string, CategoryAttributeValue
     if ('values' in rawValue) {
       return [key, {
         values: (rawValue.values || []).map((item) => ({
-          dictionary_value_id: item.dictionaryValueId,
+          ...(String(item.dictionaryValueId ?? '').trim()
+            ? { dictionary_value_id: String(item.dictionaryValueId).trim() }
+            : {}),
           value: item.value,
         })),
       }]
@@ -309,16 +318,48 @@ export function normalizeValidationErrors(value: unknown): Array<UnknownRecord |
 
 export function normalizeSitesToSell(value: unknown): NonNullable<MarketplaceTargetSite['sitesToSell']> {
   if (!Array.isArray(value)) return []
-  const seen = new Set<string>()
+  const seenSites = new Set<string>()
   return value.flatMap((item) => {
     const record = asRecord(item)
     const siteId = getString(record, ['site_id']).toUpperCase()
     const logisticType = getString(record, ['logistic_type']).toLowerCase()
     if (!siteId || siteId === 'CBT' || !logisticType) return []
-    const key = `${siteId}:${logisticType}`
-    if (seen.has(key)) return []
-    seen.add(key)
-    return [{ siteId, logisticType }]
+    if (seenSites.has(siteId)) return []
+    seenSites.add(siteId)
+    const normalized: NonNullable<MarketplaceTargetSite['sitesToSell']>[number] = { siteId, logisticType }
+    if (Object.prototype.hasOwnProperty.call(record, 'price')) normalized.price = String(record.price ?? '')
+    if (Object.prototype.hasOwnProperty.call(record, 'listing_type_id')) normalized.listingTypeId = String(record.listing_type_id ?? '')
+    if (Object.prototype.hasOwnProperty.call(record, 'status')) normalized.status = String(record.status ?? '')
+    if (Object.prototype.hasOwnProperty.call(record, 'free_shipping') && typeof record.free_shipping === 'boolean') {
+      normalized.freeShipping = record.free_shipping
+    }
+    if (Object.prototype.hasOwnProperty.call(record, 'sale_terms') && Array.isArray(record.sale_terms)) {
+      normalized.saleTerms = record.sale_terms
+        .filter((term) => isRecord(term))
+        .map((term) => ({ ...term }))
+    }
+    if (Object.prototype.hasOwnProperty.call(record, 'net_proceeds')) normalized.netProceeds = String(record.net_proceeds ?? '')
+    return [normalized]
+  })
+}
+
+export function toBackendSitesToSell(value: MarketplaceTargetSite['sitesToSell']): UnknownRecord[] {
+  const seenSites = new Set<string>()
+  return (value || []).flatMap((item) => {
+    const siteId = String(item.siteId || '').trim().toUpperCase()
+    const logisticType = String(item.logisticType || '').trim().toLowerCase()
+    if (!siteId || siteId === 'CBT' || !logisticType || seenSites.has(siteId)) return []
+    seenSites.add(siteId)
+    return [{
+      site_id: siteId,
+      logistic_type: logisticType,
+      ...(item.price !== undefined ? { price: String(item.price) } : {}),
+      ...(item.listingTypeId !== undefined ? { listing_type_id: String(item.listingTypeId) } : {}),
+      ...(item.status !== undefined ? { status: String(item.status) } : {}),
+      ...(item.freeShipping !== undefined ? { free_shipping: Boolean(item.freeShipping) } : {}),
+      ...(item.saleTerms !== undefined ? { sale_terms: item.saleTerms.map((term) => ({ ...term })) } : {}),
+      ...(item.netProceeds !== undefined ? { net_proceeds: String(item.netProceeds) } : {}),
+    }]
   })
 }
 
@@ -494,13 +535,7 @@ export function toBackendTargetSite(target: MarketplaceTargetSite): UnknownRecor
     language: target.language,
     listing_currency: target.listingCurrency,
     currency_fingerprint: target.currencyFingerprint || '',
-    sites_to_sell: (target.sitesToSell || [])
-      .filter((item) => String(item.siteId || '').trim().toUpperCase() !== 'CBT')
-      .map((item) => ({
-        site_id: String(item.siteId || '').trim().toUpperCase(),
-        logistic_type: String(item.logisticType || '').trim().toLowerCase(),
-      }))
-      .filter((item) => item.site_id && item.logistic_type),
+    sites_to_sell: toBackendSitesToSell(target.sitesToSell),
     category_id: target.categoryId || '',
     description_category_id: target.descriptionCategoryId || '',
     category_path: target.categoryPath || '',

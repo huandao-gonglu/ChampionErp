@@ -11,6 +11,9 @@ from typing import Any
 
 from erp_web import marketplaces as publisher
 from erp_web.marketplaces.publisher import PublishAdapterError
+from erp_web.services.mercadolibre_listing_model import (
+    mercadolibre_listing_model_from_user_tags,
+)
 from erp_web.services.listing_currency_service import (
     apply_currency_discovery,
     store_identity_for_platform,
@@ -22,13 +25,17 @@ from erp_web.services.listing_currency_service import (
 def sync_mercadolibre_identity(
     store: dict[str, Any],
     token: str,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """``/users/me`` → user_id / nickname / account_site_id（只写内存段）。"""
 
     profile = publisher.fetch_mercadolibre_user_profile(token)
     user_id = str(profile.get("user_id") or "").strip()
     nickname = str(profile.get("nickname") or "").strip()
     account_site_id = str(profile.get("site_id") or "").strip().upper()
+    tags = {
+        str(tag or "").strip().casefold()
+        for tag in profile.get("tags", [])
+    } if isinstance(profile.get("tags"), list) else set()
     if user_id:
         store["user_id"] = user_id
     if nickname:
@@ -36,6 +43,15 @@ def sync_mercadolibre_identity(
     store["shop_name"] = nickname or user_id or str(store.get("shop_name") or "")
     if account_site_id:
         store["account_site_id"] = account_site_id
+    store["site_id"] = "CBT"
+    store["user_product_seller"] = "user_product_seller" in tags
+    store["listing_model"] = (
+        mercadolibre_listing_model_from_user_tags(
+            tags,
+            account_site_id=account_site_id,
+        )
+        or ""
+    )
     return profile
 
 
@@ -130,41 +146,47 @@ def discover_mercadolibre_listing_currency(
             and str(binding.get("site_id") or "").strip().upper() not in {"", "CBT"}
             and str(binding.get("logistic_type") or "").strip()
         ] if isinstance(bindings, list) else []
+        # 无论账号使用 User Products 还是传统 Global Items，都保留本次
+        # 成功读取的子市场能力快照。模型只由 /users tags 派生，不按接口
+        # 报错做 fallback。
+        store["marketplace_bindings"] = valid_bindings
         if not valid_bindings:
             return {
                 "supported": True,
                 "error_code": "MERCADOLIBRE_MARKETPLACE_BINDINGS_EMPTY",
                 "error_message": "Mercado Libre 未返回当前 CBT 账号可用的销售市场映射",
             }
-        store["marketplace_bindings"] = valid_bindings
+        if (
+            store.get("listing_model") == "user_products"
+            and not any(
+                binding.get("user_product") is not False
+                for binding in valid_bindings
+            )
+        ):
+            return {
+                "supported": True,
+                "error_code": "MERCADOLIBRE_USER_PRODUCTS_REQUIRED",
+                "error_message": (
+                    "Mercado Libre 明确返回所有子市场 operation 均未开通 User Products"
+                ),
+            }
         return {
             "supported": True,
             "currencies": ["USD"],
             "source": "global_selling_contract",
         }
 
-    # 区域账号不使用 CBT 市场映射；切换账号时同步清除旧派生值。
+    # 本项目的 Mercado Provider 只支持 CBT Global Selling。区域账号不是
+    # Global 子市场授权的替代路径，必须重新授权父账号。
     store["marketplace_bindings"] = []
-    try:
-        site_data = publisher.fetch_mercadolibre_site_listing(site_id, token)
-    except PublishAdapterError as exc:
-        if str(getattr(exc, "code", "") or "").endswith("NOT_FOUND"):
-            return {"supported": False}
-        return {
-            "supported": True,
-            "error_code": str(getattr(exc, "code", "") or "MERCADOLIBRE_SITE_FAILED"),
-            "error_message": str(exc),
-        }
-    except Exception as exc:
-        return {
-            "supported": True,
-            "error_code": "MERCADOLIBRE_SITE_FAILED",
-            "error_message": str(exc),
-        }
-    currencies = _mercadolibre_site_currencies(site_data)
-    if not currencies:
-        return {"supported": False}
-    return {"supported": True, "currencies": currencies, "source": "site_api"}
+    return {
+        "supported": True,
+        "error_code": "MERCADOLIBRE_CBT_ACCOUNT_REQUIRED",
+        "error_message": (
+            f"当前授权账号属于 {site_id} 区域站点；"
+            "请授权 CBT Global Selling 父账号"
+        ),
+    }
 
 
 def sync_mercadolibre_auth_and_currency(

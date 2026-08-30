@@ -124,6 +124,160 @@ def test_ai_model_attribute_fill_uses_product_context_and_validates_options(monk
     assert meta["evidence_rejected"] == ["POWER_SUPPLY_TYPE"]
 
 
+def test_ai_model_attribute_fill_replaces_scalar_number_unit_with_structured_value(
+    monkeypatch,
+) -> None:
+    product = default_product_model()
+    product["weight_kg"] = "0.182"
+    product["source"]["title"] = "Portable fan, net weight 0.182 kg"
+    product["source"]["description"] = "Battery autonomy: 3-6H."
+    product["source"]["weight_kg"] = "0.182"
+    product["drafts"]["mercadolibre"]["attributes"] = {
+        "WEIGHT": "0.182",
+        "MAX_HOURS_AUTONOMY": "6",
+    }
+    category = {
+        "category_id": "CBT455865",
+        "site": "CBT",
+        "attributes": {
+            "required": [],
+            "optional": [
+                {
+                    "id": "WEIGHT",
+                    "name": "Weight",
+                    "required": False,
+                    "value_type": "number_unit",
+                    "unit_options": ["g", "kg", "lb"],
+                    "default_unit": "kg",
+                },
+                {
+                    "id": "MAX_HOURS_AUTONOMY",
+                    "name": "Maximum autonomy",
+                    "required": False,
+                    "value_type": "number_unit",
+                    "unit_options": ["h"],
+                    "default_unit": "h",
+                },
+            ],
+        },
+    }
+    calls = 0
+
+    def fake_agent(payload, toolset, ledger):
+        nonlocal calls
+        del toolset, ledger
+        calls += 1
+        definitions = {item["id"]: item for item in payload["attributes"]}
+        assert definitions["WEIGHT"]["value_type"] == "number_unit"
+        assert definitions["WEIGHT"]["unit_options"] == ["g", "kg", "lb"]
+        assert definitions["WEIGHT"]["default_unit"] == "kg"
+        assert definitions["MAX_HOURS_AUTONOMY"]["unit_options"] == ["h"]
+        return CategoryAttributeFillAgentRun(
+            {
+                "assignments": [
+                    {
+                        "attribute_id": "WEIGHT",
+                        "value": "0.182",
+                        "dictionary_value_id": "",
+                        "unit": "kg",
+                    },
+                    {
+                        "attribute_id": "MAX_HOURS_AUTONOMY",
+                        "value": "6",
+                        "dictionary_value_id": "",
+                        "unit": "h",
+                    }
+                ],
+                "need_review": [],
+            }
+        )
+
+    monkeypatch.setattr(
+        category_attribute_ai_fill,
+        "run_category_attribute_fill_agent",
+        fake_agent,
+    )
+
+    updated, meta = category_attribute_ai_fill.apply_ai_model_attribute_fill(
+        product,
+        "mercadolibre",
+        category,
+    )
+    second, second_meta = category_attribute_ai_fill.apply_ai_model_attribute_fill(
+        updated,
+        "mercadolibre",
+        category,
+    )
+
+    assert updated["drafts"]["mercadolibre"]["attributes"]["WEIGHT"] == {
+        "value": "0.182",
+        "unit": "kg",
+    }
+    assert updated["drafts"]["mercadolibre"]["attributes"][
+        "MAX_HOURS_AUTONOMY"
+    ] == {"value": "6", "unit": "h"}
+    assert updated["drafts"]["mercadolibre"]["validation_errors"] == []
+    assert meta["ai_filled"] == ["MAX_HOURS_AUTONOMY", "WEIGHT"]
+    assert calls == 1
+    assert second == updated
+    assert second_meta["ai_filled"] == []
+
+
+def test_ai_model_attribute_fill_matches_localized_unit_to_structured_source(
+    monkeypatch,
+) -> None:
+    product = default_product_model()
+    product["weight_kg"] = "0.182"
+    product["source"]["weight_kg"] = "0.182"
+    product["drafts"]["yandex"]["attributes"] = {"5000": "0.182"}
+    category = {
+        "category_id": "16088928",
+        "site": "global",
+        "attributes": {
+            "required": [],
+            "optional": [
+                {
+                    "id": "5000",
+                    "name": "Вес товара",
+                    "required": False,
+                    "value_type": "numeric",
+                    "unit_options": ["г", "кг"],
+                    "default_unit": "кг",
+                }
+            ],
+        },
+    }
+    monkeypatch.setattr(
+        category_attribute_ai_fill,
+        "run_category_attribute_fill_agent",
+        lambda *args: CategoryAttributeFillAgentRun(
+            {
+                "assignments": [
+                    {
+                        "attribute_id": "5000",
+                        "value": "0.182",
+                        "dictionary_value_id": "",
+                        "unit": "кг",
+                    }
+                ],
+                "need_review": [],
+            }
+        ),
+    )
+
+    updated, meta = category_attribute_ai_fill.apply_ai_model_attribute_fill(
+        product,
+        "yandex",
+        category,
+    )
+
+    assert updated["drafts"]["yandex"]["attributes"]["5000"] == {
+        "value": "0.182",
+        "unit": "кг",
+    }
+    assert meta["ai_filled"] == ["5000"]
+
+
 def test_ai_model_attribute_fill_resolves_ozon_dictionary_values(monkeypatch) -> None:
     product = default_product_model()
     product["name"] = "共田 F30 手持风扇"

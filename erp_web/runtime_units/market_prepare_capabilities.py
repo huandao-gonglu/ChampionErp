@@ -243,11 +243,7 @@ def _prepare_copy(
             or text(target.get("language")),
             "copy_source": "ai",
             "copy_generated_at": datetime.now(timezone.utc).isoformat(),
-            **(
-                {"copy_operation_key": operation_key}
-                if operation_key
-                else {}
-            ),
+            **({"copy_operation_key": operation_key} if operation_key else {}),
         }
     )
     updated = invalidate_target_publish_preparation(
@@ -321,7 +317,12 @@ def _finalize_readiness(
     }
     merged = merge_target_listing_into_draft(draft, target, updates)
     if merged != draft:
-        saved, error, _status = product_store.save_draft_detail(merged)
+        saved, error, _status = product_store.save_draft_publish_state(
+            target_draft_id,
+            platform,
+            site,
+            updates,
+        )
         raise_store_error(
             error,
             default_code="DRAFT_PREPARE_FINALIZE_FAILED",
@@ -494,7 +495,7 @@ DRAFT_PREPARE_FOR_MARKET_TOOL = "draft_prepare_for_market"
     idempotency="required",
     idempotency_keys=("operation_key",),
     recovery_policy="manual",
-    version="2",
+    version="3",
 )
 def draft_prepare_for_market(
     request: DraftPrepareForMarketRequest,
@@ -524,7 +525,7 @@ def draft_prepare_for_market(
     ):
         # 目标站点必须由用户在受信补充资料入口明确选择，不能接受模型在初始
         # 计划里主动生成的值。
-        trusted_request = request.model_copy(update={"sales_target": ""})
+        trusted_request = request.model_copy(update={"sales_target": []})
     return prepare_draft_for_market(
         trusted_request,
         product_store=scope.products,

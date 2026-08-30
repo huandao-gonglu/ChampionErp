@@ -12,8 +12,12 @@ from erp_web.product_model import (
     unresolved_required_category_attributes,
 )
 from erp_web.schemas.category import (
+    category_attribute_uses_unit,
+    category_attribute_uses_numeric_unit,
     category_attribute_schema,
     category_attribute_value_is_valid,
+    normalize_category_attribute_unit,
+    normalize_category_attribute_number_unit_value,
 )
 from erp_web.schemas.category_attribute import CategoryAttributeValueLedger
 from erp_web.schemas.category_brand import (
@@ -198,6 +202,73 @@ def _has_product_evidence(value: str, product_context: dict[str, Any]) -> bool:
     return False
 
 
+_MEASUREMENT_UNIT_ALIAS_GROUPS = (
+    frozenset({"kg", "kgs", "kilogram", "kilograms", "кг", "公斤", "千克"}),
+    frozenset({"g", "gram", "grams", "гр", "г", "克"}),
+    frozenset({"lb", "lbs", "pound", "pounds", "фунт", "磅"}),
+    frozenset({"h", "hr", "hrs", "hour", "hours", "ч", "час", "小时", "小時"}),
+    frozenset({"cm", "см", "centimeter", "centimeters", "厘米"}),
+    frozenset({"mm", "мм", "millimeter", "millimeters", "毫米"}),
+)
+
+
+def _measurement_unit_aliases(unit: str) -> frozenset[str]:
+    normalized = _normalized_evidence_text(unit)
+    for aliases in _MEASUREMENT_UNIT_ALIAS_GROUPS:
+        if normalized in aliases:
+            return aliases
+    return frozenset({normalized}) if normalized else frozenset()
+
+
+def _has_number_unit_evidence(
+    value: str,
+    unit: str,
+    product_context: dict[str, Any],
+) -> bool:
+    """数值和单位必须能由同一商品事实或显式单位字段共同证明。"""
+
+    candidate = _decimal_value(value)
+    unit_aliases = _measurement_unit_aliases(unit)
+    if candidate is None or not unit_aliases:
+        return False
+    unit_pattern = "(?:" + "|".join(
+        re.escape(alias)
+        for alias in sorted(unit_aliases, key=len, reverse=True)
+    ) + ")"
+    measurement_pattern = re.compile(
+        rf"(?<![\d.,])([+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+))"
+        rf"(?![\d.,])\s*{unit_pattern}(?!\w)",
+        re.IGNORECASE,
+    )
+    for raw_evidence in _evidence_values(product_context):
+        evidence = _normalized_evidence_text(raw_evidence)
+        for match in measurement_pattern.finditer(evidence):
+            measured = _decimal_value(match.group(1))
+            if measured is not None and measured == candidate:
+                return True
+
+    # ``weight_kg`` 等结构化字段把单位编码在字段名里；只接受商品/来源
+    # 顶层事实，不把草稿 package_dimensions 当成商品类目属性证据。
+    unit_suffixes = {
+        f"_{alias.replace(' ', '_')}"
+        for alias in unit_aliases
+    }
+    for scope_name in ("product", "source"):
+        scope = product_context.get(scope_name)
+        if not isinstance(scope, dict):
+            continue
+        for key, raw_value in scope.items():
+            if not any(
+                _normalized_evidence_text(key).endswith(suffix)
+                for suffix in unit_suffixes
+            ):
+                continue
+            measured = _decimal_value(raw_value)
+            if measured is not None and measured == candidate:
+                return True
+    return False
+
+
 def _brand_fact_values(product_context: dict[str, Any]) -> list[str]:
     values: list[str] = []
     for scope_name in ("draft", "product", "source"):
@@ -360,6 +431,8 @@ def _validated_agent_attributes(
     accepted: dict[str, Any] = {}
     evidence_rejected: set[str] = set()
     dictionary_values: dict[str, list[dict[str, Any]]] = {}
+    dictionary_units: dict[str, str] = {}
+    invalid_dictionary_units: set[str] = set()
     assignments = (
         agent_output.get("assignments")
         if isinstance(agent_output.get("assignments"), list)
@@ -376,6 +449,24 @@ def _validated_agent_attributes(
         if not value:
             continue
         if attr.get("value_mode") == "strict_enum":
+            if attr_id in invalid_dictionary_units:
+                continue
+            selected_unit = ""
+            if category_attribute_uses_unit(attr):
+                canonical_unit = normalize_category_attribute_unit(
+                    attr,
+                    assignment.get("unit"),
+                )
+                if canonical_unit is None or (
+                    attr_id in dictionary_units
+                    and dictionary_units[attr_id] != canonical_unit
+                ):
+                    evidence_rejected.add(attr_id)
+                    invalid_dictionary_units.add(attr_id)
+                    dictionary_values.pop(attr_id, None)
+                    dictionary_units.pop(attr_id, None)
+                    continue
+                selected_unit = canonical_unit
             value_id = str(assignment.get("dictionary_value_id") or "").strip()
             candidate = ledger.get(attr_id, value_id)
             if candidate is None:
@@ -403,6 +494,8 @@ def _validated_agent_attributes(
             if not has_enum_evidence:
                 evidence_rejected.add(attr_id)
                 continue
+            if selected_unit:
+                dictionary_units[attr_id] = selected_unit
             dictionary_values.setdefault(attr_id, []).append(
                 {
                     "dictionary_value_id": _dictionary_value_id(
@@ -411,6 +504,49 @@ def _validated_agent_attributes(
                     "value": candidate["value"],
                 }
             )
+            continue
+        if category_attribute_uses_unit(attr):
+            canonical_unit = normalize_category_attribute_unit(
+                attr,
+                assignment.get("unit"),
+            )
+            if canonical_unit is None:
+                evidence_rejected.add(attr_id)
+                continue
+            if category_attribute_uses_numeric_unit(attr):
+                normalized_unit_value = (
+                    normalize_category_attribute_number_unit_value(
+                        attr,
+                        value,
+                        canonical_unit,
+                    )
+                )
+                if normalized_unit_value is None:
+                    evidence_rejected.add(attr_id)
+                    continue
+                if _attribute_expects_weight_grams(attr, platform=platform):
+                    has_unit_evidence = _has_deterministic_attribute_evidence(
+                        normalized_unit_value["value"],
+                        attr,
+                        product_context,
+                        platform=platform,
+                    )
+                else:
+                    has_unit_evidence = _has_number_unit_evidence(
+                        normalized_unit_value["value"],
+                        normalized_unit_value["unit"],
+                        product_context,
+                    )
+            else:
+                normalized_unit_value = {
+                    "value": value[:255],
+                    "unit": canonical_unit,
+                }
+                has_unit_evidence = _has_product_evidence(value, product_context)
+            if not has_unit_evidence:
+                evidence_rejected.add(attr_id)
+                continue
+            accepted[attr_id] = normalized_unit_value
             continue
         if _attribute_expects_weight_grams(attr, platform=platform):
             # 包装重量字段只认结构化 kg 事实的精确换算；标题、SKU 或其他
@@ -444,7 +580,12 @@ def _validated_agent_attributes(
                 value = canonical_option
             accepted[attr_id] = value[:255]
     for attr_id, values in dictionary_values.items():
-        accepted[attr_id] = {"values": values}
+        if attr_id in invalid_dictionary_units:
+            continue
+        selected: dict[str, Any] = {"values": values}
+        if unit := dictionary_units.get(attr_id):
+            selected["unit"] = unit
+        accepted[attr_id] = selected
     return accepted, evidence_rejected
 
 

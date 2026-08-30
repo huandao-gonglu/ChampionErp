@@ -1,5 +1,5 @@
 import type { CollectDiagnostics, CollectForm, DraftDetail, DraftProductContext, Marketplace, MarketplaceDraft, PricingInput, Product } from '@/types/workflow'
-import { listingLanguageLabel } from '@/constants/locales'
+import { listingLanguageValue } from '@/constants/locales'
 
 export const marketplaces: Marketplace[] = ['mercadolibre', 'yandex', 'ozon']
 
@@ -10,8 +10,11 @@ export function createEmptyDraft(language = '', site = ''): MarketplaceDraft {
     targetSites: [],
     site,
     enabled: true,
+    globalTitle: '',
     title: '',
     description: '',
+    brand: '',
+    model: '',
     bullets: [],
     categoryId: '',
     descriptionCategoryId: '',
@@ -36,6 +39,7 @@ export function createEmptyDraft(language = '', site = ''): MarketplaceDraft {
     publishStatus: '',
     lastPrecheck: {},
     lastPrecheckTarget: {},
+    publication: null,
   }
 }
 
@@ -73,9 +77,9 @@ export function createEmptyProduct(): Product {
       collectDiagnostics: {},
     },
     drafts: {
-      mercadolibre: createEmptyDraft(listingLanguageLabel('mercadolibre'), 'CBT'),
-      yandex: createEmptyDraft(listingLanguageLabel('yandex'), 'global'),
-      ozon: createEmptyDraft(listingLanguageLabel('ozon'), 'global'),
+      mercadolibre: createEmptyDraft(listingLanguageValue('mercadolibre'), 'CBT'),
+      yandex: createEmptyDraft(listingLanguageValue('yandex'), 'global'),
+      ozon: createEmptyDraft(listingLanguageValue('ozon'), 'global'),
     },
     raw: {},
   }
@@ -83,7 +87,7 @@ export function createEmptyProduct(): Product {
 
 export function createEmptyDraftDetail(platform: Marketplace = 'mercadolibre'): DraftDetail {
   return {
-    ...createEmptyDraft(listingLanguageLabel(platform)),
+    ...createEmptyDraft(listingLanguageValue(platform)),
     productId: '',
     sourceProductId: '',
     platform,

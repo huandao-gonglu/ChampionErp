@@ -24,7 +24,7 @@ from typing import Any, Callable
 
 from erp_web.schemas.category_definition import CategoryDefinition
 
-from .category_definition_support import definition_to_legacy_attribute
+from .category_definition_support import definition_to_legacy_record
 
 
 CategoryRecordLoader = Callable[..., dict[str, Any]]
@@ -74,35 +74,7 @@ class PreparedPublishContext:
         definition = self.category_definition
         if definition is None:
             return None
-        return {
-            "platform": definition.platform,
-            "site": definition.site,
-            "category_id": definition.category_id,
-            "description_category_id": definition.description_category_id,
-            "category_path": definition.category_path,
-            "path_original": [
-                segment.strip()
-                for segment in definition.category_path.split("/")
-                if segment.strip()
-            ],
-            "source": f"{definition.platform}_live",
-            "attributes": {
-                "required": [
-                    {
-                        **definition_to_legacy_attribute(attribute),
-                        "complex_id": attribute.platform_binding.complex_id,
-                    }
-                    for attribute in definition.required
-                ],
-                "optional": [
-                    {
-                        **definition_to_legacy_attribute(attribute),
-                        "complex_id": attribute.platform_binding.complex_id,
-                    }
-                    for attribute in definition.optional
-                ],
-            },
-        }
+        return definition_to_legacy_record(definition)
 
 
 def prepare_publish_context(

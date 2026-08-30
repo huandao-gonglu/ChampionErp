@@ -23,6 +23,15 @@ class MarketPrepareStore(ProductCapabilityStore, Protocol):
     def save_product(self, data: dict[str, Any]) -> dict[str, Any]:
         ...
 
+    def save_draft_publish_state(
+        self,
+        draft_id: str,
+        platform: str,
+        site: str,
+        updates: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
+        ...
+
     def draft_workflow_status(
         self,
         product: dict[str, Any],

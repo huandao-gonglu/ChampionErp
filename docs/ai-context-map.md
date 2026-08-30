@@ -614,7 +614,9 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   远端能力（Ozon `/v1/seller/info`、Yandex Business settings、Mercado Libre
   `/users/me` + `/marketplace/users/{user_id}` 账号映射；区域账号再读取站点元数据），
   返回统一发现结果，由共享状态机持久化到店铺授权配置。CBT 是 Global Selling
-  父账号/全局刊登命名空间，不是普通国家站点：禁止请求 `/sites/CBT`；标准 CBT 按
+  父账号/全局刊登命名空间，不是普通国家站点：OAuth token 与 `account_user_id`
+  只绑定这个 CBT parent；子 marketplace user 只作为 `site_id + seller_id + logistic_type`
+  operation 保存，不能拆成多套本地店铺账号。禁止请求 `/sites/CBT`；标准 CBT 按
   官方发布契约把 USD 作为 `locked` 发现结果持久化，来源为
   `global_selling_contract`。账号实际启用的子市场与物流方式持久化在
   `marketplace_bindings`，不得从静态注册表推断。
@@ -635,18 +637,40 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 - Mercado Libre CBT 草稿中的 `site=CBT` 只表示 Global Selling 刊登范围与 CBT 类目
   命名空间；真实销售目的地保存在当前目标的 `sites_to_sell[]`，每项必须精确匹配
   授权同步的 `marketplace_bindings` 中的 `site_id + logistic_type`。不得把 CBT 写入
-  `sites_to_sell[].site_id`，也不得自动选择账号的全部子市场。Fully Managed 账号在
-  标准售价流程中显式阻断，不能误用 `price/currency_id` 流程。
+  `sites_to_sell[].site_id`，也不得自动选择账号的全部子市场。只要任一 child binding
+  的 `business_model=CBT CN Fulfillment Managed`，整个 CBT seller 就必须在标准售价
+  流程中显式阻断且不提供标准销售目标选项，不能误用 `price/currency_id` 流程。
+- CBT 是内部 provider/发布目标，不是前端语言或销售市场。草稿与 CBT target 的
+  `language` 表示当前文案语言；前端按该语言展示并勾选 child market，保存时把选择
+  映射到同一个 CBT target 的 `sites_to_sell[]`。草稿箱市场选择器是唯一人工选择入口；
+  文案编辑区不得再维护第二套市场勾选或按市场拆分的标题状态。
+- `erp_web/services/mercadolibre_listing_model.py`：根据 `/users` 返回的 CBT 身份与
+  `user_product_seller` tag 派生唯一 `listing_model`。有 tag 时为 `user_products`，
+  无 tag 时为 `traditional_global_items`；两者是 Mercado 账号侧互斥合同。缺少 tag
+  只会禁止 User Products wire contract，不得阻断传统 `/global/items`，也不得在某个
+  endpoint 报错后切换模型。区域账号不映射到任何发布模型，本项目仍不提供区域
+  `/items` 直发。
 - CBT 草稿缺少或包含未授权目的地时，核价 Capability 返回受限
-  `sales_target` 下拉项；选项由当前账号 `marketplace_bindings` 机械生成，稳定值为
+  `sales_target` 多选项；选项由当前账号 `marketplace_bindings` 机械生成，并按当前
+  草稿文案语言对应的 child market 过滤，稳定值为
   `SITE_ID:logistic_type`（例如 `MLM:remote`）。仅任务卡经 `submit_input` 明确提交的
   选择会生效，初始计划中的模型值会被忽略；单独的 `MLM` 因无法区分物流方式而无效。
   选择通过账号目标契约后先规范化保存到 `target_sites[].sites_to_sell`，由 ProductStore
-  清除旧核价/预检，再继续当前核价步骤；该字段不属于 `pricing_input`。
+  清除旧核价/预检，再继续当前核价步骤；该字段不属于 `pricing_input`。已有前端选择时
+  AI 直接复用；AI 补充的选择也写回同一字段，不能形成任务专属的第二份选择状态。
 - `sites_to_sell[]` 同时属于核价指纹和发布审批快照：任一销售国家或物流方式
-  变化都会清除旧核价、预检与发布就绪状态，撤销旧发布预览，但保留已发生的远端
-  商品身份。人工审批摘要必须可读地列出每个 `site_id/logistic_type`，目的地或
+  及其市场级 `price/net_proceeds/listing_type_id/free_shipping/sale_terms/status` 变化都会清除旧核价、
+  预检与发布就绪状态，撤销旧发布预览，但保留已发生的远端商品身份。人工审批摘要
+  必须可读地列出每个 `site_id/logistic_type`，目的地、销售条件或
   店铺映射在批准后变化时，旧批准必须判定为 stale。
+- 对 `listing_model=user_products`，`marketplace_bindings[].pricing_model` 是 Mercado
+  计价模式事实源。同一个 Siteless User Product 只能使用一种模式：普通售价模式发送根级 `price` 与市场级 `price`；
+  明确启用 net proceeds 的账号发送根级 `global_net_proceeds` 与市场级
+  `net_proceeds`。两组字段互斥，选中市场的账号模式不一致、目标同时携带两种价格、
+  或普通价格账号试图发送 `net_proceeds` 时必须在本地失败，不能靠远端报错或静默
+  fallback。Fully Managed 虽然也使用 `global_net_proceeds`，但它是独立发布契约，仍由
+  上述标准流程阻断。传统 Global Items 账号则按其独立合同发送根级和市场级
+  `price`；不得把 User Products binding 的计价校验反向套到已经明确识别的传统模型。
 - `erp_web/marketplaces/yandex_currency.py`：Yandex wire 编码边界（内部 RUB ↔ wire
   RUR），只作用于最终 payload 与发现归一化，不是币种来源。
 - 商品 schema v2 仍会在输入归一化边界读取 v1 payload，但旧数字售价和无指纹核价只标记
@@ -661,15 +685,57 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 - `erp_web/product_model/platform_sku.py`：卖家 SKU 的唯一生成规则。SKU 稳定绑定
   `draft_id`：同一草稿编辑重发保持不变，同一商品重新推出的新草稿获得新 SKU；
   未发布草稿中的“其他”等占位值会被替换，已绑定远端刊登的历史 SKU 不得静默变化。
-- `erp_web/http_route_units/publish_routes.py`：发布预检、payload 预览、同步发布与
-  发布队列 HTTP 入口。
-- `erp_web/http_route_units/get_routes.py`：发布任务列表与指定 Job 详情的只读查询入口。
+- `erp_web/http_route_units/publish_routes.py`：发布预检、payload 预览、非 Mercado
+  平台同步发布、发布队列、`POST /api/mercadolibre/pause-user-product` 与
+  `POST /api/publish-bus/reconcile` HTTP 入口。reconcile 只读取 job 已持久化的远端
+  task 终态，绝不重放 publish mutation。
+  Mercado Libre 明确拒绝 `/api/publish-product` 直发旁路，只允许预览、人工确认与
+  PublishingBus 持久队列。暂停请求只接受
+  `siteless_user_product_id`，不得把本地站点 item ID 当作全局商品身份。
+- `erp_web/http_route_units/get_routes.py`：发布任务列表、指定 Job 详情与
+  `GET /api/mercadolibre/user-products` 的只读查询入口。Mercado User Products 列表
+  以本地草稿 `publication` 为主索引；仅显式 `refresh=true` 时，才按已经持久化的
+  Siteless ID 调用 `/marketplace/user-products/{id}/mapping` 刷新 Item/Local UP
+  身份映射。mapping 必须是官方顶层单元素数组，且 Siteless ID、CBT owner、父 Item/UP
+  及站点映射全部与当前账号和本地 publication 闭包一致；空数组、多元素、身份漂移或
+  非法 `UP...` 标识只记录 refresh error，不能覆盖已确认身份。mapping 不提供权威状态、售价或刊登类型，因此已有业务事实保持为本地
+  snapshot，不能把 mapping 读取称为远端状态刷新。禁止用
+  `/users/{id}/items/search` 或本地站点 item 搜索拼出全量 families。
 - `erp_web/facades/publish_facade.py`：HTTP 层唯一发布 facade；业务编排进入
   `erp_web/runtime_units/publish_workflows.py`。
 - `erp_web/runtime_units/publish_adapter.py`：发布平台适配器注册表。只有这里注册且
   在 `marketplace_registry.py` 声明 `CAP_PUBLISH` 的平台才允许进入真实发布流程。
-- `erp_web/runtime_units/publish_mercadolibre.py`：Mercado Libre 专属发布与错误处理；
-  首次发布创建 item，后续同一草稿按已持久化的 `item_id` 更新。
+- `erp_web/runtime_units/publish_mercadolibre.py`：Mercado Libre 专属发布、User
+  Products 查询/暂停与错误处理。一个本地 Mercado 草稿只持久化一个
+  `publication` 聚合；`publication.model` 明确区分 `user_products` 与
+  `traditional_global_items`，前者以 `siteless_user_product_id` 为全局身份，后者以
+  `parent_item_id` 为 CBT 全局身份，`publication.markets[]` 统一保存各销售市场的
+  item/user-product 投影。
+  暂停统一调用 `PUT /global/user-products/{siteless_user_product_id}`，成功后同步持久化
+  远端明确确认的市场状态；HTTP 206/部分响应只暂停被确认的市场，未确认市场保留原状态
+  并记录 `error/last_operation`。网络、5xx 或不可验证响应统一标记 `outcome_unknown`，
+  不得假定全部市场已经暂停，也不得从 User Products 管理动作回退到传统 Item 路径。
+- `erp_web/marketplaces/publishing.py`：只按已验证授权写入 payload 的
+  `_listing_model` 显式分发，远端错误不会触发 fallback。User Products 首次创建向
+  `POST /global/user-products/families` 发送单元素数组，并要求响应 cardinality、
+  Siteless ID 与每个市场的 Item/Local UP 映射严格闭包。已有 User Product 新增市场时
+  先调用 `POST /global/user-products/{id}` 并确认映射；只有当前 payload 与本地
+  `confirmed_payload` 存在可证明的字段差异时才执行共享字段 `PUT`，纯新增市场不发送
+  无关更新，缺少可信旧快照的复杂字段不猜测重提。若 PUT
+  异步则只轮询 `/user-products-families/tasks/{task_id}`，任务根必须 `finished` 且每个
+  User Product 都有明确 succeeded/failed 终态。poll 阶段不得再发新增市场 mutation。
+  写响应身份漂移、确认响应畸形、超时或崩溃窗口统一进入 `outcome_unknown`，保留活动
+  锁并禁止自动重放。存在 task ID 时，用户可从发布任务页触发只读对账；只有确认
+  `applied/partially_applied/not_applied` 后才把 job 收敛到终态并释放同草稿/平台锁，
+  初次 unknown 与最终对账结论分别保存审计日志。没有 task ID 的未知
+  创建仍必须通过 Mercado 后台或支持渠道人工确认，不能猜测或强制解锁。传统模型仅
+  使用 `POST /global/items` 和 `PUT /global/items/{parent_item_id}`，保留
+  `parent-item-info: true` 创建合同，并把 `item_id/site_items` 作为真实成功身份；绝不
+  恢复区域 `/items`。
+- `erp_web/runtime_units/platform_query_capabilities.py` 与
+  `publish_admin_capabilities.py`：AI 侧对应唯一能力名分别为
+  `mercadolibre_user_products_query` 和 `mercadolibre_user_product_pause`。旧的远端 item
+  列表、item close 与二次真实发布确认能力已经退役；真实发布统一走当前发布工作流。
 - `erp_web/runtime_units/publish_ozon.py`：Ozon `/v3/product/import` payload、
   草稿目标站点中的 `type_id/category_id + description_category_id` 配对、异步导入
   终态确认及错误字段映射；不得从商品级 `local_platform_categories` 回捞发布类目。
@@ -705,11 +771,19 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   不可变事实。同键同事实
   返回原 job 且不重复提交，同键不同事实返回 `PUBLISH_IDEMPOTENCY_CONFLICT`。人工页面队列入口使用
   服务端生成的 `manual:<uuid>`，不复用全局任务的稳定键。`GET /api/publish-bus/jobs` 返回按时间倒序的轻量任务摘要，
-  支持 cursor、状态、平台和商品筛选；`GET /api/publish-bus/status` 只返回指定 Job 的完整详情。
+  支持 cursor、状态、平台和商品筛选；平台摘要从不可变的已批准 payload 白名单投影
+  `sites_to_sell[].site_id/logistic_type`，使 CBT 父刊登下的实际销售市场可见，但不返回
+  售价、标题、属性或其他 payload 内容。`GET /api/publish-bus/status` 只返回指定 Job 的完整详情。
+  `POST /api/publish-bus/reconcile` 仅适用于平台状态为 `outcome_unknown` 且保存了 task ID
+  的 job；对账期间继续保留活动锁，对账成功后再次执行终态草稿补偿持久化。
   两个读取接口都不返回 worker 恢复专用的完整商品快照、approved payload、digest、店铺 identity 或
   幂等事实。
 - `erp_web/runtime_units/publish_capabilities.py`：发布摘要包含当前已授权店铺的脱敏稳定
   `store_identity`；validation digest 同时绑定商品、草稿、平台、站点、店铺身份和最终 payload。
+  `product_publish_validate` 是严格只读边界，不调用平台 `prepare_product`，因此普通上架预检
+  不会上传图片或改写商品。受信的 `publish-payload-preview` 工作流才显式调用
+  `prepare_and_evaluate_publish_validation`：先完成无副作用草稿预检，通过后准备平台素材
+  （Mercado 本地图片上传并写回 picture ID），再以同一份类目定义编译最终 payload 与 digest。
   确认后提交会重新执行确定性校验并常量时间比较 digest，随后把已批准 payload/digest/identity 写入
   PublishingBus job。worker 现取凭据，但外发前复核店铺身份与完整 digest，并直接发送冻结 payload；
   不会重新构造已确认内容。Capability 还会在重校验与队列准入前按完整确认事实恢复既有 job，封闭

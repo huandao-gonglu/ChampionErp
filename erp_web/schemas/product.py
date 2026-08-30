@@ -3,9 +3,10 @@ from __future__ import annotations
 from typing import Any, TypedDict
 
 from .image import DraftImageRef, ImageItem
+from .mercadolibre import MercadoLibrePublication
 
 
-PRODUCT_SCHEMA_VERSION = 2
+PRODUCT_SCHEMA_VERSION = 3
 
 
 class ProductSource(TypedDict, total=False):
@@ -35,9 +36,17 @@ class ProductSource(TypedDict, total=False):
     created_at: str
 
 
-class MercadoLibreSiteToSell(TypedDict):
+class MercadoLibreSiteToSell(TypedDict, total=False):
+    """一个 CBT marketplace operation 及其可独立配置的销售条件。"""
+
     site_id: str
     logistic_type: str
+    price: float | str
+    net_proceeds: float | str
+    listing_type_id: str
+    status: str
+    free_shipping: bool
+    sale_terms: list[dict[str, Any]]
 
 
 class DraftTargetSite(TypedDict, total=False):
@@ -71,6 +80,8 @@ class PlatformDraft(TypedDict, total=False):
     country: str
     status: str
     publish_status: str
+    # Mercado traditional /global/items 的 CBT 根英文标题；本地化标题仍为 title。
+    global_title: str
     title: str
     description: str
     brand: str
@@ -97,6 +108,7 @@ class PlatformDraft(TypedDict, total=False):
     last_precheck: dict[str, Any]
     last_precheck_target: dict[str, Any]
     last_publish_task: dict[str, Any]
+    publication: MercadoLibrePublication
     ai_copy_ready: bool
     copy_generated_at: str
     copy_source: str

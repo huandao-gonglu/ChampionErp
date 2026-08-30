@@ -91,7 +91,13 @@ class CapabilityInputRequired(BusinessCapabilityError):
             normalized_options.append(normalized)
         self.options = tuple(normalized_options)
         normalized_type = str(input_type or "text").strip().lower()
-        allowed_types = {"text", "select", "json_object", "string_list"}
+        allowed_types = {
+            "text",
+            "select",
+            "multi_select",
+            "json_object",
+            "string_list",
+        }
         if normalized_type not in allowed_types:
             raise ValueError(f"未知 Capability 输入类型：{normalized_type}")
         self.input_type = normalized_type

@@ -28,6 +28,7 @@ const busyAction = ref<'approve' | 'reject' | 'refresh' | 'input' | 'cancel' | '
 const actionError = ref('')
 const rejectionReason = ref('')
 const inputValues = ref<Record<string, string>>({})
+const multiSelectValues = ref<Record<string, string[]>>({})
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 const POLL_INTERVAL_MS = 4000
@@ -195,22 +196,118 @@ function errorMessage(error: unknown): string {
 
 function normalizedInputType(item: GlobalTaskRequiredInput): GlobalTaskInputType {
   const type = item.input_type
-  if (type === 'select' || type === 'json_object' || type === 'string_list') return type
+  if (type === 'select' || type === 'multi_select' || type === 'json_object' || type === 'string_list') return type
   return 'text'
+}
+
+function selectedMultiSelectValues(item: GlobalTaskRequiredInput): string[] {
+  const selected = new Set(multiSelectValues.value[item.key] || [])
+  return (item.options || []).map((option) => option.value).filter((value) => selected.has(value))
+}
+
+function isSalesTargetMultiSelect(item: GlobalTaskRequiredInput): boolean {
+  return item.key === 'sales_target' && normalizedInputType(item) === 'multi_select'
+}
+
+function salesTargetSiteId(value: string): string {
+  if (value.split(':').length !== 2) return value
+  return value.split(':', 1)[0]?.trim().toUpperCase() || value
+}
+
+function multiSelectGroupKey(item: GlobalTaskRequiredInput, value: string): string {
+  return isSalesTargetMultiSelect(item) ? salesTargetSiteId(value) : value
+}
+
+function multiSelectGroupCount(item: GlobalTaskRequiredInput): number {
+  return new Set((item.options || []).map((option) => multiSelectGroupKey(item, option.value))).size
+}
+
+function multiSelectSummary(item: GlobalTaskRequiredInput): string {
+  const selectedCount = selectedMultiSelectValues(item).length
+  return isSalesTargetMultiSelect(item)
+    ? `已选 ${selectedCount} 个市场`
+    : `已选 ${selectedCount} / ${(item.options || []).length}`
+}
+
+function setMultiSelectValues(item: GlobalTaskRequiredInput, values: string[]): void {
+  const allowed = new Set((item.options || []).map((option) => option.value))
+  multiSelectValues.value[item.key] = Array.from(new Set(values)).filter((value) => allowed.has(value))
+  actionError.value = ''
+}
+
+function toggleMultiSelectOption(item: GlobalTaskRequiredInput, value: string, checked: boolean): void {
+  const selected = new Set(selectedMultiSelectValues(item))
+  if (checked) {
+    if (isSalesTargetMultiSelect(item)) {
+      const groupKey = multiSelectGroupKey(item, value)
+      ;(item.options || [])
+        .filter((option) => multiSelectGroupKey(item, option.value) === groupKey)
+        .forEach((option) => selected.delete(option.value))
+    }
+    selected.add(value)
+  }
+  else selected.delete(value)
+  // 始终按服务端选项顺序提交，避免点击顺序改变任务输入摘要与审批摘要。
+  setMultiSelectValues(
+    item,
+    (item.options || []).map((option) => option.value).filter((optionValue) => selected.has(optionValue)),
+  )
+}
+
+function selectAllMultiSelectOptions(item: GlobalTaskRequiredInput): void {
+  const options = item.options || []
+  if (!isSalesTargetMultiSelect(item)) {
+    setMultiSelectValues(item, options.map((option) => option.value))
+    return
+  }
+
+  const current = new Set(selectedMultiSelectValues(item))
+  const selectedBySite = new Map<string, string>()
+  options.forEach((option) => {
+    if (current.has(option.value)) selectedBySite.set(multiSelectGroupKey(item, option.value), option.value)
+  })
+  options.forEach((option) => {
+    const groupKey = multiSelectGroupKey(item, option.value)
+    if (selectedBySite.has(groupKey)) return
+    const [, logisticType = ''] = option.value.split(':', 2)
+    if (logisticType.trim().toLowerCase() === 'remote') selectedBySite.set(groupKey, option.value)
+  })
+  options.forEach((option) => {
+    const groupKey = multiSelectGroupKey(item, option.value)
+    if (!selectedBySite.has(groupKey)) selectedBySite.set(groupKey, option.value)
+  })
+  const selected = new Set(selectedBySite.values())
+  setMultiSelectValues(item, options.map((option) => option.value).filter((value) => selected.has(value)))
+}
+
+function clearMultiSelectOptions(item: GlobalTaskRequiredInput): void {
+  setMultiSelectValues(item, [])
 }
 
 /** 按 input_type 校验并序列化用户填写的待补字段。
 
-报告 A-08：后端契约支持 text/select/json_object/string_list；旧实现把所有类型
-都按字符串提交，真实 string_list/json_object/select 无法使用。这里按类型序列化：
-select 必须是给定选项之一，json_object 必须能解析成 JSON 对象，string_list 按
-换行/逗号拆成字符串数组。 */
+报告 A-08：后端契约支持 text/select/multi_select/json_object/string_list；旧实现把
+所有类型都按字符串提交，真实列表、对象和选项输入无法使用。这里按类型序列化：
+select 必须是给定选项之一，multi_select 提交稳定值数组，json_object 必须能解析成
+JSON 对象，string_list 按换行/逗号拆成字符串数组。 */
 function serializeInputValue(
   item: GlobalTaskRequiredInput,
-  raw: string,
+  raw: string | string[],
 ): { ok: true; value: unknown } | { ok: false; error: string } {
   const type = normalizedInputType(item)
-  const trimmed = raw.trim()
+  if (type === 'multi_select') {
+    const selected = Array.isArray(raw)
+      ? Array.from(new Set(raw.map((value) => value.trim()).filter(Boolean)))
+      : []
+    if (!selected.length) return { ok: false, error: `请至少选择一项${item.label}。` }
+    const allowed = new Set((item.options || []).map((option) => option.value))
+    if (allowed.size && selected.some((value) => !allowed.has(value))) {
+      return { ok: false, error: `${item.label}必须从给定选项中选择。` }
+    }
+    return { ok: true, value: selected }
+  }
+  const textRaw = Array.isArray(raw) ? '' : raw
+  const trimmed = textRaw.trim()
   if (type === 'select') {
     if (!trimmed) return { ok: false, error: `请选择${item.label}。` }
     const options = item.options || []
@@ -337,8 +434,11 @@ async function submitInput(): Promise<void> {
   if (!current || busyAction.value) return
   const args: Record<string, unknown> = {}
   for (const item of pendingInputs.value) {
-    const raw = String(inputValues.value[item.key] || '')
-    if (!raw.trim()) continue
+    const inputType = normalizedInputType(item)
+    const raw = inputType === 'multi_select'
+      ? selectedMultiSelectValues(item)
+      : String(inputValues.value[item.key] || '')
+    if (Array.isArray(raw) ? !raw.length : !raw.trim()) continue
     // 报告 A-08：按 input_type 校验并序列化；非法 JSON / 选项外取值在提交前
     // 就地拦截，不再把非文本类型硬转成字符串发给后端。
     const serialized = serializeInputValue(item, raw)
@@ -361,6 +461,7 @@ async function submitInput(): Promise<void> {
     loadGeneration += 1
     commitResponse(response)
     inputValues.value = {}
+    multiSelectValues.value = {}
   } catch (error) {
     if (requestedTaskId !== props.taskId) return
     actionError.value = errorMessage(error)
@@ -398,6 +499,7 @@ watch(() => props.taskId, () => {
   progress.value = null
   actionError.value = ''
   inputValues.value = {}
+  multiSelectValues.value = {}
   syncTicker()
   void loadTask(false)
 })
@@ -522,10 +624,62 @@ onBeforeUnmount(() => {
           {{ item.label }}
         </label>
         <p v-if="item.reason" class="text-[10px] text-sky-600 dark:text-sky-300">{{ item.reason }}</p>
-        <!-- 报告 A-08：按 input_type 渲染控件；select 用选项下拉，json_object/
-             string_list 用多行文本，text 用单行输入。 -->
+        <!-- 报告 A-08：按 input_type 渲染控件；select 用单选下拉，multi_select
+             用复选列表，json_object/string_list 用多行文本，text 用单行输入。 -->
+        <div
+          v-if="normalizedInputType(item) === 'multi_select'"
+          class="mt-1 rounded-lg border border-sky-200 bg-white p-2 dark:border-sky-500/30 dark:bg-dark-950/60"
+          :data-testid="`global-task-input-${item.key}`"
+        >
+          <div class="flex flex-wrap items-center justify-between gap-2 border-b border-sky-100 pb-2 dark:border-sky-500/20">
+            <span class="text-[11px] font-semibold text-sky-700 dark:text-sky-200">
+              {{ multiSelectSummary(item) }}
+            </span>
+            <div class="flex gap-1.5">
+              <button
+                type="button"
+                class="btn btn-outline px-2 py-1 text-[11px]"
+                :data-testid="`global-task-input-${item.key}-select-all`"
+                :disabled="Boolean(busyAction) || !(item.options || []).length || selectedMultiSelectValues(item).length === multiSelectGroupCount(item)"
+                @click="selectAllMultiSelectOptions(item)"
+              >
+                {{ isSalesTargetMultiSelect(item) ? '全选市场' : '全选' }}
+              </button>
+              <button
+                type="button"
+                class="btn btn-outline px-2 py-1 text-[11px]"
+                :data-testid="`global-task-input-${item.key}-clear`"
+                :disabled="Boolean(busyAction) || !selectedMultiSelectValues(item).length"
+                @click="clearMultiSelectOptions(item)"
+              >
+                清空
+              </button>
+            </div>
+          </div>
+          <div class="mt-2 grid max-h-48 gap-1 overflow-y-auto sm:grid-cols-2">
+            <label
+              v-for="option in item.options || []"
+              :key="option.value"
+              class="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs text-sky-900 transition hover:bg-sky-50 dark:text-sky-100 dark:hover:bg-sky-500/10"
+            >
+              <input
+                type="checkbox"
+                class="size-4 rounded border-sky-300 text-primary-600"
+                :value="option.value"
+                :checked="selectedMultiSelectValues(item).includes(option.value)"
+                :disabled="Boolean(busyAction)"
+                :data-testid="`global-task-input-${item.key}-option`"
+                @change="toggleMultiSelectOption(item, option.value, ($event.target as HTMLInputElement).checked)"
+              />
+              <span class="min-w-0 break-words">{{ option.label }}</span>
+            </label>
+            <p v-if="!(item.options || []).length" class="px-2 py-1.5 text-[11px] text-rose-600 dark:text-rose-200">
+              当前没有可选项。
+            </p>
+          </div>
+        </div>
         <select
-          v-if="normalizedInputType(item) === 'select'"
+          v-else-if="normalizedInputType(item) === 'select'"
           :id="`task-input-${item.key}`"
           v-model="inputValues[item.key]"
           class="input mt-1 text-xs"

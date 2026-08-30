@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING, Any
 from erp_web import marketplaces as marketplace_api
 from erp_web.context import AppContext, get_context
 from erp_web.marketplace_registry import CAP_PUBLISH, platform_has_capability, platform_label
-from erp_web.marketplaces.publisher import PlatformPublisher
+from erp_web.marketplaces.publisher import PlatformPublisher, PublishAdapterError
+from erp_web.marketplaces.publishing import poll_mercadolibre_publish_status
 from erp_web.product_model import default_draft
 from erp_web.runtime_units.publishing_bus_core import PublishingBus
 from erp_web.stores.product_store import normalize_product_fields
@@ -21,7 +22,10 @@ from .publish_helpers import (
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .publish_context import PreparedPublishContext
-from .publish_mercadolibre import map_mercadolibre_publish_error
+from .publish_mercadolibre import (
+    ensure_mercadolibre_pictures_uploaded,
+    map_mercadolibre_publish_error,
+)
 from .publish_ozon import (
     build_ozon_publish_payload,
     map_ozon_publish_error,
@@ -74,8 +78,18 @@ class MercadoLibrePublishingAdapter:
     platform = "mercadolibre"
 
     def prepare_product(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
-        # Mercado Libre 当前使用平台图片上传接口，不依赖公网 HTTPS 图片服务。
-        return normalize_product_fields(product)
+        # User Products 只接受 Mercado picture ID。统一发布队列必须在编译
+        # payload 前完成上传，不能依赖已删除的特殊“真实发布”入口。
+        token = str((config.get(self.platform) or {}).get("access_token") or "")
+        uploaded = ensure_mercadolibre_pictures_uploaded(product, token)
+        if not uploaded.get("ok"):
+            errors = [
+                str(item.get("message") or "")
+                for item in uploaded.get("errors", [])
+                if isinstance(item, dict) and str(item.get("message") or "")
+            ]
+            raise RuntimeError("；".join(errors) or "Mercado Libre 图片上传失败")
+        return normalize_product_fields(uploaded.get("product"))
 
     def resolve_category(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         # 类目身份只来自平台草稿；不再回落到商品级规则副本。
@@ -114,7 +128,10 @@ class MercadoLibrePublishingAdapter:
         config: dict[str, Any],
     ) -> dict[str, Any]:
         result = validate_mercadolibre_draft(
-            context.product, config, context.category_record
+            context.product,
+            config,
+            context.category_record,
+            category_definition=context.category_definition,
         )
         return _flag_definition_unavailable(context, result)
 
@@ -123,7 +140,11 @@ class MercadoLibrePublishingAdapter:
         context: "PreparedPublishContext",
         config: dict[str, Any],
     ) -> dict[str, Any]:
-        return build_mercadolibre_publish_payload(context.product, config)
+        return build_mercadolibre_publish_payload(
+            context.product,
+            config,
+            category_definition=context.category_definition,
+        )
 
     def validate_payload(self, payload: Any, config: dict[str, Any]) -> list[str]:
         return validate_mercadolibre_publish_payload(payload, config)
@@ -133,7 +154,57 @@ class MercadoLibrePublishingAdapter:
         return marketplace_api.publish_mercadolibre(payload, token)
 
     def map_publish_error(self, error: Exception) -> dict[str, Any]:
+        if isinstance(error, PublishAdapterError):
+            return error.to_error_map()
         return map_mercadolibre_publish_error(marketplace_api.parse_mercadolibre_error(error))
+
+    def poll_publish_status(
+        self,
+        result: dict[str, Any],
+        config: dict[str, Any],
+    ) -> dict[str, Any]:
+        store = (
+            config.get(self.platform)
+            if isinstance(config.get(self.platform), dict)
+            else {}
+        )
+        token = str(store.get("access_token") or "")
+        try:
+            return poll_mercadolibre_publish_status(
+                result,
+                token,
+                max_confirmation_polls=max(
+                    1,
+                    int(store.get("publish_confirmation_max_polls") or 300),
+                ),
+            )
+        except PublishAdapterError as exc:
+            # 此处只执行 task GET；读失败不能证明此前 PUT 失败。重试耗尽后
+            # PublishingBus 必须进入 outcome_unknown 并保留活动锁。
+            raise PublishAdapterError(
+                exc.code,
+                str(exc),
+                retryable=exc.retryable,
+                details={**exc.details, "outcome_unknown": True},
+            ) from exc
+        except Exception as exc:
+            raise PublishAdapterError(
+                "MERCADOLIBRE_CONFIRMATION_FAILED",
+                str(exc) or "Mercado Libre 异步任务确认失败",
+                retryable=False,
+                details={"outcome_unknown": True},
+            ) from exc
+
+    def publish_poll_interval_seconds(self, config: dict[str, Any]) -> float:
+        store = (
+            config.get(self.platform)
+            if isinstance(config.get(self.platform), dict)
+            else {}
+        )
+        return max(
+            0.2,
+            float(store.get("publish_poll_interval_seconds") or 1.0),
+        )
 
     def publish(self, product: dict[str, Any], platform: str, config: dict[str, Any]) -> dict[str, Any]:
         from .runtime_api import publish_product

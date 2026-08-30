@@ -166,13 +166,18 @@ def _seed_product(product_id: str, *, with_draft: bool = True) -> dict[str, Any]
                 "enabled": True,
                 "platform": "mercadolibre",
                 "platforms": ["mercadolibre"],
-                "site": "MLM",
-                "language": "es",
+                "site": "CBT",
+                "language": "en-US",
+                "listing_currency": "USD",
                 "target_sites": [
                     {
                         "platform": "mercadolibre",
-                        "site": "MLM",
-                        "language": "es",
+                        "site": "CBT",
+                        "language": "en-US",
+                        "listing_currency": "USD",
+                        "sites_to_sell": [
+                            {"site_id": "MLM", "logistic_type": "remote"}
+                        ],
                     }
                 ],
                 "title": "Ventilador portátil",
@@ -470,13 +475,13 @@ def test_draft_pricing_apply_only_accepts_user_submitted_sales_target(
 
     saved_product = _seed_product("product-pricing-sales-target")
     draft_id = str(saved_product["drafts"]["mercadolibre"]["draft_id"])
-    received: list[str] = []
+    received: list[list[str]] = []
 
     def fake_prepare_target_pricing(**kwargs: Any) -> dict[str, Any]:
-        received.append(str(kwargs.get("sales_target") or ""))
+        received.append(list(kwargs.get("sales_target") or []))
         return {
-            "target_key": "mercadolibre:mlm",
-            "applied_price": {"amount": "100", "currency": "MXN"},
+            "target_key": "mercadolibre:cbt",
+            "applied_price": {"amount": "100", "currency": "USD"},
             "calculation_fingerprint": "fingerprint-1",
         }
 
@@ -487,8 +492,8 @@ def test_draft_pricing_apply_only_accepts_user_submitted_sales_target(
     request = DraftPricingApplyRequest(
         draft_id=draft_id,
         target_platform="mercadolibre",
-        site="MLM",
-        sales_target="MLM:remote",
+        site="CBT",
+        sales_target=["MLM:remote", "MLB:remote"],
         pricing_input={"common": {"purchase_cost": "100"}},
     )
 
@@ -515,7 +520,16 @@ def test_draft_pricing_apply_only_accepts_user_submitted_sales_target(
         execution=trusted_execution,
     )
 
-    assert received == ["", "MLM:remote"]
+    assert received == [[], ["MLM:remote", "MLB:remote"]]
+
+
+def test_draft_pricing_apply_sales_target_rejects_legacy_scalar_selector() -> None:
+    with pytest.raises(ValueError):
+        DraftPricingApplyRequest(
+            draft_id="draft-pricing",
+            sales_target="MLM:remote",  # type: ignore[arg-type]
+            pricing_input={"common": {"purchase_cost": "100"}},
+        )
 
 
 def test_product_delete_requires_trusted_approval_context() -> None:

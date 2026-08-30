@@ -66,9 +66,8 @@ from erp_web.runtime_units.publish_admin_capabilities import (
 from erp_web.runtime_units.publish_bus import load_publish_logs
 from erp_web.runtime_units.publish_capabilities import PublishCapabilityScope
 from erp_web.runtime_units.publish_mercadolibre import (
-    mercadolibre_close_remote_item,
-    mercadolibre_real_publish,
-    mercadolibre_remote_items,
+    mercadolibre_pause_user_product,
+    mercadolibre_user_products,
 )
 from erp_web.runtime_units.research_capabilities import ResearchCapabilityScope
 from erp_web.runtime_units.runtime_api import (
@@ -228,7 +227,7 @@ def build_capability_binding_scope(
             ),
             PlatformQueryCapabilityScope: PlatformQueryCapabilityScope(
                 products=context.products,
-                published_items_loader=mercadolibre_remote_items,
+                user_products_loader=mercadolibre_user_products,
                 orders_loader=mercadolibre_recent_orders,
                 publish_logs_loader=load_publish_logs,
                 publishing_bus=context.publishing_bus,
@@ -336,8 +335,7 @@ def build_capability_binding_scope(
                 direct_publisher=run_direct_publish,
                 product_loader=context.products.load_required_product_from_body,
                 store_config_loader=context.config.load_store_config,
-                real_publisher=mercadolibre_real_publish,
-                item_closer=mercadolibre_close_remote_item,
+                user_product_pauser=mercadolibre_pause_user_product,
             ),
         }
     )
@@ -784,8 +782,7 @@ _GLOBAL_TASK_CAPABILITY_LABELS = {
     "research_hot_products_search": "搜索热门商品",
     "research_run_status_query": "查询研究进度",
     "product_publish_direct": "直接发布",
-    "publish_real_confirm": "确认真实发布",
-    "platform_item_close": "关闭平台商品",
+    "mercadolibre_user_product_pause": "暂停 Mercado User Product",
 }
 
 

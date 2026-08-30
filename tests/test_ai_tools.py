@@ -66,6 +66,24 @@ def test_required_input_migrates_persisted_string_options_to_current_shape() -> 
     ]
 
 
+def test_required_input_accepts_multi_select_with_stable_options() -> None:
+    required_input = AiToolRequiredInput.model_validate(
+        {
+            "key": "sales_target",
+            "label": "销售国家与物流方式",
+            "reason": "请选择一个或多个销售目标。",
+            "input_type": "multi_select",
+            "options": ["MLB:remote", "MLM:remote"],
+        }
+    )
+
+    assert required_input.input_type == "multi_select"
+    assert [option.value for option in required_input.options] == [
+        "MLB:remote",
+        "MLM:remote",
+    ]
+
+
 def tool_command(
     call_id: str = "call_1",
     *,

@@ -15,6 +15,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   selectPublishTarget: [value: MarketplaceTargetSite]
+  updatePackageDimension: [field: PackageDimensionField, value: string]
+  invalidatePublishValidation: []
   precheck: []
   previewPayload: []
   publish: []
@@ -22,6 +24,7 @@ const emit = defineEmits<{
 
 type WarrantyType = 'none' | 'seller' | 'factory'
 type WarrantyUnit = 'months' | 'years'
+type PackageDimensionField = keyof DraftDetail['packageDimensions']
 
 const warrantyTypeOptions: Array<{ value: WarrantyType; label: string }> = [
   { value: 'none', label: '无保修' },
@@ -60,6 +63,10 @@ const activeDraft = computed(() => {
 const blockingIssues = computed(() => props.precheck?.errorItems || [])
 const warningIssues = computed(() => props.precheck?.warningItems || [])
 const hasPayloadConfirmation = computed(() => Boolean(props.payloadPreview?.validationDigest))
+const canPreviewPayload = computed(() => Boolean(
+  hasCurrentDraft.value
+  && (props.precheck?.ok || activeDraft.value.status === 'ready_to_publish'),
+))
 const canQueuePublish = computed(() => Boolean(
   hasCurrentDraft.value
   && (props.precheck?.ok || activeDraft.value.status === 'ready_to_publish')
@@ -123,10 +130,21 @@ function generateSku() {
   const modelText = typeof rawModel === 'string' ? rawModel : props.productContext.model || 'ML'
   const model = modelText.replace(/[^a-zA-Z0-9]+/g, '').slice(0, 10).toUpperCase() || 'ML'
   activeDraft.value.sku = `${model}-${suffix}`
+  emit('invalidatePublishValidation')
 }
 
 function useDefaultStock() {
-  activeDraft.value.stock = activeDraft.value.stock || props.productContext.stock || '10'
+  const stock = activeDraft.value.stock || props.productContext.stock || '10'
+  if (stock === activeDraft.value.stock) return
+  activeDraft.value.stock = stock
+  emit('invalidatePublishValidation')
+}
+
+function setPackageDimension(field: PackageDimensionField, value: string) {
+  const normalizedValue = value.trim()
+  activeDraft.value.packageDimensions[field] = normalizedValue
+  emit('updatePackageDimension', field, normalizedValue)
+  emit('invalidatePublishValidation')
 }
 
 function targetKey(target: MarketplaceTargetSite) {
@@ -155,6 +173,7 @@ function applyWarrantyTerms(type: WarrantyType, durationValue = '3', unit: Warra
     activeDraft.value.saleTerms = [
       { id: 'WARRANTY_TYPE', value_id: '6150835', value_name: 'Sin garantía' },
     ]
+    emit('invalidatePublishValidation')
     return
   }
   const number = Math.max(1, Number(String(durationValue || '').replace(',', '.')) || 3)
@@ -171,6 +190,7 @@ function applyWarrantyTerms(type: WarrantyType, durationValue = '3', unit: Warra
       value_struct: { number, unit: localUnit },
     },
   ]
+  emit('invalidatePublishValidation')
 }
 </script>
 
@@ -231,44 +251,68 @@ function applyWarrantyTerms(type: WarrantyType, durationValue = '3', unit: Warra
           <label class="block">
             <span class="text-xs font-semibold" :class="hasIssue('sku', 'SKU_MISSING') ? 'text-rose-700' : 'text-slate-500'">SKU</span>
             <div class="mt-1 flex gap-2">
-              <input v-model="activeDraft.sku" class="input" :class="hasIssue('sku', 'SKU_MISSING') ? 'border-rose-300 bg-rose-50' : ''" />
+              <input v-model="activeDraft.sku" class="input" :class="hasIssue('sku', 'SKU_MISSING') ? 'border-rose-300 bg-rose-50' : ''" data-publish-draft-field="sku" @input="emit('invalidatePublishValidation')" />
               <button class="btn btn-outline shrink-0 px-3" type="button" @click="generateSku">生成</button>
             </div>
           </label>
           <label class="block">
             <span class="text-xs font-semibold" :class="hasIssue('stock', 'STOCK_MISSING') ? 'text-rose-700' : 'text-slate-500'">库存</span>
             <div class="mt-1 flex gap-2">
-              <input v-model="activeDraft.stock" class="input" :class="hasIssue('stock', 'STOCK_MISSING') ? 'border-rose-300 bg-rose-50' : ''" />
+              <input v-model="activeDraft.stock" class="input" :class="hasIssue('stock', 'STOCK_MISSING') ? 'border-rose-300 bg-rose-50' : ''" data-publish-draft-field="stock" @input="emit('invalidatePublishValidation')" />
               <button class="btn btn-outline shrink-0 px-3" type="button" @click="useDefaultStock">填 10</button>
             </div>
           </label>
           <label class="block">
             <span class="text-xs font-semibold" :class="hasIssue('upc', 'UPC_MISSING') ? 'text-rose-700' : 'text-slate-500'">UPC / GTIN</span>
-            <input v-model="activeDraft.upc" class="input mt-1" :class="hasIssue('upc', 'UPC_MISSING') ? 'border-rose-300 bg-rose-50' : ''" />
+            <input v-model="activeDraft.upc" class="input mt-1" :class="hasIssue('upc', 'UPC_MISSING') ? 'border-rose-300 bg-rose-50' : ''" data-publish-draft-field="upc" @input="emit('invalidatePublishValidation')" />
           </label>
           <label class="mt-6 flex items-center gap-2 text-sm font-semibold text-accent-700 dark:text-accent-200">
-            <input v-model="activeDraft.allowGtinExemption" type="checkbox" class="size-4 rounded border-accent-300" />
+            <input v-model="activeDraft.allowGtinExemption" type="checkbox" class="size-4 rounded border-accent-300" data-publish-draft-field="allowGtinExemption" @change="emit('invalidatePublishValidation')" />
             允许无 UPC 豁免
           </label>
         </div>
 
         <div class="mt-4 grid gap-3 md:grid-cols-4">
-          <label class="block">
-            <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">长 cm</span>
-            <input v-model="activeDraft.packageDimensions.lengthCm" class="input mt-1" />
-          </label>
-          <label class="block">
-            <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">宽 cm</span>
-            <input v-model="activeDraft.packageDimensions.widthCm" class="input mt-1" />
-          </label>
-          <label class="block">
-            <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">高 cm</span>
-            <input v-model="activeDraft.packageDimensions.heightCm" class="input mt-1" />
-          </label>
-          <label class="block">
-            <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">重量 kg</span>
-            <input v-model="activeDraft.packageDimensions.weightKg" class="input mt-1" />
-          </label>
+          <div class="block">
+            <label for="precheck-package-length" class="text-xs font-semibold text-accent-500 dark:text-accent-400">长 cm</label>
+            <input
+              id="precheck-package-length"
+              :value="activeDraft.packageDimensions.lengthCm"
+              class="input mt-1"
+              data-package-dimension-field="lengthCm"
+              @input="setPackageDimension('lengthCm', ($event.target as HTMLInputElement).value)"
+            />
+          </div>
+          <div class="block">
+            <label for="precheck-package-width" class="text-xs font-semibold text-accent-500 dark:text-accent-400">宽 cm</label>
+            <input
+              id="precheck-package-width"
+              :value="activeDraft.packageDimensions.widthCm"
+              class="input mt-1"
+              data-package-dimension-field="widthCm"
+              @input="setPackageDimension('widthCm', ($event.target as HTMLInputElement).value)"
+            />
+          </div>
+          <div class="block">
+            <label for="precheck-package-height" class="text-xs font-semibold text-accent-500 dark:text-accent-400">高 cm</label>
+            <input
+              id="precheck-package-height"
+              :value="activeDraft.packageDimensions.heightCm"
+              class="input mt-1"
+              data-package-dimension-field="heightCm"
+              @input="setPackageDimension('heightCm', ($event.target as HTMLInputElement).value)"
+            />
+          </div>
+          <div class="block">
+            <label for="precheck-package-weight" class="text-xs font-semibold text-accent-500 dark:text-accent-400">重量 kg</label>
+            <input
+              id="precheck-package-weight"
+              :value="activeDraft.packageDimensions.weightKg"
+              class="input mt-1"
+              data-package-dimension-field="weightKg"
+              @input="setPackageDimension('weightKg', ($event.target as HTMLInputElement).value)"
+            />
+          </div>
         </div>
 
         <div class="mt-4 rounded-lg border border-accent-200 bg-white p-3 dark:border-dark-700 dark:bg-dark-900">
@@ -277,17 +321,17 @@ function applyWarrantyTerms(type: WarrantyType, durationValue = '3', unit: Warra
           <div class="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_7rem_8rem]">
             <label class="block">
               <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">保修类型</span>
-              <select v-model="selectedWarrantyType" class="input mt-1">
+              <select v-model="selectedWarrantyType" class="input mt-1" data-publish-draft-field="warrantyType">
                 <option v-for="option in warrantyTypeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
               </select>
             </label>
             <label class="block">
               <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">时长</span>
-              <input v-model="warrantyDurationValue" class="input mt-1" :disabled="selectedWarrantyType === 'none'" inputmode="decimal" />
+              <input v-model="warrantyDurationValue" class="input mt-1" :disabled="selectedWarrantyType === 'none'" data-publish-draft-field="warrantyDuration" inputmode="decimal" />
             </label>
             <label class="block">
               <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">单位</span>
-              <select v-model="warrantyDurationUnit" class="input mt-1" :disabled="selectedWarrantyType === 'none'">
+              <select v-model="warrantyDurationUnit" class="input mt-1" :disabled="selectedWarrantyType === 'none'" data-publish-draft-field="warrantyUnit">
                 <option v-for="option in warrantyUnitOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
               </select>
             </label>
@@ -303,7 +347,7 @@ function applyWarrantyTerms(type: WarrantyType, durationValue = '3', unit: Warra
           </div>
           <div class="flex flex-wrap gap-2">
             <button class="btn btn-outline" :disabled="props.loading || !hasCurrentDraft" @click="emit('precheck')">上架预检</button>
-            <button class="btn btn-outline" :disabled="props.loading || !hasCurrentDraft" @click="emit('previewPayload')">Payload 预览</button>
+            <button class="btn btn-outline" :disabled="props.loading || !canPreviewPayload" @click="emit('previewPayload')">准备素材并预览 Payload</button>
             <button class="btn btn-primary" :disabled="props.loading || !canQueuePublish" @click="emit('publish')">确认加入队列</button>
           </div>
         </div>

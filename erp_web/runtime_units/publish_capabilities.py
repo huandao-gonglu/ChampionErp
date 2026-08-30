@@ -178,7 +178,17 @@ def _summary(
         site=_text(context.get("site")),
         store_identity=store_binding.identity,
         store_label=store_binding.label,
-        title=_text(draft.get("title")),
+        title=_text(
+            payload.get("title")
+            if isinstance(payload, dict)
+            else ""
+        )
+        or _text(
+            payload.get("family_name")
+            if isinstance(payload, dict)
+            else ""
+        )
+        or _text(draft.get("title")),
         category_id=_text(draft.get("category_id")),
         listing_currency=_text(
             applied.get("currency") or draft.get("listing_currency")
@@ -219,40 +229,18 @@ def _load_context(
     return loaded
 
 
-def evaluate_publish_validation(
-    request: ProductPublishValidateRequest,
+def _evaluate_prepared_publish_context(
+    publish_context: dict[str, Any],
     *,
-    context: AppContext | None = None,
+    platform: str,
+    adapter: Any,
+    config: dict[str, Any],
+    prepared_context: Any,
+    precheck: dict[str, Any],
 ) -> _ValidationEvaluation:
-    active_context = context or get_context()
-    publish_context = _load_context(request, context=active_context)
-    platform = _text(publish_context.get("platform")).lower()
-    adapter = publishing_adapter_for(platform)
-    if adapter is None:
-        raise BusinessCapabilityError(
-            "PUBLISH_PLATFORM_UNSUPPORTED",
-            f"平台 {platform or request.platform} 尚未接入发布能力。",
-        )
-    try:
-        config = active_context.config.load_store_config()
-        prepared_product = adapter.prepare_product(
-            publish_context["product"],
-            config,
-        )
-        if not isinstance(prepared_product, dict):
-            raise TypeError("平台 adapter 返回的商品不是对象")
-        # 一次评估只加载一次类目定义；预检与 payload 编译共享该上下文。
-        prepared_context = prepare_publish_context(prepared_product, platform)
-        precheck = adapter.validate_draft(prepared_context, config)
-        if not isinstance(precheck, dict):
-            raise TypeError("平台 adapter 返回的校验结果不是对象")
-    except Exception as exc:
-        raise BusinessCapabilityError(
-            "PUBLISH_VALIDATION_EXECUTION_FAILED",
-            f"发布校验执行失败：{exc}",
-            retryable=True,
-        ) from exc
+    """对已确定的商品/类目上下文做纯 payload 编译与 digest 计算。"""
 
+    prepared_product = prepared_context.product
     errors = [
         _issue(item, severity="error", default_code="PUBLISH_VALIDATION_FAILED")
         for item in precheck.get("errors") or []
@@ -305,8 +293,6 @@ def evaluate_publish_validation(
         "warnings": [item.model_dump() for item in warnings],
     }
     publish_context["product"] = prepared_product
-    # 纯计算边界：评估不持久化任何预检结果；需要落盘的受信 HTTP 工作流
-    # （preview/precheck）在评估之后自行调用 save_draft_precheck_result。
     summary = _summary(publish_context, prepared_product, config, payload)
     digest = ""
     if not errors and payload is not None:
@@ -333,6 +319,138 @@ def evaluate_publish_validation(
         prepared_product=prepared_product,
         approved_payload=payload,
         precheck=combined_precheck,
+    )
+
+
+def evaluate_publish_validation(
+    request: ProductPublishValidateRequest,
+    *,
+    context: AppContext | None = None,
+) -> _ValidationEvaluation:
+    """只读地校验当前已持久化发布事实并生成 payload digest。
+
+    该入口不会调用 ``adapter.prepare_product``。Mercado 本地图片上传等素材
+    准备只能由显式的 payload 预览写流程触发，避免 ``side_effect=none`` 的
+    AI capability 在“校验”期间悄悄写平台和本地商品状态。
+    """
+
+    active_context = context or get_context()
+    publish_context = _load_context(request, context=active_context)
+    platform = _text(publish_context.get("platform")).lower()
+    adapter = publishing_adapter_for(platform)
+    if adapter is None:
+        raise BusinessCapabilityError(
+            "PUBLISH_PLATFORM_UNSUPPORTED",
+            f"平台 {platform or request.platform} 尚未接入发布能力。",
+        )
+    try:
+        config = active_context.config.load_store_config()
+        prepared_product = publish_context["product"]
+        if not isinstance(prepared_product, dict):
+            raise TypeError("发布上下文中的商品不是对象")
+        # 一次评估只加载一次类目定义；预检与 payload 编译共享该上下文。
+        prepared_context = prepare_publish_context(prepared_product, platform)
+        precheck = adapter.validate_draft(prepared_context, config)
+        if not isinstance(precheck, dict):
+            raise TypeError("平台 adapter 返回的校验结果不是对象")
+    except Exception as exc:
+        raise BusinessCapabilityError(
+            "PUBLISH_VALIDATION_EXECUTION_FAILED",
+            f"发布校验执行失败：{exc}",
+            retryable=True,
+        ) from exc
+
+    return _evaluate_prepared_publish_context(
+        publish_context,
+        platform=platform,
+        adapter=adapter,
+        config=config,
+        prepared_context=prepared_context,
+        precheck=precheck,
+    )
+
+
+def prepare_and_evaluate_publish_validation(
+    request: ProductPublishValidateRequest,
+    *,
+    context: AppContext | None = None,
+) -> _ValidationEvaluation:
+    """显式准备发布素材后生成最终 payload 预览与 digest。
+
+    这是写路径：Mercado 会在这里上传本地图片并持久化 picture ID。为避免
+    无效草稿产生外部写入，先用同一份类目定义执行草稿预检；只有没有阻断
+    项时才准备素材。准备后通过 ``PreparedPublishContext.with_product`` 复用
+    已加载的定义，保证预检与 payload 编译同源。
+    """
+
+    active_context = context or get_context()
+    publish_context = _load_context(request, context=active_context)
+    platform = _text(publish_context.get("platform")).lower()
+    adapter = publishing_adapter_for(platform)
+    if adapter is None:
+        raise BusinessCapabilityError(
+            "PUBLISH_PLATFORM_UNSUPPORTED",
+            f"平台 {platform or request.platform} 尚未接入发布能力。",
+        )
+    try:
+        config = active_context.config.load_store_config()
+        source_product = publish_context["product"]
+        if not isinstance(source_product, dict):
+            raise TypeError("发布上下文中的商品不是对象")
+        prepared_context = prepare_publish_context(source_product, platform)
+        precheck = adapter.validate_draft(prepared_context, config)
+        if not isinstance(precheck, dict):
+            raise TypeError("平台 adapter 返回的校验结果不是对象")
+    except Exception as exc:
+        raise BusinessCapabilityError(
+            "PUBLISH_VALIDATION_EXECUTION_FAILED",
+            f"发布校验执行失败：{exc}",
+            retryable=True,
+        ) from exc
+
+    # 只有平台 adapter 明确返回 ok=true 且没有阻断项时才允许外部写入。
+    # 契约异常的 ``ok=false + errors=[]`` 也必须 fail closed。
+    if precheck.get("ok") is not True or precheck.get("errors"):
+        if not precheck.get("errors"):
+            precheck = {
+                **precheck,
+                "errors": [
+                    {
+                        "code": "PUBLISH_VALIDATION_FAILED",
+                        "field": "",
+                        "message": "平台预检未明确通过，已停止准备发布素材。",
+                        "severity": "error",
+                    }
+                ],
+            }
+        return _evaluate_prepared_publish_context(
+            publish_context,
+            platform=platform,
+            adapter=adapter,
+            config=config,
+            prepared_context=prepared_context,
+            precheck=precheck,
+        )
+
+    try:
+        prepared_product = adapter.prepare_product(source_product, config)
+        if not isinstance(prepared_product, dict):
+            raise TypeError("平台 adapter 返回的商品不是对象")
+    except Exception as exc:
+        raise BusinessCapabilityError(
+            "PUBLISH_ASSET_PREPARATION_FAILED",
+            f"发布素材准备失败：{exc}",
+            details={"outcome_unknown": True},
+        ) from exc
+
+    publish_context["product"] = prepared_product
+    return _evaluate_prepared_publish_context(
+        publish_context,
+        platform=platform,
+        adapter=adapter,
+        config=config,
+        prepared_context=prepared_context.with_product(prepared_product),
+        precheck=precheck,
     )
 
 
@@ -554,7 +672,10 @@ def _publish_request_approval_snapshot(
             "发布条件当前不满足，请修复校验错误后重试。",
         )
     summary = evaluation.result.summary
-    destination_rows = [item.model_dump() for item in summary.destinations]
+    destination_rows = [
+        item.model_dump(mode="json", exclude_none=True)
+        for item in summary.destinations
+    ]
     destination_text = "、".join(
         f"{item.site_id}/{item.logistic_type}"
         for item in summary.destinations
@@ -684,6 +805,7 @@ __all__ = [
     "PublishingBusLike",
     "product_publish_request",
     "product_publish_validate",
+    "prepare_and_evaluate_publish_validation",
     "request_product_publish",
     "validate_product_publish",
 ]

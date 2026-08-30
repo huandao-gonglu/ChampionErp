@@ -23,7 +23,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 #: 定义序列化格式版本；归一化形状变化时必须递增，使旧缓存自动失效。
-DEFINITION_FORMAT_VERSION = 1
+DEFINITION_FORMAT_VERSION = 4
 
 #: options 有界预览上限；公共视图与内部定义共用该边界。
 ATTRIBUTE_OPTIONS_PREVIEW_LIMIT = 50
@@ -88,6 +88,8 @@ class CategoryAttributeDefinition(BaseModel):
     #: 归一化取值模式：single/multiple。
     value_mode: str = ""
     allow_custom_values: bool = False
+    #: 平台声明只读/推导属性时，发布方不得提交。
+    read_only: bool = False
     #: 平台校验约束的规范化投影（min/max/regex 等），有界键值。
     constraints: dict[str, str] = Field(default_factory=dict)
     dictionary_id: str = ""
@@ -163,6 +165,7 @@ class CategoryAttributeSummary(BaseModel):
     value_type: str = ""
     value_mode: str = ""
     allow_custom_values: bool = False
+    read_only: bool = False
     is_dictionary: bool = False
     is_collection: bool = False
     max_value_count: int | None = None
@@ -232,7 +235,7 @@ def _canonical_json(value: Any) -> str:
 def _attribute_fingerprint_projection(
     attribute: CategoryAttributeDefinition,
 ) -> dict[str, Any]:
-    """参与指纹的稳定字段投影；排除 options 预览与任何时间戳。"""
+    """参与指纹的稳定字段投影；排除时间戳等非语义元数据。"""
 
     return {
         "id": attribute.id,
@@ -241,6 +244,7 @@ def _attribute_fingerprint_projection(
         "value_type": attribute.value_type,
         "value_mode": attribute.value_mode,
         "allow_custom_values": attribute.allow_custom_values,
+        "read_only": attribute.read_only,
         "constraints": dict(attribute.constraints),
         "dictionary_id": attribute.dictionary_id,
         "is_dictionary": attribute.is_dictionary,
@@ -249,16 +253,32 @@ def _attribute_fingerprint_projection(
         "category_dependent": attribute.category_dependent,
         "default_unit": attribute.default_unit,
         "default_unit_id": attribute.default_unit_id,
-        "unit_options": [
-            {"id": unit.id, "name": unit.name}
-            for unit in attribute.unit_options
-        ],
-        "unit_ids": list(attribute.unit_ids),
+        "unit_options": sorted(
+            [
+                {"id": unit.id, "name": unit.name}
+                for unit in attribute.unit_options
+            ],
+            key=lambda item: (item["id"], item["name"]),
+        ),
+        "unit_ids": sorted(attribute.unit_ids),
         "platform_binding": {
             "complex_id": attribute.platform_binding.complex_id,
             "aspect": attribute.platform_binding.aspect,
             "platform_type": attribute.platform_binding.platform_type,
         },
+        # 发布编译器会使用预览中的 dictionary_value_id 将草稿文案编译成
+        # Mercado 等平台的枚举 wire 值，因此预览内容本身属于 payload 语义。
+        "options": sorted(
+            [
+                {
+                    "value": option.value,
+                    "dictionary_value_id": option.dictionary_value_id,
+                }
+                for option in attribute.options
+            ],
+            key=lambda item: (item["dictionary_value_id"], item["value"]),
+        ),
+        "has_more_values": attribute.has_more_values,
     }
 
 
@@ -269,7 +289,8 @@ def definition_fingerprint_projection(
 
     属性按 id 排序，保证跨进程、跨 Provider 的确定性；明确排除
     ``fetched_at``、``retrieved_at``、``expires_at``、``stale_until``、
-    缓存 source 与 options 预览等易变或有界截断内容。
+    缓存 source 等易变元数据。枚举 options 虽是有界预览，但会影响 payload
+    编译，因此必须参与指纹。
     """
 
     attributes = sorted(

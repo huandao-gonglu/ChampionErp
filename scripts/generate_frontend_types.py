@@ -20,6 +20,7 @@ SCHEMA_MODULES = (
     "erp_web.schemas.api",
     "erp_web.schemas.config",
     "erp_web.schemas.image",
+    "erp_web.schemas.mercadolibre",
     "erp_web.schemas.product",
     "erp_web.schemas.publish",
 )

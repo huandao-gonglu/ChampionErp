@@ -4,7 +4,10 @@ import type { DraftDetail, PricingResult, PricingTargetResult, UnknownRecord } f
 import {
   cbtDestinationSelectionReady,
   isMercadoLibreCbtTarget,
-  mercadoLibreIsFullyManaged,
+  MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED_MESSAGE,
+  mercadoLibreHasFullyManagedBinding,
+  mercadoLibreListingModel,
+  mercadoLibreListingModelError,
 } from '@/utils/mercadolibreGlobalSelling'
 import type { WorkflowRuntime } from '../orchestration/runtime'
 
@@ -107,8 +110,13 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
       return false
     }
     if (currentDraft.value.targetSites.some(isMercadoLibreCbtTarget)) {
-      if (mercadoLibreIsFullyManaged(storeConfig.value)) {
-        setError('当前 CBT 账号为 Fully Managed，不能使用标准售价流程。')
+      const listingModel = mercadoLibreListingModel(storeConfig.value)
+      if (!listingModel) {
+        setError(mercadoLibreListingModelError(storeConfig.value))
+        return false
+      }
+      if (listingModel === 'user_products' && mercadoLibreHasFullyManagedBinding(storeConfig.value)) {
+        setError(MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED_MESSAGE)
         return false
       }
       if (!cbtDestinationSelectionReady(currentDraft.value, storeConfig.value)) {

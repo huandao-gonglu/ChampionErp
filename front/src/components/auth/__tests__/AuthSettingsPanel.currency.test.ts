@@ -145,6 +145,75 @@ describe('AuthSettingsPanel 发布货币区块', () => {
     expect(wrapper.emitted('testAuth')?.[0]).toEqual(['yandex'])
   })
 
+  it('CBT 父账号缺少 User Products 标签时展示传统刊登模型', async () => {
+    const wrapper = mountPanel({
+      platform: 'mercadolibre',
+      storeConfig: {
+        mercadolibre: {
+          account_site_id: 'CBT',
+          listing_model: 'traditional_global_items',
+          user_product_seller: false,
+          listing_currency: '',
+          allowed_currencies: [],
+          currency_mode: 'unresolved',
+          currency_status: 'refresh_failed',
+          currency_source: '',
+          currency_verified_at: '',
+          currency_error_code: 'MERCADOLIBRE_USER_PRODUCTS_REQUIRED',
+          currency_error_message: '当前 CBT 父账号未返回 user_product_seller 标签',
+          marketplace_bindings: [
+            { seller_id: 'seller-mx', site_id: 'MLM', logistic_type: 'remote', business_model: 'CBT CN Fulfillment Managed', pricing_model: 'global_net_proceeds', user_product: false },
+          ],
+        },
+      },
+    })
+    await openStoresTab(wrapper, 'mercadolibre')
+
+    expect(wrapper.get('[data-testid="store-currency-status"]').text()).toBe('传统 CBT 刊登模型')
+    expect(wrapper.text()).not.toContain('读取失败')
+    expect(wrapper.text()).not.toContain('账号能力未开通')
+    expect(wrapper.text()).not.toContain('核价与发布已阻断')
+    expect(wrapper.get('[data-testid="ml-listing-model"]').text()).toContain('传统 CBT 刊登模型')
+    expect(wrapper.get('[data-testid="ml-traditional-listing-model-notice"]').text()).toContain('POST /global/items')
+    expect(wrapper.get('[data-testid="ml-traditional-listing-model-notice"]').text()).toContain('与 User Products 模型互斥')
+    expect(wrapper.get('[data-testid="ml-marketplace-binding"]').text()).toContain('传统 CBT operation')
+    expect(wrapper.find('[data-testid="ml-fully-managed-warning"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('重新验证仅用于刷新远端账户能力结果')
+
+    const retry = wrapper.get('[data-testid="store-currency-retry"]')
+    expect(retry.text()).toBe('重新验证并刷新账户能力')
+    await retry.trigger('click')
+    expect(wrapper.emitted('testAuth')?.[0]).toEqual(['mercadolibre'])
+  })
+
+  it('只使用显式 listing_model，缺失时不从 user_product_seller 推断', async () => {
+    const explicit = mountPanel({
+      platform: 'mercadolibre',
+      storeConfig: {
+        mercadolibre: {
+          account_site_id: 'CBT',
+          listing_model: 'user_products',
+          user_product_seller: false,
+        },
+      },
+    })
+    await openStoresTab(explicit, 'mercadolibre')
+    expect(explicit.get('[data-testid="ml-listing-model"]').text()).toContain('User Products 模型')
+
+    const fallback = mountPanel({
+      platform: 'mercadolibre',
+      storeConfig: {
+        mercadolibre: {
+          account_site_id: 'CBT',
+          user_product_seller: false,
+        },
+      },
+    })
+    await openStoresTab(fallback, 'mercadolibre')
+    expect(fallback.get('[data-testid="ml-listing-model"]').text()).toContain('缺失或无效（已阻断）')
+    expect(fallback.find('[data-testid="ml-traditional-listing-model-notice"]').exists()).toBe(false)
+  })
+
   it('未验证状态提示先完成授权', async () => {
     const wrapper = mountPanel({ platform: 'ozon', storeConfig: { ozon: {} } })
     await openStoresTab(wrapper, 'ozon')
@@ -185,8 +254,15 @@ describe('AuthSettingsPanel 发布货币区块', () => {
     expect(wrapper.get('[data-testid="store-currency-value"]').text()).toBe('-')
   })
 
-  it('授权测试按钮统一为“测试授权并读取发布货币”', async () => {
-    for (const platform of ['mercadolibre', 'yandex', 'ozon']) {
+  it('Mercado Libre 重新验证只刷新账户能力', async () => {
+    const mercadoLibre = mountPanel({ platform: 'mercadolibre' })
+    await openStoresTab(mercadoLibre, 'mercadolibre')
+    const refresh = mercadoLibre.get('[data-testid="test-mercadolibre-auth"]')
+    expect(refresh.text()).toBe('重新验证并刷新账户能力')
+    await refresh.trigger('click')
+    expect(mercadoLibre.emitted('testAuth')?.[0]).toEqual(['mercadolibre'])
+
+    for (const platform of ['yandex', 'ozon']) {
       const wrapper = mountPanel({ platform })
       await openStoresTab(wrapper, platform)
       expect(wrapper.text()).toContain('测试授权并读取发布货币')
@@ -208,6 +284,8 @@ describe('AuthSettingsPanel 发布货币区块', () => {
       storeConfig: {
         mercadolibre: {
           account_site_id: 'CBT',
+          listing_model: 'user_products',
+          user_product_seller: true,
           listing_currency: 'USD',
           allowed_currencies: ['USD'],
           currency_mode: 'locked',
@@ -215,7 +293,7 @@ describe('AuthSettingsPanel 发布货币区块', () => {
           currency_source: 'global_selling_contract',
           marketplace_bindings: [
             { seller_id: 'seller-mx', site_id: 'MLM', logistic_type: 'remote', business_model: 'cross_border' },
-            { seller_id: 'seller-br', site_id: 'MLB', logistic_type: 'fulfillment', business_model: 'CBT CN Fulfillment Managed', pricing_model: 'net_proceeds' },
+            { seller_id: 'seller-br', site_id: 'MLB', logistic_type: 'fulfillment', business_model: 'CBT CN Fulfillment Managed', pricing_model: 'net_proceeds', user_product: null },
             { seller_id: 'seller-global', site_id: 'CBT', logistic_type: 'remote' },
           ],
         },
@@ -224,14 +302,17 @@ describe('AuthSettingsPanel 发布货币区块', () => {
     await openStoresTab(wrapper, 'mercadolibre')
 
     expect(wrapper.get('[data-testid="store-currency-source"]').text()).toBe('Global Selling 官方契约')
+    expect(wrapper.get('[data-testid="ml-listing-model"]').text()).toContain('User Products 模型')
     const bindings = wrapper.findAll('[data-testid="ml-marketplace-binding"]')
     expect(bindings).toHaveLength(2)
     expect(bindings[0].text()).toContain('墨西哥（MLM）')
     expect(bindings[0].text()).toContain('物流 remote')
+    expect(bindings[0].text()).toContain('User Products 能力继承父账号')
     expect(bindings[1].text()).toContain('巴西（MLB）')
     expect(bindings[1].text()).toContain('物流 fulfillment')
+    expect(bindings[1].text()).toContain('User Products 能力继承父账号')
     expect(bindings[1].text()).toContain('CBT CN Fulfillment Managed')
-    expect(wrapper.get('[data-testid="ml-fully-managed-warning"]').text()).toContain('标准售价与销售目的地流程已阻断')
+    expect(wrapper.get('[data-testid="ml-fully-managed-warning"]').text()).toBe('该账号需走 Fully Managed/global_net_proceeds 流程，当前尚未支持。')
     expect(bindings.map((binding) => binding.text()).join(' ')).not.toContain('seller-global')
   })
 })

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 """Workstream D 第四批：审批写 Capability（发布管理）行为测试。
 
-覆盖 product_publish_direct / publish_real_confirm / platform_item_close 的
-服务端审批快照绑定、失败映射，以及 platform_item_close 经由 Global Task
+覆盖 product_publish_direct / mercadolibre_user_product_pause 的服务端审批
+快照绑定、失败映射，以及 User Product 暂停经由 Global Task
 审批闸门的纵向流程（含可信审批身份、任务版本过期负向场景）。
 审批摘要与参数只能由服务端快照生成，模型不提供 approval payload。
 """
@@ -14,21 +14,18 @@ from typing import Any
 import pytest
 
 from erp_web.context import get_context
-from erp_web.facades import global_task_facade
+from erp_web.facades import global_task_facade, publish_facade
 from erp_web.runtime_units.global_ai_control_tools import (
     GlobalTaskStartControlRequest,
 )
 from erp_web.runtime_units.publish_admin_capabilities import (
-    PLATFORM_ITEM_CLOSE_TOOL,
+    MERCADOLIBRE_USER_PRODUCT_PAUSE_TOOL,
     PRODUCT_PUBLISH_DIRECT_TOOL,
-    PUBLISH_REAL_CONFIRM_TOOL,
     PublishAdminCapabilityScope,
-    _platform_item_close_approval_snapshot,
+    _mercadolibre_user_product_pause_approval_snapshot,
     _publish_direct_approval_snapshot,
-    _publish_real_confirm_approval_snapshot,
-    platform_item_close,
+    mercadolibre_user_product_pause,
     product_publish_direct,
-    publish_real_confirm,
 )
 from erp_web.schemas.ai_tools import AiToolExecutionError, TaskApprovalSnapshot
 from erp_web.schemas.ai_trace import AiExecutionContext
@@ -37,9 +34,8 @@ from erp_web.schemas.global_tasks import (
     GlobalTaskRejectRequest,
 )
 from erp_web.schemas.publish_admin_capabilities import (
-    PlatformItemCloseRequest,
+    MercadoLibreUserProductPauseRequest,
     ProductPublishDirectRequest,
-    PublishRealConfirmRequest,
 )
 from erp_web.services.capability_errors import BusinessCapabilityError
 from erp_web.services.global_task_controller import GlobalTaskControllerError
@@ -107,16 +103,10 @@ def _publish_scope(**overrides: Any) -> PublishAdminCapabilityScope:
             200,
         ),
         store_config_loader=lambda: {"mercadolibre": {}},
-        real_publisher=lambda product, confirm: {
+        user_product_pauser=lambda siteless_id: {
             "ok": True,
-            "status": "real_publish_success",
-            "payload_path": "/tmp/payload.json",
-            "result": {"id": "MLB1"},
-        },
-        item_closer=lambda item_id: {
-            "ok": True,
-            "status": "closed",
-            "message": f"{item_id} 已提交结束发布。",
+            "status": "paused",
+            "message": f"{siteless_id} 已提交暂停。",
         },
     )
     defaults.update(overrides)
@@ -138,7 +128,7 @@ def test_product_publish_direct_approval_gate_and_success() -> None:
     scope = _publish_scope(direct_publisher=publisher)
     request = ProductPublishDirectRequest(
         product_id="product-pub-1",
-        platform="mercadolibre",
+        platform="ozon",
     )
 
     # 没有可信审批上下文的直接执行必须被拒绝。
@@ -152,7 +142,7 @@ def test_product_publish_direct_approval_gate_and_success() -> None:
     assert "product-pub-1" in snapshot.summary
     assert "测试商品" in snapshot.summary
     assert snapshot.canonical_payload["product_id"] == "product-pub-1"
-    assert snapshot.canonical_payload["platform"] == "mercadolibre"
+    assert snapshot.canonical_payload["platform"] == "ozon"
 
     result = product_publish_direct(
         request,
@@ -161,13 +151,13 @@ def test_product_publish_direct_approval_gate_and_success() -> None:
     )
     assert result.ok is True
     assert result.status == "real_publish_success"
-    assert captured == {"platform": "mercadolibre", "product_id": "product-pub-1"}
+    assert captured == {"platform": "ozon", "product_id": "product-pub-1"}
 
     # 审批对应另一个商品（目标漂移）→ 稳定 stale 错误。
     stale_snapshot = _publish_direct_approval_snapshot(
         ProductPublishDirectRequest(
             product_id="product-other",
-            platform="mercadolibre",
+            platform="ozon",
         ),
         scope,
     )
@@ -188,7 +178,10 @@ def test_product_publish_direct_failure_mapping() -> None:
             "error": "缺少必填属性",
         }
     )
-    request = ProductPublishDirectRequest(product_id="product-pub-2")
+    request = ProductPublishDirectRequest(
+        product_id="product-pub-2",
+        platform="ozon",
+    )
     snapshot = _publish_direct_approval_snapshot(request, not_ready_scope)
     with pytest.raises(BusinessCapabilityError) as not_ready:
         product_publish_direct(
@@ -208,22 +201,25 @@ def test_product_publish_direct_failure_mapping() -> None:
     # 快照生成阶段就要求商品存在；审批不能建立在无效目标上。
     with pytest.raises(BusinessCapabilityError) as missing:
         _publish_direct_approval_snapshot(
-            ProductPublishDirectRequest(product_id="product-missing"),
+            ProductPublishDirectRequest(
+                product_id="product-missing",
+                platform="ozon",
+            ),
             missing_scope,
         )
     assert missing.value.code == "PRODUCT_NOT_FOUND"
 
 
-def test_product_publish_direct_approval_expires_when_cbt_destinations_change() -> None:
+def test_product_publish_direct_approval_expires_when_destinations_change() -> None:
     product = {
         "product_id": "product-cbt-approval",
         "title": "CBT 测试商品",
         "drafts": {
-            "mercadolibre": {
+            "ozon": {
                 "target_sites": [
                     {
-                        "platform": "mercadolibre",
-                        "site": "CBT",
+                        "platform": "ozon",
+                        "site": "RU",
                         "sites_to_sell": [
                             {"site_id": "MLM", "logistic_type": "remote"}
                         ],
@@ -237,11 +233,11 @@ def test_product_publish_direct_approval_expires_when_cbt_destinations_change() 
     )
     request = ProductPublishDirectRequest(
         product_id="product-cbt-approval",
-        platform="mercadolibre",
+        platform="ozon",
     )
     snapshot = _publish_direct_approval_snapshot(request, scope)
 
-    product["drafts"]["mercadolibre"]["target_sites"][0][
+    product["drafts"]["ozon"]["target_sites"][0][
         "sites_to_sell"
     ] = [{"site_id": "MLB", "logistic_type": "remote"}]
 
@@ -260,22 +256,19 @@ def test_product_publish_direct_approval_expires_when_cbt_destinations_change() 
 
 def test_product_publish_direct_snapshot_binds_config_without_exposing_secrets() -> None:
     config = {
-        "mercadolibre": {
-            "access_token": "access-secret",
-            "refresh_token": "refresh-secret",
-            "app_secret": "app-secret",
-            "account_site_id": "CBT",
+        "ozon": {
+            "api_key": "access-secret",
+            "client_secret": "refresh-secret",
+            "password": "app-secret",
+            "client_id": "client-v1",
             "currency_fingerprint": "currency-v1",
-            "marketplace_bindings": [
-                {"site_id": "MLM", "logistic_type": "remote"}
-            ],
         },
         "listing": {"listing_type_id": "gold_special"},
     }
     scope = _publish_scope(store_config_loader=lambda: config)
     request = ProductPublishDirectRequest(
         product_id="product-config-approval",
-        platform="mercadolibre",
+        platform="ozon",
     )
     snapshot = _publish_direct_approval_snapshot(request, scope)
     serialized = str(snapshot.canonical_payload)
@@ -285,9 +278,7 @@ def test_product_publish_direct_snapshot_binds_config_without_exposing_secrets()
     assert "refresh-secret" not in serialized
     assert "app-secret" not in serialized
 
-    config["mercadolibre"]["marketplace_bindings"] = [
-        {"site_id": "MLB", "logistic_type": "remote"}
-    ]
+    config["ozon"]["client_id"] = "client-v2"
     with pytest.raises(AiToolExecutionError) as stale:
         product_publish_direct(
             request,
@@ -301,146 +292,126 @@ def test_product_publish_direct_snapshot_binds_config_without_exposing_secrets()
     assert stale.value.code == "PUBLISH_DIRECT_APPROVAL_STALE"
 
 
-def test_publish_real_confirm_approval_gate_and_success() -> None:
+def test_product_publish_direct_rejects_mercadolibre_queue_bypass() -> None:
+    scope = _publish_scope()
+    request = ProductPublishDirectRequest(
+        product_id="product-ml-direct",
+        platform="mercadolibre",
+    )
+
+    with pytest.raises(BusinessCapabilityError) as blocked:
+        _publish_direct_approval_snapshot(request, scope)
+
+    assert blocked.value.code == "MERCADOLIBRE_PUBLISH_BUS_REQUIRED"
+
+    response, status = publish_facade.publish_product_payload(
+        {"product_id": "product-ml-direct", "platform": "mercadolibre"}
+    )
+    assert status == 409
+    assert response["error_code"] == "MERCADOLIBRE_PUBLISH_BUS_REQUIRED"
+
+
+def test_user_product_pause_approval_gate_and_success() -> None:
     captured: dict[str, Any] = {}
 
-    def real_publisher(product: dict[str, Any], confirm: bool) -> dict[str, Any]:
-        captured["confirm"] = confirm
-        captured["product_id"] = product.get("product_id")
-        return {
-            "ok": True,
-            "status": "real_publish_success",
-            "payload_path": "/tmp/payload.json",
-            "result": {"id": "MLB1"},
-        }
+    def pauser(siteless_id: str) -> dict[str, Any]:
+        captured["siteless_id"] = siteless_id
+        return {"ok": True, "status": "paused", "message": f"{siteless_id} 已暂停"}
 
-    scope = _publish_scope(real_publisher=real_publisher)
-    request = PublishRealConfirmRequest(product_id="product-real-1")
+    scope = _publish_scope(user_product_pauser=pauser)
+    request = MercadoLibreUserProductPauseRequest(
+        siteless_user_product_id="UP123"
+    )
 
     with pytest.raises(AiToolExecutionError) as missing:
-        publish_real_confirm(request, scope=scope, execution=_execution())
-    assert missing.value.code == "TASK_APPROVAL_CONTEXT_REQUIRED"
-
-    snapshot = _publish_real_confirm_approval_snapshot(request, scope)
-    result = publish_real_confirm(
-        request,
-        scope=scope,
-        execution=_approved_execution(snapshot, PUBLISH_REAL_CONFIRM_TOOL),
-    )
-    assert result.ok is True
-    assert result.payload_path == "/tmp/payload.json"
-    assert captured == {"confirm": True, "product_id": "product-real-1"}
-
-    failed_scope = _publish_scope(
-        real_publisher=lambda product, confirm: {
-            "ok": False,
-            "status": "real_publish_failed",
-            "error": "平台拒绝",
-        }
-    )
-    failed_snapshot = _publish_real_confirm_approval_snapshot(request, failed_scope)
-    with pytest.raises(BusinessCapabilityError) as failed:
-        publish_real_confirm(
-            request,
-            scope=failed_scope,
-            execution=_approved_execution(failed_snapshot, PUBLISH_REAL_CONFIRM_TOOL),
-        )
-    assert failed.value.code == "PUBLISH_REAL_CONFIRM_FAILED"
-
-    stale_snapshot = _publish_real_confirm_approval_snapshot(
-        PublishRealConfirmRequest(product_id="product-other"),
-        scope,
-    )
-    with pytest.raises(AiToolExecutionError) as stale:
-        publish_real_confirm(
+        mercadolibre_user_product_pause(
             request,
             scope=scope,
-            execution=_approved_execution(stale_snapshot, PUBLISH_REAL_CONFIRM_TOOL),
+            execution=_execution(),
         )
-    assert stale.value.code == "PUBLISH_REAL_CONFIRM_APPROVAL_STALE"
-
-
-def test_platform_item_close_approval_gate_and_success() -> None:
-    captured: dict[str, Any] = {}
-
-    def closer(item_id: str) -> dict[str, Any]:
-        captured["item_id"] = item_id
-        return {"ok": True, "status": "closed", "message": f"{item_id} 已关闭"}
-
-    scope = _publish_scope(item_closer=closer)
-    request = PlatformItemCloseRequest(item_id="MLB123")
-
-    with pytest.raises(AiToolExecutionError) as missing:
-        platform_item_close(request, scope=scope, execution=_execution())
     assert missing.value.code == "TASK_APPROVAL_CONTEXT_REQUIRED"
     assert captured == {}
 
-    snapshot = _platform_item_close_approval_snapshot(request, scope)
-    assert snapshot.canonical_payload["item_id"] == "MLB123"
-    result = platform_item_close(
+    snapshot = _mercadolibre_user_product_pause_approval_snapshot(request, scope)
+    assert snapshot.canonical_payload["siteless_user_product_id"] == "UP123"
+    result = mercadolibre_user_product_pause(
         request,
         scope=scope,
-        execution=_approved_execution(snapshot, PLATFORM_ITEM_CLOSE_TOOL),
+        execution=_approved_execution(
+            snapshot,
+            MERCADOLIBRE_USER_PRODUCT_PAUSE_TOOL,
+        ),
     )
     assert result.ok is True
-    assert result.status == "closed"
-    assert captured == {"item_id": "MLB123"}
+    assert result.status == "paused"
+    assert captured == {"siteless_id": "UP123"}
 
-    stale_snapshot = _platform_item_close_approval_snapshot(
-        PlatformItemCloseRequest(item_id="MLB999"),
+    stale_snapshot = _mercadolibre_user_product_pause_approval_snapshot(
+        MercadoLibreUserProductPauseRequest(
+            siteless_user_product_id="UP999"
+        ),
         scope,
     )
     with pytest.raises(AiToolExecutionError) as stale:
-        platform_item_close(
+        mercadolibre_user_product_pause(
             request,
             scope=scope,
-            execution=_approved_execution(stale_snapshot, PLATFORM_ITEM_CLOSE_TOOL),
+            execution=_approved_execution(
+                stale_snapshot,
+                MERCADOLIBRE_USER_PRODUCT_PAUSE_TOOL,
+            ),
         )
-    assert stale.value.code == "ITEM_CLOSE_APPROVAL_STALE"
-
-    unsupported_scope = _publish_scope()
-    with pytest.raises(BusinessCapabilityError) as unsupported:
-        platform_item_close(
-            PlatformItemCloseRequest(platform="ozon", item_id="123"),
-            scope=unsupported_scope,
-            execution=_execution(),
-        )
-    assert unsupported.value.code == "PLATFORM_ITEM_CLOSE_UNSUPPORTED"
+    assert stale.value.code == "USER_PRODUCT_PAUSE_APPROVAL_STALE"
 
     failing_scope = _publish_scope(
-        item_closer=lambda item_id: {
+        user_product_pauser=lambda siteless_id: {
             "ok": False,
-            "error": "缺少 Mercado Libre item id",
-            "error_code": "ITEM_ID_MISSING",
+            "error": "User Product 不存在",
+            "error_code": "MERCADOLIBRE_USER_PRODUCT_NOT_FOUND",
         }
     )
-    failing_snapshot = _platform_item_close_approval_snapshot(request, failing_scope)
+    failing_snapshot = _mercadolibre_user_product_pause_approval_snapshot(
+        request,
+        failing_scope,
+    )
     with pytest.raises(BusinessCapabilityError) as failed:
-        platform_item_close(
+        mercadolibre_user_product_pause(
             request,
             scope=failing_scope,
-            execution=_approved_execution(failing_snapshot, PLATFORM_ITEM_CLOSE_TOOL),
+            execution=_approved_execution(
+                failing_snapshot,
+                MERCADOLIBRE_USER_PRODUCT_PAUSE_TOOL,
+            ),
         )
-    assert failed.value.code == "ITEM_ID_MISSING"
+    assert failed.value.code == "MERCADOLIBRE_USER_PRODUCT_NOT_FOUND"
 
 
-def test_platform_item_close_post_dispatch_error_is_outcome_unknown() -> None:
-    """关闭请求发出后抛错（含超时）：必须结果未知且禁止自动重试。"""
+def test_user_product_pause_post_dispatch_error_is_outcome_unknown() -> None:
+    """暂停请求发出后抛错（含超时）：必须结果未知且禁止自动重试。"""
 
-    request = PlatformItemCloseRequest(item_id="MLB999")
+    request = MercadoLibreUserProductPauseRequest(
+        siteless_user_product_id="UP999"
+    )
 
-    def broken_closer(item_id: str) -> dict[str, Any]:
+    def broken_pauser(siteless_id: str) -> dict[str, Any]:
+        del siteless_id
         raise TimeoutError("平台接口超时")
 
-    broken_scope = _publish_scope(item_closer=broken_closer)
-    snapshot = _platform_item_close_approval_snapshot(request, broken_scope)
+    broken_scope = _publish_scope(user_product_pauser=broken_pauser)
+    snapshot = _mercadolibre_user_product_pause_approval_snapshot(
+        request,
+        broken_scope,
+    )
     with pytest.raises(BusinessCapabilityError) as outcome:
-        platform_item_close(
+        mercadolibre_user_product_pause(
             request,
             scope=broken_scope,
-            execution=_approved_execution(snapshot, PLATFORM_ITEM_CLOSE_TOOL),
+            execution=_approved_execution(
+                snapshot,
+                MERCADOLIBRE_USER_PRODUCT_PAUSE_TOOL,
+            ),
         )
-    assert outcome.value.code == "ITEM_CLOSE_OUTCOME_UNKNOWN"
+    assert outcome.value.code == "USER_PRODUCT_PAUSE_OUTCOME_UNKNOWN"
     assert outcome.value.retryable is False
     assert outcome.value.details == {"outcome_unknown": True}
 
@@ -468,17 +439,17 @@ def _accept_and_run(controller, request, *, conversation_id: str, suffix: str):
     return controller.resume_task(acceptance.task_id)
 
 
-def test_platform_item_close_through_global_task_approval_gate(
+def test_user_product_pause_through_global_task_approval_gate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     context = get_context()
-    closed: list[str] = []
+    paused: list[str] = []
     monkeypatch.setattr(
         global_task_facade,
-        "mercadolibre_close_remote_item",
-        lambda item_id: (
-            closed.append(item_id)
-            or {"ok": True, "status": "closed", "message": f"{item_id} 已关闭"}
+        "mercadolibre_pause_user_product",
+        lambda siteless_id: (
+            paused.append(siteless_id)
+            or {"ok": True, "status": "paused", "message": f"{siteless_id} 已暂停"}
         ),
     )
     controller = global_task_facade.build_global_task_controller(context)
@@ -488,14 +459,13 @@ def test_platform_item_close_through_global_task_approval_gate(
         controller,
         GlobalTaskStartControlRequest.model_validate(
             {
-                "goal": "下架远端商品",
+                "goal": "暂停 User Product",
                 "platform": "mercadolibre",
                 "steps": [
                     {
-                        "capability_name": "platform_item_close",
+                        "capability_name": "mercadolibre_user_product_pause",
                         "arguments": {
-                            "platform": "mercadolibre",
-                            "item_id": "MLB456",
+                            "siteless_user_product_id": "UP456",
                         },
                     }
                 ],
@@ -507,11 +477,11 @@ def test_platform_item_close_through_global_task_approval_gate(
     assert task.status == "pending_approval"
     approval = task.pending_approval
     assert approval is not None
-    assert approval.capability_name == "platform_item_close"
+    assert approval.capability_name == "mercadolibre_user_product_pause"
     # 审批 payload 是服务端快照：摘要与冻结参数，模型没有提供。
-    assert "MLB456" in str(approval.payload.get("summary"))
-    assert approval.payload["canonical_payload"]["item_id"] == "MLB456"
-    assert closed == []
+    assert "UP456" in str(approval.payload.get("summary"))
+    assert approval.payload["canonical_payload"]["siteless_user_product_id"] == "UP456"
+    assert paused == []
 
     # 批准只改变业务状态；执行由 worker 领取。
     approved = controller.approve_task(
@@ -530,23 +500,23 @@ def test_platform_item_close_through_global_task_approval_gate(
     step_result = approved.steps[0].result
     assert step_result is not None
     assert step_result["ok"] is True
-    assert step_result["status"] == "closed"
-    assert closed == ["MLB456"]
+    assert step_result["status"] == "paused"
+    assert paused == ["UP456"]
 
 
-def test_platform_item_close_stale_task_revision_rejected(
+def test_user_product_pause_stale_task_revision_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """审批创建后任务被修改（版本前进）→ 原批准过期，不得执行。"""
 
     context = get_context()
-    closed: list[str] = []
+    paused: list[str] = []
     monkeypatch.setattr(
         global_task_facade,
-        "mercadolibre_close_remote_item",
-        lambda item_id: (
-            closed.append(item_id)
-            or {"ok": True, "status": "closed", "message": "closed"}
+        "mercadolibre_pause_user_product",
+        lambda siteless_id: (
+            paused.append(siteless_id)
+            or {"ok": True, "status": "paused", "message": "paused"}
         ),
     )
     controller = global_task_facade.build_global_task_controller(context)
@@ -556,14 +526,13 @@ def test_platform_item_close_stale_task_revision_rejected(
         controller,
         GlobalTaskStartControlRequest.model_validate(
             {
-                "goal": "下架远端商品",
+                "goal": "暂停 User Product",
                 "platform": "mercadolibre",
                 "steps": [
                     {
-                        "capability_name": "platform_item_close",
+                        "capability_name": "mercadolibre_user_product_pause",
                         "arguments": {
-                            "platform": "mercadolibre",
-                            "item_id": "MLB456",
+                            "siteless_user_product_id": "UP456",
                         },
                     }
                 ],
@@ -578,7 +547,7 @@ def test_platform_item_close_stale_task_revision_rejected(
     steps = list(task.steps)
     steps[0] = steps[0].model_copy(
         update={
-            "arguments": {"platform": "mercadolibre", "item_id": "MLB789"},
+            "arguments": {"siteless_user_product_id": "UP789"},
         }
     )
     context.global_tasks.save_task(task.model_copy(update={"steps": steps}))
@@ -589,20 +558,20 @@ def test_platform_item_close_stale_task_revision_rejected(
             approver="local-ui:test",
         )
     assert stale.value.code == "GLOBAL_TASK_APPROVAL_REVISION_STALE"
-    assert closed == []
+    assert paused == []
 
 
-def test_platform_item_close_reject_records_decision(
+def test_user_product_pause_reject_records_decision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     context = get_context()
-    closed: list[str] = []
+    paused: list[str] = []
     monkeypatch.setattr(
         global_task_facade,
-        "mercadolibre_close_remote_item",
-        lambda item_id: (
-            closed.append(item_id)
-            or {"ok": True, "status": "closed", "message": "closed"}
+        "mercadolibre_pause_user_product",
+        lambda siteless_id: (
+            paused.append(siteless_id)
+            or {"ok": True, "status": "paused", "message": "paused"}
         ),
     )
     controller = global_task_facade.build_global_task_controller(context)
@@ -612,14 +581,13 @@ def test_platform_item_close_reject_records_decision(
         controller,
         GlobalTaskStartControlRequest.model_validate(
             {
-                "goal": "下架远端商品",
+                "goal": "暂停 User Product",
                 "platform": "mercadolibre",
                 "steps": [
                     {
-                        "capability_name": "platform_item_close",
+                        "capability_name": "mercadolibre_user_product_pause",
                         "arguments": {
-                            "platform": "mercadolibre",
-                            "item_id": "MLB456",
+                            "siteless_user_product_id": "UP456",
                         },
                     }
                 ],
@@ -640,4 +608,4 @@ def test_platform_item_close_reject_records_decision(
     assert record.approver == "local-ui:test"
     assert record.decision == "rejected"
     assert record.reason == "不允许下架"
-    assert closed == []
+    assert paused == []

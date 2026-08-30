@@ -29,12 +29,12 @@ def publish_product_payload(body: dict[str, Any]) -> ResponseWithStatus:
     return publish_workflows.publish_product_payload(body)
 
 
-def confirm_mercadolibre_real_publish(body: dict[str, Any]) -> ResponseWithStatus:
-    return publish_workflows.confirm_mercadolibre_real_publish(body)
+def pause_mercadolibre_user_product(body: dict[str, Any]) -> ResponseWithStatus:
+    return publish_workflows.pause_mercadolibre_user_product(body)
 
 
-def close_mercadolibre_item(body: dict[str, Any]) -> ResponseWithStatus:
-    return publish_workflows.close_mercadolibre_item(body)
+def reconcile_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
+    return publish_workflows.reconcile_publish_job(body)
 
 
 def enqueue_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
@@ -42,10 +42,10 @@ def enqueue_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
 
 
 __all__ = [
-    "close_mercadolibre_item",
-    "confirm_mercadolibre_real_publish",
     "enqueue_publish_job",
+    "pause_mercadolibre_user_product",
     "precheck_publish_payload",
     "preview_publish_payload",
     "publish_product_payload",
+    "reconcile_publish_job",
 ]

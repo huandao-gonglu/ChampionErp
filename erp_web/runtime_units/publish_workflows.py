@@ -29,18 +29,16 @@ from .draft_publish_context import (
     save_draft_precheck_result,
 )
 from .publish_adapter import (
+    get_publishing_bus,
     publishing_adapter_for,
     unsupported_publish_response,
 )
 from .publish_capabilities import (
-    evaluate_publish_validation,
+    prepare_and_evaluate_publish_validation,
     request_product_publish,
 )
 from .publish_context import prepare_publish_context
-from .publish_mercadolibre import (
-    mercadolibre_close_remote_item,
-    mercadolibre_real_publish,
-)
+from .publish_mercadolibre import mercadolibre_pause_user_product
 from .runtime_api import publish_product
 
 ResponseWithStatus = tuple[ApiResponse, int]
@@ -87,7 +85,6 @@ def precheck_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
     adapter = publishing_adapter_for(platform)
     if adapter is None:
         return unsupported_publish_response(platform), 501
-    context["product"] = adapter.prepare_product(context["product"], config)
     prepared_context = prepare_publish_context(context["product"], platform)
     result = adapter.validate_draft(prepared_context, config)
     saved = save_draft_precheck_result(context, result)
@@ -118,7 +115,7 @@ def preview_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
     if unsupported:
         return unsupported
     try:
-        evaluation = evaluate_publish_validation(
+        evaluation = prepare_and_evaluate_publish_validation(
             ProductPublishValidateRequest(
                 draft_id=str(body.get("draft_id") or body.get("draftId") or ""),
                 platform=str(context["platform"]),
@@ -128,7 +125,7 @@ def preview_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
     except BusinessCapabilityError as exc:
         return {"ok": False, "error": str(exc), "error_code": exc.code}, 400
     result = evaluation.result
-    # 评估本身是纯计算；受信 HTTP 预览入口在这里负责预检结果落盘。
+    # 该受信写入口显式准备平台素材，再把最终 payload 对应的预检结果落盘。
     try:
         saved = save_draft_precheck_result(
             evaluation.context,
@@ -192,7 +189,7 @@ def preview_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
         "status": "preview_only",
         "payload": payload,
         # sanitized payload、摘要与 digest 一并返回，供页面展示与人工确认。
-        "summary": result.summary.model_dump(),
+        "summary": result.summary.model_dump(mode="json", exclude_none=True),
         "validation_digest": result.validation_digest,
         "warnings": [item.model_dump() for item in result.warnings],
         "path": payload_path,
@@ -206,10 +203,25 @@ def preview_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
 
 
 def publish_product_payload(body: dict[str, Any]) -> ResponseWithStatus:
-    unsupported = _unsupported_if_explicit(body, default="mercadolibre")
+    platform = _requested_platform(body)
+    if not platform:
+        return {
+            "ok": False,
+            "error": "直接发布必须显式指定 platform。",
+            "error_code": "PUBLISH_DIRECT_PLATFORM_REQUIRED",
+        }, 400
+    if platform == "mercadolibre":
+        return {
+            "ok": False,
+            "error": (
+                "Mercado Libre User Products 只能通过预览、人工确认与"
+                " PublishingBus 持久队列发布。"
+            ),
+            "error_code": "MERCADOLIBRE_PUBLISH_BUS_REQUIRED",
+        }, 409
+    unsupported = _unsupported_if_explicit(body)
     if unsupported:
         return unsupported
-    platform = _requested_platform(body, "mercadolibre")
     product, error_response, status = (
         get_context().products.load_required_product_from_body(body)
     )
@@ -226,32 +238,53 @@ def publish_product_payload(body: dict[str, Any]) -> ResponseWithStatus:
         return {"ok": False, "error": str(exc)}, 400
 
 
-def confirm_mercadolibre_real_publish(body: dict[str, Any]) -> ResponseWithStatus:
-    product, error_response, status = (
-        get_context().products.load_required_product_from_body(body)
-    )
-    if error_response:
-        return error_response, status
-    confirm = bool(body.get("confirm_real_publish") or body.get("confirm"))
+def pause_mercadolibre_user_product(body: dict[str, Any]) -> ResponseWithStatus:
     try:
-        result = mercadolibre_real_publish(product, confirm)
-        return result, 200 if result.get("ok") else 400
+        result = mercadolibre_pause_user_product(
+            str(body.get("siteless_user_product_id") or "")
+        )
+        if result.get("ok"):
+            return result, 200
+        return result, 404 if result.get("error_code") == "MERCADOLIBRE_USER_PRODUCT_NOT_FOUND" else 400
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}, 400
+
+
+def reconcile_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
+    """对未知发布结果做只读远端确认，不重放任何发布写请求。"""
+
+    job_id = str(body.get("job_id") or "").strip()
+    platform = _requested_platform(body)
+    try:
+        result = get_publishing_bus().reconcile_outcome_unknown(
+            job_id,
+            platform,
+        )
+        return result, 200
+    except FileNotFoundError as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "error_code": "PUBLISH_JOB_NOT_FOUND",
+        }, 404
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "error_code": "PUBLISH_RECONCILIATION_NOT_AVAILABLE",
+        }, 409
+    except RuntimeError as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "error_code": "PUBLISH_RECONCILIATION_CONFLICT",
+        }, 409
     except Exception as exc:
         return {
             "ok": False,
-            "status": "real_publish_failed",
             "error": str(exc),
-        }, 400
-
-
-def close_mercadolibre_item(body: dict[str, Any]) -> ResponseWithStatus:
-    try:
-        result = mercadolibre_close_remote_item(
-            str(body.get("item_id") or body.get("id") or "")
-        )
-        return result, 200 if result.get("ok") else 400
-    except Exception as exc:
-        return {"ok": False, "error": str(exc)}, 400
+            "error_code": "PUBLISH_RECONCILIATION_FAILED",
+        }, 502
 
 
 def enqueue_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
@@ -346,8 +379,7 @@ def enqueue_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
 
 
 __all__ = [
-    "close_mercadolibre_item",
-    "confirm_mercadolibre_real_publish",
+    "pause_mercadolibre_user_product",
     "enqueue_publish_job",
     "precheck_publish_payload",
     "preview_publish_payload",

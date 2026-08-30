@@ -1,5 +1,4 @@
 import {
-  confirmMercadoLibreRealPublish,
   enqueuePublish as enqueuePublishApi,
   fetchCategoryAttrs,
   fetchPublishLogs,
@@ -16,6 +15,7 @@ import { fetchDraftsIndex } from '@/api/workflow/catalog'
 import { marketplaces } from '@/constants/initialState'
 import { withAiForeground } from '@/services/withAiForeground'
 import { useAiWorkDisplayStore } from '@/stores/aiWorkDisplay'
+import { isMercadoLibrePlatform } from '@/utils/draftTargetOptions'
 import type {
   CategoryAttributeTranslations,
   CategoryResultTranslations,
@@ -26,6 +26,13 @@ import type {
   PublishPayloadSummary,
   UnknownRecord,
 } from '@/types/workflow'
+import {
+  isMercadoLibreCbtTarget,
+  MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED_MESSAGE,
+  mercadoLibreHasFullyManagedBinding,
+  mercadoLibreListingModel,
+  mercadoLibreListingModelError,
+} from '@/utils/mercadolibreGlobalSelling'
 import {
   publishJobMatchesProgressContext,
   workflowProgressDraft,
@@ -139,6 +146,7 @@ type WorkflowPublishingActionsPort = Pick<
   | 'platformOptions'
   | 'publishResult'
   | 'activePublishTargetKey'
+  | 'storeConfig'
   | 'loading'
   | 'addLog'
   | 'setError'
@@ -196,12 +204,26 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
     categoryAttributeTranslationsSource, categoryAttributeTranslating, categoryAttributeLoading, categoryAttributeError, categoryResultTranslations,
     categoryResultTranslationsSource, categoryResultTranslating, categoryPrecheck, precheck, precheckResults,
     payloadPreview, publishJob, publishJobStatus, selectedPublishJobId, publishLogs, activeMarketplace, platformOptions,
-    publishResult, activePublishTargetKey, loading, addLog, setError,
+    publishResult, activePublishTargetKey, storeConfig, loading, addLog, setError,
     requestSequence, currentStage, currentPublishTargets, selectedPublishTarget, activeMarketplaceSite,
     targetSiteKey, applyCategoryRecommendationForTarget, setCategoryRecommendation, persistActiveTargetListingFields, invalidateCategoryAttributeLoad,
     applyTargetListingToDraft, pricingTargetKey, syncActivePublishTarget, applyMutationIndexes, restorePrecheckFromProduct,
     restoreCategoryFromProduct, persistCurrentDraftForPublish, refreshPublishJobs,
   } = runtime
+
+  function mercadoLibreCbtPublishBlocked(): boolean {
+    if (!currentDraft.value.targetSites.some(isMercadoLibreCbtTarget)) return false
+    const listingModel = mercadoLibreListingModel(storeConfig.value)
+    if (!listingModel) {
+      setError(mercadoLibreListingModelError(storeConfig.value))
+      return true
+    }
+    if (listingModel === 'user_products' && mercadoLibreHasFullyManagedBinding(storeConfig.value)) {
+      setError(MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED_MESSAGE)
+      return true
+    }
+    return false
+  }
 
   function selectPublishTarget(target: MarketplaceTargetSite) {
     const targets = currentPublishTargets.value
@@ -303,6 +325,27 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
     })
   }
 
+  function clearPublishValidation(extra: Partial<MarketplaceTargetSite> = {}) {
+    precheck.value = null
+    precheckResults.value = {}
+    payloadPreview.value = null
+    currentDraft.value.lastPrecheck = {}
+    currentDraft.value.lastPrecheckTarget = {}
+    currentDraft.value.publishStatus = ''
+    currentDraft.value.status = currentDraft.value.categoryId ? 'category_ready' : 'pending'
+    persistActiveTargetListingFields({
+      lastPrecheck: {},
+      lastPrecheckTarget: {},
+      publishStatus: '',
+      status: currentDraft.value.status,
+      ...extra,
+    })
+  }
+
+  function invalidatePublishValidation() {
+    clearPublishValidation()
+  }
+
   function invalidateCategoryPrecheck() {
     const categoryChanged = String(selectedPublishTarget.value.categoryId || '').trim()
       !== currentDraft.value.categoryId.trim()
@@ -310,16 +353,9 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
       currentDraft.value.descriptionCategoryId = ''
     }
     categoryPrecheck.value = null
-    precheck.value = null
-    precheckResults.value = {}
-    payloadPreview.value = null
-    currentDraft.value.lastPrecheck = {}
-    currentDraft.value.lastPrecheckTarget = {}
-    persistActiveTargetListingFields({
+    clearPublishValidation({
       ...(categoryChanged ? { descriptionCategoryId: '' } : {}),
       categoryPrecheck: {},
-      lastPrecheck: {},
-      lastPrecheckTarget: {},
     })
   }
 
@@ -610,6 +646,7 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
       setError('请先从草稿箱选择要预检的草稿。')
       return
     }
+    if (mercadoLibreCbtPublishBlocked()) return
     loading.value = true
     setError('')
     try {
@@ -636,6 +673,7 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
       setError('请先从草稿箱选择要预检的草稿。')
       return
     }
+    if (mercadoLibreCbtPublishBlocked()) return
     loading.value = true
     setError('')
     try {
@@ -671,6 +709,7 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
       setError('请先从草稿箱选择要发布的草稿。')
       return
     }
+    if (mercadoLibreCbtPublishBlocked()) return
     const preview = payloadPreview.value
     const target = selectedPublishTarget.value
     if (!preview?.validationDigest || preview.targetKey !== pricingTargetKey(target.platform, target.site)) {
@@ -696,6 +735,10 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
   }
 
   async function publishDirect() {
+    if (activeMarketplace.value === 'mercadolibre') {
+      setError('Mercado Libre 仅支持通过发布队列提交。')
+      return
+    }
     loading.value = true
     setError('')
     try {
@@ -709,25 +752,6 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
       if (!result.ok && result.error) setError(result.error)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '直接发布失败')
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function confirmRealPublish() {
-    loading.value = true
-    setError('')
-    try {
-      const result = await confirmMercadoLibreRealPublish(product.value, true)
-      publishResult.value = result.raw
-      if (result.product) product.value = result.product
-      applyMutationIndexes(result)
-      draftsIndex.value = result.draftsIndex?.length ? result.draftsIndex : await fetchDraftsIndex()
-      publishLogs.value = await fetchPublishLogs()
-      addLog(`Mercado Libre 真实发布返回：${result.status || (result.ok ? 'success' : 'failed')} ${result.message || result.error || ''}`)
-      if (!result.ok && result.error) setError(result.error)
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : 'Mercado Libre 真实发布失败')
     } finally {
       loading.value = false
     }
@@ -762,17 +786,18 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
 
   function setMarketplaceSite(site: string) {
     const draft = product.value.drafts[activeMarketplace.value]
-    const selected = platformOptions.value
-      .find((option) => option.key === activeMarketplace.value)
-      ?.sites.find((item) => item.code.toLowerCase() === String(site || '').trim().toLowerCase())
+    const platform = platformOptions.value.find((option) => option.key === activeMarketplace.value)
+    const selected = isMercadoLibrePlatform(activeMarketplace.value)
+      ? platform?.sites.find((item) => item.code.toUpperCase() === 'CBT')
+      : platform?.sites.find((item) => item.code.toLowerCase() === String(site || '').trim().toLowerCase())
     if (!draft || !selected) return
     draft.site = selected.code
-    draft.language = selected.language
+    if (!isMercadoLibrePlatform(activeMarketplace.value)) draft.language = selected.language
   }
 
   return {
     searchCategory, suggestCategoryByAi, autoSuggestCategoriesForDraft, selectCategory, loadCategoryAttributes, translateCategoryAttributes,
-    translateCategoryResults, fillAttributesByAi, invalidateCategoryPrecheck, runCategoryOnlyPrecheck, runPrecheck, previewPayload,
-    enqueuePublish, publishDirect, confirmRealPublish, setMarketplace, setMarketplaceSite, selectPublishTarget,
+    translateCategoryResults, fillAttributesByAi, invalidatePublishValidation, invalidateCategoryPrecheck, runCategoryOnlyPrecheck, runPrecheck, previewPayload,
+    enqueuePublish, publishDirect, setMarketplace, setMarketplaceSite, selectPublishTarget,
   }
 }

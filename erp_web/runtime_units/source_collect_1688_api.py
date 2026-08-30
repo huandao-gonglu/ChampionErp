@@ -284,7 +284,13 @@ def parse_1688_api_product(raw: dict[str, Any], source_url: str, offer_id: str) 
     attrs = collect_attributes(raw)
     images = collect_image_urls(raw)
     skus = collect_skus(raw)
-    dimensions = parse_dimensions_text(first_text(find_first_key(raw, {"dimensions", "size", "specification", "规格"}), attrs.get("规格")))
+    dimensions = parse_dimensions_text(
+        first_text(
+            find_first_key(raw, {"dimensions", "size", "specification", "规格"}),
+            attrs.get("规格"),
+        ),
+        default_unit="mm",
+    )
     weight = first_text(find_first_key(raw, {"weight", "grossWeight", "netWeight"}), attrs.get("重量"))
     material = first_text(find_first_key(raw, {"material", "材质"}), attrs.get("材质"))
     brand = first_text(find_first_key(raw, {"brand", "brandName"}), attrs.get("brand"), attrs.get("brandName"), attrs.get("品牌"))

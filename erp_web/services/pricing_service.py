@@ -61,6 +61,21 @@ def _amount_text(value: Any) -> str:
     return format(amount, "f")
 
 
+def _basis_number_text(value: Any) -> str:
+    """无损序列化核价输入；物理量和费率不能按货币精度舍入。"""
+
+    try:
+        number = Decimal(str(value))
+    except Exception:
+        return "0"
+    if not number.is_finite() or number == 0:
+        return "0"
+    text = format(number, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text
+
+
 def _money(amount: Any, currency: str) -> dict[str, str]:
     return {
         "amount": _amount_text(amount),
@@ -435,26 +450,26 @@ def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], ind
         "site": site,
         "listing_currency": currency,
         "currency_fingerprint": str(target.get("currency_fingerprint") or "").strip(),
-        "cost_cny": _amount_text(values["cost_cny"]),
-        "domestic_freight_cny": _amount_text(values["freight_cny"]),
-        "packaging_cost_cny": _amount_text(packaging_cost_cny),
-        "other_cost_cny": _amount_text(values["other_cost_cny"]),
-        "weight_kg": _amount_text(values["weight_kg"]),
-        "length_cm": _amount_text(values["length_cm"]),
-        "width_cm": _amount_text(values["width_cm"]),
-        "height_cm": _amount_text(values["height_cm"]),
-        "usd_cny_rate": _amount_text(values["usd_cny_rate"]),
-        "mxn_usd_rate": _amount_text(values["mxn_usd_rate"]),
-        "rub_cny_rate": _amount_text(values["rub_cny_rate"]),
-        "commission_percent": _amount_text(commission_percent),
-        "payment_fee_percent": _amount_text(payment_fee_percent),
-        "other_fee_percent": _amount_text(other_fee_percent),
+        "cost_cny": _basis_number_text(values["cost_cny"]),
+        "domestic_freight_cny": _basis_number_text(values["freight_cny"]),
+        "packaging_cost_cny": _basis_number_text(packaging_cost_cny),
+        "other_cost_cny": _basis_number_text(values["other_cost_cny"]),
+        "weight_kg": _basis_number_text(values["weight_kg"]),
+        "length_cm": _basis_number_text(values["length_cm"]),
+        "width_cm": _basis_number_text(values["width_cm"]),
+        "height_cm": _basis_number_text(values["height_cm"]),
+        "usd_cny_rate": _basis_number_text(values["usd_cny_rate"]),
+        "mxn_usd_rate": _basis_number_text(values["mxn_usd_rate"]),
+        "rub_cny_rate": _basis_number_text(values["rub_cny_rate"]),
+        "commission_percent": _basis_number_text(commission_percent),
+        "payment_fee_percent": _basis_number_text(payment_fee_percent),
+        "other_fee_percent": _basis_number_text(other_fee_percent),
         "pricing_mode": pricing_mode,
-        "target_margin_percent": _amount_text(target_margin_percent),
-        "markup_percent": _amount_text(markup_percent),
+        "target_margin_percent": _basis_number_text(target_margin_percent),
+        "markup_percent": _basis_number_text(markup_percent),
         "shipping_quote_mode": shipping_mode,
         "shipping_currency": shipping_currency,
-        "shipping_amount": _amount_text(shipping_amount),
+        "shipping_amount": _basis_number_text(shipping_amount),
         "manual_price": _money(applied_price_input, currency) if pricing_mode == "manual" else None,
     }
     if platform == "mercadolibre" and site.upper() == "CBT":

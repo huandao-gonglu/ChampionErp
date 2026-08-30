@@ -14,7 +14,11 @@ from erp_web.runtime_units import publish_capabilities, publish_workflows
 class _Adapter:
     platform = "yandex"
 
+    def __init__(self) -> None:
+        self.prepare_calls = 0
+
     def prepare_product(self, product: dict, config: dict) -> dict:
+        self.prepare_calls += 1
         return deepcopy(product)
 
     def validate_draft(self, context, config: dict) -> dict:
@@ -136,6 +140,7 @@ def workflow_boundary(monkeypatch):
         },
     )
     monkeypatch.setattr(publish_capabilities, "get_context", lambda: context)
+    monkeypatch.setattr(publish_workflows, "get_context", lambda: context)
     # 提交发布（enqueue → request_product_publish）是写路径：允许预检落盘；
     # 测试用轻量 stub 代替真实 DB 写入。
     monkeypatch.setattr(
@@ -157,6 +162,7 @@ def workflow_boundary(monkeypatch):
 
 
 def test_preview_returns_digest_summary_and_sanitized_payload(workflow_boundary) -> None:
+    adapter, _store_config, _bus = workflow_boundary
     response, status = publish_workflows.preview_publish_payload({"draft_id": "draft-y1"})
 
     assert status == 200
@@ -169,10 +175,23 @@ def test_preview_returns_digest_summary_and_sanitized_payload(workflow_boundary)
     # 店铺身份不能泄露明文 business_id/campaign_id
     assert "222" not in response["summary"]["store_identity"]
     assert response["payload"]["offer_id"] == "SKU-001"
+    assert adapter.prepare_calls == 1
 
     # digest 稳定：同一事实重复预览结果一致
     second, _ = publish_workflows.preview_publish_payload({"draft_id": "draft-y1"})
     assert second["validation_digest"] == response["validation_digest"]
+
+
+def test_precheck_does_not_prepare_or_upload_assets(workflow_boundary) -> None:
+    adapter, _store_config, _bus = workflow_boundary
+
+    response, status = publish_workflows.precheck_publish_payload(
+        {"draft_id": "draft-y1"}
+    )
+
+    assert status == 200
+    assert response["platforms"]["yandex"]["ok"] is True
+    assert adapter.prepare_calls == 0
 
 
 def test_enqueue_requires_explicit_confirmation_and_digest(workflow_boundary) -> None:

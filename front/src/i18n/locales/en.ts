@@ -19,7 +19,7 @@ export default {
     library: { title: 'Library', subtitle: 'Local product master' },
     drafts: { title: 'Drafts', subtitle: 'Platform drafts, continue editing' },
     publish: { title: 'Publish Queue', subtitle: 'Jobs and logs' },
-    mlItems: { title: 'ML Published', subtitle: 'Remote items, close listing' },
+    mlUserProducts: { title: 'ML User Products', subtitle: 'Siteless and market projections' },
     pending: { title: 'Pending', subtitle: 'Incomplete or failed items' },
     auth: { title: 'Platform Auth', subtitle: 'Auth, AI, exchange rates' },
     logs: { title: 'Publish Logs', subtitle: 'Requests, responses, errors' },
@@ -33,9 +33,9 @@ export default {
       title: 'Publish Queue',
       description: 'Publishing jobs, task status, and run logs.',
     },
-    mlItems: {
-      title: 'ML Published Items',
-      description: 'Review Mercado Libre account listings in real time and close listings via API.',
+    mlUserProducts: {
+      title: 'ML User Products',
+      description: 'Review Siteless User Products and their market projections.',
     },
     pending: {
       title: 'Pending',

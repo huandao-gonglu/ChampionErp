@@ -10,6 +10,7 @@ from pydantic_ai.messages import (
     ModelResponse,
     ToolCallPart,
     ToolReturnPart,
+    UserPromptPart,
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.settings import ModelSettings
@@ -18,8 +19,10 @@ from erp_web.context import get_context
 from erp_web.runtime_units import category_attribute_tools
 from erp_web.schemas.category_attribute import CategoryAttributeValueLedger
 from erp_web.services.ai_agent_factory import AiAgentFactory
+from erp_web.services.ai_model_config import AI_USE_CASES
 from erp_web.services.ai_model_factory import PydanticModelBinding
 from erp_web.services.category_attribute_fill_agent_service import (
+    CATEGORY_ATTRIBUTE_FILL_RESULT_VERSION,
     CategoryAttributeAssignment,
     CategoryAttributeFillAgentOutput,
     CategoryAttributeFillOutputValidator,
@@ -56,6 +59,32 @@ PAYLOAD = {
     "category_path": "Бытовая техника / Вентилятор",
     "product_context": {"source": {"title": "F30 手持风扇"}},
     "attributes": SCHEMA,
+}
+
+NUMBER_UNIT_SCHEMA = [
+    {
+        "id": "WEIGHT",
+        "name": "Weight",
+        "required": True,
+        "value_type": "number_unit",
+        "value_mode": "free_text",
+        "unit_options": ["g", "kg", "lb"],
+        "default_unit": "kg",
+        "is_collection": False,
+        "max_value_count": 0,
+        "options": [],
+    }
+]
+
+NUMBER_UNIT_PAYLOAD = {
+    "platform": "mercadolibre",
+    "site": "CBT",
+    "category_id": "CBT455865",
+    "category_path": "Portable fans",
+    "product_context": {
+        "source": {"title": "Portable fan, net weight 0.182 kg"}
+    },
+    "attributes": NUMBER_UNIT_SCHEMA,
 }
 
 
@@ -208,3 +237,94 @@ def test_validator_rejects_strict_enum_not_returned_by_tool() -> None:
 
     with pytest.raises(ModelRetry, match="只能选择本次工具真实返回"):
         validator(None, output)  # type: ignore[arg-type]
+
+
+def test_agent_receives_and_preserves_number_unit_contract() -> None:
+    ledger = CategoryAttributeValueLedger.from_schema(NUMBER_UNIT_SCHEMA)
+    toolset = category_attribute_tools.build_category_attribute_value_toolset(
+        platform="mercadolibre",
+        category_record={"category_id": "CBT455865", "site": "CBT"},
+        ledger=ledger,
+    )
+
+    def model(messages: list[Any], agent_info: AgentInfo) -> ModelResponse:
+        assert "带单位属性" in str(agent_info.instructions or "")
+        user_prompts = [
+            str(part.content)
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+            if isinstance(part, UserPromptPart)
+        ]
+        rendered_prompt = "\n".join(user_prompts)
+        assert '\"value_type\":\"number_unit\"' in rendered_prompt
+        assert '\"unit_options\":[\"g\",\"kg\",\"lb\"]' in rendered_prompt
+        assert '\"default_unit\":\"kg\"' in rendered_prompt
+        return final_output(
+            agent_info,
+            {
+                "assignments": [
+                    {
+                        "attribute_id": "WEIGHT",
+                        "value": "0.182",
+                        "dictionary_value_id": "",
+                        "unit": "kg",
+                    }
+                ],
+                "need_review": [],
+            },
+            "number-unit-final",
+        )
+
+    result = run_category_attribute_fill_agent(
+        NUMBER_UNIT_PAYLOAD,
+        toolset,
+        ledger,
+        timeout_seconds=10,
+        factory=factory_for(FunctionModel(model)),
+    )
+
+    assert result.output["assignments"] == [
+        {
+            "attribute_id": "WEIGHT",
+            "value": "0.182",
+            "dictionary_value_id": "",
+            "unit": "kg",
+        }
+    ]
+    assert (
+        AI_USE_CASES["category.attribute_fill"]["result_schema"]
+        == CATEGORY_ATTRIBUTE_FILL_RESULT_VERSION
+    )
+    result.finish_business_result({"status": "completed"})
+
+
+@pytest.mark.parametrize(
+    ("value", "unit", "error_code"),
+    [
+        ("0.182", "", "ATTRIBUTE_UNIT_REQUIRED"),
+        ("0.182", "oz", "ATTRIBUTE_UNIT_INVALID"),
+        ("NaN", "kg", "ATTRIBUTE_NUMBER_INVALID"),
+    ],
+)
+def test_validator_rejects_invalid_number_unit_assignment(
+    value: str,
+    unit: str,
+    error_code: str,
+) -> None:
+    ledger = CategoryAttributeValueLedger.from_schema(NUMBER_UNIT_SCHEMA)
+    validator = CategoryAttributeFillOutputValidator(ledger)
+    output = CategoryAttributeFillAgentOutput(
+        assignments=[
+            CategoryAttributeAssignment(
+                attribute_id="WEIGHT",
+                value=value,
+                unit=unit,
+            )
+        ],
+        need_review=[],
+    )
+
+    with pytest.raises(ModelRetry):
+        validator(None, output)  # type: ignore[arg-type]
+    assert validator.error_code == error_code

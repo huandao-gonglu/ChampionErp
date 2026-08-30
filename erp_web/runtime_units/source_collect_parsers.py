@@ -421,7 +421,10 @@ def finalize_collected_product(
             "description": str(source.get("description") or product.get("description") or "").strip(),
             "images": normalize_list(normalized_refs),
             "image_pool": normalize_image_pool(normalized_refs, platform),
-            "dimensions": source.get("dimensions") if isinstance(source.get("dimensions"), dict) and any(source.get("dimensions").values()) else parse_dimensions_text(dims),
+            "dimensions": source.get("dimensions") if isinstance(source.get("dimensions"), dict) and any(source.get("dimensions").values()) else parse_dimensions_text(
+                dims,
+                default_unit="mm" if str(platform).strip().lower() == "1688" else "cm",
+            ),
             "weight_kg": str(source.get("weight_kg") or product.get("weight_kg") or "").strip(),
             "material": str(source.get("material") or (normalize_list(product.get("materials")) or [""])[0] or "").strip(),
             "package_contents": normalize_list(source.get("package_contents") or product.get("package_includes")),

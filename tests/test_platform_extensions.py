@@ -765,6 +765,7 @@ def test_publishing_bus_lists_lightweight_business_status_summaries() -> None:
                         "platform": "ozon",
                         "draft_id": "",
                         "site": "",
+                        "sites_to_sell": [],
                         "status": "failed",
                     "stage": "failed",
                     "attempts": 1,
@@ -781,6 +782,171 @@ def test_publishing_bus_lists_lightweight_business_status_summaries() -> None:
     public_detail = bus.get_public_status("job-failed")
     assert public_detail["display_status"] == "failed"
     assert "product" not in public_detail
+
+
+def test_publishing_bus_lists_mercadolibre_sales_markets_without_payload_leaks() -> None:
+    store = _MemoryPublishJobStore()
+    store.states = {
+        "20260829-203906-86e8145e": {
+            "job_id": "20260829-203906-86e8145e",
+            "status": "completed",
+            "created_at": "2026-08-29 20:39:06",
+            "updated_at": "2026-08-29 20:39:08",
+            "product": {
+                "product_id": "50869d686a598917",
+                "drafts": {
+                    "mercadolibre": {
+                        "sites_to_sell": [
+                            {"site_id": "MLU", "logistic_type": "remote"}
+                        ]
+                    }
+                },
+            },
+            "approved_publications": {
+                "mercadolibre": {
+                    "validation_digest": "digest-mla-must-not-leak",
+                    "store_identity": "store-identity-must-not-leak",
+                    "payload": {
+                        "title": "APPROVED_PAYLOAD_MUST_NOT_LEAK_MLA",
+                        "sites_to_sell": [
+                            {
+                                "site_id": "MLA",
+                                "logistic_type": "remote",
+                                "price": 10.49,
+                                "listing_type_id": "gold_special",
+                            }
+                        ],
+                    },
+                }
+            },
+            "platforms": {
+                "mercadolibre": {
+                    "draft_id": "d12fb1fe48cb6",
+                    "site": "CBT",
+                    "status": "success",
+                    "stage": "finished",
+                    "attempts": 1,
+                    "error": "",
+                }
+            },
+        },
+        "20260829-204353-9e0373b7": {
+            "job_id": "20260829-204353-9e0373b7",
+            "status": "completed",
+            "created_at": "2026-08-29 20:43:53",
+            "updated_at": "2026-08-29 20:43:54",
+            "product": {
+                "product_id": "50869d686a598917",
+                "drafts": {
+                    "mercadolibre": {
+                        "sites_to_sell": [
+                            {"site_id": "MLA", "logistic_type": "remote"}
+                        ]
+                    }
+                },
+            },
+            "approved_publications": {
+                "mercadolibre": {
+                    "validation_digest": "digest-mlu-must-not-leak",
+                    "store_identity": "store-identity-must-not-leak",
+                    "payload": {
+                        "title": "APPROVED_PAYLOAD_MUST_NOT_LEAK_MLU",
+                        "sites_to_sell": [
+                            {
+                                "site_id": "MLU",
+                                "logistic_type": "remote",
+                                "price": 199.99,
+                                "listing_type_id": "gold_special",
+                            }
+                        ],
+                    },
+                }
+            },
+            "platforms": {
+                "mercadolibre": {
+                    "draft_id": "d5cc0d58cb7bd",
+                    "site": "CBT",
+                    "status": "failed",
+                    "stage": "failed",
+                    "attempts": 1,
+                    "error": "Listing in Uruguay is currently unavailable",
+                }
+            },
+        },
+    }
+    bus = PublishingBus(store, adapters={}, auto_resume_pending=False)
+    try:
+        items = {
+            item["job_id"]: item
+            for item in bus.list_jobs(platform="mercadolibre")["items"]
+        }
+    finally:
+        bus.executor.shutdown(wait=True)
+
+    mla = items["20260829-203906-86e8145e"]
+    assert mla["status"] == "success"
+    assert mla["platforms"][0]["site"] == "CBT"
+    assert mla["platforms"][0]["sites_to_sell"] == [
+        {"site_id": "MLA", "logistic_type": "remote"}
+    ]
+
+    mlu = items["20260829-204353-9e0373b7"]
+    assert mlu["status"] == "failed"
+    assert mlu["platforms"][0]["site"] == "CBT"
+    assert mlu["platforms"][0]["sites_to_sell"] == [
+        {"site_id": "MLU", "logistic_type": "remote"}
+    ]
+
+    serialized = repr(items)
+    for forbidden in (
+        "approved_publications",
+        "validation_digest",
+        "store_identity",
+        "APPROVED_PAYLOAD_MUST_NOT_LEAK_MLA",
+        "APPROVED_PAYLOAD_MUST_NOT_LEAK_MLU",
+        "gold_special",
+        "199.99",
+    ):
+        assert forbidden not in serialized
+
+
+def test_publishing_bus_sales_markets_fall_back_to_frozen_product_snapshot() -> None:
+    store = _MemoryPublishJobStore()
+    store.states = {
+        "legacy-job": {
+            "job_id": "legacy-job",
+            "status": "completed",
+            "product": {
+                "product_id": "product-legacy",
+                "drafts": {
+                    "mercadolibre": {
+                        "sites_to_sell": [
+                            {"site_id": "mco", "logistic_type": "REMOTE"},
+                            {"site_id": "MCO", "logistic_type": "remote"},
+                            {"site_id": "CBT", "logistic_type": "remote"},
+                        ]
+                    }
+                },
+            },
+            "platforms": {
+                "mercadolibre": {
+                    "draft_id": "draft-legacy",
+                    "site": "CBT",
+                    "status": "success",
+                    "stage": "finished",
+                }
+            },
+        }
+    }
+    bus = PublishingBus(store, adapters={}, auto_resume_pending=False)
+    try:
+        result = bus.list_jobs()
+    finally:
+        bus.executor.shutdown(wait=True)
+
+    assert result["items"][0]["platforms"][0]["sites_to_sell"] == [
+        {"site_id": "MCO", "logistic_type": "remote"}
+    ]
 
 
 def test_publishing_bus_requires_verified_success_and_runs_terminal_hook() -> None:
@@ -1278,6 +1444,93 @@ def test_terminal_hook_updates_only_the_bound_draft(
     assert logs[0]["draft_id"] == second_draft_id
 
 
+def test_reconciled_terminal_result_writes_a_distinct_audit_log(
+    sample_product: dict[str, Any],
+) -> None:
+    context = get_context()
+    saved = context.products.save_product(sample_product)
+    product_id = str(saved["product_id"])
+    draft = saved["drafts"]["mercadolibre"]
+    draft_id = str(draft["draft_id"])
+    site = str(draft.get("site") or "mlm")
+    initial_state = {
+        "job_id": "job-reconciled-audit",
+        "status": "outcome_unknown",
+        "created_at": "2026-08-27 10:00:00",
+        "updated_at": "2026-08-27 10:00:01",
+        "product": deepcopy(saved),
+        "platforms": {
+            "mercadolibre": {
+                "platform": "mercadolibre",
+                "draft_id": draft_id,
+                "site": site,
+                "product_id": product_id,
+                "status": "outcome_unknown",
+                "stage": "outcome_unknown",
+                "error": "远端终态未知",
+                "result": {
+                    "ok": False,
+                    "status": "outcome_unknown",
+                    "task_id": "task-reconciled-audit",
+                },
+            }
+        },
+    }
+
+    persist_publish_bus_terminal_results(
+        deepcopy(initial_state),
+        context=context,
+    )
+    reconciled_state = deepcopy(initial_state)
+    reconciled_state["status"] = "completed"
+    reconciled_state["updated_at"] = "2026-08-27 10:01:00"
+    reconciled_item = reconciled_state["platforms"]["mercadolibre"]
+    reconciled_item.update(
+        {
+            "status": "success",
+            "stage": "finished",
+            "error": "",
+            "updated_at": "2026-08-27 10:01:00",
+            "result": {
+                "ok": True,
+                "status": "published",
+                "task_id": "task-reconciled-audit",
+                "id": "U-RECONCILED-1",
+            },
+            "reconciliation": {
+                "status": "applied",
+                "checked_at": "2026-08-27 10:01:00",
+                "write_replayed": False,
+            },
+        }
+    )
+
+    persist_publish_bus_terminal_results(
+        reconciled_state,
+        context=context,
+    )
+
+    logs = context.db.list_publish_logs()
+    original = [
+        item
+        for item in logs
+        if item.get("job_id") == "job-reconciled-audit"
+    ]
+    reconciliation = [
+        item
+        for item in logs
+        if item.get("job_id") == "job-reconciled-audit:reconciliation"
+    ]
+    assert len(original) == 1
+    assert original[0]["status"] == "outcome_unknown"
+    assert len(reconciliation) == 1
+    assert reconciliation[0]["status"] == "published"
+    assert reconciliation[0]["source_job_id"] == "job-reconciled-audit"
+    assert reconciliation[0]["reconciliation"]["status"] == "applied"
+    assert reconciliation[0]["reconciliation"]["write_replayed"] is False
+    assert context.db.load_draft_model(draft_id)["publish_status"] == "published"
+
+
 def test_terminal_hook_updates_a_bound_non_primary_target(
     sample_product: dict[str, Any],
 ) -> None:
@@ -1602,7 +1855,246 @@ def test_source_site_registry_dispatches_detection_checks_and_parser() -> None:
     assert parsed["name"] == "通用商品标题"
 
 
-def test_mercadolibre_adapter_reads_required_attributes_from_definition() -> None:
+def test_publish_recovery_fences_crash_during_remote_write(tmp_path) -> None:
+    database = ErpDatabase(tmp_path / "erp.sqlite3")
+    state = {
+        "job_id": "job-write-crash",
+        "idempotency_key": "write-crash:first",
+        "idempotency_facts": {"digest": "facts-1"},
+        "draft_id": "draft-write-crash",
+        "status": "running",
+        "created_at": "2026-08-26 10:00:00",
+        "updated_at": "2026-08-26 10:00:01",
+        "product": {"product_id": "product-write-crash"},
+        "platforms": {
+            "mercadolibre": {
+                "platform": "mercadolibre",
+                "draft_id": "draft-write-crash",
+                "site": "CBT",
+                "product_id": "product-write-crash",
+                "status": "running",
+                "stage": "publishing_approved_payload",
+                "attempts": 1,
+                "error": "",
+                "result": None,
+            }
+        },
+    }
+    database.create_publish_job(state)
+    adapter = _SuccessfulPublishingAdapter()
+    bus = PublishingBus(
+        database,
+        adapters={"mercadolibre": adapter},
+        auto_resume_pending=False,
+    )
+    try:
+        recovered = bus.recover_pending_jobs()
+        persisted = bus.get_status("job-write-crash")
+    finally:
+        bus.executor.shutdown(wait=True)
+
+    assert recovered == ["job-write-crash"]
+    assert persisted["status"] == "outcome_unknown"
+    assert persisted["platforms"]["mercadolibre"]["result"][
+        "outcome_unknown"
+    ] is True
+    assert adapter.publish_calls == 0
+
+    competing = deepcopy(state)
+    competing.update(
+        {
+            "job_id": "job-write-crash-retry",
+            "idempotency_key": "write-crash:retry",
+            "idempotency_facts": {"digest": "facts-2"},
+            "status": "queued",
+        }
+    )
+    competing["platforms"]["mercadolibre"].update(
+        {"status": "queued", "stage": "queued", "attempts": 0}
+    )
+    reused, created = database.create_publish_job(competing)
+    assert created is False
+    assert reused["job_id"] == "job-write-crash"
+
+
+def test_outcome_unknown_task_can_be_reconciled_without_replaying_write() -> None:
+    class ReconcileAdapter:
+        def __init__(self) -> None:
+            self.poll_calls = 0
+
+        def poll_publish_status(
+            self,
+            result: dict[str, Any],
+            config: dict[str, Any],
+        ) -> dict[str, Any]:
+            self.poll_calls += 1
+            assert result["task_id"] == "task-1"
+            return {
+                "ok": True,
+                "status": "published",
+                "id": "U123",
+            }
+
+    store = _MemoryPublishJobStore()
+    store.states["job-unknown"] = {
+        "job_id": "job-unknown",
+        "idempotency_key": "unknown:task-1",
+        "status": "outcome_unknown",
+        "terminal_results_persisted": True,
+        "product": {"product_id": "product-1"},
+        "platforms": {
+            "mercadolibre": {
+                "platform": "mercadolibre",
+                "draft_id": "draft-1",
+                "site": "CBT",
+                "product_id": "product-1",
+                "status": "outcome_unknown",
+                "stage": "outcome_unknown",
+                "error": "远端终态未知",
+                "result": {
+                    "ok": False,
+                    "status": "outcome_unknown",
+                    "task_id": "task-1",
+                    "outcome_unknown": True,
+                },
+            }
+        },
+    }
+    adapter = ReconcileAdapter()
+    terminal_states: list[dict[str, Any]] = []
+    bus = PublishingBus(
+        store,
+        adapters={"mercadolibre": adapter},
+        terminal_callback=lambda state: terminal_states.append(
+            deepcopy(state)
+        ) or state,
+        auto_resume_pending=False,
+    )
+    try:
+        result = bus.reconcile_outcome_unknown(
+            "job-unknown",
+            "mercadolibre",
+        )
+        persisted = bus.get_status("job-unknown")
+    finally:
+        bus.executor.shutdown(wait=True)
+
+    assert result["resolved"] is True
+    assert result["resolution"] == "applied"
+    assert adapter.poll_calls == 1
+    assert persisted["status"] == "completed"
+    assert persisted["platforms"]["mercadolibre"]["status"] == "success"
+    assert persisted["platforms"]["mercadolibre"]["reconciliation"] == {
+        "status": "applied",
+        "checked_at": persisted["platforms"]["mercadolibre"][
+            "reconciliation"
+        ]["checked_at"],
+        "write_replayed": False,
+    }
+    assert persisted["terminal_results_persisted"] is True
+    assert len(terminal_states) == 1
+
+
+def test_outcome_unknown_reconciliation_keeps_lock_while_task_is_pending() -> None:
+    class PendingAdapter:
+        @staticmethod
+        def poll_publish_status(
+            result: dict[str, Any],
+            config: dict[str, Any],
+        ) -> dict[str, Any]:
+            return {
+                **result,
+                "ok": True,
+                "status": "pending_confirmation",
+            }
+
+    store = _MemoryPublishJobStore()
+    store.states["job-pending-reconcile"] = {
+        "job_id": "job-pending-reconcile",
+        "idempotency_key": "unknown:task-pending",
+        "status": "outcome_unknown",
+        "terminal_results_persisted": True,
+        "product": {"product_id": "product-1"},
+        "platforms": {
+            "mercadolibre": {
+                "platform": "mercadolibre",
+                "draft_id": "draft-1",
+                "site": "CBT",
+                "product_id": "product-1",
+                "status": "outcome_unknown",
+                "result": {
+                    "ok": False,
+                    "status": "outcome_unknown",
+                    "task_ids": ["task-pending"],
+                },
+            }
+        },
+    }
+    terminal_states: list[dict[str, Any]] = []
+    bus = PublishingBus(
+        store,
+        adapters={"mercadolibre": PendingAdapter()},
+        terminal_callback=lambda state: terminal_states.append(state) or state,
+        auto_resume_pending=False,
+    )
+    try:
+        result = bus.reconcile_outcome_unknown(
+            "job-pending-reconcile",
+            "mercadolibre",
+        )
+        persisted = bus.get_status("job-pending-reconcile")
+    finally:
+        bus.executor.shutdown(wait=True)
+
+    assert result["resolved"] is False
+    assert result["resolution"] == "pending"
+    assert persisted["status"] == "outcome_unknown"
+    assert (
+        persisted["platforms"]["mercadolibre"]["status"]
+        == "outcome_unknown"
+    )
+    assert persisted["terminal_results_persisted"] is True
+    assert terminal_states == []
+
+
+def test_outcome_unknown_without_task_id_cannot_be_auto_reconciled() -> None:
+    class PollCapableAdapter:
+        @staticmethod
+        def poll_publish_status(
+            result: dict[str, Any],
+            config: dict[str, Any],
+        ) -> dict[str, Any]:
+            raise AssertionError("缺少 task_id 时不应访问远端")
+
+    store = _MemoryPublishJobStore()
+    store.states["job-no-task"] = {
+        "job_id": "job-no-task",
+        "idempotency_key": "unknown:no-task",
+        "status": "outcome_unknown",
+        "product": {"product_id": "product-1"},
+        "platforms": {
+            "mercadolibre": {
+                "status": "outcome_unknown",
+                "result": {
+                    "ok": False,
+                    "status": "outcome_unknown",
+                },
+            }
+        },
+    }
+    bus = PublishingBus(
+        store,
+        adapters={"mercadolibre": PollCapableAdapter()},
+        auto_resume_pending=False,
+    )
+    try:
+        with pytest.raises(ValueError, match="没有远端 task_id"):
+            bus.reconcile_outcome_unknown("job-no-task", "mercadolibre")
+    finally:
+        bus.executor.shutdown(wait=True)
+
+
+def test_mercadolibre_adapter_uses_root_owned_required_attributes() -> None:
     from erp_web.runtime_units.publish_context import PreparedPublishContext
 
     from tests.publish_category_support import definition_from_record
@@ -1642,7 +2134,7 @@ def test_mercadolibre_adapter_reads_required_attributes_from_definition() -> Non
         platform="mercadolibre",
     )
 
-    assert adapter.required_attributes_missing(context, {}) == ["attributes.BRAND"]
+    assert adapter.required_attributes_missing(context, {}) == []
 
 
 def test_run_ai_use_case_renders_payload_and_normalizes_result(monkeypatch) -> None:

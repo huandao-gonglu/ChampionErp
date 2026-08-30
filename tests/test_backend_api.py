@@ -51,7 +51,7 @@ def test_state_contract_is_versioned_and_never_returns_plaintext_secrets(
     state = get_json(backend_server, "/api/state")
 
     assert state["schemaVersion"] == 1
-    assert state["product"]["schema_version"] == 2
+    assert state["product"]["schema_version"] == 3
     assert state["storeConfig"]["ozon"]["client_id"] == "state-ozon-client"
     serialized = json.dumps({"saved": saved, "state": state}, ensure_ascii=False)
     for secret in (
@@ -106,7 +106,10 @@ def test_image_upload_and_delete_api(backend_server: str, sample_product: dict) 
 
     assert upload["ok"] is True
     assert upload["imagePool"]
-    item = upload["imagePool"][0]
+    item = next(
+        row for row in upload["imagePool"]
+        if str(row.get("path") or "").replace("\\", "/").startswith("data/images/")
+    )
     assert item["path"].replace("\\", "/").startswith("data/images/")
     assert item["preview_url"].startswith("/file?path=")
 

@@ -8,7 +8,10 @@ from typing import Any
 
 from erp_web.context import get_context
 from erp_web.http_request import safe_json_body
-from erp_web.product_model import draft_has_remote_listing
+from erp_web.product_model import (
+    draft_has_remote_listing,
+    mercadolibre_publication_has_failures,
+)
 from erp_web.stores.product_store import normalize_product_fields
 
 from erp_web import listing_planner as generator
@@ -20,6 +23,7 @@ from .publish_helpers import (
     _draft_for_platform,
     _field_error_map,
     precheck_item,
+    mercadolibre_publication_from_result,
     remote_publish_identity,
 )
 from .publish_adapter import publishing_adapter_for, unsupported_publish_response
@@ -34,6 +38,17 @@ from .image_pool_core import source_image_refs
 
 
 def _remote_publish_succeeded(result: Any) -> bool:
+    publication = mercadolibre_publication_from_result(result)
+    if publication:
+        remote_parent_id = (
+            publication.get("parent_item_id")
+            if publication.get("model") == "traditional_global_items"
+            else publication.get("siteless_user_product_id")
+        )
+        return bool(
+            remote_parent_id
+            and not mercadolibre_publication_has_failures(publication)
+        )
     return bool(
         isinstance(result, dict)
         and (
@@ -207,9 +222,12 @@ def publish_product(product: dict[str, Any], platform: str, config: dict[str, An
                 "product": saved,
                 "precheck": precheck,
             }
+        publication = mercadolibre_publication_from_result(result)
         status = (
             "real_publish_success"
             if _remote_publish_succeeded(result)
+            else "real_publish_partial"
+            if publication and mercadolibre_publication_has_failures(publication)
             else "real_publish_failed"
         )
     except Exception as exc:
@@ -258,8 +276,11 @@ def publish_product(product: dict[str, Any], platform: str, config: dict[str, An
     final_status = "real_publish_success" if ok else status
     payload_path, response_path = _write_publish_artifacts(platform, payload, result)
     updated = apply_precheck_to_product(product, platform, precheck, status=final_status if ok else status)
-    if ok:
-        updated_draft = _draft_for_platform(updated, platform)
+    updated_draft = _draft_for_platform(updated, platform)
+    publication = mercadolibre_publication_from_result(result)
+    if publication:
+        updated_draft["publication"] = publication
+    if ok or publication:
         updated_draft["last_publish_task"] = {
             **(
                 updated_draft.get("last_publish_task")
@@ -270,6 +291,16 @@ def publish_product(product: dict[str, Any], platform: str, config: dict[str, An
             **remote_publish_identity(result),
             "updated_at": collect_time_iso(),
         }
+    if status == "real_publish_partial":
+        updated_draft["validation_errors"] = [
+            precheck_item(
+                "MERCADOLIBRE_MARKETPLACE_PARTIAL_FAILURE",
+                "publication.markets",
+                "Siteless User Product 已创建，但至少一个目标市场刊登失败",
+                "error",
+                "查看市场级错误并仅重试失败或缺失市场",
+            )
+        ]
     append_publish_log(
         {
             "product_id": _product_id_for_log(updated, platform),

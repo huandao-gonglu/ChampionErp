@@ -3,6 +3,7 @@ from __future__ import annotations
 """类目搜索与匹配的规范化数据形状。"""
 
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 import re
 from typing import Any, Literal, TypedDict, cast
 
@@ -89,6 +90,14 @@ def category_attribute_value_mode(
     return "free_text"
 
 
+def _category_attribute_unit_name(value: Any) -> str:
+    if isinstance(value, dict):
+        return str(
+            value.get("name") or value.get("value") or value.get("id") or ""
+        ).strip()
+    return str(value or "").strip()
+
+
 def normalize_category_attribute_definition(
     definition: Any,
     *,
@@ -105,7 +114,9 @@ def normalize_category_attribute_definition(
         else raw.get("unit_options") if isinstance(raw.get("unit_options"), list) else []
     )
     unit_options = [
-        str(item).strip() for item in unit_options_source if str(item or "").strip()
+        unit_name
+        for item in unit_options_source
+        if (unit_name := _category_attribute_unit_name(item))
     ]
     default_unit = str(
         source.get("default_unit") or raw.get("default_unit") or ""
@@ -150,6 +161,7 @@ def normalize_category_attribute_definition(
         "allow_custom_values": bool(
             source.get("allow_custom_values") or raw.get("allow_custom_values")
         ),
+        "read_only": bool(source.get("read_only") or raw.get("read_only")),
         "unit": unit or default_unit,
         # 需要选择单位的平台属性通过通用 unit_options/default_unit 暴露，
         # 通用面板只消费共享字段，不理解平台专用单位键。
@@ -214,9 +226,9 @@ def category_attribute_unit_is_valid(
     """单位选择约束：无单位选项时任意非空单位放行，有选项时必须命中。"""
 
     unit_options = [
-        str(item).strip()
+        unit_name
         for item in (definition.get("unit_options") or [])
-        if str(item or "").strip()
+        if (unit_name := _category_attribute_unit_name(item))
     ]
     text = str(unit or "").strip()
     if not text:
@@ -227,6 +239,88 @@ def category_attribute_unit_is_valid(
     return text in unit_options
 
 
+def category_attribute_uses_unit(definition: dict[str, Any]) -> bool:
+    """判断属性值是否包含平台单位这一正交组成部分。"""
+
+    return bool(
+        str(definition.get("value_type") or "").strip().casefold()
+        == "number_unit"
+        or definition.get("unit_options")
+    )
+
+
+def category_attribute_uses_numeric_unit(definition: dict[str, Any]) -> bool:
+    """判断带单位属性的值部分是否必须是有限数值。"""
+
+    value_type = str(definition.get("value_type") or "").strip().casefold()
+    return category_attribute_uses_unit(definition) and value_type in {
+        "number_unit",
+        "numeric",
+        "number",
+        "integer",
+        "decimal",
+        "float",
+    }
+
+
+def normalize_category_attribute_unit(
+    definition: dict[str, Any],
+    unit: Any,
+) -> str | None:
+    """校验单位并返回平台定义中的规范名称；绝不自动补默认单位。"""
+
+    unit_text = str(unit or "").strip()
+    if not unit_text:
+        return None
+    unit_options = [
+        unit_name
+        for item in (definition.get("unit_options") or [])
+        if (unit_name := _category_attribute_unit_name(item))
+    ]
+    if not unit_options:
+        fallback_unit = str(
+            definition.get("default_unit") or definition.get("unit") or ""
+        ).strip()
+        if fallback_unit:
+            unit_options = [fallback_unit]
+    if not unit_options:
+        return None
+    return next(
+        (
+            option
+            for option in unit_options
+            if option.casefold() == unit_text.casefold()
+        ),
+        None,
+    )
+
+
+def normalize_category_attribute_number_unit_value(
+    definition: dict[str, Any],
+    value: Any,
+    unit: Any,
+) -> dict[str, str] | None:
+    """把数值单位属性规范化为共享 ``{value, unit}`` 结构。
+
+    ``unit_options`` 是平台给出的有限候选；若平台仅提供默认单位，则该
+    默认单位就是唯一可接受单位。两者都缺失时拒绝填充，且绝不根据默认值
+    替调用方补单位。
+    """
+
+    value_text = ("" if value is None else str(value)).strip().replace(",", ".")
+    try:
+        number = Decimal(value_text)
+    except (InvalidOperation, ValueError):
+        return None
+    if not value_text or not number.is_finite():
+        return None
+
+    unit_text = normalize_category_attribute_unit(definition, unit)
+    if unit_text is None:
+        return None
+    return {"value": value_text, "unit": unit_text}
+
+
 def category_attribute_value_is_valid(
     definition: dict[str, Any],
     value: Any,
@@ -234,22 +328,70 @@ def category_attribute_value_is_valid(
     """按唯一值模式判断草稿属性值是否满足平台结构约束。"""
 
     attr_id = str(definition.get("id") or "").strip()
-    if category_attribute_value_mode(definition) != "strict_enum":
+    value_mode = category_attribute_value_mode(definition)
+    uses_unit = category_attribute_uses_unit(definition)
+    if value_mode != "strict_enum":
         if isinstance(value, dict):
-            # 带单位的共享值 shape：{"value": 文本, "unit": 可选单位}。
-            text = str(value.get("value") or "").strip()
+            if isinstance(value.get("values"), list):
+                selected = [
+                    item
+                    for item in value.get("values") or []
+                    if isinstance(item, dict)
+                ]
+                if not selected or not all(
+                    str(item.get("value") or "").strip()
+                    and str(item.get("value") or "").strip().upper()
+                    != attr_id.upper()
+                    for item in selected
+                ):
+                    return False
+                if not definition.get("is_collection") and len(selected) > 1:
+                    return False
+                maximum = int(definition.get("max_value_count") or 0)
+                if maximum > 0 and len(selected) > maximum:
+                    return False
+                return not uses_unit or normalize_category_attribute_unit(
+                    definition,
+                    value.get("unit"),
+                ) is not None
+            # 带单位的共享值 shape：{"value": 文本, "unit": 单位}。
+            raw_text = value.get("value")
+            text = ("" if raw_text is None else str(raw_text)).strip()
             if not text or text.upper() == attr_id.upper():
                 return False
+            if category_attribute_uses_numeric_unit(definition):
+                return normalize_category_attribute_number_unit_value(
+                    definition,
+                    text,
+                    value.get("unit"),
+                ) is not None
+            if uses_unit:
+                return normalize_category_attribute_unit(
+                    definition,
+                    value.get("unit"),
+                ) is not None
             return category_attribute_unit_is_valid(
                 definition, value.get("unit")
             )
         if isinstance(value, (list, tuple, set)):
             return False
         text = str(value or "").strip()
-        return bool(text) and text.upper() != attr_id.upper()
+        return (
+            not uses_unit
+            and bool(text)
+            and text.upper() != attr_id.upper()
+        )
     if not isinstance(value, dict) or not isinstance(value.get("values"), list):
         return False
-    if not category_attribute_unit_is_valid(definition, value.get("unit")):
+    if uses_unit and normalize_category_attribute_unit(
+        definition,
+        value.get("unit"),
+    ) is None:
+        return False
+    if not uses_unit and not category_attribute_unit_is_valid(
+        definition,
+        value.get("unit"),
+    ):
         return False
     selected = [item for item in value.get("values") or [] if isinstance(item, dict)]
     if not selected or not all(
@@ -489,8 +631,12 @@ __all__ = [
     "CATEGORY_SEARCH_PERMISSION",
     "CATEGORY_SEARCH_TOOLSET_ID",
     "category_attribute_dictionary_id",
+    "normalize_category_attribute_number_unit_value",
+    "normalize_category_attribute_unit",
     "category_attribute_schema",
     "category_attribute_unit_is_valid",
+    "category_attribute_uses_numeric_unit",
+    "category_attribute_uses_unit",
     "category_attribute_value_is_valid",
     "category_attribute_value_mode",
     "CategoryAttributeValueMode",

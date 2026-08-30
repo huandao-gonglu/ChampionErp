@@ -48,6 +48,33 @@ def _apply_store_currency_discovery(
     write_currency_state(store, state)
     return state
 
+
+def _store_publish_readiness_next_action(
+    platform: str,
+    currency_state: dict[str, Any],
+) -> str:
+    """把授权成功与实际发布就绪状态分开呈现。"""
+
+    if store_listing_currency_ready(currency_state):
+        return "已可用于发布"
+    error_code = str(currency_state.get("currency_error_code") or "").strip()
+    if (
+        str(platform or "").strip().lower() == "mercadolibre"
+        and error_code == "MERCADOLIBRE_USER_PRODUCTS_REQUIRED"
+    ):
+        return (
+            "授权有效，但账号尚未开通 User Products；"
+            "请联系 Mercado Libre 负责团队启用，重新授权不会自动开通"
+        )
+    status = str(currency_state.get("currency_status") or "").strip()
+    if status == "selection_required":
+        return "授权有效；请选择发布货币后再核价与发布"
+    if status == "manual_required":
+        return "授权有效；请填写发布货币后再核价与发布"
+    if status == "refresh_failed":
+        return "授权有效，但发布货币读取失败；请重新检查平台接口"
+    return "授权有效，但发布货币尚未就绪"
+
 def _merge_saved_ai_model_config(model_config: dict[str, Any]) -> dict[str, Any]:
     incoming = dict(model_config if isinstance(model_config, dict) else {})
     model_id = str(incoming.get("id") or "").strip()
@@ -222,13 +249,35 @@ def exchange_mercadolibre_code_from_body(body: dict[str, Any]) -> dict[str, Any]
         if result.get("refresh_token"):
             ml["refresh_token"] = str(result.get("refresh_token") or "").strip()
         ml["user_id"] = str(result.get("user_id") or ml.get("user_id") or "").strip()
+        exchanged = True
+        # 身份切换必须分两阶段持久化：先保存新凭据，让 ConfigStore 清除旧账号
+        # 的派生能力；再基于新 token 读取并保存 listing_model、市场映射与币种。
+        # 否则同一次 save 会把刚发现的能力误判为旧身份数据并清空。
+        ml.pop("code_verifier", None)
+        config_store = get_context().config
+        config_store.save_store_config(
+            config,
+            preserve_empty_sensitive=False,
+        )
+        config = config_store.load_store_config()
+        ml = config.setdefault("mercadolibre", {})
         # code 交换成功后自动执行用户信息与币种发现，不再要求用户额外点击
         # 用户信息步骤才能补齐发布能力。
         currency_state = sync_mercadolibre_auth_and_currency(config)
-        ml.update(_store_auth_result_fields("mercadolibre", "测试成功", ml.get("shop_name") or ml.get("user_id") or token))
+        publish_ready = store_listing_currency_ready(currency_state)
+        publish_next_action = _store_publish_readiness_next_action(
+            "mercadolibre", currency_state
+        )
+        ml.update(
+            _store_auth_result_fields(
+                "mercadolibre",
+                "测试成功",
+                ml.get("shop_name") or ml.get("user_id") or token,
+                next_action=publish_next_action,
+            )
+        )
         ml["auth_error_code"] = ""
         ml["auth_error_message"] = ""
-        exchanged = True
         append_ml_auth_test_log(
             "exchange_code",
             "success",
@@ -249,11 +298,11 @@ def exchange_mercadolibre_code_from_body(body: dict[str, Any]) -> dict[str, Any]
             },
             "masked_account": ml.get("auth_masked_account") or "",
             "checked_at": ml.get("auth_checked_at") or "",
-            "publish_ready": bool(currency_state.get("currency_status") == "ready" and currency_state.get("listing_currency")),
+            "publish_ready": publish_ready,
             "currency_configuration": public_currency_configuration(currency_state) if currency_state else {},
             "storeAuthSummary": summarize_store_auth_states(config),
             "message": "Mercado Libre 授权成功，已自动读取用户信息。",
-            "next_action": "授权成功。下一步到草稿的类目/属性页实时匹配 Mercado Libre 类目，并按选中类目读取必填属性。",
+            "next_action": publish_next_action,
         }
     finally:
         if exchanged and "code_verifier" in ml:
@@ -279,9 +328,26 @@ def refresh_mercadolibre_token_from_body(body: dict[str, Any]) -> dict[str, Any]
     ml["client_secret"] = ml.get("client_secret") or app_secret
     ml["refresh_token"] = str(result.get("refresh_token") or refresh_token).strip()
     ml["access_token"] = token
+    # 与 code 交换一致，先提交新凭据并清空旧身份派生值，再发现新 token
+    # 对应的账号模型、市场映射与币种。
+    config_store = get_context().config
+    config_store.save_store_config(config)
+    config = config_store.load_store_config()
+    ml = config.setdefault("mercadolibre", {})
     # 刷新成功后同步用户信息与币种发现，保持店铺币种状态与远端一致。
     currency_state = sync_mercadolibre_auth_and_currency(config)
-    ml.update(_store_auth_result_fields("mercadolibre", "测试成功", ml.get("shop_name") or token))
+    publish_ready = store_listing_currency_ready(currency_state)
+    publish_next_action = _store_publish_readiness_next_action(
+        "mercadolibre", currency_state
+    )
+    ml.update(
+        _store_auth_result_fields(
+            "mercadolibre",
+            "测试成功",
+            ml.get("shop_name") or token,
+            next_action=publish_next_action,
+        )
+    )
     ml["auth_error_code"] = ""
     ml["auth_error_message"] = ""
     get_context().config.save_store_config(config)
@@ -291,11 +357,11 @@ def refresh_mercadolibre_token_from_body(body: dict[str, Any]) -> dict[str, Any]
         "shop_name": ml.get("shop_name") or "",
         "masked_account": ml.get("auth_masked_account") or "",
         "checked_at": ml.get("auth_checked_at") or "",
-        "publish_ready": bool(currency_state.get("currency_status") == "ready" and currency_state.get("listing_currency")),
+        "publish_ready": publish_ready,
         "currency_configuration": public_currency_configuration(currency_state) if currency_state else {},
         "storeAuthSummary": summarize_store_auth_states(config),
         "message": "Mercado Libre token 已刷新。",
-        "next_action": "Token 已刷新。下一步到草稿的类目/属性页实时匹配 Mercado Libre 类目，并按选中类目读取必填属性。",
+        "next_action": publish_next_action,
     }
 
 
@@ -791,6 +857,10 @@ def test_store_auth(
     else:
         identity = store_identity_for_platform(platform, store)
         currency_state = store_listing_currency_from_auth(platform, identity, store)
+    publish_ready = store_listing_currency_ready(currency_state)
+    store["auth_next_action"] = _store_publish_readiness_next_action(
+        platform, currency_state
+    )
     if not is_preview:
         get_context().config.save_store_config(config)
     response = {
@@ -803,7 +873,7 @@ def test_store_auth(
         "status": str(store.get("auth_status") or "ok"),
         # ok 表示授权请求本身成功；publish_ready 表示发布币种也已就绪，
         # 两者不得混为一个状态。
-        "publish_ready": store_listing_currency_ready(currency_state),
+        "publish_ready": publish_ready,
         "message": "测试成功：授权可用。",
         "currency_configuration": public_currency_configuration(currency_state),
         "storeConfig": public_store_config(config),

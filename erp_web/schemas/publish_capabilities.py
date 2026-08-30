@@ -3,7 +3,7 @@ from __future__ import annotations
 """确定性发布校验与确认后队列提交的领域契约。"""
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
@@ -33,7 +33,7 @@ class PublishValidationIssue(BaseModel):
 
 
 class ProductPublishDestination(BaseModel):
-    """审批与预检摘要中可读的实际销售站点/物流组合。"""
+    """审批与预检摘要中的实际 marketplace operation 及销售条件。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -42,6 +42,18 @@ class ProductPublishDestination(BaseModel):
         TrimmedText,
         StringConstraints(min_length=1, max_length=80),
     ]
+    price: TrimmedText | float | None = None
+    net_proceeds: TrimmedText | float | None = None
+    listing_type_id: Annotated[
+        TrimmedText,
+        StringConstraints(max_length=80),
+    ] | None = None
+    status: Annotated[
+        TrimmedText,
+        StringConstraints(max_length=80),
+    ] | None = None
+    free_shipping: bool | None = None
+    sale_terms: tuple[dict[str, Any], ...] | None = None
 
 
 class ProductPublishSummary(BaseModel):

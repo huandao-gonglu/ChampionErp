@@ -170,6 +170,34 @@ def test_product_dimension_match_does_not_fill_package_dimensions() -> None:
     }
 
 
+def test_package_volume_match_fills_package_dimensions_without_replacing_product_dimensions() -> None:
+    product = normalize_product_model(
+        {
+            "source": {
+                "attributes": {
+                    "外观尺寸": "60*55*155",
+                    "包装体积": "55*60*160mm",
+                },
+                "weight_kg": "0.182",
+            }
+        }
+    )
+
+    assert product["source"]["dimensions"] == {
+        "length_cm": "6",
+        "width_cm": "5.5",
+        "height_cm": "15.5",
+    }
+    assert product["drafts"]["mercadolibre"]["package_dimensions"] == {
+        "length_cm": "5.5",
+        "width_cm": "6",
+        "height_cm": "16",
+        "weight_kg": "0.182",
+    }
+    assert product["drafts"]["mercadolibre"]["attributes"] == {}
+    assert product["source"]["attributes"]["外观尺寸"] == "60*55*155"
+
+
 def test_merge_source_partial_result_keeps_browser_1688_attributes_and_skus() -> None:
     parsed = parse_1688_product(
         {"html": _sample_1688_html(), "text": "", "url": "https://detail.1688.com/offer/123456789.html"},

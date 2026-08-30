@@ -22,7 +22,7 @@ export function statusBadgeClass(status: string): string {
   if (['active', 'running', 'retrying', 'queued', 'claimed', 'collected', 'partial'].includes(status)) {
     return 'badge-info'
   }
-  if (['blocked', 'failed', 'error', 'real_publish_failed', 'not_ready'].includes(status)) {
+  if (['blocked', 'failed', 'error', 'real_publish_failed', 'not_ready', 'outcome_unknown'].includes(status)) {
     return 'badge-danger'
   }
   return 'badge-muted'

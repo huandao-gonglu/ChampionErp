@@ -253,3 +253,37 @@ def test_cny_shipping_quote_is_not_treated_as_a_second_editable_amount() -> None
     assert target["shipping_amount"] == 100
     assert target["shipping_cost_cny"] == 100
     assert target["suggested_price"] == {"amount": "3600.00", "currency": "RUB"}
+
+
+def test_calculation_basis_preserves_physical_measurement_precision() -> None:
+    result = pricing_service.pricing_result(
+        {
+            "common": {
+                "purchase_cost": 94,
+                "weight_kg": 0.182,
+                "length_cm": 15.5,
+                "width_cm": 5.5,
+                "height_cm": 6.125,
+                "usd_cny_rate": 7,
+            },
+            "targets": [
+                {
+                    "target_key": "mercadolibre:cbt",
+                    "platform": "mercadolibre",
+                    "site": "CBT",
+                    "listing_currency": "USD",
+                    "commission_percent": 16,
+                    "target_margin_percent": 30,
+                    "shipping_quote_mode": "manual",
+                    "shipping_currency": "USD",
+                    "shipping_amount": 3,
+                }
+            ],
+        }
+    )
+
+    basis = result["results"][0]["calculation_basis"]
+    assert basis["weight_kg"] == "0.182"
+    assert basis["length_cm"] == "15.5"
+    assert basis["width_cm"] == "5.5"
+    assert basis["height_cm"] == "6.125"

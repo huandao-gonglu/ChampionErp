@@ -1,12 +1,13 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import {
-  closeMercadoLibrePublishedItem,
+  pauseMercadoLibreUserProduct,
   fetchMercadoLibreOrders,
-  fetchMercadoLibrePublishedItems,
+  fetchMercadoLibreUserProducts,
   fetchPublishJob,
   fetchPublishJobs,
   fetchPublishLogs,
+  reconcilePublishJob,
 } from '@/api/workflow/publishing'
 import { createDefaultPricingInput } from '@/constants/initialState'
 import { useWorkflowActivityStore } from '@/stores/workflow/activity'
@@ -20,7 +21,7 @@ import type {
   MarketplaceOption,
   MercadoLibreOrderItem,
   MercadoLibreOrderNotification,
-  MercadoLibreRemoteItem,
+  MercadoLibreUserProduct,
   PayloadPreviewState,
   PricingInput,
   PricingResult,
@@ -68,12 +69,15 @@ export const useWorkflowPublishingStore = defineStore('workflow-publishing', () 
   const mercadoLibreOrderNotifications = ref<MercadoLibreOrderNotification[]>([])
   const mercadoLibreOrdersTotal = ref(0)
   const mercadoLibreOrdersCheckedAt = ref('')
-  const mercadoLibreRemoteItems = ref<MercadoLibreRemoteItem[]>([])
-  const mercadoLibreRemoteStatus = ref('active')
-  const mercadoLibreRemotePage = ref(1)
-  const mercadoLibreRemotePerPage = ref(50)
-  const mercadoLibreRemoteTotal = ref(0)
-  const mercadoLibreRemoteTotalPages = ref(1)
+  const mercadoLibreUserProducts = ref<MercadoLibreUserProduct[]>([])
+  const mercadoLibreUserProductStatus = ref('active')
+  const mercadoLibreUserProductPage = ref(1)
+  const mercadoLibreUserProductPerPage = ref(50)
+  const mercadoLibreUserProductTotal = ref(0)
+  const mercadoLibreUserProductTotalPages = ref(1)
+  const mercadoLibreUserProductRefreshErrors = ref<UnknownRecord[]>([])
+  const mercadoLibreUserProductsRefreshScope = ref('')
+  const mercadoLibreUserProductsCheckedAt = ref('')
   const activeMarketplace = ref<Marketplace>('mercadolibre')
   const platformOptions = ref<MarketplaceOption[]>([])
   const publishResult = ref<UnknownRecord | null>(null)
@@ -157,6 +161,34 @@ export const useWorkflowPublishingStore = defineStore('workflow-publishing', () 
     await refreshPublishJob()
   }
 
+  async function reconcileSelectedPublishJob(jobId: string, platform: Marketplace) {
+    const normalizedJobId = String(jobId || selectedPublishJobId.value || '').trim()
+    const normalizedPlatform = String(platform || '').trim().toLowerCase() as Marketplace
+    if (!normalizedJobId || !normalizedPlatform || publishJobsLoading.value) return
+    publishJobsLoading.value = true
+    activity.setError('')
+    let shouldRefresh = false
+    try {
+      const result = await reconcilePublishJob(normalizedJobId, normalizedPlatform)
+      const resolution = String(result.resolution || '').trim()
+      activity.addLog(
+        resolution === 'applied'
+          ? `发布任务 ${normalizedJobId} 已对账：远端变更已生效。`
+          : resolution === 'partially_applied'
+            ? `发布任务 ${normalizedJobId} 已对账：远端仅部分生效，请按市场错误处理。`
+          : resolution === 'not_applied'
+            ? `发布任务 ${normalizedJobId} 已对账：远端变更未生效。`
+            : `发布任务 ${normalizedJobId} 仍在处理中，保持结果待对账且不会重放发布。`,
+      )
+      shouldRefresh = true
+    } catch (exc) {
+      activity.setError(exc instanceof Error ? exc.message : '发布结果对账失败')
+    } finally {
+      publishJobsLoading.value = false
+    }
+    if (shouldRefresh) await refreshPublishJobs({ quiet: true })
+  }
+
   async function refreshPublishLogs() {
     activity.loading = true
     activity.setError('')
@@ -170,32 +202,47 @@ export const useWorkflowPublishingStore = defineStore('workflow-publishing', () 
     }
   }
 
-  async function refreshMercadoLibreRemoteItems(status: string = mercadoLibreRemoteStatus.value, page?: number, perPage?: number) {
+  async function refreshMercadoLibreUserProducts(
+    status: string = mercadoLibreUserProductStatus.value,
+    page?: number,
+    perPage?: number,
+    refreshIdentityMapping = false,
+  ) {
     activity.loading = true
     activity.setError('')
     try {
-      const nextStatus = status || mercadoLibreRemoteStatus.value
-      const nextPerPage = perPage || mercadoLibreRemotePerPage.value
-      const nextPage = page || (nextStatus === mercadoLibreRemoteStatus.value ? mercadoLibreRemotePage.value : 1)
-      const result = await fetchMercadoLibrePublishedItems(nextStatus, nextPage, nextPerPage)
+      const nextStatus = status || mercadoLibreUserProductStatus.value
+      const nextPerPage = perPage || mercadoLibreUserProductPerPage.value
+      const nextPage = page || (nextStatus === mercadoLibreUserProductStatus.value ? mercadoLibreUserProductPage.value : 1)
+      const result = await fetchMercadoLibreUserProducts(nextStatus, nextPage, nextPerPage, refreshIdentityMapping)
       if (!result.items.length && result.pagination.total > 0 && nextPage > 1) {
-        const previous = await fetchMercadoLibrePublishedItems(nextStatus, nextPage - 1, nextPerPage)
-        mercadoLibreRemoteItems.value = previous.items
-        mercadoLibreRemotePage.value = previous.pagination.page
-        mercadoLibreRemotePerPage.value = previous.pagination.perPage
-        mercadoLibreRemoteTotal.value = previous.pagination.total
-        mercadoLibreRemoteTotalPages.value = previous.pagination.totalPages
+        // 第一次请求已完成全量 identity mapping 对账；回退页只读取本地快照，避免重复远端调用。
+        const previous = await fetchMercadoLibreUserProducts(nextStatus, nextPage - 1, nextPerPage, false)
+        mercadoLibreUserProducts.value = previous.items
+        mercadoLibreUserProductPage.value = previous.pagination.page
+        mercadoLibreUserProductPerPage.value = previous.pagination.perPage
+        mercadoLibreUserProductTotal.value = previous.pagination.total
+        mercadoLibreUserProductTotalPages.value = previous.pagination.totalPages
+        mercadoLibreUserProductRefreshErrors.value = previous.refreshErrors
+        mercadoLibreUserProductsRefreshScope.value = previous.refreshScope
+        mercadoLibreUserProductsCheckedAt.value = previous.checkedAt
       } else {
-        mercadoLibreRemoteItems.value = result.items
-        mercadoLibreRemotePage.value = result.pagination.page
-        mercadoLibreRemotePerPage.value = result.pagination.perPage
-        mercadoLibreRemoteTotal.value = result.pagination.total
-        mercadoLibreRemoteTotalPages.value = result.pagination.totalPages
+        mercadoLibreUserProducts.value = result.items
+        mercadoLibreUserProductPage.value = result.pagination.page
+        mercadoLibreUserProductPerPage.value = result.pagination.perPage
+        mercadoLibreUserProductTotal.value = result.pagination.total
+        mercadoLibreUserProductTotalPages.value = result.pagination.totalPages
+        mercadoLibreUserProductRefreshErrors.value = result.refreshErrors
+        mercadoLibreUserProductsRefreshScope.value = result.refreshScope
+        mercadoLibreUserProductsCheckedAt.value = result.checkedAt
       }
-      mercadoLibreRemoteStatus.value = nextStatus
-      activity.addLog(`Mercado Libre 远程商品已刷新：第 ${mercadoLibreRemotePage.value}/${mercadoLibreRemoteTotalPages.value} 页，当前 ${mercadoLibreRemoteItems.value.length} 条，共 ${mercadoLibreRemoteTotal.value} 条。`)
+      mercadoLibreUserProductStatus.value = nextStatus
+      const scopeNote = mercadoLibreUserProductsRefreshScope.value === 'identity_mapping_only'
+        ? '身份映射已对账；状态与价格仍来自本地 publication 快照。'
+        : '已读取本地 publication 快照。'
+      activity.addLog(`Mercado Libre User Products ${scopeNote}第 ${mercadoLibreUserProductPage.value}/${mercadoLibreUserProductTotalPages.value} 页，当前 ${mercadoLibreUserProducts.value.length} 条，共 ${mercadoLibreUserProductTotal.value} 条。`)
     } catch (exc) {
-      activity.setError(exc instanceof Error ? exc.message : '读取 Mercado Libre 已发布商品失败')
+      activity.setError(exc instanceof Error ? exc.message : '读取 Mercado Libre User Products 失败')
     } finally {
       activity.loading = false
     }
@@ -219,15 +266,15 @@ export const useWorkflowPublishingStore = defineStore('workflow-publishing', () 
     }
   }
 
-  async function closeMercadoLibreRemoteItem(itemId: string) {
+  async function pauseMercadoLibreUserProductById(sitelessUserProductId: string) {
     activity.loading = true
     activity.setError('')
     try {
-      const result = await closeMercadoLibrePublishedItem(itemId)
-      activity.addLog(String(result.message || `${itemId} 已下架。`))
-      await refreshMercadoLibreRemoteItems(mercadoLibreRemoteStatus.value, mercadoLibreRemotePage.value, mercadoLibreRemotePerPage.value)
+      const result = await pauseMercadoLibreUserProduct(sitelessUserProductId)
+      activity.addLog(String(result.message || `${sitelessUserProductId} 已暂停。`))
+      await refreshMercadoLibreUserProducts(mercadoLibreUserProductStatus.value, mercadoLibreUserProductPage.value, mercadoLibreUserProductPerPage.value)
     } catch (exc) {
-      activity.setError(exc instanceof Error ? exc.message : '下架 Mercado Libre 商品失败')
+      activity.setError(exc instanceof Error ? exc.message : '暂停 Mercado Libre User Product 失败')
     } finally {
       activity.loading = false
     }
@@ -270,12 +317,15 @@ export const useWorkflowPublishingStore = defineStore('workflow-publishing', () 
     mercadoLibreOrderNotifications,
     mercadoLibreOrdersTotal,
     mercadoLibreOrdersCheckedAt,
-    mercadoLibreRemoteItems,
-    mercadoLibreRemoteStatus,
-    mercadoLibreRemotePage,
-    mercadoLibreRemotePerPage,
-    mercadoLibreRemoteTotal,
-    mercadoLibreRemoteTotalPages,
+    mercadoLibreUserProducts,
+    mercadoLibreUserProductStatus,
+    mercadoLibreUserProductPage,
+    mercadoLibreUserProductPerPage,
+    mercadoLibreUserProductTotal,
+    mercadoLibreUserProductTotalPages,
+    mercadoLibreUserProductRefreshErrors,
+    mercadoLibreUserProductsRefreshScope,
+    mercadoLibreUserProductsCheckedAt,
     activeMarketplace,
     platformOptions,
     publishResult,
@@ -284,9 +334,10 @@ export const useWorkflowPublishingStore = defineStore('workflow-publishing', () 
     refreshPublishJobs,
     loadMorePublishJobs,
     selectPublishJob,
+    reconcileSelectedPublishJob,
     refreshPublishLogs,
-    refreshMercadoLibreRemoteItems,
+    refreshMercadoLibreUserProducts,
     refreshMercadoLibreOrders,
-    closeMercadoLibreRemoteItem,
+    pauseMercadoLibreUserProductById,
   }
 })

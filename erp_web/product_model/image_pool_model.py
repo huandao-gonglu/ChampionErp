@@ -134,6 +134,11 @@ def normalize_image_pool_item(item: Any, order: int = 0, origin_hint: str = "sou
         ("content_sha256", ("content_sha256",)),
         ("delivery_provider", ("delivery_provider",)),
         ("delivery_error", ("delivery_error",)),
+        ("platform_picture_id", ("platform_picture_id",)),
+        ("mercadolibre_picture_id", ("mercadolibre_picture_id",)),
+        ("upload_status", ("upload_status",)),
+        ("upload_error", ("upload_error",)),
+        ("uploaded_at", ("uploaded_at",)),
     ):
         value = next(
             (
@@ -149,6 +154,8 @@ def normalize_image_pool_item(item: Any, order: int = 0, origin_hint: str = "sou
         normalized["is_sku"] = True
     if isinstance(item.get("raw"), dict):
         normalized["raw"] = deepcopy(item["raw"])
+    if isinstance(item.get("platform_uploads"), dict):
+        normalized["platform_uploads"] = deepcopy(item["platform_uploads"])
     return {
         key: value
         for key, value in normalized.items()

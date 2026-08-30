@@ -1,7 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { statusBadgeClass } from '@/utils/status'
-import type { Marketplace, PublishJobListItem, UnknownRecord } from '@/types/workflow'
+import type {
+  Marketplace,
+  MarketplaceOption,
+  MarketplaceSiteToSell,
+  PublishJobListItem,
+  UnknownRecord,
+} from '@/types/workflow'
 
 const props = defineProps<{
   jobs: PublishJobListItem[]
@@ -12,6 +18,7 @@ const props = defineProps<{
   lastUpdated: string
   precheckOk: boolean
   activeMarketplace: Marketplace
+  platformOptions: MarketplaceOption[]
   busy: boolean
 }>()
 
@@ -21,7 +28,7 @@ const emit = defineEmits<{
   loadMore: []
   enqueue: []
   publishDirect: []
-  confirmRealPublish: []
+  reconcile: [jobId: string, platform: Marketplace]
 }>()
 
 const statusFilter = ref('')
@@ -34,6 +41,7 @@ const statusLabels: Record<string, string> = {
   success: '发布成功',
   failed: '发布失败',
   partial: '部分成功',
+  outcome_unknown: '结果待对账',
 }
 
 const stageLabels: Record<string, string> = {
@@ -48,9 +56,10 @@ const stageLabels: Record<string, string> = {
   retrying: '等待重试',
   finished: '已结束',
   failed: '已结束',
+  outcome_unknown: '停止重放，等待对账',
 }
 
-const platformOptions = computed(() => Array.from(new Set(
+const filterPlatforms = computed(() => Array.from(new Set(
   props.jobs.flatMap((job) => job.platforms.map((item) => item.platform)),
 )).sort())
 
@@ -84,6 +93,47 @@ function stageLabel(stage: string) {
   return stageLabels[stage] || stage || '-'
 }
 
+function platformOption(platform: Marketplace) {
+  const platformKey = String(platform || '').trim().toLowerCase()
+  return props.platformOptions.find((option) => (
+    String(option.key || '').trim().toLowerCase() === platformKey
+  ))
+}
+
+function platformLabel(platform: Marketplace) {
+  return platformOption(platform)?.label || String(platform || '').trim() || '-'
+}
+
+function siteLabel(option: MarketplaceOption | undefined, site: string) {
+  const siteCode = String(site || '').trim()
+  if (!siteCode) return ''
+  const siteOption = option?.sites.find((item) => (
+    item.code.toLowerCase() === siteCode.toLowerCase()
+    || item.key.toLowerCase() === siteCode.toLowerCase()
+  ))
+  return siteOption ? `${siteOption.label}（${siteOption.code}）` : siteCode
+}
+
+function platformTargetLabel(
+  platform: Marketplace,
+  site: string,
+  sitesToSell: MarketplaceSiteToSell[],
+) {
+  const option = platformOption(platform)
+  const platformName = option?.label || String(platform || '').trim() || '-'
+  const parentLabel = siteLabel(option, site)
+  const baseLabel = parentLabel ? `${platformName} · ${parentLabel}` : platformName
+  const parentKey = String(site || '').trim().toLowerCase()
+  const salesLabels = sitesToSell.flatMap((target) => {
+    const targetKey = String(target.siteId || '').trim().toLowerCase()
+    if (!targetKey || targetKey === parentKey) return []
+    return [siteLabel(option, target.siteId)]
+  })
+  return salesLabels.length
+    ? `${baseLabel} → ${salesLabels.join('、')}`
+    : baseLabel
+}
+
 function formatTime(value: string) {
   return String(value || '').replace('T', ' ').replace(/Z$/, '').slice(0, 19) || '-'
 }
@@ -104,7 +154,6 @@ function selectJob(jobId: string) {
         <button class="btn btn-outline" :disabled="loading" @click="emit('refresh')">刷新列表</button>
         <button class="btn btn-primary" :disabled="busy || !precheckOk" @click="emit('enqueue')">发布入队</button>
         <button class="btn btn-outline" :disabled="busy || activeMarketplace === 'mercadolibre' || !precheckOk" @click="emit('publishDirect')">非 ML 直接发布</button>
-        <button class="btn btn-primary" :disabled="busy || activeMarketplace !== 'mercadolibre' || !precheckOk" @click="emit('confirmRealPublish')">确认 ML 真实发布</button>
       </div>
     </div>
 
@@ -119,20 +168,21 @@ function selectJob(jobId: string) {
             <option value="success">发布成功</option>
             <option value="failed">发布失败</option>
             <option value="partial">部分成功</option>
+            <option value="outcome_unknown">结果待对账</option>
           </select>
           <select v-model="platformFilter" class="input">
             <option value="">全部平台</option>
-            <option v-for="platform in platformOptions" :key="platform" :value="platform">{{ platform }}</option>
+            <option v-for="platform in filterPlatforms" :key="platform" :value="platform">{{ platformLabel(platform) }}</option>
           </select>
         </div>
 
         <div class="mt-4 overflow-x-auto rounded-lg border border-accent-200 dark:border-dark-700">
-          <table class="min-w-[980px] w-full table-fixed text-left text-sm">
+          <table class="min-w-[1160px] w-full table-fixed text-left text-sm">
             <colgroup>
               <col class="w-[145px]" />
               <col class="w-[190px]" />
               <col class="w-[190px]" />
-              <col class="w-[110px]" />
+              <col class="w-[280px]" />
               <col class="w-[110px]" />
               <col class="w-[110px]" />
               <col class="w-[70px]" />
@@ -166,7 +216,16 @@ function selectJob(jobId: string) {
                   <span class="block truncate font-medium text-accent-950 dark:text-white" :title="job.productName || job.productId">{{ job.productName || job.productId || '-' }}</span>
                   <span class="mt-1 block truncate text-xs text-accent-500 dark:text-accent-400">{{ job.productId || '-' }}</span>
                 </td>
-                <td class="p-3"><span v-for="item in job.platforms" :key="item.platform" class="badge-info mr-1">{{ item.platform }}</span></td>
+                <td class="p-3">
+                  <div class="flex flex-wrap gap-1.5">
+                    <span
+                      v-for="item in job.platforms"
+                      :key="`${item.platform}:${item.site}`"
+                      class="badge-info"
+                      :title="platformTargetLabel(item.platform, item.site, item.sitesToSell)"
+                    >{{ platformTargetLabel(item.platform, item.site, item.sitesToSell) }}</span>
+                  </div>
+                </td>
                 <td class="p-3"><span :class="statusBadgeClass(job.status)">{{ statusLabel(job.status) }}</span></td>
                 <td class="p-3 text-accent-700 dark:text-accent-200">{{ stageLabel(job.stage) }}</td>
                 <td class="p-3 text-center text-accent-700 dark:text-accent-200">{{ job.attempts }}</td>
@@ -207,13 +266,25 @@ function selectJob(jobId: string) {
           </div>
 
           <div class="mt-4 space-y-2">
-            <article v-for="item in selectedJob.platforms" :key="item.platform" class="rounded-lg border border-accent-200 p-3 dark:border-dark-700">
+            <article v-for="item in selectedJob.platforms" :key="`${item.platform}:${item.site}`" class="rounded-lg border border-accent-200 p-3 dark:border-dark-700">
               <div class="flex items-center justify-between gap-2">
-                <span class="font-semibold text-accent-950 dark:text-white">{{ item.platform }}</span>
+                <span class="font-semibold text-accent-950 dark:text-white">{{ platformTargetLabel(item.platform, item.site, item.sitesToSell) }}</span>
                 <span :class="statusBadgeClass(item.status)">{{ statusLabel(item.status) }}</span>
               </div>
               <p class="mt-2 text-xs text-accent-500 dark:text-accent-400">{{ stageLabel(item.stage) }} · 尝试 {{ item.attempts }} 次</p>
-              <p class="mt-1 break-all text-xs text-accent-500 dark:text-accent-400">{{ item.draftId || '-' }} · {{ item.site || '-' }}</p>
+              <p class="mt-1 break-all text-xs text-accent-500 dark:text-accent-400">{{ item.draftId || '-' }}</p>
+              <div v-if="item.status === 'outcome_unknown'" class="mt-3 rounded-md border border-amber-200 bg-amber-50 p-2 dark:border-amber-900/70 dark:bg-amber-950/30">
+                <p class="text-xs text-amber-800 dark:text-amber-200">只读取已保存的远端 task 终态，不会再次提交创建或更新请求。</p>
+                <button
+                  data-testid="publish-job-reconcile"
+                  type="button"
+                  class="btn btn-outline mt-2 px-2.5 py-1.5 text-xs"
+                  :disabled="loading || busy"
+                  @click="emit('reconcile', selectedJob.jobId, item.platform)"
+                >
+                  只读对账
+                </button>
+              </div>
             </article>
           </div>
 

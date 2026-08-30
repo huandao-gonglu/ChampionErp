@@ -13,7 +13,7 @@ from .product_research_config import default_product_research_config, normalize_
 
 
 DEFAULT_EXCHANGE_RATE_API_URL = "https://open.er-api.com/v6/latest/USD"
-PRESERVED_APP_CONFIG_KEYS = {"auto_ai_recognition", "alibaba_cookie", "mercadolibre_title_limit"}
+PRESERVED_APP_CONFIG_KEYS = {"auto_ai_recognition", "alibaba_cookie"}
 YUNEXPRESS_SANDBOX_BASE_URL = "https://openapi-sbx.yunexpress.cn"
 YUNEXPRESS_PRODUCTION_BASE_URL = "https://openapi.yunexpress.cn"
 _RETIRED_AI_CONFIG_KEYS = frozenset(

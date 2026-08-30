@@ -311,7 +311,37 @@ def image_pool_refs_for_platform(prod: dict[str, Any], platform: str) -> list[st
     selected_items = [item for item in platform_items if bool(item.get("selected"))]
     items = selected_items or platform_items
     items = sorted(items, key=lambda item: (0 if item.get("is_main") else 1, int(item.get("order") or 0)))
-    refs = [str(item.get("url") or item.get("path") or item.get("preview_url") or "").strip() for item in items]
+    refs: list[str] = []
+    for item in items:
+        if platform == "mercadolibre":
+            uploads = (
+                item.get("platform_uploads")
+                if isinstance(item.get("platform_uploads"), dict)
+                else {}
+            )
+            mercado_upload = (
+                uploads.get("mercadolibre")
+                if isinstance(uploads.get("mercadolibre"), dict)
+                else {}
+            )
+            picture_id = str(
+                item.get("platform_picture_id")
+                or item.get("mercadolibre_picture_id")
+                or mercado_upload.get("picture_id")
+                or mercado_upload.get("id")
+                or ""
+            ).strip()
+            if picture_id:
+                refs.append(f"ml-id:{picture_id}")
+                continue
+        refs.append(
+            str(
+                item.get("url")
+                or item.get("path")
+                or item.get("preview_url")
+                or ""
+            ).strip()
+        )
     return [ref for ref in refs if ref]
 
 

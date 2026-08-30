@@ -1,5 +1,5 @@
 import {  apiClient } from '@/api/client'
-import { listingLanguageLabel } from '@/constants/locales'
+import { listingLanguageValue } from '@/constants/locales'
 import type {
   BrowserDebugStatus,
   CollectBatchRow,
@@ -303,7 +303,7 @@ export async function generateCopyBatch(productIds: string[], platform: Marketpl
 }
 
 export async function generateImagePrompts(product: Product, platform: Marketplace, targetLanguage = ''): Promise<string> {
-  const listingLanguage = targetLanguage || product.drafts[platform]?.language || listingLanguageLabel(platform)
+  const listingLanguage = targetLanguage || product.drafts[platform]?.language || listingLanguageValue(platform)
   const response = await apiClient.post('/api/generate-image-prompts', {
     product_id: requiredProductId(product, '生成图片提示词'),
     platform,
@@ -328,7 +328,7 @@ export interface ImageTranslateOptions {
 export type ImageEditOptions = ImageTranslateOptions
 
 export async function imageTranslate(product: Product, platform: Marketplace, language: string, options: ImageTranslateOptions = {}): Promise<ProductMutationResponse> {
-  const listingLanguage = language || product.drafts[platform]?.language || listingLanguageLabel(platform)
+  const listingLanguage = language || product.drafts[platform]?.language || listingLanguageValue(platform)
   const selectedImageIds = options.sourceImageIds ?? product.source.imagePool.filter((image) => image.selected).map((image) => image.id)
   if (!selectedImageIds.length) throw new Error('请先勾选要翻译/重绘的图片')
   const response = await apiClient.post('/api/image-translate', {

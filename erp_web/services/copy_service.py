@@ -109,8 +109,13 @@ def _normalized_generated_copy(parsed: Any, target_market: str) -> dict[str, Any
     if not isinstance(parsed, dict):
         raise RuntimeError("AI 未返回 JSON 对象。")
     title_limit = platform_title_limit(target_market)
+    title = str(parsed.get("title") or "").strip()
+    if len(title) > title_limit:
+        raise RuntimeError(
+            f"AI 返回的标题超过 {title_limit} 个字符，请重新生成更短的标题。"
+        )
     result = {
-        "title": str(parsed.get("title") or "").strip()[:title_limit],
+        "title": title,
         "description": str(parsed.get("description") or "").strip(),
         "bullets": normalize_copy_list(parsed.get("bullets") or parsed.get("selling_points"), 5),
         "alt_titles": normalize_copy_list(parsed.get("alt_titles") or parsed.get("alternative_titles"), 3),

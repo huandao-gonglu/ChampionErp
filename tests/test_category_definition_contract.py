@@ -4,8 +4,8 @@
 覆盖：
 - CategoryDefinition 及其属性模型拒绝未知字段（raw/values 不得混入）；
 - 公共有界视图不含 platform_binding/raw；
-- 稳定指纹：相同语义定义跨进程产生相同指纹，缓存时间戳与 options 预览
-  变化不影响指纹，语义变化使指纹变化。
+- 稳定指纹：相同语义定义跨进程产生相同指纹，缓存时间戳不影响指纹，
+  options 预览等发布语义变化使指纹变化。
 """
 
 from __future__ import annotations
@@ -18,9 +18,14 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from erp_web.runtime_units.category_definition_support import (
+    definition_to_legacy_attribute,
+)
+from erp_web.schemas.category import category_attribute_value_is_valid
 from erp_web.schemas.category_definition import (
     ATTRIBUTE_OPTIONS_PREVIEW_LIMIT,
     CategoryAttributeDefinition,
+    CategoryAttributeOptionPreview,
     CategoryAttributePage,
     CategoryAttributePlatformBinding,
     CategoryAttributeSummary,
@@ -115,6 +120,142 @@ def test_options_preview_is_bounded_documented() -> None:
     assert ATTRIBUTE_OPTIONS_PREVIEW_LIMIT >= 1
 
 
+def test_legacy_projection_preserves_has_more_values() -> None:
+    projected = definition_to_legacy_attribute(
+        _attribute(has_more_values=True)
+    )
+
+    assert projected["has_more_values"] is True
+
+
+def test_open_collection_accepts_text_values_without_dictionary_ids() -> None:
+    definition = {
+        "id": "COMPATIBLE_DEVICES",
+        "value_mode": "open_enum",
+        "is_collection": True,
+        "max_value_count": 2,
+    }
+
+    assert category_attribute_value_is_valid(
+        definition,
+        {
+            "values": [
+                {"dictionary_value_id": "123", "value": "Phone"},
+                {"value": "Custom terminal"},
+            ]
+        },
+    )
+    assert not category_attribute_value_is_valid(
+        definition,
+        {
+            "values": [
+                {"value": "Phone"},
+                {"value": "Tablet"},
+                {"value": "Laptop"},
+            ]
+        },
+    )
+
+
+def test_strict_enum_still_requires_ids_and_respects_single_value() -> None:
+    strict_definition = {
+        "id": "COLOR",
+        "value_mode": "strict_enum",
+        "is_collection": False,
+    }
+    assert not category_attribute_value_is_valid(
+        strict_definition,
+        {"values": [{"value": "Blue"}]},
+    )
+    assert category_attribute_value_is_valid(
+        strict_definition,
+        {"values": [{"dictionary_value_id": "blue-1", "value": "Blue"}]},
+    )
+    assert not category_attribute_value_is_valid(
+        strict_definition,
+        {
+            "values": [
+                {"dictionary_value_id": "blue-1", "value": "Blue"},
+                {"dictionary_value_id": "red-1", "value": "Red"},
+            ]
+        },
+    )
+
+
+def test_number_unit_requires_structured_finite_value_and_allowed_unit() -> None:
+    definition = {
+        "id": "WEIGHT",
+        "value_type": "number_unit",
+        "value_mode": "free_text",
+        "unit_options": ["g", "kg", "lb"],
+        "default_unit": "kg",
+    }
+
+    assert not category_attribute_value_is_valid(definition, "0.182")
+    assert not category_attribute_value_is_valid(
+        definition,
+        {"value": "0.182", "unit": ""},
+    )
+    assert not category_attribute_value_is_valid(
+        definition,
+        {"value": "0.182", "unit": "oz"},
+    )
+    assert not category_attribute_value_is_valid(
+        definition,
+        {"value": "NaN", "unit": "kg"},
+    )
+    assert category_attribute_value_is_valid(
+        definition,
+        {"value": "0.182", "unit": "kg"},
+    )
+    assert category_attribute_value_is_valid(
+        definition,
+        {"value": 0, "unit": "g"},
+    )
+
+
+def test_unit_bearing_strict_enum_preserves_values_shape() -> None:
+    definition = {
+        "id": "CAPACITY",
+        "value_type": "enum",
+        "value_mode": "strict_enum",
+        "unit_options": ["ml", "l"],
+        "default_unit": "ml",
+        "is_collection": False,
+    }
+
+    assert category_attribute_value_is_valid(
+        definition,
+        {
+            "values": [
+                {"dictionary_value_id": "capacity-500", "value": "500"}
+            ],
+            "unit": "ml",
+        },
+    )
+    assert not category_attribute_value_is_valid(
+        definition,
+        {
+            "values": [
+                {"dictionary_value_id": "capacity-500", "value": "500"}
+            ]
+        },
+    )
+
+
+def test_fixed_unit_metadata_does_not_change_scalar_value_shape() -> None:
+    definition = {
+        "id": "4497",
+        "value_type": "Integer",
+        "value_mode": "free_text",
+        "unit": "г",
+        "default_unit": "г",
+        "unit_options": [],
+    }
+
+    assert category_attribute_value_is_valid(definition, "1000")
+
+
 # -- 指纹稳定性 ----------------------------------------------------------------
 
 
@@ -133,7 +274,7 @@ def test_fingerprint_ignores_cache_and_preview_noise() -> None:
     assert definition_fingerprint(base) == definition_fingerprint(noisy)
 
 
-def test_fingerprint_ignores_attribute_order_and_preview_options() -> None:
+def test_fingerprint_ignores_attribute_order_but_tracks_preview_options() -> None:
     base = _definition()
     reordered = _definition(
         required=(_attribute("2002", name="尺寸", required=False),),
@@ -149,7 +290,22 @@ def test_fingerprint_ignores_attribute_order_and_preview_options() -> None:
         required_flag_changed
     )
 
-    preview_only = _definition(
+    option_changed = _definition(
+        required=(
+            _attribute(
+                "1001",
+                options=(
+                    CategoryAttributeOptionPreview(
+                        value="蓝色",
+                        dictionary_value_id="blue-1",
+                    ),
+                ),
+            ),
+        ),
+    )
+    assert definition_fingerprint(base) != definition_fingerprint(option_changed)
+
+    preview_changed = _definition(
         required=(
             _attribute(
                 "1001",
@@ -160,7 +316,7 @@ def test_fingerprint_ignores_attribute_order_and_preview_options() -> None:
             ),
         ),
     )
-    assert definition_fingerprint(base) == definition_fingerprint(preview_only)
+    assert definition_fingerprint(base) != definition_fingerprint(preview_changed)
 
 
 def test_fingerprint_changes_with_semantic_definition() -> None:

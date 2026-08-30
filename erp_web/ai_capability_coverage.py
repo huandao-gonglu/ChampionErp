@@ -200,10 +200,10 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     ),
     AiCapabilityCoverageEntry(
         method="GET",
-        path="/api/mercadolibre/published-items",
+        path="/api/mercadolibre/user-products",
         business_domain="平台商品与订单",
         disposition="capability",
-        capability_names=("platform_published_items_query",),
+        capability_names=("mercadolibre_user_products_query",),
     ),
     AiCapabilityCoverageEntry(
         method="GET",
@@ -628,15 +628,21 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         method="POST",
         path="/api/publish-precheck",
         business_domain="发布",
-        disposition="capability",
-        capability_names=("product_publish_validate",),
+        disposition="internal_only",
+        reason=(
+            "受信发布页面工作流：复用只读发布校验并持久化当前目标的预检状态；"
+            "模型可见 product_publish_validate 本身保持无副作用。"
+        ),
     ),
     AiCapabilityCoverageEntry(
         method="POST",
         path="/api/publish-payload-preview",
         business_domain="发布",
-        disposition="capability",
-        capability_names=("product_publish_validate",),
+        disposition="internal_only",
+        reason=(
+            "受信发布页面的显式素材准备与确认入口；可能上传平台图片、写回 picture ID、"
+            "保存预检并记录预览日志，不伪装成只读 Capability。"
+        ),
     ),
     AiCapabilityCoverageEntry(
         method="POST",
@@ -647,6 +653,16 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     ),
     AiCapabilityCoverageEntry(
         method="POST",
+        path="/api/publish-bus/reconcile",
+        business_domain="发布",
+        disposition="internal_only",
+        reason=(
+            "受信发布任务 UI 的显式只读对账门面；会根据远端 task 终态释放"
+            "持久发布锁，不允许 Agent 自主触发或把它当成发布重试。"
+        ),
+    ),
+    AiCapabilityCoverageEntry(
+        method="POST",
         path="/api/publish-product",
         business_domain="发布",
         disposition="capability",
@@ -654,17 +670,10 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     ),
     AiCapabilityCoverageEntry(
         method="POST",
-        path="/api/mercadolibre/confirm-real-publish",
+        path="/api/mercadolibre/pause-user-product",
         business_domain="发布",
         disposition="capability",
-        capability_names=("publish_real_confirm",),
-    ),
-    AiCapabilityCoverageEntry(
-        method="POST",
-        path="/api/mercadolibre/close-item",
-        business_domain="发布",
-        disposition="capability",
-        capability_names=("platform_item_close",),
+        capability_names=("mercadolibre_user_product_pause",),
     ),
     # -------------------------------------------------- 物流（POST）
     AiCapabilityCoverageEntry(

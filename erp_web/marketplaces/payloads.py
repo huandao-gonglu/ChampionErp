@@ -7,6 +7,11 @@ from erp_web.services.mercadolibre_target_contract import (
     MERCADOLIBRE_CBT_CURRENCY_INVALID,
     mercadolibre_global_target_contract,
 )
+from erp_web.services.mercadolibre_listing_model import (
+    MERCADOLIBRE_LISTING_MODEL_TRADITIONAL_GLOBAL_ITEMS,
+    MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS,
+    require_mercadolibre_listing_model,
+)
 
 from .config_http import number_or_zero
 
@@ -22,7 +27,7 @@ def _format_number_unit(number: float, unit: str) -> str:
     return f"{value} {unit}"
 
 
-def _normalize_mercadolibre_sale_terms(sale_terms: Any, is_global_selling: bool) -> list[dict[str, Any]]:
+def _normalize_mercadolibre_sale_terms(sale_terms: Any) -> list[dict[str, Any]]:
     if not isinstance(sale_terms, list):
         return []
     normalized: list[dict[str, Any]] = []
@@ -36,13 +41,13 @@ def _normalize_mercadolibre_sale_terms(sale_terms: Any, is_global_selling: bool)
             value = str(term.get("value_name") or term.get("name") or "").strip().lower()
             if "vendedor" in value or "seller" in value:
                 term["value_id"] = "2230280"
-                term["value_name"] = "Seller warranty" if is_global_selling else "Garantía del vendedor"
+                term["value_name"] = "Seller warranty"
             elif "fábrica" in value or "fabrica" in value or "factory" in value:
                 term["value_id"] = "2230279"
-                term["value_name"] = "Factory warranty" if is_global_selling else "Garantía de fábrica"
+                term["value_name"] = "Factory warranty"
             elif "sin" in value or "no warranty" in value or "no garantía" in value:
                 term["value_id"] = "6150835"
-                term["value_name"] = "No warranty" if is_global_selling else "Sin garantía"
+                term["value_name"] = "No warranty"
             warranty_type = str(term.get("value_name") or "").strip().lower()
             normalized.append(term)
             continue
@@ -57,14 +62,14 @@ def _normalize_mercadolibre_sale_terms(sale_terms: Any, is_global_selling: bool)
                 continue
             raw_unit = str(struct.get("unit") or term.get("value_name") or "").strip().lower()
             if "mes" in raw_unit or "month" in raw_unit:
-                unit = "months" if is_global_selling else "meses"
+                unit = "months"
             elif "año" in raw_unit or "ano" in raw_unit or "year" in raw_unit:
-                unit = "years" if is_global_selling else "años"
+                unit = "years"
             else:
-                unit = "days" if is_global_selling else "días"
-            if unit in {"días", "days"}:
+                unit = "days"
+            if unit == "days":
                 number = max(3, round(number / 30))
-                unit = "months" if is_global_selling else "meses"
+                unit = "months"
             term["value_name"] = _format_number_unit(number, unit)
             term["value_struct"] = {"number": int(number) if float(number).is_integer() else number, "unit": unit}
             normalized.append(term)
@@ -78,6 +83,8 @@ def build_mercadolibre_payload(
     plan: dict[str, Any],
     config: dict[str, Any],
     image_urls: list[str],
+    *,
+    category_attributes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     listing = listing_for(plan, "mercadolibre")
     store = config["mercadolibre"]
@@ -86,150 +93,141 @@ def build_mercadolibre_payload(
     currency_id = str(settings.get("currency_id") or "").upper()
     if not currency_id:
         raise RuntimeError("Mercado Libre 发布币种尚未解析。")
-    sku = settings.get("sku") or product.get("name") or "SKU-1"
-    site_id = str(store.get("site_id") or "").strip().upper()
-    if not site_id:
-        raise RuntimeError("Mercado Libre 发布目标站点不能为空。")
-    category_id = product.get("category_id") or store.get("category_id")
+    site_id = str(store.get("site_id") or "CBT").strip().upper()
+    account_site_id = str(store.get("account_site_id") or "").strip().upper()
+    listing_model = require_mercadolibre_listing_model(store.get("listing_model"))
+    if site_id != "CBT" or (account_site_id and account_site_id != "CBT"):
+        raise RuntimeError(
+            "MERCADOLIBRE_CBT_ACCOUNT_REQUIRED: Mercado Libre 只允许从 CBT "
+            "Global Selling 父账号创建全局刊登"
+        )
+    if (
+        listing_model == MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS
+        and store.get("user_product_seller") is not True
+    ):
+        raise RuntimeError(
+            "MERCADOLIBRE_USER_PRODUCTS_REQUIRED: 当前账号未开通 User Products"
+        )
+    # 类目身份已经由上层从当前 Mercado 草稿写入 store 副本。商品根字段属于
+    # 来源商品，不能在平台 payload 边界覆盖当前草稿类目。
+    category_id = store.get("category_id")
     category_id = str(category_id or "").strip()
     category_id_upper = category_id.upper()
-    is_global_selling = site_id == "CBT"
-    if is_global_selling and not category_id_upper.startswith("CBT"):
+    if not category_id_upper.startswith("CBT"):
         raise RuntimeError("CBT 发布必须使用真实 CBT 类目 ID，请在草稿的类目/属性里重新实时选择 CBT 类目。")
-    if not is_global_selling and (category_id_upper.startswith("CBT") or (category_id_upper and not category_id_upper.startswith(site_id))):
-        raise RuntimeError(f"{site_id} 发布必须使用 {site_id} 类目 ID，请在草稿的类目/属性里重新实时选择该站点类目。")
-    global_targets: list[dict[str, str]] = []
-    if is_global_selling:
-        if currency_id != "USD":
-            raise RuntimeError(
-                f"{MERCADOLIBRE_CBT_CURRENCY_INVALID}: "
-                "标准 CBT Global Selling 刊登币种必须为 USD"
-            )
-        global_targets, target_issues = mercadolibre_global_target_contract(
-            settings.get("mercadolibre_sites_to_sell"),
-            store.get("marketplace_bindings"),
+    if currency_id != "USD":
+        raise RuntimeError(
+            f"{MERCADOLIBRE_CBT_CURRENCY_INVALID}: "
+            "标准 CBT Global Selling 刊登币种必须为 USD"
         )
-        if target_issues:
-            issue = target_issues[0]
-            raise RuntimeError(f"{issue['code']}: {issue['message']}")
-    attributes = [
-        {"id": "BRAND", "value_name": product.get("brand") or "Generic"},
-        {"id": "SELLER_SKU", "value_name": sku},
-    ]
-    model = settings.get("model") or product.get("model") or product.get("name") or sku
-    if model:
-        attributes.append({"id": "MODEL", "value_name": str(model)[:255]})
-    if product.get("colors"):
-        attributes.append({"id": "COLOR", "value_name": product["colors"][0]})
-    dims = [
-        float(x.replace(",", "."))
-        for x in re.findall(r"\d+(?:[,.]\d+)?", str(product.get("dimensions", "")))
-    ]
-    length, width, height = (dims + [1, 1, 1])[:3]
-    weight_kg = number_or_zero(product.get("weight_kg")) or 0.1
-    length = number_or_zero(settings.get("package_length_cm")) or length
-    width = number_or_zero(settings.get("package_width_cm")) or width
-    height = number_or_zero(settings.get("package_height_cm")) or height
-    weight_kg = number_or_zero(settings.get("package_weight_kg")) or weight_kg
-    package_length = max(1, round(length, 1))
-    package_width = max(1, round(width, 1))
-    package_height = max(1, round(height, 1))
-    package_weight = max(10, int(round(weight_kg * 1000)))
-    title = (
-        str(settings.get("mercadolibre_title") or "").strip()
-        or str(listing.get("title") or "").strip()
-        or str(product.get("name") or "").strip()
-    )[:60]
-    upc = str(settings.get("upc") or product.get("upc") or "").strip()
-    if upc:
-        attributes.append({"id": "GTIN", "value_name": upc})
-    else:
-        attributes.append({"id": "EMPTY_GTIN_REASON", "value_name": "The product does not have a registered code"})
-    package_attr_prefix = "PACKAGE" if is_global_selling else "SELLER_PACKAGE"
-    attributes.extend(
-        [
-            {"id": f"{package_attr_prefix}_LENGTH", "value_name": f"{package_length} cm"},
-            {"id": f"{package_attr_prefix}_WIDTH", "value_name": f"{package_width} cm"},
-            {"id": f"{package_attr_prefix}_HEIGHT", "value_name": f"{package_height} cm"},
-            {"id": f"{package_attr_prefix}_WEIGHT", "value_name": f"{package_weight} g"},
-        ]
+    global_targets, target_issues = mercadolibre_global_target_contract(
+        settings.get("mercadolibre_sites_to_sell"),
+        store.get("marketplace_bindings"),
+        require_user_products=(
+            listing_model == MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS
+        ),
+        enforce_binding_pricing_model=(
+            listing_model == MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS
+        ),
+        language=str(settings.get("mercadolibre_language") or "").strip(),
     )
-    extra_attributes = settings.get("mercadolibre_attributes") or {}
-    if isinstance(extra_attributes, dict):
-        for attr_id, value in extra_attributes.items():
-            attr_id = str(attr_id or "").strip()
-            if attr_id.startswith(("PACKAGE_", "SELLER_PACKAGE_")):
-                continue
-            value = str(value or "").strip()
-            if attr_id and value:
-                attributes.append({"id": attr_id, "value_name": value})
-    product_attributes = product.get("attributes") or {}
-    if isinstance(product_attributes, dict):
-        for attr_id, value in product_attributes.items():
-            attr_id = str(attr_id or "").strip()
-            if attr_id.startswith(("PACKAGE_", "SELLER_PACKAGE_")):
-                continue
-            value = str(value or "").strip()
-            if attr_id and value:
-                attributes.append({"id": attr_id, "value_name": value})
-    if is_global_selling:
-        attributes.append({"id": "ITEM_CONDITION", "value_id": "2230284", "value_name": "New"})
-        attributes = [
-            attr
-            for attr in attributes
-            if str(attr.get("id") or "") not in {"CONDITION"}
-        ]
-    deduped: dict[str, dict[str, Any]] = {}
-    for attr in attributes:
-        attr_id = str(attr.get("id") or "").strip()
-        if attr_id and attr.get("value_name"):
-            deduped[attr_id] = attr
-    attributes = list(deduped.values())
+    if target_issues:
+        issue = target_issues[0]
+        raise RuntimeError(f"{issue['code']}: {issue['message']}")
+    uses_net_proceeds = bool(
+        global_targets
+        and all(
+            target.get("net_proceeds") not in (None, "")
+            for target in global_targets
+        )
+    )
+    if category_attributes is None:
+        raise RuntimeError(
+            "MERCADOLIBRE_CATEGORY_DEFINITION_REQUIRED: "
+            "Mercado Libre payload 必须先按当前类目定义编译属性"
+        )
+    attributes = [dict(item) for item in category_attributes]
+    localized_title = str(settings.get("mercadolibre_title") or "").strip()
+    global_title = str(settings.get("mercadolibre_global_title") or "").strip()
     pictures = [
-        {"id": url.split(":", 1)[1]} if str(url).startswith("ml-id:") else {"source": url}
+        {"id": str(url).split(":", 1)[1].strip()}
         for url in image_urls
-        if url
+        if str(url).startswith("ml-id:")
+        and str(url).split(":", 1)[1].strip()
     ]
     sale_terms = settings.get("mercadolibre_sale_terms")
-    if not isinstance(sale_terms, list) or not sale_terms:
-        sale_terms = [
-            {
-                "id": "WARRANTY_TYPE",
-                "name": "Warranty type",
-                "value_id": "6150835" if not is_global_selling else "",
-                "value_name": "Sin garantía" if not is_global_selling else "No warranty",
-            },
-        ]
-    sale_terms = _normalize_mercadolibre_sale_terms(sale_terms, is_global_selling)
+    # 保修条款只来自当前平台草稿投影。空值必须保持为空并由预检/最终
+    # payload 校验阻断，不能静默合成一个用户从未确认的“No warranty”。
+    if not isinstance(sale_terms, list):
+        sale_terms = []
+    sale_terms = _normalize_mercadolibre_sale_terms(sale_terms)
 
-    payload = {
-        "_global_selling": is_global_selling,
-        "title": title,
-        "category_id": category_id,
-        "price": price_input,
-        "currency_id": currency_id,
-        "available_quantity": int(settings.get("stock") or 1),
-        "buying_mode": "buy_it_now",
-        "catalog_listing": False,
-        "listing_type_id": settings.get("listing_type_id") or "gold_special",
-        "condition": settings.get("condition") or "new",
-        "attributes": attributes,
-        "sale_terms": sale_terms,
-        "description": {"plain_text": listing.get("description", "")},
-    }
-    if is_global_selling:
-        payload["sites_to_sell"] = [
-            {
-                "site_id": target["site_id"],
-                "logistic_type": target["logistic_type"],
-                "price": price_input,
-                "listing_type_id": settings.get("listing_type_id")
-                or "gold_special",
-                "title": title,
-            }
-            for target in global_targets
-        ]
-        payload.pop("condition", None)
+    sites_to_sell: list[dict[str, Any]] = []
+    default_listing_type_id = settings.get("listing_type_id") or "gold_special"
+    for target in global_targets:
+        site_payload: dict[str, Any] = {
+            "site_id": target["site_id"],
+            "logistic_type": target["logistic_type"],
+        }
+        # Mercado 的 sales conditions 属于具体 marketplace。显式配置优先；
+        # 未配置时才继承草稿的全局默认值。
+        if (
+            listing_model == MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS
+            and uses_net_proceeds
+        ):
+            site_payload["net_proceeds"] = target["net_proceeds"]
+        elif target.get("price") not in (None, ""):
+            site_payload["price"] = target["price"]
+        else:
+            site_payload["price"] = price_input
+        site_payload["listing_type_id"] = (
+            target.get("listing_type_id") or default_listing_type_id
+        )
+        if target.get("status") not in (None, ""):
+            site_payload["status"] = target["status"]
+        if target.get("free_shipping") not in (None, ""):
+            site_payload["free_shipping"] = bool(target["free_shipping"])
+        if isinstance(target.get("sale_terms"), list):
+            site_payload["sale_terms"] = target["sale_terms"]
+        if listing_model == MERCADOLIBRE_LISTING_MODEL_TRADITIONAL_GLOBAL_ITEMS:
+            site_payload["title"] = localized_title
+        sites_to_sell.append(site_payload)
+
+    if listing_model == MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS:
+        payload = {
+            "_listing_model": listing_model,
+            "family_name": localized_title,
+            "category_id": category_id,
+            "currency_id": currency_id,
+            "available_quantity": int(settings.get("stock") or 1),
+            "attributes": attributes,
+            "sale_terms": sale_terms,
+            "description": {"plain_text": listing.get("description", "")},
+            "sites_to_sell": sites_to_sell,
+        }
+        if uses_net_proceeds:
+            payload["global_net_proceeds"] = global_targets[0]["net_proceeds"]
+        else:
+            payload["price"] = price_input
+    else:
+        payload = {
+            "_listing_model": listing_model,
+            "title": global_title,
+            "category_id": category_id,
+            "price": price_input,
+            "currency_id": currency_id,
+            "available_quantity": int(settings.get("stock") or 1),
+            "buying_mode": "buy_it_now",
+            "catalog_listing": False,
+            "listing_type_id": default_listing_type_id,
+            "sites_to_sell": sites_to_sell,
+            "attributes": attributes,
+            "sale_terms": sale_terms,
+            "description": {"plain_text": listing.get("description", "")},
+        }
+    # 当前传统 /global/items 的真实校验会在根级 pictures 缺失时返回
+    # body.required_fields（cause_id=5141）。User Products 同样把图片作为
+    # Siteless 商品信息放在根级；两种模型都只提交已上传的 picture ID。
     if pictures:
         payload["pictures"] = pictures
     return payload

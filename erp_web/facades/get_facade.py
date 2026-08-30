@@ -21,7 +21,7 @@ from erp_web.runtime_units.publish_bus import (
     load_publish_logs,
     persist_publish_bus_terminal_results,
 )
-from erp_web.runtime_units.publish_mercadolibre import mercadolibre_remote_items
+from erp_web.runtime_units.publish_mercadolibre import mercadolibre_user_products
 from erp_web.runtime_units.runtime_api import html_page
 from erp_web.runtime_units.source_collect_browser import browser_debug_status
 from erp_web.stores.config_store import summarize_store_auth_states
@@ -75,7 +75,7 @@ __all__ = [
     "mask_secret",
     "mercadolibre_auth_checklist",
     "mercadolibre_recent_orders",
-    "mercadolibre_remote_items",
+    "mercadolibre_user_products",
     "persist_publish_bus_terminal_results",
     "summarize_store_auth_states",
 ]

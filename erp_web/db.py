@@ -1762,7 +1762,7 @@ class ErpDatabase:
         self,
         state: dict[str, Any],
     ) -> tuple[dict[str, Any], bool]:
-        """为一个发布任务原子占用 ``idempotency_key``。"""
+        """原子占用幂等键，并保证同一 draft/platform 只有一个活动发布。"""
         record = self._publish_job_record(state)
         with self._write_lock:
             with self._connect() as conn:
@@ -1782,6 +1782,47 @@ class ErpDatabase:
                         if not isinstance(persisted, dict):
                             raise RuntimeError("发布任务持久化数据不是 JSON object。")
                         return persisted, False
+                    # Mercado 等远端创建接口没有可靠幂等键。即使两次人工确认
+                    # 使用不同服务端 key，同一草稿/平台也不能并发外发；completed
+                    # 但 terminal callback 尚未落库的窄窗口同样视为活动状态。
+                    for platform in (
+                        item.strip().lower()
+                        for item in str(record["platform"] or "").split(",")
+                        if item.strip()
+                    ):
+                        active_rows = conn.execute(
+                            """
+                            SELECT status, payload_json
+                            FROM publish_jobs
+                            WHERE draft_id = ?
+                              AND status IN (
+                                'pending', 'queued', 'running', 'retrying',
+                                'completed', 'outcome_unknown'
+                              )
+                              AND instr(
+                                ',' || lower(platform) || ',',
+                                ',' || ? || ','
+                              ) > 0
+                            ORDER BY created_at ASC, job_id ASC
+                            """,
+                            (record["draft_id"], platform),
+                        ).fetchall()
+                        for active_row in active_rows:
+                            persisted = json_loads(
+                                active_row["payload_json"], {}
+                            )
+                            if not isinstance(persisted, dict):
+                                raise RuntimeError(
+                                    "发布任务持久化数据不是 JSON object。"
+                                )
+                            if (
+                                str(active_row["status"] or "").lower()
+                                == "completed"
+                                and persisted.get("terminal_results_persisted")
+                            ):
+                                continue
+                            conn.commit()
+                            return persisted, False
                     conn.execute(
                         """
                         INSERT INTO publish_jobs (
@@ -1883,7 +1924,8 @@ class ErpDatabase:
                 SELECT status, payload_json
                 FROM publish_jobs
                 WHERE status IN (
-                    'pending', 'queued', 'running', 'retrying', 'completed'
+                    'pending', 'queued', 'running', 'retrying', 'completed',
+                    'outcome_unknown'
                 )
                 ORDER BY created_at ASC
                 """,
@@ -1894,7 +1936,8 @@ class ErpDatabase:
             if isinstance(state, dict):
                 state.setdefault("status", str(row["status"] or ""))
                 if (
-                    str(row["status"] or "").lower() == "completed"
+                    str(row["status"] or "").lower()
+                    in {"completed", "outcome_unknown"}
                     and state.get("terminal_results_persisted")
                 ):
                     continue

@@ -8,6 +8,7 @@ from erp_web.schemas.category import (
     category_attribute_value_is_valid,
 )
 
+from .attribute_matching import source_package_dimensions
 from .common import normalize_list
 from .defaults import default_draft
 from .merge_model import normalize_product_model
@@ -23,7 +24,7 @@ def _category_path_text(record: dict[str, Any] | None) -> str:
 
 def _source_dimension_dict(product: dict[str, Any]) -> dict[str, str]:
     source = product.get("source") if isinstance(product.get("source"), dict) else {}
-    dimensions = source.get("dimensions") if isinstance(source.get("dimensions"), dict) else {}
+    dimensions = source_package_dimensions(source)
     return {
         "length_cm": str(dimensions.get("length_cm") or product.get("package_length_cm") or "").strip(),
         "width_cm": str(dimensions.get("width_cm") or product.get("package_width_cm") or "").strip(),
@@ -45,7 +46,43 @@ def apply_category_selection(product: dict[str, Any], platform: str, category_re
     draft["category_path"] = category_path or str(draft.get("category_path") or "").strip()
     if str(record.get("description_category_id") or "").strip():
         draft["description_category_id"] = str(record["description_category_id"]).strip()
-    draft["attributes"] = deepcopy(draft.get("attributes") or {})
+    allowed_attribute_ids = {
+        str(definition.get("id") or "").strip()
+        for definition in category_attribute_schema(record)
+        if str(definition.get("id") or "").strip()
+        and not bool(definition.get("read_only"))
+    }
+    derived_attribute_ids = {
+        "PACKAGE_LENGTH",
+        "PACKAGE_WIDTH",
+        "PACKAGE_HEIGHT",
+        "PACKAGE_WEIGHT",
+        "SELLER_PACKAGE_LENGTH",
+        "SELLER_PACKAGE_WIDTH",
+        "SELLER_PACKAGE_HEIGHT",
+        "SELLER_PACKAGE_WEIGHT",
+        "SELLER_SKU",
+        "GTIN",
+        "UPC",
+        "UNIVERSAL_PRODUCT_CODE",
+        "EMPTY_GTIN_REASON",
+        "ITEM_CONDITION",
+    }
+    if platform == "mercadolibre":
+        # Mercado 的 BRAND/MODEL 在草稿根字段编辑并由发布编译器映射；
+        # attributes 中不保留第二份可能互相冲突的值。
+        derived_attribute_ids.update({"BRAND", "MODEL"})
+    current_attributes = (
+        draft.get("attributes")
+        if isinstance(draft.get("attributes"), dict)
+        else {}
+    )
+    draft["attributes"] = {
+        str(attr_id): deepcopy(value)
+        for attr_id, value in current_attributes.items()
+        if str(attr_id) in allowed_attribute_ids
+        and str(attr_id).upper() not in derived_attribute_ids
+    }
     draft["brand"] = str(draft.get("brand") or normalized.get("brand") or normalized.get("source", {}).get("brand") or "Generic").strip() or "Generic"
     draft["model"] = str(draft.get("model") or normalized.get("model") or normalized.get("source", {}).get("model") or "General").strip() or "General"
     dims = _source_dimension_dict(normalized)
@@ -65,7 +102,7 @@ def _attribute_value_from_source(product: dict[str, Any], platform: str, attr: d
     draft = product.get("drafts", {}).get(platform) if isinstance(product.get("drafts"), dict) else {}
     attr_id = str(attr.get("id") or "").strip()
     attr_name = str(attr.get("name") or "").strip().lower()
-    source_dims = source.get("dimensions") if isinstance(source.get("dimensions"), dict) else {}
+    source_dims = source_package_dimensions(source)
     draft_pkg = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
     source_material = str(source.get("material") or "").strip()
     source_package = normalize_list(source.get("package_contents"))
@@ -156,6 +193,7 @@ def _required_attribute_is_satisfied(
     normalized: dict[str, Any],
     draft: dict[str, Any],
     definition: dict[str, Any],
+    platform: str,
 ) -> bool:
     attr_id = str(definition.get("id") or "").strip()
     attr_id_upper = attr_id.upper()
@@ -172,10 +210,25 @@ def _required_attribute_is_satisfied(
     ).strip()
     if attr_id_upper == "EMPTY_GTIN_REASON" and gtin_value:
         return True
+    if attr_id_upper == "EMPTY_GTIN_REASON" and draft.get("allow_gtin_exemption"):
+        return True
     if attr_id_upper in _GTIN_ATTRIBUTE_IDS and str(
         attributes.get("EMPTY_GTIN_REASON") or ""
     ).strip():
         return True
+    if attr_id_upper in _GTIN_ATTRIBUTE_IDS and (
+        gtin_value or draft.get("allow_gtin_exemption")
+    ):
+        return True
+    if attr_id_upper == "BRAND":
+        return bool(str(attributes.get(attr_id) or draft.get("brand") or "").strip())
+    if attr_id_upper == "MODEL":
+        return bool(str(attributes.get(attr_id) or draft.get("model") or "").strip())
+    if attr_id_upper == "SELLER_SKU":
+        return bool(str(draft.get("sku") or "").strip())
+    if attr_id_upper == "ITEM_CONDITION":
+        # 当前 Mercado 发布能力只支持 New，wire 值由 listing_model 契约生成。
+        return platform == "mercadolibre"
     package_field = _PACKAGE_ATTRIBUTE_FIELDS.get(attr_id_upper)
     package = (
         draft.get("package_dimensions")
@@ -206,7 +259,12 @@ def unresolved_required_category_attributes(
         definition
         for definition in category_attribute_schema(category_record)
         if definition.get("required")
-        and not _required_attribute_is_satisfied(normalized, draft, definition)
+        and not _required_attribute_is_satisfied(
+            normalized,
+            draft,
+            definition,
+            platform,
+        )
     ]
 
 

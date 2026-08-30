@@ -6,16 +6,28 @@ from typing import Any
 
 from erp_web import marketplaces as publisher
 from erp_web.context import get_context
+from erp_web.marketplace_registry import platform_title_limit
 from erp_web.product_model import (
     default_draft,
+    normalize_mercadolibre_publication,
     normalize_draft_image_refs,
     normalize_draft_target_site,
     normalize_mercadolibre_sites_to_sell,
     validate_category_precheck,
 )
 from erp_web.services.listing_currency_service import require_store_listing_currency
+from erp_web.services.mercadolibre_listing_model import (
+    MERCADOLIBRE_LISTING_MODEL_TRADITIONAL_GLOBAL_ITEMS,
+    MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS,
+    require_mercadolibre_listing_model,
+)
 from erp_web.services.mercadolibre_target_contract import (
     mercadolibre_global_target_contract,
+    mercadolibre_payload_pricing_contract,
+)
+from erp_web.schemas.category_definition import CategoryDefinition
+from erp_web.services.mercadolibre_attribute_contract import (
+    compile_mercadolibre_attributes,
 )
 from erp_web.stores.config_store import summarize_store_auth_states
 from erp_web.stores.product_store import normalize_product_fields
@@ -49,6 +61,8 @@ def build_mercadolibre_publish_payload(
     product: dict[str, Any],
     config: dict[str, Any],
     picture_refs: list[str] | None = None,
+    *,
+    category_definition: CategoryDefinition | None = None,
 ) -> dict[str, Any]:
     plan = apply_product_drafts_to_plan(product, build_plan_for_platform(product, "mercadolibre"))
     draft = _draft_for_selected_target(product, "mercadolibre")
@@ -59,11 +73,26 @@ def build_mercadolibre_publish_payload(
     if site_id:
         store["site_id"] = site_id
     listing = payload_config.setdefault("listing", {})
+    if category_definition is None:
+        raise RuntimeError(
+            "MERCADOLIBRE_CATEGORY_DEFINITION_REQUIRED: "
+            "构建 payload 前必须加载当前 Mercado Libre 类目定义"
+        )
+    if (
+        category_definition.platform != "mercadolibre"
+        or category_definition.category_id
+        != str(draft.get("category_id") or "").strip()
+    ):
+        raise RuntimeError(
+            "MERCADOLIBRE_CATEGORY_DEFINITION_MISMATCH: "
+            "类目定义与当前 Mercado Libre 草稿不一致"
+        )
     selected_price, listing_currency = _selected_price_and_currency(
         draft, "mercadolibre", site_id
     )
-    package_dimensions = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
-    for key, value in {
+    # 以下字段的唯一事实源是当前草稿/核价投影。即使值为空也必须覆盖配置
+    # 副本，否则用户清空字段后会悄悄回落到旧 listing 配置并生成陈旧 payload。
+    listing.update({
         "mercadolibre_price": selected_price,
         "price": selected_price,
         "currency_id": listing_currency,
@@ -72,43 +101,171 @@ def build_mercadolibre_publish_payload(
         "upc": draft.get("upc"),
         "model": draft.get("model"),
         "mercadolibre_title": draft.get("title"),
-        "package_length_cm": package_dimensions.get("length_cm"),
-        "package_width_cm": package_dimensions.get("width_cm"),
-        "package_height_cm": package_dimensions.get("height_cm"),
-        "package_weight_kg": package_dimensions.get("weight_kg"),
-        "mercadolibre_attributes": draft.get("attributes") if isinstance(draft.get("attributes"), dict) else {},
-    }.items():
-        if value not in (None, "", {}):
-            listing[key] = value
+        "mercadolibre_global_title": draft.get("global_title"),
+        "mercadolibre_language": draft.get("language"),
+    })
     # 空列表也必须覆盖配置副本，避免旧配置意外成为 Global Selling fallback。
     listing["mercadolibre_sites_to_sell"] = (
         normalize_mercadolibre_sites_to_sell(draft.get("sites_to_sell"))
     )
-    if isinstance(draft.get("sale_terms"), list) and draft.get("sale_terms"):
-        listing["mercadolibre_sale_terms"] = draft.get("sale_terms")
+    listing["mercadolibre_sale_terms"] = (
+        deepcopy(draft.get("sale_terms"))
+        if isinstance(draft.get("sale_terms"), list)
+        else []
+    )
     refs = (
         image_pool_refs_for_platform(product, "mercadolibre")
         if picture_refs is None
         else list(picture_refs)
     )
+    listing_model = require_mercadolibre_listing_model(store.get("listing_model"))
+    compilation = compile_mercadolibre_attributes(
+        draft,
+        category_definition,
+        listing_model=listing_model,
+    )
+    if compilation.issues:
+        raise RuntimeError(
+            "MERCADOLIBRE_ATTRIBUTE_CONTRACT_INVALID: "
+            + "；".join(issue.message for issue in compilation.issues)
+        )
     payload = publisher.build_mercadolibre_payload(
         product,
         plan,
         payload_config,
         refs,
+        category_attributes=list(compilation.attributes),
     )
-    last_publish_task = (
-        draft.get("last_publish_task")
-        if isinstance(draft.get("last_publish_task"), dict)
-        else {}
-    )
-    item_id = str(
-        last_publish_task.get("item_id")
-        or last_publish_task.get("external_id")
-        or ""
+    publication = normalize_mercadolibre_publication(draft.get("publication"))
+    account_user_id = str(store.get("user_id") or "").strip()
+    if listing_model == MERCADOLIBRE_LISTING_MODEL_TRADITIONAL_GLOBAL_ITEMS:
+        parent_item_id = str(
+            publication.get("parent_item_id")
+            or ""
+        ).strip()
+        bindings = (
+            store.get("marketplace_bindings")
+            if isinstance(store.get("marketplace_bindings"), list)
+            else []
+        )
+        existing_markets = {
+            (
+                str(item.get("site_id") or "").strip().upper(),
+                str(item.get("logistic_type") or "").strip().lower(),
+            ): item
+            for item in publication.get("markets", [])
+            if isinstance(item, dict)
+        }
+        for target in normalize_mercadolibre_sites_to_sell(
+            draft.get("sites_to_sell")
+        ):
+            key = (target["site_id"], target["logistic_type"])
+            binding = next(
+                (
+                    item
+                    for item in bindings
+                    if isinstance(item, dict)
+                    and str(item.get("site_id") or "").strip().upper() == key[0]
+                    and str(item.get("logistic_type") or "").strip().lower()
+                    == key[1]
+                ),
+                {},
+            )
+            existing_markets[key] = {
+                **existing_markets.get(key, {}),
+                "site_id": key[0],
+                "logistic_type": key[1],
+                "seller_id": str(
+                    existing_markets.get(key, {}).get("seller_id")
+                    or binding.get("seller_id")
+                    or ""
+                ).strip(),
+            }
+        has_remote_publication = bool(
+            parent_item_id
+            or any(
+                isinstance(item, dict)
+                and (
+                    item.get("item_id")
+                    or item.get("user_product_id")
+                )
+                for item in publication.get("markets", [])
+            )
+        )
+        publication_model = str(publication.get("model") or "").strip()
+        payload["_publication"] = {
+            **publication,
+            "model": (
+                publication_model
+                if has_remote_publication and publication_model
+                else listing_model
+            ),
+            "account_user_id": str(
+                publication.get("account_user_id")
+                or ("" if has_remote_publication else account_user_id)
+            ).strip(),
+            "parent_item_id": parent_item_id,
+            "markets": list(existing_markets.values()),
+        }
+        return payload
+    siteless_id = str(
+        publication.get("siteless_user_product_id") or ""
     ).strip()
-    if item_id:
-        payload["_item_id"] = item_id
+    publication_account_user_id = str(
+        publication.get("account_user_id") or ""
+    ).strip()
+    seed_account_user_id = (
+        publication_account_user_id if siteless_id else account_user_id
+    )
+    bindings = (
+        store.get("marketplace_bindings")
+        if isinstance(store.get("marketplace_bindings"), list)
+        else []
+    )
+    existing_markets = {
+        (
+            str(item.get("site_id") or "").strip().upper(),
+            str(item.get("logistic_type") or "").strip().lower(),
+        ): item
+        for item in publication.get("markets", [])
+        if isinstance(item, dict)
+    }
+    seed_market_map = {
+        key: dict(item) for key, item in existing_markets.items()
+    }
+    for target in normalize_mercadolibre_sites_to_sell(
+        draft.get("sites_to_sell")
+    ):
+        key = (target["site_id"], target["logistic_type"])
+        binding = next(
+            (
+                item
+                for item in bindings
+                if isinstance(item, dict)
+                and str(item.get("site_id") or "").strip().upper() == key[0]
+                and str(item.get("logistic_type") or "").strip().lower()
+                == key[1]
+            ),
+            {},
+        )
+        seed_market_map[key] = {
+            **existing_markets.get(key, {}),
+            "site_id": key[0],
+            "logistic_type": key[1],
+            "seller_id": str(
+                existing_markets.get(key, {}).get("seller_id")
+                or binding.get("seller_id")
+                or ""
+            ).strip(),
+        }
+    seed_markets = list(seed_market_map.values())
+    if publication or seed_account_user_id or seed_markets:
+        payload["_publication"] = {
+            **publication,
+            "model": listing_model,
+            "account_user_id": seed_account_user_id,
+            "markets": seed_markets,
+        }
     return payload
 
 
@@ -128,13 +285,24 @@ def remote_publish_identity(result: Any) -> dict[str, Any]:
 
     identity: dict[str, Any] = {}
     for candidate in candidates:
+        siteless_id = candidate.get("siteless_user_product_id")
         item_id = candidate.get("item_id") or candidate.get("id")
         product_id = candidate.get("product_id")
         offer_id = candidate.get("offer_id")
-        external_id = candidate.get("external_id") or item_id or product_id
+        external_id = (
+            candidate.get("external_id")
+            or siteless_id
+            or item_id
+            or product_id
+        )
         operation = candidate.get("operation")
         if item_id not in (None, "") and "item_id" not in identity:
             identity["item_id"] = str(item_id)
+        if siteless_id not in (None, "") and "siteless_user_product_id" not in identity:
+            identity["siteless_user_product_id"] = str(siteless_id)
+        family_id = candidate.get("siteless_family_id")
+        if family_id not in (None, "") and "siteless_family_id" not in identity:
+            identity["siteless_family_id"] = str(family_id)
         if product_id not in (None, "", 0) and "product_id" not in identity:
             identity["product_id"] = product_id
         if offer_id not in (None, "") and "offer_id" not in identity:
@@ -146,17 +314,54 @@ def remote_publish_identity(result: Any) -> dict[str, Any]:
     return identity
 
 
+def mercadolibre_publication_from_result(result: Any) -> dict[str, Any]:
+    """从发布队列的多层包装中提取 Mercado User Products 映射。"""
+
+    current = result if isinstance(result, dict) else {}
+    for _ in range(5):
+        publication = normalize_mercadolibre_publication(
+            current.get("publication")
+        )
+        if publication:
+            return publication
+        nested = current.get("result")
+        if not isinstance(nested, dict):
+            break
+        current = nested
+    return {}
+
+
 def validate_mercadolibre_publish_payload(payload: Any, config: dict[str, Any]) -> list[str]:
     missing: list[str] = []
     payload = payload if isinstance(payload, dict) else {}
-    if not config.get("mercadolibre", {}).get("access_token"):
+    store = config.get("mercadolibre") if isinstance(config.get("mercadolibre"), dict) else {}
+    listing = config.get("listing") if isinstance(config.get("listing"), dict) else {}
+    if not store.get("access_token"):
         missing.append("Mercado Libre Access Token")
-    if not payload.get("title"):
-        missing.append("标题")
+    try:
+        listing_model = require_mercadolibre_listing_model(
+            payload.get("_listing_model")
+        )
+    except RuntimeError as exc:
+        missing.append(str(exc))
+        return missing
+    if listing_model != str(store.get("listing_model") or "").strip():
+        missing.append("payload 刊登模型与当前授权账号 listing_model 不一致")
+    if str(store.get("account_site_id") or "").strip().upper() != "CBT":
+        missing.append("必须授权 CBT Global Selling 父账号")
+    if (
+        listing_model == MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS
+        and store.get("user_product_seller") is not True
+    ):
+        missing.append("当前账号未开通 User Products")
     if not payload.get("category_id"):
         missing.append("类目 ID")
-    if not payload.get("price"):
-        missing.append("价格")
+    if not str(payload.get("category_id") or "").strip().upper().startswith("CBT"):
+        missing.append("Global Selling 必须使用 CBT 类目 ID")
+    if str(payload.get("currency_id") or "").strip().upper() != "USD":
+        missing.append("标准 CBT Global Selling 刊登币种必须为 USD")
+    pricing_mode, pricing_issues = mercadolibre_payload_pricing_contract(payload)
+    missing.extend(issue["message"] for issue in pricing_issues)
     if not payload.get("attributes"):
         missing.append("类目属性")
     sites_to_sell = (
@@ -164,29 +369,168 @@ def validate_mercadolibre_publish_payload(payload: Any, config: dict[str, Any]) 
         if isinstance(payload.get("sites_to_sell"), list)
         else []
     )
-    is_global_selling = bool(payload.get("_global_selling")) or str(
-        payload.get("category_id") or ""
-    ).strip().upper().startswith("CBT")
-    if is_global_selling:
-        if str(payload.get("currency_id") or "").strip().upper() != "USD":
-            missing.append("标准 CBT Global Selling 刊登币种必须为 USD")
-        _, target_issues = mercadolibre_global_target_contract(
-            sites_to_sell,
-            (config.get("mercadolibre") or {}).get("marketplace_bindings"),
+    publication = normalize_mercadolibre_publication(
+        payload.get("_publication")
+    )
+    raw_publication = (
+        payload.get("_publication")
+        if isinstance(payload.get("_publication"), dict)
+        else {}
+    )
+    current_account_user_id = str(store.get("user_id") or "").strip()
+    publication_account_user_id = str(
+        publication.get("account_user_id") or ""
+    ).strip()
+    if not current_account_user_id:
+        missing.append("当前 CBT 父账号缺少稳定 user_id")
+    remote_parent_id = str(
+        (
+            publication.get("siteless_user_product_id")
+            if listing_model == MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS
+            else publication.get("parent_item_id")
         )
-        missing.extend(issue["message"] for issue in target_issues)
-    pictures = payload.get("pictures")
-    if not pictures:
-        pictures = next(
-            (
-                site.get("pictures")
-                for site in sites_to_sell
-                if isinstance(site, dict) and isinstance(site.get("pictures"), list)
-            ),
-            [],
+        or ""
+    ).strip()
+    has_remote_market_identity = any(
+        isinstance(item, dict)
+        and (
+            str(item.get("item_id") or "").strip()
+            or str(item.get("user_product_id") or "").strip()
         )
-    if not pictures:
-        missing.append("图片")
+        for item in publication.get("markets", [])
+    )
+    if remote_parent_id and not publication_account_user_id:
+        missing.append("已发布 Mercado publication 缺少 CBT 父账号归属，禁止更新")
+    elif (
+        remote_parent_id
+        and current_account_user_id
+        and publication_account_user_id != current_account_user_id
+    ):
+        missing.append("已发布 Mercado publication 不属于当前 CBT 父账号")
+
+    if listing_model == MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS:
+        if raw_publication and raw_publication.get("model") != listing_model:
+            missing.append("User Products publication.model 缺失或不匹配")
+        if not payload.get("family_name"):
+            missing.append("产品族名称 family_name")
+        for field in ("title", "variations", "buying_mode", "catalog_listing"):
+            if field in payload:
+                missing.append(f"User Products payload 禁止 {field} 字段")
+        siteless_id = str(publication.get("siteless_user_product_id") or "").strip()
+        if (
+            publication.get("parent_item_id")
+            and not siteless_id
+        ):
+            missing.append("传统 Global Items publication 不能通过 User Products 路由更新")
+        if siteless_id and publication.get("model") != listing_model:
+            missing.append("已发布 publication 模型不是 user_products")
+    else:
+        if not payload.get("title"):
+            missing.append("标题 title")
+        elif len(str(payload.get("title") or "").strip()) > platform_title_limit(
+            "mercadolibre"
+        ):
+            missing.append("传统 Global Items 根 title 超过平台字符限制")
+        for field in ("family_name", "global_net_proceeds", "variations"):
+            if field in payload:
+                missing.append(f"传统 Global Items payload 禁止 {field} 字段")
+        if payload.get("_publication") and publication.get("model") != listing_model:
+            missing.append("传统 Global Items publication.model 不匹配")
+        if has_remote_market_identity and not remote_parent_id:
+            missing.append(
+                "已发布传统 Global Items publication 缺少 parent_item_id，禁止重复创建"
+            )
+
+    _, target_issues = mercadolibre_global_target_contract(
+        sites_to_sell,
+        store.get("marketplace_bindings"),
+        required_pricing_mode=pricing_mode,
+        allow_inherited_net_proceeds=pricing_mode == "net_proceeds",
+        require_user_products=(
+            listing_model == MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS
+        ),
+        enforce_binding_pricing_model=(
+            listing_model == MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS
+        ),
+        language=str(listing.get("mercadolibre_language") or "").strip(),
+    )
+    for issue in target_issues:
+        if issue["message"] not in missing:
+            missing.append(issue["message"])
+    sale_terms = (
+        payload.get("sale_terms")
+        if isinstance(payload.get("sale_terms"), list)
+        else []
+    )
+    warranty_type = next(
+        (
+            item
+            for item in sale_terms
+            if isinstance(item, dict)
+            and str(item.get("id") or "").strip() == "WARRANTY_TYPE"
+        ),
+        {},
+    )
+    if not warranty_type or not str(
+        warranty_type.get("value_id")
+        or warranty_type.get("value_name")
+        or ""
+    ).strip():
+        missing.append("sale_terms / warranty 尚未配置完整")
+    if listing_model == MERCADOLIBRE_LISTING_MODEL_TRADITIONAL_GLOBAL_ITEMS:
+        pictures = payload.get("pictures")
+        if not isinstance(pictures, list) or not pictures:
+            missing.append("传统 Global Items 根级 pictures 不能为空")
+            pictures = []
+        if any(
+            isinstance(site, dict) and "pictures" in site
+            for site in sites_to_sell
+        ):
+            missing.append("传统 Global Items pictures 只能位于 payload 根级")
+    else:
+        pictures = payload.get("pictures")
+        if not isinstance(pictures, list) or not pictures:
+            missing.append("图片")
+            pictures = []
+    if pictures and any(
+        not isinstance(picture, dict)
+        or not str(picture.get("id") or "").strip()
+        or picture.get("source")
+        for picture in pictures
+    ):
+        missing.append("Mercado 图片必须先上传并只使用 picture ID")
+
+    attributes = {
+        str(item.get("id") or "").strip(): item
+        for item in payload.get("attributes", [])
+        if isinstance(item, dict)
+    } if isinstance(payload.get("attributes"), list) else {}
+    raw_attribute_ids = [
+        str(item.get("id") or "").strip()
+        for item in payload.get("attributes", [])
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    ] if isinstance(payload.get("attributes"), list) else []
+    if len(raw_attribute_ids) != len(set(raw_attribute_ids)):
+        missing.append("类目属性 ID 不能重复")
+    condition = attributes.get("ITEM_CONDITION", {})
+    if listing_model == MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS:
+        values = condition.get("values") if isinstance(condition, dict) else None
+        if not isinstance(values, list) or not values or "value_id" in condition:
+            missing.append("User Products ITEM_CONDITION 必须使用 values 结构")
+        if any(isinstance(site, dict) and "title" in site for site in sites_to_sell):
+            missing.append("User Products sites_to_sell 禁止 title 字段")
+    else:
+        if (
+            not isinstance(condition, dict)
+            or not str(condition.get("value_id") or "").strip()
+            or "values" in condition
+        ):
+            missing.append("传统 Global Items ITEM_CONDITION 必须使用 value_id/value_name")
+        if any(
+            not isinstance(site, dict) or not str(site.get("title") or "").strip()
+            for site in sites_to_sell
+        ):
+            missing.append("传统 Global Items 每个 sites_to_sell 必须包含 title")
     return missing
 
 

@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from erp_web.product_model.attribute_matching import infer_source_attribute_matches
+from erp_web.product_model import apply_category_selection
+from erp_web.product_model.attribute_matching import (
+    infer_source_attribute_matches,
+    source_package_dimensions,
+)
+from erp_web.product_model.common import parse_dimensions_text
 
 
 @pytest.mark.parametrize(
@@ -54,7 +59,7 @@ def test_matches_common_dimension_descriptions(
     "attributes",
     [
         {"电源线长度": "220*92*85"},
-        {"包装体积": "220*92*85"},
+        {"产品体积": "220*92*85"},
         {"电池容量": "220*92*85"},
         {"产品尺寸": "20*10"},
         {"产品尺寸": "0*20*10cm"},
@@ -77,7 +82,112 @@ def test_prefers_specific_dimension_candidate_over_generic_specification() -> No
     assert match["normalized"] == {"length_cm": "22", "width_cm": "9.2", "height_cm": "8.5"}
 
 
+def test_keeps_product_and_package_dimensions_as_separate_matches() -> None:
+    matches = infer_source_attribute_matches(
+        {
+            "外观尺寸": "60*55*155",
+            "包装体积": "55*60*160mm",
+        }
+    )
+
+    assert matches["dimensions"]["scope"] == "product"
+    assert matches["dimensions"]["normalized"] == {
+        "length_cm": "6",
+        "width_cm": "5.5",
+        "height_cm": "15.5",
+    }
+    assert matches["package_dimensions"]["scope"] == "package"
+    assert matches["package_dimensions"]["normalized"] == {
+        "length_cm": "5.5",
+        "width_cm": "6",
+        "height_cm": "16",
+    }
+
+
+def test_source_package_dimensions_does_not_fall_back_to_product_dimensions() -> None:
+    matches = infer_source_attribute_matches({"外观尺寸": "60*55*155"})
+    source = {
+        "dimensions": {"length_cm": "6", "width_cm": "5.5", "height_cm": "15.5"},
+        "attribute_matches": matches,
+    }
+
+    assert source_package_dimensions(source) == {
+        "length_cm": "",
+        "width_cm": "",
+        "height_cm": "",
+    }
+
+
+@pytest.mark.parametrize(
+    ("value", "default_unit", "expected"),
+    [
+        ("60*55*155", "mm", {"length_cm": "6", "width_cm": "5.5", "height_cm": "15.5"}),
+        ("6×5.5×15.5 cm", "mm", {"length_cm": "6", "width_cm": "5.5", "height_cm": "15.5"}),
+        ("60mm × 55mm × 155mm", "cm", {"length_cm": "6", "width_cm": "5.5", "height_cm": "15.5"}),
+    ],
+)
+def test_parse_dimensions_text_normalizes_source_unit(
+    value: str,
+    default_unit: str,
+    expected: dict[str, str],
+) -> None:
+    assert parse_dimensions_text(value, default_unit=default_unit) == expected
+
+
 def test_rejects_generic_category_and_category_code() -> None:
     matches = infer_source_attribute_matches({"商品分类": "其他", "分类编码": "FAN-001"})
 
     assert "category" not in matches
+
+
+def test_category_selection_keeps_only_current_platform_schema_values() -> None:
+    product = {
+        "source": {
+            "attributes": {
+                "产地": "广东",
+                "包装体积": "55*60*160mm",
+            },
+            "weight_kg": "0.182",
+        },
+        "drafts": {
+            "mercadolibre": {
+                "site": "CBT",
+                "attributes": {
+                    "VOLTAGE": "110/220V",
+                    "WEIGHT": {"value": "182", "unit": "g"},
+                    "PACKAGE_LENGTH": "5.5",
+                    "VERTICAL_TAGS": "平台推导值",
+                    "产地": "广东",
+                },
+            }
+        },
+    }
+    category = {
+        "category_id": "CBT455865",
+        "category_path": "Portable Fans",
+        "attributes": {
+            "required": [
+                {"id": "VOLTAGE", "required": True},
+                {"id": "PACKAGE_LENGTH", "required": True},
+            ],
+            "optional": [
+                {"id": "WEIGHT"},
+                {"id": "VERTICAL_TAGS", "read_only": True},
+            ],
+        },
+    }
+
+    selected = apply_category_selection(product, "mercadolibre", category)
+    draft = selected["drafts"]["mercadolibre"]
+
+    assert draft["attributes"] == {
+        "VOLTAGE": "110/220V",
+        "WEIGHT": {"value": "182", "unit": "g"},
+    }
+    assert selected["source"]["attributes"]["产地"] == "广东"
+    assert draft["package_dimensions"] == {
+        "length_cm": "5.5",
+        "width_cm": "6",
+        "height_cm": "16",
+        "weight_kg": "0.182",
+    }

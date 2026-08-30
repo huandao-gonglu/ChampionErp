@@ -14,8 +14,8 @@ import type {
   MercadoLibreOrderItem,
   MercadoLibreOrderLine,
   MercadoLibreOrdersPage,
-  MercadoLibrePublishedPage,
-  MercadoLibreRemoteItem,
+  MercadoLibreUserProduct,
+  MercadoLibreUserProductsPage,
   PricingInput,
   PricingResult,
   PricingTargetResult,
@@ -33,6 +33,7 @@ import type {
   PayloadPreviewResult,
   ProductOperationResult,
 } from './normalizers'
+import { normalizeMercadoLibrePublication } from './normalizers/product'
 import {
   asRecord,
   ensureOk,
@@ -46,12 +47,14 @@ import {
   normalizeProductOperation,
   normalizeProductsIndex,
   normalizePublishLogs,
+  normalizeSitesToSell,
   platformList,
   precheckIssueSummary,
   precheckIssues,
   isCategoryDictionaryAttribute,
   normalizeCategoryDictionaryId,
   stringList,
+  toBackendSitesToSell,
 } from './normalizers'
 import { requiredDraftTarget, requiredProductId } from './shared'
 
@@ -71,6 +74,7 @@ function normalizePublishJobListItem(value: unknown): PublishJobListItem {
         platform: getString(item, ['platform']) as Marketplace,
         draftId: getString(item, ['draft_id', 'draftId']),
         site: getString(item, ['site']),
+        sitesToSell: normalizeSitesToSell(item.sites_to_sell),
         status: getString(item, ['status']),
         stage: getString(item, ['stage']),
         attempts: getNumber(item, ['attempts']),
@@ -167,24 +171,33 @@ export async function fetchMercadoLibreOrders(limit = 10, offset = 0): Promise<M
   }
 }
 
-function normalizeMercadoLibreRemoteItem(value: unknown): MercadoLibreRemoteItem {
+function normalizeMercadoLibreUserProduct(value: unknown): MercadoLibreUserProduct {
   const record = asRecord(value)
+  const publication = normalizeMercadoLibrePublication(record) || {
+    model: '',
+    accountUserId: '',
+    sitelessUserProductId: '',
+    sitelessFamilyId: '',
+    parentItemId: '',
+    parentUserProductId: '',
+    sellerId: '',
+    status: '',
+    familyName: '',
+    markets: [],
+    confirmedPayload: {},
+    error: '',
+    lastOperation: {},
+    updatedAt: '',
+  }
   return {
-    id: getString(record, ['id']),
-    title: getString(record, ['title']),
-    status: getString(record, ['status']),
-    subStatus: stringList(record.sub_status ?? record.subStatus),
-    permalink: getString(record, ['permalink']),
+    ...publication,
+    productId: getString(record, ['product_id', 'productId']),
+    draftId: getString(record, ['draft_id', 'draftId']),
+    title: getString(record, ['title'], publication.familyName),
     thumbnail: getString(record, ['thumbnail']),
-    price: getNumber(record, ['price']),
-    currencyId: getString(record, ['currency_id', 'currencyId']),
-    availableQuantity: getNumber(record, ['available_quantity', 'availableQuantity']),
-    soldQuantity: getNumber(record, ['sold_quantity', 'soldQuantity']),
-    categoryId: getString(record, ['category_id', 'categoryId']),
-    listingTypeId: getString(record, ['listing_type_id', 'listingTypeId']),
-    sellerSku: getString(record, ['seller_sku', 'sellerSku']),
-    dateCreated: getString(record, ['date_created', 'dateCreated']),
-    lastUpdated: getString(record, ['last_updated', 'lastUpdated']),
+    updatedAt: getString(record, ['updated_at', 'updatedAt'])
+      || publication.markets.map((market) => market.updatedAt).filter(Boolean).sort().at(-1)
+      || '',
     raw: record,
   }
 }
@@ -206,25 +219,38 @@ function normalizeMercadoLibrePagination(value: unknown, fallbackPage: number, f
   }
 }
 
-export async function fetchMercadoLibrePublishedItems(status = 'active', page = 1, perPage = 50): Promise<MercadoLibrePublishedPage> {
+export async function fetchMercadoLibreUserProducts(
+  status = 'active',
+  page = 1,
+  perPage = 50,
+  refreshIdentityMapping = false,
+): Promise<MercadoLibreUserProductsPage> {
   const params = new URLSearchParams({
     status,
     page: String(page),
     per_page: String(perPage),
+    refresh: String(refreshIdentityMapping),
   })
-  const response = await apiClient.get(`/api/mercadolibre/published-items?${params.toString()}`)
+  const response = await apiClient.get(`/api/mercadolibre/user-products?${params.toString()}`)
   const data = asRecord(response.data)
-  ensureOk(data, '读取 Mercado Libre 已发布商品失败')
+  ensureOk(data, '读取 Mercado Libre User Products 失败')
   return {
-    items: Array.isArray(data.items) ? data.items.map(normalizeMercadoLibreRemoteItem) : [],
+    items: Array.isArray(data.items) ? data.items.map(normalizeMercadoLibreUserProduct) : [],
     pagination: normalizeMercadoLibrePagination(data.pagination, page, perPage),
+    refreshErrors: Array.isArray(data.refresh_errors) ? data.refresh_errors.map(asRecord) : [],
+    refreshScope: getString(data, ['refresh_scope']),
+    checkedAt: getString(data, ['checked_at']),
   }
 }
 
-export async function closeMercadoLibrePublishedItem(itemId: string): Promise<UnknownRecord> {
-  const response = await apiClient.post('/api/mercadolibre/close-item', { item_id: itemId })
+export async function pauseMercadoLibreUserProduct(sitelessUserProductId: string): Promise<UnknownRecord> {
+  const normalizedId = String(sitelessUserProductId || '').trim()
+  if (!normalizedId) throw new Error('暂停 Mercado Libre User Product 需要 Siteless User Product ID。')
+  const response = await apiClient.post('/api/mercadolibre/pause-user-product', {
+    siteless_user_product_id: normalizedId,
+  })
   const data = asRecord(response.data)
-  ensureOk(data, '删除 Mercado Libre 商品失败')
+  ensureOk(data, '暂停 Mercado Libre User Product 失败')
   return data
 }
 
@@ -302,12 +328,7 @@ export async function calculatePrice(input: PricingInput): Promise<PricingResult
       target_key: target.targetKey,
       platform: target.platform,
       site: target.site,
-      sites_to_sell: (target.sitesToSell || [])
-        .map((item) => ({
-          site_id: String(item.siteId || '').trim().toUpperCase(),
-          logistic_type: String(item.logisticType || '').trim().toLowerCase(),
-        }))
-        .filter((item) => item.site_id && item.site_id !== 'CBT' && item.logistic_type),
+      sites_to_sell: toBackendSitesToSell(target.sitesToSell),
       listing_currency: target.listingCurrency,
       commission_percent: target.commissionPercent,
       payment_fee_percent: target.paymentFeePercent,
@@ -452,13 +473,24 @@ export async function fetchPublishJob(jobId: string): Promise<UnknownRecord> {
   return asRecord(data.job)
 }
 
-export async function publishProductDirect(product: Product, platform: Marketplace): Promise<ProductOperationResult> {
-  const response = await apiClient.post('/api/publish-product', { product_id: requiredProductId(product, '发布商品'), platform }, { validateStatus: () => true })
-  return normalizeProductOperation(response.data)
+export async function reconcilePublishJob(jobId: string, platform: Marketplace): Promise<UnknownRecord> {
+  const normalizedJobId = String(jobId || '').trim()
+  const normalizedPlatform = String(platform || '').trim().toLowerCase()
+  if (!normalizedJobId || !normalizedPlatform) throw new Error('发布结果对账需要 Job ID 与平台。')
+  const response = await apiClient.post('/api/publish-bus/reconcile', {
+    job_id: normalizedJobId,
+    platform: normalizedPlatform,
+  })
+  const data = asRecord(response.data)
+  ensureOk(data, '发布结果对账失败')
+  return data
 }
 
-export async function confirmMercadoLibreRealPublish(product: Product, confirm = false): Promise<ProductOperationResult> {
-  const response = await apiClient.post('/api/mercadolibre/confirm-real-publish', { product_id: requiredProductId(product, '确认真实发布'), confirm_real_publish: confirm, confirm }, { validateStatus: () => true })
+export async function publishProductDirect(product: Product, platform: Marketplace): Promise<ProductOperationResult> {
+  if (String(platform || '').trim().toLowerCase() === 'mercadolibre') {
+    throw new Error('Mercado Libre 仅支持通过发布队列提交刊登。')
+  }
+  const response = await apiClient.post('/api/publish-product', { product_id: requiredProductId(product, '发布商品'), platform }, { validateStatus: () => true })
   return normalizeProductOperation(response.data)
 }
 
@@ -484,9 +516,17 @@ export async function fetchCategoryAttrs(platform: Marketplace, categoryId: stri
         name: getString(record, ['name', 'label'], id),
         required: getBoolean(record, ['required']),
         options: Array.isArray(record.options)
-          ? record.options.map((option) => getString(asRecord(option), ['value'])).filter(Boolean)
+          ? record.options
+            .map((option) => typeof option === 'string'
+              ? option.trim()
+              : getString(asRecord(option), ['value', 'name']))
+            .filter(Boolean)
           : [],
         valueType: getString(record, ['value_type', 'valueType'], 'string'),
+        valueMode: getString(record, ['value_mode', 'valueMode'], 'free_text'),
+        allowCustomValues: getBoolean(record, ['allow_custom_values', 'allowCustomValues']),
+        hasMoreValues: getBoolean(record, ['has_more_values', 'hasMoreValues']),
+        readOnly: getBoolean(record, ['read_only', 'readOnly']),
         unitOptions: Array.isArray(record.unit_options)
           ? record.unit_options.map((option) => getString(asRecord(option), ['name'])).filter(Boolean)
           : stringList(record.unit_options),
@@ -680,6 +720,10 @@ function categorySelectionToBackendRecord(category: CategorySelection | null): U
         required: attr.required,
         options: attr.options || [],
         value_type: attr.valueType || '',
+        value_mode: attr.valueMode || '',
+        allow_custom_values: Boolean(attr.allowCustomValues),
+        has_more_values: Boolean(attr.hasMoreValues),
+        read_only: Boolean(attr.readOnly),
         unit: attr.unit || '',
         unit_options: attr.unitOptions || [],
         default_unit: attr.defaultUnit || '',
@@ -695,6 +739,10 @@ function categorySelectionToBackendRecord(category: CategorySelection | null): U
         required: false,
         options: attr.options || [],
         value_type: attr.valueType || '',
+        value_mode: attr.valueMode || '',
+        allow_custom_values: Boolean(attr.allowCustomValues),
+        has_more_values: Boolean(attr.hasMoreValues),
+        read_only: Boolean(attr.readOnly),
         unit: attr.unit || '',
         unit_options: attr.unitOptions || [],
         default_unit: attr.defaultUnit || '',

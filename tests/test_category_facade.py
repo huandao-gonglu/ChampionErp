@@ -197,6 +197,66 @@ def test_category_precheck_payload_preserves_category_contract(monkeypatch) -> N
     }
 
 
+def test_category_precheck_payload_persists_semantic_result_for_draft(
+    monkeypatch,
+) -> None:
+    context = {
+        "product": {"product_id": "p-1"},
+        "draft": {"draft_id": "d-1"},
+        "platform": "mercadolibre",
+        "site": "CBT",
+    }
+    saved: dict[str, Any] = {}
+    monkeypatch.setattr(
+        category_facade,
+        "load_required_draft_publish_context",
+        lambda body: (context, None, 200),
+    )
+    monkeypatch.setattr(
+        category_facade,
+        "validate_category_precheck",
+        lambda product, platform, record: ["attributes.VOLTAGE"],
+    )
+
+    def fake_save(
+        supplied_context: dict[str, Any],
+        updates: dict[str, Any],
+    ) -> dict[str, Any]:
+        assert supplied_context is context
+        saved.update(updates)
+        return {"draft": {"draft_id": "d-1"}}
+
+    monkeypatch.setattr(
+        category_facade,
+        "save_draft_target_listing_result",
+        fake_save,
+    )
+
+    result, status = category_facade.category_precheck_payload(
+        {
+            "draft_id": "d-1",
+            "category_id": "CBT455865",
+            "category_record": {
+                "category_id": "CBT455865",
+                "category_path": "Electronics / Fans",
+            },
+        }
+    )
+
+    assert status == 200
+    assert result["ok"] is True
+    assert saved == {
+        "category_precheck": {
+            "ok": False,
+            "platform": "mercadolibre",
+            "site": "CBT",
+            "category_id": "CBT455865",
+            "category_path": "Electronics / Fans",
+            "missing_fields": ["attributes.VOLTAGE"],
+        }
+    }
+
+
 def test_category_route_only_validates_delegates_and_sends_status(
     monkeypatch,
 ) -> None:

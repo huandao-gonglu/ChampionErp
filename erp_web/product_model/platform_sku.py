@@ -65,6 +65,13 @@ def draft_has_remote_listing(draft: dict[str, Any] | None) -> bool:
     }
     if statuses & _REMOTE_STATUSES:
         return True
+    publication = (
+        current.get("publication")
+        if isinstance(current.get("publication"), dict)
+        else {}
+    )
+    if publication.get("siteless_user_product_id") or publication.get("parent_item_id"):
+        return True
     task = (
         current.get("last_publish_task")
         if isinstance(current.get("last_publish_task"), dict)

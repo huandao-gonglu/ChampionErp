@@ -21,7 +21,7 @@ const legacyWorkflowEntries = [
   { path: '/research', tab: 'research', title: '选品调研' },
   { path: '/library', tab: 'library', title: '商品库' },
   { path: '/drafts', tab: 'drafts', title: '草稿箱' },
-  { path: '/ml-items', tab: 'mlItems', title: 'ML已发布' },
+  { path: '/ml-user-products', tab: 'mlUserProducts', title: 'ML User Products' },
   { path: '/edit', tab: 'library', title: '商品库' },
   { path: '/media', tab: 'library', title: '商品库' },
   { path: '/pricing', tab: 'drafts', title: '草稿箱' },

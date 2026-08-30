@@ -24,6 +24,7 @@ from erp_web.product_model import (
     normalize_draft_target_site,
     normalize_draft_image_refs,
     normalize_mercadolibre_sites_to_sell,
+    normalize_mercadolibre_publication,
     normalize_platform_draft,
     normalize_product_model,
     validate_product_root_fields,
@@ -49,6 +50,58 @@ def mask_secret(value: Any) -> str:
     if len(text) <= 8:
         return f"{text[:2]}****"
     return f"{text[:4]}****{text[-4:]}"
+
+
+_IMAGE_PLATFORM_FACT_FIELDS = (
+    "platform_picture_id",
+    "mercadolibre_picture_id",
+    "upload_status",
+    "upload_error",
+    "uploaded_at",
+    "platform_uploads",
+)
+
+
+def _preserve_image_platform_facts(
+    incoming: dict[str, Any],
+    existing: dict[str, Any],
+) -> dict[str, Any]:
+    """客户端编辑商品时保留服务端上传得到的平台图片身份。"""
+
+    result = deepcopy(incoming)
+    source = result.get("source") if isinstance(result.get("source"), dict) else {}
+    pool = source.get("image_pool") if isinstance(source.get("image_pool"), list) else []
+    old_source = (
+        existing.get("source")
+        if isinstance(existing.get("source"), dict)
+        else {}
+    )
+    old_pool = (
+        old_source.get("image_pool")
+        if isinstance(old_source.get("image_pool"), list)
+        else []
+    )
+    old_by_id = {
+        str(item.get("id") or item.get("asset_id") or "").strip(): item
+        for item in old_pool
+        if isinstance(item, dict)
+        and str(item.get("id") or item.get("asset_id") or "").strip()
+    }
+    next_pool: list[Any] = []
+    for raw in pool:
+        if not isinstance(raw, dict):
+            next_pool.append(raw)
+            continue
+        item = dict(raw)
+        identity = str(item.get("id") or item.get("asset_id") or "").strip()
+        previous = old_by_id.get(identity, {})
+        for field in _IMAGE_PLATFORM_FACT_FIELDS:
+            if previous.get(field) not in (None, "", [], {}):
+                item[field] = deepcopy(previous[field])
+        next_pool.append(item)
+    source["image_pool"] = next_pool
+    result["source"] = source
+    return result
 
 
 def product_id_from_body(body: dict[str, Any]) -> str:
@@ -281,7 +334,12 @@ def _normalize_delete_ids(value: Any) -> list[str]:
     return ids
 
 
-def _normalized_target_payload(target: dict[str, Any], platform: str, selected_site: dict[str, Any]) -> dict[str, Any]:
+def _normalized_target_payload(
+    target: dict[str, Any],
+    platform: str,
+    selected_site: dict[str, Any],
+    language: str = "",
+) -> dict[str, Any]:
     # 发布币种唯一事实源是店铺授权配置；站点注册表不再为草稿目标提供币种。
     return normalize_draft_target_site(
         target,
@@ -289,7 +347,7 @@ def _normalized_target_payload(target: dict[str, Any], platform: str, selected_s
         {
             "platform": platform,
             "site": selected_site["code"],
-            "language": selected_site["language"],
+            "language": language or selected_site["language"],
         },
     )
 
@@ -314,7 +372,7 @@ def _changed_mercadolibre_cbt_targets(
     existing: dict[str, Any],
     incoming_targets: list[dict[str, Any]],
 ) -> dict[int, dict[str, Any]]:
-    """Return CBT targets whose canonical sales-country selection changed."""
+    """Return CBT targets whose canonical sales operations changed."""
 
     existing_platform = str(existing.get("platform") or "").strip().lower()
     existing_site = str(existing.get("site") or "").strip()
@@ -348,6 +406,251 @@ def _changed_mercadolibre_cbt_targets(
         )
         if previous_sites != incoming_sites:
             changed[index] = previous
+    return changed
+
+
+_DRAFT_PUBLISH_CONTENT_FIELDS = (
+    "global_title",
+    "title",
+    "description",
+    "brand",
+    "model",
+    "category_id",
+    "description_category_id",
+    "category_path",
+    "attributes",
+    "pricing",
+    "stock",
+    "sku",
+    "upc",
+    "bullets",
+    "search_terms",
+    "language",
+    "package_dimensions",
+    "images",
+    "sale_terms",
+    "allow_gtin_exemption",
+    "shipping",
+)
+_TARGET_PUBLISH_CONTENT_FIELDS = (
+    "platform",
+    "site",
+    "language",
+    "listing_currency",
+    "currency_fingerprint",
+    "category_id",
+    "description_category_id",
+    "category_path",
+    "attributes",
+    "sites_to_sell",
+)
+_DRAFT_SERVER_OWNED_PUBLISH_FIELDS = (
+    "status",
+    "publish_status",
+    "category_precheck",
+    "last_precheck",
+    "last_precheck_target",
+    "last_publish_task",
+    "publication",
+)
+_TARGET_SERVER_OWNED_PUBLISH_FIELDS = tuple(
+    field
+    for field in _DRAFT_SERVER_OWNED_PUBLISH_FIELDS
+    if field != "publication"
+)
+_SERVER_OWNED_PUBLISH_FIELD_DEFAULTS: dict[str, Any] = {
+    "status": "",
+    "publish_status": "",
+    "category_precheck": {},
+    "last_precheck": {},
+    "last_precheck_target": {},
+    "last_publish_task": {},
+    "publication": {},
+}
+
+
+def _review_attribute_id(item: Any) -> str:
+    if isinstance(item, dict):
+        if (
+            str(item.get("code") or "").strip().upper()
+            != "NEED_REVIEW_ATTRIBUTES"
+        ):
+            return ""
+        field = str(item.get("field") or "").strip()
+    else:
+        field = str(item or "").strip()
+    if not field or field == "attributes":
+        return ""
+    value = field.split(".", 1)[-1] if field.startswith("attributes.") else field
+    value = value.strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]*", value):
+        return ""
+    return value.upper()
+
+
+def _changed_attribute_ids(
+    existing_attributes: Any,
+    incoming_attributes: Any,
+) -> set[str]:
+    existing = existing_attributes if isinstance(existing_attributes, dict) else {}
+    incoming = incoming_attributes if isinstance(incoming_attributes, dict) else {}
+    return {
+        str(key).strip().upper()
+        for key in set(existing).union(incoming)
+        if str(key).strip() and existing.get(key) != incoming.get(key)
+    }
+
+
+def _pending_attribute_review_errors(value: Any) -> list[Any]:
+    """保留 AI 待复核标记，丢弃内容变化后已经失效的旧预检结果。"""
+
+    items = value if isinstance(value, list) else []
+    reviews: list[Any] = []
+    for item in items:
+        if _review_attribute_id(item):
+            reviews.append(deepcopy(item))
+    return reviews
+
+
+def _trusted_pending_attribute_review_errors(
+    existing_value: Any,
+    incoming_value: Any,
+    changed_attribute_ids: set[str],
+    *,
+    incoming_provided: bool,
+) -> list[Any]:
+    """只允许客户端在实际编辑对应属性时确认掉既有 AI 待复核项。
+
+    客户端不能新增 review，也不能改写服务端生成的错误详情；未涉及对应
+    属性的内容编辑同样不能借机删除 review。
+    """
+
+    existing_reviews = _pending_attribute_review_errors(existing_value)
+    if not incoming_provided:
+        return existing_reviews
+    incoming_items = incoming_value if isinstance(incoming_value, list) else []
+    incoming_ids = {
+        review_id
+        for item in incoming_items
+        if (review_id := _review_attribute_id(item))
+    }
+    trusted: list[Any] = []
+    for item in existing_reviews:
+        review_id = _review_attribute_id(item)
+        if review_id in incoming_ids or review_id not in changed_attribute_ids:
+            trusted.append(deepcopy(item))
+    return trusted
+
+
+def _preserve_server_owned_publish_fields(
+    existing: dict[str, Any],
+    incoming: dict[str, Any],
+) -> dict[str, Any]:
+    """普通草稿保存不能直接写入服务端发布、预检与远端身份状态。"""
+
+    result = deepcopy(incoming)
+    for field in _DRAFT_SERVER_OWNED_PUBLISH_FIELDS:
+        result[field] = deepcopy(
+            existing.get(
+                field,
+                _SERVER_OWNED_PUBLISH_FIELD_DEFAULTS[field],
+            )
+        )
+    result["validation_errors"] = deepcopy(
+        existing.get("validation_errors")
+        if isinstance(existing.get("validation_errors"), list)
+        else []
+    )
+
+    existing_platform = str(existing.get("platform") or "").strip().lower()
+    existing_site = str(existing.get("site") or "").strip()
+    existing_targets = {
+        _draft_target_identity(
+            target,
+            fallback_platform=existing_platform,
+            fallback_site=existing_site,
+        ): target
+        for target in (
+            existing.get("target_sites")
+            if isinstance(existing.get("target_sites"), list)
+            else []
+        )
+        if isinstance(target, dict)
+    }
+    protected_targets: list[dict[str, Any]] = []
+    for raw_target in (
+        result.get("target_sites")
+        if isinstance(result.get("target_sites"), list)
+        else []
+    ):
+        if not isinstance(raw_target, dict):
+            continue
+        target = dict(raw_target)
+        previous = existing_targets.get(_draft_target_identity(target), {})
+        for field in _TARGET_SERVER_OWNED_PUBLISH_FIELDS:
+            target[field] = deepcopy(
+                previous.get(
+                    field,
+                    _SERVER_OWNED_PUBLISH_FIELD_DEFAULTS[field],
+                )
+            )
+        target["validation_errors"] = deepcopy(
+            previous.get("validation_errors")
+            if isinstance(previous.get("validation_errors"), list)
+            else []
+        )
+        protected_targets.append(target)
+    result["target_sites"] = protected_targets
+    return result
+
+
+def _changed_publish_content_targets(
+    existing: dict[str, Any],
+    incoming: dict[str, Any],
+) -> dict[int, dict[str, Any]]:
+    """返回发布内容已变化的目标，忽略客户端回传的旧状态快照。"""
+
+    existing_platform = str(existing.get("platform") or "").strip().lower()
+    existing_site = str(existing.get("site") or "").strip()
+    existing_targets = {
+        _draft_target_identity(
+            target,
+            fallback_platform=existing_platform,
+            fallback_site=existing_site,
+        ): target
+        for target in (
+            existing.get("target_sites")
+            if isinstance(existing.get("target_sites"), list)
+            else []
+        )
+        if isinstance(target, dict)
+    }
+    incoming_rows = [
+        target
+        for target in (
+            incoming.get("target_sites")
+            if isinstance(incoming.get("target_sites"), list)
+            else []
+        )
+        if isinstance(target, dict)
+    ]
+    incoming_identities = {
+        _draft_target_identity(target)
+        for target in incoming_rows
+    }
+    root_changed = any(
+        existing.get(field) != incoming.get(field)
+        for field in _DRAFT_PUBLISH_CONTENT_FIELDS
+    ) or bool(set(existing_targets).difference(incoming_identities))
+    changed: dict[int, dict[str, Any]] = {}
+    for index, target in enumerate(incoming_rows):
+        previous = existing_targets.get(_draft_target_identity(target))
+        target_changed = previous is None or any(
+            previous.get(field) != target.get(field)
+            for field in _TARGET_PUBLISH_CONTENT_FIELDS
+        )
+        if root_changed or target_changed:
+            changed[index] = previous if isinstance(previous, dict) else {}
     return changed
 
 
@@ -440,7 +743,19 @@ class ProductStore:
                 return normalize_persisted_product_fields(loaded)
         return normalize_product_fields(default_product_model())
 
-    def save_product(self, data: dict[str, Any]) -> dict[str, Any]:
+    def save_product(
+        self,
+        data: dict[str, Any],
+        *,
+        preserve_platform_facts: bool = True,
+    ) -> dict[str, Any]:
+        incoming_id = str(data.get("product_id") or "").strip()
+        existing = self._db.load_product_model(incoming_id) if incoming_id else {}
+        if preserve_platform_facts:
+            data = _preserve_image_platform_facts(
+                data,
+                existing if isinstance(existing, dict) else {},
+            )
         reject_retired_product_category_fields(data)
         validate_product_root_fields(data)
         product = self.sync_product_workflow_statuses(enrich_product_image_dimensions(normalize_product_fields(data)))
@@ -709,33 +1024,13 @@ class ProductStore:
         existing_platform = str(existing.get("platform") or "").strip().lower()
         requested_language = str(draft_payload.get("language") or existing.get("language") or "").strip()
         raw_targets = draft_payload.get("target_sites") if isinstance(draft_payload.get("target_sites"), list) else draft_payload.get("targetSites")
-        requested_primary_target = (
-            raw_targets[0]
-            if isinstance(raw_targets, list)
-            and raw_targets
-            and isinstance(raw_targets[0], dict)
-            else {}
+        incoming_validation_errors_provided = any(
+            key in draft_payload
+            for key in ("validation_errors", "validationErrors")
         )
-        requested_primary_platform = str(
-            requested_primary_target.get("platform")
-            or draft_payload.get("platform")
-            or existing_platform
-        ).strip().lower()
-        requested_primary_site = str(
-            requested_primary_target.get("site")
-            or requested_primary_target.get("site_id")
-            or draft_payload.get("site")
-            or existing.get("site")
-            or ""
-        ).strip().upper()
-        # 迁移旧 CBT/es 草稿：Global Selling 全局刊登必须使用英语。
-        if (
-            requested_primary_platform == "mercadolibre"
-            and requested_primary_site == "CBT"
-        ):
-            requested_language = str(
-                marketplace_site("mercadolibre", "CBT").get("language") or "en-US"
-            )
+        incoming_target_validation_errors_provided: set[
+            tuple[str, str]
+        ] = set()
         targets: list[dict[str, Any]] = []
         for raw_target in raw_targets if isinstance(raw_targets, list) else []:
             target = raw_target if isinstance(raw_target, dict) else {}
@@ -743,10 +1038,21 @@ class ProductStore:
             selected_site = marketplace_site(target_platform, str(target.get("site") or target.get("site_id") or ""))
             if target_platform not in PLATFORMS or not selected_site.get("code"):
                 continue
-            if requested_language and selected_site["language"].lower() != requested_language.lower():
-                continue
             if not any(item["platform"] == target_platform and item["site"] == selected_site["code"] for item in targets):
-                targets.append(_normalized_target_payload(target, target_platform, selected_site))
+                normalized_target = _normalized_target_payload(
+                    target,
+                    target_platform,
+                    selected_site,
+                    requested_language,
+                )
+                targets.append(normalized_target)
+                if any(
+                    key in target
+                    for key in ("validation_errors", "validationErrors")
+                ):
+                    incoming_target_validation_errors_provided.add(
+                        _draft_target_identity(normalized_target)
+                    )
         if not targets:
             requested_platform = str(draft_payload.get("platform") or existing_platform).strip().lower()
             platform = requested_platform if requested_platform in PLATFORMS else existing_platform
@@ -757,33 +1063,61 @@ class ProductStore:
             existing_targets = existing.get("target_sites") if isinstance(existing.get("target_sites"), list) else []
             if existing_targets:
                 fallback_target = existing_targets[0] if isinstance(existing_targets[0], dict) else {}
-            targets = [_normalized_target_payload(fallback_target, platform, selected_site)]
+            targets = [
+                _normalized_target_payload(
+                    fallback_target,
+                    platform,
+                    selected_site,
+                    requested_language,
+                )
+            ]
+        publication = normalize_mercadolibre_publication(
+            existing.get("publication")
+        )
+        if (
+            str(targets[0].get("platform") or "").strip().lower()
+            == "mercadolibre"
+            and publication
+        ):
+            requested_operations = {
+                (
+                    str(item.get("site_id") or "").strip().upper(),
+                    str(item.get("logistic_type") or "").strip().lower(),
+                )
+                for item in normalize_mercadolibre_sites_to_sell(
+                    targets[0].get("sites_to_sell")
+                )
+            }
+            published_operations = {
+                (
+                    str(item.get("site_id") or "").strip().upper(),
+                    str(item.get("logistic_type") or "").strip().lower(),
+                )
+                for item in publication.get("markets", [])
+                if isinstance(item, dict)
+                and str(item.get("item_id") or "").strip()
+            }
+            removed_operations = sorted(
+                published_operations.difference(requested_operations)
+            )
+            if removed_operations:
+                labels = "、".join(
+                    f"{site_id}:{logistic_type}"
+                    for site_id, logistic_type in removed_operations
+                )
+                return {}, {
+                    "ok": False,
+                    "error": (
+                        "不能通过编辑 sites_to_sell 删除已创建的 Mercado 市场投影："
+                        f"{labels}；请使用明确的市场状态操作"
+                    ),
+                    "error_code": "MERCADOLIBRE_PUBLISHED_MARKET_REMOVAL_FORBIDDEN",
+                    "draft_id": draft_id,
+                }, 400
         changed_cbt_targets = _changed_mercadolibre_cbt_targets(
             existing,
             targets,
         )
-        for index, previous_target in changed_cbt_targets.items():
-            previous_publish_task = (
-                previous_target.get("last_publish_task")
-                if isinstance(previous_target.get("last_publish_task"), dict)
-                else {}
-            )
-            if not previous_publish_task:
-                previous_publish_task = (
-                    existing.get("last_publish_task")
-                    if isinstance(existing.get("last_publish_task"), dict)
-                    else {}
-                )
-            targets[index] = {
-                **targets[index],
-                "validation_errors": [],
-                "last_precheck": {},
-                "last_precheck_target": {},
-                "publish_status": "",
-                "status": "category_ready",
-                # 远端商品身份是已发生的发布事实，不随新销售目标失效。
-                "last_publish_task": deepcopy(previous_publish_task),
-            }
         primary_target = targets[0]
         platform = primary_target["platform"]
         platforms = []
@@ -803,23 +1137,139 @@ class ProductStore:
             "target_sites": targets,
             "language": primary_target["language"],
         }
-        if changed_cbt_targets:
+        # publication 是发布响应写入的远端事实，通用草稿保存接口不能覆盖。
+        merged["publication"] = deepcopy(
+            existing.get("publication")
+            if isinstance(existing.get("publication"), dict)
+            else {}
+        )
+        merged["images"] = normalize_draft_image_refs(merged.get("images"))
+        merged = normalize_platform_draft(
+            merged,
+            platform,
+            {"product_id": product_id},
+        )
+        normalized_existing = normalize_platform_draft(
+            existing,
+            existing_platform,
+            {"product_id": product_id},
+        )
+        incoming_validation_errors = deepcopy(
+            merged.get("validation_errors")
+            if isinstance(merged.get("validation_errors"), list)
+            else []
+        )
+        incoming_target_validation_errors = {
+            _draft_target_identity(target): deepcopy(
+                target.get("validation_errors")
+                if isinstance(target.get("validation_errors"), list)
+                else []
+            )
+            for target in merged.get("target_sites", [])
+            if isinstance(target, dict)
+        }
+        merged = _preserve_server_owned_publish_fields(
+            normalized_existing,
+            merged,
+        )
+        changed_publish_targets = _changed_publish_content_targets(
+            normalized_existing,
+            merged,
+        )
+        existing_target_map = {
+            _draft_target_identity(
+                target,
+                fallback_platform=existing_platform,
+                fallback_site=str(existing.get("site") or ""),
+            ): target
+            for target in (
+                normalized_existing.get("target_sites")
+                if isinstance(normalized_existing.get("target_sites"), list)
+                else []
+            )
+            if isinstance(target, dict)
+        }
+        incoming_target_identities = {
+            _draft_target_identity(target)
+            for target in merged.get("target_sites", [])
+            if isinstance(target, dict)
+        }
+        removed_target_platforms = {
+            identity[0]
+            for identity in set(existing_target_map).difference(
+                incoming_target_identities
+            )
+            if identity[0]
+        }
+        for index, previous_target in changed_publish_targets.items():
+            target = merged["target_sites"][index]
+            persisted_target = existing_target_map.get(
+                _draft_target_identity(target),
+                previous_target,
+            )
+            previous_publish_task = (
+                persisted_target.get("last_publish_task")
+                if isinstance(persisted_target, dict)
+                and isinstance(persisted_target.get("last_publish_task"), dict)
+                else {}
+            )
+            if not previous_publish_task:
+                previous_publish_task = (
+                    normalized_existing.get("last_publish_task")
+                    if isinstance(normalized_existing.get("last_publish_task"), dict)
+                    else {}
+                )
+            target_identity = _draft_target_identity(target)
+            merged["target_sites"][index] = {
+                **target,
+                "validation_errors": _trusted_pending_attribute_review_errors(
+                    persisted_target.get("validation_errors"),
+                    incoming_target_validation_errors.get(target_identity, []),
+                    _changed_attribute_ids(
+                        persisted_target.get("attributes"),
+                        target.get("attributes"),
+                    ),
+                    incoming_provided=(
+                        target_identity
+                        in incoming_target_validation_errors_provided
+                    ),
+                ),
+                "category_precheck": {},
+                "last_precheck": {},
+                "last_precheck_target": {},
+                "publish_status": "",
+                "status": "category_ready",
+                # 远端商品身份是已发生的发布事实，不随草稿内容变化失效。
+                "last_publish_task": deepcopy(previous_publish_task),
+            }
+        if changed_publish_targets:
             merged.update(
                 {
-                    "validation_errors": [],
+                    "validation_errors": _trusted_pending_attribute_review_errors(
+                        normalized_existing.get("validation_errors"),
+                        incoming_validation_errors,
+                        _changed_attribute_ids(
+                            normalized_existing.get("attributes"),
+                            merged.get("attributes"),
+                        ),
+                        incoming_provided=incoming_validation_errors_provided,
+                    ),
+                    "category_precheck": {},
                     "last_precheck": {},
                     "last_precheck_target": {},
                     "publish_status": "",
                     "status": "category_ready",
-                    "pricing": {},
                     "last_publish_task": deepcopy(
-                        existing.get("last_publish_task")
-                        if isinstance(existing.get("last_publish_task"), dict)
+                        normalized_existing.get("last_publish_task")
+                        if isinstance(normalized_existing.get("last_publish_task"), dict)
                         else {}
                     ),
                 }
             )
-        merged["images"] = normalize_draft_image_refs(merged.get("images"))
+        if changed_cbt_targets:
+            # 销售目标变化会改变核价目标；普通内容编辑只让旧预检失效，
+            # 保留核价结果，让发布预检按输入指纹判断是否需要重新核价。
+            merged["pricing"] = {}
         merged = normalize_platform_draft(
             merged,
             platform,
@@ -828,14 +1278,21 @@ class ProductStore:
         saved_draft_id = self._db.upsert_draft_model(product_id, platform, merged)
         draft = self._db.load_draft_model(saved_draft_id)
         product = self._db.load_product_model(source_product_id or product_id)
-        if changed_cbt_targets and isinstance(product, dict):
+        if changed_publish_targets and isinstance(product, dict):
             publish_preview = (
                 dict(product.get("publish_preview"))
                 if isinstance(product.get("publish_preview"), dict)
                 else {}
             )
-            if "mercadolibre" in publish_preview:
-                publish_preview.pop("mercadolibre", None)
+            changed_platforms = {
+                str(merged["target_sites"][index].get("platform") or "")
+                .strip()
+                .lower()
+                for index in changed_publish_targets
+            } | removed_target_platforms
+            if any(platform_key in publish_preview for platform_key in changed_platforms):
+                for platform_key in changed_platforms:
+                    publish_preview.pop(platform_key, None)
                 product["publish_preview"] = publish_preview
                 self._db.upsert_product_model(product)
                 draft = self._db.load_draft_model(saved_draft_id)
@@ -850,6 +1307,111 @@ class ProductStore:
             "productsIndex": self.load_products_index(),
             "draftsIndex": self.load_drafts_index(),
             "message": "草稿已保存。",
+        }, None, 200
+
+    def save_draft_publish_state(
+        self,
+        draft_id: str,
+        platform: str,
+        site: str,
+        updates: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
+        """可信服务端流程写入发布/预检状态，不接受普通草稿内容字段。"""
+
+        draft_id = str(draft_id or "").strip()
+        if not draft_id:
+            return {}, {"ok": False, "error": "draft_id 不能为空"}, 400
+        allowed_fields = set(_DRAFT_SERVER_OWNED_PUBLISH_FIELDS) | {
+            "validation_errors"
+        }
+        unexpected = sorted(set(updates).difference(allowed_fields))
+        if unexpected:
+            return {}, {
+                "ok": False,
+                "error": "服务端发布状态更新包含非状态字段：" + "、".join(unexpected),
+                "draft_id": draft_id,
+            }, 400
+        existing = self._db.load_draft_model(draft_id)
+        if not existing:
+            return {}, {
+                "ok": False,
+                "error": "草稿不存在",
+                "draft_id": draft_id,
+            }, 404
+        product_id = str(existing.get("product_id") or "").strip()
+        source_product_id = str(
+            existing.get("source_product_id") or product_id
+        ).strip()
+        draft_platform = str(existing.get("platform") or "").strip().lower()
+        canonical = normalize_platform_draft(
+            existing,
+            draft_platform,
+            {"product_id": product_id},
+        )
+        selected_identity = (
+            str(platform or draft_platform).strip().lower(),
+            str(site or canonical.get("site") or "").strip().upper(),
+        )
+        selected_index = next(
+            (
+                index
+                for index, target in enumerate(canonical["target_sites"])
+                if _draft_target_identity(target) == selected_identity
+            ),
+            None,
+        )
+        if selected_index is None:
+            return {}, {
+                "ok": False,
+                "error": "草稿目标站点不存在",
+                "draft_id": draft_id,
+                "platform": selected_identity[0],
+                "site": selected_identity[1],
+            }, 404
+
+        target = dict(canonical["target_sites"][selected_index])
+        for field in _TARGET_SERVER_OWNED_PUBLISH_FIELDS:
+            if field in updates:
+                target[field] = deepcopy(updates[field])
+        if "validation_errors" in updates:
+            target["validation_errors"] = deepcopy(updates["validation_errors"])
+        canonical["target_sites"][selected_index] = target
+
+        primary_identity = _draft_target_identity(
+            canonical["target_sites"][0],
+            fallback_platform=draft_platform,
+            fallback_site=str(canonical.get("site") or ""),
+        )
+        if selected_identity == primary_identity:
+            for field in _DRAFT_SERVER_OWNED_PUBLISH_FIELDS:
+                if field in updates:
+                    canonical[field] = deepcopy(updates[field])
+            if "validation_errors" in updates:
+                canonical["validation_errors"] = deepcopy(
+                    updates["validation_errors"]
+                )
+
+        canonical = normalize_platform_draft(
+            canonical,
+            draft_platform,
+            {"product_id": product_id},
+        )
+        saved_draft_id = self._db.upsert_draft_model(
+            product_id,
+            draft_platform,
+            canonical,
+        )
+        draft = self._db.load_draft_model(saved_draft_id)
+        product = normalize_persisted_product_fields(
+            self._db.load_product_model(source_product_id or product_id)
+        )
+        return {
+            "ok": True,
+            "draft": draft,
+            "productContext": self.draft_product_context(product),
+            "productsIndex": self.load_products_index(),
+            "draftsIndex": self.load_drafts_index(),
+            "message": "草稿发布状态已保存。",
         }, None, 200
 
     def apply_image_assets_to_draft(

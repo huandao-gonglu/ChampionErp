@@ -567,7 +567,10 @@ def collect_extension_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "description": str(payload.get("description") or "").strip(),
         "images": image_values,
         "image_pool": manual_image_pool,
-        "dimensions": payload.get("dimensions") if isinstance(payload.get("dimensions"), dict) else parse_dimensions_text(payload.get("dimensions")),
+        "dimensions": payload.get("dimensions") if isinstance(payload.get("dimensions"), dict) else parse_dimensions_text(
+            payload.get("dimensions"),
+            default_unit="mm" if platform == "1688" else "cm",
+        ),
         "weight_kg": str(payload.get("weight") or "").strip(),
         "material": str(payload.get("material") or "").strip(),
         "package_contents": normalize_list(payload.get("package_contents")),
@@ -586,8 +589,12 @@ def collect_extension_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 manual_updates["source_attributes"] = cleaned.get("source_attributes") or {}
                 manual_updates["clean_source_text"] = cleaned.get("clean_source_text") or raw_html[:3000]
                 manual_updates["source_text"] = cleaned.get("source_text") or manual_updates["clean_source_text"]
-                if cleaned.get("dimensions") and not manual_updates.get("dimensions"):
-                    manual_updates["dimensions"] = parse_dimensions_text(cleaned.get("dimensions"))
+                current_dimensions = manual_updates.get("dimensions") if isinstance(manual_updates.get("dimensions"), dict) else {}
+                if cleaned.get("dimensions") and not any(current_dimensions.values()):
+                    manual_updates["dimensions"] = parse_dimensions_text(
+                        cleaned.get("dimensions"),
+                        default_unit="mm" if platform == "1688" else "cm",
+                    )
         except Exception:
             manual_updates["source_text"] = raw_html[:3000]
     source_updates = deepcopy(parsed_source)

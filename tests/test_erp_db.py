@@ -64,12 +64,20 @@ def sample_product(title: str = "Imported title", source_url: str = "https://exa
         "drafts": {
             "mercadolibre": {
                 "enabled": True,
-                "title": "Titulo MX",
-                "description": "Descripcion MX",
-                "category_id": "MLM123",
+                "title": "Global title",
+                "description": "Global description",
+                "category_id": "CBT123",
                 "attributes": {"BRAND": "BrandX"},
-                "target_sites": [{"platform": "mercadolibre", "site": "MLM", "language": "es", "listing_currency": "MXN"}],
-                "pricing": {"targets": {"mercadolibre:mlm": {"listing_currency": "MXN", "applied_price": {"amount": "19.99", "currency": "MXN"}}}},
+                "target_sites": [{
+                    "platform": "mercadolibre",
+                    "site": "CBT",
+                    "language": "en-US",
+                    "listing_currency": "USD",
+                    "sites_to_sell": [
+                        {"site_id": "MLM", "logistic_type": "remote"}
+                    ],
+                }],
+                "pricing": {"targets": {"mercadolibre:cbt": {"listing_currency": "USD", "applied_price": {"amount": "19.99", "currency": "USD"}}}},
                 "status": "copy_ready",
             }
         },
@@ -95,7 +103,7 @@ class ErpDbTests(unittest.TestCase):
                 legacy["currency"] = "RUB"
                 legacy["pricing"] = {
                     "targets": {
-                        "mercadolibre:mlm": {
+                        "mercadolibre:cbt": {
                             "applied_price": 1999.90,
                             "currency": "RUB",
                         }
@@ -111,7 +119,7 @@ class ErpDbTests(unittest.TestCase):
 
             self.assertNotIn("price", loaded)
             self.assertNotIn("currency", loaded)
-            target = loaded["pricing"]["targets"]["mercadolibre:mlm"]
+            target = loaded["pricing"]["targets"]["mercadolibre:cbt"]
             self.assertNotIn("applied_price", target)
             self.assertEqual(target["stale_reason"], "legacy_pricing_contract")
 
@@ -726,7 +734,7 @@ class ErpDbTests(unittest.TestCase):
 
             loaded = db.load_product_model(product_id)
             self.assertEqual(loaded["name"], "Imported title")
-            self.assertEqual(loaded["drafts"]["mercadolibre"]["title"], "Titulo MX")
+            self.assertEqual(loaded["drafts"]["mercadolibre"]["title"], "Global title")
             records = db.list_product_records()
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["product_id"], product_id)
@@ -889,28 +897,31 @@ class ErpDbTests(unittest.TestCase):
                 product_id,
                 "mercadolibre",
                 {
-                    "pricing": {"targets": {"mercadolibre:mlm": {
-                        "listing_currency": "MXN",
-                        "applied_price": {"amount": "29.90", "currency": "MXN"},
-                        "calculation_basis": {"listing_currency": "MXN"},
-                        "calculation_fingerprint": pricing_calculation_fingerprint({"listing_currency": "MXN"}),
+                    "pricing": {"targets": {"mercadolibre:cbt": {
+                        "listing_currency": "USD",
+                        "applied_price": {"amount": "29.90", "currency": "USD"},
+                        "calculation_basis": {"listing_currency": "USD"},
+                        "calculation_fingerprint": pricing_calculation_fingerprint({"listing_currency": "USD"}),
                     }}},
                     "publish_status": "ready",
                     "target_sites": [
                         {
                             "platform": "mercadolibre",
-                            "site": "MLM",
-                            "category_id": "MLM-1",
+                            "site": "CBT",
+                            "category_id": "CBT-1",
+                            "sites_to_sell": [
+                                {"site_id": "MLM", "logistic_type": "remote"}
+                            ],
                         }
                     ],
                 },
             )
 
             loaded = db.load_draft_model(draft_id)
-            self.assertEqual(loaded["pricing"]["targets"]["mercadolibre:mlm"]["applied_price"], {"amount": "29.90", "currency": "MXN"})
+            self.assertEqual(loaded["pricing"]["targets"]["mercadolibre:cbt"]["applied_price"], {"amount": "29.90", "currency": "USD"})
             self.assertEqual(loaded["publish_status"], "ready")
             target = loaded["target_sites"][0]
-            self.assertEqual(target["category_id"], "MLM-1")
+            self.assertEqual(target["category_id"], "CBT-1")
             with db._connect() as conn:
                 stored = json.loads(
                     conn.execute(
@@ -1165,6 +1176,7 @@ class ErpDbTests(unittest.TestCase):
                 "job_id": "job-running",
                 "idempotency_key": "test:job-running",
                 "status": "running",
+                "draft_id": "draft-running",
                 "created_at": "2026-07-26 09:00:00",
                 "updated_at": "2026-07-26 09:00:01",
                 "product": {"product_id": "p1"},
@@ -1174,6 +1186,7 @@ class ErpDbTests(unittest.TestCase):
                 "job_id": "job-done",
                 "idempotency_key": "test:job-done",
                 "status": "completed",
+                "draft_id": "draft-done",
                 "created_at": "2026-07-26 08:00:00",
                 "updated_at": "2026-07-26 08:00:05",
                 "product": {"product_id": "p2"},
@@ -1183,6 +1196,7 @@ class ErpDbTests(unittest.TestCase):
                 **done,
                 "job_id": "job-persisted",
                 "idempotency_key": "test:job-persisted",
+                "draft_id": "draft-persisted",
                 "terminal_results_persisted": True,
             }
             for state in (running, done, persisted):
@@ -1232,6 +1246,50 @@ class ErpDbTests(unittest.TestCase):
             )
             product_jobs, _ = db.list_publish_jobs(product_id="p1")
             self.assertEqual([state["job_id"] for state in product_jobs], ["job-running"])
+
+    def test_active_publish_job_reuses_draft_platform_until_terminal_persisted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = self._db(Path(tmp))
+            first = {
+                "job_id": "job-first",
+                "idempotency_key": "publish:first",
+                "draft_id": "draft-1",
+                "status": "completed",
+                "created_at": "2026-07-26 09:00:00",
+                "updated_at": "2026-07-26 09:00:01",
+                "product": {"product_id": "product-1"},
+                "platforms": {
+                    "mercadolibre": {
+                        "draft_id": "draft-1",
+                        "status": "success",
+                        "stage": "finished",
+                        "attempts": 1,
+                        "error": "",
+                    }
+                },
+            }
+            stored, created = db.create_publish_job(first)
+            self.assertTrue(created)
+            self.assertEqual(stored["job_id"], "job-first")
+
+            second = {
+                **first,
+                "job_id": "job-second",
+                "idempotency_key": "publish:second",
+                "created_at": "2026-07-26 09:00:02",
+                "updated_at": "2026-07-26 09:00:02",
+            }
+            reused, created = db.create_publish_job(second)
+            self.assertFalse(created)
+            self.assertEqual(reused["job_id"], "job-first")
+
+            first["terminal_results_persisted"] = True
+            first["updated_at"] = "2026-07-26 09:00:03"
+            db.save_publish_job(first)
+
+            stored, created = db.create_publish_job(second)
+            self.assertTrue(created)
+            self.assertEqual(stored["job_id"], "job-second")
 
 
 if __name__ == "__main__":

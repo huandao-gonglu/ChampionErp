@@ -13,7 +13,7 @@ import pytest
 
 from erp_web import http_routes
 from erp_web.http_request import MAX_JSON_BODY_BYTES, safe_json_body
-from erp_web.http_route_units import get_routes, image_routes
+from erp_web.http_route_units import get_routes, image_routes, publish_routes
 from erp_web.http_route_units.common import UserInputError
 from erp_web.http_route_units.static_routes import (
     handle_ml_callback,
@@ -184,8 +184,12 @@ def test_endpoint_contract_normalizes_integer_and_boolean_fields() -> None:
         endpoint="/api/category-search?debug=1",
     )
     publish = validate_request_payload(
-        {"product_id": "p-1", "confirm": "false"},
-        endpoint="/api/mercadolibre/confirm-real-publish",
+        {
+            "draft_id": "draft-1",
+            "validation_digest": "abc",
+            "confirm": "false",
+        },
+        endpoint="/api/publish-bus/enqueue",
     )
 
     assert category["limit"] == 25
@@ -682,3 +686,31 @@ def test_publish_bus_jobs_get_lists_filtered_summaries(
         }
     ]
     assert sent == [({"ok": True, **result}, 200)]
+
+
+def test_publish_bus_reconcile_post_uses_typed_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received: list[dict[str, Any]] = []
+    sent: list[tuple[dict[str, Any], int]] = []
+    monkeypatch.setattr(
+        publish_routes.publish_facade,
+        "reconcile_publish_job",
+        lambda body: received.append(body)
+        or ({"ok": True, "resolution": "applied"}, 200),
+    )
+    handler = SimpleNamespace(
+        path="/api/publish-bus/reconcile",
+        read_body=lambda: {
+            "job_id": "job-unknown",
+            "platform": "mercadolibre",
+        },
+        send_json=lambda payload, status=200: sent.append((payload, status)),
+    )
+
+    publish_routes.handle_publish_bus_reconcile(handler)
+
+    assert received == [
+        {"job_id": "job-unknown", "platform": "mercadolibre"}
+    ]
+    assert sent == [({"ok": True, "resolution": "applied"}, 200)]

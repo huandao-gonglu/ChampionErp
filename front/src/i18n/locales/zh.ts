@@ -19,7 +19,7 @@ export default {
     library: { title: '商品库', subtitle: '本地商品母库' },
     drafts: { title: '草稿箱', subtitle: '平台草稿、继续编辑' },
     publish: { title: '发布队列', subtitle: '任务状态、日志' },
-    mlItems: { title: 'ML已发布', subtitle: '远程商品、删除' },
+    mlUserProducts: { title: 'ML User Products', subtitle: 'Siteless 与市场投影' },
     pending: { title: '待处理', subtitle: '未完成 / 失败商品' },
     auth: { title: '平台授权', subtitle: '授权、AI、汇率' },
     logs: { title: '发布日志', subtitle: '请求、响应、错误' },
@@ -33,9 +33,9 @@ export default {
       title: '发布队列',
       description: '发布队列、任务状态和运行日志。',
     },
-    mlItems: {
-      title: 'ML 已发布商品',
-      description: '实时查看 Mercado Libre 账号商品，并支持通过 API 下架或结束发布。',
+    mlUserProducts: {
+      title: 'ML User Products',
+      description: '按 Siteless User Product 查看全局商品与市场投影。',
     },
     pending: {
       title: '待处理',

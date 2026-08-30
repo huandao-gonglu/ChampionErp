@@ -188,6 +188,73 @@ describe('GlobalTaskApprovalCard 只读任务卡', () => {
     wrapper.unmount()
   })
 
+  it('multi_select 销售目标支持多选、全选与清空，并以数组提交（A-08）', async () => {
+    vi.mocked(fetchGlobalTask).mockResolvedValue(taskResponse({
+      status: 'needs_input',
+      pending_inputs: [
+        {
+          key: 'sales_target',
+          label: '销售国家与物流方式',
+          reason: '请选择一个或多个当前账号已开通的站点与物流组合',
+          input_type: 'multi_select',
+          options: [
+            { value: 'MCO:remote', label: '哥伦比亚（MCO）· remote' },
+            { value: 'MLB:remote', label: '巴西（MLB）· remote' },
+            { value: 'MLM:fulfillment', label: '墨西哥（MLM）· fulfillment' },
+            { value: 'MLM:remote', label: '墨西哥（MLM）· remote' },
+          ],
+        },
+      ],
+    }) as never)
+    vi.mocked(submitGlobalTaskInput).mockResolvedValue(taskResponse({ status: 'in_progress' }) as never)
+
+    const wrapper = mountCard()
+    await flushPromises()
+
+    const selector = wrapper.get('[data-testid="global-task-input-sales_target"]')
+    expect(selector.element.tagName).toBe('DIV')
+    expect(selector.text()).toContain('已选 0 个市场')
+    expect(selector.text()).toContain('哥伦比亚（MCO）· remote')
+
+    await wrapper.get('[data-testid="global-task-input-sales_target-select-all"]').trigger('click')
+    expect(selector.text()).toContain('已选 3 个市场')
+    const allOptions = wrapper.findAll('[data-testid="global-task-input-sales_target-option"]')
+    expect(allOptions.map((option) => (option.element as HTMLInputElement).checked)).toEqual([
+      true,
+      true,
+      false,
+      true,
+    ])
+
+    await wrapper.get('[data-testid="global-task-input-sales_target-clear"]').trigger('click')
+    expect(selector.text()).toContain('已选 0 个市场')
+
+    const options = wrapper.findAll('[data-testid="global-task-input-sales_target-option"]')
+    await options[2].setValue(true)
+    await wrapper.get('[data-testid="global-task-input-sales_target-select-all"]').trigger('click')
+    expect(options.map((option) => (option.element as HTMLInputElement).checked)).toEqual([
+      true,
+      true,
+      true,
+      false,
+    ])
+
+    await wrapper.get('[data-testid="global-task-input-sales_target-clear"]').trigger('click')
+    await options[0].setValue(true)
+    await options[2].setValue(true)
+    await options[3].setValue(true)
+    expect((options[2].element as HTMLInputElement).checked).toBe(false)
+    expect((options[3].element as HTMLInputElement).checked).toBe(true)
+    await wrapper.get('[data-testid="global-task-input-submit"]').trigger('click')
+    await flushPromises()
+
+    expect(submitGlobalTaskInput).toHaveBeenCalledWith(
+      'gtask-1',
+      { sales_target: ['MCO:remote', 'MLM:remote'] },
+    )
+    wrapper.unmount()
+  })
+
   it('string_list 待补字段按换行/逗号拆成字符串数组提交（A-08）', async () => {
     vi.mocked(fetchGlobalTask).mockResolvedValue(taskResponse({
       status: 'needs_input',

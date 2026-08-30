@@ -54,6 +54,7 @@ def _target_key(platform: str, site: str) -> str:
 def _normalized_target(
     platform: str,
     site: str = "",
+    language: str = "",
     *,
     context: AppContext | None = None,
 ) -> dict[str, Any]:
@@ -93,7 +94,7 @@ def _normalized_target(
     return {
         "platform": platform_key,
         "site": selected_site["code"],
-        "language": selected_site["language"],
+        "language": str(language or selected_site["language"]).strip(),
         "listing_currency": state["listing_currency"],
         "currency_fingerprint": state["currency_fingerprint"],
     }
@@ -207,6 +208,7 @@ def draft_publish_targets(
         target = _normalized_target(
             str(item.get("platform") or ""),
             str(item.get("site") or item.get("site_id") or ""),
+            str(item.get("language") or draft.get("language") or ""),
             context=context,
         )
         if target["platform"] and _target_key(target["platform"], target["site"]) not in {_target_key(t["platform"], t["site"]) for t in targets}:
@@ -217,6 +219,7 @@ def draft_publish_targets(
     target = _normalized_target(
         str(draft.get("platform") or ""),
         str(draft.get("site") or draft.get("site_id") or ""),
+        str(draft.get("language") or ""),
         context=context,
     )
     target.update(_target_listing_fields({}, draft))
@@ -343,6 +346,10 @@ def merge_target_listing_into_draft(
     context: AppContext | None = None,
 ) -> dict[str, Any]:
     merged = deepcopy(draft)
+    if isinstance(updates.get("publication"), dict):
+        # Mercado Siteless publication 属于平台草稿，不属于 target_sites[] 的
+        # 预检/定价快照。
+        merged["publication"] = deepcopy(updates["publication"])
     selected_key = _target_key(str(target.get("platform") or ""), str(target.get("site") or ""))
     targets = draft_publish_targets(merged, context=context)
     if not targets and target.get("platform") and target.get("site"):
@@ -359,7 +366,7 @@ def merge_target_listing_into_draft(
     merged["target_sites"] = next_targets
     if selected_key == _target_key(str(merged.get("platform") or ""), str(merged.get("site") or merged.get("site_id") or "")):
         for key in TARGET_LISTING_KEYS:
-            # sites_to_sell 只属于 target_sites[]；根字段仅存在于当前发布投影。
+            # CBT 子市场 operation 只属于 target_sites[]；根字段仅存在于当前发布投影。
             if key != "sites_to_sell" and key in updates:
                 merged[key] = deepcopy(updates[key])
     return merged

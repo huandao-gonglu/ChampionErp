@@ -4,6 +4,7 @@ import { apiClient } from '@/api/client'
 import {
   CATEGORY_MATCH_PATH,
   CATEGORY_MATCH_REQUEST_TIMEOUT_MS,
+  fetchCategoryAttrs,
   matchCategory,
 } from '@/api/workflow/publishing'
 import { AI_PRESENTATIONS_PATH } from '@/api/aiPresentations'
@@ -320,5 +321,43 @@ describe('展示连接中断不改变业务语义（展示链与业务链分离�
     expect(display.displayMode).toBe('global-chat')
     expect(display.terminalNotice?.kind).toBe('success')
     expect(display.presentationVersion).toBe(1)
+  })
+})
+
+describe('Mercado 类目属性编辑契约', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('保留 open enum、collection 与有界预览标记', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({
+      data: {
+        ok: true,
+        category_id: 'CBT455865',
+        category_path: 'Computers / Portable Fans',
+        attributes: [{
+          id: 'COMPATIBLE_DEVICES',
+          name: 'Compatible devices',
+          required: true,
+          value_type: 'string',
+          value_mode: 'open_enum',
+          allow_custom_values: true,
+          is_collection: true,
+          has_more_values: true,
+          options: ['Phone'],
+        }],
+      },
+    })
+
+    const result = await fetchCategoryAttrs('mercadolibre', 'CBT455865', 'CBT')
+
+    expect(result.requiredAttributes[0]).toEqual(expect.objectContaining({
+      valueType: 'string',
+      valueMode: 'open_enum',
+      allowCustomValues: true,
+      isCollection: true,
+      hasMoreValues: true,
+      options: ['Phone'],
+    }))
   })
 })

@@ -24,9 +24,9 @@ export interface ListingLocaleOption {
 
 export const MARKETPLACE_LISTING_LOCALES: Record<Marketplace, ListingLocaleOption> = {
   mercadolibre: {
-    value: 'en-US',
-    label: 'English',
-    marketplaceLabel: 'Mercado Libre Global',
+    value: 'es',
+    label: 'Spanish',
+    marketplaceLabel: 'Mercado Libre Spanish-speaking markets',
   },
   yandex: {
     value: 'ru-RU',
@@ -42,7 +42,6 @@ export const MARKETPLACE_LISTING_LOCALES: Record<Marketplace, ListingLocaleOptio
 
 export const LISTING_LANGUAGE_OPTIONS: ListingLocaleOption[] = [
   MARKETPLACE_LISTING_LOCALES.mercadolibre,
-  { value: 'es', label: 'Spanish', marketplaceLabel: 'Mercado Libre regional sites' },
   { value: 'pt-BR', label: 'Portuguese (Brazil)', marketplaceLabel: 'Mercado Livre Brazil' },
   MARKETPLACE_LISTING_LOCALES.yandex,
 ]
@@ -55,6 +54,6 @@ export function listingLocaleForMarketplace(platform: Marketplace): ListingLocal
   return MARKETPLACE_LISTING_LOCALES[platform] || MARKETPLACE_LISTING_LOCALES.mercadolibre
 }
 
-export function listingLanguageLabel(platform: Marketplace): string {
-  return listingLocaleForMarketplace(platform).label
+export function listingLanguageValue(platform: Marketplace): string {
+  return listingLocaleForMarketplace(platform).value
 }

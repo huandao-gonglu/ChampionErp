@@ -24,7 +24,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
       if (combined.mercadolibreAuthChecklist.value?.tokenReady) {
         await Promise.all([
           combined.refreshMercadoLibreOrders(),
-          combined.refreshMercadoLibreRemoteItems(),
+          combined.refreshMercadoLibreUserProducts(),
         ])
       }
       return
@@ -45,8 +45,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
       await combined.refreshPublishLogs()
       return
     }
-    if (key === 'mlItems') {
-      await combined.refreshMercadoLibreRemoteItems()
+    if (key === 'mlUserProducts') {
+      await combined.refreshMercadoLibreUserProducts()
       return
     }
     if (key === 'auth') await combined.loadAiConfig()
@@ -98,12 +98,15 @@ export const useWorkflowStore = defineStore('workflow', () => {
     mercadoLibreOrderNotifications: combined.mercadoLibreOrderNotifications,
     mercadoLibreOrdersTotal: combined.mercadoLibreOrdersTotal,
     mercadoLibreOrdersCheckedAt: combined.mercadoLibreOrdersCheckedAt,
-    mercadoLibreRemoteItems: combined.mercadoLibreRemoteItems,
-    mercadoLibreRemoteStatus: combined.mercadoLibreRemoteStatus,
-    mercadoLibreRemotePage: combined.mercadoLibreRemotePage,
-    mercadoLibreRemotePerPage: combined.mercadoLibreRemotePerPage,
-    mercadoLibreRemoteTotal: combined.mercadoLibreRemoteTotal,
-    mercadoLibreRemoteTotalPages: combined.mercadoLibreRemoteTotalPages,
+    mercadoLibreUserProducts: combined.mercadoLibreUserProducts,
+    mercadoLibreUserProductStatus: combined.mercadoLibreUserProductStatus,
+    mercadoLibreUserProductPage: combined.mercadoLibreUserProductPage,
+    mercadoLibreUserProductPerPage: combined.mercadoLibreUserProductPerPage,
+    mercadoLibreUserProductTotal: combined.mercadoLibreUserProductTotal,
+    mercadoLibreUserProductTotalPages: combined.mercadoLibreUserProductTotalPages,
+    mercadoLibreUserProductRefreshErrors: combined.mercadoLibreUserProductRefreshErrors,
+    mercadoLibreUserProductsRefreshScope: combined.mercadoLibreUserProductsRefreshScope,
+    mercadoLibreUserProductsCheckedAt: combined.mercadoLibreUserProductsCheckedAt,
     activeMarketplace: combined.activeMarketplace,
     platformOptions: combined.platformOptions,
     logs: combined.logs,
@@ -183,21 +186,21 @@ export const useWorkflowStore = defineStore('workflow', () => {
     translateCategoryAttributes: combined.translateCategoryAttributes,
     translateCategoryResults: combined.translateCategoryResults,
     fillAttributesByAi: combined.fillAttributesByAi,
+    invalidatePublishValidation: combined.invalidatePublishValidation,
     invalidateCategoryPrecheck: combined.invalidateCategoryPrecheck,
     runCategoryOnlyPrecheck: combined.runCategoryOnlyPrecheck,
     runPrecheck: combined.runPrecheck,
     previewPayload: combined.previewPayload,
     enqueuePublish: combined.enqueuePublish,
     publishDirect: combined.publishDirect,
-    confirmRealPublish: combined.confirmRealPublish,
     refreshPublishJob: combined.refreshPublishJob,
     refreshPublishJobs: combined.refreshPublishJobs,
     loadMorePublishJobs: combined.loadMorePublishJobs,
     selectPublishJob: combined.selectPublishJob,
     refreshPublishLogs: combined.refreshPublishLogs,
     refreshMercadoLibreOrders: combined.refreshMercadoLibreOrders,
-    refreshMercadoLibreRemoteItems: combined.refreshMercadoLibreRemoteItems,
-    closeMercadoLibreRemoteItem: combined.closeMercadoLibreRemoteItem,
+    refreshMercadoLibreUserProducts: combined.refreshMercadoLibreUserProducts,
+    pauseMercadoLibreUserProductById: combined.pauseMercadoLibreUserProductById,
     loadAiConfig: combined.loadAiConfig,
     saveAiSettings: combined.saveAiSettings,
     testAiSettings: combined.testAiSettings,

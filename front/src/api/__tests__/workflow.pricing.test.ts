@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { calculatePrice, generateCopy, imageEdit, imageTranslate, publishPrecheck } from '@/api/workflow'
 import { apiClient } from '@/api/client'
 import { createEmptyDraftDetail, createEmptyProduct } from '@/constants/initialState'
-import { normalizeBackendProduct, normalizeProductsIndex, toBackendProduct } from '@/api/workflow/normalizers'
+import { PRODUCT_SCHEMA_VERSION, normalizeBackendProduct, normalizeProductsIndex, toBackendProduct } from '@/api/workflow/normalizers'
 
 vi.mock('@/api/client', () => ({
   API_REQUEST_TIMEOUT_MS: 30000,
@@ -236,7 +236,15 @@ describe('calculatePrice API mapping', () => {
         platform: 'mercadolibre',
         site: 'CBT',
         sitesToSell: [
-          { siteId: 'MLM', logisticType: 'remote' },
+          {
+            siteId: 'MLM',
+            logisticType: 'remote',
+            price: '29.90',
+            listingTypeId: 'gold_special',
+            freeShipping: true,
+            saleTerms: [{ id: 'WARRANTY_TYPE', value_name: 'Sin garantía' }],
+            netProceeds: '24.50',
+          },
           { siteId: 'MLB', logisticType: 'fulfillment' },
         ],
         listingCurrency: 'USD',
@@ -257,7 +265,15 @@ describe('calculatePrice API mapping', () => {
       targets: [expect.objectContaining({
         target_key: 'mercadolibre:cbt',
         sites_to_sell: [
-          { site_id: 'MLM', logistic_type: 'remote' },
+          {
+            site_id: 'MLM',
+            logistic_type: 'remote',
+            price: '29.90',
+            listing_type_id: 'gold_special',
+            free_shipping: true,
+            sale_terms: [{ id: 'WARRANTY_TYPE', value_name: 'Sin garantía' }],
+            net_proceeds: '24.50',
+          },
           { site_id: 'MLB', logistic_type: 'fulfillment' },
         ],
       })],
@@ -378,14 +394,14 @@ describe('publishPrecheck API mapping', () => {
       description: '可折叠收纳盒，适用于厨房和衣柜。',
       bullets: ['可折叠收纳', '节省空间'],
     }))
-    expect(result.schema_version).toBe(2)
+    expect(result.schema_version).toBe(PRODUCT_SCHEMA_VERSION)
     expect(result).not.toHaveProperty('id')
     expect(result).not.toHaveProperty('source_url')
   })
 
   it('only reads canonical fields from a versioned product', () => {
     const product = normalizeBackendProduct({
-      schema_version: 2,
+      schema_version: PRODUCT_SCHEMA_VERSION,
       product_id: 'canonical-id',
       name: '规范名称',
       source: {
@@ -412,10 +428,10 @@ describe('publishPrecheck API mapping', () => {
     expect(() => normalizeBackendProduct({
       schema_version: 0,
       product_id: 'old-version',
-    })).toThrow('当前仅接受 2')
+    })).toThrow(`当前仅接受 ${PRODUCT_SCHEMA_VERSION}`)
 
     expect(() => normalizeBackendProduct({
-      schema_version: 2,
+      schema_version: PRODUCT_SCHEMA_VERSION,
       product_id: 'legacy-fields',
       title: '旧商品',
       source: {},

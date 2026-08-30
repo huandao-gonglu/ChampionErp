@@ -116,6 +116,8 @@ _COMMON_FIELD_RULES: dict[str, FieldRule] = {
     "draftId": STRING,
     "html": STRING,
     "item_id": STRING,
+    "job_id": STRING,
+    "siteless_user_product_id": STRING,
     "goal": STRING,
     "message": STRING,
     "task_id": STRING,
@@ -142,7 +144,6 @@ _COMMON_FIELD_RULES: dict[str, FieldRule] = {
     "port": PORT,
     "apply_to_draft": BOOLEAN,
     "confirm": BOOLEAN,
-    "confirm_real_publish": BOOLEAN,
     "delete_files": BOOLEAN,
     "include_bullets": BOOLEAN,
     "include_description": BOOLEAN,
@@ -262,11 +263,9 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/mercadolibre/auth-link": _contract(
         required=("app_id", "redirect_uri")
     ),
-    "/api/mercadolibre/close-item": _contract(
-        fields={"id": STRING},
-        required_any=(("item_id", "id"),)
+    "/api/mercadolibre/pause-user-product": _contract(
+        required=("siteless_user_product_id",)
     ),
-    "/api/mercadolibre/confirm-real-publish": _PRODUCT,
     "/api/mercadolibre/exchange-code": _contract(
         required_any=(("code_or_url", "code"),)
     ),
@@ -280,6 +279,9 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
         # 在发布 Capability 完成。
         fields={"validation_digest": STRING},
         required_any=(("draft_id", "draftId"),),
+    ),
+    "/api/publish-bus/reconcile": _contract(
+        required=("job_id", "platform"),
     ),
     "/api/publish-payload-preview": _DRAFT,
     "/api/publish-precheck": _DRAFT,

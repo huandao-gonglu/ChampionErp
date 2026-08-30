@@ -2,15 +2,18 @@
 from __future__ import annotations
 
 import json
+import re
 import urllib.parse
-from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable
 
 from erp_web import marketplaces as publisher
 from erp_web.context import get_context
 from erp_web.product_model import (
+    canonicalize_mercadolibre_siteless_user_product_id,
     default_draft,
+    mercadolibre_publication_from_response,
+    normalize_mercadolibre_publication,
     normalize_mercadolibre_sites_to_sell,
 )
 from erp_web.stores.config_store import (
@@ -19,6 +22,7 @@ from erp_web.stores.config_store import (
     store_auth_failure_code,
 )
 from erp_web.stores.product_store import normalize_product_fields
+from erp_web.marketplaces.publisher import PublishAdapterError
 
 from .store_credentials import (
     _mercadolibre_app_secret,
@@ -31,14 +35,11 @@ from .image_pool_core import _local_path_from_image_item, _source_pool_items, im
 from .publish_helpers import (
     _draft_for_platform,
     _draft_for_selected_target,
-    _selected_price_and_currency,
-    _field_error_map,
     build_mercadolibre_publish_payload,
     compact_precheck_items,
-    compact_publish_failure_response,
     mercadolibre_picture_upload_error_message,
     precheck_item,
-    validate_publish_payload,
+    validate_mercadolibre_publish_payload,
 )
 from .publish_logs_runtime import (
     _is_mock_mercadolibre_category_id,
@@ -46,10 +47,8 @@ from .publish_logs_runtime import (
     _mercadolibre_required_attr_ids,
     _sanitize_for_log,
     append_ml_auth_test_log,
-    append_ml_publish_log,
     mercadolibre_test_error_code,
 )
-from .publish_validation import apply_precheck_to_product, validate_mercadolibre_draft
 
 
 def _last_mercadolibre_payload_path() -> Path:
@@ -152,37 +151,9 @@ def _07d_payload_generate(ctx: dict[str, Any]) -> dict[str, Any]:
     payload = build_mercadolibre_payload_preview(product, ctx["config"])
     path = _last_mercadolibre_payload_path()
     write_json(path, _sanitize_for_log(payload))
-    draft = _draft_for_platform(product, "mercadolibre")
-    draft_category_id = str(draft.get("category_id") or "").strip()
-    sites_to_sell = payload.get("sites_to_sell") if isinstance(payload.get("sites_to_sell"), list) else []
-    attributes = payload.get("attributes") if isinstance(payload.get("attributes"), list) else []
-    picture_items = payload.get("pictures") if isinstance(payload.get("pictures"), list) else []
-    if not picture_items:
-        for site in sites_to_sell:
-            if isinstance(site, dict) and isinstance(site.get("pictures"), list):
-                picture_items = site.get("pictures") or []
-                break
-    condition_present = bool(payload.get("condition")) or any(str(attr.get("id") or "") in {"ITEM_CONDITION", "CONDITION"} for attr in attributes if isinstance(attr, dict))
-    pictures_present = bool(picture_items)
-    pictures_use_ml_id = bool(picture_items) and all(isinstance(pic, dict) and bool(pic.get("id")) and not pic.get("source") for pic in picture_items)
-    shipping_present = bool(payload.get("shipping")) or any(str(site.get("logistic_type") or "").strip() for site in sites_to_sell if isinstance(site, dict))
-    required_checks = {
-        "title": bool(payload.get("title")),
-        "category_id": bool(payload.get("category_id")),
-        "category_id_from_draft": bool(draft_category_id) and str(payload.get("category_id") or "").strip() == draft_category_id,
-        "price": "price" in payload,
-        "currency_id": bool(payload.get("currency_id")),
-        "available_quantity": "available_quantity" in payload,
-        "buying_mode": bool(payload.get("buying_mode")),
-        "listing_type_id": bool(payload.get("listing_type_id")),
-        "condition": condition_present,
-        "pictures": pictures_present,
-        "pictures_with_mercadolibre_id": pictures_use_ml_id,
-        "attributes": bool(attributes),
-        "sale_terms": bool(payload.get("sale_terms")),
-        "shipping_or_logistics": shipping_present,
-    }
-    missing_keys = [key for key, present in required_checks.items() if not present]
+    # 诊断预览与正式入队共用同一份 payload 校验，避免传统 Global Items
+    # 被 User Products 专用的 family_name/title_absent 检查误报。
+    missing_keys = validate_mercadolibre_publish_payload(payload, ctx["config"])
     result.update({"ok": not missing_keys, "status": "success" if not missing_keys else "failed", "payload": _sanitize_for_log(payload), "path": str(path), "missing_keys": missing_keys})
     append_ml_auth_test_log("payload_generate", "success" if not missing_keys else "failed", {"platform": "mercadolibre"}, {"path": str(path), "missing_keys": missing_keys, "payload": _sanitize_for_log(payload)}, error_code="PAYLOAD_FIELD_MISSING" if missing_keys else "", error_message=", ".join(missing_keys), next_action="补齐 payload 缺失字段" if missing_keys else "payload 已生成，仍未真实发布。")
     return result
@@ -263,35 +234,6 @@ def run_mercadolibre_07d_test(mode: str, product: dict[str, Any] | None = None, 
         return response
 
 
-def _mercadolibre_item_summary(item: dict[str, Any]) -> dict[str, Any]:
-    attrs = item.get("attributes") if isinstance(item.get("attributes"), list) else []
-    seller_sku = ""
-    for attr in attrs:
-        if not isinstance(attr, dict):
-            continue
-        if str(attr.get("id") or "").upper() == "SELLER_SKU":
-            seller_sku = str(attr.get("value_name") or attr.get("value_id") or "").strip()
-            break
-    return {
-        "id": str(item.get("id") or "").strip(),
-        "title": str(item.get("title") or "").strip(),
-        "status": str(item.get("status") or "").strip(),
-        "sub_status": item.get("sub_status") if isinstance(item.get("sub_status"), list) else [],
-        "permalink": str(item.get("permalink") or "").strip(),
-        "thumbnail": str(item.get("thumbnail") or item.get("secure_thumbnail") or "").strip(),
-        "price": item.get("price"),
-        "currency_id": str(item.get("currency_id") or "").strip(),
-        "available_quantity": item.get("available_quantity"),
-        "sold_quantity": item.get("sold_quantity"),
-        "category_id": str(item.get("category_id") or "").strip(),
-        "listing_type_id": str(item.get("listing_type_id") or "").strip(),
-        "seller_sku": seller_sku,
-        "date_created": str(item.get("date_created") or "").strip(),
-        "last_updated": str(item.get("last_updated") or "").strip(),
-        "raw": _sanitize_for_log(item),
-    }
-
-
 def _mercadolibre_response_item_id(value: dict[str, Any]) -> str:
     for key in ("id", "item_id", "itemId"):
         text = str(value.get(key) or "").strip()
@@ -368,73 +310,366 @@ def _mercadolibre_publish_result_error_map(result: Any) -> dict[str, Any]:
     return mapped
 
 
-def mercadolibre_remote_items(status: str = "active", page: int = 1, per_page: int = 50, limit: int | None = None) -> dict[str, Any]:
-    config = get_context().config.load_store_config()
-    auth = ensure_mercadolibre_auth_ready(config)
-    if not auth.get("ok"):
-        return {"ok": False, "error": auth.get("message") or "Mercado Libre 授权不可用", "error_code": auth.get("error_code") or "AUTH_INVALID", "next_action": auth.get("next_action") or "请先完成授权测试"}
-    token = str(auth.get("token") or "").strip()
-    store = config.get("mercadolibre", {}) if isinstance(config.get("mercadolibre"), dict) else {}
-    user_id = str(store.get("user_id") or store.get("seller_id") or "").strip()
-    if not user_id:
-        me = publisher.request_json("GET", "https://api.mercadolibre.com/users/me", token)
-        if not isinstance(me, dict):
-            raise RuntimeError("Mercado Libre users/me 返回异常")
-        user_id = str(me.get("id") or "").strip()
-        if user_id:
-            config.setdefault("mercadolibre", {})["user_id"] = user_id
-            config.setdefault("mercadolibre", {})["seller_id"] = user_id
-            get_context().config.save_store_config(config)
-    if not user_id:
-        raise RuntimeError("Mercado Libre seller id 为空，请先测试授权。")
+def _local_mercadolibre_user_product_records() -> list[dict[str, Any]]:
+    """从本地草稿 publication 构建 User Products 索引。
 
-    wanted = str(status or "active").strip().lower()
-    if wanted not in {"active", "paused", "closed", "all"}:
-        wanted = "active"
-    page_size = max(1, min(int(limit if limit is not None else per_page or 50), 100))
+    Mercado Libre 没有可依赖的全量 Siteless families 列表端点，因此本地
+    publication 是唯一主索引；远端 mapping 只能刷新已知 Siteless ID。
+    """
+
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for indexed in get_context().products.iter_drafts_index(scope="all"):
+        if str(indexed.get("platform") or "").strip().lower() != "mercadolibre":
+            continue
+        raw = indexed.get("raw") if isinstance(indexed.get("raw"), dict) else {}
+        publication = normalize_mercadolibre_publication(raw.get("publication"))
+        siteless_id = str(publication.get("siteless_user_product_id") or "").strip()
+        if not siteless_id or siteless_id in seen:
+            continue
+        seen.add(siteless_id)
+        records.append(
+            {
+                "product_id": str(indexed.get("source_product_id") or indexed.get("product_id") or "").strip(),
+                "draft_id": str(indexed.get("draft_id") or "").strip(),
+                "title": str(indexed.get("title") or indexed.get("product_title") or publication.get("family_name") or "").strip(),
+                "main_image": str(indexed.get("main_image") or "").strip(),
+                "publication": publication,
+                "updated_at": str(publication.get("updated_at") or indexed.get("updated_at") or "").strip(),
+            }
+        )
+    records.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    return records
+
+
+def _mapping_response_for_publication(
+    response: Any,
+    publication: dict[str, Any],
+) -> dict[str, Any]:
+    """严格校验官方 mapping 单元素数组并投影身份字段。"""
+
+    if not isinstance(response, list):
+        raise RuntimeError(
+            "MERCADOLIBRE_MAPPING_RESPONSE_INVALID: mapping 响应必须是顶层数组"
+        )
+    if len(response) != 1:
+        raise RuntimeError(
+            "MERCADOLIBRE_MAPPING_CARDINALITY_INVALID: "
+            "mapping 响应必须且只能包含一个对象"
+        )
+    if not isinstance(response[0], dict):
+        raise RuntimeError(
+            "MERCADOLIBRE_MAPPING_RESPONSE_INVALID: mapping 数组元素必须是对象"
+        )
+
+    body = dict(response[0])
+    expected_siteless_id = canonicalize_mercadolibre_siteless_user_product_id(
+        publication.get("siteless_user_product_id")
+    )
+    if not re.fullmatch(r"U\d+", expected_siteless_id):
+        raise RuntimeError(
+            "MERCADOLIBRE_MAPPING_LOCAL_ID_INVALID: "
+            "本地 publication 缺少合法的 U{id} Siteless 身份"
+        )
+    raw_remote_id = str(body.get("siteless_user_product_id") or "").strip()
+    if not raw_remote_id:
+        raise RuntimeError(
+            "MERCADOLIBRE_MAPPING_SITELESS_ID_MISSING: "
+            "mapping 响应缺少 siteless_user_product_id"
+        )
+    remote_siteless_id = canonicalize_mercadolibre_siteless_user_product_id(
+        raw_remote_id
+    )
+    if not re.fullmatch(r"U\d+", remote_siteless_id):
+        raise RuntimeError(
+            "MERCADOLIBRE_MAPPING_SITELESS_ID_INVALID: "
+            "mapping 响应的 Siteless 身份格式无效"
+        )
+    if remote_siteless_id != expected_siteless_id:
+        raise RuntimeError(
+            "MERCADOLIBRE_MAPPING_SITELESS_ID_MISMATCH: "
+            f"expected={expected_siteless_id}, actual={remote_siteless_id}"
+        )
+
+    expected_owner_id = str(publication.get("account_user_id") or "").strip()
+    remote_owner_id = str(body.get("owner_id") or "").strip()
+    if not remote_owner_id:
+        raise RuntimeError(
+            "MERCADOLIBRE_MAPPING_OWNER_ID_MISSING: mapping 响应缺少 owner_id"
+        )
+    if not expected_owner_id or remote_owner_id != expected_owner_id:
+        raise RuntimeError(
+            "MERCADOLIBRE_MAPPING_OWNER_ID_MISMATCH: "
+            f"expected={expected_owner_id or '<missing>'}, actual={remote_owner_id}"
+        )
+
+    parent_item_id = str(body.get("item_id") or "").strip()
+    parent_user_product_id = str(body.get("user_product_id") or "").strip()
+    if not parent_item_id or not parent_user_product_id:
+        raise RuntimeError(
+            "MERCADOLIBRE_MAPPING_PARENT_ID_MISSING: "
+            "mapping 响应缺少 CBT parent item/user-product 身份"
+        )
+    if (
+        canonicalize_mercadolibre_siteless_user_product_id(
+            parent_user_product_id
+        )
+        != expected_siteless_id
+    ):
+        raise RuntimeError(
+            "MERCADOLIBRE_MAPPING_PARENT_ID_MISMATCH: "
+            "mapping 的 CBT parent_user_product_id 与 Siteless 身份不一致"
+        )
+
+    raw_markets = body.get("site_items")
+    if not isinstance(raw_markets, list):
+        raise RuntimeError(
+            "MERCADOLIBRE_MAPPING_SITE_ITEMS_INVALID: "
+            "mapping 响应的 site_items 必须是数组"
+        )
+    site_items: list[dict[str, Any]] = []
+    for raw in raw_markets:
+        if not isinstance(raw, dict):
+            raise RuntimeError(
+                "MERCADOLIBRE_MAPPING_SITE_ITEMS_INVALID: "
+                "mapping site_items 元素必须是对象"
+            )
+        site_id = str(raw.get("site_id") or "").strip().upper()
+        item_id = str(raw.get("item_id") or "").strip()
+        if not site_id or site_id == "CBT" or not item_id:
+            raise RuntimeError(
+                "MERCADOLIBRE_MAPPING_SITE_ITEM_IDENTITY_INVALID: "
+                "mapping 子市场缺少合法的 site_id/item_id"
+            )
+        site_items.append(
+            {
+                **raw,
+                "site_id": site_id,
+                "item_id": item_id,
+            }
+        )
+    return {
+        **body,
+        "account_user_id": remote_owner_id,
+        "parent_item_id": parent_item_id,
+        "parent_user_product_id": parent_user_product_id,
+        "siteless_user_product_id": remote_siteless_id,
+        "site_items": site_items,
+    }
+
+
+def _public_mercadolibre_user_product_row(
+    record: dict[str, Any],
+) -> dict[str, Any]:
+    publication = normalize_mercadolibre_publication(record.get("publication"))
+    return {
+        "product_id": str(record.get("product_id") or "").strip(),
+        "draft_id": str(record.get("draft_id") or "").strip(),
+        "title": str(record.get("title") or "").strip(),
+        "thumbnail": str(record.get("main_image") or "").strip(),
+        **publication,
+    }
+
+
+def _persist_mercadolibre_publication(
+    draft_id: str,
+    publication: dict[str, Any],
+) -> dict[str, Any]:
+    products = get_context().products
+    product = products.load_draft_from_index(draft_id)
+    product.pop("current_draft_id", None)
+    product.pop("current_draft_platform", None)
+    product_id = str(product.get("product_id") or "").strip()
+    drafts = product.get("drafts") if isinstance(product.get("drafts"), dict) else {}
+    draft = drafts.get("mercadolibre") if isinstance(drafts.get("mercadolibre"), dict) else {}
+    if not product_id or not draft or str(draft.get("draft_id") or "").strip() != draft_id:
+        raise RuntimeError(f"Mercado Libre publication 关联草稿不存在：{draft_id}")
+    draft["publication"] = normalize_mercadolibre_publication(publication)
+    drafts["mercadolibre"] = draft
+    product["drafts"] = drafts
+    saved = products.save_product(product)
+    saved_drafts = saved.get("drafts") if isinstance(saved.get("drafts"), dict) else {}
+    saved_draft = saved_drafts.get("mercadolibre") if isinstance(saved_drafts.get("mercadolibre"), dict) else {}
+    return normalize_mercadolibre_publication(saved_draft.get("publication"))
+
+
+def _refresh_mercadolibre_user_product(
+    record: dict[str, Any],
+    token: str,
+) -> dict[str, Any]:
+    publication = normalize_mercadolibre_publication(record.get("publication"))
+    siteless_id = str(publication.get("siteless_user_product_id") or "").strip()
+    response = publisher.request_json(
+        "GET",
+        "https://api.mercadolibre.com/marketplace/user-products/"
+        f"{urllib.parse.quote(siteless_id, safe='')}/mapping",
+        token,
+    )
+    merged = mercadolibre_publication_from_response(
+        _mapping_response_for_publication(response, publication),
+        existing=publication,
+        family_name=str(publication.get("family_name") or record.get("title") or ""),
+        updated_at=collect_time_iso(),
+    )
+    # mapping 端点只证明 ID/operation 关系，不返回权威状态、售价或刊登类型。
+    # 因此只接受身份字段；已有事实原样保留，新发现映射保持未知状态。
+    previous_markets = [
+        dict(item)
+        for item in publication.get("markets", [])
+        if isinstance(item, dict)
+    ]
+    identity_markets: list[dict[str, Any]] = []
+    for market in merged.get("markets", []):
+        if not isinstance(market, dict):
+            continue
+        item_id = str(market.get("item_id") or "").strip()
+        site_id = str(market.get("site_id") or "").strip().upper()
+        logistic_type = str(
+            market.get("logistic_type") or ""
+        ).strip().lower()
+        previous = next(
+            (
+                item
+                for item in previous_markets
+                if (
+                    item_id
+                    and str(item.get("item_id") or "").strip() == item_id
+                )
+                or (
+                    str(item.get("site_id") or "").strip().upper() == site_id
+                    and str(item.get("logistic_type") or "").strip().lower()
+                    == logistic_type
+                )
+            ),
+            {},
+        )
+        identity = {
+            key: value
+            for key, value in market.items()
+            if key
+            in {
+                "site_id",
+                "seller_id",
+                "logistic_type",
+                "item_id",
+                "user_product_id",
+            }
+        }
+        for key in (
+            "status",
+            "currency_id",
+            "listing_type_id",
+            "price",
+            "net_proceeds",
+            "free_shipping",
+            "sale_terms",
+            "error",
+            "last_operation",
+            "updated_at",
+        ):
+            if key in previous:
+                identity[key] = previous[key]
+        identity_markets.append(identity)
+    merged = normalize_mercadolibre_publication(
+        {
+            **merged,
+            "family_name": publication.get("family_name"),
+            "status": publication.get("status"),
+            "updated_at": publication.get("updated_at"),
+            "markets": identity_markets,
+        }
+    )
+    record["publication"] = _persist_mercadolibre_publication(
+        str(record.get("draft_id") or ""),
+        merged,
+    )
+    record["updated_at"] = str(record["publication"].get("updated_at") or "")
+    return record
+
+
+def mercadolibre_user_products(
+    status: str = "all",
+    page: int = 1,
+    per_page: int = 50,
+    *,
+    refresh: bool = False,
+) -> dict[str, Any]:
+    """按本地 Siteless publication 查询 Mercado User Products。"""
+
+    records = _local_mercadolibre_user_product_records()
+    refresh_errors: list[dict[str, str]] = []
+    if refresh and records:
+        config = get_context().config.load_store_config()
+        auth = ensure_mercadolibre_auth_ready(config)
+        if not auth.get("ok"):
+            return {
+                "ok": False,
+                "error": auth.get("message") or "Mercado Libre 授权不可用",
+                "error_code": auth.get("error_code") or "AUTH_INVALID",
+                "next_action": auth.get("next_action") or "请先完成授权测试",
+            }
+        token = str(auth.get("token") or "").strip()
+        current_account_user_id = str(
+            (config.get("mercadolibre") or {}).get("user_id") or ""
+        ).strip()
+        for record in records:
+            try:
+                publication = normalize_mercadolibre_publication(
+                    record.get("publication")
+                )
+                publication_account_user_id = str(
+                    publication.get("account_user_id") or ""
+                ).strip()
+                if (
+                    not publication_account_user_id
+                    or publication_account_user_id != current_account_user_id
+                ):
+                    raise RuntimeError(
+                        "MERCADOLIBRE_PUBLICATION_ACCOUNT_MISMATCH: "
+                        "本地 User Product 不属于当前 CBT 父账号"
+                    )
+                _refresh_mercadolibre_user_product(record, token)
+            except Exception as exc:
+                refresh_errors.append(
+                    {
+                        "siteless_user_product_id": str(
+                            (record.get("publication") or {}).get("siteless_user_product_id")
+                            if isinstance(record.get("publication"), dict)
+                            else ""
+                        ),
+                        "error": str(exc),
+                    }
+                )
+
+    wanted = str(status or "all").strip().lower()
+    if wanted not in {
+        "active",
+        "paused",
+        "closed",
+        "failed",
+        "partial",
+        "all",
+    }:
+        wanted = "all"
+    if wanted != "all":
+        records = [
+            record
+            for record in records
+            if str((record.get("publication") or {}).get("status") or "").strip().lower() == wanted
+        ]
+    page_size = max(1, min(int(per_page or 50), 100))
     current_page = max(1, int(page or 1))
     offset = (current_page - 1) * page_size
-
-    query_params: dict[str, Any] = {"limit": page_size, "offset": offset, "orders": "start_time_desc"}
-    if wanted != "all":
-        query_params["status"] = wanted
-    query = urllib.parse.urlencode(query_params)
-    search = publisher.request_json("GET", f"https://api.mercadolibre.com/users/{user_id}/items/search?{query}", token)
-    if not isinstance(search, dict):
-        raise RuntimeError(f"Mercado Libre items/search 返回异常: {search}")
-
-    item_ids = []
-    for item_id in search.get("results") or []:
-        text = str(item_id or "").strip()
-        if text and text not in item_ids:
-            item_ids.append(text)
-    status_paging = search.get("paging") if isinstance(search.get("paging"), dict) else {}
-    total = int(status_paging.get("total") or 0)
+    total = len(records)
     total_pages = max(1, (total + page_size - 1) // page_size) if total else 1
-
-    items: list[dict[str, Any]] = []
-    for index in range(0, len(item_ids), 20):
-        chunk = item_ids[index:index + 20]
-        if not chunk:
-            continue
-        batch = publisher.request_json("GET", f"https://api.mercadolibre.com/items?ids={urllib.parse.quote(','.join(chunk))}", token)
-        if not isinstance(batch, list):
-            continue
-        for entry in batch:
-            body = entry.get("body") if isinstance(entry, dict) else None
-            if isinstance(body, dict):
-                items.append(_mercadolibre_item_summary(body))
-    item_order = {item_id: index for index, item_id in enumerate(item_ids)}
-    items.sort(key=lambda item: item_order.get(str(item.get("id") or ""), len(item_order)))
-
     return {
         "ok": True,
         "platform": "mercadolibre",
         "status": wanted,
-        "user_id": user_id,
-        "items": items,
-        "item_ids": item_ids,
-        "paging": {wanted: status_paging},
+        "items": [
+            _public_mercadolibre_user_product_row(record)
+            for record in records[offset:offset + page_size]
+        ],
         "pagination": {
             "page": current_page,
             "per_page": page_size,
@@ -442,78 +677,531 @@ def mercadolibre_remote_items(status: str = "active", page: int = 1, per_page: i
             "total": total,
             "total_pages": total_pages,
             "has_prev": current_page > 1,
-            "has_next": bool(total and offset + page_size < total),
+            "has_next": offset + page_size < total,
         },
+        "refresh_errors": refresh_errors,
+        "refresh_scope": "identity_mapping_only" if refresh else "local_snapshot",
         "checked_at": collect_time_iso(),
     }
 
 
-def mercadolibre_close_remote_item(item_id: str) -> dict[str, Any]:
-    item_id = str(item_id or "").strip()
-    if not item_id:
-        return {"ok": False, "error": "缺少 Mercado Libre item id", "error_code": "ITEM_ID_MISSING"}
+def _mercadolibre_partial_update_rows(
+    body: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """展开 206 响应里的市场/变体结果，同时保留其响应路径。"""
+
+    results: list[dict[str, Any]] = []
+    nested_keys = ("listing_sites", "site_items", "variants")
+
+    def collect(values: Any, path: str) -> None:
+        if not isinstance(values, list):
+            return
+        for index, raw in enumerate(values):
+            if not isinstance(raw, dict):
+                continue
+            field = f"{path}[{index}]"
+            results.append({**raw, "_response_path": field})
+            for key in nested_keys:
+                collect(raw.get(key), f"{field}.{key}")
+
+    for key in nested_keys:
+        collect(body.get(key), key)
+    return results
+
+
+def _mercadolibre_update_row_failed(row: dict[str, Any]) -> bool:
+    return (
+        row.get("success") is False
+        or row.get("error") not in (None, "", [], {})
+        or row.get("errors") not in (None, "", [], {})
+    )
+
+
+def _mercadolibre_update_row_confirmed_paused(
+    row: dict[str, Any],
+) -> bool:
+    if _mercadolibre_update_row_failed(row):
+        return False
+    return row.get("success") is True or str(
+        row.get("status") or ""
+    ).strip().lower() == "paused"
+
+
+def _mercadolibre_update_row_error(row: dict[str, Any]) -> Any:
+    return (
+        row.get("error")
+        or row.get("errors")
+        or {
+            "code": "MERCADOLIBRE_PAUSE_UNCONFIRMED",
+            "message": "Mercado Libre 未确认该市场已暂停",
+            "response_path": str(row.get("_response_path") or ""),
+        }
+    )
+
+
+def _mercadolibre_market_matches_update_row(
+    market: dict[str, Any],
+    row: dict[str, Any],
+) -> bool:
+    market_ids = {
+        str(market.get("item_id") or "").strip(),
+        str(market.get("user_product_id") or "").strip(),
+    }
+    row_ids = {
+        str(row.get("id") or "").strip(),
+        str(row.get("item_id") or "").strip(),
+        str(row.get("user_product_id") or "").strip(),
+    }
+    if (market_ids - {""}) & (row_ids - {""}):
+        return True
+    market_site = str(market.get("site_id") or "").strip().upper()
+    row_site = str(row.get("site_id") or "").strip().upper()
+    if not market_site or market_site != row_site:
+        return False
+    market_logistic = str(
+        market.get("logistic_type") or ""
+    ).strip().lower()
+    row_logistic = str(row.get("logistic_type") or "").strip().lower()
+    return not market_logistic or not row_logistic or market_logistic == row_logistic
+
+
+def _mercadolibre_pause_root_error(body: dict[str, Any]) -> Any:
+    if body.get("error") not in (None, "", [], {}):
+        return body.get("error")
+    if body.get("errors") not in (None, "", [], {}):
+        return body.get("errors")
+    if body.get("success") is False:
+        return body.get("message") or "Mercado Libre 返回 success=false"
+    return None
+
+
+def _active_mercadolibre_publish_job(
+    record: dict[str, Any],
+) -> dict[str, Any] | None:
+    """只读复用 publish-job 状态，避免 publish 与 pause 并发写同一草稿。"""
+
+    product_id = str(record.get("product_id") or "").strip()
+    draft_id = str(record.get("draft_id") or "").strip()
+    states, _next_cursor = get_context().db.list_publish_jobs(
+        limit=100,
+        platform="mercadolibre",
+        product_id=product_id,
+    )
+    active_statuses = {
+        "pending",
+        "queued",
+        "running",
+        "retrying",
+        "completed",
+        "outcome_unknown",
+    }
+    for state in states:
+        if not isinstance(state, dict):
+            continue
+        status = str(state.get("status") or "").strip().lower()
+        if status not in active_statuses:
+            continue
+        if (
+            status == "completed"
+            and state.get("terminal_results_persisted") is True
+        ):
+            continue
+        platforms = (
+            state.get("platforms")
+            if isinstance(state.get("platforms"), dict)
+            else {}
+        )
+        platform_state = (
+            platforms.get("mercadolibre")
+            if isinstance(platforms.get("mercadolibre"), dict)
+            else {}
+        )
+        bound_draft_id = str(
+            state.get("draft_id")
+            or platform_state.get("draft_id")
+            or ""
+        ).strip()
+        if bound_draft_id == draft_id:
+            return state
+    return None
+
+
+def _mercadolibre_pause_outcome_unknown(
+    siteless_id: str,
+    publication: dict[str, Any],
+    exc: Exception,
+) -> dict[str, Any]:
+    details = (
+        dict(exc.details)
+        if isinstance(exc, PublishAdapterError)
+        else {}
+    )
+    details.update(
+        {
+            "outcome_unknown": True,
+            "remote_write_dispatched": True,
+        }
+    )
+    return {
+        "ok": False,
+        "platform": "mercadolibre",
+        "siteless_user_product_id": siteless_id,
+        "status": str(publication.get("status") or ""),
+        "error_code": "USER_PRODUCT_PAUSE_OUTCOME_UNKNOWN",
+        "error": (
+            "暂停请求已经发出，但网络或 Mercado 服务端失败使结果无法确认："
+            f"{exc}"
+        ),
+        "outcome_unknown": True,
+        "retryable": False,
+        "details": details,
+    }
+
+
+def _mercadolibre_pause_error_is_outcome_unknown(
+    exc: PublishAdapterError,
+) -> bool:
+    details = dict(exc.details)
+    if details.get("outcome_unknown") is True:
+        return True
+    try:
+        status_code = int(details.get("http_status") or 0)
+    except (TypeError, ValueError):
+        status_code = 0
+    if status_code >= 500 or status_code in {408, 423, 425}:
+        return True
+    code = str(exc.code or "").strip().upper()
+    return status_code == 0 and any(
+        marker in code for marker in ("NETWORK", "TIMEOUT", "SERVER_ERROR")
+    )
+
+
+def mercadolibre_pause_user_product(
+    siteless_user_product_id: str,
+) -> dict[str, Any]:
+    """暂停一个已持久化的 Siteless User Product。"""
+
+    siteless_id = canonicalize_mercadolibre_siteless_user_product_id(
+        siteless_user_product_id
+    )
+    if not siteless_id:
+        return {
+            "ok": False,
+            "error": "缺少 siteless_user_product_id",
+            "error_code": "SITELESS_USER_PRODUCT_ID_MISSING",
+        }
+    if not re.fullmatch(r"U\d+", siteless_id):
+        return {
+            "ok": False,
+            "error": "siteless_user_product_id 必须使用官方 U{id} 或 CBTU{id} 格式",
+            "error_code": "MERCADOLIBRE_SITELESS_USER_PRODUCT_ID_INVALID",
+        }
+    record = next(
+        (
+            item
+            for item in _local_mercadolibre_user_product_records()
+            if canonicalize_mercadolibre_siteless_user_product_id(
+                (item.get("publication") or {}).get(
+                    "siteless_user_product_id"
+                )
+                if isinstance(item.get("publication"), dict)
+                else ""
+            )
+            == siteless_id
+        ),
+        None,
+    )
+    if record is None:
+        return {
+            "ok": False,
+            "error": "本地不存在该 Mercado Siteless User Product",
+            "error_code": "MERCADOLIBRE_USER_PRODUCT_NOT_FOUND",
+        }
+    publication = normalize_mercadolibre_publication(record.get("publication"))
+    if str(publication.get("status") or "").strip().lower() == "paused":
+        return {
+            "ok": True,
+            "platform": "mercadolibre",
+            "siteless_user_product_id": siteless_id,
+            "status": "paused",
+            "user_product": _public_mercadolibre_user_product_row(record),
+            "message": f"{siteless_id} 已处于暂停状态。",
+        }
     config = get_context().config.load_store_config()
     auth = ensure_mercadolibre_auth_ready(config)
     if not auth.get("ok"):
-        return {"ok": False, "error": auth.get("message") or "Mercado Libre 授权不可用", "error_code": auth.get("error_code") or "AUTH_INVALID", "next_action": auth.get("next_action") or "请先完成授权测试"}
-    token = str(auth.get("token") or "").strip()
-    def close_regular_item() -> dict[str, Any]:
-        result = publisher.request_json("PUT", f"https://api.mercadolibre.com/items/{urllib.parse.quote(item_id)}", token, {"status": "closed"})
-        item = result if isinstance(result, dict) else {}
         return {
-            "ok": True,
+            "ok": False,
+            "error": auth.get("message") or "Mercado Libre 授权不可用",
+            "error_code": auth.get("error_code") or "AUTH_INVALID",
+            "next_action": auth.get("next_action") or "请先完成授权测试",
+        }
+    current_account_user_id = str(
+        (config.get("mercadolibre") or {}).get("user_id") or ""
+    ).strip()
+    publication_account_user_id = str(
+        publication.get("account_user_id") or ""
+    ).strip()
+    if not publication_account_user_id:
+        return {
+            "ok": False,
+            "error": "该 Siteless User Product 缺少 CBT 父账号归属，已阻止暂停",
+            "error_code": "MERCADOLIBRE_PUBLICATION_ACCOUNT_MISSING",
+        }
+    if (
+        not current_account_user_id
+        or publication_account_user_id != current_account_user_id
+    ):
+        return {
+            "ok": False,
+            "error": "该 Siteless User Product 不属于当前授权的 CBT 父账号",
+            "error_code": "MERCADOLIBRE_PUBLICATION_ACCOUNT_MISMATCH",
+        }
+    active_job = _active_mercadolibre_publish_job(record)
+    if active_job is not None:
+        return {
+            "ok": False,
             "platform": "mercadolibre",
-            "item_id": item_id,
-            "status": str(item.get("status") or "closed"),
-            "item": _mercadolibre_item_summary(item) if item else {},
-            "raw": _sanitize_for_log(item),
-            "message": f"{item_id} 已提交结束发布。",
+            "siteless_user_product_id": siteless_id,
+            "status": str(publication.get("status") or ""),
+            "error_code": "MERCADOLIBRE_USER_PRODUCT_PUBLISH_ACTIVE",
+            "error": (
+                "同一草稿仍有发布任务处于活动或结果未知状态，"
+                "完成对账前不能并发暂停"
+            ),
+            "active_job_id": str(active_job.get("job_id") or ""),
+            "active_job_status": str(active_job.get("status") or ""),
+            "next_action": "等待发布任务完成；outcome_unknown 需先人工对账",
+        }
+    token = str(auth.get("token") or "").strip()
+    try:
+        response = publisher.request_json(
+            "PUT",
+            "https://api.mercadolibre.com/global/user-products/"
+            f"{urllib.parse.quote(siteless_id, safe='')}",
+            token,
+            {"status": "paused"},
+        )
+    except PublishAdapterError as exc:
+        if _mercadolibre_pause_error_is_outcome_unknown(exc):
+            return _mercadolibre_pause_outcome_unknown(
+                siteless_id,
+                publication,
+                exc,
+            )
+        return {
+            "ok": False,
+            "platform": "mercadolibre",
+            "siteless_user_product_id": siteless_id,
+            "status": str(publication.get("status") or ""),
+            "error_code": exc.code,
+            "error": str(exc),
+            "retryable": bool(exc.retryable),
+        }
+    except Exception as exc:
+        return _mercadolibre_pause_outcome_unknown(
+            siteless_id,
+            publication,
+            exc,
+        )
+    body = response if isinstance(response, dict) else {}
+    returned_id = str(
+        body.get("id") or body.get("siteless_user_product_id") or ""
+    ).strip()
+    canonical_returned_id = (
+        canonicalize_mercadolibre_siteless_user_product_id(returned_id)
+    )
+    if canonical_returned_id != siteless_id:
+        return {
+            "ok": False,
+            "platform": "mercadolibre",
+            "siteless_user_product_id": siteless_id,
+            "status": str(publication.get("status") or ""),
+            "error_code": "USER_PRODUCT_PAUSE_OUTCOME_UNKNOWN",
+            "error": (
+                "暂停写请求响应缺少匹配的 Siteless User Product ID，"
+                "远端结果无法确认"
+            ),
+            "outcome_unknown": True,
+            "retryable": False,
+            "details": {
+                "outcome_unknown": True,
+                "remote_write_dispatched": True,
+                "expected_siteless_user_product_id": siteless_id,
+                "returned_siteless_user_product_id": canonical_returned_id,
+            },
+            "raw": _sanitize_for_log(body),
         }
 
-    if item_id.upper().startswith("CBT"):
-        payload = {"status": "paused"}
-        item = publisher.request_json("GET", f"https://api.mercadolibre.com/items/{urllib.parse.quote(item_id)}", token)
-        item = item if isinstance(item, dict) else {}
-        status = str(item.get("status") or "").strip().lower()
-        if status in {"paused", "closed"}:
-            return {
-                "ok": True,
-                "platform": "mercadolibre",
-                "item_id": item_id,
-                "status": status,
-                "item": _mercadolibre_item_summary(item) if item else {},
-                "raw": _sanitize_for_log({"item": item}),
-                "message": f"{item_id} 已处于下架状态。",
+    now = collect_time_iso()
+    update_rows = _mercadolibre_partial_update_rows(body)
+    root_error = _mercadolibre_pause_root_error(body)
+    failed_rows = [
+        row for row in update_rows
+        if _mercadolibre_update_row_failed(row)
+    ]
+    markets: list[dict[str, Any]] = []
+    confirmed_count = 0
+    unconfirmed_count = 0
+    matched_row_ids: set[int] = set()
+    previous_markets = [
+        dict(market)
+        for market in publication.get("markets", [])
+        if isinstance(market, dict)
+    ]
+    partial_response = bool(update_rows or root_error)
+    for market in previous_markets:
+        matched_rows = [
+            row
+            for row in update_rows
+            if _mercadolibre_market_matches_update_row(market, row)
+        ]
+        matched_row_ids.update(id(row) for row in matched_rows)
+        matching_failure = next(
+            (
+                row
+                for row in matched_rows
+                if _mercadolibre_update_row_failed(row)
+            ),
+            None,
+        )
+        matching_success = next(
+            (
+                row
+                for row in matched_rows
+                if _mercadolibre_update_row_confirmed_paused(row)
+            ),
+            None,
+        )
+        if matching_failure is not None:
+            operation_error = _mercadolibre_update_row_error(
+                matching_failure
+            )
+            markets.append(
+                {
+                    **market,
+                    "error": operation_error,
+                    "last_operation": {
+                        "status": "failed",
+                        "error": operation_error,
+                        "updated_at": now,
+                    },
+                }
+            )
+            unconfirmed_count += 1
+            continue
+        if matching_success is not None:
+            confirmed = {
+                **market,
+                "status": "paused",
+                "updated_at": now,
+                "last_operation": {
+                    "status": "succeeded",
+                    "updated_at": now,
+                },
             }
-        try:
-            result = publisher.request_json("PUT", f"https://api.mercadolibre.com/global/items/{urllib.parse.quote(item_id)}", token, payload)
-        except Exception as exc:
-            if "not a cbt item" in str(exc).lower():
-                return close_regular_item()
-            raise
-        item = publisher.request_json("GET", f"https://api.mercadolibre.com/items/{urllib.parse.quote(item_id)}", token)
-        item = item if isinstance(item, dict) else {}
-        status = str(item.get("status") or "").strip().lower()
-        if status not in {"paused", "closed"}:
-            return {
-                "ok": False,
-                "platform": "mercadolibre",
-                "item_id": item_id,
-                "status": status or "unknown",
-                "error": f"{item_id} 已调用 Global Selling 下架接口，但 Mercado Libre 仍返回状态 {status or 'unknown'}。",
-                "error_code": "MERCADOLIBRE_STATUS_UNCHANGED",
-                "raw": _sanitize_for_log({"update": result if isinstance(result, dict) else {"response": result}, "item": item}),
+            confirmed.pop("error", None)
+            markets.append(confirmed)
+            confirmed_count += 1
+            continue
+        if partial_response:
+            operation_error = root_error or {
+                "code": "MERCADOLIBRE_PAUSE_UNCONFIRMED",
+                "message": "Mercado Libre 响应未确认该市场已暂停",
             }
-        return {
-            "ok": True,
-            "platform": "mercadolibre",
-            "item_id": item_id,
-            "status": status,
-            "item": _mercadolibre_item_summary(item) if item else {},
-            "raw": _sanitize_for_log({"update": result if isinstance(result, dict) else {"response": result}, "item": item}),
-            "message": f"{item_id} 已提交 Global Selling 下架。",
+            markets.append(
+                {
+                    **market,
+                    "error": operation_error,
+                    "last_operation": {
+                        "status": "failed",
+                        "error": operation_error,
+                        "updated_at": now,
+                    },
+                }
+            )
+            unconfirmed_count += 1
+            continue
+        confirmed = {
+            **market,
+            "status": "paused",
+            "updated_at": now,
+            "last_operation": {
+                "status": "succeeded",
+                "updated_at": now,
+            },
         }
-    return close_regular_item()
+        confirmed.pop("error", None)
+        markets.append(confirmed)
+        confirmed_count += 1
+
+    unmatched_failures = [
+        row for row in failed_rows
+        if id(row) not in matched_row_ids
+    ]
+    fully_confirmed = (
+        bool(previous_markets)
+        and confirmed_count == len(previous_markets)
+        and not root_error
+        and not unmatched_failures
+    )
+    aggregate_status = (
+        "paused"
+        if fully_confirmed
+        else "partial"
+        if confirmed_count
+        else str(publication.get("status") or "")
+    )
+    merged = normalize_mercadolibre_publication(
+        {
+            **publication,
+            "siteless_user_product_id": siteless_id,
+            "status": aggregate_status,
+            "markets": markets,
+            "updated_at": now,
+        }
+    )
+    saved = _persist_mercadolibre_publication(str(record.get("draft_id") or ""), merged)
+    if not fully_confirmed:
+        partial_errors = [
+            _mercadolibre_update_row_error(row)
+            for row in failed_rows
+        ]
+        if root_error:
+            partial_errors.insert(0, root_error)
+        if not partial_errors:
+            partial_errors.append(
+                {
+                    "code": "MERCADOLIBRE_PAUSE_UNCONFIRMED",
+                    "message": "Mercado Libre 未确认全部市场已暂停",
+                }
+            )
+        return {
+            "ok": False,
+            "platform": "mercadolibre",
+            "siteless_user_product_id": siteless_id,
+            "status": aggregate_status,
+            "partial": confirmed_count > 0,
+            "confirmed_market_count": confirmed_count,
+            "unconfirmed_market_count": unconfirmed_count,
+            "error_code": "MERCADOLIBRE_USER_PRODUCT_PAUSE_FAILED",
+            "error": str(partial_errors),
+            "user_product": _public_mercadolibre_user_product_row(
+                {**record, "publication": saved}
+            ),
+            "raw": _sanitize_for_log(body),
+        }
+    return {
+        "ok": True,
+        "platform": "mercadolibre",
+        "siteless_user_product_id": siteless_id,
+        "status": "paused",
+        "user_product": _public_mercadolibre_user_product_row(
+            {**record, "publication": saved}
+        ),
+        "raw": _sanitize_for_log(body),
+        "message": f"{siteless_id} 已提交暂停。",
+    }
 
 
 def _mercadolibre_picture_id(item: dict[str, Any]) -> str:
@@ -599,8 +1287,12 @@ def ensure_mercadolibre_pictures_uploaded(product: dict[str, Any], token: str) -
         updated_pool.append(item)
     source["image_pool"] = updated_pool
     normalized["source"] = source
-    normalized.setdefault("drafts", {}).setdefault("mercadolibre", default_draft("mercadolibre"))["images"] = picture_refs
-    saved = get_context().products.save_product(normalized)
+    # 此处是 Mercado 上传服务写入 picture ID 的唯一可信路径；通用保存入口
+    # 会保护已有平台事实，故明确允许本次服务端结果替换上传状态。
+    saved = get_context().products.save_product(
+        normalized,
+        preserve_platform_facts=False,
+    )
     errors = compact_precheck_items(errors)
     return {"ok": not errors, "product": saved, "picture_refs": picture_refs, "errors": errors}
 
@@ -618,7 +1310,16 @@ def ensure_mercadolibre_auth_ready(config: dict[str, Any]) -> dict[str, Any]:
     def _sync_identity(token_value: str) -> str:
         profile = sync_mercadolibre_identity(store, token_value)
         name = profile.get("nickname") or profile.get("user_id") or ""
-        store.update(_store_auth_result_fields("mercadolibre", "测试成功", name or token_value))
+        # 这里只校验 token/身份；listing_model 已由 /users tags 重新派生，
+        # 币种与销售目标仍在各自的确定性预检中独立判断。
+        store.update(
+            _store_auth_result_fields(
+                "mercadolibre",
+                "测试成功",
+                name or token_value,
+                next_action="授权身份有效；发布前仍需通过币种与销售目标预检",
+            )
+        )
         store["auth_error_code"] = ""
         store["auth_error_message"] = ""
         return name
@@ -661,127 +1362,25 @@ def mercadolibre_product_for_payload(product: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def mercadolibre_config_for_payload(config: dict[str, Any], product: dict[str, Any]) -> dict[str, Any]:
-    cfg = deepcopy(config)
-    draft = _draft_for_selected_target(product, "mercadolibre")
-    pkg = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
-    store = cfg.setdefault("mercadolibre", {})
-    store["category_id"] = str(draft.get("category_id") or "").strip()
-    site_id = str(draft.get("site") or draft.get("site_id") or "").strip().upper()
-    if site_id:
-        store["site_id"] = site_id
-    listing = cfg.setdefault("listing", {})
-    selected_price, listing_currency = _selected_price_and_currency(
-        draft, "mercadolibre", site_id
-    )
-    for key, value in {
-        "mercadolibre_price": selected_price,
-        "price": selected_price,
-        "currency_id": listing_currency,
-        "stock": draft.get("stock"),
-        "sku": draft.get("sku"),
-        "upc": draft.get("upc"),
-        "model": draft.get("model"),
-        "mercadolibre_title": draft.get("title"),
-        "package_length_cm": pkg.get("length_cm"),
-        "package_width_cm": pkg.get("width_cm"),
-        "package_height_cm": pkg.get("height_cm"),
-        "package_weight_kg": pkg.get("weight_kg"),
-        "mercadolibre_attributes": draft.get("attributes") if isinstance(draft.get("attributes"), dict) else {},
-    }.items():
-        if value not in (None, ""):
-            listing[key] = value
-    listing["mercadolibre_sites_to_sell"] = (
-        normalize_mercadolibre_sites_to_sell(draft.get("sites_to_sell"))
-    )
-    if isinstance(draft.get("sale_terms"), list) and draft.get("sale_terms"):
-        listing["mercadolibre_sale_terms"] = draft.get("sale_terms")
-    return cfg
-
-
 def build_mercadolibre_payload_preview(product: dict[str, Any], config: dict[str, Any], picture_refs: list[str] | None = None) -> dict[str, Any]:
     refs = picture_refs if picture_refs is not None else image_pool_refs_for_platform(product, "mercadolibre")
     payload_product = mercadolibre_product_for_payload(product)
     if picture_refs is not None:
         payload_product.setdefault("source", {})["image_pool"] = []
-    payload_config = mercadolibre_config_for_payload(config, payload_product)
+    from .publish_context import prepare_publish_context
+
+    prepared_context = prepare_publish_context(payload_product, "mercadolibre")
+    if prepared_context.category_definition is None:
+        raise RuntimeError(
+            prepared_context.definition_error
+            or "Mercado Libre 类目属性定义暂时不可用"
+        )
     return build_mercadolibre_publish_payload(
         payload_product,
-        payload_config,
+        config,
         refs,
+        category_definition=prepared_context.category_definition,
     )
-
-
-def mercadolibre_real_publish(product: dict[str, Any], confirm: bool) -> dict[str, Any]:
-    started_at = collect_time_iso()
-    if not confirm:
-        return {"ok": False, "status": "confirmation_required", "error": "真实发布需要二次确认。"}
-    product = normalize_product_fields(product)
-    config = get_context().config.load_store_config()
-    auth = ensure_mercadolibre_auth_ready(config)
-    if not auth.get("ok"):
-        error = precheck_item(auth.get("error_code") or "AUTH_INVALID", "auth", auth.get("message") or "Mercado Libre 授权不可用", "error", auth.get("next_action") or "请先完成授权测试")
-        precheck = {"platform": "mercadolibre", "ok": False, "errors": [error], "warnings": [], "checked_at": collect_time_iso()}
-        updated = apply_precheck_to_product(product, "mercadolibre", precheck, status="not_ready")
-        append_ml_publish_log(updated, "not_ready", started_at, {"precheck": precheck}, {"ok": False, "status": "not_ready"}, error["code"], error["message"], _field_error_map([error]), error["next_action"])
-        saved = get_context().products.save_product(updated)
-        return compact_publish_failure_response("not_ready", error["message"], saved, precheck=precheck, next_action=error["next_action"])
-    precheck = validate_mercadolibre_draft(product, config)
-    if not precheck.get("ok"):
-        updated = apply_precheck_to_product(product, "mercadolibre", precheck, status="not_ready")
-        first = (precheck.get("errors") or [{}])[0]
-        append_ml_publish_log(updated, "not_ready", started_at, {"precheck": precheck}, {"ok": False, "status": "not_ready"}, str(first.get("code") or ""), "；".join(str(item.get("message") or "") for item in precheck.get("errors") or [] if isinstance(item, dict)), _field_error_map(list(precheck.get("errors") or []) + list(precheck.get("warnings") or [])), str(first.get("next_action") or ""))
-        saved = get_context().products.save_product(updated)
-        return compact_publish_failure_response("not_ready", "发布前预检未通过", saved, precheck=precheck, next_action=str(first.get("next_action") or ""))
-    upload = ensure_mercadolibre_pictures_uploaded(product, str(auth.get("token") or ""))
-    product = upload.get("product") or product
-    if not upload.get("ok"):
-        precheck = {"platform": "mercadolibre", "ok": False, "errors": upload.get("errors") or [], "warnings": [], "checked_at": collect_time_iso()}
-        updated = apply_precheck_to_product(product, "mercadolibre", precheck, status="not_ready")
-        first = (precheck.get("errors") or [{}])[0]
-        append_ml_publish_log(updated, "not_ready", started_at, {"precheck": precheck}, {"ok": False, "status": "image_upload_failed"}, str(first.get("code") or "IMAGE_UPLOAD_FAILED"), "；".join(str(item.get("message") or "") for item in precheck.get("errors") or [] if isinstance(item, dict)), _field_error_map(precheck.get("errors") or []), str(first.get("next_action") or ""))
-        saved = get_context().products.save_product(updated)
-        return compact_publish_failure_response("not_ready", "图片上传失败，已禁止真实发布", saved, precheck=precheck, next_action=str(first.get("next_action") or "前往图片池替换或重新上传图片"))
-    payload = build_mercadolibre_payload_preview(product, config, upload.get("picture_refs") or [])
-    payload_path = _last_mercadolibre_payload_path()
-    write_json(payload_path, _sanitize_for_log(payload))
-    payload_errors = validate_publish_payload("mercadolibre", payload, config)
-    if payload_errors:
-        errors = [precheck_item("PAYLOAD_INVALID", "payload", message, "error", "前往对应页面补齐字段") for message in payload_errors]
-        precheck = {"platform": "mercadolibre", "ok": False, "errors": errors, "warnings": [], "checked_at": collect_time_iso()}
-        updated = apply_precheck_to_product(product, "mercadolibre", precheck, status="not_ready")
-        append_ml_publish_log(updated, "not_ready", started_at, payload, {"ok": False, "errors": payload_errors}, "PAYLOAD_INVALID", "，".join(payload_errors), {"payload": payload_errors}, "前往对应页面补齐字段")
-        saved = get_context().products.save_product(updated)
-        return compact_publish_failure_response("not_ready", "，".join(payload_errors), saved, payload_path=str(payload_path), next_action="前往对应页面补齐字段")
-    try:
-        result = publisher.publish_mercadolibre(payload, str(auth.get("token") or ""))
-        ok = _mercadolibre_publish_result_ok(result)
-        status = "real_publish_success" if ok else "real_publish_failed"
-        if not ok:
-            mapped = _mercadolibre_publish_result_error_map(result)
-            errors = [
-                precheck_item(str((mapped.get("parsed") or {}).get("error") or "REAL_PUBLISH_FAILED"), field, mapped["summary"], "error", "前往对应字段修复后重试")
-                for field in mapped.get("field_errors", {})
-            ] or [precheck_item("REAL_PUBLISH_FAILED", "publish", mapped["summary"], "error", "查看字段映射并重试")]
-            updated = apply_precheck_to_product(product, "mercadolibre", {"platform": "mercadolibre", "ok": False, "errors": errors, "warnings": [], "checked_at": collect_time_iso()}, status=status)
-            append_ml_publish_log(updated, status, started_at, payload, mapped, str((mapped.get("parsed") or {}).get("error") or "REAL_PUBLISH_FAILED"), mapped["summary"], mapped.get("field_errors", {}), "按字段提示修复后重试")
-            saved = get_context().products.save_product(updated)
-            return compact_publish_failure_response(status, mapped["summary"], saved, error_map=mapped, payload_path=str(payload_path), result=_sanitize_for_log(result), next_action="按字段提示修复后重试")
-        updated = apply_precheck_to_product(product, "mercadolibre", precheck, status=status)
-        append_ml_publish_log(updated, status, started_at, payload, result, "" if ok else "REAL_PUBLISH_FAILED", "" if ok else "Mercado Libre 未返回成功状态", {}, "" if ok else "查看响应后重试")
-        saved = get_context().products.save_product(updated)
-        return {"ok": ok, "status": status, "result": _sanitize_for_log(result), "payload": _sanitize_for_log(payload), "payload_path": str(payload_path), "product": saved}
-    except Exception as exc:
-        parsed = publisher.parse_mercadolibre_error(exc)
-        mapped = map_mercadolibre_publish_error(parsed)
-        errors = [
-            precheck_item(str(parsed.get("error") or "REAL_PUBLISH_FAILED"), field, str(values[0] if isinstance(values, list) and values else mapped["summary"]), "error", "前往对应字段修复后重试")
-            for field, values in mapped["field_errors"].items()
-        ] or [precheck_item(str(parsed.get("error") or "REAL_PUBLISH_FAILED"), "publish", mapped["summary"], "error", "查看字段映射并重试")]
-        updated = apply_precheck_to_product(product, "mercadolibre", {"platform": "mercadolibre", "ok": False, "errors": errors, "warnings": [], "checked_at": collect_time_iso()}, status="real_publish_failed")
-        append_ml_publish_log(updated, "real_publish_failed", started_at, payload, mapped, str(parsed.get("error") or "REAL_PUBLISH_FAILED"), mapped["summary"], mapped["field_errors"], "按字段提示修复后重试")
-        saved = get_context().products.save_product(updated)
-        return compact_publish_failure_response("real_publish_failed", mapped["summary"], saved, error_map=mapped, payload_path=str(payload_path), next_action="按字段提示修复后重试")
 
 
 def map_mercadolibre_publish_error(parsed: dict[str, Any]) -> dict[str, Any]:
@@ -821,8 +1420,7 @@ __all__ = [
     "ensure_mercadolibre_auth_ready",
     "ensure_mercadolibre_pictures_uploaded",
     "map_mercadolibre_publish_error",
-    "mercadolibre_close_remote_item",
-    "mercadolibre_real_publish",
-    "mercadolibre_remote_items",
+    "mercadolibre_pause_user_product",
+    "mercadolibre_user_products",
     "run_mercadolibre_07d_test",
 ]

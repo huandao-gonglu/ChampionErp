@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """ProductStore / ConfigStore：经 AppContext 的基本 CRUD 与配置读写。"""
 
+from copy import deepcopy
 import json
 import os
 import threading
@@ -40,6 +41,113 @@ def _sample_product(title: str = "Store test product", url: str = "https://examp
     }
 
 
+def _save_ready_draft_with_server_state() -> tuple[dict, list[dict]]:
+    reviews = [
+        {
+            "code": "NEED_REVIEW_ATTRIBUTES",
+            "field": "attributes.VOLTAGE",
+            "message": "请人工确认电压",
+        },
+        {
+            "code": "NEED_REVIEW_ATTRIBUTES",
+            "field": "attributes.MODEL",
+            "message": "请人工确认型号",
+        },
+        {
+            "code": "OLD_PRECHECK",
+            "field": "title",
+            "message": "旧预检结果",
+        },
+        "AI 暂无法从商品信息判断，请人工确认。",
+    ]
+    precheck = {"ok": True, "checked_at": "2026-08-29T00:00:00Z"}
+    publish_task = {"job_id": "job-server", "item_id": "CBT123456"}
+    target = {
+        "platform": "mercadolibre",
+        "site": "CBT",
+        "language": "en-US",
+        "listing_currency": "USD",
+        "category_id": "CBT455865",
+        "attributes": {"VOLTAGE": "110V", "MODEL": "X1"},
+        "sites_to_sell": [
+            {"site_id": "MLM", "logistic_type": "remote"},
+        ],
+        "validation_errors": deepcopy(reviews),
+        "category_precheck": deepcopy(precheck),
+        "last_precheck": deepcopy(precheck),
+        "last_precheck_target": {"platform": "mercadolibre", "site": "CBT"},
+        "status": "ready_to_publish",
+        "publish_status": "ready",
+        "last_publish_task": deepcopy(publish_task),
+    }
+    product = _sample_product(
+        "Protected draft state",
+        "https://example.com/protected-draft-state",
+    )
+    product["drafts"]["mercadolibre"].update(
+        {
+            "site": "CBT",
+            "language": "en-US",
+            "title": "Protected draft state",
+            "category_id": "CBT455865",
+            "attributes": {"VOLTAGE": "110V", "MODEL": "X1"},
+            "target_sites": [target],
+            "validation_errors": deepcopy(reviews),
+            "category_precheck": deepcopy(precheck),
+            "last_precheck": deepcopy(precheck),
+            "last_precheck_target": {
+                "platform": "mercadolibre",
+                "site": "CBT",
+            },
+            "status": "ready_to_publish",
+            "publish_status": "ready",
+            "last_publish_task": deepcopy(publish_task),
+            "publication": {
+                "model": "traditional_global_items",
+                "parent_item_id": "CBT123456",
+                "status": "active",
+            },
+        }
+    )
+    product["publish_preview"] = {"mercadolibre": deepcopy(precheck)}
+    return get_context().products.save_product(product), reviews
+
+
+def _tampered_publish_state_payload(draft: dict) -> dict:
+    target = deepcopy(draft["target_sites"][0])
+    forged_reviews = [
+        {
+            "code": "NEED_REVIEW_ATTRIBUTES",
+            "field": "attributes.MODEL",
+            "message": "客户端伪造的型号消息",
+        },
+        {
+            "code": "NEED_REVIEW_ATTRIBUTES",
+            "field": "attributes.BRAND",
+            "message": "客户端新增的伪造 review",
+        },
+    ]
+    forged_state = {
+        "status": "published",
+        "publish_status": "real_publish_success",
+        "validation_errors": deepcopy(forged_reviews),
+        "category_precheck": {"ok": False, "forged": True},
+        "last_precheck": {"ok": False, "forged": True},
+        "last_precheck_target": {"platform": "ozon", "site": "global"},
+        "last_publish_task": {"job_id": "job-client-forged"},
+    }
+    target.update(deepcopy(forged_state))
+    return {
+        "draft_id": draft["draft_id"],
+        **forged_state,
+        "publication": {
+            "model": "user_products",
+            "siteless_user_product_id": "UP-CLIENT-FORGED",
+        },
+        "target_sites": [target],
+    }
+
+
 def test_product_store_crud_via_context() -> None:
     products = get_context().products
 
@@ -65,6 +173,116 @@ def test_product_store_crud_via_context() -> None:
     assert deleted["ok"] is True
     assert deleted["deleted"] == 1
     assert get_context().db.list_product_records() == []
+
+
+def test_save_draft_detail_ignores_client_publish_state_when_content_is_unchanged() -> None:
+    saved, reviews = _save_ready_draft_with_server_state()
+    existing = saved["drafts"]["mercadolibre"]
+    payload = _tampered_publish_state_payload(existing)
+
+    result, error, status = get_context().products.save_draft_detail(payload)
+
+    assert error is None and status == 200
+    draft = result["draft"]
+    target = draft["target_sites"][0]
+    for item, previous in (
+        (draft, existing),
+        (target, existing["target_sites"][0]),
+    ):
+        assert item["status"] == previous["status"]
+        assert item["publish_status"] == previous["publish_status"]
+        assert item["validation_errors"] == reviews
+        assert item["category_precheck"] == previous["category_precheck"]
+        assert item["last_precheck"] == previous["last_precheck"]
+        assert item["last_precheck_target"] == previous["last_precheck_target"]
+        assert item["last_publish_task"] == previous["last_publish_task"]
+    assert draft["publication"] == existing["publication"]
+    assert "mercadolibre" in result["productContext"]["raw"]["publish_preview"]
+
+
+def test_save_draft_detail_derives_invalidation_and_rejects_forged_state_when_content_changes() -> None:
+    saved, reviews = _save_ready_draft_with_server_state()
+    existing = saved["drafts"]["mercadolibre"]
+    payload = _tampered_publish_state_payload(existing)
+    payload["title"] = "Protected draft state edited"
+    payload["attributes"] = {"VOLTAGE": "110/220V", "MODEL": "X1"}
+    payload["target_sites"][0]["attributes"] = {
+        "VOLTAGE": "110/220V",
+        "MODEL": "X1",
+    }
+
+    result, error, status = get_context().products.save_draft_detail(payload)
+
+    assert error is None and status == 200
+    draft = result["draft"]
+    target = draft["target_sites"][0]
+    expected_reviews = [reviews[1]]
+    for item, previous in (
+        (draft, existing),
+        (target, existing["target_sites"][0]),
+    ):
+        assert item["status"] == "category_ready"
+        assert item["publish_status"] == ""
+        assert item["validation_errors"] == expected_reviews
+        assert item["category_precheck"] == {}
+        assert item["last_precheck"] == {}
+        assert item["last_precheck_target"] == {}
+        assert item["last_publish_task"] == previous["last_publish_task"]
+    assert draft["publication"] == existing["publication"]
+    assert "mercadolibre" not in result["productContext"]["raw"]["publish_preview"]
+
+
+def test_save_draft_detail_does_not_treat_omitted_validation_errors_as_review_confirmation() -> None:
+    saved, reviews = _save_ready_draft_with_server_state()
+    existing = saved["drafts"]["mercadolibre"]
+    target = deepcopy(existing["target_sites"][0])
+    target["attributes"] = {"VOLTAGE": "110/220V", "MODEL": "X1"}
+    target.pop("validation_errors", None)
+
+    result, error, status = get_context().products.save_draft_detail(
+        {
+            "draft_id": existing["draft_id"],
+            "attributes": {"VOLTAGE": "110/220V", "MODEL": "X1"},
+            "target_sites": [target],
+        }
+    )
+
+    assert error is None and status == 200
+    expected_reviews = reviews[:2]
+    assert result["draft"]["validation_errors"] == expected_reviews
+    assert (
+        result["draft"]["target_sites"][0]["validation_errors"]
+        == expected_reviews
+    )
+
+
+def test_trusted_publish_state_writer_persists_state_only_updates() -> None:
+    saved, _reviews = _save_ready_draft_with_server_state()
+    existing = saved["drafts"]["mercadolibre"]
+    updates = {
+        "validation_errors": [],
+        "category_precheck": {},
+        "last_precheck": {},
+        "last_precheck_target": {},
+        "last_publish_task": {},
+        "publish_status": "",
+        "status": "images_ready",
+    }
+
+    result, error, status = get_context().products.save_draft_publish_state(
+        existing["draft_id"],
+        "mercadolibre",
+        "CBT",
+        updates,
+    )
+
+    assert error is None and status == 200
+    for item in (result["draft"], result["draft"]["target_sites"][0]):
+        for field, value in updates.items():
+            assert item[field] == value
+    assert result["draft"]["title"] == existing["title"]
+    assert result["draft"]["attributes"] == existing["attributes"]
+    assert result["draft"]["publication"] == existing["publication"]
 
 
 def test_runtime_product_store_functions_delegate_to_context_store() -> None:
@@ -472,6 +690,7 @@ def test_app_runtime_secrets_route_nested_naming_styles_to_sqlite() -> None:
 
 
 def test_product_schema_rejects_future_and_filters_unknown_write_fields() -> None:
+    assert PRODUCT_SCHEMA_VERSION == 3
     with pytest.raises(ValueError, match="拒绝降级写入"):
         normalize_product_model(
             {
@@ -494,6 +713,12 @@ def test_product_schema_rejects_future_and_filters_unknown_write_fields() -> Non
                         "local_path": "data/images/legacy.jpg",
                         "width_px": 640,
                         "height_px": 480,
+                        "platform_uploads": {
+                            "mercadolibre": {
+                                "picture_id": "123-CBT456",
+                                "uploaded_at": "2026-08-26T00:00:00Z",
+                            }
+                        },
                         "future_image_field": "drop-me",
                     }
                 ]
@@ -510,12 +735,37 @@ def test_product_schema_rejects_future_and_filters_unknown_write_fields() -> Non
                     },
                     "categoryPrecheck": {"ok": True},
                     "future_draft_field": "drop-me",
+                    "mercadoLibrePublication": {
+                        "model": "user_products",
+                        "sitelessUserProductId": "UP100",
+                        "sitelessFamilyId": "FAMILY100",
+                        "parentItemId": "CBT100",
+                        "familyName": "Canonical family",
+                        "marketPublications": [
+                            {
+                                "siteId": "mlm",
+                                "sellerId": "991",
+                                "logisticType": "REMOTE",
+                                "itemId": "MLM100",
+                                "userProductId": "UP-MLM100",
+                                "status": "active",
+                                "price": "21.50",
+                                "currencyId": "usd",
+                            }
+                        ],
+                    },
                     "targetSites": [
                         {
                             "platform": "mercadolibre",
-                            "site": "MLM",
-                            "categoryId": "MLM-CANONICAL",
+                            "site": "CBT",
+                            "categoryId": "CBT-CANONICAL",
                             "categoryPath": "Home / Test",
+                            "sitesToSell": [
+                                {
+                                    "site_id": "MLM",
+                                    "logistic_type": "remote",
+                                }
+                            ],
                             "publishStatus": "ready",
                             "futureTargetField": "drop-me",
                         }
@@ -525,7 +775,7 @@ def test_product_schema_rejects_future_and_filters_unknown_write_fields() -> Non
                         "suggestedPrice": 99.9,
                         "exchangeRates": {"mode": "legacy"},
                         "targets": {
-                            "mercadolibre:MLM": {
+                            "mercadolibre:CBT": {
                                 "applied_price": 21.5,
                                 "appliedPrice": 88.8,
                             }
@@ -544,6 +794,12 @@ def test_product_schema_rejects_future_and_filters_unknown_write_fields() -> Non
     assert image["path"] == "data/images/legacy.jpg"
     assert image["width"] == 640
     assert image["height"] == 480
+    assert image["platform_uploads"] == {
+        "mercadolibre": {
+            "picture_id": "123-CBT456",
+            "uploaded_at": "2026-08-26T00:00:00Z",
+        }
+    }
     assert {
         "asset_id",
         "local_path",
@@ -562,9 +818,33 @@ def test_product_schema_rejects_future_and_filters_unknown_write_fields() -> Non
     }
     assert draft["category_precheck"] == {"ok": True}
     assert "future_draft_field" not in draft
+    assert draft["publication"] == {
+        "model": "user_products",
+        "parent_item_id": "CBT100",
+        "siteless_user_product_id": "UP100",
+        "siteless_family_id": "FAMILY100",
+        "family_name": "Canonical family",
+        "confirmed_payload": {},
+        "markets": [
+            {
+                "site_id": "MLM",
+                "seller_id": "991",
+                "logistic_type": "remote",
+                "item_id": "MLM100",
+                "user_product_id": "UP-MLM100",
+                "status": "active",
+                "currency_id": "USD",
+                "price": "21.50",
+            }
+        ],
+    }
     target = draft["target_sites"][0]
-    assert target["category_id"] == "MLM-CANONICAL"
+    assert target["site"] == "CBT"
+    assert target["category_id"] == "CBT-CANONICAL"
     assert target["category_path"] == "Home / Test"
+    assert target["sites_to_sell"] == [
+        {"site_id": "MLM", "logistic_type": "remote"}
+    ]
     assert target["publish_status"] == "ready"
     assert {
         "categoryId",
@@ -576,10 +856,31 @@ def test_product_schema_rejects_future_and_filters_unknown_write_fields() -> Non
     assert "suggested_price" not in pricing
     assert "suggestedPrice" not in pricing
     assert "exchangeRates" not in pricing
-    pricing_target = pricing["targets"]["mercadolibre:mlm"]
+    pricing_target = pricing["targets"]["mercadolibre:cbt"]
     assert "applied_price" not in pricing_target
     assert pricing_target["stale_reason"] == "legacy_pricing_contract"
     assert "appliedPrice" not in pricing_target
+
+
+def test_product_schema_rejects_local_mercadolibre_draft_target() -> None:
+    with pytest.raises(ValueError, match="只允许 CBT/Siteless 一级草稿"):
+        normalize_product_model(
+            {
+                "schema_version": PRODUCT_SCHEMA_VERSION,
+                "name": "Local target is retired",
+                "drafts": {
+                    "mercadolibre": {
+                        "target_sites": [
+                            {
+                                "platform": "mercadolibre",
+                                "site": "MLM",
+                                "category_id": "MLM123",
+                            }
+                        ]
+                    }
+                },
+            }
+        )
 
 
 def test_app_config_secret_update_rolls_back_when_file_write_fails(

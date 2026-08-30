@@ -289,6 +289,47 @@ def _ai_draft_read_view(value: Any) -> DraftReadView:
             "amount": _bounded_text(applied.get("amount"), max_length=40),
             "currency": _bounded_text(applied.get("currency"), max_length=16),
         }
+    publication = (
+        draft.get("publication")
+        if isinstance(draft.get("publication"), dict)
+        else {}
+    )
+    bounded_publication = _bounded_dict_subset(
+        publication,
+        (
+            "model",
+            "account_user_id",
+            "parent_item_id",
+            "parent_user_product_id",
+            "siteless_user_product_id",
+            "siteless_family_id",
+            "seller_id",
+            "family_name",
+            "status",
+            "updated_at",
+        ),
+    )
+    bounded_publication["markets"] = [
+        _bounded_dict_subset(
+            item,
+            (
+                "site_id",
+                "seller_id",
+                "logistic_type",
+                "item_id",
+                "user_product_id",
+                "status",
+                "price",
+                "currency_id",
+                "listing_type_id",
+                "error",
+                "updated_at",
+            ),
+            max_length=500,
+        )
+        for item in publication.get("markets", [])[:30]
+        if isinstance(item, dict)
+    ]
     return DraftReadView(
         draft_id=_bounded_text(draft.get("draft_id"), max_length=160),
         product_id=_bounded_text(draft.get("product_id"), max_length=160),
@@ -318,6 +359,7 @@ def _ai_draft_read_view(value: Any) -> DraftReadView:
         last_publish_task=_bounded_dict_subset(
             draft.get("last_publish_task"), _DRAFT_VIEW_PUBLISH_TASK_KEYS
         ),
+        publication=bounded_publication,
         pricing_summary=pricing_summary,
         target_sites=tuple(bounded_targets),
     )
@@ -719,7 +761,7 @@ def draft_stock_update(
     idempotency="required",
     idempotency_keys=("operation_key",),
     recovery_policy="manual",
-    version="2",
+    version="3",
 )
 def draft_pricing_apply(
     request: DraftPricingApplyRequest,
@@ -748,7 +790,7 @@ def draft_pricing_apply(
         sales_target=(
             request.sales_target
             if user_supplied_input(execution.business_scope, "sales_target")
-            else ""
+            else []
         ),
         pricing_input=dict(request.pricing_input),
         product_store=scope.products,  # type: ignore[arg-type]

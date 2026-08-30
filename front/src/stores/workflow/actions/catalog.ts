@@ -20,7 +20,7 @@ import {
 import type { ImageEditOptions, ImageTranslateOptions } from '@/api/workflow/catalog'
 import { assignUpc as assignUpcApi } from '@/api/workflow/settings'
 import {  marketplaces } from '@/constants/initialState'
-import { listingLanguageLabel } from '@/constants/locales'
+import { listingLanguageValue } from '@/constants/locales'
 import type {
 
   DraftDetail,
@@ -53,6 +53,7 @@ type WorkflowCatalogActionsPort = Pick<
   | 'categoryAutoMatchProductName'
   | 'categoryPrecheck'
   | 'precheck'
+  | 'precheckResults'
   | 'payloadPreview'
   | 'copyGenerating'
   | 'activeMarketplace'
@@ -83,7 +84,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
   const {
     product, productsIndex, draftsIndex, selectedProductIds, currentDraft,
     currentDraftProductContext, imagePrompt, collectForm, fillFormFromState, pricingResult,
-    categoryResults, categoryRecommendations, categoryAutoMatchProductName, categoryPrecheck, precheck,
+    categoryResults, categoryRecommendations, categoryAutoMatchProductName, categoryPrecheck, precheck, precheckResults,
     payloadPreview, copyGenerating, activeMarketplace, appConfig, loading,
     addLog, setError, currentStage, mergeTargetDetails, persistActiveTargetListingFields,
     invalidateCategoryAttributeLoad, configuredTargetsForLanguage, configuredSelectedTargets, targetPlatforms, syncActivePublishTarget,
@@ -595,6 +596,9 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
       currentDraftProductContext.value = result.productContext
       activeMarketplace.value = result.draft.platform
       syncActivePublishTarget()
+      precheck.value = null
+      precheckResults.value = {}
+      payloadPreview.value = null
       applyMutationIndexes(result)
       addLog(result.message || `草稿已保存：${result.draft.title || result.draft.draftId}`)
     } catch (exc) {
@@ -675,7 +679,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     loading.value = true
     setError('')
     try {
-      const language = String(targetLanguage || product.value.drafts[activeMarketplace.value]?.language || listingLanguageLabel(activeMarketplace.value)).trim()
+      const language = String(targetLanguage || product.value.drafts[activeMarketplace.value]?.language || listingLanguageValue(activeMarketplace.value)).trim()
       imagePrompt.value = await generateImagePrompts(product.value, activeMarketplace.value, language)
       addLog(`生图提示词已生成。${language ? `目标语言：${language}` : ''}`)
     } catch (exc) {
@@ -689,7 +693,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     loading.value = true
     setError('')
     try {
-      const language = String(targetLanguage || product.value.drafts[activeMarketplace.value]?.language || listingLanguageLabel(activeMarketplace.value)).trim()
+      const language = String(targetLanguage || product.value.drafts[activeMarketplace.value]?.language || listingLanguageValue(activeMarketplace.value)).trim()
       const result = await imageTranslateApi(product.value, activeMarketplace.value, language, options)
       product.value = result.product
       if (result.draft) currentDraft.value = result.draft

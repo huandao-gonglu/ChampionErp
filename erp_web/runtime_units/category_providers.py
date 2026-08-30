@@ -13,6 +13,7 @@ from __future__ import annotations
 ``CategorySearchProvider`` / ``CategoryNavigationProvider`` 运行时判断。
 """
 
+import hashlib
 import time
 import urllib.parse
 from datetime import timedelta
@@ -42,9 +43,12 @@ from .category_definition_support import (
 )
 from .category_refresh import (
     http_json,
+    mercadolibre_catalog_attribute_top_values,
     mercadolibre_category_attributes,
     mercadolibre_category_detail,
     mercadolibre_category_record,
+    mercadolibre_category_technical_specs,
+    normalize_ml_attribute,
 )
 from .ozon_category_api import (
     fetch_ozon_category_attribute_values,
@@ -106,6 +110,17 @@ class MercadoLibreCategoryProvider(CategoryProvider):
     def resolve_site(self, site: str = "") -> str:
         return self._resolved_site(site, self._store_config())
 
+    def _access_token_and_scope(self) -> tuple[str, str]:
+        store_config = self._store_config()
+        token = str(store_config.get("access_token") or "").strip()
+        if not token:
+            raise RuntimeError(
+                "Mercado Libre 类目技术规格缺少 Access Token，请先完成授权。"
+            )
+        scope_identity = str(store_config.get("user_id") or token).strip()
+        digest = hashlib.sha256(scope_identity.encode("utf-8")).hexdigest()
+        return token, f"sha256:{digest}"
+
     def _discovery_url(self, site: str, query: str, limit: int) -> str:
         site = str(site or "MLM").strip().upper()
         quoted_query = urllib.parse.quote(query)
@@ -118,13 +133,33 @@ class MercadoLibreCategoryProvider(CategoryProvider):
         def scoped_http_client(
             url: str,
             access_token: str | None = None,
+            *,
+            method: str = "GET",
+            payload: dict[str, Any] | list[Any] | None = None,
         ) -> dict[str, Any] | list[Any]:
+            normalized_method = str(method or "GET").strip().upper()
             if deadline_at is None:
-                return http_json(url, access_token)
+                if normalized_method == "GET" and payload is None:
+                    return http_json(url, access_token)
+                return http_json(
+                    url,
+                    access_token,
+                    method=normalized_method,
+                    payload=payload,
+                )
+            timeout = _remaining_timeout(deadline_at, 8) or 8
+            if normalized_method == "GET" and payload is None:
+                return http_json(
+                    url,
+                    access_token,
+                    timeout_seconds=timeout,
+                )
             return http_json(
                 url,
                 access_token,
-                timeout_seconds=_remaining_timeout(deadline_at, 8) or 8,
+                timeout_seconds=timeout,
+                method=normalized_method,
+                payload=payload,
             )
 
         return scoped_http_client
@@ -169,11 +204,82 @@ class MercadoLibreCategoryProvider(CategoryProvider):
             raise RuntimeError("缺少 Mercado Libre 类目 ID。")
         resolved_site = self.resolve_site(site)
         deadline_at = _deadline_at(timeout_seconds)
+        is_cbt = resolved_site == "CBT" or category_id.upper().startswith("CBT")
+        if is_cbt:
+            access_token, credential_scope_hash = self._access_token_and_scope()
+        else:
+            access_token, credential_scope_hash = "", "public"
 
         def live_loader() -> CategoryDefinition:
             http = self._scoped_http_client(deadline_at)
-            detail = mercadolibre_category_detail(category_id, http_client=http)
-            attrs = mercadolibre_category_attributes(category_id, http_client=http)
+            detail = mercadolibre_category_detail(
+                category_id,
+                access_token or None,
+                http_client=http,
+            )
+            technical_specs = (
+                mercadolibre_category_technical_specs(
+                    category_id,
+                    access_token,
+                    http_client=http,
+                )
+                if is_cbt
+                else {}
+            )
+            attrs = mercadolibre_category_attributes(
+                category_id,
+                access_token or None,
+                http_client=http,
+                technical_specs=technical_specs,
+            )
+            settings = (
+                detail.get("settings")
+                if isinstance(detail.get("settings"), dict)
+                else {}
+            )
+            catalog_domain = str(
+                settings.get("catalog_domain") or detail.get("domain_id") or ""
+            ).strip()
+            brand_definition = next(
+                (
+                    item
+                    for group in ("required", "optional")
+                    for item in attrs.get(group, [])
+                    if isinstance(item, dict)
+                    and str(item.get("id") or "").strip() == "BRAND"
+                ),
+                None,
+            )
+            if (
+                is_cbt
+                and catalog_domain
+                and isinstance(brand_definition, dict)
+                and brand_definition.get("allow_custom_values") is False
+            ):
+                brand_values = mercadolibre_catalog_attribute_top_values(
+                    catalog_domain,
+                    "BRAND",
+                    access_token,
+                    http_client=http,
+                    limit=51,
+                )
+                raw_brand = (
+                    brand_definition.get("raw")
+                    if isinstance(brand_definition.get("raw"), dict)
+                    else {}
+                )
+                enriched_brand = normalize_ml_attribute(
+                    raw_brand,
+                    allow_custom_values=False,
+                    supplemental_values=brand_values,
+                )
+                for group in ("required", "optional"):
+                    attrs[group] = [
+                        enriched_brand
+                        if item is brand_definition
+                        else item
+                        for item in attrs.get(group, [])
+                    ]
             record = mercadolibre_category_record(detail, resolved_site, attrs)
             attributes = (
                 record.get("attributes")
@@ -193,8 +299,7 @@ class MercadoLibreCategoryProvider(CategoryProvider):
         return load_definition_through_cache(
             cache_root=_cache_root(),
             platform=self.platform,
-            # Mercado Libre 类目接口公开，无需凭据作用域。
-            credential_scope_hash="public",
+            credential_scope_hash=credential_scope_hash,
             site=resolved_site,
             category_id=category_id,
             live_loader=live_loader,
@@ -215,18 +320,28 @@ class MercadoLibreCategoryProvider(CategoryProvider):
     ) -> CategoryAttributeValuePage:
         resolved_site = self.resolve_site(site)
         deadline_at = _deadline_at(timeout_seconds)
+        normalized_category_id = str(category_id or "").strip()
+        is_cbt = (
+            resolved_site == "CBT"
+            or normalized_category_id.upper().startswith("CBT")
+        )
+        access_token = self._access_token_and_scope()[0] if is_cbt else ""
+        http = self._scoped_http_client(deadline_at)
         raw_attributes = mercadolibre_category_attributes(
-            str(category_id or "").strip(),
-            http_client=self._scoped_http_client(deadline_at),
+            normalized_category_id,
+            access_token or None,
+            http_client=http,
         )
         candidates: list[tuple[str, str]] = []
         target_id = str(attribute_id or "").strip()
+        target_exists = False
         for group in ("required", "optional"):
             for item in raw_attributes.get(group) or []:
                 if not isinstance(item, dict):
                     continue
                 if str(item.get("id") or "").strip() != target_id:
                     continue
+                target_exists = True
                 raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
                 for row in raw.get("values") or []:
                     if not isinstance(row, dict):
@@ -235,11 +350,39 @@ class MercadoLibreCategoryProvider(CategoryProvider):
                     if not value:
                         continue
                     candidates.append((value, str(row.get("id") or "").strip()))
+        if is_cbt and target_id == "BRAND" and target_exists:
+            detail = mercadolibre_category_detail(
+                normalized_category_id,
+                access_token,
+                http_client=http,
+            )
+            settings = (
+                detail.get("settings")
+                if isinstance(detail.get("settings"), dict)
+                else {}
+            )
+            catalog_domain = str(
+                settings.get("catalog_domain") or detail.get("domain_id") or ""
+            ).strip()
+            if catalog_domain:
+                for row in mercadolibre_catalog_attribute_top_values(
+                    catalog_domain,
+                    target_id,
+                    access_token,
+                    http_client=http,
+                    limit=1000,
+                ):
+                    value = str(row.get("name") or row.get("id") or "").strip()
+                    if value:
+                        candidates.append(
+                            (value, str(row.get("id") or "").strip())
+                        )
+        candidates = list(dict.fromkeys(candidates))
         return paginate_value_candidates(
             candidates,
             platform=self.platform,
             site=resolved_site,
-            category_id=str(category_id or "").strip(),
+            category_id=normalized_category_id,
             attribute_id=target_id,
             query=query,
             cursor=cursor,

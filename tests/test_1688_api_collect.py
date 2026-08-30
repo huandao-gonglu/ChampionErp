@@ -69,3 +69,19 @@ def test_parse_1688_api_product_maps_common_fields() -> None:
     assert source["attributes"]["材质"] == "不锈钢"
     assert source["dimensions"]["length_cm"] == "30"
     assert source["skus"][0]["price"] == "12.50"
+
+
+def test_parse_1688_api_product_defaults_unitless_dimensions_to_millimetres() -> None:
+    raw = {"result": {"subject": "风扇", "dimensions": "60 x 55 x 155"}}
+
+    source = parse_1688_api_product(
+        raw,
+        "https://detail.1688.com/offer/735716533861.html",
+        "735716533861",
+    )
+
+    assert source["dimensions"] == {
+        "length_cm": "6",
+        "width_cm": "5.5",
+        "height_cm": "15.5",
+    }

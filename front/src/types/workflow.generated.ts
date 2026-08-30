@@ -4,7 +4,7 @@
  */
 
 export const API_SCHEMA_VERSION = 1 as const
-export const PRODUCT_SCHEMA_VERSION = 2 as const
+export const PRODUCT_SCHEMA_VERSION = 3 as const
 
 export interface BackendApiResponse {
   schemaVersion?: number
@@ -130,6 +130,12 @@ export interface BackendImageItem {
   content_sha256?: string
   delivery_provider?: string
   delivery_error?: string
+  platform_picture_id?: string
+  mercadolibre_picture_id?: string
+  upload_status?: string
+  upload_error?: string
+  uploaded_at?: string
+  platform_uploads?: Record<string, Record<string, unknown>>
   raw?: Record<string, unknown>
 }
 
@@ -141,6 +147,56 @@ export interface BackendDraftImageRef {
   note?: string
   alt_text?: string
   source_asset_id?: string
+}
+
+export interface BackendMercadoLibreMarketplaceBinding {
+  seller_id: string
+  site_id: string
+  logistic_type: string
+  business_model: string
+  pricing_model: string
+  user_product: boolean | null
+}
+
+export interface BackendMercadoLibreMarketplaceUser {
+  user_id: string
+  site_id: string
+  marketplace_bindings: Array<BackendMercadoLibreMarketplaceBinding>
+}
+
+export interface BackendMercadoLibreMarketPublication {
+  site_id?: string
+  seller_id?: string
+  logistic_type?: string
+  item_id?: string
+  user_product_id?: string
+  status?: string
+  price?: number | string
+  net_proceeds?: number | string
+  free_shipping?: boolean
+  sale_terms?: Array<Record<string, unknown>>
+  currency_id?: string
+  listing_type_id?: string
+  error?: Record<string, unknown> | Array<unknown> | string
+  last_operation?: Record<string, unknown>
+  updated_at?: string
+}
+
+export interface BackendMercadoLibrePublication {
+  model?: string
+  account_user_id?: string
+  parent_item_id?: string
+  parent_user_product_id?: string
+  siteless_user_product_id?: string
+  siteless_family_id?: string
+  seller_id?: string
+  family_name?: string
+  status?: string
+  markets?: Array<BackendMercadoLibreMarketPublication>
+  confirmed_payload?: Record<string, unknown>
+  error?: Record<string, unknown> | Array<unknown> | string
+  last_operation?: Record<string, unknown>
+  updated_at?: string
 }
 
 export interface BackendProductSource {
@@ -171,8 +227,14 @@ export interface BackendProductSource {
 }
 
 export interface BackendMercadoLibreSiteToSell {
-  site_id: string
-  logistic_type: string
+  site_id?: string
+  logistic_type?: string
+  price?: number | string
+  net_proceeds?: number | string
+  listing_type_id?: string
+  status?: string
+  free_shipping?: boolean
+  sale_terms?: Array<Record<string, unknown>>
 }
 
 export interface BackendDraftTargetSite {
@@ -206,6 +268,7 @@ export interface BackendPlatformDraft {
   country?: string
   status?: string
   publish_status?: string
+  global_title?: string
   title?: string
   description?: string
   brand?: string
@@ -232,6 +295,7 @@ export interface BackendPlatformDraft {
   last_precheck?: Record<string, unknown>
   last_precheck_target?: Record<string, unknown>
   last_publish_task?: Record<string, unknown>
+  publication?: BackendMercadoLibrePublication
   ai_copy_ready?: boolean
   copy_generated_at?: string
   copy_source?: string
@@ -302,4 +366,36 @@ export interface BackendPublishJob {
   persisted_drafts?: Record<string, Record<string, unknown>>
   created_at?: string
   updated_at?: string
+}
+
+export interface BackendPublishJobSiteToSellSummary {
+  site_id: string
+  logistic_type: string
+}
+
+export interface BackendPublishJobPlatformSummary {
+  platform: string
+  draft_id: string
+  site: string
+  sites_to_sell: Array<BackendPublishJobSiteToSellSummary>
+  status: string
+  stage: string
+  attempts: number
+  error: string
+  updated_at: string
+}
+
+export interface BackendPublishJobSummary {
+  job_id: string
+  product_id: string
+  product_name: string
+  draft_id: string
+  status: string
+  raw_status: string
+  stage: string
+  attempts: number
+  error: string
+  platforms: Array<BackendPublishJobPlatformSummary>
+  created_at: string
+  updated_at: string
 }

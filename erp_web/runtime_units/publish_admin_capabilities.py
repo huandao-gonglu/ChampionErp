@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-"""发布管理 Capability：直接发布、真实终态确认、远端商品关闭。
+"""发布管理 Capability：非 Mercado 直接发布与 Mercado User Product 暂停。
 
-三者都会对外部平台产生真实影响，因此全部是 task + approval 能力：
+两者都会对外部平台产生真实影响，因此全部是 task + approval 能力：
 审批摘要与规范化参数由服务端快照函数生成（含商品标题等服务端事实），
 digest 绑定冻结参数、步骤、任务版本与 Capability 版本；执行时重算快照
 复核，防止模型伪造审批或批准后目标漂移。领域逻辑仍由 ``runtime_api`` /
@@ -18,12 +18,10 @@ from typing import Annotated, Any
 from erp_web.schemas.ai_tools import TaskApprovalSnapshot
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.publish_admin_capabilities import (
-    PlatformItemCloseRequest,
-    PlatformItemCloseResult,
+    MercadoLibreUserProductPauseRequest,
+    MercadoLibreUserProductPauseResult,
     ProductPublishDirectRequest,
     ProductPublishDirectResult,
-    PublishRealConfirmRequest,
-    PublishRealConfirmResult,
 )
 from erp_web.services.ai_tool_declaration import Injected, ai_tool
 from erp_web.services.capability_errors import BusinessCapabilityError
@@ -103,13 +101,11 @@ class PublishAdminCapabilityScope:
         tuple[dict[str, Any], dict[str, Any] | None, int],
     ]
     store_config_loader: Callable[[], dict[str, Any]]
-    real_publisher: Callable[[dict[str, Any], bool], dict[str, Any]]
-    item_closer: Callable[[str], dict[str, Any]]
+    user_product_pauser: Callable[[str], dict[str, Any]]
 
 
 PRODUCT_PUBLISH_DIRECT_TOOL = "product_publish_direct"
-PUBLISH_REAL_CONFIRM_TOOL = "publish_real_confirm"
-PLATFORM_ITEM_CLOSE_TOOL = "platform_item_close"
+MERCADOLIBRE_USER_PRODUCT_PAUSE_TOOL = "mercadolibre_user_product_pause"
 
 
 def _load_product(
@@ -159,7 +155,20 @@ def _publish_direct_approval_snapshot(
     request: ProductPublishDirectRequest,
     scope: PublishAdminCapabilityScope,
 ) -> TaskApprovalSnapshot:
-    platform = _text(request.platform).lower() or "mercadolibre"
+    platform = _text(request.platform).lower()
+    if not platform:
+        raise BusinessCapabilityError(
+            "PUBLISH_DIRECT_PLATFORM_REQUIRED",
+            "直接发布必须显式指定非 Mercado Libre 平台。",
+        )
+    if platform == "mercadolibre":
+        raise BusinessCapabilityError(
+            "MERCADOLIBRE_PUBLISH_BUS_REQUIRED",
+            (
+                "Mercado Libre User Products 只能通过预览、人工确认与"
+                " PublishingBus 持久队列发布。"
+            ),
+        )
     return _publish_target_snapshot(
         scope,
         product_id=request.product_id,
@@ -168,29 +177,19 @@ def _publish_direct_approval_snapshot(
     )
 
 
-def _publish_real_confirm_approval_snapshot(
-    request: PublishRealConfirmRequest,
-    scope: PublishAdminCapabilityScope,
-) -> TaskApprovalSnapshot:
-    return _publish_target_snapshot(
-        scope,
-        product_id=request.product_id,
-        platform="mercadolibre",
-        action="确认 Mercado Libre 真实发布终态",
-    )
-
-
-def _platform_item_close_approval_snapshot(
-    request: PlatformItemCloseRequest,
+def _mercadolibre_user_product_pause_approval_snapshot(
+    request: MercadoLibreUserProductPauseRequest,
     scope: PublishAdminCapabilityScope,
 ) -> TaskApprovalSnapshot:
     del scope
-    platform = _text(request.platform).lower() or "mercadolibre"
     return TaskApprovalSnapshot(
-        summary=f"关闭 {platform} 远端商品 {request.item_id}",
+        summary=(
+            "暂停 Mercado Siteless User Product "
+            f"{request.siteless_user_product_id}"
+        ),
         canonical_payload={
-            "item_id": request.item_id,
-            "platform": platform,
+            "siteless_user_product_id": request.siteless_user_product_id,
+            "platform": "mercadolibre",
         },
     )
 
@@ -198,7 +197,7 @@ def _platform_item_close_approval_snapshot(
 @ai_tool(
     name=PRODUCT_PUBLISH_DIRECT_TOOL,
     description=(
-        "直接同步发布商品到目标平台（真实调用平台接口）；"
+        "直接同步发布商品到非 Mercado Libre 目标平台（真实调用平台接口）；"
         "需要人工在受信界面批准后才会执行。"
     ),
     permission="product.publish",
@@ -215,7 +214,7 @@ def product_publish_direct(
     scope: Annotated[PublishAdminCapabilityScope, Injected()],
     execution: Annotated[AiExecutionContext, Injected()],
 ) -> ProductPublishDirectResult:
-    platform = _text(request.platform).lower() or "mercadolibre"
+    platform = _text(request.platform).lower()
     verify_execution_approval(
         execution,
         snapshot=_publish_direct_approval_snapshot(request, scope),
@@ -260,120 +259,68 @@ def product_publish_direct(
 
 
 @ai_tool(
-    name=PUBLISH_REAL_CONFIRM_TOOL,
+    name=MERCADOLIBRE_USER_PRODUCT_PAUSE_TOOL,
     description=(
-        "确认 Mercado Libre 真实发布终态（真实调用平台接口）；"
-        "需要人工在受信界面批准后才会执行。"
-    ),
-    permission="product.publish",
-    side_effect="write",
-    approval_required=True,
-    approval_snapshot=_publish_real_confirm_approval_snapshot,
-    idempotency="required",
-    idempotency_keys=("operation_key",),
-    recovery_policy="manual",
-    version="1",
-)
-def publish_real_confirm(
-    request: PublishRealConfirmRequest,
-    scope: Annotated[PublishAdminCapabilityScope, Injected()],
-    execution: Annotated[AiExecutionContext, Injected()],
-) -> PublishRealConfirmResult:
-    verify_execution_approval(
-        execution,
-        snapshot=_publish_real_confirm_approval_snapshot(request, scope),
-        capability_name=PUBLISH_REAL_CONFIRM_TOOL,
-        capability_version="1",
-        stale_code="PUBLISH_REAL_CONFIRM_APPROVAL_STALE",
-    )
-    product = _load_product(scope, request.product_id)
-    try:
-        result = scope.real_publisher(product, True)
-    except BusinessCapabilityError:
-        raise
-    except Exception as exc:
-        raise BusinessCapabilityError(
-            "PUBLISH_REAL_CONFIRM_FAILED",
-            str(exc) or "真实发布确认失败。",
-        ) from exc
-    if not isinstance(result, dict) or not result.get("ok"):
-        status = _text(result.get("status") if isinstance(result, dict) else "")
-        if status == "not_ready":
-            code = "PUBLISH_REAL_CONFIRM_NOT_READY"
-        else:
-            code = "PUBLISH_REAL_CONFIRM_FAILED"
-        raise BusinessCapabilityError(
-            code,
-            _text(result.get("error") if isinstance(result, dict) else "")
-            or "真实发布确认失败。",
-        )
-    return PublishRealConfirmResult(
-        ok=True,
-        status=_text(result.get("status")) or "real_publish_success",
-        product_id=request.product_id,
-        payload_path=_text(result.get("payload_path")),
-        message=_text(result.get("message")),
-        result=_dict_value(result.get("result")),
-    )
-
-
-@ai_tool(
-    name=PLATFORM_ITEM_CLOSE_TOOL,
-    description=(
-        "关闭/下架平台远端商品（真实调用平台接口）；"
+        "暂停 Mercado Siteless User Product 及其市场刊登；"
         "需要人工在受信界面批准后才会执行。"
     ),
     permission="platform.write",
     side_effect="write",
     approval_required=True,
-    approval_snapshot=_platform_item_close_approval_snapshot,
+    approval_snapshot=_mercadolibre_user_product_pause_approval_snapshot,
     idempotency="required",
     idempotency_keys=("operation_key",),
     recovery_policy="manual",
     version="1",
 )
-def platform_item_close(
-    request: PlatformItemCloseRequest,
+def mercadolibre_user_product_pause(
+    request: MercadoLibreUserProductPauseRequest,
     scope: Annotated[PublishAdminCapabilityScope, Injected()],
     execution: Annotated[AiExecutionContext, Injected()],
-) -> PlatformItemCloseResult:
-    platform = _text(request.platform).lower() or "mercadolibre"
-    if platform != "mercadolibre":
-        raise BusinessCapabilityError(
-            "PLATFORM_ITEM_CLOSE_UNSUPPORTED",
-            f"暂不支持关闭该平台的远端商品：{platform}",
-        )
+) -> MercadoLibreUserProductPauseResult:
     verify_execution_approval(
         execution,
-        snapshot=_platform_item_close_approval_snapshot(request, scope),
-        capability_name=PLATFORM_ITEM_CLOSE_TOOL,
+        snapshot=_mercadolibre_user_product_pause_approval_snapshot(
+            request,
+            scope,
+        ),
+        capability_name=MERCADOLIBRE_USER_PRODUCT_PAUSE_TOOL,
         capability_version="1",
-        stale_code="ITEM_CLOSE_APPROVAL_STALE",
+        stale_code="USER_PRODUCT_PAUSE_APPROVAL_STALE",
     )
     try:
-        result = scope.item_closer(request.item_id)
+        result = scope.user_product_pauser(request.siteless_user_product_id)
     except BusinessCapabilityError:
         raise
     except Exception as exc:
-        # 关闭请求已发往平台：任何异常（含超时）都不能按普通可重试失败处理，
-        # 否则自动重试可能重复关闭/误报终态；上报为结果未知，交由人工核对。
+        # 暂停请求已发往平台后，任何异常都不能按普通可重试失败处理。
         raise BusinessCapabilityError(
-            "ITEM_CLOSE_OUTCOME_UNKNOWN",
-            f"远端商品关闭请求已发出，平台侧结果未知：{exc}",
+            "USER_PRODUCT_PAUSE_OUTCOME_UNKNOWN",
+            f"User Product 暂停请求已发出，平台侧结果未知：{exc}",
             retryable=False,
             details={"outcome_unknown": True},
         ) from exc
     if not isinstance(result, dict) or not result.get("ok"):
+        if isinstance(result, dict) and result.get("outcome_unknown") is True:
+            details = _dict_value(result.get("details"))
+            details["outcome_unknown"] = True
+            raise BusinessCapabilityError(
+                "USER_PRODUCT_PAUSE_OUTCOME_UNKNOWN",
+                _text(result.get("error"))
+                or "User Product 暂停请求已发出，平台侧结果未知。",
+                retryable=False,
+                details=details,
+            )
         raise BusinessCapabilityError(
             _text(result.get("error_code") if isinstance(result, dict) else "")
-            or "ITEM_CLOSE_FAILED",
+            or "USER_PRODUCT_PAUSE_FAILED",
             _text(result.get("error") if isinstance(result, dict) else "")
-            or "远端商品关闭失败。",
+            or "Mercado User Product 暂停失败。",
         )
-    return PlatformItemCloseResult(
+    return MercadoLibreUserProductPauseResult(
         ok=True,
-        platform=platform,
-        item_id=request.item_id,
+        platform="mercadolibre",
+        siteless_user_product_id=request.siteless_user_product_id,
         status=_text(result.get("status")),
         message=_text(result.get("message")),
     )
@@ -381,18 +328,15 @@ def platform_item_close(
 
 PUBLISH_ADMIN_AI_CAPABILITIES = (
     product_publish_direct,
-    publish_real_confirm,
-    platform_item_close,
+    mercadolibre_user_product_pause,
 )
 
 
 __all__ = [
-    "PLATFORM_ITEM_CLOSE_TOOL",
+    "MERCADOLIBRE_USER_PRODUCT_PAUSE_TOOL",
     "PRODUCT_PUBLISH_DIRECT_TOOL",
     "PUBLISH_ADMIN_AI_CAPABILITIES",
-    "PUBLISH_REAL_CONFIRM_TOOL",
     "PublishAdminCapabilityScope",
-    "platform_item_close",
+    "mercadolibre_user_product_pause",
     "product_publish_direct",
-    "publish_real_confirm",
 ]

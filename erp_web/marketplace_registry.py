@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 
 
 class Marketplace(StrEnum):
@@ -44,7 +45,7 @@ class MarketplaceSpec:
 
     key: str
     label: str
-    sites: tuple[dict[str, str], ...]
+    sites: tuple[dict[str, Any], ...]
     capabilities: frozenset[str]
     preset_key: str
     title_limit: int
@@ -83,13 +84,14 @@ MARKETPLACE_SPECS: tuple[MarketplaceSpec, ...] = (
                 "key": "CBT",
                 "code": "CBT",
                 "label": "Global Selling 全局刊登",
-                "language": "en-US",
+                "language": "es",
             },
             {"key": "MLM", "code": "MLM", "label": "墨西哥", "language": "es"},
             {"key": "MLB", "code": "MLB", "label": "巴西", "language": "pt-BR"},
             {"key": "MLC", "code": "MLC", "label": "智利", "language": "es"},
             {"key": "MCO", "code": "MCO", "label": "哥伦比亚", "language": "es"},
             {"key": "MLA", "code": "MLA", "label": "阿根廷", "language": "es"},
+            {"key": "MLU", "code": "MLU", "label": "乌拉圭", "language": "es"},
         ),
         capabilities=frozenset({CAP_PUBLISH, CAP_PREVIEW_PAYLOAD, CAP_CATEGORY_SEARCH, CAP_CATEGORY_ATTRIBUTES, CAP_ORDERS}),
         preset_key="mercadolibre",
@@ -101,11 +103,11 @@ MARKETPLACE_SPECS: tuple[MarketplaceSpec, ...] = (
             CredentialField("redirect_uri", "Redirect URI"),
             CredentialField("access_token", "Access Token", secret=True),
             CredentialField("refresh_token", "Refresh Token", secret=True),
-            CredentialField("site_id", "Site"),
         ),
         test_auth="erp_web.runtime_units.store_credentials:_test_mercadolibre_auth",
         masked_account_fields=("shop_name", "user_id"),
         auth_failure_code="mercadolibre_auth_failed",
+        store_binding_fields=("user_id",),
     ),
     MarketplaceSpec(
         key=Marketplace.YANDEX.value,
@@ -165,7 +167,12 @@ MARKETPLACE_SPECS: tuple[MarketplaceSpec, ...] = (
 _SPECS_BY_KEY: dict[str, MarketplaceSpec] = {spec.key: spec for spec in MARKETPLACE_SPECS}
 
 MARKETPLACE_OPTIONS = tuple(
-    {"key": spec.key, "label": spec.label, "sites": spec.sites}
+    {
+        "key": spec.key,
+        "label": spec.label,
+        "title_limit": spec.title_limit,
+        "sites": spec.sites,
+    }
     for spec in MARKETPLACE_SPECS
 )
 PLATFORMS = tuple(spec.key for spec in MARKETPLACE_SPECS)

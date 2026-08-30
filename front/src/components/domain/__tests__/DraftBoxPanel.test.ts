@@ -16,6 +16,18 @@ const platformOptions: MarketplaceOption[] = [{
   ],
 }]
 
+const storeConfig = {
+  mercadolibre: {
+    account_site_id: 'CBT',
+    listing_model: 'traditional_global_items',
+    marketplace_bindings: [
+      { seller_id: 'seller-mx', site_id: 'MLM', logistic_type: 'remote' },
+      { seller_id: 'seller-co', site_id: 'MCO', logistic_type: 'remote' },
+      { seller_id: 'seller-br', site_id: 'MLB', logistic_type: 'remote' },
+    ],
+  },
+}
+
 function draft(draftId: string, status: string, title: string): DraftIndexItem {
   return {
     draftId,
@@ -52,6 +64,7 @@ describe('DraftBoxPanel', () => {
           draft('published', 'published', '已发布商品'),
         ],
         platformOptions: [],
+        storeConfig: {},
         loading: false,
       },
     })
@@ -71,11 +84,19 @@ describe('DraftBoxPanel', () => {
 
   it('通过共享的两个选择器分别更新语言和市场', async () => {
     const row = draft('editable', 'claimed', '可编辑草稿')
-    row.targetSites = [{ platform: 'mercadolibre', site: 'MLM', language: 'es', listingCurrency: 'MXN' }]
+    row.site = 'CBT'
+    row.targetSites = [{
+      platform: 'mercadolibre',
+      site: 'CBT',
+      language: 'es',
+      listingCurrency: 'USD',
+      sitesToSell: [{ siteId: 'MLM', logisticType: 'remote' }],
+    }]
     const wrapper = mount(DraftBoxPanel, {
       props: {
         drafts: [row],
         platformOptions,
+        storeConfig,
         loading: false,
       },
     })
@@ -90,8 +111,15 @@ describe('DraftBoxPanel', () => {
 
     expect(wrapper.emitted('updateTargets')?.[0]?.[0]).toEqual(row)
     expect(wrapper.emitted('updateTargets')?.[0]?.[1]).toEqual([
-      expect.objectContaining({ platform: 'mercadolibre', site: 'MLM' }),
-      expect.objectContaining({ platform: 'mercadolibre', site: 'MCO' }),
+      expect.objectContaining({
+        platform: 'mercadolibre',
+        site: 'CBT',
+        language: 'es',
+        sitesToSell: [
+          { siteId: 'MLM', logisticType: 'remote' },
+          { siteId: 'MCO', logisticType: 'remote' },
+        ],
+      }),
     ])
   })
 })

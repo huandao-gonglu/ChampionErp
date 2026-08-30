@@ -45,6 +45,7 @@ const emit = defineEmits<{
   translateCategoryResults: []
   translateCategoryAttributes: []
   fillAttributes: []
+  updatePackageDimension: [field: PackageDimensionField, value: string]
   invalidateCategoryPrecheck: []
   categoryPrecheck: []
 }>()
@@ -59,6 +60,36 @@ const targetOptions = computed(() => props.publishTargets.map((target) => ({
 const showRequiredAttributes = ref(false)
 const showOptionalAttributes = ref(false)
 const attributeInputRefs = ref<Record<string, HTMLInputElement | HTMLSelectElement | null>>({})
+type PackageDimensionField = keyof DraftDetail['packageDimensions']
+type PackageDimensionAttributeMapping = {
+  field: PackageDimensionField
+  unit: 'cm' | 'kg'
+}
+type RootDraftAttributeField = 'brand' | 'model'
+
+const MERCADO_PACKAGE_DIMENSION_ATTRIBUTES: Record<string, PackageDimensionAttributeMapping> = {
+  PACKAGE_LENGTH: { field: 'lengthCm', unit: 'cm' },
+  PACKAGE_WIDTH: { field: 'widthCm', unit: 'cm' },
+  PACKAGE_HEIGHT: { field: 'heightCm', unit: 'cm' },
+  PACKAGE_WEIGHT: { field: 'weightKg', unit: 'kg' },
+}
+const MERCADO_ROOT_DRAFT_ATTRIBUTES: Record<string, RootDraftAttributeField> = {
+  BRAND: 'brand',
+  MODEL: 'model',
+}
+const MERCADO_COMPILER_MANAGED_ATTRIBUTE_IDS = new Set([
+  'SELLER_SKU',
+  'GTIN',
+  'UPC',
+  'UNIVERSAL_PRODUCT_CODE',
+  'EMPTY_GTIN_REASON',
+  'ITEM_CONDITION',
+  'SELLER_PACKAGE_LENGTH',
+  'SELLER_PACKAGE_WIDTH',
+  'SELLER_PACKAGE_HEIGHT',
+  'SELLER_PACKAGE_WEIGHT',
+])
+
 interface DictionaryFieldState {
   query: string
   loadedQuery: string | null
@@ -106,7 +137,7 @@ const pendingReviewAttributeIds = computed(() => {
   const requiredIds = new Set(
     (props.category?.requiredAttributes || [])
       .map((attr) => attr.id)
-      .filter(Boolean),
+      .filter((attrId) => Boolean(attrId) && !isCompilerManagedAttribute(attrId)),
   )
   for (const item of activeDraft.value.validationErrors) {
     collectReviewAttributeId(item, ids)
@@ -126,8 +157,16 @@ const attributeFields = computed(() => {
   }
   return [...fields.values()]
 })
-const requiredAttributeFields = computed(() => attributeFields.value.filter((attr) => attr.required))
-const optionalAttributeFields = computed(() => attributeFields.value.filter((attr) => !attr.required))
+function isCompilerManagedAttribute(attrId: string) {
+  return props.selectedPublishTarget.platform === 'mercadolibre'
+    && MERCADO_COMPILER_MANAGED_ATTRIBUTE_IDS.has(attrId)
+}
+const requiredAttributeFields = computed(() => attributeFields.value.filter(
+  (attr) => attr.required && !attr.readOnly && !isCompilerManagedAttribute(attr.id),
+))
+const optionalAttributeFields = computed(() => attributeFields.value.filter(
+  (attr) => !attr.required && !attr.readOnly && !isCompilerManagedAttribute(attr.id),
+))
 const attributeFieldById = computed(() => new Map(attributeFields.value.map((attr) => [attr.id, attr])))
 const translationCount = computed(() => Object.values(props.categoryAttributeTranslations || {}).filter((item) => item.label).length)
 const translationSourceLabel = computed(() => props.categoryAttributeTranslationsSource === 'cache' ? '缓存' : props.categoryAttributeTranslationsSource === 'ai' ? 'AI' : '')
@@ -155,8 +194,92 @@ function attributeOptionLabel(attrId: string, option: string) {
 }
 
 function attributePlaceholder(attr: CategoryAttributeDefinition) {
-  if (isCategoryDictionaryAttribute(attr.dictionaryId, attr.isDictionary)) return '请选择平台允许的值'
+  if (isStrictEnumAttribute(attr)) return attr.isCollection ? '请选择一个或多个平台值' : '请选择平台允许的值'
+  if (isOpenEnumAttribute(attr)) return attr.isCollection ? '选择建议值或添加自定义值' : '选择建议值或输入自定义值'
+  if (attr.isCollection) return '添加一个或多个属性值'
   return attr.options?.length ? '请选择平台允许的选项' : '请输入属性值'
+}
+
+function isStrictEnumAttribute(attr: CategoryAttributeDefinition) {
+  return attr.valueMode === 'strict_enum'
+    || isCategoryDictionaryAttribute(attr.dictionaryId, attr.isDictionary)
+}
+
+function isOpenEnumAttribute(attr: CategoryAttributeDefinition) {
+  if (attr.valueMode === 'open_enum') return true
+  return props.selectedPublishTarget.platform === 'mercadolibre'
+    && !isStrictEnumAttribute(attr)
+    && Boolean(attr.options?.length || attr.hasMoreValues)
+}
+
+function allowsCustomAttributeValue(attr: CategoryAttributeDefinition) {
+  return Boolean(
+    attr.allowCustomValues
+    || attr.valueMode === 'open_enum'
+    || attr.valueMode === 'free_text'
+    || (props.selectedPublishTarget.platform === 'mercadolibre' && !isStrictEnumAttribute(attr)),
+  )
+}
+
+function usesAttributeOptionPicker(attr: CategoryAttributeDefinition) {
+  return Boolean(
+    attr.isCollection
+    || isStrictEnumAttribute(attr)
+    || isOpenEnumAttribute(attr)
+    || attr.options?.length
+    || attr.hasMoreValues,
+  )
+}
+
+function usesRemoteAttributeOptions(attr: CategoryAttributeDefinition) {
+  return isCategoryDictionaryAttribute(attr.dictionaryId, attr.isDictionary)
+    || Boolean(attr.hasMoreValues)
+}
+
+function packageDimensionAttribute(attrId: string): PackageDimensionAttributeMapping | null {
+  if (props.selectedPublishTarget.platform !== 'mercadolibre') return null
+  return MERCADO_PACKAGE_DIMENSION_ATTRIBUTES[attrId] || null
+}
+
+function rootDraftAttribute(attrId: string): RootDraftAttributeField | null {
+  if (props.selectedPublishTarget.platform !== 'mercadolibre') return null
+  return MERCADO_ROOT_DRAFT_ATTRIBUTES[attrId] || null
+}
+
+function usesRootDraftAttributePicker(attr: CategoryAttributeDefinition) {
+  return rootDraftAttribute(attr.id) === 'brand'
+    && isStrictEnumAttribute(attr)
+    && Boolean(attr.options?.length || attr.hasMoreValues)
+}
+
+function rootDraftAttributeValue(attrId: string) {
+  const field = rootDraftAttribute(attrId)
+  return field ? String(activeDraft.value[field] || '') : ''
+}
+
+function setRootDraftAttributeValue(attrId: string, value: string) {
+  const field = rootDraftAttribute(attrId)
+  if (!field) return
+  activeDraft.value[field] = value.trim()
+  // BRAND/MODEL 的唯一事实源是草稿根字段，attributes 不保留重复值。
+  delete activeDraft.value.attributes[attrId]
+  invalidateEditedAttribute(attrId)
+}
+
+function packageDimensionAttributeValue(attrId: string) {
+  const mapping = packageDimensionAttribute(attrId)
+  return mapping ? activeDraft.value.packageDimensions[mapping.field] : ''
+}
+
+function setPackageDimensionAttributeValue(attrId: string, value: string) {
+  const mapping = packageDimensionAttribute(attrId)
+  if (!mapping) return
+  const normalizedValue = value.trim()
+  activeDraft.value.packageDimensions[mapping.field] = normalizedValue
+  // PACKAGE_* 是发布边界从规范化包装尺寸派生的 wire 属性，不保留第二份值。
+  delete activeDraft.value.attributes[attrId]
+  emit('updatePackageDimension', mapping.field, normalizedValue)
+  invalidateEditedAttribute(attrId)
 }
 
 function selectedDictionaryValues(attrId: string): CategoryDictionaryValue[] {
@@ -166,11 +289,34 @@ function selectedDictionaryValues(attrId: string): CategoryDictionaryValue[] {
 }
 
 function selectedDictionarySummary(attr: CategoryAttributeDefinition) {
+  if (usesRootDraftAttributePicker(attr)) return rootDraftAttributeValue(attr.id)
   const values = selectedDictionaryValues(attr.id)
-  if (!values.length) return ''
+  if (!values.length) return legacyDictionaryValue(attr.id)
   return attr.isCollection
     ? `已选 ${values.length} 项`
     : values[0]?.value || ''
+}
+
+function boundRootDraftBrandSelection(attr: CategoryAttributeDefinition) {
+  if (!usesRootDraftAttributePicker(attr)) return null
+  const brand = rootDraftAttributeValue(attr.id).trim()
+  const selected = selectedDictionaryValues(attr.id)[0]
+  const valueId = String(selected?.dictionaryValueId ?? '').trim()
+  if (!brand || !valueId || selected?.value.trim() !== brand) return null
+  return selected
+}
+
+function pickerLegacyValue(attr: CategoryAttributeDefinition) {
+  if (!usesRootDraftAttributePicker(attr)) return legacyDictionaryValue(attr.id)
+  const brand = rootDraftAttributeValue(attr.id).trim()
+  if (!brand) return ''
+  const isLocalOption = (attr.options || []).some((option) => option.trim() === brand)
+  return isLocalOption || boundRootDraftBrandSelection(attr) ? '' : brand
+}
+
+function pickerHasValue(attr: CategoryAttributeDefinition) {
+  if (usesRootDraftAttributePicker(attr)) return Boolean(rootDraftAttributeValue(attr.id).trim())
+  return Boolean(selectedDictionaryValues(attr.id).length || legacyDictionaryValue(attr.id))
 }
 
 function unitAttributeValue(attrId: string): { value: string; unit: string } {
@@ -183,6 +329,8 @@ function unitAttributeValue(attrId: string): { value: string; unit: string } {
 }
 
 function unitAttributeSelectedUnit(attr: CategoryAttributeDefinition) {
+  const raw = activeDraft.value.attributes[attr.id]
+  if (typeof raw === 'string' && raw.trim()) return ''
   const current = unitAttributeValue(attr.id).unit
   return current || attr.defaultUnit || attr.unitOptions?.[0] || ''
 }
@@ -196,7 +344,7 @@ function setUnitAttributeValue(attr: CategoryAttributeDefinition, patch: { value
   } else {
     activeDraft.value.attributes[attr.id] = { value, unit }
   }
-  emit('invalidateCategoryPrecheck')
+  invalidateEditedAttribute(attr.id)
 }
 
 function dictionaryState(attr: CategoryAttributeDefinition): DictionaryFieldState {
@@ -221,6 +369,26 @@ function dictionaryState(attr: CategoryAttributeDefinition): DictionaryFieldStat
 function legacyDictionaryValue(attrId: string) {
   const value = activeDraft.value.attributes[attrId]
   return typeof value === 'string' && value.trim() ? value.trim() : ''
+}
+
+function localAttributeOptions(attr: CategoryAttributeDefinition, query = ''): CategoryAttributeOption[] {
+  const needle = query.trim().toLocaleLowerCase()
+  return (attr.options || []).flatMap((value, index) => {
+    const normalized = String(value || '').trim()
+    if (!normalized || (needle && !normalized.toLocaleLowerCase().includes(needle))) return []
+    return [{ id: `__local__:${index}`, value: normalized }]
+  })
+}
+
+function populateLocalAttributeOptions(attr: CategoryAttributeDefinition) {
+  const state = dictionaryState(attr)
+  state.options = localAttributeOptions(attr, state.query)
+  state.loadedQuery = state.query.trim()
+  state.nextCursor = ''
+  state.hasMore = false
+  state.loading = false
+  state.loadingMore = false
+  state.error = ''
 }
 
 function mergeDictionaryOptions(
@@ -278,6 +446,10 @@ async function loadDictionaryOptions(attr: CategoryAttributeDefinition, append =
 function openDictionary(attr: CategoryAttributeDefinition) {
   const state = dictionaryState(attr)
   state.open = true
+  if (!usesRemoteAttributeOptions(attr)) {
+    populateLocalAttributeOptions(attr)
+    return
+  }
   if (
     state.loadedQuery !== state.query.trim()
     && !state.loading
@@ -296,6 +468,10 @@ function scheduleDictionarySearch(attr: CategoryAttributeDefinition, value: stri
   state.error = ''
   const previous = dictionarySearchTimers.get(attr.id)
   if (previous) clearTimeout(previous)
+  if (!usesRemoteAttributeOptions(attr)) {
+    populateLocalAttributeOptions(attr)
+    return
+  }
   const query = value.trim()
   if (props.selectedPublishTarget.platform === 'ozon' && query.length === 1) {
     state.options = []
@@ -314,14 +490,40 @@ function selectDictionaryOption(attr: CategoryAttributeDefinition, option: Categ
   // Number 安全整数范围，Number() 会造成精度丢失并选错枚举值。
   const dictionaryValueId = String(option.id ?? '').trim()
   if (!dictionaryValueId || dictionaryValueId === '0') return
-  const existing = selectedDictionaryValues(attr.id)
-  const selected = attr.isCollection
-    ? [
-      ...existing.filter((item) => String(item.dictionaryValueId) !== dictionaryValueId),
-      { dictionaryValueId, value: option.value },
-    ].slice(0, attr.maxValueCount && attr.maxValueCount > 0 ? attr.maxValueCount : undefined)
-    : [{ dictionaryValueId, value: option.value }]
-  activeDraft.value.attributes[attr.id] = { values: selected }
+  const persistedValueId = dictionaryValueId.startsWith('__local__:') ? '' : dictionaryValueId
+  const selectedValue: CategoryDictionaryValue = {
+    ...(persistedValueId ? { dictionaryValueId: persistedValueId } : {}),
+    value: option.value,
+  }
+  if (usesRootDraftAttributePicker(attr)) {
+    activeDraft.value.brand = option.value.trim()
+    if (persistedValueId) {
+      activeDraft.value.attributes[attr.id] = { values: [selectedValue] }
+    } else {
+      delete activeDraft.value.attributes[attr.id]
+    }
+  } else if (attr.isCollection) {
+    const existing = selectedDictionaryValues(attr.id)
+    const selected = [
+      ...existing.filter((item) => {
+        const itemId = String(item.dictionaryValueId ?? '').trim()
+        return persistedValueId
+          ? itemId !== persistedValueId
+          : item.value.trim().toLocaleLowerCase() !== option.value.trim().toLocaleLowerCase()
+      }),
+      selectedValue,
+    ]
+    const maximum = attr.maxValueCount && attr.maxValueCount > 0 ? attr.maxValueCount : null
+    if (maximum !== null && selected.length > maximum) {
+      dictionaryState(attr).error = `该属性最多可选择 ${maximum} 项`
+      return
+    }
+    activeDraft.value.attributes[attr.id] = { values: selected }
+  } else if (persistedValueId) {
+    activeDraft.value.attributes[attr.id] = { values: [selectedValue] }
+  } else {
+    activeDraft.value.attributes[attr.id] = option.value
+  }
   const state = dictionaryState(attr)
   state.query = ''
   state.loadedQuery = null
@@ -330,24 +532,53 @@ function selectDictionaryOption(attr: CategoryAttributeDefinition, option: Categ
   state.hasMore = false
   state.open = Boolean(attr.isCollection)
   state.error = ''
-  if (attr.isCollection) void loadDictionaryOptions(attr)
-  emit('invalidateCategoryPrecheck')
+  if (attr.isCollection) openDictionary(attr)
+  invalidateEditedAttribute(attr.id)
 }
 
-function removeDictionaryOption(attr: CategoryAttributeDefinition, dictionaryValueId: string | number) {
-  const removed = String(dictionaryValueId)
-  const values = selectedDictionaryValues(attr.id).filter(
-    (item) => String(item.dictionaryValueId) !== removed,
-  )
+function commitCustomAttributeValue(attr: CategoryAttributeDefinition) {
+  if (!allowsCustomAttributeValue(attr)) return
+  const state = dictionaryState(attr)
+  const value = state.query.trim()
+  if (!value) return
+  if (attr.isCollection) {
+    const existing = selectedDictionaryValues(attr.id)
+    const selected = [
+      ...existing.filter((item) => item.value.trim().toLocaleLowerCase() !== value.toLocaleLowerCase()),
+      { value },
+    ]
+    const maximum = attr.maxValueCount && attr.maxValueCount > 0 ? attr.maxValueCount : null
+    if (maximum !== null && selected.length > maximum) {
+      state.error = `该属性最多可填写 ${maximum} 项`
+      return
+    }
+    activeDraft.value.attributes[attr.id] = { values: selected }
+  } else {
+    activeDraft.value.attributes[attr.id] = value
+  }
+  state.query = ''
+  state.loadedQuery = null
+  state.options = []
+  state.nextCursor = ''
+  state.hasMore = false
+  state.open = Boolean(attr.isCollection)
+  state.error = ''
+  if (state.open) openDictionary(attr)
+  invalidateEditedAttribute(attr.id)
+}
+
+function removeDictionaryOption(attr: CategoryAttributeDefinition, index: number) {
+  const values = selectedDictionaryValues(attr.id).filter((_, itemIndex) => itemIndex !== index)
   if (values.length) {
     activeDraft.value.attributes[attr.id] = { values }
   } else {
     delete activeDraft.value.attributes[attr.id]
   }
-  emit('invalidateCategoryPrecheck')
+  invalidateEditedAttribute(attr.id)
 }
 
 function clearDictionaryValue(attr: CategoryAttributeDefinition) {
+  if (usesRootDraftAttributePicker(attr)) activeDraft.value.brand = ''
   delete activeDraft.value.attributes[attr.id]
   const state = dictionaryState(attr)
   state.query = ''
@@ -356,7 +587,7 @@ function clearDictionaryValue(attr: CategoryAttributeDefinition) {
   state.nextCursor = ''
   state.hasMore = false
   state.open = false
-  emit('invalidateCategoryPrecheck')
+  invalidateEditedAttribute(attr.id)
 }
 
 function clearDictionarySearch(attr: CategoryAttributeDefinition) {
@@ -368,7 +599,7 @@ function clearDictionarySearch(attr: CategoryAttributeDefinition) {
   state.hasMore = false
   state.error = ''
   state.open = true
-  void loadDictionaryOptions(attr)
+  openDictionary(attr)
 }
 
 function loadMoreDictionaryOptions(attr: CategoryAttributeDefinition) {
@@ -426,6 +657,15 @@ function collectReviewAttributeId(item: PrecheckIssue | UnknownRecord | string, 
   if (attrId) ids.add(attrId)
 }
 
+function invalidateEditedAttribute(attrId: string) {
+  activeDraft.value.validationErrors = activeDraft.value.validationErrors.filter((item) => {
+    const ids = new Set<string>()
+    collectReviewAttributeId(item, ids)
+    return !ids.has(attrId)
+  })
+  emit('invalidateCategoryPrecheck')
+}
+
 function setAttributeInputRef(attrId: string, el: Element | ComponentPublicInstance | null) {
   const node = el && '$el' in el ? el.$el : el
   attributeInputRefs.value[attrId] = node instanceof HTMLInputElement || node instanceof HTMLSelectElement ? node : null
@@ -466,6 +706,18 @@ watch(
     for (const timer of dictionarySearchTimers.values()) clearTimeout(timer)
     dictionarySearchTimers.clear()
     dictionaryFieldStates.value = {}
+  },
+)
+
+watch(
+  () => activeDraft.value.brand,
+  (brand) => {
+    const raw = activeDraft.value.attributes.BRAND
+    if (!raw) return
+    const selected = selectedDictionaryValues('BRAND')[0]
+    if (!selected?.dictionaryValueId || selected.value.trim() !== brand.trim()) {
+      delete activeDraft.value.attributes.BRAND
+    }
   },
 )
 
@@ -643,11 +895,40 @@ function selectTargetByKey(value: string) {
               <span v-if="attributeTranslation(attr.id)" class="mt-0.5 block text-[11px] text-slate-400">{{ attributeOriginalLabel(attr) }}</span>
               <span v-if="attributeTranslation(attr.id)?.help" class="mt-0.5 block text-[11px] text-slate-500">{{ attributeTranslation(attr.id)?.help }}</span>
               <span v-if="pendingReviewAttributeIds.includes(attr.id)" class="mt-0.5 block text-[11px] text-amber-600">AI 暂无法从商品信息判断，请人工确认。</span>
-              <div v-if="isCategoryDictionaryAttribute(attr.dictionaryId, attr.isDictionary)" class="relative mt-1">
+              <div v-if="packageDimensionAttribute(attr.id)" class="mt-1">
+                <div class="flex gap-2">
+                  <input
+                    :ref="(el) => setAttributeInputRef(attr.id, el)"
+                    :value="packageDimensionAttributeValue(attr.id)"
+                    class="input"
+                    :class="isMissingAttribute(attr.id) ? 'border-rose-300 bg-rose-50' : ''"
+                    :data-attribute-id="attr.id"
+                    :data-package-dimension-field="packageDimensionAttribute(attr.id)?.field"
+                    inputmode="decimal"
+                    placeholder="请输入草稿包装尺寸"
+                    @input="setPackageDimensionAttributeValue(attr.id, ($event.target as HTMLInputElement).value)"
+                  />
+                  <span class="input flex w-20 shrink-0 items-center justify-center bg-accent-50 text-accent-500 dark:bg-dark-800 dark:text-accent-300">{{ packageDimensionAttribute(attr.id)?.unit }}</span>
+                </div>
+                <p class="mt-1 text-xs text-accent-500 dark:text-accent-400">来自草稿包装尺寸，修改后同步用于发布预检和 Mercado Payload。</p>
+              </div>
+              <div v-else-if="rootDraftAttribute(attr.id) && !usesRootDraftAttributePicker(attr)" class="mt-1">
+                <input
+                  :ref="(el) => setAttributeInputRef(attr.id, el)"
+                  :value="rootDraftAttributeValue(attr.id)"
+                  class="input"
+                  :class="isMissingAttribute(attr.id) ? 'border-rose-300 bg-rose-50' : ''"
+                  :data-attribute-id="attr.id"
+                  placeholder="请输入草稿基础信息"
+                  @input="setRootDraftAttributeValue(attr.id, ($event.target as HTMLInputElement).value)"
+                />
+                <p class="mt-1 text-xs text-accent-500 dark:text-accent-400">来自草稿基础信息，修改后同步用于发布预检和 Mercado Payload。</p>
+              </div>
+              <div v-else-if="usesRootDraftAttributePicker(attr) || usesAttributeOptionPicker(attr)" class="relative mt-1">
                 <div v-if="attr.isCollection && selectedDictionaryValues(attr.id).length" class="mb-2 flex flex-wrap gap-2">
-                  <span v-for="item in selectedDictionaryValues(attr.id)" :key="item.dictionaryValueId" class="inline-flex items-center gap-1 rounded-full bg-brand-50 px-2.5 py-1 text-xs text-brand-800 ring-1 ring-brand-200 dark:bg-brand-950/30 dark:text-brand-200 dark:ring-brand-900/60">
+                  <span v-for="(item, index) in selectedDictionaryValues(attr.id)" :key="`${item.dictionaryValueId || 'custom'}:${item.value}:${index}`" class="inline-flex items-center gap-1 rounded-full bg-brand-50 px-2.5 py-1 text-xs text-brand-800 ring-1 ring-brand-200 dark:bg-brand-950/30 dark:text-brand-200 dark:ring-brand-900/60">
                     {{ item.value }}
-                    <button type="button" aria-label="移除选项" @click="removeDictionaryOption(attr, item.dictionaryValueId)">×</button>
+                    <button type="button" aria-label="移除选项" @click="removeDictionaryOption(attr, index)">×</button>
                   </span>
                 </div>
                 <div class="flex gap-2">
@@ -663,7 +944,7 @@ function selectTargetByKey(value: string) {
                     @blur="closeDictionary(attr)"
                     @click="openDictionary(attr)"
                   />
-                  <button v-if="selectedDictionaryValues(attr.id).length || legacyDictionaryValue(attr.id)" class="btn btn-outline shrink-0" type="button" @click="clearDictionaryValue(attr)">清除已选</button>
+                  <button v-if="pickerHasValue(attr)" class="btn btn-outline shrink-0" type="button" @click="clearDictionaryValue(attr)">清除已选</button>
                 </div>
                 <div v-if="dictionaryState(attr).open" class="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-accent-200 bg-white p-1 shadow-xl dark:border-dark-700 dark:bg-dark-900">
                   <div class="sticky top-0 flex gap-2 bg-white p-2 dark:bg-dark-900">
@@ -671,12 +952,14 @@ function selectTargetByKey(value: string) {
                       :value="dictionaryState(attr).query"
                       class="input"
                       :data-dictionary-search-id="attr.id"
-                      placeholder="仅搜索平台选项，不会作为属性值保存"
+                      :placeholder="allowsCustomAttributeValue(attr) ? (attr.isCollection ? '搜索建议值，或输入后添加' : '搜索建议值，或输入后使用') : '仅搜索平台选项，不会作为属性值保存'"
                       autocomplete="off"
                       @focus="openDictionary(attr)"
                       @blur="closeDictionary(attr)"
+                      @keydown.enter.prevent="commitCustomAttributeValue(attr)"
                       @input="scheduleDictionarySearch(attr, ($event.target as HTMLInputElement).value)"
                     />
+                    <button v-if="allowsCustomAttributeValue(attr) && dictionaryState(attr).query.trim()" class="btn btn-primary shrink-0" type="button" @mousedown.prevent @click="commitCustomAttributeValue(attr)">{{ attr.isCollection ? '添加' : '使用此值' }}</button>
                     <button v-if="dictionaryState(attr).query" class="btn btn-outline shrink-0" type="button" @mousedown.prevent @click="clearDictionarySearch(attr)">清除搜索</button>
                   </div>
                   <div v-if="dictionaryState(attr).loading" class="p-3 text-xs text-accent-500">正在读取平台选项…</div>
@@ -702,10 +985,10 @@ function selectTargetByKey(value: string) {
                   >
                     {{ dictionaryState(attr).loadingMore ? '正在加载更多…' : '加载更多平台选项' }}
                   </button>
-                  <div v-if="!dictionaryState(attr).loading && !dictionaryState(attr).error && !dictionaryState(attr).options.length" class="p-3 text-xs text-accent-500">没有匹配的平台选项，请更换关键词或检查类目。</div>
+                  <div v-if="!dictionaryState(attr).loading && !dictionaryState(attr).error && !dictionaryState(attr).options.length" class="p-3 text-xs text-accent-500">{{ allowsCustomAttributeValue(attr) ? '没有匹配的建议值，可直接使用当前输入。' : '没有匹配的平台选项，请更换关键词或检查类目。' }}</div>
                 </div>
-                <p v-if="legacyDictionaryValue(attr.id)" class="mt-1 text-xs text-rose-700">旧值“{{ legacyDictionaryValue(attr.id) }}”不是平台选项，请重新选择。</p>
-                <p v-else class="mt-1 text-xs text-accent-500">平台枚举字段，只会保存从列表选中的值。</p>
+                <p v-if="isStrictEnumAttribute(attr) && pickerLegacyValue(attr)" class="mt-1 text-xs text-rose-700">旧值“{{ pickerLegacyValue(attr) }}”不是平台选项，请重新选择。</p>
+                <p v-else class="mt-1 text-xs text-accent-500">{{ isStrictEnumAttribute(attr) ? '平台枚举字段，只会保存从列表选中的值。' : attr.isCollection ? '可选择多个建议值，也可逐项添加自定义值。' : '建议值可搜索；找不到时可直接使用自定义值。' }}</p>
               </div>
               <div v-else-if="attr.unitOptions?.length" class="mt-1 flex gap-2">
                 <input
@@ -723,6 +1006,7 @@ function selectTargetByKey(value: string) {
                   :aria-label="`单位（${attributeLabel(attr)}）`"
                   @change="setUnitAttributeValue(attr, { unit: ($event.target as HTMLSelectElement).value })"
                 >
+                  <option value="" disabled>请选择单位</option>
                   <option v-for="unitOption in attr.unitOptions" :key="unitOption" :value="unitOption">{{ unitOption }}</option>
                 </select>
               </div>
@@ -733,7 +1017,7 @@ function selectTargetByKey(value: string) {
                 class="input mt-1"
                 :class="isMissingAttribute(attr.id) ? 'border-rose-300 bg-rose-50' : ''"
                 :data-attribute-id="attr.id"
-                @change="emit('invalidateCategoryPrecheck')"
+                @change="invalidateEditedAttribute(attr.id)"
               >
                 <option value="">{{ attributePlaceholder(attr) }}</option>
                 <option v-for="option in attr.options" :key="option" :value="option">{{ attributeOptionLabel(attr.id, option) }}</option>
@@ -746,7 +1030,7 @@ function selectTargetByKey(value: string) {
                 :class="isMissingAttribute(attr.id) ? 'border-rose-300 bg-rose-50' : ''"
                 :data-attribute-id="attr.id"
                 :placeholder="attributePlaceholder(attr)"
-                @input="emit('invalidateCategoryPrecheck')"
+                @input="invalidateEditedAttribute(attr.id)"
               />
             </label>
           </div>
@@ -765,11 +1049,38 @@ function selectTargetByKey(value: string) {
               <span class="text-xs font-semibold text-slate-500">{{ attributeLabel(attr) }}</span>
               <span v-if="attributeTranslation(attr.id)" class="mt-0.5 block text-[11px] text-slate-400">{{ attributeOriginalLabel(attr) }}</span>
               <span v-if="attributeTranslation(attr.id)?.help" class="mt-0.5 block text-[11px] text-slate-500">{{ attributeTranslation(attr.id)?.help }}</span>
-              <div v-if="isCategoryDictionaryAttribute(attr.dictionaryId, attr.isDictionary)" class="relative mt-1">
+              <div v-if="packageDimensionAttribute(attr.id)" class="mt-1">
+                <div class="flex gap-2">
+                  <input
+                    :ref="(el) => setAttributeInputRef(attr.id, el)"
+                    :value="packageDimensionAttributeValue(attr.id)"
+                    class="input"
+                    :data-attribute-id="attr.id"
+                    :data-package-dimension-field="packageDimensionAttribute(attr.id)?.field"
+                    inputmode="decimal"
+                    placeholder="请输入草稿包装尺寸"
+                    @input="setPackageDimensionAttributeValue(attr.id, ($event.target as HTMLInputElement).value)"
+                  />
+                  <span class="input flex w-20 shrink-0 items-center justify-center bg-accent-50 text-accent-500 dark:bg-dark-800 dark:text-accent-300">{{ packageDimensionAttribute(attr.id)?.unit }}</span>
+                </div>
+                <p class="mt-1 text-xs text-accent-500 dark:text-accent-400">来自草稿包装尺寸，修改后同步用于发布预检和 Mercado Payload。</p>
+              </div>
+              <div v-else-if="rootDraftAttribute(attr.id) && !usesRootDraftAttributePicker(attr)" class="mt-1">
+                <input
+                  :ref="(el) => setAttributeInputRef(attr.id, el)"
+                  :value="rootDraftAttributeValue(attr.id)"
+                  class="input"
+                  :data-attribute-id="attr.id"
+                  placeholder="请输入草稿基础信息"
+                  @input="setRootDraftAttributeValue(attr.id, ($event.target as HTMLInputElement).value)"
+                />
+                <p class="mt-1 text-xs text-accent-500 dark:text-accent-400">来自草稿基础信息，修改后同步用于发布预检和 Mercado Payload。</p>
+              </div>
+              <div v-else-if="usesRootDraftAttributePicker(attr) || usesAttributeOptionPicker(attr)" class="relative mt-1">
                 <div v-if="attr.isCollection && selectedDictionaryValues(attr.id).length" class="mb-2 flex flex-wrap gap-2">
-                  <span v-for="item in selectedDictionaryValues(attr.id)" :key="item.dictionaryValueId" class="inline-flex items-center gap-1 rounded-full bg-brand-50 px-2.5 py-1 text-xs text-brand-800 ring-1 ring-brand-200 dark:bg-brand-950/30 dark:text-brand-200 dark:ring-brand-900/60">
+                  <span v-for="(item, index) in selectedDictionaryValues(attr.id)" :key="`${item.dictionaryValueId || 'custom'}:${item.value}:${index}`" class="inline-flex items-center gap-1 rounded-full bg-brand-50 px-2.5 py-1 text-xs text-brand-800 ring-1 ring-brand-200 dark:bg-brand-950/30 dark:text-brand-200 dark:ring-brand-900/60">
                     {{ item.value }}
-                    <button type="button" aria-label="移除选项" @click="removeDictionaryOption(attr, item.dictionaryValueId)">×</button>
+                    <button type="button" aria-label="移除选项" @click="removeDictionaryOption(attr, index)">×</button>
                   </span>
                 </div>
                 <div class="flex gap-2">
@@ -784,7 +1095,7 @@ function selectTargetByKey(value: string) {
                     @blur="closeDictionary(attr)"
                     @click="openDictionary(attr)"
                   />
-                  <button v-if="selectedDictionaryValues(attr.id).length || legacyDictionaryValue(attr.id)" class="btn btn-outline shrink-0" type="button" @click="clearDictionaryValue(attr)">清除已选</button>
+                  <button v-if="pickerHasValue(attr)" class="btn btn-outline shrink-0" type="button" @click="clearDictionaryValue(attr)">清除已选</button>
                 </div>
                 <div v-if="dictionaryState(attr).open" class="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-accent-200 bg-white p-1 shadow-xl dark:border-dark-700 dark:bg-dark-900">
                   <div class="sticky top-0 flex gap-2 bg-white p-2 dark:bg-dark-900">
@@ -792,12 +1103,14 @@ function selectTargetByKey(value: string) {
                       :value="dictionaryState(attr).query"
                       class="input"
                       :data-dictionary-search-id="attr.id"
-                      placeholder="仅搜索平台选项，不会作为属性值保存"
+                      :placeholder="allowsCustomAttributeValue(attr) ? (attr.isCollection ? '搜索建议值，或输入后添加' : '搜索建议值，或输入后使用') : '仅搜索平台选项，不会作为属性值保存'"
                       autocomplete="off"
                       @focus="openDictionary(attr)"
                       @blur="closeDictionary(attr)"
+                      @keydown.enter.prevent="commitCustomAttributeValue(attr)"
                       @input="scheduleDictionarySearch(attr, ($event.target as HTMLInputElement).value)"
                     />
+                    <button v-if="allowsCustomAttributeValue(attr) && dictionaryState(attr).query.trim()" class="btn btn-primary shrink-0" type="button" @mousedown.prevent @click="commitCustomAttributeValue(attr)">{{ attr.isCollection ? '添加' : '使用此值' }}</button>
                     <button v-if="dictionaryState(attr).query" class="btn btn-outline shrink-0" type="button" @mousedown.prevent @click="clearDictionarySearch(attr)">清除搜索</button>
                   </div>
                   <div v-if="dictionaryState(attr).loading" class="p-3 text-xs text-accent-500">正在读取平台选项…</div>
@@ -823,10 +1136,10 @@ function selectTargetByKey(value: string) {
                   >
                     {{ dictionaryState(attr).loadingMore ? '正在加载更多…' : '加载更多平台选项' }}
                   </button>
-                  <div v-if="!dictionaryState(attr).loading && !dictionaryState(attr).error && !dictionaryState(attr).options.length" class="p-3 text-xs text-accent-500">没有匹配的平台选项，请更换关键词或检查类目。</div>
+                  <div v-if="!dictionaryState(attr).loading && !dictionaryState(attr).error && !dictionaryState(attr).options.length" class="p-3 text-xs text-accent-500">{{ allowsCustomAttributeValue(attr) ? '没有匹配的建议值，可直接使用当前输入。' : '没有匹配的平台选项，请更换关键词或检查类目。' }}</div>
                 </div>
-                <p v-if="legacyDictionaryValue(attr.id)" class="mt-1 text-xs text-rose-700">旧值“{{ legacyDictionaryValue(attr.id) }}”不是平台选项，请重新选择。</p>
-                <p v-else class="mt-1 text-xs text-accent-500">平台枚举字段，只会保存从列表选中的值。</p>
+                <p v-if="isStrictEnumAttribute(attr) && pickerLegacyValue(attr)" class="mt-1 text-xs text-rose-700">旧值“{{ pickerLegacyValue(attr) }}”不是平台选项，请重新选择。</p>
+                <p v-else class="mt-1 text-xs text-accent-500">{{ isStrictEnumAttribute(attr) ? '平台枚举字段，只会保存从列表选中的值。' : attr.isCollection ? '可选择多个建议值，也可逐项添加自定义值。' : '建议值可搜索；找不到时可直接使用自定义值。' }}</p>
               </div>
               <div v-else-if="attr.unitOptions?.length" class="mt-1 flex gap-2">
                 <input
@@ -843,14 +1156,15 @@ function selectTargetByKey(value: string) {
                   :aria-label="`单位（${attributeLabel(attr)}）`"
                   @change="setUnitAttributeValue(attr, { unit: ($event.target as HTMLSelectElement).value })"
                 >
+                  <option value="" disabled>请选择单位</option>
                   <option v-for="unitOption in attr.unitOptions" :key="unitOption" :value="unitOption">{{ unitOption }}</option>
                 </select>
               </div>
-              <select v-else-if="attr.options?.length" :ref="(el) => setAttributeInputRef(attr.id, el)" v-model="activeDraft.attributes[attr.id]" class="input mt-1" :data-attribute-id="attr.id" @change="emit('invalidateCategoryPrecheck')">
+              <select v-else-if="attr.options?.length" :ref="(el) => setAttributeInputRef(attr.id, el)" v-model="activeDraft.attributes[attr.id]" class="input mt-1" :data-attribute-id="attr.id" @change="invalidateEditedAttribute(attr.id)">
                 <option value="">{{ attributePlaceholder(attr) }}</option>
                 <option v-for="option in attr.options" :key="option" :value="option">{{ attributeOptionLabel(attr.id, option) }}</option>
               </select>
-              <input v-else :ref="(el) => setAttributeInputRef(attr.id, el)" v-model="activeDraft.attributes[attr.id]" class="input mt-1" :data-attribute-id="attr.id" :placeholder="attributePlaceholder(attr)" @input="emit('invalidateCategoryPrecheck')" />
+              <input v-else :ref="(el) => setAttributeInputRef(attr.id, el)" v-model="activeDraft.attributes[attr.id]" class="input mt-1" :data-attribute-id="attr.id" :placeholder="attributePlaceholder(attr)" @input="invalidateEditedAttribute(attr.id)" />
             </label>
           </div>
         </div>

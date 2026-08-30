@@ -12,12 +12,13 @@ from erp_web.schemas.product import (
     Product,
 )
 
-from .attribute_matching import infer_source_attribute_matches
+from .attribute_matching import infer_source_attribute_matches, source_package_dimensions
 from .common import PLATFORMS, SOURCE_IMAGE_ORIGINS, normalize_list, parse_dimensions_text, text_or_empty
 from .defaults import default_collect_diagnostics, default_draft, default_pricing, default_product_model, default_source
 from .draft_image_model import normalize_draft_image_refs
 from .image_pool_model import image_pool_refs, normalize_image_pool
 from .platform_sku import resolve_platform_draft_sku
+from .mercadolibre_publication import normalize_mercadolibre_publication
 
 
 _REMOVED_PRODUCT_FIELDS = {
@@ -146,14 +147,19 @@ def normalize_draft_target_site(
         or ""
     ).strip()
     selected = marketplace_site(target_platform, raw_site)
+    if (
+        target_platform == "mercadolibre"
+        and str(selected.get("code") or raw_site).strip().upper() != "CBT"
+    ):
+        raise ValueError(
+            "Mercado Libre Global Selling 只允许 CBT/Siteless 一级草稿；"
+            "MLM、MLB、MLC、MCO 等站点只能通过 sites_to_sell 选择"
+        )
     canonical = {
         "platform": target_platform,
         "site": str(selected.get("code") or raw_site),
         "language": str(
-            selected.get("language")
-            if target_platform == "mercadolibre"
-            and str(selected.get("code") or raw_site).strip().upper() == "CBT"
-            else raw.get("language")
+            raw.get("language")
             or fallback.get("language")
             or selected.get("language")
             or ""
@@ -282,11 +288,16 @@ def normalize_draft_target_site(
     }
 
 
-def normalize_mercadolibre_sites_to_sell(value: Any) -> list[dict[str, str]]:
-    """规范化 Global Selling 销售目标，不从 CBT 刊登站点推导默认值。"""
+def normalize_mercadolibre_sites_to_sell(value: Any) -> list[dict[str, Any]]:
+    """规范化 Global Selling 销售目标及其独立销售条件。
+
+    ``site_id`` 与 ``logistic_type`` 标识一个 marketplace operation；价格、
+    listing type、配送和 sale terms 都属于该 operation，不能在产品持久化时
+    丢弃。缺省值由 payload builder 在发布边界补齐，这里只保留显式事实。
+    """
 
     rows = value if isinstance(value, list) else []
-    normalized: list[dict[str, str]] = []
+    normalized: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     for raw in rows:
         if not isinstance(raw, dict):
@@ -308,9 +319,43 @@ def normalize_mercadolibre_sites_to_sell(value: Any) -> list[dict[str, str]]:
         if key in seen:
             continue
         seen.add(key)
-        normalized.append(
-            {"site_id": site_id, "logistic_type": logistic_type}
+        target: dict[str, Any] = {
+            "site_id": site_id,
+            "logistic_type": logistic_type,
+        }
+        price = raw.get("price")
+        if price not in (None, ""):
+            target["price"] = price
+        net_proceeds = raw.get("net_proceeds")
+        if net_proceeds in (None, ""):
+            net_proceeds = raw.get("netProceeds")
+        if net_proceeds not in (None, ""):
+            target["net_proceeds"] = net_proceeds
+        listing_type_id = str(
+            raw.get("listing_type_id")
+            or raw.get("listingTypeId")
+            or raw.get("listing_type")
+            or ""
+        ).strip()
+        if listing_type_id:
+            target["listing_type_id"] = listing_type_id
+        status = str(raw.get("status") or "").strip().lower()
+        if status:
+            target["status"] = status
+        if raw.get("free_shipping") not in (None, ""):
+            target["free_shipping"] = bool(raw.get("free_shipping"))
+        elif raw.get("freeShipping") not in (None, ""):
+            target["free_shipping"] = bool(raw.get("freeShipping"))
+        sale_terms = (
+            raw.get("sale_terms")
+            if isinstance(raw.get("sale_terms"), list)
+            else raw.get("saleTerms")
+            if isinstance(raw.get("saleTerms"), list)
+            else None
         )
+        if sale_terms is not None:
+            target["sale_terms"] = deepcopy(sale_terms)
+        normalized.append(target)
     return sorted(
         normalized,
         key=lambda item: (item["site_id"], item["logistic_type"]),
@@ -453,7 +498,10 @@ def _merge_source(product: dict[str, Any]) -> dict[str, Any]:
     dimension_match = source["attribute_matches"].get("dimensions") if isinstance(source["attribute_matches"].get("dimensions"), dict) else {}
     matched_dimensions = dimension_match.get("normalized") if isinstance(dimension_match.get("normalized"), dict) else {}
     raw_dimensions = incoming.get("dimensions") if isinstance(incoming.get("dimensions"), dict) else {}
-    fallback_dimensions = parse_dimensions_text(product.get("dimensions"))
+    fallback_dimensions = parse_dimensions_text(
+        product.get("dimensions"),
+        default_unit="mm" if source["source_platform"].lower() == "1688" else "cm",
+    )
     source["dimensions"] = {
         "length_cm": str(raw_dimensions.get("length_cm") or fallback_dimensions["length_cm"] or matched_dimensions.get("length_cm") or "").strip(),
         "width_cm": str(raw_dimensions.get("width_cm") or fallback_dimensions["width_cm"] or matched_dimensions.get("width_cm") or "").strip(),
@@ -527,16 +575,16 @@ def _apply_source_mappings_to_draft(product: dict[str, Any], platform: str, curr
         if isinstance(current.get("packageDimensions"), dict)
         else {}
     )
-    source_dims = source.get("dimensions") if isinstance(source.get("dimensions"), dict) else {}
-    dimension_match = source.get("attribute_matches", {}).get("dimensions") if isinstance(source.get("attribute_matches"), dict) else {}
-    source_dimensions_are_package_safe = not (isinstance(dimension_match, dict) and dimension_match.get("scope") == "product")
+    source_dims = source_package_dimensions(source)
     current["package_dimensions"] = {
-        "length_cm": str(current_pkg.get("length_cm") or current_pkg.get("lengthCm") or (source_dims.get("length_cm") if source_dimensions_are_package_safe else "") or product.get("package_length_cm") or "").strip(),
-        "width_cm": str(current_pkg.get("width_cm") or current_pkg.get("widthCm") or (source_dims.get("width_cm") if source_dimensions_are_package_safe else "") or product.get("package_width_cm") or "").strip(),
-        "height_cm": str(current_pkg.get("height_cm") or current_pkg.get("heightCm") or (source_dims.get("height_cm") if source_dimensions_are_package_safe else "") or product.get("package_height_cm") or "").strip(),
+        "length_cm": str(current_pkg.get("length_cm") or current_pkg.get("lengthCm") or source_dims.get("length_cm") or product.get("package_length_cm") or "").strip(),
+        "width_cm": str(current_pkg.get("width_cm") or current_pkg.get("widthCm") or source_dims.get("width_cm") or product.get("package_width_cm") or "").strip(),
+        "height_cm": str(current_pkg.get("height_cm") or current_pkg.get("heightCm") or source_dims.get("height_cm") or product.get("package_height_cm") or "").strip(),
         "weight_kg": str(current_pkg.get("weight_kg") or current_pkg.get("weightKg") or source.get("weight_kg") or product.get("weight_kg") or "").strip(),
     }
-    current["attributes"] = deepcopy(current.get("attributes") or product.get("attributes") or {})
+    # 平台属性只属于当前平台草稿。来源站属性保留在 source.attributes，
+    # 不得因为草稿为空而复制进 Mercado/Ozon/Yandex 的发布字段。
+    current["attributes"] = deepcopy(current.get("attributes") or {})
     return current
 
 
@@ -586,6 +634,11 @@ def _merge_platform_draft(product: dict[str, Any], platform: str) -> dict[str, A
     current["category_path"] = str(
         current.get("category_path")
         or current.get("categoryPath")
+        or ""
+    ).strip()
+    current["global_title"] = str(
+        current.get("global_title")
+        or current.get("globalTitle")
         or ""
     ).strip()
     current["images"] = normalize_draft_image_refs(current.get("images"))
@@ -696,6 +749,17 @@ def _merge_platform_draft(product: dict[str, Any], platform: str) -> dict[str, A
             if isinstance(current.get(alias), dict)
             else {}
         )
+    current["publication"] = (
+        normalize_mercadolibre_publication(
+            current.get("publication")
+            if isinstance(current.get("publication"), dict)
+            else current.get("mercadoLibrePublication")
+            if isinstance(current.get("mercadoLibrePublication"), dict)
+            else {}
+        )
+        if platform == "mercadolibre"
+        else {}
+    )
     current["ai_copy_ready"] = bool(
         current.get("ai_copy_ready")
         or current.get("aiCopyReady")
@@ -919,7 +983,12 @@ def normalize_product_model(product: dict[str, Any] | None) -> dict[str, Any]:
         incoming.get("upc") or ""
     ).strip()
     normalized["source"] = _merge_source(incoming)
-    normalized["drafts"] = {platform: _merge_platform_draft(incoming, platform) for platform in PLATFORMS}
+    draft_input = deepcopy(incoming)
+    draft_input["source"] = normalized["source"]
+    normalized["drafts"] = {
+        platform: _merge_platform_draft(draft_input, platform)
+        for platform in PLATFORMS
+    }
 
     normalized["name"] = str(normalized["source"].get("title") or normalized.get("name") or "").strip()
     category_match = normalized["source"].get("attribute_matches", {}).get("category") if isinstance(normalized["source"].get("attribute_matches"), dict) else {}

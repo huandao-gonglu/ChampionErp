@@ -4,11 +4,12 @@ import { useClipboard } from '@/composables/useClipboard'
 import DraftLanguageSelect from '@/components/domain/DraftLanguageSelect.vue'
 import DraftMarketSelect from '@/components/domain/DraftMarketSelect.vue'
 import { statusBadgeClass, workflowStatusLabel } from '@/utils/status'
-import type { DraftIndexItem, Marketplace, MarketplaceOption, MarketplaceTargetSite } from '@/types/workflow'
+import type { DraftIndexItem, Marketplace, MarketplaceOption, MarketplaceTargetSite, UnknownRecord } from '@/types/workflow'
 
 const props = defineProps<{
   drafts: DraftIndexItem[]
   platformOptions: MarketplaceOption[]
+  storeConfig: UnknownRecord
   loading: boolean
   error?: string
 }>()
@@ -192,6 +193,7 @@ onBeforeUnmount(() => {
                 :language="row.language"
                 :target-sites="row.targetSites"
                 :platform-options="props.platformOptions"
+                :store-config="props.storeConfig"
                 :loading="props.loading"
                 @update-targets="emit('updateTargets', row, $event)"
               />

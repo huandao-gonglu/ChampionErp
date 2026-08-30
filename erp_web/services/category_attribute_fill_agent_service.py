@@ -11,6 +11,12 @@ from pydantic_ai import ModelRetry, RunContext
 from pydantic_ai.models import Model
 
 from erp_web.context import get_context
+from erp_web.schemas.category import (
+    category_attribute_uses_unit,
+    category_attribute_uses_numeric_unit,
+    normalize_category_attribute_unit,
+    normalize_category_attribute_number_unit_value,
+)
 from erp_web.schemas.category_attribute import (
     CATEGORY_ATTRIBUTE_VALUE_PERMISSION,
     CATEGORY_ATTRIBUTE_VALUE_TOOLSET_ID,
@@ -29,7 +35,7 @@ from .ai_tool_registry import AiToolSet
 
 CATEGORY_ATTRIBUTE_FILL_USE_CASE_ID = "category.attribute_fill"
 CATEGORY_ATTRIBUTE_FILL_BUDGET_PROFILE = "category.attribute_fill.default"
-CATEGORY_ATTRIBUTE_FILL_RESULT_VERSION = "category_attribute_fill.v2"
+CATEGORY_ATTRIBUTE_FILL_RESULT_VERSION = "category_attribute_fill.v3"
 CATEGORY_ATTRIBUTE_FILL_DEADLINE_SECONDS = 120
 
 
@@ -43,10 +49,20 @@ class CategoryAttributeAssignment(BaseModel):
     value: Annotated[
         str,
         StringConstraints(strip_whitespace=True, min_length=1, max_length=500),
+        Field(
+            description="属性值；带数值单位的属性只填写数值，不把单位拼入字符串"
+        ),
     ]
     dictionary_value_id: Annotated[
         str,
         StringConstraints(strip_whitespace=True, max_length=160),
+    ] = ""
+    unit: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, max_length=80),
+        Field(
+            description="带单位属性必须填写类目允许的单位；不带单位属性留空"
+        ),
     ] = ""
 
 
@@ -104,6 +120,7 @@ class CategoryAttributeFillOutputValidator:
         del ctx
         self.error_code = ""
         assignment_counts: dict[str, int] = {}
+        assignment_units: dict[str, str] = {}
         assigned_ids: set[str] = set()
         for assignment in output.assignments:
             attr_id = assignment.attribute_id
@@ -116,6 +133,49 @@ class CategoryAttributeFillOutputValidator:
             assignment_counts[attr_id] = assignment_counts.get(attr_id, 0) + 1
             assigned_ids.add(attr_id)
             value_mode = str(definition.get("value_mode") or "free_text")
+            if category_attribute_uses_unit(definition):
+                if not assignment.unit:
+                    self._retry(
+                        "ATTRIBUTE_UNIT_REQUIRED",
+                        f"带单位属性 {attr_id} 必须同时返回 value 和 unit。",
+                    )
+                canonical_unit = normalize_category_attribute_unit(
+                    definition,
+                    assignment.unit,
+                )
+                if canonical_unit is None:
+                    self._retry(
+                        "ATTRIBUTE_UNIT_INVALID",
+                        f"属性 {attr_id} 的 unit 必须原样选择类目定义提供的单位。",
+                    )
+                previous_unit = assignment_units.get(attr_id)
+                if previous_unit and previous_unit != canonical_unit:
+                    self._retry(
+                        "ATTRIBUTE_UNIT_INCONSISTENT",
+                        f"同一属性 {attr_id} 的多个值必须使用相同单位。",
+                    )
+                assignment_units[attr_id] = canonical_unit
+                assignment.unit = canonical_unit
+                if category_attribute_uses_numeric_unit(definition):
+                    normalized_number_unit = (
+                        normalize_category_attribute_number_unit_value(
+                            definition,
+                            assignment.value,
+                            assignment.unit,
+                        )
+                    )
+                    if normalized_number_unit is None:
+                        self._retry(
+                            "ATTRIBUTE_NUMBER_INVALID",
+                            f"数值单位属性 {attr_id} 的 value 必须是有限数值。",
+                        )
+                    assignment.value = normalized_number_unit["value"]
+                    assignment.unit = normalized_number_unit["unit"]
+            elif assignment.unit:
+                self._retry(
+                    "ATTRIBUTE_UNIT_FORBIDDEN",
+                    f"不带单位的属性 {attr_id} 不得返回 unit。",
+                )
             if value_mode == "strict_enum":
                 if not assignment.dictionary_value_id:
                     self._retry(
@@ -230,7 +290,10 @@ def run_category_attribute_fill_agent(
         "只在能由商品事实确定时填写，不确定时直接跳过。value_mode=strict_enum 必须先"
         "调用 category_attribute_values_search，并且只能选择工具返回的值；value_mode="
         "open_enum 优先使用 options，也允许填写有依据的自定义文本；value_mode="
-        "free_text 直接填写有依据的文本。商品品牌为 Generic、其他、无品牌、白牌或"
+        "free_text 直接填写有依据的文本。包含非空 unit_options 或 value_type="
+        "number_unit 的属性必须把数值与单位分别填写到 value 和 unit，"
+        "单位只能来自类目定义且不能根据默认单位猜测商品事实；不带单位的属性 unit"
+        "留空。商品品牌为 Generic、其他、无品牌、白牌或"
         "同义占位值时，应把它视为无品牌事实，并为 strict_enum 品牌属性查询、"
         "选择平台工具返回的官方无品牌候选。非品牌 strict_enum 允许依据商品事实和"
         "已确认类目路径进行跨语言语义匹配，但不得猜测技术规格。"

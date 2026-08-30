@@ -79,6 +79,8 @@ _STORE_AUTH_DETAIL_FIELDS = {
     # Mercado Libre 远端授权身份（/users/me 的 site_id）；静态 site_id
     # 只是默认目标站点设置，不承担账户身份语义。
     "account_site_id",
+    "user_product_seller",
+    "listing_model",
     # Global Selling 父账号通过 /marketplace/users/{user_id} 在线派生的
     # 本地站点、物流与 Fully Managed 能力映射。
     "marketplace_bindings",
@@ -112,6 +114,8 @@ _CLIENT_DERIVED_STORE_FIELDS = frozenset(
         "currency_resolution",
         "currency_id",
         "account_site_id",
+        "user_product_seller",
+        "listing_model",
         "marketplace_bindings",
     }
 )
@@ -153,6 +157,10 @@ def sanitize_client_store_config(
             for field, value in section.items()
             if field in allowed
         }
+        if spec.key == "mercadolibre":
+            # Global Selling 只有一个 CBT Provider；子市场属于 publication
+            # projection，不是独立授权或一级发布站点。
+            sanitized[key]["site_id"] = "CBT"
     return sanitized
 
 _APP_RUNTIME_SECRET_NAMESPACE = "app_config"
@@ -761,6 +769,8 @@ class ConfigStore:
                 next_action = "Redirect URI 必须以 https:// 开头，并与 Developers 后台完全一致。"
         elif not token_ready:
             next_action = "生成授权链接，用店铺主账号浏览器打开，复制 code 回 ERP 换 token。"
+        elif ml.get("listing_model") == "traditional_global_items":
+            next_action = "授权配置已具备；当前账号将使用传统 CBT Global Items 模型发布。"
         else:
             next_action = "授权配置已具备。到草稿的类目/属性页实时匹配 Mercado Libre 类目，并按选中类目读取必填属性。"
         fields = [

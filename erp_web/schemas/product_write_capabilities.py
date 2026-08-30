@@ -144,6 +144,7 @@ class DraftReadView(BaseModel):
     category_precheck: dict[str, JsonValue] = Field(default_factory=dict)
     last_precheck: dict[str, JsonValue] = Field(default_factory=dict)
     last_publish_task: dict[str, JsonValue] = Field(default_factory=dict)
+    publication: dict[str, JsonValue] = Field(default_factory=dict)
     pricing_summary: dict[str, JsonValue] = Field(default_factory=dict)
     target_sites: tuple[dict[str, JsonValue], ...] = ()
 
@@ -251,14 +252,15 @@ class DraftPricingApplyRequest(BaseModel):
         StringConstraints(max_length=40),
     ] = ""
     site: Annotated[TrimmedText, StringConstraints(max_length=40)] = ""
-    sales_target: Annotated[
-        TrimmedText,
-        StringConstraints(max_length=120),
+    sales_target: list[
+        Annotated[TrimmedText, StringConstraints(min_length=1, max_length=120)]
     ] = Field(
-        default="",
+        default_factory=list,
+        max_length=100,
         description=(
-            "仅供任务补充界面的 Mercado Libre CBT 销售目标选择器，格式为 "
-            "SITE_ID:logistic_type，例如 MLM:remote；初始计划必须留空。"
+            "仅供任务补充界面的 Mercado Libre CBT 销售目标选择器列表；每项格式为 "
+            "SITE_ID:logistic_type，例如 [\"MLM:remote\", \"MLB:remote\"]；"
+            "初始计划必须留空列表。"
         ),
     )
     pricing_input: dict[str, JsonValue] = Field(default_factory=dict)

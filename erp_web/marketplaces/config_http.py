@@ -404,6 +404,11 @@ def fetch_mercadolibre_user_profile(token: str) -> dict[str, Any]:
         "user_id": str(data.get("id") or "").strip(),
         "nickname": str(data.get("nickname") or "").strip(),
         "site_id": str(data.get("site_id") or "").strip(),
+        "tags": [
+            str(tag).strip()
+            for tag in data.get("tags", [])
+            if str(tag or "").strip()
+        ] if isinstance(data.get("tags"), list) else [],
     }
 
 
@@ -412,7 +417,9 @@ def fetch_mercadolibre_shop_name(token: str) -> str:
     return profile.get("nickname") or profile.get("user_id") or ""
 
 
-def _mercadolibre_boolean(value: Any) -> bool:
+def _mercadolibre_optional_boolean(value: Any) -> bool | None:
+    if value is None:
+        return None
     if isinstance(value, bool):
         return value
     if isinstance(value, (int, float)):
@@ -428,7 +435,8 @@ def fetch_mercadolibre_marketplace_user(
 
     Mercado Libre wire 字段 ``marketplaces[].user_id`` 在内部统一命名为
     ``seller_id``，避免与 CBT 父账号 ``user_id`` 混淆。Fully Managed
-    判定所需字段始终存在于规范化 binding 中，缺失时使用空值/``False``。
+    判定所需字段始终存在于规范化 binding 中；文本缺失时使用空值，
+    ``user_product`` 缺失时保留为 ``None``，只有远端显式 ``False`` 才阻断。
     """
 
     normalized_user_id = str(user_id or "").strip()
@@ -473,7 +481,7 @@ def fetch_mercadolibre_marketplace_user(
                     "pricing_model": str(
                         raw_binding.get("pricing_model") or ""
                     ).strip().lower(),
-                    "user_product": _mercadolibre_boolean(
+                    "user_product": _mercadolibre_optional_boolean(
                         raw_binding.get("user_product")
                     ),
                 }

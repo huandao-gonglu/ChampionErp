@@ -10,6 +10,11 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, Protocol
 
 from erp_web.marketplaces.publisher import PublishAdapterError
+from erp_web.schemas.publish import (
+    PublishJobPlatformSummary,
+    PublishJobSiteToSellSummary,
+    PublishJobSummary,
+)
 
 from .publish_confirmation import (
     canonical_publish_digest,
@@ -118,6 +123,7 @@ SUCCESS_JOB_STATUSES = frozenset(
 FAILED_JOB_STATUSES = frozenset(
     {"failed", "error", "blocked", "real_publish_failed"}
 )
+OUTCOME_UNKNOWN_JOB_STATUS = "outcome_unknown"
 
 
 def _publish_job_display_status(state: dict[str, Any]) -> str:
@@ -137,6 +143,8 @@ def _publish_job_display_status(state: dict[str, Any]) -> str:
         if statuses <= {"pending", "queued"}:
             return "queued"
         return "running"
+    if OUTCOME_UNKNOWN_JOB_STATUS in statuses:
+        return OUTCOME_UNKNOWN_JOB_STATUS
 
     has_success = bool(statuses & SUCCESS_JOB_STATUSES)
     has_failure = bool(statuses & FAILED_JOB_STATUSES)
@@ -150,6 +158,8 @@ def _publish_job_display_status(state: dict[str, Any]) -> str:
     root_status = str(state.get("status") or "").strip().lower()
     if root_status in ACTIVE_JOB_STATUSES:
         return "queued" if root_status in {"pending", "queued"} else "running"
+    if root_status == OUTCOME_UNKNOWN_JOB_STATUS:
+        return OUTCOME_UNKNOWN_JOB_STATUS
     if root_status in FAILED_JOB_STATUSES:
         return "failed"
     if root_status in SUCCESS_JOB_STATUSES:
@@ -157,19 +167,121 @@ def _publish_job_display_status(state: dict[str, Any]) -> str:
     return root_status or "queued"
 
 
-def _publish_job_summary(state: dict[str, Any]) -> dict[str, Any]:
+def _publish_job_sites_to_sell(
+    state: dict[str, Any],
+    platform: str,
+    parent_site: str,
+) -> list[PublishJobSiteToSellSummary]:
+    """投影任务冻结的销售目标，禁止把完整发布内容带入列表。"""
+
+    approvals = (
+        state.get("approved_publications")
+        if isinstance(state.get("approved_publications"), dict)
+        else {}
+    )
+    approval = approvals.get(platform)
+    payload = (
+        approval.get("payload")
+        if isinstance(approval, dict)
+        and isinstance(approval.get("payload"), dict)
+        else {}
+    )
+    raw_targets = payload.get("sites_to_sell")
+    if not isinstance(raw_targets, list):
+        product = (
+            state.get("product")
+            if isinstance(state.get("product"), dict)
+            else {}
+        )
+        drafts = (
+            product.get("drafts")
+            if isinstance(product.get("drafts"), dict)
+            else {}
+        )
+        draft = next(
+            (
+                value
+                for key, value in drafts.items()
+                if str(key or "").strip().lower() == platform.strip().lower()
+                and isinstance(value, dict)
+            ),
+            {},
+        )
+        raw_targets = draft.get("sites_to_sell")
+        if not isinstance(raw_targets, list):
+            target_sites = (
+                draft.get("target_sites")
+                if isinstance(draft.get("target_sites"), list)
+                else []
+            )
+            parent_key = parent_site.strip().lower()
+            matching_target = next(
+                (
+                    target
+                    for target in target_sites
+                    if isinstance(target, dict)
+                    and str(target.get("platform") or platform).strip().lower()
+                    == platform.strip().lower()
+                    and (
+                        not parent_key
+                        or str(target.get("site") or "").strip().lower()
+                        == parent_key
+                    )
+                    and isinstance(target.get("sites_to_sell"), list)
+                ),
+                {},
+            )
+            raw_targets = matching_target.get("sites_to_sell")
+    if not isinstance(raw_targets, list):
+        return []
+
+    targets: list[PublishJobSiteToSellSummary] = []
+    seen_sites: set[str] = set()
+    parent_site_id = parent_site.strip().upper()
+    for raw in raw_targets:
+        if not isinstance(raw, dict):
+            continue
+        site_id = str(raw.get("site_id") or "").strip().upper()
+        logistic_type = str(raw.get("logistic_type") or "").strip().lower()
+        if (
+            not site_id
+            or not logistic_type
+            or site_id == parent_site_id
+            or site_id in seen_sites
+        ):
+            continue
+        seen_sites.add(site_id)
+        targets.append(
+            {
+                "site_id": site_id,
+                "logistic_type": logistic_type,
+            }
+        )
+    return sorted(
+        targets,
+        key=lambda target: (target["site_id"], target["logistic_type"]),
+    )
+
+
+def _publish_job_summary(state: dict[str, Any]) -> PublishJobSummary:
     product = state.get("product") if isinstance(state.get("product"), dict) else {}
     raw_platforms = (
         state.get("platforms") if isinstance(state.get("platforms"), dict) else {}
     )
-    platforms: list[dict[str, Any]] = []
+    platforms: list[PublishJobPlatformSummary] = []
     for platform, raw in sorted(raw_platforms.items()):
         item = raw if isinstance(raw, dict) else {}
+        parent_site = str(item.get("site") or "")
         platforms.append(
             {
                 "platform": str(platform),
                 "draft_id": str(item.get("draft_id") or ""),
-                "site": str(item.get("site") or ""),
+                "site": parent_site,
+                "sites_to_sell": _publish_job_sites_to_sell(
+                    state,
+                    str(platform),
+                    parent_site,
+                ),
                 "status": str(item.get("status") or ""),
                 "stage": str(item.get("stage") or ""),
                 "attempts": int(item.get("attempts") or 0),
@@ -247,6 +359,7 @@ class PublishingBus:
         self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="PublishingBus")
         self._lock = threading.RLock()
         self._futures: dict[str, list[Future[Any]]] = {}
+        self._reconciling: set[tuple[str, str]] = set()
         if auto_resume_pending:
             self.recover_pending_jobs()
 
@@ -580,12 +693,11 @@ class PublishingBus:
                 continue
             if (
                 str(state.get("status") or "").strip().lower()
-                == "completed"
+                in {"completed", OUTCOME_UNKNOWN_JOB_STATUS}
                 and not state.get("terminal_results_persisted")
             ):
-                # Job status is committed before the terminal callback runs.
-                # A process crash in that narrow window must be recoverable on
-                # the next startup, just like an interrupted worker.
+                # Job status is committed before the terminal callback runs。
+                # completed/outcome_unknown 都必须在重启后补偿持久化草稿与日志。
                 if self.terminal_callback is None:
                     continue
                 self._update_job_status(job_id)
@@ -632,6 +744,188 @@ class PublishingBus:
                     result.pop("validation_digest", None)
                     result.pop("store_identity", None)
         return state
+
+    def reconcile_outcome_unknown(
+        self,
+        job_id: str,
+        platform: str,
+    ) -> dict[str, Any]:
+        """只读确认一个 ``outcome_unknown`` 平台结果。
+
+        该入口只允许复用已经持久化的 task/result 调用适配器状态查询，绝不
+        重放 publish mutation。确认到终态后才释放同草稿/平台的持久锁；仍在
+        处理中或响应依旧不可验证时继续保持 ``outcome_unknown``。
+        """
+
+        resolved_job_id = str(job_id or "").strip()
+        resolved_platform = str(platform or "").strip().lower()
+        if not resolved_job_id or not resolved_platform:
+            raise ValueError("发布结果对账缺少 job_id 或 platform。")
+        adapter = self.adapters.get(resolved_platform)
+        if adapter is None:
+            raise ValueError(f"发布结果对账不支持平台：{resolved_platform}")
+        poller = getattr(adapter, "poll_publish_status", None)
+        if not callable(poller):
+            raise ValueError(
+                f"{resolved_platform} 发布适配器没有只读结果确认能力。"
+            )
+
+        reconcile_key = (resolved_job_id, resolved_platform)
+        with self._lock:
+            if reconcile_key in self._reconciling:
+                raise RuntimeError("该发布结果正在对账，请勿并发提交。")
+            state = self._read_state(resolved_job_id)
+            platforms = (
+                state.get("platforms")
+                if isinstance(state.get("platforms"), dict)
+                else {}
+            )
+            item = platforms.get(resolved_platform)
+            if not isinstance(item, dict):
+                raise ValueError(
+                    f"发布任务不包含平台：{resolved_platform}"
+                )
+            if (
+                str(item.get("status") or "").strip().lower()
+                != OUTCOME_UNKNOWN_JOB_STATUS
+            ):
+                raise ValueError("只有结果待对账的平台任务可以执行对账。")
+            persisted_result = item.get("result")
+            if not isinstance(persisted_result, dict):
+                raise ValueError("结果待对账任务没有可供只读确认的持久化结果。")
+            has_task_identity = bool(
+                str(persisted_result.get("task_id") or "").strip()
+                or any(
+                    str(task_id or "").strip()
+                    for task_id in (
+                        persisted_result.get("task_ids")
+                        if isinstance(persisted_result.get("task_ids"), list)
+                        else []
+                    )
+                )
+            )
+            if not has_task_identity:
+                raise ValueError(
+                    "该未知结果没有远端 task_id，无法自动对账；"
+                    "必须先通过 Mercado 后台或支持渠道确认。"
+                )
+            self._reconciling.add(reconcile_key)
+
+        checked_at = current_time()
+        try:
+            config = self.config_provider()
+            config = config if isinstance(config, dict) else {}
+            checked_result = poller(copy.deepcopy(persisted_result), config)
+            if not isinstance(checked_result, dict):
+                raise RuntimeError("平台对账没有返回可验证的 object 结果。")
+
+            result_status = str(
+                checked_result.get("status") or ""
+            ).strip().lower()
+            success_evidence = bool(
+                checked_result.get("ok") is True
+                and (
+                    result_status
+                    in {"published", "success", "real_publish_success"}
+                    or checked_result.get("id") not in (None, "", 0)
+                    or checked_result.get("item_id") not in (None, "", 0)
+                    or checked_result.get("external_id")
+                    not in (None, "", 0)
+                )
+            )
+            pending = self._is_pending_publish_result(checked_result)
+            deterministic_failure = result_status in {
+                "failed",
+                "partial",
+                "not_ready",
+                "ready_for_real_publish",
+                "skipped",
+            }
+            resolved_status = (
+                "success"
+                if success_evidence
+                else "failed"
+                if deterministic_failure
+                else OUTCOME_UNKNOWN_JOB_STATUS
+            )
+            resolution = (
+                "applied"
+                if success_evidence
+                else "partially_applied"
+                if result_status == "partial"
+                else "not_applied"
+                if deterministic_failure
+                else "pending"
+                if pending
+                else "unconfirmed"
+            )
+            persisted_checked = self._persisted_platform_result(
+                checked_result
+            )
+
+            with self._lock:
+                latest = self._read_state(resolved_job_id)
+                latest_platforms = (
+                    latest.get("platforms")
+                    if isinstance(latest.get("platforms"), dict)
+                    else {}
+                )
+                latest_item = latest_platforms.get(resolved_platform)
+                if not isinstance(latest_item, dict):
+                    raise RuntimeError("对账期间发布平台状态已被移除。")
+                if (
+                    str(latest_item.get("status") or "").strip().lower()
+                    != OUTCOME_UNKNOWN_JOB_STATUS
+                ):
+                    raise RuntimeError("对账期间发布平台状态已经改变。")
+                latest_item.update(
+                    {
+                        "status": resolved_status,
+                        "stage": (
+                            "finished"
+                            if success_evidence
+                            else "failed"
+                            if deterministic_failure
+                            else OUTCOME_UNKNOWN_JOB_STATUS
+                        ),
+                        "error": (
+                            ""
+                            if success_evidence
+                            else str(
+                                checked_result.get("error")
+                                or latest_item.get("error")
+                                or "远端结果仍不可验证"
+                            )
+                        ),
+                        "result": persisted_checked,
+                        "reconciliation": {
+                            "status": resolution,
+                            "checked_at": checked_at,
+                            "write_replayed": False,
+                        },
+                        "updated_at": checked_at,
+                    }
+                )
+                latest["updated_at"] = checked_at
+                if resolved_status != OUTCOME_UNKNOWN_JOB_STATUS:
+                    # 初次 unknown 终态已经执行过一次 callback；最终确认后必须
+                    # 再回写草稿。日志仍保留最初 unknown 审计，job 保存最终结论。
+                    latest.pop("terminal_results_persisted", None)
+                    latest.pop("terminal_persistence_error", None)
+                self._write_state(resolved_job_id, latest)
+
+            self._update_job_status(resolved_job_id)
+            return {
+                "ok": True,
+                "job_id": resolved_job_id,
+                "platform": resolved_platform,
+                "resolved": resolved_status != OUTCOME_UNKNOWN_JOB_STATUS,
+                "resolution": resolution,
+                "job": self.get_public_status(resolved_job_id),
+            }
+        finally:
+            with self._lock:
+                self._reconciling.discard(reconcile_key)
 
     def list_jobs(
         self,
@@ -682,25 +976,60 @@ class PublishingBus:
     def _resume_state(self, job_id: str, state: dict[str, Any]) -> bool:
         product = state.get("product") if isinstance(state.get("product"), dict) else {}
         pending = []
+        changed = False
         platforms = state.get("platforms") if isinstance(state.get("platforms"), dict) else {}
         for platform, item in platforms.items():
             if not isinstance(item, dict):
                 continue
             status = str(item.get("status") or "").lower()
             if status in {"pending", "queued", "running", "retrying"} and platform in self.adapters:
+                stage = str(item.get("stage") or "").strip().lower()
+                result = item.get("result")
+                if (
+                    status in {"running", "retrying"}
+                    and stage in {"publishing", "publishing_approved_payload"}
+                    and not isinstance(result, dict)
+                ):
+                    # 进程可能恰好在远端写入成功后、结果持久化前退出。
+                    # 自动重放会重复创建商品，因此保守进入人工对账状态。
+                    error = (
+                        "发布请求可能已送达平台；为避免重复创建，重启后未自动重放，"
+                        "请先完成平台对账。"
+                    )
+                    item.update(
+                        {
+                            "status": OUTCOME_UNKNOWN_JOB_STATUS,
+                            "stage": OUTCOME_UNKNOWN_JOB_STATUS,
+                            "error": error,
+                            "result": {
+                                "ok": False,
+                                "status": OUTCOME_UNKNOWN_JOB_STATUS,
+                                "error_code": "PUBLISH_OUTCOME_UNKNOWN",
+                                "error": error,
+                                "outcome_unknown": True,
+                            },
+                            "updated_at": current_time(),
+                        }
+                    )
+                    changed = True
+                    continue
                 item["status"] = "queued"
                 item["stage"] = "resuming"
                 item["error"] = str(item.get("error") or "")
                 item["updated_at"] = current_time()
                 pending.append(platform)
-        if not pending:
+                changed = True
+        if not changed:
             return False
-        state["status"] = "queued"
+        state["status"] = (
+            "queued" if pending else OUTCOME_UNKNOWN_JOB_STATUS
+        )
         state["updated_at"] = current_time()
         # 旧 job 状态里若残留 config/凭据，一律丢弃（发布执行时从 store_auth 现取）。
         state.pop("config", None)
         self._write_state(job_id, state)
-        self._submit_job(job_id, product, pending)
+        if pending:
+            self._submit_job(job_id, product, pending)
         self._update_job_status(job_id)
         return True
 
@@ -732,6 +1061,7 @@ class PublishingBus:
 
         while attempts < max_attempts:
             attempts += 1
+            stored_result: dict[str, Any] | None = None
             try:
                 # 每次执行时现取店铺配置（凭据来自 store_auth 表），不落任何 job 持久化。
                 config = self.config_provider()
@@ -835,6 +1165,9 @@ class PublishingBus:
                             f"{platform} 返回待确认状态，但发布适配器未实现状态轮询"
                         )
                     persisted_pending = self._persisted_platform_result(result)
+                    # 供异常分支区分“只读确认失败”与“首次写请求失败”；前者
+                    # 可安全重试 GET，后者绝不能重放 mutation。
+                    stored_result = persisted_pending
                     self._set_platform(
                         job_id,
                         platform,
@@ -891,6 +1224,7 @@ class PublishingBus:
                             "not_ready",
                             "ready_for_real_publish",
                             "skipped",
+                            OUTCOME_UNKNOWN_JOB_STATUS,
                         }
                         else "failed"
                     )
@@ -920,7 +1254,51 @@ class PublishingBus:
                 )
                 return
             except Exception as exc:
-                retryable = _publish_exception_retryable(exc) and attempts < max_attempts
+                outcome_unknown = bool(
+                    isinstance(exc, PublishAdapterError)
+                    and exc.details.get("outcome_unknown") is True
+                )
+                confirmation_read = self._is_pending_publish_result(
+                    stored_result
+                )
+                retryable = bool(
+                    _publish_exception_retryable(exc)
+                    and attempts < max_attempts
+                    and (not outcome_unknown or confirmation_read)
+                )
+                if outcome_unknown and not retryable:
+                    safe_details = {
+                        key: exc.details[key]
+                        for key in (
+                            "http_status",
+                            "remote_write_dispatched",
+                            "outcome_unknown",
+                        )
+                        if key in exc.details
+                    }
+                    self._set_platform(
+                        job_id,
+                        platform,
+                        status=OUTCOME_UNKNOWN_JOB_STATUS,
+                        stage=OUTCOME_UNKNOWN_JOB_STATUS,
+                        error=str(exc),
+                        result={
+                            **(
+                                copy.deepcopy(stored_result)
+                                if confirmation_read
+                                and isinstance(stored_result, dict)
+                                else {}
+                            ),
+                            "ok": False,
+                            "status": OUTCOME_UNKNOWN_JOB_STATUS,
+                            "error_code": exc.code,
+                            "error": str(exc),
+                            "outcome_unknown": True,
+                            "details": safe_details,
+                        },
+                        attempts=attempts,
+                    )
+                    return
                 self._set_platform(
                     job_id,
                     platform,
@@ -1051,7 +1429,7 @@ class PublishingBus:
             item["updated_at"] = current_time()
             state["updated_at"] = item["updated_at"]
             self._write_state(job_id, state)
-        if str(updates.get("status") or "").lower() in {"success", "failed", "not_ready", "ready_for_real_publish", "skipped"}:
+        if str(updates.get("status") or "").lower() in {"success", "failed", "not_ready", "ready_for_real_publish", "skipped", OUTCOME_UNKNOWN_JOB_STATUS}:
             self._update_job_status(job_id)
 
     def _update_job_status(self, job_id: str) -> None:
@@ -1060,6 +1438,8 @@ class PublishingBus:
             statuses = [str(item.get("status") or "").lower() for item in state.get("platforms", {}).values()]
             if any(status in {"running", "retrying"} for status in statuses):
                 state["status"] = "running"
+            elif OUTCOME_UNKNOWN_JOB_STATUS in statuses:
+                state["status"] = OUTCOME_UNKNOWN_JOB_STATUS
             elif statuses and all(status in {"success", "failed", "not_ready", "ready_for_real_publish", "skipped"} for status in statuses):
                 state["status"] = "completed"
             else:
@@ -1067,7 +1447,7 @@ class PublishingBus:
             state["updated_at"] = current_time()
             self._write_state(job_id, state)
             if (
-                state["status"] == "completed"
+                state["status"] in {"completed", OUTCOME_UNKNOWN_JOB_STATUS}
                 and self.terminal_callback is not None
                 and not state.get("terminal_results_persisted")
             ):

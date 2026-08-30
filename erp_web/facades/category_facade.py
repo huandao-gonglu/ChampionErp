@@ -307,19 +307,32 @@ def category_match_payload(body: Payload) -> ResponseWithStatus:
 
 def category_precheck_payload(body: Payload) -> ResponseWithStatus:
     category_id = str(body.get("category_id") or "").strip()
-    product, _, platform, site, error, status = _load_category_subject(body)
+    product, context, platform, site, error, status = _load_category_subject(body)
     if error:
         return error, status
     record, record_error = _category_record(body, platform, site)
     if record_error:
         return record_error
     missing_fields = validate_category_precheck(product, platform, record)
+    category_precheck = {
+        "ok": not missing_fields,
+        "platform": platform,
+        "site": site,
+        "category_id": category_id,
+        "category_path": _category_path(record),
+        "missing_fields": missing_fields,
+    }
+    if context is not None:
+        save_draft_target_listing_result(
+            context,
+            {"category_precheck": category_precheck},
+        )
     return {
         "ok": True,
         "platform": platform,
         "site": site,
         "category_id": category_id,
-        "category_path": _category_path(record),
+        "category_path": category_precheck["category_path"],
         "missing_fields": missing_fields,
     }, 200
 

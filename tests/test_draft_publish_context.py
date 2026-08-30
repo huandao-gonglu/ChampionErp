@@ -75,6 +75,7 @@ def test_cbt_sales_targets_are_canonical_target_fields_and_project_only_for_publ
             "sites_to_sell": [
                 {"site_id": "MLB", "logistic_type": "remote"}
             ],
+            "marketplace_titles": {"MLB": "根字段不得持久化"},
             "target_sites": [
                 {
                     "platform": "mercadolibre",
@@ -87,6 +88,11 @@ def test_cbt_sales_targets_are_canonical_target_fields_and_project_only_for_publ
                         },
                         {"site_id": "MLM", "logistic_type": "remote"},
                     ],
+                    "marketplace_titles": {
+                        " mlm ": "  Producto localizado  ",
+                        "mlb": "Produto localizado",
+                        "mlc": "   ",
+                    },
                 }
             ],
         },
@@ -94,9 +100,11 @@ def test_cbt_sales_targets_are_canonical_target_fields_and_project_only_for_publ
     )
 
     assert "sites_to_sell" not in draft
+    assert "marketplace_titles" not in draft
     assert draft["target_sites"][0]["sites_to_sell"] == [
         {"site_id": "MLM", "logistic_type": "remote"}
     ]
+    assert "marketplace_titles" not in draft["target_sites"][0]
 
     target = draft_publish_targets(draft)[0]
     projection = draft_for_publish_target(draft, target)
@@ -105,31 +113,36 @@ def test_cbt_sales_targets_are_canonical_target_fields_and_project_only_for_publ
     assert projection["sites_to_sell"] == [
         {"site_id": "MLM", "logistic_type": "remote"}
     ]
+    assert "marketplace_titles" not in projection
     assert "sites_to_sell" not in merged
+    assert "marketplace_titles" not in merged
     assert merged["target_sites"][0]["sites_to_sell"] == [
         {"site_id": "MLM", "logistic_type": "remote"}
     ]
+    assert "marketplace_titles" not in merged["target_sites"][0]
 
 
-def test_legacy_cbt_spanish_language_migrates_to_global_english() -> None:
+@pytest.mark.parametrize("language", ["es", "pt-BR"])
+def test_cbt_target_preserves_selected_copy_language(language: str) -> None:
     draft = normalize_platform_draft(
         {
             "platform": "mercadolibre",
             "site": "CBT",
-            "language": "es",
+            "language": language,
             "target_sites": [
                 {
                     "platform": "mercadolibre",
                     "site": "CBT",
-                    "language": "es",
+                    "language": language,
                 }
             ],
         },
         "mercadolibre",
     )
 
-    assert draft["language"] == "en-US"
-    assert draft["target_sites"][0]["language"] == "en-US"
+    assert draft["language"] == language
+    assert draft["target_sites"][0]["language"] == language
+    assert draft_publish_targets(draft)[0]["language"] == language
 
 
 def test_ozon_target_round_trip_preserves_description_category_id() -> None:

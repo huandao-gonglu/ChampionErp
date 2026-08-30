@@ -367,9 +367,8 @@ def test_external_side_effect_capabilities_never_auto_retry_after_dispatch() -> 
 
     external_dispatch_capabilities = (
         "logistics_shipment_create",
-        "platform_item_close",
+        "mercadolibre_user_product_pause",
         "product_publish_direct",
-        "publish_real_confirm",
     )
     offenders: list[str] = []
     for name in external_dispatch_capabilities:

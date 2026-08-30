@@ -66,7 +66,7 @@ export interface GlobalTaskStep {
 }
 
 /** needs_input 类型化待补字段的输入类型；与后端 AiToolRequiredInput 对齐。 */
-export type GlobalTaskInputType = 'text' | 'select' | 'json_object' | 'string_list'
+export type GlobalTaskInputType = 'text' | 'select' | 'multi_select' | 'json_object' | 'string_list'
 
 /** 待补字段的提交归属路径；与后端 AiToolRequiredInput.input_owner 对齐。 */
 export type GlobalTaskInputOwner = 'step' | 'provided_attributes' | 'pricing_input'

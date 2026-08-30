@@ -100,6 +100,7 @@ def default_draft(platform: str) -> dict[str, Any]:
             "currency_fingerprint": "",
         }],
         "enabled": True,
+        "global_title": "",
         "title": "",
         "description": "",
         "bullets": [],
@@ -127,6 +128,7 @@ def default_draft(platform: str) -> dict[str, Any]:
         "validation_errors": [],
         "status": "collected",
         "publish_status": "",
+        "publication": {},
         "copy_operation_key": "",
     }
 

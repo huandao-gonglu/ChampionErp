@@ -93,14 +93,15 @@ class DraftPrepareForMarketRequest(BaseModel):
         max_length=200,
     )
     asset_ids: list[StableId] = Field(default_factory=list, max_length=100)
-    sales_target: Annotated[
-        TrimmedText,
-        StringConstraints(max_length=120),
+    sales_target: list[
+        Annotated[TrimmedText, StringConstraints(min_length=1, max_length=120)]
     ] = Field(
-        default="",
+        default_factory=list,
+        max_length=100,
         description=(
-            "仅供任务补充界面的 Mercado Libre CBT 销售目标选择器，格式为 "
-            "SITE_ID:logistic_type，例如 MLM:remote；初始计划必须留空。"
+            "仅供任务补充界面的 Mercado Libre CBT 销售目标选择器列表；每项格式为 "
+            "SITE_ID:logistic_type，例如 [\"MLM:remote\", \"MLB:remote\"]；"
+            "初始计划必须留空列表。"
         ),
     )
     # 只接受核价业务输入；平台、站点与发布币种仍从可信草稿目标注入。

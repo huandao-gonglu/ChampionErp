@@ -945,7 +945,13 @@ class AiToolRequiredInput(BaseModel):
     key: str = Field(min_length=1, max_length=120)
     label: str = Field(min_length=1, max_length=200)
     reason: str = Field(min_length=1, max_length=500)
-    input_type: Literal["text", "select", "json_object", "string_list"] = "text"
+    input_type: Literal[
+        "text",
+        "select",
+        "multi_select",
+        "json_object",
+        "string_list",
+    ] = "text"
     options: list[AiToolInputOption] = Field(default_factory=list, max_length=100)
     input_owner: Literal["step", "provided_attributes", "pricing_input"] = "step"
 

@@ -43,23 +43,27 @@ def _target_key(platform: str, site: str) -> str:
     return f"{text(platform).lower()}:{text(site).lower()}"
 
 
-def _sales_target_from_selector(selector: str) -> list[dict[str, str]]:
-    """把受信下拉值转为草稿持久化使用的规范销售目标。"""
+def _sales_targets_from_selectors(selectors: Any) -> list[dict[str, str]]:
+    """把受信多选值转为草稿持久化使用的规范销售目标列表。"""
 
-    value = text(selector)
-    if not value or value.count(":") != 1:
+    if not isinstance(selectors, (list, tuple)):
+        # 请求 Schema 只接受数组；这里也不为旧单字符串保留兼容路径。
         return []
-    site_id, logistic_type = value.split(":", 1)
-    if not text(site_id) or not text(logistic_type):
-        return []
-    return normalize_mercadolibre_sites_to_sell(
-        [
+    rows: list[dict[str, str]] = []
+    for selector in selectors:
+        value = text(selector)
+        site_id, separator, logistic_type = value.partition(":")
+        if not separator:
+            # 保留不完整事实交给统一 Mercado target contract 产生字段级错误，
+            # 不能在多选中静默丢弃非法项后保存剩余目标。
+            logistic_type = ""
+        rows.append(
             {
                 "site_id": site_id,
                 "logistic_type": logistic_type,
             }
-        ]
-    )
+        )
+    return normalize_mercadolibre_sites_to_sell(rows)
 
 
 def _selected_pricing_target(target_draft: dict[str, Any]) -> dict[str, Any]:
@@ -242,6 +246,7 @@ def _pricing_payload(
             "target_key": key,
             "platform": text(target.get("platform")).lower(),
             "site": text(target.get("site")),
+            "language": text(target.get("language")),
             "listing_currency": text(target.get("listing_currency")).upper(),
             "currency_fingerprint": text(target.get("currency_fingerprint")),
         }
@@ -271,7 +276,7 @@ def prepare_target_pricing(
     target_draft_id: str,
     target_platform: str,
     site: str = "",
-    sales_target: str = "",
+    sales_target: list[str] | tuple[str, ...] = (),
     pricing_input: Mapping[str, Any] | None = None,
     product_store: ProductCapabilityStore,
     pricing_calculator: PricingCalculator = calculate_price,
@@ -294,7 +299,7 @@ def prepare_target_pricing(
             "SALES_TARGET_NOT_APPLICABLE",
             "销售国家与物流方式选择只适用于 Mercado Libre CBT 草稿。",
         )
-    selected_sales_targets = _sales_target_from_selector(sales_target)
+    selected_sales_targets = _sales_targets_from_selectors(sales_target)
     sales_target_changed = bool(sales_target) and (
         selected_sales_targets
         != normalize_mercadolibre_sites_to_sell(target.get("sites_to_sell"))
@@ -372,9 +377,12 @@ def prepare_target_pricing(
                     message,
                     key="sales_target",
                     label="销售国家与物流方式",
-                    reason="请选择一个当前账号已开通的站点与物流组合。",
+                    reason=(
+                        "请选择一个或多个当前账号已开通的站点与物流组合；"
+                        "同一销售市场只能选择一种物流方式。"
+                    ),
                     options=sales_target_options,
-                    input_type="select",
+                    input_type="multi_select",
                     input_owner="step",
                 )
             labels = {

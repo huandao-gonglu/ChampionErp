@@ -3,8 +3,10 @@ import { computed, reactive, ref, watch } from 'vue'
 import ProductResearchSettingsPanel from '@/components/auth/ProductResearchSettingsPanel.vue'
 import type { AuthResult, Marketplace, MarketplaceOption, MercadoLibreAuthChecklist, MercadoLibreTestMode, UnknownRecord } from '@/types/workflow'
 import {
+  MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED_MESSAGE,
   mercadoLibreAccountSiteId,
-  mercadoLibreIsFullyManaged,
+  mercadoLibreHasFullyManagedBinding,
+  mercadoLibreListingModel as resolveMercadoLibreListingModel,
   mercadoLibreMarketplaceBindings,
   type MercadoLibreMarketplaceBinding,
 } from '@/utils/mercadolibreGlobalSelling'
@@ -1593,8 +1595,12 @@ const CURRENCY_SOURCE_LABELS: Record<string, string> = {
   global_selling_contract: 'Global Selling 官方契约',
   manual: '人工配置',
 }
+const MERCADOLIBRE_USER_PRODUCTS_REQUIRED_ERROR_CODE = 'MERCADOLIBRE_USER_PRODUCTS_REQUIRED'
+const MERCADOLIBRE_TRADITIONAL_MODEL_MESSAGE = '当前授权已明确使用传统 CBT 刊登模型（POST /global/items）。该模型与 User Products 模型互斥，是有效刊登路径，并非账号能力缺失。重新验证仅用于刷新远端账户能力结果。'
 
 const currencySelection = ref('')
+
+const mercadoLibreListingModel = computed(() => resolveMercadoLibreListingModel(props.storeConfig))
 
 const storeCurrencyState = computed(() => {
   const store = asRecord(props.storeConfig[selectedStorePlatform.value])
@@ -1610,13 +1616,26 @@ const storeCurrencyState = computed(() => {
   }
 })
 
+const isMercadoLibreTraditionalModelNotice = computed(() => (
+  selectedStorePlatform.value === 'mercadolibre'
+  && mercadoLibreListingModel.value === 'traditional_global_items'
+  && storeCurrencyState.value.errorCode === MERCADOLIBRE_USER_PRODUCTS_REQUIRED_ERROR_CODE
+))
+
 function currencyStatusLabelFor(status: string): string {
   return CURRENCY_STATUS_LABELS[status] || CURRENCY_STATUS_LABELS.unresolved
 }
 
-const storeCurrencyStatusLabel = computed(() => currencyStatusLabelFor(storeCurrencyState.value.status))
+const storeCurrencyStatusLabel = computed(() => (
+  isMercadoLibreTraditionalModelNotice.value
+    ? '传统 CBT 刊登模型'
+    : currencyStatusLabelFor(storeCurrencyState.value.status)
+))
 
 const storeCurrencyStatusClass = computed(() => {
+  if (isMercadoLibreTraditionalModelNotice.value) {
+    return 'bg-blue-100 text-blue-800 dark:bg-blue-500/15 dark:text-blue-200'
+  }
   switch (storeCurrencyState.value.status) {
     case 'ready':
       return 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-200'
@@ -1638,8 +1657,19 @@ const storeCurrencySourceLabel = computed(() => {
 const mercadoLibreGlobalSellingMeta = computed(() => ({
   accountSiteId: mercadoLibreAccountSiteId(props.storeConfig),
   bindings: mercadoLibreMarketplaceBindings(props.storeConfig),
-  fullyManaged: mercadoLibreIsFullyManaged(props.storeConfig),
+  fullyManaged: mercadoLibreHasFullyManagedBinding(props.storeConfig),
+  listingModel: mercadoLibreListingModel.value,
 }))
+
+const mercadoLibreListingModelLabel = computed(() => {
+  if (mercadoLibreListingModel.value === 'user_products') {
+    return 'User Products 模型'
+  }
+  if (mercadoLibreListingModel.value === 'traditional_global_items') {
+    return '传统 CBT 刊登模型'
+  }
+  return '缺失或无效（已阻断）'
+})
 
 function mercadoLibreBindingSiteLabel(binding: MercadoLibreMarketplaceBinding): string {
   const platform = props.platformOptions.find((option) => option.key === 'mercadolibre')
@@ -1648,8 +1678,16 @@ function mercadoLibreBindingSiteLabel(binding: MercadoLibreMarketplaceBinding): 
 }
 
 function mercadoLibreBindingMeta(binding: MercadoLibreMarketplaceBinding): string {
+  const operationModel = mercadoLibreListingModel.value === 'traditional_global_items'
+    ? '传统 CBT operation'
+    : binding.userProduct === false
+      ? 'User Products operation 不可用'
+      : binding.userProduct === null
+        ? 'User Products 能力继承父账号'
+        : 'User Products operation'
   return [
     `物流 ${binding.logisticType}`,
+    operationModel,
     binding.businessModel ? `业务 ${binding.businessModel}` : '',
     binding.pricingModel ? `计价 ${binding.pricingModel}` : '',
     binding.sellerId ? `Seller ${binding.sellerId}` : '',
@@ -2203,7 +2241,7 @@ function handleYunexpressEnvironmentChange(value: string) {
                 <button class="btn btn-outline py-1.5" :disabled="props.loading || !props.authLink" @click="emit('openMlLink', props.authLink)">打开授权链接</button>
                 <button class="btn btn-outline py-1.5" :disabled="props.loading || !mlCanExchangeCode" title="需要 App ID、Client Secret、https:// Redirect URI 和回跳 code" @click="emit('exchangeMlCode', form.mlCode, { app_id: form.mlAppId, client_secret: form.mlClientSecret, redirect_uri: form.mlRedirectUri })">用 code 换 token</button>
                 <button class="btn btn-outline py-1.5" :disabled="props.loading || !mlHasRefreshToken" title="需要先用 code 换到 Refresh Token" @click="emit('refreshMlToken', { app_id: form.mlAppId, client_secret: form.mlClientSecret })">刷新 token</button>
-                <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('testAuth', 'mercadolibre')">测试授权并读取发布货币</button>
+                <button data-testid="test-mercadolibre-auth" class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('testAuth', 'mercadolibre')">重新验证并刷新账户能力</button>
                 <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('realMlTest', 'category_attrs', form.mlCategoryId)">07D 类目属性</button>
                 <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('realMlTest', 'payload_generate')">07D Payload</button>
                 <button class="btn btn-outline py-1.5 text-rose-700" :disabled="props.loading" @click="emit('clearAuth', 'mercadolibre')">清除 ML 授权</button>
@@ -2233,10 +2271,16 @@ function handleYunexpressEnvironmentChange(value: string) {
               >
                 <div class="flex flex-wrap items-center justify-between gap-2">
                   <div class="font-semibold">CBT Global Selling 能力</div>
-                  <span class="rounded bg-white/80 px-2 py-0.5 text-xs dark:bg-dark-900/70">已同步 {{ mercadoLibreGlobalSellingMeta.bindings.length }} 个子市场/物流组合</span>
+                  <div class="flex flex-wrap gap-2">
+                    <span data-testid="ml-listing-model" class="rounded bg-white/80 px-2 py-0.5 text-xs dark:bg-dark-900/70">刊登模型：{{ mercadoLibreListingModelLabel }}</span>
+                    <span class="rounded bg-white/80 px-2 py-0.5 text-xs dark:bg-dark-900/70">已同步 {{ mercadoLibreGlobalSellingMeta.bindings.length }} 个子市场/物流组合</span>
+                  </div>
                 </div>
-                <p v-if="mercadoLibreGlobalSellingMeta.fullyManaged" data-testid="ml-fully-managed-warning" class="mt-2 rounded bg-amber-50 p-2 text-xs font-semibold text-amber-800 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/30">
-                  该账号包含 CBT CN Fulfillment Managed 业务模式，标准售价与销售目的地流程已阻断。
+                <p v-if="mercadoLibreGlobalSellingMeta.listingModel === 'user_products' && mercadoLibreGlobalSellingMeta.fullyManaged" data-testid="ml-fully-managed-warning" class="mt-2 rounded bg-amber-50 p-2 text-xs font-semibold text-amber-800 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/30">
+                  {{ MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED_MESSAGE }}
+                </p>
+                <p v-if="mercadoLibreGlobalSellingMeta.listingModel === 'traditional_global_items'" data-testid="ml-traditional-listing-model-notice" class="mt-2 rounded bg-blue-50 p-2 text-xs font-semibold text-blue-800 ring-1 ring-blue-200 dark:bg-blue-500/10 dark:text-blue-200 dark:ring-blue-500/30">
+                  {{ MERCADOLIBRE_TRADITIONAL_MODEL_MESSAGE }}
                 </p>
                 <div v-if="mercadoLibreGlobalSellingMeta.bindings.length" class="mt-2 grid gap-2 sm:grid-cols-2">
                   <div
@@ -2249,7 +2293,8 @@ function handleYunexpressEnvironmentChange(value: string) {
                     <div class="mt-0.5 text-xs text-blue-700 dark:text-blue-200">{{ mercadoLibreBindingMeta(binding) }}</div>
                   </div>
                 </div>
-                <p v-else class="mt-2 text-xs text-amber-700 dark:text-amber-200">尚未同步到可用子市场。请重新验证授权；同步完成前不能为 CBT 草稿选择销售国家。</p>
+                <p v-else-if="mercadoLibreGlobalSellingMeta.listingModel === 'user_products'" class="mt-2 text-xs text-amber-700 dark:text-amber-200">尚未同步到可用子市场。请重新验证并刷新账户能力；同步完成前不能为 CBT 草稿选择销售国家。</p>
+                <p v-else class="mt-2 text-xs text-accent-500 dark:text-accent-300">尚未验证账户刊登模型，请刷新账户能力。</p>
               </div>
             </template>
 
@@ -2302,7 +2347,12 @@ function handleYunexpressEnvironmentChange(value: string) {
                 <div v-if="storeCurrencyState.allowedCurrencies.length" class="flex items-center justify-between gap-2"><dt class="text-accent-500 dark:text-accent-400">允许币种</dt><dd>{{ storeCurrencyState.allowedCurrencies.join('、') }}</dd></div>
               </dl>
 
-              <div v-if="storeCurrencyState.status === 'refresh_failed'" class="mt-2 rounded bg-rose-50 p-2 text-xs text-rose-700 ring-1 ring-rose-100 dark:bg-rose-500/10 dark:text-rose-200 dark:ring-rose-500/30">
+              <div v-if="isMercadoLibreTraditionalModelNotice" class="mt-2 rounded bg-blue-50 p-2 text-xs text-blue-800 ring-1 ring-blue-100 dark:bg-blue-500/10 dark:text-blue-200 dark:ring-blue-500/30">
+                {{ MERCADOLIBRE_TRADITIONAL_MODEL_MESSAGE }}
+                <button data-testid="store-currency-retry" class="btn btn-outline ml-2 py-1 text-xs" :disabled="props.loading" @click="retryStoreCurrency()">重新验证并刷新账户能力</button>
+              </div>
+
+              <div v-else-if="storeCurrencyState.status === 'refresh_failed'" class="mt-2 rounded bg-rose-50 p-2 text-xs text-rose-700 ring-1 ring-rose-100 dark:bg-rose-500/10 dark:text-rose-200 dark:ring-rose-500/30">
                 读取失败：{{ storeCurrencyState.errorMessage || storeCurrencyState.errorCode || '远端未返回可用币种' }}。上次读取值仅供参考，核价与发布已阻断。
                 <button data-testid="store-currency-retry" class="btn btn-outline ml-2 py-1 text-xs" :disabled="props.loading" @click="retryStoreCurrency()">重新验证授权并读取币种</button>
               </div>

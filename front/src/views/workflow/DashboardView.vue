@@ -4,7 +4,7 @@ import type {
   MercadoLibreAuthChecklist,
   MercadoLibreOrderItem,
   MercadoLibreOrderNotification,
-  MercadoLibreRemoteItem,
+  MercadoLibreUserProduct,
   Product,
   ProductIndexItem,
   PublishJob,
@@ -23,9 +23,9 @@ const props = defineProps<{
   ordersTotal: number
   ordersCheckedAt: string
   notificationUrl: string
-  remoteItems: MercadoLibreRemoteItem[]
-  remoteTotal: number
-  remoteStatus: string
+  userProducts: MercadoLibreUserProduct[]
+  userProductTotal: number
+  userProductStatus: string
   authChecklist: MercadoLibreAuthChecklist | null
   publishJob: PublishJob | null
   logs: string[]
@@ -38,7 +38,7 @@ const emit = defineEmits<{
   refreshProducts: []
   refreshLogs: []
   refreshOrders: []
-  refreshRemote: []
+  refreshUserProducts: []
   openProduct: [item: ProductIndexItem]
   editImages: [item: ProductIndexItem]
   claimSelected: []
@@ -118,8 +118,8 @@ const dashboardMetrics = computed(() => [
   },
   {
     label: 'ML 在线',
-    value: props.remoteTotal || props.remoteItems.length,
-    detail: props.remoteStatus || 'active',
+    value: props.userProductTotal || props.userProducts.length,
+    detail: props.userProductStatus || 'active',
     tone: 'border-slate-200 bg-white text-slate-700 dark:border-dark-700 dark:bg-dark-900 dark:text-accent-200',
   },
 ])
@@ -543,11 +543,11 @@ function stringifyJson(value: unknown) {
           <div class="flex items-center justify-between gap-3">
             <div>
               <h2 class="card-title">发布状态</h2>
-              <p class="muted mt-1">最近发布记录和远程商品。</p>
+              <p class="muted mt-1">最近发布记录和 Mercado Libre User Products。</p>
             </div>
             <div class="flex gap-2">
               <button type="button" class="btn btn-outline py-2" @click="emit('refreshLogs')">日志</button>
-              <button type="button" class="btn btn-outline py-2" @click="emit('refreshRemote')">ML</button>
+              <button type="button" class="btn btn-outline py-2" @click="emit('refreshUserProducts')">ML User Products</button>
             </div>
           </div>
 

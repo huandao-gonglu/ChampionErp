@@ -150,22 +150,56 @@ def sample_product() -> dict:
             "description": "Manual imported product for backend tests.",
             "weight_kg": "0.5",
             "dimensions": {"length_cm": "20", "width_cm": "15", "height_cm": "10"},
-            "image_pool": [],
+            "image_pool": [
+                {
+                    "id": "sample-ml-image",
+                    "url": "ml-id:TEST-PICTURE-1",
+                    "platform_picture_id": "TEST-PICTURE-1",
+                    "origin": "source",
+                    "status": "ready",
+                    "selected": True,
+                    "is_main": True,
+                    "order": 0,
+                    "platforms": ["mercadolibre"],
+                }
+            ],
         },
         "drafts": {
             "mercadolibre": {
                 "enabled": True,
+                "platform": "mercadolibre",
+                "platforms": ["mercadolibre"],
+                "site": "CBT",
                 "title": "Stage 3A backend test product",
                 "description": "Manual imported product for backend tests.",
                 "brand": "Generic",
                 "model": "T-3A",
-                "category_id": "MLM-100",
-                "target_sites": [{"platform": "mercadolibre", "site": "MLM", "language": "es", "listing_currency": "MXN"}],
-                "pricing": {"targets": {"mercadolibre:mlm": {"listing_currency": "MXN", "applied_price": {"amount": "199", "currency": "MXN"}}}},
+                "category_id": "CBT100",
+                "target_sites": [
+                    {
+                        "platform": "mercadolibre",
+                        "site": "CBT",
+                        "language": "en-US",
+                        "listing_currency": "USD",
+                        "sites_to_sell": [
+                            {"site_id": "MLM", "logistic_type": "remote"}
+                        ],
+                    }
+                ],
+                "pricing": {
+                    "targets": {
+                        "mercadolibre:cbt": {
+                            "listing_currency": "USD",
+                            "applied_price": {"amount": "19.99", "currency": "USD"},
+                        }
+                    }
+                },
                 "available_quantity": "3",
                 "condition": "new",
                 "listing_type_id": "gold_special",
-                "images": [],
+                "images": [
+                    {"asset_id": "sample-ml-image", "role": "main", "order": 0}
+                ],
                 "attributes": {"BRAND": "Generic", "MODEL": "T-3A"},
                 "package_dimensions": {
                     "length_cm": "20",

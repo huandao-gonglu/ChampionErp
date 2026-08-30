@@ -139,6 +139,45 @@ def test_frontend_task_state_read_is_get_only() -> None:
     )
 
 
+def test_mercadolibre_admin_uses_only_user_products_contract() -> None:
+    """管理入口不得恢复本地 item 列表、关闭或特殊确认双轨。"""
+
+    routes = "\n".join(
+        (ROOT / path).read_text(encoding="utf-8")
+        for path in (
+            "erp_web/http_route_units/get_routes.py",
+            "erp_web/http_route_units/publish_routes.py",
+            "erp_web/schemas/requests.py",
+        )
+    )
+    assert "/api/mercadolibre/user-products" in routes
+    assert "/api/mercadolibre/pause-user-product" in routes
+    for retired in (
+        "/api/mercadolibre/published-items",
+        "/api/mercadolibre/close-item",
+        "/api/mercadolibre/confirm-real-publish",
+    ):
+        assert retired not in routes
+
+
+def test_mercadolibre_publisher_only_has_explicit_cbt_write_paths() -> None:
+    source = (
+        ROOT / "erp_web/marketplaces/publishing.py"
+    ).read_text(encoding="utf-8")
+    for retired in (
+        "https://api.mercadolibre.com/items",
+        '"_global_selling"',
+        '"_item_id"',
+    ):
+        assert retired not in source
+    assert "/global/user-products/families" in source
+    assert "/global/user-products/" in source
+    assert '"https://api.mercadolibre.com/global/items"' in source
+    assert "traditional_global_items" in source
+    assert "require_mercadolibre_listing_model" in source
+    assert "quote(siteless_id" in source
+
+
 def test_message_part_does_not_mount_task_card() -> None:
     text = (
         ROOT / "front/src/components/ai-work/AiMessagePart.vue"
@@ -318,3 +357,16 @@ def test_history_projection_uses_official_process_history_capability() -> None:
     assert "_agent_graph" not in source
     assert "new_message_index" not in source
 
+
+def test_mercadolibre_publish_has_no_direct_http_or_ai_bypass() -> None:
+    workflow_source = (
+        ROOT / "erp_web/runtime_units/publish_workflows.py"
+    ).read_text(encoding="utf-8")
+    capability_source = (
+        ROOT / "erp_web/runtime_units/publish_admin_capabilities.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'if platform == "mercadolibre"' in workflow_source
+    assert '"MERCADOLIBRE_PUBLISH_BUS_REQUIRED"' in workflow_source
+    assert 'if platform == "mercadolibre"' in capability_source
+    assert '"MERCADOLIBRE_PUBLISH_BUS_REQUIRED"' in capability_source

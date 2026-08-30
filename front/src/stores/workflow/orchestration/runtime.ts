@@ -3,6 +3,11 @@ import { storeToRefs } from 'pinia'
 import { saveDraft as saveDraftApi } from '@/api/workflow/catalog'
 import { diagnosticsToCollectDiagnostics } from '@/api/workflow/normalizers'
 import { createDefaultCollectDiagnostics } from '@/constants/initialState'
+import {
+  draftTargetsForLanguage,
+  isMercadoLibreParentSite,
+  isMercadoLibrePlatform,
+} from '@/utils/draftTargetOptions'
 import { useWorkflowActivityStore } from '@/stores/workflow/activity'
 import { useWorkflowCatalogStore } from '@/stores/workflow/catalog'
 import { useWorkflowCollectionStore } from '@/stores/workflow/collection'
@@ -10,10 +15,13 @@ import { useWorkflowPublishingStore } from '@/stores/workflow/publishing'
 import { useWorkflowSettingsStore } from '@/stores/workflow/settings'
 import {
   isMercadoLibreCbtTarget,
+  MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED_MESSAGE,
   mercadoLibreAccountSiteId,
   mercadoLibreDestinationKey,
-  mercadoLibreIsFullyManaged,
-  mercadoLibreMarketplaceBindings,
+  mercadoLibreHasFullyManagedBinding,
+  mercadoLibreListingModel,
+  mercadoLibreListingModelError,
+  mercadoLibreSelectableBindings,
 } from '@/utils/mercadolibreGlobalSelling'
 import type {
   CategoryAttributeValue,
@@ -197,12 +205,15 @@ export function createWorkflowRuntime() {
     mercadoLibreOrderNotifications,
     mercadoLibreOrdersTotal,
     mercadoLibreOrdersCheckedAt,
-    mercadoLibreRemoteItems,
-    mercadoLibreRemoteStatus,
-    mercadoLibreRemotePage,
-    mercadoLibreRemotePerPage,
-    mercadoLibreRemoteTotal,
-    mercadoLibreRemoteTotalPages,
+    mercadoLibreUserProducts,
+    mercadoLibreUserProductStatus,
+    mercadoLibreUserProductPage,
+    mercadoLibreUserProductPerPage,
+    mercadoLibreUserProductTotal,
+    mercadoLibreUserProductTotalPages,
+    mercadoLibreUserProductRefreshErrors,
+    mercadoLibreUserProductsRefreshScope,
+    mercadoLibreUserProductsCheckedAt,
     activeMarketplace,
     platformOptions,
     publishResult,
@@ -214,9 +225,9 @@ export function createWorkflowRuntime() {
     loadMorePublishJobs,
     selectPublishJob,
     refreshPublishLogs,
-    refreshMercadoLibreRemoteItems,
+    refreshMercadoLibreUserProducts,
     refreshMercadoLibreOrders,
-    closeMercadoLibreRemoteItem,
+    pauseMercadoLibreUserProductById,
   } = publishingStore
   const {
     appConfig,
@@ -257,7 +268,11 @@ export function createWorkflowRuntime() {
   function activeMarketplaceSite(): string {
     const draftSite = String(product.value.drafts[activeMarketplace.value]?.site || '').trim()
     if (draftSite) return draftSite
-    return platformOptions.value.find((option) => option.key === activeMarketplace.value)?.sites[0]?.code || ''
+    const platform = platformOptions.value.find((option) => option.key === activeMarketplace.value)
+    if (isMercadoLibrePlatform(activeMarketplace.value)) {
+      return platform?.sites.find((site) => isMercadoLibreParentSite(activeMarketplace.value, site.code))?.code || 'CBT'
+    }
+    return platform?.sites[0]?.code || ''
   }
 
   function targetKey(platform: Marketplace, site: string) {
@@ -281,9 +296,11 @@ export function createWorkflowRuntime() {
           // 枚举值 ID 按字符串保留：大 ID 经过 Number() 会精度丢失。
           const dictionaryValueId = String(option.dictionaryValueId ?? '').trim()
           const optionValue = String(option.value || '').trim()
-          return dictionaryValueId && dictionaryValueId !== '0' && optionValue
-            ? [{ dictionaryValueId, value: optionValue }]
-            : []
+          if (!optionValue || dictionaryValueId === '0') return []
+          return [{
+            ...(dictionaryValueId ? { dictionaryValueId } : {}),
+            value: optionValue,
+          }]
         })
         : []
       if (values.length) return [key, { values }]
@@ -388,33 +405,77 @@ export function createWorkflowRuntime() {
       return false
     }
     const currentTarget = currentDraft.value.targetSites[targetIndex]
+    let currentMercadoLibreListingModel = ''
     if (isMercadoLibreCbtTarget(currentTarget)) {
       if (mercadoLibreAccountSiteId(storeConfig.value) !== 'CBT') {
         setError('当前店铺尚未验证为 CBT Global Selling 账号。')
         return false
       }
-      if (mercadoLibreIsFullyManaged(storeConfig.value)) {
-        setError('当前 CBT 账号为 Fully Managed，不能使用标准售价与销售目的地流程。')
+      currentMercadoLibreListingModel = mercadoLibreListingModel(storeConfig.value)
+      if (!currentMercadoLibreListingModel) {
+        setError(mercadoLibreListingModelError(storeConfig.value))
+        return false
+      }
+      if (
+        currentMercadoLibreListingModel === 'user_products'
+        && mercadoLibreHasFullyManagedBinding(storeConfig.value)
+      ) {
+        setError(MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED_MESSAGE)
         return false
       }
     }
-    const allowedKeys = new Set(mercadoLibreMarketplaceBindings(storeConfig.value).map((binding) => (
+    const allowedKeys = new Set(mercadoLibreSelectableBindings(storeConfig.value).map((binding) => (
       mercadoLibreDestinationKey(binding.siteId, binding.logisticType)
     )))
-    const seen = new Set<string>()
-    const normalizedSites = sitesToSell.flatMap((item) => {
+    if (isMercadoLibreCbtTarget(currentTarget)) {
+      const requested = sitesToSell.map((item) => ({
+        siteId: String(item.siteId || '').trim().toUpperCase(),
+        logisticType: String(item.logisticType || '').trim().toLowerCase(),
+      })).filter((item) => item.siteId && item.siteId !== 'CBT' && item.logisticType)
+      if (requested.some((item) => !allowedKeys.has(mercadoLibreDestinationKey(item.siteId, item.logisticType)))) {
+        setError(currentMercadoLibreListingModel === 'traditional_global_items'
+          ? '所选销售操作已不在当前 traditional_global_items 授权市场中。'
+          : '所选销售操作未启用 User Products，或已不在当前授权中。')
+        return false
+      }
+      if (new Set(requested.map((item) => item.siteId)).size !== requested.length) {
+        setError('同一销售市场只能选择一个物流操作。')
+        return false
+      }
+    }
+    const seenSites = new Set<string>()
+    const normalizedSites: MarketplaceSiteToSell[] = sitesToSell.flatMap((item) => {
       const siteId = String(item.siteId || '').trim().toUpperCase()
       const logisticType = String(item.logisticType || '').trim().toLowerCase()
       const destinationKey = mercadoLibreDestinationKey(siteId, logisticType)
-      if (!siteId || siteId === 'CBT' || !logisticType || seen.has(destinationKey)) return []
+      if (!siteId || siteId === 'CBT' || !logisticType || seenSites.has(siteId)) return []
       if (isMercadoLibreCbtTarget(currentTarget) && !allowedKeys.has(destinationKey)) return []
-      seen.add(destinationKey)
-      return [{ siteId, logisticType }]
+      seenSites.add(siteId)
+      const normalized: MarketplaceSiteToSell = { siteId, logisticType }
+      if (item.price !== undefined) normalized.price = String(item.price)
+      if (item.netProceeds !== undefined && currentMercadoLibreListingModel !== 'traditional_global_items') {
+        normalized.netProceeds = String(item.netProceeds)
+      }
+      if (item.listingTypeId !== undefined) normalized.listingTypeId = String(item.listingTypeId)
+      if (item.status !== undefined) normalized.status = String(item.status)
+      if (item.freeShipping !== undefined) normalized.freeShipping = Boolean(item.freeShipping)
+      if (item.saleTerms !== undefined) normalized.saleTerms = item.saleTerms.map((term) => ({ ...term }))
+      return [normalized]
     })
-    const previousSignature = (currentTarget.sitesToSell || [])
-      .map((item) => mercadoLibreDestinationKey(item.siteId, item.logisticType)).sort().join(',')
-    const nextSignature = normalizedSites
-      .map((item) => mercadoLibreDestinationKey(item.siteId, item.logisticType)).sort().join(',')
+    const siteToSellSignature = (items: MarketplaceSiteToSell[]) => JSON.stringify(items
+      .map((item) => ({
+        siteId: String(item.siteId || '').trim().toUpperCase(),
+        logisticType: String(item.logisticType || '').trim().toLowerCase(),
+        price: item.price,
+        netProceeds: item.netProceeds,
+        listingTypeId: item.listingTypeId,
+        status: item.status,
+        freeShipping: item.freeShipping,
+        saleTerms: item.saleTerms,
+      }))
+      .sort((left, right) => left.siteId.localeCompare(right.siteId)))
+    const previousSignature = siteToSellSignature(currentTarget.sitesToSell || [])
+    const nextSignature = siteToSellSignature(normalizedSites)
     if (previousSignature === nextSignature) return true
 
     const updatedTarget: MarketplaceTargetSite = {
@@ -423,7 +484,7 @@ export function createWorkflowRuntime() {
       validationErrors: [],
       lastPrecheck: {},
       lastPrecheckTarget: {},
-      // 目的地变化开启新的发布流程；远端发布身份由 lastPublishTask 独立保留。
+      // 目的地或每市场销售条件变化会开启新的发布流程；远端发布身份由 lastPublishTask 独立保留。
       status: 'category_ready',
       publishStatus: '',
     }
@@ -513,16 +574,18 @@ export function createWorkflowRuntime() {
   }
 
   function configuredTargetsForLanguage(language: string): MarketplaceTargetSite[] {
-    const selectedLanguage = String(language || '').trim().toLowerCase()
-    if (!selectedLanguage) return []
-    return platformOptions.value.flatMap((platform) => platform.sites
-      .filter((site) => String(site.language || '').trim().toLowerCase() === selectedLanguage)
-      .map((site) => ({
-        platform: platform.key,
-        site: site.code,
-        language: site.language,
+    const markets = draftTargetsForLanguage(platformOptions.value, language)
+    const targets = markets.filter((target) => !isMercadoLibrePlatform(target.platform))
+    if (markets.some((target) => isMercadoLibrePlatform(target.platform))) {
+      targets.push({
+        platform: 'mercadolibre',
+        site: 'CBT',
+        language: String(language || '').trim(),
         listingCurrency: '',
-      })))
+        sitesToSell: [],
+      })
+    }
+    return targets
   }
 
   function configuredSelectedTargets(language: string, targets: MarketplaceTargetSite[]): MarketplaceTargetSite[] {
@@ -535,6 +598,39 @@ export function createWorkflowRuntime() {
       .map((target) => {
         const selected = selectedByKey.get(targetKey(target.platform, target.site))
         if (!selected) return target
+        if (isMercadoLibreParentSite(target.platform, target.site)) {
+          const languageSiteIds = new Set(draftTargetsForLanguage(platformOptions.value, language)
+            .filter((market) => isMercadoLibrePlatform(market.platform))
+            .map((market) => String(market.site || '').trim().toUpperCase()))
+          const allowedBindings = new Set(mercadoLibreSelectableBindings(storeConfig.value).map((binding) => (
+            mercadoLibreDestinationKey(binding.siteId, binding.logisticType)
+          )))
+          const seenSites = new Set<string>()
+          const sitesToSell = (selected.sitesToSell || []).flatMap((destination) => {
+            const siteId = String(destination.siteId || '').trim().toUpperCase()
+            const logisticType = String(destination.logisticType || '').trim().toLowerCase()
+            if (
+              !languageSiteIds.has(siteId)
+              || !allowedBindings.has(mercadoLibreDestinationKey(siteId, logisticType))
+              || seenSites.has(siteId)
+            ) return []
+            seenSites.add(siteId)
+            return [{
+              ...destination,
+              ...(destination.saleTerms ? { saleTerms: destination.saleTerms.map((term) => ({ ...term })) } : {}),
+              siteId,
+              logisticType,
+            }]
+          })
+          return {
+            ...selected,
+            ...target,
+            language: String(language || '').trim(),
+            listingCurrency: selected.listingCurrency,
+            currencyFingerprint: selected.currencyFingerprint,
+            sitesToSell,
+          }
+        }
         return {
           ...selected,
           ...target,
@@ -969,10 +1065,11 @@ export function createWorkflowRuntime() {
     categoryResultTranslationsSource, categoryResultTranslating, categoryPrecheck, precheck, precheckResults, payloadPreview,
     copyGenerating, publishJob, publishJobStatus, publishJobs, selectedPublishJobId, publishJobsNextCursor, publishJobsLoading,
     publishJobsLastUpdated, publishLogs, mercadoLibreOrders, mercadoLibreOrderNotifications,
-    mercadoLibreOrdersTotal, mercadoLibreOrdersCheckedAt, mercadoLibreRemoteItems, mercadoLibreRemoteStatus, mercadoLibreRemotePage, mercadoLibreRemotePerPage,
-    mercadoLibreRemoteTotal, mercadoLibreRemoteTotalPages, activeMarketplace, platformOptions, publishResult, activePublishTargetKey,
+    mercadoLibreOrdersTotal, mercadoLibreOrdersCheckedAt, mercadoLibreUserProducts, mercadoLibreUserProductStatus, mercadoLibreUserProductPage, mercadoLibreUserProductPerPage,
+    mercadoLibreUserProductTotal, mercadoLibreUserProductTotalPages, mercadoLibreUserProductRefreshErrors, mercadoLibreUserProductsRefreshScope, mercadoLibreUserProductsCheckedAt,
+    activeMarketplace, platformOptions, publishResult, activePublishTargetKey,
     refreshPublishJob, refreshPublishJobs, loadMorePublishJobs, selectPublishJob, refreshPublishLogs,
-    refreshMercadoLibreRemoteItems, refreshMercadoLibreOrders, closeMercadoLibreRemoteItem, appConfig,
+    refreshMercadoLibreUserProducts, refreshMercadoLibreOrders, pauseMercadoLibreUserProductById, appConfig,
     aiConfig, storeConfig, storeAuthSummary, mercadolibreAuthChecklist, lastAuthResult, authLink,
     loadAiConfig, saveAiSettings, testAiSettings, testPlatformApiConfig, saveStoreConfig, saveStoreCurrency, testAuth,
     loadMercadoLibreChecklist, generateMercadoLibreAuthLink, openMercadoLibreAuth, refreshMercadoLibreAuthToken, runMercadoLibreAuthTest, exchangeMlCode,

@@ -11,6 +11,8 @@ from erp_web.runtime_units.attribute_fill_capabilities import (
 from erp_web.runtime_units.category_capabilities import match_category
 from erp_web.runtime_units.market_prepare_capabilities import (
     MarketPrepareCapabilityScope,
+    _finalize_readiness,
+    _prepare_copy,
     draft_prepare_for_market,
     prepare_draft_for_market,
 )
@@ -33,23 +35,48 @@ from erp_web.services.capability_errors import (
     CapabilityInputRequired,
 )
 from erp_web.services.capability_input_provenance import encode_user_input_keys
+from erp_web.services.mercadolibre_target_contract import (
+    mercadolibre_global_target_contract,
+    mercadolibre_sales_target_selectors,
+)
 
 
 def _target_site(platform: str, site: str, currency: str) -> dict:
     return {
         "platform": platform,
         "site": site,
-        "language": "es-MX" if platform == "mercadolibre" else "ru-RU",
+        "language": "es" if platform == "mercadolibre" else "ru-RU",
         "listing_currency": currency,
         "currency_fingerprint": f"sha256:test-{platform}-{site}-{currency}",
     }
 
 
+def test_sales_target_options_follow_current_copy_language() -> None:
+    bindings = [
+        {
+            "site_id": site_id,
+            "logistic_type": "remote",
+            "user_product": True,
+        }
+        for site_id in ("MLM", "MLC", "MLB")
+    ]
+
+    assert mercadolibre_sales_target_selectors(bindings, language="es") == [
+        "MLC:remote",
+        "MLM:remote",
+    ]
+    assert mercadolibre_sales_target_selectors(
+        bindings,
+        language="pt-BR",
+    ) == ["MLB:remote"]
+    assert mercadolibre_sales_target_selectors(bindings, language="zh-CN") == []
+
+
 def _draft(
     draft_id: str,
     platform: str = "mercadolibre",
-    site: str = "MLM",
-    currency: str = "MXN",
+    site: str = "CBT",
+    currency: str = "USD",
 ) -> dict:
     draft = default_draft(platform)
     target = _target_site(platform, site, currency)
@@ -126,6 +153,7 @@ class _Products:
         self.product = product
         self.save_product_calls = 0
         self.save_draft_calls = 0
+        self.save_publish_state_calls = 0
         self.saved_draft_payloads: list[dict] = []
 
     def load_product_from_index(self, product_id: str = "", file_path: str = "") -> dict:
@@ -157,6 +185,36 @@ class _Products:
         self.product.setdefault("drafts", {})[platform] = deepcopy(draft_payload)
         return {"draft": deepcopy(draft_payload)}, None, 200
 
+    def save_draft_publish_state(
+        self,
+        draft_id: str,
+        platform: str,
+        site: str,
+        updates: dict,
+    ):
+        self.save_publish_state_calls += 1
+        draft = deepcopy(self.drafts[draft_id])
+        selected_key = (platform.lower(), site.upper())
+        targets = []
+        for target in draft.get("target_sites", []):
+            item = deepcopy(target)
+            if (
+                str(item.get("platform") or "").lower(),
+                str(item.get("site") or "").upper(),
+            ) == selected_key:
+                item.update(deepcopy(updates))
+            targets.append(item)
+        draft["target_sites"] = targets
+        primary_key = (
+            str(draft.get("platform") or "").lower(),
+            str(draft.get("site") or "").upper(),
+        )
+        if primary_key == selected_key:
+            draft.update(deepcopy(updates))
+        self.drafts[draft_id] = draft
+        self.product.setdefault("drafts", {})[platform] = deepcopy(draft)
+        return {"draft": deepcopy(draft)}, None, 200
+
     def apply_image_assets_to_draft(
         self,
         draft_id: str,
@@ -174,7 +232,7 @@ def _category_record(*_args, **_kwargs) -> dict:
         "category_id": "CAT-1",
         "category_path": "Home > Fans",
         "platform": "mercadolibre",
-        "site": "MLM",
+        "site": "CBT",
         "attributes": {
             "required": [
                 {
@@ -187,6 +245,45 @@ def _category_record(*_args, **_kwargs) -> dict:
             "optional": [],
         },
     }
+
+
+def test_finalize_readiness_uses_trusted_publish_state_writer() -> None:
+    draft = _draft("draft-finalize", site="CBT", currency="USD")
+    draft.update(
+        {
+            "validation_errors": [{"code": "STALE"}],
+            "last_precheck": {"ok": True},
+            "publish_status": "ready",
+            "status": "ready_to_publish",
+        }
+    )
+    draft["target_sites"][0].update(
+        {
+            "validation_errors": [{"code": "STALE"}],
+            "last_precheck": {"ok": True},
+            "publish_status": "ready",
+            "status": "ready_to_publish",
+        }
+    )
+    products = _Products([draft])
+
+    result = _finalize_readiness(
+        target_draft_id="draft-finalize",
+        platform="mercadolibre",
+        site="CBT",
+        product_store=products,
+    )
+
+    saved = products.drafts["draft-finalize"]
+    saved_target = saved["target_sites"][0]
+    assert products.save_publish_state_calls == 1
+    assert products.save_draft_calls == 0
+    assert result.workflow_status == "images_ready"
+    for item in (saved, saved_target):
+        assert item["validation_errors"] == []
+        assert item["last_precheck"] == {}
+        assert item["publish_status"] == ""
+        assert item["status"] == "images_ready"
 
 
 def test_cbt_pricing_request_uses_canonical_sales_targets_from_draft() -> None:
@@ -249,7 +346,7 @@ def test_cbt_pricing_without_sales_target_requests_trusted_selector() -> None:
 
     assert exc_info.value.code == "MERCADOLIBRE_SITES_TO_SELL_REQUIRED"
     assert exc_info.value.key == "sales_target"
-    assert exc_info.value.input_type == "select"
+    assert exc_info.value.input_type == "multi_select"
     assert exc_info.value.input_owner == "step"
     assert [option.value for option in exc_info.value.options] == [
         "MLB:fulfillment",
@@ -258,10 +355,23 @@ def test_cbt_pricing_without_sales_target_requests_trusted_selector() -> None:
     assert products.save_draft_calls == 0
 
 
+def test_prepare_for_market_sales_target_rejects_legacy_scalar_selector() -> None:
+    with pytest.raises(ValueError):
+        DraftPrepareForMarketRequest(
+            draft_id="draft-cbt",
+            target_platform="mercadolibre",
+            site="CBT",
+            sales_target="MLM:remote",  # type: ignore[arg-type]
+        )
+
+
 def test_cbt_sales_target_selection_is_saved_before_pricing_result() -> None:
     draft = _draft("draft-cbt", site="CBT", currency="USD")
     products = _Products([draft])
-    canonical_target = [{"site_id": "MLM", "logistic_type": "remote"}]
+    canonical_target = [
+        {"site_id": "MLB", "logistic_type": "remote"},
+        {"site_id": "MLM", "logistic_type": "remote"},
+    ]
 
     def pricing(payload: dict) -> dict:
         target = payload["targets"][0]
@@ -292,7 +402,7 @@ def test_cbt_sales_target_selection_is_saved_before_pricing_result() -> None:
         target_draft_id="draft-cbt",
         target_platform="mercadolibre",
         site="CBT",
-        sales_target="MLM:remote",
+        sales_target=["MLM:remote", "MLB:remote"],
         pricing_input={"common": {"purchase_cost": "100"}},
         product_store=products,
         pricing_calculator=pricing,
@@ -343,7 +453,7 @@ def test_cbt_sales_target_remains_saved_when_other_pricing_input_is_missing() ->
             target_draft_id="draft-cbt",
             target_platform="mercadolibre",
             site="CBT",
-            sales_target="MLM:remote",
+            sales_target=["MLM:remote"],
             pricing_input={"common": {"purchase_cost": "100"}},
             product_store=products,
             pricing_calculator=pricing,
@@ -358,17 +468,69 @@ def test_cbt_sales_target_remains_saved_when_other_pricing_input_is_missing() ->
     )
 
 
+def test_same_market_multiple_logistics_is_rejected_without_persisting() -> None:
+    draft = _draft("draft-cbt", site="CBT", currency="USD")
+    products = _Products([draft])
+    selected = [
+        {"site_id": "MLM", "logistic_type": "fulfillment"},
+        {"site_id": "MLM", "logistic_type": "remote"},
+    ]
+
+    def pricing(payload: dict) -> dict:
+        targets = payload["targets"][0]["sites_to_sell"]
+        assert targets == selected
+        _canonical, issues = mercadolibre_global_target_contract(
+            targets,
+            [
+                {
+                    "site_id": "MLM",
+                    "logistic_type": "fulfillment",
+                    "user_product": True,
+                },
+                {
+                    "site_id": "MLM",
+                    "logistic_type": "remote",
+                    "user_product": True,
+                },
+            ],
+        )
+        issue = issues[0]
+        return {
+            "ok": False,
+            "error_code": issue["code"],
+            "sales_target_options": ["MLM:fulfillment", "MLM:remote"],
+            "results": [],
+            "errors": [issue],
+        }
+
+    with pytest.raises(CapabilityInputRequired) as exc_info:
+        prepare_target_pricing(
+            target_draft_id="draft-cbt",
+            target_platform="mercadolibre",
+            site="CBT",
+            sales_target=["MLM:fulfillment", "MLM:remote"],
+            pricing_input={"common": {"purchase_cost": "100"}},
+            product_store=products,
+            pricing_calculator=pricing,
+        )
+
+    assert exc_info.value.code == "MERCADOLIBRE_MARKET_OPERATION_AMBIGUOUS"
+    assert exc_info.value.input_type == "multi_select"
+    assert "同一销售市场只能选择一种物流方式" in exc_info.value.reason
+    assert products.save_draft_calls == 0
+
+
 @pytest.mark.parametrize(
-    ("selector", "error_code", "error_field", "expected_targets"),
+    ("selectors", "error_code", "error_field", "expected_targets"),
     [
         (
-            "MLM",
-            "MERCADOLIBRE_SITES_TO_SELL_REQUIRED",
-            "sites_to_sell",
-            [],
+            ["MLM"],
+            "MERCADOLIBRE_LOGISTIC_TYPE_REQUIRED",
+            "sites_to_sell[0].logistic_type",
+            [{"site_id": "MLM", "logistic_type": ""}],
         ),
         (
-            "MLC:remote",
+            ["MLC:remote"],
             "MERCADOLIBRE_SALES_TARGET_NOT_AUTHORIZED",
             "sites_to_sell[0]",
             [{"site_id": "MLC", "logistic_type": "remote"}],
@@ -376,7 +538,7 @@ def test_cbt_sales_target_remains_saved_when_other_pricing_input_is_missing() ->
     ],
 )
 def test_invalid_or_unauthorized_cbt_sales_target_is_not_persisted(
-    selector: str,
+    selectors: list[str],
     error_code: str,
     error_field: str,
     expected_targets: list[dict[str, str]],
@@ -404,7 +566,7 @@ def test_invalid_or_unauthorized_cbt_sales_target_is_not_persisted(
             target_draft_id="draft-cbt",
             target_platform="mercadolibre",
             site="CBT",
-            sales_target=selector,
+            sales_target=selectors,
             pricing_input={"common": {"purchase_cost": "100"}},
             product_store=products,
             pricing_calculator=pricing,
@@ -439,10 +601,10 @@ def test_cbt_existing_pricing_is_not_usable_without_saved_sales_target() -> None
 def test_prepare_for_market_only_accepts_user_submitted_sales_target(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    received: list[str] = []
+    received: list[list[str]] = []
 
     def fake_prepare(request: DraftPrepareForMarketRequest, **_kwargs):
-        received.append(request.sales_target)
+        received.append(list(request.sales_target))
         return object()
 
     monkeypatch.setattr(
@@ -460,7 +622,7 @@ def test_prepare_for_market_only_accepts_user_submitted_sales_target(
         draft_id="draft-cbt",
         target_platform="mercadolibre",
         site="CBT",
-        sales_target="MLM:remote",
+        sales_target=["MLM:remote", "MLB:remote"],
     )
 
     def execution(*, trusted: bool) -> AiExecutionContext:
@@ -491,7 +653,7 @@ def test_prepare_for_market_only_accepts_user_submitted_sales_target(
         execution=execution(trusted=True),
     )
 
-    assert received == ["", "MLM:remote"]
+    assert received == [[], ["MLM:remote", "MLB:remote"]]
 
 
 def test_category_match_persists_focused_agent_selection() -> None:
@@ -499,11 +661,11 @@ def test_category_match_persists_focused_agent_selection() -> None:
 
     def matcher(product: dict, draft: dict, target: dict) -> dict:
         assert product["drafts"]["mercadolibre"]["draft_id"] == "draft-1"
-        assert target["site"] == "MLM"
+        assert target["site"] == "CBT"
         return {
             "ok": True,
             "status": "completed",
-            "target": {"platform": "mercadolibre", "site": "MLM"},
+            "target": {"platform": "mercadolibre", "site": "CBT"},
             "selected_category_id": "CAT-1",
             "query": "portable fan",
             "candidates": [{"category_id": "CAT-1", "name": "Fans"}],
@@ -515,7 +677,7 @@ def test_category_match_persists_focused_agent_selection() -> None:
         CategoryMatchRequest(
             draft_id="draft-1",
             target_platform="mercadolibre",
-            site="MLM",
+            site="CBT",
         ),
         product_store=products,
         matcher=matcher,
@@ -719,7 +881,7 @@ def test_attribute_fill_dictionary_attribute_requests_live_options() -> None:
     ]
     assert exc_info.value.input_type == "select"
     assert "枚举" in exc_info.value.reason
-    assert calls == [("mercadolibre", "CAT-1", "PURPOSE", "MLM")]
+    assert calls == [("mercadolibre", "CAT-1", "PURPOSE", "CBT")]
 
 
 def test_attribute_fill_dictionary_lookup_failure_falls_back_to_text() -> None:
@@ -957,7 +1119,7 @@ def test_prepare_claims_target_and_runs_real_owner_boundaries_in_order() -> None
         return CategoryMatchCapabilityResult(
             draft_id=request.draft_id,
             platform="mercadolibre",
-            site="MLM",
+            site="CBT",
             category_id="CAT-1",
             category_path="Home > Fans",
             changed=True,
@@ -971,7 +1133,7 @@ def test_prepare_claims_target_and_runs_real_owner_boundaries_in_order() -> None
         return ProductAttributesFillResult(
             draft_id=request.draft_id,
             platform="mercadolibre",
-            site="MLM",
+            site="CBT",
             attributes={"COLOR": "Red"},
             filled_attribute_ids=["COLOR"],
             changed=True,
@@ -981,7 +1143,7 @@ def test_prepare_claims_target_and_runs_real_owner_boundaries_in_order() -> None
         events.append("pricing")
         target = payload["targets"][0]
         assert target["platform"] == "mercadolibre"
-        assert target["site"] == "MLM"
+        assert target["site"] == "CBT"
         return {
             "ok": True,
             "input": {"common": payload["common"], "targets": [target]},
@@ -989,9 +1151,9 @@ def test_prepare_claims_target_and_runs_real_owner_boundaries_in_order() -> None
                 {
                     "ok": True,
                     "platform": "mercadolibre",
-                    "site": "MLM",
-                    "listing_currency": "MXN",
-                    "applied_price": {"amount": "299.00", "currency": "MXN"},
+                    "site": "CBT",
+                    "listing_currency": "USD",
+                    "applied_price": {"amount": "299.00", "currency": "USD"},
                     "calculation_basis": {"cost_cny": "100.00"},
                     "calculation_fingerprint": "fingerprint-1",
                     "errors": [],
@@ -1029,7 +1191,7 @@ def test_prepare_claims_target_and_runs_real_owner_boundaries_in_order() -> None
     ]
     assert result.readiness.image_count == 1
     assert result.readiness.attribute_count == 1
-    assert products.drafts["draft-target"]["pricing"]["targets"]["mercadolibre:mlm"]["applied_price"]["amount"] == "299.00"
+    assert products.drafts["draft-target"]["pricing"]["targets"]["mercadolibre:cbt"]["applied_price"]["amount"] == "299.00"
 
 
 def test_prepare_returns_input_required_for_unresolved_pricing_fact() -> None:
@@ -1060,7 +1222,7 @@ def test_prepare_returns_input_required_for_unresolved_pricing_fact() -> None:
         return CategoryMatchCapabilityResult(
             draft_id=request.draft_id,
             platform="mercadolibre",
-            site="MLM",
+            site="CBT",
             category_id="CAT-1",
             changed=True,
         )
@@ -1069,7 +1231,7 @@ def test_prepare_returns_input_required_for_unresolved_pricing_fact() -> None:
         return ProductAttributesFillResult(
             draft_id=request.draft_id,
             platform="mercadolibre",
-            site="MLM",
+            site="CBT",
             attributes={"COLOR": "Red"},
             filled_attribute_ids=["COLOR"],
             changed=False,
@@ -1166,3 +1328,300 @@ def test_regenerate_copy_operation_marker_skips_retry_after_domain_save() -> Non
 
     assert copy_calls == 1
     assert products.drafts["draft-1"]["copy_operation_key"] == operation_key
+
+
+def test_cbt_ready_copy_does_not_generate_per_market_copy() -> None:
+    draft = _draft("draft-cbt")
+    draft.update(
+        {
+            "copy_source": "ai",
+            "copy_generated_at": "2026-08-27T00:00:00Z",
+        }
+    )
+    target = draft["target_sites"][0]
+    target.update(
+        {
+            "sites_to_sell": [
+                {"site_id": "MLM", "logistic_type": "remote"}
+            ],
+            "validation_errors": [{"field": "title", "message": "stale"}],
+            "last_precheck": {"ok": True},
+            "publish_status": "ready",
+        }
+    )
+    products = _Products([draft])
+    _prepare_copy(
+        DraftPrepareForMarketRequest(
+            draft_id="draft-cbt",
+            target_platform="mercadolibre",
+        ),
+        target_draft_id="draft-cbt",
+        product_store=products,
+        copy_generator=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("已完成的当前语言文案不应再次调用模型")
+        ),
+        app_config_loader=lambda: (_ for _ in ()).throw(
+            AssertionError("已完成的当前语言文案不应加载模型配置")
+        ),
+        copy_operation_key="",
+    )
+
+    saved = products.drafts["draft-cbt"]
+    saved_target = saved["target_sites"][0]
+    assert saved["title"] == "Portable fan"
+    assert saved["description"] == "Portable fan description"
+    assert "marketplace_titles" not in saved_target
+    assert products.save_draft_calls == 0
+
+
+def test_cbt_fully_ready_copy_does_not_call_generator_or_save() -> None:
+    draft = _draft("draft-cbt")
+    draft.update(
+        {
+            "copy_source": "ai",
+            "copy_generated_at": "2026-08-27T00:00:00Z",
+        }
+    )
+    target = draft["target_sites"][0]
+    target["sites_to_sell"] = [
+        {"site_id": "MLM", "logistic_type": "remote"},
+        {"site_id": "MLC", "logistic_type": "remote"},
+    ]
+    products = _Products([draft])
+
+    _prepare_copy(
+        DraftPrepareForMarketRequest(
+            draft_id="draft-cbt",
+            target_platform="mercadolibre",
+        ),
+        target_draft_id="draft-cbt",
+        product_store=products,
+        copy_generator=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("完整文案不应再次调用模型")
+        ),
+        app_config_loader=lambda: (_ for _ in ()).throw(
+            AssertionError("完整文案不应加载模型配置")
+        ),
+        copy_operation_key="",
+    )
+
+    assert products.save_draft_calls == 0
+
+
+def test_cbt_ready_copy_does_not_depend_on_listing_model() -> None:
+    draft = _draft("draft-cbt")
+    draft.update(
+        {
+            "copy_source": "ai",
+            "copy_generated_at": "2026-08-27T00:00:00Z",
+        }
+    )
+    draft["target_sites"][0]["sites_to_sell"] = [
+        {"site_id": "MLM", "logistic_type": "remote"},
+        {"site_id": "MLC", "logistic_type": "remote"},
+    ]
+    products = _Products([draft])
+
+    def stop_after_copy(*_args, **_kwargs):
+        raise BusinessCapabilityError("TEST_STOP", "copy 步骤之后停止测试。")
+
+    with pytest.raises(BusinessCapabilityError) as exc_info:
+        prepare_draft_for_market(
+            DraftPrepareForMarketRequest(
+                draft_id="draft-cbt",
+                target_platform="mercadolibre",
+            ),
+            product_store=products,
+            copy_generator=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("已完成的当前语言文案不应再次生成")
+            ),
+            app_config_loader=lambda: (_ for _ in ()).throw(
+                AssertionError("已完成的当前语言文案不应加载模型配置")
+            ),
+            image_capability=stop_after_copy,
+        )
+
+    assert exc_info.value.code == "TEST_STOP"
+    assert "marketplace_titles" not in products.drafts["draft-cbt"][
+        "target_sites"
+    ][0]
+    assert products.save_draft_calls == 0
+
+
+def test_cbt_only_generates_current_language_copy() -> None:
+    draft = _draft("draft-cbt")
+    draft["target_sites"][0]["sites_to_sell"] = [
+        {"site_id": "MLM", "logistic_type": "remote"},
+        {"site_id": "MLC", "logistic_type": "remote"},
+    ]
+    products = _Products([draft])
+    languages: list[str] = []
+
+    def copy_generator(
+        _product: dict,
+        _source_platform: str,
+        _platform: str,
+        language: str,
+        _mode: str,
+        _app_config: dict,
+    ) -> dict:
+        languages.append(language)
+        return {
+            "ok": True,
+            "copy": {
+                "title": "Portable fan AI",
+                "description": "Portable fan AI description",
+            },
+            "language": language,
+        }
+
+    _prepare_copy(
+        DraftPrepareForMarketRequest(
+            draft_id="draft-cbt",
+            target_platform="mercadolibre",
+        ),
+        target_draft_id="draft-cbt",
+        product_store=products,
+        copy_generator=copy_generator,
+        app_config_loader=lambda: {"test": True},
+        copy_operation_key="",
+    )
+
+    saved = products.drafts["draft-cbt"]
+    assert languages == ["es"]
+    assert saved["title"] == "Portable fan AI"
+    assert saved["description"] == "Portable fan AI description"
+    assert not saved["target_sites"][0].get("marketplace_titles")
+    assert products.save_draft_calls == 1
+
+
+def test_cbt_sales_target_input_does_not_generate_additional_copy() -> None:
+    draft = _draft("draft-cbt")
+    draft.update(
+        {
+            "copy_source": "ai",
+            "copy_generated_at": "2026-08-27T00:00:00Z",
+            "images": [{"asset_id": "image-1", "role": "main", "order": 0}],
+            "category_id": "CAT-1",
+            "attributes": {"COLOR": "Red"},
+        }
+    )
+    products = _Products([draft])
+    languages: list[str] = []
+
+    def copy_generator(
+        _product: dict,
+        _source_platform: str,
+        _platform: str,
+        language: str,
+        _mode: str,
+        _app_config: dict,
+    ) -> dict:
+        languages.append(language)
+        return {"ok": True, "copy": {"title": f"Title {language}"}}
+
+    def images(request, *, product_store):
+        return ProductImagesPrepareResult(
+            draft_id=request.draft_id,
+            platform="mercadolibre",
+            image_asset_ids=["image-1"],
+            image_count=1,
+            changed=False,
+        )
+
+    def attributes(request, *, product_store):
+        return ProductAttributesFillResult(
+            draft_id=request.draft_id,
+            platform="mercadolibre",
+            site="CBT",
+            attributes={"COLOR": "Red"},
+            filled_attribute_ids=[],
+            changed=False,
+        )
+
+    def pricing(payload: dict) -> dict:
+        target = payload["targets"][0]
+        pricing_target = {
+            "ok": True,
+            "target_key": "mercadolibre:cbt",
+            "platform": "mercadolibre",
+            "site": "CBT",
+            "listing_currency": "USD",
+            "applied_price": {"amount": "39.99", "currency": "USD"},
+            "calculation_basis": {
+                "cost_cny": "100.00",
+                "sites_to_sell": deepcopy(target["sites_to_sell"]),
+            },
+            "calculation_fingerprint": "fingerprint-cbt",
+            "errors": [],
+        }
+        return {
+            "ok": True,
+            "input": {"common": payload["common"], "targets": [target]},
+            "results": [pricing_target],
+            "errors": [],
+            "exchange_rates": {"ok": True, "source": "test"},
+        }
+
+    result = prepare_draft_for_market(
+        DraftPrepareForMarketRequest(
+            draft_id="draft-cbt",
+            target_platform="mercadolibre",
+            sales_target=["MLM:remote", "MLC:remote"],
+            pricing_input={"common": {"purchase_cost": "100"}},
+        ),
+        product_store=products,
+        copy_generator=copy_generator,
+        app_config_loader=lambda: {"test": True},
+        image_capability=images,
+        attribute_capability=attributes,
+        pricing_calculator=pricing,
+    )
+
+    target = products.drafts["draft-cbt"]["target_sites"][0]
+    assert result.completed_parts.count("copy") == 1
+    assert languages == []
+    assert target["sites_to_sell"] == [
+        {"site_id": "MLC", "logistic_type": "remote"},
+        {"site_id": "MLM", "logistic_type": "remote"},
+    ]
+    assert "marketplace_titles" not in target
+
+
+def test_cbt_current_language_copy_failure_does_not_persist_partial_copy() -> None:
+    draft = _draft("draft-cbt")
+    draft["target_sites"][0]["sites_to_sell"] = [
+        {"site_id": "MLM", "logistic_type": "remote"},
+    ]
+    original = deepcopy(draft)
+    products = _Products([draft])
+    languages: list[str] = []
+
+    def copy_generator(
+        _product: dict,
+        _source_platform: str,
+        _platform: str,
+        language: str,
+        _mode: str,
+        _app_config: dict,
+    ) -> dict:
+        languages.append(language)
+        return {"ok": False, "error": "当前语言模型暂时不可用"}
+
+    with pytest.raises(BusinessCapabilityError) as exc_info:
+        _prepare_copy(
+            DraftPrepareForMarketRequest(
+                draft_id="draft-cbt",
+                target_platform="mercadolibre",
+            ),
+            target_draft_id="draft-cbt",
+            product_store=products,
+            copy_generator=copy_generator,
+            app_config_loader=lambda: {"test": True},
+            copy_operation_key="",
+        )
+
+    assert exc_info.value.code == "DRAFT_COPY_GENERATION_FAILED"
+    assert languages == ["es"]
+    assert products.save_draft_calls == 0
+    assert products.drafts["draft-cbt"] == original

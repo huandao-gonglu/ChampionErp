@@ -5,12 +5,17 @@ from copy import deepcopy
 from typing import Any
 
 from erp_web.context import get_context
+from erp_web.marketplace_registry import platform_title_limit
 from erp_web.marketplaces import mercadolibre_category_allowed_currencies
 from erp_web.services.mercadolibre_target_contract import (
     MERCADOLIBRE_CBT_CURRENCY_INVALID,
     MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED,
     MERCADOLIBRE_SALES_TARGET_NOT_AUTHORIZED,
     mercadolibre_global_target_contract,
+)
+from erp_web.services.mercadolibre_listing_model import (
+    MERCADOLIBRE_LISTING_MODEL_TRADITIONAL_GLOBAL_ITEMS,
+    MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS,
 )
 from erp_web.product_model import (
     normalize_mercadolibre_sites_to_sell,
@@ -29,6 +34,13 @@ from erp_web.services.listing_currency_service import (
     store_listing_currency_ready,
 )
 from erp_web.stores.product_store import normalize_product_fields
+from erp_web.schemas.category_definition import CategoryDefinition
+from erp_web.runtime_units.category_definition_support import (
+    definition_to_legacy_record,
+)
+from erp_web.services.mercadolibre_attribute_contract import (
+    compile_mercadolibre_attributes,
+)
 
 from .collect_helpers import collect_time_iso
 from .publish_helpers import (
@@ -250,19 +262,21 @@ def validate_mercadolibre_draft(
     product: dict[str, Any],
     config: dict[str, Any],
     category_record: dict[str, Any] | None = None,
+    *,
+    category_definition: CategoryDefinition | None = None,
 ) -> dict[str, Any]:
     product = normalize_product_fields(product)
     draft = _draft_for_selected_target(product, "mercadolibre")
     store = config.get("mercadolibre", {}) if isinstance(config.get("mercadolibre"), dict) else {}
+    if category_definition is not None:
+        category_record = definition_to_legacy_record(category_definition)
     summary = _required_attribute_summary(product, "mercadolibre", category_record)
     errors: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []
     auth_status, auth_next = _masked_auth_status("mercadolibre", config)
-    title_limit = int(
-        get_context().config.load_app_config().get("mercadolibre_title_limit")
-        or 60
-    )
+    title_limit = platform_title_limit("mercadolibre")
     title = str(draft.get("title") or "").strip()
+    global_title = str(draft.get("global_title") or "").strip()
     description = str(draft.get("description") or "").strip()
     category_id = str(draft.get("category_id") or "").strip()
     category_id_upper = category_id.upper()
@@ -271,13 +285,81 @@ def validate_mercadolibre_draft(
     attrs = draft.get("attributes") if isinstance(draft.get("attributes"), dict) else {}
     pkg = draft.get("package_dimensions") if isinstance(draft.get("package_dimensions"), dict) else {}
     images = _draft_images(product, "mercadolibre", draft)
+    listing_model = str(store.get("listing_model") or "").strip()
     if auth_status in {"未配置", "已保存，未测试", "测试失败", "Token 过期", "权限不足", "被限流"}:
         code = "AUTH_TOKEN_EXPIRED" if auth_status == "Token 过期" else "AUTH_NOT_CONFIGURED"
         errors.append(precheck_item(code, "auth", f"Mercado Libre 授权状态：{auth_status}", "error", auth_next or "前往授权页测试授权"))
+    if site_id != "CBT":
+        errors.append(
+            precheck_item(
+                "MERCADOLIBRE_CBT_TARGET_REQUIRED",
+                "site",
+                "Mercado Libre 只允许 CBT Global Selling 一级草稿",
+                "error",
+                "将 MLM、MLB、MLC、MCO 等市场改到 sites_to_sell 中选择",
+            )
+        )
+    if str(store.get("account_site_id") or "").strip().upper() != "CBT":
+        errors.append(
+            precheck_item(
+                "MERCADOLIBRE_CBT_ACCOUNT_REQUIRED",
+                "auth",
+                "当前授权不是 CBT Global Selling 父账号",
+                "error",
+                "前往授权页重新授权 CBT 父账号",
+            )
+        )
+    if listing_model not in {
+        MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS,
+        MERCADOLIBRE_LISTING_MODEL_TRADITIONAL_GLOBAL_ITEMS,
+    }:
+        errors.append(
+            precheck_item(
+                "MERCADOLIBRE_LISTING_MODEL_REQUIRED",
+                "auth",
+                "尚未从 /users tags 解析 Mercado Libre 刊登模型",
+                "error",
+                "前往授权页重新验证账号并读取刊登模型",
+            )
+        )
+    if (
+        listing_model == MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS
+        and store.get("user_product_seller") is not True
+    ):
+        errors.append(
+            precheck_item(
+                "MERCADOLIBRE_USER_PRODUCTS_REQUIRED",
+                "auth",
+                "当前账号未返回 user_product_seller 标签",
+                "error",
+                "联系 Mercado Libre 为账号开通 User Products 后重新测试授权",
+            )
+        )
     if not title:
-        errors.append(precheck_item("TITLE_MISSING", "title", "缺少标题", "error", "前往商品编辑页补齐标题"))
+        errors.append(precheck_item("TITLE_MISSING", "title", "缺少本地化标题", "error", "前往商品编辑页补齐本地化标题"))
     elif len(title) > title_limit:
         errors.append(precheck_item("TITLE_TOO_LONG", "title", f"标题长度超过 {title_limit} 字符限制", "error", "压缩 Mercado Libre 标题长度"))
+    if listing_model == MERCADOLIBRE_LISTING_MODEL_TRADITIONAL_GLOBAL_ITEMS:
+        if not global_title:
+            errors.append(
+                precheck_item(
+                    "GLOBAL_TITLE_MISSING",
+                    "global_title",
+                    "缺少 CBT 根英文标题",
+                    "error",
+                    "前往商品编辑页填写 Mercado Libre CBT 根英文标题",
+                )
+            )
+        elif len(global_title) > title_limit:
+            errors.append(
+                precheck_item(
+                    "GLOBAL_TITLE_TOO_LONG",
+                    "global_title",
+                    f"CBT 根英文标题长度超过 {title_limit} 字符限制",
+                    "error",
+                    "压缩 Mercado Libre CBT 根英文标题长度",
+                )
+            )
     if not description:
         errors.append(precheck_item("DESCRIPTION_MISSING", "description", "缺少描述", "error", "前往商品编辑页补齐描述"))
     if not category_id:
@@ -286,12 +368,29 @@ def validate_mercadolibre_draft(
         warnings.append(precheck_item("CATEGORY_PATH_MISSING", "category_path", "类目路径为空，建议重新实时匹配类目", "warning", "前往类目属性页重新选择类目"))
     if site_id == "CBT" and category_id and not category_id_upper.startswith("CBT"):
         errors.append(precheck_item("CATEGORY_SITE_MISMATCH", "category_id", "CBT 发布必须使用 CBT 类目 ID", "error", "前往类目属性页重新实时选择 CBT 类目"))
-    elif site_id and site_id != "CBT" and category_id and (category_id_upper.startswith("CBT") or not category_id_upper.startswith(site_id)):
-        errors.append(precheck_item("CATEGORY_SITE_MISMATCH", "category_id", f"{site_id} 发布必须使用 {site_id} 类目 ID", "error", "前往类目属性页重新实时选择该站点类目"))
     if summary["missing"]:
         for field in summary["missing"]:
             attr_id = str(field).split(".", 1)[-1]
             errors.append(precheck_item("REQUIRED_ATTRIBUTE_MISSING", field, f"缺少必填属性：{attr_id}", "error", "前往类目属性页补齐必填属性"))
+    if category_definition is not None and listing_model in {
+        MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS,
+        MERCADOLIBRE_LISTING_MODEL_TRADITIONAL_GLOBAL_ITEMS,
+    }:
+        compilation = compile_mercadolibre_attributes(
+            draft,
+            category_definition,
+            listing_model=listing_model,
+        )
+        for issue in compilation.issues:
+            errors.append(
+                precheck_item(
+                    issue.code,
+                    issue.field,
+                    issue.message,
+                    "error",
+                    "前往类目属性页修正该属性后重新预检",
+                )
+            )
     if not str(draft.get("brand") or "").strip():
         errors.append(precheck_item("BRAND_MISSING", "brand", "Brand 为空", "error", "前往类目属性页确认 Brand"))
     if not str(draft.get("model") or "").strip():
@@ -320,9 +419,16 @@ def validate_mercadolibre_draft(
                     "前往授权页重新验证 CBT 店铺币种，再重新核价",
                 )
             )
-        _, target_issues = mercadolibre_global_target_contract(
+        global_targets, target_issues = mercadolibre_global_target_contract(
             draft.get("sites_to_sell"),
             store.get("marketplace_bindings"),
+            require_user_products=(
+                listing_model == MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS
+            ),
+            enforce_binding_pricing_model=(
+                listing_model == MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS
+            ),
+            language=str(draft.get("language") or "").strip(),
         )
         for issue in target_issues:
             code = issue["code"]
@@ -330,7 +436,7 @@ def validate_mercadolibre_draft(
                 next_action = "前往授权页重新验证账号并读取已开通市场"
             elif code == MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED:
                 next_action = (
-                    "改选账号已开通的标准 CBT 市场；Fully Managed 需另行接入 "
+                    "当前 CBT 卖家属于 Fully Managed，需另行接入 "
                     "global_net_proceeds 价格流程"
                 )
             else:
@@ -371,8 +477,6 @@ def validate_mercadolibre_draft(
         errors.append(precheck_item("IMAGE_MISSING", "images", "缺少商品图片", "error", "前往图片池导入并勾选图片"))
     if images and not _has_main_image(product, "mercadolibre", draft):
         errors.append(precheck_item("MAIN_IMAGE_MISSING", "images", "缺少主图", "error", "前往图片池设置主图"))
-    if images and any(not str(image).startswith(("http://", "https://", "/file?path=")) for image in images):
-        warnings.append(precheck_item("IMAGE_NOT_UPLOADED", "images", "存在尚未上传的平台图片引用", "warning", "真实发布前确认图片可访问或已上传平台"))
     for field in ("length_cm", "width_cm", "height_cm"):
         if not str(pkg.get(field) or "").strip():
             errors.append(precheck_item("PACKAGE_DIMENSIONS_MISSING", f"package_dimensions.{field}", f"{field} 缺失", "error", "前往核价页或类目属性页补齐尺寸"))
@@ -411,28 +515,20 @@ def validate_mercadolibre_draft(
     if need_review:
         errors.extend(_review_precheck_items(need_review, "error"))
     if not str(draft.get("upc") or product.get("upc") or "").strip():
-        allow_gtin_exemption = bool(draft.get("allow_gtin_exemption") or draft.get("gtin_exempt") or config.get("listing", {}).get("allow_gtin_exemption"))
+        allow_gtin_exemption = bool(draft.get("allow_gtin_exemption"))
         if allow_gtin_exemption:
             warnings.append(precheck_item("UPC_MISSING", "upc", "UPC / GTIN 为空，已按配置允许豁免", "warning", "确认 Mercado Libre 类目允许 EMPTY_GTIN_REASON"))
         else:
             errors.append(precheck_item("UPC_MISSING", "upc", "UPC / GTIN 为空，且未确认允许豁免", "error", "前往商品编辑页分配 UPC 或显式确认豁免"))
-    terms_raw = product.get("marketplace_terms", {}).get("mercadolibre") if isinstance(product.get("marketplace_terms"), dict) else {}
-    sale_terms: Any = []
-    if isinstance(terms_raw, dict):
-        sale_terms = terms_raw.get("sale_terms") or terms_raw.get("warranty") or []
-    elif isinstance(terms_raw, list):
-        sale_terms = terms_raw
-    if not sale_terms:
-        sale_terms = draft.get("sale_terms") or draft.get("warranty") or []
-    if not sale_terms:
-        sale_terms = config.get("listing", {}).get("mercadolibre_sale_terms") if isinstance(config.get("listing"), dict) else []
+    # Mercado 发布条款的唯一事实源是当前草稿；配置或商品级旧值不能在用户
+    # 清空保修条款后悄悄回流到预检与 payload。
+    sale_terms: Any = (
+        draft.get("sale_terms")
+        if isinstance(draft.get("sale_terms"), list)
+        else []
+    )
     if not sale_terms:
         errors.append(precheck_item("SALE_TERMS_MISSING", "sale_terms", "sale_terms / warranty 尚未配置完整", "error", "前往平台属性页补齐保修条款"))
-    if site_id != "CBT":
-        draft_shipping = draft.get("shipping") if isinstance(draft.get("shipping"), dict) else {}
-        logistic_type = str(draft_shipping.get("logistic_type") or draft_shipping.get("mode") or config.get("listing", {}).get("mercadolibre_logistic_type") or "").strip()
-        if not logistic_type:
-            errors.append(precheck_item("LOGISTIC_MODE_MISSING", "logistic_type", "未读取 shipping / logistics mode", "error", "发布前在店铺后台确认物流模式，不要自动修改后台模式"))
     return {"platform": "mercadolibre", "ok": not errors, "errors": errors, "warnings": warnings, "checked_at": collect_time_iso()}
 
 

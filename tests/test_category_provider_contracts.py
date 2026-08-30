@@ -25,6 +25,7 @@ from erp_web.runtime_units.category_catalog import CategoryCatalog
 from erp_web.runtime_units.category_definition_support import (
     definition_from_legacy_attributes,
 )
+from erp_web.runtime_units.category_refresh import normalize_ml_attribute
 from erp_web.schemas.category_definition import CategoryDefinition
 
 
@@ -285,10 +286,25 @@ def test_mercadolibre_definition_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         category_providers,
         "mercadolibre_category_attributes",
-        lambda category_id, access_token=None, http_client=None: attributes,
+        lambda category_id, access_token=None, http_client=None, **kwargs: attributes,
+    )
+    monkeypatch.setattr(
+        category_providers,
+        "mercadolibre_category_technical_specs",
+        lambda category_id, access_token=None, http_client=None: {"groups": []},
+    )
+    monkeypatch.setattr(
+        category_providers,
+        "mercadolibre_catalog_attribute_top_values",
+        lambda *args, **kwargs: [],
     )
 
     provider = category_providers.MercadoLibreCategoryProvider()
+    monkeypatch.setattr(
+        provider,
+        "_store_config",
+        lambda: {"site_id": "MLM", "access_token": "saved-token"},
+    )
     definition = provider.attribute_definitions("MLM-100", site="MLM")
 
     assert definition.site == "MLM"
@@ -298,6 +314,351 @@ def test_mercadolibre_definition_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     assert brand.value_mode == "open_enum"
     assert [option.value for option in brand.options][:2] == ["Genérica", "Otra"]
     _assert_canonical_shape(definition)
+
+
+def test_mercadolibre_definition_merges_restricted_brand_top_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str | None, str, Any]] = []
+    top_values = [
+        {"id": str(index), "name": f"Brand {index}", "metric": 100 - index}
+        for index in range(51)
+    ]
+
+    def fake_http_json(
+        url: str,
+        access_token: str | None = None,
+        *,
+        timeout_seconds: float = 8,
+        method: str = "GET",
+        payload: dict[str, Any] | list[Any] | None = None,
+    ) -> dict[str, Any] | list[Any]:
+        del timeout_seconds
+        calls.append((url, access_token, method, payload))
+        if url.endswith("/categories/CBT455865"):
+            return {
+                "id": "CBT455865",
+                "name": "Portable Fans",
+                "settings": {"catalog_domain": "CBT-PORTABLE_FANS"},
+                "path_from_root": [],
+            }
+        if url.endswith("/categories/CBT455865/technical_specs/input"):
+            return {
+                "groups": [
+                    {
+                        "components": [
+                            {
+                                "component": "TEXT_INPUT",
+                                "ui_config": {"allow_custom_value": False},
+                                "attributes": [{"id": "BRAND"}, {"id": "MODEL"}],
+                            }
+                        ]
+                    }
+                ]
+            }
+        if "/top_values?limit=51" in url:
+            return top_values
+        if url.endswith("/categories/CBT455865/attributes"):
+            return [
+                {
+                    "id": "BRAND",
+                    "name": "Brand",
+                    "tags": {"required": True, "catalog_required": True},
+                    "value_type": "string",
+                    "value_max_length": 255,
+                },
+                {
+                    "id": "MODEL",
+                    "name": "Model",
+                    "tags": {"required": True, "catalog_required": True},
+                    "value_type": "string",
+                    "value_max_length": 255,
+                },
+            ]
+        raise AssertionError(f"未预期的 Mercado 请求：{url}")
+
+    provider = category_providers.MercadoLibreCategoryProvider()
+    monkeypatch.setattr(
+        provider,
+        "_store_config",
+        lambda: {"site_id": "CBT", "access_token": "saved-token"},
+    )
+    monkeypatch.setattr(category_providers, "http_json", fake_http_json)
+    monkeypatch.setattr(
+        category_providers,
+        "load_definition_through_cache",
+        lambda **kwargs: kwargs["live_loader"](),
+    )
+
+    definition = provider.attribute_definitions("CBT455865", site="CBT")
+
+    brand = definition.attribute_by_id("BRAND")
+    assert brand is not None
+    assert brand.allow_custom_values is False
+    assert brand.value_mode == "strict_enum"
+    assert brand.is_dictionary is True
+    assert len(brand.options) == 50
+    assert brand.options[0].dictionary_value_id == "0"
+    assert brand.has_more_values is True
+    model = definition.attribute_by_id("MODEL")
+    assert model is not None
+    assert model.allow_custom_values is False
+    assert model.value_mode == "free_text"
+    top_call = next(call for call in calls if "/top_values" in call[0])
+    assert top_call == (
+        "https://api.mercadolibre.com/catalog_domains/CBT-PORTABLE_FANS/"
+        "attributes/BRAND/top_values?limit=51",
+        "saved-token",
+        "POST",
+        None,
+    )
+
+
+def test_mercadolibre_brand_attribute_values_use_top_values_pagination(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_http_json(
+        url: str,
+        access_token: str | None = None,
+        *,
+        timeout_seconds: float = 8,
+        method: str = "GET",
+        payload: dict[str, Any] | list[Any] | None = None,
+    ) -> dict[str, Any] | list[Any]:
+        del timeout_seconds, payload
+        assert access_token == "saved-token"
+        calls.append((url, method))
+        if url.endswith("/categories/CBT455865/attributes"):
+            return [{"id": "BRAND", "value_type": "string", "tags": {}}]
+        if url.endswith("/categories/CBT455865"):
+            return {
+                "id": "CBT455865",
+                "settings": {"catalog_domain": "CBT-PORTABLE_FANS"},
+            }
+        if url.endswith("/top_values?limit=1000"):
+            return [
+                {"id": str(index), "name": f"Brand {index}"}
+                for index in range(125)
+            ]
+        raise AssertionError(f"未预期的 Mercado 请求：{url}")
+
+    provider = category_providers.MercadoLibreCategoryProvider()
+    monkeypatch.setattr(
+        provider,
+        "_store_config",
+        lambda: {"site_id": "CBT", "access_token": "saved-token"},
+    )
+    monkeypatch.setattr(category_providers, "http_json", fake_http_json)
+
+    first = provider.attribute_values(
+        "CBT455865",
+        "BRAND",
+        site="CBT",
+        limit=50,
+    )
+    second = provider.attribute_values(
+        "CBT455865",
+        "BRAND",
+        site="CBT",
+        limit=50,
+        cursor=first.next_cursor,
+    )
+    searched = provider.attribute_values(
+        "CBT455865",
+        "BRAND",
+        site="CBT",
+        query="Brand 124",
+    )
+
+    assert len(first.values) == 50 and first.has_more is True
+    assert first.next_cursor == "offset:50"
+    assert second.values[0].dictionary_value_id == "50"
+    assert searched.values[0].value == "Brand 124"
+    assert (
+        "https://api.mercadolibre.com/catalog_domains/CBT-PORTABLE_FANS/"
+        "attributes/BRAND/top_values?limit=1000",
+        "POST",
+    ) in calls
+
+
+def test_mercadolibre_definition_rejects_missing_token_before_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = category_providers.MercadoLibreCategoryProvider()
+    monkeypatch.setattr(
+        provider,
+        "_store_config",
+        lambda: {"site_id": "CBT", "access_token": ""},
+    )
+    monkeypatch.setattr(
+        category_providers,
+        "load_definition_through_cache",
+        lambda **_kwargs: pytest.fail("缺少 Token 时不得读取定义缓存"),
+    )
+
+    with pytest.raises(RuntimeError, match="Access Token"):
+        provider.attribute_definitions("CBT455865", site="CBT")
+
+
+def test_mercadolibre_definition_without_brand_skips_top_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_http_json(
+        url: str,
+        access_token: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any] | list[Any]:
+        del access_token, kwargs
+        if "/top_values" in url:
+            raise AssertionError("无 BRAND 的类目不得请求 BRAND top_values")
+        if url.endswith("/categories/CBT-NO-BRAND"):
+            return {
+                "id": "CBT-NO-BRAND",
+                "name": "No Brand Attribute",
+                "settings": {"catalog_domain": "CBT-NO-BRAND"},
+            }
+        if url.endswith("/technical_specs/input"):
+            return {"groups": []}
+        if url.endswith("/attributes"):
+            return [
+                {
+                    "id": "MODEL",
+                    "name": "Model",
+                    "value_type": "string",
+                    "tags": {"required": True},
+                }
+            ]
+        raise AssertionError(f"未预期的 Mercado 请求：{url}")
+
+    provider = category_providers.MercadoLibreCategoryProvider()
+    monkeypatch.setattr(
+        provider,
+        "_store_config",
+        lambda: {"site_id": "CBT", "access_token": "saved-token"},
+    )
+    monkeypatch.setattr(category_providers, "http_json", fake_http_json)
+    monkeypatch.setattr(
+        category_providers,
+        "load_definition_through_cache",
+        lambda **kwargs: kwargs["live_loader"](),
+    )
+
+    definition = provider.attribute_definitions("CBT-NO-BRAND", site="CBT")
+
+    assert definition.attribute_by_id("BRAND") is None
+    assert definition.attribute_by_id("MODEL") is not None
+
+
+def test_mercadolibre_normalization_preserves_wire_ids_units_and_read_only() -> None:
+    normalized = [
+        normalize_ml_attribute(
+            {
+                "id": "VOLTAGE",
+                "name": "Voltage",
+                "value_type": "string",
+                "value_max_length": 20,
+                "values": [
+                    {"id": "198813", "name": "220V"},
+                    {"id": "39205163", "name": "110/220V"},
+                ],
+            }
+        ),
+        normalize_ml_attribute(
+            {
+                "id": "WEIGHT",
+                "name": "Weight",
+                "value_type": "number_unit",
+                "allowed_units": [
+                    {"id": "g", "name": "g"},
+                    {"id": "kg", "name": "kg"},
+                    {"id": "lb", "name": "lb"},
+                ],
+                "default_unit": "kg",
+            }
+        ),
+        normalize_ml_attribute(
+            {
+                "id": "EMPTY_GTIN_REASON",
+                "name": "Empty GTIN reason",
+                "value_type": "list",
+                "values": [
+                    {
+                        "id": "17055160",
+                        "name": "The product does not have registered code",
+                    }
+                ],
+            }
+        ),
+        normalize_ml_attribute(
+            {
+                "id": "VERTICAL_TAGS",
+                "name": "Vertical tags",
+                "value_type": "string",
+                "tags": {"read_only": True},
+            }
+        ),
+    ]
+    definition = definition_from_legacy_attributes(
+        platform="mercadolibre",
+        site="CBT",
+        category_id="CBT455865",
+        required=[],
+        optional=normalized,
+    )
+
+    voltage = definition.attribute_by_id("VOLTAGE")
+    assert voltage is not None
+    assert {
+        (option.dictionary_value_id, option.value)
+        for option in voltage.options
+    } == {
+        ("198813", "220V"),
+        ("39205163", "110/220V"),
+    }
+    assert voltage.constraints == {"max_length": "20"}
+    weight = definition.attribute_by_id("WEIGHT")
+    assert weight is not None
+    assert weight.default_unit == "kg"
+    assert [(unit.id, unit.name) for unit in weight.unit_options] == [
+        ("g", "g"),
+        ("kg", "kg"),
+        ("lb", "lb"),
+    ]
+    empty_reason = definition.attribute_by_id("EMPTY_GTIN_REASON")
+    assert empty_reason is not None
+    assert empty_reason.options[0].dictionary_value_id == "17055160"
+    vertical_tags = definition.attribute_by_id("VERTICAL_TAGS")
+    assert vertical_tags is not None
+    assert vertical_tags.read_only is True
+
+
+def test_mercadolibre_exact_preview_limit_is_not_marked_incomplete() -> None:
+    def definition_for(total: int) -> CategoryDefinition:
+        attribute = normalize_ml_attribute(
+            {
+                "id": "COLOR",
+                "name": "Color",
+                "value_type": "list",
+                "values": [
+                    {"id": str(index), "name": f"Color {index}"}
+                    for index in range(total)
+                ],
+            }
+        )
+        return definition_from_legacy_attributes(
+            platform="mercadolibre",
+            site="CBT",
+            category_id="CBT455865",
+            required=[],
+            optional=[attribute],
+        )
+
+    exact = definition_for(50).attribute_by_id("COLOR")
+    truncated = definition_for(51).attribute_by_id("COLOR")
+    assert exact is not None and exact.has_more_values is False
+    assert truncated is not None and truncated.has_more_values is True
 
 
 def test_mercadolibre_cbt_search_uses_saved_access_token(

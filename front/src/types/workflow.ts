@@ -13,6 +13,10 @@ export {
   type BackendStoreConfig,
   type BackendImageItem,
   type BackendDraftImageRef,
+  type BackendMercadoLibreMarketplaceBinding,
+  type BackendMercadoLibreMarketplaceUser,
+  type BackendMercadoLibreMarketPublication,
+  type BackendMercadoLibrePublication,
   type BackendProductSource,
   type BackendMercadoLibreSiteToSell,
   type BackendDraftTargetSite,
@@ -20,6 +24,9 @@ export {
   type BackendProduct,
   type BackendPublishPlatformState,
   type BackendPublishJob,
+  type BackendPublishJobSiteToSellSummary,
+  type BackendPublishJobPlatformSummary,
+  type BackendPublishJobSummary,
 } from './workflow.generated'
 // </schema-generated-types>
 
@@ -35,6 +42,7 @@ export interface MarketplaceSiteOption {
 export interface MarketplaceOption {
   key: Marketplace
   label: string
+  titleLimit?: number
   sites: MarketplaceSiteOption[]
 }
 
@@ -44,6 +52,11 @@ export interface CategoryAttributeDefinition {
   required: boolean
   options?: string[]
   valueType?: string
+  valueMode?: 'strict_enum' | 'open_enum' | 'free_text' | string
+  allowCustomValues?: boolean
+  /** 本地 options 只是有界预览；true 时必须提供平台分页搜索入口。 */
+  hasMoreValues?: boolean
+  readOnly?: boolean
   unit?: string
   /** 平台允许的计量单位列表（如 Yandex 带单位参数），空 = 无需选单位。 */
   unitOptions?: string[]
@@ -65,8 +78,8 @@ export interface CategoryAttributeOption {
 }
 
 export interface CategoryDictionaryValue {
-  /** 平台枚举值 ID；大 ID 平台（如 Yandex）按字符串保存避免精度丢失。 */
-  dictionaryValueId: string | number
+  /** 平台枚举值 ID；自由文本集合项没有 ID，大 ID 平台按字符串保存避免精度丢失。 */
+  dictionaryValueId?: string | number
   value: string
 }
 
@@ -108,6 +121,52 @@ export interface PublishPayloadSummary {
 export interface MarketplaceSiteToSell {
   siteId: string
   logisticType: string
+  /** 子市场独立售价；留空时由全局核价结果兜底。 */
+  price?: string
+  listingTypeId?: string
+  /** 仅允许由安全编辑界面写入 active / paused；留空表示不修改远端状态。 */
+  status?: string
+  freeShipping?: boolean
+  saleTerms?: UnknownRecord[]
+  /** pricing_model=net_proceeds 时使用，与 price 互斥。 */
+  netProceeds?: string
+}
+
+export interface MercadoLibreMarketPublication {
+  siteId: string
+  itemId: string
+  userProductId: string
+  sellerId: string
+  logisticType: string
+  status: string
+  price: number | string | null
+  netProceeds: number | string | null
+  freeShipping: boolean | null
+  saleTerms: UnknownRecord[]
+  currencyId: string
+  listingTypeId: string
+  error: string | UnknownRecord | unknown[]
+  lastOperation: UnknownRecord
+  updatedAt: string
+}
+
+/** 一个内部商品对应的 Mercado Libre Siteless User Product 及其市场投影。 */
+export interface MercadoLibrePublication {
+  model: string
+  accountUserId: string
+  sitelessUserProductId: string
+  sitelessFamilyId: string
+  parentItemId: string
+  parentUserProductId: string
+  sellerId: string
+  status: string
+  familyName: string
+  markets: MercadoLibreMarketPublication[]
+  /** 已被 Mercado 确认的字段快照，用于后续增量 PUT，前端不得丢弃。 */
+  confirmedPayload: UnknownRecord
+  error: string | UnknownRecord | unknown[]
+  lastOperation: UnknownRecord
+  updatedAt: string
 }
 
 /** 发布预览确认态：payload、digest 与摘要同生命周期，预览被清空即失效。 */
@@ -229,8 +288,12 @@ export interface MarketplaceDraft {
   targetSites: MarketplaceTargetSite[]
   site: string
   enabled: boolean
+  /** Mercado traditional CBT 根刊登使用的英文标题。 */
+  globalTitle: string
   title: string
   description: string
+  brand: string
+  model: string
   bullets: string[]
   categoryId: string
   descriptionCategoryId: string
@@ -255,6 +318,7 @@ export interface MarketplaceDraft {
   publishStatus: string
   lastPrecheck: UnknownRecord
   lastPrecheckTarget: UnknownRecord
+  publication: MercadoLibrePublication | null
 }
 
 export interface Product {
@@ -494,19 +558,20 @@ export interface PublishPrecheck {
 
 export interface PublishJob {
   jobId: string
-  status: 'queued' | 'running' | 'completed' | 'failed'
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'outcome_unknown'
   platforms: Marketplace[]
   createdAt: string
   draftId?: string
   targetKey?: string
 }
 
-export type PublishJobDisplayStatus = 'queued' | 'running' | 'success' | 'failed' | 'partial'
+export type PublishJobDisplayStatus = 'queued' | 'running' | 'success' | 'failed' | 'partial' | 'outcome_unknown'
 
 export interface PublishJobPlatformSummary {
   platform: Marketplace
   draftId: string
   site: string
+  sitesToSell: MarketplaceSiteToSell[]
   status: string
   stage: string
   attempts: number
@@ -671,22 +736,11 @@ export interface PublishLogItem {
   raw: UnknownRecord
 }
 
-export interface MercadoLibreRemoteItem {
-  id: string
+export interface MercadoLibreUserProduct extends MercadoLibrePublication {
+  productId: string
+  draftId: string
   title: string
-  status: string
-  subStatus: string[]
-  permalink: string
   thumbnail: string
-  price: number
-  currencyId: string
-  availableQuantity: number
-  soldQuantity: number
-  categoryId: string
-  listingTypeId: string
-  sellerSku: string
-  dateCreated: string
-  lastUpdated: string
   raw: UnknownRecord
 }
 
@@ -738,7 +792,7 @@ export interface MercadoLibreOrdersPage {
   checkedAt: string
 }
 
-export interface MercadoLibreRemotePagination {
+export interface MercadoLibreUserProductPagination {
   page: number
   perPage: number
   offset: number
@@ -748,9 +802,12 @@ export interface MercadoLibreRemotePagination {
   hasNext: boolean
 }
 
-export interface MercadoLibrePublishedPage {
-  items: MercadoLibreRemoteItem[]
-  pagination: MercadoLibreRemotePagination
+export interface MercadoLibreUserProductsPage {
+  items: MercadoLibreUserProduct[]
+  pagination: MercadoLibreUserProductPagination
+  refreshErrors: UnknownRecord[]
+  refreshScope: string
+  checkedAt: string
 }
 
 export type ProductResearchSearchMode = 'target_only' | 'target_plus_reference' | 'global_scan'

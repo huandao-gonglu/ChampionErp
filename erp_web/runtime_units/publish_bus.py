@@ -13,10 +13,20 @@ from .draft_publish_context import (
     merge_target_listing_into_draft,
 )
 from .image_pool_core import source_image_refs
-from .publish_helpers import precheck_item, remote_publish_identity
+from .publish_helpers import (
+    mercadolibre_publication_from_result,
+    precheck_item,
+    remote_publish_identity,
+)
 
 if TYPE_CHECKING:
     from erp_web.context import AppContext
+
+
+_OUTCOME_UNKNOWN_NEXT_ACTION = (
+    "请先通过平台后台、任务或映射对账确认远端结果；确认前不要重新发布"
+)
+
 
 def page_snapshot_from_html(url: str, html: str, text: str = "", title: str = "", image_urls: list[str] | None = None) -> dict[str, Any]:
     return {
@@ -41,6 +51,8 @@ def publish_bus_terminal_status(status: str) -> str:
     value = str(status or "").strip().lower()
     if value == "success":
         return "published"
+    if value == "outcome_unknown":
+        return "outcome_unknown"
     if value in {"failed", "not_ready", "ready_for_real_publish", "skipped"}:
         return value
     return ""
@@ -59,6 +71,96 @@ def publish_bus_log_exists(
     )
 
 
+def _publish_bus_text(value: Any) -> str:
+    if not isinstance(value, (str, int, float, bool)):
+        return ""
+    return str(value).strip()
+
+
+def _publish_bus_field_errors(value: Any) -> dict[str, list[str]]:
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, list[str]] = {}
+    for raw_field, raw_messages in value.items():
+        field = _publish_bus_text(raw_field)
+        if not field:
+            continue
+        if isinstance(raw_messages, list):
+            values = raw_messages
+        elif isinstance(raw_messages, (str, int, float, bool)):
+            values = [raw_messages]
+        else:
+            values = []
+        messages = list(
+            dict.fromkeys(
+                text
+                for text in (
+                    _publish_bus_text(item)
+                    for item in values
+                    if isinstance(item, (str, int, float, bool))
+                )
+                if text
+            )
+        )
+        if messages:
+            normalized[field] = messages
+    return normalized
+
+
+def _publish_bus_error_details(
+    item: dict[str, Any],
+    terminal_status: str,
+) -> dict[str, Any]:
+    if terminal_status == "published":
+        return {}
+    result = item.get("result") if isinstance(item.get("result"), dict) else {}
+    raw_error_map = (
+        result.get("error_map")
+        if isinstance(result.get("error_map"), dict)
+        else {}
+    )
+    has_error = bool(
+        terminal_status in {"failed", "not_ready", "outcome_unknown"}
+        or raw_error_map
+        or str(item.get("error") or result.get("error") or "").strip()
+    )
+    if not has_error:
+        return {}
+
+    summary = (
+        _publish_bus_text(raw_error_map.get("summary"))
+        or _publish_bus_text(item.get("error"))
+        or _publish_bus_text(result.get("error"))
+        or (
+            "远端发布结果尚未确认"
+            if terminal_status == "outcome_unknown"
+            else "发布失败"
+        )
+    )
+    error_code = (
+        _publish_bus_text(raw_error_map.get("error_code"))
+        or _publish_bus_text(result.get("error_code"))
+        or "PUBLISH_BUS_FAILED"
+    )
+    field_errors = _publish_bus_field_errors(raw_error_map.get("field_errors"))
+    next_action = _publish_bus_text(raw_error_map.get("next_action"))
+    retryable_value = raw_error_map.get("retryable")
+    retryable = retryable_value if isinstance(retryable_value, bool) else False
+    if terminal_status == "outcome_unknown":
+        # 未知结果必须保留发布锁并先对账；平台返回的普通“重试”提示不能覆盖。
+        next_action = _OUTCOME_UNKNOWN_NEXT_ACTION
+        retryable = False
+    elif not next_action and terminal_status in {"failed", "not_ready"}:
+        next_action = "按字段提示修复后重试"
+    return {
+        "summary": summary,
+        "error_code": error_code,
+        "field_errors": field_errors,
+        "next_action": next_action,
+        "retryable": retryable,
+    }
+
+
 def apply_publish_bus_result_to_draft(
     draft: dict[str, Any],
     job_state: dict[str, Any],
@@ -69,21 +171,35 @@ def apply_publish_bus_result_to_draft(
     terminal_status = publish_bus_terminal_status(str(item.get("status") or ""))
     if not terminal_status:
         return draft
+    error_details = _publish_bus_error_details(item, terminal_status)
     updates: dict[str, Any] = {"publish_status": terminal_status}
     if terminal_status == "published":
         updates["status"] = "published"
         updates["validation_errors"] = []
-    elif str(item.get("error") or ""):
-        updates["validation_errors"] = [
+    elif error_details:
+        validation_errors = [
             precheck_item(
-                "PUBLISH_BUS_FAILED",
-                "publish",
-                str(item.get("error") or ""),
+                str(error_details["error_code"]),
+                field,
+                message,
                 "error",
-                "按字段提示修复后重试",
+                str(error_details["next_action"]),
             )
+            for field, messages in error_details["field_errors"].items()
+            for message in messages
         ]
-    updates["last_publish_task"] = {
+        if not validation_errors:
+            validation_errors = [
+                precheck_item(
+                    str(error_details["error_code"]),
+                    "publish",
+                    str(error_details["summary"]),
+                    "error",
+                    str(error_details["next_action"]),
+                )
+            ]
+        updates["validation_errors"] = validation_errors
+    last_publish_task = {
         "job_id": str(job_state.get("job_id") or ""),
         "status": terminal_status,
         "platform_status": str(item.get("status") or ""),
@@ -93,6 +209,20 @@ def apply_publish_bus_result_to_draft(
         **remote_publish_identity(item.get("result")),
         "updated_at": str(item.get("updated_at") or job_state.get("updated_at") or collect_time_iso()),
     }
+    if error_details:
+        last_publish_task.update(
+            {
+                "error": str(error_details["summary"]),
+                "error_code": str(error_details["error_code"]),
+                "field_errors": error_details["field_errors"],
+                "next_action": str(error_details["next_action"]),
+                "retryable": bool(error_details["retryable"]),
+            }
+        )
+    updates["last_publish_task"] = last_publish_task
+    publication = mercadolibre_publication_from_result(item.get("result"))
+    if platform == "mercadolibre" and publication:
+        updates["publication"] = publication
     target = {
         "platform": platform,
         "site": str(item.get("site") or draft.get("site") or ""),
@@ -111,9 +241,19 @@ def append_publish_bus_terminal_log(
 ) -> None:
     runtime_context = context or get_context()
     job_id = str(job_state.get("job_id") or "")
+    reconciliation = (
+        item.get("reconciliation")
+        if isinstance(item.get("reconciliation"), dict)
+        else {}
+    )
+    log_job_id = (
+        f"{job_id}:reconciliation"
+        if job_id and reconciliation
+        else job_id
+    )
     if (
-        job_id
-        and runtime_context.db.publish_log_exists(job_id, platform)
+        log_job_id
+        and runtime_context.db.publish_log_exists(log_job_id, platform)
     ):
         return
     from .publish_logs_runtime import (
@@ -124,6 +264,7 @@ def append_publish_bus_terminal_log(
     result = item.get("result") if isinstance(item.get("result"), dict) else {}
     payload = {
         "job_id": job_id,
+        **({"reconciliation": reconciliation} if reconciliation else {}),
         "platform": platform,
         "product_id": str(product.get("product_id") or ""),
         "stage": item.get("stage") or "",
@@ -134,14 +275,15 @@ def append_publish_bus_terminal_log(
         payload,
         result or item,
         output_dir=runtime_context.paths.output_dir,
-        artifact_key=f"{job_id}:{platform}" if job_id else "",
+        artifact_key=f"{log_job_id}:{platform}" if log_job_id else "",
     )
-    error_map = result.get("error_map") if isinstance(result.get("error_map"), dict) else {}
-    field_errors = error_map.get("field_errors") if isinstance(error_map.get("field_errors"), dict) else {}
     terminal_status = publish_bus_terminal_status(str(item.get("status") or ""))
+    error_details = _publish_bus_error_details(item, terminal_status)
     runtime_context.db.insert_publish_log_once(
         {
-            "job_id": job_id,
+            "job_id": log_job_id,
+            **({"source_job_id": job_id} if reconciliation else {}),
+            **({"reconciliation": reconciliation} if reconciliation else {}),
             "product_id": str(item.get("product_id") or product.get("product_id") or _product_id_for_log(product, platform)),
             "platform": platform,
             "draft_id": str(item.get("draft_id") or draft.get("draft_id") or ""),
@@ -150,14 +292,30 @@ def append_publish_bus_terminal_log(
             "finished_at": str(item.get("updated_at") or job_state.get("updated_at") or collect_time_iso()),
             "request_payload_path": payload_path,
             "response_body_path": response_path,
-            "error_code": str(result.get("error_code") or result.get("status") or item.get("status") or ""),
-            "error_message": str(item.get("error") or result.get("error") or ""),
-            "field_errors": field_errors,
-            "next_action": "按字段提示修复后重试" if terminal_status in {"failed", "not_ready"} else "",
+            "error_code": str(
+                error_details.get("error_code")
+                or result.get("error_code")
+                or result.get("status")
+                or item.get("status")
+                or ""
+            ),
+            "error_message": str(
+                error_details.get("summary")
+                or item.get("error")
+                or result.get("error")
+                or ""
+            ),
+            "field_errors": error_details.get("field_errors") or {},
+            "next_action": str(error_details.get("next_action") or ""),
             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
             "shop": platform,
             "sku": str(draft.get("sku") or ""),
-            "error": str(item.get("error") or result.get("error") or ""),
+            "error": str(
+                error_details.get("summary")
+                or item.get("error")
+                or result.get("error")
+                or ""
+            ),
             "image": source_image_refs(product)[:1],
         }
     )

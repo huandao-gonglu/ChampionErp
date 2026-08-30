@@ -165,6 +165,9 @@ def legacy_attribute_to_definition(
     for item in legacy.get("unit_options") or []:
         if isinstance(item, dict):
             name = _text(item.get("name") or item.get("id"))
+            unit_id = _text(item.get("id"))
+            if name and unit_id:
+                unit_ids.setdefault(name, unit_id)
         else:
             name = _text(item)
         if name and name not in unit_option_names:
@@ -228,11 +231,14 @@ def legacy_attribute_to_definition(
         is_dictionary = True
     # 字典属性的候选全集一律分页读取：预览被截断，或字典存在但本地无候选
     # （Ozon 按需加载）时，都必须提示调用方继续分页。
-    has_more_values = bool(
-        candidate_total > ATTRIBUTE_OPTIONS_PREVIEW_LIMIT
-        or (is_dictionary and candidate_total >= ATTRIBUTE_OPTIONS_PREVIEW_LIMIT)
-        or (is_dictionary and candidate_total == 0 and not previews)
-    )
+    if "has_more_values" in legacy:
+        has_more_values = bool(legacy.get("has_more_values"))
+    else:
+        has_more_values = bool(
+            candidate_total > ATTRIBUTE_OPTIONS_PREVIEW_LIMIT
+            or (is_dictionary and candidate_total >= ATTRIBUTE_OPTIONS_PREVIEW_LIMIT)
+            or (is_dictionary and candidate_total == 0 and not previews)
+        )
 
     max_value_count_raw = legacy.get("max_value_count")
     try:
@@ -267,6 +273,7 @@ def legacy_attribute_to_definition(
         value_type=_text(legacy.get("value_type")),
         value_mode=value_mode,
         allow_custom_values=bool(legacy.get("allow_custom_values")),
+        read_only=bool(legacy.get("read_only")),
         constraints=constraints,
         dictionary_id=dictionary_id,
         is_dictionary=is_dictionary,
@@ -295,6 +302,7 @@ def definition_to_legacy_attribute(
         "value_type": definition.value_type,
         "value_mode": definition.value_mode,
         "allow_custom_values": definition.allow_custom_values,
+        "read_only": definition.read_only,
         "unit": definition.default_unit,
         "unit_options": [unit.name for unit in definition.unit_options],
         "default_unit": definition.default_unit,
@@ -307,11 +315,48 @@ def definition_to_legacy_attribute(
         "constraints": dict(definition.constraints),
         "description": "",
         "options": [option.value for option in definition.options],
+        "has_more_values": definition.has_more_values,
         "dictionary_id": definition.dictionary_id,
         "is_dictionary": definition.is_dictionary,
         "is_collection": definition.is_collection,
         "max_value_count": definition.max_value_count or 0,
         "category_dependent": definition.category_dependent,
+    }
+
+
+def definition_to_legacy_record(
+    definition: CategoryDefinition,
+) -> dict[str, Any]:
+    """类型化定义 → 共享类目校验器使用的临时 record。"""
+
+    return {
+        "platform": definition.platform,
+        "site": definition.site,
+        "category_id": definition.category_id,
+        "description_category_id": definition.description_category_id,
+        "category_path": definition.category_path,
+        "path_original": [
+            segment.strip()
+            for segment in definition.category_path.split("/")
+            if segment.strip()
+        ],
+        "source": f"{definition.platform}_live",
+        "attributes": {
+            "required": [
+                {
+                    **definition_to_legacy_attribute(attribute),
+                    "complex_id": attribute.platform_binding.complex_id,
+                }
+                for attribute in definition.required
+            ],
+            "optional": [
+                {
+                    **definition_to_legacy_attribute(attribute),
+                    "complex_id": attribute.platform_binding.complex_id,
+                }
+                for attribute in definition.optional
+            ],
+        },
     }
 
 
@@ -371,6 +416,7 @@ def public_attribute_summary(
         value_type=definition.value_type,
         value_mode=definition.value_mode,
         allow_custom_values=definition.allow_custom_values,
+        read_only=definition.read_only,
         is_dictionary=definition.is_dictionary,
         is_collection=definition.is_collection,
         max_value_count=definition.max_value_count,

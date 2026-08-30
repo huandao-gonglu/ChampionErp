@@ -8,6 +8,7 @@ import pytest
 
 from erp_web.schemas.publish_capabilities import (
     ProductPublishCapabilityRequest,
+    ProductPublishDestination,
     ProductPublishRequest,
     ProductPublishValidateRequest,
     PublishRequestConfirmation,
@@ -30,8 +31,10 @@ def _no_live_category_provider(monkeypatch):
 class _Adapter:
     def __init__(self, errors: list[dict] | None = None) -> None:
         self.errors = errors or []
+        self.prepare_calls = 0
 
     def prepare_product(self, product: dict, config: dict) -> dict:
+        self.prepare_calls += 1
         return deepcopy(product)
 
     def validate_draft(self, context, config: dict) -> dict:
@@ -205,6 +208,76 @@ def test_publish_validate_returns_stable_digest_and_is_pure(
     evaluation = publish_capabilities.evaluate_publish_validation(request)
     assert evaluation.precheck["ok"] is True
     assert evaluation.approved_payload is not None
+    assert adapter.prepare_calls == 0
+
+
+def test_explicit_payload_preparation_is_the_only_validation_path_that_prepares_assets(
+    publish_boundary,
+) -> None:
+    adapter, _store_config = publish_boundary
+    request = ProductPublishValidateRequest(
+        draft_id="draft-1",
+        platform="mercadolibre",
+        site="MLM",
+    )
+
+    evaluation = publish_capabilities.prepare_and_evaluate_publish_validation(
+        request
+    )
+
+    assert evaluation.result.passed is True
+    assert adapter.prepare_calls == 1
+
+
+def test_explicit_payload_preparation_does_not_prepare_assets_when_precheck_blocks(
+    publish_boundary,
+) -> None:
+    adapter, _store_config = publish_boundary
+    adapter.errors = [
+        {
+            "code": "TITLE_MISSING",
+            "field": "title",
+            "message": "缺少标题",
+            "severity": "error",
+        }
+    ]
+
+    evaluation = publish_capabilities.prepare_and_evaluate_publish_validation(
+        ProductPublishValidateRequest(
+            draft_id="draft-1",
+            platform="mercadolibre",
+            site="MLM",
+        )
+    )
+
+    assert evaluation.result.passed is False
+    assert evaluation.result.errors[0].code == "TITLE_MISSING"
+    assert adapter.prepare_calls == 0
+
+
+def test_explicit_payload_preparation_fails_closed_when_adapter_does_not_confirm_ok(
+    publish_boundary,
+    monkeypatch,
+) -> None:
+    adapter, _store_config = publish_boundary
+    monkeypatch.setattr(
+        adapter,
+        "validate_draft",
+        lambda _context, _config: {
+            "platform": "mercadolibre",
+            "ok": False,
+            "errors": [],
+            "warnings": [],
+        },
+    )
+
+    evaluation = publish_capabilities.prepare_and_evaluate_publish_validation(
+        ProductPublishValidateRequest(draft_id="draft-1")
+    )
+
+    assert evaluation.result.passed is False
+    assert evaluation.result.errors[0].code == "PUBLISH_VALIDATION_FAILED"
+    assert adapter.prepare_calls == 0
 
 
 def test_publish_request_revalidates_digest_and_forwards_idempotency_key(
@@ -266,8 +339,26 @@ def test_cbt_publish_approval_shows_and_binds_actual_destinations(
             "listing_currency": "USD",
             "price": "18",
             "sites_to_sell": [
-                {"site_id": "MLB", "logistic_type": "remote"},
-                {"site_id": "MLM", "logistic_type": "remote"},
+                {
+                    "site_id": "MLB",
+                    "logistic_type": "remote",
+                    "price": 200.0,
+                    "listing_type_id": "gold_special",
+                },
+                {
+                    "site_id": "MLM",
+                    "logistic_type": "remote",
+                    "net_proceeds": "15.50",
+                    "listing_type_id": "gold_special",
+                    "status": "active",
+                    "free_shipping": True,
+                    "sale_terms": [
+                        {
+                            "id": "WARRANTY_TYPE",
+                            "value_name": "No warranty",
+                        }
+                    ],
+                },
             ],
             "selected_pricing": {
                 "applied_price": {"amount": "18", "currency": "USD"}
@@ -305,8 +396,26 @@ def test_cbt_publish_approval_shows_and_binds_actual_destinations(
     assert "MLB/remote" in first.summary
     assert "MLM/remote" in first.summary
     assert first.canonical_payload["destinations"] == [
-        {"site_id": "MLB", "logistic_type": "remote"},
-        {"site_id": "MLM", "logistic_type": "remote"},
+        {
+            "site_id": "MLB",
+            "logistic_type": "remote",
+            "price": 200.0,
+            "listing_type_id": "gold_special",
+        },
+        {
+            "site_id": "MLM",
+            "logistic_type": "remote",
+            "net_proceeds": "15.50",
+            "listing_type_id": "gold_special",
+            "status": "active",
+            "free_shipping": True,
+            "sale_terms": [
+                {
+                    "id": "WARRANTY_TYPE",
+                    "value_name": "No warranty",
+                }
+            ],
+        },
     ]
 
     loaded["product"]["drafts"]["mercadolibre"]["sites_to_sell"] = [
@@ -327,6 +436,22 @@ def test_cbt_publish_approval_shows_and_binds_actual_destinations(
         second.canonical_payload["validation_digest"]
         != first.canonical_payload["validation_digest"]
     )
+
+
+def test_publish_destination_accepts_current_mercadolibre_sales_conditions() -> None:
+    destination = ProductPublishDestination(
+        site_id="MLM",
+        logistic_type="remote",
+        price=200.0,
+        listing_type_id="gold_special",
+    )
+
+    assert destination.model_dump(exclude_none=True) == {
+        "site_id": "MLM",
+        "logistic_type": "remote",
+        "price": 200.0,
+        "listing_type_id": "gold_special",
+    }
 
 
 def test_publish_request_recovers_lost_job_id_before_revalidation(

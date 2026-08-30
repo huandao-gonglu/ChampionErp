@@ -3,23 +3,15 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .common import parse_dimension_measurement
 
-_DIMENSION_TRIPLET_RE = re.compile(
-    r"(?P<length>\d+(?:[.,]\d+)?)\s*[x×*]\s*"
-    r"(?P<width>\d+(?:[.,]\d+)?)\s*[x×*]\s*"
-    r"(?P<height>\d+(?:[.,]\d+)?)"
-)
-_IGNORED_DIMENSION_KEYS = ("体积", "容量", "电源线", "线长", "功率", "重量", "厚度")
+_IGNORED_DIMENSION_KEYS = ("容量", "电源线", "线长", "功率", "重量", "厚度")
 _GENERIC_CATEGORY_VALUES = {"", "其他", "其它", "通用", "未知", "无"}
 
 
 def _compact_attribute_key(value: Any) -> str:
     """移除属性名中的空格和装饰符，保留中文及字母数字用于语义匹配。"""
     return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", str(value or "").lower())
-
-
-def _format_number(value: float) -> str:
-    return f"{value:.6f}".rstrip("0").rstrip(".")
 
 
 def _dimension_scope(key: str) -> str:
@@ -29,6 +21,8 @@ def _dimension_scope(key: str) -> str:
 def _dimension_key_score(key: str) -> int:
     if not key or any(token in key for token in _IGNORED_DIMENSION_KEYS):
         return 0
+    if "体积" in key:
+        return 90 if _dimension_scope(key) == "package" else 0
     if "长宽高" in key:
         return 100
     if "尺寸" in key:
@@ -43,36 +37,19 @@ def _dimension_key_score(key: str) -> int:
     return 0
 
 
-def _dimension_unit_scale(key: str, value: str) -> tuple[float, str, bool]:
-    hint = f"{key} {value}".lower()
-    if "毫米" in hint or "mm" in hint:
-        return (0.1, "mm", False)
-    if "厘米" in hint or "cm" in hint:
-        return (1.0, "cm", False)
-    if ("米" in hint and "毫米" not in hint and "厘米" not in hint) or re.search(r"(?<![a-z])m(?![a-z])", hint):
-        return (100.0, "m", False)
-    # 1688 未标单位的三段尺寸按业务约定视为毫米，再统一写入厘米字段。
-    return (0.1, "mm", True)
-
-
-def _match_dimensions(attributes: dict[str, Any]) -> dict[str, Any]:
+def _dimension_candidates(attributes: dict[str, Any]) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for source_key, raw_value in attributes.items():
         key = _compact_attribute_key(source_key)
         value = str(raw_value or "").strip()
         score = _dimension_key_score(key)
-        match = _DIMENSION_TRIPLET_RE.search(value)
-        if not score or not match:
+        normalized, unit, unit_inferred = parse_dimension_measurement(
+            value,
+            unit_hint=key,
+            default_unit="mm",
+        )
+        if not score or not all(normalized.values()):
             continue
-        values = [float(match.group(name).replace(",", ".")) for name in ("length", "width", "height")]
-        if any(number <= 0 for number in values):
-            continue
-        scale, unit, unit_inferred = _dimension_unit_scale(key, value)
-        normalized = {
-            "length_cm": _format_number(values[0] * scale),
-            "width_cm": _format_number(values[1] * scale),
-            "height_cm": _format_number(values[2] * scale),
-        }
         candidates.append(
             {
                 "source_key": str(source_key).strip(),
@@ -85,7 +62,18 @@ def _match_dimensions(attributes: dict[str, Any]) -> dict[str, Any]:
                 "normalized": normalized,
             }
         )
-    return max(candidates, key=lambda item: (int(item["score"]), -len(item["source_key"])), default={})
+    return candidates
+
+
+def _best_dimension_candidate(
+    candidates: list[dict[str, Any]],
+    scope: str,
+) -> dict[str, Any]:
+    return max(
+        (item for item in candidates if item.get("scope") == scope),
+        key=lambda item: (int(item["score"]), -len(item["source_key"])),
+        default={},
+    )
 
 
 def _category_key_score(key: str) -> int:
@@ -119,12 +107,41 @@ def infer_source_attribute_matches(attributes: dict[str, Any] | None) -> dict[st
     clean_attributes = attributes if isinstance(attributes, dict) else {}
     matches: dict[str, Any] = {}
     category = _match_category(clean_attributes)
-    dimensions = _match_dimensions(clean_attributes)
+    dimension_candidates = _dimension_candidates(clean_attributes)
+    product_dimensions = _best_dimension_candidate(dimension_candidates, "product")
+    package_dimensions = _best_dimension_candidate(dimension_candidates, "package")
     if category:
         matches["category"] = category
-    if dimensions:
-        matches["dimensions"] = dimensions
+    if product_dimensions or package_dimensions:
+        matches["dimensions"] = product_dimensions or package_dimensions
+    if package_dimensions:
+        matches["package_dimensions"] = package_dimensions
     return matches
 
 
-__all__ = ["infer_source_attribute_matches"]
+def source_package_dimensions(source: dict[str, Any] | None) -> dict[str, str]:
+    """返回可安全用于平台包裹字段的来源尺寸，避免把商品本体尺寸当成包裹尺寸。"""
+
+    source = source if isinstance(source, dict) else {}
+    matches = source.get("attribute_matches") if isinstance(source.get("attribute_matches"), dict) else {}
+    package_match = matches.get("package_dimensions") if isinstance(matches.get("package_dimensions"), dict) else {}
+    dimensions_match = matches.get("dimensions") if isinstance(matches.get("dimensions"), dict) else {}
+    matched = package_match or (dimensions_match if dimensions_match.get("scope") == "package" else {})
+    normalized = matched.get("normalized") if isinstance(matched.get("normalized"), dict) else {}
+    if normalized:
+        return {
+            "length_cm": str(normalized.get("length_cm") or "").strip(),
+            "width_cm": str(normalized.get("width_cm") or "").strip(),
+            "height_cm": str(normalized.get("height_cm") or "").strip(),
+        }
+    if dimensions_match.get("scope") == "product":
+        return {"length_cm": "", "width_cm": "", "height_cm": ""}
+    dimensions = source.get("dimensions") if isinstance(source.get("dimensions"), dict) else {}
+    return {
+        "length_cm": str(dimensions.get("length_cm") or dimensions.get("lengthCm") or "").strip(),
+        "width_cm": str(dimensions.get("width_cm") or dimensions.get("widthCm") or "").strip(),
+        "height_cm": str(dimensions.get("height_cm") or dimensions.get("heightCm") or "").strip(),
+    }
+
+
+__all__ = ["infer_source_attribute_matches", "source_package_dimensions"]

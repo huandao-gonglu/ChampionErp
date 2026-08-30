@@ -238,6 +238,40 @@ describe('类目 Schema 分离（废弃字段不再读写）', () => {
     expect(backend).not.toHaveProperty('category_attribute_schema')
   })
 
+  it('往返保留开放集合中的平台候选与无 ID 自定义值', () => {
+    const normalized = normalizeDraftDetail({
+      draft_id: 'draft-mercado-collection',
+      product_id: 'product-mercado-collection',
+      platform: 'mercadolibre',
+      platforms: ['mercadolibre'],
+      site: 'CBT',
+      category_id: 'CBT455865',
+      attributes: {
+        COMPATIBLE_DEVICES: {
+          values: [
+            { dictionary_value_id: '123', value: 'Phone' },
+            { value: 'Custom terminal' },
+          ],
+        },
+      },
+    })
+
+    expect(normalized.attributes.COMPATIBLE_DEVICES).toEqual({
+      values: [
+        { dictionaryValueId: '123', value: 'Phone' },
+        { value: 'Custom terminal' },
+      ],
+    })
+
+    const backend = toBackendDraft(normalized)
+    expect((backend.attributes as Record<string, unknown>).COMPATIBLE_DEVICES).toEqual({
+      values: [
+        { dictionary_value_id: '123', value: 'Phone' },
+        { value: 'Custom terminal' },
+      ],
+    })
+  })
+
   it('保存商品时不回写 local_platform_categories', () => {
     const product = createEmptyProduct()
     product.productId = 'product-1'

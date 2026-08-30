@@ -97,7 +97,7 @@ AI_USE_CASES: dict[str, dict[str, Any]] = {
         "required_capabilities": [CAP_CHAT, CAP_JSON, CAP_TOOL_CALLING],
         "toolset_id": "category.attribute_values",
         "budget_profile": "category.attribute_fill.default",
-        "result_schema": "category_attribute_fill.v2",
+        "result_schema": "category_attribute_fill.v3",
     },
     "category.product_match": {
         "id": "category.product_match",

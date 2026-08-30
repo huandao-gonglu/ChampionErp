@@ -19,6 +19,7 @@ from erp_web.product_model import (
     normalize_image_pool,
     normalize_draft_image_refs,
     normalize_platforms,
+    source_package_dimensions,
 )
 from erp_web.product_model.common import normalize_list
 from erp_web.services import image_service
@@ -298,7 +299,7 @@ def apply_claimed_platform_drafts(product: dict[str, Any], claim_platforms: list
         return get_context().products.sync_product_workflow_statuses(
             normalized
         )
-    dims = source.get("dimensions") if isinstance(source.get("dimensions"), dict) else {}
+    dims = source_package_dimensions(source)
     placeholder_titles = {"", "-", "unknown", "draft title", "untitled", "未命名"}
 
     def use_existing(value: Any) -> bool:
@@ -331,7 +332,7 @@ def apply_claimed_platform_drafts(product: dict[str, Any], claim_platforms: list
 def draft_copy_from_product(product: dict[str, Any], platform: str) -> dict[str, Any]:
     normalized = normalize_product_fields(product)
     source = normalized.get("source") if isinstance(normalized.get("source"), dict) else {}
-    dims = source.get("dimensions") if isinstance(source.get("dimensions"), dict) else {}
+    dims = source_package_dimensions(source)
     product_id = str(normalized.get("product_id") or "").strip()
     draft = default_draft(platform)
     draft.update(

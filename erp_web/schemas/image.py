@@ -30,6 +30,12 @@ class ImageItem(TypedDict, total=False):
     content_sha256: str
     delivery_provider: str
     delivery_error: str
+    platform_picture_id: str
+    mercadolibre_picture_id: str
+    upload_status: str
+    upload_error: str
+    uploaded_at: str
+    platform_uploads: dict[str, dict[str, Any]]
     raw: dict[str, Any]
 
 
