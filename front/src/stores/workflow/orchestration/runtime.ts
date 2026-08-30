@@ -1,7 +1,10 @@
 import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { saveDraft as saveDraftApi } from '@/api/workflow/catalog'
-import { diagnosticsToCollectDiagnostics } from '@/api/workflow/normalizers'
+import {
+  diagnosticsToCollectDiagnostics,
+  normalizeSitesToSell,
+} from '@/api/workflow/normalizers'
 import { createDefaultCollectDiagnostics } from '@/constants/initialState'
 import {
   draftTargetsForLanguage,
@@ -17,11 +20,13 @@ import {
   isMercadoLibreCbtTarget,
   MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED_MESSAGE,
   mercadoLibreAccountSiteId,
+  mercadoLibreBindingPricingMode,
   mercadoLibreDestinationKey,
   mercadoLibreHasFullyManagedBinding,
   mercadoLibreListingModel,
   mercadoLibreListingModelError,
   mercadoLibreSelectableBindings,
+  mercadoLibreTargetPricingError,
 } from '@/utils/mercadolibreGlobalSelling'
 import type {
   CategoryAttributeValue,
@@ -36,6 +41,7 @@ import type {
   MarketplaceTargetSite,
   PrecheckIssue,
   PricingResult,
+  PricingDestinationResult,
   PricingTargetInput,
   PricingTargetResult,
   Product,
@@ -416,19 +422,20 @@ export function createWorkflowRuntime() {
         setError(mercadoLibreListingModelError(storeConfig.value))
         return false
       }
-      if (
-        currentMercadoLibreListingModel === 'user_products'
-        && mercadoLibreHasFullyManagedBinding(storeConfig.value)
-      ) {
+      if (mercadoLibreHasFullyManagedBinding(storeConfig.value)) {
         setError(MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED_MESSAGE)
         return false
       }
     }
-    const allowedKeys = new Set(mercadoLibreSelectableBindings(storeConfig.value).map((binding) => (
-      mercadoLibreDestinationKey(binding.siteId, binding.logisticType)
-    )))
+    const selectableBindings = mercadoLibreSelectableBindings(storeConfig.value)
+    const bindingByKey = new Map(selectableBindings.map((binding) => [
+      mercadoLibreDestinationKey(binding.siteId, binding.logisticType),
+      binding,
+    ]))
+    const allowedKeys = new Set(bindingByKey.keys())
     if (isMercadoLibreCbtTarget(currentTarget)) {
       const requested = sitesToSell.map((item) => ({
+        ...item,
         siteId: String(item.siteId || '').trim().toUpperCase(),
         logisticType: String(item.logisticType || '').trim().toLowerCase(),
       })).filter((item) => item.siteId && item.siteId !== 'CBT' && item.logisticType)
@@ -442,6 +449,15 @@ export function createWorkflowRuntime() {
         setError('同一销售市场只能选择一个物流操作。')
         return false
       }
+      const pricingError = mercadoLibreTargetPricingError(
+        { ...currentTarget, sitesToSell: requested },
+        storeConfig.value,
+        false,
+      )
+      if (pricingError) {
+        setError(pricingError)
+        return false
+      }
     }
     const seenSites = new Set<string>()
     const normalizedSites: MarketplaceSiteToSell[] = sitesToSell.flatMap((item) => {
@@ -452,8 +468,12 @@ export function createWorkflowRuntime() {
       if (isMercadoLibreCbtTarget(currentTarget) && !allowedKeys.has(destinationKey)) return []
       seenSites.add(siteId)
       const normalized: MarketplaceSiteToSell = { siteId, logisticType }
-      if (item.price !== undefined) normalized.price = String(item.price)
-      if (item.netProceeds !== undefined && currentMercadoLibreListingModel !== 'traditional_global_items') {
+      const binding = bindingByKey.get(destinationKey)
+      const pricingMode = binding ? mercadoLibreBindingPricingMode(binding, storeConfig.value) : ''
+      if ((!isMercadoLibreCbtTarget(currentTarget) || pricingMode === 'price') && item.price !== undefined) {
+        normalized.price = String(item.price)
+      }
+      if ((!isMercadoLibreCbtTarget(currentTarget) || pricingMode === 'net_proceeds') && item.netProceeds !== undefined) {
         normalized.netProceeds = String(item.netProceeds)
       }
       if (item.listingTypeId !== undefined) normalized.listingTypeId = String(item.listingTypeId)
@@ -602,22 +622,29 @@ export function createWorkflowRuntime() {
           const languageSiteIds = new Set(draftTargetsForLanguage(platformOptions.value, language)
             .filter((market) => isMercadoLibrePlatform(market.platform))
             .map((market) => String(market.site || '').trim().toUpperCase()))
-          const allowedBindings = new Set(mercadoLibreSelectableBindings(storeConfig.value).map((binding) => (
-            mercadoLibreDestinationKey(binding.siteId, binding.logisticType)
-          )))
+          const bindingByKey = new Map(mercadoLibreSelectableBindings(storeConfig.value).map((binding) => [
+            mercadoLibreDestinationKey(binding.siteId, binding.logisticType),
+            binding,
+          ]))
           const seenSites = new Set<string>()
           const sitesToSell = (selected.sitesToSell || []).flatMap((destination) => {
             const siteId = String(destination.siteId || '').trim().toUpperCase()
             const logisticType = String(destination.logisticType || '').trim().toLowerCase()
+            const destinationKey = mercadoLibreDestinationKey(siteId, logisticType)
+            const binding = bindingByKey.get(destinationKey)
             if (
               !languageSiteIds.has(siteId)
-              || !allowedBindings.has(mercadoLibreDestinationKey(siteId, logisticType))
+              || !binding
               || seenSites.has(siteId)
             ) return []
             seenSites.add(siteId)
+            const pricingMode = mercadoLibreBindingPricingMode(binding, storeConfig.value)
+            const { price, netProceeds, ...preserved } = destination
             return [{
-              ...destination,
+              ...preserved,
               ...(destination.saleTerms ? { saleTerms: destination.saleTerms.map((term) => ({ ...term })) } : {}),
+              ...(pricingMode === 'price' && price !== undefined ? { price } : {}),
+              ...(pricingMode === 'net_proceeds' && netProceeds !== undefined ? { netProceeds } : {}),
               siteId,
               logisticType,
             }]
@@ -748,6 +775,103 @@ export function createWorkflowRuntime() {
     return { amount: '0', currency }
   }
 
+  function optionalRecordMoney(value: unknown, currency: string) {
+    return isRecord(value) ? recordMoney({ value }, ['value'], currency) : null
+  }
+
+  function pricingDestinationResultsFromRecord(
+    saved: UnknownRecord,
+    currency: string,
+  ): PricingDestinationResult[] {
+    const rawResults = saved.destination_results ?? saved.destinationResults
+    if (!Array.isArray(rawResults)) return []
+    const seen = new Set<string>()
+    return rawResults.flatMap((value) => {
+      if (!isRecord(value)) return []
+      const siteId = recordString(value, ['site_id', 'siteId']).trim().toUpperCase()
+      const logisticType = recordString(value, ['logistic_type', 'logisticType']).trim().toLowerCase()
+      const pricingModel = recordString(value, ['pricing_model', 'pricingModel']).trim().toLowerCase()
+      const key = mercadoLibreDestinationKey(siteId, logisticType)
+      const price = optionalRecordMoney(value.price, currency)
+      const netProceeds = optionalRecordMoney(value.net_proceeds ?? value.netProceeds, currency)
+      if (!siteId || siteId === 'CBT' || !logisticType || seen.has(key)) return []
+      if (pricingModel !== 'price' && pricingModel !== 'net_proceeds') return []
+      if ((price === null) === (netProceeds === null)) return []
+      if (pricingModel === 'price' ? !price : !netProceeds) return []
+      seen.add(key)
+      return [{
+        siteId,
+        logisticType,
+        pricingModel,
+        price,
+        netProceeds,
+        calculationFingerprint: recordString(value, ['calculation_fingerprint', 'calculationFingerprint']),
+      }]
+    })
+  }
+
+  function pricingDestinationResultsMatchTarget(
+    target: PricingTargetInput,
+    results: PricingDestinationResult[],
+  ): boolean {
+    const expectedKeys = new Set((target.sitesToSell || []).map((destination) => (
+      mercadoLibreDestinationKey(destination.siteId, destination.logisticType)
+    )))
+    const actualKeys = new Set(results.map((destination) => (
+      mercadoLibreDestinationKey(destination.siteId, destination.logisticType)
+    )))
+    return expectedKeys.size > 0
+      && expectedKeys.size === results.length
+      && actualKeys.size === results.length
+      && Array.from(expectedKeys).every((key) => actualKeys.has(key))
+  }
+
+  function stablePricingConditionValue(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(stablePricingConditionValue)
+    if (!isRecord(value)) return value
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, stablePricingConditionValue(value[key])]),
+    )
+  }
+
+  function pricingSalesConditionBasis(
+    sitesToSell: MarketplaceSiteToSell[] | undefined,
+  ): UnknownRecord[] {
+    return (sitesToSell || [])
+      .map((item) => ({
+        siteId: String(item.siteId || '').trim().toUpperCase(),
+        logisticType: String(item.logisticType || '').trim().toLowerCase(),
+        ...(String(item.listingTypeId || '').trim()
+          ? { listingTypeId: String(item.listingTypeId).trim() }
+          : {}),
+        ...(String(item.status || '').trim()
+          ? { status: String(item.status).trim().toLowerCase() }
+          : {}),
+        ...(typeof item.freeShipping === 'boolean'
+          ? { freeShipping: item.freeShipping }
+          : {}),
+        ...(Array.isArray(item.saleTerms)
+          ? { saleTerms: stablePricingConditionValue(item.saleTerms) }
+          : {}),
+      }))
+      .sort((left, right) => (
+        `${left.siteId}:${left.logisticType}`.localeCompare(
+          `${right.siteId}:${right.logisticType}`,
+        )
+      ))
+  }
+
+  function pricingSalesConditionsMatchTarget(
+    target: PricingTargetInput,
+    savedBasis: UnknownRecord,
+  ): boolean {
+    const savedSites = normalizeSitesToSell(savedBasis.sites_to_sell)
+    return JSON.stringify(pricingSalesConditionBasis(target.sitesToSell))
+      === JSON.stringify(pricingSalesConditionBasis(savedSites))
+  }
+
   function pricingTargetInput(target: MarketplaceTargetSite, pricing: UnknownRecord): PricingTargetInput {
     const site = platformSite(target.platform, target.site)
     const key = pricingTargetKey(target.platform, target.site)
@@ -792,12 +916,28 @@ export function createWorkflowRuntime() {
   }
 
   function pricingResultFromDraft(pricing: UnknownRecord, targets: PricingTargetInput[]): PricingResult | null {
+    let staleMercadoLibreCbtResult = false
     const results = targets.map((target): PricingTargetResult | null => {
       const saved = pricingTargetRecord(pricing, target.targetKey)
       const savedCurrency = recordString(saved, ['listing_currency']).toUpperCase()
       const hasResult = savedCurrency === target.listingCurrency
         && ['suggested_price', 'applied_price', 'profit_cny', 'errors'].some((key) => key in saved)
       if (!hasResult) return null
+      const destinationResults = pricingDestinationResultsFromRecord(saved, target.listingCurrency)
+      const calculationBasis = isRecord(saved.calculation_basis)
+        ? saved.calculation_basis
+        : {}
+      if (
+        String(target.platform).trim().toLowerCase() === 'mercadolibre'
+        && String(target.site).trim().toUpperCase() === 'CBT'
+        && (
+          !pricingDestinationResultsMatchTarget(target, destinationResults)
+          || !pricingSalesConditionsMatchTarget(target, calculationBasis)
+        )
+      ) {
+        staleMercadoLibreCbtResult = true
+        return null
+      }
       return {
         targetKey: target.targetKey,
         platform: target.platform,
@@ -806,8 +946,15 @@ export function createWorkflowRuntime() {
         currencyFingerprint: target.currencyFingerprint,
         suggestedPrice: recordMoney(saved, ['suggested_price'], target.listingCurrency),
         appliedPrice: recordMoney(saved, ['applied_price'], target.listingCurrency),
+        appliedNetProceeds: destinationResults.some((item) => item.pricingModel === 'net_proceeds')
+          ? optionalRecordMoney(
+            saved.applied_net_proceeds ?? saved.appliedNetProceeds,
+            target.listingCurrency,
+          )
+          : null,
+        destinationResults,
         convertedPrices: Object.fromEntries(Object.entries(isRecord(saved.converted_prices) ? saved.converted_prices : {}).map(([currency, amount]) => [currency, String(amount ?? '0')])),
-        calculationBasis: isRecord(saved.calculation_basis) ? saved.calculation_basis : {},
+        calculationBasis,
         calculationFingerprint: recordString(saved, ['calculation_fingerprint']),
         shippingCostUsd: recordNumber(saved, ['shipping_cost_usd'], 0),
         shippingCostCny: recordNumber(saved, ['shipping_cost_cny'], 0),
@@ -838,6 +985,7 @@ export function createWorkflowRuntime() {
         raw: saved,
       }
     }).filter((item): item is PricingTargetResult => Boolean(item))
+    if (staleMercadoLibreCbtResult) return null
     if (!results.length) return null
     const primary = results[0]
     const common = isRecord(pricing.common) ? pricing.common as UnknownRecord : {}

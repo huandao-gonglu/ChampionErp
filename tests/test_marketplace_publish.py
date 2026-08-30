@@ -126,17 +126,28 @@ def _user_products_payload() -> dict:
     )
 
 
-def _traditional_global_items_config() -> dict:
+def _traditional_global_items_config(
+    *,
+    pricing_model: str = "price",
+    net_proceeds: str = "12.34",
+) -> dict:
+    sites_to_sell: list[dict[str, Any]] = [
+        {"site_id": "MLM", "logistic_type": "remote"}
+    ]
+    if pricing_model == "net_proceeds":
+        sites_to_sell[0]["net_proceeds"] = {
+            "amount": net_proceeds,
+            "currency": "USD",
+        }
     config = _user_products_config(
+        sites_to_sell=sites_to_sell,
         bindings=[
             {
                 "seller_id": "3345546432",
                 "site_id": "MLM",
                 "logistic_type": "remote",
                 "business_model": "CBT CN International Drop Shipping",
-                # 这是当前 /marketplace/users 返回的现代能力字段；它不能
-                # 否定 6 月 12 日已成功使用的传统 price 合同。
-                "pricing_model": "net_proceeds",
+                "pricing_model": pricing_model,
                 "user_product": False,
             }
         ]
@@ -158,7 +169,11 @@ def _traditional_global_items_config() -> dict:
     return config
 
 
-def _traditional_global_items_payload() -> dict:
+def _traditional_global_items_payload(
+    *,
+    pricing_model: str = "price",
+    net_proceeds: str = "12.34",
+) -> dict:
     return marketplace_publish.build_mercadolibre_payload(
         {
             "name": "Traditional item",
@@ -178,7 +193,10 @@ def _traditional_global_items_payload() -> dict:
                 }
             }
         },
-        _traditional_global_items_config(),
+        _traditional_global_items_config(
+            pricing_model=pricing_model,
+            net_proceeds=net_proceeds,
+        ),
         ["ml-id:123-CBT456"],
         category_attributes=_compiled_attributes("traditional_global_items"),
     )
@@ -302,6 +320,7 @@ def test_mercadolibre_traditional_payload_uses_strict_global_items_contract() ->
     ]
     assert payload["pictures"] == [{"id": "123-CBT456"}]
     assert {"family_name", "global_net_proceeds", "variations"}.isdisjoint(payload)
+    assert "net_proceeds" not in payload["sites_to_sell"][0]
     condition = next(
         item for item in payload["attributes"] if item["id"] == "ITEM_CONDITION"
     )
@@ -310,7 +329,24 @@ def test_mercadolibre_traditional_payload_uses_strict_global_items_contract() ->
         "value_id": "2230284",
         "value_name": "New",
     }
-    # user_product=false + pricing_model=net_proceeds 不得阻断传统 price 合同。
+    assert validate_mercadolibre_publish_payload(payload, config) == []
+
+
+def test_mercadolibre_traditional_payload_uses_binding_net_proceeds_only_at_market_level() -> None:
+    config = _traditional_global_items_config(pricing_model="net_proceeds")
+    payload = _traditional_global_items_payload(pricing_model="net_proceeds")
+
+    assert {"price", "global_net_proceeds"}.isdisjoint(payload)
+    assert payload["sites_to_sell"] == [
+        {
+            "site_id": "MLM",
+            "logistic_type": "remote",
+            "net_proceeds": 12.34,
+            "listing_type_id": "gold_special",
+            "title": "Artículo tradicional",
+        }
+    ]
+    assert "price" not in payload["sites_to_sell"][0]
     assert validate_mercadolibre_publish_payload(payload, config) == []
 
 
@@ -397,7 +433,7 @@ def test_mercadolibre_traditional_payload_separates_global_and_local_titles() ->
             "site_id": "MLB",
             "logistic_type": "remote",
             "business_model": "CBT CN International Drop Shipping",
-            "pricing_model": "net_proceeds",
+            "pricing_model": "price",
             "user_product": False,
         }
     )
@@ -592,10 +628,19 @@ def test_traditional_remote_parent_without_owner_is_not_claimed_by_current_accou
 
 
 @pytest.mark.parametrize("parent_key", ["item_id", "id"])
+@pytest.mark.parametrize(
+    ("pricing_model", "expected_market_pricing_field"),
+    [
+        ("price", "price"),
+        ("net_proceeds", "net_proceeds"),
+    ],
+)
 def test_mercadolibre_traditional_publish_posts_global_items_and_persists_publication(
     parent_key: str,
+    pricing_model: str,
+    expected_market_pricing_field: str,
 ) -> None:
-    payload = _traditional_global_items_payload()
+    payload = _traditional_global_items_payload(pricing_model=pricing_model)
     payload["_publication"] = {
         "model": "traditional_global_items",
         "account_user_id": "3344094721",
@@ -637,6 +682,16 @@ def test_mercadolibre_traditional_publish_posts_global_items_and_persists_public
     )
     assert request.call_args.kwargs == {"extra_headers": {"parent-item-info": "true"}}
     assert {"_listing_model", "_publication"}.isdisjoint(wire_payload)
+    market_pricing_fields = {"price", "net_proceeds"}.intersection(
+        wire_payload["sites_to_sell"][0]
+    )
+    assert market_pricing_fields == {expected_market_pricing_field}
+    if pricing_model == "net_proceeds":
+        assert {"price", "global_net_proceeds"}.isdisjoint(wire_payload)
+        assert wire_payload["sites_to_sell"][0]["net_proceeds"] == 12.34
+    else:
+        assert wire_payload["price"] == 18
+        assert "global_net_proceeds" not in wire_payload
     assert result["ok"] is True
     publication = result["publication"]
     assert publication["model"] == "traditional_global_items"
@@ -1114,7 +1169,7 @@ def test_mercadolibre_payload_preserves_explicit_market_sales_conditions() -> No
         {
             "site_id": "MLB",
             "logistic_type": "remote",
-            "price": "22.00",
+            "price": 22.0,
             "listing_type_id": "gold_special",
             "free_shipping": True,
             "sale_terms": [],
@@ -1122,7 +1177,7 @@ def test_mercadolibre_payload_preserves_explicit_market_sales_conditions() -> No
         {
             "site_id": "MLM",
             "logistic_type": "remote",
-            "price": "21.50",
+            "price": 21.5,
             "listing_type_id": "gold_pro",
             "free_shipping": False,
             "sale_terms": [{"id": "WARRANTY_TYPE", "value_id": "1"}],
@@ -1173,18 +1228,18 @@ def test_mercadolibre_payload_uses_one_net_proceeds_pricing_mode() -> None:
     )
 
     assert "price" not in payload
-    assert payload["global_net_proceeds"] == "15.50"
+    assert payload["global_net_proceeds"] == 15.5
     assert payload["sites_to_sell"] == [
         {
             "site_id": "MLB",
             "logistic_type": "remote",
-            "net_proceeds": "15.50",
+            "net_proceeds": 15.5,
             "listing_type_id": "gold_special",
         },
         {
             "site_id": "MLM",
             "logistic_type": "remote",
-            "net_proceeds": "14.25",
+            "net_proceeds": 14.25,
             "listing_type_id": "gold_special",
         },
     ]
@@ -1275,7 +1330,7 @@ def test_mercadolibre_payload_uses_one_net_proceeds_pricing_mode() -> None:
                     "user_product": True,
                 }
             ],
-            "MERCADOLIBRE_PRICING_MODEL_MISMATCH",
+            "MERCADOLIBRE_PRICING_AMOUNT_REQUIRED",
         ),
     ],
 )

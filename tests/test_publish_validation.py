@@ -237,7 +237,7 @@ def test_mercadolibre_precheck_requires_cbt_parent_and_user_products_tag() -> No
     )
 
 
-def test_mercadolibre_traditional_precheck_ignores_user_products_binding_pricing_model() -> None:
+def test_mercadolibre_traditional_precheck_accepts_net_proceeds_binding() -> None:
     config = _ml_ready_config(
         user_product_seller=False,
         listing_model="traditional_global_items",

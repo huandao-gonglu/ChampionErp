@@ -21,9 +21,9 @@ const storeConfig = {
     account_site_id: 'CBT',
     listing_model: 'traditional_global_items',
     marketplace_bindings: [
-      { seller_id: 'seller-mx', site_id: 'MLM', logistic_type: 'remote' },
-      { seller_id: 'seller-co', site_id: 'MCO', logistic_type: 'remote' },
-      { seller_id: 'seller-br', site_id: 'MLB', logistic_type: 'remote' },
+      { seller_id: 'seller-mx', site_id: 'MLM', logistic_type: 'remote', pricing_model: 'price' },
+      { seller_id: 'seller-co', site_id: 'MCO', logistic_type: 'remote', pricing_model: 'price' },
+      { seller_id: 'seller-br', site_id: 'MLB', logistic_type: 'remote', pricing_model: 'price' },
     ],
   },
 }

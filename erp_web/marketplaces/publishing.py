@@ -457,7 +457,10 @@ def _public_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, 
             "Mercado Libre payload 包含未知内部字段："
             + "、".join(unknown_internal)
         )
-    _, pricing_issues = mercadolibre_payload_pricing_contract(item_payload)
+    _, pricing_issues = mercadolibre_payload_pricing_contract(
+        item_payload,
+        listing_model=listing_model,
+    )
     if pricing_issues:
         issue = pricing_issues[0]
         raise RuntimeError(f"{issue['code']}: {issue['message']}")
@@ -1686,7 +1689,14 @@ def _traditional_global_item_payload(
         raise RuntimeError(
             "传统 Global Items payload 禁止字段：" + "、".join(forbidden)
         )
-    for field in ("title", "category_id", "price", "currency_id", "attributes"):
+    pricing_mode, pricing_issues = mercadolibre_payload_pricing_contract(
+        item_payload,
+        listing_model=listing_model,
+    )
+    if pricing_issues:
+        issue = pricing_issues[0]
+        raise RuntimeError(f"{issue['code']}: {issue['message']}")
+    for field in ("title", "category_id", "currency_id", "attributes"):
         if item_payload.get(field) in (None, "", [], {}):
             raise RuntimeError(f"传统 Global Items payload 缺少 {field}")
     if not str(item_payload.get("category_id") or "").strip().upper().startswith("CBT"):
@@ -1702,12 +1712,17 @@ def _traditional_global_item_payload(
         or str(site.get("site_id") or "").strip().upper() == "CBT"
         or not str(site.get("logistic_type") or "").strip()
         or not str(site.get("title") or "").strip()
-        or site.get("price") in (None, "")
+        or (
+            site.get(
+                "net_proceeds" if pricing_mode == "net_proceeds" else "price"
+            )
+            in (None, "")
+        )
         for site in sites
     ):
         raise RuntimeError(
             "传统 Global Items 每个 sites_to_sell 必须包含国家站点、物流、"
-            "title 与 price"
+            f"title 与 {pricing_mode}"
         )
     pictures = item_payload.get("pictures")
     if (

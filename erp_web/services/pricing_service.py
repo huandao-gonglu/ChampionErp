@@ -279,6 +279,44 @@ def _target_defaults(platform: str) -> dict[str, float]:
     return {"commission_percent": 16.0, "payment_fee_percent": 0.0, "target_margin_percent": 30.0}
 
 
+def _destination_pricing_modes(value: Any) -> list[dict[str, str]]:
+    """规范化受信 binding 投影；金额永远不从这里继承。"""
+
+    rows = value if isinstance(value, list) else []
+    normalized: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        site_id = str(raw.get("site_id") or raw.get("siteId") or "").strip().upper()
+        logistic_type = str(
+            raw.get("logistic_type") or raw.get("logisticType") or ""
+        ).strip().lower()
+        pricing_model = str(
+            raw.get("pricing_model") or raw.get("pricingModel") or ""
+        ).strip().lower()
+        operation = (site_id, logistic_type)
+        if (
+            not site_id
+            or not logistic_type
+            or pricing_model not in {"price", "net_proceeds"}
+            or operation in seen
+        ):
+            continue
+        seen.add(operation)
+        normalized.append(
+            {
+                "site_id": site_id,
+                "logistic_type": logistic_type,
+                "pricing_model": pricing_model,
+            }
+        )
+    return sorted(
+        normalized,
+        key=lambda item: (item["site_id"], item["logistic_type"]),
+    )
+
+
 def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], index: int = 0) -> dict[str, Any]:
     source = {**common, **target}
     platform = str(_target_value(target, source, "platform", default="mercadolibre") or "mercadolibre").strip().lower()
@@ -326,6 +364,40 @@ def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], ind
     values = normalize_pricing_input(source)
     base = _base_values(values)
     errors: list[dict[str, str]] = []
+    destination_pricing_modes = _destination_pricing_modes(
+        target.get("destination_pricing_modes")
+        if isinstance(target.get("destination_pricing_modes"), list)
+        else target.get("destinationPricingModes")
+    )
+    if platform == "mercadolibre" and site.upper() == "CBT":
+        selected_operations = {
+            (item["site_id"], item["logistic_type"])
+            for item in normalize_mercadolibre_sites_to_sell(
+                target.get("sites_to_sell")
+                if isinstance(target.get("sites_to_sell"), list)
+                else target.get("sitesToSell")
+            )
+        }
+        mode_operations = {
+            (item["site_id"], item["logistic_type"])
+            for item in destination_pricing_modes
+        }
+        if not selected_operations or mode_operations != selected_operations:
+            errors.append(
+                {
+                    "field": "destination_pricing_modes",
+                    "message": "CBT 销售目标缺少与账号 binding 一致的计价模式",
+                }
+            )
+        elif len(
+            {item["pricing_model"] for item in destination_pricing_modes}
+        ) != 1:
+            errors.append(
+                {
+                    "field": "destination_pricing_modes",
+                    "message": "同一次 CBT 核价不能混用 price 与 net_proceeds",
+                }
+            )
     if values["cost_cny"] <= 0:
         errors.append({"field": "cost_cny", "message": "采购成本缺失"})
     for field, label, value in (
@@ -441,6 +513,14 @@ def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], ind
     other_fee_cny = actual_revenue_cny * other_fee
     profit_cny = actual_revenue_cny - commission_cny - payment_fee_cny - other_fee_cny - total_cost_cny if not errors else 0.0
     net_revenue_cny = actual_revenue_cny - commission_cny - payment_fee_cny - other_fee_cny
+    seller_net_proceeds_cny = (
+        net_revenue_cny - shipping_cny if not errors else 0.0
+    )
+    applied_net_proceeds = (
+        seller_net_proceeds_cny * currency_rate_cny
+        if seller_net_proceeds_cny > 0 and currency_rate_cny > 0
+        else 0.0
+    )
     profit_percent = (profit_cny / actual_revenue_cny * 100) if actual_revenue_cny else 0.0
     minimum_revenue_cny = total_cost_cny / fee_denominator if total_cost_cny > 0 and fee_denominator > 0 else 0.0
     minimum_price = minimum_revenue_cny * currency_rate_cny if currency_rate_cny > 0 else 0.0
@@ -473,12 +553,42 @@ def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], ind
         "manual_price": _money(applied_price_input, currency) if pricing_mode == "manual" else None,
     }
     if platform == "mercadolibre" and site.upper() == "CBT":
+        calculation_basis["listing_model"] = str(
+            target.get("listing_model") or ""
+        ).strip()
         calculation_basis["sites_to_sell"] = (
             normalize_mercadolibre_sites_to_sell(
                 target.get("sites_to_sell")
                 if isinstance(target.get("sites_to_sell"), list)
                 else target.get("sitesToSell")
             )
+        )
+        calculation_basis["destination_pricing_modes"] = destination_pricing_modes
+    calculation_fingerprint = pricing_calculation_fingerprint(calculation_basis)
+    exposes_net_proceeds = any(
+        destination["pricing_model"] == "net_proceeds"
+        for destination in destination_pricing_modes
+    )
+    destination_results: list[dict[str, Any]] = []
+    for destination in destination_pricing_modes:
+        destination_uses_net_proceeds = (
+            destination["pricing_model"] == "net_proceeds"
+        )
+        destination_results.append(
+            {
+                **destination,
+                "price": (
+                    None
+                    if destination_uses_net_proceeds
+                    else _money(applied_price, currency)
+                ),
+                "net_proceeds": (
+                    _money(applied_net_proceeds, currency)
+                    if destination_uses_net_proceeds
+                    else None
+                ),
+                "calculation_fingerprint": calculation_fingerprint,
+            }
         )
     return {
         "ok": not errors,
@@ -490,13 +600,19 @@ def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], ind
         "index": index,
         "suggested_price": _money(suggested_price, currency),
         "applied_price": _money(applied_price, currency),
+        "applied_net_proceeds": (
+            _money(applied_net_proceeds, currency)
+            if exposes_net_proceeds
+            else None
+        ),
+        "destination_results": destination_results,
         "minimum_price": _money(minimum_price, currency),
         "converted_prices": {
             "CNY": _amount_text(revenue_cny),
             "USD": _amount_text(suggested_price_usd),
         },
         "calculation_basis": calculation_basis,
-        "calculation_fingerprint": pricing_calculation_fingerprint(calculation_basis),
+        "calculation_fingerprint": calculation_fingerprint,
         "shipping_cost_usd": round(shipping_usd, 2),
         "shipping_cost_cny": round(shipping_cny, 2),
         "shipping_quote_mode": shipping_mode,
@@ -505,6 +621,7 @@ def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], ind
         "shipping_source": shipping_source,
         "total_cost_cny": round(total_cost_cny, 2),
         "net_revenue_cny": round(net_revenue_cny, 2),
+        "seller_net_proceeds_cny": round(seller_net_proceeds_cny, 2),
         "profit_cny": round(profit_cny, 2),
         "profit_usd": round(profit_cny / values["usd_cny_rate"], 2) if values["usd_cny_rate"] > 0 else 0.0,
         "margin_percent": round(profit_percent, 2),
@@ -584,6 +701,8 @@ def calculate_pricing_batch(data: dict[str, Any]) -> dict[str, Any]:
                 "listing_currency": primary.get("listing_currency"),
                 "suggested_price": primary.get("suggested_price"),
                 "applied_price": primary.get("applied_price"),
+                "applied_net_proceeds": primary.get("applied_net_proceeds"),
+                "destination_results": primary.get("destination_results"),
                 "minimum_price": primary.get("minimum_price"),
                 "converted_prices": primary.get("converted_prices"),
                 "shipping_cost_usd": primary.get("shipping_cost_usd"),

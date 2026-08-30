@@ -28,7 +28,24 @@ def test_batch_pricing_keeps_live_rates_when_common_rates_are_empty() -> None:
                 "rub_cny_rate": "",
             },
             "targets": [
-                {"target_key": "mercadolibre:cbt", "platform": "mercadolibre", "site": "CBT", "listing_currency": "USD", "commission_percent": 16, "target_margin_percent": 30},
+                {
+                    "target_key": "mercadolibre:cbt",
+                    "platform": "mercadolibre",
+                    "site": "CBT",
+                    "listing_currency": "USD",
+                    "commission_percent": 16,
+                    "target_margin_percent": 30,
+                    "sites_to_sell": [
+                        {"site_id": "MLM", "logistic_type": "remote"},
+                    ],
+                    "destination_pricing_modes": [
+                        {
+                            "site_id": "MLM",
+                            "logistic_type": "remote",
+                            "pricing_model": "price",
+                        }
+                    ],
+                },
                 {"target_key": "mercadolibre:mlm", "platform": "mercadolibre", "site": "MLM", "listing_currency": "MXN", "commission_percent": 16, "target_margin_percent": 30},
                 {"target_key": "mercadolibre:mlc", "platform": "mercadolibre", "site": "MLC", "listing_currency": "CLP", "commission_percent": 16, "target_margin_percent": 30},
             ],
@@ -134,9 +151,19 @@ def test_cost_markup_can_be_one_hundred_percent_with_single_shipping_quote() -> 
                     "pricing_mode": "markup",
                     "markup_percent": 100,
                     "shipping_quote_mode": "manual",
-                    "shipping_currency": "USD",
-                    "shipping_amount": 10,
-                }
+                        "shipping_currency": "USD",
+                        "shipping_amount": 10,
+                        "sites_to_sell": [
+                            {"site_id": "MLM", "logistic_type": "remote"},
+                        ],
+                        "destination_pricing_modes": [
+                            {
+                                "site_id": "MLM",
+                                "logistic_type": "remote",
+                                "pricing_model": "price",
+                            }
+                        ],
+                    }
             ],
         }
     )
@@ -172,6 +199,18 @@ def test_cbt_pricing_basis_canonicalizes_sales_targets_into_fingerprint() -> Non
             {"site_id": "MLB", "logistic_type": "remote"},
             {"site_id": "MLM", "logistic_type": "remote"},
         ],
+        "destination_pricing_modes": [
+            {
+                "site_id": "MLB",
+                "logistic_type": "remote",
+                "pricing_model": "price",
+            },
+            {
+                "site_id": "MLM",
+                "logistic_type": "remote",
+                "pricing_model": "price",
+            },
+        ],
     }
 
     first = pricing_service.pricing_result(
@@ -186,6 +225,13 @@ def test_cbt_pricing_basis_canonicalizes_sales_targets_into_fingerprint() -> Non
                     "sitesToSell": [
                         {"site_id": "MLM", "logistic_type": "remote"}
                     ],
+                    "destination_pricing_modes": [
+                        {
+                            "site_id": "MLM",
+                            "logistic_type": "remote",
+                            "pricing_model": "price",
+                        }
+                    ],
                 }
             ],
         }
@@ -198,6 +244,105 @@ def test_cbt_pricing_basis_canonicalizes_sales_targets_into_fingerprint() -> Non
     assert (
         first["calculation_fingerprint"]
         != second["calculation_fingerprint"]
+    )
+
+
+def _mercadolibre_destination_pricing_result(pricing_model: str) -> dict:
+    return pricing_service.pricing_result(
+        {
+            "common": {
+                "purchase_cost": 70,
+                "usd_cny_rate": 7,
+            },
+            "targets": [
+                {
+                    "target_key": "mercadolibre:cbt",
+                    "platform": "mercadolibre",
+                    "site": "CBT",
+                    "listing_currency": "USD",
+                    "commission_percent": 20,
+                    "payment_fee_percent": 5,
+                    "other_fee_percent": 5,
+                    "target_margin_percent": 30,
+                    "shipping_quote_mode": "manual",
+                    "shipping_currency": "USD",
+                    "shipping_amount": 10,
+                    "sites_to_sell": [
+                        {"site_id": "MLM", "logistic_type": "remote"},
+                    ],
+                    "destination_pricing_modes": [
+                        {
+                            "site_id": "MLM",
+                            "logistic_type": "remote",
+                            "pricing_model": pricing_model,
+                        }
+                    ],
+                }
+            ],
+        }
+    )["results"][0]
+
+
+def test_mercadolibre_net_proceeds_is_seller_payout_not_buyer_price() -> None:
+    target = _mercadolibre_destination_pricing_result("net_proceeds")
+
+    # 买家售价：总成本 140 / (1 - 30% 平台费 - 30% 利润率) = 350 CNY。
+    assert target["applied_price"] == {"amount": "50.00", "currency": "USD"}
+    # 卖家到账额还要从买家售价扣除佣金、支付费、其他平台费和平台物流：
+    # (350 - 70 - 17.5 - 17.5 - 70) / 7 = 25 USD。
+    assert target["applied_net_proceeds"] == {
+        "amount": "25.00",
+        "currency": "USD",
+    }
+    assert target["applied_net_proceeds"] != target["applied_price"]
+
+
+def test_mercadolibre_destination_result_uses_exactly_one_binding_amount() -> None:
+    price_target = _mercadolibre_destination_pricing_result("price")
+    net_target = _mercadolibre_destination_pricing_result("net_proceeds")
+
+    price_destination = price_target["destination_results"][0]
+    assert price_destination == {
+        "site_id": "MLM",
+        "logistic_type": "remote",
+        "pricing_model": "price",
+        "price": {"amount": "50.00", "currency": "USD"},
+        "net_proceeds": None,
+        "calculation_fingerprint": price_target["calculation_fingerprint"],
+    }
+
+    net_destination = net_target["destination_results"][0]
+    assert net_destination == {
+        "site_id": "MLM",
+        "logistic_type": "remote",
+        "pricing_model": "net_proceeds",
+        "price": None,
+        "net_proceeds": {"amount": "25.00", "currency": "USD"},
+        "calculation_fingerprint": net_target["calculation_fingerprint"],
+    }
+
+
+def test_mercadolibre_binding_pricing_model_changes_pricing_fingerprint() -> None:
+    price_target = _mercadolibre_destination_pricing_result("price")
+    net_target = _mercadolibre_destination_pricing_result("net_proceeds")
+
+    assert price_target["calculation_basis"]["destination_pricing_modes"] == [
+        {
+            "site_id": "MLM",
+            "logistic_type": "remote",
+            "pricing_model": "price",
+        }
+    ]
+    assert net_target["calculation_basis"]["destination_pricing_modes"] == [
+        {
+            "site_id": "MLM",
+            "logistic_type": "remote",
+            "pricing_model": "net_proceeds",
+        }
+    ]
+    assert (
+        price_target["calculation_fingerprint"]
+        != net_target["calculation_fingerprint"]
     )
 
 
@@ -277,6 +422,16 @@ def test_calculation_basis_preserves_physical_measurement_precision() -> None:
                     "shipping_quote_mode": "manual",
                     "shipping_currency": "USD",
                     "shipping_amount": 3,
+                    "sites_to_sell": [
+                        {"site_id": "MLM", "logistic_type": "remote"},
+                    ],
+                    "destination_pricing_modes": [
+                        {
+                            "site_id": "MLM",
+                            "logistic_type": "remote",
+                            "pricing_model": "price",
+                        }
+                    ],
                 }
             ],
         }

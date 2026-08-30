@@ -47,6 +47,8 @@ from .image_pool_model import (
 )
 from .merge_model import (
     merge_source_partial_result,
+    mercadolibre_sales_condition_basis,
+    mercadolibre_sales_operation_keys,
     normalize_draft_target_site,
     normalize_mercadolibre_sites_to_sell,
     normalize_platform_draft,
@@ -92,6 +94,8 @@ __all__ = [
     "generated_platform_sku",
     "image_pool_refs",
     "merge_source_partial_result",
+    "mercadolibre_sales_condition_basis",
+    "mercadolibre_sales_operation_keys",
     "mercadolibre_publication_from_response",
     "mercadolibre_publication_has_failures",
     "normalize_draft_image_ref",

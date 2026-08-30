@@ -17,13 +17,17 @@ from erp_web.services.mercadolibre_target_contract import (
     MERCADOLIBRE_SALES_TARGET_NOT_AUTHORIZED,
     mercadolibre_global_target_contract,
     mercadolibre_sales_target_selectors,
+    mercadolibre_target_pricing_mode,
 )
 from erp_web.services import pricing_service
 from erp_web.services.listing_currency_service import (
     StoreCurrencyNotReadyError,
     require_store_listing_currency,
 )
-from erp_web.product_model import normalize_mercadolibre_sites_to_sell
+from erp_web.product_model import (
+    mercadolibre_sales_condition_basis,
+    normalize_mercadolibre_sites_to_sell,
+)
 
 
 def _pricing_exchange_rate_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -238,21 +242,25 @@ def calculate_price(input_data: dict[str, Any]) -> dict[str, Any]:
             .upper()
             == "CBT"
         ):
+            listing_model = str(
+                platform_store.get("listing_model") or ""
+            ).strip()
+            target["listing_model"] = listing_model
             sites_to_sell = normalize_mercadolibre_sites_to_sell(
                 target.get("sites_to_sell")
                 if isinstance(target.get("sites_to_sell"), list)
                 else target.get("sitesToSell")
             )
+            # price/net_proceeds 是本轮核价输出，不能作为新一轮核价输入或进入
+            # 指纹；选择事实只由 marketplace operation 与授权 binding 决定。
+            sites_to_sell = mercadolibre_sales_condition_basis(sites_to_sell)
             target["sites_to_sell"] = sites_to_sell
             _, target_issues = mercadolibre_global_target_contract(
                 sites_to_sell,
                 platform_store.get("marketplace_bindings"),
+                listing_model=listing_model,
                 require_user_products=(
-                    str(platform_store.get("listing_model") or "").strip()
-                    != "traditional_global_items"
-                ),
-                enforce_binding_pricing_model=(
-                    str(platform_store.get("listing_model") or "").strip()
+                    listing_model
                     != "traditional_global_items"
                 ),
                 language=str(target.get("language") or "").strip(),
@@ -277,9 +285,10 @@ def calculate_price(input_data: dict[str, Any]) -> dict[str, Any]:
                         mercadolibre_sales_target_selectors(
                             platform_store.get("marketplace_bindings"),
                             require_user_products=(
-                                str(platform_store.get("listing_model") or "").strip()
+                                listing_model
                                 != "traditional_global_items"
                             ),
+                            listing_model=listing_model,
                             language=str(target.get("language") or "").strip(),
                         )
                     ),
@@ -294,6 +303,17 @@ def calculate_price(input_data: dict[str, Any]) -> dict[str, Any]:
                     "platform": platform,
                     "site": "CBT",
                 }
+            target["destination_pricing_modes"] = [
+                {
+                    "site_id": site_target["site_id"],
+                    "logistic_type": site_target["logistic_type"],
+                    "pricing_model": mercadolibre_target_pricing_mode(
+                        site_target,
+                        platform_store.get("marketplace_bindings"),
+                    ),
+                }
+                for site_target in sites_to_sell
+            ]
         normalized_targets.append(target)
     source["targets"] = normalized_targets
 

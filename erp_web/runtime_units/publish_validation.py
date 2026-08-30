@@ -18,6 +18,7 @@ from erp_web.services.mercadolibre_listing_model import (
     MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS,
 )
 from erp_web.product_model import (
+    mercadolibre_sales_condition_basis,
     normalize_mercadolibre_sites_to_sell,
     validate_category_precheck,
 )
@@ -57,6 +58,7 @@ from .publish_ozon import (
     ozon_invalid_dictionary_attributes,
     ozon_required_attributes_missing,
 )
+from .market_pricing_capability import _pricing_target_is_usable
 from .publish_yandex import (
     _public_picture_invalid,
     yandex_invalid_dictionary_attributes,
@@ -214,20 +216,33 @@ def _selected_price_errors(product: dict[str, Any], draft: dict[str, Any]) -> li
         .strip()
         .upper()
         == "CBT"
-        and normalize_mercadolibre_sites_to_sell(
-            basis.get("sites_to_sell")
-        )
-        != normalize_mercadolibre_sites_to_sell(
-            draft.get("sites_to_sell")
-        )
+        and mercadolibre_sales_condition_basis(basis.get("sites_to_sell"))
+        != mercadolibre_sales_condition_basis(draft.get("sites_to_sell"))
     ):
         return [
             precheck_item(
                 PRICING_STALE,
                 "pricing",
-                "CBT 销售国家或物流方式已变化，旧核价结果失效",
+                "CBT 销售国家或物流方式已变化，或其他销售条件已变化，旧核价结果失效",
                 "error",
                 "前往核价页重新计算并应用售价",
+            )
+        ]
+    if (
+        platform == "mercadolibre"
+        and str(draft.get("site") or draft.get("site_id") or "")
+        .strip()
+        .upper()
+        == "CBT"
+        and not _pricing_target_is_usable(draft, selected)
+    ):
+        return [
+            precheck_item(
+                PRICING_STALE,
+                "pricing",
+                "CBT 核价结果缺少完整的市场计价模式或已应用金额",
+                "error",
+                "前往核价页重新计算并应用各市场价格",
             )
         ]
     basis_currency_fingerprint = str(basis.get("currency_fingerprint") or "").strip()
@@ -422,12 +437,11 @@ def validate_mercadolibre_draft(
         global_targets, target_issues = mercadolibre_global_target_contract(
             draft.get("sites_to_sell"),
             store.get("marketplace_bindings"),
+            listing_model=listing_model,
             require_user_products=(
                 listing_model == MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS
             ),
-            enforce_binding_pricing_model=(
-                listing_model == MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS
-            ),
+            require_pricing_amounts=True,
             language=str(draft.get("language") or "").strip(),
         )
         for issue in target_issues:

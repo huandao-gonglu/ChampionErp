@@ -360,7 +360,10 @@ def validate_mercadolibre_publish_payload(payload: Any, config: dict[str, Any]) 
         missing.append("Global Selling 必须使用 CBT 类目 ID")
     if str(payload.get("currency_id") or "").strip().upper() != "USD":
         missing.append("标准 CBT Global Selling 刊登币种必须为 USD")
-    pricing_mode, pricing_issues = mercadolibre_payload_pricing_contract(payload)
+    pricing_mode, pricing_issues = mercadolibre_payload_pricing_contract(
+        payload,
+        listing_model=listing_model,
+    )
     missing.extend(issue["message"] for issue in pricing_issues)
     if not payload.get("attributes"):
         missing.append("类目属性")
@@ -444,14 +447,12 @@ def validate_mercadolibre_publish_payload(payload: Any, config: dict[str, Any]) 
     _, target_issues = mercadolibre_global_target_contract(
         sites_to_sell,
         store.get("marketplace_bindings"),
+        listing_model=listing_model,
         required_pricing_mode=pricing_mode,
-        allow_inherited_net_proceeds=pricing_mode == "net_proceeds",
         require_user_products=(
             listing_model == MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS
         ),
-        enforce_binding_pricing_model=(
-            listing_model == MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS
-        ),
+        require_pricing_amounts=True,
         language=str(listing.get("mercadolibre_language") or "").strip(),
     )
     for issue in target_issues:

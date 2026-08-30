@@ -6,6 +6,7 @@ from typing import Any
 from erp_web.services.mercadolibre_target_contract import (
     MERCADOLIBRE_CBT_CURRENCY_INVALID,
     mercadolibre_global_target_contract,
+    mercadolibre_target_pricing_mode,
 )
 from erp_web.services.mercadolibre_listing_model import (
     MERCADOLIBRE_LISTING_MODEL_TRADITIONAL_GLOBAL_ITEMS,
@@ -123,10 +124,8 @@ def build_mercadolibre_payload(
     global_targets, target_issues = mercadolibre_global_target_contract(
         settings.get("mercadolibre_sites_to_sell"),
         store.get("marketplace_bindings"),
+        listing_model=listing_model,
         require_user_products=(
-            listing_model == MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS
-        ),
-        enforce_binding_pricing_model=(
             listing_model == MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS
         ),
         language=str(settings.get("mercadolibre_language") or "").strip(),
@@ -134,13 +133,37 @@ def build_mercadolibre_payload(
     if target_issues:
         issue = target_issues[0]
         raise RuntimeError(f"{issue['code']}: {issue['message']}")
-    uses_net_proceeds = bool(
-        global_targets
-        and all(
-            target.get("net_proceeds") not in (None, "")
-            for target in global_targets
+    pricing_modes = {
+        mercadolibre_target_pricing_mode(
+            target,
+            store.get("marketplace_bindings"),
         )
-    )
+        for target in global_targets
+    }
+    uses_net_proceeds = pricing_modes == {"net_proceeds"}
+    if uses_net_proceeds and any(
+        target.get("net_proceeds") in (None, "")
+        for target in global_targets
+    ):
+        raise RuntimeError(
+            "MERCADOLIBRE_PRICING_AMOUNT_REQUIRED: "
+            "net_proceeds 计价必须先核价并应用每个市场的期望到账额"
+        )
+    if uses_net_proceeds and any(
+        number_or_zero(
+            (
+                target["net_proceeds"].get("amount")
+                if isinstance(target.get("net_proceeds"), dict)
+                else target.get("net_proceeds")
+            )
+        )
+        <= 0
+        for target in global_targets
+    ):
+        raise RuntimeError(
+            "MERCADOLIBRE_PRICING_AMOUNT_REQUIRED: "
+            "每个市场的 net_proceeds 必须大于 0"
+        )
     if category_attributes is None:
         raise RuntimeError(
             "MERCADOLIBRE_CATEGORY_DEFINITION_REQUIRED: "
@@ -171,15 +194,29 @@ def build_mercadolibre_payload(
         }
         # Mercado 的 sales conditions 属于具体 marketplace。显式配置优先；
         # 未配置时才继承草稿的全局默认值。
-        if (
-            listing_model == MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS
-            and uses_net_proceeds
-        ):
-            site_payload["net_proceeds"] = target["net_proceeds"]
-        elif target.get("price") not in (None, ""):
-            site_payload["price"] = target["price"]
+        if uses_net_proceeds:
+            raw_net_proceeds = target["net_proceeds"]
+            site_payload["net_proceeds"] = number_or_zero(
+                raw_net_proceeds.get("amount")
+                if isinstance(raw_net_proceeds, dict)
+                else raw_net_proceeds
+            )
         else:
-            site_payload["price"] = price_input
+            raw_price = (
+                target.get("price")
+                if target.get("price") not in (None, "")
+                else price_input
+            )
+            site_payload["price"] = number_or_zero(
+                raw_price.get("amount")
+                if isinstance(raw_price, dict)
+                else raw_price
+            )
+            if site_payload["price"] <= 0:
+                raise RuntimeError(
+                    "MERCADOLIBRE_PRICING_AMOUNT_REQUIRED: "
+                    f"销售目标 {target['site_id']} 的 price 必须大于 0"
+                )
         site_payload["listing_type_id"] = (
             target.get("listing_type_id") or default_listing_type_id
         )
@@ -206,7 +243,7 @@ def build_mercadolibre_payload(
             "sites_to_sell": sites_to_sell,
         }
         if uses_net_proceeds:
-            payload["global_net_proceeds"] = global_targets[0]["net_proceeds"]
+            payload["global_net_proceeds"] = sites_to_sell[0]["net_proceeds"]
         else:
             payload["price"] = price_input
     else:
@@ -214,7 +251,6 @@ def build_mercadolibre_payload(
             "_listing_model": listing_model,
             "title": global_title,
             "category_id": category_id,
-            "price": price_input,
             "currency_id": currency_id,
             "available_quantity": int(settings.get("stock") or 1),
             "buying_mode": "buy_it_now",
@@ -225,6 +261,8 @@ def build_mercadolibre_payload(
             "sale_terms": sale_terms,
             "description": {"plain_text": listing.get("description", "")},
         }
+        if not uses_net_proceeds:
+            payload["price"] = price_input
     # 当前传统 /global/items 的真实校验会在根级 pictures 缺失时返回
     # body.required_fields（cause_id=5141）。User Products 同样把图片作为
     # Siteless 商品信息放在根级；两种模型都只提交已上传的 picture ID。

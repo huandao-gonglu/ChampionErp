@@ -12,7 +12,12 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
-from erp_web.product_model import normalize_mercadolibre_sites_to_sell
+from erp_web.context import get_context
+from erp_web.product_model import (
+    mercadolibre_sales_condition_basis,
+    mercadolibre_sales_operation_keys,
+    normalize_mercadolibre_sites_to_sell,
+)
 from erp_web.runtime_units.draft_publish_context import (
     draft_for_publish_target,
     merge_target_listing_into_draft,
@@ -31,12 +36,27 @@ from erp_web.services.capability_errors import (
     BusinessCapabilityError,
     CapabilityInputRequired,
 )
+from erp_web.services.listing_currency_service import (
+    StoreCurrencyNotReadyError,
+    require_store_listing_currency,
+)
 from erp_web.services.mercadolibre_target_contract import (
     MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED,
+    mercadolibre_global_target_contract,
+    mercadolibre_target_pricing_mode,
+)
+from erp_web.services.mercadolibre_listing_model import (
+    MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS,
+    require_mercadolibre_listing_model,
 )
 
 
 PricingCalculator = Callable[[dict[str, Any]], dict[str, Any]]
+StoreConfigLoader = Callable[[], dict[str, Any]]
+
+
+def _load_store_config() -> dict[str, Any]:
+    return get_context().config.load_store_config()
 
 
 def _target_key(platform: str, site: str) -> str:
@@ -64,6 +84,28 @@ def _sales_targets_from_selectors(selectors: Any) -> list[dict[str, str]]:
             }
         )
     return normalize_mercadolibre_sites_to_sell(rows)
+
+
+def _sales_targets_with_existing_conditions(
+    selected_targets: Any,
+    current_targets: Any,
+) -> list[dict[str, Any]]:
+    """保留仍被选中 operation 的非金额销售条件。"""
+
+    existing_by_operation = {
+        (target["site_id"], target["logistic_type"]): target
+        for target in mercadolibre_sales_condition_basis(current_targets)
+    }
+    return [
+        {
+            **existing_by_operation.get(
+                (selected["site_id"], selected["logistic_type"]),
+                {},
+            ),
+            **selected,
+        }
+        for selected in normalize_mercadolibre_sites_to_sell(selected_targets)
+    ]
 
 
 def _selected_pricing_target(target_draft: dict[str, Any]) -> dict[str, Any]:
@@ -115,10 +157,291 @@ def _pricing_target_is_usable(
         current_targets = normalize_mercadolibre_sites_to_sell(
             target_draft.get("sites_to_sell")
         )
-        return bool(current_targets) and normalize_mercadolibre_sites_to_sell(
-            basis.get("sites_to_sell")
-        ) == current_targets
+        current_operations = mercadolibre_sales_operation_keys(current_targets)
+        if (
+            not current_operations
+            or mercadolibre_sales_condition_basis(basis.get("sites_to_sell"))
+            != mercadolibre_sales_condition_basis(current_targets)
+        ):
+            return False
+        raw_modes = basis.get("destination_pricing_modes")
+        modes = raw_modes if isinstance(raw_modes, list) else []
+        mode_by_operation = {
+            (
+                text(item.get("site_id")).upper(),
+                text(item.get("logistic_type")).lower(),
+            ): text(item.get("pricing_model")).lower()
+            for item in modes
+            if isinstance(item, dict)
+            and text(item.get("pricing_model")).lower()
+            in {"price", "net_proceeds"}
+        }
+        raw_results = selected.get("destination_results")
+        destination_results = (
+            raw_results if isinstance(raw_results, list) else []
+        )
+        result_by_operation = {
+            (
+                text(item.get("site_id")).upper(),
+                text(item.get("logistic_type")).lower(),
+            ): item
+            for item in destination_results
+            if isinstance(item, dict)
+        }
+        if (
+            tuple(sorted(mode_by_operation)) != tuple(sorted(current_operations))
+            or tuple(sorted(result_by_operation))
+            != tuple(sorted(current_operations))
+        ):
+            return False
+        expected_currency = text(target_draft.get("listing_currency")).upper()
+        expected_fingerprint = text(selected.get("calculation_fingerprint"))
+        for operation in current_operations:
+            destination = result_by_operation[operation]
+            pricing_model = text(destination.get("pricing_model")).lower()
+            if pricing_model != mode_by_operation[operation]:
+                return False
+            selected_money = destination.get(pricing_model)
+            opposite_money = destination.get(
+                "price" if pricing_model == "net_proceeds" else "net_proceeds"
+            )
+            if not isinstance(selected_money, dict) or opposite_money not in (
+                None,
+                "",
+            ):
+                return False
+            try:
+                destination_amount_valid = (
+                    float(text(selected_money.get("amount"))) > 0
+                )
+            except (TypeError, ValueError):
+                destination_amount_valid = False
+            if (
+                not destination_amount_valid
+                or text(selected_money.get("currency")).upper()
+                != expected_currency
+                or text(destination.get("calculation_fingerprint"))
+                != expected_fingerprint
+            ):
+                return False
+            current_target = next(
+                (
+                    item
+                    for item in current_targets
+                    if (
+                        item["site_id"],
+                        item["logistic_type"],
+                    )
+                    == operation
+                ),
+                {},
+            )
+            if text(current_target.get(pricing_model)) != text(
+                selected_money.get("amount")
+            ):
+                return False
+            if current_target.get(
+                "price" if pricing_model == "net_proceeds" else "net_proceeds"
+            ) not in (None, ""):
+                return False
+        return True
     return True
+
+
+def _canonical_destination_pricing_modes(value: Any) -> tuple[tuple[str, str, str], ...]:
+    rows = value if isinstance(value, list) else []
+    return tuple(
+        sorted(
+            (
+                text(item.get("site_id")).upper(),
+                text(item.get("logistic_type")).lower(),
+                text(item.get("pricing_model")).lower(),
+            )
+            for item in rows
+            if isinstance(item, dict)
+            and text(item.get("site_id"))
+            and text(item.get("logistic_type"))
+            and text(item.get("pricing_model")).lower()
+            in {"price", "net_proceeds"}
+        )
+    )
+
+
+def _current_mercadolibre_pricing_context(
+    target: dict[str, Any],
+    *,
+    store_config: dict[str, Any],
+) -> tuple[str, tuple[tuple[str, str, str], ...]]:
+    """读取当前授权投影；无效/过期授权不得支持复用旧核价。"""
+
+    store = (
+        store_config.get("mercadolibre")
+        if isinstance(store_config, dict)
+        else {}
+    )
+    store = store if isinstance(store, dict) else {}
+    try:
+        listing_model = require_mercadolibre_listing_model(
+            store.get("listing_model")
+        )
+    except RuntimeError:
+        return "", ()
+    targets = mercadolibre_sales_condition_basis(target.get("sites_to_sell"))
+    _canonical, issues = mercadolibre_global_target_contract(
+        targets,
+        store.get("marketplace_bindings"),
+        listing_model=listing_model,
+        require_user_products=(
+            listing_model == MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS
+        ),
+        language=text(target.get("language")),
+    )
+    if issues:
+        return "", ()
+    return listing_model, _canonical_destination_pricing_modes(
+        [
+            {
+                "site_id": destination["site_id"],
+                "logistic_type": destination["logistic_type"],
+                "pricing_model": mercadolibre_target_pricing_mode(
+                    destination,
+                    store.get("marketplace_bindings"),
+                ),
+            }
+            for destination in targets
+        ]
+    )
+
+
+def _current_mercadolibre_pricing_context_matches(
+    target: dict[str, Any],
+    selected: dict[str, Any],
+    *,
+    store_config: dict[str, Any],
+) -> bool:
+    basis = (
+        selected.get("calculation_basis")
+        if isinstance(selected.get("calculation_basis"), dict)
+        else {}
+    )
+    current_listing_model, current_modes = _current_mercadolibre_pricing_context(
+        target,
+        store_config=store_config,
+    )
+    return bool(
+        current_listing_model
+        and current_modes
+        and text(basis.get("listing_model")) == current_listing_model
+        and _canonical_destination_pricing_modes(
+            basis.get("destination_pricing_modes")
+        )
+        == current_modes
+    )
+
+
+def _current_store_currency_context_matches(
+    target: dict[str, Any],
+    selected: dict[str, Any],
+    *,
+    store_config: dict[str, Any],
+) -> bool:
+    platform = text(target.get("platform")).lower()
+    store = store_config.get(platform) if isinstance(store_config, dict) else {}
+    store = store if isinstance(store, dict) else {}
+    try:
+        state = require_store_listing_currency(platform, store)
+    except StoreCurrencyNotReadyError:
+        return False
+    basis = (
+        selected.get("calculation_basis")
+        if isinstance(selected.get("calculation_basis"), dict)
+        else {}
+    )
+    current_currency = text(state.get("listing_currency")).upper()
+    current_fingerprint = text(state.get("currency_fingerprint"))
+    return bool(
+        current_currency
+        and current_fingerprint
+        and text(selected.get("listing_currency")).upper() == current_currency
+        and text(selected.get("currency_fingerprint")) == current_fingerprint
+        and text(basis.get("listing_currency")).upper() == current_currency
+        and text(basis.get("currency_fingerprint")) == current_fingerprint
+    )
+
+
+def _apply_mercadolibre_destination_results(
+    target: dict[str, Any],
+    pricing_target: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """把已验证核价结果原子写回各 marketplace operation。"""
+
+    current_targets = normalize_mercadolibre_sites_to_sell(
+        target.get("sites_to_sell")
+    )
+    raw_results = pricing_target.get("destination_results")
+    results = raw_results if isinstance(raw_results, list) else []
+    result_by_operation = {
+        (
+            text(item.get("site_id")).upper(),
+            text(item.get("logistic_type")).lower(),
+        ): item
+        for item in results
+        if isinstance(item, dict)
+    }
+    operations = mercadolibre_sales_operation_keys(current_targets)
+    if not operations or tuple(sorted(result_by_operation)) != tuple(
+        sorted(operations)
+    ):
+        raise BusinessCapabilityError(
+            "PRICING_RESULT_INVALID",
+            "CBT 核价结果没有完整覆盖当前销售国家与物流方式。",
+        )
+    expected_currency = text(
+        pricing_target.get("listing_currency")
+        or target.get("listing_currency")
+    ).upper()
+    expected_fingerprint = text(
+        pricing_target.get("calculation_fingerprint")
+    )
+    applied_targets: list[dict[str, Any]] = []
+    for current in current_targets:
+        operation = (current["site_id"], current["logistic_type"])
+        destination = result_by_operation[operation]
+        pricing_model = text(destination.get("pricing_model")).lower()
+        selected_money = destination.get(pricing_model)
+        opposite_field = (
+            "price" if pricing_model == "net_proceeds" else "net_proceeds"
+        )
+        if (
+            pricing_model not in {"price", "net_proceeds"}
+            or not isinstance(selected_money, dict)
+            or destination.get(opposite_field) not in (None, "")
+            or text(selected_money.get("currency")).upper()
+            != expected_currency
+            or text(destination.get("calculation_fingerprint"))
+            != expected_fingerprint
+        ):
+            raise BusinessCapabilityError(
+                "PRICING_RESULT_INVALID",
+                f"销售目标 {current['site_id']} 的核价模式或币种无效。",
+            )
+        try:
+            amount_valid = float(text(selected_money.get("amount"))) > 0
+        except (TypeError, ValueError):
+            amount_valid = False
+        if not amount_valid:
+            raise BusinessCapabilityError(
+                "PRICING_RESULT_INVALID",
+                f"销售目标 {current['site_id']} 的核价金额无效。",
+            )
+        applied = deepcopy(current)
+        applied.pop("price", None)
+        applied.pop("net_proceeds", None)
+        # 草稿 marketplace condition 与 Mercado wire 都使用标量金额；币种由
+        # CBT listing_currency=USD 统一约束。Money 仅保留在核价结果边界。
+        applied[pricing_model] = text(selected_money.get("amount"))
+        applied_targets.append(applied)
+    return applied_targets
 
 
 def _persist_sales_target_selection(
@@ -280,6 +603,7 @@ def prepare_target_pricing(
     pricing_input: Mapping[str, Any] | None = None,
     product_store: ProductCapabilityStore,
     pricing_calculator: PricingCalculator = calculate_price,
+    store_config_loader: StoreConfigLoader = _load_store_config,
 ) -> dict[str, Any]:
     """确定性核价并持久化到草稿 ``pricing.targets``；返回生效的定价目标。
 
@@ -299,10 +623,13 @@ def prepare_target_pricing(
             "SALES_TARGET_NOT_APPLICABLE",
             "销售国家与物流方式选择只适用于 Mercado Libre CBT 草稿。",
         )
-    selected_sales_targets = _sales_targets_from_selectors(sales_target)
+    selected_sales_targets = _sales_targets_with_existing_conditions(
+        _sales_targets_from_selectors(sales_target),
+        target.get("sites_to_sell"),
+    )
     sales_target_changed = bool(sales_target) and (
-        selected_sales_targets
-        != normalize_mercadolibre_sites_to_sell(target.get("sites_to_sell"))
+        mercadolibre_sales_operation_keys(selected_sales_targets)
+        != mercadolibre_sales_operation_keys(target.get("sites_to_sell"))
     )
     if sales_target:
         target = {**target, "sites_to_sell": selected_sales_targets}
@@ -310,7 +637,22 @@ def prepare_target_pricing(
     if not safe_input:
         selected = _selected_pricing_target(target_projection)
         if selected and _pricing_target_is_usable(target_projection, selected):
-            return deepcopy(selected)
+            if not is_mercadolibre_cbt:
+                return deepcopy(selected)
+            current_store_config = store_config_loader()
+            if (
+                _current_store_currency_context_matches(
+                    target_projection,
+                    selected,
+                    store_config=current_store_config,
+                )
+                and _current_mercadolibre_pricing_context_matches(
+                    target_projection,
+                    selected,
+                    store_config=current_store_config,
+                )
+            ):
+                return deepcopy(selected)
     payload = _pricing_payload(
         safe_input,
         product=product,
@@ -421,6 +763,12 @@ def prepare_target_pricing(
             "PRICING_RESULT_INVALID",
             "核价完成但没有返回可验证的目标售价。",
         )
+    if is_mercadolibre_cbt:
+        applied_sales_targets = _apply_mercadolibre_destination_results(
+            target,
+            pricing_target,
+        )
+        target = {**target, "sites_to_sell": applied_sales_targets}
     pricing = deepcopy(
         draft.get("pricing") if isinstance(draft.get("pricing"), dict) else {}
     )
@@ -441,7 +789,15 @@ def prepare_target_pricing(
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
     )
-    updated = deepcopy(draft)
+    updated = (
+        merge_target_listing_into_draft(
+            draft,
+            target,
+            {"sites_to_sell": target["sites_to_sell"]},
+        )
+        if is_mercadolibre_cbt
+        else deepcopy(draft)
+    )
     updated["pricing"] = pricing
     updated = invalidate_target_publish_preparation(
         product_store=product_store,

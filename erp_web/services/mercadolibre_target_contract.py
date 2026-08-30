@@ -6,6 +6,10 @@ from typing import Any
 
 from erp_web.marketplace_registry import marketplace_site
 from erp_web.product_model import normalize_mercadolibre_sites_to_sell
+from erp_web.services.mercadolibre_listing_model import (
+    MERCADOLIBRE_LISTING_MODEL_TRADITIONAL_GLOBAL_ITEMS,
+    MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS,
+)
 
 
 MERCADOLIBRE_CBT_CURRENCY_INVALID = "MERCADOLIBRE_CBT_CURRENCY_INVALID"
@@ -21,6 +25,12 @@ MERCADOLIBRE_PRICE_NET_PROCEEDS_CONFLICT = (
 )
 MERCADOLIBRE_PRICING_MODEL_MISMATCH = (
     "MERCADOLIBRE_PRICING_MODEL_MISMATCH"
+)
+MERCADOLIBRE_PRICING_MODEL_UNRESOLVED = (
+    "MERCADOLIBRE_PRICING_MODEL_UNRESOLVED"
+)
+MERCADOLIBRE_PRICING_AMOUNT_REQUIRED = (
+    "MERCADOLIBRE_PRICING_AMOUNT_REQUIRED"
 )
 MERCADOLIBRE_PRICING_MODE_MIXED = "MERCADOLIBRE_PRICING_MODE_MIXED"
 MERCADOLIBRE_SALES_TARGET_NOT_AUTHORIZED = (
@@ -53,6 +63,7 @@ def mercadolibre_sales_target_selectors(
     marketplace_bindings: Any,
     *,
     require_user_products: bool = True,
+    listing_model: str = "",
     language: str = "",
 ) -> list[str]:
     """返回当前文案语言可选的 ``SITE_ID:logistic_type`` 稳定值。"""
@@ -93,6 +104,13 @@ def mercadolibre_sales_target_selectors(
             site_id
             and site_id != "CBT"
             and logistic_type
+            and mercadolibre_binding_pricing_mode(binding)
+            and not (
+                listing_model
+                == MERCADOLIBRE_LISTING_MODEL_TRADITIONAL_GLOBAL_ITEMS
+                and str(binding.get("pricing_model") or "").strip().lower()
+                == "global_net_proceeds"
+            )
             and language_matches
             and (
                 not require_user_products
@@ -121,13 +139,23 @@ def _binding_for_target(
     return None
 
 
-def _binding_pricing_mode(binding: dict[str, Any]) -> str:
+def mercadolibre_binding_pricing_mode(binding: dict[str, Any]) -> str:
     pricing_model = str(binding.get("pricing_model") or "").strip().lower()
-    return (
-        "net_proceeds"
-        if pricing_model in {"net_proceeds", "global_net_proceeds"}
-        else "price"
-    )
+    if pricing_model in {"net_proceeds", "global_net_proceeds"}:
+        return "net_proceeds"
+    if pricing_model in {"price", "listing_price"}:
+        return "price"
+    return ""
+
+
+def mercadolibre_target_pricing_mode(
+    target: dict[str, Any],
+    marketplace_bindings: Any,
+) -> str:
+    """读取指定 marketplace operation 的可信计价模式。"""
+
+    binding = _binding_for_target(target, marketplace_bindings)
+    return mercadolibre_binding_pricing_mode(binding) if binding is not None else ""
 
 
 def _raw_sales_target_shape_issues(value: Any) -> list[dict[str, str]]:
@@ -174,6 +202,8 @@ def _raw_sales_target_shape_issues(value: Any) -> list[dict[str, str]]:
 
 def mercadolibre_payload_pricing_contract(
     payload: Any,
+    *,
+    listing_model: str,
 ) -> tuple[str, list[dict[str, str]]]:
     """校验待外发 payload 的根计价模式与每市场销售条件一致。"""
 
@@ -184,21 +214,11 @@ def mercadolibre_payload_pricing_contract(
         "",
     )
     issues: list[dict[str, str]] = []
-    pricing_mode = ""
-    if has_price == has_global_net_proceeds:
-        issues.append(
-            {
-                "code": MERCADOLIBRE_PRICE_NET_PROCEEDS_CONFLICT,
-                "field": "price",
-                "message": "price 与 global_net_proceeds 必须且只能提供一个",
-            }
-        )
-    else:
-        pricing_mode = "net_proceeds" if has_global_net_proceeds else "price"
-
     raw_targets = raw.get("sites_to_sell")
     issues.extend(_raw_sales_target_shape_issues(raw_targets))
     targets = raw_targets if isinstance(raw_targets, list) else []
+    target_modes: set[str] = set()
+    target_facts: list[tuple[int, str, bool, bool]] = []
     for index, target in enumerate(targets):
         field = f"sites_to_sell[{index}]"
         if not isinstance(target, dict):
@@ -211,6 +231,13 @@ def mercadolibre_payload_pricing_contract(
         if target_net_proceeds in (None, ""):
             target_net_proceeds = target.get("netProceeds")
         target_has_net_proceeds = target_net_proceeds not in (None, "")
+        if target_has_price:
+            target_modes.add("price")
+        if target_has_net_proceeds:
+            target_modes.add("net_proceeds")
+        target_facts.append(
+            (index, site_id, target_has_price, target_has_net_proceeds)
+        )
         if target_has_price and target_has_net_proceeds:
             issues.append(
                 {
@@ -222,14 +249,65 @@ def mercadolibre_payload_pricing_contract(
                     ),
                 }
             )
-            continue
+    pricing_mode = ""
+    if listing_model == "traditional_global_items":
+        if has_global_net_proceeds:
+            issues.append(
+                {
+                    "code": MERCADOLIBRE_PRICE_NET_PROCEEDS_CONFLICT,
+                    "field": "global_net_proceeds",
+                    "message": (
+                        "传统 Global Items 禁止 global_net_proceeds；"
+                        "Remote 净回款必须逐市场填写 net_proceeds"
+                    ),
+                }
+            )
+        if has_price:
+            pricing_mode = "price"
+        elif target_modes == {"net_proceeds"}:
+            pricing_mode = "net_proceeds"
+        else:
+            issues.append(
+                {
+                    "code": MERCADOLIBRE_PRICE_NET_PROCEEDS_CONFLICT,
+                    "field": "price",
+                    "message": (
+                        "传统 Global Items 必须使用根 price，或为每个 Remote "
+                        "市场填写 net_proceeds"
+                    ),
+                }
+            )
+    else:
+        if has_price == has_global_net_proceeds:
+            issues.append(
+                {
+                    "code": MERCADOLIBRE_PRICE_NET_PROCEEDS_CONFLICT,
+                    "field": "price",
+                    "message": "price 与 global_net_proceeds 必须且只能提供一个",
+                }
+            )
+        else:
+            pricing_mode = (
+                "net_proceeds" if has_global_net_proceeds else "price"
+            )
+
+    if len(target_modes) > 1:
+        issues.append(
+            {
+                "code": MERCADOLIBRE_PRICING_MODE_MIXED,
+                "field": "sites_to_sell",
+                "message": "同一次发布不能混用 price 与 net_proceeds",
+            }
+        )
+    for index, site_id, target_has_price, target_has_net_proceeds in target_facts:
+        field = f"sites_to_sell[{index}]"
         if pricing_mode == "price" and target_has_net_proceeds:
             issues.append(
                 {
                     "code": MERCADOLIBRE_PRICING_MODEL_MISMATCH,
                     "field": f"{field}.net_proceeds",
                     "message": (
-                        f"销售目标 {site_id or index} 与根 price 计价模式不一致"
+                        f"销售目标 {site_id or index} 与 price 计价模式不一致"
                     ),
                 }
             )
@@ -239,9 +317,20 @@ def mercadolibre_payload_pricing_contract(
                     "code": MERCADOLIBRE_PRICING_MODEL_MISMATCH,
                     "field": field,
                     "message": (
-                        f"销售目标 {site_id or index} 继承根 "
-                        "global_net_proceeds 时不能再提供 price"
+                        f"销售目标 {site_id or index} 使用 net_proceeds 时不能提供 price"
                     ),
+                }
+            )
+        elif (
+            listing_model == "traditional_global_items"
+            and pricing_mode == "net_proceeds"
+            and not target_has_net_proceeds
+        ):
+            issues.append(
+                {
+                    "code": MERCADOLIBRE_PRICING_AMOUNT_REQUIRED,
+                    "field": f"{field}.net_proceeds",
+                    "message": f"销售目标 {site_id or index} 缺少 net_proceeds",
                 }
             )
     return pricing_mode, issues
@@ -251,10 +340,10 @@ def mercadolibre_global_target_contract(
     sites_to_sell: Any,
     marketplace_bindings: Any,
     *,
+    listing_model: str,
     required_pricing_mode: str = "",
-    allow_inherited_net_proceeds: bool = False,
     require_user_products: bool = True,
-    enforce_binding_pricing_model: bool = True,
+    require_pricing_amounts: bool = False,
     language: str = "",
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     """返回规范销售目标及确定性契约错误，供核价、预检与 payload 共用。"""
@@ -264,7 +353,7 @@ def mercadolibre_global_target_contract(
     bindings = (
         marketplace_bindings if isinstance(marketplace_bindings, list) else []
     )
-    if enforce_binding_pricing_model and _mercadolibre_seller_is_fully_managed(bindings):
+    if _mercadolibre_seller_is_fully_managed(bindings):
         return targets, [
             {
                 "code": MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED,
@@ -394,12 +483,50 @@ def mercadolibre_global_target_contract(
                 }
             )
             continue
-        if not enforce_binding_pricing_model:
-            # 传统 /global/items 已被真实发布记录验证为 price 合同；现代
-            # marketplace binding 的 pricing_model 属于 User Products，不能
-            # 反向否定传统模型的历史有效合同。
+        pricing_mode = mercadolibre_binding_pricing_mode(binding)
+        if not pricing_mode:
+            issues.append(
+                {
+                    "code": MERCADOLIBRE_PRICING_MODEL_UNRESOLVED,
+                    "field": field,
+                    "message": (
+                        f"销售目标 {site_id} 的 pricing_model 尚未解析，"
+                        "请重新验证授权并同步市场能力"
+                    ),
+                }
+            )
             continue
-        pricing_mode = _binding_pricing_mode(binding)
+        raw_pricing_model = str(
+            binding.get("pricing_model") or ""
+        ).strip().lower()
+        if (
+            listing_model
+            == MERCADOLIBRE_LISTING_MODEL_TRADITIONAL_GLOBAL_ITEMS
+            and raw_pricing_model == "global_net_proceeds"
+        ):
+            issues.append(
+                {
+                    "code": MERCADOLIBRE_PRICING_MODEL_MISMATCH,
+                    "field": field,
+                    "message": (
+                        f"销售目标 {site_id} 只提供 global_net_proceeds；"
+                        "传统 Global Items 只能使用市场级 net_proceeds"
+                    ),
+                }
+            )
+            continue
+        if pricing_mode == "net_proceeds" and logistic_type != "remote":
+            issues.append(
+                {
+                    "code": MERCADOLIBRE_PRICING_MODEL_MISMATCH,
+                    "field": field,
+                    "message": (
+                        f"销售目标 {site_id} 的 {logistic_type} 物流不支持 "
+                        "net_proceeds；Fulfillment 必须使用 price"
+                    ),
+                }
+            )
+            continue
         selected_pricing_modes.add(pricing_mode)
         if required_pricing_mode and pricing_mode != required_pricing_mode:
             issues.append(
@@ -416,11 +543,13 @@ def mercadolibre_global_target_contract(
         if (
             pricing_mode == "net_proceeds"
             and not has_net_proceeds
-            and not allow_inherited_net_proceeds
+            and require_pricing_amounts
+            and listing_model
+            == MERCADOLIBRE_LISTING_MODEL_TRADITIONAL_GLOBAL_ITEMS
         ):
             issues.append(
                 {
-                    "code": MERCADOLIBRE_PRICING_MODEL_MISMATCH,
+                    "code": MERCADOLIBRE_PRICING_AMOUNT_REQUIRED,
                     "field": f"{field}.net_proceeds",
                     "message": (
                         f"销售目标 {site_id} 的账号 pricing_model=net_proceeds，"
@@ -437,6 +566,16 @@ def mercadolibre_global_target_contract(
                     "message": (
                         f"销售目标 {site_id} 未启用 net_proceeds 计价，"
                         "必须使用 price"
+                    ),
+                }
+            )
+        elif pricing_mode == "price" and not has_price and require_pricing_amounts:
+            issues.append(
+                {
+                    "code": MERCADOLIBRE_PRICING_AMOUNT_REQUIRED,
+                    "field": f"{field}.price",
+                    "message": (
+                        f"销售目标 {site_id} 缺少已应用的市场售价，请重新核价"
                     ),
                 }
             )
@@ -461,6 +600,8 @@ __all__ = [
     "MERCADOLIBRE_LOGISTIC_TYPE_REQUIRED",
     "MERCADOLIBRE_MARKET_OPERATION_AMBIGUOUS",
     "MERCADOLIBRE_PRICE_NET_PROCEEDS_CONFLICT",
+    "MERCADOLIBRE_PRICING_AMOUNT_REQUIRED",
+    "MERCADOLIBRE_PRICING_MODEL_UNRESOLVED",
     "MERCADOLIBRE_PRICING_MODEL_MISMATCH",
     "MERCADOLIBRE_PRICING_MODE_MIXED",
     "MERCADOLIBRE_SALES_TARGET_CBT_INVALID",
@@ -469,7 +610,9 @@ __all__ = [
     "MERCADOLIBRE_SALES_TARGET_NOT_AUTHORIZED",
     "MERCADOLIBRE_SITES_TO_SELL_REQUIRED",
     "MERCADOLIBRE_USER_PRODUCTS_REQUIRED",
+    "mercadolibre_binding_pricing_mode",
     "mercadolibre_global_target_contract",
     "mercadolibre_payload_pricing_contract",
     "mercadolibre_sales_target_selectors",
+    "mercadolibre_target_pricing_mode",
 ]

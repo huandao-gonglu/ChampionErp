@@ -22,6 +22,12 @@ import type { ImageEditOptions, ImageTranslateOptions } from '@/api/workflow/cat
 import { assignUpc as assignUpcApi } from '@/api/workflow/settings'
 import {  marketplaces } from '@/constants/initialState'
 import { listingLanguageValue } from '@/constants/locales'
+import {
+  isMercadoLibreCbtTarget,
+  MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED_MESSAGE,
+  mercadoLibreHasFullyManagedBinding,
+  mercadoLibreTargetPricingError,
+} from '@/utils/mercadolibreGlobalSelling'
 import type {
 
   DraftDetail,
@@ -59,6 +65,7 @@ type WorkflowCatalogActionsPort = Pick<
   | 'copyGenerating'
   | 'activeMarketplace'
   | 'appConfig'
+  | 'storeConfig'
   | 'loading'
   | 'addLog'
   | 'setError'
@@ -86,7 +93,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     product, productsIndex, draftsIndex, selectedProductIds, currentDraft,
     currentDraftProductContext, imagePrompt, collectForm, fillFormFromState, pricingResult,
     categoryResults, categoryRecommendations, categoryAutoMatchProductName, categoryPrecheck, precheck, precheckResults,
-    payloadPreview, copyGenerating, activeMarketplace, appConfig, loading,
+    payloadPreview, copyGenerating, activeMarketplace, appConfig, storeConfig, loading,
     addLog, setError, currentStage, mergeTargetDetails, persistActiveTargetListingFields,
     invalidateCategoryAttributeLoad, configuredTargetsForLanguage, configuredSelectedTargets, targetPlatforms, syncActivePublishTarget,
     draftDetailFromProduct, applyMutationIndexes, restorePrecheckFromProduct, restoreCategoryFromProduct, syncCollectDiagnosticsFromProduct,
@@ -233,6 +240,25 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     if (!validTargets.length) {
       setError('请选择来自市场配置且与草稿语言匹配的站点。')
       return
+    }
+    for (const target of validTargets.filter(isMercadoLibreCbtTarget)) {
+      if (mercadoLibreHasFullyManagedBinding(storeConfig.value)) {
+        setError(MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED_MESSAGE)
+        return
+      }
+      const requested = targets.find((candidate) => (
+        candidate.platform.toLowerCase() === target.platform.toLowerCase()
+        && candidate.site.toUpperCase() === target.site.toUpperCase()
+      ))
+      if ((requested?.sitesToSell || []).length !== (target.sitesToSell || []).length) {
+        setError('所选 Mercado 销售操作缺少有效 pricing_model，或已不在当前店铺授权中。')
+        return
+      }
+      const pricingError = mercadoLibreTargetPricingError(target, storeConfig.value, false)
+      if (pricingError) {
+        setError(pricingError)
+        return
+      }
     }
     const primaryTarget = validTargets[0]
     const platforms = targetPlatforms(validTargets)

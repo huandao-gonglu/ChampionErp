@@ -121,7 +121,7 @@ export interface PublishPayloadSummary {
 export interface MarketplaceSiteToSell {
   siteId: string
   logisticType: string
-  /** 子市场独立售价；留空时由全局核价结果兜底。 */
+  /** pricing_model=price 时使用的买家售价，与 netProceeds 互斥。 */
   price?: string
   listingTypeId?: string
   /** 仅允许由安全编辑界面写入 active / paused；留空表示不修改远端状态。 */
@@ -415,6 +415,18 @@ export interface PricingTargetInput {
   manualPrice: Money | null
 }
 
+export type PricingDestinationModel = 'price' | 'net_proceeds'
+
+/** Mercado Global Selling 单个销售 operation 的核价结果。 */
+export interface PricingDestinationResult {
+  siteId: string
+  logisticType: string
+  pricingModel: PricingDestinationModel
+  price: Money | null
+  netProceeds: Money | null
+  calculationFingerprint?: string
+}
+
 export interface PricingTargetResult {
   targetKey: string
   platform: Marketplace
@@ -422,7 +434,12 @@ export interface PricingTargetResult {
   listingCurrency: string
   currencyFingerprint?: string
   suggestedPrice: Money
+  /** 买家看到的公开售价。 */
   appliedPrice: Money
+  /** Mercado 扣除平台费用与国际物流后的期望到账额；不适用时为空。 */
+  appliedNetProceeds: Money | null
+  /** CBT 每个 site_id + logistic_type 对应的最终发布金额。 */
+  destinationResults: PricingDestinationResult[]
   convertedPrices: Record<string, string>
   calculationBasis: UnknownRecord
   calculationFingerprint: string

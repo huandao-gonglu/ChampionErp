@@ -92,25 +92,29 @@ export function mercadoLibreListingBindings(storeConfig: UnknownRecord): Mercado
   return []
 }
 
-/** 传统 Global Items 始终使用 price；User Products 才读取 binding pricing_model。 */
+/** operation 的计价方式只信任授权返回的 pricing_model；未知值 fail closed。 */
 export function mercadoLibreBindingPricingMode(
   binding: MercadoLibreMarketplaceBinding,
   storeConfig: UnknownRecord,
 ): MercadoLibrePricingMode | '' {
   const listingModel = mercadoLibreListingModel(storeConfig)
-  if (listingModel === 'traditional_global_items') return 'price'
-  if (listingModel !== 'user_products') return ''
+  if (!listingModel) return ''
   const pricingModel = binding.pricingModel.trim().toLowerCase()
-  return pricingModel === 'net_proceeds' || pricingModel === 'global_net_proceeds'
+  if (pricingModel === 'price' || pricingModel === 'listing_price') return 'price'
+  if (pricingModel === 'net_proceeds') return 'net_proceeds'
+  return listingModel === 'user_products' && pricingModel === 'global_net_proceeds'
     ? 'net_proceeds'
-    : 'price'
+    : ''
 }
 
 export function mercadoLibreSelectableBindings(storeConfig: UnknownRecord): MercadoLibreMarketplaceBinding[] {
   const listingModel = mercadoLibreListingModel(storeConfig)
   if (!listingModel) return []
-  if (listingModel === 'user_products' && mercadoLibreHasFullyManagedBinding(storeConfig)) return []
-  return mercadoLibreListingBindings(storeConfig)
+  if (mercadoLibreHasFullyManagedBinding(storeConfig)) return []
+  return mercadoLibreListingBindings(storeConfig).filter((binding) => (
+    Boolean(mercadoLibreBindingPricingMode(binding, storeConfig))
+    && binding.businessModel.trim().toLowerCase() !== MERCADOLIBRE_FULLY_MANAGED_BUSINESS_MODEL.toLowerCase()
+  ))
 }
 
 export function mercadoLibreDestinationKey(siteId: string, logisticType: string): string {
@@ -149,36 +153,62 @@ export function unauthorizedCbtDestinationCount(target: MarketplaceTargetSite, s
   return invalidCount + duplicateOperationCount
 }
 
-export function mercadoLibreTargetPricingError(target: MarketplaceTargetSite, storeConfig: UnknownRecord): string {
-  const listingModel = mercadoLibreListingModel(storeConfig)
-  if (!listingModel) return mercadoLibreListingModelError(storeConfig)
-  const bindingByKey = new Map(mercadoLibreSelectableBindings(storeConfig).map((binding) => [
+export function mercadoLibreTargetPricingError(
+  target: MarketplaceTargetSite,
+  storeConfig: UnknownRecord,
+  requireAmounts = true,
+): string {
+  if (!mercadoLibreListingModel(storeConfig)) return mercadoLibreListingModelError(storeConfig)
+  if (mercadoLibreHasFullyManagedBinding(storeConfig)) {
+    return MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED_MESSAGE
+  }
+  const bindingByKey = new Map(mercadoLibreListingBindings(storeConfig).map((binding) => [
     mercadoLibreDestinationKey(binding.siteId, binding.logisticType),
     binding,
   ]))
-  const selected = (target.sitesToSell || []).flatMap((destination) => {
+  const selected: Array<{
+    destination: NonNullable<MarketplaceTargetSite['sitesToSell']>[number]
+    binding: MercadoLibreMarketplaceBinding
+    mode: MercadoLibrePricingMode
+  }> = []
+  for (const destination of target.sitesToSell || []) {
     const binding = bindingByKey.get(mercadoLibreDestinationKey(destination.siteId, destination.logisticType))
-    const mode = binding ? mercadoLibreBindingPricingMode(binding, storeConfig) : ''
-    return binding && mode ? [{ destination, binding, mode }] : []
-  })
-  if (listingModel === 'user_products' && new Set(selected.map((item) => item.mode)).size > 1) {
-    return '同一个 Siteless User Product 不能混用 price 与 net_proceeds 计价市场。'
+    if (!binding) {
+      return `销售目标 ${text(destination.siteId).toUpperCase()} 已不在当前店铺授权中。`
+    }
+    if (binding.businessModel.trim().toLowerCase() === MERCADOLIBRE_FULLY_MANAGED_BUSINESS_MODEL.toLowerCase()) {
+      return MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED_MESSAGE
+    }
+    const mode = mercadoLibreBindingPricingMode(binding, storeConfig)
+    if (!mode) {
+      return `销售目标 ${text(destination.siteId).toUpperCase()} 缺少有效 pricing_model，请重新验证店铺授权。`
+    }
+    selected.push({ destination, binding, mode })
+  }
+  if (new Set(selected.map((item) => item.mode)).size > 1) {
+    return '同一个 Mercado Global Selling 刊登不能混用 price 与 net_proceeds 计价市场，请分开发布。'
   }
   for (const { destination, mode } of selected) {
     const siteId = text(destination.siteId).toUpperCase()
     const hasPrice = text(destination.price) !== ''
     const hasNetProceeds = text(destination.netProceeds) !== ''
-    if (hasPrice && hasNetProceeds) {
+    if (requireAmounts && hasPrice && hasNetProceeds) {
       return `销售目标 ${siteId} 的 price 与 net_proceeds 互斥，只能填写一种。`
     }
-    if (mode === 'net_proceeds' && hasPrice) {
+    if (requireAmounts && mode === 'net_proceeds' && hasPrice) {
       return `销售目标 ${siteId} 的账号 pricing_model=net_proceeds，不能填写 price。`
     }
-    if (mode === 'net_proceeds' && !hasNetProceeds) {
+    if (mode === 'net_proceeds' && text(destination.logisticType).toLowerCase() !== 'remote') {
+      return `销售目标 ${siteId} 仅 remote operation 支持 net_proceeds。`
+    }
+    if (requireAmounts && mode === 'net_proceeds' && !hasNetProceeds) {
       return `销售目标 ${siteId} 的账号 pricing_model=net_proceeds，必须填写 Net proceeds。`
     }
-    if (mode === 'price' && hasNetProceeds) {
+    if (requireAmounts && mode === 'price' && hasNetProceeds) {
       return `销售目标 ${siteId} 未启用 net_proceeds 计价，必须使用市场售价。`
+    }
+    if (requireAmounts && mode === 'price' && !hasPrice) {
+      return `销售目标 ${siteId} 的账号 pricing_model=price，必须填写市场售价。`
     }
   }
   return ''
@@ -190,9 +220,10 @@ export function cbtDestinationSelectionReady(draft: DraftDetail, storeConfig: Un
   if (mercadoLibreAccountSiteId(storeConfig) !== 'CBT') return false
   const listingModel = mercadoLibreListingModel(storeConfig)
   if (!listingModel) return false
-  if (listingModel === 'user_products' && mercadoLibreHasFullyManagedBinding(storeConfig)) return false
+  if (mercadoLibreHasFullyManagedBinding(storeConfig)) return false
   return cbtTargets.every((target) => (
     validCbtDestinationKeys(target, storeConfig).size > 0
     && unauthorizedCbtDestinationCount(target, storeConfig) === 0
+    && !mercadoLibreTargetPricingError(target, storeConfig, false)
   ))
 }

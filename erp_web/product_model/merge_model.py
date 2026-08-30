@@ -370,6 +370,28 @@ def normalize_mercadolibre_sites_to_sell(value: Any) -> list[dict[str, Any]]:
     )
 
 
+def mercadolibre_sales_operation_keys(value: Any) -> tuple[tuple[str, str], ...]:
+    """返回 CBT 销售 operation 身份，不把派生价格当作市场选择变化。"""
+
+    return tuple(
+        (item["site_id"], item["logistic_type"])
+        for item in normalize_mercadolibre_sites_to_sell(value)
+    )
+
+
+def mercadolibre_sales_condition_basis(value: Any) -> list[dict[str, Any]]:
+    """返回会影响 CBT 核价有效性的销售条件，排除本轮派生金额。"""
+
+    return [
+        {
+            key: deepcopy(item)
+            for key, item in target.items()
+            if key not in {"price", "net_proceeds"}
+        }
+        for target in normalize_mercadolibre_sites_to_sell(value)
+    ]
+
+
 def _snake_pricing_key(value: str) -> str:
     return re.sub(r"(?<!^)(?=[A-Z])", "_", str(value)).lower()
 

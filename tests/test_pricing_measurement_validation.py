@@ -1,17 +1,40 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 from erp_web.runtime_units import publish_validation
 from erp_web.services.pricing_service import pricing_calculation_fingerprint
 
 
-def _draft_with_basis(basis: dict[str, str]) -> dict:
+def _draft_with_basis(basis: dict[str, Any]) -> dict:
+    operations = [
+        {
+            "site_id": "MLM",
+            "logistic_type": "remote",
+            "price": "18.00",
+        }
+    ]
+    modes = [
+        {
+            "site_id": "MLM",
+            "logistic_type": "remote",
+            "pricing_model": "price",
+        }
+    ]
+    normalized_basis = {
+        **basis,
+        "sites_to_sell": [
+            {"site_id": "MLM", "logistic_type": "remote"}
+        ],
+        "destination_pricing_modes": modes,
+    }
+    fingerprint = pricing_calculation_fingerprint(normalized_basis)
     return {
         "platform": "mercadolibre",
         "site": "CBT",
         "listing_currency": "USD",
-        "sites_to_sell": [],
+        "sites_to_sell": operations,
         "package_dimensions": {
             "length_cm": "5.5",
             "width_cm": "6",
@@ -21,8 +44,16 @@ def _draft_with_basis(basis: dict[str, str]) -> dict:
         "selected_pricing": {
             "listing_currency": "USD",
             "applied_price": {"amount": "18.00", "currency": "USD"},
-            "calculation_basis": basis,
-            "calculation_fingerprint": pricing_calculation_fingerprint(basis),
+            "calculation_basis": normalized_basis,
+            "calculation_fingerprint": fingerprint,
+            "destination_results": [
+                {
+                    **modes[0],
+                    "price": {"amount": "18.00", "currency": "USD"},
+                    "net_proceeds": None,
+                    "calculation_fingerprint": fingerprint,
+                }
+            ],
         },
     }
 

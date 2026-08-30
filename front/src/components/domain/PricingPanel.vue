@@ -60,6 +60,13 @@ function resultFor(target: PricingTargetInput): PricingTargetResult | undefined 
   return resultByKey.value.get(target.targetKey)
 }
 
+function appliedNetProceedsFor(target: PricingTargetInput) {
+  const result = resultFor(target)
+  return result?.destinationResults.some((destination) => destination.pricingModel === 'net_proceeds')
+    ? result.appliedNetProceeds
+    : null
+}
+
 function resultErrors(target: PricingTargetInput) {
   const result = resultFor(target)
   if (!result?.errors.length) return ''
@@ -364,11 +371,16 @@ function exchangeRateText() {
           </div>
 
           <aside class="rounded-xl bg-accent-50 p-4 dark:bg-dark-800/80">
-            <p class="field-label">建议售价</p>
+            <p class="field-label">建议买家售价</p>
             <p class="mt-2 text-2xl font-black text-accent-950 dark:text-white">{{ resultFor(target) ? formatMoney(numeric(resultFor(target)!.suggestedPrice.amount), resultFor(target)!.suggestedPrice.currency) : '-' }}</p>
             <button v-if="numeric(resultFor(target)?.suggestedPrice.amount) > 0" class="mt-2 text-xs font-bold text-brand-700 hover:underline dark:text-brand-300" @click="applySuggested(target)">改为手动售价</button>
 
-            <div class="mt-4"><span class="field-label">本次应用售价</span><p class="mt-1 text-lg font-bold">{{ resultFor(target) ? formatMoney(numeric(resultFor(target)!.appliedPrice.amount), resultFor(target)!.appliedPrice.currency) : '先计算预览' }}</p></div>
+            <div class="mt-4"><span class="field-label">本次买家售价</span><p class="mt-1 text-lg font-bold">{{ resultFor(target) ? formatMoney(numeric(resultFor(target)!.appliedPrice.amount), resultFor(target)!.appliedPrice.currency) : '先计算预览' }}</p></div>
+            <div v-if="appliedNetProceedsFor(target)" class="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-900/60 dark:bg-emerald-950/30">
+              <span class="field-label text-emerald-700 dark:text-emerald-300">Mercado 期望到账额</span>
+              <p class="mt-1 text-lg font-bold text-emerald-800 dark:text-emerald-200">{{ formatMoney(numeric(appliedNetProceedsFor(target)!.amount), appliedNetProceedsFor(target)!.currency) }}</p>
+              <p class="mt-1 text-[11px] text-emerald-700/80 dark:text-emerald-300/80">用于 pricing_model=net_proceeds 的销售市场，不是买家看到的售价。</p>
+            </div>
             <div class="mt-2 grid grid-cols-3 gap-2">
               <button class="btn btn-outline px-2 py-1.5 text-xs" @click="adjustPrice(target, -1)">-{{ pricingStep(target) }}</button>
               <button class="btn btn-outline px-2 py-1.5 text-xs" @click="adjustPrice(target, 1)">+{{ pricingStep(target) }}</button>

@@ -151,6 +151,8 @@ describe('calculatePrice API mapping', () => {
           currencyFingerprint: 'sha256:store-fingerprint',
           suggestedPrice: { amount: '739.83', currency: 'MXN' },
           appliedPrice: { amount: '739.83', currency: 'MXN' },
+          appliedNetProceeds: null,
+          destinationResults: [],
           convertedPrices: { USD: '43.52', CNY: '315.52' },
           calculationBasis: { listing_currency: 'MXN' },
           calculationFingerprint: 'fingerprint',
@@ -209,6 +211,22 @@ describe('calculatePrice API mapping', () => {
           platform: 'mercadolibre',
           site: 'CBT',
           listing_currency: 'USD',
+          applied_price: { amount: '29.90', currency: 'USD' },
+          applied_net_proceeds: { amount: '24.50', currency: 'USD' },
+          destination_results: [{
+            site_id: 'MLM',
+            logistic_type: 'remote',
+            pricing_model: 'net_proceeds',
+            price: null,
+            net_proceeds: { amount: '24.50', currency: 'USD' },
+            calculation_fingerprint: 'destination-fingerprint',
+          }, {
+            site_id: 'MLB',
+            logistic_type: 'remote',
+            pricing_model: 'unknown',
+            price: { amount: '29.90', currency: 'USD' },
+            net_proceeds: null,
+          }],
           errors: [],
         }],
         input: { common: {} },
@@ -216,7 +234,7 @@ describe('calculatePrice API mapping', () => {
       },
     })
 
-    await calculatePrice({
+    const result = await calculatePrice({
       platform: 'mercadolibre',
       site: 'CBT',
       purchaseCostCny: 100,
@@ -277,6 +295,18 @@ describe('calculatePrice API mapping', () => {
           { site_id: 'MLB', logistic_type: 'fulfillment' },
         ],
       })],
+    }))
+    expect(result.results[0]).toEqual(expect.objectContaining({
+      appliedPrice: { amount: '29.90', currency: 'USD' },
+      appliedNetProceeds: { amount: '24.50', currency: 'USD' },
+      destinationResults: [{
+        siteId: 'MLM',
+        logisticType: 'remote',
+        pricingModel: 'net_proceeds',
+        price: null,
+        netProceeds: { amount: '24.50', currency: 'USD' },
+        calculationFingerprint: 'destination-fingerprint',
+      }],
     }))
   })
 })

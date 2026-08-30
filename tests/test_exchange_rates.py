@@ -190,13 +190,25 @@ def test_live_batch_pricing_uses_fetched_rates_when_common_rates_are_empty(monke
     [
         (
             [],
-            [{"site_id": "MLM", "logistic_type": "remote"}],
+            [
+                {
+                    "site_id": "MLM",
+                    "logistic_type": "remote",
+                    "pricing_model": "price",
+                }
+            ],
             "MERCADOLIBRE_SITES_TO_SELL_REQUIRED",
             ["MLM:remote"],
         ),
         (
             [{"site_id": "MLM", "logistic_type": "drop_off"}],
-            [{"site_id": "MLM", "logistic_type": "remote"}],
+            [
+                {
+                    "site_id": "MLM",
+                    "logistic_type": "remote",
+                    "pricing_model": "price",
+                }
+            ],
             "MERCADOLIBRE_SALES_TARGET_NOT_AUTHORIZED",
             ["MLM:remote"],
         ),
@@ -207,11 +219,13 @@ def test_live_batch_pricing_uses_fetched_rates_when_common_rates_are_empty(monke
                     "site_id": "MLM",
                     "logistic_type": "remote",
                     "business_model": "standard",
+                    "pricing_model": "price",
                 },
                 {
                     "site_id": "MLB",
                     "logistic_type": "remote",
                     "business_model": "CBT CN Fulfillment Managed",
+                    "pricing_model": "price",
                 },
             ],
             "MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED",

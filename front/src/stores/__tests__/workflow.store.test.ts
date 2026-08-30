@@ -1025,8 +1025,8 @@ describe('workflow store live API flow', () => {
         account_site_id: 'CBT',
         listing_model: 'user_products',
         marketplace_bindings: [
-          { seller_id: 'seller-mx', site_id: 'MLM', logistic_type: 'remote', business_model: 'cross_border', pricing_model: '', user_product: true },
-          { seller_id: 'seller-br', site_id: 'MLB', logistic_type: 'fulfillment', business_model: 'cross_border', pricing_model: '', user_product: true },
+          { seller_id: 'seller-mx', site_id: 'MLM', logistic_type: 'remote', business_model: 'cross_border', pricing_model: 'price', user_product: true },
+          { seller_id: 'seller-br', site_id: 'MLB', logistic_type: 'fulfillment', business_model: 'cross_border', pricing_model: 'price', user_product: true },
         ],
       },
     }
@@ -1157,13 +1157,13 @@ describe('workflow store live API flow', () => {
     expect(store.error).toContain('未启用 User Products')
   })
 
-  it('traditional_global_items 允许 7 个 user_product=false/mixed pricing binding，统一规范为 price', async () => {
+  it('traditional_global_items 服从 binding pricing_model，并拒绝混合计价市场', async () => {
     const draft = createEmptyDraftDetail('mercadolibre')
     draft.draftId = 'draft-cbt-traditional'
     draft.site = 'CBT'
     const bindings = [
       { seller_id: 'seller-mx', site_id: 'MLM', logistic_type: 'remote', pricing_model: 'price', user_product: false },
-      { seller_id: 'seller-br', site_id: 'MLB', logistic_type: 'remote', business_model: 'CBT CN Fulfillment Managed', pricing_model: 'global_net_proceeds', user_product: false },
+      { seller_id: 'seller-br', site_id: 'MLB', logistic_type: 'remote', business_model: 'cross_border', pricing_model: 'net_proceeds', user_product: false },
       { seller_id: 'seller-cl', site_id: 'MLC', logistic_type: 'remote', pricing_model: 'net_proceeds', user_product: false },
       { seller_id: 'seller-co', site_id: 'MCO', logistic_type: 'remote', pricing_model: 'price', user_product: false },
       { seller_id: 'seller-ar', site_id: 'MLA', logistic_type: 'remote', pricing_model: 'price', user_product: false },
@@ -1173,8 +1173,9 @@ describe('workflow store live API flow', () => {
     const sitesToSell = bindings.map((binding, index) => ({
       siteId: binding.site_id,
       logisticType: binding.logistic_type,
-      price: `${20 + index}.00`,
-      ...(binding.pricing_model.includes('net_proceeds') ? { netProceeds: `${15 + index}.00` } : {}),
+      ...(binding.pricing_model === 'price'
+        ? { price: `${20 + index}.00` }
+        : { netProceeds: `${15 + index}.00` }),
     }))
     draft.targetSites = [{
       platform: 'mercadolibre',
@@ -1210,11 +1211,21 @@ describe('workflow store live API flow', () => {
       manualPrice: null,
     }]
 
-    expect(store.updateDraftSitesToSell(draft, draft.targetSites[0]!, sitesToSell)).toBe(true)
-    expect(store.currentDraft.targetSites[0]?.sitesToSell).toHaveLength(7)
-    expect(store.currentDraft.targetSites[0]?.sitesToSell?.every((target) => (
-      target.price && !Object.prototype.hasOwnProperty.call(target, 'netProceeds')
-    ))).toBe(true)
+    expect(store.updateDraftSitesToSell(draft, draft.targetSites[0]!, sitesToSell)).toBe(false)
+    expect(store.currentDraft.targetSites[0]?.sitesToSell).toEqual([])
+    expect(store.error).toContain('不能混用 price 与 net_proceeds')
+
+    store.error = ''
+    expect(store.updateDraftSitesToSell(draft, draft.targetSites[0]!, [{
+      siteId: 'MLC',
+      logisticType: 'remote',
+      netProceeds: '17.00',
+    }])).toBe(true)
+    expect(store.currentDraft.targetSites[0]?.sitesToSell).toEqual([{
+      siteId: 'MLC',
+      logisticType: 'remote',
+      netProceeds: '17.00',
+    }])
     expect(store.error).toBe('')
 
     await store.calculatePrice()
@@ -1301,7 +1312,7 @@ describe('workflow store live API flow', () => {
     store.storeConfig = {
       mercadolibre: {
         account_site_id: 'CBT',
-        listing_model: 'user_products',
+        listing_model: 'traditional_global_items',
         marketplace_bindings: [
           { seller_id: 'seller-mx', site_id: 'MLM', logistic_type: 'remote', business_model: 'cross_border' },
           { seller_id: 'seller-co', site_id: 'MCO', logistic_type: 'remote', business_model: 'cross_border', user_product: null },
@@ -1942,6 +1953,66 @@ describe('workflow store live API flow', () => {
     expect(store.draftsIndex[1].platforms).toEqual(['yandex'])
   })
 
+  it('通过草稿箱保存市场时拒绝混用 price 与 net_proceeds', async () => {
+    const item: DraftIndexItem = {
+      draftId: 'draft-cbt-mixed-pricing',
+      productId: 'product-cbt-mixed-pricing',
+      sourceProductId: 'product-cbt-mixed-pricing',
+      platform: 'mercadolibre',
+      platforms: ['mercadolibre'],
+      targetSites: [],
+      site: 'CBT',
+      language: 'es',
+      status: 'claimed',
+      title: 'Mixed pricing draft',
+      productTitle: 'Mixed pricing product',
+      mainImage: '',
+      sourcePlatform: '1688',
+      sourceUrl: '',
+      categoryId: '',
+      categoryPath: '',
+      publishStatus: '',
+      createdAt: '',
+      updatedAt: '',
+      productFilePath: '',
+      raw: {},
+    }
+    const store = useWorkflowStore()
+    store.platformOptions = [{
+      key: 'mercadolibre',
+      label: '美客多',
+      sites: [
+        { key: 'CBT', code: 'CBT', label: '全局', language: 'en-US' },
+        { key: 'MLM', code: 'MLM', label: '墨西哥', language: 'es' },
+        { key: 'MCO', code: 'MCO', label: '哥伦比亚', language: 'es' },
+      ],
+    }]
+    store.storeConfig = {
+      mercadolibre: {
+        account_site_id: 'CBT',
+        listing_model: 'traditional_global_items',
+        marketplace_bindings: [
+          { site_id: 'MLM', logistic_type: 'remote', pricing_model: 'price', user_product: false },
+          { site_id: 'MCO', logistic_type: 'remote', pricing_model: 'net_proceeds', user_product: false },
+        ],
+      },
+    }
+
+    await store.updateDraftTargets(item, [{
+      platform: 'mercadolibre',
+      site: 'CBT',
+      language: 'es',
+      listingCurrency: 'USD',
+      sitesToSell: [
+        { siteId: 'MLM', logisticType: 'remote' },
+        { siteId: 'MCO', logisticType: 'remote' },
+      ],
+    }])
+
+    expect(workflowApi.saveDraft).not.toHaveBeenCalled()
+    expect(store.error).toContain('不能混用 price 与 net_proceeds')
+  })
+
   it('updates draft language from configured target market languages only', async () => {
     const draft = createEmptyDraftDetail('mercadolibre')
     draft.draftId = 'draft-1'
@@ -2102,7 +2173,7 @@ describe('workflow store live API flow', () => {
       site: 'CBT',
       language: 'en-US',
       listingCurrency: 'USD',
-      sitesToSell: [{ siteId: 'MLM', logisticType: 'remote' }],
+      sitesToSell: [{ siteId: 'MLM', logisticType: 'remote', price: '29.90' }],
     }]
     draft.pricing = {}
     const pricingResult: PricingResult = {
@@ -2114,8 +2185,22 @@ describe('workflow store live API flow', () => {
           listingCurrency: 'USD',
           suggestedPrice: { amount: '23.45', currency: 'USD' },
           appliedPrice: { amount: '23.45', currency: 'USD' },
+          appliedNetProceeds: { amount: '18.65', currency: 'USD' },
+          destinationResults: [{
+            siteId: 'MLM',
+            logisticType: 'remote',
+            pricingModel: 'net_proceeds',
+            price: null,
+            netProceeds: { amount: '18.65', currency: 'USD' },
+            calculationFingerprint: 'fingerprint-cbt',
+          }],
           convertedPrices: { USD: '23.45', CNY: '159.20' },
-          calculationBasis: {},
+          calculationBasis: {
+            sites_to_sell: [{
+              site_id: 'MLM',
+              logistic_type: 'remote',
+            }],
+          },
           calculationFingerprint: 'fingerprint-cbt',
           shippingCostUsd: 2.7,
           shippingCostCny: 18.33,
@@ -2171,7 +2256,7 @@ describe('workflow store live API flow', () => {
         account_site_id: 'CBT',
         listing_model: 'user_products',
         marketplace_bindings: [
-          { seller_id: 'seller-mx', site_id: 'MLM', logistic_type: 'remote', business_model: 'cross_border', user_product: true },
+          { seller_id: 'seller-mx', site_id: 'MLM', logistic_type: 'remote', business_model: 'cross_border', pricing_model: 'net_proceeds', user_product: true },
         ],
       },
     }
@@ -2206,14 +2291,41 @@ describe('workflow store live API flow', () => {
     await store.applyPrice()
     expect(workflowApi.saveDraft).not.toHaveBeenCalled()
 
+    vi.mocked(workflowApi.calculatePrice).mockResolvedValueOnce({
+      ...pricingResult,
+      results: pricingResult.results.map((item) => ({ ...item, destinationResults: [] })),
+    })
+    await store.applyPrice()
+    expect(workflowApi.saveDraft).not.toHaveBeenCalled()
+    expect(store.currentDraft.targetSites[0]?.sitesToSell).toEqual([{
+      siteId: 'MLM',
+      logisticType: 'remote',
+      price: '29.90',
+    }])
+    expect(store.error).toContain('核价结果与当前销售市场不一致')
+
     await store.applyPrice()
 
     expect(store.pricingInput.targets.map((target) => target.manualPrice)).toEqual([null])
     expect(store.pricingInput.targets.map((target) => target.shippingAmount)).toEqual([2.7])
     expect(workflowApi.saveDraft).toHaveBeenCalledWith(expect.objectContaining({
+      targetSites: [expect.objectContaining({
+        sitesToSell: [{ siteId: 'MLM', logisticType: 'remote', netProceeds: '18.65' }],
+      })],
       pricing: expect.objectContaining({
         targets: expect.objectContaining({
-          'mercadolibre:cbt': expect.objectContaining({ applied_price: { amount: '23.45', currency: 'USD' } }),
+          'mercadolibre:cbt': expect.objectContaining({
+            applied_price: { amount: '23.45', currency: 'USD' },
+            applied_net_proceeds: { amount: '18.65', currency: 'USD' },
+            destination_results: [{
+              site_id: 'MLM',
+              logistic_type: 'remote',
+              pricing_model: 'net_proceeds',
+              price: null,
+              net_proceeds: { amount: '18.65', currency: 'USD' },
+              calculation_fingerprint: 'fingerprint-cbt',
+            }],
+          }),
         }),
         exchange_rates: expect.objectContaining({ source: 'test://rates' }),
         updated_at: expect.any(String),
@@ -2225,5 +2337,136 @@ describe('workflow store live API flow', () => {
     expect(savedPricing).not.toHaveProperty('targetKey')
     expect(savedPricing).not.toHaveProperty('exchangeRates')
     expect(savedPricing).not.toHaveProperty('updatedAt')
+    expect(store.pricingResult?.results[0]?.destinationResults).toEqual([expect.objectContaining({
+      siteId: 'MLM',
+      pricingModel: 'net_proceeds',
+      price: null,
+      netProceeds: { amount: '18.65', currency: 'USD' },
+    })])
+  })
+
+  it('恢复旧 Mercado CBT 核价时，缺少 destination_results 即视为过期', async () => {
+    const draft = createEmptyDraftDetail('mercadolibre')
+    draft.draftId = 'draft-old-cbt-pricing'
+    draft.productId = 'product-old-cbt-pricing'
+    draft.sourceProductId = 'product-old-cbt-pricing'
+    draft.platform = 'mercadolibre'
+    draft.platforms = ['mercadolibre']
+    draft.site = 'CBT'
+    draft.language = 'en-US'
+    draft.targetSites = [{
+      platform: 'mercadolibre',
+      site: 'CBT',
+      language: 'en-US',
+      listingCurrency: 'USD',
+      sitesToSell: [{ siteId: 'MLM', logisticType: 'remote', price: '23.45' }],
+    }]
+    draft.pricing = {
+      targets: {
+        'mercadolibre:cbt': {
+          listing_currency: 'USD',
+          suggested_price: { amount: '23.45', currency: 'USD' },
+          applied_price: { amount: '23.45', currency: 'USD' },
+          profit_cny: 47.76,
+          errors: [],
+        },
+      },
+    }
+    vi.mocked(workflowApi.loadDraft).mockResolvedValue(draftMutation(draft))
+
+    const store = useWorkflowStore()
+    store.storeConfig = {
+      mercadolibre: {
+        account_site_id: 'CBT',
+        listing_model: 'traditional_global_items',
+        marketplace_bindings: [{
+          seller_id: 'seller-mx',
+          site_id: 'MLM',
+          logistic_type: 'remote',
+          business_model: 'cross_border',
+          pricing_model: 'price',
+          user_product: false,
+        }],
+      },
+    }
+    store.platformOptions = [{
+      key: 'mercadolibre',
+      label: '美客多',
+      sites: [
+        { key: 'CBT', code: 'CBT', label: '全局', language: 'en-US' },
+        { key: 'MLM', code: 'MLM', label: '墨西哥', language: 'es' },
+      ],
+    }]
+
+    await store.loadDraftForPricing(draft.draftId)
+
+    expect(store.pricingResult).toBeNull()
+  })
+
+  it('恢复 Mercado CBT 核价时，销售条件变化即视为过期', async () => {
+    const draft = createEmptyDraftDetail('mercadolibre')
+    draft.draftId = 'draft-changed-cbt-condition'
+    draft.productId = 'product-changed-cbt-condition'
+    draft.sourceProductId = 'product-changed-cbt-condition'
+    draft.platform = 'mercadolibre'
+    draft.platforms = ['mercadolibre']
+    draft.site = 'CBT'
+    draft.language = 'es'
+    draft.targetSites = [{
+      platform: 'mercadolibre',
+      site: 'CBT',
+      language: 'es',
+      listingCurrency: 'USD',
+      sitesToSell: [{
+        siteId: 'MLM',
+        logisticType: 'remote',
+        listingTypeId: 'gold_pro',
+        freeShipping: false,
+        price: '23.45',
+      }],
+    }]
+    draft.pricing = {
+      targets: {
+        'mercadolibre:cbt': {
+          listing_currency: 'USD',
+          suggested_price: { amount: '23.45', currency: 'USD' },
+          applied_price: { amount: '23.45', currency: 'USD' },
+          calculation_basis: {
+            sites_to_sell: [{
+              site_id: 'MLM',
+              logistic_type: 'remote',
+              listing_type_id: 'gold_special',
+              free_shipping: false,
+            }],
+          },
+          destination_results: [{
+            site_id: 'MLM',
+            logistic_type: 'remote',
+            pricing_model: 'price',
+            price: { amount: '23.45', currency: 'USD' },
+            net_proceeds: null,
+            calculation_fingerprint: 'fingerprint-old-condition',
+          }],
+          calculation_fingerprint: 'fingerprint-old-condition',
+          profit_cny: 47.76,
+          errors: [],
+        },
+      },
+    }
+    vi.mocked(workflowApi.loadDraft).mockResolvedValue(draftMutation(draft))
+
+    const store = useWorkflowStore()
+    store.platformOptions = [{
+      key: 'mercadolibre',
+      label: '美客多',
+      sites: [
+        { key: 'CBT', code: 'CBT', label: '全局', language: 'en-US' },
+        { key: 'MLM', code: 'MLM', label: '墨西哥', language: 'es' },
+      ],
+    }]
+
+    await store.loadDraftForPricing(draft.draftId)
+
+    expect(store.pricingResult).toBeNull()
   })
 })

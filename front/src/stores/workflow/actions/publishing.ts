@@ -218,7 +218,7 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
       setError(mercadoLibreListingModelError(storeConfig.value))
       return true
     }
-    if (listingModel === 'user_products' && mercadoLibreHasFullyManagedBinding(storeConfig.value)) {
+    if (mercadoLibreHasFullyManagedBinding(storeConfig.value)) {
       setError(MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED_MESSAGE)
       return true
     }

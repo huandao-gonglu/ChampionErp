@@ -709,7 +709,40 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 equivalent["productContext"]["raw"]["publish_preview"],
             )
 
-            changed_target = dict(equivalent["draft"]["target_sites"][0])
+            # 核价应用会把每个 operation 的派生 price/net_proceeds 写回草稿；
+            # 金额变化不是销售 operation 变化，不能反过来清掉刚保存的核价。
+            pricing_before = equivalent["draft"]["pricing"]
+            amount_changed_target = dict(
+                equivalent["draft"]["target_sites"][0]
+            )
+            amount_changed_target["sitesToSell"] = [
+                {
+                    "siteId": "mlm",
+                    "logisticType": "REMOTE",
+                    "netProceeds": "19.00",
+                },
+                {
+                    "siteId": "mlc",
+                    "logisticType": "remote",
+                    "price": "31.00",
+                },
+            ]
+            amount_changed_target.pop("sites_to_sell", None)
+            amount_changed, error, status = (
+                get_context().products.save_draft_detail(
+                    {
+                        "draft_id": draft_id,
+                        "target_sites": [amount_changed_target],
+                    }
+                )
+            )
+            self.assertIsNone(error)
+            self.assertEqual(status, 200)
+            self.assertEqual(amount_changed["draft"]["pricing"], pricing_before)
+
+            changed_target = dict(
+                amount_changed["draft"]["target_sites"][0]
+            )
             changed_target["sites_to_sell"] = [
                 {"site_id": "MCO", "logistic_type": "remote"}
             ]
@@ -1814,6 +1847,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                     {
                         "site_id": "MLM",
                         "logistic_type": "remote",
+                        "pricing_model": "price",
                         "user_product": True,
                     }
                 ],
@@ -1878,6 +1912,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                     {
                         "site_id": "MLM",
                         "logistic_type": "remote",
+                        "pricing_model": "price",
                         "user_product": True,
                     }
                 ],

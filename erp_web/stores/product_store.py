@@ -21,6 +21,7 @@ from erp_web.product_model import (
     PLATFORMS,
     apply_created_image_refs_to_draft,
     default_product_model,
+    mercadolibre_sales_condition_basis,
     normalize_draft_target_site,
     normalize_draft_image_refs,
     normalize_mercadolibre_sites_to_sell,
@@ -398,13 +399,13 @@ def _changed_mercadolibre_cbt_targets(
         previous = existing_targets.get(identity)
         if not isinstance(previous, dict):
             continue
-        previous_sites = normalize_mercadolibre_sites_to_sell(
+        previous_conditions = mercadolibre_sales_condition_basis(
             previous.get("sites_to_sell")
         )
-        incoming_sites = normalize_mercadolibre_sites_to_sell(
+        incoming_conditions = mercadolibre_sales_condition_basis(
             target.get("sites_to_sell")
         )
-        if previous_sites != incoming_sites:
+        if previous_conditions != incoming_conditions:
             changed[index] = previous
     return changed
 

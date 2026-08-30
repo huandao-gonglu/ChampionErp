@@ -1,13 +1,24 @@
 import { saveDraft as saveDraftApi } from '@/api/workflow/catalog'
 import { calculatePrice as calculatePriceApi } from '@/api/workflow/publishing'
-import type { DraftDetail, PricingResult, PricingTargetResult, UnknownRecord } from '@/types/workflow'
+import type {
+  DraftDetail,
+  MarketplaceSiteToSell,
+  MarketplaceTargetSite,
+  PricingDestinationResult,
+  PricingResult,
+  PricingTargetResult,
+  UnknownRecord,
+} from '@/types/workflow'
 import {
   cbtDestinationSelectionReady,
   isMercadoLibreCbtTarget,
   MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED_MESSAGE,
   mercadoLibreHasFullyManagedBinding,
+  mercadoLibreBindingPricingMode,
+  mercadoLibreDestinationKey,
   mercadoLibreListingModel,
   mercadoLibreListingModelError,
+  mercadoLibreSelectableBindings,
 } from '@/utils/mercadolibreGlobalSelling'
 import type { WorkflowRuntime } from '../orchestration/runtime'
 
@@ -44,6 +55,15 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
       currency_fingerprint: result.currencyFingerprint || '',
       suggested_price: result.suggestedPrice,
       applied_price: result.appliedPrice,
+      applied_net_proceeds: result.appliedNetProceeds,
+      destination_results: result.destinationResults.map((destination) => ({
+        site_id: destination.siteId,
+        logistic_type: destination.logisticType,
+        pricing_model: destination.pricingModel,
+        price: destination.price,
+        net_proceeds: destination.netProceeds,
+        calculation_fingerprint: destination.calculationFingerprint || '',
+      })),
       converted_prices: result.convertedPrices,
       calculation_basis: result.calculationBasis,
       calculation_fingerprint: result.calculationFingerprint,
@@ -115,7 +135,7 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
         setError(mercadoLibreListingModelError(storeConfig.value))
         return false
       }
-      if (listingModel === 'user_products' && mercadoLibreHasFullyManagedBinding(storeConfig.value)) {
+      if (mercadoLibreHasFullyManagedBinding(storeConfig.value)) {
         setError(MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED_MESSAGE)
         return false
       }
@@ -152,6 +172,64 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
     if (result.usdCnyRate > 0) pricingInput.value.usdCnyRate = result.usdCnyRate
     if (result.mxnUsdRate > 0) pricingInput.value.mxnUsdRate = result.mxnUsdRate
     if (result.rubCnyRate > 0) pricingInput.value.rubCnyRate = result.rubCnyRate
+  }
+
+  function resultMoneyAmount(result: PricingDestinationResult): number {
+    const money = result.pricingModel === 'price' ? result.price : result.netProceeds
+    return Number(money?.amount || 0)
+  }
+
+  function sitesToSellWithPricingResult(
+    target: MarketplaceTargetSite,
+    targetResult: PricingTargetResult,
+  ): MarketplaceSiteToSell[] {
+    if (!isMercadoLibreCbtTarget(target)) {
+      return (target.sitesToSell || []).map((destination) => ({ ...destination }))
+    }
+    const bindings = new Map(mercadoLibreSelectableBindings(storeConfig.value).map((binding) => [
+      mercadoLibreDestinationKey(binding.siteId, binding.logisticType),
+      binding,
+    ]))
+    const resultByKey = new Map<string, PricingDestinationResult>()
+    for (const destinationResult of targetResult.destinationResults) {
+      const key = mercadoLibreDestinationKey(destinationResult.siteId, destinationResult.logisticType)
+      if (resultByKey.has(key)) throw new Error(`核价结果包含重复销售目标 ${key}，请重新核价。`)
+      resultByKey.set(key, destinationResult)
+    }
+    const destinations = target.sitesToSell || []
+    if (!destinations.length || resultByKey.size !== destinations.length) {
+      throw new Error('Mercado CBT 核价结果与当前销售市场不一致，请重新核价。')
+    }
+    return destinations.map((destination) => {
+      const key = mercadoLibreDestinationKey(destination.siteId, destination.logisticType)
+      const destinationResult = resultByKey.get(key)
+      const binding = bindings.get(key)
+      const expectedMode = binding ? mercadoLibreBindingPricingMode(binding, storeConfig.value) : ''
+      if (!destinationResult || !expectedMode || destinationResult.pricingModel !== expectedMode) {
+        throw new Error(`销售目标 ${key} 的核价模式与当前店铺授权不一致，请重新核价。`)
+      }
+      const hasPrice = destinationResult.price !== null
+      const hasNetProceeds = destinationResult.netProceeds !== null
+      const selectedMoney = expectedMode === 'price' ? destinationResult.price : destinationResult.netProceeds
+      if (
+        hasPrice === hasNetProceeds
+        || !selectedMoney
+        || selectedMoney.currency.toUpperCase() !== targetResult.listingCurrency.toUpperCase()
+        || !Number.isFinite(resultMoneyAmount(destinationResult))
+        || resultMoneyAmount(destinationResult) <= 0
+      ) {
+        throw new Error(`销售目标 ${key} 的核价金额无效，请重新核价。`)
+      }
+      const preserved = { ...destination }
+      delete preserved.price
+      delete preserved.netProceeds
+      return {
+        ...preserved,
+        ...(expectedMode === 'price'
+          ? { price: selectedMoney.amount }
+          : { netProceeds: selectedMoney.amount }),
+      }
+    })
   }
 
   async function calculatePrice() {
@@ -206,6 +284,7 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
             ...target,
             listingCurrency: targetResult.listingCurrency,
             currencyFingerprint: targetResult.currencyFingerprint,
+            sitesToSell: sitesToSellWithPricingResult(target, targetResult),
           } : target
         }),
         pricing: buildDraftPricing(result),

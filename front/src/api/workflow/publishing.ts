@@ -17,6 +17,7 @@ import type {
   MercadoLibreUserProduct,
   MercadoLibreUserProductsPage,
   PricingInput,
+  PricingDestinationResult,
   PricingResult,
   PricingTargetResult,
   Product,
@@ -262,11 +263,48 @@ function normalizeMoney(value: unknown, currency: string) {
   }
 }
 
+function normalizeOptionalMoney(value: unknown, currency: string) {
+  return isRecord(value) ? normalizeMoney(value, currency) : null
+}
+
+function normalizePricingDestinationResult(
+  value: unknown,
+  fallbackCurrency: string,
+): PricingDestinationResult | null {
+  const record = asRecord(value)
+  const siteId = getString(record, ['site_id', 'siteId']).toUpperCase()
+  const logisticType = getString(record, ['logistic_type', 'logisticType']).toLowerCase()
+  const pricingModel = getString(record, ['pricing_model', 'pricingModel']).toLowerCase()
+  const price = normalizeOptionalMoney(record.price, fallbackCurrency)
+  const netProceeds = normalizeOptionalMoney(record.net_proceeds ?? record.netProceeds, fallbackCurrency)
+  if (!siteId || siteId === 'CBT' || !logisticType) return null
+  if (pricingModel !== 'price' && pricingModel !== 'net_proceeds') return null
+  if ((price === null) === (netProceeds === null)) return null
+  if (pricingModel === 'price' ? !price : !netProceeds) return null
+  return {
+    siteId,
+    logisticType,
+    pricingModel,
+    price,
+    netProceeds,
+    calculationFingerprint: getString(record, ['calculation_fingerprint', 'calculationFingerprint']),
+  }
+}
+
 function normalizePricingTargetResult(value: unknown, fallback: Partial<PricingTargetResult> = {}): PricingTargetResult {
   const record = asRecord(value)
   const input = asRecord(record.input)
   const listingCurrency = getString(record, ['listing_currency'], fallback.listingCurrency || '')
   const convertedPrices = asRecord(record.converted_prices)
+  const rawDestinationResults = record.destination_results ?? record.destinationResults
+  const destinationResults = Array.isArray(rawDestinationResults)
+    ? rawDestinationResults
+      .map((item) => normalizePricingDestinationResult(item, listingCurrency))
+      .filter((item): item is PricingDestinationResult => Boolean(item))
+    : []
+  const appliedNetProceeds = destinationResults.some((item) => item.pricingModel === 'net_proceeds')
+    ? normalizeOptionalMoney(record.applied_net_proceeds ?? record.appliedNetProceeds, listingCurrency)
+    : null
   return {
     targetKey: getString(record, ['target_key', 'targetKey'], fallback.targetKey || ''),
     platform: (getString(record, ['platform'], fallback.platform || 'mercadolibre')) as Marketplace,
@@ -275,6 +313,8 @@ function normalizePricingTargetResult(value: unknown, fallback: Partial<PricingT
     currencyFingerprint: getString(record, ['currency_fingerprint'], fallback.currencyFingerprint || ''),
     suggestedPrice: normalizeMoney(record.suggested_price, listingCurrency),
     appliedPrice: normalizeMoney(record.applied_price, listingCurrency),
+    appliedNetProceeds,
+    destinationResults,
     convertedPrices: Object.fromEntries(Object.entries(convertedPrices).map(([key, amount]) => [key, String(amount ?? '0')])),
     calculationBasis: asRecord(record.calculation_basis),
     calculationFingerprint: getString(record, ['calculation_fingerprint']),
