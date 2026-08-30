@@ -514,7 +514,7 @@ def validate_mercadolibre_draft(
             need_review.append(raw_field)
     if need_review:
         errors.extend(_review_precheck_items(need_review, "error"))
-    if not str(draft.get("upc") or product.get("upc") or "").strip():
+    if not str(draft.get("upc") or "").strip():
         allow_gtin_exemption = bool(draft.get("allow_gtin_exemption"))
         if allow_gtin_exemption:
             warnings.append(precheck_item("UPC_MISSING", "upc", "UPC / GTIN 为空，已按配置允许豁免", "warning", "确认 Mercado Libre 类目允许 EMPTY_GTIN_REASON"))
@@ -527,7 +527,21 @@ def validate_mercadolibre_draft(
         if isinstance(draft.get("sale_terms"), list)
         else []
     )
-    if not sale_terms:
+    warranty_type = next(
+        (
+            item
+            for item in sale_terms
+            if isinstance(item, dict)
+            and str(item.get("id") or "").strip() == "WARRANTY_TYPE"
+            and str(
+                item.get("value_id")
+                or item.get("value_name")
+                or ""
+            ).strip()
+        ),
+        None,
+    )
+    if warranty_type is None:
         errors.append(precheck_item("SALE_TERMS_MISSING", "sale_terms", "sale_terms / warranty 尚未配置完整", "error", "前往平台属性页补齐保修条款"))
     return {"platform": "mercadolibre", "ok": not errors, "errors": errors, "warnings": warnings, "checked_at": collect_time_iso()}
 

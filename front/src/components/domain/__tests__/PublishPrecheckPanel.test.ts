@@ -147,6 +147,72 @@ describe('PublishPrecheckPanel', () => {
     expect(wrapper.emitted('invalidatePublishValidation')).toHaveLength(7)
   })
 
+  it('未配置保修条款时显示未选择，不把空数据伪装成无保修', () => {
+    const props = panelProps()
+    props.draft.saleTerms = []
+    const wrapper = mount(PublishPrecheckPanel, { props })
+
+    const warrantyType = wrapper.get('[data-publish-draft-field="warrantyType"]')
+    const warrantyDuration = wrapper.get('[data-publish-draft-field="warrantyDuration"]')
+    const warrantyUnit = wrapper.get('[data-publish-draft-field="warrantyUnit"]')
+
+    expect((warrantyType.element as HTMLSelectElement).value).toBe('')
+    expect((warrantyDuration.element as HTMLInputElement).value).toBe('')
+    expect((warrantyUnit.element as HTMLSelectElement).value).toBe('')
+    expect(wrapper.text()).toContain('尚未选择保修类型')
+    expect(warrantyDuration.attributes('disabled')).toBeDefined()
+    expect(warrantyUnit.attributes('disabled')).toBeDefined()
+    expect(props.draft.saleTerms).toEqual([])
+  })
+
+  it('明确选择无保修后才把 Mercado Libre 保修声明写入草稿', async () => {
+    const props = panelProps()
+    props.draft.saleTerms = []
+    const wrapper = mount(PublishPrecheckPanel, { props })
+
+    await wrapper.get('[data-publish-draft-field="warrantyType"]').setValue('none')
+
+    expect(props.draft.saleTerms).toEqual([
+      { id: 'WARRANTY_TYPE', value_id: '6150835', value_name: 'Sin garantía' },
+    ])
+    expect(wrapper.emitted('invalidatePublishValidation')).toHaveLength(1)
+    expect(wrapper.text()).toContain('已明确选择无保修')
+  })
+
+  it('选择卖家保修时把界面默认时长同时写入草稿，不留下仅显示的假默认', async () => {
+    const props = panelProps()
+    props.draft.saleTerms = []
+    const wrapper = mount(PublishPrecheckPanel, { props })
+
+    await wrapper.get('[data-publish-draft-field="warrantyType"]').setValue('seller')
+
+    expect(props.draft.saleTerms).toEqual([
+      { id: 'WARRANTY_TYPE', value_id: '2230280', value_name: 'Garantía del vendedor' },
+      {
+        id: 'WARRANTY_TIME',
+        value_name: '3 meses',
+        value_struct: { number: 3, unit: 'meses' },
+      },
+    ])
+    expect((wrapper.get('[data-publish-draft-field="warrantyDuration"]').element as HTMLInputElement).value).toBe('3')
+    expect((wrapper.get('[data-publish-draft-field="warrantyUnit"]').element as HTMLSelectElement).value).toBe('months')
+  })
+
+  it('当前草稿摘要不使用来源商品标题和 SKU 冒充草稿字段', () => {
+    const props = panelProps()
+    props.draft.title = ''
+    props.draft.sku = ''
+    props.productContext.title = '来源商品标题'
+    props.productContext.sourceTitle = '1688 来源标题'
+    props.productContext.sku = 'SOURCE-SKU'
+    const wrapper = mount(PublishPrecheckPanel, { props })
+
+    expect(wrapper.text()).toContain('草稿标题未填写')
+    expect(wrapper.text()).toContain('无 SKU')
+    expect(wrapper.text()).toContain('1688 来源标题')
+    expect(wrapper.text()).not.toContain('SOURCE-SKU')
+  })
+
   it('仅在当前预检通过或草稿已 ready 时允许准备素材并预览 Payload', async () => {
     const wrapper = mount(PublishPrecheckPanel, { props: panelProps() })
     const previewButton = () => wrapper.findAll('button').find((button) => button.text() === '准备素材并预览 Payload')!

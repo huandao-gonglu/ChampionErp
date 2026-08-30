@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from erp_web.runtime_units import publish_adapter
 from erp_web.context import get_context
 from erp_web.db import ErpDatabase
 from erp_web.marketplace_registry import (
@@ -16,6 +17,7 @@ from erp_web.marketplace_registry import (
     CAP_PUBLISH,
     platform_has_capability,
 )
+from erp_web.marketplaces.publisher import PublishAdapterError
 from erp_web.runtime_units import ai_use_case
 from erp_web.runtime_units.publish_adapter import (
     MercadoLibrePublishingAdapter,
@@ -2135,6 +2137,236 @@ def test_mercadolibre_adapter_uses_root_owned_required_attributes() -> None:
     )
 
     assert adapter.required_attributes_missing(context, {}) == []
+
+
+def test_mercadolibre_adapter_refreshes_auth_before_preparing_product(
+    monkeypatch,
+) -> None:
+    adapter = MercadoLibrePublishingAdapter()
+    config = {
+        "mercadolibre": {
+            "access_token": "expired-token",
+            "refresh_token": "refresh-token",
+        }
+    }
+    product = {"product_id": "product-1", "source": {}, "drafts": {}}
+    upload_tokens: list[str] = []
+
+    def fake_auth(
+        target_config: dict[str, Any],
+        *,
+        force_refresh: bool = False,
+    ) -> dict[str, Any]:
+        assert force_refresh is False
+        target_config["mercadolibre"]["access_token"] = "fresh-token"
+        return {"ok": True, "token": "fresh-token", "refreshed": True}
+
+    def fake_upload(
+        target_product: dict[str, Any],
+        token: str,
+    ) -> dict[str, Any]:
+        upload_tokens.append(token)
+        return {"ok": True, "product": target_product, "errors": []}
+
+    monkeypatch.setattr(
+        publish_adapter,
+        "ensure_mercadolibre_auth_ready",
+        fake_auth,
+    )
+    monkeypatch.setattr(
+        publish_adapter,
+        "ensure_mercadolibre_pictures_uploaded",
+        fake_upload,
+    )
+
+    adapter.prepare_product(product, config)
+
+    assert upload_tokens == ["fresh-token"]
+    assert config["mercadolibre"]["access_token"] == "fresh-token"
+
+
+def test_mercadolibre_adapter_refreshes_and_retries_once_on_401(
+    monkeypatch,
+) -> None:
+    adapter = MercadoLibrePublishingAdapter()
+    config = {
+        "mercadolibre": {
+            "access_token": "expired-token",
+            "refresh_token": "refresh-token",
+        }
+    }
+    publish_tokens: list[str] = []
+    refresh_requests: list[bool] = []
+
+    def fake_publish(payload: dict[str, Any], token: str) -> dict[str, Any]:
+        del payload
+        publish_tokens.append(token)
+        if token == "expired-token":
+            raise PublishAdapterError(
+                "MERCADOLIBRE_AUTH_FAILED",
+                'POST https://api.mercadolibre.com/global/items failed: '
+                '401 {"code":"unauthorized","message":"invalid access token"}',
+                details={"http_status": 401},
+            )
+        return {"ok": True, "item_id": "CBT123"}
+
+    def fake_auth(
+        target_config: dict[str, Any],
+        *,
+        force_refresh: bool = False,
+    ) -> dict[str, Any]:
+        refresh_requests.append(force_refresh)
+        assert force_refresh is True
+        target_config["mercadolibre"]["access_token"] = "fresh-token"
+        return {"ok": True, "token": "fresh-token", "refreshed": True}
+
+    monkeypatch.setattr(
+        publish_adapter.marketplace_api,
+        "publish_mercadolibre",
+        fake_publish,
+    )
+    monkeypatch.setattr(
+        publish_adapter,
+        "ensure_mercadolibre_auth_ready",
+        fake_auth,
+    )
+
+    result = adapter.publish_payload(
+        {"_listing_model": "traditional_global_items"},
+        config,
+    )
+
+    assert result["ok"] is True
+    assert publish_tokens == ["expired-token", "fresh-token"]
+    assert refresh_requests == [True]
+
+
+def test_mercadolibre_adapter_does_not_retry_non_auth_publish_error(
+    monkeypatch,
+) -> None:
+    adapter = MercadoLibrePublishingAdapter()
+    config = {"mercadolibre": {"access_token": "valid-token"}}
+    publish_calls = 0
+
+    def fake_publish(payload: dict[str, Any], token: str) -> dict[str, Any]:
+        del payload, token
+        nonlocal publish_calls
+        publish_calls += 1
+        raise RuntimeError("POST /global/items failed: 400 invalid title")
+
+    monkeypatch.setattr(
+        publish_adapter.marketplace_api,
+        "publish_mercadolibre",
+        fake_publish,
+    )
+
+    with pytest.raises(RuntimeError, match="invalid title"):
+        adapter.publish_payload(
+            {"_listing_model": "traditional_global_items"},
+            config,
+        )
+
+    assert publish_calls == 1
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        PublishAdapterError(
+            "MERCADOLIBRE_REQUEST_INVALID",
+            "响应里的商品 ID CBT401 不满足契约",
+            details={"http_status": 400},
+        ),
+        PublishAdapterError(
+            "MERCADOLIBRE_AUTH_FAILED",
+            "POST /global/items failed: 401 unauthorized",
+            details={
+                "http_status": 401,
+                "remote_write_dispatched": True,
+                "outcome_unknown": True,
+            },
+        ),
+    ],
+)
+def test_mercadolibre_adapter_never_replays_ambiguous_write_failure(
+    monkeypatch,
+    error: PublishAdapterError,
+) -> None:
+    adapter = MercadoLibrePublishingAdapter()
+    config = {"mercadolibre": {"access_token": "token"}}
+    publish_calls = 0
+
+    def fake_publish(payload: dict[str, Any], token: str) -> dict[str, Any]:
+        del payload, token
+        nonlocal publish_calls
+        publish_calls += 1
+        raise error
+
+    monkeypatch.setattr(
+        publish_adapter.marketplace_api,
+        "publish_mercadolibre",
+        fake_publish,
+    )
+
+    with pytest.raises(PublishAdapterError) as exc_info:
+        adapter.publish_payload(
+            {"_listing_model": "traditional_global_items"},
+            config,
+        )
+
+    assert exc_info.value is error
+    assert publish_calls == 1
+
+
+def test_mercadolibre_adapter_stops_after_second_401(monkeypatch) -> None:
+    adapter = MercadoLibrePublishingAdapter()
+    config = {"mercadolibre": {"access_token": "expired-token"}}
+    publish_tokens: list[str] = []
+    refresh_calls = 0
+
+    def rejected_publish(
+        payload: dict[str, Any],
+        token: str,
+    ) -> dict[str, Any]:
+        del payload
+        publish_tokens.append(token)
+        raise PublishAdapterError(
+            "MERCADOLIBRE_AUTH_FAILED",
+            "POST /global/items failed: 401 unauthorized",
+            details={"http_status": 401},
+        )
+
+    def fake_auth(
+        target_config: dict[str, Any],
+        *,
+        force_refresh: bool = False,
+    ) -> dict[str, Any]:
+        nonlocal refresh_calls
+        assert force_refresh is True
+        refresh_calls += 1
+        target_config["mercadolibre"]["access_token"] = "fresh-token"
+        return {"ok": True, "token": "fresh-token", "refreshed": True}
+
+    monkeypatch.setattr(
+        publish_adapter.marketplace_api,
+        "publish_mercadolibre",
+        rejected_publish,
+    )
+    monkeypatch.setattr(
+        publish_adapter,
+        "ensure_mercadolibre_auth_ready",
+        fake_auth,
+    )
+
+    with pytest.raises(PublishAdapterError) as exc_info:
+        adapter.publish_payload(
+            {"_listing_model": "traditional_global_items"},
+            config,
+        )
+
+    assert exc_info.value.code == "MERCADOLIBRE_AUTH_FAILED"
+    assert publish_tokens == ["expired-token", "fresh-token"]
+    assert refresh_calls == 1
 
 
 def test_run_ai_use_case_renders_payload_and_normalizes_result(monkeypatch) -> None:

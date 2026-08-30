@@ -20,6 +20,9 @@ from erp_web.services.listing_currency_service import (
     store_listing_currency_ready,
     write_currency_state,
 )
+from erp_web.services.mercadolibre_credential_lock import (
+    MERCADOLIBRE_AUTH_LOCK,
+)
 from erp_web.runtime_units.store_credentials import (
     build_mercadolibre_auth_link,
     exchange_mercadolibre_code_from_body,
@@ -231,6 +234,14 @@ def test_store_auth_payload(body: dict[str, Any]) -> ResponseWithStatus:
 def store_currency_selection_payload(body: dict[str, Any]) -> ResponseWithStatus:
     """受控人工币种选择/填写接口（迁移方案 §9.2）。"""
 
+    with MERCADOLIBRE_AUTH_LOCK:
+        return _store_currency_selection_payload_unlocked(body)
+
+
+def _store_currency_selection_payload_unlocked(
+    body: dict[str, Any],
+) -> ResponseWithStatus:
+
     platform = str(body.get("platform") or "").strip().lower()
     if marketplace_spec(platform) is None:
         return {"ok": False, "error": "不支持的平台。"}, 400
@@ -285,6 +296,20 @@ def test_api_config_payload(body: dict[str, Any]) -> ResponseWithStatus:
 
 
 def save_settings_payload(
+    body: dict[str, Any],
+    *,
+    approval_token: str = "",
+) -> ResponseWithStatus:
+    # store settings 是完整配置的读改写；在 load 前拿锁，
+    # 避免任何平台的设置保存回写旧的 ML token 快照。
+    with MERCADOLIBRE_AUTH_LOCK:
+        return _save_settings_payload_unlocked(
+            body,
+            approval_token=approval_token,
+        )
+
+
+def _save_settings_payload_unlocked(
     body: dict[str, Any],
     *,
     approval_token: str = "",

@@ -15,6 +15,7 @@ import hashlib
 import json
 import logging
 import threading
+from contextlib import nullcontext
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,9 @@ from erp_web.runtime_units.category_store import write_json
 from erp_web.services.config_service import (
     is_sensitive_config_key,
     mask_nested_config,
+)
+from erp_web.services.mercadolibre_credential_lock import (
+    MERCADOLIBRE_AUTH_LOCK,
 )
 from erp_web.stores.product_store import mask_secret
 
@@ -97,6 +101,12 @@ _STORE_AUTH_DETAIL_FIELDS = {
     "capabilities_verified_at",
 }
 _STORE_DB_OWNED_FIELDS = _STORE_CREDENTIAL_FIELDS | _STORE_AUTH_DETAIL_FIELDS | {"auth_status", "auth_checked_at"}
+
+_MERCADOLIBRE_DERIVED_CREDENTIAL_FIELDS = {
+    "nickname",
+    "seller_id",
+    "user_id",
+}
 
 # 信任边界：币种与授权派生字段只能由后端授权/币种服务写入，客户端通用保存
 # 接口不得提交或伪造（迁移方案 §9.3）。平台段另有注册表凭据白名单兜底。
@@ -588,10 +598,13 @@ class ConfigStore:
 
     def update_store_config_fields(self, platform: str, fields: dict[str, Any], *, preserve_empty_sensitive: bool = True) -> dict[str, Any]:
         platform = str(platform or "").strip().lower()
-        config = self.load_store_config()
-        updated = self.merge_store_config_fields(config, {platform: fields}, preserve_empty_sensitive=preserve_empty_sensitive)
-        self.save_store_config(updated)
-        return updated
+        # 方法会读改写完整 store config；即使目标是其他
+        # 平台，也不能用锁外读到的旧 ML token 覆盖并发刷新。
+        with MERCADOLIBRE_AUTH_LOCK:
+            config = self.load_store_config()
+            updated = self.merge_store_config_fields(config, {platform: fields}, preserve_empty_sensitive=preserve_empty_sensitive)
+            self.save_store_config(updated)
+            return updated
 
     def _invalidate_auth_on_identity_change(
         self,
@@ -688,9 +701,59 @@ class ConfigStore:
                 checked_at=None if checked_at is None else str(checked_at),
             )
 
+    def commit_mercadolibre_oauth_credentials(
+        self,
+        section: dict[str, Any],
+        *,
+        oauth_user_id: str = "",
+        consume_code_verifier: bool = False,
+    ) -> None:
+        """在 SQLite 中原子提交已被远端轮换的 OAuth 凭据。
+
+        Mercado Libre 的 refresh token 为单次凭据。远端成功后必须
+        先将新 token 落入数据库，不能与非敏感静态 JSON 文件写入绑在
+        同一个可回滚操作中。身份、币种和发布能力会在第二阶段
+        重新发现，因此本次提交同时清除旧派生状态。
+        """
+
+        incoming = dict(section) if isinstance(section, dict) else {}
+        _sync_mercadolibre_secret_aliases(incoming)
+        credentials = {
+            key: incoming[key]
+            for key in _STORE_CREDENTIAL_FIELDS
+            if key in incoming
+        }
+        if consume_code_verifier:
+            credentials.pop("code_verifier", None)
+            for key in _MERCADOLIBRE_DERIVED_CREDENTIAL_FIELDS:
+                credentials.pop(key, None)
+        normalized_user_id = str(oauth_user_id or "").strip()
+        if normalized_user_id:
+            credentials["user_id"] = normalized_user_id
+
+        auth_detail: dict[str, Any] = {
+            key: "" for key in _STORE_AUTH_DETAIL_FIELDS
+        }
+        auth_detail["allowed_currencies"] = []
+        auth_detail["marketplace_bindings"] = []
+        with MERCADOLIBRE_AUTH_LOCK, self._save_lock:
+            self._db.update_store_auth(
+                "mercadolibre",
+                credentials=credentials,
+                replace_credentials=True,
+                auth_status="已保存，未测试",
+                auth_detail=auth_detail,
+                checked_at="",
+            )
+
     def save_store_config(self, config: dict[str, Any], *, preserve_empty_sensitive: bool = True) -> None:
-        with self._save_lock:
-            config = config if isinstance(config, dict) else {}
+        config = config if isinstance(config, dict) else {}
+        write_lock = (
+            MERCADOLIBRE_AUTH_LOCK
+            if isinstance(config.get("mercadolibre"), dict)
+            else nullcontext()
+        )
+        with write_lock, self._save_lock:
             previous_auth = self._db.list_store_auth()
             try:
                 self._invalidate_auth_on_identity_change(
@@ -735,8 +798,14 @@ class ConfigStore:
         platform = str(platform or "").strip().lower()
         if marketplace_spec(platform) is None:
             raise ValueError(f"未注册的平台：{platform or '(空)'}")
-        self._db.delete_store_auth(platform)
-        return self.load_store_config()
+        write_lock = (
+            MERCADOLIBRE_AUTH_LOCK
+            if platform == "mercadolibre"
+            else nullcontext()
+        )
+        with write_lock:
+            self._db.delete_store_auth(platform)
+            return self.load_store_config()
 
     def mercadolibre_auth_checklist(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
         ml = config if isinstance(config, dict) else self.load_store_config().get("mercadolibre", {})

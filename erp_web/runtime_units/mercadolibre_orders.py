@@ -28,7 +28,12 @@ def _mercadolibre_user_id(config: dict[str, Any], token: str) -> str:
     if user_id:
         store["user_id"] = user_id
         store["seller_id"] = user_id
-        get_context().config.save_store_config(config)
+        # 只在 ConfigStore 的串行读改写边界内更新身份，
+        # 避免订单同步用旧快照覆盖刚轮换的 token。
+        get_context().config.update_store_config_fields(
+            "mercadolibre",
+            {"user_id": user_id, "seller_id": user_id},
+        )
     return user_id
 
 

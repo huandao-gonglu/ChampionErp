@@ -309,7 +309,7 @@ def build_ozon_publish_payload(
             "包装宽度",
         ),
     }
-    barcode = str(draft.get("upc") or product.get("upc") or "").strip()
+    barcode = str(draft.get("upc") or "").strip()
     if barcode:
         item["barcode"] = barcode
     return {"items": [item]}

@@ -22,16 +22,20 @@ const emit = defineEmits<{
   publish: []
 }>()
 
-type WarrantyType = 'none' | 'seller' | 'factory'
-type WarrantyUnit = 'months' | 'years'
+type ConfiguredWarrantyType = 'none' | 'seller' | 'factory'
+type WarrantyType = '' | ConfiguredWarrantyType
+type ConfiguredWarrantyUnit = 'months' | 'years'
+type WarrantyUnit = '' | ConfiguredWarrantyUnit
 type PackageDimensionField = keyof DraftDetail['packageDimensions']
 
 const warrantyTypeOptions: Array<{ value: WarrantyType; label: string }> = [
+  { value: '', label: '请选择保修类型' },
   { value: 'none', label: '无保修' },
   { value: 'seller', label: '卖家保修' },
   { value: 'factory', label: '厂家保修' },
 ]
 const warrantyUnitOptions: Array<{ value: WarrantyUnit; label: string }> = [
+  { value: '', label: '请选择单位' },
   { value: 'months', label: '个月' },
   { value: 'years', label: '年' },
 ]
@@ -43,7 +47,8 @@ const targetOptions = computed(() => props.publishTargets.map((target) => ({
   label: targetLabel(target),
 })))
 const hasCurrentDraft = computed(() => Boolean(props.draft.draftId))
-const currentDraftTitle = computed(() => props.draft.title || props.productContext.title || props.productContext.sourceTitle || props.draft.draftId || '尚未选择草稿')
+const currentDraftTitle = computed(() => String(props.draft.title || '').trim() || (props.draft.draftId ? '草稿标题未填写' : '尚未选择草稿'))
+const currentDraftSku = computed(() => String(props.draft.sku || '').trim() || '无 SKU')
 const activeDraft = computed(() => {
   const draft = props.draft
   if (!draft.packageDimensions) {
@@ -85,35 +90,56 @@ const selectedWarrantyType = computed<WarrantyType>({
     const value = String(typeTerm?.value_id || typeTerm?.value_name || '').toLowerCase()
     if (value.includes('2230280') || value.includes('seller') || value.includes('vendedor')) return 'seller'
     if (value.includes('2230279') || value.includes('factory') || value.includes('fábrica') || value.includes('fabrica')) return 'factory'
-    return 'none'
+    if (value.includes('6150835') || value.includes('no warranty') || value.includes('sin garantía') || value.includes('sin garantia')) return 'none'
+    return ''
   },
   set(value) {
-    applyWarrantyTerms(value, warrantyDurationValue.value, warrantyDurationUnit.value)
+    if (!value) return
+    applyWarrantyTerms(
+      value,
+      warrantyDurationValue.value || '3',
+      warrantyDurationUnit.value || 'months',
+    )
   },
 })
 const warrantyDurationValue = computed<string>({
   get() {
     const timeTerm = activeDraft.value.saleTerms.find((term) => String(term.id || '') === 'WARRANTY_TIME')
+    if (!timeTerm) return ''
     const struct = timeTerm?.value_struct && typeof timeTerm.value_struct === 'object' ? timeTerm.value_struct as UnknownRecord : {}
-    const number = struct.number ?? String(timeTerm?.value_name || '').match(/\d+(?:[,.]\d+)?/)?.[0] ?? '3'
-    return String(number || '3')
+    const number = struct.number ?? String(timeTerm?.value_name || '').match(/\d+(?:[,.]\d+)?/)?.[0] ?? ''
+    return String(number || '')
   },
   set(value) {
-    applyWarrantyTerms(selectedWarrantyType.value, value, warrantyDurationUnit.value)
+    const type = selectedWarrantyType.value
+    if (!type || type === 'none') return
+    applyWarrantyTerms(type, value, warrantyDurationUnit.value || 'months')
   },
 })
 const warrantyDurationUnit = computed<WarrantyUnit>({
   get() {
     const timeTerm = activeDraft.value.saleTerms.find((term) => String(term.id || '') === 'WARRANTY_TIME')
+    if (!timeTerm) return ''
     const struct = timeTerm?.value_struct && typeof timeTerm.value_struct === 'object' ? timeTerm.value_struct as UnknownRecord : {}
     const unit = String(struct.unit || timeTerm?.value_name || '').toLowerCase()
-    return unit.includes('year') || unit.includes('año') || unit.includes('ano') ? 'years' : 'months'
+    if (unit.includes('year') || unit.includes('año') || unit.includes('ano')) return 'years'
+    if (unit.includes('month') || unit.includes('mes')) return 'months'
+    return ''
   },
   set(value) {
-    applyWarrantyTerms(selectedWarrantyType.value, warrantyDurationValue.value, value)
+    const type = selectedWarrantyType.value
+    if (!type || type === 'none' || !value) return
+    applyWarrantyTerms(type, warrantyDurationValue.value, value)
   },
 })
-const warrantySummary = computed(() => activeDraft.value.saleTerms.length ? `已配置 ${activeDraft.value.saleTerms.length} 条` : '尚未配置 warranty / sale_terms')
+const warrantySummary = computed(() => {
+  const type = selectedWarrantyType.value
+  if (!type) return '尚未选择保修类型'
+  if (type === 'none') return '已明确选择无保修'
+  return warrantyDurationValue.value && warrantyDurationUnit.value
+    ? `已配置 ${activeDraft.value.saleTerms.length} 条`
+    : '尚未配置保修时长'
+})
 
 function issueTitle(issue: PrecheckIssue) {
   return [issue.field, issue.message].filter(Boolean).join('：')
@@ -168,7 +194,7 @@ function selectTargetByKey(value: string) {
   if (target) emit('selectPublishTarget', target)
 }
 
-function applyWarrantyTerms(type: WarrantyType, durationValue = '3', unit: WarrantyUnit = 'months') {
+function applyWarrantyTerms(type: ConfiguredWarrantyType, durationValue = '3', unit: ConfiguredWarrantyUnit = 'months') {
   if (type === 'none') {
     activeDraft.value.saleTerms = [
       { id: 'WARRANTY_TYPE', value_id: '6150835', value_name: 'Sin garantía' },
@@ -205,7 +231,7 @@ function applyWarrantyTerms(type: WarrantyType, durationValue = '3', unit: Warra
             <div class="min-w-0">
               <h3 class="truncate font-semibold text-accent-950 dark:text-white">{{ currentDraftTitle }}</h3>
               <div class="mt-1 flex flex-wrap gap-2 text-xs text-accent-500 dark:text-accent-400">
-                <span>{{ activeDraft.sku || props.productContext.sku || '无 SKU' }}</span>
+                <span>{{ currentDraftSku }}</span>
                 <span>{{ props.productContext.sourcePlatform || '来源未记录' }}</span>
                 <span>{{ activeDraft.status || 'pending' }}</span>
                 <span>{{ targetLabel(props.selectedPublishTarget) }}</span>
@@ -320,19 +346,19 @@ function applyWarrantyTerms(type: WarrantyType, durationValue = '3', unit: Warra
           <div class="mt-1 text-xs text-accent-500 dark:text-accent-400">{{ warrantySummary }}</div>
           <div class="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_7rem_8rem]">
             <label class="block">
-              <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">保修类型</span>
-              <select v-model="selectedWarrantyType" class="input mt-1" data-publish-draft-field="warrantyType">
-                <option v-for="option in warrantyTypeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+              <span class="text-xs font-semibold" :class="hasIssue('sale_terms', 'SALE_TERMS_MISSING') ? 'text-rose-700' : 'text-accent-500 dark:text-accent-400'">保修类型</span>
+              <select v-model="selectedWarrantyType" class="input mt-1" :class="hasIssue('sale_terms', 'SALE_TERMS_MISSING') ? 'border-rose-300 bg-rose-50' : ''" data-publish-draft-field="warrantyType">
+                <option v-for="option in warrantyTypeOptions" :key="option.value || 'unselected'" :value="option.value" :disabled="!option.value">{{ option.label }}</option>
               </select>
             </label>
             <label class="block">
               <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">时长</span>
-              <input v-model="warrantyDurationValue" class="input mt-1" :disabled="selectedWarrantyType === 'none'" data-publish-draft-field="warrantyDuration" inputmode="decimal" />
+              <input v-model="warrantyDurationValue" class="input mt-1" :disabled="!selectedWarrantyType || selectedWarrantyType === 'none'" data-publish-draft-field="warrantyDuration" inputmode="decimal" />
             </label>
             <label class="block">
               <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">单位</span>
-              <select v-model="warrantyDurationUnit" class="input mt-1" :disabled="selectedWarrantyType === 'none'" data-publish-draft-field="warrantyUnit">
-                <option v-for="option in warrantyUnitOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+              <select v-model="warrantyDurationUnit" class="input mt-1" :disabled="!selectedWarrantyType || selectedWarrantyType === 'none'" data-publish-draft-field="warrantyUnit">
+                <option v-for="option in warrantyUnitOptions" :key="option.value || 'unselected'" :value="option.value" :disabled="!option.value">{{ option.label }}</option>
               </select>
             </label>
           </div>

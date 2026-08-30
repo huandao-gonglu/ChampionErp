@@ -115,7 +115,7 @@ def _attribute_value_from_source(product: dict[str, Any], platform: str, attr: d
     if "model" in attr_id.lower() or "model" in attr_name:
         return result(str(draft.get("model") or product.get("model") or source.get("model") or "General").strip() or "General")
     if attr_id.upper() == "EMPTY_GTIN_REASON" or "empty gtin reason" in attr_name:
-        gtin_value = str(draft.get("upc") or product.get("upc") or source.get("upc") or "").strip()
+        gtin_value = str(draft.get("upc") or "").strip()
         if gtin_value:
             return result("", True)
         if not draft.get("allow_gtin_exemption"):
@@ -133,7 +133,7 @@ def _attribute_value_from_source(product: dict[str, Any], platform: str, attr: d
                     return result(option, True)
         return result(options[0] if options else "Product exempt from GTIN", True)
     if attr_id.upper() in {"GTIN", "UPC", "UNIVERSAL_PRODUCT_CODE"} or attr_id.lower() in {"gtin", "upc"} or "universal product code" in attr_name:
-        value = str(draft.get("upc") or product.get("upc") or source.get("upc") or "").strip()
+        value = str(draft.get("upc") or "").strip()
         return result(value, bool(value))
     attr_id_upper = attr_id.upper()
     is_package_attr = "PACKAGE" in attr_id_upper or "package" in attr_name
@@ -204,7 +204,6 @@ def _required_attribute_is_satisfied(
     )
     gtin_value = str(
         draft.get("upc")
-        or normalized.get("upc")
         or attributes.get("GTIN")
         or ""
     ).strip()
@@ -281,7 +280,7 @@ def build_ai_attribute_fill(
         else default_draft(platform)
     )
     attributes = deepcopy(draft.get("attributes") or {})
-    gtin_value = str(draft.get("upc") or normalized.get("upc") or "").strip()
+    gtin_value = str(draft.get("upc") or "").strip()
     if gtin_value:
         attributes.pop("EMPTY_GTIN_REASON", None)
     elif draft.get("allow_gtin_exemption"):

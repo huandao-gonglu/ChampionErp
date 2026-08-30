@@ -192,32 +192,66 @@ def discover_mercadolibre_listing_currency(
 def sync_mercadolibre_auth_and_currency(
     config: dict[str, Any],
 ) -> dict[str, Any]:
-    """token 换取/刷新成功后的统一收尾：用户信息 + 币种发现 + 状态写入。
+    """token 换取/刷新后同步身份、币种与发布能力。
 
     身份或币种读取失败不会抛出：授权 token 已换取成功时，远端读取失败按
     ``refresh_failed`` 持久化，由用户在授权页重试，而不是静默降级。
-    返回最新币种状态（未配置 token 时返回空 dict）。
+    返回身份同步结果与最新币种状态，使调用方能区分
+    “授权身份不可用”和“授权有效但币种/市场尚未就绪”。
     """
 
     store = config.setdefault("mercadolibre", {})
     token = str(store.get("access_token") or "").strip()
     if not token:
-        return {}
+        return {
+            "identity_ready": False,
+            "identity_error_code": "MERCADOLIBRE_AUTH_FAILED",
+            "identity_error_message": "Mercado Libre Access Token 为空",
+            "currency_state": {},
+        }
+
+    identity_ready = False
+    identity_error_code = ""
+    identity_error_message = ""
     try:
         sync_mercadolibre_identity(store, token)
-        discovery: dict[str, Any] = discover_mercadolibre_listing_currency(store)
+        identity_ready = True
     except PublishAdapterError as exc:
+        identity_error_code = str(
+            getattr(exc, "code", "") or "MERCADOLIBRE_AUTH_SYNC_FAILED"
+        )
+        identity_error_message = str(exc)
         discovery = {
             "supported": True,
-            "error_code": str(getattr(exc, "code", "") or "MERCADOLIBRE_AUTH_SYNC_FAILED"),
-            "error_message": str(exc),
+            "error_code": identity_error_code,
+            "error_message": identity_error_message,
         }
     except Exception as exc:
+        identity_error_code = "MERCADOLIBRE_AUTH_SYNC_FAILED"
+        identity_error_message = str(exc)
         discovery = {
             "supported": True,
-            "error_code": "MERCADOLIBRE_AUTH_SYNC_FAILED",
-            "error_message": str(exc),
+            "error_code": identity_error_code,
+            "error_message": identity_error_message,
         }
+    else:
+        try:
+            discovery = discover_mercadolibre_listing_currency(store)
+        except PublishAdapterError as exc:
+            discovery = {
+                "supported": True,
+                "error_code": str(
+                    getattr(exc, "code", "")
+                    or "MERCADOLIBRE_CURRENCY_DISCOVERY_FAILED"
+                ),
+                "error_message": str(exc),
+            }
+        except Exception as exc:
+            discovery = {
+                "supported": True,
+                "error_code": "MERCADOLIBRE_CURRENCY_DISCOVERY_FAILED",
+                "error_message": str(exc),
+            }
     identity = store_identity_for_platform("mercadolibre", store)
     previous = store_listing_currency_from_auth("mercadolibre", identity, store)
     state = apply_currency_discovery(
@@ -227,7 +261,12 @@ def sync_mercadolibre_auth_and_currency(
         previous=previous,
     )
     write_currency_state(store, state)
-    return state
+    return {
+        "identity_ready": identity_ready,
+        "identity_error_code": identity_error_code,
+        "identity_error_message": identity_error_message,
+        "currency_state": state,
+    }
 
 
 __all__ = [

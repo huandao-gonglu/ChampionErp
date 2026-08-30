@@ -261,6 +261,20 @@ def test_mercadolibre_traditional_precheck_ignores_user_products_binding_pricing
     assert "MERCADOLIBRE_SALES_TARGET_NOT_AUTHORIZED" not in codes
 
 
+def test_mercadolibre_precheck_does_not_restore_product_upc_for_exempt_draft() -> None:
+    product = _ml_cbt_product()
+    product["upc"] = "725272000243"
+    draft = product["drafts"]["mercadolibre"]
+    draft["upc"] = ""
+    draft["allow_gtin_exemption"] = True
+    draft["attributes"].pop("GTIN", None)
+
+    result = _validate(product, _ml_ready_config())
+
+    assert not any(item["code"] == "UPC_MISSING" for item in result["errors"])
+    assert any(item["code"] == "UPC_MISSING" for item in result["warnings"])
+
+
 def test_mercadolibre_precheck_rejects_brand_outside_restricted_candidates() -> None:
     product = _ml_cbt_product()
     product["drafts"]["mercadolibre"]["brand"] = "蔚小电"
@@ -521,6 +535,25 @@ def test_mercadolibre_precheck_does_not_restore_cleared_sale_terms_from_config()
     ]
 
     result = _validate(product, config)
+
+    assert any(
+        item["code"] == "SALE_TERMS_MISSING"
+        and item["field"] == "sale_terms"
+        for item in result["errors"]
+    )
+
+
+def test_mercadolibre_precheck_requires_an_explicit_warranty_type() -> None:
+    product = _ml_cbt_product()
+    product["drafts"]["mercadolibre"]["sale_terms"] = [
+        {
+            "id": "WARRANTY_TIME",
+            "value_name": "3 months",
+            "value_struct": {"number": 3, "unit": "months"},
+        }
+    ]
+
+    result = _validate(product, _ml_ready_config())
 
     assert any(
         item["code"] == "SALE_TERMS_MISSING"

@@ -15,6 +15,7 @@ from erp_web.schemas.publish_capabilities import (
 )
 from erp_web.services.capability_errors import BusinessCapabilityError
 from erp_web.runtime_units import publish_capabilities
+from erp_web.stores.product_store import normalize_product_fields
 
 
 @pytest.fixture(autouse=True)
@@ -227,6 +228,66 @@ def test_explicit_payload_preparation_is_the_only_validation_path_that_prepares_
 
     assert evaluation.result.passed is True
     assert adapter.prepare_calls == 1
+
+
+def test_prepared_preview_and_enqueue_revalidation_keep_empty_draft_upc(
+    publish_boundary,
+    monkeypatch,
+) -> None:
+    adapter, _store_config = publish_boundary
+    loaded = _context()
+    draft = loaded["draft"]
+    draft.update(
+        {
+            "site": "CBT",
+            "category_id": "CBT123",
+            "listing_currency": "USD",
+            "upc": "",
+            "allow_gtin_exemption": True,
+            "selected_pricing": {
+                "applied_price": {"amount": "19", "currency": "USD"}
+            },
+            "price": "19",
+        }
+    )
+    loaded["site"] = "CBT"
+    loaded["target"] = {"platform": "mercadolibre", "site": "CBT"}
+    loaded["targets"] = [deepcopy(loaded["target"])]
+    loaded["product"]["upc"] = "725272000243"
+    loaded["product"]["drafts"]["mercadolibre"] = deepcopy(draft)
+    monkeypatch.setattr(
+        publish_capabilities,
+        "load_required_draft_publish_context",
+        lambda body, **_kwargs: (deepcopy(loaded), None, 200),
+    )
+    monkeypatch.setattr(
+        adapter,
+        "prepare_product",
+        lambda product, _config: normalize_product_fields(product),
+    )
+
+    def build_identifier_payload(context, _config):
+        current = context.product["drafts"]["mercadolibre"]
+        return {
+            "title": str(current.get("title") or "Portable fan"),
+            "category_id": str(current.get("category_id") or "CBT123"),
+            "price": "19",
+            "pictures": [{"id": "image-1"}],
+            "identifier": current.get("upc") or "EMPTY_GTIN_REASON",
+        }
+
+    monkeypatch.setattr(adapter, "build_payload", build_identifier_payload)
+    request = ProductPublishValidateRequest(
+        draft_id="draft-1",
+        platform="mercadolibre",
+        site="CBT",
+    )
+
+    preview = publish_capabilities.prepare_and_evaluate_publish_validation(request)
+    revalidated = publish_capabilities.evaluate_publish_validation(request)
+
+    assert preview.approved_payload["identifier"] == "EMPTY_GTIN_REASON"
+    assert preview.result.validation_digest == revalidated.result.validation_digest
 
 
 def test_explicit_payload_preparation_does_not_prepare_assets_when_precheck_blocks(

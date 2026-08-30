@@ -560,11 +560,13 @@ def _apply_source_mappings_to_draft(product: dict[str, Any], platform: str, curr
     current["model"] = str(current.get("model") or product.get("model") or source.get("model") or "General").strip() or "General"
     # 来源 SKU 是供应商数据，不是平台刊登身份；平台草稿单独拥有 SKU。
     current["sku"] = str(current.get("sku") or "").strip()
+    # UPC/GTIN 是平台草稿自己的发布事实。显式清空必须保留，否则图片上传等
+    # 整商品归一化路径会把商品主档旧 UPC 回填，令预览与发布重校验生成不同
+    # payload。购买 UPC 的分配流程会显式写入各草稿，不需要这里提供隐式回退。
     current["upc"] = str(
         current.get("upc")
         or current.get("gtin")
         or current.get("barcode")
-        or product.get("upc")
         or ""
     ).strip()
     current["stock"] = str(current.get("stock") or product.get("stock") or "").strip()

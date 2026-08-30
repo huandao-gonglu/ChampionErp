@@ -8,6 +8,8 @@ from __future__ import annotations
 响应契约（ok 与 publish_ready 分离）、人工选择接口与 save-settings 信任边界。
 """
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, patch
@@ -738,6 +740,745 @@ def test_mercadolibre_token_refresh_persists_new_identity_capabilities(
         assert saved["listing_model"] == "traditional_global_items"
         assert saved["user_product_seller"] is False
         assert saved["listing_currency"] == "USD"
+
+
+def test_publish_auth_refresh_keeps_rotated_token_when_identity_sync_fails(
+    tmp_path: Path,
+) -> None:
+    with temp_app_context(tmp_path):
+        get_context().config.save_store_config(
+            {
+                "mercadolibre": {
+                    "app_id": "app-1",
+                    "app_secret": "secret-1",
+                    "refresh_token": "refresh-old",
+                    "access_token": "access-old",
+                }
+            }
+        )
+        config = get_context().config.load_store_config()
+        with patch.object(
+            publisher,
+            "refresh_mercadolibre_token",
+            return_value={
+                "access_token": "access-new",
+                "refresh_token": "refresh-new",
+            },
+        ), patch.object(
+            publisher,
+            "fetch_mercadolibre_user_profile",
+            side_effect=RuntimeError("身份服务暂时不可用"),
+        ):
+            result = publish_mercadolibre.ensure_mercadolibre_auth_ready(
+                config,
+                force_refresh=True,
+            )
+
+        assert result["ok"] is False
+        saved = get_context().config.load_store_config()["mercadolibre"]
+        assert saved["access_token"] == "access-new"
+        assert saved["refresh_token"] == "refresh-new"
+
+
+def test_publish_auth_refresh_keeps_rotated_token_when_static_save_fails(
+    tmp_path: Path,
+) -> None:
+    with temp_app_context(tmp_path):
+        get_context().config.save_store_config(
+            {
+                "mercadolibre": {
+                    "app_id": "app-1",
+                    "app_secret": "secret-1",
+                    "refresh_token": "refresh-old",
+                    "access_token": "access-old",
+                }
+            }
+        )
+        config = get_context().config.load_store_config()
+        refresh = Mock(
+            return_value={
+                "access_token": "access-new",
+                "refresh_token": "refresh-new",
+            }
+        )
+        with patch.object(
+            publisher,
+            "refresh_mercadolibre_token",
+            refresh,
+        ), patch.object(
+            publisher,
+            "fetch_mercadolibre_user_profile",
+            return_value={
+                "user_id": "99",
+                "nickname": "GLOBAL_STORE",
+                "site_id": "CBT",
+                "tags": [],
+            },
+        ), patch.object(
+            publisher,
+            "fetch_mercadolibre_marketplace_user",
+            return_value={
+                "user_id": "99",
+                "site_id": "CBT",
+                "marketplace_bindings": [
+                    {
+                        "seller_id": "991",
+                        "site_id": "MLM",
+                        "logistic_type": "remote",
+                        "pricing_model": "price",
+                        "user_product": False,
+                    }
+                ],
+            },
+        ), patch.object(
+            publisher,
+            "save_store_config",
+            side_effect=OSError("静态配置文件写入失败"),
+        ):
+            result = publish_mercadolibre.ensure_mercadolibre_auth_ready(
+                config,
+                force_refresh=True,
+            )
+
+        assert result["ok"] is False
+        refresh.assert_called_once_with("app-1", "secret-1", "refresh-old")
+        assert config["mercadolibre"]["access_token"] == "access-new"
+        saved = get_context().config.load_store_config()["mercadolibre"]
+        assert saved["access_token"] == "access-new"
+        assert saved["refresh_token"] == "refresh-new"
+        assert saved["auth_status"] == "已保存，未测试"
+        assert saved.get("currency_status") != "ready"
+
+
+def test_publish_auth_refresh_allows_currency_discovery_failure(
+    tmp_path: Path,
+) -> None:
+    with temp_app_context(tmp_path):
+        get_context().config.save_store_config(
+            {
+                "mercadolibre": {
+                    "app_id": "app-1",
+                    "app_secret": "secret-1",
+                    "refresh_token": "refresh-old",
+                    "access_token": "access-old",
+                }
+            }
+        )
+        config = get_context().config.load_store_config()
+        with patch.object(
+            publisher,
+            "refresh_mercadolibre_token",
+            return_value={
+                "access_token": "access-new",
+                "refresh_token": "refresh-new",
+            },
+        ), patch.object(
+            publisher,
+            "fetch_mercadolibre_user_profile",
+            return_value={
+                "user_id": "99",
+                "nickname": "GLOBAL_STORE",
+                "site_id": "CBT",
+                "tags": [],
+            },
+        ), patch.object(
+            publisher,
+            "fetch_mercadolibre_marketplace_user",
+            side_effect=PublishAdapterError(
+                "MERCADOLIBRE_SERVER_ERROR",
+                "GET /marketplace/users/99 failed: 503",
+                retryable=True,
+            ),
+        ):
+            result = publish_mercadolibre.ensure_mercadolibre_auth_ready(
+                config,
+                force_refresh=True,
+            )
+
+        # token 和 /users/me 都有效时，市场/币种未就绪由后续
+        # 确定性发布预检阻断，不得误报为授权失效。
+        assert result["ok"] is True
+        assert result["token"] == "access-new"
+        saved = get_context().config.load_store_config()["mercadolibre"]
+        assert saved["access_token"] == "access-new"
+        assert saved["auth_status"] == "测试成功"
+        assert saved["auth_error_code"] == ""
+        assert saved["currency_status"] == "refresh_failed"
+        assert saved["currency_error_code"] == "MERCADOLIBRE_SERVER_ERROR"
+
+
+def test_publish_auth_preflight_preserves_retryable_identity_failure(
+    tmp_path: Path,
+) -> None:
+    with temp_app_context(tmp_path):
+        get_context().config.save_store_config(
+            {
+                "mercadolibre": {
+                    "access_token": "access-token",
+                    "auth_status": "测试成功",
+                    "auth_checked_at": "2026-08-30T00:00:00Z",
+                }
+            }
+        )
+        config = get_context().config.load_store_config()
+        with patch.object(
+            publisher,
+            "fetch_mercadolibre_user_profile",
+            side_effect=PublishAdapterError(
+                "MERCADOLIBRE_NETWORK",
+                "GET /users/me failed: connection reset",
+                retryable=True,
+            ),
+        ):
+            result = publish_mercadolibre.ensure_mercadolibre_auth_ready(
+                config
+            )
+
+        assert result["ok"] is False
+        assert result["platform_error_code"] == "MERCADOLIBRE_NETWORK"
+        assert result["retryable"] is True
+        saved = get_context().config.load_store_config()["mercadolibre"]
+        assert saved["auth_status"] == "测试成功"
+
+
+def test_publish_auth_preflight_reloads_latest_persisted_token(
+    tmp_path: Path,
+) -> None:
+    with temp_app_context(tmp_path):
+        get_context().config.save_store_config(
+            {
+                "mercadolibre": {
+                    "access_token": "access-new",
+                    "refresh_token": "refresh-new",
+                }
+            }
+        )
+        stale_config = {
+            "mercadolibre": {
+                "access_token": "access-old-still-valid",
+                "refresh_token": "refresh-old-consumed",
+            }
+        }
+        checked_tokens: list[str] = []
+
+        def profile(token: str) -> dict[str, Any]:
+            checked_tokens.append(token)
+            return {
+                "user_id": "99",
+                "nickname": "GLOBAL_STORE",
+                "site_id": "CBT",
+                "tags": [],
+            }
+
+        with patch.object(
+            publisher,
+            "fetch_mercadolibre_user_profile",
+            side_effect=profile,
+        ):
+            result = publish_mercadolibre.ensure_mercadolibre_auth_ready(
+                stale_config
+            )
+
+        assert result["ok"] is True
+        assert result["token"] == "access-new"
+        assert checked_tokens == ["access-new"]
+        assert stale_config["mercadolibre"]["access_token"] == "access-new"
+        saved = get_context().config.load_store_config()["mercadolibre"]
+        assert saved["access_token"] == "access-new"
+        assert saved["refresh_token"] == "refresh-new"
+
+
+def test_concurrent_publish_auth_refresh_reuses_the_rotated_token(
+    tmp_path: Path,
+) -> None:
+    with temp_app_context(tmp_path):
+        get_context().config.save_store_config(
+            {
+                "mercadolibre": {
+                    "app_id": "app-1",
+                    "app_secret": "secret-1",
+                    "refresh_token": "refresh-old",
+                    "access_token": "access-old",
+                    "account_site_id": "CBT",
+                }
+            }
+        )
+        first_config = get_context().config.load_store_config()
+        second_config = get_context().config.load_store_config()
+        refresh_inputs: list[str] = []
+        start = threading.Barrier(3)
+
+        def fake_refresh(
+            app_id: str,
+            app_secret: str,
+            refresh_token: str,
+        ) -> dict[str, str]:
+            assert app_id == "app-1"
+            assert app_secret == "secret-1"
+            refresh_inputs.append(refresh_token)
+            return {
+                "access_token": "access-new",
+                "refresh_token": "refresh-new",
+            }
+
+        def run(config: dict[str, Any]) -> dict[str, Any]:
+            start.wait()
+            return publish_mercadolibre.ensure_mercadolibre_auth_ready(
+                config,
+                force_refresh=True,
+            )
+
+        with patch.object(
+            publisher,
+            "refresh_mercadolibre_token",
+            side_effect=fake_refresh,
+        ), patch.object(
+            publisher,
+            "fetch_mercadolibre_user_profile",
+            return_value={
+                "user_id": "99",
+                "nickname": "GLOBAL_STORE",
+                "site_id": "CBT",
+                "tags": [],
+            },
+        ), patch.object(
+            publisher,
+            "fetch_mercadolibre_marketplace_user",
+            return_value={
+                "user_id": "99",
+                "site_id": "CBT",
+                "marketplace_bindings": [
+                    {
+                        "seller_id": "991",
+                        "site_id": "MLM",
+                        "logistic_type": "remote",
+                        "pricing_model": "price",
+                        "user_product": False,
+                    }
+                ],
+            },
+        ), ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(run, first_config),
+                executor.submit(run, second_config),
+            ]
+            start.wait()
+            results = [future.result(timeout=5) for future in futures]
+
+        assert all(result["ok"] for result in results)
+        assert refresh_inputs == ["refresh-old"]
+        assert first_config["mercadolibre"]["access_token"] == "access-new"
+        assert second_config["mercadolibre"]["access_token"] == "access-new"
+        saved = get_context().config.load_store_config()["mercadolibre"]
+        assert saved["access_token"] == "access-new"
+        assert saved["refresh_token"] == "refresh-new"
+
+
+def test_clear_auth_waits_for_inflight_refresh_and_remains_cleared(
+    tmp_path: Path,
+) -> None:
+    with temp_app_context(tmp_path):
+        get_context().config.save_store_config(
+            {
+                "mercadolibre": {
+                    "app_id": "app-1",
+                    "app_secret": "secret-1",
+                    "refresh_token": "refresh-old",
+                    "access_token": "access-old",
+                }
+            }
+        )
+        config = get_context().config.load_store_config()
+        refresh_entered = threading.Event()
+        release_refresh = threading.Event()
+        clear_started = threading.Event()
+        refresh_inputs: list[str] = []
+
+        def blocking_refresh(
+            app_id: str,
+            app_secret: str,
+            refresh_token: str,
+        ) -> dict[str, str]:
+            assert app_id == "app-1"
+            assert app_secret == "secret-1"
+            refresh_inputs.append(refresh_token)
+            refresh_entered.set()
+            assert release_refresh.wait(timeout=5)
+            return {
+                "access_token": "access-new",
+                "refresh_token": "refresh-new",
+            }
+
+        def clear_auth() -> dict[str, Any]:
+            clear_started.set()
+            return get_context().config.clear_store_auth("mercadolibre")
+
+        with patch.object(
+            publisher,
+            "refresh_mercadolibre_token",
+            side_effect=blocking_refresh,
+        ), patch.object(
+            publisher,
+            "fetch_mercadolibre_user_profile",
+            return_value={
+                "user_id": "99",
+                "nickname": "GLOBAL_STORE",
+                "site_id": "CBT",
+                "tags": [],
+            },
+        ), patch.object(
+            publisher,
+            "fetch_mercadolibre_marketplace_user",
+            return_value={
+                "user_id": "99",
+                "site_id": "CBT",
+                "marketplace_bindings": [
+                    {
+                        "seller_id": "991",
+                        "site_id": "MLM",
+                        "logistic_type": "remote",
+                        "pricing_model": "price",
+                        "user_product": False,
+                    }
+                ],
+            },
+        ), ThreadPoolExecutor(max_workers=2) as executor:
+            refresh_future = executor.submit(
+                publish_mercadolibre.ensure_mercadolibre_auth_ready,
+                config,
+                force_refresh=True,
+            )
+            assert refresh_entered.wait(timeout=5)
+            clear_future = executor.submit(clear_auth)
+            assert clear_started.wait(timeout=5)
+            assert clear_future.done() is False
+            release_refresh.set()
+            assert refresh_future.result(timeout=5)["ok"] is True
+            clear_future.result(timeout=5)
+
+        assert refresh_inputs == ["refresh-old"]
+        saved = get_context().config.load_store_config()["mercadolibre"]
+        assert not saved.get("access_token")
+        assert not saved.get("refresh_token")
+
+
+def test_code_exchange_waits_for_refresh_and_becomes_latest_credentials(
+    tmp_path: Path,
+) -> None:
+    with temp_app_context(tmp_path):
+        get_context().config.save_store_config(
+            {
+                "mercadolibre": {
+                    "app_id": "app-1",
+                    "app_secret": "secret-1",
+                    "redirect_uri": "https://example.com/callback",
+                    "code_verifier": "verifier-1",
+                    "refresh_token": "refresh-old",
+                    "access_token": "access-old",
+                }
+            }
+        )
+        config = get_context().config.load_store_config()
+        refresh_entered = threading.Event()
+        release_refresh = threading.Event()
+        exchange_started = threading.Event()
+        exchange_entered = threading.Event()
+        refresh_inputs: list[str] = []
+        exchange_inputs: list[tuple[str, str]] = []
+
+        def blocking_refresh(
+            app_id: str,
+            app_secret: str,
+            refresh_token: str,
+        ) -> dict[str, str]:
+            del app_id, app_secret
+            refresh_inputs.append(refresh_token)
+            refresh_entered.set()
+            assert release_refresh.wait(timeout=5)
+            return {
+                "access_token": "access-refreshed",
+                "refresh_token": "refresh-refreshed",
+            }
+
+        def exchange_code(
+            app_id: str,
+            app_secret: str,
+            redirect_uri: str,
+            code_or_url: str,
+            code_verifier: str,
+        ) -> dict[str, str]:
+            del app_id, app_secret, redirect_uri
+            exchange_entered.set()
+            exchange_inputs.append((code_or_url, code_verifier))
+            return {
+                "access_token": "access-exchanged",
+                "refresh_token": "refresh-exchanged",
+                "user_id": "100",
+            }
+
+        def profile(token: str) -> dict[str, Any]:
+            user_id = "100" if token == "access-exchanged" else "99"
+            return {
+                "user_id": user_id,
+                "nickname": f"GLOBAL_STORE_{user_id}",
+                "site_id": "CBT",
+                "tags": [],
+            }
+
+        def marketplace_user(
+            user_id: str,
+            token: str,
+        ) -> dict[str, Any]:
+            del token
+            return {
+                "user_id": user_id,
+                "site_id": "CBT",
+                "marketplace_bindings": [
+                    {
+                        "seller_id": f"{user_id}1",
+                        "site_id": "MLM",
+                        "logistic_type": "remote",
+                        "pricing_model": "price",
+                        "user_product": False,
+                    }
+                ],
+            }
+
+        def run_exchange() -> dict[str, Any]:
+            exchange_started.set()
+            return store_credentials.exchange_mercadolibre_code_from_body(
+                {"code_or_url": "authorization-code"}
+            )
+
+        with patch.object(
+            publisher,
+            "refresh_mercadolibre_token",
+            side_effect=blocking_refresh,
+        ), patch.object(
+            publisher,
+            "exchange_mercadolibre_code",
+            side_effect=exchange_code,
+        ), patch.object(
+            publisher,
+            "fetch_mercadolibre_user_profile",
+            side_effect=profile,
+        ), patch.object(
+            publisher,
+            "fetch_mercadolibre_marketplace_user",
+            side_effect=marketplace_user,
+        ), ThreadPoolExecutor(max_workers=2) as executor:
+            refresh_future = executor.submit(
+                publish_mercadolibre.ensure_mercadolibre_auth_ready,
+                config,
+                force_refresh=True,
+            )
+            assert refresh_entered.wait(timeout=5)
+            exchange_future = executor.submit(run_exchange)
+            assert exchange_started.wait(timeout=5)
+            assert exchange_entered.is_set() is False
+            release_refresh.set()
+            assert refresh_future.result(timeout=5)["ok"] is True
+            assert exchange_future.result(timeout=5)["status"] == "测试成功"
+
+        assert refresh_inputs == ["refresh-old"]
+        assert exchange_inputs == [("authorization-code", "verifier-1")]
+        saved = get_context().config.load_store_config()["mercadolibre"]
+        assert saved["access_token"] == "access-exchanged"
+        assert saved["refresh_token"] == "refresh-exchanged"
+        assert saved["user_id"] == "100"
+        assert not saved.get("code_verifier")
+
+
+def test_code_exchange_keeps_new_credentials_when_static_save_fails(
+    tmp_path: Path,
+) -> None:
+    with temp_app_context(tmp_path):
+        get_context().config.save_store_config(
+            {
+                "mercadolibre": {
+                    "app_id": "app-1",
+                    "app_secret": "secret-1",
+                    "redirect_uri": "https://example.com/callback",
+                    "code_verifier": "verifier-1",
+                    "refresh_token": "refresh-old",
+                    "access_token": "access-old",
+                }
+            }
+        )
+        with patch.object(
+            publisher,
+            "exchange_mercadolibre_code",
+            return_value={
+                "access_token": "access-exchanged",
+                "refresh_token": "refresh-exchanged",
+                "user_id": "100",
+            },
+        ), patch.object(
+            publisher,
+            "fetch_mercadolibre_user_profile",
+            return_value={
+                "user_id": "100",
+                "nickname": "GLOBAL_STORE",
+                "site_id": "CBT",
+                "tags": [],
+            },
+        ), patch.object(
+            publisher,
+            "fetch_mercadolibre_marketplace_user",
+            return_value={
+                "user_id": "100",
+                "site_id": "CBT",
+                "marketplace_bindings": [
+                    {
+                        "seller_id": "1001",
+                        "site_id": "MLM",
+                        "logistic_type": "remote",
+                        "pricing_model": "price",
+                        "user_product": False,
+                    }
+                ],
+            },
+        ), patch.object(
+            publisher,
+            "save_store_config",
+            side_effect=OSError("静态配置文件写入失败"),
+        ):
+            with pytest.raises(OSError, match="静态配置文件写入失败"):
+                store_credentials.exchange_mercadolibre_code_from_body(
+                    {"code_or_url": "authorization-code"}
+                )
+
+        saved = get_context().config.load_store_config()["mercadolibre"]
+        assert saved["access_token"] == "access-exchanged"
+        assert saved["refresh_token"] == "refresh-exchanged"
+        assert saved["user_id"] == "100"
+        assert not saved.get("code_verifier")
+        assert saved["auth_status"] == "已保存，未测试"
+
+
+def test_publish_auth_force_refresh_updates_caller_and_persisted_config(
+    tmp_path: Path,
+) -> None:
+    with temp_app_context(tmp_path):
+        get_context().config.save_store_config(
+            {
+                "mercadolibre": {
+                    "app_id": "app-1",
+                    "app_secret": "secret-1",
+                    "refresh_token": "refresh-old",
+                    "access_token": "access-old",
+                }
+            }
+        )
+        config = get_context().config.load_store_config()
+        with patch.object(
+            publisher,
+            "refresh_mercadolibre_token",
+            return_value={
+                "access_token": "access-new",
+                "refresh_token": "refresh-new",
+            },
+        ), patch.object(
+            publisher,
+            "fetch_mercadolibre_user_profile",
+            return_value={
+                "user_id": "99",
+                "nickname": "GLOBAL_STORE",
+                "site_id": "CBT",
+                "tags": [],
+            },
+        ), patch.object(
+            publisher,
+            "fetch_mercadolibre_marketplace_user",
+            return_value={
+                "user_id": "99",
+                "site_id": "CBT",
+                "marketplace_bindings": [
+                    {
+                        "seller_id": "991",
+                        "site_id": "MLM",
+                        "logistic_type": "remote",
+                        "pricing_model": "price",
+                        "user_product": False,
+                    }
+                ],
+            },
+        ):
+            result = publish_mercadolibre.ensure_mercadolibre_auth_ready(
+                config,
+                force_refresh=True,
+            )
+
+        assert result["ok"] is True
+        assert config["mercadolibre"]["access_token"] == "access-new"
+        assert config["mercadolibre"]["refresh_token"] == "refresh-new"
+        saved = get_context().config.load_store_config()["mercadolibre"]
+        assert saved["access_token"] == "access-new"
+        assert saved["refresh_token"] == "refresh-new"
+
+
+def test_publish_auth_force_refresh_requires_refresh_credentials(
+    tmp_path: Path,
+) -> None:
+    with temp_app_context(tmp_path):
+        get_context().config.save_store_config(
+            {"mercadolibre": {"access_token": "access-old"}}
+        )
+        config = get_context().config.load_store_config()
+        with patch.object(
+            publisher,
+            "refresh_mercadolibre_token",
+        ) as refresh:
+            result = publish_mercadolibre.ensure_mercadolibre_auth_ready(
+                config,
+                force_refresh=True,
+            )
+
+        refresh.assert_not_called()
+        assert result["ok"] is False
+        assert result["retryable"] is False
+        saved = get_context().config.load_store_config()["mercadolibre"]
+        assert saved["access_token"] == "access-old"
+        assert saved["auth_status"] == "测试失败"
+
+
+def test_publish_auth_force_refresh_preserves_oauth_network_retryability(
+    tmp_path: Path,
+) -> None:
+    with temp_app_context(tmp_path):
+        get_context().config.save_store_config(
+            {
+                "mercadolibre": {
+                    "app_id": "app-1",
+                    "app_secret": "secret-1",
+                    "refresh_token": "refresh-old",
+                    "access_token": "access-old",
+                    "auth_status": "测试成功",
+                }
+            }
+        )
+        config = get_context().config.load_store_config()
+        with patch.object(
+            publisher,
+            "refresh_mercadolibre_token",
+            side_effect=PublishAdapterError(
+                "MERCADOLIBRE_NETWORK",
+                "POST /oauth/token failed: connection reset",
+                retryable=True,
+            ),
+        ):
+            result = publish_mercadolibre.ensure_mercadolibre_auth_ready(
+                config,
+                force_refresh=True,
+            )
+
+        assert result["ok"] is False
+        assert result["platform_error_code"] == "MERCADOLIBRE_NETWORK"
+        assert result["retryable"] is True
+        saved = get_context().config.load_store_config()["mercadolibre"]
+        assert saved["access_token"] == "access-old"
+        assert saved["refresh_token"] == "refresh-old"
+        assert saved["auth_status"] == "测试失败"
 
 
 def test_mercadolibre_regional_account_never_reads_site_currency() -> None:

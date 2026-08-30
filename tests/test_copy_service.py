@@ -311,7 +311,14 @@ def test_assign_upc_writes_current_product_and_returns_full_payload(
         get_context().products.save_product(
             {
                 "name": "UPC test product",
-                "drafts": {"mercadolibre": {"enabled": True}},
+                # 只有具备真实业务内容的草稿才会持久化；默认草稿模板不是
+                # 独立平台事实，不能用商品主档 UPC 隐式回填。
+                "drafts": {
+                    "mercadolibre": {
+                        "enabled": True,
+                        "title": "UPC test Mercado Libre draft",
+                    }
+                },
             }
         )
 

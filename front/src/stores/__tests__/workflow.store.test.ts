@@ -683,6 +683,187 @@ describe('workflow store live API flow', () => {
     )
   })
 
+  it('预检前保存并提交界面当前的保修与 GTIN 豁免数据', async () => {
+    const draft = createEmptyDraftDetail('mercadolibre')
+    draft.draftId = 'draft-current-form-data'
+    draft.productId = 'product-current-form-data'
+    draft.sourceProductId = 'product-current-form-data'
+    draft.site = 'CBT'
+    draft.upc = ''
+    draft.allowGtinExemption = true
+    draft.saleTerms = [
+      { id: 'WARRANTY_TYPE', value_id: '6150835', value_name: 'Sin garantía' },
+    ]
+    draft.targetSites = [{ platform: 'mercadolibre', site: 'CBT', language: 'en-US', listingCurrency: 'USD' }]
+    vi.mocked(workflowApi.saveDraft).mockImplementation(async (savedDraft) => draftMutation(savedDraft))
+    vi.mocked(workflowApi.publishPrecheck).mockImplementation(async (savedDraft) => ({
+      draft: savedDraft,
+      precheck: { ok: true, errors: [], warnings: [], errorItems: [], warningItems: [], checkedAt: '2026-08-30T00:00:00Z' },
+      platformResults: {},
+      productContext: createEmptyDraftProductContext(),
+    }))
+
+    const store = useWorkflowStore()
+    store.currentDraft = draft
+    store.storeConfig = { mercadolibre: { listing_model: 'traditional_global_items' } }
+
+    await store.runPrecheck()
+
+    expect(workflowApi.saveDraft).toHaveBeenCalledWith(expect.objectContaining({
+      upc: '',
+      allowGtinExemption: true,
+      saleTerms: [
+        { id: 'WARRANTY_TYPE', value_id: '6150835', value_name: 'Sin garantía' },
+      ],
+    }))
+    expect(workflowApi.publishPrecheck).toHaveBeenCalledWith(
+      expect.objectContaining({
+        upc: '',
+        allowGtinExemption: true,
+        saleTerms: [
+          { id: 'WARRANTY_TYPE', value_id: '6150835', value_name: 'Sin garantía' },
+        ],
+      }),
+      expect.objectContaining({ platform: 'mercadolibre', site: 'CBT' }),
+    )
+  })
+
+  it('Payload 确认后直接入队，不再保存并改变已确认草稿', async () => {
+    const draft = createEmptyDraftDetail('mercadolibre')
+    draft.draftId = 'draft-confirmed'
+    draft.productId = 'product-confirmed'
+    draft.sourceProductId = 'product-confirmed'
+    draft.site = 'CBT'
+    draft.status = 'ready_to_publish'
+    draft.targetSites = [{ platform: 'mercadolibre', site: 'CBT', language: 'en-US', listingCurrency: 'USD' }]
+    vi.mocked(workflowApi.enqueuePublish).mockResolvedValue({
+      jobId: 'job-confirmed',
+      status: 'queued',
+      platforms: ['mercadolibre'],
+      createdAt: '2026-08-30T00:00:00Z',
+      draftId: draft.draftId,
+      targetKey: 'mercadolibre:cbt',
+    })
+    vi.mocked(workflowApi.fetchPublishJobs).mockResolvedValue({ items: [], nextCursor: '' })
+    vi.mocked(workflowApi.fetchDraftsIndex).mockResolvedValue([])
+
+    const store = useWorkflowStore()
+    store.currentDraft = draft
+    store.storeConfig = { mercadolibre: { listing_model: 'traditional_global_items' } }
+    store.precheck = { ok: true, errors: [], warnings: [], errorItems: [], warningItems: [], checkedAt: '2026-08-30T00:00:00Z' }
+    store.payloadPreview = {
+      platform: 'mercadolibre',
+      site: 'CBT',
+      targetKey: 'mercadolibre:cbt',
+      status: 'preview_only',
+      path: '/tmp/confirmed-payload.json',
+      payload: {},
+      warning: '',
+      validationDigest: 'confirmed-digest',
+      summary: null,
+      warnings: [],
+    }
+
+    await store.enqueuePublish()
+
+    expect(workflowApi.saveDraft).not.toHaveBeenCalled()
+    expect(workflowApi.enqueuePublish).toHaveBeenCalledWith(
+      draft,
+      expect.objectContaining({ platform: 'mercadolibre', site: 'CBT' }),
+      'confirmed-digest',
+    )
+  })
+
+  it('重新预检时立即废弃上一次 Payload 确认', async () => {
+    const draft = createEmptyDraftDetail('mercadolibre')
+    draft.draftId = 'draft-recheck'
+    draft.site = 'CBT'
+    draft.targetSites = [{ platform: 'mercadolibre', site: 'CBT', language: 'en-US', listingCurrency: 'USD' }]
+    vi.mocked(workflowApi.saveDraft).mockResolvedValue(draftMutation(draft))
+    vi.mocked(workflowApi.publishPrecheck).mockRejectedValue(new Error('预检请求失败'))
+
+    const store = useWorkflowStore()
+    store.currentDraft = draft
+    store.storeConfig = { mercadolibre: { listing_model: 'traditional_global_items' } }
+    store.payloadPreview = {
+      platform: 'mercadolibre',
+      site: 'CBT',
+      targetKey: 'mercadolibre:cbt',
+      status: 'preview_only',
+      path: '/tmp/old-payload.json',
+      payload: {},
+      warning: '',
+      validationDigest: 'old-digest',
+      summary: null,
+      warnings: [],
+    }
+
+    await store.runPrecheck()
+
+    expect(store.payloadPreview).toBeNull()
+    expect(store.error).toBe('预检请求失败')
+  })
+
+  it('Payload 预览失败时不会保留上一次确认指纹', async () => {
+    const draft = createEmptyDraftDetail('mercadolibre')
+    draft.draftId = 'draft-preview-retry'
+    draft.site = 'CBT'
+    draft.targetSites = [{ platform: 'mercadolibre', site: 'CBT', language: 'en-US', listingCurrency: 'USD' }]
+    vi.mocked(workflowApi.saveDraft).mockResolvedValue(draftMutation(draft))
+    vi.mocked(workflowApi.previewPublishPayload).mockRejectedValue(new Error('生成 Payload 失败'))
+
+    const store = useWorkflowStore()
+    store.currentDraft = draft
+    store.storeConfig = { mercadolibre: { listing_model: 'traditional_global_items' } }
+    store.payloadPreview = {
+      platform: 'mercadolibre',
+      site: 'CBT',
+      targetKey: 'mercadolibre:cbt',
+      status: 'preview_only',
+      path: '/tmp/old-payload.json',
+      payload: {},
+      warning: '',
+      validationDigest: 'old-digest',
+      summary: null,
+      warnings: [],
+    }
+
+    await store.previewPayload()
+
+    expect(store.payloadPreview).toBeNull()
+    expect(store.error).toBe('生成 Payload 失败')
+  })
+
+  it('入队失败后撤销 Payload 确认，要求重新预览', async () => {
+    const draft = createEmptyDraftDetail('mercadolibre')
+    draft.draftId = 'draft-stale-confirmation'
+    draft.site = 'CBT'
+    draft.targetSites = [{ platform: 'mercadolibre', site: 'CBT', language: 'en-US', listingCurrency: 'USD' }]
+    vi.mocked(workflowApi.enqueuePublish).mockRejectedValue(new Error('商品或发布 payload 已变化，原发布确认已失效。'))
+
+    const store = useWorkflowStore()
+    store.currentDraft = draft
+    store.storeConfig = { mercadolibre: { listing_model: 'traditional_global_items' } }
+    store.payloadPreview = {
+      platform: 'mercadolibre',
+      site: 'CBT',
+      targetKey: 'mercadolibre:cbt',
+      status: 'preview_only',
+      path: '/tmp/stale-payload.json',
+      payload: {},
+      warning: '',
+      validationDigest: 'stale-digest',
+      summary: null,
+      warnings: [],
+    }
+
+    await store.enqueuePublish()
+
+    expect(workflowApi.enqueuePublish).toHaveBeenCalledOnce()
+    expect(store.payloadPreview).toBeNull()
+    expect(store.error).toContain('原发布确认已失效')
+  })
+
   it('保存 CBT 草稿后清除本地预检与 Payload 预览', async () => {
     const draft = createEmptyDraftDetail('mercadolibre')
     draft.draftId = 'draft-marketplace-title-edited'

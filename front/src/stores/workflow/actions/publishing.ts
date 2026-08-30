@@ -649,6 +649,8 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
     if (mercadoLibreCbtPublishBlocked()) return
     loading.value = true
     setError('')
+    // 新一轮预检会重新保存和归一化草稿，之前的 Payload 指纹不再代表本轮数据。
+    payloadPreview.value = null
     try {
       await persistCurrentDraftForPublish()
       const target = selectedPublishTarget.value
@@ -676,6 +678,8 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
     if (mercadoLibreCbtPublishBlocked()) return
     loading.value = true
     setError('')
+    // 先撤销旧确认；如果本次准备或预览失败，不能继续提交上一次的指纹。
+    payloadPreview.value = null
     try {
       await persistCurrentDraftForPublish()
       const target = selectedPublishTarget.value
@@ -719,7 +723,8 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
     loading.value = true
     setError('')
     try {
-      await persistCurrentDraftForPublish()
+      // Payload 预览已经保存了草稿并生成确认指纹。确认之后不能再执行写入，
+      // 否则保存归一化可能改变发布事实，却仍提交旧 validationDigest。
       publishJobStatus.value = null
       publishJob.value = await enqueuePublishApi(currentDraft.value, target, preview.validationDigest)
       selectedPublishJobId.value = publishJob.value.jobId
@@ -728,6 +733,8 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
       currentStage.value = 8
       addLog(`发布任务已入队：${publishJob.value.jobId}`)
     } catch (exc) {
+      // 入队失败后强制重新预览，避免重复提交已经被后端判定失效的确认指纹。
+      payloadPreview.value = null
       setError(exc instanceof Error ? exc.message : '发布入队失败')
     } finally {
       loading.value = false

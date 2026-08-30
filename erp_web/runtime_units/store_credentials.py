@@ -19,6 +19,9 @@ from erp_web.services.listing_currency_service import (
     store_listing_currency_ready,
     write_currency_state,
 )
+from erp_web.services.mercadolibre_credential_lock import (
+    MERCADOLIBRE_AUTH_LOCK,
+)
 from erp_web.stores.config_store import (
     _store_auth_result_fields,
     store_auth_failure_code,
@@ -179,6 +182,14 @@ def test_api_config(kind: str, config: dict[str, Any], test_value: str = "") -> 
 
 
 def build_mercadolibre_auth_link(app_id: str, redirect_uri: str) -> dict[str, Any]:
+    with MERCADOLIBRE_AUTH_LOCK:
+        return _build_mercadolibre_auth_link_unlocked(app_id, redirect_uri)
+
+
+def _build_mercadolibre_auth_link_unlocked(
+    app_id: str,
+    redirect_uri: str,
+) -> dict[str, Any]:
     if not app_id or not redirect_uri:
         raise RuntimeError("请先填写 Mercado Libre 的 client_id 和 redirect_uri。")
     parsed = urllib.parse.urlparse(str(redirect_uri or "").strip())
@@ -225,6 +236,13 @@ def _update_store_auth_state(config: dict[str, Any], platform: str, updates: dic
 
 
 def exchange_mercadolibre_code_from_body(body: dict[str, Any]) -> dict[str, Any]:
+    with MERCADOLIBRE_AUTH_LOCK:
+        return _exchange_mercadolibre_code_from_body_unlocked(body)
+
+
+def _exchange_mercadolibre_code_from_body_unlocked(
+    body: dict[str, Any],
+) -> dict[str, Any]:
     config = get_context().config.load_store_config()
     ml = config.setdefault("mercadolibre", {})
     app_id = str(body.get("app_id") or ml.get("app_id") or "").strip()
@@ -232,7 +250,6 @@ def exchange_mercadolibre_code_from_body(body: dict[str, Any]) -> dict[str, Any]
     redirect_uri = str(body.get("redirect_uri") or ml.get("redirect_uri") or "").strip()
     code_verifier = str(body.get("code_verifier") or ml.get("code_verifier") or "").strip()
     code_or_url = str(body.get("code_or_url") or body.get("code") or "").strip()
-    exchanged = False
     if not code_or_url:
         raise RuntimeError("请先粘贴包含 code= 的回调地址，或直接粘贴授权 code。")
     if not code_verifier:
@@ -242,80 +259,154 @@ def exchange_mercadolibre_code_from_body(body: dict[str, Any]) -> dict[str, Any]
     ml["client_secret"] = app_secret
     ml["redirect_uri"] = redirect_uri
     ml["site_id"] = str(body.get("site_id") or ml.get("site_id") or "CBT").strip() or "CBT"
-    try:
-        result = publisher.exchange_mercadolibre_code(app_id, app_secret, redirect_uri, code_or_url, code_verifier)
-        token = str(result.get("access_token") or "").strip()
-        ml["access_token"] = token
-        if result.get("refresh_token"):
-            ml["refresh_token"] = str(result.get("refresh_token") or "").strip()
-        ml["user_id"] = str(result.get("user_id") or ml.get("user_id") or "").strip()
-        exchanged = True
-        # 身份切换必须分两阶段持久化：先保存新凭据，让 ConfigStore 清除旧账号
-        # 的派生能力；再基于新 token 读取并保存 listing_model、市场映射与币种。
-        # 否则同一次 save 会把刚发现的能力误判为旧身份数据并清空。
-        ml.pop("code_verifier", None)
-        config_store = get_context().config
-        config_store.save_store_config(
-            config,
-            preserve_empty_sensitive=False,
+    result = publisher.exchange_mercadolibre_code(
+        app_id,
+        app_secret,
+        redirect_uri,
+        code_or_url,
+        code_verifier,
+    )
+    token = str(result.get("access_token") or "").strip()
+    if not token:
+        raise RuntimeError("Mercado Libre 换取 token 后未返回 access_token。")
+    ml["access_token"] = token
+    if result.get("refresh_token"):
+        ml["refresh_token"] = str(result.get("refresh_token") or "").strip()
+    oauth_user_id = str(result.get("user_id") or "").strip()
+
+    # 远端已消费 code：先在 SQLite 单独提交新 token 并移除
+    # code_verifier，再发现身份和币种。静态 JSON 写入失败不得
+    # 回滚已经轮换的单次 OAuth 凭据。
+    config_store = get_context().config
+    config_store.commit_mercadolibre_oauth_credentials(
+        ml,
+        oauth_user_id=oauth_user_id,
+        consume_code_verifier=True,
+    )
+    config = config_store.load_store_config()
+    ml = config.setdefault("mercadolibre", {})
+    sync_result = sync_mercadolibre_auth_and_currency(config)
+    currency_state = sync_result.get("currency_state")
+    currency_state = currency_state if isinstance(currency_state, dict) else {}
+    identity_ready = bool(sync_result.get("identity_ready"))
+    publish_ready = store_listing_currency_ready(currency_state)
+    publish_next_action = _store_publish_readiness_next_action(
+        "mercadolibre", currency_state
+    )
+    status = "测试成功" if identity_ready else "测试失败"
+    ml.update(
+        _store_auth_result_fields(
+            "mercadolibre",
+            status,
+            ml.get("shop_name") or ml.get("user_id") or token,
+            error_code=str(sync_result.get("identity_error_code") or ""),
+            error_message=str(sync_result.get("identity_error_message") or ""),
+            next_action=publish_next_action,
         )
-        config = config_store.load_store_config()
-        ml = config.setdefault("mercadolibre", {})
-        # code 交换成功后自动执行用户信息与币种发现，不再要求用户额外点击
-        # 用户信息步骤才能补齐发布能力。
-        currency_state = sync_mercadolibre_auth_and_currency(config)
-        publish_ready = store_listing_currency_ready(currency_state)
-        publish_next_action = _store_publish_readiness_next_action(
-            "mercadolibre", currency_state
-        )
-        ml.update(
-            _store_auth_result_fields(
-                "mercadolibre",
-                "测试成功",
-                ml.get("shop_name") or ml.get("user_id") or token,
-                next_action=publish_next_action,
-            )
-        )
-        ml["auth_error_code"] = ""
-        ml["auth_error_message"] = ""
-        append_ml_auth_test_log(
-            "exchange_code",
-            "success",
-            {"redirect_uri": redirect_uri, "code_present": bool(code_or_url)},
-            {"status": "success", "masked_account": ml.get("auth_masked_account") or "", "checked_at": ml.get("auth_checked_at") or ""},
-            next_action="code 已使用，不要长期保存。继续测试 user_info 和 refresh token。",
-        )
-        return {
-            "platform": "mercadolibre",
-            "status": "测试成功",
-            "shop_name": ml.get("shop_name") or "",
-            "user_info_checked": True,
-            "user_info": {
-                "user_id": ml.get("user_id") or "",
-                "shop_name": ml.get("shop_name") or "",
-                "site_id": ml.get("site_id") or "",
-                "account_site_id": ml.get("account_site_id") or "",
-            },
+    )
+    config_store.save_store_config(config)
+    append_ml_auth_test_log(
+        "exchange_code",
+        "success" if identity_ready else "failed",
+        {"redirect_uri": redirect_uri, "code_present": bool(code_or_url)},
+        {
+            "status": "success" if identity_ready else "failed",
             "masked_account": ml.get("auth_masked_account") or "",
             "checked_at": ml.get("auth_checked_at") or "",
-            "publish_ready": publish_ready,
-            "currency_configuration": public_currency_configuration(currency_state) if currency_state else {},
-            "storeAuthSummary": summarize_store_auth_states(config),
-            "message": "Mercado Libre 授权成功，已自动读取用户信息。",
-            "next_action": publish_next_action,
-        }
-    finally:
-        if exchanged and "code_verifier" in ml:
-            ml.pop("code_verifier", None)
-        get_context().config.save_store_config(
-            config,
-            preserve_empty_sensitive=False,
+        },
+        next_action=(
+            "code 已使用，新 token 已保存。"
+            if not identity_ready
+            else "code 已使用，不要长期保存。"
+        ),
+    )
+    return {
+        "platform": "mercadolibre",
+        "status": status,
+        "shop_name": ml.get("shop_name") or "",
+        "user_info_checked": identity_ready,
+        "user_info": {
+            "user_id": ml.get("user_id") or "",
+            "shop_name": ml.get("shop_name") or "",
+            "site_id": ml.get("site_id") or "",
+            "account_site_id": ml.get("account_site_id") or "",
+        },
+        "masked_account": ml.get("auth_masked_account") or "",
+        "checked_at": ml.get("auth_checked_at") or "",
+        "publish_ready": publish_ready,
+        "currency_configuration": (
+            public_currency_configuration(currency_state)
+            if currency_state
+            else {}
+        ),
+        "storeAuthSummary": summarize_store_auth_states(config),
+        "message": (
+            "Mercado Libre token 已保存，但用户信息同步失败。"
+            if not identity_ready
+            else "Mercado Libre 授权成功，已自动读取用户信息。"
+        ),
+        "next_action": publish_next_action,
+    }
+
+
+def refresh_mercadolibre_token_from_body(
+    body: dict[str, Any],
+    *,
+    failed_access_token: str = "",
+) -> dict[str, Any]:
+    with MERCADOLIBRE_AUTH_LOCK:
+        return _refresh_mercadolibre_token_from_body_unlocked(
+            body,
+            failed_access_token=failed_access_token,
         )
 
 
-def refresh_mercadolibre_token_from_body(body: dict[str, Any]) -> dict[str, Any]:
+def _refresh_mercadolibre_token_from_body_unlocked(
+    body: dict[str, Any],
+    *,
+    failed_access_token: str = "",
+) -> dict[str, Any]:
     config = get_context().config.load_store_config()
     ml = config.setdefault("mercadolibre", {})
+    current_access_token = str(ml.get("access_token") or "").strip()
+    failed_access_token = str(failed_access_token or "").strip()
+    if (
+        failed_access_token
+        and current_access_token
+        and current_access_token != failed_access_token
+    ):
+        # 另一个发布线程已经完成轮换；复用锁内重新读取到的新凭据，避免
+        # 对单次 refresh_token 做第二次交换。
+        identity = store_identity_for_platform("mercadolibre", ml)
+        currency_state = store_listing_currency_from_auth(
+            "mercadolibre",
+            identity,
+            ml,
+        )
+        publish_ready = store_listing_currency_ready(currency_state)
+        identity_ready = str(ml.get("auth_status") or "") == "测试成功"
+        return {
+            "platform": "mercadolibre",
+            "status": str(ml.get("auth_status") or "测试成功"),
+            "identity_ready": identity_ready,
+            "identity_error_code": str(
+                ml.get("auth_error_code")
+                or currency_state.get("currency_error_code")
+                or ""
+            ),
+            "identity_error_message": str(
+                ml.get("auth_error_message")
+                or currency_state.get("currency_error_message")
+                or ""
+            ),
+            "publish_ready": publish_ready,
+            "message": "Mercado Libre token 已由并发发布任务刷新。",
+            "next_action": _store_publish_readiness_next_action(
+                "mercadolibre",
+                currency_state,
+            ),
+            "reused_refreshed_token": True,
+        }
     app_id = str(body.get("app_id") or ml.get("app_id") or "").strip()
     app_secret = str(body.get("app_secret") or body.get("client_secret") or _mercadolibre_app_secret(ml)).strip()
     refresh_token = str(body.get("refresh_token") or ml.get("refresh_token") or "").strip()
@@ -323,44 +414,67 @@ def refresh_mercadolibre_token_from_body(body: dict[str, Any]) -> dict[str, Any]
         raise RuntimeError("请先填写 App ID、App Secret 和 Refresh Token。")
     result = publisher.refresh_mercadolibre_token(app_id, app_secret, refresh_token)
     token = str(result.get("access_token") or "").strip()
+    if not token:
+        raise RuntimeError("Mercado Libre 刷新 token 后未返回 access_token。")
     ml["app_id"] = app_id
     ml["app_secret"] = app_secret
     ml["client_secret"] = ml.get("client_secret") or app_secret
     ml["refresh_token"] = str(result.get("refresh_token") or refresh_token).strip()
     ml["access_token"] = token
-    # 与 code 交换一致，先提交新凭据并清空旧身份派生值，再发现新 token
-    # 对应的账号模型、市场映射与币种。
+    # 远端 refresh_token 已被消费：先在 SQLite 中独立提交
+    # 新凭据，再发现账号模型、市场映射与币种。此路径
+    # 保留可能正在进行的 PKCE code_verifier。
     config_store = get_context().config
-    config_store.save_store_config(config)
+    config_store.commit_mercadolibre_oauth_credentials(
+        ml,
+        oauth_user_id=str(result.get("user_id") or "").strip(),
+    )
     config = config_store.load_store_config()
     ml = config.setdefault("mercadolibre", {})
     # 刷新成功后同步用户信息与币种发现，保持店铺币种状态与远端一致。
-    currency_state = sync_mercadolibre_auth_and_currency(config)
+    sync_result = sync_mercadolibre_auth_and_currency(config)
+    currency_state = sync_result.get("currency_state")
+    currency_state = currency_state if isinstance(currency_state, dict) else {}
+    identity_ready = bool(sync_result.get("identity_ready"))
     publish_ready = store_listing_currency_ready(currency_state)
     publish_next_action = _store_publish_readiness_next_action(
         "mercadolibre", currency_state
     )
+    status = "测试成功" if identity_ready else "测试失败"
     ml.update(
         _store_auth_result_fields(
             "mercadolibre",
-            "测试成功",
-            ml.get("shop_name") or token,
+            status,
+            ml.get("shop_name") or ml.get("user_id") or token,
+            error_code=str(sync_result.get("identity_error_code") or ""),
+            error_message=str(
+                sync_result.get("identity_error_message") or ""
+            ),
             next_action=publish_next_action,
         )
     )
-    ml["auth_error_code"] = ""
-    ml["auth_error_message"] = ""
-    get_context().config.save_store_config(config)
+    config_store.save_store_config(config)
     return {
         "platform": "mercadolibre",
-        "status": "测试成功",
+        "status": status,
+        "identity_ready": identity_ready,
+        "identity_error_code": str(
+            sync_result.get("identity_error_code") or ""
+        ),
+        "identity_error_message": str(
+            sync_result.get("identity_error_message") or ""
+        ),
         "shop_name": ml.get("shop_name") or "",
         "masked_account": ml.get("auth_masked_account") or "",
         "checked_at": ml.get("auth_checked_at") or "",
         "publish_ready": publish_ready,
         "currency_configuration": public_currency_configuration(currency_state) if currency_state else {},
         "storeAuthSummary": summarize_store_auth_states(config),
-        "message": "Mercado Libre token 已刷新。",
+        "message": (
+            "Mercado Libre token 已刷新，但用户信息同步失败。"
+            if not identity_ready
+            else "Mercado Libre token 已刷新。"
+        ),
         "next_action": publish_next_action,
     }
 
@@ -775,6 +889,23 @@ def _store_credentials_unchanged(
 
 
 def test_store_auth(
+    platform: str,
+    scope: str = "",
+    *,
+    config_override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    # 任何平台的授权测试都会读取并回写完整 store
+    # config。全流程与 Mercado Libre token 轮换串行，避免
+    # Ozon/Yandex 测试在远端请求后用旧快照覆盖新 token。
+    with MERCADOLIBRE_AUTH_LOCK:
+        return _test_store_auth_unlocked(
+            platform,
+            scope,
+            config_override=config_override,
+        )
+
+
+def _test_store_auth_unlocked(
     platform: str,
     scope: str = "",
     *,

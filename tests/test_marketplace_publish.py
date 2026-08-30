@@ -184,6 +184,25 @@ def _traditional_global_items_payload() -> dict:
     )
 
 
+def test_mercadolibre_payload_product_preserves_explicit_empty_draft_upc() -> None:
+    prepared = publish_mercadolibre.mercadolibre_product_for_payload(
+        {
+            "name": "GTIN exempt product",
+            "upc": "725272000243",
+            "drafts": {
+                "mercadolibre": {
+                    "site": "CBT",
+                    "upc": "",
+                    "allow_gtin_exemption": True,
+                }
+            },
+        }
+    )
+
+    assert prepared["upc"] == ""
+    assert prepared["drafts"]["mercadolibre"]["upc"] == ""
+
+
 def test_mercadolibre_user_products_payload_matches_siteless_contract() -> None:
     payload = _user_products_payload()
 

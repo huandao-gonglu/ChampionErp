@@ -23,6 +23,7 @@ from .publish_helpers import (
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .publish_context import PreparedPublishContext
 from .publish_mercadolibre import (
+    ensure_mercadolibre_auth_ready,
     ensure_mercadolibre_pictures_uploaded,
     map_mercadolibre_publish_error,
 )
@@ -77,10 +78,46 @@ class MercadoLibrePublishingAdapter:
 
     platform = "mercadolibre"
 
+    @staticmethod
+    def _require_auth_token(
+        config: dict[str, Any],
+        *,
+        force_refresh: bool = False,
+    ) -> str:
+        auth = ensure_mercadolibre_auth_ready(
+            config,
+            force_refresh=force_refresh,
+        )
+        token = str(auth.get("token") or "").strip()
+        if auth.get("ok") and token:
+            return token
+        message = str(auth.get("message") or "Mercado Libre 授权不可用。")
+        raise PublishAdapterError(
+            str(auth.get("platform_error_code") or "MERCADOLIBRE_AUTH_FAILED"),
+            message,
+            retryable=bool(auth.get("retryable")),
+            details={"field_errors": {"auth": [message]}},
+        )
+
+    @staticmethod
+    def _is_safe_access_token_rejection(error: Exception) -> bool:
+        if not isinstance(error, PublishAdapterError):
+            return False
+        try:
+            http_status = int(error.details.get("http_status") or 0)
+        except (TypeError, ValueError):
+            return False
+        return (
+            error.code == "MERCADOLIBRE_AUTH_FAILED"
+            and http_status == 401
+            and error.details.get("remote_write_dispatched") is not True
+            and error.details.get("outcome_unknown") is not True
+        )
+
     def prepare_product(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         # User Products 只接受 Mercado picture ID。统一发布队列必须在编译
         # payload 前完成上传，不能依赖已删除的特殊“真实发布”入口。
-        token = str((config.get(self.platform) or {}).get("access_token") or "")
+        token = self._require_auth_token(config)
         uploaded = ensure_mercadolibre_pictures_uploaded(product, token)
         if not uploaded.get("ok"):
             errors = [
@@ -151,7 +188,23 @@ class MercadoLibrePublishingAdapter:
 
     def publish_payload(self, payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         token = str((config.get(self.platform) or {}).get("access_token") or "")
-        return marketplace_api.publish_mercadolibre(payload, token)
+        if not token:
+            token = self._require_auth_token(config)
+        try:
+            return marketplace_api.publish_mercadolibre(payload, token)
+        except Exception as exc:
+            if not self._is_safe_access_token_rejection(exc):
+                raise
+            # 只有 HTTP 边界明确返回、且未进入 outcome_unknown 的 401 才
+            # 证明远端拒绝了写入。刷新后仅重试一次，避免重复创建刊登。
+            refreshed_token = self._require_auth_token(
+                config,
+                force_refresh=True,
+            )
+            return marketplace_api.publish_mercadolibre(
+                payload,
+                refreshed_token,
+            )
 
     def map_publish_error(self, error: Exception) -> dict[str, Any]:
         if isinstance(error, PublishAdapterError):
