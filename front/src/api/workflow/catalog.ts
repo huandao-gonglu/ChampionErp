@@ -72,6 +72,11 @@ export async function loadDraft(draftId: string): Promise<DraftMutationResponse>
   return normalizeDraftMutation(response.data)
 }
 
+export async function duplicateDraft(draftId: string): Promise<DraftMutationResponse> {
+  const response = await apiClient.post('/api/duplicate-draft', { draft_id: draftId })
+  return normalizeDraftMutation(response.data)
+}
+
 export async function saveDraft(draft: DraftDetail): Promise<DraftMutationResponse> {
   const response = await apiClient.post('/api/save-draft', { draft: toBackendDraftDetail(draft) })
   return normalizeDraftMutation(response.data)

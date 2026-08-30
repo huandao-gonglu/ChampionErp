@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { useClipboard } from '@/composables/useClipboard'
+import { computed, ref, watch } from 'vue'
 import DraftLanguageSelect from '@/components/domain/DraftLanguageSelect.vue'
 import DraftMarketSelect from '@/components/domain/DraftMarketSelect.vue'
 import { statusBadgeClass, workflowStatusLabel } from '@/utils/status'
@@ -17,6 +16,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   refresh: []
   edit: [item: DraftIndexItem]
+  duplicateDraft: [item: DraftIndexItem]
   deleteDraft: [item: DraftIndexItem]
   deleteDrafts: [items: DraftIndexItem[]]
   updateLanguage: [item: DraftIndexItem, language: string]
@@ -26,9 +26,6 @@ const emit = defineEmits<{
 const platformFilter = ref<'all' | Marketplace>('all')
 const draftScope = ref<'active' | 'published' | 'all'>('active')
 const selectedDraftIds = ref<string[]>([])
-const copiedDraftId = ref('')
-const { copy: copyToClipboard } = useClipboard()
-let copiedDraftTimer: number | null = null
 const isPublishedDraft = (item: DraftIndexItem) => String(item.status || '').trim().toLowerCase() === 'published'
 const allDraftRows = computed(() => props.drafts.filter((item) => {
   if (platformFilter.value !== 'all' && !draftMatchesPlatform(item, platformFilter.value)) return false
@@ -82,25 +79,9 @@ function deleteSelectedDrafts() {
   emit('deleteDrafts', selectedDrafts.value)
 }
 
-async function copyDraftId(item: DraftIndexItem) {
-  const draftId = draftIdOf(item)
-  if (!draftId) return
-  await copyToClipboard(draftId)
-  copiedDraftId.value = draftId
-  if (copiedDraftTimer) window.clearTimeout(copiedDraftTimer)
-  copiedDraftTimer = window.setTimeout(() => {
-    copiedDraftId.value = ''
-    copiedDraftTimer = null
-  }, 1500)
-}
-
 watch(() => props.drafts.map(draftIdOf), (draftIds) => {
   const existingIds = new Set(draftIds)
   selectedDraftIds.value = selectedDraftIds.value.filter((id) => existingIds.has(id))
-})
-
-onBeforeUnmount(() => {
-  if (copiedDraftTimer) window.clearTimeout(copiedDraftTimer)
 })
 </script>
 
@@ -153,7 +134,7 @@ onBeforeUnmount(() => {
           <col class="w-[150px]" />
           <col class="w-[88px]" />
           <col class="w-[14%]" />
-          <col class="w-[150px]" />
+          <col class="w-[176px]" />
         </colgroup>
         <thead class="border-b border-accent-200 bg-accent-50 text-xs text-accent-500 dark:border-dark-700 dark:bg-dark-950/70 dark:text-accent-400">
           <tr class="whitespace-nowrap">
@@ -205,9 +186,7 @@ onBeforeUnmount(() => {
             <td class="p-2">
               <div class="flex flex-nowrap gap-1">
                 <button class="btn btn-primary shrink-0 whitespace-nowrap px-1.5 py-1 text-xs" :disabled="props.loading || !draftIdOf(row)" @click="emit('edit', row)">编辑</button>
-                <button class="btn btn-outline shrink-0 whitespace-nowrap px-1.5 py-1 text-xs" :disabled="props.loading || !draftIdOf(row)" :title="draftIdOf(row) || '当前草稿暂无 ID'" @click="copyDraftId(row)">
-                  {{ copiedDraftId === draftIdOf(row) ? '已复制' : '复制' }}
-                </button>
+                <button data-testid="duplicate-draft-button" class="btn btn-outline shrink-0 whitespace-nowrap px-1.5 py-1 text-xs" :disabled="props.loading || !draftIdOf(row)" title="创建一份独立草稿副本" @click="emit('duplicateDraft', row)">复制草稿</button>
                 <button class="btn btn-outline shrink-0 whitespace-nowrap px-1.5 py-1 text-xs text-rose-600 hover:border-rose-300 hover:bg-rose-50 dark:text-rose-200 dark:hover:border-rose-500/50 dark:hover:bg-rose-500/10" :disabled="props.loading" @click="emit('deleteDraft', row)">删除</button>
               </div>
             </td>

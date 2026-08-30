@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import DraftBoxPanel from '@/components/domain/DraftBoxPanel.vue'
 import type { DraftIndexItem, MarketplaceOption } from '@/types/workflow'
 
@@ -55,6 +55,29 @@ function draft(draftId: string, status: string, title: string): DraftIndexItem {
 }
 
 describe('DraftBoxPanel', () => {
+  it('点击复制草稿时请求创建副本，不操作剪贴板', async () => {
+    const row = draft('draft-to-copy', 'claimed', '待复制草稿')
+    const writeText = vi.fn()
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    const wrapper = mount(DraftBoxPanel, {
+      props: {
+        drafts: [row],
+        platformOptions: [],
+        storeConfig: {},
+        loading: false,
+      },
+    })
+
+    await wrapper.get('[data-testid="duplicate-draft-button"]').trigger('click')
+
+    expect(wrapper.emitted('duplicateDraft')).toEqual([[row]])
+    expect(writeText).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('复制草稿')
+  })
+
   it('活动草稿不会因新增或中间状态而从草稿箱消失', async () => {
     const wrapper = mount(DraftBoxPanel, {
       props: {

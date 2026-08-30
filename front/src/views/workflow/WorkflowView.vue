@@ -490,6 +490,7 @@ watch(
               @refresh="store.refreshDraftsIndex"
               @update-language="store.updateDraftLanguage"
               @edit="openDraftWorkspace"
+              @duplicate-draft="store.duplicateDraft"
               @delete-draft="deleteDraft"
               @delete-drafts="deleteDrafts"
               @update-targets="store.updateDraftTargets"

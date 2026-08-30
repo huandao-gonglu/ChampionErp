@@ -235,6 +235,7 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
         required_any=(("draft_ids", "draftIds", "draft_id", "draftId"),)
     ),
     "/api/delete-products": _contract(required=("product_ids",)),
+    "/api/duplicate-draft": _contract(required=("draft_id",)),
     "/api/generate-copy": _PRODUCT_OR_DRAFT,
     "/api/generate-copy-batch": _contract(required=("product_ids",)),
     "/api/generate-image-prompts": _PRODUCT,

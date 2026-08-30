@@ -680,6 +680,19 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   Mercado Libre 的静态推断重置为 unresolved；静态 JSON 剥离派生币种字段并按授权状态
   迁移 `account_site_id`。
 
+## 商品与草稿
+
+- `erp_web/http_route_units/product_routes.py`：商品与草稿 HTTP 入口；路由只负责通过
+  `validate_request_payload(..., endpoint=handler.path)` 校验请求并把编排交给
+  `erp_web/facades/product_facade.py`。
+- `POST /api/duplicate-draft` 的当前唯一语义是：以一个独立草稿为来源，创建具有新
+  `draft_id` 的新刊登草稿。它复制来源草稿的可编辑内容及待复核项，但必须重置卖家
+  SKU、UPC、预检结果、发布状态及全部远端刊登身份；不得复用来源草稿身份、把操作退化为
+  复制 ID/文本，也不得保留旧复制路径作为 fallback。
+- `erp_web/facades/product_facade.py::duplicate_draft_payload`：草稿复制请求的唯一 HTTP
+  编排入口；`erp_web/stores/product_store.py::ProductStore` 仍是草稿规范化、复制、
+  持久化和索引更新的唯一 owner。
+
 ## 商品发布
 
 - `erp_web/product_model/platform_sku.py`：卖家 SKU 的唯一生成规则。SKU 稳定绑定

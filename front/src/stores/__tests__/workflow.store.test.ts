@@ -39,6 +39,7 @@ vi.mock('@/api/workflow/catalog', () => ({
   collectBatch: vi.fn(),
   claimProducts: vi.fn(),
   loadDraft: vi.fn(),
+  duplicateDraft: vi.fn(),
   saveDraft: vi.fn(),
   deleteDraft: vi.fn(),
 }))
@@ -1835,6 +1836,48 @@ describe('workflow store live API flow', () => {
     await store.claimCurrentProduct()
 
     expect(workflowApi.claimProducts).toHaveBeenCalledWith(['real-product-1'], 'yandex')
+  })
+
+  it('duplicates a draft and replaces the draft index with the API result', async () => {
+    const source: DraftIndexItem = {
+      draftId: 'draft-1',
+      productId: 'product-1',
+      sourceProductId: 'product-1',
+      platform: 'mercadolibre',
+      platforms: ['mercadolibre'],
+      targetSites: [{ platform: 'mercadolibre', site: 'MLM', language: 'es', listingCurrency: 'MXN' }],
+      site: 'MLM',
+      language: 'es',
+      status: 'claimed',
+      title: '原草稿',
+      productTitle: '来源商品',
+      mainImage: '',
+      sourcePlatform: '1688',
+      sourceUrl: 'https://example.com/source',
+      categoryId: '',
+      categoryPath: '',
+      publishStatus: '',
+      createdAt: '',
+      updatedAt: '',
+      productFilePath: '',
+      raw: {},
+    }
+    const copy = { ...source, draftId: 'draft-2', title: '原草稿（副本）' }
+    const copiedDraft = createEmptyDraftDetail('mercadolibre')
+    copiedDraft.draftId = copy.draftId
+    copiedDraft.productId = copy.productId
+    copiedDraft.sourceProductId = copy.sourceProductId
+    copiedDraft.title = copy.title
+    vi.mocked(workflowApi.duplicateDraft).mockResolvedValue(draftMutation(copiedDraft, [source, copy]))
+
+    const store = useWorkflowStore()
+    store.draftsIndex = [source]
+    await store.duplicateDraft(source)
+
+    expect(workflowApi.duplicateDraft).toHaveBeenCalledWith('draft-1')
+    expect(store.draftsIndex).toEqual([source, copy])
+    expect(store.logs[0]).toContain('已复制草稿：原草稿')
+    expect(store.error).toBe('')
   })
 
   it('updates one draft to a selected secondary site', async () => {

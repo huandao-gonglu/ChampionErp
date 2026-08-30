@@ -53,6 +53,13 @@ def handle_load_draft(handler: JsonRequestHandler) -> None:
     handler.send_json(result, status)
 
 
+def handle_duplicate_draft(handler: JsonRequestHandler) -> None:
+    result, status = product_facade.duplicate_draft_payload(
+        validate_request_payload(handler.read_body(), endpoint=handler.path)
+    )
+    handler.send_json(result, status)
+
+
 def handle_save_draft(handler: JsonRequestHandler) -> None:
     result, status = product_facade.save_draft_payload(
         validate_request_payload(handler.read_body(), endpoint=handler.path)
@@ -82,6 +89,7 @@ POST_HANDLERS: dict[str, PostHandler] = {
     "/api/save-draft": handle_save_draft,
     "/api/load-product": handle_load_product,
     "/api/load-draft": handle_load_draft,
+    "/api/duplicate-draft": handle_duplicate_draft,
     "/api/delete-draft": handle_delete_draft,
     "/api/delete-products": handle_delete_products,
 }

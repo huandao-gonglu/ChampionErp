@@ -2,6 +2,7 @@ import {
   claimProducts as claimProductsApi,
   deleteDraft as deleteDraftApi,
   deleteProducts as deleteProductsApi,
+  duplicateDraft as duplicateDraftApi,
   fetchDraftsIndex,
   fetchProductsIndex,
   generateCopy as generateCopyApi,
@@ -187,6 +188,26 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '加载核价草稿失败')
       return false
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function duplicateDraft(item: DraftIndexItem) {
+    const draftId = String(item.draftId || '').trim()
+    if (!draftId) {
+      setError('草稿缺少 ID，无法复制。')
+      return
+    }
+    loading.value = true
+    setError('')
+    try {
+      const result = await duplicateDraftApi(draftId)
+      applyMutationIndexes(result)
+      const sourceTitle = item.title || item.productTitle || draftId
+      addLog(result.message || `已复制草稿：${sourceTitle}`)
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : '复制草稿失败')
     } finally {
       loading.value = false
     }
@@ -711,7 +732,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
 
 
   return {
-    refreshProductsIndex, refreshDraftsIndex, loadProduct, loadDraft, loadDraftForPricing, updateDraftTargets,
+    refreshProductsIndex, refreshDraftsIndex, loadProduct, loadDraft, loadDraftForPricing, duplicateDraft, updateDraftTargets,
     updateDraftLanguage, deleteDraft, deleteDrafts, deleteProduct, deleteSelectedProducts, toggleProductSelection,
     selectAllProducts, setClaimPlatforms, claimSelectedProducts, claimCurrentProduct, generateCopyForSelectedProducts, enqueueSelectedProducts,
     uploadReferenceImages, clearSourceImages, saveCurrentImagePool, setMainImage, deleteImages, editImagesWithPrompt,

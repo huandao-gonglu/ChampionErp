@@ -53,6 +53,14 @@ def load_draft_payload(body: dict[str, Any]) -> ResponseWithStatus:
     return (error or result), status
 
 
+def duplicate_draft_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    products = get_context().products
+    result, error, status = products.duplicate_draft_from_index(
+        body.get("draft_id", "")
+    )
+    return (error or result), status
+
+
 def save_draft_payload(body: dict[str, Any]) -> ResponseWithStatus:
     products = get_context().products
     draft = body.get("draft") if isinstance(body.get("draft"), dict) else body
@@ -108,6 +116,7 @@ __all__ = [
     "calculate_price",
     "delete_draft_payload",
     "delete_products_payload",
+    "duplicate_draft_payload",
     "import_upcs_payload",
     "load_draft_payload",
     "load_product_payload",

@@ -230,6 +230,231 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
 
         self.with_temp_app(run)
 
+    def test_duplicate_draft_copies_content_and_resets_publish_identity(self) -> None:
+        def run(app_dir: Path) -> None:
+            product = sample_product(
+                "Draft duplicate",
+                "https://example.com/draft-duplicate",
+            )
+            product["publish_preview"] = {
+                "mercadolibre": {"ok": True, "checked_at": "2026-08-28T08:00:00Z"}
+            }
+            saved = get_context().products.save_product(product)
+            original_id = saved["drafts"]["mercadolibre"]["draft_id"]
+            original = get_context().db.load_draft_model(original_id)
+            precheck = {
+                "ok": True,
+                "checked_at": "2026-08-28T08:00:00Z",
+            }
+            publish_task = {
+                "job_id": "publish-original",
+                "item_id": "CBT123456",
+            }
+            validation_errors = [
+                {
+                    "code": "NEED_REVIEW_ATTRIBUTES",
+                    "field": "attributes.BRAND",
+                    "message": "请确认品牌",
+                }
+            ]
+            persisted_validation_errors = [
+                *validation_errors,
+                {
+                    "code": "PRICE_REQUIRED",
+                    "field": "price",
+                    "message": "旧预检价格错误",
+                },
+            ]
+            original_target = dict(original["target_sites"][0])
+            original_target.update(
+                {
+                    "category_id": "CBT-DUPLICATE",
+                    "category_path": "Home / Duplicate",
+                    "attributes": {"BRAND": "BrandX", "MODEL": "D1"},
+                    "sites_to_sell": [
+                        {
+                            "site_id": "MLM",
+                            "logistic_type": "remote",
+                            "price": "29.90",
+                            "status": "paused",
+                        }
+                    ],
+                    "validation_errors": persisted_validation_errors,
+                    "category_precheck": precheck,
+                    "last_precheck": precheck,
+                    "last_precheck_target": {
+                        "platform": "mercadolibre",
+                        "site": "CBT",
+                    },
+                    "publish_status": "real_publish_success",
+                    "status": "published",
+                    "last_publish_task": publish_task,
+                }
+            )
+            original.update(
+                {
+                    "title": "Duplicated editable title",
+                    "description": "Duplicated editable description",
+                    "category_id": "CBT-DUPLICATE",
+                    "category_path": "Home / Duplicate",
+                    "attributes": {"BRAND": "BrandX", "MODEL": "D1"},
+                    "images": [
+                        {"asset_id": "img_1", "role": "main", "order": 0}
+                    ],
+                    "copy_generated_at": "2026-08-28T07:00:00Z",
+                    "sku": "ML-ORIGINAL-SKU",
+                    "upc": "012345678905",
+                    "copy_operation_key": "copy-operation-original",
+                    "validation_errors": persisted_validation_errors,
+                    "category_precheck": precheck,
+                    "last_precheck": precheck,
+                    "last_precheck_target": original_target,
+                    "publish_status": "real_publish_success",
+                    "status": "published",
+                    "last_publish_task": publish_task,
+                    "publication": {
+                        "model": "user_products",
+                        "siteless_user_product_id": "UP-ORIGINAL",
+                    },
+                    "target_sites": [original_target],
+                }
+            )
+            get_context().db.upsert_draft_model(
+                saved["product_id"],
+                "mercadolibre",
+                original,
+            )
+            with get_context().db._connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE platform_drafts
+                    SET created_at = ?, updated_at = ?
+                    WHERE draft_id = ?
+                    """,
+                    (
+                        "2024-01-01T00:00:00Z",
+                        "2024-01-02T00:00:00Z",
+                        original_id,
+                    ),
+                )
+                conn.commit()
+            original_before = get_context().db.load_draft_model(original_id)
+
+            with patch.object(
+                erp_db,
+                "utc_now",
+                return_value="2026-08-30T09:00:00Z",
+            ):
+                result, error, status = (
+                    get_context().products.duplicate_draft_from_index(
+                        original_id
+                    )
+                )
+
+            self.assertIsNone(error)
+            self.assertEqual(status, 200)
+            self.assertTrue(result["ok"])
+            duplicated = result["draft"]
+            duplicated_target = duplicated["target_sites"][0]
+            self.assertNotEqual(duplicated["draft_id"], original_id)
+            self.assertEqual(duplicated["product_id"], original_before["product_id"])
+            self.assertEqual(
+                duplicated["source_product_id"],
+                original_before["source_product_id"],
+            )
+            self.assertEqual(duplicated["platform"], original_before["platform"])
+            for field in (
+                "title",
+                "description",
+                "images",
+                "category_id",
+                "category_path",
+                "attributes",
+                "pricing",
+            ):
+                self.assertEqual(duplicated[field], original_before[field])
+            self.assertEqual(duplicated["validation_errors"], validation_errors)
+            for field in (
+                "platform",
+                "site",
+                "language",
+                "category_id",
+                "category_path",
+                "attributes",
+            ):
+                self.assertEqual(
+                    duplicated_target[field],
+                    original_before["target_sites"][0][field],
+                )
+            self.assertEqual(
+                duplicated_target["validation_errors"],
+                validation_errors,
+            )
+            self.assertEqual(
+                duplicated_target["sites_to_sell"],
+                [
+                    {
+                        "site_id": "MLM",
+                        "logistic_type": "remote",
+                        "price": "29.90",
+                    }
+                ],
+            )
+            self.assertNotEqual(duplicated["sku"], original_before["sku"])
+            self.assertTrue(duplicated["sku"].startswith("ML-"))
+            self.assertEqual(duplicated["upc"], "")
+            self.assertEqual(duplicated["copy_operation_key"], "")
+            self.assertEqual(duplicated["created_at"], "2026-08-30T09:00:00Z")
+            self.assertEqual(duplicated["updated_at"], "2026-08-30T09:00:00Z")
+            self.assertEqual(duplicated["status"], "images_ready")
+            for field in ("publish_status",):
+                self.assertEqual(duplicated[field], "")
+                self.assertEqual(duplicated_target[field], "")
+            for field in (
+                "category_precheck",
+                "last_precheck",
+                "last_precheck_target",
+                "last_publish_task",
+            ):
+                self.assertEqual(duplicated[field], {})
+                self.assertEqual(duplicated_target[field], {})
+            self.assertEqual(duplicated["publication"], {})
+            self.assertEqual(duplicated_target["status"], "")
+            self.assertEqual(
+                get_context().db.load_draft_model(original_id),
+                original_before,
+            )
+            self.assertTrue(
+                result["productContext"]["raw"]["publish_preview"][
+                    "mercadolibre"
+                ]["ok"]
+            )
+            self.assertEqual(
+                [item["draft_id"] for item in result["draftsIndex"]],
+                [duplicated["draft_id"]],
+            )
+            self.assertEqual(result["message"], "草稿已复制。")
+
+        self.with_temp_app(run)
+
+    def test_duplicate_draft_reports_missing_identity_and_unknown_draft(self) -> None:
+        def run(app_dir: Path) -> None:
+            _result, missing_error, missing_status = (
+                get_context().products.duplicate_draft_from_index("")
+            )
+            _result, unknown_error, unknown_status = (
+                get_context().products.duplicate_draft_from_index(
+                    "draft-does-not-exist"
+                )
+            )
+
+            self.assertEqual(missing_status, 400)
+            self.assertEqual(missing_error["error"], "draft_id 不能为空")
+            self.assertEqual(unknown_status, 404)
+            self.assertEqual(unknown_error["error"], "草稿不存在")
+
+        self.with_temp_app(run)
+
     def test_save_product_profile_does_not_overwrite_platform_draft(self) -> None:
         def run(app_dir: Path) -> None:
             saved = get_context().products.save_product(sample_product("Profile boundary", "https://example.com/profile-boundary"))

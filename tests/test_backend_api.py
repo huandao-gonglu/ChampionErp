@@ -265,6 +265,65 @@ def test_save_product_and_publish_precheck_api_exist(backend_server: str, sample
     assert "mercadolibre" in precheck["platforms"]
 
 
+def test_duplicate_draft_api_creates_an_independent_draft(
+    backend_server: str,
+    sample_product: dict,
+) -> None:
+    sample_product["source"]["source_url"] = (
+        "https://detail.1688.com/offer/duplicate-draft-api.html"
+    )
+    saved = post_json(
+        backend_server,
+        "/api/save-product",
+        {"product": sample_product},
+    )
+    claimed = post_json(
+        backend_server,
+        "/api/claim-products",
+        {
+            "product_ids": [saved["product"]["product_id"]],
+            "platform": "mercadolibre",
+        },
+    )
+    original_id = claimed["items"][0]["draft_ids"][0]
+
+    duplicated = post_json(
+        backend_server,
+        "/api/duplicate-draft",
+        {"draft_id": original_id},
+    )
+
+    assert duplicated["ok"] is True
+    assert duplicated["draft"]["draft_id"] != original_id
+    assert duplicated["draft"]["product_id"] == saved["product"]["product_id"]
+    assert duplicated["draft"]["sku"]
+    assert duplicated["draft"]["upc"] == ""
+    assert any(
+        item["draft_id"] == original_id for item in duplicated["draftsIndex"]
+    )
+    assert any(
+        item["draft_id"] == duplicated["draft"]["draft_id"]
+        for item in duplicated["draftsIndex"]
+    )
+
+    missing = post_json(
+        backend_server,
+        "/api/duplicate-draft",
+        {},
+        expected_status=400,
+    )
+    unknown = post_json(
+        backend_server,
+        "/api/duplicate-draft",
+        {"draft_id": "draft-does-not-exist"},
+        expected_status=404,
+    )
+    assert missing["ok"] is False
+    assert "draft_id" in missing["error"]
+    assert unknown["ok"] is False
+    assert unknown["error"] == "草稿不存在"
+
+
 def test_product_research_hot_product_api_returns_candidates(backend_server: str) -> None:
     data = post_json(
         backend_server,

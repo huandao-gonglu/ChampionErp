@@ -150,6 +150,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     loadProduct: combined.loadProduct,
     loadDraft: combined.loadDraft,
     loadDraftForPricing: combined.loadDraftForPricing,
+    duplicateDraft: combined.duplicateDraft,
     updateDraftTargets: combined.updateDraftTargets,
     updateDraftSitesToSell: combined.updateDraftSitesToSell,
     updateDraftLanguage: combined.updateDraftLanguage,

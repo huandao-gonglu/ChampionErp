@@ -999,6 +999,122 @@ class ProductStore:
             "draftsIndex": self.load_drafts_index(),
         }, None, 200
 
+    def duplicate_draft_from_index(
+        self,
+        draft_id: str,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
+        """复制独立草稿内容，并为副本创建新的本地与平台身份。"""
+
+        draft_id = str(draft_id or "").strip()
+        if not draft_id:
+            return {}, {"ok": False, "error": "draft_id 不能为空"}, 400
+        existing = self._db.load_draft_model(draft_id)
+        if not existing:
+            return {}, {
+                "ok": False,
+                "error": "草稿不存在",
+                "draft_id": draft_id,
+            }, 404
+
+        product_id = str(existing.get("product_id") or "").strip()
+        source_product_id = str(
+            existing.get("source_product_id") or product_id
+        ).strip()
+        platform = str(existing.get("platform") or "").strip().lower()
+        if not product_id or platform not in PLATFORMS:
+            return {}, {
+                "ok": False,
+                "error": "草稿关联商品或平台无效",
+                "draft_id": draft_id,
+            }, 400
+        product = self._db.load_product_model(product_id)
+        if not product:
+            return {}, {
+                "ok": False,
+                "error": "草稿关联商品不存在",
+                "draft_id": draft_id,
+            }, 404
+
+        duplicated = deepcopy(existing)
+        # 本地草稿身份、平台卖家身份与操作幂等键均不能由原草稿继承。
+        for field in ("draft_id", "product_id", "created_at", "updated_at"):
+            duplicated.pop(field, None)
+        duplicated.update(
+            {
+                "sku": "",
+                "upc": "",
+                "copy_operation_key": "",
+                "validation_errors": _pending_attribute_review_errors(
+                    existing.get("validation_errors")
+                ),
+            }
+        )
+        for field in _DRAFT_SERVER_OWNED_PUBLISH_FIELDS:
+            duplicated[field] = deepcopy(
+                _SERVER_OWNED_PUBLISH_FIELD_DEFAULTS[field]
+            )
+
+        targets: list[dict[str, Any]] = []
+        for raw_target in (
+            duplicated.get("target_sites")
+            if isinstance(duplicated.get("target_sites"), list)
+            else []
+        ):
+            if not isinstance(raw_target, dict):
+                continue
+            target = deepcopy(raw_target)
+            for field in _TARGET_SERVER_OWNED_PUBLISH_FIELDS:
+                target[field] = deepcopy(
+                    _SERVER_OWNED_PUBLISH_FIELD_DEFAULTS[field]
+                )
+            target["validation_errors"] = _pending_attribute_review_errors(
+                raw_target.get("validation_errors")
+            )
+            if isinstance(target.get("sites_to_sell"), list):
+                operations: list[dict[str, Any]] = []
+                for raw_operation in target["sites_to_sell"]:
+                    if not isinstance(raw_operation, dict):
+                        continue
+                    operation = deepcopy(raw_operation)
+                    operation.pop("status", None)
+                    operations.append(operation)
+                target["sites_to_sell"] = operations
+            targets.append(target)
+        duplicated["target_sites"] = targets
+
+        # 同一商品可能保留原草稿的发布预览；副本状态只能按自身内容重新计算。
+        product_for_status = deepcopy(product)
+        product_for_status.pop("publish_preview", None)
+        product_drafts = (
+            deepcopy(product_for_status.get("drafts"))
+            if isinstance(product_for_status.get("drafts"), dict)
+            else {}
+        )
+        product_drafts[platform] = duplicated
+        product_for_status["drafts"] = product_drafts
+        duplicated["status"] = self.draft_workflow_status(
+            product_for_status,
+            platform,
+        )
+
+        saved_draft_id = self._db.upsert_draft_model(
+            product_id,
+            platform,
+            duplicated,
+        )
+        draft = self._db.load_draft_model(saved_draft_id)
+        product = normalize_persisted_product_fields(
+            self._db.load_product_model(source_product_id or product_id)
+        )
+        return {
+            "ok": True,
+            "draft": draft,
+            "productContext": self.draft_product_context(product),
+            "productsIndex": self.load_products_index(),
+            "draftsIndex": self.load_drafts_index(),
+            "message": "草稿已复制。",
+        }, None, 200
+
     def save_draft_detail(self, draft_payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
         draft_id = str(draft_payload.get("draft_id") or draft_payload.get("draftId") or "").strip()
         if not draft_id:

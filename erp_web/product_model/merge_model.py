@@ -155,6 +155,19 @@ def normalize_draft_target_site(
             "Mercado Libre Global Selling 只允许 CBT/Siteless 一级草稿；"
             "MLM、MLB、MLC、MCO 等站点只能通过 sites_to_sell 选择"
         )
+    # 生命周期字段的显式空值表示“已清除”，不能按普通内容字段回退到根草稿。
+    raw_publish_status = (
+        raw.get("publish_status")
+        if "publish_status" in raw
+        else raw.get("publishStatus")
+        if "publishStatus" in raw
+        else fallback.get("publish_status")
+    )
+    raw_status = (
+        raw.get("status")
+        if "status" in raw
+        else fallback.get("status")
+    )
     canonical = {
         "platform": target_platform,
         "site": str(selected.get("code") or raw_site),
@@ -240,15 +253,10 @@ def normalize_draft_target_site(
             else {}
         ),
         "publish_status": str(
-            raw.get("publish_status")
-            or raw.get("publishStatus")
-            or fallback.get("publish_status")
-            or ""
+            raw_publish_status or ""
         ).strip(),
         "status": str(
-            raw.get("status")
-            or fallback.get("status")
-            or ""
+            raw_status or ""
         ).strip(),
         "last_precheck": deepcopy(
             raw.get("last_precheck")
