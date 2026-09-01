@@ -33,6 +33,59 @@ function passedPrecheck(): PublishPrecheck {
   return { ok: true, errors: [], warnings: [], errorItems: [], warningItems: [], checkedAt: '2026-08-04T00:00:00Z' }
 }
 
+function layeredPrecheck(ok = true): PublishPrecheck {
+  return {
+    ok,
+    errors: ok ? [] : ['阿根廷售价无效（重新核价）'],
+    warnings: [],
+    errorItems: ok ? [] : [{
+      code: 'MARKET_PRICE_INVALID',
+      field: 'price',
+      message: '阿根廷售价无效',
+      severity: 'error',
+      nextAction: '重新核价',
+    }],
+    warningItems: [],
+    checkedAt: '2026-08-30T00:00:00Z',
+    parent: {
+      ok: true,
+      status: 'passed',
+      errors: [],
+      warnings: [],
+    },
+    marketChecks: [
+      {
+        siteId: 'MLA',
+        logisticType: 'remote',
+        ok,
+        status: ok ? 'passed' : 'blocked',
+        errors: ok ? [] : [{
+          code: 'MARKET_PRICE_INVALID',
+          field: 'price',
+          message: '阿根廷售价无效',
+          severity: 'error',
+          nextAction: '重新核价',
+        }],
+        warnings: [],
+      },
+      {
+        siteId: 'MLC',
+        logisticType: 'remote',
+        ok: true,
+        status: 'passed',
+        errors: [],
+        warnings: [{
+          code: 'SHIPPING_NOTICE',
+          field: 'shipping',
+          message: '请复核智利市场运费报价',
+          severity: 'warning',
+          nextAction: '返回核价页确认运费报价',
+        }],
+      },
+    ],
+  }
+}
+
 function payloadPreview(): PayloadPreviewState {
   return {
     platform: 'yandex',
@@ -102,6 +155,10 @@ describe('PublishPrecheckPanel', () => {
       weightKg: '0.182',
     }
     const wrapper = mount(PublishPrecheckPanel, { props })
+    const packageExplanation = wrapper.get('[data-testid="shipping-package-explanation"]')
+    expect(packageExplanation.text()).toContain('实际发货包装')
+    expect(packageExplanation.text()).toContain('拆装并包装后的外箱尺寸与毛重')
+    expect(packageExplanation.text()).toContain('不是组装后的商品尺寸')
     const updates = [
       ['lengthCm', '61'],
       ['widthCm', '56'],
@@ -213,7 +270,7 @@ describe('PublishPrecheckPanel', () => {
     expect(wrapper.text()).not.toContain('SOURCE-SKU')
   })
 
-  it('仅在当前预检通过或草稿已 ready 时允许准备素材并预览 Payload', async () => {
+  it('其他平台仍可从已持久化的 ready 状态继续准备 Payload', async () => {
     const wrapper = mount(PublishPrecheckPanel, { props: panelProps() })
     const previewButton = () => wrapper.findAll('button').find((button) => button.text() === '准备素材并预览 Payload')!
 
@@ -230,6 +287,32 @@ describe('PublishPrecheckPanel', () => {
     expect(previewButton().attributes('disabled')).toBeUndefined()
   })
 
+  it('Mercado 分层预检为空时不允许 stale ready_to_publish 绕过', () => {
+    const props = panelProps()
+    props.draft.platform = 'mercadolibre'
+    props.draft.site = 'CBT'
+    props.draft.status = 'ready_to_publish'
+    const mercadoTarget: MarketplaceTargetSite = {
+      platform: 'mercadolibre',
+      site: 'CBT',
+      language: 'en-US',
+      listingCurrency: 'USD',
+    }
+    const wrapper = mount(PublishPrecheckPanel, {
+      props: {
+        ...props,
+        publishTargets: [mercadoTarget],
+        selectedPublishTarget: mercadoTarget,
+        precheck: null,
+      },
+    })
+
+    const previewButton = wrapper.findAll('button').find((button) => button.text() === '准备素材并预览 Payload')!
+    expect(previewButton.attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('点击上架预检后')
+    expect(wrapper.text()).not.toContain('已保存为校验通过')
+  })
+
   it('预检通过但没有 Payload 确认指纹时仍禁止入队', () => {
     const wrapper = mount(PublishPrecheckPanel, {
       props: {
@@ -241,6 +324,221 @@ describe('PublishPrecheckPanel', () => {
     const publishButton = wrapper.findAll('button').find((button) => button.text() === '确认加入队列')!
     expect(publishButton.attributes('disabled')).toBeDefined()
     expect(wrapper.text()).toContain('请点击 Payload 预览生成确认摘要')
+  })
+
+  it('有分层 scope 时分别展示父级、销售市场和提醒项', () => {
+    const props = panelProps()
+    const mercadoTarget: MarketplaceTargetSite = {
+      platform: 'mercadolibre',
+      site: 'CBT',
+      language: 'es',
+      listingCurrency: 'USD',
+    }
+    const wrapper = mount(PublishPrecheckPanel, {
+      props: {
+        ...props,
+        publishTargets: [mercadoTarget],
+        selectedPublishTarget: mercadoTarget,
+        platformOptions: [{
+          key: 'mercadolibre',
+          label: '美客多',
+          sites: [
+            { key: 'CBT', code: 'CBT', label: 'Global Selling 全局刊登', language: 'es' },
+            { key: 'MLA', code: 'MLA', label: '阿根廷', language: 'es' },
+            { key: 'MLC', code: 'MLC', label: '智利', language: 'es' },
+          ],
+        }],
+        precheck: layeredPrecheck(),
+      },
+    })
+
+    expect(wrapper.get('[data-testid="publish-precheck-scopes"]').text()).toContain('共享刊登（CBT）')
+    expect(wrapper.get('[data-testid="publish-precheck-scopes"]').text()).toContain('分市场检查')
+    expect(wrapper.get('[data-testid="publish-precheck-scopes"]').text()).toContain('任一项不通过都不能发布')
+    expect(wrapper.get('[data-testid="publish-precheck-scopes"]').text()).toContain('已知规则检查通过')
+    expect(wrapper.get('[data-testid="publish-precheck-scopes"]').text()).not.toContain('分层预检')
+    expect(wrapper.get('[data-testid="publish-precheck-scopes"]').text()).not.toContain('确定性')
+    expect(wrapper.get('[data-testid="publish-precheck-scopes"]').text()).toContain('阿根廷（MLA）')
+    expect(wrapper.get('[data-testid="publish-precheck-scopes"]').text()).toContain('智利（MLC）')
+    expect(wrapper.get('[data-testid="publish-precheck-scopes"]').text()).toContain('物流方式：跨境直发')
+    expect(wrapper.get('[data-testid="publish-precheck-scopes"]').text()).not.toContain('remote')
+    expect(wrapper.get('[data-testid="publish-precheck-scopes"]').text()).toContain('通过')
+    expect(wrapper.get('[data-testid="publish-precheck-scopes"]').text()).toContain('请复核智利市场运费报价')
+    expect(wrapper.text()).toContain('预检通过。请点击 Payload 预览生成确认摘要')
+
+    const previewButton = wrapper.findAll('button').find((button) => button.text() === '准备素材并预览 Payload')!
+    expect(previewButton.attributes('disabled')).toBeUndefined()
+  })
+
+  it('主界面隐藏技术field与错误码，并按市场分别统计相同问题', () => {
+    const repeatedError = {
+      code: 'MERCADOLIBRE_CATEGORY_MARKET_LOGISTICS_UNSUPPORTED',
+      field: 'sites_to_sell[0].category_id',
+      message: '内部实验诊断不得展示',
+      severity: 'error',
+      nextAction: '内部技术对照不得展示',
+    }
+    const repeatedWarning = {
+      code: 'INTERNAL_MARKET_NOTICE',
+      field: 'sites_to_sell[0].shipping',
+      message: '请复核市场运费报价',
+      severity: 'warning',
+      nextAction: '返回核价页确认运费',
+    }
+    const mercadoTarget: MarketplaceTargetSite = {
+      platform: 'mercadolibre',
+      site: 'CBT',
+      language: 'es',
+      listingCurrency: 'USD',
+    }
+    const precheck: PublishPrecheck = {
+      ok: false,
+      errors: [`${repeatedError.message}（${repeatedError.nextAction}）`],
+      warnings: [`${repeatedWarning.message}（${repeatedWarning.nextAction}）`],
+      errorItems: [repeatedError],
+      warningItems: [repeatedWarning],
+      checkedAt: '2026-08-31T00:00:00Z',
+      parent: { ok: true, status: 'passed', errors: [], warnings: [] },
+      marketChecks: ['MCO', 'MLC'].map((siteId) => ({
+        siteId,
+        logisticType: 'remote',
+        ok: false,
+        status: 'blocked' as const,
+        errors: [{ ...repeatedError }],
+        warnings: [{ ...repeatedWarning }],
+      })),
+    }
+    const wrapper = mount(PublishPrecheckPanel, {
+      props: {
+        ...panelProps(),
+        publishTargets: [mercadoTarget],
+        selectedPublishTarget: mercadoTarget,
+        precheck,
+      },
+    })
+
+    expect(wrapper.text()).toContain('2 项不通过 / 2 项提醒')
+    expect(wrapper.text()).not.toContain(repeatedError.field)
+    expect(wrapper.text()).not.toContain(repeatedError.code)
+    expect(wrapper.text()).not.toContain(repeatedWarning.field)
+    expect(wrapper.text()).not.toContain(repeatedWarning.code)
+    expect(wrapper.text()).not.toContain('内部实验诊断不得展示')
+    expect(wrapper.text()).not.toContain('内部技术对照不得展示')
+    const firstMarket = wrapper.get('[data-testid="publish-precheck-scope-market:0:MCO:remote"]')
+    expect(firstMarket.findAll('li')[0].findAll('p').map((item) => item.text())).toEqual([
+      '原因：当前发布方式不支持该市场的跨境物流。',
+      '处理建议：重新执行上架预检，并按最新的店铺、市场与物流能力结果处理。',
+    ])
+  })
+
+  it('重复或空市场身份仍生成独立 scope 卡片', () => {
+    const precheck = layeredPrecheck(true)
+    const emptyMarket = {
+      ...precheck.marketChecks![0],
+      siteId: '',
+      logisticType: '',
+    }
+    precheck.marketChecks = [emptyMarket, { ...emptyMarket }]
+    const wrapper = mount(PublishPrecheckPanel, {
+      props: {
+        ...panelProps(),
+        precheck,
+      },
+    })
+
+    expect(wrapper.findAll('[data-testid^="publish-precheck-scope-market:"]')).toHaveLength(2)
+  })
+
+  it('分层预检存在错误时即使顶层 ok=true 也阻断后续按钮', () => {
+    const props = panelProps()
+    props.draft.status = 'ready_to_publish'
+    const inconsistentPrecheck = layeredPrecheck(false)
+    inconsistentPrecheck.ok = true
+    inconsistentPrecheck.errors = []
+    inconsistentPrecheck.errorItems = []
+    const wrapper = mount(PublishPrecheckPanel, {
+      props: {
+        ...props,
+        precheck: inconsistentPrecheck,
+        payloadPreview: payloadPreview(),
+      },
+    })
+
+    expect(wrapper.text()).toContain('阿根廷售价无效')
+    expect(wrapper.text()).toContain('不通过')
+    const previewButton = wrapper.findAll('button').find((button) => button.text() === '准备素材并预览 Payload')!
+    const publishButton = wrapper.findAll('button').find((button) => button.text() === '确认加入队列')!
+    expect(previewButton.attributes('disabled')).toBeDefined()
+    expect(publishButton.attributes('disabled')).toBeDefined()
+  })
+
+  it('分层 status=blocked 即使没有错误明细也阻断后续按钮', () => {
+    const precheck = layeredPrecheck(true)
+    precheck.marketChecks![0] = {
+      ...precheck.marketChecks![0],
+      ok: true,
+      status: 'blocked',
+      errors: [],
+    }
+    const wrapper = mount(PublishPrecheckPanel, {
+      props: {
+        ...panelProps(),
+        precheck,
+        payloadPreview: payloadPreview(),
+      },
+    })
+
+    expect(wrapper.text()).toContain('预检未通过')
+    expect(wrapper.text()).toContain('还有 1 项未通过')
+    const previewButton = wrapper.findAll('button').find((button) => button.text() === '准备素材并预览 Payload')!
+    const publishButton = wrapper.findAll('button').find((button) => button.text() === '确认加入队列')!
+    expect(previewButton.attributes('disabled')).toBeDefined()
+    expect(publishButton.attributes('disabled')).toBeDefined()
+  })
+
+  it('scope 卡片存在时仍展示 normalizer 合成的顶层不一致问题', () => {
+    const precheck = layeredPrecheck(false)
+    precheck.errorItems.push({
+      code: 'LAYERED_PRECHECK_MARKETS_MISMATCH',
+      field: 'sites_to_sell',
+      message: '已选销售市场与预检结果不一致',
+      severity: 'error',
+      nextAction: '重新执行上架预检',
+    })
+    precheck.errors.push('已选销售市场与预检结果不一致（重新执行上架预检）')
+    precheck.warningItems.push({
+      code: 'GLOBAL_WARNING',
+      field: 'description',
+      message: '描述建议补充',
+      severity: 'warning',
+      nextAction: '完善描述',
+    })
+    precheck.warnings.push('描述建议补充（完善描述）')
+    const wrapper = mount(PublishPrecheckPanel, {
+      props: {
+        ...panelProps(),
+        precheck,
+      },
+    })
+
+    expect(wrapper.get('[data-testid="publish-precheck-top-level-errors"]').text()).toContain('已选销售市场与预检结果不一致')
+    expect(wrapper.get('[data-testid="publish-precheck-top-level-errors"]').text()).not.toContain('sites_to_sell')
+    expect(wrapper.get('[data-testid="publish-precheck-top-level-errors"]').text()).not.toContain('LAYERED_PRECHECK_MARKETS_MISMATCH')
+    expect(wrapper.get('[data-testid="publish-precheck-top-level-warnings"]').text()).toContain('描述建议补充')
+    expect(wrapper.text()).toContain('2 项不通过 / 2 项提醒')
+    expect(wrapper.text().match(/阿根廷售价无效/g)).toHaveLength(1)
+  })
+
+  it('没有分层 scope 时保持其他平台的原有预检展示', () => {
+    const wrapper = mount(PublishPrecheckPanel, {
+      props: {
+        ...panelProps(),
+        precheck: passedPrecheck(),
+      },
+    })
+
+    expect(wrapper.find('[data-testid="publish-precheck-scopes"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('预检通过，可以发布。')
   })
 
   it('预览确认后展示摘要与指纹，并允许确认入队', async () => {

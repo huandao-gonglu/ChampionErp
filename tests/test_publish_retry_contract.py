@@ -20,7 +20,8 @@ import pytest
 
 from erp_web.marketplaces import config_http
 from erp_web.marketplaces.publisher import PublishAdapterError
-from erp_web.runtime_units.publishing_bus_core import PublishingBus
+from erp_web.runtime_units.publish_bus import publish_bus_terminal_status
+from erp_web.runtime_units.publishing_bus_core import PublishingBus, _publish_job_summary
 
 
 class _MemoryPublishJobStore:
@@ -134,6 +135,8 @@ def test_transient_adapter_error_exhausts_attempts_then_fails() -> None:
     platform_state = state["platforms"]["mercadolibre"]
     assert platform_state["status"] == "failed"
     assert platform_state["attempts"] == 2
+    assert platform_state["result"]["error_code"] == "OZON_SERVER_ERROR"
+    assert platform_state["result"]["error_map"]["retryable"] is True
     assert adapter.publish_calls == 2
 
 
@@ -197,13 +200,76 @@ def test_uncertain_remote_outcome_retries_reads_then_keeps_reconciliation_lock()
 
 def test_deterministic_adapter_error_is_not_retried() -> None:
     adapter = _FakeAdapter(
-        [PublishAdapterError("OZON_AUTH_FAILED", "凭证无效", retryable=False)]
+        [
+            PublishAdapterError(
+                "OZON_AUTH_FAILED",
+                "凭证无效",
+                retryable=False,
+                details={"next_action": "重新授权店铺后再发布。"},
+            )
+        ]
     )
     state = _run_bus(adapter, max_retries=3)
     platform_state = state["platforms"]["mercadolibre"]
     assert platform_state["status"] == "failed"
     assert platform_state["attempts"] == 1
+    assert platform_state["result"]["error_code"] == "OZON_AUTH_FAILED"
+    assert platform_state["result"]["error_map"]["next_action"] == (
+        "重新授权店铺后再发布。"
+    )
     assert adapter.publish_calls == 1
+
+
+def test_partial_platform_result_remains_partial_instead_of_becoming_failed() -> None:
+    adapter = _FakeAdapter(
+        [
+            {
+                "ok": False,
+                "status": "partial",
+                "item_id": "CBT123",
+                "error": "部分销售市场创建失败",
+                "publication": {
+                    "model": "traditional_global_items",
+                    "parent_item_id": "CBT123",
+                    "status": "partial",
+                    "markets": [
+                        {"site_id": "MLA", "item_id": "MLA123", "status": "active"},
+                        {"site_id": "MCO", "error": {"message": "not supported"}},
+                    ],
+                },
+            }
+        ]
+    )
+
+    state = _run_bus(adapter, max_retries=0)
+
+    assert state["status"] == "completed"
+    assert state["platforms"]["mercadolibre"]["status"] == "partial"
+    assert state["platforms"]["mercadolibre"]["stage"] == "partial"
+    assert state["platforms"]["mercadolibre"]["result"]["item_id"] == "CBT123"
+    assert publish_bus_terminal_status("partial") == "partial"
+
+    summary = _publish_job_summary(state)
+    assert summary["status"] == "partial"
+    assert summary["platforms"][0]["status"] == "partial"
+    assert summary["platforms"][0]["market_results"] == [
+        {
+            "site_id": "MCO",
+            "logistic_type": "",
+            "status": "failed",
+            "item_id": "",
+            "error": "not supported",
+            "error_code": "",
+        },
+        {
+            "site_id": "MLA",
+            "logistic_type": "",
+            "status": "success",
+            "item_id": "MLA123",
+            "error": "",
+            "error_code": "",
+        },
+    ]
 
 
 def test_unclassified_exception_defaults_to_not_retryable() -> None:
@@ -266,6 +332,38 @@ def test_mercadolibre_request_json_classifies_network_errors(monkeypatch) -> Non
     assert exc_info.value.code == "MERCADOLIBRE_NETWORK"
     assert exc_info.value.retryable is True
     assert "Connection refused" in str(exc_info.value)
+
+
+def test_mercadolibre_global_items_writes_use_multi_market_timeout(
+    monkeypatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_request(*_args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append(dict(kwargs))
+        return {}
+
+    monkeypatch.setattr(config_http.http_client, "request_json", fake_request)
+
+    config_http.request_json(
+        "POST",
+        "https://api.mercadolibre.com/global/items",
+        "token",
+        {"sites_to_sell": []},
+    )
+    config_http.request_json(
+        "POST",
+        "https://api.mercadolibre.com/global/items/CBT123",
+        "token",
+        {"sites_to_sell": []},
+    )
+    config_http.request_json(
+        "GET",
+        "https://api.mercadolibre.com/marketplace/items/CBT123",
+        "token",
+    )
+
+    assert [call["timeout"] for call in calls] == [300, 300, 30]
 
 
 def test_ozon_request_classifies_http_and_network_errors(monkeypatch) -> None:

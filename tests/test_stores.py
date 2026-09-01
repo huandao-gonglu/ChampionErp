@@ -735,22 +735,22 @@ def test_product_schema_rejects_future_and_filters_unknown_write_fields() -> Non
                     },
                     "categoryPrecheck": {"ok": True},
                     "future_draft_field": "drop-me",
-                    "mercadoLibrePublication": {
+                    "publication": {
                         "model": "user_products",
-                        "sitelessUserProductId": "UP100",
-                        "sitelessFamilyId": "FAMILY100",
-                        "parentItemId": "CBT100",
-                        "familyName": "Canonical family",
-                        "marketPublications": [
+                        "siteless_user_product_id": "UP100",
+                        "siteless_family_id": "FAMILY100",
+                        "parent_item_id": "CBT100",
+                        "family_name": "Canonical family",
+                        "markets": [
                             {
-                                "siteId": "mlm",
-                                "sellerId": "991",
-                                "logisticType": "REMOTE",
-                                "itemId": "MLM100",
-                                "userProductId": "UP-MLM100",
+                                "site_id": "mlm",
+                                "seller_id": "991",
+                                "logistic_type": "REMOTE",
+                                "item_id": "MLM100",
+                                "user_product_id": "UP-MLM100",
                                 "status": "active",
                                 "price": "21.50",
-                                "currencyId": "usd",
+                                "currency_id": "usd",
                             }
                         ],
                     },

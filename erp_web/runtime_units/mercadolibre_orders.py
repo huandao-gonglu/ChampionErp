@@ -6,9 +6,10 @@ from typing import Any
 
 from erp_web import marketplaces as publisher
 from erp_web.context import get_context
+from erp_web.marketplaces.publisher import PublishAdapterError
 
 from .collect_helpers import collect_time_iso
-from .publish_mercadolibre import ensure_mercadolibre_auth_ready
+from .store_credentials import get_mercadolibre_access_token
 
 
 def load_mercadolibre_order_notifications(limit: int = 20) -> list[dict[str, Any]]:
@@ -105,17 +106,21 @@ def _orders_from_search_response(value: Any) -> list[dict[str, Any]]:
 
 def mercadolibre_recent_orders(limit: int = 10, offset: int = 0) -> dict[str, Any]:
     config = get_context().config.load_store_config()
-    auth = ensure_mercadolibre_auth_ready(config)
-    if not auth.get("ok"):
+    try:
+        token = get_mercadolibre_access_token(config)
+    except PublishAdapterError as exc:
         return {
             "ok": False,
-            "error": auth.get("message") or "Mercado Libre 授权不可用",
-            "error_code": auth.get("error_code") or "AUTH_INVALID",
-            "next_action": auth.get("next_action") or "请先完成授权测试",
+            "error": str(exc) or "Mercado Libre 授权不可用",
+            "error_code": str(
+                exc.details.get("auth_error_code") or exc.code
+            ),
+            "next_action": str(
+                exc.details.get("next_action") or "请先完成授权测试"
+            ),
             "items": [],
             "notifications": load_mercadolibre_order_notifications(),
         }
-    token = str(auth.get("token") or "").strip()
     user_id = _mercadolibre_user_id(config, token)
     if not user_id:
         raise RuntimeError("Mercado Libre seller id 为空，请先测试授权。")
@@ -141,10 +146,7 @@ def mercadolibre_recent_orders(limit: int = 10, offset: int = 0) -> dict[str, An
 
 def fetch_mercadolibre_order_resource(resource: str) -> dict[str, Any]:
     config = get_context().config.load_store_config()
-    auth = ensure_mercadolibre_auth_ready(config)
-    if not auth.get("ok"):
-        raise RuntimeError(str(auth.get("message") or "Mercado Libre 授权不可用"))
-    token = str(auth.get("token") or "").strip()
+    token = get_mercadolibre_access_token(config)
     order = publisher.request_json("GET", _order_resource_url(resource), token)
     if not isinstance(order, dict):
         raise RuntimeError("Mercado Libre order resource 返回异常")

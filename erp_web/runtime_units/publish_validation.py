@@ -16,9 +16,22 @@ from erp_web.services.mercadolibre_target_contract import (
 from erp_web.services.mercadolibre_listing_model import (
     MERCADOLIBRE_LISTING_MODEL_TRADITIONAL_GLOBAL_ITEMS,
     MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS,
+    MERCADOLIBRE_TRADITIONAL_CONFIRMED_PAYLOAD_VERSION,
+)
+from erp_web.services.mercadolibre_publish_error_codes import (
+    MERCADOLIBRE_PARENT_CATEGORY_IMMUTABLE,
+    MERCADOLIBRE_PARENT_PAYLOAD_IDENTITY_MISSING,
+)
+from erp_web.services.mercadolibre_market_precheck import (
+    build_mercadolibre_market_precheck,
+    mercadolibre_market_rule_errors,
+    mercadolibre_parent_package_errors,
+    mercadolibre_public_precheck_issues,
+    mercadolibre_selected_raw_sites_to_sell,
 )
 from erp_web.product_model import (
     mercadolibre_sales_condition_basis,
+    normalize_mercadolibre_publication,
     normalize_mercadolibre_sites_to_sell,
     validate_category_precheck,
 )
@@ -280,14 +293,15 @@ def validate_mercadolibre_draft(
     *,
     category_definition: CategoryDefinition | None = None,
 ) -> dict[str, Any]:
+    raw_sites_to_sell = mercadolibre_selected_raw_sites_to_sell(product)
     product = normalize_product_fields(product)
     draft = _draft_for_selected_target(product, "mercadolibre")
     store = config.get("mercadolibre", {}) if isinstance(config.get("mercadolibre"), dict) else {}
     if category_definition is not None:
         category_record = definition_to_legacy_record(category_definition)
     summary = _required_attribute_summary(product, "mercadolibre", category_record)
-    errors: list[dict[str, str]] = []
-    warnings: list[dict[str, str]] = []
+    errors: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
     auth_status, auth_next = _masked_auth_status("mercadolibre", config)
     title_limit = platform_title_limit("mercadolibre")
     title = str(draft.get("title") or "").strip()
@@ -383,6 +397,52 @@ def validate_mercadolibre_draft(
         warnings.append(precheck_item("CATEGORY_PATH_MISSING", "category_path", "类目路径为空，建议重新实时匹配类目", "warning", "前往类目属性页重新选择类目"))
     if site_id == "CBT" and category_id and not category_id_upper.startswith("CBT"):
         errors.append(precheck_item("CATEGORY_SITE_MISMATCH", "category_id", "CBT 发布必须使用 CBT 类目 ID", "error", "前往类目属性页重新实时选择 CBT 类目"))
+    if listing_model == MERCADOLIBRE_LISTING_MODEL_TRADITIONAL_GLOBAL_ITEMS:
+        publication = normalize_mercadolibre_publication(
+            draft.get("publication")
+        )
+        parent_item_id = str(
+            publication.get("parent_item_id") or ""
+        ).strip()
+        if parent_item_id:
+            confirmed_payload = (
+                publication.get("confirmed_payload")
+                if isinstance(publication.get("confirmed_payload"), dict)
+                else {}
+            )
+            confirmed_category_id = str(
+                confirmed_payload.get("category_id") or ""
+            ).strip().upper()
+            if (
+                confirmed_payload.get("contract_version")
+                != MERCADOLIBRE_TRADITIONAL_CONFIRMED_PAYLOAD_VERSION
+                or not confirmed_category_id
+            ):
+                errors.append(
+                    precheck_item(
+                        MERCADOLIBRE_PARENT_PAYLOAD_IDENTITY_MISSING,
+                        "publication.confirmed_payload",
+                        "已有父刊登缺少最新的已确认 payload 快照。",
+                        "error",
+                        "删除当前草稿并按最新发布契约重新创建。",
+                    )
+                )
+            elif category_id_upper != confirmed_category_id:
+                errors.append(
+                    precheck_item(
+                        MERCADOLIBRE_PARENT_CATEGORY_IMMUTABLE,
+                        "category_id",
+                        (
+                            f"已有父刊登使用 {confirmed_category_id}，不能改为 "
+                            f"{category_id_upper}。"
+                        ),
+                        "error",
+                        (
+                            "使用新共享类目重新创建父刊登；旧刊登是否暂停需"
+                            "单独确认。"
+                        ),
+                    )
+                )
     if summary["missing"]:
         for field in summary["missing"]:
             attr_id = str(field).split(".", 1)[-1]
@@ -434,8 +494,8 @@ def validate_mercadolibre_draft(
                     "前往授权页重新验证 CBT 店铺币种，再重新核价",
                 )
             )
-        global_targets, target_issues = mercadolibre_global_target_contract(
-            draft.get("sites_to_sell"),
+        _, target_issues = mercadolibre_global_target_contract(
+            raw_sites_to_sell,
             store.get("marketplace_bindings"),
             listing_model=listing_model,
             require_user_products=(
@@ -491,11 +551,14 @@ def validate_mercadolibre_draft(
         errors.append(precheck_item("IMAGE_MISSING", "images", "缺少商品图片", "error", "前往图片池导入并勾选图片"))
     if images and not _has_main_image(product, "mercadolibre", draft):
         errors.append(precheck_item("MAIN_IMAGE_MISSING", "images", "缺少主图", "error", "前往图片池设置主图"))
-    for field in ("length_cm", "width_cm", "height_cm"):
-        if not str(pkg.get(field) or "").strip():
-            errors.append(precheck_item("PACKAGE_DIMENSIONS_MISSING", f"package_dimensions.{field}", f"{field} 缺失", "error", "前往核价页或类目属性页补齐尺寸"))
-    if not str(pkg.get("weight_kg") or "").strip():
-        errors.append(precheck_item("WEIGHT_MISSING", "package_dimensions.weight_kg", "重量缺失", "error", "前往核价页或类目属性页补齐重量"))
+    errors.extend(mercadolibre_parent_package_errors(pkg))
+    errors.extend(
+        mercadolibre_market_rule_errors(
+            raw_sites_to_sell,
+            pkg,
+            marketplace_bindings=store.get("marketplace_bindings"),
+        )
+    )
 
     def review_item_resolved(item: str) -> bool:
         field = str(item or "").strip()
@@ -557,7 +620,22 @@ def validate_mercadolibre_draft(
     )
     if warranty_type is None:
         errors.append(precheck_item("SALE_TERMS_MISSING", "sale_terms", "sale_terms / warranty 尚未配置完整", "error", "前往平台属性页补齐保修条款"))
-    return {"platform": "mercadolibre", "ok": not errors, "errors": errors, "warnings": warnings, "checked_at": collect_time_iso()}
+    market_precheck = build_mercadolibre_market_precheck(
+        raw_sites_to_sell,
+        errors=errors,
+        warnings=warnings,
+    )
+    public_errors = mercadolibre_public_precheck_issues(errors)
+    public_warnings = mercadolibre_public_precheck_issues(warnings)
+    return {
+        "platform": "mercadolibre",
+        "ok": not public_errors,
+        "errors": public_errors,
+        "warnings": public_warnings,
+        "parent": market_precheck["parent"],
+        "markets": market_precheck["markets"],
+        "checked_at": collect_time_iso(),
+    }
 
 
 def validate_yandex_draft(

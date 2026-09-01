@@ -12,6 +12,7 @@ MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS: MercadoLibreListingModel = (
 MERCADOLIBRE_LISTING_MODEL_TRADITIONAL_GLOBAL_ITEMS: MercadoLibreListingModel = (
     "traditional_global_items"
 )
+MERCADOLIBRE_TRADITIONAL_CONFIRMED_PAYLOAD_VERSION = 1
 
 
 def mercadolibre_listing_model_from_user_tags(
@@ -54,6 +55,7 @@ def require_mercadolibre_listing_model(value: Any) -> MercadoLibreListingModel:
 __all__ = [
     "MERCADOLIBRE_LISTING_MODEL_TRADITIONAL_GLOBAL_ITEMS",
     "MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS",
+    "MERCADOLIBRE_TRADITIONAL_CONFIRMED_PAYLOAD_VERSION",
     "MercadoLibreListingModel",
     "mercadolibre_listing_model_from_user_tags",
     "require_mercadolibre_listing_model",

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { DraftDetail, DraftProductContext, MarketplaceOption, MarketplaceTargetSite, PayloadPreviewState, PrecheckIssue, PublishPrecheck, UnknownRecord } from '@/types/workflow'
+import type { DraftDetail, DraftProductContext, MarketplaceOption, MarketplaceTargetSite, PayloadPreviewState, PrecheckIssue, PublishPrecheck, PublishPrecheckScope, UnknownRecord } from '@/types/workflow'
 
 const props = defineProps<{
   draft: DraftDetail
@@ -27,6 +27,14 @@ type WarrantyType = '' | ConfiguredWarrantyType
 type ConfiguredWarrantyUnit = 'months' | 'years'
 type WarrantyUnit = '' | ConfiguredWarrantyUnit
 type PackageDimensionField = keyof DraftDetail['packageDimensions']
+type PublishPrecheckScopeCard = PublishPrecheckScope & {
+  key: string
+  title: string
+  meta: string
+}
+
+const MERCADOLIBRE_LEGACY_CATEGORY_LOGISTICS_ERROR = 'MERCADOLIBRE_CATEGORY_MARKET_LOGISTICS_UNSUPPORTED'
+const MERCADOLIBRE_SHIPPING_MODE_NOT_SUPPORTED = 'MERCADOLIBRE_SHIPPING_MODE_NOT_SUPPORTED'
 
 const warrantyTypeOptions: Array<{ value: WarrantyType; label: string }> = [
   { value: '', label: '请选择保修类型' },
@@ -67,22 +75,112 @@ const activeDraft = computed(() => {
 })
 const blockingIssues = computed(() => props.precheck?.errorItems || [])
 const warningIssues = computed(() => props.precheck?.warningItems || [])
+const scopeCards = computed<PublishPrecheckScopeCard[]>(() => {
+  const precheck = props.precheck
+  if (!precheck) return []
+  const cards: PublishPrecheckScopeCard[] = []
+  if (precheck.parent) {
+    const site = String(props.selectedPublishTarget.site || '').trim().toUpperCase()
+    cards.push({
+      ...precheck.parent,
+      key: 'parent',
+      title: site ? `共享刊登（${site}）` : '共享刊登',
+      meta: '共享商品信息与刊登身份',
+    })
+  }
+  for (const [index, market] of (precheck.marketChecks || []).entries()) {
+    cards.push({
+      ...market,
+      key: `market:${index}:${market.siteId}:${market.logisticType}`,
+      title: marketSiteLabel(market.siteId),
+      meta: market.logisticType
+        ? `物流方式：${logisticTypeLabel(market.logisticType)}`
+        : '未提供物流方式',
+    })
+  }
+  return cards
+})
+const hasBlockedScopes = computed(() => scopeCards.value.some(scopeIsBlocked))
+const effectivePrecheckPassed = computed(() => Boolean(
+  props.precheck?.ok
+  && !props.precheck.errors.length
+  && !blockingIssues.value.length
+  && !hasBlockedScopes.value,
+))
+const scopedErrorKeys = computed(() => new Set(scopeCards.value.flatMap((scope) => (
+  scope.errors.map(issueIdentity)
+))))
+const scopedWarningKeys = computed(() => new Set(scopeCards.value.flatMap((scope) => (
+  scope.warnings.map(issueIdentity)
+))))
+const topLevelBlockingIssues = computed(() => (
+  scopeCards.value.length
+    ? blockingIssues.value.filter((issue) => !scopedErrorKeys.value.has(issueIdentity(issue)))
+    : blockingIssues.value
+))
+const topLevelWarningIssues = computed(() => (
+  scopeCards.value.length
+    ? warningIssues.value.filter((issue) => !scopedWarningKeys.value.has(issueIdentity(issue)))
+    : warningIssues.value
+))
+const blockingIssueCount = computed(() => {
+  if (scopeCards.value.length) {
+    return (
+      scopeCards.value.reduce((count, scope) => (
+        count
+        + new Set(scope.errors.map(issueIdentity)).size
+        + (scopeIsBlocked(scope) && scope.errors.length === 0 ? 1 : 0)
+      ), 0)
+      + new Set(topLevelBlockingIssues.value.map(issueIdentity)).size
+    )
+  }
+  return blockingIssues.value.length
+    ? new Set(blockingIssues.value.map(issueIdentity)).size
+    : props.precheck?.errors.length || 0
+})
+const warningIssueCount = computed(() => {
+  if (scopeCards.value.length) {
+    return (
+      scopeCards.value.reduce((count, scope) => (
+        count + new Set(scope.warnings.map(issueIdentity)).size
+      ), 0)
+      + new Set(topLevelWarningIssues.value.map(issueIdentity)).size
+    )
+  }
+  return warningIssues.value.length
+    ? new Set(warningIssues.value.map(issueIdentity)).size
+    : props.precheck?.warnings.length || 0
+})
 const hasPayloadConfirmation = computed(() => Boolean(props.payloadPreview?.validationDigest))
+const currentPrecheckPassed = computed(() => {
+  if (props.precheck) return effectivePrecheckPassed.value
+  if (props.selectedPublishTarget.platform === 'mercadolibre') return false
+  return activeDraft.value.status === 'ready_to_publish'
+})
 const canPreviewPayload = computed(() => Boolean(
   hasCurrentDraft.value
-  && (props.precheck?.ok || activeDraft.value.status === 'ready_to_publish'),
+  && currentPrecheckPassed.value,
 ))
 const canQueuePublish = computed(() => Boolean(
   hasCurrentDraft.value
-  && (props.precheck?.ok || activeDraft.value.status === 'ready_to_publish')
+  && currentPrecheckPassed.value
   && hasPayloadConfirmation.value,
 ))
 const publishReadiness = computed(() => {
-  if (!props.precheck && activeDraft.value.status === 'ready_to_publish') return '已保存为校验通过。生成 Payload 预览并确认摘要后，即可加入发布队列。'
+  if (
+    !props.precheck
+    && props.selectedPublishTarget.platform !== 'mercadolibre'
+    && activeDraft.value.status === 'ready_to_publish'
+  ) return '已保存为校验通过。生成 Payload 预览并确认摘要后，即可加入发布队列。'
   if (!props.precheck) return '点击上架预检后，这里会变成可处理清单。'
-  if (!props.precheck.ok) return `还剩 ${blockingIssues.value.length} 个阻断项，先在本页补齐能直接处理的字段。`
+  if (!effectivePrecheckPassed.value) return `还有 ${blockingIssueCount.value} 项未通过，请按处理建议修正后重新预检。`
   if (!hasPayloadConfirmation.value) return '预检通过。请点击 Payload 预览生成确认摘要，再加入发布队列。'
   return '预检通过且 Payload 已确认，可以加入发布队列。'
+})
+const precheckResultSummary = computed(() => {
+  if (!props.precheck) return '尚未执行预检。'
+  if (!effectivePrecheckPassed.value) return '预检未通过。'
+  return '预检通过，可以发布。'
 })
 const selectedWarrantyType = computed<WarrantyType>({
   get() {
@@ -141,8 +239,59 @@ const warrantySummary = computed(() => {
     : '尚未配置保修时长'
 })
 
-function issueTitle(issue: PrecheckIssue) {
-  return [issue.field, issue.message].filter(Boolean).join('：')
+function issueMessage(issue: PrecheckIssue) {
+  if (
+    issue.code === MERCADOLIBRE_LEGACY_CATEGORY_LOGISTICS_ERROR
+    || issue.code === MERCADOLIBRE_SHIPPING_MODE_NOT_SUPPORTED
+  ) return '当前发布方式不支持该市场的跨境物流。'
+  return String(issue.message || '').trim() || '预检未通过'
+}
+
+function issueNextAction(issue: PrecheckIssue) {
+  if (issue.code === MERCADOLIBRE_LEGACY_CATEGORY_LOGISTICS_ERROR) {
+    return '重新执行上架预检，并按最新的店铺、市场与物流能力结果处理。'
+  }
+  return String(issue.nextAction || '').trim()
+}
+
+function issueIdentity(issue: PrecheckIssue) {
+  return [issue.code, issue.field, issue.message].join('\u0000')
+}
+
+function scopeIsBlocked(scope: PublishPrecheckScope) {
+  return scope.status === 'blocked' || scope.errors.length > 0 || !scope.ok
+}
+
+function scopeStatusLabel(scope: PublishPrecheckScope) {
+  if (scopeIsBlocked(scope)) return '不通过'
+  return '通过'
+}
+
+function scopeStatusClass(scope: PublishPrecheckScope) {
+  if (scopeIsBlocked(scope)) return 'badge-danger'
+  return 'badge-success'
+}
+
+function marketSiteLabel(siteId: string) {
+  const code = String(siteId || '').trim().toUpperCase()
+  const platform = props.platformOptions.find((item) => item.key === props.selectedPublishTarget.platform)
+  const site = platform?.sites.find((item) => (
+    item.code.toUpperCase() === code || item.key.toUpperCase() === code
+  ))
+  return site ? `${site.label}（${site.code}）` : code || '未知销售市场'
+}
+
+function logisticTypeLabel(logisticType: string) {
+  const type = String(logisticType || '').trim().toLowerCase()
+  const labels: Record<string, string> = {
+    remote: '跨境直发',
+    fulfillment: '平台仓配',
+    cross_docking: '平台转运',
+    drop_off: '卖家送仓',
+    xd_drop_off: '卖家送至转运点',
+    self_service: '卖家配送',
+  }
+  return labels[type] || '平台指定物流'
 }
 
 function hasIssue(field: string, code = '') {
@@ -256,7 +405,7 @@ function applyWarrantyTerms(type: ConfiguredWarrantyType, durationValue = '3', u
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
         <h2 class="card-title">发布预检</h2>
-        <p class="muted mt-1">补齐发布资料，检查阻断项并预览最终 Payload。</p>
+        <p class="muted mt-1">补齐发布资料，检查发布条件并预览最终 Payload。</p>
       </div>
       <select :value="selectedTargetKey" class="input w-80 max-w-full" :disabled="props.loading || targetOptions.length <= 1" @change="selectTargetByKey(($event.target as HTMLSelectElement).value)">
         <option v-for="target in targetOptions" :key="target.key" :value="target.key">{{ target.label }}</option>
@@ -270,7 +419,9 @@ function applyWarrantyTerms(type: ConfiguredWarrantyType, durationValue = '3', u
             <h3 class="font-semibold text-accent-950 dark:text-white">发布必填资料</h3>
             <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">{{ publishReadiness }}</p>
           </div>
-          <span v-if="props.precheck" class="badge-muted">{{ blockingIssues.length }} 阻断 / {{ warningIssues.length }} 提醒</span>
+          <span v-if="props.precheck" class="badge-muted">
+            {{ blockingIssueCount }} 项不通过 / {{ warningIssueCount }} 项提醒
+          </span>
         </div>
 
         <div class="mt-4 grid gap-3 md:grid-cols-2">
@@ -298,7 +449,11 @@ function applyWarrantyTerms(type: ConfiguredWarrantyType, durationValue = '3', u
           </label>
         </div>
 
-        <div class="mt-4 grid gap-3 md:grid-cols-4">
+        <div data-testid="shipping-package-explanation" class="mt-4 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800 dark:border-blue-900/70 dark:bg-blue-950/30 dark:text-blue-200">
+          <p class="font-semibold">实际发货包装</p>
+          <p class="mt-1">填写拆装并包装后的外箱尺寸与毛重，不是组装后的商品尺寸。</p>
+        </div>
+        <div class="mt-3 grid gap-3 md:grid-cols-4">
           <div class="block">
             <label for="precheck-package-length" class="text-xs font-semibold text-accent-500 dark:text-accent-400">长 cm</label>
             <input
@@ -330,7 +485,7 @@ function applyWarrantyTerms(type: ConfiguredWarrantyType, durationValue = '3', u
             />
           </div>
           <div class="block">
-            <label for="precheck-package-weight" class="text-xs font-semibold text-accent-500 dark:text-accent-400">重量 kg</label>
+            <label for="precheck-package-weight" class="text-xs font-semibold text-accent-500 dark:text-accent-400">毛重 kg</label>
             <input
               id="precheck-package-weight"
               :value="activeDraft.packageDimensions.weightKg"
@@ -365,11 +520,23 @@ function applyWarrantyTerms(type: ConfiguredWarrantyType, durationValue = '3', u
         </div>
       </article>
 
-      <article class="min-w-0 rounded-lg border p-4" :class="props.precheck?.ok ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-500/30 dark:bg-emerald-500/10' : 'border-accent-200 bg-accent-50 dark:border-dark-700 dark:bg-dark-950/70'">
+      <article
+        class="min-w-0 rounded-lg border p-4"
+        :class="effectivePrecheckPassed
+          ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-500/30 dark:bg-emerald-500/10'
+          : 'border-accent-200 bg-accent-50 dark:border-dark-700 dark:bg-dark-950/70'"
+      >
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 class="font-semibold text-accent-950 dark:text-white">预检结果</h3>
-            <p class="mt-2 text-sm" :class="props.precheck?.ok ? 'text-emerald-700 dark:text-emerald-200' : 'text-accent-600 dark:text-accent-300'">{{ props.precheck ? (props.precheck.ok ? '预检通过，可以发布。' : '预检未通过。') : '尚未执行预检。' }}</p>
+            <p
+              class="mt-2 text-sm"
+              :class="effectivePrecheckPassed
+                ? 'text-emerald-700 dark:text-emerald-200'
+                : 'text-accent-600 dark:text-accent-300'"
+            >
+              {{ precheckResultSummary }}
+            </p>
           </div>
           <div class="flex flex-wrap gap-2">
             <button class="btn btn-outline" :disabled="props.loading || !hasCurrentDraft" @click="emit('precheck')">上架预检</button>
@@ -377,20 +544,69 @@ function applyWarrantyTerms(type: ConfiguredWarrantyType, durationValue = '3', u
             <button class="btn btn-primary" :disabled="props.loading || !canQueuePublish" @click="emit('publish')">确认加入队列</button>
           </div>
         </div>
-        <ul v-if="props.precheck?.errorItems.length" class="mt-3 space-y-2 text-sm text-rose-700">
-          <li v-for="issue in props.precheck.errorItems" :key="`${issue.code}-${issue.field}-${issue.message}`" class="rounded-lg bg-white/70 p-3 ring-1 ring-rose-100 dark:bg-rose-500/10 dark:ring-rose-500/20">
-            <div class="font-semibold">{{ issueTitle(issue) }}</div>
-            <div v-if="issue.nextAction" class="mt-1 text-rose-600">{{ issue.nextAction }}</div>
-          </li>
-        </ul>
-        <ul v-else-if="props.precheck?.errors.length" class="mt-3 list-inside list-disc text-sm text-rose-700"><li v-for="err in props.precheck.errors" :key="err">{{ err }}</li></ul>
-        <ul v-if="props.precheck?.warningItems.length" class="mt-3 space-y-2 text-sm text-amber-700">
-          <li v-for="issue in props.precheck.warningItems" :key="`${issue.code}-${issue.field}-${issue.message}`" class="rounded-lg bg-white/70 p-3 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:ring-amber-500/20">
-            <div class="font-semibold">{{ issueTitle(issue) }}</div>
-            <div v-if="issue.nextAction" class="mt-1 text-amber-600">{{ issue.nextAction }}</div>
-          </li>
-        </ul>
-        <ul v-else-if="props.precheck?.warnings.length" class="mt-3 list-inside list-disc text-sm text-amber-700"><li v-for="warning in props.precheck.warnings" :key="warning">{{ warning }}</li></ul>
+        <section v-if="scopeCards.length" data-testid="publish-precheck-scopes" class="mt-4">
+          <div>
+            <h4 class="text-sm font-semibold text-accent-950 dark:text-white">分市场检查</h4>
+            <p class="mt-1 text-xs text-accent-500 dark:text-accent-400">共享刊登和每个销售市场分别检查，任一项不通过都不能发布。</p>
+          </div>
+          <div class="mt-3 grid gap-3 md:grid-cols-2">
+            <article
+              v-for="scope in scopeCards"
+              :key="scope.key"
+              :data-testid="`publish-precheck-scope-${scope.key}`"
+              class="rounded-lg border border-accent-200 bg-white/80 p-3 dark:border-dark-700 dark:bg-dark-900/70"
+            >
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <h5 class="font-semibold text-accent-950 dark:text-white">{{ scope.title }}</h5>
+                  <p class="mt-0.5 text-xs text-accent-500 dark:text-accent-400">{{ scope.meta }}</p>
+                </div>
+                <span :class="scopeStatusClass(scope)">{{ scopeStatusLabel(scope) }}</span>
+              </div>
+              <ul v-if="scope.errors.length" class="mt-3 space-y-1.5 text-xs text-rose-700 dark:text-rose-200">
+                <li v-for="issue in scope.errors" :key="`error:${issue.code}:${issue.field}:${issue.message}`" class="space-y-1">
+                  <p><span class="font-semibold">原因：</span>{{ issueMessage(issue) }}</p>
+                  <p v-if="issueNextAction(issue)" class="text-rose-600 dark:text-rose-300"><span class="font-semibold">处理建议：</span>{{ issueNextAction(issue) }}</p>
+                </li>
+              </ul>
+              <ul v-if="scope.warnings.length" class="mt-3 space-y-1.5 text-xs text-amber-700 dark:text-amber-200">
+                <li v-for="issue in scope.warnings" :key="`warning:${issue.code}:${issue.field}:${issue.message}`" class="space-y-1">
+                  <p><span class="font-semibold">提醒：</span>{{ issueMessage(issue) }}</p>
+                  <p v-if="issueNextAction(issue)" class="text-amber-600 dark:text-amber-300"><span class="font-semibold">处理建议：</span>{{ issueNextAction(issue) }}</p>
+                </li>
+              </ul>
+              <p v-if="!scope.errors.length && !scope.warnings.length" class="mt-3 text-xs text-accent-500 dark:text-accent-400">
+                {{ scopeIsBlocked(scope) ? '该项未通过，但暂未返回具体原因。' : '已知规则检查通过。' }}
+              </p>
+            </article>
+          </div>
+        </section>
+        <section
+          v-if="topLevelBlockingIssues.length"
+          data-testid="publish-precheck-top-level-errors"
+          class="mt-3"
+        >
+          <h4 v-if="scopeCards.length" class="mb-2 text-sm font-semibold text-rose-700 dark:text-rose-200">其他发布条件</h4>
+          <ul class="space-y-2 text-sm text-rose-700">
+            <li v-for="issue in topLevelBlockingIssues" :key="`${issue.code}-${issue.field}-${issue.message}`" class="rounded-lg bg-white/70 p-3 ring-1 ring-rose-100 dark:bg-rose-500/10 dark:ring-rose-500/20">
+              <div class="font-semibold">原因：{{ issueMessage(issue) }}</div>
+              <div v-if="issueNextAction(issue)" class="mt-1 text-rose-600">处理建议：{{ issueNextAction(issue) }}</div>
+            </li>
+          </ul>
+        </section>
+        <section
+          v-if="topLevelWarningIssues.length"
+          data-testid="publish-precheck-top-level-warnings"
+          class="mt-3"
+        >
+          <h4 v-if="scopeCards.length" class="mb-2 text-sm font-semibold text-amber-700 dark:text-amber-200">其他提醒</h4>
+          <ul class="space-y-2 text-sm text-amber-700">
+            <li v-for="issue in topLevelWarningIssues" :key="`${issue.code}-${issue.field}-${issue.message}`" class="rounded-lg bg-white/70 p-3 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:ring-amber-500/20">
+              <div class="font-semibold">提醒：{{ issueMessage(issue) }}</div>
+              <div v-if="issueNextAction(issue)" class="mt-1 text-amber-600">处理建议：{{ issueNextAction(issue) }}</div>
+            </li>
+          </ul>
+        </section>
       </article>
 
       <article class="min-w-0 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
@@ -428,7 +644,10 @@ function applyWarrantyTerms(type: ConfiguredWarrantyType, durationValue = '3', u
         </div>
         <p v-if="props.payloadPreview?.warning" class="mt-3 text-sm text-amber-700">{{ props.payloadPreview.warning }}</p>
         <ul v-if="props.payloadPreview?.warnings.length" class="mt-3 space-y-1 text-sm text-amber-700">
-          <li v-for="issue in props.payloadPreview.warnings" :key="`${issue.code}-${issue.field}-${issue.message}`">⚠ {{ issue.field ? `${issue.field}：` : '' }}{{ issue.message }}</li>
+          <li v-for="issue in props.payloadPreview.warnings" :key="`${issue.code}-${issue.field}-${issue.message}`" class="space-y-1">
+            <p>提醒：{{ issueMessage(issue) }}</p>
+            <p v-if="issueNextAction(issue)">处理建议：{{ issueNextAction(issue) }}</p>
+          </li>
         </ul>
         <pre class="mt-3 max-h-80 w-full max-w-full overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-100">{{ props.payloadPreview ? JSON.stringify(props.payloadPreview.payload, null, 2) : '尚未生成 payload。' }}</pre>
       </article>

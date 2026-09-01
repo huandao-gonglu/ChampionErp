@@ -28,7 +28,10 @@ from .errors import normalize_mercadolibre_error_field, parse_mercadolibre_error
 from .payloads import (
     build_mercadolibre_payload,
 )
-from .publishing import publish_mercadolibre
+from .publishing import (
+    mercadolibre_traditional_parent_payload_error,
+    publish_mercadolibre,
+)
 
 __all__ = [
     "build_mercadolibre_payload",
@@ -45,6 +48,7 @@ __all__ = [
     "mercadolibre_category_allowed_currencies",
     "mercadolibre_category_attributes_for_publish",
     "mercadolibre_category_path",
+    "mercadolibre_traditional_parent_payload_error",
     "normalize_mercadolibre_error_field",
     "parse_mercadolibre_error",
     "publish_mercadolibre",

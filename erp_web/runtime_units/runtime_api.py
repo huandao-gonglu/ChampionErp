@@ -15,7 +15,7 @@ from erp_web.product_model import (
 from erp_web.stores.product_store import normalize_product_fields
 
 from erp_web import listing_planner as generator
-from .category_store import write_json
+from .json_store import write_json
 from .collect_helpers import collect_time_iso
 from .copy_generation import list_presets, platform_to_preset_key
 from .publish_bus import append_publish_log

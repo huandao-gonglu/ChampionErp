@@ -43,6 +43,9 @@ MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED = (
     "MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED"
 )
 MERCADOLIBRE_FULLY_MANAGED_BUSINESS_MODEL = "CBT CN Fulfillment Managed"
+MERCADOLIBRE_CN_INTERNATIONAL_DROPSHIPPING_BUSINESS_MODEL = (
+    "CBT CN International Drop Shipping"
+)
 MERCADOLIBRE_USER_PRODUCTS_REQUIRED = "MERCADOLIBRE_USER_PRODUCTS_REQUIRED"
 
 
@@ -121,10 +124,12 @@ def mercadolibre_sales_target_selectors(
     return sorted(selectors)
 
 
-def _binding_for_target(
+def mercadolibre_binding_for_target(
     target: dict[str, str],
     bindings: Any,
 ) -> dict[str, Any] | None:
+    """返回目标市场对应的授权 operation；未授权时返回 ``None``。"""
+
     site_id = str(target.get("site_id") or "").strip().upper()
     logistic_type = str(target.get("logistic_type") or "").strip().lower()
     for raw in bindings if isinstance(bindings, list) else []:
@@ -154,7 +159,7 @@ def mercadolibre_target_pricing_mode(
 ) -> str:
     """读取指定 marketplace operation 的可信计价模式。"""
 
-    binding = _binding_for_target(target, marketplace_bindings)
+    binding = mercadolibre_binding_for_target(target, marketplace_bindings)
     return mercadolibre_binding_pricing_mode(binding) if binding is not None else ""
 
 
@@ -184,6 +189,36 @@ def _raw_sales_target_shape_issues(value: Any) -> list[dict[str, str]]:
         site_id = str(
             target.get("site_id") or target.get("siteId") or ""
         ).strip().upper()
+        logistic_type = str(
+            target.get("logistic_type")
+            or target.get("logisticType")
+            or ""
+        ).strip().lower()
+        if not site_id and not logistic_type:
+            issues.append(
+                {
+                    "code": MERCADOLIBRE_SALES_TARGET_INVALID,
+                    "field": field,
+                    "message": f"{field} 缺少站点与物流方式",
+                }
+            )
+            continue
+        if not site_id:
+            issues.append(
+                {
+                    "code": MERCADOLIBRE_SALES_TARGET_INVALID,
+                    "field": f"{field}.site_id",
+                    "message": "销售目标缺少实际国家站点 ID",
+                }
+            )
+        if not logistic_type:
+            issues.append(
+                {
+                    "code": MERCADOLIBRE_LOGISTIC_TYPE_REQUIRED,
+                    "field": f"{field}.logistic_type",
+                    "message": f"销售目标 {site_id or index} 缺少物流方式",
+                }
+            )
         if site_id and site_id in selected_sites:
             issues.append(
                 {
@@ -198,6 +233,41 @@ def _raw_sales_target_shape_issues(value: Any) -> list[dict[str, str]]:
         if site_id:
             selected_sites.add(site_id)
     return issues
+
+
+def _normalized_target_source_indexes(
+    value: Any,
+    targets: list[dict[str, Any]],
+) -> list[int]:
+    """把规范化、排序后的目标稳定映射回原始输入下标。"""
+
+    rows = value if isinstance(value, list) else []
+    raw_indexes: dict[tuple[str, str], list[int]] = {}
+    for raw_index, raw in enumerate(rows):
+        if not isinstance(raw, dict):
+            continue
+        normalized = normalize_mercadolibre_sites_to_sell([raw])
+        if not normalized:
+            continue
+        target = normalized[0]
+        identity = (target["site_id"], target["logistic_type"])
+        raw_indexes.setdefault(identity, []).append(raw_index)
+
+    source_indexes: list[int] = []
+    consumed: set[int] = set()
+    for normalized_index, target in enumerate(targets):
+        identity = (target["site_id"], target["logistic_type"])
+        source_index = next(
+            (
+                candidate
+                for candidate in raw_indexes.get(identity, [])
+                if candidate not in consumed
+            ),
+            normalized_index,
+        )
+        consumed.add(source_index)
+        source_indexes.append(source_index)
+    return source_indexes
 
 
 def mercadolibre_payload_pricing_contract(
@@ -350,6 +420,10 @@ def mercadolibre_global_target_contract(
 
     raw_shape_issues = _raw_sales_target_shape_issues(sites_to_sell)
     targets = normalize_mercadolibre_sites_to_sell(sites_to_sell)
+    source_indexes = _normalized_target_source_indexes(
+        sites_to_sell,
+        targets,
+    )
     bindings = (
         marketplace_bindings if isinstance(marketplace_bindings, list) else []
     )
@@ -362,7 +436,8 @@ def mercadolibre_global_target_contract(
                     "当前 CBT 卖家属于 Fully Managed；标准 price 流程不可用，"
                     "必须使用 global_net_proceeds"
                 ),
-            }
+            },
+            *raw_shape_issues,
         ]
     if not targets:
         return targets, raw_shape_issues
@@ -371,17 +446,10 @@ def mercadolibre_global_target_contract(
     selected_sites: set[str] = set()
     selected_pricing_modes: set[str] = set()
     for index, target in enumerate(targets):
-        field = f"sites_to_sell[{index}]"
+        field = f"sites_to_sell[{source_indexes[index]}]"
         site_id = target["site_id"]
         logistic_type = target["logistic_type"]
         if not site_id:
-            issues.append(
-                {
-                    "code": MERCADOLIBRE_SALES_TARGET_INVALID,
-                    "field": f"{field}.site_id",
-                    "message": "销售目标缺少实际国家站点 ID",
-                }
-            )
             continue
         if site_id == "CBT":
             issues.append(
@@ -440,15 +508,8 @@ def mercadolibre_global_target_contract(
             continue
         selected_sites.add(site_id)
         if not logistic_type:
-            issues.append(
-                {
-                    "code": MERCADOLIBRE_LOGISTIC_TYPE_REQUIRED,
-                    "field": f"{field}.logistic_type",
-                    "message": f"销售目标 {site_id} 缺少物流方式",
-                }
-            )
             continue
-        binding = _binding_for_target(target, bindings)
+        binding = mercadolibre_binding_for_target(target, bindings)
         if binding is None:
             issues.append(
                 {
@@ -595,6 +656,7 @@ def mercadolibre_global_target_contract(
 
 __all__ = [
     "MERCADOLIBRE_CBT_CURRENCY_INVALID",
+    "MERCADOLIBRE_CN_INTERNATIONAL_DROPSHIPPING_BUSINESS_MODEL",
     "MERCADOLIBRE_FULLY_MANAGED_BUSINESS_MODEL",
     "MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED",
     "MERCADOLIBRE_LOGISTIC_TYPE_REQUIRED",
@@ -610,6 +672,7 @@ __all__ = [
     "MERCADOLIBRE_SALES_TARGET_NOT_AUTHORIZED",
     "MERCADOLIBRE_SITES_TO_SELL_REQUIRED",
     "MERCADOLIBRE_USER_PRODUCTS_REQUIRED",
+    "mercadolibre_binding_for_target",
     "mercadolibre_binding_pricing_mode",
     "mercadolibre_global_target_contract",
     "mercadolibre_payload_pricing_contract",

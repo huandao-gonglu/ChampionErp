@@ -26,8 +26,8 @@ from erp_web.marketplaces.yandex_currency import (
     yandex_wire_currency,
 )
 from erp_web.runtime_units import (
+    category_providers,
     mercadolibre_auth,
-    publish_mercadolibre,
     store_credentials,
 )
 from erp_web.stores.config_store import sanitize_client_store_config
@@ -668,7 +668,7 @@ def test_mercadolibre_identity_refresh_derives_traditional_listing_model(tmp_pat
                 "tags": [],
             },
         ):
-            result = publish_mercadolibre.ensure_mercadolibre_auth_ready(
+            result = store_credentials.ensure_mercadolibre_auth_ready(
                 get_context().config.load_store_config()
             )
 
@@ -742,6 +742,103 @@ def test_mercadolibre_token_refresh_persists_new_identity_capabilities(
         assert saved["listing_currency"] == "USD"
 
 
+def test_cbt_category_search_gets_token_through_shared_refresh_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with temp_app_context(tmp_path):
+        get_context().config.save_store_config(
+            {
+                "mercadolibre": {
+                    "app_id": "app-1",
+                    "app_secret": "secret-1",
+                    "refresh_token": "refresh-old",
+                    "access_token": "access-old",
+                    "account_site_id": "CBT",
+                }
+            }
+        )
+        refresh = Mock(
+            return_value={
+                "access_token": "access-new",
+                "refresh_token": "refresh-new",
+            }
+        )
+
+        def profile(token: str) -> dict[str, Any]:
+            if token == "access-old":
+                raise PublishAdapterError(
+                    "MERCADOLIBRE_AUTH_FAILED",
+                    "GET /users/me failed: 401 unauthorized",
+                    details={"http_status": 401},
+                )
+            assert token == "access-new"
+            return {
+                "user_id": "99",
+                "nickname": "GLOBAL_STORE",
+                "site_id": "CBT",
+                "tags": [],
+            }
+
+        def category_search(
+            url: str,
+            access_token: str | None = None,
+            *,
+            timeout_seconds: float = 8,
+        ) -> list[dict[str, Any]]:
+            del timeout_seconds
+            assert "/marketplace/domain_discovery/search" in url
+            assert access_token == "access-new"
+            return [
+                {
+                    "category_id": "CBT32271",
+                    "category_name": "Houses",
+                    "domain_name": "Dog houses",
+                }
+            ]
+
+        monkeypatch.setattr(
+            category_providers,
+            "http_json",
+            category_search,
+        )
+        with patch.object(
+            publisher,
+            "refresh_mercadolibre_token",
+            refresh,
+        ), patch.object(
+            publisher,
+            "fetch_mercadolibre_user_profile",
+            side_effect=profile,
+        ), patch.object(
+            publisher,
+            "fetch_mercadolibre_marketplace_user",
+            return_value={
+                "user_id": "99",
+                "site_id": "CBT",
+                "marketplace_bindings": [
+                    {
+                        "seller_id": "991",
+                        "site_id": "MCO",
+                        "logistic_type": "remote",
+                        "pricing_model": "net_proceeds",
+                        "user_product": False,
+                    }
+                ],
+            },
+        ):
+            rows = category_providers.MercadoLibreCategoryProvider().search_categories(
+                "wooden dog house",
+                site="CBT",
+            )
+
+        assert rows[0]["category_id"] == "CBT32271"
+        refresh.assert_called_once_with("app-1", "secret-1", "refresh-old")
+        saved = get_context().config.load_store_config()["mercadolibre"]
+        assert saved["access_token"] == "access-new"
+        assert saved["refresh_token"] == "refresh-new"
+
+
 def test_publish_auth_refresh_keeps_rotated_token_when_identity_sync_fails(
     tmp_path: Path,
 ) -> None:
@@ -769,7 +866,7 @@ def test_publish_auth_refresh_keeps_rotated_token_when_identity_sync_fails(
             "fetch_mercadolibre_user_profile",
             side_effect=RuntimeError("身份服务暂时不可用"),
         ):
-            result = publish_mercadolibre.ensure_mercadolibre_auth_ready(
+            result = store_credentials.ensure_mercadolibre_auth_ready(
                 config,
                 force_refresh=True,
             )
@@ -835,7 +932,7 @@ def test_publish_auth_refresh_keeps_rotated_token_when_static_save_fails(
             "save_store_config",
             side_effect=OSError("静态配置文件写入失败"),
         ):
-            result = publish_mercadolibre.ensure_mercadolibre_auth_ready(
+            result = store_credentials.ensure_mercadolibre_auth_ready(
                 config,
                 force_refresh=True,
             )
@@ -890,7 +987,7 @@ def test_publish_auth_refresh_allows_currency_discovery_failure(
                 retryable=True,
             ),
         ):
-            result = publish_mercadolibre.ensure_mercadolibre_auth_ready(
+            result = store_credentials.ensure_mercadolibre_auth_ready(
                 config,
                 force_refresh=True,
             )
@@ -930,7 +1027,7 @@ def test_publish_auth_preflight_preserves_retryable_identity_failure(
                 retryable=True,
             ),
         ):
-            result = publish_mercadolibre.ensure_mercadolibre_auth_ready(
+            result = store_credentials.ensure_mercadolibre_auth_ready(
                 config
             )
 
@@ -975,7 +1072,7 @@ def test_publish_auth_preflight_reloads_latest_persisted_token(
             "fetch_mercadolibre_user_profile",
             side_effect=profile,
         ):
-            result = publish_mercadolibre.ensure_mercadolibre_auth_ready(
+            result = store_credentials.ensure_mercadolibre_auth_ready(
                 stale_config
             )
 
@@ -1023,7 +1120,7 @@ def test_concurrent_publish_auth_refresh_reuses_the_rotated_token(
 
         def run(config: dict[str, Any]) -> dict[str, Any]:
             start.wait()
-            return publish_mercadolibre.ensure_mercadolibre_auth_ready(
+            return store_credentials.ensure_mercadolibre_auth_ready(
                 config,
                 force_refresh=True,
             )
@@ -1144,7 +1241,7 @@ def test_clear_auth_waits_for_inflight_refresh_and_remains_cleared(
             },
         ), ThreadPoolExecutor(max_workers=2) as executor:
             refresh_future = executor.submit(
-                publish_mercadolibre.ensure_mercadolibre_auth_ready,
+                store_credentials.ensure_mercadolibre_auth_ready,
                 config,
                 force_refresh=True,
             )
@@ -1268,7 +1365,7 @@ def test_code_exchange_waits_for_refresh_and_becomes_latest_credentials(
             side_effect=marketplace_user,
         ), ThreadPoolExecutor(max_workers=2) as executor:
             refresh_future = executor.submit(
-                publish_mercadolibre.ensure_mercadolibre_auth_ready,
+                store_credentials.ensure_mercadolibre_auth_ready,
                 config,
                 force_refresh=True,
             )
@@ -1404,7 +1501,7 @@ def test_publish_auth_force_refresh_updates_caller_and_persisted_config(
                 ],
             },
         ):
-            result = publish_mercadolibre.ensure_mercadolibre_auth_ready(
+            result = store_credentials.ensure_mercadolibre_auth_ready(
                 config,
                 force_refresh=True,
             )
@@ -1429,7 +1526,7 @@ def test_publish_auth_force_refresh_requires_refresh_credentials(
             publisher,
             "refresh_mercadolibre_token",
         ) as refresh:
-            result = publish_mercadolibre.ensure_mercadolibre_auth_ready(
+            result = store_credentials.ensure_mercadolibre_auth_ready(
                 config,
                 force_refresh=True,
             )
@@ -1467,7 +1564,7 @@ def test_publish_auth_force_refresh_preserves_oauth_network_retryability(
                 retryable=True,
             ),
         ):
-            result = publish_mercadolibre.ensure_mercadolibre_auth_ready(
+            result = store_credentials.ensure_mercadolibre_auth_ready(
                 config,
                 force_refresh=True,
             )

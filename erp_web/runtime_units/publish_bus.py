@@ -53,7 +53,13 @@ def publish_bus_terminal_status(status: str) -> str:
         return "published"
     if value == "outcome_unknown":
         return "outcome_unknown"
-    if value in {"failed", "not_ready", "ready_for_real_publish", "skipped"}:
+    if value in {
+        "failed",
+        "partial",
+        "not_ready",
+        "ready_for_real_publish",
+        "skipped",
+    }:
         return value
     return ""
 

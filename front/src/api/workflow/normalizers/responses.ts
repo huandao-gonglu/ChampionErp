@@ -6,7 +6,12 @@ import type {
   MercadoLibreOrderNotification,
   Product,
   ProductIndexItem,
+  PrecheckIssue,
   PublishLogItem,
+  PublishPrecheck,
+  PublishPrecheckMarketCheck,
+  PublishPrecheckScope,
+  PublishPrecheckScopeStatus,
   UnknownRecord,
 } from '@/types/workflow'
 
@@ -24,6 +29,8 @@ import {
   platformList,
   normalizeTargetSites,
   normalizeImageAsset,
+  precheckIssues,
+  precheckIssueSummary,
 } from './core'
 import {
 
@@ -135,6 +142,183 @@ export function normalizePublishLogs(value: unknown): PublishLogItem[] {
       }
     })
     : []
+}
+
+function normalizePublishPrecheckScope(value: unknown): PublishPrecheckScope | null {
+  const scope = asRecord(value)
+  if (!Object.keys(scope).length) return null
+
+  const errors = precheckIssues(scope.errors, 'error')
+  const warnings = precheckIssues(scope.warnings, 'warning')
+  const rawStatus = getString(scope, ['status']).trim().toLowerCase()
+  const passed = rawStatus === 'passed' && scope.ok === true && errors.length === 0
+  const status: PublishPrecheckScopeStatus = passed ? 'passed' : 'blocked'
+
+  return {
+    ok: passed,
+    status,
+    errors,
+    warnings,
+  }
+}
+
+type ExpectedPublishPrecheckMarket = {
+  siteId: string
+  logisticType: string
+}
+
+type NormalizePublishPrecheckOptions = {
+  requireLayeredScopes?: boolean
+  expectedMarkets?: readonly ExpectedPublishPrecheckMarket[]
+}
+
+function precheckMarketIdentity(siteId: unknown, logisticType: unknown): string {
+  return `${String(siteId || '').trim().toUpperCase()}\u0000${String(logisticType || '').trim().toLowerCase()}`
+}
+
+function precheckMarketIdentityIsValid(identity: string): boolean {
+  const [siteId, logisticType] = identity.split('\u0000')
+  return Boolean(siteId && logisticType)
+}
+
+function hasDuplicateIdentity(identities: readonly string[]): boolean {
+  return new Set(identities).size !== identities.length
+}
+
+function sameIdentitySet(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false
+  const rightSet = new Set(right)
+  return left.every((identity) => rightSet.has(identity))
+}
+
+function contractIssue(
+  code: string,
+  field: string,
+  message: string,
+  nextAction: string,
+): PrecheckIssue {
+  return {
+    code,
+    field,
+    message,
+    severity: 'error',
+    nextAction,
+  }
+}
+
+/**
+ * 统一归一化 API 返回与商品 publish_preview 中持久化的发布预检。
+ * 任一层级明确阻断、返回错误或显式 ok=false 时，整体结果一律失败关闭。
+ */
+export function normalizePublishPrecheck(
+  value: unknown,
+  options: NormalizePublishPrecheckOptions = {},
+): PublishPrecheck {
+  const result = asRecord(value)
+  const rawErrorItems = precheckIssues(result.errors, 'error')
+  const warningItems = precheckIssues(result.warnings, 'warning')
+  const parent = normalizePublishPrecheckScope(result.parent)
+  const marketChecks = Array.isArray(result.markets)
+    ? result.markets.flatMap((value) => {
+      const scope = normalizePublishPrecheckScope(value)
+      if (!scope) return []
+      const market = asRecord(value)
+      const check: PublishPrecheckMarketCheck = {
+        ...scope,
+        siteId: getString(market, ['site_id']).toUpperCase(),
+        logisticType: getString(market, ['logistic_type']).toLowerCase(),
+      }
+      return [check]
+    })
+    : []
+  const scopes = [...(parent ? [parent] : []), ...marketChecks]
+  const hasBlockedScope = scopes.some((scope) => (
+    scope.status === 'blocked' || scope.errors.length > 0 || !scope.ok
+  ))
+  const hasScopeErrorDetails = scopes.some((scope) => scope.errors.length > 0)
+  const missingRequiredScopes = Boolean(
+    options.requireLayeredScopes && (!parent || marketChecks.length === 0),
+  )
+  const expectedMarketIdentities = (options.expectedMarkets || []).map((market) => (
+    precheckMarketIdentity(market.siteId, market.logisticType)
+  ))
+  const actualMarketIdentities = marketChecks.map((market) => (
+    precheckMarketIdentity(market.siteId, market.logisticType)
+  ))
+  const marketScopesMismatch = Boolean(
+    options.requireLayeredScopes
+    && !missingRequiredScopes
+    && (
+      options.expectedMarkets === undefined
+      || expectedMarketIdentities.length === 0
+      || expectedMarketIdentities.some((identity) => !precheckMarketIdentityIsValid(identity))
+      || actualMarketIdentities.some((identity) => !precheckMarketIdentityIsValid(identity))
+      || hasDuplicateIdentity(expectedMarketIdentities)
+      || hasDuplicateIdentity(actualMarketIdentities)
+      || !sameIdentitySet(expectedMarketIdentities, actualMarketIdentities)
+    )
+  )
+  const contractErrors: PrecheckIssue[] = []
+  if (missingRequiredScopes) {
+    contractErrors.push(contractIssue(
+      'LAYERED_PRECHECK_REQUIRED',
+      'sites_to_sell',
+      '缺少当前 Mercado 父级与销售市场分层预检结果',
+      '重新执行上架预检',
+    ))
+  }
+  if (marketScopesMismatch) {
+    contractErrors.push(contractIssue(
+      'LAYERED_PRECHECK_MARKETS_MISMATCH',
+      'sites_to_sell',
+      '销售市场预检结果与当前选择不一致',
+      '重新执行上架预检',
+    ))
+  }
+
+  const rawTopStatus = getString(result, ['status']).trim().toLowerCase()
+  const topStatusInvalid = Boolean(
+    rawTopStatus && rawTopStatus !== 'passed' && rawTopStatus !== 'blocked'
+  )
+  const topStateContradiction = Boolean(
+    (result.ok !== true && result.ok !== false)
+    || topStatusInvalid
+    || (rawTopStatus === 'passed' && result.ok === false)
+    || (rawTopStatus === 'blocked' && result.ok === true)
+    || ((result.ok === true || rawTopStatus === 'passed') && (rawErrorItems.length > 0 || hasBlockedScope))
+  )
+  const hasActionableFailureDetails = Boolean(
+    rawErrorItems.length || hasScopeErrorDetails || contractErrors.length
+  )
+  const resultWouldFail = Boolean(
+    result.ok !== true || rawErrorItems.length || hasBlockedScope || contractErrors.length
+  )
+  const needsInconsistencyIssue = Boolean(
+    topStateContradiction || (resultWouldFail && !hasActionableFailureDetails)
+  )
+  const errorItems = [
+    ...rawErrorItems,
+    ...contractErrors,
+    ...(needsInconsistencyIssue && !rawErrorItems.some((item) => item.code === 'PRECHECK_RESULT_INCONSISTENT')
+      ? [contractIssue(
+          'PRECHECK_RESULT_INCONSISTENT',
+          'precheck',
+          '预检状态与检查明细不一致',
+          '重新执行上架预检',
+        )]
+      : []),
+  ]
+
+  return {
+    ok: result.ok === true && errorItems.length === 0 && !hasBlockedScope,
+    errors: errorItems.map(precheckIssueSummary),
+    warnings: warningItems.map(precheckIssueSummary),
+    errorItems,
+    warningItems,
+    checkedAt: getString(result, ['checked_at', 'checkedAt']),
+    parent,
+    marketChecks,
+  }
 }
 
 export function normalizeProductMutation(data: unknown): ProductMutationResponse {

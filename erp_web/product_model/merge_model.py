@@ -785,8 +785,6 @@ def _merge_platform_draft(product: dict[str, Any], platform: str) -> dict[str, A
         normalize_mercadolibre_publication(
             current.get("publication")
             if isinstance(current.get("publication"), dict)
-            else current.get("mercadoLibrePublication")
-            if isinstance(current.get("mercadoLibrePublication"), dict)
             else {}
         )
         if platform == "mercadolibre"

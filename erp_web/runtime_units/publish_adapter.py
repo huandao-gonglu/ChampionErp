@@ -23,10 +23,10 @@ from .publish_helpers import (
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .publish_context import PreparedPublishContext
 from .publish_mercadolibre import (
-    ensure_mercadolibre_auth_ready,
     ensure_mercadolibre_pictures_uploaded,
     map_mercadolibre_publish_error,
 )
+from .store_credentials import get_mercadolibre_access_token
 from .publish_ozon import (
     build_ozon_publish_payload,
     map_ozon_publish_error,
@@ -59,17 +59,31 @@ def _flag_definition_unavailable(
 
     if context.category_id and context.category_definition is None:
         errors = list(precheck.get("errors") or [])
-        errors.append(
-            precheck_item(
-                "CATEGORY_ATTRIBUTES_UNAVAILABLE",
-                "category_id",
-                "类目属性定义暂时不可用，无法完成发布校验",
-                "error",
-                context.definition_error
-                or "稍后重试；若持续失败请检查平台授权与类目接口",
-            )
+        issue = precheck_item(
+            "CATEGORY_ATTRIBUTES_UNAVAILABLE",
+            "category_id",
+            "类目属性定义暂时不可用，无法完成发布校验",
+            "error",
+            context.definition_error
+            or "稍后重试；若持续失败请检查平台授权与类目接口",
         )
-        return {**precheck, "ok": False, "errors": errors}
+        errors.append(issue)
+        result = {**precheck, "ok": False, "errors": errors}
+        parent = precheck.get("parent")
+        if (
+            str(precheck.get("platform") or "").strip().lower()
+            == "mercadolibre"
+            and isinstance(parent, dict)
+        ):
+            parent_errors = list(parent.get("errors") or [])
+            parent_errors.append(issue)
+            result["parent"] = {
+                **parent,
+                "ok": False,
+                "status": "blocked",
+                "errors": parent_errors,
+            }
+        return result
     return precheck
 
 
@@ -84,19 +98,9 @@ class MercadoLibrePublishingAdapter:
         *,
         force_refresh: bool = False,
     ) -> str:
-        auth = ensure_mercadolibre_auth_ready(
+        return get_mercadolibre_access_token(
             config,
             force_refresh=force_refresh,
-        )
-        token = str(auth.get("token") or "").strip()
-        if auth.get("ok") and token:
-            return token
-        message = str(auth.get("message") or "Mercado Libre 授权不可用。")
-        raise PublishAdapterError(
-            str(auth.get("platform_error_code") or "MERCADOLIBRE_AUTH_FAILED"),
-            message,
-            retryable=bool(auth.get("retryable")),
-            details={"field_errors": {"auth": [message]}},
         )
 
     @staticmethod
@@ -187,9 +191,7 @@ class MercadoLibrePublishingAdapter:
         return validate_mercadolibre_publish_payload(payload, config)
 
     def publish_payload(self, payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
-        token = str((config.get(self.platform) or {}).get("access_token") or "")
-        if not token:
-            token = self._require_auth_token(config)
+        token = self._require_auth_token(config)
         try:
             return marketplace_api.publish_mercadolibre(payload, token)
         except Exception as exc:
@@ -221,7 +223,7 @@ class MercadoLibrePublishingAdapter:
             if isinstance(config.get(self.platform), dict)
             else {}
         )
-        token = str(store.get("access_token") or "")
+        token = self._require_auth_token(config)
         try:
             return poll_mercadolibre_publish_status(
                 result,

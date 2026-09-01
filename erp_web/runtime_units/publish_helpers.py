@@ -443,6 +443,26 @@ def validate_mercadolibre_publish_payload(payload: Any, config: dict[str, Any]) 
             missing.append(
                 "已发布传统 Global Items publication 缺少 parent_item_id，禁止重复创建"
             )
+        parent_payload_error = (
+            publisher.mercadolibre_traditional_parent_payload_error(
+                payload,
+                publication,
+            )
+        )
+        if parent_payload_error:
+            parent_error_text = (
+                f"{parent_payload_error['error_code']}: "
+                f"{parent_payload_error['message']}"
+            )
+            details = (
+                parent_payload_error.get("details")
+                if isinstance(parent_payload_error.get("details"), dict)
+                else {}
+            )
+            next_action = str(details.get("next_action") or "").strip()
+            if next_action:
+                parent_error_text += f" 处理建议：{next_action}"
+            missing.append(parent_error_text)
 
     _, target_issues = mercadolibre_global_target_contract(
         sites_to_sell,

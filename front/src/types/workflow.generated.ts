@@ -373,15 +373,27 @@ export interface BackendPublishJobSiteToSellSummary {
   logistic_type: string
 }
 
+export interface BackendPublishJobMarketResultSummary {
+  site_id: string
+  logistic_type: string
+  status: string
+  item_id: string
+  error: string
+  error_code: string
+}
+
 export interface BackendPublishJobPlatformSummary {
   platform: string
   draft_id: string
   site: string
   sites_to_sell: Array<BackendPublishJobSiteToSellSummary>
+  market_results: Array<BackendPublishJobMarketResultSummary>
   status: string
   stage: string
   attempts: number
   error: string
+  error_code: string
+  next_action: string
   updated_at: string
 }
 
@@ -395,6 +407,8 @@ export interface BackendPublishJobSummary {
   stage: string
   attempts: number
   error: string
+  error_code: string
+  next_action: string
   platforms: Array<BackendPublishJobPlatformSummary>
   created_at: string
   updated_at: string

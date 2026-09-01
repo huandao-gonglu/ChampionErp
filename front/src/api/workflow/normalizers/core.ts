@@ -184,12 +184,19 @@ export function wireStringList(value: unknown): string[] {
 export function precheckIssueFromUnknown(value: unknown, fallbackSeverity: 'error' | 'warning'): PrecheckIssue {
   const record = asRecord(value)
   if (Object.keys(record).length) {
-    const message = getString(record, ['message', 'error', 'code'], fallbackSeverity === 'error' ? '预检错误' : '预检提醒')
+    const severity = getString(record, ['severity'], fallbackSeverity)
+    const message = getString(
+      record,
+      ['message'],
+      severity === 'warning'
+        ? '预检返回了未说明原因的提醒'
+        : '预检返回了未说明原因的阻断',
+    )
     return {
       code: getString(record, ['code']),
       field: getString(record, ['field']),
       message,
-      severity: getString(record, ['severity'], fallbackSeverity),
+      severity,
       nextAction: getString(record, ['next_action']),
     }
   }
@@ -210,9 +217,8 @@ export function precheckIssues(value: unknown, fallbackSeverity: 'error' | 'warn
 }
 
 export function precheckIssueSummary(issue: PrecheckIssue): string {
-  const prefix = issue.field ? `${issue.field}：` : ''
   const suffix = issue.nextAction ? `（${issue.nextAction}）` : ''
-  return `${prefix}${issue.message}${suffix}`.trim()
+  return `${issue.message}${suffix}`.trim()
 }
 
 export function platformList(value: unknown): Marketplace[] {

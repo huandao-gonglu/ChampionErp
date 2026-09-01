@@ -25,6 +25,7 @@ export {
   type BackendPublishPlatformState,
   type BackendPublishJob,
   type BackendPublishJobSiteToSellSummary,
+  type BackendPublishJobMarketResultSummary,
   type BackendPublishJobPlatformSummary,
   type BackendPublishJobSummary,
 } from './workflow.generated'
@@ -564,6 +565,20 @@ export interface PrecheckIssue {
   nextAction: string
 }
 
+export type PublishPrecheckScopeStatus = 'blocked' | 'passed'
+
+export interface PublishPrecheckScope {
+  ok: boolean
+  status: PublishPrecheckScopeStatus
+  errors: PrecheckIssue[]
+  warnings: PrecheckIssue[]
+}
+
+export interface PublishPrecheckMarketCheck extends PublishPrecheckScope {
+  siteId: string
+  logisticType: string
+}
+
 export interface PublishPrecheck {
   ok: boolean
   errors: string[]
@@ -571,6 +586,9 @@ export interface PublishPrecheck {
   errorItems: PrecheckIssue[]
   warningItems: PrecheckIssue[]
   checkedAt: string
+  /** Mercado Libre 分层预检；其他平台未返回 scope 时保持为空。 */
+  parent?: PublishPrecheckScope | null
+  marketChecks?: PublishPrecheckMarketCheck[]
 }
 
 export interface PublishJob {
@@ -589,11 +607,23 @@ export interface PublishJobPlatformSummary {
   draftId: string
   site: string
   sitesToSell: MarketplaceSiteToSell[]
+  marketResults?: PublishJobMarketResultSummary[]
   status: string
   stage: string
   attempts: number
   error: string
+  errorCode: string
+  nextAction: string
   updatedAt: string
+}
+
+export interface PublishJobMarketResultSummary {
+  siteId: string
+  logisticType: string
+  status: string
+  itemId: string
+  error: string
+  errorCode: string
 }
 
 export interface PublishJobListItem {
@@ -606,6 +636,8 @@ export interface PublishJobListItem {
   stage: string
   attempts: number
   error: string
+  errorCode: string
+  nextAction: string
   platforms: PublishJobPlatformSummary[]
   createdAt: string
   updatedAt: string

@@ -55,6 +55,25 @@ function draft(draftId: string, status: string, title: string): DraftIndexItem {
 }
 
 describe('DraftBoxPanel', () => {
+  it('展示草稿创建时间', () => {
+    const row = draft('created-time', 'claimed', '带创建时间的草稿')
+    row.createdAt = '2026-09-01T12:34:56+08:00'
+    const wrapper = mount(DraftBoxPanel, {
+      props: {
+        drafts: [row],
+        platformOptions: [],
+        storeConfig: {},
+        loading: false,
+      },
+    })
+
+    expect(wrapper.text()).toContain('创建时间')
+    const createdAt = wrapper.get('[data-testid="draft-created-at"]')
+    expect(createdAt.attributes('title')).toBe(row.createdAt)
+    expect(createdAt.text()).toContain('2026')
+    expect(createdAt.text()).toContain('12:34:56')
+  })
+
   it('点击复制草稿时请求创建副本，不操作剪贴板', async () => {
     const row = draft('draft-to-copy', 'claimed', '待复制草稿')
     const writeText = vi.fn()

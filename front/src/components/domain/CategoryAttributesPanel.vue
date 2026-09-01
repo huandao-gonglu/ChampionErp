@@ -4,6 +4,7 @@ import type { ComponentPublicInstance } from 'vue'
 import CategoryPrecheckPanel from '@/components/domain/CategoryPrecheckPanel.vue'
 import { fetchCategoryAttributeValues } from '@/api/workflow/publishing'
 import { isCategoryDictionaryAttribute } from '@/api/workflow/normalizers'
+import { isMercadoLibreCbtTarget } from '@/utils/mercadolibreGlobalSelling'
 import type { CategoryAttributeDefinition, CategoryAttributeOption, CategoryAttributeTranslations, CategoryDictionaryValue, CategoryPrecheckResult, CategoryResultTranslations, CategorySearchResult, CategorySelection, DraftDetail, DraftProductContext, MarketplaceOption, MarketplaceTargetSite, PrecheckIssue, PublishPrecheck, UnknownRecord } from '@/types/workflow'
 
 const props = withDefaults(defineProps<{
@@ -56,6 +57,28 @@ const targetOptions = computed(() => props.publishTargets.map((target) => ({
   key: targetKey(target),
   label: targetLabel(target),
 })))
+const usesSharedMercadoLibreCbtCategory = computed(() => (
+  isMercadoLibreCbtTarget(props.selectedPublishTarget)
+))
+const sharedMercadoLibreMarketLabels = computed(() => {
+  if (!usesSharedMercadoLibreCbtCategory.value) return []
+  const platform = props.platformOptions.find((item) => item.key === 'mercadolibre')
+  const seen = new Set<string>()
+  return (props.selectedPublishTarget.sitesToSell || []).flatMap((market) => {
+    const siteId = String(market.siteId || '').trim().toUpperCase()
+    if (!siteId || siteId === 'CBT' || seen.has(siteId)) return []
+    seen.add(siteId)
+    const site = platform?.sites.find((item) => (
+      item.code.toUpperCase() === siteId || item.key.toUpperCase() === siteId
+    ))
+    return [site ? `${site.label}（${siteId}）` : siteId]
+  })
+})
+const sharedMercadoLibreMarketSummary = computed(() => (
+  sharedMercadoLibreMarketLabels.value.length
+    ? sharedMercadoLibreMarketLabels.value.join('、')
+    : '当前 CBT 草稿的全部销售市场'
+))
 
 const showRequiredAttributes = ref(false)
 const showOptionalAttributes = ref(false)
@@ -785,8 +808,9 @@ function selectTargetByKey(value: string) {
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
         <h2 class="card-title">类目/属性</h2>
-        <p class="muted mt-1">在当前草稿的目标站点之间切换，并分别维护平台类目和必填属性。</p>
-        <p v-if="props.categoryAutoMatchProductName" class="mt-1 text-xs font-semibold text-brand-700 dark:text-brand-300">AI 识别商品主体：{{ props.categoryAutoMatchProductName }}。请逐站点检查候选类目后再确认。</p>
+        <p v-if="usesSharedMercadoLibreCbtCategory" class="muted mt-1">为当前草稿维护一个共享 CBT 类目和对应属性。</p>
+        <p v-else class="muted mt-1">在当前草稿的目标站点之间切换，并分别维护平台类目和必填属性。</p>
+        <p v-if="props.categoryAutoMatchProductName" class="mt-1 text-xs font-semibold text-brand-700 dark:text-brand-300">AI 识别商品主体：{{ props.categoryAutoMatchProductName }}。{{ usesSharedMercadoLibreCbtCategory ? '请检查候选 CBT 类目是否兼容全部已选销售市场后再确认。' : '请逐站点检查候选类目后再确认。' }}</p>
         <p v-if="showCategoryResultTranslationProgress || showAttributeTranslationProgress" class="mt-1 text-xs text-brand-700 dark:text-brand-300">正在调用 AI 模型翻译文本...</p>
         <p v-else-if="categoryResultTranslationCount || translationCount" class="mt-1 text-xs text-accent-500 dark:text-accent-400">已翻译候选类目 {{ categoryResultTranslationCount }} 项 / 属性 {{ translationCount }} 项</p>
       </div>
@@ -795,6 +819,14 @@ function selectTargetByKey(value: string) {
           <option v-for="target in targetOptions" :key="target.key" :value="target.key">{{ target.label }}</option>
         </select>
       </div>
+    </div>
+    <div
+      v-if="usesSharedMercadoLibreCbtCategory"
+      data-testid="mercadolibre-shared-category-notice"
+      class="mt-4 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800 dark:border-blue-900/70 dark:bg-blue-950/30 dark:text-blue-200"
+    >
+      <p class="font-semibold">所有已选销售市场共用一个 CBT 类目</p>
+      <p class="mt-1">适用市场：{{ sharedMercadoLibreMarketSummary }}。Mercado Libre 会自动映射各市场的本地类目，不能为每个市场分别设置类目 ID。</p>
     </div>
     <div v-if="showCategoryResultTranslationProgress || showAttributeTranslationProgress" class="mt-3 h-2 overflow-hidden rounded-full bg-accent-200 dark:bg-dark-800">
       <div class="h-full w-2/3 animate-pulse rounded-full bg-brand-500" />
@@ -805,7 +837,8 @@ function selectTargetByKey(value: string) {
         <div class="flex flex-wrap items-center justify-between gap-2">
           <div>
             <h3 class="font-semibold text-accent-950 dark:text-white">类目候选与手动搜索</h3>
-            <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">可手动输入关键词搜索当前目标站点，或按需使用 AI 识别商品主体并生成候选。</p>
+            <p v-if="usesSharedMercadoLibreCbtCategory" class="mt-1 text-sm text-accent-500 dark:text-accent-400">搜索与商品真实属性相符、并兼容全部已选销售市场的 CBT 全局类目。</p>
+            <p v-else class="mt-1 text-sm text-accent-500 dark:text-accent-400">可手动输入关键词搜索当前目标站点，或按需使用 AI 识别商品主体并生成候选。</p>
           </div>
           <button class="btn btn-outline" :disabled="props.loading || props.categoryResultTranslating || !props.categoryResults.length" @click="emit('translateCategoryResults')">翻译候选类目</button>
         </div>
@@ -837,11 +870,11 @@ function selectTargetByKey(value: string) {
           </div>
         </div>
         <label class="mt-4 block">
-          <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">类目 ID</span>
-          <input v-model="activeDraft.categoryId" class="input mt-1" placeholder="例如 MLM12345" @input="emit('invalidateCategoryPrecheck')" />
+          <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">{{ usesSharedMercadoLibreCbtCategory ? '共享 CBT 类目 ID' : '类目 ID' }}</span>
+          <input v-model="activeDraft.categoryId" class="input mt-1" :placeholder="usesSharedMercadoLibreCbtCategory ? '请输入 CBT 类目 ID' : '例如 MLM12345'" @input="emit('invalidateCategoryPrecheck')" />
         </label>
         <label class="mt-3 block">
-          <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">类目路径</span>
+          <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">{{ usesSharedMercadoLibreCbtCategory ? '共享 CBT 类目路径' : '类目路径' }}</span>
           <input v-model="activeDraft.categoryPath" class="input mt-1" />
         </label>
         <div class="mt-4 flex flex-wrap gap-2">

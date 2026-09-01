@@ -174,6 +174,202 @@ describe('workflow store live API flow', () => {
     expect(workflowApi.fetchState).toHaveBeenCalledOnce()
   })
 
+  it('从商品 publish_preview 恢复父级与市场分层预检并失败关闭', async () => {
+    const product = createEmptyProduct()
+    product.productId = 'product-persisted-layered-precheck'
+    product.drafts.mercadolibre.targetSites = [{
+      platform: 'mercadolibre',
+      site: 'CBT',
+      language: 'en-US',
+      listingCurrency: 'USD',
+      sitesToSell: [{ siteId: 'MLC', logisticType: 'remote' }],
+    }]
+    product.raw.publish_preview = {
+      mercadolibre: {
+        ok: true,
+        errors: [],
+        warnings: [],
+        checked_at: '2026-08-31T00:00:00Z',
+        parent: {
+          ok: true,
+          status: 'passed',
+          errors: [],
+          warnings: [],
+        },
+        markets: [{
+          site_id: 'MLC',
+          logistic_type: 'remote',
+          ok: true,
+          status: 'passed',
+          errors: [{ code: 'MARKET_LIMIT', field: 'shipping', message: '智利物流限制不通过' }],
+          warnings: [],
+        }],
+      },
+    }
+    vi.mocked(workflowApi.fetchState).mockResolvedValue({
+      schemaVersion: 1,
+      product,
+      imagePool: [],
+      appConfig: {},
+      storeConfig: {},
+      storeAuthSummary: {},
+      outputDir: '',
+      platformOptions: [],
+    } satisfies AppStateResponse)
+
+    const store = useWorkflowStore()
+    await store.loadState()
+
+    expect(store.precheck).toEqual(expect.objectContaining({
+      ok: false,
+      checkedAt: '2026-08-31T00:00:00Z',
+      parent: expect.objectContaining({ status: 'passed', ok: true }),
+      marketChecks: [expect.objectContaining({
+        siteId: 'MLC',
+        logisticType: 'remote',
+        status: 'blocked',
+        ok: false,
+      })],
+    }))
+    expect(store.precheck?.errorItems).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'LAYERED_PRECHECK_MARKETS_MISMATCH' }),
+    ]))
+    expect(store.workflowSteps.find((step) => step.key === 'precheck')?.status).not.toBe('done')
+  })
+
+  it('Mercado 旧式持久化 preview 缺少分层 scope 时不接受 stale ready 状态', async () => {
+    const product = createEmptyProduct()
+    product.productId = 'product-old-flat-precheck'
+    product.drafts.mercadolibre.status = 'ready_to_publish'
+    product.drafts.mercadolibre.targetSites = [{
+      platform: 'mercadolibre',
+      site: 'CBT',
+      language: 'en-US',
+      listingCurrency: 'USD',
+      sitesToSell: [{ siteId: 'MLA', logisticType: 'remote' }],
+    }]
+    product.raw.publish_preview = {
+      mercadolibre: {
+        ok: true,
+        errors: [],
+        warnings: [],
+        checked_at: '2026-08-30T00:00:00Z',
+      },
+    }
+    vi.mocked(workflowApi.fetchState).mockResolvedValue({
+      schemaVersion: 1,
+      product,
+      imagePool: [],
+      appConfig: {},
+      storeConfig: {},
+      storeAuthSummary: {},
+      outputDir: '',
+      platformOptions: [],
+    } satisfies AppStateResponse)
+
+    const store = useWorkflowStore()
+    await store.loadState()
+
+    expect(store.precheck?.ok).toBe(false)
+    expect(store.precheck?.errorItems).toEqual([
+      expect.objectContaining({ code: 'LAYERED_PRECHECK_REQUIRED' }),
+    ])
+    expect(store.workflowSteps.find((step) => step.key === 'precheck')?.status).not.toBe('done')
+  })
+
+  it('恢复持久化 Mercado preview 时按当前 target 的完整市场集合验收', async () => {
+    const product = createEmptyProduct()
+    product.productId = 'product-persisted-exact-markets'
+    product.drafts.mercadolibre.targetSites = [{
+      platform: 'mercadolibre',
+      site: 'CBT',
+      language: 'en-US',
+      listingCurrency: 'USD',
+      sitesToSell: [
+        { siteId: 'MLA', logisticType: 'remote' },
+        { siteId: 'MLC', logisticType: 'remote' },
+      ],
+    }]
+    product.raw.publish_preview = {
+      mercadolibre: {
+        ok: true,
+        errors: [],
+        warnings: [],
+        checked_at: '2026-08-31T01:00:00Z',
+        parent: { ok: true, status: 'passed', errors: [], warnings: [] },
+        markets: [
+          { site_id: 'MLC', logistic_type: 'remote', ok: true, status: 'passed', errors: [], warnings: [] },
+          { site_id: 'MLA', logistic_type: 'remote', ok: true, status: 'passed', errors: [], warnings: [] },
+        ],
+      },
+    }
+    vi.mocked(workflowApi.fetchState).mockResolvedValue({
+      schemaVersion: 1,
+      product,
+      imagePool: [],
+      appConfig: {},
+      storeConfig: {},
+      storeAuthSummary: {},
+      outputDir: '',
+      platformOptions: [],
+    } satisfies AppStateResponse)
+
+    const store = useWorkflowStore()
+    await store.loadState()
+
+    expect(store.precheck).toEqual(expect.objectContaining({
+      ok: true,
+      checkedAt: '2026-08-31T01:00:00Z',
+      errorItems: [],
+    }))
+    expect(store.workflowSteps.find((step) => step.key === 'precheck')?.status).toBe('done')
+  })
+
+  it('持久化 Mercado preview 缺少当前 target 的任一市场时失败关闭', async () => {
+    const product = createEmptyProduct()
+    product.productId = 'product-persisted-missing-market'
+    product.drafts.mercadolibre.targetSites = [{
+      platform: 'mercadolibre',
+      site: 'CBT',
+      language: 'en-US',
+      listingCurrency: 'USD',
+      sitesToSell: [
+        { siteId: 'MLA', logisticType: 'remote' },
+        { siteId: 'MLC', logisticType: 'remote' },
+      ],
+    }]
+    product.raw.publish_preview = {
+      mercadolibre: {
+        ok: true,
+        errors: [],
+        warnings: [],
+        parent: { ok: true, status: 'passed', errors: [], warnings: [] },
+        markets: [
+          { site_id: 'MLA', logistic_type: 'remote', ok: true, status: 'passed', errors: [], warnings: [] },
+        ],
+      },
+    }
+    vi.mocked(workflowApi.fetchState).mockResolvedValue({
+      schemaVersion: 1,
+      product,
+      imagePool: [],
+      appConfig: {},
+      storeConfig: {},
+      storeAuthSummary: {},
+      outputDir: '',
+      platformOptions: [],
+    } satisfies AppStateResponse)
+
+    const store = useWorkflowStore()
+    await store.loadState()
+
+    expect(store.precheck?.ok).toBe(false)
+    expect(store.precheck?.errorItems).toEqual([
+      expect.objectContaining({ code: 'LAYERED_PRECHECK_MARKETS_MISMATCH' }),
+    ])
+    expect(store.workflowSteps.find((step) => step.key === 'precheck')?.status).not.toBe('done')
+  })
+
   it('does not hydrate public credential fields into Pinia state', async () => {
     const product = createEmptyProduct()
     vi.mocked(workflowApi.fetchState).mockResolvedValue({
@@ -516,6 +712,8 @@ describe('workflow store live API flow', () => {
         stage: 'failed',
         attempts: 1,
         error: '合同币种不匹配',
+        errorCode: '',
+        nextAction: '',
         platforms: [{
           platform: 'ozon',
           draftId: 'draft-1',
@@ -525,6 +723,8 @@ describe('workflow store live API flow', () => {
           stage: 'failed',
           attempts: 1,
           error: '合同币种不匹配',
+          errorCode: '',
+          nextAction: '',
           updatedAt: '2026-08-06 22:01:44',
         }],
         createdAt: '2026-08-06 22:01:40',

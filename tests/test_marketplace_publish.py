@@ -202,6 +202,28 @@ def _traditional_global_items_payload(
     )
 
 
+def _traditional_confirmed_payload(
+    payload: dict[str, Any],
+    *,
+    successful_sites: set[str],
+) -> dict[str, Any]:
+    root = {
+        key: deepcopy(value)
+        for key, value in payload.items()
+        if key not in {"_listing_model", "_publication", "sites_to_sell"}
+    }
+    return {
+        **root,
+        "contract_version": 1,
+        "sites_to_sell": [
+            deepcopy(site)
+            for site in payload.get("sites_to_sell", [])
+            if str(site.get("site_id") or "").strip().upper()
+            in successful_sites
+        ],
+    }
+
+
 def test_mercadolibre_payload_product_preserves_explicit_empty_draft_upc() -> None:
     prepared = publish_mercadolibre.mercadolibre_product_for_payload(
         {
@@ -888,7 +910,11 @@ def test_mercadolibre_traditional_partial_create_persists_parent_publication() -
     assert result["ok"] is False
     assert (
         result["error_code"]
-        == "MERCADOLIBRE_TRADITIONAL_SITE_ITEMS_FAILED"
+        == "MERCADOLIBRE_MARKET_NOT_OPERABLE"
+    )
+    assert result["error_map"]["retryable"] is False
+    assert result["error_map"]["next_action"] == (
+        "该市场当前暂不接受国际直发，请移除后重新发布。"
     )
     assert "Listing in Uruguay is currently unavailable" in result["error"]
     publication = result["publication"]
@@ -1040,12 +1066,16 @@ def test_mercadolibre_traditional_create_rejects_unverified_raw_response(
     assert "publication" not in result
 
 
-def test_mercadolibre_traditional_update_only_puts_global_item_without_fallback() -> None:
+def test_mercadolibre_traditional_complete_parent_is_idempotent_without_write() -> None:
     payload = _traditional_global_items_payload()
     payload["_publication"] = {
         "model": "traditional_global_items",
         "account_user_id": "3344094721",
         "parent_item_id": "CBT4232215884",
+        "confirmed_payload": _traditional_confirmed_payload(
+            payload,
+            successful_sites={"MLM"},
+        ),
         "markets": [
             {
                 "site_id": "MLM",
@@ -1055,42 +1085,50 @@ def test_mercadolibre_traditional_update_only_puts_global_item_without_fallback(
             }
         ],
     }
-    with patch.object(
-        marketplace_publishing,
-        "request_json",
-        return_value={
-            "site_items": [
-                {"item_id": "MLM5490706828", "success": True}
-            ]
-        },
-    ) as request:
+    with patch.object(marketplace_publishing, "request_json") as request:
         result = marketplace_publish.publish_mercadolibre(payload, "token")
 
-    request.assert_called_once()
-    assert request.call_args.args[:3] == (
-        "PUT",
-        "https://api.mercadolibre.com/global/items/CBT4232215884",
-        "token",
-    )
-    assert request.call_args.kwargs == {}
+    request.assert_not_called()
     assert result["ok"] is True
-    assert result["operation"] == "updated"
+    assert result["operation"] == "already_published"
+    assert result["item_id"] == "CBT4232215884"
     assert result["publication"]["parent_item_id"] == "CBT4232215884"
 
 
-@pytest.mark.parametrize(
-    "response",
-    [
-        {},
-        {"success": True},
-        {"errors": [{"message": "update rejected"}]},
-        {"item_id": "CBT-WRONG"},
-        {"site_items": [{"item_id": "MLM-UNKNOWN", "success": True}]},
-    ],
-)
-def test_mercadolibre_traditional_update_does_not_inject_success_identity(
-    response: dict,
-) -> None:
+def test_mercadolibre_traditional_parent_root_change_fails_payload_preview() -> None:
+    payload = _traditional_global_items_payload()
+    payload["_publication"] = {
+        "model": "traditional_global_items",
+        "account_user_id": "3344094721",
+        "parent_item_id": "CBT4232215884",
+        "confirmed_payload": _traditional_confirmed_payload(
+            payload,
+            successful_sites={"MLM"},
+        ),
+        "markets": [
+            {
+                "site_id": "MLM",
+                "logistic_type": "remote",
+                "seller_id": "3345546432",
+                "item_id": "MLM5490706828",
+            }
+        ],
+    }
+    payload["title"] = "Changed root title"
+
+    errors = validate_mercadolibre_publish_payload(
+        payload,
+        _traditional_global_items_config(),
+    )
+
+    assert any(
+        "MERCADOLIBRE_PARENT_PAYLOAD_IMMUTABLE" in error
+        and "title" in error
+        for error in errors
+    )
+
+
+def test_mercadolibre_traditional_parent_without_confirmed_payload_is_rejected() -> None:
     payload = _traditional_global_items_payload()
     payload["_publication"] = {
         "model": "traditional_global_items",
@@ -1106,17 +1144,16 @@ def test_mercadolibre_traditional_update_does_not_inject_success_identity(
         ],
     }
 
-    with patch.object(
-        marketplace_publishing,
-        "request_json",
-        return_value=response,
-    ) as request:
-        result = marketplace_publish.publish_mercadolibre(payload, "token")
+    with patch.object(marketplace_publishing, "request_json") as request:
+        with pytest.raises(PublishAdapterError) as captured:
+            marketplace_publish.publish_mercadolibre(payload, "token")
 
-    request.assert_called_once()
-    assert result["ok"] is False
-    assert result["error_code"] == "MERCADOLIBRE_TRADITIONAL_RESPONSE_INVALID"
-    assert "publication" not in result
+    request.assert_not_called()
+    assert (
+        captured.value.code
+        == "MERCADOLIBRE_PARENT_PAYLOAD_IDENTITY_MISSING"
+    )
+    assert captured.value.retryable is False
 
 
 def test_mercadolibre_payload_preserves_explicit_market_sales_conditions() -> None:

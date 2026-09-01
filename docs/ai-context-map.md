@@ -9,6 +9,8 @@
 - 直接 import 具体 facade、service、store 或 schema owner。
 - 新 HTTP 行为从 `erp_web/http_route_units/` 的显式 handler map 进入；路由把编排交给
   `erp_web/facades/` 或职责单一的 service。
+- `erp_web/runtime_units/json_store.py`：运行时 JSON 文件原子读写的依赖轻量 owner；
+  配置、发布产物和其他领域模块不得再从类目 Store 借用通用文件写入能力。
 
 ## SQLite 数据库版本边界
 
@@ -463,8 +465,10 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
 - `erp_web/runtime_units/category_providers.py`：Mercado Libre、Ozon、Yandex 的显式
   `CategoryProvider` 实现与注册表；平台 API shape 在这里归一化为当前定义和明确
   `platform_binding`。Mercado Libre CBT 类目预测固定调用
-  `/marketplace/domain_discovery/search`，并从受信店铺配置读取 Global Selling
-  Access Token 作为 Bearer；区域站点仍调用 `/sites/{site}/domain_discovery/search`。
+  `/marketplace/domain_discovery/search`，并统一通过
+  `store_credentials.get_mercadolibre_access_token()` 取得已校验、必要时已刷新的
+  Global Selling Access Token；Provider 不得直接读取凭据。区域站点仍调用
+  `/sites/{site}/domain_discovery/search`。
 - `erp_web/runtime_units/category_definition_cache.py`：统一属性定义持久缓存 owner；24 小时
   fresh、最多 7 天 transient stale，401/403、凭据缺失、禁用类目和结构错误不得用 stale
   掩盖。缓存不进入商品、草稿、任务或 Agent history。
@@ -621,6 +625,10 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   `global_selling_contract`。账号实际启用的子市场与物流方式持久化在
   `marketplace_bindings`，不得从静态注册表推断。
   授权失败或凭据/身份变化会清除币种 ready 状态；核价层不再有远端币种补取副作用。
+  `store_credentials.get_mercadolibre_access_token()` 是业务代码取得 Mercado Libre
+  token 的唯一入口：它在凭据锁内重读 SQLite 最新值，经 `/users/me` 校验，并在明确
+  401 时以 CAS 语义刷新一次 access/refresh token。类目、订单、图片与发布调用不得
+  从配置字典直接提取 token；刷新实现不再属于 `publish_mercadolibre.py`。
 - `erp_web/http_route_units/auth_config_routes.py::/api/store-auth/currency`：受控人工
   币种选择/填写接口；`/api/save-settings` 只接受注册表凭据字段与非敏感静态字段，
   币种派生字段一律由后端授权/币种服务写入。
@@ -718,6 +726,19 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   `erp_web/runtime_units/publish_workflows.py`。
 - `erp_web/runtime_units/publish_adapter.py`：发布平台适配器注册表。只有这里注册且
   在 `marketplace_registry.py` 声明 `CAP_PUBLISH` 的平台才允许进入真实发布流程。
+- `erp_web/services/mercadolibre_target_contract.py` 与
+  `erp_web/services/mercadolibre_market_precheck.py`：Mercado Libre 多市场预检的确定性
+  契约与展示投影。前者按用户原始 `sites_to_sell[]` 顺序校验每个市场 operation，后者把
+  结果分为父级与逐市场 `blocked/passed`；任一确定性错误必须保持顶层 `ok=false`。
+  当前店铺授权 operation 为 `CBT CN International Drop Shipping + remote` 时，按官方
+  Cainiao 规则检查长≤60cm、宽≤40cm、高≤35cm、三边和≤135cm；墨西哥、智利、
+  哥伦比亚、巴西和阿根廷的包装重量≤15kg，乌拉圭≤20kg。市场级规则通过独立的
+  scope 元数据投影，字段仍指向真实的 `package_dimensions`，投影后不得把内部 scope
+  元数据返回给客户端。平台运行时的 `item.shipping.mode.not_supported`，或远端仅返回
+  `can't send the product in this kind of shipment` message 时，只映射为中性的“物流方式
+  不支持”，不得仅凭一次类目切换实验诊断为类目不兼容；当前不可运营市场也
+  只根据真实远端响应映射，不固化为永久预检规则。新确定性规则必须有当前官方路线文档，
+  并严格限定 business model、物流和市场，不能把旧承运商或单次发布结果扩大化。
 - `erp_web/runtime_units/publish_mercadolibre.py`：Mercado Libre 专属发布、User
   Products 查询/暂停与错误处理。一个本地 Mercado 草稿只持久化一个
   `publication` 聚合；`publication.model` 明确区分 `user_products` 与
@@ -741,10 +762,12 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   锁并禁止自动重放。存在 task ID 时，用户可从发布任务页触发只读对账；只有确认
   `applied/partially_applied/not_applied` 后才把 job 收敛到终态并释放同草稿/平台锁，
   初次 unknown 与最终对账结论分别保存审计日志。没有 task ID 的未知
-  创建仍必须通过 Mercado 后台或支持渠道人工确认，不能猜测或强制解锁。传统模型仅
-  使用 `POST /global/items` 和 `PUT /global/items/{parent_item_id}`，保留
-  `parent-item-info: true` 创建合同，并把 `item_id/site_items` 作为真实成功身份；绝不
-  恢复区域 `/items`。
+  创建仍必须通过 Mercado 后台或支持渠道人工确认，不能猜测或强制解锁。传统模型首次
+  创建使用完整 `POST /global/items` 并保留 `parent-item-info: true`；已有父项只用最小
+  `sites_to_sell` 请求调用 `POST /global/items/{parent_item_id}` 添加尚无 `item_id` 的
+  operation，已有 Item 绝不重复 POST。标准发布不执行全量 PUT；父根 payload 与已创建
+  市场字段由 `confirmed_payload` 锁定，变更时必须创建新的 Global Item。响应只把通过
+  operation 闭包校验的 `item_id/site_items` 作为真实成功身份；绝不恢复区域 `/items`。
 - `erp_web/runtime_units/platform_query_capabilities.py` 与
   `publish_admin_capabilities.py`：AI 侧对应唯一能力名分别为
   `mercadolibre_user_products_query` 和 `mercadolibre_user_product_pause`。旧的远端 item

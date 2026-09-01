@@ -48,9 +48,9 @@ import {
   normalizeProductOperation,
   normalizeProductsIndex,
   normalizePublishLogs,
+  normalizePublishPrecheck,
   normalizeSitesToSell,
   platformList,
-  precheckIssueSummary,
   precheckIssues,
   isCategoryDictionaryAttribute,
   normalizeCategoryDictionaryId,
@@ -76,10 +76,25 @@ function normalizePublishJobListItem(value: unknown): PublishJobListItem {
         draftId: getString(item, ['draft_id', 'draftId']),
         site: getString(item, ['site']),
         sitesToSell: normalizeSitesToSell(item.sites_to_sell),
+        marketResults: Array.isArray(item.market_results)
+          ? item.market_results.map((value) => {
+            const market = asRecord(value)
+            return {
+              siteId: getString(market, ['site_id', 'siteId']),
+              logisticType: getString(market, ['logistic_type', 'logisticType']),
+              status: getString(market, ['status']),
+              itemId: getString(market, ['item_id', 'itemId']),
+              error: getString(market, ['error']),
+              errorCode: getString(market, ['error_code', 'errorCode']),
+            }
+          })
+          : [],
         status: getString(item, ['status']),
         stage: getString(item, ['stage']),
         attempts: getNumber(item, ['attempts']),
         error: getString(item, ['error']),
+        errorCode: getString(item, ['error_code', 'errorCode']),
+        nextAction: getString(item, ['next_action', 'nextAction']),
         updatedAt: getString(item, ['updated_at', 'updatedAt']),
       }
     })
@@ -94,6 +109,8 @@ function normalizePublishJobListItem(value: unknown): PublishJobListItem {
     stage: getString(record, ['stage']),
     attempts: getNumber(record, ['attempts']),
     error: getString(record, ['error']),
+    errorCode: getString(record, ['error_code', 'errorCode']),
+    nextAction: getString(record, ['next_action', 'nextAction']),
     platforms,
     createdAt: getString(record, ['created_at', 'createdAt']),
     updatedAt: getString(record, ['updated_at', 'updatedAt']),
@@ -429,19 +446,13 @@ export async function publishPrecheck(draft: DraftDetail, target: MarketplaceTar
   ensureOk(data, '预检失败')
   const platform = getString(data, ['platform'], target.platform)
   const result = asRecord(asRecord(data.platforms)[platform])
-  const errorItems = precheckIssues(result.errors, 'error')
-  const warningItems = precheckIssues(result.warnings, 'warning')
   const mutation = normalizeDraftMutation(data)
   return {
     draft: mutation.draft,
-    precheck: {
-      ok: result.ok !== false,
-      errors: errorItems.map(precheckIssueSummary),
-      warnings: warningItems.map(precheckIssueSummary),
-      errorItems,
-      warningItems,
-      checkedAt: getString(result, ['checked_at'], new Date().toISOString()),
-    },
+    precheck: normalizePublishPrecheck(result, {
+      requireLayeredScopes: platform === 'mercadolibre',
+      expectedMarkets: platform === 'mercadolibre' ? target.sitesToSell || [] : undefined,
+    }),
     platformResults: asRecord(data.platforms),
     productsIndex: normalizeProductsIndex(data.productsIndex),
     draftsIndex: normalizeDraftsIndex(data.draftsIndex),

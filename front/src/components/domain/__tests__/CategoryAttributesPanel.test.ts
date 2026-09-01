@@ -60,6 +60,45 @@ afterEach(() => {
 })
 
 describe('CategoryAttributesPanel', () => {
+  it('Mercado CBT 明确只维护一个由全部销售市场共用的全局类目', () => {
+    const draft = createEmptyDraftDetail('mercadolibre')
+    draft.draftId = 'draft-mercado-shared-category'
+    draft.site = 'CBT'
+    draft.categoryId = 'CBT123456'
+    const sharedTarget: MarketplaceTargetSite = {
+      ...mercadoTarget,
+      sitesToSell: [
+        { siteId: 'MCO', logisticType: 'remote' },
+        { siteId: 'MLC', logisticType: 'remote' },
+      ],
+    }
+    const wrapper = mount(CategoryAttributesPanel, {
+      props: {
+        ...panelProps(draft, null),
+        publishTargets: [sharedTarget],
+        selectedPublishTarget: sharedTarget,
+        platformOptions: [{
+          key: 'mercadolibre',
+          label: '美客多',
+          sites: [
+            { key: 'CBT', code: 'CBT', label: 'Global Selling 全局刊登', language: 'es' },
+            { key: 'MCO', code: 'MCO', label: '哥伦比亚', language: 'es' },
+            { key: 'MLC', code: 'MLC', label: '智利', language: 'es' },
+          ],
+        }],
+      },
+    })
+
+    const notice = wrapper.get('[data-testid="mercadolibre-shared-category-notice"]')
+    expect(notice.text()).toContain('所有已选销售市场共用一个 CBT 类目')
+    expect(notice.text()).toContain('哥伦比亚（MCO）、智利（MLC）')
+    expect(notice.text()).toContain('不能为每个市场分别设置类目 ID')
+    expect(notice.text()).not.toContain('category_id')
+    expect(wrapper.text()).toContain('共享 CBT 类目 ID')
+    expect(wrapper.text()).toContain('共享 CBT 类目路径')
+    expect(wrapper.findAll('input[placeholder="请输入 CBT 类目 ID"]')).toHaveLength(1)
+  })
+
   it('uses separate category and attribute translation triggers', async () => {
     const draft = createEmptyDraftDetail('ozon')
     draft.draftId = 'draft-translation'

@@ -1,11 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import json
 import logging
-import os
-import uuid
-from pathlib import Path
 from typing import Any
 
 from erp_web.schemas.category_brand import (
@@ -22,40 +18,6 @@ from .category_searchers import create_category_searcher
 
 
 logger = logging.getLogger(__name__)
-
-
-def read_json(path: Path, default: Any) -> Any:
-    try:
-        if path.exists():
-            return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        # Do not fail the caller, but a corrupt/unreadable JSON store should never
-        # be silently indistinguishable from an empty one.
-        logger.warning("read_json fell back to default for %s", path, exc_info=True)
-        return default
-    return default
-
-
-def write_json(path: Path, data: Any) -> None:
-    """Atomically persist JSON: write a same-directory temp file, then os.replace.
-
-    A crash mid-write must never leave a truncated/corrupt store behind.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}")
-    try:
-        tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        if os.name != "nt":
-            tmp_path.chmod(0o600)
-        os.replace(tmp_path, path)
-        if os.name != "nt":
-            path.chmod(0o600)
-    except BaseException:
-        try:
-            tmp_path.unlink()
-        except OSError:
-            pass
-        raise
 
 
 # SQLite 初始化已并入 ErpDatabase（构造期建 schema）；本模块只保留 JSON 文件
@@ -339,7 +301,5 @@ __all__ = [
     "fetch_category_attribute_values",
     "fetch_category_attributes",
     "fetch_category_record",
-    "read_json",
     "search_categories_live",
-    "write_json",
 ]

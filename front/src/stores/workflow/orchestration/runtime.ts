@@ -3,6 +3,7 @@ import { storeToRefs } from 'pinia'
 import { saveDraft as saveDraftApi } from '@/api/workflow/catalog'
 import {
   diagnosticsToCollectDiagnostics,
+  normalizePublishPrecheck,
   normalizeSitesToSell,
 } from '@/api/workflow/normalizers'
 import { createDefaultCollectDiagnostics } from '@/constants/initialState'
@@ -39,7 +40,6 @@ import type {
   MarketplaceDraft,
   MarketplaceSiteToSell,
   MarketplaceTargetSite,
-  PrecheckIssue,
   PricingResult,
   PricingDestinationResult,
   PricingTargetInput,
@@ -118,22 +118,6 @@ export function publishJobMatchesProgressContext(
     if (normalizeProgressKey(job.targetKey) !== contextTargetKey) return false
   }
   return true
-}
-
-export function precheckIssueFromRaw(value: unknown, fallbackSeverity: 'error' | 'warning'): PrecheckIssue {
-  const record = isRecord(value) ? value : {}
-  return {
-    code: String(record.code || ''),
-    field: String(record.field || ''),
-    message: String(record.message || value || ''),
-    severity: String(record.severity || fallbackSeverity) as PrecheckIssue['severity'],
-    nextAction: String(record.next_action || record.nextAction || ''),
-  }
-}
-
-export function precheckMessages(items: unknown): string[] {
-  if (!Array.isArray(items)) return []
-  return items.map((item) => isRecord(item) ? String(item.message || item.code || '') : String(item || '')).filter(Boolean)
 }
 
 export function categorySelectionFromProduct(product: Product, platform: Marketplace): CategorySelection | null {
@@ -1059,7 +1043,9 @@ export function createWorkflowRuntime() {
       : 0
     const hasPrice = Boolean(savedPricingTargets || pricingResult.value?.results.length)
     const hasCategory = Boolean(progressDraft?.categoryId || category.value)
-    const hasPrecheck = Boolean(precheck.value?.ok || ['ready_to_publish', 'published'].includes(progressDraft?.status || ''))
+    const hasPersistedReadyStatus = activeMarketplace.value !== 'mercadolibre'
+      && ['ready_to_publish', 'published'].includes(progressDraft?.status || '')
+    const hasPrecheck = Boolean(precheck.value?.ok || hasPersistedReadyStatus)
     const publishJobMatches = publishJobMatchesProgressContext(
       publishJob.value,
       activeMarketplace.value,
@@ -1098,16 +1084,21 @@ export function createWorkflowRuntime() {
       precheck.value = null
       return
     }
-    const errorItems = Array.isArray(raw.errors) ? raw.errors.map((item) => precheckIssueFromRaw(item, 'error')) : []
-    const warningItems = Array.isArray(raw.warnings) ? raw.warnings.map((item) => precheckIssueFromRaw(item, 'warning')) : []
-    precheck.value = {
-      ok: raw.ok === true,
-      errors: precheckMessages(raw.errors),
-      warnings: precheckMessages(raw.warnings),
-      errorItems,
-      warningItems,
-      checkedAt: String(raw.checked_at || raw.checkedAt || ''),
-    }
+    const selectedTarget = selectedPublishTarget.value
+    const persistedDraft = product.value.drafts[activeMarketplace.value]
+    const persistedTarget = (persistedDraft?.targetSites || []).find((target) => (
+      target.platform === activeMarketplace.value
+      && String(target.site || '').trim().toLowerCase() === String(persistedDraft.site || '').trim().toLowerCase()
+    )) || persistedDraft?.targetSites?.[0]
+    const expectedMarkets = selectedTarget.platform
+      ? selectedTarget.sitesToSell || []
+      : persistedTarget?.sitesToSell || []
+    precheck.value = normalizePublishPrecheck(raw, {
+      requireLayeredScopes: activeMarketplace.value === 'mercadolibre',
+      expectedMarkets: activeMarketplace.value === 'mercadolibre'
+        ? expectedMarkets
+        : undefined,
+    })
   }
 
   function restoreCategoryFromProduct() {

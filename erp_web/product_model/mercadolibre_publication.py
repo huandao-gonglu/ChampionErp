@@ -21,9 +21,9 @@ def canonicalize_mercadolibre_siteless_user_product_id(value: Any) -> str:
 
 def _market_key(value: dict[str, Any]) -> tuple[str, str, str]:
     return (
-        _text(value.get("site_id") or value.get("siteId")).upper(),
-        _text(value.get("seller_id") or value.get("sellerId")),
-        _text(value.get("logistic_type") or value.get("logisticType")).lower(),
+        _text(value.get("site_id")).upper(),
+        _text(value.get("seller_id")),
+        _text(value.get("logistic_type")).lower(),
     )
 
 
@@ -35,48 +35,32 @@ def normalize_mercadolibre_market_publication(value: Any) -> dict[str, Any]:
         else {}
     )
     market: dict[str, Any] = {
-        "site_id": _text(raw.get("site_id") or raw.get("siteId")).upper(),
-        "seller_id": _text(raw.get("seller_id") or raw.get("sellerId")),
-        "logistic_type": _text(
-            raw.get("logistic_type") or raw.get("logisticType")
-        ).lower(),
-        "item_id": _text(raw.get("item_id") or raw.get("itemId") or raw.get("id")),
+        "site_id": _text(raw.get("site_id")).upper(),
+        "seller_id": _text(raw.get("seller_id")),
+        "logistic_type": _text(raw.get("logistic_type")).lower(),
+        "item_id": _text(raw.get("item_id") or raw.get("id")),
         "user_product_id": _text(
             raw.get("user_product_id")
-            or raw.get("userProductId")
             or raw.get("local_user_product_id")
         ),
         "status": _text(raw.get("status")),
-        "currency_id": _text(
-            raw.get("currency_id") or raw.get("currencyId")
-        ).upper(),
+        "currency_id": _text(raw.get("currency_id")).upper(),
         "listing_type_id": _text(
             raw.get("listing_type_id")
-            or raw.get("listingTypeId")
             or raw.get("listing_type")
         ),
-        "updated_at": _text(raw.get("updated_at") or raw.get("updatedAt")),
+        "updated_at": _text(raw.get("updated_at")),
     }
     if raw.get("price") not in (None, ""):
         market["price"] = raw.get("price")
     net_proceeds = raw.get("net_proceeds")
-    if net_proceeds in (None, ""):
-        net_proceeds = raw.get("netProceeds")
     if net_proceeds not in (None, ""):
         market["net_proceeds"] = net_proceeds
     if raw.get("free_shipping") not in (None, ""):
         market["free_shipping"] = bool(raw.get("free_shipping"))
-    elif raw.get("freeShipping") not in (None, ""):
-        market["free_shipping"] = bool(raw.get("freeShipping"))
     elif marketplace.get("free_shipping") not in (None, ""):
         market["free_shipping"] = bool(marketplace.get("free_shipping"))
-    sale_terms = (
-        raw.get("sale_terms")
-        if isinstance(raw.get("sale_terms"), list)
-        else raw.get("saleTerms")
-        if isinstance(raw.get("saleTerms"), list)
-        else None
-    )
+    sale_terms = raw.get("sale_terms") if isinstance(raw.get("sale_terms"), list) else None
     if sale_terms is not None:
         market["sale_terms"] = deepcopy(sale_terms)
     description = (
@@ -93,8 +77,6 @@ def normalize_mercadolibre_market_publication(value: Any) -> dict[str, Any]:
         market["error"] = deepcopy(error)
     if isinstance(raw.get("last_operation"), dict):
         market["last_operation"] = deepcopy(raw["last_operation"])
-    elif isinstance(raw.get("lastOperation"), dict):
-        market["last_operation"] = deepcopy(raw["lastOperation"])
     return {
         key: item
         for key, item in market.items()
@@ -111,15 +93,7 @@ def normalize_mercadolibre_publication(value: Any) -> dict[str, Any]:
         # publication 是远端身份，模型缺失时不能猜测，否则可能把同一 ID
         # 发送到错误的写接口。Demo 阶段直接丢弃这类旧数据，不保留兼容路径。
         return {}
-    raw_markets = (
-        raw.get("markets")
-        if isinstance(raw.get("markets"), list)
-        else raw.get("market_publications")
-        if isinstance(raw.get("market_publications"), list)
-        else raw.get("marketPublications")
-        if isinstance(raw.get("marketPublications"), list)
-        else []
-    )
+    raw_markets = raw.get("markets") if isinstance(raw.get("markets"), list) else []
     markets: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
     for item in raw_markets:
@@ -138,36 +112,21 @@ def normalize_mercadolibre_publication(value: Any) -> dict[str, Any]:
     )
     publication: dict[str, Any] = {
         "model": model,
-        "account_user_id": _text(
-            raw.get("account_user_id") or raw.get("accountUserId")
-        ),
+        "account_user_id": _text(raw.get("account_user_id")),
         "parent_item_id": _text(
             raw.get("parent_item_id")
-            or raw.get("parentItemId")
-            or raw.get("cbt_item_id")
             or raw.get("item_id")
         ),
-        "parent_user_product_id": _text(
-            raw.get("parent_user_product_id")
-            or raw.get("parentUserProductId")
-        ),
-        "siteless_user_product_id": _text(
-            raw.get("siteless_user_product_id")
-            or raw.get("sitelessUserProductId")
-            or raw.get("up_global_id")
-        ),
-        "siteless_family_id": _text(
-            raw.get("siteless_family_id") or raw.get("sitelessFamilyId")
-        ),
-        "seller_id": _text(raw.get("seller_id") or raw.get("sellerId")),
-        "family_name": _text(raw.get("family_name") or raw.get("familyName")),
+        "parent_user_product_id": _text(raw.get("parent_user_product_id")),
+        "siteless_user_product_id": _text(raw.get("siteless_user_product_id")),
+        "siteless_family_id": _text(raw.get("siteless_family_id")),
+        "seller_id": _text(raw.get("seller_id")),
+        "family_name": _text(raw.get("family_name")),
         "status": _text(raw.get("status")),
         "markets": markets,
         "confirmed_payload": deepcopy(
             raw.get("confirmed_payload")
             if isinstance(raw.get("confirmed_payload"), dict)
-            else raw.get("confirmedPayload")
-            if isinstance(raw.get("confirmedPayload"), dict)
             else {}
         ),
         "error": deepcopy(
@@ -180,11 +139,9 @@ def normalize_mercadolibre_publication(value: Any) -> dict[str, Any]:
         "last_operation": deepcopy(
             raw.get("last_operation")
             if isinstance(raw.get("last_operation"), dict)
-            else raw.get("lastOperation")
-            if isinstance(raw.get("lastOperation"), dict)
             else {}
         ),
-        "updated_at": _text(raw.get("updated_at") or raw.get("updatedAt")),
+        "updated_at": _text(raw.get("updated_at")),
     }
     has_parent_identity = bool(publication["parent_item_id"])
     has_siteless_identity = bool(publication["siteless_user_product_id"])

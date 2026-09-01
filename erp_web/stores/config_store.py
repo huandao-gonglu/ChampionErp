@@ -25,7 +25,7 @@ from erp_web import marketplaces as publisher
 from erp_web.context import AppPaths
 from erp_web.db import ErpDatabase
 from erp_web.marketplace_registry import MARKETPLACE_SPECS, marketplace_spec
-from erp_web.runtime_units.category_store import write_json
+from erp_web.runtime_units.json_store import write_json
 from erp_web.services.config_service import (
     is_sensitive_config_key,
     mask_nested_config,

@@ -39,6 +39,17 @@ class PublishJobSiteToSellSummary(TypedDict):
     logistic_type: str
 
 
+class PublishJobMarketResultSummary(TypedDict):
+    """统一刊登内单个销售市场的公开结果。"""
+
+    site_id: str
+    logistic_type: str
+    status: str
+    item_id: str
+    error: str
+    error_code: str
+
+
 class PublishJobPlatformSummary(TypedDict):
     """单个平台的轻量发布状态，不包含已批准 payload。"""
 
@@ -46,10 +57,13 @@ class PublishJobPlatformSummary(TypedDict):
     draft_id: str
     site: str
     sites_to_sell: list[PublishJobSiteToSellSummary]
+    market_results: list[PublishJobMarketResultSummary]
     status: str
     stage: str
     attempts: int
     error: str
+    error_code: str
+    next_action: str
     updated_at: str
 
 
@@ -65,6 +79,8 @@ class PublishJobSummary(TypedDict):
     stage: str
     attempts: int
     error: str
+    error_code: str
+    next_action: str
     platforms: list[PublishJobPlatformSummary]
     created_at: str
     updated_at: str
@@ -72,6 +88,7 @@ class PublishJobSummary(TypedDict):
 
 __all__ = [
     "PublishJob",
+    "PublishJobMarketResultSummary",
     "PublishJobPlatformSummary",
     "PublishJobSiteToSellSummary",
     "PublishJobSummary",

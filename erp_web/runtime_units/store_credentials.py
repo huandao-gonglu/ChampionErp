@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import re
 import urllib.parse
 from importlib import import_module
 from typing import Any, Callable
 
 from erp_web.context import get_context
+from erp_web.marketplaces.publisher import PublishAdapterError
 from erp_web.marketplace_registry import MarketplaceSpec, marketplace_spec, platform_label
 from erp_web import marketplaces as publisher
 from erp_web.services import ai_gateway, ai_model_config
@@ -477,6 +479,286 @@ def _refresh_mercadolibre_token_from_body_unlocked(
         ),
         "next_action": publish_next_action,
     }
+
+
+def ensure_mercadolibre_auth_ready(
+    config: dict[str, Any],
+    *,
+    force_refresh: bool = False,
+) -> dict[str, Any]:
+    """解析当前可用的 Mercado Libre 授权，并串行处理 token 轮换。"""
+
+    with MERCADOLIBRE_AUTH_LOCK:
+        return _ensure_mercadolibre_auth_ready_unlocked(
+            config,
+            force_refresh=force_refresh,
+        )
+
+
+def _ensure_mercadolibre_auth_ready_unlocked(
+    config: dict[str, Any],
+    *,
+    force_refresh: bool = False,
+) -> dict[str, Any]:
+    store = config.setdefault("mercadolibre", {})
+    caller_token = str(store.get("access_token") or "").strip()
+    persisted = get_context().config.load_store_config()
+    persisted_store = (
+        persisted.get("mercadolibre")
+        if isinstance(persisted.get("mercadolibre"), dict)
+        else {}
+    )
+    if persisted_store:
+        # 调用方可能持有排队前的旧快照。拿锁后始终以 SQLite 的最新凭据
+        # 为准，防止旧 access token 覆盖已经轮换的 refresh token。
+        store.clear()
+        store.update(persisted_store)
+    token = str(store.get("access_token") or "").strip()
+    if not token:
+        return {
+            "ok": False,
+            "error_code": "AUTH_NOT_CONFIGURED",
+            "platform_error_code": "MERCADOLIBRE_AUTH_FAILED",
+            "retryable": False,
+            "message": (
+                "Mercado Libre Access Token 为空，"
+                "请先填写有效凭据或重新授权。"
+            ),
+            "next_action": "请先完成授权测试",
+        }
+
+    def http_status(error: Exception | str) -> int:
+        if not isinstance(error, PublishAdapterError):
+            return 0
+        try:
+            return int(error.details.get("http_status") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def refreshable_access_rejection(error: Exception | str) -> bool:
+        if isinstance(error, PublishAdapterError):
+            return (
+                error.code == "MERCADOLIBRE_AUTH_FAILED"
+                and http_status(error) == 401
+                and error.details.get("remote_write_dispatched") is not True
+                and error.details.get("outcome_unknown") is not True
+            )
+        text = str(error).lower()
+        return (
+            "invalid access token" in text
+            or "invalid_token" in text
+            or bool(re.search(r"failed:\s*401(?:\s|$)", text))
+        )
+
+    def explicit_auth_failure(error: Exception | str) -> bool:
+        if isinstance(error, PublishAdapterError):
+            return (
+                error.code == "MERCADOLIBRE_AUTH_FAILED"
+                and http_status(error) in {0, 401, 403}
+            )
+        text = str(error).lower()
+        return any(
+            marker in text
+            for marker in (
+                "invalid access token",
+                "invalid_token",
+                "invalid_grant",
+                "invalid grant",
+                "refresh token invalid",
+                "token expired",
+            )
+        ) or bool(re.search(r"failed:\s*(?:401|403)(?:\s|$)", text))
+
+    def sync_identity(token_value: str) -> str:
+        profile = sync_mercadolibre_identity(store, token_value)
+        name = profile.get("nickname") or profile.get("user_id") or ""
+        store.update(
+            _store_auth_result_fields(
+                "mercadolibre",
+                "测试成功",
+                name or token_value,
+                next_action="授权身份有效；发布前仍需通过币种与销售目标预检",
+            )
+        )
+        store["auth_error_code"] = ""
+        store["auth_error_message"] = ""
+        return str(name)
+
+    def refresh_and_sync(failed_token: str) -> dict[str, Any]:
+        nonlocal token
+        # refresh 函数先原子持久化新 access_token 与单次 refresh_token，
+        # 再同步身份。即使身份查询临时失败，也不会丢失已轮换的凭据。
+        refresh_result = refresh_mercadolibre_token_from_body(
+            {},
+            failed_access_token=failed_token,
+        )
+        persisted = get_context().config.load_store_config()
+        persisted_store = (
+            persisted.get("mercadolibre")
+            if isinstance(persisted.get("mercadolibre"), dict)
+            else {}
+        )
+        store.clear()
+        store.update(persisted_store)
+        token = str(store.get("access_token") or "").strip()
+        if not token:
+            raise RuntimeError("Mercado Libre 刷新 token 后未返回 access_token。")
+        if refresh_result.get("identity_ready") is False:
+            error_code = str(
+                refresh_result.get("identity_error_code")
+                or "MERCADOLIBRE_AUTH_SYNC_FAILED"
+            ).strip()
+            message = str(
+                refresh_result.get("identity_error_message")
+                or refresh_result.get("next_action")
+                or "Mercado Libre token 已刷新，但授权身份同步失败。"
+            ).strip()
+            retryable = any(
+                marker in error_code.upper()
+                for marker in (
+                    "NETWORK",
+                    "TIMEOUT",
+                    "SERVER_ERROR",
+                    "RATE_LIMITED",
+                )
+            )
+            raise PublishAdapterError(
+                error_code,
+                message,
+                retryable=retryable,
+            )
+        return {
+            "ok": True,
+            "token": token,
+            "seller": store.get("shop_name") or store.get("user_id") or "",
+            "refreshed": True,
+        }
+
+    def failure(
+        error: Exception | str,
+        *,
+        failed_token: str = "",
+    ) -> dict[str, Any]:
+        message = str(error)
+        code = store_auth_failure_code("mercadolibre", message)
+        platform_error_code = (
+            error.code
+            if isinstance(error, PublishAdapterError)
+            else "MERCADOLIBRE_AUTH_FAILED"
+        )
+        retryable = bool(
+            error.retryable
+            if isinstance(error, PublishAdapterError)
+            else False
+        )
+        next_action = "请先完成授权测试或刷新 token"
+        if failed_token or explicit_auth_failure(error):
+            persisted = get_context().config.load_store_config()
+            persisted_store = (
+                persisted.get("mercadolibre")
+                if isinstance(persisted.get("mercadolibre"), dict)
+                else {}
+            )
+            if persisted_store:
+                store.clear()
+                store.update(persisted_store)
+        persisted_token = str(store.get("access_token") or "").strip()
+        should_mark_auth_failed = explicit_auth_failure(error) or bool(
+            failed_token
+            and persisted_token
+            and persisted_token == str(failed_token).strip()
+        )
+        if should_mark_auth_failed:
+            store.update(
+                _store_auth_result_fields(
+                    "mercadolibre",
+                    "测试失败",
+                    store.get("shop_name") or store.get("user_id") or "",
+                    next_action=next_action,
+                )
+            )
+            store["auth_error_code"] = code
+            store["auth_error_message"] = message
+            get_context().config.update_store_config_fields(
+                "mercadolibre",
+                store,
+            )
+        return {
+            "ok": False,
+            "error_code": (
+                "AUTH_UNAVAILABLE"
+                if retryable
+                else "AUTH_TOKEN_EXPIRED"
+                if "expired" in code.lower() or "expired" in message.lower()
+                else "AUTH_INVALID"
+            ),
+            "platform_error_code": platform_error_code,
+            "retryable": retryable,
+            "message": message,
+            "next_action": next_action,
+        }
+
+    if force_refresh:
+        failed_token = caller_token or token
+        try:
+            return refresh_and_sync(failed_token)
+        except Exception as exc:
+            return failure(exc, failed_token=failed_token)
+
+    try:
+        name = sync_identity(token)
+        get_context().config.update_store_config_fields(
+            "mercadolibre",
+            store,
+        )
+        return {
+            "ok": True,
+            "token": token,
+            "seller": name or store.get("user_id") or "",
+        }
+    except Exception as exc:
+        if (
+            refreshable_access_rejection(exc)
+            and str(store.get("refresh_token") or "").strip()
+        ):
+            failed_token = token
+            try:
+                return refresh_and_sync(failed_token)
+            except Exception as refresh_exc:
+                return failure(refresh_exc, failed_token=failed_token)
+        return failure(exc)
+
+
+def get_mercadolibre_access_token(
+    config: dict[str, Any] | None = None,
+    *,
+    force_refresh: bool = False,
+) -> str:
+    """返回当前可用 token；无效时统一刷新，失败则抛出类型化认证错误。"""
+
+    target_config = (
+        config
+        if config is not None
+        else get_context().config.load_store_config()
+    )
+    auth = ensure_mercadolibre_auth_ready(
+        target_config,
+        force_refresh=force_refresh,
+    )
+    token = str(auth.get("token") or "").strip()
+    if auth.get("ok") and token:
+        return token
+    message = str(auth.get("message") or "Mercado Libre 授权不可用。")
+    raise PublishAdapterError(
+        str(auth.get("platform_error_code") or "MERCADOLIBRE_AUTH_FAILED"),
+        message,
+        retryable=bool(auth.get("retryable")),
+        details={
+            "auth_error_code": str(auth.get("error_code") or "AUTH_INVALID"),
+            "next_action": str(auth.get("next_action") or "请重新授权"),
+            "field_errors": {"auth": [message]},
+        },
+    )
 
 
 def _test_mercadolibre_auth(config: dict[str, Any], scope: str) -> dict[str, Any]:
@@ -1021,7 +1303,9 @@ def _test_store_auth_unlocked(
 
 __all__ = [
     "build_mercadolibre_auth_link",
+    "ensure_mercadolibre_auth_ready",
     "exchange_mercadolibre_code_from_body",
+    "get_mercadolibre_access_token",
     "preview_mercadolibre_auth_link",
     "refresh_mercadolibre_token_from_body",
     "resolve_store_auth_tester",

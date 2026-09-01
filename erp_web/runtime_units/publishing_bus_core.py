@@ -12,6 +12,7 @@ from typing import Any, Callable, Protocol
 from erp_web.marketplaces.publisher import PublishAdapterError
 from erp_web.schemas.publish import (
     PublishJobPlatformSummary,
+    PublishJobMarketResultSummary,
     PublishJobSiteToSellSummary,
     PublishJobSummary,
 )
@@ -124,6 +125,7 @@ FAILED_JOB_STATUSES = frozenset(
     {"failed", "error", "blocked", "real_publish_failed"}
 )
 OUTCOME_UNKNOWN_JOB_STATUS = "outcome_unknown"
+PARTIAL_JOB_STATUS = "partial"
 
 
 def _publish_job_display_status(state: dict[str, Any]) -> str:
@@ -145,6 +147,8 @@ def _publish_job_display_status(state: dict[str, Any]) -> str:
         return "running"
     if OUTCOME_UNKNOWN_JOB_STATUS in statuses:
         return OUTCOME_UNKNOWN_JOB_STATUS
+    if PARTIAL_JOB_STATUS in statuses:
+        return PARTIAL_JOB_STATUS
 
     has_success = bool(statuses & SUCCESS_JOB_STATUSES)
     has_failure = bool(statuses & FAILED_JOB_STATUSES)
@@ -160,6 +164,8 @@ def _publish_job_display_status(state: dict[str, Any]) -> str:
         return "queued" if root_status in {"pending", "queued"} else "running"
     if root_status == OUTCOME_UNKNOWN_JOB_STATUS:
         return OUTCOME_UNKNOWN_JOB_STATUS
+    if root_status == PARTIAL_JOB_STATUS:
+        return PARTIAL_JOB_STATUS
     if root_status in FAILED_JOB_STATUSES:
         return "failed"
     if root_status in SUCCESS_JOB_STATUSES:
@@ -263,6 +269,75 @@ def _publish_job_sites_to_sell(
     )
 
 
+def _publish_job_market_error(market: dict[str, Any]) -> tuple[str, str]:
+    error = market.get("error")
+    if not isinstance(error, dict):
+        last_operation = (
+            market.get("last_operation")
+            if isinstance(market.get("last_operation"), dict)
+            else {}
+        )
+        error = (
+            last_operation.get("error")
+            if isinstance(last_operation.get("error"), dict)
+            else {}
+        )
+    causes = error.get("cause") if isinstance(error.get("cause"), list) else []
+    first_cause = next((item for item in causes if isinstance(item, dict)), {})
+    message = str(
+        first_cause.get("message")
+        or error.get("message")
+        or market.get("error")
+        or ""
+    ).strip()
+    code = str(
+        first_cause.get("code")
+        or error.get("error")
+        or ""
+    ).strip()
+    return message, code
+
+
+def _publish_job_market_results(result: dict[str, Any]) -> list[PublishJobMarketResultSummary]:
+    publication = (
+        result.get("publication")
+        if isinstance(result.get("publication"), dict)
+        else {}
+    )
+    markets = (
+        publication.get("markets")
+        if isinstance(publication.get("markets"), list)
+        else []
+    )
+    summaries: list[PublishJobMarketResultSummary] = []
+    for raw in markets:
+        if not isinstance(raw, dict):
+            continue
+        site_id = str(raw.get("site_id") or "").strip().upper()
+        if not site_id:
+            continue
+        item_id = str(raw.get("item_id") or "").strip()
+        error, error_code = _publish_job_market_error(raw)
+        raw_status = str(raw.get("status") or "").strip().lower()
+        if item_id and raw_status in {"", "active", "published", "success"}:
+            status = "success"
+        elif error:
+            status = "failed"
+        else:
+            status = raw_status or "queued"
+        summaries.append(
+            {
+                "site_id": site_id,
+                "logistic_type": str(raw.get("logistic_type") or "").strip().lower(),
+                "status": status,
+                "item_id": item_id,
+                "error": error,
+                "error_code": error_code,
+            }
+        )
+    return sorted(summaries, key=lambda item: item["site_id"])
+
+
 def _publish_job_summary(state: dict[str, Any]) -> PublishJobSummary:
     product = state.get("product") if isinstance(state.get("product"), dict) else {}
     raw_platforms = (
@@ -272,6 +347,12 @@ def _publish_job_summary(state: dict[str, Any]) -> PublishJobSummary:
     for platform, raw in sorted(raw_platforms.items()):
         item = raw if isinstance(raw, dict) else {}
         parent_site = str(item.get("site") or "")
+        result = item.get("result") if isinstance(item.get("result"), dict) else {}
+        error_map = (
+            result.get("error_map")
+            if isinstance(result.get("error_map"), dict)
+            else {}
+        )
         platforms.append(
             {
                 "platform": str(platform),
@@ -282,15 +363,30 @@ def _publish_job_summary(state: dict[str, Any]) -> PublishJobSummary:
                     str(platform),
                     parent_site,
                 ),
+                "market_results": _publish_job_market_results(result),
                 "status": str(item.get("status") or ""),
                 "stage": str(item.get("stage") or ""),
                 "attempts": int(item.get("attempts") or 0),
                 "error": str(item.get("error") or ""),
+                "error_code": str(
+                    error_map.get("error_code")
+                    or result.get("error_code")
+                    or ""
+                ),
+                "next_action": str(error_map.get("next_action") or ""),
                 "updated_at": str(item.get("updated_at") or ""),
             }
         )
 
     error = next((item["error"] for item in platforms if item["error"]), "")
+    error_code = next(
+        (item["error_code"] for item in platforms if item["error_code"]),
+        "",
+    )
+    next_action = next(
+        (item["next_action"] for item in platforms if item["next_action"]),
+        "",
+    )
     attempts = max((item["attempts"] for item in platforms), default=0)
     stage = next(
         (item["stage"] for item in reversed(platforms) if item["stage"]),
@@ -324,6 +420,8 @@ def _publish_job_summary(state: dict[str, Any]) -> PublishJobSummary:
         "stage": stage,
         "attempts": attempts,
         "error": error,
+        "error_code": error_code,
+        "next_action": next_action,
         "platforms": platforms,
         "created_at": str(state.get("created_at") or ""),
         "updated_at": str(state.get("updated_at") or ""),
@@ -844,6 +942,8 @@ class PublishingBus:
             resolved_status = (
                 "success"
                 if success_evidence
+                else PARTIAL_JOB_STATUS
+                if result_status == PARTIAL_JOB_STATUS
                 else "failed"
                 if deterministic_failure
                 else OUTCOME_UNKNOWN_JOB_STATUS
@@ -1221,6 +1321,7 @@ class PublishingBus:
                         if result_status
                         in {
                             "failed",
+                            PARTIAL_JOB_STATUS,
                             "not_ready",
                             "ready_for_real_publish",
                             "skipped",
@@ -1254,6 +1355,11 @@ class PublishingBus:
                 )
                 return
             except Exception as exc:
+                exception_error_map = (
+                    exc.to_error_map()
+                    if isinstance(exc, PublishAdapterError)
+                    else {}
+                )
                 outcome_unknown = bool(
                     isinstance(exc, PublishAdapterError)
                     and exc.details.get("outcome_unknown") is True
@@ -1293,18 +1399,39 @@ class PublishingBus:
                             "status": OUTCOME_UNKNOWN_JOB_STATUS,
                             "error_code": exc.code,
                             "error": str(exc),
+                            "error_map": exception_error_map,
                             "outcome_unknown": True,
                             "details": safe_details,
                         },
                         attempts=attempts,
                     )
                     return
+                failure_status = "retrying" if retryable else "failed"
+                exception_result = (
+                    copy.deepcopy(stored_result)
+                    if confirmation_read
+                    and retryable
+                    and isinstance(stored_result, dict)
+                    else {
+                        "ok": False,
+                        "status": failure_status,
+                    }
+                )
+                exception_result["error"] = str(exc)
+                if isinstance(exc, PublishAdapterError):
+                    exception_result.update(
+                        {
+                            "error_code": exc.code,
+                            "error_map": exception_error_map,
+                        }
+                    )
                 self._set_platform(
                     job_id,
                     platform,
-                    status="retrying" if retryable else "failed",
-                    stage="retrying" if retryable else "failed",
+                    status=failure_status,
+                    stage=failure_status,
                     error=str(exc),
+                    result=exception_result,
                     attempts=attempts,
                 )
                 if not retryable:
@@ -1429,7 +1556,15 @@ class PublishingBus:
             item["updated_at"] = current_time()
             state["updated_at"] = item["updated_at"]
             self._write_state(job_id, state)
-        if str(updates.get("status") or "").lower() in {"success", "failed", "not_ready", "ready_for_real_publish", "skipped", OUTCOME_UNKNOWN_JOB_STATUS}:
+        if str(updates.get("status") or "").lower() in {
+            "success",
+            "failed",
+            PARTIAL_JOB_STATUS,
+            "not_ready",
+            "ready_for_real_publish",
+            "skipped",
+            OUTCOME_UNKNOWN_JOB_STATUS,
+        }:
             self._update_job_status(job_id)
 
     def _update_job_status(self, job_id: str) -> None:
@@ -1440,7 +1575,18 @@ class PublishingBus:
                 state["status"] = "running"
             elif OUTCOME_UNKNOWN_JOB_STATUS in statuses:
                 state["status"] = OUTCOME_UNKNOWN_JOB_STATUS
-            elif statuses and all(status in {"success", "failed", "not_ready", "ready_for_real_publish", "skipped"} for status in statuses):
+            elif statuses and all(
+                status
+                in {
+                    "success",
+                    "failed",
+                    PARTIAL_JOB_STATUS,
+                    "not_ready",
+                    "ready_for_real_publish",
+                    "skipped",
+                }
+                for status in statuses
+            ):
                 state["status"] = "completed"
             else:
                 state["status"] = "queued"

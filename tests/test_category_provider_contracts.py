@@ -383,6 +383,11 @@ def test_mercadolibre_definition_merges_restricted_brand_top_values(
         "_store_config",
         lambda: {"site_id": "CBT", "access_token": "saved-token"},
     )
+    monkeypatch.setattr(
+        category_providers,
+        "get_mercadolibre_access_token",
+        lambda: "saved-token",
+    )
     monkeypatch.setattr(category_providers, "http_json", fake_http_json)
     monkeypatch.setattr(
         category_providers,
@@ -450,6 +455,11 @@ def test_mercadolibre_brand_attribute_values_use_top_values_pagination(
         "_store_config",
         lambda: {"site_id": "CBT", "access_token": "saved-token"},
     )
+    monkeypatch.setattr(
+        category_providers,
+        "get_mercadolibre_access_token",
+        lambda: "saved-token",
+    )
     monkeypatch.setattr(category_providers, "http_json", fake_http_json)
 
     first = provider.attribute_values(
@@ -491,6 +501,14 @@ def test_mercadolibre_definition_rejects_missing_token_before_cache(
         provider,
         "_store_config",
         lambda: {"site_id": "CBT", "access_token": ""},
+    )
+    def missing_token() -> str:
+        raise RuntimeError("Mercado Libre Access Token 为空，请先完成授权。")
+
+    monkeypatch.setattr(
+        category_providers,
+        "get_mercadolibre_access_token",
+        missing_token,
     )
     monkeypatch.setattr(
         category_providers,
@@ -537,6 +555,11 @@ def test_mercadolibre_definition_without_brand_skips_top_values(
         provider,
         "_store_config",
         lambda: {"site_id": "CBT", "access_token": "saved-token"},
+    )
+    monkeypatch.setattr(
+        category_providers,
+        "get_mercadolibre_access_token",
+        lambda: "saved-token",
     )
     monkeypatch.setattr(category_providers, "http_json", fake_http_json)
     monkeypatch.setattr(
@@ -688,6 +711,11 @@ def test_mercadolibre_cbt_search_uses_saved_access_token(
         "_store_config",
         lambda: {"site_id": "CBT", "access_token": "saved-token"},
     )
+    monkeypatch.setattr(
+        category_providers,
+        "get_mercadolibre_access_token",
+        lambda: "saved-token",
+    )
     monkeypatch.setattr(category_providers, "http_json", fake_http_json)
 
     candidates = provider.search_categories(
@@ -714,6 +742,16 @@ def test_mercadolibre_cbt_search_rejects_missing_access_token(
         provider,
         "_store_config",
         lambda: {"site_id": "CBT", "access_token": ""},
+    )
+    def missing_token() -> str:
+        raise RuntimeError(
+            "Mercado Libre Access Token 为空，请先填写有效凭据或重新授权。"
+        )
+
+    monkeypatch.setattr(
+        category_providers,
+        "get_mercadolibre_access_token",
+        missing_token,
     )
     monkeypatch.setattr(
         category_providers,

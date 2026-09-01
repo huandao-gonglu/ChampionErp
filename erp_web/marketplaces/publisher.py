@@ -34,7 +34,7 @@ class PublishAdapterError(RuntimeError):
         self.details = dict(details or {})
 
     def to_error_map(self) -> dict[str, Any]:
-        return {
+        error_map = {
             "summary": str(self),
             "error_code": self.code,
             "retryable": self.retryable,
@@ -45,6 +45,10 @@ class PublishAdapterError(RuntimeError):
             ),
             "raw": str(self),
         }
+        next_action = str(self.details.get("next_action") or "").strip()
+        if next_action:
+            error_map["next_action"] = next_action
+        return error_map
 
 
 class PlatformPublisher(Protocol):

@@ -6,6 +6,8 @@ import type {
   MarketplaceOption,
   MarketplaceSiteToSell,
   PublishJobListItem,
+  PublishJobMarketResultSummary,
+  PublishJobPlatformSummary,
   UnknownRecord,
 } from '@/types/workflow'
 
@@ -35,6 +37,44 @@ const statusFilter = ref('')
 const platformFilter = ref('')
 const searchQuery = ref('')
 
+const MERCADOLIBRE_SHIPPING_MODE_NOT_SUPPORTED = 'MERCADOLIBRE_SHIPPING_MODE_NOT_SUPPORTED'
+const MERCADOLIBRE_LEGACY_CATEGORY_LOGISTICS_ERROR = 'MERCADOLIBRE_CATEGORY_MARKET_LOGISTICS_UNSUPPORTED'
+const MERCADOLIBRE_MARKET_NOT_OPERABLE = 'MERCADOLIBRE_MARKET_NOT_OPERABLE'
+const MERCADOLIBRE_PACKAGE_CARRIER_LIMIT_EXCEEDED = 'MERCADOLIBRE_PACKAGE_CARRIER_LIMIT_EXCEEDED'
+const MERCADOLIBRE_LOCAL_RATE_LIMITED = 'MERCADOLIBRE_LOCAL_RATE_LIMITED'
+
+const mercadoLibreErrorGuidance: Record<string, { summary: string; nextAction: string }> = {
+  [MERCADOLIBRE_SHIPPING_MODE_NOT_SUPPORTED]: {
+    summary: '当前发布方式不支持该市场的跨境物流。',
+    nextAction: '检查店铺、销售市场与物流能力；确认不支持时移除该市场。',
+  },
+  [MERCADOLIBRE_MARKET_NOT_OPERABLE]: {
+    summary: '该销售市场当前不支持国际跨境直发。',
+    nextAction: '移除该销售市场，平台重新开放后再添加。',
+  },
+  [MERCADOLIBRE_PACKAGE_CARRIER_LIMIT_EXCEEDED]: {
+    summary: '发货包装的尺寸或重量超过当前物流限制。',
+    nextAction: '按实际发货外包装修正长、宽、高和重量，然后重新核价与预检。',
+  },
+  [MERCADOLIBRE_LOCAL_RATE_LIMITED]: {
+    summary: '平台当前请求受限，暂时无法完成该市场发布。',
+    nextAction: '等待限流窗口恢复后重试该市场。',
+  },
+}
+const mercadoLibreKnownErrorCodes = new Set(Object.keys(mercadoLibreErrorGuidance))
+
+interface PublishErrorSource {
+  error?: string
+  errorCode?: string
+  nextAction?: string
+}
+
+interface PublishErrorPresentation {
+  code: string
+  summary: string
+  nextAction: string
+}
+
 const statusLabels: Record<string, string> = {
   queued: '排队中',
   running: '发布中',
@@ -56,6 +96,7 @@ const stageLabels: Record<string, string> = {
   retrying: '等待重试',
   finished: '已结束',
   failed: '已结束',
+  partial: '已结束',
   outcome_unknown: '停止重放，等待对账',
 }
 
@@ -69,13 +110,31 @@ const filteredJobs = computed(() => {
     if (statusFilter.value && job.status !== statusFilter.value) return false
     if (platformFilter.value && !job.platforms.some((item) => item.platform === platformFilter.value)) return false
     if (!query) return true
-    return [job.jobId, job.productId, job.productName, job.draftId, job.error]
+    return [
+      job.jobId,
+      job.productId,
+      job.productName,
+      job.draftId,
+      job.error,
+      job.errorCode,
+      job.nextAction,
+      ...job.platforms.flatMap((item) => [item.error, item.errorCode, item.nextAction]),
+      ...job.platforms.flatMap((item) => (item.marketResults || []).flatMap((market) => [
+        market.siteId,
+        market.itemId,
+        market.error,
+        market.errorCode,
+      ])),
+    ]
       .some((value) => String(value || '').toLowerCase().includes(query))
   })
 })
 
 const selectedJob = computed(() => (
   props.jobs.find((job) => job.jobId === props.selectedJobId) || null
+))
+const selectedJobErrorPresentation = computed(() => (
+  selectedJob.value ? jobErrorPresentation(selectedJob.value) : null
 ))
 
 const detailForDisplay = computed(() => {
@@ -91,6 +150,95 @@ function statusLabel(status: string) {
 
 function stageLabel(stage: string) {
   return stageLabels[stage] || stage || '-'
+}
+
+function mercadoLibreErrorCode(explicitCode: string, rawError: string) {
+  const upper = `${explicitCode} ${rawError}`.toUpperCase()
+  const lower = rawError.toLowerCase()
+  if (
+    upper.includes(MERCADOLIBRE_SHIPPING_MODE_NOT_SUPPORTED)
+    || upper.includes(MERCADOLIBRE_LEGACY_CATEGORY_LOGISTICS_ERROR)
+    || lower.includes('item.shipping.mode.not_supported')
+    || lower.includes("can't send the product in this kind of shipment")
+  ) return MERCADOLIBRE_SHIPPING_MODE_NOT_SUPPORTED
+  if (
+    upper.includes(MERCADOLIBRE_MARKET_NOT_OPERABLE)
+    || lower.includes('site.not_operable')
+    || lower.includes('currently unavailable for international dropshipping')
+  ) return MERCADOLIBRE_MARKET_NOT_OPERABLE
+  if (
+    upper.includes(MERCADOLIBRE_PACKAGE_CARRIER_LIMIT_EXCEEDED)
+    || /item\.package_[a-z_]+\.over_max/.test(lower)
+  ) return MERCADOLIBRE_PACKAGE_CARRIER_LIMIT_EXCEEDED
+  if (
+    upper.includes(MERCADOLIBRE_LOCAL_RATE_LIMITED)
+    || lower.includes('local_rate_limited')
+  ) return MERCADOLIBRE_LOCAL_RATE_LIMITED
+  return explicitCode
+}
+
+function publishErrorPresentation(source: PublishErrorSource): PublishErrorPresentation | null {
+  const rawError = String(source.error || '').trim()
+  const explicitCode = String(source.errorCode || '').trim().toUpperCase()
+  const code = mercadoLibreErrorCode(explicitCode, rawError)
+  const stableGuidance = mercadoLibreErrorGuidance[code]
+  const nextAction = String(source.nextAction || '').trim()
+  const hasLegacyCategoryDiagnosis = (
+    explicitCode === MERCADOLIBRE_LEGACY_CATEGORY_LOGISTICS_ERROR
+    || rawError.toUpperCase().includes(MERCADOLIBRE_LEGACY_CATEGORY_LOGISTICS_ERROR)
+    || /CBT\d+|\u5171\u4eab\s*CBT\s*\u7c7b\u76ee|Global Item/.test(nextAction)
+  )
+  if (stableGuidance) {
+    return {
+      code,
+      summary: stableGuidance.summary,
+      nextAction: hasLegacyCategoryDiagnosis
+        ? stableGuidance.nextAction
+        : nextAction || stableGuidance.nextAction,
+    }
+  }
+  if (!rawError && !code && !nextAction) return null
+  const readableSummary = /^[\u3400-\u9fff\d\s，。；、！？：]+$/.test(rawError)
+    ? rawError
+    : '发布失败，平台未返回可直接展示的原因。'
+  return {
+    code,
+    summary: readableSummary,
+    nextAction: nextAction || '请重新执行上架预检；若仍失败，在“查看技术详情”中核对平台返回。',
+  }
+}
+
+function platformErrorPresentation(item: PublishJobPlatformSummary) {
+  const marketError = (item.marketResults || [])
+    .map(marketErrorPresentation)
+    .find((error): error is PublishErrorPresentation => Boolean(error))
+  return marketError || publishErrorPresentation(item)
+}
+
+function marketErrorPresentation(item: PublishJobMarketResultSummary) {
+  const code = String(item.errorCode || '').trim()
+  const rawError = String(item.error || '').trim()
+  const summary = code || rawError
+  if (!summary) return null
+  return {
+    code,
+    summary,
+    nextAction: '',
+  }
+}
+
+function jobErrorPresentation(job: PublishJobListItem) {
+  const marketError = job.platforms
+    .flatMap((item) => item.marketResults || [])
+    .map(marketErrorPresentation)
+    .find((error): error is PublishErrorPresentation => Boolean(error))
+  if (marketError) return marketError
+  const platformErrors = job.platforms
+    .map(platformErrorPresentation)
+    .filter((error): error is PublishErrorPresentation => Boolean(error))
+  const platformKnownError = platformErrors
+    .find((error) => mercadoLibreKnownErrorCodes.has(error.code))
+  return platformKnownError || publishErrorPresentation(job) || platformErrors[0] || null
 }
 
 function platformOption(platform: Marketplace) {
@@ -229,7 +377,7 @@ function selectJob(jobId: string) {
                 <td class="p-3"><span :class="statusBadgeClass(job.status)">{{ statusLabel(job.status) }}</span></td>
                 <td class="p-3 text-accent-700 dark:text-accent-200">{{ stageLabel(job.stage) }}</td>
                 <td class="p-3 text-center text-accent-700 dark:text-accent-200">{{ job.attempts }}</td>
-                <td class="p-3 text-accent-700 dark:text-accent-200"><span class="block truncate" :title="job.error || '-'">{{ job.error || '-' }}</span></td>
+                <td class="p-3 text-accent-700 dark:text-accent-200"><span class="block truncate" :title="jobErrorPresentation(job)?.summary || '-'">{{ jobErrorPresentation(job)?.summary || '-' }}</span></td>
               </tr>
               <tr v-if="!filteredJobs.length"><td colspan="8" class="p-8 text-center text-accent-500 dark:text-accent-300">暂无匹配的发布任务。</td></tr>
             </tbody>
@@ -260,9 +408,10 @@ function selectJob(jobId: string) {
             <dt class="text-accent-500 dark:text-accent-400">重试</dt><dd class="text-accent-700 dark:text-accent-200">{{ selectedJob.attempts }} 次</dd>
           </dl>
 
-          <div v-if="selectedJob.error" class="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900/70 dark:bg-red-950/30 dark:text-red-200">
+          <div v-if="selectedJobErrorPresentation" data-testid="publish-job-error-guidance" class="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900/70 dark:bg-red-950/30 dark:text-red-200">
             <p class="font-semibold">失败原因</p>
-            <p class="mt-1 break-words">{{ selectedJob.error }}</p>
+            <p class="mt-1 break-words"><span class="font-medium">原因：</span>{{ selectedJobErrorPresentation.summary }}</p>
+            <p v-if="selectedJobErrorPresentation.nextAction" class="mt-2 break-words font-medium">处理建议：{{ selectedJobErrorPresentation.nextAction }}</p>
           </div>
 
           <div class="mt-4 space-y-2">
@@ -273,6 +422,28 @@ function selectJob(jobId: string) {
               </div>
               <p class="mt-2 text-xs text-accent-500 dark:text-accent-400">{{ stageLabel(item.stage) }} · 尝试 {{ item.attempts }} 次</p>
               <p class="mt-1 break-all text-xs text-accent-500 dark:text-accent-400">{{ item.draftId || '-' }}</p>
+              <div v-if="platformErrorPresentation(item)" data-testid="publish-platform-error-guidance" class="mt-3 rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-800 dark:border-red-900/70 dark:bg-red-950/30 dark:text-red-200">
+                <p class="break-words"><span class="font-medium">原因：</span>{{ platformErrorPresentation(item)?.summary }}</p>
+                <p v-if="platformErrorPresentation(item)?.nextAction" class="mt-1 break-words font-medium">处理建议：{{ platformErrorPresentation(item)?.nextAction }}</p>
+              </div>
+              <div v-if="item.marketResults?.length" class="mt-3 space-y-2" data-testid="publish-market-results">
+                <p class="text-xs font-medium text-accent-600 dark:text-accent-300">销售市场结果</p>
+                <div
+                  v-for="market in item.marketResults"
+                  :key="`${market.siteId}:${market.logisticType}`"
+                  class="rounded-md border border-accent-100 p-2 text-xs dark:border-dark-700"
+                >
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="font-medium text-accent-900 dark:text-white">{{ siteLabel(platformOption(item.platform), market.siteId) }}<span v-if="market.logisticType"> · {{ market.logisticType }}</span></span>
+                    <span :class="statusBadgeClass(market.status)">{{ statusLabel(market.status) }}</span>
+                  </div>
+                  <p v-if="market.itemId" class="mt-1 break-all text-accent-500 dark:text-accent-400">{{ market.itemId }}</p>
+                  <template v-if="marketErrorPresentation(market)">
+                    <p class="mt-1 text-red-700 dark:text-red-200">原因：{{ marketErrorPresentation(market)?.summary }}</p>
+                    <p v-if="marketErrorPresentation(market)?.nextAction" class="mt-1 text-red-700 dark:text-red-200">处理建议：{{ marketErrorPresentation(market)?.nextAction }}</p>
+                  </template>
+                </div>
+              </div>
               <div v-if="item.status === 'outcome_unknown'" class="mt-3 rounded-md border border-amber-200 bg-amber-50 p-2 dark:border-amber-900/70 dark:bg-amber-950/30">
                 <p class="text-xs text-amber-800 dark:text-amber-200">只读取已保存的远端 task 终态，不会再次提交创建或更新请求。</p>
                 <button

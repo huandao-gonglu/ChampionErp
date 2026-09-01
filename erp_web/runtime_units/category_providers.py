@@ -58,6 +58,7 @@ from .ozon_category_api import (
     ozon_credential_scope_hash,
     search_ozon_categories,
 )
+from .store_credentials import get_mercadolibre_access_token
 from .yandex_category_api import (
     fetch_yandex_category_parameter_definitions,
     fetch_yandex_leaf_record,
@@ -111,12 +112,8 @@ class MercadoLibreCategoryProvider(CategoryProvider):
         return self._resolved_site(site, self._store_config())
 
     def _access_token_and_scope(self) -> tuple[str, str]:
+        token = get_mercadolibre_access_token()
         store_config = self._store_config()
-        token = str(store_config.get("access_token") or "").strip()
-        if not token:
-            raise RuntimeError(
-                "Mercado Libre 类目技术规格缺少 Access Token，请先完成授权。"
-            )
         scope_identity = str(store_config.get("user_id") or token).strip()
         digest = hashlib.sha256(scope_identity.encode("utf-8")).hexdigest()
         return token, f"sha256:{digest}"
@@ -176,8 +173,11 @@ class MercadoLibreCategoryProvider(CategoryProvider):
             raise RuntimeError("缺少 Mercado Libre 类目 ID。")
         resolved_site = self.resolve_site(site)
         deadline_at = _deadline_at(timeout_seconds)
+        is_cbt = resolved_site == "CBT" or category_id.upper().startswith("CBT")
+        access_token = self._access_token_and_scope()[0] if is_cbt else ""
         detail = mercadolibre_category_detail(
             category_id,
+            access_token or None,
             http_client=self._scoped_http_client(deadline_at),
         )
         record = mercadolibre_category_record(detail, resolved_site, None)
@@ -400,17 +400,11 @@ class MercadoLibreCategoryProvider(CategoryProvider):
         query = str(query or "").strip()
         if not query:
             return []
-        store_config = self._store_config()
-        resolved_site = self._resolved_site(site, store_config)
+        resolved_site = self.resolve_site(site)
         discovery_url = self._discovery_url(resolved_site, query, limit)
         access_token: str | None = None
         if resolved_site == "CBT":
-            access_token = str(store_config.get("access_token") or "").strip()
-            if not access_token:
-                raise RuntimeError(
-                    "Mercado Libre CBT 类目预测缺少 Access Token，"
-                    "请先填写有效凭据或重新授权。"
-                )
+            access_token = self._access_token_and_scope()[0]
         if timeout_seconds is None:
             data = http_json(discovery_url, access_token)
         else:

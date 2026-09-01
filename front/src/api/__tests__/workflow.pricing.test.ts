@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { calculatePrice, generateCopy, imageEdit, imageTranslate, publishPrecheck } from '@/api/workflow'
 import { apiClient } from '@/api/client'
 import { createEmptyDraftDetail, createEmptyProduct } from '@/constants/initialState'
-import { PRODUCT_SCHEMA_VERSION, normalizeBackendProduct, normalizeProductsIndex, toBackendProduct } from '@/api/workflow/normalizers'
+import { PRODUCT_SCHEMA_VERSION, normalizeBackendProduct, normalizeProductsIndex, normalizePublishPrecheck, toBackendProduct } from '@/api/workflow/normalizers'
 
 vi.mock('@/api/client', () => ({
   API_REQUEST_TIMEOUT_MS: 30000,
@@ -471,7 +471,16 @@ describe('publishPrecheck API mapping', () => {
   it('keeps structured backend issues readable for the UI', async () => {
     const draft = createEmptyDraftDetail('mercadolibre')
     draft.draftId = 'draft-1'
-    draft.targetSites = [{ platform: 'mercadolibre', site: 'CBT', language: 'en-US', listingCurrency: 'USD' }]
+    draft.targetSites = [{
+      platform: 'mercadolibre',
+      site: 'CBT',
+      language: 'en-US',
+      listingCurrency: 'USD',
+      sitesToSell: [
+        { siteId: 'MLA', logisticType: 'remote' },
+        { siteId: 'MLU', logisticType: 'remote' },
+      ],
+    }]
     vi.mocked(apiClient.post).mockResolvedValueOnce({
       data: {
         ok: true,
@@ -504,6 +513,30 @@ describe('publishPrecheck API mapping', () => {
                 severity: 'warning',
               },
             ],
+            parent: {
+              ok: true,
+              status: 'passed',
+              errors: [],
+              warnings: [],
+            },
+            markets: [
+              {
+                site_id: 'MLA',
+                logistic_type: 'remote',
+                ok: false,
+                status: 'blocked',
+                errors: [{ code: 'MARKET_PRICE_INVALID', field: 'price', message: '阿根廷售价无效' }],
+                warnings: [],
+              },
+              {
+                site_id: 'MLU',
+                logistic_type: 'remote',
+                ok: true,
+                status: 'passed',
+                errors: [],
+                warnings: [{ code: 'SHIPPING_NOTICE', field: 'shipping', message: '发布后检查平台运费结果' }],
+              },
+            ],
             checked_at: '2026-06-02T00:00:00Z',
           },
         },
@@ -518,14 +551,292 @@ describe('publishPrecheck API mapping', () => {
       site: 'CBT',
     })
     expect(result.precheck.ok).toBe(false)
-    expect(result.precheck.errors).toEqual(['price：价格缺失或无效（前往核价页计算并应用售价）'])
-    expect(result.precheck.warnings).toEqual(['category_path：类目路径为空'])
+    expect(result.precheck.errors).toEqual(['价格缺失或无效（前往核价页计算并应用售价）'])
+    expect(result.precheck.warnings).toEqual(['类目路径为空'])
     expect(result.precheck.errorItems[0]).toMatchObject({
       code: 'PRICE_MISSING',
       field: 'price',
       message: '价格缺失或无效',
       nextAction: '前往核价页计算并应用售价',
     })
+    expect(result.precheck.parent).toEqual({
+      ok: true,
+      status: 'passed',
+      errors: [],
+      warnings: [],
+    })
+    expect(result.precheck.marketChecks).toEqual([
+      expect.objectContaining({
+        siteId: 'MLA',
+        logisticType: 'remote',
+        status: 'blocked',
+        errors: [expect.objectContaining({ code: 'MARKET_PRICE_INVALID', message: '阿根廷售价无效' })],
+      }),
+      expect.objectContaining({
+        siteId: 'MLU',
+        logisticType: 'remote',
+        status: 'passed',
+        warnings: [expect.objectContaining({ code: 'SHIPPING_NOTICE', message: '发布后检查平台运费结果' })],
+      }),
+    ])
+  })
+
+  it('任一分层 scope 阻断时即使顶层 ok=true 也失败关闭', async () => {
+    const draft = createEmptyDraftDetail('mercadolibre')
+    draft.draftId = 'draft-layered-fail-closed'
+    draft.targetSites = [{
+      platform: 'mercadolibre',
+      site: 'CBT',
+      language: 'en-US',
+      listingCurrency: 'USD',
+      sitesToSell: [
+        { siteId: 'MLA', logisticType: 'remote' },
+        { siteId: 'MLC', logisticType: 'remote' },
+      ],
+    }]
+    vi.mocked(apiClient.post).mockResolvedValueOnce({
+      data: {
+        ok: true,
+        draft: {
+          draft_id: draft.draftId,
+          platform: 'mercadolibre',
+          site: 'CBT',
+          target_sites: [{ platform: 'mercadolibre', site: 'CBT', language: 'en-US', currency: 'USD' }],
+          enabled: true,
+          attributes: {},
+        },
+        productContext: { product_id: 'prod-layered-fail-closed' },
+        platforms: {
+          mercadolibre: {
+            ok: true,
+            errors: [],
+            warnings: [],
+            parent: {
+              ok: true,
+              status: 'passed',
+              errors: [],
+              warnings: [],
+            },
+            markets: [
+              {
+                site_id: 'MLA',
+                logistic_type: 'remote',
+                ok: true,
+                status: 'blocked',
+                errors: [],
+                warnings: [],
+              },
+              {
+                site_id: 'MLC',
+                logistic_type: 'remote',
+                ok: true,
+                status: 'passed',
+                errors: [{ code: 'MARKET_LIMIT', field: 'shipping', message: '智利物流限制不通过' }],
+                warnings: [],
+              },
+            ],
+          },
+        },
+      },
+    })
+
+    const result = await publishPrecheck(draft, draft.targetSites[0])
+
+    expect(result.precheck.ok).toBe(false)
+    expect(result.precheck.marketChecks).toEqual([
+      expect.objectContaining({ siteId: 'MLA', status: 'blocked', ok: false }),
+      expect.objectContaining({
+        siteId: 'MLC',
+        status: 'blocked',
+        ok: false,
+        errors: [expect.objectContaining({ code: 'MARKET_LIMIT' })],
+      }),
+    ])
+  })
+
+  it('Mercado 返回旧式顶层 ok 但缺少分层 scope 时要求重新预检', async () => {
+    const draft = createEmptyDraftDetail('mercadolibre')
+    draft.draftId = 'draft-old-flat-precheck'
+    draft.targetSites = [{
+      platform: 'mercadolibre',
+      site: 'CBT',
+      language: 'en-US',
+      listingCurrency: 'USD',
+      sitesToSell: [{ siteId: 'MLA', logisticType: 'remote' }],
+    }]
+    vi.mocked(apiClient.post).mockResolvedValueOnce({
+      data: {
+        ok: true,
+        draft: {
+          draft_id: draft.draftId,
+          platform: 'mercadolibre',
+          site: 'CBT',
+          target_sites: [{ platform: 'mercadolibre', site: 'CBT', language: 'en-US', currency: 'USD' }],
+          enabled: true,
+          attributes: {},
+        },
+        productContext: { product_id: 'prod-old-flat-precheck' },
+        platforms: {
+          mercadolibre: {
+            ok: true,
+            errors: [],
+            warnings: [],
+            checked_at: '2026-08-30T00:00:00Z',
+          },
+        },
+      },
+    })
+
+    const result = await publishPrecheck(draft, draft.targetSites[0])
+
+    expect(result.precheck.ok).toBe(false)
+    expect(result.precheck.errorItems).toEqual([
+      expect.objectContaining({
+        code: 'LAYERED_PRECHECK_REQUIRED',
+        nextAction: '重新执行上架预检',
+      }),
+    ])
+  })
+
+  it.each([
+    ['未知状态', 'unverified'],
+    ['缺失状态', ''],
+  ])('scope %s 时失败关闭，不把 ok=true 伪装成通过', (_label, status) => {
+    const market = {
+      site_id: 'MCO',
+      logistic_type: 'remote',
+      ok: true,
+      errors: [],
+      warnings: [],
+      ...(status ? { status } : {}),
+    }
+    const result = normalizePublishPrecheck({
+      ok: true,
+      errors: [],
+      warnings: [],
+      parent: { ok: true, status: 'passed', errors: [], warnings: [] },
+      markets: [market],
+    }, {
+      requireLayeredScopes: true,
+      expectedMarkets: [{ siteId: 'MCO', logisticType: 'remote' }],
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.marketChecks).toEqual([
+      expect.objectContaining({ siteId: 'MCO', ok: false, status: 'blocked' }),
+    ])
+    expect(result.errorItems).toEqual([
+      expect.objectContaining({ code: 'PRECHECK_RESULT_INCONSISTENT' }),
+    ])
+  })
+
+  it('市场 scope 与当前选择顺序无关但集合必须完全一致', () => {
+    const result = normalizePublishPrecheck({
+      ok: true,
+      errors: [],
+      warnings: [],
+      parent: { ok: true, status: 'passed', errors: [], warnings: [] },
+      markets: [
+        { site_id: 'MLC', logistic_type: 'remote', ok: true, status: 'passed', errors: [], warnings: [] },
+        { site_id: 'MLA', logistic_type: 'remote', ok: true, status: 'passed', errors: [], warnings: [] },
+      ],
+    }, {
+      requireLayeredScopes: true,
+      expectedMarkets: [
+        { siteId: 'MLA', logisticType: 'remote' },
+        { siteId: 'MLC', logisticType: 'remote' },
+      ],
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.errorItems).toEqual([])
+  })
+
+  it.each([
+    [
+      '缺少市场',
+      [{ siteId: 'MLA', logisticType: 'remote' }, { siteId: 'MLC', logisticType: 'remote' }],
+      [{ site_id: 'MLA', logistic_type: 'remote' }],
+    ],
+    [
+      '重复市场',
+      [{ siteId: 'MLA', logisticType: 'remote' }, { siteId: 'MLC', logisticType: 'remote' }],
+      [{ site_id: 'MLA', logistic_type: 'remote' }, { site_id: 'MLA', logistic_type: 'remote' }],
+    ],
+    [
+      '多出市场',
+      [{ siteId: 'MLA', logisticType: 'remote' }],
+      [{ site_id: 'MLA', logistic_type: 'remote' }, { site_id: 'MLC', logistic_type: 'remote' }],
+    ],
+  ])('%s时阻断 Mercado 分层预检', (_label, expectedMarkets, markets) => {
+    const result = normalizePublishPrecheck({
+      ok: true,
+      errors: [],
+      warnings: [],
+      parent: { ok: true, status: 'passed', errors: [], warnings: [] },
+      markets: markets.map((market) => ({
+        ...market,
+        ok: true,
+        status: 'passed',
+        errors: [],
+        warnings: [],
+      })),
+    }, {
+      requireLayeredScopes: true,
+      expectedMarkets,
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.errorItems).toEqual([
+      expect.objectContaining({ code: 'LAYERED_PRECHECK_MARKETS_MISMATCH' }),
+    ])
+  })
+
+  it.each([
+    { label: '顶层 ok=false 但没有阻断明细', topState: { ok: false } },
+    { label: '顶层 status 与 ok 冲突', topState: { ok: true, status: 'blocked' } },
+  ])('$label 时合成状态不一致错误', ({ topState }) => {
+    const result = normalizePublishPrecheck({
+      ...topState,
+      errors: [],
+      warnings: [],
+      parent: { ok: true, status: 'passed', errors: [], warnings: [] },
+      markets: [
+        { site_id: 'MLA', logistic_type: 'remote', ok: true, status: 'passed', errors: [], warnings: [] },
+      ],
+    }, {
+      requireLayeredScopes: true,
+      expectedMarkets: [{ siteId: 'MLA', logisticType: 'remote' }],
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.errorItems).toEqual([
+      expect.objectContaining({ code: 'PRECHECK_RESULT_INCONSISTENT' }),
+    ])
+  })
+
+  it('缺少用户文案时保留结构化 code 和 field，但摘要不暴露它们', () => {
+    const result = normalizePublishPrecheck({
+      ok: false,
+      errors: [{ code: 'RAW_INTERNAL_CODE', field: 'sites_to_sell[0].category_id' }],
+      warnings: [],
+      parent: { ok: true, status: 'passed', errors: [], warnings: [] },
+      markets: [
+        { site_id: 'MLA', logistic_type: 'remote', ok: true, status: 'passed', errors: [], warnings: [] },
+      ],
+    }, {
+      requireLayeredScopes: true,
+      expectedMarkets: [{ siteId: 'MLA', logisticType: 'remote' }],
+    })
+
+    expect(result.errorItems).toEqual([
+      expect.objectContaining({
+        code: 'RAW_INTERNAL_CODE',
+        field: 'sites_to_sell[0].category_id',
+        message: '预检返回了未说明原因的阻断',
+      }),
+    ])
+    expect(result.errors).toEqual(['预检返回了未说明原因的阻断'])
   })
 })
 

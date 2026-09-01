@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import DraftLanguageSelect from '@/components/domain/DraftLanguageSelect.vue'
 import DraftMarketSelect from '@/components/domain/DraftMarketSelect.vue'
+import { formatDateTime } from '@/utils/format'
 import { statusBadgeClass, workflowStatusLabel } from '@/utils/status'
 import type { DraftIndexItem, Marketplace, MarketplaceOption, MarketplaceTargetSite, UnknownRecord } from '@/types/workflow'
 
@@ -130,6 +131,7 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
         <colgroup>
           <col class="w-10" />
           <col />
+          <col class="w-[150px]" />
           <col class="w-[88px]" />
           <col class="w-[150px]" />
           <col class="w-[88px]" />
@@ -140,6 +142,7 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
           <tr class="whitespace-nowrap">
             <th class="p-2"><input class="size-4 rounded border-accent-300 text-primary-600" type="checkbox" aria-label="全选当前草稿" :checked="allChecked" :disabled="props.loading || !visibleDraftIds.length" @change="selectVisibleDrafts(($event.target as HTMLInputElement).checked)" /></th>
             <th class="p-2">商品</th>
+            <th class="p-2">创建时间</th>
             <th class="p-2">语言</th>
             <th class="p-2">市场</th>
             <th class="p-2">状态</th>
@@ -159,6 +162,7 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
                 </div>
               </div>
             </td>
+            <td data-testid="draft-created-at" class="p-2 text-accent-600 dark:text-accent-300" :title="row.createdAt || '-'">{{ formatDateTime(row.createdAt) }}</td>
             <td class="p-2">
               <DraftLanguageSelect
                 compact
@@ -192,7 +196,7 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
             </td>
           </tr>
           <tr v-if="!draftRows.length">
-            <td class="p-6 text-center text-accent-500 dark:text-accent-300" colspan="7">暂无草稿。可先从商品库勾选商品并推到草稿箱。</td>
+            <td class="p-6 text-center text-accent-500 dark:text-accent-300" colspan="8">暂无草稿。可先从商品库勾选商品并推到草稿箱。</td>
           </tr>
         </tbody>
       </table>

@@ -31,7 +31,11 @@ describe('发布队列 API', () => {
               sites_to_sell: [{ site_id: 'MLU', logistic_type: 'remote' }],
               status: 'failed',
               stage: 'failed',
+              error_code: 'MERCADOLIBRE_CATEGORY_MARKET_LOGISTICS_UNSUPPORTED',
+              next_action: '请选择共享类目',
             }],
+            error_code: 'MERCADOLIBRE_CATEGORY_MARKET_LOGISTICS_UNSUPPORTED',
+            next_action: '请选择共享类目',
           },
           {
             job_id: '20260829-203906-86e8145e',
@@ -59,6 +63,10 @@ describe('发布队列 API', () => {
     expect(result.items[0].platforms[0].sitesToSell).toEqual([
       { siteId: 'MLU', logisticType: 'remote' },
     ])
+    expect(result.items[0].errorCode).toBe('MERCADOLIBRE_CATEGORY_MARKET_LOGISTICS_UNSUPPORTED')
+    expect(result.items[0].nextAction).toBe('请选择共享类目')
+    expect(result.items[0].platforms[0].errorCode).toBe('MERCADOLIBRE_CATEGORY_MARKET_LOGISTICS_UNSUPPORTED')
+    expect(result.items[0].platforms[0].nextAction).toBe('请选择共享类目')
     expect(result.items[1].platforms[0].sitesToSell).toEqual([
       { siteId: 'MLA', logisticType: 'remote' },
     ])

@@ -1714,6 +1714,10 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 ]
 
             with patch.object(
+                category_providers,
+                "get_mercadolibre_access_token",
+                return_value="saved-token",
+            ), patch.object(
                 category_refresh.http_client,
                 "request_json",
                 side_effect=fake_request_json,
@@ -2105,8 +2109,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             with (
                 patch.object(
                     publish_mercadolibre,
-                    "ensure_mercadolibre_auth_ready",
-                    return_value={"ok": True, "token": "token"},
+                    "get_mercadolibre_access_token",
+                    return_value="token",
                 ),
                 patch.object(publisher, "request_json", side_effect=fake_request),
             ):
@@ -2244,8 +2248,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                     with (
                         patch.object(
                             publish_mercadolibre,
-                            "ensure_mercadolibre_auth_ready",
-                            return_value={"ok": True, "token": "token"},
+                            "get_mercadolibre_access_token",
+                            return_value="token",
                         ),
                         patch.object(
                             publisher,
@@ -2290,8 +2294,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             with (
                 patch.object(
                     publish_mercadolibre,
-                    "ensure_mercadolibre_auth_ready",
-                    return_value={"ok": True, "token": "token"},
+                    "get_mercadolibre_access_token",
+                    return_value="token",
                 ),
                 patch.object(publisher, "request_json") as request_json,
             ):
@@ -2321,8 +2325,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             with (
                 patch.object(
                     publish_mercadolibre,
-                    "ensure_mercadolibre_auth_ready",
-                    return_value={"ok": True, "token": "token"},
+                    "get_mercadolibre_access_token",
+                    return_value="token",
                 ),
                 patch.object(
                     publisher,
@@ -2404,8 +2408,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             with (
                 patch.object(
                     publish_mercadolibre,
-                    "ensure_mercadolibre_auth_ready",
-                    return_value={"ok": True, "token": "token"},
+                    "get_mercadolibre_access_token",
+                    return_value="token",
                 ),
                 patch.object(
                     publisher,
@@ -2472,8 +2476,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                     with (
                         patch.object(
                             publish_mercadolibre,
-                            "ensure_mercadolibre_auth_ready",
-                            return_value={"ok": True, "token": "token"},
+                            "get_mercadolibre_access_token",
+                            return_value="token",
                         ),
                         patch.object(
                             publisher,
@@ -2536,8 +2540,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                     with (
                         patch.object(
                             publish_mercadolibre,
-                            "ensure_mercadolibre_auth_ready",
-                            return_value={"ok": True, "token": "token"},
+                            "get_mercadolibre_access_token",
+                            return_value="token",
                         ),
                         patch.object(
                             publisher,
@@ -2599,8 +2603,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                     with (
                         patch.object(
                             publish_mercadolibre,
-                            "ensure_mercadolibre_auth_ready",
-                            return_value={"ok": True, "token": "token"},
+                            "get_mercadolibre_access_token",
+                            return_value="token",
                         ),
                         patch.object(publisher, "request_json") as request_json,
                     ):
@@ -2672,8 +2676,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             with (
                 patch.object(
                     publish_mercadolibre,
-                    "ensure_mercadolibre_auth_ready",
-                    return_value={"ok": True, "token": "token"},
+                    "get_mercadolibre_access_token",
+                    return_value="token",
                 ),
                 patch.object(publisher, "request_json", side_effect=fake_request),
             ):

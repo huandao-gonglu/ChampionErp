@@ -740,6 +740,13 @@ def test_publishing_bus_lists_lightweight_business_status_summaries() -> None:
                     "stage": "failed",
                     "attempts": 1,
                     "error": "合同币种不匹配",
+                    "result": {
+                        "error_code": "OZON_CONTRACT_CURRENCY_MISMATCH",
+                        "error_map": {
+                            "error_code": "OZON_CONTRACT_CURRENCY_MISMATCH",
+                            "next_action": "按店铺合同币种重新核价后发布。",
+                        },
+                    },
                 }
             },
         }
@@ -762,16 +769,21 @@ def test_publishing_bus_lists_lightweight_business_status_summaries() -> None:
             "stage": "failed",
             "attempts": 1,
             "error": "合同币种不匹配",
+            "error_code": "OZON_CONTRACT_CURRENCY_MISMATCH",
+            "next_action": "按店铺合同币种重新核价后发布。",
             "platforms": [
-                    {
-                        "platform": "ozon",
-                        "draft_id": "",
+                {
+                    "platform": "ozon",
+                    "draft_id": "",
                         "site": "",
                         "sites_to_sell": [],
+                        "market_results": [],
                         "status": "failed",
                     "stage": "failed",
                     "attempts": 1,
                     "error": "合同币种不匹配",
+                    "error_code": "OZON_CONTRACT_CURRENCY_MISMATCH",
+                    "next_action": "按店铺合同币种重新核价后发布。",
                     "updated_at": "",
                 }
             ],
@@ -2156,10 +2168,10 @@ def test_mercadolibre_adapter_refreshes_auth_before_preparing_product(
         target_config: dict[str, Any],
         *,
         force_refresh: bool = False,
-    ) -> dict[str, Any]:
+    ) -> str:
         assert force_refresh is False
         target_config["mercadolibre"]["access_token"] = "fresh-token"
-        return {"ok": True, "token": "fresh-token", "refreshed": True}
+        return "fresh-token"
 
     def fake_upload(
         target_product: dict[str, Any],
@@ -2170,7 +2182,7 @@ def test_mercadolibre_adapter_refreshes_auth_before_preparing_product(
 
     monkeypatch.setattr(
         publish_adapter,
-        "ensure_mercadolibre_auth_ready",
+        "get_mercadolibre_access_token",
         fake_auth,
     )
     monkeypatch.setattr(
@@ -2214,11 +2226,12 @@ def test_mercadolibre_adapter_refreshes_and_retries_once_on_401(
         target_config: dict[str, Any],
         *,
         force_refresh: bool = False,
-    ) -> dict[str, Any]:
+    ) -> str:
         refresh_requests.append(force_refresh)
-        assert force_refresh is True
+        if not force_refresh:
+            return "expired-token"
         target_config["mercadolibre"]["access_token"] = "fresh-token"
-        return {"ok": True, "token": "fresh-token", "refreshed": True}
+        return "fresh-token"
 
     monkeypatch.setattr(
         publish_adapter.marketplace_api,
@@ -2227,7 +2240,7 @@ def test_mercadolibre_adapter_refreshes_and_retries_once_on_401(
     )
     monkeypatch.setattr(
         publish_adapter,
-        "ensure_mercadolibre_auth_ready",
+        "get_mercadolibre_access_token",
         fake_auth,
     )
 
@@ -2238,7 +2251,7 @@ def test_mercadolibre_adapter_refreshes_and_retries_once_on_401(
 
     assert result["ok"] is True
     assert publish_tokens == ["expired-token", "fresh-token"]
-    assert refresh_requests == [True]
+    assert refresh_requests == [False, True]
 
 
 def test_mercadolibre_adapter_does_not_retry_non_auth_publish_error(
@@ -2258,6 +2271,11 @@ def test_mercadolibre_adapter_does_not_retry_non_auth_publish_error(
         publish_adapter.marketplace_api,
         "publish_mercadolibre",
         fake_publish,
+    )
+    monkeypatch.setattr(
+        publish_adapter,
+        "get_mercadolibre_access_token",
+        lambda *_args, **_kwargs: "valid-token",
     )
 
     with pytest.raises(RuntimeError, match="invalid title"):
@@ -2307,6 +2325,11 @@ def test_mercadolibre_adapter_never_replays_ambiguous_write_failure(
         "publish_mercadolibre",
         fake_publish,
     )
+    monkeypatch.setattr(
+        publish_adapter,
+        "get_mercadolibre_access_token",
+        lambda *_args, **_kwargs: "token",
+    )
 
     with pytest.raises(PublishAdapterError) as exc_info:
         adapter.publish_payload(
@@ -2340,12 +2363,13 @@ def test_mercadolibre_adapter_stops_after_second_401(monkeypatch) -> None:
         target_config: dict[str, Any],
         *,
         force_refresh: bool = False,
-    ) -> dict[str, Any]:
+    ) -> str:
         nonlocal refresh_calls
-        assert force_refresh is True
+        if not force_refresh:
+            return "expired-token"
         refresh_calls += 1
         target_config["mercadolibre"]["access_token"] = "fresh-token"
-        return {"ok": True, "token": "fresh-token", "refreshed": True}
+        return "fresh-token"
 
     monkeypatch.setattr(
         publish_adapter.marketplace_api,
@@ -2354,7 +2378,7 @@ def test_mercadolibre_adapter_stops_after_second_401(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         publish_adapter,
-        "ensure_mercadolibre_auth_ready",
+        "get_mercadolibre_access_token",
         fake_auth,
     )
 

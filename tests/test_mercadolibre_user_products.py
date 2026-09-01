@@ -40,7 +40,7 @@ def _publication() -> dict:
     }
 
 
-def test_user_products_response_maps_parent_and_market_publications() -> None:
+def test_user_products_response_maps_parent_and_market_operations() -> None:
     publication = mercadolibre_publication_from_response(
         {
             "item_id": "CBT100",

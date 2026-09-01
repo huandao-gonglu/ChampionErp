@@ -24,6 +24,28 @@ from .publisher import PublishAdapterError
 # 平台 HTTP 边界把远端失败分类为类型化 PublishAdapterError：
 # PublishingBus 只对 retryable=True 的失败重试，确定性 4xx 不再被反复外发。
 _RETRYABLE_HTTP_STATUS_CODES = frozenset({408, 420, 423, 425, 429})
+_DEFAULT_MERCADOLIBRE_TIMEOUT_SECONDS = 30
+# ``POST /global/items`` 会同步编排多个本地市场。真实四市场请求可能在
+# 父项创建后继续处理数分钟；沿用普通读请求的 30 秒超时会丢失最终响应，
+# 把已经开始落地的刊登错误记成 outcome_unknown。
+_MERCADOLIBRE_GLOBAL_ITEMS_WRITE_TIMEOUT_SECONDS = 300
+
+
+def _mercadolibre_request_timeout_seconds(method: str, url: str) -> int:
+    parsed = urllib.parse.urlparse(str(url or ""))
+    is_global_items_write = (
+        str(method or "").strip().upper() in {"POST", "PUT"}
+        and parsed.netloc.lower() == "api.mercadolibre.com"
+        and (
+            parsed.path == "/global/items"
+            or parsed.path.startswith("/global/items/")
+        )
+    )
+    return (
+        _MERCADOLIBRE_GLOBAL_ITEMS_WRITE_TIMEOUT_SECONDS
+        if is_global_items_write
+        else _DEFAULT_MERCADOLIBRE_TIMEOUT_SECONDS
+    )
 
 
 def _http_failure_retryable(status_code: int) -> bool:
@@ -179,7 +201,13 @@ def request_json(
         headers.update(extra_headers)
     data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
     try:
-        return http_client.request_json(url, method=method, headers=headers, data=data, timeout=30)
+        return http_client.request_json(
+            url,
+            method=method,
+            headers=headers,
+            data=data,
+            timeout=_mercadolibre_request_timeout_seconds(method, url),
+        )
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise _typed_http_failure(

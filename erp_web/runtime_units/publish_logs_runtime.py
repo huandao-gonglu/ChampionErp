@@ -14,8 +14,8 @@ from erp_web.services.config_service import is_sensitive_config_key
 from erp_web.stores.config_store import store_auth_failure_code
 from erp_web.stores.product_store import mask_secret
 
-from .category_store import write_json
 from .collect_helpers import collect_time_iso
+from .json_store import write_json
 from .publish_bus import append_publish_log
 from .publish_helpers import _draft_for_platform
 

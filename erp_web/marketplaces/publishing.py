@@ -25,7 +25,17 @@ from erp_web.services.mercadolibre_target_contract import (
 from erp_web.services.mercadolibre_listing_model import (
     MERCADOLIBRE_LISTING_MODEL_TRADITIONAL_GLOBAL_ITEMS,
     MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS,
+    MERCADOLIBRE_TRADITIONAL_CONFIRMED_PAYLOAD_VERSION,
     require_mercadolibre_listing_model,
+)
+from erp_web.services.mercadolibre_publish_error_codes import (
+    MERCADOLIBRE_LOCAL_RATE_LIMITED,
+    MERCADOLIBRE_MARKET_NOT_OPERABLE,
+    MERCADOLIBRE_PACKAGE_CARRIER_LIMIT_EXCEEDED,
+    MERCADOLIBRE_PARENT_CATEGORY_IMMUTABLE,
+    MERCADOLIBRE_PARENT_PAYLOAD_IDENTITY_MISSING,
+    MERCADOLIBRE_PARENT_PAYLOAD_IMMUTABLE,
+    MERCADOLIBRE_SHIPPING_MODE_NOT_SUPPORTED,
 )
 
 from .config_http import request_json
@@ -1824,6 +1834,73 @@ def _traditional_response_error_messages(value: Any) -> list[str]:
     return list(dict.fromkeys(messages))
 
 
+def _traditional_response_error_codes(value: Any) -> list[str]:
+    """从嵌套 error/cause 中提取 Mercado 稳定错误码。"""
+
+    codes: list[str] = []
+    if isinstance(value, list):
+        for item in value:
+            codes.extend(_traditional_response_error_codes(item))
+    elif isinstance(value, dict):
+        code = str(value.get("code") or "").strip()
+        if code:
+            codes.append(code)
+        cause = value.get("cause")
+        if isinstance(cause, (dict, list)):
+            codes.extend(_traditional_response_error_codes(cause))
+    return list(dict.fromkeys(codes))
+
+
+def _traditional_site_error_contract(raw_error: Any) -> dict[str, Any]:
+    """把已确认的市场错误映射为可操作、可重试语义。"""
+
+    codes = _traditional_response_error_codes(raw_error)
+    messages = _traditional_response_error_messages(raw_error)
+    lowered_messages = " ".join(messages).casefold()
+    if (
+        "site.not_operable" in codes
+        or "currently unavailable for international dropshipping"
+        in lowered_messages
+    ):
+        return {
+            "error_code": MERCADOLIBRE_MARKET_NOT_OPERABLE,
+            "retryable": False,
+            "next_action": "该市场当前暂不接受国际直发，请移除后重新发布。",
+        }
+    if (
+        "item.shipping.mode.not_supported" in codes
+        or "can't send the product in this kind of shipment"
+        in lowered_messages
+    ):
+        return {
+            "error_code": MERCADOLIBRE_SHIPPING_MODE_NOT_SUPPORTED,
+            "retryable": False,
+            "next_action": (
+                "检查店铺是否已开通该市场的跨境直发及物流能力；"
+                "若当前账号无可用方式，移除该市场后重新发布。"
+            ),
+        }
+    if any(
+        code.startswith("item.package_") and code.endswith(".over_max")
+        for code in codes
+    ):
+        return {
+            "error_code": MERCADOLIBRE_PACKAGE_CARRIER_LIMIT_EXCEEDED,
+            "retryable": False,
+            "next_action": (
+                "按实际发货包装修正尺寸和重量并重新核价；"
+                "若父级刊登已经创建，请新建刊登后再发布。"
+            ),
+        }
+    if "local_rate_limited" in codes or "local_rate_limited" in lowered_messages:
+        return {
+            "error_code": MERCADOLIBRE_LOCAL_RATE_LIMITED,
+            "retryable": True,
+            "next_action": "等待 Mercado Libre 本地限流窗口恢复后再重试该市场。",
+        }
+    return {}
+
+
 def _traditional_site_item_error_detail(
     item: dict[str, Any],
     *,
@@ -1850,6 +1927,7 @@ def _traditional_site_item_error_detail(
         "messages": messages,
         "error": deepcopy(raw_error),
         "raw": deepcopy(item),
+        **_traditional_site_error_contract(raw_error),
     }
 
 
@@ -1863,11 +1941,12 @@ def _traditional_response_failure(
     next_action: str = "核对 Mercado Libre 返回内容后再重试。",
     outcome_unknown: bool = False,
     merge_publication: bool = False,
+    retryable: bool = False,
 ) -> dict[str, Any]:
     error_map: dict[str, Any] = {
         "summary": summary,
         "error_code": error_code,
-        "retryable": False,
+        "retryable": retryable,
         "field_errors": dict(field_errors or {}),
         "next_action": next_action,
         # 顶层结果需要用规范化 error 覆盖远端 error；原始响应在这里完整保留。
@@ -1886,22 +1965,15 @@ def _traditional_response_failure(
 
 def _traditional_publication_markets(
     publication: dict[str, Any],
-) -> tuple[
-    dict[tuple[str, str], dict[str, Any]],
-    dict[str, dict[str, Any]],
-]:
+) -> dict[tuple[str, str], dict[str, Any]]:
     by_operation: dict[tuple[str, str], dict[str, Any]] = {}
-    by_item_id: dict[str, dict[str, Any]] = {}
     for market in publication.get("markets", []):
         if not isinstance(market, dict):
             continue
         key = _market_key(market)
         if key[0] and key[1]:
             by_operation[key] = market
-        item_id = str(market.get("item_id") or "").strip()
-        if item_id:
-            by_item_id[item_id] = market
-    return by_operation, by_item_id
+    return by_operation
 
 
 def _traditional_create_response_failure(
@@ -1909,6 +1981,7 @@ def _traditional_create_response_failure(
     *,
     publication: dict[str, Any],
     requested_sites: list[dict[str, Any]],
+    known_parent_item_id: str = "",
 ) -> dict[str, Any]:
     root_error = _traditional_response_root_error(response)
     if root_error:
@@ -1929,7 +2002,7 @@ def _traditional_create_response_failure(
             error_code="MERCADOLIBRE_TRADITIONAL_RESPONSE_INVALID",
             summary="传统 Global Items 创建请求包含无效或重复的销售 operation",
         )
-    publication_by_operation, _ = _traditional_publication_markets(publication)
+    publication_by_operation = _traditional_publication_markets(publication)
     expected_sellers: dict[tuple[str, str], str] = {}
     for key in expected_keys:
         seller_id = str(
@@ -2029,6 +2102,19 @@ def _traditional_create_response_failure(
     returned_parent_id = str(
         response.get("item_id") or response.get("id") or ""
     ).strip()
+    known_parent_item_id = str(known_parent_item_id or "").strip()
+    if (
+        known_parent_item_id
+        and returned_parent_id
+        and returned_parent_id != known_parent_item_id
+    ):
+        return _traditional_response_failure(
+            response,
+            error_code="MERCADOLIBRE_TRADITIONAL_RESPONSE_INVALID",
+            summary="传统 Global Items 加市场响应的 parent item_id 与请求不一致",
+            outcome_unknown=True,
+        )
+    confirmed_parent_id = returned_parent_id or known_parent_item_id
     if failed_items:
         site_messages = [
             (
@@ -2039,7 +2125,7 @@ def _traditional_create_response_failure(
             for item in failed_items
         ]
         summary = "传统 Global Items 市场创建失败：" + "；".join(site_messages)
-        if successful_items and not returned_parent_id:
+        if successful_items and not confirmed_parent_id:
             return _traditional_response_failure(
                 response,
                 error_code="MERCADOLIBRE_TRADITIONAL_RESPONSE_INVALID",
@@ -2056,21 +2142,34 @@ def _traditional_create_response_failure(
                 ),
                 outcome_unknown=True,
             )
+        specific_contract = (
+            failed_items[0]
+            if len(failed_items) == 1
+            and failed_items[0].get("error_code")
+            else {}
+        )
         return _traditional_response_failure(
             response,
-            error_code="MERCADOLIBRE_TRADITIONAL_SITE_ITEMS_FAILED",
+            error_code=str(
+                specific_contract.get("error_code")
+                or "MERCADOLIBRE_TRADITIONAL_SITE_ITEMS_FAILED"
+            ),
             summary=summary,
             field_errors={"sites_to_sell": site_messages},
             site_item_errors=failed_items,
-            next_action=(
-                "按各销售市场返回的原因修复或移除不可发布目标；限流目标稍后"
-                "重新预览并人工确认。"
+            next_action=str(
+                specific_contract.get("next_action")
+                or (
+                    "按各销售市场返回的原因修复或移除不可发布目标；限流目标稍后"
+                    "重新预览并人工确认。"
+                )
             ),
-            # 只在远端父身份明确时构建 partial publication，供终态落库并让
-            # 下一次发布走 PUT，避免重复创建 Global Item。
-            merge_publication=bool(returned_parent_id),
+            # 只在远端父身份明确时构建 partial publication，供终态落库；
+            # 下一次发布只 POST 尚未生成 item_id 的销售市场。
+            merge_publication=bool(confirmed_parent_id),
+            retryable=bool(specific_contract.get("retryable", False)),
         )
-    if not returned_parent_id:
+    if not confirmed_parent_id:
         return _traditional_response_failure(
             response,
             error_code="MERCADOLIBRE_TRADITIONAL_RESPONSE_INVALID",
@@ -2084,105 +2183,343 @@ def _traditional_create_response_failure(
     return {}
 
 
-def _traditional_update_response_error(
-    response: dict[str, Any],
-    *,
+def _traditional_pending_marketplaces(
+    item_payload: dict[str, Any],
     publication: dict[str, Any],
-    parent_item_id: str,
-) -> str:
-    root_error = _traditional_response_root_error(response)
-    if root_error:
-        return root_error
-    returned_parent_id = str(
-        response.get("item_id") or response.get("id") or ""
-    ).strip()
-    if returned_parent_id and returned_parent_id != parent_item_id:
-        return "传统 Global Items 更新响应的 parent item_id 与请求不一致"
+) -> list[dict[str, Any]]:
+    """返回尚未取得远端 item_id 的目标；已有 Item 绝不能重复 POST。"""
 
-    publication_by_operation, publication_by_item_id = (
-        _traditional_publication_markets(publication)
+    published_operations = {
+        _market_key(market)
+        for market in publication.get("markets", [])
+        if isinstance(market, dict)
+        and str(market.get("item_id") or market.get("id") or "").strip()
+    }
+    return [
+        dict(site)
+        for site in item_payload.get("sites_to_sell", [])
+        if isinstance(site, dict) and _market_key(site) not in published_operations
+    ]
+
+
+def _traditional_root_payload(item_payload: dict[str, Any]) -> dict[str, Any]:
+    """返回首次创建父项时真正发送的根字段快照。"""
+
+    return {
+        key: deepcopy(value)
+        for key, value in item_payload.items()
+        if key not in {"_listing_model", "_publication", "sites_to_sell"}
+    }
+
+
+def _traditional_prune_unrequested_uncreated_markets(
+    item_payload: dict[str, Any],
+    publication: dict[str, Any],
+) -> dict[str, Any]:
+    """移除用户已取消且从未取得 item_id 的失败/seed operation。"""
+
+    desired_operations = {
+        _market_key(site)
+        for site in item_payload.get("sites_to_sell", [])
+        if isinstance(site, dict)
+    }
+    markets = [
+        deepcopy(market)
+        for market in publication.get("markets", [])
+        if isinstance(market, dict)
+        and (
+            str(market.get("item_id") or market.get("id") or "").strip()
+            or _market_key(market) in desired_operations
+        )
+    ]
+    if len(markets) == len(publication.get("markets", [])):
+        return publication
+    return normalize_mercadolibre_publication(
+        {**publication, "markets": markets}
     )
-    raw_items = (
-        response.get("site_items")
-        if isinstance(response.get("site_items"), list)
-        else response.get("listing_sites")
-        if isinstance(response.get("listing_sites"), list)
-        else []
+
+
+def _traditional_publication_with_confirmed_payload(
+    publication: dict[str, Any],
+    item_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """保存父项根快照，以及已取得 item_id 的市场请求快照。"""
+
+    if not str(publication.get("parent_item_id") or "").strip():
+        return publication
+    previous_confirmed = (
+        publication.get("confirmed_payload")
+        if isinstance(publication.get("confirmed_payload"), dict)
+        else {}
     )
-    has_site_proof = False
-    for item in raw_items:
-        if not isinstance(item, dict) or _traditional_response_entry_error(item):
-            return "传统 Global Items 更新响应包含失败或无效的市场结果"
-        item_id = str(item.get("item_id") or item.get("id") or "").strip()
-        key = _market_key(item)
-        existing_market = publication_by_item_id.get(item_id)
-        if existing_market is None and key[0] and key[1]:
-            existing_market = publication_by_operation.get(key)
-        if not item_id or existing_market is None:
-            return "传统 Global Items 更新响应包含无法归属到既有 publication 的市场结果"
-        response_seller_id = str(item.get("seller_id") or "").strip()
-        expected_seller_id = str(existing_market.get("seller_id") or "").strip()
-        if (
-            response_seller_id
-            and expected_seller_id
-            and response_seller_id != expected_seller_id
-        ):
-            return "传统 Global Items 更新响应的 seller_id 与既有 publication 不一致"
-        has_site_proof = True
-    if not returned_parent_id and not has_site_proof:
-        return "传统 Global Items 更新响应没有返回可验证的远端 item 身份"
-    return ""
+    published_operations = {
+        _market_key(market)
+        for market in publication.get("markets", [])
+        if isinstance(market, dict)
+        and str(market.get("item_id") or market.get("id") or "").strip()
+    }
+    confirmed_sites = {
+        _market_key(site): deepcopy(site)
+        for site in previous_confirmed.get("sites_to_sell", [])
+        if isinstance(site, dict)
+        and _market_key(site) in published_operations
+    }
+    for site in item_payload.get("sites_to_sell", []):
+        if not isinstance(site, dict):
+            continue
+        key = _market_key(site)
+        if key in published_operations:
+            confirmed_sites[key] = deepcopy(site)
+    confirmed_payload = {
+        **_traditional_root_payload(item_payload),
+        "contract_version": MERCADOLIBRE_TRADITIONAL_CONFIRMED_PAYLOAD_VERSION,
+        "sites_to_sell": [
+            confirmed_sites[key]
+            for key in sorted(confirmed_sites)
+        ],
+    }
+    return normalize_mercadolibre_publication(
+        {**publication, "confirmed_payload": confirmed_payload}
+    )
+
+
+def mercadolibre_traditional_parent_payload_error(
+    item_payload: dict[str, Any],
+    publication: dict[str, Any],
+) -> dict[str, Any]:
+    """纯比较已有父项与当前 payload；空 dict 表示本次仅补市场。"""
+
+    parent_item_id = str(publication.get("parent_item_id") or "").strip()
+    confirmed_payload = (
+        publication.get("confirmed_payload")
+        if isinstance(publication.get("confirmed_payload"), dict)
+        else {}
+    )
+    if not parent_item_id:
+        return {}
+    if (
+        confirmed_payload.get("contract_version")
+        != MERCADOLIBRE_TRADITIONAL_CONFIRMED_PAYLOAD_VERSION
+    ):
+        message = (
+            f"已有父刊登 {parent_item_id} 缺少最新的已确认 payload 快照，"
+            "不能安全判断本次请求是否只是在补市场。"
+        )
+        return {
+            "error_code": MERCADOLIBRE_PARENT_PAYLOAD_IDENTITY_MISSING,
+            "message": message,
+            "details": {
+                "field_errors": {"publication.confirmed_payload": [message]},
+                "next_action": "删除当前草稿并按最新发布契约重新创建。",
+                "parent_item_id": parent_item_id,
+            },
+        }
+    confirmed_root = {
+        key: deepcopy(value)
+        for key, value in confirmed_payload.items()
+        if key not in {"contract_version", "sites_to_sell"}
+    }
+    requested_root = _traditional_root_payload(item_payload)
+    confirmed_category_id = str(
+        confirmed_root.get("category_id") or ""
+    ).strip().upper()
+    requested_category_id = str(
+        requested_root.get("category_id") or ""
+    ).strip().upper()
+    if requested_category_id != confirmed_category_id:
+        message = (
+            f"已有父刊登 {parent_item_id} 的共享类目为 {confirmed_category_id}，"
+            f"不能改为 {requested_category_id}。"
+        )
+        return {
+            "error_code": MERCADOLIBRE_PARENT_CATEGORY_IMMUTABLE,
+            "message": message,
+            "details": {
+                "field_errors": {"category_id": [message]},
+                "next_action": (
+                    "使用新共享类目创建新的 Global Item；旧刊登是否暂停需"
+                    "单独确认。"
+                ),
+                "parent_item_id": parent_item_id,
+                "confirmed_category_id": confirmed_category_id,
+                "requested_category_id": requested_category_id,
+            },
+        }
+
+    changed_root_fields = sorted(
+        key
+        for key in set(confirmed_root) | set(requested_root)
+        if confirmed_root.get(key) != requested_root.get(key)
+    )
+    if changed_root_fields:
+        message = (
+            f"已有父刊登 {parent_item_id} 的根字段不能通过补市场请求更新："
+            + "、".join(changed_root_fields)
+        )
+        return {
+            "error_code": MERCADOLIBRE_PARENT_PAYLOAD_IMMUTABLE,
+            "message": message,
+            "details": {
+                "field_errors": {
+                    field: [message] for field in changed_root_fields
+                },
+                "next_action": (
+                    "保留原值后只补市场，或用修正后的根字段创建新的 Global Item。"
+                ),
+                "parent_item_id": parent_item_id,
+                "changed_fields": changed_root_fields,
+            },
+        }
+
+    publication_by_operation = _traditional_publication_markets(publication)
+    confirmed_sites = {
+        _market_key(site): site
+        for site in confirmed_payload.get("sites_to_sell", [])
+        if isinstance(site, dict)
+    }
+    for site in item_payload.get("sites_to_sell", []):
+        if not isinstance(site, dict):
+            continue
+        key = _market_key(site)
+        market = publication_by_operation.get(key, {})
+        if not str(market.get("item_id") or market.get("id") or "").strip():
+            continue
+        confirmed_site = confirmed_sites.get(key)
+        if not isinstance(confirmed_site, dict):
+            message = (
+                f"已有市场 {key[0]}/{key[1]} 缺少已确认的请求快照，"
+                "不能安全跳过或更新。"
+            )
+            return {
+                "error_code": MERCADOLIBRE_PARENT_PAYLOAD_IDENTITY_MISSING,
+                "message": message,
+                "details": {
+                    "field_errors": {"sites_to_sell": [message]},
+                    "next_action": "删除当前草稿并按最新发布契约重新创建。",
+                    "parent_item_id": parent_item_id,
+                },
+            }
+        if confirmed_site == site:
+            continue
+        message = (
+            f"已有市场 {key[0]}/{key[1]} 的已确认字段发生变化；"
+            "补市场请求不会更新已经创建的 Item。"
+        )
+        return {
+            "error_code": MERCADOLIBRE_PARENT_PAYLOAD_IMMUTABLE,
+            "message": message,
+            "details": {
+                "field_errors": {"sites_to_sell": [message]},
+                "next_action": (
+                    "恢复该市场的已确认字段，或创建新的 Global Item。"
+                ),
+                "parent_item_id": parent_item_id,
+                "site_id": key[0],
+                "logistic_type": key[1],
+            },
+        }
+    return {}
+
+
+def _require_traditional_parent_payload(
+    item_payload: dict[str, Any],
+    publication: dict[str, Any],
+) -> None:
+    """已有父项只允许补市场；任何已确认字段变化都必须显式新建。"""
+
+    error = mercadolibre_traditional_parent_payload_error(
+        item_payload,
+        publication,
+    )
+    if not error:
+        return
+    raise PublishAdapterError(
+        str(error["error_code"]),
+        str(error["message"]),
+        retryable=False,
+        details=(
+            error["details"]
+            if isinstance(error.get("details"), dict)
+            else {}
+        ),
+    )
 
 
 def _publish_mercadolibre_traditional_global_items(
     payload: dict[str, Any], token: str
 ) -> dict[str, Any]:
     item_payload, publication = _traditional_global_item_payload(payload)
+    publication = _traditional_prune_unrequested_uncreated_markets(
+        item_payload,
+        publication,
+    )
     parent_item_id = str(publication.get("parent_item_id") or "").strip()
-    operation = "updated" if parent_item_id else "created"
+    _require_traditional_parent_payload(item_payload, publication)
+
+    all_requested_sites = [
+        dict(site)
+        for site in item_payload.get("sites_to_sell", [])
+        if isinstance(site, dict)
+    ]
     endpoint = MERCADOLIBRE_TRADITIONAL_GLOBAL_ITEMS_ENDPOINT
     method = "POST"
     headers: dict[str, str] | None = {"parent-item-info": "true"}
+    request_payload = item_payload
+    requested_sites = all_requested_sites
+    operation = "created"
     if parent_item_id:
         endpoint += "/" + quote(parent_item_id, safe="")
-        method = "PUT"
         headers = None
+        pending_sites = _traditional_pending_marketplaces(
+            item_payload,
+            publication,
+        )
+        if pending_sites:
+            operation = "marketplaces_added"
+            request_payload = {"sites_to_sell": pending_sites}
+            requested_sites = pending_sites
+        else:
+            settled_publication = mercadolibre_publication_from_response(
+                {},
+                existing=publication,
+                family_name=str(item_payload.get("title") or ""),
+                requested_sites=[],
+                updated_at=_now_iso(),
+                listing_model=MERCADOLIBRE_LISTING_MODEL_TRADITIONAL_GLOBAL_ITEMS,
+            )
+            settled_publication = _traditional_publication_with_confirmed_payload(
+                settled_publication,
+                item_payload,
+            )
+            return {
+                "ok": True,
+                "status": "published",
+                "operation": "already_published",
+                "item_id": parent_item_id,
+                "site_items": deepcopy(publication.get("markets", [])),
+                "listing_model": (
+                    MERCADOLIBRE_LISTING_MODEL_TRADITIONAL_GLOBAL_ITEMS
+                ),
+                "publication": settled_publication,
+            }
     raw = _write_request_json(
         method,
         endpoint,
         token,
-        item_payload,
+        request_payload,
         extra_headers=headers,
     )
     if not isinstance(raw, dict):
         raise RuntimeError("传统 Global Items 写入响应必须是 JSON object")
     response = dict(raw)
-    requested_sites = [
-        dict(site)
-        for site in item_payload.get("sites_to_sell", [])
-        if isinstance(site, dict)
-    ]
-    if parent_item_id:
-        update_error = _traditional_update_response_error(
-            response,
-            publication=publication,
-            parent_item_id=parent_item_id,
-        )
-        response_failure = (
-            _traditional_response_failure(
-                response,
-                error_code="MERCADOLIBRE_TRADITIONAL_RESPONSE_INVALID",
-                summary=update_error,
-            )
-            if update_error
-            else {}
-        )
-    else:
-        response_failure = _traditional_create_response_failure(
-            response,
-            publication=publication,
-            requested_sites=requested_sites,
-        )
+    response_failure = _traditional_create_response_failure(
+        response,
+        publication=publication,
+        requested_sites=requested_sites,
+        known_parent_item_id=(
+            parent_item_id if operation == "marketplaces_added" else ""
+        ),
+    )
     if response_failure:
         result = {
             **response,
@@ -2205,13 +2542,23 @@ def _publish_mercadolibre_traditional_global_items(
                 }
             )
         if response_failure.get("merge_publication"):
-            result["publication"] = mercadolibre_publication_from_response(
-                response,
+            merge_response = dict(response)
+            if parent_item_id:
+                merge_response.setdefault("item_id", parent_item_id)
+            merged_publication = mercadolibre_publication_from_response(
+                merge_response,
                 existing=publication,
                 family_name=str(item_payload.get("title") or ""),
                 requested_sites=requested_sites,
                 updated_at=_now_iso(),
                 listing_model=MERCADOLIBRE_LISTING_MODEL_TRADITIONAL_GLOBAL_ITEMS,
+            )
+            result["status"] = "partial"
+            result["publication"] = (
+                _traditional_publication_with_confirmed_payload(
+                    merged_publication,
+                    item_payload,
+                )
             )
         return result
     merge_response = dict(response)
@@ -2225,6 +2572,10 @@ def _publish_mercadolibre_traditional_global_items(
         requested_sites=requested_sites,
         updated_at=_now_iso(),
         listing_model=MERCADOLIBRE_LISTING_MODEL_TRADITIONAL_GLOBAL_ITEMS,
+    )
+    merged_publication = _traditional_publication_with_confirmed_payload(
+        merged_publication,
+        item_payload,
     )
     return {
         **response,
