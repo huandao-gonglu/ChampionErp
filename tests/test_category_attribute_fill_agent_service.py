@@ -87,6 +87,18 @@ NUMBER_UNIT_PAYLOAD = {
     "attributes": NUMBER_UNIT_SCHEMA,
 }
 
+OPEN_ENUM_COLLECTION_SCHEMA = [
+    {
+        "id": "700001",
+        "name": "Supported labels",
+        "required": True,
+        "value_mode": "open_enum",
+        "is_collection": True,
+        "max_value_count": 2,
+        "options": ["Alpha", "Beta"],
+    }
+]
+
 
 def factory_for(model: FunctionModel) -> AiAgentFactory:
     context = get_context()
@@ -237,6 +249,89 @@ def test_validator_rejects_strict_enum_not_returned_by_tool() -> None:
 
     with pytest.raises(ModelRetry, match="只能选择本次工具真实返回"):
         validator(None, output)  # type: ignore[arg-type]
+
+
+def test_validator_allows_multiple_values_for_open_enum_collection() -> None:
+    validator = CategoryAttributeFillOutputValidator(
+        CategoryAttributeValueLedger.from_schema(OPEN_ENUM_COLLECTION_SCHEMA)
+    )
+    output = CategoryAttributeFillAgentOutput(
+        assignments=[
+            CategoryAttributeAssignment(
+                attribute_id="700001",
+                value="Alpha",
+            ),
+            CategoryAttributeAssignment(
+                attribute_id="700001",
+                value="Beta",
+            ),
+        ],
+        need_review=[],
+    )
+
+    assert validator(None, output) is output  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("schema", "expected_message"),
+    [
+        (
+            [{**OPEN_ENUM_COLLECTION_SCHEMA[0], "is_collection": False}],
+            "只能填写一个值",
+        ),
+        (
+            [{**OPEN_ENUM_COLLECTION_SCHEMA[0], "max_value_count": 1}],
+            "最多填写 1 个值",
+        ),
+    ],
+)
+def test_validator_rejects_values_beyond_attribute_cardinality(
+    schema: list[dict[str, Any]],
+    expected_message: str,
+) -> None:
+    validator = CategoryAttributeFillOutputValidator(
+        CategoryAttributeValueLedger.from_schema(schema)
+    )
+    output = CategoryAttributeFillAgentOutput(
+        assignments=[
+            CategoryAttributeAssignment(
+                attribute_id="700001",
+                value="Alpha",
+            ),
+            CategoryAttributeAssignment(
+                attribute_id="700001",
+                value="Beta",
+            ),
+        ],
+        need_review=[],
+    )
+
+    with pytest.raises(ModelRetry, match=expected_message):
+        validator(None, output)  # type: ignore[arg-type]
+    assert validator.error_code == "ATTRIBUTE_VALUE_COUNT_INVALID"
+
+
+def test_validator_rejects_duplicate_collection_values() -> None:
+    validator = CategoryAttributeFillOutputValidator(
+        CategoryAttributeValueLedger.from_schema(OPEN_ENUM_COLLECTION_SCHEMA)
+    )
+    output = CategoryAttributeFillAgentOutput(
+        assignments=[
+            CategoryAttributeAssignment(
+                attribute_id="700001",
+                value="Alpha",
+            ),
+            CategoryAttributeAssignment(
+                attribute_id="700001",
+                value="ALPHA",
+            ),
+        ],
+        need_review=[],
+    )
+
+    with pytest.raises(ModelRetry, match="不得重复填写"):
+        validator(None, output)  # type: ignore[arg-type]
+    assert validator.error_code == "ATTRIBUTE_VALUE_DUPLICATED"
 
 
 def test_agent_receives_and_preserves_number_unit_contract() -> None:

@@ -375,6 +375,13 @@ def test_ozon_model_navigates_real_tree_and_can_backtrack_once() -> None:
     assert result["selected_category_id"] == "971326576"
     assert result["decision"]["search_count"] == 3
     assert result["query"] == "Автотовары > Автомагнитолы"
+    selected_candidate = next(
+        candidate
+        for candidate in result["candidates"]
+        if candidate["category_id"] == "971326576"
+    )
+    assert selected_candidate["description_category_id"] == "17039878"
+    assert selected_candidate["type_id"] == "971326576"
     assert navigator.parents == [
         ["17027495"],
         ["17039877"],

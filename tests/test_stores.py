@@ -12,7 +12,11 @@ import pytest
 import erp_web.stores.config_store as config_store_module
 from erp_web.context import get_context
 from erp_web.db import ErpDatabase
-from erp_web.product_model import normalize_product_model
+from erp_web.product_model import (
+    apply_category_target_updates,
+    normalize_draft_target_site,
+    normalize_product_model,
+)
 from erp_web.runtime_units.store_credentials import (
     preview_mercadolibre_auth_link,
 )
@@ -254,6 +258,18 @@ def test_save_draft_detail_does_not_treat_omitted_validation_errors_as_review_co
         result["draft"]["target_sites"][0]["validation_errors"]
         == expected_reviews
     )
+
+
+def test_save_draft_target_missing_language_uses_site_default() -> None:
+    saved, _reviews = _save_ready_draft_with_server_state()
+    payload = deepcopy(saved["drafts"]["mercadolibre"])
+    payload["language"] = "pt-BR"
+    payload["target_sites"][0].pop("language", None)
+
+    result, error, status = get_context().products.save_draft_detail(payload)
+
+    assert error is None and status == 200
+    assert result["draft"]["target_sites"][0]["language"] == "es"
 
 
 def test_trusted_publish_state_writer_persists_state_only_updates() -> None:
@@ -884,6 +900,350 @@ def test_product_normalization_preserves_explicit_empty_platform_upc() -> None:
     assert normalized["drafts"]["mercadolibre"]["upc"] == ""
     assert normalized["drafts"]["mercadolibre"]["allow_gtin_exemption"] is True
     assert normalized["drafts"]["ozon"]["upc"] == "4601234567890"
+
+
+@pytest.mark.parametrize(
+    "ozon_category",
+    [
+        {},
+        {
+            "category_id": "",
+            "description_category_id": "",
+            "category_path": "",
+        },
+    ],
+    ids=("missing", "explicit-empty"),
+)
+def test_multi_market_categories_do_not_fallback_from_root(
+    ozon_category: dict[str, str],
+) -> None:
+    normalized = normalize_product_model(
+        {
+            "schema_version": PRODUCT_SCHEMA_VERSION,
+            "name": "Yandex and Ozon category isolation",
+            "drafts": {
+                "yandex": {
+                    # target_sites 非空后，根字段不再拥有任何目标的类目身份。
+                    "category_id": "60996608",
+                    "description_category_id": "yandex-description-category",
+                    "category_path": "Yandex > Home > Storage",
+                    "target_sites": [
+                        {
+                            "platform": "yandex",
+                            "site": "global",
+                            "category_id": "yandex-target-category",
+                            "description_category_id": (
+                                "yandex-target-description-category"
+                            ),
+                            "category_path": "Yandex target > Storage",
+                        },
+                        {
+                            "platform": "ozon",
+                            "site": "global",
+                            **ozon_category,
+                        },
+                    ],
+                }
+            },
+        }
+    )
+
+    primary, sibling = normalized["drafts"]["yandex"]["target_sites"]
+    assert primary["category_id"] == "yandex-target-category"
+    assert (
+        primary["description_category_id"]
+        == "yandex-target-description-category"
+    )
+    assert primary["category_path"] == "Yandex target > Storage"
+    assert sibling["platform"] == "ozon"
+    assert sibling["category_id"] == ""
+    assert sibling["description_category_id"] == ""
+    assert sibling["category_path"] == ""
+
+
+@pytest.mark.parametrize(
+    "category_fields",
+    [
+        {
+            "category_id": "",
+            "description_category_id": "",
+            "category_path": "",
+        },
+        {
+            "categoryId": "",
+            "descriptionCategoryId": "",
+            "categoryPath": "",
+        },
+    ],
+    ids=("canonical", "aliases"),
+)
+def test_explicit_empty_category_ignores_identity_defaults_content(
+    category_fields: dict[str, str],
+) -> None:
+    target = normalize_draft_target_site(
+        {
+            "platform": "yandex",
+            "site": "global",
+            **category_fields,
+        },
+        "yandex",
+        {
+            "category_id": "60996608",
+            "description_category_id": "root-description-category",
+            "category_path": "Root > Yandex > Category",
+        },
+    )
+
+    assert target["category_id"] == ""
+    assert target["description_category_id"] == ""
+    assert target["category_path"] == ""
+
+
+def test_target_defaults_supply_only_identity_and_language() -> None:
+    target = normalize_draft_target_site(
+        {},
+        "",
+        {
+            "platform": "yandex",
+            "site": "global",
+            "language": "ru-RU",
+            "listing_currency": "RUB",
+            "currency_fingerprint": "root-fingerprint",
+            "category_id": "60996608",
+            "description_category_id": "root-description-category",
+            "category_path": "Root > Yandex > Category",
+            "attributes": {"ROOT_ATTRIBUTE": "旧值"},
+            "validation_errors": ["root-error"],
+            "category_precheck": {"ok": True},
+            "publish_status": "ready",
+            "status": "ready_to_publish",
+            "last_precheck": {"ok": True},
+            "last_precheck_target": {"platform": "yandex"},
+            "last_publish_task": {"job_id": "root-job"},
+        },
+    )
+
+    assert target["platform"] == "yandex"
+    assert target["site"] == "global"
+    assert target["language"] == "ru-RU"
+    assert target["listing_currency"] == ""
+    assert target["currency_fingerprint"] == ""
+    assert target["category_id"] == ""
+    assert target["description_category_id"] == ""
+    assert target["category_path"] == ""
+    assert target["attributes"] == {}
+    assert target["validation_errors"] == []
+    assert target["category_precheck"] == {}
+    assert target["publish_status"] == ""
+    assert target["status"] == ""
+    assert target["last_precheck"] == {}
+    assert target["last_precheck_target"] == {}
+    assert target["last_publish_task"] == {}
+
+
+def test_draft_root_listing_fields_project_primary_target() -> None:
+    yandex_precheck = {"ok": True, "platform": "yandex"}
+    normalized = normalize_product_model(
+        {
+            "schema_version": PRODUCT_SCHEMA_VERSION,
+            "name": "Primary target projection",
+            "drafts": {
+                "yandex": {
+                    "platform": "yandex",
+                    "site": "global",
+                    # 模拟编辑器当前选中 Ozon 时写入的根字段。
+                    "category_id": "95196",
+                    "description_category_id": "17028674",
+                    "category_path": "Ozon > Dog houses",
+                    "attributes": {"9048": "011"},
+                    "validation_errors": ["85"],
+                    "target_sites": [
+                        {
+                            "platform": "yandex",
+                            "site": "global",
+                            "category_id": "60996608",
+                            "description_category_id": "",
+                            "category_path": "Yandex > Pet houses",
+                            "attributes": {"700001": "Alpha"},
+                            "validation_errors": [],
+                            "category_precheck": yandex_precheck,
+                            "publish_status": "ready",
+                            "status": "ready_to_publish",
+                            "last_precheck": yandex_precheck,
+                            "last_precheck_target": {
+                                "platform": "yandex",
+                                "site": "global",
+                            },
+                        },
+                        {
+                            "platform": "ozon",
+                            "site": "global",
+                            "category_id": "95196",
+                            "description_category_id": "17028674",
+                            "category_path": "Ozon > Dog houses",
+                            "attributes": {"9048": "011"},
+                            "validation_errors": ["85"],
+                        },
+                    ],
+                }
+            },
+        }
+    )
+
+    draft = normalized["drafts"]["yandex"]
+    primary = draft["target_sites"][0]
+    for field in (
+        "category_id",
+        "description_category_id",
+        "category_path",
+        "attributes",
+    ):
+        assert draft[field] == primary[field]
+    assert draft["category_id"] == "60996608"
+    assert draft["attributes"] == {"700001": "Alpha"}
+
+
+def test_root_listing_fields_do_not_seed_synthesized_target() -> None:
+    normalized = normalize_product_model(
+        {
+            "schema_version": PRODUCT_SCHEMA_VERSION,
+            "name": "Root fields are not target facts",
+            "drafts": {
+                "yandex": {
+                    "platform": "yandex",
+                    "site": "global",
+                    # 故意使用错误根语言，合成目标必须改用 Yandex 站点默认。
+                    "language": "es-MX",
+                    "listing_currency": "ROOT-RUB",
+                    "currency_fingerprint": "root-fingerprint",
+                    "category_id": "60996608",
+                    "description_category_id": "root-description-category",
+                    "category_path": "Root > Yandex > Category",
+                    "attributes": {"ROOT_ATTRIBUTE": "旧值"},
+                    "validation_errors": ["root-error"],
+                    "category_precheck": {"ok": True},
+                    "publish_status": "ready",
+                    "status": "ready_to_publish",
+                    "last_precheck": {"ok": True},
+                    "last_precheck_target": {"platform": "yandex"},
+                    "last_publish_task": {"job_id": "root-job"},
+                    "sites_to_sell": [
+                        {"site_id": "MLM", "logistic_type": "remote"}
+                    ],
+                }
+            },
+        }
+    )
+
+    target = normalized["drafts"]["yandex"]["target_sites"][0]
+    assert target["platform"] == "yandex"
+    assert target["site"] == "global"
+    assert target["language"] == "ru-RU"
+    assert target["listing_currency"] == ""
+    assert target["currency_fingerprint"] == ""
+    assert target["category_id"] == ""
+    assert target["description_category_id"] == ""
+    assert target["category_path"] == ""
+    assert target["attributes"] == {}
+    assert target["validation_errors"] == []
+    assert target["category_precheck"] == {}
+    assert target["publish_status"] == ""
+    assert target["status"] == ""
+    assert target["last_precheck"] == {}
+    assert target["last_precheck_target"] == {}
+    assert target["last_publish_task"] == {}
+    assert target["sites_to_sell"] == []
+
+
+def test_single_target_missing_listing_fields_stays_empty() -> None:
+    normalized = normalize_product_model(
+        {
+            "schema_version": PRODUCT_SCHEMA_VERSION,
+            "name": "Single target missing fields",
+            "drafts": {
+                "yandex": {
+                    "category_id": "60996608",
+                    "category_path": "Legacy > Yandex > Category",
+                    "attributes": {"ROOT_ATTRIBUTE": "旧值"},
+                    "target_sites": [
+                        {
+                            "platform": "yandex",
+                            "site": "global",
+                        }
+                    ],
+                }
+            },
+        }
+    )
+
+    target = normalized["drafts"]["yandex"]["target_sites"][0]
+    assert target["category_id"] == ""
+    assert target["category_path"] == ""
+    assert target["attributes"] == {}
+
+
+def test_draft_rejects_primary_target_from_another_platform() -> None:
+    with pytest.raises(ValueError, match="primary target 与草稿平台不一致"):
+        normalize_product_model(
+            {
+                "schema_version": PRODUCT_SCHEMA_VERSION,
+                "name": "Invalid primary target identity",
+                "drafts": {
+                    "yandex": {
+                        "platform": "yandex",
+                        "site": "global",
+                        "target_sites": [
+                            {
+                                "platform": "ozon",
+                                "site": "global",
+                            }
+                        ],
+                    }
+                },
+            }
+        )
+
+
+def test_category_target_update_rejects_nonexistent_explicit_site() -> None:
+    draft = {
+        "target_sites": [
+            {
+                "platform": "yandex",
+                "site": "global",
+                "attributes": {"700001": "Alpha"},
+            }
+        ]
+    }
+
+    with pytest.raises(ValueError, match="类目写入目标不唯一"):
+        apply_category_target_updates(
+            draft,
+            "yandex",
+            {"attributes": {"700001": "Beta"}},
+            site="ru",
+        )
+
+    assert draft["target_sites"][0]["attributes"] == {"700001": "Alpha"}
+
+
+def test_invalid_nonempty_target_sites_do_not_inherit_root_category() -> None:
+    normalized = normalize_product_model(
+        {
+            "schema_version": PRODUCT_SCHEMA_VERSION,
+            "name": "Invalid target list",
+            "drafts": {
+                "yandex": {
+                    "category_id": "60996608",
+                    "category_path": "Root > Yandex > Category",
+                    "target_sites": ["invalid-target"],
+                }
+            },
+        }
+    )
+
+    target = normalized["drafts"]["yandex"]["target_sites"][0]
+    assert target["category_id"] == ""
+    assert target["category_path"] == ""
 
 
 def test_product_schema_rejects_local_mercadolibre_draft_target() -> None:

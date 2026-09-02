@@ -278,7 +278,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
         ...loaded.draft,
         platform: primaryTarget.platform,
         platforms,
-        targetSites: mergeTargetDetails(validTargets, loaded.draft.targetSites || [], loaded.draft),
+        targetSites: mergeTargetDetails(validTargets, loaded.draft.targetSites || []),
         site: primaryTarget.site,
         language: primaryTarget.language,
       }

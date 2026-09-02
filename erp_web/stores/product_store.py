@@ -339,7 +339,6 @@ def _normalized_target_payload(
     target: dict[str, Any],
     platform: str,
     selected_site: dict[str, Any],
-    language: str = "",
 ) -> dict[str, Any]:
     # 发布币种唯一事实源是店铺授权配置；站点注册表不再为草稿目标提供币种。
     return normalize_draft_target_site(
@@ -348,7 +347,7 @@ def _normalized_target_payload(
         {
             "platform": platform,
             "site": selected_site["code"],
-            "language": language or selected_site["language"],
+            "language": selected_site["language"],
         },
     )
 
@@ -411,15 +410,13 @@ def _changed_mercadolibre_cbt_targets(
 
 
 _DRAFT_PUBLISH_CONTENT_FIELDS = (
+    # 类目身份与属性由 target_sites[] 独立拥有，根字段只是当前编辑投影；
+    # 不能用它们把一个市场的变化扩散成全部目标失效。
     "global_title",
     "title",
     "description",
     "brand",
     "model",
-    "category_id",
-    "description_category_id",
-    "category_path",
-    "attributes",
     "pricing",
     "stock",
     "sku",
@@ -1139,7 +1136,6 @@ class ProductStore:
         product_id = str(existing.get("product_id") or "").strip()
         source_product_id = str(existing.get("source_product_id") or product_id).strip()
         existing_platform = str(existing.get("platform") or "").strip().lower()
-        requested_language = str(draft_payload.get("language") or existing.get("language") or "").strip()
         raw_targets = draft_payload.get("target_sites") if isinstance(draft_payload.get("target_sites"), list) else draft_payload.get("targetSites")
         incoming_validation_errors_provided = any(
             key in draft_payload
@@ -1160,7 +1156,6 @@ class ProductStore:
                     target,
                     target_platform,
                     selected_site,
-                    requested_language,
                 )
                 targets.append(normalized_target)
                 if any(
@@ -1185,7 +1180,6 @@ class ProductStore:
                     fallback_target,
                     platform,
                     selected_site,
-                    requested_language,
                 )
             ]
         publication = normalize_mercadolibre_publication(
@@ -1589,6 +1583,8 @@ class ProductStore:
                 "copy_generated_at": datetime.now(timezone.utc).isoformat(),
             }
         )
+        if "global_title" in copy:
+            draft["global_title"] = str(copy.get("global_title") or "").strip()
         draft.setdefault("platform", target_key)
         draft.setdefault("platforms", [target_key])
         product_for_status = dict(product)

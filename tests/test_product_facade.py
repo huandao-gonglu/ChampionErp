@@ -17,10 +17,35 @@ class _Products:
         return {"ok": True, "draft": draft}, None, 200
 
 
-def test_save_draft_resolves_and_persists_ozon_description_category_id(
+def test_save_draft_refreshes_ozon_description_category_id_on_target(
     monkeypatch,
 ) -> None:
     products = _Products()
+    fetch_calls: list[dict[str, Any]] = []
+
+    def fetch_category_record(
+        platform: str,
+        category_id: str,
+        *,
+        site: str = "",
+        include_attributes: bool = False,
+    ) -> dict[str, Any]:
+        fetch_calls.append(
+            {
+                "platform": platform,
+                "category_id": category_id,
+                "site": site,
+                "include_attributes": include_attributes,
+            }
+        )
+        return {
+            "platform": platform,
+            "site": site,
+            "category_id": category_id,
+            "type_id": "91443",
+            "description_category_id": "17039635",
+        }
+
     monkeypatch.setattr(
         product_facade,
         "get_context",
@@ -28,13 +53,7 @@ def test_save_draft_resolves_and_persists_ozon_description_category_id(
     )
     monkeypatch.setattr(
         "erp_web.runtime_units.draft_category_resolution.fetch_category_record",
-        lambda platform, category_id, site="": {
-            "platform": platform,
-            "site": site,
-            "category_id": category_id,
-            "type_id": "91443",
-            "description_category_id": "17039635",
-        },
+        fetch_category_record,
     )
 
     result, status = product_facade.save_draft_payload(
@@ -47,6 +66,7 @@ def test_save_draft_resolves_and_persists_ozon_description_category_id(
                         "platform": "ozon",
                         "site": "global",
                         "category_id": "91443",
+                        "description_category_id": "stale-description-id",
                     }
                 ],
             }
@@ -55,11 +75,19 @@ def test_save_draft_resolves_and_persists_ozon_description_category_id(
 
     assert status == 200
     assert result["ok"] is True
-    assert products.saved["description_category_id"] == "17039635"
+    assert "description_category_id" not in products.saved
     assert (
         products.saved["target_sites"][0]["description_category_id"]
         == "17039635"
     )
+    assert fetch_calls == [
+        {
+            "platform": "ozon",
+            "category_id": "91443",
+            "site": "global",
+            "include_attributes": True,
+        }
+    ]
 
 
 def test_save_draft_rejects_unresolvable_ozon_type_id(monkeypatch) -> None:
@@ -81,7 +109,13 @@ def test_save_draft_rejects_unresolvable_ozon_type_id(monkeypatch) -> None:
             "draft": {
                 "draft_id": "draft-1",
                 "platform": "ozon",
-                "category_id": "invalid",
+                "target_sites": [
+                    {
+                        "platform": "ozon",
+                        "site": "global",
+                        "category_id": "invalid",
+                    }
+                ],
             }
         }
     )

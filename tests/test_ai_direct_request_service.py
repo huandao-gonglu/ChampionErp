@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel, ConfigDict, TypeAdapter
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 from pydantic_ai.messages import (
     BinaryContent,
@@ -56,6 +58,98 @@ def _binding(
         },
         required_capabilities=required,
     )
+
+
+class _LocalizedCopyOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    global_title: str
+
+
+def _call_structured(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    output: str,
+) -> tuple[_LocalizedCopyOutput, dict[str, object]]:
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        ai_direct_request_service,
+        "create_pydantic_model_binding",
+        lambda *args, **kwargs: _binding(),
+    )
+
+    def fake_request(**kwargs):
+        captured.update(kwargs)
+        return ModelResponse(parts=[TextPart(output)])
+
+    monkeypatch.setattr(ai_direct_request_service, "_request", fake_request)
+    result = ai_direct_request_service.chat_structured(
+        app_dir=tmp_path,
+        use_case_id="copy.generate",
+        model={"id": "test-model"},
+        required_capabilities=("chat", "json"),
+        messages=[{"role": "user", "content": "生成本地化标题。"}],
+        generation_settings={"temperature": 0},
+        temperature=0.7,
+        max_tokens=64,
+        timeout_seconds=30,
+        stream=False,
+        output_type=_LocalizedCopyOutput,
+    )
+    return result, captured
+
+
+def test_direct_chat_structured_sends_schema_and_returns_validated_model(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    result, captured = _call_structured(
+        tmp_path,
+        monkeypatch,
+        output=(
+            '{"title":"本地化标题","global_title":"Global English Title"}'
+        ),
+    )
+
+    assert result == _LocalizedCopyOutput(
+        title="本地化标题",
+        global_title="Global English Title",
+    )
+    assert isinstance(result, _LocalizedCopyOutput)
+    parameters = captured["parameters"]
+    assert isinstance(parameters, ModelRequestParameters)
+    assert parameters.output_mode == "prompted"
+    assert parameters.output_object is not None
+    assert parameters.output_object.json_schema == TypeAdapter(
+        _LocalizedCopyOutput
+    ).json_schema()
+    assert "response_format" not in inspect.signature(
+        ai_direct_request_service.chat_structured
+    ).parameters
+
+
+@pytest.mark.parametrize(
+    ("output", "invalid_field"),
+    [
+        ('{"title":"本地化标题"}', "global_title"),
+        (
+            '{"title":"本地化标题","global_title":"Global Title",'
+            '"unexpected":"not allowed"}',
+            "unexpected",
+        ),
+    ],
+)
+def test_direct_chat_structured_rejects_invalid_model_output(
+    tmp_path: Path,
+    monkeypatch,
+    output: str,
+    invalid_field: str,
+) -> None:
+    with pytest.raises((RuntimeError, ValueError), match=invalid_field):
+        _call_structured(tmp_path, monkeypatch, output=output)
 
 
 def test_direct_chat_json_uses_pydantic_model_request(

@@ -149,49 +149,116 @@ def _precheck_target_snapshot(raw: Any) -> dict[str, str]:
     return snapshot
 
 
-def _target_listing_fields(raw: dict[str, Any], fallback: dict[str, Any] | None = None) -> dict[str, Any]:
-    fallback = fallback if isinstance(fallback, dict) else {}
-    raw_attributes = raw.get("attributes") if isinstance(raw.get("attributes"), dict) else {}
-    fallback_attributes = fallback.get("attributes") if isinstance(fallback.get("attributes"), dict) else {}
-    attributes = raw_attributes if raw_attributes else fallback_attributes
-    validation_errors = raw.get("validation_errors") if isinstance(raw.get("validation_errors"), list) else raw.get("validationErrors")
-    fallback_validation_errors = fallback.get("validation_errors") if isinstance(fallback.get("validation_errors"), list) else []
-    if not isinstance(validation_errors, list) or not validation_errors:
-        validation_errors = fallback_validation_errors
+def _target_field_value(
+    raw: dict[str, Any],
+    field: str,
+    alias: str = "",
+) -> Any:
+    """只读取 target 自身字段；缺失字段不从根草稿补齐。"""
+
+    if field in raw:
+        return raw.get(field)
+    if alias and alias in raw:
+        return raw.get(alias)
+    return None
+
+
+def _target_listing_fields(raw: dict[str, Any]) -> dict[str, Any]:
+    attributes = _target_field_value(raw, "attributes")
+    validation_errors = _target_field_value(
+        raw,
+        "validation_errors",
+        "validationErrors",
+    )
+    category_precheck = _target_field_value(
+        raw,
+        "category_precheck",
+        "categoryPrecheck",
+    )
+    last_precheck = _target_field_value(
+        raw,
+        "last_precheck",
+        "lastPrecheck",
+    )
+    last_precheck_target = _target_field_value(
+        raw,
+        "last_precheck_target",
+        "lastPrecheckTarget",
+    )
+    last_publish_task = _target_field_value(
+        raw,
+        "last_publish_task",
+        "lastPublishTask",
+    )
+    sites_to_sell = _target_field_value(
+        raw,
+        "sites_to_sell",
+        "sitesToSell",
+    )
     return {
-        "category_id": str(raw.get("category_id") or raw.get("categoryId") or fallback.get("category_id") or "").strip(),
-        "description_category_id": str(raw.get("description_category_id") or raw.get("descriptionCategoryId") or fallback.get("description_category_id") or "").strip(),
-        "category_path": str(raw.get("category_path") or raw.get("categoryPath") or fallback.get("category_path") or "").strip(),
-        "attributes": deepcopy(attributes),
-        "validation_errors": deepcopy(validation_errors),
-        "category_precheck": deepcopy(raw.get("category_precheck") if isinstance(raw.get("category_precheck"), dict) else raw.get("categoryPrecheck") if isinstance(raw.get("categoryPrecheck"), dict) else fallback.get("category_precheck") if isinstance(fallback.get("category_precheck"), dict) else {}),
-        "publish_status": str(raw.get("publish_status") or raw.get("publishStatus") or fallback.get("publish_status") or "").strip(),
-        "status": str(raw.get("status") or fallback.get("status") or "").strip(),
-        "last_precheck": deepcopy(raw.get("last_precheck") if isinstance(raw.get("last_precheck"), dict) else raw.get("lastPrecheck") if isinstance(raw.get("lastPrecheck"), dict) else fallback.get("last_precheck") if isinstance(fallback.get("last_precheck"), dict) else {}),
-        "last_precheck_target": _precheck_target_snapshot(
-            raw.get("last_precheck_target")
-            if isinstance(raw.get("last_precheck_target"), dict)
-            else raw.get("lastPrecheckTarget")
-            if isinstance(raw.get("lastPrecheckTarget"), dict)
-            else fallback.get("last_precheck_target")
-            if isinstance(fallback.get("last_precheck_target"), dict)
+        "category_id": str(
+            _target_field_value(
+                raw,
+                "category_id",
+                "categoryId",
+            )
+            or ""
+        ).strip(),
+        "description_category_id": str(
+            _target_field_value(
+                raw,
+                "description_category_id",
+                "descriptionCategoryId",
+            )
+            or ""
+        ).strip(),
+        "category_path": str(
+            _target_field_value(
+                raw,
+                "category_path",
+                "categoryPath",
+            )
+            or ""
+        ).strip(),
+        "attributes": deepcopy(attributes) if isinstance(attributes, dict) else {},
+        "validation_errors": (
+            deepcopy(validation_errors)
+            if isinstance(validation_errors, list)
+            else []
+        ),
+        "category_precheck": (
+            deepcopy(category_precheck)
+            if isinstance(category_precheck, dict)
             else {}
         ),
-        "last_publish_task": deepcopy(
-            raw.get("last_publish_task")
-            if isinstance(raw.get("last_publish_task"), dict)
-            else raw.get("lastPublishTask")
-            if isinstance(raw.get("lastPublishTask"), dict)
-            else fallback.get("last_publish_task")
-            if isinstance(fallback.get("last_publish_task"), dict)
+        "publish_status": str(
+            _target_field_value(
+                raw,
+                "publish_status",
+                "publishStatus",
+            )
+            or ""
+        ).strip(),
+        "status": str(
+            _target_field_value(raw, "status") or ""
+        ).strip(),
+        "last_precheck": (
+            deepcopy(last_precheck)
+            if isinstance(last_precheck, dict)
+            else {}
+        ),
+        "last_precheck_target": _precheck_target_snapshot(
+            last_precheck_target
+            if isinstance(last_precheck_target, dict)
+            else {}
+        ),
+        "last_publish_task": (
+            deepcopy(last_publish_task)
+            if isinstance(last_publish_task, dict)
             else {}
         ),
         "sites_to_sell": normalize_mercadolibre_sites_to_sell(
-            raw.get("sites_to_sell")
-            if isinstance(raw.get("sites_to_sell"), list)
-            else raw.get("sitesToSell")
-            if isinstance(raw.get("sitesToSell"), list)
-            else []
+            sites_to_sell if isinstance(sites_to_sell, list) else []
         ),
     }
 
@@ -203,26 +270,27 @@ def draft_publish_targets(
 ) -> list[dict[str, Any]]:
     targets: list[dict[str, Any]] = []
     raw_targets = draft.get("target_sites") if isinstance(draft.get("target_sites"), list) else draft.get("targetSites")
-    for index, raw in enumerate(raw_targets if isinstance(raw_targets, list) else []):
+    raw_target_rows = raw_targets if isinstance(raw_targets, list) else []
+    for raw in raw_target_rows:
         item = raw if isinstance(raw, dict) else {}
         target = _normalized_target(
             str(item.get("platform") or ""),
             str(item.get("site") or item.get("site_id") or ""),
-            str(item.get("language") or draft.get("language") or ""),
+            str(item.get("language") or ""),
             context=context,
         )
         if target["platform"] and _target_key(target["platform"], target["site"]) not in {_target_key(t["platform"], t["site"]) for t in targets}:
-            target.update(_target_listing_fields(item, draft if index == 0 else None))
+            target.update(_target_listing_fields(item))
             targets.append(target)
     if targets:
         return targets
     target = _normalized_target(
         str(draft.get("platform") or ""),
         str(draft.get("site") or draft.get("site_id") or ""),
-        str(draft.get("language") or ""),
+        "",
         context=context,
     )
-    target.update(_target_listing_fields({}, draft))
+    target.update(_target_listing_fields({}))
     return [target] if target["platform"] else []
 
 
@@ -472,7 +540,9 @@ def save_draft_precheck_result(
     errors = list(precheck.get("errors") or [])
     warnings = list(precheck.get("warnings") or [])
     requested_status = "ready" if precheck.get("ok") else "not_ready"
-    current_publish_status = str(target.get("publish_status") or draft.get("publish_status") or "").strip().lower()
+    current_publish_status = str(
+        target.get("publish_status") or ""
+    ).strip().lower()
     if current_publish_status in {"published", "real_publish_success", "success"}:
         publish_status = current_publish_status
     else:

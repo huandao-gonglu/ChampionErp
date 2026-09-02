@@ -50,6 +50,12 @@ _REMOVED_DRAFT_FIELDS = {
 _CANONICAL_PRODUCT_FIELDS = frozenset(Product.__annotations__)
 _CANONICAL_DRAFT_FIELDS = frozenset(PlatformDraft.__annotations__)
 _CANONICAL_TARGET_FIELDS = frozenset(DraftTargetSite.__annotations__)
+_PRIMARY_TARGET_ROOT_FIELDS = (
+    "category_id",
+    "description_category_id",
+    "category_path",
+    "attributes",
+)
 
 
 def _strip_publish_logs(value: Any) -> Any:
@@ -126,24 +132,44 @@ def validate_platform_draft_root_fields(
         )
 
 
+def _target_text(
+    raw: dict[str, Any],
+    field: str,
+    alias: str,
+) -> str:
+    """读取 target 自身字段；缺失与显式空值都归一化为空字符串。"""
+
+    if field in raw:
+        value = raw.get(field)
+    elif alias in raw:
+        value = raw.get(alias)
+    else:
+        value = ""
+    return str(value or "").strip()
+
+
 def normalize_draft_target_site(
     value: Any,
     platform: str,
-    fallback: dict[str, Any] | None = None,
+    identity_defaults: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Normalize a target-site boundary payload to current schema fields."""
     raw = value if isinstance(value, dict) else {}
-    fallback = fallback if isinstance(fallback, dict) else {}
+    defaults = (
+        identity_defaults
+        if isinstance(identity_defaults, dict)
+        else {}
+    )
     target_platform = str(
         raw.get("platform")
-        or fallback.get("platform")
+        or defaults.get("platform")
         or platform
     ).strip().lower()
     raw_site = str(
         raw.get("site")
         or raw.get("site_id")
-        or fallback.get("site")
-        or fallback.get("site_id")
+        or defaults.get("site")
+        or defaults.get("site_id")
         or ""
     ).strip()
     selected = marketplace_site(target_platform, raw_site)
@@ -155,33 +181,31 @@ def normalize_draft_target_site(
             "Mercado Libre Global Selling 只允许 CBT/Siteless 一级草稿；"
             "MLM、MLB、MLC、MCO 等站点只能通过 sites_to_sell 选择"
         )
-    # 生命周期字段的显式空值表示“已清除”，不能按普通内容字段回退到根草稿。
+    # target_sites[] 是刊登事实的唯一 owner；defaults 仅提供身份与语言默认。
     raw_publish_status = (
         raw.get("publish_status")
         if "publish_status" in raw
         else raw.get("publishStatus")
         if "publishStatus" in raw
-        else fallback.get("publish_status")
+        else ""
     )
     raw_status = (
         raw.get("status")
         if "status" in raw
-        else fallback.get("status")
+        else ""
     )
     canonical = {
         "platform": target_platform,
         "site": str(selected.get("code") or raw_site),
         "language": str(
             raw.get("language")
-            or fallback.get("language")
+            or defaults.get("language")
             or selected.get("language")
             or ""
         ),
         "listing_currency": str(
             raw.get("listing_currency")
             or raw.get("listingCurrency")
-            or fallback.get("listing_currency")
-            or fallback.get("listingCurrency")
             or (
                 raw.get("currency")
                 if target_platform != "ozon"
@@ -193,31 +217,23 @@ def normalize_draft_target_site(
         "currency_fingerprint": str(
             raw.get("currency_fingerprint")
             or raw.get("currencyFingerprint")
-            or fallback.get("currency_fingerprint")
-            or fallback.get("currencyFingerprint")
             or ""
         ).strip(),
-        "category_id": str(
-            raw.get("category_id")
-            or raw.get("categoryId")
-            or fallback.get("category_id")
-            or fallback.get("categoryId")
-            or ""
-        ).strip(),
-        "description_category_id": str(
-            raw.get("description_category_id")
-            or raw.get("descriptionCategoryId")
-            or fallback.get("description_category_id")
-            or fallback.get("descriptionCategoryId")
-            or ""
-        ).strip(),
-        "category_path": str(
-            raw.get("category_path")
-            or raw.get("categoryPath")
-            or fallback.get("category_path")
-            or fallback.get("categoryPath")
-            or ""
-        ).strip(),
+        "category_id": _target_text(
+            raw,
+            "category_id",
+            "categoryId",
+        ),
+        "description_category_id": _target_text(
+            raw,
+            "description_category_id",
+            "descriptionCategoryId",
+        ),
+        "category_path": _target_text(
+            raw,
+            "category_path",
+            "categoryPath",
+        ),
         # Mercado Libre Global Selling 的实际销售国家属于当前刊登目标；
         # 不得从 target.site=CBT 或草稿 shipping 自动推导。
         "sites_to_sell": normalize_mercadolibre_sites_to_sell(
@@ -230,8 +246,6 @@ def normalize_draft_target_site(
         "attributes": deepcopy(
             raw.get("attributes")
             if isinstance(raw.get("attributes"), dict)
-            else fallback.get("attributes")
-            if isinstance(fallback.get("attributes"), dict)
             else {}
         ),
         "validation_errors": deepcopy(
@@ -239,8 +253,6 @@ def normalize_draft_target_site(
             if isinstance(raw.get("validation_errors"), list)
             else raw.get("validationErrors")
             if isinstance(raw.get("validationErrors"), list)
-            else fallback.get("validation_errors")
-            if isinstance(fallback.get("validation_errors"), list)
             else []
         ),
         "category_precheck": deepcopy(
@@ -248,8 +260,6 @@ def normalize_draft_target_site(
             if isinstance(raw.get("category_precheck"), dict)
             else raw.get("categoryPrecheck")
             if isinstance(raw.get("categoryPrecheck"), dict)
-            else fallback.get("category_precheck")
-            if isinstance(fallback.get("category_precheck"), dict)
             else {}
         ),
         "publish_status": str(
@@ -263,8 +273,6 @@ def normalize_draft_target_site(
             if isinstance(raw.get("last_precheck"), dict)
             else raw.get("lastPrecheck")
             if isinstance(raw.get("lastPrecheck"), dict)
-            else fallback.get("last_precheck")
-            if isinstance(fallback.get("last_precheck"), dict)
             else {}
         ),
         "last_precheck_target": deepcopy(
@@ -272,11 +280,6 @@ def normalize_draft_target_site(
             if isinstance(raw.get("last_precheck_target"), dict)
             else raw.get("lastPrecheckTarget")
             if isinstance(raw.get("lastPrecheckTarget"), dict)
-            else fallback.get("last_precheck_target")
-            if isinstance(
-                fallback.get("last_precheck_target"),
-                dict,
-            )
             else {}
         ),
         "last_publish_task": deepcopy(
@@ -284,8 +287,6 @@ def normalize_draft_target_site(
             if isinstance(raw.get("last_publish_task"), dict)
             else raw.get("lastPublishTask")
             if isinstance(raw.get("lastPublishTask"), dict)
-            else fallback.get("last_publish_task")
-            if isinstance(fallback.get("last_publish_task"), dict)
             else {}
         ),
     }
@@ -758,16 +759,33 @@ def _merge_platform_draft(product: dict[str, Any], platform: str) -> dict[str, A
         if isinstance(current.get("targetSites"), list)
         else []
     )
-    current["target_sites"] = [
-        normalize_draft_target_site(item, platform, current)
+    normalized_targets = [
+        normalize_draft_target_site(item, platform)
         for item in raw_targets
         if isinstance(item, dict)
-    ] or [normalize_draft_target_site({}, platform, current)]
+    ]
+    identity_defaults = {
+        "platform": current.get("platform") or platform,
+        "site": current.get("site") or current.get("site_id") or "",
+    }
+    current["target_sites"] = normalized_targets or [
+        normalize_draft_target_site(
+            {},
+            platform,
+            identity_defaults,
+        )
+    ]
     primary_target = current["target_sites"][0]
-    current["site"] = str(primary_target.get("site") or current.get("site") or "").strip()
-    current["language"] = str(
-        primary_target.get("language") or current.get("language") or ""
-    ).strip()
+    primary_platform = str(
+        primary_target.get("platform") or ""
+    ).strip().lower()
+    if primary_platform != platform:
+        raise ValueError(
+            "草稿 primary target 与草稿平台不一致："
+            f"{primary_platform or '<empty>'} != {platform}"
+        )
+    current["site"] = str(primary_target.get("site") or "").strip()
+    current["language"] = str(primary_target.get("language") or "").strip()
     for field, alias in (
         ("category_precheck", "categoryPrecheck"),
         ("last_precheck", "lastPrecheck"),
@@ -790,6 +808,12 @@ def _merge_platform_draft(product: dict[str, Any], platform: str) -> dict[str, A
         if platform == "mercadolibre"
         else {}
     )
+    # target_sites[] 是平台类目内容的唯一事实来源。根类目字段只是首个
+    # （primary）目标的派生投影，不能保留编辑器当前选中兄弟市场的值；
+    # 否则会形成 platform=yandex、category_id=Ozon 的混合草稿。根状态与
+    # 校验结果仍表示整份多市场草稿，不在这里改写。
+    for field in _PRIMARY_TARGET_ROOT_FIELDS:
+        current[field] = deepcopy(primary_target[field])
     current["ai_copy_ready"] = bool(
         current.get("ai_copy_ready")
         or current.get("aiCopyReady")

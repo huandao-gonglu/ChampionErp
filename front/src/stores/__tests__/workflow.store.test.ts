@@ -86,6 +86,15 @@ vi.mock('@/api/workflow/settings', () => ({
   testApiConfig: vi.fn(),
 }))
 
+vi.mock('@/services/withAiForeground', () => ({
+  withAiForeground: vi.fn(async (
+    _options: unknown,
+    operation: (context: { presentationId: string }) => Promise<unknown>,
+  ) => (
+    operation({ presentationId: 'presentation-store-test' })
+  )),
+}))
+
 const workflowApi = {
   ...catalogApi,
   ...publishingApi,
@@ -1649,6 +1658,104 @@ describe('workflow store live API flow', () => {
     expect(workflowApi.fillCategoryAttributes).not.toHaveBeenCalled()
   })
 
+  it('keeps the Ozon target bound across save and AI attribute fill', async () => {
+    const draft = createEmptyDraftDetail('yandex')
+    draft.draftId = 'draft-ai-target-isolation'
+    draft.productId = 'product-ai-target-isolation'
+    draft.sourceProductId = 'product-ai-target-isolation'
+    draft.platform = 'yandex'
+    draft.platforms = ['yandex', 'ozon']
+    draft.site = 'global'
+    draft.language = 'ru-RU'
+    draft.categoryId = '60996608'
+    draft.categoryPath = 'Yandex / Pet houses'
+    draft.attributes = { '43903290': { values: [{ value: 'кошки' }] } }
+    draft.targetSites = [
+      {
+        platform: 'yandex',
+        site: 'global',
+        language: 'ru-RU',
+        listingCurrency: 'RUB',
+        categoryId: '60996608',
+        categoryPath: 'Yandex / Pet houses',
+        attributes: { '43903290': { values: [{ value: 'кошки' }] } },
+        validationErrors: [],
+      },
+      {
+        platform: 'ozon',
+        site: 'global',
+        language: 'ru-RU',
+        listingCurrency: 'RUB',
+        categoryId: '95196',
+        descriptionCategoryId: '17028674',
+        categoryPath: 'Ozon / Dog houses',
+        attributes: {},
+        validationErrors: [],
+      },
+    ]
+    vi.mocked(workflowApi.saveDraft).mockImplementation(async (draftToSave) => {
+      const saved = JSON.parse(JSON.stringify(draftToSave)) as DraftDetail
+      const primary = saved.targetSites[0]!
+      saved.platform = primary.platform
+      saved.site = primary.site
+      saved.categoryId = primary.categoryId || ''
+      saved.descriptionCategoryId = primary.descriptionCategoryId || ''
+      saved.categoryPath = primary.categoryPath || ''
+      saved.attributes = JSON.parse(JSON.stringify(primary.attributes || {}))
+      return draftMutation(saved)
+    })
+    vi.mocked(workflowApi.fillCategoryAttributes).mockImplementation(async (
+      draftToFill,
+      target,
+    ) => {
+      const filled = JSON.parse(JSON.stringify(draftToFill)) as DraftDetail
+      const ozon = filled.targetSites.find((item) => item.platform === target.platform && item.site === target.site)!
+      ozon.attributes = { '8229': { values: [{ dictionaryValueId: '95196', value: 'Будка для собак' }] } }
+      filled.platform = 'yandex'
+      filled.categoryId = '60996608'
+      filled.categoryPath = 'Yandex / Pet houses'
+      filled.attributes = { '43903290': { values: [{ value: 'кошки' }] } }
+      return {
+        ...draftMutation(filled),
+        needReview: [],
+        raw: { fill_source: 'ai_model' },
+      }
+    })
+
+    const store = useWorkflowStore()
+    store.currentDraft = draft
+    store.activeMarketplace = 'yandex'
+    store.activePublishTargetKey = 'yandex:global'
+    store.selectPublishTarget(draft.targetSites[1]!)
+    store.category = {
+      platform: 'ozon',
+      categoryId: '95196',
+      categoryPath: 'Ozon / Dog houses',
+      requiredAttributes: [{ id: '8229', name: 'Тип', required: true }],
+      optionalAttributes: [],
+      fetchedAt: '2026-09-02T12:00:00Z',
+      raw: {},
+    }
+
+    await store.fillAttributesByAi()
+
+    expect(workflowApi.fillCategoryAttributes).toHaveBeenCalledOnce()
+    expect(workflowApi.fillCategoryAttributes).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ platform: 'ozon', site: 'global', categoryId: '95196' }),
+      '95196',
+      expect.objectContaining({ platform: 'ozon', categoryId: '95196' }),
+      { presentationId: 'presentation-store-test' },
+    )
+    expect(store.activePublishTargetKey).toBe('ozon:global')
+    expect(store.currentDraft.attributes).toEqual({
+      '8229': { values: [{ dictionaryValueId: '95196', value: 'Будка для собак' }] },
+    })
+    expect(store.currentDraft.targetSites.find((target) => target.platform === 'yandex')?.attributes).toEqual({
+      '43903290': { values: [{ value: 'кошки' }] },
+    })
+  })
+
   it('translates category candidates through the generic flat text contract', async () => {
     vi.mocked(workflowApi.translateText).mockResolvedValue({
       'category.0.path': '家居 / 风扇',
@@ -1709,6 +1816,230 @@ describe('workflow store live API flow', () => {
         values: { Generic: '通用品牌' },
       },
     })
+  })
+
+  it('does not normalize root listing fields into missing or incomplete target sites', () => {
+    const draft = createEmptyDraftDetail('yandex')
+    draft.draftId = 'draft-no-root-target-fallback'
+    draft.platform = 'yandex'
+    draft.platforms = ['yandex']
+    draft.site = 'global'
+    draft.language = 'es-MX'
+    draft.categoryId = '60996608'
+    draft.descriptionCategoryId = '17028674'
+    draft.categoryPath = 'Yandex / Бытовая техника'
+    draft.attributes = { YANDEX_BRAND: 'Yandex brand' }
+    draft.validationErrors = ['Yandex validation error']
+    draft.publishStatus = 'ready'
+    draft.status = 'ready_to_publish'
+
+    const store = useWorkflowStore()
+    store.currentDraft = draft
+    expect(store.currentPublishTargets[0]).toEqual(expect.objectContaining({
+      platform: 'yandex',
+      site: 'global',
+      language: '',
+      categoryId: '',
+      descriptionCategoryId: '',
+      categoryPath: '',
+      attributes: {},
+      validationErrors: [],
+      publishStatus: '',
+      status: '',
+    }))
+
+    store.currentDraft.targetSites = [{
+      platform: 'yandex',
+      site: 'global',
+      language: 'ru-RU',
+      listingCurrency: 'RUB',
+    }]
+    expect(store.currentPublishTargets[0]).toEqual(expect.objectContaining({
+      categoryId: '',
+      descriptionCategoryId: '',
+      categoryPath: '',
+      attributes: {},
+      validationErrors: [],
+      publishStatus: '',
+      status: '',
+    }))
+  })
+
+  it('keeps Yandex and Ozon category edits isolated across target switches and draft saves', async () => {
+    const draft = createEmptyDraftDetail('yandex')
+    draft.draftId = 'draft-yandex-ozon-isolation'
+    draft.productId = 'product-yandex-ozon-isolation'
+    draft.sourceProductId = 'product-yandex-ozon-isolation'
+    draft.platform = 'yandex'
+    draft.platforms = ['yandex', 'ozon']
+    draft.site = 'global'
+    draft.language = 'ru-RU'
+    draft.categoryId = '60996608'
+    draft.categoryPath = 'Yandex / Бытовая техника'
+    draft.attributes = { YANDEX_BRAND: 'Yandex brand' }
+    draft.validationErrors = ['Yandex validation error']
+    // targetSites[0] 是持久化 primary；当前编辑目标由 active key 单独决定。
+    draft.targetSites = [
+      {
+        platform: 'yandex',
+        site: 'global',
+        language: 'ru-RU',
+        listingCurrency: 'RUB',
+        categoryId: '60996608',
+        descriptionCategoryId: '',
+        categoryPath: 'Yandex / Бытовая техника',
+        attributes: { YANDEX_BRAND: 'Yandex brand' },
+        validationErrors: ['Yandex validation error'],
+      },
+      {
+        platform: 'ozon',
+        site: 'global',
+        language: 'ru-RU',
+        listingCurrency: 'RUB',
+        categoryId: '95199',
+        descriptionCategoryId: '17028674',
+        categoryPath: 'Ozon / Бытовая техника',
+        attributes: { OZON_BRAND: 'Ozon brand' },
+        validationErrors: ['Ozon validation error'],
+      },
+    ]
+    const savedDrafts: DraftDetail[] = []
+    vi.mocked(workflowApi.saveDraft).mockImplementation(async (draftToSave) => {
+      const saved = JSON.parse(JSON.stringify(draftToSave)) as DraftDetail
+      savedDrafts.push(saved)
+      return draftMutation(JSON.parse(JSON.stringify(saved)) as DraftDetail)
+    })
+
+    const store = useWorkflowStore()
+    store.currentDraft = draft
+    store.activeMarketplace = 'yandex'
+    store.activePublishTargetKey = 'yandex:global'
+
+    store.selectPublishTarget(draft.targetSites[1]!)
+    expect(store.currentDraft).toEqual(expect.objectContaining({
+      categoryId: '95199',
+      descriptionCategoryId: '17028674',
+      categoryPath: 'Ozon / Бытовая техника',
+      attributes: { OZON_BRAND: 'Ozon brand' },
+      validationErrors: ['Ozon validation error'],
+    }))
+
+    // 显式清空 Ozon 类目编辑态，再切走；这些空值必须属于 Ozon 本身。
+    store.currentDraft.categoryId = ''
+    store.currentDraft.descriptionCategoryId = ''
+    store.currentDraft.categoryPath = ''
+    store.currentDraft.attributes = {}
+    store.currentDraft.validationErrors = []
+    store.selectPublishTarget(draft.targetSites[0]!)
+
+    const clearedOzon = store.currentDraft.targetSites.find((target) => target.platform === 'ozon')
+    expect(clearedOzon).toEqual(expect.objectContaining({
+      categoryId: '',
+      descriptionCategoryId: '',
+      categoryPath: '',
+      attributes: {},
+      validationErrors: [],
+    }))
+    expect(store.currentDraft).toEqual(expect.objectContaining({
+      categoryId: '60996608',
+      categoryPath: 'Yandex / Бытовая техника',
+      attributes: { YANDEX_BRAND: 'Yandex brand' },
+      validationErrors: ['Yandex validation error'],
+    }))
+
+    store.selectPublishTarget(clearedOzon!)
+    expect(store.currentDraft).toEqual(expect.objectContaining({
+      categoryId: '',
+      descriptionCategoryId: '',
+      categoryPath: '',
+      attributes: {},
+      validationErrors: [],
+    }))
+
+    await store.saveCurrentDraft()
+
+    const savedOzon = savedDrafts[0]?.targetSites.find((target) => target.platform === 'ozon')
+    const savedYandex = savedDrafts[0]?.targetSites.find((target) => target.platform === 'yandex')
+    expect(savedOzon).toEqual(expect.objectContaining({
+      categoryId: '',
+      descriptionCategoryId: '',
+      categoryPath: '',
+      attributes: {},
+      validationErrors: [],
+    }))
+    expect(savedYandex).toEqual(expect.objectContaining({
+      categoryId: '60996608',
+      descriptionCategoryId: '',
+      categoryPath: 'Yandex / Бытовая техника',
+      attributes: { YANDEX_BRAND: 'Yandex brand' },
+      validationErrors: ['Yandex validation error'],
+    }))
+
+    store.selectPublishTarget(store.currentDraft.targetSites.find((target) => target.platform === 'yandex')!)
+    expect(store.currentDraft.categoryId).toBe('60996608')
+    store.selectPublishTarget(store.currentDraft.targetSites.find((target) => target.platform === 'ozon')!)
+    expect(store.currentDraft.categoryId).toBe('')
+    expect(store.currentDraft.attributes).toEqual({})
+  })
+
+  it('does not seed a newly selected market from root listing fields', async () => {
+    const draft = createEmptyDraftDetail('yandex')
+    draft.draftId = 'draft-add-ozon-isolation'
+    draft.productId = 'product-add-ozon-isolation'
+    draft.sourceProductId = 'product-add-ozon-isolation'
+    draft.platform = 'yandex'
+    draft.platforms = ['yandex']
+    draft.site = 'global'
+    draft.language = 'ru-RU'
+    draft.categoryId = '60996608'
+    draft.categoryPath = 'Yandex / Бытовая техника'
+    draft.attributes = { YANDEX_BRAND: 'Yandex brand' }
+    draft.validationErrors = ['Yandex validation error']
+    draft.targetSites = [{
+      platform: 'yandex',
+      site: 'global',
+      language: 'ru-RU',
+      listingCurrency: 'RUB',
+      categoryId: '60996608',
+      categoryPath: 'Yandex / Бытовая техника',
+      attributes: { YANDEX_BRAND: 'Yandex brand' },
+      validationErrors: ['Yandex validation error'],
+    }]
+    const savedDrafts: DraftDetail[] = []
+    vi.mocked(workflowApi.saveDraft).mockImplementation(async (draftToSave) => {
+      const saved = JSON.parse(JSON.stringify(draftToSave)) as DraftDetail
+      savedDrafts.push(saved)
+      return draftMutation(JSON.parse(JSON.stringify(saved)) as DraftDetail)
+    })
+
+    const store = useWorkflowStore()
+    // Ozon 配置排在第一位，使新增 Ozon 成为新的 primary target。
+    store.platformOptions = [
+      { key: 'ozon', label: 'Ozon', sites: [{ key: 'global', code: 'global', label: '俄罗斯', language: 'ru-RU' }] },
+      { key: 'yandex', label: 'Yandex', sites: [{ key: 'global', code: 'global', label: '俄罗斯', language: 'ru-RU' }] },
+    ]
+    store.currentDraft = draft
+
+    await store.updateDraftTargets(draft, [
+      { platform: 'ozon', site: 'global', language: 'ru-RU', listingCurrency: 'RUB' },
+      { platform: 'yandex', site: 'global', language: 'ru-RU', listingCurrency: 'RUB' },
+    ])
+
+    const savedOzon = savedDrafts[0]?.targetSites.find((target) => target.platform === 'ozon')
+    const savedYandex = savedDrafts[0]?.targetSites.find((target) => target.platform === 'yandex')
+    expect(savedOzon).toEqual(expect.objectContaining({
+      categoryId: '',
+      descriptionCategoryId: '',
+      categoryPath: '',
+      attributes: {},
+      validationErrors: [],
+    }))
+    expect(savedYandex).toEqual(expect.objectContaining({
+      categoryId: '60996608',
+      categoryPath: 'Yandex / Бытовая техника',
+      attributes: { YANDEX_BRAND: 'Yandex brand' },
+      validationErrors: ['Yandex validation error'],
+    }))
   })
 
   it('saves the selected category to the active target before loading attributes', async () => {

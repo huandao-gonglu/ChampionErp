@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from .category_model import (
     apply_ai_attribute_fill,
+    apply_category_target_updates,
     apply_category_selection,
     build_ai_attribute_fill,
     unresolved_required_category_attributes,
@@ -76,6 +77,7 @@ __all__ = [
     "PLATFORMS",
     "SOURCE_IMAGE_ORIGINS",
     "apply_ai_attribute_fill",
+    "apply_category_target_updates",
     "apply_category_selection",
     "build_ai_attribute_fill",
     "canonicalize_mercadolibre_siteless_user_product_id",

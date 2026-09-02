@@ -170,6 +170,244 @@ def test_ozon_target_round_trip_preserves_description_category_id() -> None:
     assert merged["target_sites"][0]["description_category_id"] == "17039635"
 
 
+def test_first_publish_target_preserves_explicit_empty_listing_fields() -> None:
+    draft = {
+        "platform": "yandex",
+        "site": "global",
+        "language": "ru-RU",
+        "category_id": "ROOT-CATEGORY",
+        "description_category_id": "ROOT-DESCRIPTION-CATEGORY",
+        "category_path": "根类目",
+        "attributes": {"ROOT_ATTRIBUTE": "旧值"},
+        "validation_errors": ["旧校验错误"],
+        "category_precheck": {"ok": True},
+        "publish_status": "ready",
+        "status": "ready_to_publish",
+        "last_precheck": {"ok": True},
+        "last_precheck_target": {
+            "platform": "yandex",
+            "site": "global",
+        },
+        "last_publish_task": {"job_id": "root-job"},
+        "target_sites": [
+            {
+                "platform": "yandex",
+                "site": "global",
+                "language": "ru-RU",
+                "category_id": "",
+                "description_category_id": "",
+                "category_path": "",
+                "attributes": {},
+                "validation_errors": [],
+                "category_precheck": {},
+                "publish_status": "",
+                "status": "",
+                "last_precheck": {},
+                "last_precheck_target": {},
+                "last_publish_task": {},
+            }
+        ],
+    }
+
+    target = draft_publish_targets(draft)[0]
+
+    assert target["category_id"] == ""
+    assert target["description_category_id"] == ""
+    assert target["category_path"] == ""
+    assert target["attributes"] == {}
+    assert target["validation_errors"] == []
+    assert target["category_precheck"] == {}
+    assert target["publish_status"] == ""
+    assert target["status"] == ""
+    assert target["last_precheck"] == {}
+    assert target["last_precheck_target"] == {}
+    assert target["last_publish_task"] == {}
+
+
+def test_multi_market_publish_targets_do_not_inherit_missing_root_fields() -> None:
+    draft = {
+        "platform": "yandex",
+        "site": "global",
+        "language": "ru-RU",
+        "category_id": "YANDEX-ROOT",
+        "description_category_id": "ROOT-DESCRIPTION-CATEGORY",
+        "category_path": "Yandex 根类目",
+        "attributes": {"ROOT_ATTRIBUTE": "旧值"},
+        "validation_errors": ["旧校验错误"],
+        "category_precheck": {"ok": True},
+        "publish_status": "ready",
+        "status": "ready_to_publish",
+        "last_precheck": {"ok": True},
+        "last_precheck_target": {
+            "platform": "yandex",
+            "site": "global",
+        },
+        "last_publish_task": {"job_id": "root-job"},
+        "target_sites": [
+            {
+                "platform": "yandex",
+                "site": "global",
+                "language": "ru-RU",
+            },
+            {
+                "platform": "ozon",
+                "site": "global",
+                "language": "ru-RU",
+            },
+        ],
+    }
+
+    targets = draft_publish_targets(draft)
+
+    assert [target["platform"] for target in targets] == ["yandex", "ozon"]
+    for target in targets:
+        assert target["category_id"] == ""
+        assert target["description_category_id"] == ""
+        assert target["category_path"] == ""
+        assert target["attributes"] == {}
+        assert target["validation_errors"] == []
+        assert target["category_precheck"] == {}
+        assert target["publish_status"] == ""
+        assert target["status"] == ""
+        assert target["last_precheck"] == {}
+        assert target["last_precheck_target"] == {}
+        assert target["last_publish_task"] == {}
+
+
+def test_existing_target_missing_language_uses_site_default() -> None:
+    target = draft_publish_targets(
+        {
+            "platform": "yandex",
+            "site": "global",
+            "language": "es-MX",
+            "target_sites": [
+                {
+                    "platform": "yandex",
+                    "site": "global",
+                }
+            ],
+        }
+    )[0]
+
+    assert target["language"] == "ru-RU"
+
+
+def test_draft_without_targets_synthesizes_identity_only() -> None:
+    draft = {
+        "platform": "yandex",
+        "site": "global",
+        "language": "es-MX",
+        "listing_currency": "ROOT-RUB",
+        "currency_fingerprint": "root-fingerprint",
+        "category_id": "YANDEX-ROOT",
+        "description_category_id": "ROOT-DESCRIPTION-CATEGORY",
+        "category_path": "根类目",
+        "attributes": {"ROOT_ATTRIBUTE": "旧值"},
+        "validation_errors": ["旧校验错误"],
+        "category_precheck": {"ok": True},
+        "publish_status": "ready",
+        "status": "ready_to_publish",
+        "last_precheck": {"ok": True},
+        "last_precheck_target": {
+            "platform": "yandex",
+            "site": "global",
+        },
+        "last_publish_task": {"job_id": "root-job"},
+        "sites_to_sell": [
+            {"site_id": "MLM", "logistic_type": "remote"}
+        ],
+    }
+
+    target = draft_publish_targets(draft)[0]
+
+    assert target["platform"] == "yandex"
+    assert target["site"] == "global"
+    assert target["language"] == "ru-RU"
+    assert target["listing_currency"] != "ROOT-RUB"
+    assert target["currency_fingerprint"] != "root-fingerprint"
+    assert target["category_id"] == ""
+    assert target["description_category_id"] == ""
+    assert target["category_path"] == ""
+    assert target["attributes"] == {}
+    assert target["validation_errors"] == []
+    assert target["category_precheck"] == {}
+    assert target["publish_status"] == ""
+    assert target["status"] == ""
+    assert target["last_precheck"] == {}
+    assert target["last_precheck_target"] == {}
+    assert target["last_publish_task"] == {}
+    assert target["sites_to_sell"] == []
+
+
+def test_single_publish_target_missing_fields_stays_empty() -> None:
+    draft = {
+        "platform": "yandex",
+        "site": "global",
+        "language": "ru-RU",
+        "category_id": "YANDEX-ROOT",
+        "category_path": "Yandex 根类目",
+        "attributes": {"ROOT_ATTRIBUTE": "旧值"},
+        "target_sites": [
+            {
+                "platform": "yandex",
+                "site": "global",
+                "language": "ru-RU",
+            }
+        ],
+    }
+
+    target = draft_publish_targets(draft)[0]
+
+    assert target["category_id"] == ""
+    assert target["category_path"] == ""
+    assert target["attributes"] == {}
+
+
+def test_other_market_publish_target_ignores_root_listing() -> None:
+    [target] = draft_publish_targets(
+        {
+            "platform": "yandex",
+            "site": "global",
+            "language": "ru-RU",
+            "category_id": "60996608",
+            "description_category_id": "yandex-description-category",
+            "category_path": "Yandex > Home > Storage",
+            "attributes": {"YANDEX_BRAND": "Yandex brand"},
+            "target_sites": [
+                {
+                    "platform": "ozon",
+                    "site": "global",
+                    "language": "ru-RU",
+                }
+            ],
+        }
+    )
+
+    assert target["platform"] == "ozon"
+    assert target["category_id"] == ""
+    assert target["description_category_id"] == ""
+    assert target["category_path"] == ""
+    assert target["attributes"] == {}
+
+
+def test_invalid_nonempty_publish_targets_do_not_inherit_root_fields() -> None:
+    draft = {
+        "platform": "yandex",
+        "site": "global",
+        "language": "ru-RU",
+        "category_id": "YANDEX-ROOT",
+        "category_path": "Yandex 根类目",
+        "attributes": {"ROOT_ATTRIBUTE": "旧值"},
+        "target_sites": ["invalid-target"],
+    }
+
+    target = draft_publish_targets(draft)[0]
+
+    assert target["category_id"] == ""
+    assert target["category_path"] == ""
+    assert target["attributes"] == {}
+
+
 def test_publish_target_discards_recursive_precheck_target_history() -> None:
     recursive_history = {
         "platform": "ozon",
@@ -342,6 +580,42 @@ def test_merge_target_listing_uses_explicit_app_context(
 
     assert seen_contexts == [explicit_context]
     assert merged["target_sites"][0]["category_id"] == "91443"
+
+
+def test_precheck_does_not_inherit_root_publish_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_updates: dict[str, Any] = {}
+
+    def fake_merge(draft, _target, updates, *, context=None):
+        captured_updates.update(updates)
+        return draft
+
+    monkeypatch.setattr(
+        draft_publish_context,
+        "merge_target_listing_into_draft",
+        fake_merge,
+    )
+    monkeypatch.setattr(
+        draft_publish_context,
+        "_save_updated_draft",
+        lambda draft, _publish_context, *, context=None: draft,
+    )
+
+    draft_publish_context.save_draft_precheck_result(
+        {
+            "draft": {"publish_status": "published"},
+            "target": {
+                "platform": "ozon",
+                "site": "global",
+                "publish_status": "",
+            },
+        },
+        {"ok": True, "errors": [], "warnings": []},
+    )
+
+    assert captured_updates["publish_status"] == "ready"
+    assert captured_updates["status"] == "ready_to_publish"
 
 
 @pytest.mark.parametrize(

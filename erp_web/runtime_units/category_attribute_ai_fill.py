@@ -8,6 +8,7 @@ from typing import Any
 
 from erp_web.product_model import (
     apply_ai_attribute_fill,
+    apply_category_target_updates,
     normalize_product_model,
     unresolved_required_category_attributes,
 )
@@ -383,7 +384,6 @@ _CATEGORY_TYPE_ATTRIBUTE_NAMES = frozenset(
     }
 )
 
-
 def _has_category_type_evidence(
     attr: dict[str, Any],
     candidate: dict[str, str],
@@ -433,6 +433,9 @@ def _validated_agent_attributes(
     dictionary_values: dict[str, list[dict[str, Any]]] = {}
     dictionary_units: dict[str, str] = {}
     invalid_dictionary_units: set[str] = set()
+    collection_values: dict[str, list[dict[str, str]]] = {}
+    collection_units: dict[str, str] = {}
+    invalid_collection_units: set[str] = set()
     assignments = (
         agent_output.get("assignments")
         if isinstance(agent_output.get("assignments"), list)
@@ -506,12 +509,22 @@ def _validated_agent_attributes(
             )
             continue
         if category_attribute_uses_unit(attr):
+            if attr_id in invalid_collection_units:
+                continue
             canonical_unit = normalize_category_attribute_unit(
                 attr,
                 assignment.get("unit"),
             )
-            if canonical_unit is None:
+            if canonical_unit is None or (
+                attr.get("is_collection")
+                and attr_id in collection_units
+                and collection_units[attr_id] != canonical_unit
+            ):
                 evidence_rejected.add(attr_id)
+                if attr.get("is_collection"):
+                    invalid_collection_units.add(attr_id)
+                    collection_values.pop(attr_id, None)
+                    collection_units.pop(attr_id, None)
                 continue
             if category_attribute_uses_numeric_unit(attr):
                 normalized_unit_value = (
@@ -546,7 +559,13 @@ def _validated_agent_attributes(
             if not has_unit_evidence:
                 evidence_rejected.add(attr_id)
                 continue
-            accepted[attr_id] = normalized_unit_value
+            if attr.get("is_collection"):
+                collection_units[attr_id] = canonical_unit
+                collection_values.setdefault(attr_id, []).append(
+                    {"value": normalized_unit_value["value"]}
+                )
+            else:
+                accepted[attr_id] = normalized_unit_value
             continue
         if _attribute_expects_weight_grams(attr, platform=platform):
             # 包装重量字段只认结构化 kg 事实的精确换算；标题、SKU 或其他
@@ -578,7 +597,12 @@ def _validated_agent_attributes(
             )
             if canonical_option:
                 value = canonical_option
-            accepted[attr_id] = value[:255]
+            if attr.get("is_collection"):
+                collection_values.setdefault(attr_id, []).append(
+                    {"value": value[:255]}
+                )
+            else:
+                accepted[attr_id] = value[:255]
     for attr_id, values in dictionary_values.items():
         if attr_id in invalid_dictionary_units:
             continue
@@ -586,6 +610,17 @@ def _validated_agent_attributes(
         if unit := dictionary_units.get(attr_id):
             selected["unit"] = unit
         accepted[attr_id] = selected
+    for attr_id, values in collection_values.items():
+        if attr_id in invalid_collection_units:
+            continue
+        selected: dict[str, Any] = {"values": values}
+        if unit := collection_units.get(attr_id):
+            selected["unit"] = unit
+        definition = schema_by_id.get(attr_id) or {}
+        if category_attribute_value_is_valid(definition, selected):
+            accepted[attr_id] = selected
+        else:
+            evidence_rejected.add(attr_id)
     return accepted, evidence_rejected
 
 
@@ -659,6 +694,12 @@ def apply_ai_model_attribute_fill(
             loader=fetch_category_attribute_values,
         )
         if brand_attr_id:
+            base_draft = apply_category_target_updates(
+                base_draft,
+                platform,
+                {"attributes": deepcopy(base_draft.get("attributes") or {})},
+                site=str(record.get("site") or "").strip(),
+            )
             base_draft["validation_errors"] = [
                 str(definition.get("id") or "").strip()
                 for definition in unresolved_required_category_attributes(
@@ -674,6 +715,17 @@ def apply_ai_model_attribute_fill(
                 )
                 if str(definition.get("id") or "").strip()
             ]
+            base_draft = apply_category_target_updates(
+                base_draft,
+                platform,
+                {
+                    "attributes": deepcopy(base_draft.get("attributes") or {}),
+                    "validation_errors": list(
+                        base_draft.get("validation_errors") or []
+                    ),
+                },
+                site=str(record.get("site") or "").strip(),
+            )
             base_product.setdefault("drafts", {})[platform] = base_draft
             base_product = normalize_product_model(base_product)
             rule_filled.append(brand_attr_id)
@@ -743,6 +795,12 @@ def apply_ai_model_attribute_fill(
         attrs[attr_id] = value
 
     draft["attributes"] = attrs
+    draft = apply_category_target_updates(
+        draft,
+        platform,
+        {"attributes": attrs},
+        site=str(record.get("site") or "").strip(),
+    )
     updated.setdefault("drafts", {})[platform] = draft
     need_review = sorted(
         str(definition.get("id") or "").strip()
@@ -753,6 +811,12 @@ def apply_ai_model_attribute_fill(
         )
     )
     draft["validation_errors"] = need_review
+    draft = apply_category_target_updates(
+        draft,
+        platform,
+        {"attributes": attrs, "validation_errors": need_review},
+        site=str(record.get("site") or "").strip(),
+    )
     updated["drafts"][platform] = draft
     meta["source"] = "ai_model"
     meta["ai_filled"] = sorted(ai_attrs)

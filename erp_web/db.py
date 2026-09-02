@@ -21,7 +21,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator, Sequence
 
-from erp_web.marketplace_registry import PLATFORMS
+from erp_web.marketplace_registry import PLATFORMS, marketplace_site
 from erp_web.product_model.merge_model import (
     normalize_platform_draft,
     normalize_product_model,
@@ -1218,7 +1218,17 @@ class ErpDatabase:
         product = json_loads(row["product_json"], {})
         draft = cls._draft_from_row(row)
         status = str(draft.get("status") or draft.get("publish_status") or row["status"] or "claimed")
-        target_sites = draft.get("target_sites") if isinstance(draft.get("target_sites"), list) else [{"platform": row["platform"], "site": row["site"], "language": draft.get("language") or "", "listing_currency": ""}]
+        selected_site = marketplace_site(row["platform"], row["site"])
+        target_sites = (
+            draft.get("target_sites")
+            if isinstance(draft.get("target_sites"), list)
+            else [{
+                "platform": row["platform"],
+                "site": row["site"],
+                "language": str(selected_site.get("language") or ""),
+                "listing_currency": "",
+            }]
+        )
         return {
             "draft_id": row["draft_id"],
             "product_id": row["product_id"],

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from erp_web.product_model import apply_category_selection
+from erp_web.product_model import (
+    apply_category_selection,
+    default_product_model,
+)
 from erp_web.product_model.attribute_matching import (
     infer_source_attribute_matches,
     source_package_dimensions,
@@ -152,13 +155,19 @@ def test_category_selection_keeps_only_current_platform_schema_values() -> None:
         "drafts": {
             "mercadolibre": {
                 "site": "CBT",
-                "attributes": {
-                    "VOLTAGE": "110/220V",
-                    "WEIGHT": {"value": "182", "unit": "g"},
-                    "PACKAGE_LENGTH": "5.5",
-                    "VERTICAL_TAGS": "平台推导值",
-                    "产地": "广东",
-                },
+                "target_sites": [
+                    {
+                        "platform": "mercadolibre",
+                        "site": "CBT",
+                        "attributes": {
+                            "VOLTAGE": "110/220V",
+                            "WEIGHT": {"value": "182", "unit": "g"},
+                            "PACKAGE_LENGTH": "5.5",
+                            "VERTICAL_TAGS": "平台推导值",
+                            "产地": "广东",
+                        },
+                    }
+                ],
             }
         },
     }
@@ -191,3 +200,32 @@ def test_category_selection_keeps_only_current_platform_schema_values() -> None:
         "height_cm": "16",
         "weight_kg": "0.182",
     }
+
+
+def test_ozon_category_change_drops_previous_description_category_id() -> None:
+    product = default_product_model()
+    draft = product["drafts"]["ozon"]
+    draft["target_sites"][0].update(
+        {
+            "category_id": "OLD-TYPE",
+            "description_category_id": "OLD-DESCRIPTION",
+            "category_path": "Old category",
+        }
+    )
+
+    selected = apply_category_selection(
+        product,
+        "ozon",
+        {
+            "platform": "ozon",
+            "site": "global",
+            "category_id": "NEW-TYPE",
+            "category_path": "New category",
+            "attributes": {"required": [], "optional": []},
+        },
+    )
+
+    target = selected["drafts"]["ozon"]["target_sites"][0]
+    assert target["category_id"] == "NEW-TYPE"
+    assert target["description_category_id"] == ""
+    assert target["category_path"] == "New category"

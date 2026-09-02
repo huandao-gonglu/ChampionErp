@@ -23,13 +23,11 @@ def resolve_ozon_category_pair(target: dict[str, Any]) -> dict[str, Any]:
     if not type_id:
         resolved["description_category_id"] = ""
         return resolved
-    if _text(resolved.get("description_category_id")):
-        resolved["category_id"] = type_id
-        return resolved
     record = fetch_category_record(
         "ozon",
         type_id,
         site=_text(resolved.get("site")),
+        include_attributes=True,
     )
     resolved_type_id = _text(record.get("type_id") or record.get("category_id"))
     description_category_id = _text(record.get("description_category_id"))
@@ -57,12 +55,6 @@ def resolve_draft_category_pairs(draft: dict[str, Any]) -> dict[str, Any]:
         targets.append(target)
     if targets:
         resolved["target_sites"] = targets
-        primary = targets[0]
-        if _text(primary.get("platform")).lower() == "ozon":
-            resolved["category_id"] = _text(primary.get("category_id"))
-            resolved["description_category_id"] = _text(
-                primary.get("description_category_id")
-            )
     elif _text(resolved.get("platform")).lower() == "ozon":
         resolved = resolve_ozon_category_pair(resolved)
     return resolved

@@ -246,6 +246,8 @@ def _prepare_copy(
             **({"copy_operation_key": operation_key} if operation_key else {}),
         }
     )
+    if "global_title" in copy_payload:
+        updated["global_title"] = text(copy_payload.get("global_title"))
     updated = invalidate_target_publish_preparation(
         product_store=product_store,
         product=product,

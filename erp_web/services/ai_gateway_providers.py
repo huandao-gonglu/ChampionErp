@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, TypeVar
 
 from . import (
     ai_direct_request_service,
@@ -27,6 +27,12 @@ from .ai_provider_contracts import (
     AiChatProvider,
     AiProvider,
 )
+from .ai_structured_output import (
+    object_json_schema,
+    output_adapter,
+    prompted_schema_instruction,
+    validate_structured_output,
+)
 
 
 # 注册表只保存真正独立的非 API 连接。API 不再通过协议 Provider 注册表分流。
@@ -34,6 +40,7 @@ AI_PROVIDER_REGISTRY: tuple[AiProvider, ...] = (
     CodexCliProvider(),
     BrowserAiProvider(),
 )
+OutputT = TypeVar("OutputT")
 
 
 def _provider_for_model(
@@ -221,6 +228,83 @@ def chat_json(
     )
 
 
+def chat_structured(
+    app_dir: Path | str,
+    app_config: dict[str, Any] | None,
+    use_case_id: str,
+    messages: list[dict[str, str]],
+    *,
+    output_type: type[OutputT],
+    model_id: str = "",
+    temperature: float = 0.2,
+    max_tokens: int | None = None,
+    timeout_seconds: int | None = None,
+    extra_body: dict[str, Any] | None = None,
+    stream: bool | None = None,
+    token_callback: Callable[[str], None] | None = None,
+) -> OutputT:
+    """按 Pydantic 类型生成 Schema，并返回通过同一类型校验的结果。"""
+
+    client = AiProviderClient.for_use_case(
+        app_dir,
+        app_config,
+        use_case_id,
+        model_id=model_id,
+        timeout_seconds=timeout_seconds,
+        default_timeout_seconds=60,
+    )
+    effective_stream = True if stream is None else bool(stream)
+    if client.connection_type == ai_model_config.CONNECTION_TYPE_API:
+        if extra_body:
+            raise ValueError(
+                "API 请求不允许业务层传入 extra_body；请使用模型配置的受控字段。"
+            )
+        return ai_direct_request_service.chat_structured(
+            app_dir=client.app_dir,
+            use_case_id=client.use_case_id,
+            model=client.model,
+            required_capabilities=client.required_capabilities,
+            messages=messages,
+            generation_settings=client.generation_settings,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout_seconds=client.timeout_seconds,
+            stream=effective_stream,
+            output_type=output_type,
+            token_callback=token_callback,
+        )
+
+    adapter = output_adapter(output_type)
+    schema = object_json_schema(adapter)
+    schema_messages = [
+        *messages,
+        {
+            "role": "system",
+            "content": prompted_schema_instruction(schema),
+        },
+    ]
+    provider = client.provider_for(CAPABILITY_CHAT_JSON)
+    if not isinstance(provider, AiChatProvider):
+        raise RuntimeError(f"Provider {provider.provider_id} 未实现文本对话能力。")
+    parsed = provider.chat_json(
+        AiChatRequest(
+            app_dir=client.app_dir,
+            model=client.model,
+            messages=schema_messages,
+            required_capabilities=client.required_capabilities,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout_seconds=client.timeout_seconds,
+            response_format=True,
+            extra_body=extra_body,
+            stream=effective_stream,
+            token_callback=token_callback,
+            generation_settings=client.generation_settings,
+        )
+    )
+    return validate_structured_output(adapter, parsed)
+
+
 def _image_client(
     app_dir: Path | str,
     app_config: dict[str, Any] | None,
@@ -342,6 +426,7 @@ __all__ = [
     "BrowserAiProvider",
     "CodexCliProvider",
     "chat_json",
+    "chat_structured",
     "edit_images",
     "generate_images",
     "list_remote_models",

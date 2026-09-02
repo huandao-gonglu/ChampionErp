@@ -726,7 +726,11 @@ def test_product_delete_through_global_task_approval_gate() -> None:
 # ---------------------------------------------------------------- 文案 / 翻译
 
 
-def _fake_copy_bundle(title: str = "Ventilador generado") -> Any:
+def _fake_copy_bundle(
+    title: str = "Ventilador generado",
+    *,
+    global_title: str = "",
+) -> Any:
     def bundle(
         product: dict[str, Any],
         source_platform: str,
@@ -736,13 +740,16 @@ def _fake_copy_bundle(title: str = "Ventilador generado") -> Any:
         app_cfg: dict[str, Any],
         **kwargs: Any,
     ) -> dict[str, Any]:
+        copy = {
+            "title": title,
+            "description": "Descripción generada",
+            "bullets": ["Aire fresco"],
+        }
+        if global_title:
+            copy["global_title"] = global_title
         return {
             "ok": True,
-            "copy": {
-                "title": title,
-                "description": "Descripción generada",
-                "bullets": ["Aire fresco"],
-            },
+            "copy": copy,
             "language": language,
             "source_platform": source_platform,
             "mode": mode,
@@ -801,6 +808,38 @@ def test_copy_generate_saves_draft_and_maps_errors(
             execution=_execution(),
         )
     assert failed.value.code == "COPY_GENERATE_FAILED"
+
+
+def test_copy_generate_persists_global_title(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = get_context()
+    _seed_product("product-copy-global-title")
+    scope = _content_scope()
+    monkeypatch.setattr(
+        "erp_web.runtime_units.content_capabilities.generate_ai_copy_bundle",
+        _fake_copy_bundle(
+            "Localized marketplace title",
+            global_title="Portable Fan with Quiet Cooling",
+        ),
+    )
+
+    result = copy_generate(
+        CopyGenerateRequest(
+            product_id="product-copy-global-title",
+            platform="mercadolibre",
+        ),
+        scope=scope,
+        execution=_execution(),
+    )
+
+    assert result.copy_record["global_title"] == "Portable Fan with Quiet Cooling"
+    reloaded = context.products.load_product_from_index(
+        "product-copy-global-title",
+        "",
+    )
+    draft = dict((reloaded.get("drafts") or {}).get("mercadolibre") or {})
+    assert draft.get("global_title") == "Portable Fan with Quiet Cooling"
 
 
 def test_copy_generate_for_draft_subject(

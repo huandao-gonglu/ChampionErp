@@ -98,6 +98,11 @@ def _ml_cbt_product(
     targets = sites_to_sell
     if targets is None:
         targets = [{"site_id": "MLM", "logistic_type": "remote"}]
+    attributes = {
+        "BRAND": "Brand",
+        "MODEL": "Model",
+        "GTIN": "123456789012",
+    }
     return {
         "sku": "SKU-CBT",
         "drafts": {
@@ -113,11 +118,7 @@ def _ml_cbt_product(
                 "sku": "SKU-CBT",
                 "stock": "1",
                 "upc": "123456789012",
-                "attributes": {
-                    "BRAND": "Brand",
-                    "MODEL": "Model",
-                    "GTIN": "123456789012",
-                },
+                "attributes": dict(attributes),
                 "package_dimensions": {
                     "length_cm": "5",
                     "width_cm": "5",
@@ -137,6 +138,7 @@ def _ml_cbt_product(
                         "listing_currency": "USD",
                         "category_id": category_id,
                         "category_path": "Global category",
+                        "attributes": dict(attributes),
                         "sites_to_sell": targets,
                     }
                 ],
@@ -344,7 +346,7 @@ def test_mercadolibre_precheck_does_not_restore_product_upc_for_exempt_draft() -
     draft = product["drafts"]["mercadolibre"]
     draft["upc"] = ""
     draft["allow_gtin_exemption"] = True
-    draft["attributes"].pop("GTIN", None)
+    draft["target_sites"][0]["attributes"].pop("GTIN", None)
 
     result = _validate(product, _ml_ready_config())
 
@@ -409,7 +411,7 @@ def test_mercadolibre_traditional_precheck_requires_global_english_title() -> No
 def test_mercadolibre_precheck_uses_same_attribute_contract_as_payload() -> None:
     product = _ml_cbt_product()
     draft = product["drafts"]["mercadolibre"]
-    draft["attributes"].update(
+    draft["target_sites"][0]["attributes"].update(
         {
             "VOLTAGE": "110/220V",
             "WEIGHT": "182",
@@ -431,8 +433,9 @@ def test_mercadolibre_precheck_uses_same_attribute_contract_as_payload() -> None
 def test_manually_edited_voltage_clears_need_review_during_precheck() -> None:
     product = _ml_cbt_product()
     draft = product["drafts"]["mercadolibre"]
-    draft["attributes"]["VOLTAGE"] = "110/220V"
-    draft["validation_errors"] = [
+    target = draft["target_sites"][0]
+    target["attributes"]["VOLTAGE"] = "110/220V"
+    target["validation_errors"] = [
         {
             "code": "NEED_REVIEW_ATTRIBUTES",
             "field": "attributes.VOLTAGE",
@@ -1244,7 +1247,9 @@ def test_mercadolibre_review_summary_uses_current_cbt_attribute_ids() -> None:
         },
     }
     product = _ml_cbt_product()
-    product["drafts"]["mercadolibre"]["validation_errors"] = [
+    product["drafts"]["mercadolibre"]["target_sites"][0][
+        "validation_errors"
+    ] = [
         {
             "code": "NEED_REVIEW_ATTRIBUTES",
             "field": "attributes",

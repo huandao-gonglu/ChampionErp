@@ -7,7 +7,10 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Annotated, Any
 
-from erp_web.product_model import unresolved_required_category_attributes
+from erp_web.product_model import (
+    apply_category_target_updates,
+    unresolved_required_category_attributes,
+)
 from erp_web.runtime_units.category_attribute_ai_fill import (
     apply_ai_model_attribute_fill,
 )
@@ -247,11 +250,18 @@ def fill_product_attributes(
         record=record,
         loader=attribute_values_loader,
     )
-    input_draft = deepcopy(target_draft)
-    input_draft["attributes"] = {
+    input_attributes = {
         **deepcopy(existing_attributes),
         **provided_attributes,
     }
+    input_draft = deepcopy(target_draft)
+    input_draft["attributes"] = input_attributes
+    input_draft = apply_category_target_updates(
+        input_draft,
+        platform,
+        {"attributes": input_attributes},
+        site=text(target.get("site")),
+    )
     projected = product_with_target(product, platform, input_draft)
     try:
         updated_product, meta = attribute_filler(projected, platform, record)
@@ -292,6 +302,12 @@ def fill_product_attributes(
         loader=attribute_values_loader,
     )
     if brand_autofilled:
+        updated_draft = apply_category_target_updates(
+            updated_draft,
+            platform,
+            {"attributes": updated_draft.get("attributes") or {}},
+            site=text(target.get("site")),
+        )
         drafts[platform] = updated_draft
         meta = {
             **meta,
@@ -307,11 +323,19 @@ def fill_product_attributes(
         platform,
         record,
     )
-    updated_draft["validation_errors"] = [
+    validation_errors = [
         text(definition.get("id"))
         for definition in unresolved
         if text(definition.get("id"))
     ]
+    updated_draft["validation_errors"] = validation_errors
+    updated_draft = apply_category_target_updates(
+        updated_draft,
+        platform,
+        {"validation_errors": validation_errors},
+        site=text(target.get("site")),
+    )
+    drafts[platform] = updated_draft
     invalidated = invalidate_target_publish_preparation(
         product_store=product_store,
         product=updated_product,

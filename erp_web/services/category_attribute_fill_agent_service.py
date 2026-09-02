@@ -121,6 +121,7 @@ class CategoryAttributeFillOutputValidator:
         self.error_code = ""
         assignment_counts: dict[str, int] = {}
         assignment_units: dict[str, str] = {}
+        assignment_values: dict[str, set[tuple[str, str, str]]] = {}
         assigned_ids: set[str] = set()
         for assignment in output.assignments:
             attr_id = assignment.attribute_id
@@ -202,13 +203,23 @@ class CategoryAttributeFillOutputValidator:
                     f"非强制枚举属性 {attr_id} 应直接填写 value，不得填写 dictionary_value_id。",
                 )
 
+            value_key = (
+                assignment.dictionary_value_id.casefold(),
+                assignment.value.casefold(),
+                assignment.unit.casefold(),
+            )
+            seen_values = assignment_values.setdefault(attr_id, set())
+            if value_key in seen_values:
+                self._retry(
+                    "ATTRIBUTE_VALUE_DUPLICATED",
+                    f"属性 {attr_id} 不得重复填写相同的值。",
+                )
+            seen_values.add(value_key)
+
         for attr_id, count in assignment_counts.items():
             definition = self.ledger.definition(attr_id) or {}
             maximum = int(definition.get("max_value_count") or 0)
-            if (
-                definition.get("value_mode") != "strict_enum"
-                or not definition.get("is_collection")
-            ) and count > 1:
+            if not definition.get("is_collection") and count > 1:
                 self._retry(
                     "ATTRIBUTE_VALUE_COUNT_INVALID",
                     f"属性 {attr_id} 只能填写一个值。",

@@ -6,7 +6,7 @@ import asyncio
 import base64
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence, TypeVar
 
 from pydantic_ai import direct
 from pydantic_ai.messages import (
@@ -22,7 +22,7 @@ from pydantic_ai.messages import (
     ThinkingPartDelta,
     UserPromptPart,
 )
-from pydantic_ai.models import ModelRequestParameters
+from pydantic_ai.models import ModelRequestParameters, OutputObjectDefinition
 from pydantic_ai.native_tools import ImageGenerationTool, WebSearchTool
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import ToolDefinition
@@ -32,9 +32,15 @@ from .ai_agent_instrumentation import AiAgentInstrumentation
 from .ai_gateway_parsing import parse_json_text
 from .ai_model_errors import map_pydantic_model_error
 from .ai_model_factory import PydanticModelBinding, create_pydantic_model_binding
+from .ai_structured_output import (
+    object_json_schema,
+    output_adapter,
+    validate_structured_output,
+)
 
 
 PYDANTIC_DIRECT_PROVIDER_ID = "pydantic_direct"
+OutputT = TypeVar("OutputT")
 
 
 def _messages(value: Sequence[dict[str, str]]) -> list[ModelMessage]:
@@ -328,7 +334,7 @@ def _request(
         instrumentation.shutdown()
 
 
-def chat_json(
+def _chat_response(
     *,
     app_dir: Path | str,
     use_case_id: str,
@@ -341,9 +347,9 @@ def chat_json(
     timeout_seconds: int,
     response_format: bool,
     stream: bool,
+    output_object: OutputObjectDefinition | None = None,
     token_callback: Callable[[str], None] | None = None,
-) -> dict[str, Any]:
-    """通过 Pydantic Direct Model 执行普通文本/JSON/流式请求。"""
+) -> ModelResponse:
 
     generation = _merge_generation_settings(
         generation_settings,
@@ -374,6 +380,7 @@ def chat_json(
     parameters = ModelRequestParameters(
         native_tools=native_tools,
         output_mode="prompted" if response_format else "text",
+        output_object=output_object,
     )
 
     def emit_text_delta(text: str) -> None:
@@ -402,8 +409,84 @@ def chat_json(
         if mapped is exc:
             raise
         raise mapped from None
-    raw_text = response.text or ""
-    return parse_json_text(raw_text)
+    return response
+
+
+def chat_json(
+    *,
+    app_dir: Path | str,
+    use_case_id: str,
+    model: dict[str, Any],
+    required_capabilities: Iterable[str],
+    messages: list[dict[str, str]],
+    generation_settings: dict[str, Any] | None,
+    temperature: float,
+    max_tokens: int | None,
+    timeout_seconds: int,
+    response_format: bool,
+    stream: bool,
+    token_callback: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    """通过 Pydantic Direct Model 执行普通文本/JSON/流式请求。"""
+
+    response = _chat_response(
+        app_dir=app_dir,
+        use_case_id=use_case_id,
+        model=model,
+        required_capabilities=required_capabilities,
+        messages=messages,
+        generation_settings=generation_settings,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        timeout_seconds=timeout_seconds,
+        response_format=response_format,
+        stream=stream,
+        token_callback=token_callback,
+    )
+    return parse_json_text(response.text or "")
+
+
+def chat_structured(
+    *,
+    app_dir: Path | str,
+    use_case_id: str,
+    model: dict[str, Any],
+    required_capabilities: Iterable[str],
+    messages: list[dict[str, str]],
+    generation_settings: dict[str, Any] | None,
+    temperature: float,
+    max_tokens: int | None,
+    timeout_seconds: int,
+    stream: bool,
+    output_type: type[OutputT],
+    token_callback: Callable[[str], None] | None = None,
+) -> OutputT:
+    """使用 Pydantic Direct Model 的 prompted output 并校验类型化结果。"""
+
+    adapter = output_adapter(output_type)
+    schema = object_json_schema(adapter)
+    response = _chat_response(
+        app_dir=app_dir,
+        use_case_id=use_case_id,
+        model=model,
+        required_capabilities=required_capabilities,
+        messages=messages,
+        generation_settings=generation_settings,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        timeout_seconds=timeout_seconds,
+        response_format=True,
+        stream=stream,
+        output_object=OutputObjectDefinition(
+            json_schema=schema,
+            name=getattr(output_type, "__name__", None),
+            description=str(getattr(output_type, "__doc__", "") or "").strip()
+            or None,
+        ),
+        token_callback=token_callback,
+    )
+    parsed = parse_json_text(response.text or "")
+    return validate_structured_output(adapter, parsed)
 
 
 def _image_settings(binding: PydanticModelBinding, count: int) -> ModelSettings:
@@ -776,6 +859,7 @@ def edit_image_for_probe(
 __all__ = [
     "PYDANTIC_DIRECT_PROVIDER_ID",
     "chat_json",
+    "chat_structured",
     "edit_images",
     "edit_image_for_probe",
     "generate_images",

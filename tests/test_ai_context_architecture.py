@@ -22,6 +22,7 @@ AI 工具上下文边界与写入一致性守卫（修复计划第 11 节）：
 from __future__ import annotations
 
 import ast
+import json
 
 from tests.architecture.support import (
     ROOT,
@@ -111,6 +112,30 @@ def test_message_store_keeps_no_synthetic_tool_return_repair() -> None:
     ):
         assert banned not in source, (
             f"message store 不得保留合成 tool return 逻辑：{banned}"
+        )
+
+
+def test_copy_generation_uses_typed_schema_instead_of_prompt_field_contract() -> None:
+    service_source = (
+        ROOT / "erp_web/services/copy_service.py"
+    ).read_text(encoding="utf-8")
+    assert "ai_gateway.chat_structured(" in service_source
+    assert "ai_gateway.chat_json(" not in service_source
+
+    prompt_config = json.loads(
+        (ROOT / "config/prompts/copy_generate.json").read_text(encoding="utf-8")
+    )
+    prompt_text = "\n".join(
+        str(prompt_config.get(key) or "") for key in ("system", "user")
+    )
+    for handwritten_contract in (
+        "exactly these keys",
+        "title: string",
+        "global_title",
+    ):
+        assert handwritten_contract not in prompt_text, (
+            "文案输出字段必须由 Pydantic Schema 提供，业务 Prompt 不得重复字段契约："
+            f"{handwritten_contract}"
         )
 
 

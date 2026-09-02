@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from unittest.mock import patch
 
 import pytest
@@ -77,6 +78,21 @@ def _product() -> dict:
         "height_cm": "6.7",
         "weight_kg": "0.25",
     }
+    attributes = {
+        "0": "不得发送零属性 ID",
+        "16": "不得发送来源数字键",
+        "85": {
+            "values": [
+                {
+                    "dictionary_value_id": 5060050,
+                    "value": "Champion",
+                }
+            ]
+        },
+        "21841": "https://example.com/video.mp4",
+        "99999": "不得发送非类目数字属性",
+        "BRAND": "不得发送跨平台辅助字段",
+    }
     return {
         "product_id": "product-ozon",
         "name": "Тестовый товар",
@@ -96,7 +112,18 @@ def _product() -> dict:
             "ozon": {
                 "platform": "ozon",
                 "site": "global",
-                "target_sites": [{"platform": "ozon", "site": "global", "language": "ru-RU", "listing_currency": "RUB"}],
+                "target_sites": [
+                    {
+                        "platform": "ozon",
+                        "site": "global",
+                        "language": "ru-RU",
+                        "listing_currency": "RUB",
+                        "category_id": "94765",
+                        "description_category_id": "17027949",
+                        "category_path": "Категория / Тип",
+                        "attributes": deepcopy(attributes),
+                    }
+                ],
                 "title": "Тестовый товар для Ozon",
                 "description": "Подробное описание товара.",
                 "category_id": "94765",
@@ -108,21 +135,7 @@ def _product() -> dict:
                 "upc": "123456789012",
                 "stock": "5",
                 "vat": "0",
-                "attributes": {
-                    "0": "不得发送零属性 ID",
-                    "16": "不得发送来源数字键",
-                    "85": {
-                        "values": [
-                            {
-                                "dictionary_value_id": 5060050,
-                                "value": "Champion",
-                            }
-                        ]
-                    },
-                    "21841": "https://example.com/video.mp4",
-                    "99999": "不得发送非类目数字属性",
-                    "BRAND": "不得发送跨平台辅助字段",
-                },
+                "attributes": deepcopy(attributes),
                 "images": [
                     {"asset_id": "image-1", "role": "main", "order": 0}
                 ],
@@ -190,7 +203,7 @@ def test_build_ozon_publish_payload_uses_real_v3_contract() -> None:
 
 def test_build_ozon_publish_payload_accepts_dictionary_id_zero_as_free_text() -> None:
     product = _product()
-    product["drafts"]["ozon"]["attributes"]["9048"] = "F30"
+    product["drafts"]["ozon"]["target_sites"][0]["attributes"]["9048"] = "F30"
     schema = {
         "required": [
             *_CATEGORY_SCHEMA["required"],
@@ -232,7 +245,9 @@ def test_ozon_category_pair_does_not_fall_back_to_product_category_record() -> N
     # 类目身份只来自草稿；description_category_id 缺失时必须显式报错，
     # 不存在任何商品级规则副本回退路径（副本字段已退役）。
     product = _product()
-    product["drafts"]["ozon"]["description_category_id"] = ""
+    product["drafts"]["ozon"]["target_sites"][0][
+        "description_category_id"
+    ] = ""
 
     result = validate_ozon_draft(product, _config(), _record())
 
@@ -451,7 +466,7 @@ def test_publish_ozon_does_not_treat_item_warning_as_failure() -> None:
 
 def test_ozon_precheck_rejects_free_text_dictionary_attribute() -> None:
     product = _product()
-    product["drafts"]["ozon"]["attributes"]["85"] = "Champion"
+    product["drafts"]["ozon"]["target_sites"][0]["attributes"]["85"] = "Champion"
 
     result = validate_ozon_draft(product, _config(), _record())
 

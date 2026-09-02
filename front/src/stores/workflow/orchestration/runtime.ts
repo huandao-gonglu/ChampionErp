@@ -347,35 +347,35 @@ export function createWorkflowRuntime() {
     }
   }
 
-  function normalizeDraftTarget(target: MarketplaceTargetSite, draftDetail: DraftDetail, useRootFallback = false): MarketplaceTargetSite {
+  function normalizeDraftTarget(target: MarketplaceTargetSite): MarketplaceTargetSite {
     const site = platformSite(target.platform, target.site)
     return {
       ...target,
       platform: target.platform,
       site: target.site || site?.code || '',
-      language: target.language || site?.language || draftDetail.language || '',
+      language: target.language || site?.language || '',
       // 发布币种只信任核价时写入的店铺配置快照，不从站点 option 回填。
       listingCurrency: target.listingCurrency || '',
       currencyFingerprint: target.currencyFingerprint || '',
-      categoryId: String(target.categoryId || (useRootFallback ? draftDetail.categoryId : '') || ''),
-      descriptionCategoryId: String(target.descriptionCategoryId || (useRootFallback ? draftDetail.descriptionCategoryId : '') || ''),
-      categoryPath: String(target.categoryPath || (useRootFallback ? draftDetail.categoryPath : '') || ''),
-      attributes: Object.keys(target.attributes || {}).length ? cloneAttributes(target.attributes) : useRootFallback ? cloneAttributes(draftDetail.attributes) : {},
-      validationErrors: (target.validationErrors || []).length ? cloneValidationErrors(target.validationErrors) : useRootFallback ? cloneValidationErrors(draftDetail.validationErrors) : [],
+      categoryId: String(target.categoryId ?? ''),
+      descriptionCategoryId: String(target.descriptionCategoryId ?? ''),
+      categoryPath: String(target.categoryPath ?? ''),
+      attributes: cloneAttributes(target.attributes),
+      validationErrors: cloneValidationErrors(target.validationErrors),
       categoryPrecheck: target.categoryPrecheck || {},
-      publishStatus: String(target.publishStatus || (useRootFallback ? draftDetail.publishStatus : '') || ''),
-      status: String(target.status || (useRootFallback ? draftDetail.status : '') || ''),
-      lastPrecheck: target.lastPrecheck || (useRootFallback ? draftDetail.lastPrecheck : {}) || {},
-      lastPrecheckTarget: target.lastPrecheckTarget || (useRootFallback ? draftDetail.lastPrecheckTarget : {}) || {},
+      publishStatus: String(target.publishStatus ?? ''),
+      status: String(target.status ?? ''),
+      lastPrecheck: isRecord(target.lastPrecheck) ? target.lastPrecheck : {},
+      lastPrecheckTarget: isRecord(target.lastPrecheckTarget) ? target.lastPrecheckTarget : {},
       publishLogs: Array.isArray(target.publishLogs) ? target.publishLogs : [],
     }
   }
 
-  function mergeTargetDetails(targets: MarketplaceTargetSite[], previousTargets: MarketplaceTargetSite[], draftDetail: DraftDetail): MarketplaceTargetSite[] {
+  function mergeTargetDetails(targets: MarketplaceTargetSite[], previousTargets: MarketplaceTargetSite[]): MarketplaceTargetSite[] {
     const previousByKey = new Map(previousTargets.map((target) => [targetSiteKey(target), target]))
-    return targets.map((target, index) => {
+    return targets.map((target) => {
       const previous = previousByKey.get(targetSiteKey(target))
-      return normalizeDraftTarget({ ...(previous || {}), ...target }, draftDetail, !previous && index === 0)
+      return normalizeDraftTarget({ ...(previous || {}), ...target })
     })
   }
 
@@ -514,7 +514,7 @@ export function createWorkflowRuntime() {
   function persistActiveTargetListingFields(extra: Partial<MarketplaceTargetSite> = {}) {
     if (!currentDraft.value.draftId) return
     if (!currentDraft.value.targetSites.length && currentPublishTargets.value.length) {
-      currentDraft.value.targetSites = currentPublishTargets.value.map((target, index) => normalizeDraftTarget(target, currentDraft.value, index === 0))
+      currentDraft.value.targetSites = currentPublishTargets.value.map((target) => normalizeDraftTarget(target))
     }
     const key = activePublishTargetKey.value || targetSiteKey(selectedPublishTarget.value)
     const index = currentDraft.value.targetSites.findIndex((target) => targetSiteKey(target) === key)
@@ -678,7 +678,7 @@ export function createWorkflowRuntime() {
     return [{
       platform: draftDetail.platform,
       site: draftDetail.site || site?.code || '',
-      language: draftDetail.language || site?.language || '',
+      language: site?.language || '',
       listingCurrency: '',
     }].filter((target) => target.platform && target.site)
   }
@@ -686,15 +686,17 @@ export function createWorkflowRuntime() {
   function normalizedDraftTargets(draftDetail: DraftDetail): MarketplaceTargetSite[] {
     const selected = (draftDetail.targetSites || []).filter((target) => target.platform && target.site)
     if (selected.length) {
-      return selected.map((target, index) => normalizeDraftTarget(target, draftDetail, index === 0)).filter((target) => target.platform && target.site)
+      return selected
+        .map((target) => normalizeDraftTarget(target))
+        .filter((target) => target.platform && target.site)
     }
     const site = platformSite(draftDetail.platform, draftDetail.site)
     return [{
       platform: draftDetail.platform,
       site: draftDetail.site || site?.code || '',
-      language: draftDetail.language || site?.language || '',
+      language: site?.language || '',
       listingCurrency: '',
-    }].map((target) => normalizeDraftTarget(target, draftDetail, true)).filter((target) => target.platform && target.site)
+    }].map((target) => normalizeDraftTarget(target)).filter((target) => target.platform && target.site)
   }
 
   const currentPublishTargets = computed(() => currentDraft.value.draftId ? normalizedDraftTargets(currentDraft.value) : [])

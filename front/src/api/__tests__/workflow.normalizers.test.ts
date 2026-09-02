@@ -119,7 +119,7 @@ describe('workflow 当前 wire schema', () => {
         { site_id: 'CBT', logistic_type: 'remote' },
         { site_id: 'MLB', logistic_type: 'fulfillment' },
       ],
-    }], 'mercadolibre', 'CBT', 'en-US')
+    }], 'mercadolibre', 'CBT')
 
     expect(target?.sitesToSell).toEqual([
       {
@@ -155,8 +155,109 @@ describe('workflow 当前 wire schema', () => {
       site: 'CBT',
       language: 'en-US',
       listing_currency: 'USD',
-    }], 'mercadolibre', 'CBT', 'en-US')
+    }], 'mercadolibre', 'CBT')
     expect(oldTarget?.sitesToSell).toEqual([])
+  })
+
+  it('多目标草稿的首个目标缺字段时不会继承根编辑态', () => {
+    const draft = normalizeDraft({
+      platforms: ['yandex', 'ozon'],
+      site: 'global',
+      language: 'es-MX',
+      category_id: 'ROOT-CATEGORY',
+      description_category_id: 'ROOT-DESCRIPTION-CATEGORY',
+      category_path: 'Root / Category',
+      attributes: { ROOT_ATTRIBUTE: 'root value' },
+      validation_errors: ['Root validation error'],
+      target_sites: [{
+        platform: 'ozon',
+        site: 'global',
+        language: 'ru-RU',
+        listing_currency: 'RUB',
+      }, {
+        platform: 'yandex',
+        site: 'global',
+        language: 'ru-RU',
+        listing_currency: 'RUB',
+        category_id: '60996608',
+        category_path: 'Yandex / Бытовая техника',
+        attributes: { YANDEX_BRAND: 'Yandex brand' },
+        validation_errors: ['Yandex validation error'],
+      }],
+    }, 'ru-RU')
+
+    expect(draft.categoryId).toBe('ROOT-CATEGORY')
+    expect(draft.targetSites[0]).toEqual(expect.objectContaining({
+      platform: 'ozon',
+      categoryId: '',
+      descriptionCategoryId: '',
+      categoryPath: '',
+      attributes: {},
+      validationErrors: [],
+    }))
+    expect(draft.targetSites[1]).toEqual(expect.objectContaining({
+      platform: 'yandex',
+      categoryId: '60996608',
+      categoryPath: 'Yandex / Бытовая техника',
+      attributes: { YANDEX_BRAND: 'Yandex brand' },
+      validationErrors: ['Yandex validation error'],
+    }))
+  })
+
+  it('target_sites 整体缺失时合成的目标不会迁移根刊登字段', () => {
+    const draft = normalizeDraft({
+      platforms: ['yandex'],
+      site: 'global',
+      language: 'es-MX',
+      category_id: '60996608',
+      description_category_id: '17028674',
+      category_path: 'Yandex / Бытовая техника',
+      attributes: { YANDEX_BRAND: 'Yandex brand' },
+      validation_errors: ['Yandex validation error'],
+      publish_status: 'ready',
+      status: 'ready_to_publish',
+    }, 'ru-RU')
+
+    expect(draft.categoryId).toBe('60996608')
+    expect(draft.targetSites[0]).toEqual(expect.objectContaining({
+      platform: 'yandex',
+      site: 'global',
+      language: '',
+      categoryId: '',
+      descriptionCategoryId: '',
+      categoryPath: '',
+      attributes: {},
+      validationErrors: [],
+      publishStatus: '',
+      status: '',
+    }))
+  })
+
+  it('单目标缺失刊登字段时也不会迁移根编辑态', () => {
+    const draft = normalizeDraft({
+      platforms: ['yandex'],
+      site: 'global',
+      language: 'ru-RU',
+      category_id: '60996608',
+      category_path: 'Yandex / Бытовая техника',
+      attributes: { YANDEX_BRAND: 'Yandex brand' },
+      target_sites: [{
+        platform: 'yandex',
+        site: 'global',
+        listing_currency: 'RUB',
+      }],
+    }, 'ru-RU')
+
+    expect(draft.categoryId).toBe('60996608')
+    expect(draft.targetSites[0]).toEqual(expect.objectContaining({
+      platform: 'yandex',
+      language: '',
+      categoryId: '',
+      descriptionCategoryId: '',
+      categoryPath: '',
+      attributes: {},
+      validationErrors: [],
+    }))
   })
 
   it('Mercado publication 在草稿 snake_case 与 camelCase 之间完整往返', () => {

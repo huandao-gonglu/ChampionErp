@@ -677,7 +677,7 @@ def _draft_for_selected_target(
         return draft
     return draft_for_publish_target(
         draft,
-        normalize_draft_target_site(target, platform_key, draft),
+        normalize_draft_target_site(target, platform_key),
     )
 
 

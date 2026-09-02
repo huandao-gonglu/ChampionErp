@@ -369,55 +369,26 @@ export function toBackendSitesToSell(value: MarketplaceTargetSite['sitesToSell']
   })
 }
 
-export function targetListingFields(record: UnknownRecord, fallback?: Partial<MarketplaceTargetSite>): Partial<MarketplaceTargetSite> {
-  const fallbackAttributes = fallback?.attributes || {}
-  const fallbackValidationErrors = fallback?.validationErrors || []
-  const hasAnyField = (keys: string[]) => keys.some((key) => Object.prototype.hasOwnProperty.call(record, key))
-  const hasCategoryId = hasAnyField(['category_id'])
-  const hasDescriptionCategoryId = hasAnyField(['description_category_id'])
-  const hasCategoryPath = hasAnyField(['category_path'])
-  const hasAttributes = hasAnyField(['attributes'])
-  const hasValidationErrors = hasAnyField(['validation_errors'])
-  const hasCategoryPrecheck = hasAnyField(['category_precheck'])
-  const hasPublishStatus = hasAnyField(['publish_status'])
-  const hasStatus = hasAnyField(['status'])
-  const hasLastPrecheck = hasAnyField(['last_precheck'])
-  const hasLastPrecheckTarget = hasAnyField(['last_precheck_target'])
-  const hasLastPublishTask = hasAnyField(['last_publish_task'])
-  const hasSitesToSell = hasAnyField(['sites_to_sell'])
+export function targetListingFields(record: UnknownRecord): Partial<MarketplaceTargetSite> {
   return {
-    sitesToSell: hasSitesToSell
-      ? normalizeSitesToSell(record.sites_to_sell)
-      : (fallback?.sitesToSell || []).map((item) => ({ ...item })),
-    categoryId: hasCategoryId ? getString(record, ['category_id']) : fallback?.categoryId || '',
-    descriptionCategoryId: hasDescriptionCategoryId
-      ? getString(record, ['description_category_id'])
-      : fallback?.descriptionCategoryId || '',
-    categoryPath: hasCategoryPath ? getString(record, ['category_path']) : fallback?.categoryPath || '',
-    attributes: hasAttributes ? normalizeAttributes(record.attributes) : { ...fallbackAttributes },
-    validationErrors: hasValidationErrors
-      ? normalizeValidationErrors(record.validation_errors)
-      : [...fallbackValidationErrors],
-    categoryPrecheck: hasCategoryPrecheck
-      ? asRecord(record.category_precheck)
-      : fallback?.categoryPrecheck || {},
-    publishStatus: hasPublishStatus ? getString(record, ['publish_status']) : fallback?.publishStatus || '',
-    status: hasStatus ? getString(record, ['status']) : fallback?.status ? String(fallback.status) : '',
-    lastPrecheck: hasLastPrecheck
-      ? asRecord(record.last_precheck)
-      : fallback?.lastPrecheck || {},
-    lastPrecheckTarget: hasLastPrecheckTarget
-      ? asRecord(record.last_precheck_target)
-      : fallback?.lastPrecheckTarget || {},
-    lastPublishTask: hasLastPublishTask
-      ? asRecord(record.last_publish_task)
-      : fallback?.lastPublishTask || {},
+    sitesToSell: normalizeSitesToSell(record.sites_to_sell),
+    categoryId: getString(record, ['category_id']),
+    descriptionCategoryId: getString(record, ['description_category_id']),
+    categoryPath: getString(record, ['category_path']),
+    attributes: normalizeAttributes(record.attributes),
+    validationErrors: normalizeValidationErrors(record.validation_errors),
+    categoryPrecheck: asRecord(record.category_precheck),
+    publishStatus: getString(record, ['publish_status']),
+    status: getString(record, ['status']),
+    lastPrecheck: asRecord(record.last_precheck),
+    lastPrecheckTarget: asRecord(record.last_precheck_target),
+    lastPublishTask: asRecord(record.last_publish_task),
   }
 }
 
-export function normalizeTargetSites(value: unknown, platform: Marketplace, site: string, language: string, fallback?: Partial<MarketplaceTargetSite>): MarketplaceTargetSite[] {
+export function normalizeTargetSites(value: unknown, platform: Marketplace, site: string): MarketplaceTargetSite[] {
   const rawItems = Array.isArray(value) ? value : []
-  const targets = rawItems.flatMap((value, index): MarketplaceTargetSite[] => {
+  const targets = rawItems.flatMap((value): MarketplaceTargetSite[] => {
     const record = asRecord(value)
     const targetPlatform = getString(record, ['platform']).toLowerCase() as Marketplace
     const targetSite = getString(record, ['site'])
@@ -425,14 +396,21 @@ export function normalizeTargetSites(value: unknown, platform: Marketplace, site
     return [{
       platform: targetPlatform,
       site: targetSite,
-      language: getString(record, ['language'], language),
+      language: getString(record, ['language']),
       // 发布币种是核价时写入的店铺配置快照，不再从站点 option 回填。
       listingCurrency: getString(record, ['listing_currency']),
       currencyFingerprint: getString(record, ['currency_fingerprint']),
-      ...targetListingFields(record, index === 0 ? fallback : undefined),
+      ...targetListingFields(record),
     }]
   })
-  return targets.length ? targets : [{ platform, site, language, listingCurrency: '', ...targetListingFields({}, fallback) }]
+  if (targets.length) return targets
+  return [{
+    platform,
+    site,
+    language: '',
+    listingCurrency: '',
+    ...targetListingFields({}),
+  }]
 }
 
 export function normalizeDimensions(value: unknown) {

@@ -126,6 +126,43 @@ describe('category.product_match 同步 focused response + 通用 presentation �
     expect(result.trace.taskRunId).toBe('task-1')
   })
 
+  it('保留 Ozon 候选的 type_id 与 description_category_id 供类目选择读取', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ data: DESCRIPTOR, status: 200 })
+    vi.mocked(apiClient.post).mockResolvedValueOnce({
+      data: {
+        ...TYPED_RESULT,
+        selected_category_id: '971326576',
+        candidates: [{
+          category_id: '971326576',
+          name: 'Автомагнитолы',
+          path_segments: ['Автотовары', 'Автомагнитолы'],
+          type_id: '971326576',
+          description_category_id: '17039878',
+        }],
+      },
+      status: 200,
+    })
+
+    const ozonDraft = createEmptyDraftDetail('ozon')
+    ozonDraft.draftId = 'draft-ozon'
+    ozonDraft.productId = 'product-ozon'
+    const result = await matchCategory(ozonDraft, {
+      platform: 'ozon',
+      site: 'global',
+      language: 'ru-RU',
+      listingCurrency: 'RUB',
+    })
+    const selected = result.candidates[0]
+
+    expect(selected?.raw).toEqual(expect.objectContaining({
+      type_id: '971326576',
+      description_category_id: '17039878',
+    }))
+    // selectCategory 的 Ozon 取值契约：type_id 是发布类目，description_category_id 是配对目录。
+    expect(String(selected?.raw.type_id || selected?.id || '').trim()).toBe('971326576')
+    expect(String(selected?.raw.description_category_id || '').trim()).toBe('17039878')
+  })
+
   it('运行期间临时接管浮窗，业务终态后恢复 global-chat', async () => {
     const display = useAiWorkDisplayStore()
     let modeDuringBusiness = ''

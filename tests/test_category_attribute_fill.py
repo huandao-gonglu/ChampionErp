@@ -13,14 +13,33 @@ from erp_web.services.category_attribute_fill_agent_service import (
 )
 
 
+def _set_primary_listing(
+    draft: dict,
+    *,
+    category_id: str | None = None,
+    attributes: dict | None = None,
+    validation_errors: list[str] | None = None,
+) -> None:
+    target = draft["target_sites"][0]
+    if category_id is not None:
+        target["category_id"] = category_id
+    if attributes is not None:
+        target["attributes"] = attributes
+    if validation_errors is not None:
+        target["validation_errors"] = validation_errors
+
+
 def test_ai_attribute_fill_treats_attribute_id_value_as_missing() -> None:
     product = default_product_model()
     product["drafts"]["mercadolibre"]["model"] = "T-3A"
-    product["drafts"]["mercadolibre"]["attributes"] = {
-        "BRAND": "Generic",
-        "MODEL": "T-3A",
-        "AIR_CONDITIONER_TYPE": "AIR_CONDITIONER_TYPE",
-    }
+    _set_primary_listing(
+        product["drafts"]["mercadolibre"],
+        attributes={
+            "BRAND": "Generic",
+            "MODEL": "T-3A",
+            "AIR_CONDITIONER_TYPE": "AIR_CONDITIONER_TYPE",
+        },
+    )
     category = {
         "category_id": "MLM459570",
         "attributes": {
@@ -48,12 +67,15 @@ def test_ai_model_attribute_fill_uses_product_context_and_validates_options(monk
     product["attributes"] = {"form_factor": "Portable"}
     product["drafts"]["mercadolibre"]["brand"] = "Generic"
     product["drafts"]["mercadolibre"]["model"] = "T-3A"
-    product["drafts"]["mercadolibre"]["attributes"] = {
-        "BRAND": "Generic",
-        "MODEL": "T-3A",
-        "AIR_CONDITIONER_TYPE": "AIR_CONDITIONER_TYPE",
-        "POWER_SUPPLY_TYPE": "POWER_SUPPLY_TYPE",
-    }
+    _set_primary_listing(
+        product["drafts"]["mercadolibre"],
+        attributes={
+            "BRAND": "Generic",
+            "MODEL": "T-3A",
+            "AIR_CONDITIONER_TYPE": "AIR_CONDITIONER_TYPE",
+            "POWER_SUPPLY_TYPE": "POWER_SUPPLY_TYPE",
+        },
+    )
     category = {
         "category_id": "MLM459570",
         "attributes": {
@@ -723,7 +745,7 @@ def test_ai_model_attribute_fill_allows_custom_value_for_open_enum(
     product = default_product_model()
     category = {
         "category_id": "MLM123",
-        "site": "MLM",
+        "site": "CBT",
         "attributes": {
             "required": [
                 {
@@ -763,6 +785,65 @@ def test_ai_model_attribute_fill_allows_custom_value_for_open_enum(
     assert updated["drafts"]["mercadolibre"]["validation_errors"] == [
         "MOUNT_TYPE"
     ]
+
+
+def test_ai_model_attribute_fill_preserves_open_enum_collection(
+    monkeypatch,
+) -> None:
+    product = default_product_model()
+    product["source"]["title"] = "Alpha Beta bundle"
+    category = {
+        "category_id": "700000",
+        "site": "global",
+        "category_path": "Test / Collections",
+        "attributes": {
+            "required": [],
+            "optional": [
+                {
+                    "id": "700001",
+                    "name": "Supported labels",
+                    "required": False,
+                    "value_mode": "open_enum",
+                    "is_collection": True,
+                    "max_value_count": 2,
+                    "options": ["Alpha", "Beta"],
+                }
+            ],
+        },
+    }
+    monkeypatch.setattr(
+        category_attribute_ai_fill,
+        "run_category_attribute_fill_agent",
+        lambda *args: CategoryAttributeFillAgentRun(
+            {
+                "assignments": [
+                    {
+                        "attribute_id": "700001",
+                        "value": "Alpha",
+                        "dictionary_value_id": "",
+                    },
+                    {
+                        "attribute_id": "700001",
+                        "value": "Beta",
+                        "dictionary_value_id": "",
+                    },
+                ],
+                "need_review": [],
+            }
+        ),
+    )
+
+    updated, meta = category_attribute_ai_fill.apply_ai_model_attribute_fill(
+        product,
+        "yandex",
+        category,
+    )
+
+    assert updated["drafts"]["yandex"]["attributes"]["700001"] == {
+        "values": [{"value": "Alpha"}, {"value": "Beta"}]
+    }
+    assert updated["drafts"]["yandex"]["validation_errors"] == []
+    assert meta["ai_filled"] == ["700001"]
 
 
 def test_unresolved_optional_dictionary_attribute_is_not_a_blocking_error(
@@ -919,7 +1000,7 @@ def test_ai_model_attribute_fill_rejects_market_default_without_product_evidence
     )
     category = {
         "category_id": "MLM457530",
-        "site": "MLM",
+        "site": "CBT",
         "attributes": {
             "required": [
                 {
@@ -1023,8 +1104,11 @@ def test_existing_required_open_enum_is_idempotent_and_clears_stale_error(
 ) -> None:
     product = default_product_model()
     draft = product["drafts"]["ozon"]
-    draft["attributes"] = {"9048": "F30"}
-    draft["validation_errors"] = ["9048"]
+    _set_primary_listing(
+        draft,
+        attributes={"9048": "F30"},
+        validation_errors=["9048"],
+    )
     category = {
         "category_id": "91443",
         "site": "global",
@@ -1076,7 +1160,11 @@ def test_existing_required_open_enum_is_idempotent_and_clears_stale_error(
 def test_category_precheck_only_reports_missing_required_category_attributes() -> None:
     product = default_product_model()
     draft = product["drafts"]["mercadolibre"]
-    draft["category_id"] = "MLM123"
+    _set_primary_listing(
+        draft,
+        category_id="MLM123",
+        attributes={"REQUIRED_VALUE": "filled"},
+    )
     draft["brand"] = ""
     draft["model"] = ""
     draft["package_dimensions"] = {
@@ -1085,7 +1173,6 @@ def test_category_precheck_only_reports_missing_required_category_attributes() -
         "height_cm": "",
         "weight_kg": "",
     }
-    draft["attributes"] = {"REQUIRED_VALUE": "filled"}
     category = {
         "category_id": "MLM123",
         "attributes": {
@@ -1108,8 +1195,11 @@ def test_category_precheck_only_reports_missing_required_category_attributes() -
 def test_dictionary_attribute_requires_a_selected_platform_value() -> None:
     product = default_product_model()
     draft = product["drafts"]["ozon"]
-    draft["category_id"] = "94765"
-    draft["attributes"] = {"85": "中性"}
+    _set_primary_listing(
+        draft,
+        category_id="94765",
+        attributes={"85": "中性"},
+    )
     category = {
         "category_id": "94765",
         "attributes": {
@@ -1134,7 +1224,7 @@ def test_dictionary_attribute_requires_a_selected_platform_value() -> None:
         "attributes.85"
     ]
 
-    draft["attributes"]["85"] = {
+    draft["target_sites"][0]["attributes"]["85"] = {
         "values": [
             {
                 "dictionary_value_id": 126745801,

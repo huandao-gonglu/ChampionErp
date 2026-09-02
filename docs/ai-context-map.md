@@ -29,8 +29,8 @@
 ### 当前统一边界
 
 最终目标不是只统一 Agent loop，而是统一全部 `connection_type=api` 的 AI 推理请求：需要工具
-循环的用例使用 Pydantic Agent，不需要 Agent 的普通 chat/JSON/stream 使用 Pydantic Direct
-Model Requests，图片等能力使用锁定版本提供的 Pydantic capability/native tool。两类调用都
+循环的用例使用 Pydantic Agent，不需要 Agent 的普通 chat/JSON/stream/typed output 使用
+Pydantic Direct Model Requests，图片等能力使用锁定版本提供的 Pydantic capability/native tool。两类调用都
 必须复用 `erp_web/services/ai_model_factory.py` 创建的 Model/Provider。
 
 阶段 6 已完成：普通 chat/JSON/stream 统一由 Pydantic Direct Model Requests 发送；图片请求
@@ -45,8 +45,12 @@ Model Requests，图片等能力使用锁定版本提供的 Pydantic capability/
 - `erp_web/services/ai_provider_catalog.py`：产品已正式接入的 Provider Catalog、旧配置迁移和
   Pydantic Provider 公共构造器的唯一 owner。前端只消费 Catalog，不扫描 Pydantic 包，也不
   根据 Base URL 或模型名猜测厂商。
-- `erp_web/services/ai_direct_request_service.py`：普通 API chat/JSON/stream/image 的唯一
-  Pydantic Direct Model 执行入口，负责公开 Pydantic message/event 转换和项目结果归一化。
+- `erp_web/services/ai_direct_request_service.py`：普通 API chat/JSON/stream/typed output/image 的唯一
+  Pydantic Direct Model 执行入口，负责公开 Pydantic message/event 转换和项目结果归一化；类型化输出
+  使用 `OutputObjectDefinition` 的 prompted output，不在业务 Prompt 重复字段清单。
+- `erp_web/services/ai_structured_output.py`：非 Agent 类型化输出的 dependency-light Schema 适配边界；
+  从同一个 Pydantic 类型生成 JSON Schema 并验证返回值。CLI/Browser 尚无 Pydantic `Model` 适配器，
+  因而仅在这两个非 API 边界附加自动生成的 Schema；适配器就绪后删除该提示式分支。
 - `erp_web/services/ai_gateway_probe.py`：API/CLI/Browser 共用的能力探测编排、四态结果
   （`supported` / `unsupported` / `unavailable` / `inconclusive`）、确定性探测素材、连接指纹与
   versioned capability profile owner；探测结果归一化进 capability profile；
@@ -97,7 +101,7 @@ Model Requests，图片等能力使用锁定版本提供的 Pydantic capability/
 API use case
   → centralized Pydantic Model Factory
       ├─ Agent use case → AiAgentFactory → Pydantic Agent
-      ├─ plain chat/json/stream → Pydantic Direct Model Requests
+      ├─ plain chat/json/stream/typed output → Pydantic Direct Model Requests
       └─ image/model capability → Pydantic capability 或登记过的 focused 例外
 
 CLI / Browser use case

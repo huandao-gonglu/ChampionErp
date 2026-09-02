@@ -284,6 +284,18 @@ def _category_record(*_args, **_kwargs) -> dict:
     }
 
 
+def _set_projection_attributes(
+    product: dict,
+    platform: str,
+    attributes: dict,
+) -> dict:
+    updated = deepcopy(product)
+    draft = updated["drafts"][platform]
+    draft["attributes"] = deepcopy(attributes)
+    draft["target_sites"][0]["attributes"] = deepcopy(attributes)
+    return updated
+
+
 def test_finalize_readiness_uses_trusted_publish_state_writer() -> None:
     draft = _draft("draft-finalize", site="CBT", currency="USD")
     draft.update(
@@ -1201,7 +1213,7 @@ def test_category_post_run_failure_preserves_domain_error() -> None:
 
 def test_attribute_fill_persists_partial_result_then_requests_missing_fact() -> None:
     draft = _draft("draft-1")
-    draft["category_id"] = "CAT-1"
+    draft["target_sites"][0]["category_id"] = "CAT-1"
     products = _Products([draft])
 
     def record(*_args, **_kwargs) -> dict:
@@ -1217,8 +1229,11 @@ def test_attribute_fill_persists_partial_result_then_requests_missing_fact() -> 
         return category
 
     def filler(product: dict, platform: str, category: dict | None):
-        updated = deepcopy(product)
-        updated["drafts"][platform]["attributes"] = {"COLOR": "Red"}
+        updated = _set_projection_attributes(
+            product,
+            platform,
+            {"COLOR": "Red"},
+        )
         return updated, {
             "source": "rules",
             "warning": "Agent 未能确定电池型号。",
@@ -1247,7 +1262,7 @@ def test_attribute_fill_dictionary_attribute_requests_live_options() -> None:
     """字典属性待输入时必须实时拉取平台合法候选值，而不是空文本框。"""
 
     draft = _draft("draft-1")
-    draft["category_id"] = "CAT-1"
+    draft["target_sites"][0]["category_id"] = "CAT-1"
     products = _Products([draft])
 
     def record(*_args, **_kwargs) -> dict:
@@ -1265,8 +1280,11 @@ def test_attribute_fill_dictionary_attribute_requests_live_options() -> None:
         return category
 
     def filler(product: dict, platform: str, category: dict | None):
-        updated = deepcopy(product)
-        updated["drafts"][platform]["attributes"] = {"COLOR": "Red"}
+        updated = _set_projection_attributes(
+            product,
+            platform,
+            {"COLOR": "Red"},
+        )
         return updated, {"source": "rules"}
 
     calls: list[tuple[str, str, str, str]] = []
@@ -1307,7 +1325,7 @@ def test_attribute_fill_dictionary_attribute_requests_live_options() -> None:
 
 def test_attribute_fill_dictionary_lookup_failure_falls_back_to_text() -> None:
     draft = _draft("draft-1")
-    draft["category_id"] = "CAT-1"
+    draft["target_sites"][0]["category_id"] = "CAT-1"
     products = _Products([draft])
 
     def record(*_args, **_kwargs) -> dict:
@@ -1325,8 +1343,11 @@ def test_attribute_fill_dictionary_lookup_failure_falls_back_to_text() -> None:
         return category
 
     def filler(product: dict, platform: str, category: dict | None):
-        updated = deepcopy(product)
-        updated["drafts"][platform]["attributes"] = {"COLOR": "Red"}
+        updated = _set_projection_attributes(
+            product,
+            platform,
+            {"COLOR": "Red"},
+        )
         return updated, {"source": "rules"}
 
     def broken_values_loader(*_args, **_kwargs):
@@ -1353,8 +1374,9 @@ def test_attribute_fill_resolves_user_text_into_dictionary_value() -> None:
     """待输入提交的候选文本必须解析为带 dictionary_value_id 的结构化值。"""
 
     draft = _draft("draft-1")
-    draft["category_id"] = "CAT-1"
-    draft["attributes"] = {}
+    draft["target_sites"][0].update(
+        {"category_id": "CAT-1", "attributes": {}}
+    )
     products = _Products([draft])
 
     def record(*_args, **_kwargs) -> dict:
@@ -1374,10 +1396,9 @@ def test_attribute_fill_resolves_user_text_into_dictionary_value() -> None:
         return category
 
     def filler(product: dict, platform: str, category: dict | None):
-        updated = deepcopy(product)
-        attrs = dict(updated["drafts"][platform].get("attributes") or {})
+        attrs = dict(product["drafts"][platform].get("attributes") or {})
         attrs["COLOR"] = "Red"
-        updated["drafts"][platform]["attributes"] = attrs
+        updated = _set_projection_attributes(product, platform, attrs)
         return updated, {"source": "rules"}
 
     def values_loader(platform, category_id, attribute_id, site="", **_kwargs):
@@ -1412,7 +1433,7 @@ def test_attribute_fill_completes_for_category_without_required_attributes() -> 
     """零必填参数类目：没有可填的必填属性时正常完成，不得 needs_input。"""
 
     draft = _draft("draft-1")
-    draft["category_id"] = "CAT-1"
+    draft["target_sites"][0]["category_id"] = "CAT-1"
     products = _Products([draft])
 
     def record(*_args, **_kwargs) -> dict:
@@ -1449,7 +1470,7 @@ def test_attribute_fill_completes_for_category_without_required_attributes() -> 
 
 def test_attribute_fill_accepts_explicit_user_value_and_completes() -> None:
     draft = _draft("draft-1")
-    draft["category_id"] = "CAT-1"
+    draft["target_sites"][0]["category_id"] = "CAT-1"
     products = _Products([draft])
 
     def filler(product: dict, platform: str, category: dict | None):
@@ -1544,6 +1565,12 @@ def test_prepare_claims_target_and_runs_real_owner_boundaries_in_order() -> None
         target = products.drafts[request.draft_id]
         target["category_id"] = "CAT-1"
         target["category_path"] = "Home > Fans"
+        target["target_sites"][0].update(
+            {
+                "category_id": "CAT-1",
+                "category_path": "Home > Fans",
+            }
+        )
         products.product["drafts"]["mercadolibre"] = deepcopy(target)
         return CategoryMatchCapabilityResult(
             draft_id=request.draft_id,
@@ -1558,6 +1585,7 @@ def test_prepare_claims_target_and_runs_real_owner_boundaries_in_order() -> None
         events.append("attributes")
         target = products.drafts[request.draft_id]
         target["attributes"] = {"COLOR": "Red"}
+        target["target_sites"][0]["attributes"] = {"COLOR": "Red"}
         products.product["drafts"]["mercadolibre"] = deepcopy(target)
         return ProductAttributesFillResult(
             draft_id=request.draft_id,
@@ -1705,9 +1733,10 @@ def test_regenerate_copy_operation_marker_skips_retry_after_domain_save() -> Non
     draft.update(
         {
             "images": [{"asset_id": "image-1", "role": "main", "order": 0}],
-            "category_id": "CAT-1",
-            "attributes": {"COLOR": "Red"},
         }
+    )
+    draft["target_sites"][0].update(
+        {"category_id": "CAT-1", "attributes": {"COLOR": "Red"}}
     )
     products = _Products([draft])
     copy_calls = 0
@@ -1928,6 +1957,38 @@ def test_cbt_only_generates_current_language_copy() -> None:
     assert products.save_draft_calls == 1
 
 
+def test_prepare_copy_persists_generated_global_title() -> None:
+    draft = _draft("draft-cbt")
+    products = _Products([draft])
+
+    def copy_generator(*_args, **_kwargs) -> dict:
+        return {
+            "ok": True,
+            "copy": {
+                "title": "Ventilador portátil",
+                "global_title": "Portable Rechargeable Fan",
+                "description": "Descripción localizada",
+            },
+            "language": "es",
+        }
+
+    _prepare_copy(
+        DraftPrepareForMarketRequest(
+            draft_id="draft-cbt",
+            target_platform="mercadolibre",
+        ),
+        target_draft_id="draft-cbt",
+        product_store=products,
+        copy_generator=copy_generator,
+        app_config_loader=lambda: {"test": True},
+        copy_operation_key="",
+    )
+
+    assert products.drafts["draft-cbt"]["global_title"] == (
+        "Portable Rechargeable Fan"
+    )
+
+
 def test_cbt_sales_target_input_does_not_generate_additional_copy() -> None:
     seed_store_currency(
         "mercadolibre",
@@ -1940,9 +2001,10 @@ def test_cbt_sales_target_input_does_not_generate_additional_copy() -> None:
             "copy_source": "ai",
             "copy_generated_at": "2026-08-27T00:00:00Z",
             "images": [{"asset_id": "image-1", "role": "main", "order": 0}],
-            "category_id": "CAT-1",
-            "attributes": {"COLOR": "Red"},
         }
+    )
+    draft["target_sites"][0].update(
+        {"category_id": "CAT-1", "attributes": {"COLOR": "Red"}}
     )
     products = _Products([draft])
     languages: list[str] = []

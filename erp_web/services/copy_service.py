@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from erp_web.schemas.copy import (
+    LocalizedCopyOutput,
+    MercadoLibreCbtLocalizedCopyOutput,
+)
 from erp_web.marketplace_registry import (
     default_marketplace_site,
     marketplace_options,
@@ -66,6 +70,36 @@ def _default_language(target_market: str) -> str:
     return str(default_marketplace_site(target_market).get("language") or "English").strip()
 
 
+def _requires_cbt_global_title(
+    product: dict[str, Any],
+    target_market: str,
+) -> bool:
+    """CBT 草稿除本地化标题外，还需要独立的英文根标题。"""
+
+    if str(target_market or "").strip().lower() != "mercadolibre":
+        return False
+    drafts = product.get("drafts") if isinstance(product.get("drafts"), dict) else {}
+    draft = drafts.get("mercadolibre") if isinstance(drafts.get("mercadolibre"), dict) else {}
+    candidates = [product, draft]
+    for candidate in candidates:
+        platform = str(candidate.get("platform") or "").strip().lower()
+        site = str(candidate.get("site") or "").strip().upper()
+        if site == "CBT" and platform in {"", "mercadolibre"}:
+            return True
+        target_sites = candidate.get("target_sites")
+        if not isinstance(target_sites, list):
+            continue
+        if any(
+            isinstance(target, dict)
+            and str(target.get("platform") or "mercadolibre").strip().lower()
+            == "mercadolibre"
+            and str(target.get("site") or "").strip().upper() == "CBT"
+            for target in target_sites
+        ):
+            return True
+    return False
+
+
 def build_copy_prompt_from_config(
     app_dir: str,
     app_config: dict[str, Any] | None,
@@ -89,41 +123,48 @@ def build_copy_prompt_from_config(
         raise RuntimeError("功能绑定“文案生成”的系统提示词未配置，请在 AI 设置中维护 copy.generate 提示词。")
     if not has_required_context:
         raise RuntimeError("功能绑定“文案生成”的用户提示词必须包含 language、market_label 和 product_summary 上下文。")
+    user_prompt = ai_prompt_templates.render_prompt_template(
+        configured_user,
+        {
+            "language": language,
+            "target_market": target_market,
+            "market_label": market_label,
+            "mode": mode,
+            "title_limit": title_limit,
+            "product_summary": product_summary(product),
+        },
+    )
     return {
         "system": configured_system,
-        "user": ai_prompt_templates.render_prompt_template(
-            configured_user,
-            {
-                "language": language,
-                "target_market": target_market,
-                "market_label": market_label,
-                "mode": mode,
-                "title_limit": title_limit,
-                "product_summary": product_summary(product),
-            },
-        ),
+        "user": user_prompt,
     }
 
 
-def _normalized_generated_copy(parsed: Any, target_market: str) -> dict[str, Any]:
-    if not isinstance(parsed, dict):
-        raise RuntimeError("AI 未返回 JSON 对象。")
+def _normalized_generated_copy(
+    parsed: LocalizedCopyOutput,
+    target_market: str,
+) -> dict[str, Any]:
+    values = parsed.model_dump(mode="json")
     title_limit = platform_title_limit(target_market)
-    title = str(parsed.get("title") or "").strip()
+    title = str(values.get("title") or "").strip()
     if len(title) > title_limit:
         raise RuntimeError(
             f"AI 返回的标题超过 {title_limit} 个字符，请重新生成更短的标题。"
         )
     result = {
         "title": title,
-        "description": str(parsed.get("description") or "").strip(),
-        "bullets": normalize_copy_list(parsed.get("bullets") or parsed.get("selling_points"), 5),
-        "alt_titles": normalize_copy_list(parsed.get("alt_titles") or parsed.get("alternative_titles"), 3),
-        "search_keywords": normalize_copy_list(parsed.get("search_keywords") or parsed.get("keywords"), 20),
+        "description": str(values.get("description") or "").strip(),
+        "bullets": normalize_copy_list(values.get("bullets"), 5),
+        "alt_titles": normalize_copy_list(values.get("alt_titles"), 3),
+        "search_keywords": normalize_copy_list(values.get("search_keywords"), 20),
     }
-    missing = [key for key in ("title", "description") if not result[key]]
-    if missing:
-        raise RuntimeError(f"AI 返回的文案缺少必要字段：{', '.join(missing)}。")
+    if isinstance(parsed, MercadoLibreCbtLocalizedCopyOutput):
+        global_title = parsed.global_title
+        if len(global_title) > title_limit:
+            raise RuntimeError(
+                f"AI 返回的 CBT 根英文标题超过 {title_limit} 个字符，请重新生成更短的标题。"
+            )
+        result["global_title"] = global_title
     return result
 
 
@@ -137,14 +178,21 @@ def generate_copy(
 ) -> dict[str, Any]:
     target = str(target_market or "mercadolibre").strip().lower()
     language = language or _default_language(target)
+    require_global_title = _requires_cbt_global_title(product, target)
     model = {}
     try:
         prompt_pair = build_copy_prompt_from_config(app_dir, app_config, product, target, language, mode)
         model = ai_gateway.resolve_model_for_use_case(app_dir, app_config, "copy.generate")
-        parsed = ai_gateway.chat_json(
+        output_type = (
+            MercadoLibreCbtLocalizedCopyOutput
+            if require_global_title
+            else LocalizedCopyOutput
+        )
+        parsed = ai_gateway.chat_structured(
             app_dir,
             app_config,
             "copy.generate",
+            output_type=output_type,
             messages=[
                 {"role": "system", "content": prompt_pair["system"]},
                 {"role": "user", "content": prompt_pair["user"]},

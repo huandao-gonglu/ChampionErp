@@ -9,7 +9,6 @@ import type {
   Marketplace,
   MercadoLibreMarketPublication,
   MercadoLibrePublication,
-  MarketplaceTargetSite,
   MarketplaceDraft,
   Product,
   UnknownRecord,
@@ -201,22 +200,11 @@ export function normalizeDraft(value: unknown, language: string): MarketplaceDra
   const categoryPath = getString(record, ['category_path'])
   const attributes = normalizeAttributes(record.attributes)
   const validationErrors = normalizeValidationErrors(record.validation_errors)
-  const targetFallback: Partial<MarketplaceTargetSite> = {
-    categoryId,
-    descriptionCategoryId,
-    categoryPath,
-    attributes,
-    validationErrors,
-    publishStatus: getString(record, ['publish_status']),
-    status: getString(record, ['status'], draft.status),
-    lastPrecheck: asRecord(record.last_precheck),
-    lastPrecheckTarget: asRecord(record.last_precheck_target),
-  }
   return {
     ...draft,
     draftId: getString(record, ['draft_id']),
     platforms: platformList(record.platforms),
-    targetSites: normalizeTargetSites(record.target_sites, platformList(record.platforms)[0] || 'mercadolibre', site, draftLanguage, targetFallback),
+    targetSites: normalizeTargetSites(record.target_sites, platformList(record.platforms)[0] || 'mercadolibre', site),
     site,
     enabled: getBoolean(record, ['enabled'], draft.enabled),
     globalTitle: getString(record, ['global_title']),
@@ -378,17 +366,7 @@ export function normalizeDraftDetail(value: unknown): DraftDetail {
     sourceProductId: getString(record, ['source_product_id']),
     platform: primaryPlatform,
     platforms,
-    targetSites: normalizeTargetSites(record.target_sites, primaryPlatform, getString(record, ['site']), draft.language, {
-      categoryId: draft.categoryId,
-      descriptionCategoryId: draft.descriptionCategoryId,
-      categoryPath: draft.categoryPath,
-      attributes: draft.attributes,
-      validationErrors: draft.validationErrors,
-      publishStatus: draft.publishStatus,
-      status: draft.status,
-      lastPrecheck: draft.lastPrecheck,
-      lastPrecheckTarget: draft.lastPrecheckTarget,
-    }),
+    targetSites: normalizeTargetSites(record.target_sites, primaryPlatform, getString(record, ['site'])),
     site: getString(record, ['site']),
     createdAt: getString(record, ['created_at']),
     updatedAt: getString(record, ['updated_at']),

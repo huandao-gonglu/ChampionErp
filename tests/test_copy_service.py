@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
 from conftest import assert_no_old_path
 from erp_web.context import get_context
@@ -32,6 +33,34 @@ def _api_model() -> dict[str, object]:
         "capabilities": ["chat", "json"],
         "enabled": True,
     }
+
+
+@pytest.fixture
+def resolved_copy_model(monkeypatch) -> None:
+    monkeypatch.setattr(
+        copy_service.ai_gateway,
+        "resolve_model_for_use_case",
+        lambda *_args, **_kwargs: {
+            "id": "bound_copy_model",
+            "provider": "Test Provider",
+        },
+    )
+
+
+def _patch_structured_copy(
+    monkeypatch,
+    payload: dict[str, object],
+) -> dict[str, object]:
+    seen: dict[str, object] = {}
+
+    def fake_chat(*_args, **kwargs):
+        output_type = kwargs["output_type"]
+        seen["output_type"] = output_type
+        seen["messages"] = kwargs["messages"]
+        return output_type.model_validate(payload)
+
+    monkeypatch.setattr(copy_service.ai_gateway, "chat_structured", fake_chat)
+    return seen
 
 
 def test_generate_copy_without_api_key_does_not_create_fallback_copy(
@@ -74,13 +103,17 @@ def test_generate_copy_uses_bound_model_and_registry_language(
 
     def fake_chat(*args, **kwargs):
         seen["messages"] = kwargs.get("messages") or args[3]
-        return {
-            "title": "Органайзер для дома",
-            "description": "Компактный органайзер для хранения вещей дома.",
-        }
+        output_type = kwargs["output_type"]
+        seen["output_type"] = output_type
+        return output_type.model_validate(
+            {
+                "title": "Органайзер для дома",
+                "description": "Компактный органайзер для хранения вещей дома.",
+            }
+        )
 
     monkeypatch.setattr(copy_service.ai_gateway, "resolve_model_for_use_case", fake_resolve)
-    monkeypatch.setattr(copy_service.ai_gateway, "chat_json", fake_chat)
+    monkeypatch.setattr(copy_service.ai_gateway, "chat_structured", fake_chat)
 
     result = copy_service.generate_copy(
         str(app_dir),
@@ -94,28 +127,19 @@ def test_generate_copy_uses_bound_model_and_registry_language(
     assert result["provider"] == "Test Provider"
     assert result["copy"]["bullets"] == []
     assert seen["use_case"] == "copy.generate"
+    assert issubclass(seen["output_type"], BaseModel)
+    assert "global_title" not in seen["output_type"].model_fields
 
 
 def test_generate_copy_rejects_overlong_title_instead_of_truncating(
     app_dir: Path,
     monkeypatch,
+    resolved_copy_model,
 ) -> None:
-    monkeypatch.setattr(
-        copy_service.ai_gateway,
-        "resolve_model_for_use_case",
-        lambda *_args, **_kwargs: {
-            "id": "bound_copy_model",
-            "provider": "Test Provider",
-        },
-    )
     overlong_title = "x" * 61
-    monkeypatch.setattr(
-        copy_service.ai_gateway,
-        "chat_json",
-        lambda *_args, **_kwargs: {
-            "title": overlong_title,
-            "description": "Description",
-        },
+    _patch_structured_copy(
+        monkeypatch,
+        {"title": overlong_title, "description": "Description"},
     )
 
     result = copy_service.generate_copy(
@@ -129,6 +153,154 @@ def test_generate_copy_rejects_overlong_title_instead_of_truncating(
     assert result["ok"] is False
     assert "超过 60 个字符" in result["error"]
     assert result["copy"] == {}
+
+
+@pytest.mark.parametrize(
+    "mercadolibre_draft",
+    [
+        {"site": "CBT"},
+        {"target_sites": [{"platform": "mercadolibre", "site": "CBT"}]},
+    ],
+    ids=("draft-site", "target-sites"),
+)
+def test_generate_copy_for_cbt_requires_and_preserves_english_global_title(
+    app_dir: Path,
+    monkeypatch,
+    resolved_copy_model,
+    mercadolibre_draft: dict[str, object],
+) -> None:
+    global_title = "Foldable Storage Organizer"
+    seen = _patch_structured_copy(
+        monkeypatch,
+        {
+            "global_title": global_title,
+            "title": "Organizador de almacenamiento plegable",
+            "description": "Organizador plegable para guardar artículos del hogar.",
+        },
+    )
+
+    result = copy_service.generate_copy(
+        str(app_dir),
+        {
+            "name": "Foldable storage organizer",
+            "drafts": {"mercadolibre": mercadolibre_draft},
+        },
+        {"ai_models": []},
+        target_market="mercadolibre",
+        language="es-MX",
+    )
+
+    assert result["ok"] is True
+    assert result["copy"]["global_title"] == global_title
+    output_type = seen["output_type"]
+    assert issubclass(output_type, BaseModel)
+    schema = output_type.model_json_schema()
+    assert "global_title" in schema["required"]
+    global_title_description = schema["properties"]["global_title"]["description"]
+    assert "English" in global_title_description or "英文" in global_title_description
+    user_prompt = next(
+        message["content"]
+        for message in seen["messages"]
+        if message["role"] == "user"
+    )
+    assert "global_title" not in user_prompt
+
+
+@pytest.mark.parametrize(
+    ("global_title", "error_marker"),
+    [(None, "global_title"), ("x" * 61, "60")],
+    ids=("missing", "overlong"),
+)
+def test_generate_copy_for_cbt_rejects_invalid_global_title(
+    app_dir: Path,
+    monkeypatch,
+    resolved_copy_model,
+    global_title: str | None,
+    error_marker: str,
+) -> None:
+    payload: dict[str, object] = {
+        "title": "Organizador plegable",
+        "description": "Organizador plegable para el hogar.",
+    }
+    if global_title is not None:
+        payload["global_title"] = global_title
+    _patch_structured_copy(monkeypatch, payload)
+
+    result = copy_service.generate_copy(
+        str(app_dir),
+        {
+            "name": "Foldable organizer",
+            "drafts": {"mercadolibre": {"site": "CBT"}},
+        },
+        {"ai_models": []},
+        target_market="mercadolibre",
+        language="es-MX",
+    )
+
+    assert result["ok"] is False
+    assert result["copy"] == {}
+    assert error_marker in result["error"]
+
+
+@pytest.mark.parametrize(
+    ("target_market", "product"),
+    [
+        (
+            "mercadolibre",
+            {
+                "name": "Mexico organizer",
+                "drafts": {
+                    "mercadolibre": {
+                        "site": "MLM",
+                        "target_sites": [{"site": "MLM"}],
+                    }
+                },
+            },
+        ),
+        (
+            "ozon",
+            {
+                "name": "Ozon organizer",
+                "drafts": {"mercadolibre": {"site": "CBT"}},
+            },
+        ),
+    ],
+    ids=("mercadolibre-non-cbt", "non-mercadolibre"),
+)
+def test_generate_copy_outside_mercadolibre_cbt_does_not_require_global_title(
+    app_dir: Path,
+    monkeypatch,
+    resolved_copy_model,
+    target_market: str,
+    product: dict[str, object],
+) -> None:
+    seen = _patch_structured_copy(
+        monkeypatch,
+        {
+            "title": "Localized organizer",
+            "description": "Localized organizer description.",
+        },
+    )
+
+    result = copy_service.generate_copy(
+        str(app_dir),
+        product,
+        {"ai_models": []},
+        target_market=target_market,
+        language="en-US",
+    )
+
+    assert result["ok"] is True
+    assert "global_title" not in result["copy"]
+    output_type = seen["output_type"]
+    assert issubclass(output_type, BaseModel)
+    assert "global_title" not in output_type.model_fields
+    user_prompt = next(
+        message["content"]
+        for message in seen["messages"]
+        if message["role"] == "user"
+    )
+    assert "global_title" not in user_prompt
 
 
 def test_configured_copy_prompt_contains_target_and_product_context(
@@ -147,6 +319,34 @@ def test_configured_copy_prompt_contains_target_and_product_context(
     assert "Ozon" in prompt["user"]
     assert "Manual organizer" in prompt["user"]
     assert "{$" not in prompt["user"]
+
+
+def test_configured_copy_prompt_does_not_duplicate_output_schema(
+    app_dir: Path,
+) -> None:
+    cbt_prompt = copy_service.build_copy_prompt_from_config(
+        str(app_dir),
+        {},
+        {
+            "name": "Manual organizer",
+            "drafts": {"mercadolibre": {"site": "CBT"}},
+        },
+        "mercadolibre",
+        "es-MX",
+        "rewrite",
+    )
+
+    assert "global_title" not in cbt_prompt["user"]
+    assert not any(
+        field_declaration in cbt_prompt["user"]
+        for field_declaration in (
+            "title: string",
+            "description: string",
+            "bullets: array",
+            "alt_titles: array",
+            "search_keywords: array",
+        )
+    )
 
 
 def test_copy_service_does_not_hardcode_keys(

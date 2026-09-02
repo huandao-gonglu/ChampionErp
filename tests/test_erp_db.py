@@ -88,6 +88,34 @@ class ErpDbTests(unittest.TestCase):
     def _db(self, app_dir: Path) -> ErpDatabase:
         return ErpDatabase(app_dir / erp_db.DEFAULT_DB_NAME)
 
+    def test_draft_record_synthetic_target_does_not_inherit_root_language(self) -> None:
+        row = {
+            "product_json": "{}",
+            "draft_id": "draft-no-root-language-fallback",
+            "product_id": "product-no-root-language-fallback",
+            "platform": "yandex",
+            "site": "global",
+            "status": "claimed",
+            "product_title": "",
+            "main_image": "",
+            "source_platform": "",
+            "source_url": "",
+            "created_at": "2026-09-02T00:00:00Z",
+            "updated_at": "2026-09-02T00:00:00Z",
+        }
+        draft = {
+            "platform": "yandex",
+            "site": "global",
+            "language": "es-MX",
+            "target_sites": None,
+        }
+
+        with mock.patch.object(ErpDatabase, "_draft_from_row", return_value=draft):
+            record = ErpDatabase._draft_record_from_row(row)  # type: ignore[arg-type]
+
+        self.assertEqual(record["language"], "es-MX")
+        self.assertEqual(record["target_sites"][0]["language"], "ru-RU")
+
     def test_legacy_draft_price_and_currency_are_read_as_stale_v2_data(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = self._db(Path(tmp))

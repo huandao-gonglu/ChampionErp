@@ -332,14 +332,20 @@ def _result(
     trace: CategoryMatchTrace | None = None,
     agent_run: CategoryMatchAgentRun | None = None,
 ) -> CategoryMatchResult:
-    public_candidates: list[CategoryCandidate] = [
-        {
+    public_candidates: list[CategoryCandidate] = []
+    for candidate in ledger.candidates():
+        public_candidate: CategoryCandidate = {
             "category_id": str(candidate.get("category_id") or ""),
             "name": str(candidate.get("name") or ""),
             "path_segments": list(candidate.get("path_segments") or []),
         }
-        for candidate in ledger.candidates()
-    ]
+        if "description_category_id" in candidate:
+            public_candidate["description_category_id"] = str(
+                candidate.get("description_category_id") or ""
+            )
+        if "type_id" in candidate:
+            public_candidate["type_id"] = str(candidate.get("type_id") or "")
+        public_candidates.append(public_candidate)
     result: CategoryMatchResult = {
         "ok": ok,
         "status": status,

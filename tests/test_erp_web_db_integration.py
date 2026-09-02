@@ -563,14 +563,29 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                     "pricing": {"targets": {"yandex:global": {"listing_currency": "RUB", "applied_price": {"amount": "33", "currency": "RUB"}}}},
                     "status": "copy_ready",
                     "language": "ru-RU",
+                    "category_id": "yandex-category-1",
+                    "description_category_id": "yandex-description-category-1",
+                    "category_path": "Yandex > Home > Storage",
+                    "attributes": {"BRAND": "Test Brand"},
                     "target_sites": [
                         {
                             "platform": "yandex",
                             "site": "global",
                             "category_id": "yandex-category-1",
+                            "description_category_id": (
+                                "yandex-description-category-1"
+                            ),
+                            "category_path": "Yandex > Home > Storage",
                             "attributes": {"BRAND": "Test Brand"},
                         },
-                        {"platform": "ozon", "site": "global"},
+                        {
+                            "platform": "ozon",
+                            "site": "global",
+                            "category_id": "",
+                            "description_category_id": "",
+                            "category_path": "",
+                            "attributes": {},
+                        },
                     ],
                 }
             )
@@ -587,6 +602,15 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 result["draft"]["target_sites"][0]["attributes"],
                 {"BRAND": "Test Brand"},
             )
+            ozon_target = result["draft"]["target_sites"][1]
+            self.assertEqual(ozon_target["platform"], "ozon")
+            for field in (
+                "category_id",
+                "description_category_id",
+                "category_path",
+            ):
+                self.assertEqual(ozon_target[field], "")
+            self.assertEqual(ozon_target["attributes"], {})
             # 已退役的类目 Schema 字段必须被保存入口显式拒绝。
             _rejected, rejected_error, rejected_status = (
                 get_context().products.save_draft_detail(
@@ -606,11 +630,194 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             self.assertEqual(
                 rejected_error["error_code"], "RETIRED_CATEGORY_SCHEMA_FIELD"
             )
-            self.assertEqual(get_context().db.load_draft_model(yandex_draft_id)["title"], "Yandex independent title")
-            self.assertEqual(get_context().db.load_draft_model(yandex_draft_id)["platforms"], ["yandex", "ozon"])
+            reloaded_yandex = get_context().db.load_draft_model(yandex_draft_id)
+            self.assertEqual(reloaded_yandex["title"], "Yandex independent title")
+            self.assertEqual(reloaded_yandex["platforms"], ["yandex", "ozon"])
+            reloaded_ozon_target = reloaded_yandex["target_sites"][1]
+            for field in (
+                "category_id",
+                "description_category_id",
+                "category_path",
+            ):
+                self.assertEqual(reloaded_ozon_target[field], "")
+            self.assertEqual(reloaded_ozon_target["attributes"], {})
             updated_record = next(item for item in get_context().db.list_draft_records(scope="all") if item["draft_id"] == yandex_draft_id)
             self.assertEqual(updated_record["platforms"], ["yandex", "ozon"])
             self.assertEqual(get_context().db.load_draft_model(ozon_draft_id)["title"], "Ozon original")
+
+        self.with_temp_app(run)
+
+    def test_save_draft_detail_scopes_target_owned_changes_to_one_market(
+        self,
+    ) -> None:
+        def run(app_dir: Path) -> None:
+            yandex_precheck = {
+                "ok": True,
+                "market": "yandex",
+                "checked_at": "2026-08-31T08:00:00Z",
+            }
+            ozon_precheck = {
+                "ok": True,
+                "market": "ozon",
+                "checked_at": "2026-08-31T08:01:00Z",
+            }
+            yandex_target = {
+                "platform": "yandex",
+                "site": "global",
+                "language": "ru-RU",
+                "listing_currency": "RUB",
+                "category_id": "60996608",
+                "description_category_id": "yandex-description-category",
+                "category_path": "Yandex > Home > Storage",
+                "attributes": {"BRAND": "Brand Y"},
+                "category_precheck": yandex_precheck,
+                "last_precheck": yandex_precheck,
+                "last_precheck_target": {
+                    "platform": "yandex",
+                    "site": "global",
+                },
+                "publish_status": "ready",
+                "status": "ready_to_publish",
+            }
+            ozon_target = {
+                "platform": "ozon",
+                "site": "global",
+                "language": "ru-RU",
+                "listing_currency": "RUB",
+                "category_id": "95199",
+                "description_category_id": "17028674",
+                "category_path": "Ozon > Home > Storage",
+                "attributes": {"85": "Brand O"},
+                "category_precheck": ozon_precheck,
+                "last_precheck": ozon_precheck,
+                "last_precheck_target": {
+                    "platform": "ozon",
+                    "site": "global",
+                },
+                "publish_status": "ready",
+                "status": "ready_to_publish",
+            }
+            product = sample_product(
+                "Scoped target invalidation",
+                "https://example.com/scoped-target-invalidation",
+            )
+            product["drafts"]["yandex"] = {
+                "enabled": True,
+                "platforms": ["yandex", "ozon"],
+                "site": "global",
+                "language": "ru-RU",
+                "title": "Shared marketplace title",
+                "description": "Shared marketplace description",
+                "category_id": "60996608",
+                "description_category_id": "yandex-description-category",
+                "category_path": "Yandex > Home > Storage",
+                "attributes": {"BRAND": "Brand Y"},
+                "target_sites": [yandex_target, ozon_target],
+                "category_precheck": yandex_precheck,
+                "last_precheck": yandex_precheck,
+                "last_precheck_target": yandex_target,
+                "publish_status": "ready",
+                "status": "ready_to_publish",
+            }
+            product["publish_preview"] = {
+                "yandex": yandex_precheck,
+                "ozon": ozon_precheck,
+            }
+            saved = get_context().products.save_product(product)
+            original = deepcopy(saved["drafts"]["yandex"])
+            changed_targets = deepcopy(original["target_sites"])
+            changed_targets[1].update(
+                {
+                    "category_id": "95200",
+                    "description_category_id": "17028675",
+                    "category_path": "Ozon > Home > Organizers",
+                    "attributes": {"85": "Brand O2"},
+                }
+            )
+
+            result, error, status = get_context().products.save_draft_detail(
+                {
+                    "draft_id": original["draft_id"],
+                    # 编辑器会把当前 Ozon 投影同步到根；这些字段不能让兄弟市场失效。
+                    "category_id": "95200",
+                    "description_category_id": "17028675",
+                    "category_path": "Ozon > Home > Organizers",
+                    "attributes": {"85": "Brand O2"},
+                    "target_sites": changed_targets,
+                }
+            )
+
+            self.assertIsNone(error)
+            self.assertEqual(status, 200)
+            updated = result["draft"]
+            targets_by_platform = {
+                target["platform"]: target
+                for target in updated["target_sites"]
+            }
+            saved_yandex = targets_by_platform["yandex"]
+            self.assertEqual(saved_yandex["status"], "ready_to_publish")
+            self.assertEqual(saved_yandex["publish_status"], "ready")
+            self.assertEqual(
+                saved_yandex["category_precheck"],
+                yandex_precheck,
+            )
+            self.assertEqual(saved_yandex["last_precheck"], yandex_precheck)
+            saved_ozon = targets_by_platform["ozon"]
+            self.assertEqual(saved_ozon["status"], "category_ready")
+            self.assertEqual(saved_ozon["publish_status"], "")
+            self.assertEqual(saved_ozon["category_precheck"], {})
+            self.assertEqual(saved_ozon["last_precheck"], {})
+            for field in (
+                "category_id",
+                "description_category_id",
+                "category_path",
+                "attributes",
+            ):
+                self.assertEqual(updated[field], saved_yandex[field])
+            self.assertEqual(updated["platform"], "yandex")
+            reloaded = get_context().db.load_draft_model(
+                original["draft_id"]
+            )
+            for field in (
+                "category_id",
+                "description_category_id",
+                "category_path",
+                "attributes",
+            ):
+                self.assertEqual(reloaded[field], saved_yandex[field])
+            self.assertIn(
+                "yandex",
+                result["productContext"]["raw"]["publish_preview"],
+            )
+            self.assertNotIn(
+                "ozon",
+                result["productContext"]["raw"]["publish_preview"],
+            )
+
+            # 恢复相同 ready 快照后，真正共享的 title 变化仍应让全部目标失效。
+            get_context().db.upsert_draft_model(
+                saved["product_id"],
+                "yandex",
+                original,
+            )
+            restored = get_context().db.load_draft_model(original["draft_id"])
+            shared, shared_error, shared_status = (
+                get_context().products.save_draft_detail(
+                    {
+                        "draft_id": restored["draft_id"],
+                        "title": "Updated shared marketplace title",
+                        "target_sites": restored["target_sites"],
+                    }
+                )
+            )
+
+            self.assertIsNone(shared_error)
+            self.assertEqual(shared_status, 200)
+            for target in shared["draft"]["target_sites"]:
+                self.assertEqual(target["status"], "category_ready")
+                self.assertEqual(target["publish_status"], "")
+                self.assertEqual(target["category_precheck"], {})
+                self.assertEqual(target["last_precheck"], {})
 
         self.with_temp_app(run)
 
@@ -1314,6 +1521,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "images": [],
             "category_id": "",
             "attributes": {},
+            "target_sites": [mercadolibre_cbt_target()],
             "pricing": {"targets": {}},
             "status": "claimed",
         }
@@ -1337,6 +1545,12 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                 "attributes": {"BRAND": "BrandX"},
                 "pricing": pricing_targets("mercadolibre", "CBT", "USD", "19.99"),
                 "stock": "5",
+            }
+        )
+        product["drafts"]["mercadolibre"]["target_sites"][0].update(
+            {
+                "category_id": "CBT123",
+                "attributes": {"BRAND": "BrandX"},
             }
         )
         self.assertEqual(get_context().products.draft_workflow_status(product, "mercadolibre"), "images_ready")
@@ -1789,6 +2003,11 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
                     "platform": "mercadolibre",
                     "site": "CBT",
                     "listing_currency": "USD",
+                    "category_id": "CBT123",
+                    "attributes": {
+                        "BRAND": "BrandX",
+                        "MODEL": "ModelY",
+                    },
                     "sites_to_sell": [
                         {"site_id": "MLM", "logistic_type": "remote"}
                     ],
@@ -1878,13 +2097,16 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "brand": "DraftBrand",
             "model": "DraftModel",
             "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
-            "category_id": "CBT457856",
-            "attributes": {"BRAND": "DraftBrand", "MODEL": "DraftModel"},
             "target_sites": [
                 {
                     "platform": "mercadolibre",
                     "site": "CBT",
                     "listing_currency": "USD",
+                    "category_id": "CBT457856",
+                    "attributes": {
+                        "BRAND": "DraftBrand",
+                        "MODEL": "DraftModel",
+                    },
                     "sites_to_sell": [
                         {"site_id": "MLM", "logistic_type": "remote"}
                     ],
@@ -2752,7 +2974,11 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
             "category_id": "CBT123",
             "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
-            "target_sites": [mercadolibre_cbt_target()],
+            "target_sites": [{
+                **mercadolibre_cbt_target(),
+                "category_id": "CBT123",
+                "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
+            }],
             "stock": "5",
             "pricing": pricing_targets("mercadolibre", "CBT", "USD", "19.99"),
             "publish_status": "ready",
@@ -2772,7 +2998,11 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
             "category_id": "CBT123",
             "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
-            "target_sites": [mercadolibre_cbt_target()],
+            "target_sites": [{
+                **mercadolibre_cbt_target(),
+                "category_id": "CBT123",
+                "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
+            }],
             "stock": "5",
             "pricing": pricing_targets("mercadolibre", "CBT", "USD", "19.99"),
             "publish_status": "not_ready",
@@ -2795,7 +3025,11 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
             "category_id": "CBT123",
             "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
-            "target_sites": [mercadolibre_cbt_target()],
+            "target_sites": [{
+                **mercadolibre_cbt_target(),
+                "category_id": "CBT123",
+                "attributes": {"BRAND": "BrandX", "MODEL": "ModelY"},
+            }],
             "pricing": pricing_targets("mercadolibre", "CBT", "USD", "19.99"),
             "stock": "5",
             "publish_status": "ready",
@@ -2817,7 +3051,11 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             "images": [{"asset_id": "img_1", "role": "main", "order": 0}],
             "category_id": "CBT123",
             "attributes": {},
-            "target_sites": [mercadolibre_cbt_target()],
+            "target_sites": [{
+                **mercadolibre_cbt_target(),
+                "category_id": "CBT123",
+                "attributes": {},
+            }],
             "pricing": pricing_targets("mercadolibre", "CBT", "USD", "19.99"),
             "stock": "5",
             "publish_status": "ready",

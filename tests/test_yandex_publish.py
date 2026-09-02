@@ -135,6 +135,21 @@ def _draft(**overrides: Any) -> dict[str, Any]:
         },
     }
     draft.update(overrides)
+    if "target_sites" not in overrides:
+        draft["target_sites"] = [
+            {
+                "platform": "yandex",
+                "site": "global",
+                "language": "ru-RU",
+                "listing_currency": "RUB",
+                "category_id": str(draft.get("category_id") or ""),
+                "description_category_id": str(
+                    draft.get("description_category_id") or ""
+                ),
+                "category_path": str(draft.get("category_path") or ""),
+                "attributes": deepcopy(draft.get("attributes") or {}),
+            }
+        ]
     return draft
 
 
@@ -388,6 +403,36 @@ def test_build_payload_open_enum_custom_value_and_default_unit() -> None:
     assert rows == [
         {"parameterId": 44, "value": "собственное значение"},
         {"parameterId": 9048, "value": "500", "unitId": 1},
+    ]
+
+
+def test_build_payload_open_enum_collection_emits_one_row_per_value() -> None:
+    schema = {
+        "required": [],
+        "optional": [
+            {
+                "id": "700001",
+                "name": "Supported labels",
+                "required": False,
+                "value_mode": "open_enum",
+                "is_collection": True,
+                "options": ["Alpha", "Beta"],
+            }
+        ],
+    }
+    product = _product(
+        attributes={
+            "700001": {
+                "values": [{"value": "Alpha"}, {"value": "Beta"}],
+            }
+        },
+    )
+
+    payload = build_yandex_publish_payload(product, _config(), _record(schema))
+
+    assert payload["catalog"]["offer"]["parameterValues"] == [
+        {"parameterId": 700001, "value": "Alpha"},
+        {"parameterId": 700001, "value": "Beta"},
     ]
 
 
