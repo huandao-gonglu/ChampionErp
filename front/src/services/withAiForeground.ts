@@ -30,6 +30,7 @@ export const PRESENTATION_STREAM_SETTLE_MS = 5_000
 
 export interface AiForegroundOptions<TResult> {
   displayTitle: string
+  initialUserMessage?: string
   successNotice?: (result: TResult) => string
   failureNotice?: (error: unknown) => string
 }
@@ -60,6 +61,7 @@ export async function withAiForeground<TResult>(
   try {
     descriptor = await reserveAiPresentation(options.displayTitle)
     chat = createPresentationObserveChat(descriptor.presentationId, {
+      initialUserMessage: options.initialUserMessage,
       onError: (error) => {
         streamError ??= error
       },

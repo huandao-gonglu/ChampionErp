@@ -20,6 +20,7 @@ import { useWorkflowActivityStore } from '@/stores/workflow/activity'
 import { useWorkflowCatalogStore } from '@/stores/workflow/catalog'
 import { useWorkflowCollectionStore } from '@/stores/workflow/collection'
 import { withAiForeground } from '@/services/withAiForeground'
+import { capabilityProbeUserMessage } from '@/constants/aiCapabilityProbe'
 import type { AuthResult, Marketplace, MercadoLibreAuthChecklist, MercadoLibreTestMode, UnknownRecord } from '@/types/workflow'
 import { sanitizePublicAppConfig } from '@/utils/configSecurity'
 
@@ -134,6 +135,7 @@ export const useWorkflowSettingsStore = defineStore('workflow-settings', () => {
         : await withAiForeground<AuthResult>(
           {
             displayTitle: `测试 AI 模型 · ${modelLabel}`,
+            initialUserMessage: capabilityProbeUserMessage(model),
             successNotice: (probeResult) => (
               probeResult.ok
                 ? `${modelLabel} 能力测试通过`

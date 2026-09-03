@@ -189,7 +189,7 @@ class CodexCliProvider(AiChatProvider):
             prompt,
             context.timeout,
         )
-        probe_runtime._validate_chat_probe_text(text, context.probe_token)
+        probe_runtime._validate_chat_probe_text(text)
 
     def _probe_json(
         self,
@@ -204,7 +204,7 @@ class CodexCliProvider(AiChatProvider):
             context.timeout,
         )
         data = parse_json_text(text)
-        probe_runtime._validate_json_probe_data(data, context.probe_token)
+        probe_runtime._validate_json_probe_data(data)
 
     def _probe_web_search(
         self,
@@ -254,12 +254,15 @@ class CodexCliProvider(AiChatProvider):
         if capability == ai_model_config.CAP_CHAT:
             self._probe_chat(
                 context,
-                probe_runtime._chat_probe_default_messages(context.probe_token),
+                probe_runtime._chat_probe_default_messages(),
             )
         elif capability == ai_model_config.CAP_JSON:
             self._probe_json(
                 context,
-                probe_runtime._json_probe_default_messages(context.probe_token),
+                probe_runtime._probe_messages(
+                    options,
+                    probe_runtime._json_probe_default_messages(),
+                ),
             )
         elif capability == ai_model_config.CAP_WEB_SEARCH:
             self._probe_web_search(

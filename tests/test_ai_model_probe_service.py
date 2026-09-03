@@ -90,7 +90,7 @@ def test_image_edit_probe_fixture_is_a_decodable_red_png() -> None:
     assert red > blue
 
 
-def test_chat_and_json_probes_validate_nonce_without_declared_capabilities(
+def test_chat_reply_and_json_nonce_are_validated_without_declared_capabilities(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -98,14 +98,12 @@ def test_chat_and_json_probes_validate_nonce_without_declared_capabilities(
     _install_probe_binding(monkeypatch, model)
 
     def request_for_probe(**kwargs):
-        token = kwargs["messages"][-1]["content"]
-        return ModelResponse(parts=[TextPart(token)])
+        assert kwargs["messages"] == [{"role": "user", "content": "hello"}]
+        return ModelResponse(parts=[TextPart("Hello! How can I help?")])
 
     def request_json_for_probe(**kwargs):
-        challenge = json.loads(kwargs["messages"][-1]["content"])
-        return ai_gateway_probe._json_probe_expected_data(
-            challenge["probe_token"]
-        ), ""
+        assert kwargs["messages"] == ai_gateway_probe._json_probe_default_messages()
+        return {"status": "ok", "details": [1, 2, 3]}, ""
 
     monkeypatch.setattr(
         ai_model_probe_service.ai_direct_request_service,
@@ -122,46 +120,68 @@ def test_chat_and_json_probes_validate_nonce_without_declared_capabilities(
     structured = _run(tmp_path, model, "json")
 
     assert chat["results"]["chat"]["status"] == "supported"
+    assert (
+        chat["results"]["chat"]["capability_profile"]["probe_version"]
+        == "chat.v3"
+    )
     assert structured["results"]["json"]["status"] == "supported"
     profile = structured["results"]["json"]["capability_profile"]
     assert profile["version"] == 2
-    assert profile["probe_version"] == "json.v3"
+    assert profile["probe_version"] == "json.v4"
     assert len(profile["configuration_fingerprint"]) == 64
     assert "secret" not in json.dumps(profile)
     assert model["capabilities"] == []
 
 
-def test_json_probe_requires_exact_array_transformation() -> None:
-    token = "nonce"
-    expected = ai_gateway_probe._json_probe_expected_data(token)
+def test_chat_probe_accepts_any_non_empty_reply() -> None:
+    ai_gateway_probe._validate_chat_probe_text("Hello! How can I help?")
 
-    ai_gateway_probe._validate_json_probe_data(expected, token)
+    with pytest.raises(ai_gateway_probe.CapabilityProbeUnsupported):
+        ai_gateway_probe._validate_chat_probe_text("  \n  ")
 
-    invalid_results = (
-        ai_gateway_probe._json_probe_challenge_payload(token),
-        {"probe_token": token, "ok": True},
-        {"probe_token": token, "result": list(reversed(expected["result"]))},
-        {"probe_token": token, "result": [str(item) for item in expected["result"]]},
-        {**expected, "explanation": "done"},
-        {"probe_token": "wrong", "result": expected["result"]},
+
+def test_json_probe_only_requires_a_json_object() -> None:
+    ai_gateway_probe._validate_json_probe_data({})
+    ai_gateway_probe._validate_json_probe_data(
+        {"status": "ok", "details": [1, 2, 3]}
     )
-    for invalid in invalid_results:
-        with pytest.raises(ai_gateway_probe.CapabilityProbeUnsupported):
-            ai_gateway_probe._validate_json_probe_data(invalid, "nonce")
+
+    with pytest.raises(ai_gateway_probe.CapabilityProbeUnsupported):
+        ai_gateway_probe._validate_json_probe_data([])  # type: ignore[arg-type]
 
 
-def test_json_probe_challenge_has_mixed_parity_and_variable_rules() -> None:
-    first = ai_gateway_probe._json_probe_challenge_payload("x789")
-    second = ai_gateway_probe._json_probe_challenge_payload("x790")
+def test_json_probe_uses_configured_messages(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    model = _model()
+    model["probe_messages"] = [
+        {"role": "system", "content": "Return JSON."},
+        {"role": "user", "content": "Return a custom JSON object."},
+    ]
+    _install_probe_binding(monkeypatch, model)
 
-    assert set(first) == {"numbers", "rules", "probe_token"}
-    assert first["probe_token"] == "x789"
-    assert len(first["numbers"]) == 5
-    assert sum(number % 2 == 0 for number in first["numbers"]) == 2
-    assert sum(number % 2 != 0 for number in first["numbers"]) == 3
-    assert first["rules"]["remove_even"] is True
-    assert first["rules"]["sort"] == "ascending"
-    assert first != second
+    def request_json_for_probe(**kwargs):
+        assert kwargs["messages"] == model["probe_messages"]
+        return {"custom": True}, ""
+
+    monkeypatch.setattr(
+        ai_model_probe_service.ai_direct_request_service,
+        "request_json_for_probe",
+        request_json_for_probe,
+    )
+
+    report = ai_model_probe_service.probe_model_capabilities(
+        model,
+        "ignored",
+        "ignored",
+        ["json"],
+        10,
+        probe_options=ai_gateway_probe._probe_options(model),
+        app_dir=tmp_path,
+    )
+
+    assert report["results"]["json"]["status"] == "supported"
 
 
 def test_internal_probe_assertion_is_inconclusive_not_unsupported(
@@ -189,10 +209,9 @@ def test_web_search_probe_persists_the_verified_request_mode(
 ) -> None:
     model = _model()
     _install_probe_binding(monkeypatch, model)
-    monkeypatch.setattr(
-        ai_model_probe_service.ai_direct_request_service,
-        "request_json_for_probe",
-        lambda **kwargs: (
+    def request_json_for_probe(**kwargs):
+        assert kwargs["output_type"] is ai_model_probe_service._WebSearchProbeOutput
+        return (
             {
                 "can_access_web": True,
                 "source_url": "https://weather.example.invalid/chengdu",
@@ -203,7 +222,12 @@ def test_web_search_probe_persists_the_verified_request_mode(
                 "evidence": "实时天气页面",
             },
             "web_search_options",
-        ),
+        )
+
+    monkeypatch.setattr(
+        ai_model_probe_service.ai_direct_request_service,
+        "request_json_for_probe",
+        request_json_for_probe,
     )
 
     report = _run(tmp_path, model, "web_search")
@@ -212,6 +236,36 @@ def test_web_search_probe_persists_the_verified_request_mode(
     assert result["status"] == "supported"
     assert result["request_mode"] == "web_search_options"
     assert result["capability_profile"]["request_mode"] == "web_search_options"
+
+
+def test_web_search_probe_reports_plain_text_as_unsupported(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    model = _model()
+    _install_probe_binding(monkeypatch, model)
+
+    def request_json_for_probe(**kwargs):
+        del kwargs
+        raise ai_model_probe_service.ai_direct_request_service.AiProbeStructuredOutputError(
+            "模型返回的内容不是 JSON object。"
+        )
+
+    monkeypatch.setattr(
+        ai_model_probe_service.ai_direct_request_service,
+        "request_json_for_probe",
+        request_json_for_probe,
+    )
+
+    report = _run(tmp_path, model, "web_search")
+
+    result = report["results"]["web_search"]
+    assert result["status"] == "unsupported"
+    assert result["error_code"] == "CAPABILITY_PROBE_UNSUPPORTED"
+    assert result["error"] == (
+        "模型返回了普通文本或不符合约定的结果，未能证明实时联网能力。"
+    )
+    assert "AI response JSON" not in result["error"]
 
 
 def test_function_call_probe_requires_a_complete_exact_round_trip(

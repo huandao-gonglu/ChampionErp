@@ -8,6 +8,7 @@ import * as publishingApi from '@/api/workflow/publishing'
 import * as settingsApi from '@/api/workflow/settings'
 import * as stateApi from '@/api/workflow/state'
 import * as translationApi from '@/api/workflow/translation'
+import { jsonProbeMessages, JSON_PROBE_USER_MESSAGE } from '@/constants/aiCapabilityProbe'
 import { withAiForeground } from '@/services/withAiForeground'
 import type { AuthResult, DraftDetail, DraftIndexItem, PricingResult, Product } from '@/types/workflow'
 
@@ -209,7 +210,10 @@ describe('workflow store live API flow', () => {
     })
 
     expect(withAiForeground).toHaveBeenCalledWith(
-      expect.objectContaining({ displayTitle: '测试 AI 模型 · 模型 A' }),
+      expect.objectContaining({
+        displayTitle: '测试 AI 模型 · 模型 A',
+        initialUserMessage: 'hello',
+      }),
       expect.any(Function),
     )
     expect(workflowApi.testAiModel).toHaveBeenCalledWith(
@@ -217,6 +221,32 @@ describe('workflow store live API flow', () => {
       'presentation-store-test',
     )
     expect(store.lastAuthResult).toEqual(result)
+  })
+
+  it('JSON 能力测试在 presentation 中显示实际 user 消息', async () => {
+    const result: AuthResult = {
+      ok: true,
+      message: 'JSON 能力测试通过。',
+      error: '',
+      errorCode: '',
+      nextAction: '',
+      raw: { channel: 'ai_model', supported_capabilities: ['json'] },
+    }
+    vi.mocked(workflowApi.testAiModel).mockResolvedValue(result)
+
+    const store = useWorkflowStore()
+    await store.testAiSettings({
+      id: 'model-json',
+      name: 'JSON 模型',
+      probe_only_capability: 'json',
+      probe_capabilities: true,
+      probe_messages: jsonProbeMessages(),
+    })
+
+    expect(withAiForeground).toHaveBeenCalledWith(
+      expect.objectContaining({ initialUserMessage: JSON_PROBE_USER_MESSAGE }),
+      expect.any(Function),
+    )
   })
 
   it('自动加载模型列表时不占用 AI Work presentation', async () => {

@@ -47,6 +47,36 @@ OutputT = TypeVar("OutputT")
 logger = logging.getLogger(__name__)
 
 
+class AiProbeStructuredOutputError(ValueError):
+    """能力探测响应无法按声明的 Pydantic object Schema 读取。"""
+
+
+def _is_openai_responses_null_output_terminal_error(
+    exc: BaseException,
+    *,
+    binding: PydanticModelBinding,
+) -> bool:
+    """识别 Pydantic AI 处理第三方 Responses 空终态 output 时的已知异常。"""
+
+    if (
+        binding.api_style != ai_model_config.API_STYLE_OPENAI_RESPONSES
+        or type(exc) is not TypeError
+        or str(exc) != "'NoneType' object is not iterable"
+    ):
+        return False
+    traceback = exc.__traceback__
+    while traceback is not None:
+        frame = traceback.tb_frame
+        if (
+            frame.f_globals.get("__name__") == "pydantic_ai.models.openai"
+            and frame.f_code.co_name
+            == "_unambiguous_null_id_tool_search_output"
+        ):
+            return True
+        traceback = traceback.tb_next
+    return False
+
+
 def _messages(value: Sequence[dict[str, str]]) -> list[ModelMessage]:
     messages: list[ModelMessage] = []
     instructions: list[str] = []
@@ -326,11 +356,37 @@ def _request(
                 model_request_parameters=parameters,
                 instrument=instrumentation.settings,
             ) as response_stream:
-                events = response_stream
+                recovered_response: ModelResponse | None = None
+
+                async def recover_invalid_terminal_output():
+                    """把已完整接收、仅终态 output=null 的流转换为正常 EOF。"""
+
+                    nonlocal recovered_response
+                    try:
+                        async for event in response_stream:
+                            yield event
+                    except TypeError as exc:
+                        if not _is_openai_responses_null_output_terminal_error(
+                            exc,
+                            binding=binding,
+                        ):
+                            raise
+                        candidate = response_stream.get()
+                        if not candidate.parts:
+                            raise
+                        recovered_response = candidate
+                        logger.warning(
+                            "第三方 OpenAI Responses 流以 output=null 结束；"
+                            "已使用完整响应快照收尾：%s",
+                            use_case_id,
+                        )
+
+                source_events = recover_invalid_terminal_output()
+                events = source_events
                 if publish_to_presentation and presentation is not None:
                     try:
                         published = presentation.observer.observe_native_events(
-                            response_stream
+                            source_events
                         )
                     except Exception:
                         logger.warning(
@@ -364,7 +420,7 @@ def _request(
                         emit_reasoning_delta(reasoning_delta)
                     if text_delta and emit_text_delta:
                         emit_text_delta(text_delta)
-                return response_stream.get()
+                return recovered_response or response_stream.get()
 
     try:
         with instrumentation.start_run_span(use_case_id=use_case_id):
@@ -781,6 +837,7 @@ def request_for_probe(
     function_tools: list[ToolDefinition] | None = None,
     allow_text_output: bool = True,
     publish_native_events: bool = True,
+    output_object: OutputObjectDefinition | None = None,
 ) -> ModelResponse:
     """模型配置页能力探测复用的 Pydantic Direct 请求。"""
 
@@ -788,6 +845,7 @@ def request_for_probe(
         native_tools=list(native_tools or []),
         function_tools=list(function_tools or []),
         output_mode="prompted" if response_format else "text",
+        output_object=output_object,
         allow_text_output=allow_text_output,
     )
     try:
@@ -822,8 +880,13 @@ def request_json_for_probe(
     binding: PydanticModelBinding,
     messages: Sequence[dict[str, str] | ModelMessage],
     web_search: bool = False,
+    output_type: type[OutputT] | None = None,
 ) -> tuple[dict[str, Any], str]:
-    """使用既有 probe binding 验证 JSON，并可复用正式联网参数生成逻辑。"""
+    """使用既有 probe binding 验证 JSON，并可复用正式联网参数生成逻辑。
+
+    Direct Model 负责把 ``output_object`` 翻译到 Provider 协议；这里再用同一
+    Pydantic TypeAdapter 校验单次响应，不实现第二套 Agent 重试循环。
+    """
 
     native_tools: list[WebSearchTool] = []
     request_mode = ""
@@ -845,14 +908,41 @@ def request_json_for_probe(
             model_config=binding.model_config,
             required_capabilities=binding.required_capabilities,
         )
+    adapter = output_adapter(output_type) if output_type is not None else None
+    output_object = None
+    if adapter is not None:
+        output_object = OutputObjectDefinition(
+            json_schema=object_json_schema(adapter),
+            name=getattr(output_type, "__name__", None),
+            description=str(getattr(output_type, "__doc__", "") or "").strip()
+            or None,
+        )
     response = request_for_probe(
         app_dir=app_dir,
         binding=request_binding,
         messages=messages,
         response_format=True,
         native_tools=native_tools,
+        output_object=output_object,
     )
-    return parse_json_text(response.text or ""), request_mode
+    try:
+        parsed = parse_json_text(response.text or "")
+    except ValueError:
+        raise AiProbeStructuredOutputError(
+            "模型返回的内容不是 JSON object。"
+        ) from None
+    if adapter is None:
+        return parsed, request_mode
+    try:
+        validated = validate_structured_output(adapter, parsed)
+    except ValueError as exc:
+        raise AiProbeStructuredOutputError(str(exc)) from None
+    dumped = adapter.dump_python(validated, mode="json")
+    if not isinstance(dumped, dict):
+        raise AiProbeStructuredOutputError(
+            "模型返回的内容不是 JSON object。"
+        )
+    return dumped, request_mode
 
 
 def generate_images_for_probe(
@@ -899,6 +989,7 @@ def edit_image_for_probe(
 
 
 __all__ = [
+    "AiProbeStructuredOutputError",
     "PYDANTIC_DIRECT_PROVIDER_ID",
     "chat_json",
     "chat_structured",

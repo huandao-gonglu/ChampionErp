@@ -11,8 +11,6 @@ import base64
 import binascii
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-import hashlib
-import json
 import logging
 import re
 import secrets
@@ -253,7 +251,8 @@ _PROBE_OPERATIONS = {
 }
 
 _PROBE_VERSIONS = {
-    ai_model_config.CAP_JSON: 3,
+    ai_model_config.CAP_CHAT: 3,
+    ai_model_config.CAP_JSON: 4,
 }
 
 
@@ -296,96 +295,37 @@ def build_capability_profile(
     return profile
 
 
-def _chat_probe_default_messages(probe_token: str = "") -> list[dict[str, str]]:
-    expected = probe_token or "ok"
-    return [
-        {"role": "system", "content": "只返回用户给出的探测标记，不要添加其它内容。"},
-        {"role": "user", "content": expected},
-    ]
+def _chat_probe_default_messages() -> list[dict[str, str]]:
+    """文本能力只验证模型能否响应一条最小用户消息。"""
+
+    return [{"role": "user", "content": "hello"}]
 
 
-def _json_probe_default_messages(probe_token: str = "") -> list[dict[str, str]]:
-    challenge = _json_probe_challenge_payload(probe_token)
+def _json_probe_default_messages() -> list[dict[str, str]]:
+    """JSON 能力只验证模型能否返回一个可解析的 JSON object。"""
+
     return [
         {
             "role": "system",
-            "content": (
-                "你正在执行 JSON 结构能力探测。只返回一个合法 JSON 对象，"
-                "不要使用 Markdown 代码块，也不要添加解释。读取用户提供的 JSON，"
-                "严格按以下顺序处理 numbers：先移除原数组中的偶数，再把剩余数字"
-                "乘以 rules.multiply，最后按 rules.sort 指定的 ascending 顺序排序。"
-                "输出对象必须且只能包含 probe_token 和 result 两个字段："
-                "probe_token 必须原样返回；result 必须是处理后的 JSON 数字数组。"
-                "不要回显 numbers 或 rules，也不要返回 ok 字段。"
-            ),
+            "content": "Return one valid JSON object without Markdown.",
         },
         {
             "role": "user",
-            "content": json.dumps(challenge, ensure_ascii=False),
+            "content": (
+                "Return one JSON object. Any keys and values are acceptable."
+            ),
         },
     ]
 
 
-def _validate_chat_probe_text(text: str, probe_token: str) -> None:
-    if str(text or "").strip() != probe_token:
-        raise CapabilityProbeUnsupported("模型没有准确返回本次对话探测标记。")
+def _validate_chat_probe_text(text: str) -> None:
+    if not str(text or "").strip():
+        raise CapabilityProbeUnsupported("模型没有返回对话内容。")
 
 
-def _json_probe_challenge_payload(probe_token: str = "") -> dict[str, Any]:
-    """生成包含奇偶混合数组的确定性挑战，便于本地独立复算。"""
-
-    token = probe_token or "ok"
-    digest = hashlib.sha256(token.encode("utf-8")).digest()
-    odd_numbers = [2 * (digest[index] % 5) + 1 for index in range(3)]
-    even_numbers = [2 * (digest[index] % 4 + 1) for index in range(3, 5)]
-    numbers = [
-        odd_numbers[0],
-        even_numbers[0],
-        odd_numbers[1],
-        even_numbers[1],
-        odd_numbers[2],
-    ]
-    rotation = digest[5] % len(numbers)
-    numbers = numbers[rotation:] + numbers[:rotation]
-    return {
-        "numbers": numbers,
-        "rules": {
-            "sort": "ascending",
-            "remove_even": True,
-            "multiply": 2 + digest[6] % 4,
-        },
-        "probe_token": token,
-    }
-
-
-def _json_probe_expected_data(probe_token: str = "") -> dict[str, Any]:
-    challenge = _json_probe_challenge_payload(probe_token)
-    multiplier = challenge["rules"]["multiply"]
-    result = sorted(
-        number * multiplier
-        for number in challenge["numbers"]
-        if number % 2 != 0
-    )
-    return {
-        "probe_token": challenge["probe_token"],
-        "result": result,
-    }
-
-
-def _validate_json_probe_data(data: dict[str, Any], probe_token: str) -> None:
-    expected = _json_probe_expected_data(probe_token)
-    if (
-        type(data) is not dict
-        or set(data) != {"probe_token", "result"}
-        or type(data.get("probe_token")) is not str
-        or data.get("probe_token") != expected["probe_token"]
-        or type(data.get("result")) is not list
-        or any(type(item) is not int for item in data.get("result", []))
-        or data.get("result") != expected["result"]
-    ):
-        raise CapabilityProbeUnsupported(
-            "模型未正确执行 JSON 数组变换探测。"
-        )
+def _validate_json_probe_data(data: dict[str, Any]) -> None:
+    if type(data) is not dict:
+        raise CapabilityProbeUnsupported("模型没有返回 JSON object。")
 
 
 def _web_search_probe_date_iso() -> str:
@@ -644,9 +584,7 @@ __all__ = [
     "_cli_image_generate_probe_prompt",
     "_cli_image_probe_data_from_text",
     "_existing_image_path",
-    "_json_probe_challenge_payload",
     "_json_probe_default_messages",
-    "_json_probe_expected_data",
     "_normalize_probe_messages",
     "_probe_image_prompt",
     "_probe_messages",

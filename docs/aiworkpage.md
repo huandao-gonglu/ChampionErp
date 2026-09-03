@@ -141,7 +141,10 @@ return withAiForeground(
 - global.chat 实时对话与历史；
 - 类目匹配；
 - AI 填充类目属性；
-- AI 模型 chat/JSON/联网/Function Call 等文本能力探测的真实模型输出；
+- AI 模型 chat/JSON/联网/Function Call 等文本能力探测的真实模型输出；其中 chat
+  探测发送最小用户消息 `hello`，收到任意非空文本即通过；JSON 探测只要求返回
+  可解析的 JSON object，不再混入数组运算或严格字段匹配。所有能力测试都会在展示
+  流开始前显示对应的 user 消息；
 - 浮窗临时接管、AiWork 同流导航和完成后历史收敛。
 
 当前未覆盖：

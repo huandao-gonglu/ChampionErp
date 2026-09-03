@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import ProductResearchSettingsPanel from '@/components/auth/ProductResearchSettingsPanel.vue'
+import { jsonProbeMessages } from '@/constants/aiCapabilityProbe'
 import type { AuthResult, Marketplace, MarketplaceOption, MercadoLibreAuthChecklist, MercadoLibreTestMode, UnknownRecord } from '@/types/workflow'
 import {
   MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED_MESSAGE,
@@ -1179,7 +1180,9 @@ function capabilityProbePayload(capability: string): UnknownRecord {
     probe_only_capability: capability,
     probe_capabilities: true,
   }
-  if (capability === 'web_search') {
+  if (capability === 'json') {
+    base.probe_messages = jsonProbeMessages()
+  } else if (capability === 'web_search') {
     base.probe_messages = [
       {
         role: 'system',

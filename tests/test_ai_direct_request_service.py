@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from contextlib import asynccontextmanager
 import inspect
 import json
 from dataclasses import replace
@@ -15,11 +16,13 @@ from pydantic_ai.messages import (
     FilePart,
     ModelRequest,
     ModelResponse,
+    PartStartEvent,
     TextPart,
     ToolCallPart,
     UserPromptPart,
 )
-from pydantic_ai.models import ModelRequestParameters
+from pydantic_ai.models import ModelRequestParameters, OutputObjectDefinition
+from pydantic_ai.models import openai as pydantic_openai_model
 from pydantic_ai.models.openai import OpenAIResponsesModel
 from pydantic_ai.models.function import DeltaThinkingPart, FunctionModel
 from pydantic_ai.models.test import TestModel
@@ -72,6 +75,12 @@ class _LocalizedCopyOutput(BaseModel):
 
     title: str
     global_title: str
+
+
+class _ProbeOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ok: bool
 
 
 def _call_structured(
@@ -382,6 +391,59 @@ def test_probe_direct_request_returns_native_text_and_function_call_parts(
     assert isinstance(actual.parts[1], ToolCallPart)
 
 
+def test_probe_json_uses_pydantic_output_schema_and_validation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def request_for_probe(**kwargs):
+        captured.update(kwargs)
+        return ModelResponse(parts=[TextPart('{"ok": true}')])
+
+    monkeypatch.setattr(
+        ai_direct_request_service,
+        "request_for_probe",
+        request_for_probe,
+    )
+
+    result, request_mode = ai_direct_request_service.request_json_for_probe(
+        app_dir=tmp_path,
+        binding=_binding(),
+        messages=[{"role": "user", "content": "返回 JSON。"}],
+        output_type=_ProbeOutput,
+    )
+
+    output_object = captured["output_object"]
+    assert isinstance(output_object, OutputObjectDefinition)
+    assert result == {"ok": True}
+    assert request_mode == ""
+    assert captured["response_format"] is True
+    assert output_object.json_schema["properties"]["ok"]["type"] == "boolean"
+
+
+def test_probe_json_rejects_plain_text_with_localized_error(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        ai_direct_request_service,
+        "request_for_probe",
+        lambda **kwargs: ModelResponse(parts=[TextPart("I cannot browse the web.")]),
+    )
+
+    with pytest.raises(
+        ai_direct_request_service.AiProbeStructuredOutputError,
+        match="模型返回的内容不是 JSON object",
+    ):
+        ai_direct_request_service.request_json_for_probe(
+            app_dir=tmp_path,
+            binding=_binding(),
+            messages=[{"role": "user", "content": "返回 JSON。"}],
+            output_type=_ProbeOutput,
+        )
+
+
 def test_probe_direct_request_publishes_pydantic_stream_to_presentation(
     tmp_path: Path,
 ) -> None:
@@ -441,6 +503,110 @@ def test_probe_direct_request_publishes_pydantic_stream_to_presentation(
     # 同一 presentation 最多一条官方根流；后续 Direct 请求不能再发第二个
     # start/finish 序列，也不能让第一个 DONE 后残留不可消费 chunk。
     assert "second-probe-output" not in encoded
+
+
+def test_probe_recovers_responses_null_output_after_complete_stream(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    response = ModelResponse(parts=[TextPart("Hello!")])
+
+    class NullOutputTerminalStream:
+        def __init__(self) -> None:
+            self._started = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self._started:
+                self._started = True
+                return PartStartEvent(index=0, part=TextPart("Hello!"))
+            malformed = Response.model_construct(output=None)
+            pydantic_openai_model._unambiguous_null_id_tool_search_output(
+                malformed
+            )
+            raise StopAsyncIteration
+
+        def get(self) -> ModelResponse:
+            return response
+
+    stream = NullOutputTerminalStream()
+
+    @asynccontextmanager
+    async def fake_model_request_stream(*args, **kwargs):
+        del args, kwargs
+        yield stream
+
+    monkeypatch.setattr(
+        ai_direct_request_service.direct,
+        "model_request_stream",
+        fake_model_request_stream,
+    )
+    registry = AiPresentationRegistry()
+    reserved = reserve_presentation(registry, display_title="测试 AI 模型")
+    presentation_id = str(reserved["presentation_id"])
+    scope = claim_presentation_scope(registry, presentation_id=presentation_id)
+    assert scope is not None
+    binding = replace(
+        _binding(output="Hello!", required=("chat",)),
+        api_style="openai_responses",
+    )
+
+    with bind_presentation_context(scope):
+        actual = ai_direct_request_service.request_for_probe(
+            app_dir=tmp_path,
+            binding=binding,
+            messages=[{"role": "user", "content": "hello"}],
+        )
+
+    assert actual is response
+    registry.finish_request(presentation_id, request_failed=False)
+    encoded = b"".join(
+        registry.iter_chunks(presentation_id, wait_timeout=0.2)
+    ).decode("utf-8")
+    assert '"type":"finish"' in encoded
+    assert '"type":"error"' not in encoded
+    assert "Hello!" in encoded
+
+
+def test_probe_does_not_hide_unrelated_none_iteration_error(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class UnrelatedFailureStream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise TypeError("'NoneType' object is not iterable")
+
+        def get(self) -> ModelResponse:
+            return ModelResponse(parts=[TextPart("must not recover")])
+
+    @asynccontextmanager
+    async def fake_model_request_stream(*args, **kwargs):
+        del args, kwargs
+        yield UnrelatedFailureStream()
+
+    monkeypatch.setattr(
+        ai_direct_request_service.direct,
+        "model_request_stream",
+        fake_model_request_stream,
+    )
+    binding = replace(_binding(required=("chat",)), api_style="openai_responses")
+
+    with pytest.raises(TypeError, match="NoneType"):
+        ai_direct_request_service._request(
+            app_dir=tmp_path,
+            use_case_id="config.ai_model_probe",
+            binding=binding,
+            messages=[ModelRequest(parts=[UserPromptPart("hello")])],
+            parameters=ModelRequestParameters(),
+            stream=True,
+            emit_text_delta=None,
+            emit_reasoning_delta=None,
+        )
 
 
 def test_web_search_uses_the_verified_capability_profile_recipe() -> None:

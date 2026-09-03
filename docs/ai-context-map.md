@@ -447,7 +447,12 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
   存在时切换为 Pydantic Direct Model stream，原子领取同一个 root run 槽位，并把原生
   `PartStartEvent` / `PartDeltaEvent` / `PartEndEvent` 交给 observer；未绑定展示时仍执行原非流式
   请求。Direct Model 不伪报 `had_agent_run`，同一 presentation 的后续 Direct 请求不创建第二条
-  start/finish 流。
+  start/finish 流。OpenAI Responses 官方终态包含完整 response，且 `output` 为数组；部分第三方
+  网关会在内容增量完整后发送 `response.completed.response.output=null`，Pydantic AI 2.22.0 至
+  2.37.0 均会在终态辅助函数中迭代该空值。Direct 边界仅在异常精确来自该 Pydantic 辅助函数、
+  API style 为 `openai_responses` 且 `response_stream.get()` 已有有效 parts 时将其恢复为正常 EOF；
+  其他异常不吞掉。待 Pydantic AI 原生兼容空 output，或所有已支持网关遵循官方 schema 后删除
+  此临时适配。
 - 前端：`front/src/api/aiPresentations.ts`（reserve/status transport 与 observe Chat；
   `DefaultChatTransport` 的 reconnect URL 即
   `GET /api/v1/ai-presentations/{id}/stream`）、

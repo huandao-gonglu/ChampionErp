@@ -103,10 +103,7 @@ class BrowserAiProvider(AiChatProvider):
         messages: list[dict[str, str]],
     ) -> None:
         result = self._run_probe(context, messages, response_format=False)
-        probe_runtime._validate_chat_probe_text(
-            result.text,
-            context.probe_token,
-        )
+        probe_runtime._validate_chat_probe_text(result.text)
 
     def _probe_json(
         self,
@@ -114,10 +111,7 @@ class BrowserAiProvider(AiChatProvider):
         messages: list[dict[str, str]],
     ) -> None:
         result = self._run_probe(context, messages, response_format=True)
-        probe_runtime._validate_json_probe_data(
-            parse_json_text(result.text),
-            context.probe_token,
-        )
+        probe_runtime._validate_json_probe_data(parse_json_text(result.text))
 
     def _probe_web_search(
         self,
@@ -160,12 +154,15 @@ class BrowserAiProvider(AiChatProvider):
         if capability == ai_model_config.CAP_CHAT:
             self._probe_chat(
                 context,
-                probe_runtime._chat_probe_default_messages(context.probe_token),
+                probe_runtime._chat_probe_default_messages(),
             )
         elif capability == ai_model_config.CAP_JSON:
             self._probe_json(
                 context,
-                probe_runtime._json_probe_default_messages(context.probe_token),
+                probe_runtime._probe_messages(
+                    options,
+                    probe_runtime._json_probe_default_messages(),
+                ),
             )
         elif capability == ai_model_config.CAP_WEB_SEARCH:
             self._probe_web_search(

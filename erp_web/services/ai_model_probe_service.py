@@ -6,6 +6,7 @@ import base64
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict
 from pydantic_ai.messages import ModelRequest, ToolCallPart, ToolReturnPart
 from pydantic_ai.tools import ToolDefinition
 
@@ -21,6 +22,21 @@ from .ai_model_factory import (
 _IMAGE_EDIT_PROBE_PATH = (
     Path(__file__).resolve().parents[1] / "assets" / "image_edit_probe.png"
 )
+
+
+class _WebSearchProbeOutput(BaseModel):
+    """实时联网能力探测的结构化终态。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    can_access_web: bool
+    source_url: str = ""
+    location: str = ""
+    date: str = ""
+    weather: str = ""
+    temperature: str = ""
+    evidence: str = ""
+    reason: str = ""
 
 
 def _image_edit_probe_bytes() -> bytes:
@@ -114,29 +130,29 @@ def _probe_capability(
             raise ai_gateway_probe.CapabilityProbeUnavailable(str(exc)) from None
         raise ai_gateway_probe.CapabilityProbeInconclusive(str(exc)) from None
     if capability == ai_model_config.CAP_CHAT:
-        messages = ai_gateway_probe._chat_probe_default_messages(probe_token)
+        messages = ai_gateway_probe._chat_probe_default_messages()
         response = ai_direct_request_service.request_for_probe(
             app_dir=app_dir,
             binding=binding,
             messages=messages,
         )
-        ai_gateway_probe._validate_chat_probe_text(
-            response.text or "",
-            probe_token,
-        )
+        ai_gateway_probe._validate_chat_probe_text(response.text or "")
         return ai_gateway_probe.build_capability_profile(
             model,
             capability,
             strategy="pydantic_direct_text",
         )
     if capability == ai_model_config.CAP_JSON:
-        messages = ai_gateway_probe._json_probe_default_messages(probe_token)
+        messages = ai_gateway_probe._probe_messages(
+            options,
+            ai_gateway_probe._json_probe_default_messages(),
+        )
         data, _ = ai_direct_request_service.request_json_for_probe(
             app_dir=app_dir,
             binding=binding,
             messages=messages,
         )
-        ai_gateway_probe._validate_json_probe_data(data, probe_token)
+        ai_gateway_probe._validate_json_probe_data(data)
         return ai_gateway_probe.build_capability_profile(
             model,
             capability,
@@ -147,12 +163,19 @@ def _probe_capability(
             options,
             ai_gateway_probe._web_search_probe_prompt(),
         )
-        data, request_mode = ai_direct_request_service.request_json_for_probe(
-            app_dir=app_dir,
-            binding=binding,
-            messages=messages,
-            web_search=True,
-        )
+        try:
+            data, request_mode = ai_direct_request_service.request_json_for_probe(
+                app_dir=app_dir,
+                binding=binding,
+                messages=messages,
+                web_search=True,
+                output_type=_WebSearchProbeOutput,
+            )
+        except ai_direct_request_service.AiProbeStructuredOutputError:
+            raise ai_gateway_probe.CapabilityProbeUnsupported(
+                "模型返回了普通文本或不符合约定的结果，"
+                "未能证明实时联网能力。"
+            ) from None
         ai_gateway_probe._validate_web_search_probe_data(data)
         return ai_gateway_probe.build_capability_profile(
             model,

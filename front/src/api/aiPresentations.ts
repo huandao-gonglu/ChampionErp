@@ -50,6 +50,11 @@ export interface AiPresentationError extends Error {
   status?: number
 }
 
+export interface PresentationObserveChatOptions {
+  initialUserMessage?: string
+  onError?: (error: Error) => void
+}
+
 function normalizePresentationStatus(value: unknown): AiPresentationStatus {
   const text = String(value || '').trim()
   switch (text) {
@@ -132,11 +137,18 @@ async function observePresentationFetch(
  */
 export function createPresentationObserveChat(
   presentationId: string,
-  hooks: { onError?: (error: Error) => void } = {},
+  options: PresentationObserveChatOptions = {},
 ): Chat<UIMessage> {
+  const initialUserMessage = String(options.initialUserMessage || '').trim()
   return new Chat<UIMessage>({
     id: presentationId,
-    messages: [],
+    messages: initialUserMessage
+      ? [{
+          id: `${presentationId}:initial-user`,
+          role: 'user',
+          parts: [{ type: 'text', text: initialUserMessage }],
+        }]
+      : [],
     transport: new DefaultChatTransport<UIMessage>({
       api: AI_PRESENTATIONS_PATH,
       credentials: 'same-origin',
@@ -145,7 +157,7 @@ export function createPresentationObserveChat(
       prepareSendMessagesRequest: () => ({ body: {} }),
     }),
     onError: (error) => {
-      hooks.onError?.(error instanceof Error ? error : new Error(String(error)))
+      options.onError?.(error instanceof Error ? error : new Error(String(error)))
     },
   })
 }

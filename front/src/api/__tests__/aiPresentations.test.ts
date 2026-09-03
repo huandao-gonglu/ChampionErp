@@ -79,12 +79,19 @@ describe('aiPresentations 通用展示边界', () => {
     expect(descriptor.status).toBe('completed')
   })
 
-  it('observe Chat 以 presentation_id 为 id，reconnect 指向 presentation observe 流', async () => {
+  it('observe Chat 预置首次 user 消息，并以 presentation_id reconnect', async () => {
     // observe reconnect：204 = 没有可用流（Vercel reconnect 约定）。
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 204, body: null }))
 
-    const chat = createPresentationObserveChat('presentation_a')
+    const chat = createPresentationObserveChat('presentation_a', {
+      initialUserMessage: 'hello',
+    })
     expect(chat.id).toBe('presentation_a')
+    expect(chat.messages).toEqual([{
+      id: 'presentation_a:initial-user',
+      role: 'user',
+      parts: [{ type: 'text', text: 'hello' }],
+    }])
 
     // 204 → reconnect 为 null：resumeStream 干净结束，不消费任何 chunk。
     await chat.resumeStream()
@@ -96,6 +103,51 @@ describe('aiPresentations 通用展示边界', () => {
     expect(presentationStreamPath('presentation_a')).toBe(
       `${AI_PRESENTATIONS_PATH}/presentation_a/stream`,
     )
+  })
+
+  it('assistant SSE 到达后仍保留预置的首次 user 消息', async () => {
+    const encoder = new TextEncoder()
+    const chunks = [
+      { type: 'start', messageId: 'assistant-1' },
+      { type: 'start-step' },
+      { type: 'text-start', id: 'text-1' },
+      { type: 'text-delta', id: 'text-1', delta: 'Hi!' },
+      { type: 'text-end', id: 'text-1' },
+      { type: 'finish-step' },
+      { type: 'finish', finishReason: 'stop' },
+    ]
+    const body = chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('')
+      + 'data: [DONE]\n\n'
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(body))
+          controller.close()
+        },
+      }),
+      {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'x-vercel-ai-ui-message-stream': 'v1',
+        },
+      },
+    )))
+
+    const chat = createPresentationObserveChat('presentation_stream', {
+      initialUserMessage: 'hello',
+    })
+    await chat.resumeStream()
+
+    expect(chat.messages).toHaveLength(2)
+    expect(chat.messages[0]).toMatchObject({
+      role: 'user',
+      parts: [{ type: 'text', text: 'hello' }],
+    })
+    expect(chat.messages[1]).toMatchObject({
+      id: 'assistant-1',
+      role: 'assistant',
+    })
   })
 
   it('observe fetch 非 2xx 时解析后端标准 JSON 错误并附加 code/status', async () => {
