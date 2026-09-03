@@ -47,7 +47,9 @@ Pydantic Direct Model Requests，图片等能力使用锁定版本提供的 Pyda
   根据 Base URL 或模型名猜测厂商。
 - `erp_web/services/ai_direct_request_service.py`：普通 API chat/JSON/stream/typed output/image 的唯一
   Pydantic Direct Model 执行入口，负责公开 Pydantic message/event 转换和项目结果归一化；类型化输出
-  使用 `OutputObjectDefinition` 的 prompted output，不在业务 Prompt 重复字段清单。
+  使用 `OutputObjectDefinition` 的 prompted output，不在业务 Prompt 重复字段清单。模型能力测试携带
+  presentation scope 时，由该边界把 Direct Model 原生 `Part*Event` 交给统一 observer；无 presentation
+  时保持原非流式探测，不改变 Provider 契约。
 - `erp_web/services/ai_structured_output.py`：非 Agent 类型化输出的 dependency-light Schema 适配边界；
   从同一个 Pydantic 类型生成 JSON Schema 并验证返回值。CLI/Browser 尚无 Pydantic `Model` 适配器，
   因而仅在这两个非 API 边界附加自动生成的 Schema；适配器就绪后删除该提示式分支。
@@ -392,8 +394,8 @@ Direct 只读能力加四个任务控制工具；写与审批能力只经类型�
 
 用户直接触发的 AI 能力保持业务 HTTP 接口自有 start 与类型化结果，实时展示由通用
 presentation 层统一提供：前端触发前预留 presentation，业务请求在 HTTP 公共边界用
-`X-AI-Presentation-ID` header claim 该预留，此后请求范围内任何经 `AiAgentFactory`
-运行的 Pydantic Agent 都会把 native event 流自动发布为官方 Vercel chunk；前端用
+`X-AI-Presentation-ID` header claim 该预留，此后请求范围内经 `AiAgentFactory`
+运行的 Pydantic Agent，以及模型能力测试的 Pydantic Direct Model，会把 native event 流自动发布为官方 Vercel chunk；前端用
 AI SDK 官方 reconnect 约定只读观察展示流。Agent 不感知前端协议，业务类型化结果仍由
 focused service/store 拥有，前端不从消息解析业务结果；展示断连或失败不改变业务结果
 裁定。
@@ -417,7 +419,7 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
   `claim_presentation_scope` 在 HTTP 公共边界原子 claim 并构造携带
   `RegistryAiPresentationObserver` 的 root scope，非法/过期/重复 claim 返回 None，由边界
   映射稳定 409（`AI_PRESENTATION_CLAIM_INVALID`），不静默创建第二个展示；
-  `RegistryAiPresentationObserver` 透传 Agent native events，同时经
+  `RegistryAiPresentationObserver` 透传 Pydantic native events，同时经
   `vercel_ai_ui_service.new_event_stream()` 的官方 `transform_stream()` / `encode_stream()`
   编码为 chunk 发布到 registry，发布失败（含缓冲溢出）只停止发布，不改写 Agent 执行语义；
   装配期失败经 `publish_error_chunks` 也只发布官方 error/finish chunk。
@@ -441,6 +443,11 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
   它同时驱动官方转换/发布，事件原样透传；生命周期通知（run_started/running/finalizing/
   completed/failed）与子运行紧凑状态卡全部故障隔离，展示失败只降级展示。无
   presentation scope 的后台 Agent 不产生 SSE；child Agent 不产生第二条 SSE。
+- `erp_web/services/ai_direct_request_service.py` 的模型能力探测：仅在 HTTP presentation root scope
+  存在时切换为 Pydantic Direct Model stream，原子领取同一个 root run 槽位，并把原生
+  `PartStartEvent` / `PartDeltaEvent` / `PartEndEvent` 交给 observer；未绑定展示时仍执行原非流式
+  请求。Direct Model 不伪报 `had_agent_run`，同一 presentation 的后续 Direct 请求不创建第二条
+  start/finish 流。
 - 前端：`front/src/api/aiPresentations.ts`（reserve/status transport 与 observe Chat；
   `DefaultChatTransport` 的 reconnect URL 即
   `GET /api/v1/ai-presentations/{id}/stream`）、
@@ -451,9 +458,10 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
   `front/src/components/common/AiWorkFloatingButton.vue` 按 displayMode 渲染
   global-chat / presentation 分支；`front/src/views/AiWorkView.vue` 按 presentation 实时、
   global.chat、历史三档选择数据源，支持 `conversation_id` / `presentation_id` query 定位。
-- 已迁移：类目匹配（`matchCategory`）与类目属性填充（`fillAttributesByAi`）使用同一
-  wrapper；不存在业务专用展示 start/result 协议。新增第三个前台能力时后端 Agent service
-  无需改动，前端只增加 wrapper 声明与业务提示映射。完整契约见 `docs/aiworkpage.md`。
+- 已迁移：类目匹配（`matchCategory`）、类目属性填充（`fillAttributesByAi`）与 AI 模型能力测试
+  使用同一 wrapper；不存在业务专用展示 start/result 协议。Agent 能力只需增加 wrapper 声明；
+  Direct Model 能力必须在统一 Direct Model 边界显式启用 native-event 发布。完整契约见
+  `docs/aiworkpage.md`。
 
 ## 类目平台搜索与规则读取层
 

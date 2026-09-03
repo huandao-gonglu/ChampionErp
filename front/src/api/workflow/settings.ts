@@ -54,8 +54,15 @@ export async function fetchMercadoLibreAuthChecklist(): Promise<MercadoLibreAuth
   return normalizeMercadoLibreAuthChecklist(data.checklist ?? data)
 }
 
-export async function testAiModel(model: UnknownRecord): Promise<AuthResult> {
-  const response = await apiClient.post('/api/test-ai-model', { model })
+export async function testAiModel(
+  model: UnknownRecord,
+  presentationId = '',
+): Promise<AuthResult> {
+  const response = await apiClient.post(
+    '/api/test-ai-model',
+    { model },
+    { aiPresentationId: presentationId },
+  )
   return normalizeAuthResult(response.data)
 }
 

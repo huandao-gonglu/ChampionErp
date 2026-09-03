@@ -8,7 +8,8 @@ import * as publishingApi from '@/api/workflow/publishing'
 import * as settingsApi from '@/api/workflow/settings'
 import * as stateApi from '@/api/workflow/state'
 import * as translationApi from '@/api/workflow/translation'
-import type { DraftDetail, DraftIndexItem, PricingResult, Product } from '@/types/workflow'
+import { withAiForeground } from '@/services/withAiForeground'
+import type { AuthResult, DraftDetail, DraftIndexItem, PricingResult, Product } from '@/types/workflow'
 
 vi.mock('@/api/workflow/state', () => ({
   fetchState: vi.fn(),
@@ -181,6 +182,66 @@ describe('workflow store live API flow', () => {
     expect(store.product.productId).toBe('')
     expect(store.collectDiagnostics.status).toBe('idle')
     expect(workflowApi.fetchState).toHaveBeenCalledOnce()
+  })
+
+  it('通过 AI Work presentation 运行模型能力测试', async () => {
+    const result: AuthResult = {
+      ok: false,
+      message: '接口连接正常，但对话能力未通过。',
+      error: '',
+      errorCode: '',
+      nextAction: '检查模型实际输出。',
+      raw: {
+        channel: 'ai_model',
+        model_id: 'model-a',
+        unsupported_capabilities: ['chat'],
+      },
+    }
+    vi.mocked(workflowApi.testAiModel).mockResolvedValue(result)
+
+    const store = useWorkflowStore()
+    await store.testAiSettings({
+      id: 'model-a',
+      name: '模型 A',
+      model: 'provider-model-a',
+      probe_only_capability: 'chat',
+      probe_capabilities: true,
+    })
+
+    expect(withAiForeground).toHaveBeenCalledWith(
+      expect.objectContaining({ displayTitle: '测试 AI 模型 · 模型 A' }),
+      expect.any(Function),
+    )
+    expect(workflowApi.testAiModel).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'model-a' }),
+      'presentation-store-test',
+    )
+    expect(store.lastAuthResult).toEqual(result)
+  })
+
+  it('自动加载模型列表时不占用 AI Work presentation', async () => {
+    const result: AuthResult = {
+      ok: true,
+      message: '模型列表加载完成。',
+      error: '',
+      errorCode: '',
+      nextAction: '',
+      raw: { channel: 'ai_model', available_models: [] },
+    }
+    vi.mocked(workflowApi.testAiModel).mockResolvedValue(result)
+
+    const store = useWorkflowStore()
+    await store.testAiSettings({
+      id: 'model-list-a',
+      name: '模型列表 A',
+      probe_capabilities: false,
+      test_trigger: 'auto_model_list',
+    })
+
+    expect(withAiForeground).not.toHaveBeenCalled()
+    expect(workflowApi.testAiModel).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'model-list-a' }),
+    )
   })
 
   it('从商品 publish_preview 恢复父级与市场分层预检并失败关闭', async () => {

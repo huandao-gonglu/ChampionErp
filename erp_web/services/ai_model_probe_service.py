@@ -193,6 +193,9 @@ def _probe_capability(
             # Qwen 思考模式不接受 tool_choice=required/object；允许文本会让
             # Pydantic 发送 tool_choice=auto，是否真的调用工具仍由下方严格校验。
             allow_text_output=True,
+            # Function Call 需要两次模型请求；只把完成工具回传后的最终响应
+            # 作为 presentation 根流，避免第一段 DONE 留下未闭合工具卡。
+            publish_native_events=False,
         )
         tool_calls = [
             part for part in response.parts if isinstance(part, ToolCallPart)

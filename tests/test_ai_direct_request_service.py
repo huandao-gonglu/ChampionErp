@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import inspect
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -35,6 +36,12 @@ from erp_web.services.ai_model_errors import (
     map_pydantic_model_error,
 )
 from erp_web.services.ai_pydantic_image_model import OpenAIImagesModel
+from erp_web.services.ai_presentation_context import bind_presentation_context
+from erp_web.services.ai_presentation_registry import AiPresentationRegistry
+from erp_web.services.ai_presentation_service import (
+    claim_presentation_scope,
+    reserve_presentation,
+)
 
 
 def _binding(
@@ -373,6 +380,67 @@ def test_probe_direct_request_returns_native_text_and_function_call_parts(
     assert actual is response
     assert actual.text == "provider-text"
     assert isinstance(actual.parts[1], ToolCallPart)
+
+
+def test_probe_direct_request_publishes_pydantic_stream_to_presentation(
+    tmp_path: Path,
+) -> None:
+    registry = AiPresentationRegistry()
+    reserved = reserve_presentation(registry, display_title="测试 AI 模型")
+    presentation_id = str(reserved["presentation_id"])
+    scope = claim_presentation_scope(
+        registry,
+        presentation_id=presentation_id,
+    )
+    assert scope is not None
+
+    with bind_presentation_context(scope):
+        response = ai_direct_request_service.request_for_probe(
+            app_dir=tmp_path,
+            binding=_binding(
+                output="probe-visible-output",
+                required=("chat",),
+            ),
+            messages=[{"role": "user", "content": "echo probe"}],
+        )
+        second_response = ai_direct_request_service.request_for_probe(
+            app_dir=tmp_path,
+            binding=_binding(
+                output="second-probe-output",
+                required=("chat",),
+            ),
+            messages=[{"role": "user", "content": "second probe"}],
+        )
+
+    assert response.text == "probe-visible-output"
+    assert second_response.text == "second-probe-output"
+    registry.finish_request(presentation_id, request_failed=False)
+    payload = registry.status_payload(presentation_id)
+    assert payload is not None
+    assert payload["status"] == "completed"
+    # Direct Model 不是 Agent；即使产生展示流也不得伪报 Agent run。
+    assert payload["had_agent_run"] is False
+
+    encoded = b"".join(
+        registry.iter_chunks(presentation_id, wait_timeout=0.2)
+    ).decode("utf-8")
+    frames = [
+        json.loads(line[len("data: ") :])
+        for line in encoded.splitlines()
+        if line.startswith("data: ") and line != "data: [DONE]"
+    ]
+    types = [str(frame.get("type")) for frame in frames]
+    assert "start" in types
+    assert "finish" in types
+    assert "error" not in types
+    assert "".join(
+        str(frame.get("delta") or "")
+        for frame in frames
+        if frame.get("type") == "text-delta"
+    ) == "probe-visible-output"
+    # 同一 presentation 最多一条官方根流；后续 Direct 请求不能再发第二个
+    # start/finish 序列，也不能让第一个 DONE 后残留不可消费 chunk。
+    assert "second-probe-output" not in encoded
 
 
 def test_web_search_uses_the_verified_capability_profile_recipe() -> None:

@@ -1,17 +1,17 @@
-# AiWork 对话与前台 Agent 实时展示
+# AiWork 对话与前台 Pydantic 实时展示
 
 > 状态：当前有效契约（2026-08-16）。
 >
 > 本文已合并旧的浮窗接管方案、通用 Pydantic Agent 可观测层重构计划和实施文档；历史推导、迁移步骤及重复测试细节不再保留。
 >
-> 当前覆盖范围：`global.chat`，以及由用户直接触发、通过统一 `AiAgentFactory` 运行的前台 Pydantic Agent。Direct Model（包括当前图片翻译/编辑）不在自动实时展示范围内。
+> 当前覆盖范围：`global.chat`、由用户直接触发且通过统一 `AiAgentFactory` 运行的前台 Pydantic Agent，以及 AI 模型能力测试中的 Pydantic Direct Model 文本探测。图片 Direct Model 仍不在自动实时展示范围内。
 
 ## 1. 产品目标
 
 AiWork 浮窗是当前标签页的 AI 活动入口：
 
 - 默认展示可输入的全局聊天 `global.chat`。
-- 用户点击类目匹配、AI 填充属性等前台能力后，对应 presentation 临时接管浮窗，只读展示 Agent 的文字、思考和工具状态。
+- 用户点击类目匹配、AI 填充属性或 AI 模型能力测试等前台能力后，对应 presentation 临时接管浮窗，只读展示 Pydantic 的文字、思考和工具事件。
 - 业务请求结束后，浮窗恢复原全局聊天；全局聊天的 conversation、消息、输入和活动流不得被覆盖或重建。
 - 点击浮窗时在当前标签页导航到 AiWork 页面，并继续观看同一实时流；运行结束后切换为服务端历史。
 - 业务结果始终来自原业务接口，实时消息只用于展示。
@@ -19,7 +19,7 @@ AiWork 浮窗是当前标签页的 AI 活动入口：
 ```mermaid
 stateDiagram-v2
     [*] --> GlobalChat
-    GlobalChat --> Presentation: 用户触发前台 Agent
+    GlobalChat --> Presentation: 用户触发前台 Pydantic 能力
     Presentation --> Presentation: 接收实时事件
     Presentation --> GlobalChat: 业务请求与展示流收尾
 ```
@@ -36,9 +36,11 @@ flowchart LR
     WRAPPER --> BUSINESS["原业务 HTTP 接口"]
     BUSINESS --> BOUNDARY["Header claim + contextvar"]
     BOUNDARY --> FACTORY
+    BOUNDARY --> DIRECT["Pydantic Direct Model 能力探测"]
 
     FACTORY --> AGENT["Pydantic Agent"]
     AGENT --> EVENTS["AgentStreamEvent"]
+    DIRECT --> EVENTS
     EVENTS --> ADAPTER["官方 Vercel 编码"]
     ADAPTER --> REGISTRY["AiPresentationRegistry"]
     REGISTRY --> STREAM["Presentation SSE"]
@@ -52,9 +54,10 @@ flowchart LR
 | 层 | Owner | 职责 |
 | --- | --- | --- |
 | Agent 执行 | `AiAgentFactory` | 统一装配、同步/流式运行、历史保存和 native event 输出 |
+| Direct Model 执行 | `ai_direct_request_service.py` | 非 Agent 模型请求；能力测试绑定 presentation 时输出原生流事件 |
 | 展示上下文 | `ai_presentation_context.py` | contextvar、root/child 关系和 observer 协议 |
 | 展示状态 | `AiPresentationRegistry` | reservation、claim、单 lease、短期 chunk 缓冲和终态 |
-| 展示转换 | `ai_presentation_service.py` | 将 Agent native events 转成官方 Vercel chunk |
+| 展示转换 | `ai_presentation_service.py` | 将 Pydantic native events 转成官方 Vercel chunk |
 | HTTP 边界 | `http_routes.py`、`ai_presentation_routes.py` | claim presentation、绑定上下文、提供 reserve/status/stream |
 | 前端传输 | `aiPresentations.ts`、`withAiForeground.ts` | reserve、观察 SSE、调用原业务接口和恢复浮窗 |
 | 前端显示 | `AiWorkDisplayStore` | 在 global chat 与 presentation 之间切换 |
@@ -74,11 +77,12 @@ flowchart LR
 - `UIMessage[]` 由官方 Adapter 派生或保存在当前前端 `Chat` 内存中，不单独持久化。
 - registry 只保存短期官方 SSE chunk 和展示元数据，不保存业务结果或第二份消息历史。
 - presentation root Agent 使用预留的 `conversation_id`，实时流与完成后历史必须指向同一 conversation。
+- Direct Model 能力探测不持久化为 Agent 对话历史；原始输出只在当前 presentation 短期展示，最终能力结论由业务响应保存。
 
 ### 3.3 一个前台交互只有一个根流
 
 - 一次 presentation 只能 claim 一次，并且最多有一个活动 SSE lease。
-- 同一请求中第一个进入 `AiAgentFactory` 的 Agent 原子领取 root run；后续顺序 Agent 或嵌套 Agent 均作为 child。
+- 同一请求中第一个进入 `AiAgentFactory` 的 Agent，或首个启用展示的 Direct Model 请求，原子领取 root run；后续顺序运行不得创建第二条根流。
 - child 继承 presentation observer，但不创建第二条前端 SSE；当前只展示紧凑工具/子运行状态。
 - 没有 presentation context 的后台 Agent 正常执行和保存历史，但不抢占浮窗、不建立 presentation SSE。
 - Global Agent 调用业务 Agent 时，子 Agent 复用父级展示链，不自行连接前端。
@@ -90,7 +94,7 @@ flowchart LR
 3. 前端创建只读 observe `Chat`，开始连接 presentation stream。
 4. 原业务请求与观察流并发启动；业务请求通过 `X-AI-Presentation-ID` 关联 presentation。
 5. HTTP 公共边界 claim reservation，并通过 contextvar 把展示上下文传给业务调用链。
-6. `AiAgentFactory` 自动领取 root run，将 native events 旁路发布到 registry，同时保持原业务输出与规范历史。
+6. `AiAgentFactory`，或能力测试使用的统一 Direct Model 边界，自动领取 root run，将 Pydantic native events 旁路发布到 registry，同时保持原业务输出与规范历史。
 7. 原业务接口返回类型化结果；HTTP 边界关闭 presentation，前端有界等待展示流收尾。
 8. 浮窗恢复 `global.chat`；AiWork 页面继续展示该 conversation 的只读历史。
 
@@ -110,7 +114,7 @@ presentation 状态为 `reserved → bound → running → finalizing → comple
 
 ## 6. 前端接入新能力
 
-如果业务已经通过 `AiAgentFactory` 运行 Agent，通常只需在用户直接触发的前端 action 外包一层：
+如果业务已经通过 `AiAgentFactory` 运行 Agent，或使用已接入展示的模型能力测试 Direct Model 边界，通常只需在用户直接触发的前端 action 外包一层：
 
 ```ts
 return withAiForeground(
@@ -123,7 +127,8 @@ return withAiForeground(
 
 以下情况不会自动获得当前 presentation 实时流：
 
-- 直接调用 Pydantic Direct Model、Provider SDK 或普通 HTTP 模型接口；
+- 未显式启用 presentation native-event 发布的普通 Pydantic Direct Model 请求；
+- 直接调用 Provider SDK 或普通 HTTP 模型接口；
 - 不经过 `AiAgentFactory` 的图片生成、图片翻译或图片编辑；
 - 没有使用 `withAiForeground()` 的后台或非前台业务请求。
 
@@ -136,11 +141,12 @@ return withAiForeground(
 - global.chat 实时对话与历史；
 - 类目匹配；
 - AI 填充类目属性；
+- AI 模型 chat/JSON/联网/Function Call 等文本能力探测的真实模型输出；
 - 浮窗临时接管、AiWork 同流导航和完成后历史收敛。
 
 当前未覆盖：
 
-- Direct Model/图片任务的通用实时展示；
+- 能力测试之外的 Direct Model 与图片任务通用实时展示；
 - 多个 foreground presentation 并发展示；
 - 多进程/多 worker 共享 registry；
 - 页面刷新后自动恢复活动 presentation；
@@ -153,6 +159,7 @@ HTTP 公共边界记录最终响应状态：正常返回的 4xx/5xx 将 presenta
 
 - 默认浮窗可以继续 global.chat，流式过程中导航到 AiWork 不重建或中断 `Chat`。
 - 类目匹配和属性填充使用同一个 presentation 协议，实时显示 text/reasoning/tool 增量。
+- AI 模型能力测试沿用同一 presentation 协议；Pydantic Direct Model 的真实文本增量可在浮窗查看，业务判定仍来自 `/api/test-ai-model` 响应。
 - presentation 接管期间 global.chat 的消息、输入和连接保持不变，业务收尾后恢复。
 - 业务 response 是唯一结果事实，展示连接故障不改变业务结果。
 - root conversation 与持久化历史 ID 一致；同一请求最多一个 root stream；child 不建立第二条 SSE。

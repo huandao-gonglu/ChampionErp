@@ -19,6 +19,7 @@ import {
 import { useWorkflowActivityStore } from '@/stores/workflow/activity'
 import { useWorkflowCatalogStore } from '@/stores/workflow/catalog'
 import { useWorkflowCollectionStore } from '@/stores/workflow/collection'
+import { withAiForeground } from '@/services/withAiForeground'
 import type { AuthResult, Marketplace, MercadoLibreAuthChecklist, MercadoLibreTestMode, UnknownRecord } from '@/types/workflow'
 import { sanitizePublicAppConfig } from '@/utils/configSecurity'
 
@@ -127,8 +128,25 @@ export const useWorkflowSettingsStore = defineStore('workflow-settings', () => {
     activity.loading = true
     activity.setError('')
     try {
-      lastAuthResult.value = await testAiModel(model)
-      activity.addLog(`AI 模型测试：${lastAuthResult.value.message || lastAuthResult.value.error || '完成'}`)
+      const modelLabel = String(model.name || model.model || model.id || 'AI 模型').trim()
+      const result = model.probe_capabilities === false
+        ? await testAiModel(model)
+        : await withAiForeground<AuthResult>(
+          {
+            displayTitle: `测试 AI 模型 · ${modelLabel}`,
+            successNotice: (probeResult) => (
+              probeResult.ok
+                ? `${modelLabel} 能力测试通过`
+                : `${modelLabel} 能力测试未通过`
+            ),
+            failureNotice: (error) => (
+              error instanceof Error ? error.message : `${modelLabel} 能力测试失败`
+            ),
+          },
+          ({ presentationId }) => testAiModel(model, presentationId),
+        )
+      lastAuthResult.value = result
+      activity.addLog(`AI 模型测试：${result.message || result.error || '完成'}`)
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : '测试 AI 失败'
       lastAuthResult.value = {

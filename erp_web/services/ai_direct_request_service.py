@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import base64
 from dataclasses import replace
+import logging
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence, TypeVar
+from uuid import uuid4
 
 from pydantic_ai import direct
 from pydantic_ai.messages import (
@@ -32,6 +34,7 @@ from .ai_agent_instrumentation import AiAgentInstrumentation
 from .ai_gateway_parsing import parse_json_text
 from .ai_model_errors import map_pydantic_model_error
 from .ai_model_factory import PydanticModelBinding, create_pydantic_model_binding
+from .ai_presentation_context import current_presentation_context
 from .ai_structured_output import (
     object_json_schema,
     output_adapter,
@@ -41,6 +44,7 @@ from .ai_structured_output import (
 
 PYDANTIC_DIRECT_PROVIDER_ID = "pydantic_direct"
 OutputT = TypeVar("OutputT")
+logger = logging.getLogger(__name__)
 
 
 def _messages(value: Sequence[dict[str, str]]) -> list[ModelMessage]:
@@ -281,12 +285,33 @@ def _request(
     stream: bool,
     emit_text_delta: Callable[[str], None] | None,
     emit_reasoning_delta: Callable[[str], None] | None,
+    publish_native_events: bool = False,
 ) -> ModelResponse:
     instrumentation = _instrumentation(app_dir)
+    presentation = current_presentation_context()
+    publish_to_presentation = False
+    if (
+        publish_native_events
+        and presentation is not None
+        and presentation.is_root_scope
+    ):
+        candidate_run_id = f"direct_{uuid4().hex}"
+        try:
+            publish_to_presentation = (
+                presentation.observer.claim_root_run(run_id=candidate_run_id)
+                == candidate_run_id
+            )
+        except Exception:
+            logger.warning(
+                "AI Direct Model 展示 root 领取失败，降级为无展示请求：%s",
+                use_case_id,
+                exc_info=True,
+            )
+    effective_stream = stream or publish_to_presentation
 
     async def run() -> ModelResponse:
         async with binding.model:
-            if not stream:
+            if not effective_stream:
                 return await direct.model_request(
                     binding.model,
                     messages,
@@ -301,7 +326,22 @@ def _request(
                 model_request_parameters=parameters,
                 instrument=instrumentation.settings,
             ) as response_stream:
-                async for event in response_stream:
+                events = response_stream
+                if publish_to_presentation and presentation is not None:
+                    try:
+                        published = presentation.observer.observe_native_events(
+                            response_stream
+                        )
+                    except Exception:
+                        logger.warning(
+                            "AI Direct Model 展示事件包装失败，降级为无展示请求：%s",
+                            use_case_id,
+                            exc_info=True,
+                        )
+                    else:
+                        if published is not None:
+                            events = published
+                async for event in events:
                     text_delta = ""
                     reasoning_delta = ""
                     if isinstance(event, PartStartEvent) and isinstance(
@@ -740,6 +780,7 @@ def request_for_probe(
     native_tools: list[Any] | None = None,
     function_tools: list[ToolDefinition] | None = None,
     allow_text_output: bool = True,
+    publish_native_events: bool = True,
 ) -> ModelResponse:
     """模型配置页能力探测复用的 Pydantic Direct 请求。"""
 
@@ -759,6 +800,7 @@ def request_for_probe(
             stream=False,
             emit_text_delta=None,
             emit_reasoning_delta=None,
+            publish_native_events=publish_native_events,
         )
     except Exception as exc:
         mapped = map_pydantic_model_error(

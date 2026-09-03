@@ -228,6 +228,7 @@ def test_function_call_probe_requires_a_complete_exact_round_trip(
         nonlocal calls
         calls += 1
         assert kwargs["allow_text_output"] is True
+        assert kwargs.get("publish_native_events", True) is (calls != 1)
         schema = kwargs["function_tools"][0].parameters_json_schema
         assert schema == {
             "type": "object",
