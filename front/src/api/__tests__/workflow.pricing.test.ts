@@ -323,12 +323,12 @@ describe('generateCopy API mapping', () => {
       },
     })
 
-    await generateCopy(product, 'ozon')
+    await generateCopy(product, 'ozon', {}, { presentationId: 'presentation-copy' })
 
     expect(apiClient.post).toHaveBeenCalledWith('/api/generate-copy', {
       product_id: 'prod-1',
       platform: 'ozon',
-    })
+    }, { aiPresentationId: 'presentation-copy' })
   })
 
   it('binds copy generation to the current draft and language', async () => {
@@ -354,7 +354,7 @@ describe('generateCopy API mapping', () => {
       draft_id: 'draft-1',
       language: 'ru-RU',
       mode: 'rewrite',
-    })
+    }, { aiPresentationId: undefined })
   })
 })
 
@@ -853,12 +853,21 @@ describe('imageTranslate API timeout', () => {
       data: { ok: true, product: toBackendProduct(createEmptyProduct()), productsIndex: [] },
     })
 
-    await imageTranslate(product, 'mercadolibre', 'Spanish (Mexico)')
+    await imageTranslate(
+      product,
+      'mercadolibre',
+      'Spanish (Mexico)',
+      {},
+      { presentationId: 'presentation-image-translate' },
+    )
 
     expect(apiClient.post).toHaveBeenCalledWith('/api/image-translate', expect.objectContaining({
       product_id: 'prod-1',
       source_image_ids: ['img-1', 'img-2'],
-    }), { timeout: 60000 })
+    }), {
+      timeout: 60000,
+      aiPresentationId: 'presentation-image-translate',
+    })
   })
 
   it('rejects the request when no images are selected', async () => {
@@ -888,12 +897,18 @@ describe('imageEdit API payload', () => {
       data: { ok: true, product: toBackendProduct(createEmptyProduct()), productsIndex: [] },
     })
 
-    await imageEdit(product, 'mercadolibre', '  扣除背景，保留产品主体  ', {
-      draftId: 'draft-1',
-      applyToDraft: true,
-      draftImageStrategy: 'append',
-      sourceImageIds: ['img-2'],
-    })
+    await imageEdit(
+      product,
+      'mercadolibre',
+      '  扣除背景，保留产品主体  ',
+      {
+        draftId: 'draft-1',
+        applyToDraft: true,
+        draftImageStrategy: 'append',
+        sourceImageIds: ['img-2'],
+      },
+      { presentationId: 'presentation-image-edit' },
+    )
 
     expect(apiClient.post).toHaveBeenCalledWith('/api/image-edit', expect.objectContaining({
       product_id: 'prod-1',
@@ -903,6 +918,9 @@ describe('imageEdit API payload', () => {
       apply_to_draft: true,
       draft_image_strategy: 'append',
       source_image_ids: ['img-2'],
-    }), { timeout: 30000 })
+    }), {
+      timeout: 30000,
+      aiPresentationId: 'presentation-image-edit',
+    })
   })
 })

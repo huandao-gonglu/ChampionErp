@@ -9,6 +9,10 @@ from erp_web.context import get_context
 from erp_web.facades import product_research_facade
 from erp_web.product_research_config import default_product_research_config, normalize_product_research_config
 from erp_web.services import ai_gateway_providers, product_research_methods, product_research_service
+from erp_web.services.ai_presentation_context import (
+    bind_presentation_context,
+    root_presentation_context,
+)
 from erp_web.services.product_research_methods import AiSearchMethod, ProductResearchSearchMethod
 from erp_web.services.product_research_service import ProductResearchRunRegistry
 
@@ -58,22 +62,16 @@ def complete_hot_product_run(
     config: dict,
     app_config: dict | None = None,
 ) -> dict:
-    """通过当前异步生产入口启动任务并等待确定性终态。"""
+    """通过用户手动的 focused 入口同步获取确定性终态。"""
 
-    queued = product_research_service.create_hot_product_run_async(
+    run = product_research_service.create_hot_product_run(
         app_dir,
         body,
         config,
         app_config,
     )
-    deadline = time.monotonic() + 5
-    current = queued
-    while current.get("status") not in {"completed", "failed"}:
-        if time.monotonic() >= deadline:
-            pytest.fail(f"选品任务未在测试时限内结束：{queued['run_id']}")
-        time.sleep(0.01)
-        current = product_research_service.get_hot_product_run(queued["run_id"]) or current
-    return current
+    assert run.get("status") in {"completed", "failed"}
+    return run
 
 
 def web_search_app_config_with_prompt_file(tmp_path, user_prompt: str, system_prompt: str = "System prompt from file.") -> dict:
@@ -205,6 +203,57 @@ def test_create_hot_product_run_returns_ai_search_candidates(tmp_path, monkeypat
     assert run["source_status"][0]["provider_strategy"] == "ai_web_search"
     assert run["source_status"][0]["raw_items_found"] == 2
     assert run["source_status"][0]["items_filtered"] == 0
+
+
+def test_product_research_facade_only_runs_synchronously_for_bound_presentation(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_sync(*args, **kwargs):
+        del args, kwargs
+        calls.append("sync")
+        return {"run_id": "sync", "status": "completed"}
+
+    def fake_async(*args, **kwargs):
+        del args, kwargs
+        calls.append("async")
+        return {"run_id": "async", "status": "queued"}
+
+    monkeypatch.setattr(
+        product_research_service,
+        "create_hot_product_run",
+        fake_sync,
+    )
+    monkeypatch.setattr(
+        product_research_service,
+        "create_hot_product_run_async",
+        fake_async,
+    )
+    monkeypatch.setattr(
+        product_research_service,
+        "build_run_response",
+        lambda run: {"ok": True, "run": run},
+    )
+
+    payload, status = product_research_facade.create_hot_product_run_payload({})
+
+    assert status == 200
+    assert payload["run"]["run_id"] == "async"
+    assert calls == ["async"]
+
+    scope = root_presentation_context(
+        presentation_id="presentation-test",
+        root_run_id="run-test",
+        conversation_id="conversation-test",
+        origin="business.ui",
+    )
+    with bind_presentation_context(scope):
+        payload, status = product_research_facade.create_hot_product_run_payload({})
+
+    assert status == 200
+    assert payload["run"]["run_id"] == "sync"
+    assert calls == ["async", "sync"]
 
 
 def test_create_hot_product_run_async_polls_stream_description(tmp_path, monkeypatch) -> None:

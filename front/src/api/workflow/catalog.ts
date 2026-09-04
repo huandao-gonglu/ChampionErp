@@ -1,4 +1,4 @@
-import {  apiClient } from '@/api/client'
+import { apiClient, type AiPresentationTransport } from '@/api/client'
 import { listingLanguageValue } from '@/constants/locales'
 import type {
   BrowserDebugStatus,
@@ -274,6 +274,7 @@ export async function generateCopy(
   product: Product,
   platform: Marketplace,
   options: { draftId?: string; language?: string; mode?: 'rewrite' | 'generate' } = {},
+  presentation: AiPresentationTransport = {},
 ): Promise<ProductMutationResponse> {
   const response = await apiClient.post('/api/generate-copy', {
     product_id: requiredProductId(product, '生成文案'),
@@ -281,12 +282,20 @@ export async function generateCopy(
     ...(options.draftId ? { draft_id: options.draftId } : {}),
     ...(options.language ? { language: options.language } : {}),
     ...(options.mode ? { mode: options.mode } : {}),
-  })
+  }, { aiPresentationId: presentation.presentationId })
   return normalizeProductMutation(response.data)
 }
 
-export async function generateCopyBatch(productIds: string[], platform: Marketplace): Promise<UnknownRecord> {
-  const response = await apiClient.post('/api/generate-copy-batch', { product_ids: productIds, platform })
+export async function generateCopyBatch(
+  productIds: string[],
+  platform: Marketplace,
+  presentation: AiPresentationTransport = {},
+): Promise<UnknownRecord> {
+  const response = await apiClient.post(
+    '/api/generate-copy-batch',
+    { product_ids: productIds, platform },
+    { aiPresentationId: presentation.presentationId },
+  )
   const data = asRecord(response.data)
   ensureOk(data, '批量文案失败')
   const failedCount = getNumber(data, ['failed_count', 'failedCount'])
@@ -332,7 +341,13 @@ export interface ImageTranslateOptions {
 
 export type ImageEditOptions = ImageTranslateOptions
 
-export async function imageTranslate(product: Product, platform: Marketplace, language: string, options: ImageTranslateOptions = {}): Promise<ProductMutationResponse> {
+export async function imageTranslate(
+  product: Product,
+  platform: Marketplace,
+  language: string,
+  options: ImageTranslateOptions = {},
+  presentation: AiPresentationTransport = {},
+): Promise<ProductMutationResponse> {
   const listingLanguage = language || product.drafts[platform]?.language || listingLanguageValue(platform)
   const selectedImageIds = options.sourceImageIds ?? product.source.imagePool.filter((image) => image.selected).map((image) => image.id)
   if (!selectedImageIds.length) throw new Error('请先勾选要翻译/重绘的图片')
@@ -345,11 +360,20 @@ export async function imageTranslate(product: Product, platform: Marketplace, la
     apply_to_draft: options.applyToDraft,
     draft_image_strategy: options.draftImageStrategy,
     source_image_ids: selectedImageIds,
-  }, { timeout: imageTranslateTimeoutMs(selectedImageIds) })
+  }, {
+    timeout: imageTranslateTimeoutMs(selectedImageIds),
+    aiPresentationId: presentation.presentationId,
+  })
   return normalizeProductMutation(response.data)
 }
 
-export async function imageEdit(product: Product, platform: Marketplace, prompt: string, options: ImageEditOptions = {}): Promise<ProductMutationResponse> {
+export async function imageEdit(
+  product: Product,
+  platform: Marketplace,
+  prompt: string,
+  options: ImageEditOptions = {},
+  presentation: AiPresentationTransport = {},
+): Promise<ProductMutationResponse> {
   const userPrompt = String(prompt || '').trim()
   if (!userPrompt) throw new Error('请输入图生图提示词')
   const selectedImageIds = options.sourceImageIds ?? product.source.imagePool.filter((image) => image.selected).map((image) => image.id)
@@ -362,6 +386,9 @@ export async function imageEdit(product: Product, platform: Marketplace, prompt:
     apply_to_draft: options.applyToDraft,
     draft_image_strategy: options.draftImageStrategy,
     source_image_ids: selectedImageIds,
-  }, { timeout: imageTranslateTimeoutMs(selectedImageIds) })
+  }, {
+    timeout: imageTranslateTimeoutMs(selectedImageIds),
+    aiPresentationId: presentation.presentationId,
+  })
   return normalizeProductMutation(response.data)
 }

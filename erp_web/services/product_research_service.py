@@ -720,17 +720,17 @@ def _run_hot_product_worker(
             logger.exception("Failed to write product research run log: %s", run_id)
 
 
-def create_hot_product_run_async(
-    app_dir: Path | str,
+def _store_hot_product_run(
     body: dict[str, Any],
     config: dict[str, Any],
-    app_config: dict[str, Any] | None = None,
-) -> ProductResearchRun:
+    *,
+    execution_mode: str,
+) -> tuple[ProductResearchRunRegistry, ProductResearchRun, dict[str, Any], dict[str, Any]]:
     normalized_config = normalize_product_research_config(config)
     request = normalize_search_request(body if isinstance(body, dict) else {}, normalized_config)
     created_at = _utc_now()
     run: ProductResearchRun = {
-        "run_id": f"prr_{_stable_digest([created_at, request, 'async'])}",
+        "run_id": f"prr_{_stable_digest([created_at, request, execution_mode])}",
         "status": "queued",
         "search_mode": request["search_mode"],
         "created_at": created_at,
@@ -743,6 +743,49 @@ def create_hot_product_run_async(
     }
     registry = get_context().research
     stored = registry.store(run)
+    return registry, stored, request, normalized_config
+
+
+def create_hot_product_run(
+    app_dir: Path | str,
+    body: dict[str, Any],
+    config: dict[str, Any],
+    app_config: dict[str, Any] | None = None,
+) -> ProductResearchRun:
+    """同步完成用户手动发起的 focused 调研运行。
+
+    运行保持在发起它的 HTTP presentation scope 内，Direct Model 原生事件因此
+    可以由既有 AI Work SSE 观察链实时消费；未绑定 presentation 的请求与
+    Global Task 继续使用独立的 ``create_hot_product_run_async``。
+    """
+
+    registry, stored, request, normalized_config = _store_hot_product_run(
+        body,
+        config,
+        execution_mode="focused",
+    )
+    _run_hot_product_worker(
+        registry,
+        app_dir,
+        stored["run_id"],
+        request,
+        normalized_config,
+        app_config,
+    )
+    return registry.get(stored["run_id"]) or stored
+
+
+def create_hot_product_run_async(
+    app_dir: Path | str,
+    body: dict[str, Any],
+    config: dict[str, Any],
+    app_config: dict[str, Any] | None = None,
+) -> ProductResearchRun:
+    registry, stored, request, normalized_config = _store_hot_product_run(
+        body,
+        config,
+        execution_mode="async",
+    )
     worker = threading.Thread(
         target=_run_hot_product_worker,
         args=(registry, app_dir, stored["run_id"], deepcopy(request), deepcopy(normalized_config), deepcopy(app_config) if app_config is not None else None),
@@ -1010,6 +1053,7 @@ __all__ = [
     "build_run_log_record",
     "build_run_not_found_response",
     "build_run_response",
+    "create_hot_product_run",
     "create_hot_product_run_async",
     "get_active_hot_product_run",
     "get_hot_product_run",

@@ -24,10 +24,14 @@ describe('workflow translation API', () => {
       },
     })
 
-    const result = await translateText('zh-CN', {
-      'category.0.path': 'Hogar / Ventiladores',
-      'category.1.path': 'Computación / Accesorios',
-    })
+    const result = await translateText(
+      'zh-CN',
+      {
+        'category.0.path': 'Hogar / Ventiladores',
+        'category.1.path': 'Computación / Accesorios',
+      },
+      { presentationId: 'presentation-translation' },
+    )
 
     expect(apiClient.post).toHaveBeenCalledWith('/api/text-translate', {
       target_language: 'zh-CN',
@@ -35,7 +39,7 @@ describe('workflow translation API', () => {
         'category.0.path': 'Hogar / Ventiladores',
         'category.1.path': 'Computación / Accesorios',
       },
-    })
+    }, { aiPresentationId: 'presentation-translation' })
     expect(result).toEqual({
       'category.0.path': '家居 / 风扇',
       'category.1.path': '电脑 / 配件',

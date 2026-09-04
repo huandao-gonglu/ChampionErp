@@ -1,4 +1,4 @@
-import { apiClient } from '@/api/client'
+import { apiClient, type AiPresentationTransport } from '@/api/client'
 import type {
   HotProductCandidate,
   ProductResearchConfig,
@@ -96,8 +96,13 @@ function normalizeProductResearchResponse(value: unknown): ProductResearchRespon
   }
 }
 
-export async function createProductResearchHotProductRun(payload: UnknownRecord): Promise<ProductResearchResponse> {
-  const response = await apiClient.post('/api/v1/product-research/hot-products/search', payload)
+export async function createProductResearchHotProductRun(
+  payload: UnknownRecord,
+  presentation: AiPresentationTransport = {},
+): Promise<ProductResearchResponse> {
+  const response = await apiClient.post('/api/v1/product-research/hot-products/search', payload, {
+    aiPresentationId: presentation.presentationId,
+  })
   return normalizeProductResearchResponse(response.data)
 }
 
@@ -295,11 +300,12 @@ function normalizeProductResearchProviderTestResult(value: unknown): ProductRese
 export async function testProductResearchSearchProvider(
   provider: ProductResearchSourceRegistryItem,
   options: UnknownRecord,
+  presentation: AiPresentationTransport = {},
 ): Promise<ProductResearchProviderTestResult> {
   const response = await apiClient.post('/api/v1/product-research/search-providers/test', {
     provider: toProductResearchProviderPayload(provider),
     options,
-  })
+  }, { aiPresentationId: presentation.presentationId })
   return normalizeProductResearchProviderTestResult(response.data)
 }
 

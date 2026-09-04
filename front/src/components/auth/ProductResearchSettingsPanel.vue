@@ -11,6 +11,7 @@ import {
   productResearchSourceTypeLabel,
   productResearchStrategyLabel,
 } from '@/utils/productResearchLabels'
+import { withAiForeground } from '@/services/withAiForeground'
 
 const props = defineProps<{
   aiUseCasePrompts?: UnknownRecord
@@ -609,12 +610,29 @@ async function testSelectedProvider() {
   if (!applySelectedConfigJson()) return
   testingProvider.value = true
   try {
-    providerTestResult.value = await testProductResearchSearchProvider(selectedProvider.value, {
+    const provider = selectedProvider.value
+    const options = {
       market: providerTestMarket.value.trim().replace(/^\*$/, '') || providerTestMarketDefault(),
-      language: providerTestLanguageDefault(selectedProvider.value),
+      language: providerTestLanguageDefault(provider),
       keyword: providerTestKeyword.value.trim() || 'mahjong gift',
-      data_type: selectedProvider.value.supportedDataTypes[0] || 'marketplace_products',
-    })
+      data_type: provider.supportedDataTypes[0] || 'marketplace_products',
+    }
+    providerTestResult.value = provider.providerStrategy === 'ai_web_search'
+      ? await withAiForeground<ProductResearchProviderTestResult>(
+        {
+          displayTitle: '测试产品调研 AI 搜索',
+          initialUserMessage: `使用关键词“${options.keyword}”测试 ${options.market} 的 AI 联网搜索。`,
+          successNotice: (testResult) => (
+            testResult.ok ? 'AI 联网搜索测试通过' : 'AI 联网搜索测试未通过'
+          ),
+        },
+        ({ presentationId }) => testProductResearchSearchProvider(
+          provider,
+          options,
+          { presentationId },
+        ),
+      )
+      : await testProductResearchSearchProvider(provider, options)
   } catch (exc) {
     providerTestResult.value = {
       ok: false,

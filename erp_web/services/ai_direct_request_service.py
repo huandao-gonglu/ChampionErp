@@ -29,6 +29,8 @@ from pydantic_ai.native_tools import ImageGenerationTool, WebSearchTool
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import ToolDefinition
 
+from erp_web.context import get_context
+
 from . import ai_generation_settings, ai_model_config, image_service
 from .ai_agent_instrumentation import AiAgentInstrumentation
 from .ai_gateway_parsing import parse_json_text
@@ -49,6 +51,31 @@ logger = logging.getLogger(__name__)
 
 class AiProbeStructuredOutputError(ValueError):
     """能力探测响应无法按声明的 Pydantic object Schema 读取。"""
+
+
+def _save_presentation_history(
+    conversation_id: str,
+    messages: Sequence[ModelMessage],
+    *,
+    use_case_id: str,
+) -> None:
+    """把 Direct Model 的官方消息保存到 presentation 对应对话。
+
+    展示/历史持久化失败不得改写业务请求结果；消息形状与序列化全部交给
+    ``PydanticMessageStore`` 的官方 ``ModelMessagesTypeAdapter``。
+    """
+
+    normalized_id = str(conversation_id or "").strip()
+    if not normalized_id:
+        return
+    try:
+        get_context().pydantic_messages.save(normalized_id, list(messages))
+    except Exception:
+        logger.warning(
+            "AI Direct Model presentation 历史保存失败：%s",
+            use_case_id,
+            exc_info=True,
+        )
 
 
 def _is_openai_responses_null_output_terminal_error(
@@ -318,6 +345,7 @@ def _request(
     publish_native_events: bool = False,
 ) -> ModelResponse:
     instrumentation = _instrumentation(app_dir)
+    request_messages = list(messages)
     presentation = current_presentation_context()
     publish_to_presentation = False
     if (
@@ -338,20 +366,27 @@ def _request(
                 exc_info=True,
             )
     effective_stream = stream or publish_to_presentation
+    if publish_to_presentation and presentation is not None:
+        # 先保存输入，模型失败时 AI Work 历史仍能保留本次用户请求。
+        _save_presentation_history(
+            presentation.conversation_id,
+            request_messages,
+            use_case_id=use_case_id,
+        )
 
     async def run() -> ModelResponse:
         async with binding.model:
             if not effective_stream:
                 return await direct.model_request(
                     binding.model,
-                    messages,
+                    request_messages,
                     model_settings=binding.model_settings,
                     model_request_parameters=parameters,
                     instrument=instrumentation.settings,
                 )
             async with direct.model_request_stream(
                 binding.model,
-                messages,
+                request_messages,
                 model_settings=binding.model_settings,
                 model_request_parameters=parameters,
                 instrument=instrumentation.settings,
@@ -424,7 +459,14 @@ def _request(
 
     try:
         with instrumentation.start_run_span(use_case_id=use_case_id):
-            return asyncio.run(run())
+            response = asyncio.run(run())
+        if publish_to_presentation and presentation is not None:
+            _save_presentation_history(
+                presentation.conversation_id,
+                [*request_messages, response],
+                use_case_id=use_case_id,
+            )
+        return response
     finally:
         instrumentation.force_flush()
         instrumentation.shutdown()
@@ -493,6 +535,7 @@ def _chat_response(
             stream=stream,
             emit_text_delta=emit_text_delta,
             emit_reasoning_delta=None,
+            publish_native_events=True,
         )
     except Exception as exc:
         mapped = map_pydantic_model_error(
@@ -688,6 +731,7 @@ def _image_request(
         stream=False,
         emit_text_delta=None,
         emit_reasoning_delta=None,
+        publish_native_events=True,
     )
     provider_name = str(
         binding.model_config.get("provider")

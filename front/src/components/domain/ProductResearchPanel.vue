@@ -10,6 +10,7 @@ import {
   productResearchMarketLabel,
   productResearchStrategyLabel,
 } from '@/utils/productResearchLabels'
+import { withAiForeground } from '@/services/withAiForeground'
 import type {
   HotProductCandidate,
   ProductResearchConfig,
@@ -44,6 +45,15 @@ const selectedCandidate = computed(() => {
   return candidates.value.find((item) => item.id === selectedCandidateId.value) || candidates.value[0] || null
 })
 const canRunSearch = computed(() => Boolean(selectedTargetMarket.value?.id))
+const selectedMarketUsesAi = computed(() => {
+  const strategyByMethodId = new Map(
+    (researchConfig.value?.searchProviders || []).map((provider) => [provider.id, provider.providerStrategy]),
+  )
+  return (selectedTargetMarket.value?.searchMethods || []).some((binding) => (
+    binding.enabled !== false
+    && strategyByMethodId.get(binding.methodId) === 'ai_web_search'
+  ))
+})
 const runDescription = computed(() => {
   const status = result.value?.run.status || ''
   const description = result.value?.run.description || result.value?.description || ''
@@ -162,7 +172,21 @@ async function runSearch() {
   loading.value = true
   error.value = ''
   try {
-    const next = await createProductResearchHotProductRun(buildPayload())
+    const payload = buildPayload()
+    const next = selectedMarketUsesAi.value
+      ? await withAiForeground<ProductResearchResponse>(
+        {
+          displayTitle: '产品调研 AI 联网搜索',
+          initialUserMessage: `为 ${productResearchMarketLabel(selectedTargetMarket.value)} 生成 ${form.value.limit} 个热门商品候选。`,
+          successNotice: (response) => (
+            response.run.status === 'failed'
+              ? '产品调研运行结束，请查看错误'
+              : `产品调研完成，返回 ${response.items.length} 个候选`
+          ),
+        },
+        ({ presentationId }) => createProductResearchHotProductRun(payload, { presentationId }),
+      )
+      : await createProductResearchHotProductRun(payload)
     applyRunResponse(next)
     if (next.run.runId && !isTerminalRunStatus(next.run.status)) {
       startPolling(next.run.runId)

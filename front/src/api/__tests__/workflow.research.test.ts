@@ -4,7 +4,9 @@ import {
   createProductResearchHotProductRun,
   fetchProductResearchSettings,
   saveProductResearchSettings,
+  testProductResearchSearchProvider,
 } from '@/api/workflow/research'
+import type { ProductResearchSourceRegistryItem } from '@/types/workflow'
 
 vi.mock('@/api/client', () => ({
   apiClient: {
@@ -61,7 +63,16 @@ describe('选品 API 当前 wire schema', () => {
       },
     })
 
-    const result = await createProductResearchHotProductRun({})
+    const result = await createProductResearchHotProductRun(
+      {},
+      { presentationId: 'presentation-research' },
+    )
+
+    expect(apiClient.post).toHaveBeenCalledWith(
+      '/api/v1/product-research/hot-products/search',
+      {},
+      { aiPresentationId: 'presentation-research' },
+    )
 
     expect(result.run).toEqual(expect.objectContaining({
       runId: 'run-current',
@@ -209,5 +220,54 @@ describe('选品 API 当前 wire schema', () => {
     expect(config.searchProviders).toEqual([])
     expect(config.targetMarkets).toEqual([])
     expect(config.sourceRegistry).toEqual([])
+  })
+
+  it('将 AI 搜索 Provider 测试关联到当前 presentation', async () => {
+    const provider: ProductResearchSourceRegistryItem = {
+      id: 'ai-web-search',
+      name: 'AI 联网搜索',
+      sourceType: 'ai',
+      platform: 'amazon',
+      enabled: true,
+      priority: 1,
+      supportedMarkets: ['amazon-us'],
+      supportedLanguages: ['en-US'],
+      supportedDataTypes: ['hot_products'],
+      authRequired: false,
+      rateLimitPerMinute: 10,
+      complianceNote: '',
+      providerStrategy: 'ai_web_search',
+      configJson: {},
+      raw: {},
+    }
+    vi.mocked(apiClient.post).mockResolvedValueOnce({
+      data: {
+        ok: true,
+        status: 'success',
+        source_id: provider.id,
+        provider_strategy: provider.providerStrategy,
+        market: 'amazon-us',
+        keyword: 'mahjong gift',
+        items_found: 1,
+        duration_ms: 15,
+        sample: {},
+      },
+    })
+
+    const result = await testProductResearchSearchProvider(
+      provider,
+      { market: 'amazon-us', keyword: 'mahjong gift' },
+      { presentationId: 'presentation-provider-test' },
+    )
+
+    expect(result.ok).toBe(true)
+    expect(apiClient.post).toHaveBeenCalledWith(
+      '/api/v1/product-research/search-providers/test',
+      expect.objectContaining({
+        provider: expect.objectContaining({ id: provider.id }),
+        options: { market: 'amazon-us', keyword: 'mahjong gift' },
+      }),
+      { aiPresentationId: 'presentation-provider-test' },
+    )
   })
 })

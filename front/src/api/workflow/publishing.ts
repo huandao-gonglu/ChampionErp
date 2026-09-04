@@ -1,4 +1,4 @@
-import { apiClient } from '@/api/client'
+import { apiClient, type AiPresentationTransport } from '@/api/client'
 import { withAiForeground } from '@/services/withAiForeground'
 import type {
   CategoryAttributeDefinition,
@@ -733,6 +733,7 @@ export async function matchCategory(
   return withAiForeground(
     {
       displayTitle: 'AI 匹配类目',
+      initialUserMessage: `为“${draft.title || draft.draftId}”匹配 ${target.platform.toUpperCase()} ${target.site || ''} 类目。`.trim(),
       successNotice: (result) => (
         result.status === 'completed'
           ? '类目匹配完成'
@@ -805,11 +806,6 @@ function categorySelectionToBackendRecord(category: CategorySelection | null): U
       })),
     },
   }
-}
-
-/** 仅传输层的 presentation 关联 option：转成 `X-AI-Presentation-ID` header。 */
-export interface AiPresentationTransport {
-  presentationId?: string
 }
 
 export async function fillCategoryAttributes(

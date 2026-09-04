@@ -22,6 +22,7 @@ import type { ImageEditOptions, ImageTranslateOptions } from '@/api/workflow/cat
 import { assignUpc as assignUpcApi } from '@/api/workflow/settings'
 import {  marketplaces } from '@/constants/initialState'
 import { listingLanguageValue } from '@/constants/locales'
+import { withAiForeground } from '@/services/withAiForeground'
 import {
   isMercadoLibreCbtTarget,
   MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED_MESSAGE,
@@ -492,9 +493,16 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     loading.value = true
     setError('')
     try {
-      const result = await generateCopyBatch(ids, activeMarketplace.value)
+      const platform = activeMarketplace.value
+      const result = await withAiForeground(
+        {
+          displayTitle: '批量生成 AI 文案',
+          initialUserMessage: `为已选择的 ${ids.length} 个商品批量生成 ${platform} 平台文案。`,
+        },
+        ({ presentationId }) => generateCopyBatch(ids, platform, { presentationId }),
+      )
       productsIndex.value = await fetchProductsIndex()
-      addLog(`批量 AI 文案完成：${ids.length} 个商品，平台 ${activeMarketplace.value}。${String(result.message || '')}`)
+      addLog(`批量 AI 文案完成：${ids.length} 个商品，平台 ${platform}。${String(result.message || '')}`)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '批量生成文案失败')
     } finally {
@@ -601,7 +609,22 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     loading.value = true
     setError('')
     try {
-      const result = await imageEditApi(product.value, activeMarketplace.value, userPrompt, options)
+      const selectedCount = options.sourceImageIds?.length
+        ?? product.value.source.imagePool.filter((image) => image.selected).length
+      const result = await withAiForeground(
+        {
+          displayTitle: 'AI 图生图',
+          initialUserMessage: `${userPrompt}\n处理范围：${selectedCount} 张已选图片。`,
+          successNotice: () => 'AI 图生图完成',
+        },
+        ({ presentationId }) => imageEditApi(
+          product.value,
+          activeMarketplace.value,
+          userPrompt,
+          options,
+          { presentationId },
+        ),
+      )
       product.value = result.product
       if (result.draft) currentDraft.value = result.draft
       if (result.productContext) currentDraftProductContext.value = result.productContext
@@ -684,16 +707,31 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
       const productForCopy = draftProductId && draftProductId !== product.value.productId
         ? { ...product.value, productId: draftProductId }
         : product.value
-      const result = await generateCopyApi(
-        productForCopy,
-        activeMarketplace.value,
-        useCurrentDraft
-          ? {
-              draftId: currentDraft.value.draftId,
-              language: currentDraft.value.language,
-              mode: 'rewrite',
-            }
-          : {},
+      const platform = activeMarketplace.value
+      const productLabel = String(
+        currentDraftProductContext.value.title
+        || currentDraft.value.title
+        || productForCopy.name
+        || productForCopy.productId,
+      ).trim()
+      const actionLabel = useCurrentDraft ? '生成/改写本地化文案' : '生成 AI 文案'
+      const result = await withAiForeground(
+        {
+          displayTitle: actionLabel,
+          initialUserMessage: `${actionLabel}：${productLabel || '当前商品'}（${platform}）。`,
+        },
+        ({ presentationId }) => generateCopyApi(
+          productForCopy,
+          platform,
+          useCurrentDraft
+            ? {
+                draftId: currentDraft.value.draftId,
+                language: currentDraft.value.language,
+                mode: 'rewrite',
+              }
+            : {},
+          { presentationId },
+        ),
       )
       product.value = result.product
       if (result.draft) {
@@ -741,7 +779,22 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     setError('')
     try {
       const language = String(targetLanguage || product.value.drafts[activeMarketplace.value]?.language || listingLanguageValue(activeMarketplace.value)).trim()
-      const result = await imageTranslateApi(product.value, activeMarketplace.value, language, options)
+      const selectedCount = options.sourceImageIds?.length
+        ?? product.value.source.imagePool.filter((image) => image.selected).length
+      const result = await withAiForeground(
+        {
+          displayTitle: 'AI 翻译/重绘图片',
+          initialUserMessage: `将所选 ${selectedCount} 张图片翻译并重绘为 ${language}。`,
+          successNotice: () => '图片翻译/重绘完成',
+        },
+        ({ presentationId }) => imageTranslateApi(
+          product.value,
+          activeMarketplace.value,
+          language,
+          options,
+          { presentationId },
+        ),
+      )
       product.value = result.product
       if (result.draft) currentDraft.value = result.draft
       if (result.productContext) currentDraftProductContext.value = result.productContext

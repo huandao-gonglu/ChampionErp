@@ -528,7 +528,13 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
     setError('')
     try {
       const { content, slots } = categoryAttributeTranslationContent(categoryForTranslation)
-      const translated = await translateText('zh-CN', content)
+      const translated = await withAiForeground(
+        {
+          displayTitle: '翻译平台属性',
+          initialUserMessage: `将类目 ${categoryId} 的平台属性名称、说明和选项翻译为中文。`,
+        },
+        ({ presentationId }) => translateText('zh-CN', content, { presentationId }),
+      )
       if (requestId !== requestSequence.categoryAttributeTranslation) return
       categoryAttributeTranslations.value = attributeTranslationsFromText(categoryForTranslation, translated, slots)
       categoryAttributeTranslationsSource.value = 'ai'
@@ -550,7 +556,13 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
     categoryResultTranslating.value = true
     try {
       const { content, categoryIdsByKey } = categoryResultTranslationContent(results)
-      const translated = await translateText('zh-CN', content)
+      const translated = await withAiForeground(
+        {
+          displayTitle: '翻译候选类目',
+          initialUserMessage: `将当前 ${results.length} 个候选类目翻译为中文。`,
+        },
+        ({ presentationId }) => translateText('zh-CN', content, { presentationId }),
+      )
       if (requestId !== requestSequence.categoryResultTranslation) return
       categoryResultTranslations.value = Object.fromEntries(
         Object.entries(translated)
@@ -592,7 +604,10 @@ export function createWorkflowPublishingActions(runtime: WorkflowPublishingActio
       // 同一个通用 wrapper：reserve → observe stream → 业务 header 关联。
       // 业务 response（含 rules-only / fallback warning）是唯一结果事实。
       const result = await withAiForeground(
-        { displayTitle: 'AI 填充属性' },
+        {
+          displayTitle: 'AI 填充属性',
+          initialUserMessage: `为“${currentDraft.value.title || currentDraft.value.draftId}”填充 ${target.platform.toUpperCase()} ${target.site || ''} 类目 ${categoryId} 的属性。`.trim(),
+        },
         ({ presentationId }) => fillCategoryAttributes(
           currentDraft.value,
           target,

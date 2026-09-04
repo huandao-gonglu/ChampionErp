@@ -4,6 +4,7 @@ from typing import Any
 
 from erp_web.context import get_context
 from erp_web.services import config_service, product_research_service
+from erp_web.services.ai_presentation_context import current_presentation_context
 
 from erp_web.product_research_config import normalize_product_research_config
 from erp_web.schemas.api import ApiResponse
@@ -64,7 +65,12 @@ def create_hot_product_run_payload(body: dict[str, Any]) -> ResponseWithStatus:
     try:
         context = get_context()
         app_config = context.config.load_app_config()
-        run = product_research_service.create_hot_product_run_async(
+        create_run = (
+            product_research_service.create_hot_product_run
+            if current_presentation_context() is not None
+            else product_research_service.create_hot_product_run_async
+        )
+        run = create_run(
             context.paths.app_dir,
             body,
             app_config.get("product_research", {}),

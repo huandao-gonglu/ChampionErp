@@ -2,6 +2,11 @@ import axios, { AxiosError } from 'axios'
 import { uiLocaleOption } from '@/constants/locales'
 import { normalizeApiError } from '@/utils/apiError'
 
+/** 业务 API 与 AI Work presentation 的纯传输层关联。 */
+export interface AiPresentationTransport {
+  presentationId?: string
+}
+
 /**
  * 仅传输层使用的请求 option：request interceptor 将其转换为
  * `X-AI-Presentation-ID` header，用于把业务请求关联到已预留的 AI 展示。

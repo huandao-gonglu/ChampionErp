@@ -31,6 +31,7 @@ from pydantic_ai.providers import Provider
 from pydantic_ai.profiles import ModelProfile
 from openai.types.responses.response import Response
 
+from erp_web.context import get_context
 from erp_web.services import ai_direct_request_service, ai_model_probe_service
 from erp_web.services.ai_model_factory import PydanticModelBinding
 from erp_web.services.ai_model_errors import (
@@ -503,6 +504,72 @@ def test_probe_direct_request_publishes_pydantic_stream_to_presentation(
     # 同一 presentation 最多一条官方根流；后续 Direct 请求不能再发第二个
     # start/finish 序列，也不能让第一个 DONE 后残留不可消费 chunk。
     assert "second-probe-output" not in encoded
+    history = get_context().pydantic_messages.get(scope.conversation_id)
+    assert history is not None
+    persisted = history.model_messages()
+    assert len(persisted) == 2
+    assert "echo probe" in str(persisted[0])
+    assert "probe-visible-output" in str(persisted[1])
+    assert "second probe" not in str(persisted)
+
+
+def test_ordinary_direct_chat_publishes_and_persists_when_presentation_is_bound(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        ai_direct_request_service,
+        "create_pydantic_model_binding",
+        lambda *args, **kwargs: _binding(
+            output='{"answer":"visible"}',
+            required=("chat", "json"),
+        ),
+    )
+    registry = AiPresentationRegistry()
+    reserved = reserve_presentation(registry, display_title="生成 AI 文案")
+    presentation_id = str(reserved["presentation_id"])
+    scope = claim_presentation_scope(registry, presentation_id=presentation_id)
+    assert scope is not None
+
+    with bind_presentation_context(scope):
+        result = ai_direct_request_service.chat_json(
+            app_dir=tmp_path,
+            use_case_id="copy.generate",
+            model={"id": "test-model"},
+            required_capabilities=("chat", "json"),
+            messages=[{"role": "user", "content": "生成本地化标题。"}],
+            generation_settings={},
+            temperature=0,
+            max_tokens=64,
+            timeout_seconds=30,
+            response_format=False,
+            stream=False,
+        )
+
+    assert result == {"answer": "visible"}
+    registry.finish_request(presentation_id, request_failed=False)
+    encoded = b"".join(
+        registry.iter_chunks(presentation_id, wait_timeout=0.2)
+    ).decode("utf-8")
+    assert '"type":"start"' in encoded
+    assert '"type":"finish"' in encoded
+    frames = [
+        json.loads(line[len("data: ") :])
+        for line in encoded.splitlines()
+        if line.startswith("data: ") and line != "data: [DONE]"
+    ]
+    assert "".join(
+        str(frame.get("delta") or "")
+        for frame in frames
+        if frame.get("type") == "text-delta"
+    ) == '{"answer":"visible"}'
+
+    history = get_context().pydantic_messages.get(scope.conversation_id)
+    assert history is not None
+    persisted = history.model_messages()
+    assert len(persisted) == 2
+    assert "生成本地化标题" in str(persisted[0])
+    assert '"answer":"visible"' in str(persisted[1])
 
 
 def test_probe_recovers_responses_null_output_after_complete_stream(
@@ -661,6 +728,95 @@ def test_image_response_is_normalized_from_pydantic_file_part() -> None:
             "b64_json": base64.b64encode(raw).decode("ascii"),
         }
     ]
+
+
+def test_focused_image_request_publishes_completed_response_to_ai_work(
+    tmp_path: Path,
+) -> None:
+    raw = ai_model_probe_service._image_edit_probe_bytes()
+    calls: list[dict[str, object]] = []
+
+    class Images:
+        async def generate(self, **kwargs):
+            calls.append(kwargs)
+            item = type(
+                "ImageItem",
+                (),
+                {"b64_json": base64.b64encode(raw).decode("ascii"), "url": None},
+            )()
+            return type("ImageResponse", (), {"data": [item]})()
+
+    class Client:
+        images = Images()
+
+    class FakeProvider(Provider[object]):
+        _client = Client()
+
+        @property
+        def name(self) -> str:
+            return "test"
+
+        @property
+        def base_url(self) -> str:
+            return "https://api.example.com/v1"
+
+        @property
+        def client(self) -> object:
+            return self._client
+
+    model = OpenAIImagesModel("gpt-image-test", provider=FakeProvider())
+    binding = replace(
+        _binding(required=("image_generation",)),
+        model=model,
+        model_name="gpt-image-test",
+    )
+    registry = AiPresentationRegistry()
+    reserved = reserve_presentation(registry, display_title="生成图片")
+    presentation_id = str(reserved["presentation_id"])
+    scope = claim_presentation_scope(registry, presentation_id=presentation_id)
+    assert scope is not None
+
+    with bind_presentation_context(scope):
+        result = ai_direct_request_service._image_request(
+            app_dir=tmp_path,
+            use_case_id="image.generate",
+            binding=binding,
+            prompt="生成一张商品图",
+            action="generate",
+            result_mode="generate",
+            source=None,
+            source_id="",
+            size="1024x1024",
+            quality="medium",
+            count=1,
+        )
+
+    assert result == [
+        {
+            "provider": "Test",
+            "mode": "generate",
+            "source_id": "",
+            "suffix": ".png",
+            "b64_json": base64.b64encode(raw).decode("ascii"),
+        }
+    ]
+    assert len(calls) == 1
+    assert calls[0]["model"] == "gpt-image-test"
+
+    registry.finish_request(presentation_id, request_failed=False)
+    encoded = b"".join(
+        registry.iter_chunks(presentation_id, wait_timeout=0.2)
+    ).decode("utf-8")
+    assert '"type":"start"' in encoded
+    assert '"type":"finish"' in encoded
+    assert '"type":"file"' in encoded
+
+    history = get_context().pydantic_messages.get(scope.conversation_id)
+    assert history is not None
+    persisted = history.model_messages()
+    assert len(persisted) == 2
+    assert "生成一张商品图" in str(persisted[0])
+    assert raw == persisted[1].files[0].data
 
 
 def test_image_edit_failure_does_not_fallback_to_generation(

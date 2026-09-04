@@ -8,9 +8,12 @@ Pydantic AI 2.22 的公开 OpenAI Model 支持 Responses 原生图片工具，�
 from __future__ import annotations
 
 import base64
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from typing import Any, Sequence
 
 from openai import APIConnectionError, APIStatusError, AsyncOpenAI
+from pydantic_ai import RunContext
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 from pydantic_ai.messages import (
     BinaryContent,
@@ -22,7 +25,12 @@ from pydantic_ai.messages import (
     TextPart,
     UserPromptPart,
 )
-from pydantic_ai.models import Model, ModelRequestParameters
+from pydantic_ai.models import (
+    CompletedStreamedResponse,
+    Model,
+    ModelRequestParameters,
+    StreamedResponse,
+)
 from pydantic_ai.native_tools import ImageGenerationTool
 from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.providers import Provider
@@ -132,6 +140,36 @@ class OpenAIImagesModel(Model[AsyncOpenAI]):
             model_settings,
             model_request_parameters,
         )
+        return await self._request_prepared(messages, settings, parameters)
+
+    @asynccontextmanager
+    async def request_stream(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+        run_context: RunContext[Any] | None = None,
+    ) -> AsyncGenerator[StreamedResponse]:
+        """用官方 completed stream 暴露 Images API 的一次性响应事件。"""
+
+        del run_context
+        settings, parameters = self.prepare_request(
+            model_settings,
+            model_request_parameters,
+        )
+        response = await self._request_prepared(messages, settings, parameters)
+        yield CompletedStreamedResponse(
+            response,
+            model_request_parameters=parameters,
+            replay_events=True,
+        )
+
+    async def _request_prepared(
+        self,
+        messages: list[ModelMessage],
+        settings: ModelSettings | None,
+        parameters: ModelRequestParameters,
+    ) -> ModelResponse:
         prompt, images = _user_content(messages)
         if not prompt:
             raise ValueError("图片请求 prompt 不能为空。")

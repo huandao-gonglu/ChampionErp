@@ -863,6 +863,99 @@ describe('workflow store live API flow', () => {
     expect(store.progressPercent).toBeGreaterThan(0)
   })
 
+  it('将手动文案生成绑定到 AI Work presentation', async () => {
+    const product = collectedProduct()
+    vi.mocked(workflowApi.generateCopy).mockResolvedValue(mutation(product))
+    const store = useWorkflowStore()
+    store.product = product
+
+    await store.generateCopy()
+
+    expect(withAiForeground).toHaveBeenCalledWith(
+      expect.objectContaining({
+        displayTitle: '生成 AI 文案',
+        initialUserMessage: '生成 AI 文案：Collected product（mercadolibre）。',
+      }),
+      expect.any(Function),
+    )
+    expect(workflowApi.generateCopy).toHaveBeenCalledWith(
+      product,
+      'mercadolibre',
+      {},
+      { presentationId: 'presentation-store-test' },
+    )
+  })
+
+  it('将手动图生图绑定到 AI Work presentation', async () => {
+    const product = collectedProduct()
+    vi.mocked(workflowApi.imageEdit).mockResolvedValue(mutation(product))
+    const store = useWorkflowStore()
+    store.product = product
+
+    await store.editImagesWithPrompt('去除背景', { sourceImageIds: ['img_1'] })
+
+    expect(withAiForeground).toHaveBeenCalledWith(
+      expect.objectContaining({
+        displayTitle: 'AI 图生图',
+        initialUserMessage: '去除背景\n处理范围：1 张已选图片。',
+      }),
+      expect.any(Function),
+    )
+    expect(workflowApi.imageEdit).toHaveBeenCalledWith(
+      product,
+      'mercadolibre',
+      '去除背景',
+      { sourceImageIds: ['img_1'] },
+      { presentationId: 'presentation-store-test' },
+    )
+  })
+
+  it('将手动图片翻译绑定到 AI Work presentation', async () => {
+    const product = collectedProduct()
+    vi.mocked(workflowApi.imageTranslate).mockResolvedValue(mutation(product))
+    const store = useWorkflowStore()
+    store.product = product
+
+    await store.translateImages('es-MX', { sourceImageIds: ['img_1'] })
+
+    expect(withAiForeground).toHaveBeenCalledWith(
+      expect.objectContaining({
+        displayTitle: 'AI 翻译/重绘图片',
+        initialUserMessage: '将所选 1 张图片翻译并重绘为 es-MX。',
+      }),
+      expect.any(Function),
+    )
+    expect(workflowApi.imageTranslate).toHaveBeenCalledWith(
+      product,
+      'mercadolibre',
+      'es-MX',
+      { sourceImageIds: ['img_1'] },
+      { presentationId: 'presentation-store-test' },
+    )
+  })
+
+  it('将手动批量文案生成绑定到 AI Work presentation', async () => {
+    vi.mocked(workflowApi.generateCopyBatch).mockResolvedValue({ message: '完成' })
+    vi.mocked(workflowApi.fetchProductsIndex).mockResolvedValue([])
+    const store = useWorkflowStore()
+    store.selectedProductIds = ['product-1', 'product-2']
+
+    await store.generateCopyForSelectedProducts()
+
+    expect(withAiForeground).toHaveBeenCalledWith(
+      expect.objectContaining({
+        displayTitle: '批量生成 AI 文案',
+        initialUserMessage: '为已选择的 2 个商品批量生成 mercadolibre 平台文案。',
+      }),
+      expect.any(Function),
+    )
+    expect(workflowApi.generateCopyBatch).toHaveBeenCalledWith(
+      ['product-1', 'product-2'],
+      'mercadolibre',
+      { presentationId: 'presentation-store-test' },
+    )
+  })
+
   it('uses the active non-Mercado Libre draft when calculating workflow progress', () => {
     const draft = createEmptyDraftDetail('yandex')
     draft.draftId = 'draft-yandex'
@@ -1863,7 +1956,14 @@ describe('workflow store live API flow', () => {
 
     expect(workflowApi.translateText).toHaveBeenCalledWith('zh-CN', {
       'category.0.path': 'Hogar / Ventiladores',
-    })
+    }, { presentationId: 'presentation-store-test' })
+    expect(withAiForeground).toHaveBeenCalledWith(
+      expect.objectContaining({
+        displayTitle: '翻译候选类目',
+        initialUserMessage: '将当前 1 个候选类目翻译为中文。',
+      }),
+      expect.any(Function),
+    )
     expect(store.categoryResultTranslations).toEqual({
       'MLM-FAN': '家居 / 风扇',
     })
@@ -1898,7 +1998,14 @@ describe('workflow store live API flow', () => {
       'attribute.0.label': 'Marca',
       'attribute.0.description': 'Indica la marca del producto',
       'attribute.0.option.0': 'Generic',
-    })
+    }, { presentationId: 'presentation-store-test' })
+    expect(withAiForeground).toHaveBeenCalledWith(
+      expect.objectContaining({
+        displayTitle: '翻译平台属性',
+        initialUserMessage: '将类目 MLM-FAN 的平台属性名称、说明和选项翻译为中文。',
+      }),
+      expect.any(Function),
+    )
     expect(workflowApi.fetchCategoryAttrs).not.toHaveBeenCalled()
     expect(store.categoryAttributeTranslations).toEqual({
       BRAND: {
