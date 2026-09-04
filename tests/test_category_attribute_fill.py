@@ -544,13 +544,23 @@ def test_ai_model_attribute_fill_accepts_other_no_brand_and_exact_weight_convers
     assert "evidence_rejected" not in meta
 
 
-def test_ai_model_attribute_fill_rejects_conflicting_concrete_brand_facts(
+@pytest.mark.parametrize(
+    ("source_brand", "candidate_value", "candidate_id"),
+    [
+        ("悦尚", "YueShang", "972754621"),
+        ("大疆", "DJI", "dji-live-id"),
+    ],
+)
+def test_ai_model_attribute_fill_accepts_live_cross_language_brand_candidate(
     monkeypatch,
+    source_brand: str,
+    candidate_value: str,
+    candidate_id: str,
 ) -> None:
     product = default_product_model()
-    product["brand"] = "Bosch"
-    product["source"]["brand"] = "Bosch"
-    product["drafts"]["ozon"]["brand"] = "Makita"
+    product["brand"] = source_brand
+    product["source"]["brand"] = source_brand
+    product["drafts"]["ozon"]["brand"] = source_brand
     category = {
         "category_id": "94953",
         "site": "global",
@@ -570,14 +580,86 @@ def test_ai_model_attribute_fill_rejects_conflicting_concrete_brand_facts(
 
     def fake_agent(payload, toolset, ledger):
         del payload, toolset
-        ledger.add_values("85", [{"id": "bosch-id", "value": "Bosch"}])
+        ledger.add_values(
+            "85",
+            [{"id": candidate_id, "value": candidate_value}],
+        )
         return CategoryAttributeFillAgentRun(
             {
                 "assignments": [
                     {
                         "attribute_id": "85",
-                        "value": "Bosch",
-                        "dictionary_value_id": "bosch-id",
+                        "value": candidate_value,
+                        "dictionary_value_id": candidate_id,
+                    }
+                ],
+                "need_review": [],
+            }
+        )
+
+    monkeypatch.setattr(
+        category_attribute_ai_fill,
+        "run_category_attribute_fill_agent",
+        fake_agent,
+    )
+
+    updated, meta = category_attribute_ai_fill.apply_ai_model_attribute_fill(
+        product,
+        "ozon",
+        category,
+    )
+    expected_id = int(candidate_id) if candidate_id.isdigit() else candidate_id
+
+    assert updated["drafts"]["ozon"]["attributes"]["85"] == {
+        "values": [
+            {
+                "dictionary_value_id": expected_id,
+                "value": candidate_value,
+            }
+        ]
+    }
+    assert updated["drafts"]["ozon"]["validation_errors"] == []
+    assert meta["ai_filled"] == ["85"]
+    assert "evidence_rejected" not in meta
+
+
+def test_ai_model_attribute_fill_rejects_no_brand_candidate_for_concrete_brand(
+    monkeypatch,
+) -> None:
+    product = default_product_model()
+    product["brand"] = "悦尚"
+    product["source"]["brand"] = "悦尚"
+    product["drafts"]["ozon"]["brand"] = "悦尚"
+    category = {
+        "category_id": "94953",
+        "site": "global",
+        "attributes": {
+            "required": [
+                {
+                    "id": "85",
+                    "name": "Бренд",
+                    "required": True,
+                    "dictionary_id": "28732849",
+                    "is_dictionary": True,
+                }
+            ],
+            "optional": [],
+        },
+    }
+
+    def fake_agent(payload, toolset, ledger):
+        del payload, toolset
+        ledger.add_values(
+            "85",
+            [{"id": "126745801", "value": "Нет бренда"}],
+        )
+        return CategoryAttributeFillAgentRun(
+            {
+                "assignments": [
+                    {
+                        "attribute_id": "85",
+                        "value": "Нет бренда",
+                        "dictionary_value_id": "126745801",
                     }
                 ],
                 "need_review": [],
@@ -599,80 +681,6 @@ def test_ai_model_attribute_fill_rejects_conflicting_concrete_brand_facts(
     assert "85" not in updated["drafts"]["ozon"]["attributes"]
     assert updated["drafts"]["ozon"]["validation_errors"] == ["85"]
     assert meta["evidence_rejected"] == ["85"]
-
-
-def test_ai_model_attribute_fill_accepts_only_exact_concrete_brand_candidate(
-    monkeypatch,
-) -> None:
-    category = {
-        "category_id": "94953",
-        "site": "global",
-        "attributes": {
-            "required": [
-                {
-                    "id": "85",
-                    "name": "Бренд",
-                    "required": True,
-                    "dictionary_id": "28732849",
-                    "is_dictionary": True,
-                }
-            ],
-            "optional": [],
-        },
-    }
-
-    def run(candidate_value: str, candidate_id: str):
-        product = default_product_model()
-        product["brand"] = "Bosch"
-        product["source"]["brand"] = "Bosch"
-        product["source"]["title"] = "Compatible with Bosch Professional"
-        product["drafts"]["ozon"]["brand"] = "Bosch"
-
-        def fake_agent(payload, toolset, ledger):
-            del payload, toolset
-            ledger.add_values(
-                "85",
-                [{"id": candidate_id, "value": candidate_value}],
-            )
-            return CategoryAttributeFillAgentRun(
-                {
-                    "assignments": [
-                        {
-                            "attribute_id": "85",
-                            "value": candidate_value,
-                            "dictionary_value_id": candidate_id,
-                        }
-                    ],
-                    "need_review": [],
-                }
-            )
-
-        monkeypatch.setattr(
-            category_attribute_ai_fill,
-            "run_category_attribute_fill_agent",
-            fake_agent,
-        )
-        return category_attribute_ai_fill.apply_ai_model_attribute_fill(
-            product,
-            "ozon",
-            category,
-        )
-
-    exact, exact_meta = run("Bosch", "bosch-id")
-    similar, similar_meta = run("Bosch Professional", "bosch-pro-id")
-
-    assert exact["drafts"]["ozon"]["attributes"]["85"] == {
-        "values": [
-            {
-                "dictionary_value_id": "bosch-id",
-                "value": "Bosch",
-            }
-        ]
-    }
-    assert exact_meta["ai_filled"] == ["85"]
-    assert "85" not in similar["drafts"]["ozon"]["attributes"]
-    assert similar["drafts"]["ozon"]["validation_errors"] == ["85"]
-    assert similar_meta["evidence_rejected"] == ["85"]
 
 
 @pytest.mark.parametrize(

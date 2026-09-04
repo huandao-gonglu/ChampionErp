@@ -23,7 +23,6 @@ from erp_web.schemas.category import (
 from erp_web.schemas.category_attribute import CategoryAttributeValueLedger
 from erp_web.schemas.category_brand import (
     is_brand_attribute,
-    is_no_brand_fact,
     is_official_no_brand_value,
     product_context_declares_no_brand,
 )
@@ -270,39 +269,20 @@ def _has_number_unit_evidence(
     return False
 
 
-def _brand_fact_values(product_context: dict[str, Any]) -> list[str]:
-    values: list[str] = []
-    for scope_name in ("draft", "product", "source"):
-        scope = product_context.get(scope_name)
-        if not isinstance(scope, dict):
-            continue
-        value = str(scope.get("brand") or "").strip()
-        if value:
-            values.append(value)
-    return values
-
-
-def _has_brand_evidence(
+def _brand_candidate_is_allowed(
     value: str,
     product_context: dict[str, Any],
     *,
     platform: str,
 ) -> bool:
-    """品牌枚举只能落到明确无品牌或商品品牌字段的精确候选。"""
+    """品牌语义由 Agent 判断；代码只阻止具体品牌被降级为无品牌。"""
 
     if is_official_no_brand_value(platform, value):
         return product_context_declares_no_brand(product_context)
-    candidate = _normalized_evidence_text(value)
-    if not candidate:
-        return False
-    concrete_brands = {
-        normalized
-        for fact in _brand_fact_values(product_context)
-        if not is_no_brand_fact(fact)
-        and (normalized := _normalized_evidence_text(fact))
-    }
-    # source/product/draft 若给出了相互冲突的真实品牌，不能任选其中一个落库。
-    return concrete_brands == {candidate}
+    # 平台候选是否确实来自本次实时字典，由 CategoryAttributeValueLedger 保证。
+    # 中文品牌与拉丁转写、国际商标名或商业别名是否属于同一品牌，只能由
+    # Agent 结合商品上下文判断；代码不得再做跨语言字符串等值推断。
+    return True
 
 
 def _decimal_value(value: Any) -> Decimal | None:
@@ -475,7 +455,7 @@ def _validated_agent_attributes(
             if candidate is None:
                 continue
             if is_brand_attribute(attr, platform=platform):
-                has_enum_evidence = _has_brand_evidence(
+                has_enum_evidence = _brand_candidate_is_allowed(
                     candidate["value"],
                     product_context,
                     platform=platform,

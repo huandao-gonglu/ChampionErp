@@ -343,7 +343,11 @@ def test_agent_receives_and_preserves_number_unit_contract() -> None:
     )
 
     def model(messages: list[Any], agent_info: AgentInfo) -> ModelResponse:
-        assert "带单位属性" in str(agent_info.instructions or "")
+        instructions = str(agent_info.instructions or "")
+        assert "带单位属性" in instructions
+        assert "YueShang" in instructions
+        assert "DJI" in instructions
+        assert "具体品牌时不得选择平台官方无品牌候选" in instructions
         user_prompts = [
             str(part.content)
             for message in messages

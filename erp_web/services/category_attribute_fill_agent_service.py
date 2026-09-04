@@ -38,6 +38,15 @@ CATEGORY_ATTRIBUTE_FILL_BUDGET_PROFILE = "category.attribute_fill.default"
 CATEGORY_ATTRIBUTE_FILL_RESULT_VERSION = "category_attribute_fill.v3"
 CATEGORY_ATTRIBUTE_FILL_DEADLINE_SECONDS = 120
 
+BRAND_IDENTITY_INSTRUCTIONS = (
+    "具体品牌的跨语言名称、拉丁转写、国际商标名和商业别名由你结合商品事实"
+    "判断。品牌属性第一轮必须在同一次批量工具调用中查询源品牌原文以及最可能的"
+    "平台品牌名，例如“悦尚”可查询 YueShang，“大疆”应查询 DJI；只能选择本次"
+    "工具返回的真实平台候选。商品存在具体品牌时不得选择平台官方无品牌候选。"
+    "product、source、draft 的具体品牌相互冲突且无法确定时，必填品牌进入"
+    " need_review。"
+)
+
 
 class CategoryAttributeAssignment(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -309,6 +318,7 @@ def run_category_attribute_fill_agent(
         "选择平台工具返回的官方无品牌候选。非品牌 strict_enum 允许依据商品事实和"
         "已确认类目路径进行跨语言语义匹配，但不得猜测技术规格。"
     )
+    instructions = f"{instructions} {BRAND_IDENTITY_INSTRUCTIONS}"
     user_prompt = render_prompt_template(
         prompt.get("user") or "请填写以下类目属性：{$input_json}",
         {"input_json": _prompt_payload(payload)},
