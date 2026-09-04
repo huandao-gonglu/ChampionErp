@@ -87,7 +87,7 @@ describe('浮动气泡同标签页导航到 AiWork 的实时流集成', () => {
     vi.unstubAllGlobals()
   })
 
-  async function setupApp(): Promise<{
+  async function setupApp(initialRoute = '/'): Promise<{
     wrapper: ReturnType<typeof mount>
     router: Router
     store: ReturnType<typeof useAiChatStore>
@@ -105,11 +105,37 @@ describe('浮动气泡同标签页导航到 AiWork 的实时流集成', () => {
         { path: '/aiWork', name: 'AiWork', component: AiWorkView },
       ],
     })
-    await router.push('/')
+    await router.push(initialRoute)
     await router.isReady()
     const wrapper = mount(AppHost, { global: { plugins: [pinia, router] } })
     return { wrapper, router, store: useAiChatStore() }
   }
+
+  it('从 AI Work 返回时恢复离开前的工作台选项', async () => {
+    const { wrapper, router } = await setupApp('/?tab=drafts')
+
+    await wrapper.get('[data-testid="ai-work-floating-toggle"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(router.currentRoute.value.name).toBe('AiWork')
+    })
+    expect(router.currentRoute.value.query.workspace_tab).toBe('drafts')
+
+    await wrapper.get('[data-testid="ai-work-back"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(router.currentRoute.value.name).toBe('WorkflowHome')
+    })
+    expect(router.currentRoute.value.query.tab).toBe('drafts')
+  })
+
+  it('忽略手工注入的未知工作台选项', async () => {
+    const { wrapper, router } = await setupApp('/aiWork?workspace_tab=unknown')
+
+    await wrapper.get('[data-testid="ai-work-back"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(router.currentRoute.value.name).toBe('WorkflowHome')
+    })
+    expect(router.currentRoute.value.query).toEqual({})
+  })
 
   it('流式过程中点击进入 AiWork：同一 Chat、一次 POST，导航后继续合并增量', async () => {
     const { wrapper, router, store } = await setupApp()

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { RouterLink, useRoute } from 'vue-router'
 import type { UIMessage } from 'ai'
 import {
   fetchConversationTaskLink,
@@ -11,6 +11,7 @@ import {
 import AiChatPanel from '@/components/ai-work/AiChatPanel.vue'
 import AiMessageList from '@/components/ai-work/AiMessageList.vue'
 import JsonTreeNode from '@/components/ai-work/JsonTreeNode.vue'
+import { workflowNavItems } from '@/constants/navigation'
 import { useAiChatStore, useAiWorkDisplayStore } from '@/stores'
 import {
   GLOBAL_CHAT_CONVERSATION_PREFIX,
@@ -57,6 +58,17 @@ const requestedConversationId = computed(() => {
 const requestedPresentationId = computed(() => {
   const value = route.query.presentation_id
   return String(Array.isArray(value) ? value[0] || '' : value || '').trim()
+})
+
+const workspaceReturnRoute = computed(() => {
+  const value = route.query.workspace_tab
+  const tab = String(Array.isArray(value) ? value[0] || '' : value || '').trim()
+  return {
+    name: 'WorkflowHome',
+    query: workflowNavItems.some((item) => item.key === tab) && tab !== 'dashboard'
+      ? { tab }
+      : {},
+  }
 })
 
 const foregroundPresentation = computed(() => displayStore.foregroundPresentation)
@@ -468,9 +480,13 @@ onMounted(() => {
       <div class="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-4">
         <div class="min-w-0">
           <div class="flex flex-wrap items-center gap-3">
-            <a href="/" class="text-sm font-bold text-primary-600 hover:text-primary-500 dark:text-primary-300">
+            <RouterLink
+              :to="workspaceReturnRoute"
+              class="text-sm font-bold text-primary-600 hover:text-primary-500 dark:text-primary-300"
+              data-testid="ai-work-back"
+            >
               返回工作台
-            </a>
+            </RouterLink>
             <span class="text-slate-300 dark:text-dark-600">/</span>
             <span class="rounded-full bg-primary-100 px-2.5 py-1 text-[11px] font-black text-primary-700 dark:bg-primary-500/15 dark:text-primary-200">
               全局对话

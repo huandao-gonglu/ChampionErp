@@ -12,6 +12,7 @@ const workflowRoutes: RouteRecordRaw[] = [
       titleKey: 'routes.workflow.title',
       descriptionKey: 'routes.workflow.description',
       icon: '▦',
+      keepAlive: true,
     },
   },
 ]

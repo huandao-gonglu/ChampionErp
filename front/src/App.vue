@@ -7,7 +7,20 @@ import Toast from '@/components/common/Toast.vue'
 
 <template>
   <NavigationProgress />
-  <RouterView />
+  <RouterView v-slot="{ Component, route }">
+    <KeepAlive>
+      <component
+        :is="Component"
+        v-if="route.meta.keepAlive"
+        :key="String(route.name)"
+      />
+    </KeepAlive>
+    <component
+      :is="Component"
+      v-if="!route.meta.keepAlive"
+      :key="String(route.name)"
+    />
+  </RouterView>
   <AiWorkFloatingButton />
   <Toast />
 </template>

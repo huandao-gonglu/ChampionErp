@@ -136,6 +136,34 @@ describe('AiWorkFloatingButton', () => {
     expect(wrapper.find('[role="region"]').exists()).toBe(false)
   })
 
+  it('图钉位于关闭按钮左侧，钉住后鼠标和焦点移出都不收起', async () => {
+    const { wrapper, store } = await mountFloatingButton()
+    const floating = wrapper.get('[data-testid="ai-work-floating"]')
+    await floating.trigger('mouseenter')
+
+    const panel = wrapper.get('[data-testid="ai-work-floating-panel"]')
+    const headerButtons = panel.get('header').findAll('button')
+    expect(headerButtons.map((button) => button.attributes('data-testid'))).toEqual([
+      'ai-work-floating-pin',
+      'ai-work-floating-close',
+    ])
+
+    const pin = wrapper.get('[data-testid="ai-work-floating-pin"]')
+    expect(pin.attributes('aria-pressed')).toBe('false')
+    await pin.trigger('click')
+    expect(pin.attributes('aria-pressed')).toBe('true')
+
+    await floating.trigger('mouseleave')
+    await floating.trigger('focusout', { relatedTarget: document.body })
+    expect(store.floatingOpen).toBe(true)
+    expect(wrapper.find('[data-testid="ai-work-floating-panel"]').exists()).toBe(true)
+
+    await pin.trigger('click')
+    expect(pin.attributes('aria-pressed')).toBe('false')
+    await floating.trigger('mouseleave')
+    expect(store.floatingOpen).toBe(false)
+  })
+
   it('输入与发送都经过共享 store，不产生本地第二份状态', async () => {
     const { wrapper, store } = await mountFloatingButton()
     const sendSpy = vi.spyOn(store, 'sendMessage').mockImplementation(() => {})
@@ -180,6 +208,7 @@ describe('AiWorkFloatingButton', () => {
     await wrapper.get('[data-testid="ai-work-floating"]').trigger('mouseenter')
     expect(wrapper.find('[role="region"]').exists()).toBe(true)
 
+    await wrapper.get('[data-testid="ai-work-floating-pin"]').trigger('click')
     await wrapper.get('[data-testid="ai-work-floating-close"]').trigger('click')
     expect(store.floatingOpen).toBe(false)
     expect(wrapper.find('[role="region"]').exists()).toBe(false)

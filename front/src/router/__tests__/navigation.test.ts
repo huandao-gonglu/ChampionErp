@@ -16,6 +16,7 @@ describe('工作流顶级导航', () => {
     expect(routePaths).toContain('/publish')
     expect(navKeys).toContain('drafts')
     expect(navKeys).toContain('publish')
+    expect(router.resolve({ name: 'WorkflowHome' }).meta.keepAlive).toBe(true)
 
     await router.push('/pricing')
     expect(router.currentRoute.value.path).toBe('/')

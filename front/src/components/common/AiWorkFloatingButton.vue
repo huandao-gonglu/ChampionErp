@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
+import { PhPushPin } from '@phosphor-icons/vue'
 import AiChatPanel from '@/components/ai-work/AiChatPanel.vue'
 import AiMessageList from '@/components/ai-work/AiMessageList.vue'
+import { workflowNavItems } from '@/constants/navigation'
 import { useAiChatStore, useAiWorkDisplayStore } from '@/stores'
 
 const route = useRoute()
@@ -11,6 +13,7 @@ const displayStore = useAiWorkDisplayStore()
 const floatingElement = ref<HTMLElement | null>(null)
 const pointerWithin = ref(false)
 const focusWithin = ref(false)
+const isPinned = ref(false)
 let noticeTimer: ReturnType<typeof setTimeout> | null = null
 
 // AiWork 页面内置完整对话区域，浮动入口只在其他页面显示。
@@ -23,6 +26,14 @@ const presentationError = computed(() => foregroundPresentation.value?.error?.me
 const panelError = computed(() => chatStore.error?.message || '')
 const terminalNotice = computed(() => displayStore.terminalNotice)
 
+const workspaceReturnQuery = computed(() => {
+  if (route.name !== 'WorkflowHome') return {}
+  const tab = String(Array.isArray(route.query.tab) ? route.query.tab[0] || '' : route.query.tab || '')
+  return workflowNavItems.some((item) => item.key === tab) && tab !== 'dashboard'
+    ? { workspace_tab: tab }
+    : {}
+})
+
 // 前台 presentation 期间进入 AiWork 时携带 presentation conversation 与
 // presentation_id，页面按同一 observe Chat 继续展示；无 presentation 时恢复
 // global.chat 目标。
@@ -31,6 +42,7 @@ const aiWorkRoute = computed(() => {
     return {
       name: 'AiWork',
       query: {
+        ...workspaceReturnQuery.value,
         conversation_id: foregroundPresentation.value.conversationId,
         presentation_id: foregroundPresentation.value.presentationId,
       },
@@ -38,9 +50,12 @@ const aiWorkRoute = computed(() => {
   }
   return {
     name: 'AiWork',
-    query: chatStore.activeConversationId
-      ? { conversation_id: chatStore.activeConversationId }
-      : {},
+    query: {
+      ...workspaceReturnQuery.value,
+      ...(chatStore.activeConversationId
+        ? { conversation_id: chatStore.activeConversationId }
+        : {}),
+    },
   }
 })
 
@@ -51,7 +66,7 @@ function handleMouseEnter(): void {
 
 function handleMouseLeave(): void {
   pointerWithin.value = false
-  if (!focusWithin.value) chatStore.closeFloating()
+  if (!focusWithin.value && !isPinned.value) chatStore.closeFloating()
 }
 
 function handleFocusIn(): void {
@@ -63,7 +78,11 @@ function handleFocusOut(event: FocusEvent): void {
   const nextTarget = event.relatedTarget as Node | null
   if (nextTarget && floatingElement.value?.contains(nextTarget)) return
   focusWithin.value = false
-  if (!pointerWithin.value) chatStore.closeFloating()
+  if (!pointerWithin.value && !isPinned.value) chatStore.closeFloating()
+}
+
+function togglePinned(): void {
+  isPinned.value = !isPinned.value
 }
 
 // terminal 提示只短暂展示，不能永久停留在业务模式或遮挡 global.chat。
@@ -123,6 +142,20 @@ onBeforeUnmount(() => {
           <div class="flex shrink-0 items-center">
             <button
               type="button"
+              class="flex size-8 items-center justify-center rounded-full transition hover:bg-slate-100 dark:hover:bg-dark-800"
+              :class="isPinned
+                ? 'bg-primary-50 text-primary-600 dark:bg-primary-500/15 dark:text-primary-300'
+                : 'text-slate-400 hover:text-slate-700 dark:hover:text-white'"
+              :aria-label="isPinned ? '取消钉住浮动对话' : '钉住浮动对话'"
+              :aria-pressed="isPinned"
+              :title="isPinned ? '取消钉住' : '钉住'"
+              data-testid="ai-work-floating-pin"
+              @click="togglePinned"
+            >
+              <PhPushPin :size="17" :weight="isPinned ? 'fill' : 'regular'" />
+            </button>
+            <button
+              type="button"
               class="flex size-8 items-center justify-center rounded-full text-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-dark-800 dark:hover:text-white"
               aria-label="收起浮动对话"
               data-testid="ai-work-floating-close"
@@ -179,6 +212,20 @@ onBeforeUnmount(() => {
             </p>
           </div>
           <div class="flex shrink-0 items-center">
+            <button
+              type="button"
+              class="flex size-8 items-center justify-center rounded-full transition hover:bg-slate-100 dark:hover:bg-dark-800"
+              :class="isPinned
+                ? 'bg-primary-50 text-primary-600 dark:bg-primary-500/15 dark:text-primary-300'
+                : 'text-slate-400 hover:text-slate-700 dark:hover:text-white'"
+              :aria-label="isPinned ? '取消钉住浮动对话' : '钉住浮动对话'"
+              :aria-pressed="isPinned"
+              :title="isPinned ? '取消钉住' : '钉住'"
+              data-testid="ai-work-floating-pin"
+              @click="togglePinned"
+            >
+              <PhPushPin :size="17" :weight="isPinned ? 'fill' : 'regular'" />
+            </button>
             <button
               type="button"
               class="flex size-8 items-center justify-center rounded-full text-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-dark-800 dark:hover:text-white"

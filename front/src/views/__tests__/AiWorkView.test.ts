@@ -22,9 +22,13 @@ const mocks = vi.hoisted(() => ({
   cancelGlobalTask: vi.fn(),
 }))
 
-vi.mock('vue-router', () => ({
-  useRoute: () => mocks.route,
-}))
+vi.mock('vue-router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('vue-router')>()
+  return {
+    ...actual,
+    useRoute: () => mocks.route,
+  }
+})
 
 vi.mock('@/api/aiWork', () => ({
   fetchPydanticConversations: mocks.fetchConversations,
@@ -110,7 +114,12 @@ function setupView() {
   setActivePinia(pinia)
   const store = useAiChatStore()
   const display = useAiWorkDisplayStore()
-  const mountNow = () => mount(AiWorkView, { global: { plugins: [pinia] } })
+  const mountNow = () => mount(AiWorkView, {
+    global: {
+      plugins: [pinia],
+      stubs: { RouterLink: true },
+    },
+  })
   return { store, display, mountNow }
 }
 

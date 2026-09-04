@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
@@ -181,11 +181,15 @@ const hasActivePublishJobs = computed(() => publishJobs.value.some((job) => (
 
 let publishJobsPollTimer: ReturnType<typeof setInterval> | undefined
 
-function syncPublishJobsPolling() {
+function stopPublishJobsPolling() {
   if (publishJobsPollTimer) {
     clearInterval(publishJobsPollTimer)
     publishJobsPollTimer = undefined
   }
+}
+
+function syncPublishJobsPolling() {
+  stopPublishJobsPolling()
   if (activeNav.value !== 'publish' || !hasActivePublishJobs.value) return
   publishJobsPollTimer = setInterval(() => {
     void store.refreshPublishJobs({ quiet: true })
@@ -362,9 +366,9 @@ onMounted(async () => {
   await refreshDomainForNav(activeNav.value)
 })
 
-onBeforeUnmount(() => {
-  if (publishJobsPollTimer) clearInterval(publishJobsPollTimer)
-})
+onActivated(syncPublishJobsPolling)
+onDeactivated(stopPublishJobsPolling)
+onBeforeUnmount(stopPublishJobsPolling)
 
 watch([activeNav, hasActivePublishJobs], syncPublishJobsPolling)
 
