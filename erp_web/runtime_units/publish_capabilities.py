@@ -381,6 +381,9 @@ def prepare_and_evaluate_publish_validation(
     无效草稿产生外部写入，先用同一份类目定义执行草稿预检；只有没有阻断
     项时才准备素材。准备后通过 ``PreparedPublishContext.with_product`` 复用
     已加载的定义，保证预检与 payload 编译同源。
+
+    Yandex/Ozon 的素材准备只是本地图片物化（没有平台外写），在预检前执行；
+    否则“非 HTTPS URL”校验会拦住自己的物化路径，本地图片永远无法发布。
     """
 
     active_context = context or get_context()
@@ -392,11 +395,17 @@ def prepare_and_evaluate_publish_validation(
             "PUBLISH_PLATFORM_UNSUPPORTED",
             f"平台 {platform or request.platform} 尚未接入发布能力。",
         )
+    local_only_prepare = bool(getattr(adapter, "prepare_is_local_only", False))
     try:
         config = active_context.config.load_store_config()
         source_product = publish_context["product"]
         if not isinstance(source_product, dict):
             raise TypeError("发布上下文中的商品不是对象")
+        if local_only_prepare:
+            source_product = adapter.prepare_product(source_product, config)
+            if not isinstance(source_product, dict):
+                raise TypeError("平台 adapter 返回的商品不是对象")
+            publish_context["product"] = source_product
         prepared_context = prepare_publish_context(source_product, platform)
         precheck = adapter.validate_draft(prepared_context, config)
         if not isinstance(precheck, dict):
@@ -432,16 +441,18 @@ def prepare_and_evaluate_publish_validation(
             precheck=precheck,
         )
 
-    try:
-        prepared_product = adapter.prepare_product(source_product, config)
-        if not isinstance(prepared_product, dict):
-            raise TypeError("平台 adapter 返回的商品不是对象")
-    except Exception as exc:
-        raise BusinessCapabilityError(
-            "PUBLISH_ASSET_PREPARATION_FAILED",
-            f"发布素材准备失败：{exc}",
-            details={"outcome_unknown": True},
-        ) from exc
+    prepared_product = source_product
+    if not local_only_prepare:
+        try:
+            prepared_product = adapter.prepare_product(source_product, config)
+            if not isinstance(prepared_product, dict):
+                raise TypeError("平台 adapter 返回的商品不是对象")
+        except Exception as exc:
+            raise BusinessCapabilityError(
+                "PUBLISH_ASSET_PREPARATION_FAILED",
+                f"发布素材准备失败：{exc}",
+                details={"outcome_unknown": True},
+            ) from exc
 
     publish_context["product"] = prepared_product
     return _evaluate_prepared_publish_context(

@@ -3074,6 +3074,272 @@ describe('workflow store live API flow', () => {
     })])
   })
 
+  it('手动售价在店铺币种解析前录入时，首次核价直接生效并补齐币种', async () => {
+    const draft = createEmptyDraftDetail('ozon')
+    draft.draftId = 'draft-manual-empty-currency'
+    draft.productId = 'product-1'
+    draft.sourceProductId = 'product-1'
+    draft.platform = 'ozon'
+    draft.platforms = ['ozon']
+    draft.site = 'global'
+    draft.targetSites = [{ platform: 'ozon', site: 'global', language: 'ru-RU', listingCurrency: '' }]
+    draft.pricing = {}
+    vi.mocked(workflowApi.loadDraft).mockResolvedValue(draftMutation(draft))
+
+    const store = useWorkflowStore()
+    store.platformOptions = [
+      { key: 'ozon', label: 'Ozon', sites: [{ key: 'global', code: 'global', label: '俄罗斯', language: 'ru-RU' }] },
+    ]
+    await store.loadDraftForPricing('draft-manual-empty-currency')
+
+    const target = store.pricingInput.targets[0]
+    expect(target.listingCurrency).toBe('')
+
+    // 用户在币种解析前切到手动售价并输入金额（updateManualPrice 会以当前快照币种盖章，此时为空）。
+    target.pricingMode = 'manual'
+    target.manualPrice = { amount: '200', currency: target.listingCurrency }
+
+    vi.mocked(workflowApi.calculatePrice).mockResolvedValue({
+      results: [{
+        targetKey: 'ozon:global',
+        platform: 'ozon',
+        site: 'global',
+        listingCurrency: 'CNY',
+        currencyFingerprint: 'fingerprint-cny',
+        suggestedPrice: { amount: '150', currency: 'CNY' },
+        appliedPrice: { amount: '200', currency: 'CNY' },
+        appliedNetProceeds: null,
+        destinationResults: [],
+        convertedPrices: {},
+        calculationBasis: {},
+        calculationFingerprint: 'fingerprint',
+        shippingCostUsd: 0,
+        shippingCostCny: 10,
+        totalCostCny: 110,
+        netRevenueCny: 160,
+        profitCny: 50,
+        marginPercent: 31.25,
+        commissionPercent: 20,
+        paymentFeePercent: 0,
+        otherFeePercent: 0,
+        pricingMode: 'manual',
+        targetMarginPercent: 30,
+        markupPercent: 30,
+        shippingQuoteMode: 'manual',
+        shippingCurrency: 'CNY',
+        shippingAmount: 10,
+        shippingSource: 'manual_quote',
+        commissionCny: 40,
+        paymentFeeCny: 0,
+        otherFeeCny: 0,
+        minimumPrice: { amount: '120', currency: 'CNY' },
+        billableWeightKg: 1,
+        usdCnyRate: 7,
+        mxnUsdRate: 17,
+        rubCnyRate: 12,
+        isLoss: false,
+        errors: [],
+        raw: {},
+      }],
+      shippingCostUsd: 0,
+      shippingCostCny: 10,
+      totalCostCny: 110,
+      netRevenueCny: 160,
+      profitCny: 50,
+      marginPercent: 31.25,
+      usdCnyRate: 7,
+      mxnUsdRate: 17,
+      rubUsdRate: 78,
+      rubCnyRate: 12,
+      exchangeRateMode: 'manual',
+      exchangeRateSource: 'manual',
+      exchangeRateFetchedAt: '',
+      exchangeRateCached: false,
+    })
+
+    await store.calculatePrice()
+
+    expect(store.error).toBe('')
+    expect(target.manualPrice).toEqual({ amount: '200', currency: 'CNY' })
+    expect(target.listingCurrency).toBe('CNY')
+    expect(target.currencyFingerprint).toBe('fingerprint-cny')
+    expect(store.pricingResult?.results[0]?.appliedPrice).toEqual({ amount: '200', currency: 'CNY' })
+  })
+
+  it('店铺发布币种变化后，旧币种的手动售价被清空等待重填', async () => {
+    const draft = createEmptyDraftDetail('ozon')
+    draft.draftId = 'draft-manual-stale-currency'
+    draft.productId = 'product-1'
+    draft.sourceProductId = 'product-1'
+    draft.platform = 'ozon'
+    draft.platforms = ['ozon']
+    draft.site = 'global'
+    draft.targetSites = [{ platform: 'ozon', site: 'global', language: 'ru-RU', listingCurrency: 'USD' }]
+    draft.pricing = {}
+    vi.mocked(workflowApi.loadDraft).mockResolvedValue(draftMutation(draft))
+
+    const store = useWorkflowStore()
+    store.platformOptions = [
+      { key: 'ozon', label: 'Ozon', sites: [{ key: 'global', code: 'global', label: '俄罗斯', language: 'ru-RU' }] },
+    ]
+    await store.loadDraftForPricing('draft-manual-stale-currency')
+
+    const target = store.pricingInput.targets[0]
+    target.pricingMode = 'manual'
+    target.manualPrice = { amount: '200', currency: 'USD' }
+
+    // 店铺当前发布币种已变为 CNY：后端拒绝旧币种金额并回传新币种。
+    vi.mocked(workflowApi.calculatePrice).mockResolvedValue({
+      results: [{
+        targetKey: 'ozon:global',
+        platform: 'ozon',
+        site: 'global',
+        listingCurrency: 'CNY',
+        currencyFingerprint: 'fingerprint-cny',
+        suggestedPrice: { amount: '150', currency: 'CNY' },
+        appliedPrice: { amount: '150', currency: 'CNY' },
+        appliedNetProceeds: null,
+        destinationResults: [],
+        convertedPrices: {},
+        calculationBasis: {},
+        calculationFingerprint: 'fingerprint',
+        shippingCostUsd: 0,
+        shippingCostCny: 10,
+        totalCostCny: 110,
+        netRevenueCny: 0,
+        profitCny: 0,
+        marginPercent: 0,
+        commissionPercent: 20,
+        paymentFeePercent: 0,
+        otherFeePercent: 0,
+        pricingMode: 'manual',
+        targetMarginPercent: 30,
+        markupPercent: 30,
+        shippingQuoteMode: 'manual',
+        shippingCurrency: 'CNY',
+        shippingAmount: 10,
+        shippingSource: 'manual_quote',
+        commissionCny: 0,
+        paymentFeeCny: 0,
+        otherFeeCny: 0,
+        minimumPrice: { amount: '120', currency: 'CNY' },
+        billableWeightKg: 1,
+        usdCnyRate: 7,
+        mxnUsdRate: 17,
+        rubCnyRate: 12,
+        isLoss: false,
+        errors: [{ field: 'manual_price', message: '手动售价必须大于 0 且币种必须与发布币种一致' }],
+        raw: {},
+      }],
+      shippingCostUsd: 0,
+      shippingCostCny: 10,
+      totalCostCny: 110,
+      netRevenueCny: 0,
+      profitCny: 0,
+      marginPercent: 0,
+      usdCnyRate: 7,
+      mxnUsdRate: 17,
+      rubUsdRate: 78,
+      rubCnyRate: 12,
+      exchangeRateMode: 'manual',
+      exchangeRateSource: 'manual',
+      exchangeRateFetchedAt: '',
+      exchangeRateCached: false,
+    })
+
+    await store.calculatePrice()
+
+    expect(store.error).toContain('Ozon · 俄罗斯：手动售价必须大于 0 且币种必须与发布币种一致')
+    expect(target.manualPrice).toBeNull()
+    expect(target.listingCurrency).toBe('CNY')
+  })
+
+  it('多个目标的核价错误带目标归属，物流报价缺失时可定位到具体市场', async () => {
+    const draft = createEmptyDraftDetail('ozon')
+    draft.draftId = 'draft-shipping-missing'
+    draft.productId = 'product-1'
+    draft.sourceProductId = 'product-1'
+    draft.platform = 'ozon'
+    draft.platforms = ['ozon', 'yandex']
+    draft.site = 'global'
+    draft.targetSites = [
+      { platform: 'ozon', site: 'global', language: 'ru-RU', listingCurrency: 'CNY' },
+      { platform: 'yandex', site: 'global', language: 'ru-RU', listingCurrency: 'CNY' },
+    ]
+    draft.pricing = {}
+    vi.mocked(workflowApi.loadDraft).mockResolvedValue(draftMutation(draft))
+
+    const store = useWorkflowStore()
+    store.platformOptions = [
+      { key: 'ozon', label: 'Ozon', sites: [{ key: 'global', code: 'global', label: '俄罗斯', language: 'ru-RU' }] },
+      { key: 'yandex', label: 'Yandex', sites: [{ key: 'global', code: 'global', label: '俄罗斯', language: 'ru-RU' }] },
+    ]
+    await store.loadDraftForPricing('draft-shipping-missing')
+
+    // Ozon / Yandex 默认手动物流报价且金额为空，两个目标都缺少物流报价。
+    vi.mocked(workflowApi.calculatePrice).mockImplementation(async (input) => ({
+      results: input.targets.map((item) => ({
+        targetKey: item.targetKey,
+        platform: item.platform,
+        site: item.site,
+        listingCurrency: 'CNY',
+        currencyFingerprint: '',
+        suggestedPrice: { amount: '0', currency: 'CNY' },
+        appliedPrice: { amount: '0', currency: 'CNY' },
+        appliedNetProceeds: null,
+        destinationResults: [],
+        convertedPrices: {},
+        calculationBasis: {},
+        calculationFingerprint: 'fingerprint',
+        shippingCostUsd: 0,
+        shippingCostCny: 0,
+        totalCostCny: 0,
+        netRevenueCny: 0,
+        profitCny: 0,
+        marginPercent: 0,
+        commissionPercent: 20,
+        paymentFeePercent: 0,
+        otherFeePercent: 0,
+        pricingMode: item.pricingMode,
+        targetMarginPercent: item.targetMarginPercent,
+        markupPercent: item.markupPercent,
+        shippingQuoteMode: item.shippingQuoteMode,
+        shippingCurrency: item.shippingCurrency,
+        shippingAmount: item.shippingAmount,
+        shippingSource: 'manual_quote',
+        commissionCny: 0,
+        paymentFeeCny: 0,
+        otherFeeCny: 0,
+        minimumPrice: { amount: '0', currency: 'CNY' },
+        billableWeightKg: 1,
+        usdCnyRate: 7,
+        mxnUsdRate: 17,
+        rubCnyRate: 12,
+        isLoss: false,
+        errors: [{ field: 'shipping_amount', message: '物流报价金额必须大于 0' }],
+        raw: {},
+      })),
+      shippingCostUsd: 0,
+      shippingCostCny: 0,
+      totalCostCny: 0,
+      netRevenueCny: 0,
+      profitCny: 0,
+      marginPercent: 0,
+      usdCnyRate: 7,
+      mxnUsdRate: 17,
+      rubUsdRate: 78,
+      rubCnyRate: 12,
+      exchangeRateMode: 'manual',
+      exchangeRateSource: 'manual',
+      exchangeRateFetchedAt: '',
+      exchangeRateCached: false,
+    }))
+
+    await store.calculatePrice()
+
+    expect(store.error).toBe('核价数据需要处理：Ozon · 俄罗斯：物流报价金额必须大于 0；Yandex · 俄罗斯：物流报价金额必须大于 0')
+  })
+
   it('恢复旧 Mercado CBT 核价时，缺少 destination_results 即视为过期', async () => {
     const draft = createEmptyDraftDetail('mercadolibre')
     draft.draftId = 'draft-old-cbt-pricing'

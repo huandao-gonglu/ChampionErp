@@ -442,3 +442,66 @@ def test_calculation_basis_preserves_physical_measurement_precision() -> None:
     assert basis["length_cm"] == "15.5"
     assert basis["width_cm"] == "5.5"
     assert basis["height_cm"] == "6.125"
+
+
+def _manual_price_target(manual_price: dict) -> dict:
+    return {
+        "target_key": "ozon:global",
+        "platform": "ozon",
+        "site": "global",
+        "listing_currency": "CNY",
+        "commission_percent": 20,
+        "target_margin_percent": 30,
+        "pricing_mode": "manual",
+        "shipping_quote_mode": "manual",
+        "shipping_currency": "CNY",
+        "shipping_amount": 10,
+        "manual_price": manual_price,
+    }
+
+
+def test_manual_price_without_currency_follows_listing_currency() -> None:
+    """店铺币种解析前录入的手动售价币种为空，金额按发布币种计。"""
+
+    result = pricing_service.pricing_result(
+        {
+            "common": {"purchase_cost": 100, "usd_cny_rate": 7},
+            "targets": [_manual_price_target({"amount": "200", "currency": ""})],
+        }
+    )
+
+    target = result["results"][0]
+    assert target["ok"] is True
+    assert target["errors"] == []
+    assert target["applied_price"] == {"amount": "200.00", "currency": "CNY"}
+
+
+def test_manual_price_with_matching_currency_is_accepted() -> None:
+    result = pricing_service.pricing_result(
+        {
+            "common": {"purchase_cost": 100, "usd_cny_rate": 7},
+            "targets": [_manual_price_target({"amount": "200", "currency": "CNY"})],
+        }
+    )
+
+    target = result["results"][0]
+    assert target["ok"] is True
+    assert target["errors"] == []
+    assert target["applied_price"] == {"amount": "200.00", "currency": "CNY"}
+
+
+def test_manual_price_with_conflicting_currency_is_rejected() -> None:
+    """店铺发布币种变化后，旧币种金额不能被静默换算，必须重新确认。"""
+
+    result = pricing_service.pricing_result(
+        {
+            "common": {"purchase_cost": 100, "usd_cny_rate": 7},
+            "targets": [_manual_price_target({"amount": "200", "currency": "USD"})],
+        }
+    )
+
+    target = result["results"][0]
+    assert target["ok"] is False
+    assert target["errors"] == [
+        {"field": "manual_price", "message": "手动售价必须大于 0 且币种必须与发布币种一致"}
+    ]

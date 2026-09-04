@@ -13,13 +13,21 @@ from erp_web.runtime_units import publish_capabilities, publish_workflows
 
 class _Adapter:
     platform = "yandex"
+    # 与真实 YandexPublishingAdapter 一致：素材准备是本地图片物化。
+    prepare_is_local_only = True
 
     def __init__(self) -> None:
         self.prepare_calls = 0
 
     def prepare_product(self, product: dict, config: dict) -> dict:
         self.prepare_calls += 1
-        return deepcopy(product)
+        prepared = deepcopy(product)
+        # 模拟本地物化：本地路径图片获得公网 HTTPS URL。
+        pool = prepared.get("source", {}).get("image_pool", [])
+        for item in pool:
+            if isinstance(item, dict) and not str(item.get("url") or "").startswith("https://"):
+                item["url"] = f"https://tunnel.example.test/{item.get('id')}.jpg"
+        return prepared
 
     def validate_draft(self, context, config: dict) -> dict:
         return {
@@ -191,7 +199,65 @@ def test_precheck_does_not_prepare_or_upload_assets(workflow_boundary) -> None:
 
     assert status == 200
     assert response["platforms"]["yandex"]["ok"] is True
-    assert adapter.prepare_calls == 0
+    # Yandex 声明本地物化：预检先物化本地图片，再校验 HTTPS URL。
+    assert adapter.prepare_calls == 1
+
+
+def test_precheck_materializes_local_images_before_validating(
+    workflow_boundary,
+) -> None:
+    """本地图片必须先物化再校验，否则 IMAGE_NOT_PUBLIC 拦住自己的物化路径。"""
+
+    adapter, _store_config, _bus = workflow_boundary
+    adapter.validate_draft = lambda context, config: (
+        {
+            "platform": "yandex",
+            "ok": False,
+            "errors": [
+                {
+                    "code": "IMAGE_NOT_PUBLIC",
+                    "field": "images",
+                    "message": "Yandex 发布图片必须是平台可访问的 HTTPS 公网 URL",
+                    "severity": "error",
+                }
+            ],
+            "warnings": [],
+            "checked_at": "2026-08-16T00:00:00Z",
+        }
+        if any(
+            not str(item.get("url") or "").startswith("https://")
+            for item in context.product.get("source", {}).get("image_pool", [])
+        )
+        else {
+            "platform": "yandex",
+            "ok": True,
+            "errors": [],
+            "warnings": [],
+            "checked_at": "2026-08-16T00:00:00Z",
+        }
+    )
+
+    def local_image_loader(body, **_kwargs):
+        context = deepcopy(_yandex_context())
+        context["product"]["source"] = {
+            "image_pool": [
+                {"id": "image-1", "path": "/tmp/images/local-main.jpg", "selected": True, "platforms": ["yandex"], "is_main": True}
+            ]
+        }
+        return context, None, 200
+
+    from erp_web.runtime_units import publish_workflows as workflows
+
+    original_loader = workflows.load_required_draft_publish_context
+    workflows.load_required_draft_publish_context = local_image_loader
+    try:
+        response, status = workflows.precheck_publish_payload({"draft_id": "draft-y1"})
+    finally:
+        workflows.load_required_draft_publish_context = original_loader
+
+    assert status == 200
+    assert response["platforms"]["yandex"]["ok"] is True
+    assert adapter.prepare_calls == 1
 
 
 def test_enqueue_requires_explicit_confirmation_and_digest(workflow_boundary) -> None:

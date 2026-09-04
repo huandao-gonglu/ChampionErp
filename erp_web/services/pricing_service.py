@@ -84,10 +84,12 @@ def _money(amount: Any, currency: str) -> dict[str, str]:
 
 
 def _money_input(value: Any, expected_currency: str) -> float:
+    # 手动售价金额始终以店铺发布币种计（输入框币种只是快照回显）；
+    # 币种留空表示跟随发布币种，非空且不一致才视为真实错配。
     if not isinstance(value, dict):
         return 0.0
     currency = str(value.get("currency") or "").strip().upper()
-    if currency != str(expected_currency or "").strip().upper():
+    if currency and currency != str(expected_currency or "").strip().upper():
         return 0.0
     return number_value(value.get("amount"))
 

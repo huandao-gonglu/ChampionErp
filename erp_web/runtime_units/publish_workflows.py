@@ -85,6 +85,11 @@ def precheck_publish_payload(body: dict[str, Any]) -> ResponseWithStatus:
     adapter = publishing_adapter_for(platform)
     if adapter is None:
         return unsupported_publish_response(platform), 501
+    # 本地图片物化（Yandex/Ozon 复制到公开目录并生成公网 URL）没有平台
+    # 外写，必须在预检前执行，否则“非 HTTPS URL”校验会拦住自己的物化路径。
+    # Mercado 的素材准备会外写平台（上传图片），仍只允许校验通过后触发。
+    if getattr(adapter, "prepare_is_local_only", False):
+        context["product"] = adapter.prepare_product(context["product"], config)
     prepared_context = prepare_publish_context(context["product"], platform)
     result = adapter.validate_draft(prepared_context, config)
     saved = save_draft_precheck_result(context, result)

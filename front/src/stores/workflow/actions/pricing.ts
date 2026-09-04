@@ -30,6 +30,7 @@ type WorkflowPricingActionsPort = Pick<
   | 'pricingInput'
   | 'pricingResult'
   | 'storeConfig'
+  | 'platformOptions'
   | 'loading'
   | 'addLog'
   | 'setError'
@@ -42,7 +43,7 @@ type WorkflowPricingActionsPort = Pick<
 export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort) {
   const {
     product, currentDraft, currentDraftProductContext, pricingInput, pricingResult, storeConfig,
-    loading, addLog, setError, currentStage, applyMutationIndexes,
+    platformOptions, loading, addLog, setError, currentStage, applyMutationIndexes,
     syncPricingInputFromProduct, syncDraftPackageDimensionsFromPricingInput,
   } = runtime
 
@@ -151,10 +152,17 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
     return true
   }
 
+  function targetResultLabel(result: PricingTargetResult) {
+    const option = platformOptions.value.find((item) => item.key === result.platform)
+    const site = option?.sites.find((item) => item.code.toLowerCase() === result.site.toLowerCase())
+    return `${option?.label || result.platform} · ${site?.label || result.site}`
+  }
+
   function pricingErrors(result: PricingResult) {
-    return result.results.flatMap((item) => item.errors.map((error) => (
-      typeof error === 'string' ? error : String(error.message || error.field || '')
-    )).filter(Boolean))
+    return result.results.flatMap((item) => item.errors.map((error) => {
+      const message = typeof error === 'string' ? error : String(error.message || error.field || '')
+      return message ? `${targetResultLabel(item)}：${message}` : ''
+    }).filter(Boolean))
   }
 
   function acceptPreview(result: PricingResult) {
@@ -163,8 +171,16 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
     pricingInput.value.targets.forEach((target) => {
       const resolved = resultsByTarget.get(target.targetKey.toLowerCase())
       if (!resolved) return
-      if (target.manualPrice?.currency !== resolved.listingCurrency) {
-        target.manualPrice = null
+      if (target.manualPrice) {
+        const manualCurrency = String(target.manualPrice.currency || '').trim().toUpperCase()
+        const resolvedCurrency = String(resolved.listingCurrency || '').trim().toUpperCase()
+        if (!manualCurrency) {
+          // 手动售价在店铺币种解析前录入时币种为空；金额本就以发布币种计，直接补齐。
+          target.manualPrice = { ...target.manualPrice, currency: resolved.listingCurrency }
+        } else if (manualCurrency !== resolvedCurrency) {
+          // 店铺发布币种已变化，原金额币种含义失效，需要用户重新确认。
+          target.manualPrice = null
+        }
       }
       target.listingCurrency = resolved.listingCurrency
       target.currencyFingerprint = resolved.currencyFingerprint

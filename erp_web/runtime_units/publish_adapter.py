@@ -51,6 +51,39 @@ from .publish_yandex import (
 logger = logging.getLogger(__name__)
 
 
+def persist_materialized_image_pool(prepared: dict[str, Any]) -> dict[str, Any]:
+    """把图片物化结果（storage_key 与公网 URL）回写到商品图片池。
+
+    只回写图片池，不携带发布投影草稿，避免覆盖复合平台草稿的其他目标；
+    持久化后的 URL 让只读发布校验（digest 复验）与发布队列读到同一事实。
+    """
+
+    from .image_pool import save_image_pool_for_product
+
+    product_id = str(prepared.get("product_id") or "").strip()
+    source = prepared.get("source") if isinstance(prepared.get("source"), dict) else {}
+    pool = source.get("image_pool") if isinstance(source.get("image_pool"), list) else []
+    if not product_id or not pool:
+        return prepared
+    saved = save_image_pool_for_product(product_id, pool)
+    saved_product = saved.get("product") if saved.get("ok") else None
+    saved_source = (
+        saved_product.get("source")
+        if isinstance(saved_product, dict) and isinstance(saved_product.get("source"), dict)
+        else {}
+    )
+    saved_pool = (
+        saved_source.get("image_pool")
+        if isinstance(saved_source.get("image_pool"), list)
+        else None
+    )
+    if not saved_pool:
+        return prepared
+    prepared_source = prepared.get("source") if isinstance(prepared.get("source"), dict) else {}
+    prepared["source"] = {**prepared_source, "image_pool": saved_pool}
+    return prepared
+
+
 def _flag_definition_unavailable(
     context: "PreparedPublishContext",
     precheck: dict[str, Any],
@@ -271,9 +304,13 @@ class OzonPublishingAdapter:
     """通过 Ozon Seller API 创建或更新商品，并确认异步导入终态。"""
 
     platform = "ozon"
+    # 素材准备只是本地图片物化（复制到公开目录并生成公网 URL），
+    # 没有平台外写，可以在发布校验前执行。
+    prepare_is_local_only = True
 
     def prepare_product(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
-        return get_context().image_delivery.prepare_product(product, self.platform)
+        prepared = get_context().image_delivery.prepare_product(product, self.platform)
+        return persist_materialized_image_pool(prepared)
 
     def resolve_category(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         product = normalize_product_fields(product)
@@ -391,9 +428,13 @@ class YandexPublishingAdapter:
     """
 
     platform = "yandex"
+    # 素材准备只是本地图片物化（复制到公开目录并生成公网 URL），
+    # 没有平台外写，可以在发布校验前执行。
+    prepare_is_local_only = True
 
     def prepare_product(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
-        return get_context().image_delivery.prepare_product(product, self.platform)
+        prepared = get_context().image_delivery.prepare_product(product, self.platform)
+        return persist_materialized_image_pool(prepared)
 
     def resolve_category(self, product: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         # 类目身份只来自平台草稿；不再回落到商品级规则副本。
