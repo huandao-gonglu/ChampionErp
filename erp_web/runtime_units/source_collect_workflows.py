@@ -29,6 +29,7 @@ from .source_collect_browser import (
 )
 from .publish_bus import page_snapshot_from_html
 from .source_collect_1688_api import collect_1688_product_via_api
+from .source_collect_verification import same_collection_page, waiting_verification_result
 from .source_sites import VERIFY_MARKERS, parse_source_snapshot, source_site
 from .category_refresh import http_json
 from .collect_helpers import (
@@ -125,6 +126,9 @@ def collect_source_product(
 
         page_diagnostics, error_reason = site.diagnose(final_url, html, text, title)
         diagnostics.update(page_diagnostics)
+        waiting = waiting_verification_result(snapshot, url, platform_detected, diagnostics, error_reason)
+        if waiting:
+            return waiting
         parsed_product = site.parse(snapshot, final_url)
 
         source_updates = parsed_product.get("source") if isinstance(parsed_product.get("source"), dict) else {}
@@ -260,6 +264,7 @@ def collect_batch_products(
 ) -> dict[str, Any]:
     parsed_urls = parse_collect_urls(urls)
     items: list[dict[str, Any]] = []
+    waiting = False
     for url in parsed_urls:
         detected = (platform or detect_source_platform(url)).lower() or "unknown"
         row = {
@@ -275,6 +280,9 @@ def collect_batch_products(
             "product_id": "",
             "product": None,
         }
+        if waiting:
+            items.append(row)
+            continue
         try:
             if api_config is not None:
                 result = collect_source_product(url, mode, cookie, detected, platforms, api_config)
@@ -284,9 +292,12 @@ def collect_batch_products(
             source = product.get("source") if isinstance(product.get("source"), dict) else {}
             image_pool = current_image_pool(product)
             diagnostics = result.get("diagnostics") if isinstance(result.get("diagnostics"), dict) else {}
+            waiting = result.get("status") == "waiting_verification"
+            if waiting:
+                row["verification"] = result["verification"]
             row.update(
                 {
-                    "status": "success" if result.get("ok") else ("partial" if diagnostics.get("partial_success") else "failed"),
+                    "status": "waiting_verification" if waiting else "success" if result.get("ok") else ("partial" if diagnostics.get("partial_success") else "failed"),
                     "ok": bool(result.get("ok")),
                     "title": str(source.get("title") or product.get("name") or ""),
                     "image": str((image_pool[0] if image_pool else {}).get("preview_url") or (image_pool[0] if image_pool else {}).get("url") or ""),
@@ -325,6 +336,7 @@ def collect_from_browser_tab(
     port: int | None = None,
     claim_platforms: list[str] | None = None,
     save_only: bool = False,
+    browser_tab_id: str = "",
 ) -> dict[str, Any]:
     if port is None:
         port = get_context().paths.browser_debug_port
@@ -354,16 +366,18 @@ def collect_from_browser_tab(
     try:
         raw_tabs = http_json(f"http://127.0.0.1:{port}/json")
         raw_tabs = raw_tabs if isinstance(raw_tabs, list) else []
-        target = choose_browser_tab(raw_tabs, tab_url, product_url, platform_hint)
+        target = (next((tab for tab in raw_tabs if tab.get("id") == browser_tab_id and tab.get("type") == "page"), None)
+                  if browser_tab_id else choose_browser_tab(raw_tabs, tab_url, product_url, platform_hint))
         if not target:
             raise RuntimeError("NO_PRODUCT_TAB_FOUND")
         snapshot = snapshot_from_cdp_target(target, platform_hint)
+        snapshot["browser_tab_id"] = str(target.get("id") or "")
         final_url = str(snapshot.get("final_url") or snapshot.get("url") or product_url or tab_url or "")
         original_product = get_context().products.collection_product(product_url or final_url)
         html_text = str(snapshot.get("html") or "")
         text = str(snapshot.get("text") or "")
         title = str(snapshot.get("title") or snapshot.get("page_title") or "")
-        platform_detected = (platform_hint or detect_source_platform(final_url) or detect_source_platform(title) or "unknown").lower()
+        platform_detected = (detect_source_platform(product_url or final_url) or platform_hint or detect_source_platform(title) or "unknown").lower()
         site = source_site(platform_detected)
         diagnostics = default_collect_diagnostics()
         diagnostics.update(
@@ -386,6 +400,10 @@ def collect_from_browser_tab(
         )
         if not diagnostics["html_snapshot_path"] and html_text:
             diagnostics["html_snapshot_path"] = write_collect_debug_html(final_url, html_text, platform_detected)
+        if save_only:
+            if not diagnostics["html_snapshot_path"]:
+                raise RuntimeError("TAB_NOT_ACCESSIBLE：页面没有可保存的 HTML，请等待页面加载后重试。")
+            return {"ok": True, "saved_only": True, "diagnostics": diagnostics, "browserStatus": status, "html": html_text, "real_publish_called": False}
         page_diagnostics, error_reason = site.diagnose(
             final_url,
             html_text,
@@ -394,6 +412,11 @@ def collect_from_browser_tab(
             detect_slider=True,
         )
         diagnostics.update(page_diagnostics)
+        waiting = waiting_verification_result(snapshot, product_url or tab_url or final_url, platform_detected, diagnostics, error_reason)
+        if waiting:
+            return {**waiting, "browserStatus": status}
+        if browser_tab_id and not same_collection_page(product_url, final_url):
+            raise RuntimeError("TAB_NOT_ACCESSIBLE：原标签页已离开目标商品，请返回商品页后重试。")
         parsed = site.parse(snapshot, final_url)
         source_updates = parsed.get("source") if isinstance(parsed.get("source"), dict) else {}
         source_updates = normalize_collect_source_images(source_updates, platform_detected, "browser", claim_platforms)
@@ -404,14 +427,12 @@ def collect_from_browser_tab(
         diagnostics["partial_success"] = any([flags["title_found"], flags["images_found_count"], flags["bullets_found_count"], flags["dimensions_found"], flags["weight_found"]])
         diagnostics["success"] = bool(flags["title_found"] and not diagnostics["error_code"])
         diagnostics = finalize_collect_diagnostics(diagnostics, source_updates, platform_detected)
-        if save_only:
-            return {"ok": True, "saved_only": True, "diagnostics": diagnostics, "browserStatus": status, "html": html_text, "real_publish_called": False}
         merged = merge_source_partial_result(original_product, source_updates, diagnostics)
         if diagnostics["partial_success"]:
-            merged["source"]["source_url"] = final_url
+            merged["source"]["source_url"] = product_url or final_url
             merged["source"]["source_platform"] = platform_detected
             original_url = str((original_product.get("source") or {}).get("source_url") or "").strip()
-            if final_url and final_url != original_url:
+            if final_url and not same_collection_page(original_url, final_url):
                 merged.pop("product_id", None)
                 merged.pop("id", None)
         merged["source"]["collect_status"] = "success" if diagnostics["success"] else ("partial" if diagnostics["partial_success"] else "failed")
@@ -426,10 +447,8 @@ def collect_from_browser_tab(
         code = "NO_PRODUCT_TAB_FOUND" if "NO_PRODUCT_TAB_FOUND" in message else "TAB_NOT_ACCESSIBLE" if "TAB_NOT_ACCESSIBLE" in message else "REMOTE_DEBUGGING_NOT_CONNECTED"
         diagnostics = default_collect_diagnostics()
         diagnostics.update({"collect_mode": "browser_debugging", "started_at": started_at, "finished_at": collect_time_iso(), "success": False, "partial_success": False, "error_code": code, "error_message": message, "browser_connected": bool(status.get("connected")), "debug_port": port, "next_action": "请确认专用 Chrome 已打开商品页；如果仍失败，点击保存 HTML 快照或使用 HTML 导入 / 手动补充。", "checked_at": collect_time_iso()})
-        merged = merge_source_partial_result(original_product, {}, diagnostics)
-        merged["source"]["collect_diagnostics"] = diagnostics
-        saved = get_context().products.save_product(merged)
-        return {"ok": False, "product": saved, "imagePool": current_image_pool(saved), "productsIndex": get_context().products.load_products_index(), "diagnostics": diagnostics, "browserStatus": status, "error": message, "next_action": diagnostics["next_action"], "real_publish_called": False}
+        # 目标页失效、快照失败等情况只返回诊断，不修改之前采集的商品。
+        return {"ok": False, "product": original_product, "imagePool": current_image_pool(original_product), "productsIndex": get_context().products.load_products_index(), "diagnostics": diagnostics, "browserStatus": status, "error": message, "next_action": diagnostics["next_action"], "real_publish_called": False}
 
 
 def collect_1688_product(url: str, cookie: str | None = None) -> dict[str, Any]:

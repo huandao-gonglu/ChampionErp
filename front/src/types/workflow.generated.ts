@@ -12,6 +12,8 @@ export interface BackendApiResponse {
   error?: string
   error_code?: string
   message?: string
+  status?: string
+  verification?: BackendCollectionVerification
   data?: unknown
   items?: Array<unknown>
   product?: Record<string, unknown>
@@ -34,6 +36,18 @@ export interface BackendAppStateResponse {
   platformOptions: Array<Record<string, unknown>>
   outputDir: string
   approvalToken: string
+}
+
+export interface BackendCollectionVerification {
+  browser_tab_id: string
+  source_url: string
+  platform: string
+}
+
+export interface BackendCollectionVerificationStatus {
+  ok: boolean
+  status: "waiting_verification" | "loading" | "ready" | "unavailable"
+  message: string
 }
 
 export interface BackendAiCapabilityProfile {

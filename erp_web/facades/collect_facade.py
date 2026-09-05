@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from typing import Any
 
 from erp_web.context import get_context
 from erp_web.services import collect_service, config_service
 
 from erp_web.runtime_units.collect_helpers import claim_products_to_platforms
+from erp_web.runtime_units.source_collect_verification import inspect_collection_verification
 from erp_web.runtime_units.source_collect_browser import open_browser_debug_session
 from erp_web.runtime_units.source_collect_workflows import (
     collect_1688_payload_service,
@@ -89,7 +92,7 @@ def collect_1688_payload(body: dict[str, Any]) -> ResponseWithStatus:
             config,
         )
         result = collect_1688_payload_service(resolved_body)
-        status = 200 if result.get("ok") or (result.get("diagnostics") or {}).get("partial_success") else 400
+        status = 200 if result.get("ok") or result.get("status") == "waiting_verification" or (result.get("diagnostics") or {}).get("partial_success") else 400
         return result, status
     except Exception as exc:
         return {"ok": False, "error": str(exc)}, 400
@@ -109,14 +112,22 @@ def collect_from_browser_tab_payload(body: dict[str, Any]) -> ApiResponse:
         port=int(body.get("port") or debug_port),
         claim_platforms=body.get("platforms") if isinstance(body.get("platforms"), list) else None,
         save_only=bool(body.get("save_only")),
+        browser_tab_id=str(body.get("browser_tab_id") or ""),
     )
+
+
+def collection_verification_payload(body: dict[str, Any]) -> ApiResponse:
+    return inspect_collection_verification(str(body["browser_tab_id"]), str(body["source_url"]))
 
 
 def open_browser_profile_payload() -> ResponseWithStatus:
     profile_dir = get_context().paths.browser_debug_profile_dir
     profile_dir.mkdir(parents=True, exist_ok=True)
     try:
-        os.startfile(str(profile_dir))  # type: ignore[attr-defined]
+        if os.name == "nt":
+            os.startfile(str(profile_dir))  # type: ignore[attr-defined]
+        else:
+            subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(profile_dir)])
         return {"ok": True, "profile_dir": str(profile_dir)}, 200
     except Exception as exc:
         return {"ok": False, "error": str(exc), "profile_dir": str(profile_dir)}, 400
@@ -144,6 +155,7 @@ def collect_extension_payload_response(body: dict[str, Any]) -> ResponseWithStat
 
 
 __all__ = [
+    "collection_verification_payload",
     "claim_products_payload",
     "clean_1688_payload",
     "collect_1688_payload",

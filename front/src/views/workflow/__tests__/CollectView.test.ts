@@ -87,7 +87,7 @@ describe('CollectView', () => {
   })
 
   it('Cookie 只保留在组件局部态并在提交后立即清空', async () => {
-    const collectForm = { ...form }
+    const collectForm = { ...form, productUrl: 'https://detail.1688.com/offer/1.html' }
     const wrapper = mount(CollectView, {
       props: {
         form: collectForm,
@@ -100,7 +100,7 @@ describe('CollectView', () => {
       },
     })
 
-    await wrapper.get('select').setValue('url')
+    await wrapper.get('[data-testid="collect-method-url"]').trigger('click')
     const advancedButton = wrapper.findAll('button').find((button) => (
       button.text().includes('高级选项：Cookie')
     ))
@@ -123,4 +123,13 @@ describe('CollectView', () => {
     expect((cookieInput.element as HTMLTextAreaElement).value).toBe('')
     expect(JSON.stringify(collectForm)).not.toContain('component-only-cookie-secret')
   })
+  it('等待验证时说明自动继续，并允许在加载期间取消等待', async () => {
+    const wrapper = mount(CollectView, { props: { form: { ...form }, diagnostics: { ...diagnostics, status: 'waiting_verification' }, product, loading: true, error: '', batchRows: [], browserStatus: null } })
+    const cancel = wrapper.findAll('button').find(button => button.text() === '取消等待')!
+    expect(cancel.attributes('disabled')).toBeUndefined()
+    expect(wrapper.text()).toContain('完成后会自动采集这一项')
+    await cancel.trigger('click')
+    expect(wrapper.emitted('cancelVerification')).toHaveLength(1)
+  })
+
 })

@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from erp_web.services.html_extract_service import html_to_text
 from .source_collect_parsers import parse_1688_product, parse_amazon_product, parse_generic_product
 
 VERIFY_MARKERS = (
@@ -45,19 +46,22 @@ def _never(_url: str, _html: str, _text: str, _title: str) -> bool:
 
 
 def _login_1688(url: str, html: str, text: str, title: str) -> bool:
-    return _contains(("login.1688.com", "请登录", "登录", "帐号密码登录"), url, html, text, title)
+    # 商品页导航中的“登录”入口和脚本不能让人工验证永远无法结束。
+    return (_contains(("login.1688.com",), url)
+            or _contains(("登录",), title)
+            or _contains(("帐号密码登录", "账号密码登录", "短信登录", "请登录后继续"), text or html_to_text(html)))
 
 
-def _captcha_1688(_url: str, html: str, text: str, _title: str) -> bool:
-    return _contains(tuple(VERIFY_MARKERS) + ("滑块", "安全验证"), html, text)
+def _captcha_1688(url: str, html: str, text: str, title: str) -> bool:
+    return _contains(tuple(VERIFY_MARKERS) + ("滑块", "安全验证"), url, title, text or html_to_text(html))
 
 
 def _login_amazon(url: str, _html: str, text: str, title: str) -> bool:
-    return "signin" in str(url or "").casefold() or "sign in" in f"{title} {text}".casefold()
+    return "signin" in str(url or "").casefold() or "sign in" in str(title).casefold()
 
 
 def _captcha_amazon(url: str, html: str, text: str, title: str) -> bool:
-    return _contains(tuple(AMAZON_VERIFY_MARKERS) + ("/errors/validatecaptcha",), url, html, text, title)
+    return _contains(("robot check", "captcha", "enter the characters you see below", "validatecaptcha"), url, title, text or html_to_text(html))
 
 
 def _region_amazon(_url: str, html: str, text: str, _title: str) -> bool:
@@ -181,7 +185,6 @@ SOURCE_SITES: tuple[SourceSiteSpec, ...] = (
             "SLIDER": "1688_SLIDER_REQUIRED",
             "NO_IMAGES": "1688_IMAGE_NOT_FOUND",
             "NO_TITLE": "1688_TITLE_NOT_FOUND",
-            "NO_DIMENSIONS": "1688_DIMENSIONS_NOT_FOUND",
             "SELECTOR": "1688_SELECTOR_FAILED",
             "PROFILE": "1688_BROWSER_PROFILE_NOT_FOUND",
             "REMOTE": "1688_REMOTE_DEBUGGING_NOT_CONNECTED",
@@ -194,7 +197,8 @@ SOURCE_SITES: tuple[SourceSiteSpec, ...] = (
         supports_api_collect=True,
         playwright_fallback=True,
         image_limit=5,
-        required_quality_fields=("title", "images", "dimensions"),
+        # 包装资料属于核价/发布条件；来源未提供时仍允许采集入库。
+        required_quality_fields=("title", "images"),
     ),
     SourceSiteSpec(
         key="amazon",

@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
+import CollectBatchManager from './CollectBatchManager.vue'
+import BrowserCollector from './BrowserCollector.vue'
 import type { BrowserDebugStatus, CollectBatchRow, CollectDiagnostics, CollectForm, Product, TransientCollectCredentials } from '@/types/workflow'
 
 const props = defineProps<{
@@ -15,8 +17,10 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   collect: [credentials?: TransientCollectCredentials]
-  batchCollect: [credentials?: TransientCollectCredentials]
-  collectFromBrowser: [saveOnly: boolean]
+  batchCollect: [credentials?: TransientCollectCredentials, rowIds?: string[]]
+  updateBatchRows: [rows: CollectBatchRow[]]
+  cancelVerification: []
+  collectFromBrowser: [saveOnly: boolean, tabUrl: string]
   open1688Browser: []
   checkBrowser: []
   openProfile: []
@@ -32,87 +36,21 @@ const activeCollectTab = ref<CollectTab>('browser')
 const advancedOpen = ref(false)
 const transientAlibabaCookie = ref('')
 
-const collectTabs: Array<{
-  key: CollectTab
-  optionTitle: string
-  title: string
-  subtitle: string
-  badge: string
-  labelClass: string
-  selectClass: string
-  summaryClass: string
-  titleClass: string
-  subtitleClass: string
-  badgeClass: string
-  panelClass: string
-  panelLabelClass: string
-  panelValueClass: string
-}> = [
-  {
-    key: 'browser',
-    optionTitle: '方式一：浏览器采集',
-    title: '浏览器采集',
-    subtitle: '登录后从当前标签页采集',
-    badge: '1688 / Amazon',
-    labelClass: 'text-primary-700 dark:text-primary-200',
-    selectClass: 'border-primary-200 bg-white focus:border-primary-500 focus:ring-primary-100 dark:border-primary-500/30 dark:bg-dark-900 dark:focus:ring-primary-500/20',
-    summaryClass: 'bg-white ring-primary-100 dark:bg-dark-900/80 dark:ring-primary-500/20',
-    titleClass: 'text-primary-900 dark:text-primary-100',
-    subtitleClass: 'text-primary-700 dark:text-primary-200',
-    badgeClass: 'bg-primary-50 text-primary-700 ring-primary-200 dark:bg-primary-500/10 dark:text-primary-200 dark:ring-primary-500/30',
-    panelClass: 'bg-white ring-primary-100 dark:bg-dark-900/80 dark:ring-primary-500/20',
-    panelLabelClass: 'text-primary-700 dark:text-primary-200',
-    panelValueClass: 'text-slate-950 dark:text-white',
-  },
-  {
-    key: 'manual',
-    optionTitle: '方式二：手动 / HTML 导入',
-    title: '手动 / HTML 导入',
-    subtitle: '粘贴资料或 HTML 导入',
-    badge: '稳妥',
-    labelClass: 'text-primary-700 dark:text-primary-200',
-    selectClass: 'border-primary-200 bg-white focus:border-primary-500 focus:ring-primary-100 dark:border-primary-500/30 dark:bg-dark-900 dark:focus:ring-primary-500/20',
-    summaryClass: 'bg-white ring-primary-100 dark:bg-dark-900/80 dark:ring-primary-500/20',
-    titleClass: 'text-primary-900 dark:text-primary-100',
-    subtitleClass: 'text-primary-700 dark:text-primary-200',
-    badgeClass: 'bg-primary-50 text-primary-700 ring-primary-200 dark:bg-primary-500/10 dark:text-primary-200 dark:ring-primary-500/30',
-    panelClass: 'bg-white ring-primary-100 dark:bg-dark-900/80 dark:ring-primary-500/20',
-    panelLabelClass: 'text-primary-700 dark:text-primary-200',
-    panelValueClass: 'text-slate-950 dark:text-white',
-  },
-  {
-    key: 'url',
-    optionTitle: '方式三：URL / 批量采集',
-    title: 'URL / 批量采集',
-    subtitle: '自动抓取链接或列表',
-    badge: '高级',
-    labelClass: 'text-accent-600 dark:text-accent-300',
-    selectClass: 'border-accent-300 bg-white focus:border-primary-500 focus:ring-primary-100 dark:border-dark-700 dark:bg-dark-900 dark:focus:ring-primary-500/20',
-    summaryClass: 'bg-white ring-accent-200 dark:bg-dark-900/80 dark:ring-dark-700',
-    titleClass: 'text-accent-950 dark:text-white',
-    subtitleClass: 'text-accent-500 dark:text-accent-300',
-    badgeClass: 'bg-accent-100 text-accent-600 ring-accent-200 dark:bg-dark-800 dark:text-accent-300 dark:ring-dark-600',
-    panelClass: 'bg-white ring-accent-200 dark:bg-dark-900/80 dark:ring-dark-700',
-    panelLabelClass: 'text-accent-600 dark:text-accent-300',
-    panelValueClass: 'text-slate-950 dark:text-white',
-  },
-  {
-    key: 'api',
-    optionTitle: '方式四：API 采集',
-    title: 'API 采集',
-    subtitle: '使用平台授权里的 1688 凭证采集',
-    badge: '1688 API',
-    labelClass: 'text-blue-700 dark:text-blue-200',
-    selectClass: 'border-blue-200 bg-white focus:border-primary-500 focus:ring-primary-100 dark:border-blue-500/30 dark:bg-dark-900 dark:focus:ring-primary-500/20',
-    summaryClass: 'bg-white ring-blue-100 dark:bg-dark-900/80 dark:ring-blue-500/20',
-    titleClass: 'text-blue-950 dark:text-blue-100',
-    subtitleClass: 'text-blue-700 dark:text-blue-200',
-    badgeClass: 'bg-blue-50 text-blue-700 ring-blue-200 dark:bg-blue-500/10 dark:text-blue-200 dark:ring-blue-500/30',
-    panelClass: 'bg-white ring-blue-100 dark:bg-dark-900/80 dark:ring-blue-500/20',
-    panelLabelClass: 'text-blue-700 dark:text-blue-200',
-    panelValueClass: 'text-slate-950 dark:text-white',
-  },
+const collectTabs: Array<{ key: CollectTab; title: string; subtitle: string }> = [
+  { key: 'browser', title: '浏览器采集', subtitle: '登录后选择商品页面' },
+  { key: 'url', title: 'URL / 批量采集', subtitle: '管理链接并逐条采集' },
+  { key: 'manual', title: '手动 / HTML 导入', subtitle: '粘贴已有商品资料' },
+  { key: 'api', title: 'API 采集', subtitle: '使用已授权的 1688 API' },
 ]
+
+const panelStyle = {
+  titleClass: 'text-slate-950 dark:text-white',
+  subtitleClass: 'text-slate-500 dark:text-accent-300',
+  badgeClass: 'bg-primary-50 text-primary-700 ring-primary-200 dark:bg-primary-500/10 dark:text-primary-200 dark:ring-primary-500/30',
+  panelClass: 'bg-slate-50 ring-slate-200 dark:bg-dark-900/80 dark:ring-dark-700',
+  panelLabelClass: 'text-slate-500 dark:text-accent-300',
+  panelValueClass: 'text-slate-950 dark:text-white',
+}
 
 const urlCollectModes = [
   { value: 'browser', label: '浏览器会话优先' },
@@ -120,15 +58,15 @@ const urlCollectModes = [
 ] as const
 
 const collectStatusLabel = computed(() => {
-  if (props.diagnostics.status === 'success') return '采集成功'
+  if (props.diagnostics.status === 'success') return '采集完成'
   if (props.diagnostics.status === 'failed') return '采集失败'
-  if (props.diagnostics.status === 'running') return '采集中'
-  return '等待采集'
+  if (props.diagnostics.status === 'waiting_verification') return '等待人工验证'
+  if (props.diagnostics.status === 'running') return '正在采集'
+  return '未开始'
 })
 
-const activeCollectTabMeta = computed(() => collectTabs.find((tab) => tab.key === activeCollectTab.value) || collectTabs[0])
-
 function selectCollectTab(tab: CollectTab) {
+  if (props.loading) return
   activeCollectTab.value = tab
   if (tab === 'manual' && props.form.mode !== 'extension') props.form.mode = 'manual'
   if (tab === 'browser') props.form.mode = 'browser'
@@ -136,7 +74,10 @@ function selectCollectTab(tab: CollectTab) {
     props.form.platform = '1688'
     props.form.mode = 'api'
   }
-  if (tab === 'url' && ['manual', 'extension', 'api'].includes(props.form.mode)) props.form.mode = 'browser'
+  if (tab === 'url') {
+    if (['manual', 'extension', 'api'].includes(props.form.mode)) props.form.mode = 'browser'
+    props.form.platform = 'unknown'
+  }
 }
 
 function openDebugFile(path: string) {
@@ -158,8 +99,8 @@ function collectProduct() {
   emit('collect', takeTransientCollectCredentials())
 }
 
-function collectBatch() {
-  emit('batchCollect', takeTransientCollectCredentials())
+function collectBatch(rowIds?: string[]) {
+  emit('batchCollect', takeTransientCollectCredentials(), rowIds)
 }
 
 function saveSettings() {
@@ -170,9 +111,9 @@ function saveSettings() {
 <template>
   <div class="space-y-6">
     <PageHeader
-      eyebrow="Collect / Source Only"
+      eyebrow="商品来源"
       title="采集商品"
-      description="选择一种采集方式后继续操作。默认从“浏览器采集”开始，适合需要登录、验证码或当前标签页上下文的 1688 / Amazon 商品。"
+      description="从浏览器页面、商品链接或已有资料采集，统一保存到商品库。"
     >
       <template #actions>
         <span class="rounded-full bg-primary-50 px-4 py-2 text-sm font-semibold text-primary-700 ring-1 ring-primary-100 dark:bg-primary-500/10 dark:text-primary-200 dark:ring-primary-500/30">{{ collectStatusLabel }}</span>
@@ -180,52 +121,44 @@ function saveSettings() {
       </template>
     </PageHeader>
 
-    <div v-if="props.error" class="rounded-2xl bg-rose-50 p-4 text-sm font-medium text-rose-700 ring-1 ring-rose-200">
+    <div v-if="props.diagnostics.status === 'waiting_verification'" role="status" class="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
+      <div>
+        <p class="font-semibold">正在等待你完成验证</p>
+        <p class="mt-1">请在采集浏览器的原商品页完成验证。完成后会自动采集这一项，再继续后面的链接。</p>
+      </div>
+      <button class="btn btn-outline shrink-0" @click="emit('cancelVerification')">取消等待</button>
+    </div>
+
+    <div v-if="props.error" role="alert" class="rounded-2xl bg-rose-50 p-4 text-sm font-medium text-rose-700 ring-1 ring-rose-200">
       {{ props.error }}
     </div>
 
     <nav data-testid="collect-method-card" class="card p-4">
-      <div class="grid gap-4 lg:grid-cols-[minmax(240px,360px)_minmax(0,1fr)] lg:items-center">
-        <label class="block">
-          <span class="text-xs font-semibold uppercase tracking-[0.16em]" :class="activeCollectTabMeta.labelClass">采集方式</span>
-          <select
-            :value="activeCollectTab"
-            class="input mt-2 text-base font-semibold"
-            :class="activeCollectTabMeta.selectClass"
-            @change="selectCollectTab(($event.target as HTMLSelectElement).value as CollectTab)"
-          >
-            <option v-for="tab in collectTabs" :key="tab.key" :value="tab.key">{{ tab.optionTitle }}</option>
-          </select>
-        </label>
-        <div class="rounded-2xl p-4 ring-1" :class="activeCollectTabMeta.summaryClass">
-          <div class="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <div class="text-base font-bold" :class="activeCollectTabMeta.titleClass">{{ activeCollectTabMeta.title }}</div>
-              <div class="mt-1 text-sm" :class="activeCollectTabMeta.subtitleClass">{{ activeCollectTabMeta.subtitle }}</div>
-            </div>
-            <span class="rounded-full px-2.5 py-1 text-xs ring-1" :class="activeCollectTabMeta.badgeClass">{{ activeCollectTabMeta.badge }}</span>
-          </div>
-        </div>
+      <div class="grid grid-cols-2 gap-2 lg:grid-cols-4" aria-label="采集方式">
+        <button v-for="tab in collectTabs" :key="tab.key" class="rounded-xl border p-4 text-left transition-colors disabled:opacity-50" :class="activeCollectTab === tab.key ? 'border-primary-400 bg-primary-50/60 dark:border-primary-500 dark:bg-primary-500/10' : 'border-transparent hover:bg-slate-50 dark:hover:bg-dark-900'" :aria-pressed="activeCollectTab === tab.key" :disabled="props.loading" :data-testid="`collect-method-${tab.key}`" @click="selectCollectTab(tab.key)">
+          <span class="block text-sm font-semibold" :class="activeCollectTab === tab.key ? 'text-primary-800 dark:text-primary-200' : ''">{{ tab.title }}</span>
+          <span class="muted mt-1 block text-xs">{{ tab.subtitle }}</span>
+        </button>
       </div>
     </nav>
 
-    <section class="grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
+    <section class="grid gap-6 2xl:grid-cols-[minmax(0,1fr)_320px]">
       <main class="space-y-6">
         <section v-if="activeCollectTab === 'manual'" class="card space-y-6">
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h3 class="card-title">方式二：手动 / HTML 导入</h3>
+              <h3 class="card-title">手动 / HTML 导入</h3>
               <p class="muted mt-1">适合第一次跑通、1688 触发验证、页面解析失败、或已经有商品资料的场景。</p>
             </div>
-            <span class="badge-info">/api/collect-extension-payload</span>
+            <span class="badge-info">资料导入</span>
           </div>
 
           <div class="grid gap-4 lg:grid-cols-3">
-            <div class="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
-              <div class="text-sm font-bold text-emerald-950">1. 选择来源</div>
+            <div class="rounded-2xl border border-emerald-100 bg-emerald-50 p-4 dark:border-emerald-500/20 dark:bg-emerald-500/10">
+              <div class="text-sm font-bold text-emerald-950 dark:text-emerald-100">1. 选择来源</div>
               <div class="mt-4 space-y-4">
                 <label class="block">
-                  <span class="text-xs font-semibold text-emerald-800">来源平台</span>
+                  <span class="text-xs font-semibold text-emerald-800 dark:text-emerald-200">来源平台</span>
                   <select v-model="props.form.platform" class="input mt-1 bg-white">
                     <option value="1688">1688</option>
                     <option value="amazon">Amazon</option>
@@ -236,47 +169,47 @@ function saveSettings() {
               </div>
             </div>
 
-            <div class="rounded-2xl border border-blue-100 bg-blue-50 p-4 lg:col-span-2">
+            <div class="rounded-2xl border border-blue-100 bg-blue-50 p-4 dark:border-blue-500/20 dark:bg-blue-500/10 lg:col-span-2">
               <div class="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <div class="text-sm font-bold text-blue-950">2. 可选：粘贴原始文本 / HTML</div>
-                  <p class="mt-1 text-xs text-blue-800">如果是 1688 页面文本，先点“清洗 1688 文本”，系统会回填标题、价格、规格和图片。</p>
+                  <div class="text-sm font-bold text-blue-950 dark:text-blue-100">2. 可选：粘贴原始文本 / HTML</div>
+                  <p class="mt-1 text-xs text-blue-800 dark:text-blue-200">如果是 1688 页面文本，先点“清洗 1688 文本”，系统会回填标题、价格、规格和图片。</p>
                 </div>
                 <button class="btn btn-secondary py-1.5" :disabled="props.loading || !props.form.rawText.trim()" @click="emit('clean1688')">清洗 1688 文本</button>
               </div>
               <div class="mt-4 grid gap-4 md:grid-cols-[0.9fr_1.1fr]">
                 <label class="block">
-                  <span class="text-xs font-semibold text-blue-800">来源链接，可选</span>
+                  <span class="text-xs font-semibold text-blue-800 dark:text-blue-200">来源链接，可选</span>
                   <input v-model="props.form.productUrl" class="input mt-1 bg-white" placeholder="https://detail.1688.com/offer/... 或 manual://..." />
                 </label>
                 <label class="block">
-                  <span class="text-xs font-semibold text-blue-800">原始文本 / HTML</span>
+                  <span class="text-xs font-semibold text-blue-800 dark:text-blue-200">原始文本 / HTML</span>
                   <textarea v-model="props.form.rawText" class="input mt-1 min-h-28 bg-white font-mono" placeholder="粘贴 1688 文本、HTML、插件导出的原始内容；没有也可以直接填写下方字段。" />
                 </label>
               </div>
             </div>
           </div>
 
-          <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <div class="text-sm font-bold text-slate-950">3. 核对并补齐商品字段</div>
+          <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-dark-700 dark:bg-dark-900">
+            <div class="text-sm font-bold text-slate-950 dark:text-white">3. 核对并补齐商品字段</div>
             <div class="mt-4 grid gap-4 md:grid-cols-2">
-              <label class="block"><span class="text-xs font-semibold text-slate-500">商品标题</span><input v-model="props.form.manualTitle" class="input mt-1 bg-white" placeholder="例如：可折叠收纳盒" /></label>
-              <label class="block"><span class="text-xs font-semibold text-slate-500">识别价格</span><input v-model="props.form.manualPrice" class="input mt-1 bg-white" placeholder="12.5" /></label>
-              <label class="block"><span class="text-xs font-semibold text-slate-500">尺寸</span><input v-model="props.form.manualDimensions" class="input mt-1 bg-white" placeholder="40 x 30 x 20 cm" /></label>
-              <label class="block"><span class="text-xs font-semibold text-slate-500">重量 kg</span><input v-model="props.form.manualWeight" class="input mt-1 bg-white" placeholder="0.85" /></label>
+              <label class="block"><span class="text-xs font-semibold text-slate-500 dark:text-accent-300">商品标题</span><input v-model="props.form.manualTitle" class="input mt-1 bg-white" placeholder="例如：可折叠收纳盒" /></label>
+              <label class="block"><span class="text-xs font-semibold text-slate-500 dark:text-accent-300">识别价格</span><input v-model="props.form.manualPrice" class="input mt-1 bg-white" placeholder="12.5" /></label>
+              <label class="block"><span class="text-xs font-semibold text-slate-500 dark:text-accent-300">尺寸</span><input v-model="props.form.manualDimensions" class="input mt-1 bg-white" placeholder="40 x 30 x 20 cm" /></label>
+              <label class="block"><span class="text-xs font-semibold text-slate-500 dark:text-accent-300">重量 kg</span><input v-model="props.form.manualWeight" class="input mt-1 bg-white" placeholder="0.85" /></label>
             </div>
             <div class="mt-4 grid gap-4 lg:grid-cols-3">
-              <label class="block"><span class="text-xs font-semibold text-slate-500">卖点，每行一个</span><textarea v-model="props.form.manualBullets" class="input mt-1 min-h-28 bg-white" /></label>
-              <label class="block"><span class="text-xs font-semibold text-slate-500">描述</span><textarea v-model="props.form.manualDescription" class="input mt-1 min-h-28 bg-white" /></label>
-              <label class="block"><span class="text-xs font-semibold text-slate-500">图片地址，每行一个</span><textarea v-model="props.form.manualImages" class="input mt-1 min-h-28 bg-white font-mono" placeholder="https://...jpg" /></label>
+              <label class="block"><span class="text-xs font-semibold text-slate-500 dark:text-accent-300">卖点，每行一个</span><textarea v-model="props.form.manualBullets" class="input mt-1 min-h-28 bg-white" /></label>
+              <label class="block"><span class="text-xs font-semibold text-slate-500 dark:text-accent-300">描述</span><textarea v-model="props.form.manualDescription" class="input mt-1 min-h-28 bg-white" /></label>
+              <label class="block"><span class="text-xs font-semibold text-slate-500 dark:text-accent-300">图片地址，每行一个</span><textarea v-model="props.form.manualImages" class="input mt-1 min-h-28 bg-white font-mono" placeholder="https://...jpg" /></label>
             </div>
           </div>
 
-          <div class="rounded-2xl border border-slate-200 bg-white p-4">
+          <div class="rounded-2xl border border-slate-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-900">
             <div class="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <div class="text-sm font-bold text-slate-950">4. 导入商品库</div>
-                <p class="mt-1 text-xs text-slate-500">导入后会生成商品记录和来源图片，可在商品库推到草稿箱。</p>
+                <div class="text-sm font-bold text-slate-950 dark:text-white">4. 导入商品库</div>
+                <p class="mt-1 text-xs text-slate-500 dark:text-accent-300">导入后会生成商品记录和来源图片，可在商品库推到草稿箱。</p>
               </div>
               <div class="flex flex-wrap gap-2">
                 <button class="btn btn-primary" :disabled="props.loading" @click="emit('importManual')">导入手动内容</button>
@@ -285,110 +218,20 @@ function saveSettings() {
           </div>
         </section>
 
-        <section v-else-if="activeCollectTab === 'browser'" data-testid="collect-active-card" class="card space-y-6">
-          <div class="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h3 class="card-title text-primary-900 dark:text-primary-100">方式一：浏览器采集</h3>
-              <p class="mt-1 text-sm text-primary-700 dark:text-primary-200">适合 1688 / Amazon 需要登录、验证码、滑块或反爬的页面。先在专用 Chrome 人工打开商品页，再从当前标签采集。</p>
-            </div>
-            <span class="rounded-full bg-white px-3 py-1 text-xs text-primary-700 ring-1 ring-primary-100 dark:bg-dark-900 dark:text-primary-200 dark:ring-primary-500/20">Remote Debugging {{ props.browserStatus?.port || 9222 }}</span>
-          </div>
-
-          <div class="grid gap-4 lg:grid-cols-2">
-            <div class="rounded-2xl bg-white p-4 ring-1 ring-primary-100 dark:bg-dark-900/80 dark:ring-primary-500/20">
-              <div class="text-sm font-bold text-slate-950 dark:text-white">1. 启动专用 Chrome</div>
-              <p class="mt-2 text-sm text-slate-600 dark:text-accent-300">点击后端自动打开浏览器；如果失败，可以打开 Profile 文件夹检查环境。</p>
-              <div class="mt-4 flex flex-wrap gap-2">
-                <button class="btn btn-primary py-1.5" :disabled="props.loading" @click="emit('open1688Browser')">打开 1688 浏览器会话</button>
-                <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('openProfile')">打开 Profile 文件夹</button>
-              </div>
-            </div>
-
-            <div class="rounded-2xl bg-white p-4 ring-1 ring-primary-100 dark:bg-dark-900/80 dark:ring-primary-500/20">
-              <div class="text-sm font-bold text-slate-950 dark:text-white">2. 登录并打开商品详情页</div>
-              <p class="mt-2 text-sm text-slate-600 dark:text-accent-300">在专用 Chrome 完成登录、滑块 / 验证码，然后打开真实商品详情页。</p>
-              <div class="mt-4 grid gap-4 md:grid-cols-2">
-                <label class="block">
-                  <span class="text-xs font-semibold text-slate-500 dark:text-accent-300">平台提示</span>
-                  <select v-model="props.form.platform" class="input mt-1">
-                    <option value="1688">1688</option>
-                    <option value="amazon">Amazon</option>
-                    <option value="unknown">其他</option>
-                  </select>
-                </label>
-                <label class="block">
-                  <span class="text-xs font-semibold text-slate-500 dark:text-accent-300">商品链接，可选</span>
-                  <input v-model="props.form.productUrl" class="input mt-1" placeholder="用于辅助匹配标签页" />
-                </label>
-              </div>
-            </div>
-          </div>
-
-          <div class="rounded-2xl bg-white p-4 ring-1 ring-primary-100 dark:bg-dark-900/80 dark:ring-primary-500/20">
-            <div class="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <div class="text-sm font-bold text-slate-950 dark:text-white">3. 检测浏览器标签页</div>
-                <p class="mt-1 text-xs text-slate-500 dark:text-accent-300">确认后端能连接 Chrome，并能看到 1688 / Amazon 商品页。</p>
-              </div>
-              <button class="btn btn-outline py-1.5" :disabled="props.loading" @click="emit('checkBrowser')">检测浏览器页面</button>
-            </div>
-
-            <div class="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700 dark:border-dark-700 dark:bg-dark-800 dark:text-accent-200">
-              <div class="flex flex-wrap items-start justify-between gap-2">
-                <div>
-                  <div class="font-semibold dark:text-white">浏览器连接状态</div>
-                  <div class="mt-1 text-xs text-slate-500 dark:text-accent-300">端口：{{ props.browserStatus?.port || 9222 }} / 标签页：{{ props.browserStatus?.tabsCount ?? 0 }}</div>
-                </div>
-                <span class="badge" :class="props.browserStatus?.connected ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200' : 'bg-slate-100 text-slate-600 ring-1 ring-slate-200'">
-                  {{ props.browserStatus?.connected ? '已连接' : '未连接' }}
-                </span>
-              </div>
-              <div v-if="props.browserStatus" class="mt-3 rounded bg-white p-3 text-xs ring-1 ring-slate-200 dark:bg-dark-900 dark:ring-dark-700">
-                <div>错误码：<span class="font-mono">{{ props.browserStatus.errorCode || '-' }}</span></div>
-                <div class="mt-1">下一步：{{ props.browserStatus.nextAction || '-' }}</div>
-                <div v-if="props.browserStatus.errorMessage" class="mt-1 text-slate-500 dark:text-accent-300">{{ props.browserStatus.errorMessage }}</div>
-              </div>
-              <div v-if="props.browserStatus?.tabs.length" class="mt-3 overflow-auto">
-                <table class="w-full text-left text-xs">
-                  <thead class="text-slate-500"><tr><th class="p-2">平台</th><th class="p-2">标题</th><th class="p-2">URL</th></tr></thead>
-                  <tbody>
-                    <tr v-for="tab in props.browserStatus.tabs" :key="tab.url" class="border-t">
-                      <td class="p-2">{{ tab.platformDetected || '-' }}</td>
-                      <td class="p-2">{{ tab.title || '-' }}</td>
-                      <td class="max-w-md truncate p-2">{{ tab.url }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-
-          <div class="rounded-2xl bg-white p-4 ring-1 ring-primary-100 dark:bg-dark-900/80 dark:ring-primary-500/20">
-            <div class="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <div class="text-sm font-bold text-slate-950 dark:text-white">4. 从当前标签页采集</div>
-                <p class="mt-1 text-xs text-slate-500 dark:text-accent-300">采集成功会写入商品库；失败时可先保存 HTML 快照用于排查或手动导入。</p>
-              </div>
-              <div class="flex flex-wrap gap-2">
-                <button class="btn btn-primary" :disabled="props.loading" @click="emit('collectFromBrowser', false)">从当前标签页采集</button>
-                <button class="btn btn-outline" :disabled="props.loading" @click="emit('collectFromBrowser', true)">保存 HTML 快照</button>
-              </div>
-            </div>
-          </div>
-        </section>
+        <BrowserCollector v-else-if="activeCollectTab === 'browser'" :status="props.browserStatus" :loading="props.loading" @open="emit('open1688Browser')" @check="emit('checkBrowser')" @profile="emit('openProfile')" @collect="(saveOnly, tabUrl) => emit('collectFromBrowser', saveOnly, tabUrl)" />
 
         <section v-else-if="activeCollectTab === 'api'" data-testid="collect-active-card" class="card space-y-6">
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h3 class="card-title text-blue-950 dark:text-blue-100">方式四：API 采集</h3>
+              <h3 class="card-title text-blue-950 dark:text-blue-100">API 采集</h3>
               <p class="mt-1 text-sm text-blue-700 dark:text-blue-200">使用“平台授权”里的 1688 AppKey / Secret，从官方接口采集商品详情。</p>
             </div>
-            <span class="rounded-full bg-white px-3 py-1 text-xs text-blue-700 ring-1 ring-blue-100 dark:bg-dark-900 dark:text-blue-200 dark:ring-blue-500/20">/api/collect-1688 · mode=api</span>
+            <span class="rounded-full bg-white px-3 py-1 text-xs text-blue-700 ring-1 ring-blue-100 dark:bg-dark-900 dark:text-blue-200 dark:ring-blue-500/20">1688 API</span>
           </div>
 
           <div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
             <div class="rounded-2xl bg-white p-4 ring-1 ring-blue-100 dark:bg-dark-900/80 dark:ring-blue-500/20">
-              <div class="text-sm font-bold text-slate-950 dark:text-white">1. 填写 1688 商品链接</div>
+              <div class="text-sm font-bold text-slate-950 dark:text-white">填写 1688 商品链接</div>
               <label class="mt-4 block">
                 <span class="text-xs font-semibold text-slate-500 dark:text-accent-300">商品详情链接</span>
                 <input v-model="props.form.productUrl" class="input mt-1" placeholder="https://detail.1688.com/offer/..." />
@@ -408,7 +251,7 @@ function saveSettings() {
           <div class="rounded-2xl bg-white p-4 ring-1 ring-blue-100 dark:bg-dark-900/80 dark:ring-blue-500/20">
             <div class="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <div class="text-sm font-bold text-slate-950 dark:text-white">3. 开始 API 采集</div>
+                <div class="text-sm font-bold text-slate-950 dark:text-white">开始 API 采集</div>
                 <p class="mt-1 text-xs text-slate-500 dark:text-accent-300">如果提示凭证缺失，请到“平台授权”保存 1688 采集 API。</p>
               </div>
               <button class="btn btn-primary" :disabled="props.loading" @click="collectProduct">API 采集单链接</button>
@@ -416,166 +259,79 @@ function saveSettings() {
           </div>
         </section>
 
-        <section v-else class="card space-y-6">
-          <div class="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h3 class="card-title">方式三：URL / 批量采集</h3>
-              <p class="muted mt-1">适合页面可公开访问或已准备 Cookie 的商品链接。1688 / Amazon 遇到验证时建议切到“浏览器标签采集”。</p>
-            </div>
-            <span class="badge-muted">/api/collect-source / /api/collect-batch</span>
+        <section v-else class="card space-y-5">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <label class="flex items-center gap-3 text-sm font-medium">
+              采集模式
+              <select v-model="props.form.mode" :disabled="props.loading" class="input w-auto">
+                <option v-for="mode in urlCollectModes" :key="mode.value" :value="mode.value">{{ mode.label }}</option>
+              </select>
+            </label>
+            <button type="button" class="btn btn-outline py-2 text-sm" :aria-expanded="advancedOpen" @click="advancedOpen = !advancedOpen">高级选项：Cookie / 保存位置 {{ advancedOpen ? '−' : '+' }}</button>
           </div>
-
-          <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <div class="text-sm font-bold text-slate-950">1. 填写单链接或多链接</div>
-            <div class="mt-4 grid gap-4 xl:grid-cols-2">
-              <label class="block">
-                <span class="text-xs font-semibold text-slate-500">单个商品链接</span>
-                <div class="mt-1 flex flex-col gap-2 sm:flex-row">
-                  <input v-model="props.form.productUrl" class="input min-w-0 bg-white" placeholder="https://detail.1688.com/offer/..." />
-                  <button class="btn btn-primary shrink-0" :disabled="props.loading" @click="collectProduct">采集单链接</button>
-                </div>
-              </label>
-              <label class="block">
-                <span class="text-xs font-semibold text-slate-500">多链接采集，每行一个</span>
-                <textarea v-model="props.form.productUrls" class="input mt-1 min-h-24 bg-white" placeholder="Amazon / 1688 / 其他商品链接" />
-              </label>
-            </div>
+          <div v-if="advancedOpen" class="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-dark-700 dark:bg-dark-900 dark:border-dark-700 dark:bg-dark-900">
+            <label class="block"><span class="text-xs font-semibold">1688 Cookie</span><textarea v-model="transientAlibabaCookie" :disabled="props.loading" data-testid="transient-alibaba-cookie" class="input mt-1 min-h-24 font-mono" placeholder="复制浏览器请求 Cookie；提交后立即清空" /></label>
+            <label class="block"><span class="text-xs font-semibold">保存位置</span><input v-model="props.form.outputDir" :disabled="props.loading" class="input mt-1" placeholder="data/images/source" /></label>
+            <button type="button" class="btn btn-outline" :disabled="props.loading" @click="saveSettings">保存 Cookie / 设置</button>
           </div>
-
-          <div class="rounded-2xl border border-slate-200 bg-white p-4">
-            <div class="text-sm font-bold text-slate-950">2. 设置采集参数</div>
-            <div class="mt-4 grid gap-4 md:grid-cols-3">
-              <label class="block">
-                <span class="text-xs font-semibold text-slate-500">来源平台</span>
-                <select v-model="props.form.platform" class="input mt-1">
-                  <option value="1688">1688</option>
-                  <option value="amazon">Amazon</option>
-                  <option value="unknown">其他 / 自动识别</option>
-                </select>
-              </label>
-              <label class="block">
-                <span class="text-xs font-semibold text-slate-500">采集模式</span>
-                <select v-model="props.form.mode" class="input mt-1">
-                  <option v-for="mode in urlCollectModes" :key="mode.value" :value="mode.value">{{ mode.label }}</option>
-                </select>
-              </label>
-              <label class="flex items-end gap-2 rounded-2xl bg-slate-50 px-3 py-2 ring-1 ring-slate-200">
-                <input v-model="props.form.autoAiRecognition" type="checkbox" class="size-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500" />
-                <span class="text-sm font-medium text-slate-700">采集后提示检查商品库</span>
-              </label>
+          <CollectBatchManager :rows="props.batchRows" :loading="props.loading" @update="emit('updateBatchRows', $event)" @collect="collectBatch" />
+          <details class="rounded-xl border border-slate-200 p-4 dark:border-dark-700">
+            <summary class="cursor-pointer text-sm font-semibold">单链接快捷采集</summary>
+            <div class="mt-4 space-y-3">
+              <label class="block"><span class="text-xs font-semibold">来源平台</span><select v-model="props.form.platform" class="input mt-1" :disabled="props.loading"><option value="unknown">自动识别</option><option value="1688">1688</option><option value="amazon">Amazon</option></select></label>
+              <label class="block"><span class="text-xs font-semibold">单个商品链接</span><input v-model="props.form.productUrl" :disabled="props.loading" class="input mt-1" placeholder="https://detail.1688.com/offer/..." /></label>
+              <button class="btn btn-primary" :disabled="props.loading || !props.form.productUrl.trim()" @click="collectProduct">采集单链接</button>
             </div>
-
-            <div class="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <button type="button" class="flex w-full items-center justify-between text-left" @click="advancedOpen = !advancedOpen">
-                <span>
-                  <span class="block text-sm font-semibold text-slate-950">高级选项：Cookie / 保存位置</span>
-                  <span class="mt-1 block text-xs text-slate-500">只有遇到登录、验证码、反爬或需要保存默认配置时再展开。</span>
-                </span>
-                <span class="text-xl">{{ advancedOpen ? '−' : '+' }}</span>
-              </button>
-              <div v-if="advancedOpen" class="mt-4 space-y-4">
-                <label class="block">
-                  <span class="text-xs font-semibold text-slate-500">1688 Cookie</span>
-                  <textarea v-model="transientAlibabaCookie" data-testid="transient-alibaba-cookie" class="input mt-1 min-h-24 bg-white font-mono" placeholder="复制浏览器请求 Cookie；提交后立即清空" />
-                </label>
-                <label class="block">
-                  <span class="text-xs font-semibold text-slate-500">保存位置</span>
-                  <input v-model="props.form.outputDir" class="input mt-1 bg-white" placeholder="data/images/source" />
-                </label>
-                <button type="button" class="btn btn-outline" :disabled="props.loading" @click="saveSettings">保存 Cookie / 设置</button>
-              </div>
-            </div>
-          </div>
-
-          <div class="rounded-2xl border border-slate-200 bg-white p-4">
-            <div class="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <div class="text-sm font-bold text-slate-950">3. 开始采集</div>
-                <p class="mt-1 text-xs text-slate-500">单链接写入当前商品；批量会逐条保存到商品库。</p>
-              </div>
-              <div class="flex flex-wrap gap-2">
-                <button class="btn btn-primary" :disabled="props.loading" @click="collectProduct">采集单链接</button>
-                <button class="btn btn-secondary" :disabled="props.loading" @click="collectBatch">批量采集并保存</button>
-              </div>
-            </div>
-          </div>
-
-          <section v-if="props.batchRows.length" class="rounded-2xl border border-slate-200 bg-white p-4">
-            <div class="flex items-center justify-between gap-3">
-              <div>
-                <h3 class="text-sm font-bold text-slate-950">批量采集结果</h3>
-                <p class="muted mt-1">可回看成功、部分成功和失败原因。</p>
-              </div>
-              <span class="badge-info">{{ props.batchRows.length }} 条</span>
-            </div>
-            <div class="mt-4 overflow-auto rounded-2xl border border-slate-200">
-              <table class="w-full text-left text-sm">
-                <thead class="bg-slate-50 text-xs text-slate-500">
-                  <tr><th class="p-3">主图</th><th class="p-3">来源</th><th class="p-3">链接</th><th class="p-3">标题</th><th class="p-3">状态</th><th class="p-3">错误码</th><th class="p-3">下一步建议</th></tr>
-                </thead>
-                <tbody>
-                  <tr v-for="row in props.batchRows" :key="row.url" class="border-t">
-                    <td class="p-3"><img v-if="row.image" :src="row.image" class="size-12 rounded object-cover" /><div v-else class="size-12 rounded bg-slate-100 text-center text-[10px] leading-[48px] text-slate-500">无图</div></td>
-                    <td class="p-3">{{ row.platform || '-' }}</td>
-                    <td class="max-w-xs truncate p-3">{{ row.url }}</td>
-                    <td class="p-3">{{ row.title || '-' }}</td>
-                    <td class="p-3"><span class="badge-muted">{{ row.status || '-' }}</span></td>
-                    <td class="p-3 font-mono">{{ row.errorCode || row.error || '-' }}</td>
-                    <td class="max-w-sm p-3">{{ row.nextAction || '-' }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </section>
+          </details>
         </section>
       </main>
 
-      <aside class="space-y-6 xl:sticky xl:top-6 xl:self-start">
-        <section data-testid="collect-diagnostics-card" class="card">
+      <aside class="space-y-6 min-w-0 2xl:sticky 2xl:top-6 2xl:self-start">
+        <section data-testid="collect-diagnostics-card" class="card space-y-4">
           <div class="flex items-center justify-between gap-3">
             <div>
-              <h3 class="text-base font-semibold" :class="activeCollectTabMeta.titleClass">采集进度 / 诊断</h3>
-              <p class="mt-1 text-sm" :class="activeCollectTabMeta.subtitleClass">状态、错误码、调试截图和 HTML 快照。</p>
+              <h3 class="text-base font-semibold" :class="panelStyle.titleClass">采集进度 / 诊断</h3>
+              <p class="mt-1 text-sm" :class="panelStyle.subtitleClass">状态、错误码、调试截图和 HTML 快照。</p>
             </div>
             <span
-              class="badge"
+              class="badge shrink-0 whitespace-nowrap"
               :class="{
                 'bg-slate-100 text-slate-600 ring-1 ring-slate-200 dark:bg-dark-800 dark:text-accent-300 dark:ring-dark-600': props.diagnostics.status === 'idle',
-                'bg-primary-50 text-primary-700 ring-1 ring-primary-200 dark:bg-primary-500/10 dark:text-primary-200 dark:ring-primary-500/30': props.diagnostics.status === 'running',
+                'bg-primary-50 text-primary-700 ring-1 ring-primary-200 dark:bg-primary-500/10 dark:text-primary-200 dark:ring-primary-500/30': ['running', 'waiting_verification'].includes(props.diagnostics.status),
                 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-200 dark:ring-emerald-500/30': props.diagnostics.status === 'success',
                 'bg-rose-50 text-rose-700 ring-1 ring-rose-200 dark:bg-rose-500/10 dark:text-rose-200 dark:ring-rose-500/30': props.diagnostics.status === 'failed',
               }"
             >
-              {{ props.diagnostics.status }}
+              {{ collectStatusLabel }}
             </span>
           </div>
 
           <div>
-            <div class="mb-2 flex justify-between text-sm font-medium" :class="activeCollectTabMeta.subtitleClass">
+            <div class="mb-2 flex justify-between text-sm font-medium" :class="panelStyle.subtitleClass">
               <span>{{ props.diagnostics.message }}</span>
               <span>{{ props.diagnostics.progress }}%</span>
             </div>
-            <div class="h-2 rounded-full bg-white/70 ring-1 dark:bg-dark-900" :class="activeCollectTabMeta.panelClass">
+            <div class="h-2 rounded-full bg-white/70 ring-1 dark:bg-dark-900" :class="panelStyle.panelClass">
               <div class="h-2 rounded-full bg-brand-600 transition-all" :style="{ width: `${props.diagnostics.progress}%` }" />
             </div>
           </div>
 
           <dl class="grid grid-cols-2 gap-3 text-sm">
-            <div class="rounded-2xl p-3 ring-1" :class="activeCollectTabMeta.panelClass">
-              <dt :class="activeCollectTabMeta.panelLabelClass">图片数量</dt>
-              <dd class="mt-1 text-xl font-bold" :class="activeCollectTabMeta.panelValueClass">{{ props.diagnostics.downloadedImages }}</dd>
+            <div class="rounded-2xl p-3 ring-1" :class="panelStyle.panelClass">
+              <dt :class="panelStyle.panelLabelClass">图片数量</dt>
+              <dd class="mt-1 text-xl font-bold" :class="panelStyle.panelValueClass">{{ props.diagnostics.downloadedImages }}</dd>
             </div>
-            <div class="rounded-2xl p-3 ring-1" :class="activeCollectTabMeta.panelClass">
-              <dt :class="activeCollectTabMeta.panelLabelClass">卖点数量</dt>
-              <dd class="mt-1 text-xl font-bold" :class="activeCollectTabMeta.panelValueClass">{{ props.diagnostics.extractedBullets }}</dd>
+            <div class="rounded-2xl p-3 ring-1" :class="panelStyle.panelClass">
+              <dt :class="panelStyle.panelLabelClass">卖点数量</dt>
+              <dd class="mt-1 text-xl font-bold" :class="panelStyle.panelValueClass">{{ props.diagnostics.extractedBullets }}</dd>
             </div>
-            <div class="col-span-2 rounded-2xl p-3 ring-1" :class="activeCollectTabMeta.panelClass">
-              <dt :class="activeCollectTabMeta.panelLabelClass">错误码</dt>
-              <dd class="mt-1 break-all font-mono text-sm" :class="activeCollectTabMeta.panelValueClass">{{ props.diagnostics.errorCode || '-' }}</dd>
+            <div class="col-span-2 rounded-2xl p-3 ring-1" :class="panelStyle.panelClass">
+              <dt :class="panelStyle.panelLabelClass">错误码</dt>
+              <dd class="mt-1 break-all font-mono text-sm" :class="panelStyle.panelValueClass">{{ props.diagnostics.errorCode || '-' }}</dd>
             </div>
-            <div class="col-span-2 rounded-2xl p-3 ring-1" :class="activeCollectTabMeta.panelClass">
-              <dt :class="activeCollectTabMeta.panelLabelClass">来源</dt>
-              <dd class="mt-1 break-all text-sm font-medium" :class="activeCollectTabMeta.panelValueClass">{{ props.diagnostics.lastSourceUrl || '-' }}</dd>
+            <div class="col-span-2 rounded-2xl p-3 ring-1" :class="panelStyle.panelClass">
+              <dt :class="panelStyle.panelLabelClass">来源</dt>
+              <dd class="mt-1 break-all text-sm font-medium" :class="panelStyle.panelValueClass">{{ props.diagnostics.lastSourceUrl || '-' }}</dd>
             </div>
           </dl>
 
@@ -595,25 +351,25 @@ function saveSettings() {
         <section data-testid="collect-result-card" class="card">
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h3 class="text-base font-semibold" :class="activeCollectTabMeta.titleClass">当前采集结果</h3>
-              <p class="mt-1 text-sm" :class="activeCollectTabMeta.subtitleClass">后续文案、图片、核价、上架都基于这份数据。</p>
+              <h3 class="text-base font-semibold" :class="panelStyle.titleClass">当前采集结果</h3>
+              <p class="mt-1 text-sm" :class="panelStyle.subtitleClass">后续文案、图片、核价、上架都基于这份数据。</p>
             </div>
-            <span class="rounded-full px-2.5 py-1 text-xs font-semibold ring-1" :class="activeCollectTabMeta.badgeClass">{{ props.product.source.sourcePlatform || '未采集' }}</span>
+            <span class="rounded-full px-2.5 py-1 text-xs font-semibold ring-1" :class="panelStyle.badgeClass">{{ props.product.source.sourcePlatform || '未采集' }}</span>
           </div>
           <div class="mt-5 space-y-3">
-            <div class="rounded-2xl p-4 ring-1" :class="activeCollectTabMeta.panelClass">
-              <p class="text-xs font-semibold" :class="activeCollectTabMeta.panelLabelClass">商品标题</p>
-              <p class="mt-2 text-base font-bold" :class="activeCollectTabMeta.panelValueClass">{{ props.product.source.title || props.product.name || '待采集' }}</p>
+            <div class="rounded-2xl p-4 ring-1" :class="panelStyle.panelClass">
+              <p class="text-xs font-semibold" :class="panelStyle.panelLabelClass">商品标题</p>
+              <p class="mt-2 text-base font-bold" :class="panelStyle.panelValueClass">{{ props.product.source.title || props.product.name || '待采集' }}</p>
               <p class="mt-2 line-clamp-4 text-sm leading-6 text-slate-600 dark:text-accent-300">{{ props.product.source.description || '暂无描述' }}</p>
             </div>
             <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
-              <div class="rounded-2xl p-4 ring-1" :class="activeCollectTabMeta.panelClass">
-                <p class="text-xs font-semibold" :class="activeCollectTabMeta.panelLabelClass">价格</p>
-                <p class="mt-2 text-base font-bold" :class="activeCollectTabMeta.panelValueClass">{{ props.product.source.price || '-' }} {{ props.product.source.currency }}</p>
+              <div class="rounded-2xl p-4 ring-1" :class="panelStyle.panelClass">
+                <p class="text-xs font-semibold" :class="panelStyle.panelLabelClass">价格</p>
+                <p class="mt-2 text-base font-bold" :class="panelStyle.panelValueClass">{{ props.product.source.price || '-' }} {{ props.product.source.currency }}</p>
               </div>
-              <div class="rounded-2xl p-4 ring-1" :class="activeCollectTabMeta.panelClass">
-                <p class="text-xs font-semibold" :class="activeCollectTabMeta.panelLabelClass">规格</p>
-                <p class="mt-2 text-sm font-semibold" :class="activeCollectTabMeta.panelValueClass">{{ props.product.source.dimensions.lengthCm || '-' }} × {{ props.product.source.dimensions.widthCm || '-' }} × {{ props.product.source.dimensions.heightCm || '-' }} cm</p>
+              <div class="rounded-2xl p-4 ring-1" :class="panelStyle.panelClass">
+                <p class="text-xs font-semibold" :class="panelStyle.panelLabelClass">规格</p>
+                <p class="mt-2 text-sm font-semibold" :class="panelStyle.panelValueClass">{{ props.product.source.dimensions.lengthCm || '-' }} × {{ props.product.source.dimensions.widthCm || '-' }} × {{ props.product.source.dimensions.heightCm || '-' }} cm</p>
                 <p class="mt-1 text-sm text-slate-600 dark:text-accent-300">{{ props.product.source.weightKg || '-' }} kg</p>
               </div>
             </div>

@@ -137,6 +137,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
     resetForm: combined.resetForm,
     collectProduct: combined.collectProduct,
     collectBatch: combined.collectBatch,
+    cancelCollectionVerification: combined.cancelCollectionVerification,
+    updateCollectBatchRows: combined.updateCollectBatchRows,
     collectFromBrowserTab: combined.collectFromBrowserTab,
     open1688Browser: combined.open1688Browser,
     checkBrowserDebugStatus: combined.checkBrowserDebugStatus,

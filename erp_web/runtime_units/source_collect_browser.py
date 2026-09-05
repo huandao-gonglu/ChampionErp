@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import time
@@ -19,6 +20,7 @@ from erp_web.services.browser_debug_service import (
 )
 from .category_refresh import http_json
 from .collect_helpers import detect_source_platform, save_collect_snapshot_artifacts
+from .source_collect_verification import same_collection_page
 
 def wait_for_cdp(port: int, timeout: int = 15) -> None:
     deadline = time.time() + timeout
@@ -85,12 +87,14 @@ def choose_browser_tab(raw_tabs: list[dict[str, Any]], tab_url: str = "", produc
     platform_hint = str(platform_hint or "").strip().lower()
     if tab_url:
         for tab in pages:
-            if tab_url in str(tab.get("url") or ""):
+            if tab_url == str(tab.get("url") or ""):
                 return tab
+        return None
     if product_url:
         for tab in pages:
-            if product_url in str(tab.get("url") or "") or str(tab.get("url") or "") in product_url:
+            if product_url == str(tab.get("url") or ""):
                 return tab
+        return None
     if platform_hint in {"amazon", "1688"}:
         for tab in pages:
             if detect_source_platform(str(tab.get("url") or "")) == platform_hint:
@@ -98,10 +102,10 @@ def choose_browser_tab(raw_tabs: list[dict[str, Any]], tab_url: str = "", produc
     for tab in pages:
         if detect_source_platform(str(tab.get("url") or "")) in {"amazon", "1688"}:
             return tab
-    return pages[0] if pages else None
+    return None
 
 
-def open_browser_debug_session(url: str, port: int, profile_name: str) -> None:
+def open_browser_debug_session(url: str, port: int, profile_name: str) -> dict[str, Any]:
     chrome = find_chrome_path()
     paths = get_context().paths
     profile = (
@@ -112,10 +116,6 @@ def open_browser_debug_session(url: str, port: int, profile_name: str) -> None:
     profile.mkdir(parents=True, exist_ok=True)
     try:
         http_json(f"http://127.0.0.1:{port}/json/version")
-        try:
-            urllib.request.urlopen(f"http://127.0.0.1:{port}/json/new?{urllib.parse.quote(url, safe='')}", timeout=5)
-        except Exception:
-            pass
     except Exception:
         subprocess.Popen(
             [
@@ -125,38 +125,30 @@ def open_browser_debug_session(url: str, port: int, profile_name: str) -> None:
                 "--no-first-run",
                 "--disable-popup-blocking",
                 "--start-maximized",
-                url,
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
         wait_for_cdp(port)
+    return cdp_target_for_url(port, url)
 
 
 def cdp_target_for_url(port: int, url: str) -> dict[str, Any]:
     pages = http_json(f"http://127.0.0.1:{port}/json/list")
     for page in pages:
-        page_url = page.get("url", "")
-        if page.get("type") == "page" and (url in page_url or "1688.com" in page_url):
+        current_url = str(page.get("url") or "")
+        if page.get("type") == "page" and same_collection_page(url, current_url):
             return page
-    try:
-        with urllib.request.urlopen(
-            f"http://127.0.0.1:{port}/json/new?{urllib.parse.quote(url, safe='')}",
-            timeout=5,
-        ):
-            pass
-    except Exception:
-        pass
-    time.sleep(2)
-    pages = http_json(f"http://127.0.0.1:{port}/json/list")
-    for page in pages:
-        page_url = page.get("url", "")
-        if page.get("type") == "page" and (url in page_url or "1688.com" in page_url):
-            return page
-    for page in pages:
-        if page.get("type") == "page":
-            return page
-    raise RuntimeError("没有找到可用的 Chrome 页面")
+    # Chrome 的新建标签接口要求 PUT，并直接返回新标签，避免误用其他商品页。
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/json/new?{urllib.parse.quote(url, safe='')}",
+        method="PUT",
+    )
+    with urllib.request.urlopen(request, timeout=5) as response:
+        target = json.load(response)
+    if not isinstance(target, dict) or not target.get("webSocketDebuggerUrl"):
+        raise RuntimeError("Chrome 未返回新页面，请刷新浏览器连接后重试。")
+    return target
 
 
 def fetch_page_html_with_browser_session(url: str, port: int | None = None) -> str | None:
@@ -171,14 +163,13 @@ def fetch_page_snapshot_with_browser_session(url: str, port: int | None = None, 
     if port is None:
         port = get_context().paths.browser_debug_port
     try:
-        open_browser_debug_session(url, port, profile_name)
-        target = cdp_target_for_url(port, url)
+        target = open_browser_debug_session(url, port, profile_name)
         cdp = CdpWebSocket(target["webSocketDebuggerUrl"])
         try:
             cdp.call("Page.enable")
             cdp.call("Runtime.enable")
             cdp.call("DOM.enable")
-            cdp.call("Page.navigate", {"url": url}, timeout=20)
+            # 打开目标时已经导航；读取时不刷新，以保留人工登录和验证后的页面。
             deadline = time.time() + 25
             while time.time() < deadline:
                 ready = cdp.call("Runtime.evaluate", {"expression": "document.readyState", "returnByValue": True}, timeout=10)
@@ -227,6 +218,7 @@ def fetch_page_snapshot_with_browser_session(url: str, port: int | None = None, 
                 "html": html,
                 "text": values.get("text") or "",
                 "title": values.get("title") or "",
+                "browser_tab_id": str(target.get("id") or ""),
                 "image_urls": values.get("images") or [],
                 "html_snapshot_path": artifacts.get("html_snapshot_path", ""),
                 "screenshot_path": artifacts.get("screenshot_path", ""),
@@ -299,6 +291,7 @@ def snapshot_from_cdp_target(target: dict[str, Any], platform_hint: str = "") ->
             "html": html_text,
             "text": str(values.get("text") or ""),
             "title": str(values.get("title") or target.get("title") or ""),
+            "browser_tab_id": str(target.get("id") or ""),
             "image_urls": values.get("images") if isinstance(values.get("images"), list) else [],
             "html_snapshot_path": artifacts.get("html_snapshot_path", ""),
             "screenshot_path": artifacts.get("screenshot_path", ""),

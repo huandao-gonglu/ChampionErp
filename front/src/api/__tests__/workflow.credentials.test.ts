@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { apiClient } from '@/api/client'
 import {
   collectProduct,
+  collectBatch,
+  collectFromBrowserTab,
+  inspectCollectionVerification,
   saveCollectSettings,
 } from '@/api/workflow/catalog'
 import {
@@ -86,4 +89,48 @@ describe('采集请求凭据边界', () => {
     expect(apiConfig).not.toHaveProperty('app_secret')
     expect(apiConfig).not.toHaveProperty('access_token')
   })
+  it('浏览器快照请求携带精确目标，响应不生成空商品', async () => {
+    const form = createDefaultCollectForm()
+    form.productUrl = 'https://detail.1688.com/offer/123.html'
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ data: {
+      ok: true, saved_only: true, diagnostics: { html_snapshot_path: '/tmp/snapshot.html' },
+      browserStatus: { connected: true, current_tabs: [] },
+    } })
+    const result = await collectFromBrowserTab(form, true, form.productUrl)
+    expect(apiClient.post).toHaveBeenCalledWith('/api/collect-from-browser-tab', expect.objectContaining({
+      tab_url: form.productUrl, product_url: form.productUrl, save_only: true,
+    }))
+    expect(result).toMatchObject({ savedOnly: true, diagnostics: { html_snapshot_path: '/tmp/snapshot.html' } })
+    expect(result).not.toHaveProperty('product')
+  })
+
+  it('自动识别不把 unknown 当作明确平台发送，批量凭据只来自本次参数', async () => {
+    const form = createDefaultCollectForm()
+    form.platform = 'unknown'
+    form.productUrl = 'https://amazon.com/dp/ABC123'
+    form.productUrls = form.productUrl
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ data: { ok: true, product: toBackendProduct(createEmptyProduct()) } })
+    await collectProduct(form)
+    expect(apiClient.post).toHaveBeenLastCalledWith('/api/collect-source', expect.objectContaining({ platform: '' }))
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ data: { ok: true, items: [] } })
+    await collectBatch(form, { alibabaCookie: 'transient-cookie' })
+    expect(apiClient.post).toHaveBeenLastCalledWith('/api/collect-batch', expect.objectContaining({ platform: '', urls: form.productUrl, cookie: 'transient-cookie' }))
+    expect(JSON.stringify(form)).not.toContain('transient-cookie')
+  })
+
+  it('等待验证响应不生成商品，继续请求只携带原标签身份', async () => {
+    const form = { ...createDefaultCollectForm(), productUrl: 'https://detail.1688.com/offer/123.html' }
+    const waiting = { ok: false, status: 'waiting_verification', verification: { browser_tab_id: 'original', source_url: form.productUrl, platform: '1688' }, diagnostics: {} }
+    vi.mocked(apiClient.post).mockResolvedValue({ data: waiting })
+    const result = await collectProduct(form)
+    expect(result).not.toHaveProperty('product')
+    expect(result.verification?.browserTabId).toBe('original')
+    expect((await collectFromBrowserTab(form, false, '', 'original')).savedOnly).toBe(false)
+    expect(apiClient.post).toHaveBeenLastCalledWith('/api/collect-from-browser-tab', expect.objectContaining({ browser_tab_id: 'original', product_url: form.productUrl }))
+    const signal = new AbortController().signal
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ data: { ok: true, status: 'ready', message: '验证已完成' } })
+    await inspectCollectionVerification(result.verification!, signal)
+    expect(apiClient.post).toHaveBeenLastCalledWith('/api/collect-verification', { browser_tab_id: 'original', source_url: form.productUrl }, { signal })
+  })
+
 })

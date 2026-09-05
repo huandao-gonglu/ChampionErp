@@ -77,6 +77,13 @@ def all_handled_endpoints() -> frozenset[tuple[str, str]]:
 
 
 AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
+    AiCapabilityCoverageEntry(
+        method="POST",
+        path="/api/collect-verification",
+        business_domain="浏览器调试",
+        disposition="excluded",
+        reason="采集页面等待人工验证时的只读状态探测，由前端驱动，不作为 AI 工具轮询或验证码操作能力。",
+    ),
     # -------------------------------------------------- 前端页面（GET）
     AiCapabilityCoverageEntry(
         method="GET",

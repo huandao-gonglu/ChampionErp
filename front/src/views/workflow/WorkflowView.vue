@@ -459,6 +459,8 @@ watch(
             :browser-status="browserDebugStatus"
             @collect="store.collectProduct"
             @batch-collect="store.collectBatch"
+            @cancel-verification="store.cancelCollectionVerification"
+            @update-batch-rows="store.updateCollectBatchRows"
             @collect-from-browser="store.collectFromBrowserTab"
             @open1688-browser="store.open1688Browser"
             @check-browser="store.checkBrowserDebugStatus"

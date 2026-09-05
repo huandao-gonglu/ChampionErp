@@ -2,7 +2,8 @@ import { apiClient, type AiPresentationTransport } from '@/api/client'
 import { listingLanguageValue } from '@/constants/locales'
 import type {
   BrowserDebugStatus,
-  CollectBatchRow,
+  CollectBatchResultRow,
+  CollectionVerification,
   DraftIndexItem,
   DraftDetail,
   CollectForm,
@@ -107,10 +108,43 @@ function collectApiOptions(form: CollectForm): UnknownRecord {
   }
 }
 
+export type CollectionAttempt =
+  | (ProductMutationResponse & { verification?: undefined })
+  | { verification: CollectionVerification; diagnostics: UnknownRecord }
+
+function normalizeVerification(value: unknown): CollectionVerification | undefined {
+  const record = asRecord(value)
+  const browserTabId = getString(record, ['browser_tab_id'])
+  const sourceUrl = getString(record, ['source_url'])
+  return browserTabId && sourceUrl ? { browserTabId, sourceUrl, platform: getString(record, ['platform']) } : undefined
+}
+
+function normalizeCollectionAttempt(value: unknown): CollectionAttempt {
+  const data = asRecord(value)
+  const verification = normalizeVerification(data.verification)
+  if (data.status === 'waiting_verification' && verification) {
+    return { verification, diagnostics: asRecord(data.diagnostics) }
+  }
+  return normalizeProductMutation(data)
+}
+
+export async function inspectCollectionVerification(verification: CollectionVerification, signal: AbortSignal): Promise<{
+  status: 'waiting_verification' | 'loading' | 'ready' | 'unavailable'; message: string
+}> {
+  const response = await apiClient.post('/api/collect-verification', {
+    browser_tab_id: verification.browserTabId, source_url: verification.sourceUrl,
+  }, { signal })
+  const data = asRecord(response.data)
+  ensureOk(data, '检查验证状态失败')
+  const status = getString(data, ['status'])
+  if (!['waiting_verification', 'loading', 'ready', 'unavailable'].includes(status)) throw new Error('验证状态无效，请重新采集。')
+  return { status: status as 'waiting_verification' | 'loading' | 'ready' | 'unavailable', message: getString(data, ['message']) }
+}
+
 export async function collectProduct(
   form: CollectForm,
   credentials: TransientCollectCredentials = {},
-): Promise<ProductMutationResponse> {
+): Promise<CollectionAttempt> {
   const url = form.productUrl.trim()
   if (!url || form.mode === 'extension' || form.mode === 'manual') {
     return importManualProduct(form)
@@ -121,9 +155,9 @@ export async function collectProduct(
     mode: form.mode,
     ...collectCredentialsPayload(credentials),
     '1688_api': collectApiOptions(form),
-    platform: form.platform,
+    platform: form.platform === 'unknown' ? '' : form.platform,
   })
-  return normalizeProductMutation(response.data)
+  return normalizeCollectionAttempt(response.data)
 }
 
 export async function clean1688Text(text: string, url = ''): Promise<UnknownRecord> {
@@ -136,13 +170,13 @@ export async function clean1688Text(text: string, url = ''): Promise<UnknownReco
 export async function collectBatch(
   form: CollectForm,
   credentials: TransientCollectCredentials = {},
-): Promise<{ rows: CollectBatchRow[]; productsIndex: ProductIndexItem[] }> {
+): Promise<{ rows: CollectBatchResultRow[]; productsIndex: ProductIndexItem[] }> {
   const response = await apiClient.post('/api/collect-batch', {
     urls: form.productUrls,
     mode: form.mode === 'extension' ? 'manual' : form.mode,
     ...collectCredentialsPayload(credentials),
     '1688_api': collectApiOptions(form),
-    platform: form.platform === 'manual' ? '' : form.platform,
+    platform: ['manual', 'unknown'].includes(form.platform) ? '' : form.platform,
   })
   const data = asRecord(response.data)
   ensureOk(data, '批量采集失败')
@@ -153,6 +187,7 @@ export async function collectBatch(
         url: getString(record, ['url']),
         platform: getString(record, ['platform']),
         status: getString(record, ['status']),
+        verification: normalizeVerification(record.verification),
         ok: getBoolean(record, ['ok']),
         title: getString(record, ['title']),
         image: getString(record, ['image']),
@@ -167,15 +202,27 @@ export async function collectBatch(
   return { rows, productsIndex: normalizeProductsIndex(data.productsIndex) }
 }
 
-export async function collectFromBrowserTab(form: CollectForm, saveOnly = false): Promise<ProductMutationResponse & { browserStatus?: BrowserDebugStatus }> {
+type BrowserCollectResponse = (
+  | (CollectionAttempt & { savedOnly: false })
+  | { savedOnly: true; diagnostics: UnknownRecord }
+) & { browserStatus?: BrowserDebugStatus }
+
+export async function collectFromBrowserTab(form: CollectForm, saveOnly = false, tabUrl = '', browserTabId = ''): Promise<BrowserCollectResponse> {
   const response = await apiClient.post('/api/collect-from-browser-tab', {
+    tab_url: tabUrl,
     product_url: form.productUrl,
     platform_hint: form.platform === 'manual' ? '' : form.platform,
     save_only: saveOnly,
+    ...(browserTabId ? { browser_tab_id: browserTabId } : {}),
   })
   const data = asRecord(response.data)
-  const result = normalizeProductMutation(data)
-  return { ...result, browserStatus: data.browserStatus ? normalizeBrowserStatus(data.browserStatus) : undefined }
+  const browserStatus = data.browserStatus ? normalizeBrowserStatus(data.browserStatus) : undefined
+  if (saveOnly) {
+    ensureOk(data, '保存 HTML 快照失败')
+    return { savedOnly: true, diagnostics: asRecord(data.diagnostics), browserStatus }
+  }
+  const result = normalizeCollectionAttempt(data)
+  return { ...result, savedOnly: false, browserStatus }
 }
 
 export async function open1688Browser(): Promise<string> {

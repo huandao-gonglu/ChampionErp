@@ -65,6 +65,7 @@ DRAFT_IMAGE_STRATEGY = FieldRule(
 # 这些字段跨多个端点共享相同 JSON 形状。只在调用方实际传入字段时校验，
 # 因此配置类端点仍可按白名单消费自己的扩展字段。
 _COMMON_FIELD_RULES: dict[str, FieldRule] = {
+    "browser_tab_id": STRING,
     "1688_api": OBJECT,
     "appConfig": OBJECT,
     "category_record": OBJECT,
@@ -229,6 +230,7 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
         required_any=(("urls", "url"),)
     ),
     "/api/collect-extension-payload": _EMPTY,
+    "/api/collect-verification": _contract(required=("browser_tab_id", "source_url")),
     "/api/collect-from-browser-tab": _EMPTY,
     "/api/collect-source": _contract(required=("url",)),
     "/api/delete-draft": _contract(

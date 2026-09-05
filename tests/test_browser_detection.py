@@ -31,20 +31,23 @@ def test_fetch_browser_session_defaults_to_unified_debug_port(monkeypatch) -> No
 
     opened: dict[str, object] = {}
 
-    def fake_open_browser_debug_session(url: str, port: int, profile_name: str) -> None:
+    def fake_open_browser_debug_session(url: str, port: int, profile_name: str) -> dict:
         opened["url"] = url
         opened["port"] = port
         opened["profile_name"] = profile_name
+        return {"webSocketDebuggerUrl": "ws://fake"}
 
     monkeypatch.setenv("ERP_1688_CDP_PORT", "9224")
     monkeypatch.setattr(source_collect_browser, "open_browser_debug_session", fake_open_browser_debug_session)
-    monkeypatch.setattr(source_collect_browser, "cdp_target_for_url", lambda port, url: {"webSocketDebuggerUrl": "ws://fake"})
+    calls: list[str] = []
+    monkeypatch.setattr(source_collect_browser.time, "sleep", lambda _: None)
 
     class FakeCdp:
         def __init__(self, _url: str) -> None:
             pass
 
         def call(self, method: str, params: dict | None = None, timeout: int | None = None) -> dict:
+            calls.append(method)
             if method == "Runtime.evaluate":
                 expression = (params or {}).get("expression", "")
                 if expression == "document.readyState":
@@ -77,6 +80,8 @@ def test_fetch_browser_session_defaults_to_unified_debug_port(monkeypatch) -> No
 
     assert opened["port"] == 9222
     assert snapshot
+    assert "Page.navigate" not in calls
+    assert "Page.reload" not in calls
 
 
 def test_open_1688_browser_uses_unified_debug_port(monkeypatch) -> None:

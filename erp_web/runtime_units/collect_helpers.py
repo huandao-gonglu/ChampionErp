@@ -6,6 +6,7 @@ import os
 import re
 import time
 from copy import deepcopy
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -175,14 +176,27 @@ def is_amazon_region_blocked_page(html: str, text: str) -> bool:
 
 def snapshot_field_flags(source: dict[str, Any]) -> dict[str, Any]:
     dimensions = source.get("dimensions") if isinstance(source.get("dimensions"), dict) else {}
+    skus = [row for row in source.get("skus", []) if isinstance(row, dict)] if isinstance(source.get("skus"), list) else []
+    packages = [row.get("package_dimensions") if isinstance(row.get("package_dimensions"), dict) else {} for row in skus]
+
+    def positive(value: Any) -> bool:
+        try:
+            number = Decimal(str(value))
+            return number.is_finite() and number > 0
+        except (InvalidOperation, ValueError):
+            return False
+
+    # 有规格时逐项检查包装资料，不能拿第一项尺寸代表整组已完整。
+    dimensions_found = all(all(positive(package.get(part)) for part in ("length_cm", "width_cm", "height_cm")) for package in (packages or [dimensions]))
+    weight_found = all(positive(package.get("weight_kg")) for package in packages) if packages else positive(source.get("weight_kg"))
     return {
         "images_found_count": len(normalize_list(source.get("images"))),
         "title_found": bool(str(source.get("title") or "").strip()),
         "price_found": bool(str(source.get("price") or "").strip()),
         "bullets_found_count": len(normalize_list(source.get("bullets"))),
-        "sku_found_count": len(normalize_list(source.get("skus"))),
-        "dimensions_found": any(str(dimensions.get(part) or "").strip() for part in ["length_cm", "width_cm", "height_cm"]),
-        "weight_found": bool(str(source.get("weight_kg") or "").strip()),
+        "sku_found_count": len(skus),
+        "dimensions_found": dimensions_found,
+        "weight_found": weight_found,
     }
 
 
@@ -214,6 +228,10 @@ def finalize_collect_diagnostics(diagnostics: dict[str, Any], source: dict[str, 
     diagnostics.update(snapshot_field_flags(source))
     diagnostics.update(collect_field_summary(source))
     diagnostics["next_action"] = collect_next_action(platform, str(diagnostics.get("error_code") or ""))
+    if diagnostics.get("success"):
+        missing_package = [label for field, label in (("dimensions", "包装长宽高"), ("weight", "包装重量")) if field in diagnostics["missing_fields"]]
+        if missing_package:
+            diagnostics["next_action"] = "采集已完成，本次未采到完整的" + "、".join(missing_package) + "。请在商品或草稿的 SKU 页补齐后再核价、发布。"
     diagnostics["checked_at"] = collect_time_iso()
     return diagnostics
 

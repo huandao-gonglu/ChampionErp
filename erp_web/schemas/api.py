@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, TypedDict
 
 from .product import Product
+from .collection import CollectionVerification
 
 
 API_SCHEMA_VERSION = 1
@@ -14,6 +15,8 @@ class ApiResponse(TypedDict, total=False):
     error: str
     error_code: str
     message: str
+    status: str
+    verification: CollectionVerification
     data: Any
     items: list[Any]
     product: dict[str, Any]

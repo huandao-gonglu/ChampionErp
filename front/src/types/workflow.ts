@@ -4,6 +4,8 @@ export {
   PRODUCT_SCHEMA_VERSION,
   type BackendApiResponse,
   type BackendAppStateResponse,
+  type BackendCollectionVerification,
+  type BackendCollectionVerificationStatus,
   type BackendAiCapabilityProfile,
   type BackendAiModelConfig,
   type BackendAiReasoningSettings,
@@ -708,7 +710,7 @@ export interface TransientCollectCredentials {
 }
 
 export interface CollectDiagnostics {
-  status: 'idle' | 'running' | 'success' | 'failed'
+  status: 'idle' | 'running' | 'waiting_verification' | 'success' | 'failed'
   progress: number
   message: string
   downloadedImages: number
@@ -722,7 +724,14 @@ export interface CollectDiagnostics {
   raw: UnknownRecord
 }
 
-export interface CollectBatchRow {
+export interface CollectionVerification {
+  browserTabId: string
+  sourceUrl: string
+  platform: string
+}
+
+export interface CollectBatchResultRow {
+  verification?: CollectionVerification
   url: string
   platform: string
   status: string
@@ -734,6 +743,13 @@ export interface CollectBatchRow {
   nextAction: string
   productId: string
   product?: Product
+}
+
+export type CollectBatchStatus = 'pending' | 'running' | 'waiting_verification' | 'success' | 'failed'
+
+export interface CollectBatchRow extends CollectBatchResultRow {
+  id: string
+  status: CollectBatchStatus
 }
 
 export interface BrowserDebugTab {
