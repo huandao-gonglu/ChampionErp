@@ -51,7 +51,7 @@ def test_state_contract_is_versioned_and_never_returns_plaintext_secrets(
     state = get_json(backend_server, "/api/state")
 
     assert state["schemaVersion"] == 1
-    assert state["product"]["schema_version"] == 3
+    assert state["product"]["schema_version"] == 4
     assert state["storeConfig"]["ozon"]["client_id"] == "state-ozon-client"
     serialized = json.dumps({"saved": saved, "state": state}, ensure_ascii=False)
     for secret in (

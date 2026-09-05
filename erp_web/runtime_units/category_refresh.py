@@ -91,6 +91,7 @@ def normalize_ml_attribute(
     )
     has_restricted_candidates = bool(normalized_values) and not custom_values_allowed
     return {
+        "variation_role": {"CHILD_PK": "variant", "PARENT_PK": "parent"}.get(str(attr.get("hierarchy") or ""), ""),
         "id": str(attr.get("id") or "").strip(),
         "name": str(attr.get("name") or attr.get("id") or "").strip(),
         "required": ml_attr_required(attr),

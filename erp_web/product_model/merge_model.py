@@ -17,11 +17,13 @@ from .common import PLATFORMS, SOURCE_IMAGE_ORIGINS, normalize_list, parse_dimen
 from .defaults import default_collect_diagnostics, default_draft, default_pricing, default_product_model, default_source
 from .draft_image_model import normalize_draft_image_refs
 from .image_pool_model import image_pool_refs, normalize_image_pool
+from .sku_model import normalize_product_skus, normalize_draft_skus, merge_collected_skus
 from .platform_sku import resolve_platform_draft_sku
 from .mercadolibre_publication import normalize_mercadolibre_publication
 
 
 _REMOVED_PRODUCT_FIELDS = {
+    "selected_sku_indices",
     "id",
     "title",
     "source_images",
@@ -542,7 +544,7 @@ def _merge_source(product: dict[str, Any]) -> dict[str, Any]:
     source["material"] = str(incoming.get("material") or ((product.get("materials") or [""])[0]) or "").strip()
     source["package_contents"] = normalize_list(incoming.get("package_contents") or product.get("package_includes"))
     source["variants"] = deepcopy(incoming.get("variants") or [])
-    source["skus"] = deepcopy(incoming.get("skus") or product.get("sku_items") or [])
+    source["skus"] = deepcopy(incoming.get("skus") or [])
     source["brand"] = str(incoming.get("brand") or product.get("brand") or "").strip()
     source["model"] = str(incoming.get("model") or product.get("model") or "").strip()
     source["sku"] = str(incoming.get("sku") or product.get("sku") or "").strip()
@@ -830,6 +832,12 @@ def _merge_platform_draft(product: dict[str, Any], platform: str) -> dict[str, A
             or current.get(alias)
             or ""
         ).strip()
+    current["sku_items"] = normalize_draft_skus(current.get("sku_items"), product.get("sku_items", []), current["draft_id"])
+    grouping = current.get("grouping") if isinstance(current.get("grouping"), dict) else {}
+    mode = str(grouping.get("mode") or "combined")
+    if mode not in {"combined", "separate"}:
+        raise ValueError("不支持的 SKU 分组方式")
+    current["grouping"] = {"mode": mode, "name": str(grouping.get("name") or current.get("title") or "").strip()}
     current["sku"] = resolve_platform_draft_sku(
         current,
         platform,
@@ -935,7 +943,13 @@ def merge_source_partial_result(
         apply_if_present(source, field, updates.get(field))
     for field in ["bullets", "images", "image_pool", "package_contents", "variants", "skus", "collect_logs"]:
         apply_if_present(source, field, updates.get(field))
-    apply_if_present(source, "attributes", updates.get("attributes"))
+    if diagnostics.get("success") and isinstance(updates.get("skus"), list):
+        source["skus"] = deepcopy(updates["skus"])
+    if diagnostics.get("success") and isinstance(updates.get("attributes"), dict):
+        # 成功采集是新的来源快照；人工属性另有归属，不保留来源已删除的噪声。
+        source["attributes"] = deepcopy(updates["attributes"])
+    else:
+        apply_if_present(source, "attributes", updates.get("attributes"))
     apply_if_present(source, "dimensions", updates.get("dimensions"))
     if should_clear_collect_images:
         kept_pool: list[dict[str, Any]] = []
@@ -993,10 +1007,8 @@ def merge_source_partial_result(
     normalized["brand"] = str(source.get("brand") or normalized.get("brand") or "").strip()
     normalized["model"] = str(source.get("model") or normalized.get("model") or "").strip()
     normalized["sku"] = str(source.get("sku") or normalized.get("sku") or "").strip()
-    if isinstance(source.get("attributes"), dict) and source.get("attributes"):
-        normalized["attributes"] = deepcopy(source["attributes"])
-    if isinstance(source.get("skus"), list) and source["skus"]:
-        normalized["sku_items"] = deepcopy(source["skus"])
+    if updates.get("title") or "skus" in updates:
+        normalized["sku_items"] = merge_collected_skus(normalized.get("sku_items"), source)
     normalized["materials"] = normalize_list(normalized.get("materials") or [source.get("material")])
     normalized["selling_points"] = normalize_list(normalized.get("selling_points") or source.get("bullets"))
     normalized["package_includes"] = normalize_list(normalized.get("package_includes") or source.get("package_contents"))
@@ -1021,10 +1033,10 @@ def normalize_product_model(product: dict[str, Any] | None) -> dict[str, Any]:
             incoming_schema_version = int(raw_schema_version)
         except (TypeError, ValueError) as exc:
             raise ValueError("产品 schema_version 必须是整数") from exc
-        if incoming_schema_version < 1 or incoming_schema_version > PRODUCT_SCHEMA_VERSION:
+        if incoming_schema_version != PRODUCT_SCHEMA_VERSION:
             raise ValueError(
                 "产品 schema_version "
-                f"{incoming_schema_version} 不在可迁移范围 1.."
+                f"{incoming_schema_version} 不符合当前版本 "
                 f"{PRODUCT_SCHEMA_VERSION}，拒绝降级写入或读取"
             )
     normalized = default_product_model()
@@ -1036,6 +1048,7 @@ def normalize_product_model(product: dict[str, Any] | None) -> dict[str, Any]:
     normalized["upc"] = str(
         incoming.get("upc") or ""
     ).strip()
+    normalized["sku_items"] = normalize_product_skus(incoming.get("sku_items", []))
     normalized["source"] = _merge_source(incoming)
     draft_input = deepcopy(incoming)
     draft_input["source"] = normalized["source"]

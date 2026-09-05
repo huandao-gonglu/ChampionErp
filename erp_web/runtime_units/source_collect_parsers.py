@@ -9,6 +9,7 @@ from copy import deepcopy
 from html.parser import HTMLParser
 from typing import Any
 
+from erp_web.product_model.sku_model import collected_skus
 from erp_web.context import get_context
 from erp_web.product_model import (
     default_product_model,
@@ -242,18 +243,28 @@ def extract_1688_context_data(html: str) -> dict[str, Any]:
                     break
         skus.append(
             {
-                "id": _clean_attribute_value(item.get("skuId") or item.get("id") or index, 80),
+                "id": _clean_attribute_value(item.get("skuId") or item.get("id"), 80),
                 "name": " / ".join(parts) or _clean_attribute_value(spec_key, 180) or f"SKU {index + 1}",
-                "spec1": parts[0] if parts else "",
-                "spec2": parts[1] if len(parts) > 1 else "",
+                "options": {name: value for name, value in zip(prop_names, parts) if name},
                 "price": _clean_attribute_value(item.get("discountPrice") or item.get("price"), 80),
-                "stock": _clean_attribute_value(item.get("canBookCount") or item.get("stock") or item.get("inventory"), 80),
+                "stock": str(next((item[key] for key in ("canBookCount", "stock", "inventory") if item.get(key) is not None), "")),
                 "image": image,
                 "sale_price": _clean_attribute_value(item.get("price"), 80),
             }
         )
 
     pack_rows = piece_weight_scale.get("pieceWeightScaleInfo") if isinstance(piece_weight_scale.get("pieceWeightScaleInfo"), list) else []
+    pack_by_id = {str(row.get("skuId")): row for row in pack_rows if isinstance(row, dict)}
+    for sku in skus:
+        row = pack_by_id.get(sku["id"], {})
+        try:
+            package_weight = f"{float(row["weight"]) / 1000:g}" if row.get("weight") is not None else ""
+        except (ValueError, TypeError):
+            package_weight = ""
+        sku["package_dimensions"] = {
+            **{f"{key}_cm": str(row.get(key) if row.get(key) is not None else "") for key in ("length", "width", "height")},
+            "weight_kg": package_weight,
+        }
     weight_kg = ""
     dimensions_text = ""
     for item in pack_rows:
@@ -275,7 +286,7 @@ def extract_1688_context_data(html: str) -> dict[str, Any]:
             if number > 0:
                 dims.append(f"{number:g}")
         if len(dims) == 3 and not dimensions_text:
-            dimensions_text = " x ".join(dims)
+            dimensions_text = " x ".join(dims) + " cm"
         if weight_kg and dimensions_text:
             break
 
@@ -294,7 +305,7 @@ def extract_1688_context_data(html: str) -> dict[str, Any]:
         "title": title,
         "attributes": attrs,
         "sku_props": sku_prop_values,
-        "skus": skus[:200],
+        "skus": skus,
         "price": price,
         "currency": "CNY" if price else "",
         "weight_kg": weight_kg,
@@ -310,6 +321,9 @@ def extract_1688_attributes(text: str, html: str) -> dict[str, str]:
     if isinstance(context_attrs, dict):
         attrs.update({str(key): str(value) for key, value in context_attrs.items() if str(key).strip() and str(value).strip()})
     attrs.update(extract_1688_attribute_table(html))
+    if attrs:
+        # 结构化商品属性已就绪，不混入页面底部的价格说明、时间和店铺文案。
+        return attrs
     for line in [line.strip() for line in text.splitlines() if line.strip()]:
         match = re.match(r"^([A-Za-z0-9_\-\u4e00-\u9fff]{1,24})\s*[:：]\s*(.+)$", line)
         if not match:
@@ -437,6 +451,7 @@ def finalize_collected_product(
     if isinstance(product.get("attributes"), dict) and product.get("attributes"):
         source["attributes"] = deepcopy(product["attributes"])
     product["source"] = source
+    product["sku_items"] = collected_skus(source)
     return normalize_product_fields(product)
 
 

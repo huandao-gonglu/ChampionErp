@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import ProductSkuEditor from './ProductSkuEditor.vue'
 import ProductAttributesEditor from './ProductAttributesEditor.vue'
 import type { Product } from '@/types/workflow'
 
@@ -41,7 +42,6 @@ watch(() => props.product.productId, () => {
       </div>
       <div class="flex flex-wrap gap-2">
         <button class="btn btn-primary" :disabled="props.loading || !attributesValid" @click="emit('save')">保存商品</button>
-        <button class="btn btn-outline" :disabled="props.loading || !attributesValid" @click="emit('assignUpc')">分配 UPC</button>
       </div>
     </div>
 
@@ -55,12 +55,10 @@ watch(() => props.product.productId, () => {
       <label class="block"><span class="text-xs font-semibold text-slate-500">宽 cm</span><input v-model="props.product.source.dimensions.widthCm" class="input mt-1" /></label>
       <label class="block"><span class="text-xs font-semibold text-slate-500">高 cm</span><input v-model="props.product.source.dimensions.heightCm" class="input mt-1" /></label>
       <label class="block"><span class="text-xs font-semibold text-slate-500">重量 kg</span><input v-model="props.product.source.weightKg" class="input mt-1" /></label>
-      <label class="block"><span class="text-xs font-semibold text-slate-500">SKU</span><input v-model="props.product.sku" class="input mt-1" /></label>
       <label class="block"><span class="text-xs font-semibold text-slate-500">Model</span><input v-model="props.product.model" class="input mt-1" /></label>
-      <label class="block"><span class="text-xs font-semibold text-slate-500">库存</span><input v-model="props.product.stock" class="input mt-1" /></label>
-      <label class="block"><span class="text-xs font-semibold text-slate-500">UPC</span><input v-model="props.product.upc" class="input mt-1" /></label>
-      <label class="block"><span class="text-xs font-semibold text-slate-500">采购成本</span><input v-model="props.product.cost" class="input mt-1" /></label>
     </div>
+
+    <ProductSkuEditor v-model="props.product.skuItems" :disabled="props.loading" />
 
     <ProductAttributesEditor
       :key="`${props.product.productId}:profile`"

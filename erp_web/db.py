@@ -21,6 +21,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator, Sequence
 
+from erp_web.product_model.sku_model import retain_sku_publications
 from erp_web.marketplace_registry import PLATFORMS, marketplace_site
 from erp_web.product_model.merge_model import (
     normalize_platform_draft,
@@ -833,13 +834,14 @@ class ErpDatabase:
                     f"草稿 {draft_id} 声明商品 {declared_product_id}，不能保存到商品 {product_id}。"
                 )
             existing = conn.execute(
-                "SELECT product_id FROM platform_drafts WHERE draft_id = ?",
+                "SELECT product_id, draft_json FROM platform_drafts WHERE draft_id = ?",
                 (draft_id,),
             ).fetchone()
             if existing and str(existing["product_id"] or "") != product_id:
                 raise ValueError(
                     f"草稿 {draft_id} 已绑定商品 {existing['product_id']}，禁止静默换绑到商品 {product_id}。"
                 )
+            draft = retain_sku_publications(_load_current_draft_json(existing["draft_json"]) if existing else {}, draft)
             site = str(draft.get("site") or draft.get("site_id") or "").strip()
             conn.execute(
                 """
@@ -1039,6 +1041,25 @@ class ErpDatabase:
             conn.commit()
             return cursor.rowcount > 0
 
+    def update_sku_publication(self, draft_id: str, sku_id: str, target_key: str, publication: dict[str, Any]) -> None:
+        """可信发布流程原子更新一行，保留同时编辑的内容和其他 SKU 的发布进度。"""
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            stored = conn.execute("SELECT draft_json FROM platform_drafts WHERE draft_id = ?", (draft_id,)).fetchone()
+            if not stored:
+                raise ValueError("发布草稿不存在")
+            draft = _load_current_draft_json(stored["draft_json"])
+            row = next((row for row in draft.get("sku_items", []) if row.get("sku_id") == sku_id), None)
+            if not row:
+                raise ValueError("发布 SKU 不存在")
+            if publication.get("status") == "dispatching":
+                current = row.get("publications", {}).get(target_key, {})
+                if current.get("status") in {"dispatching", "outcome_unknown", "pending_confirmation"}:
+                    raise ValueError("SKU 已有未确认的发布操作，必须先确认远端结果")
+            row.setdefault("publications", {})[target_key] = publication
+            conn.execute("UPDATE platform_drafts SET draft_json = ?, updated_at = ? WHERE draft_id = ?", (json_dumps(draft), utc_now(), draft_id))
+            conn.commit()
+
     def upsert_draft_model(self, product_id: str, platform: str, draft: dict[str, Any]) -> str:
         now = utc_now()
         product_id = str(product_id or "").strip()
@@ -1058,6 +1079,7 @@ class ErpDatabase:
             {"product_id": product_id},
         )
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             draft["platform"] = platform
             draft["platforms"] = _draft_platforms(draft, platform)
             declared_product_id = str(
@@ -1070,13 +1092,14 @@ class ErpDatabase:
                     f"草稿 {draft_id} 声明商品 {declared_product_id}，不能保存到商品 {product_id}。"
                 )
             existing = conn.execute(
-                "SELECT product_id FROM platform_drafts WHERE draft_id = ?",
+                "SELECT product_id, draft_json FROM platform_drafts WHERE draft_id = ?",
                 (draft_id,),
             ).fetchone()
             if existing and str(existing["product_id"] or "") != product_id:
                 raise ValueError(
                     f"草稿 {draft_id} 已绑定商品 {existing['product_id']}，禁止静默换绑到商品 {product_id}。"
                 )
+            draft = retain_sku_publications(_load_current_draft_json(existing["draft_json"]) if existing else {}, draft)
             site = str(draft.get("site") or draft.get("site_id") or "").strip()
             conn.execute(
                 """

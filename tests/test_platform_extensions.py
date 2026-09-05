@@ -269,9 +269,9 @@ def test_marketplace_capabilities_only_enable_real_integrations() -> None:
     # 注册表之外的平台保持 fail-closed。
     assert not platform_has_capability("wildberries", CAP_PUBLISH)
 
-    assert isinstance(publishing_adapter_for("mercadolibre"), MercadoLibrePublishingAdapter)
-    assert isinstance(publishing_adapter_for("ozon"), OzonPublishingAdapter)
-    assert isinstance(publishing_adapter_for("yandex"), YandexPublishingAdapter)
+    assert isinstance(publishing_adapter_for("mercadolibre").item_adapter, MercadoLibrePublishingAdapter)
+    assert isinstance(publishing_adapter_for("ozon").item_adapter, OzonPublishingAdapter)
+    assert isinstance(publishing_adapter_for("yandex").item_adapter, YandexPublishingAdapter)
     assert unsupported_publish_response("wildberries") == {
         "ok": False,
         "supported": False,

@@ -1,0 +1,609 @@
+{
+  "dataJson": {
+    "tempModel": {
+      "offerTitle": "木质宠物屋"
+    },
+    "skuModel": {
+      "skuProps": [
+        {
+          "fid": 3216,
+          "prop": "颜色",
+          "value": [
+            {
+              "imageUrl": "https://cbu01.alicdn.com/img/ibank/O1CN01lZjw7o1eB6Pncx9Vp_!!2730773832-0-cib.jpg",
+              "name": "原木色"
+            },
+            {
+              "imageUrl": "https://cbu01.alicdn.com/img/ibank/O1CN017Oc9A31eB6Pm4z5rg_!!2730773832-0-cib.jpg",
+              "name": "原木+门"
+            },
+            {
+              "imageUrl": "https://cbu01.alicdn.com/img/ibank/O1CN01xWBpIz1eB6PgvABph_!!2730773832-0-cib.jpg",
+              "name": "红松色"
+            },
+            {
+              "imageUrl": "https://cbu01.alicdn.com/img/ibank/O1CN016VEt481eB6PgrVbem_!!2730773832-0-cib.jpg",
+              "name": "红松+门"
+            }
+          ]
+        },
+        {
+          "fid": 1234,
+          "prop": "规格",
+          "value": [
+            {
+              "name": "S"
+            },
+            {
+              "name": "M"
+            },
+            {
+              "name": "L"
+            },
+            {
+              "name": "XL"
+            }
+          ]
+        }
+      ],
+      "skuInfoMap": {
+        "原木+门&gt;S": {
+          "specId": "e12863cd28ba8fed3ec571d79c0ea1ae",
+          "saleCount": 0,
+          "discountPrice": "47.00",
+          "canBookCount": 86,
+          "specAttrs": "原木+门&gt;S",
+          "price": "47.00",
+          "priceAmount": 1,
+          "skuId": 5903422359797,
+          "isPromotionSku": false
+        },
+        "原木+门&gt;L": {
+          "specId": "3bf752338f2bdc79f37b87a76c465b94",
+          "saleCount": 0,
+          "discountPrice": "91.00",
+          "canBookCount": 9233,
+          "specAttrs": "原木+门&gt;L",
+          "price": "91.00",
+          "priceAmount": 1,
+          "skuId": 3140985304087,
+          "isPromotionSku": false
+        },
+        "原木+门&gt;M": {
+          "specId": "6a18ddeee2836581b0b4d778de6560cc",
+          "saleCount": 0,
+          "discountPrice": "59.00",
+          "canBookCount": 9427,
+          "specAttrs": "原木+门&gt;M",
+          "price": "59.00",
+          "priceAmount": 1,
+          "skuId": 3140985304073,
+          "isPromotionSku": false
+        },
+        "原木色&gt;XL": {
+          "specId": "2663ff8707b613d72f0d5393062d7a80",
+          "saleCount": 0,
+          "discountPrice": "138.00",
+          "canBookCount": 9823,
+          "specAttrs": "原木色&gt;XL",
+          "price": "138.00",
+          "priceAmount": 1,
+          "skuId": 3140985304100,
+          "isPromotionSku": false
+        },
+        "原木+门&gt;XL": {
+          "specId": "6d4a4cef5369220a2b46e8daf17a7ea4",
+          "saleCount": 0,
+          "discountPrice": "148.00",
+          "canBookCount": 9731,
+          "specAttrs": "原木+门&gt;XL",
+          "price": "148.00",
+          "priceAmount": 1,
+          "skuId": 3140985304101,
+          "isPromotionSku": false
+        },
+        "红松+门&gt;XL": {
+          "specId": "96a9c90592fd0ebc4d96bda15c1e3287",
+          "saleCount": 0,
+          "discountPrice": "148.00",
+          "canBookCount": 9522,
+          "specAttrs": "红松+门&gt;XL",
+          "price": "148.00",
+          "priceAmount": 1,
+          "skuId": 3140985304103,
+          "isPromotionSku": false
+        },
+        "红松+门&gt;M": {
+          "specId": "0795a58877f73d1f905fe9f7f8ea9669",
+          "saleCount": 0,
+          "discountPrice": "59.00",
+          "canBookCount": 9385,
+          "specAttrs": "红松+门&gt;M",
+          "price": "59.00",
+          "priceAmount": 1,
+          "skuId": 3140985304075,
+          "isPromotionSku": false
+        },
+        "原木色&gt;S": {
+          "specId": "0fecaad4d41527f7c5fa2126cb4e345d",
+          "saleCount": 0,
+          "discountPrice": "37.00",
+          "canBookCount": 47,
+          "specAttrs": "原木色&gt;S",
+          "price": "37.00",
+          "priceAmount": 1,
+          "skuId": 5903422359800,
+          "isPromotionSku": false
+        },
+        "红松色&gt;M": {
+          "specId": "bead3d75603414150434cba3687ae829",
+          "saleCount": 0,
+          "discountPrice": "49.00",
+          "canBookCount": 8946,
+          "specAttrs": "红松色&gt;M",
+          "price": "49.00",
+          "priceAmount": 1,
+          "skuId": 3140985304074,
+          "isPromotionSku": false
+        },
+        "红松+门&gt;S": {
+          "specId": "9f1400d9651d132fbecbc1f6f6f87e0b",
+          "saleCount": 0,
+          "discountPrice": "47.00",
+          "canBookCount": 88,
+          "specAttrs": "红松+门&gt;S",
+          "price": "47.00",
+          "priceAmount": 1,
+          "skuId": 5903422359798,
+          "isPromotionSku": false
+        },
+        "原木色&gt;M": {
+          "specId": "4cc2068894e5529681837c6f72333982",
+          "saleCount": 0,
+          "discountPrice": "49.00",
+          "canBookCount": 9165,
+          "specAttrs": "原木色&gt;M",
+          "price": "49.00",
+          "priceAmount": 1,
+          "skuId": 3140985304072,
+          "isPromotionSku": false
+        },
+        "红松色&gt;L": {
+          "specId": "c8a1cd6596b387a5d8e11f63d9733c59",
+          "saleCount": 0,
+          "discountPrice": "86.00",
+          "canBookCount": 8994,
+          "specAttrs": "红松色&gt;L",
+          "price": "86.00",
+          "priceAmount": 1,
+          "skuId": 3140985304088,
+          "isPromotionSku": false
+        },
+        "原木色&gt;L": {
+          "specId": "678c7d6ed830129ee373259815e15b20",
+          "saleCount": 0,
+          "discountPrice": "86.00",
+          "canBookCount": 9056,
+          "specAttrs": "原木色&gt;L",
+          "price": "86.00",
+          "priceAmount": 1,
+          "skuId": 3140985304086,
+          "isPromotionSku": false
+        },
+        "红松色&gt;S": {
+          "specId": "73d58add1a3fb84664d8945be15a121b",
+          "saleCount": 0,
+          "discountPrice": "37.00",
+          "canBookCount": 33,
+          "specAttrs": "红松色&gt;S",
+          "price": "37.00",
+          "priceAmount": 1,
+          "skuId": 5903422359801,
+          "isPromotionSku": false
+        },
+        "红松色&gt;XL": {
+          "specId": "741e13036a955a7591d7f76bf7b02b1e",
+          "saleCount": 0,
+          "discountPrice": "138.00",
+          "canBookCount": 9543,
+          "specAttrs": "红松色&gt;XL",
+          "price": "138.00",
+          "priceAmount": 1,
+          "skuId": 3140985304102,
+          "isPromotionSku": false
+        }
+      }
+    }
+  },
+  "pieceWeightScale": {
+    "pieceWeightScaleInfo": [
+      {
+        "sku2": "S",
+        "volume": 20240.0,
+        "sku1": "原木色",
+        "length": 46.0,
+        "width": 44.0,
+        "weight": 4500,
+        "skuId": 5903422359800,
+        "height": 10.0
+      },
+      {
+        "sku2": "M",
+        "volume": 26220.0,
+        "sku1": "原木色",
+        "length": 57.0,
+        "width": 46.0,
+        "weight": 8000,
+        "skuId": 3140985304072,
+        "height": 10.0
+      },
+      {
+        "sku2": "L",
+        "volume": 32760.0,
+        "sku1": "原木色",
+        "length": 63.0,
+        "width": 52.0,
+        "weight": 9500,
+        "skuId": 3140985304086,
+        "height": 10.0
+      },
+      {
+        "sku2": "XL",
+        "volume": 51850.0,
+        "sku1": "原木色",
+        "length": 85.0,
+        "width": 61.0,
+        "weight": 16500,
+        "skuId": 3140985304100,
+        "height": 10.0
+      },
+      {
+        "sku2": "S",
+        "volume": 20240.0,
+        "sku1": "原木+门",
+        "length": 46.0,
+        "width": 44.0,
+        "weight": 4500,
+        "skuId": 5903422359797,
+        "height": 10.0
+      },
+      {
+        "sku2": "M",
+        "volume": 26220.0,
+        "sku1": "原木+门",
+        "length": 57.0,
+        "width": 46.0,
+        "weight": 8000,
+        "skuId": 3140985304073,
+        "height": 10.0
+      },
+      {
+        "sku2": "L",
+        "volume": 32760.0,
+        "sku1": "原木+门",
+        "length": 63.0,
+        "width": 52.0,
+        "weight": 9500,
+        "skuId": 3140985304087,
+        "height": 10.0
+      },
+      {
+        "sku2": "XL",
+        "volume": 51850.0,
+        "sku1": "原木+门",
+        "length": 85.0,
+        "width": 61.0,
+        "weight": 16500,
+        "skuId": 3140985304101,
+        "height": 10.0
+      },
+      {
+        "sku2": "S",
+        "volume": 20240.0,
+        "sku1": "红松色",
+        "length": 46.0,
+        "width": 44.0,
+        "weight": 4500,
+        "skuId": 5903422359801,
+        "height": 10.0
+      },
+      {
+        "sku2": "M",
+        "volume": 26220.0,
+        "sku1": "红松色",
+        "length": 57.0,
+        "width": 46.0,
+        "weight": 8000,
+        "skuId": 3140985304074,
+        "height": 10.0
+      },
+      {
+        "sku2": "L",
+        "volume": 32760.0,
+        "sku1": "红松色",
+        "length": 63.0,
+        "width": 52.0,
+        "weight": 9500,
+        "skuId": 3140985304088,
+        "height": 10.0
+      },
+      {
+        "sku2": "XL",
+        "volume": 51850.0,
+        "sku1": "红松色",
+        "length": 85.0,
+        "width": 61.0,
+        "weight": 16500,
+        "skuId": 3140985304102,
+        "height": 10.0
+      },
+      {
+        "sku2": "S",
+        "volume": 20240.0,
+        "sku1": "红松+门",
+        "length": 46.0,
+        "width": 44.0,
+        "weight": 4500,
+        "skuId": 5903422359798,
+        "height": 10.0
+      },
+      {
+        "sku2": "M",
+        "volume": 26220.0,
+        "sku1": "红松+门",
+        "length": 57.0,
+        "width": 46.0,
+        "weight": 8000,
+        "skuId": 3140985304075,
+        "height": 10.0
+      },
+      {
+        "sku2": "XL",
+        "volume": 51850.0,
+        "sku1": "红松+门",
+        "length": 85.0,
+        "width": 61.0,
+        "weight": 16500,
+        "skuId": 3140985304103,
+        "height": 10.0
+      }
+    ],
+    "columnList": [
+      {
+        "fid": 3216,
+        "precision": 0,
+        "name": "sku1",
+        "label": "颜色"
+      },
+      {
+        "fid": 1234,
+        "precision": 0,
+        "name": "sku2",
+        "label": "规格"
+      },
+      {
+        "precision": 2,
+        "name": "length",
+        "label": "长(cm)"
+      },
+      {
+        "precision": 2,
+        "name": "width",
+        "label": "宽(cm)"
+      },
+      {
+        "precision": 2,
+        "name": "height",
+        "label": "高(cm)"
+      },
+      {
+        "precision": 3,
+        "name": "volume",
+        "label": "体积(cm³)"
+      },
+      {
+        "precision": 0,
+        "name": "weight",
+        "label": "重量(g)"
+      }
+    ]
+  },
+  "CpvEnhance": {
+    "decisionCpv": [
+      {
+        "name": "材质",
+        "values": [
+          "木质"
+        ]
+      },
+      {
+        "name": "产品类别",
+        "values": [
+          "宠物窝"
+        ]
+      }
+    ],
+    "normalCpv": [
+      {
+        "name": "品牌",
+        "values": [
+          "悦尚"
+        ]
+      },
+      {
+        "name": "产地",
+        "values": [
+          "河北"
+        ]
+      },
+      {
+        "name": "是否进口",
+        "values": [
+          "否"
+        ]
+      },
+      {
+        "name": "货号",
+        "values": [
+          "011"
+        ]
+      },
+      {
+        "name": "是否专利货源",
+        "values": [
+          "否"
+        ]
+      },
+      {
+        "name": "颜色",
+        "values": [
+          "原木色",
+          "原木+门",
+          "红松色",
+          "红松+门"
+        ]
+      },
+      {
+        "name": "规格",
+        "values": [
+          "S",
+          "M",
+          "L",
+          "XL"
+        ]
+      },
+      {
+        "name": "主要下游平台",
+        "values": [
+          "ebay",
+          "亚马逊",
+          "wish",
+          "速卖通",
+          "独立站",
+          "LAZADA"
+        ]
+      },
+      {
+        "name": "主要销售地区",
+        "values": [
+          "非洲",
+          "欧洲",
+          "南美",
+          "东南亚",
+          "北美",
+          "东北亚",
+          "中东"
+        ]
+      },
+      {
+        "name": "有可授权的自有品牌",
+        "values": [
+          "否"
+        ]
+      },
+      {
+        "name": "是否跨境出口专供货源",
+        "values": [
+          "是"
+        ]
+      },
+      {
+        "name": "送礼用途",
+        "values": [
+          "广告礼品",
+          "促销赠品",
+          "福利礼品",
+          "公关礼品",
+          "其他"
+        ]
+      },
+      {
+        "name": "是否属于礼品",
+        "values": [
+          "是，商务礼品"
+        ]
+      },
+      {
+        "name": "是否IP授权",
+        "values": [
+          "否"
+        ]
+      },
+      {
+        "name": "清洁方式",
+        "values": [
+          "擦拭"
+        ]
+      },
+      {
+        "name": "安装方式",
+        "values": [
+          "简易安装"
+        ]
+      },
+      {
+        "name": "封闭形式",
+        "values": [
+          "半封闭"
+        ]
+      },
+      {
+        "name": "便携性",
+        "values": [
+          "方便"
+        ]
+      },
+      {
+        "name": "产房功能",
+        "values": [
+          "有"
+        ]
+      },
+      {
+        "name": "适用季节",
+        "values": [
+          "四季通用"
+        ]
+      },
+      {
+        "name": "图案",
+        "values": [
+          "纯色"
+        ]
+      },
+      {
+        "name": "功能",
+        "values": [
+          "透气",
+          "保暖"
+        ]
+      },
+      {
+        "name": "使用场景",
+        "values": [
+          "室内"
+        ]
+      },
+      {
+        "name": "适用品种",
+        "values": [
+          "迷你犬",
+          "小型犬",
+          "中型犬"
+        ]
+      },
+      {
+        "name": "厕所托盘",
+        "values": [
+          "不带厕所托盘"
+        ]
+      },
+      {
+        "name": "填充物",
+        "values": [
+          "无"
+        ]
+      }
+    ]
+  }
+}

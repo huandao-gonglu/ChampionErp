@@ -35,6 +35,7 @@ from erp_web.schemas.publish_capabilities import (
     ProductPublishRequest,
     ProductPublishRequestResult,
     ProductPublishSummary,
+    ProductPublishSkuSummary,
     ProductPublishValidateRequest,
     ProductPublishValidationResult,
     PublishRequestConfirmation,
@@ -171,7 +172,20 @@ def _summary(
             for target in normalize_mercadolibre_sites_to_sell(source_targets)
             if target.get("site_id") and target.get("logistic_type")
         )
+    sku_summaries = []
+    key = f"{platform}:{context.get('site', '')}".lower()
+    for row in draft.get("sku_items", []):
+        if not row.get("selected"):
+            continue
+        quote = row.get("pricing", {}).get("targets", {}).get(key, {})
+        price = quote.get("applied_price", {})
+        sku_summaries.append(ProductPublishSkuSummary(
+            sku_id=row["sku_id"], sku=row["sku"], stock=_text(row.get("stock")),
+            price=_text(price.get("amount")), currency=_text(price.get("currency")),
+            destinations=tuple(ProductPublishDestination(**target) for target in quote.get("sites_to_sell", [])),
+        ))
     return ProductPublishSummary(
+        sku_items=tuple(sku_summaries), grouping_mode=_text(draft.get("grouping", {}).get("mode")),
         product_id=_text(prepared_product.get("product_id")),
         draft_id=_text(context.get("draft", {}).get("draft_id")),
         platform=platform,

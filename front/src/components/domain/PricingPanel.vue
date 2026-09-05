@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 import type {
   DraftIndexItem,
+  DraftSku,
+  UnknownRecord,
   DraftProductContext,
   Marketplace,
   MarketplaceOption,
@@ -22,7 +24,12 @@ const props = defineProps<{
   platformOptions: MarketplaceOption[]
   loading: boolean
   selectionLocked?: boolean
+  skuItems: DraftSku[]
 }>()
+
+watch(() => JSON.stringify(props.input), () => {
+  if (!props.loading) for (const row of props.skuItems) row.pricing.applied = false
+}, { flush: 'sync' })
 
 const emit = defineEmits<{
   calculate: []
@@ -76,15 +83,8 @@ function resultErrors(target: PricingTargetInput) {
     .join('；')
 }
 
-const billableWeightKg = computed(() => {
-  const actual = numeric(props.input.weightKg)
-  const volume = numeric(props.input.lengthCm) * numeric(props.input.widthCm) * numeric(props.input.heightCm) / 6000
-  return Math.max(actual, volume)
-})
-
 const commonErrors = computed(() => {
   const errors: string[] = []
-  if (numeric(props.input.purchaseCostCny) <= 0) errors.push('采购成本必须大于 0')
   for (const [label, value] of [
     ['国内物流', props.input.domesticFreightCny],
     ['包装耗材', props.input.packagingCostCny],
@@ -119,7 +119,6 @@ function targetInputErrors(target: PricingTargetInput) {
   if (target.pricingMode === 'manual' && numeric(target.manualPrice?.amount) <= 0) errors.push('手动售价必须大于 0')
   if (target.shippingQuoteMode === 'auto') {
     if (target.platform !== 'mercadolibre') errors.push('当前平台没有自动物流报价，请改为手动报价')
-    if (billableWeightKg.value <= 0) errors.push('自动估算物流费需要重量或尺寸')
   } else if (numeric(target.shippingAmount) <= 0) {
     errors.push('物流报价金额必须大于 0')
   }
@@ -237,8 +236,8 @@ function exchangeRateText() {
         <p class="mt-2 truncate text-sm font-semibold text-accent-950 dark:text-white" :title="props.productContext.sourceTitle || props.productContext.sourceProductId">{{ props.productContext.sourceTitle || props.productContext.sourceProductId || '-' }}</p>
       </div>
       <div class="rounded-xl bg-accent-50 p-3 dark:bg-dark-800">
-        <p class="field-label">草稿当前主售价</p>
-        <p class="mt-2 text-sm font-semibold text-accent-950 dark:text-white">各目标市场独立保存</p>
+        <p class="field-label">SKU 售价</p>
+        <p class="mt-2 text-sm font-semibold text-accent-950 dark:text-white">每个 SKU × 目标市场独立保存</p>
       </div>
       <div class="rounded-xl bg-accent-50 p-3 dark:bg-dark-800">
         <p class="field-label">核价状态</p>
@@ -256,29 +255,29 @@ function exchangeRateText() {
       {{ commonErrors.join('；') }}
     </div>
 
+    <div class="mt-5 overflow-x-auto">
+      <table class="w-full text-left text-sm">
+        <thead class="text-xs text-slate-500"><tr><th class="p-2">SKU</th><th>目标市场</th><th>售价</th><th>利润 CNY</th><th>核价状态</th></tr></thead><tbody>
+          <template v-for="row in skuItems.filter(row => row.selected)" :key="row.sku_id">
+            <tr v-for="(quote, key) in (row.pricing.targets as Record<string, UnknownRecord> || {})" :key="String(key)" class="border-t border-accent-200 dark:border-dark-700"><td class="p-2">{{ productContext.skuItems.find(sku => sku.id === row.sku_id)?.name || row.sku }}</td><td>{{ key }}</td><td>{{ (quote.applied_price as UnknownRecord)?.amount }} {{ (quote.applied_price as UnknownRecord)?.currency }}</td><td :class="quote.is_loss ? 'text-red-500' : ''">{{ quote.profit_cny }}</td><td>{{ (quote.errors as unknown[])?.length ? '数据待处理' : row.pricing.applied ? '已应用' : '预览' }}</td></tr>
+            <tr v-if="!Object.keys(row.pricing.targets as UnknownRecord || {}).length" class="border-t border-accent-200 dark:border-dark-700"><td class="p-2">{{ productContext.skuItems.find(sku => sku.id === row.sku_id)?.name || row.sku }}</td><td colspan="4">尚未核价</td></tr>
+          </template>
+        </tbody>
+      </table>
+      <p class="muted mt-2">下方市场卡片显示首个已选 SKU 的计算示例；上表列出全部规格的独立结果。修改参数后需重新应用售价。</p>
+    </div>
+
     <div class="mt-5 grid gap-5 xl:grid-cols-[minmax(0,2fr)_minmax(22rem,1fr)]">
       <div class="space-y-5">
         <article class="rounded-xl border border-accent-200 p-4 dark:border-dark-700">
           <div>
-            <h3 class="font-black text-accent-950 dark:text-white">1 · 商品成本</h3>
-            <p class="mt-1 text-xs text-accent-500 dark:text-accent-400">这里只填写实际承担的固定成本；平台按比例收取的费用放在目标市场中。</p>
+            <h3 class="font-black text-accent-950 dark:text-white">1 · 共用费用模板</h3>
+            <p class="mt-1 text-xs text-accent-500 dark:text-accent-400">以下费用按每件商品计；采购成本和包装资料取各 SKU 的实际值。单个 SKU 可在 SKU 页覆盖费用。</p>
           </div>
           <div class="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <label><span class="field-label">采购成本（CNY）</span><input v-model.number="props.input.purchaseCostCny" class="input mt-1" type="number" min="0" step="0.01" /></label>
             <label><span class="field-label">国内物流（CNY）</span><input v-model.number="props.input.domesticFreightCny" class="input mt-1" type="number" min="0" step="0.01" /></label>
             <label><span class="field-label">包装耗材（CNY）</span><input v-model.number="props.input.packagingCostCny" class="input mt-1" type="number" min="0" step="0.01" /></label>
             <label><span class="field-label">其他固定成本（CNY）</span><input v-model.number="props.input.otherCostCny" class="input mt-1" type="number" min="0" step="0.01" /></label>
-          </div>
-          <div class="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-            <label><span class="field-label">实重（kg）</span><input v-model.number="props.input.weightKg" class="input mt-1" type="number" min="0" step="0.001" /></label>
-            <label><span class="field-label">长（cm）</span><input v-model.number="props.input.lengthCm" class="input mt-1" type="number" min="0" step="0.1" /></label>
-            <label><span class="field-label">宽（cm）</span><input v-model.number="props.input.widthCm" class="input mt-1" type="number" min="0" step="0.1" /></label>
-            <label><span class="field-label">高（cm）</span><input v-model.number="props.input.heightCm" class="input mt-1" type="number" min="0" step="0.1" /></label>
-            <div class="rounded-lg bg-accent-50 p-3 dark:bg-dark-800">
-              <p class="field-label">计费重</p>
-              <p class="mt-2 text-sm font-bold text-accent-950 dark:text-white">{{ billableWeightKg.toFixed(3) }} kg</p>
-              <p class="mt-1 text-[11px] text-accent-500 dark:text-accent-400">实重与体积重取较大值</p>
-            </div>
           </div>
         </article>
 

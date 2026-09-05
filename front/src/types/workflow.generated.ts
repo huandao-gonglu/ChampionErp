@@ -4,7 +4,7 @@
  */
 
 export const API_SCHEMA_VERSION = 1 as const
-export const PRODUCT_SCHEMA_VERSION = 3 as const
+export const PRODUCT_SCHEMA_VERSION = 4 as const
 
 export interface BackendApiResponse {
   schemaVersion?: number
@@ -258,6 +258,8 @@ export interface BackendDraftTargetSite {
 }
 
 export interface BackendPlatformDraft {
+  sku_items?: Array<Record<string, unknown>>
+  grouping?: Record<string, unknown>
   draft_id?: string
   product_id?: string
   source_product_id?: string
@@ -331,7 +333,6 @@ export interface BackendProduct {
   listing_overrides?: Record<string, unknown>
   copy_results?: Record<string, unknown>
   sku_items?: Array<Record<string, unknown>>
-  selected_sku_indices?: Array<number>
   pricing_defaults?: Record<string, unknown>
   publish_preview?: Record<string, unknown>
   collect_status?: string

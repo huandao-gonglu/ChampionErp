@@ -225,6 +225,9 @@ def apply_publish_bus_result_to_draft(
                 "retryable": bool(error_details["retryable"]),
             }
         )
+    sku_result = item.get("result") if isinstance(item.get("result"), dict) else {}
+    if "grouping" in sku_result:
+        last_publish_task["grouping"] = sku_result["grouping"]
     updates["last_publish_task"] = last_publish_task
     publication = mercadolibre_publication_from_result(item.get("result"))
     if platform == "mercadolibre" and publication:

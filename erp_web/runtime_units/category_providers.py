@@ -652,6 +652,7 @@ def _yandex_parameter_definition(parameter: dict[str, Any]) -> dict[str, Any]:
         if str(item.get("name") or "").strip() and str(item.get("id") or "").strip()
     }
     return {
+        "variation_role": "variant" if parameter.get("distinctive") else "",
         "id": parameter_id,
         "name": str(parameter.get("name") or parameter_id).strip(),
         "required": bool(parameter.get("required")),

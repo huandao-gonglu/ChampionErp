@@ -92,7 +92,7 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
       <div class="min-w-0">
         <p class="text-xs font-semibold uppercase text-primary-600 dark:text-primary-300">草稿箱</p>
         <h2 class="mt-2 card-title">草稿箱</h2>
-        <p class="muted mt-1">商品从母库复制到这里后独立编辑，来源商品只作为关联和参考。</p>
+        <p class="muted mt-1">各草稿独立编辑内容、选择发布 SKU 和核价；未覆盖的规格资料沿用商品。</p>
       </div>
       <div class="grid w-full gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] lg:w-auto">
         <select v-model="platformFilter" class="input sm:w-48">

@@ -2,6 +2,8 @@ import { saveDraft as saveDraftApi } from '@/api/workflow/catalog'
 import { calculatePrice as calculatePriceApi } from '@/api/workflow/publishing'
 import type {
   DraftDetail,
+  DraftSku,
+  PricingInput,
   MarketplaceSiteToSell,
   MarketplaceTargetSite,
   PricingDestinationResult,
@@ -37,14 +39,13 @@ type WorkflowPricingActionsPort = Pick<
   | 'currentStage'
   | 'applyMutationIndexes'
   | 'syncPricingInputFromProduct'
-  | 'syncDraftPackageDimensionsFromPricingInput'
 >
 
 export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort) {
   const {
     product, currentDraft, currentDraftProductContext, pricingInput, pricingResult, storeConfig,
     platformOptions, loading, addLog, setError, currentStage, applyMutationIndexes,
-    syncPricingInputFromProduct, syncDraftPackageDimensionsFromPricingInput,
+    syncPricingInputFromProduct,
   } = runtime
 
   function pricingResultRecord(result: PricingTargetResult): UnknownRecord {
@@ -97,22 +98,22 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
     }
   }
 
-  function buildDraftPricing(result: PricingResult): UnknownRecord {
+  function buildDraftPricing(result: PricingResult, input: PricingInput): UnknownRecord {
     const targets = Object.fromEntries(result.results.map((item) => [item.targetKey, pricingResultRecord(item)]))
     return {
       common: {
-        purchase_cost_cny: pricingInput.value.purchaseCostCny,
-        domestic_freight_cny: pricingInput.value.domesticFreightCny,
-        packaging_cost_cny: pricingInput.value.packagingCostCny,
-        other_cost_cny: pricingInput.value.otherCostCny,
-        weight_kg: pricingInput.value.weightKg,
-        length_cm: pricingInput.value.lengthCm,
-        width_cm: pricingInput.value.widthCm,
-        height_cm: pricingInput.value.heightCm,
-        usd_cny_rate: result.usdCnyRate || pricingInput.value.usdCnyRate,
-        mxn_usd_rate: result.mxnUsdRate || pricingInput.value.mxnUsdRate,
-        rub_cny_rate: result.rubCnyRate || pricingInput.value.rubCnyRate,
-        exchange_rate_mode: result.exchangeRateMode || pricingInput.value.exchangeRateMode,
+        purchase_cost_cny: input.purchaseCostCny,
+        domestic_freight_cny: input.domesticFreightCny,
+        packaging_cost_cny: input.packagingCostCny,
+        other_cost_cny: input.otherCostCny,
+        weight_kg: input.weightKg,
+        length_cm: input.lengthCm,
+        width_cm: input.widthCm,
+        height_cm: input.heightCm,
+        usd_cny_rate: result.usdCnyRate || input.usdCnyRate,
+        mxn_usd_rate: result.mxnUsdRate || input.mxnUsdRate,
+        rub_cny_rate: result.rubCnyRate || input.rubCnyRate,
+        exchange_rate_mode: result.exchangeRateMode || input.exchangeRateMode,
       },
       targets,
       exchange_rates: {
@@ -144,6 +145,10 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
         setError('CBT 草稿至少需要选择一个当前授权的销售国家/物流后才能核价。')
         return false
       }
+    }
+    if (!currentDraft.value.skuItems.some(row => row.selected)) {
+      setError('请先在 SKU 页选择需要发布的规格。')
+      return false
     }
     if (!pricingInput.value.targets.length) {
       setError('当前草稿没有可核价的目标市场，请先在草稿箱选择市场。')
@@ -248,19 +253,107 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
     })
   }
 
-  async function calculatePrice() {
+  function inputForSku(row: DraftSku): PricingInput {
+    const sku = currentDraftProductContext.value.skuItems.find(sku => sku.id === row.sku_id)
+    if (!sku || !sku.active) throw new Error('已选择的 SKU 已停用或不存在，请重新选品。')
+    const dims = { ...sku.package_dimensions, ...(row.overrides.package_dimensions as UnknownRecord || {}) }
+    const cost = row.overrides.cost_cny ?? sku.cost_cny
+    if (String(cost).trim() === '' || ['length_cm', 'width_cm', 'height_cm', 'weight_kg'].some(key => String(dims[key] ?? '').trim() === '')) {
+      throw new Error(`${sku.name || row.sku_id}：请先补齐采购成本和包装长、宽、高、重量。`)
+    }
+    const overrides = row.pricing_overrides || {}
+    const common = (overrides.common || {}) as UnknownRecord
+    const targets = (overrides.targets || {}) as Record<string, UnknownRecord>
+    return {
+      ...JSON.parse(JSON.stringify(pricingInput.value)),
+      purchaseCostCny: Number(cost),
+      weightKg: Number(dims.weight_kg), lengthCm: Number(dims.length_cm),
+      widthCm: Number(dims.width_cm), heightCm: Number(dims.height_cm),
+      domesticFreightCny: Number(common.domestic_freight_cny ?? pricingInput.value.domesticFreightCny),
+      packagingCostCny: Number(common.packaging_cost_cny ?? pricingInput.value.packagingCostCny),
+      otherCostCny: Number(common.other_cost_cny ?? pricingInput.value.otherCostCny),
+      targets: pricingInput.value.targets.map(target => {
+        const own = targets[target.targetKey.toLowerCase()] || {}
+        return { ...target,
+          ...(own.shipping_amount !== undefined ? { shippingAmount: Number(own.shipping_amount), shippingQuoteMode: 'manual' as const } : {}),
+          ...(own.manual_price ? { manualPrice: own.manual_price as PricingInput['targets'][number]['manualPrice'], pricingMode: 'manual' as const } : {}),
+        }
+      }),
+    }
+  }
+
+  async function calculateSkus(apply: boolean) {
     if (!validatePricingContext()) return
     loading.value = true
     setError('')
     try {
-      const result = await calculatePriceApi(pricingInput.value)
-      acceptPreview(result)
-      const errors = pricingErrors(result)
+      const rows = currentDraft.value.skuItems.filter(row => row.selected)
+      const completed: { row: DraftSku; input: PricingInput; result: PricingResult }[] = []
+      // 每项独立取物理资料；共享参数只作默认值，不能将首个 SKU 的报价复制给其他规格。
+      for (const row of rows) {
+        const input = inputForSku(row)
+        const result = await calculatePriceApi(input)
+        completed.push({ row, input, result })
+      }
+      if (completed[0]) acceptPreview(completed[0].result)
+      const errors = completed.flatMap(({ row, result }) => [
+        ...pricingErrors(result).map(error => `${row.sku || row.sku_id}：${error}`),
+        ...(result.results.some(item => item.isLoss) ? [`${row.sku || row.sku_id}：售价会亏损`] : []),
+        ...(apply && (!result.results.length || result.results.some(item => Number(item.appliedPrice.amount) <= 0)) ? [`${row.sku || row.sku_id}：缺少有效售价`] : []),
+      ])
+      const canApply = apply && !errors.length
+      const staged: { row: DraftSku; pricing: UnknownRecord }[] = []
+      for (const { row, input, result } of completed) {
+        const pricing = { ...buildDraftPricing(result, input), applied: canApply } as UnknownRecord
+        for (const target of currentDraft.value.targetSites) {
+          const calculated = result.results.find(item => item.targetKey.toLowerCase() === `${target.platform}:${target.site}`.toLowerCase())
+          if (calculated) {
+            const savedTargets = pricing.targets as Record<string, UnknownRecord>
+            savedTargets[calculated.targetKey].sites_to_sell = sitesToSellWithPricingResult(target, calculated).map(destination => ({
+              site_id: destination.siteId, logistic_type: destination.logisticType,
+              ...(destination.price !== undefined ? { price: destination.price } : {}),
+              ...(destination.netProceeds !== undefined ? { net_proceeds: destination.netProceeds } : {}),
+            }))
+          }
+        }
+        staged.push({ row, pricing })
+      }
+      // 整组验证通过后再替换本地结果，避免中途异常留下部分已应用的售价。
+      for (const { row, pricing } of staged) row.pricing = pricing
       if (errors.length) {
-        setError(`核价数据需要处理：${errors.join('；')}`)
+        setError(`核价需要处理：${errors.join('；')}`)
         return
       }
-      addLog(`核价预览完成：${result.results.length} 个目标市场，尚未写入草稿。`)
+      if (!apply) {
+        addLog(`核价预览完成：${rows.length} 个 SKU，尚未应用售价。`)
+        return
+      }
+      const first = completed[0]!
+      const shared = buildDraftPricing(first.result, pricingInput.value)
+      for (const target of pricingInput.value.targets) {
+        const record = (shared.targets as Record<string, UnknownRecord>)[target.targetKey]
+        if (!record) continue
+        Object.assign(record, { commission_percent: target.commissionPercent, payment_fee_percent: target.paymentFeePercent,
+          other_fee_percent: target.otherFeePercent, pricing_mode: target.pricingMode, target_margin_percent: target.targetMarginPercent,
+          markup_percent: target.markupPercent, shipping_quote_mode: target.shippingQuoteMode, shipping_currency: target.shippingCurrency,
+          shipping_amount: target.shippingAmount })
+        if (target.pricingMode === 'manual' && target.manualPrice) record.applied_price = { ...target.manualPrice }
+      }
+      // 草稿保存共用核价模板；实际发布只读取 SKU × 目标的已应用结果。
+      const draftToSave: DraftDetail = { ...currentDraft.value, pricing: shared,
+        targetSites: currentDraft.value.targetSites.map(target => {
+          const result = first.result.results.find(item => item.targetKey.toLowerCase() === `${target.platform}:${target.site}`.toLowerCase())
+          return result ? { ...target, listingCurrency: result.listingCurrency, currencyFingerprint: result.currencyFingerprint } : target
+        }),
+      }
+      const saved = await saveDraftApi(draftToSave)
+      currentDraft.value = saved.draft
+      currentDraftProductContext.value = saved.productContext
+      syncPricingInputFromProduct()
+      if (product.value.productId && product.value.productId === saved.draft.productId) product.value.drafts[saved.draft.platform] = saved.draft
+      applyMutationIndexes(saved)
+      currentStage.value = 5
+      addLog(`售价已应用：${rows.length} 个 SKU × ${first.result.results.length} 个目标市场。`)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '核价失败')
     } finally {
@@ -268,60 +361,8 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
     }
   }
 
-  async function applyPrice() {
-    if (!validatePricingContext()) return
-    loading.value = true
-    setError('')
-    try {
-      const result = await calculatePriceApi(pricingInput.value)
-      acceptPreview(result)
-      const errors = pricingErrors(result)
-      if (errors.length) {
-        setError(`无法应用售价：${errors.join('；')}`)
-        return
-      }
-      if (result.results.some((item) => item.isLoss)) {
-        setError('无法应用售价：至少一个目标市场会亏损，请提高售价后重新计算预览。')
-        return
-      }
-      const primary = result.results[0]
-      if (!primary || Number(primary.appliedPrice.amount) <= 0) {
-        setError('无法应用售价：请先生成或填写有效售价。')
-        return
-      }
-      const packageDimensions = syncDraftPackageDimensionsFromPricingInput()
-      const resultsByTarget = new Map(result.results.map((item) => [item.targetKey.toLowerCase(), item]))
-      const draftToSave: DraftDetail = {
-        ...currentDraft.value,
-        targetSites: currentDraft.value.targetSites.map((target) => {
-          const key = `${target.platform}:${target.site}`.toLowerCase()
-          const targetResult = resultsByTarget.get(key)
-          return targetResult ? {
-            ...target,
-            listingCurrency: targetResult.listingCurrency,
-            currencyFingerprint: targetResult.currencyFingerprint,
-            sitesToSell: sitesToSellWithPricingResult(target, targetResult),
-          } : target
-        }),
-        pricing: buildDraftPricing(result),
-        packageDimensions,
-      }
-      const saved = await saveDraftApi(draftToSave)
-      currentDraft.value = saved.draft
-      currentDraftProductContext.value = saved.productContext
-      syncPricingInputFromProduct()
-      if (product.value.productId && product.value.productId === saved.draft.productId) {
-        product.value.drafts[saved.draft.platform] = saved.draft
-      }
-      applyMutationIndexes(saved)
-      currentStage.value = 5
-      addLog(`售价已应用：${result.results.length} 个目标市场已写入草稿。`)
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '核价失败')
-    } finally {
-      loading.value = false
-    }
-  }
+  async function calculatePrice() { await calculateSkus(false) }
+  async function applyPrice() { await calculateSkus(true) }
 
 
   return {

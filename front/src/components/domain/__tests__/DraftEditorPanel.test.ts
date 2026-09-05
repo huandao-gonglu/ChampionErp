@@ -37,6 +37,8 @@ const storeConfig = {
 function draft(): DraftDetail {
   return {
     draftId: 'draft-1',
+    skuItems: [],
+    grouping: { mode: 'combined', name: '' },
     productId: 'product-1',
     sourceProductId: 'product-1',
     platform: 'mercadolibre',
@@ -82,6 +84,7 @@ function draft(): DraftDetail {
 }
 
 const productContext: DraftProductContext = {
+  skuItems: [],
   productId: 'product-1',
   sourceProductId: 'product-1',
   title: '商品',

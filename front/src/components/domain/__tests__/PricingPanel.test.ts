@@ -107,6 +107,7 @@ describe('PricingPanel', () => {
   it('明确区分买家售价与 Mercado 期望到账额', () => {
     const wrapper = mount(PricingPanel, {
       props: {
+        skuItems: [],
         input,
         result,
         draftItems: [],

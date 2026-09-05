@@ -1296,11 +1296,12 @@ def ensure_mercadolibre_pictures_uploaded(product: dict[str, Any], token: str) -
     # 此处是 Mercado 上传服务写入 picture ID 的唯一可信路径；通用保存入口
     # 会保护已有平台事实，故明确允许本次服务端结果替换上传状态。
     saved = get_context().products.save_product(
-        normalized,
+        {**normalized, "drafts": {}},
         preserve_platform_facts=False,
     )
     errors = compact_precheck_items(errors)
-    return {"ok": not errors, "product": saved, "picture_refs": picture_refs, "errors": errors}
+    normalized["source"] = saved["source"]
+    return {"ok": not errors, "product": normalized, "picture_refs": picture_refs, "errors": errors}
 
 
 def mercadolibre_product_for_payload(product: dict[str, Any]) -> dict[str, Any]:

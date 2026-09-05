@@ -732,9 +732,11 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 
 ## 商品发布
 
-- `erp_web/product_model/platform_sku.py`：卖家 SKU 的唯一生成规则。SKU 稳定绑定
-  `draft_id`：同一草稿编辑重发保持不变，同一商品重新推出的新草稿获得新 SKU；
-  未发布草稿中的“其他”等占位值会被替换，已绑定远端刊登的历史 SKU 不得静默变化。
+- `erp_web/product_model/sku_model.py`：商品实际 SKU、来源快照、草稿选品与每行卖家编码的唯一契约。商品保存全部实际规格；草稿通过 `sku_id` 引用，卖家编码绑定 `draft_id + sku_id`。已发送的编码和远端关联不能由普通保存覆盖。
+- `erp_web/runtime_units/sku_publish_projection.py`：逐 SKU 合并草稿覆盖值、目标属性和独立核价结果，并校验平台组合条件。临时单品投影不写回主档。
+- `erp_web/runtime_units/sku_publish_adapter.py`：注册表唯一发布入口，编译带每项身份的冻结 SKU 清单；平台叶子适配器保留原生单品 I/O。每项写前落盘、写后保存响应，成功项按内容指纹跳过，未知结果禁止再次创建，异步确认仅推进原任务。
+- 前端 `ProductSkuEditor.vue` 维护商品事实，`DraftSkuPanel.vue` 负责草稿选品和覆盖，`actions/pricing.ts` 按 SKU × 目标调用现有核价引擎。包装资料或费用改变后必须重新应用售价。
+- 商品 schema 当前为 4；本次 Demo 历史商品/草稿/发布记录直接清理，没有历史 SKU 格式读取、迁移或双写路径。详见 `docs/sku-workflow.md`。
 - `erp_web/http_route_units/publish_routes.py`：发布预检、payload 预览、非 Mercado
   平台同步发布、发布队列、`POST /api/mercadolibre/pause-user-product` 与
   `POST /api/publish-bus/reconcile` HTTP 入口。reconcile 只读取 job 已持久化的远端

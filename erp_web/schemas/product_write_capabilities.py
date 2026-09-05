@@ -58,7 +58,6 @@ class ProductProfilePatch(BaseModel):
     listing_overrides: dict[str, JsonValue] = Field(default_factory=dict)
     copy_results: dict[str, JsonValue] = Field(default_factory=dict)
     sku_items: list[dict[str, JsonValue]] = Field(default_factory=list)
-    selected_sku_indices: list[int] = Field(default_factory=list)
     pricing_defaults: dict[str, JsonValue] = Field(default_factory=dict)
     publish_preview: dict[str, JsonValue] = Field(default_factory=dict)
     collect_status: str = ""
@@ -153,6 +152,9 @@ class DraftReadView(BaseModel):
     last_publish_task: dict[str, JsonValue] = Field(default_factory=dict)
     publication: dict[str, JsonValue] = Field(default_factory=dict)
     pricing_summary: dict[str, JsonValue] = Field(default_factory=dict)
+    sku_items: tuple[dict[str, JsonValue], ...] = ()
+    sku_count: int = 0
+    grouping: dict[str, JsonValue] = Field(default_factory=dict)
     target_sites: tuple[dict[str, JsonValue], ...] = ()
 
 

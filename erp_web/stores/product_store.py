@@ -156,78 +156,6 @@ def reject_retired_draft_schema_fields(draft_payload: dict[str, Any]) -> None:
         raise RetiredCategorySchemaFieldError(sorted(set(found)))
 
 
-def normalize_sku_items(product: dict[str, Any]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    source = product.get("source") if isinstance(product.get("source"), dict) else {}
-    raw_items = product.get("sku_items")
-    if isinstance(raw_items, list):
-        for index, item in enumerate(raw_items):
-            if not isinstance(item, dict):
-                continue
-            rows.append(
-                {
-                    "id": str(item.get("id") or index),
-                    "selected": bool(item.get("selected", index == 0)),
-                    "name": str(item.get("name") or item.get("sku") or item.get("spec") or f"SKU {index + 1}"),
-                    "spec1": str(item.get("spec1") or item.get("variant1") or item.get("color") or ""),
-                    "spec2": str(item.get("spec2") or item.get("variant2") or item.get("size") or ""),
-                    "price": str(item.get("price") or ""),
-                    "stock": str(item.get("stock") or ""),
-                    "image": str(item.get("image") or item.get("image_url") or ""),
-                    "sale_price": str(item.get("sale_price") or item.get("suggested_price") or ""),
-                    "custom_stock": str(item.get("custom_stock") or item.get("publish_stock") or ""),
-                }
-            )
-    if not rows:
-        variations = product.get("variations")
-        if isinstance(variations, list):
-            for index, item in enumerate(variations):
-                if not isinstance(item, dict):
-                    continue
-                attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
-                rows.append(
-                    {
-                        "id": str(item.get("id") or index),
-                        "selected": index == 0,
-                        "name": str(item.get("title") or item.get("name") or attrs.get("name") or f"SKU {index + 1}"),
-                        "spec1": str(item.get("spec1") or item.get("color") or attrs.get("color") or ""),
-                        "spec2": str(item.get("spec2") or item.get("size") or attrs.get("size") or ""),
-                        "price": str(item.get("price") or item.get("sale_price") or item.get("cost") or ""),
-                        "stock": str(item.get("stock") or item.get("inventory") or ""),
-                        "image": str(item.get("image") or item.get("image_url") or ""),
-                        "sale_price": str(item.get("sale_price") or ""),
-                        "custom_stock": str(item.get("custom_stock") or ""),
-                    }
-                )
-    if not rows:
-        rows.append(
-            {
-                "id": "0",
-                "selected": True,
-                "name": str(product.get("sku") or product.get("model") or product.get("name") or "SKU 1"),
-                "spec1": "",
-                "spec2": "",
-                "price": str(source.get("price") or product.get("cost") or ""),
-                "stock": str(product.get("stock") or ""),
-                "image": str(
-                    (
-                        normalize_list(source.get("images"))
-                        or [
-                            str(item.get("url") or item.get("path") or "")
-                            for item in source.get("image_pool", [])
-                            if isinstance(item, dict)
-                            and str(item.get("url") or item.get("path") or "").strip()
-                        ]
-                        or [""]
-                    )[0]
-                ),
-                "sale_price": "",
-                "custom_stock": "",
-            }
-        )
-    return rows
-
-
 def normalize_product_fields(product: dict[str, Any]) -> dict[str, Any]:
     normalized = normalize_product_model(product)
     for key in ["materials", "colors", "selling_points", "package_includes", "avoid_claims"]:
@@ -239,7 +167,6 @@ def normalize_product_fields(product: dict[str, Any]) -> dict[str, Any]:
     normalized.setdefault("listing_overrides", {})
     normalized.setdefault("copy_results", {})
     normalized.setdefault("sku_items", [])
-    normalized.setdefault("selected_sku_indices", [])
     normalized.setdefault("pricing_defaults", {})
     normalized.setdefault("publish_preview", {})
     if not isinstance(normalized.get("listing_overrides"), dict):
@@ -250,9 +177,6 @@ def normalize_product_fields(product: dict[str, Any]) -> dict[str, Any]:
         normalized["pricing_defaults"] = {}
     if not isinstance(normalized.get("publish_preview"), dict):
         normalized["publish_preview"] = {}
-    normalized["sku_items"] = normalize_sku_items(normalized)
-    if not normalized.get("selected_sku_indices"):
-        normalized["selected_sku_indices"] = [0] if normalized["sku_items"] else []
     return normalized
 
 
@@ -305,14 +229,10 @@ def _draft_pricing_ready(draft: dict[str, Any]) -> bool:
 
 
 def _draft_publish_fields_ready(draft: dict[str, Any]) -> bool:
-    attrs = draft.get("attributes") if isinstance(draft.get("attributes"), dict) else {}
-    return all(
-        [
-            str(draft.get("category_id") or "").strip(),
-            bool(attrs),
-            _draft_pricing_ready(draft),
-            str(draft.get("stock") or "").strip(),
-        ]
+    rows = [row for row in draft.get("sku_items", []) if row.get("selected")]
+    return bool(draft.get("category_id") and rows) and all(
+        row.get("pricing", {}).get("applied") is True and str(row.get("stock", "")).strip()
+        for row in rows
     )
 
 
@@ -778,6 +698,15 @@ class ProductStore:
             return "", product
         return upc, self.load_product_from_index(product_id, "")
 
+    def collection_product(self, source_url: str) -> dict[str, Any]:
+        """重复采集合并同一来源商品；新 URL 从空白商品开始。"""
+        identity = str(source_url or "").split("?")[0].rstrip("/")
+        if identity:
+            for item in self._db.list_product_records():
+                if str(item.get("source_url") or "").split("?")[0].rstrip("/") == identity:
+                    return normalize_persisted_product_fields(self._db.load_product_model(item["product_id"]))
+        return default_product_model()
+
     def save_product_profile(self, data: dict[str, Any]) -> dict[str, Any]:
         product_data = dict(data or {})
         product_data.pop("drafts", None)
@@ -795,6 +724,10 @@ class ProductStore:
                 if isinstance(product_data.get("source"), dict)
                 else {}
             )
+            if "sku_items" in product_data:
+                incoming_ids = {row.get("id") for row in product_data["sku_items"]}
+                if any(row["id"] not in incoming_ids for row in existing.get("sku_items", [])):
+                    raise ValueError("已有 SKU 请使用停用，不能删除其身份与历史关联")
             product_data = {**existing, **product_data}
             if isinstance(patch_source.get("attributes"), dict):
                 old_attributes = existing_source.get("attributes") or {}
@@ -988,6 +921,7 @@ class ProductStore:
                 "width_cm": str(dimensions.get("width_cm") or dimensions.get("widthCm") or ""),
                 "height_cm": str(dimensions.get("height_cm") or dimensions.get("heightCm") or ""),
             },
+            "sku_items": deepcopy(normalized.get("sku_items", [])),
             "image_pool": current_image_pool(normalized),
             "raw": normalized,
         }
@@ -1093,6 +1027,11 @@ class ProductStore:
                 target["sites_to_sell"] = operations
             targets.append(target)
         duplicated["target_sites"] = targets
+        for sku in duplicated.get("sku_items", []):
+            sku["publications"] = {}
+            sku["pricing"] = {}
+            sku["sku"] = ""
+
 
         # 同一商品可能保留原草稿的发布预览；副本状态只能按自身内容重新计算。
         product_for_status = deepcopy(product)
@@ -1268,11 +1207,14 @@ class ProductStore:
             if isinstance(existing.get("publication"), dict)
             else {}
         )
+        sku_publications = {row["sku_id"]: row.get("publications", {}) for row in existing.get("sku_items", [])}
+        for row in merged.get("sku_items", []):
+            row["publications"] = deepcopy(sku_publications.get(row.get("sku_id"), {}))
         merged["images"] = normalize_draft_image_refs(merged.get("images"))
         merged = normalize_platform_draft(
             merged,
             platform,
-            {"product_id": product_id},
+            self._db.load_product_model(product_id),
         )
         normalized_existing = normalize_platform_draft(
             existing,
@@ -1395,6 +1337,8 @@ class ProductStore:
             # 销售目标变化会改变核价目标；普通内容编辑只让旧预检失效，
             # 保留核价结果，让发布预检按输入指纹判断是否需要重新核价。
             merged["pricing"] = {}
+            for row in merged.get("sku_items", []):
+                row.setdefault("pricing", {})["applied"] = False
         merged = normalize_platform_draft(
             merged,
             platform,
@@ -1433,6 +1377,19 @@ class ProductStore:
             "draftsIndex": self.load_drafts_index(),
             "message": "草稿已保存。",
         }, None, 200
+
+    def save_sku_publication(self, draft_id: str, sku_id: str, target_key: str, publication: dict[str, Any]) -> None:
+        """仅供平台发布适配器保存远端 SKU 身份与执行结果。"""
+        draft = self._db.load_draft_model(draft_id)
+        targets = {f"{item['platform']}:{item['site']}".lower() for item in draft.get("target_sites", [])}
+        if target_key not in targets:
+            raise ValueError("SKU 发布目标不属于当前草稿")
+        self._db.update_sku_publication(draft_id, sku_id, target_key, deepcopy(publication))
+
+    def sku_publication(self, draft_id: str, sku_id: str, target_key: str) -> dict[str, Any]:
+        draft = self._db.load_draft_model(draft_id)
+        row = next((row for row in draft.get("sku_items", []) if row.get("sku_id") == sku_id), {})
+        return deepcopy(row.get("publications", {}).get(target_key, {}))
 
     def save_draft_publish_state(
         self,
@@ -1618,7 +1575,6 @@ __all__ = [
     "mask_secret",
     "normalize_product_fields",
     "normalize_persisted_product_fields",
-    "normalize_sku_items",
     "normalize_space",
     "product_id_from_body",
 ]

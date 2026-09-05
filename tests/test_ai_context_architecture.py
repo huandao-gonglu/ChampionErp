@@ -395,3 +395,14 @@ def test_mercadolibre_publish_has_no_direct_http_or_ai_bypass() -> None:
     assert '"MERCADOLIBRE_PUBLISH_BUS_REQUIRED"' in workflow_source
     assert 'if platform == "mercadolibre"' in capability_source
     assert '"MERCADOLIBRE_PUBLISH_BUS_REQUIRED"' in capability_source
+
+
+def test_platform_publish_registry_uses_sku_group_entry_point() -> None:
+    from erp_web.runtime_units.publish_adapter import publishing_adapter_for
+    from erp_web.runtime_units.sku_publish_adapter import SkuGroupPublishingAdapter
+
+    for platform in ('mercadolibre', 'ozon', 'yandex'):
+        adapter = publishing_adapter_for(platform)
+        assert isinstance(adapter, SkuGroupPublishingAdapter)
+        assert adapter.item_adapter.platform == platform
+        assert not isinstance(adapter.item_adapter, SkuGroupPublishingAdapter)

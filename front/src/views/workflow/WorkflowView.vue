@@ -9,6 +9,7 @@ import PublishPrecheckPanel from '@/components/domain/PublishPrecheckPanel.vue'
 import CollectView from '@/views/workflow/CollectView.vue'
 import DashboardView from '@/views/workflow/DashboardView.vue'
 import DraftBoxPanel from '@/components/domain/DraftBoxPanel.vue'
+import DraftSkuPanel from '@/components/domain/DraftSkuPanel.vue'
 import DraftEditorPanel from '@/components/domain/DraftEditorPanel.vue'
 import DraftWorkspacePanel, { type DraftWorkspaceTab } from '@/components/domain/DraftWorkspacePanel.vue'
 import LibraryPanel from '@/components/domain/LibraryPanel.vue'
@@ -484,7 +485,7 @@ watch(
           />
 
           <div v-else-if="activeNav === 'drafts'" class="space-y-6">
-            <PageHeader title="草稿箱" description="从商品库复制出的独立编辑稿，来源商品只作为关联和参考。" />
+            <PageHeader title="草稿箱" description="分别维护各平台的内容、SKU 选品和售价；规格资料可沿用商品或在草稿中单独调整。" />
             <DraftBoxPanel
               :drafts="draftsIndex"
               :platform-options="platformOptions"
@@ -737,6 +738,10 @@ watch(
             />
           </template>
 
+          <template #skus>
+            <DraftSkuPanel :draft="currentDraft" :skus="currentDraftProductContext.skuItems" :loading="loading" />
+          </template>
+
           <template #images>
             <ProductImageEditorPanel
               title="草稿图片编辑"
@@ -809,6 +814,7 @@ watch(
           <template #pricing>
             <div class="grid min-w-0 gap-6">
               <PricingPanel
+                :sku-items="currentDraft.skuItems"
                 selection-locked
                 :input="pricingInput"
                 :result="pricingResult"
@@ -836,7 +842,6 @@ watch(
               :payload-preview="payloadPreview"
               :loading="loading"
               @select-publish-target="store.selectPublishTarget"
-              @update-package-dimension="syncPricingPackageDimension"
               @invalidate-publish-validation="store.invalidatePublishValidation"
               @precheck="store.runPrecheck"
               @preview-payload="store.previewPayload"

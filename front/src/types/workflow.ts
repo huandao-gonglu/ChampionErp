@@ -105,6 +105,8 @@ export interface CategoryAttributeValuesPage {
 
 /** 发布 payload 预览摘要（脱敏后由后端随预览返回）。 */
 export interface PublishPayloadSummary {
+  skuItems?: UnknownRecord[]
+  groupingMode?: string
   productId: string
   draftId: string
   platform: string
@@ -283,7 +285,35 @@ export interface ProductSource {
   collectDiagnostics: UnknownRecord
 }
 
+export interface ProductSku extends UnknownRecord {
+  id: string
+  source_sku_id: string
+  name: string
+  options: Record<string, string>
+  cost_cny: string
+  supplier_stock: string
+  image: string
+  barcode: string
+  package_dimensions: Record<string, string>
+  active: boolean
+  source_snapshot: UnknownRecord
+}
+
+export interface DraftSku extends UnknownRecord {
+  pricing_overrides?: UnknownRecord
+  sku_id: string
+  selected: boolean
+  sku: string
+  stock: string
+  overrides: UnknownRecord
+  attributes_by_target: Record<string, UnknownRecord>
+  pricing: UnknownRecord
+  publications: Record<string, UnknownRecord>
+}
+
 export interface MarketplaceDraft {
+  skuItems: DraftSku[]
+  grouping: { mode: string; name: string }
   draftId: string
   platforms: Marketplace[]
   targetSites: MarketplaceTargetSite[]
@@ -323,6 +353,7 @@ export interface MarketplaceDraft {
 }
 
 export interface Product {
+  skuItems: ProductSku[]
   productId: string
   name: string
   brand: string
@@ -352,6 +383,7 @@ export interface DraftDetail extends MarketplaceDraft {
 }
 
 export interface DraftProductContext {
+  skuItems: ProductSku[]
   productId: string
   sourceProductId: string
   title: string

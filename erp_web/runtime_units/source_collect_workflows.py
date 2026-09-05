@@ -81,7 +81,7 @@ def collect_source_product(
             "started_at": collect_time_iso(),
         }
     )
-    partial_product = get_context().products.load_product()
+    partial_product = get_context().products.collection_product(url)
     snapshot: dict[str, Any] | None = None
     html = ""
     text = ""
@@ -359,6 +359,7 @@ def collect_from_browser_tab(
             raise RuntimeError("NO_PRODUCT_TAB_FOUND")
         snapshot = snapshot_from_cdp_target(target, platform_hint)
         final_url = str(snapshot.get("final_url") or snapshot.get("url") or product_url or tab_url or "")
+        original_product = get_context().products.collection_product(product_url or final_url)
         html_text = str(snapshot.get("html") or "")
         text = str(snapshot.get("text") or "")
         title = str(snapshot.get("title") or snapshot.get("page_title") or "")
@@ -532,8 +533,8 @@ def collect_1688_payload_service(body: dict[str, Any]) -> dict[str, Any]:
 
 def collect_extension_payload(payload: dict[str, Any]) -> dict[str, Any]:
     payload = payload if isinstance(payload, dict) else {}
-    original_product = get_context().products.load_product()
     source_url = str(payload.get("source_url") or "").strip()
+    original_product = get_context().products.collection_product(source_url)
     platform = str(payload.get("platform") or detect_source_platform(source_url) or "unknown").strip().lower()
     raw_html = str(payload.get("raw_html_optional") or payload.get("raw_text") or payload.get("text") or "").strip()
     claim_platforms = normalize_platforms(payload.get("platforms"))

@@ -187,6 +187,8 @@ function normalizePayloadPreviewSummary(value: UnknownRecord): PublishPayloadSum
     site: text('site'),
     storeIdentity: text('store_identity', 'storeIdentity'),
     storeLabel: text('store_label', 'storeLabel'),
+    skuItems: Array.isArray(value.sku_items) ? value.sku_items as UnknownRecord[] : [],
+    groupingMode: text('grouping_mode'),
     title: text('title'),
     categoryId: text('category_id', 'categoryId'),
     listingCurrency: text('listing_currency', 'listingCurrency'),

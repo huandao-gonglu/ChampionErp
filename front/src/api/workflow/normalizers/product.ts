@@ -11,6 +11,8 @@ import type {
   MercadoLibrePublication,
   MarketplaceDraft,
   Product,
+  ProductSku,
+  DraftSku,
   UnknownRecord,
 } from '@/types/workflow'
 
@@ -202,6 +204,8 @@ export function normalizeDraft(value: unknown, language: string): MarketplaceDra
   const validationErrors = normalizeValidationErrors(record.validation_errors)
   return {
     ...draft,
+    skuItems: (Array.isArray(record.sku_items) ? record.sku_items : []) as DraftSku[],
+    grouping: { mode: String(asRecord(record.grouping).mode || "combined"), name: String(asRecord(record.grouping).name || "") },
     draftId: getString(record, ['draft_id']),
     platforms: platformList(record.platforms),
     targetSites: normalizeTargetSites(record.target_sites, platformList(record.platforms)[0] || 'mercadolibre', site),
@@ -254,6 +258,7 @@ export function normalizeBackendProduct(value: unknown, imagePoolOverride?: unkn
   const product = createEmptyProduct()
   return {
     ...product,
+    skuItems: (Array.isArray(record.sku_items) ? record.sku_items : []) as ProductSku[],
     productId: getString(record, ['product_id']),
     name: getString(record, ['name']),
     brand: getString(record, ['brand']),
@@ -317,6 +322,8 @@ export function toBackendImageAsset(image: ImageAsset): UnknownRecord {
 
 export function toBackendDraft(draft: MarketplaceDraft): UnknownRecord {
   return {
+    sku_items: draft.skuItems,
+    grouping: draft.grouping,
     enabled: draft.enabled,
     draft_id: draft.draftId,
     platforms: draft.platforms,
@@ -382,6 +389,7 @@ export function normalizeDraftProductContext(value: unknown): DraftProductContex
     ? record.image_pool
     : []
   return {
+    skuItems: (Array.isArray(record.sku_items) ? record.sku_items : []) as ProductSku[],
     productId: getString(record, ['product_id']),
     sourceProductId: getString(record, ['source_product_id']),
     title: getString(record, ['title']),
@@ -459,10 +467,7 @@ export function toBackendProduct(product: Product): BackendProduct {
     attributes: product.attributes,
     listing_overrides: asRecord(rawProduct.listing_overrides),
     copy_results: asRecord(rawProduct.copy_results),
-    sku_items: recordList(rawProduct.sku_items),
-    selected_sku_indices: Array.isArray(rawProduct.selected_sku_indices)
-      ? rawProduct.selected_sku_indices.filter((value): value is number => Number.isInteger(value))
-      : [],
+    sku_items: product.skuItems,
     pricing_defaults: asRecord(rawProduct.pricing_defaults),
     publish_preview: asRecord(rawProduct.publish_preview),
     collect_status: getString(rawProduct, ['collect_status']),

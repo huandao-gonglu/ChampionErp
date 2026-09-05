@@ -138,6 +138,12 @@ function mutation(product: Product): ProductMutationResponse {
   return { ok: true, product, imagePool: product.source.imagePool, productsIndex: [] }
 }
 
+function ensurePricingSku(store: ReturnType<typeof useWorkflowStore>) {
+  if (store.currentDraft.skuItems.length) return
+  store.currentDraftProductContext.skuItems = [{ id: 'sku-test', source_sku_id: '', name: '测试规格', options: {}, cost_cny: String(store.pricingInput.purchaseCostCny), supplier_stock: '', image: '', barcode: '', active: true, source_snapshot: {}, package_dimensions: {length_cm: String(store.pricingInput.lengthCm), width_cm: String(store.pricingInput.widthCm), height_cm: String(store.pricingInput.heightCm), weight_kg: String(store.pricingInput.weightKg)} }]
+  store.currentDraft.skuItems = [{sku_id: 'sku-test', sku: 'TEST-SKU', stock: '5', selected: true, overrides: {}, attributes_by_target: {}, pricing: {}, publications: {}}]
+}
+
 function draftMutation(draft: DraftDetail, draftsIndex: DraftIndexItem[] = []): DraftMutationResponse {
   return {
     ok: true,
@@ -1621,6 +1627,7 @@ describe('workflow store live API flow', () => {
     }])
     expect(store.error).toBe('')
 
+    ensurePricingSku(store)
     await store.calculatePrice()
     expect(workflowApi.calculatePrice).toHaveBeenCalledOnce()
 
@@ -1680,6 +1687,7 @@ describe('workflow store live API flow', () => {
     )).toBe(false)
     expect(store.error).toContain('缺少 Mercado Libre listing_model')
 
+    ensurePricingSku(store)
     await store.calculatePrice()
     expect(store.error).toContain('缺少 Mercado Libre listing_model')
     expect(workflowApi.calculatePrice).not.toHaveBeenCalled()
@@ -1723,6 +1731,7 @@ describe('workflow store live API flow', () => {
     expect(store.currentDraft.targetSites[0]?.sitesToSell).toEqual([{ siteId: 'MLM', logisticType: 'remote' }])
     expect(store.error).toBe(expectedError)
 
+    ensurePricingSku(store)
     await store.calculatePrice()
     expect(store.error).toBe(expectedError)
     expect(workflowApi.calculatePrice).not.toHaveBeenCalled()
@@ -3002,6 +3011,7 @@ describe('workflow store live API flow', () => {
     await store.loadDraftForPricing('draft-1')
     expect(store.pricingInput.targets.map((target) => target.manualPrice)).toEqual([null])
 
+    ensurePricingSku(store)
     await store.calculatePrice()
 
     expect(store.pricingInput.targets.map((target) => target.manualPrice)).toEqual([null])
@@ -3017,6 +3027,7 @@ describe('workflow store live API flow', () => {
         errors: [{ field: 'target_margin_percent', message: '平台费用合计 + 目标销售利润率必须小于 100%' }],
       } : item),
     })
+    ensurePricingSku(store)
     await store.applyPrice()
     expect(workflowApi.saveDraft).not.toHaveBeenCalled()
 
@@ -3024,6 +3035,7 @@ describe('workflow store live API flow', () => {
       ...pricingResult,
       results: pricingResult.results.map((item) => ({ ...item, destinationResults: [] })),
     })
+    ensurePricingSku(store)
     await store.applyPrice()
     expect(workflowApi.saveDraft).not.toHaveBeenCalled()
     expect(store.currentDraft.targetSites[0]?.sitesToSell).toEqual([{
@@ -3033,13 +3045,14 @@ describe('workflow store live API flow', () => {
     }])
     expect(store.error).toContain('核价结果与当前销售市场不一致')
 
+    ensurePricingSku(store)
     await store.applyPrice()
 
     expect(store.pricingInput.targets.map((target) => target.manualPrice)).toEqual([null])
-    expect(store.pricingInput.targets.map((target) => target.shippingAmount)).toEqual([2.7])
+    expect(store.pricingInput.targets.map((target) => target.shippingAmount)).toEqual([0])
     expect(workflowApi.saveDraft).toHaveBeenCalledWith(expect.objectContaining({
       targetSites: [expect.objectContaining({
-        sitesToSell: [{ siteId: 'MLM', logisticType: 'remote', netProceeds: '18.65' }],
+        listingCurrency: 'USD',
       })],
       pricing: expect.objectContaining({
         targets: expect.objectContaining({
@@ -3157,6 +3170,7 @@ describe('workflow store live API flow', () => {
       exchangeRateCached: false,
     })
 
+    ensurePricingSku(store)
     await store.calculatePrice()
 
     expect(store.error).toBe('')
@@ -3247,6 +3261,7 @@ describe('workflow store live API flow', () => {
       exchangeRateCached: false,
     })
 
+    ensurePricingSku(store)
     await store.calculatePrice()
 
     expect(store.error).toContain('Ozon · 俄罗斯：手动售价必须大于 0 且币种必须与发布币种一致')
@@ -3335,9 +3350,11 @@ describe('workflow store live API flow', () => {
       exchangeRateCached: false,
     }))
 
+    ensurePricingSku(store)
     await store.calculatePrice()
 
-    expect(store.error).toBe('核价数据需要处理：Ozon · 俄罗斯：物流报价金额必须大于 0；Yandex · 俄罗斯：物流报价金额必须大于 0')
+    expect(store.error).toContain('TEST-SKU：Ozon · 俄罗斯：物流报价金额必须大于 0')
+    expect(store.error).toContain('TEST-SKU：Yandex · 俄罗斯：物流报价金额必须大于 0')
   })
 
   it('恢复旧 Mercado CBT 核价时，缺少 destination_results 即视为过期', async () => {

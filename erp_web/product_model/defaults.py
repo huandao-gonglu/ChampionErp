@@ -88,6 +88,8 @@ def default_pricing(platform: str = "") -> dict[str, Any]:
 def default_draft(platform: str) -> dict[str, Any]:
     site = default_marketplace_site(platform)
     return {
+        "sku_items": [],
+        "grouping": {"mode": "combined", "name": ""},
         "platform": platform,
         "platforms": [platform],
         "target_sites": [{
@@ -171,7 +173,6 @@ def default_product_model() -> dict[str, Any]:
         "listing_overrides": {},
         "copy_results": {},
         "sku_items": [],
-        "selected_sku_indices": [],
         "pricing_defaults": {},
         "publish_preview": {},
         "sku": "",

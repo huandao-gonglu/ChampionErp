@@ -5,6 +5,8 @@ export const marketplaces: Marketplace[] = ['mercadolibre', 'yandex', 'ozon']
 
 export function createEmptyDraft(language = '', site = ''): MarketplaceDraft {
   return {
+    skuItems: [],
+    grouping: { mode: 'combined', name: '' },
     draftId: '',
     platforms: [],
     targetSites: [],
@@ -46,6 +48,7 @@ export function createEmptyDraft(language = '', site = ''): MarketplaceDraft {
 export function createEmptyProduct(): Product {
   return {
     attributes: {},
+    skuItems: [],
     productId: '',
     name: '',
     brand: '',
@@ -102,6 +105,7 @@ export function createEmptyDraftDetail(platform: Marketplace = 'mercadolibre'): 
 
 export function createEmptyDraftProductContext(): DraftProductContext {
   return {
+    skuItems: [],
     productId: '',
     sourceProductId: '',
     title: '',

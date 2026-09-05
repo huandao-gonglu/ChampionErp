@@ -12,6 +12,7 @@ from tests.runtime_test_utils import temp_app_context
 def _yandex_product(image_path: Path) -> dict:
     return {
         "product_id": "",
+        "sku_items": [{"id": "sku-1", "name": "便携风扇", "cost_cny": "12.34"}],
         "name": "便携风扇",
         "brand": "BrandX",
         "model": "ModelY",
@@ -38,6 +39,7 @@ def _yandex_product(image_path: Path) -> dict:
         "drafts": {
             "yandex": {
                 "draft_id": "draft-yandex-materialize",
+                "sku_items": [{"sku_id": "sku-1", "selected": True, "sku": "SKU-Y1", "stock": "10"}],
                 "enabled": True,
                 "title": "Ручной вентилятор",
                 "description": "Описание товара",

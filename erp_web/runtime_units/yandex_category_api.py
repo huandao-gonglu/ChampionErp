@@ -779,6 +779,7 @@ def _normalize_yandex_parameter(item: dict[str, Any]) -> dict[str, Any]:
     if constraints_raw.get("maxLength") is not None:
         constraints["max_length"] = constraints_raw.get("maxLength")
     return {
+        "distinctive": item.get("distinctive") is True,
         "parameter_id": parameter_id,
         "name": _text(item.get("name") or parameter_id),
         "required": bool(item.get("required") or item.get("isRequired")),

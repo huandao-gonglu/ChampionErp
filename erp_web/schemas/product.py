@@ -6,7 +6,7 @@ from .image import DraftImageRef, ImageItem
 from .mercadolibre import MercadoLibrePublication
 
 
-PRODUCT_SCHEMA_VERSION = 3
+PRODUCT_SCHEMA_VERSION = 4
 
 
 class ProductSource(TypedDict, total=False):
@@ -70,6 +70,8 @@ class DraftTargetSite(TypedDict, total=False):
 
 
 class PlatformDraft(TypedDict, total=False):
+    sku_items: list[dict[str, Any]]
+    grouping: dict[str, Any]
     draft_id: str
     product_id: str
     source_product_id: str
@@ -144,7 +146,6 @@ class Product(TypedDict, total=False):
     listing_overrides: dict[str, Any]
     copy_results: dict[str, Any]
     sku_items: list[dict[str, Any]]
-    selected_sku_indices: list[int]
     pricing_defaults: dict[str, Any]
     publish_preview: dict[str, Any]
     collect_status: str

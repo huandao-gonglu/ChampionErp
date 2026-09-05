@@ -736,7 +736,7 @@ def test_app_runtime_secrets_route_nested_naming_styles_to_sqlite() -> None:
 
 
 def test_product_schema_rejects_future_and_filters_unknown_write_fields() -> None:
-    assert PRODUCT_SCHEMA_VERSION == 3
+    assert PRODUCT_SCHEMA_VERSION == 4
     with pytest.raises(ValueError, match="拒绝降级写入"):
         normalize_product_model(
             {

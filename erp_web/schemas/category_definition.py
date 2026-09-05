@@ -23,7 +23,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 #: 定义序列化格式版本；归一化形状变化时必须递增，使旧缓存自动失效。
-DEFINITION_FORMAT_VERSION = 4
+DEFINITION_FORMAT_VERSION = 5
 
 #: options 有界预览上限；公共视图与内部定义共用该边界。
 ATTRIBUTE_OPTIONS_PREVIEW_LIMIT = 50
@@ -83,6 +83,8 @@ class CategoryAttributeDefinition(BaseModel):
     id: str
     name: str = ""
     required: bool = False
+    #: variant 为变体维度，parent 为同组必须一致的属性。
+    variation_role: str = ""
     #: 归一化值类型：string/integer/float/boolean/enum/date/datetime 等。
     value_type: str = ""
     #: 归一化取值模式：single/multiple。

@@ -112,8 +112,8 @@ def test_parse_1688_product_uses_context_skus_and_preserves_attributes() -> None
     assert source["weight_kg"] == "0.3"
     assert len(source["skus"]) == 2
     assert product["sku_items"][0]["name"] == "红色牛津布 / 笔袋"
-    assert product["sku_items"][0]["price"] == "9.50"
-    assert product["sku_items"][0]["stock"] == "25"
+    assert product["sku_items"][0]["cost_cny"] == "9.50"
+    assert product["sku_items"][0]["supplier_stock"] == "25"
     assert product["sku_items"][0]["image"] == "https://cbu01.alicdn.com/red.jpg"
 
 
@@ -208,7 +208,7 @@ def test_merge_source_partial_result_keeps_browser_1688_attributes_and_skus() ->
 
     merged = merge_source_partial_result({}, parsed["source"], diagnostics)
 
-    assert merged["attributes"]["品牌"] == "恒悦"
+    assert merged["source"]["attributes"]["品牌"] == "恒悦"
     assert merged["source"]["attributes"]["货号"] == "HY25123001"
     assert merged["brand"] == "恒悦"
     assert merged["model"] == "HY25123001"

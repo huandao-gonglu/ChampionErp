@@ -262,16 +262,15 @@ def collect_skus(raw: Any) -> list[dict[str, str]]:
         name = first_text(item.get("skuName"), item.get("name"), item.get("specId"), attrs.get("name"), f"SKU {index + 1}")
         skus.append(
             {
-                "id": first_text(item.get("skuId"), item.get("id"), index),
+                "id": first_text(item.get("skuId"), item.get("id"), item.get("specId")),
                 "name": name,
-                "spec1": first_text(attrs.get("color"), attrs.get("颜色"), item.get("color")),
-                "spec2": first_text(attrs.get("size"), attrs.get("尺码"), attrs.get("规格"), item.get("size")),
+                "options": {str(key): str(value) for key, value in attrs.items() if value is not None},
                 "price": first_text(price),
-                "stock": first_text(stock),
+                "stock": str(stock) if stock is not None else "",
                 "image": first_text(item.get("imageUrl"), item.get("picUrl"), item.get("image")),
             }
         )
-    return skus[:200]
+    return skus
 
 
 def parse_1688_api_product(raw: dict[str, Any], source_url: str, offer_id: str) -> dict[str, Any]:
@@ -330,7 +329,7 @@ def collect_1688_product_via_api(
     api_config = resolve_1688_api_config(config)
     ensure_1688_api_ready(api_config)
     started_at = collect_time_iso()
-    original_product = get_context().products.load_product()
+    original_product = get_context().products.collection_product(source_url)
     diagnostics = default_collect_diagnostics()
     diagnostics.update(
         {
@@ -374,10 +373,6 @@ def collect_1688_product_via_api(
             merged["brand"] = source_updates["brand"]
         if source_updates.get("model"):
             merged["model"] = source_updates["model"]
-        if isinstance(source_updates.get("attributes"), dict) and source_updates["attributes"]:
-            merged["attributes"] = source_updates["attributes"]
-        if isinstance(source_updates.get("skus"), list) and source_updates["skus"]:
-            merged["sku_items"] = source_updates["skus"]
         merged["source"]["collect_status"] = "success" if diagnostics["success"] else ("partial" if diagnostics["partial_success"] else "failed")
         merged["source"]["collect_logs"] = list(merged["source"].get("collect_logs") or [])
         merged["source"]["collect_logs"].append({"started_at": started_at, "finished_at": diagnostics["finished_at"], "mode": "api", "platform": "1688", "success": diagnostics["success"], "partial_success": diagnostics["partial_success"], "error_code": diagnostics["error_code"], "error_message": diagnostics["error_message"]})

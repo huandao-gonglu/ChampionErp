@@ -369,7 +369,15 @@ def test_global_chat_typed_task_vertical_publish_flow(
     )
     # 发布币种唯一事实源：显式创建 ready 店铺授权币种配置。
     seed_store_currency("ozon", "RUB", identity={"client_id": "vertical-client"})
-    saved_product = context.products.save_product(_source_product())
+    product = _source_product()
+    draft = product["drafts"]["ozon"]
+    product["sku_items"] = [{"id": "sku-vertical", "active": True, "name": "风扇", "cost_cny": "100", "barcode": draft["upc"], "package_dimensions": deepcopy(draft["package_dimensions"])}]
+    pricing = deepcopy(draft["pricing"])
+    quote = pricing["targets"]["ozon:global"]
+    quote["calculation_basis"].update({"domestic_freight_cny": "0", "packaging_cost_cny": "0", "other_cost_cny": "0"})
+    quote["calculation_fingerprint"] = pricing_calculation_fingerprint(quote["calculation_basis"])
+    draft["sku_items"] = [{"sku_id": "sku-vertical", "sku": draft["sku"], "stock": "5", "selected": True, "pricing": {**pricing, "applied": True}}]
+    saved_product = context.products.save_product(product)
     draft_id = str(saved_product["drafts"]["ozon"]["draft_id"])
 
     boundary_calls = {"copy": 0, "category": 0, "attributes": 0}
@@ -478,10 +486,12 @@ def test_global_chat_typed_task_vertical_publish_flow(
         deterministic_attribute_agent,
     )
 
+    from erp_web.runtime_units.sku_publish_adapter import SkuGroupPublishingAdapter
+
     network_adapter = _PlatformNetworkBoundary(succeed=remote_success)
     bus = PublishingBus(
         context.db,
-        adapters={"ozon": network_adapter},
+        adapters={"ozon": SkuGroupPublishingAdapter(network_adapter)},
         config_provider=context.config.load_store_config,
         terminal_callback=lambda state: persist_publish_bus_terminal_results(
             state,
@@ -670,7 +680,7 @@ def test_global_chat_typed_task_vertical_publish_flow(
             }
         else:
             assert terminal.error_code == "GLOBAL_TASK_JOB_FAILED"
-            assert terminal.error_message == "平台拒绝纵向测试商品"
+            assert "平台拒绝纵向测试商品" in terminal.error_message
 
         persisted_draft = context.db.load_draft_model(draft_id)
         assert persisted_draft["publish_status"] == (

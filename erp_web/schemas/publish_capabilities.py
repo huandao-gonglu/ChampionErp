@@ -56,6 +56,16 @@ class ProductPublishDestination(BaseModel):
     sale_terms: tuple[dict[str, Any], ...] | None = None
 
 
+class ProductPublishSkuSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    sku_id: str
+    sku: str
+    stock: str = ""
+    price: str = ""
+    currency: str = ""
+    destinations: tuple[ProductPublishDestination, ...] = ()
+
+
 class ProductPublishSummary(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -74,6 +84,8 @@ class ProductPublishSummary(BaseModel):
     price: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
     stock: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
     image_count: int = Field(default=0, ge=0)
+    sku_items: tuple[ProductPublishSkuSummary, ...] = ()
+    grouping_mode: str = ""
     destinations: tuple[ProductPublishDestination, ...] = ()
 
 

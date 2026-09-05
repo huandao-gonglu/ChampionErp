@@ -109,6 +109,8 @@ function payloadPreview(): PayloadPreviewState {
       price: '1299',
       stock: '10',
       imageCount: 3,
+      groupingMode: 'separate',
+      skuItems: [{ sku_id: 'first', sku: 'YDX-001', stock: '10', price: '1299', currency: 'RUB', destinations: [] }, { sku_id: 'second', sku: 'YDX-002', stock: '5', price: '1599', currency: 'RUB', destinations: [] }],
     },
     warnings: [],
   }
@@ -146,40 +148,11 @@ describe('PublishPrecheckPanel', () => {
     expect(buttons.find((button) => button.text() === '确认加入队列')!.attributes('disabled')).toBeDefined()
   })
 
-  it('编辑包装尺寸时同步草稿并通知父组件更新核价输入', async () => {
-    const props = panelProps()
-    props.draft.packageDimensions = {
-      lengthCm: '60',
-      widthCm: '55',
-      heightCm: '155',
-      weightKg: '0.182',
-    }
-    const wrapper = mount(PublishPrecheckPanel, { props })
-    const packageExplanation = wrapper.get('[data-testid="shipping-package-explanation"]')
-    expect(packageExplanation.text()).toContain('实际发货包装')
-    expect(packageExplanation.text()).toContain('拆装并包装后的外箱尺寸与毛重')
-    expect(packageExplanation.text()).toContain('不是组装后的商品尺寸')
-    const updates = [
-      ['lengthCm', '61'],
-      ['widthCm', '56'],
-      ['heightCm', '156'],
-      ['weightKg', '0.183'],
-    ] as const
-
-    for (const [field, value] of updates) {
-      await wrapper.get(`input[data-package-dimension-field="${field}"]`).setValue(` ${value} `)
-      expect(props.draft.packageDimensions[field]).toBe(value)
-    }
-
-    expect(wrapper.emitted('updatePackageDimension')).toEqual(
-      updates.map(([field, value]) => [field, value]),
-    )
-    expect(wrapper.emitted('invalidatePublishValidation')).toHaveLength(updates.length)
-    for (const [field] of updates) {
-      const input = wrapper.get(`input[data-package-dimension-field="${field}"]`)
-      expect(input.element.parentElement?.tagName).toBe('DIV')
-      wrapper.get(`label[for="${input.attributes('id')}"]`)
-    }
+  it('预检读取所选 SKU，不提供草稿级单品编码或包装编辑入口', () => {
+    const wrapper = mount(PublishPrecheckPanel, { props: panelProps() })
+    expect(wrapper.find('[data-package-dimension-field]').exists()).toBe(false)
+    expect(wrapper.find('[data-publish-draft-field="sku"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('逐 SKU 校验')
   })
 
   it('任一发布字段编辑都会通知父组件废弃旧预检与 Payload', async () => {
@@ -193,15 +166,12 @@ describe('PublishPrecheckPanel', () => {
       },
     })
 
-    await wrapper.get('[data-publish-draft-field="sku"]').setValue('SKU-NEW')
-    await wrapper.get('[data-publish-draft-field="stock"]').setValue('12')
-    await wrapper.get('[data-publish-draft-field="upc"]').setValue('123456789012')
     await wrapper.get('[data-publish-draft-field="allowGtinExemption"]').setValue(true)
     await wrapper.get('[data-publish-draft-field="warrantyType"]').setValue('seller')
     await wrapper.get('[data-publish-draft-field="warrantyDuration"]').setValue('6')
     await wrapper.get('[data-publish-draft-field="warrantyUnit"]').setValue('years')
 
-    expect(wrapper.emitted('invalidatePublishValidation')).toHaveLength(7)
+    expect(wrapper.emitted('invalidatePublishValidation')).toHaveLength(4)
   })
 
   it('未配置保修条款时显示未选择，不把空数据伪装成无保修', () => {
@@ -265,7 +235,7 @@ describe('PublishPrecheckPanel', () => {
     const wrapper = mount(PublishPrecheckPanel, { props })
 
     expect(wrapper.text()).toContain('草稿标题未填写')
-    expect(wrapper.text()).toContain('无 SKU')
+    expect(wrapper.text()).toContain('已选 0 个 SKU')
     expect(wrapper.text()).toContain('1688 来源标题')
     expect(wrapper.text()).not.toContain('SOURCE-SKU')
   })
@@ -556,7 +526,8 @@ describe('PublishPrecheckPanel', () => {
     expect(text).toContain('已确认预览')
     expect(text).toContain(summary.storeIdentity)
     expect(text).toContain('1299 RUB')
-    expect(text).toContain('图片 3 张')
+    expect(text).toContain('1599 RUB')
+    expect(text).toContain('2 个 SKU · 3 张共用图片')
     expect(text).toContain(`${preview.validationDigest.slice(0, 16)}…`)
     expect(text).toContain('"offerId": "YDX-001"')
 

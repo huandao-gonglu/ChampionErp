@@ -1,5 +1,5 @@
 <script setup lang="ts">
-export type DraftWorkspaceTab = 'text' | 'images' | 'category' | 'pricing' | 'precheck'
+export type DraftWorkspaceTab = 'text' | 'skus' | 'images' | 'category' | 'pricing' | 'precheck'
 
 const props = defineProps<{
   activeTab: DraftWorkspaceTab
@@ -14,6 +14,7 @@ const emit = defineEmits<{
 
 const tabs: Array<{ key: DraftWorkspaceTab; label: string; summary: string }> = [
   { key: 'text', label: '编辑文本', summary: '标题、描述和卖点' },
+  { key: 'skus', label: 'SKU', summary: '选品、规格和销售设置' },
   { key: 'images', label: '编辑图片', summary: '发布图和图片池' },
   { key: 'category', label: '类目/属性', summary: '类目与必填属性' },
   { key: 'pricing', label: '核价', summary: '成本、运费和利润' },
@@ -35,7 +36,7 @@ const tabs: Array<{ key: DraftWorkspaceTab; label: string; summary: string }> = 
       </div>
     </header>
 
-    <nav class="grid gap-2 rounded-2xl border border-accent-200 bg-slate-50 p-2 dark:border-dark-700 dark:bg-dark-950/70 sm:grid-cols-2 xl:grid-cols-5" aria-label="草稿编辑功能">
+    <nav class="grid gap-2 rounded-2xl border border-accent-200 bg-slate-50 p-2 dark:border-dark-700 dark:bg-dark-950/70 sm:grid-cols-2 xl:grid-cols-6" aria-label="草稿编辑功能">
       <button
         v-for="tab in tabs"
         :key="tab.key"

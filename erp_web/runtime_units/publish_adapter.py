@@ -13,6 +13,7 @@ from erp_web.product_model import default_draft
 from erp_web.runtime_units.publishing_bus_core import PublishingBus
 from erp_web.stores.product_store import normalize_product_fields
 
+from .sku_publish_adapter import SkuGroupPublishingAdapter
 from .publish_helpers import (
     _required_attribute_summary,
     build_mercadolibre_publish_payload,
@@ -508,9 +509,9 @@ class YandexPublishingAdapter:
 
 
 _PUBLISHERS: dict[str, PlatformPublisher] = {
-    MercadoLibrePublishingAdapter.platform: MercadoLibrePublishingAdapter(),
-    OzonPublishingAdapter.platform: OzonPublishingAdapter(),
-    YandexPublishingAdapter.platform: YandexPublishingAdapter(),
+    MercadoLibrePublishingAdapter.platform: SkuGroupPublishingAdapter(MercadoLibrePublishingAdapter()),
+    OzonPublishingAdapter.platform: SkuGroupPublishingAdapter(OzonPublishingAdapter()),
+    YandexPublishingAdapter.platform: SkuGroupPublishingAdapter(YandexPublishingAdapter()),
 }
 
 

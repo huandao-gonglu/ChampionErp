@@ -178,6 +178,8 @@ def _ai_draft_product_context(value: Any) -> dict[str, Any]:
         compact_images.append(compact_image)
     compact["image_pool"] = compact_images
     compact["image_count"] = len(images)
+    compact["sku_count"] = len(context.get("sku_items", []))
+    compact["sku_items"] = [_bounded_dict_subset(row, ("id", "name", "cost_cny", "options", "package_dimensions", "active")) for row in context.get("sku_items", [])[:100]]
     return compact
 
 
@@ -361,6 +363,9 @@ def _ai_draft_read_view(value: Any) -> DraftReadView:
         ),
         publication=bounded_publication,
         pricing_summary=pricing_summary,
+        sku_count=len(draft.get("sku_items", [])),
+        sku_items=tuple(_bounded_dict_subset(row, ("sku_id", "selected", "sku", "stock", "overrides", "attributes_by_target")) for row in draft.get("sku_items", [])[:100]),
+        grouping=_bounded_dict_subset(draft.get("grouping"), ("mode", "name")),
         target_sites=tuple(bounded_targets),
     )
 

@@ -15,7 +15,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   selectPublishTarget: [value: MarketplaceTargetSite]
-  updatePackageDimension: [field: PackageDimensionField, value: string]
   invalidatePublishValidation: []
   precheck: []
   previewPayload: []
@@ -26,7 +25,6 @@ type ConfiguredWarrantyType = 'none' | 'seller' | 'factory'
 type WarrantyType = '' | ConfiguredWarrantyType
 type ConfiguredWarrantyUnit = 'months' | 'years'
 type WarrantyUnit = '' | ConfiguredWarrantyUnit
-type PackageDimensionField = keyof DraftDetail['packageDimensions']
 type PublishPrecheckScopeCard = PublishPrecheckScope & {
   key: string
   title: string
@@ -56,7 +54,7 @@ const targetOptions = computed(() => props.publishTargets.map((target) => ({
 })))
 const hasCurrentDraft = computed(() => Boolean(props.draft.draftId))
 const currentDraftTitle = computed(() => String(props.draft.title || '').trim() || (props.draft.draftId ? '草稿标题未填写' : '尚未选择草稿'))
-const currentDraftSku = computed(() => String(props.draft.sku || '').trim() || '无 SKU')
+const currentDraftSku = computed(() => `已选 ${props.draft.skuItems.filter(row => row.selected).length} 个 SKU`)
 const activeDraft = computed(() => {
   const draft = props.draft
   if (!draft.packageDimensions) {
@@ -298,30 +296,6 @@ function hasIssue(field: string, code = '') {
   return blockingIssues.value.some((issue) => issue.field === field || issue.code === code || issue.field.startsWith(`${field}.`))
 }
 
-function generateSku() {
-  const source = activeDraft.value.draftId || props.productContext.sourceUrl || props.productContext.title || activeDraft.value.title || Date.now().toString()
-  const suffix = source.replace(/[^a-zA-Z0-9]+/g, '').slice(-8).toUpperCase() || Date.now().toString().slice(-6)
-  const rawModel = activeDraft.value.attributes.MODEL
-  const modelText = typeof rawModel === 'string' ? rawModel : props.productContext.model || 'ML'
-  const model = modelText.replace(/[^a-zA-Z0-9]+/g, '').slice(0, 10).toUpperCase() || 'ML'
-  activeDraft.value.sku = `${model}-${suffix}`
-  emit('invalidatePublishValidation')
-}
-
-function useDefaultStock() {
-  const stock = activeDraft.value.stock || props.productContext.stock || '10'
-  if (stock === activeDraft.value.stock) return
-  activeDraft.value.stock = stock
-  emit('invalidatePublishValidation')
-}
-
-function setPackageDimension(field: PackageDimensionField, value: string) {
-  const normalizedValue = value.trim()
-  activeDraft.value.packageDimensions[field] = normalizedValue
-  emit('updatePackageDimension', field, normalizedValue)
-  emit('invalidatePublishValidation')
-}
-
 function targetKey(target: MarketplaceTargetSite) {
   return `${String(target.platform || '').trim().toLowerCase()}:${String(target.site || '').trim().toLowerCase()}`
 }
@@ -424,76 +398,10 @@ function applyWarrantyTerms(type: ConfiguredWarrantyType, durationValue = '3', u
           </span>
         </div>
 
-        <div class="mt-4 grid gap-3 md:grid-cols-2">
-          <label class="block">
-            <span class="text-xs font-semibold" :class="hasIssue('sku', 'SKU_MISSING') ? 'text-rose-700' : 'text-slate-500'">SKU</span>
-            <div class="mt-1 flex gap-2">
-              <input v-model="activeDraft.sku" class="input" :class="hasIssue('sku', 'SKU_MISSING') ? 'border-rose-300 bg-rose-50' : ''" data-publish-draft-field="sku" @input="emit('invalidatePublishValidation')" />
-              <button class="btn btn-outline shrink-0 px-3" type="button" @click="generateSku">生成</button>
-            </div>
-          </label>
-          <label class="block">
-            <span class="text-xs font-semibold" :class="hasIssue('stock', 'STOCK_MISSING') ? 'text-rose-700' : 'text-slate-500'">库存</span>
-            <div class="mt-1 flex gap-2">
-              <input v-model="activeDraft.stock" class="input" :class="hasIssue('stock', 'STOCK_MISSING') ? 'border-rose-300 bg-rose-50' : ''" data-publish-draft-field="stock" @input="emit('invalidatePublishValidation')" />
-              <button class="btn btn-outline shrink-0 px-3" type="button" @click="useDefaultStock">填 10</button>
-            </div>
-          </label>
-          <label class="block">
-            <span class="text-xs font-semibold" :class="hasIssue('upc', 'UPC_MISSING') ? 'text-rose-700' : 'text-slate-500'">UPC / GTIN</span>
-            <input v-model="activeDraft.upc" class="input mt-1" :class="hasIssue('upc', 'UPC_MISSING') ? 'border-rose-300 bg-rose-50' : ''" data-publish-draft-field="upc" @input="emit('invalidatePublishValidation')" />
-          </label>
-          <label class="mt-6 flex items-center gap-2 text-sm font-semibold text-accent-700 dark:text-accent-200">
-            <input v-model="activeDraft.allowGtinExemption" type="checkbox" class="size-4 rounded border-accent-300" data-publish-draft-field="allowGtinExemption" @change="emit('invalidatePublishValidation')" />
-            允许无 UPC 豁免
-          </label>
-        </div>
-
-        <div data-testid="shipping-package-explanation" class="mt-4 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800 dark:border-blue-900/70 dark:bg-blue-950/30 dark:text-blue-200">
-          <p class="font-semibold">实际发货包装</p>
-          <p class="mt-1">填写拆装并包装后的外箱尺寸与毛重，不是组装后的商品尺寸。</p>
-        </div>
-        <div class="mt-3 grid gap-3 md:grid-cols-4">
-          <div class="block">
-            <label for="precheck-package-length" class="text-xs font-semibold text-accent-500 dark:text-accent-400">长 cm</label>
-            <input
-              id="precheck-package-length"
-              :value="activeDraft.packageDimensions.lengthCm"
-              class="input mt-1"
-              data-package-dimension-field="lengthCm"
-              @input="setPackageDimension('lengthCm', ($event.target as HTMLInputElement).value)"
-            />
-          </div>
-          <div class="block">
-            <label for="precheck-package-width" class="text-xs font-semibold text-accent-500 dark:text-accent-400">宽 cm</label>
-            <input
-              id="precheck-package-width"
-              :value="activeDraft.packageDimensions.widthCm"
-              class="input mt-1"
-              data-package-dimension-field="widthCm"
-              @input="setPackageDimension('widthCm', ($event.target as HTMLInputElement).value)"
-            />
-          </div>
-          <div class="block">
-            <label for="precheck-package-height" class="text-xs font-semibold text-accent-500 dark:text-accent-400">高 cm</label>
-            <input
-              id="precheck-package-height"
-              :value="activeDraft.packageDimensions.heightCm"
-              class="input mt-1"
-              data-package-dimension-field="heightCm"
-              @input="setPackageDimension('heightCm', ($event.target as HTMLInputElement).value)"
-            />
-          </div>
-          <div class="block">
-            <label for="precheck-package-weight" class="text-xs font-semibold text-accent-500 dark:text-accent-400">毛重 kg</label>
-            <input
-              id="precheck-package-weight"
-              :value="activeDraft.packageDimensions.weightKg"
-              class="input mt-1"
-              data-package-dimension-field="weightKg"
-              @input="setPackageDimension('weightKg', ($event.target as HTMLInputElement).value)"
-            />
-          </div>
+        <div data-testid="shipping-package-explanation" class="mt-4 rounded-lg bg-white p-3 text-sm dark:bg-dark-900">
+          <p class="font-semibold">逐 SKU 校验</p>
+          <p class="muted mt-1">卖家编码、可售库存、条码、实际发货包装和售价均取所选 SKU 的资料。请在 SKU 页编辑各项，在核价页批量计算并应用售价。</p>
+          <label class="mt-3 flex items-center gap-2"><input v-model="activeDraft.allowGtinExemption" type="checkbox" data-publish-draft-field="allowGtinExemption" @change="emit('invalidatePublishValidation')" />允许无 UPC 豁免</label>
         </div>
 
         <div class="mt-4 rounded-lg border border-accent-200 bg-white p-3 dark:border-dark-700 dark:bg-dark-900">
@@ -632,15 +540,19 @@ function applyWarrantyTerms(type: ConfiguredWarrantyType, durationValue = '3', u
             <div class="mt-0.5 truncate text-xs text-accent-500 dark:text-accent-400">{{ props.payloadPreview.summary.categoryId || '无类目' }}</div>
           </div>
           <div class="rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm dark:border-dark-700 dark:bg-dark-900">
-            <div class="text-xs font-semibold text-accent-500 dark:text-accent-400">价格 / 库存</div>
-            <div class="mt-1 text-accent-700 dark:text-accent-200">{{ props.payloadPreview.summary.price || '-' }} {{ props.payloadPreview.summary.listingCurrency }}</div>
-            <div class="mt-0.5 text-xs text-accent-500 dark:text-accent-400">库存 {{ props.payloadPreview.summary.stock || '-' }} · 图片 {{ props.payloadPreview.summary.imageCount }} 张</div>
+            <div class="text-xs font-semibold text-accent-500 dark:text-accent-400">发布规格 / 图片</div>
+            <div class="mt-1 text-accent-700 dark:text-accent-200">{{ props.payloadPreview.summary.skuItems?.length || 0 }} 个 SKU · {{ props.payloadPreview.summary.imageCount }} 张共用图片</div>
+            <div class="mt-0.5 text-xs text-accent-500 dark:text-accent-400">各规格售价和库存见下表</div>
           </div>
           <div class="rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm dark:border-dark-700 dark:bg-dark-900">
             <div class="text-xs font-semibold text-accent-500 dark:text-accent-400">草稿 / 平台</div>
             <div class="mt-1 truncate font-mono text-accent-700 dark:text-accent-200">{{ props.payloadPreview.summary.draftId || '-' }}</div>
             <div class="mt-0.5 truncate text-xs text-accent-500 dark:text-accent-400">{{ props.payloadPreview.summary.platform }}{{ props.payloadPreview.summary.site ? ` / ${props.payloadPreview.summary.site}` : '' }}</div>
           </div>
+        </div>
+        <div v-if="props.payloadPreview?.summary?.skuItems?.length" class="mt-3 overflow-auto text-sm">
+          <p class="font-semibold">本次发布 {{ props.payloadPreview.summary.skuItems.length }} 个 SKU · {{ props.payloadPreview.summary.groupingMode === 'combined' ? '组合展示' : '独立刊登' }}</p>
+          <table class="mt-2 w-full text-left"><thead><tr><th>卖家编码</th><th>库存</th><th>售价</th></tr></thead><tbody><tr v-for="row in props.payloadPreview.summary.skuItems" :key="String(row.sku_id)"><td class="py-2">{{ row.sku }}</td><td>{{ row.stock }}</td><td>{{ row.price }} {{ row.currency }}<p v-for="(destination, index) in (row.destinations as UnknownRecord[] || [])" :key="index" class="text-xs">{{ destination.site_id }} / {{ destination.logistic_type }}：{{ destination.net_proceeds != null ? '净收入 ' + destination.net_proceeds : destination.price }}</p></td></tr></tbody></table>
         </div>
         <p v-if="props.payloadPreview?.warning" class="mt-3 text-sm text-amber-700">{{ props.payloadPreview.warning }}</p>
         <ul v-if="props.payloadPreview?.warnings.length" class="mt-3 space-y-1 text-sm text-amber-700">

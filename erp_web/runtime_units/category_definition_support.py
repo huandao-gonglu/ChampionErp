@@ -137,6 +137,11 @@ def _platform_binding_from_legacy(
     )
 
 
+def record_aspect(legacy: dict[str, Any]) -> bool:
+    raw = legacy.get("raw") if isinstance(legacy.get("raw"), dict) else {}
+    return raw.get("is_aspect") is True or legacy.get("is_aspect") is True
+
+
 def legacy_attribute_to_definition(
     legacy: dict[str, Any],
     *,
@@ -270,6 +275,7 @@ def legacy_attribute_to_definition(
         id=attribute_id,
         name=_text(legacy.get("name") or attribute_id),
         required=bool(legacy.get("required")),
+        variation_role=_text(legacy.get("variation_role")) or ("variant" if record_aspect(legacy) else ""),
         value_type=_text(legacy.get("value_type")),
         value_mode=value_mode,
         allow_custom_values=bool(legacy.get("allow_custom_values")),
@@ -299,6 +305,7 @@ def definition_to_legacy_attribute(
         "id": definition.id,
         "name": definition.name,
         "required": definition.required,
+        "variation_role": definition.variation_role,
         "value_type": definition.value_type,
         "value_mode": definition.value_mode,
         "allow_custom_values": definition.allow_custom_values,

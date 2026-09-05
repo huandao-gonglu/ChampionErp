@@ -945,6 +945,7 @@ def _terminal_success(
         "business_id": checkpoint.business_id,
         "campaign_status": campaign_status,
         "card_status": card_status,
+        "group_id": checkpoint.evidence.get("confirmation", {}).get("group_id", ""),
         "checked_at": collect_time_iso(),
         "checkpoint": checkpoint.model_dump(),
         "warnings": deepcopy(checkpoint.warnings),
@@ -1203,11 +1204,13 @@ def _confirmation_readback(
         )
 
     card_status = ""
+    group_id = ""
     if mappings:
         first = mappings[0] if isinstance(mappings[0], dict) else {}
         # 官方响应中 cardStatus 位于 offerMappings[].offer.cardStatus。
         nested_offer = first.get("offer") if isinstance(first.get("offer"), dict) else {}
         card_status = str(nested_offer.get("cardStatus") or "").strip()
+        group_id = str(nested_offer.get("groupId") or "")
     campaign_status = ""
     if offers:
         first_offer = offers[0] if isinstance(offers[0], dict) else {}
@@ -1216,6 +1219,7 @@ def _confirmation_readback(
     checkpoint.evidence["confirmation"] = {
         "campaign_status": campaign_status,
         "card_status": card_status,
+        "group_id": group_id,
         "at": collect_time_iso(),
     }
     checkpoint.last_response_summary = {

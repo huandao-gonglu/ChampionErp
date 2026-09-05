@@ -1555,6 +1555,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(get_context().products.draft_workflow_status(product, "mercadolibre"), "images_ready")
 
+        product["sku_items"] = [{"id": "status-sku"}]
+        product["drafts"]["mercadolibre"]["sku_items"] = [{"sku_id": "status-sku", "selected": True, "sku": "STATUS", "stock": "5", "pricing": {"applied": True}}]
         product = publish_validation.apply_precheck_to_product(
             product,
             "mercadolibre",
@@ -2028,6 +2030,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             saved = get_context().products.save_product(product)
             self.assertEqual(saved["drafts"]["mercadolibre"]["status"], "images_ready")
 
+            saved["sku_items"] = [{"id": "status-sku"}]
+            saved["drafts"]["mercadolibre"]["sku_items"] = [{"sku_id": "status-sku", "selected": True, "sku": "STATUS", "stock": "5", "pricing": {"applied": True}}]
             prechecked = publish_validation.apply_precheck_to_product(
                 saved,
                 "mercadolibre",
@@ -2194,6 +2198,10 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             }
         )
 
+        draft = product["drafts"]["mercadolibre"]
+        product["sku_items"] = [{"id": "sku-cbt", "active": True, "cost_cny": "100", "barcode": draft["upc"], "package_dimensions": draft["package_dimensions"]}]
+        draft["sku_items"] = [{"sku_id": "sku-cbt", "sku": draft["sku"], "selected": True, "stock": draft["stock"], "pricing": {**draft["pricing"], "applied": True}}]
+        draft["sku_items"][0]["pricing"]["targets"]["mercadolibre:cbt"]["sites_to_sell"] = [{"site_id": "MLM", "logistic_type": "remote", "price": 18}]
         payload = publish_adapter.require_publishing_adapter(
             "mercadolibre"
         ).build_payload(
@@ -2206,6 +2214,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             ),
             config,
         )
+        payload = payload["items"][0]["payload"]
         attributes = {
             item["id"]: item.get("value_name") or item.get("values")
             for item in payload["attributes"]
@@ -2986,6 +2995,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
         ready_product["publish_preview"] = {
             "mercadolibre": {"ok": True, "errors": [], "warnings": [], "checked_at": "2026-05-30T11:05:00"}
         }
+        ready_product["sku_items"] = [{"id": "status-sku"}]
+        ready_product["drafts"]["mercadolibre"]["sku_items"] = [{"sku_id": "status-sku", "selected": True, "sku": "STATUS", "stock": "5", "pricing": {"applied": True}}]
         ready_status = get_context().products.product_index_status(ready_product, "mercadolibre")
 
         pending_product = sample_product("Queue blocked item", "https://example.com/queue-blocked")
@@ -3037,6 +3048,8 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
         precheck_only_product["publish_preview"] = {
             "mercadolibre": {"ok": True, "errors": [], "warnings": [], "checked_at": "2026-05-30T11:10:00"}
         }
+        precheck_only_product["sku_items"] = [{"id": "status-sku"}]
+        precheck_only_product["drafts"]["mercadolibre"]["sku_items"] = [{"sku_id": "status-sku", "selected": True, "sku": "STATUS", "stock": "5", "pricing": {"applied": True}}]
         precheck_status = get_context().products.product_index_status(precheck_only_product, "mercadolibre")
 
         self.assertEqual(precheck_status["workflow_status"], "ready_to_publish")
