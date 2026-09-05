@@ -45,6 +45,36 @@ def _sample_product(title: str = "Store test product", url: str = "https://examp
     }
 
 
+@pytest.mark.parametrize("attributes", [{"电机类型": "无刷电机", "电池容量": "2000–4000mAh"}, {}])
+def test_source_attribute_edits_survive_save_reload_and_remove_stale_copies(attributes: dict) -> None:
+    from erp_web.runtime_units.category_attribute_ai_fill import _product_context
+    from erp_web.runtime_units.product_capabilities import read_product
+    from erp_web.schemas.product_capabilities import ProductReadRequest
+
+    products = get_context().products
+    product = {
+        "name": "便携风扇",
+        "source": {"title": "便携风扇", "attributes": {"电机类型": "旧电机", "尺寸": "0", "材质": "ABS"}},
+        "attributes": {"电机类型": "旧电机", "尺寸": "0", "材质": "独立核实的材质", "内部备注": "保留"},
+    }
+    saved = products.save_product(product)
+    product_id = saved["product_id"]
+    products.save_product_profile({"product_id": product_id, "source": {"attributes": attributes}})
+    reloaded = products.load_product_from_index(product_id, "")
+
+    assert reloaded["source"]["attributes"] == attributes
+    assert reloaded["attributes"] == {"材质": "独立核实的材质", "内部备注": "保留"}
+    facts = read_product(ProductReadRequest(product_id=product_id), product_store=products)
+    assert facts.product.source_attributes == attributes
+    fill_context = _product_context(reloaded, "mercadolibre")
+    assert fill_context["source"]["attributes"] == attributes
+    assert "旧电机" not in json.dumps(fill_context, ensure_ascii=False)
+
+    # 再次保存也不能从采集副本恢复已删除的属性。
+    products.save_product_profile(reloaded)
+    assert products.load_product_from_index(product_id, "")["source"]["attributes"] == attributes
+
+
 def _save_ready_draft_with_server_state() -> tuple[dict, list[dict]]:
     reviews = [
         {

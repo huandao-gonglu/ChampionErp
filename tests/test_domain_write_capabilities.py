@@ -454,6 +454,29 @@ def test_product_profile_patch_is_partial() -> None:
     assert str(reloaded.get("brand")) == "Champion"
 
 
+def test_product_profile_attribute_patch_can_be_verified_by_product_read() -> None:
+    """复现对话中的主档属性写入，回读必须显示属性实际值。"""
+    from erp_web.runtime_units.product_capabilities import read_product
+    from erp_web.schemas.product_capabilities import ProductReadRequest
+
+    context = get_context()
+    _seed_product("product-attribute-readback", with_draft=False)
+    result = product_profile_patch(
+        ProductProfilePatchRequest(product={
+            "product_id": "product-attribute-readback",
+            "attributes": {"适用年龄": "1-99岁"},
+        }),
+        scope=_write_scope(),
+        execution=_execution("op-profile-attribute-readback"),
+    )
+    facts = read_product(
+        ProductReadRequest(product_id=result.product_id),
+        product_store=context.products,
+    )
+    assert facts.product.attributes == {"适用年龄": "1-99岁"}
+    assert "适用年龄" not in facts.product.source_attributes
+
+
 def test_draft_pricing_apply_requires_existing_draft() -> None:
     scope = _write_scope()
     with pytest.raises(BusinessCapabilityError) as missing:

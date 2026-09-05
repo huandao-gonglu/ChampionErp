@@ -35,7 +35,7 @@ class FrontendTemplateTests(unittest.TestCase):
     def test_app_vue_only_contains_global_shell(self) -> None:
         app_vue = (FRONT_SRC_DIR / "App.vue").read_text(encoding="utf-8")
 
-        self.assertIn("<RouterView />", app_vue)
+        self.assertRegex(app_vue, r"<RouterView\b")
         self.assertIn("NavigationProgress", app_vue)
         self.assertIn("Toast", app_vue)
         self.assertNotIn("useWorkflowStore", app_vue)

@@ -796,6 +796,20 @@ class ProductStore:
                 else {}
             )
             product_data = {**existing, **product_data}
+            if isinstance(patch_source.get("attributes"), dict):
+                old_attributes = existing_source.get("attributes") or {}
+                new_attributes = patch_source["attributes"]
+                product_attributes = dict(product_data.get("attributes") or {})
+                # 清理已修改来源属性的采集副本，避免旧值继续成为 AI 证据。
+                # 与来源值不同的主档属性属于独立维护资料，保留供冲突核实。
+                for key, value in old_attributes.items():
+                    if (
+                        (key not in new_attributes or new_attributes[key] != value)
+                        and key in product_attributes
+                        and product_attributes[key] == value
+                    ):
+                        del product_attributes[key]
+                product_data["attributes"] = product_attributes
             product_data["source"] = {**existing_source, **patch_source}
         source = product_data.get("source") if isinstance(product_data.get("source"), dict) else None
         if source is not None and "name" in product_data:

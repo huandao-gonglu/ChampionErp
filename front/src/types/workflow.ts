@@ -277,7 +277,7 @@ export interface ProductSource {
   }
   weightKg: string
   imagePool: ImageAsset[]
-  attributes: Record<string, CategoryAttributeValue>
+  attributes: UnknownRecord
   attributeMatches: UnknownRecord
   collectStatus: string
   collectDiagnostics: UnknownRecord
@@ -335,6 +335,7 @@ export interface Product {
   materials: string[]
   sellingPoints: string[]
   packageIncludes: string[]
+  attributes: UnknownRecord
   source: ProductSource
   drafts: Record<Marketplace, MarketplaceDraft>
   raw: UnknownRecord

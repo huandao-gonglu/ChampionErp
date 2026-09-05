@@ -45,6 +45,7 @@ export function createEmptyDraft(language = '', site = ''): MarketplaceDraft {
 
 export function createEmptyProduct(): Product {
   return {
+    attributes: {},
     productId: '',
     name: '',
     brand: '',

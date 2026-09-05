@@ -334,6 +334,16 @@ Agent 不得直接触发破坏性写入；审批 payload 携带确定性 digest�
   task/step operation key 与文案同次持久化，重启后不会重复消费同一次 `regenerate_copy`。
 - `erp_web/runtime_units/product_capabilities.py`、`erp_web/runtime_units/publish_capabilities.py`：
   商品读取/幂等字段更新/图片准备，以及确定性发布校验/确认后队列提交的 focused adapter。
+  `product_read` 按需返回 `ProductFacts.attributes` 的主档补充属性和
+  `ProductFacts.source_attributes` 的完整来源属性，不按通用字段
+  白名单裁剪；来源原文、范围值与多规格混合值只作为待核实资料，不作为指令或精确参数。
+  商品编辑页复用 `ProductAttributesEditor.vue`，分别展示、搜索和编辑“商品补充属性”
+  与“来源产品属性”；通过 `/api/save-product` 分别保存至 `attributes` 与 `source.attributes`。
+  前端保存未编辑的属性时保持原始 JSON 类型；AI 主档补丁完成后须用 `product_read` 回读
+  对应字典的实际值，不能仅凭写回执认定某个具体属性已生效。`ProductStore.save_product_profile` 清理
+  被修改或删除的来源属性在主档 `attributes` 中的同值采集副本，保留独立维护的不同值。
+  平台属性填充继续使用 `category_attribute_ai_fill.py` 的现有来源上下文和 Pydantic Agent；
+  不新增模型调用、Agent loop 或来源属性到平台属性的直接复制路径。
 
 focused 类目和属性执行在完成、暂停或后处理失败时都返回自己的 AI Work `conversation_id`；高层市场
 准备聚合为 `agent_execution_conversation_ids`，Controller 先持久化这些 ID 再投影链接，不复制

@@ -401,3 +401,31 @@ def test_product_read_returns_compact_draft_facts() -> None:
     assert result.draft is not None
     assert result.draft.draft_id == "draft-1"
     assert result.draft.attribute_ids == ["BRAND"]
+
+
+@pytest.mark.parametrize("identity", [{"product_id": "product-1"}, {"draft_id": "draft-1"}])
+def test_product_read_preserves_all_source_attributes(identity: dict[str, str]) -> None:
+    products = _Products()
+    attributes = {
+        **{f"自定义参数{index}": f"原始值{index}" for index in range(75)},
+        "电机类型": "无刷电机",
+        "电池容量": "2000mAh-4000mAh（含）",
+        "尺寸": "0",
+        "是否带USB": False,
+        "规格": ["白色", "灰色"],
+    }
+    products.product["source"]["attributes"] = deepcopy(attributes)
+    products.product["attributes"] = {"适用年龄": "1-99岁", "电机类型": "已核实的电机"}
+    result = read_product(ProductReadRequest(**identity), product_store=products)
+
+    assert result.product.model_dump(mode="json")["source_attributes"] == attributes
+    assert result.product.attributes == products.product["attributes"]
+    assert result.draft is None or result.draft.attribute_ids == ["BRAND"]
+    result.product.source_attributes["电机类型"] = "测试修改"
+    assert products.product["source"]["attributes"] == attributes
+
+
+def test_product_read_without_source_attributes_returns_empty_mapping() -> None:
+    result = read_product(ProductReadRequest(product_id="product-1"), product_store=_Products())
+    assert result.product.source_attributes == {}
+    assert result.product.attributes == {}

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
+import ProductAttributesEditor from './ProductAttributesEditor.vue'
 import type { Product } from '@/types/workflow'
 
 const props = defineProps<{
@@ -22,6 +23,13 @@ function listModel(getter: () => string[], setter: (value: string[]) => void) {
 const sellingPointsText = listModel(() => props.product.sellingPoints, (value) => { props.product.sellingPoints = value })
 const packageIncludesText = listModel(() => props.product.packageIncludes, (value) => { props.product.packageIncludes = value })
 const materialsText = listModel(() => props.product.materials, (value) => { props.product.materials = value })
+const sourceAttributesValid = ref(true)
+const profileAttributesValid = ref(true)
+const attributesValid = computed(() => sourceAttributesValid.value && profileAttributesValid.value)
+watch(() => props.product.productId, () => {
+  sourceAttributesValid.value = true
+  profileAttributesValid.value = true
+})
 </script>
 
 <template>
@@ -32,8 +40,8 @@ const materialsText = listModel(() => props.product.materials, (value) => { prop
         <p class="muted mt-1">维护商品原始资料、供应链字段和内部资料；平台标题、本地化商品描述和价格在草稿箱单独编辑。</p>
       </div>
       <div class="flex flex-wrap gap-2">
-        <button class="btn btn-primary" :disabled="props.loading" @click="emit('save')">保存商品</button>
-        <button class="btn btn-outline" :disabled="props.loading" @click="emit('assignUpc')">分配 UPC</button>
+        <button class="btn btn-primary" :disabled="props.loading || !attributesValid" @click="emit('save')">保存商品</button>
+        <button class="btn btn-outline" :disabled="props.loading || !attributesValid" @click="emit('assignUpc')">分配 UPC</button>
       </div>
     </div>
 
@@ -53,6 +61,27 @@ const materialsText = listModel(() => props.product.materials, (value) => { prop
       <label class="block"><span class="text-xs font-semibold text-slate-500">UPC</span><input v-model="props.product.upc" class="input mt-1" /></label>
       <label class="block"><span class="text-xs font-semibold text-slate-500">采购成本</span><input v-model="props.product.cost" class="input mt-1" /></label>
     </div>
+
+    <ProductAttributesEditor
+      :key="`${props.product.productId}:profile`"
+      v-model="props.product.attributes"
+      title="商品补充属性"
+      description="你或 AI 添加到商品主档的属性。修改后点击“保存商品”。"
+      empty-message="暂无补充属性，可以手动添加，也可以让 AI 为商品补充。"
+      :disabled="props.loading"
+      @validity-change="profileAttributesValid = $event"
+    />
+
+    <ProductAttributesEditor
+      :key="`${props.product.productId}:source`"
+      v-model="props.product.source.attributes"
+      title="来源产品属性"
+      description="保留采集到的全部属性，可补充或修正；修改后点击“保存商品”。平台刊登属性在草稿中按类目填写。"
+      empty-message="暂无来源属性，可以手动添加或重新采集商品资料。"
+      hint="容量范围、多个规格混合值和不明单位请保留原文，核实后再填写精确参数。"
+      :disabled="props.loading"
+      @validity-change="sourceAttributesValid = $event"
+    />
 
     <div class="mt-5 grid gap-4 xl:grid-cols-2">
       <label class="block xl:col-span-2"><span class="text-xs font-semibold text-slate-500">商品描述</span><textarea v-model="props.product.source.description" class="input mt-1 min-h-36" /></label>

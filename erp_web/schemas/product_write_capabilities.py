@@ -47,7 +47,14 @@ class ProductProfilePatch(BaseModel):
     )
     source: dict[str, JsonValue] = Field(default_factory=dict)
     marketplace_terms: dict[str, JsonValue] = Field(default_factory=dict)
-    attributes: dict[str, JsonValue] = Field(default_factory=dict)
+    attributes: dict[str, JsonValue] = Field(
+        default_factory=dict,
+        description=(
+            "商品主档补充属性，对应 product_read 返回的 attributes 和前端商品补充属性。"
+            "提供时替换整个字典；增删单个属性前先读取并保留其他键。"
+            "来源属性由 source.attributes 单独保存。"
+        ),
+    )
     listing_overrides: dict[str, JsonValue] = Field(default_factory=dict)
     copy_results: dict[str, JsonValue] = Field(default_factory=dict)
     sku_items: list[dict[str, JsonValue]] = Field(default_factory=list)
