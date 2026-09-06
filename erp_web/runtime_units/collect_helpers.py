@@ -23,6 +23,8 @@ from erp_web.product_model import (
     source_package_dimensions,
 )
 from erp_web.product_model.common import normalize_list
+from erp_web.product_model.image_pool_model import normalize_image_pool_item
+from erp_web.product_model.sku_image_model import ensure_source_image_asset
 from erp_web.services import image_service
 from erp_web.services.browser_debug_service import file_url
 from erp_web.stores.product_store import normalize_product_fields
@@ -265,6 +267,24 @@ def normalize_collect_source_images(source_updates: dict[str, Any], platform: st
     image_limit = source_site(platform).image_limit
     if image_limit is not None:
         refs = refs[:image_limit]
+    # 商品展示图的数量限制不截断规格图；同一原图只入池一次。
+    assets: list[dict[str, Any]] = []
+    for index, item in enumerate(refs):
+        if isinstance(item, str):
+            asset_id = ensure_source_image_asset(assets, item)
+            asset = next((value for value in assets if value["id"] == asset_id), None)
+            if asset:
+                asset.update({"selected": True, "is_main": index == 0, "is_sku": False, "usage": "main" if index == 0 else "detail"})
+        else:
+            asset = normalize_image_pool_item(item, index)
+            original = asset.get("url") or asset.get("path")
+            if re.fullmatch(r"img_\d+", asset["id"]) and original:
+                stable: list[dict[str, Any]] = []
+                asset["id"] = ensure_source_image_asset(stable, original)
+            assets.append(asset)
+    refs = assets
+    for sku in source.get("skus", []):
+        ensure_source_image_asset(refs, sku.get("image"))
     origin = collect_image_origin(platform, mode)
     platforms = normalize_platforms(claim_platforms)
     normalized_pool = image_service.materialize_image_values(

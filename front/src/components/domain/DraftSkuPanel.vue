@@ -2,9 +2,10 @@
 import { computed, ref, watch } from 'vue'
 import { PhArrowCounterClockwise } from '@phosphor-icons/vue'
 import ProductAttributesEditor from './ProductAttributesEditor.vue'
-import type { DraftDetail, DraftSku, ProductSku, UnknownRecord } from '@/types/workflow'
+import SkuImagePicker from './SkuImagePicker.vue'
+import type { DraftDetail, DraftSku, ImageAsset, ProductSku, UnknownRecord } from '@/types/workflow'
 
-const props = defineProps<{ draft: DraftDetail; skus: ProductSku[]; loading: boolean }>()
+const props = defineProps<{ draft: DraftDetail; skus: ProductSku[]; images?: ImageAsset[]; loading: boolean }>()
 const expanded = ref('')
 const targetKey = ref('')
 watch(() => [props.draft.draftId, props.skus.map(row => row.id).join(',')], () => {
@@ -13,7 +14,7 @@ watch(() => [props.draft.draftId, props.skus.map(row => row.id).join(',')], () =
   }
   targetKey.value = `${props.draft.targetSites[0]?.platform}:${props.draft.targetSites[0]?.site}`.toLowerCase()
 }, { immediate: true })
-watch(() => JSON.stringify(props.draft.skuItems.map(row => [row.sku_id, row.overrides, row.pricing_overrides])), (next, previous) => {
+watch(() => JSON.stringify(props.draft.skuItems.map(row => [row.sku_id, row.overrides.cost_cny, row.overrides.package_dimensions, row.pricing_overrides])), (next, previous) => {
   if (previous && next !== previous && !props.loading) for (const row of props.draft.skuItems) row.pricing.applied = false
 }, { flush: 'sync' })
 const pairs = computed(() => props.draft.skuItems.map(row => ({ row, sku: props.skus.find(sku => sku.id === row.sku_id) })).filter((pair): pair is { row: DraftSku; sku: ProductSku } => Boolean(pair.sku)))
@@ -54,7 +55,7 @@ function attributes(row: DraftSku) { return row.attributes_by_target[targetKey.v
             <tr v-if="expanded === row.sku_id">
               <td colspan="8" class="bg-slate-50 p-4 dark:bg-dark-950">
                 <div class="mb-3 flex items-center justify-between"><span class="text-sm font-semibold">此草稿的规格资料</span><button class="flex items-center gap-1 text-xs" @click="row.overrides = {}"><PhArrowCounterClockwise />恢复使用商品资料</button></div>
-                <div class="grid gap-3 md:grid-cols-3"><label class="text-xs">采购成本 CNY<input :value="row.overrides.cost_cny ?? sku.cost_cny" type="number" class="input mt-1" @input="row.overrides.cost_cny = ($event.target as HTMLInputElement).value" /></label><label v-for="[key,label] in [['length_cm','包装长 cm'],['width_cm','包装宽 cm'],['height_cm','包装高 cm'],['weight_kg','包装重量 kg']]" :key="key" class="text-xs">{{ label }}<input :value="dimensions(sku,row)[key]" type="number" step="any" class="input mt-1" @input="row.overrides.package_dimensions = {...(row.overrides.package_dimensions as UnknownRecord || {}), [key]: ($event.target as HTMLInputElement).value}" /></label><label class="text-xs">条码<input :value="row.overrides.barcode ?? sku.barcode" class="input mt-1" @input="row.overrides.barcode = ($event.target as HTMLInputElement).value" /></label><label class="text-xs md:col-span-3">SKU 图片地址<input :value="row.overrides.image ?? sku.image" class="input mt-1" @input="row.overrides.image = ($event.target as HTMLInputElement).value" /></label></div>
+                <div class="grid gap-3 md:grid-cols-3"><label class="text-xs">采购成本 CNY<input :value="row.overrides.cost_cny ?? sku.cost_cny" type="number" class="input mt-1" @input="row.overrides.cost_cny = ($event.target as HTMLInputElement).value" /></label><label v-for="[key,label] in [['length_cm','包装长 cm'],['width_cm','包装宽 cm'],['height_cm','包装高 cm'],['weight_kg','包装重量 kg']]" :key="key" class="text-xs">{{ label }}<input :value="dimensions(sku,row)[key]" type="number" step="any" class="input mt-1" @input="row.overrides.package_dimensions = {...(row.overrides.package_dimensions as UnknownRecord || {}), [key]: ($event.target as HTMLInputElement).value}" /></label><label class="text-xs">条码<input :value="row.overrides.barcode ?? sku.barcode" class="input mt-1" @input="row.overrides.barcode = ($event.target as HTMLInputElement).value" /></label><SkuImagePicker class="md:col-span-3" :model-value="String(row.overrides.image_asset_id ?? sku.image_asset_id)" :images="images" :disabled="loading" :label="`${sku.name} 的图片`" allow-inherit :inherited="row.overrides.image_asset_id === undefined" @update:model-value="row.overrides.image_asset_id = $event" @inherit="delete row.overrides.image_asset_id" /></div>
                 <label class="mt-4 block text-sm">目标市场<select v-model="targetKey" class="input mt-1"><option v-for="target in draft.targetSites" :key="`${target.platform}:${target.site}`" :value="`${target.platform}:${target.site}`.toLowerCase()">{{ target.platform }} · {{ target.site }}</option></select></label>
                 <div class="my-3 grid gap-3 md:grid-cols-3"><label v-for="[key, label] in [['domestic_freight_cny', '国内运费 CNY'], ['packaging_cost_cny', '包装耗材 CNY'], ['other_cost_cny', '其他固定费用 CNY']]" :key="key" class="text-xs">{{ label }}<input :value="fee(row, key)" class="input mt-1" type="number" min="0" step="any" placeholder="沿用核价共用模板" @input="setFee(row, key, ($event.target as HTMLInputElement).value)" /></label></div>
                 <div class="my-3 grid gap-3 md:grid-cols-2"><label class="text-xs">此目标的国际运费（使用核价页物流币种）<input :value="targetFee(row).shipping_amount" class="input mt-1" type="number" min="0" step="any" placeholder="沿用共用物流报价" @input="setTargetFee(row, 'shipping_amount', ($event.target as HTMLInputElement).value)" /></label><label class="text-xs">此目标的手动售价 {{ quoteCurrency(row) }}<input :value="(targetFee(row).manual_price as UnknownRecord)?.amount" class="input mt-1" type="number" min="0" step="any" :disabled="!quoteCurrency(row)" placeholder="先核价以确认币种；留空使用共用规则" @input="setTargetFee(row, 'manual_price', ($event.target as HTMLInputElement).value ? {amount: ($event.target as HTMLInputElement).value, currency: quoteCurrency(row)} : null)" /></label></div>

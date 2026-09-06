@@ -1,30 +1,16 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { DraftDetail, DraftProductContext, MarketplaceOption, MarketplaceTargetSite, PayloadPreviewState, PrecheckIssue, PublishPrecheck, PublishPrecheckScope, UnknownRecord } from '@/types/workflow'
+import { publishPrecheckPassed } from '@/utils/publishReadiness'
+import type { MarketplaceOption, MarketplaceTargetSite, PayloadPreviewState, PrecheckIssue, PublishPrecheck, PublishPrecheckScope, UnknownRecord } from '@/types/workflow'
 
 const props = defineProps<{
-  draft: DraftDetail
-  productContext: DraftProductContext
-  publishTargets: MarketplaceTargetSite[]
-  selectedPublishTarget: MarketplaceTargetSite
+  target: MarketplaceTargetSite
+  columnLayout?: boolean
   platformOptions: MarketplaceOption[]
   precheck: PublishPrecheck | null
   payloadPreview: PayloadPreviewState | null
-  loading: boolean
 }>()
 
-const emit = defineEmits<{
-  selectPublishTarget: [value: MarketplaceTargetSite]
-  invalidatePublishValidation: []
-  precheck: []
-  previewPayload: []
-  publish: []
-}>()
-
-type ConfiguredWarrantyType = 'none' | 'seller' | 'factory'
-type WarrantyType = '' | ConfiguredWarrantyType
-type ConfiguredWarrantyUnit = 'months' | 'years'
-type WarrantyUnit = '' | ConfiguredWarrantyUnit
 type PublishPrecheckScopeCard = PublishPrecheckScope & {
   key: string
   title: string
@@ -34,43 +20,6 @@ type PublishPrecheckScopeCard = PublishPrecheckScope & {
 const MERCADOLIBRE_LEGACY_CATEGORY_LOGISTICS_ERROR = 'MERCADOLIBRE_CATEGORY_MARKET_LOGISTICS_UNSUPPORTED'
 const MERCADOLIBRE_SHIPPING_MODE_NOT_SUPPORTED = 'MERCADOLIBRE_SHIPPING_MODE_NOT_SUPPORTED'
 
-const warrantyTypeOptions: Array<{ value: WarrantyType; label: string }> = [
-  { value: '', label: '请选择保修类型' },
-  { value: 'none', label: '无保修' },
-  { value: 'seller', label: '卖家保修' },
-  { value: 'factory', label: '厂家保修' },
-]
-const warrantyUnitOptions: Array<{ value: WarrantyUnit; label: string }> = [
-  { value: '', label: '请选择单位' },
-  { value: 'months', label: '个月' },
-  { value: 'years', label: '年' },
-]
-
-const selectedTargetKey = computed(() => targetKey(props.selectedPublishTarget))
-const targetOptions = computed(() => props.publishTargets.map((target) => ({
-  ...target,
-  key: targetKey(target),
-  label: targetLabel(target),
-})))
-const hasCurrentDraft = computed(() => Boolean(props.draft.draftId))
-const currentDraftTitle = computed(() => String(props.draft.title || '').trim() || (props.draft.draftId ? '草稿标题未填写' : '尚未选择草稿'))
-const currentDraftSku = computed(() => `已选 ${props.draft.skuItems.filter(row => row.selected).length} 个 SKU`)
-const activeDraft = computed(() => {
-  const draft = props.draft
-  if (!draft.packageDimensions) {
-    draft.packageDimensions = { lengthCm: '', widthCm: '', heightCm: '', weightKg: '' }
-  }
-  if (!Array.isArray(draft.saleTerms)) {
-    draft.saleTerms = []
-  }
-  if (typeof draft.upc !== 'string') {
-    draft.upc = ''
-  }
-  if (typeof draft.allowGtinExemption !== 'boolean') {
-    draft.allowGtinExemption = false
-  }
-  return draft
-})
 const blockingIssues = computed(() => props.precheck?.errorItems || [])
 const warningIssues = computed(() => props.precheck?.warningItems || [])
 const scopeCards = computed<PublishPrecheckScopeCard[]>(() => {
@@ -78,7 +27,7 @@ const scopeCards = computed<PublishPrecheckScopeCard[]>(() => {
   if (!precheck) return []
   const cards: PublishPrecheckScopeCard[] = []
   if (precheck.parent) {
-    const site = String(props.selectedPublishTarget.site || '').trim().toUpperCase()
+    const site = String(props.target.site || '').trim().toUpperCase()
     cards.push({
       ...precheck.parent,
       key: 'parent',
@@ -98,13 +47,7 @@ const scopeCards = computed<PublishPrecheckScopeCard[]>(() => {
   }
   return cards
 })
-const hasBlockedScopes = computed(() => scopeCards.value.some(scopeIsBlocked))
-const effectivePrecheckPassed = computed(() => Boolean(
-  props.precheck?.ok
-  && !props.precheck.errors.length
-  && !blockingIssues.value.length
-  && !hasBlockedScopes.value,
-))
+const effectivePrecheckPassed = computed(() => publishPrecheckPassed(props.precheck))
 const scopedErrorKeys = computed(() => new Set(scopeCards.value.flatMap((scope) => (
   scope.errors.map(issueIdentity)
 ))))
@@ -149,94 +92,20 @@ const warningIssueCount = computed(() => {
     ? new Set(warningIssues.value.map(issueIdentity)).size
     : props.precheck?.warnings.length || 0
 })
-const hasPayloadConfirmation = computed(() => Boolean(props.payloadPreview?.validationDigest))
-const currentPrecheckPassed = computed(() => {
-  if (props.precheck) return effectivePrecheckPassed.value
-  if (props.selectedPublishTarget.platform === 'mercadolibre') return false
-  return activeDraft.value.status === 'ready_to_publish'
-})
-const canPreviewPayload = computed(() => Boolean(
-  hasCurrentDraft.value
-  && currentPrecheckPassed.value,
-))
-const canQueuePublish = computed(() => Boolean(
-  hasCurrentDraft.value
-  && currentPrecheckPassed.value
-  && hasPayloadConfirmation.value,
+const hasPayloadConfirmation = computed(() => Boolean(
+  props.payloadPreview?.validationDigest && props.payloadPreview.targetKey === targetKey(props.target),
 ))
 const publishReadiness = computed(() => {
-  if (
-    !props.precheck
-    && props.selectedPublishTarget.platform !== 'mercadolibre'
-    && activeDraft.value.status === 'ready_to_publish'
-  ) return '已保存为校验通过。生成 Payload 预览并确认摘要后，即可加入发布队列。'
-  if (!props.precheck) return '点击上架预检后，这里会变成可处理清单。'
+  if (!props.precheck) return '执行全部预检后，这里会显示该市场的问题清单。'
   if (!effectivePrecheckPassed.value) return `还有 ${blockingIssueCount.value} 项未通过，请按处理建议修正后重新预检。`
-  if (!hasPayloadConfirmation.value) return '预检通过。请点击 Payload 预览生成确认摘要，再加入发布队列。'
-  return '预检通过且 Payload 已确认，可以加入发布队列。'
+  if (!hasPayloadConfirmation.value) return '预检通过，可统一准备发布预览。'
+  return '预检和发布预览已就绪，等待统一确认加入队列。'
 })
 const precheckResultSummary = computed(() => {
   if (!props.precheck) return '尚未执行预检。'
   if (!effectivePrecheckPassed.value) return '预检未通过。'
   return '预检通过，可以发布。'
 })
-const selectedWarrantyType = computed<WarrantyType>({
-  get() {
-    const typeTerm = activeDraft.value.saleTerms.find((term) => String(term.id || '') === 'WARRANTY_TYPE')
-    const value = String(typeTerm?.value_id || typeTerm?.value_name || '').toLowerCase()
-    if (value.includes('2230280') || value.includes('seller') || value.includes('vendedor')) return 'seller'
-    if (value.includes('2230279') || value.includes('factory') || value.includes('fábrica') || value.includes('fabrica')) return 'factory'
-    if (value.includes('6150835') || value.includes('no warranty') || value.includes('sin garantía') || value.includes('sin garantia')) return 'none'
-    return ''
-  },
-  set(value) {
-    if (!value) return
-    applyWarrantyTerms(
-      value,
-      warrantyDurationValue.value || '3',
-      warrantyDurationUnit.value || 'months',
-    )
-  },
-})
-const warrantyDurationValue = computed<string>({
-  get() {
-    const timeTerm = activeDraft.value.saleTerms.find((term) => String(term.id || '') === 'WARRANTY_TIME')
-    if (!timeTerm) return ''
-    const struct = timeTerm?.value_struct && typeof timeTerm.value_struct === 'object' ? timeTerm.value_struct as UnknownRecord : {}
-    const number = struct.number ?? String(timeTerm?.value_name || '').match(/\d+(?:[,.]\d+)?/)?.[0] ?? ''
-    return String(number || '')
-  },
-  set(value) {
-    const type = selectedWarrantyType.value
-    if (!type || type === 'none') return
-    applyWarrantyTerms(type, value, warrantyDurationUnit.value || 'months')
-  },
-})
-const warrantyDurationUnit = computed<WarrantyUnit>({
-  get() {
-    const timeTerm = activeDraft.value.saleTerms.find((term) => String(term.id || '') === 'WARRANTY_TIME')
-    if (!timeTerm) return ''
-    const struct = timeTerm?.value_struct && typeof timeTerm.value_struct === 'object' ? timeTerm.value_struct as UnknownRecord : {}
-    const unit = String(struct.unit || timeTerm?.value_name || '').toLowerCase()
-    if (unit.includes('year') || unit.includes('año') || unit.includes('ano')) return 'years'
-    if (unit.includes('month') || unit.includes('mes')) return 'months'
-    return ''
-  },
-  set(value) {
-    const type = selectedWarrantyType.value
-    if (!type || type === 'none' || !value) return
-    applyWarrantyTerms(type, warrantyDurationValue.value, value)
-  },
-})
-const warrantySummary = computed(() => {
-  const type = selectedWarrantyType.value
-  if (!type) return '尚未选择保修类型'
-  if (type === 'none') return '已明确选择无保修'
-  return warrantyDurationValue.value && warrantyDurationUnit.value
-    ? `已配置 ${activeDraft.value.saleTerms.length} 条`
-    : '尚未配置保修时长'
-})
-
 function issueMessage(issue: PrecheckIssue) {
   if (
     issue.code === MERCADOLIBRE_LEGACY_CATEGORY_LOGISTICS_ERROR
@@ -272,7 +141,7 @@ function scopeStatusClass(scope: PublishPrecheckScope) {
 
 function marketSiteLabel(siteId: string) {
   const code = String(siteId || '').trim().toUpperCase()
-  const platform = props.platformOptions.find((item) => item.key === props.selectedPublishTarget.platform)
+  const platform = props.platformOptions.find((item) => item.key === props.target.platform)
   const site = platform?.sites.find((item) => (
     item.code.toUpperCase() === code || item.key.toUpperCase() === code
   ))
@@ -292,10 +161,6 @@ function logisticTypeLabel(logisticType: string) {
   return labels[type] || '平台指定物流'
 }
 
-function hasIssue(field: string, code = '') {
-  return blockingIssues.value.some((issue) => issue.field === field || issue.code === code || issue.field.startsWith(`${field}.`))
-}
-
 function targetKey(target: MarketplaceTargetSite) {
   return `${String(target.platform || '').trim().toLowerCase()}:${String(target.site || '').trim().toLowerCase()}`
 }
@@ -312,122 +177,16 @@ function targetLabel(target: MarketplaceTargetSite) {
   return `${platformLabel} - ${siteLabel}（${target.site || site?.code || '-'} / ${language || '-'} / ${currency || '-'}）`
 }
 
-function selectTargetByKey(value: string) {
-  const target = props.publishTargets.find((item) => targetKey(item) === value)
-  if (target) emit('selectPublishTarget', target)
-}
-
-function applyWarrantyTerms(type: ConfiguredWarrantyType, durationValue = '3', unit: ConfiguredWarrantyUnit = 'months') {
-  if (type === 'none') {
-    activeDraft.value.saleTerms = [
-      { id: 'WARRANTY_TYPE', value_id: '6150835', value_name: 'Sin garantía' },
-    ]
-    emit('invalidatePublishValidation')
-    return
-  }
-  const number = Math.max(1, Number(String(durationValue || '').replace(',', '.')) || 3)
-  const localUnit = unit === 'years' ? 'años' : 'meses'
-  activeDraft.value.saleTerms = [
-    {
-      id: 'WARRANTY_TYPE',
-      value_id: type === 'seller' ? '2230280' : '2230279',
-      value_name: type === 'seller' ? 'Garantía del vendedor' : 'Garantía de fábrica',
-    },
-    {
-      id: 'WARRANTY_TIME',
-      value_name: `${number} ${localUnit}`,
-      value_struct: { number, unit: localUnit },
-    },
-  ]
-  emit('invalidatePublishValidation')
-}
 </script>
 
 <template>
   <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
-    <article class="mb-6 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
-      <div class="flex flex-wrap items-start justify-between gap-4">
-        <div class="min-w-0">
-          <p class="text-xs font-semibold text-accent-500 dark:text-accent-400">当前预检草稿</p>
-          <div class="mt-2 flex flex-wrap items-center gap-3">
-            <img v-if="props.productContext.imagePool[0]?.previewUrl || props.productContext.imagePool[0]?.url" :src="props.productContext.imagePool[0]?.previewUrl || props.productContext.imagePool[0]?.url" class="size-14 rounded-lg object-cover" />
-            <div class="min-w-0">
-              <h3 class="truncate font-semibold text-accent-950 dark:text-white">{{ currentDraftTitle }}</h3>
-              <div class="mt-1 flex flex-wrap gap-2 text-xs text-accent-500 dark:text-accent-400">
-                <span>{{ currentDraftSku }}</span>
-                <span>{{ props.productContext.sourcePlatform || '来源未记录' }}</span>
-                <span>{{ activeDraft.status || 'pending' }}</span>
-                <span>{{ targetLabel(props.selectedPublishTarget) }}</span>
-              </div>
-            </div>
-          </div>
-          <p v-if="!hasCurrentDraft" class="mt-3 text-sm text-amber-700">请先从草稿箱选择草稿，再执行发布预检。</p>
-        </div>
-        <div class="flex w-full flex-wrap gap-2 lg:w-auto lg:min-w-[28rem]">
-          <div class="min-w-0 flex-1 rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm text-accent-700 dark:border-dark-700 dark:bg-dark-900 dark:text-accent-200">
-            <div class="text-xs font-semibold text-accent-500 dark:text-accent-400">来源商品</div>
-            <div class="mt-1 truncate">{{ props.productContext.sourceTitle || props.productContext.title || props.productContext.productId || '未记录来源商品' }}</div>
-          </div>
-          <div class="min-w-0 flex-1 rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm text-accent-700 dark:border-dark-700 dark:bg-dark-900 dark:text-accent-200">
-            <div class="text-xs font-semibold text-accent-500 dark:text-accent-400">草稿 ID</div>
-            <div class="mt-1 truncate font-mono">{{ activeDraft.draftId || '-' }}</div>
-          </div>
-        </div>
-      </div>
-    </article>
-
-    <div class="flex flex-wrap items-center justify-between gap-3">
-      <div>
-        <h2 class="card-title">发布预检</h2>
-        <p class="muted mt-1">补齐发布资料，检查发布条件并预览最终 Payload。</p>
-      </div>
-      <select :value="selectedTargetKey" class="input w-80 max-w-full" :disabled="props.loading || targetOptions.length <= 1" @change="selectTargetByKey(($event.target as HTMLSelectElement).value)">
-        <option v-for="target in targetOptions" :key="target.key" :value="target.key">{{ target.label }}</option>
-      </select>
+    <div>
+      <h3 class="card-title">{{ targetLabel(props.target) }}</h3>
+      <p class="muted mt-1">该市场的检查结果与发布摘要。</p>
     </div>
 
-    <div class="mt-5 grid min-w-0 gap-6 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
-      <article class="min-w-0 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
-        <div class="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h3 class="font-semibold text-accent-950 dark:text-white">发布必填资料</h3>
-            <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">{{ publishReadiness }}</p>
-          </div>
-          <span v-if="props.precheck" class="badge-muted">
-            {{ blockingIssueCount }} 项不通过 / {{ warningIssueCount }} 项提醒
-          </span>
-        </div>
-
-        <div data-testid="shipping-package-explanation" class="mt-4 rounded-lg bg-white p-3 text-sm dark:bg-dark-900">
-          <p class="font-semibold">逐 SKU 校验</p>
-          <p class="muted mt-1">卖家编码、可售库存、条码、实际发货包装和售价均取所选 SKU 的资料。请在 SKU 页编辑各项，在核价页批量计算并应用售价。</p>
-          <label class="mt-3 flex items-center gap-2"><input v-model="activeDraft.allowGtinExemption" type="checkbox" data-publish-draft-field="allowGtinExemption" @change="emit('invalidatePublishValidation')" />允许无 UPC 豁免</label>
-        </div>
-
-        <div class="mt-4 rounded-lg border border-accent-200 bg-white p-3 dark:border-dark-700 dark:bg-dark-900">
-          <div class="text-sm font-semibold text-accent-950 dark:text-white">保修条款</div>
-          <div class="mt-1 text-xs text-accent-500 dark:text-accent-400">{{ warrantySummary }}</div>
-          <div class="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_7rem_8rem]">
-            <label class="block">
-              <span class="text-xs font-semibold" :class="hasIssue('sale_terms', 'SALE_TERMS_MISSING') ? 'text-rose-700' : 'text-accent-500 dark:text-accent-400'">保修类型</span>
-              <select v-model="selectedWarrantyType" class="input mt-1" :class="hasIssue('sale_terms', 'SALE_TERMS_MISSING') ? 'border-rose-300 bg-rose-50' : ''" data-publish-draft-field="warrantyType">
-                <option v-for="option in warrantyTypeOptions" :key="option.value || 'unselected'" :value="option.value" :disabled="!option.value">{{ option.label }}</option>
-              </select>
-            </label>
-            <label class="block">
-              <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">时长</span>
-              <input v-model="warrantyDurationValue" class="input mt-1" :disabled="!selectedWarrantyType || selectedWarrantyType === 'none'" data-publish-draft-field="warrantyDuration" inputmode="decimal" />
-            </label>
-            <label class="block">
-              <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">单位</span>
-              <select v-model="warrantyDurationUnit" class="input mt-1" :disabled="!selectedWarrantyType || selectedWarrantyType === 'none'" data-publish-draft-field="warrantyUnit">
-                <option v-for="option in warrantyUnitOptions" :key="option.value || 'unselected'" :value="option.value" :disabled="!option.value">{{ option.label }}</option>
-              </select>
-            </label>
-          </div>
-        </div>
-      </article>
-
+    <div class="mt-5 grid min-w-0 gap-6" :class="props.columnLayout ? '' : 'xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]'">
       <article
         class="min-w-0 rounded-lg border p-4"
         :class="effectivePrecheckPassed
@@ -445,19 +204,16 @@ function applyWarrantyTerms(type: ConfiguredWarrantyType, durationValue = '3', u
             >
               {{ precheckResultSummary }}
             </p>
+            <p class="muted mt-1">{{ publishReadiness }}</p>
           </div>
-          <div class="flex flex-wrap gap-2">
-            <button class="btn btn-outline" :disabled="props.loading || !hasCurrentDraft" @click="emit('precheck')">上架预检</button>
-            <button class="btn btn-outline" :disabled="props.loading || !canPreviewPayload" @click="emit('previewPayload')">准备素材并预览 Payload</button>
-            <button class="btn btn-primary" :disabled="props.loading || !canQueuePublish" @click="emit('publish')">确认加入队列</button>
-          </div>
+          <span v-if="props.precheck" class="badge-muted">{{ blockingIssueCount }} 项不通过 / {{ warningIssueCount }} 项提醒</span>
         </div>
         <section v-if="scopeCards.length" data-testid="publish-precheck-scopes" class="mt-4">
           <div>
             <h4 class="text-sm font-semibold text-accent-950 dark:text-white">分市场检查</h4>
             <p class="mt-1 text-xs text-accent-500 dark:text-accent-400">共享刊登和每个销售市场分别检查，任一项不通过都不能发布。</p>
           </div>
-          <div class="mt-3 grid gap-3 md:grid-cols-2">
+          <div class="mt-3 grid gap-3" :class="props.columnLayout ? '' : 'md:grid-cols-2'">
             <article
               v-for="scope in scopeCards"
               :key="scope.key"
@@ -526,7 +282,7 @@ function applyWarrantyTerms(type: ConfiguredWarrantyType, durationValue = '3', u
             </p>
             <p v-else class="mt-1 text-xs text-accent-500 dark:text-accent-400">尚未生成预览。入队发布前必须先预览并确认以下摘要。</p>
           </div>
-          <span v-if="hasPayloadConfirmation" class="badge-info">已确认预览</span>
+          <span v-if="hasPayloadConfirmation" class="badge-info">预览已就绪</span>
         </div>
         <div v-if="props.payloadPreview?.summary" class="mt-3 grid gap-2 md:grid-cols-2">
           <div class="rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm dark:border-dark-700 dark:bg-dark-900">

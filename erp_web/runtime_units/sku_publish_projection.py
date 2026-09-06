@@ -5,6 +5,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from erp_web.product_model.sku_model import PACKAGE_FIELDS, record, selected_skus, sku_fingerprint, text
+from erp_web.product_model.sku_image_model import sku_image_asset
 from .publish_context import PreparedPublishContext
 
 
@@ -107,14 +108,10 @@ def sku_context(context: PreparedPublishContext, fact: dict[str, Any], row: dict
         draft["sites_to_sell"] = deepcopy(quote.get("sites_to_sell", []))
     product["cost"] = fact.get("cost_cny", "")
     product["stock"] = row.get("stock", "")
-    image = text(fact.get("image"))
-    if image:
-        pool = record(product.get("source")).get("image_pool", [])
-        asset = next((item for item in pool if image in {text(item.get(field)) for field in ("id", "url", "path", "preview_url")}), None)
-        if not asset:
-            raise ValueError("SKU 图片尚未加入商品图片池，请在图片页添加该图片")
+    asset = sku_image_asset(product, fact)
+    if asset:
         refs = [ref for ref in draft.get("images", []) if ref.get("asset_id") != asset["id"]]
-        draft["images"] = [{"asset_id": asset["id"], "role": "main", "order": 0}, *[{**ref, "role": "gallery", "order": index + 1} for index, ref in enumerate(refs)]]
+        draft["images"] = [{"asset_id": asset["id"], "role": "main", "order": 0}, *[{**ref, "role": "detail" if ref.get("role") == "main" else ref.get("role", "detail"), "order": index + 1} for index, ref in enumerate(refs)]]
     return context.with_product(product)
 
 

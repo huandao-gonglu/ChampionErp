@@ -425,8 +425,8 @@ export function normalizeDimensions(value: unknown) {
 export function normalizeImageAsset(value: unknown): ImageAsset {
   const record = asRecord(value)
   const platforms = platformList(record.platforms)
-  const width = getNumber(record, ['width'])
-  const height = getNumber(record, ['height'])
+  const width = getNumber(record, ['width', 'width_px'])
+  const height = getNumber(record, ['height', 'height_px'])
   const id = getString(record, ['id'], `image_${Math.random().toString(36).slice(2, 8)}`)
   const path = getString(record, ['path'])
   const url = getString(record, ['url'])

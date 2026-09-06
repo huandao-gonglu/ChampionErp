@@ -213,6 +213,20 @@ export interface BackendMercadoLibrePublication {
   updated_at?: string
 }
 
+export interface BackendProductSku {
+  id?: string
+  source_sku_id?: string
+  name?: string
+  options?: Record<string, string>
+  cost_cny?: string
+  supplier_stock?: string
+  image_asset_id?: string
+  barcode?: string
+  package_dimensions?: Record<string, string>
+  active?: boolean
+  source_snapshot?: Record<string, unknown>
+}
+
 export interface BackendProductSource {
   source_platform?: string
   source_url?: string
@@ -346,7 +360,7 @@ export interface BackendProduct {
   attributes?: Record<string, unknown>
   listing_overrides?: Record<string, unknown>
   copy_results?: Record<string, unknown>
-  sku_items?: Array<Record<string, unknown>>
+  sku_items?: Array<BackendProductSku>
   pricing_defaults?: Record<string, unknown>
   publish_preview?: Record<string, unknown>
   collect_status?: string

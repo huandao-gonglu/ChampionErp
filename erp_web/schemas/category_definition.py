@@ -164,6 +164,7 @@ class CategoryAttributeSummary(BaseModel):
     id: str
     name: str = ""
     required: bool = False
+    variation_role: str = ""
     value_type: str = ""
     value_mode: str = ""
     allow_custom_values: bool = False

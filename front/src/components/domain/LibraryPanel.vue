@@ -114,7 +114,16 @@ function statusClass(value: string) {
               <div v-else class="flex size-8 items-center justify-center rounded-md bg-accent-100 text-[9px] font-bold text-accent-500 dark:bg-dark-800 dark:text-accent-300">无图</div>
             </td>
             <td class="min-w-0 p-2">
-              <div class="truncate text-accent-600 dark:text-accent-300" :title="`${item.sourcePlatform || '-'} · ${item.sourceUrl || '-'}`">{{ item.sourcePlatform || '-' }} · {{ item.sourceUrl || '-' }}</div>
+              <div class="truncate text-accent-600 dark:text-accent-300" :title="item.sourcePlatform">{{ item.sourcePlatform || '-' }}</div>
+              <input
+                class="input mt-1 min-w-0 rounded-md px-2 py-1 text-xs"
+                type="text"
+                :value="item.sourceUrl"
+                :title="item.sourceUrl"
+                aria-label="来源 URL"
+                placeholder="暂无来源链接"
+                readonly
+              />
             </td>
             <td class="min-w-0 p-2">
               <div class="truncate font-semibold text-accent-950 dark:text-white" :title="`${item.title || '-'} · ${item.productId || '-'}`">{{ item.title || '-' }}</div>

@@ -2,15 +2,16 @@
 import { ref } from 'vue'
 import { PhPlus, PhTrash, PhCaretDown } from '@phosphor-icons/vue'
 import ProductAttributesEditor from './ProductAttributesEditor.vue'
-import type { ProductSku } from '@/types/workflow'
+import SkuImagePicker from './SkuImagePicker.vue'
+import type { ImageAsset, ProductSku } from '@/types/workflow'
 
 const rows = defineModel<ProductSku[]>({ required: true })
-defineProps<{ disabled?: boolean }>()
+defineProps<{ disabled?: boolean; images?: ImageAsset[] }>()
 const expanded = ref('')
 const fields = [['length_cm', '包装长 cm'], ['width_cm', '包装宽 cm'], ['height_cm', '包装高 cm'], ['weight_kg', '包装重 kg']]
 function add() {
   const id = crypto.randomUUID()
-  rows.value.push({ id, source_sku_id: '', name: '', options: {}, cost_cny: '', supplier_stock: '', image: '', barcode: '', package_dimensions: {}, active: true, source_snapshot: {} })
+  rows.value.push({ id, source_sku_id: '', name: '', options: {}, cost_cny: '', supplier_stock: '', image_asset_id: '', barcode: '', package_dimensions: {}, active: true, source_snapshot: {} })
   expanded.value = id
 }
 </script>
@@ -37,7 +38,7 @@ function add() {
             </tr>
             <tr v-if="expanded === row.id">
               <td colspan="9" class="bg-slate-50 p-3 dark:bg-dark-950">
-                <div class="grid gap-3 md:grid-cols-2"><label class="text-xs">SKU 图片地址<input v-model="row.image" class="input mt-1" :disabled="disabled" /></label><label class="text-xs">商品条码<input v-model="row.barcode" class="input mt-1" :disabled="disabled" /></label></div>
+                <div class="grid gap-3 md:grid-cols-2"><SkuImagePicker v-model="row.image_asset_id" :images="images" :disabled="disabled" :label="`${row.name} 的图片`" /><label class="text-xs">商品条码<input v-model="row.barcode" class="input mt-1" :disabled="disabled" /></label></div>
                 <ProductAttributesEditor v-model="row.options" empty-message="尚未设置属性" title="规格属性" description="按实际商品填写颜色、尺寸等维度；不会自动生成不存在的组合。" :disabled="disabled" />
                 <p v-if="row.source_sku_id" class="mt-2 text-xs text-slate-500">来源 SKU：{{ row.source_sku_id }}</p>
               </td>

@@ -114,7 +114,9 @@ def test_parse_1688_product_uses_context_skus_and_preserves_attributes() -> None
     assert product["sku_items"][0]["name"] == "红色牛津布 / 笔袋"
     assert product["sku_items"][0]["cost_cny"] == "9.50"
     assert product["sku_items"][0]["supplier_stock"] == "25"
-    assert product["sku_items"][0]["image"] == "https://cbu01.alicdn.com/red.jpg"
+    assert source["skus"][0]["image"] == "https://cbu01.alicdn.com/red.jpg"
+    asset_id = product["sku_items"][0]["image_asset_id"]
+    assert any(asset["id"] == asset_id for asset in source["image_pool"])
 
 
 def test_parse_1688_product_semantically_matches_non_strict_category_and_dimension_keys() -> None:

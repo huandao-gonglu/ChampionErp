@@ -574,21 +574,41 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
 - `erp_web/product_model/category_model.py`：类目属性有效性和未解决必填项的唯一确定性判断；
   `strict_enum/open_enum/free_text` 三种值模式同时供规则填充、Agent target 和发布预检使用。
 - `erp_web/runtime_units/category_attribute_ai_fill.py`：类目属性填充编排入口；先执行规则填充，
-  只把规则处理后仍未解决的必填属性交给 Agent，合并后重新计算最终阻塞项。重复执行时
+  把规则处理后仍未解决的必填项和有界可选项交给 Agent，合并后重新计算最终阻塞项。重复执行时
   已有效的开放枚举或文本值不会再次进入 Agent。
+- `erp_web/runtime_units/category_attribute_sku_scope.py`：复用 `selected_skus` 解析本次勾选
+  及覆盖后的 SKU 事实，只暴露共同选项与差异字段名；原商品的全部 SKU 汇总值不进入
+  公共属性证据。`variation_role` 贯穿内部定义、公共摘要、前端及填充请求，多 SKU 存在
+  差异时变体属性留到 SKU 层处理。
+- `erp_web/schemas/category_attribute_evidence.py`：`category_attribute_fill.v4` 的来源引用
+  合同。描述性枚举翻译引用 `product_context` 中来源字段的完整原文；代码校验路径和
+  原文一致，Agent 负责等义判断。引用只证明来源，不构成对翻译语义的独立验证；数值、
+  单位换算、品牌、网址和自由文本继续使用各自的约束，不能靠任意来源引用放行。
+- `erp_web/russian_text.py`：使用 Snowball 的俄语词形归一化纯文本边界，按线程隔离
+  stemmer。Yandex 缓存树检索使用完整词干匹配，允许叶子名称部分命中并按覆盖程度排序；
+  属性证据允许连续俄语词的变格（如 `Женская` → `Женский`），不放宽数值、型号或
+  跨语言语义推断。此处不增加模型调用或 Agent 重试，继续由 Pydantic AI 管理运行。
 - `erp_web/runtime_units/category_attribute_tools.py`：类型化
   `search_category_attribute_values(...)` 能力通过 `@ai_tool` 声明唯一工具
   `category_attribute_values_search`；该工具只接受 `value_mode=strict_enum` 的平台强制枚举。
   显式 Catalog 与场景 allowlist 绑定平台、站点、类目和 request-scoped Ledger，AI 只能
   批量提交当前属性 ID 与搜索词。Definition、Schema 与机械
   executor adapter 均由 Compiler 生成，不存在旧手写工具名或闭包 executor。
+  批量查询逐项返回错误码和纠正说明，普通属性的中文词不会被发往俄语字典；品牌原文
+  查询保留。单项错误不丢弃同批合法候选，网络重试成功会清除该属性的失败标记。
   `erp_web/services/category_attribute_fill_agent_service.py` 负责类型化输出和候选账本校验：
   平台强制枚举只能选择本次工具返回的 `dictionary_value_id + value`；开放枚举优先使用
   schema options，没有匹配选项时允许填写有商品依据的自定义文本且不得提交枚举 ID。非品牌
   `strict_enum` 的候选真实性以 request-scoped Ledger 为边界，候选适用性仍需商品事实；类目
-  “类型”枚举可由已确认的类目 ID/路径提供跨语言证据。品牌只接受明确无品牌语义或与唯一、
-  一致的商品品牌字段精确匹配的候选，禁止相似品牌替换。自由文本仍需商品事实证据，包装重量
+  “类型”枚举可由已确认的类目 ID/路径提供跨语言证据。品牌跨语言名和商业别名由 Agent
+  结合商品品牌事实判断，只能选择真实字典候选；具体品牌不得改填无品牌或相似品牌。自由文本仍需商品事实证据，包装重量
   等结构化事实只允许通过确定性单位换算放行。
+  已核对安装的 Pydantic AI 2.22.0 与官方 Output validators 文档：继续直接使用
+  `agent.output_validator` / `ModelRetry`，一次收集全部领域校验错误，交由原生输出重试
+  处理；不增加第二次 Agent 调用或自研重试循环。Prompt 明确可查询属性、字典语言和
+  SKU 范围，裁掉发布内部字段，选项保留有界示例。前端分别提示已保存数量和必填待确认，
+  未采用的建议通过属性名称说明原因。原生输出校验器移除可选属性的复核建议，不为此
+  消耗额外模型轮次；只有未解决的必填属性进入人工待确认。
 - `config/prompts/category_attribute_fill.json`：`category.attribute_fill` Agent prompt；
   明确区分发布必填、平台强制枚举、建议枚举和普通自定义属性，并要求技术参数、链接、
   编码、证件与文件不得编造。
@@ -749,7 +769,9 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 - `erp_web/runtime_units/sku_publish_projection.py`：逐 SKU 合并草稿覆盖值、目标属性和独立核价结果，并校验平台组合条件。临时单品投影不写回主档。
 - `erp_web/runtime_units/sku_publish_adapter.py`：注册表唯一发布入口，编译带每项身份的冻结 SKU 清单；平台叶子适配器保留原生单品 I/O。每项写前落盘、写后保存响应，成功项按内容指纹跳过，未知结果禁止再次创建，异步确认仅推进原任务。
 - 前端 `ProductSkuEditor.vue` 维护商品事实，`DraftSkuPanel.vue` 负责草稿选品和覆盖，`actions/pricing.ts` 按 SKU × 目标调用现有核价引擎。包装资料或费用改变后必须重新应用售价。
-- 商品 schema 当前为 4；本次 Demo 历史商品/草稿/发布记录直接清理，没有历史 SKU 格式读取、迁移或双写路径。详见 `docs/sku-workflow.md`。
+- `erp_web/product_model/sku_image_model.py`：SKU 图片资产引用与原图地址迁移的纯函数 owner。采集统一下载规格图并按来源去重；内部 `image_asset_id` 是唯一关联，草稿以同名覆盖字段单独选图。旧持久化 `image` 只在读取边界迁移，发布不再按 URL/路径匹配。
+- 前端 `SkuImagePicker.vue` 从素材池选图；图片页“关联 SKU”复用商品/草稿保存入口。`replace_selected` 处理结果只替换当前草稿的相应 SKU 引用，换图不使核价失效。无调用方的 `set_sku` 素材标记 action 已删除。
+- 商品 schema 当前为 4；保留本地商品及草稿的 SKU 图片地址迁移能力，不恢复旧的按下标选品格式。详见 `docs/sku-workflow.md`。
 - `erp_web/http_route_units/publish_routes.py`：发布预检、payload 预览、非 Mercado
   平台同步发布、发布队列、`POST /api/mercadolibre/pause-user-product` 与
   `POST /api/publish-bus/reconcile` HTTP 入口。reconcile 只读取 job 已持久化的远端

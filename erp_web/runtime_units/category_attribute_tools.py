@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Annotated, Any
 
 from erp_web.schemas.ai_trace import AiExecutionContext
-from erp_web.schemas.ai_tools import AiToolExecutionError
 from erp_web.schemas.category_attribute import (
     CATEGORY_ATTRIBUTE_VALUE_PERMISSION,
     CATEGORY_ATTRIBUTE_VALUE_TOOLSET_ID,
@@ -88,7 +88,7 @@ def _platform_values(
     ),
     permission=CATEGORY_ATTRIBUTE_VALUE_PERMISSION,
     side_effect="none",
-    version="4",
+    version="5",
 )
 def search_category_attribute_values(
     request: CategoryAttributeValueSearchRequest,
@@ -103,16 +103,30 @@ def search_category_attribute_values(
         attribute_id = _text(item.attribute_id, 160)
         query = _text(item.query, 255)
         definition = scope.ledger.definition(attribute_id)
+        error_code = ""
+        error_message = ""
         if definition is None:
-            raise AiToolExecutionError(
-                "ATTRIBUTE_NOT_IN_CURRENT_CATEGORY",
-                "只能查询当前类目属性定义中的 attribute_id。",
-            )
-        if definition.get("value_mode") != "strict_enum":
-            raise AiToolExecutionError(
-                "ATTRIBUTE_VALUES_NOT_QUERYABLE",
-                "只有强制枚举属性可以查询平台枚举值。",
-            )
+            error_code = "ATTRIBUTE_NOT_IN_CURRENT_CATEGORY"
+            error_message = "只能查询 queryable_attribute_ids 列出的当前类目属性。"
+        elif definition.get("value_mode") != "strict_enum":
+            error_code = "ATTRIBUTE_VALUES_NOT_QUERYABLE"
+            error_message = "该属性不是强制枚举，请直接按商品事实填写文本，dictionary_value_id 留空。"
+        elif (
+            scope.platform in {"ozon", "yandex"}
+            and re.search(r"[\u3400-\u9fff]", query)
+            and not is_brand_attribute(definition, platform=scope.platform)
+        ):
+            error_code = "ATTRIBUTE_QUERY_LANGUAGE_MISMATCH"
+            examples = "、".join(str(value) for value in (definition.get("options") or [])[:6])
+            error_message = "平台字典使用俄语，请把查询词翻译成俄语后批量重查。"
+            if examples:
+                error_message += "可参考平台原文：" + examples
+        if error_code:
+            results.append(CategoryAttributeValueLookupResult(
+                attribute_id=attribute_id, query=query, values=[],
+                error_code=error_code, error_message=error_message[:300],
+            ))
+            continue
         scope.ledger.record_attempt(attribute_id, query)
         platform_query = query
         if (
@@ -121,7 +135,6 @@ def search_category_attribute_values(
             and is_no_brand_fact(query)
         ):
             platform_query = no_brand_query_term(scope.platform) or query
-        error_code = ""
         try:
             values = _platform_values(
                 scope,
@@ -132,7 +145,12 @@ def search_category_attribute_values(
         except Exception:
             values = []
             error_code = "ATTRIBUTE_VALUE_LOOKUP_FAILED"
+            error_message = "平台字典查询失败；可重试，仍失败时必填属性进入 need_review，可选属性跳过。"
             scope.ledger.record_failure(attribute_id)
+        else:
+            scope.ledger.failed_attribute_ids.discard(attribute_id)
+            if not values:
+                error_message = "没有匹配候选。换用平台语言的简短核心词；不要省略字典 ID 提交结果。"
         scope.ledger.add_values(
             attribute_id,
             [value.model_dump(mode="json") for value in values],
@@ -143,6 +161,7 @@ def search_category_attribute_values(
                 query=query,
                 values=values,
                 error_code=error_code,
+                error_message=error_message,
             )
         )
     execution.bounded_timeout_seconds()

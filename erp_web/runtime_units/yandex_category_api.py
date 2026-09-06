@@ -31,6 +31,7 @@ from erp_web.marketplaces.yandex_http import (
     fetch_yandex_category_tree,
 )
 from erp_web.schemas.category import CategoryCorpusInfo
+from erp_web.russian_text import normalize_russian_word, text_words
 
 logger = logging.getLogger(__name__)
 
@@ -594,20 +595,42 @@ def fetch_yandex_category_tree_summary(
     }
 
 
+_SEARCH_STOP_WORDS = frozenset(
+    {"и", "или", "для", "на", "в", "во", "с", "со", "от", "по", "за", "к", "из", "у", "о", "об"}
+)
+
+
 def _normalize_query(value: str) -> list[str]:
-    return [part for part in " ".join(value.casefold().split()).split(" ") if part]
+    return list(dict.fromkeys(
+        word for word in text_words(value) if word not in _SEARCH_STOP_WORDS
+    ))
 
 
-def _search_score(record: dict[str, Any], query: str, terms: list[str]) -> int:
-    name = _text(record.get("name_original")).casefold()
-    path = _text(record.get("category_path")).casefold()
-    if query in name:
-        return 100
-    if query in path:
-        return 90
-    if terms and all(term in path for term in terms):
-        return 80
-    return 0
+def _search_score(record: dict[str, Any], terms: list[str]) -> tuple[int, list[str]]:
+    name = {
+        normalize_russian_word(word)
+        for word in _normalize_query(_text(record.get("name_original")))
+    }
+    path = name | {
+        normalize_russian_word(word)
+        for word in _normalize_query(_text(record.get("category_path")))
+    }
+    query = {normalize_russian_word(term) for term in terms}
+    matched = [term for term in terms if normalize_russian_word(term) in path]
+    name_matches = query & name
+    if not query or not matched:
+        return 0, []
+    if query == name:
+        return 100, matched
+    if query <= name:
+        return 95, matched
+    if name_matches:
+        # 修饰词缺失不能把商品名命中整条丢弃；优先覆盖叶子名称，路径仅作补充。
+        score = 40 + int(35 * len(name_matches) / len(name))
+        score += int(20 * len(query & path) / len(query))
+        return score, matched
+    # 只命中上级目录时，必须覆盖全部实词，避免“для”等泛词召回整棵树。
+    return (60, matched) if query <= path else (0, [])
 
 
 def search_yandex_categories(
@@ -619,16 +642,15 @@ def search_yandex_categories(
     """本地缓存树上的规范化匹配；不为每次输入发远端请求。"""
 
     query = _text(query)
-    if not query:
+    terms = _normalize_query(query)
+    if not terms:
         return []
     records, corpus_info = load_yandex_category_corpus(
         timeout_seconds=timeout_seconds
     )
-    normalized_query = " ".join(_normalize_query(query))
-    terms = _normalize_query(query)
     matches: list[dict[str, Any]] = []
     for record in records:
-        score = _search_score(record, normalized_query, terms)
+        score, matched_terms = _search_score(record, terms)
         if not score:
             continue
         result = deepcopy(record)
@@ -638,7 +660,7 @@ def search_yandex_categories(
                 "name": result["name_original"],
                 "path": result["category_path"],
                 "score": score,
-                "matched_terms": terms,
+                "matched_terms": matched_terms,
                 "source": "yandex_category_tree",
                 "cache_source": corpus_info.get("cache_source"),
             }

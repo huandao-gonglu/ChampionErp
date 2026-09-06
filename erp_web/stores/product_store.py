@@ -31,6 +31,7 @@ from erp_web.product_model import (
     validate_product_root_fields,
 )
 from erp_web.product_model.common import normalize_list
+from erp_web.product_model.sku_image_model import replace_draft_sku_images
 from erp_web.runtime_units.image_pool_core import (
     _display_image_ref,
     _source_pool_items,
@@ -1516,6 +1517,9 @@ class ProductStore:
         product = normalize_persisted_product_fields(product)
         next_images = apply_created_image_refs_to_draft(existing.get("images"), created_items, strategy)
         merged = {**existing, "images": next_images}
+        if strategy == "replace_selected":
+            merged["sku_items"] = deepcopy(existing.get("sku_items", []))
+            replace_draft_sku_images(product, merged, created_items)
         product_for_status = dict(product or {})
         drafts = product_for_status.get("drafts") if isinstance(product_for_status.get("drafts"), dict) else {}
         product_for_status["drafts"] = {**drafts, platform: merged}

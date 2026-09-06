@@ -58,7 +58,7 @@ watch(() => props.product.productId, () => {
       <label class="block"><span class="text-xs font-semibold text-slate-500">Model</span><input v-model="props.product.model" class="input mt-1" /></label>
     </div>
 
-    <ProductSkuEditor v-model="props.product.skuItems" :disabled="props.loading" />
+    <ProductSkuEditor v-model="props.product.skuItems" :images="props.product.source.imagePool" :disabled="props.loading" />
 
     <ProductAttributesEditor
       :key="`${props.product.productId}:profile`"

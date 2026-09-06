@@ -8,8 +8,11 @@ import json
 import uuid
 from typing import Any
 
+from .sku_image_model import ensure_source_image_asset
+from .image_pool_model import normalize_image_pool
+
 PACKAGE_FIELDS = ("length_cm", "width_cm", "height_cm", "weight_kg")
-SKU_FACT_FIELDS = ("name", "options", "cost_cny", "supplier_stock", "image", "barcode", "package_dimensions")
+SKU_FACT_FIELDS = ("name", "options", "cost_cny", "supplier_stock", "image_asset_id", "barcode", "package_dimensions")
 
 
 def text(value: Any) -> str:
@@ -45,7 +48,7 @@ def normalize_product_skus(value: Any) -> list[dict[str, Any]]:
             "options": options,
             "cost_cny": text(raw.get("cost_cny")),
             "supplier_stock": text(raw.get("supplier_stock")),
-            "image": text(raw.get("image")),
+            "image_asset_id": text(raw.get("image_asset_id")),
             "barcode": text(raw.get("barcode")),
             "package_dimensions": {k: text(record(raw.get("package_dimensions")).get(k)) for k in PACKAGE_FIELDS},
             "active": raw.get("active") is not False,
@@ -61,6 +64,8 @@ def collected_skus(source: dict[str, Any]) -> list[dict[str, Any]]:
         "package_dimensions": {**record(source.get("dimensions")), "weight_kg": source.get("weight_kg")},
     }]
     result = []
+    pool = normalize_image_pool(source.get("image_pool") or source.get("images") or [])
+    source["image_pool"] = pool
     for raw in rows:
         supplier_id = text(raw.get("id"))
         if not supplier_id:
@@ -69,7 +74,8 @@ def collected_skus(source: dict[str, Any]) -> list[dict[str, Any]]:
         facts = {
             "name": text(raw.get("name")), "options": options,
             "cost_cny": text(raw.get("price")) if text(source.get("currency")).upper() == "CNY" else "",
-            "supplier_stock": text(raw.get("stock")), "image": text(raw.get("image")),
+            "supplier_stock": text(raw.get("stock")),
+            "image_asset_id": ensure_source_image_asset(pool, raw.get("image")),
             "barcode": text(raw.get("barcode")),
             "package_dimensions": {k: text(record(raw.get("package_dimensions")).get(k)) for k in PACKAGE_FIELDS},
         }

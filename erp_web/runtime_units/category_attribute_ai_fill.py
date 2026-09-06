@@ -6,6 +6,7 @@ from copy import deepcopy
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from erp_web.russian_text import contains_russian_word_forms
 from erp_web.product_model import (
     apply_ai_attribute_fill,
     apply_category_target_updates,
@@ -21,6 +22,7 @@ from erp_web.schemas.category import (
     normalize_category_attribute_number_unit_value,
 )
 from erp_web.schemas.category_attribute import CategoryAttributeValueLedger
+from erp_web.schemas.category_attribute_evidence import has_translated_attribute_evidence
 from erp_web.schemas.category_brand import (
     is_brand_attribute,
     is_official_no_brand_value,
@@ -32,6 +34,11 @@ from erp_web.services.category_attribute_fill_agent_service import (
 )
 
 from .category_attribute_tools import build_category_attribute_value_toolset
+from .category_attribute_sku_scope import (
+    attribute_needs_sku_scope,
+    attribute_sku_scope,
+    exclude_aggregate_sku_facts,
+)
 from .category_brand_values import apply_no_brand_attribute
 from .category_store import fetch_category_attribute_values
 
@@ -83,7 +90,7 @@ def _product_context(product: dict[str, Any], platform: str) -> dict[str, Any]:
         if isinstance(product.get("drafts"), dict)
         else {}
     )
-    return {
+    context = {
         "product": {
             "name": product.get("name"),
             "brand": product.get("brand"),
@@ -102,7 +109,7 @@ def _product_context(product: dict[str, Any], platform: str) -> dict[str, Any]:
             "description": _short_text(source.get("description"), 2500),
             "bullets": _normalize_list(source.get("bullets"))[:30],
             "attributes": (
-                source.get("attributes")
+                deepcopy(source.get("attributes"))
                 if isinstance(source.get("attributes"), dict)
                 else {}
             ),
@@ -134,7 +141,10 @@ def _product_context(product: dict[str, Any], platform: str) -> dict[str, Any]:
                 else {}
             ),
         },
+        "sku_scope": attribute_sku_scope(product, draft),
     }
+    exclude_aggregate_sku_facts(context)
+    return context
 
 
 def _agent_payload(
@@ -185,19 +195,29 @@ def _normalized_evidence_text(value: Any) -> str:
     return " ".join(str(value or "").casefold().split())
 
 
+def _product_evidence_values(product_context: dict[str, Any]) -> list[str]:
+    # SKU 数量、选项字段名等范围元数据不是商品属性值证据。
+    return _evidence_values({
+        **{key: product_context.get(key) for key in ("product", "source", "draft")},
+        "common_options": (product_context.get("sku_scope") or {}).get("common_options"),
+    })
+
+
 def _has_product_evidence(value: str, product_context: dict[str, Any]) -> bool:
     """模型建议值必须在可信商品事实中有可复核文本锚点。"""
 
     candidate = _normalized_evidence_text(value)
     if not candidate:
         return False
-    for raw_evidence in _evidence_values(product_context):
+    for raw_evidence in _product_evidence_values(product_context):
         evidence = _normalized_evidence_text(raw_evidence)
         if candidate == evidence:
             return True
         # 品牌、型号、规格和选项常作为更长标题/描述的一部分出现；过短值
         # 不做子串匹配，避免数字或单字符碰巧命中。
         if len(candidate) >= 3 and candidate in evidence:
+            return True
+        if contains_russian_word_forms(candidate, evidence):
             return True
     return False
 
@@ -240,7 +260,7 @@ def _has_number_unit_evidence(
         rf"(?![\d.,])\s*{unit_pattern}(?!\w)",
         re.IGNORECASE,
     )
-    for raw_evidence in _evidence_values(product_context):
+    for raw_evidence in _product_evidence_values(product_context):
         evidence = _normalized_evidence_text(raw_evidence)
         for match in measurement_pattern.finditer(evidence):
             measured = _decimal_value(match.group(1))
@@ -431,6 +451,12 @@ def _validated_agent_attributes(
         value = str(assignment.get("value") or "").strip()
         if not value:
             continue
+        if attribute_needs_sku_scope(attr, product_context):
+            evidence_rejected.add(attr_id)
+            continue
+        translated_evidence = has_translated_attribute_evidence(
+            value, attr, assignment.get("evidence"), product_context,
+        )
         if attr.get("value_mode") == "strict_enum":
             if attr_id in invalid_dictionary_units:
                 continue
@@ -464,7 +490,7 @@ def _validated_agent_attributes(
                 # Ledger 证明候选来自当前平台，但不证明技术规格适用于当前商品。
                 # 普通枚举仍需商品事实；“类型”枚举额外接受已确认类目身份/路径，
                 # 从而不会因中俄文字面不同把真实的类目类型候选误拒。
-                has_enum_evidence = _has_product_evidence(
+                has_enum_evidence = translated_evidence or _has_product_evidence(
                     candidate["value"],
                     product_context,
                 ) or _has_category_type_evidence(
@@ -557,7 +583,7 @@ def _validated_agent_attributes(
                 platform=platform,
             )
         else:
-            has_evidence = _has_product_evidence(value, product_context)
+            has_evidence = translated_evidence or _has_product_evidence(value, product_context)
         if not has_evidence:
             evidence_rejected.add(attr_id)
             continue
@@ -802,9 +828,11 @@ def apply_ai_model_attribute_fill(
     meta["ai_filled"] = sorted(ai_attrs)
     if evidence_rejected:
         meta["evidence_rejected"] = sorted(evidence_rejected)
+        attribute_names = {str(attr["id"]): str(attr.get("name") or attr["id"]) for attr in schema}
         meta["warning"] = (
-            "以下属性的模型建议缺少商品事实证据，已保留待人工复核："
-            + "、".join(sorted(evidence_rejected))
+            "以下建议未写入（缺少可核对的事实或需要按 SKU 填写）："
+            + "、".join(attribute_names.get(attr_id, attr_id) for attr_id in sorted(evidence_rejected))
+            + "。待确认数量仅统计必填属性。"
         )
     if ledger.failed_attribute_ids:
         dictionary_warning = (

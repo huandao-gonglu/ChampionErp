@@ -6,6 +6,7 @@ from typing import Any
 from erp_web.context import get_context
 from erp_web.marketplaces.publisher import PlatformPublisher, PublishAdapterError
 from erp_web.product_model.sku_model import record, selected_skus, sku_fingerprint, text
+from erp_web.product_model.sku_image_model import sku_image_asset
 from .collect_helpers import collect_time_iso
 from .publish_context import PreparedPublishContext
 from .sku_publish_projection import grouping_contract, sku_context, sku_quote_errors, target_key, validate_grouping
@@ -53,13 +54,9 @@ class SkuGroupPublishingAdapter:
         prepared = deepcopy(product)
         draft = record(record(prepared.get("drafts")).get(self.platform))
         images = deepcopy(draft.get("images", []))
-        pool = record(prepared.get("source")).get("image_pool", [])
         refs = {item.get("asset_id") for item in images}
         for fact, _ in selected_skus(prepared, draft):
-            image = text(fact.get("image"))
-            if not image:
-                continue
-            asset = next((item for item in pool if image in {text(item.get(field)) for field in ("id", "url", "path", "preview_url")}), None)
+            asset = sku_image_asset(prepared, fact)
             if asset and asset["id"] not in refs:
                 draft.setdefault("images", []).append({"asset_id": asset["id"], "role": "gallery", "order": len(refs)})
                 refs.add(asset["id"])
@@ -89,7 +86,13 @@ class SkuGroupPublishingAdapter:
                 own_errors = sku_quote_errors(fact, row, context.draft, target_key(context))
                 if not text(row.get("stock")).isdigit():
                     own_errors.append("请填写此 SKU 的可售库存")
-                projected = sku_context(context, fact, row, grouping)
+                try:
+                    projected = sku_context(context, fact, row, grouping)
+                except ValueError as exc:
+                    errors.append({**self._issue(f"{fact.get('name') or row['sku']}：{exc}", row["sku_id"]),
+                                   "field": f"sku_items.{row['sku_id']}.image_asset_id", "next_action": "在 SKU 页从图片池重新选择图片"})
+                    errors.extend(self._issue(message, row["sku_id"]) for message in own_errors)
+                    continue
                 projections.append(projected)
                 check = self.item_adapter.validate_draft(projected, config)
                 for issue in check.get("errors", []):

@@ -81,7 +81,7 @@ def test_failed_collect_without_images_clears_stale_collect_pool_but_keeps_local
     assert [item["id"] for item in pool] == ["manual-keep"]
     assert merged["source"]["images"] == []
     assert {"source_images", "source_image_urls"}.isdisjoint(merged)
-    assert merged["sku_items"][0]["image"] == ""
+    assert merged["sku_items"][0]["image_asset_id"] == ""
     assert merged["drafts"]["mercadolibre"]["images"] == []
     assert merged["drafts"]["yandex"]["images"] == []
     assert merged["drafts"]["ozon"]["images"] == []

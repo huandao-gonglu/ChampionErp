@@ -409,6 +409,50 @@ def test_ai_model_attribute_fill_resolves_ozon_dictionary_values(monkeypatch) ->
     assert "evidence_rejected" not in meta
 
 
+@pytest.mark.parametrize("title, accepted", [
+    ("Женская солнцезащитная маска Golovejoy XKZ42", True),
+    ("Мужская солнцезащитная маска Golovejoy XKZ42", False),
+    ("Солнцезащитная маска Golovejoy XKZ42", False),
+])
+def test_ozon_gender_accepts_russian_inflection_without_inventing_evidence(
+    monkeypatch, title, accepted,
+) -> None:
+    """回归 conversation_de42...：Женская 与字典 Женский 是同一词的变格。"""
+    product = default_product_model()
+    product["drafts"]["ozon"]["title"] = title
+    category = {
+        "category_id": "970676618", "site": "global",
+        "attributes": {"required": [{
+            "id": "9163", "name": "Пол", "required": True,
+            "dictionary_id": "320", "is_dictionary": True,
+            "is_collection": True, "max_value_count": 2,
+        }], "optional": []},
+    }
+
+    def fake_agent(payload, toolset, ledger):
+        ledger.add_values("9163", [{"id": "22881", "value": "Женский"}])
+        return CategoryAttributeFillAgentRun({
+            "assignments": [{
+                "attribute_id": "9163", "value": "Женский",
+                "dictionary_value_id": "22881",
+            }], "need_review": [],
+        })
+
+    monkeypatch.setattr(category_attribute_ai_fill, "run_category_attribute_fill_agent", fake_agent)
+    updated, meta = category_attribute_ai_fill.apply_ai_model_attribute_fill(product, "ozon", category)
+    draft = updated["drafts"]["ozon"]
+    if accepted:
+        assert draft["attributes"]["9163"] == {"values": [{
+            "dictionary_value_id": 22881, "value": "Женский",
+        }]}
+        assert draft["validation_errors"] == []
+        assert "evidence_rejected" not in meta
+    else:
+        assert "9163" not in draft["attributes"]
+        assert draft["validation_errors"] == ["9163"]
+        assert meta["evidence_rejected"] == ["9163"]
+
+
 def test_ai_model_attribute_fill_accepts_other_no_brand_and_exact_weight_conversion(
     monkeypatch,
 ) -> None:

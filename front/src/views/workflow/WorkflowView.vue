@@ -4,8 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
 import AuthSettingsPanel from '@/components/auth/AuthSettingsPanel.vue'
-import CategoryAttributesPanel from '@/components/domain/CategoryAttributesPanel.vue'
-import PublishPrecheckPanel from '@/components/domain/PublishPrecheckPanel.vue'
+import DraftCategoryWorkspace from '@/views/workflow/DraftCategoryWorkspace.vue'
+import DraftPublishPrecheckWorkspace from './DraftPublishPrecheckWorkspace.vue'
 import CollectView from '@/views/workflow/CollectView.vue'
 import DashboardView from '@/views/workflow/DashboardView.vue'
 import DraftBoxPanel from '@/components/domain/DraftBoxPanel.vue'
@@ -58,25 +58,7 @@ const {
 const {
   pricingInput,
   pricingResult,
-  category,
-  categoryQuery,
-  categoryResults,
-  categoryAutoMatching,
-  categoryAutoMatchMessage,
-  categoryAutoMatchCurrent,
-  categoryAutoMatchTotal,
-  categoryAutoMatchProductName,
-  categoryAttributeTranslations,
-  categoryAttributeTranslationsSource,
-  categoryAttributeTranslating,
-  categoryAttributeLoading,
-  categoryAttributeError,
-  categoryResultTranslations,
-  categoryResultTranslationsSource,
-  categoryResultTranslating,
-  categoryPrecheck,
   precheck,
-  payloadPreview,
   copyGenerating,
   publishJob,
   publishJobStatus,
@@ -118,9 +100,6 @@ const {
   error,
 } = storeToRefs(activityStore)
 const {
-  categoryAutoMatchTargetError,
-  currentPublishTargets,
-  selectedPublishTarget,
   workflowSteps,
   progressPercent,
   imagePool,
@@ -257,18 +236,7 @@ async function ensureDraftWorkspaceImages() {
 async function switchDraftWorkspaceTab(tab: DraftWorkspaceTab) {
   if (tab === 'images') await ensureDraftWorkspaceImages()
   draftWorkspaceTab.value = tab
-  if (
-    tab === 'category'
-    && currentDraft.value.categoryId.trim()
-    && !categoryAttributeLoading.value
-    && !(
-      category.value?.categoryId === currentDraft.value.categoryId.trim()
-      && category.value.platform === selectedPublishTarget.value.platform
-      && Boolean(category.value.fetchedAt)
-    )
-  ) {
-    await store.loadCategoryAttributes()
-  }
+
 }
 
 async function translateEditorImages(imageIds: string[]) {
@@ -699,6 +667,7 @@ watch(
           @image-edit="editEditorImages"
           @upload="store.uploadReferenceImages"
           @save="store.saveCurrentImagePool"
+          @save-sku-images="store.saveCurrentProduct"
           @set-main="store.setMainImage"
           @delete="store.deleteImages"
           @clear="store.clearSourceImages"
@@ -741,7 +710,7 @@ watch(
           </template>
 
           <template #skus>
-            <DraftSkuPanel :draft="currentDraft" :skus="currentDraftProductContext.skuItems" :loading="loading" />
+            <DraftSkuPanel :draft="currentDraft" :skus="currentDraftProductContext.skuItems" :images="imagePool" :loading="loading" />
           </template>
 
           <template #images>
@@ -758,6 +727,7 @@ watch(
               @upload="store.uploadReferenceImages"
               @save="store.saveCurrentImagePool"
               @save-draft-images="store.saveCurrentDraft"
+              @save-sku-images="store.saveCurrentDraft"
               @set-main="store.setMainImage"
               @delete="store.deleteImages"
               @clear="store.clearSourceImages"
@@ -765,52 +735,7 @@ watch(
           </template>
 
           <template #category>
-            <div class="relative">
-              <CategoryAttributesPanel
-                :draft="currentDraft"
-                :product-context="currentDraftProductContext"
-                :publish-targets="currentPublishTargets"
-                :selected-publish-target="selectedPublishTarget"
-                :platform-options="platformOptions"
-                :category="category"
-                :category-query="categoryQuery"
-                :category-results="categoryResults"
-                :category-auto-match-product-name="categoryAutoMatchProductName"
-                :category-auto-match-target-error="categoryAutoMatchTargetError"
-                :category-attribute-translations="categoryAttributeTranslations"
-                :category-attribute-translations-source="categoryAttributeTranslationsSource"
-                :category-attribute-translating="categoryAttributeTranslating"
-                :category-attribute-loading="categoryAttributeLoading"
-                :category-attribute-error="categoryAttributeError"
-                :category-result-translations="categoryResultTranslations"
-                :category-result-translations-source="categoryResultTranslationsSource"
-                :category-result-translating="categoryResultTranslating"
-                :category-precheck="categoryPrecheck"
-                :precheck="precheck"
-                :loading="loading"
-                @update-category-query="categoryQuery = $event"
-                @select-publish-target="store.selectPublishTarget"
-                @search-category="store.searchCategory"
-                @suggest-category="store.suggestCategoryByAi"
-                @select-category="store.selectCategory"
-                @apply-category="store.loadCategoryAttributes"
-                @translate-category-results="store.translateCategoryResults"
-                @translate-category-attributes="store.translateCategoryAttributes"
-                @fill-attributes="store.fillAttributesByAi"
-                @update-package-dimension="syncPricingPackageDimension"
-                @invalidate-category-precheck="store.invalidateCategoryPrecheck"
-                @category-precheck="store.runCategoryOnlyPrecheck"
-              />
-              <div v-if="categoryAutoMatching" class="absolute inset-0 z-20 flex items-center justify-center rounded-3xl bg-white/90 p-6 text-center backdrop-blur-sm dark:bg-dark-950/90">
-                <div class="max-w-md">
-                  <div class="mx-auto size-10 animate-spin rounded-full border-4 border-brand-100 border-t-brand-600 dark:border-brand-950 dark:border-t-brand-400" />
-                  <h3 class="mt-5 text-lg font-black text-slate-950 dark:text-white">正在自动识别并匹配类目</h3>
-                  <p class="mt-2 text-sm text-slate-600 dark:text-slate-300">{{ categoryAutoMatchMessage || '正在准备商品信息…' }}</p>
-                  <p v-if="categoryAutoMatchTotal" class="mt-3 text-xs font-semibold text-brand-700 dark:text-brand-300">已处理 {{ categoryAutoMatchCurrent }} / {{ categoryAutoMatchTotal }} 个目标站点</p>
-                  <p class="mt-5 text-xs text-slate-500 dark:text-slate-400">完成后会自动关闭，请逐站点检查候选类目并手动确认。</p>
-                </div>
-              </div>
-            </div>
+            <DraftCategoryWorkspace :key="currentDraft.draftId" @update-package-dimension="syncPricingPackageDimension" />
           </template>
 
           <template #pricing>
@@ -834,21 +759,7 @@ watch(
           </template>
 
           <template #precheck>
-            <PublishPrecheckPanel
-              :draft="currentDraft"
-              :product-context="currentDraftProductContext"
-              :publish-targets="currentPublishTargets"
-              :selected-publish-target="selectedPublishTarget"
-              :platform-options="platformOptions"
-              :precheck="precheck"
-              :payload-preview="payloadPreview"
-              :loading="loading"
-              @select-publish-target="store.selectPublishTarget"
-              @invalidate-publish-validation="store.invalidatePublishValidation"
-              @precheck="store.runPrecheck"
-              @preview-payload="store.previewPayload"
-              @publish="() => store.enqueuePublish()"
-            />
+            <DraftPublishPrecheckWorkspace :key="currentDraft.draftId" />
           </template>
         </DraftWorkspacePanel>
       </div>

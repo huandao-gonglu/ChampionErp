@@ -186,6 +186,7 @@ def normalize_category_attribute_definition(
         "category_dependent": bool(
             source.get("category_dependent") or raw.get("category_dependent")
         ),
+        "variation_role": str(source.get("variation_role") or raw.get("variation_role") or ""),
     }
 
 

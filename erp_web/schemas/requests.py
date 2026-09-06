@@ -51,7 +51,7 @@ PORT = FieldRule("integer", minimum=1, maximum=65535)
 IMAGE_ACTION = FieldRule(
     "enum",
     choices=frozenset(
-        {"upload", "sort", "delete", "replace", "set_main", "set_sku", "filter"}
+        {"upload", "sort", "delete", "replace", "set_main", "filter"}
     ),
 )
 DRAFT_IMAGE_STRATEGY = FieldRule(

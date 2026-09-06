@@ -420,6 +420,7 @@ def public_attribute_summary(
         id=definition.id,
         name=definition.name,
         required=definition.required,
+        variation_role=definition.variation_role,
         value_type=definition.value_type,
         value_mode=definition.value_mode,
         allow_custom_values=definition.allow_custom_values,

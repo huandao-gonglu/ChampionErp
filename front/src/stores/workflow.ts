@@ -4,9 +4,13 @@ import { createWorkflowCollectionActions } from './workflow/actions/collection'
 import { createWorkflowPricingActions } from './workflow/actions/pricing'
 import { createWorkflowPublishingActions } from './workflow/actions/publishing'
 import { createWorkflowRuntime } from './workflow/orchestration/runtime'
+import { createDraftPublishBatch } from './workflow/orchestration/publishBatch'
+import { createDraftTargetEditors } from './workflow/orchestration/targetEditors'
 
 export const useWorkflowStore = defineStore('workflow', () => {
   const runtime = createWorkflowRuntime()
+  const targetEditors = createDraftTargetEditors(runtime)
+  const publishBatch = createDraftPublishBatch(runtime, targetEditors)
   const combined = {
     ...runtime,
     ...createWorkflowCollectionActions(runtime),
@@ -53,6 +57,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
   }
 
   return {
+    targetEditors,
+    publishBatch,
     product: combined.product,
     collectForm: combined.collectForm,
     collectDiagnostics: combined.collectDiagnostics,

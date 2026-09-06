@@ -574,6 +574,7 @@ export async function fetchCategoryAttrs(platform: Marketplace, categoryId: stri
             .filter(Boolean)
           : [],
         valueType: getString(record, ['value_type', 'valueType'], 'string'),
+        variationRole: getString(record, ['variation_role']),
         valueMode: getString(record, ['value_mode', 'valueMode'], 'free_text'),
         allowCustomValues: getBoolean(record, ['allow_custom_values', 'allowCustomValues']),
         hasMoreValues: getBoolean(record, ['has_more_values', 'hasMoreValues']),
@@ -770,6 +771,7 @@ function categorySelectionToBackendRecord(category: CategorySelection | null): U
         id: attr.id,
         name: attr.name,
         required: attr.required,
+        variation_role: attr.variationRole || '',
         options: attr.options || [],
         value_type: attr.valueType || '',
         value_mode: attr.valueMode || '',
@@ -789,6 +791,7 @@ function categorySelectionToBackendRecord(category: CategorySelection | null): U
         id: attr.id,
         name: attr.name,
         required: false,
+        variation_role: attr.variationRole || '',
         options: attr.options || [],
         value_type: attr.valueType || '',
         value_mode: attr.valueMode || '',

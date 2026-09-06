@@ -3,7 +3,6 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 import PublishPrecheckPanel from '@/components/domain/PublishPrecheckPanel.vue'
-import { createEmptyDraftDetail, createEmptyDraftProductContext } from '@/constants/initialState'
 import type { MarketplaceTargetSite, PayloadPreviewState, PublishPrecheck } from '@/types/workflow'
 
 const target: MarketplaceTargetSite = {
@@ -14,18 +13,11 @@ const target: MarketplaceTargetSite = {
 }
 
 function panelProps() {
-  const draft = createEmptyDraftDetail('ozon')
-  draft.draftId = 'draft-precheck'
-  draft.site = 'global'
   return {
-    draft,
-    productContext: createEmptyDraftProductContext(),
-    publishTargets: [target],
-    selectedPublishTarget: target,
+    target: target,
     platformOptions: [],
     precheck: null,
     payloadPreview: null,
-    loading: false,
   }
 }
 
@@ -122,7 +114,8 @@ describe('PublishPrecheckPanel', () => {
       props: panelProps(),
     })
 
-    expect(wrapper.text()).toContain('发布必填资料')
+    expect(wrapper.findAll('button')).toHaveLength(0)
+    expect(wrapper.findAll('input, select')).toHaveLength(0)
     expect(wrapper.text()).toContain('预检结果')
     expect(wrapper.text()).toContain('Payload 预览')
     expect(wrapper.text()).not.toContain('类目候选与手动搜索')
@@ -131,169 +124,10 @@ describe('PublishPrecheckPanel', () => {
     expect(wrapper.text()).not.toContain('类目预检')
   })
 
-  it('保留发布预检、Payload 预览和入队事件', async () => {
-    const wrapper = mount(PublishPrecheckPanel, {
-      props: {
-        ...panelProps(),
-        precheck: passedPrecheck(),
-      },
-    })
-
-    const buttons = wrapper.findAll('button')
-    await buttons.find((button) => button.text() === '上架预检')!.trigger('click')
-    await buttons.find((button) => button.text() === '准备素材并预览 Payload')!.trigger('click')
-
-    expect(wrapper.emitted('precheck')).toHaveLength(1)
-    expect(wrapper.emitted('previewPayload')).toHaveLength(1)
-    expect(buttons.find((button) => button.text() === '确认加入队列')!.attributes('disabled')).toBeDefined()
-  })
-
-  it('预检读取所选 SKU，不提供草稿级单品编码或包装编辑入口', () => {
+  it('直接展示目标名称，不提供目标切换控件', () => {
     const wrapper = mount(PublishPrecheckPanel, { props: panelProps() })
-    expect(wrapper.find('[data-package-dimension-field]').exists()).toBe(false)
-    expect(wrapper.find('[data-publish-draft-field="sku"]').exists()).toBe(false)
-    expect(wrapper.text()).toContain('逐 SKU 校验')
-  })
-
-  it('任一发布字段编辑都会通知父组件废弃旧预检与 Payload', async () => {
-    const props = panelProps()
-    props.draft.status = 'ready_to_publish'
-    const wrapper = mount(PublishPrecheckPanel, {
-      props: {
-        ...props,
-        precheck: passedPrecheck(),
-        payloadPreview: payloadPreview(),
-      },
-    })
-
-    await wrapper.get('[data-publish-draft-field="allowGtinExemption"]').setValue(true)
-    await wrapper.get('[data-publish-draft-field="warrantyType"]').setValue('seller')
-    await wrapper.get('[data-publish-draft-field="warrantyDuration"]').setValue('6')
-    await wrapper.get('[data-publish-draft-field="warrantyUnit"]').setValue('years')
-
-    expect(wrapper.emitted('invalidatePublishValidation')).toHaveLength(4)
-  })
-
-  it('未配置保修条款时显示未选择，不把空数据伪装成无保修', () => {
-    const props = panelProps()
-    props.draft.saleTerms = []
-    const wrapper = mount(PublishPrecheckPanel, { props })
-
-    const warrantyType = wrapper.get('[data-publish-draft-field="warrantyType"]')
-    const warrantyDuration = wrapper.get('[data-publish-draft-field="warrantyDuration"]')
-    const warrantyUnit = wrapper.get('[data-publish-draft-field="warrantyUnit"]')
-
-    expect((warrantyType.element as HTMLSelectElement).value).toBe('')
-    expect((warrantyDuration.element as HTMLInputElement).value).toBe('')
-    expect((warrantyUnit.element as HTMLSelectElement).value).toBe('')
-    expect(wrapper.text()).toContain('尚未选择保修类型')
-    expect(warrantyDuration.attributes('disabled')).toBeDefined()
-    expect(warrantyUnit.attributes('disabled')).toBeDefined()
-    expect(props.draft.saleTerms).toEqual([])
-  })
-
-  it('明确选择无保修后才把 Mercado Libre 保修声明写入草稿', async () => {
-    const props = panelProps()
-    props.draft.saleTerms = []
-    const wrapper = mount(PublishPrecheckPanel, { props })
-
-    await wrapper.get('[data-publish-draft-field="warrantyType"]').setValue('none')
-
-    expect(props.draft.saleTerms).toEqual([
-      { id: 'WARRANTY_TYPE', value_id: '6150835', value_name: 'Sin garantía' },
-    ])
-    expect(wrapper.emitted('invalidatePublishValidation')).toHaveLength(1)
-    expect(wrapper.text()).toContain('已明确选择无保修')
-  })
-
-  it('选择卖家保修时把界面默认时长同时写入草稿，不留下仅显示的假默认', async () => {
-    const props = panelProps()
-    props.draft.saleTerms = []
-    const wrapper = mount(PublishPrecheckPanel, { props })
-
-    await wrapper.get('[data-publish-draft-field="warrantyType"]').setValue('seller')
-
-    expect(props.draft.saleTerms).toEqual([
-      { id: 'WARRANTY_TYPE', value_id: '2230280', value_name: 'Garantía del vendedor' },
-      {
-        id: 'WARRANTY_TIME',
-        value_name: '3 meses',
-        value_struct: { number: 3, unit: 'meses' },
-      },
-    ])
-    expect((wrapper.get('[data-publish-draft-field="warrantyDuration"]').element as HTMLInputElement).value).toBe('3')
-    expect((wrapper.get('[data-publish-draft-field="warrantyUnit"]').element as HTMLSelectElement).value).toBe('months')
-  })
-
-  it('当前草稿摘要不使用来源商品标题和 SKU 冒充草稿字段', () => {
-    const props = panelProps()
-    props.draft.title = ''
-    props.draft.sku = ''
-    props.productContext.title = '来源商品标题'
-    props.productContext.sourceTitle = '1688 来源标题'
-    props.productContext.sku = 'SOURCE-SKU'
-    const wrapper = mount(PublishPrecheckPanel, { props })
-
-    expect(wrapper.text()).toContain('草稿标题未填写')
-    expect(wrapper.text()).toContain('已选 0 个 SKU')
-    expect(wrapper.text()).toContain('1688 来源标题')
-    expect(wrapper.text()).not.toContain('SOURCE-SKU')
-  })
-
-  it('其他平台仍可从已持久化的 ready 状态继续准备 Payload', async () => {
-    const wrapper = mount(PublishPrecheckPanel, { props: panelProps() })
-    const previewButton = () => wrapper.findAll('button').find((button) => button.text() === '准备素材并预览 Payload')!
-
-    expect(previewButton().attributes('disabled')).toBeDefined()
-    await previewButton().trigger('click')
-    expect(wrapper.emitted('previewPayload')).toBeUndefined()
-
-    await wrapper.setProps({ precheck: passedPrecheck() })
-    expect(previewButton().attributes('disabled')).toBeUndefined()
-
-    await wrapper.setProps({ precheck: null })
-    wrapper.props('draft').status = 'ready_to_publish'
-    await wrapper.vm.$nextTick()
-    expect(previewButton().attributes('disabled')).toBeUndefined()
-  })
-
-  it('Mercado 分层预检为空时不允许 stale ready_to_publish 绕过', () => {
-    const props = panelProps()
-    props.draft.platform = 'mercadolibre'
-    props.draft.site = 'CBT'
-    props.draft.status = 'ready_to_publish'
-    const mercadoTarget: MarketplaceTargetSite = {
-      platform: 'mercadolibre',
-      site: 'CBT',
-      language: 'en-US',
-      listingCurrency: 'USD',
-    }
-    const wrapper = mount(PublishPrecheckPanel, {
-      props: {
-        ...props,
-        publishTargets: [mercadoTarget],
-        selectedPublishTarget: mercadoTarget,
-        precheck: null,
-      },
-    })
-
-    const previewButton = wrapper.findAll('button').find((button) => button.text() === '准备素材并预览 Payload')!
-    expect(previewButton.attributes('disabled')).toBeDefined()
-    expect(wrapper.text()).toContain('点击上架预检后')
-    expect(wrapper.text()).not.toContain('已保存为校验通过')
-  })
-
-  it('预检通过但没有 Payload 确认指纹时仍禁止入队', () => {
-    const wrapper = mount(PublishPrecheckPanel, {
-      props: {
-        ...panelProps(),
-        precheck: passedPrecheck(),
-      },
-    })
-
-    const publishButton = wrapper.findAll('button').find((button) => button.text() === '确认加入队列')!
-    expect(publishButton.attributes('disabled')).toBeDefined()
-    expect(wrapper.text()).toContain('请点击 Payload 预览生成确认摘要')
+    expect(wrapper.get('h3').text()).toContain('ozon')
+    expect(wrapper.findAll('select').every((select) => select.attributes('data-publish-draft-field'))).toBe(true)
   })
 
   it('有分层 scope 时分别展示父级、销售市场和提醒项', () => {
@@ -307,8 +141,7 @@ describe('PublishPrecheckPanel', () => {
     const wrapper = mount(PublishPrecheckPanel, {
       props: {
         ...props,
-        publishTargets: [mercadoTarget],
-        selectedPublishTarget: mercadoTarget,
+        target: mercadoTarget,
         platformOptions: [{
           key: 'mercadolibre',
           label: '美客多',
@@ -334,10 +167,7 @@ describe('PublishPrecheckPanel', () => {
     expect(wrapper.get('[data-testid="publish-precheck-scopes"]').text()).not.toContain('remote')
     expect(wrapper.get('[data-testid="publish-precheck-scopes"]').text()).toContain('通过')
     expect(wrapper.get('[data-testid="publish-precheck-scopes"]').text()).toContain('请复核智利市场运费报价')
-    expect(wrapper.text()).toContain('预检通过。请点击 Payload 预览生成确认摘要')
-
-    const previewButton = wrapper.findAll('button').find((button) => button.text() === '准备素材并预览 Payload')!
-    expect(previewButton.attributes('disabled')).toBeUndefined()
+    expect(wrapper.text()).toContain('预检通过，可统一准备发布预览')
   })
 
   it('主界面隐藏技术field与错误码，并按市场分别统计相同问题', () => {
@@ -381,8 +211,7 @@ describe('PublishPrecheckPanel', () => {
     const wrapper = mount(PublishPrecheckPanel, {
       props: {
         ...panelProps(),
-        publishTargets: [mercadoTarget],
-        selectedPublishTarget: mercadoTarget,
+        target: mercadoTarget,
         precheck,
       },
     })
@@ -400,6 +229,7 @@ describe('PublishPrecheckPanel', () => {
       '处理建议：重新执行上架预检，并按最新的店铺、市场与物流能力结果处理。',
     ])
   })
+
 
   it('重复或空市场身份仍生成独立 scope 卡片', () => {
     const precheck = layeredPrecheck(true)
@@ -419,9 +249,9 @@ describe('PublishPrecheckPanel', () => {
     expect(wrapper.findAll('[data-testid^="publish-precheck-scope-market:"]')).toHaveLength(2)
   })
 
-  it('分层预检存在错误时即使顶层 ok=true 也阻断后续按钮', () => {
+
+  it('分层预检存在错误时即使顶层 ok=true 也显示未通过', () => {
     const props = panelProps()
-    props.draft.status = 'ready_to_publish'
     const inconsistentPrecheck = layeredPrecheck(false)
     inconsistentPrecheck.ok = true
     inconsistentPrecheck.errors = []
@@ -436,13 +266,10 @@ describe('PublishPrecheckPanel', () => {
 
     expect(wrapper.text()).toContain('阿根廷售价无效')
     expect(wrapper.text()).toContain('不通过')
-    const previewButton = wrapper.findAll('button').find((button) => button.text() === '准备素材并预览 Payload')!
-    const publishButton = wrapper.findAll('button').find((button) => button.text() === '确认加入队列')!
-    expect(previewButton.attributes('disabled')).toBeDefined()
-    expect(publishButton.attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('预检未通过')
   })
 
-  it('分层 status=blocked 即使没有错误明细也阻断后续按钮', () => {
+  it('分层 status=blocked 即使没有错误明细也显示未通过', () => {
     const precheck = layeredPrecheck(true)
     precheck.marketChecks![0] = {
       ...precheck.marketChecks![0],
@@ -460,10 +287,6 @@ describe('PublishPrecheckPanel', () => {
 
     expect(wrapper.text()).toContain('预检未通过')
     expect(wrapper.text()).toContain('还有 1 项未通过')
-    const previewButton = wrapper.findAll('button').find((button) => button.text() === '准备素材并预览 Payload')!
-    const publishButton = wrapper.findAll('button').find((button) => button.text() === '确认加入队列')!
-    expect(previewButton.attributes('disabled')).toBeDefined()
-    expect(publishButton.attributes('disabled')).toBeDefined()
   })
 
   it('scope 卡片存在时仍展示 normalizer 合成的顶层不一致问题', () => {
@@ -511,19 +334,20 @@ describe('PublishPrecheckPanel', () => {
     expect(wrapper.text()).toContain('预检通过，可以发布。')
   })
 
-  it('预览确认后展示摘要与指纹，并允许确认入队', async () => {
+  it('预览就绪后展示摘要与指纹，发布统一确认', async () => {
     const preview = payloadPreview()
     const wrapper = mount(PublishPrecheckPanel, {
       props: {
         ...panelProps(),
         precheck: passedPrecheck(),
         payloadPreview: preview,
+        target: { ...target, platform: 'yandex' },
       },
     })
 
     const text = wrapper.text()
     const summary = preview.summary!
-    expect(text).toContain('已确认预览')
+    expect(text).toContain('预览已就绪')
     expect(text).toContain(summary.storeIdentity)
     expect(text).toContain('1299 RUB')
     expect(text).toContain('1599 RUB')
@@ -531,9 +355,6 @@ describe('PublishPrecheckPanel', () => {
     expect(text).toContain(`${preview.validationDigest.slice(0, 16)}…`)
     expect(text).toContain('"offerId": "YDX-001"')
 
-    const publishButton = wrapper.findAll('button').find((button) => button.text() === '确认加入队列')!
-    expect(publishButton.attributes('disabled')).toBeUndefined()
-    await publishButton.trigger('click')
-    expect(wrapper.emitted('publish')).toHaveLength(1)
+    expect(wrapper.findAll('button')).toHaveLength(0)
   })
 })

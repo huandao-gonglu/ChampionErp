@@ -6,7 +6,6 @@ import pytest
 
 from erp_web.runtime_units import category_attribute_tools
 from erp_web.schemas.ai_trace import AiExecutionContext
-from erp_web.schemas.ai_tools import AiToolExecutionError
 from erp_web.schemas.category_attribute import CategoryAttributeValueLedger
 
 
@@ -76,6 +75,7 @@ def test_attribute_value_tool_queries_strict_dictionary_and_records_ids(
                 }
             ],
             "error_code": "",
+            "error_message": "",
         }
     ]
     assert captured["platform"] == "ozon"
@@ -104,11 +104,13 @@ def test_attribute_value_tool_rejects_open_enum() -> None:
         ledger=ledger,
     )
 
-    with pytest.raises(AiToolExecutionError, match="只有强制枚举属性"):
-        toolset.get("category_attribute_values_search").executor(
-            {"requests": [{"attribute_id": "STYLE", "query": "wall"}]},
-            execution_context(),
-        )
+    output = toolset.get("category_attribute_values_search").executor(
+        {"requests": [{"attribute_id": "STYLE", "query": "wall"}]},
+        execution_context(),
+    )
+    assert output["results"][0]["error_code"] == "ATTRIBUTE_VALUES_NOT_QUERYABLE"
+    assert "直接" in output["results"][0]["error_message"]
+    assert ledger.attempts == []
 
 
 def test_brand_value_tool_maps_no_brand_alias_to_platform_query(
@@ -159,8 +161,35 @@ def test_brand_value_tool_maps_no_brand_alias_to_platform_query(
             }
         ],
         "error_code": "",
+        "error_message": "",
     }
     assert ledger.get("85", "live-id") == {
         "dictionary_value_id": "live-id",
         "value": "Нет бренда",
     }
+
+
+def test_invalid_batch_items_do_not_discard_valid_dictionary_results(monkeypatch):
+    ledger = CategoryAttributeValueLedger.from_schema([
+        {"id": "STYLE", "value_mode": "open_enum"},
+        {"id": "GENDER", "value_mode": "strict_enum", "options": ["женский", "мужской"]},
+    ])
+    calls = []
+    def values(*args, **kwargs):
+        calls.append(kwargs["query"])
+        return {"values": [{"id": "female", "value": "женский"}]}
+    monkeypatch.setattr(category_attribute_tools, "fetch_category_attribute_values", values)
+    tool = category_attribute_tools.build_category_attribute_value_toolset(
+        platform="yandex", category_record={"category_id": "67831537"}, ledger=ledger,
+    ).get("category_attribute_values_search")
+    result = tool.executor({"requests": [
+        {"attribute_id": "STYLE", "query": "冰丝"},
+        {"attribute_id": "GENDER", "query": "女性"},
+        {"attribute_id": "GENDER", "query": "женский"},
+    ]}, execution_context())
+    assert [item["error_code"] for item in result["results"]] == [
+        "ATTRIBUTE_VALUES_NOT_QUERYABLE", "ATTRIBUTE_QUERY_LANGUAGE_MISMATCH", "",
+    ]
+    assert "женский" in result["results"][1]["error_message"]
+    assert calls == ["женский"]
+    assert ledger.get("GENDER", "female")["value"] == "женский"

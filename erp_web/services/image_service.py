@@ -353,7 +353,7 @@ def materialize_image_values(
     platform_values = normalize_platforms(platforms) or list(PLATFORMS)
     for index, value in enumerate(image_values or []):
         raw_item = value if isinstance(value, dict) else {}
-        text = str(raw_item.get("preview_url") or raw_item.get("url") or raw_item.get("path") or value or "").strip()
+        text = str(raw_item.get("path") or raw_item.get("url") or raw_item.get("preview_url") or value or "").strip()
         if not text:
             continue
         if text.startswith(("http://", "https://")):
@@ -384,13 +384,23 @@ def materialize_image_values(
                 app_dir,
             )
         if item:
+            # 素材身份与原图来源不会因下载、本地路径或分发域名变化而改变。
+            if raw_item.get("id"):
+                item["id"] = item["asset_id"] = raw_item["id"]
+            item["raw"] = {**(raw_item.get("raw") or {})}
+            if text.startswith(("http://", "https://")):
+                item["raw"].setdefault("source_url", text)
+            for field in ("usage", "is_sku", "sku", "derived_from_id", "source_asset_id"):
+                if field in raw_item:
+                    item[field] = raw_item[field]
             item["origin"] = origin if item.get("status") == "ready" else item.get("origin") or origin
             item["platforms"] = platform_values
             item["order"] = index
-            item["is_main"] = index == 0
-            item["selected"] = True
+            item["is_main"] = raw_item.get("is_main", index == 0)
+            item["selected"] = raw_item.get("selected", True)
             items.append(item)
-    return normalize_pool(items, app_dir)
+    # 这里只下载本次素材；不能把单张 SKU 图自动提升为公共主图。
+    return [normalize_item(item, index, app_dir) for index, item in enumerate(items)]
 
 
 def add_images(pool: list[dict[str, Any]], items: list[dict[str, Any]], app_dir: Path | str | None = None) -> list[dict[str, Any]]:
@@ -463,17 +473,6 @@ def set_main_image(pool: list[dict[str, Any]], image_id: str, app_dir: Path | st
     return normalize_pool(items, app_dir)
 
 
-def set_sku_image(pool: list[dict[str, Any]], image_id: str, sku: str, app_dir: Path | str | None = None) -> list[dict[str, Any]]:
-    items = normalize_pool(pool or [], app_dir)
-    for item in items:
-        if str(item.get("id")) == str(image_id):
-            item["is_sku"] = True
-            item["sku"] = str(sku or "").strip()
-            item["usage"] = "sku"
-            item["selected"] = True
-    return normalize_pool(items, app_dir)
-
-
 def filter_images(pool: list[dict[str, Any]], platform: str = "", selected_only: bool = False, app_dir: Path | str | None = None) -> list[dict[str, Any]]:
     items = normalize_pool(pool or [], app_dir)
     platform = str(platform or "").strip().lower()
@@ -496,8 +495,6 @@ def apply_image_action(app_dir: Path | str, pool: list[dict[str, Any]], action: 
         return replace_image(pool, str(body.get("image_id") or ""), body.get("replacement") or {}, app_dir)
     if action == "set_main":
         return set_main_image(pool, str(body.get("image_id") or ""), app_dir)
-    if action == "set_sku":
-        return set_sku_image(pool, str(body.get("image_id") or ""), str(body.get("sku") or body.get("sku_id") or ""), app_dir)
     if action == "filter":
         return filter_images(pool, str(body.get("platform") or ""), bool(body.get("selected_only")), app_dir)
     raise ValueError(f"Unsupported image action: {action}")

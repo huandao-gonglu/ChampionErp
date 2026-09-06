@@ -22,7 +22,7 @@ def test_image_root_is_created_under_data_images(app_dir: Path, old_path_markers
     assert_no_old_path(root, old_path_markers)
 
 
-def test_upload_delete_replace_main_and_sku_image(app_dir: Path, tmp_path: Path, old_path_markers: tuple[str, ...]) -> None:
+def test_upload_delete_replace_and_main_image(app_dir: Path, tmp_path: Path, old_path_markers: tuple[str, ...]) -> None:
     source = tmp_path / "test_image.png"
     replacement = tmp_path / "replacement.png"
     _make_png(source, (255, 0, 0))
@@ -43,15 +43,10 @@ def test_upload_delete_replace_main_and_sku_image(app_dir: Path, tmp_path: Path,
     pool = image_service.set_main_image(pool, item["id"], app_dir)
     assert pool[0]["is_main"] is True
 
-    pool = image_service.set_sku_image(pool, item["id"], "SKU-BLUE", app_dir)
-    assert pool[0]["is_sku"] is True
-    assert pool[0]["sku"] == "SKU-BLUE"
-
     pool = image_service.replace_image(pool, item["id"], {"path": str(replacement), "product_id": "pytest-stage3a"}, app_dir)
     replaced_path = app_dir / pool[0]["path"]
     assert replaced_path.exists()
     assert pool[0]["is_main"] is True
-    assert pool[0]["is_sku"] is True
 
     pool = image_service.delete_images(pool, [pool[0]["id"]], app_dir)
     assert pool == []

@@ -51,6 +51,7 @@ class CategoryAttributeValueLookupResult(BaseModel):
     query: Annotated[str, StringConstraints(max_length=255)]
     values: list[CategoryAttributeValueCandidate] = Field(max_length=20)
     error_code: Annotated[str, StringConstraints(max_length=80)] = ""
+    error_message: Annotated[str, StringConstraints(max_length=300)] = ""
 
 
 class CategoryAttributeValueSearchResult(BaseModel):

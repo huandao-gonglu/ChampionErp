@@ -55,6 +55,21 @@ def _relative_posix(path) -> str:
     return path.relative_to(ROOT).as_posix()
 
 
+def test_sku_images_have_one_asset_reference_contract() -> None:
+    from erp_web.schemas.requests import IMAGE_ACTION
+    from erp_web.services import image_service
+    assert "set_sku" not in IMAGE_ACTION.choices
+    assert not hasattr(image_service, "set_sku_image")
+    for path in ("erp_web/runtime_units/sku_publish_projection.py", "erp_web/runtime_units/sku_publish_adapter.py"):
+        tree = parse_python(ROOT / path)
+        assert not any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                       and node.func.attr == "get" and node.args
+                       and isinstance(node.args[0], ast.Constant) and node.args[0].value == "image"
+                       for node in ast.walk(tree)), "SKU 发布只能按资产 ID 关联，不能恢复 URL 匹配"
+    dependencies = [target for _, target in imported_targets([ROOT / "erp_web/product_model/sku_image_model.py"])]
+    assert not any(any(part in target for part in ("runtime_units", "stores", "services", "context")) for target in dependencies)
+
+
 def test_database_has_no_legacy_deferred_task_migration() -> None:
     source = (ROOT / "erp_web/db.py").read_text(encoding="utf-8")
     for retired_symbol in (

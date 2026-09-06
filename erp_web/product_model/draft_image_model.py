@@ -96,6 +96,8 @@ def draft_image_refs_from_pool(product: dict[str, Any], platform: str = "") -> l
         ]
         if platform_items:
             pool = platform_items
+    # 规格图由 SKU 引用进入单品主图，不自动混入所有规格的公共图集。
+    pool = [item for item in pool if not item.get("is_sku")]
     selected_items = [item for item in pool if bool(item.get("selected"))]
     items = selected_items or pool
     items = sorted(items, key=lambda item: (0 if item.get("is_main") else 1, int(item.get("order") or 0)))

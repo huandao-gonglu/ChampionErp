@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+import json
 
 import pytest
 from pydantic_ai import ModelRetry
@@ -138,6 +139,78 @@ def final_output(
             )
         ]
     )
+
+
+def test_validator_reports_both_missing_dictionary_ids_in_one_retry():
+    ledger = CategoryAttributeValueLedger.from_schema([
+        {"id": "GENDER", "value_mode": "strict_enum", "required": True},
+        {"id": "SEASON", "value_mode": "strict_enum", "required": False},
+    ])
+    validator = CategoryAttributeFillOutputValidator(ledger)
+    output = CategoryAttributeFillAgentOutput(assignments=[
+        CategoryAttributeAssignment(attribute_id="GENDER", value="женский"),
+        CategoryAttributeAssignment(attribute_id="SEASON", value="лето"),
+    ], need_review=[])
+    with pytest.raises(ModelRetry) as caught:
+        validator(None, output)
+    assert "GENDER" in str(caught.value)
+    assert "SEASON" in str(caught.value)
+    assert validator.error_code == "ATTRIBUTE_ENUM_ID_REQUIRED"
+
+
+def test_native_agent_batches_gender_and_season_and_saves_translated_evidence(monkeypatch):
+    from erp_web.product_model import default_product_model
+    from erp_web.runtime_units import category_attribute_ai_fill
+
+    product = default_product_model()
+    product["source"]["attributes"] = {"适用性别": "女", "适合季节": "夏季,春季"}
+    category = {"category_id": "67831537", "site": "global", "attributes": {
+        "required": [{"id": "14805991", "name": "Пол", "required": True,
+                      "value_mode": "strict_enum", "dictionary_id": "gender"}],
+        "optional": [{"id": "27142893", "name": "Сезон", "value_mode": "strict_enum",
+                      "dictionary_id": "season"}],
+    }}
+    candidates = {
+        "14805991": {"id": "14805993", "value": "женский"},
+        "27142893": {"id": "32034092", "value": "демисезон/лето"},
+    }
+    monkeypatch.setattr(category_attribute_tools, "fetch_category_attribute_values",
+                        lambda platform, cat, attr, **kwargs: {"values": [candidates[attr]]})
+    turns = 0
+    def model(messages, agent_info):
+        nonlocal turns
+        turns += 1
+        if turns == 1:
+            prompt = next(part.content for msg in messages for part in msg.parts if isinstance(part, UserPromptPart))
+            payload = json.loads(prompt.split('Input:\n')[1])
+            assert payload["queryable_attribute_ids"] == ["14805991", "27142893"]
+            assert "俄语" in payload["dictionary_language"]
+            return ModelResponse(parts=[ToolCallPart("category_attribute_values_search", {"requests": [
+                {"attribute_id": "14805991", "query": "женский"},
+                {"attribute_id": "27142893", "query": "демисезон/лето"},
+            ]}, tool_call_id="batch")])
+        assert turns == 2
+        return final_output(agent_info, {"assignments": [
+            {"attribute_id": attr_id, "value": candidates[attr_id]["value"],
+             "dictionary_value_id": candidates[attr_id]["id"],
+             "evidence": {"source_path": ["source", "attributes", field],
+                          "source_value": product["source"]["attributes"][field],
+                          "reason": reason}}
+            for attr_id, field, reason in [
+                ("14805991", "适用性别", "女性对应平台女款选项"),
+                ("27142893", "适合季节", "来源春夏季对应平台换季/夏季选项"),
+            ]
+        ], "need_review": []}, "final")
+
+    factory = factory_for(FunctionModel(model))
+    monkeypatch.setattr(category_attribute_ai_fill, "run_category_attribute_fill_agent",
+                        lambda payload, toolset, ledger: run_category_attribute_fill_agent(
+                            payload, toolset, ledger, factory=factory, timeout_seconds=10))
+    updated, meta = category_attribute_ai_fill.apply_ai_model_attribute_fill(product, "yandex", category)
+    assert turns == 2
+    assert meta["ai_filled"] == ["14805991", "27142893"]
+    assert "evidence_rejected" not in meta
+    assert updated["drafts"]["yandex"]["validation_errors"] == []
 
 
 def test_agent_queries_only_strict_enum_and_allows_custom_open_enum_value(
@@ -385,6 +458,7 @@ def test_agent_receives_and_preserves_number_unit_contract() -> None:
 
     assert result.output["assignments"] == [
         {
+            "evidence": None,
             "attribute_id": "WEIGHT",
             "value": "0.182",
             "dictionary_value_id": "",

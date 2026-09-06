@@ -18,6 +18,7 @@ from .defaults import default_collect_diagnostics, default_draft, default_pricin
 from .draft_image_model import normalize_draft_image_refs
 from .image_pool_model import image_pool_refs, normalize_image_pool
 from .sku_model import normalize_product_skus, normalize_draft_skus, merge_collected_skus
+from .sku_image_model import migrate_sku_image_addresses
 from .platform_sku import resolve_platform_draft_sku
 from .mercadolibre_publication import normalize_mercadolibre_publication
 
@@ -875,6 +876,7 @@ def normalize_platform_draft(
         else {}
     )
     product["drafts"] = drafts
+    migrate_sku_image_addresses(product)
     return _merge_platform_draft(product, platform_key)
 
 
@@ -907,6 +909,17 @@ def merge_source_partial_result(
     normalized = normalize_product_model(product or {})
     source = deepcopy(normalized.get("source") or default_source())
     updates = source_updates if isinstance(source_updates, dict) else {}
+    if updates.get("image_pool"):
+        # 重新采集不得移除人工素材或仍被商品/草稿引用的资产。
+        referenced = {row.get("image_asset_id") for row in normalized.get("sku_items", [])}
+        for draft in normalized.get("drafts", {}).values():
+            referenced.update(ref.get("asset_id") for ref in draft.get("images", []))
+            referenced.update((row.get("overrides") or {}).get("image_asset_id") for row in draft.get("sku_items", []))
+        incoming_pool = deepcopy(updates["image_pool"])
+        incoming_ids = {item.get("id") for item in incoming_pool}
+        retained = [item for item in source.get("image_pool", []) if item.get("id") not in incoming_ids
+                    and (item.get("id") in referenced or item.get("origin") not in SOURCE_IMAGE_ORIGINS)]
+        updates = {**updates, "image_pool": incoming_pool + retained}
     diagnostics = diagnostics_updates if isinstance(diagnostics_updates, dict) else updates.get("collect_diagnostics")
     diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
     try:
@@ -982,17 +995,12 @@ def merge_source_partial_result(
                 for ref in normalize_draft_image_refs(draft.get("images"))
                 if text_or_empty(ref.get("asset_id")) in kept_asset_ids
             ] if kept_asset_ids else []
-        for sku_items in (
-            normalized.get("sku_items"),
-            source.get("skus"),
-        ):
-            for sku_item in sku_items if isinstance(sku_items, list) else []:
-                if (
-                    isinstance(sku_item, dict)
-                    and text_or_empty(sku_item.get("image"))
-                    not in kept_image_refs
-                ):
-                    sku_item["image"] = ""
+        for sku_item in normalized.get("sku_items", []):
+            if text_or_empty(sku_item.get("image_asset_id")) not in kept_asset_ids:
+                sku_item["image_asset_id"] = ""
+        for sku_item in source.get("skus", []):
+            if text_or_empty(sku_item.get("image")) not in kept_image_refs:
+                sku_item["image"] = ""
     if isinstance(source.get("image_pool"), list):
         source["images"] = image_pool_refs(
             normalize_image_pool(source["image_pool"], "source"),
@@ -1026,6 +1034,7 @@ def merge_source_partial_result(
 
 def normalize_product_model(product: dict[str, Any] | None) -> dict[str, Any]:
     incoming = deepcopy(product or {})
+    migrate_sku_image_addresses(incoming)
     _reject_removed_product_fields(incoming)
     raw_schema_version = incoming.get("schema_version")
     if raw_schema_version not in (None, ""):

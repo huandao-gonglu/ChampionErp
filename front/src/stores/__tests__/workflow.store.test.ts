@@ -1,4 +1,6 @@
 import { setActivePinia, createPinia } from 'pinia'
+import { mount, flushPromises } from '@vue/test-utils'
+import DraftPublishPrecheckWorkspace from '@/views/workflow/DraftPublishPrecheckWorkspace.vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createEmptyDraftDetail, createEmptyDraftProductContext, createEmptyProduct } from '@/constants/initialState'
 import { useWorkflowStore } from '@/stores/workflow'
@@ -141,7 +143,7 @@ function mutation(product: Product): ProductMutationResponse {
 
 function ensurePricingSku(store: ReturnType<typeof useWorkflowStore>) {
   if (store.currentDraft.skuItems.length) return
-  store.currentDraftProductContext.skuItems = [{ id: 'sku-test', source_sku_id: '', name: '测试规格', options: {}, cost_cny: String(store.pricingInput.purchaseCostCny), supplier_stock: '', image: '', barcode: '', active: true, source_snapshot: {}, package_dimensions: {length_cm: String(store.pricingInput.lengthCm), width_cm: String(store.pricingInput.widthCm), height_cm: String(store.pricingInput.heightCm), weight_kg: String(store.pricingInput.weightKg)} }]
+  store.currentDraftProductContext.skuItems = [{ id: 'sku-test', source_sku_id: '', name: '测试规格', options: {}, cost_cny: String(store.pricingInput.purchaseCostCny), supplier_stock: '', image_asset_id: '', barcode: '', active: true, source_snapshot: {}, package_dimensions: {length_cm: String(store.pricingInput.lengthCm), width_cm: String(store.pricingInput.widthCm), height_cm: String(store.pricingInput.heightCm), weight_kg: String(store.pricingInput.weightKg)} }]
   store.currentDraft.skuItems = [{sku_id: 'sku-test', sku: 'TEST-SKU', stock: '5', selected: true, overrides: {}, attributes_by_target: {}, pricing: {}, publications: {}}]
 }
 
@@ -154,6 +156,19 @@ function draftMutation(draft: DraftDetail, draftsIndex: DraftIndexItem[] = []): 
     draftsIndex,
     raw: {},
   }
+}
+
+function multiMarketCategoryDraft() {
+  const draft = createEmptyDraftDetail('yandex')
+  draft.draftId = 'draft-multi-category'
+  draft.site = 'global'
+  draft.targetSites = [
+    { platform: 'yandex', site: 'global', language: 'ru-RU', listingCurrency: 'RUB', categoryId: 'yandex-old', attributes: { material: '棉' } },
+    { platform: 'ozon', site: 'global', language: 'ru-RU', listingCurrency: 'RUB', categoryId: 'ozon-old', descriptionCategoryId: 'ozon-parent', attributes: { material: '冰丝' } },
+  ]
+  draft.categoryId = 'yandex-old'
+  draft.attributes = { material: '棉' }
+  return draft
 }
 
 describe('workflow store live API flow', () => {
@@ -169,6 +184,307 @@ describe('workflow store live API flow', () => {
       },
     })
     vi.clearAllMocks()
+  })
+
+  it('三个目标市场完整展开，用统一按钮全部预检，失败可单独重试', async () => {
+    const store = useWorkflowStore()
+    store.currentDraft = multiMarketCategoryDraft()
+    store.currentDraft.targetSites.push({ platform: 'mercadolibre', site: 'CBT', language: 'en-US', listingCurrency: 'USD' })
+    store.activePublishTargetKey = 'yandex:global'
+    vi.mocked(workflowApi.saveDraft).mockImplementation(async (draft) => draftMutation(JSON.parse(JSON.stringify(draft))))
+    vi.mocked(workflowApi.publishPrecheck).mockImplementation(async (draft, target) => ({
+      draft: JSON.parse(JSON.stringify(draft)),
+      precheck: { ok: target.platform === 'ozon', errors: target.platform === 'ozon' ? [] : ['缺少 Yandex 类目'], warnings: [], errorItems: target.platform === 'ozon' ? [] : [{ code: 'CATEGORY_MISSING', field: 'category_id', severity: 'error', message: '缺少 Yandex 类目', nextAction: '选择类目' }], warningItems: [], checkedAt: '2026-09-05' },
+      platformResults: {},
+    }))
+    const wrapper = mount(DraftPublishPrecheckWorkspace)
+    const panels = wrapper.findAll('[data-testid="publish-target-editor"]')
+    expect(panels).toHaveLength(3)
+    expect(panels.map((panel) => panel.attributes('aria-label'))).toEqual(['yandex 发布预检', 'ozon 发布预检', 'mercadolibre 发布预检'])
+    expect(panels.every((panel) => panel.text().includes('预检结果'))).toBe(true)
+    expect(wrapper.findAll('[data-testid="publish-shared-fields"]')).toHaveLength(1)
+    expect(panels.every((panel) => panel.findAll('button').length === 0)).toBe(true)
+    expect(panels[0].element.parentElement?.classList.contains('xl:grid-cols-2')).toBe(true)
+
+    await wrapper.get('[data-testid="publish-batch-actions"]').findAll('button').find((button) => button.text() === '全部预检')!.trigger('click')
+    await flushPromises()
+    expect(workflowApi.saveDraft).toHaveBeenCalledOnce()
+    expect(workflowApi.publishPrecheck).toHaveBeenCalledTimes(2)
+    expect(store.selectedPublishTarget.platform).toBe('yandex')
+    expect(panels[1].text()).toContain('预检通过，可以发布。')
+    expect(panels[0].text()).toContain('缺少 Yandex 类目')
+    expect(panels[2].findAll('button')).toHaveLength(1)
+    expect(store.publishBatch.passed.map((editor) => editor.key)).toEqual(['ozon:global'])
+
+    await panels[0].findAll('button').find((button) => button.text() === '重试该市场预检')!.trigger('click')
+    await flushPromises()
+    expect(workflowApi.publishPrecheck).toHaveBeenCalledTimes(3)
+    expect(workflowApi.publishPrecheck).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ platform: 'yandex' }))
+    expect(panels[1].findAll('button')).toHaveLength(0)
+    wrapper.unmount()
+  })
+
+  it('统一预览后一次确认批量入队，部分失败继续处理，重试不重复提交成功市场', async () => {
+    const store = useWorkflowStore()
+    store.currentDraft = multiMarketCategoryDraft()
+    const passed = { ok: true, errors: [], warnings: [], errorItems: [], warningItems: [], checkedAt: '2026-09-06' }
+    vi.mocked(workflowApi.saveDraft).mockImplementation(async (draft) => draftMutation(JSON.parse(JSON.stringify(draft))))
+    vi.mocked(workflowApi.publishPrecheck).mockImplementation(async (draft) => ({ draft: JSON.parse(JSON.stringify(draft)), precheck: passed, platformResults: {} }))
+    vi.mocked(workflowApi.previewPublishPayload).mockImplementation(async (draft, target) => {
+      const prepared: DraftDetail = JSON.parse(JSON.stringify(draft))
+      prepared.targetSites.find((item) => item.platform === target.platform)!.lastPrecheck = { ok: true, errors: [], warnings: [] }
+      return { draft: prepared, platform: target.platform, site: target.site, target: {}, status: 'preview_only', path: '/tmp/preview.json', payload: {}, warning: '', validationDigest: `${target.platform}-batch-digest`, summary: {}, warnings: [] }
+    })
+    vi.mocked(workflowApi.enqueuePublish).mockImplementation(async (_draft, target) => {
+      if (target.platform === 'yandex') throw new Error('Yandex 暂不可用')
+      return { jobId: 'job-batch-ozon', platforms: ['ozon'], status: 'queued', createdAt: '2026-09-06' }
+    })
+    vi.mocked(workflowApi.fetchPublishJobs).mockResolvedValue({ items: [], nextCursor: '' })
+    vi.mocked(workflowApi.fetchDraftsIndex).mockResolvedValue([])
+    await Promise.all([store.publishBatch.precheckAll(), store.publishBatch.precheckAll()])
+    expect(workflowApi.saveDraft).toHaveBeenCalledOnce()
+    expect(workflowApi.publishPrecheck).toHaveBeenCalledTimes(2)
+    await store.publishBatch.previewAll()
+    expect(workflowApi.saveDraft).toHaveBeenCalledTimes(2)
+    expect(workflowApi.previewPublishPayload).toHaveBeenCalledTimes(2)
+    expect(store.publishBatch.ready).toHaveLength(2)
+    expect(workflowApi.enqueuePublish).not.toHaveBeenCalled()
+    const wrapper = mount(DraftPublishPrecheckWorkspace)
+    expect(wrapper.get('[data-testid="publish-batch-actions"]').text()).toContain('本次确认将提交：yandex · global、ozon · global')
+    vi.mocked(workflowApi.saveDraft).mockClear()
+
+    await wrapper.get('[data-testid="publish-batch-actions"]').findAll('button').find((button) => button.text() === '确认发布已就绪市场（2）')!.trigger('click')
+    await flushPromises()
+    expect(workflowApi.enqueuePublish).toHaveBeenCalledTimes(2)
+    expect(workflowApi.enqueuePublish).toHaveBeenNthCalledWith(1, expect.anything(), expect.objectContaining({ platform: 'yandex' }), 'yandex-batch-digest')
+    expect(workflowApi.enqueuePublish).toHaveBeenNthCalledWith(2, expect.anything(), expect.objectContaining({ platform: 'ozon' }), 'ozon-batch-digest')
+    expect(workflowApi.saveDraft).not.toHaveBeenCalled()
+    expect(store.publishBatch.queuedCount).toBe(1)
+    expect(store.targetEditors[0].state.publishFailure?.message).toBe('Yandex 暂不可用')
+    expect(store.targetEditors[1].state.queuedPublishJobId).toBe('job-batch-ozon')
+    await store.publishBatch.enqueueAll()
+    expect(workflowApi.enqueuePublish).toHaveBeenCalledTimes(2)
+
+    await store.publishBatch.retry(store.targetEditors[0])
+    expect(workflowApi.previewPublishPayload).toHaveBeenCalledTimes(3)
+    expect(workflowApi.enqueuePublish).toHaveBeenCalledTimes(2)
+    vi.mocked(workflowApi.enqueuePublish).mockResolvedValue({ jobId: 'job-batch-yandex', platforms: ['yandex'], status: 'queued', createdAt: '2026-09-06' })
+    await store.publishBatch.enqueueAll()
+    expect(workflowApi.enqueuePublish).toHaveBeenCalledTimes(3)
+    expect(workflowApi.enqueuePublish).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ platform: 'yandex' }), 'yandex-batch-digest')
+    expect(store.publishBatch.queuedCount).toBe(2)
+    wrapper.unmount()
+  })
+
+  it('批量预览跳过未通过目标，入队排除分市场阻断、缺失或错配指纹', async () => {
+    const store = useWorkflowStore()
+    store.currentDraft = multiMarketCategoryDraft()
+    const [yandex, ozon] = store.targetEditors
+    const passed = { ok: true, errors: [], warnings: [], errorItems: [], warningItems: [], checkedAt: '2026-09-06' }
+    yandex.state.precheck = { ...passed, marketChecks: [{ siteId: 'MLA', logisticType: 'remote', ok: true, status: 'blocked', errors: [], warnings: [] }] }
+    ozon.state.precheck = { ...passed }
+    vi.mocked(workflowApi.saveDraft).mockImplementation(async (draft) => draftMutation(JSON.parse(JSON.stringify(draft))))
+    vi.mocked(workflowApi.previewPublishPayload).mockResolvedValue({ platform: 'ozon', site: 'global', target: {}, status: 'preview_only', path: '', payload: {}, warning: '', validationDigest: 'ozon-ready', summary: {}, warnings: [] })
+    await store.publishBatch.previewAll()
+    expect(workflowApi.previewPublishPayload).toHaveBeenCalledOnce()
+    expect(workflowApi.previewPublishPayload).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ platform: 'ozon' }))
+    yandex.state.payloadPreview = { ...ozon.state.payloadPreview!, targetKey: 'yandex:global' }
+    ozon.state.payloadPreview = { ...ozon.state.payloadPreview!, targetKey: 'yandex:global' }
+    expect(store.publishBatch.ready).toHaveLength(0)
+    await store.publishBatch.enqueueAll()
+    expect(workflowApi.enqueuePublish).not.toHaveBeenCalled()
+    yandex.state.precheck = null
+    ozon.state.payloadPreview = null
+    expect(store.publishBatch.ready).toHaveLength(0)
+  })
+
+  it('入队成功后列表刷新失败仍记录成功，避免再次提交', async () => {
+    const store = useWorkflowStore()
+    store.currentDraft = multiMarketCategoryDraft()
+    const ozon = store.targetEditors[1]
+    ozon.state.precheck = { ok: true, errors: [], warnings: [], errorItems: [], warningItems: [], checkedAt: '2026-09-06' }
+    ozon.state.payloadPreview = { platform: 'ozon', site: 'global', targetKey: 'ozon:global', status: 'preview_only', path: '', payload: {}, warning: '', validationDigest: 'accepted-digest', summary: null, warnings: [] }
+    vi.mocked(workflowApi.enqueuePublish).mockResolvedValue({ jobId: 'job-accepted', platforms: ['ozon'], status: 'queued', createdAt: '2026-09-06' })
+    vi.mocked(workflowApi.fetchPublishJobs).mockResolvedValue({ items: [], nextCursor: '' })
+    vi.mocked(workflowApi.fetchDraftsIndex).mockRejectedValue(new Error('列表暂不可用'))
+    await store.publishBatch.enqueueAll()
+    await store.publishBatch.enqueueAll()
+    expect(workflowApi.enqueuePublish).toHaveBeenCalledOnce()
+    expect(ozon.state.queuedPublishJobId).toBe('job-accepted')
+    expect(ozon.state.publishFailure).toBeNull()
+  })
+
+  it('各市场分别保存 Payload 确认，入队使用本市场指纹且不再保存草稿', async () => {
+    const store = useWorkflowStore()
+    store.currentDraft = multiMarketCategoryDraft()
+    store.activePublishTargetKey = 'yandex:global'
+    vi.mocked(workflowApi.saveDraft).mockImplementation(async (draft) => draftMutation(JSON.parse(JSON.stringify(draft))))
+    vi.mocked(workflowApi.previewPublishPayload).mockImplementation(async (_draft, target) => ({
+      platform: target.platform, site: target.site, target: {}, status: 'preview_only',
+      path: `/tmp/${target.platform}.json`, payload: { platform: target.platform }, warning: '',
+      validationDigest: `${target.platform}-digest`, summary: {}, warnings: [],
+    }))
+    vi.mocked(workflowApi.enqueuePublish).mockResolvedValue({ jobId: 'job-ozon', status: 'queued', platforms: ['ozon'], createdAt: '2026-09-05' })
+    vi.mocked(workflowApi.fetchPublishJobs).mockResolvedValue({ items: [], nextCursor: '' })
+    vi.mocked(workflowApi.fetchDraftsIndex).mockResolvedValue([])
+    const [yandex, ozon] = store.targetEditors
+    await yandex.run(yandex.actions.previewPayload)
+    await ozon.run(ozon.actions.previewPayload)
+    expect(yandex.state.payloadPreview?.validationDigest).toBe('yandex-digest')
+    expect(ozon.state.payloadPreview?.validationDigest).toBe('ozon-digest')
+    vi.mocked(workflowApi.saveDraft).mockClear()
+
+    await ozon.run(ozon.actions.enqueuePublish)
+    expect(workflowApi.enqueuePublish).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ platform: 'ozon' }), 'ozon-digest')
+    expect(workflowApi.saveDraft).not.toHaveBeenCalled()
+    expect(store.selectedPublishTarget.platform).toBe('yandex')
+  })
+
+  it('Payload 准备归一化草稿后使用最终预检结果，仍可确认当前市场', async () => {
+    const store = useWorkflowStore()
+    store.currentDraft = multiMarketCategoryDraft()
+    vi.mocked(workflowApi.saveDraft).mockImplementation(async (draft) => draftMutation(JSON.parse(JSON.stringify(draft))))
+    vi.mocked(workflowApi.previewPublishPayload).mockImplementation(async (draft, target) => {
+      const prepared: DraftDetail = JSON.parse(JSON.stringify(draft))
+      prepared.skuItems = [{ sku_id: 'prepared-sku', selected: true, sku: 'PREPARED', stock: '10', overrides: {}, attributes_by_target: {}, pricing: {}, publications: {} }]
+      prepared.targetSites[1].lastPrecheck = { ok: true, errors: [], warnings: [] }
+      return {
+        draft: prepared, platform: target.platform, site: target.site, target: {}, status: 'preview_only',
+        path: '/tmp/prepared.json', payload: {}, warning: '', validationDigest: 'prepared-digest', summary: {}, warnings: [],
+      }
+    })
+    const ozon = store.targetEditors[1]
+    ozon.state.precheck = { ok: true, errors: [], warnings: [], errorItems: [], warningItems: [], checkedAt: '2026-09-05' }
+    await ozon.run(ozon.actions.previewPayload)
+    expect(ozon.state.precheck?.ok).toBe(true)
+    expect(ozon.state.payloadPreview?.validationDigest).toBe('prepared-digest')
+  })
+
+  it('平台字段变更只撤销该市场结果，共享资料变更撤销全部市场结果', () => {
+    const store = useWorkflowStore()
+    store.currentDraft = multiMarketCategoryDraft()
+    const [yandex, ozon] = store.targetEditors
+    const passed = { ok: true, errors: [], warnings: [], errorItems: [], warningItems: [], checkedAt: '2026-09-05' }
+    yandex.state.precheck = { ...passed }
+    ozon.state.precheck = { ...passed }
+    ozon.draft.attributes.material = '涤纶'
+    expect(ozon.state.precheck).toBeNull()
+    expect(yandex.state.precheck?.ok).toBe(true)
+    ozon.state.precheck = { ...passed }
+    ozon.draft.allowGtinExemption = true
+    expect(ozon.state.precheck).toBeNull()
+    expect(yandex.state.precheck).toBeNull()
+  })
+
+  it('各目标分别恢复已保存的预检结果', () => {
+    const store = useWorkflowStore()
+    const draft = multiMarketCategoryDraft()
+    draft.targetSites[0].lastPrecheck = { ok: false, errors: ['Yandex 资料缺失'] }
+    draft.targetSites[1].lastPrecheck = { ok: true, errors: [], warnings: [] }
+    store.currentDraft = draft
+    const [yandex, ozon] = store.targetEditors
+    expect(yandex.state.precheck?.errors).toContain('Yandex 资料缺失')
+    expect(ozon.state.precheck?.ok).toBe(true)
+  })
+
+  it('切换草稿后忽略迟到的预检响应并停止旧批次后续市场', async () => {
+    const store = useWorkflowStore()
+    store.currentDraft = multiMarketCategoryDraft()
+    vi.mocked(workflowApi.saveDraft).mockImplementation(async (draft) => draftMutation(JSON.parse(JSON.stringify(draft))))
+    let finish!: (result: Awaited<ReturnType<typeof workflowApi.publishPrecheck>>) => void
+    vi.mocked(workflowApi.publishPrecheck).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    const oldDraft = JSON.parse(JSON.stringify(store.currentDraft))
+    const pending = store.publishBatch.precheckAll()
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'))
+    const nextDraft = multiMarketCategoryDraft()
+    nextDraft.draftId = 'draft-next-precheck'
+    store.currentDraft = nextDraft
+    finish({ draft: oldDraft, precheck: { ok: true, errors: [], warnings: [], errorItems: [], warningItems: [], checkedAt: '2026-09-05' }, platformResults: {} })
+    await pending
+    expect(workflowApi.publishPrecheck).toHaveBeenCalledOnce()
+    expect(store.currentDraft.draftId).toBe('draft-next-precheck')
+    expect(store.targetEditors[1].state.precheck).toBeNull()
+  })
+
+  it('多平台类目区不切换当前平台即可独立搜索和编辑', async () => {
+    const store = useWorkflowStore()
+    store.currentDraft = multiMarketCategoryDraft()
+    const [yandex, ozon] = store.targetEditors
+    vi.mocked(workflowApi.searchCategories).mockImplementation(async (platform) => ({ results: [
+      { id: `${platform}-mask`, name: `${platform} 面罩`, path: `${platform} / 面罩`, raw: {} },
+    ] }))
+    yandex!.state.categoryQuery = 'маски'
+    ozon!.state.categoryQuery = 'Маска-повязка'
+    await yandex!.run(yandex!.actions.searchCategory)
+    await ozon!.run(ozon!.actions.searchCategory)
+    expect(workflowApi.searchCategories).toHaveBeenNthCalledWith(1, 'yandex', 'маски', 'global')
+    expect(workflowApi.searchCategories).toHaveBeenNthCalledWith(2, 'ozon', 'Маска-повязка', 'global')
+    expect(yandex!.state.categoryResults[0]?.id).toBe('yandex-mask')
+    expect(ozon!.state.categoryResults[0]?.id).toBe('ozon-mask')
+    ozon!.draft.attributes.material = '聚酯纤维'
+    ozon!.actions.invalidateCategoryPrecheck()
+    expect(yandex!.draft.attributes.material).toBe('棉')
+    expect(store.currentDraft.targetSites[1]?.attributes?.material).toBe('聚酯纤维')
+    expect(store.selectedPublishTarget.platform).toBe('yandex')
+  })
+
+  it('Ozon 类目确认保存到自身目标且保留 Yandex 编辑内容', async () => {
+    const store = useWorkflowStore()
+    store.currentDraft = multiMarketCategoryDraft()
+    const [yandex, ozon] = store.targetEditors
+    yandex!.draft.attributes.material = '亚麻'
+    yandex!.actions.invalidateCategoryPrecheck()
+    vi.mocked(workflowApi.saveDraft).mockImplementation(async (draft) => draftMutation(JSON.parse(JSON.stringify(draft))))
+    vi.mocked(workflowApi.fetchCategoryAttrs).mockResolvedValue({
+      platform: 'ozon', categoryId: '970676618', categoryPath: 'Одежда / Маска',
+      requiredAttributes: [], optionalAttributes: [], fetchedAt: '2026-09-05T00:00:00Z',
+      raw: { description_category_id: '41777465' },
+    })
+    await ozon!.run(() => ozon!.actions.selectCategory({
+      id: '970676618', name: 'Маска', path: 'Одежда / Маска', raw: { description_category_id: '41777465' },
+    }))
+    expect(ozon!.state.error).toBe('')
+    expect(workflowApi.fetchCategoryAttrs).toHaveBeenCalledWith('ozon', '970676618', 'global')
+    expect(store.currentDraft.targetSites[0]).toMatchObject({ categoryId: 'yandex-old', attributes: { material: '亚麻' } })
+    expect(store.currentDraft.targetSites[1]).toMatchObject({ categoryId: '970676618', descriptionCategoryId: '41777465', attributes: {} })
+    expect(store.currentDraft.categoryId).toBe('yandex-old')
+    expect(ozon!.state.category?.categoryId).toBe('970676618')
+    expect(yandex!.state.category?.categoryId).toBe('yandex-old')
+  })
+
+  it('单个平台操作区的 AI 匹配只发起该平台的一次请求', async () => {
+    const store = useWorkflowStore()
+    store.currentDraft = multiMarketCategoryDraft()
+    const [yandex, ozon] = store.targetEditors
+    vi.mocked(workflowApi.saveDraft).mockImplementation(async (draft) => draftMutation(JSON.parse(JSON.stringify(draft))))
+    vi.mocked(workflowApi.matchCategory).mockResolvedValue({
+      ok: true, status: 'unresolved', selectedCategoryId: '', candidates: [], query: '面罩', failure: null,
+      decision: { confidenceBand: 'low', modelConfidence: 0, decisionScore: 0, abstained: true, evidence: [], searchCount: 3 },
+      trace: { taskRunId: 'category-ozon' },
+    })
+    await ozon!.run(ozon!.actions.suggestCategoryByAi)
+    expect(ozon!.state.error).toContain('没有找到')
+    expect(workflowApi.matchCategory).toHaveBeenCalledTimes(1)
+    expect(workflowApi.matchCategory).toHaveBeenCalledWith(expect.objectContaining({ draftId: 'draft-multi-category', platform: 'ozon' }), expect.objectContaining({ platform: 'ozon', site: 'global' }))
+    expect(yandex!.state.categoryQuery).toBe('')
+    expect(store.selectedPublishTarget.platform).toBe('yandex')
+  })
+
+  it('切换草稿后旧平台的属性响应不会写入新草稿', async () => {
+    const store = useWorkflowStore()
+    store.currentDraft = multiMarketCategoryDraft()
+    const ozon = store.targetEditors[1]!
+    let complete!: (result: Awaited<ReturnType<typeof workflowApi.fetchCategoryAttrs>>) => void
+    vi.mocked(workflowApi.fetchCategoryAttrs).mockImplementation(() => new Promise((resolve) => { complete = resolve }))
+    const pending = ozon.run(ozon.actions.loadCategoryAttributes)
+    const next = createEmptyDraftDetail('yandex')
+    next.draftId = 'new-draft'
+    store.currentDraft = next
+    complete({ platform: 'ozon', categoryId: 'ozon-old', categoryPath: '旧类目', requiredAttributes: [], optionalAttributes: [], raw: {}, fetchedAt: '2026-09-05' })
+    await pending
+    expect(store.currentDraft.draftId).toBe('new-draft')
+    expect(store.currentDraft.categoryId).toBe('')
+    expect(workflowApi.saveDraft).not.toHaveBeenCalled()
   })
 
   it('loads backend state without seeded sample data', async () => {

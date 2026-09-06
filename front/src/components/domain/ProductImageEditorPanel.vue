@@ -28,9 +28,31 @@ const emit = defineEmits<{
   delete: [imageIds: string[]]
   clear: []
   saveDraftImages: []
+  saveSkuImages: []
 }>()
 
 const draftAssetIds = computed(() => props.draft?.images.map((image) => image.assetId) ?? [])
+const skuAssignments = computed(() => props.product.skuItems.filter(sku => sku.active).map(sku => {
+  const row = props.draft?.skuItems.find(row => row.sku_id === sku.id)
+  return { skuId: sku.id, name: sku.name, imageAssetId: String(row?.overrides.image_asset_id ?? sku.image_asset_id ?? '') }
+}))
+
+function assignSku(skuId: string, assetId: string) {
+  if (props.loading || (assetId && !props.images.some(image => image.id === assetId))) return
+  if (props.draft) {
+    let row = props.draft.skuItems.find(row => row.sku_id === skuId)
+    if (!row) {
+      row = { sku_id: skuId, selected: false, sku: '', stock: '', overrides: {}, attributes_by_target: {}, pricing: {}, publications: {} }
+      props.draft.skuItems.push(row)
+    }
+    row.overrides.image_asset_id = assetId
+  } else {
+    const sku = props.product.skuItems.find(sku => sku.id === skuId)
+    if (sku) sku.image_asset_id = assetId
+  }
+  // 使用现有商品/草稿保存入口；两个页面始终修改同一份 SKU 引用。
+  emit('saveSkuImages')
+}
 
 function orderedDraftImages(draft: DraftDetail) {
   return [...draft.images].sort((left, right) => left.order - right.order)
@@ -93,6 +115,7 @@ function toggleDraftImage(image: ImageAsset, checked: boolean) {
       <div v-if="props.error" class="mt-3 rounded-lg bg-rose-50 p-4 text-sm font-medium text-rose-700 ring-1 ring-rose-200">
         {{ props.error }}
       </div>
+      <p v-if="skuAssignments.length" class="muted mt-3">展开图片下的“关联 SKU”即可指定用途，选择后自动保存。{{ props.draft ? '只影响当前草稿。' : '设置商品 SKU 的默认图片。' }}</p>
     </section>
 
     <div v-if="props.draft" class="grid items-start gap-5 xl:grid-cols-[minmax(0,1.45fr)_minmax(360px,0.75fr)]">
@@ -102,6 +125,8 @@ function toggleDraftImage(image: ImageAsset, checked: boolean) {
         :show-translate-action="props.showTranslateAction === true"
         :show-draft-controls="true"
         :draft-asset-ids="draftAssetIds"
+        :sku-assignments="skuAssignments"
+        @assign-sku="assignSku"
         @translate="emit('translate', $event)"
         @image-edit="emit('imageEdit', $event)"
         @upload="emit('upload', $event)"
@@ -126,6 +151,8 @@ function toggleDraftImage(image: ImageAsset, checked: boolean) {
       :images="props.images"
       :loading="props.loading"
       :show-translate-action="props.showTranslateAction === true"
+      :sku-assignments="skuAssignments"
+      @assign-sku="assignSku"
       @translate="emit('translate', $event)"
       @image-edit="emit('imageEdit', $event)"
       @upload="emit('upload', $event)"

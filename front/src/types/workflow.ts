@@ -19,6 +19,7 @@ export {
   type BackendMercadoLibreMarketplaceUser,
   type BackendMercadoLibreMarketPublication,
   type BackendMercadoLibrePublication,
+  type BackendProductSku,
   type BackendProductSource,
   type BackendMercadoLibreSiteToSell,
   type BackendDraftTargetSite,
@@ -53,6 +54,7 @@ export interface CategoryAttributeDefinition {
   id: string
   name: string
   required: boolean
+  variationRole?: string
   options?: string[]
   valueType?: string
   valueMode?: 'strict_enum' | 'open_enum' | 'free_text' | string
@@ -294,7 +296,7 @@ export interface ProductSku extends UnknownRecord {
   options: Record<string, string>
   cost_cny: string
   supplier_stock: string
-  image: string
+  image_asset_id: string
   barcode: string
   package_dimensions: Record<string, string>
   active: boolean
@@ -613,6 +615,8 @@ export interface PublishPrecheckMarketCheck extends PublishPrecheckScope {
   siteId: string
   logisticType: string
 }
+
+export type DraftPublishOperation = 'precheck' | 'preview' | 'publish'
 
 export interface PublishPrecheck {
   ok: boolean

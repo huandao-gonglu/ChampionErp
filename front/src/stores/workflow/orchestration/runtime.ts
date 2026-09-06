@@ -1188,7 +1188,11 @@ export function createWorkflowRuntime() {
     persistActiveTargetListingFields(categoryPrecheck.value ? { categoryPrecheck: categoryPrecheck.value.raw || categoryPrecheck.value } : {})
     syncActivePublishTarget()
     const target = selectedPublishTarget.value
+    const draftId = currentDraft.value.draftId
     const result = await saveDraftApi(currentDraft.value)
+    if (currentDraft.value.draftId !== draftId) {
+      throw new Error('草稿已改变，已忽略上一份草稿的保存响应。')
+    }
     currentDraft.value = result.draft
     currentDraftProductContext.value = result.productContext
     syncActivePublishTarget(target)

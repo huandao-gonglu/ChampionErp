@@ -14,6 +14,7 @@ const props = defineProps<{
   showTranslateAction?: boolean
   showDraftControls?: boolean
   draftAssetIds?: string[]
+  skuAssignments?: Array<{ skuId: string; name: string; imageAssetId: string }>
 }>()
 
 const emit = defineEmits<{
@@ -25,6 +26,7 @@ const emit = defineEmits<{
   setMain: [imageId: string]
   delete: [imageIds: string[]]
   toggleDraftImage: [image: ImageAsset, checked: boolean]
+  assignSku: [skuId: string, assetId: string]
 }>()
 
 const input = ref<HTMLInputElement | null>(null)
@@ -206,6 +208,18 @@ watch(
             </span>
           </div>
           <p v-if="image.targetLanguage" class="text-xs font-medium text-brand-700 dark:text-primary-200">{{ image.targetLanguage }} · from {{ image.derivedFromId }}</p>
+          <p v-if="props.skuAssignments?.some(sku => sku.imageAssetId === image.id)" class="text-xs text-primary-700 dark:text-primary-200">
+            用于 SKU：{{ props.skuAssignments.filter(sku => sku.imageAssetId === image.id).map(sku => sku.name).join('、') }}
+          </p>
+          <details v-if="props.skuAssignments?.length" class="rounded-lg bg-slate-50 p-2 text-xs dark:bg-dark-800">
+            <summary class="cursor-pointer font-semibold">关联 SKU</summary>
+            <div class="mt-2 max-h-44 space-y-2 overflow-auto">
+              <label v-for="sku in props.skuAssignments" :key="sku.skuId" class="flex items-center gap-2">
+                <input type="checkbox" :checked="sku.imageAssetId === image.id" :disabled="props.loading" :aria-label="`将图片 ${image.id} 用于 ${sku.name}`" @change="emit('assignSku', sku.skuId, eventChecked($event) ? image.id : '')" />
+                {{ sku.name }}
+              </label>
+            </div>
+          </details>
           <div class="flex flex-wrap items-center gap-2">
             <label
               class="inline-flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs font-semibold"

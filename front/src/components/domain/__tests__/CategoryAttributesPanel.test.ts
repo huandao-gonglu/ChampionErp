@@ -35,8 +35,7 @@ function panelProps(draft: DraftDetail, category: CategorySelection | null) {
   return {
     draft,
     productContext: createEmptyDraftProductContext(),
-    publishTargets: [target],
-    selectedPublishTarget: target,
+    target: target,
     platformOptions: [],
     category,
     categoryQuery: '',
@@ -75,8 +74,7 @@ describe('CategoryAttributesPanel', () => {
     const wrapper = mount(CategoryAttributesPanel, {
       props: {
         ...panelProps(draft, null),
-        publishTargets: [sharedTarget],
-        selectedPublishTarget: sharedTarget,
+        target: sharedTarget,
         platformOptions: [{
           key: 'mercadolibre',
           label: '美客多',
@@ -244,8 +242,7 @@ describe('CategoryAttributesPanel', () => {
     const wrapper = mount(CategoryAttributesPanel, {
       props: {
         ...panelProps(draft, category),
-        publishTargets: [mercadoTarget],
-        selectedPublishTarget: mercadoTarget,
+        target: mercadoTarget,
       },
     })
 
@@ -288,8 +285,7 @@ describe('CategoryAttributesPanel', () => {
     const wrapper = mount(CategoryAttributesPanel, {
       props: {
         ...panelProps(draft, category),
-        publishTargets: [mercadoTarget],
-        selectedPublishTarget: mercadoTarget,
+        target: mercadoTarget,
       },
     })
 
@@ -346,8 +342,7 @@ describe('CategoryAttributesPanel', () => {
     const wrapper = mount(CategoryAttributesPanel, {
       props: {
         ...panelProps(draft, category),
-        publishTargets: [mercadoTarget],
-        selectedPublishTarget: mercadoTarget,
+        target: mercadoTarget,
       },
     })
 
@@ -413,8 +408,7 @@ describe('CategoryAttributesPanel', () => {
     const wrapper = mount(CategoryAttributesPanel, {
       props: {
         ...panelProps(draft, category),
-        publishTargets: [mercadoTarget],
-        selectedPublishTarget: mercadoTarget,
+        target: mercadoTarget,
       },
     })
 
@@ -509,8 +503,7 @@ describe('CategoryAttributesPanel', () => {
     const wrapper = mount(CategoryAttributesPanel, {
       props: {
         ...panelProps(draft, category),
-        publishTargets: [mercadoTarget],
-        selectedPublishTarget: mercadoTarget,
+        target: mercadoTarget,
       },
     })
 
@@ -549,8 +542,7 @@ describe('CategoryAttributesPanel', () => {
     const wrapper = mount(CategoryAttributesPanel, {
       props: {
         ...panelProps(draft, category),
-        publishTargets: [mercadoTarget],
-        selectedPublishTarget: mercadoTarget,
+        target: mercadoTarget,
       },
     })
 
@@ -596,8 +588,7 @@ describe('CategoryAttributesPanel', () => {
     const wrapper = mount(CategoryAttributesPanel, {
       props: {
         ...panelProps(draft, category),
-        publishTargets: [mercadoTarget],
-        selectedPublishTarget: mercadoTarget,
+        target: mercadoTarget,
       },
     })
 
@@ -649,8 +640,7 @@ describe('CategoryAttributesPanel', () => {
     const wrapper = mount(CategoryAttributesPanel, {
       props: {
         ...panelProps(draft, category),
-        publishTargets: [mercadoTarget],
-        selectedPublishTarget: mercadoTarget,
+        target: mercadoTarget,
       },
     })
 
@@ -697,8 +687,7 @@ describe('CategoryAttributesPanel', () => {
     const wrapper = mount(CategoryAttributesPanel, {
       props: {
         ...panelProps(draft, category),
-        publishTargets: [mercadoTarget],
-        selectedPublishTarget: mercadoTarget,
+        target: mercadoTarget,
       },
     })
 
@@ -757,8 +746,7 @@ describe('CategoryAttributesPanel', () => {
     const wrapper = mount(CategoryAttributesPanel, {
       props: {
         ...panelProps(draft, category),
-        publishTargets: [mercadoTarget],
-        selectedPublishTarget: mercadoTarget,
+        target: mercadoTarget,
       },
     })
 
@@ -1072,8 +1060,7 @@ describe('CategoryAttributesPanel', () => {
     const wrapper = mount(CategoryAttributesPanel, {
       props: {
         ...panelProps(draft, category),
-        publishTargets: [yandexTarget],
-        selectedPublishTarget: yandexTarget,
+        target: yandexTarget,
       },
     })
 
@@ -1119,8 +1106,7 @@ describe('CategoryAttributesPanel', () => {
     const wrapper = mount(CategoryAttributesPanel, {
       props: {
         ...panelProps(draft, category),
-        publishTargets: [yandexTarget],
-        selectedPublishTarget: yandexTarget,
+        target: yandexTarget,
       },
     })
 

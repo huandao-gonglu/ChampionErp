@@ -10,12 +10,12 @@ import type { CategoryAttributeDefinition, CategoryAttributeOption, CategoryAttr
 const props = withDefaults(defineProps<{
   draft: DraftDetail
   productContext: DraftProductContext
-  publishTargets: MarketplaceTargetSite[]
-  selectedPublishTarget: MarketplaceTargetSite
+  target: MarketplaceTargetSite
   platformOptions: MarketplaceOption[]
   category: CategorySelection | null
   categoryQuery: string
   categoryResults: CategorySearchResult[]
+  columnLayout?: boolean
   categoryAutoMatchProductName?: string
   categoryAutoMatchTargetError?: string
   categoryAttributeTranslations: CategoryAttributeTranslations
@@ -31,6 +31,7 @@ const props = withDefaults(defineProps<{
   loading: boolean
 }>(), {
   categoryAutoMatchProductName: '',
+  columnLayout: false,
   categoryAutoMatchTargetError: '',
   categoryAttributeLoading: false,
   categoryAttributeError: '',
@@ -38,7 +39,6 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   updateCategoryQuery: [value: string]
-  selectPublishTarget: [value: MarketplaceTargetSite]
   searchCategory: []
   suggestCategory: []
   selectCategory: [item: CategorySearchResult]
@@ -51,20 +51,16 @@ const emit = defineEmits<{
   categoryPrecheck: []
 }>()
 
-const selectedTargetKey = computed(() => targetKey(props.selectedPublishTarget))
-const targetOptions = computed(() => props.publishTargets.map((target) => ({
-  ...target,
-  key: targetKey(target),
-  label: targetLabel(target),
-})))
+const targetIdentityKey = computed(() => targetKey(props.target))
+const panelElement = ref<HTMLElement | null>(null)
 const usesSharedMercadoLibreCbtCategory = computed(() => (
-  isMercadoLibreCbtTarget(props.selectedPublishTarget)
+  isMercadoLibreCbtTarget(props.target)
 ))
 const sharedMercadoLibreMarketLabels = computed(() => {
   if (!usesSharedMercadoLibreCbtCategory.value) return []
   const platform = props.platformOptions.find((item) => item.key === 'mercadolibre')
   const seen = new Set<string>()
-  return (props.selectedPublishTarget.sitesToSell || []).flatMap((market) => {
+  return (props.target.sitesToSell || []).flatMap((market) => {
     const siteId = String(market.siteId || '').trim().toUpperCase()
     if (!siteId || siteId === 'CBT' || seen.has(siteId)) return []
     seen.add(siteId)
@@ -129,7 +125,6 @@ const dictionaryFieldStates = ref<Record<string, DictionaryFieldState>>({})
 const dictionarySearchTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 const hasCurrentDraft = computed(() => Boolean(props.draft.draftId))
-const currentDraftTitle = computed(() => props.draft.title || props.productContext.title || props.productContext.sourceTitle || props.draft.draftId || '尚未选择草稿')
 
 const activeDraft = computed(() => {
   const draft = props.draft
@@ -142,7 +137,7 @@ const hasSelectedCategory = computed(() => Boolean(activeDraft.value.categoryId.
 const hasLoadedCategoryDefinition = computed(() => Boolean(
   props.category
   && props.category.categoryId === activeDraft.value.categoryId.trim()
-  && props.category.platform === props.selectedPublishTarget.platform
+  && props.category.platform === props.target.platform
   && props.category.fetchedAt,
 ))
 const categoryAttributeState = computed<'empty' | 'loading' | 'ready' | 'error'>(() => {
@@ -181,7 +176,7 @@ const attributeFields = computed(() => {
   return [...fields.values()]
 })
 function isCompilerManagedAttribute(attrId: string) {
-  return props.selectedPublishTarget.platform === 'mercadolibre'
+  return props.target.platform === 'mercadolibre'
     && MERCADO_COMPILER_MANAGED_ATTRIBUTE_IDS.has(attrId)
 }
 const requiredAttributeFields = computed(() => attributeFields.value.filter(
@@ -230,7 +225,7 @@ function isStrictEnumAttribute(attr: CategoryAttributeDefinition) {
 
 function isOpenEnumAttribute(attr: CategoryAttributeDefinition) {
   if (attr.valueMode === 'open_enum') return true
-  return props.selectedPublishTarget.platform === 'mercadolibre'
+  return props.target.platform === 'mercadolibre'
     && !isStrictEnumAttribute(attr)
     && Boolean(attr.options?.length || attr.hasMoreValues)
 }
@@ -240,7 +235,7 @@ function allowsCustomAttributeValue(attr: CategoryAttributeDefinition) {
     attr.allowCustomValues
     || attr.valueMode === 'open_enum'
     || attr.valueMode === 'free_text'
-    || (props.selectedPublishTarget.platform === 'mercadolibre' && !isStrictEnumAttribute(attr)),
+    || (props.target.platform === 'mercadolibre' && !isStrictEnumAttribute(attr)),
   )
 }
 
@@ -260,12 +255,12 @@ function usesRemoteAttributeOptions(attr: CategoryAttributeDefinition) {
 }
 
 function packageDimensionAttribute(attrId: string): PackageDimensionAttributeMapping | null {
-  if (props.selectedPublishTarget.platform !== 'mercadolibre') return null
+  if (props.target.platform !== 'mercadolibre') return null
   return MERCADO_PACKAGE_DIMENSION_ATTRIBUTES[attrId] || null
 }
 
 function rootDraftAttribute(attrId: string): RootDraftAttributeField | null {
-  if (props.selectedPublishTarget.platform !== 'mercadolibre') return null
+  if (props.target.platform !== 'mercadolibre') return null
   return MERCADO_ROOT_DRAFT_ATTRIBUTES[attrId] || null
 }
 
@@ -439,10 +434,10 @@ async function loadDictionaryOptions(attr: CategoryAttributeDefinition, append =
   }
   try {
     const page = await fetchCategoryAttributeValues(
-      props.selectedPublishTarget.platform,
+      props.target.platform,
       activeDraft.value.categoryId,
       attr.id,
-      props.selectedPublishTarget.site,
+      props.target.site,
       query,
       50,
       cursor,
@@ -496,7 +491,7 @@ function scheduleDictionarySearch(attr: CategoryAttributeDefinition, value: stri
     return
   }
   const query = value.trim()
-  if (props.selectedPublishTarget.platform === 'ozon' && query.length === 1) {
+  if (props.target.platform === 'ozon' && query.length === 1) {
     state.options = []
     state.loadedQuery = query
     state.loading = false
@@ -635,6 +630,7 @@ function closeDictionary(attr: CategoryAttributeDefinition) {
     const active = document.activeElement
     if (
       active instanceof HTMLElement
+      && panelElement.value?.contains(active)
       && (active.dataset.attributeId === attr.id || active.dataset.dictionarySearchId === attr.id)
     ) return
     if (state) state.open = false
@@ -721,7 +717,7 @@ async function focusAttribute(attrId: string) {
 }
 
 watch(
-  () => [selectedTargetKey.value, props.category?.categoryId || ''],
+  () => [targetIdentityKey.value, props.category?.categoryId || ''],
   () => {
     showRequiredAttributes.value = false
     showOptionalAttributes.value = false
@@ -765,59 +761,18 @@ function targetLabel(target: MarketplaceTargetSite) {
   return `${platformLabel} - ${siteLabel}（${target.site || site?.code || '-'} / ${language || '-'} / ${currency || '-'}）`
 }
 
-function selectTargetByKey(value: string) {
-  const target = props.publishTargets.find((item) => targetKey(item) === value)
-  if (target) emit('selectPublishTarget', target)
-}
-
 </script>
 
 <template>
-  <section class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
-    <article class="mb-6 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
-      <div class="flex flex-wrap items-start justify-between gap-4">
-        <div class="min-w-0">
-          <p class="text-xs font-semibold text-accent-500 dark:text-accent-400">当前类目/属性草稿</p>
-          <div class="mt-2 flex flex-wrap items-center gap-3">
-            <img v-if="props.productContext.imagePool[0]?.previewUrl || props.productContext.imagePool[0]?.url" :src="props.productContext.imagePool[0]?.previewUrl || props.productContext.imagePool[0]?.url" class="size-14 rounded-lg object-cover" />
-            <div class="min-w-0">
-              <h3 class="truncate font-semibold text-accent-950 dark:text-white">{{ currentDraftTitle }}</h3>
-              <div class="mt-1 flex flex-wrap gap-2 text-xs text-accent-500 dark:text-accent-400">
-                <span>{{ activeDraft.sku || props.productContext.sku || '无 SKU' }}</span>
-                <span>{{ props.productContext.sourcePlatform || '来源未记录' }}</span>
-                <span>{{ activeDraft.status || 'pending' }}</span>
-                <span>{{ targetLabel(props.selectedPublishTarget) }}</span>
-              </div>
-            </div>
-          </div>
-          <p v-if="!hasCurrentDraft" class="mt-3 text-sm text-amber-700">请先从草稿箱选择草稿，再编辑目标站点的类目/属性。</p>
-        </div>
-        <div class="flex w-full flex-wrap gap-2 lg:w-auto lg:min-w-[28rem]">
-          <div class="min-w-0 flex-1 rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm text-accent-700 dark:border-dark-700 dark:bg-dark-900 dark:text-accent-200">
-            <div class="text-xs font-semibold text-accent-500 dark:text-accent-400">来源商品</div>
-            <div class="mt-1 truncate">{{ props.productContext.sourceTitle || props.productContext.title || props.productContext.productId || '未记录来源商品' }}</div>
-          </div>
-          <div class="min-w-0 flex-1 rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm text-accent-700 dark:border-dark-700 dark:bg-dark-900 dark:text-accent-200">
-            <div class="text-xs font-semibold text-accent-500 dark:text-accent-400">草稿 ID</div>
-            <div class="mt-1 truncate font-mono">{{ activeDraft.draftId || '-' }}</div>
-          </div>
-        </div>
-      </div>
-    </article>
-
+  <section ref="panelElement" class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h2 class="card-title">类目/属性</h2>
+        <h2 class="card-title">{{ targetLabel(props.target) }}</h2>
         <p v-if="usesSharedMercadoLibreCbtCategory" class="muted mt-1">为当前草稿维护一个共享 CBT 类目和对应属性。</p>
-        <p v-else class="muted mt-1">在当前草稿的目标站点之间切换，并分别维护平台类目和必填属性。</p>
-        <p v-if="props.categoryAutoMatchProductName" class="mt-1 text-xs font-semibold text-brand-700 dark:text-brand-300">AI 识别商品主体：{{ props.categoryAutoMatchProductName }}。{{ usesSharedMercadoLibreCbtCategory ? '请检查候选 CBT 类目是否兼容全部已选销售市场后再确认。' : '请逐站点检查候选类目后再确认。' }}</p>
+        <p v-else class="muted mt-1">在此直接搜索、匹配并确认该平台的类目，填写平台属性。</p>
+        <p v-if="props.categoryAutoMatchProductName" class="mt-1 text-xs font-semibold text-brand-700 dark:text-brand-300">AI 识别商品主体：{{ props.categoryAutoMatchProductName }}。{{ usesSharedMercadoLibreCbtCategory ? '请检查候选 CBT 类目是否兼容全部已选销售市场后再确认。' : '请检查本平台的候选类目后再确认。' }}</p>
         <p v-if="showCategoryResultTranslationProgress || showAttributeTranslationProgress" class="mt-1 text-xs text-brand-700 dark:text-brand-300">正在调用 AI 模型翻译文本...</p>
         <p v-else-if="categoryResultTranslationCount || translationCount" class="mt-1 text-xs text-accent-500 dark:text-accent-400">已翻译候选类目 {{ categoryResultTranslationCount }} 项 / 属性 {{ translationCount }} 项</p>
-      </div>
-      <div class="flex flex-wrap items-center gap-2">
-        <select :value="selectedTargetKey" class="input w-80 max-w-full" :disabled="props.loading || targetOptions.length <= 1" @change="selectTargetByKey(($event.target as HTMLSelectElement).value)">
-          <option v-for="target in targetOptions" :key="target.key" :value="target.key">{{ target.label }}</option>
-        </select>
       </div>
     </div>
     <div
@@ -832,7 +787,7 @@ function selectTargetByKey(value: string) {
       <div class="h-full w-2/3 animate-pulse rounded-full bg-brand-500" />
     </div>
 
-    <div class="mt-5 grid min-w-0 items-start gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+    <div class="mt-5 grid min-w-0 items-start gap-6" :class="props.columnLayout ? '' : 'xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]'">
       <article class="min-w-0 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <div>
@@ -849,7 +804,7 @@ function selectTargetByKey(value: string) {
           <button class="btn btn-outline shrink-0" :disabled="props.loading || !hasCurrentDraft" @click="emit('suggestCategory')">AI 匹配类目</button>
           <button class="btn btn-primary shrink-0" :disabled="props.loading || !hasCurrentDraft" @click="emit('searchCategory')">搜索</button>
         </div>
-        <div class="mt-4 space-y-2">
+        <div class="mt-4 max-h-80 space-y-2 overflow-y-auto">
           <button v-for="item in props.categoryResults" :key="item.id" class="w-full rounded-lg border border-accent-200 bg-white p-3 text-left hover:border-brand-300 hover:bg-brand-50 dark:border-dark-700 dark:bg-dark-900 dark:hover:border-primary-500/60 dark:hover:bg-dark-800" @click="emit('selectCategory', item)">
             <div class="flex flex-wrap items-center justify-between gap-2">
               <div class="font-semibold text-accent-950 dark:text-white">{{ categoryResultTitle(item) }}</div>
@@ -885,7 +840,7 @@ function selectTargetByKey(value: string) {
         </div>
 
         <div v-if="categoryAttributeState === 'empty'" class="mt-4 rounded-lg border border-dashed border-accent-300 bg-white p-4 text-sm text-accent-500 dark:border-dark-600 dark:bg-dark-900 dark:text-accent-300">
-          请先从左侧搜索结果中选择类目。
+          请先从候选结果中选择类目。
         </div>
         <div v-else-if="categoryAttributeState === 'loading'" class="mt-4 rounded-lg border border-brand-200 bg-brand-50 p-4 text-sm text-brand-700 dark:border-primary-500/40 dark:bg-primary-950/20 dark:text-brand-300">
           正在读取并保存平台属性定义...

@@ -9,6 +9,22 @@ from .mercadolibre import MercadoLibrePublication
 PRODUCT_SCHEMA_VERSION = 4
 
 
+class ProductSku(TypedDict, total=False):
+    """商品规格的默认图片仅引用商品图片池资产，采集地址保留在 source.skus。"""
+
+    id: str
+    source_sku_id: str
+    name: str
+    options: dict[str, str]
+    cost_cny: str
+    supplier_stock: str
+    image_asset_id: str
+    barcode: str
+    package_dimensions: dict[str, str]
+    active: bool
+    source_snapshot: dict[str, Any]
+
+
 class ProductSource(TypedDict, total=False):
     source_platform: str
     source_url: str
@@ -145,7 +161,7 @@ class Product(TypedDict, total=False):
     attributes: dict[str, Any]
     listing_overrides: dict[str, Any]
     copy_results: dict[str, Any]
-    sku_items: list[dict[str, Any]]
+    sku_items: list[ProductSku]
     pricing_defaults: dict[str, Any]
     publish_preview: dict[str, Any]
     collect_status: str
@@ -161,5 +177,6 @@ __all__ = [
     "MercadoLibreSiteToSell",
     "PlatformDraft",
     "Product",
+    "ProductSku",
     "ProductSource",
 ]

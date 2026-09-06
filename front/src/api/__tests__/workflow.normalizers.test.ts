@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   normalizeDraft,
+  normalizeImageAsset,
   normalizeDraftsIndex,
   normalizeMarketplaceOptions,
   normalizeProductsIndex,
@@ -12,6 +13,12 @@ import {
 import { draftTargetLabel, draftTargetsForLanguage } from '@/utils/draftTargetOptions'
 
 describe('workflow 当前 wire schema', () => {
+  it('图片读取商品资产及图片池展示接口的像素尺寸', () => {
+    for (const dimensions of [{ width: 800, height: 600 }, { width_px: 800, height_px: 600 }]) {
+      expect(normalizeImageAsset({ id: 'sku-red', ...dimensions })).toMatchObject({ id: 'sku-red', width: 800, height: 600 })
+    }
+  })
+
   it('索引只读取当前 snake_case 字段', () => {
     const [product] = normalizeProductsIndex([{
       product_id: 'product-current',
