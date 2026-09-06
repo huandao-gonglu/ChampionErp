@@ -93,6 +93,35 @@ def test_retired_index_based_sku_format_is_rejected():
         normalize_product_skus([{"id": "same"}, {"id": "same"}])
 
 
+@pytest.mark.parametrize(("stock", "supplier_stock", "expected"), [
+    (None, "500", "500"),
+    ("", "500", "500"),
+    ("  ", "500", "500"),
+    ("", 0, "0"),
+    ("", "", ""),
+    (0, "500", "0"),
+    ("0", "500", "0"),
+    ("7", "500", "7"),
+])
+def test_draft_stock_defaults_to_supplier_and_survives_save(tmp_path, stock, supplier_stock, expected):
+    with temp_app_context(tmp_path) as app:
+        product = product_fixture()
+        product["sku_items"][0]["supplier_stock"] = supplier_stock
+        product["drafts"]["ozon"]["sku_items"][0]["stock"] = stock
+        saved = app.products.save_product(product)
+        assert saved["drafts"]["ozon"]["sku_items"][0]["stock"] == expected
+
+        draft = app.db.load_draft_model("sku-draft")
+        draft["sku_items"][0]["stock"] = ""
+        app.products.save_draft_detail(draft)
+        reloaded = app.db.load_draft_model("sku-draft")
+        assert reloaded["sku_items"][0]["stock"] == str(supplier_stock)
+
+        reloaded["sku_items"][0]["stock"] = "0"
+        app.products.save_draft_detail(reloaded)
+        assert app.db.load_draft_model("sku-draft")["sku_items"][0]["stock"] == "0"
+
+
 def test_each_sku_projects_own_cost_package_and_draft_overrides(tmp_path):
     with temp_app_context(tmp_path) as app:
         product = app.products.save_product(product_fixture())

@@ -41,7 +41,9 @@ export function createDraftPublishBatch(runtime: WorkflowRuntime, editors: Targe
     if (!success) {
       editor.state.publishFailure = {
         operation,
-        message: editor.state.error || editor.state.precheck?.errors.join('、') || `${labels[operation]}未完成，请查看该市场的问题清单。`,
+        message: editor.state.error || (operation === 'precheck'
+          ? '预检未通过，请查看下方问题清单。'
+          : `${labels[operation]}未完成，请查看下方该市场的检查结果。`),
       }
     }
   }

@@ -49,7 +49,7 @@ function invalidateSharedValidation() {
       >
         <p v-if="editor.state.queuedPublishJobId" class="mb-3 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200" role="status">已加入发布队列 · {{ editor.state.queuedPublishJobId }}</p>
         <div v-else-if="editor.state.publishFailure" class="mb-3 rounded-lg bg-rose-50 p-3 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-300" role="alert">
-          <p>{{ editor.state.publishFailure.message }}</p>
+          <p class="whitespace-pre-line break-words">{{ editor.state.publishFailure.message }}</p>
           <button class="btn btn-outline mt-3" :disabled="loading" @click="publishBatch.retry(editor)">{{ editor.state.publishFailure.operation === 'precheck' ? '重试该市场预检' : '重新准备该市场' }}</button>
         </div>
         <PublishPrecheckPanel

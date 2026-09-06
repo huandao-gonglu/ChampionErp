@@ -8,9 +8,15 @@ import type { DraftDetail, DraftSku, ImageAsset, ProductSku, UnknownRecord } fro
 const props = defineProps<{ draft: DraftDetail; skus: ProductSku[]; images?: ImageAsset[]; loading: boolean }>()
 const expanded = ref('')
 const targetKey = ref('')
-watch(() => [props.draft.draftId, props.skus.map(row => row.id).join(',')], () => {
+watch(() => [props.draft.draftId, props.draft.skuItems, props.skus.map(row => [row.id, row.supplier_stock])], () => {
   for (const sku of props.skus) {
-    if (!props.draft.skuItems.some(row => row.sku_id === sku.id)) props.draft.skuItems.push({ sku_id: sku.id, selected: false, sku: '', stock: '', overrides: {}, attributes_by_target: {}, pricing: {}, publications: {} })
+    const row = props.draft.skuItems.find(row => row.sku_id === sku.id)
+    const supplierStock = String(sku.supplier_stock ?? '').trim()
+    if (!row) {
+      props.draft.skuItems.push({ sku_id: sku.id, selected: false, sku: '', stock: supplierStock, overrides: {}, attributes_by_target: {}, pricing: {}, publications: {} })
+    } else if (!String(row.stock ?? '').trim()) {
+      row.stock = supplierStock
+    }
   }
   targetKey.value = `${props.draft.targetSites[0]?.platform}:${props.draft.targetSites[0]?.site}`.toLowerCase()
 }, { immediate: true })
@@ -43,7 +49,7 @@ function attributes(row: DraftSku) { return row.attributes_by_target[targetKey.v
 
 <template>
   <section class="space-y-4">
-    <div class="flex flex-wrap items-center justify-between gap-3"><div><h3 class="font-bold">发布 SKU · 已选择 {{ selectedCount }} / {{ pairs.length }}</h3><p class="muted mt-1">修改只影响当前草稿。成本和包装资料默认跟随商品，展开一行可单独调整。</p></div><div class="flex gap-2"><button class="btn btn-outline" :disabled="loading" @click="pairs.forEach(({row, sku}) => row.selected = sku.active)">全选启用规格</button><button class="btn btn-outline" :disabled="loading" @click="pairs.forEach(({row}) => row.selected = false)">取消全选</button></div></div>
+    <div class="flex flex-wrap items-center justify-between gap-3"><div><h3 class="font-bold">发布 SKU · 已选择 {{ selectedCount }} / {{ pairs.length }}</h3><p class="muted mt-1">修改只影响当前草稿。可售库存默认填写供应商库存，可手动调整。成本和包装资料默认跟随商品，展开一行可单独调整。</p></div><div class="flex gap-2"><button class="btn btn-outline" :disabled="loading" @click="pairs.forEach(({row, sku}) => row.selected = sku.active)">全选启用规格</button><button class="btn btn-outline" :disabled="loading" @click="pairs.forEach(({row}) => row.selected = false)">取消全选</button></div></div>
     <div class="flex flex-wrap gap-4"><label class="text-sm">发布组织方式<select v-model="draft.grouping.mode" class="input mt-1"><option value="combined">组合展示</option><option value="separate">独立刊登</option></select></label><label class="grow text-sm">平台组名<input v-model="draft.grouping.name" class="input mt-1" :placeholder="draft.title" /></label></div>
     <p v-for="item in groupingResults" :key="item.target" class="text-sm">{{ item.target }}：{{ statusLabel(item.grouping.status) }}</p>
     <p v-if="!pairs.length" class="rounded-lg bg-slate-50 p-5 text-sm dark:bg-dark-900">商品暂无 SKU，请先在商品的“规格与 SKU”中添加。</p>

@@ -118,7 +118,7 @@ def normalize_draft_skus(value: Any, product_skus: Any, draft_id: str) -> list[d
         result.append({
             "sku_id": sku_id, "selected": raw.get("selected") is True,
             "sku": text(raw.get("sku")) or "SKU-" + sku_fingerprint([draft_id, sku_id])[:20].upper(),
-            "stock": text(raw.get("stock")),
+            "stock": text(raw.get("stock")) or text(facts.get(sku_id, {}).get("supplier_stock")),
             "overrides": deepcopy(record(raw.get("overrides"))),
             "attributes_by_target": deepcopy(record(raw.get("attributes_by_target"))),
             "pricing": deepcopy(record(raw.get("pricing"))),

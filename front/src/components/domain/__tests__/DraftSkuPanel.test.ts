@@ -18,6 +18,28 @@ const facts: ProductSku[] = [{
 }]
 
 describe('草稿 SKU 选品', () => {
+  it('新增和库存为空的 SKU 默认填写供应商库存，保留手动库存', async () => {
+    const draft = reactive(createEmptyDraftDetail('ozon'))
+    draft.draftId = 'draft-stock'
+    draft.skuItems = [{ sku_id: 'red-s', sku: 'SELL-RED', selected: true, stock: '', overrides: {}, attributes_by_target: {}, pricing: {}, publications: {} }]
+    const wrapper = mount(DraftSkuPanel, { props: { draft, skus: facts, loading: false } })
+    const stocks = wrapper.findAll<HTMLInputElement>('input[aria-label="可售库存"]')
+    expect(stocks.map(input => input.element.value)).toEqual(['500', '900'])
+    await stocks[0]!.setValue('12')
+    await stocks[1]!.setValue('0')
+    await wrapper.setProps({ skus: facts.map(sku => ({ ...sku, supplier_stock: '1000' })) })
+    expect(stocks.map(input => input.element.value)).toEqual(['12', '0'])
+    expect(facts.map(sku => sku.supplier_stock)).toEqual(['500', '900'])
+  })
+
+  it('供应商库存缺失时保持空白，资料补齐后填入零库存', async () => {
+    const draft = reactive(createEmptyDraftDetail('ozon'))
+    const wrapper = mount(DraftSkuPanel, { props: { draft, skus: [{ ...facts[0]!, supplier_stock: '' }], loading: false } })
+    expect(draft.skuItems[0]!.stock).toBe('')
+    await wrapper.setProps({ skus: [{ ...facts[0]!, supplier_stock: '0' }] })
+    expect(wrapper.get<HTMLInputElement>('input[aria-label="可售库存"]').element.value).toBe('0')
+  })
+
   it('恢复已保存的选品并列出新增规格，全选不会启用来源停用规格', async () => {
     const draft = reactive(createEmptyDraftDetail('ozon'))
     draft.draftId = 'draft-one'
