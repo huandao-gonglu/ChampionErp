@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { publishPrecheckPassed } from '@/utils/publishReadiness'
+import { groupPrecheckIssues, precheckIssueIdentity as issueIdentity } from '@/utils/precheckIssues'
+import PublishPrecheckSkuDetails from './PublishPrecheckSkuDetails.vue'
+import PublishPrecheckRelatedIssues from './PublishPrecheckRelatedIssues.vue'
 import type { MarketplaceOption, MarketplaceTargetSite, PayloadPreviewState, PrecheckIssue, PublishPrecheck, PublishPrecheckScope, UnknownRecord } from '@/types/workflow'
 
 const props = defineProps<{
@@ -20,8 +23,8 @@ type PublishPrecheckScopeCard = PublishPrecheckScope & {
 const MERCADOLIBRE_LEGACY_CATEGORY_LOGISTICS_ERROR = 'MERCADOLIBRE_CATEGORY_MARKET_LOGISTICS_UNSUPPORTED'
 const MERCADOLIBRE_SHIPPING_MODE_NOT_SUPPORTED = 'MERCADOLIBRE_SHIPPING_MODE_NOT_SUPPORTED'
 
-const blockingIssues = computed(() => props.precheck?.errorItems || [])
-const warningIssues = computed(() => props.precheck?.warningItems || [])
+const blockingIssues = computed(() => groupPrecheckIssues(props.precheck?.errorItems || []))
+const warningIssues = computed(() => groupPrecheckIssues(props.precheck?.warningItems || []))
 const scopeCards = computed<PublishPrecheckScopeCard[]>(() => {
   const precheck = props.precheck
   if (!precheck) return []
@@ -30,6 +33,8 @@ const scopeCards = computed<PublishPrecheckScopeCard[]>(() => {
     const site = String(props.target.site || '').trim().toUpperCase()
     cards.push({
       ...precheck.parent,
+      errors: groupPrecheckIssues(precheck.parent.errors),
+      warnings: groupPrecheckIssues(precheck.parent.warnings),
       key: 'parent',
       title: site ? `共享刊登（${site}）` : '共享刊登',
       meta: '共享商品信息与刊登身份',
@@ -38,6 +43,8 @@ const scopeCards = computed<PublishPrecheckScopeCard[]>(() => {
   for (const [index, market] of (precheck.marketChecks || []).entries()) {
     cards.push({
       ...market,
+      errors: groupPrecheckIssues(market.errors),
+      warnings: groupPrecheckIssues(market.warnings),
       key: `market:${index}:${market.siteId}:${market.logisticType}`,
       title: marketSiteLabel(market.siteId),
       meta: market.logisticType
@@ -69,29 +76,26 @@ const blockingIssueCount = computed(() => {
     return (
       scopeCards.value.reduce((count, scope) => (
         count
-        + new Set(scope.errors.map(issueIdentity)).size
+        + scope.errors.length
         + (scopeIsBlocked(scope) && scope.errors.length === 0 ? 1 : 0)
       ), 0)
-      + new Set(topLevelBlockingIssues.value.map(issueIdentity)).size
+      + topLevelBlockingIssues.value.length
     )
   }
   return blockingIssues.value.length
-    ? new Set(blockingIssues.value.map(issueIdentity)).size
-    : props.precheck?.errors.length || 0
 })
 const warningIssueCount = computed(() => {
   if (scopeCards.value.length) {
     return (
       scopeCards.value.reduce((count, scope) => (
-        count + new Set(scope.warnings.map(issueIdentity)).size
+        count + scope.warnings.length
       ), 0)
-      + new Set(topLevelWarningIssues.value.map(issueIdentity)).size
+      + topLevelWarningIssues.value.length
     )
   }
   return warningIssues.value.length
-    ? new Set(warningIssues.value.map(issueIdentity)).size
-    : props.precheck?.warnings.length || 0
 })
+const payloadWarnings = computed(() => groupPrecheckIssues(props.payloadPreview?.warnings || []))
 const hasPayloadConfirmation = computed(() => Boolean(
   props.payloadPreview?.validationDigest && props.payloadPreview.targetKey === targetKey(props.target),
 ))
@@ -119,10 +123,6 @@ function issueNextAction(issue: PrecheckIssue) {
     return '重新执行上架预检，并按最新的店铺、市场与物流能力结果处理。'
   }
   return String(issue.nextAction || '').trim()
-}
-
-function issueIdentity(issue: PrecheckIssue) {
-  return [issue.code, issue.field, issue.message].join('\u0000')
 }
 
 function scopeIsBlocked(scope: PublishPrecheckScope) {
@@ -228,15 +228,19 @@ function targetLabel(target: MarketplaceTargetSite) {
                 <span :class="scopeStatusClass(scope)">{{ scopeStatusLabel(scope) }}</span>
               </div>
               <ul v-if="scope.errors.length" class="mt-3 space-y-1.5 text-xs text-rose-700 dark:text-rose-200">
-                <li v-for="issue in scope.errors" :key="`error:${issue.code}:${issue.field}:${issue.message}`" class="space-y-1">
+                <li v-for="issue in scope.errors" :key="issueIdentity(issue)" class="space-y-1">
                   <p><span class="font-semibold">原因：</span>{{ issueMessage(issue) }}</p>
                   <p v-if="issueNextAction(issue)" class="text-rose-600 dark:text-rose-300"><span class="font-semibold">处理建议：</span>{{ issueNextAction(issue) }}</p>
+                  <PublishPrecheckRelatedIssues :issues="issue.relatedIssues" />
+                  <PublishPrecheckSkuDetails :skus="issue.affectedSkus" />
                 </li>
               </ul>
               <ul v-if="scope.warnings.length" class="mt-3 space-y-1.5 text-xs text-amber-700 dark:text-amber-200">
-                <li v-for="issue in scope.warnings" :key="`warning:${issue.code}:${issue.field}:${issue.message}`" class="space-y-1">
+                <li v-for="issue in scope.warnings" :key="issueIdentity(issue)" class="space-y-1">
                   <p><span class="font-semibold">提醒：</span>{{ issueMessage(issue) }}</p>
                   <p v-if="issueNextAction(issue)" class="text-amber-600 dark:text-amber-300"><span class="font-semibold">处理建议：</span>{{ issueNextAction(issue) }}</p>
+                  <PublishPrecheckRelatedIssues :issues="issue.relatedIssues" />
+                  <PublishPrecheckSkuDetails :skus="issue.affectedSkus" />
                 </li>
               </ul>
               <p v-if="!scope.errors.length && !scope.warnings.length" class="mt-3 text-xs text-accent-500 dark:text-accent-400">
@@ -251,10 +255,12 @@ function targetLabel(target: MarketplaceTargetSite) {
           class="mt-3"
         >
           <h4 v-if="scopeCards.length" class="mb-2 text-sm font-semibold text-rose-700 dark:text-rose-200">其他发布条件</h4>
-          <ul class="space-y-2 text-sm text-rose-700">
-            <li v-for="issue in topLevelBlockingIssues" :key="`${issue.code}-${issue.field}-${issue.message}`" class="rounded-lg bg-white/70 p-3 ring-1 ring-rose-100 dark:bg-rose-500/10 dark:ring-rose-500/20">
+          <ul class="space-y-2 text-sm text-rose-700 dark:text-rose-200">
+            <li v-for="issue in topLevelBlockingIssues" :key="issueIdentity(issue)" class="rounded-lg bg-white/70 p-3 ring-1 ring-rose-100 dark:bg-rose-500/10 dark:ring-rose-500/20">
               <div class="font-semibold">原因：{{ issueMessage(issue) }}</div>
-              <div v-if="issueNextAction(issue)" class="mt-1 text-rose-600">处理建议：{{ issueNextAction(issue) }}</div>
+              <div v-if="issueNextAction(issue)" class="mt-1 text-rose-600 dark:text-rose-300">处理建议：{{ issueNextAction(issue) }}</div>
+              <PublishPrecheckRelatedIssues :issues="issue.relatedIssues" />
+              <PublishPrecheckSkuDetails :skus="issue.affectedSkus" />
             </li>
           </ul>
         </section>
@@ -264,10 +270,12 @@ function targetLabel(target: MarketplaceTargetSite) {
           class="mt-3"
         >
           <h4 v-if="scopeCards.length" class="mb-2 text-sm font-semibold text-amber-700 dark:text-amber-200">其他提醒</h4>
-          <ul class="space-y-2 text-sm text-amber-700">
-            <li v-for="issue in topLevelWarningIssues" :key="`${issue.code}-${issue.field}-${issue.message}`" class="rounded-lg bg-white/70 p-3 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:ring-amber-500/20">
+          <ul class="space-y-2 text-sm text-amber-700 dark:text-amber-200">
+            <li v-for="issue in topLevelWarningIssues" :key="issueIdentity(issue)" class="rounded-lg bg-white/70 p-3 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:ring-amber-500/20">
               <div class="font-semibold">提醒：{{ issueMessage(issue) }}</div>
-              <div v-if="issueNextAction(issue)" class="mt-1 text-amber-600">处理建议：{{ issueNextAction(issue) }}</div>
+              <div v-if="issueNextAction(issue)" class="mt-1 text-amber-600 dark:text-amber-300">处理建议：{{ issueNextAction(issue) }}</div>
+              <PublishPrecheckRelatedIssues :issues="issue.relatedIssues" />
+              <PublishPrecheckSkuDetails :skus="issue.affectedSkus" />
             </li>
           </ul>
         </section>
@@ -311,10 +319,12 @@ function targetLabel(target: MarketplaceTargetSite) {
           <table class="mt-2 w-full text-left"><thead><tr><th>卖家编码</th><th>库存</th><th>售价</th></tr></thead><tbody><tr v-for="row in props.payloadPreview.summary.skuItems" :key="String(row.sku_id)"><td class="py-2">{{ row.sku }}</td><td>{{ row.stock }}</td><td>{{ row.price }} {{ row.currency }}<p v-for="(destination, index) in (row.destinations as UnknownRecord[] || [])" :key="index" class="text-xs">{{ destination.site_id }} / {{ destination.logistic_type }}：{{ destination.net_proceeds != null ? '净收入 ' + destination.net_proceeds : destination.price }}</p></td></tr></tbody></table>
         </div>
         <p v-if="props.payloadPreview?.warning" class="mt-3 text-sm text-amber-700">{{ props.payloadPreview.warning }}</p>
-        <ul v-if="props.payloadPreview?.warnings.length" class="mt-3 space-y-1 text-sm text-amber-700">
-          <li v-for="issue in props.payloadPreview.warnings" :key="`${issue.code}-${issue.field}-${issue.message}`" class="space-y-1">
+        <ul v-if="payloadWarnings.length" class="mt-3 space-y-1 text-sm text-amber-700 dark:text-amber-200">
+          <li v-for="issue in payloadWarnings" :key="issueIdentity(issue)" class="space-y-1">
             <p>提醒：{{ issueMessage(issue) }}</p>
             <p v-if="issueNextAction(issue)">处理建议：{{ issueNextAction(issue) }}</p>
+            <PublishPrecheckRelatedIssues :issues="issue.relatedIssues" />
+            <PublishPrecheckSkuDetails :skus="issue.affectedSkus" />
           </li>
         </ul>
         <pre class="mt-3 max-h-80 w-full max-w-full overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-100">{{ props.payloadPreview ? JSON.stringify(props.payloadPreview.payload, null, 2) : '尚未生成 payload。' }}</pre>

@@ -10,6 +10,10 @@ from typing import Any, Literal, TypedDict, cast
 
 CATEGORY_SEARCH_PERMISSION = "category.read"
 CATEGORY_SEARCH_TOOLSET_ID = "category.search"
+# 仅用于拒绝异常输入；检索成本由并发、截止时间和候选返回量控制。
+CATEGORY_SEARCH_MAX_KEYWORDS_PER_CALL = 64
+CATEGORY_SEARCH_MAX_CANDIDATES = 24
+CATEGORY_SEARCH_CANDIDATES_PER_KEYWORD = 8
 CategoryAttributeValueMode = Literal["strict_enum", "open_enum", "free_text"]
 
 
@@ -431,12 +435,30 @@ class CategoryCandidate(TypedDict, total=False):
     site: str
     description_category_id: str
     type_id: str
+    matched_keywords: list[str]
 
 
 class CategorySearchResult(TypedDict):
     keyword: str
     candidates: list[CategoryCandidate]
     source: str
+
+
+class CategoryKeywordSearchError(TypedDict):
+    keyword: str
+    code: str
+    message: str
+    retryable: bool
+
+
+class CategoryKeywordSearchResult(TypedDict):
+    """新增候选全文、此前已返回的类目 ID、命中词和逐词错误。"""
+
+    keywords: list[str]
+    candidates: list[CategoryCandidate]
+    repeated_candidate_ids: list[str]
+    errors: list[CategoryKeywordSearchError]
+    truncated: bool
 
 
 CategoryTreeNodeLevel = Literal["branch", "product_type"]
@@ -495,7 +517,10 @@ class CategoryCandidateLedger:
                 continue
             candidate = dict(row)
             stored_result["candidates"].append(candidate)
-            self._candidates.setdefault(category_id, candidate)
+            stored = self._candidates.setdefault(category_id, candidate)
+            matched = stored.setdefault("matched_keywords", [])
+            if stored_result["keyword"] and stored_result["keyword"] not in matched:
+                matched.append(stored_result["keyword"])
         self.searches.append(stored_result)
 
     def add_browse_result(self, result: CategoryBrowseResult) -> None:
@@ -556,7 +581,7 @@ class CategoryCandidateLedger:
     def can_abstain(self) -> bool:
         if self.retrieval_mode == "tree_navigation":
             return self.has_leaf_candidates or self.navigation_count >= 4
-        return self.search_count >= 3
+        return self.search_count > 0
 
     @property
     def last_error(self) -> Exception | None:
@@ -583,7 +608,7 @@ class CategoryCandidateLedger:
         candidate = self._candidates.get(str(category_id or "").strip())
         return dict(candidate) if candidate is not None else None
 
-    def candidates(self, *, limit: int = 24) -> list[CategoryCandidate]:
+    def candidates(self, *, limit: int = CATEGORY_SEARCH_MAX_CANDIDATES) -> list[CategoryCandidate]:
         return [
             dict(candidate)
             for candidate in list(self._candidates.values())[: max(1, int(limit))]
@@ -631,6 +656,11 @@ class CategoryMatchResult(TypedDict):
 __all__ = [
     "CATEGORY_SEARCH_PERMISSION",
     "CATEGORY_SEARCH_TOOLSET_ID",
+    "CATEGORY_SEARCH_MAX_KEYWORDS_PER_CALL",
+    "CATEGORY_SEARCH_MAX_CANDIDATES",
+    "CATEGORY_SEARCH_CANDIDATES_PER_KEYWORD",
+    "CategoryKeywordSearchError",
+    "CategoryKeywordSearchResult",
     "category_attribute_dictionary_id",
     "normalize_category_attribute_number_unit_value",
     "normalize_category_attribute_unit",

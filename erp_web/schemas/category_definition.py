@@ -165,6 +165,8 @@ class CategoryAttributeSummary(BaseModel):
     name: str = ""
     required: bool = False
     variation_role: str = ""
+    #: ERP 按刊登设置派生，供界面排除人工/AI 编辑；不改变平台必填事实。
+    managed_by: str = ""
     value_type: str = ""
     value_mode: str = ""
     allow_custom_values: bool = False

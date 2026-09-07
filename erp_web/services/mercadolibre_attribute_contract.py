@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from erp_web.schemas.sku_custom_attributes import custom_attribute_entries
 from erp_web.schemas.category_definition import (
     CategoryAttributeDefinition,
     CategoryDefinition,
@@ -607,6 +608,18 @@ def compile_mercadolibre_attributes(
             issues.append(issue)
         elif wire is not None:
             compiled.append(wire)
+
+    custom = draft.get("sku_custom_attributes")
+    if custom:
+        if listing_model != MERCADOLIBRE_LISTING_MODEL_USER_PRODUCTS:
+            issues.append(MercadoLibreAttributeIssue(
+                "CUSTOM_ATTRIBUTES_REQUIRE_USER_PRODUCTS", "sku_custom_attributes",
+                "自定义 SKU 属性需要 Mercado User Products 刊登模式",
+            ))
+        else:
+            entries, errors = custom_attribute_entries(custom, definitions.values())
+            compiled.extend(entries)
+            issues.extend(MercadoLibreAttributeIssue("CUSTOM_ATTRIBUTE_INVALID", "sku_custom_attributes", message) for message in errors)
 
     return MercadoLibreAttributeCompilation(
         attributes=tuple(compiled),

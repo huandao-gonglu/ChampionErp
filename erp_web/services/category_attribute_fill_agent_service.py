@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
-from typing import Annotated, Any, Mapping
+from typing import Annotated, Any, Mapping, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
-from pydantic_ai import ModelRetry, RunContext
+from pydantic import (
+    BaseModel, ConfigDict, Field, ModelWrapValidatorHandler, PrivateAttr,
+    StringConstraints, ValidationError, model_validator,
+)
+from pydantic_ai import RunContext
 from pydantic_ai.models import Model
 
 from erp_web.context import get_context
@@ -25,6 +28,7 @@ from erp_web.schemas.category_attribute import (
 from erp_web.schemas.category_attribute_evidence import (
     CategoryAttributeEvidence,
     evidence_reference_is_valid,
+    attribute_evidence_sources,
 )
 
 from .ai_agent_dependencies import AiAgentDependencies
@@ -102,6 +106,47 @@ class CategoryAttributeFillAgentOutput(BaseModel):
 
     assignments: list[CategoryAttributeAssignment] = Field(max_length=100)
     need_review: list[CategoryAttributeReview] = Field(max_length=100)
+    _rejected_attributes: dict[str, str] = PrivateAttr(default_factory=dict)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def isolate_invalid_attributes(cls, value: Any, handler: ModelWrapValidatorHandler[Self]) -> Self:
+        """由原生 Pydantic 校验定位坏项；同一属性整组隔离，其他属性继续提交。"""
+        try:
+            return handler(value)
+        except ValidationError as exc:
+            if not isinstance(value, dict):
+                raise
+            invalid_indexes: dict[str, set[int]] = {"assignments": set(), "need_review": set()}
+            rejected: dict[str, str] = {}
+
+            def item_id(item: Any, key: str) -> str:
+                raw_id = item.get(key) if isinstance(item, dict) else getattr(item, key, None)
+                return raw_id.strip() if isinstance(raw_id, str) else ""
+
+            for error in exc.errors():
+                location = error["loc"]
+                # 整体格式/列表上限仍交给 Pydantic AI 原生重试，不把坏响应当成空成功。
+                if len(location) < 2 or location[0] not in invalid_indexes or not isinstance(location[1], int):
+                    raise
+                section, index = location[:2]
+                invalid_indexes[section].add(index)
+                item = value[section][index]
+                key = "attribute_id" if section == "assignments" else "id"
+                attr_id = item_id(item, key)
+                if attr_id:
+                    rejected[attr_id] = "AI 建议格式无效，未写入该属性，请核对来源与属性值。"
+            cleaned = dict(value)
+            for section, indexes in invalid_indexes.items():
+                key = "attribute_id" if section == "assignments" else "id"
+                cleaned[section] = [
+                    item for index, item in enumerate(value[section])
+                    if index not in indexes
+                    and item_id(item, key) not in rejected
+                ]
+            output = handler(cleaned)
+            output._rejected_attributes.update(rejected)
+            return output
 
 
 CATEGORY_ATTRIBUTE_FILL_AGENT_PROFILE = AiAgentExecutionProfile(
@@ -120,7 +165,7 @@ CATEGORY_ATTRIBUTE_FILL_AGENT_PROFILE = AiAgentExecutionProfile(
 
 
 class CategoryAttributeFillOutputValidator:
-    """强制字典值只能来自本次工具结果；普通选项允许自定义文本。"""
+    """逐属性校验字典、证据和数量；坏属性不影响其他合法属性。"""
 
     def __init__(
         self, ledger: CategoryAttributeValueLedger, *,
@@ -128,11 +173,11 @@ class CategoryAttributeFillOutputValidator:
     ) -> None:
         self.ledger = ledger
         self.product_context = dict(product_context or {})
-        self._errors: list[tuple[str, str]] = []
+        self._errors: list[tuple[str, str, str]] = []
         self.error_code = ""
 
-    def _add_error(self, code: str, message: str) -> None:
-        self._errors.append((code, message))
+    def _add_error(self, attr_id: str, code: str, message: str) -> None:
+        self._errors.append((attr_id, code, message))
 
     def __call__(
         self,
@@ -151,6 +196,7 @@ class CategoryAttributeFillOutputValidator:
             definition = self.ledger.definition(attr_id)
             if definition is None:
                 self._add_error(
+                    attr_id,
                     "MODEL_SELECTED_UNKNOWN_ATTRIBUTE",
                     f"attribute_id {attr_id} 不属于当前类目属性。",
                 )
@@ -161,6 +207,7 @@ class CategoryAttributeFillOutputValidator:
                 assignment.evidence.model_dump(mode="json"), self.product_context,
             ):
                 self._add_error(
+                    attr_id,
                     "ATTRIBUTE_EVIDENCE_INVALID",
                     f"属性 {attr_id} 的 evidence 必须引用 product_context 中实际存在的来源字段及完整原文。",
                 )
@@ -168,6 +215,7 @@ class CategoryAttributeFillOutputValidator:
             if category_attribute_uses_unit(definition):
                 if not assignment.unit:
                     self._add_error(
+                        attr_id,
                         "ATTRIBUTE_UNIT_REQUIRED",
                         f"带单位属性 {attr_id} 必须同时返回 value 和 unit。",
                     )
@@ -177,12 +225,14 @@ class CategoryAttributeFillOutputValidator:
                 )
                 if canonical_unit is None and assignment.unit:
                     self._add_error(
+                        attr_id,
                         "ATTRIBUTE_UNIT_INVALID",
                         f"属性 {attr_id} 的 unit 必须原样选择类目定义提供的单位。",
                     )
                 previous_unit = assignment_units.get(attr_id)
                 if previous_unit and previous_unit != canonical_unit:
                     self._add_error(
+                        attr_id,
                         "ATTRIBUTE_UNIT_INCONSISTENT",
                         f"同一属性 {attr_id} 的多个值必须使用相同单位。",
                     )
@@ -199,6 +249,7 @@ class CategoryAttributeFillOutputValidator:
                     )
                     if normalized_number_unit is None:
                         self._add_error(
+                            attr_id,
                             "ATTRIBUTE_NUMBER_INVALID",
                             f"数值单位属性 {attr_id} 的 value 必须是有限数值。",
                         )
@@ -207,12 +258,14 @@ class CategoryAttributeFillOutputValidator:
                         assignment.unit = normalized_number_unit["unit"]
             elif assignment.unit:
                 self._add_error(
+                    attr_id,
                     "ATTRIBUTE_UNIT_FORBIDDEN",
                     f"不带单位的属性 {attr_id} 不得返回 unit。",
                 )
             if value_mode == "strict_enum":
                 if not assignment.dictionary_value_id:
                     self._add_error(
+                        attr_id,
                         "ATTRIBUTE_ENUM_ID_REQUIRED",
                         f"强制枚举属性 {attr_id} 必须返回工具候选的 dictionary_value_id。",
                     )
@@ -222,16 +275,19 @@ class CategoryAttributeFillOutputValidator:
                 )
                 if candidate is None and assignment.dictionary_value_id:
                     self._add_error(
+                        attr_id,
                         "ATTRIBUTE_ENUM_VALUE_NOT_RETURNED",
                         f"强制枚举属性 {attr_id} 只能选择本次工具真实返回的值。",
                     )
                 elif candidate is not None and candidate["value"].casefold() != assignment.value.casefold():
                     self._add_error(
+                        attr_id,
                         "ATTRIBUTE_ENUM_LABEL_MISMATCH",
                         f"属性 {attr_id} 的 value 必须与 dictionary_value_id 对应的工具值一致。",
                     )
             elif assignment.dictionary_value_id:
                 self._add_error(
+                    attr_id,
                     "ATTRIBUTE_CUSTOM_VALUE_ID_FORBIDDEN",
                     f"非强制枚举属性 {attr_id} 应直接填写 value，不得填写 dictionary_value_id。",
                 )
@@ -244,6 +300,7 @@ class CategoryAttributeFillOutputValidator:
             seen_values = assignment_values.setdefault(attr_id, set())
             if value_key in seen_values:
                 self._add_error(
+                    attr_id,
                     "ATTRIBUTE_VALUE_DUPLICATED",
                     f"属性 {attr_id} 不得重复填写相同的值。",
                 )
@@ -254,57 +311,48 @@ class CategoryAttributeFillOutputValidator:
             maximum = int(definition.get("max_value_count") or 0)
             if not definition.get("is_collection") and count > 1:
                 self._add_error(
+                    attr_id,
                     "ATTRIBUTE_VALUE_COUNT_INVALID",
                     f"属性 {attr_id} 只能填写一个值。",
                 )
             if maximum > 0 and count > maximum:
                 self._add_error(
+                    attr_id,
                     "ATTRIBUTE_VALUE_COUNT_INVALID",
                     f"属性 {attr_id} 最多填写 {maximum} 个值。",
                 )
 
-        review_ids: set[str] = set()
-        # 可选属性不阻塞当前流程；直接移除可选复核建议，避免为无效待确认再消耗模型轮次。
-        output.need_review = [
-            review for review in output.need_review
-            if (definition := self.ledger.definition(review.id)) is None
-            or definition.get("required")
-        ]
+        review_by_id: dict[str, CategoryAttributeReview] = {}
         for review in output.need_review:
-            if self.ledger.definition(review.id) is None:
+            definition = self.ledger.definition(review.id)
+            if definition is None or not definition.get("required"):
+                continue
+            if review.id in assigned_ids:
                 self._add_error(
-                    "MODEL_REVIEWED_UNKNOWN_ATTRIBUTE",
-                    f"need_review 中的 {review.id} 不属于当前类目属性。",
+                    review.id, "ATTRIBUTE_DECISION_CONFLICT",
+                    f"属性 {review.id} 同时被填写和标记待确认，未写入冲突建议。",
                 )
-            if review.id in review_ids:
-                self._add_error(
-                    "ATTRIBUTE_REVIEW_DUPLICATED",
-                    f"need_review 中的属性 {review.id} 重复。",
-                )
-            review_ids.add(review.id)
-        conflict = sorted(assigned_ids & review_ids)
-        if conflict:
-            self._add_error(
-                "ATTRIBUTE_DECISION_CONFLICT",
-                "同一属性不能同时填写并进入 need_review：" + "、".join(conflict),
+            review_by_id.setdefault(review.id, review)
+
+        rejected = dict(output._rejected_attributes)
+        for attr_id, _, message in self._errors:
+            rejected.setdefault(attr_id, message)
+        self.error_code = self._errors[0][1] if self._errors else ""
+        output._rejected_attributes = rejected
+        output.assignments = [
+            assignment for assignment in output.assignments
+            if assignment.attribute_id not in rejected
+        ]
+        accepted_ids = {assignment.attribute_id for assignment in output.assignments}
+        output.need_review = [
+            CategoryAttributeReview(
+                id=attr_id,
+                reason=rejected.get(attr_id, "")[:300]
+                or (review_by_id[attr_id].reason if attr_id in review_by_id else "AI 未提供可用建议，请核对该必填属性。"),
             )
-        undecided_required = sorted(
-            attr_id
             for attr_id, definition in self.ledger.definitions.items()
-            if definition.get("required")
-            and attr_id not in assigned_ids
-            and attr_id not in review_ids
-        )
-        if undecided_required:
-            self._add_error(
-                "REQUIRED_ATTRIBUTE_DECISION_MISSING",
-                "每个必填属性必须填写或进入 need_review："
-                + "、".join(undecided_required),
-            )
-        if self._errors:
-            self.error_code = self._errors[0][0]
-            messages = list(dict.fromkeys(message for _, message in self._errors))
-            raise ModelRetry("请一次修正以下属性问题，再提交完整结果：\n" + "\n".join(messages))
+            if definition.get("required") and attr_id not in accepted_ids
+        ]
         return output
 
 
@@ -312,6 +360,7 @@ class CategoryAttributeFillOutputValidator:
 class CategoryAttributeFillAgentRun:
     output: dict[str, Any]
     outcome: AiAgentRunOutcome[CategoryAttributeFillAgentOutput] | None = None
+    rejected_attributes: dict[str, str] = field(default_factory=dict)
 
     def finish_business_result(self, result: Mapping[str, Any]) -> None:
         del result
@@ -321,6 +370,9 @@ class CategoryAttributeFillAgentRun:
 
 def _prompt_payload(payload: Mapping[str, Any]) -> str:
     compact = dict(payload)
+    references = attribute_evidence_sources(dict(payload.get("product_context") or {}))
+    if references:
+        compact["attribute_evidence_sources"] = references
     compact["dictionary_language"] = (
         "俄语（ru-RU）；普通属性不要用中文查询，优先复制 options 中的俄语词"
         if payload.get("platform") in {"ozon", "yandex"}
@@ -374,7 +426,12 @@ def run_category_attribute_fill_agent(
         "不猜包装数量，不截取区间。遵守集合数量限制，一次修正全部校验问题。"
         "商品声明无品牌时查询官方无品牌候选，具体品牌不得改填无品牌。"
     )
-    instructions = f"{instructions} {BRAND_IDENTITY_INSTRUCTIONS}"
+    instructions = (
+        f"{instructions} {BRAND_IDENTITY_INSTRUCTIONS} "
+        "优先批量查询有事实依据的必填项，可选不确定项跳过。查询工具不再可用时，"
+        "立即提交已有证据和真实候选支持的 assignments，未解决的必填项进入 need_review；"
+        "不得继续查询或编造未查到的字典值。"
+    )
     user_prompt = render_prompt_template(
         prompt.get("user") or "请填写以下类目属性：{$input_json}",
         {"input_json": _prompt_payload(payload)},
@@ -407,6 +464,7 @@ def run_category_attribute_fill_agent(
     return CategoryAttributeFillAgentRun(
         output=outcome.output.model_dump(mode="json"),
         outcome=outcome,
+        rejected_attributes=dict(outcome.output._rejected_attributes),
     )
 
 

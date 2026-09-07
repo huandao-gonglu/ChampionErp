@@ -431,6 +431,7 @@ describe('workflow store live API flow', () => {
   it('Ozon 类目确认保存到自身目标且保留 Yandex 编辑内容', async () => {
     const store = useWorkflowStore()
     store.currentDraft = multiMarketCategoryDraft()
+    store.currentDraft.skuItems = [{ sku_id: 'mask', selected: true, sku: 'mask', stock: '1', overrides: {}, pricing: {}, publications: {}, attributes_by_target: { 'yandex:global': { color: '黑' }, 'ozon:global': { old_color: '黑' } } }]
     const [yandex, ozon] = store.targetEditors
     yandex!.draft.attributes.material = '亚麻'
     yandex!.actions.invalidateCategoryPrecheck()
@@ -444,6 +445,7 @@ describe('workflow store live API flow', () => {
       id: '970676618', name: 'Маска', path: 'Одежда / Маска', raw: { description_category_id: '41777465' },
     }))
     expect(ozon!.state.error).toBe('')
+    expect(store.currentDraft.skuItems[0]?.attributes_by_target).toEqual({ 'yandex:global': { color: '黑' } })
     expect(workflowApi.fetchCategoryAttrs).toHaveBeenCalledWith('ozon', '970676618', 'global')
     expect(store.currentDraft.targetSites[0]).toMatchObject({ categoryId: 'yandex-old', attributes: { material: '亚麻' } })
     expect(store.currentDraft.targetSites[1]).toMatchObject({ categoryId: '970676618', descriptionCategoryId: '41777465', attributes: {} })
@@ -2168,7 +2170,7 @@ describe('workflow store live API flow', () => {
     expect(workflowApi.fillCategoryAttributes).not.toHaveBeenCalled()
   })
 
-  it('keeps the Ozon target bound across save and AI attribute fill', async () => {
+  it.each(['', 'AI 未完成属性提交，本次未写入 AI 建议。'])('Ozon 填写保留目标市场并展示警告：%s', async (warning) => {
     const draft = createEmptyDraftDetail('yandex')
     draft.draftId = 'draft-ai-target-isolation'
     draft.productId = 'product-ai-target-isolation'
@@ -2228,6 +2230,7 @@ describe('workflow store live API flow', () => {
       return {
         ...draftMutation(filled),
         needReview: [],
+        warning,
         raw: { fill_source: 'ai_model' },
       }
     })
@@ -2256,8 +2259,11 @@ describe('workflow store live API flow', () => {
       '95196',
       expect.objectContaining({ platform: 'ozon', categoryId: '95196' }),
       { presentationId: 'presentation-store-test' },
+      '',
+      false,
     )
     expect(store.activePublishTargetKey).toBe('ozon:global')
+    expect(store.error).toBe(warning)
     expect(store.currentDraft.attributes).toEqual({
       '8229': { values: [{ dictionaryValueId: '95196', value: 'Будка для собак' }] },
     })

@@ -47,11 +47,50 @@ describe('草稿 SKU 选品', () => {
     const wrapper = mount(DraftSkuPanel, { props: { draft, skus: facts, loading: false } })
     expect(draft.skuItems).toHaveLength(2)
     expect(draft.skuItems[0]?.selected).toBe(true)
-    expect(wrapper.findAll('input[type="checkbox"]')[1]?.attributes('disabled')).toBeDefined()
+    expect(wrapper.get('input[aria-label="发布 蓝色 L"]').attributes('disabled')).toBeDefined()
     expect(wrapper.get('input[aria-label="可售库存"]').element).toHaveProperty('value', '0')
     await wrapper.findAll('button').find(button => button.text() === '全选启用规格')!.trigger('click')
     expect(draft.skuItems.map(row => row.selected)).toEqual([true, false])
     expect(facts[1]?.active).toBe(false)
+  })
+
+  it('新增启用规格默认全选，父复选框支持半选且始终跳过停用规格', async () => {
+    const draft = reactive(createEmptyDraftDetail('ozon'))
+    const skus = [facts[0]!, { ...facts[0]!, id: 'green', name: '绿色 S' }, facts[1]!]
+    const wrapper = mount(DraftSkuPanel, { props: { draft, skus, loading: false } })
+    const parent = wrapper.get<HTMLInputElement>('input[aria-label="全选启用 SKU"]')
+    expect(draft.skuItems.map(row => row.selected)).toEqual([true, true, false])
+    expect(parent.element.checked).toBe(true)
+    expect(parent.element.indeterminate).toBe(false)
+    expect(wrapper.text()).toContain('已选择 2 / 2')
+
+    await wrapper.get('input[aria-label="发布 红色 S"]').setValue(false)
+    expect(parent.element.checked).toBe(false)
+    expect(parent.element.indeterminate).toBe(true)
+    await parent.setValue(true)
+    expect(draft.skuItems.map(row => row.selected)).toEqual([true, true, false])
+    await parent.setValue(false)
+    expect(draft.skuItems.every(row => !row.selected)).toBe(true)
+    expect(parent.element.indeterminate).toBe(false)
+
+    await wrapper.setProps({ skus: [...skus, { ...facts[0]!, id: 'new', name: '新增规格' }] })
+    expect(draft.skuItems.map(row => row.selected)).toEqual([false, false, false, true])
+    expect(parent.element.indeterminate).toBe(true)
+    await wrapper.setProps({ loading: true })
+    expect(parent.attributes('disabled')).toBeDefined()
+  })
+
+  it('没有启用规格时父复选框禁用，停用空记录显示明确名称', () => {
+    const draft = reactive(createEmptyDraftDetail('ozon'))
+    const wrapper = mount(DraftSkuPanel, { props: {
+      draft, skus: [{ ...facts[1]!, name: '' }], loading: false,
+    } })
+    const parent = wrapper.get<HTMLInputElement>('input[aria-label="全选启用 SKU"]')
+    expect(parent.element.checked).toBe(false)
+    expect(parent.element.indeterminate).toBe(false)
+    expect(parent.attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('无规格信息')
+    expect(wrapper.text()).toContain('已停用')
   })
 
   it('草稿修改成本不改商品事实，并立即使已应用售价失效', async () => {
@@ -59,7 +98,7 @@ describe('草稿 SKU 选品', () => {
     draft.draftId = 'draft-two'
     draft.skuItems = [{ sku_id: 'red-s', sku: 'SELL-RED', selected: true, stock: '1', overrides: {}, attributes_by_target: {}, pricing: { applied: true }, publications: {} }]
     const wrapper = mount(DraftSkuPanel, { props: { draft, skus: facts.slice(0, 1), loading: false } })
-    await wrapper.findAll('button').find(button => button.text() === '详情')!.trigger('click')
+    await wrapper.findAll('button').find(button => button.text() === '属性 / 详情')!.trigger('click')
     const cost = wrapper.findAll('label').find(label => label.text().startsWith('采购成本 CNY'))!.get('input')
     await cost.setValue('18')
     expect(draft.skuItems[0]?.overrides.cost_cny).toBe('18')
@@ -73,7 +112,7 @@ describe('草稿 SKU 选品', () => {
     draft.skuItems = [{ sku_id: 'red-s', sku: 'SELL-RED', selected: true, stock: '1', overrides: {}, attributes_by_target: {}, pricing: { applied: true }, publications: {} }]
     const skus = [{ ...facts[0]!, image_asset_id: 'original' }]
     const wrapper = mount(DraftSkuPanel, { props: { draft, skus, loading: false } })
-    await wrapper.findAll('button').find(button => button.text() === '详情')!.trigger('click')
+    await wrapper.findAll('button').find(button => button.text() === '属性 / 详情')!.trigger('click')
     const picker = wrapper.getComponent(SkuImagePicker)
     picker.vm.$emit('update:modelValue', 'translated')
     await wrapper.vm.$nextTick()

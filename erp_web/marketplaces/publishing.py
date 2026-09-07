@@ -921,7 +921,8 @@ def _update_attribute_entries(value: Any) -> list[dict[str, Any]]:
         if not isinstance(raw, dict):
             continue
         attribute_id = str(raw.get("id") or "").strip()
-        if not attribute_id:
+        attribute_name = str(raw.get("name") or "").strip()
+        if not attribute_id and not attribute_name:
             continue
         has_values = isinstance(raw.get("values"), list)
         raw_values = raw.get("values") if has_values else [raw]
@@ -940,7 +941,7 @@ def _update_attribute_entries(value: Any) -> list[dict[str, Any]]:
             )
         ]
         if values:
-            entries.append({"id": attribute_id, "values": values})
+            entries.append({**({"id": attribute_id} if attribute_id else {"name": attribute_name}), "values": values})
     return entries
 
 
@@ -952,7 +953,8 @@ def _attribute_entries_signature(value: Any) -> tuple[Any, ...] | None:
         if not isinstance(raw, dict):
             return None
         attribute_id = str(raw.get("id") or "").strip()
-        if not attribute_id:
+        attribute_name = str(raw.get("name") or "").strip()
+        if not attribute_id and not attribute_name:
             return None
         has_values = isinstance(raw.get("values"), list)
         raw_values = raw.get("values") if has_values else [raw]
@@ -973,7 +975,8 @@ def _attribute_entries_signature(value: Any) -> tuple[Any, ...] | None:
                 values.append(("name", normalized["name"]))
             else:
                 return None
-        entries.append((attribute_id, tuple(sorted(values))))
+        identity = "id:" + attribute_id if attribute_id else "name:" + attribute_name
+        entries.append((identity, tuple(sorted(values))))
     return tuple(sorted(entries))
 
 

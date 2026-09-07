@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from erp_web.schemas.category_grouping import is_listing_grouping_attribute, listing_grouping_value
 from erp_web.schemas.category import (
     category_attribute_schema,
     category_attribute_value_is_valid,
@@ -12,6 +13,7 @@ from .attribute_matching import source_package_dimensions
 from .common import normalize_list
 from .defaults import default_draft
 from .merge_model import normalize_product_model
+from .sku_model import selected_skus
 
 
 def _category_path_text(record: dict[str, Any] | None) -> str:
@@ -100,6 +102,7 @@ def apply_category_selection(product: dict[str, Any], platform: str, category_re
         for definition in category_attribute_schema(record)
         if str(definition.get("id") or "").strip()
         and not bool(definition.get("read_only"))
+        and not is_listing_grouping_attribute(platform, definition)
     }
     derived_attribute_ids = {
         "PACKAGE_LENGTH",
@@ -257,6 +260,15 @@ def _required_attribute_is_satisfied(
     definition: dict[str, Any],
     platform: str,
 ) -> bool:
+    if is_listing_grouping_attribute(platform, definition):
+        if (draft.get("grouping") or {}).get("mode") == "separate":
+            selected = selected_skus(normalized, draft)
+            if selected:
+                return all(
+                    bool(listing_grouping_value(draft, definition, seller_sku=row.get("sku", "")))
+                    for _, row in selected
+                )
+        return bool(listing_grouping_value(draft, definition))
     attr_id = str(definition.get("id") or "").strip()
     attr_id_upper = attr_id.upper()
     attributes = (
@@ -342,6 +354,13 @@ def build_ai_attribute_fill(
         else default_draft(platform)
     )
     attributes = deepcopy(draft.get("attributes") or {})
+    grouping_ids = {
+        item["id"] for item in category_attribute_schema(category_record)
+        if is_listing_grouping_attribute(platform, item)
+    }
+    # 分组设置是唯一来源；不在可编辑属性中保存会过期的第二份组名。
+    for attr_id in grouping_ids:
+        attributes.pop(attr_id, None)
     gtin_value = str(draft.get("upc") or "").strip()
     if gtin_value:
         attributes.pop("EMPTY_GTIN_REASON", None)
@@ -355,7 +374,8 @@ def build_ai_attribute_fill(
     ):
         attr_id = str(definition.get("id") or "").strip()
         attributes.pop(attr_id, None)
-        if definition.get("value_mode") == "strict_enum":
+        if attr_id in grouping_ids or definition.get("value_mode") == "strict_enum" or definition.get("variation_role") == "variant":
+            # 变体属性必须由明确 SKU 范围的事实支持，不能从整份商品取第一个颜色或选项。
             continue
         value, confident = _attribute_value_from_source(
             normalized,

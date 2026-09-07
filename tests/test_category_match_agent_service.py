@@ -119,12 +119,13 @@ def test_agent_uses_native_tool_call_and_typed_output() -> None:
         nonlocal turns
         turns += 1
         if turns == 1:
-            assert "candidates" not in str(messages)
+            assert "MLM-FAN" not in str(messages)
+            assert "首次调用前" in str(messages)
             return ModelResponse(
                 parts=[
                     ToolCallPart(
                         "search_categories",
-                        {"keyword": "ventilador"},
+                        {"keywords": ["ventilador"]},
                         tool_call_id="search-1",
                     )
                 ]
@@ -200,7 +201,7 @@ def test_output_validator_retries_before_any_search() -> None:
                 parts=[
                     ToolCallPart(
                         "search_categories",
-                        {"keyword": "ventilador"},
+                        {"keywords": ["ventilador"]},
                         tool_call_id="search-after-retry",
                     )
                 ]
@@ -234,7 +235,7 @@ def test_unknown_category_stays_a_stable_agent_error_after_retries() -> None:
                 parts=[
                     ToolCallPart(
                         "search_categories",
-                        {"keyword": "ventilador"},
+                        {"keywords": ["ventilador"]},
                         tool_call_id="search-1",
                     )
                 ]
@@ -272,22 +273,22 @@ def test_unknown_category_stays_a_stable_agent_error_after_retries() -> None:
     )
 
 
-def test_abstain_requires_three_different_effective_searches() -> None:
-    searcher = Searcher([[], [], []])
+def test_abstain_after_one_planned_batch_needs_no_extra_search() -> None:
+    searcher = Searcher([[]])
     ledger = CategoryCandidateLedger()
     toolset = toolset_for(searcher, ledger)
-    keywords = iter(["ventilador", "ventilador de mesa", "aparato de ventilación"])
+    keywords = ["ventilador"]
     turns = 0
 
     def model(messages: list[Any], agent_info: AgentInfo) -> ModelResponse:
         nonlocal turns
         turns += 1
-        if turns in {1, 2, 3}:
+        if turns == 1:
             return ModelResponse(
                 parts=[
                     ToolCallPart(
                         "search_categories",
-                        {"keyword": next(keywords)},
+                        {"keywords": keywords},
                         tool_call_id=f"search-{turns}",
                     )
                 ]
@@ -298,7 +299,7 @@ def test_abstain_requires_three_different_effective_searches() -> None:
                 "selected_category_id": "",
                 "abstained": True,
                 "model_confidence": 0.1,
-                "evidence": ["三次搜索均无结果"],
+                "evidence": ["没有可靠匹配，也没有商品事实支持的其他方向"],
             },
             "abstain",
         )
@@ -312,15 +313,12 @@ def test_abstain_requires_three_different_effective_searches() -> None:
     )
 
     assert result.output["abstained"] is True
-    assert ledger.search_count == 3
-    assert searcher.keywords == [
-        "ventilador",
-        "ventilador de mesa",
-        "aparato de ventilación",
-    ]
+    assert turns == 2
+    assert ledger.search_count == 1
+    assert searcher.keywords == ["ventilador"]
 
 
-def test_duplicate_keyword_is_deduplicated_and_does_not_count_as_three_searches() -> None:
+def test_duplicate_keyword_is_deduplicated_without_forcing_more_searches() -> None:
     searcher = Searcher([[]])
     ledger = CategoryCandidateLedger()
     toolset = toolset_for(searcher, ledger)
@@ -335,7 +333,7 @@ def test_duplicate_keyword_is_deduplicated_and_does_not_count_as_three_searches(
                 parts=[
                     ToolCallPart(
                         "search_categories",
-                        {"keyword": "ventilador"},
+                        {"keywords": ["ventilador"]},
                         tool_call_id=f"duplicate-{turns}",
                     )
                 ]
@@ -351,52 +349,77 @@ def test_duplicate_keyword_is_deduplicated_and_does_not_count_as_three_searches(
             f"early-{turns}",
         )
 
-    with pytest.raises(AiAgentExecutionError) as captured:
-        run_category_match_agent(
-            PAYLOAD,
-            toolset,
-            ledger,
-            timeout_seconds=10,
-            factory=factory_for(FunctionModel(model)),
-        )
-
-    assert captured.value.code == "CATEGORY_SEARCH_INCOMPLETE"
+    result = run_category_match_agent(
+        PAYLOAD, toolset, ledger, timeout_seconds=10,
+        factory=factory_for(FunctionModel(model)),
+    )
+    assert result.output["abstained"] is True
     assert searcher.keywords == ["ventilador"]
     assert ledger.search_count == 1
 
 
-def test_search_limit_feedback_precedes_profile_tool_limit() -> None:
-    searcher = Searcher([[], [], []])
+def test_native_budget_stops_searching_and_preserves_final_output() -> None:
+    searcher = Searcher([[] for _ in range(12)])
     ledger = CategoryCandidateLedger()
     toolset = toolset_for(searcher, ledger)
     turns = 0
 
     def model(messages: list[Any], agent_info: AgentInfo) -> ModelResponse:
         nonlocal turns
-        del messages, agent_info
         turns += 1
-        return ModelResponse(
-            parts=[
-                ToolCallPart(
-                    "search_categories",
-                    {"keyword": f"keyword-{turns}"},
-                    tool_call_id=f"search-{turns}",
-                )
-            ]
-        )
+        assert [tool.name for tool in agent_info.function_tools] == (["search_categories"] if turns <= 4 else [])
+        if agent_info.function_tools:
+            return ModelResponse(parts=[ToolCallPart(
+                "search_categories",
+                {"keywords": [f"keyword-{turns}-{i}" for i in range(3)]},
+                tool_call_id=f"search-{turns}",
+            )])
+        return final_output(agent_info, {
+            "selected_category_id": "", "abstained": True,
+            "model_confidence": 0.1, "evidence": ["批量搜索未发现匹配类目"],
+        }, "abstain")
 
-    with pytest.raises(AiAgentExecutionError) as captured:
-        run_category_match_agent(
-            PAYLOAD,
-            toolset,
-            ledger,
-            timeout_seconds=10,
-            factory=factory_for(FunctionModel(model)),
-        )
+    result = run_category_match_agent(
+        PAYLOAD, toolset, ledger, timeout_seconds=10,
+        factory=factory_for(FunctionModel(model)),
+    )
+    assert result.output["abstained"] is True
+    assert turns == 5
+    assert len(searcher.keywords) == ledger.search_count == 12
 
-    assert captured.value.code == "AI_AGENT_USAGE_LIMIT_EXCEEDED"
-    assert searcher.keywords == ["keyword-1", "keyword-2", "keyword-3"]
-    assert ledger.search_count == 3
+
+def test_model_can_select_previous_candidate_after_followup_only_returns_references() -> None:
+    searcher = Searcher([[candidate("MLM-FAN")], [candidate("MLM-FAN")]])
+    ledger = CategoryCandidateLedger()
+    toolset = toolset_for(searcher, ledger)
+    turns = 0
+
+    def model(messages, agent_info):
+        nonlocal turns
+        turns += 1
+        if turns <= 2:
+            return ModelResponse(parts=[ToolCallPart(
+                "search_categories",
+                {"keywords": ["ventilador" if turns == 1 else "ventilador portátil"]},
+                tool_call_id=f"query-{turns}",
+            )])
+        returned = [
+            part for message in messages for part in message.parts
+            if isinstance(part, ToolReturnPart) and part.tool_name == "search_categories"
+        ][-1].content
+        assert returned["candidates"] == []
+        assert returned["repeated_candidate_ids"] == ["MLM-FAN"]
+        return final_output(agent_info, {
+            "selected_category_id": "MLM-FAN", "abstained": False,
+            "model_confidence": 0.9, "evidence": ["补查没有新类目，先前候选符合商品实物"],
+        }, "final")
+
+    result = run_category_match_agent(
+        PAYLOAD, toolset, ledger, timeout_seconds=10,
+        factory=factory_for(FunctionModel(model)),
+    )
+    assert result.output["selected_category_id"] == "MLM-FAN"
+    assert turns == 3
 
 
 def test_provider_api_error_keeps_original_type_and_redacts_secret() -> None:
@@ -506,16 +529,16 @@ def test_unexpected_category_approval_is_rejected_before_execution() -> None:
         nonlocal executions
         del arguments, context
         executions += 1
-        return {"keyword": "fan", "candidates": [], "source": "test"}
+        return {"keywords": ["fan"], "candidates": [], "errors": [], "truncated": False}
 
     definition = AiToolDefinition(
         name="search_categories",
-        version="1",
+        version="2",
         description="测试审批边界",
         input_schema={
             "type": "object",
-            "required": ["keyword"],
-            "properties": {"keyword": {"type": "string", "minLength": 1}},
+            "required": ["keywords"],
+            "properties": {"keywords": {"type": "array", "items": {"type": "string", "minLength": 1}}},
             "additionalProperties": False,
         },
         output_schema={"type": "object"},
@@ -530,7 +553,7 @@ def test_unexpected_category_approval_is_rejected_before_execution() -> None:
         approval_preparers={
             definition.name: (
                 lambda arguments: TaskApprovalSnapshot(
-                    summary=f"类目匹配 {arguments.get('keyword')}",
+                    summary=f"类目匹配 {arguments.get('keywords')}",
                     canonical_payload=dict(arguments),
                 )
             )
@@ -543,7 +566,7 @@ def test_unexpected_category_approval_is_rejected_before_execution() -> None:
             parts=[
                 ToolCallPart(
                     "search_categories",
-                    {"keyword": "fan"},
+                    {"keywords": ["fan"]},
                     tool_call_id="unexpected-approval",
                 )
             ]
@@ -584,7 +607,7 @@ def test_category_match_run_publishes_presentation_chunks_under_bound_scope() ->
                 parts=[
                     ToolCallPart(
                         "search_categories",
-                        {"keyword": "ventilador"},
+                        {"keywords": ["ventilador"]},
                         tool_call_id="search-presentation",
                     )
                 ]

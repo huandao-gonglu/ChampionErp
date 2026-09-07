@@ -215,7 +215,7 @@ def execution_context() -> AiExecutionContext:
 def search(toolset, keyword: str) -> dict[str, Any]:
     binding = toolset.get("search_categories")
     assert binding is not None
-    return binding.executor({"keyword": keyword}, execution_context())
+    return binding.executor({"keywords": [keyword]}, execution_context())
 
 
 def browse(toolset, parent_ids: list[str]) -> dict[str, Any]:
@@ -452,8 +452,6 @@ def test_model_selected_unknown_category_is_a_protocol_failure() -> None:
 def test_model_can_abstain_after_real_searches() -> None:
     def run(payload, toolset):
         search(toolset, "ventilador")
-        search(toolset, "ventilador de mesa")
-        search(toolset, "aparato de ventilación")
         return {
             "selected_category_id": "",
             "abstained": True,
@@ -474,7 +472,7 @@ def test_model_can_abstain_after_real_searches() -> None:
     assert result["failure"]["code"] == "ABSTAIN_NO_MATCH"
 
 
-def test_model_cannot_abstain_early_when_more_keywords_can_be_tried() -> None:
+def test_model_can_abstain_without_a_minimum_keyword_quota() -> None:
     def run(payload, toolset):
         search(toolset, "ventilador")
         return {
@@ -492,8 +490,9 @@ def test_model_cannot_abstain_early_when_more_keywords_can_be_tried() -> None:
         agent_service=fake_agent_service(run),
     )
 
-    assert result["ok"] is False
-    assert result["failure"]["code"] == "CATEGORY_SEARCH_INCOMPLETE"
+    assert result["ok"] is True
+    assert result["status"] == "unresolved"
+    assert result["failure"]["code"] == "ABSTAIN_NO_MATCH"
 
 
 def test_cross_site_candidate_is_rejected_by_server_validation() -> None:
@@ -546,7 +545,7 @@ def test_final_validation_reads_detail_and_attributes_once() -> None:
 def test_provider_error_keeps_search_error_taxonomy() -> None:
     def run(payload, toolset):
         search(toolset, "ventilador")
-        raise AssertionError("工具错误应先向模型返回")
+        return {"selected_category_id": "", "abstained": True, "model_confidence": 0, "evidence": []}, TRACE
 
     error = CategorySearchError(
         "CATEGORY_CREDENTIALS_MISSING",

@@ -10,6 +10,8 @@ import CollectView from '@/views/workflow/CollectView.vue'
 import DashboardView from '@/views/workflow/DashboardView.vue'
 import DraftBoxPanel from '@/components/domain/DraftBoxPanel.vue'
 import DraftSkuPanel from '@/components/domain/DraftSkuPanel.vue'
+import DraftSkuAttributesEditor from '@/components/domain/DraftSkuAttributesEditor.vue'
+import DraftSkuAttributeBatchFill from '@/components/domain/DraftSkuAttributeBatchFill.vue'
 import DraftEditorPanel from '@/components/domain/DraftEditorPanel.vue'
 import DraftWorkspacePanel, { type DraftWorkspaceTab } from '@/components/domain/DraftWorkspacePanel.vue'
 import LibraryPanel from '@/components/domain/LibraryPanel.vue'
@@ -710,7 +712,14 @@ watch(
           </template>
 
           <template #skus>
-            <DraftSkuPanel :draft="currentDraft" :skus="currentDraftProductContext.skuItems" :images="imagePool" :loading="loading" />
+            <DraftSkuPanel :draft="currentDraft" :skus="currentDraftProductContext.skuItems" :images="imagePool" :loading="loading">
+              <template #batch-attributes="{ targetKey }">
+                <DraftSkuAttributeBatchFill :target-key="targetKey" :loading="loading" />
+              </template>
+              <template #attributes="{ row, sku, targetKey }">
+                <DraftSkuAttributesEditor :sku-id="row.sku_id" :sku="sku" :target-key="targetKey" />
+              </template>
+            </DraftSkuPanel>
           </template>
 
           <template #images>

@@ -29,6 +29,39 @@ def _set_primary_listing(
         target["validation_errors"] = validation_errors
 
 
+@pytest.mark.parametrize("second_color", ["黑色", "灰色"])
+def test_public_fill_excludes_variant_fields_before_model_and_ledger(monkeypatch, second_color):
+    product = default_product_model()
+    product["source"]["attributes"] = {"适用性别": "女"}
+    product["sku_items"] = [
+        {"id": "first", "options": {"颜色": "黑色"}},
+        {"id": "second", "options": {"颜色": second_color}},
+    ]
+    draft = product["drafts"]["ozon"]
+    draft["sku_items"] = [{"sku_id": sku_id, "selected": True} for sku_id in ("first", "second")]
+    _set_primary_listing(draft, category_id="970676618")
+    category = {"category_id": "970676618", "site": "global", "attributes": {
+        "required": [
+            {"id": "COLOR", "required": True, "value_mode": "strict_enum", "variation_role": "variant"},
+            {"id": "GENDER", "required": True, "value_mode": "strict_enum"},
+        ],
+        "optional": [{"id": "COLOR_NAME", "variation_role": "variant"}],
+    }}
+
+    def fake_agent(payload, toolset, ledger):
+        assert [item["id"] for item in payload["attributes"]] == ["GENDER"]
+        assert set(ledger.definitions) == {"GENDER"}
+        ledger.add_values("GENDER", [{"id": "female", "value": "女"}])
+        return CategoryAttributeFillAgentRun({"assignments": [
+            {"attribute_id": "GENDER", "value": "女", "dictionary_value_id": "female"},
+        ], "need_review": []})
+
+    monkeypatch.setattr(category_attribute_ai_fill, "run_category_attribute_fill_agent", fake_agent)
+    updated, meta = category_attribute_ai_fill.apply_ai_model_attribute_fill(product, "ozon", category)
+    assert meta["ai_filled"] == ["GENDER"]
+    assert set(updated["drafts"]["ozon"]["attributes"]) == {"GENDER"}
+
+
 def test_ai_attribute_fill_treats_attribute_id_value_as_missing() -> None:
     product = default_product_model()
     product["drafts"]["mercadolibre"]["model"] = "T-3A"

@@ -3,6 +3,7 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 import PublishPrecheckPanel from '@/components/domain/PublishPrecheckPanel.vue'
+import { normalizePublishPrecheck } from '@/api/workflow/normalizers'
 import type { MarketplaceTargetSite, PayloadPreviewState, PublishPrecheck } from '@/types/workflow'
 
 const target: MarketplaceTargetSite = {
@@ -109,6 +110,74 @@ function payloadPreview(): PayloadPreviewState {
 }
 
 describe('PublishPrecheckPanel', () => {
+  it('关联的整组问题随必填缺失展示一次，保留全部 SKU 明细', async () => {
+    const affected = Array.from({ length: 29 }, (_, index) => ({ sku_id: `sku-${index}`, sku: `SELL-${index}`, name: `规格 ${index}` }))
+    const result = normalizePublishPrecheck({
+      ok: false,
+      errors: [
+        {
+          code: 'REQUIRED_ATTRIBUTE_MISSING', field: 'attributes.10096', message: '缺少 Ozon 必填属性：10096（Цвет товара）', severity: 'error',
+          next_action: '前往 SKU → 属性 / 详情（当前目标市场）补齐必填属性', affected_skus: affected,
+          related_issues: [{ code: 'SKU_VARIATION_ATTRIBUTES_EMPTY', field: 'sku_items', message: '所选 29 个 SKU 的平台差异属性全部为空，无需填满所有可选字段', severity: 'error', next_action: '补齐后检查规格组合是否重复' }],
+        },
+      ],
+      warnings: [{ code: 'NEED_REVIEW_ATTRIBUTES', field: 'attributes.10096', message: '属性待复核：10096', severity: 'warning', affected_skus: affected }],
+    })
+    const wrapper = mount(PublishPrecheckPanel, { props: { ...panelProps(), precheck: result } })
+
+    expect(result.errorItems[0].affectedSkus?.[28]).toEqual({ skuId: 'sku-28', sku: 'SELL-28', name: '规格 28' })
+    expect(wrapper.text()).toContain('1 项不通过 / 1 项提醒')
+    expect(wrapper.text().match(/缺少 Ozon 必填属性：10096/g)).toHaveLength(1)
+    expect(wrapper.text().match(/属性待复核：10096/g)).toHaveLength(1)
+    const errors = wrapper.get('[data-testid="publish-precheck-top-level-errors"]')
+    expect(errors.findAll(':scope > ul > li')).toHaveLength(1)
+    expect(errors.get('[aria-label="关联说明"]').text()).toContain('无需填满所有可选字段')
+    expect(errors.text()).toContain('SKU → 属性 / 详情（当前目标市场）')
+    expect(errors.text()).not.toContain('类目属性页')
+    expect(result.errorItems[0].relatedIssues?.[0].code).toBe('SKU_VARIATION_ATTRIBUTES_EMPTY')
+    const details = errors.get('details')
+    expect(details.get('summary').text()).toBe('受影响的 29 个 SKU')
+    expect(details.attributes('open')).toBeUndefined()
+    await details.get('summary').trigger('click')
+    expect(details.element.open).toBe(true)
+    expect(details.findAll('li')).toHaveLength(29)
+    expect(details.text()).toContain('规格 28SELL-28')
+  })
+
+  it('同一缺失问题在预览中仍保留关联校验说明', () => {
+    const preview = payloadPreview()
+    preview.warnings = [{
+      code: 'ATTRIBUTE_REVIEW', field: 'attributes.color', message: '核对颜色', severity: 'warning', nextAction: '核对规格',
+      relatedIssues: [{ code: 'RELATED_CHECK', field: 'sku_items', message: '相关规格仍需核对', severity: 'warning', nextAction: '确认后重新预检' }],
+    }]
+    const wrapper = mount(PublishPrecheckPanel, { props: { ...panelProps(), payloadPreview: preview } })
+    expect(wrapper.get('[aria-label="关联说明"]').text()).toContain('相关规格仍需核对')
+  })
+
+  it('重复提醒只渲染一次，数量与列表一致', () => {
+    const warning = { code: 'NEED_REVIEW_ATTRIBUTES', field: 'attributes.10096', message: '属性待复核：10096', severity: 'warning', nextAction: '填写属性' }
+    const precheck = { ...passedPrecheck(), warnings: [warning.message], warningItems: Array.from({ length: 29 }, () => ({ ...warning })) }
+    const wrapper = mount(PublishPrecheckPanel, { props: { ...panelProps(), precheck } })
+
+    expect(wrapper.text()).toContain('0 项不通过 / 1 项提醒')
+    expect(wrapper.get('[data-testid="publish-precheck-top-level-warnings"]').findAll('li')).toHaveLength(1)
+  })
+
+  it('范围内去重且不合并不同销售市场的问题', () => {
+    const precheck = layeredPrecheck(false)
+    const first = precheck.marketChecks![0]
+    first.errors.push({ ...first.errors[0] })
+    precheck.marketChecks![1].errors = [...first.errors]
+    precheck.marketChecks![1].ok = false
+    precheck.marketChecks![1].status = 'blocked'
+    const wrapper = mount(PublishPrecheckPanel, { props: { ...panelProps(), precheck } })
+
+    expect(wrapper.text()).toContain('2 项不通过 / 1 项提醒')
+    for (const card of wrapper.findAll('[data-testid^="publish-precheck-scope-market:"]')) {
+      expect(card.text().match(/阿根廷售价无效/g)).toHaveLength(1)
+    }
+  })
+
   it('只渲染发布预检，不包含类目属性编辑模块', () => {
     const wrapper = mount(PublishPrecheckPanel, {
       props: panelProps(),

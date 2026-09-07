@@ -1,9 +1,9 @@
 {
   "category_attribute_values_search": {
-    "version": "5",
-    "contract_fingerprint": "d38359a153b0172e29075b0f776fceaa752ba9462b69e2b4957ba8fff2e05256"
+    "version": "6",
+    "contract_fingerprint": "d9f063f807927bf73f2e6d9994d2bba6d4d6755be0c4f2240c10bd312599bb60"
   },
   "toolsets": {
-    "category.attribute_values": "aed5cd74c797488ac6a293945fe81977bed78f50d755c9f0c63ce7f1c09dfd28"
+    "category.attribute_values": "d667feb4b6327484c28416bbd236b017e3188d0870989176ecc02ac97d6fb072"
   }
 }

@@ -16,6 +16,7 @@ const props = withDefaults(defineProps<{
   categoryQuery: string
   categoryResults: CategorySearchResult[]
   columnLayout?: boolean
+  skuScope?: boolean
   categoryAutoMatchProductName?: string
   categoryAutoMatchTargetError?: string
   categoryAttributeTranslations: CategoryAttributeTranslations
@@ -32,6 +33,7 @@ const props = withDefaults(defineProps<{
 }>(), {
   categoryAutoMatchProductName: '',
   columnLayout: false,
+  skuScope: false,
   categoryAutoMatchTargetError: '',
   categoryAttributeLoading: false,
   categoryAttributeError: '',
@@ -76,8 +78,8 @@ const sharedMercadoLibreMarketSummary = computed(() => (
     : '当前 CBT 草稿的全部销售市场'
 ))
 
-const showRequiredAttributes = ref(false)
-const showOptionalAttributes = ref(false)
+const showRequiredAttributes = ref(props.skuScope)
+const showOptionalAttributes = ref(props.skuScope)
 const attributeInputRefs = ref<Record<string, HTMLInputElement | HTMLSelectElement | null>>({})
 type PackageDimensionField = keyof DraftDetail['packageDimensions']
 type PackageDimensionAttributeMapping = {
@@ -176,21 +178,33 @@ const attributeFields = computed(() => {
   return [...fields.values()]
 })
 function isCompilerManagedAttribute(attrId: string) {
-  return props.target.platform === 'mercadolibre'
-    && MERCADO_COMPILER_MANAGED_ATTRIBUTE_IDS.has(attrId)
+  return (props.target.platform === 'mercadolibre'
+    && MERCADO_COMPILER_MANAGED_ATTRIBUTE_IDS.has(attrId))
+    || [...(props.category?.requiredAttributes || []), ...(props.category?.optionalAttributes || [])]
+      .some(attr => attr.id === attrId && attr.managedBy === 'listing_grouping')
 }
+const systemGroupingAttributes = computed(() => attributeFields.value.filter(attr => attr.managedBy === 'listing_grouping'))
+const systemGroupingDisplay = computed(() => {
+  if (props.draft.grouping.mode === 'separate') {
+    return systemGroupingAttributes.value.some(attr => attr.required)
+      ? '独立刊登：系统为每个 SKU 填写不同的分组值。'
+      : '独立刊登：系统不提交分组名称。'
+  }
+  const name = (props.draft.grouping.name || props.draft.title).trim()
+  return name ? `组合展示：${name}` : '尚未设置组合名称，请到 SKU 页填写平台组名。'
+})
+const skuVariantCount = computed(() => props.skuScope || props.draft.skuItems.filter(row => row.selected).length < 2 ? 0 : attributeFields.value.filter(attr => attr.variationRole === 'variant').length)
+const belongsToSku = (attr: CategoryAttributeDefinition) => skuVariantCount.value > 0 && attr.variationRole === 'variant'
 const requiredAttributeFields = computed(() => attributeFields.value.filter(
-  (attr) => attr.required && !attr.readOnly && !isCompilerManagedAttribute(attr.id),
+  (attr) => attr.required && !belongsToSku(attr) && !attr.readOnly && !isCompilerManagedAttribute(attr.id),
 ))
 const optionalAttributeFields = computed(() => attributeFields.value.filter(
-  (attr) => !attr.required && !attr.readOnly && !isCompilerManagedAttribute(attr.id),
+  (attr) => !attr.required && !belongsToSku(attr) && !attr.readOnly && !isCompilerManagedAttribute(attr.id),
 ))
 const attributeFieldById = computed(() => new Map(attributeFields.value.map((attr) => [attr.id, attr])))
 const translationCount = computed(() => Object.values(props.categoryAttributeTranslations || {}).filter((item) => item.label).length)
 const translationSourceLabel = computed(() => props.categoryAttributeTranslationsSource === 'cache' ? '缓存' : props.categoryAttributeTranslationsSource === 'ai' ? 'AI' : '')
-const showAttributeTranslationProgress = computed(() => props.categoryAttributeTranslating)
 const categoryResultTranslationCount = computed(() => Object.values(props.categoryResultTranslations || {}).filter(Boolean).length)
-const showCategoryResultTranslationProgress = computed(() => props.categoryResultTranslating)
 
 function attributeTranslation(attrId: string) {
   return props.categoryAttributeTranslations?.[attrId] || null
@@ -219,8 +233,9 @@ function attributePlaceholder(attr: CategoryAttributeDefinition) {
 }
 
 function isStrictEnumAttribute(attr: CategoryAttributeDefinition) {
-  return attr.valueMode === 'strict_enum'
-    || isCategoryDictionaryAttribute(attr.dictionaryId, attr.isDictionary)
+  // 字典提供候选值，不代表禁止自定义；优先遵循平台声明的取值模式。
+  if (attr.valueMode) return attr.valueMode === 'strict_enum'
+  return isCategoryDictionaryAttribute(attr.dictionaryId, attr.isDictionary)
 }
 
 function isOpenEnumAttribute(attr: CategoryAttributeDefinition) {
@@ -719,8 +734,8 @@ async function focusAttribute(attrId: string) {
 watch(
   () => [targetIdentityKey.value, props.category?.categoryId || ''],
   () => {
-    showRequiredAttributes.value = false
-    showOptionalAttributes.value = false
+    showRequiredAttributes.value = props.skuScope
+    showOptionalAttributes.value = props.skuScope
     attributeInputRefs.value = {}
     for (const timer of dictionarySearchTimers.values()) clearTimeout(timer)
     dictionarySearchTimers.clear()
@@ -765,30 +780,25 @@ function targetLabel(target: MarketplaceTargetSite) {
 
 <template>
   <section ref="panelElement" class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
-    <div class="flex flex-wrap items-center justify-between gap-3">
+    <div v-if="!props.skuScope" class="flex flex-wrap items-center justify-between gap-3">
       <div>
         <h2 class="card-title">{{ targetLabel(props.target) }}</h2>
         <p v-if="usesSharedMercadoLibreCbtCategory" class="muted mt-1">为当前草稿维护一个共享 CBT 类目和对应属性。</p>
         <p v-else class="muted mt-1">在此直接搜索、匹配并确认该平台的类目，填写平台属性。</p>
         <p v-if="props.categoryAutoMatchProductName" class="mt-1 text-xs font-semibold text-brand-700 dark:text-brand-300">AI 识别商品主体：{{ props.categoryAutoMatchProductName }}。{{ usesSharedMercadoLibreCbtCategory ? '请检查候选 CBT 类目是否兼容全部已选销售市场后再确认。' : '请检查本平台的候选类目后再确认。' }}</p>
-        <p v-if="showCategoryResultTranslationProgress || showAttributeTranslationProgress" class="mt-1 text-xs text-brand-700 dark:text-brand-300">正在调用 AI 模型翻译文本...</p>
-        <p v-else-if="categoryResultTranslationCount || translationCount" class="mt-1 text-xs text-accent-500 dark:text-accent-400">已翻译候选类目 {{ categoryResultTranslationCount }} 项 / 属性 {{ translationCount }} 项</p>
+        <p v-if="categoryResultTranslationCount || translationCount" class="mt-1 text-xs text-accent-500 dark:text-accent-400">已翻译候选类目 {{ categoryResultTranslationCount }} 项 / 属性 {{ translationCount }} 项</p>
       </div>
     </div>
     <div
-      v-if="usesSharedMercadoLibreCbtCategory"
+      v-if="!props.skuScope && usesSharedMercadoLibreCbtCategory"
       data-testid="mercadolibre-shared-category-notice"
       class="mt-4 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800 dark:border-blue-900/70 dark:bg-blue-950/30 dark:text-blue-200"
     >
       <p class="font-semibold">所有已选销售市场共用一个 CBT 类目</p>
       <p class="mt-1">适用市场：{{ sharedMercadoLibreMarketSummary }}。Mercado Libre 会自动映射各市场的本地类目，不能为每个市场分别设置类目 ID。</p>
     </div>
-    <div v-if="showCategoryResultTranslationProgress || showAttributeTranslationProgress" class="mt-3 h-2 overflow-hidden rounded-full bg-accent-200 dark:bg-dark-800">
-      <div class="h-full w-2/3 animate-pulse rounded-full bg-brand-500" />
-    </div>
-
-    <div class="mt-5 grid min-w-0 items-start gap-6" :class="props.columnLayout ? '' : 'xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]'">
-      <article class="min-w-0 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
+    <div class="mt-5 grid min-w-0 items-start gap-6" :class="props.columnLayout || props.skuScope ? '' : 'xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]'">
+      <article v-if="!props.skuScope" class="min-w-0 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <div>
             <h3 class="font-semibold text-accent-950 dark:text-white">类目候选与手动搜索</h3>
@@ -808,9 +818,11 @@ function targetLabel(target: MarketplaceTargetSite) {
           <button v-for="item in props.categoryResults" :key="item.id" class="w-full rounded-lg border border-accent-200 bg-white p-3 text-left hover:border-brand-300 hover:bg-brand-50 dark:border-dark-700 dark:bg-dark-900 dark:hover:border-primary-500/60 dark:hover:bg-dark-800" @click="emit('selectCategory', item)">
             <div class="flex flex-wrap items-center justify-between gap-2">
               <div class="font-semibold text-accent-950 dark:text-white">{{ categoryResultTitle(item) }}</div>
-              <span v-if="item.raw.score" class="badge-info">AI {{ item.raw.score }}</span>
+              <span v-if="item.raw.aiRecommended" class="badge-info">AI 推荐 · 请核对完整路径</span>
             </div>
             <div class="mt-1 text-xs text-accent-500 dark:text-accent-400">{{ categoryResultSubtitle(item) }}</div>
+            <p class="mt-1 text-xs text-accent-500">类目 ID：{{ item.id }}</p>
+            <p v-for="(reason, index) in (item.raw.matchEvidence as string[] || [])" :key="index" class="mt-1 text-xs text-accent-500">{{ reason }}</p>
             <div v-if="item.raw.site || item.raw.source" class="mt-1 text-xs text-accent-400 dark:text-accent-500">{{ item.raw.site || '' }}{{ item.raw.source ? ` / ${item.raw.source}` : '' }}</div>
           </button>
           <div v-if="!props.categoryResults.length" class="rounded-lg border border-dashed border-accent-300 bg-white p-5 text-center text-sm text-accent-500 dark:border-dark-600 dark:bg-dark-900 dark:text-accent-300">暂无搜索结果。</div>
@@ -820,23 +832,24 @@ function targetLabel(target: MarketplaceTargetSite) {
       <article class="min-w-0 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
         <div class="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h3 class="font-semibold text-accent-950 dark:text-white">当前类目 / 平台属性</h3>
+            <h3 class="font-semibold text-accent-950 dark:text-white">{{ props.skuScope ? '此 SKU 的平台差异属性' : '当前类目 / 平台属性' }}</h3>
             <p v-if="translationCount" class="mt-1 text-xs text-accent-500 dark:text-accent-400">属性翻译：{{ translationCount }} 项{{ translationSourceLabel ? ` / ${translationSourceLabel}` : '' }}</p>
           </div>
         </div>
-        <label class="mt-4 block">
+        <p v-if="props.skuScope" class="mt-3 text-sm">{{ activeDraft.categoryPath }}（{{ activeDraft.categoryId }}）</p>
+        <label v-if="!props.skuScope" class="mt-4 block">
           <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">{{ usesSharedMercadoLibreCbtCategory ? '共享 CBT 类目 ID' : '类目 ID' }}</span>
           <input v-model="activeDraft.categoryId" class="input mt-1" :placeholder="usesSharedMercadoLibreCbtCategory ? '请输入 CBT 类目 ID' : '例如 MLM12345'" @input="emit('invalidateCategoryPrecheck')" />
         </label>
-        <label class="mt-3 block">
+        <label v-if="!props.skuScope" class="mt-3 block">
           <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">{{ usesSharedMercadoLibreCbtCategory ? '共享 CBT 类目路径' : '类目路径' }}</span>
           <input v-model="activeDraft.categoryPath" class="input mt-1" />
         </label>
         <div class="mt-4 flex flex-wrap gap-2">
           <button class="btn btn-outline" :disabled="props.loading || props.categoryAttributeLoading || !hasCurrentDraft || !hasSelectedCategory" @click="emit('applyCategory')">刷新平台属性</button>
           <button class="btn btn-outline" :disabled="props.loading || props.categoryAttributeTranslating || categoryAttributeState !== 'ready'" @click="emit('translateCategoryAttributes')">翻译平台属性</button>
-          <button class="btn btn-primary" :disabled="props.loading || categoryAttributeState !== 'ready'" @click="emit('fillAttributes')">AI 填充属性</button>
-          <button class="btn btn-outline" :disabled="props.loading || categoryAttributeState !== 'ready'" @click="emit('categoryPrecheck')">类目预检</button>
+          <button class="btn btn-primary" :disabled="props.loading || categoryAttributeState !== 'ready'" @click="emit('fillAttributes')">{{ props.skuScope ? 'AI 补齐此 SKU 属性' : 'AI 填充属性' }}</button>
+          <button v-if="!props.skuScope" class="btn btn-outline" :disabled="props.loading || categoryAttributeState !== 'ready'" @click="emit('categoryPrecheck')">类目预检</button>
         </div>
 
         <div v-if="categoryAttributeState === 'empty'" class="mt-4 rounded-lg border border-dashed border-accent-300 bg-white p-4 text-sm text-accent-500 dark:border-dark-600 dark:bg-dark-900 dark:text-accent-300">
@@ -855,6 +868,12 @@ function targetLabel(target: MarketplaceTargetSite) {
           <span class="badge-muted">可选属性 {{ optionalAttributeFields.length }} 个</span>
         </div>
 
+        <p v-if="skuVariantCount" class="mt-3 text-sm text-brand-700">此类目还有 {{ skuVariantCount }} 个 SKU 差异字段，请在 SKU 页的“属性 / 详情”中按规格填写。</p>
+        <div v-if="categoryAttributeState === 'ready' && systemGroupingAttributes.length" data-testid="system-grouping-attributes" class="mt-3 rounded-lg bg-accent-50 p-3 text-sm dark:bg-dark-800">
+          <p class="font-medium">刊登分组（系统填写）</p>
+          <p class="mt-1">{{ systemGroupingDisplay }}</p>
+          <p class="mt-1 text-accent-500">根据 SKU 页的发布组织方式和平台组名自动填写，无需 AI 或手动编辑此属性。</p>
+        </div>
         <div v-if="categoryAttributeState === 'ready' && pendingReviewAttributeIds.length" class="mt-4 rounded-xl bg-amber-50 p-3 text-sm text-amber-800 ring-1 ring-amber-200 dark:bg-amber-950/20 dark:text-amber-300 dark:ring-amber-900/60">
           <div class="font-semibold">待复核属性</div>
           <div class="mt-2 flex flex-wrap gap-2">
@@ -1024,7 +1043,7 @@ function targetLabel(target: MarketplaceTargetSite) {
           </div>
         </div>
         <div v-else-if="categoryAttributeState === 'ready'" class="mt-4 rounded-lg border border-accent-200 bg-white p-3 text-sm text-accent-500 dark:border-dark-700 dark:bg-dark-900 dark:text-accent-300">
-          当前类目没有必填属性。
+          当前没有需要手动或 AI 填写的必填属性。
         </div>
 
         <div v-if="categoryAttributeState === 'ready' && optionalAttributeFields.length" class="mt-4 rounded-lg border border-accent-200 bg-white p-3 dark:border-dark-700 dark:bg-dark-900">

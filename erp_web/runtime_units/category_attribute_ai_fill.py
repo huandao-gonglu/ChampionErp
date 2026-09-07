@@ -22,6 +22,7 @@ from erp_web.schemas.category import (
     normalize_category_attribute_number_unit_value,
 )
 from erp_web.schemas.category_attribute import CategoryAttributeValueLedger
+from erp_web.schemas.category_grouping import is_listing_grouping_attribute
 from erp_web.schemas.category_attribute_evidence import has_translated_attribute_evidence
 from erp_web.schemas.category_brand import (
     is_brand_attribute,
@@ -448,6 +449,8 @@ def _validated_agent_attributes(
         attr = schema_by_id.get(attr_id)
         if not attr:
             continue
+        if is_listing_grouping_attribute(platform, attr):
+            continue
         value = str(assignment.get("value") or "").strip()
         if not value:
             continue
@@ -658,8 +661,9 @@ def unresolved_optional_category_attributes(
         else {}
     )
     result: list[dict[str, Any]] = []
+    context = _product_context(normalized, platform)
     for definition in category_attribute_schema(category_record):
-        if definition.get("required"):
+        if definition.get("required") or attribute_needs_sku_scope(definition, context) or is_listing_grouping_attribute(platform, definition):
             continue
         attr_id = str(definition.get("id") or "").strip()
         if not attr_id:
@@ -752,6 +756,13 @@ def apply_ai_model_attribute_fill(
             platform,
             category_record,
         )
+        # 界面与模型使用同一填写范围；多 SKU 的变体字段不能占用公共填写的查询预算。
+        context = _product_context(base_product, platform)
+        agent_schema = [
+            item for item in agent_schema
+            if not attribute_needs_sku_scope(item, context)
+            and not is_listing_grouping_attribute(platform, item)
+        ]
         if not agent_schema:
             result_meta: dict[str, Any] = {
                 "source": "rules",
@@ -786,8 +797,9 @@ def apply_ai_model_attribute_fill(
             category_id=str(payload.get("category_id") or ""),
             category_path=str(payload.get("category_path") or ""),
         )
+        evidence_rejected.update(agent_run.rejected_attributes.keys() & ledger.definitions.keys())
     except Exception as exc:
-        meta["warning"] = f"AI 属性填充失败，已使用规则填充：{exc}"
+        meta["warning"] = f"AI 未完成属性提交，本次未写入 AI 建议；已有属性及规则填写结果已保留。原因：{exc}"
         return base_product, meta
 
     updated = normalize_product_model(deepcopy(base_product))
@@ -830,7 +842,7 @@ def apply_ai_model_attribute_fill(
         meta["evidence_rejected"] = sorted(evidence_rejected)
         attribute_names = {str(attr["id"]): str(attr.get("name") or attr["id"]) for attr in schema}
         meta["warning"] = (
-            "以下建议未写入（缺少可核对的事实或需要按 SKU 填写）："
+            "以下建议未写入（格式、字典值、事实证据或 SKU 范围未通过校验）："
             + "、".join(attribute_names.get(attr_id, attr_id) for attr_id in sorted(evidence_rejected))
             + "。待确认数量仅统计必填属性。"
         )

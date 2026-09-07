@@ -1,0 +1,394 @@
+{
+  "product_context": {
+    "product": {
+      "brand": "Golovejoy",
+      "materials": [
+        "冰丝"
+      ]
+    },
+    "source": {
+      "brand": "Golovejoy",
+      "material": "冰丝",
+      "attributes": {
+        "适用性别": "女",
+        "产地": "浙江",
+        "功能": "防尘"
+      }
+    },
+    "sku_scope": {
+      "selected_count": 0,
+      "common_options": {},
+      "varying_option_names": []
+    }
+  },
+  "schema": [
+    {
+      "id": "9163",
+      "name": "Пол",
+      "required": true,
+      "value_type": "String",
+      "value_mode": "strict_enum",
+      "is_collection": true,
+      "max_value_count": 0,
+      "options": []
+    },
+    {
+      "id": "10096",
+      "name": "Цвет товара",
+      "required": true,
+      "value_type": "String",
+      "value_mode": "strict_enum",
+      "is_collection": true,
+      "max_value_count": 0,
+      "variation_role": "variant",
+      "options": []
+    },
+    {
+      "id": "31",
+      "name": "Бренд в одежде и обуви",
+      "required": true,
+      "value_type": "String",
+      "value_mode": "strict_enum",
+      "is_collection": false,
+      "max_value_count": 0,
+      "options": []
+    },
+    {
+      "id": "8229",
+      "name": "Тип",
+      "required": true,
+      "value_type": "String",
+      "value_mode": "strict_enum",
+      "is_collection": false,
+      "max_value_count": 0,
+      "options": []
+    },
+    {
+      "id": "4496",
+      "name": "Материал",
+      "required": false,
+      "value_type": "String",
+      "value_mode": "strict_enum",
+      "is_collection": true,
+      "max_value_count": 4,
+      "options": []
+    },
+    {
+      "id": "22232",
+      "name": "ТН ВЭД коды ЕАЭС",
+      "required": false,
+      "value_type": "String",
+      "value_mode": "strict_enum",
+      "is_collection": false,
+      "max_value_count": 0,
+      "options": []
+    },
+    {
+      "id": "4389",
+      "name": "Страна-изготовитель",
+      "required": false,
+      "value_type": "String",
+      "value_mode": "strict_enum",
+      "is_collection": true,
+      "max_value_count": 0,
+      "options": []
+    }
+  ],
+  "lookups": {
+    "9163": [
+      {
+        "dictionary_value_id": "22881",
+        "value": "Женский"
+      }
+    ],
+    "10096": [
+      {
+        "dictionary_value_id": "61574",
+        "value": "черный"
+      }
+    ],
+    "31": [
+      {
+        "dictionary_value_id": "970693417",
+        "value": "Golovejoy"
+      }
+    ],
+    "8229": [
+      {
+        "dictionary_value_id": "970676618",
+        "value": "Маска-повязка на лицо"
+      }
+    ],
+    "4496": [
+      {
+        "dictionary_value_id": "61855",
+        "value": "Искусственный шелк"
+      }
+    ],
+    "22232": [
+      {
+        "dictionary_value_id": "971398549",
+        "value": "6115990000 - Прочие трикотажные чулочно-носочные изделия из прочих текстильных материалов, машинного или ручного вязания"
+      }
+    ],
+    "4389": [
+      {
+        "dictionary_value_id": "90296",
+        "value": "Китай"
+      }
+    ]
+  },
+  "outputs": [
+    {
+      "assignments": [
+        {
+          "attribute_id": "9163",
+          "dictionary_value_id": "22881",
+          "evidence": {
+            "reason": "产品source.attributes中'适用性别':'女'与俄语句式'Женский'语义等价",
+            "source_path": [
+              "sku_scope",
+              "common_options"
+            ],
+            "source_value": "适用性别: 女"
+          },
+          "value": "Женский"
+        },
+        {
+          "attribute_id": "10096",
+          "dictionary_value_id": "61574",
+          "evidence": {
+            "reason": "从多个SKU颜色中选择代表性颜色黑色', 'XKZ42暗夜黑'与俄语'черный'等价",
+            "source_path": [
+              "sku_scope",
+              "common_options"
+            ],
+            "source_value": "颜色: XKZ42暗夜黑,XKZ42茶白,XKZ42樱花粉,XKZ42太空灰"
+          },
+          "value": "черный"
+        },
+        {
+          "attribute_id": "31",
+          "dictionary_value_id": "970693417",
+          "evidence": null,
+          "value": "Golovejoy"
+        },
+        {
+          "attribute_id": "8229",
+          "dictionary_value_id": "970676618",
+          "evidence": null,
+          "value": "Маска-повязка на лицо"
+        },
+        {
+          "attribute_id": "4496",
+          "dictionary_value_id": "61855",
+          "evidence": {
+            "reason": "source.material中'冰丝'即'Artificial silk'，俄语'Искусственный шелк'语义等价",
+            "source_path": [
+              "product",
+              "materials"
+            ],
+            "source_value": "冰丝"
+          },
+          "value": "Искусственный шелк"
+        },
+        {
+          "attribute_id": "22232",
+          "dictionary_value_id": "6114900000",
+          "evidence": {
+            "reason": "面罩属于针织服饰配件，归类于6114其他针织纺织服装类别",
+            "source_path": [
+              "sku_scope",
+              "common_options"
+            ],
+            "source_value": ""
+          },
+          "value": "6114900000"
+        },
+        {
+          "attribute_id": "4389",
+          "dictionary_value_id": "90296",
+          "evidence": {
+            "reason": "source.attributes中'产地':'浙江'位于中国境内",
+            "source_path": [
+              "source",
+              "attributes"
+            ],
+            "source_value": "产地: 浙江"
+          },
+          "value": "Китай"
+        }
+      ],
+      "need_review": [
+        {
+          "id": "10096",
+          "reason": "必填颜色属性有多个SKU颜色选项(XKZ42暗夜黑/茶白/樱花粉等)，因当前未指定单个SKU而无法确定各变体的具体颜色值，需按SKU分别配置"
+        }
+      ]
+    },
+    {
+      "assignments": [
+        {
+          "attribute_id": "9163",
+          "dictionary_value_id": "22881",
+          "evidence": {
+            "reason": "产品source.attributes中'适用性别':'女'与俄语句式'Женский'语义等价",
+            "source_path": [
+              "source",
+              "attributes"
+            ],
+            "source_value": "适用性别: 女"
+          },
+          "value": "Женский"
+        },
+        {
+          "attribute_id": "10096",
+          "dictionary_value_id": "61574",
+          "evidence": {
+            "reason": "从多个SKU颜色中选择代表性颜色黑色', 'XKZ42暗夜黑'与俄语'черный'等价",
+            "source_path": [
+              "source",
+              "attributes"
+            ],
+            "source_value": "颜色: XKZ42暗夜黑,XKZ42茶白,XKZ42樱花粉,XKZ42太空灰"
+          },
+          "value": "черный"
+        },
+        {
+          "attribute_id": "31",
+          "dictionary_value_id": "970693417",
+          "evidence": null,
+          "value": "Golovejoy"
+        },
+        {
+          "attribute_id": "8229",
+          "dictionary_value_id": "970676618",
+          "evidence": null,
+          "value": "Маска-повязка на лицо"
+        },
+        {
+          "attribute_id": "4496",
+          "dictionary_value_id": "61855",
+          "evidence": {
+            "reason": "source.material中'冰丝'即'Artificial silk'，俄语'Искусственный шелк'语义等价",
+            "source_path": [
+              "product",
+              "materials"
+            ],
+            "source_value": "冰丝"
+          },
+          "value": "Искусственный шелк"
+        },
+        {
+          "attribute_id": "22232",
+          "dictionary_value_id": "6114900000",
+          "evidence": {
+            "reason": "面罩属于针织服饰配件，归类于6114其他针织纺织服装类别",
+            "source_path": [
+              "source",
+              "attributes"
+            ],
+            "source_value": "功能: 防尘"
+          },
+          "value": "6114900000"
+        },
+        {
+          "attribute_id": "4389",
+          "dictionary_value_id": "90296",
+          "evidence": {
+            "reason": "source.attributes中'产地':'浙江'位于中国境内",
+            "source_path": [
+              "source",
+              "attributes"
+            ],
+            "source_value": "产地: 浙江"
+          },
+          "value": "Китай"
+        }
+      ],
+      "need_review": [
+        {
+          "id": "10096",
+          "reason": "必填颜色属性有多个SKU颜色选项(XKZ42暗夜黑/茶白/樱花粉等)，因当前未指定单个SKU而无法确定各变体的具体颜色值，需按SKU分别配置"
+        }
+      ]
+    },
+    {
+      "assignments": [
+        {
+          "attribute_id": "9163",
+          "dictionary_value_id": "22881",
+          "evidence": {
+            "reason": "产品属性'适用性别:女'与俄语句式'Женский'语义等价",
+            "source_path": [
+              "source",
+              "attributes",
+              "适用性别"
+            ],
+            "source_value": "女"
+          },
+          "value": "Женский"
+        },
+        {
+          "attribute_id": "31",
+          "dictionary_value_id": "970693417",
+          "evidence": null,
+          "value": "Golovejoy"
+        },
+        {
+          "attribute_id": "8229",
+          "dictionary_value_id": "970676618",
+          "evidence": null,
+          "value": "Маска-повязка на лицо"
+        },
+        {
+          "attribute_id": "4496",
+          "dictionary_value_id": "61855",
+          "evidence": {
+            "reason": "source.product_materials中'冰丝'即'Artificial silk'，俄语'Искусственный шелк'语义等价",
+            "source_path": [
+              "product",
+              "materials"
+            ],
+            "source_value": "冰丝"
+          },
+          "value": "Искусственный шелк"
+        },
+        {
+          "attribute_id": "22232",
+          "dictionary_value_id": "971398549",
+          "evidence": {
+            "reason": "面罩属于针织服饰配件，归类于611599其他针织纺织制品类别",
+            "source_path": [
+              "source",
+              "attributes",
+              "功能"
+            ],
+            "source_value": "防尘"
+          },
+          "value": "6115990000"
+        },
+        {
+          "attribute_id": "4389",
+          "dictionary_value_id": "90296",
+          "evidence": {
+            "reason": "source.attributes中'产地:浙江'位于中国境内",
+            "source_path": [
+              "source",
+              "attributes",
+              "产地"
+            ],
+            "source_value": "浙江"
+          },
+          "value": "Китай"
+        }
+      ],
+      "need_review": [
+        {
+          "id": "10096",
+          "reason": "必填颜色属性有多个SKU颜色选项(XKZ42暗夜黑/茶白/樱花粉等)，因当前未指定单个SKU而无法确定各变体的具体颜色值，需按SKU分别配置"
+        }
+      ]
+    }
+  ]
+}

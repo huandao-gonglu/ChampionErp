@@ -59,6 +59,9 @@ def normalize_product_skus(value: Any) -> list[dict[str, Any]]:
 
 def collected_skus(source: dict[str, Any]) -> list[dict[str, Any]]:
     """来源格式只在采集边界转换；无变体的商品也有一个真实销售规格。"""
+    # 空白或失败的采集结果尚不能证明商品没有变体，不生成空的 single 记录。
+    if not source.get("skus") and not text(source.get("title")):
+        return []
     rows = source.get("skus") or [{
         "id": "single", "name": source.get("title"), "price": source.get("price"),
         "package_dimensions": {**record(source.get("dimensions")), "weight_kg": source.get("weight_kg")},
@@ -104,6 +107,11 @@ def merge_collected_skus(existing: Any, source: dict[str, Any]) -> list[dict[str
     return incoming
 
 
+def new_draft_sku_rows(product_skus: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """新草稿默认选中全部启用规格；卖家编码在取得草稿身份后生成。"""
+    return [{"sku_id": row["id"], "selected": row.get("active") is not False} for row in product_skus]
+
+
 def normalize_draft_skus(value: Any, product_skus: Any, draft_id: str) -> list[dict[str, Any]]:
     facts = {text(row.get("id")): row for row in product_skus if isinstance(row, dict)} if isinstance(product_skus, list) else {}
     result = []
@@ -121,6 +129,8 @@ def normalize_draft_skus(value: Any, product_skus: Any, draft_id: str) -> list[d
             "stock": text(raw.get("stock")) or text(facts.get(sku_id, {}).get("supplier_stock")),
             "overrides": deepcopy(record(raw.get("overrides"))),
             "attributes_by_target": deepcopy(record(raw.get("attributes_by_target"))),
+            "source_option_translations": deepcopy(record(raw.get("source_option_translations"))),
+            "custom_attributes_by_target": deepcopy(record(raw.get("custom_attributes_by_target"))),
             "pricing": deepcopy(record(raw.get("pricing"))),
             "pricing_overrides": deepcopy(record(raw.get("pricing_overrides"))),
             "publications": deepcopy(record(raw.get("publications"))),
@@ -153,6 +163,14 @@ def selected_skus(product: dict[str, Any], draft: dict[str, Any]) -> list[tuple[
     return result
 
 
+
+def editable_selected_skus(product: dict[str, Any], draft: dict[str, Any]) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """批量编辑只处理已选且启用的事实，发布仍使用 selected_skus 的严格校验。"""
+    facts = {row["id"]: row for row in product.get("sku_items", [])}
+    rows = [row for row in draft.get("sku_items", [])
+            if row.get("selected") and row["sku_id"] in facts and facts[row["sku_id"]].get("active", True)]
+    return [(effective_sku(facts[row["sku_id"]], row), row) for row in rows]
+
 def retain_sku_publications(previous: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
     """普通内容保存不允许覆盖远端事实或重绑已使用的卖家编码。"""
     result = deepcopy(incoming)
@@ -166,4 +184,4 @@ def retain_sku_publications(previous: dict[str, Any], incoming: dict[str, Any]) 
     return result
 
 
-__all__ = ["retain_sku_publications", "PACKAGE_FIELDS", "SKU_FACT_FIELDS", "collected_skus", "effective_sku", "merge_collected_skus", "normalize_draft_skus", "normalize_product_skus", "selected_skus", "sku_fingerprint"]
+__all__ = ["retain_sku_publications", "PACKAGE_FIELDS", "SKU_FACT_FIELDS", "collected_skus", "effective_sku", "editable_selected_skus", "merge_collected_skus", "new_draft_sku_rows", "normalize_draft_skus", "normalize_product_skus", "selected_skus", "sku_fingerprint"]

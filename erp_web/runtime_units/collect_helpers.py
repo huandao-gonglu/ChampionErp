@@ -25,6 +25,7 @@ from erp_web.product_model import (
 from erp_web.product_model.common import normalize_list
 from erp_web.product_model.image_pool_model import normalize_image_pool_item
 from erp_web.product_model.sku_image_model import ensure_source_image_asset
+from erp_web.product_model.sku_model import new_draft_sku_rows
 from erp_web.services import image_service
 from erp_web.services.browser_debug_service import file_url
 from erp_web.stores.product_store import normalize_product_fields
@@ -350,6 +351,7 @@ def apply_claimed_platform_drafts(product: dict[str, Any], claim_platforms: list
             continue
         image_refs = draft_image_refs_from_pool(normalized, platform)
         draft["enabled"] = True
+        draft["sku_items"] = new_draft_sku_rows(normalized.get("sku_items", []))
         draft["title"] = draft.get("title") if use_existing(draft.get("title")) else source.get("title") or normalized.get("name") or ""
         draft["description"] = draft.get("description") if use_existing(draft.get("description")) else source.get("description") or ""
         draft["bullets"] = draft.get("bullets") or source.get("bullets") or []
@@ -379,6 +381,7 @@ def draft_copy_from_product(product: dict[str, Any], platform: str) -> dict[str,
             "platform": platform,
             "platforms": [platform],
             "source_product_id": product_id,
+            "sku_items": new_draft_sku_rows(normalized.get("sku_items", [])),
             "title": str(source.get("title") or normalized.get("name") or ""),
             "description": str(source.get("description") or normalized.get("description") or ""),
             "bullets": normalize_list(source.get("bullets") or normalized.get("selling_points")),

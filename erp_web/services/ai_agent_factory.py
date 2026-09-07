@@ -18,7 +18,7 @@ from pydantic_ai import (
     UsageLimits,
     capture_run_messages,
 )
-from pydantic_ai.capabilities import ProcessHistory
+from pydantic_ai.capabilities import PrepareTools, ProcessHistory
 from pydantic_ai.exceptions import (
     AgentRunError,
     ModelAPIError,
@@ -35,8 +35,8 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models import Model
 from pydantic_ai.run import AgentRunResultEvent
-from pydantic_ai.settings import ModelSettings
-from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
+from pydantic_ai.settings import ModelSettings, ToolOrOutput
+from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults, ToolDefinition
 
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.stores.pydantic_message_store import (
@@ -71,6 +71,16 @@ _logger = logging.getLogger(__name__)
 OutputT = TypeVar("OutputT")
 OutputValidator = Callable[[RunContext[AiAgentDependencies], OutputT], OutputT]
 ModelBindingFactory = Callable[..., PydanticModelBinding]
+
+
+def _prepare_tools_within_usage_limit(
+    ctx: RunContext[AiAgentDependencies], tool_defs: list[ToolDefinition],
+) -> list[ToolDefinition]:
+    """用原生使用量停用已耗尽的工具，保留最终输出工具供模型提交结果。"""
+    limit = ctx.usage_limits.tool_calls_limit if ctx.usage_limits else None
+    if limit is not None and ctx.usage.tool_calls >= limit:
+        return []
+    return tool_defs
 
 
 @dataclass(frozen=True)
@@ -799,7 +809,12 @@ class AiAgentFactory:
             configured = base_settings.get("timeout")
             if isinstance(configured, (int, float)) and configured > 0:
                 remaining = min(remaining, float(configured))
-            return ModelSettings(**{**base_settings, "timeout": remaining})
+            current = ModelSettings(**{**base_settings, "timeout": remaining})
+            limit = ctx.usage_limits.tool_calls_limit if ctx.usage_limits else None
+            if limit is not None and ctx.usage.tool_calls >= limit:
+                # 同时约束 Provider 的工具选择，避免模型继续调用历史里已隐藏的查询工具。
+                current["tool_choice"] = ToolOrOutput(function_tools=[])
+            return current
 
         return settings
 
@@ -837,6 +852,7 @@ class AiAgentFactory:
             toolsets=[build_pydantic_toolset(toolset)],
             name=profile.use_case_id.replace(".", "_"),
             capabilities=[
+                PrepareTools(_prepare_tools_within_usage_limit),
                 # 修复计划第 15 节：模型输入历史由官方 ProcessHistory 在请求
                 # 边界投影。processor 的工具可见性安全门保证暴露工具时完整保留
                 # ThinkingPart；仅在工具不可见时删除旧完成轮次可省略 thinking。

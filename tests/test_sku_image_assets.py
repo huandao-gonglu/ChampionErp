@@ -94,9 +94,11 @@ def test_precheck_reports_every_missing_image_with_sku_and_keeps_stock_errors():
         row["stock"] = ""
     result = SkuGroupPublishingAdapter(ItemBoundary()).validate_draft(context_for(product), {})
     errors = result["errors"]
-    assert len(errors) == 4
-    assert {issue["field"] for issue in errors if issue["field"].endswith("image_asset_id")} == {"sku_items.fact-0.image_asset_id", "sku_items.fact-1.image_asset_id"}
-    assert sum("库存" in issue["message"] for issue in errors) == 2
+    assert len(errors) == 2
+    assert {issue["field"] for issue in errors} == {"image_asset_id", "stock"}
+    assert sum("库存" in issue["message"] for issue in errors) == 1
+    for issue in errors:
+        assert {sku["sku_id"] for sku in issue["affected_skus"]} == {"fact-0", "fact-1"}
 
 
 def test_recollection_preserves_manually_chosen_asset_and_updates_source_snapshot(tmp_path):

@@ -6,6 +6,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints, model_validator
 
+from erp_web.schemas.category import CATEGORY_SEARCH_MAX_CANDIDATES, CATEGORY_SEARCH_MAX_KEYWORDS_PER_CALL
 
 TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True)]
 
@@ -17,8 +18,10 @@ class CategorySearchRequest(BaseModel):
         "mercadolibre"
     )
     site: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
-    query: Annotated[TrimmedText, StringConstraints(min_length=1, max_length=500)]
-    limit: int = Field(default=20, ge=1, le=50)
+    keywords: tuple[Annotated[TrimmedText, StringConstraints(min_length=1, max_length=300)], ...] = Field(
+        min_length=1, max_length=CATEGORY_SEARCH_MAX_KEYWORDS_PER_CALL,
+    )
+    limit: int = Field(default=20, ge=1, le=CATEGORY_SEARCH_MAX_CANDIDATES)
 
 
 class CategorySearchResult(BaseModel):
@@ -26,9 +29,11 @@ class CategorySearchResult(BaseModel):
 
     platform: TrimmedText
     site: TrimmedText = ""
-    query: TrimmedText = ""
+    keywords: tuple[TrimmedText, ...] = ()
     source: TrimmedText = ""
     results: tuple[dict[str, JsonValue], ...] = ()
+    errors: tuple[dict[str, JsonValue], ...] = ()
+    truncated: bool = False
 
 
 class CategoryAttributesQueryRequest(BaseModel):

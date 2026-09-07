@@ -102,6 +102,8 @@ def _issue(
         message=message,
         severity=normalized_severity,
         next_action=_text(item.get("next_action")),
+        affected_skus=item.get("affected_skus") or [],
+        related_issues=item.get("related_issues") or [],
     )
 
 

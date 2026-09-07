@@ -59,6 +59,31 @@ afterEach(() => {
 })
 
 describe('CategoryAttributesPanel', () => {
+  it('分组属性由刊登设置派生，切换模式后不保留人工输入或待复核项', async () => {
+    const draft = createEmptyDraftDetail('ozon')
+    draft.draftId = 'grouping-draft'
+    draft.categoryId = '970676618'
+    draft.title = '商品标题'
+    draft.grouping = { mode: 'combined', name: 'Golovejoy XKZ42' }
+    draft.attributes = { '8292': 'Два' }
+    draft.validationErrors = ['8292']
+    const category: CategorySelection = {
+      platform: 'ozon', categoryId: draft.categoryId, categoryPath: 'Одежда / Аксессуары',
+      requiredAttributes: [{ id: '8292', name: 'Объединить на одной карточке', required: true, managedBy: 'listing_grouping' }],
+      optionalAttributes: [], fetchedAt: '2026-09-06T00:00:00Z', raw: {},
+    }
+    const wrapper = mount(CategoryAttributesPanel, { props: panelProps(draft, category) })
+    expect(wrapper.get('[data-testid="system-grouping-attributes"]').text()).toContain('组合展示：Golovejoy XKZ42')
+    expect(wrapper.text()).toContain('必填属性 0 个')
+    expect(wrapper.text()).not.toContain('待复核属性')
+    expect(wrapper.findAll('input[placeholder="请输入属性值"]')).toHaveLength(0)
+    await wrapper.setProps({ draft: { ...draft, grouping: { mode: 'combined', name: '新组名' } } })
+    expect(wrapper.get('[data-testid="system-grouping-attributes"]').text()).toContain('组合展示：新组名')
+    await wrapper.setProps({ draft: { ...draft, grouping: { mode: 'separate', name: '旧组名' } } })
+    expect(wrapper.get('[data-testid="system-grouping-attributes"]').text()).toContain('系统为每个 SKU 填写不同的分组值')
+    expect(wrapper.get('[data-testid="system-grouping-attributes"]').text()).not.toContain('旧组名')
+  })
+
   it('Mercado CBT 明确只维护一个由全部销售市场共用的全局类目', () => {
     const draft = createEmptyDraftDetail('mercadolibre')
     draft.draftId = 'draft-mercado-shared-category'
@@ -654,6 +679,53 @@ describe('CategoryAttributesPanel', () => {
     expect(wrapper.find('[data-attribute-id="ITEM_CONDITION"]').exists()).toBe(false)
     expect(wrapper.find('[data-attribute-id="SELLER_SKU"]').exists()).toBe(false)
     expect(wrapper.find('[data-attribute-id="GTIN"]').exists()).toBe(false)
+  })
+
+  it.each([true, false])('Yandex 有字典的开放枚举允许自定义颜色，严格枚举仍需选择平台值（必填=%s）', async (required) => {
+    fetchCategoryAttributeValues.mockResolvedValue({
+      values: [{ id: '16206752', value: '000 белый', info: '' }],
+      nextCursor: '', hasMore: false, complete: true,
+    })
+    const draft = createEmptyDraftDetail('yandex')
+    draft.draftId = 'draft-yandex-color'
+    draft.categoryId = '67831537'
+    draft.attributes = { '14871214': 'XKZ42暗夜黑', '25911110': '均码' }
+    const color = {
+      id: '14871214', name: 'Название цвета от производителя', required,
+      valueMode: 'open_enum', allowCustomValues: true,
+      dictionaryId: 'yandex-parameter-14871214', isDictionary: true,
+      variationRole: 'variant', options: ['000 белый'],
+    }
+    const category: CategorySelection = {
+      platform: 'yandex', categoryId: draft.categoryId, categoryPath: 'Балаклавы',
+      requiredAttributes: required ? [color] : [],
+      optionalAttributes: [
+        ...(required ? [] : [color]),
+        {
+          id: '25911110', name: 'Размер в сетке', required: false,
+          valueMode: 'strict_enum', allowCustomValues: false,
+          dictionaryId: 'yandex-parameter-25911110', isDictionary: true,
+        },
+      ],
+      fetchedAt: '2026-09-07T00:00:00Z', raw: {},
+    }
+    const wrapper = mount(CategoryAttributesPanel, {
+      props: { ...panelProps(draft, category), target: yandexTarget, skuScope: true },
+    })
+    const colorInput = wrapper.get<HTMLInputElement>('[data-attribute-id="14871214"]')
+    expect(colorInput.element.value).toBe('XKZ42暗夜黑')
+    expect(colorInput.attributes('placeholder')).toBe('选择建议值或输入自定义值')
+    expect(wrapper.text()).not.toContain('旧值“XKZ42暗夜黑”不是平台选项')
+    expect(wrapper.text()).toContain('旧值“均码”不是平台选项')
+    await colorInput.trigger('focus')
+    await flushPromises()
+    expect(fetchCategoryAttributeValues).toHaveBeenCalledWith('yandex', '67831537', '14871214', 'global', '', 50, '')
+    await wrapper.get('[data-dictionary-search-id="14871214"]').setValue('XKZ42 чёрный')
+    await wrapper.findAll('button').find(button => button.text() === '使用此值')!.trigger('click')
+    expect(draft.attributes['14871214']).toBe('XKZ42 чёрный')
+    expect(colorInput.element.value).toBe('XKZ42 чёрный')
+    expect(wrapper.text()).not.toContain('旧值“XKZ42 чёрный”不是平台选项')
+    wrapper.unmount()
   })
 
   it('Mercado 开放枚举超过本地预览时可搜索完整候选或直接填写自定义值', async () => {

@@ -1,5 +1,4 @@
 import pytest
-from pydantic_ai import ModelRetry
 
 from erp_web.runtime_units.category_attribute_ai_fill import (
     _product_context, _validated_agent_attributes,
@@ -31,8 +30,9 @@ def test_invalid_or_partial_evidence_is_rejected_by_native_validator(reference):
         "evidence": reference,
     }], "need_review": []})
     validator = CategoryAttributeFillOutputValidator(ledger, product_context=CONTEXT)
-    with pytest.raises(ModelRetry, match="完整原文"):
-        validator(None, output)
+    validated = validator(None, output)
+    assert validated.assignments == []
+    assert "完整原文" in validated.need_review[0].reason
 
 
 def test_translation_reference_cannot_authorize_invented_numeric_specification():

@@ -575,6 +575,7 @@ export async function fetchCategoryAttrs(platform: Marketplace, categoryId: stri
           : [],
         valueType: getString(record, ['value_type', 'valueType'], 'string'),
         variationRole: getString(record, ['variation_role']),
+        managedBy: getString(record, ['managed_by']),
         valueMode: getString(record, ['value_mode', 'valueMode'], 'free_text'),
         allowCustomValues: getBoolean(record, ['allow_custom_values', 'allowCustomValues']),
         hasMoreValues: getBoolean(record, ['has_more_values', 'hasMoreValues']),
@@ -684,7 +685,8 @@ function normalizeCategoryMatchResult(data: UnknownRecord): CategoryMatchResult 
         id: getString(record, ['category_id']),
         name: getString(record, ['name']),
         path: pathSegments.join(' / ') || getString(record, ['name']),
-        raw: record,
+        raw: { ...record, aiRecommended: getString(record, ['category_id']) === selectedCategoryId && data.status === 'completed',
+          matchEvidence: getString(record, ['category_id']) === selectedCategoryId ? stringList(asRecord(data.decision).evidence) : [] },
       }
     }).filter((item) => item.id)
     : []
@@ -817,10 +819,14 @@ export async function fillCategoryAttributes(
   categoryId: string,
   category: CategorySelection | null = null,
   presentation: AiPresentationTransport = {},
+  skuId = '',
+  reuseSkuSources = false,
 ): Promise<DraftMutationResponse & { needReview: unknown[]; warning?: string }> {
   const response = await apiClient.post('/api/category-ai-fill', {
     ...requiredDraftTarget(draft, target, '填充类目属性'),
     category_id: categoryId,
+    ...(skuId ? { sku_id: skuId } : {}),
+    ...(reuseSkuSources ? { reuse_sku_sources: true } : {}),
     category_record: categorySelectionToBackendRecord(category),
   }, {
     aiPresentationId: presentation.presentationId,

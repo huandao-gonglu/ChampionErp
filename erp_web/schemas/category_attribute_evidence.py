@@ -11,7 +11,7 @@ class CategoryAttributeEvidence(BaseModel):
 
     source_path: list[Annotated[str, StringConstraints(min_length=1, max_length=160)]] = Field(
         min_length=2, max_length=6,
-        description="仅引用 product_context.product、source 或 sku_scope.common_options 中实际存在的字段，不得引用 draft；例如 ['source','attributes','适合季节']",
+        description="仅引用 product_context.product、source 或 sku_scope.common_options 中实际存在的字段，不得引用 draft；例如 ['source','attributes','适合季节'] 或 ['sku_scope','common_options','颜色']；必须包含末级字段，不能停在 common_options 对象",
     )
     source_value: Annotated[str, StringConstraints(min_length=1, max_length=1000)] = Field(
         description="该字段的完整原文；保留原语言，不得只截取多值中的一项",
@@ -53,3 +53,23 @@ def has_translated_attribute_evidence(
         and str(definition.get("value_type") or "").lower()
         not in {"number_unit", "numeric", "number", "integer", "decimal", "float"}
     )
+
+
+def attribute_evidence_sources(context: dict[str, Any]) -> list[dict[str, Any]]:
+    """提供来源的完整字符串末级引用；对象、数组和草稿不能充当翻译证据。"""
+    references: list[dict[str, Any]] = []
+
+    def collect(value: Any, path: list[str]) -> None:
+        if len(path) > 6 or len(references) >= 100:
+            return
+        if isinstance(value, str) and value.strip() and len(value) <= 1000:
+            references.append({"source_path": path, "source_value": value})
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                if isinstance(key, str) and 0 < len(key) <= 160:
+                    collect(item, [*path, key])
+
+    collect((context.get("sku_scope") or {}).get("common_options"), ["sku_scope", "common_options"])
+    for section in ("source", "product"):
+        collect(context.get(section), [section])
+    return references

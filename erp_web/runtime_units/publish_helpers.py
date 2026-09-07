@@ -573,7 +573,7 @@ def precheck_item(code: str, field: str, message: str, severity: str = "error", 
 
 def compact_precheck_items(items: list[Any]) -> list[dict[str, Any]]:
     compacted: list[dict[str, Any]] = []
-    index_by_key: dict[tuple[str, str, str, str, str], int] = {}
+    index_by_key: dict[tuple[Any, ...], int] = {}
     counts: list[int] = []
     for raw in items:
         if not isinstance(raw, dict):
@@ -585,12 +585,28 @@ def compact_precheck_items(items: list[Any]) -> list[dict[str, Any]]:
             str(raw.get("severity") or "error"),
             str(raw.get("next_action") or ""),
         )
-        key = (item["code"], item["field"], item["message"], item["severity"], item["next_action"])
+        affected = deepcopy(raw.get("affected_skus") or [])
+        if affected:
+            item["affected_skus"] = affected
+        related = deepcopy(raw.get("related_issues") or [])
+        if related:
+            item["related_issues"] = related
+        key = (item["code"], item["field"], item["message"], item["severity"], item["next_action"], bool(affected))
         if key in index_by_key:
             idx = index_by_key[key]
             counts[idx] += 1
             compacted[idx]["message"] = f"{key[2]}（共 {counts[idx]} 次）"
             compacted[idx]["count"] = counts[idx]
+            if related:
+                existing_related = compacted[idx].setdefault("related_issues", [])
+                existing_related.extend(issue for issue in related if issue not in existing_related)
+            if affected:
+                skus = compacted[idx]["affected_skus"]
+                seen = {sku["sku_id"] for sku in skus}
+                for sku in affected:
+                    if sku["sku_id"] not in seen:
+                        skus.append(sku)
+                        seen.add(sku["sku_id"])
             continue
         index_by_key[key] = len(compacted)
         counts.append(1)

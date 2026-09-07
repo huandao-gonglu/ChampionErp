@@ -1,7 +1,7 @@
 """类目匹配领域的只读 ToolSet。
 
-平台和站点已经在任务入口绑定：拥有完整类目树的平台逐层导航，只有远端
-发现接口的平台继续使用关键字搜索。工具参数均不接收 platform/site。
+平台和站点已经在任务入口绑定：导航器逐层展开类目树，搜索器接收一组
+关键字并合并候选。工具参数均不接收 platform/site。
 """
 
 from __future__ import annotations
@@ -10,14 +10,17 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from erp_web.marketplaces.category_provider import CategoryNavigator, CategorySearcher
+from erp_web.runtime_units.category_keyword_search import CategoryKeywordBatchSearch
 from erp_web.schemas.ai_tools import AiToolDefinition, AiToolExecutionError
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.category import (
+    CATEGORY_SEARCH_CANDIDATES_PER_KEYWORD,
+    CATEGORY_SEARCH_MAX_KEYWORDS_PER_CALL,
+    CATEGORY_SEARCH_MAX_CANDIDATES,
     CATEGORY_SEARCH_PERMISSION,
     CATEGORY_SEARCH_TOOLSET_ID,
     CategoryBrowseResult,
     CategoryCandidateLedger,
-    CategorySearchResult,
 )
 from erp_web.services.ai_tool_registry import (
     AiToolSet,
@@ -27,10 +30,15 @@ from erp_web.services.ai_tool_registry import (
 
 _AI_CANDIDATE_SCHEMA = {
     "type": "object",
-    "required": ["category_id", "name", "path_segments"],
+    "required": ["category_id", "name", "path_segments", "matched_keywords"],
     "properties": {
         "category_id": {"type": "string", "minLength": 1, "maxLength": 160},
         "name": {"type": "string", "maxLength": 500},
+        "matched_keywords": {
+            "type": "array",
+            "items": {"type": "string", "maxLength": 300},
+            "maxItems": CATEGORY_SEARCH_MAX_KEYWORDS_PER_CALL,
+        },
         "path_segments": {
             "type": "array",
             "items": {"type": "string", "maxLength": 500},
@@ -68,48 +76,66 @@ _AI_TREE_NODE_SCHEMA = {
     "additionalProperties": False,
 }
 
-_MAX_KEYWORD_SEARCHES = 3
 _MAX_NAVIGATION_CALLS = 4
 
 CATEGORY_SEARCH_TOOL_DEFINITIONS = (
     AiToolDefinition(
         name="search_categories",
-        version="1",
+        version="3",
         description=(
-            "使用一个目标市场语言的简短商品关键字搜索当前平台类目。"
-            "若结果不合适，请更换关键字再次搜索。"
+            "先按商品实物规划主要相关品名，一次通过 keywords 批量提交，避免每次只更换功能修饰语。"
+            "candidates 只包含此前未返回的候选全文，repeated_candidate_ids 引用此前已返回的类目。"
+            "已有合适候选就提交最终结果；只有具体缺口才补查。"
+            "truncated=true 表示还有未返回的新候选，必要时可缩小词组查询。"
         ),
         input_schema={
             "type": "object",
-            "required": ["keyword"],
+            "required": ["keywords"],
             "properties": {
-                "keyword": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 300,
+                "keywords": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1, "maxLength": 300},
+                    "minItems": 1,
+                    "maxItems": CATEGORY_SEARCH_MAX_KEYWORDS_PER_CALL,
                 }
             },
             "additionalProperties": False,
         },
         output_schema={
             "type": "object",
-            "required": [
-                "keyword",
-                "candidates",
-                "searches_used",
-                "searches_remaining",
-                "must_finalize",
-            ],
+            "required": ["keywords", "candidates", "repeated_candidate_ids", "errors", "truncated"],
             "properties": {
-                "keyword": {"type": "string", "maxLength": 300},
+                "keywords": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": 300},
+                    "maxItems": CATEGORY_SEARCH_MAX_KEYWORDS_PER_CALL,
+                },
                 "candidates": {
                     "type": "array",
                     "items": _AI_CANDIDATE_SCHEMA,
-                    "maxItems": 8,
+                    "maxItems": CATEGORY_SEARCH_MAX_CANDIDATES,
                 },
-                "searches_used": {"type": "integer", "minimum": 0, "maximum": 3},
-                "searches_remaining": {"type": "integer", "minimum": 0, "maximum": 3},
-                "must_finalize": {"type": "boolean"},
+                "repeated_candidate_ids": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1, "maxLength": 160},
+                    "maxItems": CATEGORY_SEARCH_MAX_KEYWORDS_PER_CALL * CATEGORY_SEARCH_CANDIDATES_PER_KEYWORD,
+                },
+                "errors": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["keyword", "code", "message", "retryable"],
+                        "properties": {
+                            "keyword": {"type": "string", "maxLength": 300},
+                            "code": {"type": "string", "maxLength": 160},
+                            "message": {"type": "string", "maxLength": 500},
+                            "retryable": {"type": "boolean"},
+                        },
+                        "additionalProperties": False,
+                    },
+                    "maxItems": CATEGORY_SEARCH_MAX_KEYWORDS_PER_CALL,
+                },
+                "truncated": {"type": "boolean"},
             },
             "additionalProperties": False,
         },
@@ -185,34 +211,6 @@ class CategoryMatchToolBundle:
     toolset: AiToolSet
     retrieval_mode: Literal["keyword_search", "tree_navigation"]
     initial_options: list[dict[str, Any]]
-
-
-def _ai_search_result(
-    result: CategorySearchResult,
-    *,
-    searches_used: int,
-) -> dict[str, Any]:
-    """裁剪工具返回，避免把平台内部字段和缓存元数据送给模型。"""
-
-    used = max(0, min(_MAX_KEYWORD_SEARCHES, int(searches_used)))
-    return {
-        "keyword": str(result.get("keyword") or "").strip()[:300],
-        "candidates": [
-            {
-                "category_id": str(candidate.get("category_id") or "")[:160],
-                "name": str(candidate.get("name") or "")[:500],
-                "path_segments": [
-                    str(segment)[:500]
-                    for segment in (candidate.get("path_segments") or [])[:20]
-                ],
-            }
-            for candidate in (result.get("candidates") or [])[:8]
-            if str(candidate.get("category_id") or "").strip()
-        ],
-        "searches_used": used,
-        "searches_remaining": _MAX_KEYWORD_SEARCHES - used,
-        "must_finalize": used >= _MAX_KEYWORD_SEARCHES,
-    }
 
 
 def _ai_browse_nodes(result: CategoryBrowseResult) -> list[dict[str, Any]]:
@@ -341,33 +339,11 @@ def build_category_match_toolset(
 
     ledger.retrieval_mode = "keyword_search"
 
-    def search_executor(
-        arguments: dict[str, Any],
-        context: AiExecutionContext,
-    ) -> dict[str, Any]:
-        context.bounded_timeout_seconds()
-        keyword = str(arguments["keyword"])
-        if ledger.search_count >= _MAX_KEYWORD_SEARCHES:
-            return _ai_search_result(
-                {"keyword": keyword, "candidates": [], "source": "limit"},
-                searches_used=ledger.search_count,
-            )
-        ledger.record_attempt(keyword)
-        try:
-            result = searcher.search_categories(keyword)
-        except Exception as exc:
-            ledger.record_error(exc)
-            raise
-        context.bounded_timeout_seconds()
-        ledger.add_result(result)
-        return _ai_search_result(result, searches_used=ledger.search_count)
-
+    batch_search = CategoryKeywordBatchSearch(searcher=searcher, ledger=ledger)
     toolset = AiToolSet.bind(
         CATEGORY_SEARCH_TOOLSET_ID,
         CATEGORY_SEARCH_TOOL_DEFINITIONS,
-        {
-            "search_categories": deadline_aware_tool_executor(search_executor),
-        },
+        {"search_categories": deadline_aware_tool_executor(batch_search.execute)},
     )
     return CategoryMatchToolBundle(
         toolset=toolset,

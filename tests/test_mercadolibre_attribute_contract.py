@@ -794,3 +794,25 @@ def test_compile_enforces_scalar_max_length() -> None:
         for issue in result.issues
     )
     assert not any(item["id"] == "BRAND" for item in result.attributes)
+
+
+def test_user_products_custom_attributes_are_wire_names_and_do_not_replace_required():
+    definition = _definition()
+    result = compile_mercadolibre_attributes({"sku_custom_attributes": [{"name": "Design", "value": "Neck protection"}]}, definition, listing_model="user_products")
+    assert {"name": "Design", "values": [{"name": "Neck protection"}]} in result.attributes
+    assert any(issue.code == "REQUIRED_ATTRIBUTE_MISSING" for issue in result.issues)
+    for custom in ([{"name": "Brand", "value": "Duplicate"}], [{"name": "Design", "value": "A"}, {"name": "design", "value": "B"}], [{"name": "Design", "value": ""}]):
+        invalid = compile_mercadolibre_attributes({"sku_custom_attributes": custom}, definition, listing_model="user_products")
+        assert any(issue.code == "CUSTOM_ATTRIBUTE_INVALID" for issue in invalid.issues)
+    traditional = compile_mercadolibre_attributes({"sku_custom_attributes": [{"name": "Design", "value": "A"}]}, definition, listing_model="traditional")
+    assert any(issue.code == "CUSTOM_ATTRIBUTES_REQUIRE_USER_PRODUCTS" for issue in traditional.issues)
+
+
+def test_custom_attributes_survive_remote_confirmation_and_update_projection():
+    from erp_web.marketplaces.publishing import _user_product_fields, _publication_with_confirmed_payload, _confirmed_value_equal
+    entries = [{"name": "Design", "values": [{"name": "Neck protection"}]}]
+    assert _user_product_fields({"attributes": entries}) == {"attributes": entries}
+    publication = _publication_with_confirmed_payload({"model": "user_products", "siteless_user_product_id": "U100"}, {"attributes": entries})
+    assert publication["confirmed_payload"]["attributes"] == entries
+    assert _confirmed_value_equal("attributes", entries, entries)
+    assert not _confirmed_value_equal("attributes", entries, [{"name": "Design", "values": [{"name": "3D"}]}])

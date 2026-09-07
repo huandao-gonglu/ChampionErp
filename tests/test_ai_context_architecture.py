@@ -55,6 +55,29 @@ def _relative_posix(path) -> str:
     return path.relative_to(ROOT).as_posix()
 
 
+def test_agent_tool_budget_visibility_uses_native_prepare_tools():
+    """预算只从原生 RunContext 读取，集中装配时保留原生最终输出通道。"""
+    tree = parse_python(ROOT / "erp_web/services/ai_agent_factory.py")
+    assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+               and node.func.id == "PrepareTools" for node in ast.walk(tree))
+    preparer = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                    and node.name == "_prepare_tools_within_usage_limit")
+    attributes = {ast.unparse(node) for node in ast.walk(preparer) if isinstance(node, ast.Attribute)}
+    assert {"ctx.usage.tool_calls", "ctx.usage_limits.tool_calls_limit"} <= attributes
+
+
+def test_listing_grouping_is_owned_by_pure_domain_rules():
+    paths = [
+        ROOT / "erp_web/schemas/category_grouping.py",
+    ]
+    assert not any(any(part in target for part in ("runtime_units", "services", "stores", "pydantic_ai"))
+                   for _, target in imported_targets(paths))
+    for name in ("product_model/category_model.py", "runtime_units/category_attribute_ai_fill.py",
+                 "runtime_units/sku_publish_projection.py", "runtime_units/publish_ozon.py"):
+        assert any(target.startswith("erp_web.schemas.category_grouping.")
+                   for _, target in imported_targets([ROOT / "erp_web" / name]))
+
+
 def test_sku_images_have_one_asset_reference_contract() -> None:
     from erp_web.schemas.requests import IMAGE_ACTION
     from erp_web.services import image_service
@@ -421,3 +444,12 @@ def test_platform_publish_registry_uses_sku_group_entry_point() -> None:
         assert isinstance(adapter, SkuGroupPublishingAdapter)
         assert adapter.item_adapter.platform == platform
         assert not isinstance(adapter.item_adapter, SkuGroupPublishingAdapter)
+
+
+def test_sku_source_reuse_does_not_create_an_agent_runtime():
+    paths = [ROOT / "erp_web/runtime_units/sku_source_attributes.py", ROOT / "erp_web/runtime_units/sku_attribute_fill.py"]
+    assert not any(any(part in target for part in ("pydantic_ai", "ai_agent_factory", "ai_model_factory", "ai_direct_request_service"))
+                   for _, target in imported_targets(paths))
+    custom = [ROOT / "erp_web/schemas/sku_custom_attributes.py"]
+    assert not any(any(part in target for part in ("runtime_units", "services", "stores", "pydantic_ai"))
+                   for _, target in imported_targets(custom))

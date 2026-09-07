@@ -41,5 +41,4 @@ def attribute_needs_sku_scope(definition: dict[str, Any], context: dict[str, Any
     return (
         definition.get("variation_role") == "variant"
         and int(scope.get("selected_count") or 0) > 1
-        and bool(scope.get("varying_option_names"))
     )

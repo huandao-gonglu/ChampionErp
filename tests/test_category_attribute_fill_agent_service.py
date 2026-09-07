@@ -4,17 +4,17 @@ from typing import Any
 import json
 
 import pytest
-from pydantic_ai import ModelRetry
 from pydantic_ai.messages import (
     ModelMessagesTypeAdapter,
     ModelRequest,
     ModelResponse,
+    RetryPromptPart,
     ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
-from pydantic_ai.settings import ModelSettings
+from pydantic_ai.settings import ModelSettings, ToolOrOutput
 
 from erp_web.context import get_context
 from erp_web.runtime_units import category_attribute_tools
@@ -141,7 +141,7 @@ def final_output(
     )
 
 
-def test_validator_reports_both_missing_dictionary_ids_in_one_retry():
+def test_validator_isolates_missing_dictionary_ids_without_blocking_other_attributes():
     ledger = CategoryAttributeValueLedger.from_schema([
         {"id": "GENDER", "value_mode": "strict_enum", "required": True},
         {"id": "SEASON", "value_mode": "strict_enum", "required": False},
@@ -151,10 +151,10 @@ def test_validator_reports_both_missing_dictionary_ids_in_one_retry():
         CategoryAttributeAssignment(attribute_id="GENDER", value="женский"),
         CategoryAttributeAssignment(attribute_id="SEASON", value="лето"),
     ], need_review=[])
-    with pytest.raises(ModelRetry) as caught:
-        validator(None, output)
-    assert "GENDER" in str(caught.value)
-    assert "SEASON" in str(caught.value)
+    validated = validator(None, output)
+    assert validated.assignments == []
+    assert [item.id for item in validated.need_review] == ["GENDER"]
+    assert set(validated._rejected_attributes) == {"GENDER", "SEASON"}
     assert validator.error_code == "ATTRIBUTE_ENUM_ID_REQUIRED"
 
 
@@ -302,6 +302,54 @@ def test_agent_queries_only_strict_enum_and_allows_custom_open_enum_value(
     result.finish_business_result({"status": "completed"})
 
 
+@pytest.mark.parametrize("invalid_first_batch", [False, True])
+def test_query_limit_keeps_final_output_available_and_saves_known_values(monkeypatch, invalid_first_batch):
+    """查满四轮后停止暴露查询工具，已有候选仍通过原生最终输出与业务校验保存。"""
+    from erp_web.product_model import default_product_model
+    from erp_web.runtime_units import category_attribute_ai_fill
+
+    monkeypatch.setattr(category_attribute_tools, "fetch_category_attribute_values",
+                        lambda *args, **kwargs: {"values": [{"id": "91443", "value": "Вентилятор"}]})
+    product = default_product_model()
+    category = {"category_id": "91443", "site": "global", "category_path": "Бытовая техника / Вентилятор",
+                "attributes": {"required": SCHEMA[:1], "optional": []}}
+    product["drafts"]["ozon"]["target_sites"][0]["category_id"] = "91443"
+    turns = 0
+
+    def model(messages, agent_info):
+        nonlocal turns
+        turns += 1
+        if invalid_first_batch and turns == 1:
+            return ModelResponse(parts=[ToolCallPart("category_attribute_values_search", {
+                "requests": [{"attribute_id": "8229", "query": "вентилятор"}] * 9,
+            }, tool_call_id="oversized-query")])
+        if invalid_first_batch and turns == 2:
+            retries = [part for message in messages if isinstance(message, ModelRequest)
+                       for part in message.parts if isinstance(part, RetryPromptPart)]
+            assert "maxItems" in str(retries[-1].content)
+        query_turn = turns - int(invalid_first_batch)
+        if agent_info.function_tools:
+            assert query_turn <= 4
+            return ModelResponse(parts=[ToolCallPart("category_attribute_values_search", {
+                "requests": [{"attribute_id": "8229", "query": f"вентилятор {turns}"}],
+            }, tool_call_id=f"query-{turns}")])
+        assert query_turn == 5
+        assert agent_info.output_tools
+        assert agent_info.model_settings["tool_choice"] == ToolOrOutput(function_tools=[])
+        return final_output(agent_info, {"assignments": [{"attribute_id": "8229", "value": "Вентилятор",
+                            "dictionary_value_id": "91443"}], "need_review": []}, "final")
+
+    factory = factory_for(FunctionModel(model))
+    monkeypatch.setattr(category_attribute_ai_fill, "run_category_attribute_fill_agent",
+                        lambda payload, toolset, ledger: run_category_attribute_fill_agent(
+                            payload, toolset, ledger, factory=factory, timeout_seconds=10))
+    updated, meta = category_attribute_ai_fill.apply_ai_model_attribute_fill(product, "ozon", category)
+    assert turns == 5 + int(invalid_first_batch)
+    assert meta["ai_filled"] == ["8229"]
+    assert "warning" not in meta
+    assert updated["drafts"]["ozon"]["attributes"]["8229"]["values"][0]["dictionary_value_id"] == 91443
+
+
 def test_validator_rejects_strict_enum_not_returned_by_tool() -> None:
     ledger = CategoryAttributeValueLedger.from_schema(SCHEMA)
     validator = CategoryAttributeFillOutputValidator(ledger)
@@ -320,8 +368,9 @@ def test_validator_rejects_strict_enum_not_returned_by_tool() -> None:
         need_review=[],
     )
 
-    with pytest.raises(ModelRetry, match="只能选择本次工具真实返回"):
-        validator(None, output)  # type: ignore[arg-type]
+    validated = validator(None, output)
+    assert [item.attribute_id for item in validated.assignments] == ["STYLE"]
+    assert "只能选择本次工具真实返回" in validated.need_review[0].reason
 
 
 def test_validator_allows_multiple_values_for_open_enum_collection() -> None:
@@ -379,8 +428,9 @@ def test_validator_rejects_values_beyond_attribute_cardinality(
         need_review=[],
     )
 
-    with pytest.raises(ModelRetry, match=expected_message):
-        validator(None, output)  # type: ignore[arg-type]
+    validated = validator(None, output)
+    assert validated.assignments == []
+    assert expected_message in validated.need_review[0].reason
     assert validator.error_code == "ATTRIBUTE_VALUE_COUNT_INVALID"
 
 
@@ -402,8 +452,9 @@ def test_validator_rejects_duplicate_collection_values() -> None:
         need_review=[],
     )
 
-    with pytest.raises(ModelRetry, match="不得重复填写"):
-        validator(None, output)  # type: ignore[arg-type]
+    validated = validator(None, output)
+    assert validated.assignments == []
+    assert "不得重复填写" in validated.need_review[0].reason
     assert validator.error_code == "ATTRIBUTE_VALUE_DUPLICATED"
 
 
@@ -498,6 +549,7 @@ def test_validator_rejects_invalid_number_unit_assignment(
         need_review=[],
     )
 
-    with pytest.raises(ModelRetry):
-        validator(None, output)  # type: ignore[arg-type]
+    validated = validator(None, output)
+    assert validated.assignments == []
+    assert [item.id for item in validated.need_review] == ["WEIGHT"]
     assert validator.error_code == error_code

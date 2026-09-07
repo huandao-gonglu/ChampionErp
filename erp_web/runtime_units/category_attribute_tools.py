@@ -82,13 +82,13 @@ def _platform_values(
 @ai_tool(
     name=CATEGORY_ATTRIBUTE_VALUE_SEARCH_TOOL,
     description=(
-        "批量查询当前类目强制枚举属性的真实平台候选。每项使用目标市场语言的"
+        "批量查询当前类目强制枚举属性的真实平台候选，每次最多 8 项。每项使用目标市场语言的"
         "简短核心词搜索；品牌查询接受 Generic、无品牌、no brand 等语义别名并"
         "转换为平台官方检索词。最终只能选择本工具返回的 dictionary_value_id 和 value。"
     ),
     permission=CATEGORY_ATTRIBUTE_VALUE_PERMISSION,
     side_effect="none",
-    version="5",
+    version="6",
 )
 def search_category_attribute_values(
     request: CategoryAttributeValueSearchRequest,

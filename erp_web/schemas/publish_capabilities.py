@@ -22,7 +22,19 @@ class ProductPublishValidateRequest(BaseModel):
     site: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
 
 
-class PublishValidationIssue(BaseModel):
+class PublishIssueSku(BaseModel):
+    """预检问题涉及的实际规格；与问题原因分开保存，便于汇总和定位。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    sku_id: str
+    sku: str
+    name: str = ""
+
+
+class PublishRelatedIssue(BaseModel):
+    """一条确定性校验；作为关联说明时保留规则身份与处理建议。"""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     code: Annotated[TrimmedText, StringConstraints(max_length=120)] = ""
@@ -30,6 +42,11 @@ class PublishValidationIssue(BaseModel):
     message: Annotated[TrimmedText, StringConstraints(max_length=1000)]
     severity: Literal["error", "warning"]
     next_action: Annotated[TrimmedText, StringConstraints(max_length=1000)] = ""
+
+
+class PublishValidationIssue(PublishRelatedIssue):
+    affected_skus: list[PublishIssueSku] = Field(default_factory=list)
+    related_issues: list[PublishRelatedIssue] = Field(default_factory=list)
 
 
 class ProductPublishDestination(BaseModel):
@@ -175,5 +192,7 @@ __all__ = [
     "ProductPublishValidateRequest",
     "ProductPublishValidationResult",
     "PublishRequestConfirmation",
+    "PublishIssueSku",
+    "PublishRelatedIssue",
     "PublishValidationIssue",
 ]

@@ -246,6 +246,7 @@ def test_category_precheck_payload_persists_semantic_result_for_draft(
     assert status == 200
     assert result["ok"] is True
     assert saved == {
+        "validation_errors": ["VOLTAGE"],
         "category_precheck": {
             "ok": False,
             "platform": "mercadolibre",

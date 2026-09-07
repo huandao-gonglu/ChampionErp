@@ -5,10 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from pydantic_ai import FunctionToolset, RunContext, Tool
+from pydantic_ai import FunctionToolset, ModelRetry, RunContext, Tool
 from pydantic_ai.exceptions import CallDeferred
 
-from erp_web.schemas.ai_tools import AiToolCommand, AiToolDefinition
+from erp_web.schemas.ai_tools import (
+    AiToolCommand, AiToolDefinition, AiToolSchemaError, validate_json_schema,
+)
 
 from .ai_agent_dependencies import AiAgentDependencies
 from .ai_tool_registry import AiToolSet
@@ -109,6 +111,14 @@ class PydanticToolBridge:
     ) -> Tool[AiAgentDependencies]:
         agent_deferred = definition.agent_deferred
 
+        def validate_arguments(ctx: RunContext[AiAgentDependencies], **arguments: Any) -> None:
+            # from_schema 不自动校验参数；在执行前交给原生重试，不触发业务副作用。
+            self._require_runtime_binding(ctx.deps)
+            try:
+                validate_json_schema(arguments, definition.input_schema)
+            except AiToolSchemaError as exc:
+                raise ModelRetry(f"工具参数不符合定义，请修正后重试：{exc}") from exc
+
         def invoke(
             ctx: RunContext[AiAgentDependencies],
             **arguments: Any,
@@ -163,6 +173,7 @@ class PydanticToolBridge:
             json_schema=definition.to_dict()["input_schema"],
             takes_ctx=True,
             sequential=True,
+            args_validator=validate_arguments,
         )
 
     def as_toolset(self) -> FunctionToolset[AiAgentDependencies]:

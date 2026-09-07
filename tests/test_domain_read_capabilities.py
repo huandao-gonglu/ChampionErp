@@ -320,7 +320,7 @@ def _category_scope(**overrides: Any) -> CategoryQueryCapabilityScope:
 def test_category_search_attributes_and_values_queries() -> None:
     scope = _category_scope()
     search = category_search(
-        CategorySearchRequest(query="fans", platform="mercadolibre"),
+        CategorySearchRequest(keywords=("fans",), platform="mercadolibre"),
         scope=scope,
         execution=_execution(),
     )
@@ -350,14 +350,54 @@ def test_category_query_wraps_live_api_failures() -> None:
         raise RuntimeError("network down")
 
     scope = _category_scope(searcher=broken)
-    with pytest.raises(BusinessCapabilityError) as error:
-        category_search(
-            CategorySearchRequest(query="fans"),
-            scope=scope,
-            execution=_execution(),
-        )
-    assert error.value.code == "CATEGORY_LIVE_API_FAILED"
-    assert error.value.retryable is True
+    result = category_search(
+        CategorySearchRequest(keywords=("fans",)), scope=scope, execution=_execution(),
+    )
+    assert result.errors[0]["code"] == "CATEGORY_LIVE_API_FAILED"
+    assert result.errors[0]["keyword"] == "fans"
+    assert result.errors[0]["retryable"] is True
+
+
+def test_category_query_merges_keyword_list_and_keeps_ozon_id_pair() -> None:
+    queries = []
+
+    def searcher(platform, *, query, site, limit, timeout_seconds):
+        queries.append(query)
+        assert platform == "ozon" and site == "global"
+        assert 0 < timeout_seconds <= 8
+        if query == "失败词":
+            raise AiToolExecutionError("CATEGORY_SEARCH_TIMEOUT", "查询超时", retryable=True)
+        return [{
+            "category_id": "970676618", "type_id": "970676618",
+            "description_category_id": "41777465", "name": "Маска-повязка на лицо",
+            "category_path": "Одежда / Аксессуары / Маска-повязка на лицо",
+        }]
+
+    keywords = [f"相关词{index}" for index in range(8)]
+    result = category_search(
+        CategorySearchRequest(platform="ozon", site="global", keywords=(*keywords, " 相关词0 ", "失败词")),
+        scope=_category_scope(searcher=searcher), execution=_execution(),
+    )
+    assert len(queries) == len(result.keywords) == 9
+    assert len(result.results) == 1
+    row = result.results[0]
+    assert row["description_category_id"] == "41777465"
+    assert row["type_id"] == row["category_id"] == "970676618"
+    assert row["matched_keywords"] == keywords
+    assert result.errors[0]["keyword"] == "失败词"
+    assert result.errors[0]["code"] == "CATEGORY_SEARCH_TIMEOUT"
+
+
+def test_category_query_limit_applies_to_combined_candidates() -> None:
+    def searcher(platform, *, query, **kwargs):
+        return [{"category_id": f"{query}-{rank}", "name": query} for rank in range(8)]
+
+    result = category_search(
+        CategorySearchRequest(keywords=("fan", "ventilador"), limit=4),
+        scope=_category_scope(searcher=searcher), execution=_execution(),
+    )
+    assert len(result.results) == 4 and result.truncated
+    assert [row["category_id"] for row in result.results] == ["fan-0", "ventilador-0", "fan-1", "ventilador-1"]
 
 
 def test_category_precheck_product_path() -> None:
@@ -411,7 +451,7 @@ def test_category_queries_thread_bounded_timeout_to_live_io() -> None:
     scope = _category_scope(searcher=searcher, attributes_loader=attributes_loader)
 
     category_search(
-        CategorySearchRequest(query="fans"),
+        CategorySearchRequest(keywords=("fans",)),
         scope=scope,
         execution=_execution(deadline_seconds=42),
     )

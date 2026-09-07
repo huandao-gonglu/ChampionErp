@@ -175,7 +175,7 @@ export function createWorkflowCategoryActions(runtime: WorkflowCategoryActionsPo
         recommendations[targetSiteKey(target)] = {
           query: result.query,
           results: result.candidates,
-          error: result.status === 'failed' ? result.failure?.message || '类目匹配失败' : '',
+          error: result.status !== 'completed' ? result.failure?.message || 'AI 尚未确认合适类目，请核对候选。' : '',
         }
         if (result.candidates.length) candidateTargetCount += 1
         if (result.status === 'completed') completedCount += 1
@@ -199,6 +199,8 @@ export function createWorkflowCategoryActions(runtime: WorkflowCategoryActionsPo
 
   function clearCurrentCategoryDependentFields() {
     currentDraft.value.descriptionCategoryId = ''
+    const key = targetSiteKey(selectedPublishTarget.value)
+    for (const row of currentDraft.value.skuItems) delete row.attributes_by_target[key]
     currentDraft.value.attributes = {}
     currentDraft.value.validationErrors = []
     currentDraft.value.lastPrecheck = {}
@@ -291,7 +293,11 @@ export function createWorkflowCategoryActions(runtime: WorkflowCategoryActionsPo
   async function selectCategory(item: CategorySearchResult) {
     const target = { ...selectedPublishTarget.value }
     const previousCategoryId = String(target.categoryId || '').trim()
-    const categoryId = String(item.raw.type_id || item.id).trim()
+    const categoryId = String(item.id).trim()
+    if (item.raw.type_id && String(item.raw.type_id).trim() !== categoryId) {
+      setError('类目编号与平台商品类型不一致，请重新搜索后选择。')
+      return
+    }
     if (!categoryId) {
       setError('所选类目缺少类目 ID。')
       return
@@ -472,7 +478,8 @@ export function createWorkflowCategoryActions(runtime: WorkflowCategoryActionsPo
     }
   }
 
-  async function fillAttributesByAi() {
+  async function fillAttributesByAi(skuId = '', reuseSkuSources = false) {
+    const draftId = currentDraft.value.draftId
     if (useAiWorkDisplayStore().foregroundOccupied) {
       setError('已有前台 AI 任务运行，请等待完成后再试。')
       return
@@ -494,13 +501,13 @@ export function createWorkflowCategoryActions(runtime: WorkflowCategoryActionsPo
       if (!category.value || category.value.categoryId !== categoryId || category.value.platform !== target.platform || !category.value.fetchedAt) {
         category.value = await fetchCategoryAttrs(target.platform, categoryId, target.site)
       }
-      const before = { ...currentDraft.value.attributes }
+      const before = { ...(skuId ? currentDraft.value.skuItems.find(row => row.sku_id === skuId)?.attributes_by_target[targetSiteKey(target)] : currentDraft.value.attributes) }
       // 同一个通用 wrapper：reserve → observe stream → 业务 header 关联。
       // 业务 response（含 rules-only / fallback warning）是唯一结果事实。
       const result = await withAiForeground(
         {
-          displayTitle: 'AI 填充属性',
-          initialUserMessage: `为“${currentDraft.value.title || currentDraft.value.draftId}”填充 ${target.platform.toUpperCase()} ${target.site || ''} 类目 ${categoryId} 的属性。`.trim(),
+          displayTitle: reuseSkuSources ? '复用并翻译来源规格' : skuId ? 'AI 填充 SKU 属性' : 'AI 填充属性',
+          initialUserMessage: `为“${currentDraft.value.title || currentDraft.value.draftId}”填充 ${target.platform.toUpperCase()} ${target.site || ''} 类目 ${categoryId} 的${skuId ? ` SKU ${skuId}` : '公共'}属性。`.trim(),
         },
         ({ presentationId }) => fillCategoryAttributes(
           currentDraft.value,
@@ -508,17 +515,24 @@ export function createWorkflowCategoryActions(runtime: WorkflowCategoryActionsPo
           categoryId,
           category.value,
           { presentationId },
+          skuId,
+          reuseSkuSources,
         ),
       )
+      if (!isCurrent() || currentDraft.value.draftId !== draftId) return
       currentDraft.value = result.draft
       currentDraftProductContext.value = result.productContext
       syncActivePublishTarget(target)
       applyMutationIndexes(result)
-      const after = currentDraft.value.attributes
-      const filledCount = Object.keys(after).filter((key) => String(after[key] || '').trim() && String(before[key] || '').trim() !== String(after[key] || '').trim()).length
+      const after = (skuId ? currentDraft.value.skuItems.find(row => row.sku_id === skuId)?.attributes_by_target[targetSiteKey(target)] : currentDraft.value.attributes) || {}
+      const filledCount = reuseSkuSources ? (Array.isArray(result.raw?.ai_filled) ? result.raw.ai_filled.length : 0) : Object.keys(after).filter((key) => String(after[key] || '').trim() && String(before[key] || '').trim() !== String(after[key] || '').trim()).length
       const source = result.raw?.fill_source === 'ai_model' ? 'AI 模型' : '规则'
-      addLog(`属性已保存：${source} 新增/更新 ${filledCount} 项，必填待确认 ${result.needReview.length} 项。`)
-      if (result.warning) addLog(result.warning)
+      addLog(`属性已保存：${source} 新增/更新 ${filledCount} 项，${skuId ? 'SKU 属性待核对' : '必填待确认'} ${result.needReview.length} 项。`)
+      if (result.warning) {
+        addLog(result.warning)
+        setError(result.warning)
+      }
+      return { filledCount, needReview: result.needReview, warning: result.warning }
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : 'AI 填充属性失败')
     } finally {

@@ -16,6 +16,7 @@ import type {
   Product,
   ProductIndexItem,
   PrecheckIssue,
+  PrecheckRelatedIssue,
   UnknownRecord,
 } from '@/types/workflow'
 
@@ -181,7 +182,7 @@ export function wireStringList(value: unknown): string[] {
     : []
 }
 
-export function precheckIssueFromUnknown(value: unknown, fallbackSeverity: 'error' | 'warning'): PrecheckIssue {
+function precheckRelatedIssueFromUnknown(value: unknown, fallbackSeverity: 'error' | 'warning'): PrecheckRelatedIssue {
   const record = asRecord(value)
   if (Object.keys(record).length) {
     const severity = getString(record, ['severity'], fallbackSeverity)
@@ -206,6 +207,22 @@ export function precheckIssueFromUnknown(value: unknown, fallbackSeverity: 'erro
     message: String(value || '').trim(),
     severity: fallbackSeverity,
     nextAction: '',
+  }
+}
+
+export function precheckIssueFromUnknown(value: unknown, fallbackSeverity: 'error' | 'warning'): PrecheckIssue {
+  const record = asRecord(value)
+  return {
+    ...precheckRelatedIssueFromUnknown(value, fallbackSeverity),
+    ...(Array.isArray(record.affected_skus) ? {
+      affectedSkus: record.affected_skus.map((value) => {
+        const sku = asRecord(value)
+        return { skuId: getString(sku, ['sku_id']), sku: getString(sku, ['sku']), name: getString(sku, ['name']) }
+      }).filter((sku) => sku.skuId),
+    } : {}),
+    ...(Array.isArray(record.related_issues) ? {
+      relatedIssues: record.related_issues.map((issue) => precheckRelatedIssueFromUnknown(issue, fallbackSeverity)),
+    } : {}),
   }
 }
 

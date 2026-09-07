@@ -204,7 +204,11 @@ export function normalizeDraft(value: unknown, language: string): MarketplaceDra
   const validationErrors = normalizeValidationErrors(record.validation_errors)
   return {
     ...draft,
-    skuItems: (Array.isArray(record.sku_items) ? record.sku_items : []) as DraftSku[],
+    skuItems: (Array.isArray(record.sku_items) ? record.sku_items : []).map((item) => {
+      const row = asRecord(item)
+      return { ...row, attributes_by_target: Object.fromEntries(Object.entries(asRecord(row.attributes_by_target))
+        .map(([key, value]) => [key, normalizeAttributes(value)])) } as DraftSku
+    }),
     grouping: { mode: String(asRecord(record.grouping).mode || "combined"), name: String(asRecord(record.grouping).name || "") },
     draftId: getString(record, ['draft_id']),
     platforms: platformList(record.platforms),
@@ -322,7 +326,9 @@ export function toBackendImageAsset(image: ImageAsset): UnknownRecord {
 
 export function toBackendDraft(draft: MarketplaceDraft): UnknownRecord {
   return {
-    sku_items: draft.skuItems,
+    sku_items: draft.skuItems.map(row => ({ ...row, attributes_by_target: Object.fromEntries(
+      Object.entries(row.attributes_by_target).map(([key, value]) => [key, toBackendAttributes(value)]),
+    ) })),
     grouping: draft.grouping,
     enabled: draft.enabled,
     draft_id: draft.draftId,

@@ -66,6 +66,8 @@ DRAFT_IMAGE_STRATEGY = FieldRule(
 # 因此配置类端点仍可按白名单消费自己的扩展字段。
 _COMMON_FIELD_RULES: dict[str, FieldRule] = {
     "browser_tab_id": STRING,
+    "sku_id": STRING,
+    "reuse_sku_sources": BOOLEAN,
     "1688_api": OBJECT,
     "appConfig": OBJECT,
     "category_record": OBJECT,

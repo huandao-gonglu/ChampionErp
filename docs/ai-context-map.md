@@ -92,8 +92,16 @@ Pydantic Direct Model Requests，图片等能力使用锁定版本提供的 Pyda
   尚未产生的 capability 声明阻断探测。两条入口共享私有构造器和同一套 API style、认证、
   timeout、模型类型与密钥脱敏规则。
 - `erp_web/services/ai_agent_factory.py`：Pydantic Agent 的唯一装配与同步/流式运行入口；
+  工具调用预算耗尽时，通过原生 `PrepareTools` 和 `RunContext.usage/usage_limits`
+  隐藏函数工具，并用原生动态 `ToolOrOutput(function_tools=[])` 限定 Provider 只提交结果，
+  保留最终输出工具提交已确认结果，硬限额仍由原生 `UsageLimits` 执行。
+  已核对安装的 Pydantic AI 2.22.0 与官方 [动态工具](https://pydantic.dev/docs/ai/tools-toolsets/tools-advanced/#agent-wide-dynamic-tools)、
+  [使用量限制](https://pydantic.dev/docs/ai/core-concepts/agent/#usage-limits)；直接使用原生能力，不增加重跑 Agent、计数器或恢复循环。
   创建请求级 dependencies、usage limits 和 instrumentation，不包含领域终检。需审批
   写工具只能交给 `GlobalTaskController`，Factory 不维护第二套 deferred 状态机。
+- `erp_web/services/ai_tool_bridge.py`：`Tool.from_schema` 的输入校验通过原生
+  `args_validator` 在执行前复用现有 JSON Schema 契约；参数错误抛出 `ModelRetry`
+  让模型纠正，授权、执行及输出错误仍由 Runtime 处理，不重试已产生副作用的操作。
 - `erp_web/services/ai_agent_instrumentation.py`：独立 OpenTelemetry 技术 trace owner；
   关闭 prompt/tool 内容采集并在 JSONL exporter 再次脱敏。观测写失败不影响业务结果。
 - `erp_web/services/ai_agent_observability.py`：Agent 的 AI Work 内容投影 owner；保存有界且
@@ -514,6 +522,14 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
 - `erp_web/runtime_units/category_definition_cache.py`：统一属性定义持久缓存 owner；24 小时
   fresh、最多 7 天 transient stale，401/403、凭据缺失、禁用类目和结构错误不得用 stale
   掩盖。缓存不进入商品、草稿、任务或 Agent history。
+- `erp_web/schemas/category_grouping.py`：刊登分组字段识别和值派生的唯一纯规则入口。
+  Ozon 按类目字段名称识别，Yandex 使用分组属性 200；组合展示使用 `draft.grouping.name`
+  或标题，独立刊登省略可选分组值，必填值按 SKU 卖家编码派生。公共属性页的
+  `CategoryAttributeSummary.managed_by=listing_grouping` 表示由系统填写，保持平台的
+  `required/read_only` 事实不变；该标记在公共投影时计算，不依赖旧缓存是否携带标记。
+  普通属性和 SKU 属性 AI 填写都排除此字段；`category_model` 必填检查、SKU 发布投影与
+  Ozon wire 构造使用同一规则。旧属性值不能改变分组设置，也不作为第二份可编辑来源。
+  仅调整领域输入与确定性派生，不新增或修改 Agent 生命周期、模型循环或重试机制。
 - `erp_web/runtime_units/category_searchers.py`：任务入口根据当前平台实例化具体
   检索对象。Mercado Libre 调用 `domain_discovery/search`；Ozon 同一绑定对象同时
   保留人工关键词搜索能力并为自动匹配实现树导航；Yandex 只在本地缓存类目树上做
@@ -539,6 +555,9 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
   远端/缓存搜索、错误分类和 Ozon ID 配对测试；含 Yandex 关键词搜索与
   HTTP 420 限流（可重试）/401 认证失败（终态）分类。
 
+`erp_web/runtime_units/category_query_capabilities.py::category_search`（v2）为通用 AI 查询入口，
+也接收 `keywords` 列表，复用 `category_keyword_search.py` 的并发与合并逻辑；`limit` 限制合并
+结果总量，返回逐词错误与命中词，同时保留 Ozon 类目 ID 配对。
 `erp_web/runtime_units/category_store.py::search_categories_live` 继续服务人工关键词搜索；
 自动匹配按绑定对象能力选择 `CategoryNavigator` 或 `CategorySearcher`，两者不互相 fallback。
 
@@ -604,8 +623,13 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
   结合商品品牌事实判断，只能选择真实字典候选；具体品牌不得改填无品牌或相似品牌。自由文本仍需商品事实证据，包装重量
   等结构化事实只允许通过确定性单位换算放行。
   已核对安装的 Pydantic AI 2.22.0 与官方 Output validators 文档：继续直接使用
-  `agent.output_validator` / `ModelRetry`，一次收集全部领域校验错误，交由原生输出重试
-  处理；不增加第二次 Agent 调用或自研重试循环。Prompt 明确可查询属性、字典语言和
+  原生 Pydantic `model_validator(mode="wrap")` 隔离格式错误属性，`agent.output_validator`
+  按属性校验并隔离字典、证据、单位和数量错误；同一集合属性整组拒绝，避免截断后误填。
+  合法属性正常提交，未解决必填项进入待确认，可选项跳过；整体响应格式错误仍由原生
+  输出重试处理。不增加第二次 Agent 调用、自研重试循环或异常后提取历史消息的旁路。
+  参考：[Pydantic 校验器](https://docs.pydantic.dev/latest/concepts/validators/#model-validators)、
+  [Pydantic AI 输出校验](https://ai.pydantic.dev/output/#output-validators)。
+  Prompt 提供 `attribute_evidence_sources` 的完整来源字符串末级引用，明确可查询属性、字典语言和
   SKU 范围，裁掉发布内部字段，选项保留有界示例。前端分别提示已保存数量和必填待确认，
   未采用的建议通过属性名称说明原因。原生输出校验器移除可选属性的复核建议，不为此
   消耗额外模型轮次；只有未解决的必填属性进入人工待确认。
@@ -620,16 +644,29 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
 
 - `erp_web/runtime_units/category_tools.py`：`category.search` 只读 ToolSet。绑定对象实现
   `CategoryNavigator` 时只暴露 `browse_categories(parent_ids)`；否则只暴露
-  `search_categories(keyword)`。工具 schema 与执行器均没有 platform/site 参数。
+  `search_categories(keywords)`（v3）。关键词列表替代单词入参；工具 schema 与执行器均没有 platform/site 参数。
+- `erp_web/runtime_units/category_keyword_search.py`：关键词批量 I/O owner；每个匹配任务内
+  去重并复用成功查询，最多 3 个并发查询，沿用入口绑定的 provider 超时和任务 deadline。
+  每词最多 8 个候选，交错合并后最多返回 24 个新增候选，保留 `matched_keywords`、逐词错误和
+  `truncated`。后续查询不重复展开已见类目的全文，改用 `repeated_candidate_ids` 引用历史；
+  已见类目仍可最终选择，新增候选优先使用返回名额。`truncated` 只表示尚有未展示的新候选。
+  仅将实际返回模型的候选登记到账本；缩小关键词组可从缓存取回被裁剪的候选。
+  64 个词仅作为异常入参保护，不设置总关键词配额；工具调用次数仍由 Pydantic AI 原生预算管理。
 - `erp_web/facades/category_match_facade.py`：`category_match` 共享业务阶段；
-  首轮发送裁剪后的双语商品事实；Ozon 同时发送真实顶层节点并允许最多四次树导航，
-  Mercado Libre 最多三次换词发现。最终选择必须经过叶子候选账本、站点、可发布状态、
+  首轮发送裁剪后的双语商品事实；绑定导航器时发送真实顶层节点并允许最多四次树导航，
+  绑定搜索器时使用关键词列表批量发现，所有平台复用相同批量契约。最终选择必须经过叶子候选账本、站点、可发布状态、
   详情、Ozon ID 配对和属性读取校验；达到资源上限时返回 unresolved，不静默改选。
   `prepare_category_match_input / setup_category_match_search / finalize_category_match`
   被 Global Task capability 与同步 focused HTTP 入口共用，行为一致。
 - `erp_web/services/category_match_agent_service.py`：`category.product_match` 的 focused
   Execution Profile、prompt 渲染、类型化 `CategoryMatchAgentOutput` 与 Ledger output
-  validator；只通过统一 `AiAgentFactory` 的流式 `open_stream_run` 运行（同步执行路径已删除）。
+  validator；关键词模式首轮一次规划基于实物的主要相关方向，批量检索后优先提交结果；
+  仅有具体缺口才补查，不按最低关键词数量阻止 abstain，也不额外启动规划 Agent。
+  最多四次工具调用，保留针对具体缺口的补查能力。
+  输出校验、重试、调用预算和生命周期均直接使用 Pydantic AI 2.22.0 原生能力；
+  已核对官方文档：https://pydantic.dev/docs/ai/core-concepts/output/ 与
+  https://pydantic.dev/docs/ai/tools-toolsets/tools-advanced/ 。
+  只通过统一 `AiAgentFactory` 的流式 `open_stream_run` 运行（同步执行路径已删除）。
 - `erp_web/http_route_units/category_routes.py::handle_category_match`：
   `POST /api/v1/category-match` 同步 focused 入口。类型化业务结果由本接口独占，始终
   返回 200 与类型化 `CategoryMatchResult`（`ok=false` 属于业务判断型结果；subject
@@ -767,7 +804,8 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 
 - `erp_web/product_model/sku_model.py`：商品实际 SKU、来源快照、草稿选品与每行卖家编码的唯一契约。商品保存全部实际规格；草稿通过 `sku_id` 引用，卖家编码绑定 `draft_id + sku_id`。已发送的编码和远端关联不能由普通保存覆盖。
 - `erp_web/runtime_units/sku_publish_projection.py`：逐 SKU 合并草稿覆盖值、目标属性和独立核价结果，并校验平台组合条件。临时单品投影不写回主档。
-- `erp_web/runtime_units/sku_publish_adapter.py`：注册表唯一发布入口，编译带每项身份的冻结 SKU 清单；平台叶子适配器保留原生单品 I/O。每项写前落盘、写后保存响应，成功项按内容指纹跳过，未知结果禁止再次创建，异步确认仅推进原任务。
+- `erp_web/runtime_units/sku_precheck.py`：平台无关的纯预检问题汇总。以错误码、类目差异字段和受影响 SKU 集合关联必填缺失与整组空值检查；其它组合约束独立阻断。以 `erp_web/schemas/publish_capabilities.py` 中的 `PublishIssueSku`、`PublishRelatedIssue` 保留规格身份与关联校验，并按类目定义定位填写入口。
+- `erp_web/runtime_units/sku_publish_adapter.py`：注册表唯一发布入口，委托 `sku_precheck.py` 汇总 SKU 预检错误和提醒；编译带每项身份的冻结 SKU 清单；平台叶子适配器保留原生单品 I/O。每项写前落盘、写后保存响应，成功项按内容指纹跳过，未知结果禁止再次创建，异步确认仅推进原任务。
 - 前端 `ProductSkuEditor.vue` 维护商品事实，`DraftSkuPanel.vue` 负责草稿选品和覆盖，`actions/pricing.ts` 按 SKU × 目标调用现有核价引擎。包装资料或费用改变后必须重新应用售价。
 - `erp_web/product_model/sku_image_model.py`：SKU 图片资产引用与原图地址迁移的纯函数 owner。采集统一下载规格图并按来源去重；内部 `image_asset_id` 是唯一关联，草稿以同名覆盖字段单独选图。旧持久化 `image` 只在读取边界迁移，发布不再按 URL/路径匹配。
 - 前端 `SkuImagePicker.vue` 从素材池选图；图片页“关联 SKU”复用商品/草稿保存入口。`replace_selected` 处理结果只替换当前草稿的相应 SKU 引用，换图不使核价失效。无调用方的 `set_sku` 素材标记 action 已删除。
@@ -978,3 +1016,16 @@ PUBLISHED 值）先于 Campaign 状态裁决：`HAS_CARD_CAN_UPDATE_ERRORS`/`NO_
 - `tests/test_backend_api.py` 与 `tests/test_http_request_security.py`：HTTP contract
   与本机请求安全边界。
 - `tests/architecture/`：长期模块边界、持久化与平台契约。
+
+### SKU 平台属性填写
+
+- `erp_web/runtime_units/sku_attribute_fill.py`：创建单 SKU 的事实投影，只补当前类目的变体属性空值，结果写入 `sku_items[].attributes_by_target[platform:site]`，不修改公共属性或商品来源。
+- 多 SKU 公共填写在构建模型输入及候选账本前排除变体字段，与公共属性页面的范围一致；即使来源规格相同也交由 SKU 入口填写。单 SKU 投影仍可填写真实变体字段。
+- `/api/category-ai-fill` 可携带 `sku_id`，仍经 `category_facade.py` 与原有 `category_attribute_ai_fill.py` / Pydantic AI service；SKU 请求使用服务器当前类目定义，客户端不能指定可写字段。
+- `DraftSkuAttributesEditor.vue` 复用 `CategoryAttributesPanel.vue` 的平台枚举、集合和单位控件；`DraftSkuPanel.vue` 只负责 SKU 选品及详情位置。
+
+### SKU 来源规格复用
+
+`/api/category-ai-fill` 的 `reuse_sku_sources=true` 由 `category_facade.py` 装配 `sku_source_attributes.py`，只按服务端类目定义补充所选 SKU 的空值。翻译使用现有 `text_translation.translate_texts` 与原生 AI 请求入口，不新增 Agent 生命周期。随后单 SKU Agent 只处理仍缺失的必要字段/区别。批量编辑用 `sku_model.editable_selected_skus` 筛选已选启用规格；发布继续严格检查停用或失效引用。`attribute_evidence_sources` 提供可原样复制的来源末级路径，证据校验仍读取原事实。`sku_custom_attributes.py` 是 Mercado User Products 自定义规格的纯契约，发布编译与组合预检共同使用。
+
+SKU 新草稿默认选品由 `sku_model.new_draft_sku_rows` 定义：全部启用规格选中，停用规格不选中。`collect_helpers.py` 的两条新建草稿路径共同调用它，卖家编码待取得真实草稿 ID 后生成；`DraftSkuPanel.vue` 对新增事实采用相同默认值，并以表头父复选框表示全选、半选和全未选。已有显式取消选择不会因刷新重新选中。空白采集数据不生成 `single` 规格，真实来源删除的旧 SKU 仍保留身份并停用。

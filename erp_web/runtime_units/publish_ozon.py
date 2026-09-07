@@ -13,6 +13,7 @@ from typing import Any
 from erp_web.marketplaces.config_http import request_ozon_json
 from erp_web.marketplaces.publisher import PublishAdapterError
 from erp_web.schemas.category import category_attribute_dictionary_id
+from erp_web.schemas.category_grouping import apply_listing_grouping_attributes
 from erp_web.stores.product_store import normalize_product_fields
 
 from .publish_helpers import (
@@ -77,7 +78,7 @@ def _attribute_definitions(record: dict[str, Any] | None) -> dict[str, dict[str,
                 continue
             attr_id = str(raw.get("id") or "").strip()
             if attr_id:
-                definitions[attr_id] = raw
+                definitions[attr_id] = {**raw, "required": bool(raw.get("required", group == "required"))}
     return definitions
 
 
@@ -156,6 +157,9 @@ def _ozon_attributes(
         deepcopy(draft.get("attributes"))
         if isinstance(draft.get("attributes"), dict)
         else {}
+    )
+    raw_attributes = apply_listing_grouping_attributes(
+        raw_attributes, draft, "ozon", list(definitions.values()),
     )
     description_attr_id = _description_attribute_id(definitions)
     description = str(draft.get("description") or "").strip()

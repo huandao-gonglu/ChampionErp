@@ -7,12 +7,19 @@ from erp_web.context import get_context
 from erp_web.marketplaces.publisher import PlatformPublisher, PublishAdapterError
 from erp_web.product_model.sku_model import record, selected_skus, sku_fingerprint, text
 from erp_web.product_model.sku_image_model import sku_image_asset
+from erp_web.schemas.publish_capabilities import PublishIssueSku
 from .collect_helpers import collect_time_iso
 from .publish_context import PreparedPublishContext
+from .sku_precheck import summarize_sku_precheck
 from .sku_publish_projection import grouping_contract, sku_context, sku_quote_errors, target_key, validate_grouping
 
 PENDING = {"pending_confirmation", "publish_pending_confirmation"}
 SUCCESS = {"published", "imported", "real_publish_success", "success"}
+
+
+def _sku_issues(issues: list[dict[str, Any]], fact: dict[str, Any], row: dict[str, Any]) -> list[dict[str, Any]]:
+    affected = PublishIssueSku(sku_id=row["sku_id"], sku=row["sku"], name=text(fact.get("name"))).model_dump()
+    return [{**issue, "affected_skus": [affected]} for issue in issues]
 
 
 def remote_status(result: dict[str, Any]) -> str:
@@ -74,44 +81,48 @@ class SkuGroupPublishingAdapter:
 
     def validate_draft(self, context: PreparedPublishContext, config: dict[str, Any]) -> dict[str, Any]:
         errors, warnings, rows, projections = [], [], [], []
+        grouping_issues = []
+        selected_sku_ids: set[str] = set()
         grouping = grouping_contract(context)
         try:
             selected = selected_skus(context.product, context.draft)
             if not selected:
                 raise ValueError("请先在 SKU 页选择需要发布的规格")
+            selected_sku_ids = {row["sku_id"] for _, row in selected}
             codes = [row["sku"] for _, row in selected]
             if len(codes) != len(set(codes)):
                 raise ValueError("平台卖家编码重复，请为各 SKU 设置不同的编码")
             for fact, row in selected:
-                own_errors = sku_quote_errors(fact, row, context.draft, target_key(context))
+                own_errors = [self._issue(message, "pricing") for message in sku_quote_errors(fact, row, context.draft, target_key(context))]
                 if not text(row.get("stock")).isdigit():
-                    own_errors.append("请填写此 SKU 的可售库存")
+                    own_errors.append(self._issue("请填写此 SKU 的可售库存", "stock"))
                 try:
                     projected = sku_context(context, fact, row, grouping)
                 except ValueError as exc:
-                    errors.append({**self._issue(f"{fact.get('name') or row['sku']}：{exc}", row["sku_id"]),
-                                   "field": f"sku_items.{row['sku_id']}.image_asset_id", "next_action": "在 SKU 页从图片池重新选择图片"})
-                    errors.extend(self._issue(message, row["sku_id"]) for message in own_errors)
+                    own_errors.append({**self._issue(str(exc), "image_asset_id"), "next_action": "在 SKU 页从图片池重新选择图片"})
+                    errors.extend(_sku_issues(own_errors, fact, row))
                     continue
                 projections.append(projected)
                 check = self.item_adapter.validate_draft(projected, config)
-                for issue in check.get("errors", []):
-                    errors.append({**issue, "field": f"sku_items.{row['sku_id']}.{issue.get('field', '')}", "message": f"{fact.get('name') or row['sku']}：{issue.get('message', '')}"})
-                errors.extend(self._issue(message, row["sku_id"]) for message in own_errors)
-                warnings.extend(check.get("warnings", []))
+                errors.extend(_sku_issues([*check.get("errors", []), *own_errors], fact, row))
+                warnings.extend(_sku_issues(check.get("warnings", []), fact, row))
                 rows.append({"sku_id": row["sku_id"], "sku": row["sku"], "precheck": check})
-            errors.extend(self._issue(message) for message in validate_grouping(context, grouping, projections))
+            grouping_issues = validate_grouping(context, grouping, projections)
             if len(selected) > 1 and grouping["mode"] == "combined" and self.platform == "mercadolibre":
                 # User Products 每个变体可独立定价；传统模型要求同价，不能悄悄拆成多个商品。
                 if record(config.get("mercadolibre")).get("listing_model") != "user_products":
                     errors.append(self._issue("当前 Mercado 店铺未启用 User Products，组合内独立定价不可用；请选择独立刊登"))
         except ValueError as exc:
             errors.append(self._issue(str(exc)))
+        errors, warnings = summarize_sku_precheck(
+            errors, warnings, grouping_issues,
+            definition=context.category_definition, selected_sku_ids=selected_sku_ids,
+        )
         return {"ok": not errors, "platform": self.platform, "errors": errors, "warnings": warnings, "sku_results": rows, "grouping": grouping}
 
     @staticmethod
-    def _issue(message: str, sku_id: str = "") -> dict[str, Any]:
-        return {"code": "SKU_PUBLISH_INVALID", "field": f"sku_items.{sku_id}" if sku_id else "sku_items", "message": message, "severity": "error", "next_action": "检查 SKU 选品、平台属性与核价"}
+    def _issue(message: str, field: str = "sku_items") -> dict[str, Any]:
+        return {"code": "SKU_PUBLISH_INVALID", "field": field, "message": message, "severity": "error", "next_action": "检查 SKU 选品、平台属性与核价"}
 
     def build_payload(self, context: PreparedPublishContext, config: dict[str, Any]) -> dict[str, Any]:
         grouping = grouping_contract(context)
@@ -131,7 +142,7 @@ class SkuGroupPublishingAdapter:
             items.append({"sku_id": row["sku_id"], "sku": row["sku"], "payload": payload, "fingerprint": sku_fingerprint(content)})
         errors = validate_grouping(context, grouping, projections)
         if errors:
-            raise ValueError("；".join(errors))
+            raise ValueError("；".join(issue.message for issue in errors))
         return {"kind": "sku_group", "platform": self.platform, "product_id": context.product.get("product_id"), "draft_id": context.draft.get("draft_id"), "target_key": target_key(context), "grouping": grouping, "items": items}
 
     def validate_payload(self, payload: Any, config: dict[str, Any]) -> list[str]:

@@ -212,6 +212,24 @@ def test_publish_validate_returns_stable_digest_and_is_pure(
     assert adapter.prepare_calls == 0
 
 
+def test_validation_preserves_grouped_sku_issue_details(publish_boundary):
+    adapter, _store_config = publish_boundary
+    affected = [{"sku_id": "first", "sku": "SELL-1", "name": "红色"}, {"sku_id": "second", "sku": "SELL-2", "name": "蓝色"}]
+    related = [{"code": "SKU_VARIATION_ATTRIBUTES_EMPTY", "field": "sku_items", "message": "差异属性为空，无法区分组合内的规格", "severity": "error", "next_action": "填写真实规格"}]
+    adapter.errors = [{"code": "REQUIRED_ATTRIBUTE_MISSING", "field": "attributes.COLOR", "message": "缺少颜色", "severity": "error", "affected_skus": affected, "related_issues": related}]
+
+    evaluation = publish_capabilities.evaluate_publish_validation(
+        ProductPublishValidateRequest(draft_id="draft-1", platform="mercadolibre", site="MLM")
+    )
+
+    assert evaluation.result.passed is False
+    assert evaluation.result.errors[0].model_dump()["affected_skus"] == affected
+    assert evaluation.precheck["errors"][0]["affected_skus"] == affected
+    assert evaluation.precheck["errors"][0]["related_issues"] == related
+    assert evaluation.result.errors[0].model_dump()["related_issues"] == related
+    assert evaluation.approved_payload is None
+
+
 def test_explicit_payload_preparation_is_the_only_validation_path_that_prepares_assets(
     publish_boundary,
 ) -> None:

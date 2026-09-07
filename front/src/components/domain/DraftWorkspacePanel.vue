@@ -1,5 +1,5 @@
 <script setup lang="ts">
-export type DraftWorkspaceTab = 'text' | 'skus' | 'images' | 'category' | 'pricing' | 'precheck'
+export type DraftWorkspaceTab = 'text' | 'images' | 'category' | 'skus' | 'pricing' | 'precheck'
 
 const props = defineProps<{
   activeTab: DraftWorkspaceTab
@@ -14,9 +14,9 @@ const emit = defineEmits<{
 
 const tabs: Array<{ key: DraftWorkspaceTab; label: string; summary: string }> = [
   { key: 'text', label: '编辑文本', summary: '标题、描述和卖点' },
-  { key: 'skus', label: 'SKU', summary: '选品、规格和销售设置' },
   { key: 'images', label: '编辑图片', summary: '发布图和图片池' },
   { key: 'category', label: '类目/属性', summary: '类目与必填属性' },
+  { key: 'skus', label: 'SKU', summary: '选品、规格和销售设置' },
   { key: 'pricing', label: '核价', summary: '成本、运费和利润' },
   { key: 'precheck', label: '发布预检', summary: '校验与发布准备' },
 ]

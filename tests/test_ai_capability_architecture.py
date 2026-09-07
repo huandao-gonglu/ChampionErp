@@ -339,8 +339,7 @@ def test_read_only_capabilities_have_no_write_side_effects() -> None:
 
 
 def test_blocking_io_capabilities_thread_bounded_timeout() -> None:
-    """进行同步阻塞 I/O 的能力必须在函数体内调用 bounded_timeout_seconds()，
-    把外层剩余时间传给底层 HTTP/SDK，而不是丢弃 execution。"""
+    """同步 I/O 入口或其绑定查询适配器必须把剩余时间传给底层 HTTP/SDK。"""
 
     blocking_io_capabilities = (
         "category_search",
@@ -353,12 +352,25 @@ def test_blocking_io_capabilities_thread_bounded_timeout() -> None:
     for name in blocking_io_capabilities:
         tool = APPLICATION_CAPABILITY_CATALOG.tools[name]
         source = inspect.getsource(tool.function)
+        if name == "category_search":
+            from erp_web.runtime_units.category_query_capabilities import _CategoryQuerySearcher
+
+            assert "_CategoryQuerySearcher(platform, site, scope.searcher, execution)" in source
+            source = inspect.getsource(_CategoryQuerySearcher.search_categories)
         if "bounded_timeout_seconds(" not in source:
             offenders.append(name)
     assert offenders == [], (
         "以下阻塞 I/O 能力未把 execution.bounded_timeout_seconds() 传给底层调用："
         + ", ".join(offenders)
     )
+
+
+def test_category_search_catalog_uses_keyword_list_contract() -> None:
+    definition = APPLICATION_CAPABILITY_CATALOG.tools["category_search"].definition
+    assert definition.version == "2"
+    properties = definition.input_schema["properties"]
+    assert "keywords" in properties and "query" not in properties
+    assert properties["keywords"]["maxItems"] == 64
 
 
 def test_external_side_effect_capabilities_never_auto_retry_after_dispatch() -> None:

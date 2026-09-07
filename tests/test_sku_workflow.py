@@ -86,6 +86,40 @@ def test_source_sku_identity_and_manual_fact_survive_recollection():
     assert merged[2]["id"] == "manual" and merged[2]["active"] is True
 
 
+@pytest.mark.parametrize("source", [{}, {"skus": []}, {"title": "  ", "source_url": "https://example.test/product"}])
+def test_empty_collection_does_not_create_blank_single_sku(source):
+    assert collected_skus(source) == []
+
+
+def test_product_without_variants_still_has_a_named_single_sku():
+    rows = collected_skus({"title": "无变体商品", "source_url": "https://example.test/product", "skus": []})
+    assert len(rows) == 1
+    assert rows[0]["source_sku_id"] == "single"
+    assert rows[0]["name"] == "无变体商品"
+
+
+def test_new_claimed_drafts_select_active_skus_and_preserve_saved_deselection(tmp_path):
+    from erp_web.runtime_units.collect_helpers import claim_products_to_platforms, apply_claimed_platform_drafts
+
+    with temp_app_context(tmp_path) as app:
+        product = product_fixture()
+        product["sku_items"][1]["active"] = False
+        product["drafts"] = {}
+        product = app.products.save_product(product)
+        initialized = apply_claimed_platform_drafts(product, ["ozon"])
+        assert [row["selected"] for row in initialized["drafts"]["ozon"]["sku_items"]] == [True, False]
+
+        first = claim_products_to_platforms([product["product_id"]], ["ozon"])
+        second = claim_products_to_platforms([product["product_id"]], ["ozon"])
+        drafts = [app.db.load_draft_model(result["items"][0]["draft_ids"][0]) for result in (first, second)]
+        assert all([row["selected"] for row in draft["sku_items"]] == [True, False] for draft in drafts)
+        assert drafts[0]["sku_items"][0]["sku"] != drafts[1]["sku_items"][0]["sku"]
+        drafts[0]["sku_items"][0]["selected"] = False
+        saved, error, status = app.products.save_draft_detail(drafts[0])
+        assert status == 200 and error is None
+        assert all(not row["selected"] for row in app.db.load_draft_model(drafts[0]["draft_id"])["sku_items"])
+
+
 def test_retired_index_based_sku_format_is_rejected():
     with pytest.raises(ValueError, match="退役"):
         normalize_product_skus([{"spec1": "红", "price": "10"}])
@@ -189,12 +223,23 @@ def test_combination_uses_platform_variant_dimensions_not_source_names():
     context = PreparedPublishContext(**{**context.__dict__, "category_definition": definition})
     grouping = grouping_contract(context)
     projections = [sku_context(context, fact, row, grouping) for fact, row in zip(source["sku_items"], draft["sku_items"])]
-    assert validate_grouping(context, grouping, projections)
+    assert "2 个 SKU 的平台差异属性全部为空" in validate_grouping(context, grouping, projections)[0].message
+    assert "颜色（color）" in validate_grouping(context, grouping, projections)[0].message
     for row, color in zip(draft["sku_items"], ("红", "蓝")):
         row["attributes_by_target"] = {"ozon:global": {"color": color}}
     projections = [sku_context(context, fact, row, grouping) for fact, row in zip(source["sku_items"], draft["sku_items"])]
     assert validate_grouping(context, grouping, projections) == []
     assert all(item.draft["attributes"]["group"] == "组" for item in projections)
+    for row, label in zip(draft["sku_items"], ("红", "Красный")):
+        row["attributes_by_target"]["ozon:global"]["color"] = {"values": [{"dictionary_value_id": "red", "value": label}]}
+    projections = [sku_context(context, fact, row, grouping) for fact, row in zip(source["sku_items"], draft["sku_items"])]
+    issue = validate_grouping(context, grouping, projections)[0].message
+    assert "属性组合相同" in issue
+    assert "规格 0、规格 1" in issue
+    draft["sku_items"][0]["attributes_by_target"]["ozon:global"]["color"] = "红"
+    draft["sku_items"][1]["attributes_by_target"]["ozon:global"]["color"] = {"values": [{"value": "红"}]}
+    projections = [sku_context(context, fact, row, grouping) for fact, row in zip(source["sku_items"], draft["sku_items"])]
+    assert "属性组合相同" in validate_grouping(context, grouping, projections)[0].message
 
 
 def test_new_collection_url_does_not_inherit_previous_product(tmp_path):
@@ -275,3 +320,42 @@ def test_sku_quote_rejects_changed_shared_manual_price_and_sales_destinations():
     quote['sites_to_sell'] = [{'site_id': 'MLM', 'logistic_type': 'remote', 'price': '10'}]
     draft['target_sites'] = [{'platform': 'mercadolibre', 'site': 'CBT', 'sites_to_sell': [{'site_id': 'MLB', 'logistic_type': 'remote'}]}]
     assert '销售国家' in sku_quote_errors(fact, row, draft, 'mercadolibre:cbt')[0]
+
+
+def test_mercado_custom_variants_distinguish_skus_without_category_variant_fields():
+    product = product_fixture()
+    draft = product["drafts"].pop("ozon")
+    product["drafts"]["mercadolibre"] = draft
+    draft["grouping"] = {"mode": "combined", "name": "真实款式"}
+    draft["target_sites"] = [{"platform": "mercadolibre", "site": "CBT"}]
+    for row, value in zip(draft["sku_items"], ("3D", "Neck protection")):
+        row["custom_attributes_by_target"] = {"mercadolibre:cbt": [{"name": "Design", "value": value}]}
+    context = PreparedPublishContext(product=product, draft=draft, target=draft["target_sites"][0], platform="mercadolibre")
+    grouping = grouping_contract(context)
+    def projections():
+        return [sku_context(context, fact, row, grouping) for fact, row in zip(product["sku_items"], draft["sku_items"])]
+    assert validate_grouping(context, grouping, projections()) == []
+    draft["sku_items"][1]["custom_attributes_by_target"]["mercadolibre:cbt"][0]["value"] = "3D"
+    assert "平台属性组合相同" in validate_grouping(context, grouping, projections())[0].message
+    draft["sku_items"][1]["custom_attributes_by_target"]["mercadolibre:cbt"] = []
+    assert "相同的自定义属性名称" in validate_grouping(context, grouping, projections())[0].message
+
+
+def test_completed_sku_attribute_does_not_inherit_stale_common_review():
+    product = product_fixture()
+    context = context_for(product)
+    definition = CategoryDefinition(platform="ozon", site="global", category_id="mask", required=(
+        CategoryAttributeDefinition(id="10096", name="Цвет товара", required=True, variation_role="variant", value_mode="strict_enum"),
+    ))
+    from dataclasses import replace
+    context = replace(context, category_definition=definition)
+    review = {"code": "NEED_REVIEW_ATTRIBUTES", "field": "attributes.10096"}
+    context.draft["validation_errors"] = [review, "brand"]
+    context.draft["sku_items"][0]["attributes_by_target"] = {"ozon:global": {"10096": {"values": [{"dictionary_value_id": "61574", "value": "черный"}]}}}
+    grouping = grouping_contract(context)
+    done = sku_context(context, product["sku_items"][0], context.draft["sku_items"][0], grouping)
+    missing = sku_context(context, product["sku_items"][1], context.draft["sku_items"][1], grouping)
+    assert done.draft["validation_errors"] == ["brand"]
+    assert done.target["validation_errors"] == ["brand"]
+    assert missing.draft["validation_errors"] == [review, "brand"]
+    assert context.draft["validation_errors"] == [review, "brand"]

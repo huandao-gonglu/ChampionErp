@@ -17,6 +17,7 @@ import ssl
 import urllib.error
 from typing import Any
 
+from erp_web.schemas.category_grouping import is_listing_grouping_attribute
 from erp_web.schemas.category_definition import (
     ATTRIBUTE_OPTIONS_PREVIEW_LIMIT,
     CategoryAttributeDefinition,
@@ -415,12 +416,14 @@ def definition_from_legacy_attributes(
 
 def public_attribute_summary(
     definition: CategoryAttributeDefinition,
+    *, platform: str,
 ) -> CategoryAttributeSummary:
     return CategoryAttributeSummary(
         id=definition.id,
         name=definition.name,
         required=definition.required,
         variation_role=definition.variation_role,
+        managed_by="listing_grouping" if is_listing_grouping_attribute(platform, {"id": definition.id, "name": definition.name}) else "",
         value_type=definition.value_type,
         value_mode=definition.value_mode,
         allow_custom_values=definition.allow_custom_values,
@@ -520,7 +523,7 @@ def project_attribute_page(
         category_path=definition.category_path,
         limit=safe_limit,
         cursor=cursor,
-        attributes=tuple(public_attribute_summary(item) for item in window),
+        attributes=tuple(public_attribute_summary(item, platform=definition.platform) for item in window),
         next_cursor=f"offset:{offset + safe_limit}" if has_more else "",
         has_more=has_more,
     )

@@ -333,7 +333,11 @@ def _result(
     agent_run: CategoryMatchAgentRun | None = None,
 ) -> CategoryMatchResult:
     public_candidates: list[CategoryCandidate] = []
-    for candidate in ledger.candidates():
+    candidates = ledger.candidates()
+    selected_candidate = ledger.get(selected_category_id) if selected_category_id else None
+    if selected_candidate and not any(row["category_id"] == selected_category_id for row in candidates):
+        candidates = [selected_candidate, *candidates[:-1]]
+    for candidate in candidates:
         public_candidate: CategoryCandidate = {
             "category_id": str(candidate.get("category_id") or ""),
             "name": str(candidate.get("name") or ""),
@@ -746,7 +750,7 @@ def finalize_category_match(
                     "message": (
                         "树导航必须先到达商品类型，必要时回退改选分支后再 abstain。"
                         if ledger.retrieval_mode == "tree_navigation"
-                        else "未匹配到类目时必须更换关键字并完成 3 次搜索后再 abstain。"
+                        else "请先完成一次实际类目检索，再根据商品事实判断是否 abstain。"
                     ),
                     "stage": "model",
                     "retryable": False,
@@ -828,7 +832,7 @@ def match_category(
     agent_service: CategoryMatchAgentService = run_category_match_agent,
     detail_loader: Callable[..., dict[str, Any]] = fetch_category_record,
 ) -> CategoryMatchResult:
-    """运行一次同步、最多三次搜索且允许 abstain 的 ``category.match``。
+    """运行一次同步、支持批量关键词搜索且允许 abstain 的 ``category.match``。
 
     供 Global Task 等 child 场景使用；用户直接触发的业务根运行走 focused
     start/stream/result endpoint 并复用同一套共享阶段。

@@ -7,7 +7,10 @@ from dataclasses import dataclass
 from typing import Annotated, Any
 
 from erp_web.product_model import validate_category_precheck
+from erp_web.runtime_units.category_keyword_search import CategoryKeywordBatchSearch
+from erp_web.schemas.ai_tools import AiToolExecutionError
 from erp_web.schemas.ai_trace import AiExecutionContext
+from erp_web.schemas.category import CATEGORY_SEARCH_CANDIDATES_PER_KEYWORD, CategoryCandidateLedger
 from erp_web.schemas.category_query_capabilities import (
     CategoryAttributeValuesQueryRequest,
     CategoryAttributeValuesQueryResult,
@@ -64,13 +67,60 @@ CATEGORY_ATTRIBUTE_VALUES_QUERY_TOOL = "category_attribute_values_query"
 CATEGORY_PRECHECK_TOOL = "category_precheck"
 
 
+@dataclass(frozen=True)
+class _CategoryQuerySearcher:
+    """把通用查询的可信平台和实时接口绑定到批量检索器。"""
+
+    platform: str
+    site: str
+    loader: Callable[..., list[dict[str, Any]]]
+    execution: AiExecutionContext
+
+    def search_categories(self, keyword: str) -> dict[str, Any]:
+        try:
+            rows = self.loader(
+                self.platform, query=keyword, site=self.site,
+                limit=CATEGORY_SEARCH_CANDIDATES_PER_KEYWORD,
+                timeout_seconds=self.execution.bounded_timeout_seconds(8),
+            )
+        except BusinessCapabilityError as exc:
+            raise AiToolExecutionError(exc.code, str(exc), retryable=exc.retryable) from exc
+        except AiToolExecutionError:
+            raise
+        except Exception as exc:
+            raise AiToolExecutionError(
+                "CATEGORY_LIVE_API_FAILED", "类目实时查询失败，请稍后重试", retryable=True,
+            ) from exc
+        return {
+            "keyword": keyword,
+            "source": f"{self.platform}_live",
+            "candidates": [
+                {
+                    **row,
+                    "category_id": _text(row.get("category_id") or row.get("id")),
+                    "path_segments": [
+                        part.strip()
+                        for part in _text(row.get("category_path") or row.get("path")).split(" / ")
+                        if part.strip()
+                    ],
+                }
+                for row in _dict_rows(rows)
+            ],
+        }
+
+
 @ai_tool(
     name=CATEGORY_SEARCH_TOOL,
-    description="按关键词实时搜索目标平台类目候选。",
+    description=(
+        "先根据商品实物规划主要相关搜索方向，首轮通过 keywords 列表一次批量查询；"
+        "已有合适候选直接选择，只有具体缺口才补查。结果按类目 ID 去重，"
+        "matched_keywords 标明命中词，errors 按词报告失败；limit 是合并后的候选总量。"
+        "truncated=true 时可缩小词组继续查询。"
+    ),
     permission="category.read",
     side_effect="none",
     recovery_policy="retry_safe",
-    version="1",
+    version="2",
 )
 def category_search(
     request: CategorySearchRequest,
@@ -79,24 +129,26 @@ def category_search(
 ) -> CategorySearchResult:
     platform = _text(request.platform).lower()
     site = _text(request.site)
-    try:
-        results = scope.searcher(
-            platform,
-            query=request.query,
-            site=site,
-            limit=request.limit,
-            timeout_seconds=execution.bounded_timeout_seconds(),
-        )
-    except BusinessCapabilityError:
-        raise
-    except Exception as exc:
-        raise _live_api_error(exc) from exc
+    ledger = CategoryCandidateLedger()
+    batch = CategoryKeywordBatchSearch(
+        searcher=_CategoryQuerySearcher(platform, site, scope.searcher, execution),
+        ledger=ledger,
+        limit=request.limit,
+    ).execute({"keywords": request.keywords}, execution)
+    results = []
+    for candidate in batch["candidates"]:
+        # 保留通用查询所需的 Ozon ID 配对等实时字段。
+        row = ledger.get(candidate["category_id"])
+        if row is not None:
+            results.append(row)
     return CategorySearchResult(
         platform=platform,
         site=site,
-        query=request.query,
+        keywords=tuple(batch["keywords"]),
         source=f"{platform}_live",
         results=_dict_rows(results),
+        errors=tuple(batch["errors"]),
+        truncated=batch["truncated"],
     )
 
 

@@ -4,6 +4,17 @@ import { normalizeDraftDetail, toBackendDraft, toBackendDraftDetail, toBackendPr
 import type { DraftDetail } from '@/types/workflow'
 
 describe('类目 Schema 分离（废弃字段不再读写）', () => {
+  it('逐 SKU 平台枚举 ID 与单位保存后原样往返，保留大整数 ID', () => {
+    const own = { color: { values: [{ dictionary_value_id: '9007199254740993123', value: 'Черный' }] }, size: { value: '20', unit: 'cm' } }
+    const normalized = normalizeDraftDetail({ draft_id: 'sku-attributes', platform: 'ozon', site: 'global', sku_items: [{
+      sku_id: 'mask-black', selected: true, sku: 'BLACK', stock: '0', overrides: {}, pricing: {}, publications: {},
+      attributes_by_target: { 'ozon:global': own, 'yandex:global': { color: '暗夜黑' } },
+    }] })
+    expect(normalized.skuItems[0]?.attributes_by_target['ozon:global']?.color).toEqual({ values: [{ dictionaryValueId: '9007199254740993123', value: 'Черный' }] })
+    const saved = toBackendDraftDetail(normalized)
+    expect((saved.sku_items as Array<Record<string, unknown>>)[0]?.attributes_by_target).toEqual({ 'ozon:global': own, 'yandex:global': { color: '暗夜黑' } })
+  })
+
   it('在目标站点中往返保留发布任务快照', () => {
     const normalized = normalizeDraftDetail({
       draft_id: 'draft-publish-task',

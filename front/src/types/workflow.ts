@@ -55,6 +55,7 @@ export interface CategoryAttributeDefinition {
   name: string
   required: boolean
   variationRole?: string
+  managedBy?: string
   options?: string[]
   valueType?: string
   valueMode?: 'strict_enum' | 'open_enum' | 'free_text' | string
@@ -310,7 +311,9 @@ export interface DraftSku extends UnknownRecord {
   sku: string
   stock: string
   overrides: UnknownRecord
-  attributes_by_target: Record<string, UnknownRecord>
+  attributes_by_target: Record<string, Record<string, CategoryAttributeValue>>
+  custom_attributes_by_target?: Record<string, { name: string; value: string }[]>
+  source_option_translations?: Record<string, Record<string, string>>
   pricing: UnknownRecord
   publications: Record<string, UnknownRecord>
 }
@@ -594,12 +597,19 @@ export interface CategoryPrecheckResult {
   raw: UnknownRecord
 }
 
-export interface PrecheckIssue {
+export interface PrecheckRelatedIssue {
   code: string
   field: string
   message: string
   severity: 'error' | 'warning' | string
   nextAction: string
+}
+
+export interface PrecheckIssue extends PrecheckRelatedIssue {
+  /** 同类问题影响的规格；问题原因不再拼接 SKU 名称。 */
+  affectedSkus?: Array<{ skuId: string; sku: string; name: string }>
+  /** 已执行的关联校验，随主问题展示，不重复计数。 */
+  relatedIssues?: PrecheckRelatedIssue[]
 }
 
 export type PublishPrecheckScopeStatus = 'blocked' | 'passed'

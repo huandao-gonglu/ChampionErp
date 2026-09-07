@@ -51,6 +51,25 @@ CATEGORY_MATCH_BUDGET_PROFILE = "category.match.default"
 CATEGORY_MATCH_RESULT_VERSION = "category_match.v1"
 CATEGORY_MATCH_DEADLINE_SECONDS = 60
 
+CATEGORY_IDENTITY_INSTRUCTIONS = (
+    "先根据商品事实判断销售的实物是什么，再匹配完整类目路径，不能仅按功能或营销词选择。"
+    "同样用于防晒的纺织面罩与涂抹用品不是同一种商品；材质、结构和佩戴/使用方式与"
+    "候选祖先分类矛盾时必须排除该候选，不能以叶子名称相似解释掉矛盾。"
+    "搜索优先使用实物通用名，后续仍保留商品主体，不能退化为只有用途的泛词。"
+    "最终 evidence 应说明商品实物与完整路径相符的事实，并说明排除近似候选的原因；"
+    "真实候选 ID 只证明类目存在，不证明它适合商品。候选均不合适时必须 abstain，"
+    "不得为了完成任务选择最接近但实物类型不同的类目。"
+)
+
+
+CATEGORY_KEYWORD_SEARCH_INSTRUCTIONS = (
+    "首次调用前，先按商品实物规划目标市场的规范品名、常见别称和相关上位品名，"
+    "将已能想到的主要方向一次放入 keywords 批量查询，不要每次只更换功能修饰语。"
+    "结果足以判断时直接选择；只有缺少具体品名或仍存在类别歧义时才补查。"
+    "后续 candidates 只展示新增类目，repeated_candidate_ids 引用之前的候选，仍可选择它们。"
+    "truncated=true 本身不要求补查；无可靠匹配时 abstain，不需要搜满关键词或调用次数。"
+)
+
 
 class CategoryMatchAgentOutput(BaseModel):
     """模型边界的严格类型；平台详情终检仍由 facade 负责。"""
@@ -123,7 +142,7 @@ class CategoryMatchOutputValidator:
                     "树导航必须先展开到真实商品类型；若分支不合适，应回退并"
                     "改选之前保留的分支，最多完成 4 次导航后才能 abstain。"
                     if self.ledger.retrieval_mode == "tree_navigation"
-                    else "没有匹配时必须改换关键词，完成 3 次不同的有效搜索后才能 abstain。"
+                    else "请先完成一次实际类目检索，再根据商品事实判断是否 abstain。"
                 )
                 self._retry(
                     "CATEGORY_SEARCH_INCOMPLETE",
@@ -179,8 +198,11 @@ def _prepare_run_params(
     )
     instructions = prompt.get("system") or (
         "必须先调用当前类目检索工具，只能选择工具真实返回的商品类型；"
-        "树导航按真实分支逐层展开，关键字模式最多搜索 3 次，无匹配时 abstain。"
+        "树导航按真实分支逐层展开；关键词模式一次提交 keywords 列表，无匹配时 abstain。"
     )
+    instructions = f"{instructions} {CATEGORY_IDENTITY_INSTRUCTIONS}"
+    if not payload.get("category_navigation"):
+        instructions = f"{instructions} {CATEGORY_KEYWORD_SEARCH_INSTRUCTIONS}"
     user_prompt = render_prompt_template(
         prompt.get("user") or "请根据以下商品事实匹配类目：{$input_json}",
         {"input_json": _prompt_payload(payload)},
