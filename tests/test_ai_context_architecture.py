@@ -63,7 +63,7 @@ def test_agent_tool_budget_visibility_uses_native_prepare_tools():
     preparer = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
                     and node.name == "_prepare_tools_within_usage_limit")
     attributes = {ast.unparse(node) for node in ast.walk(preparer) if isinstance(node, ast.Attribute)}
-    assert {"ctx.usage.tool_calls", "ctx.usage_limits.tool_calls_limit"} <= attributes
+    assert {"ctx.usage.tool_calls", "ctx.deps.tool_runtime.max_tool_calls"} <= attributes
 
 
 def test_listing_grouping_is_owned_by_pure_domain_rules():
@@ -453,3 +453,15 @@ def test_sku_source_reuse_does_not_create_an_agent_runtime():
     custom = [ROOT / "erp_web/schemas/sku_custom_attributes.py"]
     assert not any(any(part in target for part in ("runtime_units", "services", "stores", "pydantic_ai"))
                    for _, target in imported_targets(custom))
+
+
+
+def test_agent_budget_retry_uses_native_tool_validator_without_response_rewriting():
+    factory = (ROOT / "erp_web/services/ai_agent_factory.py").read_text()
+    bridge = (ROOT / "erp_web/services/ai_tool_bridge.py").read_text()
+    budget = (ROOT / "erp_web/services/ai_agent_budget.py").read_text()
+    assert "args_validator=validate_arguments" in bridge
+    assert "raise AgentToolBudgetRetry" in bridge
+    assert "tool_calls_limit=self._profile.max_tool_calls + 1" in factory
+    assert "after_model_request" not in budget
+    assert "ModelResponse(" not in budget and "RetryPromptPart(" not in budget

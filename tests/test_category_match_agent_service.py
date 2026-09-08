@@ -98,12 +98,16 @@ def factory_for(model: FunctionModel) -> AiAgentFactory:
 
 def toolset_for(searcher: Searcher, ledger: CategoryCandidateLedger) -> AiToolSet:
     return build_category_match_toolset(
+        platform="mercadolibre", site="MLM",
         searcher=searcher,
         ledger=ledger,
     ).toolset
 
 
 def final_output(agent_info: AgentInfo, payload: dict[str, Any], call_id: str) -> ModelResponse:
+    payload.setdefault("physical_comparison", {"product_form": "桌面风扇", "category_form": "风扇" if payload.get("selected_category_id") else "", "compatible": bool(payload.get("selected_category_id"))})
+    payload.setdefault("selected_category_path", ["Hogar", "Ventiladores"] if payload.get("selected_category_id") else [])
+    payload.setdefault("type_relationship", "same_type" if payload.get("selected_category_id") else "uncertain")
     assert len(agent_info.output_tools) == 1
     return ModelResponse(
         parts=[ToolCallPart(agent_info.output_tools[0].name, payload, tool_call_id=call_id)]
@@ -125,7 +129,7 @@ def test_agent_uses_native_tool_call_and_typed_output() -> None:
                 parts=[
                     ToolCallPart(
                         "search_categories",
-                        {"keywords": ["ventilador"]},
+                        {"alternative_names": [], "product_identity": "桌面风扇，有电机和扇叶", "product_type": 'ventilador', "keywords": ["ventilador"]},
                         tool_call_id="search-1",
                     )
                 ]
@@ -201,7 +205,7 @@ def test_output_validator_retries_before_any_search() -> None:
                 parts=[
                     ToolCallPart(
                         "search_categories",
-                        {"keywords": ["ventilador"]},
+                        {"alternative_names": [], "product_identity": "桌面风扇，有电机和扇叶", "product_type": 'ventilador', "keywords": ["ventilador"]},
                         tool_call_id="search-after-retry",
                     )
                 ]
@@ -235,7 +239,7 @@ def test_unknown_category_stays_a_stable_agent_error_after_retries() -> None:
                 parts=[
                     ToolCallPart(
                         "search_categories",
-                        {"keywords": ["ventilador"]},
+                        {"alternative_names": [], "product_identity": "桌面风扇，有电机和扇叶", "product_type": 'ventilador', "keywords": ["ventilador"]},
                         tool_call_id="search-1",
                     )
                 ]
@@ -288,7 +292,7 @@ def test_abstain_after_one_planned_batch_needs_no_extra_search() -> None:
                 parts=[
                     ToolCallPart(
                         "search_categories",
-                        {"keywords": keywords},
+                        {"alternative_names": [], "product_identity": "桌面风扇，有电机和扇叶", "product_type": (keywords)[0], "keywords": keywords},
                         tool_call_id=f"search-{turns}",
                     )
                 ]
@@ -333,7 +337,7 @@ def test_duplicate_keyword_is_deduplicated_without_forcing_more_searches() -> No
                 parts=[
                     ToolCallPart(
                         "search_categories",
-                        {"keywords": ["ventilador"]},
+                        {"alternative_names": [], "product_identity": "桌面风扇，有电机和扇叶", "product_type": 'ventilador', "keywords": ["ventilador"]},
                         tool_call_id=f"duplicate-{turns}",
                     )
                 ]
@@ -371,7 +375,7 @@ def test_native_budget_stops_searching_and_preserves_final_output() -> None:
         if agent_info.function_tools:
             return ModelResponse(parts=[ToolCallPart(
                 "search_categories",
-                {"keywords": [f"keyword-{turns}-{i}" for i in range(3)]},
+                {"alternative_names": [], "product_identity": "桌面风扇，有电机和扇叶", "product_type": ([f"keyword-{turns}-{i}" for i in range(3)])[0], "keywords": [f"keyword-{turns}-{i}" for i in range(3)]},
                 tool_call_id=f"search-{turns}",
             )])
         return final_output(agent_info, {
@@ -400,7 +404,7 @@ def test_model_can_select_previous_candidate_after_followup_only_returns_referen
         if turns <= 2:
             return ModelResponse(parts=[ToolCallPart(
                 "search_categories",
-                {"keywords": ["ventilador" if turns == 1 else "ventilador portátil"]},
+                {"alternative_names": [], "product_identity": "桌面风扇，有电机和扇叶", "product_type": 'ventilador' if turns == 1 else 'ventilador portátil', "keywords": ["ventilador" if turns == 1 else "ventilador portátil"]},
                 tool_call_id=f"query-{turns}",
             )])
         returned = [
@@ -566,7 +570,7 @@ def test_unexpected_category_approval_is_rejected_before_execution() -> None:
             parts=[
                 ToolCallPart(
                     "search_categories",
-                    {"keywords": ["fan"]},
+                    {"alternative_names": [], "product_identity": "桌面风扇，有电机和扇叶", "product_type": 'fan', "keywords": ["fan"]},
                     tool_call_id="unexpected-approval",
                 )
             ]
@@ -607,7 +611,7 @@ def test_category_match_run_publishes_presentation_chunks_under_bound_scope() ->
                 parts=[
                     ToolCallPart(
                         "search_categories",
-                        {"keywords": ["ventilador"]},
+                        {"alternative_names": [], "product_identity": "桌面风扇，有电机和扇叶", "product_type": 'ventilador', "keywords": ["ventilador"]},
                         tool_call_id="search-presentation",
                     )
                 ]
@@ -668,6 +672,7 @@ def test_category_match_run_publishes_presentation_chunks_under_bound_scope() ->
     # 未绑定 scope 的同款运行不产生任何 presentation 状态（旧语义不受影响）。
     turns = 0
     plain_ledger = CategoryCandidateLedger()
+    ledger = plain_ledger
     plain = run_category_match_agent(
         PAYLOAD,
         toolset_for(Searcher([[candidate("MLM-FAN")]]), plain_ledger),
@@ -676,3 +681,112 @@ def test_category_match_run_publishes_presentation_chunks_under_bound_scope() ->
         factory=factory_for(FunctionModel(model)),
     )
     assert plain.output["selected_category_id"] == "MLM-FAN"
+
+
+def test_wrong_script_retries_before_search_and_does_not_spend_tool_budget() -> None:
+    searcher = Searcher([[candidate("90565")]])
+    ledger = CategoryCandidateLedger()
+    toolset = build_category_match_toolset(searcher=searcher, ledger=ledger, platform="yandex", site="global").toolset
+    turns = 0
+
+    def model(messages, info):
+        nonlocal turns
+        turns += 1
+        assert "search_language" in str(messages) and "ru-RU" in str(messages)
+        if turns == 1:
+            return ModelResponse(parts=[ToolCallPart("search_categories", {"alternative_names": [], "product_identity": "桌面风扇，有电机和扇叶", "product_type": "风扇", "keywords": ["风扇", "вентилятор"]}, tool_call_id="wrong")])
+        if turns == 2:
+            assert searcher.keywords == [] and ledger.search_count == 0
+            assert "CATEGORY_SEARCH_LANGUAGE_MISMATCH" in str(messages)
+            return ModelResponse(parts=[ToolCallPart("search_categories", {"alternative_names": [], "product_identity": "桌面风扇，有电机和扇叶", "product_type": "вентилятор", "keywords": ["вентилятор"]}, tool_call_id="corrected")])
+        return final_output(info, {"selected_category_id": "90565", "abstained": False,
+                                  "model_confidence": 0.9, "evidence": []}, "final")
+
+    result = run_category_match_agent({**PAYLOAD, "target": {"platform": "yandex", "site": "global", "language": "zh-CN"}},
+        toolset, ledger, timeout_seconds=10, factory=factory_for(FunctionModel(model)))
+    assert searcher.keywords == ["вентилятор"]
+    assert result.outcome.usage["tool_calls"] == 1
+
+
+@pytest.mark.parametrize("path,relationship,compatible", [
+    (["Hogar", "错误路径"], "same_type", True),
+    (["Hogar", "Ventiladores"], "uncertain", True),
+    (["Hogar", "Ventiladores"], "same_type", False),
+])
+def test_invalid_path_or_physical_relationship_retries_without_extra_search(path, relationship, compatible):
+    ledger = CategoryCandidateLedger()
+    searcher = Searcher([[candidate("MLM-FAN")]])
+    turns = 0
+
+    def model(messages, info):
+        nonlocal turns
+        turns += 1
+        if turns == 1:
+            return ModelResponse(parts=[ToolCallPart("search_categories", {
+                "product_identity": "桌面电风扇，有电机和扇叶", "product_type": "ventilador",
+                "alternative_names": [], "keywords": ["ventilador"],
+            }, tool_call_id="search")])
+        output = {"selected_category_id": "MLM-FAN", "abstained": False, "model_confidence": 0.9, "evidence": ["实物为风扇"]}
+        if turns == 2:
+            output.update(selected_category_path=path, type_relationship=relationship,
+                          physical_comparison={"product_form": "电风扇", "category_form": "风扇", "compatible": compatible})
+        return final_output(info, output, f"final-{turns}")
+
+    result = run_category_match_agent(PAYLOAD, toolset_for(searcher, ledger), ledger,
+                                     timeout_seconds=10, factory=factory_for(FunctionModel(model)))
+    assert turns == 3
+    assert searcher.keywords == ["ventilador"]
+    assert result.output["selected_category_id"] == "MLM-FAN"
+
+
+def test_repeated_budget_violation_is_generic_local_error_with_details() -> None:
+    from erp_web.services.ai_agent_factory import _safe_agent_error
+    from erp_web.services.ai_agent_budget import AgentToolBudgetRetry
+    from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
+
+    validator = type("Validator", (), {"error_code": "STALE_DOMAIN_ERROR"})()
+    try:
+        try:
+            raise AgentToolBudgetRetry(limit=4, used=4, requested=1)
+        except Exception as cause:
+            raise UnexpectedModelBehavior("Exceeded retries") from cause
+    except Exception as exc:
+        error = _safe_agent_error(exc, validator=validator, conversation_id="test", task_run_id="test")
+    assert error.code == "AI_AGENT_USAGE_LIMIT_EXCEEDED"
+    assert error.details == {"origin": "local", "resource": "tool_calls", "limit": 4,
+                            "used": 4, "requested": 1, "stage": "before_tool_execution"}
+    assert "未执行" in str(error)
+    request_error = _safe_agent_error(UsageLimitExceeded("The next request would exceed the request_limit of 6"),
+        validator=validator, conversation_id="test", task_run_id="test")
+    assert request_error.details["resource"] == "request"
+    assert request_error.code == "AI_AGENT_USAGE_LIMIT_EXCEEDED"
+
+
+def test_final_output_has_native_retry_room_after_four_searches_and_hidden_tool_call():
+    ledger = CategoryCandidateLedger()
+    searcher = Searcher([[candidate("MLM-FAN")] for _ in range(4)])
+    turns = 0
+
+    def model(messages, info):
+        nonlocal turns
+        turns += 1
+        if turns <= 4:
+            word = f"ventilador {turns}"
+            return ModelResponse(parts=[ToolCallPart("search_categories", {
+                "product_identity": "电风扇", "product_type": word,
+                "alternative_names": [], "keywords": [word],
+            }, tool_call_id=f"search-{turns}")])
+        assert not info.function_tools
+        if turns == 5:
+            return ModelResponse(parts=[ToolCallPart("search_categories", {}, tool_call_id="hidden-fifth")])
+        return final_output(info, {
+            "selected_category_id": "MLM-FAN", "abstained": False, "model_confidence": 0.9,
+            "evidence": "错误的字符串格式" if turns == 6 else ["商品与风扇类目一致"],
+        }, f"final-{turns}")
+
+    result = run_category_match_agent(PAYLOAD, toolset_for(searcher, ledger), ledger,
+                                     timeout_seconds=10, factory=factory_for(FunctionModel(model)))
+    assert turns == 7
+    assert len(searcher.keywords) == 4
+    assert result.outcome.usage["tool_calls"] == 4
+    assert result.output["selected_category_id"] == "MLM-FAN"

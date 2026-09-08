@@ -60,6 +60,8 @@ class MarketplaceSpec:
     # 发布确认的稳定店铺身份字段组：非空时要求组内字段全部存在，
     # identity 由全部字段共同构成；空 = 由 publish_confirmation 兜底规则解析。
     store_binding_fields: tuple[str, ...] = ()
+    # 类目预测接口语言覆盖；不改变站点刊登/草稿语言。
+    category_search_languages: tuple[tuple[str, str], ...] = ()
 
     @property
     def language(self) -> str:
@@ -108,6 +110,7 @@ MARKETPLACE_SPECS: tuple[MarketplaceSpec, ...] = (
         masked_account_fields=("shop_name", "user_id"),
         auth_failure_code="mercadolibre_auth_failed",
         store_binding_fields=("user_id",),
+        category_search_languages=(("CBT", "en"),),
     ),
     MarketplaceSpec(
         key=Marketplace.YANDEX.value,

@@ -41,7 +41,6 @@ const emit = defineEmits<{
   refreshUserProducts: []
   openProduct: [item: ProductIndexItem]
   editImages: [item: ProductIndexItem]
-  claimSelected: []
   collect: []
   publishSelected: []
 }>()

@@ -459,6 +459,9 @@ class CategoryKeywordSearchResult(TypedDict):
     repeated_candidate_ids: list[str]
     errors: list[CategoryKeywordSearchError]
     truncated: bool
+    search_language: str
+    remaining_candidate_count: int
+    query_candidate_counts: dict[str, int]
 
 
 CategoryTreeNodeLevel = Literal["branch", "product_type"]
@@ -620,6 +623,7 @@ CategoryConfidenceBand = Literal["high", "medium", "low"]
 
 
 class CategoryMatchFailure(TypedDict, total=False):
+    details: dict[str, Any]
     code: str
     message: str
     stage: str

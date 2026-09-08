@@ -4,6 +4,7 @@ export {
   PRODUCT_SCHEMA_VERSION,
   type BackendApiResponse,
   type BackendAppStateResponse,
+  type BackendDraftClaimTarget,
   type BackendCollectionVerification,
   type BackendCollectionVerificationStatus,
   type BackendAiCapabilityProfile,
@@ -770,6 +771,15 @@ export interface BrowserDebugTab {
   platformDetected: string
   title: string
   url: string
+}
+
+export interface BrowserCollectRow extends BrowserDebugTab {
+  status: CollectBatchStatus
+  verification?: CollectionVerification
+  error: string
+  nextAction: string
+  saveOnly: boolean
+  htmlSnapshotPath: string
 }
 
 export interface BrowserDebugStatus {

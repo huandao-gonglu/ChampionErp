@@ -367,8 +367,9 @@ def test_blocking_io_capabilities_thread_bounded_timeout() -> None:
 
 def test_category_search_catalog_uses_keyword_list_contract() -> None:
     definition = APPLICATION_CAPABILITY_CATALOG.tools["category_search"].definition
-    assert definition.version == "2"
+    assert definition.version == "3"
     properties = definition.input_schema["properties"]
+    assert "product_type" in properties
     assert "keywords" in properties and "query" not in properties
     assert properties["keywords"]["maxItems"] == 64
 

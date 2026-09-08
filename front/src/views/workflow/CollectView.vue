@@ -3,7 +3,7 @@ import { computed, ref } from 'vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import CollectBatchManager from './CollectBatchManager.vue'
 import BrowserCollector from './BrowserCollector.vue'
-import type { BrowserDebugStatus, CollectBatchRow, CollectDiagnostics, CollectForm, Product, TransientCollectCredentials } from '@/types/workflow'
+import type { BrowserCollectRow, BrowserDebugStatus, CollectBatchRow, CollectDiagnostics, CollectForm, Product, TransientCollectCredentials } from '@/types/workflow'
 
 const props = defineProps<{
   form: CollectForm
@@ -13,6 +13,7 @@ const props = defineProps<{
   error: string
   batchRows: CollectBatchRow[]
   browserStatus: BrowserDebugStatus | null
+  browserRows: BrowserCollectRow[]
 }>()
 
 const emit = defineEmits<{
@@ -20,7 +21,7 @@ const emit = defineEmits<{
   batchCollect: [credentials?: TransientCollectCredentials, rowIds?: string[]]
   updateBatchRows: [rows: CollectBatchRow[]]
   cancelVerification: []
-  collectFromBrowser: [saveOnly: boolean, tabUrl: string]
+  collectFromBrowser: [saveOnly: boolean, tabUrls: string[]]
   open1688Browser: []
   checkBrowser: []
   openProfile: []
@@ -218,7 +219,7 @@ function saveSettings() {
           </div>
         </section>
 
-        <BrowserCollector v-else-if="activeCollectTab === 'browser'" :status="props.browserStatus" :loading="props.loading" @open="emit('open1688Browser')" @check="emit('checkBrowser')" @profile="emit('openProfile')" @collect="(saveOnly, tabUrl) => emit('collectFromBrowser', saveOnly, tabUrl)" />
+        <BrowserCollector v-else-if="activeCollectTab === 'browser'" :status="props.browserStatus" :rows="props.browserRows" :loading="props.loading" @open="emit('open1688Browser')" @check="emit('checkBrowser')" @profile="emit('openProfile')" @collect="(saveOnly, tabUrls) => emit('collectFromBrowser', saveOnly, tabUrls)" />
 
         <section v-else-if="activeCollectTab === 'api'" data-testid="collect-active-card" class="card space-y-6">
           <div class="flex flex-wrap items-start justify-between gap-3">

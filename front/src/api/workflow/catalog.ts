@@ -9,6 +9,7 @@ import type {
   CollectForm,
   ImageAsset,
   Marketplace,
+  MarketplaceTargetSite,
   Product,
   ProductIndexItem,
   TransientCollectCredentials,
@@ -259,15 +260,34 @@ export async function importManualProduct(form: CollectForm): Promise<ProductMut
   return normalizeProductMutation(response.data)
 }
 
-export async function claimProducts(productIds: string[], platform?: Marketplace): Promise<UnknownRecord> {
-  const response = await apiClient.post('/api/claim-products', { product_ids: productIds, platform })
+export interface ClaimProductsResult {
+  claimedCount: number
+  draftCount: number
+  failures: { productId: string; error: string }[]
+  productsIndex: ProductIndexItem[]
+  draftsIndex: DraftIndexItem[]
+}
+
+export async function claimProducts(productIds: string[], targets: MarketplaceTargetSite[]): Promise<ClaimProductsResult> {
+  const response = await apiClient.post('/api/claim-products', {
+    product_ids: productIds,
+    targets: targets.map(({ platform, site, language }) => ({ platform, site, language })),
+  })
   const data = asRecord(response.data)
   ensureOk(data, '推到草稿箱失败')
   if (productIds.length && getNumber(data, ['claimed_count']) <= 0) {
     const firstItem = asRecord(Array.isArray(data.items) ? data.items[0] : {})
     throw new Error(getString(firstItem, ['error'], '没有商品被推到草稿箱'))
   }
-  return data
+  return {
+    claimedCount: getNumber(data, ['claimed_count']),
+    draftCount: getNumber(data, ['draft_count']),
+    failures: (Array.isArray(data.items) ? data.items : []).map(asRecord)
+      .filter((item) => !item.ok)
+      .map((item) => ({ productId: getString(item, ['product_id']), error: getString(item, ['error'], '推到草稿箱失败') })),
+    productsIndex: normalizeProductsIndex(data.productsIndex),
+    draftsIndex: normalizeDraftsIndex(data.draftsIndex),
+  }
 }
 
 export async function saveCollectSettings(

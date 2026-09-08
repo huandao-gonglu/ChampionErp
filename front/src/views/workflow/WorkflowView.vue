@@ -25,6 +25,7 @@ import ProductResearchPanel from '@/components/domain/ProductResearchPanel.vue'
 import PublishJobsPanel from '@/components/domain/PublishJobsPanel.vue'
 import RunLog from '@/components/domain/RunLog.vue'
 import { workflowNavItems } from '@/constants/navigation'
+import { useDraftImageSaveState } from '@/composables/useDraftImageSaveState'
 import { useClipboard } from '@/composables/useClipboard'
 import { useBackdropDismiss } from '@/composables/useBackdropDismiss'
 import { useAppStore } from '@/stores/app'
@@ -34,7 +35,7 @@ import { useWorkflowCatalogStore } from '@/stores/workflow/catalog'
 import { useWorkflowCollectionStore } from '@/stores/workflow/collection'
 import { useWorkflowPublishingStore } from '@/stores/workflow/publishing'
 import { useWorkflowSettingsStore } from '@/stores/workflow/settings'
-import type { DraftIndexItem, ProductIndexItem, UnknownRecord } from '@/types/workflow'
+import type { DraftIndexItem, MarketplaceTargetSite, ProductIndexItem, UnknownRecord } from '@/types/workflow'
 
 const store = useWorkflowStore()
 const activityStore = useWorkflowActivityStore()
@@ -51,11 +52,14 @@ const {
   currentDraft,
   currentDraftProductContext,
 } = storeToRefs(catalogStore)
+const imageSaveState = useDraftImageSaveState(currentDraft, () => store.saveCurrentDraft())
+const imageSaveStatus = imageSaveState.status
 const {
   collectForm,
   collectDiagnostics,
   collectBatchRows,
   browserDebugStatus,
+  browserCollectRows,
 } = storeToRefs(collectionStore)
 const {
   pricingInput,
@@ -250,6 +254,7 @@ async function editEditorImages(request: { prompt: string; imageIds: string[] })
 }
 
 async function translateDraftWorkspaceImages(imageIds: string[]) {
+  if (imageSaveState.dirty.value && !await imageSaveState.save()) return
   await store.translateImages(currentDraft.value.language, {
     draftId: currentDraft.value.draftId,
     applyToDraft: true,
@@ -259,6 +264,7 @@ async function translateDraftWorkspaceImages(imageIds: string[]) {
 }
 
 async function editDraftWorkspaceImages(request: { prompt: string; imageIds: string[] }) {
+  if (imageSaveState.dirty.value && !await imageSaveState.save()) return
   await store.editImagesWithPrompt(request.prompt, {
     draftId: currentDraft.value.draftId,
     applyToDraft: true,
@@ -292,6 +298,7 @@ const {
 } = useBackdropDismiss(closeProductEditor)
 
 function closeDraftWorkspace() {
+  if (imageSaveState.dirty.value && !window.confirm('图片设置尚未保存，关闭将放弃这些修改。确认关闭？')) return
   draftWorkspaceOpen.value = false
   resetDraftWorkspaceBackdropPointer()
   draftWorkspaceItem.value = null
@@ -322,8 +329,8 @@ function navigate(key: string) {
   void refreshDomainForNav(key)
 }
 
-async function claimSelectedAndOpenDrafts() {
-  const ok = await store.claimSelectedProducts()
+async function claimAndOpenDrafts(productIds: string[], targets: MarketplaceTargetSite[]) {
+  const ok = await store.claimProductsToDrafts(productIds, targets)
   if (ok) navigate('drafts')
 }
 
@@ -331,7 +338,13 @@ function toggleTheme() {
   appStore.toggleTheme()
 }
 
+function warnUnsavedImages(event: BeforeUnloadEvent) {
+  if (!draftWorkspaceOpen.value || !imageSaveState.dirty.value) return
+  event.preventDefault()
+  event.returnValue = ''
+}
 onMounted(async () => {
+  window.addEventListener('beforeunload', warnUnsavedImages)
   await store.loadState()
   initialStateLoaded = true
   await refreshDomainForNav(activeNav.value)
@@ -339,7 +352,7 @@ onMounted(async () => {
 
 onActivated(syncPublishJobsPolling)
 onDeactivated(stopPublishJobsPolling)
-onBeforeUnmount(stopPublishJobsPolling)
+onBeforeUnmount(() => { stopPublishJobsPolling(); window.removeEventListener('beforeunload', warnUnsavedImages) })
 
 watch([activeNav, hasActivePublishJobs], syncPublishJobsPolling)
 
@@ -408,7 +421,6 @@ watch(
             @refresh-user-products="store.refreshMercadoLibreUserProducts"
             @open-product="openProductEditor"
             @edit-images="openProductImageEditor"
-            @claim-selected="claimSelectedAndOpenDrafts"
             @collect="navigate('collect')"
             @publish-selected="store.enqueueSelectedProducts"
           />
@@ -427,11 +439,12 @@ watch(
             :error="error"
             :batch-rows="collectBatchRows"
             :browser-status="browserDebugStatus"
+            :browser-rows="browserCollectRows"
             @collect="store.collectProduct"
             @batch-collect="store.collectBatch"
             @cancel-verification="store.cancelCollectionVerification"
             @update-batch-rows="store.updateCollectBatchRows"
-            @collect-from-browser="store.collectFromBrowserTab"
+            @collect-from-browser="store.collectFromBrowserTabs"
             @open1688-browser="store.open1688Browser"
             @check-browser="store.checkBrowserDebugStatus"
             @open-profile="store.openDebugProfile"
@@ -445,15 +458,17 @@ watch(
             v-else-if="activeNav === 'library'"
             :items="productsIndex"
             :selected-ids="selectedProductIds"
+            :platform-options="platformOptions"
+            :store-config="storeConfig"
             :loading="loading"
             :error="error"
             @refresh="store.refreshProductsIndex"
+            @claim="claimAndOpenDrafts"
             @edit="openProductEditor"
             @delete-item="store.deleteProduct"
             @delete-selected="store.deleteSelectedProducts"
             @toggle="store.toggleProductSelection"
             @select-all="store.selectAllProducts"
-            @claim="claimSelectedAndOpenDrafts"
           />
 
           <div v-else-if="activeNav === 'drafts'" class="space-y-6">
@@ -695,7 +710,7 @@ watch(
             <button v-if="draftWorkspaceTab === 'text'" class="btn btn-outline" :disabled="loading || !(currentDraft.productId || currentDraftProductContext.productId)" @click="() => store.generateCopy(true)">
               {{ copyGenerating ? '正在生成本地化文案…' : '生成/改写本地化文案' }}
             </button>
-            <button class="btn btn-primary" :disabled="loading || !currentDraft.draftId" :title="draftSaveBlockedReason" @click="store.saveCurrentDraft">保存草稿</button>
+            <button class="btn btn-primary" :disabled="loading || !currentDraft.draftId" :title="draftSaveBlockedReason" @click="imageSaveState.save">{{ draftWorkspaceTab === 'images' ? '保存图片设置' : '保存草稿' }}</button>
           </template>
 
           <template #text>
@@ -731,15 +746,10 @@ watch(
               :error="error"
               show-translate-action
               :draft="currentDraft"
+              :save-status="imageSaveStatus"
               @translate="translateDraftWorkspaceImages"
               @image-edit="editDraftWorkspaceImages"
               @upload="store.uploadReferenceImages"
-              @save="store.saveCurrentImagePool"
-              @save-draft-images="store.saveCurrentDraft"
-              @save-sku-images="store.saveCurrentDraft"
-              @set-main="store.setMainImage"
-              @delete="store.deleteImages"
-              @clear="store.clearSourceImages"
             />
           </template>
 

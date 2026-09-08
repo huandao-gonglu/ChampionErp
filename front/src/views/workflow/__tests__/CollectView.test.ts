@@ -68,6 +68,7 @@ describe('CollectView', () => {
         error: '',
         batchRows: [],
         browserStatus: null,
+        browserRows: [],
       },
     })
 
@@ -97,6 +98,7 @@ describe('CollectView', () => {
         error: '',
         batchRows: [],
         browserStatus: null,
+        browserRows: [],
       },
     })
 
@@ -124,7 +126,7 @@ describe('CollectView', () => {
     expect(JSON.stringify(collectForm)).not.toContain('component-only-cookie-secret')
   })
   it('等待验证时说明自动继续，并允许在加载期间取消等待', async () => {
-    const wrapper = mount(CollectView, { props: { form: { ...form }, diagnostics: { ...diagnostics, status: 'waiting_verification' }, product, loading: true, error: '', batchRows: [], browserStatus: null } })
+    const wrapper = mount(CollectView, { props: { form: { ...form }, diagnostics: { ...diagnostics, status: 'waiting_verification' }, product, loading: true, error: '', batchRows: [], browserStatus: null, browserRows: [] } })
     const cancel = wrapper.findAll('button').find(button => button.text() === '取消等待')!
     expect(cancel.attributes('disabled')).toBeUndefined()
     expect(wrapper.text()).toContain('完成后会自动采集这一项')

@@ -38,6 +38,12 @@ export interface BackendAppStateResponse {
   approvalToken: string
 }
 
+export interface BackendDraftClaimTarget {
+  platform: string
+  site: string
+  language: string
+}
+
 export interface BackendCollectionVerification {
   browser_tab_id: string
   source_url: string

@@ -9,9 +9,11 @@ from typing import Any
 
 from erp_web.marketplaces.category_provider import CategorySearcher
 from erp_web.schemas.ai_tools import AiToolExecutionError
+from erp_web.schemas.category_search_language import validate_category_keywords
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.category import (
     CATEGORY_SEARCH_CANDIDATES_PER_KEYWORD,
+    CATEGORY_SEARCH_MAX_KEYWORDS_PER_CALL,
     CATEGORY_SEARCH_MAX_CANDIDATES,
     CategoryCandidate,
     CategoryCandidateLedger,
@@ -29,15 +31,26 @@ class CategoryKeywordBatchSearch:
         *,
         searcher: CategorySearcher,
         ledger: CategoryCandidateLedger,
+        search_language: str,
         limit: int = CATEGORY_SEARCH_MAX_CANDIDATES,
     ) -> None:
+        self.search_language = search_language
         self.searcher = searcher
         self.ledger = ledger
         self.limit = max(1, min(CATEGORY_SEARCH_MAX_CANDIDATES, limit))
         self._cache: dict[str, CategorySearchResult] = {}
         self._lock = Lock()
 
+    def validate_arguments(self, arguments: dict[str, Any]) -> None:
+        keywords = [word for word in arguments["keywords"] if word.strip()]
+        if not keywords:
+            raise AiToolExecutionError("CATEGORY_SEARCH_KEYWORDS_EMPTY", "请提供非空的商品关键词列表")
+        if len({" ".join(word.split()).casefold() for word in keywords}) > CATEGORY_SEARCH_MAX_KEYWORDS_PER_CALL:
+            raise AiToolExecutionError("CATEGORY_SEARCH_TOO_MANY_KEYWORDS", "品名、别称与补充词合并后最多 64 个，请只保留有依据的不同搜索方向。")
+        validate_category_keywords(keywords, self.search_language)
+
     def execute(self, arguments: dict[str, Any], context: AiExecutionContext) -> dict[str, Any]:
+        self.validate_arguments(arguments)
         # 同轮多个工具调用共享账本和缓存；排队时间也计入原有任务截止时间。
         if not self._lock.acquire(timeout=context.bounded_timeout_seconds()):
             raise TimeoutError("类目批量查询等待超时")
@@ -140,6 +153,9 @@ class CategoryKeywordBatchSearch:
             "errors": errors,
             "repeated_candidate_ids": repeated_ids,
             "truncated": len(new_candidates) > len(visible),
+            "remaining_candidate_count": len(new_candidates) - len(visible),
+            "query_candidate_counts": {result["keyword"]: len(result["candidates"]) for result in successes},
+            "search_language": self.search_language,
         }
 
 

@@ -18,6 +18,7 @@ class CategorySearchRequest(BaseModel):
         "mercadolibre"
     )
     site: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
+    product_type: Annotated[TrimmedText, StringConstraints(min_length=1, max_length=100)] = Field(description="固定检索语言的简短实物通用名，将与 keywords 一起查询。")
     keywords: tuple[Annotated[TrimmedText, StringConstraints(min_length=1, max_length=300)], ...] = Field(
         min_length=1, max_length=CATEGORY_SEARCH_MAX_KEYWORDS_PER_CALL,
     )

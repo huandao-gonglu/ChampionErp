@@ -9,6 +9,7 @@ from typing import Annotated, Any
 from erp_web.product_model import validate_category_precheck
 from erp_web.runtime_units.category_keyword_search import CategoryKeywordBatchSearch
 from erp_web.schemas.ai_tools import AiToolExecutionError
+from erp_web.schemas.category_search_language import category_search_language
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.category import CATEGORY_SEARCH_CANDIDATES_PER_KEYWORD, CategoryCandidateLedger
 from erp_web.schemas.category_query_capabilities import (
@@ -112,6 +113,7 @@ class _CategoryQuerySearcher:
 @ai_tool(
     name=CATEGORY_SEARCH_TOOL,
     description=(
+        "关键词使用目标市场固定语言：Yandex/Ozon 俄语、美客多巴西葡语、其他本地站西语、CBT 英语。禁止中文或换语言试搜。"
         "先根据商品实物规划主要相关搜索方向，首轮通过 keywords 列表一次批量查询；"
         "已有合适候选直接选择，只有具体缺口才补查。结果按类目 ID 去重，"
         "matched_keywords 标明命中词，errors 按词报告失败；limit 是合并后的候选总量。"
@@ -120,7 +122,7 @@ class _CategoryQuerySearcher:
     permission="category.read",
     side_effect="none",
     recovery_policy="retry_safe",
-    version="2",
+    version="3",
 )
 def category_search(
     request: CategorySearchRequest,
@@ -133,8 +135,9 @@ def category_search(
     batch = CategoryKeywordBatchSearch(
         searcher=_CategoryQuerySearcher(platform, site, scope.searcher, execution),
         ledger=ledger,
+        search_language=category_search_language(platform, site),
         limit=request.limit,
-    ).execute({"keywords": request.keywords}, execution)
+    ).execute({"keywords": [request.product_type, *request.keywords]}, execution)
     results = []
     for candidate in batch["candidates"]:
         # 保留通用查询所需的 Ozon ID 配对等实时字段。

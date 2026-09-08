@@ -320,7 +320,7 @@ def _category_scope(**overrides: Any) -> CategoryQueryCapabilityScope:
 def test_category_search_attributes_and_values_queries() -> None:
     scope = _category_scope()
     search = category_search(
-        CategorySearchRequest(keywords=("fans",), platform="mercadolibre"),
+        CategorySearchRequest(product_type='fans', keywords=("fans",), platform="mercadolibre"),
         scope=scope,
         execution=_execution(),
     )
@@ -351,7 +351,7 @@ def test_category_query_wraps_live_api_failures() -> None:
 
     scope = _category_scope(searcher=broken)
     result = category_search(
-        CategorySearchRequest(keywords=("fans",)), scope=scope, execution=_execution(),
+        CategorySearchRequest(product_type='fans', keywords=("fans",)), scope=scope, execution=_execution(),
     )
     assert result.errors[0]["code"] == "CATEGORY_LIVE_API_FAILED"
     assert result.errors[0]["keyword"] == "fans"
@@ -365,7 +365,7 @@ def test_category_query_merges_keyword_list_and_keeps_ozon_id_pair() -> None:
         queries.append(query)
         assert platform == "ozon" and site == "global"
         assert 0 < timeout_seconds <= 8
-        if query == "失败词":
+        if query == "ошибка":
             raise AiToolExecutionError("CATEGORY_SEARCH_TIMEOUT", "查询超时", retryable=True)
         return [{
             "category_id": "970676618", "type_id": "970676618",
@@ -373,9 +373,9 @@ def test_category_query_merges_keyword_list_and_keeps_ozon_id_pair() -> None:
             "category_path": "Одежда / Аксессуары / Маска-повязка на лицо",
         }]
 
-    keywords = [f"相关词{index}" for index in range(8)]
+    keywords = [f"маска {index}" for index in range(8)]
     result = category_search(
-        CategorySearchRequest(platform="ozon", site="global", keywords=(*keywords, " 相关词0 ", "失败词")),
+        CategorySearchRequest(product_type=keywords[0], platform="ozon", site="global", keywords=(*keywords, " маска 0 ", "ошибка")),
         scope=_category_scope(searcher=searcher), execution=_execution(),
     )
     assert len(queries) == len(result.keywords) == 9
@@ -384,7 +384,7 @@ def test_category_query_merges_keyword_list_and_keeps_ozon_id_pair() -> None:
     assert row["description_category_id"] == "41777465"
     assert row["type_id"] == row["category_id"] == "970676618"
     assert row["matched_keywords"] == keywords
-    assert result.errors[0]["keyword"] == "失败词"
+    assert result.errors[0]["keyword"] == "ошибка"
     assert result.errors[0]["code"] == "CATEGORY_SEARCH_TIMEOUT"
 
 
@@ -393,7 +393,7 @@ def test_category_query_limit_applies_to_combined_candidates() -> None:
         return [{"category_id": f"{query}-{rank}", "name": query} for rank in range(8)]
 
     result = category_search(
-        CategorySearchRequest(keywords=("fan", "ventilador"), limit=4),
+        CategorySearchRequest(product_type='fan', keywords=("fan", "ventilador"), limit=4),
         scope=_category_scope(searcher=searcher), execution=_execution(),
     )
     assert len(result.results) == 4 and result.truncated
@@ -451,7 +451,7 @@ def test_category_queries_thread_bounded_timeout_to_live_io() -> None:
     scope = _category_scope(searcher=searcher, attributes_loader=attributes_loader)
 
     category_search(
-        CategorySearchRequest(keywords=("fans",)),
+        CategorySearchRequest(product_type='fans', keywords=("fans",)),
         scope=scope,
         execution=_execution(deadline_seconds=42),
     )

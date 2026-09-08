@@ -24,7 +24,6 @@ from pydantic_ai.exceptions import (
     ModelAPIError,
     ModelHTTPError,
     UnexpectedModelBehavior,
-    UsageLimitExceeded,
 )
 from pydantic_ai.messages import (
     AgentStreamEvent,
@@ -44,6 +43,7 @@ from erp_web.stores.pydantic_message_store import (
     PydanticMessageStoreError,
 )
 
+from .ai_agent_budget import agent_budget_error, agent_budget_instructions
 from .ai_agent_dependencies import AiAgentDependencies
 from .ai_agent_instrumentation import AiAgentInstrumentation, AiAgentTrace
 from .ai_model_factory import (
@@ -58,7 +58,7 @@ from .ai_presentation_context import (
     bind_presentation_context,
     current_presentation_context,
 )
-from .ai_tool_bridge import AiToolBridgeError, build_pydantic_toolset
+from .ai_tool_bridge import AiToolBridgeError, build_pydantic_toolset, tool_argument_retry_error
 from .ai_tool_registry import AiToolSet
 from .ai_tool_runtime import (
     DEFERRED_CONTINUATION_SCOPE_KEY,
@@ -77,7 +77,7 @@ def _prepare_tools_within_usage_limit(
     ctx: RunContext[AiAgentDependencies], tool_defs: list[ToolDefinition],
 ) -> list[ToolDefinition]:
     """用原生使用量停用已耗尽的工具，保留最终输出工具供模型提交结果。"""
-    limit = ctx.usage_limits.tool_calls_limit if ctx.usage_limits else None
+    limit = ctx.deps.tool_runtime.max_tool_calls
     if limit is not None and ctx.usage.tool_calls >= limit:
         return []
     return tool_defs
@@ -132,7 +132,9 @@ class AiAgentExecutionError(RuntimeError):
         task_run_id: str = "",
         run_id: str = "",
         trace_id: str = "",
+        details: Mapping[str, Any] | None = None,
     ) -> None:
+        self.details = dict(details or {})
         self.code = str(code or "AI_AGENT_RUN_FAILED")
         self.retryable = bool(retryable)
         self.conversation_id = str(conversation_id or "")
@@ -223,6 +225,8 @@ def _safe_agent_error(
     task_run_id: str,
     run_id: str = "",
     trace_id: str = "",
+    tool_call_limit: int | None = None,
+    tool_calls_used: int = 0,
 ) -> AiAgentExecutionError:
     correlation = {
         "conversation_id": conversation_id,
@@ -280,6 +284,24 @@ def _safe_agent_error(
                 f"output_tokens={usage.get('output_tokens', 0)}。",
                 **correlation,
             )
+    budget_error = agent_budget_error(
+        exc, tool_call_limit=tool_call_limit, tool_calls_used=tool_calls_used,
+        model_requests_used=sum(isinstance(message, ModelResponse) for message in model_messages or []),
+    )
+    if budget_error is not None:
+        message, details = budget_error
+        return AiAgentExecutionError(
+            "AI_AGENT_USAGE_LIMIT_EXCEEDED", message, details=details, **correlation,
+        )
+    input_retry = tool_argument_retry_error(exc)
+    if input_retry is not None:
+        return AiAgentExecutionError(
+            "AI_AGENT_TOOL_ARGUMENTS_INVALID",
+            "模型多次提交不符合工具约束的参数，任务未完成：" + (safe_model_error_text(input_retry.validation_message) or "参数无效。"),
+            details={"origin": "local", "stage": "tool_validation", "tool_name": input_retry.tool_name,
+                     "validation_code": input_retry.code},
+            **correlation,
+        )
     validation_code = str(getattr(validator, "error_code", "") or "")
     if validation_code:
         return AiAgentExecutionError(
@@ -311,12 +333,6 @@ def _safe_agent_error(
             "TASK_DEADLINE_EXCEEDED",
             "AI Agent 总 deadline 已耗尽。",
             retryable=True,
-            **correlation,
-        )
-    if isinstance(exc, UsageLimitExceeded):
-        return AiAgentExecutionError(
-            "AI_AGENT_USAGE_LIMIT_EXCEEDED",
-            "AI Agent 已达到当前 execution profile 的资源上限。",
             **correlation,
         )
     if isinstance(exc, (UnexpectedModelBehavior, AgentRunError)):
@@ -567,7 +583,10 @@ class AiAgentStreamSession(Generic[OutputT]):
                 deps=self._dependencies,
                 usage_limits=UsageLimits(
                     request_limit=self._profile.max_model_requests,
-                    tool_calls_limit=self._profile.max_tool_calls,
+                    # 2.22.0 会把 unknown tool 也纳入整批执行前的预计用量。
+                    # 多留一个校验位置，让第一个隐藏工具调用走原生 unknown-tool retry；
+                    # 不增加实际执行额度：args_validator 与 Runtime 都限定 max_tool_calls。
+                    tool_calls_limit=self._profile.max_tool_calls + 1,
                 ),
             ) as native_events:
                 async for event in native_events:
@@ -607,6 +626,8 @@ class AiAgentStreamSession(Generic[OutputT]):
                 task_run_id=self.task_run_id,
                 run_id=self._run_id,
                 trace_id=self.trace_id,
+                tool_call_limit=self._profile.max_tool_calls,
+                tool_calls_used=self._dependencies.tool_runtime.unique_call_count,
             )
             self._failure_error = error
             self._notify_presentation_failed(error.code, str(error))
@@ -810,7 +831,9 @@ class AiAgentFactory:
             if isinstance(configured, (int, float)) and configured > 0:
                 remaining = min(remaining, float(configured))
             current = ModelSettings(**{**base_settings, "timeout": remaining})
-            limit = ctx.usage_limits.tool_calls_limit if ctx.usage_limits else None
+            limit = ctx.deps.tool_runtime.max_tool_calls
+            if limit is not None and limit - ctx.usage.tool_calls <= 1:
+                current["parallel_tool_calls"] = False
             if limit is not None and ctx.usage.tool_calls >= limit:
                 # 同时约束 Provider 的工具选择，避免模型继续调用历史里已隐藏的查询工具。
                 current["tool_choice"] = ToolOrOutput(function_tools=[])
@@ -845,7 +868,7 @@ class AiAgentFactory:
         agent: Agent[AiAgentDependencies, OutputT] = Agent(
             model_override or binding.model,
             output_type=profile.output_type,
-            instructions=instructions,
+            instructions=[instructions, agent_budget_instructions],
             deps_type=AiAgentDependencies,
             model_settings=self._bounded_model_settings(binding.model_settings),
             retries=profile.retries,

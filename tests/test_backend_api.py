@@ -252,17 +252,17 @@ def test_save_product_and_publish_precheck_api_exist(backend_server: str, sample
     claimed = post_json(
         backend_server,
         "/api/claim-products",
-        {"product_ids": [saved["product"]["product_id"]], "platform": "mercadolibre"},
+        {"product_ids": [saved["product"]["product_id"]], "targets": [{"platform": "yandex", "site": "global", "language": "ru-RU"}]},
     )
     draft_id = claimed["items"][0]["draft_ids"][0]
 
     precheck = post_json(
         backend_server,
         "/api/publish-precheck",
-        {"draft_id": draft_id, "platform": "mercadolibre", "site": "CBT"},
+        {"draft_id": draft_id, "platform": "yandex", "site": "global"},
     )
     assert precheck["ok"] is True
-    assert "mercadolibre" in precheck["platforms"]
+    assert "yandex" in precheck["platforms"]
 
 
 def test_duplicate_draft_api_creates_an_independent_draft(
@@ -282,7 +282,7 @@ def test_duplicate_draft_api_creates_an_independent_draft(
         "/api/claim-products",
         {
             "product_ids": [saved["product"]["product_id"]],
-            "platform": "mercadolibre",
+            "targets": [{"platform": "yandex", "site": "global", "language": "ru-RU"}],
         },
     )
     original_id = claimed["items"][0]["draft_ids"][0]

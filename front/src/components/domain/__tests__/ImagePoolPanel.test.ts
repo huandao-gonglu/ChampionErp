@@ -56,7 +56,7 @@ describe('ImagePoolPanel', () => {
         draftAssetIds: ['img-1'],
       },
     })
-    const membershipButton = wrapper.findAll('button').find((button) => button.text() === '移出发布图片')
+    const membershipButton = wrapper.findAll('button').find((button) => button.text() === '从当前草稿移除')
 
     await membershipButton?.trigger('click')
     expect(wrapper.emitted('toggleDraftImage')).toEqual([[first, false]])

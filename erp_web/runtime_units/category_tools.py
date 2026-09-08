@@ -6,13 +6,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from erp_web.marketplaces.category_provider import CategoryNavigator, CategorySearcher
 from erp_web.runtime_units.category_keyword_search import CategoryKeywordBatchSearch
 from erp_web.schemas.ai_tools import AiToolDefinition, AiToolExecutionError
 from erp_web.schemas.ai_trace import AiExecutionContext
+from erp_web.schemas.category_search_language import category_search_language
 from erp_web.schemas.category import (
     CATEGORY_SEARCH_CANDIDATES_PER_KEYWORD,
     CATEGORY_SEARCH_MAX_KEYWORDS_PER_CALL,
@@ -81,17 +82,32 @@ _MAX_NAVIGATION_CALLS = 4
 CATEGORY_SEARCH_TOOL_DEFINITIONS = (
     AiToolDefinition(
         name="search_categories",
-        version="3",
+        version="4",
         description=(
-            "先按商品实物规划主要相关品名，一次通过 keywords 批量提交，避免每次只更换功能修饰语。"
+            "先填写 product_type 确认实物通用名，再在 keywords 一次提交同一实物的当地别称及规范品名。"
+            "程序自动合并 product_type、alternative_names 与 keywords；一个词的功能改写不算新别称，不能扩大为另一种商品。"
             "candidates 只包含此前未返回的候选全文，repeated_candidate_ids 引用此前已返回的类目。"
             "已有合适候选就提交最终结果；只有具体缺口才补查。"
-            "truncated=true 表示还有未返回的新候选，必要时可缩小词组查询。"
+            "truncated=true 表示缓存中仍有新候选，可用相同 keywords 继续读取，不必新增同义词。"
+            "query_candidate_counts 是各词当前返回数量，最多 8 条；这些是排序候选，不是全类目枚举。"
         ),
         input_schema={
             "type": "object",
-            "required": ["keywords"],
+            "required": ["product_identity", "product_type", "alternative_names", "keywords"],
             "properties": {
+                "product_identity": {
+                    "type": "string", "minLength": 1, "maxLength": 300,
+                    "description": "先用中文提取原始标题/规格中的实物结构、佩戴或工作方式、用途；未知的结构不要编造。原始规格优先于译文和营销描述。后续所有品名必须保持此身份，不得换成结构不同的邻近商品。",
+                },
+                "alternative_names": {
+                    "type": "array", "maxItems": 6,
+                    "description": "同一实物在当地市场的其他通用名称，通常 1 至 2 个不同叫法。不是给 product_type 换形容词，也不是新用途或另一种商品；确无别称时为空。程序会与 product_type、keywords 一起查询。",
+                    "items": {"type": "string", "minLength": 1, "maxLength": 100},
+                },
+                "product_type": {
+                    "type": "string", "minLength": 1, "maxLength": 100,
+                    "description": "固定搜索语言的实物通用名，去掉人群、营销功能和型号。实际卖的是什么物件？程序一定查询此词。",
+                },
                 "keywords": {
                     "type": "array",
                     "items": {"type": "string", "minLength": 1, "maxLength": 300},
@@ -103,7 +119,7 @@ CATEGORY_SEARCH_TOOL_DEFINITIONS = (
         },
         output_schema={
             "type": "object",
-            "required": ["keywords", "candidates", "repeated_candidate_ids", "errors", "truncated"],
+            "required": ["keywords", "candidates", "repeated_candidate_ids", "errors", "truncated", "search_language", "remaining_candidate_count", "query_candidate_counts"],
             "properties": {
                 "keywords": {
                     "type": "array",
@@ -136,6 +152,9 @@ CATEGORY_SEARCH_TOOL_DEFINITIONS = (
                     "maxItems": CATEGORY_SEARCH_MAX_KEYWORDS_PER_CALL,
                 },
                 "truncated": {"type": "boolean"},
+                "search_language": {"type": "string"},
+                "remaining_candidate_count": {"type": "integer", "minimum": 0},
+                "query_candidate_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
             },
             "additionalProperties": False,
         },
@@ -265,6 +284,8 @@ def build_category_match_toolset(
     *,
     searcher: CategorySearcher,
     ledger: CategoryCandidateLedger,
+    platform: str,
+    site: str,
 ) -> CategoryMatchToolBundle:
     """按绑定对象能力选择树导航或关键字发现，不暴露平台参数。"""
 
@@ -339,11 +360,23 @@ def build_category_match_toolset(
 
     ledger.retrieval_mode = "keyword_search"
 
-    batch_search = CategoryKeywordBatchSearch(searcher=searcher, ledger=ledger)
+    language = category_search_language(platform, site)
+    batch_search = CategoryKeywordBatchSearch(searcher=searcher, ledger=ledger, search_language=language)
+    definitions = tuple(replace(
+        definition, description=f"本次所有关键词固定使用 {language}，禁止中文或换语言试搜。" + definition.description,
+    ) for definition in CATEGORY_SEARCH_TOOL_DEFINITIONS)
+    def validate_match_search(arguments: dict[str, Any]) -> None:
+        batch_search.validate_arguments({"keywords": [arguments["product_type"], *arguments["alternative_names"], *arguments["keywords"]]})
+
+    def execute_match_search(arguments: dict[str, Any], context: AiExecutionContext) -> dict[str, Any]:
+        validate_match_search(arguments)
+        return batch_search.execute({"keywords": [arguments["product_type"], *arguments["alternative_names"], *arguments["keywords"]]}, context)
+
     toolset = AiToolSet.bind(
         CATEGORY_SEARCH_TOOLSET_ID,
-        CATEGORY_SEARCH_TOOL_DEFINITIONS,
-        {"search_categories": deadline_aware_tool_executor(batch_search.execute)},
+        definitions,
+        {"search_categories": deadline_aware_tool_executor(execute_match_search)},
+        arguments_validators={"search_categories": validate_match_search},
     )
     return CategoryMatchToolBundle(
         toolset=toolset,

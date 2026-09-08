@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { ProductIndexItem } from '@/types/workflow'
+import LibraryMarketSelector from './LibraryMarketSelector.vue'
+import type { MarketplaceOption, MarketplaceTargetSite, ProductIndexItem, UnknownRecord } from '@/types/workflow'
 
 const props = defineProps<{
   items: ProductIndexItem[]
   selectedIds: string[]
+  platformOptions: MarketplaceOption[]
+  storeConfig: UnknownRecord
   loading: boolean
   error?: string
 }>()
@@ -16,10 +19,11 @@ const emit = defineEmits<{
   selectAll: [checked: boolean, productIds: string[]]
   deleteItem: [item: ProductIndexItem]
   deleteSelected: []
-  claim: []
+  claim: [productIds: string[], targets: MarketplaceTargetSite[]]
 }>()
 
 const workflowFilter = ref('all')
+const selectedTargets = ref<MarketplaceTargetSite[]>([])
 const doneStatuses = new Set(['done', 'success', 'ready', 'ready_to_publish', 'published', 'completed', 'true', 'real_publish_success'])
 
 const filteredItems = computed(() => props.items.filter((item) => {
@@ -30,6 +34,11 @@ const filteredItems = computed(() => props.items.filter((item) => {
 
 const allChecked = computed(() => filteredItems.value.length > 0 && filteredItems.value.every((item) => props.selectedIds.includes(item.productId)))
 const selectedCount = computed(() => props.selectedIds.length)
+
+function requestClaim(productIds: string[]) {
+  if (props.loading || !productIds.length || !selectedTargets.value.length) return
+  emit('claim', [...productIds], selectedTargets.value.map((target) => ({ ...target })))
+}
 
 function confirmDelete(item: ProductIndexItem) {
   const title = item.title || item.productId || '该商品'
@@ -69,6 +78,8 @@ function statusClass(value: string) {
       {{ props.error }}
     </div>
 
+    <LibraryMarketSelector v-model="selectedTargets" class="mt-5" :platform-options="props.platformOptions" :store-config="props.storeConfig" :loading="props.loading" />
+
     <div class="mt-5 rounded-lg border border-accent-200 bg-accent-50 p-3 dark:border-dark-700 dark:bg-dark-950/70">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div class="text-sm text-accent-500 dark:text-accent-400">
@@ -78,14 +89,14 @@ function statusClass(value: string) {
         </div>
         <div class="flex flex-wrap gap-2">
           <button class="btn btn-outline py-2" :disabled="props.loading" @click="emit('refresh')">刷新商品库</button>
-          <button class="btn btn-secondary py-2" :disabled="props.loading || !selectedCount" @click="emit('claim')">推到草稿箱</button>
+          <button data-testid="library-claim-selected" class="btn btn-primary py-2" :disabled="props.loading || !selectedCount || !selectedTargets.length" @click="requestClaim(props.selectedIds)">推到草稿<span v-if="selectedCount">（{{ selectedCount }} 个商品）</span></button>
           <button class="btn btn-outline py-2 text-rose-700 dark:text-rose-200" :disabled="props.loading || !selectedCount" @click="confirmDeleteSelected">批量删除</button>
         </div>
       </div>
     </div>
 
-    <div class="mt-5 overflow-hidden rounded-lg border border-accent-200 dark:border-dark-700">
-      <table class="w-full table-fixed text-left text-xs">
+    <div class="mt-5 overflow-x-auto rounded-lg border border-accent-200 dark:border-dark-700">
+      <table class="w-full min-w-[760px] table-fixed text-left text-xs">
         <colgroup>
           <col class="w-10" />
           <col class="w-10" />
@@ -93,7 +104,7 @@ function statusClass(value: string) {
           <col />
           <col class="w-[72px]" />
           <col class="w-[108px]" />
-          <col class="w-[150px]" />
+          <col class="w-[210px]" />
         </colgroup>
         <thead class="border-b border-accent-200 bg-accent-50 text-xs text-accent-500 dark:border-dark-700 dark:bg-dark-950/70 dark:text-accent-400">
           <tr class="whitespace-nowrap">
@@ -133,6 +144,7 @@ function statusClass(value: string) {
             <td class="p-2">
               <div class="flex flex-nowrap gap-1">
                 <button class="btn btn-primary shrink-0 whitespace-nowrap px-1.5 py-1 text-xs" :disabled="props.loading" title="编辑商品" @click="emit('edit', item)">编辑</button>
+                <button data-testid="library-claim-row" class="btn btn-outline shrink-0 whitespace-nowrap px-1.5 py-1 text-xs" :disabled="props.loading || !selectedTargets.length" @click="requestClaim([item.productId])">推到草稿</button>
                 <button class="btn btn-outline shrink-0 whitespace-nowrap px-1.5 py-1 text-xs text-rose-700 dark:text-rose-200" :disabled="props.loading" @click="confirmDelete(item)">删除</button>
               </div>
             </td>

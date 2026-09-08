@@ -29,6 +29,7 @@ type WorkflowCollectionActionsPort = Pick<
   | 'collectDiagnostics'
   | 'collectBatchRows'
   | 'browserDebugStatus'
+  | 'browserCollectRows'
   | 'fillFormFromState'
   | 'pricingResult'
   | 'category'
@@ -56,7 +57,7 @@ type WorkflowCollectionActionsPort = Pick<
 export function createWorkflowCollectionActions(runtime: WorkflowCollectionActionsPort) {
   const {
     product, productsIndex, collectForm, collectDiagnostics,
-    collectBatchRows, browserDebugStatus, fillFormFromState, pricingResult, category,
+    collectBatchRows, browserDebugStatus, browserCollectRows, fillFormFromState, pricingResult, category,
     precheck, payloadPreview, publishJob,
     platformOptions, appConfig, aiConfig, storeConfig, storeAuthSummary,
     mercadolibreAuthChecklist, lastAuthResult, loading, addLog, setError,
@@ -71,7 +72,7 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
     if (collectDiagnostics.value.status === 'waiting_verification') verificationController?.abort()
   }
 
-  async function waitForVerification(initial: CollectionVerification, row?: CollectBatchRow) {
+  async function waitForVerification(initial: CollectionVerification, row?: Pick<CollectBatchRow, 'status' | 'verification' | 'error' | 'nextAction'>) {
     let verification = initial
     const controller = new AbortController()
     verificationController = controller
@@ -279,48 +280,89 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
     }
   }
 
-  async function collectFromBrowserTab(saveOnly = false, tabUrl = '') {
+  async function collectFromBrowserTabs(saveOnly: boolean, tabUrls: string[]) {
     if (loading.value) return
-    const selectedTab = browserDebugStatus.value?.tabs.find((tab) => tab.url === tabUrl)
-    if (!browserDebugStatus.value?.connected || !selectedTab) {
+    const urls = [...new Set(tabUrls)]
+    const tabs = browserDebugStatus.value?.tabs || []
+    if (!browserDebugStatus.value?.connected || !urls.length || urls.some((url) => !/^https?:\/\//i.test(url) || !tabs.some((tab) => tab.url === url))) {
       setError('请先检测浏览器并选择要采集的标签页。')
       return
     }
+    const previousRows = new Map(browserCollectRows.value.map((row) => [row.url, row]))
+    const resuming = !saveOnly && urls.some((url) => previousRows.get(url)?.verification)
+    // 固定本轮目标及顺序，逐项响应中的浏览器状态更新不改变队列。
+    browserCollectRows.value = urls.map((url) => {
+      const previous = previousRows.get(url)
+      if (resuming && previous && !previous.saveOnly) return { ...previous }
+      return {
+        ...tabs.find((tab) => tab.url === url)!, status: 'pending', error: '', nextAction: '',
+        saveOnly, htmlSnapshotPath: '',
+      }
+    })
+    const rows = browserCollectRows.value
+    const form = { ...collectForm.value }
     loading.value = true
     setError('')
-    collectDiagnostics.value = {
-      ...createDefaultCollectDiagnostics(), status: 'running', progress: 20,
-      message: saveOnly ? '正在保存所选页面的 HTML 快照…' : '正在采集所选浏览器页面…', lastSourceUrl: tabUrl,
-    }
+    let completed = rows.filter((row) => ['success', 'failed'].includes(row.status)).length
+    let succeeded = rows.filter((row) => row.status === 'success').length
     try {
-      const result = await collectFromBrowserTabApi({
-        ...collectForm.value, productUrl: tabUrl, platform: selectedTab.platformDetected === 'unknown' ? '' : selectedTab.platformDetected,
-      }, saveOnly, tabUrl)
-      if (result.browserStatus) browserDebugStatus.value = result.browserStatus
-      if (result.savedOnly) {
+      for (const row of rows) {
+        if (['success', 'failed'].includes(row.status)) continue
+        row.status = 'running'
         collectDiagnostics.value = {
-          ...createDefaultCollectDiagnostics(), status: 'success', progress: 100,
-          message: 'HTML 快照已保存。', lastSourceUrl: tabUrl,
-          htmlSnapshotPath: String(result.diagnostics.html_snapshot_path || ''),
-          screenshotPath: String(result.diagnostics.screenshot_path || ''), raw: result.diagnostics,
+          ...createDefaultCollectDiagnostics(), status: 'running', progress: Math.round(completed / rows.length * 100),
+          message: `正在${saveOnly ? '保存快照' : '采集'} ${completed + 1}/${rows.length}：${row.title || row.url}`,
+          lastSourceUrl: row.url,
         }
-      } else {
-        const completed = await completeCollectionAttempt(result)
-        product.value = completed.product
-        applyMutationIndexes(completed)
-        syncCollectDiagnosticsFromProduct('已从所选浏览器页面采集。', completed.diagnostics)
-        syncPricingInputFromProduct()
-        currentStage.value = 1
+        try {
+          const result = row.verification
+            ? { ...await waitForVerification(row.verification, row), savedOnly: false as const }
+            : await collectFromBrowserTabApi({
+              ...form, productUrl: row.url, platform: row.platformDetected === 'unknown' ? '' : row.platformDetected,
+            }, saveOnly, row.url)
+          if (result.browserStatus) browserDebugStatus.value = result.browserStatus
+          if (result.savedOnly) {
+            collectDiagnostics.value = {
+              ...collectDiagnostics.value, message: 'HTML 快照已保存。',
+              htmlSnapshotPath: String(result.diagnostics.html_snapshot_path || ''),
+              screenshotPath: String(result.diagnostics.screenshot_path || ''), raw: result.diagnostics,
+            }
+          } else {
+            const collected = result.verification ? await waitForVerification(result.verification, row) : result
+            product.value = collected.product
+            applyMutationIndexes(collected)
+            syncCollectDiagnosticsFromProduct('已从所选浏览器页面采集。', collected.diagnostics)
+            syncPricingInputFromProduct()
+            currentStage.value = 1
+          }
+          row.status = 'success'
+          row.verification = undefined
+          row.nextAction = ''
+          row.htmlSnapshotPath = collectDiagnostics.value.htmlSnapshotPath
+          succeeded++
+          addLog(`${saveOnly ? '已保存 HTML 快照' : '已采集商品'}：${row.title || row.url}`)
+        } catch (exc) {
+          if (exc instanceof VerificationCancelled) {
+            row.nextAction = '已取消等待；保留原商品页，重新采集所选页面可继续。'
+            showVerificationCancelled()
+            collectDiagnostics.value.nextAction = '保留原商品页，再次点击“采集所选页面”可继续；后续页面尚未开始。'
+            return
+          }
+          row.status = 'failed'
+          row.verification = undefined
+          row.error = exc instanceof Error ? exc.message : '浏览器采集失败'
+          row.nextAction = '请确认页面仍可访问并已完成登录或验证，再勾选重试。'
+          addLog(`${saveOnly ? '保存快照失败' : '采集失败'}：${row.title || row.url}；${row.error}`)
+        }
+        completed++
+        collectDiagnostics.value.progress = Math.round(completed / rows.length * 100)
       }
-      addLog(saveOnly ? '已保存所选浏览器页面的 HTML 快照。' : '已从所选浏览器页面采集商品。')
-    } catch (exc) {
-      if (exc instanceof VerificationCancelled) { showVerificationCancelled(); return }
-      const message = exc instanceof Error ? exc.message : '浏览器采集失败'
+      const message = `本轮${saveOnly ? '快照保存' : '采集'}结束：${succeeded} 页完成，${completed - succeeded} 页失败。`
       collectDiagnostics.value = {
-        ...collectDiagnostics.value, status: 'failed', progress: 0, message,
-        nextAction: '请刷新标签页列表，确认页面可访问并已完成登录或验证后重试。',
+        ...collectDiagnostics.value, status: succeeded === completed ? 'success' : 'failed', progress: 100, message,
+        nextAction: succeeded < completed ? '查看本轮结果中的失败原因，勾选失败页面后可重新采集。' : saveOnly ? '可在本轮结果中打开各页面的 HTML 快照。' : '可前往商品库检查采集结果。',
       }
-      setError(message)
+      addLog(message)
     } finally {
       loading.value = false
     }
@@ -449,7 +491,7 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
 
   return {
     cancelCollectionVerification,
-    loadState, resetForm, collectProduct, collectBatch, updateCollectBatchRows, collectFromBrowserTab, open1688Browser,
+    loadState, resetForm, collectProduct, collectBatch, updateCollectBatchRows, collectFromBrowserTabs, open1688Browser,
     checkBrowserDebugStatus, openDebugProfile, importManual, previewClean1688Text, clearCollectedProduct, saveCollectSettings,
   }
 }

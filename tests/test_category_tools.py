@@ -136,17 +136,17 @@ def context() -> AiExecutionContext:
 
 def batch_runtime(searcher, ledger):
     return AiToolRuntime(
-        toolset=build_category_match_toolset(searcher=searcher, ledger=ledger).toolset,
+        toolset=build_category_match_toolset(searcher=searcher, ledger=ledger, platform="mercadolibre", site="MLM").toolset,
         execution_context=context(),
     )
 
 
-def batch_command(keywords, call_id="batch"):
+def batch_command(keywords, call_id="batch", *, ledger=None):
     return AiToolCommand(
         call_id=call_id,
         tool_name="search_categories",
-        tool_version="3",
-        arguments={"keywords": keywords},
+        tool_version="4",
+        arguments={"alternative_names": [], "product_identity": "桌面风扇，有电机和扇叶", "product_type": keywords[0], "keywords": keywords},
         round=1,
     )
 
@@ -156,8 +156,8 @@ def test_batch_accepts_twelve_keywords_and_reuses_normalized_queries() -> None:
     ledger = CategoryCandidateLedger()
     runtime = batch_runtime(searcher, ledger)
     keywords = [f"fan {index}" for index in range(12)]
-    first = runtime.execute(batch_command([*keywords, " FAN   0 ", " "]))
-    second = runtime.execute(batch_command([" Fan  0 ", "fan 11"], "repeat"))
+    first = runtime.execute(batch_command([*keywords, " FAN   0 ", " "], ledger=ledger))
+    second = runtime.execute(batch_command([" Fan  0 ", "fan 11"], "repeat", ledger=ledger))
     assert first.ok and second.ok
     assert sorted(searcher.keywords) == sorted(keywords)
     assert ledger.search_count == 12
@@ -166,6 +166,40 @@ def test_batch_accepts_twelve_keywords_and_reuses_normalized_queries() -> None:
     assert not second.output["candidates"]
     assert list(second.output["repeated_candidate_ids"]) == ["MLM-FAN"]
     assert ledger.get("MLM-FAN") is not None
+
+
+def test_product_name_and_complementary_names_execute_as_one_batch() -> None:
+    searcher = BoundSearcher()
+    ledger = CategoryCandidateLedger()
+    runtime = batch_runtime(searcher, ledger)
+    result = runtime.execute(AiToolCommand(
+        call_id="four-names", tool_name="search_categories", tool_version="4", round=1,
+        arguments={
+            "product_identity": "挂耳式纺织面罩，用于遮阳和防尘",
+            "product_type": "mascarilla",
+            "alternative_names": ["cubrebocas"],
+            "keywords": ["mascarilla de tela", "protector facial solar"],
+        },
+    ))
+    assert result.ok
+    assert runtime.unique_call_count == 1
+    assert set(searcher.keywords) == {
+        "mascarilla", "cubrebocas", "mascarilla de tela", "protector facial solar",
+    }
+    assert result.output["search_language"] == "es"
+
+
+def test_wrong_language_in_any_merged_name_rejects_entire_batch() -> None:
+    searcher = BoundSearcher()
+    runtime = batch_runtime(searcher, CategoryCandidateLedger())
+    result = runtime.execute(AiToolCommand(
+        call_id="wrong-alias", tool_name="search_categories", tool_version="4", round=1,
+        arguments={"product_identity": "风扇", "product_type": "ventilador",
+                   "alternative_names": ["风扇"], "keywords": ["ventilador USB"]},
+    ))
+    assert not result.ok
+    assert result.error["code"] == "CATEGORY_SEARCH_LANGUAGE_MISMATCH"
+    assert searcher.keywords == []
 
 
 def test_batch_keeps_successes_and_reports_each_failed_keyword() -> None:
@@ -178,7 +212,7 @@ def test_batch_keeps_successes_and_reports_each_failed_keyword() -> None:
             return super().search_categories(keyword)
 
     ledger = CategoryCandidateLedger()
-    result = batch_runtime(Searcher(), ledger).execute(batch_command(["fan", "failed", "secret"]))
+    result = batch_runtime(Searcher(), ledger).execute(batch_command(["fan", "failed", "secret"], ledger=ledger))
     assert result.ok
     assert result.output["candidates"][0]["category_id"] == "MLM-FAN"
     assert result.output["errors"][0] == {
@@ -234,13 +268,13 @@ def test_truncated_candidates_are_not_selectable_until_returned_by_narrower_quer
     searcher = Searcher()
     ledger = CategoryCandidateLedger()
     runtime = batch_runtime(searcher, ledger)
-    result = runtime.execute(batch_command(["a", "b", "c", "d"]))
+    result = runtime.execute(batch_command(["a", "b", "c", "d"], ledger=ledger))
     assert result.ok and result.output["truncated"]
     ids = [row["category_id"] for row in result.output["candidates"]]
     assert len(ids) == 24
     assert ids[:4] == ["a-0", "b-0", "c-0", "d-0"]
     assert ledger.get("d-7") is None
-    narrowed = runtime.execute(batch_command(["d"], "narrow"))
+    narrowed = runtime.execute(batch_command(["d"], "narrow", ledger=ledger))
     assert narrowed.ok and not narrowed.output["truncated"]
     assert "d-7" in [row["category_id"] for row in narrowed.output["candidates"]]
     assert ledger.get("d-7") is not None
@@ -259,8 +293,8 @@ def test_followup_omits_repeated_details_and_reserves_slots_for_new_candidates()
 
     ledger = CategoryCandidateLedger()
     runtime = batch_runtime(Searcher(), ledger)
-    first = runtime.execute(batch_command(["a", "b", "c"]))
-    followup = runtime.execute(batch_command(["a", "b", "c", "d"], "followup"))
+    first = runtime.execute(batch_command(["a", "b", "c"], ledger=ledger))
+    followup = runtime.execute(batch_command(["a", "b", "c", "d"], "followup", ledger=ledger))
     assert first.ok and followup.ok
     assert {row["category_id"] for row in followup.output["candidates"]} == {
         f"d-{rank}" for rank in range(8)
@@ -279,7 +313,7 @@ def test_followup_omits_repeated_details_and_reserves_slots_for_new_candidates()
 def test_batch_rejects_invalid_input_before_search(arguments) -> None:
     searcher = BoundSearcher()
     result = batch_runtime(searcher, CategoryCandidateLedger()).execute(AiToolCommand(
-        call_id="invalid", tool_name="search_categories", tool_version="3",
+        call_id="invalid", tool_name="search_categories", tool_version="4",
         arguments=arguments, round=1,
     ))
     assert not result.ok
@@ -289,7 +323,7 @@ def test_batch_rejects_invalid_input_before_search(arguments) -> None:
 def test_category_toolset_only_exposes_keyword_search() -> None:
     searcher = BoundSearcher()
     ledger = CategoryCandidateLedger()
-    bundle = build_category_match_toolset(searcher=searcher, ledger=ledger)
+    bundle = build_category_match_toolset(searcher=searcher, ledger=ledger, platform="mercadolibre", site="MLM")
     toolset = bundle.toolset
     runtime = AiToolRuntime(
         toolset=toolset,
@@ -300,8 +334,8 @@ def test_category_toolset_only_exposes_keyword_search() -> None:
     command = AiToolCommand(
         call_id="call-search",
         tool_name="search_categories",
-        tool_version="3",
-        arguments={"keywords": ["ventilador"]},
+        tool_version="4",
+        arguments={"alternative_names": [], "product_identity": "桌面风扇，有电机和扇叶", "product_type": "ventilador", "keywords": ["ventilador"]},
         round=1,
     )
 
@@ -322,7 +356,7 @@ def test_category_toolset_only_exposes_keyword_search() -> None:
         "search_categories"
     ]
     definition = CATEGORY_SEARCH_TOOL_DEFINITIONS[0].to_dict()
-    assert set(definition["input_schema"]["properties"]) == {"keywords"}
+    assert set(definition["input_schema"]["properties"]) == {"product_type", "alternative_names", "keywords", "product_identity"}
     assert "platform" not in str(definition)
     assert "site" not in str(definition)
 
@@ -330,6 +364,7 @@ def test_category_toolset_only_exposes_keyword_search() -> None:
 def test_tool_output_hides_bound_scope_and_provider_metadata() -> None:
     result = AiToolRuntime(
         toolset=build_category_match_toolset(
+            platform="mercadolibre", site="MLM",
             searcher=BoundSearcher(),
             ledger=CategoryCandidateLedger(),
         ).toolset,
@@ -338,8 +373,8 @@ def test_tool_output_hides_bound_scope_and_provider_metadata() -> None:
         AiToolCommand(
             call_id="call-search",
             tool_name="search_categories",
-            tool_version="3",
-            arguments={"keywords": ["ventilador"]},
+            tool_version="4",
+            arguments={"alternative_names": [], "product_identity": "桌面风扇，有电机和扇叶", "product_type": "ventilador", "keywords": ["ventilador"]},
             round=1,
         )
     )
@@ -359,12 +394,16 @@ def test_tool_output_hides_bound_scope_and_provider_metadata() -> None:
         "errors": [],
         "repeated_candidate_ids": [],
         "truncated": False,
+        "search_language": "es",
+        "remaining_candidate_count": 0,
+        "query_candidate_counts": {"ventilador": 1},
     }
 
 
 def test_tool_rejects_platform_or_site_arguments() -> None:
     result = AiToolRuntime(
         toolset=build_category_match_toolset(
+            platform="mercadolibre", site="MLM",
             searcher=BoundSearcher(),
             ledger=CategoryCandidateLedger(),
         ).toolset,
@@ -373,7 +412,7 @@ def test_tool_rejects_platform_or_site_arguments() -> None:
         AiToolCommand(
             call_id="call-search",
             tool_name="search_categories",
-            tool_version="3",
+            tool_version="4",
             arguments={
                 "keywords": ["ventilador"],
                 "platform": "ozon",
@@ -391,7 +430,7 @@ def test_tool_rejects_platform_or_site_arguments() -> None:
 def test_ozon_navigation_exposes_roots_then_records_only_leaf_candidates() -> None:
     navigator = BoundNavigator()
     ledger = CategoryCandidateLedger()
-    bundle = build_category_match_toolset(searcher=navigator, ledger=ledger)
+    bundle = build_category_match_toolset(searcher=navigator, ledger=ledger, platform="ozon", site="global")
     runtime = AiToolRuntime(
         toolset=bundle.toolset,
         execution_context=context(),
@@ -452,6 +491,7 @@ def test_ozon_navigation_exposes_roots_then_records_only_leaf_candidates() -> No
 
 def test_navigation_rejects_nodes_not_returned_by_the_current_run() -> None:
     bundle = build_category_match_toolset(
+        platform="mercadolibre", site="MLM",
         searcher=BoundNavigator(),
         ledger=CategoryCandidateLedger(),
     )

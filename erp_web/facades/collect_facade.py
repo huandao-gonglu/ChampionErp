@@ -73,13 +73,13 @@ def collect_batch_payload(body: dict[str, Any]) -> ApiResponse:
 
 
 def claim_products_payload(body: dict[str, Any]) -> ResponseWithStatus:
-    platforms = body.get("platforms") if isinstance(body.get("platforms"), list) else None
-    if platforms is None and body.get("platform"):
-        platforms = [body.get("platform")]
-    result = claim_products_to_platforms(
-        body.get("product_ids") if isinstance(body.get("product_ids"), list) else [],
-        platforms,
-    )
+    try:
+        result = claim_products_to_platforms(
+            body.get("product_ids") if isinstance(body.get("product_ids"), list) else [],
+            selected_markets=body.get("targets") if isinstance(body.get("targets"), list) else [],
+        )
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}, 400
     return result, 200 if result.get("ok") else 400
 
 

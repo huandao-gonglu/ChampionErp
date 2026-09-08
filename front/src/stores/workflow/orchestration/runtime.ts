@@ -156,6 +156,7 @@ export function createWorkflowRuntime() {
     collectDiagnostics,
     collectBatchRows,
     browserDebugStatus,
+    browserCollectRows,
   } = storeToRefs(collectionStore)
   const { fillFormFromState } = collectionStore
   const {
@@ -1203,7 +1204,7 @@ export function createWorkflowRuntime() {
 
   return {
     product, productsIndex, draftsIndex, selectedProductIds, currentDraft, currentDraftProductContext,
-    imagePrompt, collectForm, collectDiagnostics, collectBatchRows, browserDebugStatus, fillFormFromState,
+    imagePrompt, collectForm, collectDiagnostics, collectBatchRows, browserDebugStatus, browserCollectRows, fillFormFromState,
     pricingInput, pricingResult, category, categoryQuery, categoryResults, categoryRecommendations,
     categoryAutoMatching, categoryAutoMatchMessage, categoryAutoMatchCurrent, categoryAutoMatchTotal, categoryAutoMatchProductName,
     categoryAttributeTranslations, categoryAttributeTranslationsSource, categoryAttributeTranslating, categoryAttributeLoading, categoryAttributeError, categoryResultTranslations,

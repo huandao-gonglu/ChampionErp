@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import json
-from typing import Annotated, Any, Mapping
+from typing import Annotated, Any, Mapping, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
@@ -33,6 +33,7 @@ from erp_web.schemas.category import (
     CategoryCandidateLedger,
 )
 from erp_web.schemas.category import CategoryMatchTrace
+from erp_web.schemas.category_search_language import category_search_language
 
 from .ai_agent_dependencies import AiAgentDependencies
 from .ai_agent_factory import (
@@ -48,31 +49,53 @@ from .ai_tool_registry import AiToolSet
 
 CATEGORY_MATCH_USE_CASE_ID = "category.product_match"
 CATEGORY_MATCH_BUDGET_PROFILE = "category.match.default"
-CATEGORY_MATCH_RESULT_VERSION = "category_match.v1"
+CATEGORY_MATCH_RESULT_VERSION = "category_match.v2"
 CATEGORY_MATCH_DEADLINE_SECONDS = 60
 
 CATEGORY_IDENTITY_INSTRUCTIONS = (
-    "先根据商品事实判断销售的实物是什么，再匹配完整类目路径，不能仅按功能或营销词选择。"
-    "同样用于防晒的纺织面罩与涂抹用品不是同一种商品；材质、结构和佩戴/使用方式与"
-    "候选祖先分类矛盾时必须排除该候选，不能以叶子名称相似解释掉矛盾。"
-    "搜索优先使用实物通用名，后续仍保留商品主体，不能退化为只有用途的泛词。"
-    "最终 evidence 应说明商品实物与完整路径相符的事实，并说明排除近似候选的原因；"
-    "真实候选 ID 只证明类目存在，不证明它适合商品。候选均不合适时必须 abstain，"
-    "不得为了完成任务选择最接近但实物类型不同的类目。"
+    "先锁定商品身份：实际出售的物件、材质/结构、使用方式，以标题及明确规格为依据。"
+    "product.source 与 facts.attributes 的原始规格是身份依据，优先于 product.target 的译文或营销扩写。"
+    "关键词及最终类目必须保持该身份一致；营销功能不能证明新的用途、认证或商品类型。"
+    "不得因为一个共用词而把商品扩展成另一种实物，也不得凭空添加医疗、工业、运动等专门用途。"
+    "比对完整类目路径；排除材质、结构或实物类型矛盾的候选。"
+    "路径是平台组织商品的目录，不能反过来给商品添加认证或用途；上级的并列集合不意味着每个叶子都具备其中某一专门用途。"
+    "结合最具体叶子的范围判断：通用防护用品不自动等于医用器械，功能词缺失也不能否定同一种实物。"
+    "类目通常不细分全部功能、人群和款式；缺少这些修饰语不等于不匹配。"
+    "broader_type 必须是真正包含该实物的上位分类；仅材质相似或同样能遮脸，但穿戴结构不同的相邻叶子不能算上位类型。"
+    "有真实类型匹配就可以选择，不要为了寻找与长标题字面完全相同的叶子反复搜索。"
+    "例如：挂耳式纺织面罩可与通用的可重复使用防护口罩比较；防晒功能不使它变成医用口罩、套头帽、环形脖套或方形头巾。"
+    "“医用与卫生口罩”是并列范围，不能把其下所有通用防护口罩一律认定为医用器械。"
+    "evidence 简述实物与路径相符的事实及关键排除依据；真实 ID 只证明存在，不证明适用。"
+    "无法可靠判断时 abstain，不得硬选，也不得声称平台不存在这个类目。"
 )
 
 
 CATEGORY_KEYWORD_SEARCH_INSTRUCTIONS = (
-    "首次调用前，先按商品实物规划目标市场的规范品名、常见别称和相关上位品名，"
-    "将已能想到的主要方向一次放入 keywords 批量查询，不要每次只更换功能修饰语。"
-    "结果足以判断时直接选择；只有缺少具体品名或仍存在类别歧义时才补查。"
-    "后续 candidates 只展示新增类目，repeated_candidate_ids 引用之前的候选，仍可选择它们。"
-    "truncated=true 本身不要求补查；无可靠匹配时 abstain，不需要搜满关键词或调用次数。"
+    "首次调用前，先在 product_identity 用中文摘出原始规格中的结构、使用方式与用途；再填写 product_type 锁定实物通用名，在 alternative_names 列出同一实物在固定 search_language 的不同叫法，再用 keywords 补充有区分作用的规范品名。"
+    "三部分合计通常 3 至 4 个互补品名即可，一次调用批量查询。"
+    "优先覆盖不同的实物叫法，至少保留一个去掉营销功能和人群修饰的简短通用名；"
+    "不要用多个只更换功能修饰语的长标题占满首批。不要按功能联想另一种商品，也不要为了凑数加词。"
+    "首批结果返回后先对比已有候选；商品身份与完整路径相符时直接提交最终结果。"
+    "只有能指出已有候选的具体实物冲突或缺失的品名时，才进行一次针对该缺口的补查；"
+    "不要把更多搜索次数当成更高可信度。后续 candidates 只展示新增类目，"
+    "repeated_candidate_ids 引用之前候选，仍可选择它们。"
+    "truncated=true 仅表示本批缓存还有未展示的新候选；必要时原 keywords 可继续取后续候选。"
+    "query_candidate_counts 是每词排序返回量（上限 8），不表示完整类目库覆盖率。"
+    "无可靠匹配时 abstain，不需要搜满关键词或调用次数。"
 )
 
 
+class CategoryPhysicalComparison(BaseModel):
+    """商品与候选的具体实物对照，避免把邻近叶子误称为上位类目。"""
+
+    model_config = ConfigDict(extra="forbid")
+    product_form: str = Field(min_length=1, max_length=160, description="用中文描述商品实际结构/形态，依据输入事实，不能只写用途或材质。")
+    category_form: str = Field(max_length=160, description="用中文解释所选叶子通常指的实物结构；未选择时为空。")
+    compatible: bool = Field(description="是否同一种实物或真正包含该实物的上位分类；不同穿戴结构、不同商品类型只是相邻类目，不能因都遮脸或材质相似就判为 true。")
+
+
 class CategoryMatchAgentOutput(BaseModel):
-    """模型边界的严格类型；平台详情终检仍由 facade 负责。"""
+    """选择已检索且实物类型一致的类目并完成任务；候选已充分时立即提交，无可靠匹配则 abstain。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -80,6 +103,13 @@ class CategoryMatchAgentOutput(BaseModel):
         str,
         StringConstraints(strip_whitespace=True, max_length=160),
     ]
+    selected_category_path: list[Annotated[str, StringConstraints(max_length=500)]] = Field(
+        max_length=20, description="复制所选候选的完整 path_segments，不能只看叶子名称；abstain 时为空。",
+    )
+    type_relationship: Literal["same_type", "broader_type", "uncertain", "incompatible"] = Field(
+        description="以实物、材质、结构和使用方式比较商品与整个类目路径；用途相似但实物不同是 incompatible。",
+    )
+    physical_comparison: CategoryPhysicalComparison
     abstained: bool
     model_confidence: float = Field(ge=0, le=1)
     evidence: list[
@@ -87,10 +117,16 @@ class CategoryMatchAgentOutput(BaseModel):
             str,
             StringConstraints(strip_whitespace=True, min_length=1, max_length=300),
         ]
-    ] = Field(max_length=8)
+    ] = Field(max_length=8, description="用中文说明实物类型及完整类目路径为何相符，或为何无法可靠确定。")
 
     @model_validator(mode="after")
     def validate_selection_shape(self) -> "CategoryMatchAgentOutput":
+        if not self.abstained and not self.physical_comparison.compatible:
+            raise ValueError("实物结构不相符时必须 abstain，不能把相邻叶子作为上位类目强选")
+        if not self.abstained and self.type_relationship not in {"same_type", "broader_type"}:
+            raise ValueError("实物类型不符或关系不确定时必须 abstain")
+        if self.abstained and self.selected_category_path:
+            raise ValueError("abstained 时不得携带已选择的类目路径")
         if self.abstained and self.selected_category_id:
             raise ValueError("abstained 时不得同时选择 category_id")
         if not self.abstained and not self.selected_category_id:
@@ -105,7 +141,9 @@ CATEGORY_MATCH_AGENT_PROFILE = AiAgentExecutionProfile(
     budget_profile=CATEGORY_MATCH_BUDGET_PROFILE,
     permissions=frozenset({CATEGORY_SEARCH_PERMISSION}),
     timeout_seconds=CATEGORY_MATCH_DEADLINE_SECONDS,
-    max_model_requests=6,
+    # 最多四批检索 + 一次越界纠正 + 最终输出及两次原生格式纠正。
+    # 只增加模型完成输出的余量，实际工具额度和总 deadline 不变。
+    max_model_requests=8,
     max_tool_calls=4,
     max_tool_output_bytes=128 * 1024,
     retries=2,
@@ -154,6 +192,9 @@ class CategoryMatchOutputValidator:
                 "MODEL_SELECTED_UNKNOWN_CATEGORY",
                 "selected_category_id 必须来自本次检索工具真实返回的商品类型。",
             )
+        candidate = self.ledger.get(output.selected_category_id)
+        if output.selected_category_path != list(candidate.get("path_segments") or []):
+            self._retry("CATEGORY_PATH_REVIEW_REQUIRED", "请逐段核对并复制已选候选的完整 path_segments，再判断实物类型是否一致。")
         return output
 
 
@@ -203,6 +244,21 @@ def _prepare_run_params(
     instructions = f"{instructions} {CATEGORY_IDENTITY_INSTRUCTIONS}"
     if not payload.get("category_navigation"):
         instructions = f"{instructions} {CATEGORY_KEYWORD_SEARCH_INSTRUCTIONS}"
+    else:
+        instructions += (
+            "树导航：从 root_nodes 保留最可能的 1 至 2 个 branch 并调用 browse_categories。"
+            "只能展开真实返回的 branch node_id，直到得到 level=product_type 的 category_id。"
+            "叶子不合适时可回到之前保留的分支；不得重复展开同一分支，最多 4 次导航。"
+            "达到商品类型后选择实物相符的候选，无可靠匹配时 abstain。"
+        )
+    target = payload.get("target") if isinstance(payload.get("target"), Mapping) else {}
+    language = category_search_language(str(target.get("platform") or ""), str(target.get("site") or ""))
+    instructions += (
+        f" 本次 search_language 固定为 {language}，由平台检索接口决定。"
+        "所有搜索品名只使用该语言；商品原文、草稿 language 和用户交流语言不能覆盖它。"
+        "禁止中文和换多种语言试搜。品牌/型号可保留原文，品名仍须使用固定语言。"
+    )
+    payload = {**payload, "search_language": language}
     user_prompt = render_prompt_template(
         prompt.get("user") or "请根据以下商品事实匹配类目：{$input_json}",
         {"input_json": _prompt_payload(payload)},

@@ -223,7 +223,7 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/category-search": _contract(
         required_any=(("query", "keyword"),)
     ),
-    "/api/claim-products": _contract(required=("product_ids",)),
+    "/api/claim-products": _contract(required=("product_ids", "targets")),
     "/api/collect-1688": _contract(required=("url",)),
     "/api/collect-1688-clean": _contract(
         required_any=(("text", "html"),)

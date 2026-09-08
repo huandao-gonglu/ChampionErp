@@ -105,7 +105,7 @@ AI_USE_CASES: dict[str, dict[str, Any]] = {
         "required_capabilities": [CAP_CHAT, CAP_JSON, CAP_TOOL_CALLING],
         "toolset_id": "category.search",
         "budget_profile": "category.match.default",
-        "result_schema": "category_match.v1",
+        "result_schema": "category_match.v2",
     },
     "text.translate": {
         "id": "text.translate",

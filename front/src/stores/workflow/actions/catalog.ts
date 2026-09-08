@@ -20,7 +20,6 @@ import {
 } from '@/api/workflow/catalog'
 import type { ImageEditOptions, ImageTranslateOptions } from '@/api/workflow/catalog'
 import { assignUpc as assignUpcApi } from '@/api/workflow/settings'
-import {  marketplaces } from '@/constants/initialState'
 import { listingLanguageValue } from '@/constants/locales'
 import { withAiForeground } from '@/services/withAiForeground'
 import {
@@ -33,7 +32,6 @@ import type {
 
   DraftDetail,
   DraftIndexItem,
-  Marketplace,
   MarketplaceTargetSite,
   Product,
   ProductIndexItem,
@@ -53,7 +51,6 @@ type WorkflowCatalogActionsPort = Pick<
   | 'currentDraft'
   | 'currentDraftProductContext'
   | 'imagePrompt'
-  | 'collectForm'
   | 'fillFormFromState'
   | 'pricingResult'
   | 'categoryResults'
@@ -92,7 +89,7 @@ type DraftTargetSelectionSource = Pick<DraftDetail, 'draftId' | 'language' | 'ta
 export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort) {
   const {
     product, productsIndex, draftsIndex, selectedProductIds, currentDraft,
-    currentDraftProductContext, imagePrompt, collectForm, fillFormFromState, pricingResult,
+    currentDraftProductContext, imagePrompt, fillFormFromState, pricingResult,
     categoryResults, categoryRecommendations, categoryAutoMatchProductName, categoryPrecheck, precheck, precheckResults,
     payloadPreview, copyGenerating, activeMarketplace, appConfig, storeConfig, loading,
     addLog, setError, currentStage, mergeTargetDetails, persistActiveTargetListingFields,
@@ -423,58 +420,29 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     selectedProductIds.value = Array.from(new Set([...selectedProductIds.value, ...targetIds]))
   }
 
-  function normalizeClaimPlatforms(values: Marketplace[]) {
-    return marketplaces.filter((platform) => values.includes(platform))
-  }
-
-  function setClaimPlatforms(values: Marketplace[]) {
-    const selected = normalizeClaimPlatforms(values)
-    collectForm.value.selectedClaimPlatforms = selected.length ? selected : [activeMarketplace.value]
-  }
-
-  async function claimSelectedProducts() {
-    const ids = selectedProductIds.value.length
-      ? selectedProductIds.value
-      : product.value.productId
-        ? [product.value.productId]
-        : productsIndex.value.map((item) => item.productId).filter(Boolean)
+  async function claimProductsToDrafts(productIds: string[], targets: MarketplaceTargetSite[]) {
+    if (loading.value) return false
+    const ids = [...new Set(productIds.map((id) => id.trim()).filter(Boolean))]
     if (!ids.length) {
       setError('请先选择商品。')
       return false
     }
-    loading.value = true
-    setError('')
-    try {
-      const platform = activeMarketplace.value
-      await claimProductsApi(ids, platform)
-      productsIndex.value = await fetchProductsIndex()
-      draftsIndex.value = await fetchDraftsIndex()
-      addLog(`已推送 ${ids.length} 个商品到草稿箱。`)
-      return true
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : '推到草稿箱失败')
-      return false
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function claimCurrentProduct() {
-    const id = product.value.productId
-    if (!id) {
-      setError('请先从商品库加载一个商品。')
+    if (!targets.length) {
+      setError('请至少选择一个目标市场。')
       return false
     }
     loading.value = true
     setError('')
     try {
-      const platform = activeMarketplace.value
-      await claimProductsApi([id], platform)
-      const loaded = await loadProductApi(id, '')
-      product.value = loaded.product
-      productsIndex.value = await fetchProductsIndex()
-      draftsIndex.value = await fetchDraftsIndex()
-      addLog('已推到草稿箱。')
+      const result = await claimProductsApi(ids, targets)
+      applyMutationIndexes(result)
+      addLog(`已将 ${result.claimedCount} 个商品推到草稿箱，生成 ${result.draftCount} 份草稿。`)
+      if (result.failures.length) {
+        const failedIds = new Set(result.failures.map((item) => item.productId))
+        selectedProductIds.value = selectedProductIds.value.filter((id) => !ids.includes(id) || failedIds.has(id))
+        setError(`已生成 ${result.draftCount} 份草稿；${result.failures.length} 个商品失败：${result.failures.map((item) => `${item.productId}：${item.error}`).join('；')}`)
+        return false
+      }
       return true
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '推到草稿箱失败')
@@ -671,8 +639,10 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
       payloadPreview.value = null
       applyMutationIndexes(result)
       addLog(result.message || `草稿已保存：${result.draft.title || result.draft.draftId}`)
+      return true
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '保存草稿失败')
+      return false
     } finally {
       loading.value = false
     }
@@ -813,7 +783,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
   return {
     refreshProductsIndex, refreshDraftsIndex, loadProduct, loadDraft, loadDraftForPricing, duplicateDraft, updateDraftTargets,
     updateDraftLanguage, deleteDraft, deleteDrafts, deleteProduct, deleteSelectedProducts, toggleProductSelection,
-    selectAllProducts, setClaimPlatforms, claimSelectedProducts, claimCurrentProduct, generateCopyForSelectedProducts, enqueueSelectedProducts,
+    selectAllProducts, claimProductsToDrafts, generateCopyForSelectedProducts, enqueueSelectedProducts,
     uploadReferenceImages, clearSourceImages, saveCurrentImagePool, setMainImage, deleteImages, editImagesWithPrompt,
     saveCurrentProduct, saveCurrentDraft, assignUpc, generateCopy, generateImagePromptPack, translateImages,
   }

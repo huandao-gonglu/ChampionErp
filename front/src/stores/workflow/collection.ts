@@ -2,7 +2,7 @@ import { ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import { createDefaultCollectDiagnostics, createDefaultCollectForm } from '@/constants/initialState'
 import { useWorkflowCatalogStore } from '@/stores/workflow/catalog'
-import type { BrowserDebugStatus, CollectBatchRow, CollectDiagnostics, CollectForm, UnknownRecord } from '@/types/workflow'
+import type { BrowserCollectRow, BrowserDebugStatus, CollectBatchRow, CollectDiagnostics, CollectForm, UnknownRecord } from '@/types/workflow'
 import { COLLECT_QUEUE_STORAGE_KEY, restoreCollectQueue } from '@/utils/collectQueue'
 
 export const useWorkflowCollectionStore = defineStore('workflow-collection', () => {
@@ -10,6 +10,7 @@ export const useWorkflowCollectionStore = defineStore('workflow-collection', () 
   const collectDiagnostics = ref<CollectDiagnostics>(createDefaultCollectDiagnostics())
   const collectBatchRows = ref<CollectBatchRow[]>([])
   const browserDebugStatus = ref<BrowserDebugStatus | null>(null)
+  const browserCollectRows = ref<BrowserCollectRow[]>([])
 
   try { collectBatchRows.value = restoreCollectQueue(localStorage.getItem(COLLECT_QUEUE_STORAGE_KEY)) } catch { /* 存储不可用时仍可在当前页面管理列表。 */ }
   watch(collectBatchRows, (rows) => {
@@ -45,6 +46,7 @@ export const useWorkflowCollectionStore = defineStore('workflow-collection', () 
     collectDiagnostics,
     collectBatchRows,
     browserDebugStatus,
+    browserCollectRows,
     fillFormFromState,
   }
 })

@@ -28,6 +28,8 @@ from erp_web.runtime_units.category_tools import (
     CategoryCandidateLedger,
     build_category_match_toolset,
 )
+from erp_web.schemas.category_search_language import category_search_language
+from erp_web.schemas.ai_tools import AiToolExecutionError
 from erp_web.schemas.category import (
     CategoryCandidate,
     CategoryMatchDecision,
@@ -293,6 +295,7 @@ def failure_from_exception(exc: Exception, *, stage: str) -> CategoryMatchFailur
         }
     if isinstance(cause, AiAgentExecutionError):
         return {
+            "details": dict(cause.details),
             "code": cause.code,
             "message": str(cause),
             "stage": stage,
@@ -513,6 +516,12 @@ def prepare_category_match_input(
             "stage": "input",
             "retryable": False,
         }
+    try:
+        category_search_language(platform, site)
+    except AiToolExecutionError as exc:
+        return normalized_target, {}, {
+            "code": exc.code, "message": str(exc), "stage": "input", "retryable": False,
+        }
     facts = category_product_facts(product, draft, normalized_target)
     if not facts["source"]["title"] and not facts["target"]["title"]:
         return normalized_target, facts, {
@@ -545,6 +554,8 @@ def setup_category_match_search(
     tool_bundle = build_category_match_toolset(
         searcher=scoped_searcher,
         ledger=ledger,
+        platform=str(normalized_target["platform"]),
+        site=str(normalized_target["site"]),
     )
     payload: dict[str, Any] = {
         "target": dict(normalized_target),
@@ -607,33 +618,6 @@ def finalize_category_match(
                 "trace_id": exc.trace_id,
             }
         decision["search_count"] = ledger.search_count
-        if (
-            isinstance(exc, AiAgentExecutionError)
-            and exc.code == "AI_AGENT_USAGE_LIMIT_EXCEEDED"
-            and ledger.search_count > 0
-        ):
-            decision.update(
-                confidence_band="low",
-                model_confidence=0.0,
-                decision_score=0.0,
-                abstained=True,
-                evidence=["类目检索达到本次运行上限，未静默选择候选。"],
-            )
-            return _result(
-                ok=True,
-                status="unresolved",
-                target=normalized_target,
-                ledger=ledger,
-                decision=decision,
-                failure={
-                    "code": "ABSTAIN_RETRIEVAL_LIMIT",
-                    "message": "类目分支仍无法确定，请人工确认。",
-                    "stage": "decision",
-                    "retryable": False,
-                },
-                trace=trace,
-                agent_run=agent_run,
-            )
         return _result(
             ok=False,
             status="failed",
@@ -766,7 +750,7 @@ def finalize_category_match(
             decision=decision,
             failure={
                 "code": "ABSTAIN_NO_MATCH",
-                "message": "搜索后仍没有足够匹配的类目，请人工确认。",
+                "message": "已检索的候选不足以可靠确认类目，请核对商品实物与完整路径；这不代表平台没有该类目。",
                 "stage": "decision",
                 "retryable": False,
             },

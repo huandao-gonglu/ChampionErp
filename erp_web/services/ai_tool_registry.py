@@ -44,6 +44,9 @@ class AiToolBinding:
     # 审批工具专属：arguments → 服务端审批快照；非审批工具为 None。
     approval_preparer: Callable[[dict[str, Any]], Any] | None = None
 
+    # 纯参数校验；由原生 args_validator 反馈 ModelRetry，不执行领域 I/O。
+    arguments_validator: Callable[[dict[str, Any]], None] | None = None
+
     def __post_init__(self) -> None:
         if not callable(self.executor):
             raise TypeError(f"工具 {self.definition.name} 的 executor 必须可调用")
@@ -93,8 +96,11 @@ class AiToolSet:
             str, Callable[[dict[str, Any]], Any]
         ]
         | None = None,
+        *,
+        arguments_validators: Mapping[str, Callable[[dict[str, Any]], None]] | None = None,
     ) -> "AiToolSet":
         preparers = dict(approval_preparers or {})
+        validators = dict(arguments_validators or {})
         definition_map: dict[str, AiToolDefinition] = {}
         for definition in definitions:
             if definition.name in definition_map:
@@ -109,6 +115,8 @@ class AiToolSet:
             if extra:
                 parts.append(f"存在未定义 executor：{', '.join(extra)}")
             raise ValueError(f"ToolSet {toolset_id} 绑定不完整；{'；'.join(parts)}")
+        if set(validators) - definition_map.keys():
+            raise ValueError("参数校验器对应未定义工具")
         unknown_preparers = sorted(set(preparers.keys()) - definition_map.keys())
         if unknown_preparers:
             raise ValueError(
@@ -121,6 +129,7 @@ class AiToolSet:
                     definition,
                     executors[name],
                     preparers.get(name),
+                    validators.get(name),
                 )
                 for name, definition in definition_map.items()
             },

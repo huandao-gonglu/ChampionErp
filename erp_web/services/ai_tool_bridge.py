@@ -9,11 +9,33 @@ from pydantic_ai import FunctionToolset, ModelRetry, RunContext, Tool
 from pydantic_ai.exceptions import CallDeferred
 
 from erp_web.schemas.ai_tools import (
-    AiToolCommand, AiToolDefinition, AiToolSchemaError, validate_json_schema,
+    AiToolCommand, AiToolDefinition, AiToolSchemaError, AiToolExecutionError, validate_json_schema,
 )
 
 from .ai_agent_dependencies import AiAgentDependencies
+from .ai_agent_budget import AgentToolBudgetRetry
 from .ai_tool_registry import AiToolSet
+
+
+class AiToolArgumentRetry(ModelRetry):
+    """安全参数错误；纠正、次数限制和工具消息闭合由原生 Agent 负责。"""
+
+    def __init__(self, *, code: str, message: str, tool_name: str) -> None:
+        self.code = code
+        self.validation_message = message
+        self.tool_name = tool_name
+        super().__init__(f"{code}: {message}")
+
+
+def tool_argument_retry_error(exc: Exception) -> AiToolArgumentRetry | None:
+    cause: BaseException | None = exc
+    seen: set[int] = set()
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        if isinstance(cause, AiToolArgumentRetry):
+            return cause
+        cause = cause.__cause__ or cause.__context__
+    return None
 
 
 class AiToolBridgeError(RuntimeError):
@@ -111,18 +133,33 @@ class PydanticToolBridge:
     ) -> Tool[AiAgentDependencies]:
         agent_deferred = definition.agent_deferred
 
+        def require_budget(ctx: RunContext[AiAgentDependencies]) -> None:
+            runtime = ctx.deps.tool_runtime
+            # 同批调用的原生 usage 可能在整批结束后更新；Runtime 现有账本提供
+            # 串行执行时的即时用量，不创建另一套计数器。
+            used = max(ctx.usage.tool_calls, runtime.unique_call_count)
+            if used >= runtime.max_tool_calls:
+                raise AgentToolBudgetRetry(limit=runtime.max_tool_calls, used=used, requested=1)
+
         def validate_arguments(ctx: RunContext[AiAgentDependencies], **arguments: Any) -> None:
             # from_schema 不自动校验参数；在执行前交给原生重试，不触发业务副作用。
             self._require_runtime_binding(ctx.deps)
+            require_budget(ctx)
             try:
                 validate_json_schema(arguments, definition.input_schema)
+                binding = self.toolset.bindings[definition.name]
+                if binding.arguments_validator is not None:
+                    binding.arguments_validator(arguments)
+            except AiToolExecutionError as exc:
+                raise AiToolArgumentRetry(code=exc.code, message=str(exc), tool_name=definition.name) from exc
             except AiToolSchemaError as exc:
-                raise ModelRetry(f"工具参数不符合定义，请修正后重试：{exc}") from exc
+                raise AiToolArgumentRetry(code="TOOL_INPUT_SCHEMA_INVALID", message=f"工具参数不符合定义：{exc}", tool_name=definition.name) from exc
 
         def invoke(
             ctx: RunContext[AiAgentDependencies],
             **arguments: Any,
         ) -> Any:
+            require_budget(ctx)
             try:
                 output = self.execute(
                     dependencies=ctx.deps,
@@ -191,6 +228,7 @@ def build_pydantic_toolset(
 
 __all__ = [
     "AiToolBridgeError",
+    "tool_argument_retry_error",
     "PydanticToolBridge",
     "build_pydantic_toolset",
 ]

@@ -14,6 +14,9 @@
 
 ## 商品采集
 
+- 商品库推到草稿统一从 `/api/claim-products` → `collect_facade.claim_products_payload` → `collect_helpers.claim_products_to_platforms`，请求必须显式携带 `product_ids` 与 `targets`（平台、销售市场、注册语言）。每个商品按语言创建一份独立草稿，市场只包含该语言下勾选的项目；美客多销售市场按授权物流操作归入 CBT 的 `sites_to_sell`。响应的 `claimed_count` 统计成功商品数，`draft_count` 统计实际创建草稿数。
+- 顶部批量与单行操作共用 `claimProductsToDrafts`，只传各自商品 ID 和顶部市场选择，不使用当前平台或整库兜底。AI 认领与市场准备任务仍使用其显式平台参数，复用同一个商品复制、草稿持久化循环。
+
 - `source_sites.py` 的采集质量门槛与核价/发布条件分开：1688 有标题和图片且未被验证拦截即可入库。缺失包装长宽高、重量通过 `collect_helpers.py` 的 `missing_fields` / `next_action` 提示在 SKU 页补齐，不触发采集失败；有规格时逐 SKU 判断包装完整性，不用首项资料代表整组。
 - `front/src/views/workflow/CollectView.vue` 组织采集方式；`BrowserCollector.vue` 负责浏览器页面选择，
   `CollectBatchManager.vue` 负责 URL 增删改、状态筛选和失败重试。
@@ -92,16 +95,22 @@ Pydantic Direct Model Requests，图片等能力使用锁定版本提供的 Pyda
   尚未产生的 capability 声明阻断探测。两条入口共享私有构造器和同一套 API style、认证、
   timeout、模型类型与密钥脱敏规则。
 - `erp_web/services/ai_agent_factory.py`：Pydantic Agent 的唯一装配与同步/流式运行入口；
-  工具调用预算耗尽时，通过原生 `PrepareTools` 和 `RunContext.usage/usage_limits`
+  工具调用预算耗尽时，通过原生 `PrepareTools`、`RunContext.usage` 和执行 Profile
   隐藏函数工具，并用原生动态 `ToolOrOutput(function_tools=[])` 限定 Provider 只提交结果，
-  保留最终输出工具提交已确认结果，硬限额仍由原生 `UsageLimits` 执行。
+  保留最终输出工具提交结果；桥接层在原生 `args_validator` 和实际执行前检查同一 Runtime 账本。
+  Pydantic AI 2.22.0 的整批预检也计算 unknown tool，因此原生 `UsageLimits` 比实际工具额度多留
+  一个协议校验位置，使第一个越界调用能收到原生 RetryPrompt。这个位置不能执行第五次业务工具；
+  更大的越界批次仍由原生预检直接拒绝，模型请求数和总 deadline 由各自 Profile 限制。
   已核对安装的 Pydantic AI 2.22.0 与官方 [动态工具](https://pydantic.dev/docs/ai/tools-toolsets/tools-advanced/#agent-wide-dynamic-tools)、
   [使用量限制](https://pydantic.dev/docs/ai/core-concepts/agent/#usage-limits)；直接使用原生能力，不增加重跑 Agent、计数器或恢复循环。
   创建请求级 dependencies、usage limits 和 instrumentation，不包含领域终检。需审批
   写工具只能交给 `GlobalTaskController`，Factory 不维护第二套 deferred 状态机。
 - `erp_web/services/ai_tool_bridge.py`：`Tool.from_schema` 的输入校验通过原生
-  `args_validator` 在执行前复用现有 JSON Schema 契约；参数错误抛出 `ModelRetry`
+  `args_validator` 在执行前复用现有 JSON Schema 与可选的纯领域参数校验器；参数错误抛出 `ModelRetry`
   让模型纠正，授权、执行及输出错误仍由 Runtime 处理，不重试已产生副作用的操作。
+- `erp_web/services/ai_agent_budget.py`：通用的本地额度诊断与动态指令。保留资源类型、限制值、
+  实际用量和拒绝阶段；本地额度异常不冒充 Provider 限流或领域无匹配。不修改原生消息、
+  不实现第二套 Agent loop；重试次数与逐工具请求/返回的闭合仍由 Pydantic AI 管理。
 - `erp_web/services/ai_agent_instrumentation.py`：独立 OpenTelemetry 技术 trace owner；
   关闭 prompt/tool 内容采集并在 JSONL exporter 再次脱敏。观测写失败不影响业务结果。
 - `erp_web/services/ai_agent_observability.py`：Agent 的 AI Work 内容投影 owner；保存有界且
@@ -555,8 +564,9 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
   远端/缓存搜索、错误分类和 Ozon ID 配对测试；含 Yandex 关键词搜索与
   HTTP 420 限流（可重试）/401 认证失败（终态）分类。
 
-`erp_web/runtime_units/category_query_capabilities.py::category_search`（v2）为通用 AI 查询入口，
-也接收 `keywords` 列表，复用 `category_keyword_search.py` 的并发与合并逻辑；`limit` 限制合并
+`erp_web/runtime_units/category_query_capabilities.py::category_search`（v3）为通用 AI 查询入口，
+接收 `product_type` 与 `keywords` 列表，合并查询固定语言的通用名和补充词，复用
+`category_keyword_search.py` 的并发与合并逻辑；`limit` 限制合并
 结果总量，返回逐词错误与命中词，同时保留 Ozon 类目 ID 配对。
 `erp_web/runtime_units/category_store.py::search_categories_live` 继续服务人工关键词搜索；
 自动匹配按绑定对象能力选择 `CategoryNavigator` 或 `CategorySearcher`，两者不互相 fallback。
@@ -644,25 +654,38 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
 
 - `erp_web/runtime_units/category_tools.py`：`category.search` 只读 ToolSet。绑定对象实现
   `CategoryNavigator` 时只暴露 `browse_categories(parent_ids)`；否则只暴露
-  `search_categories(keywords)`（v3）。关键词列表替代单词入参；工具 schema 与执行器均没有 platform/site 参数。
+  `search_categories`（v4）。先在 `product_identity` 摘出原始规格中的实物结构，再填写固定语言的
+  `product_type / alternative_names / keywords`，三组词在一次工具调用中合并查询。
+  不额外启动规划 Agent；工具 schema 与执行器均没有 platform/site 参数。
+- `erp_web/schemas/category_search_language.py`：根据注册平台/站点确定唯一检索语言，独立于商品
+  原文和草稿语言。Yandex/Ozon 俄语，MLB 葡语，其余美客多本地站西语，CBT 预测接口固定英语。
+  CBT 覆盖定义在 `marketplace_registry.py`，不改变刊登语言。执行前整批拒绝中文或错误文字体系，
+  被拒的批次不调用搜索器；拉丁字母短词的英/西/葡语语义仍需要模型遵循契约，不能将文字体系
+  检查宣称为完整语言识别。
 - `erp_web/runtime_units/category_keyword_search.py`：关键词批量 I/O owner；每个匹配任务内
   去重并复用成功查询，最多 3 个并发查询，沿用入口绑定的 provider 超时和任务 deadline。
   每词最多 8 个候选，交错合并后最多返回 24 个新增候选，保留 `matched_keywords`、逐词错误和
   `truncated`。后续查询不重复展开已见类目的全文，改用 `repeated_candidate_ids` 引用历史；
-  已见类目仍可最终选择，新增候选优先使用返回名额。`truncated` 只表示尚有未展示的新候选。
+  已见类目仍可最终选择，新增候选优先使用返回名额。`truncated` 与 `remaining_candidate_count`
+  只表示缓存中尚有未展示的新候选；`query_candidate_counts` 是每词排序返回量，不是全库覆盖率。
   仅将实际返回模型的候选登记到账本；缩小关键词组可从缓存取回被裁剪的候选。
   64 个词仅作为异常入参保护，不设置总关键词配额；工具调用次数仍由 Pydantic AI 原生预算管理。
 - `erp_web/facades/category_match_facade.py`：`category_match` 共享业务阶段；
   首轮发送裁剪后的双语商品事实；绑定导航器时发送真实顶层节点并允许最多四次树导航，
   绑定搜索器时使用关键词列表批量发现，所有平台复用相同批量契约。最终选择必须经过叶子候选账本、站点、可发布状态、
-  详情、Ozon ID 配对和属性读取校验；达到资源上限时返回 unresolved，不静默改选。
+  详情、Ozon ID 配对和属性读取校验；达到资源上限时返回 failed 并保留通用额度错误和 details。
+  仅模型主动、有效地 abstain 返回 unresolved；检索未确认不等于平台没有类目，不静默改选。
   `prepare_category_match_input / setup_category_match_search / finalize_category_match`
   被 Global Task capability 与同步 focused HTTP 入口共用，行为一致。
 - `erp_web/services/category_match_agent_service.py`：`category.product_match` 的 focused
   Execution Profile、prompt 渲染、类型化 `CategoryMatchAgentOutput` 与 Ledger output
   validator；关键词模式首轮一次规划基于实物的主要相关方向，批量检索后优先提交结果；
   仅有具体缺口才补查，不按最低关键词数量阻止 abstain，也不额外启动规划 Agent。
-  最多四次工具调用，保留针对具体缺口的补查能力。
+  最多四次实际工具调用，模型请求上限为八次，给越界纠正及最终输出的原生校验重试留出余量；
+  总 deadline 仍为 60 秒。保留针对具体缺口的补查能力。输出 `category_match.v2` 携带完整路径、
+  实物类型关系与中文结构对照；路径必须来自候选账本，明确结构冲突或不确定时不得选择。
+  原始标题/规格优先于翻译和营销扩写；同一用途或材质不能把相邻叶子变成上位类目。
+  这些约束不能证明模型的语义判断始终正确，须用真实模型评测而非旧 AI 选择作为正确答案。
   输出校验、重试、调用预算和生命周期均直接使用 Pydantic AI 2.22.0 原生能力；
   已核对官方文档：https://pydantic.dev/docs/ai/core-concepts/output/ 与
   https://pydantic.dev/docs/ai/tools-toolsets/tools-advanced/ 。
@@ -686,6 +709,11 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
   `POST /api/category-ai-fill`（见“类目匹配 Capability”属性填充段）。
 - `tests/test_category_match_facade.py`、`tests/test_category_tools.py`：首次上下文裁剪、
   Ozon 逐层导航与有限回退、Mercado Libre 多轮换词、未知 ID、deadline、凭据和工具去重测试。
+- `tests/test_ai_agent_budget.py`：使用原生 FunctionModel/Agent 验证单批和跨批第五次调用不执行、
+  RetryPrompt 正确闭合工具消息、预算错误保持通用含义。
+- `scripts/evaluate_category_match.py`：读取历史商品事实或 JSON，使用当前配置的真实模型和平台
+  检索器，记录首批完成率、候选召回、调用数、重试、耗时与结构判断。评测使用隔离数据库，
+  不修改原会话、商品或草稿；可临时指定已配置模型比较，不能把旧 AI 结果当作已确认标准。
 
 endpoint 内部只使用 `category_id/path_segments`。前端只在 API 边界转换成人工
 选择组件需要的 `id/path`，且不会自动写入模型首选；用户仍需点击候选确认。HTTP

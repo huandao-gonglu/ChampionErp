@@ -215,7 +215,7 @@ def execution_context() -> AiExecutionContext:
 def search(toolset, keyword: str) -> dict[str, Any]:
     binding = toolset.get("search_categories")
     assert binding is not None
-    return binding.executor({"keywords": [keyword]}, execution_context())
+    return binding.executor({"alternative_names": [], "product_identity": "桌面风扇，有电机和扇叶", "product_type": keyword, "keywords": [keyword]}, execution_context())
 
 
 def browse(toolset, parent_ids: list[str]) -> dict[str, Any]:
@@ -389,7 +389,7 @@ def test_ozon_model_navigates_real_tree_and_can_backtrack_once() -> None:
     ]
 
 
-def test_navigation_usage_limit_returns_unresolved_instead_of_502() -> None:
+def test_navigation_usage_limit_preserves_generic_failure() -> None:
     navigator = FakeNavigator()
 
     def run(payload, toolset):
@@ -400,6 +400,7 @@ def test_navigation_usage_limit_returns_unresolved_instead_of_502() -> None:
             "导航达到上限",
             conversation_id="aic-limit",
             task_run_id="task-limit",
+            details={"origin": "local", "resource": "tool_calls", "limit": 4, "used": 4},
         )
 
     result = match_category(
@@ -410,9 +411,10 @@ def test_navigation_usage_limit_returns_unresolved_instead_of_502() -> None:
         agent_service=fake_agent_service(run),
     )
 
-    assert result["ok"] is True
-    assert result["status"] == "unresolved"
-    assert result["failure"]["code"] == "ABSTAIN_RETRIEVAL_LIMIT"
+    assert result["ok"] is False
+    assert result["status"] == "failed"
+    assert result["failure"]["code"] == "AI_AGENT_USAGE_LIMIT_EXCEEDED"
+    assert result["failure"]["details"] == {"origin": "local", "resource": "tool_calls", "limit": 4, "used": 4}
     assert result["decision"]["abstained"] is True
 
 

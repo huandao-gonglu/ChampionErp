@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from erp_web.context import AppContext, get_context
+from erp_web.marketplace_registry import marketplace_site
+from erp_web.schemas.collection import DraftClaimTarget
 from erp_web.product_model import (
     PLATFORMS,
     SOURCE_IMAGE_ORIGINS,
@@ -28,6 +30,7 @@ from erp_web.product_model.sku_image_model import ensure_source_image_asset
 from erp_web.product_model.sku_model import new_draft_sku_rows
 from erp_web.services import image_service
 from erp_web.services.browser_debug_service import file_url
+from erp_web.services.mercadolibre_target_contract import mercadolibre_sales_target_selectors
 from erp_web.stores.product_store import normalize_product_fields
 
 from .source_sites import detect_source_site, source_site
@@ -403,20 +406,76 @@ def draft_copy_from_product(product: dict[str, Any], platform: str) -> dict[str,
     return draft
 
 
+def _selected_market_groups(
+    selected_markets: list[DraftClaimTarget],
+    store_config: dict[str, Any],
+) -> list[list[dict[str, Any]]]:
+    if not isinstance(selected_markets, list) or not selected_markets:
+        raise ValueError("请至少选择一个目标市场。")
+    groups: dict[str, list[dict[str, Any]]] = {}
+    seen: set[tuple[str, str]] = set()
+    for raw in selected_markets:
+        if not isinstance(raw, dict) or any(not isinstance(raw.get(key), str) for key in ("platform", "site", "language")):
+            raise ValueError("目标市场必须包含平台、站点和语言。")
+        platform = raw["platform"].strip().lower()
+        site = raw["site"].strip()
+        registered = marketplace_site(platform, site)
+        if not site or not registered["code"] or registered["code"].lower() != site.lower() or (platform == "mercadolibre" and site.upper() == "CBT"):
+            raise ValueError(f"无效的销售市场：{platform} · {site}。")
+        language = registered["language"]
+        if raw["language"].strip().lower() != language.lower():
+            raise ValueError(f"市场 {platform} · {site} 的语言必须是 {language}。")
+        site = registered["code"]
+        key = (platform, site)
+        if key in seen:
+            continue
+        seen.add(key)
+        group = groups.setdefault(language.lower(), [])
+        if platform == "mercadolibre":
+            config = store_config.get("mercadolibre") or {}
+            listing_model = str(config.get("listing_model") or "")
+            if listing_model not in {"user_products", "traditional_global_items"}:
+                raise ValueError("美客多店铺缺少有效刊登模式，请先验证店铺授权。")
+            operations = [selector.split(":", 1)[1] for selector in mercadolibre_sales_target_selectors(
+                config.get("marketplace_bindings"),
+                listing_model=listing_model,
+                require_user_products=listing_model == "user_products",
+                language=language,
+            ) if selector.split(":", 1)[0] == site]
+            if not operations:
+                raise ValueError(f"美客多市场 {site} 当前不可选，请刷新店铺授权后重试。")
+            # 与市场选择器一致，默认优先采用 remote；后续仍可在草稿中调整。
+            operation = min(operations, key=lambda value: (value != "remote", value))
+            target = next((item for item in group if item["platform"] == platform), None)
+            if target is None:
+                target = {"platform": platform, "site": "CBT", "language": language, "sites_to_sell": []}
+                group.append(target)
+            target["sites_to_sell"].append({"site_id": site, "logistic_type": operation})
+        else:
+            group.append({"platform": platform, "site": site, "language": language})
+    return list(groups.values())
+
+
 def claim_products_to_platforms(
     product_ids: list[str],
     platforms: list[str] | None = None,
     *,
+    selected_markets: list[DraftClaimTarget] | None = None,
     context: AppContext | None = None,
 ) -> dict[str, Any]:
     active_context = context or get_context()
     products = active_context.products
-    targets = normalize_platforms(platforms) or ["mercadolibre"]
-    targets = [platform for platform in targets if platform in PLATFORMS]
-    if not targets:
+    if selected_markets is not None:
+        groups = _selected_market_groups(selected_markets, active_context.config.load_store_config())
+    else:
+        # AI 认领与市场准备任务仍显式按平台创建；与商品库共用复制及持久化流程。
+        targets = normalize_platforms(platforms) or ["mercadolibre"]
+        groups = [default_draft(platform)["target_sites"] for platform in targets if platform in PLATFORMS]
+    targets = list(dict.fromkeys(target["platform"] for group in groups for target in group))
+    if not groups:
         return {"ok": False, "claimed_count": 0, "items": [], "error": "没有可用的草稿目标"}
     items: list[dict[str, Any]] = []
-    for product_id in [str(item or "").strip() for item in product_ids if str(item or "").strip()]:
+    for product_id in dict.fromkeys(str(item or "").strip() for item in product_ids if str(item or "").strip()):
         product = products.load_product_from_index(
             product_id,
             "",
@@ -426,8 +485,16 @@ def claim_products_to_platforms(
             items.append({"product_id": product_id, "ok": False, "error": "商品不存在"})
             continue
         draft_ids: list[str] = []
-        for platform in targets:
+        for group in groups:
+            primary = group[0]
+            platform = primary["platform"]
             draft = draft_copy_from_product(product, platform)
+            draft.update({
+                "platforms": list(dict.fromkeys(target["platform"] for target in group)),
+                "language": primary["language"],
+                "site": primary["site"],
+                "target_sites": deepcopy(group),
+            })
             draft_id = active_context.db.upsert_draft_model(
                 product_id,
                 platform,
@@ -448,6 +515,7 @@ def claim_products_to_platforms(
     return {
         "ok": True,
         "claimed_count": sum(1 for item in items if item.get("ok")),
+        "draft_count": sum(len(item.get("draft_ids", [])) for item in items),
         "items": items,
         "productsIndex": products.load_products_index(),
         "draftsIndex": products.load_drafts_index(),

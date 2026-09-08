@@ -38,10 +38,10 @@ describe('SKU 图片资产选择', () => {
     const product = productFixture()
     const wrapper = mount(ProductImageEditorPanel, { props: { product, images, loading: false } })
     const pool = wrapper.getComponent(ImagePoolPanel)
-    await pool.get('input[aria-label="将图片 edited 用于 红色"]').setValue(true)
+    pool.vm.$emit('assignSkus', [{ assetId: 'edited', skuIds: ['red'], mode: 'assign' }])
     expect(product.skuItems[0]!.image_asset_id).toBe('edited')
     expect(wrapper.emitted('saveSkuImages')).toHaveLength(1)
-    expect(pool.text()).toContain('用于 SKU：红色')
+    expect(product.skuItems[0]!.image_asset_id).toBe('edited')
   })
 
   it('草稿图片页关联与 SKU 页共用覆盖字段，隔离商品及公共图集', async () => {
@@ -49,11 +49,13 @@ describe('SKU 图片资产选择', () => {
     const draft = reactive(createEmptyDraftDetail('ozon'))
     draft.skuItems = [{ sku_id: 'red', selected: true, sku: 'RED', stock: '1', overrides: {}, attributes_by_target: {}, pricing: { applied: true }, publications: {} }]
     const wrapper = mount(ProductImageEditorPanel, { props: { product, draft, images, loading: false } })
-    await wrapper.getComponent(ImagePoolPanel).get('input[aria-label="将图片 edited 用于 红色"]').setValue(true)
+    wrapper.getComponent(ImagePoolPanel).vm.$emit('assignSkus', [{ assetId: 'edited', skuIds: ['red'], mode: 'assign' }])
     expect(draft.skuItems[0]!.overrides.image_asset_id).toBe('edited')
     expect(draft.skuItems[0]!.pricing.applied).toBe(true)
     expect(product.skuItems[0]!.image_asset_id).toBe('original')
     expect(draft.images).toEqual([])
-    expect(wrapper.emitted('saveSkuImages')).toHaveLength(1)
+    expect(wrapper.emitted('saveSkuImages')).toBeUndefined()
+    wrapper.getComponent(ImagePoolPanel).vm.$emit('assignSkus', [{ assetId: '', skuIds: ['red'], mode: 'inherit' }])
+    expect(draft.skuItems[0]!.overrides).not.toHaveProperty('image_asset_id')
   })
 })
