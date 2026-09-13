@@ -44,6 +44,20 @@ class AgentCallStore:
                  "arguments": json.loads(row["arguments_json"]),
                  "output": json.loads(row["output_json"] or "null")} for row in rows]
 
+    def completed_tool_receipts(
+        self, conversation_id: str, tool_name: str,
+    ) -> list[dict[str, Any]]:
+        """读取同会话已完成的工具回执，供领域层核对创建对象的来源。"""
+        with self.db._connect() as conn:
+            rows = conn.execute(
+                """SELECT arguments_json,output_json FROM ai_tool_receipts
+                WHERE conversation_id=? AND tool_name=? AND status='completed'
+                AND output_json IS NOT NULL ORDER BY rowid""",
+                (conversation_id, tool_name),
+            ).fetchall()
+        return [{"arguments": json.loads(row["arguments_json"]),
+                 "output": json.loads(row["output_json"])} for row in rows]
+
     def pending(
         self, conversation_id: str
     ) -> tuple[DeferredToolRequests, DeferredToolResults, RunUsage] | None:

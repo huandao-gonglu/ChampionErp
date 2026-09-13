@@ -346,6 +346,8 @@ def test_write_capability_outputs_exclude_unbounded_aggregates() -> None:
 
 def test_save_receipts_do_not_use_unbounded_dict_resource() -> None:
     from erp_web.schemas.product_write_capabilities import (
+        DraftDuplicateResult,
+        DraftSkuSelectionUpdateResult,
         DraftPricingApplyResult,
         DraftSaveResult,
         DraftStockUpdateResult,
@@ -354,6 +356,8 @@ def test_save_receipts_do_not_use_unbounded_dict_resource() -> None:
     )
 
     for model in (
+        DraftDuplicateResult,
+        DraftSkuSelectionUpdateResult,
         ProductSaveResult,
         DraftSaveResult,
         ProductProfilePatchResult,
@@ -394,6 +398,8 @@ def test_generic_object_saves_not_in_global_task_allowlist() -> None:
     for focused in (
         "product_profile_patch",
         "draft_stock_update",
+        "draft_duplicate",
+        "draft_sku_selection_update",
         "draft_pricing_apply",
         "product_attributes_update",
     ):

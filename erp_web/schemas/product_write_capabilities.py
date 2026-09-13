@@ -207,6 +207,47 @@ class DraftDeleteRequest(BaseModel):
     draft_ids: Annotated[tuple[str, ...], Field(min_length=1)]
 
 
+class DraftDuplicateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    draft_id: Annotated[TrimmedText, StringConstraints(min_length=1, max_length=160)]
+
+
+class DraftDuplicateResult(BaseModel):
+    """独立副本的身份回执；完整内容通过 draft_read 读取。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source_draft_id: str
+    draft_id: str
+    product_id: str
+    platform: str
+
+
+class DraftSkuSelectionUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    draft_id: Annotated[TrimmedText, StringConstraints(min_length=1, max_length=160)]
+    selected_sku_ids: Annotated[
+        tuple[Annotated[TrimmedText, StringConstraints(min_length=1, max_length=160)], ...],
+        Field(max_length=100),
+    ] = Field(description="草稿最终勾选的完整 SKU ID 集合；未列出的取消勾选，空列表表示全部取消。")
+
+    @model_validator(mode="after")
+    def require_unique_skus(self) -> "DraftSkuSelectionUpdateRequest":
+        if len(set(self.selected_sku_ids)) != len(self.selected_sku_ids):
+            raise ValueError("selected_sku_ids 不得重复。")
+        return self
+
+
+class DraftSkuSelectionUpdateResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    draft_id: str
+    selected_count: int = Field(ge=0, le=100)
+    changed: bool
+
+
 class DraftDeleteResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -332,6 +373,10 @@ class ProductProfilePatchResult(BaseModel):
 
 
 __all__ = [
+    "DraftDuplicateRequest",
+    "DraftDuplicateResult",
+    "DraftSkuSelectionUpdateRequest",
+    "DraftSkuSelectionUpdateResult",
     "DraftDeleteRequest",
     "DraftDeleteResult",
     "DraftPricingApplyRequest",

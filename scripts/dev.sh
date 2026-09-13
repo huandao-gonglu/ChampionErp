@@ -207,7 +207,7 @@ start_image_https_tunnel() {
   echo "[log] Image Tunnel log: $IMAGE_TUNNEL_LOG"
 }
 
-if ! "$PY" -c "import requests, PIL, dotenv, openai, pydantic_ai, opentelemetry.sdk, snowballstemmer; from importlib.metadata import version; assert version('pydantic-ai-slim') == '2.22.0'; assert version('opentelemetry-sdk') == '1.44.0'; assert version('snowballstemmer') == '3.1.1'" >/dev/null 2>&1; then
+if ! "$PY" -c "import requests, PIL, dotenv, openai, pydantic_ai, opentelemetry.sdk, snowballstemmer; from importlib.metadata import version; assert version('pydantic-ai-slim') == '2.43.0'; assert version('opentelemetry-sdk') == '1.44.0'; assert version('snowballstemmer') == '3.1.1'" >/dev/null 2>&1; then
   echo "[setup] Installing backend dependencies"
   "$PY" -m pip install --upgrade pip
   "$PY" -m pip install -r "$ROOT_DIR/requirements.txt"

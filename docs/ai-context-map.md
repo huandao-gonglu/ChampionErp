@@ -702,9 +702,25 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   `draft_id` 的新刊登草稿。它复制来源草稿的可编辑内容及待复核项，但必须重置卖家
   SKU、UPC、预检结果、发布状态及全部远端刊登身份；不得复用来源草稿身份、把操作退化为
   复制 ID/文本，也不得保留旧复制路径作为 fallback。
+- 复制草稿保留逐 SKU 已应用核价及其币种快照；报价不绑定草稿/卖家编码。
+  预检仍按当前店铺币种、成本、包装、费用及销售目标检查有效性。缺失核价币种快照
+  报 `PRICING_STALE`，仅非空快照与当前币种不符时报告币种变化。
 - `erp_web/facades/product_facade.py::duplicate_draft_payload`：草稿复制请求的唯一 HTTP
   编排入口；`erp_web/stores/product_store.py::ProductStore` 仍是草稿规范化、复制、
   持久化和索引更新的唯一 owner。
+- `runtime_units/draft_edit_capabilities.py` 暴露 `draft_duplicate` 和
+  `draft_sku_selection_update` 两个可组合操作，共用 `ProductWriteCapabilityScope`。
+  AI 逐次复制多份，再用完整 `selected_sku_ids` 集合设置每份的发布选择；空集合取消
+  全选，不删除商品 SKU。`ProductStore.update_draft_sku_selection` 在商品锁内校验
+  SKU 归属及启用状态，仅提交勾选变化，复用编辑器保存和预检失效规则。
+- `facades/agent_draft_scope.py` 从同会话的可信 `draft_duplicate` 成功回执解析新草稿
+  的来源，只允许当前所选草稿及其副本后代进入后续写入范围；不自动开放同商品的兄弟
+  草稿，不信任模型提交的来源声明。后续用户消息仍按当前所选范围与操作权限检查。
+- 工具参数、身份回执和勾选契约位于 `schemas/product_write_capabilities.py`。
+  复制防重继续复用 Pydantic AI 原生 tool call ID 与现有 Tool Bridge 的持久回执：
+  同一调用重放返回原回执，新调用可创建另一份副本；结果未知时沿用现有阻断机制。
+  本次只增加业务工具和范围校验，不新增 Agent loop、恢复协议或审批状态机。
+  已核对本地 `pydantic-ai-slim==2.43.0` 与官方 Function Tools / Toolsets 文档。
 
 ## 商品发布
 

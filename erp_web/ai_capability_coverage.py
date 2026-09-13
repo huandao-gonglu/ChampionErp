@@ -380,8 +380,8 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         method="POST",
         path="/api/duplicate-draft",
         business_domain="商品与草稿",
-        disposition="internal_only",
-        reason="受信草稿箱 UI 的复制门面；当前不向模型开放自动创建副本能力。",
+        disposition="capability",
+        capability_names=("draft_duplicate",),
     ),
     AiCapabilityCoverageEntry(
         method="POST",

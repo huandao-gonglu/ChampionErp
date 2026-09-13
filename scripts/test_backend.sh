@@ -13,7 +13,7 @@ fi
 PY="$ROOT_DIR/.venv/bin/python"
 
 # Install dependencies needed by the backend test suite.
-if ! "$PY" -c "import pytest, requests, PIL, dotenv, pydantic_ai, opentelemetry.sdk; from importlib.metadata import version; assert version('pydantic-ai-slim') == '2.22.0'; assert version('opentelemetry-sdk') == '1.44.0'" >/dev/null 2>&1; then
+if ! "$PY" -c "import pytest, requests, PIL, dotenv, pydantic_ai, opentelemetry.sdk; from importlib.metadata import version; assert version('pydantic-ai-slim') == '2.43.0'; assert version('opentelemetry-sdk') == '1.44.0'" >/dev/null 2>&1; then
   echo "[setup] Installing backend test dependencies"
   "$PY" -m pip install --upgrade pip
   "$PY" -m pip install -r "$ROOT_DIR/requirements-dev.txt"

@@ -10,6 +10,7 @@ from typing import Any
 
 
 from erp_web.context import AppContext, get_context
+from erp_web.facades.agent_draft_scope import authorized_draft_ids
 from erp_web.runtime_units.conversation_fact_capabilities import ConversationFactScope
 from erp_web.facades.category_match_facade import (
     match_category as run_category_match,
@@ -377,6 +378,9 @@ def build_global_chat_toolset(context: AppContext | None = None) -> AiToolSet:
                     )
             ids = set(
                 json.loads(execution.business_scope.get("target_draft_ids", "[]"))
+            )
+            ids = authorized_draft_ids(
+                active, execution.business_scope.get("conversation_id", ""), ids,
             )
             from erp_web.schemas.ai_tools import AiToolExecutionError
 

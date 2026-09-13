@@ -196,6 +196,16 @@ def _selected_price_errors(product: dict[str, Any], draft: dict[str, Any]) -> li
             or selected.get("listing_currency")
             or snapshot_currency
         ).strip().upper()
+    if not snapshot_currency:
+        return [
+            precheck_item(
+                PRICING_STALE,
+                "pricing",
+                "缺少核价币种快照，请计算并应用售价",
+                "error",
+                "前往核价页计算并应用当前 SKU 的售价",
+            )
+        ]
     if snapshot_currency != store_currency:
         return [
             precheck_item(

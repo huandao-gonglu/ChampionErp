@@ -71,6 +71,14 @@ class ProductDraftWriteStore(Protocol):
 
     def delete_draft_from_index(self, draft_id: Any) -> dict[str, Any]: ...
 
+    def duplicate_draft_from_index(
+        self, draft_id: str,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, int]: ...
+
+    def update_draft_sku_selection(
+        self, draft_id: str, selected_sku_ids: list[str],
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, int]: ...
+
     def draft_workflow_status(
         self,
         product: dict[str, Any],
@@ -173,9 +181,10 @@ def _ai_draft_product_context(value: Any) -> dict[str, Any]:
     compact["image_count"] = len(images)
     compact["sku_count"] = len(context.get("sku_items", []))
     compact["sku_items"] = [
-        _bounded_dict_subset(
-            row, ("id", "name", "cost_cny", "options", "package_dimensions", "active")
-        )
+        {
+            key: _bounded_attribute_value(row.get(key))
+            for key in ("id", "name", "cost_cny", "options", "package_dimensions", "active")
+        }
         for row in context.get("sku_items", [])[:100]
     ]
     return compact
@@ -369,17 +378,17 @@ def _ai_draft_read_view(value: Any) -> DraftReadView:
         pricing_summary=pricing_summary,
         sku_count=len(draft.get("sku_items", [])),
         sku_items=tuple(
-            _bounded_dict_subset(
-                row,
-                (
+            {
+                key: _bounded_attribute_value(row.get(key))
+                for key in (
                     "sku_id",
                     "selected",
                     "sku",
                     "stock",
                     "overrides",
                     "attributes_by_target",
-                ),
-            )
+                )
+            }
             for row in draft.get("sku_items", [])[:100]
         ),
         grouping=_bounded_dict_subset(draft.get("grouping"), ("mode", "name")),

@@ -366,6 +366,7 @@ _DRAFT_PUBLISH_CONTENT_FIELDS = (
     "pricing",
     "stock",
     "sku",
+    "sku_items",
     "upc",
     "bullets",
     "search_terms",
@@ -1216,7 +1217,8 @@ class ProductStore:
         duplicated["target_sites"] = targets
         for sku in duplicated.get("sku_items", []):
             sku["publications"] = {}
-            sku["pricing"] = {}
+            # 核价依据属于商品成本和销售条件，不绑定草稿或卖家身份。
+            # 保留已应用报价，发布预检继续核对币种、成本、包装及费用是否变化。
             sku["sku"] = ""
 
         # 同一商品可能保留原草稿的发布预览；副本状态只能按自身内容重新计算。
@@ -1255,6 +1257,47 @@ class ProductStore:
             None,
             200,
         )
+
+    @product_mutation("draft")
+    def update_draft_sku_selection(
+        self, draft_id: str, selected_sku_ids: list[str]
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
+        """在商品锁内更新一份草稿的勾选，保留所有 SKU 内容和共享商品事实。"""
+        existing = self._db.load_draft_model(draft_id)
+        if not existing:
+            return {}, {"error": "草稿不存在", "error_code": "DRAFT_NOT_FOUND"}, 404
+        selected = set(selected_sku_ids)
+        if len(selected) != len(selected_sku_ids):
+            return {}, {"error": "SKU ID 不得重复", "error_code": "DRAFT_SKU_SELECTION_INVALID"}, 400
+        rows = deepcopy(existing.get("sku_items", []))
+        product = self._db.load_product_model(existing["product_id"])
+        facts = {row["id"]: row for row in product.get("sku_items", [])}
+        row_ids = {row["sku_id"] for row in rows}
+        invalid = sorted(
+            (selected - row_ids)
+            | {
+                sku_id for sku_id in selected
+                if sku_id not in facts or not facts[sku_id].get("active", True)
+            }
+        )
+        if invalid:
+            return {}, {
+                "error": "只能勾选当前草稿中存在且启用的 SKU：" + "、".join(invalid),
+                "error_code": "DRAFT_SKU_SELECTION_INVALID",
+            }, 400
+        changed = any(
+            bool(row.get("selected")) != (row["sku_id"] in selected)
+            for row in rows
+        )
+        if not changed:
+            return {"changed": False}, None, 200
+        for row in rows:
+            row["selected"] = row["sku_id"] in selected
+        # 复用编辑器保存的归一化和预检失效规则，不在能力层读改写整份草稿。
+        _result, error, status = self.save_draft_detail(
+            {"draft_id": draft_id, "sku_items": rows}
+        )
+        return {"changed": error is None}, error, status
 
     @product_mutation("product")
     def save_draft_detail(
