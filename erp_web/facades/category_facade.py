@@ -6,18 +6,11 @@ from __future__ import annotations
 CategoryProvider 注册表处理；facade 不直接访问文件、网络或 SQLite。
 """
 
-from copy import deepcopy
 from typing import Any
 
 from erp_web.context import get_context
 from erp_web.facades.category_match_facade import match_category
 from erp_web.product_model import validate_category_precheck
-from erp_web.runtime_units.category_attribute_ai_fill import (
-    apply_ai_model_attribute_fill,
-)
-from erp_web.runtime_units.sku_attribute_fill import fill_sku_attributes
-from erp_web.runtime_units.sku_source_attributes import reuse_sku_source_attributes
-from erp_web.runtime_units.text_translation import translate_texts
 from erp_web.runtime_units.category_store import (
     fetch_category_attribute_page,
     fetch_category_attribute_values,
@@ -226,92 +219,10 @@ def load_category_match_subject(
     return product, draft or {}, target, None
 
 
-def _draft_fill_payload(
-    context: Payload,
-    updated: Payload,
-    platform: str,
-    meta: Payload,
-) -> Payload:
-    drafts = updated.get("drafts") if isinstance(updated.get("drafts"), dict) else {}
-    updated_draft = (
-        drafts.get(platform) if isinstance(drafts.get(platform), dict) else {}
-    )
-    updated_draft = {
-        **updated_draft,
-        "category_precheck": {},
-        "last_precheck": {},
-        "last_precheck_target": {},
-    }
-    if meta.get("sku_id") or meta.get("sku_sources"):
-        context = deepcopy(context)
-        context["draft"]["sku_items"] = deepcopy(updated_draft["sku_items"])
-    saved = save_draft_target_listing_result(context, updated_draft)
-    saved_draft = saved.get("draft", {})
-    return {
-        "ok": True,
-        "fill_source": meta.get("source"),
-        "warning": meta.get("warning", ""),
-        "ai_filled": meta.get("ai_filled", []),
-        "draft": saved_draft,
-        "productContext": saved.get("productContext"),
-        "productsIndex": saved.get("productsIndex", []),
-        "draftsIndex": saved.get("draftsIndex", []),
-        "attributes": updated_draft.get("attributes", {}),
-        "need_review": meta.get("need_review", updated_draft.get("validation_errors", [])),
-    }
 
 
-def _product_fill_payload(
-    updated: Payload,
-    platform: str,
-    meta: Payload,
-) -> Payload:
-    products = get_context().products
-    saved = products.save_product(updated)
-    drafts = saved.get("drafts") if isinstance(saved.get("drafts"), dict) else {}
-    draft = drafts.get(platform) if isinstance(drafts.get(platform), dict) else {}
-    return {
-        "ok": True,
-        "fill_source": meta.get("source"),
-        "warning": meta.get("warning", ""),
-        "ai_filled": meta.get("ai_filled", []),
-        "product": saved,
-        "draft": draft,
-        "attributes": draft.get("attributes", {}),
-        "need_review": draft.get("validation_errors", []),
-    }
 
 
-def category_ai_fill_payload(body: Payload) -> ResponseWithStatus:
-    product, context, platform, site, error, status = _load_category_subject(body)
-    if error:
-        return error, status
-    record, record_error = _category_record(body, platform, site)
-    if record_error:
-        return record_error
-    sku_id = str(body.get("sku_id") or "").strip()
-    if sku_id or body.get("reuse_sku_sources"):
-        if context is None:
-            return {"ok": False, "error": "填写 SKU 属性需要明确草稿。", "error_code": "DRAFT_ID_REQUIRED"}, 400
-        # 客户端的属性定义不能决定可写字段；按草稿当前类目重新取得平台定义。
-        selected_id = str(product["drafts"][platform].get("category_id") or "").strip()
-        if not selected_id or selected_id != str(body.get("category_id") or "").strip():
-            return {"ok": False, "error": "类目已变化，请重新加载后填写 SKU 属性。", "error_code": "CATEGORY_CHANGED"}, 400
-        record, record_error = _category_record({"category_id": selected_id}, platform, site)
-        if record_error:
-            return record_error
-        try:
-            if body.get("reuse_sku_sources"):
-                updated, meta = reuse_sku_source_attributes(product, platform, record, translator=translate_texts)
-            else:
-                updated, meta = fill_sku_attributes(product, platform, record, sku_id, filler=apply_ai_model_attribute_fill)
-        except ValueError as exc:
-            return {"ok": False, "error": str(exc), "error_code": "SKU_ATTRIBUTES_INVALID"}, 400
-    else:
-        updated, meta = apply_ai_model_attribute_fill(product, platform, record)
-    if context is not None:
-        return _draft_fill_payload(context, updated, platform, meta), 200
-    return _product_fill_payload(updated, platform, meta), 200
 
 
 def category_match_payload(body: Payload) -> ResponseWithStatus:
@@ -370,7 +281,6 @@ def category_precheck_payload(body: Payload) -> ResponseWithStatus:
 
 
 __all__ = [
-    "category_ai_fill_payload",
     "category_attrs_payload",
     "category_match_payload",
     "category_precheck_payload",

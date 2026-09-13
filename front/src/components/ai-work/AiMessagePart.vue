@@ -29,23 +29,27 @@ const toolName = computed(() => {
   return name || 'tool'
 })
 
+const businessResult = computed(() => (
+  tool.value.output && typeof tool.value.output === 'object'
+    ? tool.value.output as { ok?: boolean; status?: string; error?: { message?: string } }
+    : undefined
+))
+const businessFailed = computed(() => businessResult.value?.ok === false)
+
 const toolStatusLabel = computed(() => {
-  // 开放的 global_task_start 是已受理的后台 Global Task（服务端已按 Deferred
-  // ledger 归一化为 input-available）：展示受理语义，避免误解为普通工具就绪；
-  // 任务真实状态以 conversation 级任务卡为唯一事实源。
-  if (toolName.value === 'global_task_start' && tool.value.state === 'input-available') {
-    return '任务已受理 · 后台执行'
-  }
   switch (tool.value.state) {
     case 'input-streaming':
       return '正在调用工具…'
     case 'input-available':
       return '工具已就绪'
     case 'approval-requested':
+      // 原生历史导出也用此状态表示尚未返回的工具，不能据此断言正在审批。
+      return '等待工具结果或审批'
     case 'approval-responded':
-      return '等待审批'
+      return '已响应审批'
     case 'output-available':
-      return '工具完成'
+      return businessFailed.value ? '业务执行失败'
+        : businessResult.value?.status === 'partial' ? '部分完成' : '工具完成'
     case 'output-error':
       return '工具失败'
     case 'output-denied':
@@ -56,6 +60,9 @@ const toolStatusLabel = computed(() => {
 })
 
 const toolStatusClass = computed(() => {
+  if (businessFailed.value) {
+    return 'bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-500/10 dark:text-rose-200 dark:ring-rose-500/30'
+  }
   switch (tool.value.state) {
     case 'output-error':
       return 'bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-500/10 dark:text-rose-200 dark:ring-rose-500/30'

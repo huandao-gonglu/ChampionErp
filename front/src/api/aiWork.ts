@@ -1,7 +1,7 @@
 import { apiClient } from './client'
 import type {
   AiWorkUiMessagesResponse,
-  ConversationTaskLinkResponse,
+  AiChatCancelResponse,
   PydanticConversationDetailResponse,
   PydanticConversationListResponse,
 } from '@/types/aiWork'
@@ -35,16 +35,6 @@ export async function fetchUiMessages(
   return response.data
 }
 
-/** conversation → 未解决 Deferred 任务的只读关联（仅返回 ready link）。 */
-export async function fetchConversationTaskLink(
-  conversationId: string,
-): Promise<ConversationTaskLinkResponse> {
-  const response = await apiClient.get<ConversationTaskLinkResponse>(
-    `${CONVERSATIONS_PATH}/${encodeURIComponent(conversationId)}/task-link`,
-  )
-  return response.data
-}
-
 /** 后台官方事件订阅 SSE URL；断线重连时携带已应用的 history version。 */
 export function conversationEventsUrl(
   conversationId: string,
@@ -59,3 +49,10 @@ export function conversationEventsUrl(
 
 /** 聊天流接口不走 Axios；此路径常量供共享 Chat transport 使用。 */
 export const AI_CHAT_RUNS_PATH = '/api/v1/ai-chat/runs'
+
+export async function cancelChatRun(conversationId: string, messageId: string): Promise<AiChatCancelResponse> {
+  const response = await apiClient.post<AiChatCancelResponse>('/api/v1/ai-chat/cancel', {
+    id: conversationId, message_id: messageId,
+  })
+  return response.data
+}

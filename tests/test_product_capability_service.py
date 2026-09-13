@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from contextlib import nullcontext
 
 import pytest
 
@@ -21,6 +22,9 @@ from erp_web.runtime_units.product_capabilities import (
 
 
 class _Products:
+    def mutation_scope(self, _arguments):
+        return nullcontext()
+
     def __init__(self) -> None:
         self.product = {
             "product_id": "product-1",
@@ -69,6 +73,7 @@ class _Products:
             "title": "Portable fan",
             "description": "Description",
             "status": "ready_to_publish",
+            "category_id": "CAT-1",
             "attributes": {"BRAND": "Generic"},
             "images": [],
             "validation_errors": [{"field": "attributes.MODEL"}],
@@ -86,7 +91,8 @@ class _Products:
                     "site": "MLM",
                     "language": "es-MX",
                     "listing_currency": "MXN",
-                    "attributes": {"BRAND": "Generic"},
+                    "category_id": "CAT-1",
+            "attributes": {"BRAND": "Generic"},
                     "validation_errors": [{"field": "attributes.MODEL"}],
                     "category_precheck": {"ok": True},
                     "last_precheck": {"ok": True},
@@ -133,6 +139,7 @@ class _Products:
 def test_attributes_update_sets_values_and_skips_identical_retry() -> None:
     products = _Products()
     request = ProductAttributesUpdateRequest(
+                category_id="CAT-1",
         draft_id="draft-1",
         platform="mercadolibre",
         site="MLM",
@@ -222,6 +229,7 @@ def test_images_prepare_invalidates_every_target_in_one_save() -> None:
             "site": "global",
             "language": "ru-RU",
             "listing_currency": "RUB",
+            "category_id": "CAT-1",
             "attributes": {"BRAND": "Generic"},
             "validation_errors": [{"field": "attributes.MODEL"}],
             "category_precheck": {"ok": True},
@@ -258,6 +266,7 @@ def test_attributes_update_requires_target_when_draft_has_multiple_targets() -> 
             "site": "global",
             "language": "ru-RU",
             "listing_currency": "RUB",
+            "category_id": "CAT-1",
             "attributes": {"BRAND": "Generic"},
         }
     )
@@ -265,6 +274,7 @@ def test_attributes_update_requires_target_when_draft_has_multiple_targets() -> 
     with pytest.raises(CapabilityInputRequired) as exc_info:
         update_product_attributes(
             ProductAttributesUpdateRequest(
+                category_id="CAT-1",
                 draft_id="draft-1",
                 updates={"MODEL": "F-1"},
             ),
@@ -293,6 +303,7 @@ def test_attributes_update_only_checks_selected_target_publish_state() -> None:
             "site": "global",
             "language": "ru-RU",
             "listing_currency": "RUB",
+            "category_id": "CAT-1",
             "attributes": {"BRAND": "Generic"},
             "category_precheck": {"ok": True},
             "last_precheck": {"ok": True},
@@ -305,6 +316,7 @@ def test_attributes_update_only_checks_selected_target_publish_state() -> None:
 
     result = update_product_attributes(
         ProductAttributesUpdateRequest(
+                category_id="CAT-1",
             draft_id="draft-1",
             platform="ozon",
             site="global",
@@ -356,6 +368,7 @@ def test_product_mutations_reject_published_draft(operation: str) -> None:
         if operation == "attributes":
             update_product_attributes(
                 ProductAttributesUpdateRequest(
+                category_id="CAT-1",
                     draft_id="draft-1",
                     platform="mercadolibre",
                     site="MLM",
@@ -429,3 +442,10 @@ def test_product_read_without_source_attributes_returns_empty_mapping() -> None:
     result = read_product(ProductReadRequest(product_id="product-1"), product_store=_Products())
     assert result.product.source_attributes == {}
     assert result.product.attributes == {}
+
+
+@pytest.fixture(autouse=True)
+def category_definition(monkeypatch):
+    monkeypatch.setattr("erp_web.runtime_units.category_attribute_updates.fetch_category_record",
+                        lambda *args, **kwargs: {"category_id": "CAT-1", "attributes": {
+                            "required": [{"id": "MODEL", "name": "型号", "required": True}], "optional": []}})

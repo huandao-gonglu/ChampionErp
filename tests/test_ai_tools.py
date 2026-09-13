@@ -109,7 +109,9 @@ def execution_context(
     return AiExecutionContext(
         task_run_id="task_test",
         attempt_id="attempt_test",
-        deadline_at=now - timedelta(seconds=1) if expired else now + timedelta(seconds=30),
+        deadline_at=now - timedelta(seconds=1)
+        if expired
+        else now + timedelta(seconds=30),
         budget_profile="test.default",
         permissions=permissions,
         idempotency_context={"operation_id": "operation-test"},
@@ -165,9 +167,7 @@ def test_ai_tool_schema_rejects_invalid_definitions_commands_and_arguments() -> 
             arguments={"item_id": "sku-1"},
             round=0,
         )
-    invalid_arguments = runtime(
-        lambda arguments, context: arguments
-    ).execute(
+    invalid_arguments = runtime(lambda arguments, context: arguments).execute(
         AiToolCommand(
             call_id="call_missing",
             tool_name="lookup_item",
@@ -257,7 +257,7 @@ def test_runtime_rejects_unregistered_tool_and_missing_permission() -> None:
     assert denied.error["code"] == "TOOL_PERMISSION_DENIED"
 
 
-def test_runtime_deduplicates_call_ids_and_same_tool_arguments() -> None:
+def test_runtime_deduplicates_ids_but_new_calls_read_fresh_data() -> None:
     executions: list[str] = []
 
     def executor(arguments, context):
@@ -272,19 +272,20 @@ def test_runtime_deduplicates_call_ids_and_same_tool_arguments() -> None:
 
     assert first.ok is True
     assert repeated_id.deduplicated is True
-    assert repeated_arguments.deduplicated is True
+    assert repeated_arguments.deduplicated is False
     assert repeated_arguments.call_id == "call_2"
-    assert executions == ["sku-1"]
+    assert executions == ["sku-1", "sku-1"]
 
 
-def test_runtime_persists_execution_checkpoint_only_immediately_before_executor() -> None:
+def test_runtime_persists_execution_checkpoint_only_immediately_before_executor() -> (
+    None
+):
     checkpoints: list[str] = []
     executions: list[str] = []
 
     tool_runtime = runtime(
         lambda arguments, context: (
-            executions.append(arguments["item_id"])
-            or {"item_id": arguments["item_id"]}
+            executions.append(arguments["item_id"]) or {"item_id": arguments["item_id"]}
         ),
         before_executor=lambda command: checkpoints.append(command.call_id),
         side_effect="write",
@@ -400,8 +401,7 @@ def test_runtime_enforces_deadline_and_call_budget() -> None:
     )
     assert tool_runtime.execute(tool_command()).ok is True
     over_budget = tool_runtime.execute(tool_command("call_2", item_id="sku-2"))
-    assert over_budget.ok is False
-    assert over_budget.error["code"] == "TOOL_CALL_BUDGET_EXCEEDED"
+    assert over_budget.ok is True  # 原生 UsageLimits 是工具额度的唯一执行边界。
 
 
 def test_runtime_validates_output_schema() -> None:
@@ -473,11 +473,7 @@ def test_write_projection_failure_marks_outcome_unknown() -> None:
     large_toolset = AiToolSet.bind(
         "test.write.large",
         [large_definition],
-        {
-            large_definition.name: deadline_aware_tool_executor(
-                large_write_executor
-            )
-        },
+        {large_definition.name: deadline_aware_tool_executor(large_write_executor)},
     )
     large_runtime = AiToolRuntime(
         toolset=large_toolset,
@@ -518,11 +514,7 @@ def test_write_projection_failure_marks_outcome_unknown() -> None:
     nan_toolset = AiToolSet.bind(
         "test.write.nan",
         [nan_definition],
-        {
-            nan_definition.name: deadline_aware_tool_executor(
-                nan_write_executor
-            )
-        },
+        {nan_definition.name: deadline_aware_tool_executor(nan_write_executor)},
     )
     nan_runtime = AiToolRuntime(
         toolset=nan_toolset,

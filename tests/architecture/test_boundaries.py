@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import subprocess
 import sys
 
@@ -18,14 +17,11 @@ from .support import (
 def test_services_do_not_reverse_depend_on_runtime_units() -> None:
     offenders = [
         f"{path.relative_to(ROOT)} -> {target}"
-        for path, target in imported_targets(
-            python_files("erp_web/services")
-        )
+        for path, target in imported_targets(python_files("erp_web/services"))
         if "runtime_units" in target
     ]
-    assert not offenders, (
-        "services 不得反向依赖 runtime_units：\n"
-        + "\n".join(offenders)
+    assert not offenders, "services 不得反向依赖 runtime_units：\n" + "\n".join(
+        offenders
     )
 
 
@@ -34,8 +30,7 @@ def test_facades_do_not_own_external_io() -> None:
     import_offenders = [
         f"{path.relative_to(ROOT)} -> {target}"
         for path, target in imported_targets(facades)
-        if target.lstrip(".").split(".")[0]
-        in {"requests", "urllib", "sqlite3"}
+        if target.lstrip(".").split(".")[0] in {"requests", "urllib", "sqlite3"}
     ]
     call_offenders = forbidden_calls(
         facades,
@@ -52,13 +47,11 @@ def test_facades_do_not_own_external_io() -> None:
             "sqlite3.connect",
         },
     )
-    assert not import_offenders, (
-        "Facade 不得直接依赖网络或数据库模块：\n"
-        + "\n".join(import_offenders)
+    assert not import_offenders, "Facade 不得直接依赖网络或数据库模块：\n" + "\n".join(
+        import_offenders
     )
-    assert not call_offenders, (
-        "Facade 不得直接执行外部 IO：\n"
-        + "\n".join(call_offenders)
+    assert not call_offenders, "Facade 不得直接执行外部 IO：\n" + "\n".join(
+        call_offenders
     )
 
 
@@ -69,15 +62,8 @@ def test_root_compatibility_packages_stay_removed() -> None:
         "product_model_units",
         "marketplace_publish_units",
     )
-    existing = [
-        package
-        for package in retired_packages
-        if (ROOT / package).exists()
-    ]
-    assert not existing, (
-        "不得在仓库根目录恢复包内实现的兼容镜像："
-        f"{existing}"
-    )
+    existing = [package for package in retired_packages if (ROOT / package).exists()]
+    assert not existing, f"不得在仓库根目录恢复包内实现的兼容镜像：{existing}"
 
 
 def test_frontend_workflow_types_match_backend_schema() -> None:
@@ -121,36 +107,18 @@ def test_app_context_owns_stateful_services(tmp_path) -> None:
         second.close()
 
 
-def test_production_global_task_controller_always_wires_deferred_links() -> None:
-    """报告 R-07：生产装配的 GlobalTaskController 必须接线 Deferred ledger。
-
-    无 link 任务的执行 fallback 已删除：接线 ledger 后，recovery 对无 link 的
-    recoverable 任务只做隔离取消。若生产装配漏接 deferred_links，孤儿任务会
-    重新获得执行路径，因此用 AST 检查固化该接线。
-    """
-
-    offenders: list[str] = []
+def test_retired_agent_engine_and_endpoints_are_absent() -> None:
+    for relative in (
+        "erp_web/services/global_task_controller.py",
+        "erp_web/services/global_task_continuation_service.py",
+        "erp_web/runtime_units/global_ai_control_tools.py",
+        "erp_web/stores/pydantic_deferred_task_link_store.py",
+        "erp_web/stores/pydantic_ai_event_outbox_store.py",
+        "erp_web/http_route_units/global_agent_routes.py",
+        "front/src/components/ai-work/GlobalTaskApprovalCard.vue",
+    ):
+        assert not (ROOT / relative).exists(), relative
     for path in python_files("erp_web"):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            name = (
-                func.id
-                if isinstance(func, ast.Name)
-                else func.attr
-                if isinstance(func, ast.Attribute)
-                else ""
-            )
-            if name != "GlobalTaskController":
-                continue
-            keywords = {keyword.arg for keyword in node.keywords}
-            if "deferred_links" not in keywords:
-                offenders.append(
-                    f"{path.relative_to(ROOT)}:{node.lineno}"
-                )
-    assert not offenders, (
-        "生产代码装配 GlobalTaskController 必须显式接线 deferred_links，"
-        "否则无 link 任务会绕过隔离：\n" + "\n".join(offenders)
-    )
+        source = path.read_text()
+        assert "GlobalTaskController" not in source
+        assert "global_task_start" not in source

@@ -11,7 +11,6 @@ import DashboardView from '@/views/workflow/DashboardView.vue'
 import DraftBoxPanel from '@/components/domain/DraftBoxPanel.vue'
 import DraftSkuPanel from '@/components/domain/DraftSkuPanel.vue'
 import DraftSkuAttributesEditor from '@/components/domain/DraftSkuAttributesEditor.vue'
-import DraftSkuAttributeBatchFill from '@/components/domain/DraftSkuAttributeBatchFill.vue'
 import DraftEditorPanel from '@/components/domain/DraftEditorPanel.vue'
 import DraftWorkspacePanel, { type DraftWorkspaceTab } from '@/components/domain/DraftWorkspacePanel.vue'
 import LibraryPanel from '@/components/domain/LibraryPanel.vue'
@@ -26,12 +25,15 @@ import PublishJobsPanel from '@/components/domain/PublishJobsPanel.vue'
 import RunLog from '@/components/domain/RunLog.vue'
 import { workflowNavItems } from '@/constants/navigation'
 import { useDraftImageSaveState } from '@/composables/useDraftImageSaveState'
+import { useAiPageContext } from '@/composables/useAiPageContext'
+import { aiPageLabels } from '@/types/aiPageContext'
 import { useClipboard } from '@/composables/useClipboard'
 import { useBackdropDismiss } from '@/composables/useBackdropDismiss'
 import { useAppStore } from '@/stores/app'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useWorkflowActivityStore } from '@/stores/workflow/activity'
 import { useWorkflowCatalogStore } from '@/stores/workflow/catalog'
+import { useAiAttributeResults } from '@/composables/useAiAttributeResults'
 import { useWorkflowCollectionStore } from '@/stores/workflow/collection'
 import { useWorkflowPublishingStore } from '@/stores/workflow/publishing'
 import { useWorkflowSettingsStore } from '@/stores/workflow/settings'
@@ -52,6 +54,7 @@ const {
   currentDraft,
   currentDraftProductContext,
 } = storeToRefs(catalogStore)
+useAiAttributeResults(currentDraft)
 const imageSaveState = useDraftImageSaveState(currentDraft, () => store.saveCurrentDraft())
 const imageSaveStatus = imageSaveState.status
 const {
@@ -125,6 +128,25 @@ const draftWorkspaceImagesLoadedFor = ref('')
 const editorMode = ref<'text' | 'images'>('text')
 const imageEditorTitle = ref('商品库图片编辑')
 const navItems = workflowNavItems
+
+useAiPageContext(() => {
+  if (route.path !== '/') return null
+  if (draftWorkspaceOpen.value) {
+    const draft = currentDraft.value
+    const target = draft.targetSites.length === 1 ? draft.targetSites[0] : undefined
+    return {
+      page: 'draft_editor', section: draftWorkspaceTab.value,
+      draft_id: draft.draftId || undefined,
+      product_id: draft.productId || currentDraftProductContext.value.productId || undefined,
+      platform: target?.platform, site: target?.site || undefined,
+    }
+  }
+  return { page: activeNav.value in aiPageLabels ? activeNav.value as keyof typeof aiPageLabels : 'dashboard' }
+})
+useAiPageContext(() => editorOpen.value && route.path === '/' ? {
+  page: 'product_editor', section: editorMode.value,
+  product_id: product.value.productId || undefined,
+} : null, 30)
 
 const pricingDraftItems = computed(() => draftsIndex.value.filter((item) => item.draftId))
 const pricingDraftTitle = computed(() => currentDraft.value.title || currentDraftProductContext.value.title || currentDraftProductContext.value.sourceTitle || currentDraft.value.draftId)
@@ -728,9 +750,6 @@ watch(
 
           <template #skus>
             <DraftSkuPanel :draft="currentDraft" :skus="currentDraftProductContext.skuItems" :images="imagePool" :loading="loading">
-              <template #batch-attributes="{ targetKey }">
-                <DraftSkuAttributeBatchFill :target-key="targetKey" :loading="loading" />
-              </template>
               <template #attributes="{ row, sku, targetKey }">
                 <DraftSkuAttributesEditor :sku-id="row.sku_id" :sku="sku" :target-key="targetKey" />
               </template>

@@ -125,6 +125,7 @@ def translate_texts(
     content: dict[str, Any],
     *,
     preserve_terms: tuple[str, ...] | list[str] = (),
+    timeout_seconds: int | None = None,
 ) -> dict[str, str]:
     language = str(target_language or "").strip()
     if not language:
@@ -144,6 +145,7 @@ def translate_texts(
         },
         lambda value: _normalize_translation_result(value, expected_keys),
         temperature=0.1,
+        **({"timeout_seconds": timeout_seconds} if timeout_seconds is not None else {}),
     )
     return _restore_preserve_terms(translated, protected_tokens)
 

@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Chat } from '@ai-sdk/vue'
 import type { UIMessage } from 'ai'
 import { useAiChatStore, useAiWorkDisplayStore } from '@/stores'
-import AiChatPanel from '@/components/ai-work/AiChatPanel.vue'
 import AiWorkView from '../AiWorkView.vue'
 
 const GLOBAL_CHAT_ID = `conversation_global_chat_${'ab'.repeat(16)}`
@@ -14,12 +13,6 @@ const mocks = vi.hoisted(() => ({
   fetchConversations: vi.fn(),
   fetchConversation: vi.fn(),
   fetchUiMessages: vi.fn(),
-  fetchConversationTaskLink: vi.fn(),
-  fetchGlobalTask: vi.fn(),
-  approveGlobalTask: vi.fn(),
-  rejectGlobalTask: vi.fn(),
-  submitGlobalTaskInput: vi.fn(),
-  cancelGlobalTask: vi.fn(),
 }))
 
 vi.mock('vue-router', async (importOriginal) => {
@@ -34,20 +27,11 @@ vi.mock('@/api/aiWork', () => ({
   fetchPydanticConversations: mocks.fetchConversations,
   fetchPydanticConversation: mocks.fetchConversation,
   fetchUiMessages: mocks.fetchUiMessages,
-  fetchConversationTaskLink: mocks.fetchConversationTaskLink,
   conversationEventsUrl: (conversationId: string, afterHistoryVersion: number) => (
     `/api/v1/ai-work/conversations/${conversationId}/events`
     + `?after_history_version=${Math.max(0, Math.floor(afterHistoryVersion))}`
   ),
   AI_CHAT_RUNS_PATH: '/api/v1/ai-chat/runs',
-}))
-
-vi.mock('@/api/globalTasks', () => ({
-  fetchGlobalTask: mocks.fetchGlobalTask,
-  approveGlobalTask: mocks.approveGlobalTask,
-  rejectGlobalTask: mocks.rejectGlobalTask,
-  submitGlobalTaskInput: mocks.submitGlobalTaskInput,
-  cancelGlobalTask: mocks.cancelGlobalTask,
 }))
 
 const conversations = [
@@ -151,24 +135,6 @@ describe('AiWorkView 对话与历史', () => {
     mocks.fetchConversations.mockResolvedValue({ ok: true, conversations })
     mocks.fetchConversation.mockImplementation(async (conversationId: string) => detail(conversationId))
     mocks.fetchUiMessages.mockImplementation(async (conversationId: string) => uiMessages(conversationId))
-    mocks.fetchConversationTaskLink.mockImplementation(async (conversationId: string) => ({
-      ok: true,
-      conversation_id: conversationId,
-      task_id: '',
-      link_status: '',
-      task: null,
-    }))
-    mocks.fetchGlobalTask.mockImplementation(async (taskId: string) => ({
-      ok: true,
-      task_id: taskId,
-      task: {
-        task_id: taskId,
-        goal: '后台任务',
-        status: 'in_progress',
-        steps: [],
-        current_step_index: 0,
-      },
-    }))
   })
 
   afterEach(() => {
@@ -264,47 +230,6 @@ describe('AiWorkView 对话与历史', () => {
     const live = wrapper.get('[data-testid="ai-work-live-chat"]')
     expect(live.text()).toContain('草稿有几条？')
     expect(live.text()).toContain('共有 3 条草稿。')
-  })
-
-  it('活动会话把 conversation id 传给 AiChatPanel 并在存在未解决任务时挂载任务卡', async () => {
-    const { store, mountNow } = setupView()
-    const conversationId = store.startConversation()
-    mocks.route.query = { conversation_id: conversationId }
-    mocks.fetchConversationTaskLink.mockResolvedValue({
-      ok: true,
-      conversation_id: conversationId,
-      task_id: 'gtask-9',
-      link_status: 'ready',
-      task: null,
-    })
-    mocks.fetchGlobalTask.mockResolvedValue({
-      ok: true,
-      task_id: 'gtask-9',
-      task: {
-        task_id: 'gtask-9',
-        goal: '删除指定商品',
-        status: 'in_progress',
-        steps: [],
-        current_step_index: 0,
-      },
-    })
-
-    const wrapper = mountNow()
-    await flushPromises()
-
-    const panel = wrapper.findComponent(AiChatPanel)
-    expect(panel.exists()).toBe(true)
-    expect(panel.props('conversationId')).toBe(conversationId)
-
-    // 任务卡由 conversation 级 task-link 纯读接口驱动挂载，并锁定普通发送。
-    await vi.waitFor(() => {
-      expect(wrapper.find('[data-testid="global-task-card"]').exists()).toBe(true)
-    })
-    expect(mocks.fetchGlobalTask).toHaveBeenCalledWith('gtask-9')
-    expect(wrapper.find('[data-testid="ai-chat-send-blocked"]').exists()).toBe(true)
-    expect(store.hasUnresolvedTask).toBe(true)
-
-    wrapper.unmount()
   })
 
   it('活动运行完成后刷新一次列表，服务端结果替换临时条目', async () => {
@@ -430,7 +355,9 @@ describe('AiWorkView 对话与历史', () => {
     })
   })
 
-  it('global.chat 历史可以重新激活后继续发送', async () => {
+  it('选中普通对话就显示输入框，只读取一次历史，发送前不调用模型', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
     const { store, mountNow } = setupView()
     const wrapper = mountNow()
     await flushPromises()
@@ -439,55 +366,75 @@ describe('AiWorkView 对话与历史', () => {
     await flushPromises()
 
     expect(wrapper.get('[data-testid="ai-work-chat-view"]').text()).toContain(`派生回答-${GLOBAL_CHAT_ID}`)
-    const reactivate = wrapper.get('[data-testid="ai-work-reactivate"]')
-    expect(reactivate.attributes('disabled')).toBeUndefined()
-
-    await reactivate.trigger('click')
-    await flushPromises()
-
     expect(store.activeConversationId).toBe(GLOBAL_CHAT_ID)
     expect(wrapper.find('[data-testid="ai-work-live-chat"]').exists()).toBe(true)
     expect(wrapper.get('[data-testid="ai-work-live-chat"]').text()).toContain(`派生回答-${GLOBAL_CHAT_ID}`)
     expect(wrapper.find('[data-testid="ai-work-reactivate"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="ai-chat-input"]').exists()).toBe(true)
+    expect(mocks.fetchUiMessages.mock.calls.filter(([id]) => id === GLOBAL_CHAT_ID)).toHaveLength(1)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('硬刷新后选中含未解决任务的 global.chat 历史会自动重新激活（A-12）', async () => {
-    const { store, mountNow } = setupView()
+  it('直接打开普通对话链接也能输入，消息发到选中的原对话', async () => {
     mocks.route.query = { conversation_id: GLOBAL_CHAT_ID }
-    mocks.fetchConversationTaskLink.mockImplementation(
-      async (conversationId: string) => (
-        conversationId === GLOBAL_CHAT_ID
-          ? {
-            ok: true,
-            conversation_id: conversationId,
-            task_id: 'gtask-locked',
-            link_status: 'ready',
-            task: null,
-          }
-          : {
-            ok: true,
-            conversation_id: conversationId,
-            task_id: '',
-            link_status: '',
-            task: null,
-          }
-      ),
-    )
-
+    const fetchMock = vi.fn(async () => new Response(
+      'data: {"type":"start","messageId":"reply"}\n\ndata: {"type":"finish","finishReason":"stop"}\n\ndata: [DONE]\n\n',
+      { headers: { 'x-vercel-ai-ui-message-stream': 'v1' } },
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+    const { store, mountNow } = setupView()
     const wrapper = mountNow()
     await flushPromises()
-
-    // 报告 A-12：无需手动点击"继续此对话"，锁定的历史会话自动恢复为可操作
-    // 的活动会话，任务卡随之挂载。
-    await vi.waitFor(() => {
-      expect(store.chat?.id).toBe(GLOBAL_CHAT_ID)
-    })
     expect(store.activeConversationId).toBe(GLOBAL_CHAT_ID)
-    expect(store.hasUnresolvedTask).toBe(true)
-    await vi.waitFor(() => {
-      expect(wrapper.find('[data-testid="ai-work-live-chat"]').exists()).toBe(true)
+    expect(fetchMock).not.toHaveBeenCalled()
+    await wrapper.get('[data-testid="ai-chat-input"]').setValue('继续讨论')
+    await wrapper.get('[data-testid="ai-chat-composer"]').trigger('submit')
+    await flushPromises()
+    const init = (fetchMock.mock.calls as unknown as [string, RequestInit][])[0]![1]
+    const payload = JSON.parse(String(init.body))
+    expect(payload.id).toBe(GLOBAL_CHAT_ID)
+    expect(payload.messages[0].parts[0].text).toBe('继续讨论')
+    wrapper.unmount()
+    store.disconnectEvents()
+  })
+
+  it('历史迟到时不能把用户刚选中的业务记录切换成其他对话', async () => {
+    let resolveHistory!: (value: ReturnType<typeof uiMessages>) => void
+    mocks.fetchUiMessages.mockImplementation((id: string) => id === GLOBAL_CHAT_ID
+      ? new Promise(resolve => { resolveHistory = resolve })
+      : Promise.resolve(uiMessages(id)))
+    const { store, mountNow } = setupView()
+    const wrapper = mountNow()
+    await flushPromises()
+    await wrapper.get(`[data-testid="ai-work-conversation-${GLOBAL_CHAT_ID}"]`).trigger('click')
+    await wrapper.get('[data-testid="ai-work-conversation-conversation-1"]').trigger('click')
+    await flushPromises()
+    resolveHistory(uiMessages(GLOBAL_CHAT_ID))
+    await flushPromises()
+    expect(wrapper.get('[data-testid="ai-work-selected-id"]').text()).toBe('conversation-1')
+    expect(store.activeConversationId).toBeNull()
+    expect(wrapper.find('[data-testid="ai-chat-input"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('普通对话读取失败时保留错误，重新选择后可以直接输入', async () => {
+    mocks.fetchUiMessages.mockImplementation(async (id: string) => {
+      if (id === GLOBAL_CHAT_ID) throw new Error('历史暂时不可用')
+      return uiMessages(id)
     })
-    expect(wrapper.find('[data-testid="ai-work-reactivate"]').exists()).toBe(false)
+    const { store, mountNow } = setupView()
+    const wrapper = mountNow()
+    await flushPromises()
+    await wrapper.get(`[data-testid="ai-work-conversation-${GLOBAL_CHAT_ID}"]`).trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="ai-work-ui-messages-error"]').text()).toContain('历史暂时不可用')
+    expect(store.activeConversationId).toBeNull()
+    mocks.fetchUiMessages.mockImplementation(async (id: string) => uiMessages(id))
+    await wrapper.get(`[data-testid="ai-work-conversation-${GLOBAL_CHAT_ID}"]`).trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="ai-chat-input"]').exists()).toBe(true)
+    wrapper.unmount()
+    store.disconnectEvents()
   })
 
   it('非 global.chat 历史只读且不显示继续入口', async () => {

@@ -122,7 +122,9 @@ def _selected_pricing_target(target_draft: dict[str, Any]) -> dict[str, Any]:
             if isinstance(target_draft.get("pricing"), dict)
             else {}
         )
-        targets = pricing.get("targets") if isinstance(pricing.get("targets"), dict) else {}
+        targets = (
+            pricing.get("targets") if isinstance(pricing.get("targets"), dict) else {}
+        )
         key = _target_key(
             text(target_draft.get("platform")),
             text(target_draft.get("site")),
@@ -135,8 +137,16 @@ def _pricing_target_is_usable(
     target_draft: dict[str, Any],
     selected: dict[str, Any],
 ) -> bool:
-    applied = selected.get("applied_price") if isinstance(selected.get("applied_price"), dict) else {}
-    basis = selected.get("calculation_basis") if isinstance(selected.get("calculation_basis"), dict) else {}
+    applied = (
+        selected.get("applied_price")
+        if isinstance(selected.get("applied_price"), dict)
+        else {}
+    )
+    basis = (
+        selected.get("calculation_basis")
+        if isinstance(selected.get("calculation_basis"), dict)
+        else {}
+    )
     try:
         amount_valid = float(text(applied.get("amount"))) > 0
     except (TypeError, ValueError):
@@ -158,11 +168,9 @@ def _pricing_target_is_usable(
             target_draft.get("sites_to_sell")
         )
         current_operations = mercadolibre_sales_operation_keys(current_targets)
-        if (
-            not current_operations
-            or mercadolibre_sales_condition_basis(basis.get("sites_to_sell"))
-            != mercadolibre_sales_condition_basis(current_targets)
-        ):
+        if not current_operations or mercadolibre_sales_condition_basis(
+            basis.get("sites_to_sell")
+        ) != mercadolibre_sales_condition_basis(current_targets):
             return False
         raw_modes = basis.get("destination_pricing_modes")
         modes = raw_modes if isinstance(raw_modes, list) else []
@@ -173,13 +181,10 @@ def _pricing_target_is_usable(
             ): text(item.get("pricing_model")).lower()
             for item in modes
             if isinstance(item, dict)
-            and text(item.get("pricing_model")).lower()
-            in {"price", "net_proceeds"}
+            and text(item.get("pricing_model")).lower() in {"price", "net_proceeds"}
         }
         raw_results = selected.get("destination_results")
-        destination_results = (
-            raw_results if isinstance(raw_results, list) else []
-        )
+        destination_results = raw_results if isinstance(raw_results, list) else []
         result_by_operation = {
             (
                 text(item.get("site_id")).upper(),
@@ -188,11 +193,9 @@ def _pricing_target_is_usable(
             for item in destination_results
             if isinstance(item, dict)
         }
-        if (
-            tuple(sorted(mode_by_operation)) != tuple(sorted(current_operations))
-            or tuple(sorted(result_by_operation))
-            != tuple(sorted(current_operations))
-        ):
+        if tuple(sorted(mode_by_operation)) != tuple(
+            sorted(current_operations)
+        ) or tuple(sorted(result_by_operation)) != tuple(sorted(current_operations)):
             return False
         expected_currency = text(target_draft.get("listing_currency")).upper()
         expected_fingerprint = text(selected.get("calculation_fingerprint"))
@@ -211,15 +214,12 @@ def _pricing_target_is_usable(
             ):
                 return False
             try:
-                destination_amount_valid = (
-                    float(text(selected_money.get("amount"))) > 0
-                )
+                destination_amount_valid = float(text(selected_money.get("amount"))) > 0
             except (TypeError, ValueError):
                 destination_amount_valid = False
             if (
                 not destination_amount_valid
-                or text(selected_money.get("currency")).upper()
-                != expected_currency
+                or text(selected_money.get("currency")).upper() != expected_currency
                 or text(destination.get("calculation_fingerprint"))
                 != expected_fingerprint
             ):
@@ -248,7 +248,9 @@ def _pricing_target_is_usable(
     return True
 
 
-def _canonical_destination_pricing_modes(value: Any) -> tuple[tuple[str, str, str], ...]:
+def _canonical_destination_pricing_modes(
+    value: Any,
+) -> tuple[tuple[str, str, str], ...]:
     rows = value if isinstance(value, list) else []
     return tuple(
         sorted(
@@ -261,8 +263,7 @@ def _canonical_destination_pricing_modes(value: Any) -> tuple[tuple[str, str, st
             if isinstance(item, dict)
             and text(item.get("site_id"))
             and text(item.get("logistic_type"))
-            and text(item.get("pricing_model")).lower()
-            in {"price", "net_proceeds"}
+            and text(item.get("pricing_model")).lower() in {"price", "net_proceeds"}
         )
     )
 
@@ -274,16 +275,10 @@ def _current_mercadolibre_pricing_context(
 ) -> tuple[str, tuple[tuple[str, str, str], ...]]:
     """读取当前授权投影；无效/过期授权不得支持复用旧核价。"""
 
-    store = (
-        store_config.get("mercadolibre")
-        if isinstance(store_config, dict)
-        else {}
-    )
+    store = store_config.get("mercadolibre") if isinstance(store_config, dict) else {}
     store = store if isinstance(store, dict) else {}
     try:
-        listing_model = require_mercadolibre_listing_model(
-            store.get("listing_model")
-        )
+        listing_model = require_mercadolibre_listing_model(store.get("listing_model"))
     except RuntimeError:
         return "", ()
     targets = mercadolibre_sales_condition_basis(target.get("sites_to_sell"))
@@ -332,9 +327,7 @@ def _current_mercadolibre_pricing_context_matches(
         current_listing_model
         and current_modes
         and text(basis.get("listing_model")) == current_listing_model
-        and _canonical_destination_pricing_modes(
-            basis.get("destination_pricing_modes")
-        )
+        and _canonical_destination_pricing_modes(basis.get("destination_pricing_modes"))
         == current_modes
     )
 
@@ -375,9 +368,7 @@ def _apply_mercadolibre_destination_results(
 ) -> list[dict[str, Any]]:
     """把已验证核价结果原子写回各 marketplace operation。"""
 
-    current_targets = normalize_mercadolibre_sites_to_sell(
-        target.get("sites_to_sell")
-    )
+    current_targets = normalize_mercadolibre_sites_to_sell(target.get("sites_to_sell"))
     raw_results = pricing_target.get("destination_results")
     results = raw_results if isinstance(raw_results, list) else []
     result_by_operation = {
@@ -397,29 +388,22 @@ def _apply_mercadolibre_destination_results(
             "CBT 核价结果没有完整覆盖当前销售国家与物流方式。",
         )
     expected_currency = text(
-        pricing_target.get("listing_currency")
-        or target.get("listing_currency")
+        pricing_target.get("listing_currency") or target.get("listing_currency")
     ).upper()
-    expected_fingerprint = text(
-        pricing_target.get("calculation_fingerprint")
-    )
+    expected_fingerprint = text(pricing_target.get("calculation_fingerprint"))
     applied_targets: list[dict[str, Any]] = []
     for current in current_targets:
         operation = (current["site_id"], current["logistic_type"])
         destination = result_by_operation[operation]
         pricing_model = text(destination.get("pricing_model")).lower()
         selected_money = destination.get(pricing_model)
-        opposite_field = (
-            "price" if pricing_model == "net_proceeds" else "net_proceeds"
-        )
+        opposite_field = "price" if pricing_model == "net_proceeds" else "net_proceeds"
         if (
             pricing_model not in {"price", "net_proceeds"}
             or not isinstance(selected_money, dict)
             or destination.get(opposite_field) not in (None, "")
-            or text(selected_money.get("currency")).upper()
-            != expected_currency
-            or text(destination.get("calculation_fingerprint"))
-            != expected_fingerprint
+            or text(selected_money.get("currency")).upper() != expected_currency
+            or text(destination.get("calculation_fingerprint")) != expected_fingerprint
         ):
             raise BusinessCapabilityError(
                 "PRICING_RESULT_INVALID",
@@ -505,7 +489,9 @@ def _pricing_payload(
 ) -> dict[str, Any]:
     raw = deepcopy(dict(pricing_input))
     pricing = draft.get("pricing") if isinstance(draft.get("pricing"), dict) else {}
-    stored_common = pricing.get("common") if isinstance(pricing.get("common"), dict) else {}
+    stored_common = (
+        pricing.get("common") if isinstance(pricing.get("common"), dict) else {}
+    )
     product_defaults = (
         product.get("pricing_defaults")
         if isinstance(product.get("pricing_defaults"), dict)
@@ -536,7 +522,9 @@ def _pricing_payload(
         **deepcopy(raw_common),
     }
     key = _target_key(text(target.get("platform")), text(target.get("site")))
-    stored_targets = pricing.get("targets") if isinstance(pricing.get("targets"), dict) else {}
+    stored_targets = (
+        pricing.get("targets") if isinstance(pricing.get("targets"), dict) else {}
+    )
     target_input = (
         deepcopy(stored_targets.get(key))
         if isinstance(stored_targets.get(key), dict)
@@ -640,17 +628,14 @@ def prepare_target_pricing(
             if not is_mercadolibre_cbt:
                 return deepcopy(selected)
             current_store_config = store_config_loader()
-            if (
-                _current_store_currency_context_matches(
-                    target_projection,
-                    selected,
-                    store_config=current_store_config,
-                )
-                and _current_mercadolibre_pricing_context_matches(
-                    target_projection,
-                    selected,
-                    store_config=current_store_config,
-                )
+            if _current_store_currency_context_matches(
+                target_projection,
+                selected,
+                store_config=current_store_config,
+            ) and _current_mercadolibre_pricing_context_matches(
+                target_projection,
+                selected,
+                store_config=current_store_config,
             ):
                 return deepcopy(selected)
     payload = _pricing_payload(
@@ -725,7 +710,7 @@ def prepare_target_pricing(
                     ),
                     options=sales_target_options,
                     input_type="multi_select",
-                    input_owner="step",
+                    argument_path="arguments",
                 )
             labels = {
                 "cost_cny": "采购成本（CNY）",
@@ -742,7 +727,7 @@ def prepare_target_pricing(
                 key=field,
                 label=labels.get(field, field),
                 reason="请补充核价资料后继续同一步骤。",
-                input_owner="pricing_input",
+                argument_path="pricing_input",
             )
         raise BusinessCapabilityError(
             "PRICING_CALCULATION_FAILED",
@@ -773,7 +758,9 @@ def prepare_target_pricing(
         draft.get("pricing") if isinstance(draft.get("pricing"), dict) else {}
     )
     key = _target_key(platform, text(target.get("site")))
-    stored_targets = pricing.get("targets") if isinstance(pricing.get("targets"), dict) else {}
+    stored_targets = (
+        pricing.get("targets") if isinstance(pricing.get("targets"), dict) else {}
+    )
     pricing.update(
         {
             "platform": platform,
@@ -827,7 +814,9 @@ def prepare_target_pricing(
         if isinstance(saved_pricing.get("targets"), dict)
         else {}
     )
-    persisted = saved_targets.get(key) if isinstance(saved_targets.get(key), dict) else {}
+    persisted = (
+        saved_targets.get(key) if isinstance(saved_targets.get(key), dict) else {}
+    )
     return deepcopy(persisted) if persisted else deepcopy(pricing_target)
 
 

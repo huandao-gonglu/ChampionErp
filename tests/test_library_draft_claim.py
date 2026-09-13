@@ -73,6 +73,23 @@ def test_each_product_has_one_draft_per_language_and_only_selected_markets(libra
         }
 
 
+def test_agent_all_markets_uses_same_language_groups_and_sales_bindings(library):
+    from erp_web.facades.agent_capability_facade import build_global_chat_toolset
+    from erp_web.schemas.ai_trace import AiExecutionContext
+
+    tool = build_global_chat_toolset(library).bindings["claim_products"]
+    result = tool.executor({"product_ids": ["product-1", "product-2"], "all_markets": True},
+                          AiExecutionContext.create(timeout_seconds=30, budget_profile="test"))
+    assert result["claimed_count"] == 2
+    assert len(result["drafts_index"]) == 6
+    for item in result["items"]:
+        drafts = [library.db.load_draft_model(draft_id) for draft_id in item["draft_ids"]]
+        assert {draft["language"] for draft in drafts} == {"es", "pt-BR", "ru-RU"}
+        assert sum(len(draft["target_sites"]) for draft in drafts) == 4
+        brazil = next(draft for draft in drafts if draft["language"] == "pt-BR")
+        assert brazil["target_sites"][0]["sites_to_sell"] == [{"site_id": "MLB", "logistic_type": "remote"}]
+
+
 def test_single_row_multiple_languages_create_fresh_drafts_without_modifying_existing(library):
     targets = [market("mercadolibre", "MLM", "es"), market("mercadolibre", "MLB", "pt-BR")]
     body = {"product_ids": ["product-1", "product-1"], "targets": targets + targets}

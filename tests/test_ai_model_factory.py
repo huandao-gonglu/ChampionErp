@@ -14,7 +14,7 @@ from pydantic_ai.providers.deepseek import DeepSeekProvider
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import ToolDefinition
 
-from erp_web.services import ai_model_factory, ai_provider_catalog
+from erp_web.services import ai_provider_catalog
 from erp_web.services.ai_model_factory import (
     AiModelFactoryError,
     create_pydantic_model_binding,
@@ -43,10 +43,11 @@ def model_config(**overrides):
     return config
 
 
-def test_public_provider_catalog_does_not_expose_generic_adapter_as_second_openai() -> None:
+def test_public_provider_catalog_does_not_expose_generic_adapter_as_second_openai() -> (
+    None
+):
     providers = {
-        item["id"]: item
-        for item in ai_provider_catalog.public_provider_catalog()
+        item["id"]: item for item in ai_provider_catalog.public_provider_catalog()
     }
 
     assert set(providers) == {"openai", "deepseek", "alibaba"}
@@ -59,11 +60,13 @@ def test_public_provider_catalog_does_not_expose_generic_adapter_as_second_opena
 
 def test_pydantic_ai_dependency_is_locked_to_verified_public_api() -> None:
     requirements = (
-        Path(__file__).resolve().parents[1] / "requirements.txt"
-    ).read_text(encoding="utf-8").splitlines()
+        (Path(__file__).resolve().parents[1] / "requirements.txt")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
 
-    assert requirements.count("pydantic-ai-slim[openai]==2.22.0") == 1
-    assert version("pydantic-ai-slim") == "2.22.0"
+    assert requirements.count("pydantic-ai-slim[openai]==2.43.0") == 1
+    assert version("pydantic-ai-slim") == "2.43.0"
     assert all(
         item is not None
         for item in (
@@ -99,7 +102,6 @@ def test_factory_builds_openai_chat_model_with_custom_base_url_and_settings() ->
         "temperature": 0.15,
         "max_tokens": 900,
         "timeout": 12.0,
-        "parallel_tool_calls": False,
     }
 
 
@@ -120,7 +122,7 @@ def test_factory_builds_responses_model_and_unified_openai_thinking() -> None:
     assert isinstance(binding.model, OpenAIResponsesModel)
     assert binding.model_settings["max_tokens"] == 1200
     assert binding.model_settings["thinking"] == "high"
-    assert binding.model_settings["parallel_tool_calls"] is False
+    assert "parallel_tool_calls" not in binding.model_settings
 
 
 def test_alibaba_qwen_responses_downgrades_required_tool_choice_to_auto() -> None:
@@ -216,7 +218,9 @@ def test_factory_maps_alibaba_chat_reasoning_without_openai_thinking() -> None:
     }
 
 
-def test_factory_resolves_environment_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_factory_resolves_environment_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("ERP_TEST_AGENT_API_KEY", "env-secret-value")
     monkeypatch.setenv("ERP_TEST_AGENT_BASE_URL", "https://env.example.invalid/v1")
     monkeypatch.setenv("ERP_TEST_AGENT_MODEL", "env-model")
@@ -239,9 +243,7 @@ def test_factory_resolves_environment_credentials(monkeypatch: pytest.MonkeyPatc
 
 def test_factory_rejects_retired_provider_retry_override() -> None:
     with pytest.raises(AiModelFactoryError, match="provider_max_retries 已退役"):
-        create_pydantic_model_binding(
-            model_config(extra={"provider_max_retries": 3})
-        )
+        create_pydantic_model_binding(model_config(extra={"provider_max_retries": 3}))
 
 
 def test_factory_uses_curated_deepseek_provider() -> None:
@@ -304,7 +306,6 @@ def test_factory_resolves_frontend_neutral_use_case_binding(tmp_path: Path) -> N
         "temperature": 0.25,
         "max_tokens": 640,
         "timeout": 17.0,
-        "parallel_tool_calls": False,
     }
 
 
@@ -331,7 +332,9 @@ def test_use_case_factory_rejects_unknown_or_incompatible_binding(
         )
 
 
-def test_factory_rejects_unsupported_connection_capability_and_protocol_override() -> None:
+def test_factory_rejects_unsupported_connection_capability_and_protocol_override() -> (
+    None
+):
     with pytest.raises(AiModelFactoryError, match="只支持 API"):
         create_pydantic_model_binding(model_config(connection_type="cli"))
 
@@ -389,7 +392,9 @@ def test_factory_rejects_invalid_config_without_leaking_secret(
         create_pydantic_model_binding(model_config(api_key="", api_key_env=""))
 
 
-def test_factory_rejects_unmapped_deepseek_reasoning_instead_of_silent_downgrade() -> None:
+def test_factory_rejects_unmapped_deepseek_reasoning_instead_of_silent_downgrade() -> (
+    None
+):
     with pytest.raises(AiModelFactoryError, match="无法安全转换推理参数"):
         create_pydantic_model_binding(
             model_config(
@@ -398,7 +403,5 @@ def test_factory_rejects_unmapped_deepseek_reasoning_instead_of_silent_downgrade
                 base_url="https://api.deepseek.com",
                 model="deepseek-reasoner",
             ),
-            generation_settings={
-                "reasoning": {"mode": "enabled", "effort": "medium"}
-            },
+            generation_settings={"reasoning": {"mode": "enabled", "effort": "medium"}},
         )

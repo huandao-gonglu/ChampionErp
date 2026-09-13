@@ -193,7 +193,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
     loadCategoryAttributes: combined.loadCategoryAttributes,
     translateCategoryAttributes: combined.translateCategoryAttributes,
     translateCategoryResults: combined.translateCategoryResults,
-    fillAttributesByAi: combined.fillAttributesByAi,
     invalidatePublishValidation: combined.invalidatePublishValidation,
     invalidateCategoryPrecheck: combined.invalidateCategoryPrecheck,
     runCategoryOnlyPrecheck: combined.runCategoryOnlyPrecheck,

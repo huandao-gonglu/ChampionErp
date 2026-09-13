@@ -1,17 +1,38 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import CategoryAttributesPanel from '@/components/domain/CategoryAttributesPanel.vue'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useWorkflowActivityStore } from '@/stores/workflow/activity'
 import { useWorkflowCatalogStore } from '@/stores/workflow/catalog'
 import { useWorkflowPublishingStore } from '@/stores/workflow/publishing'
+import { useAiPageContext } from '@/composables/useAiPageContext'
 
 const workflow = useWorkflowStore()
 const { targetEditors } = storeToRefs(workflow)
 const { currentDraftProductContext } = storeToRefs(useWorkflowCatalogStore())
 const { platformOptions } = storeToRefs(useWorkflowPublishingStore())
 const { loading } = storeToRefs(useWorkflowActivityStore())
+const focusedTarget = ref('')
+const focusedAttribute = ref('')
+
+function focusBackground(key: string, event: Event): void {
+  focusedTarget.value = key
+  focusedAttribute.value = (event.target as HTMLElement).closest<HTMLElement>('[data-attribute-id]')?.dataset.attributeId || ''
+}
+
+useAiPageContext(() => {
+  const editor = targetEditors.value.find(item => item.key === focusedTarget.value)
+    ?? (targetEditors.value.length === 1 ? targetEditors.value[0] : undefined)
+  if (!editor) return null
+  return {
+    page: 'draft_editor', section: 'category',
+    draft_id: editor.draft.draftId || undefined,
+    product_id: editor.draft.productId || currentDraftProductContext.value.productId || undefined,
+    platform: editor.target.platform, site: editor.target.site || undefined,
+    attribute_id: focusedAttribute.value || undefined,
+  }
+}, 10)
 
 const emit = defineEmits<{
   updatePackageDimension: [field: 'lengthCm' | 'widthCm' | 'heightCm' | 'weightKg', value: string]
@@ -43,6 +64,8 @@ onMounted(async () => {
         :disabled="loading"
         class="relative min-w-0"
         data-testid="category-target-editor"
+        @pointerdown="focusBackground(editor.key, $event)"
+        @focusin="focusBackground(editor.key, $event)"
       >
         <CategoryAttributesPanel
           :draft="editor.draft"
@@ -73,7 +96,6 @@ onMounted(async () => {
           @apply-category="editor.run(editor.actions.loadCategoryAttributes)"
           @translate-category-results="editor.run(editor.actions.translateCategoryResults)"
           @translate-category-attributes="editor.run(editor.actions.translateCategoryAttributes)"
-          @fill-attributes="editor.run(editor.actions.fillAttributesByAi)"
           @update-package-dimension="(field, value) => emit('updatePackageDimension', field, value)"
           @invalidate-category-precheck="editor.actions.invalidateCategoryPrecheck"
           @category-precheck="editor.run(editor.actions.runCategoryOnlyPrecheck)"

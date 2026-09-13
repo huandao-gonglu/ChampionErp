@@ -20,20 +20,12 @@ export interface ChatCommandEntry {
 export function useChatCommands() {
   const chatStore = useAiChatStore()
 
-  const context = computed<ChatCommandContext>(() => {
-    const linkedTask = chatStore.taskLink?.task ?? null
-    return {
-      isBusy: chatStore.isBusy,
-      hasUnresolvedTask: chatStore.hasUnresolvedTask,
-      taskStatus: linkedTask?.status ?? '',
-      taskId: chatStore.taskLink?.task_id ?? '',
-      approvalStepId: linkedTask?.pending_approval?.step_id ?? '',
-      approvalSummary: String(linkedTask?.pending_approval?.payload?.summary ?? '').trim(),
-      startConversation: chatStore.startConversation,
-      stopStreaming: chatStore.stopStreaming,
-      refreshTaskLink: chatStore.refreshTaskLink,
-    }
-  })
+  const context = computed<ChatCommandContext>(() => ({
+    isBusy: chatStore.isBusy,
+    startConversation: chatStore.startConversation,
+    stopStreaming: chatStore.stopStreaming,
+    refreshHistory: chatStore.refreshHistory,
+  }))
 
   /** 按查询串（`/` 之后的部分）返回命令条目；查询串为空返回全部命令。 */
   function commandsFor(query: string): ChatCommandEntry[] {

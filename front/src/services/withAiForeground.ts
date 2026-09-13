@@ -59,7 +59,7 @@ export async function withAiForeground<TResult>(
   let chat: ReturnType<typeof createPresentationObserveChat>
   let streamError: Error | null = null
   try {
-    descriptor = await reserveAiPresentation(options.displayTitle)
+    descriptor = await reserveAiPresentation(options.displayTitle, options.initialUserMessage)
     chat = createPresentationObserveChat(descriptor.presentationId, {
       initialUserMessage: options.initialUserMessage,
       onError: (error) => {

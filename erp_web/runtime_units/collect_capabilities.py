@@ -85,7 +85,7 @@ class CollectCapabilityScope:
     ]
     online_1688_collector: Callable[[dict[str, Any]], dict[str, Any]]
     text_cleaner: Callable[[str, str], dict[str, Any]]
-    claimer: Callable[[list[str], list[str] | None], dict[str, Any]]
+    claimer: Callable[[list[str], list[dict[str, str]] | None], dict[str, Any]]
 
 
 SOURCE_COLLECT_TOOL = "source_collect"
@@ -327,7 +327,7 @@ def collect_1688_clean(
 
 @ai_tool(
     name=CLAIM_PRODUCTS_TOOL,
-    description="把本地商品认领到目标平台，生成对应平台草稿。",
+    description="把本地商品认领到销售市场生成草稿。所有平台和市场须一次调用 all_markets=true，由服务端按可选市场和语言分组（同语言跨平台共用草稿）；指定市场使用 targets。只创建草稿，不准备文案或发布。",
     permission="collect.write",
     side_effect="write",
     approval_required=False,
@@ -342,9 +342,9 @@ def claim_products(
     execution: Annotated[AiExecutionContext, Injected()],
 ) -> ClaimProductsResult:
     del execution
-    platforms = list(request.platforms) if request.platforms else None
+    targets = None if request.all_markets else [target.model_dump() for target in request.targets]
     try:
-        result = scope.claimer(list(request.product_ids), platforms)
+        result = scope.claimer(list(request.product_ids), targets)
     except BusinessCapabilityError:
         raise
     except Exception as exc:

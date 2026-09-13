@@ -670,10 +670,10 @@ export async function searchCategories(platform: Marketplace, query: string, sit
 export const CATEGORY_MATCH_PATH = '/api/v1/category-match'
 
 /**
- * 类目匹配业务请求 timeout：必须大于后端 Agent deadline（60s）并保留网络余量，
+ * 类目匹配业务请求 timeout：必须大于后端总 deadline（150s）并保留网络余量，
  * 不能沿用低于业务 deadline 的全局默认 timeout。
  */
-export const CATEGORY_MATCH_REQUEST_TIMEOUT_MS = 75_000
+export const CATEGORY_MATCH_REQUEST_TIMEOUT_MS = 180_000
 
 function normalizeCategoryMatchResult(data: UnknownRecord): CategoryMatchResult {
   const selectedCategoryId = getString(data, ['selected_category_id', 'selectedCategoryId'])
@@ -758,85 +758,4 @@ export async function matchCategory(
       return normalizeCategoryMatchResult(asRecord(response.data))
     },
   )
-}
-
-function categorySelectionToBackendRecord(category: CategorySelection | null): UnknownRecord | null {
-  if (!category) return null
-  return {
-    ...asRecord(category.raw),
-    platform: category.platform,
-    category_id: category.categoryId,
-    category_path: category.categoryPath,
-    path_original: category.categoryPath ? [category.categoryPath] : [],
-    attributes: {
-      required: category.requiredAttributes.map((attr) => ({
-        id: attr.id,
-        name: attr.name,
-        required: attr.required,
-        variation_role: attr.variationRole || '',
-        options: attr.options || [],
-        value_type: attr.valueType || '',
-        value_mode: attr.valueMode || '',
-        allow_custom_values: Boolean(attr.allowCustomValues),
-        has_more_values: Boolean(attr.hasMoreValues),
-        read_only: Boolean(attr.readOnly),
-        unit: attr.unit || '',
-        unit_options: attr.unitOptions || [],
-        default_unit: attr.defaultUnit || '',
-        dictionary_id: normalizeCategoryDictionaryId(attr.dictionaryId),
-        is_dictionary: isCategoryDictionaryAttribute(attr.dictionaryId, attr.isDictionary),
-        is_collection: Boolean(attr.isCollection),
-        max_value_count: attr.maxValueCount || 0,
-        category_dependent: Boolean(attr.categoryDependent),
-      })),
-      optional: category.optionalAttributes.map((attr) => ({
-        id: attr.id,
-        name: attr.name,
-        required: false,
-        variation_role: attr.variationRole || '',
-        options: attr.options || [],
-        value_type: attr.valueType || '',
-        value_mode: attr.valueMode || '',
-        allow_custom_values: Boolean(attr.allowCustomValues),
-        has_more_values: Boolean(attr.hasMoreValues),
-        read_only: Boolean(attr.readOnly),
-        unit: attr.unit || '',
-        unit_options: attr.unitOptions || [],
-        default_unit: attr.defaultUnit || '',
-        dictionary_id: normalizeCategoryDictionaryId(attr.dictionaryId),
-        is_dictionary: isCategoryDictionaryAttribute(attr.dictionaryId, attr.isDictionary),
-        is_collection: Boolean(attr.isCollection),
-        max_value_count: attr.maxValueCount || 0,
-        category_dependent: Boolean(attr.categoryDependent),
-      })),
-    },
-  }
-}
-
-export async function fillCategoryAttributes(
-  draft: DraftDetail,
-  target: MarketplaceTargetSite,
-  categoryId: string,
-  category: CategorySelection | null = null,
-  presentation: AiPresentationTransport = {},
-  skuId = '',
-  reuseSkuSources = false,
-): Promise<DraftMutationResponse & { needReview: unknown[]; warning?: string }> {
-  const response = await apiClient.post('/api/category-ai-fill', {
-    ...requiredDraftTarget(draft, target, '填充类目属性'),
-    category_id: categoryId,
-    ...(skuId ? { sku_id: skuId } : {}),
-    ...(reuseSkuSources ? { reuse_sku_sources: true } : {}),
-    category_record: categorySelectionToBackendRecord(category),
-  }, {
-    aiPresentationId: presentation.presentationId,
-  })
-  const data = asRecord(response.data)
-  ensureOk(data, 'AI 填充属性失败')
-  const result = normalizeDraftMutation(data)
-  return {
-    ...result,
-    needReview: Array.isArray(data.need_review) ? data.need_review : [],
-    warning: getString(data, ['warning']),
-  }
 }

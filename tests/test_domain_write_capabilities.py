@@ -7,7 +7,6 @@ from __future__ import annotations
 AI 与网络边界以可信替代注入，持久化走隔离 AppContext 的真实存储。
 """
 
-import base64
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -15,16 +14,12 @@ from typing import Any
 import pytest
 
 from erp_web.context import get_context
-from erp_web.facades import global_task_facade
 from erp_web.runtime_units.content_capabilities import (
     ContentCapabilityScope,
     copy_generate,
     copy_generate_batch,
     image_prompts_generate,
     text_translate,
-)
-from erp_web.runtime_units.global_ai_control_tools import (
-    GlobalTaskStartControlRequest,
 )
 from erp_web.runtime_units.image_capabilities import (
     ImageCapabilityScope,
@@ -50,7 +45,7 @@ from erp_web.runtime_units.product_write_capabilities import (
     product_save,
 )
 from erp_web.runtime_units.text_translation import TranslationRequestError
-from erp_web.schemas.ai_tools import AiToolExecutionError, TaskApprovalSnapshot
+from erp_web.schemas.ai_tools import AiToolExecutionError, ToolApprovalSnapshot
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.content_capabilities import (
     CopyGenerateBatchRequest,
@@ -58,7 +53,6 @@ from erp_web.schemas.content_capabilities import (
     ImagePromptsGenerateRequest,
     TextTranslateRequest,
 )
-from erp_web.schemas.global_tasks import GlobalTaskApproveRequest
 from erp_web.schemas.image_capabilities import (
     ImageEditRequest,
     ImagePoolActionRequest,
@@ -77,9 +71,7 @@ from erp_web.schemas.product_write_capabilities import (
     ProductSaveRequest,
 )
 from erp_web.services.capability_errors import BusinessCapabilityError
-from erp_web.services.capability_input_provenance import encode_user_input_keys
-from erp_web.services.global_task_controller import GlobalTaskControllerError
-from erp_web.services.task_approval import approval_binding_digest
+from erp_web.services.tool_approval import approval_binding_digest
 
 
 _TINY_PNG_B64 = (
@@ -94,18 +86,18 @@ def _execution(operation_key: str = "op-1") -> AiExecutionContext:
         attempt_id="attempt-1",
         deadline_at=datetime.now(timezone.utc) + timedelta(minutes=5),
         budget_profile="test",
-        business_scope={"task_id": "task-1", "step_id": "step-1"},
+        business_scope={"task_id": "task-1", "tool_call_id": "step-1"},
         idempotency_context={"operation_key": operation_key},
     )
 
 
 def _approved_execution(
-    snapshot: TaskApprovalSnapshot,
+    snapshot: ToolApprovalSnapshot,
     capability_name: str,
     *,
     operation_key: str = "op-1",
-    step_id: str = "step-1",
-    task_revision: int = 1,
+    tool_call_id: str = "step-1",
+    approval_revision: int = 1,
 ) -> AiExecutionContext:
     """模拟 Controller 批准后注入的可信审批上下文（digest + 任务版本）。"""
 
@@ -114,8 +106,8 @@ def _approved_execution(
         capability_name=capability_name,
         capability_version="1",
         operation_key=operation_key,
-        step_id=step_id,
-        task_revision=task_revision,
+        tool_call_id=tool_call_id,
+        approval_revision=approval_revision,
     )
     return AiExecutionContext(
         task_run_id="task-1",
@@ -124,12 +116,12 @@ def _approved_execution(
         budget_profile="test",
         business_scope={
             "task_id": "task-1",
-            "step_id": step_id,
+            "tool_call_id": tool_call_id,
             "approver": "local-ui:test",
         },
         idempotency_context={"operation_key": operation_key},
         approval_digest=digest,
-        approval_task_revision=task_revision,
+        approval_revision=approval_revision,
     )
 
 
@@ -462,10 +454,12 @@ def test_product_profile_attribute_patch_can_be_verified_by_product_read() -> No
     context = get_context()
     _seed_product("product-attribute-readback", with_draft=False)
     result = product_profile_patch(
-        ProductProfilePatchRequest(product={
-            "product_id": "product-attribute-readback",
-            "attributes": {"适用年龄": "1-99岁"},
-        }),
+        ProductProfilePatchRequest(
+            product={
+                "product_id": "product-attribute-readback",
+                "attributes": {"适用年龄": "1-99岁"},
+            }
+        ),
         scope=_write_scope(),
         execution=_execution("op-profile-attribute-readback"),
     )
@@ -532,8 +526,10 @@ def test_draft_pricing_apply_only_accepts_user_submitted_sales_target(
         budget_profile="test",
         business_scope={
             "task_id": "task-1",
-            "step_id": "step-1",
-            "user_input_keys": encode_user_input_keys(["sales_target"]),
+            "tool_call_id": "step-1",
+            "saved_user_facts": json.dumps(
+                {"sales_target": ["MLM:remote", "MLB:remote"]}
+            ),
         },
         idempotency_context={"operation_key": "op-pricing-user-target"},
     )
@@ -566,7 +562,7 @@ def test_product_delete_requires_trusted_approval_context() -> None:
     # 没有可信审批上下文的直接执行必须被拒绝（模型自批不可能成功）。
     with pytest.raises(AiToolExecutionError) as missing:
         product_delete(request, scope=scope, execution=_execution())
-    assert missing.value.code == "TASK_APPROVAL_CONTEXT_REQUIRED"
+    assert missing.value.code == "TOOL_APPROVAL_CONTEXT_REQUIRED"
     assert len(context.products.load_products_index()) == 2
 
     # 审批 digest 与当前参数不一致（目标漂移）→ 稳定 stale 错误。
@@ -630,7 +626,7 @@ def test_draft_delete_approval_flow() -> None:
 
     with pytest.raises(AiToolExecutionError) as missing:
         draft_delete(request, scope=scope, execution=_execution())
-    assert missing.value.code == "TASK_APPROVAL_CONTEXT_REQUIRED"
+    assert missing.value.code == "TOOL_APPROVAL_CONTEXT_REQUIRED"
     assert context.db.load_draft_model(draft_id)
 
     stale_snapshot = _draft_delete_approval_snapshot(
@@ -656,94 +652,6 @@ def test_draft_delete_approval_flow() -> None:
     assert result.deleted_ids == (draft_id,)
     assert result.affected_product_ids == ("product-draft-del",)
     assert not context.db.load_draft_model(draft_id)
-
-
-def test_product_delete_through_global_task_approval_gate() -> None:
-    from pydantic_ai.messages import ModelRequest, UserPromptPart
-
-    context = get_context()
-    _seed_product("product-task-del", with_draft=False)
-    controller = global_task_facade.build_global_task_controller(context)
-    links = context.deferred_task_links
-    target_ids = ["product-task-del"]
-    conversation_id = "conversation_global_chat_" + "d" * 32
-
-    # 模型只提供业务参数；审批摘要与 payload 由服务端快照生成。
-    # Deferred 生命周期：受理 → 首次 history 提交 → worker 推进。
-    acceptance = controller.accept_deferred_task(
-        GlobalTaskStartControlRequest.model_validate(
-            {
-                "goal": "清理测试商品",
-                "product_id": "product-task-del",
-                "platform": "mercadolibre",
-                "steps": [
-                    {
-                        "capability_name": "product_delete",
-                        "arguments": {"product_ids": target_ids},
-                    }
-                ],
-            }
-        ),
-        conversation_id=conversation_id,
-        request_run_id="run-d2-1",
-        tool_call_id="call-d2-1",
-        message_id="message-d2-1",
-    )
-    links.commit_initial_deferred_history(
-        conversation_id,
-        [ModelRequest(parts=[UserPromptPart("创建任务")])],
-        link_id=acceptance.link_id,
-        request_run_id="run-d2-1",
-        encoded_chunks=[],
-    )
-    task = controller.resume_task(acceptance.task_id)
-    assert task.status == "pending_approval"
-    approval = task.pending_approval
-    assert approval is not None
-    assert approval.capability_name == "product_delete"
-    payload = approval.payload
-    assert str(payload.get("summary"))  # 服务端生成摘要，模型不能提供
-    assert payload["canonical_payload"]["product_ids"] == target_ids
-    assert len(context.products.load_products_index()) == 1
-
-    # 缺少可信审批身份的批准必须被拒绝。
-    with pytest.raises(GlobalTaskControllerError) as no_identity:
-        controller.approve_task(
-            GlobalTaskApproveRequest(task_id=task.task_id),
-            approver="",
-        )
-    assert no_identity.value.code == "GLOBAL_TASK_APPROVAL_IDENTITY_REQUIRED"
-    assert len(context.products.load_products_index()) == 1
-
-    # 批准只改变业务状态；执行由 worker 领取。
-    approved = controller.approve_task(
-        GlobalTaskApproveRequest(task_id=task.task_id),
-        approver="local-ui:test",
-        conversation_id=conversation_id,
-        message_id="message-d2-2",
-    ).task
-    assert approved.status == "running"
-    approved = controller.resume_task(task.task_id)
-    assert approved.status == "completed"
-    record = approved.steps[0].approval
-    assert record is not None
-    assert record.approver == "local-ui:test"
-    assert record.decision == "approved"
-    assert record.digest == approval.digest
-    assert record.task_revision == approval.task_revision
-    step_result = approved.steps[0].result
-    assert step_result is not None
-    assert step_result["deleted"] == 1
-    assert step_result["deleted_ids"] == target_ids
-    assert context.products.load_products_index() == []
-
-    # 重复批准：任务已终结，不再是待审批状态。
-    with pytest.raises(GlobalTaskControllerError) as repeat:
-        controller.approve_task(
-            GlobalTaskApproveRequest(task_id=task.task_id),
-            approver="local-ui:test",
-        )
-    assert repeat.value.code == "GLOBAL_TASK_APPROVAL_NOT_EXPECTED"
 
 
 # ---------------------------------------------------------------- 文案 / 翻译
@@ -973,8 +881,7 @@ def test_text_translate_and_invalid_request(
     ) -> dict[str, str]:
         assert preserve_terms == ("Generic", "MODEL-1")
         return {
-            str(key): f"[{target_language}] {value}"
-            for key, value in content.items()
+            str(key): f"[{target_language}] {value}" for key, value in content.items()
         }
 
     monkeypatch.setattr(
@@ -1041,7 +948,9 @@ def test_image_pool_upload_action_save_roundtrip() -> None:
     assert "product-image-1-image-1" in pool_ids
     reloaded = context.products.load_product_from_index("product-image-1", "")
     source = dict(reloaded.get("source") or {})
-    persisted_ids = [str(dict(item).get("id")) for item in source.get("image_pool") or []]
+    persisted_ids = [
+        str(dict(item).get("id")) for item in source.get("image_pool") or []
+    ]
     assert uploaded_id in persisted_ids
 
     filtered = image_pool_action(
@@ -1215,6 +1124,4 @@ def test_image_edit_can_persist_generated_image_as_main(
         "",
     )
     pool = list(dict(saved.get("source") or {}).get("image_pool") or [])
-    assert [item["id"] for item in pool if item.get("is_main")] == [
-        "generated-main-1"
-    ]
+    assert [item["id"] for item in pool if item.get("is_main")] == ["generated-main-1"]

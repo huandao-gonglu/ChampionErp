@@ -1,19 +1,13 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Annotated
 
 import pytest
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from erp_web.runtime_units.category_attribute_tools import (
-    CATEGORY_ATTRIBUTE_TOOL_CATALOG,
-    build_category_attribute_value_toolset,
-)
 from erp_web.runtime_units.collect_capabilities import collect_from_browser_tab
 from erp_web.schemas.ai_tools import (
     AiToolCommand,
@@ -23,7 +17,6 @@ from erp_web.schemas.ai_tools import (
     validate_json_schema,
 )
 from erp_web.schemas.ai_trace import AiExecutionContext
-from erp_web.schemas.category_attribute import CategoryAttributeValueLedger
 from erp_web.services.ai_tool_catalog import AiToolBindingScope, AiToolCatalog
 from erp_web.services.ai_tool_compiler import AiToolCompiler, AiToolCompilerError
 from erp_web.services.ai_tool_declaration import Injected, ai_tool
@@ -484,38 +477,3 @@ def test_compiler_reports_output_adapter_failures_with_stable_code() -> None:
         )
     )
     assert result.error["code"] == "TOOL_OUTPUT_SCHEMA_INVALID"
-
-
-def test_category_attribute_contract_snapshot_requires_explicit_version_upgrade() -> None:
-    snapshot_path = Path(__file__).parent / "snapshots" / "ai_tool_contracts.json"
-    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-    tool = CATEGORY_ATTRIBUTE_TOOL_CATALOG.tools["category_attribute_values_search"]
-    toolset = build_category_attribute_value_toolset(
-        platform="ozon",
-        category_record={},
-        ledger=CategoryAttributeValueLedger.from_schema([]),
-    )
-
-    assert snapshot["category_attribute_values_search"] == {
-        "version": tool.definition.version,
-        "contract_fingerprint": tool.definition.contract_fingerprint,
-    }
-    payload = {
-        "toolset_id": toolset.toolset_id,
-        "tools": [
-            {
-                "name": definition.name,
-                "contract_fingerprint": definition.contract_fingerprint,
-            }
-            for definition in sorted(toolset.definitions, key=lambda item: item.name)
-        ],
-    }
-    fingerprint = hashlib.sha256(
-        json.dumps(
-            payload,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
-    assert snapshot["toolsets"]["category.attribute_values"] == fingerprint

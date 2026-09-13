@@ -10,16 +10,16 @@ from __future__ import annotations
 """
 
 import hashlib
+from datetime import datetime, timezone
 import json
 import os
 import sqlite3
 import threading
-import time
 import uuid
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any, Iterator
 
 from erp_web.product_model.sku_model import retain_sku_publications
 from erp_web.marketplace_registry import PLATFORMS, marketplace_site
@@ -31,7 +31,7 @@ from erp_web.product_model.merge_model import (
 )
 
 DEFAULT_DB_NAME = "erp.sqlite3"
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 REQUIRED_TABLES = (
     "store_auth",
@@ -46,12 +46,12 @@ REQUIRED_TABLES = (
     "research_runs",
     "research_candidates",
     "exchange_rates",
-    "global_tasks",
     "draft_query_snapshots",
+    "ai_deferred_requests",
+    "ai_tool_receipts",
+    "ai_chat_inbox",
     "pydantic_message_histories",
     "ai_chat_turn_claims",
-    "pydantic_deferred_task_links",
-    "pydantic_ai_event_outbox",
 )
 
 # Research run statuses that never change again (mirrors product_research_service).
@@ -196,18 +196,6 @@ CREATE TABLE IF NOT EXISTS exchange_rates (
     fetched_at TEXT NOT NULL DEFAULT ''
 );
 
-CREATE TABLE IF NOT EXISTS global_tasks (
-    task_id TEXT PRIMARY KEY,
-    status TEXT NOT NULL DEFAULT '',
-    revision INTEGER NOT NULL DEFAULT 1,
-    execution_id TEXT NOT NULL DEFAULT '',
-    execution_owner TEXT NOT NULL DEFAULT '',
-    execution_lease_expires_at REAL NOT NULL DEFAULT 0,
-    task_json TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL DEFAULT '',
-    updated_at TEXT NOT NULL DEFAULT ''
-);
-
 CREATE TABLE IF NOT EXISTS draft_query_snapshots (
     snapshot_id TEXT PRIMARY KEY,
     ordered_draft_ids_json TEXT NOT NULL DEFAULT '[]',
@@ -240,40 +228,6 @@ CREATE TABLE IF NOT EXISTS ai_chat_turn_claims (
     UNIQUE(conversation_id, client_message_id)
 );
 
-CREATE TABLE IF NOT EXISTS pydantic_deferred_task_links (
-    link_id TEXT PRIMARY KEY,
-    conversation_id TEXT NOT NULL,
-    request_run_id TEXT NOT NULL DEFAULT '',
-    tool_call_id TEXT NOT NULL,
-    task_id TEXT NOT NULL,
-    link_status TEXT NOT NULL DEFAULT 'awaiting_history'
-        CHECK (link_status IN (
-            'awaiting_history', 'ready', 'resolved', 'abandoned'
-        )),
-    history_version INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT '',
-    ready_at TEXT NOT NULL DEFAULT '',
-    lease_id TEXT NOT NULL DEFAULT '',
-    lease_expires_at REAL NOT NULL DEFAULT 0,
-    continuation_run_id TEXT NOT NULL DEFAULT '',
-    resolved_at TEXT NOT NULL DEFAULT '',
-    abandoned_at TEXT NOT NULL DEFAULT '',
-    last_error_code TEXT NOT NULL DEFAULT '',
-    UNIQUE(task_id),
-    UNIQUE(conversation_id, tool_call_id)
-);
-
-CREATE TABLE IF NOT EXISTS pydantic_ai_event_outbox (
-    outbox_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    conversation_id TEXT NOT NULL,
-    run_id TEXT NOT NULL DEFAULT '',
-    history_version INTEGER NOT NULL,
-    kind TEXT NOT NULL DEFAULT '',
-    events_json TEXT NOT NULL DEFAULT '[]',
-    created_at TEXT NOT NULL DEFAULT '',
-    published_at TEXT NOT NULL DEFAULT ''
-);
-
 CREATE INDEX IF NOT EXISTS idx_products_updated_at ON products(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_products_source_url ON products(source_url);
 CREATE INDEX IF NOT EXISTS idx_platform_drafts_product ON platform_drafts(product_id);
@@ -285,21 +239,46 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_publish_jobs_idempotency_key
 ON publish_jobs(idempotency_key);
 CREATE INDEX IF NOT EXISTS idx_research_runs_updated ON research_runs(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_research_candidates_run ON research_candidates(run_id, rank);
-CREATE INDEX IF NOT EXISTS idx_global_tasks_updated ON global_tasks(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_pydantic_message_histories_updated
 ON pydantic_message_histories(updated_at DESC);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_deferred_task_links_active_conversation
-ON pydantic_deferred_task_links(conversation_id)
-WHERE link_status IN ('awaiting_history', 'ready');
-CREATE INDEX IF NOT EXISTS idx_deferred_task_links_ready
-ON pydantic_deferred_task_links(link_status, ready_at);
-CREATE INDEX IF NOT EXISTS idx_pydantic_ai_event_outbox_conversation
-ON pydantic_ai_event_outbox(conversation_id, history_version);
+;
+
+CREATE TABLE IF NOT EXISTS ai_deferred_requests (
+ conversation_id TEXT PRIMARY KEY,
+ requests_json BLOB NOT NULL,
+ results_json BLOB NOT NULL,
+ usage_json BLOB NOT NULL,
+ created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ai_tool_receipts (
+ conversation_id TEXT NOT NULL,
+ tool_call_id TEXT NOT NULL,
+ tool_name TEXT NOT NULL,
+ arguments_json TEXT NOT NULL,
+ execution_json TEXT NOT NULL DEFAULT '{}',
+ status TEXT NOT NULL,
+ output_json TEXT,
+ job_json TEXT,
+ updated_at TEXT NOT NULL,
+ PRIMARY KEY(conversation_id, tool_call_id)
+);
+CREATE TABLE IF NOT EXISTS ai_chat_inbox (
+ sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+ conversation_id TEXT NOT NULL,
+ message_id TEXT NOT NULL,
+ messages_json BLOB NOT NULL,
+ target_draft_ids TEXT NOT NULL DEFAULT '[]',
+ status TEXT NOT NULL DEFAULT 'received',
+ created_at TEXT NOT NULL,
+ UNIQUE(conversation_id, message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_chat_inbox_pending ON ai_chat_inbox(conversation_id,status,sequence);
 """
 
 # ---------------------------------------------------------------------------
 # Schema helpers
 # ---------------------------------------------------------------------------
+
 
 def _execute_schema_statements(conn: sqlite3.Connection) -> None:
     """在调用方事务中逐条执行 schema DDL。"""
@@ -354,11 +333,17 @@ def _current_schema_signature() -> tuple[tuple[str, str, str, str], ...]:
 
 
 def utc_now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    return (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
 
 
 def json_dumps(value: Any) -> str:
-    return json.dumps(value if value is not None else {}, ensure_ascii=False, sort_keys=True)
+    return json.dumps(
+        value if value is not None else {}, ensure_ascii=False, sort_keys=True
+    )
 
 
 def json_loads(value: str, default: Any) -> Any:
@@ -425,7 +410,10 @@ def _platform_values(value: Any) -> list[str]:
         else:
             raw_items = [
                 part.strip()
-                for part in value.replace("；", "\n").replace(";", "\n").replace(",", "\n").splitlines()
+                for part in value.replace("；", "\n")
+                .replace(";", "\n")
+                .replace(",", "\n")
+                .splitlines()
                 if part.strip()
             ]
     else:
@@ -448,7 +436,9 @@ def _draft_platforms(draft: dict[str, Any], primary_platform: Any) -> list[str]:
             if platform in PLATFORMS and platform not in platforms:
                 platforms.append(platform)
     if not platforms:
-        platforms = _platform_values(draft.get("platforms") or draft.get("platforms_json"))
+        platforms = _platform_values(
+            draft.get("platforms") or draft.get("platforms_json")
+        )
     primary = str(primary_platform or "").strip().lower()
     if primary in PLATFORMS and primary not in platforms:
         platforms.insert(0, primary)
@@ -502,13 +492,9 @@ def _load_current_draft_json(value: Any) -> dict[str, Any]:
     try:
         draft = json.loads(str(value or "{}"))
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise RuntimeError(
-            "platform_drafts.draft_json 不是有效的当前 JSON"
-        ) from exc
+        raise RuntimeError("platform_drafts.draft_json 不是有效的当前 JSON") from exc
     if not isinstance(draft, dict):
-        raise RuntimeError(
-            "platform_drafts.draft_json 必须是 JSON object"
-        )
+        raise RuntimeError("platform_drafts.draft_json 必须是 JSON object")
     return draft
 
 
@@ -525,8 +511,17 @@ def _validate_product_write_shape(product: dict[str, Any]) -> None:
 def _draft_should_persist(draft: dict[str, Any]) -> bool:
     if str(draft.get("draft_id") or draft.get("draftId") or "").strip():
         return True
-    status = str(draft.get("status") or draft.get("publish_status") or "").strip().lower()
-    if status in {"copy_ready", "images_ready", "ready_to_publish", "published", "failed", "not_ready"}:
+    status = (
+        str(draft.get("status") or draft.get("publish_status") or "").strip().lower()
+    )
+    if status in {
+        "copy_ready",
+        "images_ready",
+        "ready_to_publish",
+        "published",
+        "failed",
+        "not_ready",
+    }:
         return True
     for key in ("title", "description", "category_id", "copy_generated_at"):
         if str(draft.get(key) or "").strip():
@@ -584,6 +579,7 @@ def _int_or_none(value: Any) -> int | None:
 # ---------------------------------------------------------------------------
 # ErpDatabase
 # ---------------------------------------------------------------------------
+
 
 class ErpDatabase:
     """Single owner of the SQLite store (schema, connections, all queries)."""
@@ -647,9 +643,7 @@ class ErpDatabase:
         uri = f"{self.db_path.resolve().as_uri()}?mode=ro"
         conn = sqlite3.connect(uri, uri=True, timeout=10)
         try:
-            version = int(
-                conn.execute("PRAGMA user_version").fetchone()[0] or 0
-            )
+            version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
             return version, _schema_signature(conn)
         finally:
             conn.close()
@@ -660,9 +654,7 @@ class ErpDatabase:
             inspected_version,
             inspected_schema,
         ) = self._inspect_schema_without_mutation()
-        is_empty_database = (
-            inspected_version == 0 and not inspected_schema
-        )
+        is_empty_database = inspected_version == 0 and not inspected_schema
         is_current_database = (
             inspected_version == SCHEMA_VERSION
             and inspected_schema == _current_schema_signature()
@@ -679,9 +671,7 @@ class ErpDatabase:
                 conn.execute("BEGIN IMMEDIATE")
                 try:
                     _execute_schema_statements(conn)
-                    conn.execute(
-                        f"PRAGMA user_version = {SCHEMA_VERSION}"
-                    )
+                    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                     conn.commit()
                 except BaseException:
                     conn.rollback()
@@ -707,8 +697,16 @@ class ErpDatabase:
                 pool = json.loads(seed_path.read_text(encoding="utf-8"))
             except Exception:
                 return
-            values = [str(item or "").strip() for item in _list(_dict(pool).get("values")) if str(item or "").strip()]
-            used = {str(item or "").strip() for item in _list(_dict(pool).get("used")) if str(item or "").strip()}
+            values = [
+                str(item or "").strip()
+                for item in _list(_dict(pool).get("values"))
+                if str(item or "").strip()
+            ]
+            used = {
+                str(item or "").strip()
+                for item in _list(_dict(pool).get("used"))
+                if str(item or "").strip()
+            }
             now = utc_now()
             for value in values:
                 status = "used" if value in used else "free"
@@ -770,25 +768,15 @@ class ErpDatabase:
                 str(source.get("brand") or product.get("brand") or ""),
                 str(source.get("model") or product.get("model") or ""),
                 str(
-                    source.get("collect_status")
-                    or product.get("collect_status")
-                    or ""
+                    source.get("collect_status") or product.get("collect_status") or ""
                 ),
                 str(source.get("price") or ""),
                 str(source.get("currency") or ""),
                 json_dumps(source.get("dimensions") or {}),
-                str(
-                    source.get("weight_kg")
-                    or product.get("weight_kg")
-                    or ""
-                ),
+                str(source.get("weight_kg") or product.get("weight_kg") or ""),
                 json_dumps(_without_publish_logs(source)),
                 json_dumps(stored_product),
-                str(
-                    product.get("created_at")
-                    or source.get("created_at")
-                    or now
-                ),
+                str(product.get("created_at") or source.get("created_at") or now),
                 now,
             ),
         )
@@ -807,7 +795,13 @@ class ErpDatabase:
                 conn.commit()
         return product_id
 
-    def _upsert_drafts(self, conn: sqlite3.Connection, product_id: str, product: dict[str, Any], now: str) -> None:
+    def _upsert_drafts(
+        self,
+        conn: sqlite3.Connection,
+        product_id: str,
+        product: dict[str, Any],
+        now: str,
+    ) -> None:
         drafts = _dict(product.get("drafts"))
         for platform, draft_raw in drafts.items():
             draft = _dict(draft_raw)
@@ -825,9 +819,7 @@ class ErpDatabase:
                 {"product_id": product_id},
             )
             declared_product_id = str(
-                draft.get("source_product_id")
-                or draft.get("product_id")
-                or ""
+                draft.get("source_product_id") or draft.get("product_id") or ""
             ).strip()
             if declared_product_id and declared_product_id != product_id:
                 raise ValueError(
@@ -841,7 +833,10 @@ class ErpDatabase:
                 raise ValueError(
                     f"草稿 {draft_id} 已绑定商品 {existing['product_id']}，禁止静默换绑到商品 {product_id}。"
                 )
-            draft = retain_sku_publications(_load_current_draft_json(existing["draft_json"]) if existing else {}, draft)
+            draft = retain_sku_publications(
+                _load_current_draft_json(existing["draft_json"]) if existing else {},
+                draft,
+            )
             site = str(draft.get("site") or draft.get("site_id") or "").strip()
             conn.execute(
                 """
@@ -868,7 +863,13 @@ class ErpDatabase:
                 ),
             )
 
-    def _upsert_media(self, conn: sqlite3.Connection, product_id: str, product: dict[str, Any], now: str) -> None:
+    def _upsert_media(
+        self,
+        conn: sqlite3.Connection,
+        product_id: str,
+        product: dict[str, Any],
+        now: str,
+    ) -> None:
         pool = _image_pool(product)
         asset_ids = [
             str(item.get("id") or f"image_{index + 1}").strip() or f"image_{index + 1}"
@@ -883,7 +884,10 @@ class ErpDatabase:
         else:
             conn.execute("DELETE FROM media_assets WHERE product_id = ?", (product_id,))
         for index, item in enumerate(pool):
-            asset_id = str(item.get("id") or f"image_{index + 1}").strip() or f"image_{index + 1}"
+            asset_id = (
+                str(item.get("id") or f"image_{index + 1}").strip()
+                or f"image_{index + 1}"
+            )
             width = _int_or_none(item.get("width"))
             height = _int_or_none(item.get("height"))
             conn.execute(
@@ -914,16 +918,28 @@ class ErpDatabase:
                     asset_id,
                     str(item.get("url") or ""),
                     str(item.get("path") or item.get("local_path") or ""),
-                    str(item.get("preview_url") or item.get("url") or item.get("path") or ""),
+                    str(
+                        item.get("preview_url")
+                        or item.get("url")
+                        or item.get("path")
+                        or ""
+                    ),
                     width,
                     height,
-                    str(item.get("size_label") or (f"{width} x {height}" if width and height else "")),
+                    str(
+                        item.get("size_label")
+                        or (f"{width} x {height}" if width and height else "")
+                    ),
                     str(item.get("usage") or item.get("type") or ""),
                     str(item.get("origin") or ""),
                     json_dumps(_list(item.get("platforms"))),
                     1 if item.get("is_main") else 0,
                     1 if item.get("selected") else 0,
-                    int(item.get("order") if str(item.get("order") or "").isdigit() else index),
+                    int(
+                        item.get("order")
+                        if str(item.get("order") or "").isdigit()
+                        else index
+                    ),
                     json_dumps(item),
                     now,
                     now,
@@ -932,7 +948,9 @@ class ErpDatabase:
 
     def load_product_model(self, product_id: str) -> dict[str, Any]:
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM products WHERE product_id = ?", (product_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM products WHERE product_id = ?", (product_id,)
+            ).fetchone()
             if not row:
                 return {}
             product = json_loads(row["product_json"], {})
@@ -942,7 +960,9 @@ class ErpDatabase:
             product["drafts"] = self._load_drafts(conn, row["product_id"])
             product.setdefault("source", {})
             if isinstance(product["source"], dict):
-                product["source"]["image_pool"] = self._load_media(conn, row["product_id"])
+                product["source"]["image_pool"] = self._load_media(
+                    conn, row["product_id"]
+                )
             return product
 
     def _load_drafts(
@@ -961,7 +981,11 @@ class ErpDatabase:
             (product_id,),
         ):
             draft = _load_current_draft_json(row["draft_json"])
-            draft_id = row["draft_id"] if "draft_id" in row.keys() else str(draft.get("draft_id") or "")
+            draft_id = (
+                row["draft_id"]
+                if "draft_id" in row.keys()
+                else str(draft.get("draft_id") or "")
+            )
             platform = str(row["platform"])
             draft.update(
                 {
@@ -992,7 +1016,8 @@ class ErpDatabase:
             {
                 "draft_id": row["draft_id"],
                 "product_id": row["product_id"],
-                "source_product_id": draft.get("source_product_id") or row["product_id"],
+                "source_product_id": draft.get("source_product_id")
+                or row["product_id"],
                 "platform": row["platform"],
                 "platforms": _draft_platforms(draft, row["platform"]),
                 "site": row["site"],
@@ -1008,11 +1033,15 @@ class ErpDatabase:
         )
 
     def load_draft_model(self, draft_id: str) -> dict[str, Any]:
-        draft_id = _slug(str(draft_id or "").strip()) if str(draft_id or "").strip() else ""
+        draft_id = (
+            _slug(str(draft_id or "").strip()) if str(draft_id or "").strip() else ""
+        )
         if not draft_id:
             return {}
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM platform_drafts WHERE draft_id = ?", (draft_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM platform_drafts WHERE draft_id = ?", (draft_id,)
+            ).fetchone()
             return self._draft_from_row(row) if row else {}
 
     def load_product_for_draft(self, draft_id: str) -> dict[str, Any]:
@@ -1037,30 +1066,52 @@ class ErpDatabase:
             return False
         with self._connect() as conn:
             draft_id = _slug(draft_id)
-            cursor = conn.execute("DELETE FROM platform_drafts WHERE draft_id = ?", (draft_id,))
+            cursor = conn.execute(
+                "DELETE FROM platform_drafts WHERE draft_id = ?", (draft_id,)
+            )
             conn.commit()
             return cursor.rowcount > 0
 
-    def update_sku_publication(self, draft_id: str, sku_id: str, target_key: str, publication: dict[str, Any]) -> None:
+    def update_sku_publication(
+        self, draft_id: str, sku_id: str, target_key: str, publication: dict[str, Any]
+    ) -> None:
         """可信发布流程原子更新一行，保留同时编辑的内容和其他 SKU 的发布进度。"""
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            stored = conn.execute("SELECT draft_json FROM platform_drafts WHERE draft_id = ?", (draft_id,)).fetchone()
+            stored = conn.execute(
+                "SELECT draft_json FROM platform_drafts WHERE draft_id = ?", (draft_id,)
+            ).fetchone()
             if not stored:
                 raise ValueError("发布草稿不存在")
             draft = _load_current_draft_json(stored["draft_json"])
-            row = next((row for row in draft.get("sku_items", []) if row.get("sku_id") == sku_id), None)
+            row = next(
+                (
+                    row
+                    for row in draft.get("sku_items", [])
+                    if row.get("sku_id") == sku_id
+                ),
+                None,
+            )
             if not row:
                 raise ValueError("发布 SKU 不存在")
             if publication.get("status") == "dispatching":
                 current = row.get("publications", {}).get(target_key, {})
-                if current.get("status") in {"dispatching", "outcome_unknown", "pending_confirmation"}:
+                if current.get("status") in {
+                    "dispatching",
+                    "outcome_unknown",
+                    "pending_confirmation",
+                }:
                     raise ValueError("SKU 已有未确认的发布操作，必须先确认远端结果")
             row.setdefault("publications", {})[target_key] = publication
-            conn.execute("UPDATE platform_drafts SET draft_json = ?, updated_at = ? WHERE draft_id = ?", (json_dumps(draft), utc_now(), draft_id))
+            conn.execute(
+                "UPDATE platform_drafts SET draft_json = ?, updated_at = ? WHERE draft_id = ?",
+                (json_dumps(draft), utc_now(), draft_id),
+            )
             conn.commit()
 
-    def upsert_draft_model(self, product_id: str, platform: str, draft: dict[str, Any]) -> str:
+    def upsert_draft_model(
+        self, product_id: str, platform: str, draft: dict[str, Any]
+    ) -> str:
         now = utc_now()
         product_id = str(product_id or "").strip()
         platform = str(platform or "").strip().lower()
@@ -1083,9 +1134,7 @@ class ErpDatabase:
             draft["platform"] = platform
             draft["platforms"] = _draft_platforms(draft, platform)
             declared_product_id = str(
-                draft.get("source_product_id")
-                or draft.get("product_id")
-                or ""
+                draft.get("source_product_id") or draft.get("product_id") or ""
             ).strip()
             if declared_product_id and declared_product_id != product_id:
                 raise ValueError(
@@ -1099,7 +1148,10 @@ class ErpDatabase:
                 raise ValueError(
                     f"草稿 {draft_id} 已绑定商品 {existing['product_id']}，禁止静默换绑到商品 {product_id}。"
                 )
-            draft = retain_sku_publications(_load_current_draft_json(existing["draft_json"]) if existing else {}, draft)
+            draft = retain_sku_publications(
+                _load_current_draft_json(existing["draft_json"]) if existing else {},
+                draft,
+            )
             site = str(draft.get("site") or draft.get("site_id") or "").strip()
             conn.execute(
                 """
@@ -1128,7 +1180,9 @@ class ErpDatabase:
             conn.commit()
         return draft_id
 
-    def _load_media(self, conn: sqlite3.Connection, product_id: str) -> list[dict[str, Any]]:
+    def _load_media(
+        self, conn: sqlite3.Connection, product_id: str
+    ) -> list[dict[str, Any]]:
         rows = conn.execute(
             "SELECT * FROM media_assets WHERE product_id = ? ORDER BY sort_order ASC, id ASC",
             (product_id,),
@@ -1240,24 +1294,33 @@ class ErpDatabase:
     def _draft_record_from_row(cls, row: sqlite3.Row) -> dict[str, Any]:
         product = json_loads(row["product_json"], {})
         draft = cls._draft_from_row(row)
-        status = str(draft.get("status") or draft.get("publish_status") or row["status"] or "claimed")
+        status = str(
+            draft.get("status")
+            or draft.get("publish_status")
+            or row["status"]
+            or "claimed"
+        )
         selected_site = marketplace_site(row["platform"], row["site"])
         target_sites = (
             draft.get("target_sites")
             if isinstance(draft.get("target_sites"), list)
-            else [{
-                "platform": row["platform"],
-                "site": row["site"],
-                "language": str(selected_site.get("language") or ""),
-                "listing_currency": "",
-            }]
+            else [
+                {
+                    "platform": row["platform"],
+                    "site": row["site"],
+                    "language": str(selected_site.get("language") or ""),
+                    "listing_currency": "",
+                }
+            ]
         )
         return {
             "draft_id": row["draft_id"],
             "product_id": row["product_id"],
             "source_product_id": draft.get("source_product_id") or row["product_id"],
             "platform": row["platform"],
-            "platforms": _draft_platforms({**draft, "target_sites": target_sites}, row["platform"]),
+            "platforms": _draft_platforms(
+                {**draft, "target_sites": target_sites}, row["platform"]
+            ),
             "target_sites": target_sites,
             "site": row["site"],
             "language": str(draft.get("language") or ""),
@@ -1281,7 +1344,9 @@ class ErpDatabase:
         if not product_id:
             return False
         with self._connect() as conn:
-            cursor = conn.execute("DELETE FROM products WHERE product_id = ?", (product_id,))
+            cursor = conn.execute(
+                "DELETE FROM products WHERE product_id = ?", (product_id,)
+            )
             conn.commit()
             return cursor.rowcount > 0
 
@@ -1290,9 +1355,17 @@ class ErpDatabase:
     def get_store_auth(self, platform: str) -> dict[str, Any]:
         platform = str(platform or "").strip().lower()
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM store_auth WHERE platform = ?", (platform,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM store_auth WHERE platform = ?", (platform,)
+            ).fetchone()
         if not row:
-            return {"platform": platform, "credentials": {}, "auth_status": "", "auth_detail": {}, "checked_at": ""}
+            return {
+                "platform": platform,
+                "credentials": {},
+                "auth_status": "",
+                "auth_detail": {},
+                "checked_at": "",
+            }
         return {
             "platform": platform,
             "credentials": _dict(json_loads(row["credentials_json"], {})),
@@ -1337,20 +1410,10 @@ class ErpDatabase:
                     [
                         (
                             str(platform),
-                            json_dumps(
-                                _dict(value).get("credentials")
-                            ),
-                            str(
-                                _dict(value).get("auth_status")
-                                or ""
-                            ),
-                            json_dumps(
-                                _dict(value).get("auth_detail")
-                            ),
-                            str(
-                                _dict(value).get("checked_at")
-                                or ""
-                            ),
+                            json_dumps(_dict(value).get("credentials")),
+                            str(_dict(value).get("auth_status") or ""),
+                            json_dumps(_dict(value).get("auth_detail")),
+                            str(_dict(value).get("checked_at") or ""),
                             now,
                         )
                         for platform, value in sorted(rows.items())
@@ -1396,7 +1459,9 @@ class ErpDatabase:
             if auth_detail is not None:
                 for key, value in _dict(auth_detail).items():
                     stored_detail[str(key)] = "" if value is None else value
-            status = existing["auth_status"] if auth_status is None else str(auth_status)
+            status = (
+                existing["auth_status"] if auth_status is None else str(auth_status)
+            )
             checked = existing["checked_at"] if checked_at is None else str(checked_at)
             with self._connect() as conn:
                 conn.execute(
@@ -1410,7 +1475,14 @@ class ErpDatabase:
                         checked_at=excluded.checked_at,
                         updated_at=excluded.updated_at
                     """,
-                    (platform, json_dumps(stored_credentials), status, json_dumps(stored_detail), checked, utc_now()),
+                    (
+                        platform,
+                        json_dumps(stored_credentials),
+                        status,
+                        json_dumps(stored_detail),
+                        checked,
+                        utc_now(),
+                    ),
                 )
                 conn.commit()
 
@@ -1446,8 +1518,7 @@ class ErpDatabase:
                 (namespace,),
             ).fetchall()
         return {
-            str(row["secret_path"]): json_loads(row["secret_json"], "")
-            for row in rows
+            str(row["secret_path"]): json_loads(row["secret_json"], "") for row in rows
         }
 
     def replace_runtime_secrets(
@@ -1492,9 +1563,24 @@ class ErpDatabase:
         entry: dict[str, Any],
     ) -> int:
         entry = _dict(entry)
-        ts = str(entry.get("time") or entry.get("finished_at") or entry.get("checked_at") or "") or utc_now()
-        artifacts_path = str(entry.get("response_body_path") or entry.get("request_payload_path") or "")
-        message = str(entry.get("error_message") or entry.get("error") or entry.get("message") or "")
+        ts = (
+            str(
+                entry.get("time")
+                or entry.get("finished_at")
+                or entry.get("checked_at")
+                or ""
+            )
+            or utc_now()
+        )
+        artifacts_path = str(
+            entry.get("response_body_path") or entry.get("request_payload_path") or ""
+        )
+        message = str(
+            entry.get("error_message")
+            or entry.get("error")
+            or entry.get("message")
+            or ""
+        )
         cursor = conn.execute(
             """
             INSERT INTO publish_logs (
@@ -1552,12 +1638,7 @@ class ErpDatabase:
                     (platform,),
                 ).fetchall()
                 if any(
-                    str(
-                        _dict(
-                            json_loads(row["detail_json"], {})
-                        ).get("job_id")
-                        or ""
-                    )
+                    str(_dict(json_loads(row["detail_json"], {})).get("job_id") or "")
                     == job_id
                     for row in rows
                 ):
@@ -1693,8 +1774,15 @@ class ErpDatabase:
 
     def upc_pool_stats(self) -> dict[str, int]:
         with self._connect() as conn:
-            total = int(conn.execute("SELECT COUNT(*) FROM upc_pool").fetchone()[0] or 0)
-            free = int(conn.execute("SELECT COUNT(*) FROM upc_pool WHERE status = 'free'").fetchone()[0] or 0)
+            total = int(
+                conn.execute("SELECT COUNT(*) FROM upc_pool").fetchone()[0] or 0
+            )
+            free = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM upc_pool WHERE status = 'free'"
+                ).fetchone()[0]
+                or 0
+            )
         return {"total": total, "free": free, "used": total - free}
 
     # -- order_notifications ------------------------------------------------------
@@ -1750,9 +1838,7 @@ class ErpDatabase:
             raise ValueError("发布任务缺少 idempotency_key。")
         product = _dict(state.get("product"))
         platforms = _dict(state.get("platforms"))
-        draft_id = str(
-            product.get("current_draft_id") or product.get("draft_id") or ""
-        )
+        draft_id = str(product.get("current_draft_id") or product.get("draft_id") or "")
         drafts = _dict(product.get("drafts"))
         draft_id = str(state.get("draft_id") or draft_id)
         if not draft_id:
@@ -1841,17 +1927,15 @@ class ErpDatabase:
                             (record["draft_id"], platform),
                         ).fetchall()
                         for active_row in active_rows:
-                            persisted = json_loads(
-                                active_row["payload_json"], {}
-                            )
+                            persisted = json_loads(active_row["payload_json"], {})
                             if not isinstance(persisted, dict):
                                 raise RuntimeError(
                                     "发布任务持久化数据不是 JSON object。"
                                 )
-                            if (
-                                str(active_row["status"] or "").lower()
-                                == "completed"
-                                and persisted.get("terminal_results_persisted")
+                            if str(
+                                active_row["status"] or ""
+                            ).lower() == "completed" and persisted.get(
+                                "terminal_results_persisted"
                             ):
                                 continue
                             conn.commit()
@@ -1906,12 +1990,8 @@ class ErpDatabase:
                             (record["job_id"],),
                         ).fetchone()
                         if exists:
-                            raise ValueError(
-                                "发布任务的 idempotency_key 不可变更。"
-                            )
-                        raise FileNotFoundError(
-                            f"发布任务不存在：{record['job_id']}"
-                        )
+                            raise ValueError("发布任务的 idempotency_key 不可变更。")
+                        raise FileNotFoundError(f"发布任务不存在：{record['job_id']}")
                     conn.commit()
                 except BaseException:
                     conn.rollback()
@@ -1920,7 +2000,9 @@ class ErpDatabase:
     def load_publish_job(self, job_id: str) -> dict[str, Any]:
         job_id = str(job_id or "").strip()
         with self._connect() as conn:
-            row = conn.execute("SELECT payload_json FROM publish_jobs WHERE job_id = ?", (job_id,)).fetchone()
+            row = conn.execute(
+                "SELECT payload_json FROM publish_jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
         if not row:
             return {}
         state = json_loads(row["payload_json"], {})
@@ -1968,11 +2050,10 @@ class ErpDatabase:
             state = json_loads(row["payload_json"], {})
             if isinstance(state, dict):
                 state.setdefault("status", str(row["status"] or ""))
-                if (
-                    str(row["status"] or "").lower()
-                    in {"completed", "outcome_unknown"}
-                    and state.get("terminal_results_persisted")
-                ):
+                if str(row["status"] or "").lower() in {
+                    "completed",
+                    "outcome_unknown",
+                } and state.get("terminal_results_persisted"):
                     continue
                 states.append(state)
         return states
@@ -2009,7 +2090,11 @@ class ErpDatabase:
                     return [], ""
                 clauses.append("(created_at < ? OR (created_at = ? AND job_id < ?))")
                 values.extend(
-                    [cursor_row["created_at"], cursor_row["created_at"], cursor_row["job_id"]]
+                    [
+                        cursor_row["created_at"],
+                        cursor_row["created_at"],
+                        cursor_row["job_id"],
+                    ]
                 )
 
             where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
@@ -2039,7 +2124,9 @@ class ErpDatabase:
             state.setdefault("created_at", str(row["created_at"] or ""))
             state.setdefault("updated_at", str(row["updated_at"] or ""))
             states.append(state)
-        next_cursor = str(selected_rows[-1]["job_id"] or "") if has_more and selected_rows else ""
+        next_cursor = (
+            str(selected_rows[-1]["job_id"] or "") if has_more and selected_rows else ""
+        )
         return states, next_cursor
 
     # -- research_runs / research_candidates -----------------------------------
@@ -2084,14 +2171,20 @@ class ErpDatabase:
                 ),
             )
             if items is not None:
-                conn.execute("DELETE FROM research_candidates WHERE run_id = ?", (run_id,))
+                conn.execute(
+                    "DELETE FROM research_candidates WHERE run_id = ?", (run_id,)
+                )
                 for index, item in enumerate(items):
                     if not isinstance(item, dict):
                         continue
                     rank = _int_or_none(item.get("rank"))
                     conn.execute(
                         "INSERT INTO research_candidates (run_id, rank, data_json) VALUES (?, ?, ?)",
-                        (run_id, rank if rank is not None else index + 1, json_dumps(item)),
+                        (
+                            run_id,
+                            rank if rank is not None else index + 1,
+                            json_dumps(item),
+                        ),
                     )
             conn.commit()
 
@@ -2100,7 +2193,9 @@ class ErpDatabase:
         if not run_id:
             return {}
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM research_runs WHERE run_id = ?", (run_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM research_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
             if not row:
                 return {}
             item_rows = conn.execute(
@@ -2115,7 +2210,13 @@ class ErpDatabase:
             "error": str(row["error"] or ""),
             "created_at": str(row["created_at"] or ""),
             "updated_at": str(row["updated_at"] or ""),
-            "items": [item for item in (json_loads(item_row["data_json"], {}) for item_row in item_rows) if isinstance(item, dict)],
+            "items": [
+                item
+                for item in (
+                    json_loads(item_row["data_json"], {}) for item_row in item_rows
+                )
+                if isinstance(item, dict)
+            ],
         }
 
     def list_research_runs(self, limit: int = 100) -> list[dict[str, Any]]:
@@ -2148,335 +2249,7 @@ class ErpDatabase:
             conn.commit()
             return int(cursor.rowcount or 0)
 
-    # -- global_tasks / draft_query_snapshots ---------------------------------
-
-    def create_global_task(
-        self,
-        state: dict[str, Any],
-        *,
-        execution_owner: str = "",
-        execution_id: str = "",
-        lease_seconds: float = 30.0,
-    ) -> dict[str, Any]:
-        """原子创建任务，可同时领取首次执行权。
-
-        首次 claim 与 INSERT 使用同一事务，避免 recovery worker 在初始状态
-        持久化之前抢先推进新任务。
-        """
-
-        payload = _dict(state)
-        task_id = str(payload.get("task_id") or "").strip()
-        status = str(payload.get("status") or "").strip()
-        execution_owner = str(execution_owner or "").strip()
-        execution_id = str(execution_id or "").strip()
-        if bool(execution_owner) != bool(execution_id):
-            raise ValueError("首次执行领取必须同时提供 owner 和 execution_id。")
-        lease_expires_at = (
-            time.time() + max(1.0, float(lease_seconds))
-            if execution_owner
-            else 0
-        )
-        payload["execution_id"] = execution_id
-        revision = 1
-        payload["revision"] = revision
-        created_at = str(payload.get("created_at") or "") or utc_now()
-        updated_at = str(payload.get("updated_at") or "") or created_at
-        if not task_id or not status:
-            raise ValueError("全局任务缺少 task_id 或状态。")
-        with self._write_lock:
-            with self._connect() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                try:
-                    conn.execute(
-                        """
-                        INSERT INTO global_tasks (
-                            task_id, status, revision,
-                            execution_id, execution_owner,
-                            execution_lease_expires_at,
-                            task_json, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            task_id,
-                            status,
-                            revision,
-                            execution_id,
-                            execution_owner,
-                            lease_expires_at,
-                            json_dumps(payload),
-                            created_at,
-                            updated_at,
-                        ),
-                    )
-                    conn.commit()
-                    return payload
-                except BaseException:
-                    conn.rollback()
-                    raise
-
-    def save_global_task(
-        self,
-        state: dict[str, Any],
-        *,
-        expected_revision: int,
-        execution_owner: str = "",
-        execution_id: str = "",
-    ) -> dict[str, Any]:
-        """以 revision + 可选执行 owner 做 CAS，避免旧快照覆盖新状态。"""
-
-        payload = _dict(state)
-        task_id = str(payload.get("task_id") or "").strip()
-        status = str(payload.get("status") or "").strip()
-        expected_revision = int(expected_revision)
-        next_revision = expected_revision + 1
-        payload["revision"] = next_revision
-        updated_at = str(payload.get("updated_at") or "") or utc_now()
-        if not task_id or not status:
-            raise ValueError("全局任务缺少 task_id 或状态。")
-        with self._write_lock:
-            with self._connect() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                try:
-                    cursor = conn.execute(
-                        """
-                        UPDATE global_tasks
-                        SET status = ?, revision = ?, task_json = ?,
-                            updated_at = ?
-                        WHERE task_id = ? AND revision = ?
-                          AND (
-                              (? = '' AND execution_owner = '')
-                              OR (execution_owner = ? AND execution_id = ?)
-                          )
-                        """,
-                        (
-                            status,
-                            next_revision,
-                            json_dumps(payload),
-                            updated_at,
-                            task_id,
-                            expected_revision,
-                            execution_owner,
-                            execution_owner,
-                            execution_id,
-                        ),
-                    )
-                    if cursor.rowcount != 1:
-                        exists = conn.execute(
-                            "SELECT 1 FROM global_tasks WHERE task_id = ?",
-                            (task_id,),
-                        ).fetchone()
-                        if not exists:
-                            raise FileNotFoundError(f"全局任务不存在：{task_id}")
-                        raise RuntimeError(
-                            f"全局任务状态已被其他执行者更新：{task_id}"
-                        )
-                    conn.commit()
-                    return payload
-                except BaseException:
-                    conn.rollback()
-                    raise
-
-    def claim_global_task_execution(
-        self,
-        task_id: str,
-        *,
-        owner: str,
-        execution_id: str,
-        lease_seconds: float,
-        allowed_statuses: frozenset[str] | None = None,
-    ) -> dict[str, Any]:
-        """原子领取可执行任务；未过期 lease 只能由原 execution token 续租。"""
-
-        task_id = str(task_id or "").strip()
-        owner = str(owner or "").strip()
-        execution_id = str(execution_id or "").strip()
-        if not task_id or not owner or not execution_id:
-            raise ValueError("领取任务执行权需要 task_id、owner 和 execution_id。")
-        now = time.time()
-        expires_at = now + max(1.0, float(lease_seconds))
-        with self._write_lock:
-            with self._connect() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                try:
-                    row = conn.execute(
-                        """
-                        SELECT task_json, status, execution_owner,
-                               execution_lease_expires_at
-                        FROM global_tasks WHERE task_id = ?
-                        """,
-                        (task_id,),
-                    ).fetchone()
-                    if row is None:
-                        raise FileNotFoundError(f"全局任务不存在：{task_id}")
-                    normalized_statuses = (
-                        tuple(sorted(str(item) for item in allowed_statuses))
-                        if allowed_statuses is not None
-                        else ()
-                    )
-                    if allowed_statuses is not None and (
-                        not normalized_statuses
-                        or str(row["status"] or "") not in normalized_statuses
-                    ):
-                        return {}
-                    current_owner = str(row["execution_owner"] or "")
-                    current_expiry = float(
-                        row["execution_lease_expires_at"] or 0
-                    )
-                    if current_owner and current_expiry > now:
-                        return {}
-                    payload = json_loads(row["task_json"], {})
-                    payload = payload if isinstance(payload, dict) else {}
-                    payload["execution_id"] = execution_id
-                    status_guard = ""
-                    status_values: tuple[str, ...] = ()
-                    if allowed_statuses is not None:
-                        placeholders = ",".join("?" for _ in normalized_statuses)
-                        status_guard = f" AND status IN ({placeholders})"
-                        status_values = normalized_statuses
-                    cursor = conn.execute(
-                        f"""
-                        UPDATE global_tasks
-                        SET execution_id = ?, execution_owner = ?,
-                            execution_lease_expires_at = ?
-                        WHERE task_id = ?
-                          AND (
-                              execution_owner = ''
-                              OR execution_lease_expires_at <= ?
-                          )
-                          {status_guard}
-                        """,
-                        (
-                            execution_id, owner, expires_at,
-                            task_id, now, *status_values,
-                        ),
-                    )
-                    if cursor.rowcount != 1:
-                        conn.rollback()
-                        return {}
-                    conn.commit()
-                    return payload
-                except BaseException:
-                    conn.rollback()
-                    raise
-
-    def renew_global_task_execution(
-        self,
-        task_id: str,
-        *,
-        owner: str,
-        execution_id: str,
-        lease_seconds: float,
-    ) -> bool:
-        now = time.time()
-        with self._write_lock:
-            with self._connect() as conn:
-                cursor = conn.execute(
-                    """
-                    UPDATE global_tasks
-                    SET execution_lease_expires_at = ?
-                    WHERE task_id = ? AND execution_owner = ?
-                      AND execution_id = ?
-                      AND execution_lease_expires_at > ?
-                    """,
-                    (
-                        now + max(1.0, float(lease_seconds)),
-                        str(task_id or "").strip(),
-                        str(owner or "").strip(),
-                        str(execution_id or "").strip(),
-                        now,
-                    ),
-                )
-                conn.commit()
-                return cursor.rowcount == 1
-
-    def release_global_task_execution(
-        self,
-        task_id: str,
-        *,
-        owner: str,
-        execution_id: str,
-    ) -> bool:
-        with self._write_lock:
-            with self._connect() as conn:
-                cursor = conn.execute(
-                    """
-                    UPDATE global_tasks
-                    SET execution_id = '', execution_owner = '',
-                        execution_lease_expires_at = 0
-                    WHERE task_id = ? AND execution_owner = ?
-                      AND execution_id = ?
-                    """,
-                    (
-                        str(task_id or "").strip(),
-                        str(owner or "").strip(),
-                        str(execution_id or "").strip(),
-                    ),
-                )
-                conn.commit()
-                return cursor.rowcount == 1
-
-    def load_global_task(self, task_id: str) -> dict[str, Any]:
-        task_id = str(task_id or "").strip()
-        if not task_id:
-            return {}
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT task_json FROM global_tasks WHERE task_id = ?",
-                (task_id,),
-            ).fetchone()
-        payload = json_loads(row["task_json"], {}) if row else {}
-        return payload if isinstance(payload, dict) else {}
-
-    def list_unfinished_global_tasks(self) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT task_json
-                FROM global_tasks
-                WHERE status NOT IN ('completed', 'failed', 'cancelled')
-                ORDER BY created_at ASC, task_id ASC
-                """
-            ).fetchall()
-        return [
-            payload
-            for row in rows
-            if isinstance(
-                payload := json_loads(row["task_json"], {}),
-                dict,
-            )
-        ]
-
-    def list_recoverable_global_tasks(
-        self,
-        *,
-        limit: int = 100,
-    ) -> list[dict[str, Any]]:
-        """只读取恢复 worker 会实际处理的有界任务集合。"""
-
-        bounded_limit = max(1, int(limit))
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT task_json
-                FROM global_tasks
-                WHERE status IN ('running', 'in_progress')
-                  AND (
-                      execution_owner = ''
-                      OR execution_lease_expires_at <= ?
-                  )
-                ORDER BY updated_at ASC, task_id ASC
-                LIMIT ?
-                """,
-                (time.time(), bounded_limit),
-            ).fetchall()
-        return [
-            payload
-            for row in rows
-            if isinstance(
-                payload := json_loads(row["task_json"], {}),
-                dict,
-            )
-        ]
+    # -- draft_query_snapshots ---------------------------------
 
     def save_draft_query_snapshot(self, snapshot: dict[str, Any]) -> None:
         """持久化不可变轻量快照；不复制草稿业务数据。"""
@@ -2501,9 +2274,7 @@ class ErpDatabase:
         ):
             raise ValueError("草稿查询快照缺少 ID、有序草稿 ID、查询条件或聚合统计。")
         normalized_ids = [
-            str(item or "").strip()
-            for item in ordered_ids
-            if str(item or "").strip()
+            str(item or "").strip() for item in ordered_ids if str(item or "").strip()
         ]
         with self._write_lock:
             with self._connect() as conn:
@@ -2533,7 +2304,9 @@ class ErpDatabase:
                             or existing_query != query
                             or existing_aggregates != aggregates
                         ):
-                            raise ValueError("草稿查询 snapshot_id 已绑定其他查询结果。")
+                            raise ValueError(
+                                "草稿查询 snapshot_id 已绑定其他查询结果。"
+                            )
                         conn.commit()
                         return
                     conn.execute(
@@ -2578,9 +2351,7 @@ class ErpDatabase:
         aggregates = aggregates if isinstance(aggregates, dict) else {}
         return {
             "snapshot_id": snapshot_id,
-            "draft_ids": (
-                ordered_ids if isinstance(ordered_ids, list) else []
-            ),
+            "draft_ids": (ordered_ids if isinstance(ordered_ids, list) else []),
             "query": query if isinstance(query, dict) else {},
             "total": int(aggregates.get("total") or 0),
             "count_by_platform": (
@@ -2678,11 +2449,7 @@ class ErpDatabase:
                 self._PYDANTIC_MESSAGE_HISTORY_SELECT,
                 (normalized_id,),
             ).fetchone()
-        return (
-            self._pydantic_message_history_row(row)
-            if row is not None
-            else None
-        )
+        return self._pydantic_message_history_row(row) if row is not None else None
 
     def get_pydantic_message_history_version(
         self,
@@ -2746,822 +2513,6 @@ class ErpDatabase:
                 conn.commit()
         return cursor.rowcount == 1
 
-    # -- pydantic_deferred_task_links / pydantic_ai_event_outbox ------------------
-
-    _DEFERRED_TASK_LINK_COLUMNS = (
-        "link_id",
-        "conversation_id",
-        "request_run_id",
-        "tool_call_id",
-        "task_id",
-        "link_status",
-        "history_version",
-        "created_at",
-        "ready_at",
-        "lease_id",
-        "lease_expires_at",
-        "continuation_run_id",
-        "resolved_at",
-        "abandoned_at",
-        "last_error_code",
-    )
-
-    _DEFERRED_TASK_LINK_SELECT = """
-        SELECT {columns}
-        FROM pydantic_deferred_task_links
-        """.format(columns=", ".join(_DEFERRED_TASK_LINK_COLUMNS))
-
-    _AI_EVENT_OUTBOX_COLUMNS = (
-        "outbox_id",
-        "conversation_id",
-        "run_id",
-        "history_version",
-        "kind",
-        "events_json",
-        "created_at",
-        "published_at",
-    )
-
-    @classmethod
-    def _deferred_task_link_row(cls, row: sqlite3.Row) -> dict[str, Any]:
-        return {
-            column: (
-                int(row[column])
-                if column in {"history_version"}
-                else float(row[column])
-                if column == "lease_expires_at"
-                else str(row[column] or "")
-            )
-            for column in cls._DEFERRED_TASK_LINK_COLUMNS
-        }
-
-    @staticmethod
-    def _ai_event_outbox_row(row: sqlite3.Row) -> dict[str, Any]:
-        return {
-            "outbox_id": int(row["outbox_id"] or 0),
-            "conversation_id": str(row["conversation_id"] or ""),
-            "run_id": str(row["run_id"] or ""),
-            "history_version": int(row["history_version"] or 0),
-            "kind": str(row["kind"] or ""),
-            "events_json": str(row["events_json"] or "[]"),
-            "created_at": str(row["created_at"] or ""),
-            "published_at": str(row["published_at"] or ""),
-        }
-
-    @staticmethod
-    def _require_link_identifiers(
-        *,
-        link_id: str,
-        conversation_id: str,
-        tool_call_id: str,
-        task_id: str,
-    ) -> None:
-        for label, value in (
-            ("link_id", link_id),
-            ("conversation_id", conversation_id),
-            ("tool_call_id", tool_call_id),
-            ("task_id", task_id),
-        ):
-            if not str(value or "").strip():
-                raise ValueError(f"Deferred task link 缺少 {label}。")
-
-    def create_global_task_with_deferred_link(
-        self,
-        state: dict[str, Any],
-        *,
-        link_id: str,
-        conversation_id: str,
-        request_run_id: str,
-        tool_call_id: str,
-        now: str,
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """同一事务原子创建 Deferred 任务与 provisional link。
-
-        link 初始为 ``awaiting_history`` 且 ``ready_at`` 为空：首次 Agent
-        history 提交前 worker 禁止执行任务。conversation 级 active link 唯一
-        约束（partial unique index）在这里兜底拒绝第二个未解决 Deferred。
-        """
-
-        payload = _dict(state)
-        task_id = str(payload.get("task_id") or "").strip()
-        status = str(payload.get("status") or "").strip()
-        normalized_link_id = str(link_id or "").strip()
-        normalized_conversation_id = str(conversation_id or "").strip()
-        normalized_tool_call_id = str(tool_call_id or "").strip()
-        normalized_request_run_id = str(request_run_id or "").strip()
-        timestamp = str(now or "").strip()
-        self._require_link_identifiers(
-            link_id=normalized_link_id,
-            conversation_id=normalized_conversation_id,
-            tool_call_id=normalized_tool_call_id,
-            task_id=task_id,
-        )
-        if not status or not timestamp:
-            raise ValueError("Deferred 任务创建缺少状态或时间。")
-        payload["revision"] = 1
-        payload["execution_id"] = ""
-        created_at = str(payload.get("created_at") or "") or timestamp
-        payload["created_at"] = created_at
-        payload["updated_at"] = str(payload.get("updated_at") or "") or timestamp
-        with self._write_lock:
-            with self._connect() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                try:
-                    conn.execute(
-                        """
-                        INSERT INTO global_tasks (
-                            task_id, status, revision,
-                            execution_id, execution_owner,
-                            execution_lease_expires_at,
-                            task_json, created_at, updated_at
-                        ) VALUES (?, ?, 1, '', '', 0, ?, ?, ?)
-                        """,
-                        (
-                            task_id,
-                            status,
-                            json_dumps(payload),
-                            payload["created_at"],
-                            payload["updated_at"],
-                        ),
-                    )
-                    conn.execute(
-                        """
-                        INSERT INTO pydantic_deferred_task_links (
-                            link_id, conversation_id, request_run_id,
-                            tool_call_id, task_id, link_status,
-                            history_version, created_at
-                        ) VALUES (?, ?, ?, ?, ?, 'awaiting_history', 0, ?)
-                        """,
-                        (
-                            normalized_link_id,
-                            normalized_conversation_id,
-                            normalized_request_run_id,
-                            normalized_tool_call_id,
-                            task_id,
-                            timestamp,
-                        ),
-                    )
-                    link_row = conn.execute(
-                        f"{self._DEFERRED_TASK_LINK_SELECT} WHERE link_id = ?",
-                        (normalized_link_id,),
-                    ).fetchone()
-                    conn.commit()
-                except BaseException:
-                    conn.rollback()
-                    raise
-        assert link_row is not None
-        return payload, self._deferred_task_link_row(link_row)
-
-    def get_deferred_task_link(
-        self,
-        link_id: str,
-    ) -> dict[str, Any] | None:
-        normalized = str(link_id or "").strip()
-        if not normalized:
-            return None
-        with self._connect() as conn:
-            row = conn.execute(
-                f"{self._DEFERRED_TASK_LINK_SELECT} WHERE link_id = ?",
-                (normalized,),
-            ).fetchone()
-        return self._deferred_task_link_row(row) if row is not None else None
-
-    def get_deferred_task_link_by_task(
-        self,
-        task_id: str,
-    ) -> dict[str, Any] | None:
-        normalized = str(task_id or "").strip()
-        if not normalized:
-            return None
-        with self._connect() as conn:
-            row = conn.execute(
-                f"{self._DEFERRED_TASK_LINK_SELECT} WHERE task_id = ?",
-                (normalized,),
-            ).fetchone()
-        return self._deferred_task_link_row(row) if row is not None else None
-
-    def active_deferred_task_link_for_conversation(
-        self,
-        conversation_id: str,
-    ) -> dict[str, Any] | None:
-        """读取 conversation 当前未解决 link（awaiting_history/ready）。"""
-
-        normalized = str(conversation_id or "").strip()
-        if not normalized:
-            return None
-        with self._connect() as conn:
-            row = conn.execute(
-                f"""
-                {self._DEFERRED_TASK_LINK_SELECT}
-                WHERE conversation_id = ?
-                  AND link_status IN ('awaiting_history', 'ready')
-                """,
-                (normalized,),
-            ).fetchone()
-        return self._deferred_task_link_row(row) if row is not None else None
-
-    def list_continuable_deferred_task_links(
-        self,
-        *,
-        limit: int = 50,
-    ) -> list[dict[str, Any]]:
-        """link 已 ready、Task 已终结且 link 未解决的可恢复记录。"""
-
-        bounded_limit = max(1, int(limit))
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT {", ".join("link." + column for column in self._DEFERRED_TASK_LINK_COLUMNS)}
-                FROM pydantic_deferred_task_links AS link
-                JOIN global_tasks AS task ON task.task_id = link.task_id
-                WHERE link.link_status = 'ready'
-                  AND link.ready_at != ''
-                  AND link.resolved_at = ''
-                  AND link.abandoned_at = ''
-                  AND task.status IN ('completed', 'failed', 'cancelled')
-                  AND (
-                      link.lease_id = ''
-                      OR link.lease_expires_at <= ?
-                  )
-                ORDER BY link.ready_at ASC, link.link_id ASC
-                LIMIT ?
-                """,
-                (time.time(), bounded_limit),
-            ).fetchall()
-        return [self._deferred_task_link_row(row) for row in rows]
-
-    def list_expired_provisional_deferred_links(
-        self,
-        *,
-        cutoff_iso: str,
-        limit: int = 50,
-    ) -> list[dict[str, Any]]:
-        """早于 cutoff 仍未形成首次 history 的 provisional link。
-
-        ``created_at`` 使用同一 UTC ISO 格式写入，可按字典序比较；调用方负责
-        用 ``datetime.now(timezone.utc) - TTL`` 计算 cutoff。
-        """
-
-        normalized_cutoff = str(cutoff_iso or "").strip()
-        if not normalized_cutoff:
-            raise ValueError("provisional link sweep 缺少 cutoff 时间。")
-        bounded_limit = max(1, int(limit))
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"""
-                {self._DEFERRED_TASK_LINK_SELECT}
-                WHERE link_status = 'awaiting_history'
-                  AND created_at != ''
-                  AND created_at < ?
-                ORDER BY created_at ASC, link_id ASC
-                LIMIT ?
-                """,
-                (normalized_cutoff, bounded_limit),
-            ).fetchall()
-        return [self._deferred_task_link_row(row) for row in rows]
-
-    def claim_deferred_task_link(
-        self,
-        link_id: str,
-        *,
-        lease_id: str,
-        lease_seconds: float,
-    ) -> dict[str, Any] | None:
-        """原子领取 continuation claim；lease 只防重复 continuation。"""
-
-        normalized_link_id = str(link_id or "").strip()
-        normalized_lease_id = str(lease_id or "").strip()
-        if not normalized_link_id or not normalized_lease_id:
-            raise ValueError("领取 Deferred link 需要 link_id 和 lease_id。")
-        now = time.time()
-        expires_at = now + max(1.0, float(lease_seconds))
-        with self._write_lock:
-            with self._connect() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                try:
-                    cursor = conn.execute(
-                        """
-                        UPDATE pydantic_deferred_task_links
-                        SET lease_id = ?, lease_expires_at = ?
-                        WHERE link_id = ?
-                          AND link_status = 'ready'
-                          AND resolved_at = ''
-                          AND abandoned_at = ''
-                          AND (lease_id = '' OR lease_expires_at <= ?)
-                        """,
-                        (
-                            normalized_lease_id,
-                            expires_at,
-                            normalized_link_id,
-                            now,
-                        ),
-                    )
-                    if cursor.rowcount != 1:
-                        conn.rollback()
-                        return None
-                    row = conn.execute(
-                        f"{self._DEFERRED_TASK_LINK_SELECT} WHERE link_id = ?",
-                        (normalized_link_id,),
-                    ).fetchone()
-                    conn.commit()
-                except BaseException:
-                    conn.rollback()
-                    raise
-        assert row is not None
-        return self._deferred_task_link_row(row)
-
-    def release_deferred_task_link_claim(
-        self,
-        link_id: str,
-        *,
-        lease_id: str,
-    ) -> bool:
-        with self._write_lock:
-            with self._connect() as conn:
-                cursor = conn.execute(
-                    """
-                    UPDATE pydantic_deferred_task_links
-                    SET lease_id = '', lease_expires_at = 0
-                    WHERE link_id = ? AND lease_id = ?
-                      AND link_status = 'ready'
-                      AND resolved_at = ''
-                    """,
-                    (str(link_id or "").strip(), str(lease_id or "").strip()),
-                )
-                conn.commit()
-                return cursor.rowcount == 1
-
-    def update_deferred_task_link_last_error(
-        self,
-        link_id: str,
-        *,
-        error_code: str,
-    ) -> None:
-        with self._write_lock:
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    UPDATE pydantic_deferred_task_links
-                    SET last_error_code = ?
-                    WHERE link_id = ?
-                    """,
-                    (
-                        str(error_code or "").strip()[:120],
-                        str(link_id or "").strip(),
-                    ),
-                )
-                conn.commit()
-
-    def commit_deferred_history_ready(
-        self,
-        conversation_id: str,
-        messages_json: bytes,
-        *,
-        now: str,
-        link_id: str,
-        outbox_run_id: str,
-        outbox_kind: str,
-        outbox_events_json: str,
-    ) -> dict[str, Any]:
-        """首次 Deferred history + link ready + outbox 的同事务提交。"""
-
-        normalized_id = str(conversation_id or "").strip()
-        normalized_link_id = str(link_id or "").strip()
-        timestamp = str(now or "").strip()
-        if not normalized_id or not normalized_link_id or not timestamp:
-            raise ValueError("Deferred history 提交缺少必要标识。")
-        if not isinstance(messages_json, bytes):
-            raise TypeError("Pydantic 消息历史必须以 bytes 保存。")
-        with self._write_lock:
-            with self._connect() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                try:
-                    conn.execute(
-                        """
-                        INSERT INTO pydantic_message_histories (
-                            conversation_id, messages_json, history_version,
-                            created_at, updated_at
-                        ) VALUES (?, ?, 1, ?, ?)
-                        ON CONFLICT(conversation_id) DO UPDATE SET
-                            messages_json = excluded.messages_json,
-                            history_version =
-                                pydantic_message_histories.history_version + 1,
-                            updated_at = excluded.updated_at
-                        """,
-                        (
-                            normalized_id,
-                            sqlite3.Binary(messages_json),
-                            timestamp,
-                            timestamp,
-                        ),
-                    )
-                    history_row = conn.execute(
-                        self._PYDANTIC_MESSAGE_HISTORY_SELECT,
-                        (normalized_id,),
-                    ).fetchone()
-                    assert history_row is not None
-                    history_version = int(history_row["history_version"] or 0)
-                    cursor = conn.execute(
-                        """
-                        UPDATE pydantic_deferred_task_links
-                        SET link_status = 'ready', ready_at = ?,
-                            history_version = ?, last_error_code = ''
-                        WHERE link_id = ?
-                          AND link_status = 'awaiting_history'
-                        """,
-                        (timestamp, history_version, normalized_link_id),
-                    )
-                    if cursor.rowcount != 1:
-                        raise RuntimeError(
-                            "Deferred link 不在 awaiting_history 状态，"
-                            f"无法提交首次 history：{normalized_link_id}"
-                        )
-                    self._insert_outbox_in_conn(
-                        conn,
-                        conversation_id=normalized_id,
-                        run_id=str(outbox_run_id or "").strip(),
-                        history_version=history_version,
-                        kind=str(outbox_kind or "").strip(),
-                        events_json=str(outbox_events_json or "[]"),
-                        now=timestamp,
-                    )
-                    conn.commit()
-                except BaseException:
-                    conn.rollback()
-                    raise
-        return self._pydantic_message_history_row(history_row)
-
-    def commit_continuation_history_resolved(
-        self,
-        conversation_id: str,
-        messages_json: bytes,
-        *,
-        now: str,
-        link_id: str,
-        expected_version: int,
-        continuation_run_id: str,
-        lease_id: str,
-        outbox_kind: str,
-        outbox_events_json: str,
-    ) -> dict[str, Any] | None:
-        """continuation history CAS + link resolved + outbox 的同事务提交。
-
-        history version 与 link 冻结版本不一致时整体回滚并返回 None，调用方
-        重新读取对账，不得盲目追加消息。link 更新同时校验当前 ``lease_id``：
-        lease 过期后被第二个 worker 领取时，第一个 worker 的最终提交必须失败，
-        避免越过租约写入别人正在重跑的 link。
-        """
-
-        normalized_id = str(conversation_id or "").strip()
-        normalized_link_id = str(link_id or "").strip()
-        normalized_run_id = str(continuation_run_id or "").strip()
-        normalized_lease_id = str(lease_id or "").strip()
-        timestamp = str(now or "").strip()
-        expected = int(expected_version)
-        if not normalized_id or not normalized_link_id or not timestamp:
-            raise ValueError("continuation 提交缺少必要标识。")
-        if not normalized_run_id:
-            raise ValueError("continuation 提交缺少 run_id。")
-        if not normalized_lease_id:
-            raise ValueError("continuation 提交缺少 lease_id。")
-        if not isinstance(messages_json, bytes):
-            raise TypeError("Pydantic 消息历史必须以 bytes 保存。")
-        with self._write_lock:
-            with self._connect() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                try:
-                    cursor = conn.execute(
-                        """
-                        UPDATE pydantic_message_histories
-                        SET messages_json = ?,
-                            history_version = history_version + 1,
-                            updated_at = ?
-                        WHERE conversation_id = ? AND history_version = ?
-                        """,
-                        (
-                            sqlite3.Binary(messages_json),
-                            timestamp,
-                            normalized_id,
-                            expected,
-                        ),
-                    )
-                    if cursor.rowcount != 1:
-                        conn.rollback()
-                        return None
-                    cursor = conn.execute(
-                        """
-                        UPDATE pydantic_deferred_task_links
-                        SET link_status = 'resolved', resolved_at = ?,
-                            continuation_run_id = ?,
-                            lease_id = '', lease_expires_at = 0,
-                            last_error_code = ''
-                        WHERE link_id = ?
-                          AND link_status = 'ready'
-                          AND resolved_at = ''
-                          AND lease_id = ?
-                        """,
-                        (
-                            timestamp,
-                            normalized_run_id,
-                            normalized_link_id,
-                            normalized_lease_id,
-                        ),
-                    )
-                    if cursor.rowcount != 1:
-                        conn.rollback()
-                        return None
-                    self._insert_outbox_in_conn(
-                        conn,
-                        conversation_id=normalized_id,
-                        run_id=normalized_run_id,
-                        history_version=expected + 1,
-                        kind=str(outbox_kind or "").strip(),
-                        events_json=str(outbox_events_json or "[]"),
-                        now=timestamp,
-                    )
-                    row = conn.execute(
-                        self._PYDANTIC_MESSAGE_HISTORY_SELECT,
-                        (normalized_id,),
-                    ).fetchone()
-                    conn.commit()
-                except BaseException:
-                    conn.rollback()
-                    raise
-        assert row is not None
-        return self._pydantic_message_history_row(row)
-
-    def abandon_deferred_link_and_cancel_task(
-        self,
-        link_id: str,
-        *,
-        now: str,
-        cancel_assistant_message: str,
-    ) -> dict[str, Any] | None:
-        """无法形成首次 history 的 provisional link：abandon 并取消任务。
-
-        只有 ``awaiting_history`` 且 Task 仍处于初始 running 状态时才允许；
-        已 ready/resolved 的 link 必须走标准恢复链路，不能在这里被放弃。
-        """
-
-        normalized_link_id = str(link_id or "").strip()
-        timestamp = str(now or "").strip()
-        if not normalized_link_id or not timestamp:
-            raise ValueError("abandon Deferred link 缺少必要标识。")
-        with self._write_lock:
-            with self._connect() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                try:
-                    cursor = conn.execute(
-                        """
-                        UPDATE pydantic_deferred_task_links
-                        SET link_status = 'abandoned', abandoned_at = ?,
-                            lease_id = '', lease_expires_at = 0
-                        WHERE link_id = ?
-                          AND link_status = 'awaiting_history'
-                          AND ready_at = ''
-                        """,
-                        (timestamp, normalized_link_id),
-                    )
-                    if cursor.rowcount != 1:
-                        conn.rollback()
-                        return None
-                    row = conn.execute(
-                        f"""
-                        SELECT task_id FROM pydantic_deferred_task_links
-                        WHERE link_id = ?
-                        """,
-                        (normalized_link_id,),
-                    ).fetchone()
-                    task_id = str(row["task_id"] or "") if row else ""
-                    task_row = conn.execute(
-                        "SELECT task_json FROM global_tasks WHERE task_id = ?",
-                        (task_id,),
-                    ).fetchone()
-                    if task_row is not None:
-                        payload = json_loads(task_row["task_json"], {})
-                        payload = payload if isinstance(payload, dict) else {}
-                        if str(payload.get("status") or "") == "running":
-                            payload["status"] = "cancelled"
-                            payload["pending_inputs"] = []
-                            payload["pending_approval"] = None
-                            payload["assistant_message"] = str(
-                                cancel_assistant_message or ""
-                            )
-                            payload["updated_at"] = timestamp
-                            conn.execute(
-                                """
-                                UPDATE global_tasks
-                                SET status = 'cancelled', task_json = ?,
-                                    updated_at = ?,
-                                    execution_id = '', execution_owner = '',
-                                    execution_lease_expires_at = 0
-                                WHERE task_id = ? AND status = 'running'
-                                """,
-                                (json_dumps(payload), timestamp, task_id),
-                            )
-                    link_row = conn.execute(
-                        f"{self._DEFERRED_TASK_LINK_SELECT} WHERE link_id = ?",
-                        (normalized_link_id,),
-                    ).fetchone()
-                    conn.commit()
-                except BaseException:
-                    conn.rollback()
-                    raise
-        assert link_row is not None
-        return self._deferred_task_link_row(link_row)
-
-    def mark_deferred_link_ready_from_history(
-        self,
-        link_id: str,
-        *,
-        now: str,
-        history_version: int,
-    ) -> dict[str, Any] | None:
-        """恢复协调：已存在匹配 Deferred history 的 provisional link 修复为 ready。"""
-
-        normalized_link_id = str(link_id or "").strip()
-        timestamp = str(now or "").strip()
-        version = int(history_version)
-        if not normalized_link_id or not timestamp or version < 1:
-            raise ValueError("修复 Deferred link 缺少必要标识或版本。")
-        with self._write_lock:
-            with self._connect() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                try:
-                    cursor = conn.execute(
-                        """
-                        UPDATE pydantic_deferred_task_links
-                        SET link_status = 'ready', ready_at = ?,
-                            history_version = ?, last_error_code = ''
-                        WHERE link_id = ?
-                          AND link_status = 'awaiting_history'
-                        """,
-                        (timestamp, version, normalized_link_id),
-                    )
-                    if cursor.rowcount != 1:
-                        conn.rollback()
-                        return None
-                    row = conn.execute(
-                        f"{self._DEFERRED_TASK_LINK_SELECT} WHERE link_id = ?",
-                        (normalized_link_id,),
-                    ).fetchone()
-                    conn.commit()
-                except BaseException:
-                    conn.rollback()
-                    raise
-        assert row is not None
-        return self._deferred_task_link_row(row)
-
-    @staticmethod
-    def _insert_outbox_in_conn(
-        conn: sqlite3.Connection,
-        *,
-        conversation_id: str,
-        run_id: str,
-        history_version: int,
-        kind: str,
-        events_json: str,
-        now: str,
-    ) -> None:
-        conn.execute(
-            """
-            INSERT INTO pydantic_ai_event_outbox (
-                conversation_id, run_id, history_version, kind,
-                events_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                conversation_id,
-                run_id,
-                int(history_version),
-                kind,
-                events_json,
-                now,
-            ),
-        )
-
-    def list_outbox_events_after(
-        self,
-        conversation_id: str,
-        *,
-        after_history_version: int,
-        limit: int = 200,
-    ) -> list[dict[str, Any]]:
-        """按 history_version 升序重放该版本之后的官方编码事件批次。"""
-
-        normalized_id = str(conversation_id or "").strip()
-        if not normalized_id:
-            return []
-        bounded_limit = max(1, min(int(limit), 1000))
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT {columns}
-                FROM pydantic_ai_event_outbox
-                WHERE conversation_id = ? AND history_version > ?
-                ORDER BY history_version ASC, outbox_id ASC
-                LIMIT ?
-                """.format(columns=", ".join(self._AI_EVENT_OUTBOX_COLUMNS)),
-                (normalized_id, int(after_history_version), bounded_limit),
-            ).fetchall()
-        return [self._ai_event_outbox_row(row) for row in rows]
-
-    def latest_outbox_history_version(
-        self,
-        conversation_id: str,
-    ) -> int:
-        normalized_id = str(conversation_id or "").strip()
-        if not normalized_id:
-            return 0
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT MAX(history_version) AS latest
-                FROM pydantic_ai_event_outbox
-                WHERE conversation_id = ?
-                """,
-                (normalized_id,),
-            ).fetchone()
-        return int((row["latest"] if row else 0) or 0)
-
-    def mark_outbox_published(self, outbox_ids: Sequence[int]) -> None:
-        identifiers = [int(item) for item in outbox_ids if int(item) > 0]
-        if not identifiers:
-            return
-        now = utc_now()
-        with self._write_lock:
-            with self._connect() as conn:
-                conn.execute(
-                    f"""
-                    UPDATE pydantic_ai_event_outbox
-                    SET published_at = ?
-                    WHERE outbox_id IN ({",".join("?" for _ in identifiers)})
-                      AND published_at = ''
-                    """,
-                    (now, *identifiers),
-                )
-                conn.commit()
-
-    def list_unpublished_outbox_events(
-        self,
-        *,
-        limit: int = 200,
-    ) -> list[dict[str, Any]]:
-        """按提交顺序列出尚未投递的官方编码事件批次（供后台 publisher 重投）。"""
-
-        bounded_limit = max(1, min(int(limit), 1000))
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT {columns}
-                FROM pydantic_ai_event_outbox
-                WHERE published_at = ''
-                ORDER BY outbox_id ASC
-                LIMIT ?
-                """.format(columns=", ".join(self._AI_EVENT_OUTBOX_COLUMNS)),
-                (bounded_limit,),
-            ).fetchall()
-        return [self._ai_event_outbox_row(row) for row in rows]
-
-    def prune_published_outbox_events(self, *, keep_latest: int) -> int:
-        """报告 A-14：按保留窗口清理已投递批次，约束 outbox 无限增长。
-
-        每个 conversation 只保留最近 ``keep_latest`` 条已发布（published_at
-        非空）批次，删除更早的已发布批次。绝不删除未发布批次——它们仍在等待
-        后台重投。订阅端游标早于最早保留版本时由 SSE 端回 ``resync_required``，
-        客户端重读 ``/ui-messages`` 即可对齐，不依赖被清理的旧批次。
-        """
-
-        bounded_keep = max(1, int(keep_latest))
-        with self._write_lock:
-            with self._connect() as conn:
-                cursor = conn.execute(
-                    """
-                    DELETE FROM pydantic_ai_event_outbox
-                    WHERE published_at != ''
-                      AND (
-                        SELECT COUNT(*)
-                        FROM pydantic_ai_event_outbox AS newer
-                        WHERE newer.conversation_id
-                              = pydantic_ai_event_outbox.conversation_id
-                          AND newer.published_at != ''
-                          AND (
-                            newer.history_version
-                              > pydantic_ai_event_outbox.history_version
-                            OR (
-                              newer.history_version
-                                = pydantic_ai_event_outbox.history_version
-                              AND newer.outbox_id
-                                > pydantic_ai_event_outbox.outbox_id
-                            )
-                          )
-                      ) >= ?
-                    """,
-                    (bounded_keep,),
-                )
-                conn.commit()
-                return max(0, int(cursor.rowcount or 0))
-
     # -- ai_chat_turn_claims -------------------------------------------------------
 
     _AI_CHAT_TURN_CLAIM_COLUMNS = (
@@ -3585,8 +2536,7 @@ class ErpDatabase:
         row: sqlite3.Row,
     ) -> dict[str, Any]:
         return {
-            column: str(row[column] or "")
-            for column in cls._AI_CHAT_TURN_CLAIM_COLUMNS
+            column: str(row[column] or "") for column in cls._AI_CHAT_TURN_CLAIM_COLUMNS
         }
 
     def insert_ai_chat_turn_claim(
@@ -3708,11 +2658,7 @@ class ErpDatabase:
                 """,
                 (conversation, message_id),
             ).fetchone()
-        return (
-            self._ai_chat_turn_claim_row(row)
-            if row is not None
-            else None
-        )
+        return self._ai_chat_turn_claim_row(row) if row is not None else None
 
     def latest_ai_chat_turn_claim_for_conversation(
         self,
@@ -3733,11 +2679,7 @@ class ErpDatabase:
                 """,
                 (conversation,),
             ).fetchone()
-        return (
-            self._ai_chat_turn_claim_row(row)
-            if row is not None
-            else None
-        )
+        return self._ai_chat_turn_claim_row(row) if row is not None else None
 
     # -- exchange_rates -----------------------------------------------------------
 
@@ -3772,14 +2714,26 @@ class ErpDatabase:
         return {"rates": rates, "fetched_at": fetched_at}
 
 
-def _record_from_row(row: sqlite3.Row, loaded_drafts: dict[str, Any] | None = None) -> dict[str, Any]:
+def _record_from_row(
+    row: sqlite3.Row, loaded_drafts: dict[str, Any] | None = None
+) -> dict[str, Any]:
     product = json_loads(row["product_json"], {})
-    drafts = loaded_drafts if isinstance(loaded_drafts, dict) else _dict(product.get("drafts")) if isinstance(product, dict) else {}
+    drafts = (
+        loaded_drafts
+        if isinstance(loaded_drafts, dict)
+        else _dict(product.get("drafts"))
+        if isinstance(product, dict)
+        else {}
+    )
     platforms = [
         platform
         for platform in PLATFORMS
         if isinstance(drafts.get(platform), dict)
-        and (drafts[platform].get("enabled") or drafts[platform].get("title") or drafts[platform].get("category_id"))
+        and (
+            drafts[platform].get("enabled")
+            or drafts[platform].get("title")
+            or drafts[platform].get("category_id")
+        )
     ]
     draft_statuses = {
         platform: str(drafts[platform].get("status") or "collected")
@@ -3796,19 +2750,36 @@ def _record_from_row(row: sqlite3.Row, loaded_drafts: dict[str, Any] | None = No
         "collect_status": row["collect_status"],
         "workflow_status": draft_statuses.get("mercadolibre", "collected"),
         "draft_statuses": draft_statuses,
-        "ai_copy_status": "done" if draft_statuses.get("mercadolibre") in {"copy_ready", "images_ready", "ready_to_publish", "published"} else "pending",
-        "image_status": "done" if draft_statuses.get("mercadolibre") in {"images_ready", "ready_to_publish", "published"} else "pending",
+        "ai_copy_status": "done"
+        if draft_statuses.get("mercadolibre")
+        in {"copy_ready", "images_ready", "ready_to_publish", "published"}
+        else "pending",
+        "image_status": "done"
+        if draft_statuses.get("mercadolibre")
+        in {"images_ready", "ready_to_publish", "published"}
+        else "pending",
         "category_status": "done" if ml_draft.get("category_id") else "pending",
-        "attributes_status": "done" if isinstance(ml_draft.get("attributes"), dict) and ml_draft.get("attributes") else "pending",
-        "pricing_status": "done" if any(
+        "attributes_status": "done"
+        if isinstance(ml_draft.get("attributes"), dict) and ml_draft.get("attributes")
+        else "pending",
+        "pricing_status": "done"
+        if any(
             isinstance(item, dict)
             and isinstance(item.get("applied_price"), dict)
             and str(item["applied_price"].get("amount") or "").strip()
             for item in _dict(_dict(ml_draft.get("pricing")).get("targets")).values()
-        ) else "pending",
-        "precheck_status": (_dict(_dict(product.get("publish_preview")).get("mercadolibre")).get("ok", "pending") if isinstance(product, dict) else "pending"),
+        )
+        else "pending",
+        "precheck_status": (
+            _dict(_dict(product.get("publish_preview")).get("mercadolibre")).get(
+                "ok", "pending"
+            )
+            if isinstance(product, dict)
+            else "pending"
+        ),
         "publish_status": ml_draft.get("publish_status") or "not_ready",
-        "optimized": draft_statuses.get("mercadolibre") in {"copy_ready", "images_ready", "ready_to_publish", "published"},
+        "optimized": draft_statuses.get("mercadolibre")
+        in {"copy_ready", "images_ready", "ready_to_publish", "published"},
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "platforms": platforms,

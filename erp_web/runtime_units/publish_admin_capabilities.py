@@ -15,7 +15,7 @@ import hashlib
 import json
 from typing import Annotated, Any
 
-from erp_web.schemas.ai_tools import TaskApprovalSnapshot
+from erp_web.schemas.ai_tools import ToolApprovalSnapshot
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.publish_admin_capabilities import (
     MercadoLibreUserProductPauseRequest,
@@ -25,7 +25,7 @@ from erp_web.schemas.publish_admin_capabilities import (
 )
 from erp_web.services.ai_tool_declaration import Injected, ai_tool
 from erp_web.services.capability_errors import BusinessCapabilityError
-from erp_web.services.task_approval import verify_execution_approval
+from erp_web.services.tool_approval import verify_execution_approval
 
 
 def _text(value: Any) -> str:
@@ -93,9 +93,7 @@ def _non_secret_publish_config(
 class PublishAdminCapabilityScope:
     """发布管理能力的可信依赖边界。"""
 
-    direct_publisher: Callable[
-        [dict[str, Any], str, dict[str, Any]], dict[str, Any]
-    ]
+    direct_publisher: Callable[[dict[str, Any], str, dict[str, Any]], dict[str, Any]]
     product_loader: Callable[
         [dict[str, Any]],
         tuple[dict[str, Any], dict[str, Any] | None, int],
@@ -127,14 +125,14 @@ def _publish_target_snapshot(
     product_id: str,
     platform: str,
     action: str,
-) -> TaskApprovalSnapshot:
+) -> ToolApprovalSnapshot:
     """发布目标审批快照：冻结发布目标与完整商品状态指纹。"""
 
     product = _load_product(scope, product_id)
     config = scope.store_config_loader()
     config = config if isinstance(config, dict) else {}
     title = _text(product.get("title")) or "（无标题）"
-    return TaskApprovalSnapshot(
+    return ToolApprovalSnapshot(
         summary=f"{action}：《{title}》({product_id}) → {platform}",
         canonical_payload={
             "action": action,
@@ -154,7 +152,7 @@ def _publish_target_snapshot(
 def _publish_direct_approval_snapshot(
     request: ProductPublishDirectRequest,
     scope: PublishAdminCapabilityScope,
-) -> TaskApprovalSnapshot:
+) -> ToolApprovalSnapshot:
     platform = _text(request.platform).lower()
     if not platform:
         raise BusinessCapabilityError(
@@ -180,12 +178,11 @@ def _publish_direct_approval_snapshot(
 def _mercadolibre_user_product_pause_approval_snapshot(
     request: MercadoLibreUserProductPauseRequest,
     scope: PublishAdminCapabilityScope,
-) -> TaskApprovalSnapshot:
+) -> ToolApprovalSnapshot:
     del scope
-    return TaskApprovalSnapshot(
+    return ToolApprovalSnapshot(
         summary=(
-            "暂停 Mercado Siteless User Product "
-            f"{request.siteless_user_product_id}"
+            f"暂停 Mercado Siteless User Product {request.siteless_user_product_id}"
         ),
         canonical_payload={
             "siteless_user_product_id": request.siteless_user_product_id,

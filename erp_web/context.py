@@ -27,24 +27,18 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, avoids import cycles
     )
     from erp_web.services.approval_session import ApprovalSession
     from erp_web.services.image_delivery_service import ImageDeliveryService
-    from erp_web.services.ai_conversation_event_bus import AiConversationEventBus
     from erp_web.services.product_research_service import ProductResearchRunRegistry
     from erp_web.stores.ai_chat_turn_claim_store import AiChatTurnClaimStore
     from erp_web.stores.config_store import ConfigStore
     from erp_web.stores.draft_query_snapshot_store import DraftQuerySnapshotStore
-    from erp_web.stores.global_task_store import LocalGlobalTaskStore
     from erp_web.stores.product_store import ProductStore
-    from erp_web.stores.pydantic_ai_event_outbox_store import (
-        PydanticAiEventOutboxStore,
-    )
-    from erp_web.stores.pydantic_deferred_task_link_store import (
-        PydanticDeferredTaskLinkStore,
-    )
     from erp_web.stores.pydantic_message_store import PydanticMessageStore
 
-_DEFAULT_APP_DIR = Path(
-    os.environ.get("ERP_APP_DIR", str(Path(__file__).resolve().parents[1]))
-).expanduser().resolve()
+_DEFAULT_APP_DIR = (
+    Path(os.environ.get("ERP_APP_DIR", str(Path(__file__).resolve().parents[1])))
+    .expanduser()
+    .resolve()
+)
 
 
 @dataclass(frozen=True)
@@ -116,7 +110,10 @@ class AppPaths:
             collect_debug_dir=cache_dir / "collect_debug",
             browser_profile_dir=app_dir / "browser_profile" / "1688",
             browser_debug_profile_dir=Path(
-                os.environ.get("ERP_BROWSER_PROFILE_DIR", str(app_dir / "browser_profile" / "debug"))
+                os.environ.get(
+                    "ERP_BROWSER_PROFILE_DIR",
+                    str(app_dir / "browser_profile" / "debug"),
+                )
             ),
             front_dir=front_dir,
             front_dist_dir=front_dist_dir,
@@ -155,18 +152,25 @@ class AppContext:
         self._research: "ProductResearchRunRegistry | None" = None
         self._pydantic_messages: "PydanticMessageStore | None" = None
         self._chat_turn_claims: "AiChatTurnClaimStore | None" = None
+        self._agent_calls = None
         self._chat_runs: "AiChatRunRegistry | None" = None
         self._draft_query_snapshots: "DraftQuerySnapshotStore | None" = None
         self._exchange_rates: "ExchangeRateService | None" = None
         self._image_delivery: "ImageDeliveryService | None" = None
         self._publishing_bus: "PublishingBus | None" = None
-        self._global_tasks: "LocalGlobalTaskStore | None" = None
-        self._deferred_task_links: "PydanticDeferredTaskLinkStore | None" = None
-        self._ai_event_outbox: "PydanticAiEventOutboxStore | None" = None
-        self._conversation_event_bus: "AiConversationEventBus | None" = None
         self._ai_presentations: "AiPresentationRegistry | None" = None
         self._approval_session: "ApprovalSession | None" = None
         self._category_catalog: "CategoryCatalog | None" = None
+
+    @property
+    def agent_calls(self):
+        if self._agent_calls is None:
+            with self._lazy_lock:
+                if self._agent_calls is None:
+                    from erp_web.stores.agent_call_store import AgentCallStore
+
+                    self._agent_calls = AgentCallStore(self.db)
+        return self._agent_calls
 
     @property
     def products(self) -> "ProductStore":
@@ -193,7 +197,9 @@ class AppContext:
         if self._research is None:
             with self._lazy_lock:
                 if self._research is None:
-                    from erp_web.services.product_research_service import ProductResearchRunRegistry
+                    from erp_web.services.product_research_service import (
+                        ProductResearchRunRegistry,
+                    )
 
                     self._research = ProductResearchRunRegistry(self.db)
         return self._research
@@ -243,9 +249,7 @@ class AppContext:
                         DraftQuerySnapshotStore,
                     )
 
-                    self._draft_query_snapshots = DraftQuerySnapshotStore(
-                        self.db
-                    )
+                    self._draft_query_snapshots = DraftQuerySnapshotStore(self.db)
         return self._draft_query_snapshots
 
     @property
@@ -253,7 +257,9 @@ class AppContext:
         if self._exchange_rates is None:
             with self._lazy_lock:
                 if self._exchange_rates is None:
-                    from erp_web.runtime_units.pricing_runtime import ExchangeRateService
+                    from erp_web.runtime_units.pricing_runtime import (
+                        ExchangeRateService,
+                    )
 
                     self._exchange_rates = ExchangeRateService(self.db)
         return self._exchange_rates
@@ -263,7 +269,9 @@ class AppContext:
         if self._image_delivery is None:
             with self._lazy_lock:
                 if self._image_delivery is None:
-                    from erp_web.services.image_delivery_service import ImageDeliveryService
+                    from erp_web.services.image_delivery_service import (
+                        ImageDeliveryService,
+                    )
 
                     self._image_delivery = ImageDeliveryService(self.paths)
         return self._image_delivery
@@ -292,54 +300,6 @@ class AppContext:
 
                     self._category_catalog = build_category_catalog()
         return self._category_catalog
-
-    @property
-    def global_tasks(self) -> "LocalGlobalTaskStore":
-        if self._global_tasks is None:
-            with self._lazy_lock:
-                if self._global_tasks is None:
-                    from erp_web.stores.global_task_store import LocalGlobalTaskStore
-
-                    self._global_tasks = LocalGlobalTaskStore(self.db)
-        return self._global_tasks
-
-    @property
-    def deferred_task_links(self) -> "PydanticDeferredTaskLinkStore":
-        if self._deferred_task_links is None:
-            with self._lazy_lock:
-                if self._deferred_task_links is None:
-                    from erp_web.stores.pydantic_deferred_task_link_store import (
-                        PydanticDeferredTaskLinkStore,
-                    )
-
-                    self._deferred_task_links = PydanticDeferredTaskLinkStore(
-                        self.db
-                    )
-        return self._deferred_task_links
-
-    @property
-    def ai_event_outbox(self) -> "PydanticAiEventOutboxStore":
-        if self._ai_event_outbox is None:
-            with self._lazy_lock:
-                if self._ai_event_outbox is None:
-                    from erp_web.stores.pydantic_ai_event_outbox_store import (
-                        PydanticAiEventOutboxStore,
-                    )
-
-                    self._ai_event_outbox = PydanticAiEventOutboxStore(self.db)
-        return self._ai_event_outbox
-
-    @property
-    def conversation_event_bus(self) -> "AiConversationEventBus":
-        if self._conversation_event_bus is None:
-            with self._lazy_lock:
-                if self._conversation_event_bus is None:
-                    from erp_web.services.ai_conversation_event_bus import (
-                        AiConversationEventBus,
-                    )
-
-                    self._conversation_event_bus = AiConversationEventBus()
-        return self._conversation_event_bus
 
     @property
     def ai_presentations(self) -> "AiPresentationRegistry":

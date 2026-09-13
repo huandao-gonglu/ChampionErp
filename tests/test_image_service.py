@@ -14,10 +14,11 @@ def _make_png(path: Path, color: tuple[int, int, int]) -> None:
     image.save(path, format="PNG")
 
 
-def test_image_root_is_created_under_data_images(app_dir: Path, old_path_markers: tuple[str, ...]) -> None:
+def test_image_root_is_created_under_data_images(app_dir: Path, tmp_path: Path, old_path_markers: tuple[str, ...]) -> None:
     root = image_service.images_root(app_dir)
     assert root.exists()
     assert root.is_dir()
+    assert root.resolve().is_relative_to(tmp_path.resolve())
     assert root.resolve().is_relative_to((app_dir / "data" / "images").resolve())
     assert_no_old_path(root, old_path_markers)
 

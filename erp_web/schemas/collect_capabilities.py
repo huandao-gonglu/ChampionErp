@@ -135,11 +135,25 @@ class Collect1688CleanResult(BaseModel):
     cleaned: dict[str, JsonValue] = Field(default_factory=dict)
 
 
+class ClaimMarket(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    platform: str
+    site: str
+    language: str
+
+
 class ClaimProductsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     product_ids: Annotated[tuple[str, ...], Field(min_length=1)]
-    platforms: tuple[str, ...] = ()
+    all_markets: bool = Field(default=False, description="用户要求所有平台和市场时设为 true，由服务端读取当前可选市场。")
+    targets: tuple[ClaimMarket, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_market_scope(self):
+        if self.all_markets == bool(self.targets):
+            raise ValueError("请选择全部市场或指定 targets，不能同时选择或同时省略。")
+        return self
 
 
 class ClaimProductsResult(BaseModel):

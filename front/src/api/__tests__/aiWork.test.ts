@@ -14,17 +14,6 @@ describe('AI Work 只读 API', () => {
     vi.mocked(apiClient.get).mockResolvedValue({ data: { ok: true, conversations: [] } })
   })
 
-  it('只导出规范读取、派生读取、任务关联读取、事件订阅 URL 与流路径常量', () => {
-    expect(Object.keys(aiWorkApi).sort()).toEqual([
-      'AI_CHAT_RUNS_PATH',
-      'conversationEventsUrl',
-      'fetchConversationTaskLink',
-      'fetchPydanticConversation',
-      'fetchPydanticConversations',
-      'fetchUiMessages',
-    ])
-  })
-
   it('读取 conversation 索引并使用显式 limit', async () => {
     await aiWorkApi.fetchPydanticConversations()
     await aiWorkApi.fetchPydanticConversations(25)
@@ -48,14 +37,6 @@ describe('AI Work 只读 API', () => {
 
     expect(apiClient.get).toHaveBeenCalledWith(
       '/api/v1/ai-work/conversations/conversation_global_chat_abc/ui-messages',
-    )
-  })
-
-  it('任务关联读取 /task-link 子路径并编码 ID', async () => {
-    await aiWorkApi.fetchConversationTaskLink('conversation_global_chat_abc')
-
-    expect(apiClient.get).toHaveBeenCalledWith(
-      '/api/v1/ai-work/conversations/conversation_global_chat_abc/task-link',
     )
   })
 

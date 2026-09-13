@@ -47,7 +47,6 @@ def _sample_product(title: str = "Store test product", url: str = "https://examp
 
 @pytest.mark.parametrize("attributes", [{"电机类型": "无刷电机", "电池容量": "2000–4000mAh"}, {}])
 def test_source_attribute_edits_survive_save_reload_and_remove_stale_copies(attributes: dict) -> None:
-    from erp_web.runtime_units.category_attribute_ai_fill import _product_context
     from erp_web.runtime_units.product_capabilities import read_product
     from erp_web.schemas.product_capabilities import ProductReadRequest
 
@@ -66,9 +65,7 @@ def test_source_attribute_edits_survive_save_reload_and_remove_stale_copies(attr
     assert reloaded["attributes"] == {"材质": "独立核实的材质", "内部备注": "保留"}
     facts = read_product(ProductReadRequest(product_id=product_id), product_store=products)
     assert facts.product.source_attributes == attributes
-    fill_context = _product_context(reloaded, "mercadolibre")
-    assert fill_context["source"]["attributes"] == attributes
-    assert "旧电机" not in json.dumps(fill_context, ensure_ascii=False)
+    assert "旧电机" not in facts.model_dump_json()
 
     # 再次保存也不能从采集副本恢复已删除的属性。
     products.save_product_profile(reloaded)

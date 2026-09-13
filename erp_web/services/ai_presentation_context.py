@@ -182,6 +182,7 @@ class AiPresentationContext:
     parent_run_id: str
     origin: RunOrigin
     observer: AiRunObserver
+    initial_user_message: str = ""
 
     @property
     def is_root_scope(self) -> bool:
@@ -264,6 +265,7 @@ def root_presentation_context(
     conversation_id: str,
     origin: RunOrigin,
     observer: AiRunObserver | None = None,
+    initial_user_message: str = "",
 ) -> AiPresentationContext:
     """构造 HTTP 公共边界的 root scope（``run_id`` 为空占位）。"""
 
@@ -280,6 +282,7 @@ def root_presentation_context(
         parent_run_id="",
         origin=origin,
         observer=observer or NullAiRunObserver(),
+        initial_user_message=initial_user_message,
     )
 
 

@@ -2,8 +2,7 @@ from __future__ import annotations
 
 """普通业务 Capability 的稳定错误边界。
 
-领域 service 不依赖全局任务 schema。Controller/facade 可以把这里的错误
-机械转换为 ``CapabilityResult.failed`` 或 ``CapabilityResult.needs_input``。
+领域 service 不依赖全局任务 schema。Tool Bridge 把缺字段或业务错误作为工具结果交给原生 Agent。
 """
 
 from collections.abc import Mapping, Sequence
@@ -11,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-_INPUT_OWNERS = frozenset({"step", "provided_attributes", "pricing_input"})
+_INPUT_OWNERS = frozenset({"arguments", "provided_attributes", "pricing_input"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,7 +33,7 @@ class BusinessCapabilityError(RuntimeError):
     """可由上层稳定映射的业务 Capability 错误。
 
     ``details`` 允许能力附带结构化语义，例如副作用已发出但结果未知的
-    ``{"outcome_unknown": True}``；Controller 必须据此区分普通失败与
+    ``{"outcome_unknown": True}``；调用方必须据此区分普通失败与
     不可自动重试的结果未知。
     """
 
@@ -55,7 +54,7 @@ class BusinessCapabilityError(RuntimeError):
 
 
 class CapabilityInputRequired(BusinessCapabilityError):
-    """表示同一步骤可以在获得明确字段后继续。"""
+    """表示工具在获得明确字段后可以重新调用。"""
 
     def __init__(
         self,
@@ -67,7 +66,7 @@ class CapabilityInputRequired(BusinessCapabilityError):
         reason: str = "",
         options: Sequence[str | CapabilityInputOption] = (),
         input_type: str = "text",
-        input_owner: str = "step",
+        argument_path: str = "arguments",
     ) -> None:
         self.key = str(key or "").strip()
         self.label = str(label or self.key).strip()
@@ -101,20 +100,20 @@ class CapabilityInputRequired(BusinessCapabilityError):
         if normalized_type not in allowed_types:
             raise ValueError(f"未知 Capability 输入类型：{normalized_type}")
         self.input_type = normalized_type
-        normalized_owner = str(input_owner or "step").strip().lower()
+        normalized_owner = str(argument_path or "arguments").strip().lower()
         if normalized_owner not in _INPUT_OWNERS:
             raise ValueError(f"未知 Capability 输入 owner：{normalized_owner}")
-        self.input_owner = normalized_owner
+        self.argument_path = normalized_owner
         super().__init__(
             code,
             message,
         )
 
-    def set_input_owner(self, input_owner: str) -> None:
-        normalized_owner = str(input_owner or "step").strip().lower()
+    def set_argument_path(self, argument_path: str) -> None:
+        normalized_owner = str(argument_path or "arguments").strip().lower()
         if normalized_owner not in _INPUT_OWNERS:
             raise ValueError(f"未知 Capability 输入 owner：{normalized_owner}")
-        self.input_owner = normalized_owner
+        self.argument_path = normalized_owner
 
 
 __all__ = [

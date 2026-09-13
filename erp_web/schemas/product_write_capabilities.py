@@ -9,7 +9,14 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    StringConstraints,
+    model_validator,
+)
 
 
 TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True)]
@@ -261,15 +268,25 @@ class DraftPricingApplyRequest(BaseModel):
         StringConstraints(max_length=40),
     ] = ""
     site: Annotated[TrimmedText, StringConstraints(max_length=40)] = ""
+    source_conversation_id: str = Field(
+        default="",
+        max_length=160,
+        description="资料来源会话 ID；跨会话引用仍由服务端校验归属。",
+    )
+    source_message_id: str = Field(
+        default="",
+        max_length=200,
+        description="conversation_facts_query 返回的真实用户消息 ID；不接受模型自报来源。",
+    )
     sales_target: list[
         Annotated[TrimmedText, StringConstraints(min_length=1, max_length=120)]
     ] = Field(
         default_factory=list,
         max_length=100,
         description=(
-            "仅供任务补充界面的 Mercado Libre CBT 销售目标选择器列表；每项格式为 "
-            "SITE_ID:logistic_type，例如 [\"MLM:remote\", \"MLB:remote\"]；"
-            "初始计划必须留空列表。"
+            "Mercado Libre CBT 销售目标；仅使用已保存选择或带 source_message_id 的用户事实。每项格式为 "
+            'SITE_ID:logistic_type，例如 ["MLM:remote", "MLB:remote"]；'
+            "不要猜测用户销售目标。"
         ),
     )
     pricing_input: dict[str, JsonValue] = Field(default_factory=dict)

@@ -64,6 +64,7 @@ class _PresentationState:
     presentation_id: str
     conversation_id: str
     display_title: str
+    initial_user_message: str = ""
     status: str = RESERVED
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
@@ -103,6 +104,7 @@ class AiPresentationRegistry:
         presentation_id: str,
         conversation_id: str,
         display_title: str,
+        initial_user_message: str = "",
     ) -> bool:
         """原子预留 presentation（status=reserved）；重复 ID 返回 False。"""
 
@@ -117,6 +119,7 @@ class AiPresentationRegistry:
                 presentation_id=normalized,
                 conversation_id=str(conversation_id or ""),
                 display_title=str(display_title or ""),
+                initial_user_message=initial_user_message,
                 reserved_expires_at=datetime.fromtimestamp(
                     _now().timestamp() + self._reservation_ttl_seconds,
                     tz=timezone.utc,
@@ -156,6 +159,7 @@ class AiPresentationRegistry:
                 "presentation_id": state.presentation_id,
                 "conversation_id": state.conversation_id,
                 "display_title": state.display_title,
+                "initial_user_message": state.initial_user_message,
                 "status": state.status,
             }
 

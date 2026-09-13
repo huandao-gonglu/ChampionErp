@@ -130,7 +130,10 @@ def _build_pydantic_model_binding(
 
     model = ai_model_config.normalize_ai_model(model_config)
     model_id = str(model.get("id") or "").strip()
-    if ai_model_config.model_connection_type(model) != ai_model_config.CONNECTION_TYPE_API:
+    if (
+        ai_model_config.model_connection_type(model)
+        != ai_model_config.CONNECTION_TYPE_API
+    ):
         raise AiModelFactoryError("Pydantic Agent 当前只支持 API 模型连接。")
     normalized_operation_capabilities = _normalize_operation_capabilities(
         operation_capabilities
@@ -167,13 +170,10 @@ def _build_pydantic_model_binding(
             f"AI 模型 {model_id or 'unknown'} 的生成配置无效：{exc}"
         ) from exc
     effective_timeout = _positive_timeout(
-        timeout_seconds
-        if timeout_seconds is not None
-        else model.get("timeout_seconds")
+        timeout_seconds if timeout_seconds is not None else model.get("timeout_seconds")
     )
     if effective_timeout is not None:
         settings_payload["timeout"] = effective_timeout
-    settings_payload["parallel_tool_calls"] = False
     model_settings = ModelSettings(**settings_payload)
 
     try:
@@ -191,7 +191,9 @@ def _build_pydantic_model_binding(
                 raise AiModelFactoryError(
                     f"AI Provider {provider_spec.label} 未接入 Images Model。"
                 )
-            unsupported_mix = set(normalized_operation_capabilities) - image_capabilities
+            unsupported_mix = (
+                set(normalized_operation_capabilities) - image_capabilities
+            )
             if unsupported_mix:
                 raise AiModelFactoryError(
                     "专用图片模型不能同时承担文本或工具能力："
@@ -212,11 +214,7 @@ def _build_pydantic_model_binding(
                     model_name,
                 )
             )
-            profile = (
-                OpenAIModelProfile(**profile_payload)
-                if profile_payload
-                else None
-            )
+            profile = OpenAIModelProfile(**profile_payload) if profile_payload else None
             pydantic_model: Model = OpenAIResponsesModel(
                 model_name,
                 provider=provider,
@@ -228,11 +226,7 @@ def _build_pydantic_model_binding(
                     provider_family
                 )
             )
-            profile = (
-                OpenAIModelProfile(**profile_payload)
-                if profile_payload
-                else None
-            )
+            profile = OpenAIModelProfile(**profile_payload) if profile_payload else None
             pydantic_model = OpenAIChatModel(
                 model_name,
                 provider=provider,
@@ -323,9 +317,7 @@ def create_pydantic_model_binding_for_use_case(
     try:
         config_service.load_env(app_dir)
         required_capabilities = tuple(
-            ai_model_config.ai_use_case_required_capabilities(
-                normalized_use_case_id
-            )
+            ai_model_config.ai_use_case_required_capabilities(normalized_use_case_id)
         )
         model = ai_model_config.resolve_ai_model(
             app_config,

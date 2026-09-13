@@ -16,7 +16,7 @@ disposition：
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
 
 from erp_web.http_route_units import (
     ai_work_routes,
@@ -50,13 +50,11 @@ class AiCapabilityCoverageEntry(BaseModel):
         else:
             if self.capability_names:
                 raise ValueError(
-                    f"{self.method} {self.path}："
-                    f"{self.disposition} 分类不得引用能力"
+                    f"{self.method} {self.path}：{self.disposition} 分类不得引用能力"
                 )
             if not self.reason.strip():
                 raise ValueError(
-                    f"{self.method} {self.path}："
-                    f"{self.disposition} 分类必须给出理由"
+                    f"{self.method} {self.path}：{self.disposition} 分类必须给出理由"
                 )
         return self
 
@@ -314,29 +312,19 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     ),
     AiCapabilityCoverageEntry(
         method="GET",
-        path="/api/v1/ai-work/conversations/<conversation_id>/task-link",
-        business_domain="AI 会话运输",
-        disposition="excluded",
-        reason="conversation→未解决 Deferred 任务的只读关联，chat/会话 transport。",
-    ),
-    AiCapabilityCoverageEntry(
-        method="GET",
         path="/api/v1/ai-work/conversations/<conversation_id>/events",
         business_domain="AI 会话运输",
         disposition="excluded",
         reason="活动 conversation 官方事件订阅 SSE，chat/会话 transport。",
     ),
-    AiCapabilityCoverageEntry(
-        method="GET",
-        path="/api/v1/global-tasks/<task_id>",
-        business_domain="全局任务",
-        disposition="internal_only",
-        reason=(
-            "受信任务卡的纯读任务状态与计算型执行进度视图；"
-            "主 Agent 等价路径是 global_task_get。"
-        ),
-    ),
     # -------------------------------------------------- 主 Agent 运输（POST）
+    AiCapabilityCoverageEntry(
+        method="POST",
+        path="/api/v1/ai-chat/cancel",
+        business_domain="AI 会话运输",
+        disposition="excluded",
+        reason="用户停止入口，向 Pydantic 原生取消令牌传递信号，不作为模型工具。",
+    ),
     AiCapabilityCoverageEntry(
         method="POST",
         path="/api/v1/ai-chat/runs",
@@ -352,34 +340,6 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         reason="AI 演示 SSE transport，协议基础设施。",
     ),
     # -------------------------------------------------- 全局任务门面（POST）
-    AiCapabilityCoverageEntry(
-        method="POST",
-        path="/api/global-task-input",
-        business_domain="全局任务",
-        disposition="internal_only",
-        reason="受信任务 UI 的 HTTP 门面；主 Agent 等价路径是 global_task_submit_input。",
-    ),
-    AiCapabilityCoverageEntry(
-        method="POST",
-        path="/api/global-task-approve",
-        business_domain="全局任务",
-        disposition="internal_only",
-        reason="受信任务 UI 的人工审批门；必须携带审批 token，主 Agent 不具备等价路径。",
-    ),
-    AiCapabilityCoverageEntry(
-        method="POST",
-        path="/api/global-task-reject",
-        business_domain="全局任务",
-        disposition="internal_only",
-        reason="受信任务 UI 的人工拒绝门；必须携带审批 token，主 Agent 不具备等价路径。",
-    ),
-    AiCapabilityCoverageEntry(
-        method="POST",
-        path="/api/global-task-cancel",
-        business_domain="全局任务",
-        disposition="internal_only",
-        reason="受信任务 UI 的 HTTP 门面；主 Agent 等价路径是 global_task_cancel。",
-    ),
     # -------------------------------------------------- 商品与草稿（POST）
     AiCapabilityCoverageEntry(
         method="POST",
@@ -479,13 +439,6 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         business_domain="类目与属性",
         disposition="capability",
         capability_names=("category_precheck",),
-    ),
-    AiCapabilityCoverageEntry(
-        method="POST",
-        path="/api/category-ai-fill",
-        business_domain="类目与属性",
-        disposition="capability",
-        capability_names=("product_attributes_fill",),
     ),
     AiCapabilityCoverageEntry(
         method="POST",
@@ -825,7 +778,9 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
 def coverage_manifest_endpoints() -> frozenset[tuple[str, str]]:
     """Manifest 声明的入口集合（method, path）。"""
 
-    return frozenset((entry.method, entry.path) for entry in AI_CAPABILITY_COVERAGE_MANIFEST)
+    return frozenset(
+        (entry.method, entry.path) for entry in AI_CAPABILITY_COVERAGE_MANIFEST
+    )
 
 
 __all__ = [

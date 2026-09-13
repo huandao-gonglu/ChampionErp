@@ -57,7 +57,6 @@ vi.mock('@/api/workflow/publishing', () => ({
   matchCategory: vi.fn(),
   searchCategories: vi.fn(),
   previewPublishPayload: vi.fn(),
-  fillCategoryAttributes: vi.fn(),
   fetchPublishLogs: vi.fn(),
   fetchPublishJob: vi.fn(),
   fetchPublishJobs: vi.fn(),
@@ -2136,11 +2135,6 @@ describe('workflow store live API flow', () => {
     expect(ok).toBe(false)
     expect(store.error).toContain('已有前台 AI 任务运行')
     expect(workflowApi.matchCategory).not.toHaveBeenCalled()
-    expect(workflowApi.fillCategoryAttributes).not.toHaveBeenCalled()
-
-    await store.fillAttributesByAi()
-    expect(store.error).toContain('已有前台 AI 任务运行')
-    expect(workflowApi.fillCategoryAttributes).not.toHaveBeenCalled()
   })
 
   it('rejects AI business triggers while a foreground start is pending (atomic occupancy)', async () => {
@@ -2164,112 +2158,6 @@ describe('workflow store live API flow', () => {
     expect(ok).toBe(false)
     expect(store.error).toContain('已有前台 AI 任务运行')
     expect(workflowApi.matchCategory).not.toHaveBeenCalled()
-
-    await store.fillAttributesByAi()
-    expect(store.error).toContain('已有前台 AI 任务运行')
-    expect(workflowApi.fillCategoryAttributes).not.toHaveBeenCalled()
-  })
-
-  it.each(['', 'AI 未完成属性提交，本次未写入 AI 建议。'])('Ozon 填写保留目标市场并展示警告：%s', async (warning) => {
-    const draft = createEmptyDraftDetail('yandex')
-    draft.draftId = 'draft-ai-target-isolation'
-    draft.productId = 'product-ai-target-isolation'
-    draft.sourceProductId = 'product-ai-target-isolation'
-    draft.platform = 'yandex'
-    draft.platforms = ['yandex', 'ozon']
-    draft.site = 'global'
-    draft.language = 'ru-RU'
-    draft.categoryId = '60996608'
-    draft.categoryPath = 'Yandex / Pet houses'
-    draft.attributes = { '43903290': { values: [{ value: 'кошки' }] } }
-    draft.targetSites = [
-      {
-        platform: 'yandex',
-        site: 'global',
-        language: 'ru-RU',
-        listingCurrency: 'RUB',
-        categoryId: '60996608',
-        categoryPath: 'Yandex / Pet houses',
-        attributes: { '43903290': { values: [{ value: 'кошки' }] } },
-        validationErrors: [],
-      },
-      {
-        platform: 'ozon',
-        site: 'global',
-        language: 'ru-RU',
-        listingCurrency: 'RUB',
-        categoryId: '95196',
-        descriptionCategoryId: '17028674',
-        categoryPath: 'Ozon / Dog houses',
-        attributes: {},
-        validationErrors: [],
-      },
-    ]
-    vi.mocked(workflowApi.saveDraft).mockImplementation(async (draftToSave) => {
-      const saved = JSON.parse(JSON.stringify(draftToSave)) as DraftDetail
-      const primary = saved.targetSites[0]!
-      saved.platform = primary.platform
-      saved.site = primary.site
-      saved.categoryId = primary.categoryId || ''
-      saved.descriptionCategoryId = primary.descriptionCategoryId || ''
-      saved.categoryPath = primary.categoryPath || ''
-      saved.attributes = JSON.parse(JSON.stringify(primary.attributes || {}))
-      return draftMutation(saved)
-    })
-    vi.mocked(workflowApi.fillCategoryAttributes).mockImplementation(async (
-      draftToFill,
-      target,
-    ) => {
-      const filled = JSON.parse(JSON.stringify(draftToFill)) as DraftDetail
-      const ozon = filled.targetSites.find((item) => item.platform === target.platform && item.site === target.site)!
-      ozon.attributes = { '8229': { values: [{ dictionaryValueId: '95196', value: 'Будка для собак' }] } }
-      filled.platform = 'yandex'
-      filled.categoryId = '60996608'
-      filled.categoryPath = 'Yandex / Pet houses'
-      filled.attributes = { '43903290': { values: [{ value: 'кошки' }] } }
-      return {
-        ...draftMutation(filled),
-        needReview: [],
-        warning,
-        raw: { fill_source: 'ai_model' },
-      }
-    })
-
-    const store = useWorkflowStore()
-    store.currentDraft = draft
-    store.activeMarketplace = 'yandex'
-    store.activePublishTargetKey = 'yandex:global'
-    store.selectPublishTarget(draft.targetSites[1]!)
-    store.category = {
-      platform: 'ozon',
-      categoryId: '95196',
-      categoryPath: 'Ozon / Dog houses',
-      requiredAttributes: [{ id: '8229', name: 'Тип', required: true }],
-      optionalAttributes: [],
-      fetchedAt: '2026-09-02T12:00:00Z',
-      raw: {},
-    }
-
-    await store.fillAttributesByAi()
-
-    expect(workflowApi.fillCategoryAttributes).toHaveBeenCalledOnce()
-    expect(workflowApi.fillCategoryAttributes).toHaveBeenCalledWith(
-      expect.any(Object),
-      expect.objectContaining({ platform: 'ozon', site: 'global', categoryId: '95196' }),
-      '95196',
-      expect.objectContaining({ platform: 'ozon', categoryId: '95196' }),
-      { presentationId: 'presentation-store-test' },
-      '',
-      false,
-    )
-    expect(store.activePublishTargetKey).toBe('ozon:global')
-    expect(store.error).toBe(warning)
-    expect(store.currentDraft.attributes).toEqual({
-      '8229': { values: [{ dictionaryValueId: '95196', value: 'Будка для собак' }] },
-    })
-    expect(store.currentDraft.targetSites.find((target) => target.platform === 'yandex')?.attributes).toEqual({
-      '43903290': { values: [{ value: 'кошки' }] },
-    })
   })
 
   it('translates category candidates through the generic flat text contract', async () => {

@@ -93,6 +93,7 @@ class CategoryMatchAgentService(Protocol):
         ledger: CategoryCandidateLedger,
         *,
         timeout_seconds: float,
+        candidate_detail_loader: Callable[..., dict[str, Any]],
     ) -> CategoryMatchAgentRun:
         ...
 
@@ -434,7 +435,8 @@ def _validate_selected_category(
             platform,
             selected_category_id,
             site=site,
-            include_attributes=True,
+            # 匹配只核验类目身份；属性加载属于用户选定类目后的独立步骤。
+            include_attributes=False,
             timeout_seconds=ensure_deadline(),
         )
     except (TimeoutError, CategoryMatchError):
@@ -471,19 +473,6 @@ def _validate_selected_category(
                 "Ozon 类目缺少 type_id 与 description_category_id 配对。",
             )
 
-    attributes = (
-        detail.get("attributes")
-        if isinstance(detail.get("attributes"), Mapping)
-        else {}
-    )
-    if not isinstance(attributes.get("required"), list) or not isinstance(
-        attributes.get("optional"), list
-    ):
-        raise _validation_error(
-            "CATEGORY_ATTRIBUTES_UNAVAILABLE",
-            "类目属性响应结构无效。",
-            retryable=True,
-        )
     ensure_deadline()
     return candidate
 
@@ -769,26 +758,12 @@ def finalize_category_match(
         )
     except Exception as exc:
         failure = failure_from_exception(exc, stage="validation")
-        if failure["code"] in {
-            "MODEL_SELECTED_UNKNOWN_CATEGORY",
-            "TASK_DEADLINE_EXCEEDED",
-        }:
-            return _result(
-                ok=False,
-                status="failed",
-                target=normalized_target,
-                ledger=ledger,
-                decision=decision,
-                failure=failure,
-                trace=trace,
-                agent_run=agent_run,
-            )
         return _result(
-            ok=True,
-            status="unresolved",
+            ok=False,
+            status="failed",
             target=normalized_target,
             ledger=ledger,
-            decision={**decision, "abstained": True},
+            decision=decision,
             failure=failure,
             trace=trace,
             agent_run=agent_run,
@@ -863,6 +838,10 @@ def match_category(
             toolset,
             ledger,
             timeout_seconds=remaining_seconds,
+            candidate_detail_loader=lambda category_id, *, timeout_seconds: detail_loader(
+                normalized_target["platform"], category_id, site=normalized_target["site"],
+                include_attributes=False, timeout_seconds=min(timeout_seconds, remaining_deadline_seconds(deadline_at)),
+            ),
         )
     except Exception as exc:
         return finalize_category_match(

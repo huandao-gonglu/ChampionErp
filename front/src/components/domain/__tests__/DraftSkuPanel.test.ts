@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { mount } from '@vue/test-utils'
 import { reactive } from 'vue'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia'
 import DraftSkuPanel from '@/components/domain/DraftSkuPanel.vue'
 import SkuImagePicker from '@/components/domain/SkuImagePicker.vue'
 import { createEmptyDraftDetail } from '@/constants/initialState'
@@ -18,6 +19,7 @@ const facts: ProductSku[] = [{
 }]
 
 describe('草稿 SKU 选品', () => {
+  beforeEach(() => setActivePinia(createPinia()))
   it('新增和库存为空的 SKU 默认填写供应商库存，保留手动库存', async () => {
     const draft = reactive(createEmptyDraftDetail('ozon'))
     draft.draftId = 'draft-stock'

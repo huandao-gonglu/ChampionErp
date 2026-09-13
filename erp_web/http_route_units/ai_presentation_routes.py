@@ -70,6 +70,7 @@ def handle_reserve(handler: JsonRequestHandler) -> None:
     payload = reserve_presentation(
         get_context().ai_presentations,
         display_title=body.get("display_title"),
+        initial_user_message=body.get("initial_user_message", ""),
     )
     handler.send_json(payload)
 

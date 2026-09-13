@@ -77,6 +77,20 @@ class DraftPublishReadiness(BaseModel):
     validation_warning_count: int = Field(default=0, ge=0)
 
 
+class DraftTargetSummary(BaseModel):
+    """每个目标单独处理类目、公共属性和 SKU 属性，不能只处理主平台。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    platform: str
+    site: str = ""
+    language: str = ""
+    category_id: str = ""
+    attribute_count: int = 0
+    selected_sku_count: int = 0
+    skus_with_attributes: int = 0
+    sales_targets: list[str] = Field(default_factory=list, max_length=100)
+
+
 class DraftSummary(BaseModel):
     """草稿及其来源/目标市场的只读事实。
 
@@ -103,6 +117,7 @@ class DraftSummary(BaseModel):
         max_length=20,
     )
     target_site: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
+    targets: list[DraftTargetSummary] = Field(default_factory=list, max_length=50)
     language: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
     category_id: Annotated[TrimmedText, StringConstraints(max_length=160)] = ""
     category_path: Annotated[TrimmedText, StringConstraints(max_length=1000)] = ""
@@ -137,4 +152,5 @@ __all__ = [
     "DraftQuerySort",
     "DraftQueryView",
     "DraftSummary",
+    "DraftTargetSummary",
 ]

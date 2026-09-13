@@ -115,9 +115,7 @@ def _context() -> dict:
         "listing_currency": "MXN",
         "stock": "5",
         "images": [{"asset_id": "image-1", "role": "main", "order": 0}],
-        "selected_pricing": {
-            "applied_price": {"amount": "199", "currency": "MXN"}
-        },
+        "selected_pricing": {"applied_price": {"amount": "199", "currency": "MXN"}},
     }
     return {
         "draft": deepcopy(draft),
@@ -153,9 +151,7 @@ def publish_boundary(monkeypatch):
         }
     }
     context = SimpleNamespace(
-        config=SimpleNamespace(
-            load_store_config=lambda: deepcopy(store_config)
-        ),
+        config=SimpleNamespace(load_store_config=lambda: deepcopy(store_config)),
         products=_Products(),
     )
     monkeypatch.setattr(publish_capabilities, "get_context", lambda: context)
@@ -214,12 +210,34 @@ def test_publish_validate_returns_stable_digest_and_is_pure(
 
 def test_validation_preserves_grouped_sku_issue_details(publish_boundary):
     adapter, _store_config = publish_boundary
-    affected = [{"sku_id": "first", "sku": "SELL-1", "name": "红色"}, {"sku_id": "second", "sku": "SELL-2", "name": "蓝色"}]
-    related = [{"code": "SKU_VARIATION_ATTRIBUTES_EMPTY", "field": "sku_items", "message": "差异属性为空，无法区分组合内的规格", "severity": "error", "next_action": "填写真实规格"}]
-    adapter.errors = [{"code": "REQUIRED_ATTRIBUTE_MISSING", "field": "attributes.COLOR", "message": "缺少颜色", "severity": "error", "affected_skus": affected, "related_issues": related}]
+    affected = [
+        {"sku_id": "first", "sku": "SELL-1", "name": "红色"},
+        {"sku_id": "second", "sku": "SELL-2", "name": "蓝色"},
+    ]
+    related = [
+        {
+            "code": "SKU_VARIATION_ATTRIBUTES_EMPTY",
+            "field": "sku_items",
+            "message": "差异属性为空，无法区分组合内的规格",
+            "severity": "error",
+            "next_action": "填写真实规格",
+        }
+    ]
+    adapter.errors = [
+        {
+            "code": "REQUIRED_ATTRIBUTE_MISSING",
+            "field": "attributes.COLOR",
+            "message": "缺少颜色",
+            "severity": "error",
+            "affected_skus": affected,
+            "related_issues": related,
+        }
+    ]
 
     evaluation = publish_capabilities.evaluate_publish_validation(
-        ProductPublishValidateRequest(draft_id="draft-1", platform="mercadolibre", site="MLM")
+        ProductPublishValidateRequest(
+            draft_id="draft-1", platform="mercadolibre", site="MLM"
+        )
     )
 
     assert evaluation.result.passed is False
@@ -240,9 +258,7 @@ def test_explicit_payload_preparation_is_the_only_validation_path_that_prepares_
         site="MLM",
     )
 
-    evaluation = publish_capabilities.prepare_and_evaluate_publish_validation(
-        request
-    )
+    evaluation = publish_capabilities.prepare_and_evaluate_publish_validation(request)
 
     assert evaluation.result.passed is True
     assert adapter.prepare_calls == 1
@@ -262,9 +278,7 @@ def test_prepared_preview_and_enqueue_revalidation_keep_empty_draft_upc(
             "listing_currency": "USD",
             "upc": "",
             "allow_gtin_exemption": True,
-            "selected_pricing": {
-                "applied_price": {"amount": "19", "currency": "USD"}
-            },
+            "selected_pricing": {"applied_price": {"amount": "19", "currency": "USD"}},
             "price": "19",
         }
     )
@@ -379,8 +393,8 @@ def test_publish_request_revalidates_digest_and_forwards_idempotency_key(
             site="MLM",
             idempotency_key="task-1:publish-step",
             confirmation=PublishRequestConfirmation(
-                task_id="task-1",
-                step_id="publish-step",
+                conversation_id="task-1",
+                tool_call_id="publish-step",
                 validation_digest=validation.validation_digest,
                 confirmed_at=datetime.now(timezone.utc),
             ),
@@ -439,9 +453,7 @@ def test_cbt_publish_approval_shows_and_binds_actual_destinations(
                     ],
                 },
             ],
-            "selected_pricing": {
-                "applied_price": {"amount": "18", "currency": "USD"}
-            },
+            "selected_pricing": {"applied_price": {"amount": "18", "currency": "USD"}},
         }
     )
     loaded["draft"] = deepcopy(draft)
@@ -500,9 +512,7 @@ def test_cbt_publish_approval_shows_and_binds_actual_destinations(
     loaded["product"]["drafts"]["mercadolibre"]["sites_to_sell"] = [
         {"site_id": "MLM", "logistic_type": "remote"}
     ]
-    loaded["draft"]["sites_to_sell"] = [
-        {"site_id": "MLM", "logistic_type": "remote"}
-    ]
+    loaded["draft"]["sites_to_sell"] = [{"site_id": "MLM", "logistic_type": "remote"}]
     second = publish_capabilities._publish_request_approval_snapshot(
         request,
         scope,
@@ -564,8 +574,8 @@ def test_publish_request_recovers_lost_job_id_before_revalidation(
             site="MLM",
             idempotency_key="task-crashed:publish-step",
             confirmation=PublishRequestConfirmation(
-                task_id="task-crashed",
-                step_id="publish-step",
+                conversation_id="task-crashed",
+                tool_call_id="publish-step",
                 validation_digest=validation.validation_digest,
                 confirmed_at=datetime.now(timezone.utc),
             ),
@@ -603,8 +613,8 @@ def test_publish_request_rejects_stale_confirmation_before_enqueue(
                 site="MLM",
                 idempotency_key="task-1:publish-step",
                 confirmation=PublishRequestConfirmation(
-                    task_id="task-1",
-                    step_id="publish-step",
+                    conversation_id="task-1",
+                    tool_call_id="publish-step",
                     validation_digest="0" * 64,
                     confirmed_at=datetime.now(timezone.utc),
                 ),
@@ -638,8 +648,8 @@ def test_publish_request_rejects_confirmation_after_store_account_changes(
                 site="MLM",
                 idempotency_key="task-1:publish-step",
                 confirmation=PublishRequestConfirmation(
-                    task_id="task-1",
-                    step_id="publish-step",
+                    conversation_id="task-1",
+                    tool_call_id="publish-step",
                     validation_digest=validation.validation_digest,
                     confirmed_at=datetime.now(timezone.utc),
                 ),

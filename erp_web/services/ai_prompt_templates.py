@@ -28,9 +28,6 @@ DEFAULT_AI_USE_CASE_PROMPTS: dict[str, dict[str, str]] = {
     "image.translate": {
         "path": "config/prompts/image_translate.json",
     },
-    "category.attribute_fill": {
-        "path": "config/prompts/category_attribute_fill.json",
-    },
     "category.product_match": {
         "path": "config/prompts/category_product_match.json",
     },

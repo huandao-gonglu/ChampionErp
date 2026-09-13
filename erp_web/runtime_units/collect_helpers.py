@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from erp_web.context import AppContext, get_context
-from erp_web.marketplace_registry import marketplace_site
+from erp_web.marketplace_registry import marketplace_site, MARKETPLACE_SPECS
 from erp_web.schemas.collection import DraftClaimTarget
 from erp_web.product_model import (
     PLATFORMS,
@@ -456,6 +456,22 @@ def _selected_market_groups(
     return list(groups.values())
 
 
+def claim_products_to_markets(product_ids, targets=None, *, context=None):
+    """AI 与市场选择器共用认领行为；全部市场从注册表和真实店铺绑定解析。"""
+    active = context or get_context()
+    if targets is None:
+        config = active.config.load_store_config().get("mercadolibre") or {}
+        listing_model = str(config.get("listing_model") or "")
+        enabled_ml = {item.split(":", 1)[0] for item in mercadolibre_sales_target_selectors(
+            config.get("marketplace_bindings"), listing_model=listing_model,
+            require_user_products=listing_model == "user_products",
+        )}
+        targets = [{"platform": spec.key, "site": site["code"], "language": site["language"]}
+                   for spec in MARKETPLACE_SPECS for site in spec.sites
+                   if spec.key != "mercadolibre" or site["code"] in enabled_ml]
+    return claim_products_to_platforms(product_ids, selected_markets=targets, context=active)
+
+
 def claim_products_to_platforms(
     product_ids: list[str],
     platforms: list[str] | None = None,
@@ -531,6 +547,7 @@ def productImages_from_source(product: dict[str, Any]) -> list[str]:
 
 __all__ = [
     "apply_claimed_platform_drafts",
+    "claim_products_to_markets",
     "claim_products_to_platforms",
     "collect_error_code",
     "collect_field_summary",

@@ -2,19 +2,24 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import json
 from typing import Any, Mapping
 
 from pydantic_ai import FunctionToolset, ModelRetry, RunContext, Tool
-from pydantic_ai.exceptions import CallDeferred
+from pydantic_ai.exceptions import ApprovalRequired, CallDeferred
 
 from erp_web.schemas.ai_tools import (
-    AiToolCommand, AiToolDefinition, AiToolSchemaError, AiToolExecutionError, validate_json_schema,
+    AiToolCommand,
+    AiToolDefinition,
+    AiToolSchemaError,
+    AiToolExecutionError,
+    validate_json_schema,
 )
 
 from .ai_agent_dependencies import AiAgentDependencies
-from .ai_agent_budget import AgentToolBudgetRetry
 from .ai_tool_registry import AiToolSet
+from .capability_errors import BusinessCapabilityError
 
 
 class AiToolArgumentRetry(ModelRetry):
@@ -82,6 +87,7 @@ class PydanticToolBridge:
         tool_call_id: str,
         arguments: Mapping[str, Any],
         round_number: int,
+        execution_context: Any = None,
     ) -> Any:
         """唯一执行入口；不会读取或调用 ToolSet binding.executor。"""
 
@@ -109,21 +115,26 @@ class PydanticToolBridge:
                 tool_version=binding.definition.version,
                 arguments=dict(arguments),
                 round=max(1, int(round_number)),
-            )
+            ),
+            execution_context=execution_context,
         )
         payload = result.to_dict()
         if not result.ok:
-            error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+            error = (
+                payload.get("error") if isinstance(payload.get("error"), dict) else {}
+            )
             error_code = str(error.get("code") or "TOOL_EXECUTION_FAILED")
+            if dependencies.tool_runtime.is_model_visible_error(call_id) or error.get(
+                "details", {}
+            ).get("outcome_unknown"):
+                return payload
             raise AiToolBridgeError(
                 code=error_code,
                 message=str(error.get("message") or ""),
                 tool_name=tool_name,
                 tool_call_id=call_id,
                 retryable=bool(error.get("retryable")),
-                model_visible=dependencies.tool_runtime.is_model_visible_error(
-                    call_id
-                ),
+                model_visible=dependencies.tool_runtime.is_model_visible_error(call_id),
             )
         return payload.get("output")
 
@@ -131,35 +142,111 @@ class PydanticToolBridge:
         self,
         definition: AiToolDefinition,
     ) -> Tool[AiAgentDependencies]:
-        agent_deferred = definition.agent_deferred
-
-        def require_budget(ctx: RunContext[AiAgentDependencies]) -> None:
-            runtime = ctx.deps.tool_runtime
-            # 同批调用的原生 usage 可能在整批结束后更新；Runtime 现有账本提供
-            # 串行执行时的即时用量，不创建另一套计数器。
-            used = max(ctx.usage.tool_calls, runtime.unique_call_count)
-            if used >= runtime.max_tool_calls:
-                raise AgentToolBudgetRetry(limit=runtime.max_tool_calls, used=used, requested=1)
-
-        def validate_arguments(ctx: RunContext[AiAgentDependencies], **arguments: Any) -> None:
-            # from_schema 不自动校验参数；在执行前交给原生重试，不触发业务副作用。
+        def validate_arguments(
+            ctx: RunContext[AiAgentDependencies], **arguments: Any
+        ) -> None:
             self._require_runtime_binding(ctx.deps)
-            require_budget(ctx)
             try:
                 validate_json_schema(arguments, definition.input_schema)
                 binding = self.toolset.bindings[definition.name]
                 if binding.arguments_validator is not None:
                     binding.arguments_validator(arguments)
             except AiToolExecutionError as exc:
-                raise AiToolArgumentRetry(code=exc.code, message=str(exc), tool_name=definition.name) from exc
+                raise AiToolArgumentRetry(
+                    code=exc.code, message=str(exc), tool_name=definition.name
+                ) from exc
             except AiToolSchemaError as exc:
-                raise AiToolArgumentRetry(code="TOOL_INPUT_SCHEMA_INVALID", message=f"工具参数不符合定义：{exc}", tool_name=definition.name) from exc
+                raise AiToolArgumentRetry(
+                    code="TOOL_INPUT_SCHEMA_INVALID",
+                    message=f"工具参数不符合定义：{exc}",
+                    tool_name=definition.name,
+                ) from exc
 
-        def invoke(
-            ctx: RunContext[AiAgentDependencies],
-            **arguments: Any,
-        ) -> Any:
-            require_budget(ctx)
+        def invoke(ctx: RunContext[AiAgentDependencies], **arguments: Any) -> Any:
+            runtime = ctx.deps.tool_runtime
+            support = runtime.run_support
+            writing = definition.side_effect == "write"
+            if support is not None:
+                support.before_tool(ctx, writing=writing)
+                execution = support.execution(ctx, arguments)
+            else:
+                execution = replace(
+                    ctx.deps.execution_context,
+                    approved_tool_call_ids=frozenset({str(ctx.tool_call_id)})
+                    if ctx.tool_call_approved
+                    else frozenset(),
+                )
+            metadata = dict(ctx.tool_call_metadata or {})
+            if support is not None and writing:
+                unknown = support.store.unresolved_outcome(
+                    support.conversation_id, definition.name, arguments
+                )
+                if unknown is not None:
+                    return unknown
+            if definition.approval_required and not ctx.tool_call_approved:
+                from .tool_approval import approval_binding_digest
+
+                binding = self.toolset.bindings[definition.name]
+                try:
+                    snapshot = binding.approval_preparer(arguments)
+                except (AiToolExecutionError, BusinessCapabilityError) as exc:
+                    return {
+                        "ok": False,
+                        "error": {
+                            "code": exc.code,
+                            "message": str(exc),
+                            "details": exc.details,
+                        },
+                    }
+                revision = support.version if support is not None else 1
+                metadata = {
+                    "summary": snapshot.summary,
+                    "approval_revision": revision,
+                    "approval_digest": approval_binding_digest(
+                        snapshot=snapshot,
+                        capability_name=definition.name,
+                        capability_version=definition.version,
+                        operation_key=execution.idempotency_context.get(
+                            "operation_key", ""
+                        ),
+                        tool_call_id=str(ctx.tool_call_id),
+                        approval_revision=revision,
+                    ),
+                }
+                raise ApprovalRequired(metadata=metadata)
+            if definition.execution_mode == "persistent_job":
+                # 先由原生 Agent 产生请求，history/request/投递记录同事务提交后才运行。
+                raise CallDeferred(metadata=metadata)
+            if support is not None and writing:
+                if not support.store.begin_write(
+                    support.conversation_id,
+                    str(ctx.tool_call_id),
+                    definition.name,
+                    arguments,
+                ):
+                    receipt = support.store.receipt(
+                        support.conversation_id, str(ctx.tool_call_id)
+                    )
+                    if receipt and (
+                        receipt["tool_name"] != definition.name
+                        or json.loads(receipt["arguments_json"]) != arguments
+                    ):
+                        raise AiToolBridgeError(
+                            code="TOOL_CALL_ID_CONFLICT",
+                            message="工具调用 ID 已用于其他参数，不能重新执行。",
+                            tool_name=definition.name,
+                            tool_call_id=str(ctx.tool_call_id),
+                        )
+                    if receipt and receipt["output_json"]:
+                        return json.loads(receipt["output_json"])
+                    return {
+                        "ok": False,
+                        "error": {
+                            "code": "TOOL_OUTCOME_UNKNOWN",
+                            "message": "该调用已开始但缺少完成回执，请先查询业务状态。",
+                            "details": {"outcome_unknown": True},
+                        },
+                    }
             try:
                 output = self.execute(
                     dependencies=ctx.deps,
@@ -167,49 +254,30 @@ class PydanticToolBridge:
                     tool_call_id=str(ctx.tool_call_id or ""),
                     arguments=arguments,
                     round_number=ctx.run_step,
+                    execution_context=execution,
                 )
-            except AiToolBridgeError as exc:
-                if not exc.model_visible:
-                    raise
-                # Deferred 控制工具创建失败时必须以稳定错误闭合本次调用，
-                # 不能产生第二个未解决 Deferred。
-                return {
-                    "ok": False,
-                    "error": {
-                        "code": exc.code,
-                        "message": str(exc),
-                        "retryable": exc.retryable,
-                    },
-                }
-            if not agent_deferred:
-                return output
-            task_id = str(
-                (output or {}).get("task_id")
-                if isinstance(output, Mapping)
-                else ""
-            ).strip()
-            if not task_id:
-                raise AiToolBridgeError(
-                    code="GLOBAL_TASK_DEFERRED_ACCEPTANCE_INVALID",
-                    message="Deferred 控制工具未返回可信 task_id，不能挂起。",
-                    tool_name=definition.name,
-                    tool_call_id=str(ctx.tool_call_id or ""),
+            except Exception:
+                if support is not None and writing:
+                    support.store.mark_unknown(
+                        support.conversation_id, str(ctx.tool_call_id)
+                    )
+                raise
+            if support is not None and writing:
+                support.store.finish(
+                    support.conversation_id, str(ctx.tool_call_id), output
                 )
-            # CallDeferred 是 Pydantic 异常，不是返回值；它不进入 ERP JSON
-            # result 序列化，也不会被 AiToolRuntime 捕获成 TOOL_EXECUTION_FAILED。
-            # 置位 run 级标志：协议层从该时刻起把官方编码事件切入「事务提交
-            # 后才发布」的有界缓冲，终态事件不得先于 history/link/outbox 提交。
-            ctx.deps.tool_runtime.deferred_call_started = True
-            raise CallDeferred(metadata={"task_id": task_id})
+            return output
 
         invoke.__name__ = definition.name
+        # 可信 Injected 参数不暴露给模型；from_schema 仅保留机械参数适配。
+        # 同步函数由 Pydantic 在线程中执行，独立调用使用原生并发调度。
         return Tool.from_schema(
             invoke,
             name=definition.name,
             description=definition.description,
             json_schema=definition.to_dict()["input_schema"],
             takes_ctx=True,
-            sequential=True,
+            sequential=False,
             args_validator=validate_arguments,
         )
 

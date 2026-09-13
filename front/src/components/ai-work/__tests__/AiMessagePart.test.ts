@@ -38,40 +38,6 @@ describe('AiMessagePart', () => {
     expect(card.text()).toContain('"total": 2')
   })
 
-  it('global_task_start 历史 part 只按普通工具卡展示，不挂载交互任务卡', () => {
-    const wrapper = mountPart({
-      type: 'tool-global_task_start',
-      toolCallId: 'call-task',
-      state: 'output-available',
-      input: { goal: '删除指定商品' },
-      output: {
-        ok: true,
-        task_id: 'gtask-1',
-        task: { task_id: 'gtask-1', goal: '删除指定商品', status: 'pending_approval' },
-      },
-    })
-
-    expect(wrapper.get('[data-testid="ai-part-tool"]').text()).toContain('global_task_start')
-    expect(wrapper.text()).toContain('工具完成')
-    // 交互式任务卡只由 conversation 级 AiChatPanel 挂载，消息 part 不再重复渲染。
-    expect(wrapper.find('[data-testid="global-task-card"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="global-task-approve"]').exists()).toBe(false)
-  })
-
-  it('开放的 global_task_start 展示受理语义，不误显示为审批', () => {
-    const wrapper = mountPart({
-      type: 'tool-global_task_start',
-      toolCallId: 'call-task',
-      state: 'input-available',
-      input: { goal: '删除指定商品' },
-    })
-
-    const text = wrapper.get('[data-testid="ai-part-tool"]').text()
-    expect(text).toContain('任务已受理 · 后台执行')
-    expect(text).not.toContain('等待审批')
-    expect(text).not.toContain('工具已就绪')
-  })
-
   it('只为安全的 source 与 file URL 创建链接', () => {
     const source = mountPart({
       type: 'source-url',
@@ -103,6 +69,20 @@ describe('AiMessagePart', () => {
     })
     expect(unsafeFile.find('a').exists()).toBe(false)
     expect(unsafeFile.text()).toContain('attack.pdf')
+  })
+
+  it('原生已返回状态仍展示业务失败和部分完成', () => {
+    const failed = mountPart({ type: 'tool-category_match', state: 'output-available',
+      output: { ok: false, error: { message: '类目匹配超时' } } })
+    expect(failed.text()).toContain('业务执行失败')
+    const partial = mountPart({ type: 'tool-example_partial_result', state: 'output-available',
+      output: { status: 'partial' } })
+    expect(partial.text()).toContain('部分完成')
+  })
+
+  it('历史导出的未返回工具不能被断言为等待审批', () => {
+    const pending = mountPart({ type: 'tool-category_match', state: 'approval-requested' })
+    expect(pending.text()).toContain('等待工具结果或审批')
   })
 
   it('未知 part 折叠为调试信息且不影响消息', () => {

@@ -50,7 +50,7 @@ from .ai_tool_registry import AiToolSet
 CATEGORY_MATCH_USE_CASE_ID = "category.product_match"
 CATEGORY_MATCH_BUDGET_PROFILE = "category.match.default"
 CATEGORY_MATCH_RESULT_VERSION = "category_match.v2"
-CATEGORY_MATCH_DEADLINE_SECONDS = 60
+CATEGORY_MATCH_DEADLINE_SECONDS = 150
 
 CATEGORY_IDENTITY_INSTRUCTIONS = (
     "先锁定商品身份：实际出售的物件、材质/结构、使用方式，以标题及明确规格为依据。"
@@ -58,6 +58,8 @@ CATEGORY_IDENTITY_INSTRUCTIONS = (
     "关键词及最终类目必须保持该身份一致；营销功能不能证明新的用途、认证或商品类型。"
     "不得因为一个共用词而把商品扩展成另一种实物，也不得凭空添加医疗、工业、运动等专门用途。"
     "比对完整类目路径；排除材质、结构或实物类型矛盾的候选。"
+    "完整消费品与替换零件不能因共享关键词归为同类；先比较日常使用类型，再比较附加功能。"
+    "搜索返回的商品领域名不一定是完整路径，收到详情纠正后必须重新判断，不能只替换路径文字。"
     "路径是平台组织商品的目录，不能反过来给商品添加认证或用途；上级的并列集合不意味着每个叶子都具备其中某一专门用途。"
     "结合最具体叶子的范围判断：通用防护用品不自动等于医用器械，功能词缺失也不能否定同一种实物。"
     "类目通常不细分全部功能、人群和款式；缺少这些修饰语不等于不匹配。"
@@ -141,12 +143,13 @@ CATEGORY_MATCH_AGENT_PROFILE = AiAgentExecutionProfile(
     budget_profile=CATEGORY_MATCH_BUDGET_PROFILE,
     permissions=frozenset({CATEGORY_SEARCH_PERMISSION}),
     timeout_seconds=CATEGORY_MATCH_DEADLINE_SECONDS,
-    # 最多四批检索 + 一次越界纠正 + 最终输出及两次原生格式纠正。
-    # 只增加模型完成输出的余量，实际工具额度和总 deadline 不变。
-    max_model_requests=8,
-    max_tool_calls=4,
+    # 树导航允许回退并展开第二条分支，同时给最终输出和原生纠正保留余量。
+    # 总 deadline 仍约束整个检索过程。
+    max_model_requests=12,
+    max_tool_calls=8,
     max_tool_output_bytes=128 * 1024,
-    retries=2,
+    # 格式纠正与更换候选后的完整路径复核共享原生输出重试额度。
+    retries=4,
     result_version=CATEGORY_MATCH_RESULT_VERSION,
 )
 
@@ -154,8 +157,10 @@ CATEGORY_MATCH_AGENT_PROFILE = AiAgentExecutionProfile(
 class CategoryMatchOutputValidator:
     """把 Ledger 中的确定性约束反馈给模型并在重试耗尽后保留稳定码。"""
 
-    def __init__(self, ledger: CategoryCandidateLedger) -> None:
+    def __init__(self, ledger: CategoryCandidateLedger, candidate_detail_loader=None) -> None:
         self.ledger = ledger
+        self.candidate_detail_loader = candidate_detail_loader
+        self.verified_paths = {}
         self.error_code = ""
 
     def _retry(self, code: str, message: str) -> None:
@@ -167,7 +172,6 @@ class CategoryMatchOutputValidator:
         ctx: RunContext[AiAgentDependencies],
         output: CategoryMatchAgentOutput,
     ) -> CategoryMatchAgentOutput:
-        del ctx
         self.error_code = ""
         if self.ledger.search_count == 0:
             self._retry(
@@ -193,8 +197,18 @@ class CategoryMatchOutputValidator:
                 "selected_category_id 必须来自本次检索工具真实返回的商品类型。",
             )
         candidate = self.ledger.get(output.selected_category_id)
-        if output.selected_category_path != list(candidate.get("path_segments") or []):
-            self._retry("CATEGORY_PATH_REVIEW_REQUIRED", "请逐段核对并复制已选候选的完整 path_segments，再判断实物类型是否一致。")
+        if self.candidate_detail_loader and output.selected_category_id not in self.verified_paths:
+            detail = self.candidate_detail_loader(output.selected_category_id,
+                timeout_seconds=ctx.deps.execution_context.remaining_seconds())
+            self.verified_paths[output.selected_category_id] = [
+                part.strip() for part in str(detail.get("category_path") or "").split(" / ") if part.strip()
+            ]
+        path = self.verified_paths.get(output.selected_category_id, list(candidate.get("path_segments") or []))
+        if not path or output.selected_category_path != path:
+            self._retry("CATEGORY_PATH_REVIEW_REQUIRED", "搜索结果可能只有商品领域名。该 ID 的真实完整类目路径是："
+                        + json.dumps(path, ensure_ascii=False)
+                        + "。请重新比较商品实物、父级用途与叶子类型，排除配件/替换件等不适用类目；"
+                        "不符时改选其他已检索候选或补查，不能仅复制路径而保留错误判断。")
         return output
 
 
@@ -311,6 +325,7 @@ async def open_category_match_stream(
     conversation_id: str,
     factory: AiAgentFactory | None = None,
     model_override: Model | None = None,
+    candidate_detail_loader=None,
 ) -> AsyncIterator[
     tuple[AiAgentStreamSession[CategoryMatchAgentOutput], str]
 ]:
@@ -327,7 +342,7 @@ async def open_category_match_stream(
         toolset=toolset,
         conversation_id=conversation_id,
         use_case_state=ledger,
-        output_validator=CategoryMatchOutputValidator(ledger),
+        output_validator=CategoryMatchOutputValidator(ledger, candidate_detail_loader),
         business_scope=params.business_scope,
         idempotency_context={"result_version": CATEGORY_MATCH_RESULT_VERSION},
         timeout_seconds=timeout_seconds,
@@ -367,6 +382,7 @@ def run_category_match_agent(
     timeout_seconds: float,
     factory: AiAgentFactory | None = None,
     model_override: Model | None = None,
+    candidate_detail_loader=None,
 ) -> CategoryMatchAgentRun:
     """同步入口（Global Task 等 child 场景）；不建立展示流。
 
@@ -383,6 +399,7 @@ def run_category_match_agent(
             conversation_id=f"conversation_{uuid4().hex}",
             factory=factory,
             model_override=model_override,
+            candidate_detail_loader=candidate_detail_loader,
         ) as (session, user_prompt):
             native = session.events(_user_prompt_messages(user_prompt))
             try:

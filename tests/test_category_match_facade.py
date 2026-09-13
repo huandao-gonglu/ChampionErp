@@ -232,7 +232,7 @@ def detail_loader(
     include_attributes: bool,
     timeout_seconds: float,
 ) -> dict[str, Any]:
-    assert include_attributes is True
+    assert include_attributes is False
     assert timeout_seconds > 0
     return {
         "category_id": category_id,
@@ -254,7 +254,7 @@ def selected(category_id: str, confidence: float = 0.95) -> dict[str, Any]:
 
 
 def fake_agent_service(run):
-    def service(payload, toolset, ledger, *, timeout_seconds):
+    def service(payload, toolset, ledger, *, timeout_seconds, candidate_detail_loader):
         del ledger
         assert timeout_seconds > 0
         output, trace = run(payload, toolset)
@@ -510,12 +510,12 @@ def test_cross_site_candidate_is_rejected_by_server_validation() -> None:
         agent_service=fake_agent_service(run),
     )
 
-    assert result["ok"] is True
-    assert result["status"] == "unresolved"
+    assert result["ok"] is False
+    assert result["status"] == "failed"
     assert result["failure"]["code"] == "SITE_RULE_VIOLATION"
 
 
-def test_final_validation_reads_detail_and_attributes_once() -> None:
+def test_final_validation_does_not_depend_on_attribute_api() -> None:
     calls: list[str] = []
 
     def run(payload, toolset):
@@ -524,11 +524,12 @@ def test_final_validation_reads_detail_and_attributes_once() -> None:
 
     def load_detail(*args, **kwargs):
         calls.append("detail")
+        if kwargs["include_attributes"]:
+            raise TimeoutError("平台属性接口超时，不应影响已完成的类目匹配。")
         return {
             "category_id": "MLM-FAN",
             "platform": "mercadolibre",
             "site": "MLM",
-            "attributes": {"required": [], "optional": []},
         }
 
     result = match_category(
@@ -608,8 +609,8 @@ def test_ozon_selection_requires_type_and_description_category_pair() -> None:
         },
     )
 
-    assert result["ok"] is True
-    assert result["status"] == "unresolved"
+    assert result["ok"] is False
+    assert result["status"] == "failed"
     assert result["failure"]["code"] == "CATEGORY_NOT_PUBLISHABLE"
 
 

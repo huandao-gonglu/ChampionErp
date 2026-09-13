@@ -1,17 +1,21 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import { PhPlus } from '@phosphor-icons/vue'
+import { computed, onDeactivated, ref, watch } from 'vue'
+import { useEventListener } from '@vueuse/core'
+import { PhEye, PhEyeSlash, PhPlus } from '@phosphor-icons/vue'
 import AiChatCommandPanel from './AiChatCommandPanel.vue'
-import TaskApprovalModeSelect from './TaskApprovalModeSelect.vue'
 import { useChatCommands } from '@/composables/useChatCommands'
+import { useAiPageContextStore } from '@/stores/aiPageContext'
 
 const props = withDefaults(defineProps<{
   modelValue: string
   busy: boolean
+  stopping?: boolean
+  conversationId?: string
   /** 非空时锁定普通发送（例如存在未解决的全局任务），并展示原因。 */
   sendDisabledReason?: string
 }>(), {
   sendDisabledReason: '',
+  conversationId: '',
 })
 
 const emit = defineEmits<{
@@ -21,9 +25,55 @@ const emit = defineEmits<{
 }>()
 
 const { commandsFor, selectCommand } = useChatCommands()
+const pageContext = useAiPageContextStore()
+const composing = ref(false)
+const stopArmed = ref(false)
+
+function resetStopShortcut(): void {
+  stopArmed.value = false
+}
+
+function requestStop(): void {
+  resetStopShortcut()
+  if (props.busy && !props.stopping) emit('stop')
+}
+
+function onCompositionStart(): void {
+  composing.value = true
+  resetStopShortcut()
+}
+
+function isCompositionKey(event: KeyboardEvent): boolean {
+  // IME 结束组合时可能先触发 compositionend，此时需用 keyCode 229 补充判断。
+  return composing.value || event.isComposing || event.keyCode === 229
+}
+
+function onComposerKeydown(event: KeyboardEvent): void {
+  if (isCompositionKey(event)) {
+    resetStopShortcut()
+    if (event.key === 'Escape') event.stopPropagation()
+    return
+  }
+  if (event.key !== 'Escape' || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+    resetStopShortcut()
+    return
+  }
+  if (!props.busy) return
+  // 运行期间的 Esc 属于停止快捷键，不能同时收起外层浮动对话。
+  event.preventDefault()
+  event.stopPropagation()
+  if (props.stopping || event.repeat) return
+  if (stopArmed.value) requestStop()
+  else stopArmed.value = true
+}
+
+watch(() => [props.busy, props.stopping, props.conversationId], resetStopShortcut, { flush: 'sync' })
+useEventListener(window, 'blur', resetStopShortcut)
+useEventListener(document, 'visibilitychange', resetStopShortcut)
+onDeactivated(resetStopShortcut)
 
 const canSend = computed(() => (
-  props.modelValue.trim().length > 0 && !props.busy && !props.sendDisabledReason
+  props.modelValue.trim().length > 0 && !props.sendDisabledReason && !props.stopping && !composing.value
 ))
 
 /** 输入以 `/` 开头时返回其后的查询串，否则返回 null。 */
@@ -77,6 +127,11 @@ function onInput(event: Event) {
 }
 
 function onKeydown(event: KeyboardEvent) {
+  if (isCompositionKey(event)) {
+    resetStopShortcut()
+    if (event.key === 'Escape') event.stopPropagation()
+    return
+  }
   if (commandPanelVisible.value) {
     if (event.key === 'ArrowDown') {
       event.preventDefault()
@@ -113,6 +168,8 @@ function onKeydown(event: KeyboardEvent) {
     class="shrink-0 border-t border-slate-200 bg-white pt-4 dark:border-dark-700 dark:bg-dark-900"
     data-testid="ai-chat-composer"
     @submit.prevent="canSend && emit('send')"
+    @keydown="onComposerKeydown"
+    @focusout="resetStopShortcut"
   >
     <div class="relative">
       <AiChatCommandPanel
@@ -129,10 +186,11 @@ function onKeydown(event: KeyboardEvent) {
           :value="modelValue"
           class="min-h-20 w-full resize-y bg-transparent px-1 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400 disabled:cursor-not-allowed disabled:opacity-60 dark:text-white dark:placeholder:text-accent-400"
           placeholder="输入消息，向全局 Agent 提问"
-          :disabled="busy"
           data-testid="ai-chat-input"
           @input="onInput"
           @keydown="onKeydown"
+          @compositionstart="onCompositionStart"
+          @compositionend="composing = false"
         ></textarea>
         <div class="mt-1 flex items-center justify-between gap-3">
           <div class="flex min-w-0 items-center gap-1">
@@ -146,18 +204,21 @@ function onKeydown(event: KeyboardEvent) {
             >
               <PhPlus :size="24" weight="regular" />
             </button>
-            <TaskApprovalModeSelect />
+            <button
+              type="button"
+              class="flex size-9 shrink-0 items-center justify-center rounded-xl transition hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/70 dark:hover:bg-dark-700"
+              :class="pageContext.enabled ? 'text-primary-600 dark:text-primary-300' : 'text-slate-400 dark:text-accent-400'"
+              aria-label="读取背景"
+              :aria-pressed="pageContext.enabled"
+              :title="pageContext.hint"
+              data-testid="ai-chat-background-toggle"
+              @click="pageContext.toggle"
+            >
+              <PhEye v-if="pageContext.enabled" :size="22" aria-hidden="true" />
+              <PhEyeSlash v-else :size="22" aria-hidden="true" />
+            </button>
           </div>
-          <button
-            v-if="busy"
-            type="button"
-            class="btn btn-outline px-3 py-1.5 text-xs"
-            data-testid="ai-chat-stop"
-            @click="emit('stop')"
-          >
-            停止
-          </button>
-          <template v-else>
+          <div class="flex items-center gap-2">
             <button
               type="submit"
               class="btn btn-primary px-3 py-1.5 text-xs"
@@ -166,7 +227,19 @@ function onKeydown(event: KeyboardEvent) {
             >
               发送
             </button>
-          </template>
+            <button
+              v-if="busy"
+              type="button"
+              class="btn btn-outline px-3 py-1.5 text-xs"
+              data-testid="ai-chat-stop"
+              :disabled="stopping"
+              :aria-label="stopping ? '正在停止' : stopArmed ? '再次按 Esc 停止当前操作' : '停止当前操作'"
+              :title="stopArmed ? '再次按 Esc 停止，焦点变化后取消等待' : '停止当前操作（连续按两次 Esc）'"
+              @click="requestStop"
+            >
+              {{ stopping ? '正在停止…' : stopArmed ? 'Esc' : '停止' }}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -179,7 +252,7 @@ function onKeydown(event: KeyboardEvent) {
       {{ sendDisabledReason }}
     </p>
     <p class="mt-2 text-xs text-slate-400">
-      Enter 发送，Shift + Enter 换行，输入 / 查看可用命令。完全授权只跳过人工审批，不会绕过资料校验或扩大工具权限。
+      Enter 发送，Shift + Enter 换行，连续按两次 Esc 停止，输入 / 查看可用命令。运行期间也可以发送补充资料或纠正要求。
     </p>
   </form>
 </template>

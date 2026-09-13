@@ -48,11 +48,6 @@ def handle_category_match(handler: JsonRequestHandler) -> None:
     handler.send_json(result, status)
 
 
-def handle_category_ai_fill(handler: JsonRequestHandler) -> None:
-    result, status = category_facade.category_ai_fill_payload(
-        validate_request_payload(handler.read_body(), endpoint=handler.path)
-    )
-    handler.send_json(result, status)
 
 
 def handle_category_precheck(handler: JsonRequestHandler) -> None:
@@ -74,7 +69,6 @@ POST_HANDLERS: dict[str, PostHandler] = {
     "/api/category-attrs": handle_category_attrs,
     "/api/category-search": handle_category_search,
     CATEGORY_MATCH_PATH: handle_category_match,
-    "/api/category-ai-fill": handle_category_ai_fill,
     "/api/category-precheck": handle_category_precheck,
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)

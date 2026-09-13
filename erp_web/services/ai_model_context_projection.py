@@ -1,6 +1,6 @@
 """模型输入历史的最小安全投影（修复计划第 15 节）。
 
-本模块是传给 Pydantic AI 官方 ``ProcessHistory`` Capability 的 processor，只处
+本模块用于 Pydantic AI 官方 ``model_request`` Hook，只处
 理 ``RunContext`` 与 ``ModelMessage`` 值：不读数据库、不调模型、不发事件、不执
 行工具，也不实现任何 Provider thinking 协议映射——thinking 的回传字段名、签名
 与 provider 元数据一律由 Pydantic Provider adapter 负责，本模块不做任何映射。
@@ -18,6 +18,9 @@
 from __future__ import annotations
 
 import dataclasses
+import json
+from copy import copy
+from collections.abc import Awaitable, Callable
 from typing import Any, Sequence
 
 from pydantic_ai.messages import (
@@ -27,11 +30,13 @@ from pydantic_ai.messages import (
     ThinkingPart,
     ToolCallPart,
     ToolReturnPart,
+    UserPromptPart,
 )
+from pydantic_ai.models import ModelRequestContext
 from pydantic_ai.tools import RunContext
 
 
-__all__ = ["project_model_context_for_model", "strip_stale_thinking"]
+__all__ = ["project_model_context_for_model", "strip_stale_thinking", "project_model_request"]
 
 
 def _run_id(message: ModelMessage) -> str:
@@ -118,11 +123,10 @@ def project_model_context_for_model(
     ctx: RunContext[Any],
     messages: list[ModelMessage],
 ) -> list[ModelMessage]:
-    """``ProcessHistory`` processor：工具可见性安全门 + 最小旧 thinking 删除。
+    """请求投影：工具可见性安全门 + 最小旧 thinking 删除。
 
     输入输出均为 ``list[ModelMessage]``；Pydantic 在每次模型请求边界调用。
-    第一个参数必须标注为 ``RunContext``，供 Pydantic ``takes_run_context``
-    探测并注入运行上下文。
+    保持规范历史不变，只供原生模型请求 Hook 使用。
     """
 
     try:
@@ -136,5 +140,49 @@ def project_model_context_for_model(
     return strip_stale_thinking(messages, current_run_id=current_run_id)
 
 
-# ModelRequest 仅用于类型导入完整性（部分静态检查需要引用）。
-_ = ModelRequest
+def _prior_tool_result_previews(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """旧用户回合的大工具结果仅作摘要；本轮结果和所有原生调用配对原样保留。"""
+    boundary = max((i for i, m in enumerate(messages)
+                    if isinstance(m, ModelRequest) and any(isinstance(p, UserPromptPart) for p in m.parts)), default=0)
+    projected = []
+    for index, message in enumerate(messages):
+        if index >= boundary or not isinstance(message, ModelRequest):
+            projected.append(message)
+            continue
+        parts = []
+        for part in message.parts:
+            if not isinstance(part, ToolReturnPart) or len(text := part.model_response_str()) <= 4000:
+                parts.append(part)
+                continue
+            content = part.content
+            summary = {"history_preview": True,
+                       "notice": "这是旧回合结果摘要，不能据此认定任务完成。完整结果保存在原生历史及工具回执；需要当前字段时重新查询业务工具。",
+                       "original_characters": len(text)}
+            if isinstance(content, dict):
+                for key in ("ok", "status", "error", "draft_id", "platform", "target_platform", "site", "category_id", "warning"):
+                    if key in content:
+                        value = content[key]
+                        summary[key] = value if len(json.dumps(value, ensure_ascii=False)) <= 1000 else str(value)[:1000] + "…"
+                if isinstance(items := content.get("items"), list):
+                    summary["item_count"] = len(items)
+                    summary["items_with_error"] = sum(bool(item.get("error")) for item in items if isinstance(item, dict))
+            summary["preview"] = text[:1200] + "…"
+            parts.append(dataclasses.replace(part, content=summary))
+        projected.append(dataclasses.replace(message, parts=parts))
+    return projected
+
+
+async def project_model_request(
+    ctx: RunContext[Any], *, request_context: ModelRequestContext,
+    handler: Callable[[ModelRequestContext], Awaitable[ModelResponse]],
+) -> ModelResponse:
+    """仅向 Provider 发送投影副本；原生 run 历史和持久化仍持有完整消息。
+
+    ProcessHistory 会替换 run 的历史，不能满足完整审计要求。原生请求包裹
+    Hook 允许只替换本次发送内容，不创建历史合并、消息恢复或模型调用旁路。
+    """
+    messages = _prior_tool_result_previews(project_model_context_for_model(ctx, request_context.messages))
+    # model_id/streaming 是原生 init=False 字段，dataclasses.replace 会重置它们。
+    projected = copy(request_context)
+    projected.messages = messages
+    return await handler(projected)

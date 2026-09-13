@@ -10,9 +10,6 @@ from typing import Annotated, Any
 
 from erp_web.context import get_context
 from erp_web.product_model import normalize_draft_image_refs, normalize_list
-from erp_web.runtime_units.attribute_fill_capabilities import (
-    fill_product_attributes,
-)
 from erp_web.runtime_units.category_capabilities import CategoryMatcher
 from erp_web.runtime_units.collect_helpers import claim_products_to_platforms
 from erp_web.runtime_units.copy_generation import generate_ai_copy_bundle
@@ -40,20 +37,13 @@ from erp_web.runtime_units.pricing_runtime import calculate_price
 from erp_web.runtime_units.product_capabilities import prepare_product_images
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.draft_capabilities import DraftPublishReadiness
-from erp_web.schemas.market_prepare_capabilities import (
-    CategoryMatchCapabilityResult,
-    CategoryMatchRequest,
-    DraftPrepareForMarketRequest,
-    DraftPrepareForMarketResult,
-    ProductAttributesFillRequest,
-    ProductAttributesFillResult,
-)
+from erp_web.schemas.market_prepare_capabilities import CategoryMatchCapabilityResult, CategoryMatchRequest, DraftPrepareForMarketRequest, DraftPrepareForMarketResult
 from erp_web.schemas.product_capabilities import (
     ProductImagesPrepareRequest,
     ProductImagesPrepareResult,
 )
 from erp_web.services.ai_tool_declaration import Injected, ai_tool
-from erp_web.services.capability_input_provenance import user_supplied_input
+from erp_web.services.capability_input_provenance import user_supplied_input, require_category_user_selection
 from erp_web.services.capability_errors import (
     BusinessCapabilityError,
     CapabilityInputRequired,
@@ -68,7 +58,6 @@ CopyGenerator = Callable[
 AppConfigLoader = Callable[[], dict[str, Any]]
 ImagePrepareCapability = Callable[..., ProductImagesPrepareResult]
 CategoryCapability = Callable[..., CategoryMatchCapabilityResult]
-AttributeCapability = Callable[..., ProductAttributesFillResult]
 
 
 def _load_app_config() -> dict[str, Any]:
@@ -87,7 +76,11 @@ def _draft_for_existing_target(
     ):
         return text(source_draft.get("draft_id"))
     drafts = product.get("drafts") if isinstance(product.get("drafts"), dict) else {}
-    existing = drafts.get(target_platform) if isinstance(drafts.get(target_platform), dict) else {}
+    existing = (
+        drafts.get(target_platform)
+        if isinstance(drafts.get(target_platform), dict)
+        else {}
+    )
     return text(existing.get("draft_id"))
 
 
@@ -239,8 +232,7 @@ def _prepare_copy(
             "description": description,
             "bullets": normalize_list(copy_payload.get("bullets")),
             "search_terms": normalize_list(copy_payload.get("search_keywords")),
-            "language": text(response.get("language"))
-            or text(target.get("language")),
+            "language": text(response.get("language")) or text(target.get("language")),
             "copy_source": "ai",
             "copy_generated_at": datetime.now(timezone.utc).isoformat(),
             **({"copy_operation_key": operation_key} if operation_key else {}),
@@ -261,9 +253,7 @@ def _prepare_copy(
         default_message="目标市场文案保存失败。",
     )
     saved_row = (
-        saved_result.get("draft")
-        if isinstance(saved_result.get("draft"), dict)
-        else {}
+        saved_result.get("draft") if isinstance(saved_result.get("draft"), dict) else {}
     )
     if text(saved_row.get("draft_id")) != target_draft_id:
         raise BusinessCapabilityError(
@@ -284,9 +274,10 @@ def _prepare_copy(
             "DRAFT_COPY_PERSIST_INCOMPLETE",
             "文案生成返回成功，但稳定目标草稿没有完整标题和描述。",
         )
-    if operation_key and text(
-        saved_projection.get("copy_operation_key")
-    ) != operation_key:
+    if (
+        operation_key
+        and text(saved_projection.get("copy_operation_key")) != operation_key
+    ):
         raise BusinessCapabilityError(
             "DRAFT_COPY_PERSIST_INCOMPLETE",
             "文案生成已保存，但幂等 operation marker 未能从稳定目标草稿验证。",
@@ -342,8 +333,7 @@ def _finalize_readiness(
     warning_count = sum(
         1
         for issue in validation
-        if isinstance(issue, dict)
-        and text(issue.get("severity")).lower() == "warning"
+        if isinstance(issue, dict) and text(issue.get("severity")).lower() == "warning"
     )
     return DraftPublishReadiness(
         workflow_status=workflow_status,
@@ -369,7 +359,6 @@ def prepare_draft_for_market(
     app_config_loader: AppConfigLoader = _load_app_config,
     image_capability: ImagePrepareCapability = prepare_product_images,
     category_capability: CategoryCapability | None = None,
-    attribute_capability: AttributeCapability = fill_product_attributes,
     pricing_calculator: PricingCalculator = calculate_price,
     copy_operation_key: str = "",
 ) -> DraftPrepareForMarketResult:
@@ -427,21 +416,6 @@ def prepare_draft_for_market(
         )
     completed_parts.append("category")
 
-    try:
-        attribute_capability(
-            ProductAttributesFillRequest(
-                draft_id=target_draft_id,
-                target_platform=platform,
-                site=text(target.get("site")),
-                provided_attributes=request.provided_attributes,
-            ),
-            product_store=product_store,
-        )
-    except CapabilityInputRequired as exc:
-        exc.set_input_owner("provided_attributes")
-        raise
-    completed_parts.append("attributes")
-
     prepare_target_pricing(
         target_draft_id=target_draft_id,
         target_platform=platform,
@@ -469,7 +443,13 @@ def prepare_draft_for_market(
     )
 
 
-__all__ = ["MarketPrepareCapabilityScope", "draft_prepare_for_market", "prepare_draft_for_market", "DRAFT_PREPARE_FOR_MARKET_TOOL", "MARKET_PREPARE_AI_CAPABILITIES"]
+__all__ = [
+    "MarketPrepareCapabilityScope",
+    "draft_prepare_for_market",
+    "prepare_draft_for_market",
+    "DRAFT_PREPARE_FOR_MARKET_TOOL",
+    "MARKET_PREPARE_AI_CAPABILITIES",
+]
 
 
 @dataclass(frozen=True)
@@ -488,16 +468,14 @@ DRAFT_PREPARE_FOR_MARKET_TOOL = "draft_prepare_for_market"
 
 @ai_tool(
     name=DRAFT_PREPARE_FOR_MARKET_TOOL,
-    description=(
-        "把来源草稿准备为目标市场草稿：认领、文案、图片、类目、属性与定价。"
-    ),
+    description=("把来源草稿准备为目标市场草稿：认领、文案、图片、类目与定价；属性需要主对话查询后单独填写。"),
     permission="product.write",
     side_effect="write",
     approval_required=False,
     idempotency="required",
     idempotency_keys=("operation_key",),
     recovery_policy="manual",
-    version="3",
+    version="4",
 )
 def draft_prepare_for_market(
     request: DraftPrepareForMarketRequest,
@@ -524,10 +502,14 @@ def draft_prepare_for_market(
     if request.sales_target and not user_supplied_input(
         execution.business_scope,
         "sales_target",
+        value=request.sales_target,
+        source_message_id=request.source_message_id,
+        entity_id=request.draft_id,
     ):
-        # 目标站点必须由用户在受信补充资料入口明确选择，不能接受模型在初始
-        # 计划里主动生成的值。
+        # 销售目标必须有实体范围匹配的既有值或用户消息依据。
         trusted_request = request.model_copy(update={"sales_target": []})
+    require_category_user_selection(request.category_id, execution,
+                                    source_message_id=request.source_message_id, draft_id=request.draft_id)
     return prepare_draft_for_market(
         trusted_request,
         product_store=scope.products,

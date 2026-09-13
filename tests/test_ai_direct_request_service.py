@@ -262,7 +262,7 @@ def test_direct_stream_only_exposes_text_through_the_token_callback(
 
     result = ai_direct_request_service.chat_json(
         app_dir=tmp_path,
-        use_case_id="category.attribute_fill",
+        use_case_id="text.translate",
         model={"id": "test-model"},
         required_capabilities=("chat", "json"),
         messages=[{"role": "user", "content": "Return JSON."}],

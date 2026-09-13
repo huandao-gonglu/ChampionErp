@@ -1,38 +1,23 @@
-"""单主 Agent 与全业务 Capability 化的架构守卫（规划 §6/§8 Workstream E）。
-
-守卫内容：
-- exposure 覆盖规则（唯一 Catalog、Direct/Task/Internal 集合约束）；
-- ``global_task_start`` 的 step union 与 Task allowlist 同源机械投影；
-- Controller 与 Task schema 不含 Capability 名称分支、Planner 残留；
-- 业务 Catalog 只在组合根编译一次（不存在第二个 Schema compiler/Task Spec）；
-- 写能力必须声明幂等与恢复元数据，只读能力不得声明幂等。
-"""
+"""显式领域能力目录、权限和原生工具边界的架构守卫。"""
 
 from __future__ import annotations
 
 import inspect
-import json
 import re
-import typing
 from pathlib import Path
 
 from erp_web.ai_capability_composition import (
     ALL_AI_CAPABILITIES,
     APPLICATION_CAPABILITY_CATALOG,
-    GLOBAL_CHAT_DIRECT_CAPABILITIES,
-    GLOBAL_TASK_CAPABILITIES,
+    GLOBAL_CHAT_CAPABILITIES,
+    _WRITE_CAPABILITIES,
     INTERNAL_ONLY_CAPABILITIES,
     validate_capability_exposure,
-)
-from erp_web.runtime_units.global_ai_control_tools import (
-    GLOBAL_TASK_CONTROL_CATALOG,
-    GlobalTaskStartControlRequest,
 )
 from erp_web.schemas.platform_query_capabilities import (
     ProductsIndexQueryRequest,
     ProductsIndexQueryResult,
 )
-from erp_web.services.global_task_controller import GlobalTaskController
 
 
 APP_ROOT = Path(__file__).resolve().parents[1]
@@ -43,15 +28,13 @@ def test_capability_exposure_rules_hold() -> None:
 
     catalog_names = set(APPLICATION_CAPABILITY_CATALOG.tools)
     assert catalog_names == set(
-        GLOBAL_CHAT_DIRECT_CAPABILITIES
-        | GLOBAL_TASK_CAPABILITIES
-        | INTERNAL_ONLY_CAPABILITIES
+        GLOBAL_CHAT_CAPABILITIES | _WRITE_CAPABILITIES | INTERNAL_ONLY_CAPABILITIES
     )
     # 审批能力只能是 Task 能力，主 Agent 不得直接触发破坏性写入。
     for name, tool in APPLICATION_CAPABILITY_CATALOG.tools.items():
         if tool.definition.approval_required:
-            assert name not in GLOBAL_CHAT_DIRECT_CAPABILITIES, name
-            assert name in GLOBAL_TASK_CAPABILITIES, name
+            assert name not in GLOBAL_CHAT_CAPABILITIES, name
+            assert name in _WRITE_CAPABILITIES, name
 
 
 def test_write_capabilities_declare_idempotency_and_recovery() -> None:
@@ -66,47 +49,11 @@ def test_write_capabilities_declare_idempotency_and_recovery() -> None:
             assert definition.idempotency_keys == (), name
 
 
-def test_task_step_union_is_projected_from_task_allowlist() -> None:
-    annotation = GlobalTaskStartControlRequest.model_fields["steps"].annotation
-    (inner,) = typing.get_args(annotation)
-    union_type = typing.get_args(inner)[0]
-    branches = typing.get_args(union_type)
-    projected = {
-        typing.get_args(branch.model_fields["capability_name"].annotation)[0]
-        for branch in branches
-    }
-    assert projected == set(GLOBAL_TASK_CAPABILITIES)
-    for branch in branches:
-        name = typing.get_args(branch.model_fields["capability_name"].annotation)[0]
-        request_type = branch.model_fields["arguments"].annotation
-        assert request_type is APPLICATION_CAPABILITY_CATALOG.tools[name].request_type
-
-
-def test_controller_and_task_schema_are_capability_name_agnostic() -> None:
-    guarded = (
-        APP_ROOT / "erp_web" / "services" / "global_task_controller.py",
-        APP_ROOT / "erp_web" / "schemas" / "global_tasks.py",
-    )
-    capability_names = set(APPLICATION_CAPABILITY_CATALOG.tools)
-    for path in guarded:
-        text = path.read_text(encoding="utf-8")
-        leaked = sorted(
-            name for name in capability_names if f'"{name}"' in text or f"'{name}'" in text
-        )
-        assert leaked == [], f"{path.name} 出现 Capability 名称分支：{leaked}"
-        lowered = text.lower()
-        assert "planner" not in lowered, f"{path.name} 残留 Planner 引用"
-        assert "global.task.plan" not in text, f"{path.name} 残留旧 plan 绑定"
-
-
 def test_business_catalog_compiled_only_in_composition_root() -> None:
     allowed = {
         APP_ROOT / "erp_web" / "ai_capability_composition.py",
         # 任务控制 ToolSet 是控制面 Catalog，不含业务能力。
         APP_ROOT / "erp_web" / "runtime_units" / "global_ai_control_tools.py",
-        # 属性填充 focused Agent 的 run-scoped 内部工具集（Internal 用途），
-        # 不进入主 Agent/Task exposure。
-        APP_ROOT / "erp_web" / "runtime_units" / "category_attribute_tools.py",
     }
     offenders: list[str] = []
     for path in sorted((APP_ROOT / "erp_web").rglob("*.py")):
@@ -123,33 +70,13 @@ def test_business_catalog_compiled_only_in_composition_root() -> None:
 # -- P1-1：审批入口不得进入模型可绑定 ToolSet -------------------------------
 
 
-def test_task_control_toolset_has_exactly_four_tools_and_no_approval() -> None:
-    control_names = set(GLOBAL_TASK_CONTROL_CATALOG.tools)
-    assert control_names == {
-        "global_task_start",
-        "global_task_get",
-        "global_task_submit_input",
-        "global_task_cancel",
-    }, control_names
-    # 审批/拒绝只走受信 UI/API，不作为模型工具存在。
-    assert "global_task_approve" not in control_names
-    assert "global_task_reject" not in control_names
-    for catalog in (
-        GLOBAL_TASK_CONTROL_CATALOG,
-        APPLICATION_CAPABILITY_CATALOG,
-    ):
-        for name in catalog.tools:
-            assert name not in {"global_task_approve", "global_task_reject"}, name
-
-
-def test_approval_level_is_not_model_controlled_and_retired_debug_surface_is_absent() -> None:
+def test_approval_level_is_not_model_controlled_and_retired_debug_surface_is_absent() -> (
+    None
+):
     all_model_schemas = repr(
         {
             name: tool.definition.input_schema
-            for catalog in (
-                GLOBAL_TASK_CONTROL_CATALOG,
-                APPLICATION_CAPABILITY_CATALOG,
-            )
+            for catalog in (APPLICATION_CAPABILITY_CATALOG,)
             for name, tool in catalog.tools.items()
         }
     )
@@ -180,57 +107,6 @@ def test_approval_level_is_not_model_controlled_and_retired_debug_surface_is_abs
         assert retired_endpoint not in source, path
 
 
-def test_global_chat_prompt_routes_writes_to_typed_tasks() -> None:
-    prompt_path = APP_ROOT / "config" / "prompts" / "global_chat.json"
-    prompt = json.loads(prompt_path.read_text(encoding="utf-8"))
-    system = str(prompt.get("system") or "")
-    assert "你没有写权限" not in system
-    assert "global_task_start" in system
-    assert "product_delete" in system
-    assert "draft_delete" in system
-    assert "pending_approval" in system
-
-
-def test_global_chat_prompt_distinguishes_claim_from_market_prepare() -> None:
-    prompt_path = APP_ROOT / "config" / "prompts" / "global_chat.json"
-    prompt = json.loads(prompt_path.read_text(encoding="utf-8"))
-    system = str(prompt.get("system") or "")
-
-    assert "claim_products" in system
-    assert "draft_prepare_for_market" in system
-    assert "草稿箱" in system
-    assert "认领" in system
-
-
-def test_global_chat_prompt_chains_category_match_before_attribute_fill() -> None:
-    """无类目草稿必须先排 category_match，不得落入 needs_input 让用户手填。"""
-
-    prompt_path = APP_ROOT / "config" / "prompts" / "global_chat.json"
-    prompt = json.loads(prompt_path.read_text(encoding="utf-8"))
-    system = str(prompt.get("system") or "")
-
-    assert "category_match" in system
-    assert "product_attributes_fill" in system
-    assert "drafts_query" in system
-    assert "category_id" in system
-    assert "needs_input" in system
-
-
-def test_global_chat_prompt_orders_combined_draft_editing_steps() -> None:
-    """组合编辑任务必须先持久化文案和图片，再处理类目、属性与核价。"""
-
-    prompt_path = APP_ROOT / "config" / "prompts" / "global_chat.json"
-    prompt = json.loads(prompt_path.read_text(encoding="utf-8"))
-    system = str(prompt.get("system") or "")
-
-    assert (
-        "copy_generate → image_edit 或 image_translate → category_match → "
-        "product_attributes_fill → draft_pricing_apply"
-    ) in system
-    assert "apply_to_draft=true" in system
-    assert "剩余步骤不得改变相对顺序" in system
-
-
 def test_product_index_query_supports_snapshot_bound_position_resolution() -> None:
     """“第几个商品”必须绑定服务端快照，不能由模型用历史列表换算 ID。"""
 
@@ -241,17 +117,6 @@ def test_product_index_query_supports_snapshot_bound_position_resolution() -> No
     assert "positions" in request_fields
     assert "snapshot_id" in result_fields
     assert "selected_items" in result_fields
-
-
-def test_global_chat_prompt_explains_browser_session_boundary() -> None:
-    prompt_path = APP_ROOT / "config" / "prompts" / "global_chat.json"
-    prompt = json.loads(prompt_path.read_text(encoding="utf-8"))
-    system = str(prompt.get("system") or "")
-
-    assert "collect_from_browser_tab" in system
-    assert "已连接" in system
-    assert "打开" in system
-    assert "用户" in system or "受信界面" in system
 
 
 # -- P1-2：审批摘要由服务端快照生成，模型不提交 approval 字段 ---------------
@@ -353,9 +218,14 @@ def test_blocking_io_capabilities_thread_bounded_timeout() -> None:
         tool = APPLICATION_CAPABILITY_CATALOG.tools[name]
         source = inspect.getsource(tool.function)
         if name == "category_search":
-            from erp_web.runtime_units.category_query_capabilities import _CategoryQuerySearcher
+            from erp_web.runtime_units.category_query_capabilities import (
+                _CategoryQuerySearcher,
+            )
 
-            assert "_CategoryQuerySearcher(platform, site, scope.searcher, execution)" in source
+            assert (
+                "_CategoryQuerySearcher(platform, site, scope.searcher, execution)"
+                in source
+            )
             source = inspect.getsource(_CategoryQuerySearcher.search_categories)
         if "bounded_timeout_seconds(" not in source:
             offenders.append(name)
@@ -390,22 +260,8 @@ def test_external_side_effect_capabilities_never_auto_retry_after_dispatch() -> 
         if "retryable=True" in source:
             offenders.append(name)
     assert offenders == [], (
-        "以下外部写能力不得在副作用发出后声明 retryable=True："
-        + ", ".join(offenders)
+        "以下外部写能力不得在副作用发出后声明 retryable=True：" + ", ".join(offenders)
     )
 
 
 # -- P2-5：Job Status Reader 注册表领域无关，Controller 不依赖领域模块 ------
-
-
-def test_controller_job_readers_are_injected_and_domain_agnostic() -> None:
-    controller_source = (
-        APP_ROOT / "erp_web" / "services" / "global_task_controller.py"
-    ).read_text(encoding="utf-8")
-    # Controller 通过注入的 reader 注册表按 job_type 解析状态，
-    # 不得直接 import 领域 runtime_units（publish/research 等）。
-    assert "erp_web.runtime_units" not in controller_source
-    assert "from erp_web.runtime_units" not in controller_source
-    # job_status_readers 是构造期必填项，保证 Job 状态读取受信且可注册。
-    signature = inspect.signature(GlobalTaskController.__init__)
-    assert "job_status_readers" in signature.parameters

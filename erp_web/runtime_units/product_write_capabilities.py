@@ -18,7 +18,7 @@ from erp_web.runtime_units.draft_category_resolution import (
 from erp_web.runtime_units.market_pricing_capability import (
     prepare_target_pricing,
 )
-from erp_web.schemas.ai_tools import TaskApprovalSnapshot
+from erp_web.schemas.ai_tools import ToolApprovalSnapshot
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.product_write_capabilities import (
     DraftDeleteRequest,
@@ -42,47 +42,40 @@ from erp_web.schemas.product_write_capabilities import (
 from erp_web.services.ai_tool_declaration import Injected, ai_tool
 from erp_web.services.capability_input_provenance import user_supplied_input
 from erp_web.services.capability_errors import BusinessCapabilityError
-from erp_web.services.task_approval import verify_execution_approval
+from erp_web.services.tool_approval import verify_execution_approval
 
 
 class ProductDraftWriteStore(Protocol):
-    def save_product_profile(self, data: dict[str, Any]) -> dict[str, Any]:
-        ...
+    def save_product_profile(self, data: dict[str, Any]) -> dict[str, Any]: ...
 
     def delete_products_from_index(
         self,
         product_ids: list[Any],
-    ) -> dict[str, Any]:
-        ...
+    ) -> dict[str, Any]: ...
 
     def load_product_from_index(
         self,
         product_id: str = "",
         file_path: str = "",
-    ) -> dict[str, Any]:
-        ...
+    ) -> dict[str, Any]: ...
 
     def load_draft_detail_from_index(
         self,
         draft_id: str,
-    ) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
-        ...
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, int]: ...
 
     def save_draft_detail(
         self,
         draft_payload: dict[str, Any],
-    ) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
-        ...
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, int]: ...
 
-    def delete_draft_from_index(self, draft_id: Any) -> dict[str, Any]:
-        ...
+    def delete_draft_from_index(self, draft_id: Any) -> dict[str, Any]: ...
 
     def draft_workflow_status(
         self,
         product: dict[str, Any],
         platform: str = "mercadolibre",
-    ) -> str:
-        ...
+    ) -> str: ...
 
 
 def _text(value: Any) -> str:
@@ -179,7 +172,12 @@ def _ai_draft_product_context(value: Any) -> dict[str, Any]:
     compact["image_pool"] = compact_images
     compact["image_count"] = len(images)
     compact["sku_count"] = len(context.get("sku_items", []))
-    compact["sku_items"] = [_bounded_dict_subset(row, ("id", "name", "cost_cny", "options", "package_dimensions", "active")) for row in context.get("sku_items", [])[:100]]
+    compact["sku_items"] = [
+        _bounded_dict_subset(
+            row, ("id", "name", "cost_cny", "options", "package_dimensions", "active")
+        )
+        for row in context.get("sku_items", [])[:100]
+    ]
     return compact
 
 
@@ -247,7 +245,9 @@ def _ai_draft_read_view(value: Any) -> DraftReadView:
     """
 
     draft = _dict_value(value)
-    attributes = draft.get("attributes") if isinstance(draft.get("attributes"), dict) else {}
+    attributes = (
+        draft.get("attributes") if isinstance(draft.get("attributes"), dict) else {}
+    )
     bounded_attributes: dict[str, Any] = {}
     for index, (attr_id, attr_value) in enumerate(attributes.items()):
         if index >= _DRAFT_VIEW_ATTRIBUTE_MAX:
@@ -262,7 +262,11 @@ def _ai_draft_read_view(value: Any) -> DraftReadView:
     bounded_errors: list[Any] = []
     for item in validation_errors[:50]:
         if isinstance(item, dict):
-            bounded_errors.append(_bounded_dict_subset(item, ("code", "field", "message", "severity"), max_length=500))
+            bounded_errors.append(
+                _bounded_dict_subset(
+                    item, ("code", "field", "message", "severity"), max_length=500
+                )
+            )
         else:
             bounded_errors.append(_bounded_text(item, max_length=500))
     target_sites = (
@@ -273,7 +277,9 @@ def _ai_draft_read_view(value: Any) -> DraftReadView:
         if isinstance(site, dict):
             bounded_targets.append(_bounded_dict_subset(site, _DRAFT_VIEW_TARGET_KEYS))
     pricing = draft.get("pricing") if isinstance(draft.get("pricing"), dict) else {}
-    pricing_targets = pricing.get("targets") if isinstance(pricing.get("targets"), dict) else {}
+    pricing_targets = (
+        pricing.get("targets") if isinstance(pricing.get("targets"), dict) else {}
+    )
     pricing_summary: dict[str, Any] = {}
     for target_key, target_value in list(pricing_targets.items())[:16]:
         applied = (
@@ -292,9 +298,7 @@ def _ai_draft_read_view(value: Any) -> DraftReadView:
             "currency": _bounded_text(applied.get("currency"), max_length=16),
         }
     publication = (
-        draft.get("publication")
-        if isinstance(draft.get("publication"), dict)
-        else {}
+        draft.get("publication") if isinstance(draft.get("publication"), dict) else {}
     )
     bounded_publication = _bounded_dict_subset(
         publication,
@@ -364,7 +368,20 @@ def _ai_draft_read_view(value: Any) -> DraftReadView:
         publication=bounded_publication,
         pricing_summary=pricing_summary,
         sku_count=len(draft.get("sku_items", [])),
-        sku_items=tuple(_bounded_dict_subset(row, ("sku_id", "selected", "sku", "stock", "overrides", "attributes_by_target")) for row in draft.get("sku_items", [])[:100]),
+        sku_items=tuple(
+            _bounded_dict_subset(
+                row,
+                (
+                    "sku_id",
+                    "selected",
+                    "sku",
+                    "stock",
+                    "overrides",
+                    "attributes_by_target",
+                ),
+            )
+            for row in draft.get("sku_items", [])[:100]
+        ),
         grouping=_bounded_dict_subset(draft.get("grouping"), ("mode", "name")),
         target_sites=tuple(bounded_targets),
     )
@@ -386,11 +403,7 @@ def _changed_field_names(
     if not isinstance(patch, dict):
         return ()
     names = sorted(
-        {
-            str(key)[:_CHANGED_FIELD_MAX_NAME]
-            for key in patch
-            if str(key) not in ignore
-        }
+        {str(key)[:_CHANGED_FIELD_MAX_NAME] for key in patch if str(key) not in ignore}
     )
     return tuple(names[:_CHANGED_FIELD_MAX_COUNT])
 
@@ -413,9 +426,7 @@ DRAFT_PRICING_APPLY_TOOL = "draft_pricing_apply"
 
 
 def _normalized_ids(ids: Any) -> list[str]:
-    return sorted(
-        {item for item in (_text(value) for value in ids) if item}
-    )
+    return sorted({item for item in (_text(value) for value in ids) if item})
 
 
 def _state_token(value: dict[str, Any] | None) -> str:
@@ -440,11 +451,7 @@ def _product_delete_states(
     states: dict[str, str] = {}
     for product_id in ids:
         loaded = scope.products.load_product_from_index(product_id, "")
-        exact = (
-            loaded
-            if _text(loaded.get("product_id")) == product_id
-            else {}
-        )
+        exact = loaded if _text(loaded.get("product_id")) == product_id else {}
         states[product_id] = _state_token(exact)
     return states
 
@@ -456,7 +463,9 @@ def _draft_delete_states(
     states: dict[str, str] = {}
     for draft_id in ids:
         result, error, _status = scope.products.load_draft_detail_from_index(draft_id)
-        draft = result.get("draft") if error is None and isinstance(result, dict) else {}
+        draft = (
+            result.get("draft") if error is None and isinstance(result, dict) else {}
+        )
         states[draft_id] = _state_token(draft if isinstance(draft, dict) else {})
     return states
 
@@ -464,13 +473,13 @@ def _draft_delete_states(
 def _product_delete_approval_snapshot(
     request: ProductDeleteRequest,
     scope: ProductWriteCapabilityScope,
-) -> TaskApprovalSnapshot:
+) -> ToolApprovalSnapshot:
     """服务端生成的删除审批快照；模型不提供摘要也不提供参数。"""
 
     ids = _normalized_ids(request.product_ids)
     preview = "、".join(ids[:5])
     more = f"（另有 {len(ids) - 5} 个）" if len(ids) > 5 else ""
-    return TaskApprovalSnapshot(
+    return ToolApprovalSnapshot(
         summary=f"删除 {len(ids)} 个本地商品：{preview}{more}",
         canonical_payload={
             "product_ids": ids,
@@ -482,13 +491,13 @@ def _product_delete_approval_snapshot(
 def _draft_delete_approval_snapshot(
     request: DraftDeleteRequest,
     scope: ProductWriteCapabilityScope,
-) -> TaskApprovalSnapshot:
+) -> ToolApprovalSnapshot:
     """服务端生成的草稿删除审批快照；模型不提供摘要也不提供参数。"""
 
     ids = _normalized_ids(request.draft_ids)
     preview = "、".join(ids[:5])
     more = f"（另有 {len(ids) - 5} 个）" if len(ids) > 5 else ""
-    return TaskApprovalSnapshot(
+    return ToolApprovalSnapshot(
         summary=f"删除 {len(ids)} 个本地草稿：{preview}{more}",
         canonical_payload={
             "draft_ids": ids,
@@ -530,9 +539,7 @@ def product_save(
 
 @ai_tool(
     name=PRODUCT_DELETE_TOOL,
-    description=(
-        "删除本地商品；破坏性操作，需要人工在受信界面批准后才会执行。"
-    ),
+    description=("删除本地商品；破坏性操作，需要人工在受信界面批准后才会执行。"),
     permission="product.write",
     side_effect="write",
     approval_required=True,
@@ -644,9 +651,7 @@ def draft_save(
 
 @ai_tool(
     name=DRAFT_DELETE_TOOL,
-    description=(
-        "删除本地草稿；破坏性操作，需要人工在受信界面批准后才会执行。"
-    ),
+    description=("删除本地草稿；破坏性操作，需要人工在受信界面批准后才会执行。"),
     permission="draft.write",
     side_effect="write",
     approval_required=True,
@@ -794,7 +799,13 @@ def draft_pricing_apply(
         site=request.site,
         sales_target=(
             request.sales_target
-            if user_supplied_input(execution.business_scope, "sales_target")
+            if user_supplied_input(
+                execution.business_scope,
+                "sales_target",
+                value=request.sales_target,
+                source_message_id=request.source_message_id,
+                entity_id=request.draft_id,
+            )
             else []
         ),
         pricing_input=dict(request.pricing_input),

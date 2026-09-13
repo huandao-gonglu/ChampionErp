@@ -10,7 +10,9 @@ from erp_web import app_config
 from erp_web.services import ai_model_config, browser_ai_runtime, config_service
 
 
-def test_config_paths_are_project_local(app_dir: Path, old_path_markers: tuple[str, ...]) -> None:
+def test_config_paths_are_project_local(
+    app_dir: Path, old_path_markers: tuple[str, ...]
+) -> None:
     cfg_dir = config_service.config_dir(app_dir)
     env_file = config_service.env_path(app_dir)
 
@@ -20,7 +22,9 @@ def test_config_paths_are_project_local(app_dir: Path, old_path_markers: tuple[s
     assert_no_old_path(env_file, old_path_markers)
 
 
-def test_default_env_template_and_public_config(app_dir: Path, old_path_markers: tuple[str, ...]) -> None:
+def test_default_env_template_and_public_config(
+    app_dir: Path, old_path_markers: tuple[str, ...]
+) -> None:
     path = config_service.write_env_template(app_dir)
     public = config_service.public_ai_config(app_dir, {})
 
@@ -37,7 +41,10 @@ def test_default_env_template_and_public_config(app_dir: Path, old_path_markers:
         "alibaba",
     }
     assert all(item["supported_api_styles"] for item in public["providers"])
-    assert all(item["model_discovery"] in {"openai_models", "manual"} for item in public["providers"])
+    assert all(
+        item["model_discovery"] in {"openai_models", "manual"}
+        for item in public["providers"]
+    )
     assert all("generation_capabilities" in model for model in public["ai_models"])
     assert "copy.generate" in public["ai_use_case_prompts"]
     assert "research.web_search" in public["ai_use_case_prompts"]
@@ -164,7 +171,7 @@ def test_ai_use_case_binding_keeps_timeout_override_and_legacy_model_id() -> Non
                 "model_id": "copy_model",
                 "timeout_override_seconds": "125",
             },
-            "category.attribute_fill": "category_model",
+            "category.product_match": "category_model",
         }
     )
 
@@ -172,7 +179,7 @@ def test_ai_use_case_binding_keeps_timeout_override_and_legacy_model_id() -> Non
         "model_id": "copy_model",
         "timeout_override_seconds": 125,
     }
-    assert bindings["category.attribute_fill"] == {"model_id": "category_model"}
+    assert bindings["category.product_match"] == {"model_id": "category_model"}
 
 
 def test_ai_use_case_binding_normalizes_generation_overrides() -> None:
@@ -199,7 +206,9 @@ def test_ai_use_case_binding_normalizes_generation_overrides() -> None:
     }
 
 
-def test_merge_ai_config_rejects_reasoning_for_unmapped_deepseek_profile(app_dir: Path) -> None:
+def test_merge_ai_config_rejects_reasoning_for_unmapped_deepseek_profile(
+    app_dir: Path,
+) -> None:
     with pytest.raises(ValueError, match="无法安全转换推理参数"):
         config_service.merge_ai_config(
             app_dir,
@@ -247,19 +256,33 @@ def test_merge_config_writes_ai_use_case_prompt_files(tmp_path: Path) -> None:
         },
     )
 
-    assert merged["ai_use_case_prompts"]["copy.generate"]["path"] == "config/prompts/copy_generate.json"
-    assert merged["ai_use_case_prompts"]["research.web_search"]["path"] == "config/prompts/research_web_search.json"
-    written = json.loads((tmp_path / "config/prompts/copy_generate.json").read_text(encoding="utf-8"))
+    assert (
+        merged["ai_use_case_prompts"]["copy.generate"]["path"]
+        == "config/prompts/copy_generate.json"
+    )
+    assert (
+        merged["ai_use_case_prompts"]["research.web_search"]["path"]
+        == "config/prompts/research_web_search.json"
+    )
+    written = json.loads(
+        (tmp_path / "config/prompts/copy_generate.json").read_text(encoding="utf-8")
+    )
     assert written["description"] == "文案生成提示词"
     assert written["system"] == "System from settings"
     assert written["user"] == "User prompt {$language}"
-    research_written = json.loads((tmp_path / "config/prompts/research_web_search.json").read_text(encoding="utf-8"))
+    research_written = json.loads(
+        (tmp_path / "config/prompts/research_web_search.json").read_text(
+            encoding="utf-8"
+        )
+    )
     assert research_written["description"] == "AI 选品搜索默认模板"
     assert research_written["system"] == "Research system"
     assert research_written["user"] == "Research user {$marketId}"
 
 
-def test_merge_config_preserves_existing_model_key_when_public_payload_is_blank(app_dir: Path) -> None:
+def test_merge_config_preserves_existing_model_key_when_public_payload_is_blank(
+    app_dir: Path,
+) -> None:
     current = {
         "ai_models": [
             {
@@ -294,7 +317,9 @@ def test_merge_config_preserves_existing_model_key_when_public_payload_is_blank(
     assert merged["ai_models"][0]["api_key"] == "saved-key"
 
 
-def test_merge_config_clears_saved_api_key_when_model_switches_to_cli(app_dir: Path) -> None:
+def test_merge_config_clears_saved_api_key_when_model_switches_to_cli(
+    app_dir: Path,
+) -> None:
     current = {
         "ai_models": [
             {
@@ -332,7 +357,9 @@ def test_merge_config_clears_saved_api_key_when_model_switches_to_cli(app_dir: P
     assert merged["ai_models"][0]["command"] == "codex"
 
 
-def test_merge_config_clears_saved_api_key_when_model_switches_to_browser(app_dir: Path) -> None:
+def test_merge_config_clears_saved_api_key_when_model_switches_to_browser(
+    app_dir: Path,
+) -> None:
     current = {
         "ai_models": [
             {
@@ -492,10 +519,14 @@ def test_normalize_ai_model_keeps_strategy_profiles_without_wire_payload() -> No
     assert "request_body" not in model["capability_profiles"]["web_search"]
     assert model["capability_profiles"]["web_search"]["request_mode"] == "openai_tools"
     assert model["capability_profiles"]["web_search"]["version"] == 2
-    assert model["capability_profiles"]["web_search"]["probe_version"] == "web_search.v2"
+    assert (
+        model["capability_profiles"]["web_search"]["probe_version"] == "web_search.v2"
+    )
 
 
-def test_normalize_ai_model_invalidates_versioned_proof_after_connection_change() -> None:
+def test_normalize_ai_model_invalidates_versioned_proof_after_connection_change() -> (
+    None
+):
     raw_model = {
         "id": "fingerprinted",
         "connection_type": "api",
@@ -518,13 +549,14 @@ def test_normalize_ai_model_invalidates_versioned_proof_after_connection_change(
     }
 
     current = ai_model_config.normalize_ai_model(raw_model)
-    changed = ai_model_config.normalize_ai_model(
-        {**raw_model, "model": "model-b"}
-    )
+    changed = ai_model_config.normalize_ai_model({**raw_model, "model": "model-b"})
 
     assert current["capabilities"] == ["chat"]
     assert "chat" in current["capability_profiles"]
-    assert current["capability_profiles"]["chat"]["configuration_fingerprint"] == fingerprint
+    assert (
+        current["capability_profiles"]["chat"]["configuration_fingerprint"]
+        == fingerprint
+    )
     assert changed["capabilities"] == []
     assert "capability_profiles" not in changed
 
@@ -566,7 +598,13 @@ def test_normalize_ai_model_supports_cli_connection() -> None:
             "command": "",
             "model": "",
             "api_key": "should-not-survive",
-            "capabilities": ["chat", "json", "web_search", "image_generate", "image_edit"],
+            "capabilities": [
+                "chat",
+                "json",
+                "web_search",
+                "image_generate",
+                "image_edit",
+            ],
             "timeout_seconds": "180",
         },
         2,
@@ -578,7 +616,13 @@ def test_normalize_ai_model_supports_cli_connection() -> None:
     assert model["provider"] == "Codex CLI"
     assert model["model"] == ""
     assert model["api_key"] == ""
-    assert model["capabilities"] == ["chat", "json", "web_search", "image_generate", "image_edit"]
+    assert model["capabilities"] == [
+        "chat",
+        "json",
+        "web_search",
+        "image_generate",
+        "image_edit",
+    ]
     assert model["timeout_seconds"] == "180"
     assert model["sandbox"] == "read-only"
 
@@ -640,7 +684,9 @@ def test_normalize_browser_model_does_not_inherit_default_api_fields() -> None:
     assert model["api_key"] == ""
     assert model["api_key_env"] == ""
     assert model["capabilities"] == ["chat", "json", "web_search", "image_generate"]
-    assert browser_ai_runtime.browser_ai_profile_dir("/tmp/champion", model) == Path("/tmp/champion/browser_profile/ai/chatgpt/default")
+    assert browser_ai_runtime.browser_ai_profile_dir("/tmp/champion", model) == Path(
+        "/tmp/champion/browser_profile/ai/chatgpt/default"
+    )
 
 
 def test_public_ai_config_exposes_connection_types_and_cli_tools(app_dir: Path) -> None:
@@ -648,7 +694,10 @@ def test_public_ai_config_exposes_connection_types_and_cli_tools(app_dir: Path) 
 
     assert public["connection_types"] == ["api", "cli", "browser"]
     assert public["browser_modes"] == ["managed_profile", "existing_browser"]
-    assert any(tool["value"] == "codex" and tool["command"] == "codex" for tool in public["cli_tools"])
+    assert any(
+        tool["value"] == "codex" and tool["command"] == "codex"
+        for tool in public["cli_tools"]
+    )
     assert "effective_capabilities" not in public["ai_models"][0]
 
 
@@ -719,21 +768,18 @@ def test_normalize_app_config_rejects_legacy_ai_aliases(
         )
 
 
-def test_normalize_app_config_defaults_to_ask_and_accepts_full() -> None:
-    defaulted = app_config.normalize_app_config({})
-    authorized = app_config.normalize_app_config(
-        {"task_approval_mode": "full"}
-    )
+def test_retired_task_approval_mode_is_not_a_configuration_contract():
+    import pytest
+    from erp_web import app_config
 
-    assert defaulted["task_approval_mode"] == "ask"
-    assert authorized["task_approval_mode"] == "full"
+    assert "task_approval_mode" not in app_config.default_app_config()
+    with pytest.raises(ValueError, match="不受支持"):
+        app_config.normalize_app_config({"task_approval_mode": "full"})
 
 
 def test_normalize_app_config_rejects_unknown_approval_mode() -> None:
     with pytest.raises(ValueError, match="task_approval_mode"):
-        app_config.normalize_app_config(
-            {"task_approval_mode": "legacy-test-grant"}
-        )
+        app_config.normalize_app_config({"task_approval_mode": "legacy-test-grant"})
 
 
 def test_normalize_app_config_keeps_1688_api_credentials() -> None:
@@ -850,9 +896,7 @@ def test_normalize_app_config_rejects_legacy_ai_keys_alongside_canonical_model(
 
 def test_normalize_app_config_rejects_retired_pricing_key() -> None:
     with pytest.raises(ValueError, match="packaging"):
-        app_config.normalize_app_config(
-            {"pricing_defaults": {"packaging": "9"}}
-        )
+        app_config.normalize_app_config({"pricing_defaults": {"packaging": "9"}})
 
 
 def test_pricing_fields_do_not_backfill_other_canonical_fields() -> None:

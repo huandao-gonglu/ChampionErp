@@ -424,6 +424,7 @@ export function toBackendDraftDetail(draft: DraftDetail): UnknownRecord {
     draft_id: draft.draftId,
     product_id: draft.productId,
     source_product_id: draft.sourceProductId || draft.productId,
+    updated_at: draft.updatedAt,
     platform,
     platforms,
     target_sites: draft.targetSites.map(toBackendTargetSite),

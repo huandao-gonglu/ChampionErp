@@ -15,18 +15,10 @@ def test_database_owns_schema_and_connection_policy(tmp_path) -> None:
                 "SELECT name FROM sqlite_master WHERE type='table'"
             )
         }
-        user_version = connection.execute(
-            "PRAGMA user_version"
-        ).fetchone()[0]
-        journal_mode = connection.execute(
-            "PRAGMA journal_mode"
-        ).fetchone()[0]
-        foreign_keys = connection.execute(
-            "PRAGMA foreign_keys"
-        ).fetchone()[0]
-        busy_timeout = connection.execute(
-            "PRAGMA busy_timeout"
-        ).fetchone()[0]
+        user_version = connection.execute("PRAGMA user_version").fetchone()[0]
+        journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
+        foreign_keys = connection.execute("PRAGMA foreign_keys").fetchone()[0]
+        busy_timeout = connection.execute("PRAGMA busy_timeout").fetchone()[0]
         publish_job_indexes = connection.execute(
             'PRAGMA index_list("publish_jobs")'
         ).fetchall()
@@ -55,14 +47,6 @@ def test_database_owns_schema_and_connection_policy(tmp_path) -> None:
             )
             for index in message_history_indexes
         }
-        deferred_link_indexes = connection.execute(
-            'PRAGMA index_list("pydantic_deferred_task_links")'
-        ).fetchall()
-        deferred_link_unique_partial = {
-            (str(index["name"]), int(index["partial"] or 0))
-            for index in deferred_link_indexes
-            if int(index["unique"] or 0) == 1
-        }
     assert set(REQUIRED_TABLES).issubset(tables)
     assert user_version == SCHEMA_VERSION
     assert str(journal_mode).lower() == "wal"
@@ -84,11 +68,11 @@ def test_database_owns_schema_and_connection_policy(tmp_path) -> None:
         "updated_at": ("TEXT", 1, 0),
     }
     assert ("updated_at",) in message_history_index_columns
-    # 每个 conversation 最多一个未解决 Deferred link：partial unique index。
+    assert {"ai_deferred_requests", "ai_tool_receipts", "ai_chat_inbox"} <= tables
     assert (
-        "idx_deferred_task_links_active_conversation",
-        1,
-    ) in deferred_link_unique_partial
+        not {"global_tasks", "pydantic_deferred_task_links", "pydantic_ai_event_outbox"}
+        & tables
+    )
     assert "ai_" + "sessions" not in tables
 
 
@@ -135,10 +119,7 @@ def test_publish_jobs_never_persist_credentials(tmp_path) -> None:
             platform: str,
             config: dict,
         ) -> dict:
-            assert (
-                config["mercadolibre"]["access_token"]
-                == access_token
-            )
+            assert config["mercadolibre"]["access_token"] == access_token
             return {"ok": True, "status": "published"}
 
     database = ErpDatabase(tmp_path / "erp.sqlite3")
@@ -171,15 +152,10 @@ def test_publish_jobs_never_persist_credentials(tmp_path) -> None:
             },
         )
         bus.wait(queued["job_id"], timeout=2)
-        persisted = database.load_publish_job(
-            queued["job_id"]
-        )
+        persisted = database.load_publish_job(queued["job_id"])
         with database._connect() as connection:
             raw_payload = connection.execute(
-                (
-                    "SELECT payload_json FROM publish_jobs "
-                    "WHERE job_id = ?"
-                ),
+                ("SELECT payload_json FROM publish_jobs WHERE job_id = ?"),
                 (queued["job_id"],),
             ).fetchone()[0]
     finally:

@@ -15,7 +15,7 @@ import hashlib
 import json
 
 from erp_web.context import AppContext
-from erp_web.schemas.ai_tools import TaskApprovalSnapshot
+from erp_web.schemas.ai_tools import ToolApprovalSnapshot
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.logistics_capabilities import (
     LogisticsShipmentCreateRequest,
@@ -26,7 +26,7 @@ from erp_web.schemas.logistics_capabilities import (
 from erp_web.services.ai_tool_declaration import Injected, ai_tool
 from erp_web.services.capability_errors import BusinessCapabilityError
 from erp_web.services.config_service import merge_runtime_secret_section
-from erp_web.services.task_approval import verify_execution_approval
+from erp_web.services.tool_approval import verify_execution_approval
 from erp_web.runtime_units.yunexpress_client import (
     build_create_package_payload,
     build_create_package_preview,
@@ -42,8 +42,7 @@ class YunExpressClientLike(Protocol):
         access_token: str = "",
         *,
         timeout_seconds: float | None = None,
-    ) -> dict[str, Any]:
-        ...
+    ) -> dict[str, Any]: ...
 
 
 def _text(value: Any) -> str:
@@ -106,11 +105,11 @@ LOGISTICS_SHIPMENT_CREATE_TOOL = "logistics_shipment_create"
 def _logistics_shipment_approval_snapshot(
     request: LogisticsShipmentCreateRequest,
     scope: LogisticsCapabilityScope,
-) -> TaskApprovalSnapshot:
+) -> ToolApprovalSnapshot:
     """服务端生成的发货审批快照：冻结运单内容与已保存配置指纹。"""
 
     config = _resolved_config(scope.context)
-    return TaskApprovalSnapshot(
+    return ToolApprovalSnapshot(
         summary=f"云途创建发货单：{_shipment_summary(request.shipment)}",
         canonical_payload={
             "config_fingerprint": _canonical_json_digest(config),
@@ -133,9 +132,7 @@ def logistics_shipment_preview(
 ) -> LogisticsShipmentPreviewResult:
     config = _resolved_config(scope.context)
     preview = build_create_package_preview(config, dict(request.shipment))
-    errors = (
-        preview.get("errors") if isinstance(preview, dict) else []
-    ) or []
+    errors = (preview.get("errors") if isinstance(preview, dict) else []) or []
     if errors:
         raise BusinessCapabilityError(
             "LOGISTICS_PREVIEW_INCOMPLETE",
@@ -151,9 +148,7 @@ def logistics_shipment_preview(
 
 @ai_tool(
     name=LOGISTICS_SHIPMENT_CREATE_TOOL,
-    description=(
-        "调用云途创建真实发货单；必须经过审批，审批通过后才会调用外部接口。"
-    ),
+    description=("调用云途创建真实发货单；必须经过审批，审批通过后才会调用外部接口。"),
     permission="logistics.write",
     side_effect="write",
     approval_required=True,

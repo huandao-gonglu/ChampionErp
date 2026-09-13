@@ -326,6 +326,16 @@ def normalize_category_attribute_number_unit_value(
     return {"value": value_text, "unit": unit_text}
 
 
+def _has_joined_collection_options(definition: dict[str, Any], value: Any) -> bool:
+    """拒绝把多个已知选项拼成单个自定义值；保留平台本身包含分号的选项。"""
+    if not definition.get("is_collection"):
+        return False
+    text = str(value or "").strip().casefold()
+    options = {str(option).strip().casefold() for option in definition.get("options", [])}
+    parts = [part.strip() for part in re.split(r"[;；,，]", text)]
+    return text not in options and len(parts) > 1 and all(part in options for part in parts)
+
+
 def category_attribute_value_is_valid(
     definition: dict[str, Any],
     value: Any,
@@ -345,6 +355,7 @@ def category_attribute_value_is_valid(
                 ]
                 if not selected or not all(
                     str(item.get("value") or "").strip()
+                    and not _has_joined_collection_options(definition, item.get("value"))
                     and str(item.get("value") or "").strip().upper()
                     != attr_id.upper()
                     for item in selected
@@ -362,7 +373,7 @@ def category_attribute_value_is_valid(
             # 带单位的共享值 shape：{"value": 文本, "unit": 单位}。
             raw_text = value.get("value")
             text = ("" if raw_text is None else str(raw_text)).strip()
-            if not text or text.upper() == attr_id.upper():
+            if not text or text.upper() == attr_id.upper() or _has_joined_collection_options(definition, text):
                 return False
             if category_attribute_uses_numeric_unit(definition):
                 return normalize_category_attribute_number_unit_value(
@@ -385,6 +396,7 @@ def category_attribute_value_is_valid(
             not uses_unit
             and bool(text)
             and text.upper() != attr_id.upper()
+            and not _has_joined_collection_options(definition, text)
         )
     if not isinstance(value, dict) or not isinstance(value.get("values"), list):
         return False

@@ -7,7 +7,11 @@ from typing import Any, Mapping
 def is_listing_grouping_attribute(platform: str, definition: Mapping[str, Any]) -> bool:
     """按平台语义识别分组字段，不写死 Ozon 的类目属性编号。"""
     if platform == "ozon":
-        return str(definition.get("name") or "").strip().casefold() == "объединить на одной карточке"
+        # 类目可能通过“型号名称”承载组合；只识别明确声明合并卡片语义的字段。
+        return str(definition.get("name") or "").strip().casefold() in {
+            "объединить на одной карточке",
+            "название модели (для объединения в одну карточку)",
+        }
     return platform == "yandex" and str(definition.get("id") or "") == "200"
 
 

@@ -35,7 +35,7 @@ class ApprovalSession:
         presented_normalized = str(presented or "").strip()
         if not presented_normalized:
             raise ApprovalSessionError(
-                "GLOBAL_TASK_APPROVAL_UNAUTHORIZED",
+                "AI_TOOL_APPROVAL_UNAUTHORIZED",
                 "审批请求缺少可信审批凭据。",
             )
         if not hmac.compare_digest(
@@ -43,12 +43,10 @@ class ApprovalSession:
             self._token.encode("utf-8"),
         ):
             raise ApprovalSessionError(
-                "GLOBAL_TASK_APPROVAL_UNAUTHORIZED",
+                "AI_TOOL_APPROVAL_UNAUTHORIZED",
                 "审批凭据无效；审批只能由受信 UI 确认。",
             )
-        fingerprint = hashlib.sha256(
-            self._token.encode("utf-8")
-        ).hexdigest()[:12]
+        fingerprint = hashlib.sha256(self._token.encode("utf-8")).hexdigest()[:12]
         return f"local-ui:{fingerprint}"
 
 

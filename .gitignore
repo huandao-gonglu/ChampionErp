@@ -2,6 +2,8 @@ node_modules/
 .venv/
 .codegraph/
 AGENTS.md
+# ERP 运行时记忆是产品配置，随代码保存；不沿用开发约定文件的忽略规则。
+!config/agents.md
 .DS_Store
 __pycache__/
 .pytest_cache/
@@ -41,6 +43,9 @@ erp.sqlite3
 *.tsbuildinfo
 logo-cart-verification.png
 data/logs/
+# 本地业务数据备份和原始运行证据，不随源码提交。
+data/backups/
+docs/audits/*.evidence.json
 # 本地界面审查截图和检查证据，不属于产品源码或正式文档。
 data/audits/
 .codex-audit/

@@ -356,7 +356,9 @@ def validate_json_schema_definition(
         )
 
 
-def validate_json_schema(value: Any, schema: Mapping[str, Any], *, path: str = "$") -> None:
+def validate_json_schema(
+    value: Any, schema: Mapping[str, Any], *, path: str = "$"
+) -> None:
     """校验工具边界使用的 JSON Schema 子集。
 
     V1 支持 object/array/基础类型、required、properties、
@@ -375,10 +377,13 @@ def validate_json_schema(value: Any, schema: Mapping[str, Any], *, path: str = "
             [expected_type]
             if isinstance(expected_type, str)
             else list(expected_type)
-            if isinstance(expected_type, Sequence) and not isinstance(expected_type, (str, bytes))
+            if isinstance(expected_type, Sequence)
+            and not isinstance(expected_type, (str, bytes))
             else []
         )
-        if not expected_types or not all(isinstance(item, str) for item in expected_types):
+        if not expected_types or not all(
+            isinstance(item, str) for item in expected_types
+        ):
             raise AiToolSchemaError(
                 f"{path} 的 schema.type 无效",
                 code="TOOL_SCHEMA_INVALID",
@@ -392,7 +397,9 @@ def validate_json_schema(value: Any, schema: Mapping[str, Any], *, path: str = "
         raise AiToolSchemaError(f"{path} 必须等于 schema.const")
     if "enum" in schema:
         enum_values = schema["enum"]
-        if not isinstance(enum_values, Sequence) or isinstance(enum_values, (str, bytes)):
+        if not isinstance(enum_values, Sequence) or isinstance(
+            enum_values, (str, bytes)
+        ):
             raise AiToolSchemaError(
                 f"{path} 的 schema.enum 必须是数组",
                 code="TOOL_SCHEMA_INVALID",
@@ -571,15 +578,12 @@ class AiToolDefinition:
     injected_type_names: tuple[str, ...] = ()
     execution_mode: AiToolExecutionMode = "sync"
     recovery_policy: AiToolRecoveryPolicy = "manual"
-    # Agent 控制 Tool 的 Pydantic Deferred 握手标记：只允许极少量控制工具
-    # （当前唯一是 global_task_start），不得扩散为第二套 Capability execution
-    # mode。Runtime 仍然完成校验/授权/幂等；Bridge 在成功创建后抛出
-    # CallDeferred，领域 Capability 不感知 Pydantic 生命周期类型。
-    agent_deferred: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", normalize_ai_tool_name(self.name))
-        object.__setattr__(self, "version", _require_string(self.version, label="tool.version"))
+        object.__setattr__(
+            self, "version", _require_string(self.version, label="tool.version")
+        )
         object.__setattr__(
             self,
             "description",
@@ -594,23 +598,10 @@ class AiToolDefinition:
             raise AiToolSchemaError("tool.side_effect 只允许 none 或 write")
         if not isinstance(self.approval_required, bool):
             raise AiToolSchemaError("tool.approval_required 必须是布尔值")
-        if not isinstance(self.agent_deferred, bool):
-            raise AiToolSchemaError("tool.agent_deferred 必须是布尔值")
-        if self.agent_deferred:
-            if self.side_effect != "write":
-                raise AiToolSchemaError(
-                    "agent_deferred 只允许写控制工具（Deferred 握手会创建持久化任务）"
-                )
-            if self.approval_required:
-                raise AiToolSchemaError(
-                    "agent_deferred 控制工具不得声明 Capability 审批"
-                )
         if self.idempotency not in {"none", "required"}:
             raise AiToolSchemaError("tool.idempotency 只允许 none 或 required")
         if self.execution_mode not in set(AI_TOOL_EXECUTION_MODES):
-            raise AiToolSchemaError(
-                "tool.execution_mode 只允许 sync 或 persistent_job"
-            )
+            raise AiToolSchemaError("tool.execution_mode 只允许 sync 或 persistent_job")
         if self.recovery_policy not in set(AI_TOOL_RECOVERY_POLICIES):
             raise AiToolSchemaError(
                 "tool.recovery_policy 只允许 manual、retry_safe 或 idempotent"
@@ -686,7 +677,6 @@ class AiToolDefinition:
             "injected_type_names": list(self.injected_type_names),
             "execution_mode": self.execution_mode,
             "recovery_policy": self.recovery_policy,
-            "agent_deferred": self.agent_deferred,
         }
 
     @property
@@ -722,7 +712,6 @@ class AiToolDefinition:
                 "injected_type_names",
                 "execution_mode",
                 "recovery_policy",
-                "agent_deferred",
             },
             optional=set(),
             label="AiToolDefinition",
@@ -741,7 +730,6 @@ class AiToolDefinition:
             injected_type_names=tuple(data["injected_type_names"]),
             execution_mode=data["execution_mode"],
             recovery_policy=data["recovery_policy"],
-            agent_deferred=data["agent_deferred"],
         )
 
 
@@ -756,7 +744,9 @@ class AiToolCommand:
     round: int
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "call_id", _require_string(self.call_id, label="call.call_id"))
+        object.__setattr__(
+            self, "call_id", _require_string(self.call_id, label="call.call_id")
+        )
         object.__setattr__(
             self,
             "tool_name",
@@ -767,7 +757,11 @@ class AiToolCommand:
             "tool_version",
             _require_string(self.tool_version, label="call.tool_version"),
         )
-        if not isinstance(self.round, int) or isinstance(self.round, bool) or self.round < 1:
+        if (
+            not isinstance(self.round, int)
+            or isinstance(self.round, bool)
+            or self.round < 1
+        ):
             raise AiToolSchemaError("call.round 必须是大于等于 1 的整数")
         arguments = _require_object(self.arguments, label="call.arguments")
         object.__setattr__(
@@ -794,7 +788,9 @@ class AiToolResult:
     truncated: bool = False
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "call_id", _require_string(self.call_id, label="result.call_id"))
+        object.__setattr__(
+            self, "call_id", _require_string(self.call_id, label="result.call_id")
+        )
         object.__setattr__(
             self,
             "tool_name",
@@ -802,9 +798,15 @@ class AiToolResult:
         )
         if not isinstance(self.ok, bool):
             raise AiToolSchemaError("result.ok 必须是布尔值")
-        if not isinstance(self.duration_ms, int) or isinstance(self.duration_ms, bool) or self.duration_ms < 0:
+        if (
+            not isinstance(self.duration_ms, int)
+            or isinstance(self.duration_ms, bool)
+            or self.duration_ms < 0
+        ):
             raise AiToolSchemaError("result.duration_ms 必须是非负整数")
-        if not isinstance(self.deduplicated, bool) or not isinstance(self.truncated, bool):
+        if not isinstance(self.deduplicated, bool) or not isinstance(
+            self.truncated, bool
+        ):
             raise AiToolSchemaError("result deduplicated/truncated 必须是布尔值")
         if self.ok:
             if self.error is not None:
@@ -888,7 +890,7 @@ def validate_ai_tool_result(payload: Mapping[str, Any]) -> AiToolResult:
 class JobReferenceResult(BaseModel):
     """persistent_job Capability 的统一同步返回：已提交 Job 的可信引用。
 
-    ``job_type`` 是领域无关的 Job 类别标识；Controller 通过 Job Status
+    ``job_type`` 是领域无关的 Job 类别标识；后台工具对账器通过 Job Status
     Reader 注册表按 ``job_type`` 解析状态读取器，不直接依赖领域模块。
     """
 
@@ -906,7 +908,7 @@ PUBLISH_JOB_TYPE = "publish"
 PRODUCT_RESEARCH_JOB_TYPE = "product_research"
 
 
-class TaskApprovalSnapshot(BaseModel):
+class ToolApprovalSnapshot(BaseModel):
     """服务端生成的审批冻结快照：人类可读摘要 + 规范化执行参数。
 
     审批展示内容与执行绑定都由它派生；模型不能提交最终用于展示的审批
@@ -935,9 +937,9 @@ class AiToolInputOption(BaseModel):
 class AiToolRequiredInput(BaseModel):
     """needs_input 标准错误中携带的类型化待补字段。
 
-    ``input_owner`` 标记补充字段的提交归属路径：``step`` 表示顶层步骤参数，
-    ``provided_attributes`` / ``pricing_input`` 表示嵌套路径。Controller 依此
-    把 UI 提交的字段合并到正确的嵌套位置，而不是只做顶层浅合并。
+    ``argument_path`` 标记补充字段的提交归属路径：``arguments`` 表示工具顶层参数，
+    ``pricing_input`` 表示定价嵌套路径。``provided_attributes`` 仅用于读取
+    既有持久化错误回执，当前属性填写直接通过主对话写工具提交值。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -953,7 +955,9 @@ class AiToolRequiredInput(BaseModel):
         "string_list",
     ] = "text"
     options: list[AiToolInputOption] = Field(default_factory=list, max_length=100)
-    input_owner: Literal["step", "provided_attributes", "pricing_input"] = "step"
+    argument_path: Literal["arguments", "provided_attributes", "pricing_input"] = (
+        "arguments"
+    )
 
     @field_validator("options", mode="before")
     @classmethod
@@ -963,9 +967,7 @@ class AiToolRequiredInput(BaseModel):
         if not isinstance(value, (list, tuple)):
             return value
         return [
-            {"value": option, "label": option}
-            if isinstance(option, str)
-            else option
+            {"value": option, "label": option} if isinstance(option, str) else option
             for option in value
         ]
 
@@ -989,7 +991,7 @@ __all__ = [
     "PUBLISH_JOB_TYPE",
     "TOOL_APPROVAL_REQUIRED",
     "TOOL_INPUT_REQUIRED",
-    "TaskApprovalSnapshot",
+    "ToolApprovalSnapshot",
     "normalize_ai_tool_name",
     "validate_ai_tool_definition",
     "validate_ai_tool_result",

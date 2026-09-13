@@ -43,8 +43,17 @@ def _isolated_app_context(tmp_path: Path) -> Iterator[None]:
         yield
 
 
+@pytest.fixture()
+def app_dir(_isolated_app_context: None) -> Path:
+    """运行时文件统一写入当前测试的临时应用目录。"""
+    from erp_web.context import get_context
+
+    return get_context().paths.app_dir
+
+
 @pytest.fixture(scope="session")
-def app_dir() -> Path:
+def repo_dir() -> Path:
+    """仓库目录只用于读取源码，不能作为测试运行时数据目录。"""
     return APP_DIR
 
 

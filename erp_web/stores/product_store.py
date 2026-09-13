@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterator
 
 from erp_web.db import ErpDatabase, product_identity
+from erp_web.stores.product_mutation import product_mutation, product_resource_locks
 from erp_web.marketplace_registry import marketplace_site
 from erp_web.product_model import (
     PLATFORMS,
@@ -72,11 +73,11 @@ def _preserve_image_platform_facts(
 
     result = deepcopy(incoming)
     source = result.get("source") if isinstance(result.get("source"), dict) else {}
-    pool = source.get("image_pool") if isinstance(source.get("image_pool"), list) else []
+    pool = (
+        source.get("image_pool") if isinstance(source.get("image_pool"), list) else []
+    )
     old_source = (
-        existing.get("source")
-        if isinstance(existing.get("source"), dict)
-        else {}
+        existing.get("source") if isinstance(existing.get("source"), dict) else {}
     )
     old_pool = (
         old_source.get("image_pool")
@@ -112,7 +113,10 @@ def product_id_from_body(body: dict[str, Any]) -> str:
 
 RETIRED_CATEGORY_SCHEMA_FIELD = "RETIRED_CATEGORY_SCHEMA_FIELD"
 
-_RETIRED_PRODUCT_CATEGORY_KEYS = ("local_platform_categories", "localPlatformCategories")
+_RETIRED_PRODUCT_CATEGORY_KEYS = (
+    "local_platform_categories",
+    "localPlatformCategories",
+)
 _RETIRED_DRAFT_SCHEMA_KEYS = ("category_attribute_schema", "categoryAttributeSchema")
 
 
@@ -159,7 +163,13 @@ def reject_retired_draft_schema_fields(draft_payload: dict[str, Any]) -> None:
 
 def normalize_product_fields(product: dict[str, Any]) -> dict[str, Any]:
     normalized = normalize_product_model(product)
-    for key in ["materials", "colors", "selling_points", "package_includes", "avoid_claims"]:
+    for key in [
+        "materials",
+        "colors",
+        "selling_points",
+        "package_includes",
+        "avoid_claims",
+    ]:
         normalized[key] = normalize_list(normalized.get(key))
     normalized.setdefault("sku", "")
     normalized.setdefault("model", "")
@@ -206,12 +216,17 @@ def normalize_persisted_product_fields(
 
 # -- workflow-status helpers (pure) -----------------------------------------
 
+
 def _draft_copy_ready(draft: dict[str, Any]) -> bool:
     return bool(
         draft.get("copy_generated_at")
         or draft.get("ai_copy_ready")
-        or str(draft.get("copy_source") or "").lower() in {"ai", "deepseek", "openai", "fallback_ai"}
-    ) and bool(str(draft.get("title") or "").strip() and str(draft.get("description") or "").strip())
+        or str(draft.get("copy_source") or "").lower()
+        in {"ai", "deepseek", "openai", "fallback_ai"}
+    ) and bool(
+        str(draft.get("title") or "").strip()
+        and str(draft.get("description") or "").strip()
+    )
 
 
 def _draft_images_ready(draft: dict[str, Any]) -> bool:
@@ -232,16 +247,28 @@ def _draft_pricing_ready(draft: dict[str, Any]) -> bool:
 def _draft_publish_fields_ready(draft: dict[str, Any]) -> bool:
     rows = [row for row in draft.get("sku_items", []) if row.get("selected")]
     return bool(draft.get("category_id") and rows) and all(
-        row.get("pricing", {}).get("applied") is True and str(row.get("stock", "")).strip()
+        row.get("pricing", {}).get("applied") is True
+        and str(row.get("stock", "")).strip()
         for row in rows
     )
 
 
-def _draft_precheck_ready(product: dict[str, Any], platform: str, draft: dict[str, Any]) -> bool:
-    preview_map = product.get("publish_preview") if isinstance(product.get("publish_preview"), dict) else {}
-    preview = preview_map.get(platform) if isinstance(preview_map.get(platform), dict) else {}
+def _draft_precheck_ready(
+    product: dict[str, Any], platform: str, draft: dict[str, Any]
+) -> bool:
+    preview_map = (
+        product.get("publish_preview")
+        if isinstance(product.get("publish_preview"), dict)
+        else {}
+    )
+    preview = (
+        preview_map.get(platform) if isinstance(preview_map.get(platform), dict) else {}
+    )
     publish_status = str(draft.get("publish_status") or "").strip().lower()
-    return bool(preview.get("ok") is True or publish_status in {"ready", "published", "real_publish_success", "success"})
+    return bool(
+        preview.get("ok") is True
+        or publish_status in {"ready", "published", "real_publish_success", "success"}
+    )
 
 
 def _normalize_delete_ids(value: Any) -> list[str]:
@@ -281,11 +308,9 @@ def _draft_target_identity(
 ) -> tuple[str, str]:
     return (
         str(target.get("platform") or fallback_platform).strip().lower(),
-        str(
-            target.get("site")
-            or target.get("site_id")
-            or fallback_site
-        ).strip().upper(),
+        str(target.get("site") or target.get("site_id") or fallback_site)
+        .strip()
+        .upper(),
     )
 
 
@@ -373,9 +398,7 @@ _DRAFT_SERVER_OWNED_PUBLISH_FIELDS = (
     "publication",
 )
 _TARGET_SERVER_OWNED_PUBLISH_FIELDS = tuple(
-    field
-    for field in _DRAFT_SERVER_OWNED_PUBLISH_FIELDS
-    if field != "publication"
+    field for field in _DRAFT_SERVER_OWNED_PUBLISH_FIELDS if field != "publication"
 )
 _SERVER_OWNED_PUBLISH_FIELD_DEFAULTS: dict[str, Any] = {
     "status": "",
@@ -390,10 +413,7 @@ _SERVER_OWNED_PUBLISH_FIELD_DEFAULTS: dict[str, Any] = {
 
 def _review_attribute_id(item: Any) -> str:
     if isinstance(item, dict):
-        if (
-            str(item.get("code") or "").strip().upper()
-            != "NEED_REVIEW_ATTRIBUTES"
-        ):
+        if str(item.get("code") or "").strip().upper() != "NEED_REVIEW_ATTRIBUTES":
             return ""
         field = str(item.get("field") or "").strip()
     else:
@@ -553,10 +573,7 @@ def _changed_publish_content_targets(
         )
         if isinstance(target, dict)
     ]
-    incoming_identities = {
-        _draft_target_identity(target)
-        for target in incoming_rows
-    }
+    incoming_identities = {_draft_target_identity(target) for target in incoming_rows}
     root_changed = any(
         existing.get(field) != incoming.get(field)
         for field in _DRAFT_PUBLISH_CONTENT_FIELDS
@@ -579,19 +596,66 @@ class ProductStore:
     def __init__(self, db: ErpDatabase) -> None:
         self._db = db
 
+    def mutation_scope(self, arguments):
+        keys = set()
+
+        def collect(value):
+            if not isinstance(value, dict):
+                return
+            for field in ("product_id", "product_ids"):
+                ids = value.get(field, [])
+                ids = ids if isinstance(ids, (list, tuple)) else [ids]
+                keys.update("product:" + str(i) for i in ids if i)
+            for field in ("draft_id", "draft_ids", "target_draft_id"):
+                ids = value.get(field, [])
+                ids = ids if isinstance(ids, (list, tuple)) else [ids]
+                for draft_id in ids:
+                    if not draft_id:
+                        continue
+                    draft = self._db.load_draft_model(str(draft_id))
+                    product_id = draft.get("product_id")
+                    keys.add(
+                        "product:" + str(product_id)
+                        if product_id
+                        else "draft:" + str(draft_id)
+                    )
+            for nested in value.values():
+                if isinstance(nested, dict):
+                    collect(nested)
+
+        collect(arguments)
+        return product_resource_locks(self._db.db_path, keys)
+
+    def draft_record(self, draft_id: str) -> dict[str, Any]:
+        """读取指定草稿的持久记录；不存在时返回空值，不能回落到其他商品。"""
+        return self._db.load_draft_model(draft_id)
+
     # -- workflow status -----------------------------------------------------
 
-    def draft_workflow_status(self, product: dict[str, Any], platform: str = "mercadolibre") -> str:
+    def draft_workflow_status(
+        self, product: dict[str, Any], platform: str = "mercadolibre"
+    ) -> str:
         product = normalize_product_fields(product or {})
         platform = str(platform or "mercadolibre").strip().lower() or "mercadolibre"
-        draft = (product.get("drafts") or {}).get(platform) if isinstance(product.get("drafts"), dict) else {}
+        draft = (
+            (product.get("drafts") or {}).get(platform)
+            if isinstance(product.get("drafts"), dict)
+            else {}
+        )
         draft = draft if isinstance(draft, dict) else {}
         publish_status = str(draft.get("publish_status") or "").strip().lower()
         if publish_status in {"published", "real_publish_success", "success"}:
             return "published"
-        if not (draft.get("enabled") or draft.get("title") or draft.get("category_id") or draft.get("status")):
+        if not (
+            draft.get("enabled")
+            or draft.get("title")
+            or draft.get("category_id")
+            or draft.get("status")
+        ):
             return "collected"
-        if _draft_publish_fields_ready(draft) and _draft_precheck_ready(product, platform, draft):
+        if _draft_publish_fields_ready(draft) and _draft_precheck_ready(
+            product, platform, draft
+        ):
             return "ready_to_publish"
         if _draft_copy_ready(draft) and _draft_images_ready(draft):
             return "images_ready"
@@ -599,21 +663,37 @@ class ProductStore:
             return "copy_ready"
         return "claimed"
 
-    def publish_queue_platforms(self, product: dict[str, Any], requested_platforms: list[str] | None = None) -> list[str]:
+    def publish_queue_platforms(
+        self, product: dict[str, Any], requested_platforms: list[str] | None = None
+    ) -> list[str]:
         product = self.sync_product_workflow_statuses(product or {})
         targets = requested_platforms or list(PLATFORMS)
-        normalized_targets = [str(platform or "").strip().lower() for platform in targets if str(platform or "").strip().lower() in PLATFORMS]
+        normalized_targets = [
+            str(platform or "").strip().lower()
+            for platform in targets
+            if str(platform or "").strip().lower() in PLATFORMS
+        ]
         eligible: list[str] = []
         for platform in normalized_targets:
-            draft = (product.get("drafts") or {}).get(platform) if isinstance(product.get("drafts"), dict) else {}
+            draft = (
+                (product.get("drafts") or {}).get(platform)
+                if isinstance(product.get("drafts"), dict)
+                else {}
+            )
             draft = draft if isinstance(draft, dict) else {}
-            if self.draft_workflow_status(product, platform) == "ready_to_publish" or _draft_precheck_ready(product, platform, draft):
+            if self.draft_workflow_status(
+                product, platform
+            ) == "ready_to_publish" or _draft_precheck_ready(product, platform, draft):
                 eligible.append(platform)
         return eligible
 
     def sync_product_workflow_statuses(self, product: dict[str, Any]) -> dict[str, Any]:
         normalized = normalize_product_fields(product or {})
-        drafts = normalized.get("drafts") if isinstance(normalized.get("drafts"), dict) else {}
+        drafts = (
+            normalized.get("drafts")
+            if isinstance(normalized.get("drafts"), dict)
+            else {}
+        )
         for platform, draft in list(drafts.items()):
             if platform not in PLATFORMS or not isinstance(draft, dict):
                 continue
@@ -626,26 +706,52 @@ class ProductStore:
         }
         return normalized
 
-    def product_index_status(self, product: dict[str, Any], platform: str = "mercadolibre") -> dict[str, Any]:
+    def product_index_status(
+        self, product: dict[str, Any], platform: str = "mercadolibre"
+    ) -> dict[str, Any]:
         product = self.sync_product_workflow_statuses(product)
-        source = product.get("source") if isinstance(product.get("source"), dict) else {}
-        draft = (product.get("drafts") or {}).get(platform) if isinstance(product.get("drafts"), dict) else {}
+        source = (
+            product.get("source") if isinstance(product.get("source"), dict) else {}
+        )
+        draft = (
+            (product.get("drafts") or {}).get(platform)
+            if isinstance(product.get("drafts"), dict)
+            else {}
+        )
         draft = draft if isinstance(draft, dict) else {}
         pool = _source_pool_items(product)
         workflow_status = self.draft_workflow_status(product, platform)
-        has_copy = workflow_status in {"copy_ready", "images_ready", "ready_to_publish", "published"}
-        has_generated_image = any(str(item.get("origin") or "") in {"ai_generated", "chatgpt_import"} for item in pool)
+        has_copy = workflow_status in {
+            "copy_ready",
+            "images_ready",
+            "ready_to_publish",
+            "published",
+        }
+        has_generated_image = any(
+            str(item.get("origin") or "") in {"ai_generated", "chatgpt_import"}
+            for item in pool
+        )
         queue_platforms = self.publish_queue_platforms(product, [platform])
         return {
-            "collect_status": source.get("collect_status") or ("success" if source.get("title") else "pending"),
+            "collect_status": source.get("collect_status")
+            or ("success" if source.get("title") else "pending"),
             "workflow_status": workflow_status,
             "draft_statuses": product.get("workflow_statuses") or {},
             "ai_copy_status": "done" if has_copy else "pending",
-            "image_status": "done" if workflow_status in {"images_ready", "ready_to_publish", "published"} or pool else "pending",
+            "image_status": "done"
+            if workflow_status in {"images_ready", "ready_to_publish", "published"}
+            or pool
+            else "pending",
             "category_status": "done" if draft.get("category_id") else "pending",
-            "attributes_status": "done" if isinstance(draft.get("attributes"), dict) and draft.get("attributes") else "pending",
+            "attributes_status": "done"
+            if isinstance(draft.get("attributes"), dict) and draft.get("attributes")
+            else "pending",
             "pricing_status": "done" if _draft_pricing_ready(draft) else "pending",
-            "precheck_status": ((product.get("publish_preview") or {}).get(platform) or {}).get("ok", "pending") if isinstance(product.get("publish_preview"), dict) else "pending",
+            "precheck_status": (
+                (product.get("publish_preview") or {}).get(platform) or {}
+            ).get("ok", "pending")
+            if isinstance(product.get("publish_preview"), dict)
+            else "pending",
             "publish_status": draft.get("publish_status") or "not_ready",
             "publish_queue_ready": bool(queue_platforms),
             "publish_queue_platforms": queue_platforms,
@@ -662,6 +768,7 @@ class ProductStore:
                 return normalize_persisted_product_fields(loaded)
         return normalize_product_fields(default_product_model())
 
+    @product_mutation("product")
     def save_product(
         self,
         data: dict[str, Any],
@@ -677,7 +784,9 @@ class ProductStore:
             )
         reject_retired_product_category_fields(data)
         validate_product_root_fields(data)
-        product = self.sync_product_workflow_statuses(enrich_product_image_dimensions(normalize_product_fields(data)))
+        product = self.sync_product_workflow_statuses(
+            enrich_product_image_dimensions(normalize_product_fields(data))
+        )
         product["product_id"] = product_identity(product)
         product_id = self._db.upsert_product_model(product)
         return normalize_persisted_product_fields(
@@ -690,9 +799,7 @@ class ProductStore:
     ) -> tuple[str, dict[str, Any]]:
         """Atomically claim a UPC and persist the canonical product."""
         product = self.sync_product_workflow_statuses(
-            enrich_product_image_dimensions(
-                normalize_product_fields(data)
-            )
+            enrich_product_image_dimensions(normalize_product_fields(data))
         )
         upc, product_id = self._db.assign_upc_to_product_model(product)
         if not upc:
@@ -704,10 +811,16 @@ class ProductStore:
         identity = str(source_url or "").split("?")[0].rstrip("/")
         if identity:
             for item in self._db.list_product_records():
-                if str(item.get("source_url") or "").split("?")[0].rstrip("/") == identity:
-                    return normalize_persisted_product_fields(self._db.load_product_model(item["product_id"]))
+                if (
+                    str(item.get("source_url") or "").split("?")[0].rstrip("/")
+                    == identity
+                ):
+                    return normalize_persisted_product_fields(
+                        self._db.load_product_model(item["product_id"])
+                    )
         return default_product_model()
 
+    @product_mutation("product")
     def save_product_profile(self, data: dict[str, Any]) -> dict[str, Any]:
         product_data = dict(data or {})
         product_data.pop("drafts", None)
@@ -727,7 +840,10 @@ class ProductStore:
             )
             if "sku_items" in product_data:
                 incoming_ids = {row.get("id") for row in product_data["sku_items"]}
-                if any(row["id"] not in incoming_ids for row in existing.get("sku_items", [])):
+                if any(
+                    row["id"] not in incoming_ids
+                    for row in existing.get("sku_items", [])
+                ):
                     raise ValueError("已有 SKU 请使用停用，不能删除其身份与历史关联")
             product_data = {**existing, **product_data}
             if isinstance(patch_source.get("attributes"), dict):
@@ -745,20 +861,30 @@ class ProductStore:
                         del product_attributes[key]
                 product_data["attributes"] = product_attributes
             product_data["source"] = {**existing_source, **patch_source}
-        source = product_data.get("source") if isinstance(product_data.get("source"), dict) else None
+        source = (
+            product_data.get("source")
+            if isinstance(product_data.get("source"), dict)
+            else None
+        )
         if source is not None and "name" in product_data:
-            source["title"] = str(product_data.get("name") or source.get("title") or "").strip()
+            source["title"] = str(
+                product_data.get("name") or source.get("title") or ""
+            ).strip()
         return self.save_product(product_data)
 
     # -- index views -------------------------------------------------------------
 
-    def sanitize_products_index(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def sanitize_products_index(
+        self, items: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         sanitized: list[dict[str, Any]] = []
         for item in items:
             if not isinstance(item, dict):
                 continue
             record = dict(item)
-            record["main_image"] = _display_image_ref(str(record.get("main_image") or ""))
+            record["main_image"] = _display_image_ref(
+                str(record.get("main_image") or "")
+            )
             sanitized.append(record)
         return sanitized
 
@@ -777,9 +903,17 @@ class ProductStore:
                 yield sanitized[0]
 
     def delete_products_from_index(self, product_ids: list[Any]) -> dict[str, Any]:
-        ids = _normalize_delete_ids(product_ids if isinstance(product_ids, list) else [product_ids])
+        ids = _normalize_delete_ids(
+            product_ids if isinstance(product_ids, list) else [product_ids]
+        )
         if not ids:
-            return {"ok": False, "error": "请先选择要删除的商品。", "deleted": 0, "deletedIds": [], "productsIndex": self.load_products_index()}
+            return {
+                "ok": False,
+                "error": "请先选择要删除的商品。",
+                "deleted": 0,
+                "deletedIds": [],
+                "productsIndex": self.load_products_index(),
+            }
 
         deleted_ids: list[str] = []
         missing_ids: list[str] = []
@@ -804,6 +938,7 @@ class ProductStore:
             "message": f"已删除 {len(deleted_ids)} 个商品。",
         }
 
+    @product_mutation("draft")
     def delete_draft_from_index(self, draft_id: Any) -> dict[str, Any]:
         normalized_ids = _normalize_delete_ids(draft_id)
         if not normalized_ids:
@@ -832,9 +967,15 @@ class ProductStore:
             else:
                 missing_ids.append(normalized_id)
 
-        product = self.load_product_from_index(affected_product_ids[0], "") if len(affected_product_ids) == 1 else self.load_product()
+        product = (
+            self.load_product_from_index(affected_product_ids[0], "")
+            if len(affected_product_ids) == 1
+            else self.load_product()
+        )
         deleted_count = len(deleted_ids)
-        message = "草稿已删除。" if deleted_count == 1 else f"已删除 {deleted_count} 个草稿。"
+        message = (
+            "草稿已删除。" if deleted_count == 1 else f"已删除 {deleted_count} 个草稿。"
+        )
         if not deleted_count:
             message = "草稿不存在或已被删除。"
 
@@ -854,7 +995,9 @@ class ProductStore:
             "error": "" if deleted_count else "草稿不存在或已被删除。",
         }
 
-    def load_product_from_index(self, product_id: str = "", file_path: str = "") -> dict[str, Any]:
+    def load_product_from_index(
+        self, product_id: str = "", file_path: str = ""
+    ) -> dict[str, Any]:
         product_id = str(product_id or "").strip()
         file_path = str(file_path or "").strip()
         sqlite_product_id = product_id
@@ -866,14 +1009,20 @@ class ProductStore:
                 return normalize_persisted_product_fields(loaded)
         return self.load_product()
 
-    def load_required_product_from_body(self, body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
+    def load_required_product_from_body(
+        self, body: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
         product_id = product_id_from_body(body)
         if not product_id:
             return {}, {"ok": False, "error": "product_id 不能为空"}, 400
         product = self.load_product_from_index(product_id, "")
         loaded_id = str(product.get("product_id") or "").strip()
         if loaded_id != product_id:
-            return {}, {"ok": False, "error": "商品不存在", "product_id": product_id}, 404
+            return (
+                {},
+                {"ok": False, "error": "商品不存在", "product_id": product_id},
+                404,
+            )
         return product, None, 200
 
     def load_draft_from_index(self, draft_id: str) -> dict[str, Any]:
@@ -881,18 +1030,11 @@ class ProductStore:
         if draft_id:
             loaded = self._db.load_product_for_draft(draft_id)
             if loaded:
-                current_draft_id = str(
-                    loaded.pop("current_draft_id", "")
-                    or draft_id
-                )
-                current_draft_platform = str(
-                    loaded.pop("current_draft_platform", "")
-                )
+                current_draft_id = str(loaded.pop("current_draft_id", "") or draft_id)
+                current_draft_platform = str(loaded.pop("current_draft_platform", ""))
                 product = normalize_persisted_product_fields(loaded)
                 product["current_draft_id"] = current_draft_id
-                product["current_draft_platform"] = (
-                    current_draft_platform
-                )
+                product["current_draft_platform"] = current_draft_platform
                 return product
         return self.load_product()
 
@@ -900,11 +1042,23 @@ class ProductStore:
 
     def draft_product_context(self, product: dict[str, Any]) -> dict[str, Any]:
         normalized = normalize_product_fields(product or {})
-        source = normalized.get("source") if isinstance(normalized.get("source"), dict) else {}
-        dimensions = source.get("dimensions") if isinstance(source.get("dimensions"), dict) else {}
+        source = (
+            normalized.get("source")
+            if isinstance(normalized.get("source"), dict)
+            else {}
+        )
+        dimensions = (
+            source.get("dimensions")
+            if isinstance(source.get("dimensions"), dict)
+            else {}
+        )
         return {
             "product_id": str(normalized.get("product_id") or ""),
-            "source_product_id": str(normalized.get("source_product_id") or normalized.get("product_id") or ""),
+            "source_product_id": str(
+                normalized.get("source_product_id")
+                or normalized.get("product_id")
+                or ""
+            ),
             "title": str(normalized.get("name") or source.get("title") or ""),
             "source_title": str(source.get("title") or normalized.get("name") or ""),
             "source_platform": str(source.get("source_platform") or ""),
@@ -913,39 +1067,65 @@ class ProductStore:
             "model": str(normalized.get("model") or source.get("model") or ""),
             "sku": str(normalized.get("sku") or ""),
             "stock": str(normalized.get("stock") or ""),
-            "cost": str(normalized.get("cost") or normalized.get("source_price_cny_for_cost") or source.get("price") or ""),
+            "cost": str(
+                normalized.get("cost")
+                or normalized.get("source_price_cny_for_cost")
+                or source.get("price")
+                or ""
+            ),
             "source_price": str(source.get("price") or ""),
             "currency": str(source.get("currency") or ""),
-            "weight_kg": str(source.get("weight_kg") or normalized.get("weight_kg") or ""),
+            "weight_kg": str(
+                source.get("weight_kg") or normalized.get("weight_kg") or ""
+            ),
             "dimensions": {
-                "length_cm": str(dimensions.get("length_cm") or dimensions.get("lengthCm") or ""),
-                "width_cm": str(dimensions.get("width_cm") or dimensions.get("widthCm") or ""),
-                "height_cm": str(dimensions.get("height_cm") or dimensions.get("heightCm") or ""),
+                "length_cm": str(
+                    dimensions.get("length_cm") or dimensions.get("lengthCm") or ""
+                ),
+                "width_cm": str(
+                    dimensions.get("width_cm") or dimensions.get("widthCm") or ""
+                ),
+                "height_cm": str(
+                    dimensions.get("height_cm") or dimensions.get("heightCm") or ""
+                ),
             },
             "sku_items": deepcopy(normalized.get("sku_items", [])),
             "image_pool": current_image_pool(normalized),
             "raw": normalized,
         }
 
-    def load_draft_detail_from_index(self, draft_id: str) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
+    def load_draft_detail_from_index(
+        self, draft_id: str
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
         draft_id = str(draft_id or "").strip()
         if not draft_id:
             return {}, {"ok": False, "error": "draft_id 不能为空"}, 400
         draft = self._db.load_draft_model(draft_id)
         if not draft:
             return {}, {"ok": False, "error": "草稿不存在", "draft_id": draft_id}, 404
-        product = self._db.load_product_model(str(draft.get("source_product_id") or draft.get("product_id") or ""))
+        product = self._db.load_product_model(
+            str(draft.get("source_product_id") or draft.get("product_id") or "")
+        )
         if not product:
-            return {}, {"ok": False, "error": "草稿关联商品不存在", "draft_id": draft_id}, 404
+            return (
+                {},
+                {"ok": False, "error": "草稿关联商品不存在", "draft_id": draft_id},
+                404,
+            )
         product = normalize_persisted_product_fields(product)
-        return {
-            "ok": True,
-            "draft": draft,
-            "productContext": self.draft_product_context(product),
-            "productsIndex": self.load_products_index(),
-            "draftsIndex": self.load_drafts_index(),
-        }, None, 200
+        return (
+            {
+                "ok": True,
+                "draft": draft,
+                "productContext": self.draft_product_context(product),
+                "productsIndex": self.load_products_index(),
+                "draftsIndex": self.load_drafts_index(),
+            },
+            None,
+            200,
+        )
 
+    @product_mutation("draft")
     def duplicate_draft_from_index(
         self,
         draft_id: str,
@@ -957,30 +1137,40 @@ class ProductStore:
             return {}, {"ok": False, "error": "draft_id 不能为空"}, 400
         existing = self._db.load_draft_model(draft_id)
         if not existing:
-            return {}, {
-                "ok": False,
-                "error": "草稿不存在",
-                "draft_id": draft_id,
-            }, 404
+            return (
+                {},
+                {
+                    "ok": False,
+                    "error": "草稿不存在",
+                    "draft_id": draft_id,
+                },
+                404,
+            )
 
         product_id = str(existing.get("product_id") or "").strip()
-        source_product_id = str(
-            existing.get("source_product_id") or product_id
-        ).strip()
+        source_product_id = str(existing.get("source_product_id") or product_id).strip()
         platform = str(existing.get("platform") or "").strip().lower()
         if not product_id or platform not in PLATFORMS:
-            return {}, {
-                "ok": False,
-                "error": "草稿关联商品或平台无效",
-                "draft_id": draft_id,
-            }, 400
+            return (
+                {},
+                {
+                    "ok": False,
+                    "error": "草稿关联商品或平台无效",
+                    "draft_id": draft_id,
+                },
+                400,
+            )
         product = self._db.load_product_model(product_id)
         if not product:
-            return {}, {
-                "ok": False,
-                "error": "草稿关联商品不存在",
-                "draft_id": draft_id,
-            }, 404
+            return (
+                {},
+                {
+                    "ok": False,
+                    "error": "草稿关联商品不存在",
+                    "draft_id": draft_id,
+                },
+                404,
+            )
 
         duplicated = deepcopy(existing)
         # 本地草稿身份、平台卖家身份与操作幂等键均不能由原草稿继承。
@@ -997,9 +1187,7 @@ class ProductStore:
             }
         )
         for field in _DRAFT_SERVER_OWNED_PUBLISH_FIELDS:
-            duplicated[field] = deepcopy(
-                _SERVER_OWNED_PUBLISH_FIELD_DEFAULTS[field]
-            )
+            duplicated[field] = deepcopy(_SERVER_OWNED_PUBLISH_FIELD_DEFAULTS[field])
 
         targets: list[dict[str, Any]] = []
         for raw_target in (
@@ -1011,9 +1199,7 @@ class ProductStore:
                 continue
             target = deepcopy(raw_target)
             for field in _TARGET_SERVER_OWNED_PUBLISH_FIELDS:
-                target[field] = deepcopy(
-                    _SERVER_OWNED_PUBLISH_FIELD_DEFAULTS[field]
-                )
+                target[field] = deepcopy(_SERVER_OWNED_PUBLISH_FIELD_DEFAULTS[field])
             target["validation_errors"] = _pending_attribute_review_errors(
                 raw_target.get("validation_errors")
             )
@@ -1032,7 +1218,6 @@ class ProductStore:
             sku["publications"] = {}
             sku["pricing"] = {}
             sku["sku"] = ""
-
 
         # 同一商品可能保留原草稿的发布预览；副本状态只能按自身内容重新计算。
         product_for_status = deepcopy(product)
@@ -1058,17 +1243,26 @@ class ProductStore:
         product = normalize_persisted_product_fields(
             self._db.load_product_model(source_product_id or product_id)
         )
-        return {
-            "ok": True,
-            "draft": draft,
-            "productContext": self.draft_product_context(product),
-            "productsIndex": self.load_products_index(),
-            "draftsIndex": self.load_drafts_index(),
-            "message": "草稿已复制。",
-        }, None, 200
+        return (
+            {
+                "ok": True,
+                "draft": draft,
+                "productContext": self.draft_product_context(product),
+                "productsIndex": self.load_products_index(),
+                "draftsIndex": self.load_drafts_index(),
+                "message": "草稿已复制。",
+            },
+            None,
+            200,
+        )
 
-    def save_draft_detail(self, draft_payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
-        draft_id = str(draft_payload.get("draft_id") or draft_payload.get("draftId") or "").strip()
+    @product_mutation("product")
+    def save_draft_detail(
+        self, draft_payload: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
+        draft_id = str(
+            draft_payload.get("draft_id") or draft_payload.get("draftId") or ""
+        ).strip()
         if not draft_id:
             return {}, {"ok": False, "error": "draft_id 不能为空"}, 400
         try:
@@ -1087,25 +1281,45 @@ class ProductStore:
         existing = self._db.load_draft_model(draft_id)
         if not existing:
             return {}, {"ok": False, "error": "草稿不存在", "draft_id": draft_id}, 404
+        if draft_payload.get("updated_at") and draft_payload[
+            "updated_at"
+        ] != existing.get("updated_at"):
+            return (
+                {},
+                {
+                    "ok": False,
+                    "error_code": "DRAFT_CHANGED",
+                    "error": "草稿已被其他操作更新，请重新读取后应用本次补丁。",
+                    "draft_id": draft_id,
+                },
+                409,
+            )
         product_id = str(existing.get("product_id") or "").strip()
         source_product_id = str(existing.get("source_product_id") or product_id).strip()
         existing_platform = str(existing.get("platform") or "").strip().lower()
-        raw_targets = draft_payload.get("target_sites") if isinstance(draft_payload.get("target_sites"), list) else draft_payload.get("targetSites")
-        incoming_validation_errors_provided = any(
-            key in draft_payload
-            for key in ("validation_errors", "validationErrors")
+        raw_targets = (
+            draft_payload.get("target_sites")
+            if isinstance(draft_payload.get("target_sites"), list)
+            else draft_payload.get("targetSites")
         )
-        incoming_target_validation_errors_provided: set[
-            tuple[str, str]
-        ] = set()
+        incoming_validation_errors_provided = any(
+            key in draft_payload for key in ("validation_errors", "validationErrors")
+        )
+        incoming_target_validation_errors_provided: set[tuple[str, str]] = set()
         targets: list[dict[str, Any]] = []
         for raw_target in raw_targets if isinstance(raw_targets, list) else []:
             target = raw_target if isinstance(raw_target, dict) else {}
             target_platform = str(target.get("platform") or "").strip().lower()
-            selected_site = marketplace_site(target_platform, str(target.get("site") or target.get("site_id") or ""))
+            selected_site = marketplace_site(
+                target_platform, str(target.get("site") or target.get("site_id") or "")
+            )
             if target_platform not in PLATFORMS or not selected_site.get("code"):
                 continue
-            if not any(item["platform"] == target_platform and item["site"] == selected_site["code"] for item in targets):
+            if not any(
+                item["platform"] == target_platform
+                and item["site"] == selected_site["code"]
+                for item in targets
+            ):
                 normalized_target = _normalized_target_payload(
                     target,
                     target_platform,
@@ -1113,22 +1327,39 @@ class ProductStore:
                 )
                 targets.append(normalized_target)
                 if any(
-                    key in target
-                    for key in ("validation_errors", "validationErrors")
+                    key in target for key in ("validation_errors", "validationErrors")
                 ):
                     incoming_target_validation_errors_provided.add(
                         _draft_target_identity(normalized_target)
                     )
         if not targets:
-            requested_platform = str(draft_payload.get("platform") or existing_platform).strip().lower()
-            platform = requested_platform if requested_platform in PLATFORMS else existing_platform
-            selected_site = marketplace_site(platform, str(draft_payload.get("site") or existing.get("site") or ""))
+            requested_platform = (
+                str(draft_payload.get("platform") or existing_platform).strip().lower()
+            )
+            platform = (
+                requested_platform
+                if requested_platform in PLATFORMS
+                else existing_platform
+            )
+            selected_site = marketplace_site(
+                platform, str(draft_payload.get("site") or existing.get("site") or "")
+            )
             if platform not in PLATFORMS or not selected_site.get("code"):
-                return {}, {"ok": False, "error": "草稿站点不支持", "draft_id": draft_id}, 400
+                return (
+                    {},
+                    {"ok": False, "error": "草稿站点不支持", "draft_id": draft_id},
+                    400,
+                )
             fallback_target = {}
-            existing_targets = existing.get("target_sites") if isinstance(existing.get("target_sites"), list) else []
+            existing_targets = (
+                existing.get("target_sites")
+                if isinstance(existing.get("target_sites"), list)
+                else []
+            )
             if existing_targets:
-                fallback_target = existing_targets[0] if isinstance(existing_targets[0], dict) else {}
+                fallback_target = (
+                    existing_targets[0] if isinstance(existing_targets[0], dict) else {}
+                )
             targets = [
                 _normalized_target_payload(
                     fallback_target,
@@ -1136,12 +1367,9 @@ class ProductStore:
                     selected_site,
                 )
             ]
-        publication = normalize_mercadolibre_publication(
-            existing.get("publication")
-        )
+        publication = normalize_mercadolibre_publication(existing.get("publication"))
         if (
-            str(targets[0].get("platform") or "").strip().lower()
-            == "mercadolibre"
+            str(targets[0].get("platform") or "").strip().lower() == "mercadolibre"
             and publication
         ):
             requested_operations = {
@@ -1159,8 +1387,7 @@ class ProductStore:
                     str(item.get("logistic_type") or "").strip().lower(),
                 )
                 for item in publication.get("markets", [])
-                if isinstance(item, dict)
-                and str(item.get("item_id") or "").strip()
+                if isinstance(item, dict) and str(item.get("item_id") or "").strip()
             }
             removed_operations = sorted(
                 published_operations.difference(requested_operations)
@@ -1170,15 +1397,19 @@ class ProductStore:
                     f"{site_id}:{logistic_type}"
                     for site_id, logistic_type in removed_operations
                 )
-                return {}, {
-                    "ok": False,
-                    "error": (
-                        "不能通过编辑 sites_to_sell 删除已创建的 Mercado 市场投影："
-                        f"{labels}；请使用明确的市场状态操作"
-                    ),
-                    "error_code": "MERCADOLIBRE_PUBLISHED_MARKET_REMOVAL_FORBIDDEN",
-                    "draft_id": draft_id,
-                }, 400
+                return (
+                    {},
+                    {
+                        "ok": False,
+                        "error": (
+                            "不能通过编辑 sites_to_sell 删除已创建的 Mercado 市场投影："
+                            f"{labels}；请使用明确的市场状态操作"
+                        ),
+                        "error_code": "MERCADOLIBRE_PUBLISHED_MARKET_REMOVAL_FORBIDDEN",
+                        "draft_id": draft_id,
+                    },
+                    400,
+                )
         changed_cbt_targets = _changed_mercadolibre_cbt_targets(
             existing,
             targets,
@@ -1208,7 +1439,10 @@ class ProductStore:
             if isinstance(existing.get("publication"), dict)
             else {}
         )
-        sku_publications = {row["sku_id"]: row.get("publications", {}) for row in existing.get("sku_items", [])}
+        sku_publications = {
+            row["sku_id"]: row.get("publications", {})
+            for row in existing.get("sku_items", [])
+        }
         for row in merged.get("sku_items", []):
             row["publications"] = deepcopy(sku_publications.get(row.get("sku_id"), {}))
         merged["images"] = normalize_draft_image_refs(merged.get("images"))
@@ -1298,8 +1532,7 @@ class ProductStore:
                         target.get("attributes"),
                     ),
                     incoming_provided=(
-                        target_identity
-                        in incoming_target_validation_errors_provided
+                        target_identity in incoming_target_validation_errors_provided
                     ),
                 ),
                 "category_precheck": {},
@@ -1329,7 +1562,9 @@ class ProductStore:
                     "status": "category_ready",
                     "last_publish_task": deepcopy(
                         normalized_existing.get("last_publish_task")
-                        if isinstance(normalized_existing.get("last_publish_task"), dict)
+                        if isinstance(
+                            normalized_existing.get("last_publish_task"), dict
+                        )
                         else {}
                     ),
                 }
@@ -1355,43 +1590,86 @@ class ProductStore:
                 else {}
             )
             changed_platforms = {
-                str(merged["target_sites"][index].get("platform") or "")
-                .strip()
-                .lower()
+                str(merged["target_sites"][index].get("platform") or "").strip().lower()
                 for index in changed_publish_targets
             } | removed_target_platforms
-            if any(platform_key in publish_preview for platform_key in changed_platforms):
+            if any(
+                platform_key in publish_preview for platform_key in changed_platforms
+            ):
                 for platform_key in changed_platforms:
                     publish_preview.pop(platform_key, None)
                 product["publish_preview"] = publish_preview
                 self._db.upsert_product_model(product)
                 draft = self._db.load_draft_model(saved_draft_id)
-                product = self._db.load_product_model(
-                    source_product_id or product_id
-                )
+                product = self._db.load_product_model(source_product_id or product_id)
         product = normalize_persisted_product_fields(product)
-        return {
-            "ok": True,
-            "draft": draft,
-            "productContext": self.draft_product_context(product),
-            "productsIndex": self.load_products_index(),
-            "draftsIndex": self.load_drafts_index(),
-            "message": "草稿已保存。",
-        }, None, 200
+        return (
+            {
+                "ok": True,
+                "draft": draft,
+                "productContext": self.draft_product_context(product),
+                "productsIndex": self.load_products_index(),
+                "draftsIndex": self.load_drafts_index(),
+                "message": "草稿已保存。",
+            },
+            None,
+            200,
+        )
 
-    def save_sku_publication(self, draft_id: str, sku_id: str, target_key: str, publication: dict[str, Any]) -> None:
+    @product_mutation("draft")
+    def save_draft_category_fields(
+        self, draft_id: str, platform: str, site: str,
+        before: dict[str, Any], updates: dict[str, Any],
+    ) -> dict[str, Any]:
+        """类目能力只提交目标字段差异，不保存整份商品及其兄弟草稿。"""
+        draft = self._db.load_draft_model(draft_id)
+        targets = draft.get("target_sites", [])
+        target = next((item for item in targets if item.get("platform") == platform and item.get("site") == site), None)
+        if target is None:
+            raise ValueError("目标已不存在，请重新读取草稿。")
+        allowed = {"category_id", "category_path", "description_category_id", "attributes",
+                   "validation_errors", "status", "category_precheck", "last_precheck",
+                   "last_precheck_target", "last_publish_task", "publish_status"}
+        for field in allowed:
+            if field not in updates or updates[field] == before.get(field):
+                continue
+            current = target.get(field)
+            if field in {"category_id", "attributes"} and current != before.get(field) and current != updates[field]:
+                raise ValueError("目标类目或属性已被其他操作修改，请重新读取后再填写。")
+            target[field] = deepcopy(updates[field])
+            if (draft.get("platform"), draft.get("site")) == (platform, site):
+                draft[field] = deepcopy(updates[field])
+        self._db.upsert_draft_model(draft["product_id"], draft["platform"], draft)
+        return self._db.load_draft_model(draft_id)
+
+
+    @product_mutation("draft")
+    def save_sku_publication(
+        self, draft_id: str, sku_id: str, target_key: str, publication: dict[str, Any]
+    ) -> None:
         """仅供平台发布适配器保存远端 SKU 身份与执行结果。"""
         draft = self._db.load_draft_model(draft_id)
-        targets = {f"{item['platform']}:{item['site']}".lower() for item in draft.get("target_sites", [])}
+        targets = {
+            f"{item['platform']}:{item['site']}".lower()
+            for item in draft.get("target_sites", [])
+        }
         if target_key not in targets:
             raise ValueError("SKU 发布目标不属于当前草稿")
-        self._db.update_sku_publication(draft_id, sku_id, target_key, deepcopy(publication))
+        self._db.update_sku_publication(
+            draft_id, sku_id, target_key, deepcopy(publication)
+        )
 
-    def sku_publication(self, draft_id: str, sku_id: str, target_key: str) -> dict[str, Any]:
+    def sku_publication(
+        self, draft_id: str, sku_id: str, target_key: str
+    ) -> dict[str, Any]:
         draft = self._db.load_draft_model(draft_id)
-        row = next((row for row in draft.get("sku_items", []) if row.get("sku_id") == sku_id), {})
+        row = next(
+            (row for row in draft.get("sku_items", []) if row.get("sku_id") == sku_id),
+            {},
+        )
         return deepcopy(row.get("publications", {}).get(target_key, {}))
 
+    @product_mutation("draft")
     def save_draft_publish_state(
         self,
         draft_id: str,
@@ -1404,27 +1682,32 @@ class ProductStore:
         draft_id = str(draft_id or "").strip()
         if not draft_id:
             return {}, {"ok": False, "error": "draft_id 不能为空"}, 400
-        allowed_fields = set(_DRAFT_SERVER_OWNED_PUBLISH_FIELDS) | {
-            "validation_errors"
-        }
+        allowed_fields = set(_DRAFT_SERVER_OWNED_PUBLISH_FIELDS) | {"validation_errors"}
         unexpected = sorted(set(updates).difference(allowed_fields))
         if unexpected:
-            return {}, {
-                "ok": False,
-                "error": "服务端发布状态更新包含非状态字段：" + "、".join(unexpected),
-                "draft_id": draft_id,
-            }, 400
+            return (
+                {},
+                {
+                    "ok": False,
+                    "error": "服务端发布状态更新包含非状态字段："
+                    + "、".join(unexpected),
+                    "draft_id": draft_id,
+                },
+                400,
+            )
         existing = self._db.load_draft_model(draft_id)
         if not existing:
-            return {}, {
-                "ok": False,
-                "error": "草稿不存在",
-                "draft_id": draft_id,
-            }, 404
+            return (
+                {},
+                {
+                    "ok": False,
+                    "error": "草稿不存在",
+                    "draft_id": draft_id,
+                },
+                404,
+            )
         product_id = str(existing.get("product_id") or "").strip()
-        source_product_id = str(
-            existing.get("source_product_id") or product_id
-        ).strip()
+        source_product_id = str(existing.get("source_product_id") or product_id).strip()
         draft_platform = str(existing.get("platform") or "").strip().lower()
         canonical = normalize_platform_draft(
             existing,
@@ -1444,13 +1727,17 @@ class ProductStore:
             None,
         )
         if selected_index is None:
-            return {}, {
-                "ok": False,
-                "error": "草稿目标站点不存在",
-                "draft_id": draft_id,
-                "platform": selected_identity[0],
-                "site": selected_identity[1],
-            }, 404
+            return (
+                {},
+                {
+                    "ok": False,
+                    "error": "草稿目标站点不存在",
+                    "draft_id": draft_id,
+                    "platform": selected_identity[0],
+                    "site": selected_identity[1],
+                },
+                404,
+            )
 
         target = dict(canonical["target_sites"][selected_index])
         for field in _TARGET_SERVER_OWNED_PUBLISH_FIELDS:
@@ -1470,9 +1757,7 @@ class ProductStore:
                 if field in updates:
                     canonical[field] = deepcopy(updates[field])
             if "validation_errors" in updates:
-                canonical["validation_errors"] = deepcopy(
-                    updates["validation_errors"]
-                )
+                canonical["validation_errors"] = deepcopy(updates["validation_errors"])
 
         canonical = normalize_platform_draft(
             canonical,
@@ -1488,14 +1773,18 @@ class ProductStore:
         product = normalize_persisted_product_fields(
             self._db.load_product_model(source_product_id or product_id)
         )
-        return {
-            "ok": True,
-            "draft": draft,
-            "productContext": self.draft_product_context(product),
-            "productsIndex": self.load_products_index(),
-            "draftsIndex": self.load_drafts_index(),
-            "message": "草稿发布状态已保存。",
-        }, None, 200
+        return (
+            {
+                "ok": True,
+                "draft": draft,
+                "productContext": self.draft_product_context(product),
+                "productsIndex": self.load_products_index(),
+                "draftsIndex": self.load_drafts_index(),
+                "message": "草稿发布状态已保存。",
+            },
+            None,
+            200,
+        )
 
     def apply_image_assets_to_draft(
         self,
@@ -1512,32 +1801,53 @@ class ProductStore:
         product_id = str(existing.get("product_id") or "").strip()
         platform = str(existing.get("platform") or "").strip().lower()
         if not product_id or platform not in PLATFORMS:
-            return {}, {"ok": False, "error": "草稿关联商品或平台无效", "draft_id": draft_id}, 400
-        product = self._db.load_product_model(str(existing.get("source_product_id") or product_id))
+            return (
+                {},
+                {"ok": False, "error": "草稿关联商品或平台无效", "draft_id": draft_id},
+                400,
+            )
+        product = self._db.load_product_model(
+            str(existing.get("source_product_id") or product_id)
+        )
         product = normalize_persisted_product_fields(product)
-        next_images = apply_created_image_refs_to_draft(existing.get("images"), created_items, strategy)
+        next_images = apply_created_image_refs_to_draft(
+            existing.get("images"), created_items, strategy
+        )
         merged = {**existing, "images": next_images}
         if strategy == "replace_selected":
             merged["sku_items"] = deepcopy(existing.get("sku_items", []))
             replace_draft_sku_images(product, merged, created_items)
         product_for_status = dict(product or {})
-        drafts = product_for_status.get("drafts") if isinstance(product_for_status.get("drafts"), dict) else {}
+        drafts = (
+            product_for_status.get("drafts")
+            if isinstance(product_for_status.get("drafts"), dict)
+            else {}
+        )
         product_for_status["drafts"] = {**drafts, platform: merged}
         merged["status"] = self.draft_workflow_status(product_for_status, platform)
         saved_draft_id = self._db.upsert_draft_model(product_id, platform, merged)
         draft = self._db.load_draft_model(saved_draft_id)
-        product = self._db.load_product_model(str(draft.get("source_product_id") or product_id))
+        product = self._db.load_product_model(
+            str(draft.get("source_product_id") or product_id)
+        )
         product = normalize_persisted_product_fields(product)
-        return {
-            "ok": True,
-            "draft": draft,
-            "productContext": self.draft_product_context(product),
-            "productsIndex": self.load_products_index(),
-            "draftsIndex": self.load_drafts_index(),
-            "message": "草稿图片已更新。",
-        }, None, 200
+        return (
+            {
+                "ok": True,
+                "draft": draft,
+                "productContext": self.draft_product_context(product),
+                "productsIndex": self.load_products_index(),
+                "draftsIndex": self.load_drafts_index(),
+                "message": "草稿图片已更新。",
+            },
+            None,
+            200,
+        )
 
-    def save_draft_copy_result(self, product: dict[str, Any], target_market: str, copy: dict[str, Any]) -> dict[str, Any]:
+    @product_mutation("product")
+    def save_draft_copy_result(
+        self, product: dict[str, Any], target_market: str, copy: dict[str, Any]
+    ) -> dict[str, Any]:
         product = normalize_product_fields(product or {})
         product_id = str(product.get("product_id") or "").strip()
         target_key = str(target_market or "").strip().lower() or "mercadolibre"
@@ -1545,8 +1855,15 @@ class ProductStore:
             raise RuntimeError("product_id 不能为空")
         if target_key not in PLATFORMS:
             raise RuntimeError("不支持的平台")
-        drafts = product.get("drafts") if isinstance(product.get("drafts"), dict) else {}
-        draft = dict(drafts.get(target_key) if isinstance(drafts.get(target_key), dict) else {})
+        # 模型生成期间其他字段可能已更新；只把本次文案补丁合入最新草稿。
+        draft_id = str(product.get("current_draft_id") or "")
+        latest = self.load_product_from_index(product_id, "")
+        drafts = latest.get("drafts") if isinstance(latest.get("drafts"), dict) else {}
+        draft = (
+            self._db.load_draft_model(draft_id)
+            if draft_id
+            else dict(drafts.get(target_key) or {})
+        )
         draft.update(
             {
                 "title": copy.get("title", ""),

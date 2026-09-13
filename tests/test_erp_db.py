@@ -26,7 +26,9 @@ def _database_files_snapshot(db_path: Path) -> dict[str, bytes | None]:
     return snapshot
 
 
-def sample_product(title: str = "Imported title", source_url: str = "https://example.com/item") -> dict:
+def sample_product(
+    title: str = "Imported title", source_url: str = "https://example.com/item"
+) -> dict:
     return {
         "product_id": "",
         "name": title,
@@ -68,16 +70,25 @@ def sample_product(title: str = "Imported title", source_url: str = "https://exa
                 "description": "Global description",
                 "category_id": "CBT123",
                 "attributes": {"BRAND": "BrandX"},
-                "target_sites": [{
-                    "platform": "mercadolibre",
-                    "site": "CBT",
-                    "language": "en-US",
-                    "listing_currency": "USD",
-                    "sites_to_sell": [
-                        {"site_id": "MLM", "logistic_type": "remote"}
-                    ],
-                }],
-                "pricing": {"targets": {"mercadolibre:cbt": {"listing_currency": "USD", "applied_price": {"amount": "19.99", "currency": "USD"}}}},
+                "target_sites": [
+                    {
+                        "platform": "mercadolibre",
+                        "site": "CBT",
+                        "language": "en-US",
+                        "listing_currency": "USD",
+                        "sites_to_sell": [
+                            {"site_id": "MLM", "logistic_type": "remote"}
+                        ],
+                    }
+                ],
+                "pricing": {
+                    "targets": {
+                        "mercadolibre:cbt": {
+                            "listing_currency": "USD",
+                            "applied_price": {"amount": "19.99", "currency": "USD"},
+                        }
+                    }
+                },
                 "status": "copy_ready",
             }
         },
@@ -220,14 +231,12 @@ class ErpDbTests(unittest.TestCase):
     ) -> str:
         conn = sqlite3.connect(db_path)
         try:
-            conn.execute(
-                "ALTER TABLE platform_drafts RENAME TO drafts_v5_seed"
-            )
+            conn.execute("ALTER TABLE platform_drafts RENAME TO drafts_v5_seed")
             self._create_v4_draft_table(conn, "platform_drafts")
             draft_id = str(
-                conn.execute(
-                    "SELECT draft_id FROM drafts_v5_seed LIMIT 1"
-                ).fetchone()[0]
+                conn.execute("SELECT draft_id FROM drafts_v5_seed LIMIT 1").fetchone()[
+                    0
+                ]
             )
             self._insert_v4_draft(
                 conn,
@@ -245,9 +254,7 @@ class ErpDbTests(unittest.TestCase):
                     (product_id,),
                 ).fetchone()[0]
             )
-            stored_product["drafts"] = {
-                "mercadolibre": {"title": "重复草稿"}
-            }
+            stored_product["drafts"] = {"mercadolibre": {"title": "重复草稿"}}
             stored_product["publish_logs"] = [{"status": "legacy"}]
             conn.execute(
                 """
@@ -345,12 +352,8 @@ class ErpDbTests(unittest.TestCase):
                     }
                 ],
             )
-            self.assertTrue(
-                database.delete_pydantic_message_history("conversation-1")
-            )
-            self.assertIsNone(
-                database.get_pydantic_message_history("conversation-1")
-            )
+            self.assertTrue(database.delete_pydantic_message_history("conversation-1"))
+            self.assertIsNone(database.get_pydantic_message_history("conversation-1"))
 
     def test_current_schema_without_required_index_is_rejected(
         self,
@@ -359,7 +362,7 @@ class ErpDbTests(unittest.TestCase):
             "idx_products_updated_at",
             "idx_publish_jobs_idempotency_key",
             "idx_pydantic_message_histories_updated",
-            "idx_deferred_task_links_active_conversation",
+            "idx_ai_chat_inbox_pending",
         ):
             with self.subTest(index_name=index_name):
                 with tempfile.TemporaryDirectory() as tmp:
@@ -388,9 +391,7 @@ class ErpDbTests(unittest.TestCase):
                     try:
                         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                         conn.execute("PRAGMA journal_mode = DELETE")
-                        conn.execute(
-                            f"PRAGMA user_version = {unsupported_version}"
-                        )
+                        conn.execute(f"PRAGMA user_version = {unsupported_version}")
                         conn.commit()
                     finally:
                         conn.close()
@@ -477,15 +478,9 @@ class ErpDbTests(unittest.TestCase):
             db_path = app_dir / erp_db.DEFAULT_DB_NAME
             conn = sqlite3.connect(db_path)
             try:
-                conn.execute(
-                    "CREATE TABLE future_sentinel (value TEXT NOT NULL)"
-                )
-                conn.execute(
-                    "INSERT INTO future_sentinel VALUES ('preserve-me')"
-                )
-                conn.execute(
-                    f"PRAGMA user_version = {erp_db.SCHEMA_VERSION + 1}"
-                )
+                conn.execute("CREATE TABLE future_sentinel (value TEXT NOT NULL)")
+                conn.execute("INSERT INTO future_sentinel VALUES ('preserve-me')")
+                conn.execute(f"PRAGMA user_version = {erp_db.SCHEMA_VERSION + 1}")
                 conn.execute("PRAGMA journal_mode = DELETE")
                 conn.commit()
             finally:
@@ -508,15 +503,9 @@ class ErpDbTests(unittest.TestCase):
                 uri=True,
             )
             try:
-                version = conn.execute(
-                    "PRAGMA user_version"
-                ).fetchone()[0]
-                journal_mode = conn.execute(
-                    "PRAGMA journal_mode"
-                ).fetchone()[0]
-                value = conn.execute(
-                    "SELECT value FROM future_sentinel"
-                ).fetchone()[0]
+                version = conn.execute("PRAGMA user_version").fetchone()[0]
+                journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+                value = conn.execute("SELECT value FROM future_sentinel").fetchone()[0]
             finally:
                 conn.close()
             self.assertEqual(after, before)
@@ -556,10 +545,14 @@ class ErpDbTests(unittest.TestCase):
             try:
                 tables = {
                     row[0]
-                    for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
                 }
                 version = conn.execute("PRAGMA user_version").fetchone()[0]
-                columns = {row[1] for row in conn.execute("PRAGMA table_info(products)")}
+                columns = {
+                    row[1] for row in conn.execute("PRAGMA table_info(products)")
+                }
                 count = conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
             finally:
                 conn.close()
@@ -593,9 +586,7 @@ class ErpDbTests(unittest.TestCase):
                 uri=True,
             )
             try:
-                version = conn.execute(
-                    "PRAGMA user_version"
-                ).fetchone()[0]
+                version = conn.execute("PRAGMA user_version").fetchone()[0]
                 stored_draft = conn.execute(
                     """
                     SELECT title, category_id, attributes_json, price_json
@@ -650,9 +641,7 @@ class ErpDbTests(unittest.TestCase):
                 uri=True,
             )
             try:
-                journal_mode = conn.execute(
-                    "PRAGMA journal_mode"
-                ).fetchone()[0]
+                journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
             finally:
                 conn.close()
             self.assertEqual(journal_mode, "delete")
@@ -688,9 +677,7 @@ class ErpDbTests(unittest.TestCase):
                 uri=True,
             )
             try:
-                version = conn.execute(
-                    "PRAGMA user_version"
-                ).fetchone()[0]
+                version = conn.execute("PRAGMA user_version").fetchone()[0]
                 product_count = conn.execute(
                     "SELECT COUNT(*) FROM products WHERE product_id = ?",
                     (product_id,),
@@ -768,14 +755,20 @@ class ErpDbTests(unittest.TestCase):
             self.assertEqual(records[0]["product_id"], product_id)
             conn = sqlite3.connect(app_dir / erp_db.DEFAULT_DB_NAME)
             try:
-                draft_count = conn.execute("SELECT COUNT(*) FROM platform_drafts").fetchone()[0]
-                media_count = conn.execute("SELECT COUNT(*) FROM media_assets").fetchone()[0]
+                draft_count = conn.execute(
+                    "SELECT COUNT(*) FROM platform_drafts"
+                ).fetchone()[0]
+                media_count = conn.execute(
+                    "SELECT COUNT(*) FROM media_assets"
+                ).fetchone()[0]
             finally:
                 conn.close()
             self.assertEqual(draft_count, 1)
             self.assertEqual(media_count, 1)
 
-    def test_iter_draft_records_reads_beyond_bounded_index_and_filters_afterward(self) -> None:
+    def test_iter_draft_records_reads_beyond_bounded_index_and_filters_afterward(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = self._db(Path(tmp))
             start = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -822,9 +815,7 @@ class ErpDbTests(unittest.TestCase):
                 conn.commit()
 
             all_records = list(db.iter_draft_records(scope="all", batch_size=73))
-            active_records = list(
-                db.iter_draft_records(scope="active", batch_size=17)
-            )
+            active_records = list(db.iter_draft_records(scope="active", batch_size=17))
 
             self.assertEqual(len(all_records), 520)
             self.assertEqual(all_records[0]["draft_id"], "draft-519")
@@ -844,7 +835,9 @@ class ErpDbTests(unittest.TestCase):
             db = self._db(Path(tmp))
             product_id = db.upsert_product_model(sample_product())
 
-            draft_id = db.upsert_draft_model(product_id, "ozon", {"title": "Ozon", "status": "claimed"})
+            draft_id = db.upsert_draft_model(
+                product_id, "ozon", {"title": "Ozon", "status": "claimed"}
+            )
 
             self.assertTrue(draft_id.startswith("d"))
             self.assertEqual(len(draft_id), 13)
@@ -925,12 +918,18 @@ class ErpDbTests(unittest.TestCase):
                 product_id,
                 "mercadolibre",
                 {
-                    "pricing": {"targets": {"mercadolibre:cbt": {
-                        "listing_currency": "USD",
-                        "applied_price": {"amount": "29.90", "currency": "USD"},
-                        "calculation_basis": {"listing_currency": "USD"},
-                        "calculation_fingerprint": pricing_calculation_fingerprint({"listing_currency": "USD"}),
-                    }}},
+                    "pricing": {
+                        "targets": {
+                            "mercadolibre:cbt": {
+                                "listing_currency": "USD",
+                                "applied_price": {"amount": "29.90", "currency": "USD"},
+                                "calculation_basis": {"listing_currency": "USD"},
+                                "calculation_fingerprint": pricing_calculation_fingerprint(
+                                    {"listing_currency": "USD"}
+                                ),
+                            }
+                        }
+                    },
                     "publish_status": "ready",
                     "target_sites": [
                         {
@@ -946,7 +945,10 @@ class ErpDbTests(unittest.TestCase):
             )
 
             loaded = db.load_draft_model(draft_id)
-            self.assertEqual(loaded["pricing"]["targets"]["mercadolibre:cbt"]["applied_price"], {"amount": "29.90", "currency": "USD"})
+            self.assertEqual(
+                loaded["pricing"]["targets"]["mercadolibre:cbt"]["applied_price"],
+                {"amount": "29.90", "currency": "USD"},
+            )
             self.assertEqual(loaded["publish_status"], "ready")
             target = loaded["target_sites"][0]
             self.assertEqual(target["category_id"], "CBT-1")
@@ -978,14 +980,20 @@ class ErpDbTests(unittest.TestCase):
             self.assertEqual(db.list_product_records(), [])
             conn = sqlite3.connect(app_dir / erp_db.DEFAULT_DB_NAME)
             try:
-                draft_count = conn.execute("SELECT COUNT(*) FROM platform_drafts").fetchone()[0]
-                media_count = conn.execute("SELECT COUNT(*) FROM media_assets").fetchone()[0]
+                draft_count = conn.execute(
+                    "SELECT COUNT(*) FROM platform_drafts"
+                ).fetchone()[0]
+                media_count = conn.execute(
+                    "SELECT COUNT(*) FROM media_assets"
+                ).fetchone()[0]
             finally:
                 conn.close()
             self.assertEqual(draft_count, 0)
             self.assertEqual(media_count, 0)
 
-    def test_delete_draft_model_removes_single_draft_without_product_or_media(self) -> None:
+    def test_delete_draft_model_removes_single_draft_without_product_or_media(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             app_dir = Path(tmp)
             db = self._db(app_dir)
@@ -1001,7 +1009,9 @@ class ErpDbTests(unittest.TestCase):
             self.assertNotIn("mercadolibre", loaded.get("drafts", {}))
             conn = sqlite3.connect(app_dir / erp_db.DEFAULT_DB_NAME)
             try:
-                media_count = conn.execute("SELECT COUNT(*) FROM media_assets").fetchone()[0]
+                media_count = conn.execute(
+                    "SELECT COUNT(*) FROM media_assets"
+                ).fetchone()[0]
             finally:
                 conn.close()
             self.assertEqual(media_count, 1)
@@ -1012,13 +1022,19 @@ class ErpDbTests(unittest.TestCase):
 
             db.update_store_auth(
                 "mercadolibre",
-                credentials={"access_token": "tok-1", "refresh_token": "ref-1", "app_id": "app-1"},
+                credentials={
+                    "access_token": "tok-1",
+                    "refresh_token": "ref-1",
+                    "app_id": "app-1",
+                },
                 auth_status="测试成功",
                 auth_detail={"shop_name": "Demo Shop", "auth_error_code": ""},
                 checked_at="2026-07-26T00:00:00Z",
             )
             # 空值不得清掉已存秘密（merge 模式）。
-            db.update_store_auth("mercadolibre", credentials={"access_token": "", "app_id": "app-2"})
+            db.update_store_auth(
+                "mercadolibre", credentials={"access_token": "", "app_id": "app-2"}
+            )
 
             record = db.get_store_auth("mercadolibre")
             self.assertEqual(record["credentials"]["access_token"], "tok-1")
@@ -1034,7 +1050,9 @@ class ErpDbTests(unittest.TestCase):
                 replace_credentials=True,
             )
             replaced = db.get_store_auth("mercadolibre")["credentials"]
-            self.assertEqual(replaced, {"access_token": "tok-2", "refresh_token": "ref-2"})
+            self.assertEqual(
+                replaced, {"access_token": "tok-2", "refresh_token": "ref-2"}
+            )
 
     def test_publish_logs_insert_and_query_desc(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1077,16 +1095,11 @@ class ErpDbTests(unittest.TestCase):
             def worker() -> None:
                 try:
                     barrier.wait(timeout=5)
-                    results.append(
-                        db.insert_publish_log_once(entry)
-                    )
+                    results.append(db.insert_publish_log_once(entry))
                 except BaseException as exc:
                     errors.append(exc)
 
-            threads = [
-                threading.Thread(target=worker)
-                for _ in range(2)
-            ]
+            threads = [threading.Thread(target=worker) for _ in range(2)]
             for thread in threads:
                 thread.start()
             for thread in threads:
@@ -1158,10 +1171,7 @@ class ErpDbTests(unittest.TestCase):
             saved = db.load_product_model(product_id)
             self.assertEqual(saved["upc"], upc)
             self.assertTrue(
-                all(
-                    draft["upc"] == upc
-                    for draft in saved["drafts"].values()
-                )
+                all(draft["upc"] == upc for draft in saved["drafts"].values())
             )
             self.assertEqual(
                 db.upc_pool_stats(),
@@ -1172,7 +1182,12 @@ class ErpDbTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             app_dir = Path(tmp)
             (app_dir / "upc_pool.json").write_text(
-                json.dumps({"values": ["100000000001", "100000000002"], "used": ["100000000001"]}),
+                json.dumps(
+                    {
+                        "values": ["100000000001", "100000000002"],
+                        "used": ["100000000001"],
+                    }
+                ),
                 encoding="utf-8",
             )
 
@@ -1189,7 +1204,11 @@ class ErpDbTests(unittest.TestCase):
             db = self._db(Path(tmp))
             for index in range(3):
                 db.insert_order_notification(
-                    {"topic": "orders_v2", "resource": f"/orders/{index}", "order_id": str(index)}
+                    {
+                        "topic": "orders_v2",
+                        "resource": f"/orders/{index}",
+                        "order_id": str(index),
+                    }
                 )
 
             items = db.list_order_notifications(limit=2)
@@ -1208,7 +1227,14 @@ class ErpDbTests(unittest.TestCase):
                 "created_at": "2026-07-26 09:00:00",
                 "updated_at": "2026-07-26 09:00:01",
                 "product": {"product_id": "p1"},
-                "platforms": {"mercadolibre": {"status": "running", "stage": "publishing", "attempts": 1, "error": ""}},
+                "platforms": {
+                    "mercadolibre": {
+                        "status": "running",
+                        "stage": "publishing",
+                        "attempts": 1,
+                        "error": "",
+                    }
+                },
             }
             done = {
                 "job_id": "job-done",
@@ -1218,7 +1244,14 @@ class ErpDbTests(unittest.TestCase):
                 "created_at": "2026-07-26 08:00:00",
                 "updated_at": "2026-07-26 08:00:05",
                 "product": {"product_id": "p2"},
-                "platforms": {"ozon": {"status": "success", "stage": "finished", "attempts": 1, "error": ""}},
+                "platforms": {
+                    "ozon": {
+                        "status": "success",
+                        "stage": "finished",
+                        "attempts": 1,
+                        "error": "",
+                    }
+                },
             }
             persisted = {
                 **done,
@@ -1273,9 +1306,13 @@ class ErpDbTests(unittest.TestCase):
                 ["job-persisted", "job-done"],
             )
             product_jobs, _ = db.list_publish_jobs(product_id="p1")
-            self.assertEqual([state["job_id"] for state in product_jobs], ["job-running"])
+            self.assertEqual(
+                [state["job_id"] for state in product_jobs], ["job-running"]
+            )
 
-    def test_active_publish_job_reuses_draft_platform_until_terminal_persisted(self) -> None:
+    def test_active_publish_job_reuses_draft_platform_until_terminal_persisted(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = self._db(Path(tmp))
             first = {

@@ -16,7 +16,9 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -29,6 +31,7 @@ from pydantic_ai.messages import (
     TextPart,
     ToolCallPart,
     ToolReturnPart,
+    UserPromptPart,
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.settings import ModelSettings
@@ -42,6 +45,7 @@ from erp_web.services.ai_agent_factory import (
     AiAgentFactory,
 )
 from erp_web.services.ai_model_factory import PydanticModelBinding
+from erp_web.services.ai_chat_run_registry import AiChatRunRegistry
 from erp_web.services.ai_presentation_context import (
     AiPresentationContext,
     bind_presentation_context,
@@ -60,6 +64,9 @@ from erp_web.services.ai_presentation_service import (
 )
 from erp_web.services.ai_tool_registry import AiToolSet, deadline_aware_tool_executor
 from erp_web.stores.pydantic_message_store import PydanticMessageStore
+from erp_web.stores.agent_call_store import AgentCallStore
+from erp_web.stores.ai_chat_turn_claim_store import AiChatTurnClaimStore
+from erp_web.services.vercel_ai_ui_service import VercelAiUiService
 from tests.ai_function_model_streaming import streaming_function_model
 
 
@@ -307,6 +314,45 @@ def _parent_model(messages: list[Any], info: AgentInfo) -> ModelResponse:
 
 
 # -- 成功路径：官方 chunk 发布与展示生命周期 ---------------------------------
+
+
+@pytest.mark.parametrize("sync_entry", [False, True])
+def test_presentation_user_summary_survives_native_history_reload(tmp_path: Path, sync_entry: bool) -> None:
+    summary = "为千斤顶垫填充 OZON global 类目 234790370 的公共属性。"
+    internal = '根据 Input 填写属性：{"attributes": [9048, 8229, 85]}'
+
+    def model(messages, _info):
+        assert messages[0].parts[0].content == internal
+        return ModelResponse(parts=[TextPart("属性处理完成。")])
+
+    factory = _factory(tmp_path, {TEXT_PROFILE.use_case_id: FunctionModel(model)})
+    registry = AiPresentationRegistry()
+    reserved = reserve_presentation(registry, display_title="AI 属性填写", initial_user_message=summary)
+    scope = claim_presentation_scope(registry, presentation_id=reserved["presentation_id"])
+    assert scope.initial_user_message == summary
+    with bind_presentation_context(scope):
+        if sync_entry:
+            factory.run_sync(profile=TEXT_PROFILE, instructions="填写属性", user_prompt=internal, toolset=EMPTY_TOOLSET)
+        else:
+            async def run():
+                async with factory.open_stream_run(profile=TEXT_PROFILE, instructions="填写属性", toolset=EMPTY_TOOLSET,
+                                                   conversation_id=reserved["conversation_id"]) as session:
+                    async for _ in session.events([ModelRequest(parts=[UserPromptPart(internal)])]):
+                        pass
+            asyncio.run(run())
+
+    # 从数据库重建历史服务，不依赖前端内存或仍存活的 presentation。
+    db = ErpDatabase(tmp_path / "erp.sqlite3")
+    store = PydanticMessageStore(db)
+    ui = VercelAiUiService(chat_service=SimpleNamespace(message_store=store),
+                         claim_store=AiChatTurnClaimStore(db), run_registry=AiChatRunRegistry(), call_store=AgentCallStore(db))
+    for _ in range(2):
+        replay = ui.dump_ui_messages(reserved["conversation_id"])["messages"]
+        assert replay[0]["role"] == "user"
+        assert replay[0]["parts"] == [{"type": "text", "text": summary}]
+        assert replay[1]["role"] == "assistant"
+        assert internal not in json.dumps(replay, ensure_ascii=False)
+    assert store.get(reserved["conversation_id"]).model_messages()[0].parts[0].content == internal
 
 
 def test_run_sync_publishes_official_chunks_and_lifecycle(tmp_path: Path) -> None:

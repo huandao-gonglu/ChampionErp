@@ -1,7 +1,8 @@
+import { createPinia, setActivePinia } from 'pinia'
 // @vitest-environment jsdom
 
 import { mount } from '@vue/test-utils'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import DraftBoxPanel from '@/components/domain/DraftBoxPanel.vue'
 import type { DraftIndexItem, MarketplaceOption } from '@/types/workflow'
 
@@ -55,6 +56,7 @@ function draft(draftId: string, status: string, title: string): DraftIndexItem {
 }
 
 describe('DraftBoxPanel', () => {
+  beforeEach(() => setActivePinia(createPinia()))
   it('展示草稿创建时间', () => {
     const row = draft('created-time', 'claimed', '带创建时间的草稿')
     row.createdAt = '2026-09-01T12:34:56+08:00'

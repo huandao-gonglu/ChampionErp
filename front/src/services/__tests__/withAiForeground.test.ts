@@ -31,6 +31,21 @@ describe('withAiForeground 通用前台 wrapper', () => {
     stubNoStream()
   })
 
+  it('实时用户短句也提交到 reserve，供服务端保存并在历史中恢复', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ data: DESCRIPTOR, status: 200 })
+    const text = '为千斤顶垫填充 OZON global 类目 234790370 的公共属性。'
+    await withAiForeground(
+      { displayTitle: 'AI 测试任务', initialUserMessage: text },
+      async () => {
+        expect(useAiWorkDisplayStore().presentationMessages[0]?.parts).toEqual([{ type: 'text', text }])
+        return { ok: true }
+      },
+    )
+    expect(apiClient.post).toHaveBeenCalledWith('/api/v1/ai-presentations', {
+      display_title: 'AI 测试任务', initial_user_message: text,
+    })
+  })
+
   it('reserve 后注入 presentationId 给业务操作，返回原业务类型化值', async () => {
     vi.mocked(apiClient.post).mockResolvedValueOnce({ data: DESCRIPTOR, status: 200 })
 

@@ -31,13 +31,13 @@
 ## SQLite 数据库版本边界
 
 - `erp_web/db.py` 是 SQLite schema 与版本门禁的唯一 owner，当前
-  `SCHEMA_VERSION=14`。数据库文件不存在或 `user_version=0` 且没有任何用户 schema
+  `SCHEMA_VERSION=15`。数据库文件不存在或 `user_version=0` 且没有任何用户 schema
   object 时，才会在单事务内创建当前结构。
-- 现有数据库只在版本为 14 且全部 table、column、constraint、index、view、trigger 与当前
-  建库 SQL 的完整结构签名一致时打开。非空 v0、v1–v13、未来版本和结构残缺/额外的 v14
+- 现有数据库只在版本为 15 且全部 table、column、constraint、index、view、trigger 与当前
+  建库 SQL 的完整结构签名一致时打开。非空 v0、v1–v14、未来版本和结构残缺/额外的 v15
   都在写入前失败；运行时不升级、修复、删除或重建数据库。
 - 旧库切换是显式运维流程：先导出需保留的配置与授权，再停止应用、删除主库及
-  `-wal`/`-shm`，创建全新 v14 后导回配置。`upc_pool.json` 是已购买 UPC 的显式资产导入，
+  `-wal`/`-shm`，创建全新 v15 后导回配置。`upc_pool.json` 是已购买 UPC 的显式资产导入，
   不是旧 schema 兼容路径。
 
 ## AI Provider 与 AI Work
@@ -94,17 +94,23 @@ Pydantic Direct Model Requests，图片等能力使用锁定版本提供的 Pyda
   `create_pydantic_probe_binding`，只根据待测操作选择 Chat/Responses/Images Model，不允许用
   尚未产生的 capability 声明阻断探测。两条入口共享私有构造器和同一套 API style、认证、
   timeout、模型类型与密钥脱敏规则。
-- `erp_web/services/ai_agent_factory.py`：Pydantic Agent 的唯一装配与同步/流式运行入口；
-  工具调用预算耗尽时，通过原生 `PrepareTools`、`RunContext.usage` 和执行 Profile
-  隐藏函数工具，并用原生动态 `ToolOrOutput(function_tools=[])` 限定 Provider 只提交结果，
-  保留最终输出工具提交结果；桥接层在原生 `args_validator` 和实际执行前检查同一 Runtime 账本。
-  Pydantic AI 2.22.0 的整批预检也计算 unknown tool，因此原生 `UsageLimits` 比实际工具额度多留
-  一个协议校验位置，使第一个越界调用能收到原生 RetryPrompt。这个位置不能执行第五次业务工具；
-  更大的越界批次仍由原生预检直接拒绝，模型请求数和总 deadline 由各自 Profile 限制。
-  已核对安装的 Pydantic AI 2.22.0 与官方 [动态工具](https://pydantic.dev/docs/ai/tools-toolsets/tools-advanced/#agent-wide-dynamic-tools)、
-  [使用量限制](https://pydantic.dev/docs/ai/core-concepts/agent/#usage-limits)；直接使用原生能力，不增加重跑 Agent、计数器或恢复循环。
-  创建请求级 dependencies、usage limits 和 instrumentation，不包含领域终检。需审批
-  写工具只能交给 `GlobalTaskController`，Factory 不维护第二套 deferred 状态机。
+- `erp_web/services/ai_agent_factory.py`：唯一 Pydantic Agent 装配与运行入口。`ai_model_errors.py` 统一保留嵌套 Direct Model 错误的 HTTP 状态、可重试性和安全原因，供 Agent 与业务工具边界使用。
+- `erp_web/services/copy_service.py`：`copy.generate` 通过同一工厂运行独立文案 Agent。
+  使用原生 `PromptedOutput` 与 `output_validator`；复核拒绝通过 `ModelRetry` 回到本次文案
+  对话，下一稿能看到上一稿和具体拒绝原因。最多生成三稿，并受总计 240 秒的 deadline 约束；
+  复核仅返回判断，不维护循环，候选通过全部检查后才交给领域层保存。事实摘要保留重量的 kg
+  单位；外部工具参数不传复核意见，也不复制主 Agent 的全部消息。已核对 Pydantic AI 2.22.0
+  的[原生输出校验能力](https://ai.pydantic.dev/output/#output-validator-functions)，业务层不再保留
+  无反馈的 Direct Model 文案生成路径。文案生成使用集中 Agent 工厂支持的 API 模型连接。
+  原生 `UsageLimits` 限制模型请求和工具调用；`PrepareTools` 在预算耗尽后隐藏业务工具，
+  不预留可执行的额外额度。`Hooks.before_node_run` 在 `UserPromptNode` 和
+  `ModelRequestNode` 开始前更新本轮业务权限，通过 `RunContext.enqueue` 接收用户更新；
+  消息注入和事件编码由原生队列负责，权限更新先于工具准备。
+  主 Agent 使用 `str | DeferredToolRequests`，focused Agent 保留其类型化输出与独立领域能力。
+- `erp_web/services/ai_model_context_projection.py`：原生模型请求 Hook 的纯输入投影；旧大工具结果只在发送副本中形成摘要，完整原生 run 历史与持久化不裁剪。保留工具配对、本轮结果及 Provider 需要的思考信息，不维护第二套历史或恢复协议。
+- `erp_web/services/chat_operation_scope.py`：用集中 Factory 的原生结构化输出解释最新用户操作范围；仅提供 ERP 写权限约束，不生成步骤计划。原生 `PrepareTools` 限制可见写工具，领域执行边界再次校验。
+- `erp_web/services/global_agent_chat_service.py`：主对话服务；原生输出 validator 根据当前草稿目标集合检查遗漏，使用 `ModelRetry` 反馈，禁止只凭主平台推断已覆盖全部市场。
+- `erp_web/runtime_units/collect_helpers.py::claim_products_to_markets`：AI 认领和商品库市场选择共享按语言分组逻辑；全部市场从真实店铺绑定及平台注册表解析。
 - `erp_web/services/ai_tool_bridge.py`：`Tool.from_schema` 的输入校验通过原生
   `args_validator` 在执行前复用现有 JSON Schema 与可选的纯领域参数校验器；参数错误抛出 `ModelRetry`
   让模型纠正，授权、执行及输出错误仍由 Runtime 处理，不重试已产生副作用的操作。
@@ -123,11 +129,14 @@ Pydantic Direct Model Requests，图片等能力使用锁定版本提供的 Pyda
   右侧按优先级选择数据源——前台 presentation（observe Chat 实时消息）、活动 `global.chat`
   （共享 `Chat.messages`）或服务端 `/ui-messages` 只读派生历史；“原始消息”辅助标签提供
   规范 Pydantic JSON 树、Raw JSON 与下载；支持 `conversation_id` / `presentation_id` query 定位。
-  活动 conversation 把 `conversation_id` 传给 `AiChatPanel`，由 conversation 级 `task-link`
-  纯读接口驱动挂载唯一 `GlobalTaskApprovalCard`；存在未解决任务时普通发送被锁定，
-  审批/补资料/取消等明确命令不受影响。`front/src/stores/aiChat.ts` 订阅后台官方事件 SSE
-  （按单调递增 `history_version` 应用，`resync_required` 时重读 `/ui-messages` 再重连），
-  后台 continuation 提交的最终回复经该通道只读进入对话。
+  全局对话与草稿箱批量准备共享 `front/src/stores/aiChat.ts`。原生工具卡提交批准/拒绝；
+  运行期间仍可提交用户消息，收件箱显示接收状态。后台只发送历史版本变更通知，
+  前端用官方 Adapter 派生的历史恢复消息，不在浏览器推进 Agent。
+  前台短句 `initialUserMessage` 经 reserve 的 `initial_user_message` 传入 presentation scope，
+  由 `AiAgentFactory` 保存到原生输入 metadata 的 `presentation_user_message`；只用于展示，
+  不替换模型输入、不作为授权证据。`/ui-messages` 在官方转换后逐条恢复短句（空标记隐藏输入）；
+  未标记的用户消息原样保留，不按 conversation ID 过滤。原始消息保留完整输入，
+  历史展示不依赖浏览器缓存或仍然存活的 presentation registry。
 
 ```text
 API use case
@@ -145,7 +154,7 @@ CLI / Browser use case
 
 ### Focused 例外登记：专用 Images API
 
-- 缺失能力：锁定的 `pydantic-ai-slim[openai]==2.22.0` 支持 Responses 原生图片工具，但没有
+- 缺失能力：锁定的 `pydantic-ai-slim[openai]==2.43.0` 支持 Responses 原生图片工具，但没有
   能绑定 `gpt-image-*` 专用模型并表达 `images.generate` / `images.edit` 的公开 Model。
 - 限定范围：只有 `erp_web/services/ai_pydantic_image_model.py::OpenAIImagesModel`；不支持
   chat、JSON、function tool 或供应商级实时增量，不能加入非 API Provider 注册表。
@@ -187,14 +196,16 @@ CLI / Browser use case
 - `erp_web/services/ai_agent_dependencies.py`：请求级 Agent dependencies，绑定唯一
   execution context、recorder、Tool Runtime、tenant、business scope、审批、幂等和
   use-case state。
+- `erp_web/services/chat_operation_scope.py`：用集中 Factory 的原生结构化输出解释最新用户操作范围；仅提供 ERP 写权限约束，不生成步骤计划。原生 `PrepareTools` 限制可见写工具，领域执行边界再次校验。
+- `erp_web/services/global_agent_chat_service.py`：主对话服务；原生输出 validator 根据当前草稿目标集合检查遗漏，使用 `ModelRetry` 反馈，禁止只凭主平台推断已覆盖全部市场。
+- `erp_web/runtime_units/collect_helpers.py::claim_products_to_markets`：AI 认领和商品库市场选择共享按语言分组逻辑；全部市场从真实店铺绑定及平台注册表解析。
 - `erp_web/services/ai_tool_bridge.py`：把显式 ERP ToolSet 转换为 Pydantic
   `FunctionToolset`；Pydantic tool 只调用 `AiToolRuntime.execute(...)`，不直接调用
-  领域 executor，并强制串行执行以保护 Runtime 的预算和去重状态。
+  领域 executor；原生 Pydantic 调度独立同步工具的并发，Runtime 仅按 call ID 去重。
 - `erp_web/services/ai_agent_factory.py`：由 Pydantic Agent 独占 model → tool → model
   循环、类型化 output、重试和 usage limit；`run_sync(...)` 与 `open_stream_run(...)`
-  是统一同步/流式入口，成功时用官方 `result.all_messages()` 原子替换 conversation
-  历史。需审批与长任务恢复只由 `GlobalTaskController` 承担，Agent Factory 不保存第二套
-  deferred state。
+  是统一同步/流式入口，保留完整 canonical history，仅追加原生 `new_messages()`；不能把模型上下文裁剪结果写回历史。
+  审批与外部工具暂停由原生 Deferred 请求和结果表达。
 - `erp_web/stores/pydantic_message_store.py`：Pydantic 官方 `ModelMessage` 历史的唯一持久化
   边界；`messages_json` 用 `ModelMessagesTypeAdapter` 校验与序列化，是消息的唯一事实来源。
 
@@ -218,131 +229,49 @@ service 属于上层用例编排，不进入通用 Tool Runtime；Memory 和 Pol
 旧自定义 runner、JSON Tool Protocol 和 Agent tool-turn provider adapter 已物理删除。当前
 不存在 feature flag、shadow run、fallback、旧 API HTTP/SDK 请求栈或第二条 Agent 生产路径。
 
-## 单主 Agent（global.chat）与全局任务 Capability 化
+## 单主 Agent（global.chat）与领域能力
 
-全局只有 `global.chat` 一个主 Agent / 对话入口 / 全局模型绑定。不存在独立 Planner，
-也不存在第二次计划模型调用：主 Agent 在对话回合内直接选择类型化任务步骤，经
-`global_task_start` 提交。`global_task_start` 受理成功后 Bridge 抛出 Pydantic 官方
-`CallDeferred`，当前 run 以官方 Deferred 语义挂起；任务执行只由后台 recovery
-worker 完成，任务终结后 continuation run 用官方 `DeferredToolResults` 恢复同一
-conversation 并生成最终 Assistant 回复。任务与发布终态由 Controller 和
-PublishingBus 持久化，不从对话事件推断。
+主 Agent 直接调用 focused ERP 工具，读取结果后继续决定下一步。草稿箱的“AI 准备所选”
+只把目标 `draft_id` 和用户目标提交给同一入口。不存在固定步骤计划或第二个执行 Agent。
 
 ```text
-global.chat（唯一主 Agent）
-  → erp_web/facades/global_task_facade.py::build_global_chat_toolset
-      ├─ Direct 只读 Capability（GLOBAL_CHAT_DIRECT_CAPABILITIES）
-      └─ 任务控制 ToolSet（global_ai_control_tools.py）
-          → global_task_start（类型化 step union，agent_deferred）
-              → erp_web/services/global_task_controller.py::accept_deferred_task
-                  ├─ APPLICATION_CAPABILITY_CATALOG（唯一业务 Catalog）
-                  ├─ erp_web/stores/global_task_store.py
-                  ├─ erp_web/stores/pydantic_deferred_task_link_store.py
-                  │   （conversation → task 关联 + history ready 屏障）
-                  └─ PublishingBus（发布终态）
-
-后台推进（不依赖原始请求连接）：
-  server.py::start_global_task_recovery_worker
-    → GlobalTaskController.recover_unfinished_tasks（worker 执行步骤）
-    → GlobalTaskContinuationService.recover_pending
-        （任务终结 → DeferredToolResults 续跑 → 最终回复原子提交）
-
-受信任务 UI（只读 + 明确用户命令）：
-  GET /api/v1/global-tasks/<task_id>（纯读任务状态 + 计算型执行进度视图）
-  GET /api/v1/ai-work/conversations/<id>/task-link（conversation → 未解决任务）
-  GET /api/v1/ai-work/conversations/<id>/events（官方事件订阅 SSE）
-  POST /api/global-task-{input,approve,reject,cancel}
-    → erp_web/http_route_units/global_agent_routes.py
-        → erp_web/facades/global_task_facade.py（受信任务 UI HTTP 门面）
+POST /api/v1/ai-chat/runs（Vercel SubmitMessage，可带 target_draft_ids）
+  → ai_chat_facade → VercelAiUiService → GlobalAgentChatService
+    → AiAgentFactory → Pydantic Agent → 原生 Tool → AiToolRuntime → 领域 Capability
+      ├─ 普通结果/缺字段 → 原生模型继续决策
+      ├─ ApprovalRequired → 原生工具卡 → DeferredToolResults
+      └─ CallDeferred → 原生请求和历史同事务落盘
+          → AgentJobService 领取领域 Job → 真实终态 → DeferredToolResults → 同一入口恢复
 ```
 
-`app_config.task_approval_mode` 是唯一审批等级设置：`ask`（询问审批，默认）和
-`full`（完全授权）。`ask` 模式下，高风险步骤进入 `pending_approval`，只能由携带
-进程级 `X-Approval-Token` 的受信 UI 调用正式 approve/reject 入口；`full` 模式下，
-Controller 在副作用前为当前步骤生成冻结快照、digest 和审批审计记录，再通过同一个
-`AiToolRuntime` 执行。完全授权不扩大 ToolSet、Binding Scope 或权限集合，也不绕过
-输入校验、Capability version、operation key 与执行侧 digest 重核。
+当前 owner：
 
-审批等级通过现有 `/api/save-settings` 保存；修改该字段同样必须携带
-`X-Approval-Token`。主 Agent ToolSet 不包含设置、approve 或 reject 工具，因此模型
-无法读取、修改审批等级或自行批准任务。不存在测试专用授权端点、命令或旁路。
+- `erp_web/ai_capability_composition.py`：显式 Catalog 与场景权限；全局工具包含领域读写工具。
+- `erp_web/facades/agent_capability_facade.py`：应用能力 Scope、所选草稿范围、可信消息来源、Job Reader 装配。
+- `erp_web/services/chat_operation_scope.py`：用集中 Factory 的原生结构化输出解释最新用户操作范围；仅提供 ERP 写权限约束，不生成步骤计划。原生 `PrepareTools` 限制可见写工具，领域执行边界再次校验。
+- `erp_web/services/global_agent_chat_service.py`：主对话服务；原生输出 validator 根据当前草稿目标集合检查遗漏，使用 `ModelRetry` 反馈，禁止只凭主平台推断已覆盖全部市场。
+- `erp_web/runtime_units/collect_helpers.py::claim_products_to_markets`：AI 认领和商品库市场选择共享按语言分组逻辑；全部市场从真实店铺绑定及平台注册表解析。
+- `erp_web/services/ai_tool_bridge.py`：机械参数校验、原生并发、审批快照与 Deferred 转接；不选择下一步。
+- `erp_web/services/tool_approval.py`：业务审批内容 digest，绑定工具名/版本、operation key、原生 call ID 和审批版本；执行前重核。
+- `erp_web/services/agent_run_storage.py`：原生 hook 到消息 CAS、输入收件箱与副作用检查点的适配。
+- `config/agents.md`、`erp_web/services/agent_memory.py`：ERP 主 Agent 的长期业务记忆与唯一文件读取边界。`GlobalAgentChatService.instructions()` 在每次新运行或 Deferred 恢复时加载当前应用目录下的文件，沿现有 Factory 的原生 `instructions` 注入系统上下文；不增加 Agent loop 或消息协议。它不受页面背景眼睛开关影响，不加载仓库开发用 `AGENTS.md`，不回退到其他实例的记忆。文件为 UTF-8、上限 32 KiB；缺失或空文件表示没有附加记忆，读取失败、非法编码和超限明确报错，不静默截断规则。文件编辑在下次 run 生效；当前仅提供文件读取，未提供 Agent 自主写入记忆工具。接入主 Agent 记忆不表示已有专用属性 Agent 的规则和校验已经完成迁移。
+- `erp_web/schemas/ai_page_context.py`：主对话页面背景的有界契约与中文指令渲染，只接受页面枚举和资源 ID。`vercel_ai_ui_service.py` 校验请求的 `page_context` 后写入原生消息 metadata，缺省表示本条消息不携带背景；客户端消息 metadata 仍被丢弃。`AgentRunStorage` 随用户输入更新背景，Factory 使用 Pydantic AI 原生动态 `instructions` 注入模型系统上下文，不创建独立系统消息历史或新 Agent loop；Deferred 恢复复用已保存快照，后续关闭开关会清除当前背景。
+- `front/src/stores/aiPageContext.ts`、`useAiPageContext.ts`：可见页面及编辑区域提供定位信息，输入框眼睛开关默认开启并在本机记住选择；普通发送和运行中追加消息均在发送瞬间复制背景。关闭编辑器、切换页面或 KeepAlive 停用时撤销该区域背景，页面背景不作为写权限，也不携带表单未保存值。
+- `erp_web/stores/agent_call_store.py`：原生 Deferred 请求/结果序列化、收件箱和领域执行回执；不存步骤计划、Agent 状态或事件副本。
+- `erp_web/services/agent_job_service.py`：固定大小线程池领取和对账领域 Job；scanner 不执行模型。等待平台真实结果后恢复原生 Agent，允许再调用工具。
+- `erp_web/runtime_units/domain_job_readers.py`：发布与研究 Job 的只读终态和有界活动证据。
+- `erp_web/schemas/domain_jobs.py`：Job Reader 的有界生命周期/活动证据，供模型了解真实终态。
+- `erp_web/stores/product_mutation.py`：商品聚合的短期互斥；`ProductStore` 的局部读改写保护、草稿旧快照冲突检测。锁不跨模型调用或人工等待。
+- `erp_web/runtime_units/conversation_fact_capabilities.py`：按草稿、会话归属查询真实用户消息；引用不能由模型自报可信标志替代。
 
-### 唯一 Capability 组合根
+原生 Deferred 要求当前批次全部调用结果/审批齐备才恢复模型。部分结果先落盘，独立领域 Job 可并发。
+新增用户消息始终可接收，在下一个原生模型边界生效。取消不会撤销已经发出的平台操作；未开始的调用先返回用户要求已更新，等待模型重新决定。
 
-- `erp_web/ai_capability_composition.py`：唯一业务 Capability 组合根。全部领域能力
-  tuple 在此显式汇总，由 `AiToolCatalog.compile` 编译为唯一
-  `APPLICATION_CAPABILITY_CATALOG`；不扫描包、不动态发现、不存在第二个 Schema
-  compiler 或 Task Spec 层。`GLOBAL_CHAT_DIRECT_CAPABILITIES`（只读、主 Agent 可
-  直接调用）、`GLOBAL_TASK_CAPABILITIES`（可作为任务步骤）、
-  `INTERNAL_ONLY_CAPABILITIES`（当前为空，预留 focused Agent 内部用途）是三个互斥
-  exposure 集合；`validate_capability_exposure()` 校验每个 Catalog Capability 至少
-  进入一个 exposure 集合、Internal 与 Direct/Task 互斥、Direct allowlist 不含写能力。
-- `erp_web/facades/global_task_facade.py`：唯一应用装配入口。
-  `build_capability_binding_scope` 按 Scope 类型构造可信 Binding Scope 并注入领域
-  依赖（采集 cookie/密钥只从已保存配置解析，模型输入永远不提供凭据）；
-  `build_global_task_controller` 装配 Controller 与 Task ToolSet；
-  `build_global_chat_toolset` 把 Direct 只读能力与四个任务控制工具合并为
-  `global.chat` ToolSet。四个 `/api/global-task-*` POST 门面只是受信任务 UI 的
-  补资料、审批确认/拒绝与取消入口；任务状态读取是纯 GET
-  （`/api/v1/global-tasks/<task_id>` 与 conversation 级 `task-link`），不存在任何
-  可推进任务的写刷新。审批确认/拒绝必须携带
-  服务端下发给受信 UI 的 token，主 Agent 不具备对应工具。任务创建只经由
-  `global_task_start` 工具，不存在 `/api/global-task-start` 或发布确认专用入口。
-- `erp_web/runtime_units/global_ai_control_tools.py`：四个任务控制工具
-  （`global_task_start/get/submit_input/cancel`）。
-  `global_task_start` 的 steps 由 `project_task_step_union` 从每个 Task Capability 的
-  Pydantic Request 机械投影为 discriminated union：每步携带该 Capability 的真实
-  参数 Schema；不存在逐 Capability 手写 step model、任意字典参数或 Controller 内的
-  Capability 名称分支。
-- `erp_web/services/global_task_controller.py`：任务状态机、严格顺序推进、暂停/补
-  资料与审批门的 owner；`accept_deferred_task` 只受理任务与创建 deferred link，
-  不执行任何步骤。任务推进只由后台 recovery worker 完成，HTTP 门面与前端读取
-  都不能推进任务；执行步骤只依赖 Catalog 的类型化
-  request/executor。`submit_input` 会随步骤保存用户实际提交过的顶层字段名，执行时
-  只通过可信 `business_scope` 传递该来源标记；模型在初始计划中主动生成同名值不能
-  冒充用户选择。Controller 与 `erp_web/schemas/global_tasks.py` 不含 Capability
-  名称分支、Planner 或旧 `global.task.plan` 引用（架构测试守卫）。
-- `erp_web/stores/global_task_store.py`：`LocalGlobalTaskState` 的唯一 Store；草稿
-  快照方法委托给 `erp_web/stores/draft_query_snapshot_store.py`。后者是
-  `DraftQuerySnapshot` 的唯一持久化 owner，不依赖任务状态或任务 schema。
-- `erp_web/stores/pydantic_deferred_task_link_store.py`：conversation → 未解决
-  Deferred 任务的唯一关联表（当前 schema v14）。`awaiting_history` provisional link 只
-  供服务端恢复/清理；`ready` link 是前端任务卡与发送锁定的唯一依据；任务终结并
-  continuation 提交后 link 变 `resolved`。
-- `erp_web/stores/pydantic_ai_event_outbox_store.py`：官方编码事件 outbox。事件
-  批次只在 history/link/outbox 原子提交成功后发布；订阅端按单调递增
-  `history_version` 重放，游标超出保留窗口时明确 `resync_required`。
-- `erp_web/services/global_task_continuation_service.py`：任务终结后用官方
-  `DeferredToolResults` 续跑同一 conversation，最终 Assistant 回复与
-  history/link/outbox 原子提交；不合成项目自有 Assistant message shape。
-- `erp_web/services/global_task_progress_service.py`：GlobalTask 执行进度投影
-  服务。把当前任务与领域 Job 已持久化状态即时投影为计算型只读
-  `GlobalTaskExecutionProgress`：不写回任务状态、不推进任务、不触发 CAS/revision
-  递增，进度读取失败只降级为通用运行信息。领域专用状态由按 `job_type` 注册的
-  `JobStatusReader` 类型化为 `JobStateSnapshot`（生命周期字段 status/error 供
-  Controller 消费，展示字段供投影服务消费），Reader 缺失/异常或 Job 缺失均安全降级。
-- `erp_web/services/vercel_ai_ui_service.py`：`/api/v1/ai-chat/runs` 的服务端
-  drain；接受普通回合前原子拒绝存在未解决 link 的 conversation
-  （`AI_CHAT_CONVERSATION_TASK_PENDING`），客户端断线不取消已接受的 run。
-- `erp_web/schemas/global_tasks.py`：任务、步骤、`pending_input_owner`、带
-  `input_type/input_owner` 的类型化 `RequiredInput`、审批与拒绝 shape。补充值由
-  Controller 按 owner 合并到 step、属性或核价输入，不靠 facade 字段白名单。另含
-  只读执行进度契约：`JobStateSnapshot`（Reader 类型化快照）、
-  `GlobalTaskExecutionProgress` / `GlobalTaskViewResponse`（HTTP/UI 进度读模型）；
-  进度字段均为白名单且限长，不透传凭据、完整 payload 或原始平台对象。
+缺资料是工具业务结果，包含字段、原因、选项和工具参数路径；主 Agent 可以先读取关联商品、草稿、平台和有权限历史。
+商品共用事实与各草稿/站点决定分开保存。`source_message_id`/`source_conversation_id` 只定位实际消息，服务端检查归属、实体范围与值；已保存销售目标可以复用。
 
-声明 `approval_required` 的 Capability 只能进入 `GLOBAL_TASK_CAPABILITIES`，主
-Agent 不得直接触发破坏性写入；审批 payload 携带确定性 digest，Capability 执行时
-重算并比较，目标或事实被篡改时以 `*_APPROVAL_STALE` 稳定码安全失败。
-
-`DraftQuerySnapshot.total` 和聚合统计覆盖完整匹配集合；为限制模型上下文和本地状态大小，
-`draft_ids/items` 只保存按 `limit` 截取的当前有序页。`draft_position` 是该页内的一基序号，Controller
-再把它解析为稳定 `draft_id` 并读取当前 ProductStore 事实；模型输出的数字或 ID 不直接进入写操作。
-`view=summary/workflow/publish_readiness/detail` 采用同一稳定 `DraftSummary` schema 的分级字段投影，
-快照重放保持创建时 view，不把 view 当作无效果展示提示。
-
-发布上下文遇到多个候选目标且请求未明确平台/站点时返回 `DRAFT_TARGET_AMBIGUOUS`；
-平台下仍有多个站点时返回 `DRAFT_TARGET_SITE_AMBIGUOUS`，不会静默选择首项或默认站点。
+`DraftQuerySnapshot.total` 覆盖完整匹配集合，`draft_ids/items` 只保存有界页。主 Agent 使用返回的稳定 `draft_id` 调用写工具。
+目标平台/站点不明确时返回 `DRAFT_TARGET_AMBIGUOUS` 或 `DRAFT_TARGET_SITE_AMBIGUOUS`，不能静默选首项。
 
 ### Endpoint Coverage Manifest
 
@@ -361,7 +290,7 @@ Agent 不得直接触发破坏性写入；审批 payload 携带确定性 digest�
 - `erp_web/runtime_units/market_pricing_capability.py`：确定性核价和草稿持久化。
 - `erp_web/runtime_units/market_prepare_capabilities.py`：`draft_prepare_for_market` 的高层顺序编排；
   复用现有目标草稿、文案、图片、类目、属性和核价 owner，不复制领域实现；文案重生成以稳定
-  task/step operation key 与文案同次持久化，重启后不会重复消费同一次 `regenerate_copy`。
+  conversation/tool_call operation key 与文案同次持久化，重启后不会重复消费同一次 `regenerate_copy`。
 - `erp_web/runtime_units/product_capabilities.py`、`erp_web/runtime_units/publish_capabilities.py`：
   商品读取/幂等字段更新/图片准备，以及确定性发布校验/确认后队列提交的 focused adapter。
   `product_read` 按需返回 `ProductFacts.attributes` 的主档补充属性和
@@ -372,66 +301,56 @@ Agent 不得直接触发破坏性写入；审批 payload 携带确定性 digest�
   前端保存未编辑的属性时保持原始 JSON 类型；AI 主档补丁完成后须用 `product_read` 回读
   对应字典的实际值，不能仅凭写回执认定某个具体属性已生效。`ProductStore.save_product_profile` 清理
   被修改或删除的来源属性在主档 `attributes` 中的同值采集副本，保留独立维护的不同值。
-  平台属性填充继续使用 `category_attribute_ai_fill.py` 的现有来源上下文和 Pydantic Agent；
-  不新增模型调用、Agent loop 或来源属性到平台属性的直接复制路径。
+  平台属性由主对话根据来源事实及真实平台定义直接判断，通过确定性写工具保存。
+- `erp_web/runtime_units/source_inspect_capability.py` 与 `erp_web/schemas/source_inspect.py`：
+  `inspect_source_facts` 提供草稿来源属性的分类文本视图、完整原始 JSON 与采集时间；
+  复用 `ProductCapabilityScope` 和草稿详情存储接口，显式进入主 Agent 只读能力集合。
+  分类只作查看提示，不生成无采集依据的置信度或认证结论；执行继续使用现有 Pydantic AI 原生工具链。
 
 focused 类目和属性执行在完成、暂停或后处理失败时都返回自己的 AI Work `conversation_id`；高层市场
-准备聚合为 `agent_execution_conversation_ids`，Controller 先持久化这些 ID 再投影链接，不复制
+准备聚合为 `agent_execution_conversation_ids`，主 Agent 在原生工具结果中取得这些 ID，不复制
 transcript 或 Tool 输出。
 
-### AiWork Pydantic 消息历史
+### 原生对话 HTTP 与消息历史
 
-旧的 AiWork 事件投影、JSONL 消息记录、`ai_sessions`、parent/child conversation、long-poll 与
-Global Task 聊天耦合已全部删除。当前 AiWork 只围绕 Pydantic 官方 `ModelMessage` 历史：
+- `POST /api/v1/ai-chat/runs`：新用户消息或官方 approval-responded 消息。用户消息 ID 幂等领取与输入同事务保存；仅服务端历史参与模型调用。
+- `POST /api/v1/ai-chat/cancel`：接收 `{id, message_id}`，直接取消本轮原生令牌；不排队发送取消 prompt。相同消息的停止幂等，已知旧消息不能取消新回合；取消先于发送到达时，现有 claim 幂等记录阻止迟到消息启动。
+- 同会话有活动 run 或未齐备 Deferred 时返回 HTTP 202 接收凭据。批准/拒绝还需 `X-Approval-Token`，客户端不能更改服务端 call ID、工具名或参数。
+- `GET /api/v1/ai-work/conversations` 与 `/{id}`：历史索引和 canonical Pydantic JSON。
+- `GET /api/v1/ai-work/conversations/{id}/ui-messages`：官方 `VercelAIAdapter.dump_messages()` 输出，加有界待处理调用、输入接收状态与运行错误；`run_active`、`run_status`、`latest_message_id` 分别来自运行互斥表及原有 claim，供停止确认和目标关联。
+- `GET /api/v1/ai-work/conversations/{id}/events`：只通知 `history_version` 变更，前端重新读取 `/ui-messages`；不保存、重编码或重放自定义 Agent 事件。
+- `ai_chat_run_registry.py`：进程内同会话互斥和 Pydantic `CancellationToken` 关联；历史提交额外使用 SQLite CAS 防止旧写者覆盖。
+- `ai_chat_turn_claim_store.py`：用户输入幂等身份/归属/安全错误码，不含消息正文。
+- `pydantic_message_store.py`：完整原生消息的读取、校验；`agent_call_store.py` 组合提交同一消息表及 Deferred，二者不各存一份历史。
 
-- `erp_web/http_route_units/ai_work_routes.py`：只读检查入口。
-  `GET /api/v1/ai-work/conversations` 列出历史索引；
-  `GET /api/v1/ai-work/conversations/{id}` 返回规范 `ModelMessage` JSON；
-  `GET /api/v1/ai-work/conversations/{id}/ui-messages` 用官方 Adapter 派生只读
-  `UIMessage[]`（含 `history_version` 订阅游标）；
-  `GET /api/v1/ai-work/conversations/{id}/task-link` 返回 conversation → 未解决
-  Deferred 任务的纯读关联（只含 `ready` link）；
-  `GET /api/v1/ai-work/conversations/{id}/events` 官方编码事件订阅 SSE：先从
-  outbox 重放 `after_history_version` 之后的保留批次再转 live，游标超出保留窗口
-  时返回 `resync_required`；
-  `GET /api/v1/global-tasks/{task_id}` 纯读任务状态，并附带计算型只读
-  `execution_progress`（当前步骤、活跃 Job 阶段/重试/下次检查、内部活动与耗时）；
-  GET 不推进任务、不递增 revision，连续读取不产生任何写入。
-- `erp_web/stores/pydantic_message_store.py`：`ModelMessage` 历史唯一持久化边界；
-  每次提交递增 `history_version`，不合成 orphan tool return。
-- 已退役的 `/raw`、`/children`、wait/after_seq 参数继续返回 404。
+实时流为 `AgentStreamEvent → VercelAIEventStream → SSE → @ai-sdk/vue Chat`。HTTP 断线不取消后台执行。
+慢客户端超过有界队列后收到官方编码的 error/finish，再从已提交历史恢复。最终消息先持久化再下发终态。
+未知副作用保留回执，重启不盲目重发；实际平台 Job 自己保留幂等和对账状态。
 
-### 全局对话（global.chat）与实时消息流
+AI Work 选中普通对话后，直接使用本次 `/ui-messages` 响应绑定共享 Chat 并显示输入框；
+无需额外点击继续，也不重复读取历史。打开对话只读取历史并订阅更新，发送消息才提交新的 run。
+历史响应必须仍匹配当前选择，旧会话回调不得断开当前订阅；业务 Agent 执行记录仍只读展示。
 
-`global.chat` 是唯一主 Agent 对话入口：输出自然语言文本，业务入口
-`erp_web/services/global_agent_chat_service.py`，只选择服务端 prompt、`global.chat`
-ToolSet、Execution Profile 与权限，再调用 `AiAgentFactory.open_stream_run(...)`。
-Execution Profile 的 output type 是 `str | DeferredToolRequests`：
-`global_task_start` 受理成功时 Bridge 抛出官方 `CallDeferred`，run 以 Deferred 语义
-挂起；任务终结后 `open_continuation_run(...)` 用官方 `DeferredToolResults` 恢复同一
-conversation 并生成最终回复。
-ToolSet 由 `erp_web/facades/global_task_facade.py::build_global_chat_toolset` 装配：
-Direct 只读能力加四个任务控制工具；写与审批能力只经类型化任务步骤执行，主 Agent
-没有直接写工具，也不存在并行的第二条规划链。
+### 对话停止与框架边界
 
-- `erp_web/http_route_units/ai_chat_routes.py`：`POST /api/v1/ai-chat/runs` 薄路由，预流校验返回
-  标准 JSON，开始输出后只发送官方 Vercel SSE chunk。
-- `erp_web/services/vercel_ai_ui_service.py`：唯一 Vercel 协议入口，负责解析请求、领取锁与 claim、
-  运行/编码 SSE 与历史 `dump_messages()`；是新增 Pydantic UI import 的唯一 owner。
-- `erp_web/facades/ai_chat_facade.py`：composition root，从 `AppContext` 装配 focused services。
-- `erp_web/services/ai_chat_run_registry.py`：进程内按 conversation ID 的活动 run 互斥屏障，由
-  `AppContext` 单例持有。
-- `erp_web/stores/ai_chat_turn_claim_store.py` + `ai_chat_turn_claims` 表：`client_message_id`
-  幂等领取与 profile/owner 归属；只存运行控制元数据及安全的 error code、trace ID、
-  最后工具名，不存消息正文、工具参数或工具结果。
-- `erp_web/stores/draft_query_snapshot_store.py`：草稿查询快照的独立持久化 owner，不依赖 Global Task。
-- `erp_web/facades/global_task_facade.py`：装配 `global.chat` ToolSet 的 Direct 只读
-  能力绑定；`drafts_query` 与任务步骤共用同一 Capability，快照经独立 snapshot store
-  持久化，不依赖任务状态。
+当前锁定 Pydantic AI 2.43.0，已核对[官方取消文档](https://pydantic.dev/docs/ai/core-concepts/agent/#cancelling-a-run)及安装源码。
+直接使用原生 `CancellationToken`、`RunCancelled.all_messages()` 与 Vercel `abort` 编码；
+没有自研 Agent 取消状态机或事件编码。`services/ai_run_cancellation.py` 只通过 ContextVar
+把同一个官方令牌传给主 Agent、同步工具中的嵌套 Agent 和该范围内领取的后台领域任务。
+工具 I/O 的既有 `bounded_timeout_seconds()` 检查点同时检查取消，阻止后续批次；
+已阻塞的同步 I/O 和已提交的平台操作无法由 Python 线程取消强制撤销，保留实际回执并继续对账。
+Agent 取消后保留框架快照，未闭合工具历史在新用户回合由框架自动修复。
 
-实时展示链是 `AgentStreamEvent → VercelAIAdapter/VercelAIEventStream → SSE → @ai-sdk/vue Chat`；
-历史展示链是 `PydanticMessageStore → ModelMessage[] → VercelAIAdapter.dump_messages() → UIMessage[]`。
-消息事实唯一来源是 `pydantic_message_histories.messages_json`，不存在第二张 UI 消息表或消息双写。
+领域侧只撤下尚未执行的 queued 工具、未处理输入和原生 Deferred 恢复请求；
+不会为停止再调用模型生成确认，也不会由后台扫描重新启动已取消操作。
+新的明确用户输入可建立新的令牌；旧操作的工作线程仍持有旧令牌，不能被新输入重新激活。
+前端立即调用 `Chat.stop()` 结束可见输出，同时独立请求后端取消；收到后端确认前显示“正在停止”。
+后台 Deferred 等待期间也提供停止按钮。浏览器断线仍不等价于用户明确停止。
+对话输入区连续按两次 Esc 复用同一停止入口：第一次把按钮显示为 `Esc`，第二次触发停止；
+焦点变化、窗口失焦、切换会话、输入其他按键或开始组合输入时取消等待，长按重复事件不算第二次。
+输入法组合期间不拦截 Enter/Tab 执行发送或命令，也不把候选框 Esc 当作停止；
+按[浏览器 IME 事件说明](https://developer.mozilla.org/en-US/docs/Web/API/Element/keydown_event#keydown_events_with_ime)
+同时检查组合事件状态、`isComposing` 和 `keyCode === 229`，覆盖 compositionend 先于提交按键的顺序。
 
 ### AI Presentation 通用可观测层
 
@@ -597,55 +516,14 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
   `description-category/attribute/values/search` 大字典搜索接口；结果短时缓存。品牌空查询首屏
   会用当前类目的实时搜索结果置顶官方“无品牌”候选；`无品牌/其他/Generic/no brand` 等查询别名
   只转换为平台原文检索词，枚举 ID 不做跨类目硬编码。
-- `erp_web/schemas/category_brand.py` 与
-  `erp_web/runtime_units/category_brand_values.py`：平台作用域内的品牌属性识别、无品牌事实
-  等价关系及官方 strict-enum 候选解析；Ozon 属性 85 不得扩散为其他平台的品牌身份。
-- `erp_web/product_model/category_model.py`：类目属性有效性和未解决必填项的唯一确定性判断；
-  `strict_enum/open_enum/free_text` 三种值模式同时供规则填充、Agent target 和发布预检使用。
-- `erp_web/runtime_units/category_attribute_ai_fill.py`：类目属性填充编排入口；先执行规则填充，
-  把规则处理后仍未解决的必填项和有界可选项交给 Agent，合并后重新计算最终阻塞项。重复执行时
-  已有效的开放枚举或文本值不会再次进入 Agent。
-- `erp_web/runtime_units/category_attribute_sku_scope.py`：复用 `selected_skus` 解析本次勾选
-  及覆盖后的 SKU 事实，只暴露共同选项与差异字段名；原商品的全部 SKU 汇总值不进入
-  公共属性证据。`variation_role` 贯穿内部定义、公共摘要、前端及填充请求，多 SKU 存在
-  差异时变体属性留到 SKU 层处理。
-- `erp_web/schemas/category_attribute_evidence.py`：`category_attribute_fill.v4` 的来源引用
-  合同。描述性枚举翻译引用 `product_context` 中来源字段的完整原文；代码校验路径和
-  原文一致，Agent 负责等义判断。引用只证明来源，不构成对翻译语义的独立验证；数值、
-  单位换算、品牌、网址和自由文本继续使用各自的约束，不能靠任意来源引用放行。
-- `erp_web/russian_text.py`：使用 Snowball 的俄语词形归一化纯文本边界，按线程隔离
-  stemmer。Yandex 缓存树检索使用完整词干匹配，允许叶子名称部分命中并按覆盖程度排序；
-  属性证据允许连续俄语词的变格（如 `Женская` → `Женский`），不放宽数值、型号或
-  跨语言语义推断。此处不增加模型调用或 Agent 重试，继续由 Pydantic AI 管理运行。
-- `erp_web/runtime_units/category_attribute_tools.py`：类型化
-  `search_category_attribute_values(...)` 能力通过 `@ai_tool` 声明唯一工具
-  `category_attribute_values_search`；该工具只接受 `value_mode=strict_enum` 的平台强制枚举。
-  显式 Catalog 与场景 allowlist 绑定平台、站点、类目和 request-scoped Ledger，AI 只能
-  批量提交当前属性 ID 与搜索词。Definition、Schema 与机械
-  executor adapter 均由 Compiler 生成，不存在旧手写工具名或闭包 executor。
-  批量查询逐项返回错误码和纠正说明，普通属性的中文词不会被发往俄语字典；品牌原文
-  查询保留。单项错误不丢弃同批合法候选，网络重试成功会清除该属性的失败标记。
-  `erp_web/services/category_attribute_fill_agent_service.py` 负责类型化输出和候选账本校验：
-  平台强制枚举只能选择本次工具返回的 `dictionary_value_id + value`；开放枚举优先使用
-  schema options，没有匹配选项时允许填写有商品依据的自定义文本且不得提交枚举 ID。非品牌
-  `strict_enum` 的候选真实性以 request-scoped Ledger 为边界，候选适用性仍需商品事实；类目
-  “类型”枚举可由已确认的类目 ID/路径提供跨语言证据。品牌跨语言名和商业别名由 Agent
-  结合商品品牌事实判断，只能选择真实字典候选；具体品牌不得改填无品牌或相似品牌。自由文本仍需商品事实证据，包装重量
-  等结构化事实只允许通过确定性单位换算放行。
-  已核对安装的 Pydantic AI 2.22.0 与官方 Output validators 文档：继续直接使用
-  原生 Pydantic `model_validator(mode="wrap")` 隔离格式错误属性，`agent.output_validator`
-  按属性校验并隔离字典、证据、单位和数量错误；同一集合属性整组拒绝，避免截断后误填。
-  合法属性正常提交，未解决必填项进入待确认，可选项跳过；整体响应格式错误仍由原生
-  输出重试处理。不增加第二次 Agent 调用、自研重试循环或异常后提取历史消息的旁路。
-  参考：[Pydantic 校验器](https://docs.pydantic.dev/latest/concepts/validators/#model-validators)、
-  [Pydantic AI 输出校验](https://ai.pydantic.dev/output/#output-validators)。
-  Prompt 提供 `attribute_evidence_sources` 的完整来源字符串末级引用，明确可查询属性、字典语言和
-  SKU 范围，裁掉发布内部字段，选项保留有界示例。前端分别提示已保存数量和必填待确认，
-  未采用的建议通过属性名称说明原因。原生输出校验器移除可选属性的复核建议，不为此
-  消耗额外模型轮次；只有未解决的必填属性进入人工待确认。
-- `config/prompts/category_attribute_fill.json`：`category.attribute_fill` Agent prompt；
-  明确区分发布必填、平台强制枚举、建议枚举和普通自定义属性，并要求技术参数、链接、
-  编码、证件与文件不得编造。
+- `erp_web/schemas/category_brand.py`：平台品牌身份及无品牌查询词；仅采用平台实际返回的候选。
+- `erp_web/product_model/category_model.py`：类目选择、属性有效性与发布必填项判断。
+- `erp_web/runtime_units/product_capabilities.py`：主对话通过 `draft_attributes_read` 读取指定草稿目标的完整公共属性，分页读取全部已选启用 SKU 的有效事实和已填属性；商品共用事实由 `product_read` / `inspect_source_facts` 提供。
+- `category_attributes_query` 分页返回全部定义，`category_attribute_values_query` 查询真实候选。主对话负责事实判断、语义匹配、翻译和缺资料时询问用户；不设前 20 个可选属性的限制。
+- `product_attributes_update` / `draft_sku_attributes_update` 分别保存公共属性和指定 SKU 的差异属性。`erp_web/runtime_units/category_attribute_updates.py` 只执行确定性校验：服务端重读类目定义，核对作用域、只读字段、值类型/数量/单位以及平台枚举 ID 与原文。网络校验后在商品锁内重读当前目标，再局部合并本次字段，拒绝变化后的类目、停用或未选 SKU。
+- 属性填写只有主对话这一条 AI 路径。页面入口、专用属性 Agent/复核模型、局部 HTTP 调用和复合草稿准备里的隐式属性步骤均已删除。`draft_prepare_for_market` 返回的完成步骤只包含目标、文案、图片、类目和定价；主对话随后按需直接填写属性。
+- `erp_web/services/global_agent_chat_service.py` 与 `config/agents.md` 规定事实复用、公共/SKU 边界、无品牌优先及缺口汇报。继续使用已安装的 Pydantic AI 2.43.0 原生工具调用、消息历史和指令装配；此次不需要新增 Agent loop 或生命周期。
+- `front/src/composables/useAiAttributeResults.ts` 仅把本轮成功写入回执投影到当前草稿同一类目的属性表，逐字段更新；历史回放和失败结果不覆盖表单，不触发业务调用。眼睛开关继续控制发送时的页面背景。
 - `front/src/components/domain/CategoryAttributesPanel.vue` 对字典字段只保存平台选项的
   `dictionary_value_id + value`（ID 原样按字符串存取，不做数值化），搜索输入不进入草稿；
   实时候选按 `next_cursor/has_more` 追加并按 ID 去重，大品牌字典通过“加载更多”继续读取；
@@ -673,20 +551,21 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
 - `erp_web/facades/category_match_facade.py`：`category_match` 共享业务阶段；
   首轮发送裁剪后的双语商品事实；绑定导航器时发送真实顶层节点并允许最多四次树导航，
   绑定搜索器时使用关键词列表批量发现，所有平台复用相同批量契约。最终选择必须经过叶子候选账本、站点、可发布状态、
-  详情、Ozon ID 配对和属性读取校验；达到资源上限时返回 failed 并保留通用额度错误和 details。
+  详情和 Ozon ID 配对校验；匹配阶段不读取属性定义，属性由用户选择类目后的独立加载步骤读取，
+  避免属性接口超时使已完成的匹配失败。达到资源上限时返回 failed 并保留通用额度错误和 details。
   仅模型主动、有效地 abstain 返回 unresolved；检索未确认不等于平台没有类目，不静默改选。
   `prepare_category_match_input / setup_category_match_search / finalize_category_match`
-  被 Global Task capability 与同步 focused HTTP 入口共用，行为一致。
+  被 主 Agent 领域工具 与同步 focused HTTP 入口共用，行为一致。
 - `erp_web/services/category_match_agent_service.py`：`category.product_match` 的 focused
   Execution Profile、prompt 渲染、类型化 `CategoryMatchAgentOutput` 与 Ledger output
   validator；关键词模式首轮一次规划基于实物的主要相关方向，批量检索后优先提交结果；
   仅有具体缺口才补查，不按最低关键词数量阻止 abstain，也不额外启动规划 Agent。
-  最多四次实际工具调用，模型请求上限为八次，给越界纠正及最终输出的原生校验重试留出余量；
-  总 deadline 仍为 60 秒。保留针对具体缺口的补查能力。输出 `category_match.v2` 携带完整路径、
+  最多八次实际工具调用，模型请求上限为十二次，给越界纠正及最终输出的原生校验重试留出余量；
+  总 deadline 为 150 秒。保留针对具体缺口的补查能力。输出 `category_match.v2` 携带完整路径、
   实物类型关系与中文结构对照；路径必须来自候选账本，明确结构冲突或不确定时不得选择。
   原始标题/规格优先于翻译和营销扩写；同一用途或材质不能把相邻叶子变成上位类目。
   这些约束不能证明模型的语义判断始终正确，须用真实模型评测而非旧 AI 选择作为正确答案。
-  输出校验、重试、调用预算和生命周期均直接使用 Pydantic AI 2.22.0 原生能力；
+  输出校验、重试、调用预算和生命周期均直接使用 Pydantic AI 2.43.0 原生能力；
   已核对官方文档：https://pydantic.dev/docs/ai/core-concepts/output/ 与
   https://pydantic.dev/docs/ai/tools-toolsets/tools-advanced/ 。
   只通过统一 `AiAgentFactory` 的流式 `open_stream_run` 运行（同步执行路径已删除）。
@@ -702,11 +581,10 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
 - `front/src/api/workflow/publishing.ts::matchCategory`：经通用 `withAiForeground`
   wrapper 调用同步 `POST /api/v1/category-match`；presentation ID 通过 axios config
   `aiPresentationId` 注入并由拦截器转换为 `X-AI-Presentation-ID` header，不进入 JSON
-  body；显式 timeout 大于后端 deadline 并留余量；类型化结果适配到现有人工候选 shape。
+  body；显式 timeout 为 180 秒，覆盖后端 150 秒 deadline 并留余量；类型化结果适配到现有人工候选 shape。
 - `front/src/stores/workflow/actions/publishing.ts::autoSuggestCategoriesForDraft`：
   自动匹配唯一入口，逐目标站点调用 `matchCategory`；不包含运行时开关或第二条
-  自动匹配分支。属性填充分支 `fillAttributesByAi` 使用同一 wrapper 触发
-  `POST /api/category-ai-fill`（见“类目匹配 Capability”属性填充段）。
+  自动匹配分支。属性填写统一从主对话执行。
 - `tests/test_category_match_facade.py`、`tests/test_category_tools.py`：首次上下文裁剪、
   Ozon 逐层导航与有限回退、Mercado Libre 多轮换词、未知 ID、deadline、凭据和工具去重测试。
 - `tests/test_ai_agent_budget.py`：使用原生 FunctionModel/Agent 验证单批和跨批第五次调用不执行、
@@ -955,7 +833,7 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   确认后提交会重新执行确定性校验并常量时间比较 digest，随后把已批准 payload/digest/identity 写入
   PublishingBus job。worker 现取凭据，但外发前复核店铺身份与完整 digest，并直接发送冻结 payload；
   不会重新构造已确认内容。Capability 还会在重校验与队列准入前按完整确认事实恢复既有 job，封闭
-  “job 已落库、GlobalTask 尚未保存 job_id”的崩溃窗口。店铺切换、payload 篡改或事实冲突都会在网络
+  “job 已落库、工具回执尚未保存 job_id”的崩溃窗口。店铺切换、payload 篡改或事实冲突都会在网络
   调用前安全失败。
 - 发布错误类型化重试契约：PublishingBus 只在适配器抛出
   `PublishAdapterError(retryable=True)` 且未耗尽重试次数时重试；店铺绑定校验失败
@@ -994,7 +872,7 @@ PUBLISHED 值）先于 Campaign 状态裁决：`HAS_CARD_CAN_UPDATE_ERRORS`/`NO_
 - `erp_web/product_research_config.py`：调研配置入口。
 - `erp_web/services/product_research_service.py`：调研编排与运行服务。手动 AI focused HTTP 调研在当前
   presentation scope 内同步完成，以便 Direct Model 事件持续输出到同一 SSE；未绑定 presentation 的普通调研与
-  Global Task 仍调用独立的 `create_hot_product_run_async()`，不被前台 presentation 生命周期限制。
+  主 Agent 的原生 Deferred 工具调用独立的 `create_hot_product_run_async()`，不被前台 presentation 生命周期限制。
 - `erp_web/schemas/product_research.py`：调研数据形状。
 
 ## 架构守卫
@@ -1002,9 +880,7 @@ PUBLISHED 值）先于 Campaign 状态裁决：`HAS_CARD_CAN_UPDATE_ERRORS`/`NO_
 - `tests/test_ai_context_architecture.py`：静态依赖与公共入口守卫。
 - `tests/test_ai_capability_architecture.py`：单主 Agent 与全业务 Capability 化守卫——
   exposure 覆盖规则、审批能力只能进 Task allowlist、写能力幂等/恢复元数据与只读能力
-  不得声明幂等、`global_task_start` step union 与 Task allowlist 同源机械投影、
-  Controller/Task schema 无 Capability 名称分支与 Planner 残留、业务 Catalog 只在
-  组合根编译一次。
+  不得虚构幂等、主 Agent 的目录权限与原生工具 Schema 一致、业务 Catalog 只在组合根编译一次。
 - `tests/test_ai_capability_coverage.py`：Endpoint Coverage Manifest 零未分类、零遗漏，
   业务域端点排除必须带原因。
 - `tests/test_ai_tools.py`：工具 schema、ToolSet 和 Runtime。
@@ -1020,9 +896,9 @@ PUBLISHED 值）先于 Campaign 状态裁决：`HAS_CARD_CAN_UPDATE_ERRORS`/`NO_
 - `tests/test_ai_agent_factory_presentation.py`：factory 执行内核的 presentation 集成——
   绑定 scope 自动发布官方 chunk、无 scope 运行不产生 SSE、发布失败只降级展示。
 - `tests/test_ai_agent_instrumentation.py`：技术 spans、usage、trace 关联、脱敏和故障隔离。
-- `tests/test_global_task_controller.py`、`tests/test_global_task_store.py`、
-  `tests/test_global_agent_vertical_integration.py`：capability-name-agnostic Controller
-  状态机、类型化步骤执行、审批门、暂停恢复与本地持久化。
+- `tests/test_pydantic_native_contracts.py`、`tests/test_native_agent_integration.py`：安装版本的原生并发、Deferred/混合审批、恢复后继续调用工具。
+- `tests/test_native_domain_workflow.py`：15 条所选草稿、真实准备服务与平台 mock 的审批/Job 纵向验收。
+- `tests/test_native_reliability.py`：商品并发、旧快照拒绝、取消、CAS、未知副作用重启、模型异常与慢客户端恢复。
 - `tests/test_domain_write_capabilities.py`、`tests/test_domain_collect_capabilities.py`、
   `tests/test_publish_admin_capabilities.py`：商品/草稿写能力、采集凭据规则与
   发布管理审批 digest 的行为测试。
@@ -1036,9 +912,7 @@ PUBLISHED 值）先于 Campaign 状态裁决：`HAS_CARD_CAN_UPDATE_ERRORS`/`NO_
   `config_http` 状态码分类与既有消息格式保持。
 - `tests/test_yandex_publish_workflows.py`：Yandex 预览 digest、确认入队与状态回读的
   HTTP 契约，含 400 需确认 / 409 确认过期路径。
-- `tests/test_global_agent_routes.py`、前端 `AiChatPanel` / `GlobalTaskApprovalCard`
-  测试：四个受信任务 POST 门面与纯读 GET、conversation 级任务卡挂载、发送锁定、
-  RequiredInput 与审批确认/拒绝交互、后台事件订阅重连。
+- `tests/test_ai_chat_routes.py` 与前端原生对话测试：增量 SSE、身份边界、收件箱、工具审批、批量入口与历史重连。
 - `tests/test_ai_context_architecture.py`：禁止第二 Agent loop、自研 deferred codec
   与前端任务推进的架构守卫。
 - `tests/test_backend_api.py` 与 `tests/test_http_request_security.py`：HTTP contract
@@ -1047,13 +921,12 @@ PUBLISHED 值）先于 Campaign 状态裁决：`HAS_CARD_CAN_UPDATE_ERRORS`/`NO_
 
 ### SKU 平台属性填写
 
-- `erp_web/runtime_units/sku_attribute_fill.py`：创建单 SKU 的事实投影，只补当前类目的变体属性空值，结果写入 `sku_items[].attributes_by_target[platform:site]`，不修改公共属性或商品来源。
-- 多 SKU 公共填写在构建模型输入及候选账本前排除变体字段，与公共属性页面的范围一致；即使来源规格相同也交由 SKU 入口填写。单 SKU 投影仍可填写真实变体字段。
-- `/api/category-ai-fill` 可携带 `sku_id`，仍经 `category_facade.py` 与原有 `category_attribute_ai_fill.py` / Pydantic AI service；SKU 请求使用服务器当前类目定义，客户端不能指定可写字段。
-- `DraftSkuAttributesEditor.vue` 复用 `CategoryAttributesPanel.vue` 的平台枚举、集合和单位控件；`DraftSkuPanel.vue` 只负责 SKU 选品及详情位置。
+主对话按目标分页读取 SKU 事实，通过 `draft_sku_attributes_update` 明确提交当前 SKU 的差异值；后端不再分批调用其他模型。公共属性写入拒绝变体字段，SKU 写入拒绝公共字段，均不改来源商品事实。`DraftSkuAttributesEditor.vue` 继续复用平台枚举、集合和单位控件进行手工编辑；`DraftSkuPanel.vue` 只负责选品及详情位置。
 
-### SKU 来源规格复用
-
-`/api/category-ai-fill` 的 `reuse_sku_sources=true` 由 `category_facade.py` 装配 `sku_source_attributes.py`，只按服务端类目定义补充所选 SKU 的空值。翻译使用现有 `text_translation.translate_texts` 与原生 AI 请求入口，不新增 Agent 生命周期。随后单 SKU Agent 只处理仍缺失的必要字段/区别。批量编辑用 `sku_model.editable_selected_skus` 筛选已选启用规格；发布继续严格检查停用或失效引用。`attribute_evidence_sources` 提供可原样复制的来源末级路径，证据校验仍读取原事实。`sku_custom_attributes.py` 是 Mercado User Products 自定义规格的纯契约，发布编译与组合预检共同使用。
+`sku_custom_attributes.py` 继续负责 Mercado User Products 自定义规格的纯契约，发布编译与组合预检共用。来源规格和历史 `source_option_translations` 数据仍可读取，当前属性填写由主对话直接按事实判断。
 
 SKU 新草稿默认选品由 `sku_model.new_draft_sku_rows` 定义：全部启用规格选中，停用规格不选中。`collect_helpers.py` 的两条新建草稿路径共同调用它，卖家编码待取得真实草稿 ID 后生成；`DraftSkuPanel.vue` 对新增事实采用相同默认值，并以表头父复选框表示全选、半选和全未选。已有显式取消选择不会因刷新重新选中。空白采集数据不生成 `single` 规格，真实来源删除的旧 SKU 仍保留身份并停用。
+
+### 属性事实边界
+
+主对话不能将混合 SKU 的汇总描述套给每个规格，不能从图片比例猜测尺寸、重量、品牌或认证。当前读工具提供来源文字与结构化 SKU 事实；资料不足时在主对话询问用户，不启动额外的属性图片填写或复核 Agent。

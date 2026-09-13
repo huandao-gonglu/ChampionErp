@@ -1,0 +1,179 @@
+"""通过原生 hooks 把单写者 run 连接到收件箱、消息 CAS 和写回执。"""
+
+from __future__ import annotations
+
+import dataclasses
+import asyncio
+import json
+import threading
+from typing import Any
+
+from pydantic_ai import ModelRequestNode, ModelRetry, RunContext, UserPromptNode
+from pydantic_ai.messages import ModelMessagesTypeAdapter, UserPromptPart
+
+from erp_web.stores.agent_call_store import AgentCallStore
+from erp_web.schemas.ai_page_context import page_context_instructions
+from erp_web.services.ai_run_cancellation import check_cancellation
+
+
+class AgentRunStorage:
+    def __init__(
+        self, store: AgentCallStore, conversation_id: str, history: list, version: int,
+        *, scope_resolver=None,
+    ) -> None:
+        self.store = store
+        self.conversation_id = conversation_id
+        self.history = list(history)
+        self.version = version
+        self.consumed: set[int] = set()
+        self.lock = threading.RLock()
+        self.target_draft_ids: tuple[str, ...] = store.selected_drafts(conversation_id)
+        self.scope_resolver = scope_resolver
+        self.allowed_write_tools = None
+        self.all_drafts = False
+        self.page_context = None
+        for message in history:
+            metadata = message.metadata or {}
+            if "page_context" in metadata:
+                self.page_context = metadata["page_context"]
+            if "allowed_write_tools" in metadata:
+                self.allowed_write_tools = frozenset(metadata["allowed_write_tools"])
+                self.all_drafts = bool(metadata.get("all_drafts"))
+
+    def context_instructions(self) -> str:
+        """由原生动态 instructions 读取本轮背景，关闭时不复用旧页面。"""
+        return page_context_instructions(self.page_context)
+
+    def canonical(self, ctx: RunContext) -> list:
+        return [*self.history, *(m for m in ctx.messages if m.run_id == ctx.run_id)]
+
+    def receive_at_boundary(self, ctx: RunContext) -> None:
+        check_cancellation()
+        with self.lock:
+            incoming = []
+            for row in self.store.inbox(self.conversation_id):
+                if row["sequence"] in self.consumed:
+                    continue
+                messages = ModelMessagesTypeAdapter.validate_json(row["messages_json"])
+                for message in messages:
+                    message.run_id = ctx.run_id
+                    message.conversation_id = self.conversation_id
+                    self.page_context = (message.metadata or {}).get("page_context")
+                    message.metadata = {
+                        "user_message_id": row["message_id"],
+                        "page_context": self.page_context,
+                    }
+                if self.scope_resolver is not None:
+                    check_cancellation()
+                    texts = [str(part.content) for message in [*self.canonical(ctx), *incoming, *messages]
+                             for part in message.parts if isinstance(part, UserPromptPart)]
+                    authorization = self.scope_resolver(texts)
+                    self.allowed_write_tools = frozenset(authorization.allowed_write_tools) if authorization else frozenset()
+                    self.all_drafts = authorization.all_drafts if authorization else False
+                    for message in messages:
+                        message.metadata["allowed_write_tools"] = sorted(self.allowed_write_tools)
+                        message.metadata["all_drafts"] = self.all_drafts
+                # 工具准备发生在 before_model_request 之前；在模型节点开始前更新
+                # 业务权限，消息通过原生队列交给框架注入和编码。
+                ctx.enqueue(*messages)
+                incoming.extend(messages)
+                ids = tuple(json.loads(row["target_draft_ids"]))
+                if ids:
+                    self.target_draft_ids = ids
+                self.consumed.add(row["sequence"])
+
+    def before_tool(self, ctx: RunContext, *, writing: bool) -> None:
+        check_cancellation()
+        if any(
+            row["sequence"] not in self.consumed
+            for row in self.store.inbox(self.conversation_id)
+        ):
+            raise ModelRetry(
+                "用户已提交更新。请先读取下一次模型请求中的新用户消息，再决定操作。"
+            )
+        if writing:
+            with self.lock:
+                self.version = self.store.commit(
+                    self.conversation_id,
+                    self.canonical(ctx),
+                    expected_version=self.version,
+                    consumed_sequences=tuple(self.consumed),
+                    replace_deferred=False,
+                )
+
+    def execution(self, ctx: RunContext, arguments: dict[str, Any]) -> Any:
+        base = ctx.deps.execution_context
+        call_id = str(ctx.tool_call_id)
+        metadata = dict(ctx.tool_call_metadata or {})
+        scope = {
+            **dict(base.business_scope),
+            "tool_call_id": call_id,
+            "approver": str(metadata.get("approver", "")),
+            "approval_confirmed_at": str(metadata.get("approval_confirmed_at", "")),
+            "target_draft_ids": json.dumps(self.target_draft_ids),
+            "user_facts": json.dumps(
+                self.store.user_facts(self.conversation_id), ensure_ascii=False
+            ),
+        }
+        if self.allowed_write_tools is not None:
+            scope["allowed_write_tools"] = json.dumps(sorted(self.allowed_write_tools))
+        return dataclasses.replace(
+            base,
+            business_scope=scope,
+            idempotency_context={
+                **dict(base.idempotency_context),
+                "operation_key": f"{self.conversation_id}:{call_id}",
+            },
+            approved_tool_call_ids=frozenset({call_id})
+            if ctx.tool_call_approved
+            else frozenset(),
+            approval_digest=str(metadata.get("approval_digest", "")),
+            approval_revision=int(metadata.get("approval_revision", 0)),
+        )
+
+    def finish(self, result: Any) -> None:
+        from pydantic_ai import DeferredToolRequests
+
+        with self.lock:
+            self.version = self.store.commit(
+                self.conversation_id,
+                [*self.history, *result.new_messages()],
+                expected_version=self.version,
+                requests=result.output
+                if isinstance(result.output, DeferredToolRequests)
+                else None,
+                usage=result.usage,
+                consumed_sequences=tuple(self.consumed),
+            )
+
+    def fail(self, messages: list, run_id: str) -> None:
+        """保存已发生的原生历史；失败的用户回合不由收件箱无限重新运行。"""
+        with self.lock:
+            current = [message for message in messages if message.run_id == run_id]
+            self.version = self.store.commit(
+                self.conversation_id,
+                [*self.history, *current],
+                expected_version=self.version,
+                consumed_sequences=tuple(self.consumed),
+            )
+
+    def failure_summary(self) -> str:
+        records = self.store.current_turn_receipts(self.conversation_id)
+        if not records:
+            return ""
+        lines = ["本轮业务回执（失败不代表已写入的数据已撤销）："]
+        for row in records:
+            args, output = row["arguments"], row["output"] or {}
+            target = "/".join(str(value or "") for value in (args.get("draft_id"), args.get("target_platform") or args.get("platform"), args.get("site")))
+            error = output.get("error") or {}
+            status = error.get("code") or output.get("status") or row["status"]
+            lines.append(f"{target} {row['tool_name']}：{status}")
+        return "\n".join(lines)
+
+
+async def receive_user_updates(ctx: RunContext, *, node: Any) -> Any:
+    support = ctx.deps.tool_runtime.run_support
+    # 带历史或 Deferred 的 UserPromptNode 也会提前准备工具。
+    if support is not None and isinstance(node, (UserPromptNode, ModelRequestNode)):
+        await asyncio.to_thread(support.receive_at_boundary, ctx)
+    return node

@@ -250,7 +250,9 @@ def pause_mercadolibre_user_product(body: dict[str, Any]) -> ResponseWithStatus:
         )
         if result.get("ok"):
             return result, 200
-        return result, 404 if result.get("error_code") == "MERCADOLIBRE_USER_PRODUCT_NOT_FOUND" else 400
+        return result, 404 if result.get(
+            "error_code"
+        ) == "MERCADOLIBRE_USER_PRODUCT_NOT_FOUND" else 400
     except Exception as exc:
         return {"ok": False, "error": str(exc)}, 400
 
@@ -326,7 +328,7 @@ def enqueue_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
             "target": context["target"],
         }, 400
 
-    # 服务端生成可信幂等键；task_id 复用同一 key 作为确认归属标识。
+    # 服务端生成可信幂等键；conversation_id 复用同一 key 作为确认归属标识。
     idempotency_key = f"manual:{uuid.uuid4().hex}"
     try:
         request = ProductPublishRequest(
@@ -335,8 +337,8 @@ def enqueue_publish_job(body: dict[str, Any]) -> ResponseWithStatus:
             site=site,
             idempotency_key=idempotency_key,
             confirmation=PublishRequestConfirmation(
-                task_id=idempotency_key,
-                step_id="manual_enqueue",
+                conversation_id=idempotency_key,
+                tool_call_id="manual_enqueue",
                 validation_digest=validation_digest,
                 confirmed_at=datetime.now(timezone.utc),
             ),

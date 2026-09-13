@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
-from typing import Any, Mapping, TypedDict
+from typing import Any, Callable, Mapping, TypedDict
 from uuid import uuid4
 
 
@@ -36,10 +36,11 @@ class AiExecutionContext:
     parent_task_run_id: str | None = None
     approved_tool_call_ids: frozenset[str] = frozenset()
     allow_write: bool = False
-    # 审批绑定：Controller 在批准执行时注入已持久化审批请求的 digest 与
+    # 审批绑定：原生审批恢复时注入已持久化请求的 digest 与
     # 任务版本；approval-required Capability 必须在执行侧重算快照并复核。
     approval_digest: str = ""
-    approval_task_revision: int = 0
+    approval_revision: int = 0
+    cancellation_check: Callable[[], None] | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not self.task_run_id:
@@ -96,18 +97,21 @@ class AiExecutionContext:
         permissions: frozenset[str] | set[str] | tuple[str, ...] = frozenset(),
         business_scope: Mapping[str, str] | None = None,
         idempotency_context: Mapping[str, str] | None = None,
-        approved_tool_call_ids: frozenset[str] | set[str] | tuple[str, ...] = frozenset(),
+        approved_tool_call_ids: frozenset[str]
+        | set[str]
+        | tuple[str, ...] = frozenset(),
         allow_write: bool = False,
         approval_digest: str = "",
-        approval_task_revision: int = 0,
+        approval_revision: int = 0,
+        cancellation_check: Callable[[], None] | None = None,
         now: datetime | None = None,
     ) -> "AiExecutionContext":
         safe_timeout = float(timeout_seconds)
         if safe_timeout <= 0:
             raise ValueError("timeout_seconds 必须大于 0")
-        safe_revision = int(approval_task_revision)
+        safe_revision = int(approval_revision)
         if safe_revision < 0:
-            raise ValueError("approval_task_revision 不能为负数")
+            raise ValueError("approval_revision 不能为负数")
         started_at = now or datetime.now(timezone.utc)
         if started_at.tzinfo is None:
             raise ValueError("now 必须包含时区")
@@ -126,7 +130,8 @@ class AiExecutionContext:
             approved_tool_call_ids=frozenset(approved_tool_call_ids),
             allow_write=bool(allow_write),
             approval_digest=str(approval_digest or "").strip(),
-            approval_task_revision=safe_revision,
+            approval_revision=safe_revision,
+            cancellation_check=cancellation_check,
         )
 
     def remaining_seconds(self, *, now: datetime | None = None) -> float:
@@ -150,6 +155,8 @@ class AiExecutionContext:
         每一个网络、浏览器或外部进程调用，才能满足 cooperative deadline。
         """
 
+        if self.cancellation_check is not None:
+            self.cancellation_check()
         remaining = self.remaining_seconds(now=now)
         if remaining <= 0:
             raise TimeoutError("AI Task 总 deadline 已耗尽")

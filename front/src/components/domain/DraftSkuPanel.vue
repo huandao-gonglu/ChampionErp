@@ -2,11 +2,21 @@
 import { computed, ref, watch } from 'vue'
 import { PhArrowCounterClockwise } from '@phosphor-icons/vue'
 import SkuImagePicker from './SkuImagePicker.vue'
+import { useAiPageContext } from '@/composables/useAiPageContext'
 import type { DraftDetail, DraftSku, ImageAsset, ProductSku, UnknownRecord } from '@/types/workflow'
 
 const props = defineProps<{ draft: DraftDetail; skus: ProductSku[]; images?: ImageAsset[]; loading: boolean }>()
 const expanded = ref('')
 const targetKey = ref('')
+useAiPageContext(() => {
+  const target = props.draft.targetSites.find(item => `${item.platform}:${item.site}`.toLowerCase() === targetKey.value)
+  return {
+    page: 'draft_editor', section: 'skus',
+    draft_id: props.draft.draftId || undefined, product_id: props.draft.productId || undefined,
+    platform: target?.platform, site: target?.site || undefined,
+    sku_id: props.draft.skuItems.some(row => row.sku_id === expanded.value) ? expanded.value : undefined,
+  }
+}, 10)
 watch(() => [props.draft.draftId, props.draft.skuItems, props.skus.map(row => [row.id, row.supplier_stock])], () => {
   for (const sku of props.skus) {
     const row = props.draft.skuItems.find(row => row.sku_id === sku.id)
@@ -63,7 +73,6 @@ const groupingResults = computed(() => ((props.draft.raw.target_sites as Unknown
     <p v-for="item in groupingResults" :key="item.target" class="text-sm">{{ item.target }}：{{ statusLabel(item.grouping.status) }}</p>
     <p v-if="!pairs.length" class="rounded-lg bg-slate-50 p-5 text-sm dark:bg-dark-900">商品暂无 SKU，请先在商品的“规格与 SKU”中添加。</p>
     <label class="block text-sm">目标市场<select v-model="targetKey" :disabled="loading" class="input mt-1"><option v-for="target in draft.targetSites" :key="`${target.platform}:${target.site}`" :value="`${target.platform}:${target.site}`.toLowerCase()">{{ target.platform }} · {{ target.site }}</option></select></label>
-    <slot name="batch-attributes" :target-key="targetKey" />
     <fieldset :disabled="loading" class="min-w-0 overflow-x-auto">
       <table v-if="pairs.length" class="w-full min-w-[750px] text-left text-sm">
         <thead class="text-xs text-slate-500"><tr><th class="p-2"><label class="inline-flex items-center gap-2"><input

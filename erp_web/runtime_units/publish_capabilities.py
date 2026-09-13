@@ -26,7 +26,7 @@ from erp_web.runtime_units.publish_context import prepare_publish_context
 from erp_web.schemas.ai_tools import (
     PUBLISH_JOB_TYPE,
     JobReferenceResult,
-    TaskApprovalSnapshot,
+    ToolApprovalSnapshot,
 )
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.publish_capabilities import (
@@ -43,7 +43,7 @@ from erp_web.schemas.publish_capabilities import (
 )
 from erp_web.services.ai_tool_declaration import Injected, ai_tool
 from erp_web.services.capability_errors import BusinessCapabilityError
-from erp_web.services.task_approval import verify_execution_approval
+from erp_web.services.tool_approval import verify_execution_approval
 
 
 class PublishingBusLike(Protocol):
@@ -56,8 +56,7 @@ class PublishingBusLike(Protocol):
         validation_digest: str,
         platform: str,
         site: str,
-    ) -> dict[str, Any] | None:
-        ...
+    ) -> dict[str, Any] | None: ...
 
     def enqueue(
         self,
@@ -67,8 +66,7 @@ class PublishingBusLike(Protocol):
         targets: dict[str, dict[str, Any]],
         idempotency_key: str,
         approved_publications: dict[str, dict[str, Any]] | None = None,
-    ) -> dict[str, Any]:
-        ...
+    ) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True)
@@ -95,7 +93,11 @@ def _issue(
 ) -> PublishValidationIssue:
     item = raw if isinstance(raw, dict) else {}
     message = _text(item.get("message") if item else raw) or "发布校验失败"
-    normalized_severity = "warning" if _text(item.get("severity")).lower() == "warning" or severity == "warning" else "error"
+    normalized_severity = (
+        "warning"
+        if _text(item.get("severity")).lower() == "warning" or severity == "warning"
+        else "error"
+    )
     return PublishValidationIssue(
         code=_text(item.get("code")) or default_code,
         field=_text(item.get("field")),
@@ -166,7 +168,8 @@ def _summary(
     if platform == "mercadolibre" and _text(context.get("site")).upper() == "CBT":
         source_targets = (
             payload.get("sites_to_sell")
-            if isinstance(payload, dict) and isinstance(payload.get("sites_to_sell"), list)
+            if isinstance(payload, dict)
+            and isinstance(payload.get("sites_to_sell"), list)
             else draft.get("sites_to_sell")
         )
         destinations = tuple(
@@ -181,29 +184,30 @@ def _summary(
             continue
         quote = row.get("pricing", {}).get("targets", {}).get(key, {})
         price = quote.get("applied_price", {})
-        sku_summaries.append(ProductPublishSkuSummary(
-            sku_id=row["sku_id"], sku=row["sku"], stock=_text(row.get("stock")),
-            price=_text(price.get("amount")), currency=_text(price.get("currency")),
-            destinations=tuple(ProductPublishDestination(**target) for target in quote.get("sites_to_sell", [])),
-        ))
+        sku_summaries.append(
+            ProductPublishSkuSummary(
+                sku_id=row["sku_id"],
+                sku=row["sku"],
+                stock=_text(row.get("stock")),
+                price=_text(price.get("amount")),
+                currency=_text(price.get("currency")),
+                destinations=tuple(
+                    ProductPublishDestination(**target)
+                    for target in quote.get("sites_to_sell", [])
+                ),
+            )
+        )
     return ProductPublishSummary(
-        sku_items=tuple(sku_summaries), grouping_mode=_text(draft.get("grouping", {}).get("mode")),
+        sku_items=tuple(sku_summaries),
+        grouping_mode=_text(draft.get("grouping", {}).get("mode")),
         product_id=_text(prepared_product.get("product_id")),
         draft_id=_text(context.get("draft", {}).get("draft_id")),
         platform=platform,
         site=_text(context.get("site")),
         store_identity=store_binding.identity,
         store_label=store_binding.label,
-        title=_text(
-            payload.get("title")
-            if isinstance(payload, dict)
-            else ""
-        )
-        or _text(
-            payload.get("family_name")
-            if isinstance(payload, dict)
-            else ""
-        )
+        title=_text(payload.get("title") if isinstance(payload, dict) else "")
+        or _text(payload.get("family_name") if isinstance(payload, dict) else "")
         or _text(draft.get("title")),
         category_id=_text(draft.get("category_id")),
         listing_currency=_text(
@@ -639,9 +643,7 @@ def request_product_publish(
         draft_id=request.draft_id,
         platform=evaluation.platform,
         status=_text(result.get("status")) or "queued",
-        idempotent_replay=bool(
-            result.get("idempotent_replay") or result.get("reused")
-        ),
+        idempotent_replay=bool(result.get("idempotent_replay") or result.get("reused")),
     )
 
 
@@ -678,7 +680,7 @@ def product_publish_validate(
 def _publish_request_approval_snapshot(
     request: ProductPublishCapabilityRequest,
     scope: PublishCapabilityScope,
-) -> TaskApprovalSnapshot:
+) -> ToolApprovalSnapshot:
     """服务端生成的发布审批快照：冻结发布校验摘要与 validation_digest。
 
     审批页面展示它与执行真正提交的内容同源；任务创建与执行复核两个时点
@@ -697,17 +699,16 @@ def _publish_request_approval_snapshot(
         raise BusinessCapabilityError(
             "PUBLISH_VALIDATION_FAILED",
             "发布条件当前不满足，请修复校验错误后重试。",
+            details={"validation": evaluation.result.model_dump(mode="json")},
         )
     summary = evaluation.result.summary
     destination_rows = [
-        item.model_dump(mode="json", exclude_none=True)
-        for item in summary.destinations
+        item.model_dump(mode="json", exclude_none=True) for item in summary.destinations
     ]
     destination_text = "、".join(
-        f"{item.site_id}/{item.logistic_type}"
-        for item in summary.destinations
+        f"{item.site_id}/{item.logistic_type}" for item in summary.destinations
     )
-    return TaskApprovalSnapshot(
+    return ToolApprovalSnapshot(
         summary=(
             f"发布草稿 {summary.draft_id} 到 {summary.platform}："
             f"《{summary.title}》 {summary.listing_currency} {summary.price}"
@@ -762,12 +763,12 @@ def product_publish_request(
             "PUBLISH_OPERATION_KEY_REQUIRED",
             "发布请求缺少可信 operation_key。",
         )
-    task_id = str(execution.business_scope.get("task_id") or "").strip()
-    step_id = str(execution.business_scope.get("step_id") or "").strip()
+    conversation_id = str(execution.business_scope.get("conversation_id") or "").strip()
+    tool_call_id = str(execution.business_scope.get("tool_call_id") or "").strip()
     confirmed_at_raw = str(
         execution.business_scope.get("approval_confirmed_at") or ""
     ).strip()
-    if not task_id or not step_id or not confirmed_at_raw:
+    if not conversation_id or not tool_call_id or not confirmed_at_raw:
         raise BusinessCapabilityError(
             "PUBLISH_APPROVAL_CONTEXT_REQUIRED",
             "发布请求缺少可信审批上下文。",
@@ -787,9 +788,7 @@ def product_publish_request(
         capability_version="1",
         stale_code="PUBLISH_CONFIRMATION_STALE",
     )
-    validation_digest = str(
-        snapshot.canonical_payload.get("validation_digest") or ""
-    )
+    validation_digest = str(snapshot.canonical_payload.get("validation_digest") or "")
     result = request_product_publish(
         ProductPublishRequest(
             draft_id=request.draft_id,
@@ -797,8 +796,8 @@ def product_publish_request(
             site=request.site,
             idempotency_key=operation_key,
             confirmation=PublishRequestConfirmation(
-                task_id=task_id,
-                step_id=step_id,
+                conversation_id=conversation_id,
+                tool_call_id=tool_call_id,
                 validation_digest=validation_digest,
                 confirmed_at=confirmed_at,
             ),

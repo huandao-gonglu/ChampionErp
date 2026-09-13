@@ -14,6 +14,7 @@ from erp_web.schemas.draft_capabilities import (
     DraftQueryResult,
     DraftQuerySnapshot,
     DraftSummary,
+    DraftTargetSummary,
 )
 from erp_web.services.capability_errors import (
     BusinessCapabilityError,
@@ -90,6 +91,19 @@ def _summary(item: dict[str, Any], *, view: str = "detail") -> DraftSummary:
     images = raw.get("images") if isinstance(raw.get("images"), list) else []
     validation_errors, validation_warnings = _validation_counts(raw)
     last_precheck = raw.get("last_precheck") if isinstance(raw.get("last_precheck"), dict) else {}
+    selected_skus = [row for row in raw.get("sku_items", []) if row.get("selected", True)]
+    targets = [DraftTargetSummary(
+        platform=_text(target.get("platform")), site=_text(target.get("site")),
+        language=_text(target.get("language") or raw.get("language")),
+        category_id=_text(target.get("category_id")),
+        attribute_count=len(target.get("attributes") or {}),
+        selected_sku_count=len(selected_skus),
+        sales_targets=[f"{row.get('site_id', '')}:{row.get('logistic_type', '')}"
+                       for row in target.get("sites_to_sell", [])],
+        skus_with_attributes=sum(bool((row.get("attributes_by_target") or {}).get(
+            f"{target.get('platform', '')}:{target.get('site', '')}".lower()
+        )) for row in selected_skus),
+    ) for target in raw.get("target_sites", []) if isinstance(target, dict)]
     summary = DraftSummary(
         draft_id=draft_id,
         product_id=_text(item.get("source_product_id") or item.get("product_id")),
@@ -99,6 +113,7 @@ def _summary(item: dict[str, Any], *, view: str = "detail") -> DraftSummary:
         target_platform=_text(item.get("platform")).lower(),
         target_platforms=_platforms(item),
         target_site=_text(item.get("site")),
+        targets=targets,
         language=_text(item.get("language")),
         category_id=_text(item.get("category_id")),
         category_path=_text(item.get("category_path")),
@@ -126,6 +141,7 @@ def _summary(item: dict[str, Any], *, view: str = "detail") -> DraftSummary:
         "target_platform": summary.target_platform,
         "target_platforms": summary.target_platforms,
         "target_site": summary.target_site,
+        "targets": summary.targets,
         "created_at": summary.created_at,
         "updated_at": summary.updated_at,
     }

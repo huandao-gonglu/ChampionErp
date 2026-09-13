@@ -7,13 +7,17 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import asdict
 import logging
 import urllib.parse
 
 from erp_web.facades import ai_chat_facade
 from erp_web.http_request import safe_json_body_with_raw
 from erp_web.schemas.requests import validate_request_payload
-from erp_web.services.vercel_ai_ui_service import VercelUiProtocolError
+from erp_web.services.vercel_ai_ui_service import (
+    AcceptedChatInput,
+    VercelUiProtocolError,
+)
 
 from .common import JsonRequestHandler
 
@@ -21,13 +25,19 @@ from .common import JsonRequestHandler
 _logger = logging.getLogger(__name__)
 
 CHAT_RUNS_PATH = "/api/v1/ai-chat/runs"
+CHAT_CANCEL_PATH = "/api/v1/ai-chat/cancel"
 
 
 def handle_chat_run(handler: JsonRequestHandler) -> None:
     payload, raw_body = safe_json_body_with_raw(handler)
     validate_request_payload(payload, endpoint=handler.path)
     try:
-        run = ai_chat_facade.run_chat_stream(raw_body)
+        run = ai_chat_facade.run_chat_stream(
+            raw_body,
+            approval_token=str(
+                getattr(handler, "headers", {}).get("X-Approval-Token", "")
+            ),
+        )
     except VercelUiProtocolError as exc:
         handler.send_json(
             {
@@ -38,7 +48,10 @@ def handle_chat_run(handler: JsonRequestHandler) -> None:
             exc.status_code,
         )
         return
-    # 报告 A-02：registry/claim 已在 run_chat_stream() 内领取。此后写响应头
+    if isinstance(run, AcceptedChatInput):
+        handler.send_json({"ok": True, **asdict(run)}, 202)
+        return
+    # registry 已领取；请求中断时持久收件箱交由后台投递。
     # 或创建 loop 的任何失败都必须进入确定性收尾（claim failed + 释放 run
     # lock），否则 conversation 永久锁死（后续请求全部 AI_CHAT_RUN_ACTIVE）。
     # stream 一旦启动，收尾由进程级 runner 上的 producer 负责，此处不重复。
@@ -65,8 +78,20 @@ def handle_chat_run(handler: JsonRequestHandler) -> None:
             loop.close()
 
 
+def handle_chat_cancel(handler: JsonRequestHandler) -> None:
+    payload, _ = safe_json_body_with_raw(handler)
+    payload = validate_request_payload(payload, endpoint=handler.path)
+    try:
+        result = ai_chat_facade.cancel_chat_run(payload["id"], payload["message_id"])
+    except VercelUiProtocolError as exc:
+        handler.send_json({"ok": False, "error": str(exc), "error_code": exc.code}, exc.status_code)
+        return
+    handler.send_json(result, 200)
+
+
 POST_HANDLERS = {
     CHAT_RUNS_PATH: handle_chat_run,
+    CHAT_CANCEL_PATH: handle_chat_cancel,
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)
 
@@ -81,7 +106,9 @@ def handle_post(handler: JsonRequestHandler, parsed: urllib.parse.ParseResult) -
 
 __all__ = [
     "CHAT_RUNS_PATH",
+    "CHAT_CANCEL_PATH",
     "HANDLED_PATHS",
     "POST_HANDLERS",
     "handle_post",
+    "handle_chat_cancel",
 ]

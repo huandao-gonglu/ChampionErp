@@ -75,8 +75,8 @@ def test_only_providers_import_platform_category_api() -> None:
 
 BUSINESS_CONSUMER_FILES = (
     "erp_web/runtime_units/category_capabilities.py",
-    "erp_web/runtime_units/attribute_fill_capabilities.py",
-    "erp_web/runtime_units/category_attribute_ai_fill.py",
+    "erp_web/runtime_units/category_attribute_updates.py",
+    "erp_web/runtime_units/product_capabilities.py",
     "erp_web/runtime_units/category_query_capabilities.py",
     "erp_web/runtime_units/market_prepare_capabilities.py",
     "erp_web/runtime_units/publish_helpers.py",

@@ -6,19 +6,23 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Generic, Mapping, Sequence, TypeVar
+from typing import get_args, Any, Callable, Generic, Mapping, Sequence, TypeVar
 from uuid import uuid4
 
 from pydantic_ai import (
     Agent,
     AgentRunResult,
     RunContext,
+    RunCancelled,
     UsageLimits,
     capture_run_messages,
 )
-from pydantic_ai.capabilities import PrepareTools, ProcessHistory
+from pydantic_ai.capabilities import Hooks, PrepareTools
+from pydantic_ai.usage import RunUsage
+from .agent_run_storage import receive_user_updates
+from .ai_run_cancellation import current_cancellation_token, check_cancellation
 from pydantic_ai.exceptions import (
     AgentRunError,
     ModelAPIError,
@@ -31,6 +35,7 @@ from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
     UserPromptPart,
+    UserContent,
 )
 from pydantic_ai.models import Model
 from pydantic_ai.run import AgentRunResultEvent
@@ -51,19 +56,24 @@ from .ai_model_factory import (
     PydanticModelBinding,
     create_pydantic_model_binding_for_use_case,
 )
-from .ai_model_context_projection import project_model_context_for_model
-from .ai_model_errors import model_http_error_payload, safe_model_error_text
+from .ai_model_context_projection import project_model_request
+from .ai_model_errors import (
+    direct_model_error_payload,
+    model_http_error_payload,
+    safe_model_error_text,
+)
 from .ai_presentation_context import (
     AiPresentationContext,
     bind_presentation_context,
     current_presentation_context,
 )
-from .ai_tool_bridge import AiToolBridgeError, build_pydantic_toolset, tool_argument_retry_error
-from .ai_tool_registry import AiToolSet
-from .ai_tool_runtime import (
-    DEFERRED_CONTINUATION_SCOPE_KEY,
-    AiToolRuntime,
+from .ai_tool_bridge import (
+    AiToolBridgeError,
+    build_pydantic_toolset,
+    tool_argument_retry_error,
 )
+from .ai_tool_registry import AiToolSet
+from .ai_tool_runtime import AiToolRuntime
 
 
 _logger = logging.getLogger(__name__)
@@ -74,12 +84,28 @@ ModelBindingFactory = Callable[..., PydanticModelBinding]
 
 
 def _prepare_tools_within_usage_limit(
-    ctx: RunContext[AiAgentDependencies], tool_defs: list[ToolDefinition],
+    ctx: RunContext[AiAgentDependencies],
+    tool_defs: list[ToolDefinition],
 ) -> list[ToolDefinition]:
     """用原生使用量停用已耗尽的工具，保留最终输出工具供模型提交结果。"""
     limit = ctx.deps.tool_runtime.max_tool_calls
     if limit is not None and ctx.usage.tool_calls >= limit:
         return []
+    support = ctx.deps.tool_runtime.run_support
+    if support is not None:
+        # 在原生工具准备阶段保留收尾时间；不另建重试循环或超时状态机。
+        execution = ctx.deps.execution_context
+        if not hasattr(support, "deadline_reserve_seconds"):
+            support.deadline_reserve_seconds = min(90, execution.remaining_seconds() / 10)
+        reserve = support.deadline_reserve_seconds
+        if execution.remaining_seconds() < reserve:
+            return []
+        allowed = getattr(support, "allowed_write_tools", None)
+        if allowed is not None:
+            tool_defs = [tool for tool in tool_defs if (
+                ctx.deps.tool_runtime.toolset.bindings[tool.name].definition.side_effect != "write"
+                or tool.name in allowed
+            )]
     return tool_defs
 
 
@@ -234,6 +260,11 @@ def _safe_agent_error(
         "run_id": run_id,
         "trace_id": trace_id,
     }
+    direct_error = direct_model_error_payload(exc)
+    if direct_error is not None:
+        # 输出校验中的翻译等 Direct Model 调用已在集中请求边界转换过异常。
+        # 保留该服务的实际失败原因，不能归为模型输出无效或通用 Agent 错误。
+        return AiAgentExecutionError(**direct_error, **correlation)
     if isinstance(exc, ModelHTTPError):
         provider_error = model_http_error_payload(exc)
         status_code = int(provider_error["status_code"])
@@ -285,21 +316,33 @@ def _safe_agent_error(
                 **correlation,
             )
     budget_error = agent_budget_error(
-        exc, tool_call_limit=tool_call_limit, tool_calls_used=tool_calls_used,
-        model_requests_used=sum(isinstance(message, ModelResponse) for message in model_messages or []),
+        exc,
+        tool_call_limit=tool_call_limit,
+        tool_calls_used=tool_calls_used,
+        model_requests_used=sum(
+            isinstance(message, ModelResponse) for message in model_messages or []
+        ),
     )
     if budget_error is not None:
         message, details = budget_error
         return AiAgentExecutionError(
-            "AI_AGENT_USAGE_LIMIT_EXCEEDED", message, details=details, **correlation,
+            "AI_AGENT_USAGE_LIMIT_EXCEEDED",
+            message,
+            details=details,
+            **correlation,
         )
     input_retry = tool_argument_retry_error(exc)
     if input_retry is not None:
         return AiAgentExecutionError(
             "AI_AGENT_TOOL_ARGUMENTS_INVALID",
-            "模型多次提交不符合工具约束的参数，任务未完成：" + (safe_model_error_text(input_retry.validation_message) or "参数无效。"),
-            details={"origin": "local", "stage": "tool_validation", "tool_name": input_retry.tool_name,
-                     "validation_code": input_retry.code},
+            "模型多次提交不符合工具约束的参数，任务未完成："
+            + (safe_model_error_text(input_retry.validation_message) or "参数无效。"),
+            details={
+                "origin": "local",
+                "stage": "tool_validation",
+                "tool_name": input_retry.tool_name,
+                "validation_code": input_retry.code,
+            },
             **correlation,
         )
     validation_code = str(getattr(validator, "error_code", "") or "")
@@ -372,21 +415,10 @@ class AiAgentStreamSession(Generic[OutputT]):
         output_validator: OutputValidator[OutputT] | None = None,
         presentation_context: AiPresentationContext | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
-        external_deferred_commit: bool = False,
-        external_final_commit: bool = False,
+        run_support: Any = None,
+        usage: RunUsage | None = None,
     ) -> None:
-        """一次流式 run 的 owner。
-
-        ``deferred_tool_results`` 只用于后台 continuation：同一 conversation、
-        新 run_id、不合成新用户 prompt，用官方 ``DeferredToolResults`` 闭合
-        上一轮悬空的 external deferred tool call。
-
-        ``external_deferred_commit=True``：首次 Deferred 握手的 history 由协议
-        层与 link ready/outbox 同事务提交，session 遇到
-        ``DeferredToolRequests`` output 时不自动保存历史。
-        ``external_final_commit=True``：continuation 的最终 history 由恢复服务
-        按 CAS 提交，session 全程不自动保存，也不在失败时落 captured 消息。
-        """
+        """包装原生流与领域展示；run_support 负责消息和 Deferred 的原子提交。"""
 
         self._factory = factory
         self._profile = profile
@@ -400,19 +432,20 @@ class AiAgentStreamSession(Generic[OutputT]):
         self._output_validator = output_validator
         self._presentation = presentation_context
         self._deferred_tool_results = deferred_tool_results
-        self._external_deferred_commit = bool(external_deferred_commit)
-        self._external_final_commit = bool(external_final_commit)
+        self._run_support = run_support
+        self._usage = usage
         self._run_id = execution_context.attempt_id
         self._started = False
         self._history_persisted = False
         self._completed = False
         self._failure_error: AiAgentExecutionError | None = None
+        self.cancelled = False
         self._running_notified = False
         self._finalizing_notified = False
         self._result: AgentRunResult[Any] | None = None
-        self._events: AsyncIterator[
-            AgentStreamEvent | AgentRunResultEvent[Any]
-        ] | None = None
+        self._events: (
+            AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]] | None
+        ) = None
         self._published: AsyncIterator[Any] | None = None
 
     @property
@@ -450,26 +483,6 @@ class AiAgentStreamSession(Generic[OutputT]):
         return self._history_persisted
 
     @property
-    def external_final_commit(self) -> bool:
-        """True 时最终历史由调用方按 CAS 提交，Factory 不落任何消息。"""
-
-        return self._external_final_commit
-
-    @property
-    def external_deferred_commit(self) -> bool:
-        """True 时首次 Deferred 历史由协议层组合事务提交，Factory 不落消息。"""
-
-        return self._external_deferred_commit
-
-    @property
-    def deferred_handshake_started(self) -> bool:
-        """Deferred 控制工具已抛出 CallDeferred；官方终态事件必须延迟发布。"""
-
-        return bool(
-            getattr(self._dependencies.tool_runtime, "deferred_call_started", False)
-        )
-
-    @property
     def completed(self) -> bool:
         """run 正常完成并且结果消息已经持久化。"""
 
@@ -500,6 +513,22 @@ class AiAgentStreamSession(Generic[OutputT]):
                 task_run_id=self.task_run_id,
             )
         self._started = True
+        presentation = self._presentation
+        if presentation is not None and presentation.origin == "business.ui":
+            # 展示文案随原生输入 metadata 保存，不替换模型输入，也不增加模型回合。
+            # 仅根运行携带前台短句，子运行不能复制父任务的用户气泡。
+            display_text = presentation.initial_user_message if presentation.is_root_run else ""
+            projected_inputs = []
+            for message in new_messages:
+                if isinstance(message, ModelRequest) and any(isinstance(p, UserPromptPart) for p in message.parts):
+                    message = replace(message, metadata={
+                        **(message.metadata or {}),
+                        "presentation_user_message": display_text,
+                    })
+                    display_text = ""
+                projected_inputs.append(message)
+            new_messages = projected_inputs
+        self._new_input_messages = list(new_messages)
         iterator = self._stream(list(new_messages))
         self._events = iterator
         presentation = self._presentation
@@ -574,19 +603,19 @@ class AiAgentStreamSession(Generic[OutputT]):
         new_messages: list[ModelMessage],
     ) -> AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]]:
         try:
-            async with self._agent.run_stream_events(
+            # Provider timeout 通常只限制网络等待；原生流由总时限退出并负责关闭。
+            async with asyncio.timeout(self._execution_context.remaining_seconds()), self._agent.run_stream_events(
                 None,
                 message_history=[*self._message_history, *new_messages],
                 deferred_tool_results=self._deferred_tool_results,
                 conversation_id=self._conversation_id,
                 run_id=self._execution_context.attempt_id,
+                cancellation_token=current_cancellation_token(),
                 deps=self._dependencies,
+                usage=self._usage,
                 usage_limits=UsageLimits(
                     request_limit=self._profile.max_model_requests,
-                    # 2.22.0 会把 unknown tool 也纳入整批执行前的预计用量。
-                    # 多留一个校验位置，让第一个隐藏工具调用走原生 unknown-tool retry；
-                    # 不增加实际执行额度：args_validator 与 Runtime 都限定 max_tool_calls。
-                    tool_calls_limit=self._profile.max_tool_calls + 1,
+                    tool_calls_limit=self._profile.max_tool_calls,
                 ),
             ) as native_events:
                 async for event in native_events:
@@ -594,22 +623,22 @@ class AiAgentStreamSession(Generic[OutputT]):
                     if isinstance(event, AgentRunResultEvent):
                         self._complete_with_result(event.result)
                     yield event
-        except AiAgentExecutionError as exc:
-            self._failure_error = exc
-            self._notify_presentation_failed(exc.code, str(exc))
+        except RunCancelled as exc:
+            self.cancelled = True
+            # 原生快照保留部分输出与已完成工具结果；悬空调用由框架在下轮修复。
+            if not self._history_persisted:
+                if self._run_support is not None:
+                    self._run_support.fail(exc.all_messages(), self._run_id)
+                else:
+                    self._factory.message_store.save(self._conversation_id, exc.all_messages())
+            self._history_persisted = True
             raise
         except Exception as exc:
-            # continuation 的 history 只能由恢复服务按 CAS 提交；首次 Deferred
-            # 握手的 history 只能由协议层组合事务提交（报告 A-03：两类 external
-            # commit 都必须排除，否则 result 之后的收尾异常会单独保存 captured
-            # history，把 history 与 ready link/outbox 拆成两个事实）。失败时
-            # 保存部分 captured 消息会破坏 link 冻结版本与恢复语义。
-            if (
-                self._captured_messages
-                and not self._history_persisted
-                and not self._external_final_commit
-                and not self._external_deferred_commit
-            ):
+            # 已发生的原生消息和已消费输入一起持久化，失败不自动重放副作用。
+            if self._run_support is not None and not self._history_persisted:
+                self._run_support.fail(self._captured_messages, self._run_id)
+                self._history_persisted = True
+            if self._captured_messages and not self._history_persisted:
                 try:
                     self._factory.message_store.save(
                         self._conversation_id,
@@ -618,7 +647,7 @@ class AiAgentStreamSession(Generic[OutputT]):
                     self._history_persisted = True
                 except Exception as persistence_exc:
                     exc = persistence_exc
-            error = _safe_agent_error(
+            error = exc if isinstance(exc, AiAgentExecutionError) else _safe_agent_error(
                 exc,
                 validator=self._output_validator,
                 model_messages=self._captured_messages,
@@ -630,6 +659,10 @@ class AiAgentStreamSession(Generic[OutputT]):
                 tool_calls_used=self._dependencies.tool_runtime.unique_call_count,
             )
             self._failure_error = error
+            if self._run_support is not None:
+                summary = self._run_support.failure_summary()
+                if summary:
+                    error.args = (str(error) + "\n" + summary,)
             self._notify_presentation_failed(error.code, str(error))
             raise error from None
 
@@ -703,14 +736,17 @@ class AiAgentStreamSession(Generic[OutputT]):
         """
 
         self._run_id = str(result.run_id or "") or self._run_id
+        if self._run_support is not None:
+            self._run_support.finish(result)
+            self._history_persisted = True
         self._technical_trace.set_agent_run_id(self._run_id)
         self._execution_context.bounded_timeout_seconds()
-        deferred_output = isinstance(result.output, DeferredToolRequests)
-        externally_committed = self._external_final_commit or (
-            deferred_output and self._external_deferred_commit
-        )
-        if not self._history_persisted and not externally_committed:
-            messages = list(result.all_messages())
+        if not self._history_persisted:
+            messages = [
+                *self._message_history,
+                *self._new_input_messages,
+                *result.new_messages(),
+            ]
             if messages:
                 self._factory.message_store.save(
                     self._conversation_id,
@@ -747,7 +783,7 @@ class AiAgentStreamSession(Generic[OutputT]):
 
         只暴露 ``AiAgentRunOutcome``，不外泄 raw Agent、deps 或原始 iterator；
         focused business service 用它取得 output 并执行领域收尾（``complete()`` /
-        ``fail()``）。审批和长任务恢复统一由 ``GlobalTaskController`` 负责，
+        ``fail()``）。审批和长任务恢复使用 Pydantic 原生请求与结果，
         Agent session 不产生第二套 deferred pending state。
         """
 
@@ -791,7 +827,11 @@ class AiAgentStreamSession(Generic[OutputT]):
             run_id=self._run_id,
             trace_id=self.trace_id,
             usage=_safe_usage(result.usage),
-            messages=list(result.all_messages()),
+            messages=[
+                *self._message_history,
+                *self._new_input_messages,
+                *result.new_messages(),
+            ],
             _observer=observer,
             _presentation_run_id=presentation_run_id,
         )
@@ -851,35 +891,34 @@ class AiAgentFactory:
         output_validator: OutputValidator[OutputT] | None,
         model_override: Model | None,
     ) -> Agent[AiAgentDependencies, OutputT]:
-        """集中装配唯一 Agent 定义；审批写工具必须交给 Global Task。"""
+        """集中装配唯一 Agent 定义；审批与 Deferred 使用原生工具机制。"""
 
-        approval_tools = sorted(
-            definition.name
-            for definition in toolset.definitions
-            if definition.approval_required
-        )
-        if approval_tools:
+        if any(
+            item.approval_required for item in toolset.definitions
+        ) and DeferredToolRequests not in get_args(profile.output_type):
             raise AiAgentExecutionError(
-                "TOOL_APPROVAL_REQUIRED",
-                "需审批工具只能通过 GlobalTaskController 执行："
-                + "、".join(approval_tools),
+                "TOOL_APPROVAL_REQUIRED", "当前 focused Agent 不提供人工审批入口。"
             )
+
+        def run_instructions(ctx: RunContext[AiAgentDependencies]) -> str:
+            # 业务要求与动态额度是同一组指令；统一交给原生 instructions 编码。
+            # 部分兼容服务只保留最后一条 system 消息，拆开发送会丢失业务约束。
+            support = ctx.deps.tool_runtime.run_support
+            background = support.context_instructions() if support is not None else ""
+            return "\n\n".join(filter(None, (instructions, background, agent_budget_instructions(ctx))))
 
         agent: Agent[AiAgentDependencies, OutputT] = Agent(
             model_override or binding.model,
             output_type=profile.output_type,
-            instructions=[instructions, agent_budget_instructions],
+            instructions=run_instructions,
             deps_type=AiAgentDependencies,
             model_settings=self._bounded_model_settings(binding.model_settings),
             retries=profile.retries,
             toolsets=[build_pydantic_toolset(toolset)],
             name=profile.use_case_id.replace(".", "_"),
             capabilities=[
+                Hooks(before_node_run=receive_user_updates, model_request=project_model_request),
                 PrepareTools(_prepare_tools_within_usage_limit),
-                # 修复计划第 15 节：模型输入历史由官方 ProcessHistory 在请求
-                # 边界投影。processor 的工具可见性安全门保证暴露工具时完整保留
-                # ThinkingPart；仅在工具不可见时删除旧完成轮次可省略 thinking。
-                ProcessHistory(processor=project_model_context_for_model),
             ],
         )
         agent.instrument = self.instrumentation.settings
@@ -892,7 +931,7 @@ class AiAgentFactory:
         *,
         profile: AiAgentExecutionProfile[OutputT],
         instructions: str,
-        user_prompt: str,
+        user_prompt: str | Sequence[UserContent],
         toolset: AiToolSet,
         use_case_state: Any = None,
         output_validator: OutputValidator[OutputT] | None = None,
@@ -924,6 +963,7 @@ class AiAgentFactory:
         execution_context = AiExecutionContext.create(
             timeout_seconds=effective_timeout,
             budget_profile=profile.budget_profile,
+            cancellation_check=check_cancellation,
             actor_id=actor_id,
             tenant_id=tenant_id,
             permissions=profile.permissions,
@@ -1017,6 +1057,8 @@ class AiAgentFactory:
                     execution_context.bounded_timeout_seconds()
                     technical_trace.set_agent_run_id(run_id)
             return outcome
+        except RunCancelled:
+            raise
         except AiAgentExecutionError as error:
             self._notify_pre_stream_failure(
                 presentation,
@@ -1162,8 +1204,8 @@ class AiAgentFactory:
         conversation_id: str,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
-        external_deferred_commit: bool = False,
-        external_final_commit: bool = False,
+        run_support: Any = None,
+        usage: RunUsage | None = None,
         use_case_state: Any = None,
         output_validator: OutputValidator[OutputT] | None = None,
         actor_id: str = "local-user",
@@ -1201,14 +1243,10 @@ class AiAgentFactory:
             float(timeout_seconds or profile.timeout_seconds),
         )
         effective_business_scope: dict[str, str] = dict(business_scope or {})
-        if deferred_tool_results is not None:
-            # 报告 A-05：continuation 正在闭合一个已存在的 Deferred 任务。
-            # 标记本 run，让 Runtime 把其中再次调用 Deferred 控制工具的请求
-            # 转为稳定、模型可见的拒绝，而不是终止 run 的不可见错误。
-            effective_business_scope[DEFERRED_CONTINUATION_SCOPE_KEY] = "true"
         execution_context = AiExecutionContext.create(
             timeout_seconds=effective_timeout,
             budget_profile=profile.budget_profile,
+            cancellation_check=check_cancellation,
             actor_id=actor_id,
             tenant_id=tenant_id,
             permissions=profile.permissions,
@@ -1241,6 +1279,7 @@ class AiAgentFactory:
                 max_tool_calls=profile.max_tool_calls,
                 max_output_bytes=profile.max_tool_output_bytes,
             )
+            runtime.run_support = run_support
             dependencies = AiAgentDependencies(
                 use_case_id=profile.use_case_id,
                 execution_context=execution_context,
@@ -1283,8 +1322,8 @@ class AiAgentFactory:
                         output_validator=output_validator,
                         presentation_context=presentation,
                         deferred_tool_results=deferred_tool_results,
-                        external_deferred_commit=external_deferred_commit,
-                        external_final_commit=external_final_commit,
+                        run_support=run_support,
+                        usage=usage,
                     )
                     try:
                         if presentation is not None:
@@ -1296,6 +1335,8 @@ class AiAgentFactory:
                             yield session
                     finally:
                         await session.aclose_events()
+        except RunCancelled:
+            raise
         except AiAgentExecutionError as error:
             self._notify_pre_stream_failure(
                 presentation,
@@ -1322,28 +1363,25 @@ class AiAgentFactory:
             )
             raise error from None
         finally:
-            # continuation 的 history 只能由恢复服务按 CAS 提交；这里保存部分
-            # captured 消息会污染 link 冻结版本。首次 Deferred 握手同理：正式
-            # history 只能由协议层的 history/link/outbox 组合事务提交，提前单独
-            # 落盘会在提交前暴露开放 ToolCall 并造成双版本；崩溃场景由
-            # provisional link 的 repair/abandon 恢复链路对账，不做读时修补。
+            # 流提前关闭时仍保存原生历史；全局对话使用同一 CAS 提交边界。
             if (
                 session is not None
                 and captured_messages
                 and not session.history_persisted
-                and not session.external_final_commit
-                and not session.external_deferred_commit
             ):
                 try:
-                    self.message_store.save(
-                        normalized_conversation_id,
-                        list(captured_messages),
-                    )
+                    if run_support is not None:
+                        run_support.fail(captured_messages, session._run_id)
+                    else:
+                        self.message_store.save(
+                            normalized_conversation_id, list(captured_messages)
+                        )
                 except Exception as persistence_exc:
                     _logger.warning(
                         "流式运行捕获消息持久化失败：%s",
                         persistence_exc,
                     )
+
 
 __all__ = [
     "AiAgentExecutionError",

@@ -51,6 +51,7 @@ def test_reserve_is_atomic_and_descriptor_is_public() -> None:
         "presentation_id": "presentation_a",
         "conversation_id": "conversation_presentation_a",
         "display_title": "AI 填充属性",
+        "initial_user_message": "",
         "status": RESERVED,
     }
     assert registry.descriptor("presentation_missing") is None

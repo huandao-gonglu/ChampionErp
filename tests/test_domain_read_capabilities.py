@@ -42,7 +42,7 @@ from erp_web.runtime_units.store_auth_capabilities import (
     store_auth_check,
     store_auth_checklist,
 )
-from erp_web.schemas.ai_tools import AiToolExecutionError, TaskApprovalSnapshot
+from erp_web.schemas.ai_tools import AiToolExecutionError, ToolApprovalSnapshot
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.category_query_capabilities import (
     CategoryAttributeValuesQueryRequest,
@@ -72,7 +72,7 @@ from erp_web.schemas.store_auth_capabilities import (
     StoreAuthChecklistRequest,
 )
 from erp_web.services.capability_errors import BusinessCapabilityError
-from erp_web.services.task_approval import approval_binding_digest
+from erp_web.services.tool_approval import approval_binding_digest
 
 
 def _execution(
@@ -83,18 +83,18 @@ def _execution(
         attempt_id="attempt-1",
         deadline_at=datetime.now(timezone.utc) + timedelta(seconds=deadline_seconds),
         budget_profile="test",
-        business_scope={"task_id": "task-1", "step_id": "step-1"},
+        business_scope={"task_id": "task-1", "tool_call_id": "step-1"},
         idempotency_context={"operation_key": operation_key},
     )
 
 
 def _approved_execution(
-    snapshot: TaskApprovalSnapshot,
+    snapshot: ToolApprovalSnapshot,
     capability_name: str,
     *,
     operation_key: str = "op-1",
-    step_id: str = "step-1",
-    task_revision: int = 1,
+    tool_call_id: str = "step-1",
+    approval_revision: int = 1,
     deadline_seconds: float = 300,
 ) -> AiExecutionContext:
     """模拟 Controller 批准后注入的可信审批上下文（digest + 任务版本）。"""
@@ -104,8 +104,8 @@ def _approved_execution(
         capability_name=capability_name,
         capability_version="1",
         operation_key=operation_key,
-        step_id=step_id,
-        task_revision=task_revision,
+        tool_call_id=tool_call_id,
+        approval_revision=approval_revision,
     )
     return AiExecutionContext(
         task_run_id="task-1",
@@ -114,12 +114,12 @@ def _approved_execution(
         budget_profile="test",
         business_scope={
             "task_id": "task-1",
-            "step_id": step_id,
+            "tool_call_id": tool_call_id,
             "approver": "local-ui:test",
         },
         idempotency_context={"operation_key": operation_key},
         approval_digest=digest,
-        approval_task_revision=task_revision,
+        approval_revision=approval_revision,
     )
 
 
@@ -265,12 +265,7 @@ def _category_scope(**overrides: Any) -> CategoryQueryCapabilityScope:
                 "category_path": "Home / Fans",
             }
         ],
-        attributes_loader=lambda platform,
-        category_id,
-        site="",
-        cursor="",
-        limit=50,
-        timeout_seconds=None: {
+        attributes_loader=lambda platform, category_id, site="", cursor="", limit=50, timeout_seconds=None: {
             "ok": True,
             "platform": platform,
             "site": site,
@@ -281,14 +276,7 @@ def _category_scope(**overrides: Any) -> CategoryQueryCapabilityScope:
             "has_more": False,
         },
         attribute_values_loader=(
-            lambda platform,
-            category_id,
-            attribute_id,
-            site="",
-            query="",
-            cursor="",
-            limit=50,
-            timeout_seconds=None: {
+            lambda platform, category_id, attribute_id, site="", query="", cursor="", limit=50, timeout_seconds=None: {
                 "ok": True,
                 "category_id": category_id,
                 "attribute_id": attribute_id,
@@ -297,11 +285,7 @@ def _category_scope(**overrides: Any) -> CategoryQueryCapabilityScope:
                 "has_more": False,
             }
         ),
-        record_loader=lambda platform,
-        category_id,
-        site="",
-        include_attributes=False,
-        timeout_seconds=None: {
+        record_loader=lambda platform, category_id, site="", include_attributes=False, timeout_seconds=None: {
             "category_id": category_id,
             "category_path": "Home / Fans",
             "attributes": {"required": [], "optional": []},
@@ -320,7 +304,9 @@ def _category_scope(**overrides: Any) -> CategoryQueryCapabilityScope:
 def test_category_search_attributes_and_values_queries() -> None:
     scope = _category_scope()
     search = category_search(
-        CategorySearchRequest(product_type='fans', keywords=("fans",), platform="mercadolibre"),
+        CategorySearchRequest(
+            product_type="fans", keywords=("fans",), platform="mercadolibre"
+        ),
         scope=scope,
         execution=_execution(),
     )
@@ -336,9 +322,7 @@ def test_category_search_attributes_and_values_queries() -> None:
     assert dict(attributes.attributes[0])["id"] == "BRAND"
 
     values = category_attribute_values_query(
-        CategoryAttributeValuesQueryRequest(
-            category_id="MLB123", attribute_id="BRAND"
-        ),
+        CategoryAttributeValuesQueryRequest(category_id="MLB123", attribute_id="BRAND"),
         scope=scope,
         execution=_execution(),
     )
@@ -351,7 +335,9 @@ def test_category_query_wraps_live_api_failures() -> None:
 
     scope = _category_scope(searcher=broken)
     result = category_search(
-        CategorySearchRequest(product_type='fans', keywords=("fans",)), scope=scope, execution=_execution(),
+        CategorySearchRequest(product_type="fans", keywords=("fans",)),
+        scope=scope,
+        execution=_execution(),
     )
     assert result.errors[0]["code"] == "CATEGORY_LIVE_API_FAILED"
     assert result.errors[0]["keyword"] == "fans"
@@ -366,17 +352,29 @@ def test_category_query_merges_keyword_list_and_keeps_ozon_id_pair() -> None:
         assert platform == "ozon" and site == "global"
         assert 0 < timeout_seconds <= 8
         if query == "ошибка":
-            raise AiToolExecutionError("CATEGORY_SEARCH_TIMEOUT", "查询超时", retryable=True)
-        return [{
-            "category_id": "970676618", "type_id": "970676618",
-            "description_category_id": "41777465", "name": "Маска-повязка на лицо",
-            "category_path": "Одежда / Аксессуары / Маска-повязка на лицо",
-        }]
+            raise AiToolExecutionError(
+                "CATEGORY_SEARCH_TIMEOUT", "查询超时", retryable=True
+            )
+        return [
+            {
+                "category_id": "970676618",
+                "type_id": "970676618",
+                "description_category_id": "41777465",
+                "name": "Маска-повязка на лицо",
+                "category_path": "Одежда / Аксессуары / Маска-повязка на лицо",
+            }
+        ]
 
     keywords = [f"маска {index}" for index in range(8)]
     result = category_search(
-        CategorySearchRequest(product_type=keywords[0], platform="ozon", site="global", keywords=(*keywords, " маска 0 ", "ошибка")),
-        scope=_category_scope(searcher=searcher), execution=_execution(),
+        CategorySearchRequest(
+            product_type=keywords[0],
+            platform="ozon",
+            site="global",
+            keywords=(*keywords, " маска 0 ", "ошибка"),
+        ),
+        scope=_category_scope(searcher=searcher),
+        execution=_execution(),
     )
     assert len(queries) == len(result.keywords) == 9
     assert len(result.results) == 1
@@ -393,11 +391,19 @@ def test_category_query_limit_applies_to_combined_candidates() -> None:
         return [{"category_id": f"{query}-{rank}", "name": query} for rank in range(8)]
 
     result = category_search(
-        CategorySearchRequest(product_type='fan', keywords=("fan", "ventilador"), limit=4),
-        scope=_category_scope(searcher=searcher), execution=_execution(),
+        CategorySearchRequest(
+            product_type="fan", keywords=("fan", "ventilador"), limit=4
+        ),
+        scope=_category_scope(searcher=searcher),
+        execution=_execution(),
     )
     assert len(result.results) == 4 and result.truncated
-    assert [row["category_id"] for row in result.results] == ["fan-0", "ventilador-0", "fan-1", "ventilador-1"]
+    assert [row["category_id"] for row in result.results] == [
+        "fan-0",
+        "ventilador-0",
+        "fan-1",
+        "ventilador-1",
+    ]
 
 
 def test_category_precheck_product_path() -> None:
@@ -451,7 +457,7 @@ def test_category_queries_thread_bounded_timeout_to_live_io() -> None:
     scope = _category_scope(searcher=searcher, attributes_loader=attributes_loader)
 
     category_search(
-        CategorySearchRequest(product_type='fans', keywords=("fans",)),
+        CategorySearchRequest(product_type="fans", keywords=("fans",)),
         scope=scope,
         execution=_execution(deadline_seconds=42),
     )
@@ -498,10 +504,13 @@ def test_pricing_calculate_passthrough_and_failure() -> None:
     )
     assert dict(result.targets[0])["price"] == "99"
     assert result.exchange_rate_mode == "manual"
-    assert PricingCalculateRequest(
-        targets=({"platform": "mercadolibre"},),
-        mxn_usd_rate="17",
-    ).mxn_usd_rate == 17.0
+    assert (
+        PricingCalculateRequest(
+            targets=({"platform": "mercadolibre"},),
+            mxn_usd_rate="17",
+        ).mxn_usd_rate
+        == 17.0
+    )
 
     def failing(input_data: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": "核价失败：缺少成本"}
@@ -726,7 +735,7 @@ def test_logistics_preview_and_create_with_server_snapshot() -> None:
     # 没有可信审批上下文的直接执行必须被拒绝。
     with pytest.raises(AiToolExecutionError) as missing:
         logistics_shipment_create(request, scope=scope, execution=_execution())
-    assert missing.value.code == "TASK_APPROVAL_CONTEXT_REQUIRED"
+    assert missing.value.code == "TOOL_APPROVAL_CONTEXT_REQUIRED"
     assert "payload" not in captured
 
     snapshot = _logistics_shipment_approval_snapshot(request, scope)
@@ -736,9 +745,7 @@ def test_logistics_preview_and_create_with_server_snapshot() -> None:
     created = logistics_shipment_create(
         request,
         scope=scope,
-        execution=_approved_execution(
-            snapshot, LOGISTICS_SHIPMENT_CREATE_TOOL
-        ),
+        execution=_approved_execution(snapshot, LOGISTICS_SHIPMENT_CREATE_TOOL),
     )
     assert created.message
     assert captured["payload"]["product_code"] == "YC001"
@@ -753,9 +760,7 @@ def test_logistics_preview_and_create_with_server_snapshot() -> None:
         logistics_shipment_create(
             LogisticsShipmentCreateRequest(shipment=tampered),
             scope=scope,
-            execution=_approved_execution(
-                snapshot, LOGISTICS_SHIPMENT_CREATE_TOOL
-            ),
+            execution=_approved_execution(snapshot, LOGISTICS_SHIPMENT_CREATE_TOOL),
         )
     assert stale.value.code == "LOGISTICS_APPROVAL_STALE"
 
@@ -799,9 +804,7 @@ def test_logistics_preview_and_create_error_mapping() -> None:
         context=context,
         client_factory=_RejectedClient,
     )
-    rejected_snapshot = _logistics_shipment_approval_snapshot(
-        request, rejected_scope
-    )
+    rejected_snapshot = _logistics_shipment_approval_snapshot(request, rejected_scope)
     with pytest.raises(BusinessCapabilityError) as rejected:
         logistics_shipment_create(
             request,

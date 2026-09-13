@@ -91,6 +91,7 @@ def reserve_presentation(
     registry: AiPresentationRegistry,
     *,
     display_title: Any,
+    initial_user_message: str = "",
 ) -> dict[str, object]:
     """预留一次展示并返回公开 descriptor。
 
@@ -106,6 +107,7 @@ def reserve_presentation(
             presentation_id=presentation_id,
             conversation_id=conversation_id,
             display_title=title,
+            initial_user_message=initial_user_message.strip(),
         ):
             return {
                 "ok": True,
@@ -139,6 +141,7 @@ def claim_presentation_scope(
         root_run_id=new_presentation_root_run_id(),
         conversation_id=conversation_id,
         origin="business.ui",
+        initial_user_message=(registry.descriptor(normalized) or {}).get("initial_user_message", ""),
         observer=RegistryAiPresentationObserver(
             registry=registry,
             presentation_id=normalized,

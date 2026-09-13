@@ -1,16 +1,14 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { UIMessage } from 'ai'
+import type { AiWorkUiMessagesResponse } from '@/types/aiWork'
 import { useAiChatStore } from '../aiChat'
+import { useAiPageContextStore } from '../aiPageContext'
 
 const encoder = new TextEncoder()
 
 const mocks = vi.hoisted(() => ({
   fetchUiMessages: vi.fn(),
-  fetchConversationTaskLink: vi.fn(),
-  approveGlobalTask: vi.fn(),
-  rejectGlobalTask: vi.fn(),
-  cancelGlobalTask: vi.fn(),
+  cancelChatRun: vi.fn(),
 }))
 
 vi.mock('@/api/aiWork', () => ({
@@ -19,15 +17,10 @@ vi.mock('@/api/aiWork', () => ({
     `/api/v1/ai-work/conversations/${conversationId}/events`
     + `?after_history_version=${Math.max(0, Math.floor(afterHistoryVersion))}`
   ),
-  fetchConversationTaskLink: mocks.fetchConversationTaskLink,
   fetchUiMessages: mocks.fetchUiMessages,
+  cancelChatRun: mocks.cancelChatRun,
 }))
 
-vi.mock('@/api/globalTasks', () => ({
-  approveGlobalTask: mocks.approveGlobalTask,
-  rejectGlobalTask: mocks.rejectGlobalTask,
-  cancelGlobalTask: mocks.cancelGlobalTask,
-}))
 
 function encodedChunk(payload: Record<string, unknown> | '[DONE]'): Uint8Array {
   const value = payload === '[DONE]' ? payload : JSON.stringify(payload)
@@ -59,18 +52,93 @@ class FakeEventSource {
   }
 }
 
-function emptyTaskLink(conversationId: string) {
-  return { ok: true, conversation_id: conversationId, task_id: '', link_status: '', task: null }
-}
+describe('停止操作', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    mocks.cancelChatRun.mockReset()
+    mocks.fetchUiMessages.mockReset()
+  })
+  afterEach(() => {
+    useAiChatStore().disconnectEvents()
+    vi.unstubAllGlobals()
+  })
+
+  it('立即中断浏览器流，独立取消后端；保留部分输出直到原生历史提交', async () => {
+    let controller!: ReadableStreamDefaultController<Uint8Array>
+    let requestSignal: AbortSignal | null | undefined
+    let confirm!: () => void
+    mocks.cancelChatRun.mockImplementation(() => new Promise<void>(resolve => { confirm = resolve }))
+    const fetchMock = vi.fn(async (_url, init: RequestInit) => {
+      requestSignal = init.signal
+      const stream = new ReadableStream<Uint8Array>({ start(value) { controller = value } })
+      init.signal?.addEventListener('abort', () => controller.error(new DOMException('已停止', 'AbortError')))
+      return new Response(stream, { headers: { 'x-vercel-ai-ui-message-stream': 'v1' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useAiChatStore()
+    store.input = '开始查询'
+    store.sendMessage()
+    await vi.waitFor(() => expect(controller).toBeDefined())
+    controller.enqueue(encodedChunk({ type: 'start', messageId: 'assistant' }))
+    controller.enqueue(encodedChunk({ type: 'text-start', id: 'text' }))
+    controller.enqueue(encodedChunk({ type: 'text-delta', id: 'text', delta: '部分输出' }))
+    await vi.waitFor(() => expect(store.status).toBe('streaming'))
+    const userId = store.messages[0]!.id
+    const partial = store.messages
+    store.stopStreaming()
+    store.stopStreaming()
+    expect(store.stopping).toBe(true)
+    expect(mocks.cancelChatRun).toHaveBeenCalledTimes(1)
+    expect(mocks.cancelChatRun).toHaveBeenCalledWith(store.activeConversationId, userId)
+    await vi.waitFor(() => expect(requestSignal?.aborted).toBe(true))
+    expect(store.messages[1]?.parts).toEqual(partial[1]?.parts)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(mocks.fetchUiMessages).not.toHaveBeenCalled()
+    mocks.fetchUiMessages
+      .mockResolvedValueOnce({ history_version: 0, messages: [], run_active: true })
+      .mockResolvedValue({ history_version: 1, messages: partial, run_active: false, run_status: 'cancelled' })
+    confirm()
+    await vi.waitFor(() => expect(mocks.fetchUiMessages).toHaveBeenCalledTimes(1))
+    expect(store.stopping).toBe(true)
+    expect(store.messages).toEqual(partial)
+    await vi.waitFor(() => expect(store.stopping).toBe(false))
+    expect(store.receivedNotice).toBe('')
+    expect(store.error).toBeUndefined()
+  })
+
+  it('等待后台工具也能停止，失败后可以重试，旧会话响应不会影响新会话', async () => {
+    const store = useAiChatStore()
+    const id = store.startConversation()
+    const detail: AiWorkUiMessagesResponse = { ok: true, conversation_id: id, created_at: '', updated_at: '', history_version: 1, messages: [], latest_message_id: 'user-1', pending_tool_calls: [
+      { tool_call_id: 'job', tool_name: 'prepare', kind: 'external', summary: '' },
+    ] }
+    mocks.fetchUiMessages.mockResolvedValue(detail)
+    store.openConversation(detail)
+    expect(store.canStop).toBe(true)
+    mocks.cancelChatRun.mockRejectedValueOnce(new Error('网络不可用'))
+    store.stopStreaming()
+    await vi.waitFor(() => expect(store.error?.message).toBe('网络不可用'))
+    expect(store.stopping).toBe(false)
+    expect(store.canStop).toBe(true)
+    let confirm!: () => void
+    mocks.cancelChatRun.mockImplementation(() => new Promise<void>(resolve => { confirm = resolve }))
+    store.stopStreaming()
+    expect(mocks.cancelChatRun).toHaveBeenCalledTimes(2)
+    store.startConversation()
+    confirm()
+    await Promise.resolve()
+    expect(store.stopping).toBe(false)
+    expect(store.receivedNotice).toBe('')
+    expect(store.messages).toEqual([])
+  })
+})
+
 
 describe('AiChatStore 实时流', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     mocks.fetchUiMessages.mockReset()
-    mocks.fetchConversationTaskLink.mockReset()
-    mocks.fetchConversationTaskLink.mockImplementation(async (conversationId: string) => (
-      emptyTaskLink(conversationId)
-    ))
+    localStorage.removeItem('ai-chat-read-background')
     FakeEventSource.instances = []
   })
 
@@ -99,8 +167,12 @@ describe('AiChatStore 实时流', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     const store = useAiChatStore()
+    const background = useAiPageContextStore()
+    const owner = Symbol()
+    background.setSource(owner, { page: 'draft_editor', draft_id: 'draft-a', section: 'category' })
     store.input = '查询草稿'
     store.sendMessage()
+    background.setSource(owner, { page: 'product_editor', product_id: 'product-b' })
 
     await vi.waitFor(() => {
       expect(controller).toBeDefined()
@@ -111,6 +183,7 @@ describe('AiChatStore 实时流', () => {
     expect(requestBody?.trigger).toBe('submit-message')
     expect(requestBody?.id).toBe(store.activeConversationId)
     expect(requestBody?.messages).toHaveLength(1)
+    expect(requestBody?.page_context).toEqual({ page: 'draft_editor', draft_id: 'draft-a', section: 'category' })
     expect((requestBody?.messages as Array<{ role: string }>)[0]?.role).toBe('user')
 
     controller!.enqueue(encodedChunk({ type: 'start', messageId: 'assistant-1' }))
@@ -186,774 +259,62 @@ describe('AiChatStore 实时流', () => {
   })
 })
 
-describe('AiChatStore 任务关联与发送锁定', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia())
-    mocks.fetchUiMessages.mockReset()
-    mocks.fetchConversationTaskLink.mockReset()
-    FakeEventSource.instances = []
-  })
 
-  afterEach(() => {
-    vi.unstubAllGlobals()
+describe('原生等待与批量入口', () => {
+  beforeEach(() => { localStorage.removeItem('ai-chat-read-background'); setActivePinia(createPinia()); mocks.fetchUiMessages.mockReset() })
+  afterEach(() => { useAiChatStore().disconnectEvents(); vi.unstubAllGlobals() })
+  it('草稿批量入口只发送去重后的所选 ID，并显示后台接收状态', async () => {
+    let request: { id: string; target_draft_ids: string[]; messages: { id: string; parts: { text: string }[] }[] } | undefined
+    vi.stubGlobal('fetch', vi.fn(async (_url, init) => {
+      request = JSON.parse(init.body)
+      mocks.fetchUiMessages.mockResolvedValue({ history_version: 0, messages: [], pending_tool_calls: [], received_messages: [{ message_id: request!.messages[0].id }] })
+      return new Response(JSON.stringify({ conversation_id: request!.id, message: '已收到，等待当前操作结束后应用' }), { status: 202 })
+    }))
+    const store = useAiChatStore()
+    store.prepareDrafts(['draft-a', 'draft-b', 'draft-a'])
+    await vi.waitFor(() => expect(request).toBeDefined())
+    expect(request!.target_draft_ids).toEqual(['draft-a', 'draft-b'])
+    expect(request!.messages[0].parts[0].text).toContain('本次仅准备草稿')
+    await vi.waitFor(() => expect(store.receivedNotice).toContain('已收到'))
+    expect(store.floatingOpen).toBe(true)
   })
-
-  it('存在未解决任务关联时锁定普通发送并给出明确原因', async () => {
+  it('等待工具时追加输入直接进入同一会话收件箱', async () => {
+    const store = useAiChatStore()
+    const id = store.startConversation()
+    store.pendingToolCalls = [{ tool_call_id: 'external', tool_name: 'prepare', kind: 'external', summary: '' }]
+    const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      expect(url).toContain('/runs'); expect(init?.method).toBe('POST')
+      return new Response(JSON.stringify({ message: '已收到' }), { status: 202 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const background = useAiPageContextStore()
+    background.setSource(Symbol(), { page: 'draft_editor', draft_id: 'draft-a' })
+    store.input = '只处理 draft-a'
+    store.sendMessage()
+    await vi.waitFor(() => expect(store.receivedMessages).toHaveLength(1))
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).id).toBe(id)
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).page_context.draft_id).toBe('draft-a')
+    expect(store.receivedMessages[0].text).toBe('只处理 draft-a')
+    expect(store.error).toBeUndefined()
+    background.toggle()
+    store.input = '继续'
+    store.sendMessage()
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).not.toHaveProperty('page_context')
+  })
+  it('打开对话只绑定已读取历史，旧会话的订阅回调不能断开当前订阅', () => {
+    vi.stubGlobal('EventSource', FakeEventSource)
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
     const store = useAiChatStore()
-    const conversationId = store.startConversation()
-    mocks.fetchConversationTaskLink.mockResolvedValue({
-      ok: true,
-      conversation_id: conversationId,
-      task_id: 'gtask-1',
-      link_status: 'ready',
-      task: null,
-    })
-
-    await store.refreshTaskLink()
-
-    expect(store.hasUnresolvedTask).toBe(true)
-    expect(store.sendBlockedReason).toContain('全局任务')
-    store.input = '继续问一个问题'
-    expect(store.canSend).toBe(false)
-
-    store.sendMessage()
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
-
-  it('任务关联清空后普通发送恢复可用', async () => {
-    const store = useAiChatStore()
-    const conversationId = store.startConversation()
-    mocks.fetchConversationTaskLink.mockResolvedValue({
-      ok: true,
-      conversation_id: conversationId,
-      task_id: 'gtask-1',
-      link_status: 'ready',
-      task: null,
-    })
-    await store.refreshTaskLink()
-    expect(store.hasUnresolvedTask).toBe(true)
-
-    mocks.fetchConversationTaskLink.mockResolvedValue(emptyTaskLink(conversationId))
-    await store.refreshTaskLink()
-
-    expect(store.hasUnresolvedTask).toBe(false)
-    expect(store.sendBlockedReason).toBe('')
-    store.input = '问题'
-    expect(store.canSend).toBe(true)
-  })
-
-  it('发送锁定期间 /new 仍可切换到新会话', async () => {
-    const fetchMock = vi.fn()
-    vi.stubGlobal('fetch', fetchMock)
-    const store = useAiChatStore()
-    const conversationId = store.startConversation()
-    mocks.fetchConversationTaskLink.mockResolvedValue({
-      ok: true,
-      conversation_id: conversationId,
-      task_id: 'gtask-1',
-      link_status: 'ready',
-      task: null,
-    })
-    await store.refreshTaskLink()
-
-    store.input = '/new'
-    store.sendMessage()
-
-    expect(store.activeConversationId).not.toBe(conversationId)
-    expect(store.taskLink).toBeNull()
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
-})
-
-describe('AiChatStore 后台官方事件订阅', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia())
-    mocks.fetchUiMessages.mockReset()
-    mocks.fetchConversationTaskLink.mockReset()
-    mocks.fetchConversationTaskLink.mockImplementation(async (conversationId: string) => (
-      emptyTaskLink(conversationId)
-    ))
-    FakeEventSource.instances = []
-    vi.stubGlobal('EventSource', FakeEventSource)
-  })
-
-  afterEach(() => {
-    vi.unstubAllGlobals()
-  })
-
-  it('冷启动先读服务端历史版本，再以该版本为游标建立订阅', async () => {
-    mocks.fetchUiMessages.mockResolvedValue({
-      ok: true,
-      conversation_id: 'conversation-1',
-      history_version: 7,
-      created_at: '',
-      updated_at: '',
-      messages: [
-        { id: 'm1', role: 'user', parts: [{ type: 'text', text: '历史问题' }] },
-      ],
-    })
-
-    const store = useAiChatStore()
-    await expect(store.reactivateConversation('conversation-1')).resolves.toBe(true)
-
-    expect(store.historyVersion).toBe(7)
-    const source = FakeEventSource.instances.at(-1)
-    expect(source?.url).toBe(
-      '/api/v1/ai-work/conversations/conversation-1/events?after_history_version=7',
-    )
-    expect(store.messages).toHaveLength(1)
-  })
-
-  it('收到新版本批次后重读服务端历史并刷新任务关联', async () => {
-    const continuationMessage: UIMessage = {
-      id: 'assistant-final',
-      role: 'assistant',
-      parts: [{ type: 'text', text: '后台任务已完成。' }],
-    }
-    mocks.fetchUiMessages.mockResolvedValue({
-      ok: true,
-      conversation_id: '',
-      history_version: 1,
-      created_at: '',
-      updated_at: '',
-      messages: [continuationMessage],
-    })
-
-    const store = useAiChatStore()
-    const conversationId = store.startConversation()
-    mocks.fetchUiMessages.mockResolvedValue({
-      ok: true,
-      conversation_id: conversationId,
-      history_version: 1,
-      created_at: '',
-      updated_at: '',
-      messages: [continuationMessage],
-    })
-    mocks.fetchConversationTaskLink.mockResolvedValue(emptyTaskLink(conversationId))
-
-    const source = FakeEventSource.instances.at(-1)!
-    source.emit({
-      type: 'batch',
-      history_version: 1,
-      run_id: 'run-1',
-      kind: 'continuation',
-      events: [],
-    })
-
-    await vi.waitFor(() => {
-      expect(store.messages).toHaveLength(1)
-      expect(store.historyVersion).toBe(1)
-    })
-    expect(store.messages[0]?.id).toBe('assistant-final')
-    expect(mocks.fetchConversationTaskLink).toHaveBeenCalledWith(conversationId)
-  })
-
-  it('重复或旧版本批次只做去重，不重复重读历史', async () => {
-    const store = useAiChatStore()
-    const conversationId = store.startConversation()
-    mocks.fetchUiMessages.mockResolvedValue({
-      ok: true,
-      conversation_id: conversationId,
-      history_version: 2,
-      created_at: '',
-      updated_at: '',
-      messages: [],
-    })
-
-    const source = FakeEventSource.instances.at(-1)!
-    source.emit({ type: 'batch', history_version: 2, events: [] })
-    await vi.waitFor(() => {
-      expect(store.historyVersion).toBe(2)
-    })
-    expect(mocks.fetchUiMessages).toHaveBeenCalledTimes(1)
-
-    // 重复投递同一版本与更旧版本：均被去重。
-    source.emit({ type: 'batch', history_version: 2, events: [] })
-    source.emit({ type: 'batch', history_version: 1, events: [] })
-    await Promise.resolve()
-    expect(mocks.fetchUiMessages).toHaveBeenCalledTimes(1)
-  })
-
-  it('resync_required 时重读历史并以新版本游标重建订阅', async () => {
-    const store = useAiChatStore()
-    const conversationId = store.startConversation()
-    mocks.fetchUiMessages.mockResolvedValue({
-      ok: true,
-      conversation_id: conversationId,
-      history_version: 5,
-      created_at: '',
-      updated_at: '',
-      messages: [],
-    })
-
-    const source = FakeEventSource.instances.at(-1)!
-    expect(FakeEventSource.instances).toHaveLength(1)
-    source.emit({ type: 'resync_required', history_version: 5 })
-
-    await vi.waitFor(() => {
-      expect(FakeEventSource.instances).toHaveLength(2)
-      expect(store.historyVersion).toBe(5)
-    })
-    expect(source.readyState).toBe(FakeEventSource.CLOSED)
-    expect(FakeEventSource.instances.at(-1)?.url).toBe(
-      `/api/v1/ai-work/conversations/${conversationId}/events?after_history_version=5`,
-    )
-  })
-
-  it('切换新会话时关闭旧订阅', () => {
-    const store = useAiChatStore()
-    store.startConversation()
-    const first = FakeEventSource.instances.at(-1)!
-
-    store.newConversation()
-
-    expect(first.readyState).toBe(FakeEventSource.CLOSED)
-  })
-})
-
-function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>((r) => {
-    resolve = r
-  })
-  return { promise, resolve }
-}
-
-describe('AiChatStore 反序响应防护（报告 R-04/R-06）', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia())
-    mocks.fetchUiMessages.mockReset()
-    mocks.fetchConversationTaskLink.mockReset()
-    FakeEventSource.instances = []
-    vi.stubGlobal('EventSource', FakeEventSource)
-  })
-
-  afterEach(() => {
-    vi.unstubAllGlobals()
-  })
-
-  it('history 重读反序完成时旧响应不得覆盖新快照（R-04）', async () => {
-    const store = useAiChatStore()
-    const conversationId = store.startConversation()
-
-    const stale = deferred<Record<string, unknown>>()
-    const fresh = deferred<Record<string, unknown>>()
-    const responses: Array<Promise<Record<string, unknown>>> = [
-      stale.promise,
-      fresh.promise,
-    ]
-    mocks.fetchUiMessages.mockImplementation(() => responses.shift()!)
-    mocks.fetchConversationTaskLink.mockResolvedValue(
-      emptyTaskLink(conversationId),
-    )
-
-    // 两个新版本批次触发两次并发 resync：A 拿到 v2 请求，B 拿到 v3 请求。
-    const source = FakeEventSource.instances.at(-1)!
-    source.emit({ type: 'batch', history_version: 2, events: [] })
-    source.emit({ type: 'batch', history_version: 3, events: [] })
-    expect(mocks.fetchUiMessages).toHaveBeenCalledTimes(2)
-
-    // 新响应先完成并应用。
-    fresh.resolve({
-      ok: true,
-      conversation_id: conversationId,
-      history_version: 3,
-      created_at: '',
-      updated_at: '',
-      messages: [
-        { id: 'v3', role: 'assistant', parts: [{ type: 'text', text: '新版本' }] },
-      ],
-    })
-    await vi.waitFor(() => {
-      expect(store.historyVersion).toBe(3)
-    })
-    expect(store.messages.map((message) => message.id)).toEqual(['v3'])
-
-    // 旧响应后完成：不得把 messages 覆盖回 v2（旧 bug：v3 游标 + v2 消息，
-    // 随后 v3 批次被当作重复事件忽略，最终回复一直不可见）。
-    stale.resolve({
-      ok: true,
-      conversation_id: conversationId,
-      history_version: 2,
-      created_at: '',
-      updated_at: '',
-      messages: [
-        { id: 'v2', role: 'assistant', parts: [{ type: 'text', text: '旧版本' }] },
-      ],
-    })
-    await Promise.resolve()
-    await Promise.resolve()
+    const first = store.startConversation()
+    store.openConversation({ ok: true, conversation_id: 'second', created_at: '', updated_at: '', history_version: 3, messages: [] })
+    const current = FakeEventSource.instances.at(-1)!
+    store.connectEvents(first)
+    expect(current.readyState).toBe(FakeEventSource.OPEN)
+    expect(store.activeConversationId).toBe('second')
     expect(store.historyVersion).toBe(3)
-    expect(store.messages.map((message) => message.id)).toEqual(['v3'])
-  })
-
-  it('task-link 旧 empty 响应不得覆盖新 ready 关联（R-06）', async () => {
-    const store = useAiChatStore()
-    const conversationId = store.startConversation()
-
-    const staleEmpty = deferred<Record<string, unknown>>()
-    const freshReady = deferred<Record<string, unknown>>()
-    mocks.fetchConversationTaskLink
-      .mockImplementationOnce(() => staleEmpty.promise)
-      .mockImplementationOnce(() => freshReady.promise)
-
-    const first = store.refreshTaskLink()
-    const second = store.refreshTaskLink()
-
-    freshReady.resolve({
-      ok: true,
-      conversation_id: conversationId,
-      task_id: 'gtask-1',
-      link_status: 'ready',
-      task: null,
-    })
-    await second
-    expect(store.hasUnresolvedTask).toBe(true)
-
-    // 旧 empty 响应晚到：不得覆盖较新的 ready 关联（否则任务卡消失、
-    // 前端误放开被锁定的普通发送）。
-    staleEmpty.resolve(emptyTaskLink(conversationId))
-    await first
-    expect(store.hasUnresolvedTask).toBe(true)
-    expect(store.taskLink?.task_id).toBe('gtask-1')
-  })
-
-  it('task-link 旧 ready 响应不得覆盖新 empty 关联（R-06）', async () => {
-    const store = useAiChatStore()
-    const conversationId = store.startConversation()
-
-    const staleReady = deferred<Record<string, unknown>>()
-    const freshEmpty = deferred<Record<string, unknown>>()
-    mocks.fetchConversationTaskLink
-      .mockImplementationOnce(() => staleReady.promise)
-      .mockImplementationOnce(() => freshEmpty.promise)
-
-    const first = store.refreshTaskLink()
-    const second = store.refreshTaskLink()
-
-    freshEmpty.resolve(emptyTaskLink(conversationId))
-    await second
-    expect(store.hasUnresolvedTask).toBe(false)
-
-    // 旧 ready 响应晚到：任务已结束的 empty 事实必须保留
-    // （否则任务卡与发送锁被陈旧关联继续保留）。
-    staleReady.resolve({
-      ok: true,
-      conversation_id: conversationId,
-      task_id: 'gtask-1',
-      link_status: 'ready',
-      task: null,
-    })
-    await first
-    expect(store.hasUnresolvedTask).toBe(false)
-    expect(store.taskLink?.task_id).toBe('')
-  })
-
-  it('duplicate-claim 恢复不得用旧 history 覆盖 continuation 已提交的新消息（A-07）', async () => {
-    const store = useAiChatStore()
-    const conversationId = store.startConversation()
-
-    // recoverFromDuplicateClaim 的第一次 fetchUiMessages 返回慢 v1；
-    // 其后由 continuation 批次触发的 resync 返回 v2。
-    const staleV1 = deferred<Record<string, unknown>>()
-    const freshV2: Record<string, unknown> = {
-      ok: true,
-      conversation_id: conversationId,
-      history_version: 2,
-      created_at: '',
-      updated_at: '',
-      messages: [
-        { id: 'v2', role: 'assistant', parts: [{ type: 'text', text: '后台最终回复' }] },
-      ],
-    }
-    mocks.fetchUiMessages.mockResolvedValue(freshV2)
-    mocks.fetchUiMessages.mockImplementationOnce(() => staleV1.promise)
-    mocks.fetchConversationTaskLink.mockResolvedValue(
-      emptyTaskLink(conversationId),
-    )
-
-    // duplicate POST：服务端返回 AI_CHAT_TURN_ALREADY_ACCEPTED，触发
-    // recoverFromDuplicateClaim。
-    const fetchMock = vi.fn(
-      async () => new Response(
-        JSON.stringify({
-          error: '本轮消息已被服务端接受。',
-          error_code: 'AI_CHAT_TURN_ALREADY_ACCEPTED',
-        }),
-        { status: 409, headers: { 'Content-Type': 'application/json' } },
-      ),
-    )
-    vi.stubGlobal('fetch', fetchMock)
-
-    store.input = '你好'
-    store.sendMessage()
-
-    // 等待 recoverFromDuplicateClaim 发起 fetchUiMessages（慢 v1 在途）。
-    await vi.waitFor(() => {
-      expect(mocks.fetchUiMessages).toHaveBeenCalledTimes(1)
-    })
-
-    // 慢 v1 在途期间，continuation 批次把 v2 提交并推进游标。
-    const source = FakeEventSource.instances.at(-1)!
-    source.emit({ type: 'batch', history_version: 2, events: [] })
-    await vi.waitFor(() => {
-      expect(store.historyVersion).toBe(2)
-    })
-    expect(store.messages.map((message) => message.id)).toEqual(['v2'])
-
-    // 慢 v1 响应晚到：不得覆盖 v2 消息，也不得回退游标
-    // （旧 bug：v2 游标 + v1 消息，随后真正的 v2 批次被当作重复忽略）。
-    staleV1.resolve({
-      ok: true,
-      conversation_id: conversationId,
-      history_version: 1,
-      created_at: '',
-      updated_at: '',
-      messages: [
-        { id: 'v1', role: 'assistant', parts: [{ type: 'text', text: '陈旧快照' }] },
-      ],
-    })
-    await Promise.resolve()
-    await Promise.resolve()
-    expect(store.historyVersion).toBe(2)
-    expect(store.messages.map((message) => message.id)).toEqual(['v2'])
-  })
-
-  it('history 重读失败后按退避确定性重试，最终读到已提交历史（A-11）', async () => {
-    vi.useFakeTimers()
-    const store = useAiChatStore()
-    const conversationId = store.startConversation()
-    mocks.fetchConversationTaskLink.mockResolvedValue(
-      emptyTaskLink(conversationId),
-    )
-    // 首次重读失败，重试后成功。
-    mocks.fetchUiMessages
-      .mockRejectedValueOnce(new Error('network'))
-      .mockResolvedValue({
-        ok: true,
-        conversation_id: conversationId,
-        history_version: 2,
-        created_at: '',
-        updated_at: '',
-        messages: [
-          { id: 'v2', role: 'assistant', parts: [{ type: 'text', text: '重试成功' }] },
-        ],
-      })
-
-    const source = FakeEventSource.instances.at(-1)!
-    source.emit({ type: 'batch', history_version: 2, events: [] })
-    await vi.advanceTimersByTimeAsync(0)
-    // 首次重读失败：尚未应用，已安排退避重试。
-    expect(mocks.fetchUiMessages).toHaveBeenCalledTimes(1)
-    expect(store.historyVersion).toBe(0)
-
-    // 推进首个退避窗口（500ms）：重试成功并应用 v2。
-    await vi.advanceTimersByTimeAsync(500)
-    await vi.advanceTimersByTimeAsync(0)
-    expect(mocks.fetchUiMessages).toHaveBeenCalledTimes(2)
-    expect(store.historyVersion).toBe(2)
-    expect(store.messages.map((message) => message.id)).toEqual(['v2'])
-
-    store.newConversation()
-    vi.useRealTimers()
-  })
-
-  it('task-link 旧成功被取代且新请求失败时确定性重新对账（A-10）', async () => {
-    vi.useFakeTimers()
-    const store = useAiChatStore()
-    const conversationId = store.startConversation()
-    mocks.fetchUiMessages.mockResolvedValue({
-      ok: true,
-      conversation_id: conversationId,
-      history_version: 1,
-      created_at: '',
-      updated_at: '',
-      messages: [],
-    })
-
-    const slowReady = deferred<Record<string, unknown>>()
-    let callCount = 0
-    mocks.fetchConversationTaskLink.mockImplementation(() => {
-      callCount += 1
-      if (callCount === 1) return slowReady.promise
-      if (callCount === 2) return Promise.reject(new Error('network'))
-      return Promise.resolve({
-        ok: true,
-        conversation_id: conversationId,
-        task_id: 'gtask-1',
-        link_status: 'ready',
-        task: null,
-      })
-    })
-
-    // R1（慢成功）在途。
-    const first = store.refreshTaskLink()
-    // R2（新请求，失败）取代 R1 的代次。
-    const second = store.refreshTaskLink()
-    await second
-    // R2 失败：旧关联保留，已安排确定性重试。
-    expect(store.hasUnresolvedTask).toBe(false)
-
-    // R1 的慢成功此时到达：代次已过时，不得应用。
-    slowReady.resolve({
-      ok: true,
-      conversation_id: conversationId,
-      task_id: 'gtask-1',
-      link_status: 'ready',
-      task: null,
-    })
-    await first
-    expect(store.hasUnresolvedTask).toBe(false)
-
-    // 推进首个退避窗口（250ms）：重试成功，关联完成对账。
-    await vi.advanceTimersByTimeAsync(250)
-    expect(store.hasUnresolvedTask).toBe(true)
-    expect(store.taskLink?.task_id).toBe('gtask-1')
-
-    store.newConversation()
-    vi.useRealTimers()
-  })
-
-  it('reconnect 不得取消同会话的 task-link 对账重试（A-10）', async () => {
-    vi.useFakeTimers()
-    const store = useAiChatStore()
-    const conversationId = store.startConversation()
-    mocks.fetchUiMessages.mockResolvedValue({
-      ok: true,
-      conversation_id: conversationId,
-      history_version: 1,
-      created_at: '',
-      updated_at: '',
-      messages: [],
-    })
-    let callCount = 0
-    mocks.fetchConversationTaskLink.mockImplementation(() => {
-      callCount += 1
-      if (callCount <= 2) return Promise.reject(new Error('network'))
-      return Promise.resolve({
-        ok: true,
-        conversation_id: conversationId,
-        task_id: 'gtask-9',
-        link_status: 'ready',
-        task: null,
-      })
-    })
-
-    // resync_required 触发的 resync 带 reconnect=true：成功读取 history 后
-    // refreshTaskLink 失败并安排重试，随后的 disconnect/重连不得取消它
-    // （旧 bug：disconnectEvents 的 resetRetryState 立即清除 timer）。
-    const source = FakeEventSource.instances.at(-1)!
-    source.emit({ type: 'resync_required' })
-    await vi.advanceTimersByTimeAsync(0)
-    expect(callCount).toBe(1)
-
-    // 250ms：第一次重试（仍失败，安排第二次）。
-    await vi.advanceTimersByTimeAsync(250)
-    expect(callCount).toBe(2)
-    // 500ms：第二次重试成功，关联完成对账。
-    await vi.advanceTimersByTimeAsync(500)
-    expect(callCount).toBe(3)
-    expect(store.hasUnresolvedTask).toBe(true)
-    expect(store.taskLink?.task_id).toBe('gtask-9')
-
-    store.newConversation()
-    vi.useRealTimers()
-  })
-
-  it('会话 A 耗尽 history 重试后切到会话 B，B 的失败仍会重试（A-11）', async () => {
-    vi.useFakeTimers()
-    const store = useAiChatStore()
-    const conversationA = store.startConversation()
-    mocks.fetchConversationTaskLink.mockResolvedValue(
-      emptyTaskLink(conversationA),
-    )
-    // 会话 A：history 重读持续失败，耗尽 3 次重试。
-    mocks.fetchUiMessages.mockRejectedValue(new Error('network'))
-
-    const sourceA = FakeEventSource.instances.at(-1)!
-    sourceA.emit({ type: 'batch', history_version: 1, events: [] })
-    await vi.advanceTimersByTimeAsync(0)
-    // 500 + 1000 + 2000ms 三次退避全部失败。
-    await vi.advanceTimersByTimeAsync(500)
-    await vi.advanceTimersByTimeAsync(1000)
-    await vi.advanceTimersByTimeAsync(2000)
-    const attemptsForA = mocks.fetchUiMessages.mock.calls.length
-    expect(attemptsForA).toBeGreaterThanOrEqual(4)
-
-    // 切到会话 B：重试状态必须清零，B 的首次失败仍会得到重试。
-    const conversationB = store.startConversation()
-    mocks.fetchConversationTaskLink.mockResolvedValue(
-      emptyTaskLink(conversationB),
-    )
-    const callsBeforeB = mocks.fetchUiMessages.mock.calls.length
-
-    const sourceB = FakeEventSource.instances.at(-1)!
-    sourceB.emit({ type: 'batch', history_version: 1, events: [] })
-    await vi.advanceTimersByTimeAsync(0)
-    // B 首次失败后安排了重试（旧 bug：计数器未清零，直接放弃）。
-    // 至少增加两次：B 的首次 fetch + 500ms 退避重试，直接证明重试发生。
-    await vi.advanceTimersByTimeAsync(500)
-    expect(mocks.fetchUiMessages.mock.calls.length).toBeGreaterThanOrEqual(
-      callsBeforeB + 2,
-    )
-
-    store.newConversation()
-    vi.useRealTimers()
-  })
-})
-
-describe('AiChatStore 斜杠命令注册表分发', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia())
-    mocks.fetchUiMessages.mockReset()
-    mocks.fetchConversationTaskLink.mockReset()
-    mocks.approveGlobalTask.mockReset()
-    mocks.rejectGlobalTask.mockReset()
-    mocks.cancelGlobalTask.mockReset()
-    mocks.approveGlobalTask.mockResolvedValue({ ok: true, task_id: 'gtask-9', task: {} })
-    mocks.rejectGlobalTask.mockResolvedValue({ ok: true, task_id: 'gtask-9', task: {} })
-    mocks.cancelGlobalTask.mockResolvedValue({ ok: true, task_id: 'gtask-9', task: {} })
-    FakeEventSource.instances = []
-  })
-
-  afterEach(() => {
-    vi.unstubAllGlobals()
-    vi.restoreAllMocks()
-  })
-
-  function pendingApprovalTaskLink(conversationId: string) {
-    return {
-      ok: true,
-      conversation_id: conversationId,
-      task_id: 'gtask-9',
-      link_status: 'ready',
-      task: {
-        task_id: 'gtask-9',
-        goal: '删除商品',
-        status: 'pending_approval',
-        steps: [],
-        current_step_index: 0,
-        pending_approval: {
-          step_id: 'step-1',
-          capability_name: 'product_delete',
-          capability_version: '1',
-          task_revision: 1,
-          digest: 'digest',
-          payload: { summary: '删除 3 个商品' },
-          requested_at: '',
-        },
-        pending_inputs: [],
-      },
-    }
-  }
-
-  async function createStoreWithPendingApproval() {
-    const store = useAiChatStore()
-    const conversationId = store.startConversation()
-    mocks.fetchConversationTaskLink.mockResolvedValue(
-      pendingApprovalTaskLink(conversationId),
-    )
-    await store.refreshTaskLink()
-    expect(store.hasUnresolvedTask).toBe(true)
-    return store
-  }
-
-  it('待审批任务存在时 /approve 经命令批准任务且不发送消息', async () => {
-    const fetchMock = vi.fn()
-    vi.stubGlobal('fetch', fetchMock)
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
-    const store = await createStoreWithPendingApproval()
-
-    store.input = '/approve'
-    store.sendMessage()
-
-    await vi.waitFor(() => {
-      expect(mocks.approveGlobalTask).toHaveBeenCalledWith('gtask-9', 'step-1')
-    })
-    await vi.waitFor(() => {
-      expect(store.input).toBe('')
-    })
     expect(fetchMock).not.toHaveBeenCalled()
-  })
-
-  it('/approve 确认弹窗取消时保留输入且不调用 API', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
-    const store = await createStoreWithPendingApproval()
-
-    store.input = '/approve'
-    store.sendMessage()
-
-    await Promise.resolve()
-    expect(mocks.approveGlobalTask).not.toHaveBeenCalled()
-    expect(store.input).toBe('/approve')
-  })
-
-  it('/reject 缺少原因时保留输入供用户补充', async () => {
-    const store = await createStoreWithPendingApproval()
-
-    store.input = '/reject'
-    store.sendMessage()
-
-    await Promise.resolve()
-    expect(mocks.rejectGlobalTask).not.toHaveBeenCalled()
-    expect(store.input).toBe('/reject')
-  })
-
-  it('/reject 附原因时拒绝任务并清空输入', async () => {
-    const store = await createStoreWithPendingApproval()
-
-    store.input = '/reject 太危险'
-    store.sendMessage()
-
-    await vi.waitFor(() => {
-      expect(mocks.rejectGlobalTask).toHaveBeenCalledWith('gtask-9', 'step-1', '太危险')
-    })
-    await vi.waitFor(() => {
-      expect(store.input).toBe('')
-    })
-  })
-
-  it('任务执行中 /cancel 不可用，按发送锁定拦截', async () => {
-    const fetchMock = vi.fn()
-    vi.stubGlobal('fetch', fetchMock)
-    const store = useAiChatStore()
-    const conversationId = store.startConversation()
-    mocks.fetchConversationTaskLink.mockResolvedValue({
-      ok: true,
-      conversation_id: conversationId,
-      task_id: 'gtask-9',
-      link_status: 'ready',
-      task: {
-        task_id: 'gtask-9',
-        goal: '采集商品',
-        status: 'in_progress',
-        steps: [],
-        current_step_index: 0,
-        pending_approval: null,
-        pending_inputs: [],
-      },
-    })
-    await store.refreshTaskLink()
-
-    store.input = '/cancel'
-    store.sendMessage()
-
-    expect(mocks.cancelGlobalTask).not.toHaveBeenCalled()
-    expect(fetchMock).not.toHaveBeenCalled()
-    expect(store.input).toBe('/cancel')
-  })
-
-  it('未注册命令文本按普通消息流程处理（锁定期被拦截）', async () => {
-    const fetchMock = vi.fn()
-    vi.stubGlobal('fetch', fetchMock)
-    const store = await createStoreWithPendingApproval()
-
-    store.input = '/unknown'
-    store.sendMessage()
-
-    expect(fetchMock).not.toHaveBeenCalled()
-    expect(store.input).toBe('/unknown')
+    expect(mocks.fetchUiMessages).not.toHaveBeenCalled()
   })
 })

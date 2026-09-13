@@ -106,10 +106,36 @@ class ProductAttributesUpdateRequest(BaseModel):
     ]
     platform: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
     site: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
+    category_id: Annotated[TrimmedText, StringConstraints(min_length=1, max_length=160)]
     updates: dict[
         Annotated[TrimmedText, StringConstraints(min_length=1, max_length=160)],
         JsonValue,
-    ] = Field(min_length=1, max_length=200)
+    ] = Field(min_length=1, max_length=200, description="已根据商品事实与平台定义确定的值。枚举用 {values: [{dictionary_value_id: 平台返回的ID, value: 平台原文}]}；带单位值用 {value, unit}。null 表示清空。此工具只校验和保存，不调用模型。")
+
+
+class DraftSkuAttributesUpdateRequest(ProductAttributesUpdateRequest):
+    sku_id: Annotated[TrimmedText, StringConstraints(min_length=1, max_length=160)]
+
+
+class DraftAttributesReadRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    draft_id: Annotated[TrimmedText, StringConstraints(min_length=1, max_length=160)]
+    platform: TrimmedText = ""
+    site: TrimmedText = ""
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=25, ge=1, le=50)
+
+
+class DraftAttributesReadResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    draft_id: str
+    platform: str
+    site: str
+    category_id: str
+    attributes: dict[str, JsonValue]
+    skus: list[dict[str, JsonValue]] = Field(max_length=50)
+    sku_count: int
+    next_offset: int | None
 
 
 class ProductAttributesUpdateResult(BaseModel):
@@ -121,6 +147,12 @@ class ProductAttributesUpdateResult(BaseModel):
     attributes: dict[str, JsonValue]
     changed_keys: list[str] = Field(max_length=200)
     changed: bool
+    sku_id: str = ""
+    category_id: str
+    previous_updated_at: str = ""
+    updated_at: str = ""
+    draft_fields: dict[str, str] = Field(default_factory=dict, max_length=2)
+    missing_required_attribute_ids: list[str] = Field(default_factory=list, max_length=500)
 
 
 class ProductImagesPrepareRequest(BaseModel):
@@ -146,6 +178,9 @@ class ProductImagesPrepareResult(BaseModel):
 
 
 __all__ = [
+    "DraftAttributesReadRequest",
+    "DraftAttributesReadResult",
+    "DraftSkuAttributesUpdateRequest",
     "ProductAttributesUpdateRequest",
     "ProductAttributesUpdateResult",
     "ProductDraftFacts",

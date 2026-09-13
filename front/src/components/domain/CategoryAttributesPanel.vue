@@ -47,7 +47,6 @@ const emit = defineEmits<{
   applyCategory: []
   translateCategoryResults: []
   translateCategoryAttributes: []
-  fillAttributes: []
   updatePackageDimension: [field: PackageDimensionField, value: string]
   invalidateCategoryPrecheck: []
   categoryPrecheck: []
@@ -848,7 +847,6 @@ function targetLabel(target: MarketplaceTargetSite) {
         <div class="mt-4 flex flex-wrap gap-2">
           <button class="btn btn-outline" :disabled="props.loading || props.categoryAttributeLoading || !hasCurrentDraft || !hasSelectedCategory" @click="emit('applyCategory')">刷新平台属性</button>
           <button class="btn btn-outline" :disabled="props.loading || props.categoryAttributeTranslating || categoryAttributeState !== 'ready'" @click="emit('translateCategoryAttributes')">翻译平台属性</button>
-          <button class="btn btn-primary" :disabled="props.loading || categoryAttributeState !== 'ready'" @click="emit('fillAttributes')">{{ props.skuScope ? 'AI 补齐此 SKU 属性' : 'AI 填充属性' }}</button>
           <button v-if="!props.skuScope" class="btn btn-outline" :disabled="props.loading || categoryAttributeState !== 'ready'" @click="emit('categoryPrecheck')">类目预检</button>
         </div>
 
@@ -901,7 +899,7 @@ function targetLabel(target: MarketplaceTargetSite) {
               <span class="text-xs font-semibold" :class="isMissingAttribute(attr.id) ? 'text-rose-700' : 'text-slate-500'">* {{ attributeLabel(attr) }}</span>
               <span v-if="attributeTranslation(attr.id)" class="mt-0.5 block text-[11px] text-slate-400">{{ attributeOriginalLabel(attr) }}</span>
               <span v-if="attributeTranslation(attr.id)?.help" class="mt-0.5 block text-[11px] text-slate-500">{{ attributeTranslation(attr.id)?.help }}</span>
-              <span v-if="pendingReviewAttributeIds.includes(attr.id)" class="mt-0.5 block text-[11px] text-amber-600">AI 暂无法从商品信息判断，请人工确认。</span>
+              <span v-if="pendingReviewAttributeIds.includes(attr.id)" class="mt-0.5 block text-[11px] text-amber-600">该属性需要核对，请确认商品资料。</span>
               <div v-if="packageDimensionAttribute(attr.id)" class="mt-1">
                 <div class="flex gap-2">
                   <input

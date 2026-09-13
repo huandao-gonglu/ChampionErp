@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useAiChatStore } from '@/stores/aiChat'
 import DraftLanguageSelect from '@/components/domain/DraftLanguageSelect.vue'
 import DraftMarketSelect from '@/components/domain/DraftMarketSelect.vue'
 import { formatDateTime } from '@/utils/format'
@@ -24,6 +25,7 @@ const emit = defineEmits<{
   updateTargets: [item: DraftIndexItem, targets: MarketplaceTargetSite[]]
 }>()
 
+const chatStore = useAiChatStore()
 const platformFilter = ref<'all' | Marketplace>('all')
 const draftScope = ref<'active' | 'published' | 'all'>('active')
 const selectedDraftIds = ref<string[]>([])
@@ -119,6 +121,7 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
           <span class="mx-2 text-accent-300 dark:text-dark-600">/</span>
           已勾选：<span class="font-semibold text-accent-800 dark:text-accent-100">{{ selectedCount }}</span> 个
         </div>
+        <button class="btn btn-primary px-3 py-1.5 text-xs" data-testid="drafts-ai-prepare" :disabled="props.loading || !selectedCount" @click="chatStore.prepareDrafts(selectedDraftIds)">AI 准备所选草稿（{{ selectedCount }}）</button>
         <button class="btn btn-outline px-3 py-1.5 text-xs text-rose-600 hover:border-rose-300 hover:bg-rose-50 dark:text-rose-200 dark:hover:border-rose-500/50 dark:hover:bg-rose-500/10" :disabled="props.loading || !selectedCount" @click="deleteSelectedDrafts">批量删除选中</button>
       </div>
     </div>

@@ -34,8 +34,10 @@ class CategoryMatchRequest(BaseModel):
     draft_id: StableId
     target_platform: PlatformKey
     site: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
-    # focused Agent 无法消歧时，用户可以提交平台真实 category_id 继续同一步骤。
-    category_id: Annotated[TrimmedText, StringConstraints(max_length=160)] = ""
+    category_id: Annotated[TrimmedText, StringConstraints(max_length=160)] = Field(
+        default="", description="自动匹配留空；仅用户明确选择时填写，并提供 source_message_id。",
+    )
+    source_message_id: str = ""
 
 
 class CategoryMatchCapabilityResult(BaseModel):
@@ -51,32 +53,14 @@ class CategoryMatchCapabilityResult(BaseModel):
     changed: bool
 
 
-class ProductAttributesFillRequest(BaseModel):
-    """规则填充和 focused Agent 运行前可合并明确的用户属性值。"""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    draft_id: StableId
-    target_platform: PlatformKey
-    site: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
-    provided_attributes: dict[StableId, JsonValue] = Field(
-        default_factory=dict,
-        max_length=200,
-    )
 
 
-class ProductAttributesFillResult(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
 
-    draft_id: StableId
-    platform: PlatformKey
-    site: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
-    attributes: dict[str, JsonValue] = Field(max_length=500)
-    filled_attribute_ids: list[str] = Field(default_factory=list, max_length=500)
-    need_review_attribute_ids: list[str] = Field(default_factory=list, max_length=500)
-    fill_source: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
-    warning: Annotated[TrimmedText, StringConstraints(max_length=1000)] = ""
-    changed: bool
+
+
+
+
+
 
 
 class DraftPrepareForMarketRequest(BaseModel):
@@ -88,20 +72,26 @@ class DraftPrepareForMarketRequest(BaseModel):
     target_platform: PlatformKey
     site: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
     category_id: Annotated[TrimmedText, StringConstraints(max_length=160)] = ""
-    provided_attributes: dict[StableId, JsonValue] = Field(
-        default_factory=dict,
-        max_length=200,
-    )
     asset_ids: list[StableId] = Field(default_factory=list, max_length=100)
+    source_conversation_id: str = Field(
+        default="",
+        max_length=160,
+        description="资料来源会话 ID；跨会话引用仍由服务端校验归属。",
+    )
+    source_message_id: str = Field(
+        default="",
+        max_length=200,
+        description="conversation_facts_query 返回的真实用户消息 ID；不接受模型自报来源。",
+    )
     sales_target: list[
         Annotated[TrimmedText, StringConstraints(min_length=1, max_length=120)]
     ] = Field(
         default_factory=list,
         max_length=100,
         description=(
-            "仅供任务补充界面的 Mercado Libre CBT 销售目标选择器列表；每项格式为 "
-            "SITE_ID:logistic_type，例如 [\"MLM:remote\", \"MLB:remote\"]；"
-            "初始计划必须留空列表。"
+            "Mercado Libre CBT 销售目标；仅使用已保存选择或带 source_message_id 的用户事实。每项格式为 "
+            'SITE_ID:logistic_type，例如 ["MLM:remote", "MLB:remote"]；'
+            "不要猜测用户销售目标。"
         ),
     )
     # 只接受核价业务输入；平台、站点与发布币种仍从可信草稿目标注入。
@@ -125,6 +115,4 @@ __all__ = [
     "CategoryMatchRequest",
     "DraftPrepareForMarketRequest",
     "DraftPrepareForMarketResult",
-    "ProductAttributesFillRequest",
-    "ProductAttributesFillResult",
 ]

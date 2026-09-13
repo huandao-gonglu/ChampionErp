@@ -273,14 +273,14 @@ describe('CategoryAttributesPanel', () => {
 
     await wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))!.trigger('click')
     expect(wrapper.text()).toContain('待复核属性')
-    expect(wrapper.text()).toContain('AI 暂无法从商品信息判断，请人工确认。')
+    expect(wrapper.text()).toContain('该属性需要核对，请确认商品资料。')
 
     await wrapper.get<HTMLInputElement>('[data-attribute-id="VOLTAGE"]').setValue('110/220V')
 
     expect(draft.attributes.VOLTAGE).toBe('110/220V')
     expect(draft.validationErrors).toEqual(['MODEL'])
     expect(wrapper.text()).not.toContain('待复核属性')
-    expect(wrapper.text()).not.toContain('AI 暂无法从商品信息判断，请人工确认。')
+    expect(wrapper.text()).not.toContain('该属性需要核对，请确认商品资料。')
     expect(wrapper.emitted('invalidateCategoryPrecheck')).toHaveLength(1)
   })
 

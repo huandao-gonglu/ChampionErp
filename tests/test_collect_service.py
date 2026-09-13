@@ -43,6 +43,6 @@ def test_verification_text_requires_manual_handling(old_path_markers: tuple[str,
     assert_no_old_path(result, old_path_markers)
 
 
-def test_collect_service_does_not_reference_legacy_runtime_paths(app_dir: Path, old_path_markers: tuple[str, ...]) -> None:
-    service_source = (app_dir / "erp_web" / "services" / "collect_service.py").read_text(encoding="utf-8", errors="ignore")
+def test_collect_service_does_not_reference_legacy_runtime_paths(repo_dir: Path, old_path_markers: tuple[str, ...]) -> None:
+    service_source = (repo_dir / "erp_web" / "services" / "collect_service.py").read_text(encoding="utf-8", errors="ignore")
     assert_no_old_path(service_source, old_path_markers)

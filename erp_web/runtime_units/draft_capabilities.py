@@ -32,6 +32,7 @@ DRAFTS_QUERY_TOOL = "drafts_query"
         " source_platform、target_platform、target_site；并返回总数、稳定排序"
         "摘要与 query_snapshot_id；解析‘第一个/第二个’时必须传已有 "
         "snapshot_id 和 positions。"
+        "每条草稿的 targets 是完整平台/站点集合；所有草稿任务必须逐一覆盖 targets，不能只处理 target_platform。"
     ),
     permission="draft.read",
     side_effect="none",

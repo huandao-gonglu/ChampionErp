@@ -51,7 +51,16 @@ class MercadoLibreCbtLocalizedCopyOutput(LocalizedCopyOutput):
     )
 
 
+class CopyQualityReview(BaseModel):
+    """保存前对目标语言与商品事实的独立复核。"""
+    model_config = ConfigDict(extra="forbid")
+    language_matches: bool
+    unsupported_claims: list[str] = Field(default_factory=list, max_length=30)
+    explanation: str
+
+
 __all__ = [
     "LocalizedCopyOutput",
     "MercadoLibreCbtLocalizedCopyOutput",
+    "CopyQualityReview",
 ]

@@ -81,6 +81,25 @@ def safe_model_error_text(value: Any) -> str:
     return _detail_text(value)
 
 
+def direct_model_error_payload(exc: Exception) -> dict[str, Any] | None:
+    """让 Agent 和业务工具保留集中 Direct Model 边界的安全失败原因。"""
+    if not isinstance(exc, (AIHTTPError, AIModelRequestError)):
+        return None
+    message = safe_model_error_text(str(exc)) or "AI 模型请求失败。"
+    if isinstance(exc, AIModelRequestError):
+        return {"code": "AIModelRequestError", "message": message,
+                "retryable": True, "details": {}}
+    status_code = int(exc.status_code)
+    if status_code == 402:
+        message = "AI Provider 余额不足或计费配置不可用。" + message
+    return {
+        "code": "AI_PROVIDER_PAYMENT_REQUIRED" if status_code == 402 else f"HTTP_{status_code}",
+        "message": message,
+        "retryable": status_code in {408, 425, 429} or status_code >= 500,
+        "details": {"status_code": status_code, "model_id": safe_model_error_text(exc.model_id)},
+    }
+
+
 def model_http_error_payload(exc: ModelHTTPError) -> dict[str, Any]:
     """保留 Provider HTTP 错误的原始状态、代码、消息与 request ID。"""
 
@@ -195,6 +214,7 @@ def map_pydantic_model_error(
 __all__ = [
     "AIHTTPError",
     "AIModelRequestError",
+    "direct_model_error_payload",
     "map_pydantic_model_error",
     "model_http_error_detail",
     "model_http_error_payload",

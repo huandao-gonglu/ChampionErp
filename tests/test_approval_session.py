@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import pytest
 
-from erp_web.context import get_context
-from erp_web.facades import auth_config_facade, global_task_facade
 from erp_web.services.approval_session import (
     ApprovalSession,
     ApprovalSessionError,
@@ -41,11 +39,11 @@ def test_require_approver_rejects_empty_or_mismatched_token() -> None:
 
     with pytest.raises(ApprovalSessionError) as empty:
         session.require_approver("")
-    assert empty.value.code == "GLOBAL_TASK_APPROVAL_UNAUTHORIZED"
+    assert empty.value.code == "AI_TOOL_APPROVAL_UNAUTHORIZED"
 
     with pytest.raises(ApprovalSessionError) as mismatch:
         session.require_approver("forged-token")
-    assert mismatch.value.code == "GLOBAL_TASK_APPROVAL_UNAUTHORIZED"
+    assert mismatch.value.code == "AI_TOOL_APPROVAL_UNAUTHORIZED"
 
 
 def test_generated_token_is_random_and_nonempty() -> None:
@@ -55,81 +53,3 @@ def test_generated_token_is_random_and_nonempty() -> None:
     assert len(first.token) >= 32
     # 两个会话默认生成不同 token，避免跨会话复用审批凭据。
     assert first.token != second.token
-
-
-def test_facade_approve_without_valid_token_is_unauthorized() -> None:
-    # 缺少凭据：403，且不会触达 Controller。
-    payload, status = global_task_facade.approve_global_task_payload(
-        {"task_id": "gtask_missing"},
-        approval_token="",
-    )
-    assert status == 403
-    assert payload["error_code"] == "GLOBAL_TASK_APPROVAL_UNAUTHORIZED"
-
-    # 伪造凭据：同样 403。
-    payload, status = global_task_facade.approve_global_task_payload(
-        {"task_id": "gtask_missing"},
-        approval_token="forged-by-model",
-    )
-    assert status == 403
-    assert payload["error_code"] == "GLOBAL_TASK_APPROVAL_UNAUTHORIZED"
-
-
-def test_facade_reject_without_valid_token_is_unauthorized() -> None:
-    payload, status = global_task_facade.reject_global_task_payload(
-        {"task_id": "gtask_missing", "reason": "拒绝"},
-        approval_token="forged-by-model",
-    )
-    assert status == 403
-    assert payload["error_code"] == "GLOBAL_TASK_APPROVAL_UNAUTHORIZED"
-
-
-def test_facade_accepts_bootstrap_token_and_derives_identity() -> None:
-    # 受信 UI 通过 /api/state 拿到的 token 能通过校验；随后的失败只应来自
-    # 任务不存在，而不是审批凭据无效。
-    token = get_context().approval_session.token
-
-    payload, status = global_task_facade.approve_global_task_payload(
-        {"task_id": "gtask_missing"},
-        approval_token=token,
-    )
-    assert payload["error_code"] != "GLOBAL_TASK_APPROVAL_UNAUTHORIZED", (
-        payload,
-        status,
-    )
-
-
-def test_save_approval_mode_requires_trusted_ui_token() -> None:
-    payload, status = auth_config_facade.save_settings_payload(
-        {"appConfig": {"task_approval_mode": "full"}},
-        approval_token="",
-    )
-
-    assert status == 403
-    assert payload["error_code"] == "GLOBAL_TASK_APPROVAL_UNAUTHORIZED"
-    assert get_context().config.load_app_config()["task_approval_mode"] == "ask"
-
-
-def test_save_approval_mode_accepts_bootstrap_token() -> None:
-    token = get_context().approval_session.token
-
-    payload, status = auth_config_facade.save_settings_payload(
-        {"appConfig": {"task_approval_mode": "full"}},
-        approval_token=token,
-    )
-
-    assert status == 200
-    assert payload["appConfig"]["task_approval_mode"] == "full"
-    assert get_context().config.load_app_config()["task_approval_mode"] == "full"
-
-
-def test_save_approval_mode_rejects_unknown_value() -> None:
-    token = get_context().approval_session.token
-
-    payload, status = auth_config_facade.save_settings_payload(
-        {"appConfig": {"task_approval_mode": "allow"}},
-        approval_token=token,
-    )
-
-    assert status == 400
-    assert payload["error_code"] == "APP_CONFIG_INVALID"

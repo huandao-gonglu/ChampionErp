@@ -1,60 +1,63 @@
-from __future__ import annotations
-
-"""全局任务补充资料的可信来源标记。
-
-模型可以看到 Capability 请求 Schema，因此仅凭某个字段有值，不能证明它是
-用户在任务补充界面明确提交的。Controller 把受信 ``submit_input`` 写入过的
-顶层字段名记录到步骤，并在执行时通过 ``business_scope`` 传给 Capability。
-"""
+"""字段来源校验：只接受服务端已保存值或可定位、范围匹配的用户消息。"""
 
 import json
-from collections.abc import Iterable, Mapping
+import re
+from collections.abc import Mapping
+
+from .capability_errors import BusinessCapabilityError
 
 
-USER_INPUT_KEYS_SCOPE_KEY = "user_input_keys"
+def require_category_user_selection(category_id, execution, *, source_message_id, draft_id):
+    """自动匹配必须经过实物对照；只有用户明确指定的类目才能直接保存。"""
+    if category_id and not user_supplied_input(
+        execution.business_scope, "category_id", value=category_id,
+        source_message_id=source_message_id, entity_id=draft_id,
+    ):
+        raise BusinessCapabilityError(
+            "CATEGORY_USER_SELECTION_REQUIRED",
+            "直接指定 category_id 需要对应草稿的真实用户选择。自动匹配请留空，"
+            "由类目 Agent 检索并核对完整路径和商品实物，不能只凭搜索结果 ID 保存。",
+        )
 
 
-def encode_user_input_keys(keys: Iterable[str]) -> str:
-    """把用户补充字段编码为稳定、可放入 business_scope 的 JSON。"""
-
-    normalized = sorted(
-        {
-            str(key or "").strip()
-            for key in keys
-            if str(key or "").strip()
-        }
-    )
-    return json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
 
 
 def user_supplied_input(
     business_scope: Mapping[str, str],
     key: str,
+    *,
+    value=None,
+    source_message_id="",
+    entity_id="",
 ) -> bool:
-    """判断字段是否来自 Controller 的受信补充资料入口。"""
+    if value in (None, [], ""):
+        return False
+    saved = json.loads(business_scope.get("saved_user_facts", "{}"))
+    if saved.get(key) == value:
+        return True
+    if not source_message_id or not entity_id:
+        return False
+    for fact in json.loads(business_scope.get("user_facts", "[]")):
+        if fact.get("message_id") != source_message_id:
+            continue
+        text = str(fact.get("text", ""))
+        if entity_id not in fact.get("draft_ids", []) and not re.search(
+            r"(?<![\w-])" + re.escape(entity_id) + r"(?![\w-])", text
+        ):
+            return False
+        values = value if isinstance(value, list) else [value]
+        clauses = re.split(r"[，,。；;\n]", text)
 
-    expected = str(key or "").strip()
-    if not expected:
-        return False
-    raw = str(business_scope.get(USER_INPUT_KEYS_SCOPE_KEY) or "").strip()
-    if not raw:
-        return False
-    try:
-        decoded = json.loads(raw)
-    except (TypeError, ValueError):
-        return False
-    if not isinstance(decoded, list):
-        return False
-    normalized = {
-        str(item or "").strip()
-        for item in decoded
-        if isinstance(item, str) and str(item or "").strip()
-    }
-    return expected in normalized
+        def explicitly_selected(item):
+            token = str(item)
+            mentions = [clause for clause in clauses if token in clause]
+            return bool(mentions) and all(
+                not any(
+                    word in clause.split(token, 1)[0]
+                    for word in ("不要", "不是", "不选", "禁止", "取消")
+                )
+                for clause in mentions
+            )
 
-
-__all__ = [
-    "USER_INPUT_KEYS_SCOPE_KEY",
-    "encode_user_input_keys",
-    "user_supplied_input",
-]
+        return all(explicitly_selected(item) for item in values)
+    return False

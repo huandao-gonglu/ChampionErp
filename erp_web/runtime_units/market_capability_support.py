@@ -20,6 +20,10 @@ from erp_web.services.capability_errors import (
 
 
 class MarketPrepareStore(ProductCapabilityStore, Protocol):
+    def save_draft_category_fields(self, draft_id: str, platform: str, site: str,
+                                  before: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
+        ...
+
     def save_product(self, data: dict[str, Any]) -> dict[str, Any]:
         ...
 
@@ -313,23 +317,13 @@ def persist_target_projection(
     """持久化目标草稿投影；不再携带平台规则副本（local_platform_categories）。"""
 
     platform = text(target.get("platform")).lower()
-    merged_draft = merge_target_listing_into_draft(
-        draft,
-        target,
-        updated_target_draft,
-    )
-    next_product = deepcopy(product)
-    drafts = next_product.get("drafts") if isinstance(next_product.get("drafts"), dict) else {}
-    next_product["drafts"] = {**drafts, platform: merged_draft}
-    if merged_draft != draft:
-        try:
-            product_store.save_product(next_product)
-        except Exception as exc:
-            raise BusinessCapabilityError(
-                "TARGET_DRAFT_SAVE_FAILED",
-                f"目标草稿保存失败：{exc}",
-                retryable=True,
-            ) from exc
+    try:
+        product_store.save_draft_category_fields(
+            text(draft.get("draft_id")), platform, text(target.get("site")),
+            draft_for_publish_target(draft, target), updated_target_draft,
+        )
+    except Exception as exc:
+        raise BusinessCapabilityError("TARGET_DRAFT_SAVE_FAILED", f"目标草稿保存失败：{exc}", retryable=True) from exc
     saved_draft, _saved_product = load_draft(
         product_store,
         text(draft.get("draft_id")),

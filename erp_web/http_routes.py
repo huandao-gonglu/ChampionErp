@@ -15,7 +15,6 @@ from .http_route_units import (
     collect_routes,
     copy_routes,
     get_routes,
-    global_agent_routes,
     logistics_routes,
     mercadolibre_routes,
     product_routes,
@@ -52,7 +51,6 @@ GET_API_ROUTES = frozenset(
 POST_ROUTE_UNITS = (
     ai_chat_routes,
     ai_presentation_routes,
-    global_agent_routes,
     collect_routes,
     copy_routes,
     auth_config_routes,
@@ -79,6 +77,7 @@ __all__ = [
     "handle_post",
     "safe_json_body",
 ]
+
 
 def handle_get(handler: JsonRequestHandler) -> None:
     parsed = urllib.parse.urlparse(handler.path)

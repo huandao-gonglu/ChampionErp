@@ -69,15 +69,4 @@ describe('SKU 使用真实类目属性编辑器', () => {
     wrapper.unmount()
   })
 
-  it('单项入口只填写当前 SKU，批量入口位于列表上方' , async () => {
-    const { editor } = setup()
-    const fill = vi.spyOn(editor.actions, 'fillAttributesByAi').mockResolvedValue({ filledCount: 1, needReview: [], warning: '' })
-    const wrapper = mount(DraftSkuAttributesEditor, { props: { skuId: 'black', sku, targetKey: 'ozon:global' } })
-    expect(wrapper.text()).not.toContain('AI 补齐该市场已选 SKU')
-    await wrapper.findAll('button').find(button => button.text() === 'AI 补齐此 SKU 属性')!.trigger('click')
-    await flushPromises()
-    expect(fill.mock.calls).toEqual([['black']])
-    expect(wrapper.text()).toContain('新增 1 项')
-    wrapper.unmount()
-  })
 })

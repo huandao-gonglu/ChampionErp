@@ -30,6 +30,7 @@ from erp_web.schemas.market_prepare_capabilities import (
     CategoryMatchRequest,
 )
 from erp_web.services.ai_tool_declaration import Injected, ai_tool
+from erp_web.services.capability_input_provenance import require_category_user_selection
 from erp_web.services.capability_errors import (
     BusinessCapabilityError,
     CapabilityInputOption,
@@ -82,7 +83,8 @@ def match_category(
     target = select_target(draft, platform=platform, site=request.site)
     target_draft = draft_for_publish_target(draft, target)
     assert_target_mutable(target_draft)
-    selected_category_id = request.category_id or text(target_draft.get("category_id"))
+    # 未指定类目时始终重新匹配，已有结果不能吞掉用户的复核请求。
+    selected_category_id = request.category_id
     query = ""
     confidence = 0.0
 
@@ -287,7 +289,8 @@ def category_match(
     scope: Annotated[CategoryCapabilityScope, Injected()],
     execution: Annotated[AiExecutionContext, Injected()],
 ) -> CategoryMatchCapabilityResult:
-    del execution
+    require_category_user_selection(request.category_id, execution,
+                                    source_message_id=request.source_message_id, draft_id=request.draft_id)
     return match_category(
         request,
         product_store=scope.products,

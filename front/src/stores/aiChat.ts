@@ -1,553 +1,303 @@
-import { computed, ref, shallowRef } from 'vue'
+import { computed, ref, shallowRef, nextTick } from 'vue'
 import { defineStore } from 'pinia'
 import { Chat } from '@ai-sdk/vue'
 import { DefaultChatTransport } from 'ai'
-import type { ChatStatus, UIMessage } from 'ai'
-import {
-  AI_CHAT_RUNS_PATH,
-  conversationEventsUrl,
-  fetchConversationTaskLink,
-  fetchUiMessages,
-} from '@/api/aiWork'
+import type { UIMessage } from 'ai'
+import { AI_CHAT_RUNS_PATH, cancelChatRun, conversationEventsUrl, fetchUiMessages } from '@/api/aiWork'
+import { apiClient } from '@/api/client'
 import { matchChatCommand } from '@/services/chatCommands'
 import type { ChatCommandContext } from '@/services/chatCommands'
 import { GLOBAL_CHAT_CONVERSATION_PREFIX } from '@/types/aiWork'
-import type { ConversationTaskLinkResponse } from '@/types/aiWork'
+import type { AiWorkUiMessagesResponse, PendingToolCall } from '@/types/aiWork'
+import { useAiPageContextStore } from './aiPageContext'
 
-/** 后端预流错误码：同一 (conversation, client_message_id) 已被服务端接受。 */
 export const AI_CHAT_TURN_ALREADY_ACCEPTED = 'AI_CHAT_TURN_ALREADY_ACCEPTED'
-
-export interface AiChatError extends Error {
-  code?: string
-  status?: number
-}
-
-/** 生成 `conversation_global_chat_<32 位十六进制>` 会话 ID。 */
+export interface AiChatError extends Error { code?: string; status?: number }
 export function createChatConversationId(): string {
-  const random =
-    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID().replace(/-/g, '')
-      : Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('')
-  return `${GLOBAL_CHAT_CONVERSATION_PREFIX}${random}`.slice(
-    0,
-    GLOBAL_CHAT_CONVERSATION_PREFIX.length + 32,
-  )
-}
-
-/** 预流错误时解析后端标准 JSON，并把错误码附加到 Error 上；流式响应原样返回。 */
-async function chatFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  const response = await fetch(input, init)
-  if (response.ok) {
-    return response
-  }
-  let code = 'AI_CHAT_HTTP_ERROR'
-  let message = `HTTP ${response.status}`
-  try {
-    const body = (await response.json()) as { error?: string; error_code?: string }
-    if (body?.error_code) code = body.error_code
-    if (body?.error) message = body.error
-  } catch {
-    // 非 JSON 错误体保持默认 HTTP 文案。
-  }
-  const error = new Error(message) as AiChatError
-  error.code = code
-  error.status = response.status
-  throw error
-}
-
-function createTransport(): DefaultChatTransport<UIMessage> {
-  return new DefaultChatTransport<UIMessage>({
-    api: AI_CHAT_RUNS_PATH,
-    credentials: 'same-origin',
-    fetch: chatFetch,
-    // 服务端历史是唯一事实来源：只上传本轮最新一条用户消息，保留 Adapter 需要的 id 与 trigger。
-    prepareSendMessagesRequest: ({ id, messages, trigger }) => {
-      const latestUserMessage = [...messages].reverse().find((message) => message.role === 'user')
-      return {
-        body: {
-          id,
-          trigger,
-          messages: latestUserMessage ? [latestUserMessage] : [],
-        },
-      }
-    },
-  })
+  return GLOBAL_CHAT_CONVERSATION_PREFIX + crypto.randomUUID().replace(/-/g, '')
 }
 
 export const useAiChatStore = defineStore('aiChat', () => {
+  const pageContext = useAiPageContextStore()
   const activeConversationId = ref<string | null>(null)
   const chat = shallowRef<Chat<UIMessage> | null>(null)
   const input = ref('')
   const floatingOpen = ref(false)
   const historyVersion = ref(0)
-  const reactivating = ref(false)
-  // conversation → 未解决 Deferred 任务的只读关联；由 task-link 纯读接口与
-  // 后台官方事件驱动刷新，普通发送在它存在时被锁定（服务端 409 兜底）。
-  const taskLink = ref<ConversationTaskLinkResponse | null>(null)
-
+  const stopping = ref(false)
+  const runActive = ref(false)
+  const latestMessageId = ref<string | null>(null)
+  const pendingToolCalls = ref<PendingToolCall[]>([])
+  const receivedNotice = ref('')
+  const localError = ref<AiChatError>()
+  const targetDraftIds = ref<string[]>([])
+  const receivedMessages = ref<{ message_id: string; text: string }[]>([])
   let eventSource: EventSource | null = null
-  let eventsConversationId: string | null = null
-  let eventsReconnectTimer: ReturnType<typeof setTimeout> | null = null
-  let pendingServerResync = false
-  // 报告 R-04/R-06：history 重读与 task-link 重读都可能有多个请求并发在途。
-  // generation 单调递增，响应回来时只有最新一次请求的结果允许应用，旧响应
-  // 不得覆盖较新的快照（反序完成时尤其重要）。
-  let resyncGeneration = 0
-  let taskLinkGeneration = 0
-  // 报告 A-11：重试状态必须绑定 conversation 与 generation。旧实现用 store 级
-  // 计数器且只在成功时归零：会话 A 耗尽重试后切到会话 B，B 的首次失败将永远
-  // 得不到重试。现在状态随 conversation 绑定，切换会话（start/new/reactivate/
-  // disconnect）清零；新的触发点（批次事件、手动刷新、onFinish）重启周期，
-  // 达到短期上限也不是永久放弃。
-  let resyncRetryTimer: ReturnType<typeof setTimeout> | null = null
-  let resyncRetry = { conversationId: null as string | null, attempts: 0 }
-  const RESYNC_MAX_RETRY_ATTEMPTS = 3
-  const RESYNC_RETRY_BASE_MS = 500
-  // 报告 A-10：task-link 失败也要确定性重新对账。「旧成功 + 新失败」窗口里，
-  // 较新请求失败后若不重试，界面会长期停留在陈旧关联（误锁发送或丢失任务卡）。
-  let taskLinkRetryTimer: ReturnType<typeof setTimeout> | null = null
-  let taskLinkRetry = { conversationId: null as string | null, attempts: 0 }
-  const TASK_LINK_MAX_RETRY_ATTEMPTS = 2
-  const TASK_LINK_RETRY_BASE_MS = 250
-
-  const status = computed<ChatStatus>(() => chat.value?.status ?? 'ready')
-  // AI SDK 的流式增量通过 `replaceMessage` 做数组索引赋值（`messagesRef.value[index] = { ...message }`），
-  // 新消息对象复用同一 parts/part 引用，且 SDK 在非响应式对象上原地改写 `part.text`，
-  // 直接返回原数组引用无法可靠触发气泡重渲染。这里遍历活动 Chat 的消息建立索引级依赖，
-  // 并返回结构化新副本作为渲染桥；唯一事实源仍是 `chat.messages`（及服务端 Pydantic 历史），
-  // 该副本仅为渲染派生，不落库、不双写、不当可信历史。
-  const messages = computed<UIMessage[]>(() => {
-    const current = chat.value?.messages
-    if (!current || current.length === 0) return []
-    return JSON.parse(JSON.stringify(current)) as UIMessage[]
-  })
-  const error = computed<AiChatError | undefined>(() => chat.value?.error as AiChatError | undefined)
+  let retryTimer: ReturnType<typeof setTimeout> | undefined
+  let generation = 0
+  let stopRequestVersion = 0
+  const pendingInputIds = new Set<string>()
+  const status = computed(() => chat.value?.status ?? 'ready')
   const isBusy = computed(() => status.value === 'submitted' || status.value === 'streaming')
-  const hasUnresolvedTask = computed(() => Boolean(taskLink.value?.ok && taskLink.value.task_id))
-  const sendBlockedReason = computed(() => (
-    hasUnresolvedTask.value
-      ? '当前会话有进行中的全局任务；请先在任务卡片中审批、补充资料或取消任务，再发送新消息。'
-      : ''
-  ))
-  const canSend = computed(() => (
-    input.value.trim().length > 0 && !isBusy.value && !hasUnresolvedTask.value
-  ))
-
-  async function recoverFromDuplicateClaim(instance: Chat<UIMessage>): Promise<void> {
-    // 报告 A-07：duplicate-claim 恢复与 resyncFromServer 共享同一 generation/
-    // version 单调提交规则。旧实现直接赋值 instance.messages、不校验代次也
-    // 不更新 historyVersion：当一个 v1 慢请求在途时，continuation 批次已把 v2
-    // 提交并推进游标，随后 v1 慢响应会用旧 history 覆盖 v2 消息，而游标仍停在
-    // v2，真正的 v2 批次此后被当作重复事件忽略，最终回复从界面消失。
-    const conversationId = instance.id
-    const generation = ++resyncGeneration
-    try {
-      const detail = await fetchUiMessages(conversationId)
-      // 被更新的写入意图取代、会话已切换、或版本低于已应用版本时丢弃，
-      // 陈旧响应绝不能覆盖较新消息。
-      if (generation !== resyncGeneration) return
-      if (!detail.ok || chat.value !== instance) return
-      const incoming = Number(detail.history_version) || 0
-      if (incoming < historyVersion.value) return
-      instance.messages = detail.messages
-      historyVersion.value = incoming
-      instance.clearError()
-    } catch {
-      // 收敛失败时保留可解释的 error 状态，供界面展示。
-    }
-  }
-
-  /** 只读刷新 conversation → unresolved task 关联；失败时确定性重新对账。 */
-  async function refreshTaskLink(): Promise<void> {
-    const conversationId = activeConversationId.value
-    if (!conversationId) {
-      taskLink.value = null
-      return
-    }
-    // 报告 A-10：新的对账意图重启该会话的重试周期。
-    taskLinkRetry = { conversationId, attempts: 0 }
-    await fetchTaskLinkOnce(conversationId)
-  }
-
-  /** 单次 task-link 读取；失败时按退避安排有界重试（报告 A-10）。 */
-  async function fetchTaskLinkOnce(conversationId: string): Promise<void> {
-    const generation = ++taskLinkGeneration
-    try {
-      const response = await fetchConversationTaskLink(conversationId)
-      // 报告 R-06：同一 conversation 的旧请求可能晚于新请求返回。被更新的
-      // 请求取代、或 conversation 已切换时，丢弃结果，旧响应不得覆盖较新的
-      // 关联事实（旧 empty 覆盖新 ready 会丢任务卡，反之会误锁发送）。
-      if (generation !== taskLinkGeneration) return
-      if (activeConversationId.value !== conversationId) return
-      taskLink.value = response?.ok ? response : null
-      taskLinkRetry = { conversationId, attempts: 0 }
-    } catch {
-      // 报告 A-10：只读探测失败保留既有 link 状态（避免误放开被锁定的普通
-      // 发送），但必须确定性重新对账——否则「旧成功响应被取代 + 新请求失败」
-      // 会让界面长期停留在陈旧关联上。
-      if (generation !== taskLinkGeneration) return
-      if (activeConversationId.value !== conversationId) return
-      scheduleTaskLinkRetry(conversationId)
-    }
-  }
-
-  function clearTaskLinkRetry(): void {
-    if (taskLinkRetryTimer !== null) {
-      clearTimeout(taskLinkRetryTimer)
-      taskLinkRetryTimer = null
-    }
-  }
-
-  function scheduleTaskLinkRetry(conversationId: string): void {
-    if (taskLinkRetry.conversationId !== conversationId) return
-    if (taskLinkRetry.attempts >= TASK_LINK_MAX_RETRY_ATTEMPTS) return
-    taskLinkRetry.attempts += 1
-    const delay = TASK_LINK_RETRY_BASE_MS * 2 ** (taskLinkRetry.attempts - 1)
-    clearTaskLinkRetry()
-    taskLinkRetryTimer = setTimeout(() => {
-      taskLinkRetryTimer = null
-      if (activeConversationId.value === conversationId) {
-        void fetchTaskLinkOnce(conversationId)
-      }
-    }, delay)
-  }
-
-  /** 报告 A-11：切换会话时清零两类重试状态，旧会话的重试不得泄漏到新会话。 */
-  function resetRetryState(): void {
-    clearResyncRetry()
-    clearTaskLinkRetry()
-    resyncRetry = { conversationId: null, attempts: 0 }
-    taskLinkRetry = { conversationId: null, attempts: 0 }
-  }
+  const messages = computed<UIMessage[]>(() => JSON.parse(JSON.stringify(chat.value?.messages ?? [])))
+  const error = computed(() => localError.value ?? chat.value?.error as AiChatError | undefined)
+  const canSend = computed(() => Boolean(input.value.trim()) && !stopping.value)
+  const canStop = computed(() => isBusy.value || runActive.value || pendingToolCalls.value.length > 0 || stopping.value)
 
   function disconnectEvents(): void {
-    if (eventsReconnectTimer !== null) {
-      clearTimeout(eventsReconnectTimer)
-      eventsReconnectTimer = null
-    }
-    // 报告 A-10：同一 conversation 的重连（resync reconnect）不得取消刚安排
-    // 的 task-link 对账重试。重试状态的清零只发生在会话切换入口
-    // （start/new/reactivate 显式调用 resetRetryState），不在这里。
-    if (eventSource) {
-      eventSource.close()
-      eventSource = null
-    }
-    eventsConversationId = null
+    eventSource?.close()
+    eventSource = null
+    if (retryTimer) clearTimeout(retryTimer)
+    retryTimer = undefined
   }
-
-  /**
-   * 以当前已应用的 history version 为游标建立后台官方事件订阅；
-   * 服务端先从 outbox 重放游标之后的保留批次再转 live。
-   */
   function connectEvents(conversationId: string): void {
-    if (typeof EventSource === 'undefined') return
-    if (eventSource && eventsConversationId === conversationId) return
+    if (activeConversationId.value !== conversationId) return
     disconnectEvents()
-    eventsConversationId = conversationId
+    if (typeof EventSource === 'undefined') return
     const source = new EventSource(conversationEventsUrl(conversationId, historyVersion.value))
-    source.onmessage = (event: MessageEvent) => {
-      handleEventPayload(conversationId, String(event.data ?? ''))
+    eventSource = source
+    source.onmessage = () => {
+      if (eventSource !== source) return
+      source.close()
+      if (isBusy.value) return
+      void resyncFromServer(conversationId)
     }
     source.onerror = () => {
-      if (eventSource !== source || eventsConversationId !== conversationId) return
-      if (source.readyState === EventSource.CLOSED) {
-        // 致命断开：以已应用版本为新游标延迟重建订阅。
-        // CONNECTING 表示浏览器自带退避重连，仍沿用原 URL 游标，重放 + 版本去重可覆盖。
-        disconnectEvents()
-        eventsReconnectTimer = setTimeout(() => {
-          eventsReconnectTimer = null
-          if (activeConversationId.value === conversationId) connectEvents(conversationId)
-        }, 2000)
-      }
+      source.close()
+      if (eventSource !== source) return
+      retryTimer = setTimeout(() => void resyncFromServer(conversationId), 1000)
     }
-    eventSource = source
   }
-
-  function handleEventPayload(conversationId: string, rawData: string): void {
-    if (eventsConversationId !== conversationId) return
-    let payload: { type?: unknown; history_version?: unknown }
-    try {
-      payload = JSON.parse(rawData) as { type?: unknown; history_version?: unknown }
-    } catch {
+  async function resyncFromServer(conversationId: string, attempt = 0): Promise<void> {
+    if (activeConversationId.value !== conversationId) return
+    if (isBusy.value) {
+      if (stopping.value) retryTimer = setTimeout(() => void resyncFromServer(conversationId), 100)
       return
     }
-    if (payload.type === 'resync_required') {
-      // 游标早于 outbox 保留窗口：重读 /ui-messages 后以新版本重建订阅。
-      void resyncFromServer(conversationId, { reconnect: true })
-      return
-    }
-    if (payload.type === 'batch') {
-      const version = Number(payload.history_version ?? 0)
-      // 只按单调递增版本应用；重复或旧批次仅去重。
-      if (!Number.isFinite(version) || version <= historyVersion.value) return
-      void resyncFromServer(conversationId, { reconnect: false })
-    }
-  }
-
-  function clearResyncRetry(): void {
-    if (resyncRetryTimer !== null) {
-      clearTimeout(resyncRetryTimer)
-      resyncRetryTimer = null
-    }
-  }
-
-  /** 报告 A-11：重读失败后按指数退避重试，直到成功或达到短期上限。 */
-  function scheduleResyncRetry(
-    conversationId: string,
-    options: { reconnect: boolean },
-  ): void {
-    if (resyncRetry.conversationId !== conversationId) return
-    if (resyncRetry.attempts >= RESYNC_MAX_RETRY_ATTEMPTS) return
-    resyncRetry.attempts += 1
-    const delay = RESYNC_RETRY_BASE_MS * 2 ** (resyncRetry.attempts - 1)
-    clearResyncRetry()
-    resyncRetryTimer = setTimeout(() => {
-      resyncRetryTimer = null
-      if (activeConversationId.value === conversationId) {
-        void resyncFromServer(conversationId, options, { scheduled: true })
-      }
-    }, delay)
-  }
-
-  /** 以服务端已提交历史为最终事实源重读消息，并刷新任务关联。 */
-  async function resyncFromServer(
-    conversationId: string,
-    options: { reconnect: boolean },
-    flags: { scheduled?: boolean } = {},
-  ): Promise<void> {
-    // 新的重读意图取代尚未触发的重试计时。
-    clearResyncRetry()
-    if (!flags.scheduled) {
-      // 报告 A-11：新触发点（批次事件、手动刷新、onFinish）重启重试周期——
-      // 达到短期上限后仍有可恢复触发点，而不是永久放弃。
-      resyncRetry = { conversationId, attempts: 0 }
-    } else if (resyncRetry.conversationId !== conversationId) {
-      resyncRetry = { conversationId, attempts: 0 }
-    }
-    if (isBusy.value && chat.value?.id === conversationId) {
-      // 报告 A-11：流式期间 SDK 官方消息是渲染权威；等本回合 onFinish 后再
-      // 应用服务端历史。此处不能用旧游标立即重建订阅——服务端会持续返回同一
-      // resync_required，形成重连忙循环；onFinish 收尾时会重读快照并以新
-      // 游标重建订阅。
-      pendingServerResync = true
-      return
-    }
-    const generation = ++resyncGeneration
+    const requestGeneration = ++generation
     try {
       const detail = await fetchUiMessages(conversationId)
-      // 报告 R-04：并发 resync 的响应可能反序完成。只有最新一次请求的响应
-      // 允许应用；版本低于已应用版本的响应是陈旧快照，绝不能覆盖较新消息
-      // （否则 v3 游标 + v2 消息，且 v3 批次会被当作重复事件忽略）。
-      if (generation !== resyncGeneration) return
-      if (!detail.ok || chat.value?.id !== conversationId) return
-      const incoming = Number(detail.history_version) || 0
-      if (incoming < historyVersion.value) return
+      if (requestGeneration !== generation || chat.value?.id !== conversationId) return
+      if (detail.history_version < historyVersion.value) return
+      runActive.value = detail.run_active ?? false
+      if (!pendingInputIds.size) latestMessageId.value = detail.latest_message_id ?? latestMessageId.value
+      if (runActive.value && detail.run_status === 'cancelled') stopping.value = true
+      if (stopping.value && runActive.value) {
+        retryTimer = setTimeout(() => void resyncFromServer(conversationId), 200)
+        return
+      }
+      stopping.value = false
       chat.value.messages = detail.messages
-      historyVersion.value = incoming
-      resyncRetry = { conversationId, attempts: 0 }
-    } catch {
-      // 报告 A-11：重读失败不能只保留旧消息等待手动刷新——已投递批次不会
-      // 保证再次出现。按退避确定性重试，确保已提交历史最终可读。
-      if (generation !== resyncGeneration) return
-      if (activeConversationId.value !== conversationId) return
-      scheduleResyncRetry(conversationId, options)
-      return
-    }
-    await refreshTaskLink()
-    if (options.reconnect) {
-      disconnectEvents()
+      historyVersion.value = detail.history_version
+      pendingToolCalls.value = detail.pending_tool_calls ?? []
+      localError.value = detail.run_error ? Object.assign(new Error(detail.run_error.message), { code: detail.run_error.code }) : undefined
+      const pending = new Set((detail.received_messages ?? []).map(row => row.message_id))
+      receivedMessages.value = receivedMessages.value.filter(row => pending.has(row.message_id))
+      receivedNotice.value = pending.size ? '已收到，等待当前操作结束后应用' : ''
       connectEvents(conversationId)
+      if (runActive.value) retryTimer = setTimeout(() => void resyncFromServer(conversationId), 200)
+    } catch {
+      if (requestGeneration !== generation || activeConversationId.value !== conversationId) return
+      if (attempt < 3) retryTimer = setTimeout(() => void resyncFromServer(conversationId, attempt + 1), 500 * 2 ** attempt)
+      else {
+        if (stopping.value) {
+          stopping.value = false
+          receivedNotice.value = '停止请求已发送，暂时无法确认结果，请重试'
+        }
+        connectEvents(conversationId)
+      }
     }
   }
-
-  function createChat(conversationId: string, initialMessages: UIMessage[]): Chat<UIMessage> {
+  async function chatFetch(url: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+    const response = await fetch(url, init)
+    if (response.status === 202) {
+      const receipt = await response.json()
+      if (receipt.conversation_id === activeConversationId.value) receivedNotice.value = receipt.message
+      const accepted = new Error(receipt.message) as AiChatError
+      accepted.code = 'AI_CHAT_INPUT_ACCEPTED'
+      throw accepted
+    }
+    if (response.ok) return response
+    const payload = await response.json().catch(() => ({}))
+    const failure = new Error(payload.error ?? `HTTP ${response.status}`) as AiChatError
+    failure.code = payload.error_code
+    failure.status = response.status
+    throw failure
+  }
+  function createChat(conversationId: string, initial: UIMessage[]): Chat<UIMessage> {
     const instance = new Chat<UIMessage>({
-      id: conversationId,
-      messages: initialMessages,
-      transport: createTransport(),
-      onFinish: ({ isAbort, isDisconnect, isError }) => {
-        // history version 不做本地猜测：本回合结束（或流式期间积压了官方
-        // 事件）时重读服务端已提交历史，用服务端版本对齐订阅游标。
-        const cleanFinish = !isAbort && !isDisconnect && !isError
-        const hadPendingResync = pendingServerResync
-        if (cleanFinish || hadPendingResync) {
-          pendingServerResync = false
-          // 报告 A-11：busy 期间积压了 resync_required 时，本回合结束后不仅
-          // 重读快照，还要以新游标重建订阅（busy 分支不再立即重连，避免旧
-          // 游标重连忙循环）。
-          void resyncFromServer(instance.id, { reconnect: hadPendingResync })
-        }
+      id: conversationId, messages: initial,
+      transport: new DefaultChatTransport({
+        api: AI_CHAT_RUNS_PATH, credentials: 'same-origin', fetch: chatFetch,
+        prepareSendMessagesRequest: async ({ id, messages: all, trigger, body }) => {
+          const latest = all.at(-1)
+          if (latest?.role === 'assistant') {
+            const parts = latest.parts.filter(part => 'state' in part && part.state === 'approval-responded')
+            const { data } = await apiClient.get<{ approvalToken: string }>('/api/state')
+            return { headers: { 'X-Approval-Token': data.approvalToken }, body: { id, trigger, messages: [{ ...latest, parts }] } }
+          }
+          if (latest?.role === 'user' && activeConversationId.value === id) latestMessageId.value = latest.id
+          return { body: { id, trigger, messages: latest ? [latest] : [], ...body } }
+        },
+      }),
+      onFinish: () => {
+        if (!stopping.value) void nextTick().then(() => resyncFromServer(conversationId))
       },
-      onError: (chatError) => {
-        const code = (chatError as AiChatError).code
-        if (code === AI_CHAT_TURN_ALREADY_ACCEPTED) {
-          void recoverFromDuplicateClaim(instance)
+      onError: (cause) => {
+        const code = (cause as AiChatError).code
+        if (code === 'AI_CHAT_INPUT_ACCEPTED' || code === AI_CHAT_TURN_ALREADY_ACCEPTED) {
+          void nextTick().then(() => { instance.clearError(); void resyncFromServer(conversationId) })
+        } else {
+          connectEvents(conversationId)
         }
       },
     })
     return instance
   }
-
   function startConversation(): string {
-    const conversationId = createChatConversationId()
-    activeConversationId.value = conversationId
-    chat.value = createChat(conversationId, [])
+    disconnectEvents()
+    generation++
+    stopRequestVersion++
+    const id = createChatConversationId()
+    activeConversationId.value = id
+    chat.value = createChat(id, [])
     historyVersion.value = 0
-    taskLink.value = null
-    pendingServerResync = false
-    // 使上一会话仍在途的重读/关联响应作废，并清零其重试状态（报告 A-11）。
-    resyncGeneration += 1
-    taskLinkGeneration += 1
-    resetRetryState()
-    connectEvents(conversationId)
-    return conversationId
+    pendingToolCalls.value = []
+    receivedMessages.value = []
+    receivedNotice.value = ''
+    targetDraftIds.value = []
+    localError.value = undefined
+    stopping.value = false
+    runActive.value = false
+    latestMessageId.value = null
+    connectEvents(id)
+    return id
   }
-
   function newConversation(): void {
     disconnectEvents()
+    generation++
+    stopRequestVersion++
     activeConversationId.value = null
     chat.value = null
     input.value = ''
-    taskLink.value = null
-    pendingServerResync = false
-    resyncGeneration += 1
-    taskLinkGeneration += 1
-    resetRetryState()
+    pendingToolCalls.value = []
+    receivedMessages.value = []
+    receivedNotice.value = ''
+    stopping.value = false
+    runActive.value = false
+    latestMessageId.value = null
   }
-
-  /** 构建命令执行所需的状态快照与动作；注册表不 import store，避免循环依赖。 */
-  function buildCommandContext(): ChatCommandContext {
-    const linkedTask = taskLink.value?.task ?? null
-    return {
-      isBusy: isBusy.value,
-      hasUnresolvedTask: hasUnresolvedTask.value,
-      taskStatus: linkedTask?.status ?? '',
-      taskId: taskLink.value?.task_id ?? '',
-      approvalStepId: linkedTask?.pending_approval?.step_id ?? '',
-      approvalSummary: String(linkedTask?.pending_approval?.payload?.summary ?? '').trim(),
-      startConversation,
-      stopStreaming,
-      refreshTaskLink,
+  async function queueText(text: string): Promise<void> {
+    const id = activeConversationId.value
+    if (!id) return
+    const messageId = crypto.randomUUID()
+    latestMessageId.value = messageId
+    const requestVersion = stopRequestVersion
+    pendingInputIds.add(messageId)
+    let response: Response
+    try {
+      response = await fetch(AI_CHAT_RUNS_PATH, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+        id, trigger: 'submit-message', messages: [{ id: messageId, role: 'user', parts: [{ type: 'text', text }] }],
+        target_draft_ids: targetDraftIds.value,
+        page_context: pageContext.snapshot(),
+      }) })
+    } catch (cause) {
+      if (requestVersion !== stopRequestVersion) return
+      throw cause
+    } finally {
+      pendingInputIds.delete(messageId)
     }
+    if (requestVersion !== stopRequestVersion || stopping.value) { await response.body?.cancel(); return }
+    if (!response.ok) throw new Error((await response.json()).error ?? '消息未能提交')
+    if (activeConversationId.value !== id) { await response.body?.cancel(); return }
+    receivedMessages.value.push({ message_id: messageId, text })
+    receivedNotice.value = response.status === 202 ? (await response.json()).message : '已收到，正在应用'
+    if (response.status !== 202) await response.body?.cancel()
+    connectEvents(id)
   }
-
+  function commandContext(): ChatCommandContext {
+    return { isBusy: canStop.value, startConversation, stopStreaming, refreshHistory }
+  }
   function sendMessage(): void {
+    if (stopping.value) return
     const text = input.value.trim()
-    if (!text || isBusy.value) return
-    // 斜杠命令经统一注册表分发（services/chatCommands）：与既有 /new 语义一致，
-    // 绕过任务发送锁、不发送消息；同步命令成功即清空输入，异步命令在结果
-    // 返回后清空，失败则保留输入便于重试。
-    const context = buildCommandContext()
-    const matched = matchChatCommand(text)
-    if (matched && matched.command.available(context)) {
-      const result = matched.command.execute(context, matched.arg)
-      if (result instanceof Promise) {
-        result.then((consumed) => {
-          if (consumed) input.value = ''
-        }).catch(() => {
-          // 命令失败保留输入。
-        })
-      } else if (result) {
-        input.value = ''
-      }
+    if (!text) return
+    const command = matchChatCommand(text)
+    if (command && command.command.available(commandContext())) {
+      if (command.command.execute(commandContext(), command.arg)) input.value = ''
       return
     }
-    // 未解决 Deferred 任务存在时锁定普通发送；审批/输入/取消经命令或任务卡片入口，不受影响。
-    if (hasUnresolvedTask.value) return
-    if (!chat.value) {
-      startConversation()
-    }
+    if (!chat.value) startConversation()
     input.value = ''
-    void chat.value?.sendMessage({ text })
+    localError.value = undefined
+    if (isBusy.value || runActive.value || pendingToolCalls.value.length) {
+      void queueText(text).catch(cause => { localError.value = cause; input.value = text })
+    } else void chat.value?.sendMessage({ text }, { body: {
+      target_draft_ids: [...targetDraftIds.value],
+      page_context: pageContext.snapshot(),
+    } })
   }
-
   function stopStreaming(): void {
-    chat.value?.stop()
-  }
-
-  function clearError(): void {
-    chat.value?.clearError()
-  }
-
-  /** 重新激活一个已完成的 global.chat 历史：用服务端派生消息初始化新的活动 Chat。 */
-  async function reactivateConversation(conversationId: string): Promise<boolean> {
-    if (chat.value?.id === conversationId) {
-      activeConversationId.value = conversationId
-      connectEvents(conversationId)
-      void refreshTaskLink()
-      return true
-    }
-    reactivating.value = true
+    const id = activeConversationId.value
+    const instance = chat.value
+    const messageId = latestMessageId.value ?? instance?.messages.slice().reverse().find(message => message.role === 'user')?.id
+    if (!id || !instance || !messageId || stopping.value) return
+    stopping.value = true
+    runActive.value = true
+    localError.value = undefined
+    receivedNotice.value = '正在停止…'
     disconnectEvents()
-    try {
-      const detail = await fetchUiMessages(conversationId)
-      if (!detail.ok) {
-        return false
-      }
-      activeConversationId.value = conversationId
-      chat.value = createChat(conversationId, detail.messages)
-      // 冷启动：先采用服务端历史版本作为订阅游标，再建立重放后无缝转 live 的订阅。
-      historyVersion.value = Number(detail.history_version) || 0
-      taskLink.value = null
-      pendingServerResync = false
-      // 使切换前会话仍在途的重读/关联响应作废，防止旧响应覆盖冷启动快照；
-      // 同时清零切换前会话的重试状态（报告 A-11）。
-      resyncGeneration += 1
-      taskLinkGeneration += 1
-      resetRetryState()
-      connectEvents(conversationId)
-      void refreshTaskLink()
-      return true
-    } catch {
-      // 重激活失败：恢复原活动 conversation 的订阅，避免静默失去事件通道。
-      if (activeConversationId.value) connectEvents(activeConversationId.value)
-      return false
-    } finally {
-      reactivating.value = false
-    }
+    generation++
+    stopRequestVersion++
+    // 后端取消独立于浏览器断流；即使发送请求尚未到达，也按消息 ID 阻止启动。
+    const cancellation = cancelChatRun(id, messageId)
+    void instance.stop()
+    void cancellation.then(() => {
+      if (chat.value === instance) void resyncFromServer(id)
+    }).catch(cause => {
+      if (chat.value !== instance) return
+      stopping.value = false
+      localError.value = cause
+      receivedNotice.value = '停止请求失败，请重试'
+    })
   }
-
-  function openFloating(): void {
+  async function respondToApproval(id: string, approved: boolean, reason?: string): Promise<void> {
+    await chat.value?.addToolApprovalResponse({ id, approved, reason })
+    await chat.value?.sendMessage()
+  }
+  function openConversation(detail: AiWorkUiMessagesResponse): void {
+    const id = detail.conversation_id
+    // 页面已校验响应并确认仍选中该会话；打开只绑定历史，不提交模型请求。
+    generation++
+    disconnectEvents()
+    stopRequestVersion++
+    activeConversationId.value = id
+    chat.value = createChat(id, detail.messages)
+    historyVersion.value = detail.history_version
+    runActive.value = detail.run_active ?? false
+    stopping.value = Boolean(runActive.value && detail.run_status === 'cancelled')
+    latestMessageId.value = detail.latest_message_id ?? null
+    pendingToolCalls.value = detail.pending_tool_calls ?? []
+    localError.value = detail.run_error ? Object.assign(new Error(detail.run_error.message), { code: detail.run_error.code }) : undefined
+    targetDraftIds.value = []
+    receivedMessages.value = []
+    receivedNotice.value = detail.received_messages?.length ? '已收到，等待当前操作结束后应用' : ''
+    connectEvents(id)
+    if (runActive.value) retryTimer = setTimeout(() => void resyncFromServer(id), 200)
+  }
+  function prepareDrafts(ids: string[], goal = '准备所选草稿，复用已有资料，完成可执行的准备工作并按草稿汇报剩余问题。'): void {
+    startConversation()
+    targetDraftIds.value = [...new Set(ids)]
+    input.value = `${goal}\n目标 draft_id：${targetDraftIds.value.join('、')}。本次仅准备草稿。`
     floatingOpen.value = true
+    sendMessage()
   }
-
-  function closeFloating(): void {
-    floatingOpen.value = false
-  }
-
-  /** 以服务端已提交历史刷新游标；不做本地版本猜测。 */
   function refreshHistory(): void {
-    const conversationId = activeConversationId.value
-    if (!conversationId || chat.value?.id !== conversationId) return
-    void resyncFromServer(conversationId, { reconnect: false })
+    if (activeConversationId.value) void resyncFromServer(activeConversationId.value)
   }
-
-  return {
-    activeConversationId,
-    chat,
-    input,
-    floatingOpen,
-    historyVersion,
-    reactivating,
-    taskLink,
-    status,
-    messages,
-    error,
-    isBusy,
-    canSend,
-    hasUnresolvedTask,
-    sendBlockedReason,
-    startConversation,
-    newConversation,
-    sendMessage,
-    stopStreaming,
-    clearError,
-    reactivateConversation,
-    refreshTaskLink,
-    connectEvents,
-    disconnectEvents,
-    openFloating,
-    closeFloating,
-    refreshHistory,
-  }
+  function clearError(): void { localError.value = undefined; chat.value?.clearError() }
+  return { activeConversationId, chat, input, floatingOpen, historyVersion, stopping, canStop, status, messages,
+    error, isBusy, canSend, pendingToolCalls, receivedNotice, receivedMessages, startConversation, newConversation,
+    sendMessage, stopStreaming, respondToApproval, clearError, openConversation, connectEvents, disconnectEvents,
+    prepareDrafts, refreshHistory, openFloating: () => { floatingOpen.value = true }, closeFloating: () => { floatingOpen.value = false } }
 })

@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { nextTick, ref, watch } from 'vue'
 import type { UIMessage } from 'ai'
 import AiChatComposer from './AiChatComposer.vue'
 import AiMessageList from './AiMessageList.vue'
-import GlobalTaskApprovalCard from './GlobalTaskApprovalCard.vue'
+import NativeToolApprovals from './NativeToolApprovals.vue'
 import { useAiChatStore } from '@/stores'
 
 const props = withDefaults(defineProps<{
@@ -28,23 +28,6 @@ const emit = defineEmits<{
 
 const scrollRef = ref<HTMLElement | null>(null)
 const chatStore = useAiChatStore()
-
-// conversation 级任务卡只依赖 task-link 纯读接口；不依赖消息 part 或 ToolReturn。
-const activeTaskId = computed(() => (
-  chatStore.taskLink?.conversation_id === props.conversationId
-    ? (chatStore.taskLink?.task_id || '')
-    : ''
-))
-const sendDisabledReason = computed(() => chatStore.sendBlockedReason)
-
-function syncTaskLink(): void {
-  if (props.conversationId && props.conversationId === chatStore.activeConversationId) {
-    void chatStore.refreshTaskLink()
-  }
-}
-
-onMounted(syncTaskLink)
-watch(() => [props.conversationId, props.historyVersion], syncTaskLink)
 
 async function scrollToBottom() {
   await nextTick()
@@ -73,7 +56,7 @@ watch(() => props.messages, () => {
         </div>
         <h3 class="mt-4 text-base font-black">告诉全局 Agent 你想了解什么</h3>
         <p class="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-500 dark:text-accent-300">
-          可以查询业务事实，也可以让全局 Agent 创建修改、删除或发布任务；高风险操作会等待你确认。
+          可以查询业务事实，也可以让全局 Agent 准备草稿或执行商品操作；高风险操作会等待你确认。
         </p>
       </div>
 
@@ -100,18 +83,19 @@ watch(() => props.messages, () => {
       </p>
     </div>
 
-    <!-- conversation 级全局任务卡：独立于消息 part 挂载，仅纯 GET 读取 -->
-    <GlobalTaskApprovalCard
-      v-if="activeTaskId"
-      :task-id="activeTaskId"
-      :enabled="true"
-    />
+    <NativeToolApprovals />
+    <p v-if="chatStore.pendingToolCalls.some(call => call.kind === 'external')" class="mb-2 text-sm text-slate-500">后台操作执行中，Agent 等待工具结果。可以继续补充资料或纠正要求。</p>
+    <div v-if="chatStore.receivedNotice" role="status" class="mb-2 rounded-lg bg-sky-50 p-3 text-sm text-sky-800">
+      {{ chatStore.receivedNotice }}
+      <p v-for="message in chatStore.receivedMessages" :key="message.message_id">{{ message.text }}</p>
+    </div>
 
     <!-- 输入框 -->
     <AiChatComposer
       :model-value="input"
-      :busy="busy"
-      :send-disabled-reason="sendDisabledReason"
+      :busy="busy || chatStore.canStop"
+      :stopping="chatStore.stopping"
+      :conversation-id="conversationId"
       @update:model-value="emit('update:input', $event)"
       @send="emit('send')"
       @stop="emit('stop')"

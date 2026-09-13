@@ -91,14 +91,6 @@ AI_USE_CASES: dict[str, dict[str, Any]] = {
         "label": "图片翻译/重绘",
         "required_capabilities": [CAP_IMAGE_EDIT],
     },
-    "category.attribute_fill": {
-        "id": "category.attribute_fill",
-        "label": "类目属性 AI 填充",
-        "required_capabilities": [CAP_CHAT, CAP_JSON, CAP_TOOL_CALLING],
-        "toolset_id": "category.attribute_values",
-        "budget_profile": "category.attribute_fill.default",
-        "result_schema": "category_attribute_fill.v4",
-    },
     "category.product_match": {
         "id": "category.product_match",
         "label": "商品类目候选匹配",

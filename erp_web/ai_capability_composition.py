@@ -1,17 +1,17 @@
 """应用级 Capability 组合根。
 
 唯一 ``AiToolCatalog`` 实例在这里由各领域显式导出的 Capability tuple 组合而成；
-Direct / Task / Internal 三个不可变名称集合从同一个 Catalog 投影 ToolSet。
+主 Agent / Internal 三个不可变名称集合从同一个 Catalog 投影 ToolSet。
 不扫描包、不依赖 import side effect 注册、不做运行时动态发现。
 """
 
 from __future__ import annotations
 
 from typing import Collection
-
-from erp_web.runtime_units.attribute_fill_capabilities import (
-    ATTRIBUTE_FILL_AI_CAPABILITIES,
+from erp_web.runtime_units.conversation_fact_capabilities import (
+    CONVERSATION_FACT_CAPABILITIES,
 )
+
 from erp_web.runtime_units.category_capabilities import CATEGORY_AI_CAPABILITIES
 from erp_web.runtime_units.category_query_capabilities import (
     CATEGORY_QUERY_AI_CAPABILITIES,
@@ -35,6 +35,9 @@ from erp_web.runtime_units.product_write_capabilities import (
     DRAFT_WRITE_AI_CAPABILITIES,
     PRODUCT_WRITE_AI_CAPABILITIES,
 )
+from erp_web.runtime_units.source_inspect_capability import (
+    SOURCE_INSPECT_AI_CAPABILITIES,
+)
 from erp_web.runtime_units.publish_capabilities import PUBLISH_AI_CAPABILITIES
 from erp_web.runtime_units.publish_admin_capabilities import (
     PUBLISH_ADMIN_AI_CAPABILITIES,
@@ -51,7 +54,6 @@ PRODUCT_CAPABILITIES = PRODUCT_AI_CAPABILITIES
 PRODUCT_WRITE_CAPABILITIES = PRODUCT_WRITE_AI_CAPABILITIES
 CATEGORY_CAPABILITIES = CATEGORY_AI_CAPABILITIES
 CATEGORY_QUERY_CAPABILITIES = CATEGORY_QUERY_AI_CAPABILITIES
-ATTRIBUTE_FILL_CAPABILITIES = ATTRIBUTE_FILL_AI_CAPABILITIES
 MARKET_PREPARE_CAPABILITIES = MARKET_PREPARE_AI_CAPABILITIES
 PUBLISH_CAPABILITIES = PUBLISH_AI_CAPABILITIES
 DRAFT_QUERY_CAPABILITIES = DRAFT_QUERY_AI_CAPABILITIES
@@ -64,14 +66,15 @@ STORE_AUTH_CAPABILITIES = STORE_AUTH_AI_CAPABILITIES
 LOGISTICS_CAPABILITIES = LOGISTICS_AI_CAPABILITIES
 COLLECTION_CAPABILITIES = COLLECTION_AI_CAPABILITIES
 RESEARCH_CAPABILITIES = RESEARCH_AI_CAPABILITIES
+SOURCE_INSPECT_CAPABILITIES = SOURCE_INSPECT_AI_CAPABILITIES
 PUBLISH_ADMIN_CAPABILITIES = PUBLISH_ADMIN_AI_CAPABILITIES
 
 ALL_AI_CAPABILITIES = (
+    *CONVERSATION_FACT_CAPABILITIES,
     *PRODUCT_CAPABILITIES,
     *PRODUCT_WRITE_CAPABILITIES,
     *CATEGORY_CAPABILITIES,
     *CATEGORY_QUERY_CAPABILITIES,
-    *ATTRIBUTE_FILL_CAPABILITIES,
     *MARKET_PREPARE_CAPABILITIES,
     *PUBLISH_CAPABILITIES,
     *DRAFT_QUERY_CAPABILITIES,
@@ -84,16 +87,20 @@ ALL_AI_CAPABILITIES = (
     *LOGISTICS_CAPABILITIES,
     *COLLECTION_CAPABILITIES,
     *RESEARCH_CAPABILITIES,
+    *SOURCE_INSPECT_CAPABILITIES,
     *PUBLISH_ADMIN_CAPABILITIES,
 )
 
 APPLICATION_CAPABILITY_CATALOG = AiToolCatalog.compile(ALL_AI_CAPABILITIES)
 
-#: 主 Agent 可直接调用的只读/纯计算能力。
-GLOBAL_CHAT_DIRECT_CAPABILITIES = frozenset(
+#: 主 Agent 的查询和纯计算能力。
+GLOBAL_CHAT_CAPABILITIES = frozenset(
     {
+        "conversation_facts_query",
         "drafts_query",
         "product_read",
+        "draft_attributes_read",
+        "inspect_source_facts",
         "product_publish_validate",
         "draft_read",
         "products_index_query",
@@ -115,16 +122,17 @@ GLOBAL_CHAT_DIRECT_CAPABILITIES = frozenset(
     }
 )
 
-#: 可以作为 Global Task step 执行的能力。
+#: 主 Agent 的 focused 写能力。
 #:
 #: 高频写入已迁移到 focused Capability：库存/售价以平台草稿为 owner
 #: （draft_stock_update / draft_pricing_apply），商品主档走部分补丁
 #: （product_profile_patch）。通用 product_save / draft_save 容易误选
 #: owner 并膨胀上下文，已从常用 allowlist 移除，只保留为 internal。
-GLOBAL_TASK_CAPABILITIES = frozenset(
+_WRITE_CAPABILITIES = frozenset(
     {
         "drafts_query",
         "product_read",
+        "draft_attributes_read",
         "draft_read",
         "product_profile_patch",
         "product_delete",
@@ -132,9 +140,9 @@ GLOBAL_TASK_CAPABILITIES = frozenset(
         "draft_pricing_apply",
         "draft_delete",
         "product_attributes_update",
+        "draft_sku_attributes_update",
         "product_images_prepare",
         "category_match",
-        "product_attributes_fill",
         "draft_prepare_for_market",
         "product_publish_validate",
         "product_publish_request",
@@ -165,7 +173,7 @@ GLOBAL_TASK_CAPABILITIES = frozenset(
     }
 )
 
-#: 仅供其他 Capability/focused Agent 内部使用；与 Direct/Task 互斥。
+#: 仅供其他 Capability/focused Agent 内部使用；与 主 Agent 互斥。
 #: product_save / draft_save 是通用整对象保存，已被 focused write 取代，
 #: 不再暴露给模型做任务规划；HTTP 门面走独立 facade，不经过 Capability。
 INTERNAL_ONLY_CAPABILITIES = frozenset[str](
@@ -175,8 +183,7 @@ INTERNAL_ONLY_CAPABILITIES = frozenset[str](
     }
 )
 
-GLOBAL_CHAT_DIRECT_TOOLSET_ID = "global.chat.direct"
-GLOBAL_TASK_TOOLSET_ID = "global.task"
+GLOBAL_CHAT_TOOLSET_ID = "global.chat"
 
 
 def application_capability_permissions() -> frozenset[str]:
@@ -192,82 +199,45 @@ def validate_capability_exposure() -> None:
     """校验 exposure 覆盖规则；架构测试直接调用。
 
     - 集合只能引用 Catalog 已编译能力；
-    - 每个 Catalog Capability 至少进入 Direct、Task 或 Internal 之一；
-    - Internal 与 Direct/Task 互斥；
-    - Direct allowlist 不包含 write Capability。
+    - 每个 Catalog Capability 至少进入 主 Agent 或 Internal 之一；
+    - Internal 与 主 Agent 互斥；
     """
 
     catalog_names = set(APPLICATION_CAPABILITY_CATALOG.tools)
     for label, names in (
-        ("GLOBAL_CHAT_DIRECT_CAPABILITIES", GLOBAL_CHAT_DIRECT_CAPABILITIES),
-        ("GLOBAL_TASK_CAPABILITIES", GLOBAL_TASK_CAPABILITIES),
+        ("GLOBAL_CHAT_CAPABILITIES", GLOBAL_CHAT_CAPABILITIES),
+        ("_WRITE_CAPABILITIES", _WRITE_CAPABILITIES),
         ("INTERNAL_ONLY_CAPABILITIES", INTERNAL_ONLY_CAPABILITIES),
     ):
         unknown = sorted(names - catalog_names)
         if unknown:
-            raise ValueError(
-                f"{label} 引用了 Catalog 未收录能力：{', '.join(unknown)}"
-            )
+            raise ValueError(f"{label} 引用了 Catalog 未收录能力：{', '.join(unknown)}")
     overlap = sorted(
-        INTERNAL_ONLY_CAPABILITIES
-        & (GLOBAL_CHAT_DIRECT_CAPABILITIES | GLOBAL_TASK_CAPABILITIES)
+        INTERNAL_ONLY_CAPABILITIES & (GLOBAL_CHAT_CAPABILITIES | _WRITE_CAPABILITIES)
     )
     if overlap:
-        raise ValueError(
-            f"Internal 能力不得同时进入 Direct/Task：{', '.join(overlap)}"
-        )
+        raise ValueError(f"Internal 能力不得同时进入 主 Agent：{', '.join(overlap)}")
     unexposed = sorted(
         catalog_names
-        - (
-            GLOBAL_CHAT_DIRECT_CAPABILITIES
-            | GLOBAL_TASK_CAPABILITIES
-            | INTERNAL_ONLY_CAPABILITIES
-        )
+        - (GLOBAL_CHAT_CAPABILITIES | _WRITE_CAPABILITIES | INTERNAL_ONLY_CAPABILITIES)
     )
     if unexposed:
         raise ValueError(
             f"Catalog 能力未进入任何 exposure 集合：{', '.join(unexposed)}"
         )
-    write_direct = sorted(
-        name
-        for name in GLOBAL_CHAT_DIRECT_CAPABILITIES
-        if APPLICATION_CAPABILITY_CATALOG.tools[name].definition.side_effect
-        == "write"
-    )
-    if write_direct:
-        raise ValueError(
-            f"direct allowlist 不能包含 write Capability：{', '.join(write_direct)}"
-        )
 
 
-def bind_global_chat_direct_toolset(
+def bind_global_chat_toolset(
     *,
     scope: AiToolBindingScope,
     declared_permissions: Collection[str],
 ) -> AiToolSet:
-    """为主 Agent 绑定只读 Direct ToolSet。"""
+    """为主 Agent 绑定查询、准备与原生审批业务工具。"""
 
     validate_capability_exposure()
     return APPLICATION_CAPABILITY_CATALOG.bind(
-        toolset_id=GLOBAL_CHAT_DIRECT_TOOLSET_ID,
-        allowed_tools=sorted(GLOBAL_CHAT_DIRECT_CAPABILITIES),
-        scope=scope,
-        declared_permissions=declared_permissions,
-        allow_write=False,
-    )
-
-
-def bind_global_task_toolset(
-    *,
-    scope: AiToolBindingScope,
-    declared_permissions: Collection[str],
-) -> AiToolSet:
-    """为 Global Task Controller 绑定可写 Task ToolSet。"""
-
-    validate_capability_exposure()
-    return APPLICATION_CAPABILITY_CATALOG.bind(
-        toolset_id=GLOBAL_TASK_TOOLSET_ID,
-        allowed_tools=sorted(GLOBAL_TASK_CAPABILITIES),
+        toolset_id=GLOBAL_CHAT_TOOLSET_ID,
+        allowed_tools=sorted(GLOBAL_CHAT_CAPABILITIES | _WRITE_CAPABILITIES),
         scope=scope,
         declared_permissions=declared_permissions,
         allow_write=True,
@@ -277,17 +247,15 @@ def bind_global_task_toolset(
 __all__ = [
     "ALL_AI_CAPABILITIES",
     "APPLICATION_CAPABILITY_CATALOG",
-    "ATTRIBUTE_FILL_CAPABILITIES",
     "CATEGORY_CAPABILITIES",
     "CATEGORY_QUERY_CAPABILITIES",
     "COLLECTION_CAPABILITIES",
     "CONTENT_CAPABILITIES",
     "DRAFT_QUERY_CAPABILITIES",
     "DRAFT_WRITE_CAPABILITIES",
-    "GLOBAL_CHAT_DIRECT_CAPABILITIES",
-    "GLOBAL_CHAT_DIRECT_TOOLSET_ID",
-    "GLOBAL_TASK_CAPABILITIES",
-    "GLOBAL_TASK_TOOLSET_ID",
+    "GLOBAL_CHAT_CAPABILITIES",
+    "GLOBAL_CHAT_TOOLSET_ID",
+    "_WRITE_CAPABILITIES",
     "IMAGE_CAPABILITIES",
     "INTERNAL_ONLY_CAPABILITIES",
     "LOGISTICS_CAPABILITIES",
@@ -299,9 +267,9 @@ __all__ = [
     "PUBLISH_ADMIN_CAPABILITIES",
     "PUBLISH_CAPABILITIES",
     "RESEARCH_CAPABILITIES",
+    "SOURCE_INSPECT_CAPABILITIES",
     "STORE_AUTH_CAPABILITIES",
     "application_capability_permissions",
-    "bind_global_chat_direct_toolset",
-    "bind_global_task_toolset",
+    "bind_global_chat_toolset",
     "validate_capability_exposure",
 ]

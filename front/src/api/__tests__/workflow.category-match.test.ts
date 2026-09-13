@@ -95,9 +95,9 @@ describe('category.product_match 同步 focused response + 通用 presentation �
     expect(apiClient.post).toHaveBeenNthCalledWith(
       1,
       AI_PRESENTATIONS_PATH,
-      { display_title: 'AI 匹配类目' },
+      expect.objectContaining({ display_title: 'AI 匹配类目', initial_user_message: expect.any(String) }),
     )
-    // 第二个 POST 是同步业务请求；timeout 必须大于后端 60s Agent deadline。
+    // 第二个 POST 是同步业务请求；timeout 必须覆盖后端 150s 总 deadline。
     expect(apiClient.post).toHaveBeenNthCalledWith(
       2,
       CATEGORY_MATCH_PATH,
@@ -112,7 +112,7 @@ describe('category.product_match 同步 focused response + 通用 presentation �
         timeout: CATEGORY_MATCH_REQUEST_TIMEOUT_MS,
       }),
     )
-    expect(CATEGORY_MATCH_REQUEST_TIMEOUT_MS).toBeGreaterThan(60_000)
+    expect(CATEGORY_MATCH_REQUEST_TIMEOUT_MS).toBeGreaterThan(150_000)
     // presentation 关联只走传输层 option/header：不进入业务 JSON。
     const businessBody = vi.mocked(apiClient.post).mock.calls[1]?.[1] as Record<string, unknown>
     expect(businessBody).not.toHaveProperty('presentation_id')

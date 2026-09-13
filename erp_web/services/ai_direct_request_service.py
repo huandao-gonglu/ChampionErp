@@ -37,6 +37,7 @@ from .ai_gateway_parsing import parse_json_text
 from .ai_model_errors import map_pydantic_model_error
 from .ai_model_factory import PydanticModelBinding, create_pydantic_model_binding
 from .ai_presentation_context import current_presentation_context
+from .ai_run_cancellation import check_cancellation
 from .ai_structured_output import (
     object_json_schema,
     output_adapter,
@@ -344,6 +345,7 @@ def _request(
     emit_reasoning_delta: Callable[[str], None] | None,
     publish_native_events: bool = False,
 ) -> ModelResponse:
+    check_cancellation()
     instrumentation = _instrumentation(app_dir)
     request_messages = list(messages)
     presentation = current_presentation_context()
@@ -399,6 +401,7 @@ def _request(
                     nonlocal recovered_response
                     try:
                         async for event in response_stream:
+                            check_cancellation()
                             yield event
                     except TypeError as exc:
                         if not _is_openai_responses_null_output_terminal_error(

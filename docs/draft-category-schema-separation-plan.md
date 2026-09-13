@@ -418,8 +418,7 @@ focused Agent 仍只返回候选选择、置信度和证据，不接收完整属
 
 ### 7.2 属性填充
 
-`attribute_fill_capabilities`、`category_attribute_ai_fill` 和
-`product_model/category_model` 接收当次注入的 `CategoryDefinition`：
+主对话通过类目查询能力读取当次平台定义；`category_attribute_updates` 在写入前重新校验当前类目规则：
 
 ```text
 读取草稿 category_id
@@ -765,7 +764,7 @@ category identity、已填写 attributes
 
 ```bash
 .venv/bin/python -m pytest tests/test_category_tools.py -q
-.venv/bin/python -m pytest tests/test_category_attribute_tools.py -q
+.venv/bin/python -m pytest tests/test_main_chat_attributes.py -q
 .venv/bin/python -m pytest tests/test_domain_read_capabilities.py -q
 .venv/bin/python -m pytest tests/test_market_prepare_capabilities.py -q
 .venv/bin/python -m pytest tests/test_draft_publish_context.py -q

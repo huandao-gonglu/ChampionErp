@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from erp_web.context import get_context
-from erp_web.facades import global_task_facade
+from erp_web.facades import agent_capability_facade
 from erp_web.runtime_units.collect_capabilities import (
     CollectCapabilityScope,
     claim_products,
@@ -49,7 +49,7 @@ def _execution(operation_key: str = "op-1") -> AiExecutionContext:
         attempt_id="attempt-1",
         deadline_at=datetime.now(timezone.utc) + timedelta(minutes=5),
         budget_profile="test",
-        business_scope={"task_id": "task-1", "step_id": "step-1"},
+        business_scope={"task_id": "task-1", "tool_call_id": "step-1"},
         idempotency_context={"operation_key": operation_key},
     )
 
@@ -74,11 +74,7 @@ def _collect_scope(**overrides: Any) -> CollectCapabilityScope:
             "productsIndex": [],
         },
         browser_tab_collector=(
-            lambda tab_url,
-            platform_hint,
-            product_url,
-            claim_platforms,
-            save_only: {
+            lambda tab_url, platform_hint, product_url, claim_platforms, save_only: {
                 "ok": True,
                 "product": {"product_id": "product-tab"},
                 "imagePool": [{"id": "tab-image"}],
@@ -184,7 +180,9 @@ def test_collect_batch_counts_and_failure() -> None:
     assert result.success_count == 2
     assert len(result.items) == 2
 
-    def mixed(urls: Any, mode: str, platform: str, claim_platforms: Any) -> dict[str, Any]:
+    def mixed(
+        urls: Any, mode: str, platform: str, claim_platforms: Any
+    ) -> dict[str, Any]:
         return {
             "ok": True,
             "total": 2,
@@ -351,16 +349,16 @@ def test_claim_products_with_real_store_and_failure_mapping() -> None:
         }
     )
     scope = _collect_scope(
-        claimer=lambda product_ids, platforms: claim_products_to_platforms(
+        claimer=lambda product_ids, targets: claim_products_to_platforms(
             product_ids,
-            platforms,
+            selected_markets=targets,
             context=context,
         )
     )
     result = claim_products(
         ClaimProductsRequest(
             product_ids=("product-claim-1",),
-            platforms=("mercadolibre",),
+            targets=({"platform": "ozon", "site": "global", "language": "ru-RU"},),
         ),
         scope=scope,
         execution=_execution(),
@@ -379,7 +377,7 @@ def test_claim_products_with_real_store_and_failure_mapping() -> None:
     )
     with pytest.raises(BusinessCapabilityError) as error:
         claim_products(
-            ClaimProductsRequest(product_ids=("product-claim-1",)),
+            ClaimProductsRequest(product_ids=("product-claim-1",), all_markets=True),
             scope=failing_scope,
             execution=_execution(),
         )
@@ -388,8 +386,8 @@ def test_claim_products_with_real_store_and_failure_mapping() -> None:
 
 def test_collect_credentials_resolve_from_saved_config_only() -> None:
     context = get_context()
-    assert global_task_facade._resolved_collect_cookie(context) == ""
-    assert global_task_facade._saved_1688_api_config(context) is None
+    assert agent_capability_facade._resolved_collect_cookie(context) == ""
+    assert agent_capability_facade._saved_1688_api_config(context) is None
 
     config = context.config.load_app_config()
     config["alibaba_cookie"] = "saved-cookie"
@@ -400,8 +398,8 @@ def test_collect_credentials_resolve_from_saved_config_only() -> None:
     }
     context.config.save_app_config(config)
 
-    assert global_task_facade._resolved_collect_cookie(context) == "saved-cookie"
-    api = global_task_facade._saved_1688_api_config(context)
+    assert agent_capability_facade._resolved_collect_cookie(context) == "saved-cookie"
+    api = agent_capability_facade._saved_1688_api_config(context)
     assert api is not None
     assert api["app_key"] == "key-1"
 
@@ -513,16 +511,12 @@ def test_research_run_status_query_by_id_and_active() -> None:
         )
     assert missing.value.code == "RESEARCH_RUN_NOT_FOUND"
 
-    active = research_run_status_query(
-        ResearchRunStatusQueryRequest(), scope=scope
-    )
+    active = research_run_status_query(ResearchRunStatusQueryRequest(), scope=scope)
     assert active.active is True
     assert dict(active.run)["run_id"] == "prr_9"
 
     idle_scope = _research_scope()
-    idle = research_run_status_query(
-        ResearchRunStatusQueryRequest(), scope=idle_scope
-    )
+    idle = research_run_status_query(ResearchRunStatusQueryRequest(), scope=idle_scope)
     assert idle.ok is True
     assert idle.active is False
     assert idle.run == {}

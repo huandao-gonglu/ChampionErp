@@ -53,7 +53,7 @@ def _deferred_open_history() -> list[ModelMessage]:
         ModelResponse(
             parts=[
                 ToolCallPart(
-                    "global_task_start",
+                    "product_publish_request",
                     {"goal": "发布商品"},
                     tool_call_id="call-deferred-1",
                 )

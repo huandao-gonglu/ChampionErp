@@ -41,6 +41,7 @@ from erp_web.runtime_units.publish_logs_runtime import (
     mercadolibre_test_error_code,
 )
 from erp_web.runtime_units.publish_mercadolibre import run_mercadolibre_07d_test
+
 ResponseWithStatus = tuple[dict[str, Any], int]
 
 
@@ -213,7 +214,9 @@ def run_mercadolibre_auth_test_payload(
 
 def test_store_auth_payload(body: dict[str, Any]) -> ResponseWithStatus:
     platform = str(body.get("platform") or "").strip().lower()
-    config_override = body.get("config") if isinstance(body.get("config"), dict) else None
+    config_override = (
+        body.get("config") if isinstance(body.get("config"), dict) else None
+    )
     if config_override is not None:
         # preview 测试同样不得接受客户端伪造的派生字段。
         config_override = sanitize_client_store_config(config_override)
@@ -318,13 +321,7 @@ def _save_settings_payload_unlocked(
         app_dir = _app_dir()
         incoming_app = body.get("appConfig")
         if isinstance(incoming_app, dict) and incoming_app:
-            if "task_approval_mode" in incoming_app:
-                get_context().approval_session.require_approver(
-                    approval_token
-                )
-            save_app_config(
-                merge_app_config_fields(load_app_config(), incoming_app)
-            )
+            save_app_config(merge_app_config_fields(load_app_config(), incoming_app))
         incoming_store = body.get("storeConfig")
         if isinstance(incoming_store, dict) and incoming_store:
             # 信任边界：只接受注册表凭据字段与非敏感静态字段；币种/授权

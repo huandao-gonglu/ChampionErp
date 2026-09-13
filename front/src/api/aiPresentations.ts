@@ -89,9 +89,11 @@ export function normalizePresentationDescriptor(raw: unknown): AiPresentationDes
 /** POST reserve：服务端预留展示并立即返回 descriptor（不执行 Agent）。 */
 export async function reserveAiPresentation(
   displayTitle: string,
+  initialUserMessage?: string,
 ): Promise<AiPresentationDescriptor> {
   const response = await apiClient.post(AI_PRESENTATIONS_PATH, {
     display_title: displayTitle,
+    ...(initialUserMessage ? { initial_user_message: initialUserMessage.trim() } : {}),
   })
   return normalizePresentationDescriptor(response.data)
 }

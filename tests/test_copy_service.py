@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import subprocess
+import json
 from pathlib import Path
 
 import pytest
-from pydantic import BaseModel
+from pydantic_ai.messages import ModelResponse, RetryPromptPart, TextPart, UserPromptPart
+from pydantic_ai.models.function import FunctionModel
+from erp_web.schemas.copy import CopyQualityReview
+from erp_web.services.ai_model_factory import PydanticModelBinding
 
 from conftest import assert_no_old_path
 from erp_web.context import get_context
@@ -17,6 +21,7 @@ from erp_web.services import (
     copy_service,
 )
 from tests.runtime_test_utils import temp_app_context
+from tests.ai_function_model_streaming import streaming_function_model
 
 
 def _api_model() -> dict[str, object]:
@@ -35,30 +40,48 @@ def _api_model() -> dict[str, object]:
     }
 
 
-@pytest.fixture
-def resolved_copy_model(monkeypatch) -> None:
-    monkeypatch.setattr(
-        copy_service.ai_gateway,
-        "resolve_model_for_use_case",
-        lambda *_args, **_kwargs: {
-            "id": "bound_copy_model",
-            "provider": "Test Provider",
-        },
-    )
-
-
 def _patch_structured_copy(
     monkeypatch,
     payload: dict[str, object],
+    *,
+    writer=None,
+    reviewer=None,
 ) -> dict[str, object]:
-    seen: dict[str, object] = {}
+    """使用真实 Pydantic Agent，只替换远端生成和独立复核的模型响应。"""
+    seen = {"requests": [], "reviews": []}
+
+    def generate(messages, info):
+        seen["requests"].append(list(messages))
+        seen["output_schema"] = info.model_request_parameters.output_object.json_schema
+        seen["messages"] = [
+            {"role": "user", "content": part.content}
+            for message in messages
+            for part in message.parts
+            if isinstance(part, UserPromptPart)
+        ]
+        candidate = writer(messages, info) if writer else payload
+        return ModelResponse(parts=[TextPart(json.dumps(candidate, ensure_ascii=False))])
+
+    model = streaming_function_model(FunctionModel(generate))
+
+    def binding(*_args, **_kwargs):
+        seen["use_case"] = _args[2]
+        return PydanticModelBinding(
+            model=model, model_settings={"temperature": 0},
+            model_id="bound_copy_model", model_name="test-copy",
+            provider_id="test", provider_family="test", api_style="chat_completions",
+            model_config={"provider": "Test Provider"},
+        )
 
     def fake_chat(*_args, **kwargs):
-        output_type = kwargs["output_type"]
-        seen["output_type"] = output_type
-        seen["messages"] = kwargs["messages"]
-        return output_type.model_validate(payload)
+        assert kwargs["output_type"] is CopyQualityReview
+        review_input = json.loads(kwargs["messages"][1]["content"])
+        seen["reviews"].append(review_input)
+        if reviewer:
+            return reviewer(review_input)
+        return CopyQualityReview(language_matches=True, explanation="测试文案符合事实及目标语言。")
 
+    monkeypatch.setattr(copy_service, "create_pydantic_model_binding_for_use_case", binding)
     monkeypatch.setattr(copy_service.ai_gateway, "chat_structured", fake_chat)
     return seen
 
@@ -95,25 +118,13 @@ def test_generate_copy_uses_bound_model_and_registry_language(
     app_dir: Path,
     monkeypatch,
 ) -> None:
-    seen: dict[str, object] = {}
-
-    def fake_resolve(*args, **kwargs):
-        seen["use_case"] = args[2]
-        return {"id": "bound_copy_model", "provider": "Test Provider"}
-
-    def fake_chat(*args, **kwargs):
-        seen["messages"] = kwargs.get("messages") or args[3]
-        output_type = kwargs["output_type"]
-        seen["output_type"] = output_type
-        return output_type.model_validate(
-            {
-                "title": "Органайзер для дома",
-                "description": "Компактный органайзер для хранения вещей дома.",
-            }
-        )
-
-    monkeypatch.setattr(copy_service.ai_gateway, "resolve_model_for_use_case", fake_resolve)
-    monkeypatch.setattr(copy_service.ai_gateway, "chat_structured", fake_chat)
+    seen = _patch_structured_copy(
+        monkeypatch,
+        {
+            "title": "Органайзер для дома",
+            "description": "Компактный органайзер для хранения вещей дома.",
+        },
+    )
 
     result = copy_service.generate_copy(
         str(app_dir),
@@ -127,14 +138,12 @@ def test_generate_copy_uses_bound_model_and_registry_language(
     assert result["provider"] == "Test Provider"
     assert result["copy"]["bullets"] == []
     assert seen["use_case"] == "copy.generate"
-    assert issubclass(seen["output_type"], BaseModel)
-    assert "global_title" not in seen["output_type"].model_fields
+    assert "global_title" not in seen["output_schema"]["properties"]
 
 
 def test_generate_copy_rejects_overlong_title_instead_of_truncating(
     app_dir: Path,
     monkeypatch,
-    resolved_copy_model,
 ) -> None:
     overlong_title = "x" * 61
     _patch_structured_copy(
@@ -166,7 +175,6 @@ def test_generate_copy_rejects_overlong_title_instead_of_truncating(
 def test_generate_copy_for_cbt_requires_and_preserves_english_global_title(
     app_dir: Path,
     monkeypatch,
-    resolved_copy_model,
     mercadolibre_draft: dict[str, object],
 ) -> None:
     global_title = "Foldable Storage Organizer"
@@ -192,9 +200,7 @@ def test_generate_copy_for_cbt_requires_and_preserves_english_global_title(
 
     assert result["ok"] is True
     assert result["copy"]["global_title"] == global_title
-    output_type = seen["output_type"]
-    assert issubclass(output_type, BaseModel)
-    schema = output_type.model_json_schema()
+    schema = seen["output_schema"]
     assert "global_title" in schema["required"]
     global_title_description = schema["properties"]["global_title"]["description"]
     assert "English" in global_title_description or "英文" in global_title_description
@@ -214,7 +220,6 @@ def test_generate_copy_for_cbt_requires_and_preserves_english_global_title(
 def test_generate_copy_for_cbt_rejects_invalid_global_title(
     app_dir: Path,
     monkeypatch,
-    resolved_copy_model,
     global_title: str | None,
     error_marker: str,
 ) -> None:
@@ -224,7 +229,7 @@ def test_generate_copy_for_cbt_rejects_invalid_global_title(
     }
     if global_title is not None:
         payload["global_title"] = global_title
-    _patch_structured_copy(monkeypatch, payload)
+    seen = _patch_structured_copy(monkeypatch, payload)
 
     result = copy_service.generate_copy(
         str(app_dir),
@@ -239,7 +244,16 @@ def test_generate_copy_for_cbt_rejects_invalid_global_title(
 
     assert result["ok"] is False
     assert result["copy"] == {}
-    assert error_marker in result["error"]
+    retry_parts = [
+        part
+        for messages in seen["requests"]
+        for message in messages
+        for part in message.parts
+        if isinstance(part, RetryPromptPart)
+    ]
+    assert retry_parts
+    assert error_marker in str([part.content for part in retry_parts])
+    assert len(seen["requests"]) == 3
 
 
 @pytest.mark.parametrize(
@@ -270,7 +284,6 @@ def test_generate_copy_for_cbt_rejects_invalid_global_title(
 def test_generate_copy_outside_mercadolibre_cbt_does_not_require_global_title(
     app_dir: Path,
     monkeypatch,
-    resolved_copy_model,
     target_market: str,
     product: dict[str, object],
 ) -> None:
@@ -292,9 +305,7 @@ def test_generate_copy_outside_mercadolibre_cbt_does_not_require_global_title(
 
     assert result["ok"] is True
     assert "global_title" not in result["copy"]
-    output_type = seen["output_type"]
-    assert issubclass(output_type, BaseModel)
-    assert "global_title" not in output_type.model_fields
+    assert "global_title" not in seen["output_schema"]["properties"]
     user_prompt = next(
         message["content"]
         for message in seen["messages"]
@@ -319,6 +330,108 @@ def test_configured_copy_prompt_contains_target_and_product_context(
     assert "Ozon" in prompt["user"]
     assert "Manual organizer" in prompt["user"]
     assert "{$" not in prompt["user"]
+
+
+def test_copy_retry_receives_previous_draft_and_exact_review_feedback(
+    app_dir: Path, monkeypatch,
+) -> None:
+    rejected = {"title": "Almohadilla", "description": "Para gato hidráulico."}
+    corrected = {"title": "Almohadilla", "description": "Apoyo de goma para gato."}
+    reason = "来源只说明千斤顶，没有液压类型依据；删除 hidráulico。"
+
+    def writer(messages, _info):
+        has_feedback = any(
+            isinstance(part, RetryPromptPart)
+            for message in messages for part in message.parts
+        )
+        return corrected if has_feedback else rejected
+
+    def reviewer(review_input):
+        invalid = review_input["generated_copy"]["description"] == rejected["description"]
+        return CopyQualityReview(
+            language_matches=True,
+            unsupported_claims=[reason] if invalid else [],
+            explanation="存在无依据声称。" if invalid else "已删除无依据限定词。",
+        )
+
+    seen = _patch_structured_copy(monkeypatch, rejected, writer=writer, reviewer=reviewer)
+    result = copy_service.generate_copy(
+        str(app_dir),
+        {"name": "千斤顶橡胶垫", "weight_kg": "0.13", "source": {"attributes": {"材质": "橡胶"}}},
+        {}, language="es",
+    )
+
+    assert result["ok"] is True
+    assert result["copy"]["description"] == corrected["description"]
+    assert len(seen["requests"]) == len(seen["reviews"]) == 2
+    second_parts = [part for message in seen["requests"][1] for part in message.parts]
+    assert any(isinstance(part, TextPart) and rejected["description"] in part.content for part in second_parts)
+    assert any(isinstance(part, RetryPromptPart) and reason in str(part.content) for part in second_parts)
+    for review_input in seen["reviews"]:
+        facts = json.loads(review_input["product_facts"])
+        assert facts["Weight (kg)"] == "0.13"
+        assert "Weight" not in facts
+    assert "Weight (kg)" in seen["messages"][0]["content"]
+
+    with get_context().db._connect() as connection:
+        histories = connection.execute("SELECT messages_json FROM pydantic_message_histories").fetchall()
+    assert len(histories) == 1
+    history = histories[0]["messages_json"].decode("utf-8")
+    assert reason in history
+    assert rejected["description"] in history
+    assert corrected["description"] in history
+
+
+def test_copy_rejection_exhausts_native_retries_without_saving_draft(
+    app_dir: Path, monkeypatch,
+) -> None:
+    from erp_web.runtime_units.content_capabilities import ContentCapabilityScope, copy_generate
+    from erp_web.schemas.ai_trace import AiExecutionContext
+    from erp_web.schemas.content_capabilities import CopyGenerateRequest
+    from erp_web.services.capability_errors import BusinessCapabilityError
+
+    context = get_context()
+    product = context.products.save_product({
+        "product_id": "copy-rejected", "name": "橡胶垫",
+        "drafts": {"mercadolibre": {"enabled": True, "title": "原始标题"}},
+    })
+    draft_id = product["drafts"]["mercadolibre"]["draft_id"]
+    before = context.db.load_product_model("copy-rejected")
+    reason = "来源没有防划痕功能的依据。"
+    seen = _patch_structured_copy(
+        monkeypatch,
+        {"global_title": "Rubber Jack Pad", "title": "Almohadilla", "description": "Evita arañazos."},
+        reviewer=lambda _input: CopyQualityReview(
+            language_matches=True, unsupported_claims=[reason], explanation="声明无依据。",
+        ),
+    )
+
+    with pytest.raises(BusinessCapabilityError) as error:
+        copy_generate(
+            CopyGenerateRequest(draft_id=draft_id, language="es"),
+            ContentCapabilityScope(context.products, lambda: {}),
+            AiExecutionContext.create(timeout_seconds=30, budget_profile="test"),
+        )
+
+    assert error.value.code == "COPY_GENERATE_FAILED"
+    assert reason in str(error.value)
+    assert len(seen["requests"]) == len(seen["reviews"]) == 3
+    assert context.db.load_product_model("copy-rejected") == before
+
+
+def test_copy_review_transport_error_does_not_request_content_rewrite(
+    app_dir: Path, monkeypatch,
+) -> None:
+    def reviewer(_review_input):
+        raise TimeoutError("测试复核超时")
+
+    seen = _patch_structured_copy(
+        monkeypatch, {"title": "Almohadilla", "description": "Goma."}, reviewer=reviewer,
+    )
+    result = copy_service.generate_copy(str(app_dir), {"name": "橡胶垫"}, {}, language="es")
+    assert result["ok"] is False
+    assert result["copy"] == {}
+    assert len(seen["requests"]) == len(seen["reviews"]) == 1
 
 
 def test_configured_copy_prompt_does_not_duplicate_output_schema(
@@ -350,10 +463,10 @@ def test_configured_copy_prompt_does_not_duplicate_output_schema(
 
 
 def test_copy_service_does_not_hardcode_keys(
-    app_dir: Path,
+    repo_dir: Path,
     old_path_markers: tuple[str, ...],
 ) -> None:
-    assert_no_old_path((app_dir / "erp_web/services/copy_service.py").read_text(), old_path_markers)
+    assert_no_old_path((repo_dir / "erp_web/services/copy_service.py").read_text(), old_path_markers)
 
 
 def test_api_chat_uses_pydantic_direct_boundary(tmp_path: Path, monkeypatch) -> None:

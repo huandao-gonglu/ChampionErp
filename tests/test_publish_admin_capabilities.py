@@ -13,11 +13,7 @@ from typing import Any
 
 import pytest
 
-from erp_web.context import get_context
-from erp_web.facades import global_task_facade, publish_facade
-from erp_web.runtime_units.global_ai_control_tools import (
-    GlobalTaskStartControlRequest,
-)
+from erp_web.facades import publish_facade
 from erp_web.runtime_units.publish_admin_capabilities import (
     MERCADOLIBRE_USER_PRODUCT_PAUSE_TOOL,
     PRODUCT_PUBLISH_DIRECT_TOOL,
@@ -27,19 +23,14 @@ from erp_web.runtime_units.publish_admin_capabilities import (
     mercadolibre_user_product_pause,
     product_publish_direct,
 )
-from erp_web.schemas.ai_tools import AiToolExecutionError, TaskApprovalSnapshot
+from erp_web.schemas.ai_tools import AiToolExecutionError, ToolApprovalSnapshot
 from erp_web.schemas.ai_trace import AiExecutionContext
-from erp_web.schemas.global_tasks import (
-    GlobalTaskApproveRequest,
-    GlobalTaskRejectRequest,
-)
 from erp_web.schemas.publish_admin_capabilities import (
     MercadoLibreUserProductPauseRequest,
     ProductPublishDirectRequest,
 )
 from erp_web.services.capability_errors import BusinessCapabilityError
-from erp_web.services.global_task_controller import GlobalTaskControllerError
-from erp_web.services.task_approval import approval_binding_digest
+from erp_web.services.tool_approval import approval_binding_digest
 
 
 def _execution(operation_key: str = "op-1") -> AiExecutionContext:
@@ -48,18 +39,18 @@ def _execution(operation_key: str = "op-1") -> AiExecutionContext:
         attempt_id="attempt-1",
         deadline_at=datetime.now(timezone.utc) + timedelta(minutes=5),
         budget_profile="test",
-        business_scope={"task_id": "task-1", "step_id": "step-1"},
+        business_scope={"task_id": "task-1", "tool_call_id": "step-1"},
         idempotency_context={"operation_key": operation_key},
     )
 
 
 def _approved_execution(
-    snapshot: TaskApprovalSnapshot,
+    snapshot: ToolApprovalSnapshot,
     capability_name: str,
     *,
     operation_key: str = "op-1",
-    step_id: str = "step-1",
-    task_revision: int = 1,
+    tool_call_id: str = "step-1",
+    approval_revision: int = 1,
 ) -> AiExecutionContext:
     """模拟 Controller 批准后注入的可信审批上下文（digest + 任务版本）。"""
 
@@ -68,8 +59,8 @@ def _approved_execution(
         capability_name=capability_name,
         capability_version="1",
         operation_key=operation_key,
-        step_id=step_id,
-        task_revision=task_revision,
+        tool_call_id=tool_call_id,
+        approval_revision=approval_revision,
     )
     return AiExecutionContext(
         task_run_id="task-1",
@@ -78,12 +69,12 @@ def _approved_execution(
         budget_profile="test",
         business_scope={
             "task_id": "task-1",
-            "step_id": step_id,
+            "tool_call_id": tool_call_id,
             "approver": "local-ui:test",
         },
         idempotency_context={"operation_key": operation_key},
         approval_digest=digest,
-        approval_task_revision=task_revision,
+        approval_revision=approval_revision,
     )
 
 
@@ -116,7 +107,9 @@ def _publish_scope(**overrides: Any) -> PublishAdminCapabilityScope:
 def test_product_publish_direct_approval_gate_and_success() -> None:
     captured: dict[str, Any] = {}
 
-    def publisher(product: dict[str, Any], platform: str, config: dict[str, Any]) -> dict[str, Any]:
+    def publisher(
+        product: dict[str, Any], platform: str, config: dict[str, Any]
+    ) -> dict[str, Any]:
         captured["platform"] = platform
         captured["product_id"] = product.get("product_id")
         return {
@@ -134,7 +127,7 @@ def test_product_publish_direct_approval_gate_and_success() -> None:
     # 没有可信审批上下文的直接执行必须被拒绝。
     with pytest.raises(AiToolExecutionError) as missing:
         product_publish_direct(request, scope=scope, execution=_execution())
-    assert missing.value.code == "TASK_APPROVAL_CONTEXT_REQUIRED"
+    assert missing.value.code == "TOOL_APPROVAL_CONTEXT_REQUIRED"
     assert captured == {}
 
     # 服务端快照冻结发布目标与商品标题；审批展示与执行参数同源。
@@ -237,9 +230,9 @@ def test_product_publish_direct_approval_expires_when_destinations_change() -> N
     )
     snapshot = _publish_direct_approval_snapshot(request, scope)
 
-    product["drafts"]["ozon"]["target_sites"][0][
-        "sites_to_sell"
-    ] = [{"site_id": "MLB", "logistic_type": "remote"}]
+    product["drafts"]["ozon"]["target_sites"][0]["sites_to_sell"] = [
+        {"site_id": "MLB", "logistic_type": "remote"}
+    ]
 
     with pytest.raises(AiToolExecutionError) as stale:
         product_publish_direct(
@@ -254,7 +247,9 @@ def test_product_publish_direct_approval_expires_when_destinations_change() -> N
     assert stale.value.code == "PUBLISH_DIRECT_APPROVAL_STALE"
 
 
-def test_product_publish_direct_snapshot_binds_config_without_exposing_secrets() -> None:
+def test_product_publish_direct_snapshot_binds_config_without_exposing_secrets() -> (
+    None
+):
     config = {
         "ozon": {
             "api_key": "access-secret",
@@ -319,9 +314,7 @@ def test_user_product_pause_approval_gate_and_success() -> None:
         return {"ok": True, "status": "paused", "message": f"{siteless_id} 已暂停"}
 
     scope = _publish_scope(user_product_pauser=pauser)
-    request = MercadoLibreUserProductPauseRequest(
-        siteless_user_product_id="UP123"
-    )
+    request = MercadoLibreUserProductPauseRequest(siteless_user_product_id="UP123")
 
     with pytest.raises(AiToolExecutionError) as missing:
         mercadolibre_user_product_pause(
@@ -329,7 +322,7 @@ def test_user_product_pause_approval_gate_and_success() -> None:
             scope=scope,
             execution=_execution(),
         )
-    assert missing.value.code == "TASK_APPROVAL_CONTEXT_REQUIRED"
+    assert missing.value.code == "TOOL_APPROVAL_CONTEXT_REQUIRED"
     assert captured == {}
 
     snapshot = _mercadolibre_user_product_pause_approval_snapshot(request, scope)
@@ -347,9 +340,7 @@ def test_user_product_pause_approval_gate_and_success() -> None:
     assert captured == {"siteless_id": "UP123"}
 
     stale_snapshot = _mercadolibre_user_product_pause_approval_snapshot(
-        MercadoLibreUserProductPauseRequest(
-            siteless_user_product_id="UP999"
-        ),
+        MercadoLibreUserProductPauseRequest(siteless_user_product_id="UP999"),
         scope,
     )
     with pytest.raises(AiToolExecutionError) as stale:
@@ -389,9 +380,7 @@ def test_user_product_pause_approval_gate_and_success() -> None:
 def test_user_product_pause_post_dispatch_error_is_outcome_unknown() -> None:
     """暂停请求发出后抛错（含超时）：必须结果未知且禁止自动重试。"""
 
-    request = MercadoLibreUserProductPauseRequest(
-        siteless_user_product_id="UP999"
-    )
+    request = MercadoLibreUserProductPauseRequest(siteless_user_product_id="UP999")
 
     def broken_pauser(siteless_id: str) -> dict[str, Any]:
         del siteless_id
@@ -414,198 +403,3 @@ def test_user_product_pause_post_dispatch_error_is_outcome_unknown() -> None:
     assert outcome.value.code == "USER_PRODUCT_PAUSE_OUTCOME_UNKNOWN"
     assert outcome.value.retryable is False
     assert outcome.value.details == {"outcome_unknown": True}
-
-
-def _accept_and_run(controller, request, *, conversation_id: str, suffix: str):
-    """Deferred 生命周期：受理 → 首次 history 提交 → worker 推进。"""
-
-    from pydantic_ai.messages import ModelRequest, UserPromptPart
-
-    context = get_context()
-    acceptance = controller.accept_deferred_task(
-        request,
-        conversation_id=conversation_id,
-        request_run_id=f"run-{suffix}",
-        tool_call_id=f"call-{suffix}",
-        message_id=f"message-{suffix}",
-    )
-    context.deferred_task_links.commit_initial_deferred_history(
-        conversation_id,
-        [ModelRequest(parts=[UserPromptPart("创建任务")])],
-        link_id=acceptance.link_id,
-        request_run_id=f"run-{suffix}",
-        encoded_chunks=[],
-    )
-    return controller.resume_task(acceptance.task_id)
-
-
-def test_user_product_pause_through_global_task_approval_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    context = get_context()
-    paused: list[str] = []
-    monkeypatch.setattr(
-        global_task_facade,
-        "mercadolibre_pause_user_product",
-        lambda siteless_id: (
-            paused.append(siteless_id)
-            or {"ok": True, "status": "paused", "message": f"{siteless_id} 已暂停"}
-        ),
-    )
-    controller = global_task_facade.build_global_task_controller(context)
-    conversation_id = "conversation_global_chat_" + "4" * 32
-
-    task = _accept_and_run(
-        controller,
-        GlobalTaskStartControlRequest.model_validate(
-            {
-                "goal": "暂停 User Product",
-                "platform": "mercadolibre",
-                "steps": [
-                    {
-                        "capability_name": "mercadolibre_user_product_pause",
-                        "arguments": {
-                            "siteless_user_product_id": "UP456",
-                        },
-                    }
-                ],
-            }
-        ),
-        conversation_id=conversation_id,
-        suffix="d4-1",
-    )
-    assert task.status == "pending_approval"
-    approval = task.pending_approval
-    assert approval is not None
-    assert approval.capability_name == "mercadolibre_user_product_pause"
-    # 审批 payload 是服务端快照：摘要与冻结参数，模型没有提供。
-    assert "UP456" in str(approval.payload.get("summary"))
-    assert approval.payload["canonical_payload"]["siteless_user_product_id"] == "UP456"
-    assert paused == []
-
-    # 批准只改变业务状态；执行由 worker 领取。
-    approved = controller.approve_task(
-        GlobalTaskApproveRequest(task_id=task.task_id),
-        approver="local-ui:test",
-        conversation_id=conversation_id,
-        message_id="message-d4-2",
-    ).task
-    assert approved.status == "running"
-    approved = controller.resume_task(task.task_id)
-    assert approved.status == "completed"
-    record = approved.steps[0].approval
-    assert record is not None
-    assert record.approver == "local-ui:test"
-    assert record.digest == approval.digest
-    step_result = approved.steps[0].result
-    assert step_result is not None
-    assert step_result["ok"] is True
-    assert step_result["status"] == "paused"
-    assert paused == ["UP456"]
-
-
-def test_user_product_pause_stale_task_revision_rejected(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """审批创建后任务被修改（版本前进）→ 原批准过期，不得执行。"""
-
-    context = get_context()
-    paused: list[str] = []
-    monkeypatch.setattr(
-        global_task_facade,
-        "mercadolibre_pause_user_product",
-        lambda siteless_id: (
-            paused.append(siteless_id)
-            or {"ok": True, "status": "paused", "message": "paused"}
-        ),
-    )
-    controller = global_task_facade.build_global_task_controller(context)
-    conversation_id = "conversation_global_chat_" + "5" * 32
-
-    task = _accept_and_run(
-        controller,
-        GlobalTaskStartControlRequest.model_validate(
-            {
-                "goal": "暂停 User Product",
-                "platform": "mercadolibre",
-                "steps": [
-                    {
-                        "capability_name": "mercadolibre_user_product_pause",
-                        "arguments": {
-                            "siteless_user_product_id": "UP456",
-                        },
-                    }
-                ],
-            }
-        ),
-        conversation_id=conversation_id,
-        suffix="d4-3",
-    )
-    assert task.status == "pending_approval"
-
-    # 模拟审批创建后任务又被别的写入修改：步骤参数漂移且 revision 前进。
-    steps = list(task.steps)
-    steps[0] = steps[0].model_copy(
-        update={
-            "arguments": {"siteless_user_product_id": "UP789"},
-        }
-    )
-    context.global_tasks.save_task(task.model_copy(update={"steps": steps}))
-
-    with pytest.raises(GlobalTaskControllerError) as stale:
-        controller.approve_task(
-            GlobalTaskApproveRequest(task_id=task.task_id),
-            approver="local-ui:test",
-        )
-    assert stale.value.code == "GLOBAL_TASK_APPROVAL_REVISION_STALE"
-    assert paused == []
-
-
-def test_user_product_pause_reject_records_decision(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    context = get_context()
-    paused: list[str] = []
-    monkeypatch.setattr(
-        global_task_facade,
-        "mercadolibre_pause_user_product",
-        lambda siteless_id: (
-            paused.append(siteless_id)
-            or {"ok": True, "status": "paused", "message": "paused"}
-        ),
-    )
-    controller = global_task_facade.build_global_task_controller(context)
-    conversation_id = "conversation_global_chat_" + "6" * 32
-
-    task = _accept_and_run(
-        controller,
-        GlobalTaskStartControlRequest.model_validate(
-            {
-                "goal": "暂停 User Product",
-                "platform": "mercadolibre",
-                "steps": [
-                    {
-                        "capability_name": "mercadolibre_user_product_pause",
-                        "arguments": {
-                            "siteless_user_product_id": "UP456",
-                        },
-                    }
-                ],
-            }
-        ),
-        conversation_id=conversation_id,
-        suffix="d4-5",
-    )
-    assert task.status == "pending_approval"
-
-    rejected = controller.reject_task(
-        GlobalTaskRejectRequest(task_id=task.task_id, reason="不允许下架"),
-        approver="local-ui:test",
-    ).task
-    assert rejected.status == "failed"
-    record = rejected.steps[0].approval
-    assert record is not None
-    assert record.approver == "local-ui:test"
-    assert record.decision == "rejected"
-    assert record.reason == "不允许下架"
-    assert paused == []

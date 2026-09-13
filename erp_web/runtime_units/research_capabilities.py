@@ -5,7 +5,7 @@ from __future__ import annotations
 领域逻辑仍由 ``product_research_service`` 拥有；Capability 只做类型化
 编排。创建研究运行是写入（持久化 run 并触发后台外部检索），按统一的
 persistent_job 契约返回领域无关的 ``JobReferenceResult``（job_id +
-job_type）；查询是只读。Controller 通过 Job Status Reader 注册表跟踪
+job_type）；查询是只读。后台工具对账器通过 Job Status Reader 注册表跟踪
 运行终态，不直接依赖研究领域模块。
 """
 

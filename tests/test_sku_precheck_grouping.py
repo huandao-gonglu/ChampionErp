@@ -78,6 +78,30 @@ def combination_context(required_id="color"):
     ))
 
 
+def test_ozon_model_group_is_recognized_and_still_requires_real_variant_differences():
+    context = combination_context()
+    context = replace(context, category_definition=CategoryDefinition(
+        platform="ozon", category_id="970581471", description_category_id="17027943",
+        required=(CategoryAttributeDefinition(
+            id="9048", name="Название модели (для объединения в одну карточку)", required=True,
+        ),),
+        optional=(CategoryAttributeDefinition(id="7251", name="Высота подъема, см", variation_role="variant"),),
+    ))
+    context.draft["attributes"] = {"9048": "Tesla Model 3 X S Y"}
+    adapter = sku_publish_adapter.SkuGroupPublishingAdapter(ItemBoundary())
+
+    missing = adapter.validate_draft(context, {})
+    assert missing["grouping"]["attribute_id"] == "9048"
+    assert [error["code"] for error in missing["errors"]] == ["SKU_VARIATION_ATTRIBUTES_EMPTY"]
+
+    for index, row in enumerate(context.draft["sku_items"]):
+        row["attributes_by_target"] = {"ozon:global": {"7251": str(index + 1)}}
+    assert adapter.validate_draft(context, {})["ok"] is True
+    envelope = adapter.build_payload(context, {})
+    assert envelope["grouping"]["attribute_id"] == "9048"
+    assert len(envelope["items"]) == 2
+
+
 @pytest.mark.parametrize("case", ["共同属性缺失", "缺失范围不同", "没有必填项缺失"])
 def test_unrelated_missing_attributes_do_not_hide_combination_error(case, monkeypatch):
     context = combination_context("brand" if case == "共同属性缺失" else "color")

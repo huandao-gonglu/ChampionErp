@@ -196,9 +196,6 @@ def test_frontend_site_options_do_not_carry_currency() -> None:
 def test_business_ai_use_cases_share_one_executor() -> None:
     executors = {
         "erp_web/runtime_units/text_translation.py": "run_ai_use_case",
-        "erp_web/runtime_units/category_attribute_ai_fill.py": (
-            "run_category_attribute_fill_agent"
-        ),
     }
     for relative_path, executor in executors.items():
         calls = called_leaf_names(relative_path)

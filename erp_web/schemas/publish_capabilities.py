@@ -61,14 +61,20 @@ class ProductPublishDestination(BaseModel):
     ]
     price: TrimmedText | float | None = None
     net_proceeds: TrimmedText | float | None = None
-    listing_type_id: Annotated[
-        TrimmedText,
-        StringConstraints(max_length=80),
-    ] | None = None
-    status: Annotated[
-        TrimmedText,
-        StringConstraints(max_length=80),
-    ] | None = None
+    listing_type_id: (
+        Annotated[
+            TrimmedText,
+            StringConstraints(max_length=80),
+        ]
+        | None
+    ) = None
+    status: (
+        Annotated[
+            TrimmedText,
+            StringConstraints(max_length=80),
+        ]
+        | None
+    ) = None
     free_shipping: bool | None = None
     sale_terms: tuple[dict[str, Any], ...] | None = None
 
@@ -117,15 +123,15 @@ class ProductPublishValidationResult(BaseModel):
 
 
 class PublishRequestConfirmation(BaseModel):
-    """由 Controller 从已持久化确认状态构造，不能来自模型参数。"""
+    """由 服务端 从已持久化确认状态构造，不能来自模型参数。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    task_id: Annotated[
+    conversation_id: Annotated[
         TrimmedText,
         StringConstraints(min_length=1, max_length=160),
     ]
-    step_id: Annotated[
+    tool_call_id: Annotated[
         TrimmedText,
         StringConstraints(min_length=1, max_length=160),
     ]

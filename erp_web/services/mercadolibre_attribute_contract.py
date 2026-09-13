@@ -40,6 +40,7 @@ _SYSTEM_OWNED_ATTRIBUTE_IDS = {
     "EMPTY_GTIN_REASON",
     "ITEM_CONDITION",
 }
+MERCADOLIBRE_DERIVED_ATTRIBUTE_IDS = frozenset(_SYSTEM_OWNED_ATTRIBUTE_IDS - _ROOT_DRAFT_FIELDS.keys())
 _EMPTY_GTIN_REASON_ID = "17055160"
 _EMPTY_GTIN_REASON_NAME = "The product does not have registered code"
 
@@ -628,6 +629,7 @@ def compile_mercadolibre_attributes(
 
 
 __all__ = [
+    "MERCADOLIBRE_DERIVED_ATTRIBUTE_IDS",
     "MercadoLibreAttributeCompilation",
     "MercadoLibreAttributeIssue",
     "compile_mercadolibre_attributes",

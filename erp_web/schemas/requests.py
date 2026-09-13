@@ -5,6 +5,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
+
 class RequestValidationError(ValueError):
     """HTTP 请求不满足公开契约，并携带稳定的 HTTP 错误状态。"""
 
@@ -50,15 +51,11 @@ LIMIT = FieldRule("integer", minimum=1, maximum=500)
 PORT = FieldRule("integer", minimum=1, maximum=65535)
 IMAGE_ACTION = FieldRule(
     "enum",
-    choices=frozenset(
-        {"upload", "sort", "delete", "replace", "set_main", "filter"}
-    ),
+    choices=frozenset({"upload", "sort", "delete", "replace", "set_main", "filter"}),
 )
 DRAFT_IMAGE_STRATEGY = FieldRule(
     "enum",
-    choices=frozenset(
-        {"pool_only", "append", "replace_selected", "replace_all"}
-    ),
+    choices=frozenset({"pool_only", "append", "replace_selected", "replace_all"}),
 )
 
 
@@ -67,7 +64,6 @@ DRAFT_IMAGE_STRATEGY = FieldRule(
 _COMMON_FIELD_RULES: dict[str, FieldRule] = {
     "browser_tab_id": STRING,
     "sku_id": STRING,
-    "reuse_sku_sources": BOOLEAN,
     "1688_api": OBJECT,
     "appConfig": OBJECT,
     "category_record": OBJECT,
@@ -115,6 +111,7 @@ _COMMON_FIELD_RULES: dict[str, FieldRule] = {
     "code_or_url": STRING,
     "country": STRING,
     "display_title": STRING,
+    "initial_user_message": STRING,
     "draft_id": STRING,
     "draftId": STRING,
     "html": STRING,
@@ -175,12 +172,8 @@ def _contract(
 _EMPTY = _contract()
 _PRODUCT = _contract(required=("product_id",))
 _DRAFT = _contract(required_any=(("draft_id", "draftId"),))
-_PRODUCT_OR_DRAFT = _contract(
-    required_any=(("product_id", "draft_id", "draftId"),)
-)
-_SHIPMENT = _contract(
-    required_any=(("shipment", "order", "payload"),)
-)
+_PRODUCT_OR_DRAFT = _contract(required_any=(("product_id", "draft_id", "draftId"),))
+_SHIPMENT = _contract(required_any=(("shipment", "order", "payload"),))
 
 
 # 路由键是合同的一部分。即使端点当前没有额外必填项，也显式登记，便于新增
@@ -191,18 +184,6 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/assign-upc": _EMPTY,
     "/api/browser-debug/open-profile": _EMPTY,
     "/api/calculate-price": _EMPTY,
-    "/api/global-task-input": _contract(
-        required=("task_id", "arguments"),
-    ),
-    "/api/global-task-approve": _contract(required=("task_id",)),
-    "/api/global-task-reject": _contract(required=("task_id", "reason")),
-    "/api/global-task-cancel": _contract(required=("task_id",)),
-    "/api/category-ai-fill": _contract(
-        required_any=(
-            ("product_id", "draft_id", "draftId"),
-            ("category_id", "category_record"),
-        )
-    ),
     "/api/v1/category-match": _contract(
         required=("platform",),
         required_any=(
@@ -220,17 +201,11 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
             ("category_id", "category_record"),
         )
     ),
-    "/api/category-search": _contract(
-        required_any=(("query", "keyword"),)
-    ),
+    "/api/category-search": _contract(required_any=(("query", "keyword"),)),
     "/api/claim-products": _contract(required=("product_ids", "targets")),
     "/api/collect-1688": _contract(required=("url",)),
-    "/api/collect-1688-clean": _contract(
-        required_any=(("text", "html"),)
-    ),
-    "/api/collect-batch": _contract(
-        required_any=(("urls", "url"),)
-    ),
+    "/api/collect-1688-clean": _contract(required_any=(("text", "html"),)),
+    "/api/collect-batch": _contract(required_any=(("urls", "url"),)),
     "/api/collect-extension-payload": _EMPTY,
     "/api/collect-verification": _contract(required=("browser_tab_id", "source_url")),
     "/api/collect-from-browser-tab": _EMPTY,
@@ -243,31 +218,21 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/generate-copy": _PRODUCT_OR_DRAFT,
     "/api/generate-copy-batch": _contract(required=("product_ids",)),
     "/api/generate-image-prompts": _PRODUCT,
-    "/api/image-edit": _contract(
-        required=("product_id", "prompt", "source_image_ids")
-    ),
+    "/api/image-edit": _contract(required=("product_id", "prompt", "source_image_ids")),
     "/api/image-pool/action": _contract(
         fields={"action": IMAGE_ACTION},
         required=("product_id", "action"),
     ),
     "/api/image-pool/save": _PRODUCT,
     "/api/image-pool/sync-generated": _PRODUCT,
-    "/api/image-pool/upload": _contract(
-        required=("product_id", "uploads")
-    ),
-    "/api/image-translate": _contract(
-        required=("product_id", "source_image_ids")
-    ),
+    "/api/image-pool/upload": _contract(required=("product_id", "uploads")),
+    "/api/image-translate": _contract(required=("product_id", "source_image_ids")),
     "/api/load-draft": _DRAFT,
-    "/api/load-product": _contract(
-        required_any=(("product_id", "product_file_path"),)
-    ),
+    "/api/load-product": _contract(required_any=(("product_id", "product_file_path"),)),
     "/api/logistics/yunexpress/create-shipment": _SHIPMENT,
     "/api/logistics/yunexpress/preview": _SHIPMENT,
     "/api/mercadolibre/auth-checklist": _EMPTY,
-    "/api/mercadolibre/auth-link": _contract(
-        required=("app_id", "redirect_uri")
-    ),
+    "/api/mercadolibre/auth-link": _contract(required=("app_id", "redirect_uri")),
     "/api/mercadolibre/pause-user-product": _contract(
         required=("siteless_user_product_id",)
     ),
@@ -291,9 +256,7 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/publish-payload-preview": _DRAFT,
     "/api/publish-precheck": _DRAFT,
     "/api/publish-product": _PRODUCT,
-    "/api/save-draft": _contract(
-        required_any=(("draft", "draft_id", "draftId"),)
-    ),
+    "/api/save-draft": _contract(required_any=(("draft", "draft_id", "draftId"),)),
     "/api/save-product": _contract(required=("product",)),
     "/api/save-settings": _EMPTY,
     "/api/store-auth/clear": _contract(required=("platform",)),
@@ -301,29 +264,29 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
         fields={"listing_currency": STRING},
         required=("platform", "listing_currency"),
     ),
-    "/api/test-ai-model": _contract(
-        required_any=(("model", "config"),)
-    ),
+    "/api/test-ai-model": _contract(required_any=(("model", "config"),)),
     "/api/test-api-config": _contract(required=("kind",)),
     "/api/test-store-auth": _contract(required=("platform",)),
-    "/api/text-translate": _contract(
-        required=("target_language", "content")
-    ),
+    "/api/text-translate": _contract(required=("target_language", "content")),
     "/api/upc-pool/import": _contract(required=("values",)),
     "/api/v1/ai-chat/runs": _contract(
         fields={
             "trigger": STRING,
             "id": STRING,
             "messages": ARRAY,
+            "target_draft_ids": ARRAY,
+            "page_context": OBJECT,
         },
         required=("id", "messages"),
     ),
-    "/api/v1/product-research/hot-products/search": _EMPTY,
-    "/api/v1/product-research/search-providers/test": _contract(
-        required=("provider",)
+    "/api/v1/ai-chat/cancel": _contract(
+        fields={"id": STRING, "message_id": STRING}, required=("id", "message_id"),
     ),
+    "/api/v1/product-research/hot-products/search": _EMPTY,
+    "/api/v1/product-research/search-providers/test": _contract(required=("provider",)),
     "/api/v1/product-research/source-registry/save": _EMPTY,
 }
+
 
 def _is_present(value: Any) -> bool:
     if value is None:
@@ -405,9 +368,7 @@ def _normalize_field(field_name: str, value: Any, rule: FieldRule) -> Any:
     if rule.kind == "string_or_array":
         if isinstance(value, str):
             return value
-        if isinstance(value, list) and all(
-            isinstance(item, str) for item in value
-        ):
+        if isinstance(value, list) and all(isinstance(item, str) for item in value):
             return value
         raise _type_error(field_name, "字符串或字符串数组")
     if rule.kind == "uploads":

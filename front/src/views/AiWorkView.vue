@@ -3,7 +3,6 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import type { UIMessage } from 'ai'
 import {
-  fetchConversationTaskLink,
   fetchPydanticConversation,
   fetchPydanticConversations,
   fetchUiMessages,
@@ -11,6 +10,7 @@ import {
 import AiChatPanel from '@/components/ai-work/AiChatPanel.vue'
 import AiMessageList from '@/components/ai-work/AiMessageList.vue'
 import JsonTreeNode from '@/components/ai-work/JsonTreeNode.vue'
+import { useAiPageContext } from '@/composables/useAiPageContext'
 import { workflowNavItems } from '@/constants/navigation'
 import { useAiChatStore, useAiWorkDisplayStore } from '@/stores'
 import {
@@ -28,6 +28,7 @@ interface ConversationListEntry extends PydanticConversationSummary {
 }
 
 const route = useRoute()
+useAiPageContext(() => ({ page: 'ai_work' }))
 const chatStore = useAiChatStore()
 const displayStore = useAiWorkDisplayStore()
 
@@ -44,7 +45,6 @@ const inspectorMode = ref<InspectorMode>('tree')
 const historyMessages = ref<UIMessage[] | null>(null)
 const loadingUiMessages = ref(false)
 const uiMessagesError = ref('')
-const reactivateError = ref('')
 
 let listRequestGeneration = 0
 let detailRequestGeneration = 0
@@ -140,14 +140,6 @@ const liveErrorText = computed(() => chatStore.error?.message || '')
 
 const isGlobalChatSelected = computed(() => (
   selectedId.value.startsWith(GLOBAL_CHAT_CONVERSATION_PREFIX)
-))
-
-/** 仅 global.chat 前缀、非活动且没有其他进行中 run 的历史允许重新激活。 */
-const canReactivate = computed(() => (
-  isGlobalChatSelected.value
-  && !selectedIsActive.value
-  && !chatStore.isBusy
-  && !chatStore.reactivating
 ))
 
 /** 服务端列表 + 活动会话/活动业务运行尚未持久化时的前端临时条目。 */
@@ -259,7 +251,7 @@ async function loadConversation(conversationId: string): Promise<void> {
   }
 }
 
-/** 活动会话直接绑定共享 Chat；其他 conversation 读取服务端派生的只读 UIMessage[]。 */
+/** 普通对话读取后即可输入；业务 Agent 记录只展示历史。 */
 async function loadUiMessages(conversationId: string): Promise<void> {
   historyMessages.value = null
   uiMessagesError.value = ''
@@ -284,7 +276,11 @@ async function loadUiMessages(conversationId: string): Promise<void> {
       uiMessagesError.value = '读取历史消息失败：messages 不是数组。'
       return
     }
-    historyMessages.value = response.messages
+    if (conversationId.startsWith(GLOBAL_CHAT_CONVERSATION_PREFIX)) {
+      chatStore.openConversation(response)
+    } else {
+      historyMessages.value = response.messages
+    }
   } catch (cause) {
     if (generation !== uiMessagesRequestGeneration || selectedId.value !== conversationId) return
     uiMessagesError.value = formatError(cause, '读取历史消息失败')
@@ -321,7 +317,6 @@ async function loadActiveConversationDetail(conversationId: string): Promise<voi
 async function loadSelection(conversationId: string, resetView = false): Promise<void> {
   selectedId.value = conversationId
   if (resetView) viewMode.value = 'chat'
-  reactivateError.value = ''
   if (chatStore.chat?.id === conversationId) {
     historyMessages.value = null
     uiMessagesError.value = ''
@@ -347,25 +342,6 @@ async function loadSelection(conversationId: string, resetView = false): Promise
     loadConversation(conversationId),
     loadUiMessages(conversationId),
   ])
-  // 报告 A-12：重载/选中一个存在未解决任务的 global.chat 会话时，自动把它
-  // 恢复为可操作的活动会话，任务卡随之挂载，无需手动点击“继续此对话”。
-  await autoReactivateIfLocked(conversationId)
-}
-
-/** 报告 A-12：只读选中项若是有未解决任务的 global.chat，自动重新激活。 */
-async function autoReactivateIfLocked(conversationId: string): Promise<void> {
-  if (!conversationId.startsWith(GLOBAL_CHAT_CONVERSATION_PREFIX)) return
-  if (chatStore.chat?.id === conversationId) return
-  if (chatStore.isBusy || chatStore.reactivating) return
-  try {
-    const link = await fetchConversationTaskLink(conversationId)
-    // 选中项已切换、或没有未解决任务时不做自动恢复。
-    if (selectedId.value !== conversationId) return
-    if (!link?.ok || !link.task_id) return
-    await chatStore.reactivateConversation(conversationId)
-  } catch {
-    // 自动恢复失败不影响只读展示；用户仍可手动“继续此对话”。
-  }
 }
 
 async function selectConversation(conversationId: string): Promise<void> {
@@ -419,15 +395,6 @@ async function refreshConversations(): Promise<void> {
     listError.value = formatError(cause, '读取 conversation 列表失败')
   } finally {
     if (generation === listRequestGeneration) loadingList.value = false
-  }
-}
-
-async function reactivateSelected(): Promise<void> {
-  if (!canReactivate.value) return
-  reactivateError.value = ''
-  const succeeded = await chatStore.reactivateConversation(selectedId.value)
-  if (!succeeded) {
-    reactivateError.value = '重新激活失败：无法读取该会话的派生消息。'
   }
 }
 
@@ -759,29 +726,9 @@ onMounted(() => {
                   该 conversation 暂无消息。
                 </div>
 
-                <div class="mt-4 flex flex-wrap items-center gap-3">
-                  <button
-                    v-if="canReactivate || chatStore.reactivating"
-                    type="button"
-                    class="btn btn-outline"
-                    data-testid="ai-work-reactivate"
-                    :disabled="!canReactivate"
-                    @click="reactivateSelected"
-                  >
-                    {{ chatStore.reactivating ? '正在重新激活…' : '继续此对话' }}
-                  </button>
-                  <p
-                    v-if="reactivateError"
-                    role="alert"
-                    class="text-sm text-rose-600 dark:text-rose-300"
-                    data-testid="ai-work-reactivate-error"
-                  >
-                    {{ reactivateError }}
-                  </p>
-                  <p v-else-if="!isGlobalChatSelected" class="text-xs text-slate-400">
-                    该会话属于其他业务 Agent，仅提供只读展示。
-                  </p>
-                </div>
+                <p v-if="!isGlobalChatSelected" class="mt-4 text-xs text-slate-400">
+                  该会话属于其他业务 Agent，仅提供只读展示。
+                </p>
               </template>
             </template>
           </div>

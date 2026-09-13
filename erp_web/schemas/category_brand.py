@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-import re
 from typing import Any
 
 
@@ -32,7 +30,6 @@ _BRAND_ATTRIBUTE_IDS = {
     "ozon": frozenset({"85"}),
     "mercadolibre": frozenset({"BRAND"}),
 }
-_BRAND_NAME_WORDS = frozenset({"бренд", "brand", "marca"})
 
 # 平台官方“无品牌”值的查询词与规范文本。这里不保存 dictionary_value_id：
 # 即使文本稳定，ID 仍必须从当前类目、当前凭据作用域的实时平台结果取得。
@@ -78,21 +75,6 @@ def is_brand_attribute_id(platform: str, attribute_id: Any) -> bool:
     return attr_id in known_ids
 
 
-def is_brand_attribute(
-    definition: Mapping[str, Any],
-    *,
-    platform: str,
-) -> bool:
-    """结合平台作用域、属性 ID 与名称判断品牌属性。"""
-
-    attr_id = _text(definition.get("id"))
-    if is_brand_attribute_id(platform, attr_id):
-        return True
-    name = _text(definition.get("name")).casefold()
-    words = set(re.findall(r"[^\W_]+", name, flags=re.UNICODE))
-    # 拉丁/西里尔品牌词必须是完整单词；否则 `marca` 会误命中
-    # 西语 `marcador`（标记器）。中文没有空格分词，保留明确的“品牌”子串。
-    return bool(words & _BRAND_NAME_WORDS) or "品牌" in name
 
 
 def normalize_attribute_value_query(
@@ -111,28 +93,12 @@ def normalize_attribute_value_query(
     return raw_query
 
 
-def product_context_declares_no_brand(product_context: Mapping[str, Any]) -> bool:
-    """商品上下文是否只有“无品牌”事实且不存在更具体的真实品牌。"""
-
-    brand_values: list[str] = []
-    for scope_name in ("draft", "product", "source"):
-        scope = product_context.get(scope_name)
-        if not isinstance(scope, Mapping) or "brand" not in scope:
-            continue
-        brand_values.append(_text(scope.get("brand")))
-    if not brand_values:
-        return False
-    if any(value and not is_no_brand_fact(value) for value in brand_values):
-        return False
-    return any(is_no_brand_fact(value) for value in brand_values)
 
 
 __all__ = [
-    "is_brand_attribute",
     "is_brand_attribute_id",
     "is_no_brand_fact",
     "is_official_no_brand_value",
     "no_brand_query_term",
     "normalize_attribute_value_query",
-    "product_context_declares_no_brand",
 ]

@@ -5,9 +5,6 @@ from copy import deepcopy
 import pytest
 
 from erp_web.product_model import default_draft, default_product_model
-from erp_web.runtime_units.attribute_fill_capabilities import (
-    fill_product_attributes,
-)
 from erp_web.runtime_units.category_capabilities import match_category
 from erp_web.runtime_units.market_prepare_capabilities import (
     MarketPrepareCapabilityScope,
@@ -23,19 +20,13 @@ from erp_web.runtime_units.market_pricing_capability import (
     prepare_target_pricing,
 )
 from erp_web.schemas.ai_trace import AiExecutionContext
-from erp_web.schemas.market_prepare_capabilities import (
-    CategoryMatchCapabilityResult,
-    CategoryMatchRequest,
-    DraftPrepareForMarketRequest,
-    ProductAttributesFillRequest,
-    ProductAttributesFillResult,
-)
+from erp_web.schemas.market_prepare_capabilities import CategoryMatchCapabilityResult, CategoryMatchRequest, DraftPrepareForMarketRequest
 from erp_web.schemas.product_capabilities import ProductImagesPrepareResult
 from erp_web.services.capability_errors import (
     BusinessCapabilityError,
     CapabilityInputRequired,
 )
-from erp_web.services.capability_input_provenance import encode_user_input_keys
+import json
 from erp_web.services.listing_currency_service import compute_currency_fingerprint
 from erp_web.services.mercadolibre_target_contract import (
     mercadolibre_global_target_contract,
@@ -146,7 +137,9 @@ def _cbt_price_contract(
 class _Products:
     def __init__(self, drafts: list[dict] | None = None) -> None:
         rows = drafts or [_draft("draft-1")]
-        self.drafts = {_draft_row["draft_id"]: deepcopy(_draft_row) for _draft_row in rows}
+        self.drafts = {
+            _draft_row["draft_id"]: deepcopy(_draft_row) for _draft_row in rows
+        }
         product = default_product_model()
         product.update(
             {
@@ -181,10 +174,7 @@ class _Products:
                         }
                     ],
                 },
-                "drafts": {
-                    row["platform"]: deepcopy(row)
-                    for row in rows
-                },
+                "drafts": {row["platform"]: deepcopy(row) for row in rows},
             }
         )
         self.product = product
@@ -193,17 +183,23 @@ class _Products:
         self.save_publish_state_calls = 0
         self.saved_draft_payloads: list[dict] = []
 
-    def load_product_from_index(self, product_id: str = "", file_path: str = "") -> dict:
+    def load_product_from_index(
+        self, product_id: str = "", file_path: str = ""
+    ) -> dict:
         return deepcopy(self.product) if product_id == "product-1" else {}
 
     def load_draft_detail_from_index(self, draft_id: str):
         draft = self.drafts.get(draft_id)
         if draft is None:
             return {}, {"error": "草稿不存在", "error_code": "DRAFT_NOT_FOUND"}, 404
-        return {
-            "draft": deepcopy(draft),
-            "productContext": {"raw": deepcopy(self.product)},
-        }, None, 200
+        return (
+            {
+                "draft": deepcopy(draft),
+                "productContext": {"raw": deepcopy(self.product)},
+            },
+            None,
+            200,
+        )
 
     def save_product(self, data: dict) -> dict:
         self.save_product_calls += 1
@@ -212,6 +208,12 @@ class _Products:
             if isinstance(draft, dict) and draft.get("draft_id"):
                 self.drafts[str(draft["draft_id"])] = deepcopy(draft)
         return deepcopy(self.product)
+
+    def save_draft_category_fields(self, draft_id, platform, site, before, updates):
+        from erp_web.runtime_units.draft_publish_context import merge_target_listing_into_draft
+        draft = merge_target_listing_into_draft(self.drafts[draft_id], {"platform": platform, "site": site}, updates)
+        self.save_draft_detail(draft)
+        return draft
 
     def save_draft_detail(self, draft_payload: dict):
         self.save_draft_calls += 1
@@ -260,7 +262,9 @@ class _Products:
     ):
         raise AssertionError("本测试使用注入的图片 Capability")
 
-    def draft_workflow_status(self, product: dict, platform: str = "mercadolibre") -> str:
+    def draft_workflow_status(
+        self, product: dict, platform: str = "mercadolibre"
+    ) -> str:
         return "images_ready"
 
 
@@ -348,9 +352,7 @@ def test_cbt_pricing_request_uses_canonical_sales_targets_from_draft() -> None:
         {
             "target": {
                 # 调用方不能用核价参数篡改草稿当前销售目标。
-                "sites_to_sell": [
-                    {"site_id": "MLC", "logistic_type": "remote"}
-                ]
+                "sites_to_sell": [{"site_id": "MLC", "logistic_type": "remote"}]
             }
         },
         product=products.product,
@@ -396,7 +398,7 @@ def test_cbt_pricing_without_sales_target_requests_trusted_selector() -> None:
     assert exc_info.value.code == "MERCADOLIBRE_SITES_TO_SELL_REQUIRED"
     assert exc_info.value.key == "sales_target"
     assert exc_info.value.input_type == "multi_select"
-    assert exc_info.value.input_owner == "step"
+    assert exc_info.value.argument_path == "arguments"
     assert [option.value for option in exc_info.value.options] == [
         "MLB:fulfillment",
         "MLM:remote",
@@ -470,18 +472,13 @@ def test_cbt_sales_target_selection_is_saved_before_pricing_result() -> None:
     selected_snapshot, priced_snapshot = products.saved_draft_payloads
     assert selected_snapshot["target_sites"][0]["sites_to_sell"] == canonical_target
     assert (
-        selected_snapshot.get("pricing", {})
-        .get("targets", {})
-        .get("mercadolibre:cbt")
+        selected_snapshot.get("pricing", {}).get("targets", {}).get("mercadolibre:cbt")
         is None
     )
     priced_operations = [
         {**operation, "price": "39.99"} for operation in canonical_target
     ]
-    assert (
-        priced_snapshot["target_sites"][0]["sites_to_sell"]
-        == priced_operations
-    )
+    assert priced_snapshot["target_sites"][0]["sites_to_sell"] == priced_operations
     persisted_pricing = priced_snapshot["pricing"]["targets"]["mercadolibre:cbt"]
     assert persisted_pricing["calculation_basis"]["sites_to_sell"] == canonical_target
     assert (
@@ -521,7 +518,7 @@ def test_cbt_sales_target_remains_saved_when_other_pricing_input_is_missing() ->
         )
 
     assert exc_info.value.key == "shipping_amount"
-    assert exc_info.value.input_owner == "pricing_input"
+    assert exc_info.value.argument_path == "pricing_input"
     assert products.save_draft_calls == 1
     assert (
         products.drafts["draft-cbt"]["target_sites"][0]["sites_to_sell"]
@@ -774,9 +771,7 @@ def test_cbt_binding_pricing_mode_change_forces_recalculation() -> None:
         }
     )
     draft = _draft("draft-cbt", site="CBT", currency="USD")
-    draft["target_sites"][0]["sites_to_sell"] = [
-        {**operation, "net_proceeds": "25.00"}
-    ]
+    draft["target_sites"][0]["sites_to_sell"] = [{**operation, "net_proceeds": "25.00"}]
     draft["pricing"] = {
         "common": {"purchase_cost_cny": "100"},
         "targets": {"mercadolibre:cbt": old_selected},
@@ -852,9 +847,7 @@ def test_cbt_same_sales_target_preserves_existing_non_amount_conditions() -> Non
         "sale_terms": [{"id": "WARRANTY_TYPE", "value_name": "No warranty"}],
     }
     draft = _draft("draft-cbt", site="CBT", currency="USD")
-    draft["target_sites"][0]["sites_to_sell"] = [
-        {**operation, "price": "39.99"}
-    ]
+    draft["target_sites"][0]["sites_to_sell"] = [{**operation, "price": "39.99"}]
     products = _Products([draft])
 
     def pricing(payload: dict) -> dict:
@@ -931,9 +924,7 @@ def test_cbt_store_identity_change_forces_recalculation() -> None:
         }
     )
     draft = _draft("draft-cbt", site="CBT", currency="USD")
-    draft["target_sites"][0]["sites_to_sell"] = [
-        {**operation, "price": "50.00"}
-    ]
+    draft["target_sites"][0]["sites_to_sell"] = [{**operation, "price": "50.00"}]
     draft["pricing"] = {
         "common": {"purchase_cost_cny": "100"},
         "targets": {"mercadolibre:cbt": selected},
@@ -1059,10 +1050,10 @@ def test_prepare_for_market_only_accepts_user_submitted_sales_target(
     )
 
     def execution(*, trusted: bool) -> AiExecutionContext:
-        business_scope = {"task_id": "task-1", "step_id": "step-1"}
+        business_scope = {"task_id": "task-1", "tool_call_id": "step-1"}
         if trusted:
-            business_scope["user_input_keys"] = encode_user_input_keys(
-                ["sales_target"]
+            business_scope["saved_user_facts"] = json.dumps(
+                {"sales_target": ["MLM:remote", "MLB:remote"]}
             )
         return AiExecutionContext.create(
             timeout_seconds=30,
@@ -1089,8 +1080,13 @@ def test_prepare_for_market_only_accepts_user_submitted_sales_target(
     assert received == [[], ["MLM:remote", "MLB:remote"]]
 
 
-def test_category_match_persists_focused_agent_selection() -> None:
-    products = _Products()
+@pytest.mark.parametrize("existing_category", ["", "WRONG-CATEGORY"])
+def test_category_match_persists_focused_agent_selection(existing_category) -> None:
+    draft = _draft("draft-1")
+    draft["category_id"] = existing_category
+    for target in draft.get("target_sites", []):
+        target["category_id"] = existing_category
+    products = _Products(drafts=[draft])
 
     def matcher(product: dict, draft: dict, target: dict) -> dict:
         assert product["drafts"]["mercadolibre"]["draft_id"] == "draft-1"
@@ -1211,285 +1207,18 @@ def test_category_post_run_failure_preserves_domain_error() -> None:
     assert exc_info.value.code == "CATEGORY_RECORD_BROKEN"
 
 
-def test_attribute_fill_persists_partial_result_then_requests_missing_fact() -> None:
-    draft = _draft("draft-1")
-    draft["target_sites"][0]["category_id"] = "CAT-1"
-    products = _Products([draft])
-
-    def record(*_args, **_kwargs) -> dict:
-        category = _category_record()
-        category["attributes"]["required"].append(
-            {
-                "id": "BATTERY_TYPE",
-                "name": "Battery type",
-                "required": True,
-                "options": ["AA", "AAA"],
-            }
-        )
-        return category
-
-    def filler(product: dict, platform: str, category: dict | None):
-        updated = _set_projection_attributes(
-            product,
-            platform,
-            {"COLOR": "Red"},
-        )
-        return updated, {
-            "source": "rules",
-            "warning": "Agent 未能确定电池型号。",
-        }
-
-    with pytest.raises(CapabilityInputRequired) as exc_info:
-        fill_product_attributes(
-            ProductAttributesFillRequest(
-                draft_id="draft-1",
-                target_platform="mercadolibre",
-            ),
-            product_store=products,
-            attribute_filler=filler,
-            category_record_loader=record,
-        )
-
-    assert exc_info.value.key == "BATTERY_TYPE"
-    assert [option.value for option in exc_info.value.options] == ["AA", "AAA"]
-    assert exc_info.value.input_type == "select"
-    assert exc_info.value.input_owner == "provided_attributes"
-    assert products.drafts["draft-1"]["attributes"] == {"COLOR": "Red"}
-    assert products.drafts["draft-1"]["validation_errors"] == ["BATTERY_TYPE"]
 
 
-def test_attribute_fill_dictionary_attribute_requests_live_options() -> None:
-    """字典属性待输入时必须实时拉取平台合法候选值，而不是空文本框。"""
-
-    draft = _draft("draft-1")
-    draft["target_sites"][0]["category_id"] = "CAT-1"
-    products = _Products([draft])
-
-    def record(*_args, **_kwargs) -> dict:
-        category = _category_record()
-        category["attributes"]["required"].append(
-            {
-                "id": "PURPOSE",
-                "name": "Предназначено для",
-                "required": True,
-                "is_dictionary": True,
-                "dictionary_id": "749",
-                "options": [],
-            }
-        )
-        return category
-
-    def filler(product: dict, platform: str, category: dict | None):
-        updated = _set_projection_attributes(
-            product,
-            platform,
-            {"COLOR": "Red"},
-        )
-        return updated, {"source": "rules"}
-
-    calls: list[tuple[str, str, str, str]] = []
-
-    def values_loader(platform, category_id, attribute_id, site="", **_kwargs):
-        calls.append((platform, category_id, attribute_id, site))
-        return {
-            "ok": True,
-            "values": [
-                {"id": "33746", "value": "Для собак"},
-                {"id": "33754", "value": "Для кошек"},
-                {"id": "33751", "value": "Для птиц"},
-            ],
-        }
-
-    with pytest.raises(CapabilityInputRequired) as exc_info:
-        fill_product_attributes(
-            ProductAttributesFillRequest(
-                draft_id="draft-1",
-                target_platform="mercadolibre",
-            ),
-            product_store=products,
-            attribute_filler=filler,
-            category_record_loader=record,
-            attribute_values_loader=values_loader,
-        )
-
-    assert exc_info.value.key == "PURPOSE"
-    assert [option.value for option in exc_info.value.options] == [
-        "Для собак",
-        "Для кошек",
-        "Для птиц",
-    ]
-    assert exc_info.value.input_type == "select"
-    assert "枚举" in exc_info.value.reason
-    assert calls == [("mercadolibre", "CAT-1", "PURPOSE", "CBT")]
 
 
-def test_attribute_fill_dictionary_lookup_failure_falls_back_to_text() -> None:
-    draft = _draft("draft-1")
-    draft["target_sites"][0]["category_id"] = "CAT-1"
-    products = _Products([draft])
-
-    def record(*_args, **_kwargs) -> dict:
-        category = _category_record()
-        category["attributes"]["required"].append(
-            {
-                "id": "PURPOSE",
-                "name": "Предназначено для",
-                "required": True,
-                "is_dictionary": True,
-                "dictionary_id": "749",
-                "options": [],
-            }
-        )
-        return category
-
-    def filler(product: dict, platform: str, category: dict | None):
-        updated = _set_projection_attributes(
-            product,
-            platform,
-            {"COLOR": "Red"},
-        )
-        return updated, {"source": "rules"}
-
-    def broken_values_loader(*_args, **_kwargs):
-        raise RuntimeError("dictionary unavailable")
-
-    with pytest.raises(CapabilityInputRequired) as exc_info:
-        fill_product_attributes(
-            ProductAttributesFillRequest(
-                draft_id="draft-1",
-                target_platform="mercadolibre",
-            ),
-            product_store=products,
-            attribute_filler=filler,
-            category_record_loader=record,
-            attribute_values_loader=broken_values_loader,
-        )
-
-    assert exc_info.value.key == "PURPOSE"
-    assert exc_info.value.options == ()
-    assert exc_info.value.input_type == "text"
 
 
-def test_attribute_fill_resolves_user_text_into_dictionary_value() -> None:
-    """待输入提交的候选文本必须解析为带 dictionary_value_id 的结构化值。"""
-
-    draft = _draft("draft-1")
-    draft["target_sites"][0].update(
-        {"category_id": "CAT-1", "attributes": {}}
-    )
-    products = _Products([draft])
-
-    def record(*_args, **_kwargs) -> dict:
-        category = _category_record()
-        category["attributes"]["required"].append(
-            {
-                "id": "PURPOSE",
-                "name": "Предназначено для",
-                "required": True,
-                "is_dictionary": True,
-                "dictionary_id": "749",
-                "is_collection": True,
-                "max_value_count": 3,
-                "options": [],
-            }
-        )
-        return category
-
-    def filler(product: dict, platform: str, category: dict | None):
-        attrs = dict(product["drafts"][platform].get("attributes") or {})
-        attrs["COLOR"] = "Red"
-        updated = _set_projection_attributes(product, platform, attrs)
-        return updated, {"source": "rules"}
-
-    def values_loader(platform, category_id, attribute_id, site="", **_kwargs):
-        return {
-            "ok": True,
-            "values": [
-                {"id": "33746", "value": "Для собак"},
-                {"id": "33754", "value": "Для кошек"},
-            ],
-        }
-
-    result = fill_product_attributes(
-        ProductAttributesFillRequest(
-            draft_id="draft-1",
-            target_platform="mercadolibre",
-            provided_attributes={"PURPOSE": "для собак"},
-        ),
-        product_store=products,
-        attribute_filler=filler,
-        category_record_loader=record,
-        attribute_values_loader=values_loader,
-    )
-
-    assert result.attributes["PURPOSE"] == {
-        "values": [{"dictionary_value_id": "33746", "value": "Для собак"}]
-    }
-    assert result.attributes["COLOR"] == "Red"
-    assert products.drafts["draft-1"]["validation_errors"] == []
 
 
-def test_attribute_fill_completes_for_category_without_required_attributes() -> None:
-    """零必填参数类目：没有可填的必填属性时正常完成，不得 needs_input。"""
-
-    draft = _draft("draft-1")
-    draft["target_sites"][0]["category_id"] = "CAT-1"
-    products = _Products([draft])
-
-    def record(*_args, **_kwargs) -> dict:
-        category = _category_record()
-        category["attributes"]["required"] = []
-        category["attributes"]["optional"] = [
-            {
-                "id": "PURPOSE",
-                "name": "Предназначено для",
-                "required": False,
-                "is_dictionary": True,
-                "dictionary_id": "749",
-                "options": [],
-            }
-        ]
-        return category
-
-    def filler(product: dict, platform: str, category: dict | None):
-        return deepcopy(product), {"source": "rules", "ai_filled": []}
-
-    result = fill_product_attributes(
-        ProductAttributesFillRequest(
-            draft_id="draft-1",
-            target_platform="mercadolibre",
-        ),
-        product_store=products,
-        attribute_filler=filler,
-        category_record_loader=record,
-    )
-
-    assert result.draft_id == "draft-1"
-    assert products.drafts["draft-1"]["validation_errors"] == []
 
 
-def test_attribute_fill_accepts_explicit_user_value_and_completes() -> None:
-    draft = _draft("draft-1")
-    draft["target_sites"][0]["category_id"] = "CAT-1"
-    products = _Products([draft])
 
-    def filler(product: dict, platform: str, category: dict | None):
-        return deepcopy(product), {"source": "rules", "ai_filled": []}
 
-    result = fill_product_attributes(
-        ProductAttributesFillRequest(
-            draft_id="draft-1",
-            target_platform="mercadolibre",
-            provided_attributes={"COLOR": "Red"},
-        ),
-        product_store=products,
-        attribute_filler=filler,
-        category_record_loader=_category_record,
-    )
-
-    assert result.attributes == {"COLOR": "Red"}
-    assert result.need_review_attribute_ids == []
-    assert result.platform == "mercadolibre"
 
 
 def test_prepare_claims_target_and_runs_real_owner_boundaries_in_order() -> None:
@@ -1581,20 +1310,6 @@ def test_prepare_claims_target_and_runs_real_owner_boundaries_in_order() -> None
             changed=True,
         )
 
-    def attributes(request, *, product_store):
-        events.append("attributes")
-        target = products.drafts[request.draft_id]
-        target["attributes"] = {"COLOR": "Red"}
-        target["target_sites"][0]["attributes"] = {"COLOR": "Red"}
-        products.product["drafts"]["mercadolibre"] = deepcopy(target)
-        return ProductAttributesFillResult(
-            draft_id=request.draft_id,
-            platform="mercadolibre",
-            site="CBT",
-            attributes={"COLOR": "Red"},
-            filled_attribute_ids=["COLOR"],
-            changed=True,
-        )
 
     def pricing(payload: dict) -> dict:
         events.append("pricing")
@@ -1635,11 +1350,11 @@ def test_prepare_claims_target_and_runs_real_owner_boundaries_in_order() -> None
         app_config_loader=lambda: {"test": True},
         image_capability=images,
         category_capability=category,
-        attribute_capability=attributes,
+
         pricing_calculator=pricing,
     )
 
-    assert events == ["claim", "copy", "images", "category", "attributes", "pricing"]
+    assert events == ["claim", "copy", "images", "category", "pricing"]
     assert result.draft_id == "draft-target"
     assert result.source_draft_id == "draft-source"
     assert result.completed_parts == [
@@ -1647,12 +1362,16 @@ def test_prepare_claims_target_and_runs_real_owner_boundaries_in_order() -> None
         "copy",
         "images",
         "category",
-        "attributes",
         "pricing",
     ]
     assert result.readiness.image_count == 1
-    assert result.readiness.attribute_count == 1
-    assert products.drafts["draft-target"]["pricing"]["targets"]["mercadolibre:cbt"]["applied_price"]["amount"] == "299.00"
+    assert result.readiness.attribute_count == 0
+    assert (
+        products.drafts["draft-target"]["pricing"]["targets"]["mercadolibre:cbt"][
+            "applied_price"
+        ]["amount"]
+        == "299.00"
+    )
 
 
 def test_prepare_returns_input_required_for_unresolved_pricing_fact() -> None:
@@ -1688,15 +1407,6 @@ def test_prepare_returns_input_required_for_unresolved_pricing_fact() -> None:
             changed=True,
         )
 
-    def attributes(request, *, product_store):
-        return ProductAttributesFillResult(
-            draft_id=request.draft_id,
-            platform="mercadolibre",
-            site="CBT",
-            attributes={"COLOR": "Red"},
-            filled_attribute_ids=["COLOR"],
-            changed=False,
-        )
 
     def pricing(_payload: dict) -> dict:
         return {
@@ -1719,16 +1429,19 @@ def test_prepare_returns_input_required_for_unresolved_pricing_fact() -> None:
             product_store=products,
             image_capability=images,
             category_capability=category,
-            attribute_capability=attributes,
+
             pricing_calculator=pricing,
         )
 
     assert exc_info.value.code == "PRICING_INPUT_REQUIRED"
     assert exc_info.value.key == "shipping_quote_mode"
-    assert exc_info.value.input_owner == "pricing_input"
+    assert exc_info.value.argument_path == "pricing_input"
 
 
-def test_regenerate_copy_operation_marker_skips_retry_after_domain_save() -> None:
+def test_regenerate_copy_operation_marker_skips_retry_after_domain_save(monkeypatch) -> None:
+    def missing_pricing(**kwargs):
+        raise CapabilityInputRequired("PRICING_INPUT_REQUIRED", "缺少运费", key="freight", label="运费", reason="请补充")
+    monkeypatch.setattr("erp_web.runtime_units.market_prepare_capabilities.prepare_target_pricing", missing_pricing)
     draft = _draft("draft-1")
     draft.update(
         {
@@ -1762,13 +1475,6 @@ def test_regenerate_copy_operation_marker_skips_retry_after_domain_save() -> Non
             changed=False,
         )
 
-    def attributes(request, *, product_store):
-        raise CapabilityInputRequired(
-            "PRODUCT_ATTRIBUTE_INPUT_REQUIRED",
-            "仍缺少品牌。",
-            key="BRAND",
-            label="品牌",
-        )
 
     request = DraftPrepareForMarketRequest(
         draft_id="draft-1",
@@ -1784,7 +1490,7 @@ def test_regenerate_copy_operation_marker_skips_retry_after_domain_save() -> Non
                 product_store=products,
                 copy_generator=copy_generator,
                 image_capability=images,
-                attribute_capability=attributes,
+
                 copy_operation_key=operation_key,
             )
 
@@ -1803,9 +1509,7 @@ def test_cbt_ready_copy_does_not_generate_per_market_copy() -> None:
     target = draft["target_sites"][0]
     target.update(
         {
-            "sites_to_sell": [
-                {"site_id": "MLM", "logistic_type": "remote"}
-            ],
+            "sites_to_sell": [{"site_id": "MLM", "logistic_type": "remote"}],
             "validation_errors": [{"field": "title", "message": "stale"}],
             "last_precheck": {"ok": True},
             "publish_status": "ready",
@@ -1904,9 +1608,7 @@ def test_cbt_ready_copy_does_not_depend_on_listing_model() -> None:
         )
 
     assert exc_info.value.code == "TEST_STOP"
-    assert "marketplace_titles" not in products.drafts["draft-cbt"][
-        "target_sites"
-    ][0]
+    assert "marketplace_titles" not in products.drafts["draft-cbt"]["target_sites"][0]
     assert products.save_draft_calls == 0
 
 
@@ -1984,9 +1686,7 @@ def test_prepare_copy_persists_generated_global_title() -> None:
         copy_operation_key="",
     )
 
-    assert products.drafts["draft-cbt"]["global_title"] == (
-        "Portable Rechargeable Fan"
-    )
+    assert products.drafts["draft-cbt"]["global_title"] == ("Portable Rechargeable Fan")
 
 
 def test_cbt_sales_target_input_does_not_generate_additional_copy() -> None:
@@ -2029,15 +1729,6 @@ def test_cbt_sales_target_input_does_not_generate_additional_copy() -> None:
             changed=False,
         )
 
-    def attributes(request, *, product_store):
-        return ProductAttributesFillResult(
-            draft_id=request.draft_id,
-            platform="mercadolibre",
-            site="CBT",
-            attributes={"COLOR": "Red"},
-            filled_attribute_ids=[],
-            changed=False,
-        )
 
     def pricing(payload: dict) -> dict:
         target = payload["targets"][0]
@@ -2075,7 +1766,7 @@ def test_cbt_sales_target_input_does_not_generate_additional_copy() -> None:
         copy_generator=copy_generator,
         app_config_loader=lambda: {"test": True},
         image_capability=images,
-        attribute_capability=attributes,
+
         pricing_calculator=pricing,
     )
 
