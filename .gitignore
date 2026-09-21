@@ -29,6 +29,8 @@ config/local-backup/
 data/category_cache/
 data/images/
 data/cache/
+# 模块维护的费率版本与原始模板属于本地业务数据。
+data/tariffs/
 .playwright-mcp/
 erp.sqlite3
 *.sqlite

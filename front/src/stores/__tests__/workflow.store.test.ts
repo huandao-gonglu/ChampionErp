@@ -12,7 +12,7 @@ import * as stateApi from '@/api/workflow/state'
 import * as translationApi from '@/api/workflow/translation'
 import { jsonProbeMessages, JSON_PROBE_USER_MESSAGE } from '@/constants/aiCapabilityProbe'
 import { withAiForeground } from '@/services/withAiForeground'
-import type { AuthResult, DraftDetail, DraftIndexItem, PricingResult, Product } from '@/types/workflow'
+import type { AuthResult, DraftDetail, DraftIndexItem, PricingResult, Product, UnknownRecord } from '@/types/workflow'
 
 vi.mock('@/api/workflow/state', () => ({
   fetchState: vi.fn(),
@@ -3178,6 +3178,7 @@ describe('workflow store live API flow', () => {
           }],
           convertedPrices: { USD: '23.45', CNY: '159.20' },
           calculationBasis: {
+            shipping_evidence: { route: '测试物流渠道', original_currency: 'USD', original_amount: '2.7', tariff_version: 'test-version' },
             sites_to_sell: [{
               site_id: 'MLM',
               logistic_type: 'remote',
@@ -3199,7 +3200,7 @@ describe('workflow store live API flow', () => {
           shippingQuoteMode: 'auto',
           shippingCurrency: 'USD',
           shippingAmount: 2.7,
-          shippingSource: 'system_estimate',
+          shippingSource: 'international_shipping',
           commissionCny: 25.47,
           paymentFeeCny: 0,
           otherFeeCny: 0,
@@ -3260,6 +3261,7 @@ describe('workflow store live API flow', () => {
 
     expect(store.pricingInput.targets.map((target) => target.manualPrice)).toEqual([null])
     expect(workflowApi.saveDraft).not.toHaveBeenCalled()
+    expect(store.pricingInput.targets[0].shippingAmount).toBe(2.7)
 
     vi.mocked(workflowApi.calculatePrice).mockResolvedValueOnce({
       ...pricingResult,
@@ -3293,7 +3295,7 @@ describe('workflow store live API flow', () => {
     await store.applyPrice()
 
     expect(store.pricingInput.targets.map((target) => target.manualPrice)).toEqual([null])
-    expect(store.pricingInput.targets.map((target) => target.shippingAmount)).toEqual([0])
+    expect(store.pricingInput.targets.map((target) => target.shippingAmount)).toEqual([2.7])
     expect(workflowApi.saveDraft).toHaveBeenCalledWith(expect.objectContaining({
       targetSites: [expect.objectContaining({
         listingCurrency: 'USD',
@@ -3318,6 +3320,8 @@ describe('workflow store live API flow', () => {
       }),
     }))
     const savedPricing = vi.mocked(workflowApi.saveDraft).mock.calls[0][0].pricing
+    expect((savedPricing.targets as Record<string, UnknownRecord>)['mercadolibre:cbt'].calculation_basis).toEqual(expect.objectContaining({ shipping_evidence: expect.objectContaining({ route: '测试物流渠道', original_amount: '2.7' }) }))
+    expect(store.pricingResult?.results[0].calculationBasis.shipping_evidence).toEqual(expect.objectContaining({ route: '测试物流渠道' }))
     expect(savedPricing).not.toHaveProperty('suggestedPrice')
     expect(savedPricing).not.toHaveProperty('appliedPrice')
     expect(savedPricing).not.toHaveProperty('targetKey')

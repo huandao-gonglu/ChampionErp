@@ -793,6 +793,10 @@ export function createWorkflowRuntime() {
         price,
         netProceeds,
         calculationFingerprint: recordString(value, ['calculation_fingerprint', 'calculationFingerprint']),
+        ...(value.shipping_currency ? {
+          shippingAmount: recordNumber(value, ['shipping_amount']),
+          shippingCurrency: recordString(value, ['shipping_currency']),
+        } : {}),
       }]
     })
   }
@@ -888,6 +892,7 @@ export function createWorkflowRuntime() {
       site: target.site || site?.code || '',
       listingCurrency,
       sitesToSell: (target.sitesToSell || []).map((item) => ({ ...item })),
+      categoryId: target.categoryId,
       currencyFingerprint: target.currencyFingerprint,
       commissionPercent: recordNumber(saved, ['commissionPercent', 'commission_percent'], defaults.commissionPercent),
       paymentFeePercent: recordNumber(saved, ['paymentFeePercent', 'payment_fee_percent'], defaults.paymentFeePercent),
@@ -895,7 +900,7 @@ export function createWorkflowRuntime() {
       pricingMode,
       targetMarginPercent: recordNumber(saved, ['targetMarginPercent', 'target_margin_percent'], defaults.targetMarginPercent),
       markupPercent: recordNumber(saved, ['markupPercent', 'markup_percent'], 30),
-      shippingQuoteMode: (savedShippingMode || (legacyShippingUsd > 0 || legacyShippingCny > 0 ? 'manual' : target.platform === 'mercadolibre' ? 'auto' : 'manual')) as PricingTargetInput['shippingQuoteMode'],
+      shippingQuoteMode: (savedShippingMode || (legacyShippingUsd > 0 || legacyShippingCny > 0 ? 'manual' : 'auto')) as PricingTargetInput['shippingQuoteMode'],
       shippingCurrency: shippingCurrency as PricingTargetInput['shippingCurrency'],
       shippingAmount: recordNumber(saved, ['shippingAmount', 'shipping_amount'], shippingCurrency === 'USD' ? legacyShippingUsd : legacyShippingCny),
       manualPrice: reusableManualPrice,
@@ -1142,6 +1147,8 @@ export function createWorkflowRuntime() {
     pricingInput.value.domesticFreightCny = recordNumber(common, ['domesticFreightCny', 'domestic_freight_cny', 'domestic_freight'], pricingInput.value.domesticFreightCny)
     pricingInput.value.packagingCostCny = recordNumber(common, ['packagingCostCny', 'packaging_cost_cny', 'packaging_cost'], pricingInput.value.packagingCostCny)
     pricingInput.value.otherCostCny = recordNumber(common, ['otherCostCny', 'other_cost_cny', 'other_cost'], pricingInput.value.otherCostCny)
+    pricingInput.value.battery = common.battery === true
+    pricingInput.value.liquid = common.liquid === true
     pricingInput.value.weightKg = recordNumber(common, ['weightKg', 'weight_kg'], parseNumber(pkg.weightKg || context.weightKg || product.value.source.weightKg || pricingInput.value.weightKg))
     pricingInput.value.lengthCm = recordNumber(common, ['lengthCm', 'length_cm'], parseNumber(pkg.lengthCm || context.dimensions.lengthCm || product.value.source.dimensions.lengthCm || pricingInput.value.lengthCm))
     pricingInput.value.widthCm = recordNumber(common, ['widthCm', 'width_cm'], parseNumber(pkg.widthCm || context.dimensions.widthCm || product.value.source.dimensions.widthCm || pricingInput.value.widthCm))

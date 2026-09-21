@@ -20,6 +20,7 @@ from erp_web.services.mercadolibre_target_contract import (
     mercadolibre_target_pricing_mode,
 )
 from erp_web.services import pricing_service
+from erp_web.services.pricing_shipping import PricingShipping
 from erp_web.services.listing_currency_service import (
     StoreCurrencyNotReadyError,
     require_store_listing_currency,
@@ -28,6 +29,8 @@ from erp_web.product_model import (
     mercadolibre_sales_condition_basis,
     normalize_mercadolibre_sites_to_sell,
 )
+from erp_web.marketplaces.publisher import PublishAdapterError
+from .store_credentials import get_mercadolibre_access_token
 
 
 def _pricing_exchange_rate_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -317,6 +320,17 @@ def calculate_price(input_data: dict[str, Any]) -> dict[str, Any]:
         normalized_targets.append(target)
     source["targets"] = normalized_targets
 
+    if any(
+        isinstance(target, dict) and target.get("platform") == "mercadolibre"
+        and target.get("shipping_quote_mode", "auto") == "auto"
+        for target in raw_targets
+    ):
+        try:
+            token = get_mercadolibre_access_token(store_config)
+        except PublishAdapterError as exc:
+            return {"ok": False, "error": str(exc)}
+        store_config.setdefault("mercadolibre", {})["access_token"] = token
+
     has_manual_rates = source.get("usd_cny_rate") not in (None, "") and source.get("mxn_usd_rate") not in (None, "")
     exchange_mode = str(source.get("exchange_rate_mode") or ("manual" if has_manual_rates else "live")).strip().lower()
     exchange_rates: dict[str, Any] | None = None
@@ -337,7 +351,10 @@ def calculate_price(input_data: dict[str, Any]) -> dict[str, Any]:
             common["rub_usd_rate"] = source["rub_usd_rate"]
             common["rub_cny_rate"] = source["rub_cny_rate"]
             common["currency_usd_rates"] = source["currency_usd_rates"]
-    result = pricing_service.pricing_result(source)
+    result = pricing_service.pricing_result(
+        source,
+        shipping_resolver=PricingShipping(get_context().paths.data_dir / "tariffs", store_config),
+    )
     if exchange_rates:
         result["exchange_rates"] = exchange_rates
         result["exchange_rate_mode"] = "live"

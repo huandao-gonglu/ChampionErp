@@ -12,11 +12,15 @@ from erp_web.facades.agent_capability_facade import build_global_chat_toolset
 from erp_web.facades import agent_capability_facade
 from erp_web.runtime_units import category_attribute_updates as validation
 from erp_web.runtime_units.product_capabilities import (
-    ProductCapabilityScope, draft_attributes_read, update_product_attributes,
+    ProductCapabilityScope, draft_attributes_read, product_read, update_product_attributes,
+)
+from erp_web.runtime_units.product_write_capabilities import (
+    ProductWriteCapabilityScope, draft_read,
 )
 from erp_web.schemas.product_capabilities import (
-    DraftAttributesReadRequest, DraftSkuAttributesUpdateRequest, ProductAttributesUpdateRequest,
+    DraftAttributesReadRequest, DraftSkuAttributesUpdateRequest, ProductAttributesUpdateRequest, ProductReadRequest,
 )
+from erp_web.schemas.product_write_capabilities import DraftReadRequest
 from erp_web.services.capability_errors import BusinessCapabilityError
 from tests.test_native_domain_workflow import setup_domain
 from tests.test_native_agent_integration import service, body
@@ -141,6 +145,49 @@ def test_paginated_read_preserves_each_sku_facts_and_all_saved_attributes(subjec
     assert first.skus[0]["options"] == {"颜色": "黑色"}
     assert second.skus[0]["options"] == {"颜色": "白色"}
     assert first.skus[0]["package_dimensions"] != second.skus[0]["package_dimensions"]
+
+
+@pytest.mark.parametrize("missing_dimension", ["", "0.0"])
+def test_read_tools_preserve_shared_dimensions_without_filling_missing_sku_dimensions(
+    subject, missing_dimension,
+):
+    """复现主档为空、草稿有尺寸、SKU 未填的现场，三个读取入口都保留事实层级。"""
+    app, draft_id, _ = subject
+    dimensions = {"length_cm": "13", "width_cm": "10", "height_cm": "5", "weight_kg": "0.65"}
+    product = app.products.load_product_from_index("product-native-0")
+    product["dimensions"] = ""
+    product["source"]["dimensions"] = {}
+    for sku in product["sku_items"]:
+        sku["package_dimensions"].update({
+            key: missing_dimension for key in ("length_cm", "width_cm", "height_cm")
+        })
+    draft = product["drafts"]["ozon"]
+    draft["package_dimensions"] = dimensions
+    draft["sku_items"][1]["overrides"] = {"package_dimensions": {"length_cm": "26"}}
+    app.products.save_product(product)
+    before = app.products.load_product_from_index("product-native-0")
+    scope = ProductCapabilityScope(app.products)
+
+    draft_result = draft_read(
+        DraftReadRequest(draft_id=draft_id), ProductWriteCapabilityScope(app.products),
+    ).model_dump(mode="json")
+    product_result = product_read(
+        ProductReadRequest(draft_id=draft_id, platform="ozon", site="global"), scope,
+    ).model_dump(mode="json")
+    assert draft_result["draft"]["package_dimensions"] == dimensions
+    assert product_result["draft"]["package_dimensions"] == dimensions
+    assert product_result["product"]["dimensions"] == ""
+
+    for offset in (0, 1):
+        result = draft_attributes_read(
+            DraftAttributesReadRequest(draft_id=draft_id, offset=offset, limit=1), scope,
+        ).model_dump(mode="json")
+        assert result["package_dimensions"] == dimensions
+        sku_dimensions = result["skus"][0]["package_dimensions"]
+        assert sku_dimensions["length_cm"] == (missing_dimension if offset == 0 else "26")
+        assert sku_dimensions["width_cm"] == sku_dimensions["height_cm"] == missing_dimension
+        assert sku_dimensions["weight_kg"] == str(offset + 1)
+    assert app.products.load_product_from_index("product-native-0") == before
 
 
 def test_native_main_chat_reads_queries_and_writes_without_a_focused_agent(subject, tmp_path):

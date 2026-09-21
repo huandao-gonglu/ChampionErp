@@ -152,6 +152,10 @@ class DraftReadView(BaseModel):
     description_category_id: TrimmedText = ""
     category_path: TrimmedText = ""
     attributes: dict[str, JsonValue] = Field(default_factory=dict)
+    package_dimensions: dict[str, JsonValue] = Field(
+        default_factory=dict,
+        description="草稿共用包装尺寸：length_cm、width_cm、height_cm、weight_kg；逐 SKU 的有效包装尺寸用 draft_attributes_read 读取，不自动继承共用值。",
+    )
     image_count: int = 0
     validation_errors: tuple[JsonValue, ...] = ()
     category_precheck: dict[str, JsonValue] = Field(default_factory=dict)

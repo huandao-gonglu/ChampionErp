@@ -367,6 +367,11 @@ def _ai_draft_read_view(value: Any) -> DraftReadView:
         ),
         category_path=_bounded_text(draft.get("category_path"), max_length=500),
         attributes=bounded_attributes,
+        package_dimensions=_bounded_dict_subset(
+            draft.get("package_dimensions"),
+            ("length_cm", "width_cm", "height_cm", "weight_kg"),
+            max_length=80,
+        ),
         image_count=len(images),
         validation_errors=tuple(bounded_errors),
         category_precheck=_dict_value(draft.get("category_precheck")),
@@ -587,7 +592,7 @@ def product_delete(
 
 @ai_tool(
     name=DRAFT_READ_TOOL,
-    description="按 draft_id 读取草稿的类型化有界视图与精简关联商品上下文。",
+    description="按 draft_id 读取草稿的类型化有界视图与精简关联商品上下文，包含草稿共用 package_dimensions（cm/kg）。逐 SKU 的有效包装尺寸用 draft_attributes_read 读取；商品或 SKU 尺寸为空不代表草稿无尺寸，共用尺寸也不代表已应用到所有 SKU。",
     permission="draft.read",
     side_effect="none",
     recovery_policy="retry_safe",

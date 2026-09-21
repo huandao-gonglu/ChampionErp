@@ -65,6 +65,10 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
         price: destination.price,
         net_proceeds: destination.netProceeds,
         calculation_fingerprint: destination.calculationFingerprint || '',
+        ...(destination.shippingCurrency ? {
+          shipping_amount: destination.shippingAmount,
+          shipping_currency: destination.shippingCurrency,
+        } : {}),
       })),
       converted_prices: result.convertedPrices,
       calculation_basis: result.calculationBasis,
@@ -102,6 +106,8 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
     const targets = Object.fromEntries(result.results.map((item) => [item.targetKey, pricingResultRecord(item)]))
     return {
       common: {
+        battery: input.battery ?? false,
+        liquid: input.liquid ?? false,
         purchase_cost_cny: input.purchaseCostCny,
         domestic_freight_cny: input.domesticFreightCny,
         packaging_cost_cny: input.packagingCostCny,
@@ -189,6 +195,10 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
       }
       target.listingCurrency = resolved.listingCurrency
       target.currencyFingerprint = resolved.currencyFingerprint
+      if (target.shippingQuoteMode === 'auto') {
+        target.shippingAmount = resolved.shippingAmount
+        target.shippingCurrency = resolved.shippingCurrency
+      }
     })
     if (result.usdCnyRate > 0) pricingInput.value.usdCnyRate = result.usdCnyRate
     if (result.mxnUsdRate > 0) pricingInput.value.mxnUsdRate = result.mxnUsdRate
@@ -289,10 +299,16 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
     try {
       const rows = currentDraft.value.skuItems.filter(row => row.selected)
       const completed: { row: DraftSku; input: PricingInput; result: PricingResult }[] = []
+      const tariffVersions = new Map<string, string>()
       // 每项独立取物理资料；共享参数只作默认值，不能将首个 SKU 的报价复制给其他规格。
       for (const row of rows) {
         const input = inputForSku(row)
+        for (const target of input.targets) target.shippingTariffVersion = tariffVersions.get(target.platform)
         const result = await calculatePriceApi(input)
+        for (const target of result.results) {
+          const evidence = target.calculationBasis.shipping_evidence as UnknownRecord | undefined
+          if (typeof evidence?.tariff_version === 'string') tariffVersions.set(target.platform, evidence.tariff_version)
+        }
         completed.push({ row, input, result })
       }
       if (completed[0]) acceptPreview(completed[0].result)

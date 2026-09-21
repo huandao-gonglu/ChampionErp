@@ -93,9 +93,13 @@ describe('calculatePrice API mapping', () => {
     })
 
     expect(apiClient.post).toHaveBeenCalledWith('/api/calculate-price', {
+      battery: false,
+      liquid: false,
       platform: 'mercadolibre',
       site: 'MLM',
       common: {
+        battery: false,
+        liquid: false,
         purchase_cost: 100,
         domestic_freight: 10,
         packaging_cost: 0,
@@ -172,6 +176,7 @@ describe('calculatePrice API mapping', () => {
           shippingCurrency: 'USD',
           shippingAmount: 8,
           shippingSource: '',
+          shippingCandidates: [],
           commissionCny: 0,
           paymentFeeCny: 0,
           otherFeeCny: 0,

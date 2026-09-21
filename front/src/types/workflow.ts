@@ -416,6 +416,8 @@ export interface DraftProductContext {
 }
 
 export interface PricingInput {
+  battery?: boolean
+  liquid?: boolean
   platform: Marketplace
   site: string
   purchaseCostCny: number
@@ -438,6 +440,9 @@ export type ShippingQuoteMode = 'auto' | 'manual'
 export type ShippingCurrency = 'USD' | 'CNY'
 
 export interface PricingTargetInput {
+  /** 仅在一次逐 SKU 核价期间固定费率版本；下次核价重新读取当前版本。 */
+  shippingTariffVersion?: string
+  categoryId?: string
   targetKey: string
   platform: Marketplace
   site: string
@@ -461,6 +466,8 @@ export type PricingDestinationModel = 'price' | 'net_proceeds'
 
 /** Mercado Global Selling 单个销售 operation 的核价结果。 */
 export interface PricingDestinationResult {
+  shippingAmount?: number
+  shippingCurrency?: string
   siteId: string
   logisticType: string
   pricingModel: PricingDestinationModel
@@ -470,6 +477,7 @@ export interface PricingDestinationResult {
 }
 
 export interface PricingTargetResult {
+  shippingCandidates?: UnknownRecord[]
   targetKey: string
   platform: Marketplace
   site: string

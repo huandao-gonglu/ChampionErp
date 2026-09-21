@@ -1,4 +1,4 @@
-import { apiClient, type AiPresentationTransport } from '@/api/client'
+import { apiClient } from '@/api/client'
 import { withAiForeground } from '@/services/withAiForeground'
 import type {
   CategoryAttributeDefinition,
@@ -302,6 +302,10 @@ function normalizePricingDestinationResult(
     siteId,
     logisticType,
     pricingModel,
+    ...(record.shipping_currency ? {
+      shippingAmount: getNumber(record, ['shipping_amount']),
+      shippingCurrency: getString(record, ['shipping_currency']),
+    } : {}),
     price,
     netProceeds,
     calculationFingerprint: getString(record, ['calculation_fingerprint', 'calculationFingerprint']),
@@ -351,6 +355,7 @@ function normalizePricingTargetResult(value: unknown, fallback: Partial<PricingT
     shippingCurrency: getString(record, ['shipping_currency', 'shippingCurrency'], fallback.shippingCurrency || 'USD') as PricingTargetResult['shippingCurrency'],
     shippingAmount: getNumber(record, ['shipping_amount', 'shippingAmount'], fallback.shippingAmount || 0),
     shippingSource: getString(record, ['shipping_source', 'shippingSource']),
+    shippingCandidates: Array.isArray(record.shipping_candidates) ? record.shipping_candidates.map(asRecord) : [],
     commissionCny: getNumber(record, ['commission_cny', 'commissionCny']),
     paymentFeeCny: getNumber(record, ['payment_fee_cny', 'paymentFeeCny']),
     otherFeeCny: getNumber(record, ['other_fee_cny', 'otherFeeCny']),
@@ -367,6 +372,8 @@ function normalizePricingTargetResult(value: unknown, fallback: Partial<PricingT
 
 export async function calculatePrice(input: PricingInput): Promise<PricingResult> {
   const common = {
+    battery: input.battery ?? false,
+    liquid: input.liquid ?? false,
     purchase_cost: input.purchaseCostCny,
     domestic_freight: input.domesticFreightCny,
     packaging_cost: input.packagingCostCny,
@@ -396,6 +403,8 @@ export async function calculatePrice(input: PricingInput): Promise<PricingResult
       shipping_quote_mode: target.shippingQuoteMode,
       shipping_currency: target.shippingCurrency,
       shipping_amount: target.shippingAmount,
+      ...(target.shippingTariffVersion ? { shipping_tariff_version: target.shippingTariffVersion } : {}),
+      ...(target.categoryId ? { category_id: target.categoryId } : {}),
       manual_price: target.manualPrice,
     }))
     : []

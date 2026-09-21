@@ -608,6 +608,14 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 
 ## 发布币种与核价
 
+- 国际物流入口：现有 `/api/calculate-price` → `runtime_units/pricing_runtime.py`
+  → `services/pricing_shipping.py` → `international_shipping/ShippingModule.quote()`。
+  模块负责 Ozon/Yandex 费率版本和三平台物流计算，返回全部候选；ERP 使用既有汇率
+  换成物流字段 CNY/USD 后选最低价。模块通过回调使用当前售价算法校验货值，
+  不反向导入 ERP。Mercado 的内置运费表已删除，多销售国家分别请求报价并计算售价。
+  凭据由项目装配，Mercado token 仍通过 `get_mercadolibre_access_token()` 取得。
+  证据进入既有核价依据和指纹；逐 SKU 核价固定模板版本。无新增 tariff HTTP 端点，
+  模板导入/预览/启用由模块 CLI 维护，详见 `erp_web/international_shipping/README.md`。
 - 店铺授权配置（`store_auth.auth_detail_json`）中的 `listing_currency` 是核价与发布
   的唯一币种事实源。注册表、国家、站点、草稿历史值和前端 option 都不是发布币种
   来源，也不得作为 fallback。
@@ -946,3 +954,5 @@ SKU 新草稿默认选品由 `sku_model.new_draft_sku_rows` 定义：全部启�
 ### 属性事实边界
 
 主对话不能将混合 SKU 的汇总描述套给每个规格，不能从图片比例猜测尺寸、重量、品牌或认证。当前读工具提供来源文字与结构化 SKU 事实；资料不足时在主对话询问用户，不启动额外的属性图片填写或复核 Agent。
+
+`draft_read`、按草稿查询的 `product_read` 与 `draft_attributes_read` 均返回草稿共用的 `package_dimensions`（cm/kg）。`draft_attributes_read.skus[].package_dimensions` 单独保留来源 SKU 与草稿覆盖后的有效包装尺寸；商品主档尺寸为空或 SKU 尺寸为零，不代表草稿共用尺寸不存在。读取不自动将共用尺寸套用到所有 SKU，实际发货资料仍按逐 SKU 事实校验。

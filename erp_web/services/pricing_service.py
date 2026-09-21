@@ -5,27 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 import re
 from typing import Any
 
+from erp_web.schemas.shipping import ShippingResolution, ShippingResolver
 from erp_web.marketplace_registry import marketplace_site
 from erp_web.product_model import normalize_mercadolibre_sites_to_sell
-
-
-ML_SHIPPING_FALLBACK_TABLE = [
-    {"max_g": 100, "usd": 1.70},
-    {"max_g": 300, "usd": 2.70},
-    {"max_g": 500, "usd": 3.40},
-    {"max_g": 1000, "usd": 4.60},
-    {"max_g": 2000, "usd": 7.20},
-    {"max_g": 3000, "usd": 9.90},
-    {"max_g": 5000, "usd": 14.80},
-    {"max_g": 10000, "usd": 26.50},
-    {"max_g": 15000, "usd": 37.80},
-    {"max_g": 20000, "usd": 50.40},
-    {"max_g": 30000, "usd": 73.80},
-]
 
 
 def service_status() -> dict[str, str]:
@@ -112,21 +98,6 @@ def billable_weight_kg(length_cm: Any = 0, width_cm: Any = 0, height_cm: Any = 0
     return round(max(weight, volume_kg), 4)
 
 
-def estimate_ml_shipping_usd(billable_kg: float, tiers: list[dict[str, Any]] | None = None) -> float:
-    billable_g = max(1, int(round(number_value(billable_kg) * 1000)))
-    table = tiers or ML_SHIPPING_FALLBACK_TABLE
-    for tier in table:
-        limit_g = int(number_value(tier.get("max_g")))
-        cost = number_value(tier.get("usd"))
-        if limit_g and billable_g <= limit_g:
-            return round(cost, 2)
-    last = table[-1]
-    last_usd = number_value(last.get("usd"))
-    last_kg = number_value(last.get("max_g"), 30000) / 1000
-    extra_kg = max(0.0, number_value(billable_kg) - last_kg)
-    return round(last_usd + extra_kg * 2.5, 2)
-
-
 def normalize_pricing_input(data: dict[str, Any]) -> dict[str, Any]:
     source = data if isinstance(data, dict) else {}
     length = first_value(source, "length_cm", "package_length_cm", "length", default="")
@@ -156,7 +127,6 @@ def normalize_pricing_input(data: dict[str, Any]) -> dict[str, Any]:
         "usd_cny_rate": number_value(first_value(source, "usd_cny_rate", "usd_cny", "currency_rate", "rate")),
         "mxn_usd_rate": number_value(first_value(source, "mxn_usd_rate", "mxn_rate")),
         "rub_cny_rate": number_value(first_value(source, "rub_cny_rate", "rub_rate", default=12), 12),
-        "ml_shipping_usd": number_value(first_value(source, "ml_shipping_usd", "shipping_usd", "shipping_cost")),
         "russia_freight_rate": number_value(first_value(source, "russia_freight_rate", default=0)),
         "sale_price_mxn": number_value(first_value(source, "sale_price_mxn", "mx_price", "mercadolibre_price")),
         "sale_price_usd": number_value(first_value(source, "sale_price_usd", "price_usd")),
@@ -172,8 +142,6 @@ def normalize_pricing_input(data: dict[str, Any]) -> dict[str, Any]:
 
 def _base_values(values: dict[str, Any]) -> dict[str, float]:
     billable_kg = billable_weight_kg(values["length_cm"], values["width_cm"], values["height_cm"], values["weight_kg"])
-    if values["ml_shipping_usd"] <= 0 and billable_kg > 0:
-        values["ml_shipping_usd"] = estimate_ml_shipping_usd(billable_kg)
     common_base = (
         values["cost_cny"]
         + values["freight_cny"]
@@ -183,14 +151,10 @@ def _base_values(values: dict[str, Any]) -> dict[str, float]:
         + values["advertising_cost_cny"]
         + values["other_platform_fee_cny"]
     )
-    ml_shipping_cny = values["ml_shipping_usd"] * values["usd_cny_rate"]
-    ml_base = common_base + values["prep_fee_cny"] + ml_shipping_cny
     return {
         "billable_kg": billable_kg,
         "volume_weight_kg": round((values["length_cm"] * values["width_cm"] * values["height_cm"]) / 6000, 4) if values["length_cm"] and values["width_cm"] and values["height_cm"] else 0.0,
         "common_base_cny": common_base,
-        "ml_shipping_cny": ml_shipping_cny,
-        "ml_base_cny": ml_base,
     }
 
 
@@ -319,7 +283,7 @@ def _destination_pricing_modes(value: Any) -> list[dict[str, str]]:
     )
 
 
-def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], index: int = 0) -> dict[str, Any]:
+def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], index: int = 0, *, shipping_quote: ShippingResolution | None = None) -> dict[str, Any]:
     source = {**common, **target}
     platform = str(_target_value(target, source, "platform", default="mercadolibre") or "mercadolibre").strip().lower()
     site_config = marketplace_site(platform, str(_target_value(target, source, "site", "site_id", default="")))
@@ -414,31 +378,26 @@ def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], ind
     if shipping_mode not in {"auto", "manual"}:
         shipping_mode = "auto" if platform == "mercadolibre" else "manual"
     raw_shipping_currency = str(_target_value(target, source, "shipping_currency", "shippingCurrency", default="") or "").strip().upper()
-    legacy_shipping_usd = _target_number(target, source, "shipping_cost_usd", "shippingCostUsd", "ml_shipping_usd", "shipping_usd", default=0)
-    legacy_shipping_cny = _target_number(target, source, "shipping_cost_cny", "shippingCostCny", default=0)
-    shipping_currency = raw_shipping_currency if raw_shipping_currency in {"USD", "CNY"} else ("USD" if legacy_shipping_usd > 0 or platform == "mercadolibre" else "CNY")
+    shipping_currency = raw_shipping_currency if raw_shipping_currency in {"USD", "CNY"} else ("USD" if platform == "mercadolibre" else "CNY")
     shipping_amount = _target_number(target, source, "shipping_amount", "shippingAmount", default=0)
-    if shipping_amount <= 0:
-        shipping_amount = legacy_shipping_usd if shipping_currency == "USD" else legacy_shipping_cny
 
     shipping_usd = 0.0
     shipping_cny = 0.0
     shipping_source = "manual_quote"
     if shipping_mode == "auto":
-        shipping_source = "system_estimate"
-        if platform != "mercadolibre":
-            errors.append({"field": "shipping_quote_mode", "message": "当前平台没有自动物流报价，请填写物流商报价"})
-        elif base["billable_kg"] <= 0:
-            errors.append({"field": "weight_or_dimensions", "message": "自动估算物流费需要重量或尺寸"})
-        elif values["usd_cny_rate"] <= 0:
-            errors.append({"field": "usd_cny_rate", "message": "自动估算物流费需要 USD/CNY 汇率"})
+        shipping_source = "international_shipping"
+        if shipping_quote is None:
+            errors.append({"field": "shipping_amount", "message": "自动物流报价尚未获取，请通过核价入口重新计算"})
+        elif shipping_quote.get("error"):
+            errors.append({"field": "shipping_amount", "message": shipping_quote["error"]})
         else:
-            shipping_currency = "USD"
-            shipping_usd = values["ml_shipping_usd"]
-            shipping_amount = shipping_usd
-            shipping_cny = shipping_usd * values["usd_cny_rate"]
-    else:
-        if shipping_amount <= 0 or not math.isfinite(shipping_amount):
+            shipping_currency = shipping_quote["currency"]
+            shipping_amount = float(shipping_quote["amount"])
+            base["billable_kg"] = float(shipping_quote["billable_g"]) / 1000
+            volume_g = shipping_quote["evidence"].get("volume_weight_g")
+            base["volume_weight_kg"] = float(volume_g) / 1000 if volume_g is not None else None
+    if shipping_mode != "auto" or (shipping_quote is not None and not shipping_quote.get("error")):
+        if shipping_amount < 0 or not math.isfinite(shipping_amount) or (shipping_mode != "auto" and shipping_amount == 0):
             errors.append({"field": "shipping_amount", "message": "物流报价金额必须大于 0"})
         elif shipping_currency == "USD":
             if values["usd_cny_rate"] <= 0:
@@ -502,7 +461,14 @@ def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], ind
             revenue_cny = total_cost_cny * (1 + markup_percent / 100) / fee_denominator
         else:
             revenue_cny = applied_price_input / currency_rate_cny
+    if not errors and pricing_mode != "manual" and shipping_quote:
+        revenue_cny = max(revenue_cny, float(shipping_quote["minimum_price_cny"]))
     suggested_price = revenue_cny * currency_rate_cny if revenue_cny > 0 and currency_rate_cny > 0 else 0.0
+    if not errors and pricing_mode != "manual" and shipping_quote:
+        floor_price = (Decimal(shipping_quote["minimum_price_cny"]) * Decimal(str(currency_rate_cny))).quantize(Decimal("0.01"), rounding=ROUND_CEILING)
+        if Decimal(_amount_text(suggested_price)) < floor_price:
+            suggested_price = float(floor_price)
+            revenue_cny = suggested_price / currency_rate_cny
     suggested_price_usd = revenue_cny / values["usd_cny_rate"] if revenue_cny > 0 and values["usd_cny_rate"] > 0 else 0.0
     applied_price = (
         applied_price_input
@@ -537,6 +503,8 @@ def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], ind
         "packaging_cost_cny": _basis_number_text(packaging_cost_cny),
         "other_cost_cny": _basis_number_text(values["other_cost_cny"]),
         "weight_kg": _basis_number_text(values["weight_kg"]),
+        "battery": source.get("battery", False),
+        "liquid": source.get("liquid", False),
         "length_cm": _basis_number_text(values["length_cm"]),
         "width_cm": _basis_number_text(values["width_cm"]),
         "height_cm": _basis_number_text(values["height_cm"]),
@@ -554,6 +522,8 @@ def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], ind
         "shipping_amount": _basis_number_text(shipping_amount),
         "manual_price": _money(applied_price_input, currency) if pricing_mode == "manual" else None,
     }
+    if shipping_quote and not shipping_quote.get("error"):
+        calculation_basis["shipping_evidence"] = shipping_quote["evidence"]
     if platform == "mercadolibre" and site.upper() == "CBT":
         calculation_basis["listing_model"] = str(
             target.get("listing_model") or ""
@@ -621,6 +591,7 @@ def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], ind
         "shipping_currency": shipping_currency,
         "shipping_amount": round(shipping_amount, 2),
         "shipping_source": shipping_source,
+        "shipping_candidates": shipping_quote["candidates"] if shipping_quote else [],
         "total_cost_cny": round(total_cost_cny, 2),
         "net_revenue_cny": round(net_revenue_cny, 2),
         "seller_net_proceeds_cny": round(seller_net_proceeds_cny, 2),
@@ -670,7 +641,46 @@ def calculate_target_pricing(common: dict[str, Any], target: dict[str, Any], ind
     }
 
 
-def calculate_pricing_batch(data: dict[str, Any]) -> dict[str, Any]:
+def _calculate_with_shipping(common: dict, target: dict, index: int, resolver: ShippingResolver | None) -> dict:
+    platform = str(target.get("platform") or "").lower()
+    mode = target.get("shipping_quote_mode") or ("auto" if platform == "mercadolibre" else "manual")
+    if mode != "auto" or resolver is None:
+        return calculate_target_pricing(common, target, index)
+    destinations = _destination_pricing_modes(target.get("destination_pricing_modes"))
+    if platform != "mercadolibre" or str(target.get("site", "")).upper() != "CBT" or len(destinations) <= 1:
+        return calculate_target_pricing(common, target, index, shipping_quote=resolver(common, target))
+    # 国家不是可互相替代的物流渠道；每个销售目标单独报价、计算售价。
+    results = []
+    for destination in destinations:
+        operation = (destination["site_id"], destination["logistic_type"])
+        selected = [item for item in target.get("sites_to_sell", []) if (item.get("site_id"), item.get("logistic_type")) == operation]
+        child = {**target, "sites_to_sell": selected, "destination_pricing_modes": [destination]}
+        results.append(calculate_target_pricing(common, child, index, shipping_quote=resolver(common, child)))
+    result = dict(results[0])
+    basis = dict(result["calculation_basis"])
+    basis["sites_to_sell"] = normalize_mercadolibre_sites_to_sell(target.get("sites_to_sell"))
+    basis["destination_pricing_modes"] = destinations
+    basis["destination_shipping"] = [
+        {"site_id": destination["site_id"], "logistic_type": destination["logistic_type"], "basis": item["calculation_basis"]}
+        for destination, item in zip(destinations, results)
+    ]
+    fingerprint = pricing_calculation_fingerprint(basis)
+    result.update({
+        "ok": all(item["ok"] for item in results),
+        "errors": [error for item in results for error in item["errors"]],
+        "is_loss": any(item["is_loss"] for item in results),
+        "calculation_basis": basis, "calculation_fingerprint": fingerprint,
+        "destination_results": [
+            {**entry, "calculation_fingerprint": fingerprint, "shipping_amount": item["shipping_amount"], "shipping_currency": item["shipping_currency"]}
+            for item in results for entry in item["destination_results"]
+        ],
+        "shipping_candidates": [candidate for item in results for candidate in item["shipping_candidates"]],
+    })
+    result["precheck_errors"] = result["errors"]
+    return result
+
+
+def calculate_pricing_batch(data: dict[str, Any], *, shipping_resolver: ShippingResolver | None = None) -> dict[str, Any]:
     source = data if isinstance(data, dict) else {}
     common = _record(source.get("common"))
     targets = source.get("targets")
@@ -683,7 +693,7 @@ def calculate_pricing_batch(data: dict[str, Any]) -> dict[str, Any]:
         if value not in (None, "", [], {}):
             common_source[key] = value
     common_source.pop("targets", None)
-    results = [calculate_target_pricing(common_source, _record(target), index) for index, target in enumerate(targets)]
+    results = [_calculate_with_shipping(common_source, _record(target), index, shipping_resolver) for index, target in enumerate(targets)]
     primary = results[0] if results else {}
     errors = [error for result in results for error in result.get("errors", []) if isinstance(error, dict)]
     response: dict[str, Any] = {
@@ -722,5 +732,5 @@ def calculate_pricing_batch(data: dict[str, Any]) -> dict[str, Any]:
     return response
 
 
-def pricing_result(data: dict[str, Any]) -> dict[str, Any]:
-    return calculate_pricing_batch(data)
+def pricing_result(data: dict[str, Any], *, shipping_resolver: ShippingResolver | None = None) -> dict[str, Any]:
+    return calculate_pricing_batch(data, shipping_resolver=shipping_resolver)

@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 
 import { mount } from '@vue/test-utils'
+import { reactive } from 'vue'
 import { describe, expect, it } from 'vitest'
 import PricingPanel from '@/components/domain/PricingPanel.vue'
 import { createEmptyDraftProductContext } from '@/constants/initialState'
-import type { PricingInput, PricingResult } from '@/types/workflow'
+import type { DraftSku, PricingInput, PricingResult } from '@/types/workflow'
 
 const input: PricingInput = {
   platform: 'mercadolibre',
@@ -74,7 +75,7 @@ const result: PricingResult = {
     shippingQuoteMode: 'auto',
     shippingCurrency: 'USD',
     shippingAmount: 83.13,
-    shippingSource: 'system_estimate',
+    shippingSource: 'international_shipping',
     commissionCny: 187.81,
     paymentFeeCny: 0,
     otherFeeCny: 0,
@@ -104,6 +105,42 @@ const result: PricingResult = {
 }
 
 describe('PricingPanel', () => {
+  it('Yandex 可自动报价并保持当前物流币种，展示原币与报价依据', () => {
+    const localInput = structuredClone(input)
+    localInput.targets[0] = { ...localInput.targets[0], platform: 'yandex', site: 'global', targetKey: 'yandex:global', shippingCurrency: 'CNY', shippingAmount: 15.28, sitesToSell: [] }
+    const localResult = structuredClone(result)
+    localResult.results[0] = { ...localResult.results[0], ...localInput.targets[0],
+      calculationBasis: { shipping_evidence: {
+        route: 'CEL Economy', original_amount: '183.33', original_currency: 'RUB',
+        billable_g: '367', tariff_version: 'yandex-test-version', exchange_rate: '0.083333', quoted_at: '2026-09-21',
+      } },
+    }
+    const wrapper = mount(PricingPanel, { props: {
+      skuItems: [], input: localInput, result: localResult, draftItems: [], draftId: 'draft', draftTitle: '商品',
+      productContext: createEmptyDraftProductContext(), platformOptions: [], loading: false,
+    } })
+    expect(wrapper.get('option[value="auto"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.text()).toContain('自动获取最低运费')
+    expect(wrapper.text()).toContain('183.33 RUB')
+    expect(wrapper.text()).toContain('yandex-test-version')
+    const currencySelect = wrapper.findAll('select').find(select => select.find('option[value="CNY"]').exists())!
+    expect(currencySelect.attributes('disabled')).toBeUndefined()
+    expect((currencySelect.element as HTMLSelectElement).value).toBe('CNY')
+  })
+
+  it('修改电池或液体信息复用既有核价失效机制', async () => {
+    const localInput = reactive(structuredClone(input))
+    const rows = reactive([{ pricing: { applied: true } }]) as unknown as DraftSku[]
+    const wrapper = mount(PricingPanel, { props: {
+      skuItems: rows, input: localInput, result: null, draftItems: [], draftId: 'draft', draftTitle: '商品',
+      productContext: createEmptyDraftProductContext(), platformOptions: [], loading: false,
+    } })
+    const battery = wrapper.findAll('label').find(label => label.text().includes('所选 SKU 含电池'))!
+    await battery.get('input').setValue(true)
+    expect(localInput.battery).toBe(true)
+    expect(rows[0].pricing.applied).toBe(false)
+  })
+
   it('明确区分买家售价与 Mercado 期望到账额', () => {
     const wrapper = mount(PricingPanel, {
       props: {

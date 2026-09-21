@@ -49,6 +49,24 @@ SANCTIONED_DEFERRED_MODULES = frozenset(
 )
 
 
+def test_international_shipping_has_no_erp_or_agent_dependencies():
+    """物流模块只接收参数，不读取 ERP 账号、启动 Agent 或维护第二套核价流程。"""
+    folder = ROOT / "erp_web/international_shipping"
+    for path in python_files(folder):
+        tree = parse_python(path)
+        for node in ast.walk(tree):
+            names = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                names = [node.module or ""]
+            assert not any(name.startswith(("erp_web", "sqlite3", "pydantic_ai")) for name in names), path
+    pricing = (ROOT / "erp_web/services/pricing_service.py").read_text()
+    assert "ML_SHIPPING_FALLBACK_TABLE" not in pricing
+    assert "estimate_ml_shipping_usd" not in pricing
+    assert not (ROOT / "erp_web/http_route_units/tariff_routes.py").exists()
+
+
 def _relative_posix(path) -> str:
     return path.relative_to(ROOT).as_posix()
 

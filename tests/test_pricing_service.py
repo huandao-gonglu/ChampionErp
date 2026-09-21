@@ -5,6 +5,11 @@ import math
 from erp_web.services import pricing_service
 
 
+def _shipping_quote(_common: dict, _target: dict) -> dict:
+    """纯核价测试提供已取得的物流报价，不依赖旧内置费率表。"""
+    return {"amount": "4", "currency": "USD", "billable_g": "300", "minimum_price_cny": "0", "evidence": {}, "candidates": []}
+
+
 def _assert_finite_positive(result: dict, *keys: str) -> None:
     for key in keys:
         value = result.get(key)
@@ -49,7 +54,7 @@ def test_batch_pricing_keeps_live_rates_when_common_rates_are_empty() -> None:
                 {"target_key": "mercadolibre:mlm", "platform": "mercadolibre", "site": "MLM", "listing_currency": "MXN", "commission_percent": 16, "target_margin_percent": 30},
                 {"target_key": "mercadolibre:mlc", "platform": "mercadolibre", "site": "MLC", "listing_currency": "CLP", "commission_percent": 16, "target_margin_percent": 30},
             ],
-        }
+        }, shipping_resolver=_shipping_quote,
     )
 
     assert result["ok"] is True
@@ -79,10 +84,11 @@ def test_batch_pricing_treats_zero_applied_price_as_use_suggested_price() -> Non
                     "listing_currency": "MXN",
                     "commission_percent": 16,
                     "target_margin_percent": 30,
-                    "shipping_cost_usd": 0,
+                    "shipping_amount": 0,
+                    "shipping_quote_mode": "auto",
                 }
             ],
-        }
+        }, shipping_resolver=_shipping_quote,
     )
 
     target = result["results"][0]

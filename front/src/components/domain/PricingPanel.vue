@@ -118,7 +118,7 @@ function targetInputErrors(target: PricingTargetInput) {
   // 前端不在核价前用目标快照拦截。
   if (target.pricingMode === 'manual' && numeric(target.manualPrice?.amount) <= 0) errors.push('手动售价必须大于 0')
   if (target.shippingQuoteMode === 'auto') {
-    if (target.platform !== 'mercadolibre') errors.push('当前平台没有自动物流报价，请改为手动报价')
+    if (!['mercadolibre', 'ozon', 'yandex'].includes(target.platform)) errors.push('当前平台没有自动物流报价，请改为手动报价')
   } else if (numeric(target.shippingAmount) <= 0) {
     errors.push('物流报价金额必须大于 0')
   }
@@ -275,6 +275,8 @@ function exchangeRateText() {
             <p class="mt-1 text-xs text-accent-500 dark:text-accent-400">以下费用按每件商品计；采购成本和包装资料取各 SKU 的实际值。单个 SKU 可在 SKU 页覆盖费用。</p>
           </div>
           <div class="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <label class="flex items-center gap-2"><input v-model="props.input.battery" type="checkbox" />所选 SKU 含电池</label>
+            <label class="flex items-center gap-2"><input v-model="props.input.liquid" type="checkbox" />所选 SKU 含液体</label>
             <label><span class="field-label">国内物流（CNY）</span><input v-model.number="props.input.domesticFreightCny" class="input mt-1" type="number" min="0" step="0.01" /></label>
             <label><span class="field-label">包装耗材（CNY）</span><input v-model.number="props.input.packagingCostCny" class="input mt-1" type="number" min="0" step="0.01" /></label>
             <label><span class="field-label">其他固定成本（CNY）</span><input v-model.number="props.input.otherCostCny" class="input mt-1" type="number" min="0" step="0.01" /></label>
@@ -360,12 +362,28 @@ function exchangeRateText() {
             <div>
               <p class="text-sm font-bold text-accent-950 dark:text-white">国际物流报价</p>
               <p class="mt-1 text-xs text-accent-500 dark:text-accent-400">原币金额只填写一次，折算物流成本 CNY 为只读结果。</p>
+              <p v-if="target.platform === 'mercadolibre' && target.sitesToSell.length > 1" class="mt-1 text-xs text-accent-500">多个销售国家分别核价，下方公共金额显示第一个国家。</p>
               <div class="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                <label><span class="field-label">报价方式</span><select v-model="target.shippingQuoteMode" class="input mt-1"><option value="auto" :disabled="target.platform !== 'mercadolibre'">系统按计费重估算</option><option value="manual">手动填写物流报价</option></select></label>
-                <label><span class="field-label">物流报价币种</span><select v-model="target.shippingCurrency" class="input mt-1" :disabled="target.shippingQuoteMode === 'auto'"><option value="USD">USD</option><option value="CNY">CNY</option></select></label>
-                <label><span class="field-label">物流报价金额</span><input v-model.number="target.shippingAmount" class="input mt-1" type="number" min="0" step="0.01" :disabled="target.shippingQuoteMode === 'auto'" :placeholder="target.shippingQuoteMode === 'auto' ? '计算时估算' : '物流商报价'" /></label>
-                <div class="rounded-lg bg-accent-50 p-3 dark:bg-dark-800"><p class="field-label">折算物流成本（只读）</p><p class="mt-2 text-sm font-bold text-accent-950 dark:text-white">{{ formatMoney(shippingCny(target), 'CNY') }}</p><p class="mt-1 text-[11px] text-accent-500 dark:text-accent-400">{{ resultFor(target)?.shippingSource === 'system_estimate' ? '系统估算' : '按报价币种折算' }}</p></div>
+                <label><span class="field-label">报价方式</span><select v-model="target.shippingQuoteMode" class="input mt-1"><option value="auto" :disabled="!['mercadolibre', 'ozon', 'yandex'].includes(target.platform)">自动获取最低运费</option><option value="manual">手动填写物流报价</option></select></label>
+                <label><span class="field-label">物流报价币种</span><select v-model="target.shippingCurrency" class="input mt-1"><option value="USD">USD</option><option value="CNY">CNY</option></select></label>
+                <label><span class="field-label">物流报价金额</span><input v-model.number="target.shippingAmount" class="input mt-1" type="number" min="0" step="0.01" :disabled="target.shippingQuoteMode === 'auto'" :placeholder="target.shippingQuoteMode === 'auto' ? '核价时自动填写' : '物流商报价'" /></label>
+                <div class="rounded-lg bg-accent-50 p-3 dark:bg-dark-800"><p class="field-label">折算物流成本（只读）</p><p class="mt-2 text-sm font-bold text-accent-950 dark:text-white">{{ formatMoney(shippingCny(target), 'CNY') }}</p><p class="mt-1 text-[11px] text-accent-500 dark:text-accent-400">{{ resultFor(target)?.shippingSource === 'international_shipping' ? '最低有效物流报价' : '按报价币种折算' }}</p></div>
               </div>
+              <p v-if="resultFor(target)?.calculationBasis.shipping_evidence" class="mt-2 text-xs text-accent-500">
+                {{ (resultFor(target)!.calculationBasis.shipping_evidence as UnknownRecord).route }} ·
+                {{ (resultFor(target)!.calculationBasis.shipping_evidence as UnknownRecord).original_amount }}
+                {{ (resultFor(target)!.calculationBasis.shipping_evidence as UnknownRecord).original_currency }} ·
+                计费重 {{ (resultFor(target)!.calculationBasis.shipping_evidence as UnknownRecord).billable_g }} g
+              </p>
+              <details v-if="resultFor(target)?.calculationBasis.shipping_evidence" class="mt-2 text-xs text-accent-500">
+                <summary class="cursor-pointer">报价依据</summary>
+                <p class="mt-1">版本/来源：{{ (resultFor(target)!.calculationBasis.shipping_evidence as UnknownRecord).tariff_version || (resultFor(target)!.calculationBasis.shipping_evidence as UnknownRecord).endpoint }}</p>
+                <p>换算比例：{{ (resultFor(target)!.calculationBasis.shipping_evidence as UnknownRecord).exchange_rate }} · 报价时间：{{ (resultFor(target)!.calculationBasis.shipping_evidence as UnknownRecord).quoted_at }}</p>
+                <p>{{ (resultFor(target)!.calculationBasis.shipping_evidence as UnknownRecord).limitation }}</p>
+              </details>
+              <p v-for="destination in (resultFor(target)?.destinationResults || []).filter(item => item.shippingCurrency)" :key="`${destination.siteId}:${destination.logisticType}`" class="mt-1 text-xs text-accent-500">
+                {{ destination.siteId }} · {{ destination.logisticType }}：{{ formatMoney(destination.shippingAmount || 0, destination.shippingCurrency!) }}
+              </p>
             </div>
           </div>
 

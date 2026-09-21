@@ -145,7 +145,8 @@ def test_pricing_runtime_has_no_platform_currency_side_effects() -> None:
         [ROOT / "erp_web/runtime_units/pricing_runtime.py"]
     )
     for _, target in imports:
-        assert "store_credentials" not in target, target
+        # 国际物流只通过项目现有 owner 取得 token；核价不得自行发现或选择币种。
+        assert "store_credentials" not in target or target.endswith("store_credentials.get_mercadolibre_access_token"), target
 
 
 def test_retired_currency_source_strings_are_gone() -> None:
