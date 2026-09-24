@@ -116,7 +116,6 @@ function collectedProduct(): Product {
   product.source.sourcePlatform = '1688'
   product.source.price = '30'
   product.source.currency = 'CNY'
-  product.sellingPoints = ['Point A', 'Point B']
   product.source.imagePool = [
     {
       id: 'img_1',
@@ -1208,6 +1207,24 @@ describe('workflow store live API flow', () => {
       {},
       { presentationId: 'presentation-store-test' },
     )
+  })
+
+  it('本地化完成后仍保存所选草稿，并使用新文案对应的版本', async () => {
+    const draft = { ...createEmptyDraftDetail('mercadolibre'), draftId: 'draft-original', productId: 'product-1', updatedAt: 'before-copy' }
+    const localized = { ...draft, title: 'Kit de mosaico', description: '新文案', updatedAt: 'after-copy' }
+    const product = { ...createEmptyProduct(), productId: 'product-1' }
+    vi.mocked(workflowApi.generateCopy).mockResolvedValue({ ...mutation(product), ...draftMutation(localized) })
+    vi.mocked(workflowApi.saveDraft).mockImplementation(async value => draftMutation(value))
+    const store = useWorkflowStore()
+    store.product = product
+    store.currentDraft = draft
+
+    await store.generateCopy(true)
+    store.currentDraft.description += '，继续编辑'
+    expect(await store.saveCurrentDraft()).toBe(true)
+    expect(workflowApi.saveDraft).toHaveBeenCalledWith(expect.objectContaining({
+      draftId: 'draft-original', title: 'Kit de mosaico', description: '新文案，继续编辑', updatedAt: 'after-copy',
+    }))
   })
 
   it('将手动图生图绑定到 AI Work presentation', async () => {
@@ -3113,6 +3130,7 @@ describe('workflow store live API flow', () => {
       productContext,
     }))
     vi.mocked(workflowApi.runCategoryPrecheck).mockResolvedValue({
+      ...draftMutation({ ...draft, updatedAt: 'after-category-precheck' }),
       ok: true,
       errors: [],
       missingFields: [],
@@ -3139,9 +3157,14 @@ describe('workflow store live API flow', () => {
       },
     }))
     expect(workflowApi.runCategoryPrecheck).toHaveBeenCalledOnce()
+    store.currentDraft.title = '预检后继续编辑'
+    expect(await store.saveCurrentDraft()).toBe(true)
+    expect(workflowApi.saveDraft).toHaveBeenLastCalledWith(expect.objectContaining({
+      draftId: 'draft-1', title: '预检后继续编辑', updatedAt: 'after-category-precheck',
+    }))
   })
 
-  it('previews pricing without saving, then persists prices only when applied', async () => {
+  it.each([1, 2])('逐 SKU 自动运费预览与应用：%i 个 SKU 独立传参和保存', async (skuCount) => {
     const draft = createEmptyDraftDetail('mercadolibre')
     draft.draftId = 'draft-1'
     draft.productId = 'product-1'
@@ -3257,6 +3280,28 @@ describe('workflow store live API flow', () => {
     expect(store.pricingInput.targets.map((target) => target.manualPrice)).toEqual([null])
 
     ensurePricingSku(store)
+    if (skuCount === 2) {
+      const source = store.currentDraftProductContext.skuItems[0]!
+      store.currentDraftProductContext.skuItems.push({
+        ...source, id: 'sku-second', name: '第二规格', cost_cny: '55',
+        package_dimensions: { length_cm: '30', width_cm: '20', height_cm: '10', weight_kg: '0.8' },
+      })
+      store.currentDraft.skuItems.push({
+        ...store.currentDraft.skuItems[0]!, sku_id: 'sku-second', sku: 'SECOND',
+        overrides: { package_dimensions: { weight_kg: '0.9' } }, pricing: {},
+      })
+      vi.mocked(workflowApi.calculatePrice).mockImplementation(async (input) => ({
+        ...pricingResult,
+        results: pricingResult.results.map(item => input.weightKg === 0.9 ? {
+          ...item, shippingAmount: 5.4,
+          calculationBasis: { ...item.calculationBasis, shipping_evidence: { original_amount: '5.4', original_currency: 'USD' } },
+          destinationResults: item.destinationResults.map(destination => ({
+            ...destination, shippingAmount: 5.4, shippingCurrency: 'USD',
+            netProceeds: { amount: '21.35', currency: 'USD' },
+          })),
+        } : item),
+      }))
+    }
     await store.calculatePrice()
 
     expect(store.pricingInput.targets.map((target) => target.manualPrice)).toEqual([null])
@@ -3333,6 +3378,26 @@ describe('workflow store live API flow', () => {
       price: null,
       netProceeds: { amount: '18.65', currency: 'USD' },
     })])
+    if (skuCount === 2) {
+      expect(workflowApi.calculatePrice).toHaveBeenCalledWith(expect.objectContaining({
+        purchaseCostCny: 55, weightKg: 0.9, lengthCm: 30, widthCm: 20, heightCm: 10,
+        targets: [expect.objectContaining({ shippingQuoteMode: 'auto' })],
+      }))
+      const saved = vi.mocked(workflowApi.saveDraft).mock.calls[0]![0]
+      expect(saved.skuItems[1]!.pricing).toMatchObject({
+        applied: true,
+        common: { weight_kg: 0.9, length_cm: 30, width_cm: 20, height_cm: 10 },
+        targets: { 'mercadolibre:cbt': {
+          shipping_amount: 5.4, shipping_currency: 'USD',
+          calculation_basis: { shipping_evidence: { original_amount: '5.4' } },
+          destination_results: [expect.objectContaining({ shipping_amount: 5.4, shipping_currency: 'USD' })],
+          sites_to_sell: [expect.objectContaining({ net_proceeds: '21.35' })],
+        } },
+      })
+      expect(saved.skuItems[0]!.pricing).toMatchObject({
+        targets: { 'mercadolibre:cbt': { shipping_amount: 2.7 } },
+      })
+    }
   })
 
   it('手动售价在店铺币种解析前录入时，首次核价直接生效并补齐币种', async () => {

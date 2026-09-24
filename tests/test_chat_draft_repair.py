@@ -1,12 +1,10 @@
-"""真实失败场景的业务回归：范围、目标覆盖、写入前校验和并发字段隔离。"""
+"""真实失败场景的业务回归：写入前校验、依赖失败和并发字段隔离。"""
 
-import json
 from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
 from pydantic_ai import ModelRetry
-from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
 
 from erp_web.context import get_context
 from erp_web.facades.agent_capability_facade import build_global_chat_toolset
@@ -14,26 +12,9 @@ from erp_web.runtime_units.product_capabilities import prepare_product_images
 from erp_web.schemas.product_capabilities import ProductImagesPrepareRequest
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.ai_tools import AiToolExecutionError
-from erp_web.schemas.copy import CopyQualityReview
-from erp_web.services.global_agent_chat_service import GlobalAgentChatService
 from erp_web.services.capability_errors import CapabilityInputRequired
 from erp_web.services import copy_service
 from tests.test_market_prepare_capabilities import _Products, _draft
-
-
-def test_unrequested_compound_operation_is_blocked_before_writes():
-    app = get_context()
-    tool = build_global_chat_toolset(app).bindings["draft_prepare_for_market"]
-    execution = AiExecutionContext.create(
-        timeout_seconds=20, budget_profile="test", allow_write=True,
-        permissions={"product.write"}, business_scope={
-            "allowed_write_tools": json.dumps(["category_match", "category_match"]),
-        },
-    )
-    with pytest.raises(AiToolExecutionError, match="超出用户本轮要求"):
-        tool.executor({"draft_id": "not-read", "target_platform": "ozon"}, execution)
-
-
 
 
 def test_model_cannot_bypass_category_comparison_with_search_result_id():
@@ -59,53 +40,6 @@ def test_repeated_category_outage_is_known_rejection_before_domain_execution(mon
                       AiExecutionContext.create(timeout_seconds=20, budget_profile="test"))
     assert error.value.code == "CATEGORY_SERVICE_UNAVAILABLE"
     assert error.value.retryable is False
-
-
-@pytest.mark.parametrize("retry,timeout", [(0, 300), (2, 300), (0, 30)])
-def test_all_targets_are_checked_without_a_model_query(retry, timeout):
-    support = SimpleNamespace(all_drafts=True, allowed_write_tools={"category_match"}, target_draft_ids=(),
-        target_reader=lambda: [{"draft_id": "d", "raw": {"target_sites": [
-            {"platform": "ozon", "site": "global", "category_id": ""},
-        ]}}])
-    ctx = SimpleNamespace(messages=[], run_id="run", retry=retry, deps=SimpleNamespace(
-        tool_runtime=SimpleNamespace(run_support=support),
-        execution_context=AiExecutionContext.create(timeout_seconds=timeout, budget_profile="test"),
-    ))
-    with pytest.raises(ModelRetry, match="d/ozon/global"):
-        GlobalAgentChatService.validate_target_coverage(ctx, "全部完成")
-
-
-def test_all_targets_are_checked_including_secondary_platform():
-    support = SimpleNamespace(all_drafts=True, allowed_write_tools={"category_match"})
-    messages = [ModelRequest(parts=[ToolReturnPart("drafts_query", {"items": [{
-        "draft_id": "d", "targets": [{"platform": p, "site": "global", "category_id": ""}
-                                      for p in ("yandex", "ozon")],
-    }]}, tool_call_id="query")], run_id="run"), ModelResponse(parts=[ToolCallPart(
-        "category_match", {"draft_id": "d", "target_platform": "yandex", "site": "global"},
-        tool_call_id="match",
-    )], run_id="run")]
-    ctx = SimpleNamespace(messages=messages, run_id="run", retry=0, deps=SimpleNamespace(
-        tool_runtime=SimpleNamespace(run_support=support),
-        execution_context=AiExecutionContext.create(timeout_seconds=300, budget_profile="test"),
-    ))
-    with pytest.raises(ModelRetry, match="d/ozon/global"):
-        GlobalAgentChatService.validate_target_coverage(ctx, "全部完成")
-
-
-def test_unexecuted_tool_call_does_not_count_as_target_coverage():
-    support = SimpleNamespace(all_drafts=True, allowed_write_tools={"category_match"},
-        target_draft_ids=(), target_reader=lambda: [{"draft_id": "d", "raw": {
-            "target_sites": [{"platform": "ozon", "site": "global"}]}}])
-    messages = [ModelResponse(parts=[ToolCallPart("category_match", {
-        "draft_id": "d", "target_platform": "ozon"}, tool_call_id="unavailable")], run_id="run")]
-    ctx = SimpleNamespace(messages=messages, run_id="run", retry=0, deps=SimpleNamespace(
-        tool_runtime=SimpleNamespace(run_support=support),
-        execution_context=AiExecutionContext.create(timeout_seconds=300, budget_profile="test")))
-    with pytest.raises(ModelRetry, match="d/ozon/global"):
-        GlobalAgentChatService.validate_target_coverage(ctx, "全部完成")
-    messages.append(ModelRequest(parts=[ToolReturnPart("category_match", {
-        "ok": False, "error": {"code": "CAPABILITY_INPUT_REQUIRED"}}, tool_call_id="unavailable")], run_id="run"))
-    assert GlobalAgentChatService.validate_target_coverage(ctx, "已执行，缺少品牌资料") == "已执行，缺少品牌资料"
 
 
 def test_170_images_cannot_be_saved_before_result_validation():
@@ -134,20 +68,13 @@ def test_existing_image_selection_is_preserved():
 
 
 
-def test_copy_context_preserves_conflicting_facts_and_reports_review_problems(monkeypatch):
-    product = {"name": "专利款投影灯", "selling_points": ["商家好评率 99%"],
+def test_copy_context_preserves_conflicting_facts():
+    product = {"name": "专利款投影灯", "attributes": {"类型": "普通投影灯"},
                "source": {"attributes": {"是否有专利": "否"}}}
     summary = copy_service.product_summary(product)
     assert "是否有专利" in summary and "否" in summary
-    assert "好评率" not in summary
-    monkeypatch.setattr(copy_service.ai_gateway, "chat_structured", lambda *a, **k:
-                        CopyQualityReview(language_matches=False, unsupported_claims=["无依据的专利声明"], explanation="目标是葡语，实际为西语"))
-    review = copy_service.review_copy_quality(
-        ".", {}, summary, "pt-BR", {"title": "Tazón"}, timeout_seconds=30,
-    )
-    assert review.language_matches is False
-    assert review.unsupported_claims == ["无依据的专利声明"]
-    assert review.explanation == "目标是葡语，实际为西语"
+    assert "普通投影灯" in summary
+
 
 
 

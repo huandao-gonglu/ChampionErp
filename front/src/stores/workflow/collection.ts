@@ -35,7 +35,6 @@ export const useWorkflowCollectionStore = defineStore('workflow-collection', () 
     collectForm.value.platform = product.source.sourcePlatform || collectForm.value.platform || '1688'
     collectForm.value.manualTitle = product.source.title || product.name || ''
     collectForm.value.manualPrice = product.source.price || ''
-    collectForm.value.manualDescription = product.source.description || ''
     collectForm.value.manualWeight = product.source.weightKg || ''
     const dims = product.source.dimensions
     collectForm.value.manualDimensions = [dims.lengthCm, dims.widthCm, dims.heightCm].filter(Boolean).join(' x ')

@@ -33,7 +33,6 @@ class _Products:
             "model": "F-1",
             "stock": "8",
             "materials": ["ABS"],
-            "selling_points": ["Reusable"],
             "package_includes": ["Fan", "Cable"],
             "dimensions": "20x15x10cm",
             "weight_kg": "0.5",
@@ -407,7 +406,7 @@ def test_product_read_returns_compact_draft_facts() -> None:
     assert result.product.product_id == "product-1"
     assert result.product.source_image_count == 2
     assert result.product.materials == ["ABS"]
-    assert result.product.selling_points == ["Reusable"]
+    assert "description" not in result.product.model_dump()
     assert result.product.package_includes == ["Fan", "Cable"]
     assert result.product.dimensions == "20x15x10cm"
     assert result.product.weight_kg == "0.5"

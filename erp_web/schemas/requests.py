@@ -145,7 +145,6 @@ _COMMON_FIELD_RULES: dict[str, FieldRule] = {
     "apply_to_draft": BOOLEAN,
     "confirm": BOOLEAN,
     "delete_files": BOOLEAN,
-    "include_bullets": BOOLEAN,
     "include_description": BOOLEAN,
     "probe_capabilities": BOOLEAN,
     "save_only": BOOLEAN,

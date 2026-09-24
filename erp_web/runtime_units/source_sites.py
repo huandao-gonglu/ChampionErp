@@ -143,7 +143,6 @@ class SourceSiteSpec:
         checks = {
             "title": ("title_found", "NO_TITLE"),
             "images": ("images_found_count", "NO_IMAGES"),
-            "bullets": ("bullets_found_count", "NO_BULLETS"),
             "dimensions": ("dimensions_found", "NO_DIMENSIONS"),
             "weight": ("weight_found", "NO_WEIGHT"),
         }
@@ -211,7 +210,6 @@ SOURCE_SITES: tuple[SourceSiteSpec, ...] = (
             "REGION": "AMAZON_REGION_BLOCKED",
             "NO_IMAGES": "AMAZON_IMAGE_NOT_FOUND",
             "NO_TITLE": "AMAZON_TITLE_NOT_FOUND",
-            "NO_BULLETS": "AMAZON_NO_BULLETS_FOUND",
             "NO_DIMENSIONS": "AMAZON_DIMENSIONS_NOT_FOUND",
             "NO_WEIGHT": "AMAZON_WEIGHT_NOT_FOUND",
             "SELECTOR": "AMAZON_SELECTOR_FAILED",
@@ -223,7 +221,7 @@ SOURCE_SITES: tuple[SourceSiteSpec, ...] = (
         login_check=_login_amazon,
         captcha_check=_captcha_amazon,
         region_check=_region_amazon,
-        required_quality_fields=("title", "images", "bullets", "dimensions", "weight"),
+        required_quality_fields=("title", "images", "dimensions", "weight"),
     ),
     SourceSiteSpec(
         key="generic",

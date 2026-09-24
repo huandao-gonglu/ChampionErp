@@ -142,7 +142,6 @@ def collect_source_product(
             [
                 diagnostics["title_found"],
                 diagnostics["images_found_count"],
-                diagnostics["bullets_found_count"],
                 diagnostics["dimensions_found"],
                 diagnostics["weight_found"],
             ]
@@ -424,7 +423,7 @@ def collect_from_browser_tab(
         error_reason = site.quality_reason(flags, error_reason)
         diagnostics["error_code"] = collect_error_code(platform_detected, "browser", error_reason) if error_reason else ""
         diagnostics["error_message"] = "浏览器采集成功" if not diagnostics["error_code"] else diagnostics["error_code"]
-        diagnostics["partial_success"] = any([flags["title_found"], flags["images_found_count"], flags["bullets_found_count"], flags["dimensions_found"], flags["weight_found"]])
+        diagnostics["partial_success"] = any([flags["title_found"], flags["images_found_count"], flags["dimensions_found"], flags["weight_found"]])
         diagnostics["success"] = bool(flags["title_found"] and not diagnostics["error_code"])
         diagnostics = finalize_collect_diagnostics(diagnostics, source_updates, platform_detected)
         merged = merge_source_partial_result(original_product, source_updates, diagnostics)
@@ -539,7 +538,6 @@ def collect_1688_payload_service(body: dict[str, Any]) -> dict[str, Any]:
             "source_url": cleaned.get("source_url") or source.get("source_url") or "",
             "price": cleaned.get("source_price_cny") or source.get("price") or "",
             "currency": "CNY" if cleaned.get("source_price_cny") else source.get("currency", ""),
-            "description": cleaned.get("clean_source_text") or source.get("description") or "",
             "attributes": cleaned.get("source_attributes") or {},
         }
     )
@@ -583,8 +581,6 @@ def collect_extension_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "title": str(payload.get("title") or "").strip(),
         "price": str(payload.get("price") or "").strip(),
         "currency": str(payload.get("currency") or "").strip(),
-        "bullets": normalize_list(payload.get("bullets")),
-        "description": str(payload.get("description") or "").strip(),
         "images": image_values,
         "image_pool": manual_image_pool,
         "dimensions": payload.get("dimensions") if isinstance(payload.get("dimensions"), dict) else parse_dimensions_text(

@@ -35,12 +35,5 @@ const props = defineProps<{
         <dd class="mt-1 font-semibold">{{ props.product.source.imagePool.length }} 张</dd>
       </div>
     </dl>
-
-    <div class="mt-5">
-      <h3 class="text-sm font-semibold text-slate-900">卖点</h3>
-      <div class="mt-2 flex flex-wrap gap-2">
-        <span v-for="point in props.product.sellingPoints" :key="point" class="badge-muted">{{ point }}</span>
-      </div>
-    </div>
   </section>
 </template>

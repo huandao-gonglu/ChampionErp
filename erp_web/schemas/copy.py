@@ -19,11 +19,8 @@ class LocalizedCopyOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: CopyText = Field(description="目标市场语言的商品标题")
-    description: CopyText = Field(description="目标市场语言的商品描述")
-    bullets: list[CopyText] = Field(
-        default_factory=list,
-        max_length=5,
-        description="目标市场语言的简短商品卖点",
+    description: CopyText = Field(
+        description="目标市场语言的完整商品描述；将有事实依据的优势、用途、规格与包装清单组织成自然段或要点，自然覆盖相关搜索词，禁止堆砌关键词或编造信息"
     )
     alt_titles: list[CopyText] = Field(
         default_factory=list,
@@ -51,16 +48,7 @@ class MercadoLibreCbtLocalizedCopyOutput(LocalizedCopyOutput):
     )
 
 
-class CopyQualityReview(BaseModel):
-    """保存前对目标语言与商品事实的独立复核。"""
-    model_config = ConfigDict(extra="forbid")
-    language_matches: bool
-    unsupported_claims: list[str] = Field(default_factory=list, max_length=30)
-    explanation: str
-
-
 __all__ = [
     "LocalizedCopyOutput",
     "MercadoLibreCbtLocalizedCopyOutput",
-    "CopyQualityReview",
 ]

@@ -469,16 +469,23 @@ export async function publishPrecheck(draft: DraftDetail, target: MarketplaceTar
   }
 }
 
-export async function runCategoryPrecheck(draft: DraftDetail, target: MarketplaceTargetSite, categoryId: string): Promise<CategoryPrecheckResult> {
+export async function runCategoryPrecheck(draft: DraftDetail, target: MarketplaceTargetSite, categoryId: string): Promise<CategoryPrecheckResult & DraftMutationResponse> {
   const response = await apiClient.post('/api/category-precheck', { ...requiredDraftTarget(draft, target, '类目预检'), category_id: categoryId })
   const data = asRecord(response.data)
   ensureOk(data, '类目预检失败')
   return {
+    ...normalizeDraftMutation(data),
     ok: stringList(data.errors).length === 0 && stringList(data.missing_fields).length === 0,
     errors: stringList(data.errors),
     missingFields: stringList(data.missing_fields),
     checkedAt: new Date().toISOString(),
-    raw: data,
+    // 预检记录只保存检查结论，不能把返回的整份草稿再嵌入草稿自身。
+    raw: {
+      ok: stringList(data.errors).length === 0 && stringList(data.missing_fields).length === 0,
+      platform: data.platform, site: data.site, category_id: data.category_id,
+      category_path: data.category_path, missing_fields: stringList(data.missing_fields),
+      errors: stringList(data.errors),
+    },
   }
 }
 

@@ -259,8 +259,9 @@ def category_precheck_payload(body: Payload) -> ResponseWithStatus:
         "category_path": _category_path(record),
         "missing_fields": missing_fields,
     }
+    mutation = {}
     if context is not None:
-        save_draft_target_listing_result(
+        mutation = save_draft_target_listing_result(
             context,
             {
                 "category_precheck": category_precheck,
@@ -271,6 +272,7 @@ def category_precheck_payload(body: Payload) -> ResponseWithStatus:
             },
         )
     return {
+        **mutation,
         "ok": True,
         "platform": platform,
         "site": site,

@@ -12,6 +12,12 @@
 - `erp_web/runtime_units/json_store.py`：运行时 JSON 文件原子读写的依赖轻量 owner；
   配置、发布产物和其他领域模块不得再从类目 Store 借用通用文件写入能力。
 
+## 草稿操作后的继续保存
+
+- `copy_facade.generate_copy_payload` 通过 `current_draft_id` 绑定用户选中的独立草稿。`copy_generation.save_copy_result` 将该操作上下文交给 `ProductStore.save_draft_copy_result`；Store 必须在商品归一化前取出草稿 ID，不能丢失后改为同平台最新草稿。文案仅合入指定草稿的最新内容，已删除的目标不得被重建。
+- `/api/category-precheck` 会持久化目标的预检结论，因此响应包含保存后的 `draft`、`productContext` 和索引。前端 `runCategoryPrecheck` 与类目动作同步这份草稿及其 `updatedAt`，后续保存沿用新版本；预检记录只保留检查结论，不嵌套整个保存响应。
+- `/api/save-draft` 继续拒绝真正过期的版本；不得通过省略 `updated_at` 或自动强制重试绕过并发修改保护。`tests/test_draft_save_after_actions.py` 验证同商品同平台双草稿的文案隔离、预检后继续保存以及旧版本仍被拒绝。
+
 ## 商品采集
 
 - 商品库推到草稿统一从 `/api/claim-products` → `collect_facade.claim_products_payload` → `collect_helpers.claim_products_to_platforms`，请求必须显式携带 `product_ids` 与 `targets`（平台、销售市场、注册语言）。每个商品按语言创建一份独立草稿，市场只包含该语言下勾选的项目；美客多销售市场按授权物流操作归入 CBT 的 `sites_to_sell`。响应的 `claimed_count` 统计成功商品数，`draft_count` 统计实际创建草稿数。
@@ -27,6 +33,13 @@
 - `/api/collect-from-browser-tab` 的显式 URL 或标签 ID 只选择指定目标；`save_only` 只保存 HTML/截图，不解析、不下载商品图片、不修改商品。验证码页不会作为部分商品写入。
 - 上述等待是 ERP 浏览器采集的领域交互，不创建 Agent run、审批或消息协议，不涉及 Pydantic AI 生命周期。
 - `source_collect_browser.cdp_target_for_url` 复用相同 URL 或同一 1688 offer 路径的页面，后者允许验证后查询参数变化；其他商品仍通过 Chrome DevTools 的 `PUT /json/new` 创建目标页。打开操作直接返回目标句柄，采集不重复查找或强制刷新，保留人工登录和验证后的页面；协议依据：[Chrome DevTools HTTP endpoints](https://chromedevtools.github.io/devtools-protocol/)。
+
+## 草稿描述
+
+- 商品采集和主档只保存标题、属性、SKU、图片等事实资料，不采集或维护描述与独立卖点；采集诊断不再统计描述。新建草稿的描述为空，不从来源继承，也不拼接模板描述。
+- `services/copy_service.py` 根据标题、商品/来源属性和 SKU 规格生成平台草稿 `description`，允许在草稿中人工编辑；发布与生图读取草稿文案。缺少事实依据的优势、用途、认证等不得编造。
+- `stores/product_description_migration.py` 在数据库读取边界移除历史商品/来源描述及卖点，保留各草稿的描述，历史草稿卖点并入各自描述。保存后仅写入当前契约；不改变 SQLite schema，也不改写发布历史。
+- 文案生成继续使用 Pydantic AI 原生 `PromptedOutput` 和输出校验，没有新增 Agent 基础设施。
 
 ## SQLite 数据库版本边界
 
@@ -96,20 +109,19 @@ Pydantic Direct Model Requests，图片等能力使用锁定版本提供的 Pyda
   timeout、模型类型与密钥脱敏规则。
 - `erp_web/services/ai_agent_factory.py`：唯一 Pydantic Agent 装配与运行入口。`ai_model_errors.py` 统一保留嵌套 Direct Model 错误的 HTTP 状态、可重试性和安全原因，供 Agent 与业务工具边界使用。
 - `erp_web/services/copy_service.py`：`copy.generate` 通过同一工厂运行独立文案 Agent。
-  使用原生 `PromptedOutput` 与 `output_validator`；复核拒绝通过 `ModelRetry` 回到本次文案
-  对话，下一稿能看到上一稿和具体拒绝原因。最多生成三稿，并受总计 240 秒的 deadline 约束；
-  复核仅返回判断，不维护循环，候选通过全部检查后才交给领域层保存。事实摘要保留重量的 kg
-  单位；外部工具参数不传复核意见，也不复制主 Agent 的全部消息。已核对 Pydantic AI 2.22.0
-  的[原生输出校验能力](https://ai.pydantic.dev/output/#output-validator-functions)，业务层不再保留
-  无反馈的 Direct Model 文案生成路径。文案生成使用集中 Agent 工厂支持的 API 模型连接。
+  使用原生 `PromptedOutput` 校验输出结构，生成后不再额外调用 AI 复核语言、事实或营销措辞。
+  字段类型、必填内容及平台标题长度校验通过后直接交给领域层保存。格式错误的原生重试
+  最多两次，整个生成过程最多三次模型请求，并受总计 240 秒的 deadline 约束。
+  事实摘要保留重量的 kg 单位，不复制主 Agent 的全部消息。已核对安装的 Pydantic AI 2.43.0
+  与[原生结构化输出文档](https://ai.pydantic.dev/output/#prompted-output)：直接复用原生格式
+  校验及重试，不增加业务 Agent loop。文案生成使用集中 Agent 工厂支持的 API 模型连接。
   原生 `UsageLimits` 限制模型请求和工具调用；`PrepareTools` 在预算耗尽后隐藏业务工具，
   不预留可执行的额外额度。`Hooks.before_node_run` 在 `UserPromptNode` 和
-  `ModelRequestNode` 开始前更新本轮业务权限，通过 `RunContext.enqueue` 接收用户更新；
-  消息注入和事件编码由原生队列负责，权限更新先于工具准备。
+  `ModelRequestNode` 开始前更新页面背景，通过 `RunContext.enqueue` 接收用户更新；
+  消息注入和事件编码由原生队列负责，不按用户文本生成或重置工具权限。
   主 Agent 使用 `str | DeferredToolRequests`，focused Agent 保留其类型化输出与独立领域能力。
 - `erp_web/services/ai_model_context_projection.py`：原生模型请求 Hook 的纯输入投影；旧大工具结果只在发送副本中形成摘要，完整原生 run 历史与持久化不裁剪。保留工具配对、本轮结果及 Provider 需要的思考信息，不维护第二套历史或恢复协议。
-- `erp_web/services/chat_operation_scope.py`：用集中 Factory 的原生结构化输出解释最新用户操作范围；仅提供 ERP 写权限约束，不生成步骤计划。原生 `PrepareTools` 限制可见写工具，领域执行边界再次校验。
-- `erp_web/services/global_agent_chat_service.py`：主对话服务；原生输出 validator 根据当前草稿目标集合检查遗漏，使用 `ModelRetry` 反馈，禁止只凭主平台推断已覆盖全部市场。
+- `erp_web/services/global_agent_chat_service.py`：主对话服务；主模型依据完整对话选择实际提供的工具，并按原生执行回执回答先前操作结果。批量任务逐目标汇报覆盖及缺口，不再由额外模型推断授权或推断强制补做的目标。
 - `erp_web/runtime_units/collect_helpers.py::claim_products_to_markets`：AI 认领和商品库市场选择共享按语言分组逻辑；全部市场从真实店铺绑定及平台注册表解析。
 - `erp_web/services/ai_tool_bridge.py`：`Tool.from_schema` 的输入校验通过原生
   `args_validator` 在执行前复用现有 JSON Schema 与可选的纯领域参数校验器；参数错误抛出 `ModelRetry`
@@ -196,8 +208,7 @@ CLI / Browser use case
 - `erp_web/services/ai_agent_dependencies.py`：请求级 Agent dependencies，绑定唯一
   execution context、recorder、Tool Runtime、tenant、business scope、审批、幂等和
   use-case state。
-- `erp_web/services/chat_operation_scope.py`：用集中 Factory 的原生结构化输出解释最新用户操作范围；仅提供 ERP 写权限约束，不生成步骤计划。原生 `PrepareTools` 限制可见写工具，领域执行边界再次校验。
-- `erp_web/services/global_agent_chat_service.py`：主对话服务；原生输出 validator 根据当前草稿目标集合检查遗漏，使用 `ModelRetry` 反馈，禁止只凭主平台推断已覆盖全部市场。
+- `erp_web/services/global_agent_chat_service.py`：主对话服务；主模型依据完整对话选择实际提供的工具，并按原生执行回执回答先前操作结果。批量任务逐目标汇报覆盖及缺口，不再由额外模型推断授权或推断强制补做的目标。
 - `erp_web/runtime_units/collect_helpers.py::claim_products_to_markets`：AI 认领和商品库市场选择共享按语言分组逻辑；全部市场从真实店铺绑定及平台注册表解析。
 - `erp_web/services/ai_tool_bridge.py`：把显式 ERP ToolSet 转换为 Pydantic
   `FunctionToolset`；Pydantic tool 只调用 `AiToolRuntime.execute(...)`，不直接调用
@@ -248,8 +259,7 @@ POST /api/v1/ai-chat/runs（Vercel SubmitMessage，可带 target_draft_ids）
 
 - `erp_web/ai_capability_composition.py`：显式 Catalog 与场景权限；全局工具包含领域读写工具。
 - `erp_web/facades/agent_capability_facade.py`：应用能力 Scope、所选草稿范围、可信消息来源、Job Reader 装配。
-- `erp_web/services/chat_operation_scope.py`：用集中 Factory 的原生结构化输出解释最新用户操作范围；仅提供 ERP 写权限约束，不生成步骤计划。原生 `PrepareTools` 限制可见写工具，领域执行边界再次校验。
-- `erp_web/services/global_agent_chat_service.py`：主对话服务；原生输出 validator 根据当前草稿目标集合检查遗漏，使用 `ModelRetry` 反馈，禁止只凭主平台推断已覆盖全部市场。
+- `erp_web/services/global_agent_chat_service.py`：主对话服务；主模型依据完整对话选择实际提供的工具，并按原生执行回执回答先前操作结果。批量任务逐目标汇报覆盖及缺口，不再由额外模型推断授权或推断强制补做的目标。
 - `erp_web/runtime_units/collect_helpers.py::claim_products_to_markets`：AI 认领和商品库市场选择共享按语言分组逻辑；全部市场从真实店铺绑定及平台注册表解析。
 - `erp_web/services/ai_tool_bridge.py`：机械参数校验、原生并发、审批快照与 Deferred 转接；不选择下一步。
 - `erp_web/services/tool_approval.py`：业务审批内容 digest，绑定工具名/版本、operation key、原生 call ID 和审批版本；执行前重核。
@@ -518,9 +528,10 @@ focused service/store 拥有，前端不从消息解析业务结果；展示断�
   只转换为平台原文检索词，枚举 ID 不做跨类目硬编码。
 - `erp_web/schemas/category_brand.py`：平台品牌身份及无品牌查询词；仅采用平台实际返回的候选。
 - `erp_web/product_model/category_model.py`：类目选择、属性有效性与发布必填项判断。
-- `erp_web/runtime_units/product_capabilities.py`：主对话通过 `draft_attributes_read` 读取指定草稿目标的完整公共属性，分页读取全部已选启用 SKU 的有效事实和已填属性；商品共用事实由 `product_read` / `inspect_source_facts` 提供。
-- `category_attributes_query` 分页返回全部定义，`category_attribute_values_query` 查询真实候选。主对话负责事实判断、语义匹配、翻译和缺资料时询问用户；不设前 20 个可选属性的限制。
+- `erp_web/runtime_units/product_capabilities.py`：属性任务优先使用 `draft_attributes_read(scope=common)`，一次返回 `product` 商品/来源事实、`targets` 全部目标的类目及完整已填公共属性、共用包装尺寸和 SKU 数量，不携带图片或 SKU 明细。指定 `scope=sku` 和明确平台/站点后，才按 `next_offset` 分页读取已选启用 SKU 的有效事实和差异属性。
+- `category_attributes_query` 默认 `scope=common`，SKU 任务使用 `scope=sku`，检查全部定义可用 `scope=all`；`write_scope` 标明可写范围，排除字段通过 `excluded_attributes` 的精简记录说明。过滤沿用原始分页游标，空页仍按 `has_more` 继续；不丢弃必填或可选属性。`category_attribute_values_query` 查询真实候选，小字典优先空查询，独立目标/候选并行，同一目标集中写入。主对话负责事实判断、语义匹配、翻译和缺资料时询问用户；不设前 20 个可选属性的限制。
 - `product_attributes_update` / `draft_sku_attributes_update` 分别保存公共属性和指定 SKU 的差异属性。`erp_web/runtime_units/category_attribute_updates.py` 只执行确定性校验：服务端重读类目定义，核对作用域、只读字段、值类型/数量/单位以及平台枚举 ID 与原文。网络校验后在商品锁内重读当前目标，再局部合并本次字段，拒绝变化后的类目、停用或未选 SKU。
+- `erp_web/runtime_units/category_attribute_access.py` 是查询与写入共用的纯作用域规则：公共、SKU、托管及只读字段一致判定。托管字段在枚举查询前拒绝；Ozon 单字符枚举值用字典分页按 ID 和原文精确核对，不走至少两字符的搜索端点，不跳过枚举真实性校验。本地查询参数错误不可重试，网络故障保留可重试属性。
 - 属性填写只有主对话这一条 AI 路径。页面入口、专用属性 Agent/复核模型、局部 HTTP 调用和复合草稿准备里的隐式属性步骤均已删除。`draft_prepare_for_market` 返回的完成步骤只包含目标、文案、图片、类目和定价；主对话随后按需直接填写属性。
 - `erp_web/services/global_agent_chat_service.py` 与 `config/agents.md` 规定事实复用、公共/SKU 边界、无品牌优先及缺口汇报。继续使用已安装的 Pydantic AI 2.43.0 原生工具调用、消息历史和指令装配；此次不需要新增 Agent loop 或生命周期。
 - `front/src/composables/useAiAttributeResults.ts` 仅把本轮成功写入回执投影到当前草稿同一类目的属性表，逐字段更新；历史回放和失败结果不覆盖表单，不触发业务调用。眼睛开关继续控制发送时的页面背景。
@@ -945,14 +956,22 @@ PUBLISHED 值）先于 Campaign 状态裁决：`HAS_CARD_CAN_UPDATE_ERRORS`/`NO_
 
 ### SKU 平台属性填写
 
-主对话按目标分页读取 SKU 事实，通过 `draft_sku_attributes_update` 明确提交当前 SKU 的差异值；后端不再分批调用其他模型。公共属性写入拒绝变体字段，SKU 写入拒绝公共字段，均不改来源商品事实。`DraftSkuAttributesEditor.vue` 继续复用平台枚举、集合和单位控件进行手工编辑；`DraftSkuPanel.vue` 只负责选品及详情位置。
+主对话通过 `draft_attributes_read(scope=sku)` 按目标分页读取 SKU 事实，通过 `draft_sku_attributes_update` 明确提交当前 SKU 的差异值；后端不再分批调用其他模型。公共属性写入拒绝变体字段，SKU 写入拒绝公共字段，均不改来源商品事实。`DraftSkuAttributesEditor.vue` 继续复用平台枚举、集合和单位控件进行手工编辑；`DraftSkuPanel.vue` 只负责选品及详情位置。
 
 `sku_custom_attributes.py` 继续负责 Mercado User Products 自定义规格的纯契约，发布编译与组合预检共用。来源规格和历史 `source_option_translations` 数据仍可读取，当前属性填写由主对话直接按事实判断。
 
 SKU 新草稿默认选品由 `sku_model.new_draft_sku_rows` 定义：全部启用规格选中，停用规格不选中。`collect_helpers.py` 的两条新建草稿路径共同调用它，卖家编码待取得真实草稿 ID 后生成；`DraftSkuPanel.vue` 对新增事实采用相同默认值，并以表头父复选框表示全选、半选和全未选。已有显式取消选择不会因刷新重新选中。空白采集数据不生成 `single` 规格，真实来源删除的旧 SKU 仍保留身份并停用。
 
+### 主对话工具权限与执行回执
+
+- 主对话工具由 `ai_capability_composition.py` 的显式 Catalog/allowlist、Execution Profile 权限与 `AiToolRuntime` 的代码校验决定。用户文本、页面背景和历史消息 metadata 均不产生工具授权表；不再调用额外授权模型，也不持久化按回合推断的写权限。所选草稿及其合法副本范围、字段校验、发布/删除审批继续在既有执行边界生效。
+- 主模型结合完整对话理解“是、继续”等指代，工具可用不等于应当调用。问“刚才写没写”时先依据真实回执回答；计划、工具名、发送调用或当前字段存在均不能证明写入成功。只有结果未知或需核实当前状态时才查询。
+- 已核对安装的 Pydantic AI 2.43.0 与[原生工具准备](https://ai.pydantic.dev/tools-advanced/#agent-wide-dynamic-tools)、[Deferred Tools](https://ai.pydantic.dev/deferred-tools/) 文档。直接使用原生 `PrepareTools` 管理额度/收尾时间、`RunContext.enqueue` 注入用户消息，以及原生 Deferred 审批/恢复；无需另建授权 Agent、消息历史协议或状态机。
+- `draft_sku_package_update` 是 SKU 包装资料写入口，声明在 `runtime_units/draft_edit_capabilities.py`，契约在 `schemas/draft_package.py`，写入由 `ProductStore.update_draft_sku_package` 持锁执行。请求明确 `draft_id`、`sku_ids` 和 `package_dimensions` 局部字段；仅更新指定已选启用 SKU 的 `overrides.package_dimensions`，保留其他字段、逐 SKU 重量和全部目标市场，返回实际应用字段、SKU 范围及变更数量。零值、非有限数、未知/停用/未选 SKU 和已发布对象在写入前拒绝。
+- `draft_sku_attributes_update` 仅写平台类目属性，不能写包装字段。通用 `draft_save` 仍为 internal，不为包装编辑重新开放整对象保存。
+
 ### 属性事实边界
 
 主对话不能将混合 SKU 的汇总描述套给每个规格，不能从图片比例猜测尺寸、重量、品牌或认证。当前读工具提供来源文字与结构化 SKU 事实；资料不足时在主对话询问用户，不启动额外的属性图片填写或复核 Agent。
 
-`draft_read`、按草稿查询的 `product_read` 与 `draft_attributes_read` 均返回草稿共用的 `package_dimensions`（cm/kg）。`draft_attributes_read.skus[].package_dimensions` 单独保留来源 SKU 与草稿覆盖后的有效包装尺寸；商品主档尺寸为空或 SKU 尺寸为零，不代表草稿共用尺寸不存在。读取不自动将共用尺寸套用到所有 SKU，实际发货资料仍按逐 SKU 事实校验。
+`draft_read`、按草稿查询的 `product_read` 与 `draft_attributes_read` 均返回草稿共用的 `package_dimensions`（cm/kg）。`draft_attributes_read(scope=sku)` 的 `skus[].package_dimensions` 单独保留来源 SKU 与草稿覆盖后的有效包装尺寸；商品主档尺寸为空或 SKU 尺寸为零，不代表草稿共用尺寸不存在。读取不自动将共用尺寸套用到所有 SKU，实际发货资料仍按逐 SKU 事实校验。

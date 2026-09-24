@@ -151,7 +151,7 @@ export function createDraftTargetEditors(runtime: WorkflowRuntime) {
       const value = draft.value
       return JSON.stringify({
         title: value.title, globalTitle: value.globalTitle, description: value.description,
-        brand: value.brand, model: value.model, bullets: value.bullets, language: value.language,
+        brand: value.brand, model: value.model, language: value.language,
         skuItems: value.skuItems, grouping: value.grouping, images: value.images, pricing: value.pricing,
         sku: value.sku, stock: value.stock, upc: value.upc, packageDimensions: value.packageDimensions,
         saleTerms: value.saleTerms, allowGtinExemption: value.allowGtinExemption,

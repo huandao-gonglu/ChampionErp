@@ -21,6 +21,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator
 
+from erp_web.stores.product_description_migration import migrate_draft_description, migrate_product_description
 from erp_web.product_model.sku_model import retain_sku_publications
 from erp_web.marketplace_registry import PLATFORMS, marketplace_site
 from erp_web.product_model.merge_model import (
@@ -495,7 +496,7 @@ def _load_current_draft_json(value: Any) -> dict[str, Any]:
         raise RuntimeError("platform_drafts.draft_json 不是有效的当前 JSON") from exc
     if not isinstance(draft, dict):
         raise RuntimeError("platform_drafts.draft_json 必须是 JSON object")
-    return draft
+    return migrate_draft_description(draft)
 
 
 def _validate_product_write_shape(product: dict[str, Any]) -> None:
@@ -956,6 +957,7 @@ class ErpDatabase:
             product = json_loads(row["product_json"], {})
             if not isinstance(product, dict):
                 product = {}
+            product = migrate_product_description(product)
             product["product_id"] = row["product_id"]
             product["drafts"] = self._load_drafts(conn, row["product_id"])
             product.setdefault("source", {})

@@ -248,3 +248,55 @@ def test_ozon_incomplete_pagination_is_rejected():
 def test_platform_client_blocks_unrelated_side_effects():
     with pytest.raises(ValueError, match='只允许'):
         PlatformClient('ozon', CONFIG['ozon']).call('/v3/product/import', body={})
+
+
+@pytest.mark.parametrize('fixed,rate,divisor,weight,expected_fee,expected_g', [
+    # 2026-09-22 核对的官方 Ozon 中国 rFBS 表：G29/G42/G69/G93/G119/G150。
+    ('3.37', '.0281', None, '367', '13.69', '367'),
+    ('25.83', '.0281', None, '501', '39.91', '501'),
+    ('17.97', '.0393', None, '2000', '96.57', '2000'),
+    ('24.71', '.0393', None, '5000', '221.21', '5000'),
+    ('40.44', '.0281', '12000', '3000', '321.44', '10000'),
+    ('69.64', '.0258', '12000', '5001', '327.64', '10000'),
+    ('40.44', '.0281', '12000', '10000.01', '321.47', '10001'),
+])
+def test_official_ozon_rate_samples(fixed, rate, divisor, weight, expected_fee, expected_g):
+    # 大体积输入同时验证：实际重渠道不能擅自启用体积重，体积重渠道取两者较大。
+    route = {'fixed': fixed, 'per_g': rate, 'volumetric_divisor_kg': divisor}
+    assert ozon_shipping(Package(weight, 80, 50, 30), route) == (Decimal(expected_fee), Decimal(expected_g))
+
+
+@pytest.mark.parametrize('fixed,rate,step,weight,expected_fee,expected_g', [
+    # 官方 Logistics calculator 费率列；不使用有单位错误或缓存失效的 AA 示例总价。
+    ('198', '.506', '100', '367', '400.40', '400'),
+    ('198', '.506', '100', '400', '400.40', '400'),
+    ('198', '.506', '100', '400.01', '451.00', '500'),
+    ('161', '.715', '100', '367', '447.00', '400'),
+    ('78', '.287', '1', '367', '183.33', '367'),
+    ('78', '.287', '1', '367.01', '183.62', '368'),
+])
+def test_official_yandex_rate_and_step_samples(fixed, rate, step, weight, expected_fee, expected_g):
+    route = {'fixed': fixed, 'per_g': rate, 'step_g': step}
+    assert yandex_shipping(Package(weight, 20, 10, 5), route) == (Decimal(expected_fee), Decimal(expected_g))
+
+
+@pytest.mark.parametrize('weight,accepted', [('500', True), ('500.01', False)])
+def test_ozon_extra_small_weight_boundary_is_inclusive(rules, weight, accepted):
+    result = calculate(rules, {'weight_kg': str(Decimal(weight) / 1000)})
+    assert result['ok'] is accepted
+
+
+def test_mercado_destination_conditions_and_sku_units_reach_api(rules, monkeypatch):
+    requests = []
+    def call(_client, path, **kwargs):
+        requests.append((path, kwargs['params']))
+        return {'coverage': {'all_country': {'list_cost': 100, 'currency_id': 'MXN', 'billable_weight': 901}}}
+    monkeypatch.setattr(PlatformClient, 'call', call)
+    selected = ml_target()
+    selected['sites_to_sell'][0].update(listing_type_id='gold_special', free_shipping=False)
+    result = calculate(rules, {'weight_kg': '.9001', 'length_cm': '30.1', 'width_cm': '20.2', 'height_cm': '10.3'}, selected)
+    assert result['ok']
+    assert all(path == '/users/11/shipping_options/free' for path, _ in requests)
+    assert all(params['dimensions'] == '11x21x31,901' for _, params in requests)
+    assert all(params['listing_type_id'] == 'gold_special' and params['free_shipping'] == 'false' for _, params in requests)
+    assert all(params['currency_id'] == 'USD' for _, params in requests)

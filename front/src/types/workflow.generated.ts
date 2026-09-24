@@ -238,8 +238,6 @@ export interface BackendProductSource {
   title?: string
   price?: string
   currency?: string
-  description?: string
-  bullets?: Array<string>
   material?: string
   package_contents?: Array<string>
   variants?: Array<Record<string, unknown>>
@@ -317,7 +315,6 @@ export interface BackendPlatformDraft {
   stock?: string
   sku?: string
   upc?: string
-  bullets?: Array<string>
   search_terms?: Array<string>
   language?: string
   package_dimensions?: Record<string, string>
@@ -352,11 +349,9 @@ export interface BackendProduct {
   upc?: string
   cost?: string
   materials?: Array<string>
-  selling_points?: Array<string>
   package_includes?: Array<string>
   colors?: Array<string>
   avoid_claims?: Array<string>
-  description?: string
   dimensions?: string
   weight_kg?: string
   source?: BackendProductSource

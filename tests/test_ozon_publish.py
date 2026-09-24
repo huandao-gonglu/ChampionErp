@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from erp_web.stores.product_description_migration import migrate_draft_description
+
 from copy import deepcopy
 from unittest.mock import patch
 
@@ -501,3 +503,13 @@ def test_ozon_adapter_and_draft_precheck_are_publish_ready() -> None:
         adapter.validate_payload(adapter.build_payload(context, _config()), _config())
         == []
     )
+
+
+def test_migrated_description_reaches_ozon_annotation():
+    product = _product()
+    draft = product["drafts"]["ozon"]
+    draft["bullets"] = ["Компактный корпус"]
+    product["drafts"]["ozon"] = migrate_draft_description(draft)
+    payload = build_ozon_publish_payload(product, _config(), _record())
+    annotation = next(row for row in payload["items"][0]["attributes"] if row["id"] == 4191)
+    assert annotation["values"] == [{"value": "Подробное описание товара.\n\nКомпактный корпус"}]

@@ -31,14 +31,6 @@ const emit = defineEmits<{
   updateTargets: [draft: DraftDetail, targets: MarketplaceTargetSite[]]
 }>()
 
-function listModel(getter: () => string[], setter: (value: string[]) => void) {
-  return computed({
-    get: () => getter().join('\n'),
-    set: (value: string) => setter(value.split(/\n|,/).map((item) => item.trim()).filter(Boolean)),
-  })
-}
-
-const bulletsText = listModel(() => props.draft.bullets, (value) => { props.draft.bullets = value })
 const canGenerateCopy = computed(() => Boolean(props.draft.productId || props.productContext.productId))
 const canSaveDraft = computed(() => Boolean(props.draft.draftId))
 const saveBlockedReason = computed(() => (
@@ -117,11 +109,7 @@ const titleLimit = computed(() => (
       </label>
       <label class="block">
         <span class="text-xs font-semibold text-slate-500">商品描述</span>
-        <textarea v-model="props.draft.description" class="input mt-1 min-h-36" />
-      </label>
-      <label class="block">
-        <span class="text-xs font-semibold text-slate-500">商品卖点，每行一个</span>
-        <textarea v-model="bulletsText" class="input mt-1 min-h-28" />
+        <textarea v-model="props.draft.description" class="input mt-1 min-h-36" placeholder="描述商品特点、用途、规格与包装清单；自然使用相关搜索词，避免重复堆砌。" />
       </label>
     </section>
   </section>

@@ -29,7 +29,7 @@ ERP 在 `services/pricing_shipping.py` 中调用该入口，复用本轮核价�
 
 ## 计算与证据
 
-- Ozon：实际重与模板体积重取大，金额向上保留两位小数。仅保留真实 rFBS 仓库的
+- Ozon：按模板各行决定使用实际重，或实际重与体积重取大，金额向上保留两位小数。仅保留真实 rFBS 仓库的
   ACTIVE 配送方式；核验重量、尺寸、电池、液体和人民币货值档。
 - Yandex：使用大陆模板的每克费率和进位步长。轻小件的重量/货值阈值从模板读取。
   60/90 cm 尺寸限制不是模板字段，延续原实验政策并记录来源；液体准入未知时报错。
@@ -60,3 +60,7 @@ Mercado 使用 `/users/{user_id}/shipping_options/free`，高度×宽度×长度
 官方参数：[Mercado 运费试算](https://developers.mercadolibre.com.mx/es_ar/administra-proyectos-aplicaciones/costos-de-envios)。
 
 模块不涉及 Agent 生命周期，无需新增 Pydantic AI loop、工具或协议。
+
+现有模板的样本、边界及 ERP 链路核验结果见
+[国际物流计算核验记录](../../docs/international-shipping-verification.md)。
+Mercado 的接口连通性已实测，Global Selling 跨境费用一致性仍缺官方样本对照。

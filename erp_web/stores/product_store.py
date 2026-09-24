@@ -15,7 +15,10 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Iterator
 
+from pydantic import ValidationError
+
 from erp_web.db import ErpDatabase, product_identity
+from erp_web.schemas.draft_package import DraftSkuPackageUpdateRequest
 from erp_web.stores.product_mutation import product_mutation, product_resource_locks
 from erp_web.marketplace_registry import marketplace_site
 from erp_web.product_model import (
@@ -166,7 +169,6 @@ def normalize_product_fields(product: dict[str, Any]) -> dict[str, Any]:
     for key in [
         "materials",
         "colors",
-        "selling_points",
         "package_includes",
         "avoid_claims",
     ]:
@@ -368,7 +370,6 @@ _DRAFT_PUBLISH_CONTENT_FIELDS = (
     "sku",
     "sku_items",
     "upc",
-    "bullets",
     "search_terms",
     "language",
     "package_dimensions",
@@ -1299,6 +1300,50 @@ class ProductStore:
         )
         return {"changed": error is None}, error, status
 
+    @product_mutation("draft")
+    def update_draft_sku_package(
+        self, draft_id: str, sku_ids: list[str], package_dimensions: dict[str, float],
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
+        """在商品锁内局部更新 SKU 包装，保留来源事实、其他规格和全部目标市场。"""
+        try:
+            request = DraftSkuPackageUpdateRequest(
+                draft_id=draft_id, sku_ids=sku_ids, package_dimensions=package_dimensions,
+            )
+        except ValidationError:
+            return {}, {"error": "SKU ID 或包装字段无效，包装值必须是有限正数。", "error_code": "DRAFT_SKU_PACKAGE_INVALID"}, 400
+        existing = self._db.load_draft_model(request.draft_id)
+        if not existing:
+            return {}, {"error": "草稿不存在", "error_code": "DRAFT_NOT_FOUND"}, 404
+        product = self._db.load_product_model(existing["product_id"])
+        facts = {row["id"]: row for row in product.get("sku_items", [])}
+        rows = deepcopy(existing.get("sku_items", []))
+        by_id = {row["sku_id"]: row for row in rows}
+        if any(sku_id not in by_id or not by_id[sku_id].get("selected")
+               or not facts.get(sku_id, {}).get("active", False) for sku_id in request.sku_ids):
+            return {}, {"error": "只能修改当前草稿中已选且启用的 SKU。", "error_code": "SKU_OUTSIDE_DRAFT"}, 400
+        published = {"published", "real_publish_success", "success"}
+        if any(subject.get("publish_status") in published or subject.get("status") in published
+               for subject in [existing, *existing.get("target_sites", [])]) or any(
+            by_id[sku_id].get("publications") for sku_id in request.sku_ids
+        ):
+            return {}, {"error": "SKU 或草稿已发布，不能修改包装资料。", "error_code": "DRAFT_ALREADY_PUBLISHED"}, 409
+        patch = {key: str(value) for key, value in request.package_dimensions.model_dump(exclude_unset=True).items()}
+        changed_count = 0
+        for sku_id in request.sku_ids:
+            row = by_id[sku_id]
+            overrides = row.setdefault("overrides", {})
+            current = overrides.get("package_dimensions", {})
+            if any(current.get(key) != value for key, value in patch.items()):
+                overrides["package_dimensions"] = {**current, **patch}
+                changed_count += 1
+        if not changed_count:
+            return {"changed_count": 0, "updated_at": existing["updated_at"]}, None, 200
+        # 携带锁内读取的全部目标，避免局部 SKU 修改缩减多平台草稿；复用保存的预检失效规则。
+        result, error, status = self.save_draft_detail({**existing, "sku_items": rows})
+        if error is not None:
+            return {}, error, status
+        return {"changed_count": changed_count, "updated_at": result["draft"]["updated_at"]}, None, 200
+
     @product_mutation("product")
     def save_draft_detail(
         self, draft_payload: dict[str, Any]
@@ -1891,6 +1936,8 @@ class ProductStore:
     def save_draft_copy_result(
         self, product: dict[str, Any], target_market: str, copy: dict[str, Any]
     ) -> dict[str, Any]:
+        # 当前草稿是本次操作的目标，不属于商品持久化字段；须在归一化前保留。
+        draft_id = str((product or {}).get("current_draft_id") or "").strip()
         product = normalize_product_fields(product or {})
         product_id = str(product.get("product_id") or "").strip()
         target_key = str(target_market or "").strip().lower() or "mercadolibre"
@@ -1899,7 +1946,6 @@ class ProductStore:
         if target_key not in PLATFORMS:
             raise RuntimeError("不支持的平台")
         # 模型生成期间其他字段可能已更新；只把本次文案补丁合入最新草稿。
-        draft_id = str(product.get("current_draft_id") or "")
         latest = self.load_product_from_index(product_id, "")
         drafts = latest.get("drafts") if isinstance(latest.get("drafts"), dict) else {}
         draft = (
@@ -1907,11 +1953,12 @@ class ProductStore:
             if draft_id
             else dict(drafts.get(target_key) or {})
         )
+        if draft_id and not draft:
+            raise ValueError("当前草稿已不存在，本次文案未保存。")
         draft.update(
             {
                 "title": copy.get("title", ""),
                 "description": copy.get("description", ""),
-                "bullets": normalize_list(copy.get("bullets")),
                 "search_terms": normalize_list(copy.get("search_keywords")),
                 "language": str(copy.get("language") or draft.get("language") or ""),
                 "copy_source": "ai",

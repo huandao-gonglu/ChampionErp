@@ -39,11 +39,9 @@ class ProductProfilePatch(BaseModel):
     upc: str = ""
     cost: str = ""
     materials: list[str] = Field(default_factory=list)
-    selling_points: list[str] = Field(default_factory=list)
     package_includes: list[str] = Field(default_factory=list)
     colors: list[str] = Field(default_factory=list)
     avoid_claims: list[str] = Field(default_factory=list)
-    description: str = ""
     dimensions: str = Field(
         default="",
         description="商品尺寸文本，例如 30x20x10cm。",
@@ -154,7 +152,7 @@ class DraftReadView(BaseModel):
     attributes: dict[str, JsonValue] = Field(default_factory=dict)
     package_dimensions: dict[str, JsonValue] = Field(
         default_factory=dict,
-        description="草稿共用包装尺寸：length_cm、width_cm、height_cm、weight_kg；逐 SKU 的有效包装尺寸用 draft_attributes_read 读取，不自动继承共用值。",
+        description="草稿共用包装尺寸：length_cm、width_cm、height_cm、weight_kg；逐 SKU 的有效包装尺寸用 draft_attributes_read(scope=sku) 读取，不自动继承共用值。",
     )
     image_count: int = 0
     validation_errors: tuple[JsonValue, ...] = ()

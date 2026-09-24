@@ -277,7 +277,6 @@ export interface ProductSource {
   title: string
   price: string
   currency: string
-  description: string
   dimensions: {
     lengthCm: string
     widthCm: string
@@ -333,7 +332,6 @@ export interface MarketplaceDraft {
   description: string
   brand: string
   model: string
-  bullets: string[]
   categoryId: string
   descriptionCategoryId: string
   categoryPath: string
@@ -372,7 +370,6 @@ export interface Product {
   upc: string
   cost: string
   materials: string[]
-  sellingPoints: string[]
   packageIncludes: string[]
   attributes: UnknownRecord
   source: ProductSource
@@ -720,8 +717,6 @@ export interface CollectForm {
   selectedClaimPlatforms: Marketplace[]
   manualTitle: string
   manualPrice: string
-  manualBullets: string
-  manualDescription: string
   manualDimensions: string
   manualWeight: string
   manualImages: string
@@ -737,7 +732,6 @@ export interface CollectDiagnostics {
   progress: number
   message: string
   downloadedImages: number
-  extractedBullets: number
   antiBotWarning: boolean
   lastSourceUrl: string
   errorCode: string

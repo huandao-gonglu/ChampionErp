@@ -31,8 +31,6 @@ class ProductSource(TypedDict, total=False):
     title: str
     price: str
     currency: str
-    description: str
-    bullets: list[str]
     material: str
     package_contents: list[str]
     variants: list[dict[str, Any]]
@@ -113,7 +111,6 @@ class PlatformDraft(TypedDict, total=False):
     stock: str
     sku: str
     upc: str
-    bullets: list[str]
     search_terms: list[str]
     language: str
     package_dimensions: dict[str, str]
@@ -148,11 +145,9 @@ class Product(TypedDict, total=False):
     upc: str
     cost: str
     materials: list[str]
-    selling_points: list[str]
     package_includes: list[str]
     colors: list[str]
     avoid_claims: list[str]
-    description: str
     dimensions: str
     weight_kg: str
     source: ProductSource

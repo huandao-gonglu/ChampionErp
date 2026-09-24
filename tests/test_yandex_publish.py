@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from erp_web.stores.product_description_migration import migrate_draft_description
+
 import json
 import time
 from copy import deepcopy
@@ -1407,3 +1409,14 @@ def test_build_payload_requires_at_least_one_parameter_value() -> None:
 
     payload = build_yandex_publish_payload(_product(), _config(), _record())
     assert len(payload["catalog"]["offer"]["parameterValues"]) >= 1
+
+
+def test_migrated_description_reaches_yandex_catalog():
+    product = _product()
+    draft = product["drafts"]["yandex"]
+    draft["bullets"] = ["Компактный корпус"]
+    migrated = migrate_draft_description(draft)
+    product["drafts"]["yandex"] = migrated
+    payload = build_yandex_publish_payload(product, _config(), _record())
+    assert payload["catalog"]["offer"]["description"] == migrated["description"]
+    assert "Компактный корпус" in payload["catalog"]["offer"]["description"]

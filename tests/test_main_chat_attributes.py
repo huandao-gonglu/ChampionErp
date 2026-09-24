@@ -139,8 +139,8 @@ def test_category_change_during_platform_lookup_is_rejected(subject, monkeypatch
 def test_paginated_read_preserves_each_sku_facts_and_all_saved_attributes(subject):
     app, draft_id, _ = subject
     scope = ProductCapabilityScope(app.products)
-    first = draft_attributes_read(DraftAttributesReadRequest(draft_id=draft_id, limit=1), scope)
-    second = draft_attributes_read(DraftAttributesReadRequest(draft_id=draft_id, offset=first.next_offset, limit=1), scope)
+    first = draft_attributes_read(DraftAttributesReadRequest(draft_id=draft_id, scope="sku", limit=1), scope)
+    second = draft_attributes_read(DraftAttributesReadRequest(draft_id=draft_id, scope="sku", offset=first.next_offset, limit=1), scope)
     assert first.sku_count == 2 and second.next_offset is None
     assert first.skus[0]["options"] == {"颜色": "黑色"}
     assert second.skus[0]["options"] == {"颜色": "白色"}
@@ -180,7 +180,7 @@ def test_read_tools_preserve_shared_dimensions_without_filling_missing_sku_dimen
 
     for offset in (0, 1):
         result = draft_attributes_read(
-            DraftAttributesReadRequest(draft_id=draft_id, offset=offset, limit=1), scope,
+            DraftAttributesReadRequest(draft_id=draft_id, scope="sku", offset=offset, limit=1), scope,
         ).model_dump(mode="json")
         assert result["package_dimensions"] == dimensions
         sku_dimensions = result["skus"][0]["package_dimensions"]
@@ -196,14 +196,14 @@ def test_native_main_chat_reads_queries_and_writes_without_a_focused_agent(subje
     target = {"platform": "ozon", "site": "global", "category_id": "94765"}
     steps = [
         ("product_read", {"draft_id": draft_id}),
-        ("draft_attributes_read", {"draft_id": draft_id}),
-        ("category_attributes_query", {**target, "limit": 20}),
-        ("category_attributes_query", {**target, "limit": 20, "cursor": "20"}),
+        ("draft_attributes_read", {"draft_id": draft_id, "scope": "sku"}),
+        ("category_attributes_query", {**target, "limit": 20, "scope": "all"}),
+        ("category_attributes_query", {**target, "limit": 20, "cursor": "20", "scope": "all"}),
         ("category_attribute_values_query", {**target, "attribute_id": "85", "query": "Нет бренда"}),
         ("category_attribute_values_query", {**target, "attribute_id": "4389", "query": "Китай"}),
         ("product_attributes_update", {"draft_id": draft_id, **target, "updates": {"85": enum("no-brand", "Нет бренда"), "4389": enum("china", "Китай"), "7199": "Резина"}}),
         ("draft_sku_attributes_update", {"draft_id": draft_id, **target, "sku_id": "s0", "updates": {"color": "Черный"}}),
-        ("draft_attributes_read", {"draft_id": draft_id}),
+        ("draft_attributes_read", {"draft_id": draft_id, "scope": "sku"}),
     ]
     async def model(messages, info):
         returns = [part for message in messages for part in message.parts if isinstance(part, ToolReturnPart)]
@@ -216,7 +216,7 @@ def test_native_main_chat_reads_queries_and_writes_without_a_focused_agent(subje
         else:
             assert returns[3].content["attributes"][4]["id"] == "7199"
             saved = returns[-1].content
-            assert saved["attributes"]["85"] == enum("no-brand", "Нет бренда")
+            assert saved["targets"][0]["attributes"]["85"] == enum("no-brand", "Нет бренда")
             assert saved["skus"][0]["attributes"]["color"] == "Черный"
             yield "已保存公共品牌、产地、材质和指定 SKU 颜色；其他缺资料项保持未填。"
     ui = service(tmp_path, FunctionModel(stream_function=model), build_global_chat_toolset(app))

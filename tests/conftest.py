@@ -150,13 +150,11 @@ def sample_product() -> dict:
         "brand": "Generic",
         "model": "T-3A",
         "materials": ["ABS"],
-        "selling_points": ["Reusable", "Easy to clean"],
         "package_includes": ["Main unit", "Manual"],
         "source": {
             "title": "Stage 3A backend test product",
             "source_url": "https://detail.1688.com/offer/123456.html",
             "source_platform": "1688",
-            "description": "Manual imported product for backend tests.",
             "weight_kg": "0.5",
             "dimensions": {"length_cm": "20", "width_cm": "15", "height_cm": "10"},
             "image_pool": [
@@ -180,7 +178,7 @@ def sample_product() -> dict:
                 "platforms": ["mercadolibre"],
                 "site": "CBT",
                 "title": "Stage 3A backend test product",
-                "description": "Manual imported product for backend tests.",
+                "description": "Manual imported product for backend tests. Reusable. Easy to clean.",
                 "brand": "Generic",
                 "model": "T-3A",
                 "category_id": "CBT100",

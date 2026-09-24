@@ -24,6 +24,8 @@ from .mercadolibre_publication import normalize_mercadolibre_publication
 
 
 _REMOVED_PRODUCT_FIELDS = {
+    "description",
+    "selling_points",
     "selected_sku_indices",
     "id",
     "title",
@@ -45,6 +47,7 @@ _REMOVED_PRODUCT_FIELDS = {
     "local_platform_categories",
 }
 _REMOVED_DRAFT_FIELDS = {
+    "bullets",
     "barcode",
     "gtin",
     "category_attribute_schema",
@@ -504,15 +507,6 @@ def _merge_source(product: dict[str, Any]) -> dict[str, Any]:
         or ""
     ).strip()
     source["currency"] = str(incoming.get("currency") or "").strip()
-    source["bullets"] = normalize_list(
-        incoming.get("bullets")
-        or product.get("selling_points")
-    )
-    source["description"] = str(
-        incoming.get("description")
-        or product.get("description")
-        or ""
-    ).strip()
     image_pool = incoming.get("image_pool") if isinstance(incoming.get("image_pool"), list) else []
     source_images = (
         incoming.get("images")
@@ -563,7 +557,7 @@ def _draft_sources(product: dict[str, Any], platform: str) -> dict[str, Any]:
     copy_results = product.get("copy_results") if isinstance(product.get("copy_results"), dict) else {}
     copy = copy_results.get(platform) if isinstance(copy_results.get(platform), dict) else {}
     override = overrides.get(platform) if isinstance(overrides.get(platform), dict) else {}
-    for field in ["title", "description", "bullets", "search_terms", "language"]:
+    for field in ["title", "description", "search_terms", "language"]:
         value = copy.get(field) if copy.get(field) not in (None, "") else override.get(field)
         if value not in (None, ""):
             current[field] = deepcopy(value)
@@ -678,7 +672,6 @@ def _merge_platform_draft(product: dict[str, Any], platform: str) -> dict[str, A
         or ""
     ).strip()
     current["images"] = normalize_draft_image_refs(current.get("images"))
-    current["bullets"] = normalize_list(current.get("bullets"))
     current["search_terms"] = normalize_list(
         current.get("search_terms")
         or current.get("searchTerms")
@@ -952,9 +945,9 @@ def merge_source_partial_result(
             return
         target[key] = deepcopy(value)
 
-    for field in ["source_url", "source_platform", "title", "price", "currency", "description", "weight_kg", "material", "brand", "model", "sku", "collect_status"]:
+    for field in ["source_url", "source_platform", "title", "price", "currency", "weight_kg", "material", "brand", "model", "sku", "collect_status"]:
         apply_if_present(source, field, updates.get(field))
-    for field in ["bullets", "images", "image_pool", "package_contents", "variants", "skus", "collect_logs"]:
+    for field in ["images", "image_pool", "package_contents", "variants", "skus", "collect_logs"]:
         apply_if_present(source, field, updates.get(field))
     if diagnostics.get("success") and isinstance(updates.get("skus"), list):
         source["skus"] = deepcopy(updates["skus"])
@@ -1018,9 +1011,7 @@ def merge_source_partial_result(
     if updates.get("title") or "skus" in updates:
         normalized["sku_items"] = merge_collected_skus(normalized.get("sku_items"), source)
     normalized["materials"] = normalize_list(normalized.get("materials") or [source.get("material")])
-    normalized["selling_points"] = normalize_list(normalized.get("selling_points") or source.get("bullets"))
     normalized["package_includes"] = normalize_list(normalized.get("package_includes") or source.get("package_contents"))
-    normalized["description"] = str(normalized.get("description") or source.get("description") or "").strip()
     normalized["weight_kg"] = str(normalized.get("weight_kg") or source.get("weight_kg") or "").strip()
     normalized["collect_status"] = str(normalized.get("collect_status") or source.get("collect_status") or "").strip()
     normalized["collect_logs"] = deepcopy(normalized.get("collect_logs") or source.get("collect_logs") or [])
@@ -1070,9 +1061,7 @@ def normalize_product_model(product: dict[str, Any] | None) -> dict[str, Any]:
     category_match = normalized["source"].get("attribute_matches", {}).get("category") if isinstance(normalized["source"].get("attribute_matches"), dict) else {}
     normalized["category"] = str(normalized.get("category") or (category_match.get("value") if isinstance(category_match, dict) else "") or "").strip()
     normalized["materials"] = normalize_list(normalized.get("materials") or [normalized["source"].get("material")])
-    normalized["selling_points"] = normalize_list(normalized.get("selling_points") or normalized["source"].get("bullets"))
     normalized["package_includes"] = normalize_list(normalized.get("package_includes") or normalized["source"].get("package_contents"))
-    normalized["description"] = str(normalized.get("description") or normalized["drafts"]["mercadolibre"].get("description") or normalized["source"].get("description") or "").strip()
 
     normalized["collect_status"] = str(normalized.get("collect_status") or normalized["source"].get("collect_status") or "").strip()
     normalized["collect_logs"] = deepcopy(normalized.get("collect_logs") or normalized["source"].get("collect_logs") or [])

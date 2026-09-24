@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from erp_web.stores.product_description_migration import migrate_draft_description
+
 from copy import deepcopy
 from typing import Any
 from unittest.mock import patch
@@ -2983,3 +2985,18 @@ def test_publish_confirmation_digest_changes_with_cbt_sales_targets() -> None:
     )
 
     assert first != second
+
+
+def test_migrated_description_reaches_mercadolibre_payload():
+    from erp_web.runtime_units.copy_generation import apply_product_drafts_to_plan
+
+    draft = migrate_draft_description({"description": "Description", "bullets": ["Easy to clean"]})
+    plan = apply_product_drafts_to_plan(
+        {"drafts": {"mercadolibre": draft}},
+        {"platforms": {"mercadolibre": {"listing": {"title": "Test product"}}}},
+    )
+    payload = marketplace_publish.build_mercadolibre_payload(
+        {"name": "Test product"}, plan, _user_products_config(), ["ml-id:123-CBT456"],
+        category_attributes=_compiled_attributes("user_products"),
+    )
+    assert payload["description"] == {"plain_text": "Description\n\nEasy to clean"}

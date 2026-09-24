@@ -129,43 +129,6 @@ def upscale_amazon_image_url(url: str) -> str:
     return re.sub(r"\._[^./]*(?=\.(?:jpg|jpeg|png|webp)(?:$|\?))", "", url, flags=re.I)
 
 
-def extract_amazon_bullets(html: str) -> list[str]:
-    section = ""
-    feature = re.search(r'(?is)id=["\']feature-bullets["\'][^>]*>(.*?)(?:›\s*See more product details|id=["\']productOverview_feature_div|id=["\']productDetails)', html)
-    if feature:
-        section = feature.group(1)
-    else:
-        about = re.search(r"(?is)About this item(.*?)(?:›\s*See more product details|Product details|From the manufacturer)", html)
-        section = about.group(1) if about else ""
-    if not section:
-        return []
-    bullets = []
-    for item in re.findall(r"(?is)<li[^>]*>(.*?)</li>", section):
-        text = html_to_text(item)
-        text = re.sub(r"^\s*[•\-]\s*", "", text).strip()
-        lowered = text.lower()
-        if text and "make sure this fits" not in lowered and "see more" not in lowered:
-            bullets.append(text)
-        if len(bullets) >= 5:
-            break
-    if len(bullets) < 5:
-        plain = html_to_text(section)
-        for line in re.split(r"\n|•|·|●|(?<=\.)\s+(?=[A-Z])", plain):
-            text = normalize_space(line)
-            lowered = text.lower()
-            if (
-                len(text) > 25
-                and "about this item" not in lowered
-                and "see more" not in lowered
-                and "make sure this fits" not in lowered
-                and text not in bullets
-            ):
-                bullets.append(text)
-            if len(bullets) >= 5:
-                break
-    return bullets[:5]
-
-
 def extract_page_title(html: str) -> str:
     for pattern in [
         r'(?is)<span[^>]+id=["\']productTitle["\'][^>]*>(.*?)</span>',
@@ -187,13 +150,6 @@ def infer_product_from_title(title: str) -> dict[str, Any]:
     if any(term in lowered for term in ["fishing", "bobber", "float", "crappie", "bass", "trout"]):
         inferred["category"] = "钓鱼浮漂/渔具配件"
         inferred["target_customer"] = "钓鱼爱好者、户外垂钓用户"
-        inferred["selling_points"] = [
-            "钓鱼浮漂套装，适合多种淡水鱼垂钓",
-            "醒目配色，便于观察鱼讯",
-            "泡沫材质轻便耐用，适合户外携带",
-            "带夹设计，安装和更换更方便",
-            "适合鲈鱼、鳟鱼、蓝鳃鱼等垂钓场景",
-        ]
     count = re.search(r"\b(\d+)\s*(?:pcs|pieces|pack|count)\b", lowered)
     if count:
         inferred["package_includes"] = [f"{count.group(1)} 件产品"]

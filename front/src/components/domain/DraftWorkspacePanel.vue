@@ -13,7 +13,7 @@ const emit = defineEmits<{
 }>()
 
 const tabs: Array<{ key: DraftWorkspaceTab; label: string; summary: string }> = [
-  { key: 'text', label: '编辑文本', summary: '标题、描述和卖点' },
+  { key: 'text', label: '编辑文本', summary: '标题和商品描述' },
   { key: 'images', label: '编辑图片', summary: '公共图集和 SKU 主图' },
   { key: 'category', label: '类目/属性', summary: '类目与必填属性' },
   { key: 'skus', label: 'SKU', summary: '选品、规格和销售设置' },

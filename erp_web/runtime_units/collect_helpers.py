@@ -199,7 +199,6 @@ def snapshot_field_flags(source: dict[str, Any]) -> dict[str, Any]:
         "images_found_count": len(normalize_list(source.get("images"))),
         "title_found": bool(str(source.get("title") or "").strip()),
         "price_found": bool(str(source.get("price") or "").strip()),
-        "bullets_found_count": len(normalize_list(source.get("bullets"))),
         "sku_found_count": len(skus),
         "dimensions_found": dimensions_found,
         "weight_found": weight_found,
@@ -214,11 +213,9 @@ def collect_field_summary(source: dict[str, Any]) -> dict[str, list[str]]:
         "title": flags["title_found"],
         "price": flags["price_found"],
         "images": flags["images_found_count"] > 0,
-        "bullets": flags["bullets_found_count"] > 0,
         "skus": flags["sku_found_count"] > 0,
         "dimensions": flags["dimensions_found"],
         "weight": flags["weight_found"],
-        "description": bool(str(source.get("description") or "").strip()),
         "brand": bool(str(source.get("brand") or "").strip()),
     }
     for field, ok in checks.items():
@@ -356,8 +353,6 @@ def apply_claimed_platform_drafts(product: dict[str, Any], claim_platforms: list
         draft["enabled"] = True
         draft["sku_items"] = new_draft_sku_rows(normalized.get("sku_items", []))
         draft["title"] = draft.get("title") if use_existing(draft.get("title")) else source.get("title") or normalized.get("name") or ""
-        draft["description"] = draft.get("description") if use_existing(draft.get("description")) else source.get("description") or ""
-        draft["bullets"] = draft.get("bullets") or source.get("bullets") or []
         draft["images"] = normalize_draft_image_refs(draft.get("images")) or image_refs
         draft["brand"] = draft.get("brand") or source.get("brand") or "Generic"
         draft["model"] = draft.get("model") or normalized.get("model") or "General"
@@ -386,8 +381,6 @@ def draft_copy_from_product(product: dict[str, Any], platform: str) -> dict[str,
             "source_product_id": product_id,
             "sku_items": new_draft_sku_rows(normalized.get("sku_items", [])),
             "title": str(source.get("title") or normalized.get("name") or ""),
-            "description": str(source.get("description") or normalized.get("description") or ""),
-            "bullets": normalize_list(source.get("bullets") or normalized.get("selling_points")),
             "images": draft_image_refs_from_pool(normalized, platform),
             "brand": str(normalized.get("brand") or source.get("brand") or "Generic"),
             "model": str(normalized.get("model") or source.get("model") or "General"),

@@ -155,7 +155,7 @@ def test_generate_copy_uses_requested_draft_context(monkeypatch) -> None:
             "source_platform": "ozon",
             "language": "ru-RU",
             "mode": "rewrite",
-            "copy": {"title": "标题", "description": "描述", "bullets": []},
+            "copy": {"title": "标题", "description": "描述"},
         }
 
     monkeypatch.setattr(copy_facade, "generate_ai_copy_bundle", fake_generate)
@@ -257,14 +257,13 @@ def test_generate_image_prompts_builds_compatible_response(monkeypatch) -> None:
             "product_id": "product-1",
             "platform": "ozon",
             "selected_image_ids": ["image-1"],
-            "include_bullets": False,
             "include_description": True,
             "target_language": "ru-RU",
         }
     )
 
     assert received == [
-        (product, "ozon", ["image-1"], False, True, "ru-RU"),
+        (product, "ozon", ["image-1"], True, "ru-RU"),
     ]
     assert result == (
         {

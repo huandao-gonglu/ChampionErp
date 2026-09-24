@@ -1271,7 +1271,6 @@ def test_prepare_claims_target_and_runs_real_owner_boundaries_in_order() -> None
             "copy": {
                 "title": "Ventilador portátil",
                 "description": "Descripción localizada",
-                "bullets": ["Compacto"],
             },
             "language": language,
         }

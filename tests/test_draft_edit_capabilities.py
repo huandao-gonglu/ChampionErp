@@ -37,7 +37,7 @@ def seed_draft():
     return app, saved["drafts"]["mercadolibre"]["draft_id"]
 
 
-def execution(source_id, *, conversation=CONVERSATION, tools=None):
+def execution(source_id, *, conversation=CONVERSATION):
     return AiExecutionContext.create(
         timeout_seconds=30, budget_profile="test", allow_write=True,
         permissions={"draft.write", "draft.read"},
@@ -45,7 +45,6 @@ def execution(source_id, *, conversation=CONVERSATION, tools=None):
         business_scope={
             "conversation_id": conversation,
             "target_draft_ids": json.dumps([source_id]),
-            "allowed_write_tools": json.dumps(tools or ["draft_duplicate", "draft_sku_selection_update"]),
         },
     )
 
@@ -178,8 +177,6 @@ def test_only_successful_same_conversation_copy_receipts_extend_scope():
     assert select_tool.executor({"draft_id": grandchild["draft_id"], "selected_sku_ids": []}, execution(source_id))["changed"] is True
     with pytest.raises(AiToolExecutionError, match="范围"):
         select_tool.executor(args, execution(source_id, conversation="another-conversation"))
-    with pytest.raises(AiToolExecutionError, match="超出用户本轮要求"):
-        select_tool.executor(args, execution(source_id, tools=["draft_duplicate"]))
     sibling = copy_tool.executor({"draft_id": source_id}, execution(source_id))
     with pytest.raises(AiToolExecutionError, match="范围"):
         select_tool.executor({**args, "draft_id": sibling["draft_id"]}, execution(source_id))

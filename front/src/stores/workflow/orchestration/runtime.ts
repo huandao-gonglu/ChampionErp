@@ -58,7 +58,6 @@ export function isRecord(value: unknown): value is UnknownRecord {
 export function collectStats(product: Product) {
   return {
     downloadedImages: product.source.imagePool.length,
-    extractedBullets: product.sellingPoints.length,
   }
 }
 
@@ -1065,7 +1064,7 @@ export function createWorkflowRuntime() {
     return [
       ['collect', '采集商品', '链接、Cookie、浏览器标签、手动导入'],
       ['library', '商品库', 'SQLite 本地商品库和草稿复制'],
-      ['copy', 'AI 文案', '生成目标平台标题、描述、卖点'],
+      ['copy', 'AI 文案', '生成目标平台标题和完整商品描述'],
       ['images', '图片处理', '上传、图片池、图片翻译'],
       ['edit', '商品编辑', '基础信息、SKU、UPC、库存'],
       ['pricing', '核价', '成本、运费、汇率、佣金'],
@@ -1125,7 +1124,6 @@ export function createWorkflowRuntime() {
       progress: product.value.source.title || product.value.name ? 100 : 0,
       message,
       downloadedImages: stats.downloadedImages,
-      extractedBullets: stats.extractedBullets,
       antiBotWarning: false,
       lastSourceUrl: product.value.source.sourceUrl,
       raw: product.value.source.collectDiagnostics,

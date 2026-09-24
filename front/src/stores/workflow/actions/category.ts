@@ -492,7 +492,16 @@ export function createWorkflowCategoryActions(runtime: WorkflowCategoryActionsPo
     setError('')
     try {
       await persistCurrentDraftForPublish()
-      categoryPrecheck.value = await runCategoryPrecheck(currentDraft.value, selectedPublishTarget.value, categoryId)
+      if (!isCurrent()) return
+      const draftId = currentDraft.value.draftId
+      const target = selectedPublishTarget.value
+      const result = await runCategoryPrecheck(currentDraft.value, target, categoryId)
+      if (!isCurrent() || currentDraft.value.draftId !== draftId) return
+      currentDraft.value = result.draft
+      currentDraftProductContext.value = result.productContext
+      syncActivePublishTarget(target)
+      applyMutationIndexes(result)
+      categoryPrecheck.value = result
       persistActiveTargetListingFields({ categoryPrecheck: categoryPrecheck.value.raw || categoryPrecheck.value })
       addLog(categoryPrecheck.value.ok ? '类目预检通过。' : `类目预检发现缺项：${categoryPrecheck.value.missingFields.join('、') || categoryPrecheck.value.errors.join('、')}`)
     } catch (exc) {

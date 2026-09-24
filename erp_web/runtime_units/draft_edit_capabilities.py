@@ -1,9 +1,10 @@
-"""可组合的草稿复制与 SKU 勾选能力，业务写入统一交给 ProductStore。"""
+"""草稿复制、SKU 勾选与包装资料能力，业务写入统一交给 ProductStore。"""
 
 from typing import Annotated, Any
 
 from erp_web.runtime_units.product_write_capabilities import ProductWriteCapabilityScope
 from erp_web.schemas.ai_trace import AiExecutionContext
+from erp_web.schemas.draft_package import DraftSkuPackageUpdateRequest, DraftSkuPackageUpdateResult
 from erp_web.schemas.product_write_capabilities import (
     DraftDuplicateRequest,
     DraftDuplicateResult,
@@ -89,6 +90,41 @@ def draft_sku_selection_update(
     )
 
 
-DRAFT_EDIT_AI_CAPABILITIES = (draft_duplicate, draft_sku_selection_update)
+@ai_tool(
+    name="draft_sku_package_update",
+    description=(
+        "修改指定草稿中指定已选启用 SKU 的实际包装长宽高（cm）或重量（kg）。"
+        "先用 draft_attributes_read(scope=sku) 读取 SKU ID 和现有尺寸；sku_ids 列出的 SKU 应用同一组明确值，"
+        "不同尺寸分组调用。只更新 package_dimensions 中提供的字段，省略重量可保留各 SKU 原有重量。"
+        "写入草稿 SKU 的 overrides.package_dimensions，不修改商品主档、草稿共用尺寸、平台属性或其他 SKU。"
+        "返回已处理 SKU、字段值和 changed_count；这是包装资料写入口，不要用 draft_sku_attributes_update 写包装字段。"
+    ),
+    permission="draft.write",
+    side_effect="write",
+    approval_required=False,
+    idempotency="required",
+    idempotency_keys=("operation_key",),
+    recovery_policy="idempotent",
+    version="1",
+)
+def draft_sku_package_update(
+    request: DraftSkuPackageUpdateRequest,
+    scope: Annotated[ProductWriteCapabilityScope, Injected()],
+    execution: Annotated[AiExecutionContext, Injected()],
+) -> DraftSkuPackageUpdateResult:
+    del execution
+    result = _require_result(scope.products.update_draft_sku_package(
+        request.draft_id, list(request.sku_ids),
+        request.package_dimensions.model_dump(exclude_unset=True),
+    ))
+    return DraftSkuPackageUpdateResult(
+        draft_id=request.draft_id, sku_ids=request.sku_ids,
+        package_dimensions=request.package_dimensions.model_dump(exclude_unset=True),
+        changed_count=result["changed_count"], changed=result["changed_count"] > 0,
+        updated_at=result["updated_at"],
+    )
 
-__all__ = ["DRAFT_EDIT_AI_CAPABILITIES", "draft_duplicate", "draft_sku_selection_update"]
+
+DRAFT_EDIT_AI_CAPABILITIES = (draft_duplicate, draft_sku_selection_update, draft_sku_package_update)
+
+__all__ = ["DRAFT_EDIT_AI_CAPABILITIES", "draft_duplicate", "draft_sku_selection_update", "draft_sku_package_update"]

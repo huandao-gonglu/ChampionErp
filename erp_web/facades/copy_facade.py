@@ -196,7 +196,6 @@ def generate_image_prompts_payload(body: dict[str, Any]) -> ResponseWithStatus:
         product,
         body.get("platform", "mercadolibre"),
         selected_ids,
-        bool(body.get("include_bullets", True)),
         bool(body.get("include_description", True)),
         str(body.get("target_language") or body.get("language") or ""),
     )

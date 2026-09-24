@@ -150,7 +150,6 @@ def _seed_product(product_id: str, *, with_draft: bool = True) -> dict[str, Any]
                 }
             ],
         },
-        "selling_points": ["Ligero", "Silencioso"],
     }
     if with_draft:
         payload["drafts"] = {
@@ -296,7 +295,7 @@ def test_draft_read_omits_unbounded_raw_product_context() -> None:
         "product-draft-large-context",
         "",
     )
-    product["source"]["description"] = "x" * 300_000
+    product["source"]["attributes"] = {"规格": "x" * 300_000}
     context.products.save_product(product)
 
     read = draft_read(DraftReadRequest(draft_id=draft_id), scope=_write_scope())
@@ -332,8 +331,8 @@ def test_write_receipts_are_bounded_and_exclude_full_aggregates() -> None:
 
     # 把商品和草稿膨胀到远超旧 64 KiB 上限的真实规模。
     product = context.products.load_product_from_index("product-receipt-large", "")
-    product["description"] = "长描述" * 60_000
-    product["source"]["description"] = "来源长描述" * 60_000
+    product["attributes"] = {"规格": "大规格" * 60_000}
+    product["source"]["attributes"] = {"规格": "来源规格" * 60_000}
     context.products.save_product(product)
     big_draft = context.db.load_draft_model(draft_id)
     big_draft["description"] = "草稿长描述" * 60_000
@@ -674,7 +673,6 @@ def _fake_copy_bundle(
         copy = {
             "title": title,
             "description": "Descripción generada",
-            "bullets": ["Aire fresco"],
         }
         if global_title:
             copy["global_title"] = global_title
@@ -891,14 +889,14 @@ def test_text_translate_and_invalid_request(
     result = text_translate(
         TextTranslateRequest(
             target_language="es",
-            content={"title": "Portable fan", "bullets": "Light"},
+            content={"title": "Portable fan", "description": "Light"},
             preserve_terms=("Generic", "MODEL-1"),
         ),
         scope=scope,
     )
     assert result.translations == {
         "title": "[es] Portable fan",
-        "bullets": "[es] Light",
+        "description": "[es] Light",
     }
 
     def failing_translate(

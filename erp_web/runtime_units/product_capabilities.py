@@ -24,6 +24,7 @@ from erp_web.schemas.product_capabilities import (
     DraftSkuAttributesUpdateRequest,
     DraftAttributesReadRequest,
     DraftAttributesReadResult,
+    DraftAttributeTarget,
     ProductAttributesUpdateRequest,
     ProductAttributesUpdateResult,
     ProductDraftFacts,
@@ -365,11 +366,9 @@ def _product_facts(product: dict[str, Any]) -> ProductFacts:
         sku=_text(product.get("sku")),
         stock=_text(product.get("stock")),
         cost=_text(product.get("cost") or product.get("source_price_cny_for_cost")),
-        description=_text(product.get("description") or source.get("description"))[:4000],
         materials=_text_list(
             product.get("materials") or source.get("material") or []
         ),
-        selling_points=_text_list(product.get("selling_points")),
         package_includes=_text_list(product.get("package_includes")),
         dimensions=_text(product.get("dimensions")),
         weight_kg=_text(product.get("weight_kg") or source.get("weight_kg")),
@@ -695,38 +694,51 @@ def product_read(
 
 @ai_tool(
     name="draft_attributes_read",
-    description="读取草稿一个平台目标的完整已填公共属性、草稿共用 package_dimensions，并分页读取全部已选启用 SKU 的事实、覆盖值与已填差异属性。顶层 package_dimensions 与 skus[].package_dimensions 分别保留；SKU 尺寸为空或零不代表草稿无尺寸，也不自动套用共用尺寸。next_offset 非空时继续读取；商品共用事实用 product_read 补充。此工具不返回平台属性定义，定义需用 category_attributes_query 查询。",
-    permission="product.read", side_effect="none", recovery_policy="retry_safe", version="1",
+    description="属性任务优先使用此工具：默认一次返回商品/来源事实、全部平台目标的类目和完整已填公共属性、草稿共用包装尺寸，不返回图片与 SKU 列表，无需先调用 draft_read/product_read。只有处理 SKU 属性或包装时使用 scope=sku，明确平台/站点并按 next_offset 分页读取；逐 SKU 包装不自动继承共用尺寸。平台定义另用 category_attributes_query 按相同 scope 查询。",
+    permission="product.read", side_effect="none", recovery_policy="retry_safe", version="2",
 )
 def draft_attributes_read(
     request: DraftAttributesReadRequest,
     scope: Annotated[ProductCapabilityScope, Injected()],
 ) -> DraftAttributesReadResult:
     draft, product = _load_draft(scope.products, request.draft_id)
-    target = _select_target(draft, platform=request.platform, site=request.site)
-    projection = draft_for_publish_target(draft, target)
-    selected = editable_selected_skus(product, projection)
-    platform, site = _text(target.get("platform")), _text(target.get("site"))
-    key = f"{platform}:{site}".lower()
+    targets = (
+        [_select_target(draft, platform=request.platform, site=request.site)]
+        if request.scope == "sku" or request.platform or request.site
+        else draft_publish_targets(draft)
+    )
+    target_facts = []
+    for target in targets:
+        projection = draft_for_publish_target(draft, target)
+        target_facts.append(DraftAttributeTarget(
+            platform=_text(target.get("platform")), site=_text(target.get("site")),
+            category_id=_text(projection.get("category_id")),
+            category_path=_text(projection.get("category_path")),
+            publish_status=_text(projection.get("publish_status") or projection.get("status")),
+            attributes=deepcopy(projection.get("attributes") or {}),
+        ))
+    selected = editable_selected_skus(product, draft)
     items = []
-    for source, row in selected[request.offset:request.offset + request.limit]:
-        fact = effective_sku(source, row)
-        items.append({"sku_id": row["sku_id"], "name": fact.get("name", ""),
-                      "options": deepcopy(fact.get("options") or {}),
-                      "package_dimensions": deepcopy(fact.get("package_dimensions") or {}),
-                      "attributes": deepcopy(row.get("attributes_by_target", {}).get(key, {}))})
+    if request.scope == "sku":
+        key = f"{target_facts[0].platform}:{target_facts[0].site}".lower()
+        for source, row in selected[request.offset:request.offset + request.limit]:
+            fact = effective_sku(source, row)
+            items.append({"sku_id": row["sku_id"], "name": fact.get("name", ""),
+                          "options": deepcopy(fact.get("options") or {}),
+                          "package_dimensions": deepcopy(fact.get("package_dimensions") or {}),
+                          "attributes": deepcopy(row.get("attributes_by_target", {}).get(key, {}))})
     end = request.offset + len(items)
     return DraftAttributesReadResult(
-        draft_id=request.draft_id, platform=platform, site=site,
-        category_id=_text(projection.get("category_id")), attributes=deepcopy(projection.get("attributes") or {}),
+        draft_id=request.draft_id, product=_product_facts(product), targets=target_facts,
         package_dimensions=deepcopy(draft.get("package_dimensions") or {}),
-        skus=items, sku_count=len(selected), next_offset=end if end < len(selected) else None,
+        skus=items, sku_count=len(selected),
+        next_offset=end if request.scope == "sku" and end < len(selected) else None,
     )
 
 
 @ai_tool(
     name=PRODUCT_ATTRIBUTES_UPDATE_TOOL,
-    description="保存草稿指定类目的公共属性。先读取草稿事实、分页查询全部属性定义与真实枚举，主对话确定值后提交；不推断、不调用模型。SKU 差异字段使用 draft_sku_attributes_update。返回实际已存值和必填缺口；写入成功不等于全部属性填齐。",
+    description="保存草稿指定类目的公共属性。读取 draft_attributes_read 与 category_attributes_query(scope=common) 后，将同一目标已确定的值合并到一次 updates 提交；只写 write_scope=common 的字段，托管/只读字段不可写。SKU 差异字段用 draft_sku_attributes_update。返回实际已存值和必填缺口；写入成功不等于全部属性填齐。工具不推断、不调用模型。",
     permission="product.write",
     side_effect="write",
     approval_required=False,
@@ -745,7 +757,7 @@ def product_attributes_update(
 
 @ai_tool(
     name="draft_sku_attributes_update",
-    description="保存草稿指定目标、指定 SKU 的差异属性；先用 draft_read 读取该 SKU 事实和已填值，再查询平台定义与枚举并由主对话决定填写值。不修改公共属性或其他 SKU，不调用模型。每个 SKU 单独提交，不把整商品混合规格当作单个 SKU 事实。",
+    description="保存草稿指定目标、指定 SKU 的平台类目差异属性；包装长宽高和重量使用 draft_sku_package_update，不得作为此工具的 updates 属性。先用 draft_attributes_read(scope=sku) 读取该 SKU 事实和已填值，再查询 scope=sku 的平台定义与枚举并由主对话决定填写值。不修改公共属性或其他 SKU，不调用模型。每个 SKU 单独提交，不把整商品混合规格当作单个 SKU 事实。",
     permission="product.write", side_effect="write", approval_required=False,
     idempotency="required", idempotency_keys=("operation_key",), recovery_policy="manual", version="1",
 )

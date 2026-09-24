@@ -21,7 +21,6 @@ function listModel(getter: () => string[], setter: (value: string[]) => void) {
   })
 }
 
-const sellingPointsText = listModel(() => props.product.sellingPoints, (value) => { props.product.sellingPoints = value })
 const packageIncludesText = listModel(() => props.product.packageIncludes, (value) => { props.product.packageIncludes = value })
 const materialsText = listModel(() => props.product.materials, (value) => { props.product.materials = value })
 const sourceAttributesValid = ref(true)
@@ -82,8 +81,6 @@ watch(() => props.product.productId, () => {
     />
 
     <div class="mt-5 grid gap-4 xl:grid-cols-2">
-      <label class="block xl:col-span-2"><span class="text-xs font-semibold text-slate-500">商品描述</span><textarea v-model="props.product.source.description" class="input mt-1 min-h-36" /></label>
-      <label class="block"><span class="text-xs font-semibold text-slate-500">商品卖点，每行一个</span><textarea v-model="sellingPointsText" class="input mt-1 min-h-24" /></label>
       <label class="block"><span class="text-xs font-semibold text-slate-500">包装清单，每行一个</span><textarea v-model="packageIncludesText" class="input mt-1 min-h-24" /></label>
       <label class="block"><span class="text-xs font-semibold text-slate-500">材质，每行一个</span><textarea v-model="materialsText" class="input mt-1 min-h-24" /></label>
     </div>

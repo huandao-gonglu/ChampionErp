@@ -246,7 +246,6 @@ def image_prompts_generate(
         product,
         request.platform or "mercadolibre",
         list(request.selected_image_ids),
-        request.include_bullets,
         request.include_description,
         request.target_language,
     )

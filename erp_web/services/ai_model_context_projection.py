@@ -156,7 +156,7 @@ def _prior_tool_result_previews(messages: list[ModelMessage]) -> list[ModelMessa
                 continue
             content = part.content
             summary = {"history_preview": True,
-                       "notice": "这是旧回合结果摘要，不能据此认定任务完成。完整结果保存在原生历史及工具回执；需要当前字段时重新查询业务工具。",
+                       "notice": "这是旧回合结果摘要；历史操作结果优先依据执行回执回答，摘要中的既有字段不证明本次已写入或全部完成。仅在需要当前字段或执行结果不明确时查询业务工具。完整结果保存在原生历史及工具回执。",
                        "original_characters": len(text)}
             if isinstance(content, dict):
                 for key in ("ok", "status", "error", "draft_id", "platform", "target_platform", "site", "category_id", "warning"):

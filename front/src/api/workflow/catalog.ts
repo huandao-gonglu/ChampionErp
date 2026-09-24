@@ -250,8 +250,6 @@ export async function importManualProduct(form: CollectForm): Promise<ProductMut
     platform: form.platform,
     title: form.manualTitle,
     price: form.manualPrice,
-    bullets: form.manualBullets,
-    description: form.manualDescription,
     dimensions: form.manualDimensions,
     weight: form.manualWeight,
     images: stringList(form.manualImages),
@@ -391,7 +389,6 @@ export async function generateImagePrompts(product: Product, platform: Marketpla
     language: listingLanguage,
     target_language: listingLanguage,
     selected_image_ids: product.source.imagePool.filter((image) => image.selected).map((image) => image.id),
-    include_bullets: true,
     include_description: true,
   })
   const data = asRecord(response.data)

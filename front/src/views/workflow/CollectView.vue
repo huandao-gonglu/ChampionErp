@@ -199,9 +199,7 @@ function saveSettings() {
               <label class="block"><span class="text-xs font-semibold text-slate-500 dark:text-accent-300">尺寸</span><input v-model="props.form.manualDimensions" class="input mt-1 bg-white" placeholder="40 x 30 x 20 cm" /></label>
               <label class="block"><span class="text-xs font-semibold text-slate-500 dark:text-accent-300">重量 kg</span><input v-model="props.form.manualWeight" class="input mt-1 bg-white" placeholder="0.85" /></label>
             </div>
-            <div class="mt-4 grid gap-4 lg:grid-cols-3">
-              <label class="block"><span class="text-xs font-semibold text-slate-500 dark:text-accent-300">卖点，每行一个</span><textarea v-model="props.form.manualBullets" class="input mt-1 min-h-28 bg-white" /></label>
-              <label class="block"><span class="text-xs font-semibold text-slate-500 dark:text-accent-300">描述</span><textarea v-model="props.form.manualDescription" class="input mt-1 min-h-28 bg-white" /></label>
+            <div class="mt-4">
               <label class="block"><span class="text-xs font-semibold text-slate-500 dark:text-accent-300">图片地址，每行一个</span><textarea v-model="props.form.manualImages" class="input mt-1 min-h-28 bg-white font-mono" placeholder="https://...jpg" /></label>
             </div>
           </div>
@@ -318,13 +316,9 @@ function saveSettings() {
           </div>
 
           <dl class="grid grid-cols-2 gap-3 text-sm">
-            <div class="rounded-2xl p-3 ring-1" :class="panelStyle.panelClass">
+            <div class="col-span-2 rounded-2xl p-3 ring-1" :class="panelStyle.panelClass">
               <dt :class="panelStyle.panelLabelClass">图片数量</dt>
               <dd class="mt-1 text-xl font-bold" :class="panelStyle.panelValueClass">{{ props.diagnostics.downloadedImages }}</dd>
-            </div>
-            <div class="rounded-2xl p-3 ring-1" :class="panelStyle.panelClass">
-              <dt :class="panelStyle.panelLabelClass">卖点数量</dt>
-              <dd class="mt-1 text-xl font-bold" :class="panelStyle.panelValueClass">{{ props.diagnostics.extractedBullets }}</dd>
             </div>
             <div class="col-span-2 rounded-2xl p-3 ring-1" :class="panelStyle.panelClass">
               <dt :class="panelStyle.panelLabelClass">错误码</dt>
@@ -361,7 +355,6 @@ function saveSettings() {
             <div class="rounded-2xl p-4 ring-1" :class="panelStyle.panelClass">
               <p class="text-xs font-semibold" :class="panelStyle.panelLabelClass">商品标题</p>
               <p class="mt-2 text-base font-bold" :class="panelStyle.panelValueClass">{{ props.product.source.title || props.product.name || '待采集' }}</p>
-              <p class="mt-2 line-clamp-4 text-sm leading-6 text-slate-600 dark:text-accent-300">{{ props.product.source.description || '暂无描述' }}</p>
             </div>
             <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
               <div class="rounded-2xl p-4 ring-1" :class="panelStyle.panelClass">

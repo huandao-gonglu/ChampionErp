@@ -290,7 +290,7 @@ def test_first_model_request_contains_only_clean_product_facts() -> None:
     facts = seen["payload"]["product"]
     assert facts["source"]["title"] == "便携式 USB 风扇"
     assert facts["target"]["title"] == "Ventilador portátil USB"
-    assert facts["source"]["description"] == "桌面静音风扇，USB 供电。"
+    assert "description" not in facts["source"]
     assert facts["facts"]["attributes"] == {"Power": "USB"}
 
 

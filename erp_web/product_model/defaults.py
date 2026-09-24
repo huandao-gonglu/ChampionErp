@@ -14,8 +14,6 @@ def default_source() -> dict[str, Any]:
         "title": "",
         "price": "",
         "currency": "",
-        "bullets": [],
-        "description": "",
         "images": [],
         "image_pool": [],
         "dimensions": {
@@ -60,7 +58,6 @@ def default_collect_diagnostics() -> dict[str, Any]:
         "images_found_count": 0,
         "title_found": False,
         "price_found": False,
-        "bullets_found_count": 0,
         "sku_found_count": 0,
         "dimensions_found": False,
         "weight_found": False,
@@ -105,7 +102,6 @@ def default_draft(platform: str) -> dict[str, Any]:
         "global_title": "",
         "title": "",
         "description": "",
-        "bullets": [],
         "search_terms": [],
         "language": site["language"],
         "country": "",
@@ -146,7 +142,6 @@ def default_product_model() -> dict[str, Any]:
         "materials": [],
         "dimensions": "",
         "colors": [],
-        "selling_points": [],
         "package_includes": [],
         "avoid_claims": [],
         "marketplace_terms": {
@@ -182,7 +177,6 @@ def default_product_model() -> dict[str, Any]:
         "upc": "",
         "collect_status": "",
         "collect_logs": [],
-        "description": "",
         "source": default_source(),
         "drafts": {platform: default_draft(platform) for platform in PLATFORMS},
     }

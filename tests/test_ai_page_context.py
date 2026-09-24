@@ -74,7 +74,7 @@ def test_client_metadata_cannot_inject_background_instructions(tmp_path):
     user = next(m for m in ui.chat_service.trusted_history(CONVERSATION)
                 if any(isinstance(p, UserPromptPart) for p in m.parts))
     assert user.metadata["page_context"] is None
-    assert user.metadata["allowed_write_tools"] == []
+    assert "allowed_write_tools" not in user.metadata
 
 
 @pytest.mark.parametrize("context", [

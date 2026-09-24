@@ -8,6 +8,7 @@ from typing import Annotated, Any
 
 from erp_web.product_model import validate_category_precheck
 from erp_web.runtime_units.category_keyword_search import CategoryKeywordBatchSearch
+from erp_web.runtime_units.category_attribute_access import attribute_write_scope
 from erp_web.schemas.ai_tools import AiToolExecutionError
 from erp_web.schemas.category_search_language import category_search_language
 from erp_web.schemas.ai_trace import AiExecutionContext
@@ -37,6 +38,8 @@ def _dict_rows(value: Any) -> tuple[dict[str, Any], ...]:
 
 
 def _live_api_error(exc: Exception) -> BusinessCapabilityError:
+    if isinstance(exc, ValueError):
+        return BusinessCapabilityError("CATEGORY_QUERY_INVALID", str(exc), retryable=False)
     return BusinessCapabilityError(
         "CATEGORY_LIVE_API_FAILED",
         str(exc) or "类目实时接口调用失败。",
@@ -157,11 +160,11 @@ def category_search(
 
 @ai_tool(
     name=CATEGORY_ATTRIBUTES_QUERY_TOOL,
-    description="分页查询目标类目的属性定义摘要；用 cursor 继续读取后续页。",
+    description="分页查询类目属性：默认 scope=common 只返回可写公共属性，SKU 任务用 scope=sku。write_scope 标明写入范围；excluded_attributes 仅说明排除的托管、只读或其他范围字段，不能写入它们。按 has_more/cursor 继续，包括过滤后的空页。已有 options 可直接使用，缺候选时并行查询所需字典。",
     permission="category.read",
     side_effect="none",
     recovery_policy="retry_safe",
-    version="2",
+    version="3",
 )
 def category_attributes_query(
     request: CategoryAttributesQueryRequest,
@@ -188,6 +191,17 @@ def category_attributes_query(
             "CATEGORY_ATTRIBUTES_QUERY_FAILED",
             "类目属性定义查询失败。",
         )
+    attributes = []
+    excluded = []
+    for definition in _dict_rows(payload.get("attributes")):
+        write_scope = attribute_write_scope(platform, definition)
+        if request.scope != "all" and write_scope != request.scope:
+            excluded.append({"id": definition["id"], "name": definition.get("name", ""), "write_scope": write_scope})
+            continue
+        # 保留非空规则和布尔约束；省略空的单位、字典元数据，避免每轮重复传输。
+        attributes.append({**{key: value for key, value in definition.items()
+                              if key not in {"raw", "platform_binding"} and value is not None and value != "" and value != []},
+                           "write_scope": write_scope})
     return CategoryAttributesQueryResult(
         platform=_text(payload.get("platform")) or platform,
         site=_text(payload.get("site")) or site,
@@ -195,7 +209,8 @@ def category_attributes_query(
         category_path=_text(payload.get("category_path")),
         limit=request.limit,
         cursor=request.cursor,
-        attributes=_dict_rows(payload.get("attributes")),
+        attributes=tuple(attributes),
+        excluded_attributes=tuple(excluded),
         next_cursor=_text(payload.get("next_cursor")),
         has_more=bool(payload.get("has_more")),
     )
@@ -203,7 +218,7 @@ def category_attributes_query(
 
 @ai_tool(
     name=CATEGORY_ATTRIBUTE_VALUES_QUERY_TOOL,
-    description="分页查询类目属性的候选枚举值（支持关键词过滤）；用 cursor 继续读取。",
+    description="分页查询类目属性真实候选。有限的小字典优先空 query 读取首屏，避免同义词搜空后再读全表；品牌等大字典使用关键词。多个独立属性可同时查询。has_more 时用 cursor 继续；搜索为空不能证明字典无匹配。",
     permission="category.read",
     side_effect="none",
     recovery_policy="retry_safe",

@@ -332,11 +332,6 @@ def build_global_chat_toolset(context: AppContext | None = None) -> AiToolSet:
         def execute(arguments, execution):
             from erp_web.schemas.ai_tools import AiToolExecutionError
 
-            allowed = execution.business_scope.get("allowed_write_tools")
-            if allowed is not None and binding.definition.name not in json.loads(allowed):
-                raise AiToolExecutionError(
-                    "OPERATION_OUTSIDE_USER_SCOPE", "该操作超出用户本轮要求，未执行任何写入。"
-                )
             if binding.definition.name in {"category_match", "draft_prepare_for_market"}:
                 failures = []
                 for receipt in active.agent_calls.current_turn_receipts(

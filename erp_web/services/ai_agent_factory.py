@@ -100,12 +100,6 @@ def _prepare_tools_within_usage_limit(
         reserve = support.deadline_reserve_seconds
         if execution.remaining_seconds() < reserve:
             return []
-        allowed = getattr(support, "allowed_write_tools", None)
-        if allowed is not None:
-            tool_defs = [tool for tool in tool_defs if (
-                ctx.deps.tool_runtime.toolset.bindings[tool.name].definition.side_effect != "write"
-                or tool.name in allowed
-            )]
     return tool_defs
 
 

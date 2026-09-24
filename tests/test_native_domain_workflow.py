@@ -93,7 +93,6 @@ def setup_domain(monkeypatch, count=1):
             "copy": {
                 "title": "Портативный вентилятор",
                 "description": "Описание вентилятора",
-                "bullets": ["Компактный"],
             },
         },
     )

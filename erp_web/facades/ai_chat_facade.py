@@ -22,7 +22,6 @@ def build_global_chat_service(context=None):
         message_store=active.pydantic_messages,
         toolset=build_global_chat_toolset(active),
         call_store=active.agent_calls,
-        target_reader=active.products.iter_drafts_index,
     )
 
 

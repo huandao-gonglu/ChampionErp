@@ -9,7 +9,7 @@ import threading
 from typing import Any
 
 from pydantic_ai import ModelRequestNode, ModelRetry, RunContext, UserPromptNode
-from pydantic_ai.messages import ModelMessagesTypeAdapter, UserPromptPart
+from pydantic_ai.messages import ModelMessagesTypeAdapter
 
 from erp_web.stores.agent_call_store import AgentCallStore
 from erp_web.schemas.ai_page_context import page_context_instructions
@@ -19,7 +19,6 @@ from erp_web.services.ai_run_cancellation import check_cancellation
 class AgentRunStorage:
     def __init__(
         self, store: AgentCallStore, conversation_id: str, history: list, version: int,
-        *, scope_resolver=None,
     ) -> None:
         self.store = store
         self.conversation_id = conversation_id
@@ -28,17 +27,11 @@ class AgentRunStorage:
         self.consumed: set[int] = set()
         self.lock = threading.RLock()
         self.target_draft_ids: tuple[str, ...] = store.selected_drafts(conversation_id)
-        self.scope_resolver = scope_resolver
-        self.allowed_write_tools = None
-        self.all_drafts = False
         self.page_context = None
         for message in history:
             metadata = message.metadata or {}
             if "page_context" in metadata:
                 self.page_context = metadata["page_context"]
-            if "allowed_write_tools" in metadata:
-                self.allowed_write_tools = frozenset(metadata["allowed_write_tools"])
-                self.all_drafts = bool(metadata.get("all_drafts"))
 
     def context_instructions(self) -> str:
         """由原生动态 instructions 读取本轮背景，关闭时不复用旧页面。"""
@@ -50,7 +43,6 @@ class AgentRunStorage:
     def receive_at_boundary(self, ctx: RunContext) -> None:
         check_cancellation()
         with self.lock:
-            incoming = []
             for row in self.store.inbox(self.conversation_id):
                 if row["sequence"] in self.consumed:
                     continue
@@ -63,20 +55,8 @@ class AgentRunStorage:
                         "user_message_id": row["message_id"],
                         "page_context": self.page_context,
                     }
-                if self.scope_resolver is not None:
-                    check_cancellation()
-                    texts = [str(part.content) for message in [*self.canonical(ctx), *incoming, *messages]
-                             for part in message.parts if isinstance(part, UserPromptPart)]
-                    authorization = self.scope_resolver(texts)
-                    self.allowed_write_tools = frozenset(authorization.allowed_write_tools) if authorization else frozenset()
-                    self.all_drafts = authorization.all_drafts if authorization else False
-                    for message in messages:
-                        message.metadata["allowed_write_tools"] = sorted(self.allowed_write_tools)
-                        message.metadata["all_drafts"] = self.all_drafts
-                # 工具准备发生在 before_model_request 之前；在模型节点开始前更新
-                # 业务权限，消息通过原生队列交给框架注入和编码。
+                # 在模型节点开始前更新页面背景，用户消息由原生队列注入和编码。
                 ctx.enqueue(*messages)
-                incoming.extend(messages)
                 ids = tuple(json.loads(row["target_draft_ids"]))
                 if ids:
                     self.target_draft_ids = ids
@@ -115,8 +95,6 @@ class AgentRunStorage:
                 self.store.user_facts(self.conversation_id), ensure_ascii=False
             ),
         }
-        if self.allowed_write_tools is not None:
-            scope["allowed_write_tools"] = json.dumps(sorted(self.allowed_write_tools))
         return dataclasses.replace(
             base,
             business_scope=scope,

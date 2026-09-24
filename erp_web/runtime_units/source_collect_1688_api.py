@@ -13,7 +13,6 @@ from typing import Any
 
 from erp_web.context import get_context
 from erp_web.product_model import default_collect_diagnostics, merge_source_partial_result, parse_dimensions_text
-from erp_web.product_model.common import normalize_list
 from erp_web.services.config_service import merge_runtime_secret_section
 
 from .collect_helpers import (
@@ -278,7 +277,6 @@ def parse_1688_api_product(raw: dict[str, Any], source_url: str, offer_id: str) 
         find_first_key(raw, {"subject", "title", "name", "productName", "offerTitle"}),
         f"1688 商品 {offer_id}",
     )
-    description = first_text(find_first_key(raw, {"description", "desc", "detail", "productDetail"}))
     price = first_text(find_first_key(raw, {"price", "priceRange", "salePrice", "consignPrice", "promotionPrice"}))
     attrs = collect_attributes(raw)
     images = collect_image_urls(raw)
@@ -294,15 +292,12 @@ def parse_1688_api_product(raw: dict[str, Any], source_url: str, offer_id: str) 
     material = first_text(find_first_key(raw, {"material", "材质"}), attrs.get("材质"))
     brand = first_text(find_first_key(raw, {"brand", "brandName"}), attrs.get("brand"), attrs.get("brandName"), attrs.get("品牌"))
     model = first_text(find_first_key(raw, {"model", "货号"}), attrs.get("model"), attrs.get("型号"), attrs.get("货号"))
-    bullets = normalize_list([f"{key}: {value}" for key, value in list(attrs.items())[:6]])
     return {
         "source_url": source_url,
         "source_platform": "1688",
         "title": title,
         "price": price,
         "currency": "CNY" if price else "",
-        "description": description,
-        "bullets": bullets,
         "images": images,
         "dimensions": dimensions,
         "weight_kg": re.sub(r"[^0-9.,]", "", weight),

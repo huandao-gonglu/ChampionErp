@@ -45,7 +45,6 @@ _SENSITIVE_KEY_PARTS = frozenset(
         "authorization",
         "auth",
         "body",
-        "bullets",
         "content",
         "cookie",
         "credential",

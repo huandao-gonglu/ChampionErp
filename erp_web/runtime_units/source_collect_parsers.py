@@ -431,8 +431,6 @@ def finalize_collected_product(
             "title": str(source.get("title") or product.get("name") or "").strip(),
             "price": str(source.get("price") or price or product.get("cost") or "").strip(),
             "currency": str(source.get("currency") or currency or "").strip(),
-            "bullets": normalize_list(source.get("bullets") or product.get("selling_points")),
-            "description": str(source.get("description") or product.get("description") or "").strip(),
             "images": normalize_list(normalized_refs),
             "image_pool": normalize_image_pool(normalized_refs, platform),
             "dimensions": source.get("dimensions") if isinstance(source.get("dimensions"), dict) and any(source.get("dimensions").values()) else parse_dimensions_text(
@@ -563,14 +561,6 @@ def parse_1688_product(raw_data: str | dict[str, Any], page_url: str = "") -> di
     if isinstance(context.get("skus"), list) and context["skus"]:
         product["sku_items"] = deepcopy(context["skus"])
 
-    bullets: list[str] = []
-    for line in text.splitlines():
-        value = line.strip(" -•\t")
-        if 6 <= len(value) <= 80 and any(ch.isalpha() or "\u4e00" <= ch <= "\u9fff" for ch in value):
-            if not value.startswith(("品牌", "型号", "规格", "尺寸", "包装", "材质", "价格")):
-                bullets.append(value)
-    product["selling_points"] = bullets[:6]
-
     price, currency = (str(context.get("price") or "").strip(), str(context.get("currency") or "").strip()) if context.get("price") else html_extract_service.extract_price_currency(html)
     dims, parsed_weight = html_extract_service.extract_measurements(html)
     if dims and not product.get("dimensions"):
@@ -626,14 +616,6 @@ def parse_amazon_product(raw_data: str | dict[str, Any], page_url: str = "") -> 
         product["name"] = title.strip()
         product.update({key: value for key, value in html_extract_service.infer_product_from_title(title).items() if value})
 
-    bullets = []
-    try:
-        bullets = html_extract_service.extract_amazon_bullets(html)
-    except Exception:
-        bullets = []
-    if bullets:
-        product["selling_points"] = bullets[:10]
-
     price, currency = html_extract_service.extract_price_currency(html)
     dims, parsed_weight = html_extract_service.extract_measurements(html)
     if dims:
@@ -685,9 +667,6 @@ def parse_generic_product(raw_data: str | dict[str, Any], page_url: str = "") ->
     brand = extract_text_pattern(text, [r"(?:brand|品牌)[:：]\s*([^\n]+)"])
     if brand:
         product["brand"] = brand.strip()
-    bullets = [line.strip(" -•\t") for line in text.splitlines() if 8 <= len(line.strip()) <= 120][:8]
-    if bullets:
-        product["selling_points"] = bullets
     price, currency = html_extract_service.extract_price_currency(html)
     dims, parsed_weight = html_extract_service.extract_measurements(html)
     if dims:

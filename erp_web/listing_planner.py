@@ -43,10 +43,10 @@ def product_summary(product: dict[str, Any]) -> str:
         "材质": "、".join(product.get("materials", [])),
         "尺寸": product.get("dimensions"),
         "颜色": "、".join(product.get("colors", [])),
-        "核心卖点": "；".join(product.get("selling_points", [])),
+        "来源属性": (product.get("source") or {}).get("attributes"),
+        "商品属性": product.get("attributes"),
         "包装清单": "、".join(product.get("package_includes", [])),
         "禁用表达": "；".join(product.get("avoid_claims", [])),
-        "补充信息": product.get("supplemental_info") or product.get("source_text"),
     }
     return "\n".join(f"{k}: {v}" for k, v in fields.items() if v)
 
@@ -97,8 +97,6 @@ def build_listing_copy(product: dict[str, Any], platform: PlatformPlan) -> dict[
         *product.get("materials", [])[:2],
         product.get("dimensions", ""),
     ]
-    selling_points = product.get("selling_points", [])
-    package = product.get("package_includes", [])
 
     title_parts = [
         terms["product_type"],
@@ -118,26 +116,6 @@ def build_listing_copy(product: dict[str, Any], platform: PlatformPlan) -> dict[
     )
 
     search_keywords = unique_words(primary_keywords + attribute_keywords)
-    short_bullets = unique_words(selling_points)[:5]
-    package_text = "、".join(package) if package else "以实际包装清单为准"
-    keyword_line = " ".join(search_keywords)
-
-    description = "\n".join(
-        [
-            f"{terms['product_type']}，适合{product.get('target_customer', '目标买家')}使用。",
-            "",
-            "五点描述草稿:",
-            *[f"- {point}" for point in short_bullets],
-            f"- 使用场景: {product.get('target_customer', '目标买家')}日常使用。",
-            f"- 包装清单: {package_text}",
-            "",
-            f"材质/规格: {product.get('dimensions', '')}；{'、'.join(product.get('materials', []))}",
-            "",
-            f"搜索词覆盖: {keyword_line}",
-            "说明: 以上内容只使用与产品真实相关的关键词，避免无关流量词和夸张承诺。",
-        ]
-    )
-
     prompt = build_copy_prompt(product, platform, search_keywords)
     return {
         "language": terms["language"] or copy_rules["language"],
@@ -145,7 +123,7 @@ def build_listing_copy(product: dict[str, Any], platform: PlatformPlan) -> dict[
         "alt_titles": unique_words([alt_title_1, alt_title_2]),
         "title_max_chars": max_chars,
         "search_keywords": search_keywords,
-        "description": description,
+        "description": "",
         "copy_prompt": prompt,
         "rules": copy_rules,
     }
@@ -183,11 +161,11 @@ def build_copy_prompt(
 
 描述规则:
 {description_rules}
-- 描述采用 Amazon 五点描述风格，每点一行。
-- 五点必须覆盖: 核心卖点、使用功能、使用场景、规格/材质、包装清单。
+- 描述采用清晰的自然段或要点，按商品实际资料组织内容。
+- 将有事实依据的优势、功能、使用场景、规格/材质和包装清单写入描述；缺少依据的内容不要编造。
 - 语言自然，适合当地买家阅读，不要像关键词列表。
 - 可以自然埋入长尾关键词，但必须和产品真实相关。
-- description 只能输出 {description_language} 的五点描述，不要写中文说明，不要写“关键词覆盖”。
+- description 只能输出 {description_language} 的完整商品描述，不要写中文说明，不要写“关键词覆盖”。
 - 每一点都必须是通顺句子，不要堆关键词。
 
 输出 JSON:
@@ -195,7 +173,7 @@ def build_copy_prompt(
   "title": "首字母大写的最推荐标题",
   "alt_titles": ["不带品牌名、不带难翻译名词的备选标题", "另一个准确高曝光备选标题"],
   "search_keywords": ["准确关键词1", "准确关键词2"],
-  "description": "五点描述，每点一行，符合目标语言和平台要求"
+  "description": "完整商品描述，包含有依据的特点、用途和规格，符合目标语言和平台要求"
 }}
 """
 

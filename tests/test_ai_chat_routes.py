@@ -183,7 +183,6 @@ def _patch_chat_model(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
     from erp_web.services import ai_agent_factory as factory_module
     from erp_web.services import global_agent_chat_service as chat_module
-    from erp_web.services.chat_operation_scope import ChatOperationScope
 
     holder: dict[str, Any] = {
         "model": TestModel(custom_output_text="这是全局对话回复。", call_tools=[])
@@ -207,8 +206,6 @@ def _patch_chat_model(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         return real_factory(**kwargs)
 
     monkeypatch.setattr(chat_module, "AiAgentFactory", patched_factory)
-    monkeypatch.setattr(chat_module, "resolve_chat_operation_scope",
-                        lambda factory, profile, toolset, messages: ChatOperationScope(allowed_write_tools=list(toolset.bindings), all_drafts=False))
     return holder
 
 

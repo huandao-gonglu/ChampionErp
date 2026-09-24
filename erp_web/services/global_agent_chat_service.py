@@ -6,15 +6,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from pydantic_ai import DeferredToolRequests, ModelRetry
-from pydantic_ai.messages import ToolCallPart, ToolReturnPart, UserPromptPart
+from pydantic_ai import DeferredToolRequests
 from erp_web.ai_capability_composition import application_capability_permissions
 from erp_web.services.ai_agent_factory import AiAgentExecutionProfile, AiAgentFactory
 from erp_web.services.ai_prompt_templates import load_ai_use_case_prompt_pair
 from erp_web.services.agent_run_storage import AgentRunStorage
 from erp_web.services.agent_memory import load_agent_memory_instructions
 from erp_web.stores.agent_call_store import AgentCallStore
-from erp_web.services.chat_operation_scope import resolve_chat_operation_scope
 
 GLOBAL_CHAT_USE_CASE_ID = GLOBAL_CHAT_PROFILE_ID = GLOBAL_CHAT_TOOLSET_ID = (
     "global.chat"
@@ -38,7 +36,7 @@ GLOBAL_CHAT_PROFILE = AiAgentExecutionProfile(
 )
 
 NATIVE_INSTRUCTIONS = """你是本地 ERP 的主 Agent。根据用户目标直接选择代码已注册的 focused 业务能力，读取工具结果后决定下一步。
-先读取目标草稿、关联商品、店铺/平台资料和相关用户历史，复用已有事实。缺字段或可修复错误时，先查询、纠正参数或选择适用工具；只询问确实缺失或冲突的信息。
+开展新的业务操作时，先复用对话中仍有效的事实，仅按需读取目标草稿、关联商品、店铺/平台资料。缺字段或可修复错误时，先查询、纠正参数或选择适用工具；只询问确实缺失或冲突的信息。
 多条独立草稿可以并发准备，一条缺资料时继续处理其他可执行草稿。不处理用户未选中的草稿。
 商品共用事实可以复用，平台类目、售价、币种和销售目标必须按站点范围处理。模型猜测不能成为用户决定；来源引用只能来自真实用户消息或已保存事实。
 草稿准备不包含发布授权。发布、删除等需审批操作必须由用户批准；在可独立完成的准备之后再收集审批。
@@ -46,69 +44,20 @@ NATIVE_INSTRUCTIONS = """你是本地 ERP 的主 Agent。根据用户目标直�
 收到纠正或取消后优先遵守最新要求。按草稿报告已完成内容、剩余缺口和证据；预算耗尽时明确未完成事项。
 用户只要求类目、公共属性时，只执行这些操作；完整准备能力会额外修改文案、图片和价格，不能用于窄范围任务的失败恢复。
 自动匹配或复核类目时直接调用对应的自动匹配能力并让服务端负责平台检索、树导航和实物比较；候选查询能力用于用户查看候选，不是自动匹配的前置步骤；关键词搜索空结果不表示自动树导航也不可用。
-草稿 targets 列表中每个平台和站点都属于该草稿，不可只处理主平台。开始时记录完整目标集合，结束前再次查询核对每个目标，逐项说明未完成原因。
-属性填写由你在主对话完成：用 draft_read 定位当前草稿与全部目标，用 draft_attributes_read 按目标读取完整已填属性及 SKU 事实（next_offset 非空时继续分页），必要时用 product_read 或 inspect_source_facts 补充商品事实。同一对话中身份、类目和内容未变化的已读事实可以复用；发生编辑或切换对象时重新读取。
-类目已正确时保留类目。用 category_attributes_query 分页读取全部定义（has_more 时继续），按需要用 category_attribute_values_query 查询真实候选；不得只看前若干可选字段。根据事实填写可确定的必填和可选属性，不强填缺资料项。
+草稿 targets 列表中每个平台和站点都属于该草稿，不可只处理主平台。开展批量操作时记录用户要求的完整目标集合，结束前依据逐项回执核对覆盖情况；缺少当前状态证据时再查询，逐项说明未完成原因。
+属性填写由你在主对话完成。公共属性任务优先用 draft_attributes_read(scope=common)，一次取得商品/来源事实与全部目标类目、已填公共属性；无需先读 draft_read、product_read 或图片。仅在填写指定 SKU 属性或包装时用 scope=sku，明确平台/站点并按 next_offset 分页。公共属性页面的“填充属性”只处理公共字段，不因 SKU 数量多而扩展任务；用户明确要求 SKU 时必须按范围完成。同一对话中身份、类目和内容未变化的已读事实可以复用。
+类目已正确时保留类目。各目标的 category_attributes_query 可在同一响应并行调用，scope 与本次任务一致；按 has_more 分页读取全部定义，即使过滤后当前页为空。只填写匹配 write_scope 的字段，excluded_attributes 中的托管、只读或其他范围字段不能提交。已有候选直接复用，有限小字典先空 query 查看首屏，大字典才按关键词检索；独立的候选查询放在同一轮，不逐字段等待。结合现有证据确定值后立即写入，不反复讨论同一缺资料项。
 品牌优先选择平台实际提供的无品牌，只有找到非常确定的目标品牌才使用该品牌，不能伪造无品牌 ID。其他属性不得从混合 SKU、模糊参数或图片猜精确值；缺少可靠依据时在主对话询问用户。
-公共字段用 product_attributes_update 写入；SKU 差异字段用 draft_sku_attributes_update 逐个写入已选 SKU。提交 category_id 和真实值；后端只校验和保存。填写或补齐默认保留已有有效值，只有用户要求修正时才覆盖。单次写入回执不表示全部完成，核对全部定义、已选 SKU 与实际已存值，汇报写入、缺资料和失败项。完整准备能力完成后仍需按此流程单独填写属性。
+平台公共属性用 product_attributes_update 写入，同一平台/站点的已确定字段合并为一次 updates；平台 SKU 差异属性用 draft_sku_attributes_update 逐个写入已选 SKU。提交 category_id 和真实值；后端只校验和保存。填写或补齐默认保留已有有效值，只有用户要求修正时才覆盖。按本次范围核对定义与回执：公共属性任务不要求遍历 SKU。单次写入成功不等于全部字段填齐；有明确回执无需再读取验证，直接简洁汇报已保存、缺资料和失败项。确定性参数/作用域错误只在参数已修正后重试，不能原样重试。完整准备能力完成后仍需按此流程单独填写属性。
+工具是否可用由代码的 Catalog、Execution Profile、业务权限和资源额度决定；只调用当前实际提供的工具，历史消息或提示词提到的名称不代表当前可用。严格遵循当前工具 Schema 和用途，不能猜测工具、参数或把字段塞进不对应的属性工具。
+用户询问刚才是否执行、保存或完成某项操作时，先依据原生历史中的工具调用和执行回执直接回答，再决定是否需要核实当前状态。明确区分未尝试、执行前被拒绝、部分成功、确认成功和结果未知；计划、口头承诺、发送调用都不算写入成功，传输成功但业务 ok=false 也不算成功。执行前 Unknown tool name 或参数校验拒绝表示该调用未执行；超时、响应丢失或结果投影失败不能据此断言没有写入。已有明确回执时不要以重新读取作为回答前置条件；读取到字段存在也不能证明是自己刚才写的。
+用户说“是、继续、按这个做”时，结合完整对话中紧邻的提议、既有目标和纠正理解其含义；只执行对应的明确操作，不扩大到无关字段。用户只是追问操作结果时直接回答，不自动继续写入。发布和删除仍走原生工具审批。
+SKU 包装长宽高和重量使用 draft_sku_package_update 写入，存入指定 SKU 的 overrides.package_dimensions；它们不属于平台类目属性。先读 draft_attributes_read(scope=sku) 确定 SKU 和尺寸，将用户明确同意共用一组尺寸的 SKU ID 一起提交，省略 weight_kg 可保留各 SKU 原有重量。草稿共用 package_dimensions 存在不代表逐 SKU 已填写，汇报时说明实际写入层级及 SKU 范围。
 同一平台依赖重复失败时不再反复换类目或复合工具；先完成其他平台。工具暂不可用或预算接近耗尽时，立即按现有工具回执汇总实际写入、失败与缺资料项。
 """
 
 
 class GlobalAgentChatService:
-    @staticmethod
-    def validate_target_coverage(ctx, output):
-        """结果提交前核对实际查询范围；只反馈缺漏，由原生 Agent 决定如何处理。"""
-        support = ctx.deps.tool_runtime.run_support
-        if not isinstance(output, str) or not support.all_drafts:
-            return output
-        requested = set(support.allowed_write_tools or ()) & {
-            "category_match"
-        }
-        targets = {}
-        called = set()
-        # Deferred 恢复会产生新 run_id；同一真实用户回合的回执仍属于当前任务。
-        user_indexes = [index for index, message in enumerate(ctx.messages)
-                        if any(isinstance(part, UserPromptPart) for part in message.parts)]
-        turn_messages = (ctx.messages[user_indexes[-1]:] if user_indexes else
-                         [message for message in ctx.messages if message.run_id == ctx.run_id])
-        returned_calls = {
-            (part.tool_name, part.tool_call_id): part.content
-            for message in turn_messages
-            for part in message.parts if isinstance(part, ToolReturnPart)
-        }
-        reader = getattr(support, "target_reader", None)
-        if reader is not None:
-            for item in reader():
-                if support.target_draft_ids and item["draft_id"] not in support.target_draft_ids:
-                    continue
-                for target in item.get("raw", {}).get("target_sites", []):
-                    targets[(item["draft_id"], target["platform"], target["site"])] = target
-        for message in turn_messages:
-            for part in message.parts:
-                if isinstance(part, ToolReturnPart) and part.tool_name == "drafts_query" and isinstance(part.content, dict):
-                    for item in part.content.get("items", []):
-                        for target in item.get("targets", []):
-                            key = (item["draft_id"], target["platform"], target["site"])
-                            targets[key] = target
-                if (isinstance(part, ToolCallPart) and part.tool_name in requested
-                        and (part.tool_name, part.tool_call_id) in returned_calls):
-                    args = part.args_as_dict()
-                    key = (args.get("draft_id"), args.get("target_platform"), args.get("site", ""), part.tool_name)
-                    called.add(key)
-        missing = []
-        for key, target in targets.items():
-            for operation in requested:
-                if operation == "category_match" and target.get("category_id"):
-                    continue
-                if (*key, operation) not in called and (key[0], key[1], "", operation) not in called:
-                    missing.append(f"{key[0]}/{key[1]}/{key[2]}:{operation}")
-        if missing:
-            raise ModelRetry("完整目标集合仍有未处理项：" + "、".join(missing)
-                             + "。请核对未处理的类目目标；若上游持续失败或确实不能执行，"
-                             "逐项明确说明原因，不得宣称全部完成。")
-        return output
-
     def __init__(
         self,
         *,
@@ -118,24 +67,16 @@ class GlobalAgentChatService:
         toolset: Any,
         factory: Any = None,
         call_store: AgentCallStore | None = None,
-        scope_resolver=None,
-        target_reader=None,
     ) -> None:
         self.app_dir = Path(app_dir)
         self.app_config = dict(app_config or {})
         self.message_store = message_store
         self.toolset = toolset
         self.call_store = call_store or AgentCallStore(message_store.db)
-        self.target_reader = target_reader
         self.factory = factory or AiAgentFactory(
             app_dir=self.app_dir,
             app_config=self.app_config,
             message_store=message_store,
-        )
-        self.scope_resolver = scope_resolver or (
-            lambda messages: resolve_chat_operation_scope(
-                self.factory, GLOBAL_CHAT_PROFILE, self.toolset, messages
-            )
         )
 
     def instructions(self) -> str:
@@ -168,9 +109,7 @@ class GlobalAgentChatService:
             conversation_id,
             messages,
             history.history_version if history else 0,
-            scope_resolver=self.scope_resolver,
         )
-        support.target_reader = self.target_reader
         pending = self.call_store.pending(conversation_id)
         if pending is not None and not self.call_store.ready(conversation_id):
             raise ValueError(
@@ -193,7 +132,6 @@ class GlobalAgentChatService:
                 "message_id": client_message_id,
             },
             model_override=model_override,
-            output_validator=self.validate_target_coverage,
         ) as session:
             yield session
 

@@ -230,7 +230,6 @@ def _prepare_copy(
         {
             "title": title,
             "description": description,
-            "bullets": normalize_list(copy_payload.get("bullets")),
             "search_terms": normalize_list(copy_payload.get("search_keywords")),
             "language": text(response.get("language")) or text(target.get("language")),
             "copy_source": "ai",

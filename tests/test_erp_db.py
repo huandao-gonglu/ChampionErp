@@ -34,7 +34,6 @@ def sample_product(
         "name": title,
         "brand": "BrandX",
         "model": "ModelY",
-        "selling_points": ["Point A", "Point B"],
         "weight_kg": "0.5",
         "source": {
             "source_url": source_url,
@@ -42,8 +41,6 @@ def sample_product(
             "title": title,
             "price": "12.34",
             "currency": "CNY",
-            "bullets": ["Point A", "Point B"],
-            "description": "Original description",
             "dimensions": {"length_cm": "10", "width_cm": "8", "height_cm": "3"},
             "weight_kg": "0.5",
             "image_pool": [

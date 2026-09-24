@@ -57,7 +57,6 @@ function draft(): DraftDetail {
     description: 'Descripción',
     brand: 'Brand',
     model: 'Model',
-    bullets: ['Punto'],
     categoryId: '',
     descriptionCategoryId: '',
     categoryPath: '',

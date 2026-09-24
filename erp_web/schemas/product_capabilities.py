@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """商品读取、属性设置和草稿图片准备的类型化契约。"""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import (
     BaseModel,
@@ -45,9 +45,7 @@ class ProductFacts(BaseModel):
     sku: Annotated[TrimmedText, StringConstraints(max_length=255)] = ""
     stock: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
     cost: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
-    description: Annotated[TrimmedText, StringConstraints(max_length=4000)] = ""
     materials: list[str] = Field(default_factory=list, max_length=100)
-    selling_points: list[str] = Field(default_factory=list, max_length=100)
     package_includes: list[str] = Field(default_factory=list, max_length=100)
     dimensions: Annotated[TrimmedText, StringConstraints(max_length=255)] = ""
     weight_kg: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
@@ -126,24 +124,33 @@ class DraftAttributesReadRequest(BaseModel):
     draft_id: Annotated[TrimmedText, StringConstraints(min_length=1, max_length=160)]
     platform: TrimmedText = ""
     site: TrimmedText = ""
+    scope: Literal["common", "sku"] = Field(default="common", description="common 读取商品事实和全部目标的公共属性，不返回 SKU 列表；sku 按指定平台/站点分页读取 SKU。")
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=25, ge=1, le=50)
+
+
+class DraftAttributeTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    platform: str
+    site: str
+    category_id: str
+    category_path: str = ""
+    publish_status: str = ""
+    attributes: dict[str, JsonValue]
 
 
 class DraftAttributesReadResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     draft_id: str
-    platform: str
-    site: str
-    category_id: str
-    attributes: dict[str, JsonValue]
+    product: ProductFacts
+    targets: list[DraftAttributeTarget]
     package_dimensions: dict[str, JsonValue] = Field(
         default_factory=dict,
         description="草稿共用包装尺寸（cm/kg）；skus[].package_dimensions 是逐 SKU 的有效包装尺寸，缺失时不会自动继承此值。",
     )
-    skus: list[dict[str, JsonValue]] = Field(max_length=50)
+    skus: list[dict[str, JsonValue]] = Field(default_factory=list, max_length=50)
     sku_count: int
-    next_offset: int | None
+    next_offset: int | None = None
 
 
 class ProductAttributesUpdateResult(BaseModel):
@@ -188,6 +195,7 @@ class ProductImagesPrepareResult(BaseModel):
 __all__ = [
     "DraftAttributesReadRequest",
     "DraftAttributesReadResult",
+    "DraftAttributeTarget",
     "DraftSkuAttributesUpdateRequest",
     "ProductAttributesUpdateRequest",
     "ProductAttributesUpdateResult",

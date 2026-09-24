@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 from pydantic_ai.messages import ModelResponse, RetryPromptPart, TextPart, UserPromptPart
 from pydantic_ai.models.function import FunctionModel
-from erp_web.schemas.copy import CopyQualityReview
 from erp_web.services.ai_model_factory import PydanticModelBinding
 
 from conftest import assert_no_old_path
@@ -45,10 +44,9 @@ def _patch_structured_copy(
     payload: dict[str, object],
     *,
     writer=None,
-    reviewer=None,
 ) -> dict[str, object]:
-    """使用真实 Pydantic Agent，只替换远端生成和独立复核的模型响应。"""
-    seen = {"requests": [], "reviews": []}
+    """使用真实 Pydantic Agent，只替换远端生成的模型响应。"""
+    seen = {"requests": []}
 
     def generate(messages, info):
         seen["requests"].append(list(messages))
@@ -73,16 +71,7 @@ def _patch_structured_copy(
             model_config={"provider": "Test Provider"},
         )
 
-    def fake_chat(*_args, **kwargs):
-        assert kwargs["output_type"] is CopyQualityReview
-        review_input = json.loads(kwargs["messages"][1]["content"])
-        seen["reviews"].append(review_input)
-        if reviewer:
-            return reviewer(review_input)
-        return CopyQualityReview(language_matches=True, explanation="测试文案符合事实及目标语言。")
-
     monkeypatch.setattr(copy_service, "create_pydantic_model_binding_for_use_case", binding)
-    monkeypatch.setattr(copy_service.ai_gateway, "chat_structured", fake_chat)
     return seen
 
 
@@ -94,7 +83,7 @@ def test_generate_copy_without_api_key_does_not_create_fallback_copy(
         {
             "name": "Manual test organizer",
             "materials": ["PP"],
-            "selling_points": ["Foldable"],
+            "attributes": {"结构": "Foldable"},
         },
         {
             "ai_models": [
@@ -136,7 +125,7 @@ def test_generate_copy_uses_bound_model_and_registry_language(
     assert result["ok"] is True
     assert result["language"] == "ru-RU"
     assert result["provider"] == "Test Provider"
-    assert result["copy"]["bullets"] == []
+    assert "bullets" not in result["copy"]
     assert seen["use_case"] == "copy.generate"
     assert "global_title" not in seen["output_schema"]["properties"]
 
@@ -320,7 +309,7 @@ def test_configured_copy_prompt_contains_target_and_product_context(
     prompt = copy_service.build_copy_prompt_from_config(
         str(app_dir),
         {},
-        {"name": "Manual organizer", "selling_points": ["Foldable"]},
+        {"name": "Manual organizer", "attributes": {"结构": "Foldable"}},
         "ozon",
         "ru-RU",
         "rewrite",
@@ -332,106 +321,79 @@ def test_configured_copy_prompt_contains_target_and_product_context(
     assert "{$" not in prompt["user"]
 
 
-def test_copy_retry_receives_previous_draft_and_exact_review_feedback(
+def test_copy_generation_saves_first_valid_output_without_extra_model_request(
     app_dir: Path, monkeypatch,
 ) -> None:
-    rejected = {"title": "Almohadilla", "description": "Para gato hidráulico."}
-    corrected = {"title": "Almohadilla", "description": "Apoyo de goma para gato."}
-    reason = "来源只说明千斤顶，没有液压类型依据；删除 hidráulico。"
+    from erp_web.facades.copy_facade import generate_copy_payload
+
+    def unexpected_request(*_args, **_kwargs):
+        pytest.fail("文案生成后不得额外调用模型。")
+
+    monkeypatch.setattr(ai_gateway, "chat_structured", unexpected_request)
+    context = get_context()
+    product = context.products.save_product({
+        "product_id": "copy-single-request", "name": "圣诞珍珠钻亚克力挂牌",
+        "drafts": {"yandex": {"enabled": True, "title": "原始标题", "language": "ru-RU"}},
+    })
+    draft_id = product["drafts"]["yandex"]["draft_id"]
+    generated = {
+        "title": "Новогодняя подвеска",
+        "description": "Жемчужные стразы создают объёмный эффект. Подойдёт для хобби взрослых и украшения ёлки.",
+    }
+    seen = _patch_structured_copy(monkeypatch, generated)
+
+    response, status = generate_copy_payload({"draft_id": draft_id, "platform": "yandex"})
+
+    assert status == 200
+    assert response["ok"] is True
+    assert len(seen["requests"]) == 1
+    saved = context.products.load_draft_from_index(draft_id)["drafts"]["yandex"]
+    assert saved["title"] == generated["title"]
+    assert saved["description"] == generated["description"]
+    assert saved["copy_source"] == "ai"
+
+
+def test_copy_schema_errors_use_native_retry(app_dir: Path, monkeypatch) -> None:
+    corrected = {"title": "Название", "description": "Описание товара."}
 
     def writer(messages, _info):
         has_feedback = any(
             isinstance(part, RetryPromptPart)
             for message in messages for part in message.parts
         )
-        return corrected if has_feedback else rejected
+        return corrected if has_feedback else {"title": "Название"}
 
-    def reviewer(review_input):
-        invalid = review_input["generated_copy"]["description"] == rejected["description"]
-        return CopyQualityReview(
-            language_matches=True,
-            unsupported_claims=[reason] if invalid else [],
-            explanation="存在无依据声称。" if invalid else "已删除无依据限定词。",
-        )
-
-    seen = _patch_structured_copy(monkeypatch, rejected, writer=writer, reviewer=reviewer)
+    seen = _patch_structured_copy(monkeypatch, corrected, writer=writer)
     result = copy_service.generate_copy(
-        str(app_dir),
-        {"name": "千斤顶橡胶垫", "weight_kg": "0.13", "source": {"attributes": {"材质": "橡胶"}}},
-        {}, language="es",
+        str(app_dir), {"name": "挂牌"}, {}, target_market="yandex", language="ru-RU",
     )
 
     assert result["ok"] is True
     assert result["copy"]["description"] == corrected["description"]
-    assert len(seen["requests"]) == len(seen["reviews"]) == 2
-    second_parts = [part for message in seen["requests"][1] for part in message.parts]
-    assert any(isinstance(part, TextPart) and rejected["description"] in part.content for part in second_parts)
-    assert any(isinstance(part, RetryPromptPart) and reason in str(part.content) for part in second_parts)
-    for review_input in seen["reviews"]:
-        facts = json.loads(review_input["product_facts"])
-        assert facts["Weight (kg)"] == "0.13"
-        assert "Weight" not in facts
-    assert "Weight (kg)" in seen["messages"][0]["content"]
-
-    with get_context().db._connect() as connection:
-        histories = connection.execute("SELECT messages_json FROM pydantic_message_histories").fetchall()
-    assert len(histories) == 1
-    history = histories[0]["messages_json"].decode("utf-8")
-    assert reason in history
-    assert rejected["description"] in history
-    assert corrected["description"] in history
+    assert len(seen["requests"]) == 2
 
 
-def test_copy_rejection_exhausts_native_retries_without_saving_draft(
-    app_dir: Path, monkeypatch,
-) -> None:
-    from erp_web.runtime_units.content_capabilities import ContentCapabilityScope, copy_generate
-    from erp_web.schemas.ai_trace import AiExecutionContext
-    from erp_web.schemas.content_capabilities import CopyGenerateRequest
-    from erp_web.services.capability_errors import BusinessCapabilityError
+@pytest.mark.parametrize("payload", [
+    {"title": "Название", "description": ""},
+    {"title": "x" * 121, "description": "Описание товара."},
+])
+def test_invalid_copy_is_not_saved(app_dir: Path, monkeypatch, payload) -> None:
+    from erp_web.facades.copy_facade import generate_copy_payload
 
     context = get_context()
     product = context.products.save_product({
-        "product_id": "copy-rejected", "name": "橡胶垫",
-        "drafts": {"mercadolibre": {"enabled": True, "title": "原始标题"}},
+        "product_id": "copy-invalid", "name": "挂牌",
+        "drafts": {"yandex": {"enabled": True, "title": "原始标题", "language": "ru-RU"}},
     })
-    draft_id = product["drafts"]["mercadolibre"]["draft_id"]
-    before = context.db.load_product_model("copy-rejected")
-    reason = "来源没有防划痕功能的依据。"
-    seen = _patch_structured_copy(
-        monkeypatch,
-        {"global_title": "Rubber Jack Pad", "title": "Almohadilla", "description": "Evita arañazos."},
-        reviewer=lambda _input: CopyQualityReview(
-            language_matches=True, unsupported_claims=[reason], explanation="声明无依据。",
-        ),
-    )
+    draft_id = product["drafts"]["yandex"]["draft_id"]
+    before = context.db.load_product_model("copy-invalid")
+    _patch_structured_copy(monkeypatch, payload)
 
-    with pytest.raises(BusinessCapabilityError) as error:
-        copy_generate(
-            CopyGenerateRequest(draft_id=draft_id, language="es"),
-            ContentCapabilityScope(context.products, lambda: {}),
-            AiExecutionContext.create(timeout_seconds=30, budget_profile="test"),
-        )
+    response, status = generate_copy_payload({"draft_id": draft_id, "platform": "yandex"})
 
-    assert error.value.code == "COPY_GENERATE_FAILED"
-    assert reason in str(error.value)
-    assert len(seen["requests"]) == len(seen["reviews"]) == 3
-    assert context.db.load_product_model("copy-rejected") == before
-
-
-def test_copy_review_transport_error_does_not_request_content_rewrite(
-    app_dir: Path, monkeypatch,
-) -> None:
-    def reviewer(_review_input):
-        raise TimeoutError("测试复核超时")
-
-    seen = _patch_structured_copy(
-        monkeypatch, {"title": "Almohadilla", "description": "Goma."}, reviewer=reviewer,
-    )
-    result = copy_service.generate_copy(str(app_dir), {"name": "橡胶垫"}, {}, language="es")
-    assert result["ok"] is False
-    assert result["copy"] == {}
-    assert len(seen["requests"]) == len(seen["reviews"]) == 1
+    assert status == 400
+    assert response["ok"] is False
+    assert context.db.load_product_model("copy-invalid") == before
 
 
 def test_configured_copy_prompt_does_not_duplicate_output_schema(

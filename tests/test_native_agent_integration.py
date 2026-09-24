@@ -7,13 +7,12 @@ import time
 
 import pytest
 
-from pydantic_ai.messages import UserPromptPart, ToolReturnPart
+from pydantic_ai.messages import UserPromptPart, ToolReturnPart, RetryPromptPart
 from pydantic_ai.models.function import FunctionModel, DeltaToolCall
 from pydantic_ai.models.test import TestModel
 
 from erp_web.services.ai_tool_registry import AiToolSet
 from erp_web.services.global_agent_chat_service import GlobalAgentChatService
-from erp_web.services.chat_operation_scope import ChatOperationScope
 from erp_web.services.vercel_ai_ui_service import VercelAiUiService
 from erp_web.services.ai_chat_run_registry import AiChatRunRegistry
 from erp_web.services.approval_session import ApprovalSession
@@ -99,7 +98,6 @@ def service(tmp_path, model, toolset=None):
         toolset=toolset or AiToolSet.bind("global.chat", [], {}),
         factory=factory,
         call_store=calls,
-        scope_resolver=lambda messages: ChatOperationScope(allowed_write_tools=list((toolset or tools()).bindings), all_drafts=False),
     )
     return VercelAiUiService(
         chat_service=chat,
@@ -384,8 +382,8 @@ def test_partial_approvals_are_idempotent_and_wait_for_all_native_decisions(tmp_
     assert executed == ["0"]
 
 
-def test_new_request_after_cancel_prepares_newly_authorized_tools(tmp_path):
-    """取消后的新请求须在工具准备前更新权限，不得整轮只暴露只读工具。"""
+def test_new_request_after_cancel_keeps_code_defined_tools(tmp_path):
+    """取消后新运行仍有代码允许的写工具，取消不改变权限。"""
     executed = []
     observations = []
 
@@ -408,8 +406,8 @@ def test_new_request_after_cancel_prepares_newly_authorized_tools(tmp_path):
     assert executed == ["draft-1"]
 
 
-def test_followup_replaces_previous_operation_tools_before_first_request(tmp_path):
-    """公共属性切换到 SKU 时，第一条模型请求就只获得新操作权限。"""
+def test_followup_keeps_code_defined_tools_while_model_selects_operation(tmp_path):
+    """公共属性切换到 SKU 时，工具列表不变，模型按完整上下文选择操作。"""
     executed = []
     observations = []
 
@@ -418,7 +416,7 @@ def test_followup_replaces_previous_operation_tools_before_first_request(tmp_pat
         expected = {"填写公共属性": "product_attributes_update", "填写全部 SKU": "draft_sku_attributes_update"}[latest]
         names = {tool.name for tool in info.function_tools}
         observations.append((latest, names))
-        assert names == {expected}
+        assert names == {"product_attributes_update", "draft_sku_attributes_update"}
         if any(isinstance(p, ToolReturnPart) and p.tool_name == expected for m in messages for p in m.parts):
             yield "已处理"
         else:
@@ -427,8 +425,32 @@ def test_followup_replaces_previous_operation_tools_before_first_request(tmp_pat
     ui = service(tmp_path, FunctionModel(stream_function=model), tools(*[
         binding(name, lambda args, ctx, name=name: executed.append(name) or {}, write=True)
         for name in ("product_attributes_update", "draft_sku_attributes_update")]))
-    ui.chat_service.scope_resolver = lambda texts: ChatOperationScope(
-        allowed_write_tools=["draft_sku_attributes_update" if texts[-1] == "填写全部 SKU" else "product_attributes_update"], all_drafts=False)
     for index, text in enumerate(("填写公共属性", "填写全部 SKU")):
         asyncio.run(ui.prepare_run(body(text, f"scope-{index}")).stream(lambda _: None))
     assert executed == ["product_attributes_update", "draft_sku_attributes_update"], observations
+
+
+def test_failed_call_evidence_is_preserved_for_followup_without_business_reads(tmp_path):
+    """原生未知工具拒绝保持在下一轮模型上下文中，无须查询才能知道该调用未执行。"""
+    executed = []
+    observed = []
+
+    async def model(messages, info):
+        latest = [p.content for m in messages for p in m.parts if isinstance(p, UserPromptPart)][-1]
+        observed.append(latest)
+        failures = [p for m in messages for p in m.parts if isinstance(p, RetryPromptPart)]
+        if not failures:
+            yield {0: DeltaToolCall(name="unavailable_write", json_args='{"draft_id":"draft-1"}', tool_call_id="failed-write")}
+        else:
+            assert failures[-1].tool_call_id == "failed-write"
+            assert "Unknown tool name" in str(failures[-1].content)
+            yield "没有写入：刚才的工具调用在执行前被拒绝，此后没有成功写入。"
+
+    ui = service(tmp_path, FunctionModel(stream_function=model), tools(
+        binding("read", lambda args, ctx: executed.append("read") or {}),
+        binding("write", lambda args, ctx: executed.append("write") or {}, write=True),
+    ))
+    for text, identifier in [("应用尺寸", "write"), ("你没有把尺寸写入草稿吗", "followup")]:
+        asyncio.run(ui.prepare_run(body(text, identifier)).stream(lambda _: None))
+    assert executed == []
+    assert observed == ["应用尺寸", "应用尺寸", "你没有把尺寸写入草稿吗"]

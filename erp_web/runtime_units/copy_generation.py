@@ -12,9 +12,7 @@ from erp_web.marketplace_registry import (
     platform_title_limit,
 )
 from erp_web.product_model import PLATFORMS
-from erp_web.product_model.common import normalize_list
 from erp_web.services import copy_service
-from erp_web.stores.product_store import normalize_product_fields
 
 from .image_pool_core import _source_only_pool_items, _source_pool_items
 
@@ -104,7 +102,6 @@ def save_copy_result(
     target_market: str,
     copy: dict[str, Any],
 ) -> dict[str, Any]:
-    product = normalize_product_fields(product)
     target_key = (target_market or "").strip().lower() or "mercadolibre"
     return get_context().products.save_draft_copy_result(
         product,
@@ -187,8 +184,6 @@ def apply_product_drafts_to_plan(product: dict[str, Any], plan: dict[str, Any]) 
             value = draft.get(field) or override.get(field)
             if value:
                 listing[field] = value
-        if draft.get("bullets"):
-            listing["bullets"] = draft.get("bullets")
         if draft.get("search_terms"):
             listing["search_keywords"] = draft.get("search_terms")
             listing["attribute_keywords"] = draft.get("search_terms")
@@ -199,7 +194,6 @@ def build_image_prompt_pack(
     product: dict[str, Any],
     platform: str,
     selected_image_ids: list[str] | None = None,
-    include_bullets: bool = True,
     include_description: bool = True,
     target_language: str = "",
 ) -> str:
@@ -214,8 +208,7 @@ def build_image_prompt_pack(
     images = [item for item in pool if str(item.get("id") or "").strip() in selected_ids] if selected_ids else pool
     if not images:
         images = _source_only_pool_items(product)
-    bullets = normalize_list(product.get("selling_points")) if include_bullets else []
-    description = str(listing.get("description") or product.get("description") or "").strip() if include_description else ""
+    description = str(listing.get("description") or "").strip() if include_description else ""
     language = str(target_language or listing.get("language") or "").strip()
     lines = [
         "ChatGPT 生图提示词包",
@@ -223,7 +216,6 @@ def build_image_prompt_pack(
         f"品牌: {product.get('brand', '')}",
         f"品类: {product.get('category', '')}",
         f"目标语言: {language or '按目标平台'}",
-        f"核心卖点: {'，'.join(bullets[:6])}",
         f"平台文案: {listing.get('title', '')}",
         f"平台描述: {description}",
         "原图:",

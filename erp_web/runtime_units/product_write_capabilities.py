@@ -79,6 +79,10 @@ class ProductDraftWriteStore(Protocol):
         self, draft_id: str, selected_sku_ids: list[str],
     ) -> tuple[dict[str, Any], dict[str, Any] | None, int]: ...
 
+    def update_draft_sku_package(
+        self, draft_id: str, sku_ids: list[str], package_dimensions: dict[str, float],
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, int]: ...
+
     def draft_workflow_status(
         self,
         product: dict[str, Any],

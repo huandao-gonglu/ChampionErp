@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """类目搜索、属性定义/枚举查询与类目预检的 Capability 契约。"""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints, model_validator
 
@@ -50,6 +50,7 @@ class CategoryAttributesQueryRequest(BaseModel):
     ]
     cursor: Annotated[TrimmedText, StringConstraints(max_length=160)] = ""
     limit: int = Field(default=50, ge=1, le=100)
+    scope: Literal["common", "sku", "all"] = Field(default="common", description="common 只读可写公共属性；sku 只读可写 SKU 属性；all 查看全部定义及 write_scope。分页游标沿用原始定义页，过滤后空页仍须检查 has_more。")
 
 
 class CategoryAttributesQueryResult(BaseModel):
@@ -64,6 +65,7 @@ class CategoryAttributesQueryResult(BaseModel):
     limit: int = 50
     cursor: TrimmedText = ""
     attributes: tuple[dict[str, JsonValue], ...] = ()
+    excluded_attributes: tuple[dict[str, JsonValue], ...] = ()
     next_cursor: TrimmedText = ""
     has_more: bool = False
 

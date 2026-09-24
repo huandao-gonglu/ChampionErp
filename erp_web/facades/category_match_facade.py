@@ -139,19 +139,6 @@ def _first_mapping(*values: Any) -> Mapping[str, Any]:
     return {}
 
 
-def _bullets(*values: Any, limit: int = 8) -> list[str]:
-    result: list[str] = []
-    for value in values:
-        rows = value if isinstance(value, (list, tuple)) else []
-        for row in rows:
-            text = _clean_description(row, 240)
-            if text and text not in result:
-                result.append(text)
-            if len(result) >= limit:
-                return result
-    return result
-
-
 def _attribute_value(value: Any) -> str | int | float | bool | list[str] | None:
     if isinstance(value, bool):
         return value
@@ -208,12 +195,6 @@ def category_product_facts(
         500,
     )
     target_title = _text(draft_data.get("title"), 500)
-    source_description = _clean_description(
-        source.get("description")
-        or source.get("clean_source_text")
-        or source.get("source_text")
-        or normalized.get("description")
-    )
     target_description = _clean_description(
         draft_data.get("description")
         or draft_data.get("description_html")
@@ -228,7 +209,6 @@ def category_product_facts(
                 80,
             ),
             "title": source_title,
-            "description": source_description,
         },
         "target": {
             "language": _text(
@@ -256,12 +236,6 @@ def category_product_facts(
                 or source.get("model")
                 or normalized.get("model"),
                 160,
-            ),
-            "bullets": _bullets(
-                draft_data.get("bullets"),
-                draft_data.get("bullet_points"),
-                source.get("bullets"),
-                source.get("bullet_points"),
             ),
             "attributes": _key_attributes(
                 draft_data.get("attributes"),

@@ -22,7 +22,6 @@ def library(monkeypatch):
             "product_id": product_id,
             "source": {
                 "title": f"测试商品 {product_id}",
-                "description": "采集的商品描述",
                 "source_url": f"https://example.com/{product_id}",
                 "source_platform": "1688",
             },

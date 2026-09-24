@@ -425,7 +425,7 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
   }
 
   async function previewClean1688Text() {
-    const raw = `${collectForm.value.rawText || collectForm.value.manualDescription || ''}`.trim()
+    const raw = `${collectForm.value.rawText || ''}`.trim()
     if (!raw) {
       setError('请先在“原始文本 / HTML 导入”里粘贴 1688 文本或 HTML。')
       return
@@ -439,7 +439,6 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
       collectForm.value.manualPrice = String(cleaned.source_price_cny || cleaned.source_price_cny_for_cost || collectForm.value.manualPrice || '')
       collectForm.value.manualDimensions = String(cleaned.dimensions || collectForm.value.manualDimensions || '')
       collectForm.value.manualWeight = String(cleaned.source_weight_kg || collectForm.value.manualWeight || '')
-      collectForm.value.manualDescription = String(cleaned.clean_source_text || cleaned.source_text || collectForm.value.manualDescription || '')
       if (Array.isArray(cleaned.images) && cleaned.images.length) collectForm.value.manualImages = cleaned.images.map(String).join('\n')
       collectDiagnostics.value = {
         ...collectDiagnostics.value,
@@ -447,7 +446,6 @@ export function createWorkflowCollectionActions(runtime: WorkflowCollectionActio
         progress: cleaned.ok === false ? 0 : 100,
         message: String(cleaned.message || '1688 文本已清洗，可检查字段后导入商品库。'),
         downloadedImages: Array.isArray(cleaned.images) ? cleaned.images.length : collectDiagnostics.value.downloadedImages,
-        extractedBullets: Array.isArray(cleaned.package_includes) ? cleaned.package_includes.length : collectDiagnostics.value.extractedBullets,
         antiBotWarning: Boolean(cleaned.manual_required),
         raw: cleaned,
       }

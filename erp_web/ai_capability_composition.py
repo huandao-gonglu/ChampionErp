@@ -141,6 +141,7 @@ _WRITE_CAPABILITIES = frozenset(
         "draft_stock_update",
         "draft_duplicate",
         "draft_sku_selection_update",
+        "draft_sku_package_update",
         "draft_pricing_apply",
         "draft_delete",
         "product_attributes_update",

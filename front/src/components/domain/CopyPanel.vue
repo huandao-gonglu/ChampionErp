@@ -59,13 +59,6 @@ function copyPrompt() {
           <p class="text-xs font-semibold text-slate-500">描述</p>
           <textarea v-model="props.product.drafts[props.activeMarketplace].description" class="input mt-1 min-h-36" placeholder="待生成" />
         </label>
-        <div>
-          <p class="text-xs font-semibold text-slate-500">Bullets</p>
-          <div class="mt-2 flex flex-wrap gap-2">
-            <span v-for="bullet in props.product.drafts[props.activeMarketplace].bullets" :key="bullet" class="badge-info">{{ bullet }}</span>
-            <span v-if="!props.product.drafts[props.activeMarketplace].bullets.length" class="badge-muted">待生成</span>
-          </div>
-        </div>
       </div>
     </article>
 

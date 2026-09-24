@@ -71,7 +71,6 @@ class ImagePromptsGenerateRequest(BaseModel):
         "mercadolibre"
     )
     selected_image_ids: tuple[str, ...] = ()
-    include_bullets: bool = True
     include_description: bool = True
     target_language: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
 

@@ -110,6 +110,23 @@ def test_agent_tool_budget_visibility_uses_native_prepare_tools():
     } <= attributes
 
 
+def test_chat_permissions_are_not_inferred_from_conversation():
+    """权限由代码目录与 Runtime 决定，不允许恢复按回合推断权限的第二模型。"""
+    assert not (ROOT / "erp_web/services/chat_operation_scope.py").exists()
+    forbidden = {"allowed_write_tools", "scope_resolver", "resolve_chat_operation_scope", "ChatOperationScope"}
+    for path in python_files(ROOT / "erp_web"):
+        for node in ast.walk(parse_python(path)):
+            if isinstance(node, ast.Name):
+                assert node.id not in forbidden, path
+            elif isinstance(node, ast.Attribute):
+                assert node.attr not in forbidden, path
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                assert node.value not in forbidden, path
+    runtime = (ROOT / "erp_web/services/ai_tool_runtime.py").read_text()
+    assert "definition.required_permission not in execution.permissions" in runtime
+    assert 'definition.side_effect == "write" and not execution.allow_write' in runtime
+
+
 def test_listing_grouping_is_owned_by_pure_domain_rules():
     paths = [
         ROOT / "erp_web/schemas/category_grouping.py",
@@ -123,7 +140,7 @@ def test_listing_grouping_is_owned_by_pure_domain_rules():
     )
     for name in (
         "product_model/category_model.py",
-        "runtime_units/category_attribute_updates.py",
+        "runtime_units/category_attribute_access.py",
         "runtime_units/sku_publish_projection.py",
         "runtime_units/publish_ozon.py",
     ):
@@ -218,7 +235,7 @@ def test_copy_generation_uses_typed_schema_instead_of_prompt_field_contract() ->
     service_source = (ROOT / "erp_web/services/copy_service.py").read_text(
         encoding="utf-8"
     )
-    assert "ai_gateway.chat_structured(" in service_source
+    assert "PromptedOutput(output_type)" in service_source
     assert "ai_gateway.chat_json(" not in service_source
 
     prompt_config = json.loads(
@@ -238,18 +255,22 @@ def test_copy_generation_uses_typed_schema_instead_of_prompt_field_contract() ->
         )
 
 
-def test_copy_generation_feedback_is_owned_by_native_agent() -> None:
-    """文案修正必须留在原生 Agent 的输出校验链，不能重新开始无反馈的生成。"""
+def test_copy_generation_has_no_extra_ai_review() -> None:
+    """文案只通过原生 Agent 生成，格式有效后不再调用模型复核。"""
     import inspect
-    from erp_web.services.copy_service import CopyOutputValidator, generate_copy
+    from erp_web.services import copy_service
+    from erp_web.schemas import copy as copy_schema
 
-    generation = inspect.getsource(generate_copy)
-    validator = inspect.getsource(CopyOutputValidator)
+    generation = inspect.getsource(copy_service.generate_copy)
+    service = inspect.getsource(copy_service)
     assert "AiAgentFactory(" in generation
-    assert "output_validator=validator" in generation
     assert "PromptedOutput(output_type)" in generation
-    assert "ai_gateway.chat_structured(" not in generation
-    assert "raise ModelRetry(" in validator
+    assert "output_validator=" not in generation
+    assert "ai_gateway" not in service
+    for retired in ("CopyOutputValidator", "review_copy_quality", "COPY_QUALITY_REJECTED"):
+        assert not hasattr(copy_service, retired)
+        assert retired not in service
+    assert not hasattr(copy_schema, "CopyQualityReview")
     assert not any(isinstance(node, (ast.For, ast.While)) for node in ast.walk(ast.parse(generation)))
 
 
@@ -418,6 +439,7 @@ def test_generic_object_saves_not_in_global_task_allowlist() -> None:
         "draft_stock_update",
         "draft_duplicate",
         "draft_sku_selection_update",
+        "draft_sku_package_update",
         "draft_pricing_apply",
         "product_attributes_update",
     ):
@@ -538,6 +560,14 @@ def test_agent_budget_retry_uses_native_tool_validator_without_response_rewritin
     assert "ModelResponse(" not in budget and "RetryPromptPart(" not in budget
 
 
+def test_attribute_query_and_write_share_access_rules():
+    for name in ("category_query_capabilities.py", "category_attribute_updates.py"):
+        assert any(
+            target == "erp_web.runtime_units.category_attribute_access.attribute_write_scope"
+            for _, target in imported_targets([ROOT / "erp_web/runtime_units" / name])
+        )
+
+
 def test_attribute_ai_has_only_the_main_conversation_entry():
     from erp_web.ai_capability_composition import APPLICATION_CAPABILITY_CATALOG, GLOBAL_CHAT_CAPABILITIES, _WRITE_CAPABILITIES
     from erp_web.http_route_units.category_routes import HANDLED_PATHS
@@ -577,3 +607,34 @@ def test_stop_uses_native_cancellation_instead_of_a_queued_prompt():
     assert "instance.stop()" in front
     for path in ("front/src/stores/aiChat.ts", "erp_web/services/agent_run_storage.py", "erp_web/services/vercel_ai_ui_service.py"):
         assert "取消当前操作" not in (ROOT / path).read_text()
+
+
+def test_description_belongs_only_to_drafts():
+    """旧卖点仅可在持久化迁移与拒绝旧契约的边界出现。"""
+    allowed = {
+        "erp_web/stores/product_description_migration.py",
+        "erp_web/product_model/merge_model.py",
+    }
+    retired = {"selling_points", "bullets", "bullet_points", "include_bullets", "bullets_found_count", "description_found"}
+    for path in python_files(ROOT / "erp_web"):
+        if _relative_posix(path) in allowed:
+            continue
+        for node in ast.walk(parse_python(path)):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                assert node.value not in retired, (path, node.lineno, node.value)
+    for relative in (
+        "front/src/components/domain/ProductEditorPanel.vue",
+        "front/src/components/domain/DraftEditorPanel.vue",
+        "front/src/components/domain/CopyPanel.vue",
+        "front/src/api/workflow/normalizers/product.ts",
+    ):
+        source = (ROOT / relative).read_text()
+        assert "sellingPoints" not in source and ".bullets" not in source
+
+    from erp_web.schemas.product import Product, ProductSource, PlatformDraft
+    from erp_web.schemas.product_capabilities import ProductFacts
+    from erp_web.schemas.product_write_capabilities import ProductProfilePatch
+
+    for shape in (Product, ProductSource, ProductFacts, ProductProfilePatch):
+        assert "description" not in shape.__annotations__
+    assert "description" in PlatformDraft.__annotations__

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { calculatePrice, generateCopy, imageEdit, imageTranslate, publishPrecheck } from '@/api/workflow'
+import { calculatePrice, generateCopy, imageEdit, imageTranslate, publishPrecheck, runCategoryPrecheck } from '@/api/workflow'
 import { apiClient } from '@/api/client'
 import { createEmptyDraftDetail, createEmptyProduct } from '@/constants/initialState'
 import { PRODUCT_SCHEMA_VERSION, normalizeBackendProduct, normalizeProductsIndex, normalizePublishPrecheck, toBackendProduct } from '@/api/workflow/normalizers'
@@ -363,6 +363,24 @@ describe('generateCopy API mapping', () => {
   })
 })
 
+describe('类目预检保存结果', () => {
+  it('保留后台最新草稿版本，预检记录不嵌入整份草稿', async () => {
+    const draft = { ...createEmptyDraftDetail('mercadolibre'), draftId: 'draft-1', productId: 'product-1' }
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ data: {
+      ok: true, platform: 'mercadolibre', site: 'CBT', category_id: 'CBT455516',
+      missing_fields: ['attributes.BRAND'],
+      draft: { draft_id: 'draft-1', platform: 'mercadolibre', updated_at: 'after-precheck' },
+    } })
+    const result = await runCategoryPrecheck(draft, { platform: 'mercadolibre', site: 'CBT', language: 'es', listingCurrency: 'USD' }, 'CBT455516')
+    expect(result.draft.updatedAt).toBe('after-precheck')
+    expect(result.ok).toBe(false)
+    expect(result.raw.ok).toBe(false)
+    expect(result.raw.missing_fields).toEqual(['attributes.BRAND'])
+    expect(result.raw).not.toHaveProperty('draft')
+    expect(result.raw).not.toHaveProperty('productContext')
+  })
+})
+
 describe('publishPrecheck API mapping', () => {
   it('maps draft statuses for the draft box', () => {
     const items = normalizeProductsIndex([
@@ -418,17 +436,19 @@ describe('publishPrecheck API mapping', () => {
     expect(result.source).not.toHaveProperty('future_source_field')
   })
 
-  it('writes product descriptions and selling points into source data', () => {
+  it('商品只写入事实属性，不再写入描述和独立卖点', () => {
     const product = createEmptyProduct()
-    product.source.description = '可折叠收纳盒，适用于厨房和衣柜。'
-    product.sellingPoints = ['可折叠收纳', '节省空间']
+    product.source.attributes = { 材质: 'PP' }
 
     const result = toBackendProduct(product)
 
     expect(result.source).toEqual(expect.objectContaining({
-      description: '可折叠收纳盒，适用于厨房和衣柜。',
-      bullets: ['可折叠收纳', '节省空间'],
+      attributes: { 材质: 'PP' },
     }))
+    expect(result).not.toHaveProperty('description')
+    expect(result.source).not.toHaveProperty('description')
+    expect(result).not.toHaveProperty('selling_points')
+    expect(result.source).not.toHaveProperty('bullets')
     expect(result.schema_version).toBe(PRODUCT_SCHEMA_VERSION)
     expect(result).not.toHaveProperty('id')
     expect(result).not.toHaveProperty('source_url')
