@@ -16,7 +16,6 @@ import DraftWorkspacePanel, { type DraftWorkspaceTab } from '@/components/domain
 import LibraryPanel from '@/components/domain/LibraryPanel.vue'
 import MercadoLibrePublishedPanel from '@/components/domain/MercadoLibrePublishedPanel.vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
-import PricingChart from '@/components/domain/PricingChart.vue'
 import PricingPanel from '@/components/domain/PricingPanel.vue'
 import ProductImageEditorPanel from '@/components/domain/ProductImageEditorPanel.vue'
 import ProductEditorPanel from '@/components/domain/ProductEditorPanel.vue'
@@ -792,7 +791,6 @@ watch(
                 @calculate="store.calculatePrice"
                 @apply="store.applyPrice"
               />
-              <PricingChart :result="pricingResult" />
             </div>
           </template>
 

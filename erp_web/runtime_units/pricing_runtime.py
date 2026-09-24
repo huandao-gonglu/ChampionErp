@@ -209,13 +209,47 @@ def fetch_pricing_exchange_rates(force_refresh: bool = False, config: dict[str, 
     return get_context().exchange_rates.get_rates(cfg, bool(force_refresh))
 
 
+class PricingSession:
+    """一次核价操作的公共资料；不跨请求缓存店铺凭据、渠道或费率。"""
+
+    def __init__(self) -> None:
+        self.store_config = get_context().config.load_store_config()
+        self.shipping = PricingShipping(get_context().paths.data_dir / "tariffs", self.store_config)
+        self.exchange_rates: dict[str, Any] | None = None
+        self.token_loaded = False
+        self.token_error: str | None = None
+
+    def rates(self, force_refresh: bool) -> dict[str, Any]:
+        if self.exchange_rates is None:
+            self.exchange_rates = fetch_pricing_exchange_rates(force_refresh)
+        return self.exchange_rates
+
+    def prepare_mercadolibre(self) -> None:
+        if not self.token_loaded:
+            self.token_loaded = True
+            try:
+                token = get_mercadolibre_access_token(self.store_config)
+                self.store_config.setdefault("mercadolibre", {})["access_token"] = token
+            except PublishAdapterError as exc:
+                self.token_error = str(exc)
+        if self.token_error is not None:
+            raise ValueError(self.token_error)
+
+    def calculate(self, input_data: dict[str, Any]) -> dict[str, Any]:
+        return _calculate_price(input_data, self)
+
+
 def calculate_price(input_data: dict[str, Any]) -> dict[str, Any]:
-    source = dict(input_data) if isinstance(input_data, dict) else {}
+    return PricingSession().calculate(input_data)
+
+
+def _calculate_price(input_data: dict[str, Any], session: PricingSession) -> dict[str, Any]:
+    source = deepcopy(input_data) if isinstance(input_data, dict) else {}
     raw_targets = source.get("targets")
     if not isinstance(raw_targets, list) or not raw_targets:
         return {"ok": False, "error": "核价必须指定至少一个发布目标。"}
 
-    store_config = get_context().config.load_store_config()
+    store_config = session.store_config
     normalized_targets: list[dict[str, Any]] = []
     for raw_target in raw_targets:
         target = dict(raw_target) if isinstance(raw_target, dict) else {}
@@ -326,16 +360,15 @@ def calculate_price(input_data: dict[str, Any]) -> dict[str, Any]:
         for target in raw_targets
     ):
         try:
-            token = get_mercadolibre_access_token(store_config)
-        except PublishAdapterError as exc:
+            session.prepare_mercadolibre()
+        except ValueError as exc:
             return {"ok": False, "error": str(exc)}
-        store_config.setdefault("mercadolibre", {})["access_token"] = token
 
     has_manual_rates = source.get("usd_cny_rate") not in (None, "") and source.get("mxn_usd_rate") not in (None, "")
     exchange_mode = str(source.get("exchange_rate_mode") or ("manual" if has_manual_rates else "live")).strip().lower()
     exchange_rates: dict[str, Any] | None = None
     if exchange_mode != "manual":
-        exchange_rates = fetch_pricing_exchange_rates(bool(source.get("force_exchange_rate_refresh")))
+        exchange_rates = session.rates(bool(source.get("force_exchange_rate_refresh")))
         if not exchange_rates.get("ok"):
             return {"ok": False, "error": exchange_rates.get("error") or "实时汇率获取失败", "exchange_rates": exchange_rates}
         rates = exchange_rates.get("rates") if isinstance(exchange_rates.get("rates"), dict) else {}
@@ -353,7 +386,7 @@ def calculate_price(input_data: dict[str, Any]) -> dict[str, Any]:
             common["currency_usd_rates"] = source["currency_usd_rates"]
     result = pricing_service.pricing_result(
         source,
-        shipping_resolver=PricingShipping(get_context().paths.data_dir / "tariffs", store_config),
+        shipping_resolver=session.shipping,
     )
     if exchange_rates:
         result["exchange_rates"] = exchange_rates
@@ -376,6 +409,7 @@ def calculate_price(input_data: dict[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "ExchangeRateService",
+    "PricingSession",
     "calculate_price",
     "fetch_pricing_exchange_rates",
 ]

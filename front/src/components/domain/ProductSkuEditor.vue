@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { PhPlus, PhTrash, PhCaretDown } from '@phosphor-icons/vue'
 import ProductAttributesEditor from './ProductAttributesEditor.vue'
 import SkuImagePicker from './SkuImagePicker.vue'
+import SkuCollapsibleSection from './SkuCollapsibleSection.vue'
 import type { ImageAsset, ProductSku } from '@/types/workflow'
 
 const rows = defineModel<ProductSku[]>({ required: true })
@@ -17,9 +18,9 @@ function add() {
 </script>
 
 <template>
-  <section class="mt-5 rounded-xl border border-accent-200 p-3 dark:border-dark-700">
+  <SkuCollapsibleSection class="mt-5 rounded-xl border border-accent-200 p-3 dark:border-dark-700" title="规格与 SKU" :summary="`${rows.length} 个`">
     <div class="mb-3 flex items-center justify-between gap-3">
-      <div><h3 class="font-bold">规格与 SKU <span class="text-sm font-normal text-slate-500">{{ rows.length }} 个</span></h3><p class="muted mt-1">每个规格维护独立成本与包装信息。停用后保留身份和发布关联。</p></div>
+      <p class="muted">每个规格维护独立成本与包装信息。停用后保留身份和发布关联。</p>
       <button class="btn btn-outline" :disabled="disabled" @click="add"><PhPlus />添加 SKU</button>
     </div>
     <p v-if="!rows.length" class="py-5 text-center text-sm text-slate-500">暂无 SKU，请采集商品或添加一个规格。</p>
@@ -47,5 +48,5 @@ function add() {
         </tbody>
       </table>
     </div>
-  </section>
+  </SkuCollapsibleSection>
 </template>

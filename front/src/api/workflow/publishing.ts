@@ -17,6 +17,7 @@ import type {
   MercadoLibreUserProduct,
   MercadoLibreUserProductsPage,
   PricingInput,
+  SkuPricingBatch,
   PricingDestinationResult,
   PricingResult,
   PricingTargetResult,
@@ -370,7 +371,7 @@ function normalizePricingTargetResult(value: unknown, fallback: Partial<PricingT
   }
 }
 
-export async function calculatePrice(input: PricingInput): Promise<PricingResult> {
+function pricingPayload(input: PricingInput): UnknownRecord {
   const common = {
     battery: input.battery ?? false,
     liquid: input.liquid ?? false,
@@ -403,20 +404,21 @@ export async function calculatePrice(input: PricingInput): Promise<PricingResult
       shipping_quote_mode: target.shippingQuoteMode,
       shipping_currency: target.shippingCurrency,
       shipping_amount: target.shippingAmount,
-      ...(target.shippingTariffVersion ? { shipping_tariff_version: target.shippingTariffVersion } : {}),
       ...(target.categoryId ? { category_id: target.categoryId } : {}),
       manual_price: target.manualPrice,
     }))
     : []
-  const response = await apiClient.post('/api/calculate-price', {
+  return {
     ...common,
     platform: input.platform,
     site: input.site,
     common,
     targets,
-  })
-  const data = asRecord(response.data)
-  if (data.ok === false && !Array.isArray(data.results)) ensureOk(data, '核价失败')
+  }
+}
+
+function normalizePricingResult(data: UnknownRecord, input: PricingInput): PricingResult {
+  if (data.ok === false && (!Array.isArray(data.results) || !data.results.length)) ensureOk(data, '核价失败')
   const backendInput = asRecord(data.input)
   const commonInput = asRecord(backendInput.common)
   const exchangeRates = asRecord(data.exchange_rates)
@@ -446,6 +448,35 @@ export async function calculatePrice(input: PricingInput): Promise<PricingResult
     exchangeRateSource: getString(exchangeRates, ['source']),
     exchangeRateFetchedAt: getString(exchangeRates, ['fetched_at']),
     exchangeRateCached: getBoolean(exchangeRates, ['cached']),
+  }
+}
+
+/** 一次提交全部 SKU；结果按 SKU ID 校验，避免顺序变化造成串价。 */
+export async function calculateSkuPrices(items: { skuId: string; input: PricingInput }[]): Promise<SkuPricingBatch> {
+  const response = await apiClient.post('/api/calculate-price', {
+    items: items.map(item => ({ sku_id: item.skuId, input: pricingPayload(item.input) })),
+  }, { timeout: 0 }) // Mercado 按 SKU 请求远端运费，整批时长可能超过普通请求上限。
+  const data = asRecord(response.data)
+  ensureOk(data, '批量核价失败')
+  const rawItems = Array.isArray(data.items) ? data.items.map(asRecord) : []
+  const byId = new Map(rawItems.map(item => [getString(item, ['sku_id']), asRecord(item.result)]))
+  if (rawItems.length !== items.length || byId.size !== items.length || items.some(item => !byId.has(item.skuId))) {
+    throw new Error('核价返回的 SKU 与本次选择不一致，请重新核价。')
+  }
+  const metrics = asRecord(data.metrics)
+  return {
+    items: items.map(item => {
+      try {
+        return { skuId: item.skuId, result: normalizePricingResult(byId.get(item.skuId)!, item.input) }
+      } catch (error) {
+        throw new Error(`SKU ${item.skuId}：${error instanceof Error ? error.message : '核价失败'}`)
+      }
+    }),
+    metrics: {
+      batchId: getString(metrics, ['batch_id']),
+      durationMs: getNumber(metrics, ['duration_ms']),
+      ozonDiscoveryMs: getNumber(metrics, ['ozon_discovery_ms']),
+    },
   }
 }
 

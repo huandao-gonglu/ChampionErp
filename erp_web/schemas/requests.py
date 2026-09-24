@@ -182,7 +182,7 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/v1/ai-presentations": _EMPTY,
     "/api/assign-upc": _EMPTY,
     "/api/browser-debug/open-profile": _EMPTY,
-    "/api/calculate-price": _EMPTY,
+    "/api/calculate-price": _contract(fields={"items": ARRAY}, required=("items",)),
     "/api/v1/category-match": _contract(
         required=("platform",),
         required_any=(

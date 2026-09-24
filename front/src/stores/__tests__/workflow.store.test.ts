@@ -12,7 +12,7 @@ import * as stateApi from '@/api/workflow/state'
 import * as translationApi from '@/api/workflow/translation'
 import { jsonProbeMessages, JSON_PROBE_USER_MESSAGE } from '@/constants/aiCapabilityProbe'
 import { withAiForeground } from '@/services/withAiForeground'
-import type { AuthResult, DraftDetail, DraftIndexItem, PricingResult, Product, UnknownRecord } from '@/types/workflow'
+import type { AuthResult, DraftDetail, DraftIndexItem, PricingInput, PricingResult, SkuPricingBatch, Product, UnknownRecord } from '@/types/workflow'
 
 vi.mock('@/api/workflow/state', () => ({
   fetchState: vi.fn(),
@@ -50,7 +50,7 @@ vi.mock('@/api/workflow/catalog', () => ({
 }))
 
 vi.mock('@/api/workflow/publishing', () => ({
-  calculatePrice: vi.fn(),
+  calculateSkuPrices: vi.fn(),
   publishPrecheck: vi.fn(),
   enqueuePublish: vi.fn(),
   fetchCategoryAttrs: vi.fn(),
@@ -105,6 +105,16 @@ const workflowApi = {
   ...settingsApi,
   ...stateApi,
   ...translationApi,
+}
+
+async function pricingBatchFixture(
+  items: { skuId: string; input: PricingInput }[],
+  result: PricingResult | ((input: PricingInput) => Promise<PricingResult>),
+): Promise<SkuPricingBatch> {
+  return {
+    items: await Promise.all(items.map(async item => ({ skuId: item.skuId, result: typeof result === 'function' ? await result(item.input) : result }))),
+    metrics: { batchId: 'test-batch', durationMs: 1500, ozonDiscoveryMs: 1000 },
+  }
 }
 
 function collectedProduct(): Product {
@@ -1964,7 +1974,7 @@ describe('workflow store live API flow', () => {
 
     ensurePricingSku(store)
     await store.calculatePrice()
-    expect(workflowApi.calculatePrice).toHaveBeenCalledOnce()
+    expect(workflowApi.calculateSkuPrices).toHaveBeenCalledOnce()
 
     vi.mocked(workflowApi.saveDraft).mockImplementation(async (savedDraft) => draftMutation(savedDraft))
     vi.mocked(workflowApi.publishPrecheck).mockImplementation(async (savedDraft) => ({
@@ -2025,7 +2035,7 @@ describe('workflow store live API flow', () => {
     ensurePricingSku(store)
     await store.calculatePrice()
     expect(store.error).toContain('缺少 Mercado Libre listing_model')
-    expect(workflowApi.calculatePrice).not.toHaveBeenCalled()
+    expect(workflowApi.calculateSkuPrices).not.toHaveBeenCalled()
 
     await store.runPrecheck()
     expect(store.error).toContain('缺少 Mercado Libre listing_model')
@@ -2069,7 +2079,7 @@ describe('workflow store live API flow', () => {
     ensurePricingSku(store)
     await store.calculatePrice()
     expect(store.error).toBe(expectedError)
-    expect(workflowApi.calculatePrice).not.toHaveBeenCalled()
+    expect(workflowApi.calculateSkuPrices).not.toHaveBeenCalled()
 
     await store.runPrecheck()
     await store.previewPayload()
@@ -3253,7 +3263,7 @@ describe('workflow store live API flow', () => {
       exchangeRateCached: false,
     }
     vi.mocked(workflowApi.loadDraft).mockResolvedValue(draftMutation(draft))
-    vi.mocked(workflowApi.calculatePrice).mockResolvedValue(pricingResult)
+    vi.mocked(workflowApi.calculateSkuPrices).mockImplementation(items => pricingBatchFixture(items, pricingResult))
     vi.mocked(workflowApi.saveDraft).mockImplementation(async (savedDraft) => draftMutation(savedDraft))
 
     const store = useWorkflowStore()
@@ -3290,7 +3300,7 @@ describe('workflow store live API flow', () => {
         ...store.currentDraft.skuItems[0]!, sku_id: 'sku-second', sku: 'SECOND',
         overrides: { package_dimensions: { weight_kg: '0.9' } }, pricing: {},
       })
-      vi.mocked(workflowApi.calculatePrice).mockImplementation(async (input) => ({
+      vi.mocked(workflowApi.calculateSkuPrices).mockImplementation(items => pricingBatchFixture(items, async (input) => ({
         ...pricingResult,
         results: pricingResult.results.map(item => input.weightKg === 0.9 ? {
           ...item, shippingAmount: 5.4,
@@ -3300,15 +3310,18 @@ describe('workflow store live API flow', () => {
             netProceeds: { amount: '21.35', currency: 'USD' },
           })),
         } : item),
-      }))
+      })))
     }
     await store.calculatePrice()
+    expect(workflowApi.calculateSkuPrices).toHaveBeenCalledOnce()
+    expect(vi.mocked(workflowApi.calculateSkuPrices).mock.calls[0][0]).toHaveLength(skuCount)
 
     expect(store.pricingInput.targets.map((target) => target.manualPrice)).toEqual([null])
     expect(workflowApi.saveDraft).not.toHaveBeenCalled()
-    expect(store.pricingInput.targets[0].shippingAmount).toBe(2.7)
+    expect(store.pricingInput.targets[0].shippingAmount).toBe(0)
+    expect((store.currentDraft.skuItems[0].pricing.targets as Record<string, UnknownRecord>)['mercadolibre:cbt'].shipping_amount).toBe(2.7)
 
-    vi.mocked(workflowApi.calculatePrice).mockResolvedValueOnce({
+    vi.mocked(workflowApi.calculateSkuPrices).mockImplementationOnce(items => pricingBatchFixture(items, {
       ...pricingResult,
       results: pricingResult.results.map((item, index) => index === 0 ? {
         ...item,
@@ -3317,15 +3330,15 @@ describe('workflow store live API flow', () => {
         profitCny: 0,
         errors: [{ field: 'target_margin_percent', message: '平台费用合计 + 目标销售利润率必须小于 100%' }],
       } : item),
-    })
+    }))
     ensurePricingSku(store)
     await store.applyPrice()
     expect(workflowApi.saveDraft).not.toHaveBeenCalled()
 
-    vi.mocked(workflowApi.calculatePrice).mockResolvedValueOnce({
+    vi.mocked(workflowApi.calculateSkuPrices).mockImplementationOnce(items => pricingBatchFixture(items, {
       ...pricingResult,
       results: pricingResult.results.map((item) => ({ ...item, destinationResults: [] })),
-    })
+    }))
     ensurePricingSku(store)
     await store.applyPrice()
     expect(workflowApi.saveDraft).not.toHaveBeenCalled()
@@ -3336,11 +3349,20 @@ describe('workflow store live API flow', () => {
     }])
     expect(store.error).toContain('核价结果与当前销售市场不一致')
 
+    vi.mocked(workflowApi.calculateSkuPrices).mockImplementationOnce(async items => {
+      const response = await pricingBatchFixture(items, pricingResult)
+      store.pricingInput.domesticFreightCny += 1
+      return response
+    })
+    await store.applyPrice()
+    expect(workflowApi.saveDraft).not.toHaveBeenCalled()
+    expect(store.error).toContain('核价期间 SKU、市场或参数已改变')
+
     ensurePricingSku(store)
     await store.applyPrice()
 
     expect(store.pricingInput.targets.map((target) => target.manualPrice)).toEqual([null])
-    expect(store.pricingInput.targets.map((target) => target.shippingAmount)).toEqual([2.7])
+    expect(store.pricingInput.targets.map((target) => target.shippingAmount)).toEqual([0])
     expect(workflowApi.saveDraft).toHaveBeenCalledWith(expect.objectContaining({
       targetSites: [expect.objectContaining({
         listingCurrency: 'USD',
@@ -3379,10 +3401,10 @@ describe('workflow store live API flow', () => {
       netProceeds: { amount: '18.65', currency: 'USD' },
     })])
     if (skuCount === 2) {
-      expect(workflowApi.calculatePrice).toHaveBeenCalledWith(expect.objectContaining({
+      expect(workflowApi.calculateSkuPrices).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ input: expect.objectContaining({
         purchaseCostCny: 55, weightKg: 0.9, lengthCm: 30, widthCm: 20, heightCm: 10,
         targets: [expect.objectContaining({ shippingQuoteMode: 'auto' })],
-      }))
+      }) })]))
       const saved = vi.mocked(workflowApi.saveDraft).mock.calls[0]![0]
       expect(saved.skuItems[1]!.pricing).toMatchObject({
         applied: true,
@@ -3425,7 +3447,7 @@ describe('workflow store live API flow', () => {
     target.pricingMode = 'manual'
     target.manualPrice = { amount: '200', currency: target.listingCurrency }
 
-    vi.mocked(workflowApi.calculatePrice).mockResolvedValue({
+    vi.mocked(workflowApi.calculateSkuPrices).mockImplementation(items => pricingBatchFixture(items, {
       results: [{
         targetKey: 'ozon:global',
         platform: 'ozon',
@@ -3481,7 +3503,7 @@ describe('workflow store live API flow', () => {
       exchangeRateSource: 'manual',
       exchangeRateFetchedAt: '',
       exchangeRateCached: false,
-    })
+    }))
 
     ensurePricingSku(store)
     await store.calculatePrice()
@@ -3516,7 +3538,7 @@ describe('workflow store live API flow', () => {
     target.manualPrice = { amount: '200', currency: 'USD' }
 
     // 店铺当前发布币种已变为 CNY：后端拒绝旧币种金额并回传新币种。
-    vi.mocked(workflowApi.calculatePrice).mockResolvedValue({
+    vi.mocked(workflowApi.calculateSkuPrices).mockImplementation(items => pricingBatchFixture(items, {
       results: [{
         targetKey: 'ozon:global',
         platform: 'ozon',
@@ -3572,7 +3594,7 @@ describe('workflow store live API flow', () => {
       exchangeRateSource: 'manual',
       exchangeRateFetchedAt: '',
       exchangeRateCached: false,
-    })
+    }))
 
     ensurePricingSku(store)
     await store.calculatePrice()
@@ -3605,7 +3627,7 @@ describe('workflow store live API flow', () => {
     await store.loadDraftForPricing('draft-shipping-missing')
 
     // Ozon / Yandex 默认手动物流报价且金额为空，两个目标都缺少物流报价。
-    vi.mocked(workflowApi.calculatePrice).mockImplementation(async (input) => ({
+    vi.mocked(workflowApi.calculateSkuPrices).mockImplementation(items => pricingBatchFixture(items, async (input) => ({
       results: input.targets.map((item) => ({
         targetKey: item.targetKey,
         platform: item.platform,
@@ -3661,7 +3683,7 @@ describe('workflow store live API flow', () => {
       exchangeRateSource: 'manual',
       exchangeRateFetchedAt: '',
       exchangeRateCached: false,
-    }))
+    })))
 
     ensurePricingSku(store)
     await store.calculatePrice()

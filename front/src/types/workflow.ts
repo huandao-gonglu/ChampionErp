@@ -437,8 +437,6 @@ export type ShippingQuoteMode = 'auto' | 'manual'
 export type ShippingCurrency = 'USD' | 'CNY'
 
 export interface PricingTargetInput {
-  /** 仅在一次逐 SKU 核价期间固定费率版本；下次核价重新读取当前版本。 */
-  shippingTariffVersion?: string
   categoryId?: string
   targetKey: string
   platform: Marketplace
@@ -535,6 +533,11 @@ export interface PricingResult {
   exchangeRateSource: string
   exchangeRateFetchedAt: string
   exchangeRateCached: boolean
+}
+
+export interface SkuPricingBatch {
+  items: { skuId: string; result: PricingResult }[]
+  metrics: { batchId: string; durationMs: number; ozonDiscoveryMs: number }
 }
 
 export interface CategorySelection {

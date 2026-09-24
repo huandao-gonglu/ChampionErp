@@ -13,7 +13,7 @@ PostHandler = Callable[[JsonRequestHandler], None]
 
 def handle_calculate_price(handler: JsonRequestHandler) -> None:
     handler.send_json(
-        product_facade.calculate_price(
+        product_facade.calculate_sku_prices(
             validate_request_payload(handler.read_body(), endpoint=handler.path)
         )
     )

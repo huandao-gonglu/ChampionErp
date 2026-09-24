@@ -1,5 +1,5 @@
 import { saveDraft as saveDraftApi } from '@/api/workflow/catalog'
-import { calculatePrice as calculatePriceApi } from '@/api/workflow/publishing'
+import { calculateSkuPrices } from '@/api/workflow/publishing'
 import type {
   DraftDetail,
   DraftSku,
@@ -195,10 +195,7 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
       }
       target.listingCurrency = resolved.listingCurrency
       target.currencyFingerprint = resolved.currencyFingerprint
-      if (target.shippingQuoteMode === 'auto') {
-        target.shippingAmount = resolved.shippingAmount
-        target.shippingCurrency = resolved.shippingCurrency
-      }
+      // 自动运费属于 SKU 的结果，不能回填为该市场全部规格的共用默认运费。
     })
     if (result.usdCnyRate > 0) pricingInput.value.usdCnyRate = result.usdCnyRate
     if (result.mxnUsdRate > 0) pricingInput.value.mxnUsdRate = result.mxnUsdRate
@@ -298,19 +295,20 @@ export function createWorkflowPricingActions(runtime: WorkflowPricingActionsPort
     setError('')
     try {
       const rows = currentDraft.value.skuItems.filter(row => row.selected)
-      const completed: { row: DraftSku; input: PricingInput; result: PricingResult }[] = []
-      const tariffVersions = new Map<string, string>()
-      // 每项独立取物理资料；共享参数只作默认值，不能将首个 SKU 的报价复制给其他规格。
-      for (const row of rows) {
-        const input = inputForSku(row)
-        for (const target of input.targets) target.shippingTariffVersion = tariffVersions.get(target.platform)
-        const result = await calculatePriceApi(input)
-        for (const target of result.results) {
-          const evidence = target.calculationBasis.shipping_evidence as UnknownRecord | undefined
-          if (typeof evidence?.tariff_version === 'string') tariffVersions.set(target.platform, evidence.tariff_version)
-        }
-        completed.push({ row, input, result })
+      const draftId = currentDraft.value.draftId
+      // 每个 SKU 的物理资料与覆盖值独立传入；公共物流资料由后端在本批内复用。
+      const inputs = rows.map(row => ({ skuId: row.sku_id, input: inputForSku(row) }))
+      const fingerprint = JSON.stringify({ inputs, targets: currentDraft.value.targetSites })
+      addLog(`开始批量核价：${rows.length} 个 SKU × ${pricingInput.value.targets.length} 个目标市场，正在获取共用物流资料并计算。`)
+      const batch = await calculateSkuPrices(inputs)
+      const latestInputs = currentDraft.value.skuItems.filter(row => row.selected).map(row => ({ skuId: row.sku_id, input: inputForSku(row) }))
+      if (currentDraft.value.draftId !== draftId || JSON.stringify({ inputs: latestInputs, targets: currentDraft.value.targetSites }) !== fingerprint) {
+        throw new Error('核价期间 SKU、市场或参数已改变，请重新核价后再应用售价。')
       }
+      const byId = new Map(batch.items.map(item => [item.skuId, item.result]))
+      if (byId.size !== rows.length || rows.some(row => !byId.has(row.sku_id))) throw new Error('核价返回的 SKU 不完整，请重新核价。')
+      const completed = rows.map((row, index) => ({ row, input: inputs[index]!.input, result: byId.get(row.sku_id)! }))
+      addLog(`核价批次 ${batch.metrics.batchId}：耗时 ${(batch.metrics.durationMs / 1000).toFixed(2)} 秒，其中 Ozon 共用渠道查询 ${(batch.metrics.ozonDiscoveryMs / 1000).toFixed(2)} 秒。`)
       if (completed[0]) acceptPreview(completed[0].result)
       const errors = completed.flatMap(({ row, result }) => [
         ...pricingErrors(result).map(error => `${row.sku || row.sku_id}：${error}`),

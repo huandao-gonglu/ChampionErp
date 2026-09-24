@@ -42,7 +42,9 @@ ERP 在 `services/pricing_shipping.py` 中调用该入口，复用本轮核价�
   放在既有 `calculation_basis.shipping_evidence` 中；多国家证据在
   `calculation_basis.destination_shipping`。完整候选通过 `shipping_candidates` 返回，
   不要求把所有候选长期保存。
-- 一次逐 SKU 核价以首个成功结果的版本固定后续 SKU；新一轮重新读取当前版本。
+- 一次 SKU 批次共用同一个 `ShippingModule`，首次加载的平台费率快照与 Ozon
+  仓库/配送渠道固定用于本批后续规格。公共查询失败也在本批复用错误，新一轮
+  创建实例后重新读取当前费率及渠道，不跨批次缓存店铺凭据。
   修改包装、成本、报价输入时继续使用项目已有核价失效机制，不新增后台监控。
 
 ## 平台接口口径

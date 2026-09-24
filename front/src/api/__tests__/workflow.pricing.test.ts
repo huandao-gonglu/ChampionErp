@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import { calculatePrice, generateCopy, imageEdit, imageTranslate, publishPrecheck, runCategoryPrecheck } from '@/api/workflow'
+import { calculateSkuPrices, generateCopy, imageEdit, imageTranslate, publishPrecheck, runCategoryPrecheck } from '@/api/workflow'
 import { apiClient } from '@/api/client'
-import { createEmptyDraftDetail, createEmptyProduct } from '@/constants/initialState'
+import { createDefaultPricingInput, createEmptyDraftDetail, createEmptyProduct } from '@/constants/initialState'
 import { PRODUCT_SCHEMA_VERSION, normalizeBackendProduct, normalizeProductsIndex, normalizePublishPrecheck, toBackendProduct } from '@/api/workflow/normalizers'
 
 vi.mock('@/api/client', () => ({
@@ -11,10 +11,9 @@ vi.mock('@/api/client', () => ({
   },
 }))
 
-describe('calculatePrice API mapping', () => {
+describe('SKU 批量核价 API 映射', () => {
   it('posts pricing inputs and maps backend pricing fields for the UI', async () => {
-    vi.mocked(apiClient.post).mockResolvedValueOnce({
-      data: {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ data: { ok: true, items: [{ sku_id: 'sku-1', result: {
         ok: true,
         results: [{
           target_key: 'mercadolibre:mlm',
@@ -53,10 +52,9 @@ describe('calculatePrice API mapping', () => {
           source: 'manual',
           rates: { usd_cny_rate: 7.25, mxn_usd_rate: 17, rub_usd_rate: 73.5, rub_cny_rate: 12 },
         },
-      },
-    })
+      } }], metrics: {} } })
 
-    const result = await calculatePrice({
+    const result = (await calculateSkuPrices([{ skuId: 'sku-1', input: {
       platform: 'mercadolibre',
       site: 'MLM',
       purchaseCostCny: 100,
@@ -90,9 +88,9 @@ describe('calculatePrice API mapping', () => {
           manualPrice: null,
         },
       ],
-    })
+    } }])).items[0]!.result
 
-    expect(apiClient.post).toHaveBeenCalledWith('/api/calculate-price', {
+    expect(apiClient.post).toHaveBeenCalledWith('/api/calculate-price', { items: [{ sku_id: 'sku-1', input: {
       battery: false,
       liquid: false,
       platform: 'mercadolibre',
@@ -144,7 +142,7 @@ describe('calculatePrice API mapping', () => {
           manual_price: null,
         },
       ],
-    })
+    } }] }, { timeout: 0 })
     expect(result).toEqual({
       results: [
         {
@@ -208,8 +206,7 @@ describe('calculatePrice API mapping', () => {
   })
 
   it('sends CBT sales destinations in pricing targets', async () => {
-    vi.mocked(apiClient.post).mockResolvedValueOnce({
-      data: {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ data: { ok: true, items: [{ sku_id: 'sku-1', result: {
         ok: true,
         results: [{
           target_key: 'mercadolibre:cbt',
@@ -236,10 +233,9 @@ describe('calculatePrice API mapping', () => {
         }],
         input: { common: {} },
         exchange_rates: { rates: {} },
-      },
-    })
+      } }], metrics: {} } })
 
-    const result = await calculatePrice({
+    const result = (await calculateSkuPrices([{ skuId: 'sku-1', input: {
       platform: 'mercadolibre',
       site: 'CBT',
       purchaseCostCny: 100,
@@ -282,9 +278,9 @@ describe('calculatePrice API mapping', () => {
         shippingAmount: 0,
         manualPrice: null,
       }],
-    })
+    } }])).items[0]!.result
 
-    expect(apiClient.post).toHaveBeenCalledWith('/api/calculate-price', expect.objectContaining({
+    expect(apiClient.post).toHaveBeenCalledWith('/api/calculate-price', { items: [{ sku_id: 'sku-1', input: expect.objectContaining({
       targets: [expect.objectContaining({
         target_key: 'mercadolibre:cbt',
         sites_to_sell: [
@@ -300,7 +296,7 @@ describe('calculatePrice API mapping', () => {
           { site_id: 'MLB', logistic_type: 'fulfillment' },
         ],
       })],
-    }))
+    }) }] }, { timeout: 0 })
     expect(result.results[0]).toEqual(expect.objectContaining({
       appliedPrice: { amount: '29.90', currency: 'USD' },
       appliedNetProceeds: { amount: '24.50', currency: 'USD' },
@@ -947,5 +943,34 @@ describe('imageEdit API payload', () => {
       timeout: 30000,
       aiPresentationId: 'presentation-image-edit',
     })
+  })
+})
+
+
+describe('SKU 批量核价结果归属', () => {
+  it('198 个 SKU 一次提交，后端倒序返回时仍按 SKU ID 匹配', async () => {
+    vi.mocked(apiClient.post).mockClear()
+    const items = Array.from({ length: 198 }, (_, index) => ({ skuId: 'sku-' + index, input: createDefaultPricingInput() }))
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ data: {
+      ok: true,
+      items: [...items].reverse().map((item) => ({ sku_id: item.skuId, result: {
+        ok: true, results: [], profit_cny: Number(item.skuId.slice(4)),
+      } })),
+      metrics: { batch_id: 'batch-198', duration_ms: 2300, ozon_discovery_ms: 2100 },
+    } })
+    const result = await calculateSkuPrices(items)
+    expect(apiClient.post).toHaveBeenCalledOnce()
+    expect((vi.mocked(apiClient.post).mock.calls[0][1] as { items: unknown[] }).items).toHaveLength(198)
+    expect(result.items.map(item => item.skuId)).toEqual(items.map(item => item.skuId))
+    expect(result.items[197].result.profitCny).toBe(197)
+    expect(result.metrics).toEqual({ batchId: 'batch-198', durationMs: 2300, ozonDiscoveryMs: 2100 })
+  })
+
+  it.each([{ ids: [] }, { ids: ['sku-1', 'sku-1'] }, { ids: ['sku-1', 'other'] }])('缺失、重复或未知 SKU 拒绝写回：$ids', async ({ ids }) => {
+    const items = ['sku-1', 'sku-2'].map(skuId => ({ skuId, input: createDefaultPricingInput() }))
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ data: {
+      ok: true, items: ids.map(sku_id => ({ sku_id, result: { ok: true, results: [] } })),
+    } })
+    await expect(calculateSkuPrices(items)).rejects.toThrow('SKU 与本次选择不一致')
   })
 })

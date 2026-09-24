@@ -7,7 +7,7 @@ from erp_web.runtime_units.draft_category_resolution import (
     resolve_draft_category_pairs as _resolve_draft_category_pairs,
 )
 from erp_web.runtime_units.image_pool import current_image_pool, current_source_images
-from erp_web.runtime_units.pricing_runtime import calculate_price
+from erp_web.runtime_units.pricing_batch import calculate_sku_prices
 from erp_web.runtime_units.publish_helpers import assign_upc
 from erp_web.schemas.api import ApiResponse
 from erp_web.schemas.product import Product
@@ -113,7 +113,7 @@ def import_upcs_payload(body: dict[str, Any]) -> ResponseWithStatus:
 
 __all__ = [
     "assign_upc",
-    "calculate_price",
+    "calculate_sku_prices",
     "delete_draft_payload",
     "delete_products_payload",
     "duplicate_draft_payload",

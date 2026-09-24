@@ -165,7 +165,7 @@ def test_calculate_price_api_blocks_until_store_currency_ready(backend_server: s
     data = post_json(
         backend_server,
         "/api/calculate-price",
-        {
+        {"items": [{"sku_id": "sku-1", "input": {
             "platform": "mercadolibre",
             "site": "MLM",
             "exchange_rate_mode": "manual",
@@ -188,9 +188,11 @@ def test_calculate_price_api_blocks_until_store_currency_ready(backend_server: s
                 "commission_percent": 16,
                 "shipping_quote_mode": "auto",
             }],
-        },
+        }}]},
     )
 
+    assert data["ok"] is True
+    data = data["items"][0]["result"]
     assert data["ok"] is False
     assert data["error_code"] == "STORE_CURRENCY_UNRESOLVED"
     assert data["platform"] == "mercadolibre"

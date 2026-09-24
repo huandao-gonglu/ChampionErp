@@ -619,8 +619,17 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
 
 ## 发布币种与核价
 
-- 国际物流入口：现有 `/api/calculate-price` → `runtime_units/pricing_runtime.py`
+- 国际物流入口：`/api/calculate-price` → `product_facade.calculate_sku_prices`
+  → `runtime_units/pricing_batch.py` → `pricing_runtime.PricingSession`
   → `services/pricing_shipping.py` → `international_shipping/ShippingModule.quote()`。
+  HTTP 一次接收 `items: [{sku_id, input}]`，返回同 ID 的 `items: [{sku_id, result}]`
+  和 `metrics`（批次号、SKU/市场报价/失败计数、总耗时、Ozon 公共查询耗时），契约在
+  `schemas/pricing_batch.py`。前端核价和应用售价都提交整批请求；不再逐 SKU 发送 HTTP。
+  一批只加载一次店铺配置、实时汇率和 Mercado token，物流实例固定费率版本并复用
+  Ozon 仓库/配送渠道；公共查询失败也在本批复用错误，下一批重新读取。每个 SKU 的
+  成本、包装、货值和 Mercado 远端运费仍独立计算。`erp.pricing` 日志记录批次、
+  每 25 个 SKU 的进度、失败原因与耗时。Agent 单项核价继续调用 `calculate_price`，
+  它与 HTTP 批次使用同一个 Session 算法，没有另一套定价实现。
   模块负责 Ozon/Yandex 费率版本和三平台物流计算，返回全部候选；ERP 使用既有汇率
   换成物流字段 CNY/USD 后选最低价。模块通过回调使用当前售价算法校验货值，
   不反向导入 ERP。Mercado 的内置运费表已删除，多销售国家分别请求报价并计算售价。
